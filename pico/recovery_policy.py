@@ -83,6 +83,16 @@ def command_risk_class(command):
     text = str(command).strip()
     if not text:
         return "workspace_write"
+    # shell 里的重定向、管道、后续命令会让第一个词的分类失去意义，
+    # 所以看到这些操作符时，保守地按 workspace_write 走。
+    raw = text
+    if any(token in raw for token in (">", ">>", "|", "&&", ";")):
+        # 但如果链条里出现了 rm、curl 之类，再升级到更严格的类别
+        if any(dangerous in raw for dangerous in ("rm ", " rm ", "shred ", "dd ")):
+            return "destructive"
+        if any(external in raw for external in ("curl ", "wget ", "ssh ", "scp ", "gh ")):
+            return "external_effect"
+        return "workspace_write"
     try:
         tokens = shlex.split(text, posix=True)
     except ValueError:
