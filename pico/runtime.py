@@ -28,6 +28,7 @@ from .tool_change_recorder import ToolChangeRecorder
 from .tool_context import ToolContext
 from .tool_executor import ToolExecutor
 from . import tools as toolkit
+from .verification import new_verification_record
 from .workspace import IGNORED_PATH_NAMES, MAX_HISTORY, WorkspaceContext, clip, now
 from .workspace_observer import WorkspaceObserver
 
@@ -521,6 +522,50 @@ class Pico:
         result = self.tool_executor.execute(name, args)
         self._last_tool_result_metadata = dict(result.metadata)
         return result
+
+    def record_verification_evidence(
+        self,
+        command,
+        risk_class,
+        exit_code,
+        stdout,
+        stderr,
+        checkpoint_id="",
+        trace_event_id="",
+    ):
+        """在指定 checkpoint 上附加一条 Verification Evidence。
+
+        - 如果 checkpoint_id 为空，就挂在当前 turn 的 recovery checkpoint 上；
+        - 记录同时写入 checkpoint record，并在 trace 里补一条 verification_recorded 事件。
+        """
+        target_id = str(checkpoint_id or "")
+        if not target_id and self.current_task_state is not None:
+            target_id = self.current_task_state.recovery_checkpoint_id
+        record = new_verification_record(
+            command=command,
+            risk_class=risk_class,
+            exit_code=exit_code,
+            stdout=stdout,
+            stderr=stderr,
+            affected_checkpoint_id=target_id,
+            trace_event_id=trace_event_id,
+        )
+        if target_id:
+            checkpoint = self.checkpoint_store.load_checkpoint_record(target_id)
+            checkpoint.setdefault("verification_evidence", []).append(record)
+            self.checkpoint_store.write_checkpoint_record(checkpoint)
+        if self.current_task_state is not None:
+            self.emit_trace(
+                self.current_task_state,
+                "verification_recorded",
+                {
+                    "verification_id": record["verification_id"],
+                    "command": record["command"],
+                    "status": record["status"],
+                    "checkpoint_id": target_id,
+                },
+            )
+        return record
 
     def run_tool(self, name, args):
         """执行一次工具调用，并在执行前后套上完整护栏。

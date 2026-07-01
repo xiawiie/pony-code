@@ -47,3 +47,27 @@ def test_real_checkpoint_can_preview_and_apply_restore(tmp_path):
     result = agent.recovery_manager.apply_restore(checkpoint_id)
     assert result["restore_checkpoint_id"]
     assert agent.checkpoint_store.load_checkpoint_record(result["restore_checkpoint_id"])["checkpoint_type"] == "restore"
+
+
+def test_verification_evidence_can_attach_to_checkpoint(tmp_path):
+    agent = build_agent(
+        tmp_path,
+        [
+            '<tool>{"name":"write_file","args":{"path":"note.txt","content":"after\\n"}}</tool>',
+            "<final>done</final>",
+        ],
+    )
+    agent.ask("finish")
+    checkpoint_id = agent.current_task_state.recovery_checkpoint_id
+
+    record = agent.record_verification_evidence(
+        command="python -m pytest -q",
+        risk_class="workspace_write",
+        exit_code=0,
+        stdout="passed",
+        stderr="",
+        checkpoint_id=checkpoint_id,
+    )
+
+    checkpoint = agent.checkpoint_store.load_checkpoint_record(checkpoint_id)
+    assert checkpoint["verification_evidence"][0]["verification_id"] == record["verification_id"]
