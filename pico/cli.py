@@ -18,7 +18,6 @@ from .config import load_project_env, provider_env
 from .providers.clients import AnthropicCompatibleModelClient, OllamaModelClient, OpenAICompatibleModelClient
 from .recovery_manager import RecoveryManager
 from .recovery_checkpoint_writer import RecoveryCheckpointWriter
-from .run_store import RunStore
 from .runtime import Pico, SessionStore
 from .workspace import WorkspaceContext, middle
 
