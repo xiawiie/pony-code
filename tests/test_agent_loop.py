@@ -35,3 +35,14 @@ def test_pico_ask_delegates_to_agent_loop(tmp_path):
     agent = build_agent(tmp_path, ["<final>Facade works.</final>"])
 
     assert agent.ask("Use facade") == "Facade works."
+
+
+def test_agent_loop_emits_focused_recovery_trace_events(tmp_path):
+    agent = build_agent(tmp_path, ["<final>done</final>"])
+
+    agent.ask("say done")
+
+    trace_text = agent.run_store.trace_path(agent.current_task_state).read_text(encoding="utf-8")
+    assert '"event": "run_started"' in trace_text
+    assert '"event": "model_turn"' in trace_text
+    assert '"event": "checkpoint_created"' in trace_text

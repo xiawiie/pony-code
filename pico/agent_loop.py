@@ -141,6 +141,20 @@ class AgentLoop:
                     "duration_ms": int((time.monotonic() - model_started_at) * 1000),
                 },
             )
+            # 把一轮 model call 的 prompt 组装、请求、回包解析压成一条 model_turn，
+            # 方便下游的 replay 和排查按“逻辑轮”遍历，不用挨个匹配三个事件。
+            agent.emit_trace(
+                task_state,
+                "model_turn",
+                {
+                    "attempts": task_state.attempts,
+                    "kind": kind,
+                    "duration_ms": int((time.monotonic() - prompt_started_at) * 1000),
+                    "prompt_cache_key": prompt_metadata.get("prompt_cache_key"),
+                    "prompt_metadata": prompt_metadata,
+                    "completion_metadata": completion_metadata,
+                },
+            )
 
             if kind == "tool":
                 tool_steps += 1
