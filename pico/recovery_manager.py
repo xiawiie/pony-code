@@ -14,7 +14,7 @@ from pico.recovery_models import (
     new_id,
     utc_now,
 )
-from pico.recovery_paths import hash_file_bytes, resolve_workspace_relative_path
+from pico.recovery_paths import hash_bytes, hash_file_bytes, resolve_workspace_relative_path
 
 
 class RecoveryManager:
@@ -70,6 +70,12 @@ class RecoveryManager:
         if resolved.exists():
             observed = hash_file_bytes(resolved)["content_hash"]
 
+        if not expected:
+            if observed:
+                return "conflict", {"reason": "unexpected_file_present", "observed_current_hash": observed}
+            if not file_entry.get("before_blob_ref", ""):
+                return "review", {"reason": "missing_expected_current_hash", "observed_current_hash": ""}
+            return "restore", {"reason": "hash_match", "observed_current_hash": ""}
         if expected and observed and expected != observed:
             return "conflict", {"reason": "hash_mismatch", "observed_current_hash": observed}
         if expected and not observed:
@@ -83,12 +89,25 @@ class RecoveryManager:
         pre_states = []
         post_states = []
         touched = []
+        skipped = []
 
         for entry in plan["entries"]:
             if entry["decision"] != "restore":
                 continue
             path = entry["path"]
             resolved = resolve_workspace_relative_path(self.workspace_root, path)
+
+            before_blob_ref = entry.get("before_blob_ref") or ""
+            # 在真正动磁盘之前，先确认 before-blob 还在。如果丢了，把这条 entry
+            # 转成 skipped/blob_missing 并继续处理下一条，避免留下半恢复状态。
+            if before_blob_ref and not self.store.has_blob(before_blob_ref):
+                skipped.append({
+                    "path": path,
+                    "reason": "before_blob_missing",
+                    "before_blob_ref": before_blob_ref,
+                })
+                continue
+
             pre_hash = ""
             pre_blob_ref = ""
             if resolved.exists():
@@ -102,12 +121,23 @@ class RecoveryManager:
                 "before_hash": pre_hash,
             })
 
-            before_blob_ref = entry.get("before_blob_ref") or ""
             if before_blob_ref:
                 data = self.store.read_blob(before_blob_ref)
                 resolved.parent.mkdir(parents=True, exist_ok=True)
                 resolved.write_bytes(data)
-                post_hash = self.store.write_blob(data, "text")["content_hash"]
+                # 独立读回磁盘、独立算一次 hash，作为写入生效的独立证据。
+                # 直接对入参 data 再 sha256 会得到同样的结果，无法证明写入成功。
+                verified_hash = hash_file_bytes(resolved)["content_hash"]
+                expected_hash = hash_bytes(data)["content_hash"]
+                if verified_hash != expected_hash:
+                    skipped.append({
+                        "path": path,
+                        "reason": "post_write_hash_mismatch",
+                        "expected_hash": expected_hash,
+                        "observed_hash": verified_hash,
+                    })
+                    continue
+                post_hash = verified_hash
             else:
                 # before_blob_ref 为空 → 说明目标状态是“不存在”
                 if resolved.exists():
@@ -126,6 +156,7 @@ class RecoveryManager:
             "plan_id": plan["restore_plan_id"],
             "applied_at": utc_now(),
             "restored_paths": touched,
+            "skipped_entries": skipped,
             "pre_restore_file_states": pre_states,
             "post_restore_file_states": post_states,
         }
@@ -142,6 +173,7 @@ class RecoveryManager:
             "restore_checkpoint_id": restore_checkpoint["checkpoint_id"],
             "restore_plan_id": plan["restore_plan_id"],
             "restored_paths": touched,
+            "skipped_entries": skipped,
         }
 
 

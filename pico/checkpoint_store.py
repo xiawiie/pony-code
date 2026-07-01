@@ -134,6 +134,8 @@ class CheckpointStore:
             if not blob_path.is_file():
                 continue
             blob_ref = blob_path.name
+            if not _looks_like_blob_ref(blob_ref):
+                continue
             if blob_ref in referenced:
                 continue
             unreferenced.append(blob_ref)
@@ -179,3 +181,8 @@ def _collect_blob_refs(entry, sink):
         value = entry.get(key)
         if isinstance(value, str) and value:
             sink.add(value)
+
+
+def _looks_like_blob_ref(value):
+    text = str(value)
+    return len(text) == 64 and all(char in "0123456789abcdef" for char in text)

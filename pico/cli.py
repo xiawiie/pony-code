@@ -23,6 +23,25 @@ from .workspace import WorkspaceContext, middle
 
 
 _RECOVERY_TOP_LEVEL_COMMANDS = {"checkpoints", "runs"}
+# 只有在第一位是 recovery 顶级命令，且第二位落在下面这些子命令里的时候，
+# 才把 argv 当成 recovery inspection 命令。否则用户输入的 `pico "checkpoints ..."`
+# 就应该像普通 prompt 一样送进模型。
+_RECOVERY_SUBCOMMANDS = {
+    "checkpoints": {"list", "show", "preview-restore", "restore", "prune"},
+    "runs": {"list", "show"},
+}
+
+
+def _looks_like_recovery_command(prompt_tokens):
+    if not prompt_tokens:
+        return False
+    head = prompt_tokens[0]
+    if head not in _RECOVERY_TOP_LEVEL_COMMANDS:
+        return False
+    # `pico checkpoints` / `pico runs` 单独一个词也算：走默认子命令 list。
+    if len(prompt_tokens) == 1:
+        return True
+    return prompt_tokens[1] in _RECOVERY_SUBCOMMANDS.get(head, set())
 
 DEFAULT_SECRET_ENV_NAMES = (
     "PICO_OPENAI_API_KEY",
@@ -408,9 +427,14 @@ def _run_runs(root, args):
 
 def main(argv=None):
     parser = build_arg_parser()
-    args = parser.parse_args(argv)
+    args, extra = parser.parse_known_args(argv)
+    if extra:
+        if _looks_like_recovery_command(args.prompt):
+            args.prompt.extend(extra)
+        else:
+            parser.error("unrecognized arguments: " + " ".join(extra))
     # 先分派 checkpoints/runs 这类只读检查命令，避免为它们启动模型 client 或 REPL。
-    if args.prompt and args.prompt[0] in _RECOVERY_TOP_LEVEL_COMMANDS:
+    if _looks_like_recovery_command(args.prompt):
         code = _handle_recovery_command(args.cwd, list(args.prompt))
         if code is not None:
             return code

@@ -78,3 +78,57 @@ def test_run_shell_uses_command_policy_metadata(tmp_path):
     assert result.metadata["command_risk_class"] == "workspace_write"
     assert result.metadata["command_approval"]["decision"] == "allow"
     assert "generated.txt" in result.metadata["affected_paths"]
+
+
+def test_destructive_run_shell_is_not_auto_approved(tmp_path):
+    agent = build_agent(tmp_path)
+    victim = tmp_path / "victim.txt"
+    victim.write_text("keep\n", encoding="utf-8")
+
+    result = agent.execute_tool("run_shell", {"command": "rm -f victim.txt", "timeout": 5})
+
+    assert result.metadata["tool_status"] == "rejected"
+    assert result.metadata["tool_error_code"] == "command_approval_required"
+    assert result.metadata["command_risk_class"] == "destructive"
+    assert victim.exists()
+    assert "tool_change_id" not in result.metadata
+
+
+def test_write_file_recovery_does_not_use_full_workspace_snapshot(tmp_path):
+    agent = build_agent(tmp_path)
+
+    def fail_full_snapshot():
+        raise AssertionError("full snapshot should not run")
+
+    agent.capture_workspace_snapshot = fail_full_snapshot
+
+    result = agent.execute_tool("write_file", {"path": "note.txt", "content": "hello\n"})
+
+    assert result.metadata["tool_status"] == "ok"
+    assert result.metadata["affected_paths"] == ["note.txt"]
+
+
+def test_run_shell_recovery_does_not_use_full_workspace_snapshot(tmp_path):
+    agent = build_agent(tmp_path)
+
+    def fail_full_snapshot():
+        raise AssertionError("full snapshot should not run")
+
+    agent.capture_workspace_snapshot = fail_full_snapshot
+
+    result = agent.execute_tool("run_shell", {"command": "printf hello > generated.txt", "timeout": 5})
+
+    assert result.metadata["tool_status"] == "ok"
+    assert "generated.txt" in result.metadata["affected_paths"]
+
+
+def test_recovery_lifecycle_uses_effect_class_not_risky_flag(tmp_path):
+    agent = build_agent(tmp_path)
+    agent.model_client.outputs.append("<final>delegated</final>")
+
+    result = agent.execute_tool("delegate", {"task": "inspect README", "max_steps": 1})
+
+    assert result.metadata["tool_change_id"]
+    tool_change = agent.checkpoint_store.load_tool_change_record(result.metadata["tool_change_id"])
+    assert tool_change["tool_name"] == "delegate"
+    assert tool_change["effect_class"] == "workspace_write"

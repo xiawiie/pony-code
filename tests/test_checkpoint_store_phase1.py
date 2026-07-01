@@ -31,3 +31,17 @@ def test_prune_dry_run_scans_checkpoint_and_tool_change_blob_refs(tmp_path):
 
     assert referenced["blob_ref"] not in result["unreferenced_blob_refs"]
     assert orphan["blob_ref"] in result["unreferenced_blob_refs"]
+
+
+def test_prune_ignores_atomic_write_temp_files(tmp_path):
+    store = CheckpointStore(tmp_path)
+    temp_dir = store.blobs_dir / "ab"
+    temp_dir.mkdir(parents=True)
+    temp_file = temp_dir / ("a" * 64 + ".tmp")
+    temp_file.write_bytes(b"in flight")
+
+    result = store.prune(dry_run=False)
+
+    assert temp_file.name not in result["unreferenced_blob_refs"]
+    assert temp_file.name not in result["removed_blob_refs"]
+    assert temp_file.exists()

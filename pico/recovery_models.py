@@ -47,6 +47,7 @@ def new_checkpoint_record(checkpoint_id, checkpoint_type, session_id, run_id, tu
         "parent_checkpoint_id": str(parent_checkpoint_id or ""),
         "workspace_root": str(workspace_root),
         "tool_change_ids": [],
+        "missing_tool_change_ids": [],
         "git_review_context": {},
         "file_entries": [],
         "verification_evidence": [],

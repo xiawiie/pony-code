@@ -61,6 +61,10 @@ _EXTERNAL_EFFECT_COMMANDS = {
     "gh", "git-lfs",
 }
 
+# sh/bash/zsh 之类的 shell wrapper 会用 -c 参数把真正的命令藏在字符串里，
+# 单看第一个 token 会漏判。任何 shell wrapper 都必须递归解析 -c 后面的内容。
+_SHELL_WRAPPERS = {"sh", "bash", "zsh", "dash", "ash", "ksh", "fish"}
+
 
 def _classify_git(tokens):
     if len(tokens) < 2:
@@ -83,24 +87,20 @@ def command_risk_class(command):
     text = str(command).strip()
     if not text:
         return "workspace_write"
-    # shell 里的重定向、管道、后续命令会让第一个词的分类失去意义，
-    # 所以看到这些操作符时，保守地按 workspace_write 走。
-    raw = text
-    if any(token in raw for token in (">", ">>", "|", "&&", ";")):
-        # 但如果链条里出现了 rm、curl 之类，再升级到更严格的类别
-        if any(dangerous in raw for dangerous in ("rm ", " rm ", "shred ", "dd ")):
-            return "destructive"
-        if any(external in raw for external in ("curl ", "wget ", "ssh ", "scp ", "gh ")):
-            return "external_effect"
-        return "workspace_write"
     try:
-        tokens = shlex.split(text, posix=True)
-    except ValueError:
+        lexer = shlex.shlex(text, posix=True, punctuation_chars=True)
+        lexer.whitespace_split = True
+        tokens = list(lexer)
+    except (TypeError, ValueError):
         tokens = text.split()
     if not tokens:
         return "workspace_write"
+    if any(token in tokens for token in (">", ">>", "|", "&&", ";")):
+        return _classify_composite_shell(tokens)
     head = Path(tokens[0]).name.lower()
 
+    if head in _SHELL_WRAPPERS:
+        return _classify_shell_wrapper(tokens)
     if head == "git":
         return _classify_git(tokens)
     if head in _DESTRUCTIVE_COMMANDS:
@@ -110,6 +110,78 @@ def command_risk_class(command):
     if head in _READ_ONLY_COMMANDS:
         return "read_only"
     return "workspace_write"
+
+
+def _classify_shell_wrapper(tokens):
+    """sh -c "..." / bash -c "..." → 递归分类内部命令。
+
+    包装本身不加分不减分：内部是 read_only 就 read_only，是 destructive
+    就 destructive。这样才能挡住 `sh -c 'rm -rf x'` 走 workspace_write。
+    """
+    inner = _extract_dash_c_payload(tokens)
+    if inner is None:
+        # 没有 -c，无法判断实际执行了什么，按 workspace_write 保守处理
+        return "workspace_write"
+    return command_risk_class(inner)
+
+
+def _extract_dash_c_payload(tokens):
+    for index, token in enumerate(tokens):
+        if token == "-c" and index + 1 < len(tokens):
+            return tokens[index + 1]
+    return None
+
+
+def _classify_composite_shell(tokens):
+    command_risks = []
+    current_command = []
+    next_is_redirect_target = False
+    for token in tokens:
+        if token in {">", ">>"}:
+            next_is_redirect_target = True
+            continue
+        if token in {"|", "&&", ";"}:
+            if current_command:
+                command_risks.append(_classify_simple_tokens(current_command))
+                current_command = []
+            next_is_redirect_target = False
+            continue
+        if next_is_redirect_target:
+            if _redirect_target_is_outside_workspace(token):
+                return "destructive"
+            next_is_redirect_target = False
+            continue
+        current_command.append(token)
+    if current_command:
+        command_risks.append(_classify_simple_tokens(current_command))
+    if "destructive" in command_risks:
+        return "destructive"
+    if "external_effect" in command_risks:
+        return "external_effect"
+    return "workspace_write"
+
+
+def _classify_simple_tokens(tokens):
+    if not tokens:
+        return "workspace_write"
+    head = Path(tokens[0]).name.lower()
+    normalized = [head, *tokens[1:]]
+    if head in _SHELL_WRAPPERS:
+        return _classify_shell_wrapper(normalized)
+    if head == "git":
+        return _classify_git(normalized)
+    if head in _DESTRUCTIVE_COMMANDS:
+        return "destructive"
+    if head in _EXTERNAL_EFFECT_COMMANDS:
+        return "external_effect"
+    if head in _READ_ONLY_COMMANDS:
+        return "read_only"
+    return "workspace_write"
+
+
+def _redirect_target_is_outside_workspace(token):
+    text = str(token)
+    return text.startswith("/") or text == ".." or text.startswith("../") or "/../" in text
 
 
 def evaluate_command_approval(risk_class):

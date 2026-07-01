@@ -40,17 +40,25 @@ class RecoveryCheckpointWriter:
         verification_evidence=None,
     ):
         record = self._base_record("turn", session_id, run_id, turn_id, parent_checkpoint_id)
-        record["tool_change_ids"] = list(tool_change_ids or [])
+        requested_tool_change_ids = list(tool_change_ids or [])
         record["verification_evidence"] = list(verification_evidence or [])
         file_entries = []
-        for tool_change_id in record["tool_change_ids"]:
-            tool_change = self.store.load_tool_change_record(tool_change_id)
+        loaded_tool_changes = []
+        missing_tool_change_ids = []
+        for tool_change_id in requested_tool_change_ids:
+            try:
+                tool_change = self.store.load_tool_change_record(tool_change_id)
+            except (OSError, ValueError):
+                missing_tool_change_ids.append(tool_change_id)
+                continue
+            loaded_tool_changes.append(tool_change)
             file_entries.extend(tool_change.get("file_entries", []) or [])
+        record["tool_change_ids"] = [item["tool_change_id"] for item in loaded_tool_changes]
+        record["missing_tool_change_ids"] = missing_tool_change_ids
         record["file_entries"] = file_entries
         self.store.write_checkpoint_record(record)
         # 把 checkpoint 反写到 tool change 上，方便反向溯源
-        for tool_change_id in record["tool_change_ids"]:
-            tool_change = self.store.load_tool_change_record(tool_change_id)
+        for tool_change in loaded_tool_changes:
             tool_change["checkpoint_id"] = record["checkpoint_id"]
             self.store.write_tool_change_record(tool_change)
         return record

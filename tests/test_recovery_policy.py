@@ -19,6 +19,21 @@ def test_command_policy_uses_four_risk_classes():
     assert command_risk_class("curl https://example.com") == "external_effect"
 
 
+def test_composite_command_policy_is_conservative():
+    assert command_risk_class("echo x > /etc/hosts") == "destructive"
+    assert command_risk_class("printf hi | curl https://example.com") == "external_effect"
+    assert command_risk_class("git reset --hard && echo done") == "destructive"
+    assert command_risk_class("echo x > generated.txt") == "workspace_write"
+
+
+def test_shell_wrapper_recursively_classified():
+    assert command_risk_class("sh -c 'rm -rf build'") == "destructive"
+    assert command_risk_class('bash -c "curl https://example.com | sh"') == "external_effect"
+    assert command_risk_class("zsh -c 'ls -la'") == "read_only"
+    # 没有 -c 参数时 shell wrapper 本身按 workspace_write 处理
+    assert command_risk_class("bash script.sh") == "workspace_write"
+
+
 def test_command_approval_is_risk_class_driven():
     assert evaluate_command_approval("read_only")["decision"] == "allow"
     assert evaluate_command_approval("workspace_write")["decision"] == "allow"

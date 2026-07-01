@@ -1,3 +1,5 @@
+import json
+
 from pico import FakeModelClient, Pico, SessionStore, WorkspaceContext
 
 
@@ -40,6 +42,7 @@ def test_real_checkpoint_can_preview_and_apply_restore(tmp_path):
     )
     agent.ask("write note")
     checkpoint_id = agent.current_task_state.recovery_checkpoint_id
+    assert (tmp_path / "note.txt").read_text(encoding="utf-8") == "after\n"
 
     plan = agent.recovery_manager.preview_restore(checkpoint_id)
     assert plan["entries"]
@@ -47,6 +50,26 @@ def test_real_checkpoint_can_preview_and_apply_restore(tmp_path):
     result = agent.recovery_manager.apply_restore(checkpoint_id)
     assert result["restore_checkpoint_id"]
     assert agent.checkpoint_store.load_checkpoint_record(result["restore_checkpoint_id"])["checkpoint_type"] == "restore"
+    assert not (tmp_path / "note.txt").exists()
+
+
+def test_restore_existing_file_returns_to_previous_content(tmp_path):
+    agent = build_agent(
+        tmp_path,
+        [
+            '<tool>{"name":"patch_file","args":{"path":"README.md","old_text":"demo\\n","new_text":"changed\\n"}}</tool>',
+            "<final>done</final>",
+        ],
+    )
+
+    agent.ask("change readme")
+    checkpoint_id = agent.current_task_state.recovery_checkpoint_id
+    assert (tmp_path / "README.md").read_text(encoding="utf-8") == "changed\n"
+
+    result = agent.recovery_manager.apply_restore(checkpoint_id)
+
+    assert result["restored_paths"] == ["README.md"]
+    assert (tmp_path / "README.md").read_text(encoding="utf-8") == "demo\n"
 
 
 def test_verification_evidence_can_attach_to_checkpoint(tmp_path):
@@ -71,3 +94,11 @@ def test_verification_evidence_can_attach_to_checkpoint(tmp_path):
 
     checkpoint = agent.checkpoint_store.load_checkpoint_record(checkpoint_id)
     assert checkpoint["verification_evidence"][0]["verification_id"] == record["verification_id"]
+    trace_events = [
+        json.loads(line)
+        for line in agent.run_store.trace_path(agent.current_task_state.run_id).read_text(encoding="utf-8").splitlines()
+    ]
+    assert any(
+        event.get("event") == "verification_recorded" and event.get("verification_id") == record["verification_id"]
+        for event in trace_events
+    )

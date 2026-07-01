@@ -70,6 +70,7 @@ class AgentLoop:
                     "checkpoint_created",
                     {
                         "checkpoint_id": checkpoint["checkpoint_id"],
+                        "checkpoint_kind": "resume_summary",
                         "trigger": "freshness_mismatch",
                     },
                 )
@@ -88,6 +89,7 @@ class AgentLoop:
                     "checkpoint_created",
                     {
                         "checkpoint_id": checkpoint["checkpoint_id"],
+                        "checkpoint_kind": "resume_summary",
                         "trigger": "workspace_mismatch",
                     },
                 )
@@ -99,6 +101,7 @@ class AgentLoop:
                     "checkpoint_created",
                     {
                         "checkpoint_id": checkpoint["checkpoint_id"],
+                        "checkpoint_kind": "resume_summary",
                         "trigger": "context_reduction",
                     },
                 )
@@ -214,6 +217,7 @@ class AgentLoop:
                     "checkpoint_created",
                     {
                         "checkpoint_id": checkpoint["checkpoint_id"],
+                        "checkpoint_kind": "resume_summary",
                         "trigger": "tool_executed",
                     },
                 )
@@ -227,6 +231,7 @@ class AgentLoop:
                         {
                             "checkpoint_id": recovery_checkpoint["checkpoint_id"],
                             "recovery_checkpoint_id": recovery_checkpoint["checkpoint_id"],
+                            "checkpoint_kind": "recovery",
                             "checkpoint_type": "turn",
                             "trigger": "tool_executed",
                         },
@@ -249,6 +254,7 @@ class AgentLoop:
                 "checkpoint_created",
                 {
                     "checkpoint_id": checkpoint["checkpoint_id"],
+                    "checkpoint_kind": "resume_summary",
                     "trigger": "run_finished",
                 },
             )
@@ -262,6 +268,7 @@ class AgentLoop:
                     {
                         "checkpoint_id": recovery_checkpoint["checkpoint_id"],
                         "recovery_checkpoint_id": recovery_checkpoint["checkpoint_id"],
+                        "checkpoint_kind": "recovery",
                         "checkpoint_type": "turn",
                         "trigger": "run_finished",
                     },
@@ -294,6 +301,7 @@ class AgentLoop:
             "checkpoint_created",
             {
                 "checkpoint_id": checkpoint["checkpoint_id"],
+                "checkpoint_kind": "resume_summary",
                 "trigger": task_state.stop_reason or "run_stopped",
             },
         )
@@ -307,6 +315,7 @@ class AgentLoop:
                 {
                     "checkpoint_id": recovery_checkpoint["checkpoint_id"],
                     "recovery_checkpoint_id": recovery_checkpoint["checkpoint_id"],
+                    "checkpoint_kind": "recovery",
                     "checkpoint_type": "turn",
                     "trigger": task_state.stop_reason or "run_stopped",
                 },
