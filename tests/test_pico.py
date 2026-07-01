@@ -1727,6 +1727,15 @@ def test_package_import_surface_includes_cli_entrypoints():
     assert callable(pico_pkg.build_arg_parser)
 
 
+def test_pico_initializes_recovery_components(tmp_path):
+    agent = build_agent(tmp_path, outputs=["<final>ok</final>"])
+
+    assert agent.checkpoint_store.root == tmp_path / ".pico" / "checkpoints"
+    assert agent.tool_change_recorder.store is agent.checkpoint_store
+    assert agent.recovery_checkpoint_writer.store is agent.checkpoint_store
+    assert agent.recovery_manager.store is agent.checkpoint_store
+
+
 def test_module_execution_help_works():
     result = subprocess.run(
         [sys.executable, "-m", "pico", "--help"],

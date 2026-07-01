@@ -15,16 +15,21 @@ from pathlib import Path
 from . import checkpoint as checkpointlib
 from .features import memory as memorylib
 from . import security as securitylib
+from .checkpoint_store import CheckpointStore
 from .context_manager import ContextManager
 from .checkpoint import CHECKPOINT_NONE_STATUS
 from .prompt_prefix import build_prompt_prefix, tool_signature
+from .recovery_checkpoint_writer import RecoveryCheckpointWriter
+from .recovery_manager import RecoveryManager
 from .run_store import RunStore
 from .security import REDACTED_VALUE
 from .session_store import SessionStore
+from .tool_change_recorder import ToolChangeRecorder
 from .tool_context import ToolContext
 from .tool_executor import ToolExecutor
 from . import tools as toolkit
 from .workspace import IGNORED_PATH_NAMES, MAX_HISTORY, WorkspaceContext, clip, now
+from .workspace_observer import WorkspaceObserver
 
 DEFAULT_SHELL_ENV_ALLOWLIST = ("HOME", "LANG", "LC_ALL", "LC_CTYPE", "LOGNAME", "PATH", "PWD", "SHELL", "TERM", "TMPDIR", "TMP", "TEMP", "USER")
 DEFAULT_FEATURE_FLAGS = {
@@ -86,6 +91,14 @@ class Pico:
             self.feature_flags.update({str(key): bool(value) for key, value in feature_flags.items()})
         self.allowed_tools = self._normalize_allowed_tools(allowed_tools)
         self.run_store = run_store or RunStore(Path(workspace.repo_root) / ".pico" / "runs")
+        # 可恢复编辑（recoverable editing）的组件在这里就位。
+        # 它们和 resume-summary 用的 `checkpointlib` 是两条独立的通路：
+        # CheckpointStore 落在 .pico/checkpoints/ 下，专门记 turn/restore/manual 类型。
+        self.checkpoint_store = CheckpointStore(self.root)
+        self.tool_change_recorder = ToolChangeRecorder(self.checkpoint_store)
+        self.recovery_checkpoint_writer = RecoveryCheckpointWriter(self.checkpoint_store, self.root)
+        self.recovery_manager = RecoveryManager(self.checkpoint_store, self.root)
+        self.workspace_observer = WorkspaceObserver(self.root)
         self.session = session or {
             "id": datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6],
             "created_at": now(),
