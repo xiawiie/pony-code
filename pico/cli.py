@@ -11,10 +11,19 @@ import shutil
 import sys
 import textwrap
 
+import json
+
+from .checkpoint_store import CheckpointStore
 from .config import load_project_env, provider_env
 from .providers.clients import AnthropicCompatibleModelClient, OllamaModelClient, OpenAICompatibleModelClient
+from .recovery_manager import RecoveryManager
+from .recovery_checkpoint_writer import RecoveryCheckpointWriter
+from .run_store import RunStore
 from .runtime import Pico, SessionStore
 from .workspace import WorkspaceContext, middle
+
+
+_RECOVERY_TOP_LEVEL_COMMANDS = {"checkpoints", "runs"}
 
 DEFAULT_SECRET_ENV_NAMES = (
     "PICO_OPENAI_API_KEY",
@@ -304,8 +313,108 @@ def build_arg_parser():
     return parser
 
 
+def _handle_recovery_command(cwd, tokens):
+    """把 `pico --cwd <dir> checkpoints ...` / `runs ...` 分派到 inspection helper。
+
+    这些命令不需要模型 client 也不进入 REPL；它们只对 .pico/checkpoints 和
+    .pico/runs 做只读或轻量维护操作。
+    """
+    if not tokens:
+        return None
+    head = tokens[0]
+    workspace = WorkspaceContext.build(cwd)
+    root = workspace.repo_root
+    if head == "checkpoints":
+        return _run_checkpoints(root, tokens[1:])
+    if head == "runs":
+        return _run_runs(root, tokens[1:])
+    return None
+
+
+def _run_checkpoints(root, args):
+    store = CheckpointStore(root)
+    sub = args[0] if args else "list"
+    rest = args[1:]
+    if sub == "list":
+        for record in store.list_checkpoint_records():
+            print(f"{record['checkpoint_id']}\t{record['checkpoint_type']}\t{record.get('created_at', '')}")
+        return 0
+    if sub == "show" and rest:
+        try:
+            record = store.load_checkpoint_record(rest[0])
+        except FileNotFoundError:
+            print(f"unknown checkpoint: {rest[0]}")
+            return 2
+        print(json.dumps(record, indent=2, sort_keys=True))
+        return 0
+    if sub == "preview-restore" and rest:
+        manager = RecoveryManager(store, root, checkpoint_writer=RecoveryCheckpointWriter(store, root))
+        plan = manager.preview_restore(rest[0])
+        print(json.dumps(plan, indent=2, sort_keys=True))
+        return 0
+    if sub == "restore" and rest:
+        checkpoint_id = rest[0]
+        apply_flag = "--apply" in rest[1:]
+        manager = RecoveryManager(store, root, checkpoint_writer=RecoveryCheckpointWriter(store, root))
+        if not apply_flag:
+            plan = manager.preview_restore(checkpoint_id)
+            print(json.dumps(plan, indent=2, sort_keys=True))
+            return 0
+        result = manager.apply_restore(checkpoint_id)
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return 0
+    if sub == "prune":
+        apply_flag = "--apply" in rest
+        result = store.prune(dry_run=not apply_flag)
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return 0
+    print(
+        "usage: pico checkpoints {list | show <id> | preview-restore <id> | restore <id> [--apply] | prune [--apply]}",
+        file=sys.stderr,
+    )
+    return 2
+
+
+def _run_runs(root, args):
+    from pathlib import Path
+
+    runs_root = Path(root) / ".pico" / "runs"
+    sub = args[0] if args else "list"
+    rest = args[1:]
+    if sub == "list":
+        if not runs_root.exists():
+            return 0
+        for entry in sorted(runs_root.iterdir()):
+            if entry.is_dir():
+                print(entry.name)
+        return 0
+    if sub == "show" and rest:
+        run_dir = runs_root / rest[0]
+        if not run_dir.exists():
+            print(f"unknown run: {rest[0]}")
+            return 2
+        for name in ("task_state.json", "report.json"):
+            path = run_dir / name
+            if path.exists():
+                print(f"--- {name} ---")
+                print(path.read_text(encoding="utf-8"))
+        trace_path = run_dir / "trace.jsonl"
+        if trace_path.exists():
+            print("--- trace.jsonl ---")
+            print(trace_path.read_text(encoding="utf-8"))
+        return 0
+    print("usage: pico runs {list | show <run_id>}", file=sys.stderr)
+    return 2
+
+
 def main(argv=None):
-    args = build_arg_parser().parse_args(argv)
+    parser = build_arg_parser()
+    args = parser.parse_args(argv)
+    # 先分派 checkpoints/runs 这类只读检查命令，避免为它们启动模型 client 或 REPL。
+    if args.prompt and args.prompt[0] in _RECOVERY_TOP_LEVEL_COMMANDS:
+        code = _handle_recovery_command(args.cwd, list(args.prompt))
+        if code is not None:
+            return code
     agent = build_agent(args)
 
     model = getattr(agent.model_client, "model", getattr(args, "model", DEFAULT_OLLAMA_MODEL))
