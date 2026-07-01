@@ -28,3 +28,22 @@ def test_agent_write_file_creates_restorable_turn_checkpoint(tmp_path):
     assert turn_records
     assert any(entry["path"] == "note.txt" for record in turn_records for entry in record["file_entries"])
     assert agent.current_task_state.recovery_checkpoint_id
+
+
+def test_real_checkpoint_can_preview_and_apply_restore(tmp_path):
+    agent = build_agent(
+        tmp_path,
+        [
+            '<tool>{"name":"write_file","args":{"path":"note.txt","content":"after\\n"}}</tool>',
+            "<final>done</final>",
+        ],
+    )
+    agent.ask("write note")
+    checkpoint_id = agent.current_task_state.recovery_checkpoint_id
+
+    plan = agent.recovery_manager.preview_restore(checkpoint_id)
+    assert plan["entries"]
+
+    result = agent.recovery_manager.apply_restore(checkpoint_id)
+    assert result["restore_checkpoint_id"]
+    assert agent.checkpoint_store.load_checkpoint_record(result["restore_checkpoint_id"])["checkpoint_type"] == "restore"
