@@ -1,0 +1,48 @@
+from pico.recovery_models import (
+    CHECKPOINT_RECORD_SCHEMA_VERSION,
+    TOOL_CHANGE_RECORD_SCHEMA_VERSION,
+    TRACE_CHECKPOINT_CREATED,
+    TRACE_MODEL_TURN,
+    new_checkpoint_record,
+    new_tool_change_record,
+)
+
+
+def test_checkpoint_record_builder_has_phase1_shape():
+    record = new_checkpoint_record(
+        checkpoint_id="ckpt_1",
+        checkpoint_type="turn",
+        session_id="session_1",
+        run_id="run_1",
+        turn_id="task_1",
+        parent_checkpoint_id="ckpt_0",
+        workspace_root="/repo",
+    )
+
+    assert record["schema_version"] == CHECKPOINT_RECORD_SCHEMA_VERSION
+    assert record["checkpoint_id"] == "ckpt_1"
+    assert record["checkpoint_type"] == "turn"
+    assert record["tool_change_ids"] == []
+    assert record["file_entries"] == []
+    assert record["verification_evidence"] == []
+    assert record["restore_provenance"] == {}
+
+
+def test_tool_change_record_builder_starts_pending():
+    record = new_tool_change_record(
+        tool_change_id="tc_1",
+        checkpoint_id="",
+        turn_id="task_1",
+        tool_name="write_file",
+        effect_class="workspace_write",
+    )
+
+    assert record["schema_version"] == TOOL_CHANGE_RECORD_SCHEMA_VERSION
+    assert record["status"] == "pending"
+    assert record["tool_name"] == "write_file"
+    assert record["affected_paths"] == []
+
+
+def test_trace_event_names_are_phase1_focused():
+    assert TRACE_MODEL_TURN == "model_turn"
+    assert TRACE_CHECKPOINT_CREATED == "checkpoint_created"
