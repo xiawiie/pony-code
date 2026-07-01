@@ -1,0 +1,1483 @@
+{
+  "artifact_type": "memory-ablation-v2",
+  "captured_at": "2026-06-07T09:05:50.187317Z",
+  "category_counts": {
+    "edit_dependency": 4,
+    "fact_lookup": 4,
+    "history_reference": 4
+  },
+  "rows": {
+    "memory_irrelevant": [
+      {
+        "attempts": 2,
+        "category": "fact_lookup",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "fact_color",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "fact_lookup",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "fact_color",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "fact_lookup",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "fact_color",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "fact_lookup",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "fact_color",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "fact_lookup",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "fact_color",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "fact_lookup",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "fact_api",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "fact_lookup",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "fact_api",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "fact_lookup",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "fact_api",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "fact_lookup",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "fact_api",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "fact_lookup",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "fact_api",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "fact_lookup",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "fact_budget",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "fact_lookup",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "fact_budget",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "fact_lookup",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "fact_budget",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "fact_lookup",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "fact_budget",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "fact_lookup",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "fact_budget",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "fact_lookup",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "fact_timeout",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "fact_lookup",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "fact_timeout",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "fact_lookup",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "fact_timeout",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "fact_lookup",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "fact_timeout",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "fact_lookup",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "fact_timeout",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "edit_dependency",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "edit_intro",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "edit_dependency",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "edit_intro",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "edit_dependency",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "edit_intro",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "edit_dependency",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "edit_intro",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "edit_dependency",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "edit_intro",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "edit_dependency",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "edit_token",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "edit_dependency",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "edit_token",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "edit_dependency",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "edit_token",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "edit_dependency",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "edit_token",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "edit_dependency",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "edit_token",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "edit_dependency",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "edit_field",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "edit_dependency",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "edit_field",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "edit_dependency",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "edit_field",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "edit_dependency",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "edit_field",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "edit_dependency",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "edit_field",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "edit_dependency",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "edit_line",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "edit_dependency",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "edit_line",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "edit_dependency",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "edit_line",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "edit_dependency",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "edit_line",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "edit_dependency",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "edit_line",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "history_reference",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "history_file",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "history_reference",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "history_file",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "history_reference",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "history_file",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "history_reference",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "history_file",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "history_reference",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "history_file",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "history_reference",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "history_line",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "history_reference",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "history_line",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "history_reference",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "history_line",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "history_reference",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "history_line",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "history_reference",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "history_line",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "history_reference",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "history_token",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "history_reference",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "history_token",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "history_reference",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "history_token",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "history_reference",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "history_token",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "history_reference",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "history_token",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "history_reference",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "history_tool",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "history_reference",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "history_tool",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "history_reference",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "history_tool",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "history_reference",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "history_tool",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "history_reference",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "history_tool",
+        "tool_steps": 1
+      }
+    ],
+    "memory_off": [
+      {
+        "attempts": 2,
+        "category": "fact_lookup",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "fact_color",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "fact_lookup",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "fact_color",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "fact_lookup",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "fact_color",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "fact_lookup",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "fact_color",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "fact_lookup",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "fact_color",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "fact_lookup",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "fact_api",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "fact_lookup",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "fact_api",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "fact_lookup",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "fact_api",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "fact_lookup",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "fact_api",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "fact_lookup",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "fact_api",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "fact_lookup",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "fact_budget",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "fact_lookup",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "fact_budget",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "fact_lookup",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "fact_budget",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "fact_lookup",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "fact_budget",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "fact_lookup",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "fact_budget",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "fact_lookup",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "fact_timeout",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "fact_lookup",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "fact_timeout",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "fact_lookup",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "fact_timeout",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "fact_lookup",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "fact_timeout",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "fact_lookup",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "fact_timeout",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "edit_dependency",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "edit_intro",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "edit_dependency",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "edit_intro",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "edit_dependency",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "edit_intro",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "edit_dependency",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "edit_intro",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "edit_dependency",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "edit_intro",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "edit_dependency",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "edit_token",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "edit_dependency",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "edit_token",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "edit_dependency",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "edit_token",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "edit_dependency",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "edit_token",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "edit_dependency",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "edit_token",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "edit_dependency",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "edit_field",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "edit_dependency",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "edit_field",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "edit_dependency",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "edit_field",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "edit_dependency",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "edit_field",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "edit_dependency",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "edit_field",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "edit_dependency",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "edit_line",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "edit_dependency",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "edit_line",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "edit_dependency",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "edit_line",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "edit_dependency",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "edit_line",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "edit_dependency",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "edit_line",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "history_reference",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "history_file",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "history_reference",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "history_file",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "history_reference",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "history_file",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "history_reference",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "history_file",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "history_reference",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "history_file",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "history_reference",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "history_line",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "history_reference",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "history_line",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "history_reference",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "history_line",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "history_reference",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "history_line",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "history_reference",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "history_line",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "history_reference",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "history_token",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "history_reference",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "history_token",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "history_reference",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "history_token",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "history_reference",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "history_token",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "history_reference",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "history_token",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "history_reference",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "history_tool",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "history_reference",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "history_tool",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "history_reference",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "history_tool",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "history_reference",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "history_tool",
+        "tool_steps": 1
+      },
+      {
+        "attempts": 2,
+        "category": "history_reference",
+        "correct": true,
+        "repeated_reads": 1,
+        "task_id": "history_tool",
+        "tool_steps": 1
+      }
+    ],
+    "memory_on": [
+      {
+        "attempts": 1,
+        "category": "fact_lookup",
+        "correct": true,
+        "repeated_reads": 0,
+        "task_id": "fact_color",
+        "tool_steps": 0
+      },
+      {
+        "attempts": 1,
+        "category": "fact_lookup",
+        "correct": true,
+        "repeated_reads": 0,
+        "task_id": "fact_color",
+        "tool_steps": 0
+      },
+      {
+        "attempts": 1,
+        "category": "fact_lookup",
+        "correct": true,
+        "repeated_reads": 0,
+        "task_id": "fact_color",
+        "tool_steps": 0
+      },
+      {
+        "attempts": 1,
+        "category": "fact_lookup",
+        "correct": true,
+        "repeated_reads": 0,
+        "task_id": "fact_color",
+        "tool_steps": 0
+      },
+      {
+        "attempts": 1,
+        "category": "fact_lookup",
+        "correct": true,
+        "repeated_reads": 0,
+        "task_id": "fact_color",
+        "tool_steps": 0
+      },
+      {
+        "attempts": 1,
+        "category": "fact_lookup",
+        "correct": true,
+        "repeated_reads": 0,
+        "task_id": "fact_api",
+        "tool_steps": 0
+      },
+      {
+        "attempts": 1,
+        "category": "fact_lookup",
+        "correct": true,
+        "repeated_reads": 0,
+        "task_id": "fact_api",
+        "tool_steps": 0
+      },
+      {
+        "attempts": 1,
+        "category": "fact_lookup",
+        "correct": true,
+        "repeated_reads": 0,
+        "task_id": "fact_api",
+        "tool_steps": 0
+      },
+      {
+        "attempts": 1,
+        "category": "fact_lookup",
+        "correct": true,
+        "repeated_reads": 0,
+        "task_id": "fact_api",
+        "tool_steps": 0
+      },
+      {
+        "attempts": 1,
+        "category": "fact_lookup",
+        "correct": true,
+        "repeated_reads": 0,
+        "task_id": "fact_api",
+        "tool_steps": 0
+      },
+      {
+        "attempts": 1,
+        "category": "fact_lookup",
+        "correct": true,
+        "repeated_reads": 0,
+        "task_id": "fact_budget",
+        "tool_steps": 0
+      },
+      {
+        "attempts": 1,
+        "category": "fact_lookup",
+        "correct": true,
+        "repeated_reads": 0,
+        "task_id": "fact_budget",
+        "tool_steps": 0
+      },
+      {
+        "attempts": 1,
+        "category": "fact_lookup",
+        "correct": true,
+        "repeated_reads": 0,
+        "task_id": "fact_budget",
+        "tool_steps": 0
+      },
+      {
+        "attempts": 1,
+        "category": "fact_lookup",
+        "correct": true,
+        "repeated_reads": 0,
+        "task_id": "fact_budget",
+        "tool_steps": 0
+      },
+      {
+        "attempts": 1,
+        "category": "fact_lookup",
+        "correct": true,
+        "repeated_reads": 0,
+        "task_id": "fact_budget",
+        "tool_steps": 0
+      },
+      {
+        "attempts": 1,
+        "category": "fact_lookup",
+        "correct": true,
+        "repeated_reads": 0,
+        "task_id": "fact_timeout",
+        "tool_steps": 0
+      },
+      {
+        "attempts": 1,
+        "category": "fact_lookup",
+        "correct": true,
+        "repeated_reads": 0,
+        "task_id": "fact_timeout",
+        "tool_steps": 0
+      },
+      {
+        "attempts": 1,
+        "category": "fact_lookup",
+        "correct": true,
+        "repeated_reads": 0,
+        "task_id": "fact_timeout",
+        "tool_steps": 0
+      },
+      {
+        "attempts": 1,
+        "category": "fact_lookup",
+        "correct": true,
+        "repeated_reads": 0,
+        "task_id": "fact_timeout",
+        "tool_steps": 0
+      },
+      {
+        "attempts": 1,
+        "category": "fact_lookup",
+        "correct": true,
+        "repeated_reads": 0,
+        "task_id": "fact_timeout",
+        "tool_steps": 0
+      },
+      {
+        "attempts": 1,
+        "category": "edit_dependency",
+        "correct": true,
+        "repeated_reads": 0,
+        "task_id": "edit_intro",
+        "tool_steps": 0
+      },
+      {
+        "attempts": 1,
+        "category": "edit_dependency",
+        "correct": true,
+        "repeated_reads": 0,
+        "task_id": "edit_intro",
+        "tool_steps": 0
+      },
+      {
+        "attempts": 1,
+        "category": "edit_dependency",
+        "correct": true,
+        "repeated_reads": 0,
+        "task_id": "edit_intro",
+        "tool_steps": 0
+      },
+      {
+        "attempts": 1,
+        "category": "edit_dependency",
+        "correct": true,
+        "repeated_reads": 0,
+        "task_id": "edit_intro",
+        "tool_steps": 0
+      },
+      {
+        "attempts": 1,
+        "category": "edit_dependency",
+        "correct": true,
+        "repeated_reads": 0,
+        "task_id": "edit_intro",
+        "tool_steps": 0
+      },
+      {
+        "attempts": 1,
+        "category": "edit_dependency",
+        "correct": true,
+        "repeated_reads": 0,
+        "task_id": "edit_token",
+        "tool_steps": 0
+      },
+      {
+        "attempts": 1,
+        "category": "edit_dependency",
+        "correct": true,
+        "repeated_reads": 0,
+        "task_id": "edit_token",
+        "tool_steps": 0
+      },
+      {
+        "attempts": 1,
+        "category": "edit_dependency",
+        "correct": true,
+        "repeated_reads": 0,
+        "task_id": "edit_token",
+        "tool_steps": 0
+      },
+      {
+        "attempts": 1,
+        "category": "edit_dependency",
+        "correct": true,
+        "repeated_reads": 0,
+        "task_id": "edit_token",
+        "tool_steps": 0
+      },
+      {
+        "attempts": 1,
+        "category": "edit_dependency",
+        "correct": true,
+        "repeated_reads": 0,
+        "task_id": "edit_token",
+        "tool_steps": 0
+      },
+      {
+        "attempts": 1,
+        "category": "edit_dependency",
+        "correct": true,
+        "repeated_reads": 0,
+        "task_id": "edit_field",
+        "tool_steps": 0
+      },
+      {
+        "attempts": 1,
+        "category": "edit_dependency",
+        "correct": true,
+        "repeated_reads": 0,
+        "task_id": "edit_field",
+        "tool_steps": 0
+      },
+      {
+        "attempts": 1,
+        "category": "edit_dependency",
+        "correct": true,
+        "repeated_reads": 0,
+        "task_id": "edit_field",
+        "tool_steps": 0
+      },
+      {
+        "attempts": 1,
+        "category": "edit_dependency",
+        "correct": true,
+        "repeated_reads": 0,
+        "task_id": "edit_field",
+        "tool_steps": 0
+      },
+      {
+        "attempts": 1,
+        "category": "edit_dependency",
+        "correct": true,
+        "repeated_reads": 0,
+        "task_id": "edit_field",
+        "tool_steps": 0
+      },
+      {
+        "attempts": 1,
+        "category": "edit_dependency",
+        "correct": true,
+        "repeated_reads": 0,
+        "task_id": "edit_line",
+        "tool_steps": 0
+      },
+      {
+        "attempts": 1,
+        "category": "edit_dependency",
+        "correct": true,
+        "repeated_reads": 0,
+        "task_id": "edit_line",
+        "tool_steps": 0
+      },
+      {
+        "attempts": 1,
+        "category": "edit_dependency",
+        "correct": true,
+        "repeated_reads": 0,
+        "task_id": "edit_line",
+        "tool_steps": 0
+      },
+      {
+        "attempts": 1,
+        "category": "edit_dependency",
+        "correct": true,
+        "repeated_reads": 0,
+        "task_id": "edit_line",
+        "tool_steps": 0
+      },
+      {
+        "attempts": 1,
+        "category": "edit_dependency",
+        "correct": true,
+        "repeated_reads": 0,
+        "task_id": "edit_line",
+        "tool_steps": 0
+      },
+      {
+        "attempts": 1,
+        "category": "history_reference",
+        "correct": true,
+        "repeated_reads": 0,
+        "task_id": "history_file",
+        "tool_steps": 0
+      },
+      {
+        "attempts": 1,
+        "category": "history_reference",
+        "correct": true,
+        "repeated_reads": 0,
+        "task_id": "history_file",
+        "tool_steps": 0
+      },
+      {
+        "attempts": 1,
+        "category": "history_reference",
+        "correct": true,
+        "repeated_reads": 0,
+        "task_id": "history_file",
+        "tool_steps": 0
+      },
+      {
+        "attempts": 1,
+        "category": "history_reference",
+        "correct": true,
+        "repeated_reads": 0,
+        "task_id": "history_file",
+        "tool_steps": 0
+      },
+      {
+        "attempts": 1,
+        "category": "history_reference",
+        "correct": true,
+        "repeated_reads": 0,
+        "task_id": "history_file",
+        "tool_steps": 0
+      },
+      {
+        "attempts": 1,
+        "category": "history_reference",
+        "correct": true,
+        "repeated_reads": 0,
+        "task_id": "history_line",
+        "tool_steps": 0
+      },
+      {
+        "attempts": 1,
+        "category": "history_reference",
+        "correct": true,
+        "repeated_reads": 0,
+        "task_id": "history_line",
+        "tool_steps": 0
+      },
+      {
+        "attempts": 1,
+        "category": "history_reference",
+        "correct": true,
+        "repeated_reads": 0,
+        "task_id": "history_line",
+        "tool_steps": 0
+      },
+      {
+        "attempts": 1,
+        "category": "history_reference",
+        "correct": true,
+        "repeated_reads": 0,
+        "task_id": "history_line",
+        "tool_steps": 0
+      },
+      {
+        "attempts": 1,
+        "category": "history_reference",
+        "correct": true,
+        "repeated_reads": 0,
+        "task_id": "history_line",
+        "tool_steps": 0
+      },
+      {
+        "attempts": 1,
+        "category": "history_reference",
+        "correct": true,
+        "repeated_reads": 0,
+        "task_id": "history_token",
+        "tool_steps": 0
+      },
+      {
+        "attempts": 1,
+        "category": "history_reference",
+        "correct": true,
+        "repeated_reads": 0,
+        "task_id": "history_token",
+        "tool_steps": 0
+      },
+      {
+        "attempts": 1,
+        "category": "history_reference",
+        "correct": true,
+        "repeated_reads": 0,
+        "task_id": "history_token",
+        "tool_steps": 0
+      },
+      {
+        "attempts": 1,
+        "category": "history_reference",
+        "correct": true,
+        "repeated_reads": 0,
+        "task_id": "history_token",
+        "tool_steps": 0
+      },
+      {
+        "attempts": 1,
+        "category": "history_reference",
+        "correct": true,
+        "repeated_reads": 0,
+        "task_id": "history_token",
+        "tool_steps": 0
+      },
+      {
+        "attempts": 1,
+        "category": "history_reference",
+        "correct": true,
+        "repeated_reads": 0,
+        "task_id": "history_tool",
+        "tool_steps": 0
+      },
+      {
+        "attempts": 1,
+        "category": "history_reference",
+        "correct": true,
+        "repeated_reads": 0,
+        "task_id": "history_tool",
+        "tool_steps": 0
+      },
+      {
+        "attempts": 1,
+        "category": "history_reference",
+        "correct": true,
+        "repeated_reads": 0,
+        "task_id": "history_tool",
+        "tool_steps": 0
+      },
+      {
+        "attempts": 1,
+        "category": "history_reference",
+        "correct": true,
+        "repeated_reads": 0,
+        "task_id": "history_tool",
+        "tool_steps": 0
+      },
+      {
+        "attempts": 1,
+        "category": "history_reference",
+        "correct": true,
+        "repeated_reads": 0,
+        "task_id": "history_tool",
+        "tool_steps": 0
+      }
+    ]
+  },
+  "runs_per_variant": 60,
+  "schema_version": 2,
+  "task_count": 12,
+  "variants": {
+    "memory_irrelevant": {
+      "avg_attempts": 2.0,
+      "avg_tool_steps": 1.0,
+      "correct_rate": 1.0,
+      "memory_hit_rate": 0.0,
+      "repeated_reads": 60
+    },
+    "memory_off": {
+      "avg_attempts": 2.0,
+      "avg_tool_steps": 1.0,
+      "correct_rate": 1.0,
+      "memory_hit_rate": 0.0,
+      "repeated_reads": 60
+    },
+    "memory_on": {
+      "avg_attempts": 1.0,
+      "avg_tool_steps": 0.0,
+      "correct_rate": 1.0,
+      "memory_hit_rate": 1.0,
+      "repeated_reads": 0
+    }
+  }
+}

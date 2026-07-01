@@ -1,0 +1,136 @@
+{
+  "artifact_type": "context-ablation-v2",
+  "captured_at": "2026-06-07T09:05:10.154208Z",
+  "config_count": 12,
+  "configs": [
+    {
+      "avg_full_prompt_chars": 4544.0,
+      "avg_prompt_compression_ratio": 0.0,
+      "avg_raw_prompt_chars": 4544.0,
+      "current_request_preserved_rate": 1.0,
+      "history_level": "short",
+      "id": "short-low-short",
+      "note_level": "low",
+      "request_level": "short"
+    },
+    {
+      "avg_full_prompt_chars": 4616.0,
+      "avg_prompt_compression_ratio": 0.0,
+      "avg_raw_prompt_chars": 4616.0,
+      "current_request_preserved_rate": 1.0,
+      "history_level": "short",
+      "id": "short-low-long",
+      "note_level": "low",
+      "request_level": "long"
+    },
+    {
+      "avg_full_prompt_chars": 4742.0,
+      "avg_prompt_compression_ratio": 0.0,
+      "avg_raw_prompt_chars": 4742.0,
+      "current_request_preserved_rate": 1.0,
+      "history_level": "short",
+      "id": "short-high-short",
+      "note_level": "high",
+      "request_level": "short"
+    },
+    {
+      "avg_full_prompt_chars": 4814.0,
+      "avg_prompt_compression_ratio": 0.0,
+      "avg_raw_prompt_chars": 4814.0,
+      "current_request_preserved_rate": 1.0,
+      "history_level": "short",
+      "id": "short-high-long",
+      "note_level": "high",
+      "request_level": "long"
+    },
+    {
+      "avg_full_prompt_chars": 5464.0,
+      "avg_prompt_compression_ratio": 0.16273368066196753,
+      "avg_raw_prompt_chars": 6526.0,
+      "current_request_preserved_rate": 1.0,
+      "history_level": "medium",
+      "id": "medium-low-short",
+      "note_level": "low",
+      "request_level": "short"
+    },
+    {
+      "avg_full_prompt_chars": 5536.0,
+      "avg_prompt_compression_ratio": 0.16095786602000606,
+      "avg_raw_prompt_chars": 6598.0,
+      "current_request_preserved_rate": 1.0,
+      "history_level": "medium",
+      "id": "medium-low-long",
+      "note_level": "low",
+      "request_level": "long"
+    },
+    {
+      "avg_full_prompt_chars": 5662.0,
+      "avg_prompt_compression_ratio": 0.15794170136823318,
+      "avg_raw_prompt_chars": 6724.0,
+      "current_request_preserved_rate": 1.0,
+      "history_level": "medium",
+      "id": "medium-high-short",
+      "note_level": "high",
+      "request_level": "short"
+    },
+    {
+      "avg_full_prompt_chars": 5734.0,
+      "avg_prompt_compression_ratio": 0.1562683931724544,
+      "avg_raw_prompt_chars": 6796.0,
+      "current_request_preserved_rate": 1.0,
+      "history_level": "medium",
+      "id": "medium-high-long",
+      "note_level": "high",
+      "request_level": "long"
+    },
+    {
+      "avg_full_prompt_chars": 6314.0,
+      "avg_prompt_compression_ratio": 0.3359276398822045,
+      "avg_raw_prompt_chars": 9508.0,
+      "current_request_preserved_rate": 1.0,
+      "history_level": "long",
+      "id": "long-low-short",
+      "note_level": "low",
+      "request_level": "short"
+    },
+    {
+      "avg_full_prompt_chars": 6386.0,
+      "avg_prompt_compression_ratio": 0.3334029227557411,
+      "avg_raw_prompt_chars": 9580.0,
+      "current_request_preserved_rate": 1.0,
+      "history_level": "long",
+      "id": "long-low-long",
+      "note_level": "low",
+      "request_level": "long"
+    },
+    {
+      "avg_full_prompt_chars": 6512.0,
+      "avg_prompt_compression_ratio": 0.3290747990933443,
+      "avg_raw_prompt_chars": 9706.0,
+      "current_request_preserved_rate": 1.0,
+      "history_level": "long",
+      "id": "long-high-short",
+      "note_level": "high",
+      "request_level": "short"
+    },
+    {
+      "avg_full_prompt_chars": 6584.0,
+      "avg_prompt_compression_ratio": 0.32665166700756804,
+      "avg_raw_prompt_chars": 9778.0,
+      "current_request_preserved_rate": 1.0,
+      "history_level": "long",
+      "id": "long-high-long",
+      "note_level": "high",
+      "request_level": "long"
+    }
+  ],
+  "schema_version": 2,
+  "summary": {
+    "avg_full_prompt_chars": 5575.666666666667,
+    "avg_prompt_compression_ratio": 0.16357988916345992,
+    "avg_raw_prompt_chars": 6994.333333333333,
+    "current_request_preserved_rate": 1.0,
+    "max_prompt_compression_ratio": 0.3359276398822045,
+    "min_prompt_compression_ratio": 0.0
+  }
+}

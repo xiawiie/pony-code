@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pico"
+version = "0.1.0"
+description = "Small local coding agent for DeepSeek, OpenAI-compatible, Anthropic-compatible, and Ollama models"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+pico = "pico.cli:main"
+
+[dependency-groups]
+dev = [
+  "pytest>=8.3.5",
+  "ruff>=0.4.4",
+]
+
+[tool.setuptools.packages.find]
+include = ["pico*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
