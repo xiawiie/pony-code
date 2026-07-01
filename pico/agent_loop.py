@@ -3,6 +3,10 @@
 import time
 
 from .checkpoint import CHECKPOINT_NONE_STATUS, CHECKPOINT_PARTIAL_STALE_STATUS, CHECKPOINT_WORKSPACE_MISMATCH_STATUS
+from .recovery_checkpoint_writer import (
+    current_recovery_checkpoint_id,
+    set_current_recovery_checkpoint_id,
+)
 from .task_state import TaskState
 from .workspace import clip, now
 
@@ -33,6 +37,10 @@ class AgentLoop:
         tool_steps = 0
         attempts = 0
         max_attempts = max(agent.max_steps * 3, agent.max_steps + 4)
+        # 每次 tool 执行后，如果生成了 Tool Change Record，就把 id 收集起来；
+        # 一次 run 结束（无论成功、step_limit、retry_limit）时把这些 id 打包成一份
+        # Turn Checkpoint，写进 .pico/checkpoints/records。
+        run_tool_change_ids = []
 
         # 这是 agent 的主循环，可以按“感知 -> 决策 -> 行动 -> 记录”来理解：
         # 1. 感知：重新组 prompt，把当前状态整理给模型看
@@ -140,8 +148,19 @@ class AgentLoop:
                 args = payload.get("args", {})
                 task_state.record_tool(name)
                 tool_started_at = time.monotonic()
+                agent.emit_trace(
+                    task_state,
+                    "tool_started",
+                    {
+                        "name": name,
+                        "args": args,
+                    },
+                )
                 tool_result = agent.execute_tool(name, args)
                 result = tool_result.content
+                tool_change_id = tool_result.metadata.get("tool_change_id") or ""
+                if tool_change_id:
+                    run_tool_change_ids.append(tool_change_id)
                 agent.record(
                     {
                         "role": "tool",
@@ -163,6 +182,17 @@ class AgentLoop:
                         **dict(tool_result.metadata or {}),
                     },
                 )
+                agent.emit_trace(
+                    task_state,
+                    "tool_finished",
+                    {
+                        "name": name,
+                        "tool_change_id": tool_change_id,
+                        "tool_status": tool_result.metadata.get("tool_status", ""),
+                        "affected_paths": list(tool_result.metadata.get("affected_paths", [])),
+                        "duration_ms": int((time.monotonic() - tool_started_at) * 1000),
+                    },
+                )
                 checkpoint = agent.create_checkpoint(task_state, user_message, trigger="tool_executed")
                 agent.run_store.write_task_state(task_state)
                 agent.emit_trace(
@@ -173,6 +203,20 @@ class AgentLoop:
                         "trigger": "tool_executed",
                     },
                 )
+                recovery_checkpoint = _finalize_recovery_checkpoint(
+                    agent, task_state, run_tool_change_ids, trigger="tool_executed"
+                )
+                if recovery_checkpoint is not None:
+                    agent.emit_trace(
+                        task_state,
+                        "checkpoint_created",
+                        {
+                            "checkpoint_id": recovery_checkpoint["checkpoint_id"],
+                            "recovery_checkpoint_id": recovery_checkpoint["checkpoint_id"],
+                            "checkpoint_type": "turn",
+                            "trigger": "tool_executed",
+                        },
+                    )
                 continue
 
             if kind == "retry":
@@ -194,6 +238,20 @@ class AgentLoop:
                     "trigger": "run_finished",
                 },
             )
+            recovery_checkpoint = _finalize_recovery_checkpoint(
+                agent, task_state, run_tool_change_ids, trigger="run_finished"
+            )
+            if recovery_checkpoint is not None:
+                agent.emit_trace(
+                    task_state,
+                    "checkpoint_created",
+                    {
+                        "checkpoint_id": recovery_checkpoint["checkpoint_id"],
+                        "recovery_checkpoint_id": recovery_checkpoint["checkpoint_id"],
+                        "checkpoint_type": "turn",
+                        "trigger": "run_finished",
+                    },
+                )
             agent.emit_trace(
                 task_state,
                 "run_finished",
@@ -225,6 +283,20 @@ class AgentLoop:
                 "trigger": task_state.stop_reason or "run_stopped",
             },
         )
+        recovery_checkpoint = _finalize_recovery_checkpoint(
+            agent, task_state, run_tool_change_ids, trigger=task_state.stop_reason or "run_stopped"
+        )
+        if recovery_checkpoint is not None:
+            agent.emit_trace(
+                task_state,
+                "checkpoint_created",
+                {
+                    "checkpoint_id": recovery_checkpoint["checkpoint_id"],
+                    "recovery_checkpoint_id": recovery_checkpoint["checkpoint_id"],
+                    "checkpoint_type": "turn",
+                    "trigger": task_state.stop_reason or "run_stopped",
+                },
+            )
         agent.emit_trace(
             task_state,
             "run_finished",
@@ -237,3 +309,32 @@ class AgentLoop:
         )
         agent.run_store.write_report(task_state, agent.redact_artifact(agent.build_report(task_state)))
         return final
+
+
+def _finalize_recovery_checkpoint(agent, task_state, run_tool_change_ids, trigger):
+    """把当前累计到的 Tool Change 打包成一份 Turn Checkpoint。
+
+    只有真的有 Tool Change 时才写，避免为纯回答型 turn 产生空 checkpoint。
+    写完后：
+      - 把 checkpoint_id 记到 task_state.recovery_checkpoint_id
+      - 更新 session.recovery.current_checkpoint_id
+      - 清空累计列表，防止下一个 turn 重复写
+    """
+    if not run_tool_change_ids:
+        return None
+    ids_to_link = list(run_tool_change_ids)
+    parent_checkpoint = current_recovery_checkpoint_id(agent.session)
+    record = agent.recovery_checkpoint_writer.create_turn_checkpoint(
+        session_id=agent.session["id"],
+        run_id=task_state.run_id,
+        turn_id=task_state.task_id,
+        parent_checkpoint_id=parent_checkpoint,
+        tool_change_ids=ids_to_link,
+        verification_evidence=[],
+    )
+    task_state.recovery_checkpoint_id = record["checkpoint_id"]
+    set_current_recovery_checkpoint_id(agent.session, record["checkpoint_id"])
+    agent.session_path = agent.session_store.save(agent.session)
+    agent.run_store.write_task_state(task_state)
+    run_tool_change_ids.clear()
+    return record
