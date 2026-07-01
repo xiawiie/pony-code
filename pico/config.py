@@ -63,3 +63,53 @@ def provider_env(name, legacy_names=(), default=""):
         if value:
             return value
     return default
+
+
+def _parse_scalar(raw):
+    text = raw.strip()
+    if not text:
+        return ""
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in {"'", '"'}:
+        return text[1:-1]
+    lowered = text.lower()
+    if lowered == "true":
+        return True
+    if lowered == "false":
+        return False
+    try:
+        if "." in text:
+            return float(text)
+        return int(text)
+    except ValueError:
+        return text
+
+
+def load_pico_toml(workspace_root):
+    """极简的 pico.toml 解析器：只支持 `[section]` 头 + `key = scalar` 行。
+
+    Phase 1 只需要 `policy.max_blob_size` 之类的标量覆写，等真正的复杂
+    配置进来再切到 tomllib。
+    """
+    path = Path(workspace_root) / "pico.toml"
+    if not path.exists():
+        return {}
+    data = {}
+    current = data
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            section = line[1:-1].strip()
+            if not section:
+                continue
+            node = data
+            for part in section.split("."):
+                node = node.setdefault(part, {})
+            current = node
+            continue
+        if "=" not in line:
+            continue
+        name, value = line.split("=", 1)
+        current[name.strip()] = _parse_scalar(value)
+    return data
