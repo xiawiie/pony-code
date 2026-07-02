@@ -28,6 +28,18 @@ from .cli_errors import CLI_EXIT_USAGE, CliError
 from .cli_output import error_envelope, format_json
 from .cli_parser import parse_cli_invocation
 from .config import load_project_env, provider_env
+from .providers.defaults import (
+    DEFAULT_ANTHROPIC_BASE_URL,
+    DEFAULT_ANTHROPIC_MODEL,
+    DEFAULT_DEEPSEEK_BASE_URL,
+    DEFAULT_DEEPSEEK_MODEL,
+    DEFAULT_OLLAMA_HOST,
+    DEFAULT_OLLAMA_MODEL,
+    DEFAULT_OPENAI_BASE_URL,
+    DEFAULT_OPENAI_MODEL,
+    DEFAULT_PROVIDER,
+    PROVIDER_CHOICES,
+)
 from .providers.clients import AnthropicCompatibleModelClient, OllamaModelClient, OpenAICompatibleModelClient
 from .runtime import Pico, SessionStore
 from .workspace import WorkspaceContext, middle
@@ -103,16 +115,6 @@ HELP_DETAILS = textwrap.dedent(
 ).strip()
 
 
-DEFAULT_OLLAMA_MODEL = "qwen3.5:4b"
-DEFAULT_OLLAMA_HOST = "http://127.0.0.1:11434"
-DEFAULT_OPENAI_MODEL = "gpt-5.4"
-DEFAULT_OPENAI_BASE_URL = "https://www.right.codes/codex/v1"
-DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-4-6"
-DEFAULT_ANTHROPIC_BASE_URL = "https://www.right.codes/claude/v1"
-DEFAULT_DEEPSEEK_MODEL = "deepseek-v4-pro"
-DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com/anthropic"
-DEFAULT_PROVIDER = "deepseek"
-PROVIDER_CHOICES = ("ollama", "openai", "anthropic", "deepseek")
 SECRET_ENV_NAMES_VAR = "PICO_SECRET_ENV_NAMES"
 
 

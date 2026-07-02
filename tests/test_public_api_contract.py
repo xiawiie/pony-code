@@ -50,3 +50,21 @@ def test_packaging_exposes_non_conflicting_cli_script():
     pyproject_text = Path("pyproject.toml").read_text(encoding="utf-8")
 
     assert 'pico-cli = "pico.cli:main"' in pyproject_text
+
+
+def test_provider_defaults_have_single_source():
+    from pico import cli, cli_diagnostics
+    from pico.providers import defaults
+
+    assert cli.DEFAULT_PROVIDER == defaults.DEFAULT_PROVIDER
+    assert cli.DEFAULT_DEEPSEEK_MODEL == defaults.DEFAULT_DEEPSEEK_MODEL
+    assert cli.DEFAULT_DEEPSEEK_BASE_URL == defaults.DEFAULT_DEEPSEEK_BASE_URL
+    assert cli.PROVIDER_CHOICES == defaults.PROVIDER_CHOICES
+    assert cli_diagnostics.DEFAULT_PROVIDER == defaults.DEFAULT_PROVIDER
+    assert cli_diagnostics.DEFAULT_MODELS == defaults.DEFAULT_MODELS
+    assert cli_diagnostics.DEFAULT_BASE_URLS == defaults.DEFAULT_BASE_URLS
+
+    cli_source = Path("pico/cli.py").read_text(encoding="utf-8")
+    diagnostics_source = Path("pico/cli_diagnostics.py").read_text(encoding="utf-8")
+    assert 'DEFAULT_PROVIDER = "deepseek"' not in cli_source
+    assert 'DEFAULT_PROVIDER = "deepseek"' not in diagnostics_source
