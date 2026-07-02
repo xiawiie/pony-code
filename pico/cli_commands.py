@@ -26,17 +26,17 @@ def handle_checkpoints(root, tokens, args):
     store = CheckpointStore(root)
     sub = tokens[0] if tokens else "list"
     rest = tokens[1:]
-    if sub == "list":
+    if sub == "list" and not rest:
         records = store.list_checkpoint_records()
         return print_result("checkpoints_list", records, args, _render_checkpoints_list)
-    if sub == "show" and rest:
+    if sub == "show" and len(rest) == 1:
         record = _load_checkpoint_record(store, rest[0])
         return print_result("checkpoints_show", record, args, _render_json_body)
-    if sub == "preview-restore" and rest:
+    if sub == "preview-restore" and len(rest) == 1:
         manager = RecoveryManager(store, root, checkpoint_writer=RecoveryCheckpointWriter(store, root))
         plan = _preview_restore(manager, rest[0])
         return print_result("checkpoints_preview_restore", plan, args, _render_json_body)
-    if sub == "restore" and rest:
+    if sub == "restore" and _is_restore_args(rest):
         checkpoint_id = rest[0]
         apply_flag = "--apply" in rest[1:]
         manager = RecoveryManager(store, root, checkpoint_writer=RecoveryCheckpointWriter(store, root))
@@ -45,7 +45,7 @@ def handle_checkpoints(root, tokens, args):
             return print_result("checkpoints_preview_restore", plan, args, _render_json_body)
         result = _apply_restore(manager, checkpoint_id)
         return print_result("checkpoints_restore", result, args, _render_json_body)
-    if sub == "prune":
+    if sub == "prune" and _is_apply_only_args(rest):
         apply_flag = "--apply" in rest
         result = store.prune(dry_run=not apply_flag)
         return print_result("checkpoints_prune", result, args, _render_json_body)
@@ -60,12 +60,12 @@ def handle_runs(root, tokens, args):
     runs_root = Path(root) / ".pico" / "runs"
     sub = tokens[0] if tokens else "list"
     rest = tokens[1:]
-    if sub == "list":
+    if sub == "list" and not rest:
         data = []
         if runs_root.exists():
             data = [{"run_id": entry.name} for entry in sorted(runs_root.iterdir()) if entry.is_dir()]
         return print_result("runs_list", data, args, _render_runs_list)
-    if sub == "show" and rest:
+    if sub == "show" and len(rest) == 1:
         run_dir = runs_root / rest[0]
         if not run_dir.exists():
             raise CliError(
@@ -136,6 +136,14 @@ def _render_checkpoints_list(records):
     for record in records:
         lines.append(f"{record['checkpoint_id']}\t{record['checkpoint_type']}\t{record.get('created_at', '')}")
     return "\n".join(lines)
+
+
+def _is_restore_args(args):
+    return len(args) == 1 or (len(args) == 2 and args[1] == "--apply")
+
+
+def _is_apply_only_args(args):
+    return not args or args == ["--apply"]
 
 
 def _render_json_body(data):

@@ -54,6 +54,7 @@ def test_checkpoints_preview_restore_prints_plan(tmp_path, capsys):
     out = capsys.readouterr().out
     assert '"checkpoint_id": "ckpt_1"' in out
     assert '"decision": "restore"' in out
+    assert (tmp_path / "note.txt").read_text(encoding="utf-8") == "after\n"
 
 
 def test_checkpoints_restore_apply_changes_disk_state(tmp_path, capsys):
@@ -94,6 +95,30 @@ def test_checkpoints_prune_apply_removes_orphan_blob(tmp_path, capsys):
     assert code == 0
     assert orphan["blob_ref"] in capsys.readouterr().out
     assert not store.has_blob(orphan["blob_ref"])
+
+
+def test_checkpoints_restore_rejects_unknown_flag(tmp_path):
+    store = CheckpointStore(tmp_path)
+    store.write_checkpoint_record(new_checkpoint_record("ckpt_1", "turn", "s", "r", "t", "", str(tmp_path)))
+
+    code = main(["--cwd", str(tmp_path), "checkpoints", "restore", "ckpt_1", "--aply"])
+
+    assert code == 2
+
+
+def test_checkpoints_prune_rejects_unknown_flag(tmp_path):
+    code = main(["--cwd", str(tmp_path), "checkpoints", "prune", "--bogus"])
+
+    assert code == 2
+
+
+def test_runs_show_rejects_extra_args(tmp_path):
+    run_dir = tmp_path / ".pico" / "runs" / "run_1"
+    run_dir.mkdir(parents=True)
+
+    code = main(["--cwd", str(tmp_path), "runs", "show", "run_1", "extra"])
+
+    assert code == 2
 
 
 def test_prompt_starting_with_checkpoints_word_is_not_hijacked(tmp_path, monkeypatch):

@@ -376,10 +376,14 @@ def main(argv=None):
 
     model = getattr(agent.model_client, "model", getattr(args, "model", DEFAULT_OLLAMA_MODEL))
     host = getattr(agent.model_client, "host", getattr(agent.model_client, "base_url", getattr(args, "host", DEFAULT_OLLAMA_HOST)))
-    print(build_welcome(agent, model=model, host=host))
+    if not args.quiet:
+        print(build_welcome(agent, model=model, host=host))
 
     if invocation.command == "run":
         return run_agent_once(agent, invocation.command_args)
     if invocation.command == "repl":
+        if args.no_input:
+            print("--no-input cannot be used with interactive repl", file=sys.stderr)
+            return 2
         return run_repl(agent)
     return run_agent_once(agent, [invocation.command, *invocation.command_args])
