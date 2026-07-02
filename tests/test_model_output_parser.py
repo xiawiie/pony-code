@@ -17,6 +17,20 @@ def test_parse_model_output_accepts_xml_tool_with_multiline_content():
     }
 
 
+def test_parse_model_output_accepts_self_closing_xml_tool():
+    kind, payload = parse_model_output('<tool name="list_files" path="." />')
+
+    assert kind == "tool"
+    assert payload == {"name": "list_files", "args": {"path": "."}}
+
+
+def test_parse_model_output_retries_on_nameless_self_closing_xml_tool():
+    kind, payload = parse_model_output('<tool path="." />')
+
+    assert kind == "retry"
+    assert "malformed tool output" in payload
+
+
 def test_parse_model_output_retries_on_malformed_json_tool():
     kind, payload = parse_model_output("<tool>{bad json</tool>")
 

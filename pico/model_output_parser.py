@@ -51,14 +51,21 @@ def retry_notice(problem=None):
 
 def parse_xml_tool(raw):
     match = re.search(r"<tool(?P<attrs>[^>]*)>(?P<body>.*?)</tool>", raw, re.S)
-    if not match:
-        return None
-    attrs = parse_attrs(match.group("attrs"))
+    if match:
+        return _parse_xml_tool_payload(match.group("attrs"), match.group("body"))
+
+    match = re.search(r"<tool(?P<attrs>[^>]*)/\s*>", raw, re.S)
+    if match:
+        return _parse_xml_tool_payload(match.group("attrs"), "")
+    return None
+
+
+def _parse_xml_tool_payload(attrs_text, body):
+    attrs = parse_attrs(attrs_text)
     name = str(attrs.pop("name", "")).strip()
     if not name:
         return None
 
-    body = match.group("body")
     args = dict(attrs)
     for key in ("content", "old_text", "new_text", "command", "task", "pattern", "path"):
         if f"<{key}>" in body:
