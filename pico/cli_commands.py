@@ -76,14 +76,14 @@ def handle_checkpoints(root, tokens, args):
         manager = RecoveryManager(store, root, checkpoint_writer=RecoveryCheckpointWriter(store, root))
         checkpoint_id = _resolve_checkpoint_id(store, rest[0])
         plan = _preview_restore(manager, checkpoint_id)
-        return print_result("checkpoints_preview_restore", plan, args, _render_json_body)
+        return print_result("checkpoints_preview_restore", plan, args, _render_restore_plan)
     if sub == "restore" and _is_restore_args(rest):
         checkpoint_id = _resolve_checkpoint_id(store, rest[0])
         apply_flag = "--apply" in rest[1:]
         manager = RecoveryManager(store, root, checkpoint_writer=RecoveryCheckpointWriter(store, root))
         if not apply_flag:
             plan = _preview_restore(manager, checkpoint_id)
-            return print_result("checkpoints_preview_restore", plan, args, _render_json_body)
+            return print_result("checkpoints_preview_restore", plan, args, _render_restore_plan)
         result = _apply_restore(manager, checkpoint_id)
         return print_result("checkpoints_restore", result, args, _render_json_body)
     if sub == "prune" and _is_apply_only_args(rest):
@@ -250,6 +250,30 @@ def _is_apply_only_args(args):
 
 def _render_json_body(data):
     return json.dumps(data, indent=2, sort_keys=True)
+
+
+def _render_restore_plan(plan):
+    entries = list(plan.get("entries", []) or [])
+    count = len(entries)
+    noun = "entry" if count == 1 else "entries"
+    lines = [
+        f"Restore plan {plan.get('checkpoint_id', '-')} ({count} {noun})",
+        "",
+        "decision  path                              reason",
+    ]
+    for entry in entries:
+        decision = str(entry.get("decision", "-") or "-")
+        path = str(entry.get("path", "-") or "-")
+        reason = str(entry.get("reason", "") or entry.get("change_kind", "") or "-")
+        observed = str(entry.get("observed_current_hash", "") or "")
+        expected = str(entry.get("expected_current_hash", "") or "")
+        details = reason
+        if observed:
+            details += f" observed={observed[:12]}"
+        if expected and decision == "conflict":
+            details += f" expected={expected[:12]}"
+        lines.append(f"{decision:<8}  {path:<32}  {details}")
+    return "\n".join(lines)
 
 
 def _source_label(item):

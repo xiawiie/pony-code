@@ -10,7 +10,7 @@ Execution rule: keep exactly one task in `In Progress`. Finish, verify, update t
 - Branch: `cli`
 - Latest pushed head: `879f72fc4e46d7fea1da35f4933db04a67baa271`
 - CI: passing on Python 3.10 and 3.12 at latest pushed head
-- Local baseline: `uv run pytest -q` passed with 266 tests after CLI-001
+- Local baseline: `uv run pytest -q` passed with 268 tests after CLI-002
 
 ## Done In This Review Pass
 
@@ -23,14 +23,15 @@ Execution rule: keep exactly one task in `In Progress`. Finish, verify, update t
 | D-005 | Done | Kept run artifacts aligned to the final checkpoint on step-limit exits | Commit `7ce74cf` |
 | D-006 | Done | Added GitHub Actions CI for lint and tests | Commits `1a64bf0`, `879f72f` |
 | CLI-001 | Done | Accepted unique checkpoint id prefixes for checkpoint commands | Local `266 passed` |
+| CLI-002 | Done | Rendered human-readable restore preview text by default | Local `268 passed` |
 
 ## Sequential Queue
 
 | ID | Priority | Status | Task | Acceptance | Verification |
 | --- | --- | --- | --- | --- | --- |
 | CLI-001 | P1 | Done | Accept unique checkpoint id prefixes for checkpoint commands | `checkpoints show`, `preview-restore`, and `restore` accept a unique prefix; ambiguous and missing prefixes produce clear CLI errors | `uv run pytest -q` -> 266 passed |
-| CLI-002 | P1 | In Progress | Render human-readable restore previews by default | Text mode shows compact restore/review/conflict rows; `--format json` remains unchanged | Recovery CLI tests |
-| CLI-003 | P1 | Next | Move provider defaults to a single source | `cli.py` and `cli_diagnostics.py` import the same default provider/model/base URL constants | Provider/diagnostic tests |
+| CLI-002 | P1 | Done | Render human-readable restore previews by default | Text mode shows compact restore/review/conflict rows; `--format json` remains unchanged | `uv run pytest -q` -> 268 passed |
+| CLI-003 | P1 | In Progress | Move provider defaults to a single source | `cli.py` and `cli_diagnostics.py` import the same default provider/model/base URL constants | Provider/diagnostic tests |
 | CLI-004 | P1 | Backlog | Replace command dispatch if-chain with a command registry | Commands, namespace suggestions, and help routing derive from one table | CLI parser/command tests |
 | CLI-005 | P1 | Backlog | Add `pico-cli init` for guided `.env` setup | User can create/update local provider config without hand-editing from scratch | CLI tests with temp `.env` |
 | REC-001 | P2 | Backlog | Align recovery checkpoint naming or semantics | Code and docs agree whether recovery records are per tool step or per user turn | Recovery e2e tests and ADR/doc update |

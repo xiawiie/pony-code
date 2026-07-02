@@ -57,8 +57,37 @@ def test_checkpoints_preview_restore_prints_plan(tmp_path, capsys):
 
     assert code == 0
     out = capsys.readouterr().out
-    assert '"checkpoint_id": "ckpt_1"' in out
-    assert '"decision": "restore"' in out
+    assert "Restore plan ckpt_1 (1 entry)" in out
+    assert "restore" in out
+    assert "note.txt" in out
+    assert '"decision"' not in out
+    assert (tmp_path / "note.txt").read_text(encoding="utf-8") == "after\n"
+
+
+def test_checkpoints_preview_restore_json_keeps_success_envelope(tmp_path, capsys):
+    store = CheckpointStore(tmp_path)
+    write_restorable_checkpoint(store, tmp_path, "ckpt_1")
+
+    code = main(["--cwd", str(tmp_path), "--format", "json", "checkpoints", "preview-restore", "ckpt_1"])
+
+    assert code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is True
+    assert payload["kind"] == "checkpoints_preview_restore"
+    assert payload["data"]["checkpoint_id"] == "ckpt_1"
+    assert payload["data"]["entries"][0]["decision"] == "restore"
+
+
+def test_checkpoints_restore_without_apply_uses_preview_text(tmp_path, capsys):
+    store = CheckpointStore(tmp_path)
+    write_restorable_checkpoint(store, tmp_path, "ckpt_1")
+
+    code = main(["--cwd", str(tmp_path), "checkpoints", "restore", "ckpt_1"])
+
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "Restore plan ckpt_1 (1 entry)" in out
+    assert "note.txt" in out
     assert (tmp_path / "note.txt").read_text(encoding="utf-8") == "after\n"
 
 
@@ -88,7 +117,7 @@ def test_checkpoint_commands_accept_unique_id_prefix(tmp_path, capsys):
     assert show_code == 0
     assert '"checkpoint_id": "ckpt_alpha1234"' in show_out
     assert preview_code == 0
-    assert '"checkpoint_id": "ckpt_restore5678"' in preview_out
+    assert "Restore plan ckpt_restore5678 (1 entry)" in preview_out
     assert restore_code == 0
     assert '"restored_paths": [' in restore_out
     restore_records = [record for record in store.list_checkpoint_records() if record["checkpoint_type"] == "restore"]
