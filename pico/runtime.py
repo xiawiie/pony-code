@@ -34,6 +34,8 @@ from .workspace import MAX_HISTORY, WorkspaceContext, clip, now
 from .workspace_observer import WorkspaceObserver
 
 DEFAULT_SHELL_ENV_ALLOWLIST = ("HOME", "LANG", "LC_ALL", "LC_CTYPE", "LOGNAME", "PATH", "PWD", "SHELL", "TERM", "TMPDIR", "TMP", "TEMP", "USER")
+DEFAULT_MAX_STEPS = 12
+DEFAULT_MAX_NEW_TOKENS = 2048
 DEFAULT_FEATURE_FLAGS = {
     "memory": True,
     "relevant_memory": True,
@@ -64,8 +66,8 @@ class Pico:
         session=None,
         run_store=None,
         approval_policy="ask",
-        max_steps=6,
-        max_new_tokens=512,
+        max_steps=DEFAULT_MAX_STEPS,
+        max_new_tokens=DEFAULT_MAX_NEW_TOKENS,
         depth=0,
         max_depth=1,
         read_only=False,

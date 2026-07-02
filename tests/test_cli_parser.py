@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 from pico.cli import build_arg_parser
 from pico.cli_parser import KNOWN_TOP_LEVEL_COMMANDS, parse_cli_invocation
+from pico.runtime import DEFAULT_MAX_NEW_TOKENS, DEFAULT_MAX_STEPS
 
 
 class RecordingParser:
@@ -60,3 +61,12 @@ def test_reserved_command_names_are_known():
         "sessions",
         "checkpoints",
     }.issubset(KNOWN_TOP_LEVEL_COMMANDS)
+
+
+def test_parser_defaults_are_generous_for_coding_agent_runs():
+    args = build_arg_parser().parse_args([])
+
+    assert args.max_steps == DEFAULT_MAX_STEPS == 12
+    assert args.max_new_tokens == DEFAULT_MAX_NEW_TOKENS == 2048
+    assert args.ollama_timeout == 300
+    assert args.openai_timeout == 300

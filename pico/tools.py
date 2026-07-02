@@ -11,6 +11,9 @@ from functools import partial
 
 from .workspace import IGNORED_PATH_NAMES
 
+DEFAULT_RUN_SHELL_TIMEOUT = 60
+MAX_RUN_SHELL_TIMEOUT = 120
+
 BASE_TOOL_SPECS = {
     "list_files": {
         "schema": {"path": "str='.'"},
@@ -28,7 +31,7 @@ BASE_TOOL_SPECS = {
         "description": "Search the workspace with rg or a simple fallback.",
     },
     "run_shell": {
-        "schema": {"command": "str", "timeout": "int=20"},
+        "schema": {"command": "str", "timeout": f"int={DEFAULT_RUN_SHELL_TIMEOUT}"},
         "risky": True,
         "description": "Run a shell command in the repo root.",
     },
@@ -58,7 +61,7 @@ TOOL_EXAMPLES = {
     "list_files": '<tool>{"name":"list_files","args":{"path":"."}}</tool>',
     "read_file": '<tool>{"name":"read_file","args":{"path":"README.md","start":1,"end":80}}</tool>',
     "search": '<tool>{"name":"search","args":{"pattern":"binary_search","path":"."}}</tool>',
-    "run_shell": '<tool>{"name":"run_shell","args":{"command":"uv run --with pytest python -m pytest -q","timeout":20}}</tool>',
+    "run_shell": f'<tool>{{"name":"run_shell","args":{{"command":"uv run --with pytest python -m pytest -q","timeout":{DEFAULT_RUN_SHELL_TIMEOUT}}}}}</tool>',
     "write_file": '<tool name="write_file" path="binary_search.py"><content>def binary_search(nums, target):\n    return -1\n</content></tool>',
     "patch_file": '<tool name="patch_file" path="binary_search.py"><old_text>return -1</old_text><new_text>return mid</new_text></tool>',
     "delegate": '<tool>{"name":"delegate","args":{"task":"inspect README.md","max_steps":3}}</tool>',
@@ -113,9 +116,9 @@ def validate_tool(context, name, args):
         command = str(args.get("command", "")).strip()
         if not command:
             raise ValueError("command must not be empty")
-        timeout = int(args.get("timeout", 20))
-        if timeout < 1 or timeout > 120:
-            raise ValueError("timeout must be in [1, 120]")
+        timeout = int(args.get("timeout", DEFAULT_RUN_SHELL_TIMEOUT))
+        if timeout < 1 or timeout > MAX_RUN_SHELL_TIMEOUT:
+            raise ValueError(f"timeout must be in [1, {MAX_RUN_SHELL_TIMEOUT}]")
         return
 
     if name == "write_file":
@@ -214,9 +217,9 @@ def tool_run_shell(context, args):
     command = str(args.get("command", "")).strip()
     if not command:
         raise ValueError("command must not be empty")
-    timeout = int(args.get("timeout", 20))
-    if timeout < 1 or timeout > 120:
-        raise ValueError("timeout must be in [1, 120]")
+    timeout = int(args.get("timeout", DEFAULT_RUN_SHELL_TIMEOUT))
+    if timeout < 1 or timeout > MAX_RUN_SHELL_TIMEOUT:
+        raise ValueError(f"timeout must be in [1, {MAX_RUN_SHELL_TIMEOUT}]")
     result = subprocess.run(
         command,
         cwd=context.root,

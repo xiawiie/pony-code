@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pico as pico_pkg
+from pico.runtime import DEFAULT_MAX_NEW_TOKENS, DEFAULT_MAX_STEPS
 from pico import (
     AnthropicCompatibleModelClient,
     FakeModelClient,
@@ -34,6 +35,13 @@ def build_agent(tmp_path, outputs, **kwargs):
         approval_policy=approval_policy,
         **kwargs,
     )
+
+
+def test_pico_constructor_uses_coding_agent_defaults(tmp_path):
+    agent = build_agent(tmp_path, [])
+
+    assert agent.max_steps == DEFAULT_MAX_STEPS == 12
+    assert agent.max_new_tokens == DEFAULT_MAX_NEW_TOKENS == 2048
 
 
 def test_agent_runs_tool_then_final(tmp_path):

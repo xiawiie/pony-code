@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from pico.tool_context import ToolContext
-from pico.tools import build_tool_registry, tool_delegate, tool_read_file
+from pico.tools import DEFAULT_RUN_SHELL_TIMEOUT, build_tool_registry, tool_delegate, tool_read_file, tool_run_shell
 
 
 def test_tool_context_supports_file_tools_without_full_pico(tmp_path):
@@ -52,3 +52,31 @@ def test_build_tool_registry_binds_runners_to_tool_context(tmp_path):
 
     assert "read_file" in tools
     assert "delegate" not in tools
+
+
+def test_run_shell_uses_larger_default_timeout(tmp_path, monkeypatch):
+    captured = {}
+
+    def fake_run(*args, **kwargs):
+        captured["timeout"] = kwargs["timeout"]
+
+        class Result:
+            returncode = 0
+            stdout = "ok"
+            stderr = ""
+
+        return Result()
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+    context = ToolContext(
+        root=tmp_path,
+        path_resolver=lambda raw_path: Path(tmp_path / raw_path),
+        shell_env_provider=lambda: {"PWD": str(tmp_path)},
+        depth=0,
+        max_depth=1,
+        spawn_delegate=lambda args: "unused",
+    )
+
+    tool_run_shell(context, {"command": "echo ok"})
+
+    assert captured["timeout"] == DEFAULT_RUN_SHELL_TIMEOUT == 60
