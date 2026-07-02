@@ -123,8 +123,9 @@ class RepoMap:
         self._file_count_by_top_dir.clear()
         self._language_counts.clear()
         for rel_path in self._file_mtimes:
-            top = rel_path.split("/", 1)[0]
-            self._file_count_by_top_dir[top] += 1
+            if "/" in rel_path:
+                top = rel_path.split("/", 1)[0]
+                self._file_count_by_top_dir[top] += 1
             ext = os.path.splitext(rel_path)[1].lower()
             lang = LANGUAGE_BY_EXT.get(ext, "other")
             self._language_counts[lang] += 1
@@ -177,8 +178,9 @@ class RepoMap:
             self._symbols[sym.name].append(sym)
 
         self._file_mtimes[rel_path] = mtime
-        top = rel_path.split("/", 1)[0]
-        self._file_count_by_top_dir[top] += 1
+        if "/" in rel_path:
+            top = rel_path.split("/", 1)[0]
+            self._file_count_by_top_dir[top] += 1
         self._language_counts[lang] += 1
 
     def _extract_python(self, rel_path: str, source: str) -> Iterable[Symbol]:

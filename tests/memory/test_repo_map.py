@@ -71,11 +71,21 @@ def test_top_level_tree(tmp_path):
     _write(tmp_path, "pico/a.py", "")
     _write(tmp_path, "pico/b.py", "")
     _write(tmp_path, "tests/t.py", "")
+    _write(tmp_path, "README.md", "")           # 顶层文件, 不应出现
+    _write(tmp_path, "pyproject.toml", "")      # 同上
     rm = RepoMap(repo_root=tmp_path)
     rm.scan()
     tree = {e["path"]: e for e in rm.top_level_tree()}
+
+    # 顶层目录: 出现且 kind == "dir"
+    assert tree["pico"]["kind"] == "dir"
     assert tree["pico"]["file_count"] == 2
+    assert tree["tests"]["kind"] == "dir"
     assert tree["tests"]["file_count"] == 1
+
+    # 顶层文件: 不作为条目出现（避免 kind: "dir" 错标）
+    assert "README.md" not in tree
+    assert "pyproject.toml" not in tree
 
 
 def test_lookup_with_kind_filter(tmp_path):
