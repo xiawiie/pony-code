@@ -5,7 +5,6 @@ Pico 就是包在模型外面的控制循环：负责组 prompt、解析模型�
 """
 
 import json
-import hashlib
 import os
 import re
 import uuid
@@ -14,6 +13,7 @@ from pathlib import Path
 
 from . import checkpoint as checkpointlib
 from . import model_output_parser
+from . import workspace_snapshot
 from .features import memory as memorylib
 from . import security as securitylib
 from .checkpoint_store import CheckpointStore
@@ -30,7 +30,7 @@ from .tool_context import ToolContext
 from .tool_executor import ToolExecutor
 from . import tools as toolkit
 from .verification import new_verification_record
-from .workspace import IGNORED_PATH_NAMES, MAX_HISTORY, WorkspaceContext, clip, now
+from .workspace import MAX_HISTORY, WorkspaceContext, clip, now
 from .workspace_observer import WorkspaceObserver
 
 DEFAULT_SHELL_ENV_ALLOWLIST = ("HOME", "LANG", "LC_ALL", "LC_CTYPE", "LOGNAME", "PATH", "PWD", "SHELL", "TERM", "TMPDIR", "TMP", "TEMP", "USER")
@@ -369,38 +369,11 @@ class Pico:
         return payload
 
     def capture_workspace_snapshot(self):
-        snapshot = {}
-        for path in self.root.rglob("*"):
-            try:
-                relative_parts = path.relative_to(self.root).parts
-            except ValueError:
-                continue
-            if any(part in IGNORED_PATH_NAMES for part in relative_parts):
-                continue
-            if not path.is_file():
-                continue
-            try:
-                snapshot[path.relative_to(self.root).as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
-            except Exception:
-                continue
-        return snapshot
+        return workspace_snapshot.capture_workspace_snapshot(self.root)
 
     @staticmethod
     def diff_workspace_snapshots(before, after):
-        changed_paths = []
-        summaries = []
-        all_paths = sorted(set(before) | set(after))
-        for path in all_paths:
-            if before.get(path) == after.get(path):
-                continue
-            changed_paths.append(path)
-            if path not in before:
-                summaries.append(f"created:{path}")
-            elif path not in after:
-                summaries.append(f"deleted:{path}")
-            else:
-                summaries.append(f"modified:{path}")
-        return changed_paths, summaries
+        return workspace_snapshot.diff_workspace_snapshots(before, after)
 
     def create_checkpoint(self, task_state, user_message, trigger):
         return checkpointlib.create_checkpoint(self, task_state, user_message, trigger)

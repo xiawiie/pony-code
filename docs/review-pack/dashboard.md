@@ -10,7 +10,7 @@ Execution rule: keep exactly one task in `In Progress`. Finish, verify, update t
 - Branch: `cli`
 - Latest pushed head: see PR current head
 - CI: expected on Python 3.10 and 3.12 for each pushed dashboard task
-- Local baseline: `./scripts/check.sh` passed with 294 tests after DOC-001
+- Local baseline: `./scripts/check.sh` passed with 297 tests after WS-001
 
 ## Done In This Review Pass
 
@@ -38,6 +38,7 @@ Execution rule: keep exactly one task in `In Progress`. Finish, verify, update t
 | CFG-001 | Done | Made project `.env` parsing warn and skip malformed lines while preserving valid entries | Local `293 passed` |
 | DX-001 | Done | Added a CI-matching local check script and documented it in the development workflow | Local `294 passed` |
 | DOC-001 | Done | Documented run artifact terminology and state-store boundaries in the architecture overview | Local `294 passed` |
+| WS-001 | Done | Extracted workspace snapshot helpers into a bounded module while preserving runtime compatibility methods | Local `297 passed` |
 
 ## Sequential Queue
 
@@ -59,6 +60,41 @@ Execution rule: keep exactly one task in `In Progress`. Finish, verify, update t
 | CFG-001 | P3 | Done | Make `.env` parsing tolerant of malformed lines | Bad local `.env` lines warn/skip instead of crashing the CLI | `uv run pytest -q` -> 293 passed |
 | DX-001 | P3 | Done | Add local lint/test ergonomics | Optional pre-commit or documented lint/test shortcuts exist | `./scripts/check.sh` -> 294 passed |
 | DOC-001 | P3 | Done | Document run artifact terminology | `task_state.json`, `trace.jsonl`, and `report.json` are explained in architecture docs | `./scripts/check.sh` -> 294 passed |
+
+## User Issue Reconciliation
+
+This table reconciles the external issue list against the current `cli` branch. Some items in the original list were stale after the previous dashboard pass.
+
+| Original issue | Current status | Current evidence / next action |
+| --- | --- | --- |
+| P0: 4 tests failing | Done | Latest local baseline is `./scripts/check.sh` -> 294 passed; PR CI passed on Python 3.10 and 3.12. |
+| P1: valuable changes scattered in worktree | Done | `cli` is clean and pushed; previous large diff was split into task commits. |
+| P1: `runtime.py` God Class | Done for identified slices | Model output parsing lives in `pico/model_output_parser.py`; workspace snapshot helpers now live in `pico/workspace_snapshot.py`. |
+| P1: `evaluation/metrics.py` monolith | Done | `metrics.py` is now a compatibility export layer; implementation lives in `metrics_common.py`, `metrics_experiments.py`, and `metrics_reports.py`. |
+| P2: AgentLoop finalize/report duplication | Backlog | Terminal paths still repeat checkpoint/report/trace structure. Tracked as `LOOP-001`. |
+| P2: repeated tool-call only blocks A-A | Done | Runtime now uses a sliding six-tool history window and blocks repeated calls that recur in that window. |
+| P2: tool examples duplicated | Done | Prompt prefix imports examples from `pico.tools.TOOL_EXAMPLES`; no separate prompt-prefix example table remains. |
+| P2: default `max_steps` / `max_new_tokens` / timeout too small | Backlog | Provider HTTP timeouts are 300s, but agent and generation defaults still need a product pass. Tracked as `DEFAULT-001`. |
+| P2: Anthropic prompt cache not wired | Done | Anthropic-compatible client now sends guarded `cache_control` metadata and reports cache usage. |
+| P2: `redact_text` direct `str.replace` may over-redact | Partially Done | Short values avoid broad substring replacement; long configured secret values still use literal replacement. Tracked as `REDACT-002`. |
+| P2: secret-shape detection too narrow | Done | Common token families including `ghp_`, `github_pat_`, Slack, Hugging Face, AWS, and Google API keys are covered. |
+| P3: `parse_xml_tool` lacks self-closing support | Backlog | Current parser only accepts paired `<tool>...</tool>` XML form. Tracked as `PARSE-001`. |
+| P3: `checkpoint_created` event mixed meanings | Done | Recovery checkpoints now emit `recovery_checkpoint_created` separately. |
+| P3: no session/checkpoint file locks | Partially Done | Pending tool records have ownership checks; session/checkpoint writes still lack file locking. Tracked as `LOCK-001`. |
+| P3: `capture_workspace_snapshot` large-repo O(n) | Done for fallback bounds | Snapshot fallback now prunes ignored directories and stops at explicit file/byte limits. |
+| P3: provider no streaming | Backlog | Clients still return full completion text after the request completes. Tracked as `STREAM-001`. |
+
+## Follow-Up Implementation Queue
+
+| ID | Priority | Status | Task | Acceptance | Verification |
+| --- | --- | --- | --- | --- | --- |
+| WS-001 | P1 | Done | Extract workspace snapshot helpers and bound fallback scanning | `runtime.py` delegates snapshot capture/diff to a dedicated module; snapshot fallback has explicit limits and tests | `./scripts/check.sh` -> 297 passed |
+| LOOP-001 | P2 | In Progress | Extract AgentLoop terminal finalization helper | Model-error, final-answer, and limit-stop paths share one report/checkpoint/trace finalizer | Focused agent-loop/runtime tests; `./scripts/check.sh` |
+| PARSE-001 | P3 | Backlog | Support self-closing XML tool calls | `<tool name="list_files" path="." />` parses into a tool payload; malformed self-closing forms retry cleanly | Parser tests; `./scripts/check.sh` |
+| REDACT-002 | P2 | Backlog | Make long secret redaction token-aware | Long configured secrets are redacted without replacing substrings inside larger non-token text | Security tests; `./scripts/check.sh` |
+| DEFAULT-001 | P2 | Backlog | Revisit agent and generation defaults | CLI defaults are less brittle for real coding-agent runs and docs/tests reflect them | CLI parser/config tests; `./scripts/check.sh` |
+| LOCK-001 | P3 | Backlog | Add repo-local session/checkpoint file locking | Session and checkpoint writes are protected against overlapping Pico processes where the platform supports locks | Store concurrency tests; `./scripts/check.sh` |
+| STREAM-001 | P3 | Backlog | Add provider streaming plumbing | Provider clients can expose streamed chunks while preserving existing `complete()` compatibility | Provider tests; `./scripts/check.sh` |
 
 ## Workflow Notes
 
