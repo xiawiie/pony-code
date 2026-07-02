@@ -2,6 +2,7 @@
 
 import os
 import re
+import sys
 from pathlib import Path
 
 
@@ -22,7 +23,7 @@ def _parse_env_line(line):
     if line.startswith("export "):
         line = line[len("export "):].strip()
     if "=" not in line:
-        raise ValueError(f"invalid .env line: {line}")
+        raise ValueError("missing '=' separator")
     name, value = line.split("=", 1)
     name = name.strip()
     if not ENV_KEY_PATTERN.match(name):
@@ -41,17 +42,32 @@ def find_project_env(start):
     return None
 
 
-def load_project_env(start, override=True):
+def _warn_invalid_env_line(env_path, line_number, error):
+    print(f"warning: skipped invalid .env line {line_number} in {env_path}: {error}", file=sys.stderr)
+
+
+def read_project_env(start, warn=True):
     env_path = find_project_env(start)
     if env_path is None:
         return {}
     loaded = {}
-    for line in env_path.read_text(encoding="utf-8").splitlines():
-        parsed = _parse_env_line(line)
+    for line_number, line in enumerate(env_path.read_text(encoding="utf-8").splitlines(), start=1):
+        try:
+            parsed = _parse_env_line(line)
+        except ValueError as exc:
+            if warn:
+                _warn_invalid_env_line(env_path, line_number, exc)
+            continue
         if parsed is None:
             continue
         name, value = parsed
         loaded[name] = value
+    return loaded
+
+
+def load_project_env(start, override=True, warn=True):
+    loaded = read_project_env(start, warn=warn)
+    for name, value in loaded.items():
         if override or name not in os.environ:
             os.environ[name] = value
     return loaded

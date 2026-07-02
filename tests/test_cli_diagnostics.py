@@ -87,6 +87,26 @@ def test_config_show_json_reports_sources_without_secret_values(tmp_path, monkey
     assert "secret-value" not in captured.out
 
 
+def test_config_show_skips_malformed_project_env_lines_with_warning(tmp_path, monkeypatch, capsys):
+    _clear_provider_env(monkeypatch)
+    (tmp_path / ".env").write_text(
+        "PICO_PROVIDER=deepseek\n"
+        "not a valid env line\n"
+        "PICO_DEEPSEEK_API_KEY=secret-value\n",
+        encoding="utf-8",
+    )
+
+    code = main(["--cwd", str(tmp_path), "--format", "json", "config", "show"])
+
+    captured = capsys.readouterr()
+    assert code == 0
+    payload = json.loads(captured.out)
+    assert payload["data"]["provider"]["value"] == "deepseek"
+    assert payload["data"]["api_key"]["present"] is True
+    assert "warning: skipped invalid .env line 2" in captured.err
+    assert "secret-value" not in captured.out
+
+
 def test_config_show_text_uses_grouped_cli_output_without_secret_value(tmp_path, monkeypatch, capsys):
     _clear_provider_env(monkeypatch)
     (tmp_path / ".env").write_text(

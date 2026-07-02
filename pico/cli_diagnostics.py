@@ -5,7 +5,7 @@ from pathlib import Path
 from urllib import error, request
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
-from .config import _parse_env_line, find_project_env
+from .config import read_project_env
 from .providers.defaults import (
     API_KEY_ENV_NAMES,
     BASE_URL_ENV_NAMES,
@@ -238,17 +238,7 @@ def _storage_status(path):
 
 
 def _read_project_env(start):
-    env_path = find_project_env(start)
-    if env_path is None:
-        return {}
-    loaded = {}
-    for line in env_path.read_text(encoding="utf-8").splitlines():
-        parsed = _parse_env_line(line)
-        if parsed is None:
-            continue
-        name, value = parsed
-        loaded[name] = value
-    return loaded
+    return read_project_env(start)
 
 
 def _latest_json_stem(root):
