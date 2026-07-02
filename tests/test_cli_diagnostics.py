@@ -102,6 +102,19 @@ def test_doctor_offline_skips_connectivity(tmp_path, monkeypatch, capsys):
     assert payload["data"]["provider_connectivity"]["status"] == "skipped"
 
 
+def test_doctor_json_does_not_build_agent(tmp_path, monkeypatch, capsys):
+    def fail_build_agent(args):
+        raise AssertionError("doctor must not build a Pico agent")
+
+    monkeypatch.setattr("pico.cli.build_agent", fail_build_agent)
+
+    code = main(["--cwd", str(tmp_path), "--format", "json", "doctor", "--offline"])
+
+    assert code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["kind"] == "doctor"
+
+
 def test_doctor_reports_connectivity_as_diagnostic_result(tmp_path, monkeypatch, capsys):
     def fake_connectivity(config):
         return {
