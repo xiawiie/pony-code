@@ -124,3 +124,20 @@ def test_reject_traversal(tmp_path):
         store.read("workspace/../etc/passwd")
     with pytest.raises(ValueError, match="invalid path"):
         store.read("/etc/passwd")
+
+
+def test_size_chars_counts_characters_not_bytes(tmp_path):
+    workspace = tmp_path / "workspace"
+    user = tmp_path / "user"
+    (workspace / "notes").mkdir(parents=True)
+    user.mkdir()
+    # 6 个中文字符 = 18 bytes (UTF-8)，但 size_chars 应该报 6+换行等等
+    content = "密码验证\n还有一行\n"   # 4+4 CJK + 2 newline = 10 chars, 26 bytes
+    (workspace / "notes" / "auth.md").write_text(content, encoding="utf-8")
+    store = BlockStore(workspace_root=workspace, user_root=user)
+    entries = {e.path: e for e in store.list()}
+    entry = entries["workspace/notes/auth.md"]
+    assert entry.size_chars == len(content), f"expected {len(content)} chars, got {entry.size_chars}"
+    # 字节数会 > 字符数
+    import os
+    assert os.path.getsize(workspace / "notes" / "auth.md") > entry.size_chars

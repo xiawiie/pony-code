@@ -24,7 +24,6 @@ from pathlib import Path
 from typing import Literal
 
 MAX_NOTE_CHARS = 500
-SCOPE_MAP = {"workspace": None, "user": None}  # filled by BlockStore at init
 
 
 @dataclass(frozen=True)
@@ -70,15 +69,15 @@ class BlockStore:
     @staticmethod
     def _to_memory_file(rel_path: str, real_path: Path) -> MemoryFile:
         stat = real_path.stat()
-        first_line = ""
+        content = ""
         try:
-            with real_path.open("r", encoding="utf-8", errors="replace") as fh:
-                first_line = (fh.readline() or "").rstrip("\n")
+            content = real_path.read_text(encoding="utf-8", errors="replace")
         except OSError:
-            first_line = ""
+            content = ""
+        first_line = (content.splitlines()[0] if content else "").rstrip("\n")
         return MemoryFile(
             path=rel_path,
-            size_chars=stat.st_size,
+            size_chars=len(content),
             mtime=stat.st_mtime,
             first_line=first_line[:200],
         )
