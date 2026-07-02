@@ -19,7 +19,17 @@ def test_tokenize_cjk_bigrams():
 def test_tokenize_mixed():
     tokens = tokenize("使用 bcrypt 加密")
     assert "bcrypt" in tokens
-    assert "使用" not in tokens or "使用" in tokens  # single-char doesn't produce bigrams
+    assert "使用" in tokens         # 同一分段内 CJK 相邻 → bigram
+    assert "加密" in tokens         # 同上
+    assert "用加" not in tokens     # 跨空白分段, 不产生 bigram
+
+
+def test_tokenize_no_cross_whitespace_bigram():
+    """Regression: whitespace must break CJK bigram grouping."""
+    tokens = tokenize("你好 世界")
+    assert "你好" in tokens
+    assert "世界" in tokens
+    assert "好世" not in tokens
 
 
 def _make_store(tmp_path, files: dict[str, str]):

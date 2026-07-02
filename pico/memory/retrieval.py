@@ -27,12 +27,17 @@ BM25_B = 0.75
 
 
 def tokenize(text: str) -> list[str]:
-    """英文分词 + CJK 二元组切分."""
+    """英文分词 + CJK 二元组切分.
+
+    CJK bigram 在空白分隔的每段内独立生成 —— 避免跨语义拼接（例如
+    "使用 加密" 不会产生 "用加" 这种垃圾 bigram）。
+    """
     text = str(text)
     tokens = [t.lower() for t in _WORD_RE.findall(text)]
-    cjk_chars = _CJK_RE.findall(text)
-    for i in range(len(cjk_chars) - 1):
-        tokens.append(cjk_chars[i] + cjk_chars[i + 1])
+    for chunk in re.split(r"\s+", text):
+        cjk_chars = _CJK_RE.findall(chunk)
+        for i in range(len(cjk_chars) - 1):
+            tokens.append(cjk_chars[i] + cjk_chars[i + 1])
     return tokens
 
 
