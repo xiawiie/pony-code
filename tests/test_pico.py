@@ -614,6 +614,79 @@ def test_anthropic_compatible_client_posts_expected_messages_payload():
     }
 
 
+def test_anthropic_compatible_client_sends_prompt_cache_control_and_records_usage():
+    captured = {}
+
+    class FakeResponse:
+        headers = {"Content-Type": "application/json"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps(
+                {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "<final>cached</final>",
+                        }
+                    ],
+                    "usage": {
+                        "input_tokens": 2048,
+                        "cache_creation_input_tokens": 1024,
+                        "cache_read_input_tokens": 512,
+                        "output_tokens": 32,
+                    },
+                }
+            ).encode("utf-8")
+
+    def fake_urlopen(request, timeout):
+        captured["timeout"] = timeout
+        captured["body"] = json.loads(request.data.decode("utf-8"))
+        return FakeResponse()
+
+    client = AnthropicCompatibleModelClient(
+        model="claude-sonnet-4-5-20250929",
+        base_url="https://www.right.codes/claude-aws/v1",
+        api_key="sk-test",
+        temperature=0.2,
+        timeout=30,
+    )
+
+    with patch("urllib.request.urlopen", fake_urlopen):
+        result = client.complete(
+            "hello",
+            42,
+            prompt_cache_key="prefix-hash-123",
+            prompt_cache_retention="in_memory",
+        )
+
+    assert result == "<final>cached</final>"
+    assert captured["body"]["cache_control"] == {"type": "ephemeral"}
+    assert client.supports_prompt_cache is True
+    assert client.last_completion_metadata["prompt_cache_supported"] is True
+    assert client.last_completion_metadata["prompt_cache_key"] == "prefix-hash-123"
+    assert client.last_completion_metadata["cache_hit"] is True
+    assert client.last_completion_metadata["cached_tokens"] == 512
+    assert client.last_completion_metadata["cache_creation_input_tokens"] == 1024
+
+
+def test_anthropic_compatible_client_does_not_enable_cache_for_deepseek_base_url():
+    client = AnthropicCompatibleModelClient(
+        model="deepseek-v4-pro",
+        base_url="https://api.deepseek.com/anthropic",
+        api_key="sk-test",
+        temperature=0.2,
+        timeout=30,
+    )
+
+    assert client.supports_prompt_cache is False
+
+
 def test_anthropic_compatible_client_extracts_first_text_block():
     class FakeResponse:
         headers = {"Content-Type": "application/json"}
