@@ -11,15 +11,12 @@ import shutil
 import sys
 import textwrap
 
-import json
-
-from .checkpoint_store import CheckpointStore
-from .cli_commands import run_agent_once, run_repl
+from .cli_commands import handle_checkpoints, handle_runs, run_agent_once, run_repl
+from .cli_errors import CliError
+from .cli_output import error_envelope, format_json
 from .cli_parser import parse_cli_invocation
 from .config import load_project_env, provider_env
 from .providers.clients import AnthropicCompatibleModelClient, OllamaModelClient, OpenAICompatibleModelClient
-from .recovery_manager import RecoveryManager
-from .recovery_checkpoint_writer import RecoveryCheckpointWriter
 from .runtime import Pico, SessionStore
 from .workspace import WorkspaceContext, middle
 
@@ -330,10 +327,14 @@ def build_arg_parser():
     parser.add_argument("--max-new-tokens", type=int, default=512, help="Maximum model output tokens per step.")
     parser.add_argument("--temperature", type=float, default=0.2, help="Sampling temperature sent to Ollama.")
     parser.add_argument("--top-p", type=float, default=0.9, help="Top-p sampling value sent to Ollama.")
+    parser.add_argument("--format", choices=("text", "json"), default="text", help="Output format for inspection commands.")
+    parser.add_argument("--quiet", action="store_true", help="Suppress non-essential human output.")
+    parser.add_argument("--no-color", action="store_true", help="Disable colored output.")
+    parser.add_argument("--no-input", action="store_true", help="Disable interactive prompts.")
     return parser
 
 
-def _handle_recovery_command(cwd, tokens):
+def _handle_recovery_command(cwd, tokens, args):
     """把 `pico --cwd <dir> checkpoints ...` / `runs ...` 分派到 inspection helper。
 
     这些命令不需要模型 client 也不进入 REPL；它们只对 .pico/checkpoints 和
@@ -345,86 +346,10 @@ def _handle_recovery_command(cwd, tokens):
     workspace = WorkspaceContext.build(cwd)
     root = workspace.repo_root
     if head == "checkpoints":
-        return _run_checkpoints(root, tokens[1:])
+        return handle_checkpoints(root, tokens[1:], args)
     if head == "runs":
-        return _run_runs(root, tokens[1:])
+        return handle_runs(root, tokens[1:], args)
     return None
-
-
-def _run_checkpoints(root, args):
-    store = CheckpointStore(root)
-    sub = args[0] if args else "list"
-    rest = args[1:]
-    if sub == "list":
-        for record in store.list_checkpoint_records():
-            print(f"{record['checkpoint_id']}\t{record['checkpoint_type']}\t{record.get('created_at', '')}")
-        return 0
-    if sub == "show" and rest:
-        try:
-            record = store.load_checkpoint_record(rest[0])
-        except FileNotFoundError:
-            print(f"unknown checkpoint: {rest[0]}")
-            return 2
-        print(json.dumps(record, indent=2, sort_keys=True))
-        return 0
-    if sub == "preview-restore" and rest:
-        manager = RecoveryManager(store, root, checkpoint_writer=RecoveryCheckpointWriter(store, root))
-        plan = manager.preview_restore(rest[0])
-        print(json.dumps(plan, indent=2, sort_keys=True))
-        return 0
-    if sub == "restore" and rest:
-        checkpoint_id = rest[0]
-        apply_flag = "--apply" in rest[1:]
-        manager = RecoveryManager(store, root, checkpoint_writer=RecoveryCheckpointWriter(store, root))
-        if not apply_flag:
-            plan = manager.preview_restore(checkpoint_id)
-            print(json.dumps(plan, indent=2, sort_keys=True))
-            return 0
-        result = manager.apply_restore(checkpoint_id)
-        print(json.dumps(result, indent=2, sort_keys=True))
-        return 0
-    if sub == "prune":
-        apply_flag = "--apply" in rest
-        result = store.prune(dry_run=not apply_flag)
-        print(json.dumps(result, indent=2, sort_keys=True))
-        return 0
-    print(
-        "usage: pico checkpoints {list | show <id> | preview-restore <id> | restore <id> [--apply] | prune [--apply]}",
-        file=sys.stderr,
-    )
-    return 2
-
-
-def _run_runs(root, args):
-    from pathlib import Path
-
-    runs_root = Path(root) / ".pico" / "runs"
-    sub = args[0] if args else "list"
-    rest = args[1:]
-    if sub == "list":
-        if not runs_root.exists():
-            return 0
-        for entry in sorted(runs_root.iterdir()):
-            if entry.is_dir():
-                print(entry.name)
-        return 0
-    if sub == "show" and rest:
-        run_dir = runs_root / rest[0]
-        if not run_dir.exists():
-            print(f"unknown run: {rest[0]}")
-            return 2
-        for name in ("task_state.json", "report.json"):
-            path = run_dir / name
-            if path.exists():
-                print(f"--- {name} ---")
-                print(path.read_text(encoding="utf-8"))
-        trace_path = run_dir / "trace.jsonl"
-        if trace_path.exists():
-            print("--- trace.jsonl ---")
-            print(trace_path.read_text(encoding="utf-8"))
-        return 0
-    print("usage: pico runs {list | show <run_id>}", file=sys.stderr)
-    return 2
 
 
 def main(argv=None):
@@ -435,7 +360,16 @@ def main(argv=None):
     if invocation.command in _RECOVERY_TOP_LEVEL_COMMANDS:
         recovery_tokens = [invocation.command, *invocation.command_args]
         if _looks_like_recovery_command(recovery_tokens):
-            code = _handle_recovery_command(args.cwd, recovery_tokens)
+            try:
+                code = _handle_recovery_command(args.cwd, recovery_tokens, args)
+            except CliError as exc:
+                if getattr(args, "format", "text") == "json":
+                    print(format_json(error_envelope(exc)), end="")
+                else:
+                    print(exc.message, file=sys.stderr)
+                    if exc.hint:
+                        print(exc.hint, file=sys.stderr)
+                return exc.exit_code
             if code is not None:
                 return code
     agent = build_agent(args)

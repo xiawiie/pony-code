@@ -1,3 +1,5 @@
+import json
+
 from pico.checkpoint_store import CheckpointStore
 from pico.cli import main
 from pico.recovery_models import new_checkpoint_record
@@ -185,3 +187,27 @@ def test_no_argument_cli_enters_repl_and_exits_on_eof(tmp_path, monkeypatch):
     assert code == 0
     assert called["built"] is True
     assert called["input"] is True
+
+
+def test_checkpoints_list_json_uses_success_envelope(tmp_path, capsys):
+    store = CheckpointStore(tmp_path)
+    store.write_checkpoint_record(new_checkpoint_record("ckpt_1", "turn", "s", "r", "t", "", str(tmp_path)))
+
+    code = main(["--cwd", str(tmp_path), "--format", "json", "checkpoints", "list"])
+
+    assert code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is True
+    assert payload["kind"] == "checkpoints_list"
+    assert payload["data"][0]["checkpoint_id"] == "ckpt_1"
+
+
+def test_runs_list_json_uses_success_envelope(tmp_path, capsys):
+    run_dir = tmp_path / ".pico" / "runs" / "run_1"
+    run_dir.mkdir(parents=True)
+
+    code = main(["--cwd", str(tmp_path), "--format", "json", "runs", "list"])
+
+    assert code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload == {"ok": True, "kind": "runs_list", "data": [{"run_id": "run_1"}]}
