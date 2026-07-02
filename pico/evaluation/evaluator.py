@@ -1,6 +1,7 @@
 import hashlib
 import json
 import locale as locale_module
+import os
 import shutil
 import subprocess
 import tempfile
@@ -26,6 +27,7 @@ DEFAULT_TEMPERATURE = 0.0
 DEFAULT_TOP_P = 1.0
 DEFAULT_MAX_NEW_TOKENS = 64
 DEFAULT_TIMEZONE = "Asia/Shanghai"
+REPRODUCIBILITY_LOCALE = "C.UTF-8"
 
 REQUIRED_BENCHMARK_KEYS = ("schema_version", "tasks")
 REQUIRED_TASK_KEYS = (
@@ -121,9 +123,17 @@ def _git_value(args, fallback="", cwd=None):
 
 def _current_locale():
     try:
-        return locale_module.setlocale(locale_module.LC_CTYPE)
+        locale_module.setlocale(locale_module.LC_CTYPE)
     except Exception:
-        return locale_module.getdefaultlocale()[0] or "C"
+        pass
+    return REPRODUCIBILITY_LOCALE
+
+
+def _reproducibility_env():
+    env = dict(os.environ)
+    env["LC_ALL"] = REPRODUCIBILITY_LOCALE
+    env["LANG"] = REPRODUCIBILITY_LOCALE
+    return env
 
 
 def _now_in_timezone(timezone_name):
@@ -495,6 +505,7 @@ class BenchmarkEvaluator:
             shell=True,
             capture_output=True,
             text=True,
+            env=_reproducibility_env(),
         )
 
         within_budget = task_state.tool_steps <= int(task["step_budget"])

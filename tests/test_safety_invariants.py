@@ -143,6 +143,23 @@ def test_cli_build_agent_reads_secret_names_from_environment_config(tmp_path):
         assert agent.secret_env_summary()["secret_env_names"] == ["PICO_CUSTOM_SECRET"]
 
 
+def test_cli_no_input_makes_default_approval_non_interactive(tmp_path):
+    class DummyModelClient:
+        def __init__(self, *args, **kwargs):
+            self.args = args
+            self.kwargs = kwargs
+
+        def complete(self, prompt, max_new_tokens):
+            raise AssertionError("model should not be invoked")
+
+    (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
+    with patch.dict(os.environ, {}, clear=True), patch("pico.cli.AnthropicCompatibleModelClient", DummyModelClient):
+        args = pico_cli.build_arg_parser().parse_args(["--cwd", str(tmp_path), "--no-input"])
+        agent = pico_cli.build_agent(args)
+
+    assert agent.approval_policy == "never"
+
+
 def test_run_shell_uses_allowlisted_environment_only(tmp_path):
     secret = "shh-allowlist-secret"
     agent = build_agent(tmp_path, [], approval_policy="auto")

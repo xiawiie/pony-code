@@ -9,6 +9,7 @@ from .recovery_checkpoint_writer import (
     set_current_recovery_checkpoint_id,
 )
 from .task_state import TaskState
+from .verification import is_verification_command, parse_run_shell_result
 from .workspace import clip, now
 
 
@@ -122,12 +123,57 @@ class AgentLoop:
                 prompt_cache_key = prompt_metadata.get("prompt_cache_key")
                 prompt_cache_retention = "in_memory"
             model_started_at = time.monotonic()
-            raw = agent.model_client.complete(
-                prompt,
-                agent.max_new_tokens,
-                prompt_cache_key=prompt_cache_key,
-                prompt_cache_retention=prompt_cache_retention,
-            )
+            try:
+                raw = agent.model_client.complete(
+                    prompt,
+                    agent.max_new_tokens,
+                    prompt_cache_key=prompt_cache_key,
+                    prompt_cache_retention=prompt_cache_retention,
+                )
+            except RuntimeError as exc:
+                agent.last_completion_metadata = {}
+                agent.last_prompt_metadata = prompt_metadata
+                final = f"Model error: {exc}"
+                task_state.stop_model_error(final)
+                agent.run_store.write_task_state(task_state)
+                checkpoint = agent.create_checkpoint(task_state, user_message, trigger="model_error")
+                agent.run_store.write_task_state(task_state)
+                agent.emit_trace(
+                    task_state,
+                    "checkpoint_created",
+                    {
+                        "checkpoint_id": checkpoint["checkpoint_id"],
+                        "checkpoint_kind": "resume_summary",
+                        "trigger": "model_error",
+                    },
+                )
+                recovery_checkpoint = _finalize_recovery_checkpoint(
+                    agent, task_state, run_tool_change_ids, trigger="model_error"
+                )
+                if recovery_checkpoint is not None:
+                    agent.emit_trace(
+                        task_state,
+                        TRACE_RECOVERY_CHECKPOINT_CREATED,
+                        {
+                            "checkpoint_id": recovery_checkpoint["checkpoint_id"],
+                            "recovery_checkpoint_id": recovery_checkpoint["checkpoint_id"],
+                            "checkpoint_kind": "recovery",
+                            "checkpoint_type": "turn",
+                            "trigger": "model_error",
+                        },
+                    )
+                agent.emit_trace(
+                    task_state,
+                    "run_finished",
+                    {
+                        "status": task_state.status,
+                        "stop_reason": task_state.stop_reason,
+                        "final_answer": final,
+                        "run_duration_ms": int((time.monotonic() - run_started_at) * 1000),
+                    },
+                )
+                agent.run_store.write_report(task_state, agent.redact_artifact(agent.build_report(task_state)))
+                raise
             completion_metadata = dict(getattr(agent.model_client, "last_completion_metadata", {}) or {})
             if completion_metadata:
                 # 把后端返回的 usage/cache 统计并回 prompt_metadata，
@@ -236,6 +282,15 @@ class AgentLoop:
                             "checkpoint_type": "turn",
                             "trigger": "tool_executed",
                         },
+                    )
+                    _record_verification_evidence_for_tool(
+                        agent,
+                        task_state,
+                        name,
+                        args,
+                        result,
+                        tool_result.metadata,
+                        recovery_checkpoint["checkpoint_id"],
                     )
                 continue
 
@@ -362,3 +417,20 @@ def _finalize_recovery_checkpoint(agent, task_state, run_tool_change_ids, trigge
     agent.run_store.write_task_state(task_state)
     run_tool_change_ids.clear()
     return record
+
+
+def _record_verification_evidence_for_tool(agent, task_state, name, args, result, metadata, checkpoint_id):
+    if name != "run_shell":
+        return
+    command = str(args.get("command", "")).strip()
+    if not is_verification_command(command):
+        return
+    parsed = parse_run_shell_result(result)
+    agent.record_verification_evidence(
+        command=command,
+        risk_class=metadata.get("command_risk_class", ""),
+        exit_code=parsed["exit_code"],
+        stdout=parsed["stdout"],
+        stderr=parsed["stderr"],
+        checkpoint_id=checkpoint_id,
+    )

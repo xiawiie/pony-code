@@ -293,6 +293,7 @@ def build_agent(args):
     store = SessionStore(workspace.repo_root + "/.pico/sessions")
     model = _build_model_client(args)
     session_id = args.resume
+    approval_policy = "never" if getattr(args, "no_input", False) and args.approval == "ask" else args.approval
     if session_id == "latest":
         session_id = store.latest()
     if session_id:
@@ -301,7 +302,7 @@ def build_agent(args):
             workspace=workspace,
             session_store=store,
             session_id=session_id,
-            approval_policy=args.approval,
+            approval_policy=approval_policy,
             max_steps=args.max_steps,
             max_new_tokens=args.max_new_tokens,
             secret_env_names=configured_secret_names,
@@ -310,7 +311,7 @@ def build_agent(args):
         model_client=model,
         workspace=workspace,
         session_store=store,
-        approval_policy=args.approval,
+        approval_policy=approval_policy,
         max_steps=args.max_steps,
         max_new_tokens=args.max_new_tokens,
         secret_env_names=configured_secret_names,

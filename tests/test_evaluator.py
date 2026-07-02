@@ -11,6 +11,7 @@ from pico.evaluation.evaluator import (
     run_fixed_benchmark,
     summarize_rows,
 )
+from pico.providers.clients import FakeModelClient
 
 
 def test_load_benchmark_validates_fixed_schema():
@@ -129,6 +130,71 @@ def test_run_fixed_benchmark_reports_metadata_and_success_definition(tmp_path):
         assert row["expected_artifact_exists"] is True
         assert row["non_failure_stop_reason"] is True
         assert row["stop_reason"] == "final_answer_returned"
+
+
+def test_benchmark_reproducibility_locale_is_stable(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "pico.evaluation.evaluator.locale_module.setlocale",
+        lambda category: "zh_CN.UTF-8",
+    )
+
+    artifact = run_fixed_benchmark(
+        benchmark_path=Path("benchmarks/coding_tasks.json"),
+        artifact_path=tmp_path / "benchmark-v1.json",
+        workspace_root=tmp_path / "workspaces",
+    )
+
+    assert artifact["reproducibility"]["locale"] == "C.UTF-8"
+
+
+def test_benchmark_verifier_runs_with_reproducibility_locale(monkeypatch, tmp_path):
+    monkeypatch.setenv("LC_ALL", "zh_CN.UTF-8")
+    monkeypatch.setenv("LANG", "zh_CN.UTF-8")
+    fixture = tmp_path / "bench_repo_readme"
+    fixture.mkdir()
+    (fixture / "README.md").write_text("demo\n", encoding="utf-8")
+    benchmark_dir = tmp_path / "benchmarks"
+    benchmark_dir.mkdir()
+    benchmark_path = benchmark_dir / "benchmark.json"
+    benchmark_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "tasks": [
+                    {
+                        "id": "locale_env",
+                        "prompt": "Create the locale artifact.",
+                        "fixture_repo": "bench_repo_readme",
+                        "allowed_tools": ["read_file"],
+                        "step_budget": 1,
+                        "expected_artifact": "README.md",
+                        "verifier": (
+                            "python -c 'import os, pathlib; "
+                            "pathlib.Path(\"verifier-env.txt\").write_text("
+                            "os.environ.get(\"LC_ALL\", \"\") + \"\\n\" + os.environ.get(\"LANG\", \"\")); "
+                            "assert os.environ.get(\"LC_ALL\") == \"C.UTF-8\"; "
+                            "assert os.environ.get(\"LANG\") == \"C.UTF-8\"'"
+                        ),
+                        "category": "contract",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    evaluator = BenchmarkEvaluator(
+        benchmark_path=benchmark_path,
+        artifact_path=tmp_path / "artifact.json",
+        workspace_root=tmp_path / "workspaces",
+        model_client_factory=lambda task, workspace: FakeModelClient(["<final>done</final>"]),
+    )
+
+    row = evaluator.run_task(evaluator.load()["tasks"][0])
+
+    assert row["status"] == "pass"
+    verifier_env = tmp_path / "workspaces" / row["fixture_copy_relpath"] / "verifier-env.txt"
+    assert verifier_env.read_text(encoding="utf-8").splitlines() == ["C.UTF-8", "C.UTF-8"]
 
 
 def test_run_fixed_benchmark_covers_recovery_and_durable_contract_rows(tmp_path):

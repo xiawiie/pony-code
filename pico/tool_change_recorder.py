@@ -19,8 +19,9 @@ _ALLOWED_TERMINAL_STATUSES = {"finalized", "error", "partial_success", "interrup
 
 
 class ToolChangeRecorder:
-    def __init__(self, store):
+    def __init__(self, store, owner_id=""):
         self.store = store
+        self.owner_id = str(owner_id or "")
 
     def start(self, checkpoint_id, turn_id, tool_name, effect_class, input_summary):
         tool_change_id = new_id("tc")
@@ -30,6 +31,7 @@ class ToolChangeRecorder:
             turn_id=turn_id or "",
             tool_name=tool_name,
             effect_class=effect_class,
+            owner_id=self.owner_id,
         )
         record["input_summary"] = dict(input_summary or {})
         self.store.write_tool_change_record(record)
@@ -69,7 +71,7 @@ class ToolChangeRecorder:
         self.store.write_tool_change_record(record)
         return record
 
-    def mark_interrupted_pending(self):
+    def mark_interrupted_pending(self, legacy_only=False):
         """把所有仍是 pending 的记录改成 interrupted，返回被改动的记录列表。
 
         通常在会话重启/异常兜底时调用。已经 terminal 的记录不动。
@@ -77,6 +79,8 @@ class ToolChangeRecorder:
         touched = []
         for record in self.store.list_tool_change_records():
             if record.get("status") != "pending":
+                continue
+            if legacy_only and record.get("owner_id"):
                 continue
             updated = self.finalize(
                 record["tool_change_id"],

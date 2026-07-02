@@ -106,3 +106,35 @@ def test_benchmark_evaluator_applies_allowed_tools_to_runtime_prompt(tmp_path):
     assert row["status"] == "pass"
     assert "- read_file(" in captured_clients[0].prompts[0]
     assert "- run_shell(" not in captured_clients[0].prompts[0]
+
+
+def test_allowed_tools_filter_prompt_examples_and_rules(tmp_path):
+    agent = build_agent(tmp_path, allowed_tools=["read_file"])
+
+    prompt = agent.prompt("Read the README")
+
+    assert "- read_file(" in prompt
+    assert "- write_file(" not in prompt
+    assert 'name="write_file"' not in prompt
+    assert '"run_shell"' not in prompt
+
+
+def test_allowed_tools_filter_file_edit_rules_to_available_tools(tmp_path):
+    agent = build_agent(tmp_path, allowed_tools=["patch_file"])
+
+    prompt = agent.prompt("Patch README")
+
+    assert "- patch_file(" in prompt
+    assert "- write_file(" not in prompt
+    assert 'name="patch_file"' in prompt
+    assert 'name="write_file"' not in prompt
+
+
+def test_allowed_tools_prompt_includes_search_example_and_required_args(tmp_path):
+    agent = build_agent(tmp_path, allowed_tools=["search"])
+
+    prompt = agent.prompt("Find a symbol")
+
+    assert "- search(" in prompt
+    assert '"name":"search"' in prompt
+    assert "Do not call search with args={}" in prompt

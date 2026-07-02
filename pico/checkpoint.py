@@ -146,6 +146,8 @@ def create_checkpoint(agent, task_state, user_message, trigger):
     state = checkpoint_state(agent)
     current = current_checkpoint(agent)
     checkpoint_id = "ckpt_" + uuid.uuid4().hex[:8]
+    safe_user_message = agent.redact_text(user_message)
+    safe_final_answer = agent.redact_text(task_state.final_answer)
     key_files = []
     freshness = {}
     for path in agent.memory.to_dict()["working"]["recent_files"]:
@@ -157,14 +159,14 @@ def create_checkpoint(agent, task_state, user_message, trigger):
         "parent_checkpoint_id": current.get("checkpoint_id", "") if current else "",
         "schema_version": CHECKPOINT_SCHEMA_VERSION,
         "created_at": now(),
-        "current_goal": str(user_message),
-        "completed": [task_state.final_answer] if task_state.final_answer else [],
+        "current_goal": str(safe_user_message),
+        "completed": [safe_final_answer] if safe_final_answer else [],
         "excluded": [],
         "current_blocker": "" if str(task_state.stop_reason or "") in ("", "final_answer_returned") else str(task_state.stop_reason),
         "next_step": infer_next_step(task_state),
         "key_files": key_files,
         "freshness": freshness,
-        "summary": f"{trigger}: {clip(str(user_message), 120)}",
+        "summary": f"{trigger}: {clip(str(safe_user_message), 120)}",
         "runtime_identity": current_runtime_identity(agent),
     }
     state["items"][checkpoint_id] = checkpoint

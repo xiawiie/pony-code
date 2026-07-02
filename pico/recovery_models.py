@@ -56,12 +56,13 @@ def new_checkpoint_record(checkpoint_id, checkpoint_type, session_id, run_id, tu
     }
 
 
-def new_tool_change_record(tool_change_id, checkpoint_id, turn_id, tool_name, effect_class):
+def new_tool_change_record(tool_change_id, checkpoint_id, turn_id, tool_name, effect_class, owner_id=""):
     return {
         "schema_version": TOOL_CHANGE_RECORD_SCHEMA_VERSION,
         "tool_change_id": str(tool_change_id),
         "checkpoint_id": str(checkpoint_id or ""),
         "turn_id": str(turn_id or ""),
+        "owner_id": str(owner_id or ""),
         "tool_name": str(tool_name),
         "effect_class": str(effect_class),
         "status": "pending",

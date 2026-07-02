@@ -993,23 +993,31 @@ def test_trace_and_report_redact_secret_env_values(tmp_path):
             tmp_path,
             [
                 '<tool>{"name":"run_shell","args":{"command":"printf \'%s\' \'sk-test-secret-123\'","timeout":20}}</tool>',
-                "<final>Masked.</final>",
+                "<final>Masked sk-test-secret-123</final>",
             ],
         )
 
-        assert agent.ask("Mask the secret") == "Masked."
+        assert agent.ask("Mask the secret") == "Masked sk-test-secret-123"
+        followup_prompt = agent.prompt("Continue without repeating secrets")
+        assert secret not in followup_prompt
 
     runs_root = tmp_path / ".pico" / "runs"
     run_dirs = [path for path in runs_root.iterdir() if path.is_dir()]
     assert len(run_dirs) == 1
 
     run_dir = run_dirs[0]
+    session_text = Path(agent.session_path).read_text(encoding="utf-8")
+    task_state_text = (run_dir / "task_state.json").read_text(encoding="utf-8")
     trace_text = (run_dir / "trace.jsonl").read_text(encoding="utf-8")
     report_text = (run_dir / "report.json").read_text(encoding="utf-8")
     trace_events = [json.loads(line) for line in trace_text.splitlines()]
 
+    assert secret not in session_text
+    assert secret not in task_state_text
     assert secret not in trace_text
     assert secret not in report_text
+    assert "<redacted>" in session_text
+    assert "<redacted>" in task_state_text
 
     prompt_events = [event for event in trace_events if event["event"] == "prompt_built"]
     assert prompt_events

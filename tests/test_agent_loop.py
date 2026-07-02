@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from pico import FakeModelClient, Pico, SessionStore, WorkspaceContext
 from pico.agent_loop import AgentLoop
 
@@ -73,3 +75,22 @@ def test_recovery_checkpoint_uses_distinct_trace_event(tmp_path):
         event["event"] == "checkpoint_created" and event.get("checkpoint_kind") == "recovery"
         for event in trace_events
     )
+
+
+def test_model_error_marks_run_failed_and_writes_report(tmp_path):
+    agent = build_agent(tmp_path, [])
+
+    with pytest.raises(RuntimeError, match="fake model ran out of outputs"):
+        agent.ask("trigger backend failure")
+
+    task_state = agent.current_task_state
+    assert task_state.status == "failed"
+    assert task_state.stop_reason == "model_error"
+    assert agent.run_store.report_path(task_state).exists()
+
+    trace_events = [
+        json.loads(line)
+        for line in agent.run_store.trace_path(task_state).read_text(encoding="utf-8").splitlines()
+    ]
+    assert trace_events[-1]["event"] == "run_finished"
+    assert trace_events[-1]["status"] == "failed"

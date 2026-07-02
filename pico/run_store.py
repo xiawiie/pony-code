@@ -15,10 +15,18 @@ def _run_id(value):
     return str(value)
 
 
+def _identity(value):
+    return value
+
+
 class RunStore:
-    def __init__(self, root):
+    def __init__(self, root, redactor=None):
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
+        self._redactor = redactor or _identity
+
+    def set_redactor(self, redactor):
+        self._redactor = redactor or _identity
 
     def run_dir(self, run_id):
         return self.root / _run_id(run_id)
@@ -43,7 +51,7 @@ class RunStore:
     def write_task_state(self, task_state):
         path = self.task_state_path(task_state)
         path.parent.mkdir(parents=True, exist_ok=True)
-        self._write_json_atomic(path, task_state.to_dict())
+        self._write_json_atomic(path, self._redactor(task_state.to_dict()))
         return path
 
     def append_trace(self, task_state, event):
@@ -52,14 +60,14 @@ class RunStore:
         # trace 采用 jsonl 追加写入，原因是 agent 运行过程是流式事件序列，
         # 逐条落盘比“最后一次性写整份 trace”更稳，也更适合调试。
         with path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(event, sort_keys=True, ensure_ascii=True))
+            handle.write(json.dumps(self._redactor(event), sort_keys=True, ensure_ascii=True))
             handle.write("\n")
         return path
 
     def write_report(self, task_state, report):
         path = self.report_path(task_state)
         path.parent.mkdir(parents=True, exist_ok=True)
-        self._write_json_atomic(path, report)
+        self._write_json_atomic(path, self._redactor(report))
         return path
 
     def load_task_state(self, task_id):

@@ -1,4 +1,5 @@
 import json
+import sys
 
 from pico import FakeModelClient, Pico, SessionStore, WorkspaceContext
 
@@ -102,3 +103,17 @@ def test_verification_evidence_can_attach_to_checkpoint(tmp_path):
         event.get("event") == "verification_recorded" and event.get("verification_id") == record["verification_id"]
         for event in trace_events
     )
+
+
+def test_run_shell_verification_command_attaches_evidence_to_checkpoint(tmp_path):
+    command = f"{sys.executable} -m pytest --version"
+    tool_call = json.dumps({"name": "run_shell", "args": {"command": command, "timeout": 20}})
+    agent = build_agent(tmp_path, [f"<tool>{tool_call}</tool>", "<final>done</final>"])
+
+    agent.ask("Run the verification command")
+
+    checkpoint = agent.checkpoint_store.load_checkpoint_record(agent.current_task_state.recovery_checkpoint_id)
+    evidence = checkpoint["verification_evidence"]
+    assert len(evidence) == 1
+    assert evidence[0]["command"] == command
+    assert evidence[0]["status"] == "passed"

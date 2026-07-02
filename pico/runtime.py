@@ -92,11 +92,21 @@ class Pico:
             self.feature_flags.update({str(key): bool(value) for key, value in feature_flags.items()})
         self.allowed_tools = self._normalize_allowed_tools(allowed_tools)
         self.run_store = run_store or RunStore(Path(workspace.repo_root) / ".pico" / "runs")
+        if hasattr(self.run_store, "set_redactor"):
+            self.run_store.set_redactor(self.redact_artifact)
+        if hasattr(self.session_store, "set_redactor"):
+            self.session_store.set_redactor(self.redact_artifact)
         # 可恢复编辑（recoverable editing）的组件在这里就位。
         # 它们和 resume-summary 用的 `checkpointlib` 是两条独立的通路：
         # CheckpointStore 落在 .pico/checkpoints/ 下，专门记 turn/restore/manual 类型。
         self.checkpoint_store = CheckpointStore(self.root)
-        self.tool_change_recorder = ToolChangeRecorder(self.checkpoint_store)
+        self.tool_change_owner_id = "runtime_" + uuid.uuid4().hex[:12]
+        self.tool_change_recorder = ToolChangeRecorder(self.checkpoint_store, owner_id=self.tool_change_owner_id)
+        self.interrupted_tool_changes = (
+            self.tool_change_recorder.mark_interrupted_pending(legacy_only=True)
+            if self.depth == 0
+            else []
+        )
         self.recovery_checkpoint_writer = RecoveryCheckpointWriter(self.checkpoint_store, self.root)
         self.recovery_manager = RecoveryManager(self.checkpoint_store, self.root)
         self.workspace_observer = WorkspaceObserver(self.root)
@@ -284,7 +294,7 @@ class Pico:
         return prompt
 
     def record(self, item):
-        self.session["history"].append(item)
+        self.session["history"].append(self.redact_artifact(item))
         self.session_path = self.session_store.save(self.session)
 
     @staticmethod
@@ -417,6 +427,7 @@ class Pico:
         """
         if not self.feature_enabled("memory"):
             return
+        result = self.redact_text(result)
         path = args.get("path")
         if not path:
             return

@@ -5,6 +5,9 @@
 Verification Record，方便 checkpoint 与 trace 双向引用。
 """
 
+from pathlib import Path
+import shlex
+
 from pico.recovery_models import (
     VERIFICATION_RECORD_SCHEMA_VERSION,
     new_id,
@@ -13,6 +16,19 @@ from pico.recovery_models import (
 
 
 _MAX_TAIL_CHARS = 1000
+_VERIFICATION_COMMAND_MARKERS = (
+    "pytest",
+    "ruff",
+    "mypy",
+    "pyright",
+    "npm test",
+    "pnpm test",
+    "yarn test",
+    "cargo test",
+    "go test",
+)
+_NON_VERIFICATION_HEADS = {"rg", "grep", "find", "cat", "echo", "printf", "sed", "awk"}
+_SINGLE_TOOL_PREDECESSORS = {"run", "-m", "exec"}
 
 
 def _tail(text):
@@ -22,6 +38,57 @@ def _tail(text):
     if len(text) <= _MAX_TAIL_CHARS:
         return text
     return text[-_MAX_TAIL_CHARS:]
+
+
+def is_verification_command(command):
+    try:
+        tokens = shlex.split(str(command or ""))
+    except ValueError:
+        tokens = str(command or "").split()
+    normalized = [Path(token).name.lower() for token in tokens]
+    if not normalized:
+        return False
+    if normalized[0] in _NON_VERIFICATION_HEADS:
+        return False
+    for marker in _VERIFICATION_COMMAND_MARKERS:
+        marker_tokens = marker.split()
+        if len(marker_tokens) == 1:
+            for index, token in enumerate(normalized):
+                if token != marker_tokens[0]:
+                    continue
+                if index == 0 or normalized[index - 1] in _SINGLE_TOOL_PREDECESSORS:
+                    return True
+            continue
+        for index in range(0, len(normalized) - len(marker_tokens) + 1):
+            if normalized[index:index + len(marker_tokens)] == marker_tokens:
+                return True
+    return False
+
+
+def parse_run_shell_result(text):
+    content = str(text or "")
+    exit_code = 1
+    stdout = ""
+    stderr = ""
+    lines = content.splitlines()
+    if lines and lines[0].startswith("exit_code:"):
+        try:
+            exit_code = int(lines[0].split(":", 1)[1].strip())
+        except ValueError:
+            exit_code = 1
+    stdout_marker = "\nstdout:\n"
+    stderr_marker = "\nstderr:\n"
+    if stdout_marker in content:
+        after_stdout = content.split(stdout_marker, 1)[1]
+        if stderr_marker in after_stdout:
+            stdout, stderr = after_stdout.split(stderr_marker, 1)
+        else:
+            stdout = after_stdout
+    return {
+        "exit_code": exit_code,
+        "stdout": "" if stdout.strip() == "(empty)" else stdout.strip(),
+        "stderr": "" if stderr.strip() == "(empty)" else stderr.strip(),
+    }
 
 
 def new_verification_record(

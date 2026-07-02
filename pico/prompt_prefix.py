@@ -19,6 +19,18 @@ class PromptPrefix:
     built_at: str
 
 
+TOOL_RESPONSE_EXAMPLES = {
+    "list_files": '<tool>{"name":"list_files","args":{"path":"."}}</tool>',
+    "read_file": '<tool>{"name":"read_file","args":{"path":"README.md","start":1,"end":80}}</tool>',
+    "search": '<tool>{"name":"search","args":{"pattern":"binary_search","path":"."}}</tool>',
+    "write_file": '<tool name="write_file" path="binary_search.py"><content>def binary_search(nums, target):\n    return -1\n</content></tool>',
+    "patch_file": '<tool name="patch_file" path="binary_search.py"><old_text>return -1</old_text><new_text>return mid</new_text></tool>',
+    "run_shell": '<tool>{"name":"run_shell","args":{"command":"uv run --with pytest python -m pytest -q","timeout":20}}</tool>',
+    "delegate": '<tool>{"name":"delegate","args":{"task":"inspect README.md","max_steps":3}}</tool>',
+}
+TOOL_EXAMPLE_ORDER = ("list_files", "read_file", "search", "write_file", "patch_file", "run_shell", "delegate")
+
+
 def tool_signature(tools):
     payload = []
     for name in sorted(tools):
@@ -34,6 +46,46 @@ def tool_signature(tools):
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
 
 
+def _tool_specific_rules(tools):
+    available = set(tools)
+    lines = []
+    if "write_file" in available:
+        lines.extend(
+            [
+                "- For write_file with multi-line text, prefer XML style:",
+                '  <tool name="write_file" path="file.py"><content>...</content></tool>',
+            ]
+        )
+    if "patch_file" in available:
+        lines.extend(
+            [
+                "- For patch_file with multi-line text, prefer XML style:",
+                '  <tool name="patch_file" path="file.py"><old_text>old</old_text><new_text>new</new_text></tool>',
+            ]
+        )
+    file_edit_tools = [name for name in ("write_file", "patch_file") if name in available]
+    if file_edit_tools:
+        lines.append(
+            f"- If the user asks you to create or update a specific file and the path is clear, use {' or '.join(file_edit_tools)} instead of repeatedly listing files."
+        )
+    required_arg_tools = [name for name in ("read_file", "search", "write_file", "patch_file", "run_shell", "delegate") if name in available]
+    if required_arg_tools:
+        lines.append(
+            f"- Required tool arguments must not be empty. Do not call {', '.join(required_arg_tools)} with args={{}}."
+        )
+    return "\n".join(lines)
+
+
+def _response_examples(tools):
+    examples = [
+        TOOL_RESPONSE_EXAMPLES[name]
+        for name in TOOL_EXAMPLE_ORDER
+        if name in tools
+    ]
+    examples.append("<final>Done.</final>")
+    return "\n".join(examples)
+
+
 def build_prompt_prefix(workspace, tools, built_at=None):
     tool_lines = []
     for name, tool in tools.items():
@@ -41,16 +93,8 @@ def build_prompt_prefix(workspace, tools, built_at=None):
         risk = "approval required" if tool["risky"] else "safe"
         tool_lines.append(f"- {name}({fields}) [{risk}] {tool['description']}")
     tool_text = "\n".join(tool_lines)
-    examples = "\n".join(
-        [
-            '<tool>{"name":"list_files","args":{"path":"."}}</tool>',
-            '<tool>{"name":"read_file","args":{"path":"README.md","start":1,"end":80}}</tool>',
-            '<tool name="write_file" path="binary_search.py"><content>def binary_search(nums, target):\n    return -1\n</content></tool>',
-            '<tool name="patch_file" path="binary_search.py"><old_text>return -1</old_text><new_text>return mid</new_text></tool>',
-            '<tool>{"name":"run_shell","args":{"command":"uv run --with pytest python -m pytest -q","timeout":20}}</tool>',
-            "<final>Done.</final>",
-        ]
-    )
+    tool_specific_rules = _tool_specific_rules(tools)
+    examples = _response_examples(tools)
     # prefix 可以理解成 agent 的“工作手册”：
     # 它是谁、工具怎么调用、当前仓库是什么状态，都写在这里。
     text = textwrap.dedent(
@@ -62,18 +106,15 @@ def build_prompt_prefix(workspace, tools, built_at=None):
         - Return exactly one <tool>...</tool> or one <final>...</final>.
         - Tool calls must look like:
           <tool>{{"name":"tool_name","args":{{...}}}}</tool>
-        - For write_file and patch_file with multi-line text, prefer XML style:
-          <tool name="write_file" path="file.py"><content>...</content></tool>
         - Final answers must look like:
           <final>your answer</final>
         - Never invent tool results.
         - Keep answers concise and concrete.
-        - If the user asks you to create or update a specific file and the path is clear, use write_file or patch_file instead of repeatedly listing files.
         - Before writing tests for existing code, read the implementation first.
         - When writing tests, match the current implementation unless the user explicitly asked you to change the code.
         - New files should be complete and runnable, including obvious imports.
         - Do not repeat the same tool call with the same arguments if it did not help. Choose a different tool or return a final answer.
-        - Required tool arguments must not be empty. Do not call read_file, write_file, patch_file, run_shell, or delegate with args={{}}.
+        {tool_specific_rules}
 
         Tools:
         {tool_text}

@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 from pico.session_store import SessionStore
 
@@ -21,3 +22,21 @@ def test_session_store_latest_is_none_when_empty(tmp_path):
     store = SessionStore(tmp_path / ".pico" / "sessions")
 
     assert store.latest() is None
+
+
+def test_session_store_saves_with_atomic_replace(tmp_path, monkeypatch):
+    store = SessionStore(tmp_path / ".pico" / "sessions")
+    replace_calls = []
+    original_replace = Path.replace
+
+    def tracking_replace(self, target):
+        replace_calls.append((self.name, Path(target).name))
+        return original_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", tracking_replace)
+
+    store.save({"id": "session_atomic", "history": []})
+
+    assert replace_calls
+    assert replace_calls[-1][1] == "session_atomic.json"
+    assert not list((tmp_path / ".pico" / "sessions").glob("*.tmp"))
