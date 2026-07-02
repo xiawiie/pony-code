@@ -58,6 +58,36 @@ def test_restore_preview_conflicts_when_expected_empty_but_file_exists(tmp_path)
     assert plan["entries"][0]["reason"] == "unexpected_file_present"
 
 
+def test_preview_flags_review_when_before_blob_unavailable(tmp_path):
+    # 直接构造一份 file_entry: snapshot_eligible=True, change_kind=modified, 但没有 before_blob_ref。
+    # _build_file_entries 平时会把 snapshot_eligible flip 掉；这里保留原样是为了独立
+    # 验证 _plan_entry 里的“before_blob_unavailable”防御分支不会静默漏掉。
+    store = CheckpointStore(tmp_path)
+    after = store.write_blob(b"after\n", "text")
+    (tmp_path / "note.txt").write_text("after\n", encoding="utf-8")
+    record = new_checkpoint_record("ckpt_1", "turn", "s", "r", "t", "", str(tmp_path))
+    record["file_entries"].append(
+        {
+            "path": "note.txt",
+            "change_kind": "modified",
+            "snapshot_eligible": True,
+            "before_blob_ref": "",
+            "before_hash": "",
+            "after_blob_ref": after["blob_ref"],
+            "after_hash": after["content_hash"],
+            "expected_current_hash": after["content_hash"],
+            "content_kind": "text",
+            "ineligible_reason": "",
+        }
+    )
+    store.write_checkpoint_record(record)
+
+    plan = RecoveryManager(store, tmp_path).preview_restore("ckpt_1")
+
+    assert plan["entries"][0]["decision"] == "review"
+    assert plan["entries"][0]["reason"] == "before_blob_unavailable"
+
+
 def test_apply_restore_skips_entry_when_before_blob_missing(tmp_path):
     store = CheckpointStore(tmp_path)
     before = store.write_blob(b"before\n", "text")

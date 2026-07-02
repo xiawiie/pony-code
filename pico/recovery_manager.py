@@ -144,6 +144,7 @@ class RecoveryManager:
                         "reason": write_result["reason"],
                         "expected_hash": expected_hash,
                         "observed_hash": write_result["observed_hash"],
+                        "target_modified": bool(write_result.get("target_modified", False)),
                     })
                     continue
                 post_hash = write_result["observed_hash"]
@@ -199,11 +200,17 @@ class RecoveryCheckpointWriterProxy:
 
 
 def _write_bytes_verified(path, data, expected_hash):
-    """Write to a sibling temp file, verify it, then atomically replace target."""
+    """Write to a sibling temp file, verify its bytes, then atomically replace target.
+
+    Invariant: `path` is only touched after the temp file's hash equals
+    `expected_hash`. If any check fails we clean up the temp and return
+    `status='error'` without mutating the target — half-restore is impossible.
+    """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(delete=False, dir=str(path.parent), prefix=path.name + ".restore.", suffix=".tmp") as handle:
         temp_path = Path(handle.name)
+    temp_survived = True
     try:
         temp_path.write_bytes(data)
         temp_hash = hash_file_bytes(temp_path)["content_hash"]
@@ -214,16 +221,22 @@ def _write_bytes_verified(path, data, expected_hash):
                 "observed_hash": temp_hash,
             }
         temp_path.replace(path)
+        temp_survived = False  # replace 之后 temp 已经不在原路径了
         observed_hash = hash_file_bytes(path)["content_hash"]
         if observed_hash != expected_hash:
+            # 极小概率的读回不一致（例如底层文件系统 sync 异常）。目标已经写入，
+            # 明确标记为 verified_replaced_but_reread_mismatch，避免后续误认为
+            # “未改动”。恢复日志需要知道磁盘状态与预期不一致。
             return {
                 "status": "error",
-                "reason": "post_write_hash_mismatch",
+                "reason": "reread_hash_mismatch_after_replace",
                 "observed_hash": observed_hash,
+                "target_modified": True,
             }
         return {"status": "ok", "reason": "", "observed_hash": observed_hash}
     finally:
-        try:
-            temp_path.unlink()
-        except FileNotFoundError:
-            pass
+        if temp_survived:
+            try:
+                temp_path.unlink()
+            except FileNotFoundError:
+                pass

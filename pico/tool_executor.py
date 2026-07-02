@@ -227,6 +227,7 @@ class ToolExecutor:
         # 组路径落 blob；这样恢复能拿到真实字节，也不会去读整个 workspace。
         before_snapshot = _capture_path_snapshot(agent, before_paths) if records_recovery else {}
         before_file_states = _capture_before_file_states_for_paths(agent, before_paths) if records_recovery else {}
+        before_existed = set(before_snapshot.keys())
         observer_before = None
         if name == "run_shell":
             # run_shell 只做轻量的 before 观察，不预先落 blob。真正的 before-blob
@@ -242,13 +243,17 @@ class ToolExecutor:
                 affected_paths = list(delta.get("changed_paths", []))
                 shell_side_effects = list(delta.get("summaries", []))
                 diff_summary = shell_side_effects
-                # 只对 delta 里真正变了的路径去挖 before-blob；这里
-                # 先看 git HEAD（对于 tracked file 最准确），拿不到再兜底。
-                before_snapshot = _capture_path_snapshot_from_observer(observer_before, affected_paths)
+                # 存在性来自 observer；HEAD 只对 observer 看不到（=clean tracked）的路径可靠。
+                before_existed = _paths_present_in_observer(observer_before, affected_paths)
+                dirty_before = set(before_existed)
+                head_candidates = [p for p in affected_paths if p not in dirty_before]
                 before_file_states = _fill_git_head_before_file_states(
-                    agent, affected_paths, before_file_states, before_snapshot
+                    agent, head_candidates, before_file_states
                 )
-                before_snapshot = _merge_before_snapshot(before_snapshot, before_file_states)
+                # HEAD fallback 覆盖 clean tracked file 的存在性；命中即视为“执行前存在”。
+                for path in before_file_states.keys():
+                    before_existed.add(path)
+                before_snapshot = _merge_before_snapshot({}, before_file_states)
                 workspace_changed = bool(affected_paths)
             else:
                 after_snapshot = _capture_path_snapshot(agent, before_paths) if records_recovery else before_snapshot
@@ -280,7 +285,7 @@ class ToolExecutor:
             )
             metadata = _add_command_policy(metadata, command_risk, command_approval)
 
-            file_entries = _build_file_entries(agent, name, args, affected_paths, before_snapshot, before_file_states)
+            file_entries = _build_file_entries(agent, name, args, affected_paths, before_snapshot, before_file_states, before_existed)
             if pending_record is not None:
                 terminal_status = "finalized"
                 if tool_status == "partial_success":
@@ -314,11 +319,15 @@ class ToolExecutor:
                     affected_paths = list(delta.get("changed_paths", []))
                     shell_side_effects = list(delta.get("summaries", []))
                     diff_summary = shell_side_effects
-                    before_snapshot = _capture_path_snapshot_from_observer(observer_before, affected_paths)
+                    before_existed = _paths_present_in_observer(observer_before, affected_paths)
+                    dirty_before = set(before_existed)
+                    head_candidates = [p for p in affected_paths if p not in dirty_before]
                     before_file_states = _fill_git_head_before_file_states(
-                        agent, affected_paths, before_file_states, before_snapshot
+                        agent, head_candidates, before_file_states
                     )
-                    before_snapshot = _merge_before_snapshot(before_snapshot, before_file_states)
+                    for path in before_file_states.keys():
+                        before_existed.add(path)
+                    before_snapshot = _merge_before_snapshot({}, before_file_states)
                     workspace_changed = bool(affected_paths)
                 except Exception:  # pragma: no cover - defensive
                     affected_paths = []
@@ -343,7 +352,7 @@ class ToolExecutor:
             )
             metadata = _add_command_policy(metadata, command_risk, command_approval)
 
-            file_entries = _build_file_entries(agent, name, args, affected_paths, before_snapshot, before_file_states)
+            file_entries = _build_file_entries(agent, name, args, affected_paths, before_snapshot, before_file_states, before_existed)
             if pending_record is not None:
                 terminal_status = "partial_success" if workspace_changed else "error"
                 error_payload = {"code": metadata["tool_error_code"] or "tool_failed", "message": str(exc)[:400]}
@@ -404,27 +413,25 @@ def _capture_path_snapshot(agent, raw_paths):
     return snapshot
 
 
-def _capture_path_snapshot_from_observer(observer_capture, affected_paths):
-    """从 observer 的 before capture 里挑出 affected_paths 对应的记录。
+def _paths_present_in_observer(observer_capture, affected_paths):
+    """哪些 affected_paths 在 observer 的 before capture 里已经存在？
 
-    这样 diff_workspace_snapshots 依然能识别“路径原本存在”这个事实，用来判断
-    change_kind=created / modified / deleted，而无需在执行前就对每个 dirty 路径
-    做一次 sha256 or write_blob。
+    只返回“存在性”这一个事实（set of normalized paths），不返回 git status 标记。
+    之前把 'MM'、'??' 这些标记塞到 before_snapshot 里当 hash 用，既污染了 before_hash，
+    又让 git-HEAD fallback 认为“已经有 before 记录”而跳过。分离这两个概念可以修好这两个问题。
     """
     if not observer_capture:
-        return {}
+        return set()
     paths = observer_capture.get("paths") or {}
-    result = {}
+    present = set()
     for raw_path in affected_paths or []:
         try:
             normalized = normalize_workspace_relative_path(raw_path)
         except ValueError:
             continue
-        marker = paths.get(normalized)
-        if marker is None:
-            continue
-        result[normalized] = str(marker)
-    return result
+        if normalized in paths:
+            present.add(normalized)
+    return present
 
 
 def _capture_before_file_states_for_paths(agent, raw_paths):
@@ -464,7 +471,14 @@ def _merge_before_snapshot(before_snapshot, before_file_states):
     return merged
 
 
-def _fill_git_head_before_file_states(agent, raw_paths, before_file_states, before_snapshot):
+def _fill_git_head_before_file_states(agent, raw_paths, before_file_states):
+    """对 delta 里每个还没有 before_blob 的路径，尝试从 git HEAD 抓一份原始字节。
+
+    这里不再看 observer 是否见过 —— observer 状态标记（'MM'、'??'）不是可用的
+    before_hash，只能表达“存在”。是否有可用的 before-blob 完全取决于我们能否
+    真的从 HEAD 取出对应字节。取不到就让 _build_file_entries 把 entry 标记
+    ineligible_reason='before_blob_unavailable'。
+    """
     states = dict(before_file_states or {})
     missing_paths = []
     for raw_path in raw_paths or []:
@@ -472,10 +486,9 @@ def _fill_git_head_before_file_states(agent, raw_paths, before_file_states, befo
             normalized = normalize_workspace_relative_path(raw_path)
         except ValueError:
             continue
-        # If the observer saw the path before the shell command, it was already
-        # dirty/untracked. HEAD is not the user's immediate before state.
-        if normalized not in states and normalized not in (before_snapshot or {}):
-            missing_paths.append(normalized)
+        if normalized in states:
+            continue
+        missing_paths.append(normalized)
     if not missing_paths:
         return states
 
@@ -496,14 +509,17 @@ def _fill_git_head_before_file_states(agent, raw_paths, before_file_states, befo
     return states
 
 
-def _build_file_entries(agent, name, args, affected_paths, before_snapshot, before_file_states=None):
+def _build_file_entries(agent, name, args, affected_paths, before_snapshot, before_file_states=None, before_existed=None):
     """基于工具类型和实际 affected_paths 构造 file_entries。
 
     每个 entry 都记录：
     - snapshot_eligible + ineligible_reason（不合格就直接跳出，不落 blob）
     - after_blob_ref/after_hash/expected_current_hash（合格时按 sha256 落到 blob store）
-    - before_blob_ref/before_hash（当且仅当 before_snapshot 里有旧的 sha256）
-    - change_kind：created / modified / deleted，用 before_snapshot 是否含 key 判断
+    - before_blob_ref/before_hash（当且仅当拿到了真实字节 or 合法 sha256）
+    - change_kind：created / modified / deleted，用 before_existed 判断“执行前是否存在”
+
+    before_snapshot 里的值都必须是真实 sha256；path 是否存在的问题由 before_existed
+    单独回答。这样 observer 的 git 状态标记（'MM'、'??'）不会被误当成 hash。
     """
     store = agent.checkpoint_store
     workspace_root = agent.root
@@ -520,7 +536,10 @@ def _build_file_entries(agent, name, args, affected_paths, before_snapshot, befo
         except ValueError:
             continue
 
-        existed_before = normalized in (before_snapshot or {})
+        if before_existed is not None:
+            existed_before = normalized in before_existed
+        else:
+            existed_before = normalized in (before_snapshot or {})
         exists_after = resolved.exists()
         if not existed_before and exists_after:
             change_kind = "created"
@@ -560,7 +579,10 @@ def _build_file_entries(agent, name, args, affected_paths, before_snapshot, befo
             entry["before_blob_ref"] = str(before_state.get("before_blob_ref") or "")
             entry["before_hash"] = str(before_state.get("before_hash") or "")
         elif existed_before:
-            entry["before_hash"] = str((before_snapshot or {}).get(normalized) or "")
+            candidate = str((before_snapshot or {}).get(normalized) or "")
+            # 只接受合法 sha256 十六进制；observer 的 git 状态标记不会通过。
+            if len(candidate) == 64 and all(char in "0123456789abcdef" for char in candidate):
+                entry["before_hash"] = candidate
         if (
             entry["snapshot_eligible"]
             and change_kind in {"modified", "deleted"}

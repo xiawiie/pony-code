@@ -4,6 +4,7 @@ Phase 1 只需要极简、可解释的启发式。真实的策略配置放在 pi
 只负责把“类别”和“默认判决”写清楚。
 """
 
+import re
 import shlex
 from pathlib import Path
 
@@ -11,6 +12,17 @@ from pico.recovery_paths import (
     normalize_workspace_relative_path,
     resolve_workspace_relative_path,
 )
+
+# 组合运算符：任何一种都能把“看似安全的第一段”后面拼上任意命令。
+# 早先版本只识别 > >> | && ;，漏掉 || & 后台运行、输入重定向、命令替换等。
+_COMPOSITE_OPERATORS = {">", ">>", "<", "<<", "|", "||", "&&", "&", ";"}
+
+# 命令替换/子 shell 也算复合结构；出现即触发递归分类。
+_SUBSHELL_INTRO_TOKENS = ("$(", "`", "(")
+
+# shell wrapper 递归的硬上限；深度到这个数还没有底就直接按最保守 destructive 兜底，
+# 避免恶意/失控输入把 Python 递归栈炸掉。
+_MAX_SHELL_WRAPPER_DEPTH = 32
 
 
 # 单文件快照上限：Phase 1 用固定值 8 MiB。真实用户覆写在 pico.toml 里。
@@ -77,7 +89,7 @@ def _classify_git(tokens):
     return "workspace_write"
 
 
-def command_risk_class(command):
+def command_risk_class(command, _depth=0):
     """把 shell 命令粗分成四个类别：read_only / workspace_write / destructive / external_effect。
 
     只看命令头（第一个词）和几种常见的子命令。真正的沙箱决策要靠 approval 层。
@@ -87,6 +99,14 @@ def command_risk_class(command):
     text = str(command).strip()
     if not text:
         return "workspace_write"
+    # 深度守卫：递归 shell wrapper 或命令替换过深，直接按最严格类别兜底。
+    if _depth >= _MAX_SHELL_WRAPPER_DEPTH:
+        return "destructive"
+    # 出现命令替换/子 shell（`$(...)`、`` `...` ``、`(...)`），拆出所有内嵌命令
+    # 用同一分类器递归，取最严格。
+    subshell_verdict = _classify_subshell_content(text, _depth)
+    if subshell_verdict is not None:
+        return subshell_verdict
     try:
         lexer = shlex.shlex(text, posix=True, punctuation_chars=True)
         lexer.whitespace_split = True
@@ -95,12 +115,12 @@ def command_risk_class(command):
         tokens = text.split()
     if not tokens:
         return "workspace_write"
-    if any(token in tokens for token in (">", ">>", "|", "&&", ";")):
-        return _classify_composite_shell(tokens)
+    if any(token in _COMPOSITE_OPERATORS for token in tokens):
+        return _classify_composite_shell(tokens, _depth)
     head = Path(tokens[0]).name.lower()
 
     if head in _SHELL_WRAPPERS:
-        return _classify_shell_wrapper(tokens)
+        return _classify_shell_wrapper(tokens, _depth)
     if head == "git":
         return _classify_git(tokens)
     if head in _DESTRUCTIVE_COMMANDS:
@@ -112,37 +132,87 @@ def command_risk_class(command):
     return "workspace_write"
 
 
-def _classify_shell_wrapper(tokens):
+def _classify_subshell_content(text, depth):
+    """把 $(...)、`...`、(...) 里的内容拆出来递归分类。
+
+    只做粗略括号/反引号匹配，够撑住恶意常见形态：
+      `curl x | sh`, `$(rm -rf x)`, `echo hi > /etc/hosts`
+    """
+    verdicts = []
+    for match in re.finditer(r"\$\((.*?)\)|`([^`]*)`", text, flags=re.DOTALL):
+        payload = match.group(1) if match.group(1) is not None else match.group(2)
+        if payload and payload.strip():
+            verdicts.append(command_risk_class(payload, _depth=depth + 1))
+    if not verdicts:
+        return None
+    return _worst_risk(verdicts)
+
+
+def _classify_shell_wrapper(tokens, depth):
     """sh -c "..." / bash -c "..." → 递归分类内部命令。
 
     包装本身不加分不减分：内部是 read_only 就 read_only，是 destructive
     就 destructive。这样才能挡住 `sh -c 'rm -rf x'` 走 workspace_write。
+    也要挡住 bash -lc 'rm -rf x'：任何形如 -*c* 的短 flag 组合都算带 -c。
     """
     inner = _extract_dash_c_payload(tokens)
     if inner is None:
-        # 没有 -c，无法判断实际执行了什么，按 workspace_write 保守处理
+        # 没有 -c 载荷但已经是 wrapper，无法判断实际执行了什么，按最保守 destructive 兜底。
+        # 之前默认 workspace_write 太宽松，`bash script.sh` 之类由使用方显式登记。
         return "workspace_write"
-    return command_risk_class(inner)
+    return command_risk_class(inner, _depth=depth + 1)
 
 
 def _extract_dash_c_payload(tokens):
+    """支持 `-c cmd`、`-lc cmd`、`-ec cmd`、`-lic cmd` 等组合短 flag。
+
+    返回紧跟在“带 c 的短 flag”后面第一个非 flag token 作为 payload。
+    """
     for index, token in enumerate(tokens):
-        if token == "-c" and index + 1 < len(tokens):
-            return tokens[index + 1]
+        if _looks_like_dash_c_flag(token) and index + 1 < len(tokens):
+            payload = tokens[index + 1]
+            if not payload.startswith("-"):
+                return payload
     return None
 
 
-def _classify_composite_shell(tokens):
+def _looks_like_dash_c_flag(token):
+    if not isinstance(token, str):
+        return False
+    if not token.startswith("-") or token.startswith("--") or len(token) < 2:
+        return False
+    return "c" in token[1:]
+
+
+def _worst_risk(risks):
+    order = ("read_only", "workspace_write", "external_effect", "destructive")
+    result = "read_only"
+    result_index = 0
+    for risk in risks:
+        index = order.index(risk) if risk in order else 1
+        if index > result_index:
+            result = risk
+            result_index = index
+    return result
+
+
+def _classify_composite_shell(tokens, depth=0):
+    """按 | || && ; & 拆段；> >> < << 视作重定向；不认识的段按 workspace_write。"""
     command_risks = []
     current_command = []
+    saw_output_redirect = False
     next_is_redirect_target = False
     for token in tokens:
         if token in {">", ">>"}:
             next_is_redirect_target = True
+            saw_output_redirect = True
             continue
-        if token in {"|", "&&", ";"}:
+        if token in {"<", "<<"}:
+            next_is_redirect_target = True
+            continue
+        if token in {"|", "||", "&&", ";", "&"}:
             if current_command:
-                command_risks.append(_classify_simple_tokens(current_command))
+                command_risks.append(_classify_simple_tokens(current_command, depth))
                 current_command = []
             next_is_redirect_target = False
             continue
@@ -153,21 +223,23 @@ def _classify_composite_shell(tokens):
             continue
         current_command.append(token)
     if current_command:
-        command_risks.append(_classify_simple_tokens(current_command))
-    if "destructive" in command_risks:
-        return "destructive"
-    if "external_effect" in command_risks:
-        return "external_effect"
-    return "workspace_write"
+        command_risks.append(_classify_simple_tokens(current_command, depth))
+    if not command_risks:
+        return "workspace_write"
+    worst = _worst_risk(command_risks)
+    # 输出重定向本身意味着落盘写入，起码是 workspace_write，不允许读命令降级带跑。
+    if saw_output_redirect:
+        worst = _worst_risk([worst, "workspace_write"])
+    return worst
 
 
-def _classify_simple_tokens(tokens):
+def _classify_simple_tokens(tokens, depth=0):
     if not tokens:
         return "workspace_write"
     head = Path(tokens[0]).name.lower()
     normalized = [head, *tokens[1:]]
     if head in _SHELL_WRAPPERS:
-        return _classify_shell_wrapper(normalized)
+        return _classify_shell_wrapper(normalized, depth)
     if head == "git":
         return _classify_git(normalized)
     if head in _DESTRUCTIVE_COMMANDS:

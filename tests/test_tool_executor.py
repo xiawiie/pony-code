@@ -168,6 +168,22 @@ def test_run_shell_recovery_marks_dirty_before_tracked_file_unrestorable(tmp_pat
     assert entry["ineligible_reason"] == "before_blob_unavailable"
 
 
+def test_run_shell_recovery_populates_before_blob_from_git_head(tmp_path):
+    # clean tracked file: observer 看不到，HEAD fallback 应该把 before-blob 抓下来。
+    agent = build_agent(tmp_path)
+    init_git_repo(tmp_path)
+
+    result = agent.execute_tool("run_shell", {"command": "printf 'tool changed\\n' > README.md", "timeout": 5})
+
+    assert result.metadata["tool_status"] == "ok"
+    entry = result.metadata["file_entries"][0]
+    assert entry["path"] == "README.md"
+    assert entry["change_kind"] == "modified"
+    assert entry["before_blob_ref"]
+    assert agent.checkpoint_store.read_blob(entry["before_blob_ref"]) == b"demo\n"
+    assert entry["snapshot_eligible"] is True
+
+
 def test_workspace_write_tool_uses_generic_path_argument_for_recovery(tmp_path):
     agent = build_agent(tmp_path)
 
@@ -187,6 +203,57 @@ def test_workspace_write_tool_uses_generic_path_argument_for_recovery(tmp_path):
     assert result.metadata["tool_status"] == "ok"
     assert result.metadata["affected_paths"] == ["custom.txt"]
     assert result.metadata["file_entries"][0]["path"] == "custom.txt"
+
+
+def test_generic_path_arg_registry_covers_destination_and_paths_list(tmp_path):
+    # 目的：future tool（move_file / delete_files 等）用非 "path" 参数时也要能记录 recovery。
+    agent = build_agent(tmp_path)
+    (tmp_path / "existing.txt").write_text("original\n", encoding="utf-8")
+
+    def custom_move(args):
+        source = tmp_path / args["source"]
+        destination = tmp_path / args["destination"]
+        destination.write_bytes(source.read_bytes())
+        source.unlink()
+        return "moved"
+
+    agent.tools["custom_move"] = {
+        "schema": {"source": "str", "destination": "str"},
+        "risky": True,
+        "description": "Move a file.",
+        "run": custom_move,
+    }
+
+    result = agent.execute_tool("custom_move", {"source": "existing.txt", "destination": "moved.txt"})
+
+    assert result.metadata["tool_status"] == "ok"
+    affected = set(result.metadata["affected_paths"])
+    assert "existing.txt" in affected
+    assert "moved.txt" in affected
+
+
+def test_generic_path_arg_registry_covers_list_arg(tmp_path):
+    agent = build_agent(tmp_path)
+    (tmp_path / "a.txt").write_text("a\n", encoding="utf-8")
+    (tmp_path / "b.txt").write_text("b\n", encoding="utf-8")
+
+    def custom_delete(args):
+        for path in args["paths"]:
+            (tmp_path / path).unlink()
+        return "deleted"
+
+    agent.tools["custom_delete"] = {
+        "schema": {"paths": "list[str]"},
+        "risky": True,
+        "description": "Delete files.",
+        "run": custom_delete,
+    }
+
+    result = agent.execute_tool("custom_delete", {"paths": ["a.txt", "b.txt"]})
+
+    assert result.metadata["tool_status"] == "ok"
+    affected = set(result.metadata["affected_paths"])
+    assert affected == {"a.txt", "b.txt"}
 
 
 def test_recovery_lifecycle_uses_effect_class_not_risky_flag(tmp_path):
