@@ -19,7 +19,10 @@ from . import security as securitylib
 from .checkpoint_store import CheckpointStore
 from .context_manager import ContextManager
 from .checkpoint import CHECKPOINT_NONE_STATUS
+from .memory.block_store import BlockStore
+from .memory.retrieval import Retrieval
 from .prompt_prefix import build_prompt_prefix, tool_signature
+from .repo_map import RepoMap
 from .recovery_checkpoint_writer import RecoveryCheckpointWriter
 from .recovery_manager import RecoveryManager
 from .run_store import RunStore
@@ -124,6 +127,18 @@ class Pico:
             workspace_root=self.root,
         )
         self.session["memory"] = self.memory.to_dict()
+        # v2 memory subsystem: BlockStore/Retrieval/RepoMap 在 tool_context 里被 wire 给 memory/repo_lookup 工具
+        workspace_memory_root = self.root / ".pico" / "memory"
+        user_memory_root = Path.home() / ".pico" / "memory"
+        self.memory_store = BlockStore(
+            workspace_root=workspace_memory_root,
+            user_root=user_memory_root,
+        )
+        self.memory_retrieval = Retrieval(self.memory_store)
+        self.repo_map = RepoMap(repo_root=self.root)
+        # 后台起首次扫描；tool_repo_lookup 自己也会在首次使用时 refresh_if_stale。
+        import threading
+        threading.Thread(target=self.repo_map.scan, daemon=True).start()
         self.tools = self._apply_tool_allowlist(self.build_tools())
         self.tool_executor = ToolExecutor(self)
         self.prefix_state = self.build_prefix()
@@ -630,6 +645,9 @@ class Pico:
             depth=self.depth,
             max_depth=self.max_depth,
             spawn_delegate=self.spawn_delegate,
+            memory_store=self.memory_store,
+            memory_retrieval=self.memory_retrieval,
+            repo_map=self.repo_map,
         )
 
     def spawn_delegate(self, args):

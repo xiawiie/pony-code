@@ -17,6 +17,8 @@ MAX_HISTORY = 12000
 # 我们不会预加载整个仓库，只会先给模型一小份“导航包”。
 DOC_NAMES = ("AGENTS.md", "README.md", "pyproject.toml", "package.json")
 IGNORED_PATH_NAMES = {".git", ".pico", "__pycache__", ".pytest_cache", ".ruff_cache", ".venv", "venv"}
+# v2: 用户全局约定文件，与 workspace AGENTS.md 合成 Layer 1 上下文。
+GLOBAL_AGENTS_MD_PATH = Path.home() / ".pico" / "AGENTS.md"
 
 
 def now():
@@ -86,6 +88,16 @@ class WorkspaceContext:
                 if key in docs:
                     continue
                 docs[key] = clip(path.read_text(encoding="utf-8", errors="replace"), 1200)
+
+        # v2: 加载 ~/.pico/AGENTS.md 作为全局约定（可选，不存在或不可读时安静跳过）
+        try:
+            if GLOBAL_AGENTS_MD_PATH.exists():
+                docs["<global>/AGENTS.md"] = clip(
+                    GLOBAL_AGENTS_MD_PATH.read_text(encoding="utf-8", errors="replace"),
+                    1500,
+                )
+        except OSError:
+            pass
 
         return cls(
             cwd=str(cwd),
