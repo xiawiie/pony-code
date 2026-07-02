@@ -555,6 +555,70 @@ def test_openai_compatible_client_extracts_text_from_event_stream_deltas():
     assert result == "<final>OK</final>"
 
 
+def test_openai_compatible_client_streams_event_deltas_and_records_usage():
+    captured = {}
+
+    class FakeResponse:
+        headers = {"Content-Type": "text/event-stream"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def __iter__(self):
+            return iter(
+                [
+                    b'event: response.output_text.delta\n',
+                    b'data: {"type":"response.output_text.delta","delta":"<final>"}\n',
+                    b'\n',
+                    b'event: response.output_text.delta\n',
+                    b'data: {"type":"response.output_text.delta","delta":"OK</final>"}\n',
+                    b'\n',
+                    (
+                        b'data: {"type":"response.completed","response":{"output":[],"usage":'
+                        b'{"input_tokens":10,"input_tokens_details":{"cached_tokens":4},'
+                        b'"output_tokens":2,"total_tokens":12}}}\n'
+                    ),
+                    b'\n',
+                    b"data: [DONE]\n",
+                ]
+            )
+
+    def fake_urlopen(request, timeout):
+        captured["timeout"] = timeout
+        captured["headers"] = dict(request.headers)
+        captured["body"] = json.loads(request.data.decode("utf-8"))
+        return FakeResponse()
+
+    client = OpenAICompatibleModelClient(
+        model="right.codes/codex-mini",
+        base_url="https://right.codes/v1",
+        api_key="sk-test",
+        temperature=0.2,
+        timeout=30,
+    )
+
+    with patch("urllib.request.urlopen", fake_urlopen):
+        chunks = list(
+            client.stream_complete(
+                "hello",
+                42,
+                prompt_cache_key="prefix-hash-123",
+                prompt_cache_retention="in_memory",
+            )
+        )
+
+    assert chunks == ["<final>", "OK</final>"]
+    assert captured["timeout"] == 30
+    assert captured["headers"]["Accept"] == "text/event-stream"
+    assert captured["body"]["stream"] is True
+    assert captured["body"]["prompt_cache_key"] == "prefix-hash-123"
+    assert client.last_completion_metadata["cached_tokens"] == 4
+    assert client.last_completion_metadata["cache_hit"] is True
+
+
 def test_anthropic_compatible_client_posts_expected_messages_payload():
     captured = {}
 
@@ -727,6 +791,42 @@ def test_anthropic_compatible_client_extracts_first_text_block():
         result = client.complete("hello", 42)
 
     assert result == "<final>ok</final>"
+
+
+def test_anthropic_stream_complete_falls_back_to_complete():
+    class FakeResponse:
+        headers = {"Content-Type": "application/json"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps(
+                {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "<final>fallback</final>",
+                        }
+                    ]
+                }
+            ).encode("utf-8")
+
+    client = AnthropicCompatibleModelClient(
+        model="claude-sonnet-4-5-20250929",
+        base_url="https://www.right.codes/claude-aws/v1",
+        api_key="sk-test",
+        temperature=0.2,
+        timeout=30,
+    )
+
+    with patch("urllib.request.urlopen", return_value=FakeResponse()):
+        chunks = list(client.stream_complete("hello", 42))
+
+    assert chunks == ["<final>fallback</final>"]
 
 
 def test_build_agent_uses_openai_provider_and_model_override(tmp_path):

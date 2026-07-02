@@ -29,6 +29,9 @@ class FakeModelClient:
             raise RuntimeError("fake model ran out of outputs")
         return self.outputs.pop(0)
 
+    def stream_complete(self, prompt, max_new_tokens, **kwargs):
+        yield self.complete(prompt, max_new_tokens, **kwargs)
+
 
 class OllamaModelClient:
     def __init__(self, model, host, temperature, top_p, timeout):
@@ -79,6 +82,9 @@ class OllamaModelClient:
         if data.get("error"):
             raise RuntimeError(f"Ollama error: {data['error']}")
         return data.get("response", "")
+
+    def stream_complete(self, prompt, max_new_tokens, **kwargs):
+        yield self.complete(prompt, max_new_tokens, **kwargs)
 
 
 def _normalize_versioned_base_url(base_url):
@@ -206,6 +212,52 @@ def _extract_openai_response_from_sse(body_text):
     return "", {}
 
 
+def _iter_sse_data_payloads(lines):
+    for raw_line in lines:
+        line = raw_line.decode("utf-8", errors="replace") if isinstance(raw_line, bytes) else str(raw_line)
+        line = line.strip()
+        if not line.startswith("data:"):
+            continue
+        payload = line[len("data:"):].strip()
+        if payload:
+            yield payload
+
+
+def _iter_openai_stream_chunks(lines):
+    yielded_delta = False
+    for payload in _iter_sse_data_payloads(lines):
+        if payload == "[DONE]":
+            break
+        try:
+            event = json.loads(payload)
+        except json.JSONDecodeError:
+            continue
+        response = event.get("response")
+        response_data = response if isinstance(response, dict) else {}
+        event_type = event.get("type", "")
+        if event_type == "response.output_text.delta":
+            delta = event.get("delta")
+            if isinstance(delta, str) and delta:
+                yielded_delta = True
+                yield delta, response_data
+            continue
+        if event_type == "response.output_text.done":
+            text = event.get("text")
+            if isinstance(text, str) and text and not yielded_delta:
+                yield text, response_data
+            continue
+        if event_type == "response.completed":
+            text = _extract_openai_text(response_data)
+            if text and not yielded_delta:
+                yield text, response_data
+            else:
+                yield "", response_data
+            continue
+        text = _extract_openai_text(event)
+        if text and not yielded_delta:
+            yield text, event
+
+
 def _extract_usage_cache_details(data):
     # 把不同 OpenAI-compatible 返回里的 usage 字段整理成统一结构，
     # 让 runtime/trace/report 不需要关心 provider 细节。
@@ -235,6 +287,49 @@ class OpenAICompatibleModelClient:
         self.supports_prompt_cache = any(host in self.base_url for host in ("openai.com", "right.codes"))
         self.last_completion_metadata = {}
 
+    def _responses_payload(self, prompt, max_new_tokens, stream, prompt_cache_key, prompt_cache_retention):
+        payload = {
+            "model": self.model,
+            "input": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": prompt,
+                        }
+                    ],
+                }
+            ],
+            "max_output_tokens": max_new_tokens,
+            "stream": bool(stream),
+        }
+        if self.temperature is not None:
+            payload["temperature"] = self.temperature
+        if self.supports_prompt_cache and prompt_cache_key:
+            payload["prompt_cache_key"] = prompt_cache_key
+        if self.supports_prompt_cache and prompt_cache_retention:
+            payload["prompt_cache_retention"] = prompt_cache_retention
+        return payload
+
+    def _headers(self, accept):
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": accept,
+            "User-Agent": OPENAI_COMPATIBLE_USER_AGENT,
+        }
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        return headers
+
+    def _request(self, payload, headers):
+        return urllib.request.Request(
+            self.base_url + "/responses",
+            data=json.dumps(payload).encode("utf-8"),
+            headers=headers,
+            method="POST",
+        )
+
     def complete(self, prompt, max_new_tokens, prompt_cache_key=None, prompt_cache_retention=None):
         """向 OpenAI-compatible `/responses` 接口发起一次模型调用。
 
@@ -253,45 +348,14 @@ class OpenAICompatibleModelClient:
         落到 provider API 的地方。
         """
         self.last_completion_metadata = {}
-        payload = {
-            "model": self.model,
-            "input": [
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "input_text",
-                            "text": prompt,
-                        }
-                    ],
-                }
-            ],
-            "max_output_tokens": max_new_tokens,
-            "stream": False,
-        }
-        if self.temperature is not None:
-            payload["temperature"] = self.temperature
-        # runtime 传入的是“稳定前缀”的签名，而不是整段 prompt 的签名。
-        # 这样缓存复用针对的是稳定段，不会因为动态 history 每轮变化而失效。
-        if self.supports_prompt_cache and prompt_cache_key:
-            payload["prompt_cache_key"] = prompt_cache_key
-        if self.supports_prompt_cache and prompt_cache_retention:
-            payload["prompt_cache_retention"] = prompt_cache_retention
-
-        headers = {
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-            "User-Agent": OPENAI_COMPATIBLE_USER_AGENT,
-        }
-        if self.api_key:
-            headers["Authorization"] = f"Bearer {self.api_key}"
-
-        request = urllib.request.Request(
-            self.base_url + "/responses",
-            data=json.dumps(payload).encode("utf-8"),
-            headers=headers,
-            method="POST",
+        payload = self._responses_payload(
+            prompt,
+            max_new_tokens,
+            stream=False,
+            prompt_cache_key=prompt_cache_key,
+            prompt_cache_retention=prompt_cache_retention,
         )
+        request = self._request(payload, self._headers("application/json"))
         attempts = 3
         for attempt in range(attempts):
             try:
@@ -348,6 +412,78 @@ class OpenAICompatibleModelClient:
             **_extract_usage_cache_details(data),
         }
         return _extract_openai_text(data)
+
+    def stream_complete(self, prompt, max_new_tokens, prompt_cache_key=None, prompt_cache_retention=None):
+        self.last_completion_metadata = {}
+        payload = self._responses_payload(
+            prompt,
+            max_new_tokens,
+            stream=True,
+            prompt_cache_key=prompt_cache_key,
+            prompt_cache_retention=prompt_cache_retention,
+        )
+        request = self._request(payload, self._headers("text/event-stream"))
+        attempts = 3
+        for attempt in range(attempts):
+            try:
+                with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                    headers = getattr(response, "headers", {}) or {}
+                    content_type = headers.get("Content-Type", "")
+                    if content_type.startswith("text/event-stream"):
+                        response_data = {}
+                        emitted_text = False
+                        for chunk, event_response in _iter_openai_stream_chunks(response):
+                            if event_response:
+                                response_data = event_response
+                            if chunk:
+                                emitted_text = True
+                                yield chunk
+                        if response_data:
+                            self.last_completion_metadata = {
+                                "prompt_cache_supported": self.supports_prompt_cache,
+                                "prompt_cache_key": prompt_cache_key,
+                                "prompt_cache_retention": prompt_cache_retention,
+                                **_extract_usage_cache_details(response_data),
+                            }
+                        if not emitted_text:
+                            raise RuntimeError("OpenAI-compatible error: could not extract streamed text")
+                        return
+                    body_text = response.read().decode("utf-8")
+                break
+            except urllib.error.HTTPError as exc:
+                body = exc.read().decode("utf-8", errors="replace")
+                if exc.code >= 500 and attempt < attempts - 1:
+                    time.sleep(0.5 * (attempt + 1))
+                    continue
+                raise RuntimeError(f"OpenAI-compatible request failed with HTTP {exc.code}: {body}") from exc
+            except (urllib.error.URLError, RemoteDisconnected) as exc:
+                if attempt < attempts - 1:
+                    time.sleep(0.5 * (attempt + 1))
+                    continue
+                raise RuntimeError(
+                    "Could not reach the OpenAI-compatible backend.\n"
+                    f"Base URL: {self.base_url}\n"
+                    f"Model: {self.model}"
+                ) from exc
+
+        try:
+            data = json.loads(body_text)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(
+                "OpenAI-compatible error: backend returned non-JSON content that could not be parsed"
+            ) from exc
+        if data.get("error"):
+            raise RuntimeError(f"OpenAI-compatible error: {data['error']}")
+        self.last_completion_metadata = {
+            "prompt_cache_supported": self.supports_prompt_cache,
+            "prompt_cache_key": prompt_cache_key,
+            "prompt_cache_retention": prompt_cache_retention,
+            **_extract_usage_cache_details(data),
+        }
+        text = _extract_openai_text(data)
+        if not text:
+            raise RuntimeError("OpenAI-compatible error: could not extract text from response")
+        yield text
 
 
 def _extract_anthropic_text(data):
@@ -484,3 +620,11 @@ class AnthropicCompatibleModelClient:
         if text:
             return text
         raise RuntimeError("Anthropic-compatible error: could not extract text from response")
+
+    def stream_complete(self, prompt, max_new_tokens, prompt_cache_key=None, prompt_cache_retention=None):
+        yield self.complete(
+            prompt,
+            max_new_tokens,
+            prompt_cache_key=prompt_cache_key,
+            prompt_cache_retention=prompt_cache_retention,
+        )
