@@ -12,11 +12,26 @@ from dataclasses import dataclass
 
 DEFAULT_TOTAL_BUDGET = 12000
 DEFAULT_SECTION_BUDGETS = {
-    "prefix": 4500,  # v2: bumped from 3600 to fit 5 new memory/repo tool schemas; Task 7 will replace this whole system with token-based budgets
+    "prefix": 7000,  # v2: bumped from 4500 to fit memory_index + project_structure + guidance segments added in Task 7
     "memory": 1600,
     "relevant_memory": 1200,
     "history": 5200,
 }
+
+
+MEMORY_USAGE_GUIDANCE = """<memory_usage_guidance>
+- Use memory_save ONLY when the user explicitly asks to remember/save something.
+- Do NOT save routine tool results, file paths, or turn-scoped state.
+- Good candidates: cross-session lessons, design decisions, environment gotchas.
+- Bad candidates: "I read auth.py", "current turn diff", "pytest passed".
+</memory_usage_guidance>"""
+
+MEMORY_READING_GUIDANCE = """<memory_reading_guidance>
+Before answering about the codebase or a past decision:
+- If <memory_index> shows a relevant file, consider memory_read.
+- For symbol location, prefer repo_lookup over manual search.
+- For keyword lookup across notes, use memory_search.
+</memory_reading_guidance>"""
 DEFAULT_SECTION_FLOORS = {
     "prefix": 1200,
     "memory": 400,
@@ -74,6 +89,19 @@ class ContextManager:
         self._section_floor_overrides = {str(key): int(value) for key, value in (section_floors or {}).items()}
         self.section_floors = self._compute_section_floors()
         self.reduction_order = tuple(reduction_order or DEFAULT_REDUCTION_ORDER)
+        # Lazy import to avoid cycle
+        from pico.memory.refresher import MemoryRefresher
+        self._refresher: MemoryRefresher | None = None
+
+    def _get_refresher(self):
+        if self._refresher is None:
+            store = getattr(self.agent, "memory_store", None)
+            repo_map = getattr(self.agent, "repo_map", None)
+            if store is None or repo_map is None:
+                return None
+            from pico.memory.refresher import MemoryRefresher
+            self._refresher = MemoryRefresher(store, repo_map)
+        return self._refresher
 
     def build(self, user_message):
         """按预算组装一轮完整 prompt。
@@ -105,8 +133,24 @@ class ContextManager:
             memory_enabled = self.agent.feature_enabled("memory")
             relevant_memory_enabled = self.agent.feature_enabled("relevant_memory")
             context_reduction_enabled = self.agent.feature_enabled("context_reduction")
+        # v2: memory index + project structure (both go into stable prefix)
+        refresher = self._get_refresher()
+        memory_index_text = ""
+        project_structure_text = ""
+        if refresher is not None:
+            snap = refresher.refresh_if_stale()
+            memory_index_text = snap.memory_index_text
+            project_structure_text = snap.project_structure_text
+        base_prefix = str(getattr(self.agent, "prefix", ""))
+        composed_prefix_parts = [base_prefix]
+        composed_prefix_parts.append(MEMORY_USAGE_GUIDANCE)
+        composed_prefix_parts.append(MEMORY_READING_GUIDANCE)
+        if project_structure_text:
+            composed_prefix_parts.append(project_structure_text)
+        if memory_index_text:
+            composed_prefix_parts.append(memory_index_text)
         section_texts = {
-            "prefix": str(getattr(self.agent, "prefix", "")),
+            "prefix": "\n\n".join(p for p in composed_prefix_parts if p),
             "memory": "Memory:\n- disabled" if not memory_enabled else str(self.agent.memory_text()),
             "history": "",
             CURRENT_REQUEST_SECTION: f"Current user request:\n{user_message}",
