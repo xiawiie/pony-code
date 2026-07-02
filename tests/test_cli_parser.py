@@ -1,5 +1,16 @@
+from types import SimpleNamespace
+
 from pico.cli import build_arg_parser
 from pico.cli_parser import KNOWN_TOP_LEVEL_COMMANDS, parse_cli_invocation
+
+
+class RecordingParser:
+    def __init__(self):
+        self.received_argv = "unset"
+
+    def parse_known_args(self, argv):
+        self.received_argv = argv
+        return SimpleNamespace(prompt=[]), []
 
 
 def test_parse_run_command_with_prompt():
@@ -18,6 +29,15 @@ def test_parse_repl_command():
 
     assert invocation.command == "repl"
     assert invocation.command_args == []
+
+
+def test_parse_none_preserves_argparse_default_argv_semantics():
+    parser = RecordingParser()
+
+    invocation = parse_cli_invocation(None, parser)
+
+    assert parser.received_argv is None
+    assert invocation.command == "repl"
 
 
 def test_parse_legacy_prompt_when_head_is_not_command():

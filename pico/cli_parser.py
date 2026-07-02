@@ -25,8 +25,8 @@ class CliInvocation:
 
 
 def parse_cli_invocation(argv, parser):
-    argv = list(argv or [])
-    args, extra = parser.parse_known_args(argv)
+    parse_argv = None if argv is None else list(argv)
+    args, extra = parser.parse_known_args(parse_argv)
     tokens = list(args.prompt)
     if extra:
         tokens.extend(extra)
