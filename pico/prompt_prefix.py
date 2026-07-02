@@ -5,6 +5,7 @@ import json
 import textwrap
 from dataclasses import dataclass
 
+from .tools import TOOL_EXAMPLES
 from .workspace import now
 
 
@@ -19,15 +20,6 @@ class PromptPrefix:
     built_at: str
 
 
-TOOL_RESPONSE_EXAMPLES = {
-    "list_files": '<tool>{"name":"list_files","args":{"path":"."}}</tool>',
-    "read_file": '<tool>{"name":"read_file","args":{"path":"README.md","start":1,"end":80}}</tool>',
-    "search": '<tool>{"name":"search","args":{"pattern":"binary_search","path":"."}}</tool>',
-    "write_file": '<tool name="write_file" path="binary_search.py"><content>def binary_search(nums, target):\n    return -1\n</content></tool>',
-    "patch_file": '<tool name="patch_file" path="binary_search.py"><old_text>return -1</old_text><new_text>return mid</new_text></tool>',
-    "run_shell": '<tool>{"name":"run_shell","args":{"command":"uv run --with pytest python -m pytest -q","timeout":20}}</tool>',
-    "delegate": '<tool>{"name":"delegate","args":{"task":"inspect README.md","max_steps":3}}</tool>',
-}
 TOOL_EXAMPLE_ORDER = ("list_files", "read_file", "search", "write_file", "patch_file", "run_shell", "delegate")
 
 
@@ -78,9 +70,9 @@ def _tool_specific_rules(tools):
 
 def _response_examples(tools):
     examples = [
-        TOOL_RESPONSE_EXAMPLES[name]
+        TOOL_EXAMPLES[name]
         for name in TOOL_EXAMPLE_ORDER
-        if name in tools
+        if name in tools and name in TOOL_EXAMPLES
     ]
     examples.append("<final>Done.</final>")
     return "\n".join(examples)

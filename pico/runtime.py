@@ -601,12 +601,16 @@ class Pico:
 
     def repeated_tool_call(self, name, args):
         # agent 很常见的一种坏循环，是在没有新信息的情况下反复发起同一调用。
-        # 这里提前挡掉最简单的这种循环。
+        # 不只挡 A-A-A，也挡 A-B-A-B-A 这种短窗口拉锯。
         tool_events = [item for item in self.session["history"] if item["role"] == "tool"]
-        if len(tool_events) < 2:
+        if not tool_events:
             return False
-        recent = tool_events[-2:]
-        return all(item["name"] == name and item["args"] == args for item in recent)
+        repeated_count = sum(
+            1
+            for item in tool_events[-6:]
+            if item["name"] == name and item["args"] == args
+        )
+        return repeated_count >= 2
 
     @staticmethod
     def new_task_id():

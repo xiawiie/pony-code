@@ -277,6 +277,34 @@ def test_repeated_identical_tool_call_is_rejected(tmp_path):
     assert result == "error: repeated identical tool call for list_files; choose a different tool or return a final answer"
 
 
+def test_repeated_tool_call_rejects_short_alternating_loops(tmp_path):
+    agent = build_agent(tmp_path, [])
+    agent.record({"role": "tool", "name": "list_files", "args": {}, "content": "(empty)", "created_at": "1"})
+    agent.record(
+        {
+            "role": "tool",
+            "name": "read_file",
+            "args": {"path": "README.md", "start": 1, "end": 1},
+            "content": "demo",
+            "created_at": "2",
+        }
+    )
+    agent.record({"role": "tool", "name": "list_files", "args": {}, "content": "(empty)", "created_at": "3"})
+    agent.record(
+        {
+            "role": "tool",
+            "name": "read_file",
+            "args": {"path": "README.md", "start": 1, "end": 1},
+            "content": "demo",
+            "created_at": "4",
+        }
+    )
+
+    result = agent.run_tool("list_files", {})
+
+    assert result == "error: repeated identical tool call for list_files; choose a different tool or return a final answer"
+
+
 def test_welcome_screen_keeps_box_shape_for_long_paths(tmp_path):
     deep = tmp_path / "very" / "long" / "path" / "for" / "the" / "pico" / "agent" / "welcome" / "screen"
     deep.mkdir(parents=True)

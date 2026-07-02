@@ -3,6 +3,7 @@ import json
 import pytest
 
 from pico import FakeModelClient, Pico, SessionStore, WorkspaceContext
+from pico import tools as toolkit
 from pico.evaluation.evaluator import BenchmarkEvaluator, validate_benchmark
 
 
@@ -138,3 +139,16 @@ def test_allowed_tools_prompt_includes_search_example_and_required_args(tmp_path
     assert "- search(" in prompt
     assert '"name":"search"' in prompt
     assert "Do not call search with args={}" in prompt
+
+
+def test_prompt_examples_use_tools_module_as_single_source(tmp_path, monkeypatch):
+    monkeypatch.setitem(
+        toolkit.TOOL_EXAMPLES,
+        "search",
+        '<tool>{"name":"search","args":{"pattern":"SINGLE_SOURCE","path":"."}}</tool>',
+    )
+    agent = build_agent(tmp_path, allowed_tools=["search"])
+
+    prompt = agent.prompt("Find a symbol")
+
+    assert "SINGLE_SOURCE" in prompt
