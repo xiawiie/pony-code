@@ -121,3 +121,65 @@ def test_prompt_starting_with_checkpoints_word_is_not_hijacked(tmp_path, monkeyp
 
     assert code == 0
     assert called["asked"] == "checkpoints look good"
+
+
+def test_legacy_prompt_still_runs_one_shot(tmp_path, monkeypatch, capsys):
+    called = {}
+
+    def fake_build_agent(args):
+        called["cwd"] = args.cwd
+        called["prompt"] = list(args.prompt)
+
+        class FakeAgent:
+            model_client = type("MC", (), {"model": "x"})()
+            workspace = type("W", (), {"cwd": str(tmp_path), "branch": "main"})()
+            approval_policy = "auto"
+            session = {"id": "s"}
+
+            def ask(self, message):
+                called["asked"] = message
+                return "answer"
+
+        return FakeAgent()
+
+    monkeypatch.setattr("pico.cli.build_agent", fake_build_agent)
+    monkeypatch.setattr("pico.cli.build_welcome", lambda agent, model, host: "")
+
+    code = main(["--cwd", str(tmp_path), "inspect", "tests"])
+
+    assert code == 0
+    assert called["asked"] == "inspect tests"
+    assert "answer" in capsys.readouterr().out
+
+
+def test_no_argument_cli_enters_repl_and_exits_on_eof(tmp_path, monkeypatch):
+    called = {}
+
+    def fake_build_agent(args):
+        called["built"] = True
+
+        class FakeAgent:
+            model_client = type("MC", (), {"model": "x"})()
+            workspace = type("W", (), {"cwd": str(tmp_path), "branch": "main"})()
+            approval_policy = "auto"
+            session = {"id": "s"}
+
+            def memory_text(self):
+                return ""
+
+            def reset(self):
+                called["reset"] = True
+
+        return FakeAgent()
+
+    def fake_input(prompt):
+        raise EOFError
+
+    monkeypatch.setattr("pico.cli.build_agent", fake_build_agent)
+    monkeypatch.setattr("pico.cli.build_welcome", lambda agent, model, host: "")
+    monkeypatch.setattr("builtins.input", fake_input)
+
+    code = main(["--cwd", str(tmp_path)])
+
+    assert code == 0
+    assert called["built"] is True
