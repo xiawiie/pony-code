@@ -1,9 +1,20 @@
 """验证 Pico 运行时把 BlockStore / Retrieval / RepoMap wire 到 ToolContext。"""
 
+from pathlib import Path
+
 from pico import FakeModelClient, Pico, SessionStore, WorkspaceContext
 
 
-def test_pico_has_memory_store_and_repo_map(tmp_path):
+def _isolate_home(monkeypatch, tmp_path):
+    """让 Path.home() 指向 tmp_path/home, 隔离用户本机 ~/.pico/."""
+    fake_home = tmp_path / "home"
+    fake_home.mkdir(exist_ok=True)
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_home))
+    return fake_home
+
+
+def test_pico_has_memory_store_and_repo_map(tmp_path, monkeypatch):
+    _isolate_home(monkeypatch, tmp_path)
     (tmp_path / "AGENTS.md").write_text("# project\n")
     workspace = WorkspaceContext.build(tmp_path)
     store = SessionStore(tmp_path / ".pico" / "sessions")
@@ -18,7 +29,8 @@ def test_pico_has_memory_store_and_repo_map(tmp_path):
     assert agent.repo_map is not None
 
 
-def test_tool_context_has_wiring(tmp_path):
+def test_tool_context_has_wiring(tmp_path, monkeypatch):
+    _isolate_home(monkeypatch, tmp_path)
     workspace = WorkspaceContext.build(tmp_path)
     store = SessionStore(tmp_path / ".pico" / "sessions")
     agent = Pico(
