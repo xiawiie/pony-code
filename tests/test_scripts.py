@@ -1,5 +1,6 @@
 import subprocess
 import sys
+from pathlib import Path
 
 
 def test_maintenance_scripts_start_and_show_help():
@@ -17,3 +18,14 @@ def test_maintenance_scripts_start_and_show_help():
 
         assert result.returncode == 0, result.stderr
         assert "usage:" in result.stdout
+
+
+def test_local_check_script_matches_ci_commands():
+    script = Path("scripts/check.sh")
+
+    assert script.exists()
+    assert script.stat().st_mode & 0o111
+
+    text = script.read_text()
+    assert "uv run ruff check ." in text
+    assert "uv run pytest -q" in text

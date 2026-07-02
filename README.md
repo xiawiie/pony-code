@@ -295,8 +295,14 @@ pico-cli --format json checkpoints list
 常用本地检查：
 
 ```bash
-uv run pytest tests -q
-uv run ruff check pico tests scripts
+./scripts/check.sh
+```
+
+这个脚本执行和 CI 相同的本地检查：
+
+```bash
+uv run ruff check .
+uv run pytest -q
 ```
 
 内部代码现在按较轻的边界拆分：`pico/evaluation/` 放 benchmark 和 metrics，`pico/providers/` 放模型 provider client，`pico/features/` 放可选运行时能力。新代码应直接使用这些包路径；旧的 `pico.evaluator`、`pico.metrics`、`pico.models` 和 `pico.memory` import 不再作为公共入口保留。

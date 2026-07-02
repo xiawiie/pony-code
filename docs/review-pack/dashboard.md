@@ -10,7 +10,7 @@ Execution rule: keep exactly one task in `In Progress`. Finish, verify, update t
 - Branch: `cli`
 - Latest pushed head: see PR current head
 - CI: expected on Python 3.10 and 3.12 for each pushed dashboard task
-- Local baseline: `uv run pytest -q` passed with 293 tests after CFG-001
+- Local baseline: `./scripts/check.sh` passed with 294 tests after DX-001
 
 ## Done In This Review Pass
 
@@ -36,6 +36,7 @@ Execution rule: keep exactly one task in `In Progress`. Finish, verify, update t
 | PROV-001 | Done | Added guarded Anthropic-compatible prompt cache request metadata and cache usage reporting | Local `288 passed` |
 | SEC-001 | Done | Expanded secret-shaped token detection and limited broad redaction for short secret values | Local `291 passed` |
 | CFG-001 | Done | Made project `.env` parsing warn and skip malformed lines while preserving valid entries | Local `293 passed` |
+| DX-001 | Done | Added a CI-matching local check script and documented it in the development workflow | Local `294 passed` |
 
 ## Sequential Queue
 
@@ -55,8 +56,8 @@ Execution rule: keep exactly one task in `In Progress`. Finish, verify, update t
 | PROV-001 | P2 | Done | Add prompt cache support for Anthropic-compatible clients | Supported clients send cache-control metadata for stable prompt prefix | `uv run pytest -q` -> 288 passed |
 | SEC-001 | P2 | Done | Expand secret-shape detection and short-secret redaction policy | Common token families are rejected from durable memory; short values avoid broad accidental replacement | `uv run pytest -q` -> 291 passed |
 | CFG-001 | P3 | Done | Make `.env` parsing tolerant of malformed lines | Bad local `.env` lines warn/skip instead of crashing the CLI | `uv run pytest -q` -> 293 passed |
-| DX-001 | P3 | In Progress | Add local lint/test ergonomics | Optional pre-commit or documented lint/test shortcuts exist | Docs/config validation |
-| DOC-001 | P3 | Backlog | Document run artifact terminology | `task_state.json`, `trace.jsonl`, and `report.json` are explained in architecture docs | Docs review |
+| DX-001 | P3 | Done | Add local lint/test ergonomics | Optional pre-commit or documented lint/test shortcuts exist | `./scripts/check.sh` -> 294 passed |
+| DOC-001 | P3 | In Progress | Document run artifact terminology | `task_state.json`, `trace.jsonl`, and `report.json` are explained in architecture docs | Docs review |
 
 ## Workflow Notes
 
