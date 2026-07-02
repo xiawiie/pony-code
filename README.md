@@ -14,7 +14,8 @@
 ## 主要特性
 
 - 包名是 `pico`
-- CLI 命令是 `pico`
+- 推荐 CLI 命令是 `pico-cli`
+- 兼容 CLI 命令 `pico` 仍保留，但在 macOS 上可能和系统自带的 `/usr/bin/pico` 编辑器重名
 - 模块入口是 `python -m pico`
 - 会话保存在 `.pico/sessions/`
 - 每次运行的工件保存在 `.pico/runs/<run_id>/`
@@ -46,6 +47,7 @@ REPL 内置命令与会话路径：
 
 ```bash
 uv sync
+source .venv/bin/activate
 ```
 
 如果你已经在自己的 Python 环境里工作，也可以直接装成可编辑模式：
@@ -54,29 +56,31 @@ uv sync
 pip install -e .
 ```
 
+安装并激活对应环境后，可以直接使用 `pico-cli`。如果不想激活虚拟环境，在当前仓库里也可以把下面所有 `pico-cli ...` 命令写成 `uv run pico-cli ...`。
+
 ## 快速开始
 
 在当前仓库里启动交互模式。默认 provider 是 DeepSeek：
 
 ```bash
-uv run pico
+pico-cli
 ```
 
 指定另一个工作目录：
 
 ```bash
-uv run pico --cwd /path/to/repo
+pico-cli --cwd /path/to/repo
 ```
 
 直接跑一次性任务：
 
 ```bash
-uv run pico run "inspect the test failures and propose a fix"
+pico-cli run "inspect the test failures and propose a fix"
 ```
 
-旧形式 `uv run pico "prompt"` 仍然兼容；新示例使用显式的 `run` 子命令，便于和交互、诊断、恢复等命令区分。
+旧形式 `pico-cli "prompt"` 仍然兼容；新示例使用显式的 `run` 子命令，便于和交互、诊断、恢复等命令区分。旧入口 `pico` 也仍可用，但在 macOS 上可能和系统自带的 `/usr/bin/pico` 编辑器重名。
 
-如果当前环境已经安装过包，也可以直接这样启动：
+也可以通过模块入口启动：
 
 ```bash
 python -m pico
@@ -126,13 +130,13 @@ PICO_DEEPSEEK_MODEL="deepseek-v4-pro"
 所以常规情况下 `.env` 里只填 `PICO_DEEPSEEK_API_KEY` 就能直接启动：
 
 ```bash
-uv run pico
+pico-cli
 ```
 
 如果你需要临时切模型或代理地址，不必改 `.env`，可以直接覆盖：
 
 ```bash
-uv run pico --model deepseek-v4-pro --base-url https://api.deepseek.com/anthropic
+pico-cli --model deepseek-v4-pro --base-url https://api.deepseek.com/anthropic
 ```
 
 DeepSeek 当前走 Anthropic-compatible Messages API，所以 runtime 里复用的是 Anthropic-compatible client；这只影响 HTTP 协议，不影响 CLI 用法。
@@ -153,8 +157,8 @@ PICO_RIGHT_CODES_API_KEY="your-right-codes-key"
 然后按需要选择 provider：
 
 ```bash
-uv run pico --provider openai
-uv run pico --provider anthropic
+pico-cli --provider openai
+pico-cli --provider anthropic
 ```
 
 如果你想显式区分两条 provider 的 key，也可以分别配置：
@@ -184,7 +188,7 @@ PICO_ANTHROPIC_API_KEY="your-right-codes-key-for-claude"
 如果要改用 OpenAI-compatible `/responses` 服务，显式传 `--provider openai`：
 
 ```bash
-uv run pico --provider openai
+pico-cli --provider openai
 ```
 
 默认 OpenAI 兼容接口使用 right.codes 的 Codex endpoint：
@@ -208,7 +212,7 @@ PICO_OPENAI_MODEL="gpt-5.4"
 如果要改用 Anthropic-compatible 服务，显式传 `--provider anthropic`：
 
 ```bash
-uv run pico --provider anthropic
+pico-cli --provider anthropic
 ```
 
 默认 Anthropic 兼容接口使用 right.codes 的 Claude endpoint：
@@ -228,7 +232,7 @@ PICO_ANTHROPIC_MODEL="claude-sonnet-4-6"
 ```bash
 ollama serve
 ollama pull qwen3.5:4b
-uv run pico --provider ollama --model qwen3.5:4b
+pico-cli --provider ollama --model qwen3.5:4b
 ```
 
 ## 常用交互命令
@@ -243,25 +247,25 @@ uv run pico --provider ollama --model qwen3.5:4b
 
 常用命令入口如下：
 
-- `pico run [prompt...]`：执行一个 prompt，然后退出。
-- `pico repl`：启动交互式 REPL。
-- `pico help`：显示 CLI 帮助。
-- `pico status`：显示本地 harness 状态，不启动模型会话。
-- `pico doctor`：运行就绪诊断，包括 provider 连通性检查。
-- `pico doctor --offline`：只运行本地诊断，不检查 provider 连通性。
-- `pico config show`：显示最终生效的配置以及来源。
-- `pico runs list` / `pico runs show <run-id>`：查看历史 run 列表或单个 run 详情。
-- `pico sessions list` / `pico sessions show <session-id>`：查看历史 session 列表或单个 session 详情。
-- `pico checkpoints list` / `pico checkpoints show <checkpoint-id>`：查看 checkpoint 列表或详情。
-- `pico checkpoints preview-restore <checkpoint-id>`：预览恢复 checkpoint 会带来的变化。
-- `pico checkpoints restore <checkpoint-id> --apply`：实际恢复 checkpoint。
-- `pico checkpoints prune` / `pico checkpoints prune --apply`：预览或实际清理 checkpoint。
+- `pico-cli run [prompt...]`：执行一个 prompt，然后退出。
+- `pico-cli repl`：启动交互式 REPL。
+- `pico-cli help`：显示 CLI 帮助。
+- `pico-cli status`：显示本地 harness 状态，不启动模型会话。
+- `pico-cli doctor`：运行就绪诊断，包括 provider 连通性检查。
+- `pico-cli doctor --offline`：只运行本地诊断，不检查 provider 连通性。
+- `pico-cli config show`：显示最终生效的配置以及来源。
+- `pico-cli runs list` / `pico-cli runs show <run-id>`：查看历史 run 列表或单个 run 详情。
+- `pico-cli sessions list` / `pico-cli sessions show <session-id>`：查看历史 session 列表或单个 session 详情。
+- `pico-cli checkpoints list` / `pico-cli checkpoints show <checkpoint-id>`：查看 checkpoint 列表或详情。
+- `pico-cli checkpoints preview-restore <checkpoint-id>`：预览恢复 checkpoint 会带来的变化。
+- `pico-cli checkpoints restore <checkpoint-id> --apply`：实际恢复 checkpoint。
+- `pico-cli checkpoints prune` / `pico-cli checkpoints prune --apply`：预览或实际清理 checkpoint。
 
 诊断和 inspection 命令需要机器可读输出时，可以在命令前加 `--format json`：
 
 ```bash
-pico --format json status
-pico --format json checkpoints list
+pico-cli --format json status
+pico-cli --format json checkpoints list
 ```
 
 恢复类命令默认先预览；`restore` 和 `prune` 只有显式传入 `--apply` 才会修改本地状态。

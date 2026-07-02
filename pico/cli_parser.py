@@ -30,6 +30,8 @@ def parse_cli_invocation(argv, parser):
     tokens = list(args.prompt)
     if extra:
         tokens.extend(extra)
+    if getattr(args, "help", False):
+        return CliInvocation("help", [], args, legacy_prompt=False)
     if not tokens:
         return CliInvocation("repl", [], args, legacy_prompt=False)
     head = tokens[0]

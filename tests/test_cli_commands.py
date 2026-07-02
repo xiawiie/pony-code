@@ -72,9 +72,21 @@ def test_help_command_shows_examples(capsys):
 
     assert code == 0
     out = capsys.readouterr().out
-    assert 'pico run "inspect the failing tests"' in out
-    assert "Diagnostics:" in out
+    assert "pico-cli — Local coding agent" in out
+    assert "USAGE:" in out
+    assert "Available Commands:" in out
+    assert 'pico-cli run "inspect the failing tests"' in out
     assert "providers list" not in out
+
+
+def test_help_flag_uses_root_help_without_argparse_dump(capsys):
+    code = main(["--help"])
+
+    assert code == 0
+    out = capsys.readouterr().out
+    assert out.startswith("pico-cli — Local coding agent")
+    assert "Available Commands:" in out
+    assert "positional arguments:" not in out
 
 
 def test_unknown_command_suggests_close_match(capsys):

@@ -44,3 +44,9 @@ def test_packaging_discovers_pico_subpackages():
 
     assert "[tool.setuptools.packages.find]" in pyproject_text
     assert 'include = ["pico*"]' in pyproject_text
+
+
+def test_packaging_exposes_non_conflicting_cli_script():
+    pyproject_text = Path("pyproject.toml").read_text(encoding="utf-8")
+
+    assert 'pico-cli = "pico.cli:main"' in pyproject_text

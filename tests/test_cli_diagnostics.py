@@ -40,6 +40,22 @@ def test_status_json_reports_storage_without_building_agent(tmp_path, monkeypatc
     assert "memory" not in payload["data"]
 
 
+def test_status_text_uses_grouped_cli_output(tmp_path, monkeypatch, capsys):
+    _clear_provider_env(monkeypatch)
+    (tmp_path / ".pico" / "sessions").mkdir(parents=True)
+    (tmp_path / ".pico" / "runs" / "run_1").mkdir(parents=True)
+
+    code = main(["--cwd", str(tmp_path), "status"])
+
+    assert code == 0
+    out = capsys.readouterr().out
+    assert out.startswith("Pico status — Local harness state\n")
+    assert "Workspace" in out
+    assert "Provider" in out
+    assert "Storage" in out
+    assert not out.lstrip().startswith("{")
+
+
 def test_config_show_json_reports_sources_without_secret_values(tmp_path, monkeypatch, capsys):
     _clear_provider_env(monkeypatch)
     (tmp_path / ".env").write_text(
@@ -69,6 +85,25 @@ def test_config_show_json_reports_sources_without_secret_values(tmp_path, monkey
         "name": "PICO_DEEPSEEK_API_KEY",
     }
     assert "secret-value" not in captured.out
+
+
+def test_config_show_text_uses_grouped_cli_output_without_secret_value(tmp_path, monkeypatch, capsys):
+    _clear_provider_env(monkeypatch)
+    (tmp_path / ".env").write_text(
+        "PICO_PROVIDER=deepseek\nPICO_DEEPSEEK_API_KEY=secret-value\n",
+        encoding="utf-8",
+    )
+
+    code = main(["--cwd", str(tmp_path), "config", "show"])
+
+    captured = capsys.readouterr()
+    assert code == 0
+    assert captured.out.startswith("Pico config — Effective configuration\n")
+    assert "Provider" in captured.out
+    assert "Credentials" in captured.out
+    assert "present" in captured.out
+    assert "secret-value" not in captured.out
+    assert not captured.out.lstrip().startswith("{")
 
 
 def test_config_show_does_not_mutate_environment(tmp_path, monkeypatch, capsys):
@@ -102,6 +137,21 @@ def test_doctor_offline_skips_connectivity(tmp_path, monkeypatch, capsys):
     assert payload["kind"] == "doctor"
     assert called == {}
     assert payload["data"]["provider_connectivity"]["status"] == "skipped"
+
+
+def test_doctor_text_uses_grouped_cli_output(tmp_path, monkeypatch, capsys):
+    code = main(["--cwd", str(tmp_path), "doctor", "--offline"])
+
+    assert code == 0
+    out = capsys.readouterr().out
+    assert out.startswith("Pico doctor — CLI health check\n")
+    assert "Workspace" in out
+    assert "Config" in out
+    assert "Credentials" in out
+    assert "Storage" in out
+    assert "Provider connectivity" in out
+    assert "skipped" in out
+    assert not out.lstrip().startswith("{")
 
 
 def test_doctor_json_does_not_build_agent(tmp_path, monkeypatch, capsys):

@@ -319,10 +319,13 @@ def build_agent(args):
 
 def build_arg_parser():
     parser = argparse.ArgumentParser(
+        prog="pico-cli",
+        add_help=False,
         formatter_class=_RootHelpFormatter,
-        description="Minimal coding agent for DeepSeek, OpenAI-compatible, Anthropic-compatible, or Ollama models.",
+        description="Local coding agent for repository-grounded engineering work.",
         epilog=ROOT_HELP,
     )
+    parser.add_argument("-h", "--help", action="store_true", help="help for pico-cli")
     parser.add_argument("prompt", nargs="*", help="Optional one-shot prompt.")
     parser.add_argument("--cwd", default=".", help="Workspace directory.")
     parser.add_argument(
@@ -427,7 +430,7 @@ def main(argv=None):
             if invocation.command_args:
                 raise CliError(
                     code="usage",
-                    message="usage: pico status",
+                    message="usage: pico-cli status",
                     exit_code=CLI_EXIT_USAGE,
                 )
             return handle_status(args.cwd, args)

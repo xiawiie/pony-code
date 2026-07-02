@@ -12,31 +12,36 @@ from .recovery_checkpoint_writer import RecoveryCheckpointWriter
 from .recovery_manager import RecoveryManager
 
 
-ROOT_HELP = """Pico is a local coding-agent harness for repository-grounded engineering work.
+ROOT_HELP = """pico-cli — Local coding agent for repository-grounded engineering work.
 
-Examples:
-  pico run "inspect the failing tests"
-  pico repl
-  pico status
-  pico checkpoints preview-restore <checkpoint-id>
+USAGE:
+    pico-cli <command> [subcommand] [options]
+    pico-cli run <prompt...>
 
-Start:
-  run [prompt...]          Run one prompt and exit
-  repl                     Start the interactive REPL
+EXAMPLES:
+    pico-cli run "inspect the failing tests"
+    pico-cli doctor
+    pico-cli checkpoints preview-restore <checkpoint-id>
 
-Diagnostics:
-  status                   Show local harness state
-  doctor [--offline]       Run readiness diagnostics
-  config show              Show effective configuration and sources
+Available Commands:
+  run          Run one prompt and exit
+  repl         Start interactive REPL
+  status       Show local workspace state
+  doctor       Check config, storage, auth, and connectivity
+  config       Configuration inspection
+  runs         Run artifact inspection
+  sessions     Session inspection
+  checkpoints  Checkpoint recovery inspection
+  help         Help about any command
 
-Recovery inspection:
-  runs list|show           Inspect run artifacts
-  sessions list|show       Inspect saved sessions
-  checkpoints ...          Inspect and restore checkpoints
+Flags:
+  -h, --help       help for pico-cli
+      --format     output format for inspection commands: text or json
+      --quiet      suppress non-essential human output
 
 Compatibility:
-  pico                     Start REPL
-  pico "prompt"            Run a one-shot prompt
+    pico-cli "prompt"      Run a one-shot prompt
+    pico                   Legacy entry point; may conflict with /usr/bin/pico
 """
 
 
@@ -85,7 +90,7 @@ def handle_checkpoints(root, tokens, args):
         return print_result("checkpoints_prune", result, args, _render_json_body)
     raise CliError(
         code="usage",
-        message="usage: pico checkpoints {list | show <id> | preview-restore <id> | restore <id> [--apply] | prune [--apply]}",
+        message="usage: pico-cli checkpoints {list | show <id> | preview-restore <id> | restore <id> [--apply] | prune [--apply]}",
         exit_code=CLI_EXIT_USAGE,
     )
 
@@ -105,14 +110,14 @@ def handle_runs(root, tokens, args):
             raise CliError(
                 code="run_not_found",
                 message=f"unknown run: {rest[0]}",
-                hint="Run `pico runs list`.",
+                hint="Run `pico-cli runs list`.",
                 exit_code=CLI_EXIT_USAGE,
             )
         data = _load_run_artifacts(run_dir, rest[0])
         return print_result("runs_show", data, args, _render_runs_show)
     raise CliError(
         code="usage",
-        message="usage: pico runs {list | show <run_id>}",
+        message="usage: pico-cli runs {list | show <run_id>}",
         exit_code=CLI_EXIT_USAGE,
     )
 
@@ -128,10 +133,10 @@ def handle_doctor(tokens, cwd, args):
     elif tokens:
         raise CliError(
             code="usage",
-            message="usage: pico doctor [--offline]",
+            message="usage: pico-cli doctor [--offline]",
             exit_code=CLI_EXIT_USAGE,
         )
-    return print_result("doctor", collect_doctor(cwd, args, offline=offline), args, _render_json_body)
+    return print_result("doctor", collect_doctor(cwd, args, offline=offline), args, _render_doctor)
 
 
 def handle_config(tokens, cwd, args):
@@ -142,11 +147,11 @@ def handle_config(tokens, cwd, args):
             "config_show",
             collect_config(cwd, args),
             args,
-            _render_json_body,
+            _render_config,
         )
     raise CliError(
         code="usage",
-        message="usage: pico config show",
+        message="usage: pico-cli config show",
         exit_code=CLI_EXIT_USAGE,
     )
 
@@ -166,14 +171,14 @@ def handle_sessions(root, tokens, args):
             raise CliError(
                 code="session_not_found",
                 message=f"unknown session: {session_id}",
-                hint="Run `pico sessions list`.",
+                hint="Run `pico-cli sessions list`.",
                 exit_code=CLI_EXIT_USAGE,
             )
         data = json.loads(path.read_text(encoding="utf-8"))
         return print_result("sessions_show", data, args, _render_json_body)
     raise CliError(
         code="usage",
-        message="usage: pico sessions {list | show <session_id>}",
+        message="usage: pico-cli sessions {list | show <session_id>}",
         exit_code=CLI_EXIT_USAGE,
     )
 
@@ -245,6 +250,89 @@ def _render_json_body(data):
     return json.dumps(data, indent=2, sort_keys=True)
 
 
+def _source_label(item):
+    source = item.get("source", "")
+    name = item.get("name", "")
+    if source and name:
+        return f"{source}:{name}"
+    return source or name or "-"
+
+
+def _line(label, value):
+    lines = str(value).splitlines() or [""]
+    rendered = [f"  {label:<14} {lines[0]}"]
+    rendered.extend(f"  {'':<14} {line}" for line in lines[1:])
+    return "\n".join(rendered)
+
+
+def _presence_text(item):
+    state = "present" if item.get("present") else "missing"
+    return f"{state} ({_source_label(item)})"
+
+
+def _value_with_source(item):
+    return f"{item.get('value', '-') or '-'} ({_source_label(item)})"
+
+
+def _ok_missing(value):
+    if isinstance(value, bool):
+        return "ok" if value else "missing"
+    return str(value)
+
+
+def _render_config(data):
+    lines = [
+        "Pico config — Effective configuration",
+        "",
+        "Provider",
+        _line("provider", _value_with_source(data["provider"])),
+        _line("model", _value_with_source(data["model"])),
+        "",
+        "Credentials",
+        _line("api key", _presence_text(data["api_key"])),
+    ]
+    return "\n".join(lines)
+
+
+def _render_doctor(data):
+    config = data["config"]
+    credentials = data["credentials"]
+    connectivity = data["provider_connectivity"]
+    storage = data["storage"]
+    lines = [
+        "Pico doctor — CLI health check",
+        "",
+        "Workspace",
+        _line("repo root", data["workspace"]["repo_root"]),
+        _line("status", data["workspace"]["status"]),
+        "",
+        "Config",
+        _line("provider", _value_with_source(config["provider"])),
+        _line("model", _value_with_source(config["model"])),
+        _line("base url", _value_with_source(config["base_url"])),
+        "",
+        "Credentials",
+        _line("api key", _presence_text(credentials["api_key"])),
+        _line("status", credentials["status"]),
+        "",
+        "Storage",
+        _line("sessions", storage["sessions"]),
+        _line("runs", storage["runs"]),
+        _line("checkpoints", storage["checkpoints"]),
+        _line("recovery", data["recovery_store"]),
+        "",
+        "Provider connectivity",
+        _line("status", connectivity.get("status", "-")),
+    ]
+    if connectivity.get("http_status") is not None:
+        lines.append(_line("http", connectivity["http_status"]))
+    if connectivity.get("url"):
+        lines.append(_line("url", connectivity["url"]))
+    if connectivity.get("message"):
+        lines.append(_line("message", connectivity["message"]))
+    return "\n".join(lines)
+
+
 def _render_runs_list(runs):
     return "\n".join(run["run_id"] for run in runs)
 
@@ -265,17 +353,28 @@ def _session_files(sessions_root):
 
 def _render_status(data):
     lines = [
-        f"workspace: {data['workspace']['repo_root']}",
-        f"provider: {data['provider']['provider']['value']}",
-        f"model: {data['provider']['model']['value']}",
-        "storage:",
-        f"  sessions: {data['storage']['sessions']}",
-        f"  runs: {data['storage']['runs']}",
-        f"  checkpoints: {data['storage']['checkpoints']}",
-        "latest:",
-        f"  session_id: {data['latest']['session_id'] or '-'}",
-        f"  run_id: {data['latest']['run_id'] or '-'}",
-        f"  checkpoint_id: {data['latest']['checkpoint_id'] or '-'}",
+        "Pico status — Local harness state",
+        "",
+        "Workspace",
+        _line("repo root", data["workspace"]["repo_root"]),
+        _line("cwd", data["workspace"]["cwd"]),
+        _line("branch", data["workspace"]["branch"]),
+        _line("git status", data["workspace"]["status"]),
+        "",
+        "Provider",
+        _line("provider", _value_with_source(data["provider"]["provider"])),
+        _line("model", _value_with_source(data["provider"]["model"])),
+        _line("api key", _presence_text(data["provider"]["api_key"])),
+        "",
+        "Storage",
+        _line("sessions", _ok_missing(data["storage"]["sessions"])),
+        _line("runs", _ok_missing(data["storage"]["runs"])),
+        _line("checkpoints", _ok_missing(data["storage"]["checkpoints"])),
+        "",
+        "Latest",
+        _line("session id", data["latest"]["session_id"] or "-"),
+        _line("run id", data["latest"]["run_id"] or "-"),
+        _line("checkpoint id", data["latest"]["checkpoint_id"] or "-"),
     ]
     return "\n".join(lines)
 
@@ -303,7 +402,7 @@ def _load_checkpoint_record(store, checkpoint_id):
         raise CliError(
             code="checkpoint_not_found",
             message=f"unknown checkpoint: {checkpoint_id}",
-            hint="Run `pico checkpoints list`.",
+            hint="Run `pico-cli checkpoints list`.",
             exit_code=CLI_EXIT_USAGE,
         ) from exc
 
@@ -315,7 +414,7 @@ def _preview_restore(manager, checkpoint_id):
         raise CliError(
             code="checkpoint_not_found",
             message=f"unknown checkpoint: {checkpoint_id}",
-            hint="Run `pico checkpoints list`.",
+            hint="Run `pico-cli checkpoints list`.",
             exit_code=CLI_EXIT_USAGE,
         ) from exc
 
@@ -327,6 +426,6 @@ def _apply_restore(manager, checkpoint_id):
         raise CliError(
             code="checkpoint_not_found",
             message=f"unknown checkpoint: {checkpoint_id}",
-            hint="Run `pico checkpoints list`.",
+            hint="Run `pico-cli checkpoints list`.",
             exit_code=CLI_EXIT_USAGE,
         ) from exc
