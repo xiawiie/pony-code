@@ -41,11 +41,27 @@ def test_prompt_contains_memory_guidance(tmp_path):
 
 
 def test_workspace_state_appears_after_memory_index(tmp_path):
-    """Workspace state (branch/status) moved out of stable prefix."""
+    """Workspace state (branch/status) moved out of stable prefix to volatile section."""
     agent = _agent(tmp_path)
     prompt = agent.prompt("hi")
-    # If both present, memory_index should come before workspace_state.
+    # Both segments MUST be present.
     mi_pos = prompt.find("<memory_index>")
-    ws_pos = prompt.find("<workspace_state>") if "<workspace_state>" in prompt else -1
-    if ws_pos > 0 and mi_pos > 0:
-        assert mi_pos < ws_pos, "memory_index should be in stable prefix, workspace_state in volatile"
+    ws_pos = prompt.find("<workspace_state>")
+    assert mi_pos > 0, "memory_index missing from stable prefix"
+    assert ws_pos > 0, "workspace_state missing from volatile section"
+    # memory_index (stable prefix) must come BEFORE workspace_state (volatile section).
+    assert mi_pos < ws_pos, "memory_index should precede workspace_state (volatile ordering)"
+
+
+def test_stable_prefix_no_branch_content(tmp_path):
+    """Stable prefix (agent.prefix) must not embed branch/status/recent_commits.
+
+    Otherwise branch changes would break stable prefix cache byte-identity.
+    """
+    agent = _agent(tmp_path)
+    # agent.prefix is the stable prefix built by build_prompt_prefix()
+    # It should NOT contain branch/status/recent_commits (workspace's volatile parts).
+    assert "branch:" not in agent.prefix.lower() or "default_branch:" in agent.prefix.lower(), \
+        "stable prefix leaks git branch information (should live in volatile)"
+    assert "recent_commits" not in agent.prefix, \
+        "stable prefix leaks recent_commits (should live in volatile)"

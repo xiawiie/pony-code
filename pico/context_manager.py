@@ -149,9 +149,20 @@ class ContextManager:
             composed_prefix_parts.append(project_structure_text)
         if memory_index_text:
             composed_prefix_parts.append(memory_index_text)
+        # volatile head: workspace_state (branch/status/commits) 从 stable prefix 拆走后落这里。
+        # 放在 memory section 前，形成 volatile section 的 header。
+        workspace_state_text = ""
+        if hasattr(self.agent, "workspace") and hasattr(self.agent.workspace, "volatile_text"):
+            workspace_state_text = self.agent.workspace.volatile_text()
+        memory_body = "Memory:\n- disabled" if not memory_enabled else str(self.agent.memory_text())
+        memory_section = (
+            (workspace_state_text + "\n\n" + memory_body).strip()
+            if workspace_state_text
+            else memory_body
+        )
         section_texts = {
             "prefix": "\n\n".join(p for p in composed_prefix_parts if p),
-            "memory": "Memory:\n- disabled" if not memory_enabled else str(self.agent.memory_text()),
+            "memory": memory_section,
             "history": "",
             CURRENT_REQUEST_SECTION: f"Current user request:\n{user_message}",
         }

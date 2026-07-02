@@ -111,25 +111,38 @@ class WorkspaceContext:
             project_docs=docs,
         )
 
-    def text(self):
-        # 这段文本会被塞进 prompt prefix，作为相对稳定的基线上下文。
-        commits = "\n".join(f"- {line}" for line in self.recent_commits) or "- none"
+    def stable_text(self):
+        """稳定部分：cwd, repo_root, default_branch, project_docs。塞 stable prefix。"""
         docs = "\n".join(f"- {path}\n{snippet}" for path, snippet in self.project_docs.items()) or "- none"
         return textwrap.dedent(
             f"""\
             Workspace:
             - cwd: {self.cwd}
             - repo_root: {self.repo_root}
-            - branch: {self.branch}
             - default_branch: {self.default_branch}
-            - status:
-            {self.status}
-            - recent_commits:
-            {commits}
             - project_docs:
             {docs}
             """
         ).strip()
+
+    def volatile_text(self):
+        """易变部分：branch, status, recent_commits。塞 volatile section。"""
+        commits = "\n".join(f"- {line}" for line in self.recent_commits) or "- none"
+        return textwrap.dedent(
+            f"""\
+            <workspace_state>
+            - branch: {self.branch}
+            - status:
+            {self.status}
+            - recent_commits:
+            {commits}
+            </workspace_state>
+            """
+        ).strip()
+
+    def text(self):
+        """Legacy full text (stable + volatile)。为 backward compat 保留。"""
+        return self.stable_text() + "\n" + self.volatile_text()
 
     def fingerprint(self):
         # 这个指纹用来判断仓库状态是否发生了足够大的变化，

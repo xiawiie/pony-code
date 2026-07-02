@@ -88,7 +88,8 @@ def build_prompt_prefix(workspace, tools, built_at=None):
     tool_specific_rules = _tool_specific_rules(tools)
     examples = _response_examples(tools)
     # prefix 可以理解成 agent 的“工作手册”：
-    # 它是谁、工具怎么调用、当前仓库是什么状态，都写在这里。
+    # 它是谁、工具怎么调用、当前仓库的稳定事实，都写在这里。
+    # workspace 的易变部分（branch/status/commits）走 volatile section，不进 stable prefix。
     text = textwrap.dedent(
         f"""\
         You are pico, a small local coding agent working inside a local repository.
@@ -114,7 +115,7 @@ def build_prompt_prefix(workspace, tools, built_at=None):
         Valid response examples:
         {examples}
 
-        {workspace.text()}
+        {workspace.stable_text()}
         """
     ).strip()
     signature = tool_signature(tools)
