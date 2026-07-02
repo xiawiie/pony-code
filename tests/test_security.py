@@ -1,8 +1,10 @@
 from pico.security import (
     REDACTED_VALUE,
     detected_secret_env_items,
+    looks_secret_shaped_text,
     looks_sensitive_env_name,
     redact_artifact,
+    redact_text,
     shell_env,
 )
 
@@ -40,6 +42,22 @@ def test_redact_artifact_recurses_through_values_and_secret_keys():
 
     assert redacted["OPENAI_API_KEY"] == REDACTED_VALUE
     assert redacted["payload"] == [REDACTED_VALUE, {"nested": REDACTED_VALUE}]
+
+
+def test_common_token_families_are_secret_shaped():
+    assert looks_secret_shaped_text("Deploy credential ghp_1234567890abcdefghijklmnopqrstuv")
+    assert looks_secret_shaped_text("AWS access id AKIA1234567890ABCDEF")
+    assert looks_secret_shaped_text("Slack value xoxb-123456789012-abcdefghijklmnop")
+
+
+def test_short_secret_values_do_not_redact_broad_substrings():
+    env = {"OPENAI_API_KEY": "abc"}
+
+    assert redact_text("abc", env=env) == REDACTED_VALUE
+    assert redact_text("The abc suffix appears in non-secret prose.", env=env) == (
+        "The abc suffix appears in non-secret prose."
+    )
+    assert redact_artifact({"OPENAI_API_KEY": "abc"}, env=env)["OPENAI_API_KEY"] == REDACTED_VALUE
 
 
 def test_shell_env_uses_allowlist_and_sets_pwd_with_path_fallback(tmp_path):

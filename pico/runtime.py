@@ -52,8 +52,6 @@ DURABLE_MEMORY_LINE_PATTERNS = (
     ("dependency-facts", re.compile(r"^依赖：\s*(.+)$")),
     ("user-preferences", re.compile(r"^偏好：\s*(.+)$")),
 )
-SECRET_SHAPED_TEXT_PATTERN = re.compile(r"(?i)(\b(api[_ -]?key|token|secret|password)\b|sk-[A-Za-z0-9_-]{6,})")
-
 __all__ = ["Pico", "SessionStore"]
 
 
@@ -469,7 +467,7 @@ class Pico:
         lowered = text.lower()
         if not text:
             return "empty"
-        if REDACTED_VALUE in text or SECRET_SHAPED_TEXT_PATTERN.search(text):
+        if REDACTED_VALUE in text or securitylib.looks_secret_shaped_text(text):
             return "secret_shaped"
         checkpoint_like_prefixes = (
             "current goal",

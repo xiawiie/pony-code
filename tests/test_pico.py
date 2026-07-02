@@ -1730,6 +1730,28 @@ def test_explicit_memory_promotion_rejects_secret_shaped_and_transient_lines(tmp
     assert not dependency_path.exists()
 
 
+def test_explicit_memory_promotion_rejects_common_token_families(tmp_path):
+    agent = build_agent(
+        tmp_path,
+        [
+            "<final>Dependency: Deploy credential ghp_1234567890abcdefghijklmnopqrstuv.\n"
+            "Dependency: AWS access id AKIA1234567890ABCDEF.</final>",
+        ],
+    )
+
+    agent.ask("Capture these stable facts into durable memory.")
+
+    report = json.loads(agent.run_store.report_path(agent.current_task_state).read_text(encoding="utf-8"))
+    dependency_path = tmp_path / ".pico" / "memory" / "topics" / "dependency-facts.md"
+
+    assert report["durable_promotions"] == []
+    assert report["durable_rejections"] == [
+        "dependency-facts:secret_shaped",
+        "dependency-facts:secret_shaped",
+    ]
+    assert not dependency_path.exists()
+
+
 def test_explicit_memory_promotion_supersedes_matching_durable_fact(tmp_path):
     agent = build_agent(
         tmp_path,

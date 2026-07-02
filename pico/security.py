@@ -1,9 +1,22 @@
 """Security and redaction helpers for runtime artifacts."""
 
 import os
+import re
 
 SENSITIVE_ENV_NAME_MARKERS = ("API_KEY", "TOKEN", "SECRET", "PASSWORD")
 REDACTED_VALUE = "<redacted>"
+MIN_SECRET_SUBSTRING_REDACTION_LENGTH = 8
+SECRET_SHAPED_TEXT_PATTERNS = (
+    re.compile(r"(?i)\b(api[_ -]?key|access[_ -]?key|auth[_ -]?token|bearer[_ -]?token|credential|secret|password|token)\b"),
+    re.compile(r"(?i)\bsk-[A-Za-z0-9_-]{6,}\b"),
+    re.compile(r"(?i)\bgithub_pat_[A-Za-z0-9_]{20,}\b"),
+    re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{20,}\b"),
+    re.compile(r"\bglpat-[A-Za-z0-9_-]{20,}\b"),
+    re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b"),
+    re.compile(r"\bhf_[A-Za-z0-9]{20,}\b"),
+    re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
+    re.compile(r"\bAIza[0-9A-Za-z_-]{20,}\b"),
+)
 
 
 def _normalized_secret_names(secret_env_names):
@@ -18,6 +31,11 @@ def looks_sensitive_env_name(name):
 def is_secret_env_name(name, secret_env_names=None):
     upper = str(name).upper()
     return upper in _normalized_secret_names(secret_env_names) or looks_sensitive_env_name(upper)
+
+
+def looks_secret_shaped_text(text):
+    text = str(text or "")
+    return any(pattern.search(text) for pattern in SECRET_SHAPED_TEXT_PATTERNS)
 
 
 def configured_secret_env_items(env=None, secret_env_names=None):
@@ -66,6 +84,10 @@ def redact_text(text, env=None, secret_env_names=None):
         key=lambda item: len(item[1]),
         reverse=True,
     ):
+        if len(value) < MIN_SECRET_SUBSTRING_REDACTION_LENGTH:
+            if text == value:
+                text = REDACTED_VALUE
+            continue
         text = text.replace(value, REDACTED_VALUE)
     return text
 
