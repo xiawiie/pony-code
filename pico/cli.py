@@ -14,6 +14,8 @@ import textwrap
 import json
 
 from .checkpoint_store import CheckpointStore
+from .cli_commands import run_agent_once, run_repl
+from .cli_parser import parse_cli_invocation
 from .config import load_project_env, provider_env
 from .providers.clients import AnthropicCompatibleModelClient, OllamaModelClient, OpenAICompatibleModelClient
 from .recovery_manager import RecoveryManager
@@ -427,64 +429,23 @@ def _run_runs(root, args):
 
 def main(argv=None):
     parser = build_arg_parser()
-    args, extra = parser.parse_known_args(argv)
-    if extra:
-        if _looks_like_recovery_command(args.prompt):
-            args.prompt.extend(extra)
-        else:
-            parser.error("unrecognized arguments: " + " ".join(extra))
+    invocation = parse_cli_invocation(argv, parser)
+    args = invocation.runtime_args
     # 先分派 checkpoints/runs 这类只读检查命令，避免为它们启动模型 client 或 REPL。
-    if _looks_like_recovery_command(args.prompt):
-        code = _handle_recovery_command(args.cwd, list(args.prompt))
-        if code is not None:
-            return code
+    if invocation.command in _RECOVERY_TOP_LEVEL_COMMANDS:
+        recovery_tokens = [invocation.command, *invocation.command_args]
+        if _looks_like_recovery_command(recovery_tokens):
+            code = _handle_recovery_command(args.cwd, recovery_tokens)
+            if code is not None:
+                return code
     agent = build_agent(args)
 
     model = getattr(agent.model_client, "model", getattr(args, "model", DEFAULT_OLLAMA_MODEL))
     host = getattr(agent.model_client, "host", getattr(agent.model_client, "base_url", getattr(args, "host", DEFAULT_OLLAMA_HOST)))
     print(build_welcome(agent, model=model, host=host))
 
-    if args.prompt:
-        # one-shot 模式：只跑一次 ask，不进入 REPL 循环。
-        prompt = " ".join(args.prompt).strip()
-        if prompt:
-            print()
-            try:
-                print(agent.ask(prompt))
-            except RuntimeError as exc:
-                print(str(exc), file=sys.stderr)
-                return 1
-        return 0
-
-    while True:
-        # 交互模式：每次读取一条用户输入，交给同一个 agent，
-        # 因此 session history 和 working memory 会跨轮延续。
-        try:
-            user_input = input("\npico> ").strip()
-        except (EOFError, KeyboardInterrupt):
-            print("")
-            return 0
-
-        if not user_input:
-            continue
-        if user_input in {"/exit", "/quit"}:
-            return 0
-        if user_input == "/help":
-            print(HELP_DETAILS)
-            continue
-        if user_input == "/memory":
-            print(agent.memory_text())
-            continue
-        if user_input == "/session":
-            print(agent.session_path)
-            continue
-        if user_input == "/reset":
-            agent.reset()
-            print("session reset")
-            continue
-
-        print()
-        try:
-            print(agent.ask(user_input))
-        except RuntimeError as exc:
-            print(str(exc), file=sys.stderr)
+    if invocation.command == "run":
+        return run_agent_once(agent, invocation.command_args)
+    if invocation.command == "repl":
+        return run_repl(agent)
+    return run_agent_once(agent, [invocation.command, *invocation.command_args])
