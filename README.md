@@ -245,6 +245,7 @@ uv run pico --provider ollama --model qwen3.5:4b
 
 - `pico run [prompt...]`：执行一个 prompt，然后退出。
 - `pico repl`：启动交互式 REPL。
+- `pico help`：显示 CLI 帮助。
 - `pico status`：显示本地 harness 状态，不启动模型会话。
 - `pico doctor`：运行就绪诊断，包括 provider 连通性检查。
 - `pico doctor --offline`：只运行本地诊断，不检查 provider 连通性。
@@ -254,9 +255,9 @@ uv run pico --provider ollama --model qwen3.5:4b
 - `pico checkpoints list` / `pico checkpoints show <checkpoint-id>`：查看 checkpoint 列表或详情。
 - `pico checkpoints preview-restore <checkpoint-id>`：预览恢复 checkpoint 会带来的变化。
 - `pico checkpoints restore <checkpoint-id> --apply`：实际恢复 checkpoint。
-- `pico checkpoints prune --apply`：实际清理 checkpoint。
+- `pico checkpoints prune` / `pico checkpoints prune --apply`：预览或实际清理 checkpoint。
 
-需要机器可读输出时，可以在命令前加 `--format json`：
+诊断和 inspection 命令需要机器可读输出时，可以在命令前加 `--format json`：
 
 ```bash
 pico --format json status
