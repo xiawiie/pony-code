@@ -173,6 +173,7 @@ def test_no_argument_cli_enters_repl_and_exits_on_eof(tmp_path, monkeypatch):
         return FakeAgent()
 
     def fake_input(prompt):
+        called["input"] = True
         raise EOFError
 
     monkeypatch.setattr("pico.cli.build_agent", fake_build_agent)
@@ -183,3 +184,4 @@ def test_no_argument_cli_enters_repl_and_exits_on_eof(tmp_path, monkeypatch):
 
     assert code == 0
     assert called["built"] is True
+    assert called["input"] is True
