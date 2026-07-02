@@ -3,7 +3,7 @@
 import os
 from pathlib import Path
 
-from .config import load_project_env
+from .config import _parse_env_line, find_project_env
 from .workspace import WorkspaceContext
 
 
@@ -82,7 +82,7 @@ def collect_status(cwd, args=None):
 
 def collect_config(cwd, args=None):
     workspace = WorkspaceContext.build(cwd)
-    project_env = load_project_env(workspace.repo_root)
+    project_env = _read_project_env(workspace.repo_root)
     provider = _resolve_provider(args, project_env)
     model = _resolve_model(args, provider["value"], project_env)
     api_key = _resolve_api_key(provider["value"], project_env)
@@ -141,6 +141,20 @@ def _resolve_env_value(env_names, project_env):
         if value:
             return value, "environment", name
     return "", "unset", ""
+
+
+def _read_project_env(start):
+    env_path = find_project_env(start)
+    if env_path is None:
+        return {}
+    loaded = {}
+    for line in env_path.read_text(encoding="utf-8").splitlines():
+        parsed = _parse_env_line(line)
+        if parsed is None:
+            continue
+        name, value = parsed
+        loaded[name] = value
+    return loaded
 
 
 def _latest_json_stem(root):

@@ -110,18 +110,13 @@ def handle_sessions(root, tokens, args):
     sub = tokens[0] if tokens else "list"
     rest = tokens[1:]
     if sub == "list" and not rest:
-        data = []
-        if sessions_root.exists():
-            data = [
-                {"session_id": path.stem}
-                for path in sorted(sessions_root.glob("*.json"))
-                if path.is_file()
-            ]
+        data = [{"session_id": path.stem} for path in _session_files(sessions_root)]
         return print_result("sessions_list", data, args, _render_sessions_list)
     if sub == "show" and len(rest) == 1:
         session_id = rest[0]
-        path = sessions_root / f"{session_id}.json"
-        if not path.exists():
+        session_paths = {path.stem: path for path in _session_files(sessions_root)}
+        path = session_paths.get(session_id)
+        if path is None:
             raise CliError(
                 code="session_not_found",
                 message=f"unknown session: {session_id}",
@@ -210,6 +205,16 @@ def _render_runs_list(runs):
 
 def _render_sessions_list(sessions):
     return "\n".join(session["session_id"] for session in sessions)
+
+
+def _session_files(sessions_root):
+    if not sessions_root.exists():
+        return []
+    return [
+        path
+        for path in sorted(sessions_root.glob("*.json"))
+        if path.is_file()
+    ]
 
 
 def _render_status(data):
