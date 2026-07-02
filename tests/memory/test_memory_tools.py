@@ -113,3 +113,22 @@ def test_list_with_prefix(tmp_path):
     out = tool_memory_list(ctx, {"prefix": "workspace/notes/auth"})
     assert "auth.md" in out
     assert "testing.md" not in out
+
+
+def test_tool_registry_includes_new_tools():
+    from pico.tools import legal_tool_names
+    names = legal_tool_names()
+    for expected in ("memory_list", "memory_read", "memory_search", "memory_save", "repo_lookup"):
+        assert expected in names, f"missing tool {expected}"
+
+
+def test_tool_examples_present():
+    from pico.tools import tool_example
+    for name in ("memory_list", "memory_read", "memory_search", "memory_save", "repo_lookup"):
+        assert tool_example(name), f"missing example for {name}"
+
+
+def test_effect_class_for_new_tools_is_read_only():
+    from pico.tool_executor import _EFFECT_CLASS_BY_TOOL
+    for name in ("memory_list", "memory_read", "memory_search", "memory_save", "repo_lookup"):
+        assert _EFFECT_CLASS_BY_TOOL[name] == "read_only"

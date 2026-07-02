@@ -4,11 +4,19 @@
 如何做参数校验，以及最终如何执行，都是在这里定义的。
 """
 
+import re
 import shutil
 import subprocess
 import textwrap
 from functools import partial
 
+from .memory.tools import (
+    tool_memory_list,
+    tool_memory_read,
+    tool_memory_save,
+    tool_memory_search,
+)
+from .repo_map import tool_repo_lookup
 from .workspace import IGNORED_PATH_NAMES
 
 DEFAULT_RUN_SHELL_TIMEOUT = 60
@@ -45,6 +53,31 @@ BASE_TOOL_SPECS = {
         "risky": True,
         "description": "Replace one exact text block in a file.",
     },
+    "memory_list": {
+        "schema": {"prefix": "str=''"},
+        "risky": False,
+        "description": "List memory files (user notes + agent_notes). Optional prefix filter.",
+    },
+    "memory_read": {
+        "schema": {"path": "str", "start": "int=1", "end": "int=200"},
+        "risky": False,
+        "description": "Read a memory file by line range. Same paging as read_file.",
+    },
+    "memory_search": {
+        "schema": {"query": "str", "limit": "int=5"},
+        "risky": False,
+        "description": "Full-text search across memory files (BM25 + CJK bigram).",
+    },
+    "memory_save": {
+        "schema": {"note": "str", "scope": "str='workspace'"},
+        "risky": False,
+        "description": "Append a short note (<=500 chars) to agent_notes.md. Use only when the user explicitly asks to remember.",
+    },
+    "repo_lookup": {
+        "schema": {"symbol": "str", "kind": "str=''"},
+        "risky": False,
+        "description": "Look up where a symbol is defined. Precise for Python (AST), best-effort for TS/Go/Rust (regex).",
+    },
 }
 
 DELEGATE_TOOL_SPEC = {
@@ -65,6 +98,11 @@ TOOL_EXAMPLES = {
     "write_file": '<tool name="write_file" path="binary_search.py"><content>def binary_search(nums, target):\n    return -1\n</content></tool>',
     "patch_file": '<tool name="patch_file" path="binary_search.py"><old_text>return -1</old_text><new_text>return mid</new_text></tool>',
     "delegate": '<tool>{"name":"delegate","args":{"task":"inspect README.md","max_steps":3}}</tool>',
+    "memory_list": '<tool>{"name":"memory_list","args":{"prefix":"workspace/"}}</tool>',
+    "memory_read": '<tool>{"name":"memory_read","args":{"path":"workspace/notes/auth.md","start":1,"end":200}}</tool>',
+    "memory_search": '<tool>{"name":"memory_search","args":{"query":"bcrypt","limit":5}}</tool>',
+    "memory_save": '<tool>{"name":"memory_save","args":{"note":"bcrypt rounds > 12 causes CI timeout"}}</tool>',
+    "repo_lookup": '<tool>{"name":"repo_lookup","args":{"symbol":"AuthMiddleware"}}</tool>',
 }
 
 
@@ -152,6 +190,63 @@ def validate_tool(context, name, args):
             raise ValueError("task must not be empty")
         if context.depth >= context.max_depth:
             raise ValueError("delegate depth exceeded")
+        return
+
+    if name == "memory_list":
+        prefix = str(args.get("prefix", "")).strip()
+        if len(prefix) > 128:
+            raise ValueError("prefix too long")
+        if prefix and not re.match(r"^[a-z][a-z0-9/_.-]*$", prefix):
+            raise ValueError("invalid prefix format")
+        return
+
+    if name == "memory_read":
+        path = str(args.get("path", "")).strip()
+        if not path:
+            raise ValueError("path must not be empty")
+        if not re.match(r"^[a-z][a-z0-9/_.-]*$", path):
+            raise ValueError("invalid path format")
+        if ".." in path.split("/") or path.startswith("/"):
+            raise ValueError("path traversal not allowed")
+        start = int(args.get("start", 1) or 1)
+        end = int(args.get("end", 200) or 200)
+        if start < 1 or end < start:
+            raise ValueError("invalid line range")
+        return
+
+    if name == "memory_search":
+        query = str(args.get("query", "")).strip()
+        if not query:
+            raise ValueError("query must not be empty")
+        if len(query) > 512:
+            raise ValueError("query too long")
+        limit = int(args.get("limit", 5) or 5)
+        if limit < 1 or limit > 20:
+            raise ValueError("limit must be in [1, 20]")
+        return
+
+    if name == "memory_save":
+        note = str(args.get("note", "")).strip()
+        if not note:
+            raise ValueError("note must not be empty")
+        if len(note) > 500:
+            raise ValueError("note exceeds 500 chars")
+        scope = str(args.get("scope", "workspace"))
+        if scope not in ("workspace", "user"):
+            raise ValueError("scope must be 'workspace' or 'user'")
+        return
+
+    if name == "repo_lookup":
+        symbol = str(args.get("symbol", "")).strip()
+        if not symbol:
+            raise ValueError("symbol must not be empty")
+        if len(symbol) > 128:
+            raise ValueError("symbol too long")
+        if not re.match(r"^[A-Za-z_$][A-Za-z0-9_$]*$", symbol):
+            raise ValueError("symbol must be a valid identifier")
+        kind = str(args.get("kind", ""))
+        if kind and kind not in ("class", "function", "method"):
+            raise ValueError("kind must be class, function, or method")
         return
 
 
@@ -283,4 +378,9 @@ _TOOL_RUNNERS = {
     "run_shell": tool_run_shell,
     "write_file": tool_write_file,
     "patch_file": tool_patch_file,
+    "memory_list": tool_memory_list,
+    "memory_read": tool_memory_read,
+    "memory_search": tool_memory_search,
+    "memory_save": tool_memory_save,
+    "repo_lookup": tool_repo_lookup,
 }

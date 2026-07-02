@@ -38,6 +38,11 @@ _EFFECT_CLASS_BY_TOOL = {
     "write_file": "workspace_write",
     "patch_file": "workspace_write",
     "delegate": "workspace_write",
+    "memory_list": "read_only",
+    "memory_read": "read_only",
+    "memory_search": "read_only",
+    "memory_save": "read_only",
+    "repo_lookup": "read_only",
 }
 
 

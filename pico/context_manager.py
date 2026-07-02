@@ -12,7 +12,7 @@ from dataclasses import dataclass
 
 DEFAULT_TOTAL_BUDGET = 12000
 DEFAULT_SECTION_BUDGETS = {
-    "prefix": 3600,
+    "prefix": 4500,  # v2: bumped from 3600 to fit 5 new memory/repo tool schemas; Task 7 will replace this whole system with token-based budgets
     "memory": 1600,
     "relevant_memory": 1200,
     "history": 5200,

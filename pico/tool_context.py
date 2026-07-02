@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable, Optional
 
 
 @dataclass
@@ -13,6 +13,9 @@ class ToolContext:
     depth: int
     max_depth: int
     spawn_delegate: Callable[[dict], str]
+    memory_store: Optional[Any] = None
+    memory_retrieval: Optional[Any] = None
+    repo_map: Optional[Any] = None
 
     def path(self, raw_path):
         return self.path_resolver(str(raw_path))
