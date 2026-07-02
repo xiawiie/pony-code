@@ -71,8 +71,10 @@ uv run pico --cwd /path/to/repo
 直接跑一次性任务：
 
 ```bash
-uv run pico "inspect the test failures and propose a fix"
+uv run pico run "inspect the test failures and propose a fix"
 ```
+
+旧形式 `uv run pico "prompt"` 仍然兼容；新示例使用显式的 `run` 子命令，便于和交互、诊断、恢复等命令区分。
 
 如果当前环境已经安装过包，也可以直接这样启动：
 
@@ -236,6 +238,32 @@ uv run pico --provider ollama --model qwen3.5:4b
 - `/session`：查看当前会话文件路径
 - `/reset`：清空当前会话状态
 - `/exit` 或 `/quit`：退出 REPL
+
+## CLI Surface
+
+常用命令入口如下：
+
+- `pico run [prompt...]`：执行一个 prompt，然后退出。
+- `pico repl`：启动交互式 REPL。
+- `pico status`：显示本地 harness 状态，不启动模型会话。
+- `pico doctor`：运行就绪诊断，包括 provider 连通性检查。
+- `pico doctor --offline`：只运行本地诊断，不检查 provider 连通性。
+- `pico config show`：显示最终生效的配置以及来源。
+- `pico runs list` / `pico runs show <run-id>`：查看历史 run 列表或单个 run 详情。
+- `pico sessions list` / `pico sessions show <session-id>`：查看历史 session 列表或单个 session 详情。
+- `pico checkpoints list` / `pico checkpoints show <checkpoint-id>`：查看 checkpoint 列表或详情。
+- `pico checkpoints preview-restore <checkpoint-id>`：预览恢复 checkpoint 会带来的变化。
+- `pico checkpoints restore <checkpoint-id> --apply`：实际恢复 checkpoint。
+- `pico checkpoints prune --apply`：实际清理 checkpoint。
+
+需要机器可读输出时，可以在命令前加 `--format json`：
+
+```bash
+pico --format json status
+pico --format json checkpoints list
+```
+
+恢复类命令默认先预览；`restore` 和 `prune` 只有显式传入 `--apply` 才会修改本地状态。
 
 ## 安全与持久化
 
