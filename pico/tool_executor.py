@@ -275,42 +275,27 @@ class ToolExecutor:
                     tool_error_code = "tool_failed"
 
             agent.update_memory_after_tool(name, args, content)
-            metadata = _metadata(
-                tool_status,
+            metadata = _finalize_tool_side_effects(
+                agent=agent,
+                name=name,
+                args=args,
+                pending_record=pending_record,
+                affected_paths=affected_paths,
+                before_snapshot=before_snapshot,
+                before_file_states=before_file_states,
+                before_existed=before_existed,
+                tool_status=tool_status,
                 tool_error_code=tool_error_code,
+                security_event_type="",
                 risk_level="high" if tool["risky"] else "low",
                 read_only=not tool["risky"],
-                affected_paths=affected_paths,
                 workspace_changed=workspace_changed,
-                workspace_fingerprint=agent.workspace.fingerprint(),
                 diff_summary=diff_summary,
+                shell_side_effects=shell_side_effects if name == "run_shell" else [],
+                command_risk=command_risk,
+                command_approval=command_approval,
+                content=content,
             )
-            metadata = _add_command_policy(metadata, command_risk, command_approval)
-
-            file_entries = _build_file_entries(agent, name, args, affected_paths, before_snapshot, before_file_states, before_existed)
-            if pending_record is not None:
-                terminal_status = "finalized"
-                if tool_status == "partial_success":
-                    terminal_status = "partial_success"
-                elif tool_status == "error":
-                    terminal_status = "error"
-                error_payload = None
-                if tool_status == "error":
-                    error_payload = {"code": tool_error_code or "tool_failed", "message": content[:400]}
-                finalized = agent.tool_change_recorder.finalize(
-                    pending_record["tool_change_id"],
-                    status=terminal_status,
-                    affected_paths=affected_paths,
-                    file_entries=file_entries,
-                    error=error_payload,
-                    shell_side_effects=shell_side_effects if name == "run_shell" else None,
-                    approval=command_approval if command_approval else None,
-                )
-                metadata["tool_change_id"] = finalized["tool_change_id"]
-                metadata["file_entries"] = list(file_entries)
-                if name == "run_shell":
-                    metadata["shell_side_effects"] = list(shell_side_effects)
-            agent.record_process_note_for_tool(name, metadata)
             return ToolExecutionResult(content=content, metadata=metadata)
         except Exception as exc:
             shell_side_effects = []
@@ -343,37 +328,30 @@ class ToolExecutor:
                 affected_paths, diff_summary = agent.diff_workspace_snapshots(before_snapshot, after_snapshot)
                 workspace_changed = bool(affected_paths)
             security_event_type = "path_escape" if "path escapes workspace" in str(exc) else ""
-            metadata = _metadata(
-                "partial_success" if workspace_changed else "error",
-                tool_error_code="tool_partial_success" if workspace_changed else "tool_failed",
+            tool_status = "partial_success" if workspace_changed else "error"
+            tool_error_code = "tool_partial_success" if workspace_changed else "tool_failed"
+            metadata = _finalize_tool_side_effects(
+                agent=agent,
+                name=name,
+                args=args,
+                pending_record=pending_record,
+                affected_paths=affected_paths,
+                before_snapshot=before_snapshot,
+                before_file_states=before_file_states,
+                before_existed=before_existed,
+                tool_status=tool_status,
+                tool_error_code=tool_error_code,
                 security_event_type=security_event_type,
                 risk_level="high" if tool["risky"] else "low",
                 read_only=not tool["risky"],
-                affected_paths=affected_paths,
                 workspace_changed=workspace_changed,
-                workspace_fingerprint=agent.workspace.fingerprint(),
                 diff_summary=diff_summary,
+                shell_side_effects=shell_side_effects if name == "run_shell" else [],
+                command_risk=command_risk,
+                command_approval=command_approval,
+                content="",
+                error_message=str(exc),
             )
-            metadata = _add_command_policy(metadata, command_risk, command_approval)
-
-            file_entries = _build_file_entries(agent, name, args, affected_paths, before_snapshot, before_file_states, before_existed)
-            if pending_record is not None:
-                terminal_status = "partial_success" if workspace_changed else "error"
-                error_payload = {"code": metadata["tool_error_code"] or "tool_failed", "message": str(exc)[:400]}
-                finalized = agent.tool_change_recorder.finalize(
-                    pending_record["tool_change_id"],
-                    status=terminal_status,
-                    affected_paths=affected_paths,
-                    file_entries=file_entries,
-                    error=error_payload,
-                    shell_side_effects=shell_side_effects if name == "run_shell" else None,
-                    approval=command_approval if command_approval else None,
-                )
-                metadata["tool_change_id"] = finalized["tool_change_id"]
-                metadata["file_entries"] = list(file_entries)
-                if name == "run_shell":
-                    metadata["shell_side_effects"] = list(shell_side_effects)
-            agent.record_process_note_for_tool(name, metadata)
             return ToolExecutionResult(content=f"error: tool {name} failed: {exc}", metadata=metadata)
 
 
@@ -383,6 +361,90 @@ def _add_command_policy(metadata, command_risk, command_approval):
     if command_approval:
         metadata["command_approval"] = dict(command_approval)
     return metadata
+
+
+def _finalize_tool_side_effects(
+    *,
+    agent,
+    name,
+    args,
+    pending_record,
+    affected_paths,
+    before_snapshot,
+    before_file_states,
+    before_existed,
+    tool_status,
+    tool_error_code,
+    security_event_type,
+    risk_level,
+    read_only,
+    workspace_changed,
+    diff_summary,
+    shell_side_effects,
+    command_risk,
+    command_approval,
+    content,
+    error_message="",
+):
+    metadata = _metadata(
+        tool_status,
+        tool_error_code=tool_error_code,
+        security_event_type=security_event_type,
+        risk_level=risk_level,
+        read_only=read_only,
+        affected_paths=affected_paths,
+        workspace_changed=workspace_changed,
+        workspace_fingerprint=agent.workspace.fingerprint(),
+        diff_summary=diff_summary,
+    )
+    metadata = _add_command_policy(metadata, command_risk, command_approval)
+
+    file_entries = _build_file_entries(
+        agent,
+        name,
+        args,
+        affected_paths,
+        before_snapshot,
+        before_file_states,
+        before_existed,
+    )
+    if pending_record is not None:
+        terminal_status = _tool_change_terminal_status(tool_status)
+        error_payload = _tool_change_error_payload(
+            terminal_status=terminal_status,
+            tool_error_code=tool_error_code,
+            content=content,
+            error_message=error_message,
+        )
+        finalized = agent.tool_change_recorder.finalize(
+            pending_record["tool_change_id"],
+            status=terminal_status,
+            affected_paths=affected_paths,
+            file_entries=file_entries,
+            error=error_payload,
+            shell_side_effects=shell_side_effects if name == "run_shell" else None,
+            approval=command_approval if command_approval else None,
+        )
+        metadata["tool_change_id"] = finalized["tool_change_id"]
+        metadata["file_entries"] = list(file_entries)
+        if name == "run_shell":
+            metadata["shell_side_effects"] = list(shell_side_effects)
+    agent.record_process_note_for_tool(name, metadata)
+    return metadata
+
+
+def _tool_change_terminal_status(tool_status):
+    if tool_status in {"partial_success", "error"}:
+        return tool_status
+    return "finalized"
+
+
+def _tool_change_error_payload(terminal_status, tool_error_code, content, error_message=""):
+    if error_message and terminal_status in {"partial_success", "error"}:
+        return {"code": tool_error_code or "tool_failed", "message": str(error_message)[:400]}
+    if terminal_status == "error":
+        return {"code": tool_error_code or "tool_failed", "message": str(content or "")[:400]}
+    return None
 
 
 def _direct_tool_candidate_paths(name, args):

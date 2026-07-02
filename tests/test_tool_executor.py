@@ -80,6 +80,33 @@ def test_tool_runtime_exception_finalizes_pending_record_as_error(tmp_path):
     assert tool_change["error"]["code"] == "tool_failed"
 
 
+def test_success_and_exception_paths_use_shared_side_effect_finalizer(tmp_path, monkeypatch):
+    import pico.tool_executor as tool_executor
+
+    calls = []
+    original = tool_executor._finalize_tool_side_effects
+
+    def spy_finalize(*args, **kwargs):
+        calls.append(kwargs["tool_status"])
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(tool_executor, "_finalize_tool_side_effects", spy_finalize)
+
+    agent = build_agent(tmp_path)
+    success = agent.execute_tool("write_file", {"path": "ok.txt", "content": "ok\n"})
+
+    def boom(args):
+        (tmp_path / args["path"]).write_text("partial\n", encoding="utf-8")
+        raise RuntimeError("boom")
+
+    agent.tools["write_file"]["run"] = boom
+    failure = agent.execute_tool("write_file", {"path": "partial.txt", "content": "unused\n"})
+
+    assert success.metadata["tool_status"] == "ok"
+    assert failure.metadata["tool_status"] == "partial_success"
+    assert calls == ["ok", "partial_success"]
+
+
 def test_run_shell_uses_command_policy_metadata(tmp_path):
     agent = build_agent(tmp_path)
 
