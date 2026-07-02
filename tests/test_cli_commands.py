@@ -61,3 +61,22 @@ def test_legacy_prompt_remains_silent_compatibility(tmp_path, monkeypatch, capsy
     out = capsys.readouterr().out
     assert "answer" in out
     assert "pico run" not in out
+
+
+def test_help_command_shows_examples(capsys):
+    code = main(["help"])
+
+    assert code == 0
+    out = capsys.readouterr().out
+    assert 'pico run "inspect the failing tests"' in out
+    assert "Diagnostics:" in out
+    assert "providers list" not in out
+
+
+def test_unknown_command_suggests_close_match(capsys):
+    code = main(["chekpoints", "list"])
+
+    assert code == 2
+    err = capsys.readouterr().err
+    assert "Unknown command: chekpoints" in err
+    assert "Did you mean `checkpoints`?" in err

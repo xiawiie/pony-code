@@ -12,18 +12,20 @@ import sys
 import textwrap
 
 from .cli_commands import (
+    ROOT_HELP,
     handle_checkpoints,
     handle_config,
     handle_doctor,
+    handle_help,
     handle_runs,
     handle_sessions,
     handle_status,
     run_agent_once,
     run_repl,
 )
-from .cli_errors import CLI_EXIT_USAGE, CliError
+from .cli_errors import CLI_EXIT_USAGE, CliError, suggest
 from .cli_output import error_envelope, format_json
-from .cli_parser import parse_cli_invocation
+from .cli_parser import KNOWN_TOP_LEVEL_COMMANDS, parse_cli_invocation
 from .config import load_project_env, provider_env
 from .providers.clients import AnthropicCompatibleModelClient, OllamaModelClient, OpenAICompatibleModelClient
 from .runtime import Pico, SessionStore
@@ -38,6 +40,13 @@ _RECOVERY_SUBCOMMANDS = {
     "checkpoints": {"list", "show", "preview-restore", "restore", "prune"},
     "runs": {"list", "show"},
 }
+
+
+class _RootHelpFormatter(
+    argparse.ArgumentDefaultsHelpFormatter,
+    argparse.RawDescriptionHelpFormatter,
+):
+    pass
 
 
 def _looks_like_recovery_command(prompt_tokens):
@@ -303,8 +312,9 @@ def build_agent(args):
 
 def build_arg_parser():
     parser = argparse.ArgumentParser(
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        formatter_class=_RootHelpFormatter,
         description="Minimal coding agent for DeepSeek, OpenAI-compatible, Anthropic-compatible, or Ollama models.",
+        epilog=ROOT_HELP,
     )
     parser.add_argument("prompt", nargs="*", help="Optional one-shot prompt.")
     parser.add_argument("--cwd", default=".", help="Workspace directory.")
@@ -371,11 +381,29 @@ def _print_cli_error(args, exc):
     return exc.exit_code
 
 
+def _raise_on_legacy_command_typo(invocation):
+    if not invocation.legacy_prompt or not invocation.command_args:
+        return
+    head = invocation.command_args[0]
+    match = suggest(head, sorted(KNOWN_TOP_LEVEL_COMMANDS))
+    if not match:
+        return
+    raise CliError(
+        code="unknown_command",
+        message=f"Unknown command: {head}",
+        hint=f"Did you mean `{match}`?",
+        exit_code=CLI_EXIT_USAGE,
+    )
+
+
 def main(argv=None):
     parser = build_arg_parser()
     invocation = parse_cli_invocation(argv, parser)
     args = invocation.runtime_args
     try:
+        _raise_on_legacy_command_typo(invocation)
+        if invocation.command == "help":
+            return handle_help(invocation.command_args)
         # 先分派只读检查命令，避免为它们启动模型 client 或 REPL。
         if invocation.command == "status":
             if invocation.command_args:

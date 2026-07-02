@@ -289,3 +289,23 @@ def test_runs_list_json_uses_success_envelope(tmp_path, capsys):
     assert code == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload == {"ok": True, "kind": "runs_list", "data": [{"run_id": "run_1"}]}
+
+
+def test_json_output_contains_no_human_tip_text(tmp_path, capsys):
+    code = main(["--cwd", str(tmp_path), "--format", "json", "runs", "list"])
+
+    assert code == 0
+    out = capsys.readouterr().out
+    assert out.strip().startswith("{")
+    assert "Tip:" not in out
+    json.loads(out)
+
+
+def test_quiet_suppresses_text_inspection_output(tmp_path, capsys):
+    run_dir = tmp_path / ".pico" / "runs" / "run_1"
+    run_dir.mkdir(parents=True)
+
+    code = main(["--cwd", str(tmp_path), "--quiet", "runs", "list"])
+
+    assert code == 0
+    assert capsys.readouterr().out == ""

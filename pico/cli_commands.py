@@ -12,14 +12,47 @@ from .recovery_checkpoint_writer import RecoveryCheckpointWriter
 from .recovery_manager import RecoveryManager
 
 
+ROOT_HELP = """Pico is a local coding-agent harness for repository-grounded engineering work.
+
+Examples:
+  pico run "inspect the failing tests"
+  pico repl
+  pico status
+  pico checkpoints preview-restore <checkpoint-id>
+
+Start:
+  run [prompt...]          Run one prompt and exit
+  repl                     Start the interactive REPL
+
+Diagnostics:
+  status                   Show local harness state
+  doctor [--offline]       Run readiness diagnostics
+  config show              Show effective configuration and sources
+
+Recovery inspection:
+  runs list|show           Inspect run artifacts
+  sessions list|show       Inspect saved sessions
+  checkpoints ...          Inspect and restore checkpoints
+
+Compatibility:
+  pico                     Start REPL
+  pico "prompt"            Run a one-shot prompt
+"""
+
+
 def print_result(kind, data, args, text_renderer):
     if getattr(args, "format", "text") == "json":
         print(format_json(success_envelope(kind, data)), end="")
         return 0
 
     text = text_renderer(data)
-    if text:
+    if text and not getattr(args, "quiet", False):
         print(text, end="" if text.endswith("\n") else "\n")
+    return 0
+
+
+def handle_help(tokens):
+    print(ROOT_HELP.rstrip())
     return 0
 
 
