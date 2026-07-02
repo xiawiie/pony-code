@@ -179,7 +179,7 @@ def check_provider_connectivity(config, timeout=2):
             "status": "error",
             "category": "provider_connectivity",
             "url": diagnostic_url,
-            "message": str(exc),
+            "message": f"{type(exc).__name__}: provider connectivity check failed",
         }
 
 

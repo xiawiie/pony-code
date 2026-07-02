@@ -193,6 +193,29 @@ def test_provider_connectivity_http_500_is_non_ok_and_redacts_url(monkeypatch):
     assert "#frag" not in json.dumps(result)
 
 
+def test_provider_connectivity_generic_error_sanitizes_url_in_message(monkeypatch):
+    def fake_urlopen(url, timeout):
+        raise RuntimeError(f"failed to open {url}")
+
+    monkeypatch.setattr("pico.cli_diagnostics.request.urlopen", fake_urlopen)
+
+    result = check_provider_connectivity(
+        {
+            "provider": {"value": "openai"},
+            "base_url": {"value": "https://user:pass@example.com/v1?token=secret#frag"},
+        }
+    )
+
+    output = json.dumps(result)
+    assert result["status"] == "error"
+    assert result["url"] == "https://example.com/v1"
+    assert "RuntimeError" in result["message"]
+    assert "user:pass" not in output
+    assert "token=" not in output
+    assert "secret" not in output
+    assert "#frag" not in output
+
+
 def test_doctor_unknown_arg_returns_usage_without_agent_or_connectivity(tmp_path, monkeypatch, capsys):
     called = {}
 
