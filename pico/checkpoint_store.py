@@ -8,7 +8,9 @@
 所有写入都走原子 replace，防止在崩溃时留下半截 JSON。
 """
 
+from datetime import datetime, timedelta, timezone
 import json
+import re
 import tempfile
 from pathlib import Path
 
@@ -107,7 +109,7 @@ class CheckpointStore:
         return records
 
     # -- pruning ----------------------------------------------------------
-    def prune(self, dry_run=True):
+    def prune(self, dry_run=True, older_than=None, now=None):
         """扫描所有 blob 引用，返回未被引用的 blob。dry_run=False 时才真的删除。
 
         引用来源必须囊括：
@@ -116,18 +118,38 @@ class CheckpointStore:
           - tool change record 的 file_entries
         任何一处漏扫，都会误删仍被引用的 blob。
         """
-        referenced = set()
-        for record in self.list_checkpoint_records():
-            for entry in record.get("file_entries", []) or []:
-                _collect_blob_refs(entry, referenced)
-            provenance = record.get("restore_provenance") or {}
-            for entry in provenance.get("pre_restore_file_states", []) or []:
-                _collect_blob_refs(entry, referenced)
-            for entry in provenance.get("post_restore_file_states", []) or []:
-                _collect_blob_refs(entry, referenced)
-        for record in self.list_tool_change_records():
-            for entry in record.get("file_entries", []) or []:
-                _collect_blob_refs(entry, referenced)
+        checkpoint_records = self.list_checkpoint_records()
+        tool_change_records = self.list_tool_change_records()
+        cutoff = _cutoff_datetime(older_than, now=now)
+        prunable_checkpoint_ids = _prunable_checkpoint_ids(checkpoint_records, cutoff)
+        prunable_checkpoint_id_set = set(prunable_checkpoint_ids)
+        retained_checkpoint_records = [
+            record
+            for record in checkpoint_records
+            if record.get("checkpoint_id") not in prunable_checkpoint_id_set
+        ]
+        retained_tool_change_ids = {
+            tool_change_id
+            for record in retained_checkpoint_records
+            for tool_change_id in (record.get("tool_change_ids", []) or [])
+            if tool_change_id
+        }
+        candidate_tool_change_ids = {
+            tool_change_id
+            for record in checkpoint_records
+            if record.get("checkpoint_id") in prunable_checkpoint_id_set
+            for tool_change_id in (record.get("tool_change_ids", []) or [])
+            if tool_change_id
+        }
+        prunable_tool_change_ids = sorted(candidate_tool_change_ids - retained_tool_change_ids)
+        prunable_tool_change_id_set = set(prunable_tool_change_ids)
+        retained_tool_change_records = [
+            record
+            for record in tool_change_records
+            if record.get("tool_change_id") not in prunable_tool_change_id_set
+        ]
+
+        referenced = _referenced_blob_refs(retained_checkpoint_records, retained_tool_change_records)
 
         unreferenced = []
         for blob_path in self.blobs_dir.rglob("*"):
@@ -140,8 +162,22 @@ class CheckpointStore:
                 continue
             unreferenced.append(blob_ref)
 
+        removed_checkpoint_ids = []
+        removed_tool_change_ids = []
         removed = []
         if not dry_run:
+            for checkpoint_id in prunable_checkpoint_ids:
+                try:
+                    self._record_path(checkpoint_id).unlink()
+                    removed_checkpoint_ids.append(checkpoint_id)
+                except OSError:
+                    continue
+            for tool_change_id in prunable_tool_change_ids:
+                try:
+                    self._tool_change_path(tool_change_id).unlink()
+                    removed_tool_change_ids.append(tool_change_id)
+                except OSError:
+                    continue
             for blob_ref in unreferenced:
                 target = self._blob_path(blob_ref)
                 try:
@@ -152,6 +188,12 @@ class CheckpointStore:
 
         return {
             "dry_run": bool(dry_run),
+            "older_than": str(older_than or ""),
+            "cutoff_created_before": cutoff.isoformat() if cutoff is not None else "",
+            "prunable_checkpoint_ids": prunable_checkpoint_ids,
+            "prunable_tool_change_ids": prunable_tool_change_ids,
+            "removed_checkpoint_ids": removed_checkpoint_ids,
+            "removed_tool_change_ids": removed_tool_change_ids,
             "referenced_count": len(referenced),
             "unreferenced_blob_refs": unreferenced,
             "removed_blob_refs": removed,
@@ -181,6 +223,81 @@ def _collect_blob_refs(entry, sink):
         value = entry.get(key)
         if isinstance(value, str) and value:
             sink.add(value)
+
+
+def _referenced_blob_refs(checkpoint_records, tool_change_records):
+    referenced = set()
+    for record in checkpoint_records:
+        for entry in record.get("file_entries", []) or []:
+            _collect_blob_refs(entry, referenced)
+        provenance = record.get("restore_provenance") or {}
+        for entry in provenance.get("pre_restore_file_states", []) or []:
+            _collect_blob_refs(entry, referenced)
+        for entry in provenance.get("post_restore_file_states", []) or []:
+            _collect_blob_refs(entry, referenced)
+    for record in tool_change_records:
+        for entry in record.get("file_entries", []) or []:
+            _collect_blob_refs(entry, referenced)
+    return referenced
+
+
+def _cutoff_datetime(older_than, now=None):
+    if not older_than:
+        return None
+    duration = _parse_duration(older_than)
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    return current - duration
+
+
+def _parse_duration(value):
+    match = re.fullmatch(r"([1-9][0-9]*)([smhdw])", str(value or "").strip())
+    if not match:
+        raise ValueError("older_than must use a duration like 7d, 12h, or 30m")
+    amount = int(match.group(1))
+    unit = match.group(2)
+    if unit == "s":
+        return timedelta(seconds=amount)
+    if unit == "m":
+        return timedelta(minutes=amount)
+    if unit == "h":
+        return timedelta(hours=amount)
+    if unit == "d":
+        return timedelta(days=amount)
+    return timedelta(weeks=amount)
+
+
+def _prunable_checkpoint_ids(checkpoint_records, cutoff):
+    if cutoff is None:
+        return []
+    parent_refs = {
+        str(record.get("parent_checkpoint_id") or "")
+        for record in checkpoint_records
+        if record.get("parent_checkpoint_id")
+    }
+    prunable = []
+    for record in checkpoint_records:
+        checkpoint_id = str(record.get("checkpoint_id") or "")
+        if not checkpoint_id or checkpoint_id in parent_refs:
+            continue
+        created_at = _parse_created_at(record.get("created_at", ""))
+        if created_at is not None and created_at < cutoff:
+            prunable.append(checkpoint_id)
+    return prunable
+
+
+def _parse_created_at(value):
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
 
 
 def _looks_like_blob_ref(value):

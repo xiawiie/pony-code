@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 from pico.checkpoint_store import CheckpointStore
 from pico.recovery_models import new_checkpoint_record, new_tool_change_record
 
@@ -45,3 +47,48 @@ def test_prune_ignores_atomic_write_temp_files(tmp_path):
     assert temp_file.name not in result["unreferenced_blob_refs"]
     assert temp_file.name not in result["removed_blob_refs"]
     assert temp_file.exists()
+
+
+def test_prune_older_than_previews_and_applies_expired_records(tmp_path):
+    store = CheckpointStore(tmp_path)
+    old_blob = store.write_blob(b"old", "text")
+    new_blob = store.write_blob(b"new", "text")
+
+    old_tool_change = new_tool_change_record("tc_old", "", "task_old", "write_file", "workspace_write")
+    old_tool_change["file_entries"].append({"path": "old.txt", "after_blob_ref": old_blob["blob_ref"]})
+    store.write_tool_change_record(old_tool_change)
+    new_tool_change = new_tool_change_record("tc_new", "", "task_new", "write_file", "workspace_write")
+    new_tool_change["file_entries"].append({"path": "new.txt", "after_blob_ref": new_blob["blob_ref"]})
+    store.write_tool_change_record(new_tool_change)
+
+    old_record = new_checkpoint_record("ckpt_old", "turn", "s", "r", "task_old", "", str(tmp_path))
+    old_record["created_at"] = "2026-06-01T00:00:00+00:00"
+    old_record["tool_change_ids"] = ["tc_old"]
+    old_record["file_entries"].append({"path": "old.txt", "after_blob_ref": old_blob["blob_ref"]})
+    store.write_checkpoint_record(old_record)
+    new_record = new_checkpoint_record("ckpt_new", "turn", "s", "r", "task_new", "", str(tmp_path))
+    new_record["created_at"] = "2026-07-01T00:00:00+00:00"
+    new_record["tool_change_ids"] = ["tc_new"]
+    new_record["file_entries"].append({"path": "new.txt", "after_blob_ref": new_blob["blob_ref"]})
+    store.write_checkpoint_record(new_record)
+
+    now = datetime(2026, 7, 2, tzinfo=timezone.utc)
+    preview = store.prune(dry_run=True, older_than="7d", now=now)
+
+    assert preview["prunable_checkpoint_ids"] == ["ckpt_old"]
+    assert preview["prunable_tool_change_ids"] == ["tc_old"]
+    assert old_blob["blob_ref"] in preview["unreferenced_blob_refs"]
+    assert new_blob["blob_ref"] not in preview["unreferenced_blob_refs"]
+    assert store.load_checkpoint_record("ckpt_old")["checkpoint_id"] == "ckpt_old"
+    assert store.load_tool_change_record("tc_old")["tool_change_id"] == "tc_old"
+    assert store.has_blob(old_blob["blob_ref"]) is True
+
+    applied = store.prune(dry_run=False, older_than="7d", now=now)
+
+    assert applied["removed_checkpoint_ids"] == ["ckpt_old"]
+    assert applied["removed_tool_change_ids"] == ["tc_old"]
+    assert old_blob["blob_ref"] in applied["removed_blob_refs"]
+    assert [item["checkpoint_id"] for item in store.list_checkpoint_records()] == ["ckpt_new"]
+    assert [item["tool_change_id"] for item in store.list_tool_change_records()] == ["tc_new"]
+    assert store.has_blob(old_blob["blob_ref"]) is False
+    assert store.has_blob(new_blob["blob_ref"]) is True

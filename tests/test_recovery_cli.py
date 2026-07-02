@@ -102,6 +102,40 @@ def test_checkpoints_restore_apply_changes_disk_state(tmp_path, capsys):
     assert (tmp_path / "note.txt").read_text(encoding="utf-8") == "before\n"
 
 
+def test_checkpoints_prune_accepts_older_than_preview_and_apply(tmp_path, capsys):
+    store = CheckpointStore(tmp_path)
+    old_record = new_checkpoint_record("ckpt_old", "turn", "s", "r", "t", "", str(tmp_path))
+    old_record["created_at"] = "2000-01-01T00:00:00+00:00"
+    store.write_checkpoint_record(old_record)
+    new_record = new_checkpoint_record("ckpt_new", "turn", "s", "r", "t", "", str(tmp_path))
+    new_record["created_at"] = "2999-01-01T00:00:00+00:00"
+    store.write_checkpoint_record(new_record)
+
+    preview_code = main(["--cwd", str(tmp_path), "--format", "json", "checkpoints", "prune", "--older-than=7d"])
+    preview = json.loads(capsys.readouterr().out)
+
+    assert preview_code == 0
+    assert preview["kind"] == "checkpoints_prune"
+    assert preview["data"]["dry_run"] is True
+    assert preview["data"]["prunable_checkpoint_ids"] == ["ckpt_old"]
+    assert [item["checkpoint_id"] for item in store.list_checkpoint_records()] == ["ckpt_old", "ckpt_new"]
+
+    apply_code = main(["--cwd", str(tmp_path), "--format", "json", "checkpoints", "prune", "--older-than", "7d", "--apply"])
+    applied = json.loads(capsys.readouterr().out)
+
+    assert apply_code == 0
+    assert applied["data"]["dry_run"] is False
+    assert applied["data"]["removed_checkpoint_ids"] == ["ckpt_old"]
+    assert [item["checkpoint_id"] for item in store.list_checkpoint_records()] == ["ckpt_new"]
+
+
+def test_checkpoints_prune_rejects_invalid_older_than(tmp_path, capsys):
+    code = main(["--cwd", str(tmp_path), "checkpoints", "prune", "--older-than=soon"])
+
+    assert code == 2
+    assert "older_than must use a duration" in capsys.readouterr().err
+
+
 def test_checkpoint_commands_accept_unique_id_prefix(tmp_path, capsys):
     store = CheckpointStore(tmp_path)
     store.write_checkpoint_record(new_checkpoint_record("ckpt_alpha1234", "turn", "s", "r", "t", "", str(tmp_path)))

@@ -261,7 +261,7 @@ pico-cli --provider ollama --model qwen3.5:4b
 - `pico-cli checkpoints list` / `pico-cli checkpoints show <checkpoint-id>`：查看 checkpoint 列表或详情。
 - `pico-cli checkpoints preview-restore <checkpoint-id>`：预览恢复 checkpoint 会带来的变化。
 - `pico-cli checkpoints restore <checkpoint-id> --apply`：实际恢复 checkpoint。
-- `pico-cli checkpoints prune` / `pico-cli checkpoints prune --apply`：预览或实际清理 checkpoint。
+- `pico-cli checkpoints prune` / `pico-cli checkpoints prune --older-than=7d --apply`：预览或实际清理 checkpoint。
 
 这里的 checkpoint 指用户可恢复入口：一次用户请求产生的文件改动会聚合成一个 Turn Checkpoint；逐次工具调用的影响会作为内部 Tool Change Record 记录，并由 Turn Checkpoint 引用。
 

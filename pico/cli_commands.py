@@ -99,13 +99,23 @@ def handle_checkpoints(root, tokens, args):
             return print_result("checkpoints_preview_restore", plan, args, _render_restore_plan)
         result = _apply_restore(manager, checkpoint_id)
         return print_result("checkpoints_restore", result, args, _render_json_body)
-    if sub == "prune" and _is_apply_only_args(rest):
-        apply_flag = "--apply" in rest
-        result = store.prune(dry_run=not apply_flag)
+    if sub == "prune":
+        prune_options = _parse_prune_args(rest)
+        try:
+            result = store.prune(
+                dry_run=not prune_options["apply"],
+                older_than=prune_options["older_than"],
+            )
+        except ValueError as exc:
+            raise CliError(
+                code="usage",
+                message=str(exc),
+                exit_code=CLI_EXIT_USAGE,
+            ) from exc
         return print_result("checkpoints_prune", result, args, _render_json_body)
     raise CliError(
         code="usage",
-        message="usage: pico-cli checkpoints {list | show <id> | preview-restore <id> | restore <id> [--apply] | prune [--apply]}",
+        message="usage: pico-cli checkpoints {list | show <id> | preview-restore <id> | restore <id> [--apply] | prune [--older-than <duration>] [--apply]}",
         exit_code=CLI_EXIT_USAGE,
     )
 
@@ -316,8 +326,35 @@ def _is_restore_args(args):
     return len(args) == 1 or (len(args) == 2 and args[1] == "--apply")
 
 
-def _is_apply_only_args(args):
-    return not args or args == ["--apply"]
+def _parse_prune_args(args):
+    options = {"apply": False, "older_than": None}
+    index = 0
+    while index < len(args):
+        token = args[index]
+        if token == "--apply":
+            options["apply"] = True
+            index += 1
+            continue
+        if token == "--older-than":
+            if index + 1 >= len(args):
+                raise _prune_usage_error()
+            options["older_than"] = args[index + 1]
+            index += 2
+            continue
+        if token.startswith("--older-than="):
+            options["older_than"] = token.split("=", 1)[1]
+            index += 1
+            continue
+        raise _prune_usage_error()
+    return options
+
+
+def _prune_usage_error():
+    return CliError(
+        code="usage",
+        message="usage: pico-cli checkpoints prune [--older-than <duration>] [--apply]",
+        exit_code=CLI_EXIT_USAGE,
+    )
 
 
 def _render_json_body(data):
