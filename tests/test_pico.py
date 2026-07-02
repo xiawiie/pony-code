@@ -1870,6 +1870,11 @@ def test_reviewer_skeleton_docs_exist():
     architecture_text = architecture.read_text(encoding="utf-8")
     assert "Agent Harness v1" in architecture_text
     assert "task state" in architecture_text.lower()
+    assert "Run Artifact Terminology" in architecture_text
+    assert "`task_state.json`" in architecture_text
+    assert "`trace.jsonl`" in architecture_text
+    assert "`report.json`" in architecture_text
+    assert "not the recovery truth" in architecture_text
 
 
 def test_package_import_surface_includes_cli_entrypoints():
