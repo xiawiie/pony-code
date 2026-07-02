@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from pico.metrics import (  # noqa: E402
+from pico.evaluation.metrics import (  # noqa: E402
     collect_resume_metrics,
     render_large_scale_experiment_report,
     render_resume_metrics_markdown,

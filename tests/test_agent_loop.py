@@ -1,3 +1,5 @@
+import json
+
 from pico import FakeModelClient, Pico, SessionStore, WorkspaceContext
 from pico.agent_loop import AgentLoop
 
@@ -46,3 +48,28 @@ def test_agent_loop_emits_focused_recovery_trace_events(tmp_path):
     assert '"event": "run_started"' in trace_text
     assert '"event": "model_turn"' in trace_text
     assert '"event": "checkpoint_created"' in trace_text
+
+
+def test_recovery_checkpoint_uses_distinct_trace_event(tmp_path):
+    agent = build_agent(
+        tmp_path,
+        [
+            '<tool>{"name":"write_file","args":{"path":"note.txt","content":"after\\n"}}</tool>',
+            "<final>done</final>",
+        ],
+    )
+
+    agent.ask("write note")
+
+    trace_events = [
+        json.loads(line)
+        for line in agent.run_store.trace_path(agent.current_task_state).read_text(encoding="utf-8").splitlines()
+    ]
+    recovery_events = [event for event in trace_events if event["event"] == "recovery_checkpoint_created"]
+
+    assert recovery_events
+    assert recovery_events[0]["checkpoint_id"] == agent.current_task_state.recovery_checkpoint_id
+    assert not any(
+        event["event"] == "checkpoint_created" and event.get("checkpoint_kind") == "recovery"
+        for event in trace_events
+    )

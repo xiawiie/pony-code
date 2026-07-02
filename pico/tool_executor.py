@@ -41,15 +41,14 @@ _EFFECT_CLASS_BY_TOOL = {
 }
 
 
-# 每种“直接改文件”的工具，声明它们的参数里哪些 key 装了 workspace 相对路径。
-# 之所以要显式声明，是为了：
-#   - 新增工具时必须显式登记，否则 pending Tool Change Record 找不到 before-blob；
-#   - _direct_tool_candidate_paths 不再靠 hard-coded write_file/patch_file 分支。
+# 已知“直接改文件”的工具可以显式声明路径参数；未知 workspace_write 工具
+# 会退回到一组常见路径参数名，避免未来新工具静默丢失 recovery 记录。
 _PATH_ARG_NAMES_BY_TOOL = {
     "write_file": ("path",),
     "patch_file": ("path",),
     # 未来的 move_file 之类工具可以在这里加 ("source", "destination")
 }
+_GENERIC_PATH_ARG_NAMES = ("path", "paths", "target", "targets", "source", "sources", "destination", "destinations")
 
 
 def _effect_class(name, risky):
@@ -245,8 +244,10 @@ class ToolExecutor:
                 diff_summary = shell_side_effects
                 # 只对 delta 里真正变了的路径去挖 before-blob；这里
                 # 先看 git HEAD（对于 tracked file 最准确），拿不到再兜底。
-                before_file_states = _fill_git_head_before_file_states(agent, affected_paths, before_file_states)
                 before_snapshot = _capture_path_snapshot_from_observer(observer_before, affected_paths)
+                before_file_states = _fill_git_head_before_file_states(
+                    agent, affected_paths, before_file_states, before_snapshot
+                )
                 before_snapshot = _merge_before_snapshot(before_snapshot, before_file_states)
                 workspace_changed = bool(affected_paths)
             else:
@@ -313,8 +314,10 @@ class ToolExecutor:
                     affected_paths = list(delta.get("changed_paths", []))
                     shell_side_effects = list(delta.get("summaries", []))
                     diff_summary = shell_side_effects
-                    before_file_states = _fill_git_head_before_file_states(agent, affected_paths, before_file_states)
                     before_snapshot = _capture_path_snapshot_from_observer(observer_before, affected_paths)
+                    before_file_states = _fill_git_head_before_file_states(
+                        agent, affected_paths, before_file_states, before_snapshot
+                    )
                     before_snapshot = _merge_before_snapshot(before_snapshot, before_file_states)
                     workspace_changed = bool(affected_paths)
                 except Exception:  # pragma: no cover - defensive
@@ -372,14 +375,14 @@ def _add_command_policy(metadata, command_risk, command_approval):
 def _direct_tool_candidate_paths(name, args):
     if not isinstance(args, dict):
         return []
-    arg_names = _PATH_ARG_NAMES_BY_TOOL.get(name)
-    if not arg_names:
-        return []
+    arg_names = _PATH_ARG_NAMES_BY_TOOL.get(name, _GENERIC_PATH_ARG_NAMES)
     paths = []
     for key in arg_names:
         value = args.get(key)
         if isinstance(value, str) and value:
             paths.append(value)
+        elif isinstance(value, (list, tuple)):
+            paths.extend(item for item in value if isinstance(item, str) and item)
     return paths
 
 
@@ -461,7 +464,7 @@ def _merge_before_snapshot(before_snapshot, before_file_states):
     return merged
 
 
-def _fill_git_head_before_file_states(agent, raw_paths, before_file_states):
+def _fill_git_head_before_file_states(agent, raw_paths, before_file_states, before_snapshot):
     states = dict(before_file_states or {})
     missing_paths = []
     for raw_path in raw_paths or []:
@@ -469,7 +472,9 @@ def _fill_git_head_before_file_states(agent, raw_paths, before_file_states):
             normalized = normalize_workspace_relative_path(raw_path)
         except ValueError:
             continue
-        if normalized not in states:
+        # If the observer saw the path before the shell command, it was already
+        # dirty/untracked. HEAD is not the user's immediate before state.
+        if normalized not in states and normalized not in (before_snapshot or {}):
             missing_paths.append(normalized)
     if not missing_paths:
         return states
@@ -556,5 +561,12 @@ def _build_file_entries(agent, name, args, affected_paths, before_snapshot, befo
             entry["before_hash"] = str(before_state.get("before_hash") or "")
         elif existed_before:
             entry["before_hash"] = str((before_snapshot or {}).get(normalized) or "")
+        if (
+            entry["snapshot_eligible"]
+            and change_kind in {"modified", "deleted"}
+            and not entry["before_blob_ref"]
+        ):
+            entry["snapshot_eligible"] = False
+            entry["ineligible_reason"] = "before_blob_unavailable"
         entries.append(entry)
     return entries

@@ -7,6 +7,7 @@ Phase 1 只支持“回到某个 turn 之前的原始字节状态”这一种恢
 """
 
 from pathlib import Path
+import tempfile
 
 from pico.recovery_models import (
     CHECKPOINT_RECORD_SCHEMA_VERSION,
@@ -59,6 +60,9 @@ class RecoveryManager:
     def _plan_entry(self, file_entry):
         if not file_entry.get("snapshot_eligible", False):
             return "review", {"reason": file_entry.get("ineligible_reason", "not_snapshot_eligible")}
+        change_kind = file_entry.get("change_kind", "")
+        if change_kind in {"modified", "deleted"} and not file_entry.get("before_blob_ref", ""):
+            return "review", {"reason": "before_blob_unavailable", "observed_current_hash": ""}
         path = file_entry.get("path", "")
         try:
             resolved = resolve_workspace_relative_path(self.workspace_root, path)
@@ -122,22 +126,27 @@ class RecoveryManager:
             })
 
             if before_blob_ref:
-                data = self.store.read_blob(before_blob_ref)
-                resolved.parent.mkdir(parents=True, exist_ok=True)
-                resolved.write_bytes(data)
-                # 独立读回磁盘、独立算一次 hash，作为写入生效的独立证据。
-                # 直接对入参 data 再 sha256 会得到同样的结果，无法证明写入成功。
-                verified_hash = hash_file_bytes(resolved)["content_hash"]
-                expected_hash = hash_bytes(data)["content_hash"]
-                if verified_hash != expected_hash:
+                try:
+                    data = self.store.read_blob(before_blob_ref)
+                except FileNotFoundError:
                     skipped.append({
                         "path": path,
-                        "reason": "post_write_hash_mismatch",
-                        "expected_hash": expected_hash,
-                        "observed_hash": verified_hash,
+                        "reason": "before_blob_missing",
+                        "before_blob_ref": before_blob_ref,
                     })
                     continue
-                post_hash = verified_hash
+                resolved.parent.mkdir(parents=True, exist_ok=True)
+                expected_hash = hash_bytes(data)["content_hash"]
+                write_result = _write_bytes_verified(resolved, data, expected_hash)
+                if write_result["status"] != "ok":
+                    skipped.append({
+                        "path": path,
+                        "reason": write_result["reason"],
+                        "expected_hash": expected_hash,
+                        "observed_hash": write_result["observed_hash"],
+                    })
+                    continue
+                post_hash = write_result["observed_hash"]
             else:
                 # before_blob_ref 为空 → 说明目标状态是“不存在”
                 if resolved.exists():
@@ -187,3 +196,34 @@ class RecoveryCheckpointWriterProxy:
 
     def create_restore_checkpoint(self, **kwargs):
         return self._writer.create_restore_checkpoint(**kwargs)
+
+
+def _write_bytes_verified(path, data, expected_hash):
+    """Write to a sibling temp file, verify it, then atomically replace target."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(delete=False, dir=str(path.parent), prefix=path.name + ".restore.", suffix=".tmp") as handle:
+        temp_path = Path(handle.name)
+    try:
+        temp_path.write_bytes(data)
+        temp_hash = hash_file_bytes(temp_path)["content_hash"]
+        if temp_hash != expected_hash:
+            return {
+                "status": "error",
+                "reason": "post_write_hash_mismatch",
+                "observed_hash": temp_hash,
+            }
+        temp_path.replace(path)
+        observed_hash = hash_file_bytes(path)["content_hash"]
+        if observed_hash != expected_hash:
+            return {
+                "status": "error",
+                "reason": "post_write_hash_mismatch",
+                "observed_hash": observed_hash,
+            }
+        return {"status": "ok", "reason": "", "observed_hash": observed_hash}
+    finally:
+        try:
+            temp_path.unlink()
+        except FileNotFoundError:
+            pass

@@ -3,6 +3,7 @@ from pico.recovery_models import (
     TOOL_CHANGE_RECORD_SCHEMA_VERSION,
     TRACE_CHECKPOINT_CREATED,
     TRACE_MODEL_TURN,
+    TRACE_RECOVERY_CHECKPOINT_CREATED,
     new_checkpoint_record,
     new_tool_change_record,
 )
@@ -46,3 +47,4 @@ def test_tool_change_record_builder_starts_pending():
 def test_trace_event_names_are_phase1_focused():
     assert TRACE_MODEL_TURN == "model_turn"
     assert TRACE_CHECKPOINT_CREATED == "checkpoint_created"
+    assert TRACE_RECOVERY_CHECKPOINT_CREATED == "recovery_checkpoint_created"

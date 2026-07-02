@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from pico.metrics import run_provider_experiments  # noqa: E402
+from pico.evaluation.metrics import run_provider_experiments  # noqa: E402
 
 
 def build_arg_parser():

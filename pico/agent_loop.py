@@ -3,6 +3,7 @@
 import time
 
 from .checkpoint import CHECKPOINT_NONE_STATUS, CHECKPOINT_PARTIAL_STALE_STATUS, CHECKPOINT_WORKSPACE_MISMATCH_STATUS
+from .recovery_models import TRACE_RECOVERY_CHECKPOINT_CREATED
 from .recovery_checkpoint_writer import (
     current_recovery_checkpoint_id,
     set_current_recovery_checkpoint_id,
@@ -227,7 +228,7 @@ class AgentLoop:
                 if recovery_checkpoint is not None:
                     agent.emit_trace(
                         task_state,
-                        "checkpoint_created",
+                        TRACE_RECOVERY_CHECKPOINT_CREATED,
                         {
                             "checkpoint_id": recovery_checkpoint["checkpoint_id"],
                             "recovery_checkpoint_id": recovery_checkpoint["checkpoint_id"],
@@ -264,7 +265,7 @@ class AgentLoop:
             if recovery_checkpoint is not None:
                 agent.emit_trace(
                     task_state,
-                    "checkpoint_created",
+                    TRACE_RECOVERY_CHECKPOINT_CREATED,
                     {
                         "checkpoint_id": recovery_checkpoint["checkpoint_id"],
                         "recovery_checkpoint_id": recovery_checkpoint["checkpoint_id"],
@@ -311,7 +312,7 @@ class AgentLoop:
         if recovery_checkpoint is not None:
             agent.emit_trace(
                 task_state,
-                "checkpoint_created",
+                TRACE_RECOVERY_CHECKPOINT_CREATED,
                 {
                     "checkpoint_id": recovery_checkpoint["checkpoint_id"],
                     "recovery_checkpoint_id": recovery_checkpoint["checkpoint_id"],
