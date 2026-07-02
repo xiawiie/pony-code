@@ -72,6 +72,25 @@ _EXTERNAL_EFFECT_COMMANDS = {
     "aws", "gcloud", "az", "npm", "pnpm", "yarn", "pip", "uv", "cargo",
     "gh", "git-lfs",
 }
+_ENV_OPTIONS_WITH_VALUE = {"-u", "--unset", "-C", "--chdir"}
+_ENV_OPTIONS_WITH_VALUE_PREFIXES = ("--unset=", "--chdir=")
+_ENV_FLAGS_WITHOUT_VALUE = {"-i", "-0", "--ignore-environment", "--null", "--debug"}
+_GIT_GLOBAL_OPTIONS_WITH_VALUE = {
+    "-C",
+    "-c",
+    "--git-dir",
+    "--work-tree",
+    "--namespace",
+    "--exec-path",
+    "--config-env",
+}
+_GIT_GLOBAL_OPTIONS_WITH_VALUE_PREFIXES = (
+    "--git-dir=",
+    "--work-tree=",
+    "--namespace=",
+    "--exec-path=",
+    "--config-env=",
+)
 
 # sh/bash/zsh 之类的 shell wrapper 会用 -c 参数把真正的命令藏在字符串里，
 # 单看第一个 token 会漏判。任何 shell wrapper 都必须递归解析 -c 后面的内容。
@@ -79,14 +98,36 @@ _SHELL_WRAPPERS = {"sh", "bash", "zsh", "dash", "ash", "ksh", "fish"}
 
 
 def _classify_git(tokens):
-    if len(tokens) < 2:
+    sub = _git_subcommand(tokens)
+    if not sub:
         return "read_only"
-    sub = tokens[1].lower()
     if sub in _READ_ONLY_GIT_SUBCOMMANDS and sub not in _DESTRUCTIVE_GIT_SUBCOMMANDS:
         return "read_only"
     if sub in _DESTRUCTIVE_GIT_SUBCOMMANDS:
         return "destructive"
     return "workspace_write"
+
+
+def _git_subcommand(tokens):
+    index = 1
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "--":
+            index += 1
+            break
+        if token in _GIT_GLOBAL_OPTIONS_WITH_VALUE:
+            index += 2
+            continue
+        if any(token.startswith(prefix) for prefix in _GIT_GLOBAL_OPTIONS_WITH_VALUE_PREFIXES):
+            index += 1
+            continue
+        if token.startswith("-") and token != "-":
+            index += 1
+            continue
+        return token.lower()
+    if index < len(tokens):
+        return tokens[index].lower()
+    return ""
 
 
 def command_risk_class(command, _depth=0):
@@ -102,38 +143,89 @@ def command_risk_class(command, _depth=0):
     # 深度守卫：递归 shell wrapper 或命令替换过深，直接按最严格类别兜底。
     if _depth >= _MAX_SHELL_WRAPPER_DEPTH:
         return "destructive"
-    # 出现命令替换/子 shell（`$(...)`、`` `...` ``、`(...)`），拆出所有内嵌命令
-    # 用同一分类器递归，取最严格。
-    subshell_verdict = _classify_subshell_content(text, _depth)
-    if subshell_verdict is not None:
-        return subshell_verdict
+    # 先处理“整个命令就是一个 shell group”的形态：`(...)` / `{ ...; }`。
+    # 这些 wrapper 里可以藏任意命令，必须递归分类内部内容。
+    group_verdict = _classify_shell_group(text, _depth)
+    if group_verdict is not None:
+        return group_verdict
+    # 命令替换本身要分类，但不能提前 return：外层命令也可能更危险，
+    # 例如 `rm -rf build $(echo ok)` 的内层是 read_only，外层才是 destructive。
+    embedded_verdict = _classify_embedded_commands(text, _depth)
     try:
-        lexer = shlex.shlex(text, posix=True, punctuation_chars=True)
+        lexer = shlex.shlex(_normalize_shell_separators(text), posix=True, punctuation_chars=True)
         lexer.whitespace_split = True
-        tokens = list(lexer)
+        tokens = _expand_operator_tokens(list(lexer))
     except (TypeError, ValueError):
         tokens = text.split()
     if not tokens:
         return "workspace_write"
     if any(token in _COMPOSITE_OPERATORS for token in tokens):
-        return _classify_composite_shell(tokens, _depth)
+        outer_verdict = _classify_composite_shell(tokens, _depth)
+        return _combine_with_embedded(outer_verdict, embedded_verdict)
     head = Path(tokens[0]).name.lower()
 
     if head in _SHELL_WRAPPERS:
-        return _classify_shell_wrapper(tokens, _depth)
+        outer_verdict = _classify_shell_wrapper(tokens, _depth)
+        return _combine_with_embedded(outer_verdict, embedded_verdict)
     if head == "git":
-        return _classify_git(tokens)
+        return _combine_with_embedded(_classify_git(tokens), embedded_verdict)
     if head in _DESTRUCTIVE_COMMANDS:
-        return "destructive"
+        return _combine_with_embedded("destructive", embedded_verdict)
     if head in _EXTERNAL_EFFECT_COMMANDS:
-        return "external_effect"
+        return _combine_with_embedded("external_effect", embedded_verdict)
+    if head == "env":
+        return _combine_with_embedded(_classify_env(tokens, _depth), embedded_verdict)
+    if head == "find":
+        return _combine_with_embedded(_classify_find(tokens, _depth), embedded_verdict)
     if head in _READ_ONLY_COMMANDS:
-        return "read_only"
-    return "workspace_write"
+        return _combine_with_embedded("read_only", embedded_verdict)
+    return _combine_with_embedded("workspace_write", embedded_verdict)
 
 
-def _classify_subshell_content(text, depth):
-    """把 $(...)、`...`、(...) 里的内容拆出来递归分类。
+def _normalize_shell_separators(text):
+    return re.sub(r"[\r\n]+", " ; ", str(text))
+
+
+def _classify_shell_group(text, depth):
+    stripped = str(text).strip()
+    if stripped.startswith("(") and stripped.endswith(")"):
+        inner = stripped[1:-1].strip()
+        return command_risk_class(inner, _depth=depth + 1) if inner else "workspace_write"
+    if stripped.startswith("{") and stripped.endswith("}"):
+        inner = stripped[1:-1].strip()
+        if inner.endswith(";"):
+            inner = inner[:-1].strip()
+        return command_risk_class(inner, _depth=depth + 1) if inner else "workspace_write"
+    return None
+
+
+def _expand_operator_tokens(tokens):
+    expanded = []
+    for token in tokens:
+        text = str(token)
+        if text and all(char in "(){};|&<>" for char in text):
+            expanded.extend(_split_operator_run(text))
+        else:
+            expanded.append(token)
+    return expanded
+
+
+def _split_operator_run(text):
+    result = []
+    index = 0
+    while index < len(text):
+        pair = text[index:index + 2]
+        if pair in {"&&", "||", ">>", "<<"}:
+            result.append(pair)
+            index += 2
+            continue
+        result.append(text[index])
+        index += 1
+    return result
+
+
+def _classify_embedded_commands(text, depth):
+    """把 $(...)、`...` 里的内容拆出来递归分类。
 
     只做粗略括号/反引号匹配，够撑住恶意常见形态：
       `curl x | sh`, `$(rm -rf x)`, `echo hi > /etc/hosts`
@@ -146,6 +238,12 @@ def _classify_subshell_content(text, depth):
     if not verdicts:
         return None
     return _worst_risk(verdicts)
+
+
+def _combine_with_embedded(outer_verdict, embedded_verdict):
+    if embedded_verdict is None:
+        return outer_verdict
+    return _worst_risk([outer_verdict, embedded_verdict])
 
 
 def _classify_shell_wrapper(tokens, depth):
@@ -161,6 +259,66 @@ def _classify_shell_wrapper(tokens, depth):
         # 之前默认 workspace_write 太宽松，`bash script.sh` 之类由使用方显式登记。
         return "workspace_write"
     return command_risk_class(inner, _depth=depth + 1)
+
+
+def _classify_env(tokens, depth):
+    index = 1
+    risks = ["read_only"]
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "--":
+            index += 1
+            break
+        if token in {"-S", "--split-string"}:
+            if index + 1 < len(tokens):
+                risks.append(command_risk_class(tokens[index + 1], _depth=depth + 1))
+            index += 2
+            continue
+        if token.startswith("--split-string="):
+            risks.append(command_risk_class(token.split("=", 1)[1], _depth=depth + 1))
+            index += 1
+            continue
+        if token in _ENV_FLAGS_WITHOUT_VALUE:
+            index += 1
+            continue
+        if token in _ENV_OPTIONS_WITH_VALUE:
+            index += 2
+            continue
+        if any(token.startswith(prefix) for prefix in _ENV_OPTIONS_WITH_VALUE_PREFIXES):
+            index += 1
+            continue
+        if _looks_like_env_assignment(token):
+            index += 1
+            continue
+        if token.startswith("-") and token != "-":
+            index += 1
+            continue
+        break
+    if index >= len(tokens):
+        return _worst_risk(risks)
+    return _worst_risk([*risks, _classify_simple_tokens(tokens[index:], depth)])
+
+
+def _classify_find(tokens, depth):
+    risks = ["read_only"]
+    index = 1
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "-delete":
+            risks.append("destructive")
+            index += 1
+            continue
+        if token in {"-exec", "-execdir", "-ok", "-okdir"}:
+            payload = []
+            index += 1
+            while index < len(tokens) and tokens[index] not in {";", "+"}:
+                payload.append(tokens[index])
+                index += 1
+            if payload:
+                risks.append(_classify_simple_tokens(payload, depth))
+            continue
+        index += 1
+    return _worst_risk(risks)
 
 
 def _extract_dash_c_payload(tokens):
@@ -182,6 +340,13 @@ def _looks_like_dash_c_flag(token):
     if not token.startswith("-") or token.startswith("--") or len(token) < 2:
         return False
     return "c" in token[1:]
+
+
+def _looks_like_env_assignment(token):
+    if "=" not in str(token):
+        return False
+    name = str(token).split("=", 1)[0]
+    return bool(re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", name))
 
 
 def _worst_risk(risks):
@@ -236,6 +401,17 @@ def _classify_composite_shell(tokens, depth=0):
 def _classify_simple_tokens(tokens, depth=0):
     if not tokens:
         return "workspace_write"
+    if tokens[0] == "(" and tokens[-1] == ")":
+        return command_risk_class(" ".join(tokens[1:-1]), _depth=depth + 1)
+    if tokens[0] == "{" and tokens[-1] == "}":
+        inner = " ".join(tokens[1:-1]).strip()
+        if inner.endswith(";"):
+            inner = inner[:-1].strip()
+        return command_risk_class(inner, _depth=depth + 1) if inner else "workspace_write"
+    if tokens[0] in {"(", "{"} and len(tokens) > 1:
+        return _classify_simple_tokens(tokens[1:], depth + 1)
+    if tokens[-1] in {")", "}"} and len(tokens) > 1:
+        return _classify_simple_tokens(tokens[:-1], depth + 1)
     head = Path(tokens[0]).name.lower()
     normalized = [head, *tokens[1:]]
     if head in _SHELL_WRAPPERS:
@@ -246,6 +422,10 @@ def _classify_simple_tokens(tokens, depth=0):
         return "destructive"
     if head in _EXTERNAL_EFFECT_COMMANDS:
         return "external_effect"
+    if head == "env":
+        return _classify_env(normalized, depth)
+    if head == "find":
+        return _classify_find(normalized, depth)
     if head in _READ_ONLY_COMMANDS:
         return "read_only"
     return "workspace_write"

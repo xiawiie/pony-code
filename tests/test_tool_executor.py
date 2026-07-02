@@ -104,6 +104,29 @@ def test_destructive_run_shell_is_not_auto_approved(tmp_path):
     assert "tool_change_id" not in result.metadata
 
 
+def test_destructive_run_shell_wrapped_forms_are_not_auto_approved(tmp_path):
+    for command in (
+        "rm -f victim.txt $(echo ignored)",
+        "(rm -f victim.txt)",
+        "{ rm -f victim.txt; }",
+        "echo ok\nrm -f victim.txt",
+        "env rm -f victim.txt",
+        "find . -name victim.txt -delete",
+        "git -C . reset --hard",
+    ):
+        agent = build_agent(tmp_path)
+        victim = tmp_path / "victim.txt"
+        victim.write_text("keep\n", encoding="utf-8")
+
+        result = agent.execute_tool("run_shell", {"command": command, "timeout": 5})
+
+        assert result.metadata["tool_status"] == "rejected"
+        assert result.metadata["tool_error_code"] == "command_approval_required"
+        assert result.metadata["command_risk_class"] == "destructive"
+        assert victim.read_text(encoding="utf-8") == "keep\n"
+        assert "tool_change_id" not in result.metadata
+
+
 def test_write_file_recovery_does_not_use_full_workspace_snapshot(tmp_path):
     agent = build_agent(tmp_path)
 
@@ -182,6 +205,7 @@ def test_run_shell_recovery_populates_before_blob_from_git_head(tmp_path):
     assert entry["before_blob_ref"]
     assert agent.checkpoint_store.read_blob(entry["before_blob_ref"]) == b"demo\n"
     assert entry["snapshot_eligible"] is True
+    assert result.metadata["diff_summary"] == ["modified:README.md"]
 
 
 def test_workspace_write_tool_uses_generic_path_argument_for_recovery(tmp_path):

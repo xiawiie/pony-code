@@ -254,6 +254,8 @@ class ToolExecutor:
                 for path in before_file_states.keys():
                     before_existed.add(path)
                 before_snapshot = _merge_before_snapshot({}, before_file_states)
+                shell_side_effects = _summaries_for_paths(agent, affected_paths, before_existed)
+                diff_summary = shell_side_effects
                 workspace_changed = bool(affected_paths)
             else:
                 after_snapshot = _capture_path_snapshot(agent, before_paths) if records_recovery else before_snapshot
@@ -328,6 +330,8 @@ class ToolExecutor:
                     for path in before_file_states.keys():
                         before_existed.add(path)
                     before_snapshot = _merge_before_snapshot({}, before_file_states)
+                    shell_side_effects = _summaries_for_paths(agent, affected_paths, before_existed)
+                    diff_summary = shell_side_effects
                     workspace_changed = bool(affected_paths)
                 except Exception:  # pragma: no cover - defensive
                     affected_paths = []
@@ -432,6 +436,26 @@ def _paths_present_in_observer(observer_capture, affected_paths):
         if normalized in paths:
             present.add(normalized)
     return present
+
+
+def _summaries_for_paths(agent, affected_paths, before_existed):
+    summaries = []
+    before = set(before_existed or set())
+    for raw_path in affected_paths or []:
+        try:
+            normalized = normalize_workspace_relative_path(raw_path)
+            resolved = resolve_workspace_relative_path(agent.root, normalized)
+        except ValueError:
+            continue
+        existed_before = normalized in before
+        exists_after = resolved.exists()
+        if not existed_before and exists_after:
+            summaries.append(f"created:{normalized}")
+        elif existed_before and not exists_after:
+            summaries.append(f"deleted:{normalized}")
+        else:
+            summaries.append(f"modified:{normalized}")
+    return summaries
 
 
 def _capture_before_file_states_for_paths(agent, raw_paths):
