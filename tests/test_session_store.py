@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
+from contextlib import contextmanager
 
+import pico.session_store as session_store_module
 from pico.session_store import SessionStore
 
 
@@ -40,3 +42,19 @@ def test_session_store_saves_with_atomic_replace(tmp_path, monkeypatch):
     assert replace_calls
     assert replace_calls[-1][1] == "session_atomic.json"
     assert not list((tmp_path / ".pico" / "sessions").glob("*.tmp"))
+
+
+def test_session_store_save_uses_file_lock(tmp_path, monkeypatch):
+    calls = []
+
+    @contextmanager
+    def fake_lock(path):
+        calls.append(Path(path).name)
+        yield
+
+    monkeypatch.setattr(session_store_module.file_lock, "locked_file", fake_lock)
+
+    store = SessionStore(tmp_path / ".pico" / "sessions")
+    store.save({"id": "session_locked", "history": []})
+
+    assert calls == [".session_store.lock"]

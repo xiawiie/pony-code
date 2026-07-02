@@ -10,7 +10,7 @@ Execution rule: keep exactly one task in `In Progress`. Finish, verify, update t
 - Branch: `cli`
 - Latest pushed head: see PR current head
 - CI: expected on Python 3.10 and 3.12 for each pushed dashboard task
-- Local baseline: `./scripts/check.sh` passed with 304 tests after DEFAULT-001
+- Local baseline: `./scripts/check.sh` passed with 307 tests after LOCK-001
 
 ## Done In This Review Pass
 
@@ -43,6 +43,7 @@ Execution rule: keep exactly one task in `In Progress`. Finish, verify, update t
 | PARSE-001 | Done | Added self-closing XML tool call parsing while preserving paired XML and JSON tool formats | Local `300 passed` |
 | REDACT-002 | Done | Made configured secret redaction token-aware to avoid replacing embedded identifier substrings | Local `301 passed` |
 | DEFAULT-001 | Done | Raised agent and shell defaults for real coding-agent runs while keeping provider HTTP timeouts at 300 seconds | Local `304 passed` |
+| LOCK-001 | Done | Added repo-local file locks around session and checkpoint store writes | Local `307 passed` |
 
 ## Sequential Queue
 
@@ -84,7 +85,7 @@ This table reconciles the external issue list against the current `cli` branch. 
 | P2: secret-shape detection too narrow | Done | Common token families including `ghp_`, `github_pat_`, Slack, Hugging Face, AWS, and Google API keys are covered. |
 | P3: `parse_xml_tool` lacks self-closing support | Done | `<tool name="list_files" path="." />` now parses into a tool payload; nameless self-closing tools retry cleanly. |
 | P3: `checkpoint_created` event mixed meanings | Done | Recovery checkpoints now emit `recovery_checkpoint_created` separately. |
-| P3: no session/checkpoint file locks | Partially Done | Pending tool records have ownership checks; session/checkpoint writes still lack file locking. Tracked as `LOCK-001`. |
+| P3: no session/checkpoint file locks | Done | Session and checkpoint stores now serialize writes through repo-local lock files while preserving atomic replace. |
 | P3: `capture_workspace_snapshot` large-repo O(n) | Done for fallback bounds | Snapshot fallback now prunes ignored directories and stops at explicit file/byte limits. |
 | P3: provider no streaming | Backlog | Clients still return full completion text after the request completes. Tracked as `STREAM-001`. |
 
@@ -97,8 +98,8 @@ This table reconciles the external issue list against the current `cli` branch. 
 | PARSE-001 | P3 | Done | Support self-closing XML tool calls | `<tool name="list_files" path="." />` parses into a tool payload; malformed self-closing forms retry cleanly | `./scripts/check.sh` -> 300 passed |
 | REDACT-002 | P2 | Done | Make long secret redaction token-aware | Long configured secrets are redacted without replacing substrings inside larger non-token text | `./scripts/check.sh` -> 301 passed |
 | DEFAULT-001 | P2 | Done | Revisit agent and generation defaults | CLI defaults are less brittle for real coding-agent runs and docs/tests reflect them | `./scripts/check.sh` -> 304 passed |
-| LOCK-001 | P3 | In Progress | Add repo-local session/checkpoint file locking | Session and checkpoint writes are protected against overlapping Pico processes where the platform supports locks | Store concurrency tests; `./scripts/check.sh` |
-| STREAM-001 | P3 | Backlog | Add provider streaming plumbing | Provider clients can expose streamed chunks while preserving existing `complete()` compatibility | Provider tests; `./scripts/check.sh` |
+| LOCK-001 | P3 | Done | Add repo-local session/checkpoint file locking | Session and checkpoint writes are protected against overlapping Pico processes where the platform supports locks | `./scripts/check.sh` -> 307 passed |
+| STREAM-001 | P3 | In Progress | Add provider streaming plumbing | Provider clients can expose streamed chunks while preserving existing `complete()` compatibility | Provider tests; `./scripts/check.sh` |
 
 ## Workflow Notes
 

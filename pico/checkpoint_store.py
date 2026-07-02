@@ -14,6 +14,7 @@ import re
 import tempfile
 from pathlib import Path
 
+from pico import file_lock
 from pico.recovery_paths import hash_bytes
 
 
@@ -29,6 +30,7 @@ class CheckpointStore:
         self.records_dir = self.root / "records"
         self.tool_changes_dir = self.root / "tool_changes"
         self.blobs_dir = self.root / "blobs"
+        self.lock_path = self.root / ".checkpoint_store.lock"
         for directory in (self.records_dir, self.tool_changes_dir, self.blobs_dir):
             directory.mkdir(parents=True, exist_ok=True)
 
@@ -43,11 +45,12 @@ class CheckpointStore:
         blob_ref = info["content_hash"]
         blob_path = self._blob_path(blob_ref)
         blob_path.parent.mkdir(parents=True, exist_ok=True)
-        if not blob_path.exists():
-            with tempfile.NamedTemporaryFile(delete=False, dir=str(blob_path.parent), prefix=blob_ref + ".", suffix=".tmp") as handle:
-                handle.write(data)
-                temp_name = handle.name
-            Path(temp_name).replace(blob_path)
+        with file_lock.locked_file(self.lock_path):
+            if not blob_path.exists():
+                with tempfile.NamedTemporaryFile(delete=False, dir=str(blob_path.parent), prefix=blob_ref + ".", suffix=".tmp") as handle:
+                    handle.write(data)
+                    temp_name = handle.name
+                Path(temp_name).replace(blob_path)
         return {
             "blob_ref": blob_ref,
             "content_hash": blob_ref,
@@ -69,7 +72,8 @@ class CheckpointStore:
     def write_checkpoint_record(self, record):
         checkpoint_id = record["checkpoint_id"]
         path = self._record_path(checkpoint_id)
-        self._write_json_atomic(path, record)
+        with file_lock.locked_file(self.lock_path):
+            self._write_json_atomic(path, record)
         return path
 
     def load_checkpoint_record(self, checkpoint_id):
@@ -92,7 +96,8 @@ class CheckpointStore:
     def write_tool_change_record(self, record):
         tool_change_id = record["tool_change_id"]
         path = self._tool_change_path(tool_change_id)
-        self._write_json_atomic(path, record)
+        with file_lock.locked_file(self.lock_path):
+            self._write_json_atomic(path, record)
         return path
 
     def load_tool_change_record(self, tool_change_id):

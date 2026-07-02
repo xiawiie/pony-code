@@ -1,5 +1,8 @@
 from datetime import datetime, timezone
+from contextlib import contextmanager
+from pathlib import Path
 
+import pico.checkpoint_store as checkpoint_store_module
 from pico.checkpoint_store import CheckpointStore
 from pico.recovery_models import new_checkpoint_record, new_tool_change_record
 
@@ -19,6 +22,24 @@ def test_checkpoint_store_round_trips_records_tool_changes_and_blobs(tmp_path):
     assert store.load_checkpoint_record("ckpt_1")["tool_change_ids"] == ["tc_1"]
     assert store.load_tool_change_record("tc_1")["tool_name"] == "write_file"
     assert store.read_blob(blob["blob_ref"]) == b"hello\r\n"
+
+
+def test_checkpoint_store_writes_use_file_lock(tmp_path, monkeypatch):
+    calls = []
+
+    @contextmanager
+    def fake_lock(path):
+        calls.append(Path(path).name)
+        yield
+
+    monkeypatch.setattr(checkpoint_store_module.file_lock, "locked_file", fake_lock)
+
+    store = CheckpointStore(tmp_path)
+    store.write_blob(b"hello", content_kind="text")
+    store.write_tool_change_record(new_tool_change_record("tc_1", "", "task_1", "write_file", "workspace_write"))
+    store.write_checkpoint_record(new_checkpoint_record("ckpt_1", "turn", "s", "r", "task_1", "", str(tmp_path)))
+
+    assert calls == [".checkpoint_store.lock", ".checkpoint_store.lock", ".checkpoint_store.lock"]
 
 
 def test_prune_dry_run_scans_checkpoint_and_tool_change_blob_refs(tmp_path):
