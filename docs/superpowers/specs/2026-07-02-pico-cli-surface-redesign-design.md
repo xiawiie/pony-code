@@ -15,6 +15,18 @@ The redesign should improve the command experience without turning Pico into a b
 - CLI commands should map to existing harness boundaries instead of merging sessions, runs, checkpoints, and traces into one display model too early.
 - Bare prompt and no-argument REPL behavior remain compatibility paths, but documented workflows should prefer explicit subcommands.
 
+## CLI Guidelines Alignment
+
+This design follows the Command Line Interface Guidelines at https://clig.dev/ as a behavior contract, not as a reason to expand Pico's first implementation scope.
+
+- Human-first output should explain what happened, what matters, and what command to run next.
+- Script-friendly output should be cleanly separated through stdout, stderr, exit codes, and JSON envelopes.
+- Help should lead with examples and common workflows before exhaustive flags.
+- Interactivity should depend on TTY presence and be suppressible with `--no-input`.
+- Color and terminal formatting should be intentional and disabled when they would harm scripts or accessibility.
+- Subcommands should be explicit and future-proof; catch-all behavior is compatibility only.
+- Configuration should make precedence visible and should not expose secrets.
+
 ## Review Findings
 
 The design is feasible because the existing storage and runtime boundaries are already thin enough to wrap from CLI commands:
@@ -29,6 +41,7 @@ The main risks are execution risks, not architectural blockers:
 - `doctor` now performs provider connectivity by default. It must use bounded timeouts and classify failures as diagnostic results instead of letting network failures look like Pico runtime failures.
 - `argparse` can make fully order-independent global flags awkward. The first implementation should support the normal forms cleanly and add broader flag-order compatibility only where it stays simple.
 - `config show --format json` needs source metadata, but secret-bearing values must never be printed.
+- `--quiet`, `--format json`, and TTY-aware color rules must be tested together so human messaging never contaminates machine output.
 - `pico/cli.py` is already doing too much. Splitting it is justified, but the split should not turn into an agent runtime refactor.
 
 ## Implementation Guardrails
@@ -39,6 +52,7 @@ The main risks are execution risks, not architectural blockers:
 - Do not expose reserved extension commands in help until they work.
 - Do not introduce a third-party CLI framework.
 - Do not make restore or prune mutate files without explicit `--apply`.
+- Do not add implicit aliases or abbreviations such as `ckpt`, `chk`, or `cfg`.
 - Keep all new behavior covered by focused CLI tests before broad README updates.
 
 ## Command Model
@@ -135,6 +149,8 @@ Text output is optimized for humans. It should:
 - show next useful commands after state-changing operations;
 - avoid dumping raw JSON unless the user requested `--format json`;
 - keep errors on stderr and result data on stdout.
+- avoid color unless the output stream is a TTY and color has not been disabled.
+- suppress non-essential hints and notices when `--quiet` is set.
 
 Example:
 
@@ -176,6 +192,52 @@ Error envelope:
 
 Existing raw recovery records may appear inside `data`, but the CLI wrapper should own the outer shape.
 
+`--format json` must produce only JSON on stdout. Human tips, progress, warnings, and errors must either be encoded in the JSON envelope or written to stderr only when they do not break scripted consumption. `--quiet` must not remove required JSON fields.
+
+### Terminal Formatting
+
+The CLI should disable color and terminal-width-dependent formatting when:
+
+- `--no-color` is set;
+- `NO_COLOR` is present;
+- `TERM=dumb`;
+- stdout is not a TTY.
+
+Tables are a human-output feature only. JSON output must not depend on terminal width.
+
+## Help And Discovery
+
+Help is part of the CLI Surface and should be tested like command behavior.
+
+Required forms:
+
+```text
+pico --help
+pico -h
+pico help
+pico help <command>
+pico <command> --help
+pico <command> -h
+```
+
+Root help should lead with examples:
+
+```text
+pico run "inspect the failing tests"
+pico repl
+pico status
+pico checkpoints preview-restore <checkpoint-id>
+```
+
+Then group implemented commands:
+
+- Start: `run`, `repl`
+- Diagnostics: `status`, `doctor`, `config show`
+- Recovery inspection: `runs`, `sessions`, `checkpoints`
+- Compatibility: `pico`, `pico "prompt"`
+
+Help must not list reserved extension commands until they work. Unknown command and unknown flag errors should include suggestions when there is a close match.
+
 ## Exit Codes
 
 ```text
@@ -198,6 +260,8 @@ Unknown subcommands and unknown flags should return `2` and include a suggestion
 - `checkpoints prune --apply` removes only artifacts the Checkpoint Store reports as prunable.
 - No CLI command may automatically restore repository files after a failed run.
 - `--no-input` forbids interactive prompts. If an action requires confirmation, the command fails with a clear hint.
+- Interactive confirmation may only occur when stdin is a TTY.
+- Ctrl-C should exit promptly. If cleanup is required, it must be bounded by a timeout and should not hide that the command was interrupted.
 
 ## Status And Diagnostics
 
@@ -226,6 +290,8 @@ Unknown subcommands and unknown flags should return `2` and include a suggestion
 
 `doctor` should not mutate files or reveal secrets. It should perform a complete readiness check by default, including provider connectivity where relevant, and classify failures by area so users can see whether the problem is workspace detection, configuration, credentials, provider connectivity, storage permissions, or recovery-store shape.
 
+`pico doctor --offline` should run only local checks. This supports CI, air-gapped development, and cases where the user wants to separate local configuration failures from provider/network failures.
+
 `pico config show` should explain effective configuration and source precedence:
 
 ```text
@@ -233,6 +299,8 @@ CLI flag > shell environment > project .env > pico.toml > built-in default
 ```
 
 For the current codebase, API keys remain environment-derived for compatibility. The CLI should avoid printing secrets and should report only presence, source, and redacted names.
+
+`.env` remains supported for compatibility and local provider setup, but should not become the project's structured configuration system. Stable project configuration belongs in `pico.toml`; secret handling can move to credential files or keychain-backed storage in a later design.
 
 `pico config show --format json` should expose both effective values and source metadata so scripts and agentic workflows can diagnose precedence problems. Secret-bearing fields must report presence and source without exposing the value.
 
@@ -275,6 +343,15 @@ pico/cli_diagnostics.py  # status, doctor, config show helpers
 ```
 
 The split is organizational. It should not change runtime ownership or introduce a new CLI framework.
+
+## Future-Proofing Rules
+
+- Bare prompt compatibility is silent but not the primary command model.
+- The CLI should not add arbitrary abbreviations or fuzzy aliases.
+- Any alias must be explicit, documented, tested, and treated as stable once released.
+- Reserved command namespaces should not be consumed by prompt fallback.
+- New subcommands should be additive and should not change the meaning of existing commands.
+- Commands that depend on external services should have bounded timeouts and should explain which external dependency failed.
 
 ## High-Feasibility Execution Plan
 
@@ -361,6 +438,7 @@ Actions:
 - Implement `pico status` with workspace, branch, dirty/clean summary, selected provider/model, latest session/run/checkpoint ids, and storage presence.
 - Implement `pico config show` with effective values and source metadata.
 - Implement `pico doctor` as a complete diagnostic pass: workspace, `.env`, provider selection, credential presence, base URL, provider connectivity, storage readability, and recovery-store shape.
+- Implement `pico doctor --offline` for local-only diagnostics.
 - Use bounded timeouts for connectivity checks.
 - Categorize doctor failures by area: workspace, config, credentials, provider_connectivity, storage, recovery_store.
 
@@ -370,6 +448,7 @@ Acceptance:
 - `status` and `config show` do not build a full `Pico` agent.
 - `doctor` does not mutate files, create sessions, or reveal secrets.
 - `doctor` reports network/provider problems as diagnostic findings, not uncaught runtime exceptions.
+- `doctor --offline` does not make provider connectivity calls.
 - `config show --format json` includes source metadata and redacts secret values.
 
 ### Phase 5: Polish Errors, Help, And Documentation
@@ -379,15 +458,20 @@ Goal: make the CLI discoverable and scriptable.
 Actions:
 
 - Add root help grouping for startup, diagnostics, recovery inspection, and compatibility notes.
+- Add `pico help` and `pico help <command>` support.
 - Add unknown command and unknown flag suggestions.
 - Use consistent exit codes.
 - Ensure human errors go to stderr.
+- Add TTY-aware color and `--quiet` behavior.
 - Update README examples after behavior is stable.
 
 Acceptance:
 
 - Unknown subcommands exit with code `2`.
 - Error JSON uses `{ok: false, error: {...}}`.
+- `--format json` stdout is parseable JSON and contains no human-only tips.
+- `--quiet` suppresses non-essential text without removing JSON fields.
+- `--no-color`, `NO_COLOR`, `TERM=dumb`, and non-TTY stdout disable color.
 - Help does not list unimplemented reserved extension commands.
 - README recommends `pico run` and `pico repl` while noting silent legacy compatibility.
 
@@ -425,9 +509,14 @@ Focused tests should prove:
 - `restore` without `--apply` does not mutate files.
 - `prune` without `--apply` does not delete blobs.
 - `--format json` wraps successful command data in a stable envelope.
+- `--format json` never mixes human text into stdout.
+- `--quiet` suppresses non-essential human messages.
+- `--no-color`, `NO_COLOR`, `TERM=dumb`, and non-TTY stdout disable color.
 - unknown subcommands return exit code `2` with a suggestion.
+- `pico help`, `pico help <command>`, and subcommand `--help` show command-specific help.
 - `status` and `config show` do not require model client construction.
 - `doctor` does not construct a full `Pico` agent or mutate session state.
+- `doctor --offline` avoids provider connectivity checks.
 - `--no-input` blocks interactive confirmations.
 
 ## Out Of Scope
@@ -445,5 +534,7 @@ Focused tests should prove:
 
 - `status` does not include session memory summaries; memory/session inspection is handled separately.
 - `doctor` performs a complete readiness check by default, including provider connectivity, with bounded timeouts and clear failure categories.
+- `doctor --offline` provides a local-only diagnostic path.
 - Bare prompt compatibility remains silent; no migration tip is printed during normal one-shot execution.
 - `config show --format json` includes effective values and source metadata, while never exposing secret values.
+- CLI behavior follows clig.dev conventions for help, stdout/stderr separation, TTY-aware output, configuration precedence, and future-proof subcommands.
