@@ -43,6 +43,7 @@ class AgentLoop:
         # 一次 run 结束（无论成功、step_limit、retry_limit）时把这些 id 打包成一份
         # Turn Checkpoint，写进 .pico/checkpoints/records。
         run_tool_change_ids = []
+        run_verification_evidence = []
 
         # 这是 agent 的主循环，可以按“感知 -> 决策 -> 行动 -> 记录”来理解：
         # 1. 感知：重新组 prompt，把当前状态整理给模型看
@@ -108,9 +109,10 @@ class AgentLoop:
                 agent.run_store.write_task_state(task_state)
                 _create_resume_checkpoint(agent, task_state, user_message, trigger="model_error")
                 recovery_checkpoint = _finalize_recovery_checkpoint(
-                    agent, task_state, run_tool_change_ids, trigger="model_error"
+                    agent, task_state, run_tool_change_ids, run_verification_evidence, trigger="model_error"
                 )
                 _emit_recovery_checkpoint_created(agent, task_state, recovery_checkpoint, trigger="model_error")
+                _record_pending_verification_evidence(agent, recovery_checkpoint, run_verification_evidence)
                 agent.emit_trace(
                     task_state,
                     "run_finished",
@@ -207,20 +209,14 @@ class AgentLoop:
                     },
                 )
                 _create_resume_checkpoint(agent, task_state, user_message, trigger="tool_executed")
-                recovery_checkpoint = _finalize_recovery_checkpoint(
-                    agent, task_state, run_tool_change_ids, trigger="tool_executed"
+                verification_evidence = _verification_evidence_for_tool(
+                    name,
+                    args,
+                    result,
+                    tool_result.metadata,
                 )
-                if recovery_checkpoint is not None:
-                    _emit_recovery_checkpoint_created(agent, task_state, recovery_checkpoint, trigger="tool_executed")
-                    _record_verification_evidence_for_tool(
-                        agent,
-                        task_state,
-                        name,
-                        args,
-                        result,
-                        tool_result.metadata,
-                        recovery_checkpoint["checkpoint_id"],
-                    )
+                if verification_evidence is not None:
+                    run_verification_evidence.append(verification_evidence)
                 continue
 
             if kind == "retry":
@@ -234,9 +230,10 @@ class AgentLoop:
             agent.promote_durable_memory(user_message, final)
             _create_resume_checkpoint(agent, task_state, user_message, trigger="run_finished")
             recovery_checkpoint = _finalize_recovery_checkpoint(
-                agent, task_state, run_tool_change_ids, trigger="run_finished"
+                agent, task_state, run_tool_change_ids, run_verification_evidence, trigger="run_finished"
             )
             _emit_recovery_checkpoint_created(agent, task_state, recovery_checkpoint, trigger="run_finished")
+            _record_pending_verification_evidence(agent, recovery_checkpoint, run_verification_evidence)
             agent.emit_trace(
                 task_state,
                 "run_finished",
@@ -262,9 +259,10 @@ class AgentLoop:
         final_trigger = task_state.stop_reason or "run_stopped"
         _create_resume_checkpoint(agent, task_state, user_message, trigger=final_trigger)
         recovery_checkpoint = _finalize_recovery_checkpoint(
-            agent, task_state, run_tool_change_ids, trigger=final_trigger
+            agent, task_state, run_tool_change_ids, run_verification_evidence, trigger=final_trigger
         )
         _emit_recovery_checkpoint_created(agent, task_state, recovery_checkpoint, trigger=final_trigger)
+        _record_pending_verification_evidence(agent, recovery_checkpoint, run_verification_evidence)
         agent.emit_trace(
             task_state,
             "run_finished",
@@ -310,7 +308,7 @@ def _emit_recovery_checkpoint_created(agent, task_state, recovery_checkpoint, tr
     )
 
 
-def _finalize_recovery_checkpoint(agent, task_state, run_tool_change_ids, trigger):
+def _finalize_recovery_checkpoint(agent, task_state, run_tool_change_ids, run_verification_evidence, trigger):
     """把当前累计到的 Tool Change 打包成一份 Turn Checkpoint。
 
     只有真的有 Tool Change 时才写，避免为纯回答型 turn 产生空 checkpoint。
@@ -339,18 +337,29 @@ def _finalize_recovery_checkpoint(agent, task_state, run_tool_change_ids, trigge
     return record
 
 
-def _record_verification_evidence_for_tool(agent, task_state, name, args, result, metadata, checkpoint_id):
-    if name != "run_shell":
+def _record_pending_verification_evidence(agent, recovery_checkpoint, run_verification_evidence):
+    if recovery_checkpoint is None:
         return
+    for evidence in list(run_verification_evidence or []):
+        agent.record_verification_evidence(
+            checkpoint_id=recovery_checkpoint["checkpoint_id"],
+            **evidence,
+        )
+    if run_verification_evidence is not None:
+        run_verification_evidence.clear()
+
+
+def _verification_evidence_for_tool(name, args, result, metadata):
+    if name != "run_shell":
+        return None
     command = str(args.get("command", "")).strip()
     if not is_verification_command(command):
-        return
+        return None
     parsed = parse_run_shell_result(result)
-    agent.record_verification_evidence(
-        command=command,
-        risk_class=metadata.get("command_risk_class", ""),
-        exit_code=parsed["exit_code"],
-        stdout=parsed["stdout"],
-        stderr=parsed["stderr"],
-        checkpoint_id=checkpoint_id,
-    )
+    return {
+        "command": command,
+        "risk_class": metadata.get("command_risk_class", ""),
+        "exit_code": parsed["exit_code"],
+        "stdout": parsed["stdout"],
+        "stderr": parsed["stderr"],
+    }

@@ -18,3 +18,5 @@ Agent Harness v1 is Pico's current runtime shape: a local control loop around a 
 - `task_state.json` records attempts, tool steps, status, stop reason, and final answer.
 - `trace.jsonl` records the event timeline for prompt, model, tool, checkpoint, and finish phases.
 - `report.json` records the review summary, prompt metadata, durable memory changes, and execution metadata.
+- `.pico/checkpoints/records/*.json` stores user-facing Checkpoint Records. A `checkpoint_type="turn"` record is created once for a user request that produced one or more repository-changing Tool Change Records; `checkpoint_type="restore"` records preserve restore provenance.
+- `.pico/checkpoints/tool_changes/*.json` stores internal per-tool Tool Change Records. Turn Checkpoints link these records through `tool_change_ids` instead of exposing each tool invocation as its own restore entrypoint.

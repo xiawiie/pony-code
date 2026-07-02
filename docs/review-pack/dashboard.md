@@ -10,7 +10,7 @@ Execution rule: keep exactly one task in `In Progress`. Finish, verify, update t
 - Branch: `cli`
 - Latest pushed head: see PR current head
 - CI: expected on Python 3.10 and 3.12 for each pushed dashboard task
-- Local baseline: `uv run pytest -q` passed with 274 tests after CLI-005
+- Local baseline: `uv run pytest -q` passed with 275 tests after REC-001
 
 ## Done In This Review Pass
 
@@ -27,6 +27,7 @@ Execution rule: keep exactly one task in `In Progress`. Finish, verify, update t
 | CLI-003 | Done | Moved provider defaults to a single shared source | Local `269 passed` |
 | CLI-004 | Done | Replaced pre-agent command dispatch with a command registry | Local `270 passed` |
 | CLI-005 | Done | Added `pico-cli init` for guided `.env` provider setup | Local `274 passed` |
+| REC-001 | Done | Aligned Turn Checkpoint semantics to one user request with internal Tool Change Records | Local `275 passed` |
 
 ## Sequential Queue
 
@@ -37,8 +38,8 @@ Execution rule: keep exactly one task in `In Progress`. Finish, verify, update t
 | CLI-003 | P1 | Done | Move provider defaults to a single source | `cli.py` and `cli_diagnostics.py` import the same default provider/model/base URL constants | `uv run pytest -q` -> 269 passed |
 | CLI-004 | P1 | Done | Replace command dispatch if-chain with a command registry | Commands, namespace suggestions, and help routing derive from one table | `uv run pytest -q` -> 270 passed |
 | CLI-005 | P1 | Done | Add `pico-cli init` for guided `.env` setup | User can create/update local provider config without hand-editing from scratch | `uv run pytest -q` -> 274 passed |
-| REC-001 | P2 | In Progress | Align recovery checkpoint naming or semantics | Code and docs agree whether recovery records are per tool step or per user turn | Recovery e2e tests and ADR/doc update |
-| REC-002 | P2 | Backlog | Extract ToolExecutor side-effect finalization | Success and exception paths share one side-effect finalizer | ToolExecutor success/error tests |
+| REC-001 | P2 | Done | Align recovery checkpoint naming or semantics | Code and docs agree whether recovery records are per tool step or per user turn | `uv run pytest -q` -> 275 passed |
+| REC-002 | P2 | In Progress | Extract ToolExecutor side-effect finalization | Success and exception paths share one side-effect finalizer | ToolExecutor success/error tests |
 | REC-003 | P2 | Backlog | Add time-based checkpoint pruning | `checkpoints prune --older-than=7d` previews and applies expected deletions | Checkpoint store/CLI tests |
 | REC-004 | P2 | Backlog | Improve binary/ineligible change tracking | Restore preview explains ineligible binary changes without implying backup exists | Recovery manager tests |
 | ARCH-001 | P2 | Backlog | Move model output parsing out of `runtime.py` | Parser behavior preserved while `Pico` sheds parse helpers | Parser and runtime tests |

@@ -33,6 +33,30 @@ def test_agent_write_file_creates_restorable_turn_checkpoint(tmp_path):
     assert agent.current_task_state.recovery_checkpoint_id
 
 
+def test_single_user_request_creates_one_turn_checkpoint_for_multiple_tool_changes(tmp_path):
+    agent = build_agent(
+        tmp_path,
+        [
+            '<tool>{"name":"write_file","args":{"path":"first.txt","content":"one\\n"}}</tool>',
+            '<tool>{"name":"write_file","args":{"path":"second.txt","content":"two\\n"}}</tool>',
+            "<final>done</final>",
+        ],
+    )
+
+    agent.ask("write two files")
+
+    turn_records = [
+        item
+        for item in agent.checkpoint_store.list_checkpoint_records()
+        if item["checkpoint_type"] == "turn"
+    ]
+    assert len(turn_records) == 1
+    checkpoint = turn_records[0]
+    assert len(checkpoint["tool_change_ids"]) == 2
+    assert {entry["path"] for entry in checkpoint["file_entries"]} == {"first.txt", "second.txt"}
+    assert checkpoint["checkpoint_id"] == agent.current_task_state.recovery_checkpoint_id
+
+
 def test_real_checkpoint_can_preview_and_apply_restore(tmp_path):
     agent = build_agent(
         tmp_path,
