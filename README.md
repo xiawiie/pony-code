@@ -58,6 +58,8 @@ pip install -e .
 
 安装并激活对应环境后，可以直接使用 `pico-cli`。如果不想激活虚拟环境，在当前仓库里也可以把下面所有 `pico-cli ...` 命令写成 `uv run pico-cli ...`。
 
+更完整的安装、激活和后续迭代说明见 [Pico CLI installation and update guide](docs/cli-installation-and-updates.md)。
+
 ## 快速开始
 
 在当前仓库里启动交互模式。默认 provider 是 DeepSeek：

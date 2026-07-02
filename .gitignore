@@ -48,6 +48,7 @@ readme_intro_locked/
 
 # Local docs not intended for publication
 docs/*
+!docs/cli-installation-and-updates.md
 !docs/review-pack/
 !docs/review-pack/README.md
 !docs/architecture/
