@@ -65,17 +65,7 @@ class AgentLoop:
                 },
             )
             if prompt_metadata.get("resume_status") == CHECKPOINT_PARTIAL_STALE_STATUS:
-                checkpoint = agent.create_checkpoint(task_state, user_message, trigger="freshness_mismatch")
-                agent.run_store.write_task_state(task_state)
-                agent.emit_trace(
-                    task_state,
-                    "checkpoint_created",
-                    {
-                        "checkpoint_id": checkpoint["checkpoint_id"],
-                        "checkpoint_kind": "resume_summary",
-                        "trigger": "freshness_mismatch",
-                    },
-                )
+                _create_resume_checkpoint(agent, task_state, user_message, trigger="freshness_mismatch")
             elif prompt_metadata.get("resume_status") == CHECKPOINT_WORKSPACE_MISMATCH_STATUS:
                 agent.emit_trace(
                     task_state,
@@ -84,29 +74,9 @@ class AgentLoop:
                         "fields": list(prompt_metadata.get("runtime_identity_mismatch_fields", [])),
                     },
                 )
-                checkpoint = agent.create_checkpoint(task_state, user_message, trigger="workspace_mismatch")
-                agent.run_store.write_task_state(task_state)
-                agent.emit_trace(
-                    task_state,
-                    "checkpoint_created",
-                    {
-                        "checkpoint_id": checkpoint["checkpoint_id"],
-                        "checkpoint_kind": "resume_summary",
-                        "trigger": "workspace_mismatch",
-                    },
-                )
+                _create_resume_checkpoint(agent, task_state, user_message, trigger="workspace_mismatch")
             if prompt_metadata.get("budget_reductions"):
-                checkpoint = agent.create_checkpoint(task_state, user_message, trigger="context_reduction")
-                agent.run_store.write_task_state(task_state)
-                agent.emit_trace(
-                    task_state,
-                    "checkpoint_created",
-                    {
-                        "checkpoint_id": checkpoint["checkpoint_id"],
-                        "checkpoint_kind": "resume_summary",
-                        "trigger": "context_reduction",
-                    },
-                )
+                _create_resume_checkpoint(agent, task_state, user_message, trigger="context_reduction")
             agent.emit_trace(
                 task_state,
                 "model_requested",
@@ -136,32 +106,11 @@ class AgentLoop:
                 final = f"Model error: {exc}"
                 task_state.stop_model_error(final)
                 agent.run_store.write_task_state(task_state)
-                checkpoint = agent.create_checkpoint(task_state, user_message, trigger="model_error")
-                agent.run_store.write_task_state(task_state)
-                agent.emit_trace(
-                    task_state,
-                    "checkpoint_created",
-                    {
-                        "checkpoint_id": checkpoint["checkpoint_id"],
-                        "checkpoint_kind": "resume_summary",
-                        "trigger": "model_error",
-                    },
-                )
+                _create_resume_checkpoint(agent, task_state, user_message, trigger="model_error")
                 recovery_checkpoint = _finalize_recovery_checkpoint(
                     agent, task_state, run_tool_change_ids, trigger="model_error"
                 )
-                if recovery_checkpoint is not None:
-                    agent.emit_trace(
-                        task_state,
-                        TRACE_RECOVERY_CHECKPOINT_CREATED,
-                        {
-                            "checkpoint_id": recovery_checkpoint["checkpoint_id"],
-                            "recovery_checkpoint_id": recovery_checkpoint["checkpoint_id"],
-                            "checkpoint_kind": "recovery",
-                            "checkpoint_type": "turn",
-                            "trigger": "model_error",
-                        },
-                    )
+                _emit_recovery_checkpoint_created(agent, task_state, recovery_checkpoint, trigger="model_error")
                 agent.emit_trace(
                     task_state,
                     "run_finished",
@@ -257,32 +206,12 @@ class AgentLoop:
                         "duration_ms": int((time.monotonic() - tool_started_at) * 1000),
                     },
                 )
-                checkpoint = agent.create_checkpoint(task_state, user_message, trigger="tool_executed")
-                agent.run_store.write_task_state(task_state)
-                agent.emit_trace(
-                    task_state,
-                    "checkpoint_created",
-                    {
-                        "checkpoint_id": checkpoint["checkpoint_id"],
-                        "checkpoint_kind": "resume_summary",
-                        "trigger": "tool_executed",
-                    },
-                )
+                _create_resume_checkpoint(agent, task_state, user_message, trigger="tool_executed")
                 recovery_checkpoint = _finalize_recovery_checkpoint(
                     agent, task_state, run_tool_change_ids, trigger="tool_executed"
                 )
                 if recovery_checkpoint is not None:
-                    agent.emit_trace(
-                        task_state,
-                        TRACE_RECOVERY_CHECKPOINT_CREATED,
-                        {
-                            "checkpoint_id": recovery_checkpoint["checkpoint_id"],
-                            "recovery_checkpoint_id": recovery_checkpoint["checkpoint_id"],
-                            "checkpoint_kind": "recovery",
-                            "checkpoint_type": "turn",
-                            "trigger": "tool_executed",
-                        },
-                    )
+                    _emit_recovery_checkpoint_created(agent, task_state, recovery_checkpoint, trigger="tool_executed")
                     _record_verification_evidence_for_tool(
                         agent,
                         task_state,
@@ -303,32 +232,11 @@ class AgentLoop:
             agent.record({"role": "assistant", "content": final, "created_at": now()})
             task_state.finish_success(final)
             agent.promote_durable_memory(user_message, final)
-            checkpoint = agent.create_checkpoint(task_state, user_message, trigger="run_finished")
-            agent.run_store.write_task_state(task_state)
-            agent.emit_trace(
-                task_state,
-                "checkpoint_created",
-                {
-                    "checkpoint_id": checkpoint["checkpoint_id"],
-                    "checkpoint_kind": "resume_summary",
-                    "trigger": "run_finished",
-                },
-            )
+            _create_resume_checkpoint(agent, task_state, user_message, trigger="run_finished")
             recovery_checkpoint = _finalize_recovery_checkpoint(
                 agent, task_state, run_tool_change_ids, trigger="run_finished"
             )
-            if recovery_checkpoint is not None:
-                agent.emit_trace(
-                    task_state,
-                    TRACE_RECOVERY_CHECKPOINT_CREATED,
-                    {
-                        "checkpoint_id": recovery_checkpoint["checkpoint_id"],
-                        "recovery_checkpoint_id": recovery_checkpoint["checkpoint_id"],
-                        "checkpoint_kind": "recovery",
-                        "checkpoint_type": "turn",
-                        "trigger": "run_finished",
-                    },
-                )
+            _emit_recovery_checkpoint_created(agent, task_state, recovery_checkpoint, trigger="run_finished")
             agent.emit_trace(
                 task_state,
                 "run_finished",
@@ -351,31 +259,12 @@ class AgentLoop:
         agent.record({"role": "assistant", "content": final, "created_at": now()})
         agent.promote_durable_memory(user_message, final)
         agent.run_store.write_task_state(task_state)
-        checkpoint = agent.create_checkpoint(task_state, user_message, trigger=task_state.stop_reason or "run_stopped")
-        agent.emit_trace(
-            task_state,
-            "checkpoint_created",
-            {
-                "checkpoint_id": checkpoint["checkpoint_id"],
-                "checkpoint_kind": "resume_summary",
-                "trigger": task_state.stop_reason or "run_stopped",
-            },
-        )
+        final_trigger = task_state.stop_reason or "run_stopped"
+        _create_resume_checkpoint(agent, task_state, user_message, trigger=final_trigger)
         recovery_checkpoint = _finalize_recovery_checkpoint(
-            agent, task_state, run_tool_change_ids, trigger=task_state.stop_reason or "run_stopped"
+            agent, task_state, run_tool_change_ids, trigger=final_trigger
         )
-        if recovery_checkpoint is not None:
-            agent.emit_trace(
-                task_state,
-                TRACE_RECOVERY_CHECKPOINT_CREATED,
-                {
-                    "checkpoint_id": recovery_checkpoint["checkpoint_id"],
-                    "recovery_checkpoint_id": recovery_checkpoint["checkpoint_id"],
-                    "checkpoint_kind": "recovery",
-                    "checkpoint_type": "turn",
-                    "trigger": task_state.stop_reason or "run_stopped",
-                },
-            )
+        _emit_recovery_checkpoint_created(agent, task_state, recovery_checkpoint, trigger=final_trigger)
         agent.emit_trace(
             task_state,
             "run_finished",
@@ -388,6 +277,37 @@ class AgentLoop:
         )
         agent.run_store.write_report(task_state, agent.redact_artifact(agent.build_report(task_state)))
         return final
+
+
+def _create_resume_checkpoint(agent, task_state, user_message, trigger):
+    checkpoint = agent.create_checkpoint(task_state, user_message, trigger=trigger)
+    agent.run_store.write_task_state(task_state)
+    agent.emit_trace(
+        task_state,
+        "checkpoint_created",
+        {
+            "checkpoint_id": checkpoint["checkpoint_id"],
+            "checkpoint_kind": "resume_summary",
+            "trigger": trigger,
+        },
+    )
+    return checkpoint
+
+
+def _emit_recovery_checkpoint_created(agent, task_state, recovery_checkpoint, trigger):
+    if recovery_checkpoint is None:
+        return
+    agent.emit_trace(
+        task_state,
+        TRACE_RECOVERY_CHECKPOINT_CREATED,
+        {
+            "checkpoint_id": recovery_checkpoint["checkpoint_id"],
+            "recovery_checkpoint_id": recovery_checkpoint["checkpoint_id"],
+            "checkpoint_kind": "recovery",
+            "checkpoint_type": "turn",
+            "trigger": trigger,
+        },
+    )
 
 
 def _finalize_recovery_checkpoint(agent, task_state, run_tool_change_ids, trigger):

@@ -1014,6 +1014,26 @@ def test_successful_run_persists_run_artifacts_and_stop_reason(tmp_path):
     assert "tool_executed" in trace_events
 
 
+def test_step_limit_run_artifacts_reference_final_checkpoint(tmp_path):
+    agent = build_agent(
+        tmp_path,
+        ['<tool>{"name":"read_file","args":{"path":"README.md","start":1,"end":1}}</tool>'],
+        max_steps=1,
+    )
+
+    answer = agent.ask("Inspect README")
+
+    assert "step limit" in answer
+    task_state = json.loads(agent.run_store.task_state_path(agent.current_task_state).read_text(encoding="utf-8"))
+    report = json.loads(agent.run_store.report_path(agent.current_task_state).read_text(encoding="utf-8"))
+    checkpoint_id = agent.session["checkpoints"]["current_id"]
+
+    assert task_state["stop_reason"] == "step_limit_reached"
+    assert task_state["checkpoint_id"] == checkpoint_id
+    assert report["checkpoint_id"] == checkpoint_id
+    assert report["task_state"]["checkpoint_id"] == checkpoint_id
+
+
 def test_trace_and_report_redact_secret_env_values(tmp_path):
     secret = "sk-test-secret-123"
     with patch.dict(os.environ, {"OPENAI_API_KEY": secret}, clear=True):
