@@ -373,7 +373,7 @@ def _render_restore_plan(plan):
     for entry in entries:
         decision = str(entry.get("decision", "-") or "-")
         path = str(entry.get("path", "-") or "-")
-        reason = str(entry.get("reason", "") or entry.get("change_kind", "") or "-")
+        reason = str(entry.get("recovery_note", "") or entry.get("reason", "") or entry.get("change_kind", "") or "-")
         observed = str(entry.get("observed_current_hash", "") or "")
         expected = str(entry.get("expected_current_hash", "") or "")
         details = reason

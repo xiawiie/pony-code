@@ -40,6 +40,9 @@ class RecoveryManager:
                 "path": file_entry.get("path", ""),
                 "decision": decision,
                 "reason": detail.get("reason", ""),
+                "restore_available": decision == "restore",
+                "captured_before_state": bool(file_entry.get("before_blob_ref", "")),
+                "recovery_note": detail.get("recovery_note", ""),
                 "expected_current_hash": file_entry.get("expected_current_hash", ""),
                 "observed_current_hash": detail.get("observed_current_hash", ""),
                 "before_blob_ref": file_entry.get("before_blob_ref", ""),
@@ -59,7 +62,12 @@ class RecoveryManager:
 
     def _plan_entry(self, file_entry):
         if not file_entry.get("snapshot_eligible", False):
-            return "review", {"reason": file_entry.get("ineligible_reason", "not_snapshot_eligible")}
+            reason = file_entry.get("ineligible_reason", "not_snapshot_eligible")
+            if file_entry.get("before_blob_ref", ""):
+                note = f"review required: {reason}; automatic restore is disabled for this entry"
+            else:
+                note = f"review required: {reason}; no restorable before-state snapshot was captured"
+            return "review", {"reason": reason, "recovery_note": note}
         change_kind = file_entry.get("change_kind", "")
         if change_kind in {"modified", "deleted"} and not file_entry.get("before_blob_ref", ""):
             return "review", {"reason": "before_blob_unavailable", "observed_current_hash": ""}

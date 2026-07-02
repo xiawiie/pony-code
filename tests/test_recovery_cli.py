@@ -78,6 +78,35 @@ def test_checkpoints_preview_restore_json_keeps_success_envelope(tmp_path, capsy
     assert payload["data"]["entries"][0]["decision"] == "restore"
 
 
+def test_checkpoints_preview_restore_text_explains_ineligible_binary(tmp_path, capsys):
+    store = CheckpointStore(tmp_path)
+    (tmp_path / "image.bin").write_bytes(b"\x00\x01after")
+    record = new_checkpoint_record("ckpt_binary", "turn", "s", "r", "t", "", str(tmp_path))
+    record["file_entries"].append(
+        {
+            "path": "image.bin",
+            "change_kind": "modified",
+            "snapshot_eligible": False,
+            "before_blob_ref": "",
+            "before_hash": "",
+            "after_blob_ref": "",
+            "after_hash": "",
+            "expected_current_hash": "",
+            "content_kind": "binary",
+            "ineligible_reason": "binary_file",
+        }
+    )
+    store.write_checkpoint_record(record)
+
+    code = main(["--cwd", str(tmp_path), "checkpoints", "preview-restore", "ckpt_binary"])
+
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "review" in out
+    assert "image.bin" in out
+    assert "no restorable before-state snapshot" in out
+
+
 def test_checkpoints_restore_without_apply_uses_preview_text(tmp_path, capsys):
     store = CheckpointStore(tmp_path)
     write_restorable_checkpoint(store, tmp_path, "ckpt_1")

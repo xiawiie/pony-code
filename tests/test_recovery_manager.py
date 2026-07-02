@@ -88,6 +88,36 @@ def test_preview_flags_review_when_before_blob_unavailable(tmp_path):
     assert plan["entries"][0]["reason"] == "before_blob_unavailable"
 
 
+def test_preview_explains_ineligible_binary_without_claiming_snapshot(tmp_path):
+    store = CheckpointStore(tmp_path)
+    (tmp_path / "image.bin").write_bytes(b"\x00\x01after")
+    record = new_checkpoint_record("ckpt_binary", "turn", "s", "r", "t", "", str(tmp_path))
+    record["file_entries"].append(
+        {
+            "path": "image.bin",
+            "change_kind": "modified",
+            "snapshot_eligible": False,
+            "before_blob_ref": "",
+            "before_hash": "",
+            "after_blob_ref": "",
+            "after_hash": "",
+            "expected_current_hash": "",
+            "content_kind": "binary",
+            "ineligible_reason": "binary_file",
+        }
+    )
+    store.write_checkpoint_record(record)
+
+    plan = RecoveryManager(store, tmp_path).preview_restore("ckpt_binary")
+    entry = plan["entries"][0]
+
+    assert entry["decision"] == "review"
+    assert entry["reason"] == "binary_file"
+    assert entry["restore_available"] is False
+    assert entry["captured_before_state"] is False
+    assert "no restorable before-state snapshot" in entry["recovery_note"]
+
+
 def test_apply_restore_skips_entry_when_before_blob_missing(tmp_path):
     store = CheckpointStore(tmp_path)
     before = store.write_blob(b"before\n", "text")
