@@ -10,7 +10,7 @@ Execution rule: keep exactly one task in `In Progress`. Finish, verify, update t
 - Branch: `cli`
 - Latest pushed head: see PR current head
 - CI: expected on Python 3.10 and 3.12 for each pushed dashboard task
-- Local baseline: `./scripts/check.sh` passed with 300 tests after PARSE-001
+- Local baseline: `./scripts/check.sh` passed with 301 tests after REDACT-002
 
 ## Done In This Review Pass
 
@@ -41,6 +41,7 @@ Execution rule: keep exactly one task in `In Progress`. Finish, verify, update t
 | WS-001 | Done | Extracted workspace snapshot helpers into a bounded module while preserving runtime compatibility methods | Local `297 passed` |
 | LOOP-001 | Done | Extracted shared AgentLoop terminal finalization for checkpoint, trace, verification, and report writes | Local `298 passed` |
 | PARSE-001 | Done | Added self-closing XML tool call parsing while preserving paired XML and JSON tool formats | Local `300 passed` |
+| REDACT-002 | Done | Made configured secret redaction token-aware to avoid replacing embedded identifier substrings | Local `301 passed` |
 
 ## Sequential Queue
 
@@ -78,7 +79,7 @@ This table reconciles the external issue list against the current `cli` branch. 
 | P2: tool examples duplicated | Done | Prompt prefix imports examples from `pico.tools.TOOL_EXAMPLES`; no separate prompt-prefix example table remains. |
 | P2: default `max_steps` / `max_new_tokens` / timeout too small | Backlog | Provider HTTP timeouts are 300s, but agent and generation defaults still need a product pass. Tracked as `DEFAULT-001`. |
 | P2: Anthropic prompt cache not wired | Done | Anthropic-compatible client now sends guarded `cache_control` metadata and reports cache usage. |
-| P2: `redact_text` direct `str.replace` may over-redact | Partially Done | Short values avoid broad substring replacement; long configured secret values still use literal replacement. Tracked as `REDACT-002`. |
+| P2: `redact_text` direct `str.replace` may over-redact | Done | Configured secret values now redact with token boundaries, while short values still require exact whole-string matches. |
 | P2: secret-shape detection too narrow | Done | Common token families including `ghp_`, `github_pat_`, Slack, Hugging Face, AWS, and Google API keys are covered. |
 | P3: `parse_xml_tool` lacks self-closing support | Done | `<tool name="list_files" path="." />` now parses into a tool payload; nameless self-closing tools retry cleanly. |
 | P3: `checkpoint_created` event mixed meanings | Done | Recovery checkpoints now emit `recovery_checkpoint_created` separately. |
@@ -93,8 +94,8 @@ This table reconciles the external issue list against the current `cli` branch. 
 | WS-001 | P1 | Done | Extract workspace snapshot helpers and bound fallback scanning | `runtime.py` delegates snapshot capture/diff to a dedicated module; snapshot fallback has explicit limits and tests | `./scripts/check.sh` -> 297 passed |
 | LOOP-001 | P2 | Done | Extract AgentLoop terminal finalization helper | Model-error, final-answer, and limit-stop paths share one report/checkpoint/trace finalizer | `./scripts/check.sh` -> 298 passed |
 | PARSE-001 | P3 | Done | Support self-closing XML tool calls | `<tool name="list_files" path="." />` parses into a tool payload; malformed self-closing forms retry cleanly | `./scripts/check.sh` -> 300 passed |
-| REDACT-002 | P2 | In Progress | Make long secret redaction token-aware | Long configured secrets are redacted without replacing substrings inside larger non-token text | Security tests; `./scripts/check.sh` |
-| DEFAULT-001 | P2 | Backlog | Revisit agent and generation defaults | CLI defaults are less brittle for real coding-agent runs and docs/tests reflect them | CLI parser/config tests; `./scripts/check.sh` |
+| REDACT-002 | P2 | Done | Make long secret redaction token-aware | Long configured secrets are redacted without replacing substrings inside larger non-token text | `./scripts/check.sh` -> 301 passed |
+| DEFAULT-001 | P2 | In Progress | Revisit agent and generation defaults | CLI defaults are less brittle for real coding-agent runs and docs/tests reflect them | CLI parser/config tests; `./scripts/check.sh` |
 | LOCK-001 | P3 | Backlog | Add repo-local session/checkpoint file locking | Session and checkpoint writes are protected against overlapping Pico processes where the platform supports locks | Store concurrency tests; `./scripts/check.sh` |
 | STREAM-001 | P3 | Backlog | Add provider streaming plumbing | Provider clients can expose streamed chunks while preserving existing `complete()` compatibility | Provider tests; `./scripts/check.sh` |
 

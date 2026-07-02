@@ -6,6 +6,7 @@ import re
 SENSITIVE_ENV_NAME_MARKERS = ("API_KEY", "TOKEN", "SECRET", "PASSWORD")
 REDACTED_VALUE = "<redacted>"
 MIN_SECRET_SUBSTRING_REDACTION_LENGTH = 8
+SECRET_TOKEN_BOUNDARY_CHARS = r"A-Za-z0-9_.-"
 SECRET_SHAPED_TEXT_PATTERNS = (
     re.compile(r"(?i)\b(api[_ -]?key|access[_ -]?key|auth[_ -]?token|bearer[_ -]?token|credential|secret|password|token)\b"),
     re.compile(r"(?i)\bsk-[A-Za-z0-9_-]{6,}\b"),
@@ -88,8 +89,15 @@ def redact_text(text, env=None, secret_env_names=None):
             if text == value:
                 text = REDACTED_VALUE
             continue
-        text = text.replace(value, REDACTED_VALUE)
+        text = _redact_secret_token(text, value)
     return text
+
+
+def _redact_secret_token(text, secret):
+    pattern = re.compile(
+        rf"(?<![{SECRET_TOKEN_BOUNDARY_CHARS}]){re.escape(secret)}(?![{SECRET_TOKEN_BOUNDARY_CHARS}])"
+    )
+    return pattern.sub(REDACTED_VALUE, text)
 
 
 def redact_artifact(value, key=None, env=None, secret_env_names=None):

@@ -60,6 +60,16 @@ def test_short_secret_values_do_not_redact_broad_substrings():
     assert redact_artifact({"OPENAI_API_KEY": "abc"}, env=env)["OPENAI_API_KEY"] == REDACTED_VALUE
 
 
+def test_long_secret_values_redact_token_instances_not_embedded_text():
+    env = {"OPENAI_API_KEY": "alpha123456789"}
+
+    assert redact_text("token=alpha123456789", env=env) == f"token={REDACTED_VALUE}"
+    assert redact_text("Use alpha123456789 for the request.", env=env) == (
+        f"Use {REDACTED_VALUE} for the request."
+    )
+    assert redact_text("identifier_alpha123456789_suffix", env=env) == "identifier_alpha123456789_suffix"
+
+
 def test_shell_env_uses_allowlist_and_sets_pwd_with_path_fallback(tmp_path):
     env = {"PATH": "/usr/bin", "HOME": "/home/user", "SECRET": "nope"}
 
