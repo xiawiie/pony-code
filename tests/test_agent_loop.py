@@ -2,11 +2,13 @@ import json
 
 import pytest
 
+import pico.agent_loop as agent_loop_module
 from pico import FakeModelClient, Pico, SessionStore, WorkspaceContext
 from pico.agent_loop import AgentLoop
 
 
-def build_agent(tmp_path, outputs):
+def build_agent(tmp_path, outputs, max_steps=6):
+    tmp_path.mkdir(parents=True, exist_ok=True)
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
     workspace = WorkspaceContext.build(tmp_path)
     store = SessionStore(tmp_path / ".pico" / "sessions")
@@ -15,6 +17,7 @@ def build_agent(tmp_path, outputs):
         workspace=workspace,
         session_store=store,
         approval_policy="auto",
+        max_steps=max_steps,
     )
 
 
@@ -94,3 +97,26 @@ def test_model_error_marks_run_failed_and_writes_report(tmp_path):
     ]
     assert trace_events[-1]["event"] == "run_finished"
     assert trace_events[-1]["status"] == "failed"
+
+
+def test_terminal_paths_share_finish_run_helper(tmp_path, monkeypatch):
+    calls = []
+    original_finish = agent_loop_module._finish_run
+
+    def spy_finish(**kwargs):
+        calls.append(kwargs["trigger"])
+        return original_finish(**kwargs)
+
+    monkeypatch.setattr(agent_loop_module, "_finish_run", spy_finish)
+
+    final_agent = build_agent(tmp_path / "final", ["<final>done</final>"])
+    assert final_agent.ask("finish") == "done"
+
+    limit_agent = build_agent(
+        tmp_path / "limit",
+        ['<tool>{"name":"read_file","args":{"path":"README.md","start":1,"end":1}}</tool>'],
+        max_steps=1,
+    )
+    assert "step limit" in limit_agent.ask("hit limit")
+
+    assert calls == ["run_finished", "step_limit_reached"]

@@ -106,24 +106,16 @@ class AgentLoop:
                 agent.last_prompt_metadata = prompt_metadata
                 final = f"Model error: {exc}"
                 task_state.stop_model_error(final)
-                agent.run_store.write_task_state(task_state)
-                _create_resume_checkpoint(agent, task_state, user_message, trigger="model_error")
-                recovery_checkpoint = _finalize_recovery_checkpoint(
-                    agent, task_state, run_tool_change_ids, run_verification_evidence, trigger="model_error"
+                _finish_run(
+                    agent=agent,
+                    task_state=task_state,
+                    user_message=user_message,
+                    final=final,
+                    run_started_at=run_started_at,
+                    run_tool_change_ids=run_tool_change_ids,
+                    run_verification_evidence=run_verification_evidence,
+                    trigger="model_error",
                 )
-                _emit_recovery_checkpoint_created(agent, task_state, recovery_checkpoint, trigger="model_error")
-                _record_pending_verification_evidence(agent, recovery_checkpoint, run_verification_evidence)
-                agent.emit_trace(
-                    task_state,
-                    "run_finished",
-                    {
-                        "status": task_state.status,
-                        "stop_reason": task_state.stop_reason,
-                        "final_answer": final,
-                        "run_duration_ms": int((time.monotonic() - run_started_at) * 1000),
-                    },
-                )
-                agent.run_store.write_report(task_state, agent.redact_artifact(agent.build_report(task_state)))
                 raise
             completion_metadata = dict(getattr(agent.model_client, "last_completion_metadata", {}) or {})
             if completion_metadata:
@@ -228,24 +220,16 @@ class AgentLoop:
             agent.record({"role": "assistant", "content": final, "created_at": now()})
             task_state.finish_success(final)
             agent.promote_durable_memory(user_message, final)
-            _create_resume_checkpoint(agent, task_state, user_message, trigger="run_finished")
-            recovery_checkpoint = _finalize_recovery_checkpoint(
-                agent, task_state, run_tool_change_ids, run_verification_evidence, trigger="run_finished"
+            return _finish_run(
+                agent=agent,
+                task_state=task_state,
+                user_message=user_message,
+                final=final,
+                run_started_at=run_started_at,
+                run_tool_change_ids=run_tool_change_ids,
+                run_verification_evidence=run_verification_evidence,
+                trigger="run_finished",
             )
-            _emit_recovery_checkpoint_created(agent, task_state, recovery_checkpoint, trigger="run_finished")
-            _record_pending_verification_evidence(agent, recovery_checkpoint, run_verification_evidence)
-            agent.emit_trace(
-                task_state,
-                "run_finished",
-                {
-                    "status": task_state.status,
-                    "stop_reason": task_state.stop_reason,
-                    "final_answer": final,
-                    "run_duration_ms": int((time.monotonic() - run_started_at) * 1000),
-                },
-            )
-            agent.run_store.write_report(task_state, agent.redact_artifact(agent.build_report(task_state)))
-            return final
 
         if attempts >= max_attempts and tool_steps < agent.max_steps:
             final = "Stopped after too many malformed model responses without a valid tool call or final answer."
@@ -255,26 +239,49 @@ class AgentLoop:
             task_state.stop_step_limit(final)
         agent.record({"role": "assistant", "content": final, "created_at": now()})
         agent.promote_durable_memory(user_message, final)
-        agent.run_store.write_task_state(task_state)
         final_trigger = task_state.stop_reason or "run_stopped"
-        _create_resume_checkpoint(agent, task_state, user_message, trigger=final_trigger)
-        recovery_checkpoint = _finalize_recovery_checkpoint(
-            agent, task_state, run_tool_change_ids, run_verification_evidence, trigger=final_trigger
+        return _finish_run(
+            agent=agent,
+            task_state=task_state,
+            user_message=user_message,
+            final=final,
+            run_started_at=run_started_at,
+            run_tool_change_ids=run_tool_change_ids,
+            run_verification_evidence=run_verification_evidence,
+            trigger=final_trigger,
         )
-        _emit_recovery_checkpoint_created(agent, task_state, recovery_checkpoint, trigger=final_trigger)
-        _record_pending_verification_evidence(agent, recovery_checkpoint, run_verification_evidence)
-        agent.emit_trace(
-            task_state,
-            "run_finished",
-            {
-                "status": task_state.status,
-                "stop_reason": task_state.stop_reason,
-                "final_answer": final,
-                "run_duration_ms": int((time.monotonic() - run_started_at) * 1000),
-            },
-        )
-        agent.run_store.write_report(task_state, agent.redact_artifact(agent.build_report(task_state)))
-        return final
+
+
+def _finish_run(
+    *,
+    agent,
+    task_state,
+    user_message,
+    final,
+    run_started_at,
+    run_tool_change_ids,
+    run_verification_evidence,
+    trigger,
+):
+    agent.run_store.write_task_state(task_state)
+    _create_resume_checkpoint(agent, task_state, user_message, trigger=trigger)
+    recovery_checkpoint = _finalize_recovery_checkpoint(
+        agent, task_state, run_tool_change_ids, run_verification_evidence, trigger=trigger
+    )
+    _emit_recovery_checkpoint_created(agent, task_state, recovery_checkpoint, trigger=trigger)
+    _record_pending_verification_evidence(agent, recovery_checkpoint, run_verification_evidence)
+    agent.emit_trace(
+        task_state,
+        "run_finished",
+        {
+            "status": task_state.status,
+            "stop_reason": task_state.stop_reason,
+            "final_answer": final,
+            "run_duration_ms": int((time.monotonic() - run_started_at) * 1000),
+        },
+    )
+    agent.run_store.write_report(task_state, agent.redact_artifact(agent.build_report(task_state)))
+    return final
 
 
 def _create_resume_checkpoint(agent, task_state, user_message, trigger):
