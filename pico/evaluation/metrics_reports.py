@@ -1,0 +1,395 @@
+import json
+from pathlib import Path
+
+from .metrics_common import (
+    DEFAULT_CORE_REPORT_PATH,
+    DEFAULT_CONTEXT_ABLATION_V2_PATH,
+    DEFAULT_HARNESS_REGRESSION_V2_PATH,
+    DEFAULT_MEMORY_ABLATION_V2_PATH,
+    DEFAULT_RECOVERY_ABLATION_V2_PATH,
+    _parse_iso8601,
+    _safe_mean,
+    _safe_ratio,
+)
+from .metrics_experiments import (
+    build_stress_agent_metrics,
+    run_context_stress_matrix,
+    run_large_scale_memory_experiment,
+    run_memory_dependency_experiment,
+    run_real_context_experiment,
+    run_real_memory_experiment,
+    run_real_security_experiment_suite,
+    run_security_experiment_suite,
+)
+
+
+def aggregate_benchmark_artifact(path):
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    rows = list(payload.get("rows", []))
+    summary = dict(payload.get("summary", {}))
+    task_count = int(summary.get("total_tasks", len(rows) or 0))
+    tool_steps = [int(row.get("tool_steps", 0)) for row in rows]
+    attempts = [int(row.get("attempts", 0)) for row in rows]
+    categories = {}
+    for row in rows:
+        category = str(row.get("category", "")).strip()
+        if not category:
+            continue
+        categories[category] = categories.get(category, 0) + 1
+    return {
+        "task_count": task_count,
+        "passed": int(summary.get("passed", 0)),
+        "failed": int(summary.get("failed", 0)),
+        "pass_rate": float(summary.get("pass_rate", 0.0)),
+        "within_budget": int(summary.get("within_budget", 0)),
+        "verifier_passes": int(summary.get("verifier_passes", 0)),
+        "failure_category_counts": dict(summary.get("failure_category_counts", {})),
+        "avg_tool_steps": _safe_mean(tool_steps),
+        "avg_attempts": _safe_mean(attempts),
+        "category_counts": categories,
+        "rows": rows,
+    }
+
+
+def _infer_run_duration_ms(events):
+    finished = next((event for event in reversed(events) if event.get("event") == "run_finished"), None)
+    if finished and finished.get("run_duration_ms") is not None:
+        return float(finished["run_duration_ms"])
+    started = next((event for event in events if event.get("event") == "run_started"), None)
+    if not started or not finished:
+        return 0.0
+    start_dt = _parse_iso8601(started.get("created_at"))
+    end_dt = _parse_iso8601(finished.get("created_at"))
+    if start_dt is None or end_dt is None:
+        return 0.0
+    return max(0.0, (end_dt - start_dt).total_seconds() * 1000.0)
+
+
+def aggregate_run_artifacts(runs_root):
+    runs_root = Path(runs_root)
+    run_dirs = sorted(path for path in runs_root.glob("*") if path.is_dir())
+    reports = []
+    tool_status_counts = {}
+    tool_name_counts = {}
+    security_event_counts = {}
+    run_durations = []
+    tool_durations = []
+    prompt_durations = []
+    stop_reasons = {}
+
+    for run_dir in run_dirs:
+        report_path = run_dir / "report.json"
+        trace_path = run_dir / "trace.jsonl"
+        if report_path.exists():
+            reports.append(json.loads(report_path.read_text(encoding="utf-8")))
+        events = []
+        if trace_path.exists():
+            events = [json.loads(line) for line in trace_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        run_durations.append(_infer_run_duration_ms(events))
+        for event in events:
+            if event.get("event") == "prompt_built" and event.get("duration_ms") is not None:
+                prompt_durations.append(float(event["duration_ms"]))
+            if event.get("event") != "tool_executed":
+                continue
+            tool_name = str(event.get("name", "")).strip()
+            if tool_name:
+                tool_name_counts[tool_name] = tool_name_counts.get(tool_name, 0) + 1
+            tool_status = str(event.get("tool_status", "")).strip()
+            if tool_status:
+                tool_status_counts[tool_status] = tool_status_counts.get(tool_status, 0) + 1
+            security_event = str(event.get("security_event_type", "")).strip()
+            if security_event:
+                security_event_counts[security_event] = security_event_counts.get(security_event, 0) + 1
+            if event.get("duration_ms") is not None:
+                tool_durations.append(float(event["duration_ms"]))
+
+    tool_steps = [int(report.get("tool_steps", 0)) for report in reports]
+    attempts = [int(report.get("attempts", 0)) for report in reports]
+    prompt_chars = [int((report.get("prompt_metadata") or {}).get("prompt_chars", 0)) for report in reports]
+    cached_tokens = [int((report.get("prompt_metadata") or {}).get("cached_tokens", 0) or 0) for report in reports]
+    cache_hits = [bool((report.get("prompt_metadata") or {}).get("cache_hit")) for report in reports]
+    input_tokens = [int((report.get("prompt_metadata") or {}).get("input_tokens", 0) or 0) for report in reports]
+    prefix_reused = [
+        not bool((report.get("prompt_metadata") or {}).get("prefix_changed"))
+        for report in reports
+        if "prefix_changed" in (report.get("prompt_metadata") or {})
+    ]
+    for report in reports:
+        stop_reason = str(report.get("stop_reason", "")).strip()
+        if stop_reason:
+            stop_reasons[stop_reason] = stop_reasons.get(stop_reason, 0) + 1
+
+    return {
+        "run_count": len(reports) if reports else len(run_dirs),
+        "avg_tool_steps": _safe_mean(tool_steps),
+        "avg_attempts": _safe_mean(attempts),
+        "avg_prompt_chars": _safe_mean(prompt_chars),
+        "cache_hit_rate": _safe_ratio(sum(1 for hit in cache_hits if hit), len(cache_hits)),
+        "cached_token_ratio": _safe_ratio(sum(cached_tokens), sum(input_tokens)),
+        "avg_cached_tokens": _safe_mean(cached_tokens),
+        "prefix_reuse_rate": _safe_ratio(sum(1 for reused in prefix_reused if reused), len(prefix_reused)),
+        "tool_status_counts": tool_status_counts,
+        "tool_name_counts": tool_name_counts,
+        "security_event_counts": security_event_counts,
+        "stop_reason_counts": stop_reasons,
+        "avg_run_duration_ms": _safe_mean(run_durations),
+        "avg_tool_duration_ms": _safe_mean(tool_durations),
+        "avg_prompt_build_duration_ms": _safe_mean(prompt_durations),
+    }
+
+def collect_resume_metrics(
+    benchmark_artifact_path,
+    runs_root,
+    provider_experiments=None,
+    memory_repetitions=3,
+    large_memory_repetitions=5,
+    context_repetitions=5,
+    security_repetitions=3,
+    experiment_mode="synthetic",
+    real_provider="gpt",
+):
+    benchmark = aggregate_benchmark_artifact(benchmark_artifact_path)
+    runs = aggregate_run_artifacts(runs_root)
+    experiment_mode = str(experiment_mode)
+    real_provider = str(real_provider)
+    if experiment_mode == "real":
+        memory_large = run_real_memory_experiment(provider=real_provider, repetitions=large_memory_repetitions)
+        memory = {name: dict(values) for name, values in memory_large["variants"].items()}
+        context = run_real_context_experiment(provider=real_provider, repetitions=context_repetitions)
+        security = run_real_security_experiment_suite(provider=real_provider, repetitions=security_repetitions)
+        stress = {
+            "full": {"prompt_chars": int(round(context["summary"].get("avg_full_prompt_chars", 0.0)))},
+            "no_context_reduction": {"prompt_chars": int(round(context["summary"].get("avg_raw_prompt_chars", 0.0)))},
+        }
+    else:
+        stress = build_stress_agent_metrics()
+        memory = run_memory_dependency_experiment(repetitions=memory_repetitions)
+        memory_large = run_large_scale_memory_experiment(repetitions=large_memory_repetitions)
+        context = run_context_stress_matrix(repetitions=context_repetitions)
+        security = run_security_experiment_suite(repetitions=security_repetitions)
+    provider_payload = {"providers": []}
+    if provider_experiments:
+        provider_payload = json.loads(Path(provider_experiments).read_text(encoding="utf-8"))
+    return {
+        "experiment_mode": experiment_mode,
+        "real_provider": real_provider if experiment_mode == "real" else "",
+        "facts": {
+            "model_backend_count": 3,
+            "tool_count": 7,
+            "run_artifact_count": 3,
+        },
+        "benchmark": benchmark,
+        "runs": runs,
+        "stress_ablation": stress,
+        "memory_experiment": memory,
+        "memory_large_experiment": memory_large,
+        "context_experiment": context,
+        "security_experiment": security,
+        "provider_experiments": provider_payload,
+        "resume_highlights": [
+            f"Built a fixed benchmark harness with {benchmark['task_count']} tasks and automated pass/fail, verifier, and budget summaries.",
+            f"Recorded 3 run artifacts per execution and structured runtime metadata across {runs['run_count']} aggregated runs.",
+            f"Observed prompt-cache telemetry with average cached tokens of {runs['avg_cached_tokens']:.1f} and cache-hit rate of {runs['cache_hit_rate']:.2%} when available.",
+            (
+                f"In a real-model long-context experiment ({real_provider}), context reduction shrank average prompt size from "
+                f"{stress['no_context_reduction']['prompt_chars']} to {stress['full']['prompt_chars']} chars."
+                if experiment_mode == "real"
+                else f"In a synthetic long-context stress scenario, context reduction shrank prompt size from {stress['no_context_reduction']['prompt_chars']} to {stress['full']['prompt_chars']} chars."
+            ),
+            f"In the memory dependency experiment, repeated follow-up reads dropped from {memory['memory_off']['repeated_reads']} to {memory['memory_on']['repeated_reads']}.",
+            f"In the large-scale memory experiment, repeated reads dropped from {memory_large['variants']['memory_off']['repeated_reads']} to {memory_large['variants']['memory_on']['repeated_reads']} across {memory_large['task_count']} tasks.",
+        ],
+    }
+
+
+def render_resume_metrics_markdown(metrics):
+    benchmark = metrics["benchmark"]
+    runs = metrics["runs"]
+    stress = metrics["stress_ablation"]
+    memory = metrics["memory_experiment"]
+    memory_large = metrics["memory_large_experiment"]
+    context = metrics["context_experiment"]
+    security = metrics["security_experiment"]
+    provider_payload = metrics.get("provider_experiments", {})
+    lines = [
+        "# Pico Resume Metrics",
+        "",
+        "## Key Numbers",
+        f"- Experiment mode: {metrics.get('experiment_mode', 'synthetic')}",
+        f"- Model backends: {metrics['facts']['model_backend_count']}",
+        f"- Tool types: {metrics['facts']['tool_count']}",
+        f"- Fixed benchmark tasks: {benchmark['task_count']}",
+        f"- Fixed benchmark pass rate: {benchmark['pass_rate']:.2%}",
+        f"- Aggregated runs: {runs['run_count']}",
+        f"- Average tool steps per run: {runs['avg_tool_steps']:.2f}",
+        f"- Average attempts per run: {runs['avg_attempts']:.2f}",
+        f"- Cache hit rate: {runs['cache_hit_rate']:.2%}",
+        (
+            f"- Real-model prompt chars (full vs no context reduction): {stress['full']['prompt_chars']} / {stress['no_context_reduction']['prompt_chars']}"
+            if metrics.get("experiment_mode") == "real"
+            else f"- Synthetic prompt chars (full vs no context reduction): {stress['full']['prompt_chars']} / {stress['no_context_reduction']['prompt_chars']}"
+        ),
+        f"- Memory repeated reads (on vs off): {memory['memory_on']['repeated_reads']} / {memory['memory_off']['repeated_reads']}",
+        f"- Large-scale memory tasks: {memory_large['task_count']}",
+        f"- Context matrix configs: {context['config_count']}",
+        f"- Security scenarios: {security['scenario_count']}",
+        "",
+        "## Resume Highlights",
+    ]
+    lines.extend(f"- {line}" for line in metrics["resume_highlights"])
+    providers = provider_payload.get("providers", [])
+    if providers:
+        lines.extend(["", "## Provider Experiments"])
+        for provider in providers:
+            if provider.get("status") == "completed":
+                lines.append(
+                    f"- {provider['provider']}: pass_rate={provider['pass_rate']:.2%}, avg_attempts={provider['avg_attempts']:.2f}, avg_tool_steps={provider['avg_tool_steps']:.2f}, cache_hit_rate={provider['cache_hit_rate']:.2%}"
+                )
+            else:
+                lines.append(f"- {provider['provider']}: {provider['status']} ({provider.get('reason', 'unknown')})")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def render_large_scale_experiment_report(metrics):
+    benchmark = metrics["benchmark"]
+    memory_small = metrics["memory_experiment"]
+    memory_large = metrics["memory_large_experiment"]
+    context = metrics["context_experiment"]
+    security = metrics["security_experiment"]
+    providers = metrics.get("provider_experiments", {}).get("providers", [])
+    report_provider = (
+        metrics.get("real_provider")
+        or context.get("provider")
+        or memory_large.get("provider")
+        or security.get("provider")
+        or "unknown"
+    )
+    lines = [
+        "# Pico Large-Scale Experiment Report",
+        "",
+        "## Executive Summary",
+        (
+            f"- Experiment mode: real-model (provider: {report_provider})"
+            if metrics.get("experiment_mode") == "real"
+            else f"- Experiment mode: {metrics.get('experiment_mode', 'synthetic')}"
+        ),
+        f"- Fixed benchmark tasks: {benchmark['task_count']}",
+        f"- Large-scale memory tasks: {memory_large['task_count']}",
+        f"- Context stress configurations: {context['config_count']}",
+        f"- Security scenarios: {security['scenario_count']}",
+        "",
+        "## Context Governance",
+        (
+            f"- Real-model prompt chars ({report_provider}): {metrics['stress_ablation']['full']['prompt_chars']} vs {metrics['stress_ablation']['no_context_reduction']['prompt_chars']}"
+            if metrics.get("experiment_mode") == "real"
+            else f"- Synthetic stress prompt chars: {metrics['stress_ablation']['full']['prompt_chars']} vs {metrics['stress_ablation']['no_context_reduction']['prompt_chars']}"
+        ),
+        f"- Average prompt compression ratio across context matrix: {context['summary']['avg_prompt_compression_ratio']:.2%}",
+        f"- Max prompt compression ratio across context matrix: {context['summary']['max_prompt_compression_ratio']:.2%}",
+        "",
+        "## Memory Experiments",
+        f"- Small memory experiment repeated reads: {memory_small['memory_on']['repeated_reads']} vs {memory_small['memory_off']['repeated_reads']}",
+        f"- Large memory experiment repeated reads: {memory_large['variants']['memory_on']['repeated_reads']} vs {memory_large['variants']['memory_off']['repeated_reads']}",
+        f"- Large memory experiment avg tool steps: {memory_large['variants']['memory_on']['avg_tool_steps']:.2f} vs {memory_large['variants']['memory_off']['avg_tool_steps']:.2f}",
+        "",
+        "## Security Experiments",
+        f"- Security event counts: {json.dumps(security['security_event_counts'], sort_keys=True)}",
+        f"- Tool error code counts: {json.dumps(security['tool_error_code_counts'], sort_keys=True)}",
+        "",
+        "## Provider Experiments",
+    ]
+    if providers:
+        for provider in providers:
+            if provider.get("status") == "completed":
+                lines.append(
+                    f"- {provider['provider']}: pass_rate={provider['pass_rate']:.2%}, avg_attempts={provider['avg_attempts']:.2f}, avg_tool_steps={provider['avg_tool_steps']:.2f}, cache_hit_rate={provider['cache_hit_rate']:.2%}"
+                )
+            else:
+                lines.append(f"- {provider['provider']}: {provider['status']} ({provider.get('reason', 'unknown')})")
+    else:
+        lines.append("- none")
+    lines.extend(
+        [
+            "",
+            "## Resume-Safe Claims",
+            f"- Long-context stress scenario: prompt length reduced from {metrics['stress_ablation']['no_context_reduction']['prompt_chars']} to {metrics['stress_ablation']['full']['prompt_chars']}.",
+            f"- Large-scale memory experiment: repeated reads reduced from {memory_large['variants']['memory_off']['repeated_reads']} to {memory_large['variants']['memory_on']['repeated_reads']}.",
+            f"- Platform facts: {benchmark['task_count']} benchmark tasks, {metrics['facts']['tool_count']} tool types, {metrics['facts']['run_artifact_count']} run artifacts.",
+            "",
+        ]
+    )
+    return "\n".join(lines)
+
+def write_benchmark_core_report(
+    report_path=DEFAULT_CORE_REPORT_PATH,
+    harness_artifact_path=DEFAULT_HARNESS_REGRESSION_V2_PATH,
+    context_artifact_path=DEFAULT_CONTEXT_ABLATION_V2_PATH,
+    memory_artifact_path=DEFAULT_MEMORY_ABLATION_V2_PATH,
+    recovery_artifact_path=DEFAULT_RECOVERY_ABLATION_V2_PATH,
+):
+    harness = json.loads(Path(harness_artifact_path).read_text(encoding="utf-8"))
+    context = json.loads(Path(context_artifact_path).read_text(encoding="utf-8"))
+    memory = json.loads(Path(memory_artifact_path).read_text(encoding="utf-8"))
+    recovery = json.loads(Path(recovery_artifact_path).read_text(encoding="utf-8"))
+
+    enabled_recovery = recovery["variants"]["resume_enabled"]["summary"]
+    lines = [
+        "# Pico Benchmark Core Report",
+        "",
+        "这轮 benchmark 只收缩到 Harness regression、context ablation、working memory ablation 和 recovery ablation 四层，不把 provider、run aggregation 或 durable memory 的别的结论揉进来。",
+        "",
+        "## Harness Regression",
+        f"- 固定 regression 任务数：{harness['summary']['total_tasks']}",
+        f"- pass_rate：{harness['summary']['pass_rate']:.2%}",
+        f"- within_budget_rate：{harness['summary']['within_budget_rate']:.2%}",
+        f"- verifier_pass_rate：{harness['summary']['verifier_pass_rate']:.2%}",
+        "",
+        "## Context Ablation",
+        f"- 配置数：{context['config_count']}",
+        f"- avg_full_prompt_chars：{context['summary']['avg_full_prompt_chars']:.2f}",
+        f"- avg_raw_prompt_chars：{context['summary']['avg_raw_prompt_chars']:.2f}",
+        f"- avg_prompt_compression_ratio：{context['summary']['avg_prompt_compression_ratio']:.2%}",
+        f"- max_prompt_compression_ratio：{context['summary']['max_prompt_compression_ratio']:.2%}",
+        f"- current_request_preserved_rate：{context['summary']['current_request_preserved_rate']:.2%}",
+        "",
+        "## Working Memory Ablation",
+        f"- memory_on repeated_reads：{memory['variants']['memory_on']['repeated_reads']}",
+        f"- memory_off repeated_reads：{memory['variants']['memory_off']['repeated_reads']}",
+        f"- memory_on avg_tool_steps：{memory['variants']['memory_on']['avg_tool_steps']:.2f}",
+        f"- memory_on correct_rate：{memory['variants']['memory_on']['correct_rate']:.2%}",
+        f"- memory_hit_rate：{memory['variants']['memory_on']['memory_hit_rate']:.2%}",
+        "",
+        "## Recovery / Resume Ablation",
+        f"- resume_success_rate：{enabled_recovery['resume_success_rate']:.2%}",
+        f"- stale_reanchor_rate：{enabled_recovery['stale_reanchor_rate']:.2%}",
+        f"- workspace_drift_detection_rate：{enabled_recovery['workspace_drift_detection_rate']:.2%}",
+        f"- resume_false_accept_rate：{enabled_recovery['resume_false_accept_rate']:.2%}",
+        "",
+        "## 可以安全写进简历的指标",
+        "- avg_full_prompt_chars",
+        "- avg_raw_prompt_chars",
+        "- avg_prompt_compression_ratio",
+        "- max_prompt_compression_ratio",
+        "- repeated_reads",
+        "- avg_tool_steps",
+        "- correct_rate",
+        "- resume_success_rate",
+        "- workspace_drift_detection_rate",
+        "- resume_false_accept_rate",
+        "",
+        "## 只适合放文档/面试展开的指标",
+        "- current_request_preserved_rate",
+        "- memory_hit_rate",
+        "- stale_reanchor_rate",
+        "- failure_category_counts",
+        "",
+        "## 口径边界",
+        "- Harness regression 只证明 runtime 合同稳定，不证明 provider 上限。",
+        "- Context、memory、recovery 这三层只证明模块收益，不和 provider benchmark 混写。",
+    ]
+    report_text = "\n".join(lines) + "\n"
+    report_path = Path(report_path)
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(report_text, encoding="utf-8")
+    return report_text

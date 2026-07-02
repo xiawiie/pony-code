@@ -10,6 +10,16 @@ from pico.evaluation.metrics import (
 )
 
 
+def test_metrics_module_splits_report_and_experiment_entrypoints():
+    from pico.evaluation.metrics import run_context_ablation_v2 as compat_context_ablation
+    from pico.evaluation.metrics import write_benchmark_core_report as compat_core_report
+    from pico.evaluation.metrics_experiments import run_context_ablation_v2 as experiment_context_ablation
+    from pico.evaluation.metrics_reports import write_benchmark_core_report as report_core_report
+
+    assert compat_context_ablation is experiment_context_ablation
+    assert compat_core_report is report_core_report
+
+
 def test_run_context_ablation_v2_writes_expected_artifact(tmp_path):
     artifact_path = tmp_path / "artifacts" / "context-ablation-v2.json"
 
