@@ -52,6 +52,7 @@ def test_reserved_command_names_are_known():
     assert {
         "run",
         "repl",
+        "init",
         "status",
         "doctor",
         "config",

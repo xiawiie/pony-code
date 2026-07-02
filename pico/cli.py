@@ -18,6 +18,7 @@ from .cli_commands import (
     handle_config,
     handle_doctor,
     handle_help,
+    handle_init,
     handle_runs,
     handle_sessions,
     handle_status,
@@ -47,6 +48,7 @@ from .workspace import WorkspaceContext, middle
 
 COMMAND_SPECS = {
     "help": {"category": "meta", "subcommands": set()},
+    "init": {"category": "config", "subcommands": set()},
     "status": {"category": "inspection", "subcommands": set()},
     "doctor": {"category": "inspection", "subcommands": {"--offline"}},
     "config": {"category": "inspection", "subcommands": {"show"}},
@@ -415,6 +417,10 @@ def _dispatch_doctor(args, tokens):
     return handle_doctor(tokens, args.cwd, args)
 
 
+def _dispatch_init(args, tokens):
+    return handle_init(tokens, args.cwd, args)
+
+
 def _dispatch_config(args, tokens):
     return handle_config(tokens, args.cwd, args)
 
@@ -441,6 +447,7 @@ def _dispatch_runs(args, tokens):
 
 _PRE_AGENT_COMMAND_HANDLERS = {
     "help": _dispatch_help,
+    "init": _dispatch_init,
     "status": _dispatch_status,
     "doctor": _dispatch_doctor,
     "config": _dispatch_config,

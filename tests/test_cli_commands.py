@@ -148,3 +148,117 @@ def test_cli_command_specs_drive_namespace_tables():
         for name, spec in cli.COMMAND_SPECS.items()
         if spec["category"] == "recovery"
     }
+
+
+def test_init_creates_project_env_without_building_agent(tmp_path, monkeypatch, capsys):
+    def fail_build_agent(args):
+        raise AssertionError("init must not build a Pico agent")
+
+    monkeypatch.setattr("pico.cli.build_agent", fail_build_agent)
+
+    code = main([
+        "--cwd",
+        str(tmp_path),
+        "init",
+        "--provider",
+        "deepseek",
+        "--api-key",
+        "sk-project-deepseek",
+    ])
+
+    assert code == 0
+    env_text = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert "PICO_PROVIDER=deepseek\n" in env_text
+    assert "PICO_DEEPSEEK_MODEL=deepseek-v4-pro\n" in env_text
+    assert "PICO_DEEPSEEK_API_BASE=https://api.deepseek.com/anthropic\n" in env_text
+    assert "PICO_DEEPSEEK_API_KEY=sk-project-deepseek\n" in env_text
+
+    out = capsys.readouterr().out
+    assert out.startswith("Pico init")
+    assert "sk-project-deepseek" not in out
+
+    code = main(["--cwd", str(tmp_path), "--format", "json", "config", "show"])
+
+    assert code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["data"]["provider"]["value"] == "deepseek"
+    assert payload["data"]["api_key"] == {
+        "present": True,
+        "source": "project_env",
+        "name": "PICO_DEEPSEEK_API_KEY",
+    }
+
+
+def test_init_updates_existing_env_without_dropping_unrelated_lines(tmp_path, capsys):
+    (tmp_path / ".env").write_text(
+        "# keep this comment\n"
+        "OTHER_SETTING=kept\n"
+        "PICO_PROVIDER=deepseek\n"
+        "PICO_DEEPSEEK_API_KEY=old-secret\n",
+        encoding="utf-8",
+    )
+
+    code = main([
+        "--cwd",
+        str(tmp_path),
+        "init",
+        "--provider",
+        "openai",
+        "--model",
+        "gpt-project",
+        "--api-key",
+        "sk-openai-project",
+    ])
+
+    assert code == 0
+    env_text = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert "# keep this comment\n" in env_text
+    assert "OTHER_SETTING=kept\n" in env_text
+    assert "PICO_PROVIDER=openai\n" in env_text
+    assert "PICO_OPENAI_MODEL=gpt-project\n" in env_text
+    assert "PICO_OPENAI_API_BASE=https://www.right.codes/codex/v1\n" in env_text
+    assert "PICO_OPENAI_API_KEY=sk-openai-project\n" in env_text
+
+    out = capsys.readouterr().out
+    assert "updated" in out
+    assert "sk-openai-project" not in out
+
+
+def test_init_json_redacts_api_key_value(tmp_path, capsys):
+    code = main([
+        "--cwd",
+        str(tmp_path),
+        "--format",
+        "json",
+        "init",
+        "--provider",
+        "anthropic",
+        "--api-key",
+        "sk-anthropic-project",
+    ])
+
+    assert code == 0
+    output = capsys.readouterr().out
+    payload = json.loads(output)
+    assert payload["kind"] == "config_init"
+    assert payload["data"]["provider"] == "anthropic"
+    assert payload["data"]["api_key"] == {
+        "present": True,
+        "name": "PICO_ANTHROPIC_API_KEY",
+    }
+    assert "sk-anthropic-project" not in output
+
+
+def test_init_preserves_existing_ollama_host_when_cli_host_is_default(tmp_path):
+    (tmp_path / ".env").write_text(
+        "PICO_PROVIDER=ollama\n"
+        "PICO_OLLAMA_HOST=http://ollama.example:11434\n",
+        encoding="utf-8",
+    )
+
+    code = main(["--cwd", str(tmp_path), "init", "--provider", "ollama"])
+
+    assert code == 0
+    env_text = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert "PICO_PROVIDER=ollama\n" in env_text
+    assert "PICO_OLLAMA_HOST=http://ollama.example:11434\n" in env_text

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 KNOWN_TOP_LEVEL_COMMANDS = {
     "run",
     "repl",
+    "init",
     "status",
     "doctor",
     "config",
