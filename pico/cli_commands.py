@@ -6,7 +6,7 @@ from pathlib import Path
 
 from .checkpoint_store import CheckpointStore
 from .cli_errors import CLI_EXIT_USAGE, CliError
-from .cli_diagnostics import collect_config, collect_status
+from .cli_diagnostics import collect_config, collect_doctor, collect_status
 from .cli_output import format_json, success_envelope
 from .recovery_checkpoint_writer import RecoveryCheckpointWriter
 from .recovery_manager import RecoveryManager
@@ -86,6 +86,19 @@ def handle_runs(root, tokens, args):
 
 def handle_status(cwd, args):
     return print_result("status", collect_status(cwd, args), args, _render_status)
+
+
+def handle_doctor(tokens, cwd, args):
+    offline = False
+    if tokens == ["--offline"]:
+        offline = True
+    elif tokens:
+        raise CliError(
+            code="usage",
+            message="usage: pico doctor [--offline]",
+            exit_code=CLI_EXIT_USAGE,
+        )
+    return print_result("doctor", collect_doctor(cwd, args, offline=offline), args, _render_json_body)
 
 
 def handle_config(tokens, cwd, args):

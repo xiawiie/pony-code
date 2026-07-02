@@ -84,6 +84,42 @@ def test_config_show_does_not_mutate_environment(tmp_path, monkeypatch, capsys):
     assert "secret-value" not in captured.out
 
 
+def test_doctor_offline_skips_connectivity(tmp_path, monkeypatch, capsys):
+    called = {}
+
+    def fake_connectivity(config):
+        called["connectivity"] = True
+        return {"status": "ok"}
+
+    monkeypatch.setattr("pico.cli_diagnostics.check_provider_connectivity", fake_connectivity)
+
+    code = main(["--cwd", str(tmp_path), "--format", "json", "doctor", "--offline"])
+
+    assert code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["kind"] == "doctor"
+    assert called == {}
+    assert payload["data"]["provider_connectivity"]["status"] == "skipped"
+
+
+def test_doctor_reports_connectivity_as_diagnostic_result(tmp_path, monkeypatch, capsys):
+    def fake_connectivity(config):
+        return {
+            "status": "error",
+            "category": "provider_connectivity",
+            "message": "connection timed out",
+        }
+
+    monkeypatch.setattr("pico.cli_diagnostics.check_provider_connectivity", fake_connectivity)
+
+    code = main(["--cwd", str(tmp_path), "--format", "json", "doctor"])
+
+    assert code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["data"]["provider_connectivity"]["category"] == "provider_connectivity"
+    assert payload["data"]["provider_connectivity"]["message"] == "connection timed out"
+
+
 def test_sessions_list_and_show_json_do_not_build_agent(tmp_path, monkeypatch, capsys):
     session_dir = tmp_path / ".pico" / "sessions"
     session_dir.mkdir(parents=True)

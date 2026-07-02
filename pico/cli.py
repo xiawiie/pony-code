@@ -14,6 +14,7 @@ import textwrap
 from .cli_commands import (
     handle_checkpoints,
     handle_config,
+    handle_doctor,
     handle_runs,
     handle_sessions,
     handle_status,
@@ -384,6 +385,8 @@ def main(argv=None):
                     exit_code=CLI_EXIT_USAGE,
                 )
             return handle_status(args.cwd, args)
+        if invocation.command == "doctor":
+            return handle_doctor(invocation.command_args, args.cwd, args)
         if invocation.command == "config":
             return handle_config(invocation.command_args, args.cwd, args)
         if invocation.command == "sessions":

@@ -2,6 +2,8 @@
 
 import os
 from pathlib import Path
+from urllib import error, request
+from urllib.parse import urljoin
 
 from .config import _parse_env_line, find_project_env
 from .workspace import WorkspaceContext
@@ -12,6 +14,10 @@ DEFAULT_DEEPSEEK_MODEL = "deepseek-v4-pro"
 DEFAULT_OLLAMA_MODEL = "qwen3.5:4b"
 DEFAULT_OPENAI_MODEL = "gpt-5.4"
 DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-4-6"
+DEFAULT_OLLAMA_HOST = "http://127.0.0.1:11434"
+DEFAULT_OPENAI_BASE_URL = "https://www.right.codes/codex/v1"
+DEFAULT_ANTHROPIC_BASE_URL = "https://www.right.codes/claude/v1"
+DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com/anthropic"
 PROVIDER_CHOICES = ("ollama", "openai", "anthropic", "deepseek")
 
 MODEL_ENV_NAMES = {
@@ -44,6 +50,18 @@ API_KEY_ENV_NAMES = {
     ),
     "deepseek": ("PICO_DEEPSEEK_API_KEY", "DEEPSEEK_API_KEY"),
     "ollama": (),
+}
+BASE_URL_ENV_NAMES = {
+    "openai": ("PICO_OPENAI_API_BASE", "OPENAI_API_BASE"),
+    "anthropic": ("PICO_ANTHROPIC_API_BASE", "ANTHROPIC_API_BASE"),
+    "deepseek": ("PICO_DEEPSEEK_API_BASE", "DEEPSEEK_API_BASE"),
+    "ollama": ("PICO_OLLAMA_HOST",),
+}
+DEFAULT_BASE_URLS = {
+    "ollama": DEFAULT_OLLAMA_HOST,
+    "openai": DEFAULT_OPENAI_BASE_URL,
+    "anthropic": DEFAULT_ANTHROPIC_BASE_URL,
+    "deepseek": DEFAULT_DEEPSEEK_BASE_URL,
 }
 
 
@@ -93,6 +111,74 @@ def collect_config(cwd, args=None):
     }
 
 
+def collect_doctor(cwd, args=None, offline=False):
+    workspace = WorkspaceContext.build(cwd)
+    root = Path(workspace.repo_root)
+    pico_root = root / ".pico"
+    project_env = _read_project_env(workspace.repo_root)
+    config = collect_config(cwd, args)
+    config["base_url"] = _resolve_base_url(args, config["provider"]["value"], project_env)
+    provider_connectivity = (
+        {"status": "skipped", "category": "provider_connectivity", "message": "offline mode"}
+        if offline
+        else check_provider_connectivity(config)
+    )
+    checkpoints_root = pico_root / "checkpoints"
+    return {
+        "workspace": {
+            "status": "ok",
+            "repo_root": workspace.repo_root,
+        },
+        "config": {
+            "status": "ok",
+            "provider": config["provider"],
+            "model": config["model"],
+            "base_url": config["base_url"],
+        },
+        "credentials": {
+            "status": "ok" if config["api_key"]["present"] or config["provider"]["value"] == "ollama" else "missing",
+            "api_key": config["api_key"],
+        },
+        "provider_connectivity": provider_connectivity,
+        "storage": {
+            "sessions": _storage_status(pico_root / "sessions"),
+            "runs": _storage_status(pico_root / "runs"),
+            "checkpoints": _storage_status(checkpoints_root / "records"),
+        },
+        "recovery_store": _storage_status(checkpoints_root),
+    }
+
+
+def check_provider_connectivity(config, timeout=2):
+    provider = config["provider"]["value"]
+    base_url = config.get("base_url", {}).get("value", "")
+    url = _connectivity_url(provider, base_url)
+    try:
+        response = request.urlopen(url, timeout=timeout)
+        with response:
+            return {
+                "status": "ok",
+                "category": "provider_connectivity",
+                "url": url,
+                "http_status": response.status,
+            }
+    except error.HTTPError as exc:
+        return {
+            "status": "ok",
+            "category": "provider_connectivity",
+            "url": url,
+            "http_status": exc.code,
+            "message": f"provider endpoint responded with HTTP {exc.code}",
+        }
+    except Exception as exc:
+        return {
+            "status": "error",
+            "category": "provider_connectivity",
+            "url": url,
+            "message": str(exc),
+        }
+
+
 def _resolve_provider(args, project_env):
     explicit = getattr(args, "provider", None) if args is not None else None
     if explicit:
@@ -131,6 +217,25 @@ def _resolve_api_key(provider, project_env):
     return {"present": False, "source": "unset", "name": ""}
 
 
+def _resolve_base_url(args, provider, project_env):
+    explicit = getattr(args, "base_url", None) if args is not None else None
+    if explicit:
+        return {"value": explicit, "source": "cli", "name": "--base-url"}
+    if provider == "ollama":
+        explicit_host = getattr(args, "host", None) if args is not None else None
+        if explicit_host and explicit_host != DEFAULT_OLLAMA_HOST:
+            return {"value": explicit_host, "source": "cli", "name": "--host"}
+    env_names = BASE_URL_ENV_NAMES.get(provider, ())
+    value, source, name = _resolve_env_value(env_names, project_env)
+    if value:
+        return {"value": value, "source": source, "name": name}
+    return {
+        "value": DEFAULT_BASE_URLS.get(provider, ""),
+        "source": "default",
+        "name": f"DEFAULT_{provider.upper()}_BASE_URL" if provider != "ollama" else "DEFAULT_OLLAMA_HOST",
+    }
+
+
 def _resolve_env_value(env_names, project_env):
     for name in env_names:
         value = project_env.get(name)
@@ -141,6 +246,16 @@ def _resolve_env_value(env_names, project_env):
         if value:
             return value, "environment", name
     return "", "unset", ""
+
+
+def _connectivity_url(provider, base_url):
+    if provider == "ollama":
+        return urljoin(base_url.rstrip("/") + "/", "api/tags")
+    return base_url
+
+
+def _storage_status(path):
+    return "ok" if path.exists() else "missing"
 
 
 def _read_project_env(start):
