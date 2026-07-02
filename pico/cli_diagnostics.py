@@ -3,7 +3,7 @@
 import os
 from pathlib import Path
 from urllib import error, request
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit, urlunsplit
 
 from .config import _parse_env_line, find_project_env
 from .workspace import WorkspaceContext
@@ -118,6 +118,8 @@ def collect_doctor(cwd, args=None, offline=False):
     project_env = _read_project_env(workspace.repo_root)
     config = collect_config(cwd, args)
     config["base_url"] = _resolve_base_url(args, config["provider"]["value"], project_env)
+    diagnostic_base_url = dict(config["base_url"])
+    diagnostic_base_url["value"] = _redact_url_for_diagnostics(diagnostic_base_url["value"])
     provider_connectivity = (
         {"status": "skipped", "category": "provider_connectivity", "message": "offline mode"}
         if offline
@@ -133,7 +135,7 @@ def collect_doctor(cwd, args=None, offline=False):
             "status": "ok",
             "provider": config["provider"],
             "model": config["model"],
-            "base_url": config["base_url"],
+            "base_url": diagnostic_base_url,
         },
         "credentials": {
             "status": "ok" if config["api_key"]["present"] or config["provider"]["value"] == "ollama" else "missing",
@@ -153,20 +155,22 @@ def check_provider_connectivity(config, timeout=2):
     provider = config["provider"]["value"]
     base_url = config.get("base_url", {}).get("value", "")
     url = _connectivity_url(provider, base_url)
+    diagnostic_url = _redact_url_for_diagnostics(url)
     try:
         response = request.urlopen(url, timeout=timeout)
         with response:
             return {
                 "status": "ok",
                 "category": "provider_connectivity",
-                "url": url,
+                "url": diagnostic_url,
                 "http_status": response.status,
             }
     except error.HTTPError as exc:
+        status = "ok" if exc.code in {401, 403, 405} else "error"
         return {
-            "status": "ok",
+            "status": status,
             "category": "provider_connectivity",
-            "url": url,
+            "url": diagnostic_url,
             "http_status": exc.code,
             "message": f"provider endpoint responded with HTTP {exc.code}",
         }
@@ -174,7 +178,7 @@ def check_provider_connectivity(config, timeout=2):
         return {
             "status": "error",
             "category": "provider_connectivity",
-            "url": url,
+            "url": diagnostic_url,
             "message": str(exc),
         }
 
@@ -252,6 +256,27 @@ def _connectivity_url(provider, base_url):
     if provider == "ollama":
         return urljoin(base_url.rstrip("/") + "/", "api/tags")
     return base_url
+
+
+def _redact_url_for_diagnostics(value):
+    text = str(value or "")
+    try:
+        parts = urlsplit(text)
+        if not parts.scheme or not parts.netloc:
+            if "@" in text:
+                return "[redacted-url]"
+            return urlunsplit(("", "", parts.path, "", ""))
+        host = parts.hostname
+        if not host:
+            return "[redacted-url]"
+        if ":" in host and not host.startswith("["):
+            host = f"[{host}]"
+        netloc = host
+        if parts.port is not None:
+            netloc = f"{netloc}:{parts.port}"
+        return urlunsplit((parts.scheme, netloc, parts.path, "", ""))
+    except ValueError:
+        return "[redacted-url]"
 
 
 def _storage_status(path):

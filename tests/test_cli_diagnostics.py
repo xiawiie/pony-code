@@ -1,7 +1,9 @@
 import json
 import os
+from urllib import error
 
 from pico.cli import main
+from pico.cli_diagnostics import check_provider_connectivity
 
 
 def _clear_provider_env(monkeypatch):
@@ -131,6 +133,86 @@ def test_doctor_reports_connectivity_as_diagnostic_result(tmp_path, monkeypatch,
     payload = json.loads(capsys.readouterr().out)
     assert payload["data"]["provider_connectivity"]["category"] == "provider_connectivity"
     assert payload["data"]["provider_connectivity"]["message"] == "connection timed out"
+
+
+def test_doctor_json_redacts_secret_base_url(tmp_path, monkeypatch, capsys):
+    def fake_connectivity(config):
+        return {
+            "status": "error",
+            "category": "provider_connectivity",
+            "message": "offline test double",
+        }
+
+    monkeypatch.setattr("pico.cli_diagnostics.check_provider_connectivity", fake_connectivity)
+
+    code = main([
+        "--cwd",
+        str(tmp_path),
+        "--format",
+        "json",
+        "--base-url",
+        "https://user:pass@example.com/v1?token=secret#frag",
+        "doctor",
+    ])
+
+    assert code == 0
+    output = capsys.readouterr().out
+    payload = json.loads(output)
+    assert payload["kind"] == "doctor"
+    assert payload["data"]["config"]["base_url"]["value"] == "https://example.com/v1"
+    assert "user:pass" not in output
+    assert "token=" not in output
+    assert "secret" not in output
+    assert "#frag" not in output
+
+
+def test_provider_connectivity_http_500_is_non_ok_and_redacts_url(monkeypatch):
+    def fake_urlopen(url, timeout):
+        raise error.HTTPError(
+            url,
+            500,
+            "server error",
+            hdrs=None,
+            fp=None,
+        )
+
+    monkeypatch.setattr("pico.cli_diagnostics.request.urlopen", fake_urlopen)
+
+    result = check_provider_connectivity(
+        {
+            "provider": {"value": "openai"},
+            "base_url": {"value": "https://user:pass@example.com/v1?token=secret#frag"},
+        }
+    )
+
+    assert result["status"] != "ok"
+    assert result["url"] == "https://example.com/v1"
+    assert "user:pass" not in json.dumps(result)
+    assert "token=" not in json.dumps(result)
+    assert "secret" not in json.dumps(result)
+    assert "#frag" not in json.dumps(result)
+
+
+def test_doctor_unknown_arg_returns_usage_without_agent_or_connectivity(tmp_path, monkeypatch, capsys):
+    called = {}
+
+    def fail_build_agent(args):
+        raise AssertionError("doctor usage errors must not build a Pico agent")
+
+    def fake_connectivity(config):
+        called["connectivity"] = True
+        return {"status": "ok"}
+
+    monkeypatch.setattr("pico.cli.build_agent", fail_build_agent)
+    monkeypatch.setattr("pico.cli_diagnostics.check_provider_connectivity", fake_connectivity)
+
+    code = main(["--cwd", str(tmp_path), "--format", "json", "doctor", "--wat"])
+
+    assert code == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == "usage"
+    assert called == {}
 
 
 def test_sessions_list_and_show_json_do_not_build_agent(tmp_path, monkeypatch, capsys):
