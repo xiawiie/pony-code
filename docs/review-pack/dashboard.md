@@ -10,7 +10,7 @@ Execution rule: keep exactly one task in `In Progress`. Finish, verify, update t
 - Branch: `cli`
 - Latest pushed head: see PR current head
 - CI: expected on Python 3.10 and 3.12 for each pushed dashboard task
-- Local baseline: `uv run pytest -q` passed with 269 tests after CLI-003
+- Local baseline: `uv run pytest -q` passed with 270 tests after CLI-004
 
 ## Done In This Review Pass
 
@@ -25,6 +25,7 @@ Execution rule: keep exactly one task in `In Progress`. Finish, verify, update t
 | CLI-001 | Done | Accepted unique checkpoint id prefixes for checkpoint commands | Local `266 passed` |
 | CLI-002 | Done | Rendered human-readable restore preview text by default | Local `268 passed` |
 | CLI-003 | Done | Moved provider defaults to a single shared source | Local `269 passed` |
+| CLI-004 | Done | Replaced pre-agent command dispatch with a command registry | Local `270 passed` |
 
 ## Sequential Queue
 
@@ -33,8 +34,8 @@ Execution rule: keep exactly one task in `In Progress`. Finish, verify, update t
 | CLI-001 | P1 | Done | Accept unique checkpoint id prefixes for checkpoint commands | `checkpoints show`, `preview-restore`, and `restore` accept a unique prefix; ambiguous and missing prefixes produce clear CLI errors | `uv run pytest -q` -> 266 passed |
 | CLI-002 | P1 | Done | Render human-readable restore previews by default | Text mode shows compact restore/review/conflict rows; `--format json` remains unchanged | `uv run pytest -q` -> 268 passed |
 | CLI-003 | P1 | Done | Move provider defaults to a single source | `cli.py` and `cli_diagnostics.py` import the same default provider/model/base URL constants | `uv run pytest -q` -> 269 passed |
-| CLI-004 | P1 | In Progress | Replace command dispatch if-chain with a command registry | Commands, namespace suggestions, and help routing derive from one table | CLI parser/command tests |
-| CLI-005 | P1 | Backlog | Add `pico-cli init` for guided `.env` setup | User can create/update local provider config without hand-editing from scratch | CLI tests with temp `.env` |
+| CLI-004 | P1 | Done | Replace command dispatch if-chain with a command registry | Commands, namespace suggestions, and help routing derive from one table | `uv run pytest -q` -> 270 passed |
+| CLI-005 | P1 | In Progress | Add `pico-cli init` for guided `.env` setup | User can create/update local provider config without hand-editing from scratch | CLI tests with temp `.env` |
 | REC-001 | P2 | Backlog | Align recovery checkpoint naming or semantics | Code and docs agree whether recovery records are per tool step or per user turn | Recovery e2e tests and ADR/doc update |
 | REC-002 | P2 | Backlog | Extract ToolExecutor side-effect finalization | Success and exception paths share one side-effect finalizer | ToolExecutor success/error tests |
 | REC-003 | P2 | Backlog | Add time-based checkpoint pruning | `checkpoints prune --older-than=7d` previews and applies expected deletions | Checkpoint store/CLI tests |

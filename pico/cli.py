@@ -45,19 +45,32 @@ from .runtime import Pico, SessionStore
 from .workspace import WorkspaceContext, middle
 
 
-_RECOVERY_TOP_LEVEL_COMMANDS = {"checkpoints", "runs"}
+COMMAND_SPECS = {
+    "help": {"category": "meta", "subcommands": set()},
+    "status": {"category": "inspection", "subcommands": set()},
+    "doctor": {"category": "inspection", "subcommands": {"--offline"}},
+    "config": {"category": "inspection", "subcommands": {"show"}},
+    "sessions": {"category": "inspection", "subcommands": {"list", "show"}},
+    "checkpoints": {"category": "recovery", "subcommands": {"list", "show", "preview-restore", "restore", "prune"}},
+    "runs": {"category": "recovery", "subcommands": {"list", "show"}},
+}
+_RECOVERY_TOP_LEVEL_COMMANDS = {
+    name
+    for name, spec in COMMAND_SPECS.items()
+    if spec["category"] == "recovery"
+}
 # 只有在第一位是 recovery 顶级命令，且第二位落在下面这些子命令里的时候，
 # 才把 argv 当成 recovery inspection 命令。否则用户输入的 `pico "checkpoints ..."`
 # 就应该像普通 prompt 一样送进模型。
 _RECOVERY_SUBCOMMANDS = {
-    "checkpoints": {"list", "show", "preview-restore", "restore", "prune"},
-    "runs": {"list", "show"},
+    name: spec["subcommands"]
+    for name, spec in COMMAND_SPECS.items()
+    if spec["category"] == "recovery"
 }
 _COMMAND_NAMESPACE_SUBCOMMANDS = {
-    "checkpoints": {"list", "show", "preview-restore", "restore", "prune"},
-    "runs": {"list", "show"},
-    "sessions": {"list", "show"},
-    "config": {"show"},
+    name: spec["subcommands"]
+    for name, spec in COMMAND_SPECS.items()
+    if spec["subcommands"]
 }
 
 
@@ -384,6 +397,66 @@ def _handle_recovery_command(cwd, tokens, args):
     return None
 
 
+def _dispatch_help(args, tokens):
+    return handle_help(tokens)
+
+
+def _dispatch_status(args, tokens):
+    if tokens:
+        raise CliError(
+            code="usage",
+            message="usage: pico-cli status",
+            exit_code=CLI_EXIT_USAGE,
+        )
+    return handle_status(args.cwd, args)
+
+
+def _dispatch_doctor(args, tokens):
+    return handle_doctor(tokens, args.cwd, args)
+
+
+def _dispatch_config(args, tokens):
+    return handle_config(tokens, args.cwd, args)
+
+
+def _dispatch_sessions(args, tokens):
+    workspace = WorkspaceContext.build(args.cwd)
+    return handle_sessions(workspace.repo_root, tokens, args)
+
+
+def _dispatch_recovery(args, tokens, command):
+    recovery_tokens = [command, *tokens]
+    if not _looks_like_recovery_command(recovery_tokens):
+        return None
+    return _handle_recovery_command(args.cwd, recovery_tokens, args)
+
+
+def _dispatch_checkpoints(args, tokens):
+    return _dispatch_recovery(args, tokens, "checkpoints")
+
+
+def _dispatch_runs(args, tokens):
+    return _dispatch_recovery(args, tokens, "runs")
+
+
+_PRE_AGENT_COMMAND_HANDLERS = {
+    "help": _dispatch_help,
+    "status": _dispatch_status,
+    "doctor": _dispatch_doctor,
+    "config": _dispatch_config,
+    "sessions": _dispatch_sessions,
+    "checkpoints": _dispatch_checkpoints,
+    "runs": _dispatch_runs,
+}
+
+
+def _dispatch_pre_agent_command(invocation, args):
+    handler = _PRE_AGENT_COMMAND_HANDLERS.get(invocation.command)
+    if handler is None:
+        return None
+    return handler(args, invocation.command_args)
+
+
 def _print_cli_error(args, exc):
     if getattr(args, "format", "text") == "json":
         print(format_json(error_envelope(exc)), end="")
@@ -426,30 +499,10 @@ def main(argv=None):
     args = invocation.runtime_args
     try:
         _raise_on_legacy_command_typo(invocation)
-        if invocation.command == "help":
-            return handle_help(invocation.command_args)
         # 先分派只读检查命令，避免为它们启动模型 client 或 REPL。
-        if invocation.command == "status":
-            if invocation.command_args:
-                raise CliError(
-                    code="usage",
-                    message="usage: pico-cli status",
-                    exit_code=CLI_EXIT_USAGE,
-                )
-            return handle_status(args.cwd, args)
-        if invocation.command == "doctor":
-            return handle_doctor(invocation.command_args, args.cwd, args)
-        if invocation.command == "config":
-            return handle_config(invocation.command_args, args.cwd, args)
-        if invocation.command == "sessions":
-            workspace = WorkspaceContext.build(args.cwd)
-            return handle_sessions(workspace.repo_root, invocation.command_args, args)
-        if invocation.command in _RECOVERY_TOP_LEVEL_COMMANDS:
-            recovery_tokens = [invocation.command, *invocation.command_args]
-            if _looks_like_recovery_command(recovery_tokens):
-                code = _handle_recovery_command(args.cwd, recovery_tokens, args)
-                if code is not None:
-                    return code
+        pre_agent_result = _dispatch_pre_agent_command(invocation, args)
+        if pre_agent_result is not None:
+            return pre_agent_result
     except CliError as exc:
         return _print_cli_error(args, exc)
     agent = build_agent(args)

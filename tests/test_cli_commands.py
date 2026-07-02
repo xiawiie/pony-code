@@ -131,3 +131,20 @@ def test_unknown_command_suggestion_uses_json_error_envelope(capsys):
     assert payload["error"]["code"] == "unknown_command"
     assert payload["error"]["message"] == "Unknown command: chekpoints"
     assert payload["error"]["hint"] == "Did you mean `checkpoints`?"
+
+
+def test_cli_command_specs_drive_namespace_tables():
+    from pico import cli
+
+    expected_namespaces = {
+        name: spec["subcommands"]
+        for name, spec in cli.COMMAND_SPECS.items()
+        if spec["subcommands"]
+    }
+
+    assert cli._COMMAND_NAMESPACE_SUBCOMMANDS == expected_namespaces
+    assert cli._RECOVERY_TOP_LEVEL_COMMANDS == {
+        name
+        for name, spec in cli.COMMAND_SPECS.items()
+        if spec["category"] == "recovery"
+    }
