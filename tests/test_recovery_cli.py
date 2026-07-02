@@ -5,6 +5,29 @@ from pico.cli import main
 from pico.recovery_models import new_checkpoint_record
 
 
+def write_restorable_checkpoint(store, tmp_path, checkpoint_id):
+    before = store.write_blob(b"before\n", "text")
+    after = store.write_blob(b"after\n", "text")
+    (tmp_path / "note.txt").write_text("after\n", encoding="utf-8")
+    record = new_checkpoint_record(checkpoint_id, "turn", "s", "r", "t", "", str(tmp_path))
+    record["file_entries"].append(
+        {
+            "path": "note.txt",
+            "change_kind": "modified",
+            "snapshot_eligible": True,
+            "before_blob_ref": before["blob_ref"],
+            "before_hash": before["content_hash"],
+            "after_blob_ref": after["blob_ref"],
+            "after_hash": after["content_hash"],
+            "expected_current_hash": after["content_hash"],
+            "content_kind": "text",
+            "ineligible_reason": "",
+        }
+    )
+    store.write_checkpoint_record(record)
+    return record
+
+
 def test_checkpoints_list_does_not_start_repl(tmp_path, capsys):
     store = CheckpointStore(tmp_path)
     store.write_checkpoint_record(new_checkpoint_record("ckpt_1", "turn", "s", "r", "t", "", str(tmp_path)))
@@ -28,25 +51,7 @@ def test_runs_show_prints_run_artifact(tmp_path, capsys):
 
 def test_checkpoints_preview_restore_prints_plan(tmp_path, capsys):
     store = CheckpointStore(tmp_path)
-    before = store.write_blob(b"before\n", "text")
-    after = store.write_blob(b"after\n", "text")
-    (tmp_path / "note.txt").write_text("after\n", encoding="utf-8")
-    record = new_checkpoint_record("ckpt_1", "turn", "s", "r", "t", "", str(tmp_path))
-    record["file_entries"].append(
-        {
-            "path": "note.txt",
-            "change_kind": "modified",
-            "snapshot_eligible": True,
-            "before_blob_ref": before["blob_ref"],
-            "before_hash": before["content_hash"],
-            "after_blob_ref": after["blob_ref"],
-            "after_hash": after["content_hash"],
-            "expected_current_hash": after["content_hash"],
-            "content_kind": "text",
-            "ineligible_reason": "",
-        }
-    )
-    store.write_checkpoint_record(record)
+    write_restorable_checkpoint(store, tmp_path, "ckpt_1")
 
     code = main(["--cwd", str(tmp_path), "checkpoints", "preview-restore", "ckpt_1"])
 
@@ -59,31 +64,49 @@ def test_checkpoints_preview_restore_prints_plan(tmp_path, capsys):
 
 def test_checkpoints_restore_apply_changes_disk_state(tmp_path, capsys):
     store = CheckpointStore(tmp_path)
-    before = store.write_blob(b"before\n", "text")
-    after = store.write_blob(b"after\n", "text")
-    (tmp_path / "note.txt").write_text("after\n", encoding="utf-8")
-    record = new_checkpoint_record("ckpt_1", "turn", "s", "r", "t", "", str(tmp_path))
-    record["file_entries"].append(
-        {
-            "path": "note.txt",
-            "change_kind": "modified",
-            "snapshot_eligible": True,
-            "before_blob_ref": before["blob_ref"],
-            "before_hash": before["content_hash"],
-            "after_blob_ref": after["blob_ref"],
-            "after_hash": after["content_hash"],
-            "expected_current_hash": after["content_hash"],
-            "content_kind": "text",
-            "ineligible_reason": "",
-        }
-    )
-    store.write_checkpoint_record(record)
+    write_restorable_checkpoint(store, tmp_path, "ckpt_1")
 
     code = main(["--cwd", str(tmp_path), "checkpoints", "restore", "ckpt_1", "--apply"])
 
     assert code == 0
     assert '"restored_paths": [' in capsys.readouterr().out
     assert (tmp_path / "note.txt").read_text(encoding="utf-8") == "before\n"
+
+
+def test_checkpoint_commands_accept_unique_id_prefix(tmp_path, capsys):
+    store = CheckpointStore(tmp_path)
+    store.write_checkpoint_record(new_checkpoint_record("ckpt_alpha1234", "turn", "s", "r", "t", "", str(tmp_path)))
+    write_restorable_checkpoint(store, tmp_path, "ckpt_restore5678")
+
+    show_code = main(["--cwd", str(tmp_path), "checkpoints", "show", "ckpt_alpha"])
+    show_out = capsys.readouterr().out
+    preview_code = main(["--cwd", str(tmp_path), "checkpoints", "preview-restore", "ckpt_restore"])
+    preview_out = capsys.readouterr().out
+    restore_code = main(["--cwd", str(tmp_path), "checkpoints", "restore", "ckpt_restore", "--apply"])
+    restore_out = capsys.readouterr().out
+
+    assert show_code == 0
+    assert '"checkpoint_id": "ckpt_alpha1234"' in show_out
+    assert preview_code == 0
+    assert '"checkpoint_id": "ckpt_restore5678"' in preview_out
+    assert restore_code == 0
+    assert '"restored_paths": [' in restore_out
+    restore_records = [record for record in store.list_checkpoint_records() if record["checkpoint_type"] == "restore"]
+    assert restore_records[-1]["parent_checkpoint_id"] == "ckpt_restore5678"
+    assert (tmp_path / "note.txt").read_text(encoding="utf-8") == "before\n"
+
+
+def test_checkpoint_prefix_errors_include_candidates(tmp_path, capsys):
+    store = CheckpointStore(tmp_path)
+    store.write_checkpoint_record(new_checkpoint_record("ckpt_abcdef01", "turn", "s", "r", "t", "", str(tmp_path)))
+    store.write_checkpoint_record(new_checkpoint_record("ckpt_abcdef99", "turn", "s", "r", "t", "", str(tmp_path)))
+
+    code = main(["--cwd", str(tmp_path), "--format", "json", "checkpoints", "show", "ckpt_abcdef"])
+
+    assert code == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["error"]["code"] == "checkpoint_prefix_ambiguous"
+    assert payload["error"]["details"]["candidates"] == ["ckpt_abcdef01", "ckpt_abcdef99"]
 
 
 def test_checkpoints_prune_apply_removes_orphan_blob(tmp_path, capsys):

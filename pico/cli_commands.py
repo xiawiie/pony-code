@@ -69,14 +69,16 @@ def handle_checkpoints(root, tokens, args):
         records = store.list_checkpoint_records()
         return print_result("checkpoints_list", records, args, _render_checkpoints_list)
     if sub == "show" and len(rest) == 1:
-        record = _load_checkpoint_record(store, rest[0])
+        checkpoint_id = _resolve_checkpoint_id(store, rest[0])
+        record = _load_checkpoint_record(store, checkpoint_id)
         return print_result("checkpoints_show", record, args, _render_json_body)
     if sub == "preview-restore" and len(rest) == 1:
         manager = RecoveryManager(store, root, checkpoint_writer=RecoveryCheckpointWriter(store, root))
-        plan = _preview_restore(manager, rest[0])
+        checkpoint_id = _resolve_checkpoint_id(store, rest[0])
+        plan = _preview_restore(manager, checkpoint_id)
         return print_result("checkpoints_preview_restore", plan, args, _render_json_body)
     if sub == "restore" and _is_restore_args(rest):
-        checkpoint_id = rest[0]
+        checkpoint_id = _resolve_checkpoint_id(store, rest[0])
         apply_flag = "--apply" in rest[1:]
         manager = RecoveryManager(store, root, checkpoint_writer=RecoveryCheckpointWriter(store, root))
         if not apply_flag:
@@ -393,6 +395,40 @@ def _load_run_artifacts(run_dir, run_id):
         if path.exists():
             artifacts.append({"name": name, "content": path.read_text(encoding="utf-8")})
     return {"run_id": run_id, "artifacts": artifacts}
+
+
+def _resolve_checkpoint_id(store, value):
+    checkpoint_id = str(value or "").strip()
+    if not checkpoint_id:
+        raise CliError(
+            code="checkpoint_not_found",
+            message="unknown checkpoint: ",
+            hint="Run `pico-cli checkpoints list`.",
+            exit_code=CLI_EXIT_USAGE,
+        )
+
+    records = store.list_checkpoint_records()
+    ids = [str(record.get("checkpoint_id", "")) for record in records if str(record.get("checkpoint_id", ""))]
+    if checkpoint_id in ids:
+        return checkpoint_id
+
+    matches = [item for item in ids if item.startswith(checkpoint_id)]
+    if len(matches) == 1 and len(checkpoint_id) >= 6:
+        return matches[0]
+    if len(matches) > 1:
+        raise CliError(
+            code="checkpoint_prefix_ambiguous",
+            message=f"ambiguous checkpoint prefix: {checkpoint_id}",
+            hint="Use a longer checkpoint id prefix.",
+            exit_code=CLI_EXIT_USAGE,
+            details={"candidates": matches},
+        )
+    raise CliError(
+        code="checkpoint_not_found",
+        message=f"unknown checkpoint: {checkpoint_id}",
+        hint="Run `pico-cli checkpoints list`.",
+        exit_code=CLI_EXIT_USAGE,
+    )
 
 
 def _load_checkpoint_record(store, checkpoint_id):

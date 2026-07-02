@@ -32,6 +32,7 @@ tmp/
 .worktrees/
 .pico/
 .mini-pico/
+.planning/
 artifacts/
 release/
 readme_intro_locked/
