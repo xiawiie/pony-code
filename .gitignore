@@ -35,6 +35,11 @@ tmp/
 artifacts/
 release/
 readme_intro_locked/
+/runs
+
+# Local editor and agent context files
+/.idea/
+/CONTEXT.md
 
 # Local secrets and provider configuration
 .env
