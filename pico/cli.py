@@ -11,8 +11,16 @@ import shutil
 import sys
 import textwrap
 
-from .cli_commands import handle_checkpoints, handle_runs, run_agent_once, run_repl
-from .cli_errors import CliError
+from .cli_commands import (
+    handle_checkpoints,
+    handle_config,
+    handle_runs,
+    handle_sessions,
+    handle_status,
+    run_agent_once,
+    run_repl,
+)
+from .cli_errors import CLI_EXIT_USAGE, CliError
 from .cli_output import error_envelope, format_json
 from .cli_parser import parse_cli_invocation
 from .config import load_project_env, provider_env
@@ -352,26 +360,43 @@ def _handle_recovery_command(cwd, tokens, args):
     return None
 
 
+def _print_cli_error(args, exc):
+    if getattr(args, "format", "text") == "json":
+        print(format_json(error_envelope(exc)), end="")
+    else:
+        print(exc.message, file=sys.stderr)
+        if exc.hint:
+            print(exc.hint, file=sys.stderr)
+    return exc.exit_code
+
+
 def main(argv=None):
     parser = build_arg_parser()
     invocation = parse_cli_invocation(argv, parser)
     args = invocation.runtime_args
-    # 先分派 checkpoints/runs 这类只读检查命令，避免为它们启动模型 client 或 REPL。
-    if invocation.command in _RECOVERY_TOP_LEVEL_COMMANDS:
-        recovery_tokens = [invocation.command, *invocation.command_args]
-        if _looks_like_recovery_command(recovery_tokens):
-            try:
+    try:
+        # 先分派只读检查命令，避免为它们启动模型 client 或 REPL。
+        if invocation.command == "status":
+            if invocation.command_args:
+                raise CliError(
+                    code="usage",
+                    message="usage: pico status",
+                    exit_code=CLI_EXIT_USAGE,
+                )
+            return handle_status(args.cwd, args)
+        if invocation.command == "config":
+            return handle_config(invocation.command_args, args.cwd, args)
+        if invocation.command == "sessions":
+            workspace = WorkspaceContext.build(args.cwd)
+            return handle_sessions(workspace.repo_root, invocation.command_args, args)
+        if invocation.command in _RECOVERY_TOP_LEVEL_COMMANDS:
+            recovery_tokens = [invocation.command, *invocation.command_args]
+            if _looks_like_recovery_command(recovery_tokens):
                 code = _handle_recovery_command(args.cwd, recovery_tokens, args)
-            except CliError as exc:
-                if getattr(args, "format", "text") == "json":
-                    print(format_json(error_envelope(exc)), end="")
-                else:
-                    print(exc.message, file=sys.stderr)
-                    if exc.hint:
-                        print(exc.hint, file=sys.stderr)
-                return exc.exit_code
-            if code is not None:
-                return code
+                if code is not None:
+                    return code
+    except CliError as exc:
+        return _print_cli_error(args, exc)
     agent = build_agent(args)
 
     model = getattr(agent.model_client, "model", getattr(args, "model", DEFAULT_OLLAMA_MODEL))

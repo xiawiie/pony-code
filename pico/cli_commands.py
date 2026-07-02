@@ -6,6 +6,7 @@ from pathlib import Path
 
 from .checkpoint_store import CheckpointStore
 from .cli_errors import CLI_EXIT_USAGE, CliError
+from .cli_diagnostics import collect_config, collect_status
 from .cli_output import format_json, success_envelope
 from .recovery_checkpoint_writer import RecoveryCheckpointWriter
 from .recovery_manager import RecoveryManager
@@ -83,6 +84,59 @@ def handle_runs(root, tokens, args):
     )
 
 
+def handle_status(cwd, args):
+    return print_result("status", collect_status(cwd, args), args, _render_status)
+
+
+def handle_config(tokens, cwd, args):
+    sub = tokens[0] if tokens else ""
+    rest = tokens[1:]
+    if sub == "show" and not rest:
+        return print_result(
+            "config_show",
+            collect_config(cwd, args),
+            args,
+            _render_json_body,
+        )
+    raise CliError(
+        code="usage",
+        message="usage: pico config show",
+        exit_code=CLI_EXIT_USAGE,
+    )
+
+
+def handle_sessions(root, tokens, args):
+    sessions_root = Path(root) / ".pico" / "sessions"
+    sub = tokens[0] if tokens else "list"
+    rest = tokens[1:]
+    if sub == "list" and not rest:
+        data = []
+        if sessions_root.exists():
+            data = [
+                {"session_id": path.stem}
+                for path in sorted(sessions_root.glob("*.json"))
+                if path.is_file()
+            ]
+        return print_result("sessions_list", data, args, _render_sessions_list)
+    if sub == "show" and len(rest) == 1:
+        session_id = rest[0]
+        path = sessions_root / f"{session_id}.json"
+        if not path.exists():
+            raise CliError(
+                code="session_not_found",
+                message=f"unknown session: {session_id}",
+                hint="Run `pico sessions list`.",
+                exit_code=CLI_EXIT_USAGE,
+            )
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return print_result("sessions_show", data, args, _render_json_body)
+    raise CliError(
+        code="usage",
+        message="usage: pico sessions {list | show <session_id>}",
+        exit_code=CLI_EXIT_USAGE,
+    )
+
+
 def run_agent_once(agent, prompt_tokens):
     prompt = " ".join(prompt_tokens).strip()
     if not prompt:
@@ -152,6 +206,27 @@ def _render_json_body(data):
 
 def _render_runs_list(runs):
     return "\n".join(run["run_id"] for run in runs)
+
+
+def _render_sessions_list(sessions):
+    return "\n".join(session["session_id"] for session in sessions)
+
+
+def _render_status(data):
+    lines = [
+        f"workspace: {data['workspace']['repo_root']}",
+        f"provider: {data['provider']['provider']['value']}",
+        f"model: {data['provider']['model']['value']}",
+        "storage:",
+        f"  sessions: {data['storage']['sessions']}",
+        f"  runs: {data['storage']['runs']}",
+        f"  checkpoints: {data['storage']['checkpoints']}",
+        "latest:",
+        f"  session_id: {data['latest']['session_id'] or '-'}",
+        f"  run_id: {data['latest']['run_id'] or '-'}",
+        f"  checkpoint_id: {data['latest']['checkpoint_id'] or '-'}",
+    ]
+    return "\n".join(lines)
 
 
 def _render_runs_show(data):
