@@ -1,3 +1,7 @@
+import json
+
+import pytest
+
 from pico.cli import main
 
 
@@ -80,3 +84,38 @@ def test_unknown_command_suggests_close_match(capsys):
     err = capsys.readouterr().err
     assert "Unknown command: chekpoints" in err
     assert "Did you mean `checkpoints`?" in err
+
+
+@pytest.mark.parametrize(
+    ("tokens", "prompt"),
+    [
+        (["hello"], "hello"),
+        (["start", "a", "project"], "start a project"),
+        (["running", "tests"], "running tests"),
+        (["check", "tests"], "check tests"),
+    ],
+)
+def test_natural_language_legacy_prompts_are_not_command_typos(
+    tmp_path,
+    monkeypatch,
+    tokens,
+    prompt,
+):
+    called = {}
+    _install_fake_agent(monkeypatch, tmp_path, called)
+
+    code = main(["--cwd", str(tmp_path), *tokens])
+
+    assert code == 0
+    assert called["asked"] == prompt
+
+
+def test_unknown_command_suggestion_uses_json_error_envelope(capsys):
+    code = main(["--format", "json", "chekpoints", "list"])
+
+    assert code == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == "unknown_command"
+    assert payload["error"]["message"] == "Unknown command: chekpoints"
+    assert payload["error"]["hint"] == "Did you mean `checkpoints`?"

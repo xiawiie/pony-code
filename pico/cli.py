@@ -6,6 +6,7 @@
 """
 
 import argparse
+from difflib import get_close_matches
 import os
 import shutil
 import sys
@@ -23,9 +24,9 @@ from .cli_commands import (
     run_agent_once,
     run_repl,
 )
-from .cli_errors import CLI_EXIT_USAGE, CliError, suggest
+from .cli_errors import CLI_EXIT_USAGE, CliError
 from .cli_output import error_envelope, format_json
-from .cli_parser import KNOWN_TOP_LEVEL_COMMANDS, parse_cli_invocation
+from .cli_parser import parse_cli_invocation
 from .config import load_project_env, provider_env
 from .providers.clients import AnthropicCompatibleModelClient, OllamaModelClient, OpenAICompatibleModelClient
 from .runtime import Pico, SessionStore
@@ -39,6 +40,12 @@ _RECOVERY_TOP_LEVEL_COMMANDS = {"checkpoints", "runs"}
 _RECOVERY_SUBCOMMANDS = {
     "checkpoints": {"list", "show", "preview-restore", "restore", "prune"},
     "runs": {"list", "show"},
+}
+_COMMAND_NAMESPACE_SUBCOMMANDS = {
+    "checkpoints": {"list", "show", "preview-restore", "restore", "prune"},
+    "runs": {"list", "show"},
+    "sessions": {"list", "show"},
+    "config": {"show"},
 }
 
 
@@ -385,7 +392,18 @@ def _raise_on_legacy_command_typo(invocation):
     if not invocation.legacy_prompt or not invocation.command_args:
         return
     head = invocation.command_args[0]
-    match = suggest(head, sorted(KNOWN_TOP_LEVEL_COMMANDS))
+    rest = invocation.command_args[1:]
+    if not rest:
+        return
+    matches = get_close_matches(
+        str(head),
+        sorted(_COMMAND_NAMESPACE_SUBCOMMANDS),
+        n=1,
+        cutoff=0.8,
+    )
+    match = matches[0] if matches else ""
+    if match and rest[0] not in _COMMAND_NAMESPACE_SUBCOMMANDS[match]:
+        match = ""
     if not match:
         return
     raise CliError(
