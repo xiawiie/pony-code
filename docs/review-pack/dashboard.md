@@ -10,7 +10,7 @@ Execution rule: keep exactly one task in `In Progress`. Finish, verify, update t
 - Branch: `cli`
 - Latest pushed head: see PR current head
 - CI: expected on Python 3.10 and 3.12 for each pushed dashboard task
-- Local baseline: `uv run pytest -q` passed with 281 tests after REC-004
+- Local baseline: `uv run pytest -q` passed with 285 tests after ARCH-001
 
 ## Done In This Review Pass
 
@@ -31,6 +31,7 @@ Execution rule: keep exactly one task in `In Progress`. Finish, verify, update t
 | REC-002 | Done | Extracted shared ToolExecutor side-effect finalization | Local `276 passed` |
 | REC-003 | Done | Added time-based checkpoint pruning with preview/apply support | Local `279 passed` |
 | REC-004 | Done | Made ineligible restore preview entries explicit about missing restorable snapshots | Local `281 passed` |
+| ARCH-001 | Done | Moved model output parsing into a dedicated parser module while preserving `Pico` compatibility methods | Local `285 passed` |
 
 ## Sequential Queue
 
@@ -45,8 +46,8 @@ Execution rule: keep exactly one task in `In Progress`. Finish, verify, update t
 | REC-002 | P2 | Done | Extract ToolExecutor side-effect finalization | Success and exception paths share one side-effect finalizer | `uv run pytest -q` -> 276 passed |
 | REC-003 | P2 | Done | Add time-based checkpoint pruning | `checkpoints prune --older-than=7d` previews and applies expected deletions | `uv run pytest -q` -> 279 passed |
 | REC-004 | P2 | Done | Improve binary/ineligible change tracking | Restore preview explains ineligible binary changes without implying backup exists | `uv run pytest -q` -> 281 passed |
-| ARCH-001 | P2 | In Progress | Move model output parsing out of `runtime.py` | Parser behavior preserved while `Pico` sheds parse helpers | Parser and runtime tests |
-| ARCH-002 | P2 | Backlog | Split `evaluation/metrics.py` by report/experiment boundary | Existing public imports and metrics tests keep working | Metrics tests |
+| ARCH-001 | P2 | Done | Move model output parsing out of `runtime.py` | Parser behavior preserved while `runtime.py` sheds parser implementation and `Pico` keeps compatibility methods | `uv run pytest -q` -> 285 passed |
+| ARCH-002 | P2 | In Progress | Split `evaluation/metrics.py` by report/experiment boundary | Existing public imports and metrics tests keep working | Metrics tests |
 | PROV-001 | P2 | Backlog | Add prompt cache support for Anthropic-compatible clients | Supported clients send cache-control metadata for stable prompt prefix | Provider client tests |
 | SEC-001 | P2 | Backlog | Expand secret-shape detection and short-secret redaction policy | Common token families are rejected from durable memory; short values avoid broad accidental replacement | Security/runtime tests |
 | CFG-001 | P3 | Backlog | Make `.env` parsing tolerant of malformed lines | Bad local `.env` lines warn/skip instead of crashing the CLI | Config tests |
