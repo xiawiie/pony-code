@@ -241,9 +241,15 @@ pico-cli --provider ollama --model qwen3.5:4b
 
 - `/help`：查看内置命令
 - `/memory`：查看提炼后的工作记忆
+- `/memory-review`：打印 `agent_notes.md` 内容以及编辑提示
+- `/save <text>`：把一条 note 追加进 workspace 的 `agent_notes.md`
 - `/session`：查看当前会话文件路径
 - `/reset`：清空当前会话状态
 - `/exit` 或 `/quit`：退出 REPL
+
+## 记忆系统
+
+Pico v2 把项目知识分成三处：`AGENTS.md` 里的项目约定、`.pico/memory/notes/*.md` 里的用户手写笔记、以及 `.pico/memory/agent_notes.md` 里 agent 显式追加的短笔记。用户笔记 agent 只读不写；agent 笔记只追加、原子写入。CLI 侧 `pico-cli memory list/show/search/review/migrate` 全部对齐这套模型，细节见 [`docs/memory-model.md`](docs/memory-model.md)。
 
 ## CLI Surface
 

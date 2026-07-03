@@ -143,3 +143,23 @@ _Avoid_: permission prompt only, global allow, user annoyance
 **Shell Side Effect**:
 A repository or environment change produced by command execution rather than by a harness-mediated file editing operation.
 _Avoid_: hidden change, bash diff, tracked edit
+
+**AGENTS.md**:
+The project-convention file read at session start. Pico loads AGENTS.md; it does not load CLAUDE.md. `pico-cli doctor` flags a repo that ships CLAUDE.md without AGENTS.md.
+_Avoid_: CLAUDE.md loader, README fallback, prompt boilerplate
+
+**User Notes**:
+Free-form Markdown files under `.pico/memory/notes/` (or `~/.pico/memory/notes/`) that the agent may read (via `memory_read` / `memory_search`) but must not modify.
+_Avoid_: agent scratchpad, chat log, editable prompt
+
+**Agent Notes**:
+The single append-only file `.pico/memory/agent_notes.md` (or `~/.pico/memory/agent_notes.md`) where the agent records short timestamped lessons when the user explicitly asks it to remember something. Soft cap 8000 chars.
+_Avoid_: unbounded journal, user notes, generic scratch file
+
+**Repo Map**:
+The AST/regex-derived symbol index served via the `repo_lookup` tool. Kept out of the prompt prefix; queried on demand.
+_Avoid_: LSP replacement, ctags mirror, prompt-injected index
+
+**Memory Index**:
+The auto-rendered listing of memory files (mtime + first line) injected into the stable prompt prefix. Byte-identical across turns when nothing changes so prompt-cache remains hot.
+_Avoid_: full memory dump, dynamic memory tail, chat summary

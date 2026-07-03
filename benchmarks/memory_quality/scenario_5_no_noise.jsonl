@@ -1,0 +1,1 @@
+{"id": "no_noise_food", "setup_notes": {"workspace/notes/auth.md": "# Auth\n- bcrypt rounds\n"}, "session_turns": [{"user": "what's for lunch?", "expected_no_search_hit": true}], "success_metric": "memory_search either not called, or returns no hits, or scores below 1.0"}

@@ -1,0 +1,2 @@
+{"id": "cn_password", "setup_notes": {"workspace/notes/auth.md": "# 认证\n\n- 密码使用 bcrypt 加密, rounds 上限为 12\n- 会话 cookie 必须 SameSite=Lax\n"}, "session_turns": [{"user": "密码怎么加密的?", "expected_search_hit": "workspace/notes/auth.md"}], "success_metric": "hit precision >= 100%"}
+{"id": "cn_async_test", "setup_notes": {"workspace/notes/testing.md": "# 测试\n\n- pytest asyncio_mode 使用 auto\n"}, "session_turns": [{"user": "异步测试怎么配置?", "expected_search_hit": "workspace/notes/testing.md"}], "success_metric": "hit in top 1"}
