@@ -83,13 +83,10 @@
       "category": "recovery",
       "setup": {
         "kind": "context_reduction",
-        "history_count": 12,
-        "note_count": 6,
+        "history_turns": 30,
         "total_budget": 700,
         "section_budgets": {
           "prefix": 800,
-          "memory": 800,
-          "relevant_memory": 800,
           "history": 2400
         }
       }

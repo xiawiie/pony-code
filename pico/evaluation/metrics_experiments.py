@@ -4,6 +4,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from ..config import load_project_env, provider_env
+from ..features import memory as memorylib
 from ..providers.clients import AnthropicCompatibleModelClient, FakeModelClient, OpenAICompatibleModelClient
 from ..runtime import Pico, SessionStore
 from ..workspace import WorkspaceContext
@@ -41,11 +42,15 @@ def measure_feature_ablation_metrics(agent, user_message):
     for name, updates in variants.items():
         with _temporary_feature_flags(agent, updates):
             prompt, metadata = agent._build_prompt_and_metadata(user_message)
+        sections = metadata.get("sections") or {}
+        memory_section = sections.get("memory") or {}
+        history_section = sections.get("history") or {}
+        relevant_memory = metadata.get("relevant_memory") or {}
         results[name] = {
             "prompt_chars": int(metadata.get("prompt_chars", 0)),
-            "memory_chars": int(metadata.get("sections", {}).get("memory", {}).get("rendered_chars", 0)),
-            "history_chars": int(metadata.get("sections", {}).get("history", {}).get("rendered_chars", 0)),
-            "relevant_selected_count": int(metadata.get("relevant_memory", {}).get("selected_count", 0)),
+            "memory_chars": int(memory_section.get("rendered_chars", 0)),
+            "history_chars": int(history_section.get("rendered_chars", 0)),
+            "relevant_selected_count": int(relevant_memory.get("selected_count", 0)),
             "budget_reduction_count": len(metadata.get("budget_reductions", [])),
             "current_request_preserved": prompt.endswith(f"Current user request:\n{user_message}"),
         }
@@ -65,11 +70,6 @@ def build_stress_agent_metrics():
             approval_policy="auto",
         )
         for index in range(12):
-            agent.memory.append_note(
-                f"stress-note-{index}-" + ("A" * 180),
-                tags=("recall",),
-                created_at=f"2026-04-08T10:{index:02d}:00+00:00",
-            )
             agent.record(
                 {
                     "role": "user" if index % 2 == 0 else "assistant",
@@ -100,13 +100,7 @@ class _MemoryExperimentModelClient(FakeModelClient):
             return "<final>Done.</final>"
         if self.phase == "question":
             prompt_lower = prompt.lower()
-            memory_view = ""
-            if "memory:" in prompt_lower and "\n\nrelevant memory:" in prompt_lower:
-                memory_view = prompt_lower.split("memory:", 1)[1].split("\n\nrelevant memory:", 1)[0]
-            relevant_view = ""
-            if "relevant memory:" in prompt_lower and "\n\ntranscript:" in prompt_lower:
-                relevant_view = prompt_lower.split("relevant memory:", 1)[1].split("\n\ntranscript:", 1)[0]
-            if self.expected_fact in memory_view or self.expected_fact in relevant_view:
+            if self.expected_fact in prompt_lower:
                 return f"<final>{self.expected_fact.capitalize()}.</final>"
             self.phase = "question_after_read"
             self.followup_reads += 1
@@ -129,20 +123,9 @@ def _build_memory_experiment_agent(workspace_root, expected_fact, filename):
 
 
 def _set_irrelevant_memory(agent):
-    state = agent.memory.to_dict()
-    state["episodic_notes"] = [
-        {
-            "text": "team mascot is blue",
-            "tags": ["unrelated"],
-            "source": "other.txt",
-            "created_at": "2026-04-08T10:00:00+00:00",
-            "note_index": 0,
-        }
-    ]
-    state["notes"] = ["team mascot is blue"]
-    state["file_summaries"] = {}
-    agent.memory.state = state
-    agent.session["memory"] = agent.memory.to_dict()
+    summaries = agent.session.setdefault("memory", {}).setdefault("file_summaries", {})
+    summaries.clear()
+    memorylib.set_file_summary_dict(summaries, "other.txt", "team mascot is blue", workspace_root=agent.root)
 
 
 def _run_memory_variant(mode):
@@ -226,20 +209,9 @@ def _followup_prompt(task):
 
 
 def _set_irrelevant_memory_for_task(agent):
-    state = agent.memory.to_dict()
-    state["episodic_notes"] = [
-        {
-            "text": "the team mascot is blue",
-            "tags": ["unrelated"],
-            "source": "other.txt",
-            "created_at": "2026-04-08T10:00:00+00:00",
-            "note_index": 0,
-        }
-    ]
-    state["notes"] = ["the team mascot is blue"]
-    state["file_summaries"] = {}
-    agent.memory.state = state
-    agent.session["memory"] = agent.memory.to_dict()
+    summaries = agent.session.setdefault("memory", {}).setdefault("file_summaries", {})
+    summaries.clear()
+    memorylib.set_file_summary_dict(summaries, "other.txt", "the team mascot is blue", workspace_root=agent.root)
 
 
 def _run_memory_task_variant(task, variant):
@@ -323,10 +295,12 @@ def run_context_stress_matrix(repetitions=5):
                             approval_policy="auto",
                         )
                         for index in range(note_count):
-                            agent.memory.append_note(
-                                f"matrix-note-{index}-" + ("A" * 180),
-                                tags=("recall",),
-                                created_at=f"2026-04-08T10:{index:02d}:00+00:00",
+                            agent.record(
+                                {
+                                    "role": "user" if index % 2 == 0 else "assistant",
+                                    "content": f"matrix-note-{index}-" + ("A" * 180),
+                                    "created_at": f"2026-04-08T10:{index:02d}:00+00:00",
+                                }
                             )
                         for index in range(history_count):
                             agent.record(
@@ -802,7 +776,13 @@ def run_real_context_experiment(provider="gpt", repetitions=1):
                             agent = _build_real_agent(workspace_root, provider)
                             for index in range(note_count):
                                 note_text = f"target token is {token}" if index == 0 else f"decoy token is DECOY-{index}"
-                                agent.memory.append_note(note_text, tags=("token",), created_at=f"2026-04-09T10:{index:02d}:00+00:00")
+                                agent.record(
+                                    {
+                                        "role": "user" if index % 2 == 0 else "assistant",
+                                        "content": note_text,
+                                        "created_at": f"2026-04-09T10:{index:02d}:00+00:00",
+                                    }
+                                )
                             for index in range(history_count):
                                 agent.record(
                                     {
@@ -1046,11 +1026,11 @@ def _apply_recovery_setup(agent, task, workspace_root):
     workspace_root = Path(workspace_root)
     (workspace_root / "sample.txt").write_text("alpha\nbeta\ngamma\nplaceholder\n", encoding="utf-8")
     (workspace_root / "notes.txt").write_text("note-one\nnote-two\n", encoding="utf-8")
-    agent.session["memory"] = agent.memory.to_dict()
+    summaries = agent.session.setdefault("memory", {}).setdefault("file_summaries", {})
 
     if setup == "checkpoint_resume":
         agent.memory.remember_file("sample.txt")
-        agent.session["memory"] = agent.memory.to_dict()
+        agent._sync_working_memory()
         agent.session["checkpoints"] = {
             "current_id": "ckpt_resume",
             "items": {
@@ -1077,18 +1057,18 @@ def _apply_recovery_setup(agent, task, workspace_root):
         return
 
     if setup in {"partial_stale_single", "partial_stale_multi"}:
-        agent.memory.set_file_summary("sample.txt", "sample.txt: cached benchmark summary")
+        memorylib.set_file_summary_dict(summaries, "sample.txt", "sample.txt: cached benchmark summary", workspace_root=agent.root)
         agent.memory.remember_file("sample.txt")
-        sample_freshness = agent.memory.to_dict()["file_summaries"]["sample.txt"]["freshness"]
+        sample_freshness = summaries["sample.txt"]["freshness"]
         key_files = [{"path": "sample.txt", "freshness": sample_freshness}]
         freshness = {"sample.txt": sample_freshness}
         if setup == "partial_stale_multi":
-            agent.memory.set_file_summary("notes.txt", "notes.txt: cached note summary")
+            memorylib.set_file_summary_dict(summaries, "notes.txt", "notes.txt: cached note summary", workspace_root=agent.root)
             agent.memory.remember_file("notes.txt")
-            notes_freshness = agent.memory.to_dict()["file_summaries"]["notes.txt"]["freshness"]
+            notes_freshness = summaries["notes.txt"]["freshness"]
             key_files.append({"path": "notes.txt", "freshness": notes_freshness})
             freshness["notes.txt"] = notes_freshness
-        agent.session["memory"] = agent.memory.to_dict()
+        agent._sync_working_memory()
         agent.session["checkpoints"] = {
             "current_id": "ckpt_stale",
             "items": {

@@ -333,38 +333,43 @@ def write_benchmark_core_report(
     memory = json.loads(Path(memory_artifact_path).read_text(encoding="utf-8"))
     recovery = json.loads(Path(recovery_artifact_path).read_text(encoding="utf-8"))
 
-    enabled_recovery = recovery["variants"]["resume_enabled"]["summary"]
+    harness_summary = harness.get("summary", {})
+    context_summary = context.get("summary", {})
+    memory_variants = memory.get("variants", {})
+    memory_on = memory_variants.get("memory_on", {})
+    memory_off = memory_variants.get("memory_off", {})
+    enabled_recovery = recovery.get("variants", {}).get("resume_enabled", {}).get("summary", {})
     lines = [
         "# Pico Benchmark Core Report",
         "",
         "这轮 benchmark 只收缩到 Harness regression、context ablation、working memory ablation 和 recovery ablation 四层，不把 provider、run aggregation 或 durable memory 的别的结论揉进来。",
         "",
         "## Harness Regression",
-        f"- 固定 regression 任务数：{harness['summary']['total_tasks']}",
-        f"- pass_rate：{harness['summary']['pass_rate']:.2%}",
-        f"- within_budget_rate：{harness['summary']['within_budget_rate']:.2%}",
-        f"- verifier_pass_rate：{harness['summary']['verifier_pass_rate']:.2%}",
+        f"- 固定 regression 任务数：{harness_summary.get('total_tasks', 0)}",
+        f"- pass_rate：{harness_summary.get('pass_rate', 0.0):.2%}",
+        f"- within_budget_rate：{harness_summary.get('within_budget_rate', 0.0):.2%}",
+        f"- verifier_pass_rate：{harness_summary.get('verifier_pass_rate', 0.0):.2%}",
         "",
         "## Context Ablation",
-        f"- 配置数：{context['config_count']}",
-        f"- avg_full_prompt_chars：{context['summary']['avg_full_prompt_chars']:.2f}",
-        f"- avg_raw_prompt_chars：{context['summary']['avg_raw_prompt_chars']:.2f}",
-        f"- avg_prompt_compression_ratio：{context['summary']['avg_prompt_compression_ratio']:.2%}",
-        f"- max_prompt_compression_ratio：{context['summary']['max_prompt_compression_ratio']:.2%}",
-        f"- current_request_preserved_rate：{context['summary']['current_request_preserved_rate']:.2%}",
+        f"- 配置数：{context.get('config_count', 0)}",
+        f"- avg_full_prompt_chars：{context_summary.get('avg_full_prompt_chars', 0.0):.2f}",
+        f"- avg_raw_prompt_chars：{context_summary.get('avg_raw_prompt_chars', 0.0):.2f}",
+        f"- avg_prompt_compression_ratio：{context_summary.get('avg_prompt_compression_ratio', 0.0):.2%}",
+        f"- max_prompt_compression_ratio：{context_summary.get('max_prompt_compression_ratio', 0.0):.2%}",
+        f"- current_request_preserved_rate：{context_summary.get('current_request_preserved_rate', 0.0):.2%}",
         "",
         "## Working Memory Ablation",
-        f"- memory_on repeated_reads：{memory['variants']['memory_on']['repeated_reads']}",
-        f"- memory_off repeated_reads：{memory['variants']['memory_off']['repeated_reads']}",
-        f"- memory_on avg_tool_steps：{memory['variants']['memory_on']['avg_tool_steps']:.2f}",
-        f"- memory_on correct_rate：{memory['variants']['memory_on']['correct_rate']:.2%}",
-        f"- memory_hit_rate：{memory['variants']['memory_on']['memory_hit_rate']:.2%}",
+        f"- memory_on repeated_reads：{memory_on.get('repeated_reads', 0)}",
+        f"- memory_off repeated_reads：{memory_off.get('repeated_reads', 0)}",
+        f"- memory_on avg_tool_steps：{memory_on.get('avg_tool_steps', 0.0):.2f}",
+        f"- memory_on correct_rate：{memory_on.get('correct_rate', 0.0):.2%}",
+        f"- memory_hit_rate：{memory_on.get('memory_hit_rate', 0.0):.2%}",
         "",
         "## Recovery / Resume Ablation",
-        f"- resume_success_rate：{enabled_recovery['resume_success_rate']:.2%}",
-        f"- stale_reanchor_rate：{enabled_recovery['stale_reanchor_rate']:.2%}",
-        f"- workspace_drift_detection_rate：{enabled_recovery['workspace_drift_detection_rate']:.2%}",
-        f"- resume_false_accept_rate：{enabled_recovery['resume_false_accept_rate']:.2%}",
+        f"- resume_success_rate：{enabled_recovery.get('resume_success_rate', 0.0):.2%}",
+        f"- stale_reanchor_rate：{enabled_recovery.get('stale_reanchor_rate', 0.0):.2%}",
+        f"- workspace_drift_detection_rate：{enabled_recovery.get('workspace_drift_detection_rate', 0.0):.2%}",
+        f"- resume_false_accept_rate：{enabled_recovery.get('resume_false_accept_rate', 0.0):.2%}",
         "",
         "## 可以安全写进简历的指标",
         "- avg_full_prompt_chars",

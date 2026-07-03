@@ -309,8 +309,7 @@ def _apply_task_setup(agent, task, fixture_copy_root):
 
     kind = str(setup.get("kind", "")).strip()
     if kind == "context_reduction":
-        history_count = int(setup.get("history_count", 12))
-        note_count = int(setup.get("note_count", 6))
+        history_count = int(setup.get("history_turns", setup.get("history_count", 12)))
         for index in range(history_count):
             agent.record(
                 {
@@ -319,18 +318,11 @@ def _apply_task_setup(agent, task, fixture_copy_root):
                     "created_at": f"2026-04-15T09:{index:02d}:00+00:00",
                 }
             )
-        for index in range(note_count):
-            agent.memory.append_note(
-                f"benchmark-note-{index}-" + ("B" * 180),
-                tags=("recall",),
-                created_at=f"2026-04-15T10:{index:02d}:00+00:00",
-            )
-        agent.session["memory"] = agent.memory.to_dict()
         agent.context_manager.total_budget = int(setup.get("total_budget", 900))
         agent.context_manager.section_budgets = dict(
             setup.get(
                 "section_budgets",
-                {"prefix": 120, "memory": 120, "relevant_memory": 120, "history": 160},
+                {"prefix": 800, "history": 2400},
             )
         )
         return
@@ -338,10 +330,11 @@ def _apply_task_setup(agent, task, fixture_copy_root):
     if kind == "freshness_mismatch":
         path = str(setup.get("path", "sample.txt"))
         summary_text = str(setup.get("summary", f"{path}: stale benchmark summary"))
-        agent.memory.set_file_summary(path, summary_text)
+        summaries = agent.session.setdefault("memory", {}).setdefault("file_summaries", {})
+        memorylib.set_file_summary_dict(summaries, path, summary_text, workspace_root=agent.root)
         agent.memory.remember_file(path)
-        freshness = agent.memory.to_dict()["file_summaries"][path]["freshness"]
-        agent.session["memory"] = agent.memory.to_dict()
+        agent._sync_working_memory()
+        freshness = summaries[agent.memory.canonical_path(path)]["freshness"]
         agent.session["checkpoints"] = {
             "current_id": "ckpt_freshness",
             "items": {
@@ -476,10 +469,9 @@ class BenchmarkEvaluator:
         _apply_task_setup(agent, task, fixture_copy_root)
 
         initial_history_empty = len(agent.session["history"]) == 0
-        initial_memory_state = agent.memory.to_dict()
-        initial_memory_empty = memorylib.is_effectively_empty(initial_memory_state)
-        initial_task_summary_empty = not str(initial_memory_state["working"]["task_summary"]).strip()
-        initial_episodic_notes_empty = not initial_memory_state["episodic_notes"]
+        initial_task_summary_empty = not agent.memory.task_summary
+        initial_episodic_notes_empty = True
+        initial_memory_empty = initial_task_summary_empty and not agent.memory.recent_files
 
         final_answer = agent.ask(task["prompt"])
         task_state = agent.current_task_state
