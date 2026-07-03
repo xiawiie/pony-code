@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+import sys
 import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -24,6 +25,7 @@ from pathlib import Path
 from typing import Literal
 
 MAX_NOTE_CHARS = 500
+AGENT_NOTES_SOFT_LIMIT_CHARS = 8000
 
 
 @dataclass(frozen=True)
@@ -38,6 +40,7 @@ class BlockStore:
     def __init__(self, workspace_root: Path, user_root: Path):
         self.workspace_root = Path(workspace_root)
         self.user_root = Path(user_root)
+        self._size_warned: set[str] = set()
 
     # ---- listing / reading -------------------------------------------------
 
@@ -112,7 +115,16 @@ class BlockStore:
         new_content = existing + new_line if existing.endswith("\n") or not existing else existing + "\n" + new_line
 
         self._atomic_write(target, new_content)
-        return len(new_content)
+        size = len(new_content)
+        if size > AGENT_NOTES_SOFT_LIMIT_CHARS and scope not in self._size_warned:
+            self._size_warned.add(scope)
+            print(
+                f"warning: {scope}/agent_notes.md is at {size} chars "
+                f"(soft target {AGENT_NOTES_SOFT_LIMIT_CHARS}). "
+                f"Consider: pico-cli memory review",
+                file=sys.stderr,
+            )
+        return size
 
     # ---- internals ---------------------------------------------------------
 
