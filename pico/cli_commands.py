@@ -547,9 +547,10 @@ def run_repl(agent):
             print(HELP_DETAILS)
             continue
         if user_input == "/memory":
-            # v1 working-memory dashboard + v2 memory index overview.
-            # Kept as a single entry point so the user sees both surfaces.
-            print(agent.memory_text())
+            task_summary = agent.memory.task_summary
+            recent_files = agent.memory.recent_files
+            print(f"task: {task_summary or '(empty)'}")
+            print(f"recent: {', '.join(recent_files) if recent_files else '(empty)'}")
             try:
                 entries = agent.memory_store.list()
             except Exception:  # noqa: BLE001 — REPL loop must never crash on a listing failure

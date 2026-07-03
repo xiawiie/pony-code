@@ -4,6 +4,8 @@
 /memory-review 打印 agent_notes.md 内容与编辑提示.
 """
 
+import re
+
 import pytest
 
 
@@ -90,8 +92,49 @@ def test_repl_memory_after_save_shows_memory_file(tmp_path, monkeypatch, capsys)
     run_repl(agent)
 
     out = capsys.readouterr().out
-    # working-memory 仪表盘头
-    assert "Working memory:" in out or "working memory:" in out.lower()
-    # v2 侧的文件列表以及新写入的文件
+    assert "task:" in out
+    assert "recent:" in out
     assert "Memory files:" in out
     assert "workspace/agent_notes.md" in out
+    assert re.search(r"workspace/agent_notes\.md \(\d+ chars\)", out)
+    assert "Working memory:" not in out
+    assert "<working_memory" not in out
+    assert "</working_memory>" not in out
+
+
+def test_repl_memory_shows_working_memory_summary(tmp_path, monkeypatch, capsys):
+    from pico.cli_commands import run_repl
+
+    sample = tmp_path / "sample.txt"
+    sample.write_text("sample\n", encoding="utf-8")
+
+    agent = _build_agent(tmp_path)
+    agent.memory.set_task_summary("Task")
+    agent.memory.remember_file("sample.txt")
+    agent._sync_working_memory()
+
+    inputs = iter(["/memory", "/exit"])
+    monkeypatch.setattr("builtins.input", lambda *_: next(inputs))
+    run_repl(agent)
+
+    out = capsys.readouterr().out
+    assert "task: Task" in out
+    assert "recent: sample.txt" in out
+
+
+def test_repl_memory_does_not_call_memory_text(tmp_path, monkeypatch, capsys):
+    from pico.cli_commands import run_repl
+
+    agent = _build_agent(tmp_path)
+
+    def fail_memory_text():
+        raise AssertionError("memory_text should not be called")
+
+    monkeypatch.setattr(agent, "memory_text", fail_memory_text)
+    inputs = iter(["/memory", "/exit"])
+    monkeypatch.setattr("builtins.input", lambda *_: next(inputs))
+    run_repl(agent)
+
+    out = capsys.readouterr().out
+    assert "task:" in out
+    assert "recent:" in out
