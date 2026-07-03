@@ -1,5 +1,3 @@
-from pathlib import Path
-
 import pytest
 
 from pico.memory.block_store import BlockStore

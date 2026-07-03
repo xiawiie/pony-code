@@ -7,9 +7,6 @@ INV-4: 追加使用原子重命名，不会留下半行.
 INV-5: agent_notes.md 超过 8000 字符时, 每个 store 实例仅 stderr 告警一次.
 """
 
-import pytest
-
-
 def _store(tmp_path):
     from pico.memory.block_store import BlockStore
     ws = tmp_path / "workspace"

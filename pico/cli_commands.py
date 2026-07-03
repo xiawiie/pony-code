@@ -275,7 +275,6 @@ def handle_memory(tokens, root, args):
     数据源：`<root>/.pico/memory/` （workspace）+ `~/.pico/memory/` （user global）。
     """
     from .memory.block_store import BlockStore
-    from .memory.retrieval import Retrieval
 
     sub = tokens[0] if tokens else ""
     rest = tokens[1:]

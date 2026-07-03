@@ -1,5 +1,3 @@
-from pathlib import Path
-
 from pico import FakeModelClient, Pico, SessionStore, WorkspaceContext
 
 

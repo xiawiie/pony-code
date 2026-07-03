@@ -1,5 +1,3 @@
-from pathlib import Path
-
 from pico.memory.block_store import BlockStore
 from pico.memory.retrieval import Retrieval, tokenize
 

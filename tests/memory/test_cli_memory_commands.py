@@ -3,7 +3,6 @@
 用 `handle_memory` 直接调用（in-process），避免 subprocess 慢和环境依赖.
 """
 
-from pathlib import Path
 from types import SimpleNamespace
 
 

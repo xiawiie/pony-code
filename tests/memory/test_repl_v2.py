@@ -6,8 +6,6 @@
 
 import re
 
-import pytest
-
 
 def _build_agent(tmp_path):
     from pico.runtime import Pico, SessionStore
