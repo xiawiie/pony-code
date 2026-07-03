@@ -229,6 +229,37 @@ def normalize_memory_state(state, workspace_root=None):
     return state
 
 
+def _canonical_file_summary_path(path, workspace_root=None):
+    if not str(path).strip():
+        return ""
+    return canonicalize_path(path, workspace_root).strip()
+
+
+def normalize_file_summaries_dict(summaries, workspace_root=None):
+    if not isinstance(summaries, dict):
+        return {}
+
+    normalized = {}
+    for path, summary in summaries.items():
+        path = _canonical_file_summary_path(path, workspace_root)
+        if isinstance(summary, dict):
+            text = clip(str(summary.get("summary", "")).strip(), 500)
+            created_at = str(summary.get("created_at", "")).strip() or now()
+            freshness = summary.get("freshness")
+        else:
+            text = clip(str(summary).strip(), 500)
+            created_at = now()
+            freshness = file_freshness(path, workspace_root)
+        if not path or not text:
+            continue
+        normalized[path] = {
+            "summary": text,
+            "created_at": created_at,
+            "freshness": freshness,
+        }
+    return normalized
+
+
 def set_task_summary(state, summary, workspace_root=None):
     state = normalize_memory_state(state, workspace_root)
     state["working"]["task_summary"] = clip(str(summary).strip(), 300)
@@ -272,6 +303,46 @@ def append_note(state, text, tags=(), source="", created_at=None, workspace_root
     state["episodic_notes"] = notes[-EPISODIC_NOTE_LIMIT:]
     state["notes"] = [item["text"] for item in state["episodic_notes"]]
     return state
+
+
+def set_file_summary_dict(summaries, path, summary, workspace_root=None):
+    if not isinstance(summaries, dict):
+        return {}
+    path = _canonical_file_summary_path(path, workspace_root)
+    summary = clip(str(summary).strip(), 500)
+    if not path or not summary:
+        return summaries
+    summaries[path] = {
+        "summary": summary,
+        "created_at": now(),
+        "freshness": file_freshness(path, workspace_root),
+    }
+    return summaries
+
+
+def invalidate_file_summary_dict(summaries, path, workspace_root=None):
+    if not isinstance(summaries, dict):
+        return {}
+    path = _canonical_file_summary_path(path, workspace_root)
+    if not path:
+        return summaries
+    summaries.pop(path, None)
+    return summaries
+
+
+def invalidate_stale_file_summaries_dict(summaries, workspace_root=None):
+    if not isinstance(summaries, dict):
+        return []
+    invalidated = []
+    for path, summary in list(summaries.items()):
+        current_freshness = file_freshness(path, workspace_root)
+        if isinstance(summary, dict) and summary.get("freshness") == current_freshness:
+            continue
+        invalidated.append(path)
+        summaries.pop(path, None)
+    return invalidated
+
+
 def set_file_summary(state, path, summary, workspace_root=None):
     state = normalize_memory_state(state, workspace_root)
     path = canonicalize_path(path, workspace_root).strip()
