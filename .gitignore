@@ -55,6 +55,9 @@ docs/*
 !docs/architecture/
 !docs/architecture/agent-harness-v1-overview.md
 !docs/memory-model.md
+!docs/superpowers/
+!docs/superpowers/specs/
+!docs/superpowers/plans/
 
 # OS files
 .DS_Store
