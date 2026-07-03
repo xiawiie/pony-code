@@ -57,6 +57,18 @@ def measure_feature_ablation_metrics(agent, user_message):
     return results
 
 
+def _prompt_has_reusable_file_summary(prompt, filename, expected_fact):
+    marker = f"{str(filename).strip().lower()} ->"
+    expected_fact = str(expected_fact).strip().lower()
+    if not marker or not expected_fact:
+        return False
+    for line in str(prompt).splitlines():
+        line = line.strip().lower()
+        if line.startswith(marker) and expected_fact in line:
+            return True
+    return False
+
+
 def build_stress_agent_metrics():
     with tempfile.TemporaryDirectory(prefix="pico-metrics-") as temp_dir:
         workspace_root = Path(temp_dir)
@@ -99,8 +111,7 @@ class _MemoryExperimentModelClient(FakeModelClient):
             self.phase = "question"
             return "<final>Done.</final>"
         if self.phase == "question":
-            prompt_lower = prompt.lower()
-            if self.expected_fact in prompt_lower:
+            if _prompt_has_reusable_file_summary(prompt, self.filename, self.expected_fact):
                 return f"<final>{self.expected_fact.capitalize()}.</final>"
             self.phase = "question_after_read"
             self.followup_reads += 1
@@ -128,6 +139,21 @@ def _set_irrelevant_memory(agent):
     memorylib.set_file_summary_dict(summaries, "other.txt", "team mascot is blue", workspace_root=agent.root)
 
 
+def _clear_file_summary_memory(agent):
+    agent.session.setdefault("memory", {})["file_summaries"] = {}
+
+
+def _age_bootstrap_read_history(agent, filler_count=8):
+    for index in range(int(filler_count)):
+        agent.record(
+            {
+                "role": "user" if index % 2 == 0 else "assistant",
+                "content": f"memory-ablation-filler-{index}",
+                "created_at": f"2026-04-08T12:{index:02d}:00+00:00",
+            }
+        )
+
+
 def _run_memory_variant(mode):
     with tempfile.TemporaryDirectory(prefix="pico-memory-experiment-") as temp_dir:
         workspace_root = Path(temp_dir)
@@ -135,10 +161,12 @@ def _run_memory_variant(mode):
         (workspace_root / "facts.txt").write_text("deploy key is red\n", encoding="utf-8")
         agent = _build_memory_experiment_agent(workspace_root, "deploy key is red", "facts.txt")
         assert agent.ask("Read facts.txt and remember the key fact.") == "Done."
+        _age_bootstrap_read_history(agent)
 
         if mode == "memory_off":
             agent.feature_flags["memory"] = False
             agent.feature_flags["relevant_memory"] = False
+            _clear_file_summary_memory(agent)
         elif mode == "memory_irrelevant":
             _set_irrelevant_memory(agent)
 
@@ -221,9 +249,11 @@ def _run_memory_task_variant(task, variant):
         _write_memory_task_files(workspace_root, task)
         agent = _build_memory_experiment_agent(workspace_root, task["fact"], task["filename"])
         assert agent.ask(_bootstrap_prompt(task)) == "Done."
+        _age_bootstrap_read_history(agent)
         if variant == "memory_off":
             agent.feature_flags["memory"] = False
             agent.feature_flags["relevant_memory"] = False
+            _clear_file_summary_memory(agent)
         elif variant == "memory_irrelevant":
             _set_irrelevant_memory_for_task(agent)
         result = agent.ask(_followup_prompt(task))
@@ -705,6 +735,7 @@ def run_real_memory_experiment(provider="gpt", repetitions=1):
                     if variant == "memory_off":
                         agent.feature_flags["memory"] = False
                         agent.feature_flags["relevant_memory"] = False
+                        _clear_file_summary_memory(agent)
                     elif variant == "memory_irrelevant":
                         _set_irrelevant_memory_for_task(agent)
                     _inject_memory_noise(agent)
