@@ -1,722 +1,976 @@
-# Retire v1 Memory · Design Spec
+# Retire v1 Memory - Execution Design
 
-**Status:** Draft (rev 2, post feasibility audit)
+**Status:** Draft (rev 3, execution-ready after design audit)
 **Date:** 2026-07-03
 **Branch:** `memory`
 **Predecessor spec:** `docs/superpowers/specs/2026-07-02-pico-memory-v2-design.md`
-**Related PRs:** #1 (cli→main draft), #2 (memory→cli)
+**Related PRs:** #1 (cli->main draft), #2 (memory->cli)
 
-**Revision notes.** Rev 1 framed this as "surgical Pico.memory type
-switch" with metrics_experiments / evaluator kept out of scope. An
-independent feasibility audit surfaced 8 blockers where v1 shape was
-consumed by paths the rev-1 scope explicitly disowned
-(`invalidate_stale_memory`, `_reusable_file_summary`,
-`create_checkpoint` recent_files iteration, evaluator `_apply_task_setup`,
-metrics_experiments call sites). Rev 2 pulls those consumers into
-scope through a `_v1_view(agent)` helper and dedicated rewrites; the
-red band across commits widens accordingly (green only at commit 10
-of 12, per §5.2).
+## Revision Notes
 
----
+Rev 1 treated this as a surgical `Pico.memory` type switch. Rev 2
+expanded scope after a feasibility audit found that the v1 memory shape
+was still consumed by runtime, prompt assembly, checkpoint resume, tests,
+and evaluator code.
 
-## 1 · Goal & Scope
+Rev 3 keeps the same product goal but corrects the execution contract:
+
+- `WorkingMemory` mutation must be explicitly synchronized back to
+  `session["working_memory"]`.
+- `session["memory"]` is not removed in this spec; it is narrowed to a
+  temporary internal `file_summaries` channel for partial-stale and
+  history-compression compatibility.
+- `pico/checkpoint.py` and the recoverable-editing checkpoint store are
+  separate systems; this spec changes only the resume-summary checkpoint
+  reads in `pico/checkpoint.py`.
+- `tool_executor.py` is an explicit caller to update when deleting
+  `record_process_note_for_tool`.
+- Existing metrics experiments that depended on v1 prompt sections must
+  be kept importable/runnable, but their old v1-recall semantics are not
+  preserved by pretending hidden v1 notes still reach the prompt.
+- `prompt_cache_key` must hash the rendered stable prefix that includes
+  v2 memory index/project structure, not only the base prefix built by
+  `build_prompt_prefix()`.
+
+## 1. Goal and Scope
 
 ### Goal
 
-Remove v1 memory concepts from prompt output and runtime type surface.
-Collapse the two-of-a-kind "Memory" language (v1 `Memory:` / `Relevant memory:`
-sections vs v2 `<memory_index>`) into a single v2 story. Reduce
-`Pico.memory` to a ~120 LOC `WorkingMemory` dataclass holding only
-`task_summary` and `recent_files`.
+Remove v1 memory from Pico's runtime public type surface and from prompt
+output. After this spec, the prompt should have one memory story:
+v2 memory files surfaced through `<memory_index>`, plus memory tools.
+The old `Working memory:` and `Relevant memory:` prompt sections go away.
 
-Do **not** delete `pico/features/memory.py`. The v1 helpers
-(`canonicalize_path`, `file_freshness`) and the `LayeredMemory` class
-remain in place because (a) `metrics_experiments.py` has 74 direct
-references we are not touching this cycle, (b) `checkpoint.py` still
-uses `file_freshness` for partial-stale bookkeeping, and (c) one test
-end-to-end verifies partial-stale via `set_file_summary`. True deletion
-of the v1 file is the subject of a subsequent spec.
+`Pico.memory` becomes a small `WorkingMemory` object that holds only:
 
-### In scope
+- `task_summary`
+- `recent_files`
 
-1. Add `pico/working_memory.py` — `WorkingMemory` dataclass (≤120 LOC).
+This spec deliberately does **not** delete `pico/features/memory.py`.
+`LayeredMemory` and selected helper functions stay temporarily for
+legacy tests, evaluator setup, and the internal `file_summaries`
+compatibility channel.
+
+### In Scope
+
+1. Add `pico/working_memory.py`.
 2. Retype `Pico.memory` from `LayeredMemory` to `WorkingMemory`.
-3. Delete "Working memory:" and "Relevant memory:" sections from the
-   prompt. Collapse `SECTION_ORDER` to `[prefix, history, current_request]`.
-4. Rebase budgets/floors/reduction order to two-section reality.
-5. Move `<workspace_state>` from its current pre-memory position to the
-   head of the `history` section (still volatile; stays out of the
-   stable prefix so prompt cache remains hot).
-6. REPL `/memory` prints two top lines (`task:` / `recent:`) followed by
-   memory-file listing. No XML wrapping.
-7. Session JSON: write `working_memory` key; read either
-   `working_memory` or legacy `memory` shape.
-8. Checkpoint payload: write `working_memory` for the WorkingMemory
-   subset; keep `file_summaries` as a separate v1-shaped sub-key for the
-   partial-stale channel until its own spec.
-9. `spawn_delegate`: pass `task_summary` via `set_task_summary`; stop
-   writing `session["memory"]["notes"]`.
-10. `evaluator.py`: hardcode `initial_episodic_notes_empty = True`
-    (schema retained; value constant).
-11. `benchmarks/coding_tasks.json`: merge the
-    `context_reduction_checkpoint` task's `memory`/`relevant_memory`
-    budget keys into a single `history` key of equal total.
-12. Test updates: extend `test_v1_durable_gone.py`; rewrite the
-    context_manager / repl / workspace / public_api_contract assertions
-    that referenced v1 headers; surgical edits to `test_pico.py`.
-13. Re-baseline `benchmarks/results/harness-regression-v2.json` and
-    `benchmark-v1.json` in a single dedicated commit.
+3. Introduce a clear session sync contract for `WorkingMemory`.
+4. Replace v1 prompt sections with a three-section prompt order:
+   `prefix`, `history`, `current_request`.
+5. Move `<workspace_state>` to the head of the history section.
+6. Keep v2 memory guidance, `<project_structure>`, and `<memory_index>`
+   in the stable prefix.
+7. Recompute prompt cache keys from the rendered stable prefix.
+8. Narrow `session["memory"]` to an internal legacy channel containing
+   only `file_summaries`.
+9. Keep `file_summaries` raw-dict helpers for partial-stale detection
+   and old read-summary compression.
+10. Update `runtime`, `context_manager`, `checkpoint`, `tool_executor`,
+    `cli_commands`, `evaluator`, `metrics_experiments`, benchmark data,
+    and tests where they directly consume v1 shape.
+11. Re-baseline benchmark result JSONs after behavior is intentionally
+    changed.
 
-### Out of scope (each becomes its own spec)
+### Out of Scope
 
-- Deleting `pico/features/memory.py` outright (v1 class kept in place).
-- Deleting `pico/evaluation/metrics_experiments.py`'s v1 concepts
-  entirely — this spec rewires call sites through a `_v1_view` helper
-  (§2 C10) but does not redesign the ablation experiments.
-- Partial-stale mechanism redesign; the `file_summaries` channel
-  survives this spec (session-hosted; not on WorkingMemory).
-- Delegate context-injection redesign — `notes` cross-agent transfer
-  is dropped; only `task_summary` crosses.
-- `test_pico.py` (1864 LOC) file split.
-- `cli_commands.py` (1025 LOC) split.
-- Sessions/*.json prefix naming alignment.
-- `pico/checkpoint.py` vs `pico/checkpoint_store.py` naming collision.
-- Filling in the missing `recoverable-editing` design spec.
-- Fixing the two pre-existing red tests:
+- Deleting `pico/features/memory.py`.
+- Deleting `LayeredMemory`.
+- Redesigning the partial-stale mechanism.
+- Moving `file_summaries` to a new first-class schema. That belongs in a
+  follow-up partial-stale spec.
+- Redesigning the v2 memory-quality benchmark suite. This spec only
+  keeps existing metrics code collecting and runnable.
+- Removing `DEFAULT_FEATURE_FLAGS["relevant_memory"]`. The flag becomes
+  prompt-layout no-op compatibility until a separate cleanup spec.
+- Changing recoverable-editing checkpoint records in
+  `.pico/checkpoints/`.
+- Splitting large files such as `test_pico.py` or `cli_commands.py`.
+- Fixing the two known pre-existing red tests:
   - `tests/test_allowed_tools.py::test_benchmark_evaluator_applies_allowed_tools_to_runtime_prompt`
   - `tests/test_evaluator.py::test_benchmark_verifier_runs_with_reproducibility_locale`
 
-### Success criteria
+## 2. Current Code Facts
 
-- `type(Pico(...).memory).__name__ == "WorkingMemory"`.
-- `grep -rn "Working memory:\|Relevant memory:" pico/` returns 0.
-- `SECTION_ORDER == ["prefix", "history", "current_request"]`.
-- Prompt contains no `Memory:` or `Relevant memory:` header outside the
-  v2 `<memory_index>` block (which uses "Memory files:" listing form).
-- REPL `/memory` prints `task:` / `recent:` / `Memory files:`.
-- `pico-cli doctor --format text` still shows the CLAUDE.md hint.
-- `import pico.evaluation.metrics_experiments` and
-  `import pico.evaluation.evaluator` succeed.
-- `run_fixed_benchmark(...)` and one `run_*_experiment(...)` call
-  each complete without AttributeError (usability, not just import).
-- Full test suite: 2 pre-existing red / 0 collection errors / all
-  others pass.
-- `prompt_cache_key` remains identical across two consecutive turns
-  when memory files and AGENTS.md are unchanged.
+These facts are the implementation anchors for this spec:
 
----
+- `Pico.__init__` currently creates `memorylib.LayeredMemory` over
+  `session["memory"]`.
+- `LayeredMemory.to_dict()` currently returns nested v1 shape:
+  `working`, `episodic_notes`, `file_summaries`, plus flat mirrors
+  `task`, `files`, and `notes`.
+- `ContextManager` currently renders `memory` and `relevant_memory`
+  sections and includes metadata for both.
+- `ToolExecutor` currently calls
+  `agent.record_process_note_for_tool(name, metadata)` after tool
+  execution.
+- `pico/checkpoint.py` currently reads recent files from
+  `agent.memory.to_dict()["working"]["recent_files"]`.
+- `pico/checkpoint.py` stores resume-summary checkpoints under
+  `session["checkpoints"]`.
+- Recoverable-editing checkpoint records are a separate system under
+  `pico/checkpoint_store.py` and `pico/recovery_checkpoint_writer.py`.
+  They are not the schema changed by this spec.
+- `pico-cli sessions show` currently prints raw session JSON.
+- `pico-cli runs show` currently prints raw run artifacts.
 
-## 2 · Component boundaries & interfaces
+## 3. Architecture After This Spec
 
-### C1 · `pico/working_memory.py` (NEW)
+### 3.1 Runtime Shape
+
+`Pico.memory` is a `WorkingMemory` instance:
 
 ```python
 @dataclass
 class WorkingMemory:
     task_summary: str = ""
     recent_files: list[str] = field(default_factory=list)
+    workspace_root: str | Path | None = None
 
     TASK_SUMMARY_LIMIT = 300
     RECENT_FILES_LIMIT = 8
 
     def set_task_summary(self, summary: str) -> None: ...
-    def remember_file(self, path: str, workspace_root: str | None = None) -> None:
-        """LRU-append; canonicalize via features.memory.canonicalize_path
-        when workspace_root is provided."""
+    def remember_file(self, path: str) -> None: ...
     def canonical_path(self, path: str) -> str: ...
-    def to_dict(self) -> dict: ...
+    def to_dict(self) -> dict[str, object]: ...
 
     @classmethod
-    def from_dict(cls, data: dict | None) -> "WorkingMemory":
-        """Accepts:
-        - new shape:      {"task_summary": str, "recent_files": [str]}
-        - v1 shape:       {"working": {"task_summary": str, "recent_files": [str]}, ...}
-        - v1 top-level:   {"task": str, "files": [str], ...}
-        Unknown keys are silently ignored."""
+    def from_dict(
+        cls,
+        data: dict | None,
+        *,
+        workspace_root: str | Path | None = None,
+    ) -> "WorkingMemory": ...
 ```
 
-Depends on `pico.features.memory.canonicalize_path`. No other v1
-dependency. Does not expose `append_note`, `set_file_summary`,
-`retrieval_view`, `retrieval_candidates`, `render_memory_text`,
-`episodic_notes`, `next_note_index`, or `promote_durable`.
+`workspace_root` is runtime-only. It is used for path canonicalization
+and is not written by `to_dict()`.
 
-### C2 · `pico/features/memory.py` (UNCHANGED)
+`WorkingMemory.from_dict()` accepts:
 
-Retained for:
-- `canonicalize_path(path, workspace_root)` — consumed by
-  `WorkingMemory.remember_file`.
-- `file_freshness(path, workspace_root)` — consumed by
-  `checkpoint.py:76,154`.
-- `LayeredMemory` class — constructed directly in
-  `test_resume_invalidates_stale_file_summaries_and_marks_partial_stale`
-  and in `metrics_experiments.py`.
+- new shape: `{"task_summary": str, "recent_files": [str]}`
+- v1 nested shape: `{"working": {"task_summary": str, "recent_files": [str]}}`
+- v1 flat shape: `{"task": str, "files": [str]}`
+- `None` or invalid data, which produce an empty object
 
-`Pico.memory` is no longer an instance of `LayeredMemory`; nothing
-else in `pico/runtime.py` or `pico/agent_loop.py` reaches into v1
-state.
+It ignores unknown keys. It does not expose:
 
-### C3 · `pico/runtime.py`
+- `append_note`
+- `set_file_summary`
+- `invalidate_file_summary`
+- `invalidate_stale_file_summaries`
+- `retrieval_candidates`
+- `retrieval_view`
+- `render_memory_text`
+- `episodic_notes`
+- `next_note_index`
+- `promote_durable`
 
-- `Pico.__init__`: `self.memory = WorkingMemory.from_dict(session.get("working_memory") or session.get("memory") or {})`.
-- `self.memory_text()`: returns `json.dumps(self.memory.to_dict())` — preserves the `memory_chars` field shape for golden JSON.
-- `_ensure_session_shape`: `session.setdefault("working_memory", {})`; on next save, `session.pop("memory", None)` clears the legacy key.
-- `update_memory_after_tool` (`runtime.py:387-420`):
-  - Keep: `self.memory.set_task_summary(...)`, `self.memory.remember_file(...)`.
-  - Delete calls: `self.memory.append_note(...)`, `self.memory.set_file_summary(...)`.
-- `record_process_note_for_tool` (`runtime.py:425-439`): delete method and its call sites.
-- `invalidate_stale_memory` (`runtime.py:184`): rewrite to operate on
-  `session["memory"]["file_summaries"]` directly:
-  ```python
-  def invalidate_stale_memory(self):
-      summaries = self.session.setdefault("memory", {}).setdefault("file_summaries", {})
-      dropped = memorylib.invalidate_stale_file_summaries_dict(summaries, self.root)
-      return dropped
-  ```
-  where `memorylib.invalidate_stale_file_summaries_dict` is a new
-  module-level helper added to `pico/features/memory.py` operating on
-  raw dicts (not `LayeredMemory` instances). Called by
-  `checkpoint.evaluate_resume_state` (`checkpoint.py:62`).
-- `spawn_delegate` (`runtime.py:593-594`):
-  - `child.session["memory"]["task"] = task` → `child.memory.set_task_summary(task)`.
-  - Delete `child.session["memory"]["notes"] = [...]`.
-- `Pico.reset()`: `self.memory = WorkingMemory()`; `self.session["working_memory"] = {}`.
-- `build_report`: `memory_chars = len(self.memory_text())` (key retained; value shrinks).
+### 3.2 Session Shape
 
-### C4 · `pico/agent_loop.py`
-
-No changes. `agent.memory.set_task_summary(x)` and
-`agent.memory.remember_file(y)` remain valid.
-
-### C5 · `pico/context_manager.py`
-
-- `SECTION_ORDER = ["prefix", "history", "current_request"]`.
-- `DEFAULT_SECTION_BUDGETS = {"prefix": 7000, "history": 8000}`.
-- `DEFAULT_SECTION_FLOORS = {"prefix": 1200, "history": 1500}`.
-- `DEFAULT_REDUCTION_ORDER = ("history", "prefix")`.
-- `DEFAULT_TOTAL_BUDGET = 15000`.
-- Delete: `_render_memory_section`, `_render_relevant_memory`,
-  `RELEVANT_MEMORY_LIMIT`, `selected_notes` metadata,
-  `selected_durable_count`.
-- Keep: `MEMORY_USAGE_GUIDANCE`, `MEMORY_READING_GUIDANCE` (both v2).
-- `workspace_state` placement:
-  `section_texts["history"] = workspace_state_text + "\n\n" + history_body`
-  — `<workspace_state>` moves to the head of the `history` section.
-- `_reusable_file_summary` (`context_manager.py:462-470`): rewrite to
-  read from the session file_summaries channel rather than
-  `agent.memory.to_dict()`:
-  ```python
-  def _reusable_file_summary(self, path):
-      summaries = getattr(self.agent, "session", {}).get("memory", {}).get("file_summaries", {})
-      return summaries.get(path)
-  ```
-  `sample.txt -> alpha | beta` collapse logic downstream is
-  unchanged; only the source of `file_summaries` moves from
-  `agent.memory` (WorkingMemory has no such attribute) to the raw
-  session channel that checkpoint restore already hydrates.
-
-### C6 · `pico/workspace.py`
-
-No changes to signatures. `volatile_text()` continues to return only
-branch/status/commits. `task_summary`/`recent_files` do **not** enter
-`WorkspaceContext.fingerprint`.
-
-### C7 · REPL `/memory` (in `pico/cli_commands.py`)
-
-```python
-if user_input == "/memory":
-    wm = agent.memory.to_dict()
-    task = wm.get("task_summary", "") or "-"
-    files = ", ".join(wm.get("recent_files") or []) or "-"
-    print(f"task: {task}")
-    print(f"recent: {files}")
-    entries = agent.memory_store.list()
-    if entries:
-        print("\nMemory files:")
-        for e in entries:
-            print(f"- {e.path} ({e.size_chars} chars)")
-    else:
-        print("\nMemory files: (none)")
-    continue
-```
-
-No calls to `agent.memory_text()`. No `<workspace_state>` XML rendering.
-
-### C8 · `pico/checkpoint.py`
-
-- Write: `record.memory_state = {"working_memory": self.memory.to_dict(), "file_summaries": self.session.get("memory", {}).get("file_summaries", {})}`.
-- Read: `working_dict = mem_state.get("working_memory") or mem_state.get("working") or mem_state`; then `self.memory = WorkingMemory.from_dict(working_dict)`; `file_summaries = mem_state.get("file_summaries", {})`.
-- `create_checkpoint` (`checkpoint.py:153`): change
-  `agent.memory.to_dict()["working"]["recent_files"]` to a direct
-  attribute read `agent.memory.recent_files`. Rationale:
-  `WorkingMemory.to_dict()` is flat (no `"working"` sub-dict); the
-  original v1 nesting is gone.
-- Checkpoint restore path additionally seeds
-  `session["memory"]["file_summaries"] = mem_state.get("file_summaries", {})`
-  so subsequent `invalidate_stale_memory` calls and
-  `_reusable_file_summary` reads find the summaries in the session
-  channel where the rewritten code expects them.
-- `file_freshness` invocations at lines 76 and 154 are unchanged.
-
-### C9 · `pico/evaluation/evaluator.py`
-
-Every call site that reaches into `agent.memory` for v1 shape must
-route through a locally-constructed `LayeredMemory` view against the
-same session dict, because `agent.memory` is now `WorkingMemory` and
-does not expose `append_note` / `set_file_summary` / `episodic_notes`
-/ `file_summaries`. Rewrite the affected sites:
-
-```python
-def _v1_view(agent):
-    """Ephemeral LayeredMemory over agent.session['memory']. Used only
-    for v1-shape probes in evaluator setup / assertions."""
-    from pico.features.memory import LayeredMemory
-    return LayeredMemory(agent.session.get("memory", {}), workspace_root=agent.root)
-```
-
-Affected lines (`evaluator.py`):
-- L323, L328: `agent.memory.append_note(...)` /
-  `agent.memory.set_file_summary(...)` in `_apply_task_setup`
-  → `view = _v1_view(agent); view.append_note(...); view.set_file_summary(...)`;
-  then persist back into `agent.session["memory"] = view.to_dict()`.
-- L341-344: `agent.memory.to_dict()["file_summaries"]` /
-  `["working"]["task_summary"]` → read from
-  `agent.session.get("memory", {}).get("file_summaries", {})` and
-  from `agent.memory.task_summary` (WorkingMemory attribute) directly.
-- L479-482: `initial_memory_state["working"]["task_summary"]`,
-  `initial_memory_state["episodic_notes"]`, and
-  `memorylib.is_effectively_empty(initial_memory_state)` — replace
-  with:
-  - `initial_task_summary_empty = not agent.memory.task_summary`
-  - `initial_episodic_notes_empty = True` (constant; WorkingMemory
-    does not carry episodic_notes)
-  - `initial_memory_empty = initial_task_summary_empty and not agent.memory.recent_files`
-
-Golden JSON schema for `benchmark-v1.json` /
-`harness-regression-v2.json` retains all three key names; only values
-shift for `initial_episodic_notes_empty` (always `True`).
-
-### C10 · `pico/evaluation/metrics_experiments.py`
-
-Cannot be left "no changes." Every call site that references
-`agent.memory` reaches an instance whose type has changed. Rewrite
-each such site with the `_v1_view(agent)` helper introduced in C9:
-
-Affected lines (`metrics_experiments.py`):
-- L68, L326, L805: `agent.memory.append_note(...)` →
-  `view = _v1_view(agent); view.append_note(...); agent.session["memory"] = view.to_dict()`.
-- L131-145 (`_set_irrelevant_memory`) and L228-242
-  (`_set_irrelevant_memory_for_task`): same pattern — build a
-  LayeredMemory view, mutate, write back.
-- L1049-1091 (`_apply_recovery_setup`): same.
-- Any read of `agent.memory.to_dict()["file_summaries"]` etc: use
-  `agent.session["memory"]["file_summaries"]` directly.
-
-Extract `_v1_view` into a small module-level helper in
-`pico/evaluation/_v1_view.py` (or inline the 3-line body per file if
-duplication is preferable) — one canonical construction point avoids
-drift.
-
-Impact: `import pico.evaluation.metrics_experiments` remains green,
-AND `run_*_experiment()` continues to function. Both must be verified
-at commit close.
-
-### C11 · `benchmarks/coding_tasks.json`
-
-`context_reduction_checkpoint.setup.section_budgets`:
-
-```
-Before: {"prefix": 800, "memory": 800, "relevant_memory": 800, "history": 2400}
-After:  {"prefix": 800, "history": 4000}
-```
-
-Total budget (4800) and verifier contract unchanged.
-
-### Dependency graph after change
-
-```
-runtime           → WorkingMemory
-                  → memorylib.invalidate_stale_file_summaries_dict (new helper)
-agent_loop        → WorkingMemory (via runtime)
-context_manager   → session["memory"]["file_summaries"]  (raw read for _reusable_file_summary)
-workspace         → (unchanged)
-REPL /memory      → WorkingMemory.to_dict + BlockStore.list
-
-checkpoint        → WorkingMemory.to_dict / from_dict
-                  → features.memory.file_freshness   (kept)
-                  → session["memory"]["file_summaries"]  (mixed-shape channel)
-                  → agent.memory.recent_files  (direct attribute read)
-
-evaluator         → LayeredMemory (via _v1_view helper) for setup/probe
-                  → agent.memory.task_summary / .recent_files direct
-metrics_exp       → LayeredMemory (via _v1_view helper) for setup/probe
-tests             → WorkingMemory + LayeredMemory (partial-stale only)
-```
-
----
-
-## 3 · Data migration & compat
-
-### 3.1 · Session JSON
-
-**Old (v1):**
+This spec writes a new public working-memory key:
 
 ```json
 {
-  "id": "...",
-  "memory": {
-    "working": {"task_summary": "...", "recent_files": [...]},
-    "episodic_notes": [...],
-    "file_summaries": {...},
-    "task": "...",
-    "files": [...],
-    "notes": [...],
-    "next_note_index": 3,
-    "durable_topics": []
-  }
-}
-```
-
-**New:**
-
-```json
-{
-  "id": "...",
   "working_memory": {
     "task_summary": "...",
-    "recent_files": [...]
+    "recent_files": ["src/app.py"]
+  },
+  "memory": {
+    "file_summaries": {
+      "src/app.py": {
+        "summary": "short summary",
+        "created_at": "...",
+        "freshness": "sha256..."
+      }
+    }
   }
 }
 ```
 
-- Write: `self.session["working_memory"] = self.memory.to_dict()`; `self.session.pop("memory", None)` on first save.
-- Read: `session.get("working_memory") or session.get("memory") or {}` handed to `WorkingMemory.from_dict`.
-- Fields dropped: `episodic_notes`, `notes`, `next_note_index`, `durable_topics`, `file_summaries` (session channel only — checkpoint retains file_summaries via 3.2).
-- User-visible impact: none (v1 dashboard no longer rendered).
+`session["memory"]` remains during this spec, but it is explicitly a
+temporary internal legacy channel. It must contain only
+`file_summaries` after normalization. The following fields are no longer
+written on save:
 
-### 3.2 · Checkpoint record
+- `working`
+- `episodic_notes`
+- `task`
+- `files`
+- `notes`
+- `next_note_index`
+- `durable_topics`
 
-Mixed shape (explicit tradeoff):
+Do not call `session.pop("memory", None)` in this spec. That would break
+the file-summary compatibility channel described above.
+
+### 3.3 WorkingMemory Synchronization
+
+Because `WorkingMemory` is not a wrapper around a mutable session dict,
+runtime code must synchronize it explicitly.
+
+Add a small runtime helper:
+
+```python
+def _sync_working_memory(self):
+    self.session["working_memory"] = self.memory.to_dict()
+    return self.session["working_memory"]
+```
+
+Call it after every `WorkingMemory` mutation:
+
+- `AgentLoop.run()` after `agent.memory.set_task_summary(user_message)`
+- `runtime.update_memory_after_tool()` after `remember_file`
+- `runtime.spawn_delegate()` after setting the child task summary
+- `runtime.reset()`
+- any test or evaluator helper that mutates `agent.memory`
+
+Session saves already happen through `record()`, run finalization, or
+explicit setup saves. The sync helper only keeps the in-memory session
+dict coherent; callers that need immediate persistence should continue
+to save through `session_store`.
+
+### 3.4 Legacy File Summaries
+
+File summaries stay out of `WorkingMemory`, but they remain useful for:
+
+- partial-stale detection
+- `ContextManager` collapsing old repeated reads into short lines
+- resume benchmark setup
+
+Add raw-dict helpers in `pico/features/memory.py`:
+
+```python
+def normalize_file_summaries_dict(summaries, workspace_root=None) -> dict: ...
+def set_file_summary_dict(summaries, path, summary, workspace_root=None) -> dict: ...
+def invalidate_file_summary_dict(summaries, path, workspace_root=None) -> dict: ...
+def invalidate_stale_file_summaries_dict(summaries, workspace_root=None) -> list[str]: ...
+```
+
+These helpers operate on the `file_summaries` dict itself, not on a full
+v1 memory state. They may reuse `canonicalize_path`, `file_freshness`,
+`clip`, and `now`.
+
+`runtime.update_memory_after_tool()` should:
+
+- keep `self.memory.remember_file(canonical_path)` for
+  `read_file`, `write_file`, and `patch_file`
+- for `read_file`, write the short summary into
+  `session["memory"]["file_summaries"]` using
+  `set_file_summary_dict`
+- for `write_file` and `patch_file`, remove the path using
+  `invalidate_file_summary_dict`
+- never append episodic notes
+- never call `self.memory.set_file_summary(...)`
+
+This keeps the internal compression/staleness behavior without exposing
+file summaries through `Pico.memory`.
+
+## 4. Component Changes
+
+### 4.1 `pico/runtime.py`
+
+Initialization:
+
+1. Build `WorkingMemory` from:
+   `session.get("working_memory") or session.get("memory") or {}`.
+2. Extract legacy `file_summaries` from `session.get("memory", {})`.
+3. Normalize the session to:
+   - `session["working_memory"] = self.memory.to_dict()`
+   - `session["memory"] = {"file_summaries": normalized_summaries}`
+
+`memory_text()` returns a compact JSON string for metrics continuity:
+
+```python
+return json.dumps(self.memory.to_dict(), sort_keys=True)
+```
+
+`invalidate_stale_memory()` operates only on
+`session["memory"]["file_summaries"]`:
+
+```python
+summaries = self.session.setdefault("memory", {}).setdefault("file_summaries", {})
+return memorylib.invalidate_stale_file_summaries_dict(summaries, self.root)
+```
+
+`record_process_note_for_tool()` is deleted. Runtime no longer records
+process notes into v1 episodic memory.
+
+`spawn_delegate()`:
+
+- calls `child.memory.set_task_summary(task)`
+- calls `child._sync_working_memory()`
+- does not write `child.session["memory"]["notes"]`
+
+`reset()`:
+
+- clears history
+- resets `self.memory = WorkingMemory(workspace_root=self.root)`
+- writes `session["working_memory"] = self.memory.to_dict()`
+- keeps `session["memory"] = {"file_summaries": {}}`
+
+`build_report()` adds:
+
+```json
+"working_memory": {"task_summary": "...", "recent_files": [...]}
+```
+
+It does not claim that run reports previously had a top-level
+`memory_chars` field. Memory character counts remain in
+`prompt_metadata`.
+
+### 4.2 `pico/tool_executor.py`
+
+Delete the call to:
+
+```python
+agent.record_process_note_for_tool(name, metadata)
+```
+
+No replacement is added in this spec. Tool failures and partial success
+already flow through:
+
+- tool result metadata
+- trace events
+- recoverable-editing tool change records
+- resume-summary checkpoints
+
+### 4.3 `pico/agent_loop.py`
+
+No algorithmic change is needed. The loop still calls:
+
+```python
+agent.memory.set_task_summary(user_message)
+```
+
+Add the sync call immediately after it:
+
+```python
+agent._sync_working_memory()
+```
+
+### 4.4 `pico/context_manager.py`
+
+Collapse prompt sections to:
+
+```python
+SECTION_ORDER = ("prefix", "history", "current_request")
+```
+
+Use budgets:
+
+```python
+DEFAULT_TOTAL_BUDGET = 15000
+DEFAULT_SECTION_BUDGETS = {
+    "prefix": 7000,
+    "history": 8000,
+}
+DEFAULT_SECTION_FLOORS = {
+    "prefix": 1200,
+    "history": 1500,
+}
+DEFAULT_REDUCTION_ORDER = ("history", "prefix")
+```
+
+Remove:
+
+- `_render_relevant_memory`
+- `RELEVANT_MEMORY_LIMIT`
+- selected-note metadata
+- `relevant_memory` metadata
+- memory section metadata
+- code paths that call `agent.memory.retrieval_candidates`
+
+Keep:
+
+- `MEMORY_USAGE_GUIDANCE`
+- `MEMORY_READING_GUIDANCE`
+- `<project_structure>`
+- `<memory_index>`
+
+`<workspace_state>` moves to the beginning of the rendered history
+section:
+
+```text
+<workspace_state>
+...
+</workspace_state>
+
+Transcript:
+...
+```
+
+`_reusable_file_summary(path)` reads:
+
+```python
+summary = agent.session.get("memory", {}).get("file_summaries", {}).get(path)
+```
+
+It returns `summary["summary"]` when the stored value is a dict, and an
+empty string otherwise.
+
+### 4.5 Prompt Cache Key
+
+The current runtime uses `self.prefix_state.hash` as `prompt_cache_key`,
+but `ContextManager` appends stable v2 content (`MEMORY_USAGE_GUIDANCE`,
+`MEMORY_READING_GUIDANCE`, `<project_structure>`, `<memory_index>`) after
+`build_prompt_prefix()` has already computed that hash.
+
+Rev 3 fixes the contract:
+
+- `prefix_state.hash` remains the hash of the base prefix.
+- `ContextManager` computes `stable_prefix_hash` from the final rendered
+  prefix section before any history/current request text is appended.
+- runtime uses `stable_prefix_hash` as `prompt_cache_key`.
+- metadata keeps both:
+  - `base_prefix_hash`
+  - `stable_prefix_hash`
+- existing `prefix_hash` may remain as an alias for
+  `stable_prefix_hash` if that reduces test churn.
+
+Acceptance:
+
+- two consecutive turns with unchanged AGENTS/project structure/memory
+  files produce the same `prompt_cache_key`
+- changing `.pico/memory/...` changes `prompt_cache_key`
+- changing project structure that appears in `<project_structure>`
+  changes `prompt_cache_key`
+- changing branch/status/recent commits does not change
+  `prompt_cache_key`
+
+### 4.6 `pico/checkpoint.py`
+
+This spec changes the resume-summary checkpoint only.
+
+Do not add `memory_state` to recoverable-editing checkpoint records.
+Do not change `pico/checkpoint_store.py`,
+`pico/recovery_checkpoint_writer.py`, or `pico/recovery_models.py`.
+
+Required changes:
+
+- `evaluate_resume_state()` continues to call
+  `agent.invalidate_stale_memory()`.
+- `create_checkpoint()` changes:
+
+```python
+for path in agent.memory.to_dict()["working"]["recent_files"]:
+```
+
+to:
+
+```python
+for path in agent.memory.recent_files:
+```
+
+The checkpoint's existing `key_files` and `freshness` fields remain the
+resume truth. No checkpoint `memory_state` field is introduced in this
+spec.
+
+### 4.7 REPL `/memory`
+
+`/memory` prints:
+
+```text
+task: ...
+recent: ...
+
+Memory files:
+- workspace/notes/auth.md (123 chars)
+```
+
+It does not call `agent.memory_text()`. It does not print
+`Working memory:`. It does not print XML.
+
+### 4.8 `pico-cli sessions show` and `pico-cli runs show`
+
+Current commands print raw JSON/artifacts. No custom renderer rewrite is
+required.
+
+Acceptance is limited to:
+
+- legacy sessions can still be loaded and shown
+- new sessions show `working_memory`
+- new sessions do not write v1 episodic fields
+- run reports include `working_memory`
+
+### 4.9 `pico/evaluation/evaluator.py`
+
+Setup helpers that need legacy file summaries should use raw-dict helper
+functions, not `agent.memory.set_file_summary`.
+
+Context-reduction setup no longer seeds episodic notes. The setup should
+use history volume and section budgets to exercise prompt reduction.
+
+Initial memory booleans become:
+
+```python
+initial_task_summary_empty = not agent.memory.task_summary
+initial_episodic_notes_empty = True
+initial_memory_empty = (
+    initial_task_summary_empty
+    and not agent.memory.recent_files
+)
+```
+
+Golden JSON keeps the existing keys, but values shift where expected.
+
+### 4.10 `pico/evaluation/metrics_experiments.py`
+
+Do not preserve old v1-recall semantics by routing hidden notes through
+`_v1_view` and pretending they still affect the prompt. After this spec,
+v1 episodic notes are not prompt input.
+
+Execution contract:
+
+- imports must stay green
+- `run_context_ablation_v2(...)` must complete
+- `run_memory_ablation_v2(...)` must complete
+- `run_recovery_ablation_v2(...)` must complete
+- existing artifact schemas should remain readable by
+  `metrics_reports.py`
+
+Allowed changes:
+
+- Remove or no-op note injection that previously relied on
+  `agent.memory.append_note`.
+- Keep artifact fields such as `memory_hit_rate`, but document that this
+  artifact is a legacy smoke/continuity metric until the v2
+  memory-quality benchmark replaces it.
+- Update fake clients that parse `memory:` / `relevant memory:` so they
+  do not require removed prompt sections.
+- Continue using raw `file_summaries` helpers for recovery setup.
+
+Follow-up work:
+
+- A separate v2 memory-quality spec should replace old v1 memory
+  ablation with scenarios based on memory files, memory tools, and
+  explicit recall/eval traces.
+
+## 5. Data Migration and Compatibility
+
+### 5.1 Reading Existing Sessions
+
+On load:
+
+1. Read `working_memory` if present.
+2. Otherwise derive working state from legacy `memory`.
+3. Extract legacy `file_summaries` from legacy `memory`.
+4. Normalize the in-memory session to the rev-3 shape.
+
+No batch migration command is required.
+
+### 5.2 Writing Sessions
+
+On save, new sessions write:
 
 ```json
 {
-  "memory_state": {
-    "working_memory": {"task_summary": "...", "recent_files": [...]},
-    "file_summaries": {"path/to/file.py": {"summary": "...", "freshness": "..."}}
+  "working_memory": {
+    "task_summary": "...",
+    "recent_files": ["..."]
+  },
+  "memory": {
+    "file_summaries": {}
   }
 }
 ```
 
-- `working_memory`: consumed by `WorkingMemory.from_dict`.
-- `file_summaries`: read as a raw dict by the partial-stale channel.
-  `WorkingMemory` itself does not expose file_summaries.
-- Compatibility with pre-spec checkpoints:
-  - `mem_state["working"]` (nested v1 shape) → picked up by `from_dict`.
-  - `mem_state["task"] + mem_state["files"]` (flat v1 top-level) →
-    picked up by `from_dict` top-level branch.
+They do not write v1 notes, episodic notes, or working mirrors under
+`session["memory"]`.
 
-### 3.3 · Run report JSON
+### 5.3 Checkpoint Compatibility
 
-- Keep: `memory_chars` (value reflects `len(json.dumps(working_memory.to_dict()))`).
-- Keep: `initial_episodic_notes_empty` (constant `True`).
-- Add: `working_memory: {"task_summary": ..., "recent_files": [...]}`.
-- Drop: `episodic_notes`, `file_summaries`, `notes`, `durable_topics`.
-- `benchmarks/results/*.json` golden artifacts re-baselined in a single
-  dedicated commit (Section 5.2 commit 9).
+Existing resume-summary checkpoints remain compatible because their
+resume contract is based on:
 
-### 3.4 · `sessions show` / `runs show` renderers
+- `schema_version`
+- `key_files`
+- `freshness`
+- `runtime_identity`
 
-Any read of `data["memory"]["episodic_notes"]` /
-`data["memory"]["working"]["task_summary"]` becomes
-`data.get("working_memory", {}).get("task_summary")` etc. Missing
-fields render as `-`.
+This spec does not depend on `memory_state` in checkpoint payloads.
 
-### 3.5 · Not doing
+### 5.4 Feature Flag Compatibility
 
-- No batch migration script.
-- No `episodic_notes` → `.pico/memory/agent_notes.md` data movement.
-- No deprecation warning.
-- No CI check for v1 session reverse-compat.
+`DEFAULT_FEATURE_FLAGS["relevant_memory"]` remains for now. It no
+longer causes a prompt section to render. It remains in runtime identity
+until a separate compatibility cleanup removes it deliberately.
 
-### 3.6 · Deprecation timeline
+## 6. Testing Strategy
 
-- This spec: write new shape; read compat retained; partial-stale
-  channel still reads v1 `file_summaries`.
-- Follow-up A (partial-stale redesign): checkpoint schema collapses
-  to pure new shape.
-- Follow-up B (`pico/features/memory.py` teardown): `LayeredMemory`
-  deleted; `file_freshness` and `canonicalize_path` move to a
-  standalone module (candidate: `pico/paths.py`).
+### 6.1 New `tests/test_working_memory.py`
 
----
+Add focused tests:
 
-## 4 · Testing strategy
+- defaults are empty
+- `set_task_summary` truncates to 300 chars
+- `remember_file` dedupes and keeps the latest 8
+- path canonicalization uses `workspace_root`
+- `to_dict` round-trips flat shape
+- `from_dict` reads new shape
+- `from_dict` reads v1 nested shape
+- `from_dict` reads v1 flat shape
+- invalid or `None` input produces empty memory
+- deprecated methods are absent
 
-### 4.1 · New tests
+### 6.2 Prompt/Layout Tests
 
-`tests/test_working_memory.py`:
-- `test_defaults_are_empty`
-- `test_set_task_summary_truncates_to_300`
-- `test_remember_file_dedups_and_keeps_last_8`
-- `test_remember_file_canonicalizes_when_workspace_root_given`
-- `test_to_dict_roundtrip`
-- `test_from_dict_reads_new_shape`
-- `test_from_dict_reads_v1_nested_shape`
-- `test_from_dict_reads_v1_top_level_shape`
-- `test_from_dict_none_or_empty`
-- `test_from_dict_ignores_extra_keys`
-- `test_no_deprecated_methods` (`hasattr` false-checks for
-  `append_note`, `set_file_summary`, `retrieval_view`).
+Update or add tests for:
 
-### 4.2 · Extend `tests/memory/test_v1_durable_gone.py`
+- `SECTION_ORDER == ["prefix", "history", "current_request"]`
+- prompt has no `Working memory:` section
+- prompt has no `Relevant memory:` section
+- prompt still contains v2 memory guidance
+- prompt still contains `<memory_index>`
+- `<workspace_state>` is at the head of history, after stable prefix
+- metadata has no `memory` or `relevant_memory` section entries
+- current request is never clipped
 
-- `test_pico_memory_is_working_memory_not_layered`.
-- `test_working_memory_header_absent_from_prompt` (allowing the v2
-  `<memory_index>` "Memory files:" listing form).
-- `test_relevant_memory_section_absent`.
-- `test_section_order_collapsed_to_three`.
+### 6.3 Prompt Cache Tests
 
-### 4.3 · Extend `tests/test_workspace.py`
+Add tests for:
 
-- `test_volatile_text_signature_unchanged` (no `working=` kwarg;
-  output does not contain `task:` or `recent_files:`).
+- unchanged memory files and project docs keep `prompt_cache_key` stable
+- editing/adding a memory file changes `prompt_cache_key`
+- changing project structure that appears in `<project_structure>`
+  changes `prompt_cache_key`
+- branch/status-only volatility does not change `prompt_cache_key`
 
-### 4.4 · Rewrite `tests/test_context_manager.py`
+### 6.4 Runtime and Session Tests
 
-Remove:
-- Any assertion on `Memory:` or `Relevant memory:` string.
-- Any mock of `agent.memory.render_memory_text` /
-  `agent.memory.retrieval_view` / `agent.memory.retrieval_candidates`.
+Update tests for:
 
-Add:
-- `test_prompt_section_order_is_prefix_history_current`.
-- `test_workspace_state_prepended_to_history`.
-- `test_no_memory_or_relevant_memory_metadata_keys`.
+- `type(agent.memory).__name__ == "WorkingMemory"`
+- `AgentLoop.run()` syncs task summary into `session["working_memory"]`
+- read/write/patch tools update `recent_files`
+- read tools write raw `session["memory"]["file_summaries"]`
+- write/patch tools invalidate raw file summaries
+- new sessions do not write v1 note fields
+- legacy sessions load and normalize without crashing
+- `reset()` clears history and working memory while preserving the
+  narrowed `memory.file_summaries` shape
 
-Modify:
-- `test_context_manager_collapses_older_duplicate_reads_into_one_summary_line`:
-  fixture injects
-  `session["memory"]["file_summaries"] = {...}` directly (v1 read
-  channel), no longer via `agent.memory.set_file_summary(...)`.
+### 6.5 Tool Executor Tests
 
-### 4.5 · `tests/memory/test_repl_v2.py`
+Update tests that expected process notes. Verification should move to
+tool metadata, trace, or checkpoint records. There should be no call to
+`record_process_note_for_tool`.
 
-Change `assert "Working memory:" in out` to
-`assert "task:" in out and "Memory files:" in out`.
+### 6.6 Checkpoint Tests
 
-### 4.6 · `tests/test_public_api_contract.py`
+Update tests for:
 
-Update the import path check: `LayeredMemory` remains importable from
-`pico.features.memory`; new addition `WorkingMemory` importable from
-`pico.working_memory`.
+- `create_checkpoint()` reads `agent.memory.recent_files`
+- stale summary invalidation operates on
+  `session["memory"]["file_summaries"]`
+- partial-stale resume remains green
+- recoverable-editing checkpoint records are unchanged
 
-### 4.7 · `tests/test_pico.py`
+### 6.7 CLI Tests
 
-Full inventory of affected sites (not "surgical" — this is ~9 test
-cases with concrete changes):
+Update `/memory` tests to assert:
 
-| Line(s)     | Test / area                                                                            | Change                                                                                                                                                                                    |
-|-------------|----------------------------------------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| L61         | `agent.session["memory"]["files"]` flat mirror                                          | Delete assertion; new shape has no top-level `files`.                                                                                                                                     |
-| L74, L77    | `agent.session["memory"]["working"]["task_summary"]`                                    | Read `agent.memory.task_summary` (attribute).                                                                                                                                             |
-| L80-L108    | `test_agent_only_stores_reusable_epistemic_notes` (episodic_notes + "Relevant memory")  | **Delete entire test** — episodic-notes recall no longer exists.                                                                                                                          |
-| L111-L133   | `test_file_summary_cache_is_invalidated_on_out_of_band_edit_and_path_spelling`          | **Delete** — file_summary set/read via `agent.memory` is gone; partial-stale coverage moved to L1415 rewrite.                                                                             |
-| L1262-L1303 | `test_prompt_budget_metadata_records_budget_decisions` (`append_note` x3 + `relevant_memory`) | **Delete** — relevant_memory section removed; metadata key gone.                                                                                                                          |
-| L1326-L1345 | `test_agent_creates_checkpoint_when_context_reduction_happens...` (`append_note` + `memory`/`relevant_memory` budgets) | Rewrite: remove `append_note`; change budget dict to `{prefix, history}`; drop metadata assertions on `memory`/`relevant_memory`.                                                          |
-| L1336, L1596 | Repeated same pattern                                                                  | Same fix.                                                                                                                                                                                 |
-| L1415-L1456 | `test_resume_invalidates_stale_file_summaries_and_marks_partial_stale`                   | Rewrite: seed `session["memory"]["file_summaries"] = {...}` directly; assert `resume_status == "partial-stale"` through the rewritten `Pico.invalidate_stale_memory` path (§2 C3).         |
-| L1734-L1754 | `test_partial_success_creates_process_note_for_exploration_history`                     | **Delete** — `record_process_note_for_tool` removed (§2 C3).                                                                                                                              |
-| L1747       | `agent.memory.to_dict()["episodic_notes"]` inside above test                            | Removed by the delete above.                                                                                                                                                              |
+- `task:`
+- `recent:`
+- `Memory files:`
+- no `Working memory:`
 
-Total: 4 deletes + 5 rewrites. Commit 7 in §5.2 is a substantial
-rewrite of ~250 LOC across `test_pico.py`, not a small patch.
+For `sessions show` and `runs show`, verify that raw output still works
+for both legacy and new shape.
 
-### 4.8 · `tests/test_memory.py`
+### 6.8 Evaluator and Metrics Tests
 
-File retained. Any assertion that `Pico.memory` is a `LayeredMemory`
-is rewritten to construct a standalone `LayeredMemory` instance.
+Update tests so:
 
-### 4.9 · Regression fences (must stay green)
+- evaluator imports
+- metrics imports
+- `run_fixed_benchmark(...)` completes without AttributeError
+- `run_context_ablation_v2(...)` completes
+- `run_memory_ablation_v2(...)` completes
+- `run_recovery_ablation_v2(...)` completes
+- artifact readers in `metrics_reports.py` still handle produced JSON
 
-- `tests/memory/test_v1_durable_gone.py` (including new lines).
-- `tests/memory/test_invariants.py` (INV-1..5).
-- `tests/memory/test_cli_diagnostics_v2.py` (doctor hint text + json).
-- `tests/memory/test_prompt_layout.py::test_stable_prefix_no_branch_content`.
-- `test_agent_records_model_cache_metadata_in_last_prompt_metadata`.
+### 6.9 Full-Suite Expectations
 
-### 4.10 · Named pre-existing red tests (stay red, must still collect)
+Required:
 
-- `tests/test_allowed_tools.py::test_benchmark_evaluator_applies_allowed_tools_to_runtime_prompt`.
-- `tests/test_evaluator.py::test_benchmark_verifier_runs_with_reproducibility_locale`.
+- `pytest tests --co -q` has zero collection errors.
+- Full suite has only the two known pre-existing failures listed in this
+  spec.
+- No new failures are accepted.
 
-After the spec, `pytest tests --co -q` must succeed with zero
-collection errors.
+## 7. Grep Gates
 
-### 4.11 · Coverage sanity (pre-merge grep gates)
+Run these before merge.
+
+### Gate 1: Runtime prompt headers are gone
 
 ```bash
-# Gate 1: LayeredMemory references must be confined to whitelist
-grep -rn "LayeredMemory" pico/ tests/ --include='*.py' | \
-  grep -v "features/memory.py\|test_memory.py\|test_recovery_cli.py\|metrics_experiments.py\|test_v1_durable_gone.py\|test_public_api_contract.py\|evaluator.py\|_v1_view.py"
-# Expect: 0 hits.
-# Whitelist rationale:
-#   - features/memory.py, test_memory.py, test_recovery_cli.py: v1 kept in-place
-#   - metrics_experiments.py, evaluator.py, _v1_view.py: use _v1_view helper (§2 C9/C10)
-#   - test_v1_durable_gone.py, test_public_api_contract.py: assertion strings referencing v1
-
-# Gate 2: v1 prompt headers must be gone from runtime prompt path
-grep -rn "Working memory:\|Relevant memory:" pico/ --include='*.py' | grep -v "features/memory.py"
-# Expect: 0 hits.
-# features/memory.py:347,361 still contain the v1 header strings inside
-# LayeredMemory.render_memory_text; that class is not called by any prompt
-# path after §2 C3, so those strings are dormant.
-
-# Gate 3: session["memory"] access constrained to known channels
-grep -rn 'session\["memory"\]\|session\.get("memory"' pico/ --include='*.py'
-# Expect hits ONLY in:
-#   - runtime._ensure_session_shape (compat-read + pop)
-#   - runtime.invalidate_stale_memory (file_summaries channel)
-#   - context_manager._reusable_file_summary (file_summaries channel)
-#   - checkpoint.py create/restore (mixed shape)
-#   - evaluator.py / metrics_experiments.py (via _v1_view helper)
+grep -rn "Working memory:\|Relevant memory:" pico/ --include='*.py' \
+  | grep -v "features/memory.py"
 ```
 
-### 4.12 · TDD sequence (feeds the plan)
+Expected: no output.
 
-1. Write `test_working_memory.py` RED → implement `WorkingMemory` GREEN.
-2. Extend `test_v1_durable_gone.py` with 4 assertions RED → retype
-   `Pico.memory` + collapse `SECTION_ORDER` + retarget REPL `/memory`
-   GREEN (some legacy tests will be red during this step).
-3. Fix `test_context_manager.py` and `test_workspace.py` GREEN.
-4. Fix `test_repl_v2.py:94` GREEN.
-5. Fix `test_public_api_contract.py` GREEN.
-6. Delete `test_partial_success_creates_process_note_for_exploration_history`;
-   rewrite the partial-stale test GREEN.
-7. Hardcode `initial_episodic_notes_empty = True` in `evaluator.py`;
-   flatten `benchmarks/coding_tasks.json` budgets GREEN.
-8. Full suite: 2 pre-existing red; all others GREEN.
+`features/memory.py` may still contain dormant v1 render helpers because
+`LayeredMemory` is not deleted in this spec.
 
----
+### Gate 2: `LayeredMemory` use is constrained
 
-## 5 · Risks, rollout, out-of-scope
+```bash
+grep -rn "LayeredMemory" pico/ tests/ --include='*.py' \
+  | grep -v "features/memory.py\|test_memory.py\|test_recovery_cli.py\|test_v1_durable_gone.py\|test_public_api_contract.py"
+```
 
-### 5.1 · Risks
+Expected: no runtime prompt path hits. If evaluator/metrics still need
+explicit legacy setup, those hits must be documented and covered by
+import/run smoke tests.
 
-**R1 — Mixed-shape checkpoint payload is not aesthetic.**
-Explicit tradeoff. Comment the schema in `checkpoint.py` header; a
-follow-up spec unifies partial-stale.
+### Gate 3: Session legacy memory access is constrained
 
-**R2 — Prompt cache stability.**
-`workspace_state` moves to the head of the `history` section, keeping
-the stable prefix byte-identical. Regression fence: `test_stable_prefix_no_branch_content` and
-`test_agent_records_model_cache_metadata_in_last_prompt_metadata`.
+```bash
+grep -rn 'session\["memory"\]\|session\.get("memory"' pico/ --include='*.py'
+```
 
-**R3 — `initial_episodic_notes_empty` is now a constant.**
-Documented in `evaluator.py`. Not user-facing.
+Allowed categories:
 
-**R4 — Delegate context injection weaker.**
-Child agent no longer receives parent transcript excerpts in its
-memory notes. Task summary still crosses. If regression surfaces, a
-separate spec designs a v2 `<parent_context>` block.
+- runtime session normalization
+- runtime raw file-summary helpers
+- context-manager reusable summary reads
+- checkpoint stale-summary evaluation
+- evaluator/metrics legacy setup
 
-**R5 — Run report golden diff.**
-Accepted. Single dedicated commit re-baselines the two golden JSONs
-under `benchmarks/results/`.
+No prompt section rendering may depend on `session["memory"]`.
 
-**R6 — Stray v1 references in `test_pico.py`.**
-`grep` gates at 4.11 backstop the surgical changes. Any leakage
-becomes a hot-fix mini-PR.
+### Gate 4: Removed method is gone
 
-**R7 — `metrics_experiments.py` needs the `_v1_view` rewrite per §2 C10.**
-Import-only sanity check is insufficient; the `run_*_experiment()`
-callables must be exercised. Acceptance: at least one experiment run
-per family (`_run_memory_ablation_v2`, `_run_recovery_experiment`,
-`_run_reproducibility_experiment`) completes without AttributeError
-after commit close.
+```bash
+grep -rn "record_process_note_for_tool" pico/ tests/ --include='*.py'
+```
 
-**R8 — Reduction floor tight.**
-`DEFAULT_SECTION_BUDGETS` sums exactly to `DEFAULT_TOTAL_BUDGET`
-(15000). Once user_message is appended, the assembled prompt is
-`>=15000 + len(user_message)`, so the reduction loop fires every
-turn. Add `prefix` and `history` `DEFAULT_SECTION_FLOORS` values
-(1200 and 1500) sum to 2700 — reduction has ~12300 chars of runway.
-Acceptable but tight; document in `context_manager.py` comment.
+Expected: no output, unless a test is asserting absence by source scan.
 
-**R9 — Delegate task summary propagation is untested.**
-`spawn_delegate` writes `child.memory.set_task_summary(task)` inside
-`Pico.__init__` flow. Confirm order: `_ensure_session_shape` runs
-during `Pico.__init__`; `set_task_summary` runs after child
-construction returns to `spawn_delegate`. Order is safe. Add a test
-`test_spawn_delegate_carries_task_summary` in `test_pico.py` that
-asserts child agent has non-empty `child.memory.task_summary`.
+## 8. Execution Sequence
 
-### 5.2 · Rollout & commit sequence
+This sequence is designed to minimize ambiguous breakage. Some commits
+may be red while tests are being migrated, but each commit should have a
+clear local proof target.
 
-Base: current `memory` branch. Target: single PR into `main` after
-PRs #1 and #2 merge.
+### Commit 1: Add `WorkingMemory`
 
-Commit sequence (feeds SDD one-commit-per-task cadence):
+Files:
 
-1. `feat: add pico/working_memory.py` + unit tests.
-2. `feat: add memorylib.invalidate_stale_file_summaries_dict` +
-   `_v1_view` helper for evaluator/metrics_experiments.
-3. `refactor: runtime + agent_loop switch Pico.memory to WorkingMemory`
-   (includes `invalidate_stale_memory` rewrite, delegate rewire,
-   `record_process_note_for_tool` deletion).
-4. `refactor: context_manager collapses to 3 sections; workspace_state
-   → history head; _reusable_file_summary reads session channel`.
-5. `refactor: checkpoint mixed shape (working_memory + legacy
-   file_summaries); create_checkpoint reads attribute not to_dict`.
-6. `refactor: REPL /memory prints task/recent + memory files (no XML)`.
-7. `refactor: evaluator + metrics_experiments use _v1_view helper`
-   (touches evaluator.py L323/L328/L341-344/L479-482 and
-   metrics_experiments.py L68/L131-145/L228-242/L326/L805/L1049-1091).
-8. `chore: benchmarks/coding_tasks.json budget merge for
-   context_reduction_checkpoint`.
-9. `test: rewrite test_context_manager, test_public_api_contract,
-   test_repl_v2; extend test_v1_durable_gone, test_workspace`
-   (targeted edits).
-10. `test: rewrite test_pico.py — 4 deletes + 5 rewrites per §4.7
-    inventory` (~250 LOC touched; single dedicated commit).
-11. `docs: update memory-model.md + README /memory copy`.
-12. `chore: re-baseline benchmarks/results/*.json` (isolated commit).
+- `pico/working_memory.py`
+- `tests/test_working_memory.py`
+- `tests/test_public_api_contract.py`
 
-**Red-band expectation**: commits 3-9 leave `pytest tests -q` red;
-green is restored only at commit 10 (test_pico rewrite is the final
-piece unblocking the suite). Commits 1, 2, 11, and 12 are green on
-their own. This is a deliberate revision of the earlier "each commit
-passes" claim.
+Proof:
 
-### 5.3 · Rollback
+```bash
+uv run pytest tests/test_working_memory.py tests/test_public_api_contract.py -q
+```
 
-- Preferred: forward fix (v1 code still present; type switch reverts
-  cheaply).
-- Full revert: `git revert <merge-commit>` — session/checkpoint
-  compat channels ensure smooth downgrade.
-- Observability: run `pico-cli benchmark memory` scaffold to catch
-  ImportError or collection error; run
-  `python -c "import pico.evaluation.metrics_experiments"`.
+### Commit 2: Add raw file-summary helpers
 
-### 5.4 · Out of scope reminder
+Files:
 
-See §1. Each item is a follow-up spec.
+- `pico/features/memory.py`
+- focused tests in `tests/test_memory.py` or a new small test file
 
-### 5.5 · Acceptance checklist
+Proof:
+
+```bash
+uv run pytest tests/test_memory.py -q
+```
+
+### Commit 3: Switch runtime to `WorkingMemory`
+
+Files:
+
+- `pico/runtime.py`
+- `pico/agent_loop.py`
+- `pico/tool_executor.py`
+- focused runtime tests
+
+Includes:
+
+- session normalization
+- `_sync_working_memory`
+- raw file-summary writes/invalidations
+- deletion of process-note recording
+- delegate task-summary sync
+
+Proof:
+
+```bash
+uv run pytest tests/test_working_memory.py tests/test_pico.py -q
+```
+
+`tests/test_pico.py` may still be partially red until the dedicated test
+rewrite commit. Any red failures must match the known v1 prompt/test
+assertions listed in the implementation plan.
+
+### Commit 4: Collapse prompt layout and fix cache key
+
+Files:
+
+- `pico/context_manager.py`
+- prompt layout/cache tests
+
+Includes:
+
+- three-section prompt order
+- workspace state at history head
+- removal of v1 relevant-memory metadata
+- `stable_prefix_hash`/`prompt_cache_key` contract
+
+Proof:
+
+```bash
+uv run pytest tests/test_context_manager.py tests/memory/test_prompt_layout.py -q
+```
+
+### Commit 5: Update resume-summary checkpoint path
+
+Files:
+
+- `pico/checkpoint.py`
+- checkpoint/resume tests
+
+Proof:
+
+```bash
+uv run pytest tests/test_pico.py tests/test_recovery_e2e.py -q
+```
+
+### Commit 6: Update CLI `/memory`
+
+Files:
+
+- `pico/cli_commands.py`
+- `tests/memory/test_repl_v2.py`
+
+Proof:
+
+```bash
+uv run pytest tests/memory/test_repl_v2.py tests/memory/test_cli_memory_commands.py -q
+```
+
+### Commit 7: Update evaluator, metrics, and benchmark setup
+
+Files:
+
+- `pico/evaluation/evaluator.py`
+- `pico/evaluation/metrics_experiments.py`
+- `benchmarks/coding_tasks.json`
+- related evaluator/metrics tests
+
+Proof:
+
+```bash
+uv run pytest tests/test_evaluator.py tests/test_metrics.py -q
+python - <<'PY'
+from pathlib import Path
+from pico.evaluation.metrics_experiments import (
+    run_context_ablation_v2,
+    run_memory_ablation_v2,
+    run_recovery_ablation_v2,
+)
+run_context_ablation_v2(Path("/tmp/pico-context-ablation-v2.json"), repetitions=1)
+run_memory_ablation_v2(Path("/tmp/pico-memory-ablation-v2.json"), repetitions=1)
+run_recovery_ablation_v2(Path("/tmp/pico-recovery-ablation-v2.json"), repetitions=1)
+PY
+```
+
+Known pre-existing evaluator failures may remain, but collection and
+import errors are not acceptable.
+
+### Commit 8: Rewrite broad v1 prompt tests
+
+Files:
+
+- `tests/test_context_manager.py`
+- `tests/test_pico.py`
+- `tests/memory/test_v1_durable_gone.py`
+- `tests/test_workspace.py`
+- any other tests with v1 prompt assertions
+
+Proof:
+
+```bash
+uv run pytest tests --co -q
+uv run pytest tests -q
+```
+
+Expected full-suite result: only the two named pre-existing failures.
+
+### Commit 9: Docs and benchmark result re-baseline
+
+Files:
+
+- README or memory model docs that mention `/memory`
+- `benchmarks/results/harness-regression-v2.json`
+- `benchmarks/results/benchmark-v1.json`
+
+Proof:
+
+```bash
+uv run pytest tests --co -q
+```
+
+Run the benchmark command used to regenerate the two result files and
+record it in the commit message.
+
+## 9. Acceptance Checklist
 
 - [ ] `type(Pico(...).memory).__name__ == "WorkingMemory"`.
-- [ ] `grep -rn "Working memory:\|Relevant memory:" pico/` returns 0.
-- [ ] `SECTION_ORDER == ["prefix", "history", "current_request"]`.
-- [ ] `<workspace_state>` renders at the head of the `history` section.
-- [ ] `pico-cli sessions show <legacy-session-id>` reads v1 shape without crash.
-- [ ] REPL `/memory` prints `task:`, `recent:`, `Memory files:`.
+- [ ] `WorkingMemory` exposes no v1 note/retrieval/render methods.
+- [ ] `session["working_memory"]` is written and synchronized.
+- [ ] `session["memory"]` contains only `file_summaries`.
+- [ ] Prompt section order is `prefix`, `history`, `current_request`.
+- [ ] Prompt has no runtime `Working memory:` section.
+- [ ] Prompt has no runtime `Relevant memory:` section.
+- [ ] `<memory_index>` still renders when memory files exist.
+- [ ] `<workspace_state>` renders at the head of history.
+- [ ] `prompt_cache_key` changes when memory index/project structure
+      changes.
+- [ ] `prompt_cache_key` does not change for branch/status-only
+      volatility.
+- [ ] `/memory` prints `task:`, `recent:`, and `Memory files:`.
+- [ ] `tool_executor.py` no longer calls `record_process_note_for_tool`.
+- [ ] `create_checkpoint()` reads `agent.memory.recent_files`.
+- [ ] partial-stale resume remains green.
+- [ ] evaluator and metrics modules import.
+- [ ] `run_context_ablation_v2`, `run_memory_ablation_v2`, and
+      `run_recovery_ablation_v2` complete without AttributeError.
 - [ ] `pico-cli doctor --format text` still emits the CLAUDE.md hint.
-- [ ] `import pico.evaluation.metrics_experiments` no ImportError.
-- [ ] `import pico.evaluation.evaluator` no ImportError.
-- [ ] `run_fixed_benchmark(Path("benchmarks/coding_tasks.json"), ...)` completes without AttributeError.
-- [ ] At least one `_run_*_experiment(...)` call in `metrics_experiments` completes without AttributeError.
-- [ ] `pytest tests --co -q` reports 0 collection errors.
-- [ ] `pytest tests -q` reports the two named pre-existing failures and no others.
-- [ ] `prompt_cache_key` stable across two consecutive turns with no file changes.
-- [ ] `test_resume_invalidates_stale_file_summaries_and_marks_partial_stale` green.
-- [ ] `test_spawn_delegate_carries_task_summary` (new, per R9) green.
-- [ ] `Pico.invalidate_stale_memory` operates on session file_summaries channel (verified via partial-stale test).
-- [ ] `create_checkpoint` uses `agent.memory.recent_files` attribute (not `to_dict()["working"]`).
+- [ ] `pico-cli sessions show <legacy-session-id>` does not crash.
+- [ ] `pytest tests --co -q` reports zero collection errors.
+- [ ] `pytest tests -q` reports only the two named pre-existing failures.
+
+## 10. Rollback
+
+Rollback is straightforward because v1 code remains present:
+
+1. Revert the merge commit or the commit range.
+2. Existing legacy sessions still contain enough v1 shape for
+   `LayeredMemory` to load.
+3. New rev-3 sessions contain `working_memory` plus a narrowed
+   `memory.file_summaries` channel; `LayeredMemory` can still derive an
+   empty/default v1 state from missing note fields if needed.
+
+Forward fix is preferred for small follow-up issues because the old v1
+implementation remains available for reference during this transition.
+
+## 11. Follow-Up Specs
+
+1. Partial-stale redesign: move `file_summaries` out of
+   `session["memory"]` and into a first-class schema.
+2. Metrics redesign: replace v1 memory ablation with v2 memory-file and
+   memory-tool quality benchmarks.
+3. Remove `relevant_memory` feature flag from runtime identity.
+4. Delete `LayeredMemory` and move path/freshness helpers to a smaller
+   module.
+5. Delegate context redesign: replace parent v1 notes with an explicit
+   v2 `<parent_context>` block if needed.
