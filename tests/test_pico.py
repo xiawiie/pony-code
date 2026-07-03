@@ -1270,11 +1270,6 @@ def test_trace_and_report_redact_secret_env_values(tmp_path):
 
 def test_prompt_budget_metadata_records_budget_decisions(tmp_path):
     agent = build_agent(tmp_path, ["<final>Done.</final>"])
-    agent.memory.retrieval_candidates = lambda query, limit=3: [
-        {"text": "alpha episodic note " + ("A" * 120)},
-        {"text": "beta episodic recall note " + ("B" * 120)},
-        {"text": "gamma episodic note " + ("C" * 120)},
-    ][:limit]
 
     for index in range(4):
         agent.record(
@@ -1288,8 +1283,6 @@ def test_prompt_budget_metadata_records_budget_decisions(tmp_path):
     agent.context_manager.total_budget = 1000
     agent.context_manager.section_budgets = {
         "prefix": 80,
-        "memory": 80,
-        "relevant_memory": 80,
         "history": 80,
     }
 
@@ -1302,14 +1295,13 @@ def test_prompt_budget_metadata_records_budget_decisions(tmp_path):
     prompt_events = [event for event in trace_events if event["event"] == "prompt_built"]
     assert prompt_events
     metadata = prompt_events[0]["prompt_metadata"]
-    relevant_section = agent.model_client.prompts[0].split("Relevant memory:\n", 1)[1].split("\n\nTranscript:", 1)[0]
+    prompt = agent.model_client.prompts[0]
 
-    assert metadata["relevant_memory"]["selected_count"] == 3
-    assert len(metadata["relevant_memory"]["rendered_notes"]) == 3
-    assert len([line for line in relevant_section.splitlines() if line.startswith("- ")]) == 3
-    assert "alpha episodic" in relevant_section
-    assert "beta episodic" in relevant_section
-    assert "gamma episodic" in relevant_section
+    assert metadata["section_order"] == ["prefix", "history", "current_request"]
+    assert set(metadata["sections"]) == {"prefix", "history", "current_request"}
+    assert "relevant_memory" not in metadata
+    assert "Working memory:" not in prompt
+    assert "Relevant memory:" not in prompt
     assert metadata["current_request"]["text"] == "recall"
     assert metadata["current_request"]["rendered_chars"] == len("recall")
 
@@ -1349,8 +1341,6 @@ def test_agent_creates_checkpoint_when_context_reduction_happens_and_artifacts_o
     agent.context_manager.total_budget = 900
     agent.context_manager.section_budgets = {
         "prefix": 120,
-        "memory": 120,
-        "relevant_memory": 120,
         "history": 160,
     }
 
