@@ -55,7 +55,7 @@ pico-cli memory migrate [--apply]    # migrate legacy topics/ into notes/
 ```
 /save <text>       append note to workspace agent_notes.md
 /memory-review     same as pico-cli memory review
-/memory            existing working-memory dashboard
+/memory            working-memory dashboard + memory-file listing
 ```
 
 ## Limitations

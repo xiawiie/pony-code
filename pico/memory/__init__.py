@@ -7,4 +7,25 @@
     refresher.py   — 每 turn lazy mtime 检查
 """
 
-VERSION = 1
+from .block_store import (
+    AGENT_NOTES_SOFT_LIMIT_CHARS,
+    BlockStore,
+    MAX_NOTE_CHARS,
+    MemoryFile,
+)
+from .refresher import MemoryRefresher, RefreshSnapshot
+from .retrieval import Retrieval, SearchHit
+
+VERSION = 2
+
+__all__ = [
+    "AGENT_NOTES_SOFT_LIMIT_CHARS",
+    "BlockStore",
+    "MAX_NOTE_CHARS",
+    "MemoryFile",
+    "MemoryRefresher",
+    "RefreshSnapshot",
+    "Retrieval",
+    "SearchHit",
+    "VERSION",
+]

@@ -358,7 +358,7 @@ def render_memory_text(state, workspace_root=None):
     # 这里渲染的是给模型看的紧凑“仪表盘”，不是完整回放。
     # 笔记正文默认不展开，只有在相关召回时才按需拿出来。
     lines = [
-        "Memory:",
+        "Working memory:",
         f"- task: {state['working']['task_summary'] or '-'}",
         f"- recent_files: {', '.join(state['working']['recent_files']) or '-'}",
     ]

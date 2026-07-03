@@ -75,3 +75,23 @@ def test_repl_memory_review_when_empty(tmp_path, monkeypatch, capsys):
 
     out = capsys.readouterr().out
     assert "no agent_notes" in out.lower() or "empty" in out.lower()
+
+
+def test_repl_memory_after_save_shows_memory_file(tmp_path, monkeypatch, capsys):
+    """`/save` 后 `/memory` 必须能看到刚存进 agent_notes.md 的文件.
+
+    Locks the DX contract: the three memory surfaces refer to the same store.
+    """
+    from pico.cli_commands import run_repl
+
+    agent = _build_agent(tmp_path)
+    inputs = iter(["/save something worth remembering", "/memory", "/exit"])
+    monkeypatch.setattr("builtins.input", lambda *_: next(inputs))
+    run_repl(agent)
+
+    out = capsys.readouterr().out
+    # working-memory 仪表盘头
+    assert "Working memory:" in out or "working memory:" in out.lower()
+    # v2 侧的文件列表以及新写入的文件
+    assert "Memory files:" in out
+    assert "workspace/agent_notes.md" in out

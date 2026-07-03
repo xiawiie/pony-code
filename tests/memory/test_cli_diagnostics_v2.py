@@ -49,3 +49,19 @@ def test_doctor_no_hint_when_neither_file_exists(tmp_path, monkeypatch):
     project_docs = result.get("project_docs") or {}
     hints = project_docs.get("hints") or []
     assert hints == []
+
+
+def test_doctor_text_output_shows_claude_md_hint(tmp_path, monkeypatch, capsys):
+    """`pico-cli doctor --offline` 的默认 text 输出必须包含 CLAUDE.md hint."""
+    from pico.cli_commands import handle_doctor
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "CLAUDE.md").write_text("# Claude\n")
+
+    args = SimpleNamespace(format="text", cwd=str(tmp_path))
+    rc = handle_doctor(["--offline"], str(tmp_path), args)
+    assert rc == 0
+
+    out = capsys.readouterr().out
+    assert "CLAUDE.md" in out
+    assert "AGENTS.md" in out

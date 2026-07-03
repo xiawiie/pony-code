@@ -97,12 +97,6 @@ SCRIPTED_MODEL_OUTPUTS = {
     "workspace_mismatch_resume": [
         "<final>Done.</final>",
     ],
-    "durable_promotion_accept": [
-        "<final>Project convention: Preserve benchmark regression artifacts under artifacts/.\nDecision: Keep harness regression deterministic and reproducible.</final>",
-    ],
-    "durable_promotion_reject": [
-        "<final>Project convention: Keep verifier outcomes stable across reruns.\nDependency: API key is sk-benchmark-secret.\nDecision: Current goal is debug the harness.</final>",
-    ],
 }
 
 

@@ -547,7 +547,19 @@ def run_repl(agent):
             print(HELP_DETAILS)
             continue
         if user_input == "/memory":
+            # v1 working-memory dashboard + v2 memory index overview.
+            # Kept as a single entry point so the user sees both surfaces.
             print(agent.memory_text())
+            try:
+                entries = agent.memory_store.list()
+            except Exception:  # noqa: BLE001 — REPL loop must never crash on a listing failure
+                entries = []
+            if entries:
+                print("\nMemory files:")
+                for entry in entries:
+                    print(f"- {entry.path} ({entry.size_chars} chars)")
+            else:
+                print("\nMemory files: (none — use /save <text> or edit .pico/memory/notes/*.md)")
             continue
         if user_input == "/session":
             print(agent.session_path)
@@ -753,6 +765,14 @@ def _render_doctor(data):
         lines.append(_line("url", connectivity["url"]))
     if connectivity.get("message"):
         lines.append(_line("message", connectivity["message"]))
+    hints = ((data.get("project_docs") or {}).get("hints")) or []
+    if hints:
+        lines.append("")
+        lines.append("Project docs")
+        for hint in hints:
+            level = hint.get("level", "info")
+            message = hint.get("message", "")
+            lines.append(_line(level, message))
     return "\n".join(lines)
 
 

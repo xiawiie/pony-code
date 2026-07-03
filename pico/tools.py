@@ -10,6 +10,7 @@ import subprocess
 import textwrap
 from functools import partial
 
+from .memory.block_store import MAX_NOTE_CHARS
 from .memory.tools import (
     tool_memory_list,
     tool_memory_read,
@@ -229,8 +230,8 @@ def validate_tool(context, name, args):
         note = str(args.get("note", "")).strip()
         if not note:
             raise ValueError("note must not be empty")
-        if len(note) > 500:
-            raise ValueError("note exceeds 500 chars")
+        if len(note) > MAX_NOTE_CHARS:
+            raise ValueError(f"note exceeds {MAX_NOTE_CHARS} chars")
         scope = str(args.get("scope", "workspace"))
         if scope not in ("workspace", "user"):
             raise ValueError("scope must be 'workspace' or 'user'")

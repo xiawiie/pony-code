@@ -240,7 +240,7 @@ pico-cli --provider ollama --model qwen3.5:4b
 ## 常用交互命令
 
 - `/help`：查看内置命令
-- `/memory`：查看提炼后的工作记忆
+- `/memory`：显示 working memory 仪表盘 + `.pico/memory/` 下的文件列表
 - `/memory-review`：打印 `agent_notes.md` 内容以及编辑提示
 - `/save <text>`：把一条 note 追加进 workspace 的 `agent_notes.md`
 - `/session`：查看当前会话文件路径

@@ -154,7 +154,7 @@ class ContextManager:
         workspace_state_text = ""
         if hasattr(self.agent, "workspace") and hasattr(self.agent.workspace, "volatile_text"):
             workspace_state_text = self.agent.workspace.volatile_text()
-        memory_body = "Memory:\n- disabled" if not memory_enabled else str(self.agent.memory_text())
+        memory_body = "Working memory:\n- disabled" if not memory_enabled else str(self.agent.memory_text())
         memory_section = (
             (workspace_state_text + "\n\n" + memory_body).strip()
             if workspace_state_text
