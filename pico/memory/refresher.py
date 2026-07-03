@@ -27,7 +27,7 @@ class MemoryRefresher:
         self.store = store
         self.repo_map = repo_map
         self._last_memory_stat: dict[str, float] = {}
-        self._last_top_tree: tuple = ()
+        self._last_project_key: tuple = ()
         self._cached_memory_text = ""
         self._cached_project_text = ""
 
@@ -38,12 +38,16 @@ class MemoryRefresher:
             self._cached_memory_text = self._render_memory_index()
             self._last_memory_stat = current_stat
 
-        # Repo map (incremental) + project structure
+        # Repo map (incremental) + project structure. Cache key must include
+        # language_stats so first-of-a-kind extensions (e.g. new .rs file
+        # under existing src/) still invalidate the rendered header.
         self.repo_map.refresh_if_stale()
         current_tree = tuple((e["path"], e["file_count"]) for e in self.repo_map.top_level_tree())
-        if current_tree != self._last_top_tree or not self._cached_project_text:
+        current_langs = tuple(sorted(self.repo_map.language_stats().items()))
+        current_key = (current_tree, current_langs)
+        if current_key != self._last_project_key or not self._cached_project_text:
             self._cached_project_text = self._render_project_structure()
-            self._last_top_tree = current_tree
+            self._last_project_key = current_key
 
         return RefreshSnapshot(
             memory_index_text=self._cached_memory_text,

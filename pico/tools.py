@@ -66,7 +66,7 @@ BASE_TOOL_SPECS = {
     "memory_search": {
         "schema": {"query": "str", "limit": "int=5"},
         "risky": False,
-        "description": "Full-text search across memory files (BM25 + CJK bigram).",
+        "description": "Full-text search across memory files (BM25 + CJK bigram). Query capped at 512 chars.",
     },
     "memory_save": {
         "schema": {"note": "str", "scope": "str='workspace'"},

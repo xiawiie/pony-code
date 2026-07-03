@@ -80,7 +80,7 @@ def tool_memory_read(context, args: dict) -> str:
     if end < start:
         return "error: end must be >= start"
     slice_lines = lines[start - 1 : end]
-    numbered = [f"{start + i}: {line}" for i, line in enumerate(slice_lines)]
+    numbered = [f"{start + i:>4}: {line}" for i, line in enumerate(slice_lines)]
     footer = ""
     if len(lines) > end:
         footer = f"\n[... {len(lines) - end} more lines, use start/end for paging]"

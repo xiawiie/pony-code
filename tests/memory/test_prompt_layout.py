@@ -61,7 +61,7 @@ def test_stable_prefix_no_branch_content(tmp_path):
     agent = _agent(tmp_path)
     # agent.prefix is the stable prefix built by build_prompt_prefix()
     # It should NOT contain branch/status/recent_commits (workspace's volatile parts).
-    assert "branch:" not in agent.prefix.lower() or "default_branch:" in agent.prefix.lower(), \
-        "stable prefix leaks git branch information (should live in volatile)"
+    assert "- branch:" not in agent.prefix, \
+        "stable prefix leaks git branch line (should live in volatile)"
     assert "recent_commits" not in agent.prefix, \
         "stable prefix leaks recent_commits (should live in volatile)"

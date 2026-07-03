@@ -104,6 +104,15 @@ def test_save_rejects_too_long(tmp_path):
     assert "error" in out.lower()
 
 
+def test_save_rejects_unknown_scope(tmp_path):
+    """validate_tool must reject scope values outside {workspace, user}."""
+    from pico.tools import validate_tool
+
+    ctx = _context(tmp_path)
+    with pytest.raises(ValueError, match="scope"):
+        validate_tool(ctx, "memory_save", {"note": "hi", "scope": "hack"})
+
+
 def test_list_with_prefix(tmp_path):
     ctx = _context(tmp_path)
     ws_root = ctx.memory_store.workspace_root

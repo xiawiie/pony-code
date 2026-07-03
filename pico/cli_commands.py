@@ -363,11 +363,15 @@ def _memory_show_cmd(store, rest, args):
             message=str(exc),
             exit_code=CLI_EXIT_USAGE,
         ) from exc
+    def render(d):
+        lines = d["content"].splitlines() or [""]
+        return "\n".join(f"{number:>4}: {line}" for number, line in enumerate(lines, start=1))
+
     return print_result(
         "memory_show",
         {"path": path, "content": content},
         args,
-        lambda d: d["content"],
+        render,
     )
 
 

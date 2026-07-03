@@ -29,7 +29,6 @@ IGNORED_DIRS = frozenset({
 
 MAX_FILE_SIZE = 500_000
 MAX_FILES = 10_000
-MAX_INDEXED_FILES_LARGE_REPO = 500
 
 
 LANGUAGE_BY_EXT = {
@@ -81,6 +80,7 @@ class RepoMap:
         self._file_mtimes: dict[str, float] = {}
         self._file_count_by_top_dir: dict[str, int] = defaultdict(int)
         self._language_counts: dict[str, int] = defaultdict(int)
+        self._warned_cap = False
 
     # ---- scan --------------------------------------------------------------
 
@@ -107,17 +107,19 @@ class RepoMap:
 
         dead = set(existing) - seen
         for rel_path in dead:
-            self._remove_file(rel_path)
+            self._remove_file_entry(rel_path)
         for real_path, rel_path in stale:
-            self._remove_file(rel_path)
+            self._remove_file_entry(rel_path)
             self._index_file(real_path, rel_path)
+        # Recount once after the batch — the previous per-file _recount was
+        # O(N²) over the whole tree on every mutation.
+        if dead or stale:
+            self._recount_top_level()
 
-    def _remove_file(self, rel_path: str) -> None:
+    def _remove_file_entry(self, rel_path: str) -> None:
         self._file_mtimes.pop(rel_path, None)
         for symbols in self._symbols.values():
             symbols[:] = [s for s in symbols if s.file != rel_path]
-        # rebuild top-level counts + language stats lazily on next tree call
-        self._recount_top_level()
 
     def _recount_top_level(self) -> None:
         self._file_count_by_top_dir.clear()
@@ -149,6 +151,14 @@ class RepoMap:
                 yield real_path, rel
                 indexed += 1
                 if indexed >= MAX_FILES:
+                    if not self._warned_cap:
+                        self._warned_cap = True
+                        import sys
+                        print(
+                            f"warning: repo_map scan hit {MAX_FILES}-file cap; "
+                            f"symbols beyond this point are not indexed",
+                            file=sys.stderr,
+                        )
                     return
 
     def _index_file(self, real_path: Path, rel_path: str) -> None:
