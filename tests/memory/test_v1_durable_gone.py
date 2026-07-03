@@ -3,7 +3,8 @@
 任何 durable 相关 API 或常量都不应再存在于 pico 模块中；试图导入必须抛错.
 """
 
-import pytest
+import ast
+from pathlib import Path
 
 
 def test_durable_memory_store_class_removed():
@@ -25,6 +26,25 @@ def test_promote_durable_removed_from_layered_memory():
     assert not hasattr(mem, "durable_store"), (
         "LayeredMemory.durable_store should be removed (Task 9)"
     )
+
+
+def test_layered_memory_has_no_runtime_references_outside_dormant_module():
+    """LayeredMemory may remain as dormant helper coverage, but runtime code must not use it."""
+    root = Path(__file__).resolve().parents[2]
+    offenders = []
+    for path in (root / "pico").rglob("*.py"):
+        if path.relative_to(root).as_posix() == "pico/features/memory.py":
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and any(alias.name == "LayeredMemory" for alias in node.names):
+                offenders.append(f"{path.relative_to(root)}:{node.lineno}")
+            elif isinstance(node, ast.Name) and node.id == "LayeredMemory":
+                offenders.append(f"{path.relative_to(root)}:{node.lineno}")
+            elif isinstance(node, ast.Attribute) and node.attr == "LayeredMemory":
+                offenders.append(f"{path.relative_to(root)}:{node.lineno}")
+
+    assert offenders == []
 
 
 def test_pico_runtime_has_no_durable_hooks():

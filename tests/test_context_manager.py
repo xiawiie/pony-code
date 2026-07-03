@@ -35,6 +35,7 @@ def test_context_manager_assembles_sections_in_expected_order(tmp_path):
     prompt, metadata = ContextManager(agent).build("Where is the deploy key?")
 
     assert prompt.index("You are pico") < prompt.index("<workspace_state>")
+    assert "<memory_index>" in prompt
     assert prompt.index("<workspace_state>") < prompt.index("Transcript:")
     assert prompt.index("Transcript:") < prompt.index("Current user request:")
     assert prompt.rstrip().endswith("Current user request:\nWhere is the deploy key?")
