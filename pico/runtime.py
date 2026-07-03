@@ -6,7 +6,6 @@ Pico 就是包在模型外面的控制循环：负责组 prompt、解析模型�
 
 import json
 import os
-import re
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -26,7 +25,6 @@ from .repo_map import RepoMap
 from .recovery_checkpoint_writer import RecoveryCheckpointWriter
 from .recovery_manager import RecoveryManager
 from .run_store import RunStore
-from .security import REDACTED_VALUE
 from .session_store import SessionStore
 from .tool_change_recorder import ToolChangeRecorder
 from .tool_context import ToolContext
@@ -45,18 +43,6 @@ DEFAULT_FEATURE_FLAGS = {
     "context_reduction": True,
     "prompt_cache": True,
 }
-DURABLE_MEMORY_INTENT_PATTERN = re.compile(r"(?i)\b(capture|remember|save|store|persist|note)\b")
-DURABLE_MEMORY_INTENT_ZH_PATTERN = re.compile(r"(记住|保存|记录|沉淀|长期记忆|持久记忆)")
-DURABLE_MEMORY_LINE_PATTERNS = (
-    ("project-conventions", re.compile(r"(?i)^Project convention:\s*(.+)$")),
-    ("key-decisions", re.compile(r"(?i)^Decision:\s*(.+)$")),
-    ("dependency-facts", re.compile(r"(?i)^Dependency:\s*(.+)$")),
-    ("user-preferences", re.compile(r"(?i)^Preference:\s*(.+)$")),
-    ("project-conventions", re.compile(r"^项目约定：\s*(.+)$")),
-    ("key-decisions", re.compile(r"^决策：\s*(.+)$")),
-    ("dependency-facts", re.compile(r"^依赖：\s*(.+)$")),
-    ("user-preferences", re.compile(r"^偏好：\s*(.+)$")),
-)
 __all__ = ["Pico", "SessionStore"]
 
 
@@ -150,9 +136,6 @@ class Pico:
         self.current_run_dir = None
         self.last_prompt_metadata = {}
         self.last_completion_metadata = {}
-        self.last_durable_promotions = []
-        self.last_durable_rejections = []
-        self.last_durable_superseded = []
         self._last_tool_result_metadata = {}
         self._last_prefix_refresh = {
             "workspace_changed": False,
@@ -452,67 +435,6 @@ class Pico:
         self.memory.append_note(text, tags=tuple(tags), source=name, kind="process")
         self.session["memory"] = self.memory.to_dict()
 
-    def reject_durable_reason(self, note_text):
-        text = str(note_text or "").strip()
-        lowered = text.lower()
-        if not text:
-            return "empty"
-        if REDACTED_VALUE in text or securitylib.looks_secret_shaped_text(text):
-            return "secret_shaped"
-        checkpoint_like_prefixes = (
-            "current goal",
-            "current blocker",
-            "next step",
-            "current phase",
-            "key files",
-            "freshness",
-            "当前目标",
-            "当前卡点",
-            "下一步",
-            "当前阶段",
-            "关键文件",
-            "已完成",
-            "已排除",
-        )
-        if any(lowered.startswith(prefix) for prefix in checkpoint_like_prefixes):
-            return "transient_task_state"
-        if re.search(r"(?i)\b(stdout|stderr|traceback|exit_code)\b", text) or len(text) > 220:
-            return "noisy_output"
-        return ""
-
-    def extract_durable_promotions(self, user_message, final_answer):
-        user_text = str(user_message or "")
-        if not (DURABLE_MEMORY_INTENT_PATTERN.search(user_text) or DURABLE_MEMORY_INTENT_ZH_PATTERN.search(user_text)):
-            return [], []
-        promotions = []
-        rejections = []
-        for line in str(final_answer or "").splitlines():
-            text = line.strip()
-            if not text or REDACTED_VALUE in text:
-                continue
-            for topic, pattern in DURABLE_MEMORY_LINE_PATTERNS:
-                match = pattern.match(text)
-                if not match:
-                    continue
-                note_text = match.group(1).strip()
-                if note_text:
-                    reason = self.reject_durable_reason(note_text)
-                    if reason:
-                        rejections.append(f"{topic}:{reason}")
-                        break
-                    promotions.append((topic, note_text))
-                break
-        return promotions, rejections
-
-    def promote_durable_memory(self, user_message, final_answer):
-        promotions, rejections = self.extract_durable_promotions(user_message, final_answer)
-        promoted, superseded = self.memory.promote_durable(promotions)
-        self.session["memory"] = self.memory.to_dict()
-        self.last_durable_promotions = promoted
-        self.last_durable_rejections = rejections
-        self.last_durable_superseded = superseded
-        return promoted, rejections, superseded
-
     def ask(self, user_message):
         from .agent_loop import AgentLoop
 
@@ -624,9 +546,6 @@ class Pico:
             "resume_status": task_state.resume_status,
             "task_state": task_state.to_dict(),
             "prompt_metadata": self.last_prompt_metadata,
-            "durable_promotions": list(self.last_durable_promotions),
-            "durable_rejections": list(self.last_durable_rejections),
-            "durable_superseded": list(self.last_durable_superseded),
             "redacted_env": self.detected_secret_env_summary(),
         }
 

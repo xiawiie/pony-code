@@ -122,26 +122,6 @@
       "setup": {
         "kind": "workspace_mismatch"
       }
-    },
-    {
-      "id": "durable_promotion_accept",
-      "prompt": "Capture the stable benchmark facts as durable memory and respond with only the promoted facts.",
-      "fixture_repo": "tests/fixtures/bench_repo_readme",
-      "allowed_tools": ["read_file"],
-      "step_budget": 2,
-      "expected_artifact": "README.md fixture stays available while durable promotion succeeds",
-      "verifier": "python3 -c \"import json; from pathlib import Path; report = json.loads(next(Path('.pico/runs').glob('*/report.json')).read_text(encoding='utf-8')); conventions = Path('.pico/memory/topics/project-conventions.md').read_text(encoding='utf-8'); assert len(report['durable_promotions']) == 2; assert 'Preserve benchmark regression artifacts under artifacts/.' in conventions\"",
-      "category": "durable-contract"
-    },
-    {
-      "id": "durable_promotion_reject",
-      "prompt": "Capture only the stable benchmark facts into durable memory and reject anything transient or secret-shaped.",
-      "fixture_repo": "tests/fixtures/bench_repo_readme",
-      "allowed_tools": ["read_file"],
-      "step_budget": 2,
-      "expected_artifact": "README.md fixture stays available while durable rejection is recorded",
-      "verifier": "python3 -c \"import json; from pathlib import Path; report = json.loads(next(Path('.pico/runs').glob('*/report.json')).read_text(encoding='utf-8')); assert report['durable_rejections'] == ['dependency-facts:secret_shaped', 'key-decisions:transient_task_state']; assert report['durable_promotions'] == ['project-conventions: Keep verifier outcomes stable across reruns.']\"",
-      "category": "durable-contract"
     }
   ]
 }

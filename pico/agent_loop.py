@@ -219,7 +219,6 @@ class AgentLoop:
             final = (payload or raw).strip()
             agent.record({"role": "assistant", "content": final, "created_at": now()})
             task_state.finish_success(final)
-            agent.promote_durable_memory(user_message, final)
             return _finish_run(
                 agent=agent,
                 task_state=task_state,
@@ -238,7 +237,6 @@ class AgentLoop:
             final = "Stopped after reaching the step limit without a final answer."
             task_state.stop_step_limit(final)
         agent.record({"role": "assistant", "content": final, "created_at": now()})
-        agent.promote_durable_memory(user_message, final)
         final_trigger = task_state.stop_reason or "run_stopped"
         return _finish_run(
             agent=agent,
