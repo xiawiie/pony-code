@@ -252,6 +252,17 @@ These helpers operate on the `file_summaries` dict itself, not on a full
 v1 memory state. They may reuse `canonicalize_path`, `file_freshness`,
 `clip`, and `now`.
 
+Mutation contract:
+
+- `normalize_file_summaries_dict` returns a normalized dict and does not
+  require callers to pass a mutable object.
+- `set_file_summary_dict` and `invalidate_file_summary_dict` mutate the
+  passed dict in place and return the same dict for convenience.
+- `invalidate_stale_file_summaries_dict` mutates the passed dict in place
+  and returns only the invalidated path list.
+- Call sites may assign returned dicts, but the runtime invalidation path
+  must not rely on assignment for stale entries to be removed.
+
 `runtime.update_memory_after_tool()` should:
 
 - keep `self.memory.remember_file(canonical_path)` for
@@ -401,6 +412,25 @@ Transcript:
 ...
 ```
 
+`render_checkpoint_text()` is also volatile. It must move with
+`<workspace_state>` into the history head instead of being appended to
+the stable prefix. Recommended history-head order:
+
+```text
+<workspace_state>
+...
+</workspace_state>
+
+Task checkpoint:
+...
+
+Transcript:
+...
+```
+
+If either workspace state or checkpoint text is empty, omit only that
+block and keep the remaining order stable.
+
 `_reusable_file_summary(path)` reads:
 
 ```python
@@ -423,6 +453,10 @@ Rev 3 fixes the contract:
 - `ContextManager` computes `stable_prefix_hash` from the final rendered
   prefix section before any history/current request text is appended.
 - runtime uses `stable_prefix_hash` as `prompt_cache_key`.
+- `Pico._build_prompt_and_metadata()` must not overwrite
+  `prompt_cache_key` with `self.prefix_state.hash` after
+  `ContextManager.build()` returns metadata. It should preserve the
+  context-manager value and expose the base hash separately.
 - metadata keeps both:
   - `base_prefix_hash`
   - `stable_prefix_hash`
@@ -437,6 +471,8 @@ Acceptance:
 - changing project structure that appears in `<project_structure>`
   changes `prompt_cache_key`
 - changing branch/status/recent commits does not change
+  `prompt_cache_key`
+- changing resume checkpoint text does not change
   `prompt_cache_key`
 
 ### 4.6 `pico/checkpoint.py`
@@ -540,6 +576,10 @@ Allowed changes:
 - Update fake clients that parse `memory:` / `relevant memory:` so they
   do not require removed prompt sections.
 - Continue using raw `file_summaries` helpers for recovery setup.
+- Update `measure_feature_ablation_metrics()` so removed sections are
+  reported as `0` or absent through a documented compatibility adapter.
+  Do not assume `metadata["sections"]["memory"]` or
+  `metadata["relevant_memory"]` exists after this spec.
 
 Follow-up work:
 
@@ -624,6 +664,7 @@ Update or add tests for:
 - prompt still contains v2 memory guidance
 - prompt still contains `<memory_index>`
 - `<workspace_state>` is at the head of history, after stable prefix
+- checkpoint text, when present, is in history rather than prefix
 - metadata has no `memory` or `relevant_memory` section entries
 - current request is never clipped
 
@@ -636,6 +677,7 @@ Add tests for:
 - changing project structure that appears in `<project_structure>`
   changes `prompt_cache_key`
 - branch/status-only volatility does not change `prompt_cache_key`
+- checkpoint/resume-status volatility does not change `prompt_cache_key`
 
 ### 6.4 Runtime and Session Tests
 
@@ -741,7 +783,10 @@ Allowed categories:
 - checkpoint stale-summary evaluation
 - evaluator/metrics legacy setup
 
-No prompt section rendering may depend on `session["memory"]`.
+No dedicated `memory` or `relevant_memory` prompt section may depend on
+`session["memory"]`, because those sections no longer exist. The history
+section may still read `session["memory"]["file_summaries"]` only for
+old read-summary compression.
 
 ### Gate 4: Removed method is gone
 
@@ -791,7 +836,7 @@ Files:
 - `pico/runtime.py`
 - `pico/agent_loop.py`
 - `pico/tool_executor.py`
-- focused runtime tests
+- `tests/test_working_memory_runtime.py`
 
 Includes:
 
@@ -804,12 +849,12 @@ Includes:
 Proof:
 
 ```bash
-uv run pytest tests/test_working_memory.py tests/test_pico.py -q
+uv run pytest tests/test_working_memory.py tests/test_working_memory_runtime.py -q
 ```
 
-`tests/test_pico.py` may still be partially red until the dedicated test
-rewrite commit. Any red failures must match the known v1 prompt/test
-assertions listed in the implementation plan.
+Do not use the full `tests/test_pico.py` file as the proof for this
+commit if it still contains known v1 prompt assertions. Broad `test_pico`
+cleanup happens in Commit 8.
 
 ### Commit 4: Collapse prompt layout and fix cache key
 
@@ -836,12 +881,12 @@ uv run pytest tests/test_context_manager.py tests/memory/test_prompt_layout.py -
 Files:
 
 - `pico/checkpoint.py`
-- checkpoint/resume tests
+- `tests/test_working_memory_checkpoint.py`
 
 Proof:
 
 ```bash
-uv run pytest tests/test_pico.py tests/test_recovery_e2e.py -q
+uv run pytest tests/test_working_memory_checkpoint.py tests/test_recovery_e2e.py -q
 ```
 
 ### Commit 6: Update CLI `/memory`
@@ -903,7 +948,10 @@ uv run pytest tests --co -q
 uv run pytest tests -q
 ```
 
-Expected full-suite result: only the two named pre-existing failures.
+The full-suite command is expected to exit non-zero until the two
+pre-existing failures are fixed. Treat it as an inventory gate: the only
+allowed failing tests are the two named pre-existing failures in this
+spec.
 
 ### Commit 9: Docs and benchmark result re-baseline
 
