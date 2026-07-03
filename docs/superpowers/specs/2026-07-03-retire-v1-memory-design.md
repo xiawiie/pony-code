@@ -32,6 +32,37 @@ Rev 3 keeps the same product goal but corrects the execution contract:
   v2 memory index/project structure, not only the base prefix built by
   `build_prompt_prefix()`.
 
+## Implementation Notes
+
+The retire-v1-memory implementation landed on branch `memory` as a
+sequence of focused commits:
+
+- `7fad9f8` added `WorkingMemory` and public import coverage.
+- `00e5a54` kept `LayeredMemory` dormant while adding raw
+  `file_summaries` helper functions.
+- `b904f69` switched runtime session state to synchronized
+  `working_memory` plus internal `session["memory"].file_summaries`
+  compatibility.
+- `c773b66` removed v1 `Working memory:` and `Relevant memory:` prompt
+  sections while keeping v2 `<memory_index>` and stable-prefix cache-key
+  behavior.
+- `8421224` updated resume checkpoints to read `WorkingMemory` recent
+  files without changing recoverable-editing checkpoint records.
+- `f8c7405` changed `/memory` to the compact `task:`, `recent:`, blank
+  line, and `Memory files:` output.
+- `d659769` and `101f3b3` adapted evaluator and metrics code to the v2
+  prompt while preserving a prompt-wide memory-ablation signal.
+- `450b3bc` rewrote broad v1 prompt and session expectations.
+
+The important deviation from the first draft is intentional:
+`pico/features/memory.py` and `LayeredMemory` remain available as
+dormant helper code during the transition. `session["memory"]` is also
+not deleted; it is narrowed to the internal `file_summaries` channel so
+partial-stale detection, old read-summary compression, and compatibility
+setup continue to work. The design was self-reviewed in `b918333` before
+execution, and the final runtime behavior is covered by the focused
+commit-level tests plus the re-baselined benchmark artifacts.
+
 ## 1. Goal and Scope
 
 ### Goal
