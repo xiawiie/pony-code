@@ -4,9 +4,11 @@ from pico.checkpoint import (
     CHECKPOINT_NONE_STATUS,
     CHECKPOINT_SCHEMA_MISMATCH_STATUS,
     CHECKPOINT_SCHEMA_VERSION,
+    create_checkpoint,
     current_runtime_identity,
     evaluate_resume_state,
 )
+from pico.task_state import TaskState
 
 
 def build_agent(tmp_path, outputs=None, **kwargs):
@@ -57,3 +59,18 @@ def test_evaluate_resume_state_distinguishes_no_checkpoint_full_valid_and_schema
 
     agent.session["checkpoints"]["items"]["ckpt_valid"]["schema_version"] = "old"
     assert evaluate_resume_state(agent)["status"] == CHECKPOINT_SCHEMA_MISMATCH_STATUS
+
+
+def test_create_checkpoint_records_recent_files_without_memory_state(tmp_path):
+    agent = build_agent(tmp_path)
+    (tmp_path / "sample.txt").write_text("hello\n", encoding="utf-8")
+    agent.memory.remember_file("sample.txt")
+    agent._sync_working_memory()
+    task_state = TaskState.create(task_id="task_test", user_request="read sample", run_id="run_test")
+    task_state.finish_success("read sample")
+
+    checkpoint = create_checkpoint(agent, task_state, "read sample", "unit")
+
+    sample_item = next(item for item in checkpoint["key_files"] if item["path"] == "sample.txt")
+    assert checkpoint["freshness"]["sample.txt"] == sample_item["freshness"]
+    assert "memory_state" not in checkpoint
