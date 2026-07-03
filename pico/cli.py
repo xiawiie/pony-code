@@ -19,6 +19,7 @@ from .cli_commands import (
     handle_doctor,
     handle_help,
     handle_init,
+    handle_memory,
     handle_runs,
     handle_sessions,
     handle_status,
@@ -430,6 +431,11 @@ def _dispatch_sessions(args, tokens):
     return handle_sessions(workspace.repo_root, tokens, args)
 
 
+def _dispatch_memory(args, tokens):
+    workspace = WorkspaceContext.build(args.cwd)
+    return handle_memory(tokens, workspace.repo_root, args)
+
+
 def _dispatch_recovery(args, tokens, command):
     recovery_tokens = [command, *tokens]
     if not _looks_like_recovery_command(recovery_tokens):
@@ -452,6 +458,7 @@ _PRE_AGENT_COMMAND_HANDLERS = {
     "doctor": _dispatch_doctor,
     "config": _dispatch_config,
     "sessions": _dispatch_sessions,
+    "memory": _dispatch_memory,
     "checkpoints": _dispatch_checkpoints,
     "runs": _dispatch_runs,
 }

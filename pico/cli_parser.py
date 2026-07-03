@@ -13,6 +13,7 @@ KNOWN_TOP_LEVEL_COMMANDS = {
     "runs",
     "sessions",
     "checkpoints",
+    "memory",
     "help",
 }
 
