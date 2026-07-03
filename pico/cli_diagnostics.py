@@ -80,6 +80,14 @@ def collect_doctor(cwd, args=None, offline=False):
         else check_provider_connectivity(config)
     )
     checkpoints_root = pico_root / "checkpoints"
+    doc_hints = []
+    if (root / "CLAUDE.md").exists() and not (root / "AGENTS.md").exists():
+        doc_hints.append(
+            {
+                "level": "info",
+                "message": "CLAUDE.md exists but Pico only reads AGENTS.md. Consider: ln -s CLAUDE.md AGENTS.md",
+            }
+        )
     return {
         "workspace": {
             "status": "ok",
@@ -102,6 +110,7 @@ def collect_doctor(cwd, args=None, offline=False):
             "checkpoints": _storage_status(checkpoints_root / "records"),
         },
         "recovery_store": _storage_status(checkpoints_root),
+        "project_docs": {"hints": doc_hints},
     }
 
 

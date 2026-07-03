@@ -552,6 +552,27 @@ def run_repl(agent):
             agent.reset()
             print("session reset")
             continue
+        if user_input.startswith("/save"):
+            note = user_input[len("/save"):].strip()
+            if not note:
+                print("usage: /save <text>")
+                continue
+            try:
+                total = agent.memory_store.append_agent_note(scope="workspace", note=note)
+            except ValueError as exc:
+                print(f"error: {exc}")
+                continue
+            print(f"saved (chars_total={total})")
+            continue
+        if user_input == "/memory-review":
+            notes_path = Path(agent.root) / ".pico" / "memory" / "agent_notes.md"
+            if notes_path.exists():
+                content = notes_path.read_text(encoding="utf-8")
+                print(f"agent_notes.md ({len(content)} chars):\n\n{content}")
+                print("To edit: vim .pico/memory/agent_notes.md")
+            else:
+                print("(no agent_notes.md yet)")
+            continue
 
         print()
         try:
