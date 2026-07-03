@@ -30,10 +30,12 @@ def test_lightweight_package_split_uses_package_paths_without_legacy_shims():
     from pico.evaluation.metrics import run_context_ablation_v2
     from pico.features.memory import LayeredMemory
     from pico.providers.clients import FakeModelClient as ProviderFakeModelClient
+    from pico.working_memory import WorkingMemory
 
     assert BenchmarkEvaluator is not None
     assert LayeredMemory is not None
     assert ProviderFakeModelClient is not None
+    assert WorkingMemory.__name__ == "WorkingMemory"
     assert callable(run_context_ablation_v2)
     for legacy_module in ("evaluator.py", "metrics.py", "models.py", "memory.py"):
         assert not (Path("pico") / legacy_module).exists()
