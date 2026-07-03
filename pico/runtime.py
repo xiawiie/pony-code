@@ -32,6 +32,7 @@ from .tool_context import ToolContext
 from .tool_executor import ToolExecutor
 from . import tools as toolkit
 from .verification import new_verification_record
+from .working_memory import WorkingMemory
 from .workspace import MAX_HISTORY, WorkspaceContext, clip, now
 from .workspace_observer import WorkspaceObserver
 
@@ -106,14 +107,12 @@ class Pico:
             "created_at": now(),
             "workspace_root": workspace.repo_root,
             "history": [],
-            "memory": memorylib.default_memory_state(),
+            "working_memory": {"task_summary": "", "recent_files": []},
+            "memory": {"file_summaries": {}},
         }
         self._ensure_session_shape()
-        self.memory = memorylib.LayeredMemory(
-            self.session.setdefault("memory", memorylib.default_memory_state()),
-            workspace_root=self.root,
-        )
-        self.session["memory"] = self.memory.to_dict()
+        self.memory = WorkingMemory.from_dict(self.session.get("working_memory"), workspace_root=self.root)
+        self._sync_working_memory()
         # v2 memory subsystem: BlockStore/Retrieval/RepoMap 在 tool_context 里被 wire 给 memory/repo_lookup 工具
         workspace_memory_root = self.root / ".pico" / "memory"
         user_memory_root = Path.home() / ".pico" / "memory"
@@ -156,8 +155,19 @@ class Pico:
         )
 
     def _ensure_session_shape(self):
-        self.session.setdefault("history", [])
-        self.session.setdefault("memory", memorylib.default_memory_state())
+        if not isinstance(self.session.get("history"), list):
+            self.session["history"] = []
+        existing_memory = self.session.get("memory")
+        if not isinstance(existing_memory, dict):
+            existing_memory = {}
+        working_source = self.session.get("working_memory") or existing_memory or {}
+        self.session["working_memory"] = WorkingMemory.from_dict(working_source, workspace_root=self.root).to_dict()
+        self.session["memory"] = {
+            "file_summaries": memorylib.normalize_file_summaries_dict(
+                existing_memory.get("file_summaries", {}),
+                workspace_root=self.root,
+            )
+        }
         checkpoints = self.session.setdefault("checkpoints", {})
         if not isinstance(checkpoints, dict):
             checkpoints = {}
@@ -181,9 +191,14 @@ class Pico:
         return checkpointlib.current_checkpoint(self)
 
     def invalidate_stale_memory(self):
-        invalidated = self.memory.invalidate_stale_file_summaries()
-        self.session["memory"] = self.memory.to_dict()
+        summaries = self.session["memory"]["file_summaries"]
+        invalidated = memorylib.invalidate_stale_file_summaries_dict(summaries, self.root)
+        self.session["memory"] = {"file_summaries": summaries}
         return invalidated
+
+    def _sync_working_memory(self):
+        self.session["working_memory"] = self.memory.to_dict()
+        return self.session["working_memory"]
 
     def evaluate_resume_state(self):
         return checkpointlib.evaluate_resume_state(self)
@@ -260,7 +275,7 @@ class Pico:
         return dict(self._last_prefix_refresh)
 
     def memory_text(self):
-        return self.memory.render_memory_text()
+        return json.dumps(self.memory.to_dict(), sort_keys=True)
 
     def history_text(self):
         history = self.session["history"]
@@ -402,6 +417,8 @@ class Pico:
         """
         if not self.feature_enabled("memory"):
             return
+        if not isinstance(args, dict):
+            return
         result = self.redact_text(result)
         path = args.get("path")
         if not path:
@@ -412,31 +429,17 @@ class Pico:
         # 读文件会生成摘要；写文件/patch 会让旧摘要失效，因为它们可能过期了。
         if name in {"read_file", "write_file", "patch_file"}:
             self.memory.remember_file(canonical_path)
+            self._sync_working_memory()
+        summaries = self.session["memory"]["file_summaries"]
         if name == "read_file":
             summary = memorylib.summarize_read_result(result)
-            self.memory.set_file_summary(canonical_path, summary)
-            self.memory.append_note(summary, tags=(canonical_path,), source=canonical_path)
+            memorylib.set_file_summary_dict(summaries, canonical_path, summary, workspace_root=self.root)
         elif name in {"write_file", "patch_file"}:
-            self.memory.invalidate_file_summary(canonical_path)
+            memorylib.invalidate_file_summary_dict(summaries, canonical_path, workspace_root=self.root)
+        self.session["memory"] = {"file_summaries": summaries}
 
     def note_tool(self, name, args, result):
         self.update_memory_after_tool(name, args, result)
-
-    def record_process_note_for_tool(self, name, metadata):
-        status = str(metadata.get("tool_status", "")).strip()
-        if status not in {"partial_success", "error", "rejected"}:
-            return
-        affected_paths = [str(path).strip() for path in metadata.get("affected_paths", []) if str(path).strip()]
-        path_text = ", ".join(affected_paths) or "workspace"
-        if status == "partial_success":
-            text = f"{name} partial_success on {path_text}; inspect diff before retry"
-        elif status == "error":
-            text = f"{name} error on {path_text}; check the failure before retry"
-        else:
-            text = f"{name} rejected; choose a different action before retry"
-        tags = ["process", status, *affected_paths]
-        self.memory.append_note(text, tags=tuple(tags), source=name, kind="process")
-        self.session["memory"] = self.memory.to_dict()
 
     def ask(self, user_message):
         from .agent_loop import AgentLoop
@@ -549,6 +552,7 @@ class Pico:
             "resume_status": task_state.resume_status,
             "task_state": task_state.to_dict(),
             "prompt_metadata": self.last_prompt_metadata,
+            "working_memory": self.memory.to_dict(),
             "redacted_env": self.detected_secret_env_summary(),
         }
 
@@ -590,8 +594,8 @@ class Pico:
         )
         # 委派的目标是“调查”，不是“放权执行”。
         # 子 agent 以只读方式运行、步数更少，最后只把结论文本返回给父 agent。
-        child.session["memory"]["task"] = task
-        child.session["memory"]["notes"] = [clip(self.history_text(), 300)]
+        child.memory.set_task_summary(task)
+        child._sync_working_memory()
         return "delegate_result:\n" + child.ask(task)
 
     def tool_list_files(self, args):
@@ -669,9 +673,9 @@ class Pico:
 
     def reset(self):
         self.session["history"] = []
-        self.session["memory"].clear()
-        self.session["memory"].update(memorylib.default_memory_state())
-        self.memory = memorylib.LayeredMemory(self.session["memory"], workspace_root=self.root)
+        self.memory = WorkingMemory(workspace_root=self.root)
+        self._sync_working_memory()
+        self.session["memory"] = {"file_summaries": {}}
         self.session_store.save(self.session)
 
     def path(self, raw_path):

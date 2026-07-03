@@ -150,7 +150,7 @@ def create_checkpoint(agent, task_state, user_message, trigger):
     safe_final_answer = agent.redact_text(task_state.final_answer)
     key_files = []
     freshness = {}
-    for path in agent.memory.to_dict()["working"]["recent_files"]:
+    for path in agent.memory.recent_files:
         file_freshness = memorylib.file_freshness(path, agent.root)
         freshness[path] = file_freshness
         key_files.append({"path": path, "freshness": file_freshness})

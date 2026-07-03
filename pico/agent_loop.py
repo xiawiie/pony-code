@@ -21,6 +21,7 @@ class AgentLoop:
         agent = self.agent
         run_started_at = time.monotonic()
         agent.memory.set_task_summary(user_message)
+        agent._sync_working_memory()
         agent.record({"role": "user", "content": user_message, "created_at": now()})
 
         task_state = TaskState.create(run_id=agent.new_run_id(), task_id=agent.new_task_id(), user_request=user_message)

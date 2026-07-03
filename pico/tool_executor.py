@@ -434,7 +434,6 @@ def _finalize_tool_side_effects(
         metadata["file_entries"] = list(file_entries)
         if name == "run_shell":
             metadata["shell_side_effects"] = list(shell_side_effects)
-    agent.record_process_note_for_tool(name, metadata)
     return metadata
 
 

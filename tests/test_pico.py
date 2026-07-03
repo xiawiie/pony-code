@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pico as pico_pkg
+from pico.features import memory as memorylib
 from pico.runtime import DEFAULT_MAX_NEW_TOKENS, DEFAULT_MAX_STEPS
 from pico import (
     AnthropicCompatibleModelClient,
@@ -37,6 +38,15 @@ def build_agent(tmp_path, outputs, **kwargs):
     )
 
 
+def set_raw_file_summary(agent, path, summary):
+    memorylib.set_file_summary_dict(
+        agent.session["memory"]["file_summaries"],
+        path,
+        summary,
+        workspace_root=agent.root,
+    )
+
+
 def test_pico_constructor_uses_coding_agent_defaults(tmp_path):
     agent = build_agent(tmp_path, [])
 
@@ -58,7 +68,8 @@ def test_agent_runs_tool_then_final(tmp_path):
 
     assert answer == "Read the file successfully."
     assert any(item["role"] == "tool" and item["name"] == "read_file" for item in agent.session["history"])
-    assert "hello.txt" in agent.session["memory"]["files"]
+    assert "hello.txt" in agent.session["working_memory"]["recent_files"]
+    assert "hello.txt" in agent.session["memory"]["file_summaries"]
 
 
 def test_agent_updates_task_summary_on_each_request(tmp_path):
@@ -71,13 +82,13 @@ def test_agent_updates_task_summary_on_each_request(tmp_path):
     )
 
     assert agent.ask("First request") == "First pass."
-    assert agent.session["memory"]["working"]["task_summary"] == "First request"
+    assert agent.session["working_memory"]["task_summary"] == "First request"
 
     assert agent.ask("Second request") == "Second pass."
-    assert agent.session["memory"]["working"]["task_summary"] == "Second request"
+    assert agent.session["working_memory"]["task_summary"] == "Second request"
 
 
-def test_agent_only_stores_reusable_epistemic_notes(tmp_path):
+def test_agent_stores_file_summaries_without_episodic_notes(tmp_path):
     (tmp_path / "facts.txt").write_text("deploy key is red\n", encoding="utf-8")
     agent = build_agent(
         tmp_path,
@@ -89,10 +100,10 @@ def test_agent_only_stores_reusable_epistemic_notes(tmp_path):
     )
 
     assert agent.ask("Read the file and remember the fact") == "Done."
-    notes = agent.session["memory"]["episodic_notes"]
-    assert any("deploy key is red" in note["text"] for note in notes)
-    assert not any(note["text"] == "Done." for note in notes)
-    assert not any(note["text"] == "Done." for note in notes)
+    assert "facts.txt" in agent.session["working_memory"]["recent_files"]
+    assert "deploy key is red" in agent.session["memory"]["file_summaries"]["facts.txt"]["summary"]
+    assert "episodic_notes" not in agent.session["memory"]
+    assert "notes" not in agent.session["memory"]
 
     resumed = Pico.from_session(
         model_client=FakeModelClient(["<final>It is red.</final>"]),
@@ -103,9 +114,8 @@ def test_agent_only_stores_reusable_epistemic_notes(tmp_path):
     )
 
     assert resumed.ask("What color is the deploy key?") == "It is red."
-    prompt = resumed.model_client.prompts[-1]
-    assert "Relevant memory" in prompt
-    assert "deploy key is red" in prompt
+    assert "episodic_notes" not in resumed.session["memory"]
+    assert "notes" not in resumed.session["memory"]
 
 
 def test_file_summary_cache_is_invalidated_on_out_of_band_edit_and_path_spelling(tmp_path):
@@ -113,11 +123,12 @@ def test_file_summary_cache_is_invalidated_on_out_of_band_edit_and_path_spelling
     file_path.write_text("alpha\n", encoding="utf-8")
     agent = build_agent(tmp_path, [])
 
-    agent.memory.set_file_summary("./sample.txt", "sample.txt: alpha")
+    set_raw_file_summary(agent, "./sample.txt", "sample.txt: alpha")
     agent.memory.remember_file("./sample.txt")
-    assert agent.memory.to_dict()["file_summaries"]["sample.txt"]["freshness"]
+    agent._sync_working_memory()
+    agent.session_store.save(agent.session)
+    assert agent.session["memory"]["file_summaries"]["sample.txt"]["freshness"]
 
-    assert "sample.txt: alpha" in agent.memory.render_memory_text()
     file_path.write_text("beta\n", encoding="utf-8")
 
     resumed = Pico.from_session(
@@ -128,9 +139,7 @@ def test_file_summary_cache_is_invalidated_on_out_of_band_edit_and_path_spelling
         approval_policy="auto",
     )
 
-    assert "sample.txt: alpha" not in resumed.memory_text()
-    resumed.memory.invalidate_file_summary("sample.txt")
-    assert "sample.txt" not in resumed.memory.to_dict()["file_summaries"]
+    assert "sample.txt" not in resumed.session["memory"]["file_summaries"]
 
 
 def test_agent_retries_after_empty_model_output(tmp_path):
@@ -1261,9 +1270,11 @@ def test_trace_and_report_redact_secret_env_values(tmp_path):
 
 def test_prompt_budget_metadata_records_budget_decisions(tmp_path):
     agent = build_agent(tmp_path, ["<final>Done.</final>"])
-    agent.memory.append_note("alpha episodic note " + ("A" * 120), tags=("recall",), created_at="2026-04-07T10:00:00+00:00")
-    agent.memory.append_note("beta episodic recall note " + ("B" * 120), created_at="2026-04-07T10:01:00+00:00")
-    agent.memory.append_note("gamma episodic note " + ("C" * 120), tags=("recall",), created_at="2026-04-07T10:02:00+00:00")
+    agent.memory.retrieval_candidates = lambda query, limit=3: [
+        {"text": "alpha episodic note " + ("A" * 120)},
+        {"text": "beta episodic recall note " + ("B" * 120)},
+        {"text": "gamma episodic note " + ("C" * 120)},
+    ][:limit]
 
     for index in range(4):
         agent.record(
@@ -1333,7 +1344,8 @@ def test_agent_creates_checkpoint_when_context_reduction_happens_and_artifacts_o
                 "created_at": f"2026-04-07T10:{index:02d}:00+00:00",
             }
         )
-    agent.memory.append_note("checkpoint note " + ("B" * 220), tags=("checkpoint",), created_at="2026-04-07T11:00:00+00:00")
+    agent.memory.set_task_summary("checkpoint note " + ("B" * 220))
+    agent._sync_working_memory()
     agent.context_manager.total_budget = 900
     agent.context_manager.section_budgets = {
         "prefix": 120,
@@ -1416,8 +1428,8 @@ def test_resume_invalidates_stale_file_summaries_and_marks_partial_stale(tmp_pat
     file_path = tmp_path / "runtime.py"
     file_path.write_text("alpha\n", encoding="utf-8")
     agent = build_agent(tmp_path, ["<final>checkpoint ready.</final>"])
-    agent.memory.set_file_summary("runtime.py", "runtime.py: alpha")
-    freshness = agent.memory.to_dict()["file_summaries"]["runtime.py"]["freshness"]
+    set_raw_file_summary(agent, "runtime.py", "runtime.py: alpha")
+    freshness = agent.session["memory"]["file_summaries"]["runtime.py"]["freshness"]
     agent.session["checkpoints"] = {
         "current_id": "ckpt_stale",
         "items": {
@@ -1451,7 +1463,7 @@ def test_resume_invalidates_stale_file_summaries_and_marks_partial_stale(tmp_pat
 
     assert resumed.ask("Continue the task") == "Resumed."
 
-    assert "runtime.py" not in resumed.memory.to_dict()["file_summaries"]
+    assert "runtime.py" not in resumed.session["memory"]["file_summaries"]
     assert resumed.last_prompt_metadata["resume_status"] == "partial-stale"
     assert resumed.last_prompt_metadata["stale_summary_invalidations"] == 1
 
@@ -1593,8 +1605,8 @@ def test_freshness_mismatch_creates_checkpoint_before_model_completion(tmp_path)
     file_path = tmp_path / "runtime.py"
     file_path.write_text("alpha\n", encoding="utf-8")
     agent = build_agent(tmp_path, ["<final>Resumed.</final>"])
-    agent.memory.set_file_summary("runtime.py", "runtime.py: alpha")
-    freshness = agent.memory.to_dict()["file_summaries"]["runtime.py"]["freshness"]
+    set_raw_file_summary(agent, "runtime.py", "runtime.py: alpha")
+    freshness = agent.session["memory"]["file_summaries"]["runtime.py"]["freshness"]
     agent.session["checkpoints"] = {
         "current_id": "ckpt_freshness",
         "items": {
@@ -1731,7 +1743,7 @@ def test_resume_records_runtime_identity_mismatch_fields_in_metadata_and_trace(t
     ]
 
 
-def test_partial_success_creates_process_note_for_exploration_history(tmp_path):
+def test_partial_success_records_metadata_without_process_notes(tmp_path):
     agent = build_agent(tmp_path, [])
 
     agent.run_tool(
@@ -1742,16 +1754,10 @@ def test_partial_success_creates_process_note_for_exploration_history(tmp_path):
         },
     )
 
-    process_notes = [
-        note
-        for note in agent.memory.to_dict()["episodic_notes"]
-        if note.get("kind") == "process"
-    ]
-
-    assert process_notes
-    assert process_notes[-1]["text"] == "run_shell partial_success on README.md; inspect diff before retry"
-    assert "partial_success" in process_notes[-1]["tags"]
-    assert "README.md" in process_notes[-1]["tags"]
+    assert agent._last_tool_result_metadata["tool_status"] == "partial_success"
+    assert agent._last_tool_result_metadata["affected_paths"] == ["README.md"]
+    assert "episodic_notes" not in agent.session["memory"]
+    assert "notes" not in agent.session["memory"]
 
 
 def test_agent_records_model_cache_metadata_in_last_prompt_metadata(tmp_path):
