@@ -120,8 +120,9 @@ class ContextManager:
 
         在 agent 链路里的位置：
         它位于 `Pico.ask()` 的每轮模型调用之前，是“真正发请求给模型”
-        的最后一道组装工序。`WorkspaceContext` 提供稳定前缀，`LayeredMemory`
-        提供工作区上下文，这个函数则把它们和当前请求合成一份可控大小的 prompt。
+        的最后一道组装工序。`WorkspaceContext`、v2 memory index/project
+        structure 和会话 history 提供上下文，这个函数则把它们和当前请求合成一份
+        可控大小的 prompt。
         """
         user_message = str(user_message)
         self.section_floors = self._compute_section_floors()
