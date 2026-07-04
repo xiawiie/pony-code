@@ -131,6 +131,38 @@ def test_run_fixed_benchmark_reports_metadata_and_success_definition(tmp_path):
         assert row["stop_reason"] == "final_answer_returned"
 
 
+def test_failure_category_enum_is_stable():
+    evaluator = BenchmarkEvaluator(
+        benchmark_path=Path("benchmarks/coding_tasks.json"),
+        artifact_path=Path("artifacts/test-failure-category.json"),
+        workspace_root=Path("artifacts/test-failure-category-workspaces"),
+    )
+
+    cases = [
+        (True, True, False, True, "missing_artifact"),
+        (False, True, True, True, "budget_exceeded"),
+        (True, False, True, True, "verifier_failed"),
+        (True, True, True, False, "failure_stop_reason"),
+        (True, True, True, True, "unknown"),
+    ]
+    for (
+        within_budget,
+        verifier_passed,
+        expected_artifact_exists,
+        non_failure_stop_reason,
+        expected,
+    ) in cases:
+        assert (
+            evaluator._failure_category(
+                within_budget,
+                verifier_passed,
+                expected_artifact_exists,
+                non_failure_stop_reason,
+            )
+            == expected
+        )
+
+
 def test_benchmark_reproducibility_locale_is_stable(monkeypatch, tmp_path):
     monkeypatch.setattr(
         "pico.evaluation.evaluator.locale_module.setlocale",
