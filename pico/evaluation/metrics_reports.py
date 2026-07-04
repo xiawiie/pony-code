@@ -11,14 +11,16 @@ from .metrics_common import (
     _safe_mean,
     _safe_ratio,
 )
-from .metrics_experiments import (
+from .experiments_real import (
+    run_real_context_experiment,
+    run_real_memory_experiment,
+    run_real_security_experiment_suite,
+)
+from .experiments_synthetic import (
     build_stress_agent_metrics,
     run_context_stress_matrix,
     run_large_scale_memory_experiment,
     run_memory_dependency_experiment,
-    run_real_context_experiment,
-    run_real_memory_experiment,
-    run_real_security_experiment_suite,
     run_security_experiment_suite,
 )
 
