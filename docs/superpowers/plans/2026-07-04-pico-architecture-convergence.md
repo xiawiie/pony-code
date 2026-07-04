@@ -22,9 +22,22 @@
 
 ---
 
+## Current Progress
+
+This plan has already started on the `memory` branch:
+
+- Task 0 is complete in commit `8508955 docs: pre-flight audit for architecture convergence`.
+- Task 1 is complete in commit `7d74bb4 test: pin public import surface for all four provider clients`.
+- Task 2 is complete in commit `ed397c7 test: pin REPL /help path against silent HELP_DETAILS drop`.
+- Continue from Task 3 unless intentionally replaying the plan from the baseline commit.
+
+---
+
 ## Pre-flight: Ground-Truth Audit
 
 ### Task 0: Record current state and audit spec references
+
+Status: complete in commit `8508955`.
 
 **Files:**
 - Create: `docs/superpowers/plans/2026-07-04-pre-flight-notes.md`
@@ -33,7 +46,7 @@
 - Consumes: nothing.
 - Produces: an anchor file that subsequent tasks reference for line counts, existing test IDs, and manual real-provider commands.
 
-- [ ] **Step 1: Record current line counts**
+- [x] **Step 1: Record current line counts**
 
 Run:
 ```bash
@@ -51,7 +64,7 @@ Expected output (approximate — capture actual values):
 
 Save the actual numbers into the pre-flight notes file.
 
-- [ ] **Step 2: Audit resume_status invariant test names**
+- [x] **Step 2: Audit resume_status invariant test names**
 
 Run:
 ```bash
@@ -60,7 +73,7 @@ grep -n "def test_report_prompt_metadata_preserves_initial_resume_status\|def te
 
 Expected: both function definitions found (currently at `tests/test_pico.py:1534` and `:1584`). Record the current line numbers in the notes.
 
-- [ ] **Step 3: Audit Anthropic edge case tests**
+- [x] **Step 3: Audit Anthropic edge case tests**
 
 Run:
 ```bash
@@ -69,7 +82,7 @@ grep -n "test_anthropic_compatible_client_extracts_text_block_without_type\|test
 
 Expected: both function definitions found (currently at `tests/test_pico.py:807` and `:841`). Record current line numbers.
 
-- [ ] **Step 4: Audit CLI help path tests**
+- [x] **Step 4: Audit CLI help path tests**
 
 Run:
 ```bash
@@ -78,7 +91,7 @@ grep -n "def test_help_command_shows_examples\|def test_help_flag_uses_root_help
 
 Expected: all three functions found. Record.
 
-- [ ] **Step 5: Audit diagnostics/recovery JSON contract tests**
+- [x] **Step 5: Audit diagnostics/recovery JSON contract tests**
 
 Run:
 ```bash
@@ -87,7 +100,7 @@ grep -c "^def test" tests/test_cli_diagnostics.py tests/test_recovery_cli.py tes
 
 Expected: three counts (~16, ~15, ~13). Record what each file covers.
 
-- [ ] **Step 6: Capture `metrics.py` public `__all__`**
+- [x] **Step 6: Capture `metrics.py` public `__all__`**
 
 Run:
 ```bash
@@ -96,7 +109,7 @@ python3 -c "from pico.evaluation import metrics; print('\n'.join(sorted(metrics.
 
 Copy the full symbol list verbatim into the pre-flight notes. This is the exact surface P1 must preserve.
 
-- [ ] **Step 7: Capture `pico.providers.clients` public classes**
+- [x] **Step 7: Capture `pico.providers.clients` public classes**
 
 Run:
 ```bash
@@ -105,7 +118,7 @@ python3 -c "from pico.providers import clients; print([n for n in dir(clients) i
 
 Expected includes at minimum: `AnthropicCompatibleModelClient`, `FakeModelClient`, `OllamaModelClient`, `OpenAICompatibleModelClient`. Record.
 
-- [ ] **Step 8: Record manual real-provider commands**
+- [x] **Step 8: Record manual real-provider commands**
 
 Write these three commands verbatim into the pre-flight notes:
 ```bash
@@ -120,12 +133,12 @@ pico-cli --cwd /Users/wei/Desktop/pico --format json run --max-new-tokens 2048 \
 
 These are the exact regression commands to reuse in P1/P2/P3 acceptance.
 
-- [ ] **Step 9: Confirm baseline check passes**
+- [x] **Step 9: Confirm baseline check passes**
 
 Run: `./scripts/check.sh`
 Expected: exits 0.
 
-- [ ] **Step 10: Commit**
+- [x] **Step 10: Commit**
 
 ```bash
 git add docs/superpowers/plans/2026-07-04-pre-flight-notes.md
@@ -140,6 +153,8 @@ Purpose: freeze the behavior most likely to regress during subsequent movement.
 
 ### Task 1: Extend public API contract with all four provider classes
 
+Status: complete in commit `7d74bb4`.
+
 **Files:**
 - Modify: `tests/test_public_api_contract.py`
 
@@ -147,12 +162,13 @@ Purpose: freeze the behavior most likely to regress during subsequent movement.
 - Consumes: existing `pico.providers.clients` module.
 - Produces: contract test guarding direct import of all four provider classes; consumed by P2 acceptance.
 
-- [ ] **Step 1: Read current test**
+- [x] **Step 1: Read current test**
 
 Run: `grep -n "FakeModelClient\|OllamaModelClient\|OpenAICompatibleModelClient\|AnthropicCompatibleModelClient" tests/test_public_api_contract.py`
-Expected: only `FakeModelClient` at line 32.
+Expected on a fresh baseline: only `FakeModelClient` at line 32.
+Expected on the current branch after `7d74bb4`: all four provider classes are present in `test_all_four_provider_classes_importable_directly`.
 
-- [ ] **Step 2: Write the failing test extension**
+- [x] **Step 2: Write the failing test extension**
 
 Edit `tests/test_public_api_contract.py`. Locate the existing function `test_lightweight_package_split_uses_package_paths_without_legacy_shims`. Below it add:
 
@@ -174,12 +190,12 @@ def test_all_four_provider_classes_importable_directly():
         assert isinstance(cls, type), f"{cls!r} should be a class"
 ```
 
-- [ ] **Step 3: Run test to verify it passes today**
+- [x] **Step 3: Run test to verify it passes today**
 
 Run: `uv run pytest tests/test_public_api_contract.py::test_all_four_provider_classes_importable_directly -v`
 Expected: PASS (all four classes already live in `pico/providers/clients.py`). The test's job is to fail if P2 breaks the import surface later.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add tests/test_public_api_contract.py
@@ -188,6 +204,8 @@ git commit -m "test: pin public import surface for all four provider clients"
 
 ### Task 2: Add REPL /help smoke test
 
+Status: complete in commit `ed397c7`.
+
 **Files:**
 - Modify: `tests/test_cli_commands.py`
 
@@ -195,12 +213,14 @@ git commit -m "test: pin public import surface for all four provider clients"
 - Consumes: `pico.cli_commands.run_repl`, `pico.cli.HELP_DETAILS`.
 - Produces: a test that fails if the lazy `HELP_DETAILS` import in `pico/cli_commands.py:544` is silently dropped by P4.0.
 
-- [ ] **Step 1: Read the existing REPL EOF test for style**
+Current branch note: commit `ed397c7` already contains an equivalent local fake-model fixture. If replaying from the baseline, the fixture below is preferred because it uses the public provider test helper directly, but the acceptance requirement is the same: `run_repl(agent)` must print the first line of `HELP_DETAILS`.
+
+- [x] **Step 1: Read the existing REPL EOF test for style**
 
 Run: `sed -n '47,80p' tests/test_cli_commands.py`
 Expected: shows `test_repl_command_exits_on_eof` at line 47.
 
-- [ ] **Step 2: Write the failing test**
+- [x] **Step 2: Write the failing test**
 
 Append to `tests/test_cli_commands.py`:
 
@@ -208,52 +228,37 @@ Append to `tests/test_cli_commands.py`:
 def test_repl_help_renders_help_details(tmp_path, monkeypatch, capsys):
     from pico.cli import HELP_DETAILS
     from pico.cli_commands import run_repl
+    from pico.providers.clients import FakeModelClient
     from pico.runtime import Pico, SessionStore
     from pico.workspace import WorkspaceContext
 
-    workspace = WorkspaceContext.build(tmp_path)
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
-    session_store = SessionStore(tmp_path / ".pico" / "sessions")
-
-    class _FakeModel:
-        supports_prompt_cache = False
-        last_completion_metadata = {}
-
-        def complete(self, prompt, max_new_tokens, **kwargs):
-            return "<final>ok</final>"
-
-        def stream_complete(self, *args, **kwargs):
-            return self.complete(*args, **kwargs)
-
     agent = Pico(
-        model=_FakeModel(),
-        workspace=workspace,
-        session_store=session_store,
+        model_client=FakeModelClient(["<final>ok</final>"]),
+        workspace=WorkspaceContext.build(tmp_path),
+        session_store=SessionStore(tmp_path / ".pico" / "sessions"),
         approval_policy="auto",
     )
 
     inputs = iter(["/help", "/exit"])
-    monkeypatch.setattr("builtins.input", lambda prompt="": next(inputs))
+    monkeypatch.setattr("builtins.input", lambda *_: next(inputs))
 
-    class _Args:
-        format = "text"
-        quiet = False
-
-    run_repl(agent, _Args())
+    code = run_repl(agent)
     out = capsys.readouterr().out
+    assert code == 0
     assert HELP_DETAILS.strip().splitlines()[0] in out
 ```
 
-- [ ] **Step 3: Run test — expected to PASS today**
+- [x] **Step 3: Run test — expected to PASS today**
 
 Run: `uv run pytest tests/test_cli_commands.py::test_repl_help_renders_help_details -v`
 Expected: PASS. The test's purpose is to fail during P4.0 if `HELP_DETAILS` is moved without updating the REPL path.
 
-- [ ] **Step 4: If test fails, adjust to match actual `run_repl` signature**
+- [x] **Step 4: If test fails, inspect the current signatures before changing assertions**
 
-If step 3 fails because `Pico`/`run_repl` signatures differ, read `pico/cli_commands.py:518-598` and `pico/runtime.py` and adapt the fixture. Do NOT loosen the assertion — the point is that `HELP_DETAILS` text reaches stdout.
+If step 3 fails, read `pico/cli_commands.py:518-598`, `pico/runtime.py`, and `tests/memory/test_repl_v2.py` before editing the fixture. Do NOT loosen the assertion — the point is that `HELP_DETAILS` text reaches stdout.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add tests/test_cli_commands.py
@@ -269,13 +274,13 @@ git commit -m "test: pin REPL /help path against silent HELP_DETAILS drop"
 - Consumes: `pico.evaluation.evaluator.BenchmarkEvaluator._failure_category` (defined at `pico/evaluation/evaluator.py:569`).
 - Produces: an explicit contract test guarding the string values of `failure_category`.
 
-- [ ] **Step 1: Confirm the enum values still exist**
+- [ ] **Step 1: Confirm the behavior seam still exists**
 
 Run:
 ```bash
-grep -n "missing_artifact\|budget_exceeded\|verifier_failed\|failure_stop_reason\|provider_error" pico/evaluation/evaluator.py
+grep -n "def _failure_category" pico/evaluation/evaluator.py
 ```
-Expected: at least four literals found in `_failure_category`.
+Expected: one hit in `BenchmarkEvaluator`. This function may move to `pico/evaluation/fixed_benchmark.py` during P1; the test below must keep importing `BenchmarkEvaluator` from `pico.evaluation.evaluator` so it remains stable across that move.
 
 - [ ] **Step 2: Write the contract test**
 
@@ -283,16 +288,28 @@ Append to `tests/test_evaluator.py`:
 
 ```python
 def test_failure_category_enum_is_stable():
-    from pico.evaluation import evaluator as evaluator_mod
-    source = evaluator_mod.__file__
-    text = open(source, encoding="utf-8").read()
-    for literal in (
-        "missing_artifact",
-        "budget_exceeded",
-        "verifier_failed",
-    ):
-        assert f'"{literal}"' in text, (
-            f"expected failure_category literal {literal!r} in evaluator source"
+    evaluator = BenchmarkEvaluator(
+        benchmark_path=Path("benchmarks/coding_tasks.json"),
+        artifact_path=Path("artifacts/test-failure-category.json"),
+        workspace_root=Path("artifacts/test-failure-category-workspaces"),
+    )
+
+    cases = [
+        (True, True, False, True, "missing_artifact"),
+        (False, True, True, True, "budget_exceeded"),
+        (True, False, True, True, "verifier_failed"),
+        (True, True, True, False, "failure_stop_reason"),
+        (True, True, True, True, "unknown"),
+    ]
+    for within_budget, verifier_passed, expected_artifact_exists, non_failure_stop_reason, expected in cases:
+        assert (
+            evaluator._failure_category(
+                within_budget,
+                verifier_passed,
+                expected_artifact_exists,
+                non_failure_stop_reason,
+            )
+            == expected
         )
 ```
 
@@ -354,10 +371,16 @@ No commit — audit-only task. If the tests are missing or assertions have drift
 Run: `./scripts/check.sh`
 Expected: exit 0.
 
-- [ ] **Step 2: Confirm test counts increased by exactly 3**
+- [ ] **Step 2: Confirm P0 commits are present**
 
-Run: `git log --oneline HEAD~4..HEAD`
-Expected: four commits — pre-flight docs, and three test-adding commits from Tasks 1–3.
+Run:
+```bash
+git log --oneline --grep "pre-flight audit for architecture convergence"
+git log --oneline --grep "pin public import surface for all four provider clients"
+git log --oneline --grep "pin REPL /help path against silent HELP_DETAILS drop"
+git log --oneline --grep "freeze failure_category enum literals for benchmark artifacts"
+```
+Expected: one commit for Task 0 and one commit for each of Tasks 1-3. On the current branch, Tasks 0-2 are already present before continuing from Task 3.
 
 ---
 
@@ -370,11 +393,11 @@ Purpose: reduce `metrics_experiments.py` from 1311 lines to focused benchmark mo
 **Files:**
 - Create: `pico/evaluation/benchmark_schema.py`
 - Modify: `pico/evaluation/evaluator.py`
-- Modify: `pico/evaluation/metrics.py`
+- Verify only: `pico/evaluation/metrics.py` (do not edit unless the public re-export surface is accidentally broken)
 
 **Interfaces:**
-- Consumes: existing `BENCHMARK_SCHEMA_VERSION`, `validate_benchmark`, `load_benchmark`, `_fixture_snapshot_id`, `_scripted_outputs_for_task`, `_artifact_path_for_task`, `_workspace_relative`, `summarize_rows`, `_digest_file` (all currently in `pico/evaluation/evaluator.py`).
-- Produces: `pico.evaluation.benchmark_schema.{BENCHMARK_SCHEMA_VERSION, validate_benchmark, load_benchmark, summarize_rows}` publicly; the underscored helpers remain module-private inside the new file.
+- Consumes: existing `BENCHMARK_SCHEMA_VERSION`, `DEFAULT_BENCHMARK_PATH`, `REQUIRED_BENCHMARK_KEYS`, `REQUIRED_TASK_KEYS`, `TASK_FIXTURE_ARTIFACTS`, `SCRIPTED_MODEL_OUTPUTS`, `validate_benchmark`, `load_benchmark`, `_fixture_snapshot_id`, `_scripted_outputs_for_task`, `_artifact_path_for_task`, `_workspace_relative`, `summarize_rows`, `_digest_file` (all currently in `pico/evaluation/evaluator.py`).
+- Produces: `pico.evaluation.benchmark_schema.{BENCHMARK_SCHEMA_VERSION, DEFAULT_BENCHMARK_PATH, validate_benchmark, load_benchmark, summarize_rows}` publicly; the underscored helpers and schema/scripted fixture constants remain module-private inside the new file.
 
 - [ ] **Step 1: Identify exact line ranges to move**
 
@@ -382,11 +405,11 @@ Run:
 ```bash
 grep -n "^def validate_benchmark\|^def load_benchmark\|^def summarize_rows\|^def _fixture_snapshot_id\|^def _scripted_outputs_for_task\|^def _artifact_path_for_task\|^def _workspace_relative\|^def _digest_file\|BENCHMARK_SCHEMA_VERSION = " pico/evaluation/evaluator.py
 ```
-Expected: 9 matches. Record line numbers.
+Expected on the baseline: 9 function/version matches. Also inspect and move the adjacent constants `DEFAULT_BENCHMARK_PATH`, `REQUIRED_BENCHMARK_KEYS`, `REQUIRED_TASK_KEYS`, `TASK_FIXTURE_ARTIFACTS`, and `SCRIPTED_MODEL_OUTPUTS`, because the moved functions depend on them.
 
 - [ ] **Step 2: Create the new module with copied content**
 
-Copy `BENCHMARK_SCHEMA_VERSION`, `validate_benchmark`, `load_benchmark`, `summarize_rows`, `_fixture_snapshot_id`, `_scripted_outputs_for_task`, `_artifact_path_for_task`, `_workspace_relative`, `_digest_file` and their imports (json, hashlib, pathlib, etc.) into `pico/evaluation/benchmark_schema.py`. Do NOT alter behavior.
+Copy `BENCHMARK_SCHEMA_VERSION`, `DEFAULT_BENCHMARK_PATH`, `REQUIRED_BENCHMARK_KEYS`, `REQUIRED_TASK_KEYS`, `TASK_FIXTURE_ARTIFACTS`, `SCRIPTED_MODEL_OUTPUTS`, `validate_benchmark`, `load_benchmark`, `summarize_rows`, `_fixture_snapshot_id`, `_scripted_outputs_for_task`, `_artifact_path_for_task`, `_workspace_relative`, `_digest_file` and their imports into `pico/evaluation/benchmark_schema.py`. Required imports are `hashlib`, `json`, `Path`, and `legal_tool_names` from `pico.tools`. Do NOT alter behavior.
 
 - [ ] **Step 3: Replace originals in `evaluator.py` with re-imports**
 
@@ -394,6 +417,7 @@ At the top of `pico/evaluation/evaluator.py`, add:
 ```python
 from .benchmark_schema import (
     BENCHMARK_SCHEMA_VERSION,
+    DEFAULT_BENCHMARK_PATH,
     _artifact_path_for_task,
     _digest_file,
     _fixture_snapshot_id,
@@ -435,20 +459,20 @@ git commit -m "refactor: extract benchmark_schema module from evaluator"
 - Modify: `pico/evaluation/evaluator.py`
 
 **Interfaces:**
-- Consumes: `BenchmarkEvaluator` class (currently `pico/evaluation/evaluator.py:395`), `run_fixed_benchmark` (currently `:595`), `run_harness_regression_v2` (currently `:622`), plus their private helpers `_checkpoint_payload`, `_apply_task_setup`, `_agent_prompt_for_task`.
-- Produces: `pico.evaluation.fixed_benchmark.{BenchmarkEvaluator, run_fixed_benchmark, run_harness_regression_v2}`.
+- Consumes: `BenchmarkEvaluator` class (currently `pico/evaluation/evaluator.py:395`), `run_fixed_benchmark` (currently `:595`), `run_harness_regression_v2` (currently `:622`), the benchmark default constants (`DEFAULT_ARTIFACT_PATH`, `DEFAULT_HARNESS_REGRESSION_V2_ARTIFACT_PATH`, `DEFAULT_MODEL_NAME`, `DEFAULT_MODEL_VERSION`, `DEFAULT_TEMPERATURE`, `DEFAULT_TOP_P`, `DEFAULT_MAX_NEW_TOKENS`, `DEFAULT_TIMEZONE`, `REPRODUCIBILITY_LOCALE`), reproducibility helpers (`_git_value`, `_current_locale`, `_reproducibility_env`, `_now_in_timezone`), plus private benchmark helpers `_checkpoint_payload`, `_apply_task_setup`, `_agent_prompt_for_task`.
+- Produces: `pico.evaluation.fixed_benchmark.{BenchmarkEvaluator, run_fixed_benchmark, run_harness_regression_v2}` and keeps `pico.evaluation.evaluator` as a compatibility re-export surface.
 
 - [ ] **Step 1: Identify boundaries**
 
 Run:
 ```bash
-grep -n "^class BenchmarkEvaluator\|^def _checkpoint_payload\|^def _apply_task_setup\|^def _agent_prompt_for_task\|^def run_fixed_benchmark\|^def run_harness_regression_v2" pico/evaluation/evaluator.py
+grep -n "DEFAULT_ARTIFACT_PATH\|DEFAULT_HARNESS_REGRESSION_V2_ARTIFACT_PATH\|DEFAULT_MODEL_NAME\|DEFAULT_MODEL_VERSION\|DEFAULT_TEMPERATURE\|DEFAULT_TOP_P\|DEFAULT_MAX_NEW_TOKENS\|DEFAULT_TIMEZONE\|REPRODUCIBILITY_LOCALE\|^def _git_value\|^def _current_locale\|^def _reproducibility_env\|^def _now_in_timezone\|^def _checkpoint_payload\|^def _apply_task_setup\|^def _agent_prompt_for_task\|^class BenchmarkEvaluator\|^def run_fixed_benchmark\|^def run_harness_regression_v2" pico/evaluation/evaluator.py
 ```
 Record line ranges.
 
 - [ ] **Step 2: Create the new module**
 
-Move all identified symbols into `pico/evaluation/fixed_benchmark.py`. Add necessary imports: `from .benchmark_schema import ...` for `validate_benchmark`, `load_benchmark`, `_scripted_outputs_for_task`, etc.
+Move all identified symbols into `pico/evaluation/fixed_benchmark.py`. Add necessary imports from `.benchmark_schema` for `BENCHMARK_SCHEMA_VERSION`, `DEFAULT_BENCHMARK_PATH`, `load_benchmark`, `summarize_rows`, `_artifact_path_for_task`, `_digest_file`, `_fixture_snapshot_id`, `_scripted_outputs_for_task`, and `_workspace_relative`.
 
 - [ ] **Step 3: Reduce `evaluator.py` to re-exports**
 
@@ -456,6 +480,15 @@ Replace `evaluator.py` body (after the benchmark_schema re-imports from Task 6) 
 ```python
 from .fixed_benchmark import (
     BenchmarkEvaluator,
+    DEFAULT_ARTIFACT_PATH,
+    DEFAULT_HARNESS_REGRESSION_V2_ARTIFACT_PATH,
+    DEFAULT_MAX_NEW_TOKENS,
+    DEFAULT_MODEL_NAME,
+    DEFAULT_MODEL_VERSION,
+    DEFAULT_TEMPERATURE,
+    DEFAULT_TIMEZONE,
+    DEFAULT_TOP_P,
+    REPRODUCIBILITY_LOCALE,
     run_fixed_benchmark,
     run_harness_regression_v2,
 )
@@ -463,6 +496,16 @@ from .fixed_benchmark import (
 __all__ = [
     "BENCHMARK_SCHEMA_VERSION",
     "BenchmarkEvaluator",
+    "DEFAULT_ARTIFACT_PATH",
+    "DEFAULT_BENCHMARK_PATH",
+    "DEFAULT_HARNESS_REGRESSION_V2_ARTIFACT_PATH",
+    "DEFAULT_MAX_NEW_TOKENS",
+    "DEFAULT_MODEL_NAME",
+    "DEFAULT_MODEL_VERSION",
+    "DEFAULT_TEMPERATURE",
+    "DEFAULT_TIMEZONE",
+    "DEFAULT_TOP_P",
+    "REPRODUCIBILITY_LOCALE",
     "load_benchmark",
     "run_fixed_benchmark",
     "run_harness_regression_v2",
@@ -494,7 +537,7 @@ git commit -m "refactor: extract fixed_benchmark from evaluator"
 **Files:**
 - Create: `pico/evaluation/provider_benchmark.py`
 - Modify: `pico/evaluation/metrics_experiments.py`
-- Modify: `pico/evaluation/metrics.py`
+- Verify only: `pico/evaluation/metrics.py` (do not edit unless the public re-export surface is accidentally broken)
 
 **Interfaces:**
 - Consumes: `DEFAULT_PROVIDER_EXPERIMENT_MAX_NEW_TOKENS` (currently `pico/evaluation/metrics_experiments.py:22`), `_provider_summary_from_artifact` (`:524`), `_provider_profile` (`:550`), `_make_provider_client` (`:592`), `_normalize_text` (`:614`), `run_provider_experiments` (`:621`).
@@ -520,14 +563,15 @@ Cut the following from `pico/evaluation/metrics_experiments.py` and paste into `
 
 Add imports at the top of `provider_benchmark.py`:
 ```python
+from pathlib import Path
+
 from ..config import load_project_env, provider_env
 from ..providers.clients import (
     AnthropicCompatibleModelClient,
-    FakeModelClient,
     OpenAICompatibleModelClient,
 )
-from ..workspace import WorkspaceContext
 from .fixed_benchmark import run_fixed_benchmark
+from .metrics_common import _safe_mean, _safe_ratio
 ```
 
 - [ ] **Step 3: Re-export from `metrics_experiments.py`**
@@ -593,9 +637,18 @@ Run: `wc -l pico/evaluation/metrics_experiments.py`
 If line count ≤ 500: skip phase 1.5. Write a one-line note in the pre-flight notes file: `Phase 1.5 skipped — metrics_experiments.py is N lines, at or below 500-line soft threshold.` Commit that note only. Move to P2.
 
 If > 500: split remaining clusters as follows:
-- `experiments_synthetic.py` — `_MemoryExperimentModelClient` and everything from line ~97 to ~304 (memory/context stress/security synthetic scenarios); include `measure_feature_ablation_metrics`, `build_stress_agent_metrics`, `run_memory_dependency_experiment`, `run_large_scale_memory_experiment`, `run_context_stress_matrix`, `run_security_experiment_suite`.
-- `experiments_real.py` — `_followup_trace_metrics` through `run_real_security_experiment_suite` (`_build_real_agent`, `run_real_memory_experiment`, `run_real_context_experiment`, `_setup_real_security_workspace`, `_security_result_row`, `_run_real_repeated_call_scenario`, `run_real_security_experiment_suite`).
-- `experiments_recovery.py` — `_RecoveryScenarioModelClient`, `_build_recovery_agent`, `_apply_recovery_setup`, `_run_recovery_task_variant`, `_recovery_variant_summary`, `run_context_ablation_v2`, `run_memory_ablation_v2`, `run_recovery_ablation_v2`.
+- `experiments_synthetic.py` — move the synthetic memory/context/security cluster identified by:
+  ```bash
+  grep -n "^class _MemoryExperimentModelClient\|^def measure_feature_ablation_metrics\|^def build_stress_agent_metrics\|^def run_memory_dependency_experiment\|^def run_large_scale_memory_experiment\|^def run_context_stress_matrix\|^def run_security_experiment_suite" pico/evaluation/metrics_experiments.py
+  ```
+- `experiments_real.py` — move the real-provider experiment cluster identified by:
+  ```bash
+  grep -n "^def _followup_trace_metrics\|^def _build_real_agent\|^def run_real_memory_experiment\|^def run_real_context_experiment\|^def _setup_real_security_workspace\|^def _security_result_row\|^def _run_real_repeated_call_scenario\|^def run_real_security_experiment_suite" pico/evaluation/metrics_experiments.py
+  ```
+- `experiments_recovery.py` — move the recovery ablation cluster identified by:
+  ```bash
+  grep -n "^class _RecoveryScenarioModelClient\|^def _build_recovery_agent\|^def _apply_recovery_setup\|^def _run_recovery_task_variant\|^def _recovery_variant_summary\|^def run_context_ablation_v2\|^def run_memory_ablation_v2\|^def run_recovery_ablation_v2" pico/evaluation/metrics_experiments.py
+  ```
 
 Add re-exports in `metrics_experiments.py` for every symbol currently in `metrics.py.__all__`.
 
@@ -670,7 +723,7 @@ Delete the original function definitions in `clients.py`.
 - [ ] **Step 3: Full check**
 
 Run: `./scripts/check.sh`
-Expected: exit 0. All provider tests in `tests/test_pico.py` between lines 349–913 must pass.
+Expected: exit 0. The provider-focused subset `uv run pytest tests/test_pico.py -k "ollama or openai_compatible or anthropic" -q` must also pass if run separately.
 
 - [ ] **Step 4: Commit**
 
@@ -691,7 +744,7 @@ git commit -m "refactor: extract provider shared helpers"
 
 - [ ] **Step 1: Move `OllamaModelClient`**
 
-Cut lines 36–87 of `clients.py` into `pico/providers/ollama.py`. Add imports the class needs (json, urllib, `._shared` helpers if any).
+Move the full `OllamaModelClient` class into `pico/providers/ollama.py`. Use `grep -n "^class OllamaModelClient\|^def _normalize_versioned_base_url" pico/providers/clients.py` to find the class start and the next top-level boundary. Add imports the class needs (`json`, `urllib.error`, `urllib.request`, and shared helpers if used). Do not move `FakeModelClient`.
 
 - [ ] **Step 2: Re-export in `clients.py`**
 
@@ -724,12 +777,16 @@ git commit -m "refactor: extract OllamaModelClient into its own module"
 - Modify: `pico/providers/clients.py`
 
 **Interfaces:**
-- Consumes: `_extract_openai_text`, `_extract_openai_text_from_sse`, `_extract_openai_response_from_sse`, `OpenAICompatibleModelClient` (currently `clients.py:97–486`).
+- Consumes: `_extract_openai_text`, `_extract_openai_text_from_sse`, `_extract_openai_response_from_sse`, `OpenAICompatibleModelClient`.
 - Produces: `pico.providers.openai_compatible.OpenAICompatibleModelClient`.
 
 - [ ] **Step 1: Move symbols**
 
-Cut `_extract_openai_text`, `_extract_openai_text_from_sse`, `_extract_openai_response_from_sse`, and the entire `OpenAICompatibleModelClient` class into `pico/providers/openai_compatible.py`. Add imports:
+Move `_extract_openai_text`, `_extract_openai_text_from_sse`, `_extract_openai_response_from_sse`, and the entire `OpenAICompatibleModelClient` class into `pico/providers/openai_compatible.py`. Use this boundary check before moving:
+```bash
+grep -n "^def _extract_openai_text\|^def _extract_openai_text_from_sse\|^def _extract_openai_response_from_sse\|^class OpenAICompatibleModelClient\|^def _extract_anthropic_text" pico/providers/clients.py
+```
+Add imports:
 ```python
 from ._shared import (
     _extract_usage_cache_details,
@@ -771,12 +828,16 @@ git commit -m "refactor: extract OpenAICompatibleModelClient module"
 - Modify: `pico/providers/clients.py`
 
 **Interfaces:**
-- Consumes: `_extract_anthropic_text` (`clients.py:489`), `_anthropic_no_text_error` (`:498`), `_supports_anthropic_prompt_cache` (`:509`), `_anthropic_cache_control` (`:513`), `_extract_anthropic_usage_cache_details` (`:529`), `AnthropicCompatibleModelClient` class (`:549`).
+- Consumes: `_extract_anthropic_text`, `_anthropic_no_text_error`, `_supports_anthropic_prompt_cache`, `_anthropic_cache_control`, `_extract_anthropic_usage_cache_details`, `AnthropicCompatibleModelClient`.
 - Produces: `pico.providers.anthropic_compatible.AnthropicCompatibleModelClient` and re-export via `clients.py`.
 
 - [ ] **Step 1: Move**
 
-Cut all six symbols into `pico/providers/anthropic_compatible.py`. Preserve the exact edge-case behavior at lines 489–495 (missing-type text block) and 498–506 (thinking-only + max_tokens error).
+Move all six symbols into `pico/providers/anthropic_compatible.py`. Use this boundary check before moving:
+```bash
+grep -n "^def _extract_anthropic_text\|^def _anthropic_no_text_error\|^def _supports_anthropic_prompt_cache\|^def _anthropic_cache_control\|^def _extract_anthropic_usage_cache_details\|^class AnthropicCompatibleModelClient" pico/providers/clients.py
+```
+Preserve the exact missing-type text-block behavior in `_extract_anthropic_text` and the thinking-only plus `max_tokens` error behavior in `_anthropic_no_text_error`.
 
 - [ ] **Step 2: Re-export**
 
@@ -970,52 +1031,64 @@ git commit -m "refactor: decouple HELP_DETAILS into cli_help module"
 ### Task 18: P4.1 — Colocate diagnostics handlers into `cli_diagnostics.py`
 
 **Files:**
+- Modify: `pico/cli_output.py`
 - Modify: `pico/cli_diagnostics.py`
 - Modify: `pico/cli_commands.py`
+- Modify: `pico/cli.py`
 
 **Interfaces:**
-- Consumes: `handle_status` (`cli_commands.py:151`), `handle_doctor` (`:155`), `handle_config` (`:168`), `_render_status` (`:797`), `_render_config` (`:700`), `_render_doctor` (`:732`), and their helpers `_source_label`, `_line`, `_presence_text`, `_value_with_source`, `_ok_missing` (`:670-698`).
-- Produces: `pico.cli_diagnostics.{handle_status, handle_doctor, handle_config}`; consumers `pico.cli` and existing tests keep using `pico.cli_commands` re-exports.
+- Consumes: `print_result` (`cli_commands.py:62`), `handle_status` (`cli_commands.py:151`), `handle_doctor` (`:155`), `handle_config` (`:168`), `_render_status` (`:797`), `_render_config` (`:700`), `_render_doctor` (`:732`), and their helpers `_source_label`, `_line`, `_presence_text`, `_value_with_source`, `_ok_missing` (`:670-698`).
+- Produces: `pico.cli_output.print_result` and `pico.cli_diagnostics.{handle_status, handle_doctor, handle_config}`; consumers `pico.cli` and existing tests keep using `pico.cli_commands` re-exports.
 
 - [ ] **Step 1: Confirm consumers**
 
 Run: `grep -n "handle_status\|handle_doctor\|handle_config" pico/cli.py`
 Expected: three references in `_dispatch_*` at `:416, :420, :428`.
 
-- [ ] **Step 2: Move handlers and renderers into `cli_diagnostics.py`**
+- [ ] **Step 2: Move `print_result` to `cli_output.py` first**
 
-Cut `handle_status`, `handle_doctor`, `handle_config`, `_render_status`, `_render_config`, `_render_doctor`, `_source_label`, `_line`, `_presence_text`, `_value_with_source`, `_ok_missing` from `cli_commands.py` and paste into `pico/cli_diagnostics.py`. Add imports needed by handlers (`.cli_diagnostics.collect_*` already lives there; add `.cli_errors`, `.cli_output`, `.workspace`, `print_result` as required).
+Move the existing `print_result(kind, data, args, text_renderer)` helper from `pico/cli_commands.py` to `pico/cli_output.py`, next to `format_json` and `success_envelope`. Update `pico/cli_commands.py` to import it:
 
-- [ ] **Step 3: Check merged size**
+```python
+from .cli_output import format_json, print_result, success_envelope
+```
+
+Do not import `print_result` from `pico.cli_commands` in any new module. This prevents a `cli_diagnostics -> cli_commands -> cli_diagnostics` cycle.
+
+- [ ] **Step 3: Move handlers and renderers into `cli_diagnostics.py`**
+
+Cut `handle_status`, `handle_doctor`, `handle_config`, `_render_status`, `_render_config`, `_render_doctor`, `_source_label`, `_line`, `_presence_text`, `_value_with_source`, `_ok_missing` from `cli_commands.py` and paste into `pico/cli_diagnostics.py`. Add imports needed by handlers (`.cli_errors`, `.cli_output.print_result`, and existing diagnostics collectors). Do not import from `pico.cli_commands`.
+
+- [ ] **Step 4: Check merged size**
 
 Run: `wc -l pico/cli_diagnostics.py`
 Expected: under ~550 (the soft threshold is ~500; small overshoot acceptable). If well over 500 (e.g., 700+), split handlers into `pico/cli_diagnostics_commands.py`. Otherwise keep merged.
 
-- [ ] **Step 4: Keep re-export shims in `cli_commands.py`**
+- [ ] **Step 5: Keep re-export shims in `cli_commands.py`**
 
 At the top of `pico/cli_commands.py`, add:
 ```python
 from .cli_diagnostics import handle_config, handle_doctor, handle_status  # noqa: F401
 ```
 
-- [ ] **Step 5: Update `pico/cli.py` to import from the new home (optional but preferred)**
+- [ ] **Step 6: Update `pico/cli.py` to import from the new home (optional but preferred)**
 
 In `pico/cli.py`, change the imports at line 15-25 so `handle_config`, `handle_doctor`, `handle_status` come from `.cli_diagnostics`. Leave the rest importing from `.cli_commands`.
 
-- [ ] **Step 6: Run focused tests**
+- [ ] **Step 7: Run focused tests**
 
 Run: `uv run pytest tests/test_cli_diagnostics.py tests/test_cli_commands.py tests/memory/test_cli_diagnostics_v2.py -q`
 Expected: all pass.
 
-- [ ] **Step 7: Full check**
+- [ ] **Step 8: Full check**
 
 Run: `./scripts/check.sh`
 Expected: exit 0.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 9: Commit**
 
 ```bash
-git add pico/cli_diagnostics.py pico/cli_commands.py pico/cli.py
+git add pico/cli_output.py pico/cli_diagnostics.py pico/cli_commands.py pico/cli.py
 git commit -m "refactor: colocate diagnostics command handlers with data collectors"
 ```
 
@@ -1031,7 +1104,7 @@ git commit -m "refactor: colocate diagnostics command handlers with data collect
 
 - [ ] **Step 1: Move all named symbols into `cli_recovery.py`**
 
-Preserve imports: `CheckpointStore`, `RecoveryCheckpointWriter`, `RecoveryManager`, `WorkspaceContext`, `print_result`, `format_json`, `success_envelope`, `CliError`, `CLI_EXIT_USAGE`.
+Preserve imports: `CheckpointStore`, `RecoveryCheckpointWriter`, `RecoveryManager`, `WorkspaceContext`, `CliError`, `CLI_EXIT_USAGE`. Import `print_result` from `pico.cli_output`, not from `pico.cli_commands`. Keep `format_json` and `success_envelope` only if the moved code still uses them directly after `print_result` has moved.
 
 - [ ] **Step 2: Add compatibility re-exports to `cli_commands.py`**
 
@@ -1068,7 +1141,7 @@ git commit -m "refactor: extract recovery command handlers into cli_recovery"
 
 - [ ] **Step 1: Move symbols**
 
-Cut all six named functions plus their nested `render` closures into `pico/cli_memory.py`. Preserve the lazy `BlockStore` import at the top of `handle_memory`.
+Cut all six named functions plus their nested `render` closures into `pico/cli_memory.py`. Preserve the lazy `BlockStore` import at the top of `handle_memory`. Import `print_result` from `pico.cli_output`, not from `pico.cli_commands`.
 
 - [ ] **Step 2: Re-export**
 
@@ -1142,18 +1215,15 @@ git commit -m "refactor: extract run-once and REPL flow into cli_start"
 
 - [ ] **Step 1: List remaining `_render_*` symbols**
 
-Run: `grep -n "^def _render_\|^def print_result" pico/cli_commands.py`
+Run: `grep -n "^def _render_" pico/cli_commands.py`
 
 - [ ] **Step 2: Decide**
 
-If fewer than three remain and they are consumed by only one command family, leave them where they are and skip this task. If three or more remain and are consumed cross-family (e.g., `print_result`), move them to `pico/cli_renderers.py`.
+If fewer than three remain and they are consumed by only one command family, leave them where they are and skip this task. If three or more remain and are consumed cross-family, move them to `pico/cli_renderers.py`. `print_result` should already live in `pico/cli_output.py` from Task 18 and must not be moved again here.
 
 - [ ] **Step 3: If extracted, re-export**
 
-```python
-from .cli_renderers import print_result  # noqa: F401
-# plus any other symbols moved
-```
+If Step 2 moves renderers, add explicit imports in `pico/cli_commands.py` for every moved renderer name reported by Step 1. Do not add sample or placeholder imports. If Step 2 skips extraction, make no code change in this step.
 
 - [ ] **Step 4: Full check**
 
@@ -1215,11 +1285,18 @@ git commit -m "docs: record P4 manual smoke result"
 
 - [ ] **Step 1: Identify clusters**
 
-Approximate line ranges:
-- Provider client tests: 349–913
-- Build agent / arg parser / packaging tests: 914–1214, 1970–2018
-- Runtime/report/resume tests: 1242–1948
-- Agent integration smoke: 52–349 (top portion)
+Use function names rather than fixed line numbers, because earlier tasks may move line positions:
+```bash
+grep -n "^def test_ollama_client\|^def test_openai_compatible_client\|^def test_anthropic_compatible_client\|^def test_anthropic_stream_complete" tests/test_pico.py
+grep -n "^def test_build_agent\|^def test_build_arg_parser\|^def test_package_import_surface\|^def test_module_execution_help" tests/test_pico.py
+grep -n "^def test_report_prompt_metadata_preserves_initial_resume_status\|^def test_first_prompt_resume_status_updates_task_state_after_late_checkpoint_setup\|^def test_resume_" tests/test_pico.py
+```
+
+Expected clusters:
+- Provider client tests start at `test_ollama_client_posts_expected_payload`.
+- Build agent / arg parser / packaging tests start at `test_build_agent_uses_openai_provider_and_model_override` and continue again near `test_public_api_exports_resolve_through_package_path`.
+- Runtime/report/resume tests include `test_report_prompt_metadata_preserves_initial_resume_status` and nearby resume/report tests.
+- Agent integration smoke tests are the top portion before the provider-client cluster.
 
 - [ ] **Step 2: Add banners**
 
@@ -1230,12 +1307,15 @@ Insert banner comments at each cluster boundary. Example:
 # =============================================================================
 ```
 
-Place one immediately before line 349, one before line 914, one before line 1242, one before line 52 (if practical), and one before 1970.
+Place banners immediately before the first test in each cluster identified in Step 1. If a cluster has a second non-contiguous section near the bottom of the file, add a second banner for that section rather than moving tests in this task.
 
 - [ ] **Step 3: Run tests to prove no accidental collection break**
 
-Run: `uv run pytest tests/test_pico.py -q --collect-only | tail -20`
-Expected: same count (68) as before.
+Run:
+```bash
+uv run pytest tests/test_pico.py -q --collect-only | tail -1
+```
+Expected before and after adding banners: `68 tests collected ...`.
 
 - [ ] **Step 4: Full check**
 
@@ -1256,7 +1336,7 @@ git commit -m "test: add section banners to test_pico for cluster visibility"
 - Modify: `tests/test_pico.py`
 
 **Interfaces:**
-- Consumes: the ~13 provider-client tests currently at `tests/test_pico.py:349–913`.
+- Consumes: the provider-client tests currently identified by the `grep` command in Step 1 below.
 - Produces: same tests, now in the new file, unchanged assertions.
 
 - [ ] **Step 1: List tests to move**
@@ -1265,7 +1345,7 @@ Run:
 ```bash
 grep -n "^def test_ollama_client\|^def test_openai_compatible_client\|^def test_anthropic_compatible_client\|^def test_anthropic_stream_complete\|^def test_openai_compatible_streaming" tests/test_pico.py
 ```
-Expected: ~13 matches between lines 349–913.
+Expected: the provider-client cluster starts at `test_ollama_client_posts_expected_payload` and includes the OpenAI-compatible and Anthropic-compatible client tests.
 
 - [ ] **Step 2: Copy tests and imports**
 
@@ -1277,11 +1357,17 @@ Remove the same functions from `tests/test_pico.py`. Preserve the section banner
 
 - [ ] **Step 4: Verify collection unchanged**
 
-Run:
+Run before moving:
 ```bash
-uv run pytest tests/test_pico.py tests/test_provider_clients.py -q --collect-only | wc -l
+uv run pytest tests/test_pico.py -q --collect-only | tail -1
 ```
-Expected: total test count unchanged.
+Record the collected count.
+
+Run after moving:
+```bash
+uv run pytest tests/test_pico.py tests/test_provider_clients.py -q --collect-only | tail -1
+```
+Expected: the collected count equals the count recorded before moving.
 
 - [ ] **Step 5: Run moved tests**
 
