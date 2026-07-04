@@ -50,8 +50,8 @@ carrying too many roles:
 - `tests/test_pico.py` is about 2026 lines and still hosts multiple test
   clusters that now map to different subsystems.
 - `pico/runtime.py` is about 695 lines and remains near the upper bound, but it
-  is still a central orchestration module rather than the first extraction
-  target.
+  is a deliberate orchestration module and is explicitly exempted from the
+  Section 12 line-count target; it is not an extraction target in this work.
 
 There are also important counter-facts that should shape the plan:
 
@@ -106,7 +106,8 @@ The plan should reduce these risks without changing the product contract.
 - Do not redesign the CLI command set.
 - Do not add new memory semantics.
 - Do not redesign recovery checkpoint storage.
-- Do not introduce a broad checkpoint facade.
+- Do not introduce a broad checkpoint facade. Section 7.4 / P3 adds one narrow
+  report-metadata helper only; that is not the "facade" ruled out here.
 - Do not change benchmark artifact formats unless a compatibility shim is added
   in the same phase.
 - Do not remove public compatibility imports just because the internal module
@@ -208,8 +209,10 @@ The target CLI layout is:
 - `pico/cli.py`: argument parser, top-level entrypoint, and command wiring
 - `pico/cli_help.py`: help detail data shared by parser and command handlers
 - `pico/cli_commands.py`: small compatibility/dispatch layer during migration
-- `pico/cli_diagnostics.py`: diagnostic data collection and, if clean, the
-  corresponding status/config/doctor command handlers
+- `pico/cli_diagnostics.py`: diagnostic data collection and the corresponding
+  status/config/doctor command handlers, colocated by default; split into a
+  sibling `pico/cli_diagnostics_commands.py` only if the merged file exceeds
+  the 500-line directional threshold from Section 12 after handlers are moved
 - `pico/cli_recovery.py`: runs, sessions, checkpoints, preview restore, restore
 - `pico/cli_memory.py`: memory-related command handlers
 - `pico/cli_start.py`: run-once, REPL, slash routing, and startup orchestration
@@ -236,8 +239,10 @@ The target evaluation layout is staged, not all-at-once:
 - `pico/evaluation/fixed_benchmark.py`: deterministic local benchmark flow
 - `pico/evaluation/provider_benchmark.py`: real-provider benchmark flow,
   provider profiles, provider artifact writing
-- `pico/evaluation/metrics_experiments.py`: temporary home for experiment
-  clusters not yet moved
+- `pico/evaluation/metrics_experiments.py`: continues to hold experiment
+  clusters not extracted in phase 1. It stops being "temporary" only when
+  phase 1.5 fires; if phase 1.5 does not fire, this file remains the
+  long-lived home for those clusters and is not otherwise a problem
 
 The first extraction should not pretend that every experiment has a final home.
 After the three benchmark-focused modules are split, remaining experiment
@@ -317,8 +322,9 @@ The target test layout should make subsystem ownership easier to see:
 - keep broad integration coverage where it already protects multi-module flows
 - add section banners in `tests/test_pico.py` before extraction
 - move provider-client clusters to `tests/test_provider_clients.py`
-- move runtime-report and provider-benchmark clusters only if the extraction is
-  low risk after P1/P2
+- move runtime-report and provider-benchmark clusters only if the moved tests remain
+  in one file, no imports change, and no assertions are weakened during the
+  move
 - avoid large test rewrites during the same phase as production module movement
 
 ## 8. Work Packages
@@ -354,22 +360,57 @@ Freeze the behavior most likely to regress during movement.
 
 Actions:
 
-- add or confirm a runtime report test for resume-status precedence:
-  `task_state.resume_status` should promote into report metadata without losing
-  `last_prompt_resume_status`
+- audit existing runtime report tests first; the invariant is already covered
+  by `test_pico.py::test_report_prompt_metadata_preserves_initial_resume_status`
+  and `test_pico.py::test_first_prompt_resume_status_updates_task_state_after_late_checkpoint_setup`,
+  which assert `report["resume_status"]`,
+  `report["prompt_metadata"]["resume_status"]`, and
+  `report["prompt_metadata"]["last_prompt_resume_status"]` on the dict returned
+  by `runtime.build_report()`. Add a new test only if one of these is deleted
+  or weakened during refactor
 - freeze benchmark artifact fields introduced by the real-provider benchmark
   reliability work
 - confirm existing diagnostics/recovery JSON contract tests cover status,
-  doctor, config, runs, checkpoints, and preview restore
+  doctor, config, runs, checkpoints, and preview restore. Primary anchors to
+  audit: `tests/test_cli_diagnostics.py`, `tests/test_recovery_cli.py`,
+  `tests/test_cli_commands.py`, and the relevant portions of
+  `tests/test_pico.py`. List which command x JSON-key pairs already have
+  coverage and which are missing before writing anything new
 - add only missing JSON contract tests; do not duplicate already-strong coverage
+- protect both help paths, which are independent (CLI uses `ROOT_HELP` at
+  `pico/cli_commands.py:27`; REPL uses lazy `HELP_DETAILS` at
+  `pico/cli_commands.py:543-546` / `pico/cli.py:122`):
+  - CLI path is already covered by
+    `tests/test_cli_commands.py::test_help_command_shows_examples` and
+    `tests/test_cli_commands.py::test_help_flag_uses_root_help_without_argparse_dump`;
+    confirm these still exist and do not need extension
+  - REPL path has no dedicated test today
+    (`tests/test_cli_commands.py::test_repl_command_exits_on_eof` covers
+    EOF only). Add one focused REPL test: start `run_repl`, issue `/help`,
+    and assert the rendered output contains expected slash-command sections.
+  Together this pins both help paths so P4.0 cannot silently drop either
+  `ROOT_HELP` or `HELP_DETAILS`
+- extend `tests/test_public_api_contract.py` to directly import all four
+  provider classes (`FakeModelClient`, `OllamaModelClient`,
+  `OpenAICompatibleModelClient`, `AnthropicCompatibleModelClient`) from
+  `pico.providers.clients`. The existing test only imports `FakeModelClient`,
+  so the other three lack contract protection for P2
 - document the manual real-provider regression commands in the implementation
   plan
 
 Acceptance:
 
 - targeted tests fail if resume/checkpoint metadata semantics regress
-- benchmark artifact compatibility is protected
+- benchmark artifact compatibility is protected: at minimum `failure_category`
+  (values include `missing_artifact`, `budget_exceeded`, `verifier_failed`)
+  and `failure_category_counts` in the summary — see
+  `pico/evaluation/evaluator.py:552, 569-581`
 - CLI JSON contracts are protected enough to allow command-handler movement
+- both help paths (CLI `ROOT_HELP` and REPL `HELP_DETAILS`) have a live test
+- `tests/test_public_api_contract.py` covers direct import of all four
+  provider classes from `pico.providers.clients`
+- the manual real-provider regression commands are recorded verbatim in the
+  implementation plan for reuse in P1/P2/P3
 
 ### P1: Evaluation Split
 
@@ -383,13 +424,18 @@ Phase 1 extraction:
 - create `fixed_benchmark.py`
 - create `provider_benchmark.py`
 - keep `metrics.py` as the public re-export layer
-- keep remaining ablation/experiment clusters in `metrics_experiments.py` unless
-  a small obvious split appears during implementation
+- keep remaining ablation/experiment clusters in `metrics_experiments.py`;
+  a cluster may be extracted opportunistically during phase 1 only if it is
+  self-contained (no cross-cluster imports back into the remaining file) and
+  the extraction adds no new coupling
 
 Possible phase 1.5 extraction:
 
-- if the remaining experiment file is still too large and the clusters are
-  cleanly separable, split into synthetic, real, and recovery experiment modules
+- trigger: if `pico/evaluation/metrics_experiments.py` remains above the
+  directional 500-line threshold from Section 12 after phase 1, and the
+  clusters are cleanly separable, split it into synthetic, real, and recovery
+  experiment modules
+- if the file falls at or below the threshold naturally, phase 1.5 is skipped
 
 Acceptance:
 
@@ -419,7 +465,10 @@ Actions:
 Acceptance:
 
 - provider tests pass
-- public imports from `pico.providers.clients` continue to work
+- the extended `tests/test_public_api_contract.py` from P0 (covering all four
+  provider classes) still passes without modification after the provider
+  split, confirming public imports from `pico.providers.clients` continue to
+  work
 - real-provider smoke commands continue to work
 - provider-specific changes no longer require editing one large mixed file
 
@@ -436,6 +485,12 @@ Actions:
 - route `runtime.build_report()` through it
 - preserve existing report output
 - keep checkpoint module ownership unchanged
+- do not add a new regression test here; instead, confirm the two existing
+  tests referenced in P0 still pass unmodified after the helper is introduced,
+  and confirm they still reference dict keys on the return value of
+  `runtime.build_report()` (not attributes on an object). Because
+  `build_report()` returns a dict, the helper must also return a dict-shaped
+  fragment or update a dict in place; it must not change the report's shape
 
 Acceptance:
 
@@ -459,8 +514,10 @@ P4.0 Help Decoupling:
 
 P4.1 Diagnostics:
 
-- move or colocate `handle_status`, `handle_doctor`, and `handle_config` with
-  the existing diagnostics flow
+- colocate `handle_status`, `handle_doctor`, and `handle_config` with the
+  existing diagnostics flow inside `pico/cli_diagnostics.py`
+- split into `pico/cli_diagnostics_commands.py` only if the merged file
+  exceeds the 500-line directional threshold
 - preserve `collect_status`, `collect_config`, and `collect_doctor`
 - verify JSON and text output
 
@@ -559,6 +616,20 @@ explicitly changes them:
 Compatibility shims are acceptable when they make module movement safe. Removing
 them should be a separate, explicitly reviewed change.
 
+Forwarding-shell lifetime:
+
+- `pico/cli_commands.py`, `pico/providers/clients.py`,
+  `pico/evaluation/metrics.py`, and the top-level `pico/__init__.py`
+  re-export block (which currently exposes `Pico`, `SessionStore`,
+  `WorkspaceContext`, `build_agent`, `build_arg_parser`, `build_welcome`,
+  `main`, and the four provider classes) remain as compatibility shells
+  after this convergence work
+- their internal contents may thin down to re-exports, but the modules
+  themselves must not be deleted here
+- deprecation or removal requires a later, explicitly scoped change (with its
+  own design note) that also updates every external importer, including tests
+  under `tests/memory/`
+
 ## 11. Error Handling Principles
 
 - Provider-specific error interpretation should live near the provider
@@ -575,14 +646,23 @@ them should be a separate, explicitly reviewed change.
 
 These are directional metrics, not hard acceptance gates:
 
-- `pico/cli_commands.py`: from about 1025 lines toward 300 lines or less
+- newly extracted command modules (for example the diagnostics/recovery/
+  memory/startup command families in Section 7.1): soft threshold of about
+  500 lines per module. If a merge lands under the threshold with clean
+  responsibility, do not split further; if it exceeds the threshold, split
+  along the next obvious responsibility line
+- `pico/cli_commands.py`: from about 1025 lines toward a forwarding/dispatch
+  compatibility shell (target under about 300 lines)
+- `pico/evaluation/metrics.py`: retained as a public re-export compatibility
+  shell
 - `pico/evaluation/metrics_experiments.py`: from about 1311 lines toward
   several files with no benchmark file over about 500 lines
 - `pico/providers/clients.py`: from about 641 lines toward a forwarding/public
   compatibility shell
 - provider implementation files: ideally about 250 lines or less each
 - no `pico/` production file should remain over about 700 lines unless it is a
-  deliberate orchestration module
+  deliberate orchestration module; `pico/runtime.py` is currently the only
+  such exempted module
 
 Functional acceptance wins over line-count purity. A small overshoot is better
 than an awkward split.
@@ -615,16 +695,20 @@ hygiene once diagnostics and provider/evaluation boundaries are under control.
 
 Prefer small commits:
 
-1. tests: protect report and artifact contracts
-2. refactor: split evaluation benchmark modules
-3. refactor: split provider clients
-4. refactor: isolate runtime report checkpoint metadata
-5. refactor: decouple cli help details
-6. refactor: move cli diagnostics handlers
-7. refactor: move cli recovery handlers
-8. refactor: move cli memory handlers
-9. refactor: move cli startup flow
-10. test: organize large test clusters
+1. tests: protect report and artifact contracts (P0)
+2. tests: extend public API contract with all four provider imports (P0)
+3. tests: add REPL /help smoke covering HELP_DETAILS lazy import (P0)
+4. refactor: split evaluation benchmark modules (P1)
+5. tests: pin Anthropic edge cases (missing `type`, thinking-only + max_tokens) (pre-P2)
+6. refactor: split provider clients (P2)
+7. refactor: isolate runtime report checkpoint metadata (P3)
+8. refactor: decouple cli help details (P4.0)
+9. refactor: move cli diagnostics handlers (P4.1)
+10. refactor: move cli recovery handlers (P4.2)
+11. refactor: move cli memory handlers (P4.3)
+12. refactor: move cli startup flow (P4.4)
+13. refactor: extract remaining cli renderers (P4.5)
+14. test: organize large test clusters (P5)
 
 Each commit should be reversible and should avoid mixing production movement
 with unrelated formatting.
