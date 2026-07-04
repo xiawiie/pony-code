@@ -262,3 +262,38 @@ def test_init_preserves_existing_ollama_host_when_cli_host_is_default(tmp_path):
     env_text = (tmp_path / ".env").read_text(encoding="utf-8")
     assert "PICO_PROVIDER=ollama\n" in env_text
     assert "PICO_OLLAMA_HOST=http://ollama.example:11434\n" in env_text
+
+
+def test_repl_help_renders_help_details(tmp_path, monkeypatch, capsys):
+    from pico.cli import HELP_DETAILS
+    from pico.cli_commands import run_repl
+    from pico.runtime import Pico, SessionStore
+    from pico.workspace import WorkspaceContext
+
+    workspace = WorkspaceContext.build(tmp_path)
+    (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
+    session_store = SessionStore(tmp_path / ".pico" / "sessions")
+
+    class _FakeModel:
+        supports_prompt_cache = False
+        last_completion_metadata = {}
+
+        def complete(self, prompt, max_new_tokens, **kwargs):
+            return "<final>ok</final>"
+
+        def stream_complete(self, *args, **kwargs):
+            return self.complete(*args, **kwargs)
+
+    agent = Pico(
+        model_client=_FakeModel(),
+        workspace=workspace,
+        session_store=session_store,
+        approval_policy="auto",
+    )
+
+    inputs = iter(["/help", "/exit"])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(inputs))
+
+    run_repl(agent)
+    out = capsys.readouterr().out
+    assert HELP_DETAILS.strip().splitlines()[0] in out
