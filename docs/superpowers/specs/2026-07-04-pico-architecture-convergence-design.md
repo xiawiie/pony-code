@@ -1,749 +1,643 @@
-# Pico Architecture Convergence Design
+# Pico Architecture Convergence Design, Rev 2
 
-**Status:** Draft for user review
-**Date:** 2026-07-04
-**Branch:** `memory`
-**Baseline commit:** `c33020f fix: improve real provider benchmark reliability`
+Date: 2026-07-04
+Branch: memory
+Status: design approved for planning, implementation not started
 
 ## 1. Context
 
-Pico is already more than a thin command wrapper around a model. It is a
-local coding-agent harness with explicit runtime policy, bounded context
-assembly, constrained tools, recoverable editing artifacts, run traces,
-provider adapters, memory surfaces, and benchmark evidence.
-
-The most recent real-provider work proved that the core harness can work
-with an actual configured model. The `deepseek` provider configured with
-`qwen3.7-max` passed:
-
-- direct final-answer smoke;
-- `read_file` tool-call smoke with trace evidence;
-- the 10-task real provider benchmark;
-- the local quality gate, `./scripts/check.sh`.
-
-That same work also exposed where Pico is now most fragile. The failures
-were not simply "the model is weak." They crossed several boundaries:
-
-- provider response extraction did not handle reasoning-heavy responses
-  well enough;
-- the provider benchmark token budget was too small for models that emit
-  thinking blocks before text;
-- rejected tool calls consumed effective tool-step budget;
-- benchmark prompts hid verifier success criteria from real models;
-- report metadata could overwrite the initial resume status with a later
-  prompt status.
-
-These are architecture signals. Pico's main risk is no longer a missing
-feature. The main risk is that several valuable capabilities now meet in a
-small number of large files and overloaded semantic boundaries.
-
-This design therefore focuses on architecture convergence: preserving the
-current behavior while making the system easier to reason about, test, and
-extend in the next small version.
-
-## 2. Problem Statement
-
-Pico has coherent domain language and real behavior, but the codebase is
-starting to concentrate too much responsibility in a few places:
-
-- `pico/cli_commands.py` owns many command families, renderers, parsing
-  helpers, and compatibility behavior.
-- `pico/evaluation/metrics_experiments.py` mixes synthetic experiments,
-  real provider benchmark setup, provider profile construction, reporting
-  helpers, and recovery experiment code.
-- `pico/providers/clients.py` owns request construction, response text
-  extraction, usage extraction, streaming parsing, prompt-cache plumbing,
-  retry behavior, and provider-specific error messages.
-- `pico/runtime.py`, `pico/agent_loop.py`, and evaluator code all need to
-  understand pieces of resume-summary checkpoints and recoverable editing
-  checkpoints.
-- `tests/test_pico.py` has become a broad integration and regression
-  bucket, which makes future failures harder to localize.
-
-The current design is not broken. The risk is that further feature work
-will become slower and less reliable unless these responsibilities are
-split along existing domain boundaries.
-
-## 3. Goals
-
-1. Reduce concentrated complexity without changing the user-facing Pico
-   workflow.
-2. Preserve all current public import surfaces and CLI JSON contracts.
-3. Preserve the real provider behavior proven by the current benchmark.
-4. Make provider failures easier to classify as auth, network, response
-   shape, token budget, or verifier/runtime failure.
-5. Make the two checkpoint systems harder to confuse:
-   resume-summary checkpoints for prompt continuity, and recoverable
-   checkpoints for restore and review.
-6. Separate deterministic benchmark logic from real provider benchmark
-   logic.
-7. Keep every step independently verifiable with focused tests plus the
-   full local quality gate.
-
-## 4. Non-Goals
-
-This version does not add a new product surface. It deliberately avoids:
-
-- a TUI or web UI;
-- semantic or embedding-based memory retrieval;
-- new provider SDK dependencies;
-- a rewrite of recovery storage schemas;
-- a plugin marketplace;
-- GitHub PR automation;
-- a multi-provider dashboard;
-- a broad prompt rewrite;
-- a global project manager layer;
-- changing `.pico/checkpoints/` compatibility.
-
-The purpose is to make the existing harness easier to maintain, not to
-expand the product surface.
-
-## 5. Current Architecture Map
-
-The current runtime path is:
-
-```text
-pico.cli
-  -> pico.runtime.Pico
-    -> pico.agent_loop.AgentLoop
-      -> pico.context_manager.ContextManager
-      -> pico.providers.clients.*
-      -> pico.tool_executor.ToolExecutor
-        -> pico.tools
-        -> pico.tool_change_recorder
-        -> pico.checkpoint_store
-      -> pico.run_store
-      -> pico.checkpoint
-      -> pico.recovery_checkpoint_writer
-      -> pico.recovery_manager
-```
+Pico has passed the point where the core feature direction is unclear. The
+current branch already contains substantial work in these areas:
+
+- working-memory runtime surface
+- recoverable editing and recovery checkpoints
+- CLI diagnostics and JSON surfaces
+- real-provider benchmark reliability
+- public API compatibility tests
+
+The next useful step is not a new feature layer. It is architecture convergence:
+make the implementation easier to evolve by moving large mixed-responsibility
+files toward clearer ownership boundaries, while preserving the behavior already
+validated by the current tests and manual real-provider flows.
+
+This document supersedes the first architecture convergence design by
+integrating review findings directly into the main plan. In particular, it
+corrects four over-broad assumptions from the first draft:
+
+- runtime report metadata has already been hardened and should now be protected
+  as an invariant, not treated as an open bug
+- checkpoint writing and recovery checkpoint writing are already mostly
+  separated, so the remaining work is boundary tightening, not a new facade
+- provider extraction should start with three provider files and one shared
+  helper module, not a speculative five-file taxonomy
+- CLI diagnostics should build on `pico/cli_diagnostics.py`, not introduce a
+  parallel `cli_inspect.py`
+
+## 2. Current Architecture Snapshot
+
+The current codebase has good user-facing behavior but several files are now
+carrying too many roles:
+
+- `pico/cli_commands.py` is about 1025 lines and mixes command handlers,
+  rendering, dispatch, diagnostics, recovery, session listing, memory commands,
+  and help coupling.
+- `pico/evaluation/metrics_experiments.py` is about 1311 lines and contains
+  fixed benchmark execution, provider benchmark execution, experiment schemas,
+  synthetic memory experiments, context stress experiments, synthetic security
+  experiments, real-provider experiments, and recovery ablation experiments.
+- `pico/providers/clients.py` is about 641 lines and contains OpenAI-compatible,
+  Anthropic-compatible, and Ollama behavior in one file.
+- `tests/test_pico.py` is about 2026 lines and still hosts multiple test
+  clusters that now map to different subsystems.
+- `pico/runtime.py` is about 695 lines and remains near the upper bound, but it
+  is still a central orchestration module rather than the first extraction
+  target.
+
+There are also important counter-facts that should shape the plan:
+
+- `pico/checkpoint.py` and `pico/recovery_checkpoint_writer.py` are already
+  separate modules with different purposes.
+- `pico/cli_diagnostics.py` already owns diagnostic data collection through
+  `collect_status`, `collect_config`, and `collect_doctor`.
+- `pico/cli_commands.py` has a hidden import dependency on `HELP_DETAILS` from
+  `pico/cli.py`, which should be removed before deeper CLI extraction.
+- `pico/evaluation/metrics_experiments.py` contains more than the simple
+  fixed/provider benchmark split; ablation code must be handled deliberately.
+- the retire-v1-memory work has landed far enough that `WorkingMemory` is the
+  public runtime surface, while `features.memory` and `LayeredMemory` remain as
+  intentional compatibility/helper surfaces.
+
+## 3. Problem Statement
+
+The current risk is not that Pico lacks capabilities. The risk is that future
+changes require reasoning across too many mixed-responsibility files.
+
+The architecture convergence problem has five concrete symptoms:
+
+1. CLI changes are hard to review because command handlers, rendering,
+   diagnostics, recovery, memory, help, and startup flow live together.
+2. Evaluation changes are hard to isolate because benchmarks, experiment
+   schemas, provider-profile execution, synthetic scenarios, and recovery
+   ablations are packed into one module.
+3. Provider changes are higher-risk than necessary because unrelated provider
+   dialects share one implementation file.
+4. Runtime report/checkpoint semantics are subtle because resume status and
+   recovery checkpoint metadata coexist and can be confused conceptually.
+5. Tests still protect the behavior, but the layout does not clearly show which
+   subsystem each test cluster owns.
 
-The intended layer responsibilities are:
+The plan should reduce these risks without changing the product contract.
 
-```text
-CLI Surface
-  Parse user intent, construct the runtime, render text and JSON output.
+## 4. Goals
 
-Runtime Orchestration
-  Coordinate one agent turn, task state, prompt building, provider calls,
-  tool execution, trace events, and final reports.
+- Preserve current user-facing CLI behavior.
+- Preserve current public imports and compatibility re-exports where practical.
+- Preserve current JSON output contracts for diagnostics, recovery, benchmark
+  artifacts, and provider execution.
+- Split large files along existing conceptual boundaries.
+- Keep each phase independently reviewable.
+- Add protection tests before moving behavior that has historically been easy
+  to regress.
+- Keep the first implementation version focused on architecture A: make the
+  existing product easier to maintain before designing the next product layer.
 
-Context Assembly
-  Build bounded prompts from stable prefix, memory index, workspace state,
-  checkpoint text, history, and current request.
+## 5. Non-Goals
 
-Tool Boundary
-  Validate model-requested tools, enforce approval and command policy,
-  execute tools, observe side effects, and return tool metadata.
+- Do not redesign the CLI command set.
+- Do not add new memory semantics.
+- Do not redesign recovery checkpoint storage.
+- Do not introduce a broad checkpoint facade.
+- Do not change benchmark artifact formats unless a compatibility shim is added
+  in the same phase.
+- Do not remove public compatibility imports just because the internal module
+  layout changes.
+- Do not solve every future experiment taxonomy problem in one pass.
+- Do not begin implementation from this document alone; write a separate
+  execution plan after design approval.
 
-Recovery Boundary
-  Persist Tool Change Records, Checkpoint Records, file-state blobs, and
-  restore plans. Decide restore, conflict, and review outcomes.
+## 6. Plan Overlap Ledger
 
-Provider Adapters
-  Flatten provider-specific HTTP protocols and response shapes into a
-  stable `complete()` and `stream_complete()` contract.
+The repository has several nearby design and plan documents. The convergence
+work should respect them instead of reopening their scope.
 
-Evaluation Harness
-  Run deterministic and real-provider benchmarks, collect reports, and
-  explain failures.
-```
+### 6.1 Recoverable Editing Phase 1
 
-This shape should be kept. The work is to make the code match these
-boundaries more directly.
+Documents:
 
-## 6. Proposed Architecture Boundaries
+- `docs/superpowers/plans/2026-07-01-recoverable-editing-phase-1.md`
+- `docs/superpowers/plans/2026-07-01-recoverable-editing-phase-1-v2.md`
 
-### 6.1 CLI Surface
+Current interpretation:
 
-The CLI should only own command parsing, command dispatch, and output
-rendering. It should not own provider protocol details or recovery
-decision logic.
+- the original phase 1 plan is superseded by the v2 plan
+- much of the v2 behavior appears represented in the current runtime and tests
+- architecture convergence should not change recovery checkpoint schema or
+  restore semantics
 
-Target modules:
+Convergence impact:
 
-- `pico/cli_start.py`
-  - `run_agent_once`
-  - `run_repl`
-  - REPL slash command routing
+- recovery-related CLI extraction may move handlers, but must keep JSON keys,
+  preview behavior, restore behavior, and checkpoint listing behavior stable
+- recovery checkpoint writing remains owned by
+  `pico/recovery_checkpoint_writer.py`
 
-- `pico/cli_inspect.py`
-  - `handle_status`
-  - `handle_doctor`
-  - `handle_config`
+### 6.2 CLI Surface Redesign
 
-- `pico/cli_recovery.py`
-  - `handle_runs`
-  - `handle_sessions`
-  - `handle_checkpoints`
-  - restore preview, restore apply, and prune argument parsing
+Document:
 
-- `pico/cli_memory.py`
-  - `handle_memory`
-  - `memory list/show/search/review/migrate`
+- `docs/superpowers/plans/2026-07-02-pico-cli-surface-redesign.md`
 
-- `pico/cli_renderers.py`
-  - shared text renderers
-  - JSON body rendering helpers
-  - common output line helpers
+Current interpretation:
 
-- `pico/cli_commands.py`
-  - compatibility export layer and thin forwarding surface
+- the command surface and diagnostics direction are already represented in the
+  current branch
+- convergence should inherit that surface rather than redesign it
 
-`pico/cli.py` should continue to own top-level argument parsing and
-agent construction.
+Convergence impact:
 
-### 6.2 Runtime Orchestration
+- status, doctor, and config should build from `pico/cli_diagnostics.py`
+- command registry behavior should be preserved
+- JSON mode must remain stable
 
-`Pico` should remain the runtime facade. `AgentLoop` should remain the
-turn control loop.
+### 6.3 Pico Memory V2
 
-This version should not aggressively split `runtime.py`. The useful
-convergence point is to remove semantic assembly that belongs elsewhere:
+Documents:
 
-- report checkpoint metadata should be delegated to a checkpoint facade;
-- provider error metadata should be passed through from provider clients;
-- run diagnostics should be derived from task state and trace facts;
-- direct understanding of two checkpoint systems should be reduced.
+- `docs/superpowers/specs/2026-07-02-pico-memory-v2-design.md`
+- `docs/superpowers/plans/2026-07-02-pico-memory-v2.md`
 
-Potential future extraction:
+Current interpretation:
 
-- `pico/run_reporting.py` for report and diagnostic summary construction.
+- memory v2 has landed far enough that memory docs, runtime surfaces, and tools
+  exist in the branch
+- convergence should not reopen memory product design
 
-That extraction is optional for this version unless it falls naturally out
-of the checkpoint facade work.
+Convergence impact:
 
-### 6.3 Context Assembly
+- memory CLI extraction should move command handlers and rendering only
+- memory data model, compatibility imports, and public API should remain stable
 
-`ContextManager` is already focused enough. Its contract should be made
-more explicit rather than moved:
+### 6.4 Retire V1 Memory
 
-- current request is never reduced;
-- stable prefix hash is the prompt-cache key;
-- volatile workspace state belongs with history, not stable prefix;
-- prompt metadata must explain budget reductions and resume state;
-- checkpoint text is context input, not recovery truth.
+Documents:
 
-This version should avoid a broad prompt rewrite. Any change here should
-be driven by diagnostics or provider benchmark stability.
+- `docs/superpowers/specs/2026-07-03-retire-v1-memory-design.md`
+- `docs/superpowers/plans/2026-07-03-retire-v1-memory.md`
 
-### 6.4 Tool Boundary
+Current interpretation:
 
-`ToolExecutor.execute()` should remain the only path for executing model
-tool requests.
+- retire-v1-memory has landed as a runtime direction
+- `WorkingMemory` is the public runtime-facing surface
+- `features.memory` and `LayeredMemory` remain intentionally available as
+  dormant helper/compatibility code
+- `session["memory"].file_summaries` remains as internal compatibility
 
-The executor may delegate helper responsibilities:
+Convergence impact:
 
-- command policy evaluation;
-- shell side-effect capture;
-- file-entry construction;
-- recovery finalization helpers.
+- imports from `features.memory` are not automatically evidence of unfinished
+  retire-v1 work
+- P1 and P5 may move tests or evaluation helpers that use compatibility memory
+  code, but must not silently remove those surfaces
 
-But the orchestration rule stays the same:
+## 7. Architecture Boundaries
 
-```text
-validate -> reject/approve -> start pending change if needed
--> execute -> observe side effects -> finalize record -> return metadata
-```
+### 7.1 CLI Boundary
 
-Rejected tool calls should not consume effective `tool_steps`, but they
-must remain visible for diagnostics.
+The target CLI layout is:
 
-### 6.5 Recovery Boundary
+- `pico/cli.py`: argument parser, top-level entrypoint, and command wiring
+- `pico/cli_help.py`: help detail data shared by parser and command handlers
+- `pico/cli_commands.py`: small compatibility/dispatch layer during migration
+- `pico/cli_diagnostics.py`: diagnostic data collection and, if clean, the
+  corresponding status/config/doctor command handlers
+- `pico/cli_recovery.py`: runs, sessions, checkpoints, preview restore, restore
+- `pico/cli_memory.py`: memory-related command handlers
+- `pico/cli_start.py`: run-once, REPL, slash routing, and startup orchestration
+- `pico/cli_renderers.py`: shared rendering helpers that remain after feature
+  handlers move out
 
-The project currently has two checkpoint systems:
+Important sequencing:
 
-1. Resume-summary checkpoint
-   - owner: `pico/checkpoint.py`
-   - storage: session data
-   - purpose: prompt continuity, stale state detection, workspace mismatch
-   - not for file restore
+1. Move `HELP_DETAILS` out of `pico/cli.py` first.
+2. Keep `pico/cli_commands.py` as a compatibility shell during extraction.
+3. Move diagnostics into the existing diagnostics module before creating any
+   new module.
+4. Extract recovery and memory after JSON contract tests are pinned.
+5. Extract startup flow only after simpler command families are stable.
 
-2. Recoverable editing checkpoint
-   - owner: `pico/checkpoint_store.py`,
-     `pico/recovery_checkpoint_writer.py`, `pico/recovery_manager.py`
-   - storage: `.pico/checkpoints/`
-   - purpose: review, conflict detection, restore planning, file-state
-     blobs
-   - not for prompt transcript continuity
+### 7.2 Evaluation Boundary
 
-The systems should not be merged in this version. Instead, add a thin
-facade with explicit names so callers do not need to reconstruct the
-semantic distinction.
+The target evaluation layout is staged, not all-at-once:
 
-Candidate module:
+- `pico/evaluation/metrics.py`: public re-export surface and compatibility
+  layer
+- `pico/evaluation/benchmark_schema.py`: dataclasses, records, summary types,
+  serialization helpers
+- `pico/evaluation/fixed_benchmark.py`: deterministic local benchmark flow
+- `pico/evaluation/provider_benchmark.py`: real-provider benchmark flow,
+  provider profiles, provider artifact writing
+- `pico/evaluation/metrics_experiments.py`: temporary home for experiment
+  clusters not yet moved
 
-```text
-pico/checkpoint_facade.py
-```
+The first extraction should not pretend that every experiment has a final home.
+After the three benchmark-focused modules are split, remaining experiment
+clusters can be evaluated with real line counts. If the remaining file is still
+too large, split it into:
 
-Candidate functions:
+- `pico/evaluation/experiments_synthetic.py`
+- `pico/evaluation/experiments_real.py`
+- `pico/evaluation/experiments_recovery.py`
 
-```python
-def evaluate_prompt_resume(agent) -> dict:
-    ...
+Known clusters that must not be lost:
 
-def create_resume_summary(agent, task_state, user_message, trigger) -> dict:
-    ...
+- feature ablation
+- synthetic memory experiments
+- context stress experiments
+- synthetic security scenarios
+- provider profile/provider experiment execution
+- real memory/context/security experiments
+- recovery ablation v2
 
-def finalize_turn_recovery(agent, task_state, tool_change_ids, verification_evidence, trigger):
-    ...
+### 7.3 Provider Boundary
 
-def build_report_checkpoint_metadata(task_state, last_prompt_metadata) -> dict:
-    ...
-```
+The target provider layout starts small:
 
-The facade should not invent a new schema. It should clarify existing
-ownership and reduce repeated interpretation at call sites.
+- `pico/providers/clients.py`: public compatibility imports and factory surface
+- `pico/providers/openai_compatible.py`: OpenAI-compatible behavior
+- `pico/providers/anthropic_compatible.py`: Anthropic-compatible behavior
+- `pico/providers/ollama.py`: Ollama behavior
+- `pico/providers/_shared.py`: shared request, response, and environment
+  helpers
 
-### 6.6 Provider Adapters
+Optional future split:
 
-The public contract should stay small:
-
-```python
-class ModelClient:
-    supports_prompt_cache: bool
-    last_completion_metadata: dict
-
-    def complete(
-        self,
-        prompt,
-        max_new_tokens,
-        *,
-        prompt_cache_key=None,
-        prompt_cache_retention=None,
-    ) -> str:
-        ...
-
-    def stream_complete(...):
-        ...
-```
-
-Internal provider code should be split by concern:
-
-- request payload and headers;
-- response text extraction;
-- usage and cache metadata extraction;
-- SSE parsing;
-- error mapping.
-
-Target modules:
-
-- `pico/providers/openai_compatible.py`
-- `pico/providers/anthropic_compatible.py`
-- `pico/providers/ollama.py`
 - `pico/providers/usage.py`
 - `pico/providers/errors.py`
-- `pico/providers/clients.py` as compatibility exports
 
-The recent real-provider fixes must be preserved:
+The optional split should only happen if shared usage/error logic grows beyond a
+meaningful threshold. A useful rule of thumb is about 120 lines of cohesive
+shared logic. Below that, a single `_shared.py` is easier to maintain.
 
-- Anthropic-compatible content blocks with `text` but missing `type` must
-  still be accepted.
-- Thinking-only responses that stop with `max_tokens` must produce a
-  clear output-budget error.
-- Provider benchmark default output budget must remain 2048.
+Provider regressions to pin before extraction:
 
-### 6.7 Evaluation Harness
+- Anthropic text extraction accepts text blocks even when `type` is missing.
+- Anthropic thinking-only responses with `stop_reason=max_tokens` produce a
+  clear no-text error.
+- OpenAI-compatible usage accounting stays stable.
+- Ollama request/response behavior stays stable.
+- public client imports remain stable.
 
-Evaluation should be split into deterministic, real-provider, and report
-layers.
+### 7.4 Runtime Report and Checkpoint Boundary
 
-Target modules:
+There are two related but distinct concepts:
 
-- `pico/evaluation/benchmark_schema.py`
-  - schema constants
-  - `validate_benchmark`
-  - `load_benchmark`
-  - fixture helpers
+- resume status: whether and how the current run was resumed
+- recovery checkpoint metadata: what can be used for preview/restore and
+  recoverable editing
 
-- `pico/evaluation/fixed_benchmark.py`
-  - `BenchmarkEvaluator`
-  - `run_fixed_benchmark`
-  - scripted fake model outputs
+The current `runtime.build_report()` has already been hardened so
+`last_prompt_resume_status` and `task_state.resume_status` are preserved with
+the right precedence. Architecture convergence should protect this invariant
+rather than redesign it.
 
-- `pico/evaluation/provider_benchmark.py`
-  - provider profile resolution
-  - real provider client factories
-  - `run_provider_experiments`
-  - real provider benchmark defaults
+The target change is narrow:
 
-- `pico/evaluation/metrics_reports.py`
-  - report aggregation and markdown rendering, already partly split
+- add one helper, likely named
+  `build_report_checkpoint_metadata(task_state, last_prompt_metadata)`
+- route `runtime.build_report()` through that helper
+- keep checkpoint writing in `pico/checkpoint.py`
+- keep recovery checkpoint writing in `pico/recovery_checkpoint_writer.py`
+- do not introduce generic facade functions such as
+  `write_checkpoint_for_mode(...)`
 
-- `pico/evaluation/metrics.py`
-  - compatibility export layer
+### 7.5 Test Boundary
 
-The real-provider benchmark should be able to say whether a failure came
-from provider auth, provider network, provider response shape, output
-budget, benchmark verifier failure, runtime stop reason, or missing
-artifact.
+The target test layout should make subsystem ownership easier to see:
 
-## 7. Work Packages
+- keep broad integration coverage where it already protects multi-module flows
+- add section banners in `tests/test_pico.py` before extraction
+- move provider-client clusters to `tests/test_provider_clients.py`
+- move runtime-report and provider-benchmark clusters only if the extraction is
+  low risk after P1/P2
+- avoid large test rewrites during the same phase as production module movement
+
+## 8. Work Packages
+
+### Pre-Flight: Confirm Current Ground Truth
+
+Purpose:
+
+Make sure implementation starts from the actual current state, not a stale
+design assumption.
+
+Actions:
+
+- verify retire-v1-memory compatibility imports are intentional and still
+  covered by public API tests
+- list overlapping plan documents and mark which scopes are inherited versus
+  reopened
+- record current line counts for the large files being split
+- record the exact manual real-provider commands that should remain valid
+- identify existing JSON contract tests before adding new ones
+
+Acceptance:
+
+- convergence plan does not treat compatibility imports as unfinished work
+- convergence plan does not restart CLI, memory, or recovery product design
+- implementation checklist has the specific tests/commands to run per phase
 
 ### P0: Protection Net
 
-Purpose: freeze behavior before structural movement.
+Purpose:
 
-Tasks:
+Freeze the behavior most likely to regress during movement.
 
-1. List public compatibility imports:
-   - `pico.cli.main`
-   - `pico.cli.build_agent`
-   - `pico.cli.build_arg_parser`
-   - `pico.runtime.Pico`
-   - `pico.runtime.SessionStore`
-   - `pico.providers.clients.FakeModelClient`
-   - `pico.providers.clients.OllamaModelClient`
-   - `pico.providers.clients.OpenAICompatibleModelClient`
-   - `pico.providers.clients.AnthropicCompatibleModelClient`
-   - `pico.evaluation.metrics.run_fixed_benchmark`
-   - `pico.evaluation.metrics.run_provider_experiments`
+Actions:
 
-2. Add or confirm CLI JSON contract tests for:
-   - `config show`
-   - `doctor`
-   - `status`
-   - `runs show`
-   - `checkpoints preview-restore`
-
-3. Document manual real-provider checks:
-   - `pico-cli doctor`
-   - direct final smoke
-   - `read_file` tool smoke
-   - current provider 10-task benchmark
-
-4. Confirm benchmark artifact fields:
-   - `summary.total_tasks`
-   - `summary.pass_rate`
-   - `summary.verifier_pass_rate`
-   - `rows[].failure_category`
-   - `rows[].report.prompt_metadata`
+- add or confirm a runtime report test for resume-status precedence:
+  `task_state.resume_status` should promote into report metadata without losing
+  `last_prompt_resume_status`
+- freeze benchmark artifact fields introduced by the real-provider benchmark
+  reliability work
+- confirm existing diagnostics/recovery JSON contract tests cover status,
+  doctor, config, runs, checkpoints, and preview restore
+- add only missing JSON contract tests; do not duplicate already-strong coverage
+- document the manual real-provider regression commands in the implementation
+  plan
 
 Acceptance:
 
-- `./scripts/check.sh` passes.
-- Manual real-provider checks are documented.
-- No public import is removed.
+- targeted tests fail if resume/checkpoint metadata semantics regress
+- benchmark artifact compatibility is protected
+- CLI JSON contracts are protected enough to allow command-handler movement
 
-### P1: Evaluation and Provider Benchmark Boundary
+### P1: Evaluation Split
 
-Purpose: separate deterministic benchmark logic from real-provider logic.
+Purpose:
 
-Tasks:
+Reduce `metrics_experiments.py` risk without losing experiment clusters.
 
-1. Extract benchmark schema helpers to `benchmark_schema.py`.
-2. Move `BenchmarkEvaluator` and fake scripted outputs to
-   `fixed_benchmark.py`.
-3. Move provider profile and provider experiment code to
-   `provider_benchmark.py`.
-4. Keep `metrics.py` exporting the same public functions and constants.
-5. Keep `scripts/run_provider_experiments.py` using public exports.
+Phase 1 extraction:
 
-Acceptance:
+- create `benchmark_schema.py`
+- create `fixed_benchmark.py`
+- create `provider_benchmark.py`
+- keep `metrics.py` as the public re-export layer
+- keep remaining ablation/experiment clusters in `metrics_experiments.py` unless
+  a small obvious split appears during implementation
 
-- `tests/test_evaluator.py` passes.
-- `tests/test_metrics.py` passes.
-- `tests/test_scripts.py` passes.
-- `run_provider_experiments` remains import-compatible.
-- Provider benchmark default `max_new_tokens` remains 2048.
+Possible phase 1.5 extraction:
 
-### P2: Provider Adapter Contract
-
-Purpose: make provider behavior easier to test and diagnose.
-
-Tasks:
-
-1. Extract usage metadata helpers.
-2. Extract provider error helpers.
-3. Extract OpenAI-compatible text and SSE extraction.
-4. Extract Anthropic-compatible text and no-text diagnostics.
-5. Preserve public classes through `providers/clients.py`.
-6. Add focused tests for response shapes and error categories.
+- if the remaining experiment file is still too large and the clusters are
+  cleanly separable, split into synthetic, real, and recovery experiment modules
 
 Acceptance:
 
-- OpenAI JSON extraction is covered.
-- OpenAI SSE extraction is covered.
-- Anthropic text block extraction is covered, including missing `type`.
-- Thinking-only max-token exhaustion is covered.
-- `pico-cli doctor` behavior is unchanged.
-- Real provider smoke still passes.
+- existing evaluation imports continue to work
+- provider benchmark artifacts are byte-shape compatible at the field level
+- fixed benchmark behavior remains stable
+- real-provider benchmark command still works with local API keys
+- no experiment cluster is orphaned
 
-### P3: Checkpoint and Recovery Facade
+### P2: Provider Split
 
-Purpose: reduce misuse of the two checkpoint systems.
+Purpose:
 
-Tasks:
+Make provider-specific behavior easier to modify and test independently.
 
-1. Add a thin checkpoint facade with explicit function names.
-2. Route `AgentLoop` resume-summary checkpoint creation through it.
-3. Route turn recovery finalization through it or a closely named helper.
-4. Route report checkpoint metadata through it.
-5. Update architecture docs to state the owner and purpose of each
-   checkpoint system.
+Actions:
 
-Acceptance:
-
-- Recovery tests pass.
-- Freshness mismatch benchmark passes.
-- Workspace mismatch benchmark passes.
-- Report `resume_status` and `last_prompt_resume_status` remain stable.
-- `.pico/checkpoints/` schema does not change.
-
-### P4: CLI Surface Split
-
-Purpose: reduce `cli_commands.py` size without changing command behavior.
-
-Tasks:
-
-1. Extract start and REPL command handling.
-2. Extract inspect commands.
-3. Extract recovery commands.
-4. Extract memory commands.
-5. Extract renderers.
-6. Keep `cli_commands.py` as compatibility forwarding.
+- add provider regression tests for the Anthropic edge cases before moving code
+- split OpenAI-compatible behavior into `openai_compatible.py`
+- split Anthropic-compatible behavior into `anthropic_compatible.py`
+- split Ollama behavior into `ollama.py`
+- place shared helpers in `_shared.py`
+- leave `clients.py` as the public compatibility/import surface
+- split `usage.py` and `errors.py` only if the shared surface is large enough
+  to justify it
 
 Acceptance:
 
-- CLI tests pass after each command-family extraction.
-- JSON output stays JSON-only on stdout.
-- Help output remains useful and stable.
-- No third-party CLI framework is introduced.
+- provider tests pass
+- public imports from `pico.providers.clients` continue to work
+- real-provider smoke commands continue to work
+- provider-specific changes no longer require editing one large mixed file
+
+### P3: Runtime Report Boundary Tightening
+
+Purpose:
+
+Clarify the one remaining place where resume status and recovery checkpoint
+metadata can be conceptually confused.
+
+Actions:
+
+- add the narrow report metadata helper
+- route `runtime.build_report()` through it
+- preserve existing report output
+- keep checkpoint module ownership unchanged
+
+Acceptance:
+
+- runtime report tests pass
+- recovery checkpoint tests pass
+- no broad checkpoint facade is introduced
+- future readers can identify the resume/checkpoint metadata rule in one helper
+
+### P4: CLI Split
+
+Purpose:
+
+Reduce `cli_commands.py` into coherent command families while preserving the
+current CLI surface.
+
+P4.0 Help Decoupling:
+
+- move `HELP_DETAILS` to `pico/cli_help.py`
+- update `pico/cli.py` and `pico/cli_commands.py` to import from the new module
+- verify parser help and `help` command behavior
+
+P4.1 Diagnostics:
+
+- move or colocate `handle_status`, `handle_doctor`, and `handle_config` with
+  the existing diagnostics flow
+- preserve `collect_status`, `collect_config`, and `collect_doctor`
+- verify JSON and text output
+
+P4.2 Recovery:
+
+- extract runs, sessions, checkpoints, preview restore, and restore handlers to
+  `pico/cli_recovery.py`
+- preserve recovery JSON output
+
+P4.3 Memory:
+
+- extract memory command handlers to `pico/cli_memory.py`
+- preserve memory output and public behavior
+
+P4.4 Startup:
+
+- extract run-once, REPL, slash routing, and startup orchestration to
+  `pico/cli_start.py`
+- preserve interactive and non-interactive behavior
+
+P4.5 Rendering:
+
+- extract remaining shared rendering helpers to `pico/cli_renderers.py` only
+  after command families have moved
+
+Acceptance:
+
+- each sub-step has focused tests
+- full `./scripts/check.sh` passes at the end of P4
+- `cli_commands.py` is reduced to a small compatibility/dispatch layer
+- users see the same commands and output contracts
 
 ### P5: Test Layout Cleanup
 
-Purpose: make failures easier to localize.
+Purpose:
 
-Tasks:
+Make tests easier to navigate after production boundaries are clearer.
 
-1. Move provider client tests to `tests/test_provider_clients.py`.
-2. Move runtime report tests to `tests/test_runtime_report.py`.
-3. Move provider benchmark tests to
-   `tests/test_evaluation_provider_benchmark.py`.
-4. Keep `tests/test_pico.py` focused on public API and integration smoke.
-5. Confirm pytest collection stays stable.
+Actions:
+
+- add section banners to `tests/test_pico.py`
+- move provider-client tests to `tests/test_provider_clients.py`
+- move runtime-report tests only if it can be done without hiding integration
+  coverage
+- move provider-benchmark tests only if they naturally align with P1 modules
 
 Acceptance:
 
-- Test count stays effectively stable unless intentionally changed.
-- Test names map to architecture boundaries.
-- No assertions are weakened during moves.
+- tests are easier to map to modules
+- no coverage is lost
+- test extraction is not mixed with risky production movement in the same commit
 
-## 8. Data Flow and Diagnostics
+## 9. Validation Strategy
 
-The run lifecycle should preserve facts at the layer where they happen:
+Use a layered verification strategy. Each phase should run the narrowest useful
+tests first, then broader checks at phase boundaries.
 
-```text
-user request
-  -> CLI command invocation
-  -> task_state + run_started trace
-  -> prompt + prompt_metadata
-  -> provider call + completion_metadata
-  -> parsed model output
-  -> tool execution + tool metadata
-  -> recovery checkpoint records if needed
-  -> final report
-```
+Baseline checks:
 
-Facts should not be overwritten by later layers:
+- `./scripts/check.sh`
+- focused pytest commands for touched modules
+- CLI JSON command checks where command output is moved
+- manual real-provider benchmark smoke commands before and after provider or
+  evaluation movement
 
-- `prompt_metadata` explains prompt construction.
-- `completion_metadata` explains provider behavior.
-- `tool metadata` explains validation, rejection, execution, and side
-  effects.
-- recovery metadata explains restore eligibility and checkpoint links.
-- report summarizes; it does not become the source of event truth.
-- trace records events; it does not become the restore truth.
-- checkpoint store remains the restore truth.
+Suggested focused checks by phase:
 
-Suggested report diagnostics:
+- P0: runtime report tests, public API contract tests, CLI diagnostics/recovery
+  JSON tests
+- P1: evaluation benchmark tests and real-provider benchmark smoke
+- P2: provider client tests and real-provider smoke
+- P3: runtime report tests and recovery checkpoint tests
+- P4: CLI diagnostics, recovery, memory, startup, and public contract tests
+- P5: moved test files plus full check script
 
-```json
-{
-  "diagnostics": {
-    "model_turns": 2,
-    "tool_attempts": 1,
-    "rejected_tool_calls": 0,
-    "provider_error_category": "",
-    "last_provider_http_status": "",
-    "resume_status": "no-checkpoint",
-    "last_prompt_resume_status": "full-valid",
-    "verification_count": 1
-  }
-}
-```
-
-This does not need to be added in the first implementation step. It is
-the target shape for clearer run summaries.
-
-## 9. Error Handling
-
-Provider errors should be classifiable:
-
-- `provider_auth_error`
-  - HTTP 401 or 403, invalid key, no quota, missing permission.
-
-- `provider_network_error`
-  - timeout, DNS failure, connection reset, remote disconnect.
-
-- `provider_response_shape_error`
-  - response parsed but text cannot be extracted.
-
-- `provider_output_budget_error`
-  - response contains thinking blocks but no text before `max_tokens`.
-
-- `provider_usage_metadata_missing`
-  - text exists, but usage or cache metadata is absent.
-
-Benchmark failures should remain classifiable:
-
-- `missing_artifact`
-- `budget_exceeded`
-- `verifier_failed`
-- `failure_stop_reason`
-- `provider_error`
-- `unknown`
-
-Runtime rules:
-
-- provider errors must not be silently converted into successful final
-  answers;
-- rejected tool calls must not consume effective `tool_steps`;
-- rejected tool calls must still be visible for diagnostics;
-- `run_shell` nonzero exit is not automatically a runtime failure;
-- verifier failure remains a benchmark failure;
-- restore apply only writes when expected hashes match;
-- conflict and review states never auto-write files.
+Real-provider validation should use the local configured API keys. Any command
+that cannot run because an external provider is unavailable should be recorded
+as an environment/provider failure, not silently counted as product success.
 
 ## 10. Compatibility Contract
 
-This convergence work must preserve:
+The convergence work must preserve these contracts unless a later document
+explicitly changes them:
 
-- CLI entrypoints:
-  - `pico`
-  - `pico-cli`
-  - `python -m pico`
+- public imports from `pico` and documented submodules
+- `pico.providers.clients` imports
+- evaluation imports from `pico.evaluation.metrics`
+- CLI command names
+- CLI JSON keys for diagnostics and recovery commands
+- provider benchmark artifact fields
+- recovery checkpoint schema
+- runtime report metadata keys
+- memory public runtime surface
+- dormant compatibility helpers retained by retire-v1-memory
 
-- primary commands:
-  - `run`
-  - `repl`
-  - `status`
-  - `doctor`
-  - `config show`
-  - `runs list/show`
-  - `sessions list/show`
-  - `checkpoints list/show/preview-restore/restore/prune`
-  - `memory list/show/search/review/migrate`
+Compatibility shims are acceptable when they make module movement safe. Removing
+them should be a separate, explicitly reviewed change.
 
-- JSON envelope shape:
-  - `ok`
-  - `kind`
-  - `data` on success
-  - `error.code`, `error.message`, optional `error.hint` on failure
+## 11. Error Handling Principles
 
-- provider public classes:
-  - `FakeModelClient`
-  - `OllamaModelClient`
-  - `OpenAICompatibleModelClient`
-  - `AnthropicCompatibleModelClient`
+- Provider-specific error interpretation should live near the provider
+  implementation.
+- Shared transport/configuration errors may live in `_shared.py`.
+- Anthropic no-text and thinking-only edge cases should remain explicit.
+- CLI JSON errors should remain machine-readable.
+- Recovery errors should continue to distinguish missing runs, missing
+  checkpoints, invalid restore targets, and preview/restore failures.
+- Benchmark provider failures should remain visible as provider failures, not
+  collapsed into generic benchmark failures.
 
-- evaluation public exports from `pico.evaluation.metrics`.
+## 12. Convergence Metrics
 
-The work may add fields to reports or metadata, but it should not remove
-fields currently used by tests or benchmark artifacts without a focused
-compatibility decision.
+These are directional metrics, not hard acceptance gates:
 
-## 11. Validation Plan
+- `pico/cli_commands.py`: from about 1025 lines toward 300 lines or less
+- `pico/evaluation/metrics_experiments.py`: from about 1311 lines toward
+  several files with no benchmark file over about 500 lines
+- `pico/providers/clients.py`: from about 641 lines toward a forwarding/public
+  compatibility shell
+- provider implementation files: ideally about 250 lines or less each
+- no `pico/` production file should remain over about 700 lines unless it is a
+  deliberate orchestration module
 
-Every phase should end with:
+Functional acceptance wins over line-count purity. A small overshoot is better
+than an awkward split.
 
-```bash
-./scripts/check.sh
-```
+## 13. Rollout Order
 
-Focused validation by phase:
+Recommended rollout:
 
-```bash
-# Evaluation/provider split
-uv run pytest tests/test_evaluator.py tests/test_metrics.py tests/test_scripts.py -q
+1. Pre-flight ground-truth check
+2. P0 protection net
+3. P1 evaluation split
+4. P2 provider split
+5. P3 runtime report boundary tightening
+6. P4 CLI split
+7. P5 test layout cleanup
 
-# Provider adapter split
-uv run pytest tests/test_pico.py tests/test_scripts.py -q
+Highest-leverage subset if time is constrained:
 
-# Checkpoint/recovery facade
-uv run pytest tests/test_checkpoint.py tests/test_recovery_*.py tests/test_evaluator.py -q
+1. Pre-flight
+2. P0
+3. P1
+4. P2
+5. P3
+6. P4.0 and P4.1
 
-# CLI split
-uv run pytest tests/test_cli_*.py tests/memory/test_cli_*.py -q
-```
+P4.2 through P4.5 and P5 are valuable, but they are primarily organizational
+hygiene once diagnostics and provider/evaluation boundaries are under control.
 
-Manual real-provider validation:
+## 14. Implementation Commit Shape
 
-```bash
-pico-cli --cwd /Users/wei/Desktop/pico doctor
+Prefer small commits:
 
-pico-cli --cwd /Users/wei/Desktop/pico --format json run --max-new-tokens 2048 \
-  "Reply exactly with <final>REAL_PROVIDER_SMOKE_OK</final> and no other text."
+1. tests: protect report and artifact contracts
+2. refactor: split evaluation benchmark modules
+3. refactor: split provider clients
+4. refactor: isolate runtime report checkpoint metadata
+5. refactor: decouple cli help details
+6. refactor: move cli diagnostics handlers
+7. refactor: move cli recovery handlers
+8. refactor: move cli memory handlers
+9. refactor: move cli startup flow
+10. test: organize large test clusters
 
-pico-cli --cwd /Users/wei/Desktop/pico --format json run --max-new-tokens 2048 \
-  "Use the read_file tool to read README.md, then reply exactly with <final>REAL_PROVIDER_TOOL_OK</final> and no other text."
-```
+Each commit should be reversible and should avoid mixing production movement
+with unrelated formatting.
 
-The 10-task current-provider benchmark can be run through the provider
-benchmark helper or a targeted `run_fixed_benchmark` invocation using the
-current provider factory. The expected result for the current
-`deepseek/qwen3.7-max` setup is 10/10 unless external provider state has
-changed.
+## 15. Design Approval Status
 
-## 12. Rollout Order
+The design direction is approved by the user at the brainstorming stage:
 
-Recommended order:
+- use option 2: rewrite the current design as an integrated rev2
+- do not over-plan future product layers
+- focus on doing architecture A well before considering the next version
 
-1. P0 Protection Net
-2. P1 Evaluation and Provider Benchmark Boundary
-3. P2 Provider Adapter Contract
-4. P3 Checkpoint and Recovery Facade
-5. P4 CLI Surface Split
-6. P5 Test Layout Cleanup
+Next step after this document is reviewed:
 
-Reasoning:
-
-- The real-provider failure happened at the provider/evaluation/runtime
-  metadata boundary, so that area has the highest immediate leverage.
-- Provider extraction before CLI extraction keeps the recent correctness
-  fixes easy to protect.
-- The checkpoint facade should happen before more report or evaluator
-  work, because it clarifies resume and recovery metadata.
-- CLI splitting can then proceed with clearer downstream contracts.
-- Test movement should be done opportunistically when each boundary is
-  touched, then completed as a final cleanup phase.
-
-Each phase should be small enough to commit independently.
-
-## 13. Next-Version Notes
-
-The next version can consider these directions only after this
-convergence work is complete:
-
-- richer run diagnostics such as `pico-cli runs diagnose <run-id>`;
-- memory search improvements beyond keyword and CJK bigram matching;
-- a provider matrix report that compares configured providers without
-  blocking on unrelated provider failures;
-- better human-facing recovery review flows;
-- optional semantic memory or indexing backends.
-
-These are deliberately not part of this spec. The immediate goal is to
-make the current harness easier to change safely.
-
-## 14. Design Approval Status
-
-The design was reviewed in sections:
-
-1. goal and scope;
-2. architecture layers and module boundaries;
-3. concrete optimization work packages and priority;
-4. data flow, error handling, and diagnostics;
-5. rollout phases and validation.
-
-The user approved each section before this spec was written.
+- write a concrete implementation plan with exact files, tests, and checkpoints
+- then execute the plan phase by phase
