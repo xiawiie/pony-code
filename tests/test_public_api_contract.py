@@ -41,6 +41,23 @@ def test_lightweight_package_split_uses_package_paths_without_legacy_shims():
         assert not (Path("pico") / legacy_module).exists()
 
 
+def test_all_four_provider_classes_importable_directly():
+    from pico.providers.clients import (
+        AnthropicCompatibleModelClient,
+        FakeModelClient,
+        OllamaModelClient,
+        OpenAICompatibleModelClient,
+    )
+
+    for cls in (
+        FakeModelClient,
+        OllamaModelClient,
+        OpenAICompatibleModelClient,
+        AnthropicCompatibleModelClient,
+    ):
+        assert isinstance(cls, type), f"{cls!r} should be a class"
+
+
 def test_packaging_discovers_pico_subpackages():
     pyproject_text = Path("pyproject.toml").read_text(encoding="utf-8")
 
