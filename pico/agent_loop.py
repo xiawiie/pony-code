@@ -58,6 +58,8 @@ class AgentLoop:
             agent.run_store.write_task_state(task_state)
             prompt_started_at = time.monotonic()
             prompt, prompt_metadata = agent._build_prompt_and_metadata(user_message)
+            if attempts == 1:
+                task_state.resume_status = prompt_metadata.get("resume_status", task_state.resume_status)
             agent.emit_trace(
                 task_state,
                 "prompt_built",
@@ -151,10 +153,8 @@ class AgentLoop:
             )
 
             if kind == "tool":
-                tool_steps += 1
                 name = payload.get("name", "")
                 args = payload.get("args", {})
-                task_state.record_tool(name)
                 tool_started_at = time.monotonic()
                 agent.emit_trace(
                     task_state,
@@ -166,6 +166,9 @@ class AgentLoop:
                 )
                 tool_result = agent.execute_tool(name, args)
                 result = tool_result.content
+                if tool_result.metadata.get("tool_status") != "rejected":
+                    tool_steps += 1
+                    task_state.record_tool(name)
                 tool_change_id = tool_result.metadata.get("tool_change_id") or ""
                 if tool_change_id:
                     run_tool_change_ids.append(tool_change_id)

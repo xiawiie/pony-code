@@ -370,6 +370,28 @@ def _apply_task_setup(agent, task, fixture_copy_root):
         return
 
 
+def _agent_prompt_for_task(task):
+    prompt = str(task["prompt"]).strip()
+    expected = str(task.get("expected_artifact", "")).strip()
+    verifier = str(task.get("verifier", "")).strip()
+    if not expected and not verifier:
+        return prompt
+    lines = [prompt, "", "Success criteria:"]
+    if expected:
+        lines.append(f"- Expected artifact: {expected}")
+    if verifier:
+        lines.extend(
+            [
+                "- The run is successful only if this verification command passes and you return a final answer.",
+                "- Do not run the verification command yourself unless run_shell is listed as an available tool.",
+                "- If the verifier checks .pico runtime artifacts, return a final answer; those artifacts are produced after the run finishes.",
+                "Verification command:",
+                verifier,
+            ]
+        )
+    return "\n".join(lines)
+
+
 class BenchmarkEvaluator:
     def __init__(
         self,
@@ -473,7 +495,7 @@ class BenchmarkEvaluator:
         initial_episodic_notes_empty = True
         initial_memory_empty = initial_task_summary_empty and not agent.memory.recent_files
 
-        final_answer = agent.ask(task["prompt"])
+        final_answer = agent.ask(_agent_prompt_for_task(task))
         task_state = agent.current_task_state
         run_dir = Path(agent.current_run_dir)
         task_state_path = agent.run_store.task_state_path(task_state)

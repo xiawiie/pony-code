@@ -120,3 +120,32 @@ def test_terminal_paths_share_finish_run_helper(tmp_path, monkeypatch):
     assert "step limit" in limit_agent.ask("hit limit")
 
     assert calls == ["run_finished", "step_limit_reached"]
+
+
+def test_rejected_tool_calls_do_not_consume_step_budget(tmp_path):
+    agent = build_agent(
+        tmp_path,
+        [
+            '<tool>{"name":"read_file","args":{"path":"README.md","start":1,"end":1}}</tool>',
+            '<tool>{"name":"read_file","args":{"path":"README.md","start":1,"end":1}}</tool>',
+            '<tool>{"name":"read_file","args":{"path":"README.md","start":1,"end":1}}</tool>',
+            "<final>done after rejected repeat</final>",
+        ],
+        max_steps=3,
+    )
+
+    answer = agent.ask("inspect README and finish")
+
+    assert answer == "done after rejected repeat"
+    assert agent.current_task_state.tool_steps == 2
+    assert agent.current_task_state.stop_reason == "final_answer_returned"
+    trace_events = [
+        json.loads(line)
+        for line in agent.run_store.trace_path(agent.current_task_state).read_text(encoding="utf-8").splitlines()
+    ]
+    rejected = [
+        event
+        for event in trace_events
+        if event.get("event") == "tool_executed" and event.get("tool_status") == "rejected"
+    ]
+    assert rejected

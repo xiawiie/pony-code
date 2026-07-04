@@ -540,6 +540,10 @@ class Pico:
         return "run_" + datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6]
 
     def build_report(self, task_state):
+        prompt_metadata = dict(self.last_prompt_metadata)
+        if task_state.resume_status:
+            prompt_metadata.setdefault("last_prompt_resume_status", prompt_metadata.get("resume_status", ""))
+            prompt_metadata["resume_status"] = task_state.resume_status
         # report 是一次运行的最终摘要；
         # 和 trace 的区别在于，trace 关注过程，report 关注结果与关键指标。
         return {
@@ -553,7 +557,7 @@ class Pico:
             "checkpoint_id": task_state.checkpoint_id,
             "resume_status": task_state.resume_status,
             "task_state": task_state.to_dict(),
-            "prompt_metadata": self.last_prompt_metadata,
+            "prompt_metadata": prompt_metadata,
             "working_memory": self.memory.to_dict(),
             "redacted_env": self.detected_secret_env_summary(),
         }

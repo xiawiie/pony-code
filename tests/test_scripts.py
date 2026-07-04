@@ -1,6 +1,9 @@
 import subprocess
 import sys
 from pathlib import Path
+import importlib.util
+
+from pico.evaluation import metrics_experiments
 
 
 def test_maintenance_scripts_start_and_show_help():
@@ -29,3 +32,17 @@ def test_local_check_script_matches_ci_commands():
     text = script.read_text()
     assert "uv run ruff check ." in text
     assert "uv run pytest -q" in text
+
+
+def test_provider_experiment_defaults_allow_reasoning_budget():
+    spec = importlib.util.spec_from_file_location(
+        "run_provider_experiments_script",
+        Path("scripts/run_provider_experiments.py"),
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    args = module.build_arg_parser().parse_args(["--output-json", "out.json"])
+
+    assert args.max_new_tokens == metrics_experiments.DEFAULT_PROVIDER_EXPERIMENT_MAX_NEW_TOKENS
+    assert args.max_new_tokens >= 2048

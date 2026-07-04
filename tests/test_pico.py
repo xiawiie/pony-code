@@ -5,6 +5,8 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 import pico as pico_pkg
 from pico.features import memory as memorylib
 from pico.runtime import DEFAULT_MAX_NEW_TOKENS, DEFAULT_MAX_STEPS
@@ -802,6 +804,77 @@ def test_anthropic_compatible_client_extracts_first_text_block():
     assert result == "<final>ok</final>"
 
 
+def test_anthropic_compatible_client_extracts_text_block_without_type():
+    class FakeResponse:
+        headers = {"Content-Type": "application/json"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps(
+                {
+                    "content": [
+                        {"thinking": "hidden"},
+                        {"text": "<final>ok</final>"},
+                    ]
+                }
+            ).encode("utf-8")
+
+    client = AnthropicCompatibleModelClient(
+        model="glm-5.2",
+        base_url="https://lumina.tripo3d.com/v1",
+        api_key="sk-test",
+        temperature=0.2,
+        timeout=30,
+    )
+
+    with patch("urllib.request.urlopen", return_value=FakeResponse()):
+        result = client.complete("hello", 42)
+
+    assert result == "<final>ok</final>"
+
+
+def test_anthropic_compatible_client_explains_thinking_only_token_exhaustion():
+    class FakeResponse:
+        headers = {"Content-Type": "application/json"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps(
+                {
+                    "content": [
+                        {"type": "thinking", "thinking": "analysis consumed the output budget"},
+                    ],
+                    "stop_reason": "max_tokens",
+                    "usage": {
+                        "input_tokens": 10,
+                        "output_tokens": 42,
+                    },
+                }
+            ).encode("utf-8")
+
+    client = AnthropicCompatibleModelClient(
+        model="glm-5.2",
+        base_url="https://lumina.tripo3d.com/v1",
+        api_key="sk-test",
+        temperature=0.2,
+        timeout=30,
+    )
+
+    with patch("urllib.request.urlopen", return_value=FakeResponse()):
+        with pytest.raises(RuntimeError, match="thinking.*max_tokens.*max_new_tokens"):
+            client.complete("hello", 42)
+
+
 def test_anthropic_stream_complete_falls_back_to_complete():
     class FakeResponse:
         headers = {"Content-Type": "application/json"}
@@ -1456,6 +1529,99 @@ def test_resume_invalidates_stale_file_summaries_and_marks_partial_stale(tmp_pat
     assert "runtime.py" not in resumed.session["memory"]["file_summaries"]
     assert resumed.last_prompt_metadata["resume_status"] == "partial-stale"
     assert resumed.last_prompt_metadata["stale_summary_invalidations"] == 1
+
+
+def test_report_prompt_metadata_preserves_initial_resume_status(tmp_path):
+    file_path = tmp_path / "runtime.py"
+    file_path.write_text("alpha\n", encoding="utf-8")
+    agent = build_agent(tmp_path, ["<final>checkpoint ready.</final>"])
+    set_raw_file_summary(agent, "runtime.py", "runtime.py: alpha")
+    freshness = agent.session["memory"]["file_summaries"]["runtime.py"]["freshness"]
+    agent.session["checkpoints"] = {
+        "current_id": "ckpt_stale",
+        "items": {
+            "ckpt_stale": {
+                "checkpoint_id": "ckpt_stale",
+                "parent_checkpoint_id": "",
+                "schema_version": "phase1-v1",
+                "created_at": "2026-04-14T09:00:00+00:00",
+                "current_goal": "Fix stale summary handling",
+                "completed": [],
+                "excluded": [],
+                "current_blocker": "",
+                "next_step": "Re-read runtime.py",
+                "key_files": [{"path": "runtime.py", "freshness": freshness}],
+                "freshness": {"runtime.py": freshness},
+                "summary": "runtime.py is important",
+                "runtime_identity": {"workspace_fingerprint": agent.workspace.fingerprint()},
+            }
+        },
+    }
+    agent.session_store.save(agent.session)
+    file_path.write_text("beta\n", encoding="utf-8")
+
+    resumed = Pico.from_session(
+        model_client=FakeModelClient(
+            [
+                '<tool>{"name":"read_file","args":{"path":"runtime.py","start":1,"end":1}}</tool>',
+                "<final>Resumed.</final>",
+            ]
+        ),
+        workspace=build_workspace(tmp_path),
+        session_store=agent.session_store,
+        session_id=agent.session["id"],
+        approval_policy="auto",
+    )
+
+    assert resumed.ask("Continue the task") == "Resumed."
+    report = resumed.run_store.load_report(resumed.current_task_state.run_id)
+
+    assert report["resume_status"] == "partial-stale"
+    assert report["prompt_metadata"]["resume_status"] == "partial-stale"
+    assert report["prompt_metadata"]["last_prompt_resume_status"] == "full-valid"
+
+
+def test_first_prompt_resume_status_updates_task_state_after_late_checkpoint_setup(tmp_path):
+    file_path = tmp_path / "runtime.py"
+    file_path.write_text("alpha\n", encoding="utf-8")
+    agent = build_agent(
+        tmp_path,
+        [
+            '<tool>{"name":"read_file","args":{"path":"runtime.py","start":1,"end":1}}</tool>',
+            "<final>Resumed.</final>",
+        ],
+    )
+    set_raw_file_summary(agent, "runtime.py", "runtime.py: alpha")
+    freshness = agent.session["memory"]["file_summaries"]["runtime.py"]["freshness"]
+    agent.session["checkpoints"] = {
+        "current_id": "ckpt_stale",
+        "items": {
+            "ckpt_stale": {
+                "checkpoint_id": "ckpt_stale",
+                "parent_checkpoint_id": "",
+                "schema_version": "phase1-v1",
+                "created_at": "2026-04-14T09:00:00+00:00",
+                "current_goal": "Fix stale summary handling",
+                "completed": [],
+                "excluded": [],
+                "current_blocker": "",
+                "next_step": "Re-read runtime.py",
+                "key_files": [{"path": "runtime.py", "freshness": freshness}],
+                "freshness": {"runtime.py": freshness},
+                "summary": "runtime.py is important",
+                "runtime_identity": {"workspace_fingerprint": agent.workspace.fingerprint()},
+            }
+        },
+    }
+    agent.session_store.save(agent.session)
+    file_path.write_text("beta\n", encoding="utf-8")
+
+    assert agent.ask("Continue the task") == "Resumed."
+    report = agent.run_store.load_report(agent.current_task_state.run_id)
+
+    assert report["resume_status"] == "partial-stale"
+    assert report["prompt_metadata"]["resume_status"] == "partial-stale"
+    assert report["prompt_metadata"]["last_prompt_resume_status"] == "full-valid"
 
 
 def test_run_shell_nonzero_with_workspace_change_is_recorded_as_partial_success(tmp_path):

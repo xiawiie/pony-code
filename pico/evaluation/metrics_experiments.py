@@ -19,6 +19,8 @@ from .metrics_common import (
     _utc_timestamp,
 )
 
+DEFAULT_PROVIDER_EXPERIMENT_MAX_NEW_TOKENS = 2048
+
 
 @contextmanager
 def _temporary_feature_flags(agent, updates):
@@ -616,7 +618,12 @@ def _normalize_text(value):
     return text
 
 
-def run_provider_experiments(benchmark_path, workspace_root, artifact_root, max_new_tokens=64):
+def run_provider_experiments(
+    benchmark_path,
+    workspace_root,
+    artifact_root,
+    max_new_tokens=DEFAULT_PROVIDER_EXPERIMENT_MAX_NEW_TOKENS,
+):
     benchmark_path = Path(benchmark_path)
     workspace_root = Path(workspace_root)
     artifact_root = Path(artifact_root)

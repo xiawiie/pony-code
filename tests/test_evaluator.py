@@ -196,6 +196,59 @@ def test_benchmark_verifier_runs_with_reproducibility_locale(monkeypatch, tmp_pa
     assert verifier_env.read_text(encoding="utf-8").splitlines() == ["C.UTF-8", "C.UTF-8"]
 
 
+def test_real_provider_benchmark_prompt_includes_success_criteria(tmp_path):
+    fixture = tmp_path / "bench_repo_readme"
+    fixture.mkdir()
+    (fixture / "README.md").write_text("demo\n", encoding="utf-8")
+    benchmark_dir = tmp_path / "benchmarks"
+    benchmark_dir.mkdir()
+    benchmark_path = benchmark_dir / "benchmark.json"
+    benchmark_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "tasks": [
+                    {
+                        "id": "criteria_prompt",
+                        "prompt": "Update the README.",
+                        "fixture_repo": "bench_repo_readme",
+                        "allowed_tools": ["read_file"],
+                        "step_budget": 1,
+                        "expected_artifact": "README.md contains benchmark success text",
+                        "verifier": "python -c 'from pathlib import Path; assert Path(\"README.md\").exists()'",
+                        "category": "contract",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    clients = []
+
+    def factory(task, workspace):
+        del task, workspace
+        client = FakeModelClient(["<final>done</final>"])
+        clients.append(client)
+        return client
+
+    evaluator = BenchmarkEvaluator(
+        benchmark_path=benchmark_path,
+        artifact_path=tmp_path / "artifact.json",
+        workspace_root=tmp_path / "workspaces",
+        model_client_factory=factory,
+    )
+
+    row = evaluator.run_task(evaluator.load()["tasks"][0])
+
+    assert row["status"] == "pass"
+    prompt = clients[0].prompts[0]
+    assert "Success criteria:" in prompt
+    assert "README.md contains benchmark success text" in prompt
+    assert "Verification command:" in prompt
+    assert "Path(\"README.md\").exists()" in prompt
+    assert "Do not run the verification command yourself" in prompt
+
+
 def test_run_fixed_benchmark_covers_recovery_rows(tmp_path):
     artifact = run_fixed_benchmark(
         benchmark_path=Path("benchmarks/coding_tasks.json"),

@@ -488,11 +488,22 @@ class OpenAICompatibleModelClient:
 
 def _extract_anthropic_text(data):
     for item in data.get("content", []):
-        if isinstance(item, dict) and item.get("type") == "text":
+        if isinstance(item, dict) and (item.get("type") in ("", None, "text") or "text" in item):
             text = item.get("text")
             if isinstance(text, str) and text:
                 return text
     return ""
+
+
+def _anthropic_no_text_error(data, max_new_tokens):
+    content = data.get("content") or []
+    has_thinking = any(isinstance(item, dict) and item.get("type") == "thinking" for item in content)
+    if has_thinking and data.get("stop_reason") == "max_tokens":
+        return (
+            "Anthropic-compatible error: response contained thinking blocks but no text before max_tokens. "
+            f"Increase max_new_tokens/--max-new-tokens above {max_new_tokens} for reasoning-heavy models."
+        )
+    return "Anthropic-compatible error: could not extract text from response"
 
 
 def _supports_anthropic_prompt_cache(base_url):
@@ -619,7 +630,7 @@ class AnthropicCompatibleModelClient:
         text = _extract_anthropic_text(data)
         if text:
             return text
-        raise RuntimeError("Anthropic-compatible error: could not extract text from response")
+        raise RuntimeError(_anthropic_no_text_error(data, max_new_tokens))
 
     def stream_complete(self, prompt, max_new_tokens, prompt_cache_key=None, prompt_cache_retention=None):
         yield self.complete(
