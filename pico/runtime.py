@@ -48,6 +48,23 @@ DEFAULT_FEATURE_FLAGS = {
 __all__ = ["Pico", "SessionStore"]
 
 
+def build_report_checkpoint_metadata(task_state, last_prompt_metadata):
+    """Return a dict fragment to merge into report prompt_metadata.
+
+    Preserves the invariant that the initial prompt-time resume_status is kept
+    under last_prompt_resume_status when a later task_state.resume_status is
+    promoted into report metadata.
+    """
+    fragment = dict(last_prompt_metadata)
+    if task_state.resume_status:
+        fragment.setdefault(
+            "last_prompt_resume_status",
+            fragment.get("resume_status", ""),
+        )
+        fragment["resume_status"] = task_state.resume_status
+    return fragment
+
+
 class Pico:
     def __init__(
         self,
@@ -540,10 +557,7 @@ class Pico:
         return "run_" + datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6]
 
     def build_report(self, task_state):
-        prompt_metadata = dict(self.last_prompt_metadata)
-        if task_state.resume_status:
-            prompt_metadata.setdefault("last_prompt_resume_status", prompt_metadata.get("resume_status", ""))
-            prompt_metadata["resume_status"] = task_state.resume_status
+        prompt_metadata = build_report_checkpoint_metadata(task_state, self.last_prompt_metadata)
         # report 是一次运行的最终摘要；
         # 和 trace 的区别在于，trace 关注过程，report 关注结果与关键指标。
         return {
