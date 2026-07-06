@@ -14,17 +14,15 @@ import sys
 from .cli_commands import (
     ROOT_HELP,
     handle_checkpoints,
-    handle_config,
-    handle_doctor,
     handle_help,
     handle_init,
     handle_memory,
     handle_runs,
     handle_sessions,
-    handle_status,
     run_agent_once,
     run_repl,
 )
+from .cli_diagnostics import handle_config, handle_doctor, handle_status
 from .cli_errors import CLI_EXIT_USAGE, CliError
 from .cli_help import HELP_DETAILS  # noqa: F401
 from .cli_output import error_envelope, format_json

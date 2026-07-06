@@ -7,8 +7,9 @@ from pathlib import Path
 
 from .checkpoint_store import CheckpointStore
 from .cli_errors import CLI_EXIT_USAGE, CliError
-from .cli_diagnostics import collect_config, collect_doctor, collect_status
-from .cli_output import format_json, success_envelope
+from .cli_diagnostics import _line
+from .cli_diagnostics import handle_config, handle_doctor, handle_status  # noqa: F401
+from .cli_output import print_result
 from .config import _parse_env_line
 from .providers.defaults import (
     API_KEY_ENV_NAMES,
@@ -57,17 +58,6 @@ Compatibility:
     pico-cli "prompt"      Run a one-shot prompt
     pico                   Legacy entry point; may conflict with /usr/bin/pico
 """
-
-
-def print_result(kind, data, args, text_renderer):
-    if getattr(args, "format", "text") == "json":
-        print(format_json(success_envelope(kind, data)), end="")
-        return 0
-
-    text = text_renderer(data)
-    if text and not getattr(args, "quiet", False):
-        print(text, end="" if text.endswith("\n") else "\n")
-    return 0
 
 
 def handle_help(tokens):
@@ -144,40 +134,6 @@ def handle_runs(root, tokens, args):
     raise CliError(
         code="usage",
         message="usage: pico-cli runs {list | show <run_id>}",
-        exit_code=CLI_EXIT_USAGE,
-    )
-
-
-def handle_status(cwd, args):
-    return print_result("status", collect_status(cwd, args), args, _render_status)
-
-
-def handle_doctor(tokens, cwd, args):
-    offline = False
-    if tokens == ["--offline"]:
-        offline = True
-    elif tokens:
-        raise CliError(
-            code="usage",
-            message="usage: pico-cli doctor [--offline]",
-            exit_code=CLI_EXIT_USAGE,
-        )
-    return print_result("doctor", collect_doctor(cwd, args, offline=offline), args, _render_doctor)
-
-
-def handle_config(tokens, cwd, args):
-    sub = tokens[0] if tokens else ""
-    rest = tokens[1:]
-    if sub == "show" and not rest:
-        return print_result(
-            "config_show",
-            collect_config(cwd, args),
-            args,
-            _render_config,
-        )
-    raise CliError(
-        code="usage",
-        message="usage: pico-cli config show",
         exit_code=CLI_EXIT_USAGE,
     )
 
@@ -667,50 +623,6 @@ def _render_restore_plan(plan):
     return "\n".join(lines)
 
 
-def _source_label(item):
-    source = item.get("source", "")
-    name = item.get("name", "")
-    if source and name:
-        return f"{source}:{name}"
-    return source or name or "-"
-
-
-def _line(label, value):
-    lines = str(value).splitlines() or [""]
-    rendered = [f"  {label:<14} {lines[0]}"]
-    rendered.extend(f"  {'':<14} {line}" for line in lines[1:])
-    return "\n".join(rendered)
-
-
-def _presence_text(item):
-    state = "present" if item.get("present") else "missing"
-    return f"{state} ({_source_label(item)})"
-
-
-def _value_with_source(item):
-    return f"{item.get('value', '-') or '-'} ({_source_label(item)})"
-
-
-def _ok_missing(value):
-    if isinstance(value, bool):
-        return "ok" if value else "missing"
-    return str(value)
-
-
-def _render_config(data):
-    lines = [
-        "Pico config — Effective configuration",
-        "",
-        "Provider",
-        _line("provider", _value_with_source(data["provider"])),
-        _line("model", _value_with_source(data["model"])),
-        "",
-        "Credentials",
-        _line("api key", _presence_text(data["api_key"])),
-    ]
-    return "\n".join(lines)
-
-
 def _render_init(data):
     api_key = data["api_key"]
     if api_key["name"]:
@@ -726,53 +638,6 @@ def _render_init(data):
         _line("api key", api_key_text),
         _line("updated", ", ".join(changed) if changed else "-"),
     ]
-    return "\n".join(lines)
-
-
-def _render_doctor(data):
-    config = data["config"]
-    credentials = data["credentials"]
-    connectivity = data["provider_connectivity"]
-    storage = data["storage"]
-    lines = [
-        "Pico doctor — CLI health check",
-        "",
-        "Workspace",
-        _line("repo root", data["workspace"]["repo_root"]),
-        _line("status", data["workspace"]["status"]),
-        "",
-        "Config",
-        _line("provider", _value_with_source(config["provider"])),
-        _line("model", _value_with_source(config["model"])),
-        _line("base url", _value_with_source(config["base_url"])),
-        "",
-        "Credentials",
-        _line("api key", _presence_text(credentials["api_key"])),
-        _line("status", credentials["status"]),
-        "",
-        "Storage",
-        _line("sessions", storage["sessions"]),
-        _line("runs", storage["runs"]),
-        _line("checkpoints", storage["checkpoints"]),
-        _line("recovery", data["recovery_store"]),
-        "",
-        "Provider connectivity",
-        _line("status", connectivity.get("status", "-")),
-    ]
-    if connectivity.get("http_status") is not None:
-        lines.append(_line("http", connectivity["http_status"]))
-    if connectivity.get("url"):
-        lines.append(_line("url", connectivity["url"]))
-    if connectivity.get("message"):
-        lines.append(_line("message", connectivity["message"]))
-    hints = ((data.get("project_docs") or {}).get("hints")) or []
-    if hints:
-        lines.append("")
-        lines.append("Project docs")
-        for hint in hints:
-            level = hint.get("level", "info")
-            message = hint.get("message", "")
-            lines.append(_line(level, message))
     return "\n".join(lines)
 
 
@@ -792,34 +657,6 @@ def _session_files(sessions_root):
         for path in sorted(sessions_root.glob("*.json"))
         if path.is_file()
     ]
-
-
-def _render_status(data):
-    lines = [
-        "Pico status — Local harness state",
-        "",
-        "Workspace",
-        _line("repo root", data["workspace"]["repo_root"]),
-        _line("cwd", data["workspace"]["cwd"]),
-        _line("branch", data["workspace"]["branch"]),
-        _line("git status", data["workspace"]["status"]),
-        "",
-        "Provider",
-        _line("provider", _value_with_source(data["provider"]["provider"])),
-        _line("model", _value_with_source(data["provider"]["model"])),
-        _line("api key", _presence_text(data["provider"]["api_key"])),
-        "",
-        "Storage",
-        _line("sessions", _ok_missing(data["storage"]["sessions"])),
-        _line("runs", _ok_missing(data["storage"]["runs"])),
-        _line("checkpoints", _ok_missing(data["storage"]["checkpoints"])),
-        "",
-        "Latest",
-        _line("session id", data["latest"]["session_id"] or "-"),
-        _line("run id", data["latest"]["run_id"] or "-"),
-        _line("checkpoint id", data["latest"]["checkpoint_id"] or "-"),
-    ]
-    return "\n".join(lines)
 
 
 def _render_runs_show(data):

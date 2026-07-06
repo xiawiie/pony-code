@@ -32,6 +32,17 @@ def format_json(payload):
     return json.dumps(payload, indent=2, sort_keys=True) + "\n"
 
 
+def print_result(kind, data, args, text_renderer):
+    if getattr(args, "format", "text") == "json":
+        print(format_json(success_envelope(kind, data)), end="")
+        return 0
+
+    text = text_renderer(data)
+    if text and not getattr(args, "quiet", False):
+        print(text, end="" if text.endswith("\n") else "\n")
+    return 0
+
+
 def should_use_color(stream=None, environ=None, no_color=False):
     stream = stream or sys.stdout
     environ = os.environ if environ is None else environ
