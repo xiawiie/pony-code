@@ -177,3 +177,4 @@ All checks passed!
 - [x] Step 9: Baseline check passed
 
 All pre-flight audits complete. Codebase is in stable, tested state. Ready for architecture convergence phases.
+P2 real-provider smoke: PASS (doctor OK; direct final OK; read_file tool final OK)
