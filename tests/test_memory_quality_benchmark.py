@@ -78,3 +78,338 @@ def test_setup_workspace_maps_workspace_notes_to_pico_memory(tmp_path):
     assert (
         ws / ".pico" / "memory" / "agent_notes.md"
     ).read_text(encoding="utf-8") == "- old lesson\n"
+
+
+def test_parse_memory_search_hits_extracts_paths_and_scores():
+    module = _load_memory_benchmark_module()
+
+    hits = module.parse_memory_search_hits(
+        "Found 2 match(es) for 'bcrypt':\n"
+        "- workspace/notes/auth.md (score=1.23)\n"
+        "  L3: bcrypt rounds\n"
+        "- workspace/notes/session.md (score=0.75)\n"
+    )
+
+    assert hits == [
+        {"path": "workspace/notes/auth.md", "score": 1.23},
+        {"path": "workspace/notes/session.md", "score": 0.75},
+    ]
+
+
+def test_score_recall_requires_expected_hit_in_top_three(tmp_path):
+    module = _load_memory_benchmark_module()
+    scenario = {
+        "id": "recall_bcrypt",
+        "setup_notes": {},
+        "session_turns": [
+            {
+                "user": "how should login hashing work?",
+                "expected_search_hit": "workspace/notes/auth.md",
+            }
+        ],
+    }
+    trace_events = [
+        {
+            "event": "tool_executed",
+            "name": "memory_search",
+            "args": {"query": "hashing", "limit": 5},
+            "result": "- workspace/notes/auth.md (score=1.23)\n",
+            "tool_status": "ok",
+        }
+    ]
+
+    row = module.score_scenario(scenario, trace_events, tmp_path)
+
+    assert row["status"] == "pass"
+    assert row["tool_calls"] == ["memory_search"]
+    assert row["expected_hits"] == ["workspace/notes/auth.md"]
+    assert row["observed_hits"] == ["workspace/notes/auth.md"]
+    assert row["failure_reason"] == ""
+
+
+def test_score_update_requires_memory_save_and_preserves_existing_note(tmp_path):
+    module = _load_memory_benchmark_module()
+    memory_root = tmp_path / ".pico" / "memory"
+    memory_root.mkdir(parents=True)
+    (memory_root / "agent_notes.md").write_text(
+        "- old lesson\n- bcrypt rounds > 12 causes CI timeout\n",
+        encoding="utf-8",
+    )
+    scenario = {
+        "id": "update_bcrypt_lesson",
+        "setup_notes": {"workspace/agent_notes.md": "- old lesson\n"},
+        "session_turns": [
+            {
+                "user": "please remember: bcrypt rounds > 12 causes CI timeout",
+                "expected_tool": "memory_save",
+            }
+        ],
+    }
+    trace_events = [
+        {
+            "event": "tool_executed",
+            "name": "memory_save",
+            "args": {"note": "bcrypt rounds > 12 causes CI timeout"},
+            "result": "saved: workspace/agent_notes.md (chars_total=80)",
+            "tool_status": "ok",
+        }
+    ]
+
+    row = module.score_scenario(scenario, trace_events, tmp_path)
+
+    assert row["status"] == "pass"
+    assert row["tool_calls"] == ["memory_save"]
+    assert row["agent_notes_changed"] is True
+    assert row["failure_reason"] == ""
+
+
+def test_score_no_noise_passes_without_memory_search(tmp_path):
+    module = _load_memory_benchmark_module()
+    scenario = {
+        "id": "no_noise_food",
+        "setup_notes": {},
+        "session_turns": [
+            {
+                "user": "what is for lunch?",
+                "expected_no_search_hit": True,
+            }
+        ],
+    }
+
+    row = module.score_scenario(scenario, [], tmp_path)
+
+    assert row["status"] == "pass"
+    assert row["tool_calls"] == []
+    assert row["observed_hits"] == []
+
+
+def test_score_no_noise_fails_on_high_scoring_irrelevant_hit(tmp_path):
+    module = _load_memory_benchmark_module()
+    scenario = {
+        "id": "no_noise_food",
+        "setup_notes": {},
+        "session_turns": [
+            {
+                "user": "what is for lunch?",
+                "expected_no_search_hit": True,
+            }
+        ],
+    }
+    trace_events = [
+        {
+            "event": "tool_executed",
+            "name": "memory_search",
+            "args": {"query": "lunch"},
+            "result": "- workspace/notes/auth.md (score=1.25)\n",
+            "tool_status": "ok",
+        }
+    ]
+
+    row = module.score_scenario(scenario, trace_events, tmp_path)
+
+    assert row["status"] == "fail"
+    assert row["failure_reason"] == "unexpected high-scoring memory hit"
+
+
+def test_score_recall_fails_when_expected_hit_is_fourth_in_search_result(tmp_path):
+    module = _load_memory_benchmark_module()
+    scenario = {
+        "id": "recall_bcrypt",
+        "setup_notes": {},
+        "session_turns": [
+            {
+                "user": "how should login hashing work?",
+                "expected_search_hit": "workspace/notes/auth.md",
+            }
+        ],
+    }
+    trace_events = [
+        {
+            "event": "tool_executed",
+            "name": "memory_search",
+            "args": {"query": "hashing", "limit": 5},
+            "result": (
+                "- workspace/notes/one.md (score=1.50)\n"
+                "- workspace/notes/two.md (score=1.40)\n"
+                "- workspace/notes/three.md (score=1.30)\n"
+                "- workspace/notes/auth.md (score=1.20)\n"
+            ),
+            "tool_status": "ok",
+        }
+    ]
+
+    row = module.score_scenario(scenario, trace_events, tmp_path)
+
+    assert row["status"] == "fail"
+    assert row["failure_reason"] == "missing expected memory hit: workspace/notes/auth.md"
+
+
+def test_score_recall_passes_when_expected_hit_is_top_three_in_later_search(tmp_path):
+    module = _load_memory_benchmark_module()
+    scenario = {
+        "id": "recall_bcrypt",
+        "setup_notes": {},
+        "session_turns": [
+            {
+                "user": "how should login hashing work?",
+                "expected_search_hit": "workspace/notes/auth.md",
+            }
+        ],
+    }
+    trace_events = [
+        {
+            "event": "tool_executed",
+            "name": "memory_search",
+            "args": {"query": "login"},
+            "result": (
+                "- workspace/notes/one.md (score=1.50)\n"
+                "- workspace/notes/two.md (score=1.40)\n"
+                "- workspace/notes/three.md (score=1.30)\n"
+            ),
+            "tool_status": "ok",
+        },
+        {
+            "event": "tool_executed",
+            "name": "memory_search",
+            "args": {"query": "hashing"},
+            "result": "- workspace/notes/auth.md (score=1.20)\n",
+            "tool_status": "ok",
+        },
+    ]
+
+    row = module.score_scenario(scenario, trace_events, tmp_path)
+
+    assert row["status"] == "pass"
+    assert row["failure_reason"] == ""
+
+
+def test_score_expected_hits_top_requires_all_hits_in_one_search_event(tmp_path):
+    module = _load_memory_benchmark_module()
+    scenario = {
+        "id": "recall_auth_and_session",
+        "setup_notes": {},
+        "session_turns": [
+            {
+                "user": "what should auth sessions remember?",
+                "expected_search_hits_top": [
+                    "workspace/notes/auth.md",
+                    "workspace/notes/session.md",
+                ],
+            }
+        ],
+    }
+
+    split_row = module.score_scenario(
+        scenario,
+        [
+            {
+                "event": "tool_executed",
+                "name": "memory_search",
+                "args": {"query": "auth"},
+                "result": "- workspace/notes/auth.md (score=1.30)\n",
+                "tool_status": "ok",
+            },
+            {
+                "event": "tool_executed",
+                "name": "memory_search",
+                "args": {"query": "session"},
+                "result": "- workspace/notes/session.md (score=1.20)\n",
+                "tool_status": "ok",
+            },
+        ],
+        tmp_path,
+    )
+
+    assert split_row["status"] == "fail"
+    assert (
+        split_row["failure_reason"]
+        == "missing expected memory hit: workspace/notes/auth.md, workspace/notes/session.md"
+    )
+
+    same_event_row = module.score_scenario(
+        scenario,
+        [
+            {
+                "event": "tool_executed",
+                "name": "memory_search",
+                "args": {"query": "auth session"},
+                "result": (
+                    "- workspace/notes/auth.md (score=1.30)\n"
+                    "- workspace/notes/session.md (score=1.20)\n"
+                ),
+                "tool_status": "ok",
+            }
+        ],
+        tmp_path,
+    )
+
+    assert same_event_row["status"] == "pass"
+    assert same_event_row["failure_reason"] == ""
+
+
+def test_score_memory_save_requires_successful_tool_status(tmp_path):
+    module = _load_memory_benchmark_module()
+    memory_root = tmp_path / ".pico" / "memory"
+    memory_root.mkdir(parents=True)
+    (memory_root / "agent_notes.md").write_text(
+        "- old lesson\n- bcrypt rounds > 12 causes CI timeout\n",
+        encoding="utf-8",
+    )
+    scenario = {
+        "id": "update_bcrypt_lesson",
+        "setup_notes": {"workspace/agent_notes.md": "- old lesson\n"},
+        "session_turns": [
+            {
+                "user": "please remember: bcrypt rounds > 12 causes CI timeout",
+                "expected_tool": "memory_save",
+            }
+        ],
+    }
+    trace_events = [
+        {
+            "event": "tool_executed",
+            "name": "memory_save",
+            "args": {"note": "bcrypt rounds > 12 causes CI timeout"},
+            "result": "rejected",
+            "tool_status": "rejected",
+        }
+    ]
+
+    row = module.score_scenario(scenario, trace_events, tmp_path)
+
+    assert row["status"] == "fail"
+    assert row["failure_reason"] == "successful memory_save was not called"
+
+
+def test_score_memory_save_requires_expected_note_in_args(tmp_path):
+    module = _load_memory_benchmark_module()
+    memory_root = tmp_path / ".pico" / "memory"
+    memory_root.mkdir(parents=True)
+    (memory_root / "agent_notes.md").write_text(
+        "- old lesson\n- bcrypt rounds > 12 causes CI timeout\n",
+        encoding="utf-8",
+    )
+    scenario = {
+        "id": "update_bcrypt_lesson",
+        "setup_notes": {"workspace/agent_notes.md": "- old lesson\n"},
+        "session_turns": [
+            {
+                "user": "please remember: bcrypt rounds > 12 causes CI timeout",
+                "expected_tool": "memory_save",
+            }
+        ],
+    }
+    trace_events = [
+        {
+            "event": "tool_executed",
+            "name": "memory_save",
+            "args": {"note": "unrelated note"},
+            "result": "saved: workspace/agent_notes.md (chars_total=80)",
+            "tool_status": "ok",
+        }
+    ]
+
+    row = module.score_scenario(scenario, trace_events, tmp_path)
+
+    assert row["status"] == "fail"
+    assert row["failure_reason"] == "memory_save note args did not include expected note"
