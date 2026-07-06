@@ -1,6 +1,8 @@
 import os
 from unittest.mock import patch
 
+import pytest
+
 from pico.evaluation.metrics import (
     _provider_profile,
     run_context_ablation_v2,
@@ -142,3 +144,90 @@ def test_write_benchmark_core_report_marks_resume_safe_metrics(tmp_path):
     assert "只适合放文档/面试展开的指标" in report_text
     assert "resume_success_rate" in report_text
     assert "memory_hit_rate" in report_text
+
+
+def test_provider_selection_normalizes_default_all_and_single_provider():
+    from pico.evaluation.provider_benchmark import _normalize_provider_selection
+
+    assert _normalize_provider_selection(None) == ("gpt", "claude", "deepseek")
+    assert _normalize_provider_selection("all") == ("gpt", "claude", "deepseek")
+    assert _normalize_provider_selection("deepseek") == ("deepseek",)
+    assert _normalize_provider_selection(["gpt", "deepseek"]) == ("gpt", "deepseek")
+
+
+def test_provider_selection_rejects_unknown_provider():
+    from pico.evaluation.provider_benchmark import _normalize_provider_selection
+
+    with pytest.raises(ValueError, match="unknown provider"):
+        _normalize_provider_selection("openai")
+    with pytest.raises(ValueError, match="unknown provider"):
+        _normalize_provider_selection(["all", "openai"])
+
+
+def test_run_provider_experiments_targets_selected_provider(tmp_path, monkeypatch):
+    from pico.evaluation.provider_benchmark import run_provider_experiments
+
+    seen = []
+
+    def fake_provider_profile(provider):
+        seen.append(provider)
+        return {
+            "provider": provider,
+            "status": "blocked",
+            "reason": f"{provider} key missing",
+        }
+
+    monkeypatch.setattr(
+        "pico.evaluation.provider_benchmark._provider_profile",
+        fake_provider_profile,
+    )
+
+    payload = run_provider_experiments(
+        benchmark_path=tmp_path / "benchmarks.json",
+        workspace_root=tmp_path / "workspaces",
+        artifact_root=tmp_path / "artifacts",
+        providers="deepseek",
+    )
+
+    assert seen == ["deepseek"]
+    assert payload == {
+        "providers": [
+            {
+                "provider": "deepseek",
+                "status": "blocked",
+                "reason": "deepseek key missing",
+            }
+        ]
+    }
+
+
+def test_run_provider_experiments_default_keeps_three_provider_order(tmp_path, monkeypatch):
+    from pico.evaluation.provider_benchmark import run_provider_experiments
+
+    seen = []
+
+    def fake_provider_profile(provider):
+        seen.append(provider)
+        return {
+            "provider": provider,
+            "status": "blocked",
+            "reason": f"{provider} key missing",
+        }
+
+    monkeypatch.setattr(
+        "pico.evaluation.provider_benchmark._provider_profile",
+        fake_provider_profile,
+    )
+
+    payload = run_provider_experiments(
+        benchmark_path=tmp_path / "benchmarks.json",
+        workspace_root=tmp_path / "workspaces",
+        artifact_root=tmp_path / "artifacts",
+    )
+
+    assert seen == ["gpt", "claude", "deepseek"]
+    assert [row["provider"] for row in payload["providers"]] == [
+        "gpt",
+        "claude",
+        "deepseek",
+    ]

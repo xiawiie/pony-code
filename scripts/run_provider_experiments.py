@@ -18,6 +18,12 @@ def build_arg_parser():
     parser.add_argument("--artifact-root", default="artifacts/provider-artifacts", help="Directory to store provider benchmark artifacts.")
     parser.add_argument("--output-json", required=True, help="Path to output provider experiment JSON.")
     parser.add_argument(
+        "--provider",
+        choices=("all", "gpt", "claude", "deepseek"),
+        default="all",
+        help="Provider benchmark target. Use 'all' to run GPT, Claude, and DeepSeek.",
+    )
+    parser.add_argument(
         "--max-new-tokens",
         type=int,
         default=DEFAULT_PROVIDER_EXPERIMENT_MAX_NEW_TOKENS,
@@ -33,6 +39,7 @@ def main(argv=None):
         workspace_root=args.workspace_root,
         artifact_root=args.artifact_root,
         max_new_tokens=args.max_new_tokens,
+        providers=args.provider,
     )
     output = Path(args.output_json)
     output.parent.mkdir(parents=True, exist_ok=True)

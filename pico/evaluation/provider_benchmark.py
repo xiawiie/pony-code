@@ -10,6 +10,36 @@ from .metrics_common import _safe_mean, _safe_ratio
 
 DEFAULT_PROVIDER_EXPERIMENT_MAX_NEW_TOKENS = 2048
 
+PROVIDER_BENCHMARK_CHOICES = ("gpt", "claude", "deepseek")
+
+
+def _normalize_provider_selection(providers=None):
+    if providers is None:
+        return PROVIDER_BENCHMARK_CHOICES
+    if isinstance(providers, str):
+        requested = [providers]
+    else:
+        requested = list(providers)
+
+    saw_all = False
+    normalized = []
+    for provider in requested:
+        provider_name = str(provider).strip().lower()
+        if not provider_name:
+            continue
+        if provider_name == "all":
+            saw_all = True
+            continue
+        if provider_name not in PROVIDER_BENCHMARK_CHOICES:
+            choices = ", ".join(("all", *PROVIDER_BENCHMARK_CHOICES))
+            raise ValueError(f"unknown provider: {provider_name}. expected one of: {choices}")
+        if provider_name not in normalized:
+            normalized.append(provider_name)
+
+    if saw_all or not normalized:
+        return PROVIDER_BENCHMARK_CHOICES
+    return tuple(normalized)
+
 
 def _provider_summary_from_artifact(payload):
     rows = list(payload.get("rows", []))
@@ -113,15 +143,16 @@ def run_provider_experiments(
     workspace_root,
     artifact_root,
     max_new_tokens=DEFAULT_PROVIDER_EXPERIMENT_MAX_NEW_TOKENS,
+    providers=None,
 ):
     benchmark_path = Path(benchmark_path)
     workspace_root = Path(workspace_root)
     artifact_root = Path(artifact_root)
-    providers = []
-    for provider_name in ("gpt", "claude", "deepseek"):
+    provider_rows = []
+    for provider_name in _normalize_provider_selection(providers):
         profile = _provider_profile(provider_name)
         if profile["status"] != "ready":
-            providers.append(profile)
+            provider_rows.append(profile)
             continue
         if provider_name == "gpt":
 
@@ -162,9 +193,9 @@ def run_provider_experiments(
             result = _provider_summary_from_artifact(payload)
             result["provider"] = provider_name
             result["model"] = profile["model"]
-            providers.append(result)
+            provider_rows.append(result)
         except Exception as exc:
-            providers.append(
+            provider_rows.append(
                 {
                     "provider": provider_name,
                     "status": "error",
@@ -172,4 +203,4 @@ def run_provider_experiments(
                     "reason": str(exc),
                 }
             )
-    return {"providers": providers}
+    return {"providers": provider_rows}
