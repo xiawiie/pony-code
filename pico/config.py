@@ -16,6 +16,20 @@ def _strip_quotes(value):
     return value
 
 
+def _strip_inline_comment(value):
+    quote = ""
+    for index, char in enumerate(value):
+        if char in {"'", '"'}:
+            if not quote:
+                quote = char
+            elif quote == char:
+                quote = ""
+            continue
+        if char == "#" and not quote and (index == 0 or value[index - 1].isspace()):
+            return value[:index].rstrip()
+    return value
+
+
 def _parse_env_line(line):
     line = line.strip()
     if not line or line.startswith("#"):
@@ -28,7 +42,7 @@ def _parse_env_line(line):
     name = name.strip()
     if not ENV_KEY_PATTERN.match(name):
         raise ValueError(f"invalid .env variable name: {name}")
-    return name, _strip_quotes(value)
+    return name, _strip_quotes(_strip_inline_comment(value))
 
 
 def find_project_env(start):

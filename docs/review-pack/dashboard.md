@@ -6,11 +6,13 @@ Execution rule: keep exactly one task in `In Progress`. Finish, verify, update t
 
 ## Current Status
 
-- PR: https://github.com/xiawiie/pico/pull/1
-- Branch: `cli`
-- Latest pushed head: see PR current head
-- CI: expected on Python 3.10 and 3.12 for each pushed dashboard task
-- Local baseline: `./scripts/check.sh` passed with 309 tests after STREAM-001
+- Branch: `memory`
+- Upstream: `origin/memory`
+- CI: repository workflow runs `ruff check .` and `pytest -q` on Python 3.10 and 3.12 for pushes to `main` and pull requests
+- Local baseline: `./scripts/check.sh` passed with `452 passed` on 2026-07-06
+- Local provider smoke: `pico-cli doctor --format text` reported storage/recovery ok and provider connectivity ok on 2026-07-06
+- Local one-shot smoke: `pico-cli --no-input --approval never --max-steps 1 --max-new-tokens 32 --quiet run "Return exactly PICO_SMOKE_OK. Do not call tools."` returned `PICO_SMOKE_OK` on 2026-07-06
+- Worktree triage: keep the six tracked `.env` inline-comment/header-validation code and test changes for submission; stale untracked superpowers plan/spec drafts were removed from the working tree
 
 ## Done In This Review Pass
 
@@ -69,12 +71,12 @@ Execution rule: keep exactly one task in `In Progress`. Finish, verify, update t
 
 ## User Issue Reconciliation
 
-This table reconciles the external issue list against the current `cli` branch. Some items in the original list were stale after the previous dashboard pass.
+This table reconciles the external issue list against the current `memory` branch. Some historical evidence cells below preserve the local test counts from the commit that completed that item; the current local baseline is recorded in Current Status.
 
 | Original issue | Current status | Current evidence / next action |
 | --- | --- | --- |
-| P0: 4 tests failing | Done | Latest local baseline is `./scripts/check.sh` -> 294 passed; PR CI passed on Python 3.10 and 3.12. |
-| P1: valuable changes scattered in worktree | Done | `cli` is clean and pushed; previous large diff was split into task commits. |
+| P0: 4 tests failing | Done | Current local baseline is `./scripts/check.sh` -> `452 passed`; CI workflow covers Python 3.10 and 3.12. |
+| P1: valuable changes scattered in worktree | Done for current triage | Current branch is `memory`; six tracked code/test changes are a coherent `.env` inline-comment/header-validation fix set, and stale untracked superpowers drafts have been removed. |
 | P1: `runtime.py` God Class | Done for identified slices | Model output parsing lives in `pico/model_output_parser.py`; workspace snapshot helpers now live in `pico/workspace_snapshot.py`. |
 | P1: `evaluation/metrics.py` monolith | Done | `metrics.py` is now a compatibility export layer; implementation lives in `metrics_common.py`, `metrics_experiments.py`, and `metrics_reports.py`. |
 | P2: AgentLoop finalize/report duplication | Done | Terminal paths now share `_finish_run` for checkpoint, recovery checkpoint, verification evidence, trace, and report finalization. |

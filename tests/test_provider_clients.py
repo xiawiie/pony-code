@@ -112,6 +112,19 @@ def test_openai_compatible_client_posts_expected_responses_payload():
     }
 
 
+def test_openai_compatible_client_reports_non_header_api_key_characters():
+    client = OpenAICompatibleModelClient(
+        model="right.codes/codex-mini",
+        base_url="https://right.codes/v1",
+        api_key="sk-test新",
+        temperature=0.2,
+        timeout=30,
+    )
+
+    with pytest.raises(RuntimeError, match="Check .env for stray inline comments"):
+        client.complete("hello", 42)
+
+
 def test_openai_compatible_client_sends_prompt_cache_fields_and_records_usage():
     captured = {}
 
@@ -364,6 +377,19 @@ def test_anthropic_compatible_client_posts_expected_messages_payload():
         "stream": False,
         "temperature": 0.2,
     }
+
+
+def test_anthropic_compatible_client_reports_non_header_api_key_characters():
+    client = AnthropicCompatibleModelClient(
+        model="claude-sonnet-4-5-20250929",
+        base_url="https://www.right.codes/claude-aws/v1",
+        api_key="sk-test新",
+        temperature=0.2,
+        timeout=30,
+    )
+
+    with pytest.raises(RuntimeError, match="Check .env for stray inline comments"):
+        client.complete("hello", 42)
 
 
 def test_anthropic_compatible_client_sends_prompt_cache_control_and_records_usage():

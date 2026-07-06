@@ -6,7 +6,7 @@ from http.client import RemoteDisconnected
 import urllib.error
 import urllib.request
 
-from ._shared import _normalize_versioned_base_url, _optional_int
+from ._shared import _normalize_versioned_base_url, _optional_int, _validate_header_value
 
 
 def _extract_anthropic_text(data):
@@ -93,6 +93,7 @@ class AnthropicCompatibleModelClient:
         if self.supports_prompt_cache and prompt_cache_key:
             payload["cache_control"] = _anthropic_cache_control(prompt_cache_retention)
 
+        _validate_header_value("Anthropic-compatible API key", self.api_key)
         headers = {
             "Content-Type": "application/json",
             "x-api-key": self.api_key,

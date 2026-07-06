@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 from pico import FakeModelClient, Pico, SessionStore, WorkspaceContext
 from pico import cli as pico_cli
+from pico.config import read_project_env
 from pico.task_state import TaskState
 
 
@@ -142,6 +143,23 @@ def test_cli_build_agent_skips_malformed_project_env_lines_with_warning(tmp_path
     captured = capsys.readouterr()
     assert "warning: skipped invalid .env line 1" in captured.err
     assert secret_names == ["PICO_DEEPSEEK_API_KEY"]
+
+
+def test_project_env_strips_unquoted_inline_comments(tmp_path):
+    (tmp_path / ".env").write_text(
+        "PICO_OPENAI_API_KEY=sk-project-secret # local key note\n"
+        "PICO_OPENAI_MODEL=qwen3.7-max # default model\n"
+        "PICO_OPENAI_API_BASE=\"https://example.test/v1 # literal\"\n"
+        "PICO_LITERAL_HASH=abc#def\n",
+        encoding="utf-8",
+    )
+
+    env = read_project_env(tmp_path, warn=False)
+
+    assert env["PICO_OPENAI_API_KEY"] == "sk-project-secret"
+    assert env["PICO_OPENAI_MODEL"] == "qwen3.7-max"
+    assert env["PICO_OPENAI_API_BASE"] == "https://example.test/v1 # literal"
+    assert env["PICO_LITERAL_HASH"] == "abc#def"
 
 
 def test_cli_build_agent_reads_secret_names_from_environment_config(tmp_path):

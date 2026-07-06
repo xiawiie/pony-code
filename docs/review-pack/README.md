@@ -1,5 +1,13 @@
 # Pico Review Pack
 
+## Current local snapshot
+
+- Branch: `memory`
+- Current local baseline: `./scripts/check.sh` passes with `452 passed`
+- Provider smoke: `pico-cli doctor --format text` reports storage/recovery ok and provider connectivity ok
+- One-shot smoke: `pico-cli --no-input --approval never --max-steps 1 --max-new-tokens 32 --quiet run "Return exactly PICO_SMOKE_OK. Do not call tools."` returns `PICO_SMOKE_OK`
+- Worktree triage: keep the tracked `.env` inline-comment/header-validation fix set for submission; old untracked superpowers drafts were removed from the working tree
+
 ## Project pitch
 
 Pico is a lightweight local coding agent harness for repository-grounded engineering tasks. It wraps a model with workspace context, explicit tools, state tracking, memory, run artifacts, and benchmark evidence.
@@ -15,6 +23,8 @@ Pico is a lightweight local coding agent harness for repository-grounded enginee
 ## Benchmark evidence
 
 Benchmark runs should preserve reproducibility metadata, task rows, summary counts, and failure categories so reviewers can distinguish runtime regressions from task or provider failures.
+
+Current caveat: `benchmarks/memory_quality/run_benchmark.py` still reports `scaffold_only`; it validates scenario loading and workspace setup, not live model/tool-trace memory quality.
 
 ## Sample run artifact list
 

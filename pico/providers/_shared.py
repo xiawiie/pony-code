@@ -10,6 +10,16 @@ def _normalize_versioned_base_url(base_url):
     return base
 
 
+def _validate_header_value(name, value):
+    try:
+        str(value).encode("latin-1")
+    except UnicodeEncodeError as exc:
+        raise RuntimeError(
+            f"{name} contains characters that cannot be sent in HTTP headers. "
+            "Check .env for stray inline comments or non-ASCII suffixes."
+        ) from exc
+
+
 def _iter_sse_data_payloads(lines):
     for raw_line in lines:
         line = raw_line.decode("utf-8", errors="replace") if isinstance(raw_line, bytes) else str(raw_line)

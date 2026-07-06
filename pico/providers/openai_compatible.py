@@ -10,6 +10,7 @@ from ._shared import (
     _extract_usage_cache_details,
     _iter_openai_stream_chunks,
     _normalize_versioned_base_url,
+    _validate_header_value,
 )
 
 OPENAI_COMPATIBLE_USER_AGENT = "pico/0.1"
@@ -177,7 +178,9 @@ class OpenAICompatibleModelClient:
             "User-Agent": OPENAI_COMPATIBLE_USER_AGENT,
         }
         if self.api_key:
-            headers["Authorization"] = f"Bearer {self.api_key}"
+            authorization = f"Bearer {self.api_key}"
+            _validate_header_value("OpenAI-compatible API key", authorization)
+            headers["Authorization"] = authorization
         return headers
 
     def _request(self, payload, headers):
