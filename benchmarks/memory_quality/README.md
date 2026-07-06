@@ -1,37 +1,56 @@
 # Memory Quality Benchmark
 
-Release-gate benchmark for Pico memory v2. Not part of CI — costs real
-LLM tokens per run, so trigger it manually before cutting a release.
+Release-gate benchmark for Pico memory v2.
 
 ## Run
 
-```
-python benchmarks/memory_quality/run_benchmark.py [--scenario <substring>]
+Deterministic local evidence:
+
+```bash
+python benchmarks/memory_quality/run_benchmark.py --mode fake --format json
 ```
 
-The runner materializes a fresh temp workspace per scenario, seeds it
-from `setup_notes`, and reports the expected success metric so a human
-reviewer can score the LLM's response. The full model call + tool-trace
-capture is scaffolded and will be wired to a live provider before the
-first release; the harness structure (loader + workspace setup + summary
-table) already runs end-to-end.
+Optional live-provider evidence:
+
+```bash
+python benchmarks/memory_quality/run_benchmark.py --mode live --provider deepseek --format json
+```
+
+`--mode fake` uses a scripted fake model client and the real Pico runtime. It
+proves that memory tools execute, trace artifacts are written, and scenario
+scoring works without live provider credentials.
+
+`--mode live` uses a configured real provider and is useful before release, but
+it is not required for the fast local gate. Live-provider evidence depends on
+provider credentials, quota, and model behavior.
+
+## Output
+
+JSON output has this stable top-level shape:
+
+```json
+{
+  "schema_version": 1,
+  "mode": "fake",
+  "summary": {
+    "total": 8,
+    "passed": 8,
+    "failed": 0,
+    "pass_rate": 1.0
+  },
+  "rows": []
+}
+```
+
+Rows include scenario id, pass/fail status, memory tool calls, expected hits,
+observed hits, whether agent notes changed, and a failure reason.
+
+The current fake benchmark reports 8 rows across the 5 scenario groups below.
 
 ## Scenarios
 
-1. **recall** — user tells a fact, agent should call `memory_search` to
-   surface it later in the session.
-2. **search_cn** — Chinese query must hit Chinese notes via CJK bigram
-   tokenizer.
-3. **update** — user explicitly asks the agent to remember something;
-   agent should call `memory_save` (not re-create a duplicate note).
-4. **multi_note** — a request that touches multiple domains should
-   retrieve all relevant notes in the top hits.
-5. **no_noise** — an off-topic user turn should not falsely trigger a
-   high-scoring memory hit.
-
-## Success gate
-
-Per-scenario absolute thresholds live in
-`docs/superpowers/specs/2026-07-02-pico-memory-v2-design.md` §13.2.
-Reviewers compare the runner output against those thresholds by hand
-during release triage.
+1. **recall** - the agent should call `memory_search` and surface the expected note.
+2. **search_cn** - Chinese queries should hit Chinese notes via CJK bigram tokenizer.
+3. **update** - explicit remember requests should call `memory_save`.
+4. **multi_note** - multi-domain requests should retrieve all expected notes in the top hits.
+5. **no_noise** - off-topic turns should avoid high-scoring irrelevant memory hits.

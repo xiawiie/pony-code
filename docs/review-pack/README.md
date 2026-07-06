@@ -3,10 +3,13 @@
 ## Current local snapshot
 
 - Branch: `memory`
-- Current local baseline: `./scripts/check.sh` passes with `452 passed`
+- Current local baseline: `./scripts/check.sh` passes with `476 passed`
+- Phase 1 targeted tests: `uv run pytest tests/test_scripts.py tests/test_metrics.py tests/test_memory_quality_benchmark.py -q` passes with `34 passed`
+- Memory-quality gate: `uv run python benchmarks/memory_quality/run_benchmark.py --mode fake --format json` reports `total=8`, `failed=0`
+- Provider benchmark help: `uv run python scripts/run_provider_experiments.py --help` exposes `--provider {all,gpt,claude,deepseek}`
 - Provider smoke: `pico-cli doctor --format text` reports storage/recovery ok and provider connectivity ok
 - One-shot smoke: `pico-cli --no-input --approval never --max-steps 1 --max-new-tokens 32 --quiet run "Return exactly PICO_SMOKE_OK. Do not call tools."` returns `PICO_SMOKE_OK`
-- Worktree triage: keep the tracked `.env` inline-comment/header-validation fix set for submission; old untracked superpowers drafts were removed from the working tree
+- Worktree triage: Phase 1 tracked changes are committed on `memory`; two unrelated untracked design docs remain excluded from the branch.
 
 ## Project pitch
 
@@ -24,7 +27,7 @@ Pico is a lightweight local coding agent harness for repository-grounded enginee
 
 Benchmark runs should preserve reproducibility metadata, task rows, summary counts, and failure categories so reviewers can distinguish runtime regressions from task or provider failures.
 
-Current caveat: `benchmarks/memory_quality/run_benchmark.py` still reports `scaffold_only`; it validates scenario loading and workspace setup, not live model/tool-trace memory quality.
+Memory quality evidence: `benchmarks/memory_quality/run_benchmark.py --mode fake --format json` runs deterministic tool-trace scoring through the real Pico runtime. Live-provider memory-quality evidence remains optional because it depends on provider credentials, quota, and model behavior.
 
 ## Sample run artifact list
 
