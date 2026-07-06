@@ -20,28 +20,71 @@ import tempfile
 from pathlib import Path
 
 
+SCHEMA_VERSION = 1
 SCENARIO_DIR = Path(__file__).parent
+VALID_MODES = ("fake", "live")
+VALID_FORMATS = ("text", "json")
+VALID_LIVE_PROVIDERS = ("gpt", "claude", "deepseek")
 
 
-def load_scenarios(filter_id: str | None = None):
-    for jsonl in sorted(SCENARIO_DIR.glob("scenario_*.jsonl")):
-        for line in jsonl.read_text(encoding="utf-8").splitlines():
+class ScenarioLoadError(ValueError):
+    pass
+
+
+def load_scenarios(filter_id: str | None = None, scenario_dir: Path = SCENARIO_DIR):
+    scenario_dir = Path(scenario_dir)
+    for jsonl in sorted(scenario_dir.glob("scenario_*.jsonl")):
+        for line_number, line in enumerate(jsonl.read_text(encoding="utf-8").splitlines(), start=1):
             if not line.strip():
                 continue
-            data = json.loads(line)
-            if filter_id and filter_id not in data.get("id", ""):
+            try:
+                data = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise ScenarioLoadError(f"{jsonl}:{line_number}: invalid JSON: {exc.msg}") from exc
+            if filter_id and filter_id not in str(data.get("id", "")):
                 continue
+            scenario_id = str(data.get("id", "")).strip()
+            if not scenario_id:
+                raise ScenarioLoadError(f"{jsonl}:{line_number}: scenario id must not be empty")
+            if not isinstance(data.get("session_turns"), list):
+                raise ScenarioLoadError(f"{jsonl}:{line_number}: session_turns must be a list")
             yield jsonl.stem, data
 
 
-def setup_workspace(scenario: dict) -> Path:
-    ws = Path(tempfile.mkdtemp(prefix="pico-memory-bench-"))
+def _setup_note_target(workspace: Path, rel_path: str) -> Path:
+    parts = str(rel_path).split("/", 1)
+    if len(parts) != 2 or parts[0] != "workspace":
+        raise ValueError(f"invalid setup note path: {rel_path}")
+    sub_path = parts[1]
+    if not sub_path or sub_path.startswith("/") or ".." in sub_path.split("/"):
+        raise ValueError(f"invalid setup note path: {rel_path}")
+    if sub_path == "agent_notes.md":
+        return workspace / ".pico" / "memory" / "agent_notes.md"
+    if sub_path.startswith("notes/") and sub_path.endswith(".md"):
+        return workspace / ".pico" / "memory" / sub_path
+    raise ValueError(f"invalid setup note path: {rel_path}")
+
+
+def _validated_setup_notes(scenario: dict) -> list[tuple[str, str]]:
+    setup_notes = scenario.get("setup_notes", {})
+    if not isinstance(setup_notes, dict):
+        raise ValueError(f"{scenario.get('id', '<unknown>')}: setup_notes must be an object")
+
+    validated_notes = []
+    for rel, content in setup_notes.items():
+        rel_path = str(rel)
+        _setup_note_target(Path("__pico_workspace__"), rel_path)
+        validated_notes.append((rel_path, str(content)))
+    return validated_notes
+
+
+def setup_workspace(scenario: dict, parent_dir: Path | None = None) -> Path:
+    parent_dir = Path(parent_dir) if parent_dir is not None else None
+    setup_notes = _validated_setup_notes(scenario)
+    ws = Path(tempfile.mkdtemp(prefix="pico-memory-bench-", dir=str(parent_dir) if parent_dir else None))
     (ws / "AGENTS.md").write_text("# Test project\n", encoding="utf-8")
-    for rel, content in scenario.get("setup_notes", {}).items():
-        parts = rel.split("/", 1)
-        if len(parts) != 2 or parts[0] != "workspace":
-            continue
-        target = ws / ".pico" / "memory" / parts[1]
+    for rel, content in setup_notes:
+        target = _setup_note_target(ws, rel)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
     return ws
