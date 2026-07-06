@@ -10,7 +10,6 @@ from difflib import get_close_matches
 import os
 import shutil
 import sys
-import textwrap
 
 from .cli_commands import (
     ROOT_HELP,
@@ -27,6 +26,7 @@ from .cli_commands import (
     run_repl,
 )
 from .cli_errors import CLI_EXIT_USAGE, CliError
+from .cli_help import HELP_DETAILS  # noqa: F401
 from .cli_output import error_envelope, format_json
 from .cli_parser import parse_cli_invocation
 from .config import load_project_env, provider_env
@@ -119,18 +119,6 @@ WELCOME_ART = (
 WELCOME_NAME = "pico"
 WELCOME_SUBTITLE = "local coding agent"
 WELCOME_STATUS = "calm shell, ready for work"
-HELP_DETAILS = textwrap.dedent(
-    """\
-    Commands:
-    /help            Show this help message.
-    /memory          Show working memory + a listing of memory files.
-    /memory-review   Print agent_notes.md with an editing hint.
-    /save <text>     Append a note to workspace agent_notes.md.
-    /session         Show the path to the saved session file.
-    /reset           Clear the current session history and memory.
-    /exit            Exit the agent.
-    """
-).strip()
 
 
 SECRET_ENV_NAMES_VAR = "PICO_SECRET_ENV_NAMES"

@@ -541,7 +541,7 @@ def run_repl(agent):
         if user_input in {"/exit", "/quit"}:
             return 0
         if user_input == "/help":
-            from .cli import HELP_DETAILS
+            from .cli_help import HELP_DETAILS
 
             print(HELP_DETAILS)
             continue
