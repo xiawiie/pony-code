@@ -338,8 +338,30 @@ def tool_run_shell(context, args):
     ).strip()
 
 
+USER_NOTES_PROTECTED_PREFIX = (".pico", "memory", "notes")
+
+
+def _refuse_user_notes_write(context, path):
+    # User Notes 是用户手写的上下文；`memory_save` 只允许追加到 agent_notes.md。
+    # 通用 write_file / patch_file 必须在路径层就拒绝写入 `.pico/memory/notes/**`，
+    # 而不是依赖 --approval 拦（`--approval auto` 时不拦）。
+    try:
+        relative = path.relative_to(context.root)
+    except ValueError:
+        return ""
+    parts = relative.parts
+    if len(parts) < len(USER_NOTES_PROTECTED_PREFIX):
+        return ""
+    if parts[: len(USER_NOTES_PROTECTED_PREFIX)] == USER_NOTES_PROTECTED_PREFIX:
+        return f"error: refusing to write user note path (read-only for agent): {relative}"
+    return ""
+
+
 def tool_write_file(context, args):
     path = context.path(args["path"])
+    refusal = _refuse_user_notes_write(context, path)
+    if refusal:
+        return refusal
     content = str(args["content"])
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
@@ -348,6 +370,9 @@ def tool_write_file(context, args):
 
 def tool_patch_file(context, args):
     path = context.path(args["path"])
+    refusal = _refuse_user_notes_write(context, path)
+    if refusal:
+        return refusal
     if not path.is_file():
         raise ValueError("path is not a file")
     old_text = str(args.get("old_text", ""))
