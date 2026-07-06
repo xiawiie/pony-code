@@ -49,6 +49,11 @@ def set_raw_file_summary(agent, path, summary):
     )
 
 
+# =============================================================================
+# Agent integration smoke tests
+# =============================================================================
+
+
 def test_pico_constructor_uses_coding_agent_defaults(tmp_path):
     agent = build_agent(tmp_path, [])
 
@@ -344,6 +349,11 @@ def test_welcome_screen_keeps_box_shape_for_long_paths(tmp_path):
     assert "SLASH" not in welcome
     assert "READY      " not in welcome
     assert "commands: Commands:" not in welcome
+
+
+# =============================================================================
+# Provider client tests
+# =============================================================================
 
 
 def test_ollama_client_posts_expected_payload():
@@ -911,6 +921,11 @@ def test_anthropic_stream_complete_falls_back_to_complete():
     assert chunks == ["<final>fallback</final>"]
 
 
+# =============================================================================
+# Build agent / arg parser / packaging tests
+# =============================================================================
+
+
 def test_build_agent_uses_openai_provider_and_model_override(tmp_path):
     args = type(
         "Args",
@@ -1237,6 +1252,11 @@ def test_build_agent_uses_deepseek_provider_by_default(tmp_path):
     assert mock_anthropic.call_args.kwargs["base_url"] == "https://api.deepseek.com/anthropic"
     assert mock_anthropic.call_args.kwargs["api_key"] == "sk-test"
     assert agent.model_client is fake_client
+
+
+# =============================================================================
+# Runtime/report/resume tests
+# =============================================================================
 
 
 def test_successful_run_persists_run_artifacts_and_stop_reason(tmp_path):
@@ -1965,6 +1985,11 @@ def test_recent_transcript_entries_stay_richer_than_older_ones(tmp_path):
 
     assert recent_text in prompt
     assert old_text not in prompt
+
+
+# =============================================================================
+# Build agent / arg parser / packaging tests
+# =============================================================================
 
 
 def test_public_api_exports_resolve_through_package_path():
