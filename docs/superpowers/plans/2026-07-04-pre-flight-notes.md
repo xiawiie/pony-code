@@ -179,3 +179,71 @@ All checks passed!
 All pre-flight audits complete. Codebase is in stable, tested state. Ready for architecture convergence phases.
 P2 real-provider smoke: PASS (doctor OK; direct final OK; read_file tool final OK)
 P4 manual smoke: PASS (2026-07-06 11:25:19 CST; doctor exit 0 provider connectivity HTTP 200; direct final REAL_PROVIDER_SMOKE_OK exit 0; read_file tool final REAL_PROVIDER_TOOL_OK exit 0; status JSON ok/kind/data exit 0; REPL /help,/memory,/exit exit 0)
+
+---
+
+## Final state
+
+Task 27 acceptance run: 2026-07-06 14:21:23 CST on branch `memory`.
+
+Final line-count command:
+
+```bash
+wc -l pico/cli_commands.py pico/evaluation/metrics_experiments.py pico/providers/clients.py pico/runtime.py tests/test_pico.py pico/evaluation/*.py pico/providers/*.py pico/cli_*.py
+```
+
+Final line-count output:
+
+```text
+     258 pico/cli_commands.py
+     126 pico/evaluation/metrics_experiments.py
+      46 pico/providers/clients.py
+     709 pico/runtime.py
+     757 tests/test_pico.py
+       1 pico/evaluation/__init__.py
+     224 pico/evaluation/benchmark_schema.py
+      44 pico/evaluation/evaluator.py
+     295 pico/evaluation/experiments_real.py
+     368 pico/evaluation/experiments_recovery.py
+     508 pico/evaluation/experiments_synthetic.py
+     439 pico/evaluation/fixed_benchmark.py
+      79 pico/evaluation/metrics.py
+      36 pico/evaluation/metrics_common.py
+     126 pico/evaluation/metrics_experiments.py
+     402 pico/evaluation/metrics_reports.py
+     175 pico/evaluation/provider_benchmark.py
+      10 pico/providers/__init__.py
+      82 pico/providers/_shared.py
+     155 pico/providers/anthropic_compatible.py
+      46 pico/providers/clients.py
+      56 pico/providers/defaults.py
+      59 pico/providers/ollama.py
+     344 pico/providers/openai_compatible.py
+     258 pico/cli_commands.py
+     422 pico/cli_diagnostics.py
+      26 pico/cli_errors.py
+      15 pico/cli_help.py
+     253 pico/cli_memory.py
+      55 pico/cli_output.py
+      42 pico/cli_parser.py
+     285 pico/cli_recovery.py
+      86 pico/cli_start.py
+    6787 total
+```
+
+Line-count conclusions:
+
+- `pico/cli_commands.py`: 258 lines, under the <= 300 soft target.
+- `pico/evaluation/metrics_experiments.py`: 126 lines, under the <= 500 soft target.
+- `pico/providers/clients.py`: 46 lines, forwarding shell under 100 lines.
+- `pico/runtime.py`: 709 lines; this remains the deliberate orchestration module and was not an extraction target.
+- New/extracted files are <= 500 lines except `pico/evaluation/experiments_synthetic.py` at 508 lines. Reason documented: the 8-line soft-target overshoot keeps synthetic benchmark task definitions, fake-provider harness behavior, security checks, and aggregation entrypoints together so benchmark artifact shape stays stable after extraction.
+
+Acceptance evidence:
+
+- Public API contract: `uv run pytest tests/test_public_api_contract.py -q` -> `7 passed in 0.10s`.
+- Full check: `./scripts/check.sh` -> ruff `All checks passed!`; pytest `449 passed in 62.77s`.
+- Real-provider doctor: `pico-cli --cwd /Users/wei/Desktop/pico doctor` exited 0; sanitized output contained an OK-style diagnostic status marker.
+- Real-provider direct final: command exited 0 and returned `REAL_PROVIDER_SMOKE_OK`; run `run_20260706-141927-8f2e2c` recorded `stop_reason=final_answer_returned` and `tool_steps=0`.
+- Real-provider read_file final: command exited 0 and returned `REAL_PROVIDER_TOOL_OK`; run `run_20260706-141956-a8b44e` recorded `stop_reason=final_answer_returned`, `tool_steps=1`, and read_file tool trace events.
+- No API key values or environment dumps were printed or recorded in this note.
