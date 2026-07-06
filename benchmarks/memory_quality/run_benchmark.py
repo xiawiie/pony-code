@@ -1,10 +1,7 @@
-"""Memory quality benchmark runner (release gate, not CI).
+"""Memory quality benchmark runner.
 
-Reads `scenario_*.jsonl`, sets up fixture repos, and reports the expected
-success metric so a human reviewer can score the LLM's response. The
-actual model invocation + tool-trace capture is wired in during a
-release; this scaffold materializes workspaces and defines the summary
-shape.
+Reads `scenario_*.jsonl`, sets up isolated fixture repos, runs fake or live
+Pico sessions, scores memory tool traces, and emits text or JSON summaries.
 
 Usage:
     python benchmarks/memory_quality/run_benchmark.py [--scenario <substring>]
@@ -19,6 +16,17 @@ import shutil
 import sys
 import tempfile
 from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from pico.evaluation.provider_benchmark import _make_provider_client  # noqa: E402
+from pico.memory.block_store import BlockStore  # noqa: E402
+from pico.memory.retrieval import Retrieval  # noqa: E402
+from pico.providers.clients import FakeModelClient  # noqa: E402
+from pico.runtime import Pico, SessionStore  # noqa: E402
+from pico.workspace import WorkspaceContext  # noqa: E402
 
 
 SCHEMA_VERSION = 1
@@ -236,36 +244,188 @@ def score_scenario(scenario: dict, trace_events: list[dict], workspace: Path) ->
     return row
 
 
-def run_scenario(scenario_name: str, scenario: dict, keep: bool) -> dict:
-    print(f"[{scenario_name}] {scenario['id']} ...", flush=True)
-    ws = setup_workspace(scenario)
+def _tool_call(name: str, args: dict) -> str:
+    return "<tool>" + json.dumps({"name": name, "args": args}, sort_keys=True) + "</tool>"
+
+
+def _fake_search_query_for_turn(turn: dict) -> str:
+    user = str(turn.get("user", "")).strip()
+    expected_paths = []
+    if turn.get("expected_search_hit"):
+        expected_paths.append(str(turn["expected_search_hit"]))
+    if turn.get("expected_search_hits_top"):
+        expected_paths.extend(str(path) for path in turn["expected_search_hits_top"])
+    stems = " ".join(Path(path).stem for path in expected_paths)
+    return " ".join(part for part in (user, stems) if part)
+
+
+def _fake_outputs_for_turn(turn: dict) -> list[str]:
+    if turn.get("expected_no_search_hit"):
+        return ["<final>No relevant memory needed.</final>"]
+    if turn.get("expected_tool") == "memory_save":
+        return [
+            _tool_call("memory_save", {"note": _expected_note_from_turn(turn)}),
+            "<final>Saved the memory note.</final>",
+        ]
+    return [
+        _tool_call("memory_search", {"query": _fake_search_query_for_turn(turn), "limit": 5}),
+        "<final>Checked memory.</final>",
+    ]
+
+
+def _fake_outputs_for_scenario(scenario: dict) -> list[str]:
+    outputs = []
+    for turn in scenario.get("session_turns", []):
+        outputs.extend(_fake_outputs_for_turn(turn))
+    return outputs
+
+
+def _build_model_client(mode: str, provider: str, scenario: dict):
+    if mode == "fake":
+        return FakeModelClient(_fake_outputs_for_scenario(scenario))
+    return _make_provider_client(provider)
+
+
+def _build_agent(workspace: Path, model_client) -> Pico:
+    workspace_context = WorkspaceContext.build(str(workspace))
+    agent = Pico(
+        model_client=model_client,
+        workspace=workspace_context,
+        session_store=SessionStore(str(workspace / ".pico" / "sessions")),
+        approval_policy="never",
+        max_steps=8,
+        max_new_tokens=512,
+        depth=1,
+    )
+    agent.memory_store = BlockStore(
+        workspace / ".pico" / "memory",
+        workspace / ".pico" / "benchmark-user-memory",
+    )
+    agent.memory_retrieval = Retrieval(agent.memory_store)
+    if hasattr(agent.context_manager, "_refresher"):
+        agent.context_manager._refresher = None
+    agent.tools = agent._apply_tool_allowlist(agent.build_tools())
+    return agent
+
+
+def _read_latest_trace(agent: Pico) -> list[dict]:
+    if agent.current_task_state is None:
+        return []
+    trace_path = agent.run_store.trace_path(agent.current_task_state)
+    return [
+        json.loads(line)
+        for line in trace_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+
+def run_scenario(scenario_name: str, scenario: dict, keep: bool, mode: str, provider: str) -> dict:
+    del scenario_name
+    ws = None
     try:
-        print(f"  workspace: {ws}")
-        print(f"  expected metric: {scenario['success_metric']}")
-        # Real LLM invocation lives in the release harness; the scaffold
-        # covers scenario loading + workspace materialization so future
-        # wiring can focus on the tool-trace assertion path.
-        return {"id": scenario["id"], "status": "scaffold_only", "workspace": str(ws)}
+        ws = setup_workspace(scenario)
+        model_client = _build_model_client(mode, provider, scenario)
+        agent = _build_agent(ws, model_client)
+        trace_events = []
+        for turn in scenario.get("session_turns", []):
+            agent.ask(str(turn.get("user", "")).strip())
+            trace_events.extend(_read_latest_trace(agent))
+        row = score_scenario(scenario, trace_events, ws)
+        if keep and ws is not None:
+            row["workspace"] = str(ws)
+        return row
+    except Exception as exc:
+        row = {
+            "id": str(scenario.get("id", "")),
+            "status": "fail",
+            "tool_calls": [],
+            "expected_hits": [],
+            "observed_hits": [],
+            "agent_notes_changed": False,
+            "failure_reason": f"{type(exc).__name__}: {exc}",
+        }
+        if keep and ws is not None:
+            row["workspace"] = str(ws)
+        return row
     finally:
-        if not keep:
+        if not keep and ws is not None:
             shutil.rmtree(ws, ignore_errors=True)
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--scenario", default=None, help="Filter by id substring.")
-    ap.add_argument("--keep", action="store_true", help="Keep temp workspaces.")
-    args = ap.parse_args()
+def summarize_rows(rows: list[dict]) -> dict:
+    total = len(rows)
+    passed = sum(1 for row in rows if row.get("status") == "pass")
+    failed = total - passed
+    return {
+        "total": total,
+        "passed": passed,
+        "failed": failed,
+        "pass_rate": passed / total if total else 0.0,
+    }
 
-    results = []
-    for stem, scenario in load_scenarios(filter_id=args.scenario):
-        results.append(run_scenario(stem, scenario, keep=args.keep))
 
-    print("\n=== summary ===")
-    for record in results:
-        print(f"  {record['id']}: {record['status']}")
+def build_payload(rows: list[dict], mode: str, provider: str) -> dict:
+    payload = {
+        "schema_version": SCHEMA_VERSION,
+        "mode": mode,
+        "summary": summarize_rows(rows),
+        "rows": rows,
+    }
+    if mode == "live":
+        payload["provider"] = provider
+    return payload
 
-    return 0 if results else 1
+
+def render_text(payload: dict) -> str:
+    lines = ["=== summary ==="]
+    summary = payload["summary"]
+    lines.append(
+        f"total={summary['total']} passed={summary['passed']} failed={summary['failed']} "
+        f"pass_rate={summary['pass_rate']:.3f}"
+    )
+    for row in payload["rows"]:
+        suffix = ""
+        if row.get("failure_reason"):
+            suffix = f" - {row['failure_reason']}"
+        lines.append(f"  {row['id']}: {row['status']}{suffix}")
+    return "\n".join(lines)
+
+
+def build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--scenario", default=None, help="Filter by id substring.")
+    parser.add_argument("--keep", action="store_true", help="Keep temp workspaces.")
+    parser.add_argument("--mode", choices=VALID_MODES, default="fake")
+    parser.add_argument("--provider", choices=VALID_LIVE_PROVIDERS, default="deepseek")
+    parser.add_argument("--format", choices=VALID_FORMATS, default="text")
+    parser.add_argument("--fail-fast", action="store_true")
+    return parser
+
+
+def main(argv=None):
+    args = build_arg_parser().parse_args(argv)
+    rows = []
+    try:
+        scenarios = list(load_scenarios(filter_id=args.scenario))
+    except ScenarioLoadError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    if not scenarios:
+        print("no memory quality scenarios matched", file=sys.stderr)
+        return 1
+
+    for stem, scenario in scenarios:
+        row = run_scenario(stem, scenario, keep=args.keep, mode=args.mode, provider=args.provider)
+        rows.append(row)
+        if args.fail_fast and row.get("status") != "pass":
+            break
+
+    payload = build_payload(rows, mode=args.mode, provider=args.provider)
+    if args.format == "json":
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    else:
+        print(render_text(payload))
+    return 0 if payload["summary"]["total"] and payload["summary"]["failed"] == 0 else 1
 
 
 if __name__ == "__main__":

@@ -1,4 +1,5 @@
 import importlib.util
+import json
 from pathlib import Path
 
 import pytest
@@ -413,3 +414,83 @@ def test_score_memory_save_requires_expected_note_in_args(tmp_path):
 
     assert row["status"] == "fail"
     assert row["failure_reason"] == "memory_save note args did not include expected note"
+
+
+def test_fake_mode_outputs_json_summary_without_human_text(capsys):
+    module = _load_memory_benchmark_module()
+
+    code = module.main(["--mode", "fake", "--format", "json", "--scenario", "recall_bcrypt"])
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert code == 0
+    assert captured.out.lstrip().startswith("{")
+    assert "=== summary ===" not in captured.out
+    assert payload["schema_version"] == 1
+    assert payload["mode"] == "fake"
+    assert payload["summary"]["total"] == 1
+    assert payload["summary"]["failed"] == 0
+    assert payload["rows"][0]["id"] == "recall_bcrypt"
+    assert payload["rows"][0]["status"] == "pass"
+    assert "memory_search" in payload["rows"][0]["tool_calls"]
+
+
+def test_fake_mode_scores_update_scenario(capsys):
+    module = _load_memory_benchmark_module()
+
+    code = module.main(["--mode", "fake", "--format", "json", "--scenario", "update_bcrypt_lesson"])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 0
+    row = payload["rows"][0]
+    assert row["status"] == "pass"
+    assert row["tool_calls"] == ["memory_save"]
+    assert row["agent_notes_changed"] is True
+
+
+def test_fake_mode_scores_no_noise_without_memory_search(capsys):
+    module = _load_memory_benchmark_module()
+
+    code = module.main(["--mode", "fake", "--format", "json", "--scenario", "no_noise_food"])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 0
+    row = payload["rows"][0]
+    assert row["status"] == "pass"
+    assert row["tool_calls"] == []
+    assert row["observed_hits"] == []
+
+
+def test_fake_mode_full_benchmark_outputs_zero_failures(capsys):
+    module = _load_memory_benchmark_module()
+
+    code = module.main(["--mode", "fake", "--format", "json"])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert payload["summary"]["total"] == 8
+    assert payload["summary"]["failed"] == 0
+
+
+def test_fake_mode_ignores_user_memory_root(monkeypatch, tmp_path, capsys):
+    home = tmp_path / "home"
+    user_notes = home / ".pico" / "memory" / "notes"
+    user_notes.mkdir(parents=True)
+    noisy_note = (
+        "auth session testing bcrypt hash passwords login endpoint async tests "
+        "pytest asyncio_mode auto cookies SameSite flow "
+        "密码 加密 异步 测试 配置 认证 会话 "
+    )
+    for index in range(4):
+        (user_notes / f"noisy_{index}.md").write_text(noisy_note * 20, encoding="utf-8")
+    monkeypatch.setenv("HOME", str(home))
+
+    module = _load_memory_benchmark_module()
+
+    code = module.main(["--mode", "fake", "--format", "json"])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert payload["summary"]["failed"] == 0
+    for row in payload["rows"]:
+        assert not any(path.startswith("user/") for path in row["observed_hits"])
