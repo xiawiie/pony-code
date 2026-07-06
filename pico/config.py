@@ -114,6 +114,23 @@ def _parse_scalar(raw):
         return text
 
 
+def project_max_blob_size(workspace_root):
+    """ADR-0034 承诺的 pico.toml 轻量 override：读取 `[policy] max_blob_size`。
+
+    没写 pico.toml、section 缺失、值非法（负数或非整数）都回退到 recovery_policy
+    里的默认值，让调用方可以无条件把返回值传给 snapshot_eligibility。
+    """
+    from .recovery_policy import DEFAULT_MAX_BLOB_SIZE
+
+    data = load_pico_toml(workspace_root)
+    raw = data.get("policy", {}).get("max_blob_size")
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        return DEFAULT_MAX_BLOB_SIZE
+    if raw <= 0:
+        return DEFAULT_MAX_BLOB_SIZE
+    return raw
+
+
 def load_pico_toml(workspace_root):
     """极简的 pico.toml 解析器：只支持 `[section]` 头 + `key = scalar` 行。
 

@@ -537,7 +537,11 @@ def _capture_before_file_states_for_paths(agent, raw_paths):
             continue
         if not resolved.exists() or not resolved.is_file():
             continue
-        eligibility = snapshot_eligibility(workspace_root, normalized)
+        eligibility = snapshot_eligibility(
+            workspace_root,
+            normalized,
+            max_blob_size=agent.project_max_blob_size,
+        )
         if not eligibility.get("snapshot_eligible", False):
             continue
         try:
@@ -620,7 +624,11 @@ def _build_file_entries(agent, name, args, affected_paths, before_snapshot, befo
             normalized = normalize_workspace_relative_path(raw_path)
         except ValueError:
             continue
-        eligibility = snapshot_eligibility(workspace_root, normalized)
+        eligibility = snapshot_eligibility(
+            workspace_root,
+            normalized,
+            max_blob_size=agent.project_max_blob_size,
+        )
         try:
             resolved = resolve_workspace_relative_path(workspace_root, normalized)
         except ValueError:

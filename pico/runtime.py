@@ -119,6 +119,11 @@ class Pico:
         self.recovery_checkpoint_writer = RecoveryCheckpointWriter(self.checkpoint_store, self.root)
         self.recovery_manager = RecoveryManager(self.checkpoint_store, self.root)
         self.workspace_observer = WorkspaceObserver(self.root)
+        # ADR-0034: pico.toml 里 `[policy] max_blob_size` 是唯一在第一阶段生效的覆盖项。
+        # 构造期解析一次并缓存，后续 snapshot_eligibility 调用都读这个值。
+        from .config import project_max_blob_size
+
+        self.project_max_blob_size = project_max_blob_size(self.root)
         self.session = session or {
             "id": datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6],
             "created_at": now(),
