@@ -21,9 +21,7 @@ def _iter_sse_data_payloads(lines):
             yield payload
 
 
-def _iter_openai_stream_chunks(lines):
-    from .clients import _extract_openai_text
-
+def _iter_openai_stream_chunks(lines, extract_text):
     yielded_delta = False
     for payload in _iter_sse_data_payloads(lines):
         if payload == "[DONE]":
@@ -47,13 +45,13 @@ def _iter_openai_stream_chunks(lines):
                 yield text, response_data
             continue
         if event_type == "response.completed":
-            text = _extract_openai_text(response_data)
+            text = extract_text(response_data)
             if text and not yielded_delta:
                 yield text, response_data
             else:
                 yield "", response_data
             continue
-        text = _extract_openai_text(event)
+        text = extract_text(event)
         if text and not yielded_delta:
             yield text, event
 
