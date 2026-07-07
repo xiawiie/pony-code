@@ -179,6 +179,10 @@ class Pico:
     def _ensure_session_shape(self):
         if not isinstance(self.session.get("history"), list):
             self.session["history"] = []
+        if not isinstance(self.session.get("messages"), list):
+            self.session["messages"] = []
+        if not isinstance(self.session.get("recently_recalled"), list):
+            self.session["recently_recalled"] = []
         existing_memory = self.session.get("memory")
         if not isinstance(existing_memory, dict):
             existing_memory = {}
@@ -334,6 +338,11 @@ class Pico:
 
     def record(self, item):
         self.session["history"].append(self.redact_artifact(item))
+        self.session_path = self.session_store.save(self.session)
+
+    def record_message(self, msg):
+        """Append a v2-shaped message dict to session["messages"] and persist."""
+        self.session["messages"].append(self.redact_artifact(msg))
         self.session_path = self.session_store.save(self.session)
 
     @staticmethod

@@ -1,6 +1,7 @@
 """Agent control loop extracted from the runtime facade."""
 
 import time
+import uuid
 
 from .checkpoint import CHECKPOINT_NONE_STATUS, CHECKPOINT_PARTIAL_STALE_STATUS, CHECKPOINT_WORKSPACE_MISMATCH_STATUS
 from .recovery_models import TRACE_RECOVERY_CHECKPOINT_CREATED
@@ -11,6 +12,55 @@ from .recovery_checkpoint_writer import (
 from .task_state import TaskState
 from .verification import is_verification_command, parse_run_shell_result
 from .workspace import clip, now
+
+
+def _append_user_turn(agent, text: str):
+    """Append a plain-text user turn to session["messages"] via agent.record_message."""
+    msg = {"role": "user", "content": text, "_pico_meta": {"created_at": now()}}
+    agent.record_message(msg)
+    return msg
+
+
+def _append_tool_use(agent, *, name: str, input: dict, id_hint: str | None = None) -> str:
+    """Append an assistant tool_use turn. Returns the tool_use_id (generated if id_hint None)."""
+    tool_use_id = id_hint or f"toolu_{uuid.uuid4().hex[:12]}"
+    msg = {
+        "role": "assistant",
+        "content": [{"type": "tool_use", "id": tool_use_id, "name": name, "input": input}],
+        "_pico_meta": {"created_at": now(), "tool_use_id": tool_use_id},
+    }
+    agent.record_message(msg)
+    return tool_use_id
+
+
+def _append_tool_result(
+    agent,
+    *,
+    tool_use_id: str,
+    content: str,
+    digest_applied: bool = False,
+    source_hash: str | None = None,
+):
+    """Append a tool_result. Anthropic semantics: role="user" wrapping the tool_result block."""
+    msg = {
+        "role": "user",
+        "content": [{"type": "tool_result", "tool_use_id": tool_use_id, "content": content}],
+        "_pico_meta": {
+            "created_at": now(),
+            "tool_use_id": tool_use_id,
+            "digest_applied": digest_applied,
+            "source_hash": source_hash,
+        },
+    }
+    agent.record_message(msg)
+    return msg
+
+
+def _append_assistant_text(agent, text: str):
+    """Append a plain-text assistant turn."""
+    msg = {"role": "assistant", "content": text, "_pico_meta": {"created_at": now()}}
+    agent.record_message(msg)
+    return msg
 
 
 class AgentLoop:
