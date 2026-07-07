@@ -1,7 +1,7 @@
 # Pico Ideal AgentLoop Kernel — Design Spec
 
 Date: 2026-07-07
-Status: Draft — revised after naming and compatibility review
+Status: Implementation plan written
 
 ---
 
@@ -97,6 +97,26 @@ does well:
 
 This is not compatibility clutter. It is Pico's current product value.
 
+### Finding 5: Only Transcript State Should Be Cut Over
+
+The hard cutover is about the persisted conversation transcript. Current Pico
+also stores non-transcript runtime state in the session file:
+
+- `memory.file_summaries`
+- `checkpoints`
+- `runtime_identity`
+- `resume_state`
+- `recovery`
+- `working_memory`
+- `recently_recalled`
+- `created_at` / `workspace_root`
+
+Those fields are not old compatibility baggage. They support file-summary
+reuse, checkpoint freshness, workspace mismatch detection, recovery checkpoint
+linking, and diagnostics. The v3 migration should keep and normalize those
+fields while replacing only the old transcript sources: `history` and
+`messages`.
+
 ---
 
 ## 3. Target Architecture
@@ -143,13 +163,23 @@ No standalone gateway is introduced.
 ```python
 session = {
     "id": "...",
+    "created_at": "...",
+    "workspace_root": "...",
     "schema_version": 3,
     "records": [...],
     "recovery": {...},
+    "checkpoints": {...},
+    "runtime_identity": {...},
+    "resume_state": {...},
     "working_memory": {...},
+    "memory": {"file_summaries": {...}},
     "recently_recalled": [...],
 }
 ```
+
+The required v3 change is not a minimal session file. The required change is a
+single persisted transcript: `records`. Existing non-transcript fields remain
+part of the session because other Pico systems still own them.
 
 ### 4.2 Removed Stored Fields
 
