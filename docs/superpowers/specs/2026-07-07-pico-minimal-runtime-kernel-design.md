@@ -1,116 +1,118 @@
 # Pico Minimal Runtime Kernel — Design Spec
 
 Date: 2026-07-07
-Status: Draft — awaiting user review before implementation planning
+Status: Draft v2 — revised after implementation-grounded review
 
 ---
 
 ## 1. Summary
 
-Pico should evolve toward a **Pi-style minimal agent runtime kernel**, not a
+Pico should evolve toward a **Pi-style minimal runtime kernel**, not a
 standalone gateway.
 
-The kernel is a small set of stable internal protocols and runtime boundaries:
+The design direction remains:
 
-- `TurnRequest`: what the model sees for one turn.
-- `ModelResponse`: what the provider returns after normalization.
-- `SessionEvent`: the append-only source of truth for user/model/tool/recovery
-  activity.
-- `ToolInvocation`: a model-requested tool action after runtime validation.
-- `ToolResult`: the normalized result of a tool execution, including recovery
-  and verification metadata.
+> Minimal Runtime Kernel + Thin Provider Adapters + Session Event Journal,
+> with gateway/server mode deferred until there is a real multi-client need.
 
-This design keeps Pico local, small, inspectable, and provider-agnostic. It also
-keeps a future gateway possible: if Pico later needs a server, IDE client,
-desktop client, or multi-agent control plane, that layer can wrap the runtime
-kernel instead of becoming the runtime itself.
+The v2 revision makes the design stricter about current-code fit:
+
+1. **Context parity first**: the new turn request path must preserve the useful
+   context currently produced by `ContextManager.build()`.
+2. **Adapter shim, not interface jump**: keep `complete_v2(...)` during
+   migration; introduce object-based calls behind a compatibility seam.
+3. **Event journal starts as shadow log**: do not make events the source of truth
+   until projection parity is proven.
+4. **Reuse existing tool result semantics**: the proposed `ToolResult` is the
+   target meaning of the current `ToolExecutionResult`, not a parallel object to
+   add blindly.
+5. **Single tool-use policy in phase 1**: the runtime handles one tool call per
+   model turn until multi-tool behavior is explicitly designed.
+
+This keeps Pico's architecture upgrade incremental: it clarifies protocol
+boundaries without destabilizing memory, context, recovery, trace, or reports.
 
 ---
 
-## 2. Background
+## 2. Current Implementation Anchors
 
-Pico is already more than a thin CLI wrapper. The current runtime has:
+This design is grounded in the current Pico shape:
 
-- a CLI / REPL surface;
-- an `AgentLoop` control loop;
-- bounded context assembly;
-- provider clients;
-- tool execution and approval policy;
-- memory layers;
-- checkpoints and recovery records;
-- trace, report, and evaluation scaffolding.
-
-Recent work has already moved in the correct direction:
-
-- `ContextManager.build_v2()` emits a structured request with `system`, `tools`,
+- `pico.runtime.Pico` is the runtime facade.
+- `pico.agent_loop.AgentLoop` owns the model/tool/final-answer loop.
+- `pico.context_manager.ContextManager.build()` is the legacy prompt assembly
+  path.
+- `ContextManager.build_v2()` currently returns a dict with `system`, `tools`,
   `messages`, and `cache_control_breakpoints`.
 - provider clients can expose `complete_v2(...)`.
-- `Response` and `StopReason` normalize provider output.
-- `FallbackAdapter` lets old prompt/string providers participate in the v2
-  runtime path.
-- `AgentLoop` is shifting from parsing XML text to handling normalized response
-  blocks.
+- `pico.providers.response.Response` and `StopReason` normalize model output.
+- `FallbackAdapter` lets legacy prompt/string providers participate in the v2
+  path.
+- `SessionStore` currently persists JSON sessions with `messages` and legacy
+  `history` compatibility.
+- `ToolExecutor.execute(...)` returns `ToolExecutionResult(content, metadata)`.
+- checkpoint/recovery state currently flows through tool-change records,
+  turn checkpoints, resume checkpoints, task state, trace, and reports.
 
-The next design step should not be another broad subsystem rewrite. It should
-be a boundary clarification: make the internal protocol explicit, then let
-context, provider adapters, tools, session storage, report generation, and
-recovery all project around that protocol.
+The design must respect these facts. A kernel refactor that loses context,
+breaks provider compatibility, or splits recovery metadata away from the
+existing tool execution path is not acceptable.
 
 ---
 
-## 3. Product Direction
+## 3. Design Decision
 
-### 3.1 Primary Archetype: Pi-style Minimal Runtime
+### 3.1 Do Not Build a Gateway Now
 
-Pi's useful idea for Pico is not a feature checklist. It is a shape:
+A gateway would usually own:
 
-- small core;
-- provider-agnostic runtime;
-- session history as a first-class primitive;
-- extension points that are simple and composable;
-- UI surfaces as clients of the runtime, not owners of the runtime.
+- multi-client access;
+- session routing;
+- provider routing;
+- event streaming;
+- auth or permission boundaries;
+- agent runtime selection;
+- channel integrations.
 
-This matches Pico's current direction: local-first, stdlib-heavy, inspectable,
-and focused on a single workspace coding-agent loop.
+That shape is useful for systems like multi-channel coding-agent platforms. It
+is not Pico's current primary path. Pico is still a local coding-agent harness:
+one CLI/REPL, one workspace, one runtime loop, local state, local recovery
+artifacts.
 
-### 3.2 Secondary Inspiration: OpenCode / OpenClaw Boundaries
+Building a gateway now would move complexity outward before the internal turn
+protocol is stable.
 
-OpenCode and OpenClaw are still useful references, but mainly for boundaries:
+### 3.2 Keep Gateway-Readiness Internally
 
-- server/client separation can be useful later;
-- permissions should remain a runtime/tool policy concern;
-- provider differences should be behind adapters;
-- multi-agent and multi-channel routing should not leak into the core loop.
+Pico should keep a future gateway possible by stabilizing internal contracts:
 
-Pico should absorb these boundary lessons without copying their platform shape.
+- model input is a `TurnRequest`;
+- provider output is a normalized `Response`;
+- tool execution goes through a normalized invocation/result boundary;
+- durable runtime activity can be shadow-logged as session events;
+- runtime state transitions are traceable.
 
-### 3.3 Main Decision
+If Pico later needs a gateway, it should wrap the runtime:
 
-Do **not** design a standalone gateway now.
+```text
+Gateway/API wrapper -> Pico Runtime Kernel -> Session/Event/Recovery stores
+```
 
-Design:
-
-> Pico Minimal Runtime Kernel + Session Event Journal + Thin Provider Adapters
-
-Future gateway:
-
-> HTTP/WebSocket/API wrapper around the runtime kernel, only if multi-client or
-> long-running server use cases become real.
+It should not become the place where agent semantics live.
 
 ---
 
 ## 4. Goals
 
-1. Make the model-facing turn shape provider-agnostic.
-2. Keep provider adapters thin and translation-only.
-3. Make session history an append-only event journal, not only a provider
-   `messages` array.
-4. Treat `messages` as a projection from session events.
-5. Keep tool policy, approval, recovery, and verification outside provider
+1. Make the model-facing turn shape explicit and provider-agnostic.
+2. Preserve context quality from the current legacy prompt path.
+3. Keep provider adapters thin and translation-only.
+4. Keep tool policy, approval, recovery, and verification outside provider
    adapters.
-6. Preserve Pico's local-first simplicity.
-7. Leave a clear future path to gateway/server mode without building it now.
-8. Migrate incrementally from today's v2 request/response path.
+5. Introduce session events incrementally as an audit/projection layer.
+6. Avoid a broad rewrite of memory, checkpoint, recovery, trace, or reports.
+7. Keep Pico local-first and inspectable.
+8. Leave gateway/server mode as a future wrapper, not a near-term subsystem.
 
 ---
 
@@ -119,12 +121,12 @@ Future gateway:
 - Do not build a standalone gateway process.
 - Do not introduce WebSocket, HTTP server, auth, multi-client sessions, or
   remote routing in this phase.
-- Do not build a full plugin marketplace or OpenClaw-style capability platform.
-- Do not add subagent routing as part of this kernel design.
-- Do not add a vector database or embedding memory.
-- Do not rewrite checkpoint/recovery/reporting wholesale.
-- Do not make provider adapters responsible for runtime policy.
-- Do not force all current providers to become native-tool providers at once.
+- Do not build a full plugin platform in the first kernel migration.
+- Do not add subagent routing as part of this design.
+- Do not add vector search, embeddings, or an external database.
+- Do not replace `messages` and `history` with events in the first phase.
+- Do not rename every existing type just to match the design vocabulary.
+- Do not make current non-native providers implement native tool APIs.
 
 ---
 
@@ -134,50 +136,142 @@ Future gateway:
 flowchart TD
   CLI["CLI / REPL"] --> Runtime["Pico Runtime Kernel"]
 
-  Runtime --> Context["Context Composer"]
-  Runtime --> Provider["Provider Adapter"]
-  Runtime --> Tools["Tool Executor + Policy"]
-  Runtime --> Session["Session Event Journal"]
-  Runtime --> Recovery["Checkpoint / Recovery"]
-
+  Runtime --> Context["ContextManager / Turn Builder"]
   Context --> TurnRequest["TurnRequest"]
+
+  Runtime --> Provider["Provider Adapter"]
   TurnRequest --> Provider
-  Provider --> ModelResponse["ModelResponse"]
-  ModelResponse --> Runtime
+  Provider --> Response["Response / ModelResponse semantics"]
+  Response --> Runtime
 
-  Runtime --> ToolInvocation["ToolInvocation"]
-  ToolInvocation --> Tools
-  Tools --> ToolResult["ToolResult"]
-  ToolResult --> Runtime
+  Runtime --> Invocation["ToolInvocation"]
+  Invocation --> Tools["ToolExecutor + Policy"]
+  Tools --> ToolExecutionResult["ToolExecutionResult / ToolResult semantics"]
+  ToolExecutionResult --> Runtime
 
-  Runtime --> SessionEvent["SessionEvent"]
-  SessionEvent --> Session
+  Runtime --> Messages["session['messages']"]
+  Runtime --> History["session['history'] legacy compatibility"]
+  Runtime --> Events["session['events'] shadow journal"]
+  Runtime --> Trace["RunStore trace/report"]
+  Runtime --> Recovery["Checkpoint / Recovery records"]
 ```
 
-The runtime kernel owns the control loop. It does not own every subsystem's
-internal logic. Its job is to coordinate one turn:
+The runtime kernel coordinates one turn:
 
-1. accept user input;
-2. append a user event;
-3. ask the context composer for a `TurnRequest`;
-4. send the request through the provider adapter;
-5. receive a normalized `ModelResponse`;
-6. append assistant text or tool-use events;
-7. execute tools through the tool executor;
-8. append tool result and recovery events;
-9. repeat until final answer, error, retry limit, or step limit.
+1. append the user's message to current session state;
+2. build a model-facing `TurnRequest`;
+3. call a provider through the adapter boundary;
+4. interpret the normalized `Response`;
+5. either finish with assistant text or create one tool invocation;
+6. execute the tool through `ToolExecutor`;
+7. append tool result to model-facing transcript;
+8. update trace, task state, recovery, and shadow events;
+9. repeat until final answer, model error, retry limit, or step limit.
+
+The important change from the first draft: `session["events"]` is not the first
+source of truth. It starts as a shadow journal until projections are proven.
 
 ---
 
-## 7. Core Protocols
+## 7. Core Invariants
 
-The names below are design-level names. Implementation can introduce them as
-dataclasses or typed dicts, depending on the local style.
+### 7.1 Context Parity Invariant
 
-### 7.1 TurnRequest
+The v2 turn request path must not silently drop context that the legacy prompt
+path currently gives to the model.
 
-`TurnRequest` is Pico's internal model request. It should not be described as
-"Anthropic shape", even if Anthropic is the first native implementation.
+The current legacy path includes:
+
+- stable prefix and behavioral rules;
+- memory guidance;
+- project structure and memory index;
+- workspace volatile state;
+- checkpoint/resume text;
+- compressed history;
+- current user request;
+- budget metadata and prompt cache metadata.
+
+The target `build_turn(...)` must explicitly account for each of these. A field
+may move from flat prompt text into `system`, `messages`, a system-reminder
+block, or metadata, but it must not disappear.
+
+Acceptance rule:
+
+> A test should compare the legacy prompt sections with the v2 `TurnRequest`
+> and assert that each required context class is represented.
+
+### 7.2 Provider Adapter Boundary Invariant
+
+Provider adapters translate. They do not own runtime policy.
+
+Adapters may:
+
+- convert `TurnRequest` to provider payload;
+- send the request;
+- convert provider response to Pico `Response`;
+- expose usage, cache, and provider metadata.
+
+Adapters must not:
+
+- write sessions;
+- execute tools;
+- decide approvals;
+- create recovery checkpoints;
+- assemble memory;
+- own runtime retry behavior.
+
+### 7.3 Tool Policy Boundary Invariant
+
+All tool safety and side-effect policy remains in runtime/tool execution:
+
+- tool allowlist;
+- read-only mode;
+- approval policy;
+- path safety;
+- shell command risk;
+- workspace delta detection;
+- recovery tool-change records;
+- verification evidence.
+
+### 7.4 Event Journal Migration Invariant
+
+Session events are introduced as a shadow log first.
+
+During the first event phase:
+
+- runtime continues writing `session["messages"]`;
+- runtime continues writing legacy `session["history"]` while compatibility
+  needs it;
+- reports and resume behavior do not depend on `session["events"]`;
+- events are checked against current outputs through projection tests.
+
+Only after parity is proven can events become the source for messages, reports,
+or checkpoint summaries.
+
+### 7.5 Single Tool-Use Invariant
+
+In phase 1, Pico supports one executable tool call per model turn.
+
+If a provider returns multiple `tool_use` blocks, runtime behavior must be
+explicit. Recommended behavior:
+
+- execute the first tool call;
+- emit trace metadata that multiple tool calls were returned;
+- preserve the unexecuted count in metadata;
+- leave full multi-tool semantics for a future design.
+
+This matches the current loop, which executes the first tool block.
+
+---
+
+## 8. Protocols and Boundaries
+
+### 8.1 TurnRequest
+
+`TurnRequest` is Pico's internal model request.
+
+Initial implementation may be a typed dict or small dataclass. It should wrap
+the existing `build_v2` shape rather than forcing a broad call-site rewrite.
 
 ```python
 class TurnRequest:
@@ -188,32 +282,49 @@ class TurnRequest:
     metadata: dict
 ```
 
-Fields:
+Target meaning:
 
-- `system`: stable runtime/system content for the current session.
-- `tools`: normalized tool schemas available this turn.
+- `system`: stable runtime/system content.
+- `tools`: model-available tools for this turn.
 - `messages`: model-facing transcript projection.
-- `cache_control_breakpoints`: provider-agnostic cache hints.
-- `metadata`: prompt cache key, resume status, budget reductions, context
-  sources, workspace state, and debug counters.
+- `cache_control_breakpoints`: cache hints independent from a specific provider.
+- `metadata`: context/report/debug information.
 
-Rules:
+Design refinement:
 
-- Runtime consumes `TurnRequest`, not provider-specific request payloads.
-- Provider adapters translate `TurnRequest` into concrete provider payloads.
-- `metadata` is observable/debuggable, but should not drive provider-specific
-  control flow outside adapters.
+- The current `tools` field may remain provider-shaped during migration.
+- The target internal concept should be `ToolSpec`, not Anthropic `input_schema`.
+- Provider adapters should eventually translate `ToolSpec` into Anthropic,
+  OpenAI-compatible, or fallback prompt formats.
 
-### 7.2 ModelResponse
-
-`ModelResponse` is the provider-normalized model output.
+Recommended `ToolSpec` target:
 
 ```python
-class ModelResponse:
+class ToolSpec:
+    name: str
+    description: str
+    input_schema: dict
+    effect_class: str
+    approval_hint: str
+```
+
+`effect_class` and `approval_hint` are runtime semantics. Native provider
+payloads can receive them as description text when no first-class field exists.
+
+### 8.2 Response / ModelResponse Semantics
+
+Keep the existing `Response` type initially.
+
+The design term `ModelResponse` describes semantics, not an immediate rename.
+Renaming `Response` now would add churn without making the kernel safer.
+
+Current response fields are enough for phase 1:
+
+```python
+class Response:
     stop_reason: StopReason
     content: list[dict]
     usage: dict
-    provider_metadata: dict
 ```
 
 Allowed first-phase content blocks:
@@ -221,28 +332,109 @@ Allowed first-phase content blocks:
 - `{"type": "text", "text": "..."}`
 - `{"type": "tool_use", "id": "...", "name": "...", "input": {...}}`
 
-First-phase stop reasons:
+Phase-1 stop reasons:
 
 - `end_turn`
 - `tool_use`
 - `max_tokens`
 - `stop_sequence`
 
+Future extension:
+
+- provider metadata can be added later if `usage` and
+  `last_completion_metadata` are not enough.
+
+### 8.3 Provider Adapter Interface
+
+Current interface:
+
+```python
+complete_v2(*, system, tools, messages, max_tokens, cache_breakpoints=None)
+```
+
+Target interface:
+
+```python
+complete_turn(request: TurnRequest, *, max_tokens: int) -> Response
+```
+
+Migration rule:
+
+Do not replace `complete_v2(...)` in one jump.
+
+Recommended seam:
+
+1. Add a small runtime helper or adapter method that accepts `TurnRequest`.
+2. It delegates to `complete_v2(...)` for current providers.
+3. New providers may implement object-based calls later.
+4. Once all call sites are object-based, `complete_v2(...)` can become an
+   adapter compatibility method.
+
+This preserves the current automatic `FallbackAdapter` wrapping behavior.
+
+### 8.4 ToolInvocation
+
+`ToolInvocation` is the runtime's accepted tool request.
+
+It can start as an internal helper object, not necessarily a persisted schema.
+
+```python
+class ToolInvocation:
+    id: str
+    name: str
+    input: dict
+    source_response_index: int
+    source_turn_id: str
+```
+
 Rules:
 
-- Runtime decides what to do with `stop_reason`.
-- Provider-specific raw JSON should not leak past the adapter.
-- Existing `Response` can be kept as the first implementation of this concept;
-  renaming to `ModelResponse` is optional and can happen later.
+- created from one accepted `tool_use` block;
+- validated by runtime/tool policy;
+- connected to `ToolExecutionResult` metadata;
+- not created by provider adapters.
 
-### 7.3 SessionEvent
+### 8.5 ToolExecutionResult / ToolResult Semantics
 
-`SessionEvent` is the durable source of truth.
+Pico already has:
+
+```python
+@dataclass(frozen=True)
+class ToolExecutionResult:
+    content: str
+    metadata: dict
+```
+
+The design term `ToolResult` should mean the target semantics of this existing
+object. Do not create a second parallel result type unless the implementation
+plan proves that the current type cannot carry the needed fields.
+
+Target metadata semantics:
+
+- `tool_status`;
+- `tool_error_code`;
+- `read_only`;
+- `affected_paths`;
+- `workspace_changed`;
+- `diff_summary`;
+- `tool_change_id`;
+- `file_entries`;
+- `shell_side_effects`;
+- verification evidence reference when applicable.
+
+If later a stronger type is needed, introduce it as a small wrapper around
+`ToolExecutionResult`, not as a replacement that bypasses existing recovery
+logic.
+
+### 8.6 SessionEvent
+
+`SessionEvent` is the target audit/projection event shape.
+
+It starts as shadow state:
 
 ```python
 class SessionEvent:
     id: str
-    parent_id: str | None
     run_id: str | None
     turn_id: str | None
     type: str
@@ -252,510 +444,343 @@ class SessionEvent:
 
 Initial event types:
 
-- `user_message`
-- `assistant_text`
-- `assistant_tool_use`
-- `tool_result`
-- `model_error`
-- `checkpoint_created`
-- `recovery_detected`
-- `verification_evidence`
-- `context_reduced`
-- `memory_written`
+- `user_message`;
+- `assistant_text`;
+- `assistant_tool_use`;
+- `tool_result`;
+- `model_error`;
+- `checkpoint_created`;
+- `recovery_checkpoint_created`;
+- `verification_evidence`;
+- `context_reduced`.
 
-Rules:
-
-- The journal is append-only.
-- `messages` is a projection from events, not the only session truth.
-- Reports, replay, resume, and checkpoint summaries should prefer events as
-  their source.
-- Branching/tree history is not required in phase 1, but `parent_id` keeps the
-  door open.
-
-### 7.4 ToolInvocation
-
-`ToolInvocation` is created after the runtime accepts a model's tool request.
-
-```python
-class ToolInvocation:
-    id: str
-    name: str
-    input: dict
-    source_event_id: str
-    approval_context: dict
-```
-
-Rules:
-
-- Tool invocation IDs should connect model response, session event, tool result,
-  and recovery metadata.
-- Runtime/tool policy validates the invocation before execution.
-- Provider adapters do not decide whether a tool is allowed.
-
-### 7.5 ToolResult
-
-`ToolResult` is the normalized output of tool execution.
-
-```python
-class ToolResult:
-    invocation_id: str
-    status: str
-    content: str
-    metadata: dict
-    workspace_delta: dict | None
-    recovery_checkpoint_id: str | None
-    verification_evidence: list[dict]
-```
-
-Rules:
-
-- `status` should distinguish success, rejection, error, and interrupted states.
-- Recovery metadata belongs here, not in provider adapters.
-- Verification evidence belongs here when the tool was a verification command.
-- The model-facing `tool_result` message is a projection from this object.
+Do not add `parent_id` in the first implementation unless branch/session-tree
+behavior is also being built. It can be added later without changing the core
+event concept.
 
 ---
 
-## 8. Module Boundaries
+## 9. Data Flow
 
-### 8.1 Runtime Kernel
-
-Owns:
-
-- turn loop;
-- max step / retry handling;
-- transition from model response to tool execution;
-- appending session events;
-- finish conditions;
-- trace/report notifications.
-
-Does not own:
-
-- provider-specific payload construction;
-- context retrieval internals;
-- tool-specific execution logic;
-- checkpoint storage internals;
-- memory retrieval algorithms.
-
-### 8.2 Context Composer
-
-Current anchor: `ContextManager.build_v2(...)`.
-
-Desired boundary:
-
-```python
-ContextComposer.build_turn(user_input, session, workspace) -> TurnRequest
-```
-
-Responsibilities:
-
-- stable system content;
-- normalized tools list;
-- event-to-message projection;
-- memory and workspace context injection;
-- resume/checkpoint context injection;
-- budget enforcement;
-- cache breakpoint selection;
-- metadata for trace/report/debug.
-
-Non-responsibilities:
-
-- calling providers;
-- executing tools;
-- writing session events;
-- deciding approval policy.
-
-Important design choice:
-
-Do not turn context into an enterprise-style pipeline with many public
-components. Keep one public method and small internal helpers.
-
-### 8.3 Provider Adapter
-
-Current anchors:
-
-- `complete_v2(...)`
-- `Response`
-- `StopReason`
-- `FallbackAdapter`
-
-Desired boundary:
-
-```python
-ProviderAdapter.complete(request: TurnRequest) -> ModelResponse
-```
-
-Responsibilities:
-
-- translate Pico request to provider payload;
-- send request;
-- translate provider response to `ModelResponse`;
-- expose usage/cache/request metadata.
-
-Non-responsibilities:
-
-- no session writes;
-- no memory assembly;
-- no tool approval;
-- no recovery checkpointing;
-- no retry policy, except provider transport retries if explicitly local to the
-  provider client;
-- no runtime-specific parsing beyond provider normalization.
-
-`FallbackAdapter` remains important, but as a compatibility bridge:
-
-- input: `TurnRequest`;
-- behavior: flatten system/tools/messages into the legacy prompt format;
-- output: `ModelResponse`;
-- long-term role: compatibility for non-native-tool providers, not the center of
-  the architecture.
-
-### 8.4 Session Store
-
-Desired boundary:
-
-```python
-SessionStore.append_event(event: SessionEvent) -> None
-SessionStore.load_events(session_id) -> list[SessionEvent]
-SessionProjector.to_messages(events) -> list[dict]
-SessionProjector.to_report(events) -> dict
-```
-
-Responsibilities:
-
-- durable event journal;
-- compatibility with existing `history` / `messages` during migration;
-- event projection helpers;
-- future branch support via `parent_id`.
-
-Non-responsibilities:
-
-- provider API formatting;
-- tool execution;
-- memory retrieval;
-- context budget policy.
-
-### 8.5 Tool Executor + Policy
-
-Current anchor: `ToolExecutor.execute(...)`.
-
-Responsibilities:
-
-- validate tool name and input;
-- enforce read-only mode;
-- enforce approvals;
-- enforce path/workspace safety;
-- detect repeated or suspicious tool calls;
-- execute tool;
-- attach workspace delta;
-- attach recovery checkpoint metadata;
-- attach verification evidence.
-
-Non-responsibilities:
-
-- provider request formatting;
-- model response parsing;
-- context retrieval;
-- final answer generation.
-
-### 8.6 Recovery / Checkpoint
-
-Recovery should remain a separate concern, but it should attach to events and
-tool results more cleanly.
-
-Desired relationship:
-
-- tool execution creates `ToolResult`;
-- if workspace changes happen, recovery metadata is attached to `ToolResult`;
-- runtime appends `tool_result` and `checkpoint_created` events;
-- reports and resume derive from those events.
-
-This avoids making checkpoint state a parallel hidden transcript.
-
----
-
-## 9. Gateway Position
-
-### 9.1 What a Gateway Would Mean
-
-In this domain, a gateway usually means a long-running process that owns:
-
-- multi-client access;
-- session routing;
-- provider routing;
-- event streaming;
-- auth/permissions;
-- agent runtime selection;
-- channel integrations.
-
-That is valuable for systems like multi-client IDE/desktop/web agents or
-OpenClaw-style multi-channel orchestration.
-
-### 9.2 Why Pico Should Not Build It Now
-
-Pico's current primary path is local:
-
-- one CLI/REPL session;
-- one workspace;
-- one runtime loop;
-- local session and recovery artifacts;
-- local provider configuration.
-
-Adding a gateway now would turn a runtime-boundary problem into a distributed
-systems problem before the internal protocols are stable.
-
-### 9.3 What Pico Should Keep
-
-Pico should keep gateway-readiness through internal contracts:
-
-- every turn is a `TurnRequest`;
-- every provider output is a `ModelResponse`;
-- every durable action is a `SessionEvent`;
-- tool execution is normalized through `ToolInvocation` and `ToolResult`;
-- runtime state transitions are observable.
-
-If a gateway is needed later, it wraps this kernel:
+### 9.1 First Model Call in a Turn
 
 ```text
-Gateway API -> Runtime Kernel -> Session Event Journal
+user input
+  -> append session["messages"] user turn
+  -> append legacy session["history"] user record
+  -> append shadow SessionEvent(user_message)
+  -> build TurnRequest with context parity
+  -> provider adapter
+  -> Response
 ```
 
-It should not become the place where agent semantics live.
+### 9.2 Tool Use
+
+```text
+Response(tool_use)
+  -> choose one tool_use block
+  -> ToolInvocation
+  -> ToolExecutor.execute(name, input)
+  -> ToolExecutionResult(content, metadata)
+  -> append assistant tool_use message
+  -> append user tool_result message
+  -> append legacy history tool record
+  -> append shadow events
+  -> update trace/task state/recovery
+  -> next model call
+```
+
+### 9.3 Final Answer
+
+```text
+Response(text)
+  -> append assistant message
+  -> append legacy history assistant record
+  -> append shadow SessionEvent(assistant_text)
+  -> finish task state
+  -> finalize recovery checkpoint if needed
+  -> write report
+```
+
+### 9.4 Retry / Malformed Output
+
+```text
+Response(stop_sequence or no actionable content)
+  -> record retry notice in legacy history/trace
+  -> do not append invalid assistant content to model-facing messages
+  -> retry until retry limit
+```
+
+This preserves the current behavior that avoids illegal consecutive assistant
+messages in the v2 transcript.
 
 ---
 
-## 10. Extension Model
+## 10. Migration Plan
 
-Pico should not build a full plugin platform in this phase.
+### Phase 0: Context Parity Gate
 
-Instead, define small extension primitives that can later support skills,
-plugins, or hooks.
+Goal: ensure the v2 turn request does not reduce agent quality.
 
-Initial hook points:
+Actions:
 
-- `before_turn`
-- `before_model`
-- `after_model`
-- `before_tool`
-- `after_tool`
-- `before_compact`
+- map every legacy prompt section to a v2 destination;
+- ensure workspace volatile state and checkpoint text reach the model;
+- preserve current-request protection under budget pressure;
+- preserve prompt/cache metadata needed by trace and reports;
+- add tests that compare context classes from `build()` and `build_v2` /
+  `build_turn()`.
 
-Allowed hook outputs:
+Exit criteria:
 
-- `ContextPatch`
-- `PolicyDecision`
-- `MemoryWriteIntent`
-- `TraceAnnotation`
+- v2 request includes all required context classes;
+- existing context-manager tests still pass;
+- model-facing request no longer depends on calling legacy build only for side
+  effects and metadata.
 
-Rules:
+### Phase 1: Protocol Naming Without Behavior Churn
 
-- hooks cannot mutate arbitrary runtime internals;
-- hooks return small typed outputs;
-- runtime applies those outputs;
-- hook failures should be visible and recoverable;
-- first implementation can be internal-only, with no public plugin API.
+Goal: make existing v2 shapes explicit with minimal code motion.
 
-This gives Pico Pi-style extensibility without platform complexity.
+Actions:
+
+- introduce `TurnRequest` as a small dataclass or typed dict wrapper;
+- keep current `Response` name;
+- keep current `complete_v2(...)`;
+- document `Response` as Pico's model-response protocol;
+- keep `messages` as the model-facing transcript.
+
+Exit criteria:
+
+- tests can assert protocol shape directly;
+- no provider behavior changes are required.
+
+### Phase 2: Adapter Object-Call Shim
+
+Goal: let runtime call providers with a request object without breaking current
+providers.
+
+Actions:
+
+- add a shim such as `complete_turn(request, max_tokens=...)`;
+- implement it by delegating to `complete_v2(...)`;
+- keep runtime fallback wrapping for non-v2 providers;
+- add tests proving the shim does not mutate requests.
+
+Exit criteria:
+
+- agent loop no longer needs to unpack `system/tools/messages` itself;
+- existing provider tests remain valid.
+
+### Phase 3: Tool Boundary Tightening
+
+Goal: align the design's `ToolResult` semantics with current
+`ToolExecutionResult`.
+
+Actions:
+
+- define a small helper for converting a tool_use block into a tool invocation;
+- make single-tool behavior explicit;
+- ensure `ToolExecutionResult.metadata` carries recovery and verification
+  fields consistently;
+- keep current recovery checkpoint writer path.
+
+Exit criteria:
+
+- tool execution tests remain green;
+- runtime trace clearly records chosen tool id and unexecuted extra tool count,
+  if any.
+
+### Phase 4: Shadow Session Event Journal
+
+Goal: add events without changing runtime truth.
+
+Actions:
+
+- add `session["events"]`;
+- append events beside current `messages/history` writes;
+- redact events with the same artifact redaction path;
+- do not read events for prompt/report/resume yet.
+
+Exit criteria:
+
+- events are persisted;
+- events do not affect model behavior;
+- session migration remains backward compatible.
+
+### Phase 5: Projection Parity
+
+Goal: prove events can reproduce existing views.
+
+Actions:
+
+- implement event-to-messages projection tests;
+- implement event-to-report projection tests;
+- compare projected messages with current `session["messages"]`;
+- compare report-relevant fields with current report data.
+
+Exit criteria:
+
+- projections match current behavior for text, tool use, tool result, errors,
+  checkpoint events, and verification evidence;
+- only then decide whether events should become source of truth.
+
+### Future Work: Hooks and Gateway
+
+Hooks and gateway mode are not part of the first implementation plan.
+
+Future hooks may include:
+
+- `before_turn`;
+- `before_model`;
+- `after_model`;
+- `before_tool`;
+- `after_tool`;
+- `before_compact`.
+
+Future gateway mode should only be considered after real needs appear:
+
+- multiple clients sharing one session;
+- IDE/desktop/CLI connection to the same runtime;
+- long-running headless service;
+- multi-agent routing.
 
 ---
 
-## 11. Migration Strategy
+## 11. Testing Strategy
 
-### Phase 1: Name and Stabilize the Protocol
+### Context Parity Tests
 
-Goal: make the existing v2 path explicit.
-
-Actions:
-
-- introduce or document `TurnRequest` around the existing
-  `system/tools/messages/cache_control_breakpoints` shape;
-- treat current `Response` as the first `ModelResponse`;
-- document adapter responsibilities;
-- keep existing fallback behavior.
-
-Expected result:
-
-- no broad behavior change;
-- cleaner code references;
-- runtime has a clearer contract with context and providers.
-
-### Phase 2: Runtime Loop Consumes Protocol Objects
-
-Goal: reduce loose dict / scattered-argument coupling.
-
-Actions:
-
-- context composer returns a named request object or typed dict;
-- provider adapter accepts that request object;
-- agent loop uses protocol fields instead of provider-shaped assumptions;
-- trace/report record protocol metadata.
-
-Expected result:
-
-- provider-specific shape no longer leaks into the runtime loop;
-- tests can mock `TurnRequest -> ModelResponse` directly.
-
-### Phase 3: Session Event Journal
-
-Goal: make event journal the source of truth.
-
-Actions:
-
-- append events for user, assistant text, assistant tool use, tool result, model
-  errors, context reduction, checkpoint, and verification evidence;
-- keep writing current `messages` / `history` during migration;
-- add projectors from events to model messages and reports.
-
-Expected result:
-
-- replay/resume/report can rely on one event stream;
-- `messages` becomes a model-facing projection;
-- legacy session fields remain until migration is complete.
-
-### Phase 4: Tool Result and Recovery Attachment
-
-Goal: attach workspace/recovery/verification metadata to normalized tool
-results.
-
-Actions:
-
-- normalize tool executor output into `ToolResult`;
-- include recovery checkpoint IDs and workspace deltas;
-- project `ToolResult` into provider `tool_result` blocks;
-- derive report/checkpoint sections from events.
-
-Expected result:
-
-- fewer hidden side channels;
-- clearer recovery and report semantics.
-
-### Phase 5: Internal Hook Primitives
-
-Goal: add small extension points without a plugin platform.
-
-Actions:
-
-- define internal hook call sites;
-- define return objects;
-- start with no external registration API;
-- use hooks only where current code already has a natural boundary.
-
-Expected result:
-
-- future skills/extensions have a path;
-- current kernel remains small.
-
----
-
-## 12. Testing Strategy
+- legacy context classes are represented in `TurnRequest`;
+- workspace volatile state reaches the model-facing request;
+- checkpoint/resume text reaches the model-facing request;
+- current user request is preserved under budget pressure;
+- prompt/cache metadata remains available for trace/report.
 
 ### Protocol Tests
 
-- `TurnRequest` contains system/tools/messages/cache hints and metadata.
-- `ModelResponse` supports text and tool_use blocks.
-- stop reason mapping is provider-agnostic.
+- `TurnRequest` contains system, tools, messages, cache hints, and metadata;
+- `Response` supports text and tool_use blocks;
+- stop reason handling is provider-agnostic;
+- multi-tool response behavior is explicit.
 
 ### Provider Adapter Tests
 
-- Anthropic-compatible adapter maps `TurnRequest` to native messages API.
-- OpenAI-compatible adapter can later map the same request without runtime
-  changes.
-- `FallbackAdapter` flattens requests without mutating input.
-- adapter does not write session or execute tools.
+- object-call shim delegates to `complete_v2(...)`;
+- Anthropic-compatible adapter maps request fields correctly;
+- `FallbackAdapter` flattens request fields without mutation;
+- adapter does not write session, execute tools, or create recovery records.
 
 ### Runtime Loop Tests
 
-- user input appends a user event.
-- text model response appends assistant text and finishes.
-- tool_use model response creates a tool invocation, executes it, appends tool
-  result, and continues.
-- malformed/no-action response triggers retry handling.
-- max step and retry limits remain enforced.
+- text response appends assistant message and finishes;
+- tool response creates one invocation, executes it, appends result, and
+  continues;
+- retry/no-action response does not corrupt `messages`;
+- step and retry limits remain enforced.
 
-### Session Projection Tests
+### Tool / Recovery Tests
 
-- event journal projects to provider messages.
-- event journal projects to report sections.
-- tool_result projection preserves `tool_use_id`.
-- legacy `history` / `messages` compatibility remains during migration.
+- `ToolExecutionResult.metadata` carries tool status and recovery fields;
+- mutating tools continue creating tool-change records;
+- verification command evidence still attaches to recovery checkpoints;
+- trace includes tool id and recovery ids.
 
-### Recovery Tests
+### Shadow Event Tests
 
-- mutating tool result records workspace delta and checkpoint metadata.
-- verification command attaches evidence.
-- recovery/checkpoint events can be found from the session journal.
+- events are written beside current session fields;
+- event writes are redacted;
+- events do not alter prompt/report/resume behavior;
+- event-to-message projection matches current `messages` in covered cases.
 
 ### Regression Gate
 
-Use the existing narrow tests during early protocol work. Before implementation
-is considered complete, run the repository's canonical check script.
+Use focused tests during phases. Before the implementation is complete, run the
+repo's canonical check script.
 
 ---
 
-## 13. Risks and Mitigations
+## 12. Risks and Mitigations
 
-### Risk: Over-abstracting the Kernel
-
-Mitigation:
-
-- start with typed dicts or small dataclasses only;
-- no generic event bus;
-- no plugin registry;
-- no server.
-
-### Risk: Event Journal Duplicates Existing Messages/History
+### Risk: Context Quality Regression
 
 Mitigation:
 
-- keep dual-write only during migration;
-- define projectors early;
-- retire legacy fields only after tests prove parity.
+- context parity is Phase 0;
+- no event or adapter cleanup proceeds until the model-facing request carries
+  current required context.
 
-### Risk: Provider Adapter Becomes Too Smart
+### Risk: Event Journal Becomes a Premature Rewrite
 
 Mitigation:
 
-- adapter tests should assert no session/tool/policy side effects;
+- events start as shadow writes;
+- no prompt/report/resume reads from events until projection parity passes.
+
+### Risk: Provider Adapter Gets Too Smart
+
+Mitigation:
+
+- adapter tests assert no session/tool/recovery side effects;
 - runtime owns stop-reason behavior;
-- tool policy remains in tool executor.
+- tool executor owns safety and side effects.
+
+### Risk: Too Many New Types
+
+Mitigation:
+
+- keep `Response` initially;
+- treat `ToolResult` as semantics of existing `ToolExecutionResult`;
+- introduce `TurnRequest` first because it removes real scattered-argument
+  coupling.
 
 ### Risk: Gateway Pressure Returns Too Early
 
 Mitigation:
 
-- document explicit gateway triggers;
-- require real multi-client/server use case before adding gateway code;
-- keep runtime callable as a library first.
-
-### Risk: Naming Drift
-
-Mitigation:
-
-- pick protocol names once;
-- update docs and tests together;
-- avoid `v2` in long-lived names except as migration markers.
+- document gateway triggers;
+- keep gateway/server code out of the first implementation plan;
+- keep runtime callable as a local library.
 
 ---
 
-## 14. Open Questions for Review
+## 13. Revised Review Verdict
 
-1. Should the implementation rename current `Response` to `ModelResponse`, or
-   keep `Response` and only clarify semantics in docs/tests?
-2. Should `TurnRequest` be introduced as a dataclass immediately, or should the
-   current dict shape remain while tests define the contract?
-3. Should the first event journal live beside existing session fields, or inside
-   `session["events"]` as the migration bridge?
-4. Should event branching fields (`parent_id`) be added now, or delayed until a
-   real branch/resume workflow exists?
+The original direction is sound:
 
-Recommended answers:
+- no standalone gateway now;
+- make Pico's internal turn protocol explicit;
+- keep provider adapters thin;
+- move toward event-backed session semantics.
 
-1. Keep `Response` initially; rename later only if the old name causes
-   confusion.
-2. Use a small dataclass if it does not force large call-site churn; otherwise
-   stabilize the typed dict first.
-3. Use `session["events"]` first to keep migration local.
-4. Add `parent_id` as optional metadata now, but do not build branching behavior.
+The upgraded design changes the execution emphasis:
+
+1. **Preserve existing context behavior before abstracting.**
+2. **Wrap current types before renaming them.**
+3. **Shadow-write events before trusting them.**
+4. **Use current recovery/tool result paths instead of replacing them.**
+5. **Move hooks and gateway to future work.**
+
+This is the version that fits Pico's current codebase best.
+
+---
+
+## 14. Open Questions for User Review
+
+Recommended answers are included so the implementation plan can proceed without
+turning into another broad architecture debate.
+
+1. Should `Response` be renamed to `ModelResponse` now?
+   - Recommendation: no. Keep `Response` and clarify semantics.
+2. Should `TurnRequest` be a dataclass immediately?
+   - Recommendation: yes, if the change is small; otherwise use a typed dict
+     first and keep the same contract.
+3. Should `session["events"]` become source of truth immediately?
+   - Recommendation: no. Start as a shadow journal.
+4. Should `parent_id` for branch/tree history be added now?
+   - Recommendation: no. Add it when branch/resume-tree behavior is real.
+5. Should hooks be in the first implementation plan?
+   - Recommendation: no. Keep them as future work.
 
 ---
 
