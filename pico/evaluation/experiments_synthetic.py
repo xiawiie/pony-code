@@ -25,7 +25,7 @@ def measure_feature_ablation_metrics(agent, user_message):
     variants = {
         "full": {},
         "no_context_reduction": {"context_reduction": False},
-        "no_memory": {"memory": False, "relevant_memory": False},
+        "no_memory": {"memory": False},
     }
     results = {}
     for name, updates in variants.items():
@@ -34,12 +34,12 @@ def measure_feature_ablation_metrics(agent, user_message):
         sections = metadata.get("sections") or {}
         memory_section = sections.get("memory") or {}
         history_section = sections.get("history") or {}
-        relevant_memory = metadata.get("relevant_memory") or {}
         results[name] = {
             "prompt_chars": int(metadata.get("prompt_chars", 0)),
             "memory_chars": int(memory_section.get("rendered_chars", 0)),
             "history_chars": int(history_section.get("rendered_chars", 0)),
-            "relevant_selected_count": int(relevant_memory.get("selected_count", 0)),
+            # Task 8 dropped the never-consumed `relevant_memory` metadata block.
+            "relevant_selected_count": 0,
             "budget_reduction_count": len(metadata.get("budget_reductions", [])),
             "current_request_preserved": prompt.endswith(f"Current user request:\n{user_message}"),
         }
@@ -154,7 +154,6 @@ def _run_memory_variant(mode):
 
         if mode == "memory_off":
             agent.feature_flags["memory"] = False
-            agent.feature_flags["relevant_memory"] = False
             _clear_file_summary_memory(agent)
         elif mode == "memory_irrelevant":
             _set_irrelevant_memory(agent)
@@ -241,7 +240,6 @@ def _run_memory_task_variant(task, variant):
         _age_bootstrap_read_history(agent)
         if variant == "memory_off":
             agent.feature_flags["memory"] = False
-            agent.feature_flags["relevant_memory"] = False
             _clear_file_summary_memory(agent)
         elif variant == "memory_irrelevant":
             _set_irrelevant_memory_for_task(agent)

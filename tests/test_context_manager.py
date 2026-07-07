@@ -266,10 +266,12 @@ def test_prompt_cache_key_ignores_workspace_volatile_state(tmp_path):
 
     assert first_prompt != second_prompt
     assert "feature/cache-test" in second_prompt
-    assert first["base_prefix_hash"] == second["base_prefix_hash"]
-    assert first["stable_prefix_hash"] == second["stable_prefix_hash"]
+    # Task 8 collapsed base_prefix_hash / stable_prefix_hash / prefix_hash /
+    # prompt_cache_key into a single system_cache_key (kept prompt_cache_key
+    # alias for one release). Stable prefix should not shift when only
+    # volatile workspace state changes.
+    assert first["system_cache_key"] == second["system_cache_key"]
     assert first["prompt_cache_key"] == second["prompt_cache_key"]
-    assert first["prefix_hash"] == first["stable_prefix_hash"]
 
 
 def test_prompt_cache_key_changes_when_memory_index_changes(tmp_path):
@@ -284,17 +286,21 @@ def test_prompt_cache_key_changes_when_memory_index_changes(tmp_path):
     _, second = manager.build("second")
 
     assert first["prompt_cache_key"] != second["prompt_cache_key"]
-    assert first["base_prefix_hash"] == second["base_prefix_hash"]
+    assert first["system_cache_key"] != second["system_cache_key"]
 
 
-def test_runtime_prompt_metadata_uses_prefix_state_hash_for_base_prefix(tmp_path):
+def test_runtime_prompt_metadata_uses_system_cache_key(tmp_path):
     agent = build_agent(tmp_path, [])
 
     prompt, metadata = agent._build_prompt_and_metadata("check cache metadata")
 
-    assert metadata["base_prefix_hash"] == agent.prefix_state.hash
-    assert metadata["stable_prefix_hash"] == metadata["prefix_hash"] == metadata["prompt_cache_key"]
-    assert metadata["stable_prefix_hash"] != metadata["base_prefix_hash"]
+    # Task 8: system_cache_key is the canonical field; prompt_cache_key stays
+    # as an alias for one release cycle. Legacy synonyms are gone.
+    assert "system_cache_key" in metadata
+    assert metadata["prompt_cache_key"] == metadata["system_cache_key"]
+    assert "base_prefix_hash" not in metadata
+    assert "stable_prefix_hash" not in metadata
+    assert "prefix_hash" not in metadata
     assert "memory_save" in prompt
     assert "<memory_index>" in prompt
 
@@ -335,4 +341,4 @@ def test_history_budget_preserves_workspace_checkpoint_and_transcript_sentinels(
     assert prompt.index("<workspace_state>") < prompt.index("Task checkpoint:")
     assert prompt.index("Task checkpoint:") < prompt.index("Transcript:")
     assert prompt.split("Current user request:\n", 1)[1] == "continue"
-    assert metadata["prompt_cache_key"] == metadata["stable_prefix_hash"]
+    assert metadata["prompt_cache_key"] == metadata["system_cache_key"]

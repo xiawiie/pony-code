@@ -32,7 +32,6 @@ from .tool_context import ToolContext
 from .tool_executor import ToolExecutor
 from . import tools as toolkit
 from .verification import new_verification_record
-from .working_memory import WorkingMemory
 from .workspace import MAX_HISTORY, WorkspaceContext, clip, now
 from .workspace_observer import WorkspaceObserver
 
@@ -41,11 +40,98 @@ DEFAULT_MAX_STEPS = 12
 DEFAULT_MAX_NEW_TOKENS = 2048
 DEFAULT_FEATURE_FLAGS = {
     "memory": True,
-    "relevant_memory": True,
     "context_reduction": True,
     "prompt_cache": True,
 }
 __all__ = ["Pico", "SessionStore"]
+
+
+# --- Inlined working-memory helper -----------------------------------------
+# Task 8 retired `pico/working_memory.py` as a standalone module. The tiny
+# task_summary + recent_files state it carried is still consumed internally by
+# `checkpoint.py` (recent_files → checkpoint key_files) and the REPL /memory
+# command, so we keep the same object shape here as a runtime-private helper.
+# External callers should treat `agent.memory` as an implementation detail;
+# the durable session-level record lives at `session["working_memory"]`.
+
+_WORKING_TASK_SUMMARY_LIMIT = 300
+_WORKING_RECENT_FILES_LIMIT = 8
+
+
+def _working_truncate(text, limit):
+    return str(text)[:limit]
+
+
+def _working_normalize_task_summary(summary, limit):
+    if summary is None:
+        return ""
+    return _working_truncate(str(summary).strip(), limit)
+
+
+def _working_ensure_file_list(value):
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()]
+
+
+def _working_dedupe_preserve_order(items):
+    seen = set()
+    result = []
+    for item in items:
+        if item in seen:
+            continue
+        seen.add(item)
+        result.append(item)
+    return result
+
+
+class WorkingMemory:
+    TASK_SUMMARY_LIMIT = _WORKING_TASK_SUMMARY_LIMIT
+    RECENT_FILES_LIMIT = _WORKING_RECENT_FILES_LIMIT
+
+    def __init__(self, task_summary="", recent_files=None, workspace_root=None):
+        self.workspace_root = workspace_root
+        self.task_summary = _working_normalize_task_summary(task_summary, self.TASK_SUMMARY_LIMIT)
+        self.recent_files = _working_dedupe_preserve_order(
+            [self.canonical_path(path).strip() for path in _working_ensure_file_list(recent_files or [])]
+        )[: self.RECENT_FILES_LIMIT]
+
+    def to_dict(self):
+        return {
+            "task_summary": self.task_summary,
+            "recent_files": list(self.recent_files),
+        }
+
+    @classmethod
+    def from_dict(cls, data, workspace_root=None):
+        if not isinstance(data, dict):
+            return cls(workspace_root=workspace_root)
+
+        source = data
+        if isinstance(data.get("working"), dict):
+            source = data["working"]
+
+        task_summary = source.get("task_summary", source.get("task", ""))
+        if not isinstance(task_summary, str):
+            task_summary = ""
+        recent_files = source.get("recent_files", source.get("files", []))
+        return cls(task_summary=task_summary, recent_files=recent_files, workspace_root=workspace_root)
+
+    def canonical_path(self, path):
+        return memorylib.canonicalize_path(path, self.workspace_root)
+
+    def set_task_summary(self, summary):
+        self.task_summary = _working_normalize_task_summary(summary, self.TASK_SUMMARY_LIMIT)
+        return self
+
+    def remember_file(self, path):
+        path = self.canonical_path(path).strip()
+        if not path:
+            return self
+        self.recent_files = [item for item in self.recent_files if item != path]
+        self.recent_files.insert(0, path)
+        self.recent_files = self.recent_files[: self.RECENT_FILES_LIMIT]
+        return self
 
 
 def build_report_checkpoint_metadata(task_state, last_prompt_metadata):
@@ -404,10 +490,14 @@ class Pico:
                 "tool_count": len(self.tools),
                 "workspace_docs": len(self.workspace.project_docs),
                 "recent_commits": len(self.workspace.recent_commits),
-                "base_prefix_hash": metadata.get("base_prefix_hash", self.prefix_state.hash),
-                "stable_prefix_hash": metadata.get("stable_prefix_hash", metadata.get("prefix_hash", self.prefix_state.hash)),
-                "prefix_hash": metadata.get("prefix_hash", metadata.get("stable_prefix_hash", self.prefix_state.hash)),
-                "prompt_cache_key": metadata.get("prompt_cache_key", metadata.get("stable_prefix_hash", self.prefix_state.hash)),
+                # Task 8 consolidated the four synonyms (base/stable/prefix_hash + prompt_cache_key)
+                # into a single `system_cache_key`. `prompt_cache_key` is kept as a one-release
+                # alias so providers reaching for the old name keep working.
+                "system_cache_key": metadata.get("system_cache_key", self.prefix_state.hash),
+                "prompt_cache_key": metadata.get(
+                    "prompt_cache_key",
+                    metadata.get("system_cache_key", self.prefix_state.hash),
+                ),
                 "workspace_fingerprint": self.prefix_state.workspace_fingerprint,
                 "tool_signature": self.prefix_state.tool_signature,
                 "workspace_changed": refresh["workspace_changed"],

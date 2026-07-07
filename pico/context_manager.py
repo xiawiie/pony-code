@@ -213,7 +213,6 @@ class ContextManager:
                 reduction_log=[],
                 user_message=user_message,
                 section_texts=section_texts,
-                base_prefix=base_prefix,
             )
             return prompt, metadata
 
@@ -260,7 +259,6 @@ class ContextManager:
             reduction_log=reduction_log,
             user_message=user_message,
             section_texts=section_texts,
-            base_prefix=base_prefix,
         )
         return prompt, metadata
 
@@ -593,7 +591,7 @@ class ContextManager:
             ]
         ).strip()
 
-    def _metadata(self, prompt, rendered, budgets, reduction_log, user_message, section_texts, base_prefix):
+    def _metadata(self, prompt, rendered, budgets, reduction_log, user_message, section_texts):
         section_metadata = {}
         for section in SECTION_ORDER[:-1]:
             section_metadata[section] = {
@@ -606,16 +604,17 @@ class ContextManager:
             "budget_chars": None,
             "rendered_chars": len(rendered[CURRENT_REQUEST_SECTION].rendered),
         }
-        base_prefix_hash = getattr(getattr(self.agent, "prefix_state", None), "hash", _hash_text(base_prefix))
-        stable_prefix_hash = _hash_text(rendered["prefix"].rendered)
+        # Task 8: the four synonymous cache-key fields (base_prefix_hash /
+        # stable_prefix_hash / prefix_hash / prompt_cache_key) collapse into a
+        # single `system_cache_key`. `prompt_cache_key` is kept as a one-release
+        # alias so provider adapters still see the old name.
+        system_cache_key = _hash_text(rendered["prefix"].rendered)
         return {
             "prompt_chars": len(prompt),
             "prompt_budget_chars": self.total_budget,
             "prompt_over_budget": len(prompt) > self.total_budget,
-            "base_prefix_hash": base_prefix_hash,
-            "stable_prefix_hash": stable_prefix_hash,
-            "prefix_hash": stable_prefix_hash,
-            "prompt_cache_key": stable_prefix_hash,
+            "system_cache_key": system_cache_key,
+            "prompt_cache_key": system_cache_key,
             "section_order": list(SECTION_ORDER),
             "section_budgets": {
                 section: (None if section == CURRENT_REQUEST_SECTION else int(budgets.get(section, 0)))

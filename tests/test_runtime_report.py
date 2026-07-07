@@ -192,7 +192,7 @@ def test_prompt_metadata_refreshes_prefix_when_workspace_changes(tmp_path):
     first = agent.prompt_metadata("first", "")
     second = agent.prompt_metadata("second", "")
 
-    assert first["prefix_hash"] == second["prefix_hash"]
+    assert first["system_cache_key"] == second["system_cache_key"]
     assert second["prefix_changed"] is False
     assert second["workspace_changed"] is False
 
@@ -200,7 +200,7 @@ def test_prompt_metadata_refreshes_prefix_when_workspace_changes(tmp_path):
 
     third = agent.prompt_metadata("third", "")
 
-    assert third["prefix_hash"] != second["prefix_hash"]
+    assert third["system_cache_key"] != second["system_cache_key"]
     assert third["prefix_changed"] is True
     assert third["workspace_changed"] is True
     assert "demo changed" in agent.prefix
@@ -753,8 +753,8 @@ def test_agent_records_model_cache_metadata_in_last_prompt_metadata(tmp_path):
     assert agent.last_prompt_metadata["prompt_cache_supported"] is True
     assert agent.last_prompt_metadata["cached_tokens"] == 512
     assert agent.last_prompt_metadata["cache_hit"] is True
-    assert agent.last_prompt_metadata["prefix_hash"]
-    assert agent.last_prompt_metadata["prompt_cache_key"] == agent.last_prompt_metadata["prefix_hash"]
+    assert agent.last_prompt_metadata["system_cache_key"]
+    assert agent.last_prompt_metadata["prompt_cache_key"] == agent.last_prompt_metadata["system_cache_key"]
 
 
 @pytest.mark.legacy_string_path

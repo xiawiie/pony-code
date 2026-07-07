@@ -75,7 +75,6 @@ def run_real_memory_experiment(provider="gpt", repetitions=1):
                     agent.ask(f"Read {task['filename']} and remember the exact line. After you know it, reply with Done only.")
                     if variant == "memory_off":
                         agent.feature_flags["memory"] = False
-                        agent.feature_flags["relevant_memory"] = False
                         _clear_file_summary_memory(agent)
                     elif variant == "memory_irrelevant":
                         _set_irrelevant_memory_for_task(agent)
