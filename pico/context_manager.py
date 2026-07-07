@@ -55,6 +55,47 @@ def _hash_text(text):
     return hashlib.sha256(str(text).encode("utf-8")).hexdigest()
 
 
+def _convert_pico_tool_to_anthropic(name, spec):
+    """Convert one pico BASE_TOOL_SPECS entry to an Anthropic tool schema entry.
+
+    Rules (see task-5 brief):
+    - Each arg in `schema` is treated as string by default; if the sig contains
+      "int" it becomes {"type": "integer"}. Everything else falls through to string
+      (this includes bool / list / list[str] etc — deliberate P1 simplification).
+    - An arg is required iff its sig has no `=` default marker.
+    - `risky: True` -> append ` Requires user approval before execution.` to description.
+    """
+    props = {}
+    required = []
+    for arg_name, sig in (spec.get("schema") or {}).items():
+        sig_str = str(sig)
+        if "int" in sig_str:
+            props[arg_name] = {"type": "integer"}
+        else:
+            props[arg_name] = {"type": "string"}
+        if "=" not in sig_str:
+            required.append(arg_name)
+    desc = str(spec.get("description", "") or "")
+    if spec.get("risky"):
+        desc = (desc + " Requires user approval before execution.").strip()
+    return {
+        "name": name,
+        "description": desc,
+        "input_schema": {"type": "object", "properties": props, "required": required},
+    }
+
+
+def _build_tools_list(pico_tools):
+    """Convert the whole pico tool dict to an Anthropic-shaped tools list.
+
+    Sorted by name for deterministic output: identical inputs always produce
+    identical tool arrays, which keeps prompt-cache keys stable across turns.
+    """
+    if not pico_tools:
+        return []
+    return [_convert_pico_tool_to_anthropic(name, spec) for name, spec in sorted(pico_tools.items())]
+
+
 @dataclass
 class SectionRender:
     raw: str
@@ -222,6 +263,67 @@ class ContextManager:
             base_prefix=base_prefix,
         )
         return prompt, metadata
+
+    def build_v2(self, user_message):
+        """Assemble one turn as the Anthropic message-array shape.
+
+        Task 5 sibling to `build()`: instead of a single flat prompt string, this
+        returns a `request` dict with `system` / `tools` / `messages` /
+        `cache_control_breakpoints` — the shape `providers.anthropic.complete_v2`
+        expects. `build()` is deliberately unchanged; Task 7 will migrate the
+        agent loop to call `build_v2`.
+
+        Layout:
+        - `system`  : single text block carrying the stable `agent.prefix`, with
+                      `cache_control: ephemeral` so the provider can reuse the
+                      prompt-cache entry across turns.
+        - `tools`   : `agent.tools` (pico's internal dict) converted to Anthropic
+                      shape, sorted by name for cache-stable ordering.
+        - `messages`: a shallow copy of `agent.session["messages"]` with the current
+                      user turn appended. The copy matters — we must not mutate
+                      the session's history when we append.
+        - `cache_control_breakpoints`: `[len(messages) - 2]` when there are 2+
+                      messages, else `[]`. Task 8 will drive an actual
+                      cache-control block placement from this index.
+        """
+        user_message = str(user_message)
+        system_text = str(getattr(self.agent, "prefix", "") or "")
+        system_block = {
+            "type": "text",
+            "text": system_text,
+            "cache_control": {"type": "ephemeral"},
+        }
+        system = [system_block]
+
+        tools = _build_tools_list(getattr(self.agent, "tools", {}) or {})
+
+        # Shallow copy so the append below cannot mutate agent.session["messages"].
+        session = getattr(self.agent, "session", {}) or {}
+        messages = list(session.get("messages", []) or [])
+
+        # Task 5: plain-text user content. Task 14 will wrap this in
+        # <system-reminder> injection.
+        messages.append({"role": "user", "content": user_message})
+
+        breakpoints = [len(messages) - 2] if len(messages) >= 2 else []
+
+        system_cache_key = hashlib.sha256(system_text.encode("utf-8")).hexdigest()
+        metadata = {
+            "system_cache_key": system_cache_key,
+            "messages_count": len(messages),
+            "cache_control_breakpoints": list(breakpoints),
+            # Task 8 will drop this alias; kept for now so callers of `build()`
+            # that reach for `metadata["prompt_cache_key"]` don't break if they
+            # happen to migrate to `build_v2` first.
+            "prompt_cache_key": system_cache_key,
+        }
+        request = {
+            "system": system,
+            "tools": tools,
+            "messages": messages,
+            "cache_control_breakpoints": breakpoints,
+        }
+        return request, metadata
 
     def _render_sections_without_reduction(self, section_texts):
         history = list(getattr(self.agent, "session", {}).get("history", []))
