@@ -8,8 +8,16 @@ from pico.session_store import SessionStore
 
 def test_session_store_saves_loads_and_finds_latest_session(tmp_path):
     store = SessionStore(tmp_path / ".pico" / "sessions")
-    first = {"id": "session_001", "history": [{"role": "user", "content": "first"}]}
-    second = {"id": "session_002", "history": [{"role": "user", "content": "second"}]}
+    first = {
+        "id": "session_001",
+        "schema_version": 2,
+        "messages": [{"role": "user", "content": "first"}],
+    }
+    second = {
+        "id": "session_002",
+        "schema_version": 2,
+        "messages": [{"role": "user", "content": "second"}],
+    }
 
     first_path = store.save(first)
     second_path = store.save(second)
