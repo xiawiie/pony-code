@@ -46,9 +46,13 @@ def _flatten_messages(messages: list[dict]) -> str:
             if btype == "text":
                 lines.append(f"[{role}] {block.get('text', '')}")
             elif btype == "tool_use":
-                lines.append(f"[{role}:tool_use] {block['name']}({json.dumps(block.get('input', {}), sort_keys=True)})")
+                tid = block.get("id", "")
+                id_part = f" id={tid}" if tid else ""
+                lines.append(f"[{role}:tool_use{id_part}] {block['name']}({json.dumps(block.get('input', {}), sort_keys=True)})")
             elif btype == "tool_result":
-                lines.append(f"[{role}:tool_result] {block.get('content', '')}")
+                tid = block.get("tool_use_id", "")
+                id_part = f" id={tid}" if tid else ""
+                lines.append(f"[{role}:tool_result{id_part}] {block.get('content', '')}")
     return "\n".join(lines)
 
 
@@ -72,7 +76,7 @@ class FallbackAdapter:
                     "type": "tool_use",
                     "id": f"toolu_local_{uuid.uuid4().hex[:12]}",
                     "name": payload["name"],
-                    "input": payload.get("args", {}),
+                    "input": dict(payload.get("args", {})),
                 }],
                 usage=self.last_completion_metadata,
             )

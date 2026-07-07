@@ -58,3 +58,99 @@ def test_fallback_ignores_cache_breakpoints():
     )
     # 不支持 prompt cache 的 provider 应静默忽略 breakpoints
     assert resp.stop_reason == StopReason.END_TURN
+
+
+def test_fallback_malformed_output_maps_to_stop_sequence():
+    # <tool>{malformed json</tool> → parser returns ("retry", retry_notice_text)
+    inner = _StubInner("<tool>{not valid json</tool>")
+    adapter = FallbackAdapter(inner)
+    resp = adapter.complete_v2(
+        system=[{"type": "text", "text": "s"}], tools=[],
+        messages=[{"role": "user", "content": "x"}],
+        max_tokens=10,
+    )
+    assert resp.stop_reason == StopReason.STOP_SEQUENCE
+    assert resp.content[0]["type"] == "text"
+    assert isinstance(resp.content[0]["text"], str)
+    assert resp.content[0]["text"]  # non-empty runtime notice
+
+
+def test_fallback_flatten_messages_handles_structured_content_blocks():
+    inner = _StubInner("<final>ok</final>")
+    adapter = FallbackAdapter(inner)
+    adapter.complete_v2(
+        system=[{"type": "text", "text": "s"}], tools=[],
+        messages=[
+            {"role": "user", "content": "plain string"},
+            {"role": "assistant", "content": [{"type": "text", "text": "hi"}]},
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_x",
+                        "name": "read_file",
+                        "input": {"path": "a.py"},
+                    }
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_x",
+                        "content": "file body",
+                    }
+                ],
+            },
+        ],
+        max_tokens=10,
+    )
+    prompt = inner.last_prompt
+    assert "plain string" in prompt
+    assert "hi" in prompt
+    assert "read_file" in prompt
+    assert '"path"' in prompt
+    assert '"a.py"' in prompt
+    assert "file body" in prompt
+    assert "toolu_x" in prompt
+
+
+def test_fallback_does_not_forward_prompt_cache_kwargs():
+    inner = MagicMock()
+    inner.last_completion_metadata = {}
+    inner.complete.return_value = "<final>ok</final>"
+    adapter = FallbackAdapter(inner)
+    adapter.complete_v2(
+        system=[{"type": "text", "text": "s"}], tools=[],
+        messages=[{"role": "user", "content": "x"}],
+        max_tokens=42, cache_breakpoints=[0],  # cache_breakpoints must also be dropped
+    )
+    # Verify inner.complete was called with positional (prompt, max_tokens) only,
+    # no prompt_cache_key / prompt_cache_retention kwargs.
+    inner.complete.assert_called_once()
+    call_args, call_kwargs = inner.complete.call_args
+    assert len(call_args) == 2  # prompt, max_tokens
+    assert call_args[1] == 42
+    assert "prompt_cache_key" not in call_kwargs
+    assert "prompt_cache_retention" not in call_kwargs
+    assert "cache_breakpoints" not in call_kwargs
+
+
+def test_fallback_last_completion_metadata_mirrors_inner():
+    inner = _StubInner("<final>ok</final>")
+    adapter = FallbackAdapter(inner)
+    adapter.complete_v2(
+        system=[{"type": "text", "text": "s"}], tools=[],
+        messages=[{"role": "user", "content": "x"}],
+        max_tokens=10,
+    )
+    assert adapter.last_completion_metadata == {"input_tokens": 3, "output_tokens": 2}
+    # subsequent calls should refresh, not accumulate
+    adapter.complete_v2(
+        system=[{"type": "text", "text": "s"}], tools=[],
+        messages=[{"role": "user", "content": "y"}],
+        max_tokens=10,
+    )
+    assert adapter.last_completion_metadata == {"input_tokens": 3, "output_tokens": 2}
