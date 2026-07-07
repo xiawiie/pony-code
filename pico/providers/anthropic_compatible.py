@@ -154,3 +154,66 @@ class AnthropicCompatibleModelClient:
             prompt_cache_key=prompt_cache_key,
             prompt_cache_retention=prompt_cache_retention,
         )
+
+    def complete_v2(self, *, system, tools, messages, max_tokens, cache_breakpoints=None):
+        from .response import Response, StopReason
+
+        # 打 cache_control 断点：把指定 message.content 转为 list-of-blocks 形式
+        prepared_messages = []
+        breakpoints = set(cache_breakpoints or [])
+        for idx, msg in enumerate(messages):
+            if idx in breakpoints:
+                content = msg["content"]
+                if isinstance(content, str):
+                    blocks = [{"type": "text", "text": content, "cache_control": {"type": "ephemeral"}}]
+                else:
+                    blocks = list(content)
+                    if blocks:
+                        last = dict(blocks[-1])
+                        last["cache_control"] = {"type": "ephemeral"}
+                        blocks[-1] = last
+                prepared_messages.append({"role": msg["role"], "content": blocks})
+            else:
+                prepared_messages.append({"role": msg["role"], "content": msg["content"]})
+
+        payload = {
+            "model": self.model,
+            "system": system,
+            "tools": tools,
+            "messages": prepared_messages,
+            "max_tokens": max_tokens,
+            "temperature": self.temperature,
+        }
+        if not tools:
+            payload.pop("tools")
+
+        req = urllib.request.Request(
+            f"{self.base_url}/messages",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "content-type": "application/json",
+                "x-api-key": self.api_key,
+                "anthropic-version": "2023-06-01",
+            },
+            method="POST",
+        )
+
+        with urllib.request.urlopen(req, timeout=self.timeout) as raw:
+            data = json.loads(raw.read().decode("utf-8"))
+
+        stop_map = {
+            "end_turn": StopReason.END_TURN,
+            "tool_use": StopReason.TOOL_USE,
+            "max_tokens": StopReason.MAX_TOKENS,
+            "stop_sequence": StopReason.STOP_SEQUENCE,
+        }
+        stop_reason = stop_map.get(data.get("stop_reason", "end_turn"), StopReason.END_TURN)
+
+        usage_details = _extract_anthropic_usage_cache_details(data)
+        self.last_completion_metadata = usage_details
+
+        return Response(
+            stop_reason=stop_reason,
+            content=list(data.get("content") or []),
+            usage=usage_details,
+        )
