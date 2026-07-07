@@ -63,6 +63,14 @@ class FallbackAdapter:
         self.supports_native_tools = False
         self.last_completion_metadata = {}
 
+    def __getattr__(self, name):
+        # Delegate attribute reads (`.prompts`, `.outputs`, etc.) to inner so
+        # tests / callers that peek at the underlying provider keep working
+        # after the runtime auto-wraps a legacy provider. This only fires when
+        # normal attribute lookup fails, so declared attributes on the adapter
+        # itself still win.
+        return getattr(self._inner, name)
+
     def complete_v2(self, *, system, tools, messages, max_tokens, cache_breakpoints=None):
         prompt = "\n\n".join(part for part in (_flatten_system(system), _flatten_tools(tools), _flatten_messages(messages)) if part)
         raw = self._inner.complete(prompt, max_tokens)

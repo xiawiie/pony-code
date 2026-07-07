@@ -301,9 +301,14 @@ class ContextManager:
         session = getattr(self.agent, "session", {}) or {}
         messages = list(session.get("messages", []) or [])
 
-        # Task 5: plain-text user content. Task 14 will wrap this in
-        # <system-reminder> injection.
-        messages.append({"role": "user", "content": user_message})
+        # Task 5/7: plain-text user content. If the session already ends with a
+        # user turn (e.g. the caller pre-appended the user message, or the last
+        # entry is a tool_result which is also role="user"), don't duplicate —
+        # Anthropic's API rejects back-to-back user messages, and mid-loop we
+        # already have the current user turn persisted from the top of run().
+        # Task 14 will wrap plain-text user content in <system-reminder>.
+        if not messages or messages[-1].get("role") != "user":
+            messages.append({"role": "user", "content": user_message})
 
         breakpoints = [len(messages) - 2] if len(messages) >= 2 else []
 

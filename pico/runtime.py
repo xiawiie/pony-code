@@ -84,6 +84,15 @@ class Pico:
         feature_flags=None,
         allowed_tools=None,
     ):
+        # v2 迁移：模型后端约定的接口是 `complete_v2(system, tools, messages, ...)`。
+        # 不支持这个方法的老 provider（FakeModelClient / OllamaModelClient /
+        # OpenAICompatibleModelClient / 老的 Anthropic 客户端等）在这里统一被
+        # FallbackAdapter 包一层：外部看起来仍然是 complete_v2，内部把 v2 请求
+        # 拍扁成 <tool>/<final> XML prompt，再让老 provider.complete() 处理。
+        if not hasattr(model_client, "complete_v2"):
+            from .providers.fallback_adapter import FallbackAdapter
+
+            model_client = FallbackAdapter(model_client)
         self.model_client = model_client
         self.workspace = workspace
         self.root = Path(workspace.repo_root)
@@ -126,9 +135,11 @@ class Pico:
         self.project_max_blob_size = project_max_blob_size(self.root)
         self.session = session or {
             "id": datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6],
+            "schema_version": 2,
             "created_at": now(),
             "workspace_root": workspace.repo_root,
             "history": [],
+            "messages": [],
             "working_memory": {"task_summary": "", "recent_files": []},
             "memory": {"file_summaries": {}},
         }

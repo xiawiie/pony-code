@@ -4,6 +4,7 @@ import time
 import uuid
 
 from .checkpoint import CHECKPOINT_NONE_STATUS, CHECKPOINT_PARTIAL_STALE_STATUS, CHECKPOINT_WORKSPACE_MISMATCH_STATUS
+from .providers.response import StopReason
 from .recovery_models import TRACE_RECOVERY_CHECKPOINT_CREATED
 from .recovery_checkpoint_writer import (
     current_recovery_checkpoint_id,
@@ -72,6 +73,10 @@ class AgentLoop:
         run_started_at = time.monotonic()
         agent.memory.set_task_summary(user_message)
         agent._sync_working_memory()
+        # 新路径：session["messages"] 是唯一发给模型的 transcript。
+        # 我们同时保留 session["history"] 的旧记录（Task 8 会清理），
+        # 这样现存 trace / report / test 逻辑不必一次性全部迁移。
+        _append_user_turn(agent, user_message)
         agent.record({"role": "user", "content": user_message, "created_at": now()})
 
         task_state = TaskState.create(run_id=agent.new_run_id(), task_id=agent.new_task_id(), user_request=user_message)
@@ -97,17 +102,31 @@ class AgentLoop:
         run_verification_evidence = []
 
         # 这是 agent 的主循环，可以按“感知 -> 决策 -> 行动 -> 记录”来理解：
-        # 1. 感知：重新组 prompt，把当前状态整理给模型看
-        # 2. 决策：让模型返回一个工具调用，或一个最终答案
-        # 3. 行动：如果是工具调用，就执行工具
-        # 4. 记录：把结果写回 history / task_state / trace / memory
-        # 然后进入下一轮，直到停机条件满足
+        # 1. 感知：build_v2 把 system / tools / messages 组装成一次 v2 请求
+        # 2. 决策：让 provider.complete_v2 返回 Response（tool_use 或 text）
+        # 3. 行动：如果是 tool_use，就 execute_tool 并把 tool_result 追加回 messages
+        # 4. 记录：把结果写回 messages / history / task_state / trace / memory
+        # 然后进入下一轮，直到停机条件满足。
         while tool_steps < agent.max_steps and attempts < max_attempts:
             attempts += 1
             task_state.record_attempt()
             agent.run_store.write_task_state(task_state)
             prompt_started_at = time.monotonic()
-            prompt, prompt_metadata = agent._build_prompt_and_metadata(user_message)
+            # 依旧调用 _build_prompt_and_metadata 是为了两件事：
+            # 1) 触发 resume_state / prefix_refresh 的副作用；
+            # 2) 拿到富元数据（resume_status / budget_reductions / prompt_cache_key
+            #    等）用于 trace、checkpoint 决策与报表；
+            # 真正发给模型的请求由 build_v2 组装，二者独立、互不覆盖。
+            _, prompt_metadata = agent._build_prompt_and_metadata(user_message)
+            request, v2_metadata = agent.context_manager.build_v2(user_message)
+            # v2 特有的 metadata（system_cache_key / messages_count / breakpoints）
+            # 也并入 prompt_metadata，让 trace/report 能观察 v2 请求的真实形状。
+            # 但不要覆盖已存在的键（例如 prompt_cache_key）：build_v2 会把
+            # `prompt_cache_key` alias 到 system_cache_key，与旧路径的 prefix_hash
+            # 冲突。旧路径的 prompt_cache_key 依旧代表稳定 prefix 的哈希，
+            # 是 Task 8 之前统一的 cache key 语义。
+            for key, value in v2_metadata.items():
+                prompt_metadata.setdefault(key, value)
             if attempts == 1:
                 task_state.resume_status = prompt_metadata.get("resume_status", task_state.resume_status)
             agent.emit_trace(
@@ -140,19 +159,14 @@ class AgentLoop:
                     "prompt_cache_key": prompt_metadata.get("prompt_cache_key"),
                 },
             )
-            prompt_cache_key = None
-            prompt_cache_retention = None
-            if getattr(agent.model_client, "supports_prompt_cache", False):
-                # 只有后端明确支持时，才把稳定前缀的 hash 作为 cache key 发出去。
-                prompt_cache_key = prompt_metadata.get("prompt_cache_key")
-                prompt_cache_retention = "in_memory"
             model_started_at = time.monotonic()
             try:
-                raw = agent.model_client.complete(
-                    prompt,
-                    agent.max_new_tokens,
-                    prompt_cache_key=prompt_cache_key,
-                    prompt_cache_retention=prompt_cache_retention,
+                raw_response = agent.model_client.complete_v2(
+                    system=request["system"],
+                    tools=request["tools"],
+                    messages=request["messages"],
+                    max_tokens=agent.max_new_tokens,
+                    cache_breakpoints=request["cache_control_breakpoints"],
                 )
             except RuntimeError as exc:
                 agent.last_completion_metadata = {}
@@ -177,12 +191,36 @@ class AgentLoop:
                 prompt_metadata.update(completion_metadata)
             agent.last_completion_metadata = completion_metadata
             agent.last_prompt_metadata = prompt_metadata
-            kind, payload = agent.parse(raw)
+
+            # 解析 Response.content：过滤成 text_blocks / tool_use_blocks，
+            # tool_use 优先（Anthropic END_TURN 也可能同时带 text 与 tool_use，
+            # 但 STOP_REASON=tool_use 意味着模型希望我们执行工具）。
+            content_blocks = list(raw_response.content or [])
+            text_blocks = [b for b in content_blocks if isinstance(b, dict) and b.get("type") == "text"]
+            tool_use_blocks = [b for b in content_blocks if isinstance(b, dict) and b.get("type") == "tool_use"]
+
+            has_text = any(str(b.get("text", "")).strip() for b in text_blocks)
+            if tool_use_blocks:
+                kind = "tool"
+            elif raw_response.stop_reason == StopReason.STOP_SEQUENCE:
+                # STOP_SEQUENCE 在 v2 语义里表示“这一轮没有拿出可执行的动作”
+                # （FallbackAdapter 也用它承载 retry/malformed notice）。
+                # 即便 text 有内容也不视为 final，避免把 retry notice 当成答案返回。
+                kind = "retry"
+            elif raw_response.stop_reason == StopReason.END_TURN and has_text:
+                kind = "final"
+            elif raw_response.stop_reason == StopReason.MAX_TOKENS and has_text:
+                # 沿用旧循环对 MAX_TOKENS 的宽松处理：还有内容就落地成 final。
+                kind = "final"
+            else:
+                kind = "retry"
+
             agent.emit_trace(
                 task_state,
                 "model_parsed",
                 {
                     "kind": kind,
+                    "stop_reason": str(getattr(raw_response.stop_reason, "value", raw_response.stop_reason) or ""),
                     "completion_metadata": completion_metadata,
                     "duration_ms": int((time.monotonic() - model_started_at) * 1000),
                 },
@@ -195,6 +233,7 @@ class AgentLoop:
                 {
                     "attempts": task_state.attempts,
                     "kind": kind,
+                    "stop_reason": str(getattr(raw_response.stop_reason, "value", raw_response.stop_reason) or ""),
                     "duration_ms": int((time.monotonic() - prompt_started_at) * 1000),
                     "prompt_cache_key": prompt_metadata.get("prompt_cache_key"),
                     "prompt_metadata": prompt_metadata,
@@ -203,8 +242,15 @@ class AgentLoop:
             )
 
             if kind == "tool":
-                name = payload.get("name", "")
-                args = payload.get("args", {})
+                tool_block = tool_use_blocks[0]
+                name = str(tool_block.get("name", ""))
+                args = dict(tool_block.get("input", {}) or {})
+                tool_use_id = _append_tool_use(
+                    agent,
+                    name=name,
+                    input=args,
+                    id_hint=tool_block.get("id"),
+                )
                 tool_started_at = time.monotonic()
                 agent.emit_trace(
                     task_state,
@@ -212,6 +258,7 @@ class AgentLoop:
                     {
                         "name": name,
                         "args": args,
+                        "tool_use_id": tool_use_id,
                     },
                 )
                 tool_result = agent.execute_tool(name, args)
@@ -222,6 +269,7 @@ class AgentLoop:
                 tool_change_id = tool_result.metadata.get("tool_change_id") or ""
                 if tool_change_id:
                     run_tool_change_ids.append(tool_change_id)
+                _append_tool_result(agent, tool_use_id=tool_use_id, content=result)
                 agent.record(
                     {
                         "role": "tool",
@@ -239,6 +287,7 @@ class AgentLoop:
                         "name": name,
                         "args": args,
                         "result": clip(result, 500),
+                        "tool_use_id": tool_use_id,
                         "duration_ms": int((time.monotonic() - tool_started_at) * 1000),
                         **dict(tool_result.metadata or {}),
                     },
@@ -249,6 +298,7 @@ class AgentLoop:
                     {
                         "name": name,
                         "tool_change_id": tool_change_id,
+                        "tool_use_id": tool_use_id,
                         "tool_status": tool_result.metadata.get("tool_status", ""),
                         "affected_paths": list(tool_result.metadata.get("affected_paths", [])),
                         "duration_ms": int((time.monotonic() - tool_started_at) * 1000),
@@ -266,11 +316,29 @@ class AgentLoop:
                 continue
 
             if kind == "retry":
-                agent.record({"role": "assistant", "content": payload, "created_at": now()})
+                # retry：把可能存在的 text 内容作为“运行时提示”写进 history，
+                # 帮助排查为什么模型这一轮没有拿到有效动作；不追加到 v2 messages，
+                # 否则会产生两条连续 assistant 消息。
+                retry_text = ""
+                for block in text_blocks:
+                    retry_text = str(block.get("text", "") or "").strip()
+                    if retry_text:
+                        break
+                if not retry_text:
+                    retry_text = "Runtime notice: model returned no actionable content. Reply with a tool call or a final answer."
+                agent.record({"role": "assistant", "content": retry_text, "created_at": now()})
                 agent.run_store.write_task_state(task_state)
                 continue
 
-            final = (payload or raw).strip()
+            # final path
+            final_text = ""
+            for block in text_blocks:
+                candidate = str(block.get("text", "") or "").strip()
+                if candidate:
+                    final_text = candidate
+                    break
+            final = final_text
+            _append_assistant_text(agent, final)
             agent.record({"role": "assistant", "content": final, "created_at": now()})
             task_state.finish_success(final)
             return _finish_run(
@@ -290,6 +358,7 @@ class AgentLoop:
         else:
             final = "Stopped after reaching the step limit without a final answer."
             task_state.stop_step_limit(final)
+        _append_assistant_text(agent, final)
         agent.record({"role": "assistant", "content": final, "created_at": now()})
         final_trigger = task_state.stop_reason or "run_stopped"
         return _finish_run(
