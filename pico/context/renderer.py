@@ -23,12 +23,12 @@ Telemetry keys:
   (0 when the source was skipped or empty)
 - ``injection_truncated[source]``: counter incremented when a source's
   raw output exceeded its per-source budget and was tail-clipped
-- ``injection_dropped``: reserved for a future overflow step where an
-  entire source is dropped because the aggregate injection budget was
-  breached; currently always ``[]``
+- ``injection_dropped``: names of sources whose blocks were removed
+  because the sum of ``injection_tokens`` exceeded ``injection_budget``;
+  drops proceed in ``DROP_PRIORITY`` order (least-important first)
 - ``injection_budget``: the aggregate cap
-  (``injection_budget_ratio × total_budget_hard_cap``) that Stream C1's
-  drop logic will compare the sum of ``injection_tokens`` against
+  (``injection_budget_ratio × total_budget_hard_cap``) that the drop
+  logic compares the sum of ``injection_tokens`` against
 """
 
 from __future__ import annotations
@@ -49,6 +49,18 @@ SOURCE_ORDER = (
     "project_structure",
     "recalled_memory",
     "checkpoint",
+)
+
+# Task C1: drop-priority order — least important first. When aggregate
+# injection tokens exceed injection_budget, sources are dropped from the
+# start of this list. Distinct from SOURCE_ORDER (which is the *render*
+# order in the outgoing user message).
+DROP_PRIORITY = (
+    "checkpoint",
+    "project_structure",
+    "memory_index",
+    "workspace_state",
+    "recalled_memory",  # last — decision-critical per spec §4.4.3
 )
 
 # Task 24: ``recalled_memory`` needs the current turn's user message to
@@ -94,9 +106,14 @@ def render_current_user_message(agent, user_message):
         "injection_dropped": [],
     }
 
-    # Task B6: compute the aggregate injection budget cap. Downstream C1
-    # will use it to drop least-important blocks when sum overflows.
-    cfg = getattr(agent, "context_config", {}) or {}
+    # Task B6: compute the aggregate injection budget cap. C1's drop
+    # logic (below) compares the sum of ``injection_tokens`` against it.
+    # Guard: only trust real dicts — a MagicMock in tests would otherwise
+    # return truthy sentinels whose ``__float__`` / ``__int__`` collapse
+    # the budget to 1 and drop every block.
+    cfg = getattr(agent, "context_config", None)
+    if not isinstance(cfg, dict):
+        cfg = {}
     ratio = float(cfg.get("injection_budget_ratio", 0.15))
     total = int(cfg.get("total_budget_hard_cap", 100000))
     telemetry["injection_budget"] = int(total * ratio)
@@ -128,6 +145,25 @@ def render_current_user_message(agent, user_message):
         )
         blocks.append(block)
         telemetry["injection_tokens"][source_name] = _count_tokens(agent, escaped)
+
+    # Task C1: enforce aggregate injection budget by dropping sources in
+    # DROP_PRIORITY order until we fit. `blocks` and `telemetry` track the
+    # in-order rendered state; a dropped source is removed from both.
+    injection_budget = telemetry["injection_budget"]
+
+    def _current_tokens():
+        return sum(telemetry["injection_tokens"].get(s, 0) for s in SOURCE_ORDER)
+
+    if injection_budget > 0:
+        for candidate in DROP_PRIORITY:
+            if _current_tokens() <= injection_budget:
+                break
+            if telemetry["injection_tokens"].get(candidate, 0) <= 0:
+                continue
+            # Remove any block whose tag matches this source name.
+            blocks = [b for b in blocks if f"<pico:{candidate}>" not in b]
+            telemetry["injection_tokens"][candidate] = 0
+            telemetry["injection_dropped"].append(candidate)
 
     text = "\n\n".join(blocks + [user_message]) if blocks else user_message
     return text, telemetry
