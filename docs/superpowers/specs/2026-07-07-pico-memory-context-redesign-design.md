@@ -1050,3 +1050,30 @@ retrieval.link.decay       = 0.4
 - **Q4**：Digest 通用 fallback 是否需要格式感知（JSON / plaintext / diff）？当前
   统一 tail 3 行。倾向 P3 上线后观察，若发现某类 tool 摘要质量差再补 per-type
   fallback。不影响架构落地。
+
+---
+
+## Post-Review Update (2026-07-08)
+
+The whole-branch review after the 28-task migration flagged 15
+findings, one CRITICAL (injection subsystem inert in the live runtime)
+plus 14 others. The critical bug was fixed the same session (see
+commit `0189780`). The remaining 14 findings are addressed by the
+follow-up spec `2026-07-08-pico-review-and-optimize-design.md`.
+
+**What that spec covers**:
+- Finding 2: turn-based history budget via `history_soft_cap`
+- Finding 3: pico.toml config surface (per-domain helpers in `config.py`)
+- Finding 4: `strip_pico_meta` helper for provider payloads
+- Finding 5: `injection_dropped` populated via `DROP_PRIORITY`
+- Findings 6-12: MINOR correctness/perf/observability fixes
+- Findings 13-14 (2 of 3 legacy tests): rewritten to v2 shape
+
+**Deferred**:
+- Finding 14's third legacy test (`test_metrics.py`) — depends on
+  evaluation harness `_MemoryExperimentModelClient` internals; requires
+  independent spec.
+- Runtime dual-write drift assertion — replaced by
+  `pico-cli session inspect` CLI (static, safer).
+- Nested-dict intent overrides via `pico.toml` — deliberately dropped
+  (intent keywords live in code; users PR changes).
