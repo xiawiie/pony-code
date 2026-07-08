@@ -172,3 +172,104 @@ class FixtureManager:
                 pico_toml.unlink()
         except OSError as e:
             print(f"[live-e2e] teardown: pico.toml restore failed: {e}", file=sys.stderr)
+
+
+import time
+
+
+@dataclass(frozen=True)
+class TurnResult:
+    """Immutable record of a single turn's execution."""
+
+    turn: int
+    user_prompt: str
+    expected_behavior: str
+    final_answer: str
+    metadata: dict
+    session_message_count_before: int
+    session_message_count_after: int
+    provider_call_count_this_turn: int
+    duration_ms: int
+    usage: dict
+    stopped_at_step_limit: bool
+    error: str | None
+    provider_input_messages_len: int
+    current_user_content: str
+
+
+class TurnRunner:
+    """Runs one turn against a real Pico + provider; captures TurnResult.
+
+    The runner does NOT catch exceptions raised by ``pico.ask`` — the
+    caller (``main``) decides whether to abort or continue.
+    """
+
+    def __init__(self, pico, config: RunConfig):
+        self.pico = pico
+        self.config = config
+        self._provider_calls_before = self._count_provider_calls()
+
+    def _count_provider_calls(self) -> int:
+        """Best-effort count of provider calls seen so far.
+
+        AnthropicCompatibleModelClient does not natively track calls, so
+        we use the presence of ``last_completion_metadata`` on the client
+        as a coarse indicator; for exact counting we rely on the messages
+        array growth pattern instead (each turn produces at least one
+        provider call).
+        """
+        client = getattr(self.pico, "model_client", None)
+        return int(getattr(client, "_pico_live_call_count", 0) or 0)
+
+    def run_turn(
+        self, turn: int, user_prompt: str, expected_behavior: str
+    ) -> TurnResult:
+        """Execute one turn and return a captured TurnResult."""
+        session_before = len(self.pico.session.get("messages", []))
+        provider_calls_before = self._count_provider_calls()
+        started_ns = time.monotonic_ns()
+        error: str | None = None
+        final_answer = ""
+        stopped_at_step_limit = False
+
+        try:
+            final_answer = self.pico.ask(user_prompt)
+        except Exception as exc:  # capture and continue; caller decides
+            error = f"{type(exc).__name__}: {exc}"
+
+        duration_ms = (time.monotonic_ns() - started_ns) // 1_000_000
+        metadata = dict(getattr(self.pico, "last_prompt_metadata", {}) or {})
+        usage = dict(getattr(self.pico.model_client, "last_completion_metadata", {}) or {})
+        provider_calls_after = self._count_provider_calls()
+        session_after = len(self.pico.session.get("messages", []))
+
+        # detect step-limit stops (no exception, but final answer starts with the
+        # runtime's canned "Stopped after..." message)
+        if final_answer.startswith("Stopped after"):
+            stopped_at_step_limit = True
+
+        current_user_content = ""
+        messages = self.pico.session.get("messages", []) or []
+        if messages:
+            last = messages[-1]
+            if isinstance(last.get("content"), str):
+                current_user_content = last["content"]
+
+        provider_input_messages_len = int(metadata.get("messages_count", 0))
+
+        return TurnResult(
+            turn=turn,
+            user_prompt=user_prompt,
+            expected_behavior=expected_behavior,
+            final_answer=final_answer,
+            metadata=metadata,
+            session_message_count_before=session_before,
+            session_message_count_after=session_after,
+            provider_call_count_this_turn=max(0, provider_calls_after - provider_calls_before),
+            duration_ms=duration_ms,
+            usage=usage,
+            stopped_at_step_limit=stopped_at_step_limit,
+            error=error,
+            provider_input_messages_len=provider_input_messages_len,
+            current_user_content=current_user_content,
+        )
