@@ -408,7 +408,9 @@ class ContextManager:
         # clipping them would ship a broken prompt to the provider —
         # better to surface the misconfiguration to the operator.
         system_tokens = self._count_tokens_for_v2(system_text)
-        tools_tokens = self._count_tokens_for_v2(str(tools))
+        # Task A3: use json.dumps so the token estimate reflects wire size,
+        # not Python repr (which uses single quotes and off ~2×).
+        tools_tokens = self._count_tokens_for_v2(json.dumps(tools, sort_keys=False))
         pinned_cap = SYSTEM_TOOLS_HARD_CAP
         if system_tokens + tools_tokens > pinned_cap:
             raise RuntimeError(

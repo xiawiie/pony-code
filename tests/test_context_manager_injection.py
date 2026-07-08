@@ -71,3 +71,33 @@ def test_build_v2_last_user_already_present_skips_append():
     # only one user message in the messages array
     assert len(request["messages"]) == 1
     assert request["messages"][0]["content"] == "already here"
+
+
+def test_build_v2_tools_tokens_uses_json_serialization():
+    """Task A3: tools_tokens must reflect JSON wire size, not Python repr."""
+    import json
+    from unittest.mock import MagicMock
+    from pico.context_manager import ContextManager
+
+    a = MagicMock()
+    a.prefix = "sys"
+    a.tools = {
+        "read_file": {
+            "schema": {"path": "str"},
+            "risky": False,
+            "description": "Read a file.",
+        },
+    }
+    a.session = {"messages": [{"role": "assistant", "content": "prev"}]}
+    a.workspace = MagicMock()
+    a.workspace.volatile_text = MagicMock(return_value="")
+    a.memory_store = None
+    a.repo_map = None
+    a.render_checkpoint_text = MagicMock(return_value="")
+    a.model_client = MagicMock(count_tokens=lambda t: max(1, len(t) // 4))
+
+    cm = ContextManager(a)
+    request, metadata = cm.build_v2("hello")
+    # Recompute the expected token count against the JSON-serialized tools.
+    expected = max(1, len(json.dumps(request["tools"])) // 4)
+    assert metadata["tools_tokens"] == expected
