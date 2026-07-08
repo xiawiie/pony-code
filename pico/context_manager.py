@@ -103,6 +103,106 @@ def _build_tools_list(pico_tools):
     return [_convert_pico_tool_to_anthropic(name, spec) for name, spec in sorted(pico_tools.items())]
 
 
+def _is_top_level_user_message(msg):
+    """A 'top-level' user message is one whose content is a plain string
+    (i.e. the user typing), not a list-of-blocks (tool_result carrier)."""
+    return msg.get("role") == "user" and isinstance(msg.get("content"), str)
+
+
+def _is_tool_use_message(msg):
+    if msg.get("role") != "assistant":
+        return False
+    content = msg.get("content")
+    if not isinstance(content, list):
+        return False
+    return any(b.get("type") == "tool_use" for b in content)
+
+
+def _is_tool_result_message(msg):
+    if msg.get("role") != "user":
+        return False
+    content = msg.get("content")
+    if not isinstance(content, list):
+        return False
+    return any(b.get("type") == "tool_result" for b in content)
+
+
+def _message_text(msg):
+    """Best-effort text serialization of a message for token estimation."""
+    content = msg.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if block.get("type") == "text":
+                parts.append(str(block.get("text", "")))
+            elif block.get("type") == "tool_use":
+                parts.append(str(block.get("name", "")))
+                parts.append(str(block.get("input", "")))
+            elif block.get("type") == "tool_result":
+                parts.append(str(block.get("content", "")))
+        return "\n".join(parts)
+    return str(content or "")
+
+
+def _drop_old_turns(messages, soft_cap_tokens, floor_count, token_of):
+    """Drop oldest turn units until aggregate tokens ≤ soft_cap, subject to floor.
+
+    A **turn unit** starts at a top-level ``user`` message (one whose
+    content is a plain string — user typing) and includes every following
+    message up to the next such top-level user message. The unit contains
+    interleaved assistant.tool_use / user.tool_result pairs plus the
+    final assistant.text. Dropping is atomic — either the entire turn
+    unit goes or it stays. This guarantees no orphan
+    ``tool_use``/``tool_result`` blocks reach the provider (Anthropic
+    rejects them).
+
+    The last ``floor_count`` messages are always retained even if that
+    means exceeding ``soft_cap_tokens``. Floor honors the pairing
+    invariant: if the floor cuts through a tool_use pair, the algorithm
+    extends the kept window backwards to include the pair.
+    """
+    if not messages:
+        return list(messages), 0
+    n = len(messages)
+    floor_start = max(0, n - floor_count)
+
+    # Extend floor_start backwards so we never split a tool_use/tool_result pair.
+    # A single turn may contain multiple pairs; each iteration pulls one pair
+    # backwards, so consecutive pairs cascade correctly.
+    while floor_start > 0:
+        msg = messages[floor_start]
+        prev = messages[floor_start - 1]
+        if _is_tool_result_message(msg) and _is_tool_use_message(prev):
+            floor_start -= 1
+            continue
+        break
+
+    # Locate turn-unit boundaries in the pre-floor region, plus ``floor_start``
+    # as a sentinel so the last pre-floor turn can also be dropped when needed
+    # (the naïve `for b in turn_starts` loop would stop one turn short of the
+    # floor and leave floor_count+1 messages).
+    turn_starts = [i for i in range(floor_start) if _is_top_level_user_message(messages[i])]
+    boundaries = turn_starts + [floor_start]
+
+    kept_start = 0
+    total = sum(token_of(m) for m in messages)
+    for boundary in boundaries:
+        if total <= soft_cap_tokens:
+            break
+        if boundary <= kept_start:
+            # Nothing new to drop at this boundary (e.g. boundary=0 on first pass).
+            continue
+        dropped_tokens = sum(token_of(m) for m in messages[kept_start:boundary])
+        total -= dropped_tokens
+        kept_start = boundary
+
+    kept = list(messages[kept_start:])
+    dropped = kept_start
+    return kept, dropped
+
+
 @dataclass
 class SectionRender:
     raw: str
@@ -353,6 +453,23 @@ class ContextManager:
         else:
             messages.append({"role": "user", "content": current_user_text})
 
+        # Task A1: enforce history_soft_cap via turn-unit drop. When the agent
+        # has no context_config yet (early bootstrap / tests without pico
+        # runtime), fall back to a large default so we don't drop anything.
+        # Only accept a real dict — a MagicMock or other stand-in must not
+        # silently drive soft_cap to 1 and eat the whole history.
+        cfg = getattr(self.agent, "context_config", None)
+        if not isinstance(cfg, dict):
+            cfg = {}
+        soft_cap = int(cfg.get("history_soft_cap", 40000))
+        floor_count = int(cfg.get("history_floor_messages", 6))
+        messages, dropped_messages = _drop_old_turns(
+            messages,
+            soft_cap_tokens=soft_cap,
+            floor_count=floor_count,
+            token_of=lambda m: self._count_tokens_for_v2(_message_text(m)),
+        )
+
         breakpoints = [len(messages) - 2] if len(messages) >= 2 else []
 
         system_cache_key = hashlib.sha256(system_text.encode("utf-8")).hexdigest()
@@ -361,6 +478,10 @@ class ContextManager:
             "system_tokens": system_tokens,
             "tools_tokens": tools_tokens,
             "messages_count": len(messages),
+            "messages_tokens": sum(
+                self._count_tokens_for_v2(_message_text(m)) for m in messages
+            ),
+            "dropped_messages": dropped_messages,
             "cache_control_breakpoints": list(breakpoints),
             # Task 8 will drop this alias; kept for now so callers of `build()`
             # that reach for `metadata["prompt_cache_key"]` don't break if they
