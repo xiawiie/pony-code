@@ -139,18 +139,25 @@ def test_fallback_does_not_forward_prompt_cache_kwargs():
 
 
 def test_fallback_last_completion_metadata_mirrors_inner():
-    inner = _StubInner("<final>ok</final>")
+    class _VaryingStubInner:
+        def __init__(self):
+            self.n = 0
+            self.last_completion_metadata = {}
+        def complete(self, prompt, max_new_tokens, prompt_cache_key=None, prompt_cache_retention=None):
+            self.n += 1
+            self.last_completion_metadata = {"input_tokens": self.n, "output_tokens": self.n * 2}
+            return "<final>ok</final>"
+
+    inner = _VaryingStubInner()
     adapter = FallbackAdapter(inner)
     adapter.complete_v2(
         system=[{"type": "text", "text": "s"}], tools=[],
-        messages=[{"role": "user", "content": "x"}],
-        max_tokens=10,
+        messages=[{"role": "user", "content": "x"}], max_tokens=10,
     )
-    assert adapter.last_completion_metadata == {"input_tokens": 3, "output_tokens": 2}
-    # subsequent calls should refresh, not accumulate
+    assert adapter.last_completion_metadata == {"input_tokens": 1, "output_tokens": 2}
     adapter.complete_v2(
         system=[{"type": "text", "text": "s"}], tools=[],
-        messages=[{"role": "user", "content": "y"}],
-        max_tokens=10,
+        messages=[{"role": "user", "content": "y"}], max_tokens=10,
     )
-    assert adapter.last_completion_metadata == {"input_tokens": 3, "output_tokens": 2}
+    # Mirror the LATEST inner metadata, not the accumulated union.
+    assert adapter.last_completion_metadata == {"input_tokens": 2, "output_tokens": 4}

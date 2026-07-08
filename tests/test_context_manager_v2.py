@@ -87,9 +87,10 @@ def test_build_v2_cache_breakpoint_on_second_to_last():
 
 
 def test_build_v2_metadata_contains_system_cache_key():
+    import hashlib
     a = _make_agent()
     cm = ContextManager(a)
     _, metadata = cm.build_v2("x")
     assert "system_cache_key" in metadata
-    assert isinstance(metadata["system_cache_key"], str)
-    assert len(metadata["system_cache_key"]) == 64  # sha256 hex
+    expected = hashlib.sha256(a.prefix.encode("utf-8")).hexdigest()
+    assert metadata["system_cache_key"] == expected

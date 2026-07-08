@@ -74,6 +74,11 @@ def test_end_to_end_tool_call_then_final(tmp_path):
     # Final assistant turn is plain string
     assert msgs[3]["content"] == "done"
 
+    # Task E7: assert the provider actually saw the injection wrapping.
+    turn1_user_content = provider.calls[0]["messages"][-1]["content"]
+    assert isinstance(turn1_user_content, str)
+    assert "<system-reminder>" in turn1_user_content
+
 
 def test_end_to_end_wraps_non_v2_provider_with_fallback(tmp_path):
     """FakeModelClient (no complete_v2) must be wrapped in FallbackAdapter."""
