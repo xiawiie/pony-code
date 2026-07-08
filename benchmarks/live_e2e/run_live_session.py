@@ -273,3 +273,110 @@ class TurnRunner:
             provider_input_messages_len=provider_input_messages_len,
             current_user_content=current_user_content,
         )
+
+
+@dataclass(frozen=True)
+class Assertion:
+    """One binary check produced by AssertionEngine."""
+
+    name: str
+    passed: bool
+    expected: str
+    actual: str
+
+
+class AssertionEngine:
+    """Turn-scoped hard-assertion engine. Never raises; returns list[Assertion]."""
+
+    def dispatch(self, turn, result: TurnResult, pico, all_results):
+        """Route to per-turn check_*.
+
+        ``turn`` may be an int (1..5) or the string ``"global"``.
+        """
+        if turn == 1:
+            return self.check_turn_1_recall(result)
+        if turn == 2:
+            return self.check_turn_2_digest(result, pico)
+        if turn == 3:
+            return self.check_turn_3_injection_drop(result)
+        if turn == 4:
+            return self.check_turn_4_history_drop(result, pico)
+        if turn == 5:
+            return self.check_turn_5_cache_anchor(result, all_results)
+        if turn == "global":
+            return self.check_global(all_results, pico)
+        return []
+
+    # -- Turn 1: recall --------------------------------------------------
+
+    def check_turn_1_recall(self, result: TurnResult) -> list[Assertion]:
+        """Six assertions verifying recall triggered correctly."""
+        m = result.metadata or {}
+        intent = m.get("intent") or {}
+        injection_tokens = m.get("injection_tokens") or {}
+        content = result.current_user_content or ""
+
+        out = []
+        intent_name = intent.get("name", "")
+        out.append(Assertion(
+            name="intent_name_recall",
+            passed=intent_name == "recall",
+            expected="recall",
+            actual=str(intent_name),
+        ))
+        out.append(Assertion(
+            name="recalled_memory_block_present",
+            passed="<pico:recalled_memory" in content,
+            expected='"<pico:recalled_memory" in current_user_content',
+            actual=("<pico:recalled_memory" in content) and "found" or "not found",
+        ))
+        out.append(Assertion(
+            name="seed_note_name_visible",
+            passed="cache-invariant" in content,
+            expected='"cache-invariant" in current_user_content',
+            actual=("cache-invariant" in content) and "found" or "not found",
+        ))
+        recall_tokens = int(injection_tokens.get("recalled_memory", 0) or 0)
+        out.append(Assertion(
+            name="recalled_memory_tokens_gt_zero",
+            passed=recall_tokens > 0,
+            expected="injection_tokens[recalled_memory] > 0",
+            actual=str(recall_tokens),
+        ))
+        err_count = int(m.get("recall.error_count", 0) or 0)
+        out.append(Assertion(
+            name="recall_error_count_zero",
+            passed=err_count == 0,
+            expected="recall.error_count == 0",
+            actual=str(err_count),
+        ))
+        # stop_reason lives inside usage / model client — we accept absence
+        # when the provider stub didn't surface it; the intent here is to
+        # verify no crash and a valid final answer or tool_use path
+        final = result.final_answer or ""
+        no_error_and_answered = result.error is None and (
+            final != "" or result.stopped_at_step_limit
+        )
+        out.append(Assertion(
+            name="turn_1_completed_without_error",
+            passed=no_error_and_answered,
+            expected="pico.ask returned without exception",
+            actual=result.error or ("stopped_at_step_limit" if result.stopped_at_step_limit else "ok"),
+        ))
+        return out
+
+    # Turn 2-5 + global added in later tasks.
+    def check_turn_2_digest(self, result: TurnResult, pico) -> list[Assertion]:
+        return []
+
+    def check_turn_3_injection_drop(self, result: TurnResult) -> list[Assertion]:
+        return []
+
+    def check_turn_4_history_drop(self, result: TurnResult, pico) -> list[Assertion]:
+        return []
+
+    def check_turn_5_cache_anchor(self, result: TurnResult, all_results) -> list[Assertion]:
+        return []
+
+    def check_global(self, all_results, pico) -> list[Assertion]:
+        return []
