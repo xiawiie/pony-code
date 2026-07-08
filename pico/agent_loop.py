@@ -39,13 +39,66 @@ def _append_tool_result(
     *,
     tool_use_id: str,
     content: str,
+    tool_name: str = "",
+    tool_args: dict | None = None,
     digest_applied: bool = False,
     source_hash: str | None = None,
 ):
-    """Append a tool_result. Anthropic semantics: role="user" wrapping the tool_result block."""
+    """Append a tool_result message. Anthropic semantics: role="user"
+    wraps the tool_result content block.
+
+    Task 26: when the raw ``content`` exceeds the digest threshold
+    (see ``pico.context.digest.should_digest``), we:
+
+    1. Write the raw body to ``<run_dir>/tool_results/<hash>.txt`` so a
+       later turn can recover the full output on demand.
+    2. Replace ``content`` with the rendered digest (title + bullets +
+       "raw at ..." pointer) — the agent still sees the shape of the
+       result, at a fraction of the token cost.
+    3. Set ``_pico_meta.digest_applied = True`` and stash
+       ``source_hash`` so trace / metrics can distinguish digested
+       messages from inline ones.
+
+    When ``agent.current_run_dir`` is unavailable (e.g. mid-test), we
+    still emit the digest but leave ``raw_path`` empty — no crash.
+    Callers can override the auto-digest by passing
+    ``digest_applied=True`` up-front (used by explicit callers that
+    have already digested the content themselves).
+    """
+    # Lazy import to avoid the agent_loop → context.digest → ... cycle risk.
+    from pico.context.digest import (
+        digest_tool_result,
+        render_digest_content,
+        should_digest,
+    )
+
+    display_content = content
+    tool_args = tool_args or {}
+
+    # Only run the digest heuristic if the caller hasn't already digested.
+    if not digest_applied and should_digest(content):
+        # Compute the hash first so we know where the raw would land.
+        source_hash = digest_tool_result(tool_name, tool_args, content, raw_path="").source_hash
+        run_dir = getattr(agent, "current_run_dir", None)
+        raw_path_str = ""
+        if run_dir is not None:
+            try:
+                raw_dir = run_dir / "tool_results"
+                raw_dir.mkdir(parents=True, exist_ok=True)
+                raw_path = raw_dir / f"{source_hash}.txt"
+                raw_path.write_text(content, encoding="utf-8")
+                raw_path_str = str(raw_path)
+            except OSError:
+                raw_path_str = ""
+        digest = digest_tool_result(tool_name, tool_args, content, raw_path=raw_path_str)
+        display_content = render_digest_content(digest)
+        digest_applied = True
+
     msg = {
         "role": "user",
-        "content": [{"type": "tool_result", "tool_use_id": tool_use_id, "content": content}],
+        "content": [
+            {"type": "tool_result", "tool_use_id": tool_use_id, "content": display_content}
+        ],
         "_pico_meta": {
             "created_at": now(),
             "tool_use_id": tool_use_id,
@@ -269,7 +322,13 @@ class AgentLoop:
                 tool_change_id = tool_result.metadata.get("tool_change_id") or ""
                 if tool_change_id:
                     run_tool_change_ids.append(tool_change_id)
-                _append_tool_result(agent, tool_use_id=tool_use_id, content=result)
+                _append_tool_result(
+                    agent,
+                    tool_use_id=tool_use_id,
+                    content=result,
+                    tool_name=name,
+                    tool_args=args,
+                )
                 agent.record(
                     {
                         "role": "tool",
