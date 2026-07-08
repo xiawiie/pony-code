@@ -114,3 +114,48 @@ def test_backup_uses_nanosecond_precision_in_filename(tmp_path):
     match = re.match(r"s1\.v1\.(\d+)\.json$", backups[0].name)
     assert match is not None
     assert len(match.group(1)) >= 15, f"Expected nanosecond precision, got {match.group(1)!r}"
+
+
+def test_migrator_preserves_created_at_and_tool_use_id():
+    """Task E8: migrator must carry _pico_meta.created_at across every
+    message type and set _pico_meta.tool_use_id on both halves of tool pairs."""
+    from pico.session_store import _migrate_v1_to_v2
+
+    v1 = {
+        "id": "s",
+        "schema_version": 1,
+        "history": [
+            {"role": "user", "content": "hi", "created_at": "2026-04-01T00:00:00Z"},
+            {"role": "tool", "name": "read_file", "args": {"path": "x"}, "content": "y", "created_at": "2026-04-01T00:00:01Z"},
+            {"role": "assistant", "content": "done", "created_at": "2026-04-01T00:00:02Z"},
+        ],
+    }
+    v2 = _migrate_v1_to_v2(v1)
+    msgs = v2["messages"]
+    # user
+    assert msgs[0]["_pico_meta"]["created_at"] == "2026-04-01T00:00:00Z"
+    # assistant tool_use half
+    assert msgs[1]["_pico_meta"]["created_at"] == "2026-04-01T00:00:01Z"
+    tool_use_id = msgs[1]["_pico_meta"]["tool_use_id"]
+    assert tool_use_id
+    # user tool_result half — must share tool_use_id
+    assert msgs[2]["_pico_meta"]["tool_use_id"] == tool_use_id
+    assert msgs[2]["_pico_meta"]["created_at"] == "2026-04-01T00:00:01Z"
+    # final assistant
+    assert msgs[3]["_pico_meta"]["created_at"] == "2026-04-01T00:00:02Z"
+
+
+def test_migrator_idempotent_returns_v2_verbatim():
+    from pico.session_store import _migrate_v1_to_v2
+
+    v2 = {
+        "id": "s",
+        "schema_version": 2,
+        "messages": [
+            {"role": "user", "content": "hi", "_pico_meta": {"created_at": "x"}},
+        ],
+    }
+    result = _migrate_v1_to_v2(v2)
+    # Idempotent — same messages list, unchanged.
+    assert result["schema_version"] == 2
+    assert result["messages"] == v2["messages"]

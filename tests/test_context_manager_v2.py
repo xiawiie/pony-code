@@ -94,3 +94,21 @@ def test_build_v2_metadata_contains_system_cache_key():
     assert "system_cache_key" in metadata
     expected = hashlib.sha256(a.prefix.encode("utf-8")).hexdigest()
     assert metadata["system_cache_key"] == expected
+
+
+def test_int_schema_field_maps_to_integer_json_type():
+    """Task E8: tool schema 'int' variants must map to Anthropic-shape
+    input_schema.properties.<field>.type = 'integer', not 'string'."""
+    from pico.context_manager import _build_tools_list
+
+    tools = {
+        "read_file": {
+            "schema": {"start": "int=1", "end": "int=200"},
+            "risky": False,
+            "description": "read a slice",
+        },
+    }
+    out = _build_tools_list(tools)
+    props = out[0]["input_schema"]["properties"]
+    assert props["start"]["type"] == "integer"
+    assert props["end"]["type"] == "integer"
