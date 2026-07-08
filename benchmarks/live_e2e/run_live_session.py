@@ -646,3 +646,134 @@ class AssertionEngine:
             actual=str(total_tokens),
         ))
         return out
+
+
+import json
+
+
+class Reporter:
+    """Terminal + JSON reporter for a live-e2e run."""
+
+    _COLOR_GREEN = "\033[32m"
+    _COLOR_RED = "\033[31m"
+    _COLOR_YELLOW = "\033[33m"
+    _COLOR_RESET = "\033[0m"
+
+    def __init__(self, config: RunConfig, output_dir: Path):
+        self.config = config
+        self.output_dir = Path(output_dir)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        self._use_color = sys.stdout.isatty()
+
+    def _color(self, text: str, color: str) -> str:
+        return f"{color}{text}{self._COLOR_RESET}" if self._use_color else text
+
+    def render_turn_summary(self, turn, expected: str, assertions: list) -> None:
+        total = len(assertions)
+        passed = sum(1 for a in assertions if a.passed)
+        color = self._COLOR_GREEN if passed == total else self._COLOR_RED
+        label = "PASS" if passed == total else "FAIL"
+        turn_str = f"Turn {turn}" if isinstance(turn, int) else str(turn).capitalize()
+        # Dot-padded label for alignment
+        title = f"[live-e2e] {turn_str}: {expected}"
+        pad_target = 55
+        pad = "." * max(3, pad_target - len(title))
+        print(f"{title} {pad} {self._color(label, color)} ({passed}/{total})")
+        # Show individual failed assertions
+        for a in assertions:
+            if not a.passed:
+                print(f"    {self._color('❌', self._COLOR_RED)} {a.name}")
+                print(f"       expected: {a.expected}")
+                print(f"       actual:   {a.actual}")
+
+    def write_json(
+        self,
+        all_results: list,
+        all_assertions: dict,
+        config: RunConfig,
+        totals: dict,
+        wall_time_ms: int,
+    ) -> Path:
+        run_id = f"live-e2e-{time.time_ns()}"
+        payload = {
+            "schema_version": 1,
+            "run_id": run_id,
+            "provider": config.provider,
+            "model": config.model,
+            "wall_time_ms": wall_time_ms,
+            "config": {
+                "max_provider_calls": config.max_provider_calls,
+                "max_total_tokens": config.max_total_tokens,
+                "timeout_seconds": config.timeout_seconds,
+            },
+            "turns": [self._turn_to_json(r, all_assertions.get(r.turn, [])) for r in all_results],
+            "global_assertions": [self._assertion_to_json(a) for a in all_assertions.get("global", [])],
+            "totals": totals,
+        }
+
+        # assertion summary
+        total = 0
+        passed = 0
+        for asserts_list in all_assertions.values():
+            for a in asserts_list:
+                total += 1
+                if a.passed:
+                    passed += 1
+        payload["assertion_summary"] = {"total": total, "passed": passed, "failed": total - passed}
+        payload["overall_pass"] = passed == total
+
+        report_path = self.output_dir / f"{run_id}.json"
+        report_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+        return report_path
+
+    def _turn_to_json(self, r, assertions) -> dict:
+        return {
+            "turn": r.turn,
+            "user_prompt": r.user_prompt,
+            "expected_behavior": r.expected_behavior,
+            "duration_ms": r.duration_ms,
+            "provider_calls_this_turn": r.provider_call_count_this_turn,
+            "final_answer": r.final_answer[:500],
+            "stopped_at_step_limit": r.stopped_at_step_limit,
+            "error": r.error,
+            "usage": r.usage,
+            "metadata_subset": {
+                k: r.metadata.get(k) for k in [
+                    "intent", "injection_tokens", "injection_dropped",
+                    "injection_budget", "recall.error_count",
+                    "dropped_messages", "messages_tokens", "system_cache_key",
+                    "cache_control_breakpoints",
+                ] if k in (r.metadata or {})
+            },
+            "assertions": [self._assertion_to_json(a) for a in assertions],
+        }
+
+    @staticmethod
+    def _assertion_to_json(a) -> dict:
+        return {
+            "name": a.name,
+            "passed": a.passed,
+            "expected": a.expected,
+            "actual": a.actual,
+        }
+
+    def render_final(
+        self,
+        overall_pass: bool,
+        totals: dict,
+        wall_time_ms: int,
+        report_path: Path,
+        assertion_summary: tuple,
+    ) -> None:
+        passed, total = assertion_summary
+        color = self._COLOR_GREEN if overall_pass else self._COLOR_RED
+        label = "ALL PASS" if overall_pass else "FAIL"
+        print()
+        print(f"[live-e2e] OVERALL: {self._color(label, color)} · {passed}/{total} assertions")
+        print(
+            f"[live-e2e] wall_time={wall_time_ms/1000:.1f}s · "
+            f"input_tokens={totals.get('input_tokens', 0):,} · "
+            f"output_tokens={totals.get('output_tokens', 0):,} · "
+            f"cache_reads={totals.get('cache_read_input_tokens', 0):,}"
+        )
+        print(f"[live-e2e] report: {report_path}")
