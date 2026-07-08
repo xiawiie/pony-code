@@ -12,6 +12,7 @@ KNOWN_TOP_LEVEL_COMMANDS = {
     "config",
     "runs",
     "sessions",
+    "session",
     "checkpoints",
     "memory",
     "help",

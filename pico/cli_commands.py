@@ -11,6 +11,7 @@ from .cli_start import run_agent_once, run_repl  # noqa: F401
 from .cli_memory import handle_memory  # noqa: F401
 from .cli_output import print_result
 from .cli_recovery import handle_checkpoints, handle_runs, handle_sessions  # noqa: F401
+from .cli_session import handle_session_command
 from .config import _parse_env_line
 from .providers.defaults import (
     API_KEY_ENV_NAMES,
@@ -44,6 +45,7 @@ Available Commands:
   config       Configuration inspection
   runs         Run artifact inspection
   sessions     Session inspection
+  session      Session drift inspector (dual-write check)
   checkpoints  Checkpoint recovery inspection
   memory       Memory files inspection & migration
   help         Help about any command
@@ -62,6 +64,17 @@ Compatibility:
 def handle_help(tokens):
     print(ROOT_HELP.rstrip())
     return 0
+
+
+def handle_session(tokens, root, args):
+    """`pico-cli session {inspect} <session_id>`.
+
+    Task A5: static, read-only dual-write drift inspector. Bridges the
+    ``session["history"]`` (legacy) / ``session["messages"]`` (v2)
+    invariant without a runtime assertion.
+    """
+    sessions_root = Path(root) / ".pico" / "sessions"
+    return handle_session_command(list(tokens), sessions_root=sessions_root)
 
 
 def handle_init(tokens, cwd, args):

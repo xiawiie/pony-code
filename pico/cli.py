@@ -18,6 +18,7 @@ from .cli_commands import (
     handle_init,
     handle_memory,
     handle_runs,
+    handle_session,
     handle_sessions,
     run_agent_once,
     run_repl,
@@ -52,6 +53,7 @@ COMMAND_SPECS = {
     "doctor": {"category": "inspection", "subcommands": {"--offline"}},
     "config": {"category": "inspection", "subcommands": {"show"}},
     "sessions": {"category": "inspection", "subcommands": {"list", "show"}},
+    "session": {"category": "inspection", "subcommands": {"inspect"}},
     "checkpoints": {"category": "recovery", "subcommands": {"list", "show", "preview-restore", "restore", "prune"}},
     "runs": {"category": "recovery", "subcommands": {"list", "show"}},
 }
@@ -424,6 +426,11 @@ def _dispatch_memory(args, tokens):
     return handle_memory(tokens, workspace.repo_root, args)
 
 
+def _dispatch_session(args, tokens):
+    workspace = WorkspaceContext.build(args.cwd)
+    return handle_session(tokens, workspace.repo_root, args)
+
+
 def _dispatch_recovery(args, tokens, command):
     recovery_tokens = [command, *tokens]
     if not _looks_like_recovery_command(recovery_tokens):
@@ -446,6 +453,7 @@ _PRE_AGENT_COMMAND_HANDLERS = {
     "doctor": _dispatch_doctor,
     "config": _dispatch_config,
     "sessions": _dispatch_sessions,
+    "session": _dispatch_session,
     "memory": _dispatch_memory,
     "checkpoints": _dispatch_checkpoints,
     "runs": _dispatch_runs,
