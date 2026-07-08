@@ -324,16 +324,33 @@ class ContextManager:
             self.agent, user_message
         )
 
-        # Shallow copy so the append below cannot mutate agent.session["messages"].
+        # Shallow copy so the substitution below cannot mutate agent.session["messages"].
         session = getattr(self.agent, "session", {}) or {}
         messages = list(session.get("messages", []) or [])
 
-        # Anthropic's API rejects back-to-back user messages; the agent loop
-        # may have already appended the current user turn to session before
-        # calling build_v2. In that case we skip the append entirely — the
-        # already-persisted message is the current one. (The injection
-        # wrapping is only applied when we're the ones creating the message.)
-        if not messages or messages[-1].get("role") != "user":
+        # Anthropic's API rejects back-to-back user messages, so we must
+        # avoid duplicating. The agent loop (Task 7) appends the current
+        # user turn via _append_user_turn *before* calling build_v2 so that
+        # session["messages"] carries the turn's authoritative record. But
+        # that pre-appended message is the *plain* user text — the
+        # injection wrapping only exists here in build_v2.
+        #
+        # Correct behavior: when the tail is already a user message that
+        # matches user_message, REPLACE its content with the injection-
+        # wrapped version for the request we send to the provider. This
+        # keeps the message array length invariant AND ensures the model
+        # actually sees the <system-reminder> block. If the tail is a
+        # different user turn (e.g. a tool_result), we treat that as the
+        # current turn and don't touch it; if there's no tail, we append.
+        if messages and messages[-1].get("role") == "user":
+            tail = messages[-1]
+            tail_content = tail.get("content")
+            # Only replace when the tail is our plain-string user_message.
+            # A user-role message whose content is a list of content blocks
+            # is a tool_result carrier — those must not be wrapped.
+            if isinstance(tail_content, str) and tail_content == user_message:
+                messages[-1] = {"role": "user", "content": current_user_text}
+        else:
             messages.append({"role": "user", "content": current_user_text})
 
         breakpoints = [len(messages) - 2] if len(messages) >= 2 else []
