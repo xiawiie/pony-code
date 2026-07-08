@@ -625,4 +625,24 @@ class AssertionEngine:
         return out
 
     def check_global(self, all_results, pico) -> list[Assertion]:
-        return []
+        """Two cross-turn budget invariants."""
+        out = []
+        total_calls = sum(r.provider_call_count_this_turn for r in all_results)
+        out.append(Assertion(
+            name="total_provider_calls_under_cap",
+            passed=total_calls <= 15,
+            expected="sum(provider_call_count_this_turn) <= 15",
+            actual=str(total_calls),
+        ))
+        total_tokens = 0
+        for r in all_results:
+            u = r.usage or {}
+            total_tokens += int(u.get("input_tokens", 0) or 0)
+            total_tokens += int(u.get("output_tokens", 0) or 0)
+        out.append(Assertion(
+            name="total_tokens_under_cap",
+            passed=total_tokens <= 200_000,
+            expected="total input+output tokens <= 200,000",
+            actual=str(total_tokens),
+        ))
+        return out

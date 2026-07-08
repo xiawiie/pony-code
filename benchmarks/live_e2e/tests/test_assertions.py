@@ -382,3 +382,36 @@ def test_check_turn_5_fails_when_cache_key_drifts():
     asserts = engine.check_turn_5_cache_anchor(all_results[-1], all_results)
     failed = [a for a in asserts if not a.passed]
     assert any(a.name == "system_cache_key_stable_across_turns" for a in failed)
+
+
+def test_check_global_passes_under_budget():
+    engine = AssertionEngine()
+    all_results = [
+        _turn_result_stub(usage={"input_tokens": 1000, "output_tokens": 200}, provider_call_count_this_turn=1),
+        _turn_result_stub(turn=2, usage={"input_tokens": 1500, "output_tokens": 300}, provider_call_count_this_turn=2),
+        _turn_result_stub(turn=3, usage={"input_tokens": 1200, "output_tokens": 250}, provider_call_count_this_turn=1),
+    ]
+    asserts = engine.check_global(all_results, MagicMock())
+    assert len(asserts) == 2
+    assert all(a.passed for a in asserts)
+
+
+def test_check_global_fails_when_provider_calls_exceeded():
+    engine = AssertionEngine()
+    all_results = [
+        _turn_result_stub(provider_call_count_this_turn=8),
+        _turn_result_stub(turn=2, provider_call_count_this_turn=8),  # sum = 16 > 15
+    ]
+    asserts = engine.check_global(all_results, MagicMock())
+    failed = [a for a in asserts if not a.passed]
+    assert any(a.name == "total_provider_calls_under_cap" for a in failed)
+
+
+def test_check_global_fails_when_tokens_exceeded():
+    engine = AssertionEngine()
+    all_results = [
+        _turn_result_stub(usage={"input_tokens": 150000, "output_tokens": 60000}),
+    ]
+    asserts = engine.check_global(all_results, MagicMock())
+    failed = [a for a in asserts if not a.passed]
+    assert any(a.name == "total_tokens_under_cap" for a in failed)
