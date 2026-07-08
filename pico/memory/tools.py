@@ -109,6 +109,16 @@ def tool_memory_search(context, args: dict) -> str:
 
 
 def tool_memory_save(context, args: dict) -> str:
+    """Task 21: dual-path save.
+
+    - With ``topic``: creates or appends ``agent/<topic>.md`` (per-topic file
+      with frontmatter). The optional ``type`` arg overrides the frontmatter
+      type field on first write (default ``feedback``); it is ignored on
+      subsequent appends since the header is already fixed.
+    - Without ``topic``: falls back to the legacy ``agent_notes.md`` single-file
+      append. Preserved so mid-migration workflows keep working; retired once
+      Task 22's migrator runs.
+    """
     store: BlockStore = getattr(context, "memory_store", None)
     if store is None:
         return "memory_store unavailable"
@@ -120,6 +130,16 @@ def tool_memory_save(context, args: dict) -> str:
     scope = str(args.get("scope", "workspace")).strip() or "workspace"
     if scope not in ("workspace", "user"):
         return "error: scope must be 'workspace' or 'user'"
+
+    topic = str(args.get("topic", "")).strip()
+    if topic:
+        note_type = str(args.get("type", "feedback")).strip() or "feedback"
+        try:
+            store.write_agent_topic(scope=scope, topic=topic, note=note, note_type=note_type)
+        except ValueError as exc:
+            return f"error: {exc}"
+        return f"saved: {scope}/agent/{topic}.md"
+
     try:
         total = store.append_agent_note(scope=scope, note=note)  # type: ignore[arg-type]
     except ValueError as exc:

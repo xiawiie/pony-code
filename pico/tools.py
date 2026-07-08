@@ -70,9 +70,9 @@ BASE_TOOL_SPECS = {
         "description": "Full-text search across memory files (BM25 + CJK bigram). Query capped at 512 chars.",
     },
     "memory_save": {
-        "schema": {"note": "str", "scope": "str='workspace'"},
+        "schema": {"note": "str", "scope": "str='workspace'", "topic": "str=''", "type": "str='feedback'"},
         "risky": False,
-        "description": "Append a short note (<=500 chars) to agent_notes.md. Use only when the user explicitly asks to remember.",
+        "description": "Append a short note (<=500 chars). With topic → agent/<topic>.md per-topic (Task 21); without topic → agent_notes.md legacy path. Use only when the user explicitly asks to remember.",
     },
     "repo_lookup": {
         "schema": {"symbol": "str", "kind": "str=''"},
