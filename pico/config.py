@@ -192,3 +192,51 @@ def load_pico_toml_full(workspace_root):
             return load_pico_toml(workspace_root)
         except Exception:
             return {}
+
+
+# ---------------------------------------------------------------------------
+# Task B2-B6: pico.toml surface for the context/memory subsystems.
+# Each helper is independent: missing file / missing section / bad type all
+# fall back to the hard-coded default. The pattern mirrors
+# ``project_max_blob_size`` above so future keys can be added without
+# building a shared config object.
+# ---------------------------------------------------------------------------
+
+def _context_int(root, key, default):
+    data = load_pico_toml_full(root)
+    raw = data.get("context", {}).get(key)
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        return default
+    if raw <= 0:
+        return default
+    return raw
+
+
+def _context_float(root, key, default):
+    data = load_pico_toml_full(root)
+    raw = data.get("context", {}).get(key)
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return default
+    if raw < 0:
+        return default
+    return float(raw)
+
+
+def context_history_soft_cap(root) -> int:
+    """Max tokens allowed in messages array before older turns are dropped."""
+    return _context_int(root, "history_soft_cap", 40000)
+
+
+def context_history_floor_messages(root) -> int:
+    """Minimum tail messages preserved regardless of budget."""
+    return _context_int(root, "history_floor_messages", 6)
+
+
+def context_injection_budget_ratio(root) -> float:
+    """Fraction of total budget available for <system-reminder> injection."""
+    return _context_float(root, "injection_budget_ratio", 0.15)
+
+
+def context_system_tools_hard_cap(root) -> int:
+    """Fail-loud threshold for system + tools token count."""
+    return _context_int(root, "system_tools_hard_cap", 20000)

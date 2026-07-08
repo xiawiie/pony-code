@@ -411,7 +411,10 @@ class ContextManager:
         # Task A3: use json.dumps so the token estimate reflects wire size,
         # not Python repr (which uses single quotes and off ~2×).
         tools_tokens = self._count_tokens_for_v2(json.dumps(tools, sort_keys=False))
-        pinned_cap = SYSTEM_TOOLS_HARD_CAP
+        cfg = getattr(self.agent, "context_config", None)
+        if not isinstance(cfg, dict):
+            cfg = {}
+        pinned_cap = int(cfg.get("system_tools_hard_cap", SYSTEM_TOOLS_HARD_CAP))
         if system_tokens + tools_tokens > pinned_cap:
             raise RuntimeError(
                 f"SystemTooBig: system+tools tokens {system_tokens + tools_tokens} "

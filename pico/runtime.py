@@ -219,6 +219,23 @@ class Pico:
         from .config import project_max_blob_size
 
         self.project_max_blob_size = project_max_blob_size(self.root)
+        # Task B2: gather context/memory config from pico.toml. Downstream
+        # subsystems read via `self.agent.context_config[...]` with defaults
+        # already baked in by the helper functions. Must be populated BEFORE
+        # ContextManager is constructed below so build_v2 sees the overrides.
+        from .config import (
+            context_history_floor_messages,
+            context_history_soft_cap,
+            context_injection_budget_ratio,
+            context_system_tools_hard_cap,
+        )
+
+        self.context_config = {
+            "history_soft_cap": context_history_soft_cap(self.root),
+            "history_floor_messages": context_history_floor_messages(self.root),
+            "injection_budget_ratio": context_injection_budget_ratio(self.root),
+            "system_tools_hard_cap": context_system_tools_hard_cap(self.root),
+        }
         self.session = session or {
             "id": datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6],
             "schema_version": 2,
