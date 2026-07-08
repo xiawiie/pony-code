@@ -777,3 +777,232 @@ class Reporter:
             f"cache_reads={totals.get('cache_read_input_tokens', 0):,}"
         )
         print(f"[live-e2e] report: {report_path}")
+
+
+def warn_if_dirty_working_tree(root: Path) -> None:
+    """Print a warning if `git status` reports uncommitted work. Never aborts."""
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(root), "status", "--porcelain"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return
+    if result.returncode == 0 and result.stdout.strip():
+        print(
+            "[live-e2e] warning: working tree not clean; live e2e might interact with your changes",
+            file=sys.stderr,
+        )
+
+
+def _make_anthropic_client(config: RunConfig):
+    """Instantiate a real Anthropic-compatible model client."""
+    from pico.providers.anthropic_compatible import AnthropicCompatibleModelClient
+
+    api_key = os.environ.get("PICO_ANTHROPIC_API_KEY", "")
+    base_url = os.environ.get(
+        "PICO_ANTHROPIC_BASE_URL", "https://api.anthropic.com"
+    )
+    return AnthropicCompatibleModelClient(
+        model=config.model,
+        base_url=base_url,
+        api_key=api_key,
+        temperature=0.0,
+        timeout=120,
+    )
+
+
+def _budget_exceeded(all_results: list, config: RunConfig, wall_start_ns: int) -> str | None:
+    """Return a short reason string if any cost guard has fired; else None."""
+    total_calls = sum(r.provider_call_count_this_turn for r in all_results)
+    if total_calls > config.max_provider_calls:
+        return f"max_provider_calls exceeded ({total_calls}>{config.max_provider_calls})"
+    total_tokens = 0
+    for r in all_results:
+        u = r.usage or {}
+        total_tokens += int(u.get("input_tokens", 0) or 0)
+        total_tokens += int(u.get("output_tokens", 0) or 0)
+    if total_tokens > config.max_total_tokens:
+        return f"max_total_tokens exceeded ({total_tokens}>{config.max_total_tokens})"
+    elapsed_s = (time.monotonic_ns() - wall_start_ns) / 1e9
+    if elapsed_s > config.timeout_seconds:
+        return f"timeout_seconds exceeded ({elapsed_s:.0f}>{config.timeout_seconds})"
+    return None
+
+
+def do_reset(repo_root: Path) -> int:
+    """Remove leftover seed note, restore pico.toml backup, clear results/*.json."""
+    removed = []
+    seed = repo_root / SEED_NOTE_REL
+    if seed.exists():
+        seed.unlink()
+        removed.append(str(seed.relative_to(repo_root)))
+
+    backup = repo_root / BACKUP_REL
+    pico_toml = repo_root / PICO_TOML_REL
+    if backup.exists():
+        pico_toml.write_bytes(backup.read_bytes())
+        backup.unlink()
+        removed.append(f"restored {pico_toml.name} from backup")
+    elif pico_toml.exists():
+        # No backup means the fixture pico.toml is the only one — delete it
+        # if it matches the fixture; else leave alone.
+        current = pico_toml.read_text(encoding="utf-8")
+        if current == FIXTURE_PICO_TOML:
+            pico_toml.unlink()
+            removed.append(f"deleted fixture {pico_toml.name}")
+
+    results_dir = repo_root / "benchmarks" / "live_e2e" / "results"
+    if results_dir.exists():
+        for j in results_dir.glob("*.json"):
+            j.unlink()
+            removed.append(str(j.relative_to(repo_root)))
+
+    if removed:
+        print("[live-e2e] --reset cleaned:")
+        for item in removed:
+            print(f"  - {item}")
+    else:
+        print("[live-e2e] --reset: nothing to clean")
+    return 0
+
+
+def main() -> int:
+    config = parse_args()
+
+    repo_root = Path.cwd()
+
+    if config.reset:
+        return do_reset(repo_root)
+
+    check_env(config)
+    verify_pico_repo(repo_root)
+    warn_if_dirty_working_tree(repo_root)
+
+    # Detect pre-existing seed note (unclean previous run)
+    if (repo_root / SEED_NOTE_REL).exists():
+        print(
+            f"[live-e2e] {SEED_NOTE_REL} already exists — run with --reset first",
+            file=sys.stderr,
+        )
+        return 2
+
+    wall_start = time.monotonic_ns()
+
+    TURNS = [
+        (1, "上次讨论过 cache invariant 的问题，帮我看看这个仓库的 cache 相关代码", "recall_triggered"),
+        (2, "读一下 pico/runtime.py 完整内容并告诉我它主要做什么", "digest_applied"),
+        (3, "再看一下 pico/context_manager.py", "injection_dropped"),
+        (4, "总结一下我们目前讨论的所有内容", "history_dropped"),
+        (5, "最后 done", "cache_anchor_verified"),
+    ]
+
+    with FixtureManager(repo_root):
+        # Lazy import of pico so a broken pico module produces exit 4 (not 2).
+        from pico.providers.anthropic_compatible import AnthropicCompatibleModelClient  # noqa: F401
+        from pico.runtime import Pico
+        from pico.session_store import SessionStore
+        from pico.workspace import WorkspaceContext
+
+        model_client = _make_anthropic_client(config)
+        workspace = WorkspaceContext.build(repo_root)
+        session_store = SessionStore(repo_root / ".pico" / "sessions")
+        try:
+            pico = Pico(
+                model_client=model_client,
+                workspace=workspace,
+                session_store=session_store,
+                read_only=True,
+                max_steps=3,
+            )
+        except Exception as exc:
+            print(f"[live-e2e] pico construction failed: {exc}", file=sys.stderr)
+            return 4
+
+        runner = TurnRunner(pico, config)
+        reporter = Reporter(config, repo_root / "benchmarks" / "live_e2e" / "results")
+        engine = AssertionEngine()
+
+        all_results: list = []
+        all_assertions: dict = {}
+        aborted_reason: str | None = None
+
+        for turn_no, prompt, expected in TURNS:
+            try:
+                result = runner.run_turn(turn_no, prompt, expected)
+            except Exception as exc:
+                print(f"[live-e2e] turn {turn_no} uncaught exception: {exc}", file=sys.stderr)
+                return 4
+            if result.error is not None:
+                # provider or pico error mid-turn
+                all_results.append(result)
+                all_assertions[turn_no] = []
+                print(f"[live-e2e] turn {turn_no} error: {result.error}", file=sys.stderr)
+                aborted_reason = f"provider_error_turn_{turn_no}"
+                break
+            all_results.append(result)
+            turn_asserts = engine.dispatch(turn_no, result, pico, all_results)
+            all_assertions[turn_no] = turn_asserts
+            reporter.render_turn_summary(turn_no, expected, turn_asserts)
+
+            reason = _budget_exceeded(all_results, config, wall_start)
+            if reason:
+                aborted_reason = reason
+                print(f"[live-e2e] budget guard fired: {reason}", file=sys.stderr)
+                break
+
+        # Run global checks whether we finished or aborted early
+        global_asserts = engine.check_global(all_results, pico)
+        all_assertions["global"] = global_asserts
+        reporter.render_turn_summary("global", "cross-turn invariants", global_asserts)
+
+        # Assemble totals
+        totals = {
+            "provider_calls": sum(r.provider_call_count_this_turn for r in all_results),
+            "input_tokens": sum(int((r.usage or {}).get("input_tokens", 0) or 0) for r in all_results),
+            "output_tokens": sum(int((r.usage or {}).get("output_tokens", 0) or 0) for r in all_results),
+            "cache_creation_input_tokens": sum(
+                int((r.usage or {}).get("cache_creation_input_tokens", 0) or 0) for r in all_results
+            ),
+            "cache_read_input_tokens": sum(
+                int((r.usage or {}).get("cache_read_input_tokens", 0) or 0) for r in all_results
+            ),
+        }
+
+        wall_time_ms = (time.monotonic_ns() - wall_start) // 1_000_000
+        report_path = reporter.write_json(all_results, all_assertions, config, totals, wall_time_ms)
+
+        # Compute overall pass
+        total_asserts = 0
+        passed_asserts = 0
+        for asserts_list in all_assertions.values():
+            for a in asserts_list:
+                total_asserts += 1
+                if a.passed:
+                    passed_asserts += 1
+        overall_pass = (passed_asserts == total_asserts) and aborted_reason is None
+
+        reporter.render_final(
+            overall_pass=overall_pass,
+            totals=totals,
+            wall_time_ms=wall_time_ms,
+            report_path=report_path,
+            assertion_summary=(passed_asserts, total_asserts),
+        )
+
+        if aborted_reason:
+            # Distinguish budget from provider error
+            if aborted_reason.startswith("provider_error"):
+                return 3
+            if "max_total_tokens" in aborted_reason:
+                return 5
+            if "timeout_seconds" in aborted_reason:
+                return 6
+            return 5  # max_provider_calls falls under exit 5 too
+        return 0 if overall_pass else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

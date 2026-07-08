@@ -64,3 +64,7 @@ docs/*
 
 # Packaging metadata
 pico.egg-info/
+
+# Live-e2e benchmark artifacts
+benchmarks/live_e2e/results/*.json
+benchmarks/live_e2e/results/pre-run-pico.toml.bak
