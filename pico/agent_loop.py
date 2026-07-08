@@ -126,9 +126,12 @@ class AgentLoop:
         run_started_at = time.monotonic()
         agent.memory.set_task_summary(user_message)
         agent._sync_working_memory()
-        # 新路径：session["messages"] 是唯一发给模型的 transcript。
-        # 我们同时保留 session["history"] 的旧记录（Task 8 会清理），
-        # 这样现存 trace / report / test 逻辑不必一次性全部迁移。
+        # Task 28: session["messages"] is the primary transcript sent to
+        # the model. A parallel session["history"] dual-write is retained
+        # for legacy consumers — evaluation harness, runtime.build_report,
+        # and a handful of tests that inspect the flat history structure —
+        # until the memory/context redesign completes and those consumers
+        # migrate to v2 message inspection.
         _append_user_turn(agent, user_message)
         agent.record({"role": "user", "content": user_message, "created_at": now()})
 
@@ -329,6 +332,10 @@ class AgentLoop:
                     tool_name=name,
                     tool_args=args,
                 )
+                # Dual-write to legacy history for tests + runtime helpers
+                # that still key on the flat structure. Task 28 kept this
+                # deliberately; the surface will be retired once memory
+                # experiments and legacy assertions migrate to v2.
                 agent.record(
                     {
                         "role": "tool",
@@ -375,16 +382,21 @@ class AgentLoop:
                 continue
 
             if kind == "retry":
-                # retry：把可能存在的 text 内容作为“运行时提示”写进 history，
-                # 帮助排查为什么模型这一轮没有拿到有效动作；不追加到 v2 messages，
-                # 否则会产生两条连续 assistant 消息。
+                # retry: log a diagnostic notice to legacy history (tests +
+                # trace consumers look for it). We do NOT append to v2
+                # messages — back-to-back assistant turns would violate
+                # Anthropic API constraints.
                 retry_text = ""
                 for block in text_blocks:
-                    retry_text = str(block.get("text", "") or "").strip()
-                    if retry_text:
+                    candidate = str(block.get("text", "") or "").strip()
+                    if candidate:
+                        retry_text = candidate
                         break
                 if not retry_text:
-                    retry_text = "Runtime notice: model returned no actionable content. Reply with a tool call or a final answer."
+                    retry_text = (
+                        "Runtime notice: model returned an empty response. "
+                        "Reply with a tool call or a final answer."
+                    )
                 agent.record({"role": "assistant", "content": retry_text, "created_at": now()})
                 agent.run_store.write_task_state(task_state)
                 continue
@@ -398,6 +410,7 @@ class AgentLoop:
                     break
             final = final_text
             _append_assistant_text(agent, final)
+            # Dual-write to legacy history for report/test consumers.
             agent.record({"role": "assistant", "content": final, "created_at": now()})
             task_state.finish_success(final)
             return _finish_run(
