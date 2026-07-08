@@ -276,3 +276,46 @@ def memory_recall_config(root) -> dict:
         "max_tokens_per_note": _pick_int("max_tokens_per_note", 400),
         "skip_recent_turns": _pick_int("skip_recent_turns", 2),
     }
+
+
+def memory_field_boosts(root) -> dict:
+    """BM25 field boost weights: {name, description, tags, aliases, body}.
+
+    Reads ``[memory.retrieval.field_boost]`` from pico.toml. Each key is
+    validated independently against a non-negative numeric type; missing
+    or malformed entries fall back to the module-level defaults, so a
+    partial override in pico.toml only affects the keys it names.
+    """
+    data = load_pico_toml_full(root)
+    raw = data.get("memory", {}).get("retrieval", {}).get("field_boost", {}) or {}
+    defaults = {"name": 5.0, "description": 3.0, "tags": 4.0, "aliases": 4.0, "body": 1.0}
+    out = dict(defaults)
+    for key in defaults:
+        v = raw.get(key)
+        if isinstance(v, (int, float)) and not isinstance(v, bool) and v >= 0:
+            out[key] = float(v)
+    return out
+
+
+def memory_link_config(root) -> tuple:
+    """(max_added, decay) for [[name]] link expansion.
+
+    Reads ``[memory.retrieval.link]`` from pico.toml. ``max_added`` must
+    be a positive int; ``decay`` must be a float in ``[0, 1]``. Either
+    invalid or missing falls back to the module-level defaults ``(3, 0.4)``.
+    """
+    data = load_pico_toml_full(root)
+    raw = data.get("memory", {}).get("retrieval", {}).get("link", {}) or {}
+    max_added_raw = raw.get("max_added")
+    decay_raw = raw.get("decay")
+    max_added = (
+        max_added_raw
+        if isinstance(max_added_raw, int) and not isinstance(max_added_raw, bool) and max_added_raw > 0
+        else 3
+    )
+    decay = (
+        float(decay_raw)
+        if isinstance(decay_raw, (int, float)) and not isinstance(decay_raw, bool) and 0 <= decay_raw <= 1
+        else 0.4
+    )
+    return (max_added, decay)

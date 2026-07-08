@@ -95,8 +95,15 @@ class SearchHit:
 
 
 class Retrieval:
-    def __init__(self, store: BlockStore):
+    def __init__(self, store: BlockStore, *, config=None):
         self.store = store
+        # Task B5: allow pico.toml overrides for field boosts + link config.
+        # Passing None keeps the module-level constants active for callers
+        # (e.g. legacy tests) that don't wire config yet.
+        cfg = config or {}
+        self._field_boosts = cfg.get("field_boosts", FIELD_BOOSTS)
+        link_cfg = cfg.get("link_config", (LINK_MAX_ADDED, LINK_DECAY))
+        self._link_max_added, self._link_decay = link_cfg
 
     def search(self, query: str, limit: int = 5) -> list[SearchHit]:
         query_tokens = tokenize(query)
@@ -135,7 +142,7 @@ class Retrieval:
         name_to_path = self._name_to_path_index(docs)
         expanded: list[SearchHit] = []
         for hit in primary:
-            if len(expanded) >= LINK_MAX_ADDED:
+            if len(expanded) >= self._link_max_added:
                 break
             try:
                 body = self.store.read(hit.path)
@@ -143,7 +150,7 @@ class Retrieval:
                 continue
             seen_here = {e.path for e in expanded}
             for match in _LINK_RE.finditer(body):
-                if len(expanded) >= LINK_MAX_ADDED:
+                if len(expanded) >= self._link_max_added:
                     break
                 neighbor_name = match.group(1)
                 neighbor_path = name_to_path.get(neighbor_name)
@@ -154,7 +161,7 @@ class Retrieval:
                 expanded.append(
                     SearchHit(
                         path=neighbor_path,
-                        score=hit.score * LINK_DECAY,
+                        score=hit.score * self._link_decay,
                         snippets=(f"(via [[{neighbor_name}]] from {hit.path})",),
                     )
                 )
@@ -216,8 +223,8 @@ class Retrieval:
                     superseded.add(name)
         return superseded
 
-    @staticmethod
     def _bm25_field_score(
+        self,
         query_tokens: Iterable[str],
         fields: dict[str, list[str]],
         flat_tokens: list[str],
@@ -234,7 +241,7 @@ class Retrieval:
             if term not in df:
                 continue
             tf_weighted = sum(
-                FIELD_BOOSTS.get(name, 1.0) * counters[name].get(term, 0)
+                self._field_boosts.get(name, 1.0) * counters[name].get(term, 0)
                 for name in counters
             )
             if tf_weighted == 0:

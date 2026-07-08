@@ -229,6 +229,8 @@ class Pico:
             context_history_soft_cap,
             context_injection_budget_ratio,
             context_system_tools_hard_cap,
+            memory_field_boosts,
+            memory_link_config,
             memory_recall_config,
         )
 
@@ -239,6 +241,8 @@ class Pico:
             "system_tools_hard_cap": context_system_tools_hard_cap(self.root),
             "digest_size_threshold": context_digest_size_threshold(self.root),
             "recall": memory_recall_config(self.root),
+            "field_boosts": memory_field_boosts(self.root),
+            "link_config": memory_link_config(self.root),
         }
         self.session = session or {
             "id": datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6],
@@ -260,7 +264,13 @@ class Pico:
             workspace_root=workspace_memory_root,
             user_root=user_memory_root,
         )
-        self.memory_retrieval = Retrieval(self.memory_store)
+        self.memory_retrieval = Retrieval(
+            self.memory_store,
+            config={
+                "field_boosts": self.context_config["field_boosts"],
+                "link_config": self.context_config["link_config"],
+            },
+        )
         self.repo_map = RepoMap(repo_root=self.root)
         # 后台起首次扫描；tool_repo_lookup 自己也会在首次使用时 refresh_if_stale。
         # 只在顶层 Pico 起扫描；delegate（depth > 0）走 refresh_if_stale 惰性路径，
