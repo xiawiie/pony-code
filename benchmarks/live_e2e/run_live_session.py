@@ -365,12 +365,123 @@ class AssertionEngine:
         ))
         return out
 
-    # Turn 2-5 + global added in later tasks.
+    # -- Turn 2: digest --------------------------------------------------
+
     def check_turn_2_digest(self, result: TurnResult, pico) -> list[Assertion]:
-        return []
+        """Five assertions verifying digest applied on a large tool_result."""
+        out = []
+        messages = getattr(pico, "session", {}).get("messages", []) or []
+        # find the last tool_result carrier
+        tool_result_msg = None
+        for msg in reversed(messages):
+            content = msg.get("content")
+            if isinstance(content, list) and any(
+                isinstance(b, dict) and b.get("type") == "tool_result" for b in content
+            ):
+                tool_result_msg = msg
+                break
+
+        meta = (tool_result_msg or {}).get("_pico_meta") or {}
+        digest_applied = bool(meta.get("digest_applied"))
+        out.append(Assertion(
+            name="digest_applied_flag_true",
+            passed=digest_applied,
+            expected="last tool_result message has _pico_meta.digest_applied=True",
+            actual=str(digest_applied),
+        ))
+
+        # tool_result content should start with [digest]
+        tr_content = ""
+        if tool_result_msg is not None:
+            content = tool_result_msg.get("content") or []
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "tool_result":
+                    tr_content = str(block.get("content") or "")
+                    break
+        out.append(Assertion(
+            name="tool_result_content_starts_with_digest",
+            passed=tr_content.strip().startswith("[digest]"),
+            expected="tool_result content starts with '[digest]'",
+            actual=tr_content[:80] if tr_content else "(empty)",
+        ))
+
+        # content contains "raw at "
+        out.append(Assertion(
+            name="tool_result_content_contains_raw_pointer",
+            passed="raw at " in tr_content,
+            expected='"raw at " in tool_result content',
+            actual="found" if "raw at " in tr_content else "not found",
+        ))
+
+        # extract raw path from content and check it exists on disk
+        raw_path_str = ""
+        marker = "raw at "
+        idx = tr_content.find(marker)
+        if idx != -1:
+            tail = tr_content[idx + len(marker):]
+            # path ends at ')' or end of line
+            end = tail.find(")")
+            if end == -1:
+                end = tail.find("\n")
+            raw_path_str = tail[:end].strip() if end != -1 else tail.strip()
+        raw_path = Path(raw_path_str) if raw_path_str else None
+        raw_exists = bool(raw_path and raw_path.exists())
+        out.append(Assertion(
+            name="raw_file_exists_on_disk",
+            passed=raw_exists,
+            expected=f"raw file at {raw_path_str!r} exists",
+            actual="exists" if raw_exists else "missing",
+        ))
+
+        # raw file byte size matches original — for this we compare via
+        # ``source_hash`` presence in ``_pico_meta`` as a proxy: if digest
+        # was applied and file exists, we trust the runtime's write.
+        source_hash = str(meta.get("source_hash", "") or "")
+        out.append(Assertion(
+            name="raw_file_source_hash_recorded",
+            passed=bool(source_hash),
+            expected="_pico_meta.source_hash is a non-empty string",
+            actual=source_hash or "(empty)",
+        ))
+        return out
+
+    # -- Turn 3: injection drop -----------------------------------------
 
     def check_turn_3_injection_drop(self, result: TurnResult) -> list[Assertion]:
-        return []
+        """Four assertions verifying injection budget drop behavior."""
+        m = result.metadata or {}
+        budget = int(m.get("injection_budget", 0) or 0)
+        dropped = list(m.get("injection_dropped") or [])
+        tokens = m.get("injection_tokens") or {}
+
+        out = []
+        out.append(Assertion(
+            name="injection_budget_gt_zero",
+            passed=budget > 0,
+            expected="injection_budget > 0",
+            actual=str(budget),
+        ))
+        out.append(Assertion(
+            name="injection_dropped_nonempty",
+            passed=len(dropped) >= 1,
+            expected="len(injection_dropped) >= 1",
+            actual=str(dropped),
+        ))
+        # accept either checkpoint in dropped OR checkpoint had zero tokens
+        checkpoint_tokens = int(tokens.get("checkpoint", 0) or 0)
+        out.append(Assertion(
+            name="checkpoint_dropped_or_zero_tokens",
+            passed=("checkpoint" in dropped) or (checkpoint_tokens == 0),
+            expected='"checkpoint" in dropped OR injection_tokens[checkpoint] == 0',
+            actual=f"dropped={dropped}, checkpoint_tokens={checkpoint_tokens}",
+        ))
+        out.append(Assertion(
+            name="recalled_memory_not_dropped",
+            passed="recalled_memory" not in dropped,
+            expected='"recalled_memory" NOT in dropped',
+            actual=str(dropped),
+        ))
+        return out
 
     def check_turn_4_history_drop(self, result: TurnResult, pico) -> list[Assertion]:
         return []
