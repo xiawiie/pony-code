@@ -54,6 +54,19 @@ def test_system_tools_hard_cap_override(tmp_path):
     assert context_system_tools_hard_cap(tmp_path) == 30000
 
 
+def test_total_budget_hard_cap_default(tmp_path):
+    from pico.config import context_total_budget_hard_cap
+    assert context_total_budget_hard_cap(tmp_path) == 100000
+
+
+def test_total_budget_hard_cap_override(tmp_path):
+    from pico.config import context_total_budget_hard_cap
+    (tmp_path / "pico.toml").write_text(
+        "[context]\ntotal_budget_hard_cap = 50000\n", encoding="utf-8"
+    )
+    assert context_total_budget_hard_cap(tmp_path) == 50000
+
+
 def test_bad_type_falls_back_to_default(tmp_path):
     (tmp_path / "pico.toml").write_text(
         '[context]\nhistory_soft_cap = "not-an-int"\n', encoding="utf-8"

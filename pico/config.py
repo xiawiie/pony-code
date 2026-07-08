@@ -242,6 +242,17 @@ def context_system_tools_hard_cap(root) -> int:
     return _context_int(root, "system_tools_hard_cap", 20000)
 
 
+def context_total_budget_hard_cap(root) -> int:
+    """Ceiling for the whole prompt used to derive the injection budget.
+
+    The renderer computes ``injection_budget = ratio × total_budget_hard_cap``
+    to cap ``<system-reminder>`` blocks. Exposing this via pico.toml keeps
+    the config surface complete against ``renderer._compose_injection``,
+    which already reads ``cfg.get("total_budget_hard_cap", 100000)``.
+    """
+    return _context_int(root, "total_budget_hard_cap", 100000)
+
+
 def _context_digest_int(root, key, default):
     data = load_pico_toml_full(root)
     raw = data.get("context", {}).get("digest", {}).get(key)
