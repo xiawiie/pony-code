@@ -85,12 +85,12 @@ def _flatten_recent(session_recent, skip_turns):
     return out
 
 
-def _lookup_type(store, path):
-    """Fish the frontmatter ``type`` out of a stored note (empty when absent)."""
-    for entry in store.list():
-        if entry.path == path:
-            return (entry.frontmatter or {}).get("type", "") or ""
-    return ""
+def _lookup_type(store_index, path):
+    """Return frontmatter ``type`` for ``path`` from a pre-built index."""
+    entry = store_index.get(path)
+    if entry is None:
+        return ""
+    return (entry.frontmatter or {}).get("type", "") or ""
 
 
 def _why_terms(snippets, query_text, cap=3):
@@ -164,6 +164,8 @@ def recall_for_turn(agent, user_message, budget_tokens):
         return None
 
     store = agent.memory_store
+    # Task D2: build store index once per recall call, not per hit.
+    store_index = {entry.path: entry for entry in store.list()}
     blocks = []
     picked_paths = []
     for hit, norm_score in picked:
@@ -177,7 +179,7 @@ def recall_for_turn(agent, user_message, budget_tokens):
         if para_tokens > max_tokens_per_note:
             char_budget = max_tokens_per_note * 4
             para = para[: max(3, char_budget) - 3] + "..." if char_budget > 3 else para[:char_budget]
-        note_type = _lookup_type(store, hit.path)
+        note_type = _lookup_type(store_index, hit.path)
         why = _why_terms(hit.snippets, query)
         block = (
             f'<pico:recalled_memory path="{hit.path}" type="{note_type}" '

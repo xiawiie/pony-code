@@ -112,3 +112,52 @@ def test_recall_none_when_no_retrieval(tmp_path):
     a.memory_retrieval = None
     out = recall_for_turn(a, "cache", budget_tokens=1000)
     assert out is None
+
+
+def test_recall_uses_single_store_scan(tmp_path, monkeypatch):
+    """Task D2: recall_for_turn calls store.list() at most once per call,
+    not once per hit."""
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from pico.memory.block_store import BlockStore
+    from pico.memory.recall import recall_for_turn
+    from pico.memory.retrieval import Retrieval
+
+    ws = tmp_path / "ws"
+    (ws / "agent").mkdir(parents=True)
+    (ws / "agent" / "a.md").write_text(
+        "---\nname: a\ntype: feedback\ndescription: cache one\n---\np1\n", encoding="utf-8"
+    )
+    (ws / "agent" / "b.md").write_text(
+        "---\nname: b\ntype: feedback\ndescription: cache two\n---\np2\n", encoding="utf-8"
+    )
+    store = BlockStore(workspace_root=ws, user_root=tmp_path / "user")
+    ret = Retrieval(store)
+
+    call_count = {"n": 0}
+    original_list = store.list
+    def counting_list(*args, **kwargs):
+        call_count["n"] += 1
+        return original_list(*args, **kwargs)
+    monkeypatch.setattr(store, "list", counting_list)
+
+    a = SimpleNamespace(
+        memory_store=store,
+        memory_retrieval=ret,
+        session={"recently_recalled": []},
+        model_client=MagicMock(count_tokens=lambda t: max(1, len(t) // 4)),
+        memory=SimpleNamespace(task_summary=""),
+        context_config={},
+    )
+    # Reset counter to isolate recall's contribution.
+    call_count["n"] = 0
+    out = recall_for_turn(a, "cache", budget_tokens=1000)
+    assert out is not None
+    # recall_for_turn should scan the store at most once for the type index.
+    # Retrieval.search internally scans 4 times (_load_docs +
+    # _superseded_names + _name_to_path_index — an existing quirk, out of
+    # scope for this task). Recall's own contribution is exactly 1 (the
+    # store_index build). Pre-fix impl called store.list() once per picked
+    # hit (top_k=2), yielding 4+2=6 calls. Post-fix: 4+1=5.
+    assert call_count["n"] <= 5, f"store.list() called {call_count['n']} times"
