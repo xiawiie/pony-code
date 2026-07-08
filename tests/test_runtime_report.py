@@ -755,28 +755,46 @@ def test_agent_records_model_cache_metadata_in_last_prompt_metadata(tmp_path):
     assert agent.last_prompt_metadata["prompt_cache_key"] == agent.last_prompt_metadata["system_cache_key"]
 
 
-@pytest.mark.legacy_string_path
-@pytest.mark.skip(reason="legacy string-prompt assertion; see marker docstring")
-def test_recent_transcript_entries_stay_richer_than_older_ones(tmp_path):
-    # TODO(P3 cleanup): the compressed transcript this test asserts on lives in
-    # ContextManager.build() (legacy). After Task 8 the assertion should target
-    # session["messages"] directly instead of the FallbackAdapter prompt.
+def test_recent_messages_preserved_older_digested(tmp_path):
+    """Task E5 rewrite: recent messages stay intact; older tool_results
+    over the digest threshold appear as [digest] entries."""
     agent = build_agent(tmp_path, ["<final>Done.</final>"])
-    old_text = "OLD-" + ("A" * 320)
-    recent_text = "RECENT-" + ("B" * 320)
 
-    agent.record({"role": "user", "content": old_text, "created_at": "2026-04-07T09:00:00+00:00"})
-    agent.record({"role": "assistant", "content": old_text, "created_at": "2026-04-07T09:01:00+00:00"})
-    agent.record({"role": "user", "content": recent_text, "created_at": "2026-04-07T09:02:00+00:00"})
-    agent.record({"role": "assistant", "content": recent_text, "created_at": "2026-04-07T09:03:00+00:00"})
-    agent.record({"role": "user", "content": recent_text, "created_at": "2026-04-07T09:04:00+00:00"})
-    agent.record({"role": "assistant", "content": recent_text, "created_at": "2026-04-07T09:05:00+00:00"})
-    agent.record({"role": "user", "content": recent_text, "created_at": "2026-04-07T09:06:00+00:00"})
-    agent.record({"role": "assistant", "content": recent_text, "created_at": "2026-04-07T09:07:00+00:00"})
+    # Seed session["messages"] directly (v2 shape) — 4 older + 6 recent messages.
+    agent.session["messages"] = [
+        # older tool_use/tool_result pair — result is a pre-rendered digest
+        {"role": "user", "content": "old question 1"},
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "tool_use", "id": "t1", "name": "read_file", "input": {"path": "x.py"}}
+            ],
+            "_pico_meta": {"tool_use_id": "t1"},
+        },
+        {
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": "t1", "content": "[digest] x.py (500 lines)\n- import os"}
+            ],
+            "_pico_meta": {"tool_use_id": "t1", "digest_applied": True},
+        },
+        {"role": "assistant", "content": "old answer 1"},
+        # recent 6 messages
+        {"role": "user", "content": "recent question 1"},
+        {"role": "assistant", "content": "recent answer 1"},
+        {"role": "user", "content": "recent question 2"},
+        {"role": "assistant", "content": "recent answer 2"},
+        {"role": "user", "content": "recent question 3"},
+        {"role": "assistant", "content": "recent answer 3"},
+    ]
 
-    assert agent.ask("Check the transcript") == "Done."
+    request, _metadata = agent.context_manager.build_v2("current question")
 
-    prompt = agent.model_client.prompts[-1]
+    # Last 6 messages preserved verbatim in the returned messages array
+    # (exclude the appended current user turn at index -1).
+    recent_kept = request["messages"][-7:-1]
+    assert any("recent question 1" in str(m["content"]) for m in recent_kept)
 
-    assert recent_text in prompt
-    assert old_text not in prompt
+    # Older tool_result content carries [digest] marker.
+    older_content = str(request["messages"][2]["content"])
+    assert "[digest]" in older_content
