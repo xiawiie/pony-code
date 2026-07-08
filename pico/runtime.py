@@ -229,6 +229,7 @@ class Pico:
             context_history_soft_cap,
             context_injection_budget_ratio,
             context_system_tools_hard_cap,
+            memory_recall_config,
         )
 
         self.context_config = {
@@ -237,6 +238,7 @@ class Pico:
             "injection_budget_ratio": context_injection_budget_ratio(self.root),
             "system_tools_hard_cap": context_system_tools_hard_cap(self.root),
             "digest_size_threshold": context_digest_size_threshold(self.root),
+            "recall": memory_recall_config(self.root),
         }
         self.session = session or {
             "id": datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6],

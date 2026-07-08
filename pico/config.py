@@ -255,3 +255,24 @@ def _context_digest_int(root, key, default):
 def context_digest_size_threshold(root) -> int:
     """Threshold in characters above which a tool_result gets digested."""
     return _context_digest_int(root, "size_threshold_chars", 1200)
+
+
+def memory_recall_config(root) -> dict:
+    """Recall subsystem config: min_score, top_k, max_tokens_per_note, skip_recent_turns."""
+    data = load_pico_toml_full(root)
+    raw = data.get("memory", {}).get("recall", {}) or {}
+
+    def _pick_float(key, default):
+        v = raw.get(key)
+        return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) and v >= 0 else default
+
+    def _pick_int(key, default):
+        v = raw.get(key)
+        return int(v) if isinstance(v, int) and not isinstance(v, bool) and v > 0 else default
+
+    return {
+        "min_score": _pick_float("min_score", 0.3),
+        "top_k": _pick_int("top_k", 2),
+        "max_tokens_per_note": _pick_int("max_tokens_per_note", 400),
+        "skip_recent_turns": _pick_int("skip_recent_turns", 2),
+    }

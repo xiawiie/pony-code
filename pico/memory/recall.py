@@ -72,10 +72,10 @@ def _count_tokens(agent, text):
     return max(1, len(text) // 4)
 
 
-def _flatten_recent(session_recent):
-    """Union of paths recalled in the last RECALL_SKIP_RECENT_TURNS turns."""
+def _flatten_recent(session_recent, skip_turns):
+    """Union of paths recalled in the last ``skip_turns`` turns."""
     out = set()
-    for turn in (session_recent or [])[-RECALL_SKIP_RECENT_TURNS:]:
+    for turn in (session_recent or [])[-skip_turns:]:
         for p in turn or []:
             out.add(p)
     return out
@@ -120,13 +120,22 @@ def recall_for_turn(agent, user_message, budget_tokens):
     retrieval = getattr(agent, "memory_retrieval", None)
     if retrieval is None:
         return None
+    # Task B4: recall knobs overridable via pico.toml → agent.context_config["recall"].
+    cfg_all = getattr(agent, "context_config", None)
+    if not isinstance(cfg_all, dict):
+        cfg_all = {}
+    cfg = cfg_all.get("recall") if isinstance(cfg_all.get("recall"), dict) else {}
+    min_score = float(cfg.get("min_score", RECALL_MIN_SCORE))
+    top_k = int(cfg.get("top_k", RECALL_TOP_K))
+    max_tokens_per_note = int(cfg.get("max_tokens_per_note", RECALL_MAX_TOKENS_PER_NOTE))
+    skip_recent_turns = int(cfg.get("skip_recent_turns", RECALL_SKIP_RECENT_TURNS))
     task_summary = getattr(getattr(agent, "memory", None), "task_summary", "") or ""
     query = f"{user_message} {task_summary}".strip()
     if not query:
         return None
 
     # Ask for more than top_k so the four-guard filter has room to skip.
-    hits = retrieval.search(query, limit=RECALL_TOP_K * 3)
+    hits = retrieval.search(query, limit=top_k * 3)
     if not hits:
         return None
 
@@ -134,14 +143,14 @@ def recall_for_turn(agent, user_message, budget_tokens):
     # scores are corpus-dependent; per-query normalization makes the
     # ``min_score`` threshold interpretable across different vocabularies.
     max_score = max(h.score for h in hits) or 1.0
-    recent_skip = _flatten_recent(agent.session.get("recently_recalled"))
+    recent_skip = _flatten_recent(agent.session.get("recently_recalled"), skip_recent_turns)
 
     picked = []
     for h in hits:
-        if len(picked) >= RECALL_TOP_K:
+        if len(picked) >= top_k:
             break
         norm_score = h.score / max_score
-        if norm_score < RECALL_MIN_SCORE:
+        if norm_score < min_score:
             continue
         if h.path in recent_skip:
             continue
@@ -160,8 +169,8 @@ def recall_for_turn(agent, user_message, budget_tokens):
             continue
         para = _first_paragraph(raw)
         para_tokens = _count_tokens(agent, para)
-        if para_tokens > RECALL_MAX_TOKENS_PER_NOTE:
-            char_budget = RECALL_MAX_TOKENS_PER_NOTE * 4
+        if para_tokens > max_tokens_per_note:
+            char_budget = max_tokens_per_note * 4
             para = para[: max(3, char_budget) - 3] + "..." if char_budget > 3 else para[:char_budget]
         note_type = _lookup_type(store, hit.path)
         why = _why_terms(hit.snippets, query)
@@ -179,9 +188,9 @@ def recall_for_turn(agent, user_message, budget_tokens):
 
     # Record the recall in the session so subsequent turns can honor the
     # recently-recalled guard. Bound the window at
-    # RECALL_SKIP_RECENT_TURNS + 1 entries to keep the session dict small.
+    # skip_recent_turns + 1 entries to keep the session dict small.
     recent = list(agent.session.get("recently_recalled") or [])
     recent.append(picked_paths)
-    agent.session["recently_recalled"] = recent[-(RECALL_SKIP_RECENT_TURNS + 1) :]
+    agent.session["recently_recalled"] = recent[-(skip_recent_turns + 1) :]
 
     return "\n".join(blocks)
