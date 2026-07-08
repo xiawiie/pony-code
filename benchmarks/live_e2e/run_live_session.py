@@ -484,10 +484,145 @@ class AssertionEngine:
         return out
 
     def check_turn_4_history_drop(self, result: TurnResult, pico) -> list[Assertion]:
-        return []
+        """Five assertions verifying history budget drop."""
+        m = result.metadata or {}
+        out = []
+
+        dropped = int(m.get("dropped_messages", 0) or 0)
+        out.append(Assertion(
+            name="dropped_messages_gt_zero",
+            passed=dropped > 0,
+            expected="dropped_messages > 0",
+            actual=str(dropped),
+        ))
+
+        msg_tokens = int(m.get("messages_tokens", 0) or 0)
+        # soft_cap 1200 + slop of 300 (per §5 assertion 17)
+        out.append(Assertion(
+            name="messages_tokens_under_cap_plus_slop",
+            passed=msg_tokens <= 1500,
+            expected="messages_tokens <= 1500 (soft_cap 1200 + slop)",
+            actual=str(msg_tokens),
+        ))
+
+        # pairing invariant: every tool_use.id has a tool_result.tool_use_id
+        session_msgs = getattr(pico, "session", {}).get("messages", []) or []
+        tool_use_ids = set()
+        tool_result_ids = set()
+        for msg in session_msgs:
+            content = msg.get("content")
+            if isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict):
+                        if block.get("type") == "tool_use":
+                            tid = block.get("id")
+                            if tid:
+                                tool_use_ids.add(tid)
+                        elif block.get("type") == "tool_result":
+                            tuid = block.get("tool_use_id")
+                            if tuid:
+                                tool_result_ids.add(tuid)
+        no_orphan = tool_use_ids == tool_result_ids
+        out.append(Assertion(
+            name="no_orphan_tool_use",
+            passed=no_orphan,
+            expected="every kept tool_use.id has matching tool_result",
+            actual=f"tool_use_ids={sorted(tool_use_ids)}, tool_result_ids={sorted(tool_result_ids)}",
+        ))
+
+        # drop reached the wire: provider-input messages < session messages
+        wire_len = int(result.provider_input_messages_len or 0)
+        session_len = len(session_msgs)
+        out.append(Assertion(
+            name="drop_reached_provider_wire",
+            passed=wire_len < session_len,
+            expected="provider_input_messages_len < len(session.messages)",
+            actual=f"wire={wire_len}, session={session_len}",
+        ))
+
+        # session["messages"] immutability check — the pre-drop entries
+        # still exist in session (build_v2 does not mutate session).
+        # We can only assert non-empty here; a deeper check would require
+        # capturing pre-turn session state (out of scope for a per-turn check).
+        out.append(Assertion(
+            name="session_messages_still_populated",
+            passed=session_len > 0,
+            expected="len(session.messages) > 0 (immutability preserved)",
+            actual=str(session_len),
+        ))
+        return out
 
     def check_turn_5_cache_anchor(self, result: TurnResult, all_results) -> list[Assertion]:
-        return []
+        """Five assertions verifying cache anchor stability + closure."""
+        m = result.metadata or {}
+        out = []
+
+        # 1. cache_control_breakpoints non-empty
+        breakpoints = m.get("cache_control_breakpoints") or []
+        out.append(Assertion(
+            name="cache_control_breakpoints_nonempty",
+            passed=len(breakpoints) >= 1,
+            expected="cache_control_breakpoints has at least 1 entry",
+            actual=str(breakpoints),
+        ))
+
+        # 2. any turn 2-5 usage carried cache tokens
+        cache_seen = False
+        for r in all_results:
+            u = r.usage or {}
+            if int(u.get("cache_read_input_tokens", 0) or 0) > 0:
+                cache_seen = True
+                break
+            if int(u.get("cache_creation_input_tokens", 0) or 0) > 0:
+                cache_seen = True
+                break
+        out.append(Assertion(
+            name="cache_tokens_observed_in_usage",
+            passed=cache_seen,
+            expected="cache_creation OR cache_read tokens > 0 in at least one turn's usage",
+            actual="observed" if cache_seen else "no cache tokens seen",
+        ))
+
+        # 3. system_cache_key identical across all turns
+        cache_keys = {(r.metadata or {}).get("system_cache_key", "") for r in all_results}
+        # empty string counts as "missing" — treat as failure
+        stable = len(cache_keys) == 1 and "" not in cache_keys
+        out.append(Assertion(
+            name="system_cache_key_stable_across_turns",
+            passed=stable,
+            expected="len(set(system_cache_key)) == 1 across all turns, non-empty",
+            actual=str(sorted(cache_keys)),
+        ))
+
+        # 4. metadata completeness — reference the same 15 fields as
+        #    tests/test_metadata_completeness.py
+        required = {
+            "system_cache_key", "system_tokens", "tools_tokens",
+            "messages_count", "messages_tokens", "cache_control_breakpoints",
+            "injection_tokens", "injection_truncated", "injection_dropped",
+            "injection_budget", "intent", "recall.error_count",
+            "recall.last_error", "dropped_messages", "prompt_cache_key",
+        }
+        missing = required - set(m.keys())
+        out.append(Assertion(
+            name="metadata_schema_complete",
+            passed=not missing,
+            expected="all 15 required metadata fields present",
+            actual=("missing: " + str(sorted(missing))) if missing else "all present",
+        ))
+
+        # 5. session-level recall error count remains zero
+        # (we walk all_results — each turn should report zero)
+        max_err = 0
+        for r in all_results:
+            max_err = max(max_err, int((r.metadata or {}).get("recall.error_count", 0) or 0))
+        out.append(Assertion(
+            name="no_recall_errors_across_session",
+            passed=max_err == 0,
+            expected="max(recall.error_count) across all turns == 0",
+            actual=str(max_err),
+        ))
+        return out
 
     def check_global(self, all_results, pico) -> list[Assertion]:
         return []

@@ -246,3 +246,139 @@ def test_check_turn_3_injection_drop_fails_when_recalled_memory_dropped():
     asserts = engine.check_turn_3_injection_drop(result)
     failed = [a for a in asserts if not a.passed]
     assert any(a.name == "recalled_memory_not_dropped" for a in failed)
+
+
+def _turn_4_result_stub(**overrides):
+    defaults = dict(
+        turn=4,
+        user_prompt="总结",
+        expected_behavior="history_dropped",
+        final_answer="ok",
+        metadata={
+            "dropped_messages": 4,
+            "messages_tokens": 1000,
+        },
+        session_message_count_before=14,
+        session_message_count_after=16,
+        provider_call_count_this_turn=1,
+        duration_ms=100,
+        usage={},
+        stopped_at_step_limit=False,
+        error=None,
+        provider_input_messages_len=10,  # smaller than session (drop reached wire)
+        current_user_content="",
+    )
+    defaults.update(overrides)
+    return TurnResult(**defaults)
+
+
+def _pico_stub_with_history():
+    """A pico session with 16 messages including one balanced tool_use pair."""
+    pico = MagicMock()
+    pico.session = {
+        "messages": [
+            {"role": "user", "content": "q1"},
+            {"role": "assistant", "content": "a1"},
+            {"role": "user", "content": "q2"},
+            {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "read", "input": {}}]},
+            {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "r"}]},
+            {"role": "assistant", "content": "a2"},
+        ] + [{"role": "user" if i % 2 == 0 else "assistant", "content": f"m{i}"} for i in range(10)]
+    }
+    return pico
+
+
+def test_check_turn_4_history_drop_passes_when_all_invariants_hold():
+    engine = AssertionEngine()
+    pico = _pico_stub_with_history()
+    asserts = engine.check_turn_4_history_drop(_turn_4_result_stub(), pico)
+    assert len(asserts) == 5
+    assert all(a.passed for a in asserts), [(a.name, a.actual) for a in asserts if not a.passed]
+
+
+def test_check_turn_4_pairing_invariant_catches_orphan_tool_use():
+    engine = AssertionEngine()
+    pico = MagicMock()
+    # orphan tool_use — no matching tool_result
+    pico.session = {"messages": [
+        {"role": "assistant", "content": [{"type": "tool_use", "id": "orphan_x", "name": "read", "input": {}}]},
+    ]}
+    asserts = engine.check_turn_4_history_drop(_turn_4_result_stub(), pico)
+    failed = [a for a in asserts if not a.passed]
+    assert any(a.name == "no_orphan_tool_use" for a in failed)
+
+
+def test_check_turn_4_fails_when_dropped_messages_zero():
+    engine = AssertionEngine()
+    pico = _pico_stub_with_history()
+    asserts = engine.check_turn_4_history_drop(_turn_4_result_stub(metadata={"dropped_messages": 0, "messages_tokens": 500}), pico)
+    failed = [a for a in asserts if not a.passed]
+    assert any(a.name == "dropped_messages_gt_zero" for a in failed)
+
+
+def _turn_1_result_stub_for_cache(cache_key="k"):
+    return _turn_result_stub(metadata={
+        "intent": {"name": "recall", "matched_keyword": "上次", "matched_reason": ""},
+        "injection_tokens": {"recalled_memory": 10},
+        "recall.error_count": 0,
+        "system_cache_key": cache_key,
+        "injection_budget": 500,
+        "system_tokens": 100, "tools_tokens": 50,
+        "messages_count": 2, "messages_tokens": 40, "injection_truncated": {},
+        "injection_dropped": [], "recall.last_error": "",
+        "dropped_messages": 0, "prompt_cache_key": cache_key,
+        "cache_control_breakpoints": [],
+    })
+
+
+def _turn_5_result_stub(system_cache_key="abc", **overrides):
+    metadata = {
+        "cache_control_breakpoints": [10],
+        "system_cache_key": system_cache_key,
+        "system_tokens": 100, "tools_tokens": 50, "messages_count": 12,
+        "messages_tokens": 500, "injection_tokens": {}, "injection_truncated": {},
+        "injection_dropped": [], "injection_budget": 500,
+        "intent": {"name": "default", "matched_keyword": "", "matched_reason": ""},
+        "recall.error_count": 0, "recall.last_error": "",
+        "dropped_messages": 0, "prompt_cache_key": "abc",
+    }
+    defaults = dict(
+        turn=5,
+        user_prompt="done",
+        expected_behavior="cache_anchor_verified",
+        final_answer="ok",
+        metadata=metadata,
+        session_message_count_before=16, session_message_count_after=18,
+        provider_call_count_this_turn=1, duration_ms=100,
+        usage={"cache_read_input_tokens": 100, "cache_creation_input_tokens": 0},
+        stopped_at_step_limit=False, error=None,
+        provider_input_messages_len=12, current_user_content="",
+    )
+    defaults.update(overrides)
+    return TurnResult(**defaults)
+
+
+def test_check_turn_5_cache_anchor_passes_when_cache_key_stable():
+    engine = AssertionEngine()
+    all_results = [
+        _turn_1_result_stub_for_cache(cache_key="k"),
+        _turn_1_result_stub_for_cache(cache_key="k"),
+        _turn_1_result_stub_for_cache(cache_key="k"),
+        _turn_1_result_stub_for_cache(cache_key="k"),
+        _turn_5_result_stub(system_cache_key="k"),
+    ]
+    asserts = engine.check_turn_5_cache_anchor(all_results[-1], all_results)
+    assert len(asserts) == 5
+    assert all(a.passed for a in asserts), [(a.name, a.actual) for a in asserts if not a.passed]
+
+
+def test_check_turn_5_fails_when_cache_key_drifts():
+    engine = AssertionEngine()
+    all_results = [
+        _turn_1_result_stub_for_cache(cache_key="k1"),
+        _turn_1_result_stub_for_cache(cache_key="k2"),  # drift!
+    ]
+    all_results.append(_turn_5_result_stub(system_cache_key="k1"))
+    asserts = engine.check_turn_5_cache_anchor(all_results[-1], all_results)
+    failed = [a for a in asserts if not a.passed]
+    assert any(a.name == "system_cache_key_stable_across_turns" for a in failed)
