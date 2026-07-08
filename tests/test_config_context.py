@@ -62,6 +62,50 @@ def test_bad_type_falls_back_to_default(tmp_path):
     assert context_history_soft_cap(tmp_path) == 40000
 
 
+def test_digest_size_threshold_default(tmp_path):
+    from pico.config import context_digest_size_threshold
+    assert context_digest_size_threshold(tmp_path) == 1200
+
+
+def test_digest_size_threshold_override(tmp_path):
+    from pico.config import context_digest_size_threshold
+    (tmp_path / "pico.toml").write_text(
+        "[context.digest]\nsize_threshold_chars = 500\n", encoding="utf-8"
+    )
+    assert context_digest_size_threshold(tmp_path) == 500
+
+
+def test_append_tool_result_uses_config_threshold(tmp_path):
+    """Overriding digest.size_threshold_chars via context_config makes small
+    tool results digest even though they'd otherwise be inlined."""
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from pico.agent_loop import _append_tool_result
+
+    session_messages = []
+    a = MagicMock()
+    a.session = {"messages": session_messages, "id": "s1"}
+    a.record_message = MagicMock(side_effect=lambda m: session_messages.append(m))
+    a.workspace = MagicMock()
+    a.workspace.repo_root = str(tmp_path)
+    a.current_task_state = SimpleNamespace(run_id="r1", task_id="t1")
+    a.current_run_dir = tmp_path / ".pico" / "runs" / "r1"
+    a.current_run_dir.mkdir(parents=True, exist_ok=True)
+    # Force a small threshold so a 100-char payload triggers digest.
+    a.context_config = {"digest_size_threshold": 50}
+
+    _append_tool_result(
+        a,
+        tool_use_id="t1",
+        content="x" * 100,  # over threshold=50
+        tool_name="read_file",
+        tool_args={"path": "a.py"},
+    )
+    msg = session_messages[-1]
+    assert msg["_pico_meta"]["digest_applied"] is True
+
+
 def test_build_v2_reads_system_tools_hard_cap_from_pico_toml(tmp_path):
     """Overriding system_tools_hard_cap in pico.toml raises SystemTooBig sooner."""
     from unittest.mock import MagicMock

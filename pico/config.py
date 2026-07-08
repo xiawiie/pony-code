@@ -240,3 +240,18 @@ def context_injection_budget_ratio(root) -> float:
 def context_system_tools_hard_cap(root) -> int:
     """Fail-loud threshold for system + tools token count."""
     return _context_int(root, "system_tools_hard_cap", 20000)
+
+
+def _context_digest_int(root, key, default):
+    data = load_pico_toml_full(root)
+    raw = data.get("context", {}).get("digest", {}).get(key)
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        return default
+    if raw <= 0:
+        return default
+    return raw
+
+
+def context_digest_size_threshold(root) -> int:
+    """Threshold in characters above which a tool_result gets digested."""
+    return _context_digest_int(root, "size_threshold_chars", 1200)

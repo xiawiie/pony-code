@@ -224,6 +224,7 @@ class Pico:
         # already baked in by the helper functions. Must be populated BEFORE
         # ContextManager is constructed below so build_v2 sees the overrides.
         from .config import (
+            context_digest_size_threshold,
             context_history_floor_messages,
             context_history_soft_cap,
             context_injection_budget_ratio,
@@ -235,6 +236,7 @@ class Pico:
             "history_floor_messages": context_history_floor_messages(self.root),
             "injection_budget_ratio": context_injection_budget_ratio(self.root),
             "system_tools_hard_cap": context_system_tools_hard_cap(self.root),
+            "digest_size_threshold": context_digest_size_threshold(self.root),
         }
         self.session = session or {
             "id": datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6],

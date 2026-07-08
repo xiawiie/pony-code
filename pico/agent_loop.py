@@ -75,8 +75,13 @@ def _append_tool_result(
     display_content = content
     tool_args = tool_args or {}
 
+    # Task B3: threshold overridable via pico.toml → agent.context_config.
+    cfg = getattr(agent, "context_config", None)
+    if not isinstance(cfg, dict):
+        cfg = {}
+    threshold = int(cfg.get("digest_size_threshold", 1200))
     # Only run the digest heuristic if the caller hasn't already digested.
-    if not digest_applied and should_digest(content):
+    if not digest_applied and should_digest(content, threshold=threshold):
         # Compute the hash first so we know where the raw would land.
         source_hash = digest_tool_result(tool_name, tool_args, content, raw_path="").source_hash
         run_dir = getattr(agent, "current_run_dir", None)
