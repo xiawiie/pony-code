@@ -72,6 +72,8 @@ class FallbackAdapter:
         return getattr(self._inner, name)
 
     def complete_v2(self, *, system, tools, messages, max_tokens, cache_breakpoints=None):
+        from .message_utils import strip_pico_meta
+        messages = strip_pico_meta(messages)
         prompt = "\n\n".join(part for part in (_flatten_system(system), _flatten_tools(tools), _flatten_messages(messages)) if part)
         raw = self._inner.complete(prompt, max_tokens)
         self.last_completion_metadata = dict(getattr(self._inner, "last_completion_metadata", {}))

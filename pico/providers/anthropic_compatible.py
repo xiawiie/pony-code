@@ -156,6 +156,8 @@ class AnthropicCompatibleModelClient:
         )
 
     def complete_v2(self, *, system, tools, messages, max_tokens, cache_breakpoints=None):
+        from .message_utils import strip_pico_meta
+        messages = strip_pico_meta(messages)
         from .response import Response, StopReason
 
         # 打 cache_control 断点：把指定 message.content 转为 list-of-blocks 形式
