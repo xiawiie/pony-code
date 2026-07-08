@@ -104,3 +104,20 @@ def render_checkpoint(agent, budget_tokens):
     if not text:
         return None
     return _tail_clip(text, _budget_to_chars(budget_tokens))
+
+
+def render_recalled_memory(agent, budget_tokens, user_message=""):
+    """Task 24: query-driven recall block.
+
+    Unlike the other sources, ``recalled_memory`` needs the current
+    user message to score relevance — so this renderer accepts an extra
+    ``user_message`` argument. The heavy lifting (four guards, provenance,
+    recently-recalled bookkeeping) lives in :func:`recall_for_turn`.
+    """
+    # Local import to avoid a hard cycle with the memory subsystem.
+    from pico.memory.recall import recall_for_turn
+
+    try:
+        return recall_for_turn(agent, user_message, budget_tokens)
+    except Exception:
+        return None

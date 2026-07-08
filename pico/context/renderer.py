@@ -36,11 +36,10 @@ from .sources import (
     render_checkpoint,
     render_memory_index,
     render_project_structure,
+    render_recalled_memory,
     render_workspace_state,
 )
 
-# ``recalled_memory`` is a Phase 3 source. Slot is reserved here so budgets
-# and telemetry line up; the placeholder returns ``None`` for now.
 SOURCE_ORDER = (
     "workspace_state",
     "memory_index",
@@ -49,12 +48,18 @@ SOURCE_ORDER = (
     "checkpoint",
 )
 
+# Task 24: ``recalled_memory`` needs the current turn's user message to
+# score relevance, so its renderer takes a 3rd positional arg. All other
+# renderers ignore it — we call every renderer with a uniform signature
+# ``(agent, budget_tokens, user_message)`` and let each ignore what it
+# doesn't need. This avoids the monkey-patch trick from the original plan
+# where the user message was stashed on ``agent`` as a hidden attribute.
 _RENDERERS = {
-    "workspace_state": render_workspace_state,
-    "memory_index": render_memory_index,
-    "project_structure": render_project_structure,
-    "recalled_memory": lambda agent, budget_tokens: None,  # P3 replaces
-    "checkpoint": render_checkpoint,
+    "workspace_state": lambda agent, budget, user_msg: render_workspace_state(agent, budget),
+    "memory_index": lambda agent, budget, user_msg: render_memory_index(agent, budget),
+    "project_structure": lambda agent, budget, user_msg: render_project_structure(agent, budget),
+    "recalled_memory": render_recalled_memory,
+    "checkpoint": lambda agent, budget, user_msg: render_checkpoint(agent, budget),
 }
 
 
@@ -96,7 +101,7 @@ def render_current_user_message(agent, user_message):
         if renderer is None:
             telemetry["injection_tokens"][source_name] = 0
             continue
-        raw = renderer(agent, source_budget)
+        raw = renderer(agent, source_budget, user_message)
         if not raw:
             telemetry["injection_tokens"][source_name] = 0
             continue
