@@ -478,6 +478,14 @@ class ContextManager:
         breakpoints = [len(messages) - 2] if len(messages) >= 2 else []
 
         system_cache_key = hashlib.sha256(system_text.encode("utf-8")).hexdigest()
+        # Task C2: surface recall failures into the metadata layer. Reading
+        # from the current session (not injection_telemetry) since the
+        # source renderer writes the counter side-effectually. Both keys
+        # are always emitted for schema stability, even when count == 0.
+        agent_session = getattr(self.agent, "session", None)
+        recall_errors = (agent_session or {}).get("_recall_errors", {}) if isinstance(agent_session, dict) else {}
+        if not isinstance(recall_errors, dict):
+            recall_errors = {}
         metadata = {
             "system_cache_key": system_cache_key,
             "system_tokens": system_tokens,
@@ -492,6 +500,8 @@ class ContextManager:
             # that reach for `metadata["prompt_cache_key"]` don't break if they
             # happen to migrate to `build_v2` first.
             "prompt_cache_key": system_cache_key,
+            "recall.error_count": int(recall_errors.get("count", 0) or 0),
+            "recall.last_error": str(recall_errors.get("last", "") or ""),
             **injection_telemetry,
         }
         request = {

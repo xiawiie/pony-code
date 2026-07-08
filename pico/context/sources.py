@@ -113,11 +113,21 @@ def render_recalled_memory(agent, budget_tokens, user_message=""):
     user message to score relevance — so this renderer accepts an extra
     ``user_message`` argument. The heavy lifting (four guards, provenance,
     recently-recalled bookkeeping) lives in :func:`recall_for_turn`.
+
+    Task C2: exceptions raised by ``recall_for_turn`` are recorded into
+    ``session["_recall_errors"]`` (``{count, last}``) so operators can spot
+    silent failures via ``build_v2`` metadata. Behavior unchanged — the
+    turn still proceeds with ``recalled_memory`` omitted.
     """
     # Local import to avoid a hard cycle with the memory subsystem.
     from pico.memory.recall import recall_for_turn
 
     try:
         return recall_for_turn(agent, user_message, budget_tokens)
-    except Exception:
+    except Exception as exc:
+        session = getattr(agent, "session", None)
+        if isinstance(session, dict):
+            counters = session.setdefault("_recall_errors", {"count": 0, "last": ""})
+            counters["count"] = int(counters.get("count", 0)) + 1
+            counters["last"] = f"{type(exc).__name__}: {exc}"[:200]
         return None

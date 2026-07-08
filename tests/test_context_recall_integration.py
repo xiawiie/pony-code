@@ -63,3 +63,33 @@ def test_renderer_no_recall_when_store_empty(tmp_path):
     text, _tele = render_current_user_message(a, "上次讨论过 cache")
     assert "<pico:recalled_memory" not in text
     assert "上次讨论过 cache" in text
+
+
+def test_recall_error_recorded_to_telemetry(tmp_path, monkeypatch):
+    """When recall_for_turn raises, error is recorded to telemetry."""
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from pico.context.renderer import render_current_user_message
+
+    # Force recall_for_turn to raise.
+    def _boom(*args, **kwargs):
+        raise ValueError("simulated recall crash")
+
+    monkeypatch.setattr("pico.memory.recall.recall_for_turn", _boom)
+
+    a = SimpleNamespace(
+        memory_store=MagicMock(),
+        memory_retrieval=MagicMock(),
+        session={"recently_recalled": [], "messages": []},
+        workspace=MagicMock(volatile_text=lambda: ""),
+        repo_map=None,
+        render_checkpoint_text=lambda: "",
+        model_client=MagicMock(count_tokens=lambda t: max(1, len(t) // 4)),
+        memory=SimpleNamespace(task_summary=""),
+        context_config={},
+    )
+    _text, _tele = render_current_user_message(a, "上次讨论过 cache")
+    # Recall failed but session still tracks it.
+    assert a.session["_recall_errors"]["count"] >= 1
+    assert "simulated recall crash" in a.session["_recall_errors"]["last"]
