@@ -26,6 +26,9 @@ Telemetry keys:
 - ``injection_dropped``: reserved for a future overflow step where an
   entire source is dropped because the aggregate injection budget was
   breached; currently always ``[]``
+- ``injection_budget``: the aggregate cap
+  (``injection_budget_ratio × total_budget_hard_cap``) that Stream C1's
+  drop logic will compare the sum of ``injection_tokens`` against
 """
 
 from __future__ import annotations
@@ -90,6 +93,13 @@ def render_current_user_message(agent, user_message):
         "injection_truncated": {},
         "injection_dropped": [],
     }
+
+    # Task B6: compute the aggregate injection budget cap. Downstream C1
+    # will use it to drop least-important blocks when sum overflows.
+    cfg = getattr(agent, "context_config", {}) or {}
+    ratio = float(cfg.get("injection_budget_ratio", 0.15))
+    total = int(cfg.get("total_budget_hard_cap", 100000))
+    telemetry["injection_budget"] = int(total * ratio)
 
     blocks = []
     for source_name in SOURCE_ORDER:

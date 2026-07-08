@@ -83,3 +83,30 @@ def test_telemetry_shape():
     }
     assert "name" in tele["intent"]
     assert "matched_keyword" in tele["intent"]
+
+
+def test_renderer_reads_injection_budget_from_agent_config(tmp_path):
+    """When agent.context_config has an injection_budget_ratio, the renderer
+    computes an injection_budget and stashes it in telemetry for later use."""
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from pico.context.renderer import render_current_user_message
+
+    a = SimpleNamespace(
+        memory_store=None,
+        memory_retrieval=None,
+        session={"recently_recalled": [], "messages": []},
+        workspace=MagicMock(volatile_text=lambda: "branch: main"),
+        repo_map=None,
+        render_checkpoint_text=lambda: "",
+        model_client=MagicMock(count_tokens=lambda t: max(1, len(t) // 4)),
+        memory=SimpleNamespace(task_summary=""),
+        context_config={
+            "injection_budget_ratio": 0.10,
+            "total_budget_hard_cap": 100000,
+        },
+    )
+    _text, tele = render_current_user_message(a, "hi")
+    # Injection budget = 100000 × 0.10 = 10000
+    assert tele.get("injection_budget") == 10000
