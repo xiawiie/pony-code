@@ -1,5 +1,7 @@
 """Memory command handlers for Pico's explicit CLI surface."""
 
+import shutil
+import time
 from pathlib import Path
 
 from .cli_errors import CLI_EXIT_USAGE, CliError
@@ -251,3 +253,81 @@ def _memory_migrate_cmd(rest, args, root):
         return "\n".join(lines)
 
     return print_result("memory_migrate", migrated, args, render)
+
+
+# ---- Task 22: agent_notes.md → agent/legacy-import.md migrator ---------------
+# The older `_memory_migrate_cmd` above handles a *different* legacy path
+# (`.pico/memory/topics/*.md` → `.pico/memory/notes/*.md`) from an earlier plan.
+# This module-level function serves the new per-topic migration: it takes the
+# legacy single-file `agent_notes.md`, wraps its contents in frontmatter, moves
+# it to `agent/legacy-import.md`, and renames the source with a `.legacy`
+# suffix so retrieval skips it. `--dry-run` and `--rollback` are supported.
+
+def cli_memory_migrate(workspace_root, *, dry_run: bool = False, rollback: bool = False) -> int:
+    """Migrate `agent_notes.md` into `agent/legacy-import.md`.
+
+    Parameters
+    ----------
+    workspace_root
+        Directory that contains ``agent_notes.md`` (typically
+        ``<repo>/.pico/memory``).
+    dry_run
+        If True, print the planned actions but touch no files. Returns 0.
+    rollback
+        If True, undo a previous migrate: restore ``agent_notes.md`` from the
+        ``.legacy`` sibling and delete ``agent/legacy-import.md``. Returns 0
+        on success, 1 when there is nothing to roll back.
+    """
+    ws = Path(workspace_root)
+    legacy_target = ws / "agent" / "legacy-import.md"
+    old_notes = ws / "agent_notes.md"
+    renamed = ws / "agent_notes.md.legacy"
+    backup_dir = ws / "backup"
+
+    if rollback:
+        if not renamed.exists():
+            print("nothing to rollback (agent_notes.md.legacy not found)")
+            return 1
+        if legacy_target.exists():
+            if dry_run:
+                print(f"[dry-run] would delete {legacy_target}")
+            else:
+                legacy_target.unlink()
+        if dry_run:
+            print(f"[dry-run] would rename {renamed} → {old_notes}")
+            return 0
+        renamed.rename(old_notes)
+        print(f"rolled back: {old_notes}")
+        return 0
+
+    if not old_notes.exists():
+        print("no agent_notes.md to migrate")
+        return 0
+
+    body = old_notes.read_text(encoding="utf-8")
+    ts = int(time.time())
+
+    if dry_run:
+        print(f"[dry-run] would backup {old_notes} → {backup_dir / f'agent_notes.md.{ts}'}")
+        print(f"[dry-run] would create {legacy_target} with legacy frontmatter")
+        print(f"[dry-run] would rename {old_notes} → {renamed}")
+        return 0
+
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(old_notes, backup_dir / f"agent_notes.md.{ts}")
+
+    legacy_target.parent.mkdir(parents=True, exist_ok=True)
+    fm = (
+        "---\n"
+        "name: legacy-import\n"
+        "type: feedback\n"
+        "description: Migrated legacy agent notes\n"
+        "tags: [legacy]\n"
+        "aliases: []\n"
+        "supersedes: []\n"
+        "---\n\n"
+    )
+    legacy_target.write_text(fm + body, encoding="utf-8")
+    old_notes.rename(renamed)
+    print(f"migrated to {legacy_target}")
+    return 0
