@@ -66,3 +66,35 @@ pico-cli memory migrate [--apply]    # migrate legacy topics/ into notes/
   for TS/JS/Go/Rust (regex).
 - Memory and sessions are independent axes; there is no cross-session
   memory rewind.
+
+## Recall & Digest
+
+**Recall**: at the start of every turn, `recall_for_turn` (from
+`pico/memory/recall.py`) picks up to `top_k` memory notes matching the
+user message + task summary. Four guards keep the injection lean:
+
+1. `min_score` — normalized BM25 score must clear the threshold
+2. `max_tokens_per_note` — clip per-note body to this many tokens
+3. Tombstone — skip notes with a matching `supersedes` entry
+4. Recently-recalled — skip notes surfaced in the last N turns
+
+Recalled notes appear in the outgoing user message as
+`<system-reminder><pico:recalled_memory ...>` blocks with `path=`,
+`type=`, `score=`, and `why=` provenance.
+
+**Digest**: tool_result payloads above `context.digest.size_threshold_chars`
+(default 1200) are digested — the message content becomes a short
+`[digest]` rendering (title + up to 5 bullets + `raw at ...` pointer);
+the full raw body is written to
+`.pico/runs/<run_id>/tool_results/<hash>.txt` for later retrieval.
+Session-level history stays compact; the model can still ask to re-read
+the raw file by path.
+
+## Long-Session Management
+
+Long sessions eventually exceed provider context. Pico enforces
+`history_soft_cap` (default 40000 tokens) by dropping oldest turn
+units — a "turn unit" being one top-level user question plus every
+message it triggered. The last `history_floor_messages` (default 6)
+messages are always preserved. `tool_use`/`tool_result` pairs drop
+atomically so no orphan blocks reach the provider.
