@@ -49,6 +49,14 @@ FIELD_BOOSTS = {
     "body": 1.0,
 }
 
+# Task 19: `[[name]]` link expansion caps.
+LINK_MAX_ADDED = 3       # at most this many neighbors per query
+LINK_DECAY = 0.4         # neighbor score = primary_score × decay
+LINK_DEPTH = 1           # depth cap — no recursion beyond one hop
+
+# `[[name]]` — kebab-case-friendly, matches what write_agent_topic accepts.
+_LINK_RE = re.compile(r"\[\[([a-zA-Z0-9][a-zA-Z0-9_-]*)\]\]")
+
 
 def tokenize(text: str) -> list[str]:
     """English word split + CJK bigram (per-chunk).
@@ -117,7 +125,52 @@ class Retrieval:
             results.append(SearchHit(path=path, score=score, snippets=snippets))
 
         results.sort(key=lambda h: h.score, reverse=True)
-        return results[:limit]
+        primary = results[:limit]
+
+        # Task 19: one-hop link expansion. Walk `[[name]]` markers in each
+        # primary hit's body, look up the target note by frontmatter `name`,
+        # and pull it in with a decayed score. Deduplicated against the
+        # primary set and against neighbors already added.
+        primary_paths = {h.path for h in primary}
+        name_to_path = self._name_to_path_index(docs)
+        expanded: list[SearchHit] = []
+        for hit in primary:
+            if len(expanded) >= LINK_MAX_ADDED:
+                break
+            try:
+                body = self.store.read(hit.path)
+            except (OSError, ValueError):
+                continue
+            seen_here = {e.path for e in expanded}
+            for match in _LINK_RE.finditer(body):
+                if len(expanded) >= LINK_MAX_ADDED:
+                    break
+                neighbor_name = match.group(1)
+                neighbor_path = name_to_path.get(neighbor_name)
+                if not neighbor_path:
+                    continue
+                if neighbor_path in primary_paths or neighbor_path in seen_here:
+                    continue
+                expanded.append(
+                    SearchHit(
+                        path=neighbor_path,
+                        score=hit.score * LINK_DECAY,
+                        snippets=(f"(via [[{neighbor_name}]] from {hit.path})",),
+                    )
+                )
+                seen_here.add(neighbor_path)
+
+        return primary + expanded
+
+    def _name_to_path_index(self, docs):
+        """Build ``frontmatter.name → store path`` from the doc set."""
+        idx = {}
+        for entry in self.store.list():
+            fm = getattr(entry, "frontmatter", None) or {}
+            name = fm.get("name")
+            if name:
+                idx[name] = entry.path
+        return idx
 
     def _load_docs(self):
         """Return ``[(path, flat_tokens, raw_text, per_field_tokens), ...]``."""
