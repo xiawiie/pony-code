@@ -432,6 +432,15 @@ class Pico:
         return json.dumps(self.memory.to_dict(), sort_keys=True)
 
     def history_text(self):
+        """Render the legacy session["history"] as a compact transcript.
+
+        This method is transitional — it reads from ``session["history"]``
+        (the flat, pre-v2 shape) rather than ``session["messages"]``.
+        Kept for ``build_report`` and evaluation-harness compatibility;
+        v2 telemetry uses ``metadata["messages_tokens"]`` and structured
+        messages instead. Returns "- empty" (not "") when history is
+        empty to distinguish "no runs yet" from "runs with no output".
+        """
         history = self.session["history"]
         if not history:
             return "- empty"
