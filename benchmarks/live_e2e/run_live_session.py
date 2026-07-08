@@ -802,8 +802,12 @@ def _make_anthropic_client(config: RunConfig):
     from pico.providers.anthropic_compatible import AnthropicCompatibleModelClient
 
     api_key = os.environ.get("PICO_ANTHROPIC_API_KEY", "")
-    base_url = os.environ.get(
-        "PICO_ANTHROPIC_BASE_URL", "https://api.anthropic.com"
+    # Pico's canonical env var is PICO_ANTHROPIC_API_BASE (see pico/providers/defaults.py:47).
+    # Also accept the alternate name for tolerance.
+    base_url = (
+        os.environ.get("PICO_ANTHROPIC_API_BASE")
+        or os.environ.get("PICO_ANTHROPIC_BASE_URL")
+        or "https://api.anthropic.com"
     )
     return AnthropicCompatibleModelClient(
         model=config.model,
