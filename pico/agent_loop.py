@@ -1,5 +1,6 @@
 """Agent control loop extracted from the runtime facade."""
 
+import logging
 import time
 import uuid
 
@@ -13,6 +14,8 @@ from .recovery_checkpoint_writer import (
 from .task_state import TaskState
 from .verification import is_verification_command, parse_run_shell_result
 from .workspace import clip, now
+
+logger = logging.getLogger("pico")
 
 
 def _append_user_turn(agent, text: str):
@@ -93,7 +96,8 @@ def _append_tool_result(
                 raw_path = raw_dir / f"{source_hash}.txt"
                 raw_path.write_text(content, encoding="utf-8")
                 raw_path_str = str(raw_path)
-            except OSError:
+            except OSError as exc:
+                logger.debug("raw tool_result write failed: %s", exc)
                 raw_path_str = ""
         digest = digest_tool_result(tool_name, tool_args, content, raw_path=raw_path_str)
         display_content = render_digest_content(digest)

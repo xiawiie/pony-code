@@ -19,6 +19,10 @@ the underlying subsystem — a broken source must never block the turn.
 
 from __future__ import annotations
 
+import logging
+
+logger = logging.getLogger("pico")
+
 
 def _tail_clip(text, char_budget):
     if len(text) <= char_budget:
@@ -38,7 +42,8 @@ def render_workspace_state(agent, budget_tokens):
     """git branch / status / recent commits — the live workspace snapshot."""
     try:
         text = str(agent.workspace.volatile_text() or "").strip()
-    except Exception:
+    except Exception as exc:
+        logger.debug("workspace_state source failed: %s", exc)
         return None
     if not text:
         return None
@@ -52,7 +57,8 @@ def render_memory_index(agent, budget_tokens):
         return None
     try:
         entries = store.list()
-    except Exception:
+    except Exception as exc:
+        logger.debug("memory_index source failed: %s", exc)
         return None
     if not entries:
         return None
@@ -72,17 +78,20 @@ def render_project_structure(agent, budget_tokens):
         return None
     try:
         repo_map.refresh_if_stale()
-    except Exception:
+    except Exception as exc:
+        logger.debug("project_structure source failed (refresh): %s", exc)
         return None
     try:
         tree = repo_map.top_level_tree()
-    except Exception:
+    except Exception as exc:
+        logger.debug("project_structure source failed (tree): %s", exc)
         return None
     if not tree:
         return None
     try:
         stats = repo_map.language_stats() or {}
-    except Exception:
+    except Exception as exc:
+        logger.debug("project_structure source failed (stats): %s", exc)
         stats = {}
     lang_str = ", ".join(f"{k}={v}" for k, v in sorted(stats.items()))
     lines = [f"Project (languages: {lang_str}):"]
@@ -99,7 +108,8 @@ def render_checkpoint(agent, budget_tokens):
         return None
     try:
         text = str(renderer() or "").strip()
-    except Exception:
+    except Exception as exc:
+        logger.debug("checkpoint source failed: %s", exc)
         return None
     if not text:
         return None
@@ -125,6 +135,7 @@ def render_recalled_memory(agent, budget_tokens, user_message=""):
     try:
         return recall_for_turn(agent, user_message, budget_tokens)
     except Exception as exc:
+        logger.debug("recalled_memory source failed: %s", exc)
         session = getattr(agent, "session", None)
         if isinstance(session, dict):
             counters = session.setdefault("_recall_errors", {"count": 0, "last": ""})

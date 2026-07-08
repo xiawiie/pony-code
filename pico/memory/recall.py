@@ -27,7 +27,11 @@ The rendered block carries provenance (``path=``, ``type=``, ``score=``,
 
 from __future__ import annotations
 
+import logging
+
 from pico.context.escaping import escape_pico_tags
+
+logger = logging.getLogger("pico")
 
 RECALL_TOP_K = 2
 RECALL_MIN_SCORE = 0.3
@@ -165,7 +169,8 @@ def recall_for_turn(agent, user_message, budget_tokens):
     for hit, norm_score in picked:
         try:
             raw = store.read(hit.path)
-        except (OSError, ValueError):
+        except (OSError, ValueError) as exc:
+            logger.debug("recall: store.read(%s) failed: %s", hit.path, exc)
             continue
         para = _first_paragraph(raw)
         para_tokens = _count_tokens(agent, para)

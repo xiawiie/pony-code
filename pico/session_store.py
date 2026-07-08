@@ -1,12 +1,15 @@
 """Session JSON persistence."""
 
 import json
+import logging
 import tempfile
 import time
 import uuid
 from pathlib import Path
 
 from . import file_lock
+
+logger = logging.getLogger("pico")
 
 
 def _identity(value):
@@ -48,6 +51,8 @@ def _migrate_v1_to_v2(session: dict) -> dict:
                 "content": entry.get("content", ""),
                 "_pico_meta": {"created_at": created_at},
             })
+        else:
+            logger.debug("session migrator: unknown role %r, skipping entry", role)
     session["messages"] = messages
     session.setdefault("recently_recalled", [])
     session["schema_version"] = 2

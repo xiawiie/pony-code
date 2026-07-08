@@ -33,8 +33,12 @@ Telemetry keys:
 
 from __future__ import annotations
 
+import logging
+
 from .escaping import escape_pico_tags
 from .intent import classify_intent
+
+logger = logging.getLogger("pico")
 from .sources import (
     render_checkpoint,
     render_memory_index,
