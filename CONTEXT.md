@@ -163,3 +163,42 @@ _Avoid_: LSP replacement, ctags mirror, prompt-injected index
 **Memory Index**:
 The auto-rendered listing of memory files (mtime + first line) injected into the stable prompt prefix. Byte-identical across turns when nothing changes so prompt-cache remains hot.
 _Avoid_: full memory dump, dynamic memory tail, chat summary
+
+## pico.toml Configuration Surface
+
+Pico reads optional configuration from `<repo>/pico.toml`. Every key
+falls back to a hard-coded default if the file is missing, the section
+is missing, or the value has a bad type. Sample:
+
+    [context]
+    history_soft_cap = 40000        # tokens; messages array trim threshold
+    history_floor_messages = 6      # tail messages always preserved
+    injection_budget_ratio = 0.15   # fraction of total budget for <system-reminder> blocks
+    system_tools_hard_cap = 20000   # tokens; build_v2 fails loud if system+tools exceed
+
+    [context.digest]
+    size_threshold_chars = 1200     # tool_result char count above which digest applies
+
+    [memory.recall]
+    min_score = 0.3                 # normalized BM25 gate
+    top_k = 2                       # max notes recalled per turn
+    max_tokens_per_note = 400       # per-note cap in the recall block
+    skip_recent_turns = 2           # don't re-recall notes shown in last N turns
+
+    [memory.retrieval.field_boost]
+    name = 5.0
+    description = 3.0
+    tags = 4.0
+    aliases = 4.0
+    body = 1.0
+
+    [memory.retrieval.link]
+    max_added = 3                   # neighbors per query via [[name]] expansion
+    decay = 0.4                     # neighbor score multiplier
+
+**When to change**: `history_soft_cap` if your model returns 413 on
+long sessions; `recall.min_score` if recall surfaces irrelevant memory
+too often; `field_boost.name` and friends if a domain-specific note
+naming convention benefits from re-weighting. The `intent_profiles`
+keywords are NOT overridable via `pico.toml` — edit
+`pico/context/intent.py` directly.
