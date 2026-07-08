@@ -85,3 +85,32 @@ def test_migrator_idempotent_on_v2(store, tmp_path):
     # v2 不再触发 backup
     backup_dir = session_path.parent / "backup"
     assert not backup_dir.exists() or not list(backup_dir.glob("s2.v1.*.json"))
+
+
+def test_backup_uses_nanosecond_precision_in_filename(tmp_path):
+    """Task A4: backup filename should carry nanosecond precision."""
+    import json
+    import re
+    from pico.session_store import SessionStore
+
+    store = SessionStore(tmp_path / ".pico" / "sessions")
+
+    v1 = {
+        "id": "s1",
+        "created_at": "2026-01-01T00:00:00Z",
+        "workspace_root": str(tmp_path),
+        "history": [{"role": "user", "content": "hi", "created_at": "2026-01-01T00:00:01Z"}],
+    }
+    p = store.path_for("s1")
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(v1), encoding="utf-8")
+    store.load("s1")
+
+    backup_dir = p.parent / "backup"
+    backups = list(backup_dir.glob("s1.v1.*.json"))
+    assert len(backups) == 1
+    # Nanosecond timestamps are 19 digits (10^19 ns ≈ 316 years since epoch);
+    # second timestamps were 10 digits. Assert the numeric suffix has ≥ 15 digits.
+    match = re.match(r"s1\.v1\.(\d+)\.json$", backups[0].name)
+    assert match is not None
+    assert len(match.group(1)) >= 15, f"Expected nanosecond precision, got {match.group(1)!r}"

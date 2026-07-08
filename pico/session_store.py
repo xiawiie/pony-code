@@ -57,7 +57,8 @@ def _migrate_v1_to_v2(session: dict) -> dict:
 def _write_backup(session_path, raw_bytes, session_id):
     backup_dir = session_path.parent / "backup"
     backup_dir.mkdir(parents=True, exist_ok=True)
-    ts = int(time.time())
+    # Task A4: nanosecond precision prevents same-second filename collisions.
+    ts = time.time_ns()
     (backup_dir / f"{session_id}.v1.{ts}.json").write_bytes(raw_bytes)
 
 
