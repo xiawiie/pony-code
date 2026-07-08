@@ -17,15 +17,22 @@
 
 from __future__ import annotations
 
+import re
 import sys
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 
+from .frontmatter import parse_frontmatter
+
 MAX_NOTE_CHARS = 500
 AGENT_NOTES_SOFT_LIMIT_CHARS = 8000
+
+# Task 17: agent-owned topic slug — kebab-case, alphanumeric-first.
+# Rejects `..`, `/`, dots, spaces, and any other filesystem-fragile chars.
+_TOPIC_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]*$")
 
 
 @dataclass(frozen=True)
@@ -34,6 +41,8 @@ class MemoryFile:
     size_chars: int
     mtime: float
     first_line: str
+    # Task 17: parsed frontmatter metadata, empty dict when the file has none.
+    frontmatter: dict = field(default_factory=dict)
 
 
 class BlockStore:
@@ -55,7 +64,7 @@ class BlockStore:
         if not root.exists():
             return []
         results: list[MemoryFile] = []
-        # notes/*.md (可嵌套)
+        # notes/*.md (nested allowed) — user-written, agent read-only
         notes_dir = root / "notes"
         if notes_dir.exists():
             for md in sorted(notes_dir.rglob("*.md")):
@@ -63,7 +72,16 @@ class BlockStore:
                     continue
                 rel = md.relative_to(root).as_posix()
                 results.append(self._to_memory_file(f"{scope}/{rel}", md))
-        # agent_notes.md
+        # agent/*.md (Task 17) — agent-owned, per-topic
+        agent_dir = root / "agent"
+        if agent_dir.exists():
+            for md in sorted(agent_dir.rglob("*.md")):
+                if not md.is_file():
+                    continue
+                rel = md.relative_to(root).as_posix()
+                results.append(self._to_memory_file(f"{scope}/{rel}", md))
+        # agent_notes.md (legacy single-file). We exclude anything with the
+        # .legacy suffix (post-migration renames).
         agent_notes = root / "agent_notes.md"
         if agent_notes.is_file():
             results.append(self._to_memory_file(f"{scope}/agent_notes.md", agent_notes))
@@ -77,12 +95,25 @@ class BlockStore:
             content = real_path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             content = ""
-        first_line = (content.splitlines()[0] if content else "").rstrip("\n")
+        # Task 17: parse frontmatter so retrieval / recall can boost by field.
+        # When a file has a `description` header, prefer that as the display
+        # first-line (memory_index shows it); otherwise fall back to the body's
+        # first line.
+        meta, body = parse_frontmatter(content)
+        if meta.get("description"):
+            first_line = str(meta["description"])[:200]
+        else:
+            first_line = (body.splitlines()[0] if body else "").rstrip("\n")[:200] if body else ""
+            if not first_line:
+                # Body was empty (or file was body-only, no frontmatter case):
+                # fall back to the raw first line.
+                first_line = (content.splitlines()[0] if content else "").rstrip("\n")[:200]
         return MemoryFile(
             path=rel_path,
             size_chars=len(content),
             mtime=stat.st_mtime,
-            first_line=first_line[:200],
+            first_line=first_line,
+            frontmatter=meta or {},
         )
 
     def read(self, rel_path: str) -> str:
@@ -125,6 +156,55 @@ class BlockStore:
                 file=sys.stderr,
             )
         return size
+
+    # ---- agent topic write (Task 17) ---------------------------------------
+
+    def write_agent_topic(self, scope, topic, note, note_type="feedback"):
+        """Create or append `agent/<topic>.md` with frontmatter on first write.
+
+        On first-time create the file gets a full frontmatter block with
+        ``name = topic``, ``type = note_type``, and ``description`` seeded
+        from the note's first line. On subsequent calls the body is
+        appended and the frontmatter is left untouched.
+
+        Raises ``ValueError`` on empty note, bad scope, or a topic slug that
+        would let the filename escape ``agent/`` (contains ``..``, ``/``, or
+        non-``[A-Za-z0-9_-]`` chars).
+        """
+        note = str(note).strip()
+        if not note:
+            raise ValueError("note must not be empty")
+        topic = str(topic).strip()
+        if not _TOPIC_RE.match(topic):
+            raise ValueError(f"invalid topic: {topic!r}")
+        if scope == "workspace":
+            root = self.workspace_root
+        elif scope == "user":
+            root = self.user_root
+        else:
+            raise ValueError(f"unknown scope: {scope!r}")
+        agent_dir = root / "agent"
+        agent_dir.mkdir(parents=True, exist_ok=True)
+        target = agent_dir / f"{topic}.md"
+        if target.exists():
+            existing = target.read_text(encoding="utf-8")
+            new_body = existing.rstrip("\n") + "\n\n" + note + "\n"
+            self._atomic_write(target, new_body)
+        else:
+            description = note.splitlines()[0][:80] if note else ""
+            fm = (
+                "---\n"
+                f"name: {topic}\n"
+                f"type: {note_type}\n"
+                f"description: {description}\n"
+                "tags: []\n"
+                "aliases: []\n"
+                "supersedes: []\n"
+                "---\n"
+                f"\n{note}\n"
+            )
+            self._atomic_write(target, fm)
+        return target
 
     # ---- internals ---------------------------------------------------------
 
