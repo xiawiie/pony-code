@@ -85,8 +85,12 @@ def _append_tool_result(
     threshold = int(cfg.get("digest_size_threshold", 1200))
     # Only run the digest heuristic if the caller hasn't already digested.
     if not digest_applied and should_digest(content, threshold=threshold):
-        # Compute the hash first so we know where the raw would land.
-        source_hash = digest_tool_result(tool_name, tool_args, content, raw_path="").source_hash
+        # Task D1: single-call digest. Compute the digest once (per-tool
+        # summarizer runs exactly once); then update raw_path on the
+        # dataclass via dataclasses.replace after we know where we wrote.
+        from dataclasses import replace as _dc_replace
+        digest = digest_tool_result(tool_name, tool_args, content, raw_path="")
+        source_hash = digest.source_hash
         run_dir = getattr(agent, "current_run_dir", None)
         raw_path_str = ""
         if run_dir is not None:
@@ -99,7 +103,8 @@ def _append_tool_result(
             except OSError as exc:
                 logger.debug("raw tool_result write failed: %s", exc)
                 raw_path_str = ""
-        digest = digest_tool_result(tool_name, tool_args, content, raw_path=raw_path_str)
+        if raw_path_str:
+            digest = _dc_replace(digest, raw_path=raw_path_str)
         display_content = render_digest_content(digest)
         digest_applied = True
 

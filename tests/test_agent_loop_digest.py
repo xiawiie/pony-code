@@ -78,3 +78,42 @@ def test_large_result_without_run_dir_still_digests(tmp_path):
     assert msg["_pico_meta"]["digest_applied"] is True
     content_str = msg["content"][0]["content"]
     assert "[digest]" in content_str
+
+
+def test_digest_computed_exactly_once(tmp_path, monkeypatch):
+    """Task D1: _append_tool_result must not run per-tool summarizer twice."""
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    import pico.context.digest as digest_mod
+    from pico.agent_loop import _append_tool_result
+
+    original = digest_mod._digest_read_file
+    call_count = {"n": 0}
+
+    def counting_digest_read_file(args, result):
+        call_count["n"] += 1
+        return original(args, result)
+
+    monkeypatch.setattr(digest_mod, "_digest_read_file", counting_digest_read_file)
+    monkeypatch.setitem(digest_mod._DIGESTERS, "read_file", counting_digest_read_file)
+
+    session_messages = []
+    a = MagicMock()
+    a.session = {"messages": session_messages, "id": "s1"}
+    a.record_message = MagicMock(side_effect=lambda m: session_messages.append(m))
+    a.workspace = MagicMock()
+    a.workspace.repo_root = str(tmp_path)
+    a.current_task_state = SimpleNamespace(run_id="r1", task_id="t1")
+    a.current_run_dir = tmp_path / ".pico" / "runs" / "r1"
+    a.current_run_dir.mkdir(parents=True, exist_ok=True)
+    a.context_config = {"digest_size_threshold": 100}
+
+    _append_tool_result(
+        a,
+        tool_use_id="t1",
+        content="x = 1\n" * 500,
+        tool_name="read_file",
+        tool_args={"path": "big.py"},
+    )
+    assert call_count["n"] == 1, f"_digest_read_file called {call_count['n']} times"
