@@ -68,4 +68,55 @@ def test_inspect_handles_malformed_json_gracefully(tmp_path):
     (sessions / "bad.json").write_text("{not valid json", encoding="utf-8")
     ok, report = inspect_session("bad", sessions_root=sessions)
     assert ok is False
-    assert "bad" in report.lower() or "failed" in report.lower() or "read" in report.lower()
+    assert "failed to read session" in report
+
+
+def test_inspect_ignores_tool_result_carriers(tmp_path):
+    """v2 tool_result carrier messages must not count as human user turns.
+
+    A real session with 1 human turn + 2 tool loops produces:
+      - history: 1 user entry (the human turn only)
+      - messages: 1 human user + 2 tool_result-carrier user messages
+    The inspector must treat that as a match, not drift.
+    """
+    sessions = tmp_path / "sessions"
+    _write_session(sessions, "s3", {
+        "id": "s3",
+        "workspace_root": str(tmp_path),
+        "schema_version": 2,
+        "history": [
+            {"role": "user", "content": "draw a plot", "created_at": "t"},
+            {"role": "assistant", "content": "done", "created_at": "t"},
+        ],
+        "messages": [
+            {"role": "user", "content": "draw a plot"},
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "tool_use", "id": "tu_1", "name": "run", "input": {}},
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "tu_1", "content": "ok"},
+                ],
+            },
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "tool_use", "id": "tu_2", "name": "run", "input": {}},
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "tu_2", "content": "ok"},
+                ],
+            },
+            {"role": "assistant", "content": "done"},
+        ],
+    })
+    ok, report = inspect_session("s3", sessions_root=sessions)
+    assert ok is True, report
+    assert "match" in report.lower()
