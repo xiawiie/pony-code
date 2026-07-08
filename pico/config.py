@@ -160,3 +160,35 @@ def load_pico_toml(workspace_root):
         name, value = line.split("=", 1)
         current[name.strip()] = _parse_scalar(value)
     return data
+
+
+def load_pico_toml_full(workspace_root):
+    """Full-fidelity pico.toml parser.
+
+    Prefers :mod:`tomllib` (stdlib since Python 3.11) so nested tables and
+    typed values (arrays, floats, booleans) round-trip correctly. Falls
+    back to :func:`load_pico_toml` for environments where tomllib is
+    unavailable, or when the file is malformed enough that tomllib
+    raises. Returns ``{}`` if the file doesn't exist.
+
+    The function never raises: config errors surface as an empty dict
+    plus a stderr warning, keeping the config surface strictly opt-in.
+    """
+    path = Path(workspace_root) / "pico.toml"
+    if not path.exists():
+        return {}
+    try:
+        import tomllib
+    except ImportError:
+        # Python 3.10 or earlier — should not reach here after B1 bump,
+        # but be defensive so we never crash on config load.
+        return load_pico_toml(workspace_root)
+    try:
+        with path.open("rb") as f:
+            return tomllib.load(f)
+    except (tomllib.TOMLDecodeError, OSError) as exc:
+        print(f"warning: pico.toml is malformed, using simple parser fallback ({exc})", file=sys.stderr)
+        try:
+            return load_pico_toml(workspace_root)
+        except Exception:
+            return {}
