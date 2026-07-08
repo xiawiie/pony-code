@@ -9,8 +9,15 @@ import hashlib
 import json
 from dataclasses import dataclass
 
+from pico.context.renderer import render_current_user_message
+
 
 DEFAULT_TOTAL_BUDGET = 15000
+# Task 14: pinned overflow cap for the system+tools layer (spec §6.4).
+# When (system_tokens + tools_tokens) exceeds this, build_v2 fails loud —
+# clipping the stable prefix would break prompt-cache reuse and clipping
+# tools would break the model's ability to call them.
+SYSTEM_TOOLS_HARD_CAP = 20000
 DEFAULT_SECTION_BUDGETS = {
     "prefix": 7000,
     "history": 8000,
@@ -295,30 +302,54 @@ class ContextManager:
 
         tools = _build_tools_list(getattr(self.agent, "tools", {}) or {})
 
+        # Task 14: pinned layer (system + tools) overflow is a fail-loud
+        # configuration error, not a truncation candidate. If the stable
+        # prefix or the tools schema blows past the hard cap, silently
+        # clipping them would ship a broken prompt to the provider —
+        # better to surface the misconfiguration to the operator.
+        system_tokens = self._count_tokens_for_v2(system_text)
+        tools_tokens = self._count_tokens_for_v2(str(tools))
+        pinned_cap = SYSTEM_TOOLS_HARD_CAP
+        if system_tokens + tools_tokens > pinned_cap:
+            raise RuntimeError(
+                f"SystemTooBig: system+tools tokens {system_tokens + tools_tokens} "
+                f"exceed {pinned_cap}. Inspect workspace.stable_text() or tools schema."
+            )
+
+        # Task 14: wrap the current user turn with <system-reminder> injection
+        # blocks (workspace_state, memory_index, project_structure,
+        # recalled_memory (P3), checkpoint) selected by intent-driven budgets.
+        # The renderer returns (rendered_text, telemetry).
+        current_user_text, injection_telemetry = render_current_user_message(
+            self.agent, user_message
+        )
+
         # Shallow copy so the append below cannot mutate agent.session["messages"].
         session = getattr(self.agent, "session", {}) or {}
         messages = list(session.get("messages", []) or [])
 
-        # Task 5/7: plain-text user content. If the session already ends with a
-        # user turn (e.g. the caller pre-appended the user message, or the last
-        # entry is a tool_result which is also role="user"), don't duplicate —
-        # Anthropic's API rejects back-to-back user messages, and mid-loop we
-        # already have the current user turn persisted from the top of run().
-        # Task 14 will wrap plain-text user content in <system-reminder>.
+        # Anthropic's API rejects back-to-back user messages; the agent loop
+        # may have already appended the current user turn to session before
+        # calling build_v2. In that case we skip the append entirely — the
+        # already-persisted message is the current one. (The injection
+        # wrapping is only applied when we're the ones creating the message.)
         if not messages or messages[-1].get("role") != "user":
-            messages.append({"role": "user", "content": user_message})
+            messages.append({"role": "user", "content": current_user_text})
 
         breakpoints = [len(messages) - 2] if len(messages) >= 2 else []
 
         system_cache_key = hashlib.sha256(system_text.encode("utf-8")).hexdigest()
         metadata = {
             "system_cache_key": system_cache_key,
+            "system_tokens": system_tokens,
+            "tools_tokens": tools_tokens,
             "messages_count": len(messages),
             "cache_control_breakpoints": list(breakpoints),
             # Task 8 will drop this alias; kept for now so callers of `build()`
             # that reach for `metadata["prompt_cache_key"]` don't break if they
             # happen to migrate to `build_v2` first.
             "prompt_cache_key": system_cache_key,
+            **injection_telemetry,
         }
         request = {
             "system": system,
@@ -327,6 +358,22 @@ class ContextManager:
             "cache_control_breakpoints": breakpoints,
         }
         return request, metadata
+
+    def _count_tokens_for_v2(self, text):
+        """Best-effort token count for build_v2's pinned overflow guard.
+
+        Prefers ``model_client.count_tokens`` when the provider adapter
+        exposes one (Anthropic's tokenizer, mostly). Falls back to a
+        conservative ``len // 4`` character heuristic — the guard cares
+        about order-of-magnitude, not exact counts.
+        """
+        counter = getattr(getattr(self.agent, "model_client", None), "count_tokens", None)
+        if callable(counter):
+            try:
+                return int(counter(text))
+            except Exception:
+                pass
+        return max(1, len(text) // 4)
 
     def _render_sections_without_reduction(self, section_texts):
         history = list(getattr(self.agent, "session", {}).get("history", []))
