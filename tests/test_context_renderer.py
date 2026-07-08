@@ -179,3 +179,42 @@ def test_injection_drops_checkpoint_before_recalled_memory():
     # any later-priority source in the dropped list.
     dropped = tele["injection_dropped"]
     assert dropped.index("checkpoint") < dropped.index("workspace_state")
+
+
+def test_intent_matched_reason_populated_for_keyword_hit():
+    from unittest.mock import MagicMock
+
+    from pico.context.renderer import render_current_user_message
+
+    a = MagicMock()
+    a.workspace = MagicMock(volatile_text=lambda: "")
+    a.memory_store = None
+    a.repo_map = None
+    a.render_checkpoint_text = MagicMock(return_value="")
+    a.model_client = MagicMock(count_tokens=lambda t: max(1, len(t) // 4))
+    a.session = {"recently_recalled": [], "messages": []}
+    a.memory_retrieval = None
+    a.context_config = {}
+
+    _text, tele = render_current_user_message(a, "上次报错了")
+    # "报错" is a debug keyword and debug beats recall in _INTENT_ORDER.
+    assert tele["intent"]["matched_reason"] == "keyword:'报错' via profile:debug"
+
+
+def test_intent_matched_reason_default_when_no_keyword():
+    from unittest.mock import MagicMock
+
+    from pico.context.renderer import render_current_user_message
+
+    a = MagicMock()
+    a.workspace = MagicMock(volatile_text=lambda: "")
+    a.memory_store = None
+    a.repo_map = None
+    a.render_checkpoint_text = MagicMock(return_value="")
+    a.model_client = MagicMock(count_tokens=lambda t: max(1, len(t) // 4))
+    a.session = {"recently_recalled": [], "messages": []}
+    a.memory_retrieval = None
+    a.context_config = {}
+
+    _text, tele = render_current_user_message(a, "hello world")
+    assert tele["intent"]["matched_reason"] == "default (no keyword)"

@@ -103,8 +103,19 @@ def render_current_user_message(agent, user_message):
     intent = classify_intent(user_message)
     budget = intent.budget
 
+    # Task C4: expose why the intent classifier landed on this profile so
+    # trace consumers can distinguish a real keyword hit from the
+    # fallback-to-default path without re-parsing the raw keyword.
+    if intent.matched_keyword:
+        matched_reason = f"keyword:'{intent.matched_keyword}' via profile:{intent.name}"
+    else:
+        matched_reason = "default (no keyword)"
     telemetry = {
-        "intent": {"name": intent.name, "matched_keyword": intent.matched_keyword},
+        "intent": {
+            "name": intent.name,
+            "matched_keyword": intent.matched_keyword,
+            "matched_reason": matched_reason,
+        },
         "injection_tokens": {},
         "injection_truncated": {},
         "injection_dropped": [],
