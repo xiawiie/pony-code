@@ -163,19 +163,31 @@ class Retrieval:
         return primary + expanded
 
     def _name_to_path_index(self, docs):
-        """Build ``frontmatter.name → store path`` from the doc set."""
+        """Build ``frontmatter.name → store path``, excluding tombstoned names."""
+        superseded = self._superseded_names()
         idx = {}
         for entry in self.store.list():
             fm = getattr(entry, "frontmatter", None) or {}
             name = fm.get("name")
-            if name:
-                idx[name] = entry.path
+            if not name or name in superseded:
+                continue
+            idx[name] = entry.path
         return idx
 
     def _load_docs(self):
-        """Return ``[(path, flat_tokens, raw_text, per_field_tokens), ...]``."""
+        """Return ``[(path, flat_tokens, raw_text, per_field_tokens), ...]``.
+
+        Task 20: notes named by any other note's ``supersedes: [...]`` list
+        are filtered out entirely — retrieval acts as if they no longer exist,
+        while the file itself stays on disk (a soft-delete tombstone).
+        """
+        superseded = self._superseded_names()
         docs = []
         for entry in self.store.list():
+            fm_entry = getattr(entry, "frontmatter", None) or {}
+            entry_name = fm_entry.get("name")
+            if entry_name and entry_name in superseded:
+                continue
             try:
                 raw = self.store.read(entry.path)
             except (OSError, ValueError):
@@ -188,6 +200,21 @@ class Retrieval:
             if flat:
                 docs.append((entry.path, flat, raw, fields))
         return docs
+
+    def _superseded_names(self):
+        """Collect the union of every note's ``supersedes`` list.
+
+        A single memory-store scan drives both the retrieval filter and the
+        link-expansion index. Kept as its own method so the tombstone rule
+        stays cheap to reason about (one place, two consumers).
+        """
+        superseded = set()
+        for entry in self.store.list():
+            fm = getattr(entry, "frontmatter", None) or {}
+            for name in fm.get("supersedes") or []:
+                if name:
+                    superseded.add(name)
+        return superseded
 
     @staticmethod
     def _bm25_field_score(
