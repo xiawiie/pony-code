@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+from pico.model_resolver import ModelResolutionError
+
 from scripts.live_model_smoke import (
     _ok_result,
     _error_result,
@@ -174,6 +176,30 @@ def test_run_live_model_smoke_error_result_redacts_base_url(monkeypatch, tmp_pat
     assert "user:pass" not in str(result)
     assert "token=secret" not in str(result)
     assert "#frag" not in str(result)
+
+
+def test_main_redacts_secret_bearing_base_url_in_skipped_resolution_error(monkeypatch, tmp_path, capsys):
+    secret_url = "https://user:pass@example.com/v1?token=secret#frag"
+    connection = SimpleNamespace(base_url=secret_url, api_key="")
+    error = ModelResolutionError(f"Could not infer model api for '{secret_url}'")
+
+    monkeypatch.setattr("scripts.live_model_smoke.read_project_env", lambda root, warn=True: {})
+    monkeypatch.setattr("scripts.live_model_smoke.load_model_connection", lambda root: connection)
+    monkeypatch.setattr("scripts.live_model_smoke.resolve_model_connection", lambda connection: (_ for _ in ()).throw(error))
+
+    exit_code = main([str(tmp_path)])
+    captured = capsys.readouterr()
+    artifact = (tmp_path / "artifacts" / "live-checks" / "live-model-smoke.json").read_text(encoding="utf-8")
+
+    assert exit_code == 2
+    assert "user:pass" not in artifact
+    assert "token=secret" not in artifact
+    assert "#frag" not in artifact
+    assert "user:pass" not in captured.out
+    assert "token=secret" not in captured.out
+    assert "#frag" not in captured.out
+    assert "https://example.com/v1" in artifact
+    assert "https://example.com/v1" in captured.out
 
 
 def test_main_writes_redacted_artifact_and_stdout(monkeypatch, tmp_path, capsys):

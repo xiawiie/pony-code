@@ -95,11 +95,11 @@ def _artifact_path(root):
     return Path(root) / "artifacts" / "live-checks" / "live-model-smoke.json"
 
 
-def _skip_result(root, exc, api_key=""):
+def _skip_result(root, exc, api_key="", base_url=""):
     return {
         "status": "skipped",
         "reason": "config_resolution",
-        "error": _redact_live_error_text(exc, api_key=api_key),
+        "error": _redact_live_error_text(exc, api_key=api_key, base_url=base_url),
         "root": str(Path(root).resolve()),
     }
 
@@ -144,7 +144,14 @@ def run_live_model_smoke(root):
             resolved = resolve_model_connection(connection)
         except Exception as exc:
             if isinstance(exc, (ValueError, ModelResolutionError)):
-                results.append(_skip_result(root, exc, api_key=getattr(connection, "api_key", "")))
+                results.append(
+                    _skip_result(
+                        root,
+                        exc,
+                        api_key=getattr(connection, "api_key", ""),
+                        base_url=getattr(connection, "base_url", ""),
+                    )
+                )
                 return {"results": results}, 2
             raise
 
