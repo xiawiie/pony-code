@@ -67,6 +67,7 @@ _COMMAND_NAMESPACE_SUBCOMMANDS = {
     if spec["subcommands"]
 }
 _REMOVED_MODEL_OPTIONS = (
+    "--" + "provider",
     "--model",
     "--host",
     "--base-url",
@@ -413,7 +414,7 @@ def _raise_on_removed_model_option(invocation):
             raise CliError(
                 code="usage",
                 message=f"removed option: {option}",
-                hint="Configure model connection in pico.toml or run `pico-cli init --model <name> --base-url <url>`.",
+                hint="Configure model connection in pico.toml or run `pico-cli init --model <name> --model-base-url <url>`.",
                 exit_code=CLI_EXIT_USAGE,
             )
 

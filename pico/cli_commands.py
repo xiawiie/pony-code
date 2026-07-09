@@ -132,19 +132,29 @@ def _parse_init_tokens(tokens):
         "api_key": None,
         "api": None,
     }
+    flag_keys = {
+        "--model": "model",
+        "--base-url": "base_url",
+        "--model-base-url": "base_url",
+        "--api-key-env": "api_key_env",
+        "--model-api-key-env": "api_key_env",
+        "--api-key": "api_key",
+        "--model-api-key": "api_key",
+        "--api": "api",
+        "--model-api": "api",
+    }
     index = 0
     while index < len(tokens):
         token = tokens[index]
-        if token in {"--model", "--base-url", "--api-key-env", "--api-key", "--api"}:
+        if token in flag_keys:
             if index + 1 >= len(tokens):
                 raise _init_usage_error()
-            key = token[2:].replace("-", "_")
-            options[key] = tokens[index + 1]
+            options[flag_keys[token]] = tokens[index + 1]
             index += 2
             continue
-        for flag in ("--model=", "--base-url=", "--api-key-env=", "--api-key=", "--api="):
+        for flag, key in flag_keys.items():
+            flag = f"{flag}="
             if token.startswith(flag):
-                key = flag[2:-1].replace("-", "_")
                 options[key] = token[len(flag):]
                 break
         else:
@@ -156,7 +166,10 @@ def _parse_init_tokens(tokens):
 def _init_usage_error():
     return CliError(
         code="usage",
-        message="usage: pico-cli init --model <name> --base-url <url> [--api-key-env <env>] [--api-key <key>] [--api <adapter>]",
+        message=(
+            "usage: pico-cli init --model <name> --model-base-url <url> "
+            "[--model-api-key-env <env>] [--model-api-key <key>] [--model-api <adapter>]"
+        ),
         exit_code=CLI_EXIT_USAGE,
     )
 

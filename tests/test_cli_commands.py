@@ -136,6 +136,7 @@ def test_unknown_command_suggestion_uses_json_error_envelope(capsys):
 @pytest.mark.parametrize(
     "argv",
     [
+        ["--" + "provider", "openai", "run", "hi"],
         ["--model", "qwen3.5:4b", "run", "hi"],
         ["--base-url", "https://example.test/v1", "run", "hi"],
     ],
@@ -157,6 +158,7 @@ def test_removed_root_model_flags_are_usage_errors_without_building_agent(
     captured = capsys.readouterr()
     assert "removed option" in captured.err
     assert argv[0] in captured.err
+    assert "answer" not in captured.out
 
 
 def test_cli_command_specs_drive_namespace_tables():
@@ -225,6 +227,36 @@ def test_init_creates_model_config_without_building_agent(tmp_path, monkeypatch,
     assert payload["data"]["model"]["api_key_present"] is True
     assert payload["data"]["model"]["api"] == "anthropic-messages"
     assert payload["data"]["model"]["adapter"] == "AnthropicMessagesAdapter"
+
+
+def test_init_accepts_model_prefixed_config_flags(tmp_path, monkeypatch):
+    def fail_build_agent(args):
+        raise AssertionError("init must not build a Pico agent")
+
+    monkeypatch.setattr("pico.cli.build_agent", fail_build_agent)
+
+    code = main([
+        "--cwd",
+        str(tmp_path),
+        "init",
+        "--model",
+        "gpt-5.4",
+        "--model-base-url",
+        "https://api.openai.com/v1",
+        "--model-api-key-env",
+        "OPENAI_API_KEY",
+        "--model-api",
+        "openai-responses",
+    ])
+
+    assert code == 0
+    assert (tmp_path / "pico.toml").read_text(encoding="utf-8") == (
+        "[model]\n"
+        'name = "gpt-5.4"\n'
+        'base_url = "https://api.openai.com/v1"\n'
+        'api_key_env = "OPENAI_API_KEY"\n'
+        'api = "openai-responses"\n'
+    )
 
 
 def test_init_updates_existing_env_without_dropping_unrelated_lines(tmp_path, capsys):
