@@ -160,6 +160,96 @@ def test_pico_ask_delegates_to_agent_loop(tmp_path):
     assert agent.ask("Use facade") == "Facade works."
 
 
+def test_malformed_tool_retry_is_visible_to_next_model_request(tmp_path):
+    (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
+
+    class _SniffingLegacyProvider:
+        supports_prompt_cache = False
+        last_completion_metadata = {}
+
+        def __init__(self):
+            self.prompts = []
+            self.outputs = [
+                "<tool>{not valid json</tool>",
+                "<final>Recovered.</final>",
+            ]
+
+        def complete(self, prompt, max_new_tokens):
+            self.prompts.append(prompt)
+            return self.outputs.pop(0)
+
+    workspace = WorkspaceContext.build(tmp_path)
+    store = SessionStore(tmp_path / ".pico" / "sessions")
+    agent = Pico(model_client=_SniffingLegacyProvider(), workspace=workspace, session_store=store)
+
+    assert agent.ask("do it") == "Recovered."
+
+    second_prompt = agent.model_client.prompts[1]
+    assert "<pico:runtime_feedback>" in second_prompt
+    assert "valid <tool> call" in second_prompt
+    assert agent.session["runtime_feedback"]["next_model_visible_notice"] == ""
+
+
+def test_malformed_tool_retry_after_tool_result_tail_is_visible_to_next_request(tmp_path):
+    (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
+
+    class _SniffingNativeProvider:
+        supports_prompt_cache = False
+        supports_native_tools = True
+
+        def __init__(self):
+            self.calls = []
+            self.last_completion_metadata = {}
+            self.responses = [
+                Response(
+                    stop_reason=StopReason.TOOL_USE,
+                    content=[{
+                        "type": "tool_use",
+                        "id": "toolu_read",
+                        "name": "read_file",
+                        "input": {"path": "README.md", "start": 1, "end": 1},
+                    }],
+                    usage={},
+                ),
+                Response(
+                    stop_reason=StopReason.END_TURN,
+                    content=[{"type": "text", "text": "<tool>{not valid json</tool>"}],
+                    usage={},
+                ),
+                Response(
+                    stop_reason=StopReason.END_TURN,
+                    content=[{"type": "text", "text": "<final>Recovered.</final>"}],
+                    usage={},
+                ),
+            ]
+
+        def complete_v2(self, *, system, tools, messages, max_tokens, cache_breakpoints=None):
+            self.calls.append({"messages": [dict(message) for message in messages]})
+            return self.responses.pop(0)
+
+    provider = _SniffingNativeProvider()
+    workspace = WorkspaceContext.build(tmp_path)
+    store = SessionStore(tmp_path / ".pico" / "sessions")
+    agent = Pico(model_client=provider, workspace=workspace, session_store=store, approval_policy="auto")
+
+    assert agent.ask("read then continue") == "Recovered."
+
+    third_request_messages = provider.calls[2]["messages"]
+    third_request_text = "\n".join(
+        block.get("text", "")
+        for message in third_request_messages
+        for block in (
+            message["content"]
+            if isinstance(message["content"], list)
+            else [{"type": "text", "text": message["content"]}]
+        )
+        if block.get("type") == "text"
+    )
+    assert "<pico:runtime_feedback>" in third_request_text
+    assert "valid <tool> call" in third_request_text
+    assert agent.session["runtime_feedback"]["next_model_visible_notice"] == ""
+
+
 def test_agent_loop_emits_focused_recovery_trace_events(tmp_path):
     agent = build_agent(tmp_path, ["<final>done</final>"])
 

@@ -7,8 +7,9 @@ Where `build` returns `(prompt_str, metadata)`, `build_v2` returns
 The legacy `build` is UNCHANGED by this task; Task 7 will migrate the agent loop.
 """
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
+from pico.context.intent import IntentResult
 from pico.context_manager import ContextManager
 
 
@@ -37,6 +38,7 @@ def _make_agent():
     a.feature_enabled = MagicMock(return_value=True)
     a.memory_store = None
     a.repo_map = None
+    a.session_store = None
     a.model_client = MagicMock(count_tokens=lambda t: len(t) // 4)
     return a
 
@@ -94,6 +96,99 @@ def test_build_v2_metadata_contains_system_cache_key():
     assert "system_cache_key" in metadata
     expected = hashlib.sha256(a.prefix.encode("utf-8")).hexdigest()
     assert metadata["system_cache_key"] == expected
+
+
+def test_build_v2_renders_runtime_feedback_and_clears_notice():
+    a = _make_agent()
+    a.session["runtime_feedback"] = {
+        "next_model_visible_notice": "Runtime notice: fix malformed tool JSON.",
+        "created_at": "2026-07-09T00:00:00+00:00",
+        "source": "malformed_text_protocol",
+    }
+    cm = ContextManager(a)
+
+    request, metadata = cm.build_v2("current input")
+
+    current_user_text = request["messages"][-1]["content"]
+    assert "<pico:runtime_feedback>" in current_user_text
+    assert "Runtime notice: fix malformed tool JSON." in current_user_text
+    assert metadata["runtime_feedback_rendered"] is True
+    assert metadata["runtime_feedback_source"] == "malformed_text_protocol"
+    assert a.session["runtime_feedback"]["next_model_visible_notice"] == ""
+
+
+def test_runtime_feedback_does_not_change_system_cache_key():
+    a = _make_agent()
+    cm = ContextManager(a)
+    _, baseline_metadata = cm.build_v2("current input")
+
+    a.session["runtime_feedback"] = {
+        "next_model_visible_notice": "Runtime notice: fix malformed tool JSON.",
+        "created_at": "2026-07-09T00:00:00+00:00",
+        "source": "malformed_text_protocol",
+    }
+    _, feedback_metadata = cm.build_v2("current input")
+
+    assert feedback_metadata["system_cache_key"] == baseline_metadata["system_cache_key"]
+    assert feedback_metadata["prompt_cache_key"] == baseline_metadata["prompt_cache_key"]
+
+
+def test_runtime_feedback_survives_tight_aggregate_injection_budget():
+    a = _make_agent()
+    a.context_config = {
+        "injection_budget_ratio": 0.01,
+        "total_budget_hard_cap": 100,
+    }
+    a.session["runtime_feedback"] = {
+        "next_model_visible_notice": "Runtime notice: use a valid <tool> call.",
+        "created_at": "2026-07-09T00:00:00+00:00",
+        "source": "malformed_text_protocol",
+    }
+    cm = ContextManager(a)
+
+    request, metadata = cm.build_v2("current input")
+
+    current_user_text = request["messages"][-1]["content"]
+    assert "<pico:runtime_feedback>" in current_user_text
+    assert "Runtime notice: use a valid <tool> call." in current_user_text
+    assert metadata["runtime_feedback_rendered"] is True
+    assert "runtime_feedback" not in metadata["injection_dropped"]
+    assert a.session["runtime_feedback"]["next_model_visible_notice"] == ""
+
+
+def test_runtime_feedback_is_clipped_to_per_source_budget_and_cleared():
+    a = _make_agent()
+    notice = "Runtime notice: " + ("A" * 80) + "TAIL_SENTINEL"
+    a.session["runtime_feedback"] = {
+        "next_model_visible_notice": notice,
+        "created_at": "2026-07-09T00:00:00+00:00",
+        "source": "malformed_text_protocol",
+    }
+    small_runtime_feedback_budget = IntentResult(
+        name="default",
+        matched_keyword="",
+        budget={
+            "workspace_state": 0,
+            "memory_index": 0,
+            "project_structure": 0,
+            "recalled_memory": 0,
+            "checkpoint": 0,
+            "runtime_feedback": 6,
+        },
+    )
+    cm = ContextManager(a)
+
+    with patch("pico.context.renderer.classify_intent", return_value=small_runtime_feedback_budget):
+        request, metadata = cm.build_v2("current input")
+
+    current_user_text = request["messages"][-1]["content"]
+    assert "<pico:runtime_feedback>" in current_user_text
+    assert "Runtime notice:" in current_user_text
+    assert "..." in current_user_text
+    assert "TAIL_SENTINEL" not in current_user_text
+    assert metadata["runtime_feedback_rendered"] is True
+    assert metadata["injection_truncated"]["runtime_feedback"] == 1
+    assert a.session["runtime_feedback"]["next_model_visible_notice"] == ""
 
 
 def test_int_schema_field_maps_to_integer_json_type():

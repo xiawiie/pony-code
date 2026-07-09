@@ -38,6 +38,8 @@ import logging
 from .escaping import escape_pico_tags
 from .intent import classify_intent
 from .sources import (
+    _budget_to_chars,
+    _tail_clip,
     render_checkpoint,
     render_memory_index,
     render_project_structure,
@@ -53,12 +55,15 @@ SOURCE_ORDER = (
     "project_structure",
     "recalled_memory",
     "checkpoint",
+    "runtime_feedback",
 )
 
 # Task C1: drop-priority order — least important first. When aggregate
 # injection tokens exceed injection_budget, sources are dropped from the
 # start of this list. Distinct from SOURCE_ORDER (which is the *render*
-# order in the outgoing user message).
+# order in the outgoing user message). ``runtime_feedback`` is omitted on
+# purpose: model-visible retry feedback is a corrective control signal,
+# not optional context.
 DROP_PRIORITY = (
     "checkpoint",
     "project_structure",
@@ -79,7 +84,26 @@ _RENDERERS = {
     "project_structure": lambda agent, budget, user_msg: render_project_structure(agent, budget),
     "recalled_memory": render_recalled_memory,
     "checkpoint": lambda agent, budget, user_msg: render_checkpoint(agent, budget),
+    "runtime_feedback": lambda agent, budget, user_msg: render_runtime_feedback(agent, budget, user_msg),
 }
+
+
+def _runtime_feedback_notice(agent):
+    session = getattr(agent, "session", {}) or {}
+    feedback = session.get("runtime_feedback", {})
+    if not isinstance(feedback, dict):
+        return ""
+    notice = str(feedback.get("next_model_visible_notice", "") or "").strip()
+    if not notice:
+        return ""
+    return notice
+
+
+def render_runtime_feedback(agent, budget_tokens, user_message):
+    notice = _runtime_feedback_notice(agent)
+    if not notice:
+        return ""
+    return _tail_clip(notice, _budget_to_chars(budget_tokens))
 
 
 def _count_tokens(agent, text):
@@ -147,8 +171,10 @@ def render_current_user_message(agent, user_message):
         if not raw:
             telemetry["injection_tokens"][source_name] = 0
             continue
-        original_tokens = _count_tokens(agent, raw)
-        if original_tokens > source_budget:
+        original = _runtime_feedback_notice(agent) if source_name == "runtime_feedback" else raw
+        original_tokens = _count_tokens(agent, original)
+        was_clipped = original != raw
+        if original_tokens > source_budget and (source_name != "runtime_feedback" or was_clipped):
             telemetry["injection_truncated"][source_name] = (
                 telemetry["injection_truncated"].get(source_name, 0) + 1
             )

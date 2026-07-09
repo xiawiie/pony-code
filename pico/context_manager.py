@@ -431,6 +431,15 @@ class ContextManager:
 
         # Shallow copy so the substitution below cannot mutate agent.session["messages"].
         session = getattr(self.agent, "session", {}) or {}
+        feedback = session.get("runtime_feedback", {}) if isinstance(session, dict) else {}
+        runtime_feedback_source = ""
+        runtime_feedback_notice = ""
+        if isinstance(feedback, dict):
+            runtime_feedback_notice = str(feedback.get("next_model_visible_notice", "") or "").strip()
+            runtime_feedback_source = str(feedback.get("source", "") or "")
+        runtime_feedback_pending = bool(
+            runtime_feedback_notice and "<pico:runtime_feedback>" in current_user_text
+        )
         messages = list(session.get("messages", []) or [])
 
         # Anthropic's API rejects back-to-back user messages, so we must
@@ -445,8 +454,9 @@ class ContextManager:
         # wrapped version for the request we send to the provider. This
         # keeps the message array length invariant AND ensures the model
         # actually sees the <system-reminder> block. If the tail is a
-        # different user turn (e.g. a tool_result), we treat that as the
-        # current turn and don't touch it; if there's no tail, we append.
+        # different user turn (e.g. a tool_result), we only attach a
+        # runtime-feedback text block when a one-shot corrective notice is
+        # pending; otherwise, we leave the tool_result carrier alone.
         if messages and messages[-1].get("role") == "user":
             tail = messages[-1]
             tail_content = tail.get("content")
@@ -455,6 +465,11 @@ class ContextManager:
             # is a tool_result carrier — those must not be wrapped.
             if isinstance(tail_content, str) and tail_content == user_message:
                 messages[-1] = {"role": "user", "content": current_user_text}
+            elif runtime_feedback_pending and isinstance(tail_content, list):
+                messages[-1] = {
+                    **tail,
+                    "content": [*tail_content, {"type": "text", "text": current_user_text}],
+                }
         else:
             messages.append({"role": "user", "content": current_user_text})
 
@@ -474,6 +489,16 @@ class ContextManager:
             floor_count=floor_count,
             token_of=lambda m: self._count_tokens_for_v2(_message_text(m)),
         )
+        runtime_feedback_rendered = bool(
+            runtime_feedback_pending
+            and any("<pico:runtime_feedback>" in _message_text(message) for message in messages)
+        )
+        if runtime_feedback_rendered and isinstance(feedback, dict):
+            feedback["next_model_visible_notice"] = ""
+            session_store = getattr(self.agent, "session_store", None)
+            save_session = getattr(session_store, "save", None)
+            if callable(save_session):
+                self.agent.session_path = save_session(session)
 
         breakpoints = [len(messages) - 2] if len(messages) >= 2 else []
 
@@ -502,6 +527,8 @@ class ContextManager:
             "prompt_cache_key": system_cache_key,
             "recall.error_count": int(recall_errors.get("count", 0) or 0),
             "recall.last_error": str(recall_errors.get("last", "") or ""),
+            "runtime_feedback_rendered": runtime_feedback_rendered,
+            "runtime_feedback_source": runtime_feedback_source if runtime_feedback_rendered else "",
             **injection_telemetry,
         }
         request = {
