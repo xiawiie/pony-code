@@ -19,7 +19,7 @@ from pico.security import REDACTED_VALUE, redact_text
 
 
 _LIVE_ERROR_REDACTION_PATTERNS = (
-    (re.compile(r"(?i)(authorization\s*:\s*bearer\s+)(\S+)"), r"\1" + REDACTED_VALUE),
+    (re.compile(r"(?i)authorization\s*:\s*[^\r\n]+"), "Authorization: " + REDACTED_VALUE),
     (re.compile(r"(?i)(bearer\s+)(\S+)"), r"\1" + REDACTED_VALUE),
     (re.compile(r"(?i)\bsk-[A-Za-z0-9_-]{6,}\b"), REDACTED_VALUE),
     (re.compile(r"(?i)\b(api[_-]?key|x-api-key|key|token)\s*=\s*([^\s&]+)"), r"\1=" + REDACTED_VALUE),

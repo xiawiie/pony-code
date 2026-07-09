@@ -67,6 +67,20 @@ def test_error_result_redacts_secret_like_values():
     assert "<redacted>" in result["error"]
 
 
+def test_error_result_redacts_non_bearer_authorization_values():
+    resolved = SimpleNamespace(name="model", api="openai-chat", base_url="https://api.example.test", api_key="sk-test-secret")
+    result = _error_result(
+        "/tmp/workspace",
+        resolved,
+        RuntimeError("Authorization: Api-Key header-secret-123 Authorization: Basic abc123 Authorization: abc123"),
+    )
+
+    assert "Authorization: Api-Key header-secret-123" not in result["error"]
+    assert "Authorization: Basic abc123" not in result["error"]
+    assert "Authorization: abc123" not in result["error"]
+    assert "Authorization: <redacted>" in result["error"]
+
+
 def test_temporary_project_env_restores_and_removes_vars(monkeypatch):
     monkeypatch.setenv("EXISTING_VAR", "before")
     monkeypatch.delenv("NEW_ONLY_VAR", raising=False)
@@ -116,7 +130,7 @@ def test_run_live_model_smoke_exit_mapping(monkeypatch, tmp_path):
 def test_main_writes_redacted_artifact_and_stdout(monkeypatch, tmp_path, capsys):
     class RaisingClient:
         def complete_v2(self, **kwargs):
-            raise RuntimeError("Authorization: Bearer abc123 unauthorized sk-test-secret token=abc123")
+            raise RuntimeError("Authorization: Api-Key header-secret-123 unauthorized sk-test-secret token=abc123")
 
     resolved = SimpleNamespace(
         name="model",
@@ -138,10 +152,10 @@ def test_main_writes_redacted_artifact_and_stdout(monkeypatch, tmp_path, capsys)
 
     assert exit_code == 0
     assert "sk-test-secret" not in artifact
-    assert "Bearer abc123" not in artifact
+    assert "Authorization: Api-Key header-secret-123" not in artifact
     assert "token=abc123" not in artifact
     assert "sk-test-secret" not in captured.out
-    assert "Bearer abc123" not in captured.out
+    assert "Authorization: Api-Key header-secret-123" not in captured.out
     assert "token=abc123" not in captured.out
     assert "<redacted>" in artifact
     assert "<redacted>" in captured.out
