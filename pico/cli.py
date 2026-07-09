@@ -74,6 +74,15 @@ _REMOVED_MODEL_OPTIONS = (
     "--ollama-timeout",
     "--openai-timeout",
 )
+_INIT_ONLY_MODEL_OPTIONS = (
+    "--model-base-url",
+    "--model-api-key-env",
+    "--model-api-key",
+    "--model-api",
+    "--api-key-env",
+    "--api-key",
+    "--api",
+)
 
 
 class _RootHelpFormatter(
@@ -419,8 +428,29 @@ def _raise_on_removed_model_option(invocation):
             )
 
 
+def _raise_on_init_only_model_option(invocation):
+    if invocation.command == "init":
+        return
+    for token in invocation.command_args:
+        option = _init_only_model_option(token)
+        if option:
+            raise CliError(
+                code="usage",
+                message=f"init-only option: {option}",
+                hint="Configure model connection with `pico-cli init ...` or edit pico.toml [model].",
+                exit_code=CLI_EXIT_USAGE,
+            )
+
+
 def _removed_model_option(token):
     for option in _REMOVED_MODEL_OPTIONS:
+        if token == option or str(token).startswith(f"{option}="):
+            return option
+    return ""
+
+
+def _init_only_model_option(token):
+    for option in _INIT_ONLY_MODEL_OPTIONS:
         if token == option or str(token).startswith(f"{option}="):
             return option
     return ""
@@ -431,6 +461,7 @@ def main(argv=None):
     invocation = parse_cli_invocation(argv, parser)
     args = invocation.runtime_args
     try:
+        _raise_on_init_only_model_option(invocation)
         _raise_on_removed_model_option(invocation)
         _raise_on_legacy_command_typo(invocation)
         # 先分派只读检查命令，避免为它们启动模型 client 或 REPL。

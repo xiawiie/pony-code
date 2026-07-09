@@ -161,6 +161,56 @@ def test_removed_root_model_flags_are_usage_errors_without_building_agent(
     assert "answer" not in captured.out
 
 
+@pytest.mark.parametrize(
+    ("argv", "option"),
+    [
+        (
+            ["--model-base-url", "https://api.example.test/v1", "run", "hi"],
+            "--model-base-url",
+        ),
+        (
+            ["run", "--model-base-url", "https://api.example.test/v1", "hi"],
+            "--model-base-url",
+        ),
+        (
+            ["--model-api", "openai-responses", "run", "hi"],
+            "--model-api",
+        ),
+        (
+            ["run", "--model-api=openai-responses", "hi"],
+            "--model-api",
+        ),
+        (
+            ["run", "--api-key-env", "OPENAI_API_KEY", "hi"],
+            "--api-key-env",
+        ),
+        (
+            ["run", "--model-api-key-env=OPENAI_API_KEY", "hi"],
+            "--model-api-key-env",
+        ),
+    ],
+)
+def test_init_only_model_flags_are_usage_errors_outside_init(
+    tmp_path,
+    monkeypatch,
+    capsys,
+    argv,
+    option,
+):
+    def fail_build_agent(args):
+        raise AssertionError("init-only model flags must not build a Pico agent")
+
+    monkeypatch.setattr("pico.cli.build_agent", fail_build_agent)
+
+    code = main(["--cwd", str(tmp_path), *argv])
+
+    assert code == 2
+    captured = capsys.readouterr()
+    assert f"init-only option: {option}" in captured.err
+    assert "pico-cli init" in captured.err
+    assert "answer" not in captured.out
+
+
 def test_cli_command_specs_drive_namespace_tables():
     from pico import cli
 
