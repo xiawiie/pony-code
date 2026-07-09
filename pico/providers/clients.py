@@ -9,22 +9,27 @@ from ._shared import (
     _extract_usage_cache_details,  # noqa: F401
     _iter_sse_data_payloads,  # noqa: F401
 )
-from .anthropic_compatible import (  # noqa: F401
-    AnthropicCompatibleModelClient,
+from .anthropic_messages import (  # noqa: F401
+    AnthropicMessagesAdapter,
     _anthropic_cache_control,
     _anthropic_no_text_error,
     _extract_anthropic_text,
     _extract_anthropic_usage_cache_details,
     _supports_anthropic_prompt_cache,
 )
-from .ollama import OllamaModelClient  # noqa: F401
-from .openai_compatible import (  # noqa: F401
+from .ollama_generate import OllamaGenerateAdapter  # noqa: F401
+from .openai_chat import OpenAIChatAdapter  # noqa: F401
+from .openai_responses import (  # noqa: F401
     OPENAI_COMPATIBLE_USER_AGENT,
-    OpenAICompatibleModelClient,
+    OpenAIResponsesAdapter,
     _extract_openai_response_from_sse,
     _extract_openai_text,
     _extract_openai_text_from_sse,
 )
+
+AnthropicCompatibleModelClient = AnthropicMessagesAdapter
+OllamaModelClient = OllamaGenerateAdapter
+OpenAICompatibleModelClient = OpenAIResponsesAdapter
 
 
 class FakeModelClient:

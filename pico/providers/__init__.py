@@ -1,10 +1,23 @@
 """Model provider adapters."""
 
-from .clients import AnthropicCompatibleModelClient, FakeModelClient, OllamaModelClient, OpenAICompatibleModelClient
+from .clients import (
+    AnthropicCompatibleModelClient,
+    AnthropicMessagesAdapter,
+    FakeModelClient,
+    OllamaGenerateAdapter,
+    OllamaModelClient,
+    OpenAIChatAdapter,
+    OpenAICompatibleModelClient,
+    OpenAIResponsesAdapter,
+)
 
 __all__ = [
     "AnthropicCompatibleModelClient",
+    "AnthropicMessagesAdapter",
     "FakeModelClient",
+    "OllamaGenerateAdapter",
     "OllamaModelClient",
+    "OpenAIChatAdapter",
     "OpenAICompatibleModelClient",
+    "OpenAIResponsesAdapter",
 ]

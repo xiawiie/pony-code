@@ -12,6 +12,9 @@ from ._shared import (
     _normalize_versioned_base_url,
     _validate_header_value,
 )
+from .message_utils import strip_pico_meta
+from .openai_chat import _content_to_text
+from .response import Response, StopReason
 
 OPENAI_COMPATIBLE_USER_AGENT = "pico/0.1"
 
@@ -134,7 +137,21 @@ def _extract_openai_response_from_sse(body_text):
     return "", {}
 
 
-class OpenAICompatibleModelClient:
+def _flatten_request(system, messages):
+    parts = []
+    system_text = _content_to_text(system)
+    if system_text:
+        parts.append(system_text)
+    for message in strip_pico_meta(messages):
+        text = _content_to_text(message.get("content", ""))
+        if text:
+            parts.append(f"[{message.get('role', 'user')}] {text}")
+    return "\n\n".join(parts)
+
+
+class OpenAIResponsesAdapter:
+    supports_native_tools = False
+
     def __init__(self, model, base_url, api_key, temperature, timeout):
         self.model = model
         self.base_url = _normalize_versioned_base_url(base_url)
@@ -145,6 +162,15 @@ class OpenAICompatibleModelClient:
         # 避免对不支持的后端传一个“看起来统一、其实没意义”的伪参数。
         self.supports_prompt_cache = any(host in self.base_url for host in ("openai.com", "right.codes"))
         self.last_completion_metadata = {}
+
+    def complete_v2(self, *, system, tools, messages, max_tokens, cache_breakpoints=None):
+        raw = self.complete(_flatten_request(system, messages), max_tokens)
+        usage = dict(self.last_completion_metadata)
+        return Response(
+            stop_reason=StopReason.END_TURN,
+            content=[{"type": "text", "text": str(raw)}],
+            usage=usage,
+        )
 
     def _responses_payload(self, prompt, max_new_tokens, stream, prompt_cache_key, prompt_cache_retention):
         payload = {

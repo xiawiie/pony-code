@@ -2,7 +2,7 @@
 import json
 from unittest.mock import patch, MagicMock
 
-from pico.providers.anthropic_compatible import AnthropicCompatibleModelClient
+from pico.providers.anthropic_messages import AnthropicMessagesAdapter
 from pico.providers.response import Response, StopReason
 
 
@@ -14,7 +14,7 @@ def _mock_urlopen(response_body):
 
 
 def _make_client():
-    return AnthropicCompatibleModelClient(
+    return AnthropicMessagesAdapter(
         model="claude-3-5-sonnet-latest",
         base_url="https://api.anthropic.com",
         api_key="test-key",

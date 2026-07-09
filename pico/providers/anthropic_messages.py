@@ -60,7 +60,9 @@ def _extract_anthropic_usage_cache_details(data):
     }
 
 
-class AnthropicCompatibleModelClient:
+class AnthropicMessagesAdapter:
+    supports_native_tools = True
+
     def __init__(self, model, base_url, api_key, temperature, timeout):
         self.model = model
         self.base_url = _normalize_versioned_base_url(base_url)

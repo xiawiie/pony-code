@@ -14,7 +14,7 @@ entry points.
 
 def test_p1_smoke_all_checkpoints_reachable():
     from pico.providers.response import Response, StopReason  # noqa: F401
-    from pico.providers.anthropic_compatible import AnthropicCompatibleModelClient
+    from pico.providers.anthropic_messages import AnthropicMessagesAdapter
     from pico.providers.fallback_adapter import FallbackAdapter
     from pico.session_store import SessionStore, _migrate_v1_to_v2  # noqa: F401
     from pico.context_manager import ContextManager
@@ -25,7 +25,7 @@ def test_p1_smoke_all_checkpoints_reachable():
         _append_user_turn,
     )
 
-    assert hasattr(AnthropicCompatibleModelClient, "complete_v2")
+    assert hasattr(AnthropicMessagesAdapter, "complete_v2")
     assert hasattr(FallbackAdapter, "complete_v2")
     assert hasattr(ContextManager, "build_v2")
     assert callable(_append_user_turn)

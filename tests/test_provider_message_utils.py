@@ -42,9 +42,9 @@ def test_no_pico_meta_reaches_anthropic_payload():
     """Anthropic adapter payload must not contain _pico_meta anywhere."""
     from unittest.mock import patch, MagicMock
     import json
-    from pico.providers.anthropic_compatible import AnthropicCompatibleModelClient
+    from pico.providers.anthropic_messages import AnthropicMessagesAdapter
 
-    client = AnthropicCompatibleModelClient(
+    client = AnthropicMessagesAdapter(
         model="claude-3-5-sonnet-latest",
         base_url="https://api.anthropic.com",
         api_key="test",
