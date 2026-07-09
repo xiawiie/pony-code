@@ -30,10 +30,7 @@ class _RecoveryScenarioModelClient(FakeModelClient):
         self.required_fragments = [str(fragment).lower() for fragment in required_fragments]
         self.success_answer = str(success_answer)
 
-    def complete(self, prompt, max_new_tokens, **kwargs):
-        del max_new_tokens, kwargs
-        self.prompts.append(prompt)
-        self.last_completion_metadata = {}
+    def _next_output_text(self, prompt):
         prompt_lower = str(prompt).lower()
         if all(fragment in prompt_lower for fragment in self.required_fragments):
             return f"<final>{self.success_answer}</final>"

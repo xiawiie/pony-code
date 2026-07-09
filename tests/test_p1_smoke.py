@@ -5,7 +5,7 @@ new provider/context/agent-loop surface must exist and expose their v2
 entry points.
 
 - Anthropic adapter has `complete_v2`
-- FallbackAdapter wraps non-tool_use backends via `complete_v2`
+- FakeModelClient has `complete_v2`
 - Session store carries the v1→v2 migrator helper
 - ContextManager exposes `build_v2`
 - agent_loop.py exports the four message-append helpers
@@ -15,7 +15,7 @@ entry points.
 def test_p1_smoke_all_checkpoints_reachable():
     from pico.providers.response import Response, StopReason  # noqa: F401
     from pico.providers.anthropic_messages import AnthropicMessagesAdapter
-    from pico.providers.fallback_adapter import FallbackAdapter
+    from pico.providers.clients import FakeModelClient
     from pico.session_store import SessionStore, _migrate_v1_to_v2  # noqa: F401
     from pico.context_manager import ContextManager
     from pico.agent_loop import (
@@ -26,7 +26,7 @@ def test_p1_smoke_all_checkpoints_reachable():
     )
 
     assert hasattr(AnthropicMessagesAdapter, "complete_v2")
-    assert hasattr(FallbackAdapter, "complete_v2")
+    assert hasattr(FakeModelClient, "complete_v2")
     assert hasattr(ContextManager, "build_v2")
     assert callable(_append_user_turn)
     assert callable(_append_tool_use)

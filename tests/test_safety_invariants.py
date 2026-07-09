@@ -91,7 +91,7 @@ def test_patch_file_refuses_user_notes_path(tmp_path):
 
 def test_cli_build_agent_wires_secret_env_names_from_parser(tmp_path):
     class DummyModelClient:
-        def complete(self, prompt, max_new_tokens):
+        def complete_v2(self, *, system, tools, messages, max_tokens, cache_breakpoints=None):
             raise AssertionError("model should not be invoked")
 
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
@@ -117,7 +117,7 @@ def test_cli_build_agent_wires_secret_env_names_from_parser(tmp_path):
 
 def test_cli_build_agent_uses_default_configured_secret_names(tmp_path):
     class DummyModelClient:
-        def complete(self, prompt, max_new_tokens):
+        def complete_v2(self, *, system, tools, messages, max_tokens, cache_breakpoints=None):
             raise AssertionError("model should not be invoked")
 
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
@@ -132,7 +132,7 @@ def test_cli_build_agent_uses_default_configured_secret_names(tmp_path):
 
 def test_cli_build_agent_loads_project_env_secrets_before_redaction_setup(tmp_path):
     class DummyModelClient:
-        def complete(self, prompt, max_new_tokens):
+        def complete_v2(self, *, system, tools, messages, max_tokens, cache_breakpoints=None):
             raise AssertionError("model should not be invoked")
 
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
@@ -155,7 +155,7 @@ def test_cli_build_agent_loads_project_env_secrets_before_redaction_setup(tmp_pa
 
 def test_cli_build_agent_uses_repo_root_model_secret_when_cwd_is_subdir(tmp_path):
     class DummyModelClient:
-        def complete(self, prompt, max_new_tokens):
+        def complete_v2(self, *, system, tools, messages, max_tokens, cache_breakpoints=None):
             raise AssertionError("model should not be invoked")
 
     subdir = tmp_path / "packages" / "app"
@@ -181,7 +181,7 @@ def test_cli_build_agent_uses_repo_root_model_secret_when_cwd_is_subdir(tmp_path
 
 def test_cli_build_agent_skips_malformed_project_env_lines_with_warning(tmp_path, capsys):
     class DummyModelClient:
-        def complete(self, prompt, max_new_tokens):
+        def complete_v2(self, *, system, tools, messages, max_tokens, cache_breakpoints=None):
             raise AssertionError("model should not be invoked")
 
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
@@ -211,24 +211,24 @@ def test_cli_build_agent_skips_malformed_project_env_lines_with_warning(tmp_path
 
 def test_project_env_strips_unquoted_inline_comments(tmp_path):
     (tmp_path / ".env").write_text(
-        "PICO_OPENAI_API_KEY=sk-project-secret # local key note\n"
-        "PICO_OPENAI_MODEL=qwen3.7-max # default model\n"
-        "PICO_OPENAI_API_BASE=\"https://example.test/v1 # literal\"\n"
+        "MODEL_API_KEY=sk-project-secret # local key note\n"
+        "MODEL_NAME=qwen3.7-max # default model\n"
+        "MODEL_BASE_URL=\"https://example.test/v1 # literal\"\n"
         "PICO_LITERAL_HASH=abc#def\n",
         encoding="utf-8",
     )
 
     env = read_project_env(tmp_path, warn=False)
 
-    assert env["PICO_OPENAI_API_KEY"] == "sk-project-secret"
-    assert env["PICO_OPENAI_MODEL"] == "qwen3.7-max"
-    assert env["PICO_OPENAI_API_BASE"] == "https://example.test/v1 # literal"
+    assert env["MODEL_API_KEY"] == "sk-project-secret"
+    assert env["MODEL_NAME"] == "qwen3.7-max"
+    assert env["MODEL_BASE_URL"] == "https://example.test/v1 # literal"
     assert env["PICO_LITERAL_HASH"] == "abc#def"
 
 
 def test_cli_build_agent_reads_secret_names_from_environment_config(tmp_path):
     class DummyModelClient:
-        def complete(self, prompt, max_new_tokens):
+        def complete_v2(self, *, system, tools, messages, max_tokens, cache_breakpoints=None):
             raise AssertionError("model should not be invoked")
 
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
@@ -250,7 +250,7 @@ def test_cli_build_agent_reads_secret_names_from_environment_config(tmp_path):
 
 def test_cli_no_input_makes_default_approval_non_interactive(tmp_path):
     class DummyModelClient:
-        def complete(self, prompt, max_new_tokens):
+        def complete_v2(self, *, system, tools, messages, max_tokens, cache_breakpoints=None):
             raise AssertionError("model should not be invoked")
 
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")

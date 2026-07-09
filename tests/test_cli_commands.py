@@ -136,7 +136,6 @@ def test_unknown_command_suggestion_uses_json_error_envelope(capsys):
 @pytest.mark.parametrize(
     "argv",
     [
-        ["--provider", "openai", "run", "hi"],
         ["--model", "qwen3.5:4b", "run", "hi"],
         ["--base-url", "https://example.test/v1", "run", "hi"],
     ],
@@ -529,11 +528,14 @@ def test_repl_help_renders_help_details(tmp_path, monkeypatch, capsys):
         supports_prompt_cache = False
         last_completion_metadata = {}
 
-        def complete(self, prompt, max_new_tokens, **kwargs):
-            return "<final>ok</final>"
+        def complete_v2(self, *, system, tools, messages, max_tokens, cache_breakpoints=None):
+            from pico.providers.response import Response, StopReason
 
-        def stream_complete(self, *args, **kwargs):
-            return self.complete(*args, **kwargs)
+            return Response(
+                stop_reason=StopReason.END_TURN,
+                content=[{"type": "text", "text": "<final>ok</final>"}],
+                usage={},
+            )
 
     agent = Pico(
         model_client=_FakeModel(),

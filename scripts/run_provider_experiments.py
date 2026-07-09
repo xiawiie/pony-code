@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from pico.evaluation.metrics import DEFAULT_PROVIDER_EXPERIMENT_MAX_NEW_TOKENS, run_provider_experiments  # noqa: E402
+from pico.evaluation.metrics import DEFAULT_MODEL_EXPERIMENT_MAX_NEW_TOKENS, run_provider_experiments  # noqa: E402
 
 
 def build_arg_parser():
@@ -18,15 +18,16 @@ def build_arg_parser():
     parser.add_argument("--artifact-root", default="artifacts/provider-artifacts", help="Directory to store provider benchmark artifacts.")
     parser.add_argument("--output-json", required=True, help="Path to output provider experiment JSON.")
     parser.add_argument(
-        "--provider",
+        "--model-target",
+        dest="provider",
         choices=("all", "gpt", "claude", "deepseek"),
         default="all",
-        help="Provider benchmark target. Use 'all' to run GPT, Claude, and DeepSeek.",
+        help="Benchmark model target. Use 'all' to run GPT, Claude, and DeepSeek.",
     )
     parser.add_argument(
         "--max-new-tokens",
         type=int,
-        default=DEFAULT_PROVIDER_EXPERIMENT_MAX_NEW_TOKENS,
+        default=DEFAULT_MODEL_EXPERIMENT_MAX_NEW_TOKENS,
         help="Max output tokens per provider run.",
     )
     return parser

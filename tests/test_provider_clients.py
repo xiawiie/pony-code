@@ -4,9 +4,9 @@ from unittest.mock import patch
 import pytest
 
 from pico.providers.clients import (
-    AnthropicCompatibleModelClient,
-    OllamaModelClient,
-    OpenAICompatibleModelClient,
+    AnthropicMessagesAdapter,
+    OllamaGenerateAdapter,
+    OpenAIResponsesAdapter,
 )
 
 
@@ -34,7 +34,7 @@ def test_ollama_client_posts_expected_payload():
         captured["body"] = json.loads(request.data.decode("utf-8"))
         return FakeResponse()
 
-    client = OllamaModelClient(
+    client = OllamaGenerateAdapter(
         model="qwen3.5:4b",
         host="http://127.0.0.1:11434",
         temperature=0.2,
@@ -53,7 +53,7 @@ def test_ollama_client_posts_expected_payload():
     assert captured["body"]["stream"] is False
 
 
-def test_openai_compatible_client_posts_expected_responses_payload():
+def test_openai_responses_adapter_posts_expected_responses_payload():
     captured = {}
 
     class FakeResponse:
@@ -75,7 +75,7 @@ def test_openai_compatible_client_posts_expected_responses_payload():
         captured["body"] = json.loads(request.data.decode("utf-8"))
         return FakeResponse()
 
-    client = OpenAICompatibleModelClient(
+    client = OpenAIResponsesAdapter(
         model="right.codes/codex-mini",
         base_url="https://right.codes/v1",
         api_key="sk-test",
@@ -112,8 +112,8 @@ def test_openai_compatible_client_posts_expected_responses_payload():
     }
 
 
-def test_openai_compatible_client_reports_non_header_api_key_characters():
-    client = OpenAICompatibleModelClient(
+def test_openai_responses_adapter_reports_non_header_api_key_characters():
+    client = OpenAIResponsesAdapter(
         model="right.codes/codex-mini",
         base_url="https://right.codes/v1",
         api_key="sk-test新",
@@ -125,7 +125,7 @@ def test_openai_compatible_client_reports_non_header_api_key_characters():
         client.complete("hello", 42)
 
 
-def test_openai_compatible_client_sends_prompt_cache_fields_and_records_usage():
+def test_openai_responses_adapter_sends_prompt_cache_fields_and_records_usage():
     captured = {}
 
     class FakeResponse:
@@ -157,7 +157,7 @@ def test_openai_compatible_client_sends_prompt_cache_fields_and_records_usage():
         captured["body"] = json.loads(request.data.decode("utf-8"))
         return FakeResponse()
 
-    client = OpenAICompatibleModelClient(
+    client = OpenAIResponsesAdapter(
         model="right.codes/codex-mini",
         base_url="https://right.codes/v1",
         api_key="sk-test",
@@ -182,7 +182,7 @@ def test_openai_compatible_client_sends_prompt_cache_fields_and_records_usage():
     assert client.last_completion_metadata["input_tokens"] == 2048
 
 
-def test_openai_compatible_client_extracts_text_from_event_stream():
+def test_openai_responses_adapter_extracts_text_from_event_stream():
     class FakeResponse:
         headers = {"Content-Type": "text/event-stream"}
 
@@ -199,7 +199,7 @@ def test_openai_compatible_client_extracts_text_from_event_stream():
                 "data: [DONE]\n"
             ).encode("utf-8")
 
-    client = OpenAICompatibleModelClient(
+    client = OpenAIResponsesAdapter(
         model="right.codes/codex-mini",
         base_url="https://right.codes/v1",
         api_key="sk-test",
@@ -213,7 +213,7 @@ def test_openai_compatible_client_extracts_text_from_event_stream():
     assert result == "<final>stream ok</final>"
 
 
-def test_openai_compatible_client_extracts_text_from_event_stream_deltas():
+def test_openai_responses_adapter_extracts_text_from_event_stream_deltas():
     class FakeResponse:
         headers = {"Content-Type": "text/event-stream"}
 
@@ -234,7 +234,7 @@ def test_openai_compatible_client_extracts_text_from_event_stream_deltas():
                 "data: [DONE]\n"
             ).encode("utf-8")
 
-    client = OpenAICompatibleModelClient(
+    client = OpenAIResponsesAdapter(
         model="right.codes/codex-mini",
         base_url="https://right.codes/v1",
         api_key="sk-test",
@@ -248,7 +248,7 @@ def test_openai_compatible_client_extracts_text_from_event_stream_deltas():
     assert result == "<final>OK</final>"
 
 
-def test_openai_compatible_client_streams_event_deltas_and_records_usage():
+def test_openai_responses_adapter_streams_event_deltas_and_records_usage():
     captured = {}
 
     class FakeResponse:
@@ -285,7 +285,7 @@ def test_openai_compatible_client_streams_event_deltas_and_records_usage():
         captured["body"] = json.loads(request.data.decode("utf-8"))
         return FakeResponse()
 
-    client = OpenAICompatibleModelClient(
+    client = OpenAIResponsesAdapter(
         model="right.codes/codex-mini",
         base_url="https://right.codes/v1",
         api_key="sk-test",
@@ -312,7 +312,7 @@ def test_openai_compatible_client_streams_event_deltas_and_records_usage():
     assert client.last_completion_metadata["cache_hit"] is True
 
 
-def test_anthropic_compatible_client_posts_expected_messages_payload():
+def test_anthropic_messages_adapter_posts_expected_messages_payload():
     captured = {}
 
     class FakeResponse:
@@ -343,7 +343,7 @@ def test_anthropic_compatible_client_posts_expected_messages_payload():
         captured["body"] = json.loads(request.data.decode("utf-8"))
         return FakeResponse()
 
-    client = AnthropicCompatibleModelClient(
+    client = AnthropicMessagesAdapter(
         model="claude-sonnet-4-5-20250929",
         base_url="https://www.right.codes/claude-aws/v1",
         api_key="sk-test",
@@ -379,8 +379,8 @@ def test_anthropic_compatible_client_posts_expected_messages_payload():
     }
 
 
-def test_anthropic_compatible_client_reports_non_header_api_key_characters():
-    client = AnthropicCompatibleModelClient(
+def test_anthropic_messages_adapter_reports_non_header_api_key_characters():
+    client = AnthropicMessagesAdapter(
         model="claude-sonnet-4-5-20250929",
         base_url="https://www.right.codes/claude-aws/v1",
         api_key="sk-test新",
@@ -392,7 +392,7 @@ def test_anthropic_compatible_client_reports_non_header_api_key_characters():
         client.complete("hello", 42)
 
 
-def test_anthropic_compatible_client_sends_prompt_cache_control_and_records_usage():
+def test_anthropic_messages_adapter_sends_prompt_cache_control_and_records_usage():
     captured = {}
 
     class FakeResponse:
@@ -427,7 +427,7 @@ def test_anthropic_compatible_client_sends_prompt_cache_control_and_records_usag
         captured["body"] = json.loads(request.data.decode("utf-8"))
         return FakeResponse()
 
-    client = AnthropicCompatibleModelClient(
+    client = AnthropicMessagesAdapter(
         model="claude-sonnet-4-5-20250929",
         base_url="https://www.right.codes/claude-aws/v1",
         api_key="sk-test",
@@ -453,8 +453,8 @@ def test_anthropic_compatible_client_sends_prompt_cache_control_and_records_usag
     assert client.last_completion_metadata["cache_creation_input_tokens"] == 1024
 
 
-def test_anthropic_compatible_client_does_not_enable_cache_for_deepseek_base_url():
-    client = AnthropicCompatibleModelClient(
+def test_anthropic_messages_adapter_does_not_enable_cache_for_deepseek_base_url():
+    client = AnthropicMessagesAdapter(
         model="deepseek-v4-pro",
         base_url="https://api.deepseek.com/anthropic",
         api_key="sk-test",
@@ -465,7 +465,7 @@ def test_anthropic_compatible_client_does_not_enable_cache_for_deepseek_base_url
     assert client.supports_prompt_cache is False
 
 
-def test_anthropic_compatible_client_extracts_first_text_block():
+def test_anthropic_messages_adapter_extracts_first_text_block():
     class FakeResponse:
         headers = {"Content-Type": "application/json"}
 
@@ -485,7 +485,7 @@ def test_anthropic_compatible_client_extracts_first_text_block():
                 }
             ).encode("utf-8")
 
-    client = AnthropicCompatibleModelClient(
+    client = AnthropicMessagesAdapter(
         model="claude-sonnet-4-5-20250929",
         base_url="https://www.right.codes/claude-aws/v1",
         api_key="sk-test",
@@ -499,7 +499,7 @@ def test_anthropic_compatible_client_extracts_first_text_block():
     assert result == "<final>ok</final>"
 
 
-def test_anthropic_compatible_client_extracts_text_block_without_type():
+def test_anthropic_messages_adapter_extracts_text_block_without_type():
     class FakeResponse:
         headers = {"Content-Type": "application/json"}
 
@@ -519,7 +519,7 @@ def test_anthropic_compatible_client_extracts_text_block_without_type():
                 }
             ).encode("utf-8")
 
-    client = AnthropicCompatibleModelClient(
+    client = AnthropicMessagesAdapter(
         model="glm-5.2",
         base_url="https://lumina.tripo3d.com/v1",
         api_key="sk-test",
@@ -533,7 +533,7 @@ def test_anthropic_compatible_client_extracts_text_block_without_type():
     assert result == "<final>ok</final>"
 
 
-def test_anthropic_compatible_client_explains_thinking_only_token_exhaustion():
+def test_anthropic_messages_adapter_explains_thinking_only_token_exhaustion():
     class FakeResponse:
         headers = {"Content-Type": "application/json"}
 
@@ -557,7 +557,7 @@ def test_anthropic_compatible_client_explains_thinking_only_token_exhaustion():
                 }
             ).encode("utf-8")
 
-    client = AnthropicCompatibleModelClient(
+    client = AnthropicMessagesAdapter(
         model="glm-5.2",
         base_url="https://lumina.tripo3d.com/v1",
         api_key="sk-test",
@@ -592,7 +592,7 @@ def test_anthropic_stream_complete_falls_back_to_complete():
                 }
             ).encode("utf-8")
 
-    client = AnthropicCompatibleModelClient(
+    client = AnthropicMessagesAdapter(
         model="claude-sonnet-4-5-20250929",
         base_url="https://www.right.codes/claude-aws/v1",
         api_key="sk-test",

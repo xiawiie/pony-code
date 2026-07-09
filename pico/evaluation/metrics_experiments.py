@@ -79,7 +79,7 @@ from .metrics_reports import (
     write_benchmark_core_report as write_benchmark_core_report,
 )
 from .provider_benchmark import (
-    DEFAULT_PROVIDER_EXPERIMENT_MAX_NEW_TOKENS as DEFAULT_PROVIDER_EXPERIMENT_MAX_NEW_TOKENS,
+    DEFAULT_MODEL_EXPERIMENT_MAX_NEW_TOKENS as DEFAULT_MODEL_EXPERIMENT_MAX_NEW_TOKENS,
     _make_provider_client as _make_provider_client,
     _normalize_text as _normalize_text,
     _provider_profile as _provider_profile,
@@ -92,7 +92,7 @@ __all__ = [
     'DEFAULT_CONTEXT_ABLATION_V2_PATH',
     'DEFAULT_HARNESS_REGRESSION_V2_PATH',
     'DEFAULT_MEMORY_ABLATION_V2_PATH',
-    'DEFAULT_PROVIDER_EXPERIMENT_MAX_NEW_TOKENS',
+    'DEFAULT_MODEL_EXPERIMENT_MAX_NEW_TOKENS',
     'DEFAULT_RECOVERY_ABLATION_V2_PATH',
     'MEMORY_EXPERIMENT_TASKS',
     'METRICS_SCHEMA_VERSION',

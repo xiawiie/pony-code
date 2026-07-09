@@ -44,11 +44,11 @@ def test_provider_experiment_defaults_allow_reasoning_budget():
 
     args = module.build_arg_parser().parse_args(["--output-json", "out.json"])
 
-    assert args.max_new_tokens == metrics_experiments.DEFAULT_PROVIDER_EXPERIMENT_MAX_NEW_TOKENS
+    assert args.max_new_tokens == metrics_experiments.DEFAULT_MODEL_EXPERIMENT_MAX_NEW_TOKENS
     assert args.max_new_tokens >= 2048
 
 
-def test_provider_experiment_parser_accepts_provider_selector():
+def test_provider_experiment_parser_accepts_model_target_selector():
     spec = importlib.util.spec_from_file_location(
         "run_provider_experiments_script",
         Path("scripts/run_provider_experiments.py"),
@@ -58,7 +58,7 @@ def test_provider_experiment_parser_accepts_provider_selector():
 
     default_args = module.build_arg_parser().parse_args(["--output-json", "out.json"])
     selected_args = module.build_arg_parser().parse_args(
-        ["--output-json", "out.json", "--provider", "deepseek"]
+        ["--output-json", "out.json", "--model-target", "deepseek"]
     )
 
     assert default_args.provider == "all"

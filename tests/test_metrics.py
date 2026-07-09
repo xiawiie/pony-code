@@ -42,9 +42,9 @@ def test_provider_profile_loads_project_env_before_reading_deepseek_config(tmp_p
     (tmp_path / ".env").write_text(
         "\n".join(
             [
-                "PICO_DEEPSEEK_API_KEY=sk-project-deepseek",
-                "PICO_DEEPSEEK_MODEL=deepseek-v4-pro",
-                "PICO_DEEPSEEK_API_BASE=https://api.deepseek.com/anthropic",
+                "PICO_BENCH_DEEPSEEK_API_KEY=sk-project-deepseek",
+                "PICO_BENCH_DEEPSEEK_MODEL=deepseek-v4-pro",
+                "PICO_BENCH_DEEPSEEK_BASE_URL=https://api.deepseek.com/anthropic",
             ]
         )
         + "\n",

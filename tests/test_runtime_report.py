@@ -727,14 +727,21 @@ def test_partial_success_records_metadata_without_process_notes(tmp_path):
 
 def test_agent_records_model_cache_metadata_in_last_prompt_metadata(tmp_path):
     class CacheAwareFakeModelClient(FakeModelClient):
-        def complete(self, prompt, max_new_tokens, **kwargs):
+        def complete_v2(self, *, system, tools, messages, max_tokens, cache_breakpoints=None):
+            response = super().complete_v2(
+                system=system,
+                tools=tools,
+                messages=messages,
+                max_tokens=max_tokens,
+                cache_breakpoints=cache_breakpoints,
+            )
             self.last_completion_metadata = {
                 "prompt_cache_supported": True,
                 "cached_tokens": 512,
                 "cache_hit": True,
                 "input_tokens": 1024,
             }
-            return super().complete(prompt, max_new_tokens, **kwargs)
+            return response
 
     workspace = build_workspace(tmp_path)
     store = SessionStore(tmp_path / ".pico" / "sessions")

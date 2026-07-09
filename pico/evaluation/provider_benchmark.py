@@ -2,13 +2,13 @@ from pathlib import Path
 
 from ..config import load_project_env, provider_env
 from ..providers.clients import (
-    AnthropicCompatibleModelClient,
-    OpenAICompatibleModelClient,
+    AnthropicMessagesAdapter,
+    OpenAIResponsesAdapter,
 )
 from .fixed_benchmark import run_fixed_benchmark
 from .metrics_common import _safe_mean, _safe_ratio
 
-DEFAULT_PROVIDER_EXPERIMENT_MAX_NEW_TOKENS = 2048
+DEFAULT_MODEL_EXPERIMENT_MAX_NEW_TOKENS = 2048
 
 PROVIDER_BENCHMARK_CHOICES = ("gpt", "claude", "deepseek")
 
@@ -71,40 +71,40 @@ def _provider_profile(provider):
     load_project_env(Path.cwd())
     if provider == "gpt":
         api_key = provider_env(
-            "PICO_OPENAI_API_KEY",
-            ("OPENAI_API_KEY", "PICO_RIGHT_CODES_API_KEY", "RIGHT_CODES_API_KEY", "PICO_ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY"),
+            "PICO_GPT_API_KEY",
+            ("GPT_API_KEY", "PICO_RIGHT_CODES_API_KEY", "RIGHT_CODES_API_KEY"),
         )
         if not api_key:
-            return {"provider": provider, "status": "blocked", "reason": "PICO_OPENAI_API_KEY, OPENAI_API_KEY, or shared right.codes key missing"}
+            return {"provider": provider, "status": "blocked", "reason": "PICO_GPT_API_KEY, GPT_API_KEY, or shared right.codes key missing"}
         return {
             "provider": provider,
             "status": "ready",
-            "model": provider_env("PICO_OPENAI_MODEL", ("OPENAI_MODEL",), "gpt-5.4"),
-            "base_url": provider_env("PICO_OPENAI_API_BASE", ("OPENAI_API_BASE",), "https://api.openai.com/v1"),
+            "model": provider_env("PICO_GPT_MODEL", ("GPT_MODEL",), "gpt-5.4"),
+            "base_url": provider_env("PICO_GPT_BASE_URL", ("GPT_BASE_URL",), "https://api.openai.com/v1"),
             "api_key": api_key,
         }
     if provider == "deepseek":
-        api_key = provider_env("PICO_DEEPSEEK_API_KEY", ("DEEPSEEK_API_KEY",))
+        api_key = provider_env("PICO_BENCH_DEEPSEEK_API_KEY", ("DEEPSEEK_API_KEY",))
         if not api_key:
-            return {"provider": provider, "status": "blocked", "reason": "PICO_DEEPSEEK_API_KEY or DEEPSEEK_API_KEY missing"}
+            return {"provider": provider, "status": "blocked", "reason": "PICO_BENCH_DEEPSEEK_API_KEY or DEEPSEEK_API_KEY missing"}
         return {
             "provider": provider,
             "status": "ready",
-            "model": provider_env("PICO_DEEPSEEK_MODEL", ("DEEPSEEK_MODEL",), "deepseek-v4-pro"),
-            "base_url": provider_env("PICO_DEEPSEEK_API_BASE", ("DEEPSEEK_API_BASE",), "https://api.deepseek.com/anthropic"),
+            "model": provider_env("PICO_BENCH_DEEPSEEK_MODEL", ("DEEPSEEK_MODEL",), "deepseek-v4-pro"),
+            "base_url": provider_env("PICO_BENCH_DEEPSEEK_BASE_URL", ("DEEPSEEK_BASE_URL",), "https://api.deepseek.com/anthropic"),
             "api_key": api_key,
         }
     api_key = provider_env(
-        "PICO_ANTHROPIC_API_KEY",
-        ("ANTHROPIC_API_KEY", "PICO_RIGHT_CODES_API_KEY", "RIGHT_CODES_API_KEY", "PICO_OPENAI_API_KEY", "OPENAI_API_KEY"),
+        "PICO_CLAUDE_API_KEY",
+        ("CLAUDE_API_KEY", "PICO_RIGHT_CODES_API_KEY", "RIGHT_CODES_API_KEY"),
     )
     if not api_key:
-        return {"provider": "claude", "status": "blocked", "reason": "PICO_ANTHROPIC_API_KEY or ANTHROPIC_API_KEY missing"}
+        return {"provider": "claude", "status": "blocked", "reason": "PICO_CLAUDE_API_KEY, CLAUDE_API_KEY, or shared right.codes key missing"}
     return {
         "provider": "claude",
         "status": "ready",
-        "model": provider_env("PICO_ANTHROPIC_MODEL", ("ANTHROPIC_MODEL",), "claude-sonnet-4-6"),
-        "base_url": provider_env("PICO_ANTHROPIC_API_BASE", ("ANTHROPIC_API_BASE",), "https://www.right.codes/claude/v1"),
+        "model": provider_env("PICO_CLAUDE_MODEL", ("CLAUDE_MODEL",), "claude-sonnet-4-6"),
+        "base_url": provider_env("PICO_CLAUDE_BASE_URL", ("CLAUDE_BASE_URL",), "https://www.right.codes/claude/v1"),
         "api_key": api_key,
     }
 
@@ -115,14 +115,14 @@ def _make_provider_client(provider):
         raise RuntimeError(profile["reason"])
     timeout = 60
     if provider == "gpt":
-        return OpenAICompatibleModelClient(
+        return OpenAIResponsesAdapter(
             model=profile["model"],
             base_url=profile["base_url"],
             api_key=profile["api_key"],
             temperature=0.0,
             timeout=timeout,
         )
-    return AnthropicCompatibleModelClient(
+    return AnthropicMessagesAdapter(
         model=profile["model"],
         base_url=profile["base_url"],
         api_key=profile["api_key"],
@@ -142,7 +142,7 @@ def run_provider_experiments(
     benchmark_path,
     workspace_root,
     artifact_root,
-    max_new_tokens=DEFAULT_PROVIDER_EXPERIMENT_MAX_NEW_TOKENS,
+    max_new_tokens=DEFAULT_MODEL_EXPERIMENT_MAX_NEW_TOKENS,
     providers=None,
 ):
     benchmark_path = Path(benchmark_path)
@@ -158,7 +158,7 @@ def run_provider_experiments(
 
             def factory(task, workspace, profile=profile):
                 del task, workspace
-                return OpenAICompatibleModelClient(
+                return OpenAIResponsesAdapter(
                     model=profile["model"],
                     base_url=profile["base_url"],
                     api_key=profile["api_key"],
@@ -170,7 +170,7 @@ def run_provider_experiments(
 
             def factory(task, workspace, profile=profile):
                 del task, workspace
-                return AnthropicCompatibleModelClient(
+                return AnthropicMessagesAdapter(
                     model=profile["model"],
                     base_url=profile["base_url"],
                     api_key=profile["api_key"],

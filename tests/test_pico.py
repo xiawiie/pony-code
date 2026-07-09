@@ -10,7 +10,7 @@ from pico.runtime import DEFAULT_MAX_NEW_TOKENS, DEFAULT_MAX_STEPS
 from pico import (
     FakeModelClient,
     Pico,
-    OllamaModelClient,
+    OllamaGenerateAdapter,
     SessionStore,
     WorkspaceContext,
     build_welcome,
@@ -450,7 +450,7 @@ def test_public_api_exports_resolve_through_package_path():
     assert callable(build_welcome)
     assert FakeModelClient is not None
     assert Pico is not None
-    assert OllamaModelClient is not None
+    assert OllamaGenerateAdapter is not None
     assert SessionStore is not None
     assert WorkspaceContext is not None
     assert Path(pico_pkg.__file__).as_posix().endswith("/pico/__init__.py")

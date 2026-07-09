@@ -67,7 +67,6 @@ _COMMAND_NAMESPACE_SUBCOMMANDS = {
     if spec["subcommands"]
 }
 _REMOVED_MODEL_OPTIONS = (
-    "--provider",
     "--model",
     "--host",
     "--base-url",
@@ -95,13 +94,10 @@ def _looks_like_recovery_command(prompt_tokens):
     return prompt_tokens[1] in _RECOVERY_SUBCOMMANDS.get(head, set())
 
 DEFAULT_SECRET_ENV_NAMES = (
-    "PICO_OPENAI_API_KEY",
     "OPENAI_API_KEY",
     "OPENAI_API_TOKEN",
-    "PICO_ANTHROPIC_API_KEY",
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_AUTH_TOKEN",
-    "PICO_DEEPSEEK_API_KEY",
     "DEEPSEEK_API_KEY",
     "PICO_RIGHT_CODES_API_KEY",
     "RIGHT_CODES_API_KEY",

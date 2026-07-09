@@ -80,31 +80,31 @@ def test_end_to_end_tool_call_then_final(tmp_path):
     assert "<system-reminder>" in turn1_user_content
 
 
-def test_end_to_end_wraps_non_v2_provider_with_fallback(tmp_path):
-    """FakeModelClient (no complete_v2) must be wrapped in FallbackAdapter."""
-    from pico import FakeModelClient
-    from pico.providers.fallback_adapter import FallbackAdapter
+def test_end_to_end_rejects_non_v2_provider(tmp_path):
+    """Runtime fails fast when the model client lacks complete_v2."""
+    import pytest
+
     from pico.runtime import Pico
     from pico.session_store import SessionStore
     from pico.workspace import WorkspaceContext
 
-    inner = FakeModelClient(["<final>ok</final>"])
+    class _OldClient:
+        pass
+
     workspace = WorkspaceContext.build(tmp_path)
     store = SessionStore(tmp_path / ".pico" / "sessions")
-    pico = Pico(
-        model_client=inner,
-        workspace=workspace,
-        session_store=store,
-        approval_policy="auto",
-    )
 
-    assert isinstance(pico.model_client, FallbackAdapter)
-    assert pico.ask("hi") == "ok"
+    with pytest.raises(TypeError, match=r"model_client must expose complete_v2\(\.\.\.\)"):
+        Pico(
+            model_client=_OldClient(),
+            workspace=workspace,
+            session_store=store,
+            approval_policy="auto",
+        )
 
 
-def test_end_to_end_v2_provider_not_double_wrapped(tmp_path):
-    """A provider that already has complete_v2 stays as-is."""
-    from pico.providers.fallback_adapter import FallbackAdapter
+def test_end_to_end_v2_provider_is_used_directly(tmp_path):
+    """A provider that has complete_v2 stays as-is."""
     from pico.runtime import Pico
     from pico.session_store import SessionStore
     from pico.workspace import WorkspaceContext
@@ -126,5 +126,4 @@ def test_end_to_end_v2_provider_not_double_wrapped(tmp_path):
     )
 
     assert pico.model_client is provider
-    assert not isinstance(pico.model_client, FallbackAdapter)
     assert pico.ask("hi") == "hi"

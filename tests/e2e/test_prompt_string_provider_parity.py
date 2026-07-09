@@ -1,6 +1,6 @@
-"""E2E: same pico.ask input produces equivalent flow via native and fallback paths."""
+"""E2E: native messages and prompt-string fake both see context injection."""
 
-from pico.providers.fallback_adapter import FallbackAdapter
+from pico.providers.clients import FakeModelClient
 from pico.providers.response import Response, StopReason
 from pico.runtime import Pico
 from pico.session_store import SessionStore
@@ -22,23 +22,10 @@ class _SniffProvider:
         return self.script.pop(0)
 
 
-class _XmlStubInner:
-    """Inner provider for FallbackAdapter — returns legacy <final> string."""
-    def __init__(self, script):
-        self.script = list(script)
-        self.prompts = []
-        self.last_completion_metadata = {}
-
-    def complete(self, prompt, max_new_tokens, prompt_cache_key=None, prompt_cache_retention=None):
-        self.prompts.append(prompt)
-        return self.script.pop(0)
-
-
-def test_native_and_fallback_both_complete_a_final_turn(tmp_path):
+def test_native_and_prompt_string_fake_both_complete_a_final_turn(tmp_path):
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
     workspace = WorkspaceContext.build(tmp_path)
 
-    # 1. Native path
     native = _SniffProvider([
         Response(stop_reason=StopReason.END_TURN, content=[{"type": "text", "text": "ok"}], usage={}),
     ])
@@ -46,20 +33,16 @@ def test_native_and_fallback_both_complete_a_final_turn(tmp_path):
     pico_native = Pico(model_client=native, workspace=workspace, session_store=store1, max_steps=3)
     answer_native = pico_native.ask("hello world")
 
-    # 2. Fallback path
-    inner = _XmlStubInner(["<final>ok</final>"])
-    fallback = FallbackAdapter(inner)
+    prompt_string = FakeModelClient(["<final>ok</final>"])
     store2 = SessionStore(tmp_path / ".pico" / "sessions_b")
-    pico_fb = Pico(model_client=fallback, workspace=workspace, session_store=store2, max_steps=3)
-    answer_fb = pico_fb.ask("hello world")
+    pico_prompt_string = Pico(model_client=prompt_string, workspace=workspace, session_store=store2, max_steps=3)
+    answer_prompt_string = pico_prompt_string.ask("hello world")
 
     assert answer_native.strip() == "ok"
-    assert answer_fb.strip() == "ok"
+    assert answer_prompt_string.strip() == "ok"
 
-    # Native path saw <pico:*> blocks in messages.
     native_content = native.calls[0]["messages"][-1]["content"]
     assert "<pico:workspace_state>" in native_content or "<system-reminder>" in native_content
 
-    # Fallback path saw the same blocks after flattening.
-    flattened_prompt = inner.prompts[0]
+    flattened_prompt = prompt_string.prompts[0]
     assert "<pico:workspace_state>" in flattened_prompt or "<system-reminder>" in flattened_prompt

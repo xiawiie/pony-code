@@ -163,24 +163,16 @@ def test_pico_ask_delegates_to_agent_loop(tmp_path):
 def test_malformed_tool_retry_is_visible_to_next_model_request(tmp_path):
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
 
-    class _SniffingLegacyProvider:
-        supports_prompt_cache = False
-        last_completion_metadata = {}
-
-        def __init__(self):
-            self.prompts = []
-            self.outputs = [
-                "<tool>{not valid json</tool>",
-                "<final>Recovered.</final>",
-            ]
-
-        def complete(self, prompt, max_new_tokens):
-            self.prompts.append(prompt)
-            return self.outputs.pop(0)
-
     workspace = WorkspaceContext.build(tmp_path)
     store = SessionStore(tmp_path / ".pico" / "sessions")
-    agent = Pico(model_client=_SniffingLegacyProvider(), workspace=workspace, session_store=store)
+    agent = Pico(
+        model_client=FakeModelClient([
+            "<tool>{not valid json</tool>",
+            "<final>Recovered.</final>",
+        ]),
+        workspace=workspace,
+        session_store=store,
+    )
 
     assert agent.ask("do it") == "Recovered."
 
