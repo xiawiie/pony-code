@@ -92,9 +92,9 @@ def verify_pico_repo(root: Path) -> None:
 
 FIXTURE_PICO_TOML = """\
 [context]
-history_soft_cap = 1200
+history_soft_cap = 800
 history_floor_messages = 4
-injection_budget_ratio = 0.005
+injection_budget_ratio = 0.002
 total_budget_hard_cap = 100000
 system_tools_hard_cap = 30000
 
@@ -210,23 +210,97 @@ class TurnRunner:
         self._provider_calls_before = self._count_provider_calls()
 
     def _count_provider_calls(self) -> int:
-        """Best-effort count of provider calls seen so far.
+        """Deprecated after refactor to trace-based extraction.
 
-        AnthropicCompatibleModelClient does not natively track calls, so
-        we use the presence of ``last_completion_metadata`` on the client
-        as a coarse indicator; for exact counting we rely on the messages
-        array growth pattern instead (each turn produces at least one
-        provider call).
+        Retained for interface compat with older tests that construct
+        TurnRunner and expect this method to exist.
         """
+        return 0
+
+    def _extract_first_prompt_and_counts(self) -> tuple:
+        """Read the current turn's trace and return (metadata_of_first_prompt,
+        current_user_content_of_first_prompt, provider_call_count).
+
+        Returns ``({}, "", 0)`` when the trace can't be read — the caller
+        falls back to ``agent.last_prompt_metadata`` and session inspection.
+        """
+        import json as _json
+
+        run_dir = getattr(self.pico, "current_run_dir", None)
+        if run_dir is None:
+            return ({}, "", 0)
+        trace_path = Path(run_dir) / "trace.jsonl"
+        if not trace_path.exists():
+            return ({}, "", 0)
+
+        first_metadata: dict = {}
+        first_prompt: str = ""
+        model_turn_count = 0
+        try:
+            with trace_path.open(encoding="utf-8") as f:
+                for line in f:
+                    try:
+                        ev = _json.loads(line)
+                    except _json.JSONDecodeError:
+                        continue
+                    event = ev.get("event")
+                    if event == "prompt_built" and not first_metadata:
+                        pm = ev.get("prompt_metadata") or {}
+                        first_metadata = dict(pm)
+                        # Extract the current user content from the messages
+                        # embedded in metadata if present; otherwise leave blank.
+                        # ``ContextManager.build_v2`` doesn't put messages in
+                        # metadata, but the outgoing request's last user
+                        # message is what we want. We read session state
+                        # separately after the fact.
+                    elif event == "model_turn":
+                        model_turn_count += 1
+        except OSError:
+            return ({}, "", 0)
+
+        # For current_user_content, prefer the sniffing provider wrapper's
+        # FIRST-call last_user (which is what the provider actually saw
+        # on this turn's first attempt — that's where injection lives).
+        # Fall back to scanning session["messages"] for the newest
+        # string-content user message.
+        current_user_content = ""
         client = getattr(self.pico, "model_client", None)
-        return int(getattr(client, "_pico_live_call_count", 0) or 0)
+        calls = getattr(client, "calls", None)
+        if isinstance(calls, list) and calls:
+            # Take the first call this turn — we snapshot ``_call_count_before``
+            # on turn entry. In practice: last call whose ts is minimum among
+            # calls we haven't seen yet. Simpler: track a call-count baseline
+            # via ``self._sniff_baseline`` set at run_turn entry.
+            baseline = getattr(self, "_sniff_baseline", 0)
+            new_calls = calls[baseline:]
+            if new_calls:
+                current_user_content = str(new_calls[0].get("last_user_content", ""))
+                # Advance baseline for the next turn.
+                self._sniff_baseline = baseline + len(new_calls)
+        if not current_user_content:
+            messages = list(self.pico.session.get("messages", []) or [])
+            for msg in messages:
+                role = msg.get("role")
+                content = msg.get("content")
+                if role == "user" and isinstance(content, str):
+                    current_user_content = content
+
+        return (first_metadata, current_user_content, model_turn_count)
 
     def run_turn(
         self, turn: int, user_prompt: str, expected_behavior: str
     ) -> TurnResult:
-        """Execute one turn and return a captured TurnResult."""
+        """Execute one turn and return a captured TurnResult.
+
+        Multi-attempt turns (agent takes several tool_use rounds before a
+        final answer) build a fresh prompt per attempt. ``agent.last_prompt_metadata``
+        reflects only the *last* attempt, which for the injection/recall
+        checks is misleading — recall's ``recently_recalled`` guard causes
+        recall_memory tokens to go to 0 on attempts 2+ within the same turn.
+        We therefore read the FIRST ``prompt_built`` trace event of the
+        turn's run and use ITS metadata as the ground truth.
+        """
         session_before = len(self.pico.session.get("messages", []))
-        provider_calls_before = self._count_provider_calls()
         started_ns = time.monotonic_ns()
         error: str | None = None
         final_answer = ""
@@ -238,9 +312,7 @@ class TurnRunner:
             error = f"{type(exc).__name__}: {exc}"
 
         duration_ms = (time.monotonic_ns() - started_ns) // 1_000_000
-        metadata = dict(getattr(self.pico, "last_prompt_metadata", {}) or {})
         usage = dict(getattr(self.pico.model_client, "last_completion_metadata", {}) or {})
-        provider_calls_after = self._count_provider_calls()
         session_after = len(self.pico.session.get("messages", []))
 
         # detect step-limit stops (no exception, but final answer starts with the
@@ -248,12 +320,18 @@ class TurnRunner:
         if final_answer.startswith("Stopped after"):
             stopped_at_step_limit = True
 
-        current_user_content = ""
-        messages = self.pico.session.get("messages", []) or []
-        if messages:
-            last = messages[-1]
-            if isinstance(last.get("content"), str):
-                current_user_content = last["content"]
+        # Read the first prompt_built trace event for this turn's run.
+        # If unavailable, fall back to agent.last_prompt_metadata.
+        metadata, current_user_content, provider_calls_this_turn = self._extract_first_prompt_and_counts()
+
+        if not metadata:
+            metadata = dict(getattr(self.pico, "last_prompt_metadata", {}) or {})
+        if not current_user_content:
+            messages = self.pico.session.get("messages", []) or []
+            if messages:
+                last = messages[-1]
+                if isinstance(last.get("content"), str):
+                    current_user_content = last["content"]
 
         provider_input_messages_len = int(metadata.get("messages_count", 0))
 
@@ -265,7 +343,7 @@ class TurnRunner:
             metadata=metadata,
             session_message_count_before=session_before,
             session_message_count_after=session_after,
-            provider_call_count_this_turn=max(0, provider_calls_after - provider_calls_before),
+            provider_call_count_this_turn=provider_calls_this_turn,
             duration_ms=duration_ms,
             usage=usage,
             stopped_at_step_limit=stopped_at_step_limit,
@@ -368,18 +446,37 @@ class AssertionEngine:
     # -- Turn 2: digest --------------------------------------------------
 
     def check_turn_2_digest(self, result: TurnResult, pico) -> list[Assertion]:
-        """Five assertions verifying digest applied on a large tool_result."""
+        """Five assertions verifying digest applied on a large tool_result.
+
+        Search is restricted to messages added THIS turn (via the
+        session-count-before/after window on ``result``). Within that
+        window, we prefer the FIRST tool_result whose _pico_meta says
+        digest_applied=True — that's the read_file result we intended
+        to observe. If none is digested, we fall back to the last
+        tool_result in the window so failures still surface a concrete
+        actual value.
+        """
         out = []
         messages = getattr(pico, "session", {}).get("messages", []) or []
-        # find the last tool_result carrier
+        turn_slice = messages[result.session_message_count_before: result.session_message_count_after]
         tool_result_msg = None
-        for msg in reversed(messages):
+        for msg in turn_slice:
             content = msg.get("content")
             if isinstance(content, list) and any(
                 isinstance(b, dict) and b.get("type") == "tool_result" for b in content
             ):
-                tool_result_msg = msg
-                break
+                pm = msg.get("_pico_meta") or {}
+                if pm.get("digest_applied"):
+                    tool_result_msg = msg
+                    break
+        if tool_result_msg is None:
+            for msg in reversed(turn_slice):
+                content = msg.get("content")
+                if isinstance(content, list) and any(
+                    isinstance(b, dict) and b.get("type") == "tool_result" for b in content
+                ):
+                    tool_result_msg = msg
+                    break
 
         meta = (tool_result_msg or {}).get("_pico_meta") or {}
         digest_applied = bool(meta.get("digest_applied"))
@@ -797,8 +894,47 @@ def warn_if_dirty_working_tree(root: Path) -> None:
         )
 
 
+class _SniffingProviderWrapper:
+    """Wraps a real provider and records the messages sent on each call.
+
+    Preserves the ``complete_v2`` signature and forwards straight through.
+    We record only what we need (the last user message content per call)
+    so memory stays bounded across a 5-turn session.
+    """
+
+    def __init__(self, inner):
+        self._inner = inner
+        # Per-call captures: list of {"last_user_content": str, "call_ts_ns": int}
+        self.calls: list[dict] = []
+        # Delegate attributes pico's runtime probes
+        self.supports_prompt_cache = getattr(inner, "supports_prompt_cache", False)
+        self.supports_native_tools = getattr(inner, "supports_native_tools", True)
+        self.last_completion_metadata: dict = {}
+
+    def complete_v2(self, *, system, tools, messages, max_tokens, cache_breakpoints=None):
+        last_user = ""
+        for msg in reversed(messages):
+            if msg.get("role") == "user":
+                content = msg.get("content")
+                if isinstance(content, str):
+                    last_user = content
+                    break
+                # tool_result carriers have list content — skip
+        self.calls.append({"last_user_content": last_user, "call_ts_ns": time.monotonic_ns()})
+        resp = self._inner.complete_v2(
+            system=system, tools=tools, messages=messages,
+            max_tokens=max_tokens, cache_breakpoints=cache_breakpoints,
+        )
+        self.last_completion_metadata = dict(getattr(self._inner, "last_completion_metadata", {}) or {})
+        return resp
+
+    # Passthrough for legacy calls (FallbackAdapter uses `.complete`).
+    def complete(self, *args, **kwargs):
+        return self._inner.complete(*args, **kwargs)
+
+
 def _make_anthropic_client(config: RunConfig):
-    """Instantiate a real Anthropic-compatible model client."""
+    """Instantiate a real Anthropic-compatible model client wrapped by a sniffer."""
     from pico.providers.anthropic_compatible import AnthropicCompatibleModelClient
 
     api_key = os.environ.get("PICO_ANTHROPIC_API_KEY", "")
@@ -809,13 +945,14 @@ def _make_anthropic_client(config: RunConfig):
         or os.environ.get("PICO_ANTHROPIC_BASE_URL")
         or "https://api.anthropic.com"
     )
-    return AnthropicCompatibleModelClient(
+    inner = AnthropicCompatibleModelClient(
         model=config.model,
         base_url=base_url,
         api_key=api_key,
         temperature=0.0,
         timeout=120,
     )
+    return _SniffingProviderWrapper(inner)
 
 
 def _budget_exceeded(all_results: list, config: RunConfig, wall_start_ns: int) -> str | None:
