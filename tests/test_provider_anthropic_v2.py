@@ -1,4 +1,5 @@
 """Anthropic adapter v2 payload shape + response normalization tests."""
+from urllib.error import HTTPError, URLError
 import json
 from unittest.mock import patch, MagicMock
 
@@ -87,3 +88,69 @@ def test_complete_v2_tool_use_response():
     assert resp.stop_reason == StopReason.TOOL_USE
     assert resp.content[0]["name"] == "read_file"
     assert resp.content[0]["input"]["path"] == "a.py"
+
+
+def test_complete_v2_http_error_becomes_runtime_error():
+    client = _make_client()
+    error = HTTPError(
+        url="https://api.anthropic.com/v1/messages",
+        code=401,
+        msg="Unauthorized",
+        hdrs=None,
+        fp=None,
+    )
+    error.read = lambda: b'{"error":"bad key"}'
+
+    with patch("urllib.request.urlopen", side_effect=error):
+        try:
+            client.complete_v2(
+                system=[{"type": "text", "text": "s"}],
+                tools=[],
+                messages=[{"role": "user", "content": "x"}],
+                max_tokens=10,
+            )
+        except RuntimeError as exc:
+            assert "Anthropic-compatible request failed with HTTP 401" in str(exc)
+        else:
+            assert False, "expected RuntimeError"
+
+
+def test_complete_v2_url_error_becomes_runtime_error():
+    client = _make_client()
+
+    with patch("urllib.request.urlopen", side_effect=URLError("offline")):
+        try:
+            client.complete_v2(
+                system=[{"type": "text", "text": "s"}],
+                tools=[],
+                messages=[{"role": "user", "content": "x"}],
+                max_tokens=10,
+            )
+        except RuntimeError as exc:
+            assert "Could not reach the Anthropic-compatible backend." in str(exc)
+            assert "Base URL: https://api.anthropic.com/v1" in str(exc)
+            assert "Model: claude-3-5-sonnet-latest" in str(exc)
+        else:
+            assert False, "expected RuntimeError"
+
+
+def test_complete_v2_validates_api_key_header_value():
+    client = AnthropicMessagesAdapter(
+        model="claude-3-5-sonnet-latest",
+        base_url="https://api.anthropic.com",
+        api_key="bad-key-\u2603",
+        temperature=0.0,
+        timeout=30,
+    )
+
+    try:
+        client.complete_v2(
+            system=[{"type": "text", "text": "s"}],
+            tools=[],
+            messages=[{"role": "user", "content": "x"}],
+            max_tokens=10,
+        )
+    except RuntimeError as exc:
+        assert "Anthropic-compatible API key contains characters that cannot be sent in HTTP headers" in str(exc)
+    else:
+        assert False, "expected RuntimeError"

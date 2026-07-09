@@ -48,6 +48,12 @@ class ActionCodec:
                 model_visible=True,
                 origin=ActionOrigin.MALFORMED_TEXT_PROTOCOL,
             )
+        if response.stop_reason == StopReason.MAX_TOKENS:
+            return RetryAction(
+                reason=retry_notice("model hit max_tokens before returning a complete tool call or final answer"),
+                model_visible=True,
+                origin=ActionOrigin.STOP_SEQUENCE,
+            )
         if response.stop_reason == StopReason.STOP_SEQUENCE:
             return RetryAction(
                 reason=retry_notice("model stopped before returning a tool call or final answer"),

@@ -194,7 +194,7 @@ def test_final_protocol_decodes_to_final_action():
     assert action == FinalAction(text="Done.", origin=ActionOrigin.TEXT_PROTOCOL_FINAL)
 
 
-def test_plain_text_final_wins_over_max_tokens_when_text_exists():
+def test_plain_text_with_max_tokens_becomes_model_visible_retry():
     action = decode(
         Response(
             stop_reason=StopReason.MAX_TOKENS,
@@ -203,7 +203,22 @@ def test_plain_text_final_wins_over_max_tokens_when_text_exists():
         )
     )
 
-    assert action == FinalAction(text="partial but useful", origin=ActionOrigin.PLAIN_TEXT_FINAL)
+    assert isinstance(action, RetryAction)
+    assert action.origin == ActionOrigin.STOP_SEQUENCE
+    assert action.model_visible is True
+    assert "valid <tool> call" in action.reason
+
+
+def test_valid_final_protocol_still_decodes_with_max_tokens():
+    action = decode(
+        Response(
+            stop_reason=StopReason.MAX_TOKENS,
+            content=[{"type": "text", "text": "<final>Done.</final>"}],
+            usage={},
+        )
+    )
+
+    assert action == FinalAction(text="Done.", origin=ActionOrigin.TEXT_PROTOCOL_FINAL)
 
 
 def test_empty_response_is_retry():

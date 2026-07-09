@@ -10,6 +10,7 @@ import re
 import sys
 
 from pico.action_codec import ActionCodec
+from pico.cli_diagnostics import _redact_url_for_diagnostics
 from pico.config import read_project_env
 from pico.model_actions import FinalAction
 from pico.model_config import load_model_connection
@@ -61,8 +62,10 @@ def should_fail_all_skipped(results):
     return bool(results) and all(result.get("status") == "skipped" for result in results)
 
 
-def _redact_live_error_text(exc, api_key=""):
+def _redact_live_error_text(exc, api_key="", base_url=""):
     message = str(exc)
+    if base_url:
+        message = message.replace(str(base_url), _redact_url_for_diagnostics(base_url))
     env = {"MODEL_API_KEY": api_key} if api_key else {}
     if env:
         message = redact_text(message, env=env, secret_env_names={"MODEL_API_KEY"})
@@ -107,7 +110,7 @@ def _ok_result(root, resolved, response, action):
         "root": str(Path(root).resolve()),
         "model": resolved.name,
         "api": resolved.api,
-        "base_url": resolved.base_url,
+        "base_url": _redact_url_for_diagnostics(resolved.base_url),
         "final_text": action.text,
         "usage": dict(getattr(response, "usage", {}) or {}),
     }
@@ -119,9 +122,13 @@ def _error_result(root, resolved, exc):
         "root": str(Path(root).resolve()),
         "model": resolved.name,
         "api": resolved.api,
-        "base_url": resolved.base_url,
+        "base_url": _redact_url_for_diagnostics(resolved.base_url),
         "error_type": classify_live_error(exc),
-        "error": _redact_live_error_text(exc, api_key=getattr(resolved, "api_key", "")),
+        "error": _redact_live_error_text(
+            exc,
+            api_key=getattr(resolved, "api_key", ""),
+            base_url=getattr(resolved, "base_url", ""),
+        ),
     }
 
 

@@ -191,6 +191,7 @@ class AnthropicMessagesAdapter:
         if not tools:
             payload.pop("tools")
 
+        _validate_header_value("Anthropic-compatible API key", self.api_key)
         req = urllib.request.Request(
             f"{self.base_url}/messages",
             data=json.dumps(payload).encode("utf-8"),
@@ -202,8 +203,36 @@ class AnthropicMessagesAdapter:
             method="POST",
         )
 
-        with urllib.request.urlopen(req, timeout=self.timeout) as raw:
-            data = json.loads(raw.read().decode("utf-8"))
+        attempts = 3
+        for attempt in range(attempts):
+            try:
+                with urllib.request.urlopen(req, timeout=self.timeout) as raw:
+                    body_text = raw.read().decode("utf-8")
+                break
+            except urllib.error.HTTPError as exc:
+                body = exc.read().decode("utf-8", errors="replace")
+                if exc.code >= 500 and attempt < attempts - 1:
+                    time.sleep(0.5 * (attempt + 1))
+                    continue
+                raise RuntimeError(f"Anthropic-compatible request failed with HTTP {exc.code}: {body}") from exc
+            except (urllib.error.URLError, RemoteDisconnected) as exc:
+                if attempt < attempts - 1:
+                    time.sleep(0.5 * (attempt + 1))
+                    continue
+                raise RuntimeError(
+                    "Could not reach the Anthropic-compatible backend.\n"
+                    f"Base URL: {self.base_url}\n"
+                    f"Model: {self.model}"
+                ) from exc
+
+        try:
+            data = json.loads(body_text)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(
+                "Anthropic-compatible error: backend returned non-JSON content that could not be parsed"
+            ) from exc
+        if data.get("error"):
+            raise RuntimeError(f"Anthropic-compatible error: {data['error']}")
 
         stop_map = {
             "end_turn": StopReason.END_TURN,
