@@ -189,13 +189,19 @@ class AgentLoop:
             # 真正发给模型的请求由 build_v2 组装，二者独立、互不覆盖。
             _, prompt_metadata = agent._build_prompt_and_metadata(user_message)
             request, v2_metadata = agent.context_manager.build_v2(user_message)
-            # v2 特有的 metadata（system_cache_key / messages_count / breakpoints）
-            # 也并入 prompt_metadata，让 trace/report 能观察 v2 请求的真实形状。
-            # 但不要覆盖已存在的键（例如 prompt_cache_key）：build_v2 会把
-            # `prompt_cache_key` alias 到 system_cache_key，与旧路径的 prefix_hash
-            # 冲突。旧路径的 prompt_cache_key 依旧代表稳定 prefix 的哈希，
-            # 是 Task 8 之前统一的 cache key 语义。
+            # v2 是真正发到 provider 的形状：system_cache_key 必须反映 build_v2
+            # 里 system_text 的哈希（agent.prefix），而不是 build() 里
+            # base_prefix + memory_index + project_structure 的组合哈希——那个
+            # 组合会随记忆条目增删而变，与 provider 端 cache-control 命中语义
+            # 不一致。旧的 prompt_cache_key alias 仍保留 build() 版本，避免
+            # 下游依赖那个精确值的消费者立刻断裂。
+            v2_system_cache_key = v2_metadata.get("system_cache_key")
+            if v2_system_cache_key is not None:
+                prompt_metadata["system_cache_key"] = v2_system_cache_key
+                prompt_metadata["prompt_cache_key"] = v2_system_cache_key
             for key, value in v2_metadata.items():
+                if key in ("system_cache_key", "prompt_cache_key"):
+                    continue
                 prompt_metadata.setdefault(key, value)
             if attempts == 1:
                 task_state.resume_status = prompt_metadata.get("resume_status", task_state.resume_status)
