@@ -97,3 +97,65 @@ def test_openai_chat_complete_v2_posts_chat_completion_and_returns_response():
         "cache_hit": True,
     }
     assert client.last_completion_metadata == response.usage
+
+
+def test_openai_chat_complete_v2_uses_full_chat_completions_endpoint():
+    captured = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps({"choices": [{"message": {"content": "ok"}}]}).encode("utf-8")
+
+    def fake_urlopen(request, timeout):
+        captured["url"] = request.full_url
+        return FakeResponse()
+
+    client = OpenAIChatAdapter(
+        model="gpt-test",
+        base_url="https://api.openai.com/v1/chat/completions",
+        api_key="sk-test",
+        temperature=0.2,
+        timeout=30,
+    )
+
+    with patch("urllib.request.urlopen", fake_urlopen):
+        client.complete_v2(system=[], tools=[], messages=[{"role": "user", "content": "hello"}], max_tokens=10)
+
+    assert captured["url"] == "https://api.openai.com/v1/chat/completions"
+
+
+def test_openai_chat_complete_v2_appends_chat_completions_to_provider_base():
+    captured = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps({"choices": [{"message": {"content": "ok"}}]}).encode("utf-8")
+
+    def fake_urlopen(request, timeout):
+        captured["url"] = request.full_url
+        return FakeResponse()
+
+    client = OpenAIChatAdapter(
+        model="glm-test",
+        base_url="https://open.bigmodel.cn/api/paas/v4",
+        api_key="sk-test",
+        temperature=0.2,
+        timeout=30,
+    )
+
+    with patch("urllib.request.urlopen", fake_urlopen):
+        client.complete_v2(system=[], tools=[], messages=[{"role": "user", "content": "hello"}], max_tokens=10)
+
+    assert captured["url"] == "https://open.bigmodel.cn/api/paas/v4/chat/completions"

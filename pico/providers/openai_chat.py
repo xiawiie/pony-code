@@ -7,11 +7,18 @@ from http.client import RemoteDisconnected
 import urllib.error
 import urllib.request
 
-from ._shared import _normalize_versioned_base_url, _optional_int, _validate_header_value
+from ._shared import _optional_int, _validate_header_value
 from .message_utils import strip_pico_meta
 from .response import Response, StopReason
 
 OPENAI_CHAT_USER_AGENT = "pico/0.1"
+
+
+def _normalize_chat_completions_url(base_url):
+    base = str(base_url).rstrip("/")
+    if base.endswith("/chat/completions"):
+        return base
+    return base + "/chat/completions"
 
 
 def _content_to_text(content):
@@ -94,7 +101,8 @@ class OpenAIChatAdapter:
 
     def __init__(self, model, base_url, api_key, temperature, timeout):
         self.model = model
-        self.base_url = _normalize_versioned_base_url(base_url)
+        self.base_url = str(base_url).rstrip("/")
+        self.request_url = _normalize_chat_completions_url(base_url)
         self.api_key = api_key
         self.temperature = temperature
         self.timeout = timeout
@@ -137,7 +145,7 @@ class OpenAIChatAdapter:
             payload["temperature"] = self.temperature
 
         request = urllib.request.Request(
-            self.base_url + "/chat/completions",
+            self.request_url,
             data=json.dumps(payload).encode("utf-8"),
             headers=self._headers(),
             method="POST",
@@ -152,6 +160,7 @@ class OpenAIChatAdapter:
             raise RuntimeError(
                 "Could not reach the OpenAI Chat backend.\n"
                 f"Base URL: {self.base_url}\n"
+                f"Request URL: {self.request_url}\n"
                 f"Model: {self.model}"
             ) from exc
 

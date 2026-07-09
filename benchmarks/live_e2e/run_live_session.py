@@ -928,7 +928,7 @@ class _SniffingProviderWrapper:
 
 def _make_anthropic_client(config: RunConfig):
     """Instantiate a real Anthropic-compatible model client wrapped by a sniffer."""
-    from pico.providers.anthropic_compatible import AnthropicCompatibleModelClient
+    from pico.providers.anthropic_messages import AnthropicMessagesAdapter
 
     api_key = os.environ.get("PICO_ANTHROPIC_API_KEY", "")
     # Pico's canonical env var is PICO_ANTHROPIC_API_BASE (see pico/providers/defaults.py:47).
@@ -938,7 +938,7 @@ def _make_anthropic_client(config: RunConfig):
         or os.environ.get("PICO_ANTHROPIC_BASE_URL")
         or "https://api.anthropic.com"
     )
-    inner = AnthropicCompatibleModelClient(
+    inner = AnthropicMessagesAdapter(
         model=config.model,
         base_url=base_url,
         api_key=api_key,
@@ -1035,7 +1035,7 @@ def main() -> int:
 
     with FixtureManager(repo_root):
         # Lazy import of pico so a broken pico module produces exit 4 (not 2).
-        from pico.providers.anthropic_compatible import AnthropicCompatibleModelClient  # noqa: F401
+        from pico.providers.anthropic_messages import AnthropicMessagesAdapter  # noqa: F401
         from pico.runtime import Pico
         from pico.session_store import SessionStore
         from pico.workspace import WorkspaceContext
