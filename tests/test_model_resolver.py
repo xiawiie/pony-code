@@ -50,6 +50,23 @@ def test_resolves_ollama_host_to_ollama():
     assert resolved.adapter_class == "OllamaGenerateAdapter"
 
 
+def test_resolves_openai_chat_completions_endpoint_to_openai_chat():
+    resolved = resolve_model_connection(
+        connection("gpt-4o", "https://api.openai.com/v1/chat/completions")
+    )
+
+    assert resolved.api == "openai-chat"
+    assert resolved.adapter_class == "OpenAIChatAdapter"
+
+
+def test_resolved_model_connection_repr_does_not_expose_api_key():
+    resolved = resolve_model_connection(
+        connection("gpt-5.4", "https://example.test/v1", api="openai-responses")
+    )
+
+    assert "sk-test" not in repr(resolved)
+
+
 def test_explicit_api_wins_over_inference():
     resolved = resolve_model_connection(
         connection("gpt-5.4", "https://example.test/v1", api="openai-responses")
