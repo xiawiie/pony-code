@@ -75,10 +75,17 @@ def handle_init(tokens, cwd, args):
     workspace = WorkspaceContext.build(cwd)
     config_path = Path(workspace.repo_root) / "pico.toml"
     env_path = Path(workspace.repo_root) / ".env"
-    _write_model_toml(config_path, _render_model_toml(options))
+    model_toml = _render_model_toml(options)
     written = {"updated": [], "added": [], "unchanged": []}
+    env_text = None
     if options["api_key_env"] and options["api_key"] is not None:
-        written = _write_env_assignments(env_path, {options["api_key_env"]: options["api_key"]})
+        env_text, written = _prepare_env_assignments(
+            env_path,
+            {options["api_key_env"]: options["api_key"]},
+        )
+    if env_text is not None:
+        _write_env_text(env_path, env_text)
+    _write_model_toml(config_path, model_toml)
     data = {
         "config_path": str(config_path),
         "env_path": str(env_path),
@@ -240,14 +247,26 @@ def _toml_escape(value):
 
 
 def _write_env_assignments(env_path, assignments):
-    env_path.parent.mkdir(parents=True, exist_ok=True)
+    env_text, written = _prepare_env_assignments(env_path, assignments)
+    _write_env_text(env_path, env_text)
+    return written
+
+
+def _prepare_env_assignments(env_path, assignments):
     existing_lines = env_path.read_text(encoding="utf-8").splitlines() if env_path.exists() else []
     remaining = dict(assignments)
     rendered = []
     updated = []
     unchanged = []
-    for line in existing_lines:
-        parsed = _parse_env_line(line)
+    for line_number, line in enumerate(existing_lines, start=1):
+        try:
+            parsed = _parse_env_line(line)
+        except ValueError as exc:
+            raise CliError(
+                code="usage",
+                message=f"invalid .env line {line_number}: {exc}",
+                exit_code=CLI_EXIT_USAGE,
+            ) from exc
         if parsed is None:
             rendered.append(line)
             continue
@@ -269,8 +288,13 @@ def _write_env_assignments(env_path, assignments):
         for name, value in remaining.items():
             rendered.append(_format_env_assignment(name, value))
 
-    env_path.write_text("\n".join(rendered).rstrip() + "\n", encoding="utf-8")
-    return {"updated": updated, "added": added, "unchanged": unchanged}
+    env_text = "\n".join(rendered).rstrip() + "\n"
+    return env_text, {"updated": updated, "added": added, "unchanged": unchanged}
+
+
+def _write_env_text(env_path, env_text):
+    env_path.parent.mkdir(parents=True, exist_ok=True)
+    env_path.write_text(env_text, encoding="utf-8")
 
 
 def _format_env_assignment(name, value):

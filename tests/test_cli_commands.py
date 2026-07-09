@@ -379,6 +379,51 @@ def test_init_rejects_unusable_api_key_configuration(tmp_path, tokens):
     assert not (tmp_path / ".env").exists()
 
 
+def test_init_malformed_existing_env_returns_usage_without_changing_pico_toml(
+    tmp_path,
+):
+    original_pico_toml = "[context]\nhistory_soft_cap = 1234\n"
+    (tmp_path / "pico.toml").write_text(original_pico_toml, encoding="utf-8")
+    (tmp_path / ".env").write_text("MALFORMED\n", encoding="utf-8")
+
+    code = main([
+        "--cwd",
+        str(tmp_path),
+        "init",
+        "--model",
+        "qwen-max",
+        "--base-url",
+        "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "--api-key-env",
+        "DASHSCOPE_API_KEY",
+        "--api-key",
+        "sk-project",
+    ])
+
+    assert code == 2
+    assert (tmp_path / "pico.toml").read_text(encoding="utf-8") == original_pico_toml
+
+
+def test_init_api_key_with_newline_fails_without_writing_pico_toml(tmp_path):
+    code = main([
+        "--cwd",
+        str(tmp_path),
+        "init",
+        "--model",
+        "qwen-max",
+        "--base-url",
+        "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "--api-key-env",
+        "DASHSCOPE_API_KEY",
+        "--api-key",
+        "sk-project\nsecret",
+    ])
+
+    assert code == 2
+    assert not (tmp_path / "pico.toml").exists()
+    assert not (tmp_path / ".env").exists()
+
+
 def test_init_json_redacts_api_key_value(tmp_path, capsys):
     code = main([
         "--cwd",
