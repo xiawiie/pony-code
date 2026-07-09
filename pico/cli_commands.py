@@ -1,7 +1,5 @@
 """Command handlers for Pico's explicit CLI Surface."""
 
-import getpass
-import sys
 from pathlib import Path
 
 from .cli_errors import CLI_EXIT_USAGE, CliError
@@ -13,15 +11,6 @@ from .cli_output import print_result
 from .cli_recovery import handle_checkpoints, handle_runs, handle_sessions  # noqa: F401
 from .cli_session import handle_session_command
 from .config import _parse_env_line
-from .providers.defaults import (
-    API_KEY_ENV_NAMES,
-    BASE_URL_ENV_NAMES,
-    DEFAULT_BASE_URLS,
-    DEFAULT_MODELS,
-    DEFAULT_PROVIDER,
-    MODEL_ENV_NAMES,
-    PROVIDER_CHOICES,
-)
 from .workspace import WorkspaceContext
 
 
@@ -41,7 +30,7 @@ Available Commands:
   repl         Start interactive REPL
   status       Show local workspace state
   doctor       Check config, storage, auth, and connectivity
-  init         Create or update project .env provider config
+  init         Create or update project model config
   config       Configuration inspection
   runs         Run artifact inspection
   sessions     Session inspection
@@ -79,58 +68,27 @@ def handle_session(tokens, root, args):
 
 def handle_init(tokens, cwd, args):
     options = _parse_init_tokens(tokens)
+    if not options["model"] or not options["base_url"]:
+        raise _init_usage_error()
     workspace = WorkspaceContext.build(cwd)
+    config_path = Path(workspace.repo_root) / "pico.toml"
     env_path = Path(workspace.repo_root) / ".env"
-    existing = _read_env_assignments(env_path)
-    provider = options["provider"] or getattr(args, "provider", None) or existing.get("PICO_PROVIDER") or DEFAULT_PROVIDER
-    if provider not in PROVIDER_CHOICES:
-        raise CliError(
-            code="usage",
-            message=f"unknown provider: {provider}",
-            hint=f"Expected one of: {', '.join(PROVIDER_CHOICES)}.",
-            exit_code=CLI_EXIT_USAGE,
-        )
-
-    assignments = {"PICO_PROVIDER": provider}
-    model_name = _primary_env_name(MODEL_ENV_NAMES, provider)
-    base_url_name = _primary_env_name(BASE_URL_ENV_NAMES, provider)
-    api_key_name = _primary_env_name(API_KEY_ENV_NAMES, provider)
-
-    if model_name:
-        assignments[model_name] = (
-            options["model"]
-            or getattr(args, "model", None)
-            or existing.get(model_name)
-            or DEFAULT_MODELS.get(provider, "")
-        )
-    if base_url_name:
-        assignments[base_url_name] = (
-            options["base_url"]
-            or getattr(args, "base_url", None)
-            or _host_override(args, provider)
-            or existing.get(base_url_name)
-            or DEFAULT_BASE_URLS.get(provider, "")
-        )
-
-    api_key_value = ""
-    if api_key_name:
-        api_key_value = options["api_key"]
-        if api_key_value is None:
-            api_key_value = existing.get(api_key_name)
-        if api_key_value is None:
-            api_key_value = _prompt_api_key(provider, args)
-        assignments[api_key_name] = api_key_value or ""
-
-    written = _write_env_assignments(env_path, assignments)
+    config_path.write_text(_render_model_toml(options), encoding="utf-8")
+    written = {"updated": [], "added": [], "unchanged": []}
+    if options["api_key_env"] and options["api_key"] is not None:
+        written = _write_env_assignments(env_path, {options["api_key_env"]: options["api_key"]})
     data = {
+        "config_path": str(config_path),
         "env_path": str(env_path),
-        "provider": provider,
+        "model": options["model"],
+        "base_url": options["base_url"],
+        "api": options["api"],
         "updated": written["updated"],
         "added": written["added"],
         "unchanged": written["unchanged"],
         "api_key": {
-            "present": bool(api_key_value),
-            "name": api_key_name,
+            "present": bool(options["api_key_env"] and options["api_key"] is not None),
+            "name": options["api_key_env"],
         },
     }
     return print_result("config_init", data, args, _render_init)
@@ -144,10 +102,13 @@ def _render_init(data):
         api_key_text = "not required"
     changed = [*data["updated"], *data["added"]]
     lines = [
-        "Pico init — Project .env configured",
+        "Pico init — Project model configured",
         "",
+        _line("config file", data["config_path"]),
         _line("env file", data["env_path"]),
-        _line("provider", data["provider"]),
+        _line("model", data["model"]),
+        _line("base url", data["base_url"]),
+        _line("api", data["api"] or "-"),
         _line("api key", api_key_text),
         _line("updated", ", ".join(changed) if changed else "-"),
     ]
@@ -156,22 +117,23 @@ def _render_init(data):
 
 def _parse_init_tokens(tokens):
     options = {
-        "provider": None,
         "model": None,
         "base_url": None,
+        "api_key_env": None,
         "api_key": None,
+        "api": None,
     }
     index = 0
     while index < len(tokens):
         token = tokens[index]
-        if token in {"--provider", "--model", "--base-url", "--api-key"}:
+        if token in {"--model", "--base-url", "--api-key-env", "--api-key", "--api"}:
             if index + 1 >= len(tokens):
                 raise _init_usage_error()
             key = token[2:].replace("-", "_")
             options[key] = tokens[index + 1]
             index += 2
             continue
-        for flag in ("--provider=", "--model=", "--base-url=", "--api-key="):
+        for flag in ("--model=", "--base-url=", "--api-key-env=", "--api-key=", "--api="):
             if token.startswith(flag):
                 key = flag[2:-1].replace("-", "_")
                 options[key] = token[len(flag):]
@@ -185,45 +147,31 @@ def _parse_init_tokens(tokens):
 def _init_usage_error():
     return CliError(
         code="usage",
-        message="usage: pico-cli init [--provider <name>] [--model <name>] [--base-url <url>] [--api-key <key>]",
+        message="usage: pico-cli init --model <name> --base-url <url> [--api-key-env <env>] [--api-key <key>] [--api <adapter>]",
         exit_code=CLI_EXIT_USAGE,
     )
 
 
-def _primary_env_name(mapping, provider):
-    names = mapping.get(provider, ())
-    return names[0] if names else ""
+def _render_model_toml(options):
+    lines = ["[model]"]
+    lines.append(f'name = "{_toml_escape(options["model"])}"')
+    lines.append(f'base_url = "{_toml_escape(options["base_url"])}"')
+    if options["api_key_env"]:
+        lines.append(f'api_key_env = "{_toml_escape(options["api_key_env"])}"')
+    if options["api"]:
+        lines.append(f'api = "{_toml_escape(options["api"])}"')
+    return "\n".join(lines) + "\n"
 
 
-def _host_override(args, provider):
-    if provider != "ollama":
-        return None
-    host = getattr(args, "host", None)
-    if host and host != DEFAULT_BASE_URLS.get("ollama"):
-        return host
-    return None
-
-
-def _prompt_api_key(provider, args):
-    if getattr(args, "no_input", False) or not sys.stdin.isatty():
-        return ""
-    try:
-        return getpass.getpass(f"{provider} API key (leave blank to fill later): ")
-    except (EOFError, KeyboardInterrupt):
-        return ""
-
-
-def _read_env_assignments(env_path):
-    if not env_path.exists():
-        return {}
-    assignments = {}
-    for line in env_path.read_text(encoding="utf-8").splitlines():
-        parsed = _parse_env_line(line)
-        if parsed is None:
-            continue
-        name, value = parsed
-        assignments[name] = value
-    return assignments
+def _toml_escape(value):
+    text = str(value or "")
+    if "\n" in text or "\r" in text:
+        raise CliError(
+            code="usage",
+            message="model config values cannot contain newlines",
+            exit_code=CLI_EXIT_USAGE,
+        )
+    return text.replace("\\", "\\\\").replace('"', '\\"')
 
 
 def _write_env_assignments(env_path, assignments):

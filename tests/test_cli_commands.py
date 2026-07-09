@@ -150,7 +150,7 @@ def test_cli_command_specs_drive_namespace_tables():
     }
 
 
-def test_init_creates_project_env_without_building_agent(tmp_path, monkeypatch, capsys):
+def test_init_creates_model_config_without_building_agent(tmp_path, monkeypatch, capsys):
     def fail_build_agent(args):
         raise AssertionError("init must not build a Pico agent")
 
@@ -160,18 +160,29 @@ def test_init_creates_project_env_without_building_agent(tmp_path, monkeypatch, 
         "--cwd",
         str(tmp_path),
         "init",
-        "--provider",
-        "deepseek",
+        "--model",
+        "deepseek-chat",
+        "--base-url",
+        "https://api.deepseek.com/anthropic",
+        "--api-key-env",
+        "DEEPSEEK_API_KEY",
         "--api-key",
         "sk-project-deepseek",
+        "--api",
+        "anthropic-messages",
     ])
 
     assert code == 0
+    pico_toml = (tmp_path / "pico.toml").read_text(encoding="utf-8")
+    assert pico_toml == (
+        "[model]\n"
+        'name = "deepseek-chat"\n'
+        'base_url = "https://api.deepseek.com/anthropic"\n'
+        'api_key_env = "DEEPSEEK_API_KEY"\n'
+        'api = "anthropic-messages"\n'
+    )
     env_text = (tmp_path / ".env").read_text(encoding="utf-8")
-    assert "PICO_PROVIDER=deepseek\n" in env_text
-    assert "PICO_DEEPSEEK_MODEL=deepseek-v4-pro\n" in env_text
-    assert "PICO_DEEPSEEK_API_BASE=https://api.deepseek.com/anthropic\n" in env_text
-    assert "PICO_DEEPSEEK_API_KEY=sk-project-deepseek\n" in env_text
+    assert "DEEPSEEK_API_KEY=sk-project-deepseek\n" in env_text
 
     out = capsys.readouterr().out
     assert out.startswith("Pico init")
@@ -181,20 +192,20 @@ def test_init_creates_project_env_without_building_agent(tmp_path, monkeypatch, 
 
     assert code == 0
     payload = json.loads(capsys.readouterr().out)
-    assert payload["data"]["provider"]["value"] == "deepseek"
-    assert payload["data"]["api_key"] == {
-        "present": True,
-        "source": "project_env",
-        "name": "PICO_DEEPSEEK_API_KEY",
-    }
+    assert payload["data"]["model"]["status"] == "ok"
+    assert payload["data"]["model"]["name"] == "deepseek-chat"
+    assert payload["data"]["model"]["base_url"] == "https://api.deepseek.com/anthropic"
+    assert payload["data"]["model"]["api_key_env"] == "DEEPSEEK_API_KEY"
+    assert payload["data"]["model"]["api_key_present"] is True
+    assert payload["data"]["model"]["api"] == "anthropic-messages"
+    assert payload["data"]["model"]["adapter"] == "AnthropicMessagesAdapter"
 
 
 def test_init_updates_existing_env_without_dropping_unrelated_lines(tmp_path, capsys):
     (tmp_path / ".env").write_text(
         "# keep this comment\n"
         "OTHER_SETTING=kept\n"
-        "PICO_PROVIDER=deepseek\n"
-        "PICO_DEEPSEEK_API_KEY=old-secret\n",
+        "MODEL_API_KEY=old-secret\n",
         encoding="utf-8",
     )
 
@@ -202,22 +213,25 @@ def test_init_updates_existing_env_without_dropping_unrelated_lines(tmp_path, ca
         "--cwd",
         str(tmp_path),
         "init",
-        "--provider",
-        "openai",
         "--model",
         "gpt-project",
+        "--base-url",
+        "https://www.right.codes/codex/v1",
+        "--api-key-env",
+        "MODEL_API_KEY",
         "--api-key",
         "sk-openai-project",
     ])
 
     assert code == 0
+    pico_toml = (tmp_path / "pico.toml").read_text(encoding="utf-8")
+    assert 'name = "gpt-project"\n' in pico_toml
+    assert 'base_url = "https://www.right.codes/codex/v1"\n' in pico_toml
+    assert 'api_key_env = "MODEL_API_KEY"\n' in pico_toml
     env_text = (tmp_path / ".env").read_text(encoding="utf-8")
     assert "# keep this comment\n" in env_text
     assert "OTHER_SETTING=kept\n" in env_text
-    assert "PICO_PROVIDER=openai\n" in env_text
-    assert "PICO_OPENAI_MODEL=gpt-project\n" in env_text
-    assert "PICO_OPENAI_API_BASE=https://www.right.codes/codex/v1\n" in env_text
-    assert "PICO_OPENAI_API_KEY=sk-openai-project\n" in env_text
+    assert "MODEL_API_KEY=sk-openai-project\n" in env_text
 
     out = capsys.readouterr().out
     assert "updated" in out
@@ -231,37 +245,50 @@ def test_init_json_redacts_api_key_value(tmp_path, capsys):
         "--format",
         "json",
         "init",
-        "--provider",
-        "anthropic",
+        "--model",
+        "claude-sonnet-4-6",
+        "--base-url",
+        "https://www.right.codes/claude/v1",
+        "--api-key-env",
+        "ANTHROPIC_API_KEY",
         "--api-key",
         "sk-anthropic-project",
+        "--api",
+        "anthropic-messages",
     ])
 
     assert code == 0
     output = capsys.readouterr().out
     payload = json.loads(output)
     assert payload["kind"] == "config_init"
-    assert payload["data"]["provider"] == "anthropic"
+    assert payload["data"]["model"] == "claude-sonnet-4-6"
+    assert payload["data"]["base_url"] == "https://www.right.codes/claude/v1"
+    assert payload["data"]["api"] == "anthropic-messages"
     assert payload["data"]["api_key"] == {
         "present": True,
-        "name": "PICO_ANTHROPIC_API_KEY",
+        "name": "ANTHROPIC_API_KEY",
     }
     assert "sk-anthropic-project" not in output
 
 
-def test_init_preserves_existing_ollama_host_when_cli_host_is_default(tmp_path):
-    (tmp_path / ".env").write_text(
-        "PICO_PROVIDER=ollama\n"
-        "PICO_OLLAMA_HOST=http://ollama.example:11434\n",
-        encoding="utf-8",
-    )
-
-    code = main(["--cwd", str(tmp_path), "init", "--provider", "ollama"])
+def test_init_without_api_key_env_does_not_write_env_file(tmp_path):
+    code = main([
+        "--cwd",
+        str(tmp_path),
+        "init",
+        "--model",
+        "qwen3.5:4b",
+        "--base-url",
+        "http://127.0.0.1:11434",
+    ])
 
     assert code == 0
-    env_text = (tmp_path / ".env").read_text(encoding="utf-8")
-    assert "PICO_PROVIDER=ollama\n" in env_text
-    assert "PICO_OLLAMA_HOST=http://ollama.example:11434\n" in env_text
+    assert (tmp_path / "pico.toml").read_text(encoding="utf-8") == (
+        "[model]\n"
+        'name = "qwen3.5:4b"\n'
+        'base_url = "http://127.0.0.1:11434"\n'
+    )
+    assert not (tmp_path / ".env").exists()
 
 
 def test_repl_help_renders_help_details(tmp_path, monkeypatch, capsys):

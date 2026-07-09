@@ -3,22 +3,39 @@ import os
 from urllib import error
 
 from pico.cli import main
-from pico.cli_diagnostics import check_provider_connectivity
+from pico.cli_diagnostics import check_model_connectivity
 
 
-def _clear_provider_env(monkeypatch):
+def _clear_model_env(monkeypatch):
     for name in (
-        "PICO_PROVIDER",
-        "PICO_DEEPSEEK_MODEL",
-        "DEEPSEEK_MODEL",
-        "PICO_DEEPSEEK_API_KEY",
         "DEEPSEEK_API_KEY",
+        "MODEL_API_KEY",
     ):
         monkeypatch.delenv(name, raising=False)
 
 
+def _write_model_config(
+    tmp_path,
+    *,
+    name="deepseek-chat",
+    base_url="https://api.deepseek.com/anthropic",
+    api_key_env="DEEPSEEK_API_KEY",
+    api="anthropic-messages",
+):
+    lines = [
+        "[model]",
+        f'name = "{name}"',
+        f'base_url = "{base_url}"',
+    ]
+    if api_key_env:
+        lines.append(f'api_key_env = "{api_key_env}"')
+    if api:
+        lines.append(f'api = "{api}"')
+    (tmp_path / "pico.toml").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def test_status_json_reports_storage_without_building_agent(tmp_path, monkeypatch, capsys):
-    _clear_provider_env(monkeypatch)
+    _clear_model_env(monkeypatch)
     (tmp_path / ".pico" / "sessions").mkdir(parents=True)
     (tmp_path / ".pico" / "runs" / "run_1").mkdir(parents=True)
     (tmp_path / ".pico" / "checkpoints" / "records").mkdir(parents=True)
@@ -37,11 +54,12 @@ def test_status_json_reports_storage_without_building_agent(tmp_path, monkeypatc
     assert payload["data"]["storage"]["runs"] is True
     assert payload["data"]["storage"]["checkpoints"] is True
     assert payload["data"]["latest"]["run_id"] == "run_1"
+    assert payload["data"]["model"]["status"] == "ok"
     assert "memory" not in payload["data"]
 
 
 def test_status_text_uses_grouped_cli_output(tmp_path, monkeypatch, capsys):
-    _clear_provider_env(monkeypatch)
+    _clear_model_env(monkeypatch)
     (tmp_path / ".pico" / "sessions").mkdir(parents=True)
     (tmp_path / ".pico" / "runs" / "run_1").mkdir(parents=True)
 
@@ -51,15 +69,17 @@ def test_status_text_uses_grouped_cli_output(tmp_path, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert out.startswith("Pico status — Local harness state\n")
     assert "Workspace" in out
-    assert "Provider" in out
+    assert "Model" in out
+    assert "Provider" not in out
     assert "Storage" in out
     assert not out.lstrip().startswith("{")
 
 
-def test_config_show_json_reports_sources_without_secret_values(tmp_path, monkeypatch, capsys):
-    _clear_provider_env(monkeypatch)
+def test_config_show_json_reports_model_without_secret_values(tmp_path, monkeypatch, capsys):
+    _clear_model_env(monkeypatch)
+    _write_model_config(tmp_path)
     (tmp_path / ".env").write_text(
-        "PICO_PROVIDER=deepseek\nPICO_DEEPSEEK_API_KEY=secret-value\n",
+        "DEEPSEEK_API_KEY=secret-value\n",
         encoding="utf-8",
     )
 
@@ -74,25 +94,26 @@ def test_config_show_json_reports_sources_without_secret_values(tmp_path, monkey
     assert code == 0
     payload = json.loads(captured.out)
     assert payload["kind"] == "config_show"
-    assert payload["data"]["provider"] == {
-        "value": "deepseek",
-        "source": "project_env",
-        "name": "PICO_PROVIDER",
-    }
-    assert payload["data"]["api_key"] == {
-        "present": True,
-        "source": "project_env",
-        "name": "PICO_DEEPSEEK_API_KEY",
+    assert payload["data"]["model"] == {
+        "status": "ok",
+        "name": "deepseek-chat",
+        "base_url": "https://api.deepseek.com/anthropic",
+        "api_key_env": "DEEPSEEK_API_KEY",
+        "api_key_present": True,
+        "api": "anthropic-messages",
+        "adapter": "AnthropicMessagesAdapter",
+        "native_tools": True,
+        "prompt_cache": False,
     }
     assert "secret-value" not in captured.out
 
 
 def test_config_show_skips_malformed_project_env_lines_with_warning(tmp_path, monkeypatch, capsys):
-    _clear_provider_env(monkeypatch)
+    _clear_model_env(monkeypatch)
+    _write_model_config(tmp_path)
     (tmp_path / ".env").write_text(
-        "PICO_PROVIDER=deepseek\n"
-        "not a valid env line\n"
-        "PICO_DEEPSEEK_API_KEY=secret-value\n",
+        "DEEPSEEK_API_KEY=secret-value\n"
+        "not a valid env line\n",
         encoding="utf-8",
     )
 
@@ -101,16 +122,17 @@ def test_config_show_skips_malformed_project_env_lines_with_warning(tmp_path, mo
     captured = capsys.readouterr()
     assert code == 0
     payload = json.loads(captured.out)
-    assert payload["data"]["provider"]["value"] == "deepseek"
-    assert payload["data"]["api_key"]["present"] is True
+    assert payload["data"]["model"]["status"] == "ok"
+    assert payload["data"]["model"]["api_key_present"] is True
     assert "warning: skipped invalid .env line 2" in captured.err
     assert "secret-value" not in captured.out
 
 
 def test_config_show_text_uses_grouped_cli_output_without_secret_value(tmp_path, monkeypatch, capsys):
-    _clear_provider_env(monkeypatch)
+    _clear_model_env(monkeypatch)
+    _write_model_config(tmp_path)
     (tmp_path / ".env").write_text(
-        "PICO_PROVIDER=deepseek\nPICO_DEEPSEEK_API_KEY=secret-value\n",
+        "DEEPSEEK_API_KEY=secret-value\n",
         encoding="utf-8",
     )
 
@@ -119,17 +141,18 @@ def test_config_show_text_uses_grouped_cli_output_without_secret_value(tmp_path,
     captured = capsys.readouterr()
     assert code == 0
     assert captured.out.startswith("Pico config — Effective configuration\n")
-    assert "Provider" in captured.out
-    assert "Credentials" in captured.out
+    assert "Model" in captured.out
+    assert "Provider" not in captured.out
     assert "present" in captured.out
     assert "secret-value" not in captured.out
     assert not captured.out.lstrip().startswith("{")
 
 
 def test_config_show_does_not_mutate_environment(tmp_path, monkeypatch, capsys):
-    _clear_provider_env(monkeypatch)
+    _clear_model_env(monkeypatch)
+    _write_model_config(tmp_path)
     (tmp_path / ".env").write_text(
-        "PICO_DEEPSEEK_API_KEY=secret-value\n",
+        "DEEPSEEK_API_KEY=secret-value\n",
         encoding="utf-8",
     )
 
@@ -137,7 +160,7 @@ def test_config_show_does_not_mutate_environment(tmp_path, monkeypatch, capsys):
 
     captured = capsys.readouterr()
     assert code == 0
-    assert "PICO_DEEPSEEK_API_KEY" not in os.environ
+    assert "DEEPSEEK_API_KEY" not in os.environ
     assert "secret-value" not in captured.out
 
 
@@ -148,7 +171,7 @@ def test_doctor_offline_skips_connectivity(tmp_path, monkeypatch, capsys):
         called["connectivity"] = True
         return {"status": "ok"}
 
-    monkeypatch.setattr("pico.cli_diagnostics.check_provider_connectivity", fake_connectivity)
+    monkeypatch.setattr("pico.cli_diagnostics.check_model_connectivity", fake_connectivity)
 
     code = main(["--cwd", str(tmp_path), "--format", "json", "doctor", "--offline"])
 
@@ -156,7 +179,7 @@ def test_doctor_offline_skips_connectivity(tmp_path, monkeypatch, capsys):
     payload = json.loads(capsys.readouterr().out)
     assert payload["kind"] == "doctor"
     assert called == {}
-    assert payload["data"]["provider_connectivity"]["status"] == "skipped"
+    assert payload["data"]["model_connectivity"]["status"] == "skipped"
 
 
 def test_doctor_text_uses_grouped_cli_output(tmp_path, monkeypatch, capsys):
@@ -167,9 +190,9 @@ def test_doctor_text_uses_grouped_cli_output(tmp_path, monkeypatch, capsys):
     assert out.startswith("Pico doctor — CLI health check\n")
     assert "Workspace" in out
     assert "Config" in out
-    assert "Credentials" in out
+    assert "Model" in out
     assert "Storage" in out
-    assert "Provider connectivity" in out
+    assert "Model connectivity" in out
     assert "skipped" in out
     assert not out.lstrip().startswith("{")
 
@@ -191,37 +214,43 @@ def test_doctor_reports_connectivity_as_diagnostic_result(tmp_path, monkeypatch,
     def fake_connectivity(config):
         return {
             "status": "error",
-            "category": "provider_connectivity",
+            "category": "model_connectivity",
             "message": "connection timed out",
         }
 
-    monkeypatch.setattr("pico.cli_diagnostics.check_provider_connectivity", fake_connectivity)
+    monkeypatch.setattr("pico.cli_diagnostics.check_model_connectivity", fake_connectivity)
 
     code = main(["--cwd", str(tmp_path), "--format", "json", "doctor"])
 
     assert code == 0
     payload = json.loads(capsys.readouterr().out)
-    assert payload["data"]["provider_connectivity"]["category"] == "provider_connectivity"
-    assert payload["data"]["provider_connectivity"]["message"] == "connection timed out"
+    assert payload["data"]["model_connectivity"]["category"] == "model_connectivity"
+    assert payload["data"]["model_connectivity"]["message"] == "connection timed out"
 
 
 def test_doctor_json_redacts_secret_base_url(tmp_path, monkeypatch, capsys):
+    _write_model_config(
+        tmp_path,
+        name="custom-model",
+        base_url="https://user:pass@example.com/v1?token=secret#frag",
+        api_key_env="",
+        api="openai-chat",
+    )
+
     def fake_connectivity(config):
         return {
             "status": "error",
-            "category": "provider_connectivity",
+            "category": "model_connectivity",
             "message": "offline test double",
         }
 
-    monkeypatch.setattr("pico.cli_diagnostics.check_provider_connectivity", fake_connectivity)
+    monkeypatch.setattr("pico.cli_diagnostics.check_model_connectivity", fake_connectivity)
 
     code = main([
         "--cwd",
         str(tmp_path),
         "--format",
         "json",
-        "--base-url",
-        "https://user:pass@example.com/v1?token=secret#frag",
         "doctor",
     ])
 
@@ -229,14 +258,14 @@ def test_doctor_json_redacts_secret_base_url(tmp_path, monkeypatch, capsys):
     output = capsys.readouterr().out
     payload = json.loads(output)
     assert payload["kind"] == "doctor"
-    assert payload["data"]["config"]["base_url"]["value"] == "https://example.com/v1"
+    assert payload["data"]["config"]["model"]["base_url"] == "https://example.com/v1"
     assert "user:pass" not in output
     assert "token=" not in output
     assert "secret" not in output
     assert "#frag" not in output
 
 
-def test_provider_connectivity_http_500_is_non_ok_and_redacts_url(monkeypatch):
+def test_model_connectivity_http_500_is_non_ok_and_redacts_url(monkeypatch):
     def fake_urlopen(url, timeout):
         raise error.HTTPError(
             url,
@@ -248,10 +277,12 @@ def test_provider_connectivity_http_500_is_non_ok_and_redacts_url(monkeypatch):
 
     monkeypatch.setattr("pico.cli_diagnostics.request.urlopen", fake_urlopen)
 
-    result = check_provider_connectivity(
+    result = check_model_connectivity(
         {
-            "provider": {"value": "openai"},
-            "base_url": {"value": "https://user:pass@example.com/v1?token=secret#frag"},
+            "model": {
+                "api": "openai-chat",
+                "base_url": "https://user:pass@example.com/v1?token=secret#frag",
+            },
         }
     )
 
@@ -263,16 +294,18 @@ def test_provider_connectivity_http_500_is_non_ok_and_redacts_url(monkeypatch):
     assert "#frag" not in json.dumps(result)
 
 
-def test_provider_connectivity_generic_error_sanitizes_url_in_message(monkeypatch):
+def test_model_connectivity_generic_error_sanitizes_url_in_message(monkeypatch):
     def fake_urlopen(url, timeout):
         raise RuntimeError(f"failed to open {url}")
 
     monkeypatch.setattr("pico.cli_diagnostics.request.urlopen", fake_urlopen)
 
-    result = check_provider_connectivity(
+    result = check_model_connectivity(
         {
-            "provider": {"value": "openai"},
-            "base_url": {"value": "https://user:pass@example.com/v1?token=secret#frag"},
+            "model": {
+                "api": "openai-chat",
+                "base_url": "https://user:pass@example.com/v1?token=secret#frag",
+            },
         }
     )
 
@@ -297,7 +330,7 @@ def test_doctor_unknown_arg_returns_usage_without_agent_or_connectivity(tmp_path
         return {"status": "ok"}
 
     monkeypatch.setattr("pico.cli.build_agent", fail_build_agent)
-    monkeypatch.setattr("pico.cli_diagnostics.check_provider_connectivity", fake_connectivity)
+    monkeypatch.setattr("pico.cli_diagnostics.check_model_connectivity", fake_connectivity)
 
     code = main(["--cwd", str(tmp_path), "--format", "json", "doctor", "--wat"])
 

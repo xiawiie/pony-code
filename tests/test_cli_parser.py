@@ -68,5 +68,15 @@ def test_parser_defaults_are_generous_for_coding_agent_runs():
 
     assert args.max_steps == DEFAULT_MAX_STEPS == 12
     assert args.max_new_tokens == DEFAULT_MAX_NEW_TOKENS == 2048
-    assert args.ollama_timeout == 300
-    assert args.openai_timeout == 300
+    assert args.model_timeout == 300
+
+
+def test_parser_no_longer_exposes_provider_axis():
+    parser = build_arg_parser()
+    option_dests = {action.dest for action in parser._actions}
+
+    assert "provider" not in option_dests
+    assert "host" not in option_dests
+    assert "base_url" not in option_dests
+    assert "ollama_timeout" not in option_dests
+    assert "openai_timeout" not in option_dests
