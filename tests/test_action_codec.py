@@ -49,6 +49,36 @@ def test_native_multiple_tool_calls_tracks_ignored_count():
     assert action.ignored_tool_count == 1
 
 
+def test_native_tool_call_missing_name_is_retry_not_tool_action():
+    action = decode(
+        Response(
+            stop_reason=StopReason.TOOL_USE,
+            content=[{"type": "tool_use", "id": "toolu_bad", "name": "", "input": {"path": "README.md"}}],
+            usage={},
+        )
+    )
+
+    assert isinstance(action, RetryAction)
+    assert action.origin == ActionOrigin.UNSUPPORTED_RESPONSE
+    assert action.model_visible is True
+    assert "tool name" in action.reason
+
+
+def test_native_tool_call_non_mapping_input_is_retry_not_tool_action():
+    action = decode(
+        Response(
+            stop_reason=StopReason.TOOL_USE,
+            content=[{"type": "tool_use", "id": "toolu_bad", "name": "read_file", "input": "not-a-dict"}],
+            usage={},
+        )
+    )
+
+    assert isinstance(action, RetryAction)
+    assert action.origin == ActionOrigin.UNSUPPORTED_RESPONSE
+    assert action.model_visible is True
+    assert "tool arguments" in action.reason
+
+
 def test_leading_json_tool_protocol_decodes_to_tool_action():
     action = decode(
         Response(
@@ -190,6 +220,33 @@ def test_stop_sequence_without_content_is_model_visible_retry():
     assert isinstance(action, RetryAction)
     assert action.origin == ActionOrigin.STOP_SEQUENCE
     assert action.model_visible is True
+
+
+def test_stop_sequence_with_valid_leading_tool_still_decodes_to_tool_action():
+    action = decode(
+        Response(
+            stop_reason=StopReason.STOP_SEQUENCE,
+            content=[{"type": "text", "text": '<tool>{"name":"read_file","args":{"path":"README.md"}}</tool>'}],
+            usage={},
+        )
+    )
+
+    assert isinstance(action, ToolAction)
+    assert action.name == "read_file"
+    assert action.arguments == {"path": "README.md"}
+    assert action.origin == ActionOrigin.TEXT_PROTOCOL_TOOL
+
+
+def test_stop_sequence_with_valid_final_still_decodes_to_final_action():
+    action = decode(
+        Response(
+            stop_reason=StopReason.STOP_SEQUENCE,
+            content=[{"type": "text", "text": "<final>Done.</final>"}],
+            usage={},
+        )
+    )
+
+    assert action == FinalAction(text="Done.", origin=ActionOrigin.TEXT_PROTOCOL_FINAL)
 
 
 def test_stop_sequence_with_text_is_model_visible_retry_not_final():
