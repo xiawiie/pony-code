@@ -41,9 +41,12 @@ _EFFECT_CLASS_BY_TOOL = {
     "memory_list": "read_only",
     "memory_read": "read_only",
     "memory_search": "read_only",
-    "memory_save": "read_only",
+    "memory_save": "memory_write",
     "repo_lookup": "read_only",
 }
+
+WORKSPACE_RECOVERY_EFFECTS = {"workspace_write"}
+INTERNAL_STATE_EFFECTS = {"memory_write"}
 
 
 # 已知“直接改文件”的工具可以显式声明路径参数；未知 workspace_write 工具
@@ -60,12 +63,22 @@ def _effect_class(name, risky):
     return _EFFECT_CLASS_BY_TOOL.get(name, "workspace_write" if risky else "read_only")
 
 
+def _effect_metadata(effect_class):
+    return {
+        "read_only": effect_class == "read_only",
+        "effect_class": effect_class,
+        "internal_state_changed": effect_class in INTERNAL_STATE_EFFECTS,
+    }
+
+
 def _metadata(
     tool_status,
     tool_error_code="",
     security_event_type="",
     risk_level="low",
     read_only=True,
+    effect_class="read_only",
+    internal_state_changed=False,
     affected_paths=None,
     workspace_changed=False,
     workspace_fingerprint="",
@@ -77,6 +90,8 @@ def _metadata(
         "security_event_type": security_event_type,
         "risk_level": risk_level,
         "read_only": read_only,
+        "effect_class": effect_class,
+        "internal_state_changed": bool(internal_state_changed),
         "affected_paths": list(affected_paths or []),
         "workspace_changed": bool(workspace_changed),
         "diff_summary": list(diff_summary or []),
@@ -106,18 +121,22 @@ class ToolExecutor:
 
     def execute(self, name, args):
         agent = self.agent
+        tool = agent.tools.get(name)
         if agent.allowed_tools is not None and name not in agent.allowed_tools:
+            if tool is not None:
+                blocked_effect_class = _effect_class(name, tool["risky"])
+            else:
+                blocked_effect_class = _EFFECT_CLASS_BY_TOOL.get(name, "unknown")
             return ToolExecutionResult(
                 content=f"error: tool '{name}' is not allowed in this run",
                 metadata=_metadata(
                     "rejected",
                     tool_error_code="tool_not_allowed",
                     risk_level="high",
-                    read_only=False,
+                    **_effect_metadata(blocked_effect_class),
                 ),
             )
 
-        tool = agent.tools.get(name)
         if tool is None:
             return ToolExecutionResult(
                 content=f"error: unknown tool '{name}'",
@@ -126,8 +145,14 @@ class ToolExecutor:
                     tool_error_code="unknown_tool",
                     risk_level="high",
                     read_only=False,
+                    effect_class="unknown",
+                    internal_state_changed=False,
                 ),
             )
+
+        effect_class = _effect_class(name, tool["risky"])
+        records_recovery = effect_class in WORKSPACE_RECOVERY_EFFECTS
+        effect_metadata = _effect_metadata(effect_class)
 
         try:
             agent.validate_tool(name, args)
@@ -144,7 +169,7 @@ class ToolExecutor:
                     tool_error_code="invalid_arguments",
                     security_event_type=security_event_type,
                     risk_level="high" if tool["risky"] else "low",
-                    read_only=not tool["risky"],
+                    **effect_metadata,
                 ),
             )
 
@@ -155,7 +180,7 @@ class ToolExecutor:
                     "rejected",
                     tool_error_code="repeated_identical_call",
                     risk_level="high" if tool["risky"] else "low",
-                    read_only=not tool["risky"],
+                    **effect_metadata,
                 ),
             )
 
@@ -174,7 +199,7 @@ class ToolExecutor:
                             "rejected",
                             tool_error_code="command_rejected",
                             risk_level="high",
-                            read_only=False,
+                            **effect_metadata,
                         ),
                         command_risk,
                         command_approval,
@@ -189,7 +214,7 @@ class ToolExecutor:
                             tool_error_code="command_approval_required",
                             security_event_type="command_approval_required",
                             risk_level="high",
-                            read_only=False,
+                            **effect_metadata,
                         ),
                         command_risk,
                         command_approval,
@@ -205,7 +230,7 @@ class ToolExecutor:
                         tool_error_code="approval_denied",
                         security_event_type="read_only_block" if agent.read_only else "approval_denied",
                         risk_level="high",
-                        read_only=False,
+                        **effect_metadata,
                     ),
                     command_risk,
                     command_approval,
@@ -215,8 +240,6 @@ class ToolExecutor:
         # 到这里我们准备真的跑工具，可以开一条 pending 记录。
         turn_id = getattr(getattr(agent, "current_task_state", None), "task_id", "") or ""
         parent_checkpoint = current_recovery_checkpoint_id(agent.session)
-        effect_class = _effect_class(name, tool["risky"])
-        records_recovery = effect_class != "read_only"
         pending_record = None
         if records_recovery:
             pending_record = agent.tool_change_recorder.start(
@@ -293,7 +316,7 @@ class ToolExecutor:
                 tool_error_code=tool_error_code,
                 security_event_type="",
                 risk_level="high" if tool["risky"] else "low",
-                read_only=not tool["risky"],
+                **effect_metadata,
                 workspace_changed=workspace_changed,
                 diff_summary=diff_summary,
                 shell_side_effects=shell_side_effects if name == "run_shell" else [],
@@ -348,7 +371,7 @@ class ToolExecutor:
                 tool_error_code=tool_error_code,
                 security_event_type=security_event_type,
                 risk_level="high" if tool["risky"] else "low",
-                read_only=not tool["risky"],
+                **effect_metadata,
                 workspace_changed=workspace_changed,
                 diff_summary=diff_summary,
                 shell_side_effects=shell_side_effects if name == "run_shell" else [],
@@ -383,6 +406,8 @@ def _finalize_tool_side_effects(
     security_event_type,
     risk_level,
     read_only,
+    effect_class,
+    internal_state_changed,
     workspace_changed,
     diff_summary,
     shell_side_effects,
@@ -397,6 +422,8 @@ def _finalize_tool_side_effects(
         security_event_type=security_event_type,
         risk_level=risk_level,
         read_only=read_only,
+        effect_class=effect_class,
+        internal_state_changed=internal_state_changed,
         affected_paths=affected_paths,
         workspace_changed=workspace_changed,
         workspace_fingerprint=agent.workspace.fingerprint(),

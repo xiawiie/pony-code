@@ -4,7 +4,7 @@ from pico import FakeModelClient, Pico, SessionStore, WorkspaceContext
 from pico.tool_executor import ToolExecutor, ToolExecutionResult
 
 
-def build_agent(tmp_path):
+def build_agent(tmp_path, allowed_tools=None):
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
     workspace = WorkspaceContext.build(tmp_path)
     store = SessionStore(tmp_path / ".pico" / "sessions")
@@ -13,6 +13,7 @@ def build_agent(tmp_path):
         workspace=workspace,
         session_store=store,
         approval_policy="auto",
+        allowed_tools=allowed_tools,
     )
 
 
@@ -63,6 +64,20 @@ def test_invalid_tool_args_do_not_create_pending_tool_change(tmp_path):
 
     assert result.metadata["tool_status"] == "rejected"
     assert "tool_change_id" not in result.metadata or result.metadata["tool_change_id"] == ""
+
+
+def test_unknown_tool_rejection_reports_unknown_effect_class(tmp_path):
+    agent = build_agent(tmp_path)
+
+    result = agent.execute_tool("missing_tool", {})
+
+    assert result.metadata["tool_status"] == "rejected"
+    assert result.metadata["tool_error_code"] == "unknown_tool"
+    assert result.metadata["risk_level"] == "high"
+    assert result.metadata["effect_class"] == "unknown"
+    assert result.metadata["read_only"] is False
+    assert result.metadata["internal_state_changed"] is False
+    assert "tool_change_id" not in result.metadata
 
 
 def test_tool_runtime_exception_finalizes_pending_record_as_error(tmp_path):
@@ -331,6 +346,19 @@ def test_memory_save_reports_internal_state_change_without_recovery_checkpoint(t
     assert result.metadata["workspace_changed"] is False
     assert "tool_change_id" not in result.metadata
     assert (agent.memory_store.workspace_root / "agent_notes.md").exists()
+
+
+def test_allowlist_rejection_reports_known_memory_write_effect(tmp_path):
+    agent = build_agent(tmp_path, allowed_tools=["read_file"])
+
+    result = agent.execute_tool("memory_save", {"note": "Keep action codec strict."})
+
+    assert result.metadata["tool_status"] == "rejected"
+    assert result.metadata["tool_error_code"] == "tool_not_allowed"
+    assert result.metadata["effect_class"] == "memory_write"
+    assert result.metadata["read_only"] is False
+    assert result.metadata["internal_state_changed"] is True
+    assert "tool_change_id" not in result.metadata
 
 
 def test_read_only_tool_reports_effect_class(tmp_path):
