@@ -1,6 +1,7 @@
 """Command handlers for Pico's explicit CLI Surface."""
 
 from pathlib import Path
+import re
 
 from .cli_errors import CLI_EXIT_USAGE, CliError
 from .cli_diagnostics import _line
@@ -10,7 +11,7 @@ from .cli_memory import handle_memory  # noqa: F401
 from .cli_output import print_result
 from .cli_recovery import handle_checkpoints, handle_runs, handle_sessions  # noqa: F401
 from .cli_session import handle_session_command
-from .config import _parse_env_line
+from .config import ENV_KEY_PATTERN, _parse_env_line
 from .workspace import WorkspaceContext
 
 
@@ -49,6 +50,8 @@ Compatibility:
     pico                   Legacy entry point; may conflict with /usr/bin/pico
 """
 
+_TOML_TABLE_RE = re.compile(r"^\s*\[([^\[\]]+)\]\s*(?:#.*)?$")
+
 
 def handle_help(tokens):
     print(ROOT_HELP.rstrip())
@@ -68,12 +71,11 @@ def handle_session(tokens, root, args):
 
 def handle_init(tokens, cwd, args):
     options = _parse_init_tokens(tokens)
-    if not options["model"] or not options["base_url"]:
-        raise _init_usage_error()
+    _validate_init_options(options)
     workspace = WorkspaceContext.build(cwd)
     config_path = Path(workspace.repo_root) / "pico.toml"
     env_path = Path(workspace.repo_root) / ".env"
-    config_path.write_text(_render_model_toml(options), encoding="utf-8")
+    _write_model_toml(config_path, _render_model_toml(options))
     written = {"updated": [], "added": [], "unchanged": []}
     if options["api_key_env"] and options["api_key"] is not None:
         written = _write_env_assignments(env_path, {options["api_key_env"]: options["api_key"]})
@@ -152,6 +154,31 @@ def _init_usage_error():
     )
 
 
+def _validate_init_options(options):
+    if not options["model"] or not options["base_url"]:
+        raise _init_usage_error()
+    api_key_env = options["api_key_env"]
+    api_key = options["api_key"]
+    if api_key_env is not None and not ENV_KEY_PATTERN.match(api_key_env):
+        raise CliError(
+            code="usage",
+            message="model api_key_env must be a valid environment variable name",
+            exit_code=CLI_EXIT_USAGE,
+        )
+    if api_key is not None and not api_key_env:
+        raise CliError(
+            code="usage",
+            message="--api-key requires --api-key-env",
+            exit_code=CLI_EXIT_USAGE,
+        )
+    if api_key == "":
+        raise CliError(
+            code="usage",
+            message="--api-key cannot be empty",
+            exit_code=CLI_EXIT_USAGE,
+        )
+
+
 def _render_model_toml(options):
     lines = ["[model]"]
     lines.append(f'name = "{_toml_escape(options["model"])}"')
@@ -161,6 +188,44 @@ def _render_model_toml(options):
     if options["api"]:
         lines.append(f'api = "{_toml_escape(options["api"])}"')
     return "\n".join(lines) + "\n"
+
+
+def _write_model_toml(config_path, model_toml):
+    if not config_path.exists():
+        config_path.write_text(model_toml, encoding="utf-8")
+        return
+    text = config_path.read_text(encoding="utf-8")
+    start, end = _model_table_range(text)
+    if start is None:
+        separator = ""
+        if text:
+            separator = "" if text.endswith("\n\n") else ("\n" if text.endswith("\n") else "\n\n")
+        config_path.write_text(f"{text}{separator}{model_toml}", encoding="utf-8")
+        return
+    config_path.write_text(f"{text[:start]}{model_toml}{text[end:]}", encoding="utf-8")
+
+
+def _model_table_range(text):
+    offset = 0
+    start = None
+    for line in text.splitlines(keepends=True):
+        table = _toml_table_name(line)
+        if table is not None:
+            if start is not None:
+                return start, offset
+            if table == "model":
+                start = offset
+        offset += len(line)
+    if start is None:
+        return None, None
+    return start, len(text)
+
+
+def _toml_table_name(line):
+    match = _TOML_TABLE_RE.match(line.strip())
+    if not match:
+        return None
+    return match.group(1).strip()
 
 
 def _toml_escape(value):

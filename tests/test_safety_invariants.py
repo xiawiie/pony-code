@@ -1,5 +1,6 @@
 import os
 import shlex
+import subprocess
 import sys
 from unittest.mock import patch
 
@@ -150,6 +151,32 @@ def test_cli_build_agent_loads_project_env_secrets_before_redaction_setup(tmp_pa
         args = pico_cli.build_arg_parser().parse_args(["--cwd", str(tmp_path)])
         agent = pico_cli.build_agent(args)
         assert agent.secret_env_summary()["secret_env_names"] == ["MODEL_API_KEY"]
+
+
+def test_cli_build_agent_uses_repo_root_model_secret_when_cwd_is_subdir(tmp_path):
+    class DummyModelClient:
+        def complete(self, prompt, max_new_tokens):
+            raise AssertionError("model should not be invoked")
+
+    subdir = tmp_path / "packages" / "app"
+    subdir.mkdir(parents=True)
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
+    (tmp_path / "pico.toml").write_text(
+        "[model]\n"
+        'name = "deepseek-chat"\n'
+        'base_url = "https://api.deepseek.com/anthropic"\n'
+        'api_key_env = "MODEL_CREDENTIAL"\n',
+        encoding="utf-8",
+    )
+    with patch.dict(os.environ, {"MODEL_CREDENTIAL": "credential-value-123"}, clear=True), patch(
+        "pico.cli.build_resolved_model_client",
+        return_value=DummyModelClient(),
+    ):
+        args = pico_cli.build_arg_parser().parse_args(["--cwd", str(subdir)])
+        agent = pico_cli.build_agent(args)
+        assert agent.secret_env_summary()["secret_env_names"] == ["MODEL_CREDENTIAL"]
+        assert agent.redact_text("credential-value-123") == "<redacted>"
 
 
 def test_cli_build_agent_skips_malformed_project_env_lines_with_warning(tmp_path, capsys):

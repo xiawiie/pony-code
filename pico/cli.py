@@ -115,7 +115,7 @@ WELCOME_STATUS = "calm shell, ready for work"
 SECRET_ENV_NAMES_VAR = "PICO_SECRET_ENV_NAMES"
 
 
-def _configured_secret_names(args):
+def _configured_secret_names(args, workspace_root=None):
     configured_secret_names = set(DEFAULT_SECRET_ENV_NAMES)
     configured_secret_names.update(str(name).upper() for name in getattr(args, "secret_env_names", []))
     extra_names = os.environ.get(SECRET_ENV_NAMES_VAR, "")
@@ -126,7 +126,7 @@ def _configured_secret_names(args):
             if item.strip()
         )
     try:
-        connection = load_model_connection(getattr(args, "cwd", "."))
+        connection = load_model_connection(workspace_root or getattr(args, "cwd", "."))
         if connection.api_key_env:
             configured_secret_names.add(connection.api_key_env.upper())
     except Exception:
@@ -206,7 +206,7 @@ def build_agent(args):
     # 先采集工作区快照和加载项目级环境，再整理 secret 名单、模型后端和 session。
     workspace = WorkspaceContext.build(args.cwd)
     load_project_env(workspace.repo_root)
-    configured_secret_names = _configured_secret_names(args)
+    configured_secret_names = _configured_secret_names(args, workspace.repo_root)
     store = SessionStore(workspace.repo_root + "/.pico/sessions")
     model = _build_model_client(args, workspace.repo_root)
     session_id = args.resume

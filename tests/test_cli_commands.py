@@ -238,6 +238,90 @@ def test_init_updates_existing_env_without_dropping_unrelated_lines(tmp_path, ca
     assert "sk-openai-project" not in out
 
 
+def test_init_updates_model_section_without_dropping_other_pico_toml_sections(tmp_path):
+    (tmp_path / "pico.toml").write_text(
+        "# project config\n"
+        "[policy]\n"
+        "max_blob_size = 2048\n"
+        "\n"
+        "[model]\n"
+        'name = "old-model"\n'
+        'base_url = "https://old.example.test/v1"\n'
+        "\n"
+        "[context]\n"
+        "history_soft_cap = 1234\n",
+        encoding="utf-8",
+    )
+
+    code = main([
+        "--cwd",
+        str(tmp_path),
+        "init",
+        "--model",
+        "qwen-max",
+        "--base-url",
+        "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "--api-key-env",
+        "DASHSCOPE_API_KEY",
+        "--api",
+        "openai-chat",
+    ])
+
+    assert code == 0
+    pico_toml = (tmp_path / "pico.toml").read_text(encoding="utf-8")
+    assert "# project config\n" in pico_toml
+    assert "[policy]\nmax_blob_size = 2048\n" in pico_toml
+    assert "[context]\nhistory_soft_cap = 1234\n" in pico_toml
+    assert 'name = "old-model"\n' not in pico_toml
+    assert 'base_url = "https://old.example.test/v1"\n' not in pico_toml
+    assert (
+        "[model]\n"
+        'name = "qwen-max"\n'
+        'base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"\n'
+        'api_key_env = "DASHSCOPE_API_KEY"\n'
+        'api = "openai-chat"\n'
+    ) in pico_toml
+
+
+@pytest.mark.parametrize(
+    "tokens",
+    [
+        [
+            "--model",
+            "qwen-max",
+            "--base-url",
+            "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            "--api-key-env",
+            "BAD-NAME",
+        ],
+        [
+            "--model",
+            "qwen-max",
+            "--base-url",
+            "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            "--api-key",
+            "sk-without-env",
+        ],
+        [
+            "--model",
+            "qwen-max",
+            "--base-url",
+            "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            "--api-key-env",
+            "DASHSCOPE_API_KEY",
+            "--api-key",
+            "",
+        ],
+    ],
+)
+def test_init_rejects_unusable_api_key_configuration(tmp_path, tokens):
+    code = main(["--cwd", str(tmp_path), "init", *tokens])
+
+    assert code == 2
+    assert not (tmp_path / "pico.toml").exists()
+    assert not (tmp_path / ".env").exists()
+
+
 def test_init_json_redacts_api_key_value(tmp_path, capsys):
     code = main([
         "--cwd",
