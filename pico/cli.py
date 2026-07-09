@@ -68,6 +68,7 @@ _COMMAND_NAMESPACE_SUBCOMMANDS = {
 }
 _REMOVED_MODEL_OPTIONS = (
     "--provider",
+    "--model",
     "--host",
     "--base-url",
     "--ollama-timeout",
@@ -144,7 +145,8 @@ def _configured_secret_names(args, workspace_root=None):
 def _build_model_client(args, workspace_root):
     connection = load_model_connection(workspace_root)
     resolved = resolve_model_connection(connection)
-    resolved = replace(resolved, timeout=int(args.model_timeout))
+    if args.model_timeout is not None:
+        resolved = replace(resolved, timeout=int(args.model_timeout))
     return build_resolved_model_client(resolved, temperature=args.temperature, top_p=args.top_p)
 
 
@@ -254,7 +256,7 @@ def build_arg_parser():
     parser.add_argument("-h", "--help", action="store_true", help="help for pico-cli")
     parser.add_argument("prompt", nargs="*", help="Optional one-shot prompt.")
     parser.add_argument("--cwd", default=".", help="Workspace directory.")
-    parser.add_argument("--model-timeout", type=int, default=300, help="Model request timeout in seconds.")
+    parser.add_argument("--model-timeout", type=int, default=None, help="Model request timeout override in seconds.")
     parser.add_argument("--resume", default=None, help="Session id to resume or 'latest'.")
     parser.add_argument("--approval", choices=("ask", "auto", "never"), default="ask", help="Approval policy for risky tools.")
     parser.add_argument(

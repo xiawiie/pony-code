@@ -359,7 +359,7 @@ def test_welcome_screen_keeps_box_shape_for_long_paths(tmp_path):
 # =============================================================================
 
 
-def test_build_agent_uses_model_connection_config_and_timeout_override(tmp_path):
+def test_build_agent_uses_model_connection_config_timeout(tmp_path):
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
     (tmp_path / "pico.toml").write_text(
         "[model]\n"
@@ -367,12 +367,10 @@ def test_build_agent_uses_model_connection_config_and_timeout_override(tmp_path)
         'base_url = "https://api.deepseek.com/anthropic"\n'
         'api_key_env = "MODEL_API_KEY"\n'
         'api = "anthropic-messages"\n'
-        "timeout = 10\n",
+        "timeout = 45\n",
         encoding="utf-8",
     )
-    args = pico_pkg.build_arg_parser().parse_args(
-        ["--cwd", str(tmp_path), "--model-timeout", "45"]
-    )
+    args = pico_pkg.build_arg_parser().parse_args(["--cwd", str(tmp_path)])
 
     with patch.dict(os.environ, {"MODEL_API_KEY": "sk-test"}, clear=True), patch(
         "pico.cli.build_resolved_model_client"
@@ -391,6 +389,30 @@ def test_build_agent_uses_model_connection_config_and_timeout_override(tmp_path)
     assert resolved.timeout == 45
     assert mock_factory.call_args.kwargs == {"temperature": 0.2, "top_p": 0.9}
     assert agent.model_client is fake_client
+
+
+def test_build_agent_model_timeout_cli_override_wins(tmp_path):
+    (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
+    (tmp_path / "pico.toml").write_text(
+        "[model]\n"
+        'name = "deepseek-chat"\n'
+        'base_url = "https://api.deepseek.com/anthropic"\n'
+        'api_key_env = "MODEL_API_KEY"\n'
+        'api = "anthropic-messages"\n'
+        "timeout = 10\n",
+        encoding="utf-8",
+    )
+    args = pico_pkg.build_arg_parser().parse_args(
+        ["--cwd", str(tmp_path), "--model-timeout", "45"]
+    )
+
+    with patch.dict(os.environ, {"MODEL_API_KEY": "sk-test"}, clear=True), patch(
+        "pico.cli.build_resolved_model_client"
+    ) as mock_factory:
+        pico_pkg.build_agent(args)
+
+    resolved = mock_factory.call_args.args[0]
+    assert resolved.timeout == 45
 
 
 def test_build_agent_uses_default_local_model_connection(tmp_path):

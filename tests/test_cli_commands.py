@@ -137,6 +137,7 @@ def test_unknown_command_suggestion_uses_json_error_envelope(capsys):
     "argv",
     [
         ["--provider", "openai", "run", "hi"],
+        ["--model", "qwen3.5:4b", "run", "hi"],
         ["--base-url", "https://example.test/v1", "run", "hi"],
     ],
 )

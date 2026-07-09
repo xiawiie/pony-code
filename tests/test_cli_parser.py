@@ -68,7 +68,7 @@ def test_parser_defaults_are_generous_for_coding_agent_runs():
 
     assert args.max_steps == DEFAULT_MAX_STEPS == 12
     assert args.max_new_tokens == DEFAULT_MAX_NEW_TOKENS == 2048
-    assert args.model_timeout == 300
+    assert args.model_timeout is None
 
 
 def test_parser_no_longer_exposes_provider_axis():
