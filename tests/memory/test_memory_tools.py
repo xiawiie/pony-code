@@ -136,7 +136,9 @@ def test_tool_examples_present():
         assert tool_example(name), f"missing example for {name}"
 
 
-def test_effect_class_for_new_tools_is_read_only():
+def test_effect_class_for_memory_tools_distinguishes_reads_and_writes():
     from pico.tool_executor import _EFFECT_CLASS_BY_TOOL
-    for name in ("memory_list", "memory_read", "memory_search", "memory_save", "repo_lookup"):
+
+    for name in ("memory_list", "memory_read", "memory_search", "repo_lookup"):
         assert _EFFECT_CLASS_BY_TOOL[name] == "read_only"
+    assert _EFFECT_CLASS_BY_TOOL["memory_save"] == "memory_write"

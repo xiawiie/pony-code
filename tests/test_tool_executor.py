@@ -317,3 +317,27 @@ def test_recovery_lifecycle_uses_effect_class_not_risky_flag(tmp_path):
     tool_change = agent.checkpoint_store.load_tool_change_record(result.metadata["tool_change_id"])
     assert tool_change["tool_name"] == "delegate"
     assert tool_change["effect_class"] == "workspace_write"
+
+
+def test_memory_save_reports_internal_state_change_without_recovery_checkpoint(tmp_path):
+    agent = build_agent(tmp_path)
+
+    result = agent.execute_tool("memory_save", {"note": "Keep action codec strict."})
+
+    assert result.metadata["tool_status"] == "ok"
+    assert result.metadata["effect_class"] == "memory_write"
+    assert result.metadata["read_only"] is False
+    assert result.metadata["internal_state_changed"] is True
+    assert result.metadata["workspace_changed"] is False
+    assert "tool_change_id" not in result.metadata
+    assert (agent.memory_store.workspace_root / "agent_notes.md").exists()
+
+
+def test_read_only_tool_reports_effect_class(tmp_path):
+    agent = build_agent(tmp_path)
+
+    result = agent.execute_tool("read_file", {"path": "README.md", "start": 1, "end": 1})
+
+    assert result.metadata["effect_class"] == "read_only"
+    assert result.metadata["read_only"] is True
+    assert result.metadata["internal_state_changed"] is False
