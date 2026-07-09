@@ -5,8 +5,20 @@ def test_classify_live_error_auth():
     assert classify_live_error(RuntimeError("HTTP 401: bad key")) == "auth"
 
 
+def test_classify_live_error_http_error_401_auth():
+    assert classify_live_error(RuntimeError("HTTP Error 401: Unauthorized")) == "auth"
+
+
+def test_classify_live_error_http_error_403_auth():
+    assert classify_live_error(RuntimeError("HTTP Error 403: Forbidden")) == "auth"
+
+
 def test_classify_live_error_rate_limit():
     assert classify_live_error(RuntimeError("HTTP 429: rate limit")) == "rate_limit"
+
+
+def test_classify_live_error_http_error_429_rate_limit():
+    assert classify_live_error(RuntimeError("HTTP Error 429: Too Many Requests")) == "rate_limit"
 
 
 def test_classify_live_error_network():

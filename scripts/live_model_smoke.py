@@ -18,9 +18,15 @@ from pico.providers.factory import build_model_client
 
 def classify_live_error(exc):
     message = str(exc).lower()
-    if "http 401" in message or "http 403" in message or "bad key" in message:
+    if "401" in message and ("http " in message or "http error" in message):
         return "auth"
-    if "http 429" in message or "rate limit" in message or "too many requests" in message:
+    if "403" in message and ("http " in message or "http error" in message):
+        return "auth"
+    if "bad key" in message:
+        return "auth"
+    if "429" in message and ("http " in message or "http error" in message):
+        return "rate_limit"
+    if "rate limit" in message or "too many requests" in message:
         return "rate_limit"
     if "could not reach" in message or "timed out" in message or "connection refused" in message:
         return "network"
