@@ -10,7 +10,6 @@ control flow.
 
 import logging
 
-import pytest
 
 
 def test_recall_failure_logs_debug(caplog, tmp_path, monkeypatch):

@@ -1,7 +1,6 @@
 """Task 18: Retrieval BM25 field boost — hits in frontmatter fields
 (name/description/tags/aliases) weigh more than hits in body."""
 
-from pathlib import Path
 
 from pico.memory.block_store import BlockStore
 from pico.memory.retrieval import Retrieval

@@ -15,8 +15,10 @@ See docs/superpowers/specs/2026-07-08-pico-live-e2e-test-design.md.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -173,10 +175,6 @@ class FixtureManager:
         except OSError as e:
             print(f"[live-e2e] teardown: pico.toml restore failed: {e}", file=sys.stderr)
 
-
-import time
-
-
 @dataclass(frozen=True)
 class TurnResult:
     """Immutable record of a single turn's execution."""
@@ -234,7 +232,6 @@ class TurnRunner:
             return ({}, "", 0)
 
         first_metadata: dict = {}
-        first_prompt: str = ""
         model_turn_count = 0
         try:
             with trace_path.open(encoding="utf-8") as f:
@@ -743,10 +740,6 @@ class AssertionEngine:
             actual=str(total_tokens),
         ))
         return out
-
-
-import json
-
 
 class Reporter:
     """Terminal + JSON reporter for a live-e2e run."""

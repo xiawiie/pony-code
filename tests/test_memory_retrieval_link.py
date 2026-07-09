@@ -5,7 +5,6 @@ notes into the result set with decayed score.
 Constraints: max_added=3 per query, decay=0.4, depth=1 (no recursion).
 """
 
-from pathlib import Path
 
 from pico.memory.block_store import BlockStore
 from pico.memory.retrieval import Retrieval

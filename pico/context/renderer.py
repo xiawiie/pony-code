@@ -37,8 +37,6 @@ import logging
 
 from .escaping import escape_pico_tags
 from .intent import classify_intent
-
-logger = logging.getLogger("pico")
 from .sources import (
     render_checkpoint,
     render_memory_index,
@@ -46,6 +44,8 @@ from .sources import (
     render_recalled_memory,
     render_workspace_state,
 )
+
+logger = logging.getLogger("pico")
 
 SOURCE_ORDER = (
     "workspace_state",

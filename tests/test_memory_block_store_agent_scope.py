@@ -11,7 +11,6 @@ file has no frontmatter). `write_agent_topic()` creates a per-topic
 file with fresh frontmatter or appends body to an existing one.
 """
 
-from pathlib import Path
 
 import pytest
 
