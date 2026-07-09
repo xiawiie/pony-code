@@ -4,7 +4,7 @@ from pathlib import Path
 import re
 
 from .cli_errors import CLI_EXIT_USAGE, CliError
-from .cli_diagnostics import _line
+from .cli_diagnostics import _line, _redact_url_for_diagnostics
 from .cli_diagnostics import handle_config, handle_doctor, handle_status  # noqa: F401
 from .cli_start import run_agent_once, run_repl  # noqa: F401
 from .cli_memory import handle_memory  # noqa: F401
@@ -50,7 +50,7 @@ Compatibility:
     pico                   Legacy entry point; may conflict with /usr/bin/pico
 """
 
-_TOML_TABLE_RE = re.compile(r"^\s*\[([^\[\]]+)\]\s*(?:#.*)?$")
+_TOML_TABLE_RE = re.compile(r"^\s*\[+\s*([^\[\]]+?)\s*\]+\s*(?:#.*)?$")
 
 
 def handle_help(tokens):
@@ -83,7 +83,7 @@ def handle_init(tokens, cwd, args):
         "config_path": str(config_path),
         "env_path": str(env_path),
         "model": options["model"],
-        "base_url": options["base_url"],
+        "base_url": _redact_url_for_diagnostics(options["base_url"]),
         "api": options["api"],
         "updated": written["updated"],
         "added": written["added"],

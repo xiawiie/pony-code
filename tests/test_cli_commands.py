@@ -133,6 +133,32 @@ def test_unknown_command_suggestion_uses_json_error_envelope(capsys):
     assert payload["error"]["hint"] == "Did you mean `checkpoints`?"
 
 
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["--provider", "openai", "run", "hi"],
+        ["--base-url", "https://example.test/v1", "run", "hi"],
+    ],
+)
+def test_removed_root_model_flags_are_usage_errors_without_building_agent(
+    tmp_path,
+    monkeypatch,
+    capsys,
+    argv,
+):
+    def fail_build_agent(args):
+        raise AssertionError("removed root model flags must not build a Pico agent")
+
+    monkeypatch.setattr("pico.cli.build_agent", fail_build_agent)
+
+    code = main(["--cwd", str(tmp_path), *argv])
+
+    assert code == 2
+    captured = capsys.readouterr()
+    assert "removed option" in captured.err
+    assert argv[0] in captured.err
+
+
 def test_cli_command_specs_drive_namespace_tables():
     from pico import cli
 
@@ -283,6 +309,37 @@ def test_init_updates_model_section_without_dropping_other_pico_toml_sections(tm
     ) in pico_toml
 
 
+def test_init_replaces_model_section_without_dropping_following_array_table(tmp_path):
+    (tmp_path / "pico.toml").write_text(
+        "[model]\n"
+        'name = "old-model"\n'
+        'base_url = "https://old.example.test/v1"\n'
+        "\n"
+        "[[profiles]]\n"
+        'name = "ci"\n'
+        "max_steps = 4\n",
+        encoding="utf-8",
+    )
+
+    code = main([
+        "--cwd",
+        str(tmp_path),
+        "init",
+        "--model",
+        "qwen-max",
+        "--base-url",
+        "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    ])
+
+    assert code == 0
+    pico_toml = (tmp_path / "pico.toml").read_text(encoding="utf-8")
+    assert 'name = "old-model"\n' not in pico_toml
+    assert 'base_url = "https://old.example.test/v1"\n' not in pico_toml
+    assert "[[profiles]]\n" in pico_toml
+    assert 'name = "ci"\n' in pico_toml
+    assert "max_steps = 4\n" in pico_toml
+
+
 @pytest.mark.parametrize(
     "tokens",
     [
@@ -353,6 +410,43 @@ def test_init_json_redacts_api_key_value(tmp_path, capsys):
         "name": "ANTHROPIC_API_KEY",
     }
     assert "sk-anthropic-project" not in output
+
+
+@pytest.mark.parametrize("format_args", [[], ["--format", "json"]])
+def test_init_redacts_secret_base_url_in_output_but_stores_raw(
+    tmp_path,
+    capsys,
+    format_args,
+):
+    base_url = "https://user:pass@example.com/v1?token=secret#frag"
+
+    code = main([
+        "--cwd",
+        str(tmp_path),
+        *format_args,
+        "init",
+        "--model",
+        "custom-model",
+        "--base-url",
+        base_url,
+        "--api",
+        "openai-chat",
+    ])
+
+    assert code == 0
+    output = capsys.readouterr().out
+    assert "user:pass" not in output
+    assert "pass@example" not in output
+    assert "token=secret" not in output
+    assert "#frag" not in output
+    assert 'base_url = "https://user:pass@example.com/v1?token=secret#frag"\n' in (
+        tmp_path / "pico.toml"
+    ).read_text(encoding="utf-8")
+    if format_args:
+        payload = json.loads(output)
+        assert payload["data"]["base_url"] == "https://example.com/v1"
+    else:
+        assert "https://example.com/v1" in output
 
 
 def test_init_without_api_key_env_does_not_write_env_file(tmp_path):
