@@ -81,3 +81,17 @@ def test_unknown_base_url_fails_with_fix():
         resolve_model_connection(
             connection("custom-model", "https://llm.example.test/v1")
         )
+
+
+def test_capabilities_are_small_and_adapter_derived():
+    anthropic = resolve_model_connection(
+        connection("claude-sonnet-4-6", "https://api.anthropic.com/v1", api="anthropic-messages")
+    )
+    chat = resolve_model_connection(
+        connection("qwen-max", "https://dashscope.aliyuncs.com/compatible-mode/v1")
+    )
+
+    assert anthropic.native_tools is True
+    assert anthropic.prompt_cache is True
+    assert chat.native_tools is False
+    assert chat.prompt_cache is False

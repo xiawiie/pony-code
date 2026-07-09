@@ -277,6 +277,38 @@ def test_init_creates_model_config_without_building_agent(tmp_path, monkeypatch,
     assert payload["data"]["model"]["api_key_present"] is True
     assert payload["data"]["model"]["api"] == "anthropic-messages"
     assert payload["data"]["model"]["adapter"] == "AnthropicMessagesAdapter"
+    assert payload["data"]["model"]["native_tools"] is True
+
+
+def test_config_show_reports_model_connection(tmp_path, monkeypatch, capsys):
+    def fail_build_agent(args):
+        raise AssertionError("config show must not build a Pico agent")
+
+    monkeypatch.setattr("pico.cli.build_agent", fail_build_agent)
+    (tmp_path / "pico.toml").write_text(
+        "[model]\n"
+        'name = "claude-sonnet-4-6"\n'
+        'base_url = "https://api.anthropic.com/v1"\n'
+        'api_key_env = "ANTHROPIC_API_KEY"\n'
+        'api = "anthropic-messages"\n',
+        encoding="utf-8",
+    )
+    (tmp_path / ".env").write_text(
+        "ANTHROPIC_API_KEY=secret-value\n",
+        encoding="utf-8",
+    )
+
+    code = main(["--cwd", str(tmp_path), "--format", "json", "config", "show"])
+
+    captured = capsys.readouterr()
+    assert code == 0
+    payload = json.loads(captured.out)
+    assert payload["data"]["model"]["status"] == "ok"
+    assert payload["data"]["model"]["api"] == "anthropic-messages"
+    assert payload["data"]["model"]["adapter"] == "AnthropicMessagesAdapter"
+    assert payload["data"]["model"]["native_tools"] is True
+    assert payload["data"]["model"]["prompt_cache"] is True
+    assert "secret-value" not in captured.out
 
 
 def test_init_accepts_model_prefixed_config_flags(tmp_path, monkeypatch):
