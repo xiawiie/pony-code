@@ -6,6 +6,7 @@ from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
+import re
 import sys
 
 from pico.action_codec import ActionCodec
@@ -14,6 +15,15 @@ from pico.model_actions import FinalAction
 from pico.model_config import load_model_connection
 from pico.model_resolver import ModelResolutionError, resolve_model_connection
 from pico.providers.factory import build_model_client
+from pico.security import REDACTED_VALUE, redact_text
+
+
+_LIVE_ERROR_REDACTION_PATTERNS = (
+    (re.compile(r"(?i)(authorization\s*:\s*bearer\s+)(\S+)"), r"\1" + REDACTED_VALUE),
+    (re.compile(r"(?i)(bearer\s+)(\S+)"), r"\1" + REDACTED_VALUE),
+    (re.compile(r"(?i)\bsk-[A-Za-z0-9_-]{6,}\b"), REDACTED_VALUE),
+    (re.compile(r"(?i)\b(api[_-]?key|x-api-key|key|token)\s*=\s*([^\s&]+)"), r"\1=" + REDACTED_VALUE),
+)
 
 
 def classify_live_error(exc):
@@ -22,7 +32,21 @@ def classify_live_error(exc):
         return "auth"
     if "403" in message and ("http " in message or "http error" in message):
         return "auth"
-    if "bad key" in message:
+    if any(
+        marker in message
+        for marker in (
+            "bad key",
+            "authentication_error",
+            "unauthorized",
+            "invalid api key",
+            "invalid_api_key",
+            "invalid x-api-key",
+        )
+    ):
+        return "auth"
+    if "permission denied" in message and any(
+        marker in message for marker in ("api key", "x-api-key", "token", "bearer", "credential", "auth")
+    ):
         return "auth"
     if "429" in message and ("http " in message or "http error" in message):
         return "rate_limit"
@@ -35,6 +59,16 @@ def classify_live_error(exc):
 
 def should_fail_all_skipped(results):
     return bool(results) and all(result.get("status") == "skipped" for result in results)
+
+
+def _redact_live_error_text(exc, api_key=""):
+    message = str(exc)
+    env = {"MODEL_API_KEY": api_key} if api_key else {}
+    if env:
+        message = redact_text(message, env=env, secret_env_names={"MODEL_API_KEY"})
+    for pattern, replacement in _LIVE_ERROR_REDACTION_PATTERNS:
+        message = pattern.sub(replacement, message)
+    return message
 
 
 @contextmanager
@@ -58,11 +92,11 @@ def _artifact_path(root):
     return Path(root) / "artifacts" / "live-checks" / "live-model-smoke.json"
 
 
-def _skip_result(root, exc):
+def _skip_result(root, exc, api_key=""):
     return {
         "status": "skipped",
         "reason": "config_resolution",
-        "error": str(exc),
+        "error": _redact_live_error_text(exc, api_key=api_key),
         "root": str(Path(root).resolve()),
     }
 
@@ -87,7 +121,7 @@ def _error_result(root, resolved, exc):
         "api": resolved.api,
         "base_url": resolved.base_url,
         "error_type": classify_live_error(exc),
-        "error": str(exc),
+        "error": _redact_live_error_text(exc, api_key=getattr(resolved, "api_key", "")),
     }
 
 
@@ -97,12 +131,13 @@ def run_live_model_smoke(root):
     project_env = read_project_env(root, warn=True)
 
     with _temporary_project_env(project_env):
+        connection = None
         try:
             connection = load_model_connection(root)
             resolved = resolve_model_connection(connection)
         except Exception as exc:
             if isinstance(exc, (ValueError, ModelResolutionError)):
-                results.append(_skip_result(root, exc))
+                results.append(_skip_result(root, exc, api_key=getattr(connection, "api_key", "")))
                 return {"results": results}, 2
             raise
 
