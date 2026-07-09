@@ -1,15 +1,13 @@
 """Adapter that lets non-tool_use providers speak system+tools+messages API.
 
 Flattens system+tools+messages to a single prompt string, delegates to
-inner.complete(prompt, ...), then parses <tool>/<final> XML back into
-native Response shape.
+inner.complete(prompt, ...), then returns the raw text as a transport
+Response. ActionCodec owns decoding <tool>/<final> XML later.
 """
 from __future__ import annotations
 
 import json
-import uuid
 
-from pico.model_output_parser import parse_model_output
 from pico.providers.response import Response, StopReason
 
 
@@ -77,28 +75,8 @@ class FallbackAdapter:
         prompt = "\n\n".join(part for part in (_flatten_system(system), _flatten_tools(tools), _flatten_messages(messages)) if part)
         raw = self._inner.complete(prompt, max_tokens)
         self.last_completion_metadata = dict(getattr(self._inner, "last_completion_metadata", {}))
-
-        kind, payload = parse_model_output(raw)
-        if kind == "tool":
-            return Response(
-                stop_reason=StopReason.TOOL_USE,
-                content=[{
-                    "type": "tool_use",
-                    "id": f"toolu_local_{uuid.uuid4().hex[:12]}",
-                    "name": payload["name"],
-                    "input": dict(payload.get("args", {})),
-                }],
-                usage=self.last_completion_metadata,
-            )
-        if kind == "final":
-            return Response(
-                stop_reason=StopReason.END_TURN,
-                content=[{"type": "text", "text": payload}],
-                usage=self.last_completion_metadata,
-            )
-        # retry / malformed → 用 STOP_SEQUENCE 让上层看到"未完成"
         return Response(
-            stop_reason=StopReason.STOP_SEQUENCE,
-            content=[{"type": "text", "text": str(payload)}],
+            stop_reason=StopReason.END_TURN,
+            content=[{"type": "text", "text": str(raw)}],
             usage=self.last_completion_metadata,
         )

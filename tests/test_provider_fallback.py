@@ -26,14 +26,15 @@ def test_fallback_flattens_system_tools_messages():
     )
     assert isinstance(resp, Response)
     assert resp.stop_reason == StopReason.END_TURN
-    assert resp.content == [{"type": "text", "text": "done"}]
+    assert resp.content == [{"type": "text", "text": "<final>done</final>"}]
     assert "SYSTEM_CORE" in inner.last_prompt
     assert "read_file" in inner.last_prompt
     assert "hi" in inner.last_prompt
 
 
-def test_fallback_parses_xml_tool_call_to_native_shape():
-    inner = _StubInner('<tool>{"name":"read_file","args":{"path":"a.py"}}</tool>')
+def test_fallback_preserves_xml_tool_call_as_raw_text():
+    raw = '<tool>{"name":"read_file","args":{"path":"a.py"}}</tool>'
+    inner = _StubInner(raw)
     adapter = FallbackAdapter(inner)
     resp = adapter.complete_v2(
         system=[{"type": "text", "text": "s"}],
@@ -41,11 +42,8 @@ def test_fallback_parses_xml_tool_call_to_native_shape():
         messages=[{"role": "user", "content": "x"}],
         max_tokens=10,
     )
-    assert resp.stop_reason == StopReason.TOOL_USE
-    assert resp.content[0]["type"] == "tool_use"
-    assert resp.content[0]["name"] == "read_file"
-    assert resp.content[0]["input"] == {"path": "a.py"}
-    assert resp.content[0]["id"].startswith("toolu_local_")
+    assert resp.stop_reason == StopReason.END_TURN
+    assert resp.content == [{"type": "text", "text": raw}]
 
 
 def test_fallback_ignores_cache_breakpoints():
@@ -60,19 +58,17 @@ def test_fallback_ignores_cache_breakpoints():
     assert resp.stop_reason == StopReason.END_TURN
 
 
-def test_fallback_malformed_output_maps_to_stop_sequence():
-    # <tool>{malformed json</tool> → parser returns ("retry", retry_notice_text)
-    inner = _StubInner("<tool>{not valid json</tool>")
+def test_fallback_malformed_output_preserves_raw_text():
+    raw = "<tool>{not valid json</tool>"
+    inner = _StubInner(raw)
     adapter = FallbackAdapter(inner)
     resp = adapter.complete_v2(
         system=[{"type": "text", "text": "s"}], tools=[],
         messages=[{"role": "user", "content": "x"}],
         max_tokens=10,
     )
-    assert resp.stop_reason == StopReason.STOP_SEQUENCE
-    assert resp.content[0]["type"] == "text"
-    assert isinstance(resp.content[0]["text"], str)
-    assert resp.content[0]["text"]  # non-empty runtime notice
+    assert resp.stop_reason == StopReason.END_TURN
+    assert resp.content == [{"type": "text", "text": raw}]
 
 
 def test_fallback_flatten_messages_handles_structured_content_blocks():
