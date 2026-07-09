@@ -91,10 +91,41 @@ def test_save_appends_to_workspace_agent_notes(tmp_path):
     assert "bcrypt rounds > 12 timeout" in contents
 
 
+def test_save_accepts_ordinary_token_prose(tmp_path):
+    ctx = _context(tmp_path)
+    note = "Remember token refresh tests are flaky on CI"
+
+    out = tool_memory_save(ctx, {"note": note})
+
+    assert out.lower().startswith("saved:")
+    contents = (ctx.memory_store.workspace_root / "agent_notes.md").read_text()
+    assert note in contents
+
+
 def test_save_rejects_empty(tmp_path):
     ctx = _context(tmp_path)
     out = tool_memory_save(ctx, {"note": ""})
     assert "error" in out.lower()
+
+
+def test_save_rejects_secret_shaped_note(tmp_path):
+    ctx = _context(tmp_path)
+
+    out = tool_memory_save(ctx, {"note": "OPENAI_API_KEY=sk-test-secret-value"})
+
+    assert "error" in out.lower()
+    assert "secret" in out.lower()
+    assert not (ctx.memory_store.workspace_root / "agent_notes.md").exists()
+
+
+def test_save_rejects_bare_secret_shaped_note(tmp_path):
+    ctx = _context(tmp_path)
+
+    out = tool_memory_save(ctx, {"note": "sk-test-secret-value"})
+
+    assert "error" in out.lower()
+    assert "secret" in out.lower()
+    assert not (ctx.memory_store.workspace_root / "agent_notes.md").exists()
 
 
 def test_save_rejects_too_long(tmp_path):

@@ -12,6 +12,7 @@ from functools import partial
 
 from .memory.block_store import MAX_NOTE_CHARS
 from .memory.tools import (
+    looks_like_secret_note,
     tool_memory_list,
     tool_memory_read,
     tool_memory_save,
@@ -230,6 +231,8 @@ def validate_tool(context, name, args):
         note = str(args.get("note", "")).strip()
         if not note:
             raise ValueError("note must not be empty")
+        if looks_like_secret_note(note):
+            raise ValueError("memory note appears to contain a secret")
         if len(note) > MAX_NOTE_CHARS:
             raise ValueError(f"note exceeds {MAX_NOTE_CHARS} chars")
         scope = str(args.get("scope", "workspace"))

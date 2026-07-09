@@ -348,6 +348,29 @@ def test_memory_save_reports_internal_state_change_without_recovery_checkpoint(t
     assert (agent.memory_store.workspace_root / "agent_notes.md").exists()
 
 
+def test_memory_save_accepts_ordinary_password_prose_before_execution(tmp_path):
+    agent = build_agent(tmp_path)
+    note = "Document password reset flow uses email link"
+
+    result = agent.execute_tool("memory_save", {"note": note})
+
+    assert result.metadata["tool_status"] == "ok"
+    contents = (agent.memory_store.workspace_root / "agent_notes.md").read_text()
+    assert note in contents
+
+
+def test_memory_save_rejects_secret_shaped_note_before_execution(tmp_path):
+    agent = build_agent(tmp_path)
+
+    result = agent.execute_tool("memory_save", {"note": "note=sk-test-secret-value"})
+
+    assert result.metadata["tool_status"] == "rejected"
+    assert result.metadata["tool_error_code"] == "invalid_arguments"
+    assert result.metadata["effect_class"] == "memory_write"
+    assert "secret" in result.content.lower()
+    assert not (agent.memory_store.workspace_root / "agent_notes.md").exists()
+
+
 def test_allowlist_rejection_reports_known_memory_write_effect(tmp_path):
     agent = build_agent(tmp_path, allowed_tools=["read_file"])
 

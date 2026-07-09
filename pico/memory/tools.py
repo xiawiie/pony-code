@@ -28,6 +28,19 @@ def _now_ts() -> float:
     return time.time()
 
 
+def looks_like_secret_note(note: str) -> bool:
+    from pico.security import SECRET_SHAPED_TEXT_PATTERNS, looks_sensitive_env_name
+
+    text = str(note or "")
+    # The first shared pattern is keyword-only prose; memory notes only reject value-shaped tokens.
+    if any(pattern.search(text) for pattern in SECRET_SHAPED_TEXT_PATTERNS[1:]):
+        return True
+    if "=" not in text:
+        return False
+    candidate = text.split("=", 1)[0].strip()
+    return bool(candidate and looks_sensitive_env_name(candidate))
+
+
 def tool_memory_list(context, args: dict) -> str:
     store: BlockStore = getattr(context, "memory_store", None)
     if store is None:
@@ -125,6 +138,8 @@ def tool_memory_save(context, args: dict) -> str:
     note = str(args.get("note", "")).strip()
     if not note:
         return "error: note must not be empty"
+    if looks_like_secret_note(note):
+        return "error: memory note appears to contain a secret; not saved"
     if len(note) > MAX_NOTE_CHARS:
         return f"error: note exceeds {MAX_NOTE_CHARS} chars"
     scope = str(args.get("scope", "workspace")).strip() or "workspace"
