@@ -5,6 +5,7 @@ import pytest
 import pico.agent_loop as agent_loop_module
 from pico import FakeModelClient, Pico, SessionStore, WorkspaceContext
 from pico.agent_loop import AgentLoop
+from pico.providers.response import Response, StopReason
 
 
 def build_agent(tmp_path, outputs, max_steps=6):
@@ -19,6 +20,121 @@ def build_agent(tmp_path, outputs, max_steps=6):
         approval_policy="auto",
         max_steps=max_steps,
     )
+
+
+class _NativeScriptProvider:
+    supports_prompt_cache = False
+    supports_native_tools = True
+
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.last_completion_metadata = {}
+
+    def complete_v2(self, *, system, tools, messages, max_tokens, cache_breakpoints=None):
+        if not self.responses:
+            raise RuntimeError("native script exhausted")
+        return self.responses.pop(0)
+
+
+def build_native_agent(tmp_path, responses, max_steps=6):
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
+    workspace = WorkspaceContext.build(tmp_path)
+    store = SessionStore(tmp_path / ".pico" / "sessions")
+    return Pico(
+        model_client=_NativeScriptProvider(responses),
+        workspace=workspace,
+        session_store=store,
+        approval_policy="auto",
+        max_steps=max_steps,
+    )
+
+
+def trace_events(agent):
+    return [
+        json.loads(line)
+        for line in agent.run_store.trace_path(agent.current_task_state).read_text(encoding="utf-8").splitlines()
+    ]
+
+
+def test_agent_loop_records_action_metadata_for_final(tmp_path):
+    agent = build_native_agent(
+        tmp_path,
+        [
+            Response(
+                stop_reason=StopReason.END_TURN,
+                content=[{"type": "text", "text": "Plain final."}],
+                usage={},
+            ),
+        ],
+    )
+
+    answer = agent.ask("Return a final answer")
+
+    assert answer == "Plain final."
+    events = trace_events(agent)
+    model_parsed = [event for event in events if event["event"] == "model_parsed"][-1]
+    model_turn = [event for event in events if event["event"] == "model_turn"][-1]
+    assert model_parsed["action_type"] == "final"
+    assert model_parsed["action_origin"] == "plain_text_final"
+    assert model_parsed["ignored_tool_count"] == 0
+    assert model_turn["action_type"] == "final"
+    assert model_turn["action_origin"] == "plain_text_final"
+    assert model_turn["ignored_tool_count"] == 0
+
+
+def test_agent_loop_executes_only_first_native_tool_and_records_ignored_count(tmp_path):
+    agent = build_native_agent(
+        tmp_path,
+        [
+            Response(
+                stop_reason=StopReason.TOOL_USE,
+                content=[
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_first",
+                        "name": "read_file",
+                        "input": {"path": "README.md", "start": 1, "end": 1},
+                    },
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_ignored",
+                        "name": "read_file",
+                        "input": {"path": "ignored.txt", "start": 1, "end": 1},
+                    },
+                ],
+                usage={},
+            ),
+            Response(
+                stop_reason=StopReason.END_TURN,
+                content=[{"type": "text", "text": "Finished."}],
+                usage={},
+            ),
+        ],
+    )
+
+    answer = agent.ask("Read the first file")
+
+    assert answer == "Finished."
+    tool_records = [item for item in agent.session["history"] if item["role"] == "tool"]
+    assert len(tool_records) == 1
+    assert tool_records[0]["name"] == "read_file"
+    assert tool_records[0]["args"]["path"] == "README.md"
+    notices = [
+        item
+        for item in agent.session["history"]
+        if item["role"] == "runtime" and item.get("ignored_tool_count") == 1
+    ]
+    assert notices
+    events = trace_events(agent)
+    model_parsed = [event for event in events if event["event"] == "model_parsed"][0]
+    model_turn = [event for event in events if event["event"] == "model_turn"][0]
+    assert model_parsed["action_type"] == "tool"
+    assert model_parsed["action_origin"] == "native_tool_use"
+    assert model_parsed["ignored_tool_count"] == 1
+    assert model_turn["action_type"] == "tool"
+    assert model_turn["action_origin"] == "native_tool_use"
+    assert model_turn["ignored_tool_count"] == 1
 
 
 def test_agent_loop_runs_same_control_flow_as_pico_ask(tmp_path):

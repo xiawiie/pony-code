@@ -4,8 +4,9 @@ import logging
 import time
 import uuid
 
+from .action_codec import ActionCodec
 from .checkpoint import CHECKPOINT_NONE_STATUS, CHECKPOINT_PARTIAL_STALE_STATUS, CHECKPOINT_WORKSPACE_MISMATCH_STATUS
-from .providers.response import StopReason
+from .model_actions import FinalAction, RetryAction, ToolAction
 from .recovery_models import TRACE_RECOVERY_CHECKPOINT_CREATED
 from .recovery_checkpoint_writer import (
     current_recovery_checkpoint_id,
@@ -268,34 +269,24 @@ class AgentLoop:
             agent.last_completion_metadata = completion_metadata
             agent.last_prompt_metadata = prompt_metadata
 
-            # 解析 Response.content：过滤成 text_blocks / tool_use_blocks，
-            # tool_use 优先（Anthropic END_TURN 也可能同时带 text 与 tool_use，
-            # 但 STOP_REASON=tool_use 意味着模型希望我们执行工具）。
-            content_blocks = list(raw_response.content or [])
-            text_blocks = [b for b in content_blocks if isinstance(b, dict) and b.get("type") == "text"]
-            tool_use_blocks = [b for b in content_blocks if isinstance(b, dict) and b.get("type") == "tool_use"]
-
-            has_text = any(str(b.get("text", "")).strip() for b in text_blocks)
-            if tool_use_blocks:
+            action = ActionCodec().decode(raw_response)
+            if isinstance(action, ToolAction):
                 kind = "tool"
-            elif raw_response.stop_reason == StopReason.STOP_SEQUENCE:
-                # STOP_SEQUENCE 在 v2 语义里表示“这一轮没有拿出可执行的动作”
-                # （FallbackAdapter 也用它承载 retry/malformed notice）。
-                # 即便 text 有内容也不视为 final，避免把 retry notice 当成答案返回。
+            elif isinstance(action, RetryAction):
                 kind = "retry"
-            elif raw_response.stop_reason == StopReason.END_TURN and has_text:
-                kind = "final"
-            elif raw_response.stop_reason == StopReason.MAX_TOKENS and has_text:
-                # 沿用旧循环对 MAX_TOKENS 的宽松处理：还有内容就落地成 final。
-                kind = "final"
             else:
-                kind = "retry"
+                kind = "final"
+            action_origin = str(action.origin.value)
+            ignored_tool_count = int(getattr(action, "ignored_tool_count", 0) or 0)
 
             agent.emit_trace(
                 task_state,
                 "model_parsed",
                 {
                     "kind": kind,
+                    "action_type": kind,
+                    "action_origin": action_origin,
+                    "ignored_tool_count": ignored_tool_count,
                     "stop_reason": str(getattr(raw_response.stop_reason, "value", raw_response.stop_reason) or ""),
                     "completion_metadata": completion_metadata,
                     "duration_ms": int((time.monotonic() - model_started_at) * 1000),
@@ -309,6 +300,9 @@ class AgentLoop:
                 {
                     "attempts": task_state.attempts,
                     "kind": kind,
+                    "action_type": kind,
+                    "action_origin": action_origin,
+                    "ignored_tool_count": ignored_tool_count,
                     "stop_reason": str(getattr(raw_response.stop_reason, "value", raw_response.stop_reason) or ""),
                     "duration_ms": int((time.monotonic() - prompt_started_at) * 1000),
                     "prompt_cache_key": prompt_metadata.get("prompt_cache_key"),
@@ -317,16 +311,29 @@ class AgentLoop:
                 },
             )
 
-            if kind == "tool":
-                tool_block = tool_use_blocks[0]
-                name = str(tool_block.get("name", ""))
-                args = dict(tool_block.get("input", {}) or {})
-                tool_use_id = _append_tool_use(
-                    agent,
-                    name=name,
-                    input=args,
-                    id_hint=tool_block.get("id"),
-                )
+            if isinstance(action, ToolAction):
+                name = action.name
+                args = dict(action.arguments)
+                tool_use_id = _append_tool_use(agent, name=name, input=args, id_hint=action.id)
+                if action.ignored_tool_count > 0:
+                    notice = {
+                        "role": "runtime",
+                        "content": (
+                            f"Runtime notice: ignored {action.ignored_tool_count} additional tool call(s) "
+                            "from the same model response."
+                        ),
+                        "ignored_tool_count": action.ignored_tool_count,
+                        "created_at": now(),
+                    }
+                    agent.record(notice)
+                    agent.emit_trace(
+                        task_state,
+                        "runtime_notice",
+                        {
+                            "notice_type": "ignored_tool_calls",
+                            "ignored_tool_count": action.ignored_tool_count,
+                        },
+                    )
                 tool_started_at = time.monotonic()
                 agent.emit_trace(
                     task_state,
@@ -401,34 +408,22 @@ class AgentLoop:
                     run_verification_evidence.append(verification_evidence)
                 continue
 
-            if kind == "retry":
-                # retry: log a diagnostic notice to legacy history (tests +
-                # trace consumers look for it). We do NOT append to v2
-                # messages — back-to-back assistant turns would violate
-                # Anthropic API constraints.
-                retry_text = ""
-                for block in text_blocks:
-                    candidate = str(block.get("text", "") or "").strip()
-                    if candidate:
-                        retry_text = candidate
-                        break
-                if not retry_text:
-                    retry_text = (
-                        "Runtime notice: model returned an empty response. "
-                        "Reply with a tool call or a final answer."
-                    )
+            if isinstance(action, RetryAction):
+                retry_text = action.reason
                 agent.record({"role": "assistant", "content": retry_text, "created_at": now()})
+                if action.model_visible:
+                    agent.session["runtime_feedback"] = {
+                        "next_model_visible_notice": retry_text,
+                        "created_at": now(),
+                        "source": action.origin.value,
+                    }
+                    agent.session_path = agent.session_store.save(agent.session)
                 agent.run_store.write_task_state(task_state)
                 continue
 
             # final path
-            final_text = ""
-            for block in text_blocks:
-                candidate = str(block.get("text", "") or "").strip()
-                if candidate:
-                    final_text = candidate
-                    break
-            final = final_text
+            assert isinstance(action, FinalAction)
+            final = action.text
             _append_assistant_text(agent, final)
             # Dual-write to legacy history for report/test consumers.
             agent.record({"role": "assistant", "content": final, "created_at": now()})
