@@ -250,3 +250,31 @@ Task F3: complete (commit 7ec23fe, docs-only; post-review addendum in 2026-07-07
 === Post-Migration Review & Optimize DONE ===
 Streams A-F complete; 14/15 findings closed (Finding 14's test_metrics test deferred to independent spec).
 Suite: 666 passed, 1 skipped in 67.71s. Bench harness: 3/3 scripts produce valid JSON (bench_build_v2, bench_retrieval, bench_recall).
+
+Final-review M1 fix: complete (commit dea8478; total_budget_hard_cap exposed via pico.toml)
+  minors deferred to indefinite (non-blocking): M2 renderer logger E402; M3 E1 missing metadata assert; M4 E2 orphan-check tautology; M5 E3 or-clause; M6 Retrieval FIELD_BOOSTS shared dict
+
+=== FULL POST-MIGRATION REVIEW & OPTIMIZE COMPLETE ===
+Baseline f61343a → HEAD dea8478 · 38 commits · 52+ files · +2900+/-102 lines
+Suite: 668 passed / 1 skipped (from 596/3 baseline; legacy skip 3→1 — test_metrics deferred to independent spec)
+All 14 non-ACCEPTABLE findings from prior review closed except explicit non-goal deferral.
+Benchmarks: 3 scripts smoke-verified with 10 scenarios total.
+Whole-branch verdict: SHIP (M1 fix landed post-verdict; M2-M6 non-blocking minors deferred).
+
+## Live-E2E Test 2026-07-08
+Baseline: 6752381
+Plan: docs/superpowers/plans/2026-07-08-pico-live-e2e-test.md
+Live-Task 1: complete (commit d2103e2, controller-self clean; package skeleton)
+Live-Task 2: complete (commit cdf01a6, controller-self clean; Config+parse_args+check_env+verify_pico_repo)
+Live-Task 3: complete (commit fe7f4c1, controller-self clean; seed cache-invariant fixture)
+Live-Task 4: complete (commit b8fbf59, controller-self clean; FixtureManager)
+Live-Task 5: complete (commit 552aad9, controller-self clean; TurnResult+TurnRunner)
+Live-Task 6: complete (commit b98e918, controller-self clean; Assertion + Turn 1 recall)
+Live-Task 7: complete (commit 6cc3839, controller-self clean; Turn 2 digest + Turn 3 injection drop)
+Live-Task 8: complete (commit 13b7b66, controller-self clean; Turn 4 history drop + Turn 5 cache anchor)
+Live-Task 9: complete (commit a290ce0, controller-self clean; global cross-turn)
+Live-Task 10: complete (commit 27ea7e9, controller-self clean; Reporter)
+Live-Task 11: complete (commit 5da7794, controller-self clean; main + do_reset + cost guards + .gitignore)
+Live-Task 12: complete (commit b75267b, controller-self clean; README)
+Live-Task 13: complete (commits af680b6..6a0f005; real-API 27/27 assertions, wall≈78s, ~$0.05)
+Live-E2E final: SHIP — end-to-end verification of P1+P2+P3 optimizations against real Anthropic API. Fixed real bug: agent_loop merged v1 system_cache_key over v2 (memory-index churn leaking into cache anchor).
