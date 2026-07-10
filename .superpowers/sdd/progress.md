@@ -327,3 +327,12 @@ Task 17: complete (commit bfe6157, independent review approved after provenance 
   follow-up doc contract: ba7a1cc restores the required review-pack headings with current v3 wording; focused test and independent re-review approved
 Task 18: complete (verification only)
   verification: 8 structural deletion scans; Ruff + 780 pytest passed; memory-quality 8/8; five-repetition memory ablation semantic checks; 3 perf JSON smokes; 48 offline live-harness tests; clean tracked worktree
+Task 19: complete (commits f2a5730..7217eac, independent repair review approved; final real DeepSeek E2E passed)
+  retained failure 1: benchmarks/live_e2e/results/live-e2e-1783686245345189000.json — 38/40; unconstrained delegate child reused the Provider client and invalidated outer-call attribution
+  repair 1: f2a5730 + 897d797 constrained the dedicated gate to allowed_tools=("read_file",); 49 offline harness tests and 780 full-suite tests passed
+  retained failure 2: benchmarks/live_e2e/results/live-e2e-1783686818817353000.json — 39/40; all functional assertions passed, but 16 Provider calls exceeded the unchanged 15-call cap
+  repair 2: 417e166 + 7217eac reduced only the dedicated harness max_steps from 3 to 2; focused/offline/full local gates passed and independent review approved
+  passing report: benchmarks/live_e2e/results/live-e2e-1783687362821655000.json — DeepSeek qwen3.7-max; 40/40 assertions; session schema 3; 6 native tool actions; 9/15 Provider calls; 8,152 input + 1,674 output + 8,676 cache-read tokens; no abort, leaked key, backup, or tracked artifact
+
+=== ACTION KERNEL AND MESSAGES V3 COMPLETE ===
+Tasks 1-19 done. Local full gate: Ruff + 780 pytest. Real native-tool gate: PASS (DeepSeek, 40/40). A-stage security/model-connection work remains excluded by the approved scope.
