@@ -12,6 +12,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from benchmarks.perf.harness import bench  # noqa: E402
+from pico.context.renderer import render_current_user_message  # noqa: E402
 from pico.context_manager import ContextManager  # noqa: E402
 
 
@@ -24,8 +25,12 @@ def _make_agent(session_len):
     }
     a.session = {
         "messages": [
-            {"role": "user" if i % 2 == 0 else "assistant", "content": f"msg-{i} " * 20}
-            for i in range(session_len)
+            {
+                "role": "user" if i % 2 == 0 else "assistant",
+                "content": f"msg-{i} " * 20,
+                "_pico_meta": {"created_at": "2026-07-10T00:00:00+00:00"},
+            }
+            for i in range(max(2, session_len + session_len % 2))
         ]
     }
     a.workspace = MagicMock()
@@ -43,7 +48,24 @@ def main():
     for name, size in [("small", 1), ("medium", 30), ("large", 300)]:
         agent = _make_agent(size)
         cm = ContextManager(agent)
-        result = bench(f"build_v2/{name}", lambda: cm.build_v2("test question"), iterations=100)
+        user_message = "test question"
+        agent.session["messages"].append(
+            {
+                "role": "user",
+                "content": user_message,
+                "_pico_meta": {"created_at": "2026-07-10T00:00:00+00:00"},
+            }
+        )
+        snapshot, telemetry = render_current_user_message(agent, user_message)
+        result = bench(
+            f"build_v2/{name}",
+            lambda: cm.build_v2(
+                injection_snapshot=snapshot,
+                injection_telemetry=telemetry,
+                preflight_metadata={},
+            ),
+            iterations=100,
+        )
         scenarios.append(result)
     print(json.dumps({"scenarios": scenarios}, indent=2))
 

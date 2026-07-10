@@ -1,5 +1,6 @@
 import json
 import os
+from copy import deepcopy
 from unittest.mock import patch
 
 import pytest
@@ -111,6 +112,30 @@ def test_context_ablation_compares_bounded_and_unbounded_sent_messages(tmp_path)
     )
 
 
+def test_request_preview_restores_the_canonical_session(tmp_path):
+    from pico import FakeModelClient, Pico, SessionStore, WorkspaceContext
+    from pico.evaluation.experiments_synthetic import (
+        _seed_plain_messages,
+        measure_request_ablation_metrics,
+    )
+
+    (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
+    agent = Pico(
+        model_client=FakeModelClient([]),
+        workspace=WorkspaceContext.build(tmp_path),
+        session_store=SessionStore(tmp_path / ".pico" / "sessions"),
+        approval_policy="auto",
+    )
+    _seed_plain_messages(agent, 4, "history", 80)
+    before_session = agent.session
+    before_messages = deepcopy(agent.session["messages"])
+
+    measure_request_ablation_metrics(agent, "preview this request")
+
+    assert agent.session is before_session
+    assert agent.session["messages"] == before_messages
+
+
 def test_provider_profile_loads_project_env_before_reading_deepseek_config(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     (tmp_path / ".env").write_text(
@@ -158,7 +183,7 @@ def test_provider_profile_uses_right_codes_shared_key_for_gpt(tmp_path, monkeypa
 def test_run_memory_ablation_v2_writes_expected_artifact(tmp_path):
     # TODO(P3 cleanup): _MemoryExperimentModelClient.complete() scans the
     # flattened prompt for "<file> -> <fact>" markers produced by
-    # ContextManager.build() history compression. Once memory summaries are
+    # legacy flattened history compression. Once memory summaries are
     # threaded through v2 messages / system prefix, this experiment should
     # inspect session["messages"] directly.
     artifact_path = tmp_path / "artifacts" / "memory-ablation-v2.json"

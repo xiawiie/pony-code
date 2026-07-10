@@ -1,6 +1,7 @@
 import tempfile
 from pathlib import Path
 
+from ..context.renderer import render_current_user_message
 from ..features import memory as memorylib
 from ..messages import message_content_text
 from ..providers.clients import FakeModelClient
@@ -33,13 +34,39 @@ def _latest_plain_user(request):
     return ""
 
 
+def _preview_request(agent, user_message):
+    preview = {
+        "role": "user",
+        "content": user_message,
+        "_pico_meta": {"created_at": "2026-07-10T00:00:00+00:00"},
+    }
+    original_session = agent.session
+    preview_session = {
+        **original_session,
+        "messages": [*original_session.get("messages", []), preview],
+        "recently_recalled": list(original_session.get("recently_recalled", [])),
+    }
+    if isinstance(original_session.get("_recall_errors"), dict):
+        preview_session["_recall_errors"] = dict(original_session["_recall_errors"])
+    agent.session = preview_session
+    try:
+        snapshot, telemetry = render_current_user_message(agent, user_message)
+        return agent.context_manager.build_v2(
+            injection_snapshot=snapshot,
+            injection_telemetry=telemetry,
+            preflight_metadata={},
+        )
+    finally:
+        agent.session = original_session
+
+
 def measure_request_ablation_metrics(agent, user_message):
     original_cap = agent.context_config["history_soft_cap"]
     results = {}
     try:
         for name, cap in (("bounded", 4_000), ("unbounded", 1_000_000)):
             agent.context_config["history_soft_cap"] = cap
-            request, metadata = agent.context_manager.build_v2(user_message)
+            request, metadata = _preview_request(agent, user_message)
             results[name] = {
                 "request_chars": _sent_message_chars(request),
                 "dropped_messages": int(metadata["dropped_messages"]),

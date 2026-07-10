@@ -1,14 +1,8 @@
-"""Tests for ContextManager.build_v2 — the message-array shape used by anthropic.complete_v2.
-
-Task 5 adds a sibling method `build_v2(user_message)` alongside the legacy `build`.
-Where `build` returns `(prompt_str, metadata)`, `build_v2` returns
-`(request, metadata)` with `request = {system, tools, messages, cache_control_breakpoints}`.
-
-The legacy `build` is UNCHANGED by this task; Task 7 will migrate the agent loop.
-"""
+"""Tests for the provider request built from canonical messages."""
 
 from unittest.mock import MagicMock
 
+from pico.context.renderer import render_current_user_message
 from pico.context_manager import ContextManager
 
 
@@ -41,10 +35,21 @@ def _make_agent():
     return a
 
 
+def _build_v2(agent, user_message):
+    agent.session["messages"].append(
+        {"role": "user", "content": user_message, "_pico_meta": {}}
+    )
+    snapshot, telemetry = render_current_user_message(agent, user_message)
+    return ContextManager(agent).build_v2(
+        injection_snapshot=snapshot,
+        injection_telemetry=telemetry,
+        preflight_metadata={},
+    )
+
+
 def test_build_v2_returns_system_tools_messages():
     a = _make_agent()
-    cm = ContextManager(a)
-    request, metadata = cm.build_v2("current input")
+    request, metadata = _build_v2(a, "current input")
     assert isinstance(request, dict)
     assert isinstance(request["system"], list)
     assert request["system"][0]["type"] == "text"
@@ -59,10 +64,9 @@ def test_build_v2_returns_system_tools_messages():
     assert "approval" in tools_by_name["write_file"]["description"].lower()
 
 
-def test_build_v2_appends_current_user_message():
+def test_build_v2_uses_persisted_current_user_message():
     a = _make_agent()
-    cm = ContextManager(a)
-    request, _ = cm.build_v2("current input")
+    request, _ = _build_v2(a, "current input")
     assert request["messages"][-1]["role"] == "user"
     text = request["messages"][-1]["content"]
     assert "current input" in text
@@ -70,8 +74,7 @@ def test_build_v2_appends_current_user_message():
 
 def test_build_v2_history_messages_preserved():
     a = _make_agent()
-    cm = ContextManager(a)
-    request, _ = cm.build_v2("x")
+    request, _ = _build_v2(a, "x")
     # 历史两条 + 当前一条
     assert len(request["messages"]) == 3
     assert request["messages"][0]["content"] == "hello"
@@ -80,8 +83,7 @@ def test_build_v2_history_messages_preserved():
 
 def test_build_v2_cache_breakpoint_on_second_to_last():
     a = _make_agent()
-    cm = ContextManager(a)
-    request, _ = cm.build_v2("x")
+    request, _ = _build_v2(a, "x")
     # messages 长度 3，断点 2 应位于 index 1（当前 user 消息的前一条）
     assert request["cache_control_breakpoints"] == [len(request["messages"]) - 2]
 
@@ -89,8 +91,7 @@ def test_build_v2_cache_breakpoint_on_second_to_last():
 def test_build_v2_metadata_contains_system_cache_key():
     import hashlib
     a = _make_agent()
-    cm = ContextManager(a)
-    _, metadata = cm.build_v2("x")
+    _, metadata = _build_v2(a, "x")
     assert "system_cache_key" in metadata
     expected = hashlib.sha256(a.prefix.encode("utf-8")).hexdigest()
     assert metadata["system_cache_key"] == expected

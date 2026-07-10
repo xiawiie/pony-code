@@ -6,6 +6,8 @@ provider.complete_v2 actually receives — not the bare user string.
 This end-to-end check sniffs the provider payload.
 """
 
+import json
+
 from pico.providers.response import Response, StopReason
 from pico.runtime import Pico
 from pico.session_store import SessionStore
@@ -34,6 +36,17 @@ class _SniffProvider:
             }
         )
         return self.script.pop(0)
+
+
+def build_native_agent(tmp_path, provider, **kwargs):
+    (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
+    return Pico(
+        model_client=provider,
+        workspace=WorkspaceContext.build(tmp_path),
+        session_store=SessionStore(tmp_path / ".pico" / "sessions"),
+        approval_policy="auto",
+        **kwargs,
+    )
 
 
 def test_provider_receives_injection_wrapped_user_message(tmp_path):
@@ -86,3 +99,87 @@ def test_message_count_invariant_after_injection(tmp_path):
     provider_roles = [m["role"] for m in call["messages"]]
     # Provider sees only the current user turn (nothing before it — fresh session).
     assert provider_roles == ["user"]
+
+
+def test_one_snapshot_survives_retry_and_tool_step_while_feedback_is_one_shot(
+    tmp_path,
+    monkeypatch,
+):
+    render_calls = []
+
+    def frozen_render(agent, user_message):
+        render_calls.append(user_message)
+        return (
+            "<system-reminder><pico:memory_index>SNAPSHOT</pico:memory_index></system-reminder>\n"
+            + user_message,
+            {
+                "intent": {"name": "default", "matched_keyword": "", "matched_reason": "test"},
+                "injection_tokens": {"memory_index": 1},
+                "injection_truncated": {},
+                "injection_dropped": [],
+                "injection_budget": 100,
+            },
+        )
+
+    monkeypatch.setattr(
+        "pico.agent_loop.render_current_user_message",
+        frozen_render,
+        raising=False,
+    )
+    provider = _SniffProvider([
+        Response(
+            stop_reason=StopReason.END_TURN,
+            content=[{"type": "text", "text": "<tool>{bad}</tool>"}],
+            usage={"input_tokens": 1, "output_tokens": 1},
+        ),
+        Response(
+            stop_reason=StopReason.TOOL_USE,
+            content=[{"type": "tool_use", "id": "tu_1", "name": "read_file", "input": {"path": "README.md"}}],
+            usage={"input_tokens": 2, "output_tokens": 1},
+        ),
+        Response(
+            stop_reason=StopReason.END_TURN,
+            content=[{"type": "text", "text": "done"}],
+            usage={"input_tokens": 3, "output_tokens": 1},
+        ),
+    ])
+    agent = build_native_agent(tmp_path, provider)
+    assert agent.ask("inspect") == "done"
+    assert render_calls == ["inspect"]
+
+    sent = []
+    for call in provider.calls:
+        current = next(
+            message["content"]
+            for message in reversed(call["messages"])
+            if message["role"] == "user" and isinstance(message["content"], str)
+        )
+        sent.append(current)
+    assert all("SNAPSHOT" in content for content in sent)
+    assert "runtime_feedback" not in sent[0]
+    assert "runtime_feedback" in sent[1]
+    assert "runtime_feedback" not in sent[2]
+    assert len({call["system"][0]["text"] for call in provider.calls}) == 1
+
+    canonical_text = json.dumps(agent.session["messages"])
+    assert "SNAPSHOT" not in canonical_text
+    assert "runtime_feedback" not in canonical_text
+
+    events = [
+        json.loads(line)
+        for line in agent.run_store.trace_path(agent.current_task_state)
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    prompt_metadata = [
+        event["prompt_metadata"]
+        for event in events
+        if event["event"] == "prompt_built"
+    ]
+    for event_name in ("model_requested", "action_decoded", "model_turn"):
+        metadata = [
+            event["request_metadata"]
+            for event in events
+            if event["event"] == event_name
+        ]
+        assert metadata == prompt_metadata

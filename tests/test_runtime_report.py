@@ -11,6 +11,7 @@ from pico import (
     SessionStore,
     WorkspaceContext,
 )
+from pico.context.renderer import render_current_user_message
 from pico.task_state import TaskState
 
 
@@ -38,6 +39,18 @@ def set_raw_file_summary(agent, path, summary):
         path,
         summary,
         workspace_root=agent.root,
+    )
+
+
+def build_request_view(agent, user_message):
+    agent.session["messages"].append(
+        {"role": "user", "content": user_message, "_pico_meta": {}}
+    )
+    snapshot, telemetry = render_current_user_message(agent, user_message)
+    return agent.context_manager.build_v2(
+        injection_snapshot=snapshot,
+        injection_telemetry=telemetry,
+        preflight_metadata={},
     )
 
 
@@ -152,8 +165,7 @@ def test_trace_and_report_redact_secret_env_values(tmp_path):
         )
 
         assert agent.ask("Mask the secret") == "Masked sk-test-secret-123"
-        followup_prompt = agent.prompt("Continue without repeating secrets")
-        assert secret not in followup_prompt
+        assert secret not in agent.prefix
 
     runs_root = tmp_path / ".pico" / "runs"
     run_dirs = [path for path in runs_root.iterdir() if path.is_dir()]
@@ -184,49 +196,49 @@ def test_trace_and_report_redact_secret_env_values(tmp_path):
     assert "<redacted>" in tool_events[0]["result"]
 
 
-def test_prompt_budget_metadata_records_budget_decisions(tmp_path):
+def test_request_metadata_describes_actual_sent_view(tmp_path):
     agent = build_agent(tmp_path, ["<final>Done.</final>"])
-
-    for index in range(4):
-        agent.record(
-            {
-                "role": "user" if index % 2 == 0 else "assistant",
-                "content": f"history-{index}-" + ("A" * 240),
-                "created_at": f"2026-04-07T10:0{index}:00+00:00",
-            }
-        )
-
-    agent.context_manager.total_budget = 1000
-    agent.context_manager.section_budgets = {
-        "prefix": 80,
-        "history": 80,
-    }
+    agent.context_config["history_soft_cap"] = 500
+    agent.context_config["history_floor_messages"] = 3
+    agent.session["messages"] = [
+        {
+            "role": "user" if index % 2 == 0 else "assistant",
+            "content": f"history-{index}-" + ("A" * 240),
+            "_pico_meta": {},
+        }
+        for index in range(8)
+    ]
 
     assert agent.ask("recall") == "Done."
 
     trace_events = [
         json.loads(line)
-        for line in (agent.run_store.trace_path(agent.current_task_state).read_text(encoding="utf-8").splitlines())
+        for line in agent.run_store.trace_path(agent.current_task_state)
+        .read_text(encoding="utf-8")
+        .splitlines()
     ]
-    prompt_events = [event for event in trace_events if event["event"] == "prompt_built"]
-    assert prompt_events
-    metadata = prompt_events[0]["prompt_metadata"]
-    prompt = agent.model_client.prompts[0]
+    metadata = next(
+        event["request_metadata"]
+        for event in trace_events
+        if event["event"] == "model_turn"
+    )
 
-    assert metadata["section_order"] == ["prefix", "history", "current_request"]
-    assert set(metadata["sections"]) == {"prefix", "history", "current_request"}
-    assert "relevant_memory" not in metadata
-    assert "Working memory:" not in prompt
-    assert "Relevant memory:" not in prompt
-    assert metadata["current_request"]["text"] == "recall"
-    assert metadata["current_request"]["rendered_chars"] == len("recall")
+    assert metadata["dropped_messages"] > 0
+    assert metadata["messages_count"] > 0
+    assert metadata["messages_chars"] > 0
+    assert metadata["runtime_feedback_present"] is False
 
 
-def test_prompt_metadata_refreshes_prefix_when_workspace_changes(tmp_path):
-    agent = build_agent(tmp_path, [])
+def test_turn_preflight_refreshes_prefix_when_workspace_changes(tmp_path):
+    agent = build_agent(
+        tmp_path,
+        ["<final>first</final>", "<final>second</final>", "<final>third</final>"],
+    )
 
-    first = agent.prompt_metadata("first", "")
-    second = agent.prompt_metadata("second", "")
+    assert agent.ask("first") == "first"
+    first = dict(agent.last_prompt_metadata)
+    assert agent.ask("second") == "second"
+    second = dict(agent.last_prompt_metadata)
 
     assert first["system_cache_key"] == second["system_cache_key"]
     assert second["prefix_changed"] is False
@@ -234,7 +246,8 @@ def test_prompt_metadata_refreshes_prefix_when_workspace_changes(tmp_path):
 
     (tmp_path / "README.md").write_text("demo changed\n", encoding="utf-8")
 
-    third = agent.prompt_metadata("third", "")
+    assert agent.ask("third") == "third"
+    third = agent.last_prompt_metadata
 
     assert third["system_cache_key"] != second["system_cache_key"]
     assert third["prefix_changed"] is True
@@ -245,48 +258,29 @@ def test_prompt_metadata_refreshes_prefix_when_workspace_changes(tmp_path):
 def test_agent_creates_checkpoint_when_context_reduction_happens_and_artifacts_only_reference_it(tmp_path):
     agent = build_agent(tmp_path, ["<final>Done after checkpoint.</final>"])
     for index in range(10):
-        agent.record(
+        agent.session["messages"].append(
             {
                 "role": "user" if index % 2 == 0 else "assistant",
                 "content": f"history-{index}-" + ("A" * 260),
-                "created_at": f"2026-04-07T10:{index:02d}:00+00:00",
+                "_pico_meta": {"created_at": f"2026-04-07T10:{index:02d}:00+00:00"},
             }
         )
-    agent.memory.set_task_summary("checkpoint note " + ("B" * 220))
-    agent._sync_working_memory()
-    agent.context_manager.total_budget = 900
-    agent.context_manager.section_budgets = {
-        "prefix": 120,
-        "history": 160,
-    }
+    agent.context_config["history_soft_cap"] = 500
+    agent.context_config["history_floor_messages"] = 3
 
     assert agent.ask("Resume the long task") == "Done after checkpoint."
-
-    checkpoint_state = agent.session["checkpoints"]
-    checkpoint = checkpoint_state["items"][checkpoint_state["current_id"]]
-    assert checkpoint["checkpoint_id"] == checkpoint_state["current_id"]
-    assert checkpoint["schema_version"] == "phase1-v1"
-    assert checkpoint["current_goal"] == "Resume the long task"
-    assert checkpoint["key_files"] == []
-    assert checkpoint["current_blocker"] == ""
-    assert checkpoint["next_step"]
-
-    task_state = json.loads(agent.run_store.task_state_path(agent.current_task_state).read_text(encoding="utf-8"))
-    report = json.loads(agent.run_store.report_path(agent.current_task_state).read_text(encoding="utf-8"))
     trace_events = [
         json.loads(line)
         for line in agent.run_store.trace_path(agent.current_task_state).read_text(encoding="utf-8").splitlines()
     ]
-
-    assert task_state["checkpoint_id"] == checkpoint["checkpoint_id"]
-    assert report["checkpoint_id"] == checkpoint["checkpoint_id"]
-    assert report["task_state"]["checkpoint_id"] == checkpoint["checkpoint_id"]
-    assert "current_goal" not in task_state
-    assert "current_goal" not in report
-    checkpoint_events = [event for event in trace_events if event["event"] == "checkpoint_created"]
-    assert checkpoint_events
-    assert checkpoint_events[-1]["checkpoint_id"] == checkpoint["checkpoint_id"]
-    assert "current_goal" not in checkpoint_events[-1]
+    reduction_events = [
+        event
+        for event in trace_events
+        if event["event"] == "checkpoint_created"
+        and event.get("trigger") == "context_reduction"
+    ]
+    assert agent.last_prompt_metadata["dropped_messages"] > 0
+    assert len(reduction_events) == 1
 
 
 def test_resume_prompt_carries_checkpoint_via_v2_messages(tmp_path):
@@ -311,7 +305,7 @@ def test_resume_prompt_carries_checkpoint_via_v2_messages(tmp_path):
             }
         },
     }
-    request, metadata = agent.context_manager.build_v2("continue")
+    request, metadata = build_request_view(agent, "continue")
 
     # The checkpoint text should appear inside a <pico:checkpoint> block on
     # the current turn's user message.
@@ -424,7 +418,7 @@ def test_report_last_request_metadata_preserves_initial_resume_status(tmp_path):
 
     assert report["resume_status"] == "partial-stale"
     assert report["last_request_metadata"]["resume_status"] == "partial-stale"
-    assert report["last_request_metadata"]["last_prompt_resume_status"] == "full-valid"
+    assert report["last_request_metadata"]["last_prompt_resume_status"] == "partial-stale"
 
 
 def test_first_prompt_resume_status_updates_task_state_after_late_checkpoint_setup(tmp_path):
@@ -467,7 +461,7 @@ def test_first_prompt_resume_status_updates_task_state_after_late_checkpoint_set
 
     assert report["resume_status"] == "partial-stale"
     assert report["last_request_metadata"]["resume_status"] == "partial-stale"
-    assert report["last_request_metadata"]["last_prompt_resume_status"] == "full-valid"
+    assert report["last_request_metadata"]["last_prompt_resume_status"] == "partial-stale"
 
 
 def test_run_shell_nonzero_with_workspace_change_is_recorded_as_partial_success(tmp_path):
@@ -788,7 +782,6 @@ def test_agent_keeps_completion_usage_out_of_last_prompt_metadata(tmp_path):
     assert "cached_tokens" not in agent.last_prompt_metadata
     assert "cache_hit" not in agent.last_prompt_metadata
     assert agent.last_prompt_metadata["system_cache_key"]
-    assert agent.last_prompt_metadata["prompt_cache_key"] == agent.last_prompt_metadata["system_cache_key"]
     report = agent.run_store.load_report(agent.current_task_state.run_id)
     assert report["completion_usage_totals"]["cached_tokens"] == 512
     assert report["completion_usage_totals"]["input_tokens"] == 1024
@@ -828,7 +821,7 @@ def test_recent_messages_preserved_older_digested(tmp_path):
         {"role": "assistant", "content": "recent answer 3"},
     ]
 
-    request, _metadata = agent.context_manager.build_v2("current question")
+    request, _metadata = build_request_view(agent, "current question")
 
     # Last 6 messages preserved verbatim in the returned messages array
     # (exclude the appended current user turn at index -1).

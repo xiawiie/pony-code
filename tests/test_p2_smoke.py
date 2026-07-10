@@ -25,7 +25,16 @@ def test_p2_end_to_end():
     a = MagicMock()
     a.prefix = "SYSTEM"
     a.tools = {}
-    a.session = {"messages": []}
+    user_message = "上次报错了"
+    a.session = {
+        "messages": [
+            {
+                "role": "user",
+                "content": user_message,
+                "_pico_meta": {"created_at": "2026-07-10T00:00:00+00:00"},
+            }
+        ]
+    }
     a.workspace = MagicMock()
     a.workspace.volatile_text = MagicMock(return_value="branch: main")
     a.memory_store = None
@@ -34,7 +43,12 @@ def test_p2_end_to_end():
     a.model_client = MagicMock(count_tokens=lambda t: max(1, len(t) // 4))
 
     cm = ContextManager(a)
-    req, meta = cm.build_v2("上次报错了")
+    snapshot, telemetry = render_current_user_message(a, user_message)
+    req, meta = cm.build_v2(
+        injection_snapshot=snapshot,
+        injection_telemetry=telemetry,
+        preflight_metadata={},
+    )
 
     last_content = req["messages"][-1]["content"]
     # injection block present + escaped-content-free renderer output
@@ -42,7 +56,7 @@ def test_p2_end_to_end():
     # first-match-wins: "报错" hits debug (higher priority than recall's "上次")
     assert meta["intent"]["name"] == "debug"
     # user text is preserved at the tail
-    assert "上次报错了" in last_content
+    assert user_message in last_content
     # single-message session → no cache_control breakpoint
     assert meta["cache_control_breakpoints"] == []
     # v2 shape sanity

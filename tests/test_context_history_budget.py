@@ -101,13 +101,22 @@ def test_orphan_tool_use_never_produced():
 
 def test_build_v2_drops_old_messages_when_cap_exceeded(tmp_path):
     from unittest.mock import MagicMock
+
+    from pico.context.renderer import render_current_user_message
     from pico.context_manager import ContextManager
 
     a = MagicMock()
     a.prefix = "sys"
     a.tools = {}
-    # Session with 20 old user turns + 1 fresh user turn (matching user_message).
-    old_msgs = [_msg("assistant", "x" * 200), _msg("user", "old q " + "y" * 200)] * 10
+    # Ten complete canonical turns followed by the current user turn.
+    old_msgs = [
+        message
+        for index in range(10)
+        for message in (
+            _msg("user", f"old q {index} " + "y" * 200),
+            _msg("assistant", "x" * 200),
+        )
+    ]
     a.session = {"messages": old_msgs + [_msg("user", "current q")]}
     a.workspace = MagicMock()
     a.workspace.volatile_text = MagicMock(return_value="")
@@ -118,7 +127,12 @@ def test_build_v2_drops_old_messages_when_cap_exceeded(tmp_path):
     a.context_config = {"history_soft_cap": 500, "history_floor_messages": 3}
 
     cm = ContextManager(a)
-    request, metadata = cm.build_v2("current q")
+    snapshot, telemetry = render_current_user_message(a, "current q")
+    request, metadata = cm.build_v2(
+        injection_snapshot=snapshot,
+        injection_telemetry=telemetry,
+        preflight_metadata={},
+    )
     assert metadata["dropped_messages"] > 0
     # Floor guarantees minimum tail; provider gets a bounded messages list.
     assert len(request["messages"]) < len(old_msgs) + 1

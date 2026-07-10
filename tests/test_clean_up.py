@@ -4,8 +4,7 @@
 - `feature_flags["relevant_memory"]` is no longer a default flag (never consumed).
 - Prompt metadata carries a single cache-key field (`system_cache_key`);
   the three synonymous hashes (`base_prefix_hash` / `stable_prefix_hash` /
-  `prefix_hash`) are gone. `prompt_cache_key` is kept as a one-release alias
-  so existing provider adapters do not break.
+  `prefix_hash` / `prompt_cache_key`) are gone.
 """
 
 import importlib
@@ -26,6 +25,7 @@ def test_default_feature_flags_no_relevant_memory():
 
 def test_metadata_uses_system_cache_key_only(tmp_path):
     from pico import FakeModelClient, Pico, SessionStore, WorkspaceContext
+    from pico.context.renderer import render_current_user_message
 
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
     workspace = WorkspaceContext.build(tmp_path)
@@ -37,16 +37,22 @@ def test_metadata_uses_system_cache_key_only(tmp_path):
         approval_policy="auto",
     )
 
-    _, metadata = agent.context_manager.build_v2("x")
+    agent.session["messages"].append(
+        {
+            "role": "user",
+            "content": "x",
+            "_pico_meta": {"created_at": "2026-07-10T00:00:00+00:00"},
+        }
+    )
+    snapshot, telemetry = render_current_user_message(agent, "x")
+    _, metadata = agent.context_manager.build_v2(
+        injection_snapshot=snapshot,
+        injection_telemetry=telemetry,
+        preflight_metadata={},
+    )
 
     assert "system_cache_key" in metadata
-    assert "prompt_cache_key" in metadata  # kept as alias for one release
+    assert "prompt_cache_key" not in metadata
     assert "base_prefix_hash" not in metadata
     assert "stable_prefix_hash" not in metadata
     assert "prefix_hash" not in metadata
-
-    _, build_metadata = agent.context_manager.build("x")
-    assert "system_cache_key" in build_metadata
-    assert "base_prefix_hash" not in build_metadata
-    assert "stable_prefix_hash" not in build_metadata
-    assert "prefix_hash" not in build_metadata

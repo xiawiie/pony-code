@@ -36,6 +36,7 @@ DEFAULT_TOP_P = 1.0
 DEFAULT_MAX_NEW_TOKENS = 64
 DEFAULT_TIMEZONE = "Asia/Shanghai"
 REPRODUCIBILITY_LOCALE = "C.UTF-8"
+_CONTEXT_REDUCTION_SETUP = "context_reduction"
 
 
 def _git_value(args, fallback="", cwd=None):
@@ -107,22 +108,23 @@ def _apply_task_setup(agent, task, fixture_copy_root):
         return
 
     kind = str(setup.get("kind", "")).strip()
-    if kind == "context_reduction":
+    if kind == _CONTEXT_REDUCTION_SETUP:
         history_count = int(setup.get("history_turns", setup.get("history_count", 12)))
         for index in range(history_count):
-            agent.record(
+            agent.session["messages"].append(
                 {
                     "role": "user" if index % 2 == 0 else "assistant",
                     "content": f"benchmark-history-{index}-" + ("A" * 220),
-                    "created_at": f"2026-04-15T09:{index:02d}:00+00:00",
+                    "_pico_meta": {
+                        "created_at": f"2026-04-15T09:{index:02d}:00+00:00"
+                    },
                 }
             )
-        agent.context_manager.total_budget = int(setup.get("total_budget", 900))
-        agent.context_manager.section_budgets = dict(
-            setup.get(
-                "section_budgets",
-                {"prefix": 800, "history": 2400},
-            )
+        agent.context_config["history_soft_cap"] = int(
+            setup.get("history_soft_cap", 900)
+        )
+        agent.context_config["history_floor_messages"] = int(
+            setup.get("history_floor_messages", 6)
         )
         return
 

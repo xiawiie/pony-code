@@ -6,6 +6,7 @@ import uuid
 
 from .action_codec import FinalAction, RetryAction, ToolAction, decode_action
 from .checkpoint import CHECKPOINT_NONE_STATUS, CHECKPOINT_PARTIAL_STALE_STATUS, CHECKPOINT_WORKSPACE_MISMATCH_STATUS
+from .context.renderer import render_current_user_message
 from .recovery_models import TRACE_RECOVERY_CHECKPOINT_CREATED
 from .recovery_checkpoint_writer import (
     current_recovery_checkpoint_id,
@@ -181,6 +182,34 @@ def _append_assistant_text(agent, text: str):
     return msg
 
 
+def _run_turn_preflight(agent, user_message):
+    refresh = agent.refresh_prefix()
+    agent.resume_state = agent.evaluate_resume_state()
+    metadata = {
+        "prefix_chars": len(agent.prefix),
+        "workspace_chars": len(agent.workspace.text()),
+        "memory_chars": len(agent.memory_text()),
+        "request_chars": len(str(user_message)),
+        "tool_count": len(agent.tools),
+        "workspace_docs": len(agent.workspace.project_docs),
+        "recent_commits": len(agent.workspace.recent_commits),
+        "workspace_fingerprint": agent.prefix_state.workspace_fingerprint,
+        "tool_signature": agent.prefix_state.tool_signature,
+        "workspace_changed": refresh["workspace_changed"],
+        "prefix_changed": refresh["prefix_changed"],
+        "resume_status": agent.resume_state.get("status", CHECKPOINT_NONE_STATUS),
+        "stale_summary_invalidations": int(
+            agent.resume_state.get("stale_summary_invalidations", 0)
+        ),
+        "stale_paths": list(agent.resume_state.get("stale_paths", [])),
+        "runtime_identity_mismatch_fields": list(
+            agent.resume_state.get("runtime_identity_mismatch_fields", [])
+        ),
+    }
+    metadata.update(agent.detected_secret_env_summary())
+    return metadata
+
+
 class AgentLoop:
     def __init__(self, agent):
         self.agent = agent
@@ -211,6 +240,13 @@ class AgentLoop:
                 "user_request": clip(user_message, 300),
             },
         )
+        preflight_metadata = _run_turn_preflight(agent, user_message)
+        injection_snapshot, injection_telemetry = render_current_user_message(
+            agent,
+            user_message,
+        )
+        pending_runtime_feedback = ""
+        context_reduction_checkpoint_created = False
 
         tool_steps = 0
         attempts = 0
@@ -222,68 +258,56 @@ class AgentLoop:
         run_verification_evidence = []
         completion_usage_totals = _empty_usage_totals()
 
-        # 这是 agent 的主循环，可以按“感知 -> 决策 -> 行动 -> 记录”来理解：
-        # 1. 感知：build_v2 把 system / tools / messages 组装成一次 v2 请求
-        # 2. 决策：让 provider.complete_v2 返回 Response（tool_use 或 text）
-        # 3. 行动：如果是 tool_use，就 execute_tool 并把 tool_result 追加回 messages
-        # 4. 记录：把结果写回 messages / history / task_state / trace / memory
-        # 然后进入下一轮，直到停机条件满足。
         while tool_steps < agent.max_steps and attempts < max_attempts:
             attempts += 1
             task_state.record_attempt()
             agent.run_store.write_task_state(task_state)
             prompt_started_at = time.monotonic()
-            # 依旧调用 _build_prompt_and_metadata 是为了两件事：
-            # 1) 触发 resume_state / prefix_refresh 的副作用；
-            # 2) 拿到富元数据（resume_status / budget_reductions / prompt_cache_key
-            #    等）用于 trace、checkpoint 决策与报表；
-            # 真正发给模型的请求由 build_v2 组装，二者独立、互不覆盖。
-            _, prompt_metadata = agent._build_prompt_and_metadata(user_message)
-            request, v2_metadata = agent.context_manager.build_v2(user_message)
-            # v2 是真正发到 provider 的形状：system_cache_key 必须反映 build_v2
-            # 里 system_text 的哈希（agent.prefix），而不是 build() 里
-            # base_prefix + memory_index + project_structure 的组合哈希——那个
-            # 组合会随记忆条目增删而变，与 provider 端 cache-control 命中语义
-            # 不一致。旧的 prompt_cache_key alias 仍保留 build() 版本，避免
-            # 下游依赖那个精确值的消费者立刻断裂。
-            v2_system_cache_key = v2_metadata.get("system_cache_key")
-            if v2_system_cache_key is not None:
-                prompt_metadata["system_cache_key"] = v2_system_cache_key
-                prompt_metadata["prompt_cache_key"] = v2_system_cache_key
-            for key, value in v2_metadata.items():
-                if key in ("system_cache_key", "prompt_cache_key"):
-                    continue
-                prompt_metadata.setdefault(key, value)
+            request, request_metadata = agent.context_manager.build_v2(
+                injection_snapshot=injection_snapshot,
+                injection_telemetry=injection_telemetry,
+                preflight_metadata=preflight_metadata,
+                runtime_feedback=pending_runtime_feedback,
+            )
+            pending_runtime_feedback = ""
+            agent.last_prompt_metadata = dict(request_metadata)
             if attempts == 1:
-                task_state.resume_status = prompt_metadata.get("resume_status", task_state.resume_status)
+                task_state.resume_status = request_metadata.get(
+                    "resume_status",
+                    task_state.resume_status,
+                )
             agent.emit_trace(
                 task_state,
                 "prompt_built",
                 {
-                    "prompt_metadata": prompt_metadata,
+                    "prompt_metadata": request_metadata,
                     "duration_ms": int((time.monotonic() - prompt_started_at) * 1000),
                 },
             )
-            if prompt_metadata.get("resume_status") == CHECKPOINT_PARTIAL_STALE_STATUS:
+            if attempts == 1 and request_metadata.get("resume_status") == CHECKPOINT_PARTIAL_STALE_STATUS:
                 _create_resume_checkpoint(agent, task_state, user_message, trigger="freshness_mismatch")
-            elif prompt_metadata.get("resume_status") == CHECKPOINT_WORKSPACE_MISMATCH_STATUS:
+            elif attempts == 1 and request_metadata.get("resume_status") == CHECKPOINT_WORKSPACE_MISMATCH_STATUS:
                 agent.emit_trace(
                     task_state,
                     "runtime_identity_mismatch",
                     {
-                        "fields": list(prompt_metadata.get("runtime_identity_mismatch_fields", [])),
+                        "fields": list(request_metadata.get("runtime_identity_mismatch_fields", [])),
                     },
                 )
                 _create_resume_checkpoint(agent, task_state, user_message, trigger="workspace_mismatch")
-            if prompt_metadata.get("budget_reductions"):
+            if (
+                request_metadata["dropped_messages"] > 0
+                and not context_reduction_checkpoint_created
+            ):
                 _create_resume_checkpoint(agent, task_state, user_message, trigger="context_reduction")
+                context_reduction_checkpoint_created = True
             agent.emit_trace(
                 task_state,
                 "model_requested",
                 {
                     "attempts": task_state.attempts,
                     "tool_steps": task_state.tool_steps,
-                    "prompt_cache_key": prompt_metadata.get("prompt_cache_key"),
+                    "request_metadata": request_metadata,
                 },
             )
             try:
@@ -295,7 +319,6 @@ class AgentLoop:
                     cache_breakpoints=request["cache_control_breakpoints"],
                 )
             except RuntimeError as exc:
-                agent.last_prompt_metadata = dict(prompt_metadata)
                 final = f"Model error: {exc}"
                 task_state.stop_model_error(final)
                 _finish_run(
@@ -312,7 +335,6 @@ class AgentLoop:
                 raise
             completion_usage = dict(raw_response.usage or {})
             _add_usage(completion_usage_totals, completion_usage)
-            agent.last_prompt_metadata = dict(prompt_metadata)
             action = decode_action(raw_response)
             action_payload = _action_trace_payload(action)
             agent.emit_trace(
@@ -320,7 +342,7 @@ class AgentLoop:
                 "action_decoded",
                 {
                     **action_payload,
-                    "request_metadata": prompt_metadata,
+                    "request_metadata": request_metadata,
                 },
             )
             # 把一轮 model call 的 prompt 组装、请求、回包解析压成一条 model_turn，
@@ -334,7 +356,7 @@ class AgentLoop:
                     "stop_reason": str(
                         getattr(raw_response.stop_reason, "value", raw_response.stop_reason)
                     ),
-                    "request_metadata": prompt_metadata,
+                    "request_metadata": request_metadata,
                     "completion_usage": completion_usage,
                     **action_payload,
                     "duration_ms": int((time.monotonic() - prompt_started_at) * 1000),
@@ -425,11 +447,7 @@ class AgentLoop:
                 continue
 
             if isinstance(action, RetryAction):
-                # retry: log a diagnostic notice to legacy history (tests +
-                # trace consumers look for it). We do NOT append to v2
-                # messages — back-to-back assistant turns would violate
-                # Anthropic API constraints.
-                agent.record({"role": "assistant", "content": action.notice, "created_at": now()})
+                pending_runtime_feedback = action.notice
                 agent.run_store.write_task_state(task_state)
                 continue
 

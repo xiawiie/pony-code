@@ -8,6 +8,7 @@ from .experiments_synthetic import (
     MEMORY_EXPERIMENT_TASKS,
     _clear_file_summary_memory,
     _latest_plain_user,
+    _preview_request,
     _seed_plain_messages,
     _sent_message_chars,
     _set_irrelevant_memory_for_task,
@@ -147,7 +148,7 @@ def run_real_context_experiment(provider="gpt", repetitions=1):
                             _seed_plain_messages(agent, history_count, "context-history", 700)
                             agent.context_config["history_soft_cap"] = cap
                             user_message = f"What is the target token remembered in the notes? {request_text}"
-                            request, metadata = agent.context_manager.build_v2(user_message)
+                            request, metadata = _preview_request(agent, user_message)
                             answer = agent.ask(user_message)
                             per_run.append(
                                 {

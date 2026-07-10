@@ -84,11 +84,8 @@
       "setup": {
         "kind": "context_reduction",
         "history_turns": 30,
-        "total_budget": 700,
-        "section_budgets": {
-          "prefix": 800,
-          "history": 2400
-        }
+        "history_soft_cap": 700,
+        "history_floor_messages": 3
       }
     },
     {

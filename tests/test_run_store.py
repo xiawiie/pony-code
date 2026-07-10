@@ -29,7 +29,7 @@ def test_run_store_appends_trace_jsonl(tmp_path):
         {
             "event": "prompt_built",
             "created_at": "2026-04-07T00:00:01+00:00",
-            "prompt_metadata": {"prompt_chars": 128, "secret_env_count": 1},
+            "request_metadata": {"request_chars": 128, "secret_env_count": 1},
         },
     )
     store.append_trace(state.run_id, {"event": "run_finished", "created_at": "2026-04-07T00:00:02+00:00"})

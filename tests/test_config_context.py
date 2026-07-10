@@ -123,6 +123,7 @@ def test_build_v2_reads_system_tools_hard_cap_from_pico_toml(tmp_path):
     """Overriding system_tools_hard_cap in pico.toml raises SystemTooBig sooner."""
     from unittest.mock import MagicMock
 
+    from pico.context.renderer import render_current_user_message
     from pico.context_manager import ContextManager
 
     (tmp_path / "pico.toml").write_text(
@@ -132,7 +133,15 @@ def test_build_v2_reads_system_tools_hard_cap_from_pico_toml(tmp_path):
     a = MagicMock()
     a.prefix = "x" * 500  # ~125 tokens with /4 fallback -> over 100 cap
     a.tools = {}
-    a.session = {"messages": []}
+    a.session = {
+        "messages": [
+            {
+                "role": "user",
+                "content": "hi",
+                "_pico_meta": {"created_at": "2026-07-10T00:00:00+00:00"},
+            }
+        ]
+    }
     a.workspace = MagicMock()
     a.workspace.volatile_text = MagicMock(return_value="")
     a.memory_store = None
@@ -142,5 +151,10 @@ def test_build_v2_reads_system_tools_hard_cap_from_pico_toml(tmp_path):
     a.context_config = {"system_tools_hard_cap": 100}
 
     cm = ContextManager(a)
+    snapshot, telemetry = render_current_user_message(a, "hi")
     with pytest.raises(RuntimeError, match="SystemTooBig"):
-        cm.build_v2("hi")
+        cm.build_v2(
+            injection_snapshot=snapshot,
+            injection_telemetry=telemetry,
+            preflight_metadata={},
+        )

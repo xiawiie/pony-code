@@ -18,7 +18,6 @@ from .features import memory as memorylib
 from . import security as securitylib
 from .checkpoint_store import CheckpointStore
 from .context_manager import ContextManager
-from .checkpoint import CHECKPOINT_NONE_STATUS
 from .memory.block_store import BlockStore
 from .memory.retrieval import Retrieval
 from .messages import message_metrics, tool_event_metrics
@@ -41,7 +40,6 @@ DEFAULT_MAX_STEPS = 12
 DEFAULT_MAX_NEW_TOKENS = 2048
 DEFAULT_FEATURE_FLAGS = {
     "memory": True,
-    "context_reduction": True,
     "prompt_cache": True,
 }
 __all__ = ["Pico", "SessionStore"]
@@ -471,10 +469,6 @@ class Pico:
     def feature_enabled(self, name):
         return bool(self.feature_flags.get(str(name), False))
 
-    def prompt(self, user_message):
-        prompt, _ = self._build_prompt_and_metadata(user_message)
-        return prompt
-
     def record(self, item):
         self.session["history"].append(self.redact_artifact(item))
         self.session_path = self.session_store.save(self.session)
@@ -511,48 +505,6 @@ class Pico:
 
     def shell_env(self):
         return securitylib.shell_env(allowlist=self.shell_env_allowlist, root=self.root)
-
-    def prompt_metadata(self, user_message, prompt):
-        _, metadata = self._build_prompt_and_metadata(user_message)
-        return metadata
-
-    def _build_prompt_and_metadata(self, user_message):
-        refresh = self.refresh_prefix()
-        self.resume_state = self.evaluate_resume_state()
-        prompt, metadata = self.context_manager.build(user_message)
-        # 这里把“这轮 prompt 是怎么拼出来的”连同缓存相关状态一起记下来，
-        # 后面 trace/report 才能解释清楚：为什么这一轮 prefix 变了、缓存有没有命中。
-        metadata.update(
-            {
-                "prefix_chars": len(self.prefix),
-                "workspace_chars": len(self.workspace.text()),
-                "memory_chars": len(self.memory_text()),
-                "history_chars": len(self.history_text()),
-                "request_chars": len(user_message),
-                "tool_count": len(self.tools),
-                "workspace_docs": len(self.workspace.project_docs),
-                "recent_commits": len(self.workspace.recent_commits),
-                # Task 8 consolidated the four synonyms (base/stable/prefix_hash + prompt_cache_key)
-                # into a single `system_cache_key`. `prompt_cache_key` is kept as a one-release
-                # alias so providers reaching for the old name keep working.
-                "system_cache_key": metadata.get("system_cache_key", self.prefix_state.hash),
-                "prompt_cache_key": metadata.get(
-                    "prompt_cache_key",
-                    metadata.get("system_cache_key", self.prefix_state.hash),
-                ),
-                "workspace_fingerprint": self.prefix_state.workspace_fingerprint,
-                "tool_signature": self.prefix_state.tool_signature,
-                "workspace_changed": refresh["workspace_changed"],
-                "prefix_changed": refresh["prefix_changed"],
-                "prompt_cache_supported": bool(getattr(self.model_client, "supports_prompt_cache", False)),
-                "resume_status": self.resume_state.get("status", CHECKPOINT_NONE_STATUS),
-                "stale_summary_invalidations": int(self.resume_state.get("stale_summary_invalidations", 0)),
-                "stale_paths": list(self.resume_state.get("stale_paths", [])),
-                "runtime_identity_mismatch_fields": list(self.resume_state.get("runtime_identity_mismatch_fields", [])),
-            }
-        )
-        metadata.update(self.detected_secret_env_summary())
-        return prompt, metadata
 
     def emit_trace(self, task_state, event, payload=None):
         payload = self.redact_artifact(payload or {})

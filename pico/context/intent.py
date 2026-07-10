@@ -37,6 +37,7 @@ INTENT_PROFILES: dict[str, dict] = {
             "recalled_memory": 600,
             "project_structure": 200,
             "memory_index": 200,
+            "checkpoint": 600,
         },
     },
     "recall": {
@@ -46,6 +47,7 @@ INTENT_PROFILES: dict[str, dict] = {
             "memory_index": 800,
             "project_structure": 200,
             "workspace_state": 300,
+            "checkpoint": 800,
         },
     },
     "structural": {
@@ -55,6 +57,7 @@ INTENT_PROFILES: dict[str, dict] = {
             "memory_index": 400,
             "recalled_memory": 800,
             "workspace_state": 300,
+            "checkpoint": 500,
         },
     },
     "default": {
@@ -64,6 +67,7 @@ INTENT_PROFILES: dict[str, dict] = {
             "memory_index": 400,
             "recalled_memory": 600,
             "workspace_state": 500,
+            "checkpoint": 500,
         },
     },
 }

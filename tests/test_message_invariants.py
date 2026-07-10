@@ -3,6 +3,7 @@
 
 from unittest.mock import MagicMock
 
+from pico.context.renderer import render_current_user_message
 from pico.context_manager import ContextManager
 from pico.providers.message_utils import strip_pico_meta
 
@@ -31,8 +32,23 @@ def test_message_immutability_across_turns():
     snapshot_before = [dict(m) for m in msgs]
     agent = _make_agent_with_messages(msgs)
     cm = ContextManager(agent)
-    cm.build_v2("q2")
-    cm.build_v2("q3")
+    for user_message in ("q2", "q3"):
+        agent.session["messages"].append(
+            {
+                "role": "user",
+                "content": user_message,
+                "_pico_meta": {"created_at": "2026-07-10T00:00:00+00:00"},
+            }
+        )
+        snapshot, telemetry = render_current_user_message(agent, user_message)
+        cm.build_v2(
+            injection_snapshot=snapshot,
+            injection_telemetry=telemetry,
+            preflight_metadata={},
+        )
+        agent.session["messages"].append(
+            {"role": "assistant", "content": "ack", "_pico_meta": {}}
+        )
     # Session's original entries should be byte-identical after 2 builds.
     assert agent.session["messages"][0] == snapshot_before[0]
     assert agent.session["messages"][1] == snapshot_before[1]

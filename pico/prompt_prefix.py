@@ -8,6 +8,21 @@ from dataclasses import dataclass
 from .workspace import now
 
 
+MEMORY_USAGE_GUIDANCE = """<memory_usage_guidance>
+- Use memory_save ONLY when the user explicitly asks to remember/save something.
+- Do NOT save routine tool results, file paths, or turn-scoped state.
+- Good candidates: cross-session lessons, design decisions, environment gotchas.
+- Bad candidates: "I read auth.py", "current turn diff", "pytest passed".
+</memory_usage_guidance>"""
+
+MEMORY_READING_GUIDANCE = """<memory_reading_guidance>
+Before answering about the codebase or a past decision:
+- If <memory_index> shows a relevant file, consider memory_read.
+- For symbol location, prefer repo_lookup over manual search.
+- For keyword lookup across notes, use memory_search.
+</memory_reading_guidance>"""
+
+
 @dataclass
 class PromptPrefix:
     # prefix 除了文本本身，还带一小份元数据，
@@ -77,6 +92,10 @@ def build_prompt_prefix(workspace, tools, built_at=None):
 
         Tools:
         {tool_text}
+
+        {MEMORY_USAGE_GUIDANCE}
+
+        {MEMORY_READING_GUIDANCE}
 
         {workspace.stable_text()}
         """

@@ -5,6 +5,7 @@ with a fully-mocked agent so no external state matters."""
 
 from unittest.mock import MagicMock
 
+from pico.context.renderer import render_current_user_message
 from pico.context_manager import ContextManager
 
 
@@ -12,18 +13,38 @@ REQUIRED_METADATA_FIELDS = {
     "system_cache_key",
     "system_tokens",
     "tools_tokens",
+    "prompt_cache_supported",
     "messages_count",
+    "messages_chars",
     "messages_tokens",
+    "dropped_messages",
     "cache_control_breakpoints",
+    "runtime_feedback_present",
     "injection_tokens",
     "injection_truncated",
     "injection_dropped",
     "injection_budget",
     "intent",
-    "recall.error_count",
-    "recall.last_error",
-    "dropped_messages",
-    "prompt_cache_key",
+    "prefix_chars",
+    "workspace_changed",
+    "prefix_changed",
+    "workspace_fingerprint",
+    "tool_signature",
+    "resume_status",
+    "request_chars",
+    "tool_count",
+    "workspace_docs",
+    "recent_commits",
+}
+
+FORBIDDEN_METADATA_FIELDS = {
+    "prompt" + "_chars",
+    "sections",
+    "section" + "_order",
+    "section" + "_budgets",
+    "budget" + "_reductions",
+    "history" + "_chars",
+    "prompt" + "_cache_key",
 }
 
 
@@ -31,7 +52,7 @@ def test_metadata_covers_spec_section_9():
     a = MagicMock()
     a.prefix = "sys"
     a.tools = {}
-    a.session = {"messages": [{"role": "assistant", "content": "prev"}]}
+    a.session = {"messages": [{"role": "user", "content": "hi"}]}
     a.workspace = MagicMock()
     a.workspace.volatile_text = MagicMock(return_value="")
     a.memory_store = None
@@ -41,10 +62,27 @@ def test_metadata_covers_spec_section_9():
     a.context_config = {}
 
     cm = ContextManager(a)
-    _request, metadata = cm.build_v2("hi")
+    snapshot, telemetry = render_current_user_message(a, "hi")
+    _request, metadata = cm.build_v2(
+        injection_snapshot=snapshot,
+        injection_telemetry=telemetry,
+        preflight_metadata={
+            "prefix_chars": len(a.prefix),
+            "workspace_changed": False,
+            "prefix_changed": False,
+            "workspace_fingerprint": "workspace",
+            "tool_signature": "tools",
+            "resume_status": "no-checkpoint",
+            "request_chars": 2,
+            "tool_count": 0,
+            "workspace_docs": 0,
+            "recent_commits": 0,
+        },
+    )
 
     missing = REQUIRED_METADATA_FIELDS - set(metadata.keys())
     assert not missing, f"metadata missing spec §9 fields: {sorted(missing)}"
+    assert FORBIDDEN_METADATA_FIELDS.isdisjoint(metadata)
 
     # Structural checks on non-scalar fields
     assert isinstance(metadata["intent"], dict)

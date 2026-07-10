@@ -1,3 +1,5 @@
+from pico import FakeModelClient, Pico, SessionStore
+from pico.context.renderer import render_current_user_message
 from pico.prompt_prefix import build_prompt_prefix, tool_signature
 from pico.tools import build_tool_registry
 from pico.workspace import WorkspaceContext
@@ -48,3 +50,27 @@ def test_stable_prefix_is_native_tool_protocol_neutral(tmp_path):
     assert "Return exactly one <tool>" not in prefix
     assert "<final>" not in prefix
     assert '<tool>{"name":' not in prefix
+
+
+def test_memory_guidance_lives_once_in_prefix_not_current_user_request(tmp_path):
+    (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
+    agent = Pico(
+        model_client=FakeModelClient([]),
+        workspace=WorkspaceContext.build(tmp_path),
+        session_store=SessionStore(tmp_path / ".pico" / "sessions"),
+        approval_policy="auto",
+    )
+    agent.session["messages"].append(
+        {"role": "user", "content": "inspect the project", "_pico_meta": {}}
+    )
+    snapshot, telemetry = render_current_user_message(agent, "inspect the project")
+    request, _ = agent.context_manager.build_v2(
+        injection_snapshot=snapshot,
+        injection_telemetry=telemetry,
+        preflight_metadata={},
+    )
+    current_user = request["messages"][-1]["content"]
+
+    for opening_tag in ("<memory_usage_guidance>", "<memory_reading_guidance>"):
+        assert agent.prefix.count(opening_tag) == 1
+        assert opening_tag not in current_user
