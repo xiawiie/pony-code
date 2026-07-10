@@ -117,29 +117,28 @@ class AnthropicCompatibleModelClient:
                     body_text = response.read().decode("utf-8")
                 break
             except urllib.error.HTTPError as exc:
-                body = exc.read().decode("utf-8", errors="replace")
                 if exc.code >= 500 and attempt < attempts - 1:
                     time.sleep(0.5 * (attempt + 1))
                     continue
-                raise RuntimeError(f"Anthropic-compatible request failed with HTTP {exc.code}: {body}") from exc
-            except (urllib.error.URLError, RemoteDisconnected) as exc:
+                raise RuntimeError(
+                    f"Anthropic-compatible request failed with HTTP {exc.code}"
+                ) from None
+            except (urllib.error.URLError, RemoteDisconnected):
                 if attempt < attempts - 1:
                     time.sleep(0.5 * (attempt + 1))
                     continue
                 raise RuntimeError(
-                    "Could not reach the Anthropic-compatible backend.\n"
-                    f"Base URL: {self.base_url}\n"
-                    f"Model: {self.model}"
-                ) from exc
+                    "Anthropic-compatible request failed: network_error"
+                ) from None
 
         try:
             data = json.loads(body_text)
-        except json.JSONDecodeError as exc:
+        except json.JSONDecodeError:
             raise RuntimeError(
-                "Anthropic-compatible error: backend returned non-JSON content that could not be parsed"
-            ) from exc
+                "Anthropic-compatible error: invalid_response"
+            ) from None
         if data.get("error"):
-            raise RuntimeError(f"Anthropic-compatible error: {data['error']}")
+            raise RuntimeError("Anthropic-compatible error: backend_error")
         self.last_completion_metadata = {
             "prompt_cache_supported": self.supports_prompt_cache,
             "prompt_cache_key": prompt_cache_key,
@@ -203,8 +202,25 @@ class AnthropicCompatibleModelClient:
             method="POST",
         )
 
-        with urllib.request.urlopen(req, timeout=self.timeout) as raw:
-            data = json.loads(raw.read().decode("utf-8"))
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as raw:
+                body_text = raw.read().decode("utf-8")
+        except urllib.error.HTTPError as exc:
+            raise RuntimeError(
+                f"Anthropic-compatible request failed with HTTP {exc.code}"
+            ) from None
+        except (urllib.error.URLError, RemoteDisconnected):
+            raise RuntimeError(
+                "Anthropic-compatible request failed: network_error"
+            ) from None
+        try:
+            data = json.loads(body_text)
+        except json.JSONDecodeError:
+            raise RuntimeError(
+                "Anthropic-compatible error: invalid_response"
+            ) from None
+        if data.get("error"):
+            raise RuntimeError("Anthropic-compatible error: backend_error")
 
         stop_map = {
             "end_turn": StopReason.END_TURN,

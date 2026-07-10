@@ -41,20 +41,21 @@ class OllamaModelClient:
         )
         try:
             with urllib.request.urlopen(request, timeout=self.timeout) as response:
-                data = json.loads(response.read().decode("utf-8"))
+                body_text = response.read().decode("utf-8")
         except urllib.error.HTTPError as exc:
-            body = exc.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"Ollama request failed with HTTP {exc.code}: {body}") from exc
-        except urllib.error.URLError as exc:
             raise RuntimeError(
-                "Could not reach Ollama.\n"
-                "Make sure `ollama serve` is running and the model is available.\n"
-                f"Host: {self.host}\n"
-                f"Model: {self.model}"
-            ) from exc
+                f"Ollama request failed with HTTP {exc.code}"
+            ) from None
+        except urllib.error.URLError:
+            raise RuntimeError("Ollama request failed: network_error") from None
+
+        try:
+            data = json.loads(body_text)
+        except json.JSONDecodeError:
+            raise RuntimeError("Ollama error: invalid_response") from None
 
         if data.get("error"):
-            raise RuntimeError(f"Ollama error: {data['error']}")
+            raise RuntimeError("Ollama error: backend_error")
         return data.get("response", "")
 
     def stream_complete(self, prompt, max_new_tokens, **kwargs):

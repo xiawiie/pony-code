@@ -165,7 +165,7 @@ def test_trace_and_report_redact_secret_env_values(tmp_path):
             ],
         )
 
-        assert agent.ask("Mask the secret") == "Masked sk-test-secret-123"
+        assert agent.ask("Mask the secret") == "Masked <redacted>"
         assert secret not in agent.prefix
 
     runs_root = tmp_path / ".pico" / "runs"
@@ -195,7 +195,9 @@ def test_trace_and_report_redact_secret_env_values(tmp_path):
     tool_events = [event for event in trace_events if event["event"] == "tool_executed"]
     assert tool_events
     assert "<redacted>" in tool_events[0]["args"]["command"]
-    assert "<redacted>" in tool_events[0]["result"]
+    assert tool_events[0]["result"] == "error: sensitive_content_block"
+    assert tool_events[0]["tool_status"] == "rejected"
+    assert tool_events[0]["tool_error_code"] == "sensitive_content_block"
 
 
 def test_request_metadata_describes_actual_sent_view(tmp_path):

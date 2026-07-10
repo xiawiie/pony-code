@@ -89,3 +89,26 @@ def test_message_drop_uses_actual_request_messages(tmp_path):
         len(str(message["content"])) for message in request["messages"]
     )
     assert request["messages"][-1]["content"].endswith("current")
+
+
+def test_request_metrics_and_cache_key_use_sanitized_payload(tmp_path):
+    secret = "github_pat_" + "M" * 32
+    agent = _agent(tmp_path)
+    agent.prefix += "\n" + secret
+    counted = []
+
+    def count_tokens(text):
+        counted.append(str(text))
+        return max(1, len(str(text)) // 4)
+
+    agent.model_client.count_tokens = count_tokens
+
+    request, metadata = _build_request(agent, "remember " + secret)
+
+    sent_system = request["system"][0]["text"]
+    assert secret not in sent_system
+    assert secret not in str(request["messages"])
+    assert secret not in "\n".join(counted)
+    assert metadata["system_cache_key"] == hashlib.sha256(
+        sent_system.encode("utf-8")
+    ).hexdigest()

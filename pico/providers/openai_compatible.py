@@ -228,20 +228,19 @@ class OpenAICompatibleModelClient:
                     content_type = headers.get("Content-Type", "")
                 break
             except urllib.error.HTTPError as exc:
-                body = exc.read().decode("utf-8", errors="replace")
                 if exc.code >= 500 and attempt < attempts - 1:
                     time.sleep(0.5 * (attempt + 1))
                     continue
-                raise RuntimeError(f"OpenAI-compatible request failed with HTTP {exc.code}: {body}") from exc
-            except (urllib.error.URLError, RemoteDisconnected) as exc:
+                raise RuntimeError(
+                    f"OpenAI-compatible request failed with HTTP {exc.code}"
+                ) from None
+            except (urllib.error.URLError, RemoteDisconnected):
                 if attempt < attempts - 1:
                     time.sleep(0.5 * (attempt + 1))
                     continue
                 raise RuntimeError(
-                    "Could not reach the OpenAI-compatible backend.\n"
-                    f"Base URL: {self.base_url}\n"
-                    f"Model: {self.model}"
-                ) from exc
+                    "OpenAI-compatible request failed: network_error"
+                ) from None
 
         # 有些兼容后端返回普通 JSON，有些返回 SSE。
         # 这里两种都接住，并尽量统一抽取文本和 usage/cache 元数据。
@@ -262,12 +261,12 @@ class OpenAICompatibleModelClient:
 
         try:
             data = json.loads(body_text)
-        except json.JSONDecodeError as exc:
+        except json.JSONDecodeError:
             raise RuntimeError(
-                "OpenAI-compatible error: backend returned non-JSON content that could not be parsed"
-            ) from exc
+                "OpenAI-compatible error: invalid_response"
+            ) from None
         if data.get("error"):
-            raise RuntimeError(f"OpenAI-compatible error: {data['error']}")
+            raise RuntimeError("OpenAI-compatible error: backend_error")
         self.last_completion_metadata = {
             "prompt_cache_supported": self.supports_prompt_cache,
             "prompt_cache_key": prompt_cache_key,
@@ -314,29 +313,28 @@ class OpenAICompatibleModelClient:
                     body_text = response.read().decode("utf-8")
                 break
             except urllib.error.HTTPError as exc:
-                body = exc.read().decode("utf-8", errors="replace")
                 if exc.code >= 500 and attempt < attempts - 1:
                     time.sleep(0.5 * (attempt + 1))
                     continue
-                raise RuntimeError(f"OpenAI-compatible request failed with HTTP {exc.code}: {body}") from exc
-            except (urllib.error.URLError, RemoteDisconnected) as exc:
+                raise RuntimeError(
+                    f"OpenAI-compatible request failed with HTTP {exc.code}"
+                ) from None
+            except (urllib.error.URLError, RemoteDisconnected):
                 if attempt < attempts - 1:
                     time.sleep(0.5 * (attempt + 1))
                     continue
                 raise RuntimeError(
-                    "Could not reach the OpenAI-compatible backend.\n"
-                    f"Base URL: {self.base_url}\n"
-                    f"Model: {self.model}"
-                ) from exc
+                    "OpenAI-compatible request failed: network_error"
+                ) from None
 
         try:
             data = json.loads(body_text)
-        except json.JSONDecodeError as exc:
+        except json.JSONDecodeError:
             raise RuntimeError(
-                "OpenAI-compatible error: backend returned non-JSON content that could not be parsed"
-            ) from exc
+                "OpenAI-compatible error: invalid_response"
+            ) from None
         if data.get("error"):
-            raise RuntimeError(f"OpenAI-compatible error: {data['error']}")
+            raise RuntimeError("OpenAI-compatible error: backend_error")
         self.last_completion_metadata = {
             "prompt_cache_supported": self.supports_prompt_cache,
             "prompt_cache_key": prompt_cache_key,

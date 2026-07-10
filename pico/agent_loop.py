@@ -1,6 +1,8 @@
 """Agent control loop extracted from the runtime facade."""
 
 from copy import deepcopy
+from dataclasses import replace
+import json
 import logging
 import os
 import stat
@@ -8,6 +10,7 @@ import time
 import uuid
 
 from .action_codec import FinalAction, RetryAction, ToolAction, decode_action
+from . import security as securitylib
 from .checkpoint import CHECKPOINT_NONE_STATUS, CHECKPOINT_PARTIAL_STALE_STATUS, CHECKPOINT_WORKSPACE_MISMATCH_STATUS
 from .context.renderer import render_current_user_message
 from .messages import append_messages, make_tool_pair
@@ -24,6 +27,12 @@ from .task_state import (
 )
 from .verification import is_verification_command, parse_run_shell_result
 from .workspace import clip, now
+from .tool_executor import (
+    ToolExecutionResult,
+    _EFFECT_CLASS_BY_TOOL,
+    _effect_class,
+    _metadata,
+)
 
 logger = logging.getLogger("pico")
 
@@ -90,6 +99,63 @@ def _action_trace_payload(action):
         "reason_code": action.reason_code,
         "excerpt": action.excerpt,
     }
+
+
+def _sanitize_action(agent, action):
+    if isinstance(action, FinalAction):
+        return replace(action, text=agent.redact_text(action.text)), None
+    if isinstance(action, RetryAction):
+        return replace(
+            action,
+            notice=agent.redact_text(action.notice),
+            excerpt=agent.redact_text(action.excerpt),
+        ), None
+
+    original_arguments = action.arguments
+    safe_arguments = agent.redact_artifact(original_arguments)
+    serialized = json.dumps(
+        original_arguments,
+        sort_keys=True,
+        ensure_ascii=False,
+        default=str,
+    )
+    original_contains_secret = securitylib.contains_secret_material(
+        serialized,
+        env=agent.redaction_env,
+        secret_env_names=agent.secret_env_names,
+    )
+    blocked = safe_arguments != original_arguments or original_contains_secret
+    if not blocked:
+        return action, None
+    safe_serialized = json.dumps(
+        safe_arguments,
+        sort_keys=True,
+        ensure_ascii=False,
+        default=str,
+    )
+    if securitylib.contains_secret_material(
+        safe_serialized,
+        env=agent.redaction_env,
+        secret_env_names=agent.secret_env_names,
+    ):
+        safe_arguments = {}
+    tool = agent.tools.get(action.name)
+    effect_class = (
+        "workspace_write"
+        if tool is None and action.name not in _EFFECT_CLASS_BY_TOOL
+        else _effect_class(action.name, bool(tool and tool["risky"]))
+    )
+    result = ToolExecutionResult(
+        content="error: sensitive_content_block",
+        metadata=_metadata(
+            "rejected",
+            effect_class=effect_class,
+            tool_error_code="sensitive_content_block",
+            security_event_type="sensitive_access_block",
+            risk_level="high",
+        ),
+    )
+    return replace(action, arguments=safe_arguments), result
 
 
 class SessionCommitError(RuntimeError):
@@ -427,7 +493,10 @@ class AgentLoop:
                     raise
                 completion_usage = dict(raw_response.usage or {})
                 _add_usage(completion_usage_totals, completion_usage)
-                action = decode_action(raw_response)
+                action, blocked_tool_result = _sanitize_action(
+                    agent,
+                    decode_action(raw_response),
+                )
                 action_payload = _action_trace_payload(action)
                 agent.emit_trace(
                     task_state,
@@ -479,7 +548,11 @@ class AgentLoop:
                     file_summaries_before = deepcopy(
                         agent.session["memory"]["file_summaries"]
                     )
-                    tool_result = agent.execute_tool(name, args)
+                    if blocked_tool_result is None:
+                        tool_result = agent.execute_tool(name, args)
+                    else:
+                        tool_result = blocked_tool_result
+                        agent._last_tool_result_metadata = dict(tool_result.metadata)
                     result = tool_result.content
                     metadata = dict(tool_result.metadata or {})
                     tool_change_id = str(metadata.get("tool_change_id", "") or "")
@@ -492,6 +565,11 @@ class AgentLoop:
                         tool_name=name,
                         tool_args=args,
                     )
+                    if blocked_tool_result is not None:
+                        digest_meta.update({
+                            "tool_error_code": metadata["tool_error_code"],
+                            "security_event_type": metadata["security_event_type"],
+                        })
                     pair = make_tool_pair(
                         name=name,
                         arguments=args,
@@ -569,7 +647,7 @@ class AgentLoop:
                     continue
 
                 # final path
-                final = action.text
+                final = agent.redact_text(action.text)
                 _commit_session(
                     agent,
                     messages=(_plain_message("assistant", final),),
@@ -691,10 +769,15 @@ def _finalize_run(
         except Exception as exc:
             stored_exception = exc.cause if isinstance(exc, SessionCommitError) else exc
             finalization_exceptions.append(stored_exception)
+            safe_message = agent.redact_text(str(stored_exception))
             finalization_errors.append(
-                f"{label}: {type(stored_exception).__name__}: {stored_exception}"[:300]
+                f"{label}: {type(stored_exception).__name__}: {safe_message}"[:300]
             )
-            logger.exception("run finalization step failed: %s", label)
+            logger.debug(
+                "run finalization step failed: %s (%s)",
+                label,
+                type(stored_exception).__name__,
+            )
             return None
 
     if terminal_message:
@@ -781,8 +864,11 @@ def _finalize_run(
                 "finalization_failed",
                 {"finalization_errors": list(finalization_errors)},
             )
-        except Exception:
-            logger.exception("run finalization failure trace could not be written")
+        except Exception as exc:
+            logger.debug(
+                "run finalization failure trace could not be written (%s)",
+                type(exc).__name__,
+            )
     if primary_exception is None and finalization_exceptions:
         raise finalization_exceptions[0]
     return final
@@ -864,7 +950,7 @@ def _record_pending_verification_evidence(agent, recovery_checkpoint, run_verifi
 
 
 def _verification_evidence_for_tool(name, args, result, metadata):
-    if name != "run_shell":
+    if name != "run_shell" or metadata.get("tool_status") == "rejected":
         return None
     command = str(args.get("command", "")).strip()
     if not is_verification_command(command):

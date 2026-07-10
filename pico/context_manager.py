@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 
+from pico import security as securitylib
 from pico.messages import build_request_messages, message_content_text, message_metrics
 
 
@@ -93,6 +94,19 @@ class ContextManager:
         }]
         tools = _build_tools_list(getattr(self.agent, "tools", {}) or {})
 
+        session = getattr(self.agent, "session", {}) or {}
+        messages = build_request_messages(
+            list(session.get("messages", []) or []),
+            rendered_user=injection_snapshot,
+            runtime_feedback=runtime_feedback,
+        )
+        system, messages = securitylib.sanitize_provider_payload(
+            system,
+            messages,
+            env=self.agent.redaction_env,
+            secret_env_names=self.agent.secret_env_names,
+        )
+        system_text = str(system[0].get("text", ""))
         system_tokens = self._count_tokens_for_v2(system_text)
         tools_tokens = self._count_tokens_for_v2(json.dumps(tools, sort_keys=False))
         config = getattr(self.agent, "context_config", None)
@@ -105,12 +119,6 @@ class ContextManager:
                 f"exceed {pinned_cap}. Inspect workspace.stable_text() or tools schema."
             )
 
-        session = getattr(self.agent, "session", {}) or {}
-        messages = build_request_messages(
-            list(session.get("messages", []) or []),
-            rendered_user=injection_snapshot,
-            runtime_feedback=runtime_feedback,
-        )
         runtime_feedback_present = bool(str(runtime_feedback or "").strip())
         soft_cap = int(config.get("history_soft_cap", 40000))
         floor_count = int(config.get("history_floor_messages", 6))

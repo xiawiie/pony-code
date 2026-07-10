@@ -11,15 +11,16 @@ control flow.
 import logging
 
 
-
 def test_recall_failure_logs_debug(caplog, tmp_path, monkeypatch):
     from types import SimpleNamespace
     from unittest.mock import MagicMock
 
     from pico.context.renderer import render_current_user_message
 
+    secret = "github_pat_" + "L" * 32
+
     def _boom(*a, **kw):
-        raise RuntimeError("simulated recall failure")
+        raise RuntimeError("simulated recall failure " + secret)
 
     monkeypatch.setattr("pico.memory.recall.recall_for_turn", _boom)
 
@@ -38,6 +39,8 @@ def test_recall_failure_logs_debug(caplog, tmp_path, monkeypatch):
     caplog.set_level(logging.DEBUG, logger="pico")
     render_current_user_message(a, "上次讨论 cache")
     assert any("recall" in r.message.lower() for r in caplog.records)
+    assert secret not in caplog.text
+    assert secret not in a.session["_recall_errors"]["last"]
 
 
 def test_workspace_state_failure_logs_debug(caplog, tmp_path):
@@ -47,9 +50,13 @@ def test_workspace_state_failure_logs_debug(caplog, tmp_path):
 
     a = MagicMock()
     a.workspace = MagicMock()
-    a.workspace.volatile_text = MagicMock(side_effect=RuntimeError("no git"))
+    secret = "github_pat_" + "W" * 32
+    a.workspace.volatile_text = MagicMock(
+        side_effect=RuntimeError("no git " + secret)
+    )
 
     caplog.set_level(logging.DEBUG, logger="pico")
     result = render_workspace_state(a, budget_tokens=500)
     assert result is None
     assert any("workspace_state" in r.message.lower() for r in caplog.records)
+    assert secret not in caplog.text

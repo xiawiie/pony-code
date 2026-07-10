@@ -1,5 +1,6 @@
 import copy
 import json
+import logging
 from unittest.mock import Mock
 
 import pytest
@@ -108,6 +109,15 @@ def test_pico_ask_delegates_to_agent_loop(tmp_path):
     agent = build_agent(tmp_path, ["<final>Facade works.</final>"])
 
     assert agent.ask("Use facade") == "Facade works."
+
+
+def test_rejected_tool_action_never_creates_verification_evidence():
+    assert agent_loop_module._verification_evidence_for_tool(
+        "run_shell",
+        {"command": "pytest -q"},
+        "exit_code: 1\nstdout:\n(empty)\nstderr:\nblocked",
+        {"tool_status": "rejected"},
+    ) is None
 
 
 def test_agent_loop_decodes_native_action_and_aggregates_response_usage_only(tmp_path):
@@ -548,13 +558,19 @@ def test_keyboard_interrupt_closes_run_and_reraises(tmp_path):
     assert agent.session["messages"][-1]["_pico_meta"]["origin"] == "runtime_terminal"
 
 
-def test_finalizer_failure_does_not_mask_provider_exception(tmp_path, monkeypatch):
+def test_finalizer_failure_does_not_mask_provider_exception(
+    tmp_path,
+    monkeypatch,
+    caplog,
+):
+    secret = "github_pat_" + "F" * 32
     primary = ValueError("primary provider failure")
     agent = build_native_agent(tmp_path, RaisingProvider(primary))
+    caplog.set_level(logging.DEBUG, logger="pico")
     monkeypatch.setattr(
         agent.run_store,
         "write_report",
-        Mock(side_effect=OSError("report unavailable")),
+        Mock(side_effect=OSError("report unavailable " + secret)),
     )
 
     with pytest.raises(ValueError, match="primary provider failure"):
@@ -567,6 +583,8 @@ def test_finalizer_failure_does_not_mask_provider_exception(tmp_path, monkeypatc
         event for event in events if event["event"] == "finalization_failed"
     )
     assert "report unavailable" in " ".join(failure["finalization_errors"])
+    assert secret not in json.dumps(events) + caplog.text
+    assert "OSError" in caplog.text
 
 
 def test_provider_error_report_build_failure_does_not_mask_primary(tmp_path, monkeypatch):

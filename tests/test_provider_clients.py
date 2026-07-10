@@ -1,5 +1,8 @@
+import io
 import json
-from unittest.mock import patch
+import urllib.error
+import urllib.request
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -8,6 +11,105 @@ from pico.providers.clients import (
     OllamaModelClient,
     OpenAICompatibleModelClient,
 )
+
+
+@pytest.mark.parametrize(
+    ("family", "client", "invoke"),
+    (
+        (
+            "OpenAI-compatible",
+            OpenAICompatibleModelClient(
+                model="test",
+                base_url="https://example.test/v1",
+                api_key="safe-test-key",
+                temperature=0.0,
+                timeout=1,
+            ),
+            lambda client: client.complete("hello", 10),
+        ),
+        (
+            "Anthropic-compatible",
+            AnthropicCompatibleModelClient(
+                model="test",
+                base_url="https://example.test/v1",
+                api_key="safe-test-key",
+                temperature=0.0,
+                timeout=1,
+            ),
+            lambda client: client.complete("hello", 10),
+        ),
+        (
+            "Ollama",
+            OllamaModelClient(
+                model="test",
+                host="https://example.test",
+                temperature=0.0,
+                top_p=1.0,
+                timeout=1,
+            ),
+            lambda client: client.complete("hello", 10),
+        ),
+    ),
+)
+def test_provider_http_errors_expose_only_family_and_status(
+    monkeypatch,
+    family,
+    client,
+    invoke,
+):
+    secret = "github_pat_" + "B" * 32
+    credential_url = f"https://user:{secret}@example.test/v1?api_key={secret}"
+    error = urllib.error.HTTPError(
+        credential_url,
+        401,
+        "unauthorized",
+        hdrs={},
+        fp=io.BytesIO(f'{{"error":"{secret}"}}'.encode()),
+    )
+    urlopen = Mock(side_effect=error)
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+
+    with pytest.raises(RuntimeError) as caught:
+        invoke(client)
+
+    assert str(caught.value) == f"{family} request failed with HTTP 401"
+    assert secret not in str(caught.value)
+    assert credential_url not in str(caught.value)
+    assert urlopen.call_count == 1
+
+
+def test_anthropic_v2_http_error_is_stable(monkeypatch):
+    secret = "github_pat_" + "V" * 32
+    credential_url = f"https://user:{secret}@example.test/v1?api_key={secret}"
+    error = urllib.error.HTTPError(
+        credential_url,
+        429,
+        "limited",
+        hdrs={},
+        fp=io.BytesIO(secret.encode()),
+    )
+    urlopen = Mock(side_effect=error)
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    client = AnthropicCompatibleModelClient(
+        model="test",
+        base_url="https://example.test/v1",
+        api_key="safe-test-key",
+        temperature=0.0,
+        timeout=1,
+    )
+
+    with pytest.raises(RuntimeError) as caught:
+        client.complete_v2(
+            system=[],
+            tools=[],
+            messages=[],
+            max_tokens=10,
+        )
+
+    assert str(caught.value) == (
+        "Anthropic-compatible request failed with HTTP 429"
+    )
+    assert urlopen.call_count == 1
 
 
 @pytest.mark.parametrize(

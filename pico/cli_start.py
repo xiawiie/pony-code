@@ -3,6 +3,13 @@
 import sys
 from pathlib import Path
 
+from .security import redact_text
+
+
+def _safe_text(agent, value):
+    redactor = getattr(agent, "redact_text", None)
+    return (redactor if callable(redactor) else redact_text)(value)
+
 
 def run_agent_once(agent, prompt_tokens):
     prompt = " ".join(prompt_tokens).strip()
@@ -10,9 +17,9 @@ def run_agent_once(agent, prompt_tokens):
         return 0
     print()
     try:
-        print(agent.ask(prompt))
+        print(_safe_text(agent, agent.ask(prompt)))
     except RuntimeError as exc:
-        print(str(exc), file=sys.stderr)
+        print(_safe_text(agent, str(exc))[:300], file=sys.stderr)
         return 1
     return 0
 
@@ -81,6 +88,6 @@ def run_repl(agent):
 
         print()
         try:
-            print(agent.ask(user_input))
+            print(_safe_text(agent, agent.ask(user_input)))
         except RuntimeError as exc:
-            print(str(exc), file=sys.stderr)
+            print(_safe_text(agent, str(exc))[:300], file=sys.stderr)

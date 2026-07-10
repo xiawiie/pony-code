@@ -1,5 +1,7 @@
 """Security and redaction helpers for runtime artifacts."""
 
+from copy import deepcopy
+import json
 import os
 import posixpath
 import re
@@ -83,6 +85,10 @@ _SENSITIVE_PATH_BASENAMES = {
 }
 _ALLOWED_ENV_TEMPLATE_BASENAMES = {".env.example", ".env.sample", ".env.template"}
 _SENSITIVE_KEYSTORE_SUFFIXES = (".pem", ".key", ".p12", ".pfx", ".jks", ".keystore")
+
+
+class SensitiveDataBlockedError(RuntimeError):
+    """Provider-bound content still contains high-confidence secret material."""
 
 
 def _normalized_posix_parts(raw_path):
@@ -309,7 +315,7 @@ def contains_secret_material(text, env=None, secret_env_names=None):
 
 def redact_artifact(value, key=None, env=None, secret_env_names=None):
     if key and (
-        is_secret_env_name(key, secret_env_names=secret_env_names)
+        looks_sensitive_env_name(key)
         or _is_secret_mapping_key(key)
     ):
         return REDACTED_VALUE
@@ -325,6 +331,31 @@ def redact_artifact(value, key=None, env=None, secret_env_names=None):
     if isinstance(value, str):
         return redact_text(value, env=env, secret_env_names=secret_env_names)
     return value
+
+
+def sanitize_provider_payload(system, messages, env=None, secret_env_names=None):
+    safe_system = redact_artifact(
+        deepcopy(system),
+        env=env,
+        secret_env_names=secret_env_names,
+    )
+    safe_messages = redact_artifact(
+        deepcopy(messages),
+        env=env,
+        secret_env_names=secret_env_names,
+    )
+    serialized = json.dumps(
+        {"system": safe_system, "messages": safe_messages},
+        sort_keys=True,
+        ensure_ascii=False,
+    )
+    if contains_secret_material(
+        serialized,
+        env=env,
+        secret_env_names=secret_env_names,
+    ):
+        raise SensitiveDataBlockedError("sensitive_data_blocked")
+    return safe_system, safe_messages
 
 
 def shell_env(env=None, allowlist=(), root="."):
