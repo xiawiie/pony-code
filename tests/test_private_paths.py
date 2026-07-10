@@ -9,6 +9,67 @@ from pico.security import (
     require_regular_no_symlink,
 )
 
+SECRET_PATH_COMPONENT = "github_pat_A123456789012345678901234567890"
+
+
+def test_regular_guard_symlink_error_omits_sensitive_component(tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    linked = tmp_path / SECRET_PATH_COMPONENT
+    linked.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(ValueError) as exc_info:
+        require_regular_no_symlink(linked / "note.txt")
+
+    assert str(exc_info.value) == "refusing symlink component"
+    assert SECRET_PATH_COMPONENT not in str(exc_info.value)
+
+
+def test_regular_guard_parent_type_error_omits_sensitive_component(tmp_path):
+    parent = tmp_path / SECRET_PATH_COMPONENT
+    parent.write_text("not a directory", encoding="utf-8")
+
+    with pytest.raises(ValueError) as exc_info:
+        require_regular_no_symlink(parent / "note.txt")
+
+    assert str(exc_info.value) == "parent component is not a directory"
+    assert SECRET_PATH_COMPONENT not in str(exc_info.value)
+
+
+def test_regular_guard_leaf_type_error_omits_sensitive_component(tmp_path):
+    directory = tmp_path / SECRET_PATH_COMPONENT
+    directory.mkdir()
+
+    with pytest.raises(ValueError) as exc_info:
+        require_regular_no_symlink(directory)
+
+    assert str(exc_info.value) == "path is not a regular file"
+    assert SECRET_PATH_COMPONENT not in str(exc_info.value)
+
+
+def test_private_dir_symlink_error_omits_sensitive_component(tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    linked = tmp_path / SECRET_PATH_COMPONENT
+    linked.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(ValueError) as exc_info:
+        ensure_private_dir(linked / "nested")
+
+    assert str(exc_info.value) == "private directory has symlink component"
+    assert SECRET_PATH_COMPONENT not in str(exc_info.value)
+
+
+def test_private_dir_unsafe_error_omits_sensitive_component(tmp_path):
+    unsafe = tmp_path / SECRET_PATH_COMPONENT
+    unsafe.write_text("not a directory", encoding="utf-8")
+
+    with pytest.raises(ValueError) as exc_info:
+        ensure_private_dir(unsafe / "nested")
+
+    assert str(exc_info.value) == "private directory has unsafe component"
+    assert SECRET_PATH_COMPONENT not in str(exc_info.value)
+
 
 def test_private_hardening_refuses_symlink_without_chmodding_target(tmp_path):
     outside = tmp_path.parent / f"{tmp_path.name}-outside"

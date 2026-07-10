@@ -145,9 +145,9 @@ def _lstat_chain(path, *, allow_missing_leaf=False):
                 return target
             raise
         if stat.S_ISLNK(mode):
-            raise ValueError(f"refusing symlink component: {current}")
+            raise ValueError("refusing symlink component")
         if index < len(parts) - 1 and not stat.S_ISDIR(mode):
-            raise ValueError(f"parent component is not a directory: {current}")
+            raise ValueError("parent component is not a directory")
     return target
 
 
@@ -156,7 +156,7 @@ def require_regular_no_symlink(path, *, allow_missing=False):
     if allow_missing and not path.exists():
         return path
     if not stat.S_ISREG(path.lstat().st_mode):
-        raise ValueError(f"path is not a regular file: {path}")
+        raise ValueError("path is not a regular file")
     return path
 
 
@@ -173,9 +173,9 @@ def ensure_private_dir(path):
             mode = current.lstat().st_mode
             created = True
         if stat.S_ISLNK(mode):
-            raise ValueError(f"private directory has symlink component: {current}")
+            raise ValueError("private directory has symlink component")
         if not stat.S_ISDIR(mode):
-            raise ValueError(f"private directory has unsafe component: {current}")
+            raise ValueError("private directory has unsafe component")
         if created:
             current.chmod(0o700, follow_symlinks=False)
     path.chmod(0o700, follow_symlinks=False)
