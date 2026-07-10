@@ -11,6 +11,7 @@ from pico import (
     SessionStore,
     WorkspaceContext,
 )
+from pico.task_state import TaskState
 
 
 def build_workspace(tmp_path):
@@ -43,6 +44,42 @@ def set_raw_file_summary(agent, path, summary):
 # =============================================================================
 # Runtime/report/resume tests
 # =============================================================================
+
+
+def test_report_separates_sent_request_session_transcript_and_all_completion_usage(tmp_path):
+    agent = build_agent(tmp_path, ["<final>done</final>"])
+    agent.session["messages"] = [
+        {"role": "user", "content": "older question", "_pico_meta": {"created_at": "t1"}},
+        {"role": "assistant", "content": "older answer", "_pico_meta": {"created_at": "t2"}},
+    ]
+    agent.last_prompt_metadata = {
+        "messages_count": 1,
+        "messages_chars": 8,
+        "messages_tokens": 2,
+        "system_cache_key": "cache",
+    }
+    task_state = TaskState.create(task_id="task_x", run_id="run_x", user_request="q")
+    task_state.finish_success("done")
+    report = agent.build_report(
+        task_state,
+        completion_usage_totals={
+            "input_tokens": 30,
+            "output_tokens": 7,
+            "total_tokens": 37,
+            "cached_tokens": 10,
+            "cache_creation_input_tokens": 4,
+            "cache_read_input_tokens": 10,
+            "cache_hit": True,
+        },
+    )
+    assert report["last_request_metadata"]["messages_count"] == 1
+    assert report["session_messages_count"] == 2
+    assert report["session_messages_chars"] == len("older questionolder answer")
+    assert report["completion_usage_totals"]["total_tokens"] == 37
+    assert report["completion_usage_totals"]["cache_hit"] is True
+    assert "prompt_metadata" not in report
+    assert "older question" not in json.dumps(report)
+    assert "older answer" not in json.dumps(report)
 
 
 def test_successful_run_persists_run_artifacts_and_stop_reason(tmp_path):
@@ -340,7 +377,7 @@ def test_resume_invalidates_stale_file_summaries_and_marks_partial_stale(tmp_pat
     assert resumed.last_prompt_metadata["stale_summary_invalidations"] == 1
 
 
-def test_report_prompt_metadata_preserves_initial_resume_status(tmp_path):
+def test_report_last_request_metadata_preserves_initial_resume_status(tmp_path):
     file_path = tmp_path / "runtime.py"
     file_path.write_text("alpha\n", encoding="utf-8")
     agent = build_agent(tmp_path, ["<final>checkpoint ready.</final>"])
@@ -386,8 +423,8 @@ def test_report_prompt_metadata_preserves_initial_resume_status(tmp_path):
     report = resumed.run_store.load_report(resumed.current_task_state.run_id)
 
     assert report["resume_status"] == "partial-stale"
-    assert report["prompt_metadata"]["resume_status"] == "partial-stale"
-    assert report["prompt_metadata"]["last_prompt_resume_status"] == "full-valid"
+    assert report["last_request_metadata"]["resume_status"] == "partial-stale"
+    assert report["last_request_metadata"]["last_prompt_resume_status"] == "full-valid"
 
 
 def test_first_prompt_resume_status_updates_task_state_after_late_checkpoint_setup(tmp_path):
@@ -429,8 +466,8 @@ def test_first_prompt_resume_status_updates_task_state_after_late_checkpoint_set
     report = agent.run_store.load_report(agent.current_task_state.run_id)
 
     assert report["resume_status"] == "partial-stale"
-    assert report["prompt_metadata"]["resume_status"] == "partial-stale"
-    assert report["prompt_metadata"]["last_prompt_resume_status"] == "full-valid"
+    assert report["last_request_metadata"]["resume_status"] == "partial-stale"
+    assert report["last_request_metadata"]["last_prompt_resume_status"] == "full-valid"
 
 
 def test_run_shell_nonzero_with_workspace_change_is_recorded_as_partial_success(tmp_path):

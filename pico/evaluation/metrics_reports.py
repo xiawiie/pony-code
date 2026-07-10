@@ -107,14 +107,26 @@ def aggregate_run_artifacts(runs_root):
 
     tool_steps = [int(report.get("tool_steps", 0)) for report in reports]
     attempts = [int(report.get("attempts", 0)) for report in reports]
-    prompt_chars = [int((report.get("prompt_metadata") or {}).get("prompt_chars", 0)) for report in reports]
-    cached_tokens = [int((report.get("prompt_metadata") or {}).get("cached_tokens", 0) or 0) for report in reports]
-    cache_hits = [bool((report.get("prompt_metadata") or {}).get("cache_hit")) for report in reports]
-    input_tokens = [int((report.get("prompt_metadata") or {}).get("input_tokens", 0) or 0) for report in reports]
-    prefix_reused = [
-        not bool((report.get("prompt_metadata") or {}).get("prefix_changed"))
+    request_messages_chars = [
+        int((report.get("last_request_metadata") or {}).get("messages_chars", 0))
         for report in reports
-        if "prefix_changed" in (report.get("prompt_metadata") or {})
+    ]
+    cached_tokens = [
+        int((report.get("completion_usage_totals") or {}).get("cached_tokens", 0) or 0)
+        for report in reports
+    ]
+    cache_hits = [
+        bool((report.get("completion_usage_totals") or {}).get("cache_hit"))
+        for report in reports
+    ]
+    input_tokens = [
+        int((report.get("completion_usage_totals") or {}).get("input_tokens", 0) or 0)
+        for report in reports
+    ]
+    prefix_reused = [
+        not bool((report.get("last_request_metadata") or {}).get("prefix_changed"))
+        for report in reports
+        if "prefix_changed" in (report.get("last_request_metadata") or {})
     ]
     for report in reports:
         stop_reason = str(report.get("stop_reason", "")).strip()
@@ -125,7 +137,7 @@ def aggregate_run_artifacts(runs_root):
         "run_count": len(reports) if reports else len(run_dirs),
         "avg_tool_steps": _safe_mean(tool_steps),
         "avg_attempts": _safe_mean(attempts),
-        "avg_prompt_chars": _safe_mean(prompt_chars),
+        "avg_request_messages_chars": _safe_mean(request_messages_chars),
         "cache_hit_rate": _safe_ratio(sum(1 for hit in cache_hits if hit), len(cache_hits)),
         "cached_token_ratio": _safe_ratio(sum(cached_tokens), sum(input_tokens)),
         "avg_cached_tokens": _safe_mean(cached_tokens),
@@ -225,6 +237,7 @@ def render_resume_metrics_markdown(metrics):
         f"- Aggregated runs: {runs['run_count']}",
         f"- Average tool steps per run: {runs['avg_tool_steps']:.2f}",
         f"- Average attempts per run: {runs['avg_attempts']:.2f}",
+        f"- Average sent request message chars: {runs['avg_request_messages_chars']:.2f}",
         f"- Cache hit rate: {runs['cache_hit_rate']:.2%}",
         (
             f"- Real-model prompt chars (full vs no context reduction): {stress['full']['prompt_chars']} / {stress['no_context_reduction']['prompt_chars']}"

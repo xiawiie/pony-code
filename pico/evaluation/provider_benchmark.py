@@ -49,9 +49,9 @@ def _provider_summary_from_artifact(payload):
     attempts = []
     for row in rows:
         report = row.get("report", {})
-        prompt_metadata = report.get("prompt_metadata", {})
-        cached_tokens.append(int(prompt_metadata.get("cached_tokens", 0) or 0))
-        cache_hits.append(bool(prompt_metadata.get("cache_hit")))
+        completion_usage_totals = report.get("completion_usage_totals", {})
+        cached_tokens.append(int(completion_usage_totals.get("cached_tokens", 0) or 0))
+        cache_hits.append(bool(completion_usage_totals.get("cache_hit")))
         tool_steps.append(int(row.get("tool_steps", 0)))
         attempts.append(int(row.get("attempts", 0)))
     summary = payload.get("summary", {})

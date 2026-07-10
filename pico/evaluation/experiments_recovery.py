@@ -284,7 +284,7 @@ def _run_recovery_task_variant(task, variant):
             json.loads(line)
             for line in agent.run_store.trace_path(agent.current_task_state).read_text(encoding="utf-8").splitlines()
         ]
-        resume_status = str(report.get("prompt_metadata", {}).get("resume_status", ""))
+        resume_status = str(report.get("last_request_metadata", {}).get("resume_status", ""))
         stale_reanchored = any(
             event.get("event") == "checkpoint_created" and event.get("trigger") == "freshness_mismatch"
             for event in trace

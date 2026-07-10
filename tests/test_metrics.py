@@ -1,3 +1,4 @@
+import json
 import os
 from unittest.mock import patch
 
@@ -20,6 +21,64 @@ def test_metrics_module_splits_report_and_experiment_entrypoints():
 
     assert compat_context_ablation is experiment_context_ablation
     assert compat_core_report is report_core_report
+
+
+def test_aggregate_run_artifacts_uses_canonical_report_truth_sources(tmp_path):
+    from pico.evaluation.metrics_reports import aggregate_run_artifacts
+
+    run_dir = tmp_path / "run_1"
+    run_dir.mkdir()
+    (run_dir / "report.json").write_text(
+        json.dumps(
+            {
+                "tool_steps": 2,
+                "attempts": 1,
+                "last_request_metadata": {
+                    "messages_chars": 42,
+                    "prefix_changed": False,
+                },
+                "completion_usage_totals": {
+                    "cached_tokens": 10,
+                    "cache_hit": True,
+                    "input_tokens": 40,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    metrics = aggregate_run_artifacts(tmp_path)
+
+    assert metrics["avg_request_messages_chars"] == 42
+    assert "avg_prompt_chars" not in metrics
+    assert metrics["cache_hit_rate"] == 1.0
+    assert metrics["cached_token_ratio"] == 0.25
+    assert metrics["prefix_reuse_rate"] == 1.0
+
+
+def test_provider_summary_reads_cache_from_completion_usage_totals():
+    from pico.evaluation.provider_benchmark import _provider_summary_from_artifact
+
+    summary = _provider_summary_from_artifact(
+        {
+            "rows": [
+                {
+                    "report": {
+                        "completion_usage_totals": {
+                            "cached_tokens": 12,
+                            "cache_hit": True,
+                        }
+                    },
+                    "tool_steps": 1,
+                    "attempts": 1,
+                }
+            ],
+            "summary": {"total_tasks": 1, "pass_rate": 1.0},
+        }
+    )
+
+    assert summary["avg_cached_tokens"] == 12.0
+    assert summary["cache_hit_rate"] == 1.0
 
 
 def test_run_context_ablation_v2_writes_expected_artifact(tmp_path):

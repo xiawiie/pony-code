@@ -21,6 +21,7 @@ from .context_manager import ContextManager
 from .checkpoint import CHECKPOINT_NONE_STATUS
 from .memory.block_store import BlockStore
 from .memory.retrieval import Retrieval
+from .messages import message_metrics, tool_event_metrics
 from .prompt_prefix import build_prompt_prefix, tool_signature
 from .repo_map import RepoMap
 from .recovery_checkpoint_writer import RecoveryCheckpointWriter
@@ -134,8 +135,8 @@ class WorkingMemory:
         return self
 
 
-def build_report_checkpoint_metadata(task_state, last_prompt_metadata):
-    """Return a dict fragment to merge into report prompt_metadata.
+def build_report_request_metadata(task_state, last_prompt_metadata):
+    """Return a dict fragment to merge into report last_request_metadata.
 
     Preserves the invariant that the initial prompt-time resume_status is kept
     under last_prompt_resume_status when a later task_state.resume_status is
@@ -438,7 +439,7 @@ class Pico:
 
         This method is transitional — it reads from ``session["history"]``
         (the flat, pre-v2 shape) rather than ``session["messages"]``.
-        Kept for ``build_report`` and evaluation-harness compatibility;
+        Kept for legacy prompt and evaluation-harness compatibility;
         v2 telemetry uses ``metadata["messages_tokens"]`` and structured
         messages instead. Returns "- empty" (not "") when history is
         empty to distinguish "no runs yet" from "runs with no output".
@@ -713,8 +714,26 @@ class Pico:
     def new_run_id():
         return "run_" + datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6]
 
-    def build_report(self, task_state):
-        prompt_metadata = build_report_checkpoint_metadata(task_state, self.last_prompt_metadata)
+    def build_report(self, task_state, *, completion_usage_totals=None):
+        request_metadata = build_report_request_metadata(
+            task_state,
+            self.last_prompt_metadata,
+        )
+        session_metrics = message_metrics(
+            self.session.get("messages", []),
+            token_of=self.context_manager._count_tokens_for_v2,
+        )
+        tool_metrics = tool_event_metrics(self.session.get("messages", []))
+        usage = {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0,
+            "cached_tokens": 0,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "cache_hit": False,
+            **dict(completion_usage_totals or {}),
+        }
         # report 是一次运行的最终摘要；
         # 和 trace 的区别在于，trace 关注过程，report 关注结果与关键指标。
         return {
@@ -728,7 +747,14 @@ class Pico:
             "checkpoint_id": task_state.checkpoint_id,
             "resume_status": task_state.resume_status,
             "task_state": task_state.to_dict(),
-            "prompt_metadata": prompt_metadata,
+            "last_request_metadata": request_metadata,
+            "completion_usage_totals": usage,
+            "session_messages_count": session_metrics["messages_count"],
+            "session_messages_chars": session_metrics["messages_chars"],
+            "session_messages_tokens": session_metrics["messages_tokens"],
+            "session_tool_event_count": tool_metrics["event_count"],
+            "session_tool_name_counts": tool_metrics["name_counts"],
+            "session_tool_status_counts": tool_metrics["status_counts"],
             "working_memory": self.memory.to_dict(),
             "redacted_env": self.detected_secret_env_summary(),
         }
