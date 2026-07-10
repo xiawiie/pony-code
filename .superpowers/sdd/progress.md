@@ -302,3 +302,5 @@ Task 10: complete (commits 8ed818a + 85f9a7c + 706db9f, review clean after two f
   plan scope corrections: b7f4c0a durable-budget/recorder evidence; 603ef7d summary format;
   9f37c4d fallback wire truth; 25b40bb ablation edge cases
   verification: 57 passed focused gate; fake benchmark 8/8; 723 passed full check
+Task 11: complete (commit aef10f2, independent review clean)
+  verification: 59 passed task gate; 726 passed full check
