@@ -64,8 +64,10 @@ def _extract_anthropic_usage_cache_details(data):
 
 class AnthropicCompatibleModelClient:
     def __init__(self, model, base_url, api_key, temperature, timeout):
+        from pico.config import validate_provider_base_url
+
         self.model = model
-        self.base_url = _normalize_versioned_base_url(base_url)
+        self.base_url = _normalize_versioned_base_url(validate_provider_base_url(base_url))
         self.api_key = api_key
         self.temperature = temperature
         self.timeout = timeout

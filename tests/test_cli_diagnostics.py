@@ -205,13 +205,12 @@ def test_doctor_reports_connectivity_as_diagnostic_result(tmp_path, monkeypatch,
     assert payload["data"]["provider_connectivity"]["message"] == "connection timed out"
 
 
-def test_doctor_json_redacts_secret_base_url(tmp_path, monkeypatch, capsys):
+def test_doctor_rejects_secret_base_url_without_connecting_or_echoing(tmp_path, monkeypatch, capsys):
+    called = {}
+
     def fake_connectivity(config):
-        return {
-            "status": "error",
-            "category": "provider_connectivity",
-            "message": "offline test double",
-        }
+        called["connectivity"] = True
+        return {"status": "ok"}
 
     monkeypatch.setattr("pico.cli_diagnostics.check_provider_connectivity", fake_connectivity)
 
@@ -225,15 +224,14 @@ def test_doctor_json_redacts_secret_base_url(tmp_path, monkeypatch, capsys):
         "doctor",
     ])
 
-    assert code == 0
-    output = capsys.readouterr().out
-    payload = json.loads(output)
-    assert payload["kind"] == "doctor"
-    assert payload["data"]["config"]["base_url"]["value"] == "https://example.com/v1"
+    assert code == 2
+    captured = capsys.readouterr()
+    output = captured.out + captured.err
+    assert "provider_base_url_credentials" in output
     assert "user:pass" not in output
     assert "token=" not in output
-    assert "secret" not in output
-    assert "#frag" not in output
+    assert "secret#frag" not in output
+    assert called == {}
 
 
 def test_provider_connectivity_http_500_is_non_ok_and_redacts_url(monkeypatch):

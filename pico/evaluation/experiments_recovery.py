@@ -270,7 +270,7 @@ def _apply_recovery_setup(agent, task, workspace_root):
 
 def _run_recovery_task_variant(task, variant):
     with tempfile.TemporaryDirectory(prefix="pico-recovery-ablation-") as temp_dir:
-        workspace_root = Path(temp_dir)
+        workspace_root = Path(temp_dir).resolve()
         (workspace_root / "README.md").write_text("demo\n", encoding="utf-8")
         agent = _build_recovery_agent(workspace_root, task["required_fragments"])
         _apply_recovery_setup(agent, task, workspace_root)

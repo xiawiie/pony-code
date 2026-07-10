@@ -103,7 +103,7 @@ def _prompt_has_reusable_file_summary(prompt, expected_working_line):
 
 def build_stress_agent_metrics():
     with tempfile.TemporaryDirectory(prefix="pico-metrics-") as temp_dir:
-        workspace_root = Path(temp_dir)
+        workspace_root = Path(temp_dir).resolve()
         (workspace_root / "README.md").write_text("demo\n", encoding="utf-8")
         workspace = WorkspaceContext.build(workspace_root)
         store = SessionStore(workspace_root / ".pico" / "sessions")
@@ -212,7 +212,7 @@ def _prepare_memory_followup(agent, filename):
 
 def _run_memory_variant(mode):
     with tempfile.TemporaryDirectory(prefix="pico-memory-experiment-") as temp_dir:
-        workspace_root = Path(temp_dir)
+        workspace_root = Path(temp_dir).resolve()
         (workspace_root / "README.md").write_text("demo\n", encoding="utf-8")
         (workspace_root / "facts.txt").write_text("deploy key is red\n", encoding="utf-8")
         agent = _build_memory_experiment_agent(workspace_root, "deploy key is red", "facts.txt")
@@ -305,7 +305,7 @@ def _set_irrelevant_memory_for_task(agent):
 
 def _run_memory_task_variant(task, variant):
     with tempfile.TemporaryDirectory(prefix="pico-memory-large-") as temp_dir:
-        workspace_root = Path(temp_dir)
+        workspace_root = Path(temp_dir).resolve()
         (workspace_root / "README.md").write_text("demo\n", encoding="utf-8")
         _write_memory_task_files(workspace_root, task)
         agent = _build_memory_experiment_agent(workspace_root, task["fact"], task["filename"])
@@ -379,7 +379,7 @@ def run_context_stress_matrix(repetitions=5):
                 per_run = []
                 for _ in range(repetitions):
                     with tempfile.TemporaryDirectory(prefix="pico-context-matrix-") as temp_dir:
-                        workspace_root = Path(temp_dir)
+                        workspace_root = Path(temp_dir).resolve()
                         (workspace_root / "README.md").write_text("demo\n", encoding="utf-8")
                         workspace = WorkspaceContext.build(workspace_root)
                         store = SessionStore(workspace_root / ".pico" / "sessions")
@@ -562,7 +562,7 @@ def run_security_experiment_suite(repetitions=3):
     for scenario_id, runner in SECURITY_SCENARIOS:
         for _ in range(repetitions):
             with tempfile.TemporaryDirectory(prefix="pico-security-exp-") as temp_dir:
-                workspace_root = Path(temp_dir)
+                workspace_root = Path(temp_dir).resolve()
                 (workspace_root / "README.md").write_text("demo\n", encoding="utf-8")
                 metadata = runner(workspace_root)
                 metadata["scenario_id"] = scenario_id

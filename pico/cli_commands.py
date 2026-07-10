@@ -1,10 +1,8 @@
 """Command handlers for Pico's explicit CLI Surface."""
 
-import getpass
-import sys
 from pathlib import Path
 
-from .cli_errors import CLI_EXIT_USAGE, CliError
+from .cli_errors import CLI_EXIT_CONFIG, CLI_EXIT_USAGE, CliError
 from .cli_diagnostics import _line
 from .cli_diagnostics import handle_config, handle_doctor, handle_status  # noqa: F401
 from .cli_start import run_agent_once, run_repl  # noqa: F401
@@ -12,7 +10,12 @@ from .cli_memory import handle_memory  # noqa: F401
 from .cli_output import print_result
 from .cli_recovery import handle_checkpoints, handle_runs, handle_sessions  # noqa: F401
 from .cli_session import handle_session_command
-from .config import _parse_env_line
+from .config import (
+    project_env_path,
+    read_project_env,
+    validate_provider_base_url,
+    write_project_env_assignments,
+)
 from .providers.defaults import (
     API_KEY_ENV_NAMES,
     BASE_URL_ENV_NAMES,
@@ -33,6 +36,7 @@ USAGE:
 
 EXAMPLES:
     pico-cli run "inspect the failing tests"
+    pico-cli config set-secret PICO_DEEPSEEK_API_KEY
     pico-cli doctor
     pico-cli checkpoints preview-restore <checkpoint-id>
 
@@ -42,7 +46,7 @@ Available Commands:
   status       Show local workspace state
   doctor       Check config, storage, auth, and connectivity
   init         Create or update project .env provider config
-  config       Configuration inspection
+  config       Configuration inspection and secret input
   runs         Run artifact inspection
   sessions     Session inspection
   session      Session v3 invariant inspector
@@ -78,8 +82,16 @@ def handle_session(tokens, root, args):
 def handle_init(tokens, cwd, args):
     options = _parse_init_tokens(tokens)
     workspace = WorkspaceContext.build(cwd)
-    env_path = Path(workspace.repo_root) / ".env"
-    existing = _read_env_assignments(env_path)
+    root = Path(workspace.repo_root)
+    env_path = project_env_path(root)
+    try:
+        existing = read_project_env(root)
+    except (OSError, ValueError) as exc:
+        raise CliError(
+            code="config",
+            message="project environment read failed",
+            exit_code=CLI_EXIT_CONFIG,
+        ) from exc
     provider = options["provider"] or getattr(args, "provider", None) or existing.get("PICO_PROVIDER") or DEFAULT_PROVIDER
     if provider not in PROVIDER_CHOICES:
         raise CliError(
@@ -102,34 +114,39 @@ def handle_init(tokens, cwd, args):
             or DEFAULT_MODELS.get(provider, "")
         )
     if base_url_name:
-        assignments[base_url_name] = (
+        base_url = (
             options["base_url"]
             or getattr(args, "base_url", None)
             or _host_override(args, provider)
             or existing.get(base_url_name)
             or DEFAULT_BASE_URLS.get(provider, "")
         )
+        assignments[base_url_name] = validate_provider_base_url(base_url)
 
-    api_key_value = ""
-    if api_key_name:
-        api_key_value = options["api_key"]
-        if api_key_value is None:
-            api_key_value = existing.get(api_key_name)
-        if api_key_value is None:
-            api_key_value = _prompt_api_key(provider, args)
-        assignments[api_key_name] = api_key_value or ""
-
-    written = _write_env_assignments(env_path, assignments)
+    api_key_present = bool(api_key_name and existing.get(api_key_name))
+    try:
+        written = write_project_env_assignments(root, assignments)
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise CliError(
+            code="config",
+            message="project environment update failed",
+            exit_code=CLI_EXIT_CONFIG,
+        ) from exc
     data = {
-        "env_path": str(env_path),
+        "env_path": env_path.name,
         "provider": provider,
         "updated": written["updated"],
         "added": written["added"],
         "unchanged": written["unchanged"],
         "api_key": {
-            "present": bool(api_key_value),
+            "present": api_key_present,
             "name": api_key_name,
         },
+        "set_secret_command": (
+            f"pico-cli config set-secret {api_key_name}"
+            if api_key_name and not api_key_present
+            else ""
+        ),
     }
     return print_result("config_init", data, args, _render_init)
 
@@ -149,6 +166,8 @@ def _render_init(data):
         _line("api key", api_key_text),
         _line("updated", ", ".join(changed) if changed else "-"),
     ]
+    if data.get("set_secret_command"):
+        lines.extend(("", _line("next", data["set_secret_command"])))
     return "\n".join(lines)
 
 
@@ -157,19 +176,18 @@ def _parse_init_tokens(tokens):
         "provider": None,
         "model": None,
         "base_url": None,
-        "api_key": None,
     }
     index = 0
     while index < len(tokens):
         token = tokens[index]
-        if token in {"--provider", "--model", "--base-url", "--api-key"}:
+        if token in {"--provider", "--model", "--base-url"}:
             if index + 1 >= len(tokens):
                 raise _init_usage_error()
             key = token[2:].replace("-", "_")
             options[key] = tokens[index + 1]
             index += 2
             continue
-        for flag in ("--provider=", "--model=", "--base-url=", "--api-key="):
+        for flag in ("--provider=", "--model=", "--base-url="):
             if token.startswith(flag):
                 key = flag[2:-1].replace("-", "_")
                 options[key] = token[len(flag):]
@@ -183,7 +201,7 @@ def _parse_init_tokens(tokens):
 def _init_usage_error():
     return CliError(
         code="usage",
-        message="usage: pico-cli init [--provider <name>] [--model <name>] [--base-url <url>] [--api-key <key>]",
+        message="usage: pico-cli init [--provider <name>] [--model <name>] [--base-url <url>]",
         exit_code=CLI_EXIT_USAGE,
     )
 
@@ -200,70 +218,3 @@ def _host_override(args, provider):
     if host and host != DEFAULT_BASE_URLS.get("ollama"):
         return host
     return None
-
-
-def _prompt_api_key(provider, args):
-    if getattr(args, "no_input", False) or not sys.stdin.isatty():
-        return ""
-    try:
-        return getpass.getpass(f"{provider} API key (leave blank to fill later): ")
-    except (EOFError, KeyboardInterrupt):
-        return ""
-
-
-def _read_env_assignments(env_path):
-    if not env_path.exists():
-        return {}
-    assignments = {}
-    for line in env_path.read_text(encoding="utf-8").splitlines():
-        parsed = _parse_env_line(line)
-        if parsed is None:
-            continue
-        name, value = parsed
-        assignments[name] = value
-    return assignments
-
-
-def _write_env_assignments(env_path, assignments):
-    env_path.parent.mkdir(parents=True, exist_ok=True)
-    existing_lines = env_path.read_text(encoding="utf-8").splitlines() if env_path.exists() else []
-    remaining = dict(assignments)
-    rendered = []
-    updated = []
-    unchanged = []
-    for line in existing_lines:
-        parsed = _parse_env_line(line)
-        if parsed is None:
-            rendered.append(line)
-            continue
-        name, old_value = parsed
-        if name not in remaining:
-            rendered.append(line)
-            continue
-        value = remaining.pop(name)
-        rendered.append(_format_env_assignment(name, value))
-        if old_value == value:
-            unchanged.append(name)
-        else:
-            updated.append(name)
-
-    added = list(remaining)
-    if remaining:
-        if rendered and rendered[-1].strip():
-            rendered.append("")
-        for name, value in remaining.items():
-            rendered.append(_format_env_assignment(name, value))
-
-    env_path.write_text("\n".join(rendered).rstrip() + "\n", encoding="utf-8")
-    return {"updated": updated, "added": added, "unchanged": unchanged}
-
-
-def _format_env_assignment(name, value):
-    text = str(value or "")
-    if "\n" in text or "\r" in text:
-        raise CliError(
-            code="usage",
-            message=f"{name} cannot contain newlines",
-            exit_code=CLI_EXIT_USAGE,
-        )
-    return f"{name}={text}"

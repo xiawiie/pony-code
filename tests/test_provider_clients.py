@@ -10,6 +10,45 @@ from pico.providers.clients import (
 )
 
 
+@pytest.mark.parametrize(
+    "url",
+    (
+        "https://user:opaque-password@example.test/v1",
+        "https://example.test/v1?api_key=opaque-value",
+        "https://example.test/v1?token=opaque-value",
+    ),
+)
+@pytest.mark.parametrize(
+    "client_factory",
+    (
+        lambda url: OpenAICompatibleModelClient(
+            model="test",
+            base_url=url,
+            api_key="safe-test-key",
+            temperature=0.0,
+            timeout=1,
+        ),
+        lambda url: AnthropicCompatibleModelClient(
+            model="test",
+            base_url=url,
+            api_key="safe-test-key",
+            temperature=0.0,
+            timeout=1,
+        ),
+        lambda url: OllamaModelClient(
+            model="test",
+            host=url,
+            temperature=0.0,
+            top_p=1.0,
+            timeout=1,
+        ),
+    ),
+)
+def test_credential_bearing_base_url_is_rejected_at_client_boundary(url, client_factory):
+    with pytest.raises(ValueError, match="provider_base_url_credentials"):
+        client_factory(url)
+
+
 # =============================================================================
 # Provider client tests
 # =============================================================================

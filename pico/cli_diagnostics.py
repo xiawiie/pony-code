@@ -1,13 +1,22 @@
 """Read-only diagnostics for Pico's explicit CLI commands."""
 
+import getpass
 import os
+import stat
+import sys
 from pathlib import Path
 from urllib import error, request
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
-from .cli_errors import CLI_EXIT_USAGE, CliError
+from .cli_errors import CLI_EXIT_CONFIG, CLI_EXIT_USAGE, CliError
 from .cli_output import print_result
-from .config import read_project_env
+from .config import (
+    ENV_KEY_PATTERN,
+    project_env_path,
+    read_project_env,
+    validate_provider_base_url,
+    write_project_env_assignments,
+)
 from .providers.defaults import (
     API_KEY_ENV_NAMES,
     BASE_URL_ENV_NAMES,
@@ -17,6 +26,7 @@ from .providers.defaults import (
     DEFAULT_PROVIDER,
     MODEL_ENV_NAMES,
 )
+from .security import is_secret_env_name
 from .workspace import WorkspaceContext
 
 
@@ -59,6 +69,7 @@ def collect_config(cwd, args=None):
     provider = _resolve_provider(args, project_env)
     model = _resolve_model(args, provider["value"], project_env)
     api_key = _resolve_api_key(provider["value"], project_env)
+    _resolve_base_url(args, provider["value"], project_env)
     return {
         "provider": provider,
         "model": model,
@@ -142,10 +153,79 @@ def handle_config(tokens, cwd, args):
             args,
             _render_config,
         )
-    raise CliError(
+    if sub == "set-secret":
+        return _handle_set_secret(rest, cwd, args)
+    raise _config_usage_error()
+
+
+def _config_usage_error():
+    return CliError(
         code="usage",
-        message="usage: pico-cli config show",
+        message="usage: pico-cli config show | pico-cli config set-secret <ENV_NAME> [--stdin]",
         exit_code=CLI_EXIT_USAGE,
+    )
+
+
+def _handle_set_secret(tokens, cwd, args):
+    if len(tokens) not in {1, 2} or (len(tokens) == 2 and tokens[1] != "--stdin"):
+        raise _config_usage_error()
+    name = tokens[0]
+    if not ENV_KEY_PATTERN.fullmatch(name) or not is_secret_env_name(name):
+        raise CliError(
+            code="usage",
+            message="secret environment variable name required",
+            exit_code=CLI_EXIT_USAGE,
+        )
+
+    use_stdin = len(tokens) == 2
+    if not use_stdin and getattr(args, "no_input", False):
+        raise CliError(
+            code="usage",
+            message="secret input unavailable; use --stdin",
+            exit_code=CLI_EXIT_USAGE,
+        )
+    try:
+        value = sys.stdin.read() if use_stdin else getpass.getpass(f"{name}: ")
+    except (EOFError, KeyboardInterrupt) as exc:
+        raise CliError(
+            code="usage",
+            message="secret input unavailable",
+            exit_code=CLI_EXIT_USAGE,
+        ) from exc
+    if value.endswith("\n"):
+        value = value[:-1]
+    if not value or any(char in value for char in ("\0", "\r", "\n")):
+        raise CliError(
+            code="usage",
+            message="secret input must be one non-empty line",
+            exit_code=CLI_EXIT_USAGE,
+        )
+
+    workspace = WorkspaceContext.build(cwd)
+    root = Path(workspace.repo_root)
+    try:
+        written = write_project_env_assignments(root, {name: value})
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise CliError(
+            code="config",
+            message="project environment update failed",
+            exit_code=CLI_EXIT_CONFIG,
+        ) from exc
+    env_path = project_env_path(root)
+    mode = ""
+    if os.name == "posix":
+        mode = f"{stat.S_IMODE(env_path.stat().st_mode):04o}"
+    status = "created" if name in written["added"] else "updated"
+    return print_result(
+        "config_set_secret",
+        {
+            "name": name,
+            "status": status,
+            "env_path": env_path.name,
+            "permission": mode,
+        },
+        args,
+        _render_set_secret,
     )
 
 
@@ -222,13 +302,21 @@ def _resolve_api_key(provider, project_env):
 def _resolve_base_url(args, provider, project_env):
     explicit = getattr(args, "base_url", None) if args is not None else None
     if explicit:
-        return {"value": explicit, "source": "cli", "name": "--base-url"}
-    if provider == "ollama":
+        result = {"value": explicit, "source": "cli", "name": "--base-url"}
+    elif provider == "ollama":
         explicit_host = getattr(args, "host", None) if args is not None else None
         if explicit_host and explicit_host != DEFAULT_OLLAMA_HOST:
-            return {"value": explicit_host, "source": "cli", "name": "--host"}
-    env_names = BASE_URL_ENV_NAMES.get(provider, ())
-    value, source, name = _resolve_env_value(env_names, project_env)
+            result = {"value": explicit_host, "source": "cli", "name": "--host"}
+        else:
+            result = _base_url_from_env_or_default(provider, project_env)
+    else:
+        result = _base_url_from_env_or_default(provider, project_env)
+    result["value"] = validate_provider_base_url(result["value"])
+    return result
+
+
+def _base_url_from_env_or_default(provider, project_env):
+    value, source, name = _resolve_env_value(BASE_URL_ENV_NAMES.get(provider, ()), project_env)
     if value:
         return {"value": value, "source": source, "name": name}
     return {
@@ -345,6 +433,19 @@ def _render_config(data):
         _line("api key", _presence_text(data["api_key"])),
     ]
     return "\n".join(lines)
+
+
+def _render_set_secret(data):
+    return "\n".join(
+        [
+            "Pico config — Secret stored",
+            "",
+            _line("name", data["name"]),
+            _line("status", data["status"]),
+            _line("env file", data["env_path"]),
+            _line("permission", data["permission"] or "private"),
+        ]
+    )
 
 
 def _render_doctor(data):

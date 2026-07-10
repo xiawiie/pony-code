@@ -28,7 +28,7 @@ from .cli_errors import CLI_EXIT_USAGE, CliError
 from .cli_help import HELP_DETAILS  # noqa: F401
 from .cli_output import error_envelope, format_json
 from .cli_parser import parse_cli_invocation
-from .config import load_project_env, provider_env
+from .config import load_project_env, provider_env, validate_provider_base_url
 from .providers.defaults import (
     DEFAULT_ANTHROPIC_BASE_URL,
     DEFAULT_ANTHROPIC_MODEL,
@@ -51,7 +51,7 @@ COMMAND_SPECS = {
     "init": {"category": "config", "subcommands": set()},
     "status": {"category": "inspection", "subcommands": set()},
     "doctor": {"category": "inspection", "subcommands": {"--offline"}},
-    "config": {"category": "inspection", "subcommands": {"show"}},
+    "config": {"category": "inspection", "subcommands": {"set-secret", "show"}},
     "sessions": {"category": "inspection", "subcommands": {"list", "show"}},
     "session": {"category": "inspection", "subcommands": {"inspect"}},
     "checkpoints": {"category": "recovery", "subcommands": {"list", "show", "preview-restore", "restore", "prune"}},
@@ -183,7 +183,10 @@ def _build_model_client(args):
     # 真正的提示词格式、缓存支持、HTTP 协议差异，都封装在 models.py 里。
     if provider == "openai":
         model = _effective_model(args, provider)
-        base_url = getattr(args, "base_url", None) or provider_env("PICO_OPENAI_API_BASE", ("OPENAI_API_BASE",), DEFAULT_OPENAI_BASE_URL)
+        base_url = validate_provider_base_url(
+            getattr(args, "base_url", None)
+            or provider_env("PICO_OPENAI_API_BASE", ("OPENAI_API_BASE",), DEFAULT_OPENAI_BASE_URL)
+        )
         api_key = provider_env(
             "PICO_OPENAI_API_KEY",
             ("OPENAI_API_KEY", "PICO_RIGHT_CODES_API_KEY", "RIGHT_CODES_API_KEY", "PICO_ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY"),
@@ -197,7 +200,10 @@ def _build_model_client(args):
         )
     if provider == "anthropic":
         model = _effective_model(args, provider)
-        base_url = getattr(args, "base_url", None) or provider_env("PICO_ANTHROPIC_API_BASE", ("ANTHROPIC_API_BASE",), DEFAULT_ANTHROPIC_BASE_URL)
+        base_url = validate_provider_base_url(
+            getattr(args, "base_url", None)
+            or provider_env("PICO_ANTHROPIC_API_BASE", ("ANTHROPIC_API_BASE",), DEFAULT_ANTHROPIC_BASE_URL)
+        )
         api_key = provider_env(
             "PICO_ANTHROPIC_API_KEY",
             ("ANTHROPIC_API_KEY", "PICO_RIGHT_CODES_API_KEY", "RIGHT_CODES_API_KEY", "PICO_OPENAI_API_KEY", "OPENAI_API_KEY"),
@@ -211,7 +217,10 @@ def _build_model_client(args):
         )
     if provider == "deepseek":
         model = _effective_model(args, provider)
-        base_url = getattr(args, "base_url", None) or provider_env("PICO_DEEPSEEK_API_BASE", ("DEEPSEEK_API_BASE",), DEFAULT_DEEPSEEK_BASE_URL)
+        base_url = validate_provider_base_url(
+            getattr(args, "base_url", None)
+            or provider_env("PICO_DEEPSEEK_API_BASE", ("DEEPSEEK_API_BASE",), DEFAULT_DEEPSEEK_BASE_URL)
+        )
         api_key = provider_env("PICO_DEEPSEEK_API_KEY", ("DEEPSEEK_API_KEY",))
         return AnthropicCompatibleModelClient(
             model=model,
@@ -222,7 +231,7 @@ def _build_model_client(args):
         )
 
     model = _effective_model(args, provider)
-    host = getattr(args, "host", DEFAULT_OLLAMA_HOST)
+    host = validate_provider_base_url(getattr(args, "host", DEFAULT_OLLAMA_HOST))
     return OllamaModelClient(
         model=model,
         host=host,
@@ -513,9 +522,20 @@ def main(argv=None):
         pre_agent_result = _dispatch_pre_agent_command(invocation, args)
         if pre_agent_result is not None:
             return pre_agent_result
+        agent = build_agent(args)
     except CliError as exc:
         return _print_cli_error(args, exc)
-    agent = build_agent(args)
+    except ValueError as exc:
+        if str(exc) != "provider_base_url_credentials":
+            raise
+        return _print_cli_error(
+            args,
+            CliError(
+                code="provider_base_url_credentials",
+                message="provider_base_url_credentials",
+                exit_code=CLI_EXIT_USAGE,
+            ),
+        )
 
     model = getattr(agent.model_client, "model", getattr(args, "model", DEFAULT_OLLAMA_MODEL))
     host = getattr(agent.model_client, "host", getattr(agent.model_client, "base_url", getattr(args, "host", DEFAULT_OLLAMA_HOST)))

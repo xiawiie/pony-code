@@ -4,6 +4,8 @@ import subprocess
 import sys
 from unittest.mock import Mock, patch
 
+import pytest
+
 from pico import FakeModelClient, Pico, SessionStore, WorkspaceContext
 from pico import cli as pico_cli
 from pico.config import read_project_env
@@ -73,6 +75,55 @@ def test_workspace_bootstrap_uses_hardened_git_and_drops_startup_log(tmp_path, m
     assert calls[0][1] == ["rev-parse", "--show-toplevel"]
     assert calls[0][2]["cwd"] == repo.resolve()
     assert all(call[1][0] != "log" for call in calls)
+
+
+def test_cli_freezes_parent_path_before_project_env_loading(tmp_path, monkeypatch):
+    parent_path = os.environ.get("PATH", "")
+    fake_path = str(tmp_path / "fake-bin")
+    (tmp_path / ".env").write_text(
+        f"PATH={fake_path}\nPICO_PROVIDER=ollama\n",
+        encoding="utf-8",
+    )
+    observed = {}
+
+    def capture_parent_path(workspace_root, *, env=None, names=()):
+        observed["path"] = os.environ.get("PATH", "")
+        return {}
+
+    class DummyModelClient:
+        def __init__(self, *args, **kwargs):
+            self.args = args
+            self.kwargs = kwargs
+
+    monkeypatch.setattr("pico.workspace.build_trusted_executables", capture_parent_path)
+    monkeypatch.setattr("pico.cli.OllamaModelClient", DummyModelClient)
+    args = pico_cli.build_arg_parser().parse_args([
+        "--cwd",
+        str(tmp_path),
+        "--provider",
+        "ollama",
+    ])
+
+    pico_cli.build_agent(args)
+
+    assert observed["path"] == parent_path
+    assert os.environ.get("PATH", "") == parent_path
+
+
+def test_runtime_rejects_credential_bearing_base_url_before_client_construction(monkeypatch):
+    def fail_client(*args, **kwargs):
+        raise AssertionError("client constructed")
+
+    monkeypatch.setattr(pico_cli, "AnthropicCompatibleModelClient", fail_client)
+    args = pico_cli.build_arg_parser().parse_args([
+        "--provider",
+        "deepseek",
+        "--base-url",
+        "https://user:opaque-password@example.test/v1",
+    ])
+
+    with pytest.raises(ValueError, match="provider_base_url_credentials"):
+        pico_cli._build_model_client(args)
 
 
 def test_workspace_escape_is_rejected(tmp_path):

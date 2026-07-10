@@ -7,8 +7,10 @@ import urllib.request
 
 class OllamaModelClient:
     def __init__(self, model, host, temperature, top_p, timeout):
+        from pico.config import validate_provider_base_url
+
         self.model = model
-        self.host = host.rstrip("/")
+        self.host = validate_provider_base_url(host).rstrip("/")
         self.temperature = temperature
         self.top_p = top_p
         self.timeout = timeout

@@ -1,24 +1,69 @@
 """Project-local configuration helpers."""
 
+import json
 import os
 import re
 import sys
+import tempfile
+import urllib.parse
 from pathlib import Path
+
+from .file_lock import locked_file
+from .providers.defaults import API_KEY_ENV_NAMES, BASE_URL_ENV_NAMES, MODEL_ENV_NAMES
+from .security import (
+    contains_secret_material,
+    ensure_private_dir,
+    ensure_private_file,
+    require_regular_no_symlink,
+)
 
 
 ENV_KEY_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_EXECUTION_ENV_EXACT_DENY = {"PATH", "HOME", "SHELL", "PYTHONPATH", "BASH_ENV", "ENV"}
+_PROJECT_ENV_ALLOWED = {
+    "PICO_PROVIDER",
+    "PICO_SECRET_ENV_NAMES",
+    *(name for names in MODEL_ENV_NAMES.values() for name in names),
+    *(name for names in BASE_URL_ENV_NAMES.values() for name in names),
+    *(name for names in API_KEY_ENV_NAMES.values() for name in names),
+}
+_SECRET_QUERY_KEYS = {
+    "api_key",
+    "access_key",
+    "access_token",
+    "auth_token",
+    "token",
+    "secret",
+    "password",
+    "credential",
+}
 
 
 def _strip_quotes(value):
     value = value.strip()
-    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+    if len(value) >= 2 and value[0] == value[-1] == '"':
+        try:
+            decoded = json.loads(value)
+        except json.JSONDecodeError as exc:
+            raise ValueError("invalid JSON-quoted .env value") from exc
+        if not isinstance(decoded, str):
+            raise ValueError("quoted .env value must be a string")
+        return decoded
+    if len(value) >= 2 and value[0] == value[-1] == "'":
         return value[1:-1]
     return value
 
 
 def _strip_inline_comment(value):
     quote = ""
+    escaped = False
     for index, char in enumerate(value):
+        if escaped:
+            escaped = False
+            continue
+        if quote == '"' and char == "\\":
+            escaped = True
+            continue
         if char in {"'", '"'}:
             if not quote:
                 quote = char
@@ -41,29 +86,29 @@ def _parse_env_line(line):
     name, value = line.split("=", 1)
     name = name.strip()
     if not ENV_KEY_PATTERN.match(name):
-        raise ValueError(f"invalid .env variable name: {name}")
+        raise ValueError("invalid .env variable name")
     return name, _strip_quotes(_strip_inline_comment(value))
 
 
+def project_env_path(workspace_root):
+    return Path(workspace_root).resolve() / ".env"
+
+
 def find_project_env(start):
-    current = Path(start).resolve()
-    if current.is_file():
-        current = current.parent
-    for path in (current, *current.parents):
-        env_path = path / ".env"
-        if env_path.exists():
-            return env_path
-    return None
+    """Compatibility wrapper with exact-root semantics."""
+    env_path = project_env_path(start)
+    return env_path if env_path.exists() else None
 
 
 def _warn_invalid_env_line(env_path, line_number, error):
-    print(f"warning: skipped invalid .env line {line_number} in {env_path}: {error}", file=sys.stderr)
+    print(f"warning: skipped invalid .env line {line_number}: {error}", file=sys.stderr)
 
 
 def read_project_env(start, warn=True):
-    env_path = find_project_env(start)
-    if env_path is None:
+    env_path = require_regular_no_symlink(project_env_path(start), allow_missing=True)
+    if not env_path.exists():
         return {}
+    env_path = ensure_private_file(env_path)
     loaded = {}
     for line_number, line in enumerate(env_path.read_text(encoding="utf-8").splitlines(), start=1):
         try:
@@ -82,9 +127,140 @@ def read_project_env(start, warn=True):
 def load_project_env(start, override=True, warn=True):
     loaded = read_project_env(start, warn=warn)
     for name, value in loaded.items():
-        if override or name not in os.environ:
+        if _may_import_project_env(name) and (override or name not in os.environ):
             os.environ[name] = value
     return loaded
+
+
+def _may_import_project_env(name):
+    upper = str(name).upper()
+    if upper in _EXECUTION_ENV_EXACT_DENY or upper.startswith(("LD_", "DYLD_")):
+        return False
+    return upper.startswith("PICO_") or upper in _PROJECT_ENV_ALLOWED
+
+
+def _validated_project_env_assignments(assignments):
+    result = {}
+    for raw_name, raw_value in dict(assignments or {}).items():
+        name = str(raw_name)
+        if not ENV_KEY_PATTERN.fullmatch(name):
+            raise ValueError("invalid project environment variable name")
+        value = "" if raw_value is None else str(raw_value)
+        if any(char in value for char in ("\0", "\r", "\n")):
+            raise ValueError(f"{name} cannot contain NUL or newlines")
+        result[name] = value
+    return result
+
+
+def _format_project_env_assignment(name, value):
+    return f"{name}={json.dumps(value, ensure_ascii=False)}"
+
+
+def _render_project_env_update(existing_text, assignments):
+    existing_lines = existing_text.splitlines()
+    rendered = []
+    seen = set()
+    old_values = {}
+    for line in existing_lines:
+        try:
+            parsed = _parse_env_line(line)
+        except ValueError:
+            rendered.append(line)
+            continue
+        if parsed is None:
+            rendered.append(line)
+            continue
+        name, old_value = parsed
+        if name not in assignments:
+            rendered.append(line)
+            continue
+        old_values.setdefault(name, []).append(old_value)
+        if name not in seen:
+            rendered.append(_format_project_env_assignment(name, assignments[name]))
+            seen.add(name)
+
+    added = [name for name in assignments if name not in seen]
+    if added and rendered and rendered[-1].strip():
+        rendered.append("")
+    rendered.extend(_format_project_env_assignment(name, assignments[name]) for name in added)
+    updated = [
+        name
+        for name in assignments
+        if name in seen and (len(old_values[name]) != 1 or old_values[name][0] != assignments[name])
+    ]
+    unchanged = [name for name in assignments if name in seen and name not in updated]
+    text = "\n".join(rendered)
+    return (text + "\n" if rendered else ""), {
+        "updated": updated,
+        "added": added,
+        "unchanged": unchanged,
+    }
+
+
+def _fsync_directory(path):
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    descriptor = os.open(path, flags)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _remove_created_temp(path, identity):
+    try:
+        current = path.lstat()
+    except FileNotFoundError:
+        return
+    if (current.st_dev, current.st_ino) == identity:
+        path.unlink()
+
+
+def write_project_env_assignments(workspace_root, assignments):
+    assignments = _validated_project_env_assignments(assignments)
+    root = Path(workspace_root).resolve()
+    private_root = ensure_private_dir(root / ".pico")
+    env_path = project_env_path(root)
+    lock_path = private_root / "project-env.lock"
+
+    with locked_file(lock_path, require_lock=True):
+        checked_path = require_regular_no_symlink(env_path, allow_missing=True)
+        existing_text = ""
+        if checked_path.exists():
+            existing_text = ensure_private_file(checked_path).read_text(encoding="utf-8")
+        content, result = _render_project_env_update(existing_text, assignments)
+
+        descriptor, temp_name = tempfile.mkstemp(prefix=".pico-env-", dir=root)
+        temp_path = Path(temp_name)
+        opened = os.fstat(descriptor)
+        identity = (opened.st_dev, opened.st_ino)
+        try:
+            os.fchmod(descriptor, 0o600)
+            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                descriptor = -1
+                handle.write(content)
+                handle.flush()
+                os.fsync(handle.fileno())
+            temp_path.replace(env_path)
+            env_path.chmod(0o600, follow_symlinks=False)
+            _fsync_directory(root)
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+            _remove_created_temp(temp_path, identity)
+    return result
+
+
+def validate_provider_base_url(value):
+    raw = str(value or "")
+    parsed = urllib.parse.urlsplit(raw)
+    query = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("provider_base_url_credentials")
+    if any(key.casefold().replace("-", "_") in _SECRET_QUERY_KEYS for key, _ in query):
+        raise ValueError("provider_base_url_credentials")
+    if any(contains_secret_material(item, env={}) for _, item in query):
+        raise ValueError("provider_base_url_credentials")
+    return raw
 
 
 def provider_env(name, legacy_names=(), default=""):

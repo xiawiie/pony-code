@@ -90,7 +90,7 @@ def _validated_setup_notes(scenario: dict) -> list[tuple[str, str]]:
 def setup_workspace(scenario: dict, parent_dir: Path | None = None) -> Path:
     parent_dir = Path(parent_dir) if parent_dir is not None else None
     setup_notes = _validated_setup_notes(scenario)
-    ws = Path(tempfile.mkdtemp(prefix="pico-memory-bench-", dir=str(parent_dir) if parent_dir else None))
+    ws = Path(tempfile.mkdtemp(prefix="pico-memory-bench-", dir=str(parent_dir) if parent_dir else None)).resolve()
     (ws / "AGENTS.md").write_text("# Test project\n", encoding="utf-8")
     for rel, content in setup_notes:
         target = _setup_note_target(ws, rel)
