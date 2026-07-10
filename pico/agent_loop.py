@@ -1,5 +1,6 @@
 """Agent control loop extracted from the runtime facade."""
 
+from copy import deepcopy
 import logging
 import time
 import uuid
@@ -7,6 +8,7 @@ import uuid
 from .action_codec import FinalAction, RetryAction, ToolAction, decode_action
 from .checkpoint import CHECKPOINT_NONE_STATUS, CHECKPOINT_PARTIAL_STALE_STATUS, CHECKPOINT_WORKSPACE_MISMATCH_STATUS
 from .context.renderer import render_current_user_message
+from .messages import append_messages, make_tool_pair
 from .recovery_models import TRACE_RECOVERY_CHECKPOINT_CREATED
 from .recovery_checkpoint_writer import (
     current_recovery_checkpoint_id,
@@ -69,37 +71,47 @@ def _action_trace_payload(action):
     }
 
 
-def _append_user_turn(agent, text: str):
-    """Append a plain-text user turn to session["messages"] via agent.record_message."""
-    msg = {"role": "user", "content": text, "_pico_meta": {"created_at": now()}}
-    agent.record_message(msg)
-    return msg
+class SessionCommitError(RuntimeError):
+    def __init__(self, cause):
+        super().__init__(str(cause))
+        self.cause = cause
 
 
-def _append_tool_use(agent, *, name: str, input: dict, id_hint: str | None = None) -> str:
-    """Append an assistant tool_use turn. Returns the tool_use_id (generated if id_hint None)."""
-    tool_use_id = id_hint or f"toolu_{uuid.uuid4().hex[:12]}"
-    msg = {
-        "role": "assistant",
-        "content": [{"type": "tool_use", "id": tool_use_id, "name": name, "input": input}],
-        "_pico_meta": {"created_at": now(), "tool_use_id": tool_use_id},
-    }
-    agent.record_message(msg)
-    return tool_use_id
+def _commit_session(agent, *, messages=(), legacy_history=()):
+    safe_messages = tuple(agent.redact_artifact(message) for message in messages)
+    safe_history = tuple(agent.redact_artifact(item) for item in legacy_history)
+    candidate = deepcopy(agent.session)
+    candidate["messages"] = append_messages(candidate.get("messages", []), *safe_messages)
+    if "history" in candidate:
+        candidate["history"] = [
+            *list(candidate.get("history", []) or []),
+            *safe_history,
+        ]
+    try:
+        saved_path = agent.session_store.save(candidate)
+    except Exception as exc:
+        raise SessionCommitError(exc) from exc
+    agent.session = candidate
+    agent.session_path = saved_path
 
 
-def _append_tool_result(
+def _plain_message(role, text, *, origin=""):
+    meta = {"created_at": now()}
+    if origin:
+        meta["origin"] = origin
+    return {"role": role, "content": str(text), "_pico_meta": meta}
+
+
+def _prepare_tool_result(
     agent,
     *,
-    tool_use_id: str,
     content: str,
     tool_name: str = "",
     tool_args: dict | None = None,
     digest_applied: bool = False,
     source_hash: str | None = None,
 ):
-    """Append a tool_result message. Anthropic semantics: role="user"
-    wraps the tool_result content block.
+    """Prepare a tool result for a later atomic pair commit.
 
     Task 26: when the raw ``content`` exceeds the digest threshold
     (see ``pico.context.digest.should_digest``), we:
@@ -109,9 +121,8 @@ def _append_tool_result(
     2. Replace ``content`` with the rendered digest (title + bullets +
        "raw at ..." pointer) — the agent still sees the shape of the
        result, at a fraction of the token cost.
-    3. Set ``_pico_meta.digest_applied = True`` and stash
-       ``source_hash`` so trace / metrics can distinguish digested
-       messages from inline ones.
+    3. Return ``digest_applied`` and ``source_hash`` so the atomic pair
+       commit can distinguish digested messages from inline ones.
 
     When ``agent.current_run_dir`` is unavailable (e.g. mid-test), we
     still emit the digest but leave ``raw_path`` empty — no crash.
@@ -159,27 +170,10 @@ def _append_tool_result(
         display_content = render_digest_content(digest)
         digest_applied = True
 
-    msg = {
-        "role": "user",
-        "content": [
-            {"type": "tool_result", "tool_use_id": tool_use_id, "content": display_content}
-        ],
-        "_pico_meta": {
-            "created_at": now(),
-            "tool_use_id": tool_use_id,
-            "digest_applied": digest_applied,
-            "source_hash": source_hash,
-        },
+    return display_content, {
+        "digest_applied": digest_applied,
+        "source_hash": source_hash,
     }
-    agent.record_message(msg)
-    return msg
-
-
-def _append_assistant_text(agent, text: str):
-    """Append a plain-text assistant turn."""
-    msg = {"role": "assistant", "content": text, "_pico_meta": {"created_at": now()}}
-    agent.record_message(msg)
-    return msg
 
 
 def _run_turn_preflight(agent, user_message):
@@ -225,8 +219,18 @@ class AgentLoop:
         # and a handful of tests that inspect the flat history structure —
         # until the memory/context redesign completes and those consumers
         # migrate to v2 message inspection.
-        _append_user_turn(agent, user_message)
-        agent.record({"role": "user", "content": user_message, "created_at": now()})
+        try:
+            _commit_session(
+                agent,
+                messages=(_plain_message("user", user_message),),
+                legacy_history=({
+                    "role": "user",
+                    "content": user_message,
+                    "created_at": now(),
+                },),
+            )
+        except SessionCommitError as exc:
+            raise exc.cause
 
         task_state = TaskState.create(run_id=agent.new_run_id(), task_id=agent.new_task_id(), user_request=user_message)
         task_state.resume_status = agent.resume_state.get("status", CHECKPOINT_NONE_STATUS)
@@ -366,12 +370,7 @@ class AgentLoop:
             if isinstance(action, ToolAction):
                 name = action.name
                 args = action.arguments
-                tool_use_id = _append_tool_use(
-                    agent,
-                    name=name,
-                    input=args,
-                    id_hint=action.tool_use_id,
-                )
+                tool_use_id = action.tool_use_id or f"toolu_{uuid.uuid4().hex[:12]}"
                 tool_started_at = time.monotonic()
                 agent.emit_trace(
                     task_state,
@@ -384,32 +383,68 @@ class AgentLoop:
                 )
                 tool_result = agent.execute_tool(name, args)
                 result = tool_result.content
-                if tool_result.metadata.get("tool_status") != "rejected":
-                    tool_steps += 1
-                    task_state.record_tool(name)
-                tool_change_id = tool_result.metadata.get("tool_change_id") or ""
-                if tool_change_id:
+                metadata = dict(tool_result.metadata or {})
+                tool_change_id = str(metadata.get("tool_change_id", "") or "")
+                effect_class = str(
+                    metadata.get(
+                        "effect_class",
+                        "read_only" if metadata.get("read_only") else "workspace_write",
+                    )
+                )
+                if tool_change_id and effect_class == "workspace_write":
                     run_tool_change_ids.append(tool_change_id)
-                _append_tool_result(
+                display_result, digest_meta = _prepare_tool_result(
                     agent,
-                    tool_use_id=tool_use_id,
                     content=result,
                     tool_name=name,
                     tool_args=args,
                 )
-                # Dual-write to legacy history for tests + runtime helpers
-                # that still key on the flat structure. Task 28 kept this
-                # deliberately; the surface will be retired once memory
-                # experiments and legacy assertions migrate to v2.
-                agent.record(
-                    {
-                        "role": "tool",
-                        "name": name,
-                        "args": args,
-                        "content": result,
-                        "created_at": now(),
-                    }
+                pair = make_tool_pair(
+                    name=name,
+                    arguments=args,
+                    tool_use_id=tool_use_id,
+                    result_content=display_result,
+                    created_at=now(),
+                    tool_status=metadata["tool_status"],
+                    effect_class=effect_class,
+                    tool_change_id=tool_change_id,
+                    result_meta=digest_meta,
                 )
+                try:
+                    _commit_session(
+                        agent,
+                        messages=pair,
+                        legacy_history=({
+                            "role": "tool",
+                            "name": name,
+                            "args": args,
+                            "content": result,
+                            "created_at": now(),
+                        },),
+                    )
+                except SessionCommitError as exc:
+                    task_state.stop_persistence_error("Session persistence failed.")
+                    try:
+                        _finish_run(
+                            agent=agent,
+                            task_state=task_state,
+                            user_message=user_message,
+                            final=task_state.final_answer,
+                            run_started_at=run_started_at,
+                            run_tool_change_ids=run_tool_change_ids,
+                            run_verification_evidence=run_verification_evidence,
+                            completion_usage_totals=completion_usage_totals,
+                            trigger="persistence_error",
+                        )
+                    except Exception:
+                        logger.warning(
+                            "best-effort persistence-error finalization failed",
+                            exc_info=True,
+                        )
+                    raise exc.cause
+                if metadata.get("tool_status") != "rejected":
+                    tool_steps += 1
+                    task_state.record_tool(name)
                 agent.run_store.write_task_state(task_state)
                 agent.emit_trace(
                     task_state,
@@ -420,7 +455,7 @@ class AgentLoop:
                         "result": clip(result, 500),
                         "tool_use_id": tool_use_id,
                         "duration_ms": int((time.monotonic() - tool_started_at) * 1000),
-                        **dict(tool_result.metadata or {}),
+                        **metadata,
                     },
                 )
                 agent.emit_trace(
@@ -430,8 +465,8 @@ class AgentLoop:
                         "name": name,
                         "tool_change_id": tool_change_id,
                         "tool_use_id": tool_use_id,
-                        "tool_status": tool_result.metadata.get("tool_status", ""),
-                        "affected_paths": list(tool_result.metadata.get("affected_paths", [])),
+                        "tool_status": metadata.get("tool_status", ""),
+                        "affected_paths": list(metadata.get("affected_paths", [])),
                         "duration_ms": int((time.monotonic() - tool_started_at) * 1000),
                     },
                 )
@@ -440,7 +475,7 @@ class AgentLoop:
                     name,
                     args,
                     result,
-                    tool_result.metadata,
+                    metadata,
                 )
                 if verification_evidence is not None:
                     run_verification_evidence.append(verification_evidence)
@@ -453,9 +488,15 @@ class AgentLoop:
 
             # final path
             final = action.text
-            _append_assistant_text(agent, final)
-            # Dual-write to legacy history for report/test consumers.
-            agent.record({"role": "assistant", "content": final, "created_at": now()})
+            _commit_session(
+                agent,
+                messages=(_plain_message("assistant", final),),
+                legacy_history=({
+                    "role": "assistant",
+                    "content": final,
+                    "created_at": now(),
+                },),
+            )
             task_state.finish_success(final)
             return _finish_run(
                 agent=agent,
@@ -475,8 +516,15 @@ class AgentLoop:
         else:
             final = "Stopped after reaching the step limit without a final answer."
             task_state.stop_step_limit(final)
-        _append_assistant_text(agent, final)
-        agent.record({"role": "assistant", "content": final, "created_at": now()})
+        _commit_session(
+            agent,
+            messages=(_plain_message("assistant", final),),
+            legacy_history=({
+                "role": "assistant",
+                "content": final,
+                "created_at": now(),
+            },),
+        )
         final_trigger = task_state.stop_reason or "run_stopped"
         return _finish_run(
             agent=agent,

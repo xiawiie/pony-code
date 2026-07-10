@@ -1,3 +1,4 @@
+import copy
 import json
 
 import pytest
@@ -133,6 +134,165 @@ def test_agent_loop_decodes_native_action_and_aggregates_response_usage_only(tmp
     assert report["completion_usage_totals"]["total_tokens"] == 37
     assert report["completion_usage_totals"]["cache_hit"] is True
     assert report["completion_usage_totals"]["input_tokens"] != 999999
+
+
+def test_tool_pair_is_written_by_one_session_save_without_orphan(tmp_path, monkeypatch):
+    provider = NativeScriptProvider([
+        Response(
+            stop_reason=StopReason.TOOL_USE,
+            content=[{
+                "type": "tool_use",
+                "id": "tu_pair",
+                "name": "read_file",
+                "input": {"path": "README.md"},
+            }],
+            usage={},
+        ),
+        Response(
+            stop_reason=StopReason.END_TURN,
+            content=[{"type": "text", "text": "done"}],
+            usage={},
+        ),
+    ])
+    agent = build_native_agent(tmp_path, provider)
+    saved_transcripts = []
+    original_save = agent.session_store.save
+
+    def spy_save(session):
+        saved_transcripts.append(copy.deepcopy(session["messages"]))
+        return original_save(session)
+
+    monkeypatch.setattr(agent.session_store, "save", spy_save)
+
+    assert agent.ask("read") == "done"
+
+    writes_with_pair = [
+        messages
+        for messages in saved_transcripts
+        if any(
+            message.get("role") == "assistant"
+            and isinstance(message.get("content"), list)
+            and message["content"][0].get("type") == "tool_use"
+            for message in messages
+        )
+    ]
+    assert writes_with_pair
+    first = writes_with_pair[0]
+    tool_index = next(
+        index
+        for index, message in enumerate(first)
+        if isinstance(message.get("content"), list)
+        and message["content"][0].get("type") == "tool_use"
+    )
+    assert first[tool_index]["content"][0]["id"] == "tu_pair"
+    assert first[tool_index + 1]["content"][0]["tool_use_id"] == "tu_pair"
+    assert not any(
+        messages[-1].get("role") == "assistant"
+        and isinstance(messages[-1].get("content"), list)
+        and messages[-1]["content"][0].get("type") == "tool_use"
+        for messages in saved_transcripts
+    )
+
+
+def test_side_effect_then_pair_save_failure_stops_before_another_provider_call(
+    tmp_path,
+    monkeypatch,
+):
+    provider = NativeScriptProvider([
+        Response(
+            stop_reason=StopReason.TOOL_USE,
+            content=[{
+                "type": "tool_use",
+                "id": "tu_write",
+                "name": "write_file",
+                "input": {"path": "created.txt", "content": "created\n"},
+            }],
+            usage={},
+        ),
+        Response(
+            stop_reason=StopReason.END_TURN,
+            content=[{"type": "text", "text": "must not be requested"}],
+            usage={},
+        ),
+    ])
+    agent = build_native_agent(tmp_path, provider)
+    original_save = agent.session_store.save
+
+    def fail_pair(session):
+        if any(
+            isinstance(message.get("content"), list)
+            and message["content"]
+            and message["content"][0].get("type") == "tool_use"
+            for message in session.get("messages", [])
+        ):
+            raise OSError("pair save failed")
+        return original_save(session)
+
+    monkeypatch.setattr(agent.session_store, "save", fail_pair)
+
+    with pytest.raises(OSError, match="pair save failed"):
+        agent.ask("write file")
+
+    assert (tmp_path / "created.txt").read_text(encoding="utf-8") == "created\n"
+    assert len(provider.calls) == 1
+    assert agent.current_task_state.stop_reason == "persistence_error"
+    assert agent.current_task_state.status == "failed"
+    assert [
+        (message["role"], message["content"])
+        for message in agent.session["messages"]
+    ] == [("user", "write file")]
+    assert agent.current_task_state.recovery_checkpoint_id
+
+
+def test_pair_save_primary_error_survives_terminal_persistence_failure(
+    tmp_path,
+    monkeypatch,
+):
+    provider = NativeScriptProvider([
+        Response(
+            stop_reason=StopReason.TOOL_USE,
+            content=[{
+                "type": "tool_use",
+                "id": "tu_write",
+                "name": "write_file",
+                "input": {"path": "created.txt", "content": "created\n"},
+            }],
+            usage={},
+        ),
+    ])
+    agent = build_native_agent(tmp_path, provider)
+    original_save = agent.session_store.save
+    user_turn_saved = False
+
+    def fail_pair_then_terminal(session):
+        nonlocal user_turn_saved
+        has_tool_use = any(
+            isinstance(message.get("content"), list)
+            and message["content"]
+            and message["content"][0].get("type") == "tool_use"
+            for message in session.get("messages", [])
+        )
+        if has_tool_use:
+            raise OSError("pair save failed")
+        if user_turn_saved:
+            raise RuntimeError("terminal persistence failed")
+        user_turn_saved = True
+        return original_save(session)
+
+    monkeypatch.setattr(agent.session_store, "save", fail_pair_then_terminal)
+
+    with pytest.raises(OSError, match="pair save failed"):
+        agent.ask("write file")
+
+    assert len(provider.calls) == 1
+    assert all(
+        not (
+            isinstance(message.get("content"), list)
+            and message["content"]
+            and message["content"][0].get("type") == "tool_use"
+        )
+        for message in agent.session["messages"]
+    )
 
 
 def test_agent_loop_emits_focused_recovery_trace_events(tmp_path):

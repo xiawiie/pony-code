@@ -8,7 +8,7 @@ entry points.
 - FallbackAdapter wraps non-tool_use backends via `complete_v2`
 - Session store carries the v1→v2 migrator helper
 - ContextManager exposes `build_v2`
-- agent_loop.py exports the four message-append helpers
+- agent_loop.py exports copy-on-write message helpers
 """
 
 
@@ -19,16 +19,16 @@ def test_p1_smoke_all_checkpoints_reachable():
     from pico.session_store import SessionStore, _migrate_v1_to_v2  # noqa: F401
     from pico.context_manager import ContextManager
     from pico.agent_loop import (
-        _append_assistant_text,
-        _append_tool_result,
-        _append_tool_use,
-        _append_user_turn,
+        SessionCommitError,
+        _commit_session,
+        _plain_message,
+        _prepare_tool_result,
     )
 
     assert hasattr(AnthropicCompatibleModelClient, "complete_v2")
     assert hasattr(FallbackAdapter, "complete_v2")
     assert hasattr(ContextManager, "build_v2")
-    assert callable(_append_user_turn)
-    assert callable(_append_tool_use)
-    assert callable(_append_tool_result)
-    assert callable(_append_assistant_text)
+    assert callable(_commit_session)
+    assert callable(_plain_message)
+    assert callable(_prepare_tool_result)
+    assert issubclass(SessionCommitError, RuntimeError)

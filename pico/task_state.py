@@ -90,6 +90,13 @@ class TaskState:
     def stop_model_error(self, final_answer=""):
         return self.stop(STOP_REASON_MODEL_ERROR, status=STATUS_FAILED, final_answer=final_answer)
 
+    def stop_persistence_error(self, final_answer=""):
+        return self.stop(
+            STOP_REASON_PERSISTENCE_ERROR,
+            status=STATUS_FAILED,
+            final_answer=final_answer,
+        )
+
     def finish_success(self, final_answer):
         self.status = STATUS_COMPLETED
         self.stop_reason = STOP_REASON_FINAL_ANSWER_RETURNED
