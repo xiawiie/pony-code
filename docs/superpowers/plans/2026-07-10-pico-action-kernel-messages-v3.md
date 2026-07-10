@@ -4827,6 +4827,9 @@ git commit -m "feat(session): activate atomic v3 migration"
 - Modify: `pico/agent_loop.py`
 - Modify: `pico/messages.py`
 - Modify: `pico/cli_commands.py`
+- Modify: `pico/cli_help.py`
+- Modify: `pico/features/memory.py`
+- Modify: `pico/workspace.py`
 - Modify: `pico/evaluation/experiments_real.py`
 - Modify: `pico/evaluation/experiments_synthetic.py`
 - Modify: `pico/evaluation/experiments_recovery.py`
@@ -4844,12 +4847,38 @@ git commit -m "feat(session): activate atomic v3 migration"
 - Modify: `tests/test_run_store.py`
 - Modify: `tests/test_runtime_report.py`
 - Modify: `tests/test_safety_invariants.py`
+- Modify: `tests/test_message_invariants.py`
+- Modify: `tests/test_session_store_migrator.py`
 - Modify: `tests/memory/test_runtime_wiring.py`
 - Modify: `tests/test_clean_up.py`
 - Delete: `pico/model_output_parser.py`
 - Delete: `pico/providers/message_utils.py`
 - Delete: `tests/test_model_output_parser.py`
 - Delete: `tests/test_provider_message_utils.py`
+
+**Scope correction (2026-07-10, before Task 15 execution):**
+
+- `tests/test_session_store_migrator.py` owns the Task 14 temporary runtime
+  bridge coverage. Delete its direct `_legacy_history_from_messages` bridge
+  test, and rewrite its v2 resume roundtrip assertion to require that both
+  the returned runtime session and disk payload have no `history` key. The
+  session-store's offline history-to-messages migration tests remain intact.
+- `tests/test_message_invariants.py` must import `strip_pico_meta` directly
+  from `pico.messages` before `pico.providers.message_utils` is deleted.
+- `pico/cli_help.py` and `pico/features/memory.py` explicitly describe the
+  removed `session["history"]` transcript. Rename those user-facing/internal
+  descriptions to canonical messages. `pico/workspace.py::MAX_HISTORY` is
+  only used by the deleted `Pico.history_text`; remove the now-dead constant.
+- `benchmarks/live_e2e/run_live_session.py` intentionally remains Task 16:
+  its stale trace-field read and last-call fallback are replaced by that
+  task's trace-truth aggregation. Do not alter the live harness or make a
+  provider request in Task 15. `examples/mini-pico` is a separately packaged
+  educational example and does not import the main `pico` runtime, so it is
+  outside this runtime-cutover task.
+- The deletion gate must distinguish an active legacy metadata access from
+  tests that intentionally assert the old trace key is absent. Scan all Task
+  15 tests for `last_prompt_metadata`, but scan `prompt_metadata` only in
+  production/perf code; Task 16 owns the live harness trace-field update.
 
 **Interfaces:**
 
@@ -5038,6 +5067,8 @@ Update test doubles that monkeypatch `record_message` to inspect the COW save pa
 
 - Delete `pico/model_output_parser.py` and `tests/test_model_output_parser.py`; every useful parser case must already exist in `tests/test_action_codec.py`.
 - Delete `pico/providers/message_utils.py` and `tests/test_provider_message_utils.py`; every Provider imports `strip_pico_meta` from `pico.messages` and its pure tests live in `tests/test_messages.py`.
+- Change `tests/test_message_invariants.py` to import that same
+  `pico.messages.strip_pico_meta`; no compatibility wrapper remains.
 - Remove `legacy_string_path` from `pyproject.toml`.
 - Update `pico/cli_commands.py` documentation to describe the v3 invariant inspector, not dual-write drift.
 
@@ -5061,6 +5092,18 @@ agent.session["messages"].append({
 
 or `make_tool_pair` for tool events. Save once with `agent.session_store.save(agent.session)` only when the test explicitly exercises disk reload.
 
+In `tests/test_session_store_migrator.py`, delete
+`test_legacy_history_bridge_handles_text_blocks_and_missing_tool_content`,
+because the bridge itself is deleted. Rewrite
+`test_v2_resume_roundtrip_keeps_history_only_in_memory` to assert both
+`first.session` and `second.session` omit `history` after `Pico.from_session`,
+while preserving its v2-on-disk fixture, v3 disk assertions, and second-load
+coverage. In `tests/test_message_invariants.py`, replace only the obsolete
+provider utility import; its `strip_pico_meta` behavior assertions stay the
+same. Update the `/reset` help text and the memory module's complete-
+transcript wording to say `messages`, and remove the unused `MAX_HISTORY`
+constant.
+
 The named sweep scope is the complete Task 15 **Files** list above. If this scan finds a prohibited reference in any other path, stop and amend the plan before editing or staging that path.
 
 - [ ] **Step 10: Run the structural deletion gate**
@@ -5072,7 +5115,8 @@ test ! -e pico/providers/message_utils.py
 ! rg -n 'Pico\.record\(|Pico\.record_message\(|history_text\(|ContextManager\.build\(|_build_prompt_and_metadata|model_output_parser|legacy_string_path' pico tests benchmarks pyproject.toml
 ! rg -n 'parse_model_output|toolu_local_|uuid' pico/providers/fallback_adapter.py
 ! rg -n 'last_completion_metadata' pico/agent_loop.py pico/runtime.py pico/evaluation
-! rg -n 'last_prompt_metadata|prompt_metadata' pico/agent_loop.py pico/runtime.py pico/evaluation benchmarks/perf tests
+! rg -n 'last_prompt_metadata' pico tests benchmarks/perf pyproject.toml
+! rg -n 'prompt_metadata' pico benchmarks/perf pyproject.toml
 ```
 
 Expected: every command exits zero and prints no prohibited production reference.
@@ -5088,9 +5132,9 @@ Expected: Ruff passes; all pytest tests pass with zero legacy skips.
 - [ ] **Step 12: Commit v3 cutover and deletions**
 
 ```bash
-git add pico/runtime.py pico/agent_loop.py pico/messages.py pico/cli_commands.py pyproject.toml
+git add pico/runtime.py pico/agent_loop.py pico/messages.py pico/cli_commands.py pico/cli_help.py pico/features/memory.py pico/workspace.py pyproject.toml
 git add pico/evaluation/experiments_real.py pico/evaluation/experiments_synthetic.py pico/evaluation/experiments_recovery.py pico/evaluation/fixed_benchmark.py pico/evaluation/metrics_reports.py pico/evaluation/provider_benchmark.py benchmarks/perf/bench_build_v2.py
-git add tests/e2e/test_full_turn_roundtrip.py tests/test_pico.py tests/test_agent_loop_v2_shape.py tests/test_agent_loop_digest.py tests/test_context_manager.py tests/test_config_context.py tests/test_run_store.py tests/test_runtime_report.py tests/test_safety_invariants.py tests/memory/test_runtime_wiring.py tests/test_clean_up.py
+git add tests/e2e/test_full_turn_roundtrip.py tests/test_pico.py tests/test_agent_loop_v2_shape.py tests/test_agent_loop_digest.py tests/test_context_manager.py tests/test_config_context.py tests/test_run_store.py tests/test_runtime_report.py tests/test_safety_invariants.py tests/test_message_invariants.py tests/test_session_store_migrator.py tests/memory/test_runtime_wiring.py tests/test_clean_up.py
 git add -u pico/model_output_parser.py pico/providers/message_utils.py tests/test_model_output_parser.py tests/test_provider_message_utils.py
 git commit -m "refactor(session): cut runtime over to messages v3"
 ```
