@@ -1375,7 +1375,7 @@ def main() -> int:
                 workspace=workspace,
                 session_store=session_store,
                 read_only=True,
-                max_steps=3,
+                max_steps=2,
                 allowed_tools=("read_file",),
             )
         except Exception as exc:

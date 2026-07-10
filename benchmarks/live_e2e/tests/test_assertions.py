@@ -134,6 +134,7 @@ def test_main_constructs_live_pico_with_only_read_file(tmp_path, monkeypatch):
 
     assert run_live_session.main() == 4
     assert captured["allowed_tools"] == ("read_file",)
+    assert captured["max_steps"] == 2
 
 
 def test_read_turn_trace_aggregates_every_model_turn(tmp_path):
