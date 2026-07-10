@@ -313,3 +313,6 @@ Task 13: complete (commit 696ba92, independent review clean)
 Task 14: complete (commits 4fd92aa + 4cc477d, independent review clean after one schema-contract fix)
   plan scope corrections: 7331db0 locked/redactor/tempfile semantics; 76821ff legacy consumer migration; 5496ed9 v3 runtime bridge/data-shape coverage
   verification: 106 passed SessionStore transaction gate; 790 passed full check
+Task 15: complete (commit 44fe805, independent review clean)
+  plan scope correction: 6f064aa adds bridge-test removal, direct strip_pico_meta import, v3 wording/dead constant cleanup, and Task16 harness boundary
+  verification: 175 passed focused gate; 8 structural deletion checks clean; 204 passed independent review slice; 780 passed full check
