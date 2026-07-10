@@ -2072,6 +2072,9 @@ git commit -m "refactor(evaluation): measure sent message views"
 - Modify: `pico/prompt_prefix.py`
 - Modify: `pico/providers/fallback_adapter.py`
 - Modify: `pico/providers/anthropic_compatible.py`
+- Modify: `pico/runtime.py`
+- Modify: `pico/evaluation/experiments_recovery.py`
+- Modify: `pico/evaluation/experiments_synthetic.py`
 - Modify: `tests/test_agent_loop.py`
 - Modify: `tests/test_prompt_prefix.py`
 - Modify: `tests/test_provider_fallback.py`
@@ -2445,7 +2448,7 @@ Expected at this phase: no hit in `pico/agent_loop.py` or report/evaluation code
 - [ ] **Step 10: Commit the atomic switch**
 
 ```bash
-git add pico/agent_loop.py pico/prompt_prefix.py pico/providers/fallback_adapter.py pico/providers/anthropic_compatible.py tests/test_agent_loop.py tests/test_prompt_prefix.py tests/test_provider_fallback.py tests/test_provider_anthropic_v2.py tests/e2e/test_fallback_provider_parity.py tests/test_runtime_report.py
+git add pico/agent_loop.py pico/prompt_prefix.py pico/providers/fallback_adapter.py pico/providers/anthropic_compatible.py pico/runtime.py pico/evaluation/experiments_recovery.py pico/evaluation/experiments_synthetic.py tests/test_agent_loop.py tests/test_prompt_prefix.py tests/test_provider_fallback.py tests/test_provider_anthropic_v2.py tests/e2e/test_fallback_provider_parity.py tests/test_runtime_report.py
 git commit -m "refactor(action-kernel): route all model output through codec"
 ```
 
