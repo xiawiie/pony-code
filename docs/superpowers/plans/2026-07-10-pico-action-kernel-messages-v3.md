@@ -1469,6 +1469,7 @@ git commit -m "feat(session): specify messages v3 migration"
 - Modify: `pico/evaluation/metrics_reports.py`
 - Modify: `pico/evaluation/provider_benchmark.py`
 - Modify: `pico/evaluation/experiments_recovery.py`
+- Modify: `benchmarks/coding_tasks.json`
 - Modify: `tests/test_runtime_report.py`
 - Modify: `tests/test_metrics.py`
 - Modify: `tests/test_metadata_completeness.py`
@@ -1660,6 +1661,9 @@ pico/evaluation/provider_benchmark.py:
 
 pico/evaluation/experiments_recovery.py:
   report.prompt_metadata.resume_status -> report.last_request_metadata.resume_status
+
+benchmarks/coding_tasks.json:
+  report.prompt_metadata.resume_status -> report.last_request_metadata.resume_status
 ```
 
 Rename the aggregate key `avg_prompt_chars` to `avg_request_messages_chars`. Update its tests and Markdown renderers to say “sent request message chars,” not “prompt chars.”
@@ -1667,7 +1671,7 @@ Rename the aggregate key `avg_prompt_chars` to `avg_request_messages_chars`. Upd
 - [ ] **Step 5: Run the report/metrics slice**
 
 ```bash
-uv run pytest tests/test_messages.py tests/test_runtime_report.py tests/test_metrics.py tests/test_metadata_completeness.py tests/test_run_store.py -q
+uv run pytest tests/test_messages.py tests/test_runtime_report.py tests/test_metrics.py tests/test_metadata_completeness.py tests/test_run_store.py tests/test_evaluator.py -q
 ```
 
 Expected: all pass.
@@ -1683,7 +1687,7 @@ Expected: no output.
 - [ ] **Step 7: Commit report consumer migration**
 
 ```bash
-git add pico/messages.py pico/runtime.py pico/evaluation/metrics_reports.py pico/evaluation/provider_benchmark.py pico/evaluation/experiments_recovery.py tests/test_messages.py tests/test_runtime_report.py tests/test_metrics.py tests/test_metadata_completeness.py tests/test_run_store.py
+git add pico/messages.py pico/runtime.py pico/evaluation/metrics_reports.py pico/evaluation/provider_benchmark.py pico/evaluation/experiments_recovery.py benchmarks/coding_tasks.json tests/test_messages.py tests/test_runtime_report.py tests/test_metrics.py tests/test_metadata_completeness.py tests/test_run_store.py
 git commit -m "refactor(report): read canonical message and usage truth"
 ```
 
