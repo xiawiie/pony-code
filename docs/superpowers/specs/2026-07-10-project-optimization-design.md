@@ -1,7 +1,7 @@
 # Pico Action Kernel 与 Messages v3 收敛设计
 
 - 日期：2026-07-10
-- 状态：已完成交互式设计与源码级全面 review，待用户批准修订版
+- 状态：已完成交互式设计与源码级全面 review，用户已批准，进入 implementation planning
 - 当前分支：`memory`
 - 范围：优化顺序中的 C 阶段——运行时内核与消息模型收敛
 - 后续：C 阶段验收后，另行设计 A 阶段——安全与可信基线
