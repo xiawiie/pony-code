@@ -1,63 +1,91 @@
-"""Pico live-API end-to-end test harness.
+"""Pico live-provider end-to-end harness.
 
-Runs 5 designed turns through a real Anthropic model and hard-asserts 27
-invariants covering the post-migration optimizations. Standalone; not a
-pytest test. Consumes real API credits (~$0.20/run on Sonnet).
-
-Entry:
-    uv run python -m benchmarks.live_e2e.run_live_session
-    uv run python -m benchmarks.live_e2e.run_live_session --reset
-    uv run python -m benchmarks.live_e2e.run_live_session --model claude-haiku-...
-
-See docs/superpowers/specs/2026-07-08-pico-live-e2e-test-design.md.
+One invocation selects either DeepSeek or Anthropic from the project ``.env``
+and records trace-backed evidence for five designed turns. This standalone
+command consumes API credits; incomplete or malformed trace usage fails the
+gate instead of falling back to mutable provider state. Reports omit provider
+configuration secrets.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import os
+import subprocess
 import sys
 import time
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
-
-DEFAULT_MODEL = "claude-sonnet-4-5-20250929"
+from pico.config import load_project_env, provider_env
+from pico.messages import MessageValidationError, validate_messages
+from pico.providers.defaults import (
+    API_KEY_ENV_NAMES,
+    BASE_URL_ENV_NAMES,
+    DEFAULT_BASE_URLS,
+    DEFAULT_MODELS,
+    MODEL_ENV_NAMES,
+)
 
 
 @dataclass(frozen=True)
 class RunConfig:
     """CLI + env-derived configuration for one live-e2e run."""
 
-    provider: str = "anthropic"
-    model: str = DEFAULT_MODEL
-    max_provider_calls: int = 15
-    max_total_tokens: int = 200_000
-    timeout_seconds: int = 300
-    reset: bool = False
-    verbose: bool = False
+    provider: Literal["anthropic", "deepseek"]
+    model: str
+    max_provider_calls: int
+    max_total_tokens: int
+    timeout_seconds: int
+    reset: bool
+    verbose: bool
+
+
+def _mapped_env(names, default=""):
+    return provider_env(names[0], legacy_names=names[1:], default=default)
+
+
+def provider_settings(provider):
+    if provider not in {"anthropic", "deepseek"}:
+        raise ValueError(f"unsupported live provider: {provider}")
+    return {
+        "api_key": _mapped_env(API_KEY_ENV_NAMES[provider]),
+        "model": _mapped_env(
+            MODEL_ENV_NAMES[provider],
+            default=DEFAULT_MODELS[provider],
+        ),
+        "base_url": _mapped_env(
+            BASE_URL_ENV_NAMES[provider],
+            default=DEFAULT_BASE_URLS[provider],
+        ),
+    }
 
 
 def parse_args() -> RunConfig:
     """Parse CLI arguments and return a frozen RunConfig.
 
-    Environment variable ``PICO_ANTHROPIC_MODEL`` overrides the default
-    model when ``--model`` is not passed; ``--model`` on the CLI wins
-    over both env and the hard-coded default.
+    The selected provider's canonical environment names supply defaults. A
+    ``--model`` argument overrides that provider's configured model.
     """
     parser = argparse.ArgumentParser(prog="run_live_session")
-    env_model = os.environ.get("PICO_ANTHROPIC_MODEL", DEFAULT_MODEL)
-    parser.add_argument("--model", default=env_model)
+    parser.add_argument(
+        "--provider",
+        choices=("anthropic", "deepseek"),
+        default="deepseek",
+    )
+    parser.add_argument("--model", default=None)
     parser.add_argument("--max-provider-calls", type=int, default=15)
     parser.add_argument("--max-total-tokens", type=int, default=200_000)
     parser.add_argument("--timeout-seconds", type=int, default=300)
     parser.add_argument("--reset", action="store_true")
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
+    settings = provider_settings(args.provider)
     return RunConfig(
-        provider="anthropic",
-        model=args.model,
+        provider=args.provider,
+        model=args.model or settings["model"],
         max_provider_calls=args.max_provider_calls,
         max_total_tokens=args.max_total_tokens,
         timeout_seconds=args.timeout_seconds,
@@ -67,12 +95,13 @@ def parse_args() -> RunConfig:
 
 
 def check_env(config: RunConfig) -> None:
-    """Abort with exit 2 if the Anthropic API key is missing."""
+    """Abort with exit 2 if the selected provider API key is missing."""
     if config.reset:
         return  # reset path doesn't need the API key
-    key = os.environ.get("PICO_ANTHROPIC_API_KEY", "").strip()
+    key = provider_settings(config.provider)["api_key"].strip()
     if not key:
-        print("[live-e2e] missing PICO_ANTHROPIC_API_KEY, aborted", file=sys.stderr)
+        required_name = API_KEY_ENV_NAMES[config.provider][0]
+        print(f"[live-e2e] missing {required_name}, aborted", file=sys.stderr)
         raise SystemExit(2)
 
 
@@ -193,6 +222,169 @@ class TurnResult:
     error: str | None
     provider_input_messages_len: int
     current_user_content: str
+    usage_complete: bool
+    request_metadata_by_call: tuple[dict, ...]
+    system_cache_keys: tuple[str, ...]
+    action_origins: tuple[str, ...]
+    actual_user_contents: tuple[str, ...]
+    run_id: str
+    task_state_terminal: bool
+    report_terminal: bool
+    trace_terminal: bool
+
+
+_LIVE_USAGE_KEYS = (
+    "input_tokens",
+    "output_tokens",
+    "total_tokens",
+    "cached_tokens",
+    "cache_creation_input_tokens",
+    "cache_read_input_tokens",
+)
+_TERMINAL_STATUSES = {"completed", "stopped", "failed"}
+
+
+def _empty_trace_capture():
+    return {
+        "provider_calls": 0,
+        "usage": {key: 0 for key in _LIVE_USAGE_KEYS},
+        "usage_complete": False,
+        "request_metadata": [],
+        "system_cache_keys": [],
+        "action_origins": [],
+    }
+
+
+def read_turn_trace(trace_path):
+    """Read complete per-call evidence for one persisted run trace."""
+    try:
+        events = [
+            json.loads(line)
+            for line in Path(trace_path).read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return _empty_trace_capture()
+    if not all(isinstance(event, dict) for event in events):
+        return _empty_trace_capture()
+
+    turns = [event for event in events if event.get("event") == "model_turn"]
+    actions = [event for event in events if event.get("event") == "action_decoded"]
+    totals = {key: 0 for key in _LIVE_USAGE_KEYS}
+    usage_complete = bool(turns)
+    request_metadata = []
+    cache_keys = []
+
+    for turn in turns:
+        usage = turn.get("completion_usage")
+        if not isinstance(usage, dict):
+            usage_complete = False
+            usage = {}
+        for required in ("input_tokens", "output_tokens"):
+            value = usage.get(required)
+            if not isinstance(value, int) or isinstance(value, bool):
+                usage_complete = False
+        for key in _LIVE_USAGE_KEYS:
+            value = usage.get(key)
+            if isinstance(value, int) and not isinstance(value, bool):
+                totals[key] += value
+
+        metadata = turn.get("request_metadata")
+        if not isinstance(metadata, dict):
+            usage_complete = False
+            metadata = {}
+        request_metadata.append(dict(metadata))
+        cache_key = metadata.get("system_cache_key", "")
+        cache_keys.append(cache_key if isinstance(cache_key, str) else "")
+
+    return {
+        "provider_calls": len(turns),
+        "usage": totals,
+        "usage_complete": usage_complete,
+        "request_metadata": request_metadata,
+        "system_cache_keys": cache_keys,
+        "action_origins": [
+            str(event.get("origin", ""))
+            for event in actions
+            if event.get("origin")
+        ],
+    }
+
+
+def _terminal_payload(payload):
+    if not isinstance(payload, dict):
+        return False
+    stop_reason = payload.get("stop_reason")
+    return (
+        payload.get("status") in _TERMINAL_STATUSES
+        and isinstance(stop_reason, str)
+        and bool(stop_reason.strip())
+    )
+
+
+def read_run_terminal_status(run_store, task_state):
+    """Return ``(run_id, task_state_terminal, report_terminal, trace_terminal)``."""
+    if task_state is None:
+        return "", False, False, False
+    run_id = str(getattr(task_state, "run_id", "") or "")
+    if not run_id:
+        return "", False, False, False
+
+    try:
+        state_payload = json.loads(
+            run_store.task_state_path(task_state).read_text(encoding="utf-8")
+        )
+        task_state_terminal = _terminal_payload(state_payload)
+    except (
+        AttributeError,
+        OSError,
+        TypeError,
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+    ):
+        task_state_terminal = False
+
+    try:
+        report_payload = json.loads(
+            run_store.report_path(task_state).read_text(encoding="utf-8")
+        )
+        report_terminal = _terminal_payload(report_payload)
+    except (
+        AttributeError,
+        OSError,
+        TypeError,
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+    ):
+        report_terminal = False
+
+    try:
+        trace_events = [
+            json.loads(line)
+            for line in run_store.trace_path(task_state).read_text(
+                encoding="utf-8"
+            ).splitlines()
+            if line.strip()
+        ]
+    except (
+        AttributeError,
+        OSError,
+        TypeError,
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+    ):
+        trace_terminal = False
+    else:
+        trace_terminal = all(
+            isinstance(event, dict) for event in trace_events
+        ) and any(event.get("event") == "run_finished" for event in trace_events)
+
+    return (
+        run_id,
+        task_state_terminal,
+        report_terminal,
+        trace_terminal,
+    )
 
 
 class TurnRunner:
@@ -205,103 +397,22 @@ class TurnRunner:
     def __init__(self, pico, config: RunConfig):
         self.pico = pico
         self.config = config
-        self._provider_calls_before = self._count_provider_calls()
-
-    def _count_provider_calls(self) -> int:
-        """Deprecated after refactor to trace-based extraction.
-
-        Retained for interface compat with older tests that construct
-        TurnRunner and expect this method to exist.
-        """
-        return 0
-
-    def _extract_first_prompt_and_counts(self) -> tuple:
-        """Read the current turn's trace and return (metadata_of_first_prompt,
-        current_user_content_of_first_prompt, provider_call_count).
-
-        Returns ``({}, "", 0)`` when the trace can't be read — the caller
-        falls back to ``agent.last_prompt_metadata`` and session inspection.
-        """
-        import json as _json
-
-        run_dir = getattr(self.pico, "current_run_dir", None)
-        if run_dir is None:
-            return ({}, "", 0)
-        trace_path = Path(run_dir) / "trace.jsonl"
-        if not trace_path.exists():
-            return ({}, "", 0)
-
-        first_metadata: dict = {}
-        model_turn_count = 0
-        try:
-            with trace_path.open(encoding="utf-8") as f:
-                for line in f:
-                    try:
-                        ev = _json.loads(line)
-                    except _json.JSONDecodeError:
-                        continue
-                    event = ev.get("event")
-                    if event == "prompt_built" and not first_metadata:
-                        pm = ev.get("prompt_metadata") or {}
-                        first_metadata = dict(pm)
-                        # Extract the current user content from the messages
-                        # embedded in metadata if present; otherwise leave blank.
-                        # ``ContextManager.build_v2`` doesn't put messages in
-                        # metadata, but the outgoing request's last user
-                        # message is what we want. We read session state
-                        # separately after the fact.
-                    elif event == "model_turn":
-                        model_turn_count += 1
-        except OSError:
-            return ({}, "", 0)
-
-        # For current_user_content, prefer the sniffing provider wrapper's
-        # FIRST-call last_user (which is what the provider actually saw
-        # on this turn's first attempt — that's where injection lives).
-        # Fall back to scanning session["messages"] for the newest
-        # string-content user message.
-        current_user_content = ""
-        client = getattr(self.pico, "model_client", None)
-        calls = getattr(client, "calls", None)
-        if isinstance(calls, list) and calls:
-            # Take the first call this turn — we snapshot ``_call_count_before``
-            # on turn entry. In practice: last call whose ts is minimum among
-            # calls we haven't seen yet. Simpler: track a call-count baseline
-            # via ``self._sniff_baseline`` set at run_turn entry.
-            baseline = getattr(self, "_sniff_baseline", 0)
-            new_calls = calls[baseline:]
-            if new_calls:
-                current_user_content = str(new_calls[0].get("last_user_content", ""))
-                # Advance baseline for the next turn.
-                self._sniff_baseline = baseline + len(new_calls)
-        if not current_user_content:
-            messages = list(self.pico.session.get("messages", []) or [])
-            for msg in messages:
-                role = msg.get("role")
-                content = msg.get("content")
-                if role == "user" and isinstance(content, str):
-                    current_user_content = content
-
-        return (first_metadata, current_user_content, model_turn_count)
 
     def run_turn(
         self, turn: int, user_prompt: str, expected_behavior: str
     ) -> TurnResult:
-        """Execute one turn and return a captured TurnResult.
-
-        Multi-attempt turns (agent takes several tool_use rounds before a
-        final answer) build a fresh prompt per attempt. ``agent.last_prompt_metadata``
-        reflects only the *last* attempt, which for the injection/recall
-        checks is misleading — recall's ``recently_recalled`` guard causes
-        recall_memory tokens to go to 0 on attempts 2+ within the same turn.
-        We therefore read the FIRST ``prompt_built`` trace event of the
-        turn's run and use ITS metadata as the ground truth.
-        """
+        """Execute one turn and capture only persisted trace/artifact truth."""
         session_before = len(self.pico.session.get("messages", []))
         started_ns = time.monotonic_ns()
         error: str | None = None
         final_answer = ""
         stopped_at_step_limit = False
+        calls = getattr(self.pico.model_client, "calls", [])
+        sniffer_before = len(calls) if isinstance(calls, list) else 0
+        previous_task_state = getattr(self.pico, "current_task_state", None)
+        previous_run_id = str(
+            getattr(previous_task_state, "run_id", "") or ""
+        )
 
         try:
             final_answer = self.pico.ask(user_prompt)
@@ -309,7 +420,6 @@ class TurnRunner:
             error = f"{type(exc).__name__}: {exc}"
 
         duration_ms = (time.monotonic_ns() - started_ns) // 1_000_000
-        usage = dict(getattr(self.pico.model_client, "last_completion_metadata", {}) or {})
         session_after = len(self.pico.session.get("messages", []))
 
         # detect step-limit stops (no exception, but final answer starts with the
@@ -317,20 +427,42 @@ class TurnRunner:
         if final_answer.startswith("Stopped after"):
             stopped_at_step_limit = True
 
-        # Read the first prompt_built trace event for this turn's run.
-        # If unavailable, fall back to agent.last_prompt_metadata.
-        metadata, current_user_content, provider_calls_this_turn = self._extract_first_prompt_and_counts()
-
-        if not metadata:
-            metadata = dict(getattr(self.pico, "last_prompt_metadata", {}) or {})
-        if not current_user_content:
-            messages = self.pico.session.get("messages", []) or []
-            if messages:
-                last = messages[-1]
-                if isinstance(last.get("content"), str):
-                    current_user_content = last["content"]
-
-        provider_input_messages_len = int(metadata.get("messages_count", 0))
+        current_task_state = getattr(self.pico, "current_task_state", None)
+        current_run_id = str(
+            getattr(current_task_state, "run_id", "") or ""
+        )
+        task_state = (
+            current_task_state
+            if current_run_id and current_run_id != previous_run_id
+            else None
+        )
+        captured = (
+            read_turn_trace(self.pico.run_store.trace_path(task_state))
+            if task_state is not None
+            else _empty_trace_capture()
+        )
+        calls = getattr(self.pico.model_client, "calls", [])
+        new_calls = calls[sniffer_before:] if isinstance(calls, list) else []
+        actual_user_contents = tuple(
+            str(call.get("last_user_content", ""))
+            for call in new_calls
+            if isinstance(call, dict)
+        )
+        request_metadata_by_call = tuple(captured["request_metadata"])
+        metadata = (
+            dict(request_metadata_by_call[0])
+            if request_metadata_by_call
+            else {}
+        )
+        messages_count = metadata.get("messages_count", 0)
+        provider_input_messages_len = (
+            messages_count
+            if isinstance(messages_count, int) and not isinstance(messages_count, bool)
+            else 0
+        )
+        run_id, task_state_terminal, report_terminal, trace_terminal = (
+            read_run_terminal_status(self.pico.run_store, task_state)
+        )
 
         return TurnResult(
             turn=turn,
@@ -340,13 +472,22 @@ class TurnRunner:
             metadata=metadata,
             session_message_count_before=session_before,
             session_message_count_after=session_after,
-            provider_call_count_this_turn=provider_calls_this_turn,
+            provider_call_count_this_turn=captured["provider_calls"],
             duration_ms=duration_ms,
-            usage=usage,
+            usage=captured["usage"],
             stopped_at_step_limit=stopped_at_step_limit,
             error=error,
             provider_input_messages_len=provider_input_messages_len,
-            current_user_content=current_user_content,
+            current_user_content=actual_user_contents[0] if actual_user_contents else "",
+            usage_complete=captured["usage_complete"],
+            request_metadata_by_call=request_metadata_by_call,
+            system_cache_keys=tuple(captured["system_cache_keys"]),
+            action_origins=tuple(captured["action_origins"]),
+            actual_user_contents=actual_user_contents,
+            run_id=run_id,
+            task_state_terminal=task_state_terminal,
+            report_terminal=report_terminal,
+            trace_terminal=trace_terminal,
         )
 
 
@@ -362,6 +503,9 @@ class Assertion:
 
 class AssertionEngine:
     """Turn-scoped hard-assertion engine. Never raises; returns list[Assertion]."""
+
+    def __init__(self, config: RunConfig):
+        self.config = config
 
     def dispatch(self, turn, result: TurnResult, pico, all_results):
         """Route to per-turn check_*.
@@ -443,7 +587,7 @@ class AssertionEngine:
     # -- Turn 2: digest --------------------------------------------------
 
     def check_turn_2_digest(self, result: TurnResult, pico) -> list[Assertion]:
-        """Five assertions verifying digest applied on a large tool_result.
+        """Verify digest application and native per-call trace evidence.
 
         Search is restricted to messages added THIS turn (via the
         session-count-before/after window on ``result``). Within that
@@ -537,6 +681,70 @@ class AssertionEngine:
             expected="_pico_meta.source_hash is a non-empty string",
             actual=source_hash or "(empty)",
         ))
+
+        provider_calls = result.provider_call_count_this_turn
+        out.append(Assertion(
+            name="native_tool_action_observed",
+            passed="native_tool_use" in result.action_origins,
+            expected="native_tool_use in action_origins",
+            actual=str(result.action_origins),
+        ))
+        out.append(Assertion(
+            name="native_tool_roundtrip_uses_multiple_provider_calls",
+            passed=provider_calls >= 2,
+            expected="provider_call_count_this_turn >= 2",
+            actual=str(provider_calls),
+        ))
+        out.append(Assertion(
+            name="turn_usage_complete",
+            passed=result.usage_complete,
+            expected="usage_complete is True",
+            actual=str(result.usage_complete),
+        ))
+
+        actual_user_contents = result.actual_user_contents
+        contents_cover_calls = (
+            provider_calls > 0
+            and len(actual_user_contents) == provider_calls
+        )
+        out.append(Assertion(
+            name="actual_user_contents_cover_every_provider_call",
+            passed=contents_cover_calls,
+            expected="one actual_user_content for each provider call",
+            actual=(
+                f"contents={len(actual_user_contents)}, calls={provider_calls}"
+            ),
+        ))
+        user_prompt_reached = contents_cover_calls and all(
+            result.user_prompt in content and "<system-reminder>" in content
+            for content in actual_user_contents
+        )
+        out.append(Assertion(
+            name="injected_user_prompt_reaches_every_provider_call",
+            passed=user_prompt_reached,
+            expected="each actual user content includes the prompt and <system-reminder>",
+            actual=str(user_prompt_reached),
+        ))
+
+        cache_keys = result.system_cache_keys
+        keys_cover_calls = (
+            provider_calls > 0
+            and len(cache_keys) == provider_calls
+            and all(cache_keys)
+        )
+        out.append(Assertion(
+            name="system_cache_keys_cover_every_provider_call",
+            passed=keys_cover_calls,
+            expected="one non-empty system_cache_key for each provider call",
+            actual=f"keys={len(cache_keys)}, calls={provider_calls}",
+        ))
+        keys_stable = keys_cover_calls and len(set(cache_keys)) == 1
+        out.append(Assertion(
+            name="system_cache_key_stable_within_turn",
+            passed=keys_stable,
+            expected="all system_cache_key values within the turn are identical",
+            actual=str(sorted(set(cache_keys))),
+        ))
         return out
 
     # -- Turn 3: injection drop -----------------------------------------
@@ -599,29 +807,19 @@ class AssertionEngine:
             actual=str(msg_tokens),
         ))
 
-        # pairing invariant: every tool_use.id has a tool_result.tool_use_id
         session_msgs = getattr(pico, "session", {}).get("messages", []) or []
-        tool_use_ids = set()
-        tool_result_ids = set()
-        for msg in session_msgs:
-            content = msg.get("content")
-            if isinstance(content, list):
-                for block in content:
-                    if isinstance(block, dict):
-                        if block.get("type") == "tool_use":
-                            tid = block.get("id")
-                            if tid:
-                                tool_use_ids.add(tid)
-                        elif block.get("type") == "tool_result":
-                            tuid = block.get("tool_use_id")
-                            if tuid:
-                                tool_result_ids.add(tuid)
-        no_orphan = tool_use_ids == tool_result_ids
+        try:
+            validate_messages(session_msgs, require_meta=True)
+            pairing_actual = "valid canonical messages"
+            no_orphan = True
+        except MessageValidationError as exc:
+            pairing_actual = str(exc)
+            no_orphan = False
         out.append(Assertion(
             name="no_orphan_tool_use",
             passed=no_orphan,
-            expected="every kept tool_use.id has matching tool_result",
-            actual=f"tool_use_ids={sorted(tool_use_ids)}, tool_result_ids={sorted(tool_result_ids)}",
+            expected="canonical tool_use/tool_result pairs are immediately adjacent",
+            actual=pairing_actual,
         ))
 
         # drop reached the wire: provider-input messages < session messages
@@ -660,48 +858,50 @@ class AssertionEngine:
             actual=str(breakpoints),
         ))
 
-        # 2. any turn 2-5 usage carried cache tokens
-        cache_seen = False
-        for r in all_results:
-            u = r.usage or {}
-            if int(u.get("cache_read_input_tokens", 0) or 0) > 0:
-                cache_seen = True
-                break
-            if int(u.get("cache_creation_input_tokens", 0) or 0) > 0:
-                cache_seen = True
-                break
+        # Cache-token counters are provider-dependent; per-call keys are the
+        # portable trace evidence required by this harness.
+        cache_keys = [
+            key
+            for item in all_results
+            for key in item.system_cache_keys
+        ]
+        expected_calls = sum(
+            item.provider_call_count_this_turn for item in all_results
+        )
+        keys_present = (
+            expected_calls > 0
+            and len(cache_keys) == expected_calls
+            and all(cache_keys)
+        )
         out.append(Assertion(
-            name="cache_tokens_observed_in_usage",
-            passed=cache_seen,
-            expected="cache_creation OR cache_read tokens > 0 in at least one turn's usage",
-            actual="observed" if cache_seen else "no cache tokens seen",
+            name="system_cache_keys_present_per_call",
+            passed=keys_present,
+            expected="one non-empty system_cache_key per traced provider call",
+            actual=f"keys={len(cache_keys)}, calls={expected_calls}",
         ))
 
-        # 3. system_cache_key identical across all turns
-        cache_keys = {(r.metadata or {}).get("system_cache_key", "") for r in all_results}
-        # empty string counts as "missing" — treat as failure
-        stable = len(cache_keys) == 1 and "" not in cache_keys
+        # 3. system_cache_key identical across every traced call
+        stable = keys_present and len(set(cache_keys)) == 1
         out.append(Assertion(
             name="system_cache_key_stable_across_turns",
             passed=stable,
-            expected="len(set(system_cache_key)) == 1 across all turns, non-empty",
-            actual=str(sorted(cache_keys)),
+            expected="all traced system_cache_key values are identical and non-empty",
+            actual=str(sorted(set(cache_keys))),
         ))
 
-        # 4. metadata completeness — reference the same 15 fields as
-        #    tests/test_metadata_completeness.py
+        # 4. metadata completeness for the retained v3 cache contract.
         required = {
             "system_cache_key", "system_tokens", "tools_tokens",
             "messages_count", "messages_tokens", "cache_control_breakpoints",
             "injection_tokens", "injection_truncated", "injection_dropped",
             "injection_budget", "intent", "recall.error_count",
-            "recall.last_error", "dropped_messages", "prompt_cache_key",
+            "recall.last_error", "dropped_messages",
         }
         missing = required - set(m.keys())
         out.append(Assertion(
             name="metadata_schema_complete",
             passed=not missing,
-            expected="all 15 required metadata fields present",
+            expected="all 14 required metadata fields present",
             actual=("missing: " + str(sorted(missing))) if missing else "all present",
         ))
 
@@ -719,13 +919,101 @@ class AssertionEngine:
         return out
 
     def check_global(self, all_results, pico) -> list[Assertion]:
-        """Two cross-turn budget invariants."""
+        """Cross-turn trace, persistence, terminal, and budget invariants."""
         out = []
+        usage_complete = bool(all_results) and all(
+            result.usage_complete for result in all_results
+        )
+        out.append(Assertion(
+            name="all_turn_usage_complete",
+            passed=usage_complete,
+            expected="every recorded turn has complete trace usage",
+            actual=str(usage_complete),
+        ))
+
+        action_origins = [
+            origin
+            for result in all_results
+            for origin in result.action_origins
+        ]
+        out.append(Assertion(
+            name="native_tool_action_observed",
+            passed="native_tool_use" in action_origins,
+            expected="at least one action_decoded.origin == native_tool_use",
+            actual=str(action_origins),
+        ))
+
+        session = getattr(pico, "session", {})
+        if not isinstance(session, dict):
+            session = {}
+        schema = session.get("schema_version")
+        session_is_v3 = type(schema) is int and schema == 3 and "history" not in session
+        out.append(Assertion(
+            name="in_memory_session_is_v3_without_history",
+            passed=session_is_v3,
+            expected="session.schema_version is int 3 and history is absent",
+            actual=f"schema={schema!r}, has_history={'history' in session}",
+        ))
+
+        messages = session.get("messages", [])
+        try:
+            validate_messages(messages, require_meta=True)
+            messages_valid = True
+            message_actual = "valid canonical messages"
+        except MessageValidationError as exc:
+            messages_valid = False
+            message_actual = str(exc)
+        out.append(Assertion(
+            name="canonical_tool_pairs_immediately_match",
+            passed=messages_valid,
+            expected="validate_messages(messages, require_meta=True) succeeds",
+            actual=message_actual,
+        ))
+
+        terminal = bool(all_results) and all(
+            result.task_state_terminal
+            and result.report_terminal
+            and result.trace_terminal
+            for result in all_results
+        )
+        out.append(Assertion(
+            name="all_turn_artifacts_terminal",
+            passed=terminal,
+            expected="every turn has terminal task_state, report, and trace artifacts",
+            actual=str(terminal),
+        ))
+
+        try:
+            persisted = json.loads(
+                Path(getattr(pico, "session_path")).read_text(encoding="utf-8")
+            )
+            persisted_schema = persisted.get("schema_version")
+            persisted_valid = (
+                type(persisted_schema) is int
+                and persisted_schema == 3
+                and "history" not in persisted
+            )
+            persisted_actual = (
+                f"schema={persisted_schema!r}, has_history={'history' in persisted}"
+            )
+        except (AttributeError, OSError, TypeError, json.JSONDecodeError):
+            persisted_valid = False
+            persisted_actual = "persisted session unreadable"
+        out.append(Assertion(
+            name="persisted_session_is_v3_without_history",
+            passed=persisted_valid,
+            expected="persisted session schema_version is int 3 and history is absent",
+            actual=persisted_actual,
+        ))
+
         total_calls = sum(r.provider_call_count_this_turn for r in all_results)
         out.append(Assertion(
             name="total_provider_calls_under_cap",
-            passed=total_calls <= 15,
-            expected="sum(provider_call_count_this_turn) <= 15",
+            passed=total_calls <= self.config.max_provider_calls,
+            expected=(
+                "sum(provider_call_count_this_turn) <= "
+                f"{self.config.max_provider_calls}"
+            ),
             actual=str(total_calls),
         ))
         total_tokens = 0
@@ -735,8 +1023,11 @@ class AssertionEngine:
             total_tokens += int(u.get("output_tokens", 0) or 0)
         out.append(Assertion(
             name="total_tokens_under_cap",
-            passed=total_tokens <= 200_000,
-            expected="total input+output tokens <= 200,000",
+            passed=total_tokens <= self.config.max_total_tokens,
+            expected=(
+                "total input+output tokens <= "
+                f"{self.config.max_total_tokens:,}"
+            ),
             actual=str(total_tokens),
         ))
         return out
@@ -783,6 +1074,11 @@ class Reporter:
         config: RunConfig,
         totals: dict,
         wall_time_ms: int,
+        *,
+        aborted_reason: str | None,
+        expected_turn_count: int,
+        session_schema: int,
+        git_head: str,
     ) -> Path:
         run_id = f"live-e2e-{time.time_ns()}"
         payload = {
@@ -790,6 +1086,10 @@ class Reporter:
             "run_id": run_id,
             "provider": config.provider,
             "model": config.model,
+            "git_head": git_head,
+            "python_version": sys.version,
+            "session_schema": session_schema,
+            "aborted_reason": aborted_reason or "",
             "wall_time_ms": wall_time_ms,
             "config": {
                 "max_provider_calls": config.max_provider_calls,
@@ -799,6 +1099,13 @@ class Reporter:
             "turns": [self._turn_to_json(r, all_assertions.get(r.turn, [])) for r in all_results],
             "global_assertions": [self._assertion_to_json(a) for a in all_assertions.get("global", [])],
             "totals": totals,
+            "action_origin_summary": dict(
+                Counter(
+                    origin
+                    for result in all_results
+                    for origin in result.action_origins
+                )
+            ),
         }
 
         # assertion summary
@@ -809,8 +1116,24 @@ class Reporter:
                 total += 1
                 if a.passed:
                     passed += 1
-        payload["assertion_summary"] = {"total": total, "passed": passed, "failed": total - passed}
-        payload["overall_pass"] = passed == total
+        payload["assertion_summary"] = {
+            "total": total,
+            "passed": passed,
+            "failed": total - passed,
+        }
+        completed_all_turns = len(all_results) == expected_turn_count
+        turn_assertions_present = all(
+            bool(all_assertions.get(result.turn)) for result in all_results
+        )
+        global_assertions_present = bool(all_assertions.get("global"))
+        payload["overall_pass"] = (
+            aborted_reason is None
+            and completed_all_turns
+            and turn_assertions_present
+            and global_assertions_present
+            and total > 0
+            and total == passed
+        )
 
         report_path = self.output_dir / f"{run_id}.json"
         report_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -827,8 +1150,17 @@ class Reporter:
             "stopped_at_step_limit": r.stopped_at_step_limit,
             "error": r.error,
             "usage": r.usage,
+            "usage_complete": r.usage_complete,
+            "request_metadata_by_call": r.request_metadata_by_call,
+            "system_cache_keys": r.system_cache_keys,
+            "action_origins": r.action_origins,
+            "actual_user_contents": r.actual_user_contents,
+            "run_id": r.run_id,
+            "task_state_terminal": r.task_state_terminal,
+            "report_terminal": r.report_terminal,
+            "trace_terminal": r.trace_terminal,
             "metadata_subset": {
-                k: r.metadata.get(k) for k in [
+                k: (r.metadata or {}).get(k) for k in [
                     "intent", "injection_tokens", "injection_dropped",
                     "injection_budget", "recall.error_count",
                     "dropped_messages", "messages_tokens", "system_cache_key",
@@ -871,8 +1203,6 @@ class Reporter:
 
 def warn_if_dirty_working_tree(root: Path) -> None:
     """Print a warning if `git status` reports uncommitted work. Never aborts."""
-    import subprocess
-
     try:
         result = subprocess.run(
             ["git", "-C", str(root), "status", "--porcelain"],
@@ -902,7 +1232,6 @@ class _SniffingProviderWrapper:
         # Delegate attributes pico's runtime probes
         self.supports_prompt_cache = getattr(inner, "supports_prompt_cache", False)
         self.supports_native_tools = getattr(inner, "supports_native_tools", True)
-        self.last_completion_metadata: dict = {}
 
     def complete_v2(self, *, system, tools, messages, max_tokens, cache_breakpoints=None):
         last_user = ""
@@ -914,34 +1243,25 @@ class _SniffingProviderWrapper:
                     break
                 # tool_result carriers have list content — skip
         self.calls.append({"last_user_content": last_user, "call_ts_ns": time.monotonic_ns()})
-        resp = self._inner.complete_v2(
+        return self._inner.complete_v2(
             system=system, tools=tools, messages=messages,
             max_tokens=max_tokens, cache_breakpoints=cache_breakpoints,
         )
-        self.last_completion_metadata = dict(getattr(self._inner, "last_completion_metadata", {}) or {})
-        return resp
 
     # Passthrough for legacy calls (FallbackAdapter uses `.complete`).
     def complete(self, *args, **kwargs):
         return self._inner.complete(*args, **kwargs)
 
 
-def _make_anthropic_client(config: RunConfig):
-    """Instantiate a real Anthropic-compatible model client wrapped by a sniffer."""
+def make_live_client(config: RunConfig):
+    """Instantiate the selected Anthropic-compatible live client."""
     from pico.providers.anthropic_compatible import AnthropicCompatibleModelClient
 
-    api_key = os.environ.get("PICO_ANTHROPIC_API_KEY", "")
-    # Pico's canonical env var is PICO_ANTHROPIC_API_BASE (see pico/providers/defaults.py:47).
-    # Also accept the alternate name for tolerance.
-    base_url = (
-        os.environ.get("PICO_ANTHROPIC_API_BASE")
-        or os.environ.get("PICO_ANTHROPIC_BASE_URL")
-        or "https://api.anthropic.com"
-    )
+    settings = provider_settings(config.provider)
     inner = AnthropicCompatibleModelClient(
         model=config.model,
-        base_url=base_url,
-        api_key=api_key,
+        base_url=settings["base_url"],
+        api_key=settings["api_key"],
         temperature=0.0,
         timeout=120,
     )
@@ -950,6 +1270,8 @@ def _make_anthropic_client(config: RunConfig):
 
 def _budget_exceeded(all_results: list, config: RunConfig, wall_start_ns: int) -> str | None:
     """Return a short reason string if any cost guard has fired; else None."""
+    if any(not result.usage_complete for result in all_results):
+        return "usage_unknown"
     total_calls = sum(r.provider_call_count_this_turn for r in all_results)
     if total_calls > config.max_provider_calls:
         return f"max_provider_calls exceeded ({total_calls}>{config.max_provider_calls})"
@@ -1004,9 +1326,9 @@ def do_reset(repo_root: Path) -> int:
 
 
 def main() -> int:
-    config = parse_args()
-
     repo_root = Path.cwd()
+    load_project_env(repo_root)
+    config = parse_args()
 
     if config.reset:
         return do_reset(repo_root)
@@ -1027,7 +1349,11 @@ def main() -> int:
 
     TURNS = [
         (1, "上次讨论过 cache invariant 的问题，帮我看看这个仓库的 cache 相关代码", "recall_triggered"),
-        (2, "读一下 pico/runtime.py 完整内容并告诉我它主要做什么", "digest_applied"),
+        (
+            2,
+            "Use the API-provided native read_file tool to read pico/runtime.py, then summarize it. Do not emit XML tool text.",
+            "native_tool_roundtrip",
+        ),
         (3, "再看一下 pico/context_manager.py", "injection_dropped"),
         (4, "总结一下我们目前讨论的所有内容", "history_dropped"),
         (5, "最后 done", "cache_anchor_verified"),
@@ -1040,7 +1366,7 @@ def main() -> int:
         from pico.session_store import SessionStore
         from pico.workspace import WorkspaceContext
 
-        model_client = _make_anthropic_client(config)
+        model_client = make_live_client(config)
         workspace = WorkspaceContext.build(repo_root)
         session_store = SessionStore(repo_root / ".pico" / "sessions")
         try:
@@ -1057,7 +1383,7 @@ def main() -> int:
 
         runner = TurnRunner(pico, config)
         reporter = Reporter(config, repo_root / "benchmarks" / "live_e2e" / "results")
-        engine = AssertionEngine()
+        engine = AssertionEngine(config)
 
         all_results: list = []
         all_assertions: dict = {}
@@ -1106,7 +1432,23 @@ def main() -> int:
         }
 
         wall_time_ms = (time.monotonic_ns() - wall_start) // 1_000_000
-        report_path = reporter.write_json(all_results, all_assertions, config, totals, wall_time_ms)
+        git_head = subprocess.run(
+            ["git", "-C", str(repo_root), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        report_path = reporter.write_json(
+            all_results,
+            all_assertions,
+            config,
+            totals,
+            wall_time_ms,
+            aborted_reason=aborted_reason,
+            expected_turn_count=len(TURNS),
+            session_schema=int(pico.session.get("schema_version", 0)),
+            git_head=git_head,
+        )
 
         # Compute overall pass
         total_asserts = 0
@@ -1116,7 +1458,9 @@ def main() -> int:
                 total_asserts += 1
                 if a.passed:
                     passed_asserts += 1
-        overall_pass = (passed_asserts == total_asserts) and aborted_reason is None
+        overall_pass = bool(
+            json.loads(report_path.read_text(encoding="utf-8"))["overall_pass"]
+        )
 
         reporter.render_final(
             overall_pass=overall_pass,
