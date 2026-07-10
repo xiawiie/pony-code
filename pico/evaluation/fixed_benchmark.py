@@ -9,6 +9,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from ..features import memory as memorylib
+from ..messages import validate_messages
 from ..providers.clients import FakeModelClient
 from ..runtime import Pico, SessionStore
 from ..run_store import RunStore
@@ -288,12 +289,14 @@ class BenchmarkEvaluator:
         )
         _apply_task_setup(agent, task, fixture_copy_root)
 
-        initial_history_empty = len(agent.session["history"]) == 0
+        initial_messages_empty = len(agent.session.get("messages", [])) == 0
         initial_task_summary_empty = not agent.memory.task_summary
         initial_episodic_notes_empty = True
         initial_memory_empty = initial_task_summary_empty and not agent.memory.recent_files
 
         final_answer = agent.ask(_agent_prompt_for_task(task))
+        validate_messages(agent.session["messages"], require_meta=True)
+        message_invariants_valid = True
         task_state = agent.current_task_state
         run_dir = Path(agent.current_run_dir)
         task_state_path = agent.run_store.task_state_path(task_state)
@@ -356,7 +359,8 @@ class BenchmarkEvaluator:
             "attempts": task_state.attempts,
             "final_answer": final_answer,
             "stop_reason": task_state.stop_reason,
-            "initial_history_empty": initial_history_empty,
+            "initial_messages_empty": initial_messages_empty,
+            "message_invariants_valid": message_invariants_valid,
             "initial_memory_empty": initial_memory_empty,
             "initial_task_summary_empty": initial_task_summary_empty,
             "initial_episodic_notes_empty": initial_episodic_notes_empty,

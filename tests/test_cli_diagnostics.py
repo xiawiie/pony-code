@@ -311,7 +311,7 @@ def test_doctor_unknown_arg_returns_usage_without_agent_or_connectivity(tmp_path
 def test_sessions_list_and_show_json_do_not_build_agent(tmp_path, monkeypatch, capsys):
     session_dir = tmp_path / ".pico" / "sessions"
     session_dir.mkdir(parents=True)
-    (session_dir / "session_1.json").write_text('{"id": "session_1", "history": []}\n', encoding="utf-8")
+    (session_dir / "session_1.json").write_text('{"id":"session_1","schema_version":3,"messages":[]}\n', encoding="utf-8")
 
     def fail_build_agent(args):
         raise AssertionError("sessions must not build a Pico agent")

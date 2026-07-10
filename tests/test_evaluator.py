@@ -72,7 +72,9 @@ def test_run_fixed_benchmark_uses_fresh_fixture_copy_and_fresh_run_directory(tmp
     assert run_dir.exists()
     assert not row["fixture_copy_relpath"].startswith("/")
     assert not row["run_dir_relpath"].startswith("/")
-    assert row["initial_history_empty"] is True
+    assert row["initial_messages_empty"] is True
+    assert row["message_invariants_valid"] is True
+    assert "initial_history_empty" not in row
     assert row["initial_memory_empty"] is True
     assert row["initial_task_summary_empty"] is True
     assert Path("tests/fixtures/bench_repo_patch/sample.txt").read_text(encoding="utf-8") == original_fixture
