@@ -307,3 +307,6 @@ Task 11: complete (commit aef10f2, independent review clean)
 Task 12: complete (commits d9e127e + 5a50e2e, independent review clean after one interrupt-lifecycle fix)
   plan scope corrections: c3c8c25 early-return fail-safe metadata; 971de12 lifecycle-wide Ctrl-C closure
   verification: 91 passed task gate; full check passed
+Task 13: complete (commit 696ba92, independent review clean)
+  plan scope correction: 1938002 start-boundary, pair single-exit, checkpoint persistence, and finalizer evidence coverage
+  verification: 54 passed task gate; 766 passed full check
