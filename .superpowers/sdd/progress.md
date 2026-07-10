@@ -310,3 +310,6 @@ Task 12: complete (commits d9e127e + 5a50e2e, independent review clean after one
 Task 13: complete (commit 696ba92, independent review clean)
   plan scope correction: 1938002 start-boundary, pair single-exit, checkpoint persistence, and finalizer evidence coverage
   verification: 54 passed task gate; 766 passed full check
+Task 14: complete (commits 4fd92aa + 4cc477d, independent review clean after one schema-contract fix)
+  plan scope corrections: 7331db0 locked/redactor/tempfile semantics; 76821ff legacy consumer migration; 5496ed9 v3 runtime bridge/data-shape coverage
+  verification: 106 passed SessionStore transaction gate; 790 passed full check
