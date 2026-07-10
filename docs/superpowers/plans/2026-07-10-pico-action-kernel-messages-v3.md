@@ -4372,8 +4372,8 @@ git commit -m "fix(runtime): close every started run terminally"
 - Modify: `pico/runtime.py`
 - Modify: `tests/test_session_store.py`
 - Modify: `tests/test_session_store_migrator.py`
-- Modify: `tests/test_file_lock.py`
 - Modify: `tests/test_pico.py`
+- Modify: `tests/test_p1_smoke.py`
 
 **Interfaces:**
 
@@ -4752,12 +4752,12 @@ text entry and one legacy tool entry with matching name, args, and result.
 
 - [ ] **Step 7: Replace old v1→v2 tests with v1/v2→v3 tests**
 
-Delete assertions against `_migrate_v1_to_v2` and the `.v1.<timestamp>.json` exact old filename. Preserve tests for created_at and matching generated IDs through `migrate_session_to_v3` and the new `.v1.*.json`/`.v2.*.json` patterns.
+Delete assertions against `_migrate_v1_to_v2` and the `.v1.<timestamp>.json` exact old filename. Preserve tests for created_at and matching generated IDs through `migrate_session_to_v3` and the new `.v1.*.json`/`.v2.*.json` patterns. Migrate the sole external helper consumer in `tests/test_p1_smoke.py` from `_migrate_v1_to_v2` to `migrate_session_to_v3`; do not retain a compatibility wrapper.
 
 - [ ] **Step 8: Run the SessionStore transaction gate**
 
 ```bash
-uv run pytest tests/test_session_store.py tests/test_session_store_migrator.py tests/test_file_lock.py tests/test_pico.py tests/test_runtime_report.py -q
+uv run pytest tests/test_session_store.py tests/test_session_store_migrator.py tests/test_file_lock.py tests/test_pico.py tests/test_runtime_report.py tests/test_p1_smoke.py -q
 ```
 
 Expected: all pass; repeated v3 load does not change mtime or create a backup.
@@ -4765,7 +4765,7 @@ Expected: all pass; repeated v3 load does not change mtime or create a backup.
 - [ ] **Step 9: Commit locked v3 migration**
 
 ```bash
-git add pico/session_store.py pico/runtime.py tests/test_session_store.py tests/test_session_store_migrator.py tests/test_file_lock.py tests/test_pico.py
+git add pico/session_store.py pico/runtime.py tests/test_session_store.py tests/test_session_store_migrator.py tests/test_pico.py tests/test_p1_smoke.py
 git commit -m "feat(session): activate atomic v3 migration"
 ```
 
