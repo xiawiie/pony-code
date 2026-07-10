@@ -17,9 +17,9 @@
 - Use test-driven development: add the focused failing test, run it and confirm the stated failure, implement the smallest change, rerun the focused test, then run the phase gate.
 - Do not use tests or benchmark setup through `Pico.record()` or `Pico.record_message()`. Seed valid canonical messages directly with `_pico_meta`.
 - Do not read Provider `last_completion_metadata` in `AgentLoop`, report generation, TurnRunner, or live cost accounting. Completion truth comes from each `Response.usage`.
-- Do not persist injected user text, retry feedback, wire metadata, ignored native calls, thinking blocks, or a `history` mirror.
+- The completed v3 runtime must not persist injected user text, retry feedback, wire metadata, ignored native calls, thinking blocks, or a `history` mirror. Before Task 15, the only plan-explicit transitional exceptions are the existing v2 `history` mirror (kept only so pre-cutover sessions remain readable, with no migrated consumer depending on it) and Task 8's temporary retry notice, which Task 9 replaces with one-shot request feedback. Do not introduce any other persisted copy.
 - Preserve user-owned untracked files. Stage and commit only paths named by the current task.
-- Run all commands from `/Users/wei/Desktop/pico`.
+- Run all commands from the active isolated worktree `/Users/wei/Desktop/pico/.worktrees/action-kernel-messages-v3`.
 - Do not run a real API command until every local gate in Task 18 passes.
 - For the real gate, run exactly one explicitly selected Provider. Prefer `deepseek` when its canonical key is configured; otherwise use `anthropic`. Never run both as a matrix.
 
@@ -1195,6 +1195,17 @@ def test_unknown_history_role_fails_without_mutating_input():
     assert source == before
 
 
+def test_empty_v1_history_migrates_to_empty_v3_messages():
+    migrated = migrate_session_to_v3({
+        "id": "empty",
+        "schema_version": 1,
+        "history": [],
+    })
+    assert migrated["schema_version"] == 3
+    assert migrated["messages"] == []
+    assert "history" not in migrated
+
+
 def test_v3_is_validated_and_returned_without_history():
     source = {"id": "s3", "schema_version": 3, "messages": _valid_v2_messages()}
     assert migrate_session_to_v3(source) == source
@@ -1339,6 +1350,13 @@ def migrate_session_to_v3(session):
         if isinstance(history, list) and history:
             selected = _history_to_messages(history)
         elif isinstance(messages, list) and not messages:
+            selected = []
+        elif (
+            version == 1
+            and "history" in migrated
+            and isinstance(history, list)
+            and not history
+        ):
             selected = []
         else:
             raise SessionMigrationError("session has no valid transcript")
@@ -2374,6 +2392,7 @@ git commit -m "refactor(action-kernel): route all model output through codec"
 - Modify: `pico/context/intent.py`
 - Modify: `pico/prompt_prefix.py`
 - Modify: `pico/runtime.py`
+- Modify: `pico/evaluation/experiments_synthetic.py`
 - Modify: `benchmarks/perf/bench_build_v2.py`
 - Modify: `tests/test_context_manager.py`
 - Modify: `tests/test_context_manager_v2.py`
@@ -2716,7 +2735,7 @@ Expected: no production or active-test hits. Historical docs are outside this co
 - [ ] **Step 13: Commit request-loop convergence**
 
 ```bash
-git add pico/agent_loop.py pico/context_manager.py pico/context/intent.py pico/prompt_prefix.py pico/runtime.py benchmarks/perf/bench_build_v2.py tests/test_context_manager.py tests/test_context_manager_v2.py tests/test_context_manager_injection.py tests/test_agent_loop_injection_sent.py tests/test_metadata_completeness.py tests/test_runtime_report.py tests/memory/test_prompt_layout.py
+git add pico/agent_loop.py pico/context_manager.py pico/context/intent.py pico/prompt_prefix.py pico/runtime.py pico/evaluation/experiments_synthetic.py benchmarks/perf/bench_build_v2.py tests/test_context_manager.py tests/test_context_manager_v2.py tests/test_context_manager_injection.py tests/test_agent_loop_injection_sent.py tests/test_metadata_completeness.py tests/test_runtime_report.py tests/memory/test_prompt_layout.py
 git commit -m "refactor(context): freeze turn request view"
 ```
 
@@ -4132,11 +4151,21 @@ git commit -m "feat(session): activate atomic v3 migration"
 - Modify: `pico/agent_loop.py`
 - Modify: `pico/messages.py`
 - Modify: `pico/cli_commands.py`
+- Modify: `pico/evaluation/experiments_real.py`
+- Modify: `pico/evaluation/experiments_synthetic.py`
+- Modify: `pico/evaluation/experiments_recovery.py`
+- Modify: `pico/evaluation/fixed_benchmark.py`
+- Modify: `pico/evaluation/metrics_reports.py`
+- Modify: `pico/evaluation/provider_benchmark.py`
+- Modify: `benchmarks/perf/bench_build_v2.py`
 - Modify: `pyproject.toml`
+- Modify: `tests/e2e/test_full_turn_roundtrip.py`
 - Modify: `tests/test_pico.py`
 - Modify: `tests/test_agent_loop_v2_shape.py`
 - Modify: `tests/test_agent_loop_digest.py`
+- Modify: `tests/test_context_manager.py`
 - Modify: `tests/test_config_context.py`
+- Modify: `tests/test_run_store.py`
 - Modify: `tests/test_runtime_report.py`
 - Modify: `tests/test_safety_invariants.py`
 - Modify: `tests/memory/test_runtime_wiring.py`
@@ -4356,7 +4385,7 @@ agent.session["messages"].append({
 
 or `make_tool_pair` for tool events. Save once with `agent.session_store.save(agent.session)` only when the test explicitly exercises disk reload.
 
-The active files expected in this sweep are `tests/test_pico.py`, `tests/test_agent_loop_v2_shape.py`, `tests/test_agent_loop_digest.py`, `tests/test_config_context.py`, `tests/test_runtime_report.py`, `tests/test_safety_invariants.py`, `tests/memory/test_runtime_wiring.py`, and benchmark/evaluation setup left after Tasks 6–10.
+The named sweep scope is the complete Task 15 **Files** list above. If this scan finds a prohibited reference in any other path, stop and amend the plan before editing or staging that path.
 
 - [ ] **Step 10: Run the structural deletion gate**
 
@@ -4383,7 +4412,9 @@ Expected: Ruff passes; all pytest tests pass with zero legacy skips.
 - [ ] **Step 12: Commit v3 cutover and deletions**
 
 ```bash
-git add pico/runtime.py pico/agent_loop.py pico/messages.py pico/cli_commands.py pyproject.toml tests/test_pico.py tests/test_agent_loop_v2_shape.py tests/test_agent_loop_digest.py tests/test_config_context.py tests/test_runtime_report.py tests/test_safety_invariants.py tests/memory/test_runtime_wiring.py tests/test_clean_up.py
+git add pico/runtime.py pico/agent_loop.py pico/messages.py pico/cli_commands.py pyproject.toml
+git add pico/evaluation/experiments_real.py pico/evaluation/experiments_synthetic.py pico/evaluation/experiments_recovery.py pico/evaluation/fixed_benchmark.py pico/evaluation/metrics_reports.py pico/evaluation/provider_benchmark.py benchmarks/perf/bench_build_v2.py
+git add tests/e2e/test_full_turn_roundtrip.py tests/test_pico.py tests/test_agent_loop_v2_shape.py tests/test_agent_loop_digest.py tests/test_context_manager.py tests/test_config_context.py tests/test_run_store.py tests/test_runtime_report.py tests/test_safety_invariants.py tests/memory/test_runtime_wiring.py tests/test_clean_up.py
 git add -u pico/model_output_parser.py pico/providers/message_utils.py tests/test_model_output_parser.py tests/test_provider_message_utils.py
 git commit -m "refactor(session): cut runtime over to messages v3"
 ```
