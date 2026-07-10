@@ -3,6 +3,7 @@
 import json
 import os
 import re
+import stat
 import sys
 import tempfile
 import urllib.parse
@@ -87,7 +88,10 @@ def _parse_env_line(line):
     name = name.strip()
     if not ENV_KEY_PATTERN.match(name):
         raise ValueError("invalid .env variable name")
-    return name, _strip_quotes(_strip_inline_comment(value))
+    value = _strip_quotes(_strip_inline_comment(value))
+    if any(char in value for char in ("\0", "\r", "\n")):
+        raise ValueError("invalid control character in .env value")
+    return name, value
 
 
 def project_env_path(workspace_root):
@@ -240,6 +244,12 @@ def write_project_env_assignments(workspace_root, assignments):
                 handle.write(content)
                 handle.flush()
                 os.fsync(handle.fileno())
+            try:
+                current = temp_path.lstat()
+            except OSError:
+                raise ValueError("project env temp changed") from None
+            if not stat.S_ISREG(current.st_mode) or (current.st_dev, current.st_ino) != identity:
+                raise ValueError("project env temp changed")
             temp_path.replace(env_path)
             env_path.chmod(0o600, follow_symlinks=False)
             _fsync_directory(root)

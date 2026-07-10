@@ -48,6 +48,34 @@ def test_project_env_quoted_codec_round_trips_special_values(tmp_path, value):
     assert read_project_env(tmp_path, warn=False)["PICO_TEST_SECRET"] == value
 
 
+def test_project_env_rejects_control_characters_after_decoding(tmp_path, monkeypatch, capsys):
+    sentinel = "opaque-control-value-123456789"
+    invalid_names = (
+        "PICO_JSON_NUL",
+        "PICO_JSON_NEWLINE",
+        "PICO_JSON_CARRIAGE_RETURN",
+        "PICO_UNQUOTED_NUL",
+    )
+    (tmp_path / ".env").write_text(
+        f'PICO_JSON_NUL="{sentinel}\\u0000tail"\n'
+        f'PICO_JSON_NEWLINE="{sentinel}\\ntail"\n'
+        f'PICO_JSON_CARRIAGE_RETURN="{sentinel}\\rtail"\n'
+        f"PICO_UNQUOTED_NUL={sentinel}\0tail\n"
+        "PICO_PROVIDER=deepseek\n",
+        encoding="utf-8",
+    )
+    for name in invalid_names:
+        monkeypatch.delenv(name, raising=False)
+
+    parsed = read_project_env(tmp_path)
+
+    assert parsed == {"PICO_PROVIDER": "deepseek"}
+    loaded = load_project_env(tmp_path, warn=False)
+    assert loaded == {"PICO_PROVIDER": "deepseek"}
+    assert all(name not in os.environ for name in invalid_names)
+    assert sentinel not in capsys.readouterr().err
+
+
 def test_project_env_replace_failure_preserves_original(tmp_path, monkeypatch):
     env_path = tmp_path / ".env"
     env_path.write_bytes(b"PICO_PROVIDER=deepseek\n")
@@ -151,6 +179,35 @@ def test_project_env_temp_fsync_failure_preserves_original(tmp_path, monkeypatch
     with pytest.raises(OSError, match="temp fsync failed"):
         write_project_env_assignments(tmp_path, {"PICO_PROVIDER": "anthropic"})
     assert env_path.read_bytes() == original
+
+
+def test_project_env_rejects_swapped_temp_inode_before_replace(tmp_path, monkeypatch):
+    env_path = tmp_path / ".env"
+    original = b"PICO_PROVIDER=deepseek\n"
+    env_path.write_bytes(original)
+    outside = tmp_path.parent / f"{tmp_path.name}-outside-swap"
+    outside_bytes = b"PICO_PROVIDER=outside\n"
+    outside.write_bytes(outside_bytes)
+    real_fsync = os.fsync
+    swapped = {}
+
+    def swap_temp_after_fsync(fd):
+        real_fsync(fd)
+        if swapped:
+            return
+        temp_path = next(tmp_path.glob(".pico-env-*"))
+        temp_path.unlink()
+        os.link(outside, temp_path)
+        swapped["path"] = temp_path
+
+    monkeypatch.setattr(os, "fsync", swap_temp_after_fsync)
+
+    with pytest.raises(ValueError, match="project env temp changed"):
+        write_project_env_assignments(tmp_path, {"PICO_PROVIDER": "anthropic"})
+
+    assert env_path.read_bytes() == original
+    assert outside.read_bytes() == outside_bytes
+    assert swapped["path"].samefile(outside)
 
 
 @pytest.mark.parametrize(
