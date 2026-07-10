@@ -316,3 +316,7 @@ Task 14: complete (commits 4fd92aa + 4cc477d, independent review clean after one
 Task 15: complete (commit 44fe805, independent review clean)
   plan scope correction: 6f064aa adds bridge-test removal, direct strip_pico_meta import, v3 wording/dead constant cleanup, and Task16 harness boundary
   verification: 175 passed focused gate; 8 structural deletion checks clean; 204 passed independent review slice; 780 passed full check
+Task 16: complete (commit dc74761, independent review approved)
+  plan scope corrections: da1300a hardens the entirely-offline trace/artifact contract; ef11916 removes the deleted prompt_cache_key alias from the live metadata gate
+  review fixes: strict string stop reasons; independently attributed artifact flags; no reuse of a previous run's evidence after pre-run failure
+  verification: 48 offline live-harness tests; Ruff, py_compile, diff/structural checks clean; 780 passed full check
