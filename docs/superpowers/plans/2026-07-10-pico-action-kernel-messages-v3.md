@@ -6054,9 +6054,15 @@ Expected: no uncommitted tracked implementation/evidence file. Do not commit, de
   inspecting the constructor arguments. This narrow test may enter `main()`
   past reset because it cannot make a model or network call; it supersedes the
   earlier reset-only test constraint for this one regression.
-- After the repair passes all local gates and independent review, run one
-  additional verification process with the same selected DeepSeek Provider.
-  Do not switch to Anthropic, run a matrix, or retry again.
+- After the attribution repair passed all local gates and independent review,
+  one verification process ran with the same selected DeepSeek Provider; it
+  did not switch to Anthropic or run a matrix.
+- That repair process passed every functional assertion but made 16 calls
+  against the 15-call safety cap. Turn 1 alone made seven calls because
+  rejected repeats do not consume tool steps and `max_steps=3` permits up to
+  nine attempts. Keep the 15-call cap and reduce this dedicated harness to
+  `max_steps=2`; do not loosen the budget. After local tests and review, run
+  one final same-Provider verification and do not retry after it.
 
 - [ ] **Step 1: Select one configured Provider without printing a key**
 
@@ -6073,7 +6079,7 @@ Expected: prints/selects exactly one safe Provider name. It never prints a crede
 uv run python -m benchmarks.live_e2e.run_live_session --provider "$PROVIDER"
 ```
 
-Expected: exit 0, all turns completed, non-empty assertions all passed, no abort reason, and at least one native `read_file` action. Do not run the other Provider afterward. After the recorded first-run failure, the execution correction permits exactly one same-Provider verification run.
+Expected: exit 0, all turns completed, non-empty assertions all passed, no abort reason, and at least one native `read_file` action. Do not run the other Provider afterward. The execution correction records the first attribution failure and the second budget-only failure, then permits one final same-Provider verification.
 
 - [ ] **Step 3: Validate the newest ignored report**
 
@@ -6096,7 +6102,7 @@ Expected: no leaked fixture backup, no tracked live-result JSON, and no new trac
 
 - [ ] **Step 5: Stop**
 
-Do not run a Provider matrix, retry either Provider again, publish, push, or begin A-stage work. Report the local gate, selected Provider/model, both the retained failed report and the passing report, native action count, call/token totals, and any intentionally retained untracked files.
+Do not run a Provider matrix, retry either Provider again, publish, push, or begin A-stage work. Report the local gate, selected Provider/model, both retained failed reports and the passing report, native action count, call/token totals, and any intentionally retained untracked files.
 
 ---
 
