@@ -320,3 +320,7 @@ Task 16: complete (commit dc74761, independent review approved)
   plan scope corrections: da1300a hardens the entirely-offline trace/artifact contract; ef11916 removes the deleted prompt_cache_key alias from the live metadata gate
   review fixes: strict string stop reasons; independently attributed artifact flags; no reuse of a previous run's evidence after pre-run failure
   verification: 48 offline live-harness tests; Ruff, py_compile, diff/structural checks clean; 780 passed full check
+Task 17: complete (commit bfe6157, independent review approved after provenance fix)
+  plan scope correction: ee8d082 adds semantic evidence assertions, legacy-metadata scans, and evaluator fixture-workspace hygiene
+  review fix: regenerated all evidence from parent ee8d082 so harness runtime.commit_sha exactly matches the evidence commit parent
+  verification: 50 evidence tests; semantic JSON checks; two forbidden-term scans; diff check clean; no real Provider call
