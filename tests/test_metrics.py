@@ -226,6 +226,59 @@ def test_real_memory_request_recorder_captures_actual_native_or_fallback_input()
     assert "record the wire prompt" in existing_fallback.calls[0][1]
 
 
+def test_memory_summary_detector_requires_nonempty_index_bound_line():
+    from pico.evaluation.experiments_synthetic import _prompt_has_reusable_file_summary
+
+    expected_line = "facts.txt -> deploy key is red"
+    indexed_prompt = "\n".join(
+        [
+            "<pico:memory_index>",
+            "Recent working file summaries:",
+            "",
+            expected_line,
+            "</pico:memory_index>",
+        ]
+    )
+    assert _prompt_has_reusable_file_summary(indexed_prompt, expected_line)
+    assert not _prompt_has_reusable_file_summary(indexed_prompt, "")
+
+
+def test_memory_summary_detector_rejects_line_after_closed_index():
+    from pico.evaluation.experiments_synthetic import _prompt_has_reusable_file_summary
+
+    expected_line = "facts.txt -> deploy key is red"
+    assert not _prompt_has_reusable_file_summary(
+        "\n".join(
+            [
+                "<pico:memory_index>",
+                "</pico:memory_index>",
+                "Recent working file summaries:",
+                expected_line,
+            ]
+        ),
+        expected_line,
+    )
+
+
+def test_memory_ablation_reports_no_bootstrap_drop_without_samples():
+    from pico.evaluation.experiments_real import run_real_memory_experiment
+    from pico.evaluation.experiments_synthetic import (
+        run_large_scale_memory_experiment,
+        run_memory_dependency_experiment,
+    )
+
+    variant_sets = (
+        run_memory_dependency_experiment(repetitions=0),
+        run_large_scale_memory_experiment(repetitions=0)["variants"],
+        run_real_memory_experiment(repetitions=0)["variants"],
+    )
+    for variants in variant_sets:
+        assert all(
+            not variant["bootstrap_tool_turn_dropped"]
+            for variant in variants.values()
+        )
+
+
 def test_run_memory_ablation_v2_writes_expected_artifact(tmp_path):
     artifact_path = tmp_path / "artifacts" / "memory-ablation-v2.json"
 

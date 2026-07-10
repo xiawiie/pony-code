@@ -80,14 +80,22 @@ def measure_request_ablation_metrics(agent, user_message):
 def _prompt_has_reusable_file_summary(prompt, expected_working_line):
     marker = "Recent working file summaries:"
     expected_working_line = str(expected_working_line).strip()
+    if not expected_working_line:
+        return False
+    in_memory_index = False
     in_working_summaries = False
     for line in str(prompt).splitlines():
         line = line.strip()
+        if line == "<pico:memory_index>":
+            in_memory_index = True
+            continue
+        if in_memory_index and line == "</pico:memory_index>":
+            return False
+        if not in_memory_index:
+            continue
         if line == marker:
             in_working_summaries = True
             continue
-        if in_working_summaries and line == "</pico:memory_index>":
-            return False
         if in_working_summaries and line == expected_working_line:
             return True
     return False
@@ -246,7 +254,7 @@ def run_memory_dependency_experiment(repetitions=3):
             "avg_tool_steps": _safe_mean(row["tool_steps"] for row in rows),
             "avg_attempts": _safe_mean(row["attempts"] for row in rows),
             "correct_rate": _safe_ratio(sum(1 for row in rows if row["correct"]), len(rows)),
-            "bootstrap_tool_turn_dropped": all(
+            "bootstrap_tool_turn_dropped": bool(rows) and all(
                 row["bootstrap_tool_turn_dropped"] for row in rows
             ),
         }
@@ -348,7 +356,7 @@ def run_large_scale_memory_experiment(repetitions=5):
                 "avg_attempts": _safe_mean(row["attempts"] for row in rows),
                 "correct_rate": _safe_ratio(sum(1 for row in rows if row["correct"]), len(rows)),
                 "memory_hit_rate": _safe_ratio(sum(1 for row in rows if row["repeated_reads"] == 0), len(rows)),
-                "bootstrap_tool_turn_dropped": all(
+                "bootstrap_tool_turn_dropped": bool(rows) and all(
                     row["bootstrap_tool_turn_dropped"] for row in rows
                 ),
             }

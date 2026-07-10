@@ -173,7 +173,7 @@ def run_real_memory_experiment(provider="gpt", repetitions=1):
                 "avg_tool_steps": _safe_mean(row["tool_steps"] for row in rows),
                 "avg_attempts": _safe_mean(row["attempts"] for row in rows),
                 "correct_rate": _safe_ratio(sum(1 for row in rows if row["correct"]), len(rows)),
-                "bootstrap_tool_turn_dropped": all(
+                "bootstrap_tool_turn_dropped": bool(rows) and all(
                     row["bootstrap_tool_turn_dropped"] for row in rows
                 ),
             }
