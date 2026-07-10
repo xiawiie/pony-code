@@ -2854,6 +2854,7 @@ git commit -m "refactor(context): freeze turn request view"
 - Modify: `pico/context/sources.py`
 - Modify: `pico/evaluation/experiments_synthetic.py`
 - Modify: `pico/evaluation/experiments_real.py`
+- Modify: `pico/evaluation/metrics_experiments.py`
 - Modify: `tests/test_context_sources.py`
 - Modify: `tests/test_agent_loop_injection_sent.py`
 - Modify: `tests/test_metrics.py`
@@ -2864,6 +2865,7 @@ git commit -m "refactor(context): freeze turn request view"
 - `render_memory_index(agent, budget_tokens) -> str | None` keeps its signature.
 - Output may contain durable `Memory files:` and/or `Recent working file summaries:`.
 - Working summaries are included only when the existing `memory` feature is enabled and only for paths in `agent.memory.recent_files`.
+- If a working summary exists, its marker and line are reserved ahead of durable memory entries so a full durable index cannot suppress it.
 - Memory-ablation rows add `bootstrap_tool_turn_dropped: bool`.
 
 - [ ] **Step 1: Add source and lifecycle tests**
@@ -2899,6 +2901,28 @@ def test_memory_index_omits_working_summaries_when_memory_is_off(tmp_path):
     agent.feature_flags["memory"] = False
     text = render_memory_index(agent, budget_tokens=200)
     assert text is None or "Recent working file summaries:" not in text
+
+
+def test_memory_index_reserves_working_summary_when_durable_index_overflows(tmp_path):
+    agent = build_agent(tmp_path)
+    agent.memory.remember_file("README.md")
+    agent._sync_working_memory()
+    set_file_summary_dict(
+        agent.session["memory"]["file_summaries"],
+        "README.md",
+        "project entry point",
+        workspace_root=agent.root,
+    )
+    agent.memory_store = MagicMock()
+    agent.memory_store.list.return_value = [
+        MagicMock(path=f"notes/{index}.md", size_chars=1000, first_line="x" * 80)
+        for index in range(30)
+    ]
+
+    text = render_memory_index(agent, budget_tokens=60)
+
+    assert "Recent working file summaries:" in text
+    assert "README.md -> project entry point" in text
 ```
 
 Add a two-turn test to `tests/test_agent_loop_injection_sent.py`:
@@ -2961,12 +2985,12 @@ def render_memory_index(agent, budget_tokens):
         except Exception as exc:
             logger.debug("memory_index source failed: %s", exc)
 
-    lines = []
+    durable_lines = []
     if entries:
-        lines.append("Memory files:")
+        durable_lines.append("Memory files:")
         for entry in entries:
             first = (getattr(entry, "first_line", "") or "")[:80]
-            lines.append(
+            durable_lines.append(
                 f"- {entry.path} ({entry.size_chars} chars) {first}"
             )
 
@@ -2987,14 +3011,26 @@ def render_memory_index(agent, budget_tokens):
             if summary:
                 working_lines.append(f"{path} -> {summary}")
         if working_lines:
-            if lines:
-                lines.append("")
-            lines.append("Recent working file summaries:")
-            lines.extend(working_lines)
+            working_text = "\n".join(
+                ["Recent working file summaries:", *working_lines]
+            )
+        else:
+            working_text = ""
+    else:
+        working_text = ""
 
-    if not lines:
+    durable_text = "\n".join(durable_lines)
+    if not durable_text and not working_text:
         return None
-    return _tail_clip("\n".join(lines), _budget_to_chars(budget_tokens))
+    char_budget = _budget_to_chars(budget_tokens)
+    if not working_text:
+        return _tail_clip(durable_text, char_budget)
+    if len(working_text) >= char_budget:
+        return _tail_clip(working_text, char_budget)
+    durable_budget = char_budget - len(working_text) - 2
+    if durable_text and durable_budget > 3:
+        return _tail_clip(durable_text, durable_budget) + "\n\n" + working_text
+    return working_text
 ```
 
 Do not add a source, config key, or store read.
@@ -3036,6 +3072,18 @@ Return that boolean in every row and aggregate:
 ```
 
 The fake experiment client must inspect the actual prompt received by its `complete` method and detect `filename -> expected_fact` under `Recent working file summaries:`. It must not inspect `agent.session` or legacy builder metadata.
+Require both the marker and the exact `f"{filename} -> {expected_fact}"` line in the captured prompt; a matching line elsewhere does not count. Apply the canonical filler, captured bootstrap id, and `bootstrap_tool_turn_dropped` row/aggregate to both `_run_memory_variant` / `run_memory_dependency_experiment` and `_run_memory_task_variant` / `run_large_scale_memory_experiment`.
+
+Update the stale private re-export in `pico/evaluation/metrics_experiments.py` to:
+
+```python
+from .experiments_synthetic import (
+    _age_bootstrap_messages as _age_bootstrap_messages,
+)
+```
+
+Do not retain an `_age_bootstrap_read_history` compatibility alias; importing
+`pico.evaluation.metrics` in the Task 10 gate proves the rename remains valid.
 
 - [ ] **Step 5: Remove the memory-ablation skip and assert relative behavior**
 
@@ -3055,7 +3103,7 @@ assert on["memory_hit_rate"] > irrelevant["memory_hit_rate"]
 assert on["correct_rate"] == off["correct_rate"] == irrelevant["correct_rate"] == 1.0
 ```
 
-Apply the same canonical filler, irrelevant recent-file, and bootstrap-drop precondition to `pico/evaluation/experiments_real.py`.
+Apply the same canonical filler, irrelevant recent-file, and bootstrap-drop precondition to `pico/evaluation/experiments_real.py`. Wrap the underlying real provider in a local recording proxy that preserves the provider's native/fallback capability: record `complete_v2` messages when the wrapped client supports it, otherwise record the flattened `complete` prompt. Capture the first actual provider call made by the follow-up `agent.ask()`, and set `bootstrap_tool_turn_dropped` only by checking the captured wire messages/prompt for the non-empty bootstrap tool-use id. A missing id or missing recorded follow-up call is a failing precondition, never a successful `True` value.
 
 - [ ] **Step 6: Run memory correctness gates**
 
@@ -3070,7 +3118,7 @@ Expected: tests pass; memory-quality reports 8/8; one-repetition ablation satisf
 - [ ] **Step 7: Commit working-summary injection and repaired evidence**
 
 ```bash
-git add pico/context/sources.py pico/evaluation/experiments_synthetic.py pico/evaluation/experiments_real.py tests/test_context_sources.py tests/test_agent_loop_injection_sent.py tests/test_metrics.py tests/test_memory_quality_benchmark.py
+git add pico/context/sources.py pico/evaluation/experiments_synthetic.py pico/evaluation/experiments_real.py pico/evaluation/metrics_experiments.py tests/test_context_sources.py tests/test_agent_loop_injection_sent.py tests/test_metrics.py tests/test_memory_quality_benchmark.py
 git commit -m "fix(memory): inject working summaries into sent requests"
 ```
 
