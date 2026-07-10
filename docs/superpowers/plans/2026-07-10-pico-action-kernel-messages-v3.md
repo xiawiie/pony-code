@@ -90,7 +90,7 @@ The implementation is complete only when all fourteen design criteria are true:
 | 5 — runtime integrity | 11–13 | COW pairing, effects, error closure |
 | 6 — v3 cutover and deletion | 14–15 | new and migrated sessions are v3; structural legacy scan empty |
 | 7 — evidence and live harness | 16–17 | offline live tests and current evidence docs pass |
-| 8 — final verification | 18–19 | all local gates, then exactly one real E2E |
+| 8 — final verification | 18–19 | all local gates, then one passing real E2E with the selected Provider; Task 19 retains the failed discovery run |
 
 ---
 
@@ -6025,7 +6025,7 @@ Expected: no uncommitted tracked implementation/evidence file. Do not commit, de
 
 ---
 
-### Task 19: Run Exactly One Real Native-Tool E2E
+### Task 19: Run One Passing Real Native-Tool E2E
 
 **Files:**
 
@@ -6036,7 +6036,27 @@ Expected: no uncommitted tracked implementation/evidence file. Do not commit, de
 
 - Selects `deepseek` when `PICO_DEEPSEEK_API_KEY` is configured after project env loading; otherwise selects `anthropic` when `PICO_ANTHROPIC_API_KEY` is configured.
 - Fails before network access when neither is configured.
-- Executes one harness process and one Provider only.
+- Uses one selected Provider only; the correction below records the failed
+  first process and permits one same-Provider repair verification process.
+
+**Execution correction (2026-07-10, after the first real gate):**
+
+- The first DeepSeek process is retained as failed evidence. Its outer turn-2
+  trace recorded four model calls, while the shared sniffer recorded eight
+  because the unconstrained model invoked `delegate` and the child Pico reused
+  the same model client. This also made the outer-run cost total incomplete.
+- The harness is a native `read_file` gate, not a delegate-accounting gate.
+  Reuse Pico's existing `allowed_tools` boundary and expose only `read_file`
+  in this harness. Do not add a run-attribution subsystem or change general
+  runtime delegate behavior.
+- Add one construction-only offline regression that mocks project setup,
+  Provider creation, and Pico construction, then stops immediately after
+  inspecting the constructor arguments. This narrow test may enter `main()`
+  past reset because it cannot make a model or network call; it supersedes the
+  earlier reset-only test constraint for this one regression.
+- After the repair passes all local gates and independent review, run one
+  additional verification process with the same selected DeepSeek Provider.
+  Do not switch to Anthropic, run a matrix, or retry again.
 
 - [ ] **Step 1: Select one configured Provider without printing a key**
 
@@ -6047,13 +6067,13 @@ test "$PROVIDER" = "deepseek" || test "$PROVIDER" = "anthropic"
 
 Expected: prints/selects exactly one safe Provider name. It never prints a credential.
 
-- [ ] **Step 2: Run the one authorized real E2E**
+- [ ] **Step 2: Run the authorized real E2E / same-Provider repair verification**
 
 ```bash
 uv run python -m benchmarks.live_e2e.run_live_session --provider "$PROVIDER"
 ```
 
-Expected: exit 0, all turns completed, non-empty assertions all passed, no abort reason, and at least one native `read_file` action. Do not run the other Provider afterward.
+Expected: exit 0, all turns completed, non-empty assertions all passed, no abort reason, and at least one native `read_file` action. Do not run the other Provider afterward. After the recorded first-run failure, the execution correction permits exactly one same-Provider verification run.
 
 - [ ] **Step 3: Validate the newest ignored report**
 
@@ -6076,7 +6096,7 @@ Expected: no leaked fixture backup, no tracked live-result JSON, and no new trac
 
 - [ ] **Step 5: Stop**
 
-Do not run a Provider matrix, retry the other Provider for comparison, publish, push, or begin A-stage work. Report the local gate, selected Provider/model, report path, native action count, call/token totals, and any intentionally retained untracked files.
+Do not run a Provider matrix, retry either Provider again, publish, push, or begin A-stage work. Report the local gate, selected Provider/model, both the retained failed report and the passing report, native action count, call/token totals, and any intentionally retained untracked files.
 
 ---
 
