@@ -298,3 +298,7 @@ Task 8: complete (commits 5de00d5..04fe97c, review clean; 68 focused passed)
 Task 9: complete (commits 46f008b + a0f58a3, review clean after one fix round)
   plan scope corrections: 2f68b96 consumer migration; f3977c1 trace/retry coverage
   verification: 153 passed, 1 skipped task gate; 714 passed, 1 skipped full suite
+Task 10: complete (commits 8ed818a + 85f9a7c + 706db9f, review clean after two fix rounds)
+  plan scope corrections: b7f4c0a durable-budget/recorder evidence; 603ef7d summary format;
+  9f37c4d fallback wire truth; 25b40bb ablation edge cases
+  verification: 57 passed focused gate; fake benchmark 8/8; 723 passed full check
