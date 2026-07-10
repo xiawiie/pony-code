@@ -1,8 +1,14 @@
+import copy
 import json
 
 import pytest
 
-from pico.session_store import SessionStore
+from pico.messages import validate_messages
+from pico.session_store import (
+    SessionMigrationError,
+    SessionStore,
+    migrate_session_to_v3,
+)
 
 
 @pytest.fixture
@@ -158,3 +164,153 @@ def test_migrator_idempotent_returns_v2_verbatim():
     # Idempotent — same messages list, unchanged.
     assert result["schema_version"] == 2
     assert result["messages"] == v2["messages"]
+
+
+def _valid_v2_messages():
+    return [
+        {"role": "user", "content": "q", "_pico_meta": {"created_at": "t1"}},
+        {
+            "role": "assistant",
+            "content": [{
+                "type": "tool_use",
+                "id": "toolu_1",
+                "name": "read_file",
+                "input": {"path": "a.py"},
+            }],
+            "_pico_meta": {"created_at": "t2"},
+        },
+        {
+            "role": "user",
+            "content": [{
+                "type": "tool_result",
+                "tool_use_id": "toolu_1",
+                "content": "body",
+            }],
+            "_pico_meta": {"created_at": "t2"},
+        },
+        {
+            "role": "assistant",
+            "content": "done",
+            "_pico_meta": {"created_at": "t3"},
+        },
+    ]
+
+
+def test_v2_prefers_valid_nonempty_messages_and_preserves_nontranscript_state():
+    source = {
+        "id": "s2",
+        "schema_version": 2,
+        "messages": _valid_v2_messages(),
+        "history": [{"role": "user", "content": "stale mirror"}],
+        "working_memory": {"task_summary": "goal", "recent_files": ["a.py"]},
+        "memory": {"file_summaries": {"a.py": {"summary": "fact"}}},
+        "recently_recalled": ["note"],
+        "checkpoints": {"current_id": "c1", "items": {"c1": {}}},
+        "runtime_identity": {"workspace_fingerprint": "fp"},
+        "resume_state": {"status": "full-valid"},
+        "recovery": {"current_checkpoint_id": "r1"},
+    }
+    before = copy.deepcopy(source)
+    migrated = migrate_session_to_v3(source)
+    assert source == before
+    assert migrated["schema_version"] == 3
+    assert "history" not in migrated
+    assert migrated["messages"] == before["messages"]
+    for key in (
+        "working_memory",
+        "memory",
+        "recently_recalled",
+        "checkpoints",
+        "runtime_identity",
+        "resume_state",
+        "recovery",
+    ):
+        assert migrated[key] == before[key]
+    validate_messages(migrated["messages"], require_meta=True)
+
+
+def test_v2_empty_messages_rebuilds_from_nonempty_history():
+    migrated = migrate_session_to_v3({
+        "id": "s2",
+        "schema_version": 2,
+        "messages": [],
+        "history": [
+            {"role": "user", "content": "q", "created_at": "t1"},
+            {
+                "role": "tool",
+                "name": "read_file",
+                "args": {"path": "a.py"},
+                "content": "body",
+                "created_at": "t2",
+            },
+            {"role": "assistant", "content": "done", "created_at": "t3"},
+        ],
+    })
+    assert [message["role"] for message in migrated["messages"]] == [
+        "user", "assistant", "user", "assistant"
+    ]
+    validate_messages(migrated["messages"], require_meta=True)
+
+
+def test_v2_invalid_messages_recovers_from_valid_history():
+    migrated = migrate_session_to_v3({
+        "id": "s2",
+        "schema_version": 2,
+        "messages": [{
+            "role": "assistant",
+            "content": [{
+                "type": "tool_use",
+                "id": "orphan",
+                "name": "x",
+                "input": {},
+            }],
+        }],
+        "history": [{"role": "user", "content": "recover me", "created_at": "t"}],
+    })
+    assert migrated["messages"][0]["content"] == "recover me"
+
+
+def test_unknown_history_role_fails_without_mutating_input():
+    source = {
+        "id": "bad",
+        "schema_version": 1,
+        "history": [{"role": "runtime", "content": "do not skip"}],
+    }
+    before = copy.deepcopy(source)
+    with pytest.raises(SessionMigrationError, match="unknown history role"):
+        migrate_session_to_v3(source)
+    assert source == before
+
+
+def test_empty_v1_history_migrates_to_empty_v3_messages():
+    migrated = migrate_session_to_v3({
+        "id": "empty",
+        "schema_version": 1,
+        "history": [],
+    })
+    assert migrated["schema_version"] == 3
+    assert migrated["messages"] == []
+    assert "history" not in migrated
+
+
+def test_v3_is_validated_and_returned_without_history():
+    source = {"id": "s3", "schema_version": 3, "messages": _valid_v2_messages()}
+    assert migrate_session_to_v3(source) == source
+
+
+def test_v3_with_orphan_is_rejected():
+    with pytest.raises(SessionMigrationError, match="orphan"):
+        migrate_session_to_v3({
+            "id": "s3",
+            "schema_version": 3,
+            "messages": [{
+                "role": "assistant",
+                "content": [{
+                    "type": "tool_use",
+                    "id": "x",
+                    "name": "read_file",
+                    "input": {},
+                }],
+                "_pico_meta": {},
+            }],
+        })

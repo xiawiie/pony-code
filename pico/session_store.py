@@ -1,5 +1,6 @@
 """Session JSON persistence."""
 
+from copy import deepcopy
 import json
 import logging
 import tempfile
@@ -8,8 +9,138 @@ import uuid
 from pathlib import Path
 
 from . import file_lock
+from .messages import MessageValidationError, validate_messages
 
 logger = logging.getLogger("pico")
+
+
+class SessionMigrationError(ValueError):
+    """A legacy session cannot be converted without losing transcript data."""
+
+
+def _history_to_messages(history):
+    if not isinstance(history, list):
+        raise SessionMigrationError("history must be a list")
+    messages = []
+    for entry in history:
+        if not isinstance(entry, dict):
+            raise SessionMigrationError("history entry must be an object")
+        role = entry.get("role")
+        created_at = entry.get("created_at")
+        if role in {"user", "assistant"}:
+            content = entry.get("content")
+            if not isinstance(content, str):
+                raise SessionMigrationError("plain history content must be text")
+            messages.append({
+                "role": role,
+                "content": content,
+                "_pico_meta": {"created_at": created_at} if created_at else {},
+            })
+            continue
+        if role == "tool":
+            name = entry.get("name")
+            arguments = entry.get("args", {})
+            content = entry.get("content")
+            if (
+                not isinstance(name, str)
+                or not name
+                or not isinstance(arguments, dict)
+                or not isinstance(content, str)
+            ):
+                raise SessionMigrationError("invalid tool history entry")
+            tool_use_id = f"toolu_migrated_{uuid.uuid4().hex[:12]}"
+            meta = {"tool_use_id": tool_use_id}
+            if created_at:
+                meta["created_at"] = created_at
+            messages.extend([
+                {
+                    "role": "assistant",
+                    "content": [{
+                        "type": "tool_use",
+                        "id": tool_use_id,
+                        "name": name,
+                        "input": dict(arguments),
+                    }],
+                    "_pico_meta": dict(meta),
+                },
+                {
+                    "role": "user",
+                    "content": [{
+                        "type": "tool_result",
+                        "tool_use_id": tool_use_id,
+                        "content": content,
+                    }],
+                    "_pico_meta": dict(meta),
+                },
+            ])
+            continue
+        raise SessionMigrationError(f"unknown history role: {role!r}")
+    return messages
+
+
+def _normalized_messages(messages):
+    normalized = deepcopy(messages)
+    if isinstance(normalized, list):
+        for message in normalized:
+            if isinstance(message, dict):
+                message.setdefault("_pico_meta", {})
+    validate_messages(normalized, require_meta=True)
+    return normalized
+
+
+def migrate_session_to_v3(session):
+    if not isinstance(session, dict):
+        raise SessionMigrationError("session must be an object")
+    migrated = deepcopy(session)
+    try:
+        version = int(migrated.get("schema_version", 1) or 1)
+    except (TypeError, ValueError) as exc:
+        raise SessionMigrationError("invalid session schema version") from exc
+    if version not in {1, 2, 3}:
+        raise SessionMigrationError(
+            f"unsupported session schema version: {version}"
+        )
+    history = migrated.get("history", [])
+
+    if version == 3:
+        if "history" in migrated:
+            raise SessionMigrationError("v3 session must not contain history")
+        try:
+            validate_messages(migrated.get("messages"), require_meta=True)
+        except MessageValidationError as exc:
+            raise SessionMigrationError(str(exc)) from exc
+        return migrated
+
+    messages = migrated.get("messages")
+    selected = None
+    if isinstance(messages, list) and messages:
+        try:
+            selected = _normalized_messages(messages)
+        except MessageValidationError:
+            selected = None
+    if selected is None:
+        if isinstance(history, list) and history:
+            selected = _history_to_messages(history)
+        elif isinstance(messages, list) and not messages:
+            selected = []
+        elif (
+            version == 1
+            and "history" in migrated
+            and isinstance(history, list)
+            and not history
+        ):
+            selected = []
+        else:
+            raise SessionMigrationError("session has no valid transcript")
+    try:
+        validate_messages(selected, require_meta=True)
+    except MessageValidationError as exc:
+        raise SessionMigrationError(str(exc)) from exc
+
+    migrated["messages"] = selected
+    migrated.pop("history", None)
+    migrated["schema_version"] = 3
+    return migrated
 
 
 def _identity(value):
