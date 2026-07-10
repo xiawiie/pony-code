@@ -1,5 +1,6 @@
 import os
 import shlex
+import subprocess
 import sys
 from unittest.mock import Mock, patch
 
@@ -25,6 +26,53 @@ def build_agent(tmp_path, outputs, **kwargs):
         approval_policy=approval_policy,
         **kwargs,
     )
+
+
+def test_workspace_bootstrap_ignores_workspace_git_from_path(tmp_path, monkeypatch):
+    fake_git = tmp_path / "git"
+    fake_git.write_text("#!/bin/sh\nexit 99\n", encoding="utf-8")
+    fake_git.chmod(0o755)
+    runner = Mock(side_effect=AssertionError("workspace git executed"))
+    monkeypatch.setenv("PATH", str(tmp_path))
+    monkeypatch.setattr("pico.safe_subprocess.subprocess.run", runner)
+
+    workspace = WorkspaceContext.build(tmp_path)
+
+    assert workspace.repo_root == str(tmp_path.resolve())
+    assert workspace.trusted_executables == {}
+    runner.assert_not_called()
+
+
+def test_workspace_bootstrap_uses_hardened_git_and_drops_startup_log(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    child = repo / "src"
+    child.mkdir(parents=True)
+    (repo / ".git").mkdir()
+    calls = []
+
+    def fake_git(executable, args, **kwargs):
+        calls.append((executable, list(args), kwargs))
+        stdout = {
+            ("rev-parse", "--show-toplevel"): str(repo),
+            ("branch", "--show-current"): "topic\n",
+            ("symbolic-ref", "--short", "refs/remotes/origin/HEAD"): "origin/main\n",
+            ("status", "--short"): " M README.md\n",
+        }[tuple(args)]
+        return subprocess.CompletedProcess([executable, *args], 0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr("pico.workspace.run_hardened_git", fake_git)
+    executables = {"git": "/trusted/git", "rg": "/trusted/rg"}
+
+    workspace = WorkspaceContext.build(child, executables=executables)
+
+    assert workspace.repo_root == str(repo.resolve())
+    assert workspace.branch == "topic"
+    assert workspace.status == "M README.md"
+    assert workspace.recent_commits == []
+    assert workspace.trusted_executables == executables
+    assert calls[0][1] == ["rev-parse", "--show-toplevel"]
+    assert calls[0][2]["cwd"] == repo.resolve()
+    assert all(call[1][0] != "log" for call in calls)
 
 
 def test_workspace_escape_is_rejected(tmp_path):
