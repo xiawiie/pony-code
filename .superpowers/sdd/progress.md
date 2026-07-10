@@ -336,3 +336,10 @@ Task 19: complete (commits f2a5730..7217eac, independent repair review approved;
 
 === ACTION KERNEL AND MESSAGES V3 COMPLETE ===
 Tasks 1-19 done. Local full gate: Ruff + 780 pytest. Real native-tool gate: PASS (DeepSeek, 40/40). A-stage security/model-connection work remains excluded by the approved scope.
+
+Final whole-branch review repair: complete (commits 9376b0e + af08808 + b2c0246; final independent review approved; 14/14 completion contract PASS)
+  review correction: 9376b0e records six localized C-contract repairs, related docs/CI truth fixes, and the technical adjudication that the retained live gate proves native-tool/runtime terminal contracts rather than Provider answer quality; Task 19's no-retry boundary remains intact
+  repair wave: af08808 fixes current-turn floor alignment, total/malformed codec behavior, truthful rg status, per-run request metadata reset, non-integer usage-total derivation, pair-save working-memory rollback, and zero injection budget; it also aligns Python/CI and current docs
+  re-review follow-up: b2c0246 rejects reversed/crossed recognized nested tags with a dependency-free stack; final reviewer found no Critical/Important issues and marked the branch Ready to merge
+  controller verification at b2c0246: Ruff + 791 pytest; 8 structural deletion scans; 49 offline live-harness tests; memory-quality 8/8; five-repetition memory ablation (0 vs 60/60 repeated reads, 1.0 vs 0/0 hit rate, all correct 1.0, all bootstrap dropped); perf JSON smokes 3/3/4 scenarios; diff/status clean
+  retained real evidence remains benchmarks/live_e2e/results/live-e2e-1783687362821655000.json at code commit 7217eac: DeepSeek qwen3.7-max, 40/40, schema 3, 6 native actions, 9/15 calls, 8,152 input + 1,674 output + 8,676 cache-read tokens, key scan clean
