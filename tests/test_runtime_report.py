@@ -3,7 +3,6 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
 
 from pico.features import memory as memorylib
 from pico import (

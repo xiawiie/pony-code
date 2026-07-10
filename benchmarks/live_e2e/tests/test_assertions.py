@@ -4,6 +4,7 @@ Tests are offline: no API is called, no fixture writes, no pico repo mutation.
 Populated in Tasks 6-9.
 """
 
+from pathlib import Path
 from unittest.mock import MagicMock
 
 from benchmarks.live_e2e.run_live_session import (
@@ -98,10 +99,6 @@ def test_dispatch_routes_turn_1_to_recall_check():
     result = _turn_result_stub()
     asserts = engine.dispatch(1, result, pico=MagicMock(), all_results=[result])
     assert len(asserts) == 6
-
-
-from pathlib import Path
-
 
 def _turn_2_result_stub(**overrides):
     """Session state includes a tool_result message with digest applied."""
