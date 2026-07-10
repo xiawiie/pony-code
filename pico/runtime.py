@@ -30,7 +30,7 @@ from .run_store import RunStore
 from .session_store import SessionStore, migrate_session_to_v3
 from .tool_change_recorder import ToolChangeRecorder
 from .tool_context import ToolContext
-from .tool_executor import ToolExecutor
+from .tool_executor import ToolExecutionResult, ToolExecutor
 from . import tools as toolkit
 from .config import read_project_env
 from .verification import new_verification_record
@@ -398,6 +398,8 @@ class Pico:
         self.memory_store = BlockStore(
             workspace_root=workspace_memory_root,
             user_root=user_memory_root,
+            redaction_env=self.redaction_env,
+            secret_env_names=self.secret_env_names,
         )
         self.memory_retrieval = Retrieval(
             self.memory_store,
@@ -707,8 +709,12 @@ class Pico:
 
     def execute_tool(self, name, args):
         result = self.tool_executor.execute(name, args)
-        self._last_tool_result_metadata = dict(result.metadata)
-        return result
+        safe_result = ToolExecutionResult(
+            content=self.redact_text(result.content),
+            metadata=self.redact_artifact(result.metadata),
+        )
+        self._last_tool_result_metadata = dict(safe_result.metadata)
+        return safe_result
 
     def record_verification_evidence(
         self,
@@ -867,6 +873,8 @@ class Pico:
             memory_retrieval=self.memory_retrieval,
             repo_map=self.repo_map,
             trusted_executables=self.trusted_executables,
+            redaction_env=self.redaction_env,
+            secret_env_names=self.secret_env_names,
         )
 
     def spawn_delegate(self, args):

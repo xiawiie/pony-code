@@ -4,14 +4,14 @@ Phase 1 只需要极简、可解释的启发式。真实的策略配置放在 pi
 只负责把“类别”和“默认判决”写清楚。
 """
 
+import os
 import re
 import shlex
+import stat
 from pathlib import Path
 
-from pico.recovery_paths import (
-    normalize_workspace_relative_path,
-    resolve_workspace_relative_path,
-)
+from pico import security as securitylib
+from pico.recovery_paths import normalize_workspace_relative_path
 
 # 组合运算符：任何一种都能把“看似安全的第一段”后面拼上任意命令。
 # 早先版本只识别 > >> | && ;，漏掉 || & 后台运行、输入重定向、命令替换等。
@@ -459,7 +459,13 @@ def _looks_binary(sample):
     return textish / len(sample) < 0.85
 
 
-def snapshot_eligibility(workspace_root, raw_path, max_blob_size=DEFAULT_MAX_BLOB_SIZE):
+def snapshot_eligibility(
+    workspace_root,
+    raw_path,
+    max_blob_size=DEFAULT_MAX_BLOB_SIZE,
+    env=None,
+    secret_env_names=(),
+):
     """判断一个 workspace 相对路径是否适合做快照。
 
     Phase 1 的门槛：路径合法、文件存在（或不存在→创建场景也算 eligible）、非目录、
@@ -467,44 +473,101 @@ def snapshot_eligibility(workspace_root, raw_path, max_blob_size=DEFAULT_MAX_BLO
     """
     try:
         normalized = normalize_workspace_relative_path(raw_path)
-    except ValueError as exc:
-        return {"snapshot_eligible": False, "ineligible_reason": "invalid_path", "detail": str(exc), "path": str(raw_path)}
-    try:
-        resolved = resolve_workspace_relative_path(workspace_root, normalized)
-    except ValueError as exc:
-        return {"snapshot_eligible": False, "ineligible_reason": "invalid_path", "detail": str(exc), "path": normalized}
-
-    result = {"snapshot_eligible": True, "ineligible_reason": "", "path": normalized}
-
-    if resolved.is_symlink():
+    except ValueError:
+        return {
+            "snapshot_eligible": False,
+            "ineligible_reason": "invalid_path",
+            "detail": "invalid path",
+            "path": securitylib.redact_text(
+                raw_path,
+                env=env,
+                secret_env_names=secret_env_names,
+            ),
+        }
+    result = {
+        "snapshot_eligible": True,
+        "ineligible_reason": "",
+        "path": normalized,
+    }
+    if securitylib.is_sensitive_path(normalized):
         result["snapshot_eligible"] = False
-        result["ineligible_reason"] = "symlink"
+        result["ineligible_reason"] = "sensitive_path"
         return result
-    if resolved.exists():
-        if resolved.is_dir():
-            result["snapshot_eligible"] = False
-            result["ineligible_reason"] = "directory"
-            return result
-        size = resolved.stat().st_size
-        if size > max_blob_size:
-            result["snapshot_eligible"] = False
-            result["ineligible_reason"] = "file_too_large"
-            return result
-        extension = resolved.suffix.lower()
-        if extension in _BINARY_EXTENSIONS:
-            result["snapshot_eligible"] = False
-            result["ineligible_reason"] = "binary_file"
-            return result
+
+    try:
+        root = Path(workspace_root).resolve(strict=True)
+        candidate = Path(
+            os.path.abspath(os.fspath(root / normalized))
+        )
+        candidate.relative_to(root)
+    except (OSError, ValueError):
+        result["snapshot_eligible"] = False
+        result["ineligible_reason"] = "invalid_path"
+        result["detail"] = "invalid path"
+        return result
+
+    current = root
+    parts = Path(normalized).parts
+    final_mode = root.lstat().st_mode if not parts else None
+    missing = False
+    for index, part in enumerate(parts):
+        current = current / part
         try:
-            with open(resolved, "rb") as handle:
-                sample = handle.read(4096)
-        except OSError as exc:
+            final_mode = current.lstat().st_mode
+        except FileNotFoundError:
+            missing = True
+            break
+        except OSError:
             result["snapshot_eligible"] = False
             result["ineligible_reason"] = "read_failed"
-            result["detail"] = str(exc)
+            result["detail"] = "path inspection failed"
             return result
-        if _looks_binary(sample):
+        if stat.S_ISLNK(final_mode):
             result["snapshot_eligible"] = False
-            result["ineligible_reason"] = "binary_file"
+            result["ineligible_reason"] = "symlink"
             return result
+        if index < len(parts) - 1 and not stat.S_ISDIR(final_mode):
+            result["snapshot_eligible"] = False
+            result["ineligible_reason"] = "invalid_path"
+            return result
+
+    if missing:
+        return result
+
+    resolved = candidate
+    if final_mode is not None and stat.S_ISDIR(final_mode):
+        result["snapshot_eligible"] = False
+        result["ineligible_reason"] = "directory"
+        return result
+    if final_mode is None or not stat.S_ISREG(final_mode):
+        result["snapshot_eligible"] = False
+        result["ineligible_reason"] = "read_failed"
+        return result
+    if resolved.suffix.lower() in _BINARY_EXTENSIONS:
+        result["snapshot_eligible"] = False
+        result["ineligible_reason"] = "binary_file"
+        return result
+    try:
+        with open(resolved, "rb") as handle:
+            data = handle.read(max_blob_size + 1)
+    except OSError:
+        result["snapshot_eligible"] = False
+        result["ineligible_reason"] = "read_failed"
+        result["detail"] = "read failed"
+        return result
+    if len(data) > max_blob_size:
+        result["snapshot_eligible"] = False
+        result["ineligible_reason"] = "file_too_large"
+        return result
+    if _looks_binary(data):
+        result["snapshot_eligible"] = False
+        result["ineligible_reason"] = "binary_file"
+        return result
+    if securitylib.contains_secret_material(
+        data.decode("utf-8", errors="replace"),
+        env=env,
+        secret_env_names=secret_env_names,
+    ):
+        result["snapshot_eligible"] = False
+        result["ineligible_reason"] = "sensitive_content"
     return result

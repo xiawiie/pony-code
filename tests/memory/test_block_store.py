@@ -84,6 +84,108 @@ def test_append_note_too_long_rejected(tmp_path):
         store.append_agent_note(scope="workspace", note="x" * 501)
 
 
+def test_write_entrypoints_reject_complete_secret_content_and_allow_prose(tmp_path):
+    workspace = tmp_path / "workspace"
+    user = tmp_path / "user"
+    workspace.mkdir()
+    user.mkdir()
+    store = BlockStore(workspace_root=workspace, user_root=user)
+    secret = "github_pat_A123456789012345678901234567890"
+
+    with pytest.raises(ValueError, match="sensitive_content"):
+        store.append_agent_note(scope="workspace", note=secret)
+    with pytest.raises(ValueError, match="sensitive_content"):
+        store.write_agent_topic(
+            scope="workspace",
+            topic="auth",
+            note="safe note",
+            note_type=secret,
+        )
+
+    store.append_agent_note(scope="workspace", note="password policy")
+    store.write_agent_topic(
+        scope="workspace",
+        topic="policy",
+        note="password policy",
+        note_type="feedback",
+    )
+    assert "password policy" in (workspace / "agent_notes.md").read_text(
+        encoding="utf-8"
+    )
+    assert "password policy" in (workspace / "agent" / "policy.md").read_text(
+        encoding="utf-8"
+    )
+
+
+def test_block_store_uses_configured_secret_snapshot(tmp_path):
+    workspace = tmp_path / "workspace"
+    user = tmp_path / "user"
+    workspace.mkdir()
+    user.mkdir()
+    secret = "opaque-memory-value-123456789"
+    store = BlockStore(
+        workspace_root=workspace,
+        user_root=user,
+        redaction_env={"CUSTOM_CREDENTIAL": secret},
+        secret_env_names=("CUSTOM_CREDENTIAL",),
+    )
+
+    with pytest.raises(ValueError, match="sensitive_content"):
+        store.append_agent_note(scope="workspace", note=secret)
+
+
+def test_append_rejects_when_complete_existing_note_would_remain_sensitive(tmp_path):
+    workspace = tmp_path / "workspace"
+    user = tmp_path / "user"
+    workspace.mkdir()
+    user.mkdir()
+    secret = "github_pat_A123456789012345678901234567890"
+    target = workspace / "agent_notes.md"
+    target.write_text(secret + "\n", encoding="utf-8")
+    store = BlockStore(workspace_root=workspace, user_root=user)
+
+    with pytest.raises(ValueError, match="sensitive_content"):
+        store.append_agent_note(scope="workspace", note="password policy")
+
+    assert target.read_text(encoding="utf-8") == secret + "\n"
+
+
+def test_agent_note_write_rejects_leaf_symlink_without_touching_target(tmp_path):
+    workspace = tmp_path / "workspace"
+    user = tmp_path / "user"
+    workspace.mkdir()
+    user.mkdir()
+    outside = tmp_path / "outside.md"
+    outside.write_text("untouched\n", encoding="utf-8")
+    (workspace / "agent_notes.md").symlink_to(outside)
+    store = BlockStore(workspace_root=workspace, user_root=user)
+
+    with pytest.raises(ValueError, match="symlink"):
+        store.append_agent_note(scope="workspace", note="safe note")
+
+    assert outside.read_text(encoding="utf-8") == "untouched\n"
+
+
+def test_agent_topic_write_rejects_symlinked_agent_directory(tmp_path):
+    workspace = tmp_path / "workspace"
+    user = tmp_path / "user"
+    outside = tmp_path / "outside-agent"
+    workspace.mkdir()
+    user.mkdir()
+    outside.mkdir()
+    (workspace / "agent").symlink_to(outside, target_is_directory=True)
+    store = BlockStore(workspace_root=workspace, user_root=user)
+
+    with pytest.raises(ValueError, match="symlink"):
+        store.write_agent_topic(
+            scope="workspace",
+            topic="policy",
+            note="safe note",
+        )
+
+    assert list(outside.iterdir()) == []
+
+
 def test_atomic_no_partial_write(tmp_path, monkeypatch):
     """If replace fails mid-way, main file must not exist half-written."""
     workspace = tmp_path / "workspace"

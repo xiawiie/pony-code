@@ -1,3 +1,6 @@
+import builtins
+
+from pico import recovery_policy
 from pico.recovery_policy import command_risk_class, evaluate_command_approval, snapshot_eligibility
 
 
@@ -10,6 +13,103 @@ def test_snapshot_eligibility_is_conservative(tmp_path):
 
     assert snapshot_eligibility(tmp_path, "src/app.py")["snapshot_eligible"] is True
     assert snapshot_eligibility(tmp_path, "image.bin")["ineligible_reason"] == "binary_file"
+
+
+def test_snapshot_rejects_sensitive_path_before_resolution_or_read(
+    tmp_path,
+    monkeypatch,
+):
+    (tmp_path / ".env").write_text("PICO_TOKEN=opaque\n", encoding="utf-8")
+    monkeypatch.setattr(
+        recovery_policy.Path,
+        "resolve",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("sensitive path resolved")
+        ),
+    )
+
+    result = snapshot_eligibility(tmp_path, ".env")
+
+    assert result["snapshot_eligible"] is False
+    assert result["ineligible_reason"] == "sensitive_path"
+
+
+def test_snapshot_rejects_symlink_even_when_target_stays_in_workspace(tmp_path):
+    target = tmp_path / "safe.txt"
+    target.write_text("safe\n", encoding="utf-8")
+    (tmp_path / "alias.txt").symlink_to(target)
+
+    result = snapshot_eligibility(tmp_path, "alias.txt")
+
+    assert result["snapshot_eligible"] is False
+    assert result["ineligible_reason"] == "symlink"
+
+
+def test_snapshot_scans_complete_bounded_content_with_custom_secret_name(tmp_path):
+    secret = "opaque-custom-value-123456789"
+    target = tmp_path / "source.py"
+    target.write_text("x" * 5000 + secret, encoding="utf-8")
+
+    result = snapshot_eligibility(
+        tmp_path,
+        "source.py",
+        env={"CUSTOM_CREDENTIAL": secret},
+        secret_env_names=("CUSTOM_CREDENTIAL",),
+    )
+
+    assert result["snapshot_eligible"] is False
+    assert result["ineligible_reason"] == "sensitive_content"
+    assert not (tmp_path / ".pico").exists()
+
+
+def test_snapshot_size_check_is_bounded(tmp_path):
+    target = tmp_path / "large.txt"
+    target.write_bytes(b"x" * 65)
+
+    result = snapshot_eligibility(tmp_path, "large.txt", max_blob_size=64)
+
+    assert result["snapshot_eligible"] is False
+    assert result["ineligible_reason"] == "file_too_large"
+
+
+def test_snapshot_reads_safe_candidate_once_with_bounded_size(tmp_path, monkeypatch):
+    target = tmp_path / "safe.txt"
+    target.write_bytes(b"safe\n")
+    real_open = builtins.open
+    read_sizes = []
+
+    class CountingReader:
+        def __init__(self, *args, **kwargs):
+            self.handle = real_open(*args, **kwargs)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            self.handle.close()
+
+        def read(self, size):
+            read_sizes.append(size)
+            return self.handle.read(size)
+
+    def counting_open(path, *args, **kwargs):
+        if path == target:
+            return CountingReader(path, *args, **kwargs)
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", counting_open)
+
+    result = snapshot_eligibility(tmp_path, "safe.txt", max_blob_size=64)
+
+    assert result["snapshot_eligible"] is True
+    assert read_sizes == [65]
+
+
+def test_snapshot_root_path_remains_a_directory_decision(tmp_path):
+    result = snapshot_eligibility(tmp_path, ".")
+
+    assert result["snapshot_eligible"] is False
+    assert result["ineligible_reason"] == "directory"
 
 
 def test_command_policy_uses_four_risk_classes():

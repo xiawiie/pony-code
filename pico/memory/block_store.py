@@ -24,8 +24,11 @@ import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from types import MappingProxyType
 from typing import Literal
 
+from pico import security as securitylib
+from pico.security import ensure_private_dir, require_regular_no_symlink
 from pico.workspace import _safe_index_directory, _safe_index_file
 
 from .frontmatter import parse_frontmatter
@@ -49,9 +52,21 @@ class MemoryFile:
 
 
 class BlockStore:
-    def __init__(self, workspace_root: Path, user_root: Path):
+    def __init__(
+        self,
+        workspace_root: Path,
+        user_root: Path,
+        redaction_env=None,
+        secret_env_names=(),
+    ):
         self.workspace_root = Path(os.path.abspath(os.fspath(workspace_root)))
         self.user_root = Path(os.path.abspath(os.fspath(user_root)))
+        self.redaction_env = (
+            None
+            if redaction_env is None
+            else MappingProxyType(dict(redaction_env))
+        )
+        self.secret_env_names = tuple(secret_env_names or ())
         self._size_warned: set[str] = set()
 
     # ---- listing / reading -------------------------------------------------
@@ -158,13 +173,16 @@ class BlockStore:
             raise ValueError("note must not be empty")
         if len(note) > MAX_NOTE_CHARS:
             raise ValueError(f"note exceeds {MAX_NOTE_CHARS} chars")
+        self._reject_sensitive_content(note)
         target = self._agent_notes_path(scope)
-        target.parent.mkdir(parents=True, exist_ok=True)
+        ensure_private_dir(target.parent)
+        target = require_regular_no_symlink(target, allow_missing=True)
 
         existing = target.read_text(encoding="utf-8") if target.exists() else ""
         timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         new_line = f"- {timestamp}  {note}\n"
         new_content = existing + new_line if existing.endswith("\n") or not existing else existing + "\n" + new_line
+        self._reject_sensitive_content(new_content)
 
         self._atomic_write(target, new_content)
         size = len(new_content)
@@ -198,22 +216,24 @@ class BlockStore:
         topic = str(topic).strip()
         if not _TOPIC_RE.match(topic):
             raise ValueError(f"invalid topic: {topic!r}")
+        self._reject_sensitive_content(
+            note + "\n" + topic + "\n" + str(note_type)
+        )
         if scope == "workspace":
             root = self.workspace_root
         elif scope == "user":
             root = self.user_root
         else:
             raise ValueError(f"unknown scope: {scope!r}")
-        agent_dir = root / "agent"
-        agent_dir.mkdir(parents=True, exist_ok=True)
+        agent_dir = ensure_private_dir(root / "agent")
         target = agent_dir / f"{topic}.md"
+        target = require_regular_no_symlink(target, allow_missing=True)
         if target.exists():
             existing = target.read_text(encoding="utf-8")
-            new_body = existing.rstrip("\n") + "\n\n" + note + "\n"
-            self._atomic_write(target, new_body)
+            new_content = existing.rstrip("\n") + "\n\n" + note + "\n"
         else:
             description = note.splitlines()[0][:80] if note else ""
-            fm = (
+            new_content = (
                 "---\n"
                 f"name: {topic}\n"
                 f"type: {note_type}\n"
@@ -224,7 +244,8 @@ class BlockStore:
                 "---\n"
                 f"\n{note}\n"
             )
-            self._atomic_write(target, fm)
+        self._reject_sensitive_content(new_content)
+        self._atomic_write(target, new_content)
         return target
 
     # ---- internals ---------------------------------------------------------
@@ -257,9 +278,18 @@ class BlockStore:
             raise ValueError(f"invalid path (escapes scope root): {rel_path!r}") from exc
         return target
 
+    def _reject_sensitive_content(self, content):
+        if securitylib.contains_secret_material(
+            content,
+            env=self.redaction_env,
+            secret_env_names=self.secret_env_names,
+        ):
+            raise ValueError("sensitive_content")
+
     @staticmethod
     def _atomic_write(target: Path, content: str) -> None:
-        target.parent.mkdir(parents=True, exist_ok=True)
+        ensure_private_dir(target.parent)
+        require_regular_no_symlink(target, allow_missing=True)
         with tempfile.NamedTemporaryFile(
             mode="w",
             encoding="utf-8",

@@ -10,6 +10,7 @@ from pico.memory.tools import tool_memory_list, tool_memory_search
 from pico.tool_executor import (
     ToolExecutor,
     ToolExecutionResult,
+    _capture_path_snapshot,
     _effect_class,
     _fill_git_head_before_file_states,
 )
@@ -498,6 +499,83 @@ def test_git_head_fallback_without_frozen_git_runs_nothing(tmp_path, monkeypatch
 
     assert states == {}
     agent.checkpoint_store.write_blob.assert_not_called()
+
+
+def test_git_head_fallback_rejects_sensitive_path_before_git_or_blob(
+    tmp_path,
+    monkeypatch,
+):
+    import pico.tool_executor as tool_executor
+
+    git = Mock(side_effect=AssertionError("git must not run"))
+    monkeypatch.setattr(tool_executor, "run_hardened_git", git)
+    agent = SimpleNamespace(
+        root=tmp_path,
+        trusted_executables=MappingProxyType({"git": "/frozen/git"}),
+        checkpoint_store=Mock(),
+        redaction_env={},
+        secret_env_names=(),
+    )
+
+    states = _fill_git_head_before_file_states(agent, [".env"], {})
+
+    assert states == {}
+    git.assert_not_called()
+    agent.checkpoint_store.write_blob.assert_not_called()
+
+
+def test_git_head_fallback_rejects_secret_stdout_before_blob(
+    tmp_path,
+    monkeypatch,
+):
+    import pico.tool_executor as tool_executor
+
+    secret = "opaque-head-value-123456789"
+    git = Mock(
+        return_value=subprocess.CompletedProcess(
+            [],
+            0,
+            stdout=("prefix " + secret).encode(),
+            stderr=b"",
+        )
+    )
+    monkeypatch.setattr(tool_executor, "run_hardened_git", git)
+    agent = SimpleNamespace(
+        root=tmp_path,
+        trusted_executables=MappingProxyType({"git": "/frozen/git"}),
+        checkpoint_store=Mock(),
+        redaction_env={"CUSTOM_CREDENTIAL": secret},
+        secret_env_names=("CUSTOM_CREDENTIAL",),
+    )
+
+    states = _fill_git_head_before_file_states(agent, ["README.md"], {})
+
+    assert states == {}
+    git.assert_called_once()
+    agent.checkpoint_store.write_blob.assert_not_called()
+
+
+def test_path_snapshot_never_hashes_safe_named_secret_content(
+    tmp_path,
+    monkeypatch,
+):
+    import pico.tool_executor as tool_executor
+
+    secret = "opaque-snapshot-value-123456789"
+    (tmp_path / "source.py").write_text(secret, encoding="utf-8")
+    monkeypatch.setattr(
+        tool_executor,
+        "hash_file_bytes",
+        Mock(side_effect=AssertionError("secret content hashed")),
+    )
+    agent = SimpleNamespace(
+        root=tmp_path,
+        project_max_blob_size=1024,
+        redaction_env={"CUSTOM_CREDENTIAL": secret},
+        secret_env_names=("CUSTOM_CREDENTIAL",),
+    )
+
+    assert _capture_path_snapshot(agent, ["source.py"]) == {}
 
 
 def test_workspace_write_tool_uses_generic_path_argument_for_recovery(tmp_path):

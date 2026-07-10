@@ -103,6 +103,20 @@ def test_save_too_long_raises(tmp_path):
         tool_memory_save(ctx, {"note": "x" * 501})
 
 
+def test_save_rejects_secret_content_but_allows_security_prose(tmp_path):
+    ctx = _context(tmp_path)
+    secret = "github_pat_A123456789012345678901234567890"
+
+    with pytest.raises(ValueError, match="sensitive_content"):
+        tool_memory_save(ctx, {"note": secret})
+
+    result = tool_memory_save(ctx, {"note": "password policy"})
+    assert result.startswith("saved:")
+    assert "password policy" in (
+        ctx.memory_store.workspace_root / "agent_notes.md"
+    ).read_text(encoding="utf-8")
+
+
 def test_save_rejects_unknown_scope(tmp_path):
     """validate_tool must reject scope values outside {workspace, user}."""
     from pico.tools import validate_tool

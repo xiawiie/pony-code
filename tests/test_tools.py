@@ -97,7 +97,7 @@ def test_run_shell_uses_larger_default_timeout(tmp_path, monkeypatch):
 
 def test_search_rg_return_codes_are_truthful(tmp_path, monkeypatch):
     results = iter([
-        subprocess.CompletedProcess([], 0, stdout="sample.txt:1:hit\n", stderr=""),
+        subprocess.CompletedProcess([], 0, stdout="sample.txt\0" "1:hit\n", stderr=""),
         subprocess.CompletedProcess([], 1, stdout="", stderr=""),
         subprocess.CompletedProcess([], 2, stdout="", stderr="regex parse error\n"),
     ])
@@ -125,6 +125,9 @@ def test_search_rg_return_codes_are_truthful(tmp_path, monkeypatch):
     assert exc_info.value.returncode == 2
     assert all(call[0] == "/frozen/rg" for call in calls)
     assert all(call[1][-2] == "--" for call in calls)
+    assert all("--with-filename" in call[1] for call in calls)
+    assert all("--null" in call[1] for call in calls)
+    assert all("--glob-case-insensitive" in call[1] for call in calls)
 
 
 def test_search_without_frozen_rg_never_rescans_path(tmp_path, monkeypatch):
@@ -172,6 +175,106 @@ def test_search_passes_option_shaped_pattern_as_literal(tmp_path, monkeypatch):
     assert tool_search(context, {"pattern": "--config=attack", "path": "."}) == "(no matches)"
     assert captured["executable"] == "/frozen/rg"
     assert captured["args"][-4:] == ["-e", "--config=attack", "--", str(tmp_path)]
+
+
+def test_search_filters_every_rg_result_path_defensively(tmp_path, monkeypatch):
+    def fake_rg(executable, args, **kwargs):
+        return subprocess.CompletedProcess(
+            args,
+            0,
+            stdout=(
+                "safe.py\0" "1:needle\n"
+                ".env.local\0" "1:needle\n"
+                "malformed-without-null\n"
+            ),
+            stderr="",
+        )
+
+    monkeypatch.setattr("pico.tools.run_hardened_rg", fake_rg)
+    context = ToolContext(
+        root=tmp_path,
+        path_resolver=lambda raw_path: (tmp_path / raw_path).resolve(),
+        shell_env_provider=lambda: {"PWD": str(tmp_path)},
+        depth=0,
+        max_depth=1,
+        spawn_delegate=lambda args: "unused",
+        trusted_executables={"rg": "/frozen/rg"},
+    )
+
+    result = tool_search(context, {"pattern": "needle", "path": "."})
+
+    assert result == "safe.py:1:needle"
+
+
+def test_rg_search_keeps_allowed_env_template_when_rg_has_no_other_match(
+    tmp_path,
+    monkeypatch,
+):
+    (tmp_path / ".env.example").write_text("needle\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "pico.tools.run_hardened_rg",
+        lambda executable, args, **kwargs: subprocess.CompletedProcess(
+            args,
+            1,
+            stdout="",
+            stderr="",
+        ),
+    )
+    context = ToolContext(
+        root=tmp_path,
+        path_resolver=lambda raw_path: (tmp_path / raw_path).resolve(),
+        shell_env_provider=lambda: {"PWD": str(tmp_path)},
+        depth=0,
+        max_depth=1,
+        spawn_delegate=lambda args: "unused",
+        trusted_executables={"rg": "/frozen/rg"},
+    )
+
+    result = tool_search(context, {"pattern": "needle", "path": "."})
+
+    assert result == ".env.example:1:needle"
+
+
+def test_python_search_never_stats_or_reads_sensitive_or_symlink_files(
+    tmp_path,
+    monkeypatch,
+):
+    sensitive = tmp_path / "credentials.json"
+    sensitive.write_text("needle secret\n", encoding="utf-8")
+    safe = tmp_path / "safe.txt"
+    safe.write_text("needle safe\n", encoding="utf-8")
+    linked = tmp_path / "linked.txt"
+    linked.symlink_to(safe)
+    real_stat = Path.stat
+    real_read_text = Path.read_text
+
+    def guarded_stat(self, *args, **kwargs):
+        if self == sensitive:
+            raise AssertionError("unsafe file stat")
+        if self == linked and kwargs.get("follow_symlinks", True):
+            raise AssertionError("symlink-following stat")
+        return real_stat(self, *args, **kwargs)
+
+    def guarded_read_text(self, *args, **kwargs):
+        if self in {sensitive, linked}:
+            raise AssertionError("unsafe file read")
+        return real_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", guarded_stat)
+    monkeypatch.setattr(Path, "read_text", guarded_read_text)
+    context = ToolContext(
+        root=tmp_path,
+        path_resolver=lambda raw_path: (tmp_path / raw_path).resolve(),
+        shell_env_provider=lambda: {"PWD": str(tmp_path)},
+        depth=0,
+        max_depth=1,
+        spawn_delegate=lambda args: "unused",
+        trusted_executables={},
+    )
+
+    result = tool_search(context, {"pattern": "needle", "path": "."})
+
+    assert result == "safe.txt:1:needle safe"
 
 
 @pytest.mark.parametrize(

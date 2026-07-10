@@ -1,5 +1,6 @@
 from pico import FakeModelClient, Pico, SessionStore, WorkspaceContext
 from pico import runtime as runtime_module
+from pico import workspace_snapshot as snapshot_module
 from pico.workspace_snapshot import capture_workspace_snapshot, diff_workspace_snapshots
 
 
@@ -10,6 +11,51 @@ def test_workspace_snapshot_scan_has_file_limit(tmp_path):
     snapshot = capture_workspace_snapshot(tmp_path, max_files=2)
 
     assert sorted(snapshot) == ["file_0.txt", "file_1.txt"]
+
+
+def test_workspace_snapshot_skips_sensitive_paths_before_stat_or_hash(
+    tmp_path,
+    monkeypatch,
+):
+    sensitive = tmp_path / ".env"
+    sensitive.write_text("PICO_TOKEN=opaque\n", encoding="utf-8")
+    safe = tmp_path / "safe.txt"
+    safe.write_text("safe\n", encoding="utf-8")
+    real_stat = type(safe).stat
+    calls = []
+
+    def guarded_stat(self, *args, **kwargs):
+        if self == sensitive:
+            raise AssertionError("sensitive path stat")
+        return real_stat(self, *args, **kwargs)
+
+    def fake_hash(path):
+        assert path != sensitive
+        calls.append(path)
+        return {
+            "content_hash": "a" * 64,
+            "size_bytes": path.stat().st_size,
+        }
+
+    monkeypatch.setattr(type(safe), "stat", guarded_stat)
+    monkeypatch.setattr(snapshot_module, "hash_file_bytes", fake_hash, raising=False)
+
+    snapshot = capture_workspace_snapshot(tmp_path)
+
+    assert ".env" not in snapshot
+    assert snapshot["safe.txt"] == "a" * 64
+    assert calls == [safe]
+
+
+def test_workspace_snapshot_skips_leaf_symlinks(tmp_path):
+    target = tmp_path / "target.txt"
+    target.write_text("safe\n", encoding="utf-8")
+    (tmp_path / "alias.txt").symlink_to(target)
+
+    snapshot = capture_workspace_snapshot(tmp_path)
+
+    assert "target.txt" in snapshot
+    assert "alias.txt" not in snapshot
 
 
 def test_workspace_snapshot_diff_reports_ordered_changes():

@@ -18,9 +18,18 @@ class ToolContext:
     memory_retrieval: Optional[Any] = None
     repo_map: Optional[Any] = None
     trusted_executables: Mapping[str, str] = field(default_factory=dict)
+    redaction_env: Optional[Mapping[str, str]] = None
+    secret_env_names: tuple[str, ...] = ()
 
     def __post_init__(self):
         self.trusted_executables = MappingProxyType(dict(self.trusted_executables))
+        if self.redaction_env is not None:
+            self.redaction_env = (
+                self.redaction_env
+                if isinstance(self.redaction_env, MappingProxyType)
+                else MappingProxyType(dict(self.redaction_env))
+            )
+        self.secret_env_names = tuple(self.secret_env_names)
 
     def path(self, raw_path):
         return self.path_resolver(str(raw_path))

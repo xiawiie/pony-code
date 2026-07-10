@@ -4,11 +4,15 @@
 如何做参数校验，以及最终如何执行，都是在这里定义的。
 """
 
+import os
+from pathlib import Path
 import re
+import stat
 import subprocess
 import textwrap
 from functools import partial
 
+from . import security as securitylib
 from .memory.block_store import MAX_NOTE_CHARS
 from .memory.tools import (
     tool_memory_list,
@@ -22,6 +26,49 @@ from .workspace import IGNORED_PATH_NAMES
 
 DEFAULT_RUN_SHELL_TIMEOUT = 60
 MAX_RUN_SHELL_TIMEOUT = 120
+
+_RG_SENSITIVE_GLOBS = (
+    "!.env",
+    "!.env.*",
+    "!.envrc",
+    "!.netrc",
+    "!.npmrc",
+    "!.pypirc",
+    "!.git-credentials",
+    "!credentials.json",
+    "!auth.json",
+    "!service-account*.json",
+    "!secrets.json",
+    "!secrets.yaml",
+    "!secrets.yml",
+    "!secrets.toml",
+    "!*.pem",
+    "!*.key",
+    "!*.p12",
+    "!*.pfx",
+    "!*.jks",
+    "!*.keystore",
+    "!**/.ssh/**",
+    "!**/.gnupg/**",
+    "!**/.aws/credentials",
+    "!**/.docker/config.json",
+    "!**/.kube/config",
+    "!**/.pico/sessions/**",
+    "!**/.pico/runs/**",
+    "!**/.pico/checkpoints/**",
+)
+_ALLOWED_ENV_TEMPLATES = frozenset(
+    {".env.example", ".env.sample", ".env.template"}
+)
+
+
+class SensitiveToolError(ValueError):
+    """Stable pre-run rejection for sensitive path or content."""
+
+    def __init__(self, code):
+        self.code = str(code)
+        super().__init__(self.code)
+
 
 BASE_TOOL_SPECS = {
     "list_files": {
@@ -125,18 +172,70 @@ def tool_example(name):
     return TOOL_EXAMPLES.get(name, "")
 
 
+def _lexical_tool_target(context, raw_path):
+    raw = str(raw_path)
+    if not raw or "\x00" in raw:
+        raise ValueError("path must not be empty")
+    root = Path(context.root).resolve(strict=True)
+    source = Path(raw)
+    candidate = Path(
+        os.path.abspath(
+            os.fspath(source if source.is_absolute() else root / source)
+        )
+    )
+    try:
+        relative = candidate.relative_to(root)
+    except ValueError:
+        raise ValueError("path escapes workspace") from None
+    relative_text = relative.as_posix().casefold()
+    if securitylib.is_sensitive_path(relative_text):
+        raise SensitiveToolError("sensitive_path_block")
+
+    current = root
+    for index, part in enumerate(relative.parts):
+        current = current / part
+        try:
+            mode = current.lstat().st_mode
+        except FileNotFoundError:
+            break
+        except OSError:
+            raise ValueError("path access failed") from None
+        if stat.S_ISLNK(mode):
+            raise ValueError("path escapes workspace: symlink component")
+        if index < len(relative.parts) - 1 and not stat.S_ISDIR(mode):
+            raise ValueError("path parent is not a directory")
+    return candidate, relative_text
+
+
+def _target_mode(path):
+    try:
+        return path.lstat().st_mode
+    except OSError:
+        return None
+
+
+def _contains_sensitive_content(context, value):
+    return securitylib.contains_secret_material(
+        value,
+        env=getattr(context, "redaction_env", None),
+        secret_env_names=getattr(context, "secret_env_names", ()),
+    )
+
+
 def validate_tool(context, name, args):
     args = args or {}
 
     if name == "list_files":
-        path = context.path(args.get("path", "."))
-        if not path.is_dir():
+        path, _ = _lexical_tool_target(context, args.get("path", "."))
+        mode = _target_mode(path)
+        if mode is None or not stat.S_ISDIR(mode):
             raise ValueError("path is not a directory")
         return
 
     if name == "read_file":
-        path = context.path(args["path"])
-        if not path.is_file():
+        path, _ = _lexical_tool_target(context, args["path"])
+        mode = _target_mode(path)
+        if mode is None or not stat.S_ISREG(mode):
             raise ValueError("path is not a file")
         start = int(args.get("start", 1))
         end = int(args.get("end", 200))
@@ -148,7 +247,7 @@ def validate_tool(context, name, args):
         pattern = str(args.get("pattern", "")).strip()
         if not pattern:
             raise ValueError("pattern must not be empty")
-        context.path(args.get("path", "."))
+        _lexical_tool_target(context, args.get("path", "."))
         return
 
     if name == "run_shell":
@@ -161,24 +260,28 @@ def validate_tool(context, name, args):
         return
 
     if name == "write_file":
-        path = context.path(args["path"])
+        path, _ = _lexical_tool_target(context, args["path"])
         refusal = _refuse_user_notes_write(context, path)
         if refusal:
             raise ValueError(refusal)
-        if path.exists() and path.is_dir():
-            raise ValueError("path is a directory")
+        mode = _target_mode(path)
+        if mode is not None and not stat.S_ISREG(mode):
+            raise ValueError("path is not a regular file")
         if "content" not in args:
             raise ValueError("missing content")
+        if _contains_sensitive_content(context, str(args["content"])):
+            raise SensitiveToolError("sensitive_content_block")
         return
 
     if name == "patch_file":
         # patch_file 故意做得很严格：old_text 必须精确命中且只能出现一次，
         # 这样修改行为才是确定的，失败原因也更容易解释。
-        path = context.path(args["path"])
+        path, _ = _lexical_tool_target(context, args["path"])
         refusal = _refuse_user_notes_write(context, path)
         if refusal:
             raise ValueError(refusal)
-        if not path.is_file():
+        mode = _target_mode(path)
+        if mode is None or not stat.S_ISREG(mode):
             raise ValueError("path is not a file")
         old_text = str(args.get("old_text", ""))
         if not old_text:
@@ -189,6 +292,9 @@ def validate_tool(context, name, args):
         count = text.count(old_text)
         if count != 1:
             raise ValueError(f"old_text must occur exactly once, found {count}")
+        candidate = text.replace(old_text, str(args["new_text"]), 1)
+        if _contains_sensitive_content(context, candidate):
+            raise SensitiveToolError("sensitive_content_block")
         return
 
     if name == "delegate":
@@ -247,6 +353,11 @@ def validate_tool(context, name, args):
         note_type = str(args.get("type", "feedback")).strip()
         if not note_type:
             raise ValueError("type must not be empty")
+        if _contains_sensitive_content(
+            context,
+            note + "\n" + topic + "\n" + note_type,
+        ):
+            raise SensitiveToolError("sensitive_content_block")
         return
 
     if name == "repo_lookup":
@@ -267,13 +378,27 @@ def tool_list_files(context, args):
     path = context.path(args.get("path", "."))
     if not path.is_dir():
         raise ValueError("path is not a directory")
-    entries = [
-        item for item in sorted(path.iterdir(), key=lambda item: (item.is_file(), item.name.lower()))
-        if item.name not in IGNORED_PATH_NAMES
-    ]
+    entries = sorted(path.iterdir(), key=lambda item: item.name.casefold())
     lines = []
     for entry in entries[:200]:
-        kind = "[D]" if entry.is_dir() else "[F]"
+        if entry.name in IGNORED_PATH_NAMES:
+            continue
+        relative = entry.relative_to(context.root).as_posix()
+        if securitylib.is_sensitive_path(relative):
+            lines.append(f"{entry.name} [sensitive]")
+            continue
+        try:
+            mode = entry.lstat().st_mode
+        except OSError:
+            continue
+        if stat.S_ISLNK(mode):
+            kind = "[L]"
+        elif stat.S_ISDIR(mode):
+            kind = "[D]"
+        elif stat.S_ISREG(mode):
+            kind = "[F]"
+        else:
+            kind = "[?]"
         lines.append(f"{kind} {entry.relative_to(context.root)}")
     return "\n".join(lines) or "(empty)"
 
@@ -300,38 +425,129 @@ def tool_search(context, args):
     rg_executable = context.trusted_executables.get("rg")
     if rg_executable:
         # 优先用 rg，因为搜索会非常频繁，搜索延迟会直接影响 agent 控制循环。
+        rg_args = [
+            "-n",
+            "--with-filename",
+            "--null",
+            "--smart-case",
+            "--max-count",
+            "200",
+        ]
+        try:
+            target_is_directory = stat.S_ISDIR(path.lstat().st_mode)
+        except OSError:
+            target_is_directory = False
+        if target_is_directory:
+            rg_args.append("--glob-case-insensitive")
+            for glob in _RG_SENSITIVE_GLOBS:
+                rg_args.extend(("--glob", glob))
+        rg_args.extend(("-e", pattern, "--", str(path)))
         result = run_hardened_rg(
             rg_executable,
-            [
-                "-n",
-                "--smart-case",
-                "--max-count",
-                "200",
-                "-e",
-                pattern,
-                "--",
-                str(path),
-            ],
+            rg_args,
             cwd=context.root,
         )
         if result.returncode > 1:
             result.check_returncode()
-        if result.returncode == 1:
-            return "(no matches)"
-        return result.stdout.strip() or result.stderr.strip()
+        filtered = (
+            _filter_rg_output(context.root, result.stdout)
+            if result.returncode == 0
+            else "(no matches)"
+        )
+        matches = [] if filtered == "(no matches)" else filtered.splitlines()
+        if target_is_directory and len(matches) < 200:
+            templates = (
+                item
+                for item in path.rglob("*")
+                if item.name.casefold() in _ALLOWED_ENV_TEMPLATES
+            )
+            matches.extend(
+                _python_search_matches(
+                    context.root,
+                    templates,
+                    pattern,
+                    limit=200 - len(matches),
+                )
+            )
+        return "\n".join(matches) or "(no matches)"
 
     matches = []
-    files = [path] if path.is_file() else [
-        item for item in path.rglob("*")
-        if item.is_file() and not any(part in IGNORED_PATH_NAMES for part in item.relative_to(context.root).parts)
-    ]
+    try:
+        mode = path.lstat().st_mode
+    except OSError:
+        mode = 0
+    files = [path] if stat.S_ISREG(mode) else path.rglob("*") if stat.S_ISDIR(mode) else []
+    matches = _python_search_matches(context.root, files, pattern)
+    return "\n".join(matches) or "(no matches)"
+
+
+def _python_search_matches(root, files, pattern, limit=200):
+    matches = []
     for file_path in files:
+        file_path = _safe_search_file(root, file_path)
+        if file_path is None:
+            continue
         for number, line in enumerate(file_path.read_text(encoding="utf-8", errors="replace").splitlines(), start=1):
             if pattern.lower() in line.lower():
-                matches.append(f"{file_path.relative_to(context.root)}:{number}:{line}")
-                if len(matches) >= 200:
-                    return "\n".join(matches)
+                matches.append(f"{file_path.relative_to(root)}:{number}:{line}")
+                if len(matches) >= limit:
+                    return matches
+    return matches
+
+
+def _relative_search_path(root, raw_path):
+    raw = str(raw_path)
+    if not raw or "\x00" in raw or "\n" in raw or "\r" in raw:
+        return None
+    root = Path(root).resolve()
+    source = Path(raw)
+    candidate = Path(
+        os.path.abspath(
+            os.fspath(source if source.is_absolute() else root / source)
+        )
+    )
+    try:
+        relative = candidate.relative_to(root)
+    except ValueError:
+        return None
+    relative_text = relative.as_posix()
+    if securitylib.is_sensitive_path(relative_text):
+        return None
+    return relative_text
+
+
+def _filter_rg_output(root, output):
+    remaining = str(output or "")
+    matches = []
+    while remaining:
+        raw_path, separator, after_path = remaining.partition("\x00")
+        if not separator:
+            break
+        record, newline, remaining = after_path.partition("\n")
+        if not newline:
+            remaining = ""
+        line_number, colon, body = record.partition(":")
+        if not colon or not line_number.isdigit():
+            continue
+        relative = _relative_search_path(root, raw_path)
+        if relative is None:
+            continue
+        matches.append(f"{relative}:{line_number}:{body.rstrip(chr(13))}")
+        if len(matches) >= 200:
+            break
     return "\n".join(matches) or "(no matches)"
+
+
+def _safe_search_file(root, candidate):
+    relative = _relative_search_path(root, candidate)
+    if relative is None:
+        return None
+    if any(part in IGNORED_PATH_NAMES for part in Path(relative).parts):
+        return None
+    try:
+        return securitylib.require_regular_no_symlink(candidate)
+    except (FileNotFoundError, OSError, ValueError):
+        return None
 
 
 def tool_run_shell(context, args):

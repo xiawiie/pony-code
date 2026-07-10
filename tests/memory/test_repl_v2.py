@@ -49,6 +49,26 @@ def test_repl_save_without_body_shows_usage(tmp_path, monkeypatch, capsys):
     assert not agent_notes.exists() or "usage:" not in agent_notes.read_text(encoding="utf-8")
 
 
+def test_repl_save_rejects_secret_and_keeps_security_prose(tmp_path, monkeypatch, capsys):
+    from pico.cli_commands import run_repl
+
+    secret = "github_pat_A123456789012345678901234567890"
+    agent = _build_agent(tmp_path)
+    inputs = iter([f"/save {secret}", "/save password policy", "/exit"])
+    monkeypatch.setattr("builtins.input", lambda *_: next(inputs))
+
+    run_repl(agent)
+
+    output = capsys.readouterr().out
+    contents = (
+        tmp_path / ".pico" / "memory" / "agent_notes.md"
+    ).read_text(encoding="utf-8")
+    assert "sensitive_content" in output
+    assert secret not in output
+    assert secret not in contents
+    assert "password policy" in contents
+
+
 def test_repl_memory_review_shows_agent_notes(tmp_path, monkeypatch, capsys):
     from pico.cli_commands import run_repl
 

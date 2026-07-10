@@ -327,7 +327,15 @@ def redact_artifact(value, key=None, env=None, secret_env_names=None):
     if isinstance(value, list):
         return [redact_artifact(item, key=key, env=env, secret_env_names=secret_env_names) for item in value]
     if isinstance(value, tuple):
-        return [redact_artifact(item, key=key, env=env, secret_env_names=secret_env_names) for item in value]
+        return tuple(
+            redact_artifact(
+                item,
+                key=key,
+                env=env,
+                secret_env_names=secret_env_names,
+            )
+            for item in value
+        )
     if isinstance(value, str):
         return redact_text(value, env=env, secret_env_names=secret_env_names)
     return value

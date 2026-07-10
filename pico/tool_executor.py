@@ -10,6 +10,7 @@ from dataclasses import dataclass
 import re
 import subprocess
 
+from . import security as securitylib
 from .recovery_checkpoint_writer import current_recovery_checkpoint_id
 from .recovery_paths import (
     hash_file_bytes,
@@ -22,6 +23,7 @@ from .recovery_policy import (
     snapshot_eligibility,
 )
 from .safe_subprocess import run_hardened_git
+from .tools import SensitiveToolError
 from .workspace import clip
 
 
@@ -151,6 +153,17 @@ class ToolExecutor:
 
         try:
             agent.validate_tool(name, args)
+        except SensitiveToolError as exc:
+            return ToolExecutionResult(
+                content=f"error: {exc.code}",
+                metadata=_metadata(
+                    "rejected",
+                    effect_class=effect_class,
+                    tool_error_code=exc.code,
+                    security_event_type="sensitive_access_block",
+                    risk_level="high",
+                ),
+            )
         except Exception as exc:
             example = agent.tool_example(name)
             message = f"error: invalid arguments for {name}: {exc}"
@@ -265,7 +278,7 @@ class ToolExecutor:
                 # 会在观察到 delta 之后按需生成（见下面的 _lazy_capture_before_file_states）。
                 observer_before = agent.workspace_observer.capture()
 
-            content = clip(tool["run"](args))
+            content = clip(agent.redact_text(tool["run"](args)))
             shell_side_effects = []
             if records_recovery and name == "run_shell" and observer_before is not None:
                 observer_after = agent.workspace_observer.capture()
@@ -335,6 +348,7 @@ class ToolExecutor:
             _finalize_interrupted_pending(agent, pending_record)
             raise
         except Exception as exc:
+            safe_error_message = agent.redact_text(str(exc))
             shell_side_effects = []
             if records_recovery and name == "run_shell" and observer_before is not None:
                 try:
@@ -391,9 +405,12 @@ class ToolExecutor:
                 command_risk=command_risk,
                 command_approval=command_approval,
                 content="",
-                error_message=str(exc),
+                error_message=safe_error_message,
             )
-            return ToolExecutionResult(content=f"error: tool {name} failed: {exc}", metadata=metadata)
+            return ToolExecutionResult(
+                content=f"error: tool {name} failed: {safe_error_message}",
+                metadata=metadata,
+            )
 
 
 def _add_command_policy(metadata, command_risk, command_approval):
@@ -520,6 +537,18 @@ def _capture_path_snapshot(agent, raw_paths):
     for raw_path in raw_paths or []:
         try:
             normalized = normalize_workspace_relative_path(raw_path)
+        except ValueError:
+            continue
+        eligibility = snapshot_eligibility(
+            workspace_root,
+            normalized,
+            max_blob_size=agent.project_max_blob_size,
+            env=getattr(agent, "redaction_env", None),
+            secret_env_names=getattr(agent, "secret_env_names", ()),
+        )
+        if not eligibility.get("snapshot_eligible", False):
+            continue
+        try:
             resolved = resolve_workspace_relative_path(workspace_root, normalized)
         except ValueError:
             continue
@@ -581,21 +610,33 @@ def _capture_before_file_states_for_paths(agent, raw_paths):
     for raw_path in raw_paths or []:
         try:
             normalized = normalize_workspace_relative_path(raw_path)
-            resolved = resolve_workspace_relative_path(workspace_root, normalized)
         except ValueError:
-            continue
-        if not resolved.exists() or not resolved.is_file():
             continue
         eligibility = snapshot_eligibility(
             workspace_root,
             normalized,
             max_blob_size=agent.project_max_blob_size,
+            env=getattr(agent, "redaction_env", None),
+            secret_env_names=getattr(agent, "secret_env_names", ()),
         )
         if not eligibility.get("snapshot_eligible", False):
             continue
         try:
+            resolved = resolve_workspace_relative_path(workspace_root, normalized)
+        except ValueError:
+            continue
+        if not resolved.exists() or not resolved.is_file():
+            continue
+        try:
+            securitylib.require_regular_no_symlink(resolved)
             data = resolved.read_bytes()
-        except OSError:
+        except (OSError, ValueError):
+            continue
+        if securitylib.contains_secret_material(
+            data.decode("utf-8", errors="replace"),
+            env=getattr(agent, "redaction_env", None),
+            secret_env_names=getattr(agent, "secret_env_names", ()),
+        ):
             continue
         info = store.write_blob(data, "text")
         states[normalized] = {
@@ -629,6 +670,8 @@ def _fill_git_head_before_file_states(agent, raw_paths, before_file_states):
             normalized = normalize_workspace_relative_path(raw_path)
         except ValueError:
             continue
+        if securitylib.is_sensitive_path(normalized):
+            continue
         if normalized in states:
             continue
         missing_paths.append(normalized)
@@ -651,7 +694,19 @@ def _fill_git_head_before_file_states(agent, raw_paths, before_file_states):
             continue
         if proc.returncode != 0:
             continue
-        info = agent.checkpoint_store.write_blob(proc.stdout, "text")
+        raw_stdout = (
+            proc.stdout.encode("utf-8")
+            if isinstance(proc.stdout, str)
+            else bytes(proc.stdout)
+        )
+        decoded_stdout = raw_stdout.decode("utf-8", errors="replace")
+        if securitylib.contains_secret_material(
+            decoded_stdout,
+            env=getattr(agent, "redaction_env", None),
+            secret_env_names=getattr(agent, "secret_env_names", ()),
+        ):
+            continue
+        info = agent.checkpoint_store.write_blob(raw_stdout, "text")
         states[path] = {
             "before_blob_ref": info["blob_ref"],
             "before_hash": info["content_hash"],
@@ -684,6 +739,8 @@ def _build_file_entries(agent, name, args, affected_paths, before_snapshot, befo
             workspace_root,
             normalized,
             max_blob_size=agent.project_max_blob_size,
+            env=getattr(agent, "redaction_env", None),
+            secret_env_names=getattr(agent, "secret_env_names", ()),
         )
         try:
             resolved = resolve_workspace_relative_path(workspace_root, normalized)
@@ -717,14 +774,24 @@ def _build_file_entries(agent, name, args, affected_paths, before_snapshot, befo
 
         if entry["snapshot_eligible"] and exists_after:
             try:
+                securitylib.require_regular_no_symlink(resolved)
                 data = resolved.read_bytes()
-                info = store.write_blob(data, "text")
-                entry["after_blob_ref"] = info["blob_ref"]
-                entry["after_hash"] = info["content_hash"]
-                entry["expected_current_hash"] = info["content_hash"]
-            except OSError:
-                entry["snapshot_eligible"] = False
-                entry["ineligible_reason"] = "read_failed"
+                if securitylib.contains_secret_material(
+                    data.decode("utf-8", errors="replace"),
+                    env=getattr(agent, "redaction_env", None),
+                    secret_env_names=getattr(agent, "secret_env_names", ()),
+                ):
+                    entry["snapshot_eligible"] = False
+                    entry["ineligible_reason"] = "sensitive_content"
+                else:
+                    info = store.write_blob(data, "text")
+                    entry["after_blob_ref"] = info["blob_ref"]
+                    entry["after_hash"] = info["content_hash"]
+                    entry["expected_current_hash"] = info["content_hash"]
+            except (OSError, ValueError):
+                if entry["ineligible_reason"] != "sensitive_content":
+                    entry["snapshot_eligible"] = False
+                    entry["ineligible_reason"] = "read_failed"
 
         # before_file_states 保存了执行前的真实字节；如果没有对应 blob，
         # 退回到 before_snapshot 里的 sha256，至少保留冲突判断线索。

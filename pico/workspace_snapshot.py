@@ -1,9 +1,10 @@
 """Bounded workspace snapshot helpers for side-effect detection."""
 
-import hashlib
 import os
 from pathlib import Path
 
+from . import security as securitylib
+from .recovery_paths import hash_file_bytes
 from .workspace import IGNORED_PATH_NAMES
 
 DEFAULT_MAX_SNAPSHOT_FILES = 5000
@@ -29,9 +30,10 @@ def capture_workspace_snapshot(
         if scanned_bytes + size > max_total_bytes:
             break
         try:
-            snapshot[path.relative_to(root).as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
+            info = hash_file_bytes(path)
         except OSError:
             continue
+        snapshot[path.relative_to(root).as_posix()] = info["content_hash"]
         scanned_files += 1
         scanned_bytes += size
     return snapshot
@@ -39,17 +41,36 @@ def capture_workspace_snapshot(
 
 def _iter_snapshot_files(root):
     for current_root, dirnames, filenames in os.walk(root):
-        dirnames[:] = sorted(name for name in dirnames if name not in IGNORED_PATH_NAMES)
+        current = Path(current_root)
+        safe_dirnames = []
+        for name in sorted(dirnames):
+            candidate = current / name
+            try:
+                relative = candidate.relative_to(root).as_posix()
+            except ValueError:
+                continue
+            if (
+                name in IGNORED_PATH_NAMES
+                or securitylib.is_sensitive_path(relative)
+            ):
+                continue
+            safe_dirnames.append(name)
+        dirnames[:] = safe_dirnames
         for filename in sorted(filenames):
             path = Path(current_root) / filename
             try:
-                relative_parts = path.relative_to(root).parts
+                relative = path.relative_to(root)
             except ValueError:
                 continue
+            relative_parts = relative.parts
             if any(part in IGNORED_PATH_NAMES for part in relative_parts):
                 continue
-            if path.is_file():
-                yield path
+            if securitylib.is_sensitive_path(relative.as_posix()):
+                continue
+            try:
+                yield securitylib.require_regular_no_symlink(path)
+            except (FileNotFoundError, OSError, ValueError):
+                continue
 
 
 def diff_workspace_snapshots(before, after):
