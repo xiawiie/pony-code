@@ -6106,6 +6106,52 @@ Do not run a Provider matrix, retry either Provider again, publish, push, or beg
 
 ---
 
+## Post-Task 19 Whole-Branch Review Correction (2026-07-10)
+
+The broad final review found six localized C-contract defects after the passing
+real gate. Repair them in one TDD wave; do not redesign the architecture or
+start A-stage work:
+
+1. Align history trimming to the nearest preceding top-level plain user so a
+   floor cannot retain tool pairs while dropping the current frozen injection.
+2. Keep `decode_action(Response)` total for non-iterable `content` and reject
+   incomplete nested attribute-protocol tags instead of executing them.
+3. Treat `rg` exit code 1 as no matches and exit codes greater than 1 as tool
+   errors so search failures cannot be reported as `tool_status=ok`.
+4. Clear `last_request_metadata` at each run boundary before request building,
+   preventing a failed new run from reporting a previous run's request.
+5. Derive completion `total_tokens` whenever the Provider value is absent or
+   non-integer, using valid input/output counts.
+6. If canonical pair persistence fails after a tool ran, restore the pre-tool
+   working-memory/file-summary state before terminal persistence so no
+   unpaired tool fact can be injected later.
+
+Also close the directly related small gaps:
+
+- enforce `injection_budget_ratio=0` as zero injected source blocks;
+- make the codec excerpt-bound test exceed the 160-character limit;
+- mark C-06 complete while stating that its real JSON remains intentionally
+  ignored;
+- align README and CI with the existing Python 3.11+ package requirement, run
+  the offline live-harness tests in CI, and mark the v1 architecture overview
+  as historical/superseded.
+
+Each production repair must first have a focused failing test with the expected
+failure, then the minimum implementation, then its focused green test. Finish
+with Ruff, the full default suite, the offline live-harness suite, structural
+deletion scans, memory-quality, memory ablation, and performance JSON smokes.
+
+The review suggestion to reject `stopped_at_step_limit` in the live harness is
+not adopted. The authoritative design's real-gate contract is a native Action,
+complete usage/budget accounting, schema v3, stable request injection/cache,
+and terminal task/report/trace artifacts; it explicitly separates Provider
+answer quality from this gate. The passing report satisfies that contract.
+Changing the gate now would broaden the approved semantics and contradict Task
+19's explicit no-retry boundary. Retain the report and document this confidence
+limit; do not make another Provider call.
+
+---
+
 ## Requirement-to-Task Traceability
 
 | Approved requirement | Owning task(s) |
