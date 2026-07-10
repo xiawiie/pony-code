@@ -278,3 +278,9 @@ Live-Task 11: complete (commit 5da7794, controller-self clean; main + do_reset +
 Live-Task 12: complete (commit b75267b, controller-self clean; README)
 Live-Task 13: complete (commits af680b6..6a0f005; real-API 27/27 assertions, wall≈78s, ~$0.05)
 Live-E2E final: SHIP — end-to-end verification of P1+P2+P3 optimizations against real Anthropic API. Fixed real bug: agent_loop merged v1 system_cache_key over v2 (memory-index churn leaking into cache anchor).
+
+## Action Kernel and Messages v3 2026-07-10
+Baseline: 1ba4ce6 (approved plan repair)
+Branch: codex/action-kernel-messages-v3
+Plan: docs/superpowers/plans/2026-07-10-pico-action-kernel-messages-v3.md
+Task 1: complete (commits 1ba4ce6..0fe1d12, review clean; Ruff green; 668 passed, 1 skipped)
