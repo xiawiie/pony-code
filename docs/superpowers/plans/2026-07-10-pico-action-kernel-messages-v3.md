@@ -2464,20 +2464,35 @@ git commit -m "refactor(action-kernel): route all model output through codec"
 - Modify: `pico/prompt_prefix.py`
 - Modify: `pico/runtime.py`
 - Modify: `pico/evaluation/experiments_synthetic.py`
+- Modify: `pico/evaluation/experiments_real.py`
+- Modify: `pico/evaluation/fixed_benchmark.py`
+- Modify: `benchmarks/coding_tasks.json`
 - Modify: `benchmarks/perf/bench_build_v2.py`
+- Modify: `tests/test_allowed_tools.py`
+- Modify: `tests/test_clean_up.py`
+- Modify: `tests/test_config_context.py`
+- Modify: `tests/test_context_history_budget.py`
 - Modify: `tests/test_context_manager.py`
 - Modify: `tests/test_context_manager_v2.py`
 - Modify: `tests/test_context_manager_injection.py`
 - Modify: `tests/test_agent_loop_injection_sent.py`
+- Modify: `tests/test_message_invariants.py`
 - Modify: `tests/test_metadata_completeness.py`
+- Modify: `tests/test_metrics.py`
+- Modify: `tests/test_p2_smoke.py`
+- Modify: `tests/test_prompt_prefix.py`
+- Modify: `tests/test_run_store.py`
 - Modify: `tests/test_runtime_report.py`
 - Delete: `tests/memory/test_prompt_layout.py`
+- Test: `tests/test_evaluator.py`
 
 **Interfaces:**
 
 `ContextManager.build_v2(*, injection_snapshot, injection_telemetry, preflight_metadata, runtime_feedback="") -> tuple[dict, dict]`.
 
 `AgentLoop` renders `render_current_user_message(agent, user_message)` exactly once after preflight and reuses the result for every attempt in that top-level turn.
+
+Every direct `build_v2` consumer must first make its current plain user message the final canonical request-view message, then render its snapshot and call the keyword-only API.  A measurement preview that immediately calls `agent.ask(user_message)` must put that temporary message on a copied/restored session view, so `ask()` remains the sole persistent user-turn writer.  The fixed benchmark must seed canonical `messages` and use `history_soft_cap` / `history_floor_messages`, not legacy `history`, `total_budget`, or `section_budgets`.
 
 - [ ] **Step 1: Add a deterministic three-attempt snapshot test**
 
@@ -2782,6 +2797,8 @@ Reduce `ContextManager.__init__` to `def __init__(self, agent): self.agent = age
 
 Delete `tests/memory/test_prompt_layout.py` because every assertion is against the removed string layout. Rewrite `tests/test_context_manager.py` to retain only pinned-cap, tool-schema, cache-key, and message-drop behavior against `build_v2`. Update every direct `build_v2(user_message)` call and `benchmarks/perf/bench_build_v2.py` to render one snapshot first and call the new keyword-only signature.
 
+For the direct request-view helpers in `experiments_synthetic.py`, `experiments_real.py`, and `bench_build_v2.py`, seed a final canonical plain user message before rendering.  In `experiments_real.py`, remove that preview-only message after computing the request metrics and before calling `agent.ask(user_message)`.  Migrate the fixed `context_reduction_checkpoint` fixture in both `fixed_benchmark.py` and `benchmarks/coding_tasks.json` to canonical messages plus a small `history_soft_cap`; retain the benchmark's assertion that a real request-view drop creates the checkpoint.  Replace removed `Pico.prompt` tests with stable-prefix or actual-request assertions, and update the generic trace fixture to use `request_metadata` / `request_chars`.
+
 - [ ] **Step 10: Remove the production context-reduction flag**
 
 Delete `"context_reduction": True` from `DEFAULT_FEATURE_FLAGS`. Delete every production `feature_enabled("context_reduction")` branch. Keep `history_soft_cap` and `history_floor_messages` config because they control the real request view.
@@ -2789,7 +2806,7 @@ Delete `"context_reduction": True` from `DEFAULT_FEATURE_FLAGS`. Delete every pr
 - [ ] **Step 11: Run the request-loop convergence gate**
 
 ```bash
-uv run pytest tests/test_agent_loop_injection_sent.py tests/test_context_manager.py tests/test_context_manager_v2.py tests/test_context_manager_injection.py tests/test_context_history_budget.py tests/test_metadata_completeness.py tests/test_runtime_report.py -q
+uv run pytest tests/test_agent_loop_injection_sent.py tests/test_allowed_tools.py tests/test_clean_up.py tests/test_config_context.py tests/test_context_history_budget.py tests/test_context_manager.py tests/test_context_manager_v2.py tests/test_context_manager_injection.py tests/test_message_invariants.py tests/test_metadata_completeness.py tests/test_metrics.py tests/test_p2_smoke.py tests/test_prompt_prefix.py tests/test_run_store.py tests/test_runtime_report.py tests/test_evaluator.py -q
 uv run python -m benchmarks.perf.bench_build_v2
 ```
 
@@ -2798,15 +2815,15 @@ Expected: tests pass; benchmark emits valid JSON; the three-attempt test sees on
 - [ ] **Step 12: Run structural checks for removed request paths**
 
 ```bash
-rg -n 'ContextManager\.build\(|_build_prompt_and_metadata|budget_reductions|prompt_chars|section_order|section_budgets|history_chars|feature_enabled\("context_reduction"\)|"context_reduction":' pico benchmarks tests
+rg -n 'ContextManager\.build\(|_build_prompt_and_metadata|\bbudget_reductions\b|\bprompt_chars\b|\bsection_order\b|\bsection_budgets\b|\bhistory_chars\b|feature_enabled\("context_reduction"\)|"context_reduction":' pico benchmarks tests --glob '!benchmarks/results/**' --glob '!benchmarks/live_e2e/**'
 ```
 
-Expected: no production or active-test hits. Historical docs are outside this command.
+Expected: no production or active-test hits. Stored benchmark artifacts and the live harness are excluded because they are historical data and Task 16's dedicated migration scope, respectively.
 
 - [ ] **Step 13: Commit request-loop convergence**
 
 ```bash
-git add pico/agent_loop.py pico/context_manager.py pico/context/intent.py pico/prompt_prefix.py pico/runtime.py pico/evaluation/experiments_synthetic.py benchmarks/perf/bench_build_v2.py tests/test_context_manager.py tests/test_context_manager_v2.py tests/test_context_manager_injection.py tests/test_agent_loop_injection_sent.py tests/test_metadata_completeness.py tests/test_runtime_report.py tests/memory/test_prompt_layout.py
+git add pico/agent_loop.py pico/context_manager.py pico/context/intent.py pico/prompt_prefix.py pico/runtime.py pico/evaluation/experiments_synthetic.py pico/evaluation/experiments_real.py pico/evaluation/fixed_benchmark.py benchmarks/coding_tasks.json benchmarks/perf/bench_build_v2.py tests/test_agent_loop_injection_sent.py tests/test_allowed_tools.py tests/test_clean_up.py tests/test_config_context.py tests/test_context_history_budget.py tests/test_context_manager.py tests/test_context_manager_v2.py tests/test_context_manager_injection.py tests/test_message_invariants.py tests/test_metadata_completeness.py tests/test_metrics.py tests/test_p2_smoke.py tests/test_prompt_prefix.py tests/test_run_store.py tests/test_runtime_report.py tests/memory/test_prompt_layout.py
 git commit -m "refactor(context): freeze turn request view"
 ```
 
