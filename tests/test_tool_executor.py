@@ -160,6 +160,45 @@ def test_runner_keyboard_interrupt_finalizes_pending_change_then_reraises(tmp_pa
     assert records[-1]["status"] == "interrupted"
 
 
+def test_post_runner_interrupt_closes_workspace_change_then_reraises(tmp_path, monkeypatch):
+    agent = build_agent(tmp_path)
+    original_capture = agent.workspace_observer.capture
+    capture_calls = 0
+
+    def interrupt_after_runner():
+        nonlocal capture_calls
+        capture_calls += 1
+        if capture_calls == 2:
+            raise KeyboardInterrupt()
+        return original_capture()
+
+    agent.tools["run_shell"]["run"] = lambda args: "exit_code: 0\nstdout:\nok\nstderr:\n(empty)"
+    monkeypatch.setattr(agent.workspace_observer, "capture", interrupt_after_runner)
+
+    with pytest.raises(KeyboardInterrupt):
+        agent.execute_tool("run_shell", {"command": "printf ok", "timeout": 5})
+
+    records = agent.checkpoint_store.list_tool_change_records()
+    assert records[-1]["status"] == "interrupted"
+
+
+def test_post_runner_interrupt_closes_memory_audit_then_reraises(tmp_path, monkeypatch):
+    agent = build_agent(tmp_path)
+    agent.tools["memory_save"]["run"] = lambda args: "saved"
+    monkeypatch.setattr(
+        agent,
+        "update_memory_after_tool",
+        lambda *args: (_ for _ in ()).throw(KeyboardInterrupt()),
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        agent.execute_tool("memory_save", {"note": "remember this"})
+
+    records = agent.checkpoint_store.list_tool_change_records()
+    assert records[-1]["effect_class"] == "memory_write"
+    assert records[-1]["status"] == "interrupted"
+
+
 def test_missing_memory_dependencies_and_files_never_report_ok(tmp_path, monkeypatch):
     agent = build_agent(tmp_path)
     agent.tools["memory_list"]["run"] = lambda args: tool_memory_list(

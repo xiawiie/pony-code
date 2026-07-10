@@ -246,31 +246,25 @@ class ToolExecutor:
                 input_summary=_summarize_input(args),
             )
 
-        before_paths = _direct_tool_candidate_paths(name, args) if records_recovery else []
-        # 直接改文件的工具（write_file/patch_file）在执行前只对它们要碰的那一小
-        # 组路径落 blob；这样恢复能拿到真实字节，也不会去读整个 workspace。
-        before_snapshot = _capture_path_snapshot(agent, before_paths) if records_recovery else {}
-        before_file_states = _capture_before_file_states_for_paths(agent, before_paths) if records_recovery else {}
-        before_existed = set(before_snapshot.keys())
+        before_paths = []
+        before_snapshot = {}
+        before_file_states = {}
+        before_existed = set()
         observer_before = None
-        if records_recovery and name == "run_shell":
-            # run_shell 只做轻量的 before 观察，不预先落 blob。真正的 before-blob
-            # 会在观察到 delta 之后按需生成（见下面的 _lazy_capture_before_file_states）。
-            observer_before = agent.workspace_observer.capture()
 
         try:
-            try:
-                content = clip(tool["run"](args))
-            except KeyboardInterrupt:
-                if pending_record is not None:
-                    try:
-                        agent.tool_change_recorder.finalize(
-                            pending_record["tool_change_id"],
-                            status="interrupted",
-                        )
-                    except Exception:
-                        pass
-                raise
+            before_paths = _direct_tool_candidate_paths(name, args) if records_recovery else []
+            # 直接改文件的工具（write_file/patch_file）在执行前只对它们要碰的那一小
+            # 组路径落 blob；这样恢复能拿到真实字节，也不会去读整个 workspace。
+            before_snapshot = _capture_path_snapshot(agent, before_paths) if records_recovery else {}
+            before_file_states = _capture_before_file_states_for_paths(agent, before_paths) if records_recovery else {}
+            before_existed = set(before_snapshot.keys())
+            if records_recovery and name == "run_shell":
+                # run_shell 只做轻量的 before 观察，不预先落 blob。真正的 before-blob
+                # 会在观察到 delta 之后按需生成（见下面的 _lazy_capture_before_file_states）。
+                observer_before = agent.workspace_observer.capture()
+
+            content = clip(tool["run"](args))
             shell_side_effects = []
             if records_recovery and name == "run_shell" and observer_before is not None:
                 observer_after = agent.workspace_observer.capture()
@@ -336,6 +330,9 @@ class ToolExecutor:
                 content=content,
             )
             return ToolExecutionResult(content=content, metadata=metadata)
+        except KeyboardInterrupt:
+            _finalize_interrupted_pending(agent, pending_record)
+            raise
         except Exception as exc:
             shell_side_effects = []
             if records_recovery and name == "run_shell" and observer_before is not None:
@@ -404,6 +401,17 @@ def _add_command_policy(metadata, command_risk, command_approval):
     if command_approval:
         metadata["command_approval"] = dict(command_approval)
     return metadata
+
+
+def _finalize_interrupted_pending(agent, pending_record):
+    if pending_record is None:
+        return
+    try:
+        current = agent.checkpoint_store.load_tool_change_record(pending_record["tool_change_id"])
+        if current.get("status") == "pending":
+            agent.tool_change_recorder.finalize(pending_record["tool_change_id"], status="interrupted")
+    except Exception:
+        pass
 
 
 def _finalize_tool_side_effects(
