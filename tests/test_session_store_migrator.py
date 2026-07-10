@@ -336,6 +336,16 @@ def test_v3_is_validated_and_returned_without_history():
     assert migrate_session_to_v3(source) == source
 
 
+@pytest.mark.parametrize("schema_version", ["3", 3.0])
+def test_v3_requires_an_integer_schema_version(schema_version):
+    with pytest.raises(SessionMigrationError, match="^invalid session schema version$"):
+        migrate_session_to_v3({
+            "id": "s3",
+            "schema_version": schema_version,
+            "messages": [],
+        })
+
+
 def test_load_migrates_v2_to_v3_and_backup_is_original_bytes(store):
     path = store.path_for("s2")
     path.parent.mkdir(parents=True, exist_ok=True)

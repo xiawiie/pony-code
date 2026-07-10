@@ -110,6 +110,8 @@ def migrate_session_to_v3(session):
     history = migrated.get("history", [])
 
     if version == 3:
+        if type(raw_version) is not int or raw_version != 3:
+            raise SessionMigrationError("invalid session schema version")
         if "history" in migrated:
             raise SessionMigrationError("v3 session must not contain history")
         try:
