@@ -20,6 +20,12 @@ SECRET_SHAPED_TEXT_PATTERNS = (
 _PLACEHOLDER_VALUE_RE = re.compile(
     r"(?i)^(?:example|dummy|changeme|replace[-_ ]?me|your[-_ ]?(?:api[-_ ]?)?key|x{3,}|\$\{[^}]+\}|<[^>]+>)$"
 )
+_PLACEHOLDER_SPAN_RE = re.compile(r"(\$\{[^}]+\}|<[^>]+>)")
+_QUOTED_OR_PLACEHOLDER_VALUE_PATTERN = (
+    r'"(?:\\.|[^"\\])+"'
+    r"|'(?:\\.|[^'\\])+'"
+    r"|\$\{[^}]+\}"
+)
 _CONCRETE_TOKEN_RES = (
     re.compile(r"\bsk-[A-Za-z0-9_-]{6,}\b"),
     re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}\b"),
@@ -31,13 +37,13 @@ _CONCRETE_TOKEN_RES = (
     re.compile(r"\bAIza[0-9A-Za-z_-]{20,}\b"),
 )
 _SECRET_ASSIGNMENT_RE = re.compile(
-    r"(?i)(\b(?:api[_ -]?key|access[_ -]?(?:key|token)|auth[_ -]?token|client[_ -]?secret|credential|secret|password|token)\b[\"']?\s*[:=]\s*[\"']?)(\$\{[^}]+\}|[^\"'\s,;}]+)"
+    rf"(?i)(\b(?:api[_ -]?key|access[_ -]?(?:key|token)|auth[_ -]?token|client[_ -]?secret|credential|secret|password|token)\b[\"']?\s*[:=]\s*)({_QUOTED_OR_PLACEHOLDER_VALUE_PATTERN}|[^\"'\s,;}}]+)"
 )
 _AUTH_HEADER_RE = re.compile(r"(?i)(authorization\s*:\s*(?:bearer|basic)\s+)([^\s]+)")
 _SECRET_FLAG_RE = re.compile(
-    r"(?i)(--(?:api[-_]?key|access[-_]?key|auth[-_]?token|credential|secret|password|token)(?:=|\s+))([^\s]+)"
+    rf"(?i)(--(?:api[-_]?key|access[-_]?key|auth[-_]?token|credential|secret|password|token)(?:=|\s+))({_QUOTED_OR_PLACEHOLDER_VALUE_PATTERN}|[^\s]+)"
 )
-_URL_USERINFO_RE = re.compile(r"(?i)(https?://[^/@\s:]+:)([^/@\s]+)(@)")
+_URL_USERINFO_RE = re.compile(r"(?i)(https?://[^/@\s:]+:)([^/@\s]+)(?=@)")
 _URL_SECRET_RE = re.compile(r"(?i)([?&](?:api[_-]?key|token|secret|password)=)([^&#\s]+)")
 _PRIVATE_KEY_RE = re.compile(
     r"-----BEGIN(?: [A-Z0-9]+)? PRIVATE KEY-----.*?-----END(?: [A-Z0-9]+)? PRIVATE KEY-----",
@@ -127,11 +133,27 @@ def _is_secret_mapping_key(key):
     )
 
 
-def _replace_assignment(match):
-    value = match.group(2).strip("\"'")
+def _replace_secret_value(match):
+    matched_value = match.group(2)
+    quote = matched_value[0] if matched_value[-1:] == matched_value[:1] and matched_value[:1] in "\"'" else ""
+    value = matched_value[1:-1] if quote else matched_value
     if _PLACEHOLDER_VALUE_RE.fullmatch(value):
         return match.group(0)
-    return match.group(1) + REDACTED_VALUE
+    return match.group(1) + quote + REDACTED_VALUE + quote
+
+
+def _sub_concrete_token_outside_placeholders(pattern, text):
+    return "".join(
+        part if index % 2 else pattern.sub(REDACTED_VALUE, part)
+        for index, part in enumerate(_PLACEHOLDER_SPAN_RE.split(text))
+    )
+
+
+def _replace_known_secret(text, secret):
+    return REDACTED_VALUE.join(
+        part.replace(secret, REDACTED_VALUE)
+        for part in text.split(REDACTED_VALUE)
+    )
 
 
 def redact_text(text, env=None, secret_env_names=None):
@@ -142,17 +164,17 @@ def redact_text(text, env=None, secret_env_names=None):
         reverse=True,
     ):
         if len(value) >= MIN_SECRET_SUBSTRING_REDACTION_LENGTH:
-            text = text.replace(value, REDACTED_VALUE)
+            text = _replace_known_secret(text, value)
         elif text == value:
             text = REDACTED_VALUE
     text = _PRIVATE_KEY_RE.sub(REDACTED_VALUE, text)
-    text = _AUTH_HEADER_RE.sub(lambda match: match.group(1) + REDACTED_VALUE, text)
-    text = _SECRET_FLAG_RE.sub(lambda match: match.group(1) + REDACTED_VALUE, text)
-    text = _URL_USERINFO_RE.sub(lambda match: match.group(1) + REDACTED_VALUE + match.group(3), text)
-    text = _SECRET_ASSIGNMENT_RE.sub(_replace_assignment, text)
-    text = _URL_SECRET_RE.sub(lambda match: match.group(1) + REDACTED_VALUE, text)
+    text = _AUTH_HEADER_RE.sub(_replace_secret_value, text)
+    text = _SECRET_FLAG_RE.sub(_replace_secret_value, text)
+    text = _URL_USERINFO_RE.sub(_replace_secret_value, text)
+    text = _SECRET_ASSIGNMENT_RE.sub(_replace_secret_value, text)
+    text = _URL_SECRET_RE.sub(_replace_secret_value, text)
     for pattern in _CONCRETE_TOKEN_RES:
-        text = pattern.sub(REDACTED_VALUE, text)
+        text = _sub_concrete_token_outside_placeholders(pattern, text)
     return text
 
 

@@ -110,6 +110,45 @@ def test_secret_detector_ignores_security_prose_and_sample_values():
 
 
 @pytest.mark.parametrize(
+    ("text", "expected"),
+    (
+        ('password="correct horse battery staple"', f'password="{REDACTED_VALUE}"'),
+        ("password='correct;horse,battery staple'", f"password='{REDACTED_VALUE}'"),
+        ('tool --password "correct horse battery staple"', f'tool --password "{REDACTED_VALUE}"'),
+        ("tool --password='correct;horse,battery staple'", f"tool --password='{REDACTED_VALUE}'"),
+    ),
+)
+def test_redact_text_consumes_complete_quoted_assignment_and_flag_values(text, expected):
+    assert redact_text(text, env={}) == expected
+    assert contains_secret_material(expected, env={}) is False
+
+
+@pytest.mark.parametrize(
+    "text",
+    (
+        "Authorization: Bearer example",
+        "tool --api-key ${TOKEN}",
+        "https://user:<placeholder>@example.test/v1",
+        "https://example.test/v1?api_key=your-api-key",
+        "API_KEY=<sk-example>",
+    ),
+)
+def test_placeholder_values_are_preserved_across_all_redaction_stages(text):
+    assert redact_text(text, env={}) == text
+    assert contains_secret_material(text, env={}) is False
+
+
+def test_redact_text_preserves_marker_when_env_secret_overlaps_it():
+    env = {"TOKEN": "redacted"}
+
+    safe = redact_text("redacted", env=env)
+
+    assert safe == REDACTED_VALUE
+    assert redact_text(safe, env=env) == safe
+    assert contains_secret_material(REDACTED_VALUE, env=env) is False
+
+
+@pytest.mark.parametrize(
     "key",
     (
         "api_key",
