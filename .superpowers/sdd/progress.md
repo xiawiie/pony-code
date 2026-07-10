@@ -293,3 +293,5 @@ Task 5: complete (commits 704e4bd..25a86ca, review clean; 54 passed, 1 skipped f
   follow-up: a47659b migrated two recovery benchmark verifier reads; re-review clean; evaluator 12 passed
 Task 6: complete (commits 0419ea9..309c749, review clean; 33 passed CLI/evaluator integration gate)
 Task 7: complete (commits bc8366c..e0dce59, review clean; 52 passed, 1 skipped Phase 2 gate)
+Task 8: complete (commits 5de00d5..04fe97c, review clean; 68 focused passed)
+  plan scope correction: 3ce1afc records the required runtime/evaluation side-channel cleanup
