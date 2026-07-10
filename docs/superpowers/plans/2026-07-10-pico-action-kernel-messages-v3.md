@@ -3078,7 +3078,7 @@ summary = agent.session["memory"]["file_summaries"][task["filename"]]["summary"]
 expected_working_line = f"{task['filename']} -> {summary}"
 ```
 
-Pass `expected_working_line` into the fake client, then require both the marker and that exact line in the captured prompt; a matching fact elsewhere does not count. This preserves the existing read-file summary format (including its line-number prefix) rather than changing the memory subsystem for an experiment. Apply the canonical filler, captured bootstrap id, and `bootstrap_tool_turn_dropped` row/aggregate to both `_run_memory_variant` / `run_memory_dependency_experiment` and `_run_memory_task_variant` / `run_large_scale_memory_experiment`.
+Pass `expected_working_line` into the fake client, then require a non-empty expected line plus both the marker and that exact line inside the `<pico:memory_index>` block in the captured prompt; a matching fact or marker after `</pico:memory_index>` does not count. Add a negative test with the marker/line outside the closed block. This preserves the existing read-file summary format (including its line-number prefix) rather than changing the memory subsystem for an experiment. Apply the canonical filler, captured bootstrap id, and `bootstrap_tool_turn_dropped` row/aggregate to both `_run_memory_variant` / `run_memory_dependency_experiment` and `_run_memory_task_variant` / `run_large_scale_memory_experiment`. Use `bool(rows) and all(row["bootstrap_tool_turn_dropped"] for row in rows)` for every aggregate, and add a zero-repetitions regression that asserts every variant reports `False` rather than vacuous success.
 
 Update the stale private re-export in `pico/evaluation/metrics_experiments.py` to:
 
