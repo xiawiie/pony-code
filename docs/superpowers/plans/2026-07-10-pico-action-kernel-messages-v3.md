@@ -3071,8 +3071,14 @@ Return that boolean in every row and aggregate:
 )
 ```
 
-The fake experiment client must inspect the actual prompt received by its `complete` method and detect `filename -> expected_fact` under `Recent working file summaries:`. It must not inspect `agent.session` or legacy builder metadata.
-Require both the marker and the exact `f"{filename} -> {expected_fact}"` line in the captured prompt; a matching line elsewhere does not count. Apply the canonical filler, captured bootstrap id, and `bootstrap_tool_turn_dropped` row/aggregate to both `_run_memory_variant` / `run_memory_dependency_experiment` and `_run_memory_task_variant` / `run_large_scale_memory_experiment`.
+The fake experiment client must inspect the actual prompt received by its `complete` method and detect the expected working-summary line under `Recent working file summaries:`. It must not inspect `agent.session` or legacy builder metadata. Before the follow-up, the harness derives that line from the canonical summary already produced by the bootstrap read:
+
+```python
+summary = agent.session["memory"]["file_summaries"][task["filename"]]["summary"]
+expected_working_line = f"{task['filename']} -> {summary}"
+```
+
+Pass `expected_working_line` into the fake client, then require both the marker and that exact line in the captured prompt; a matching fact elsewhere does not count. This preserves the existing read-file summary format (including its line-number prefix) rather than changing the memory subsystem for an experiment. Apply the canonical filler, captured bootstrap id, and `bootstrap_tool_turn_dropped` row/aggregate to both `_run_memory_variant` / `run_memory_dependency_experiment` and `_run_memory_task_variant` / `run_large_scale_memory_experiment`.
 
 Update the stale private re-export in `pico/evaluation/metrics_experiments.py` to:
 
