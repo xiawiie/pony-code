@@ -3138,7 +3138,10 @@ git commit -m "fix(memory): inject working summaries into sent requests"
 - Modify: `pico/task_state.py`
 - Modify: `tests/test_agent_loop.py`
 - Modify: `tests/test_agent_loop_digest.py`
+- Modify: `tests/test_agent_loop_v2_shape.py`
+- Modify: `tests/test_config_context.py`
 - Modify: `tests/test_message_invariants.py`
+- Modify: `tests/test_p1_smoke.py`
 - Modify: `tests/test_runtime_report.py`
 
 **Interfaces:**
@@ -3150,7 +3153,7 @@ git commit -m "fix(memory): inject working summaries into sent requests"
 
 - [ ] **Step 1: Add COW and pair-atomicity tests**
 
-Add to `tests/test_agent_loop.py`:
+Add `import copy` to `tests/test_agent_loop.py`, then add:
 
 ```python
 def test_tool_pair_is_written_by_one_session_save_without_orphan(tmp_path, monkeypatch):
@@ -3250,6 +3253,55 @@ def test_side_effect_then_pair_save_failure_stops_before_another_provider_call(
         for message in agent.session["messages"]
     ] == [("user", "write file")]
     assert agent.current_task_state.recovery_checkpoint_id
+
+
+def test_pair_save_primary_error_survives_terminal_persistence_failure(
+    tmp_path,
+    monkeypatch,
+):
+    provider = NativeScriptProvider([
+        Response(
+            stop_reason=StopReason.TOOL_USE,
+            content=[{
+                "type": "tool_use",
+                "id": "tu_write",
+                "name": "write_file",
+                "input": {"path": "created.txt", "content": "created\n"},
+            }],
+            usage={},
+        ),
+    ])
+    agent = build_native_agent(tmp_path, provider)
+    original_save = agent.session_store.save
+    user_turn_saved = False
+
+    def fail_pair_then_terminal(session):
+        nonlocal user_turn_saved
+        has_tool_use = any(
+            isinstance(message.get("content"), list)
+            and message["content"]
+            and message["content"][0].get("type") == "tool_use"
+            for message in session.get("messages", [])
+        )
+        if has_tool_use:
+            raise OSError("pair save failed")
+        if user_turn_saved:
+            raise RuntimeError("terminal persistence failed")
+        user_turn_saved = True
+        return original_save(session)
+
+    monkeypatch.setattr(agent.session_store, "save", fail_pair_then_terminal)
+    with pytest.raises(OSError, match="pair save failed"):
+        agent.ask("write file")
+    assert len(provider.calls) == 1
+    assert all(
+        not (
+            isinstance(message.get("content"), list)
+            and message["content"]
+            and message["content"][0].get("type") == "tool_use"
+        )
+        for message in agent.session["messages"]
+    )
 ```
 
 - [ ] **Step 2: Confirm the current code persists an orphan before execution**
@@ -3326,6 +3378,17 @@ return display_content, {
 
 It must not call `agent.record_message` or save the session.
 
+Migrate every direct helper test to the new pure/COW contract rather than
+keeping a mutating compatibility wrapper:
+
+- `tests/test_agent_loop_v2_shape.py` tests `_plain_message` and
+  `make_tool_pair` shapes/metadata without a fake `record_message`.
+- `tests/test_config_context.py` calls `_prepare_tool_result` and asserts its
+  display content and digest metadata without inspecting persisted messages.
+- `tests/test_p1_smoke.py` replaces the four append-helper imports with
+  `_commit_session`, `_plain_message`, `_prepare_tool_result`, and
+  `SessionCommitError`.
+
 - [ ] **Step 6: Execute first, then build and commit the pair**
 
 In the `ToolAction` branch:
@@ -3380,19 +3443,27 @@ try:
     )
 except SessionCommitError as exc:
     task_state.stop_persistence_error("Session persistence failed.")
-    _finish_run(
-        agent=agent,
-        task_state=task_state,
-        user_message=user_message,
-        final=task_state.final_answer,
-        run_started_at=run_started_at,
-        run_tool_change_ids=run_tool_change_ids,
-        run_verification_evidence=run_verification_evidence,
-        completion_usage_totals=completion_usage_totals,
-        trigger="persistence_error",
-    )
+    try:
+        _finish_run(
+            agent=agent,
+            task_state=task_state,
+            user_message=user_message,
+            final=task_state.final_answer,
+            run_started_at=run_started_at,
+            run_tool_change_ids=run_tool_change_ids,
+            run_verification_evidence=run_verification_evidence,
+            completion_usage_totals=completion_usage_totals,
+            trigger="persistence_error",
+        )
+    except Exception:
+        logger.warning("best-effort persistence-error finalization failed", exc_info=True)
     raise exc.cause
 ```
+
+The pair-save exception is always the primary error. Terminal state,
+checkpoint, recovery artifact, and report writes are best effort in this
+Task 11 path; a second persistence failure must never mask `exc.cause` or
+resume the loop. Task 13 later centralizes terminal finalization.
 
 Only after successful pair persistence should the loop update step counters, task state, tool-finished trace, resume checkpoint, and continue.
 
@@ -3412,7 +3483,7 @@ def stop_persistence_error(self, final_answer=""):
 - [ ] **Step 8: Run pairing, digest, and persistence tests**
 
 ```bash
-uv run pytest tests/test_agent_loop.py tests/test_agent_loop_digest.py tests/test_message_invariants.py tests/test_runtime_report.py -q
+uv run pytest tests/test_agent_loop.py tests/test_agent_loop_digest.py tests/test_agent_loop_v2_shape.py tests/test_config_context.py tests/test_message_invariants.py tests/test_p1_smoke.py tests/test_runtime_report.py -q
 ```
 
 Expected: all pass; no saved transcript ends on a tool_use; the side-effect failure test makes only one Provider call.
@@ -3420,7 +3491,7 @@ Expected: all pass; no saved transcript ends on a tool_use; the side-effect fail
 - [ ] **Step 9: Commit COW pairing**
 
 ```bash
-git add pico/agent_loop.py pico/task_state.py tests/test_agent_loop.py tests/test_agent_loop_digest.py tests/test_message_invariants.py tests/test_runtime_report.py
+git add pico/agent_loop.py pico/task_state.py tests/test_agent_loop.py tests/test_agent_loop_digest.py tests/test_agent_loop_v2_shape.py tests/test_config_context.py tests/test_message_invariants.py tests/test_p1_smoke.py tests/test_runtime_report.py
 git commit -m "fix(runtime): persist tool messages as one pair"
 ```
 
