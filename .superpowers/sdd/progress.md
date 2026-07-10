@@ -291,3 +291,4 @@ Task 4: complete (commits cc546d0..16a0b6e, review clean after v1-authority/type
   38 focused passed; 719 passed, 1 skipped full gate
 Task 5: complete (commits 704e4bd..25a86ca, review clean; 54 passed, 1 skipped focused slice)
   follow-up: a47659b migrated two recovery benchmark verifier reads; re-review clean; evaluator 12 passed
+Task 6: complete (commits 0419ea9..309c749, review clean; 33 passed CLI/evaluator integration gate)
