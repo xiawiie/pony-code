@@ -3,6 +3,7 @@ from pathlib import Path
 from contextlib import contextmanager
 
 import pico.session_store as session_store_module
+from pico.messages import validate_messages
 from pico.session_store import SessionStore
 
 
@@ -24,7 +25,13 @@ def test_session_store_saves_loads_and_finds_latest_session(tmp_path):
 
     assert first_path == store.path("session_001")
     assert json.loads(first_path.read_text(encoding="utf-8"))["id"] == "session_001"
-    assert store.load("session_002") == second
+    loaded = store.load("session_002")
+    assert loaded["schema_version"] == 3
+    assert "history" not in loaded
+    assert loaded["messages"] == [
+        {"role": "user", "content": "second", "_pico_meta": {}},
+    ]
+    validate_messages(loaded["messages"], require_meta=True)
     assert store.latest() == second_path.stem
 
 

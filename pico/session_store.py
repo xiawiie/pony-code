@@ -2,7 +2,8 @@
 
 from copy import deepcopy
 import json
-import logging
+import os
+import re
 import tempfile
 import time
 import uuid
@@ -10,9 +11,6 @@ from pathlib import Path
 
 from . import file_lock
 from .messages import MessageValidationError, validate_messages
-
-logger = logging.getLogger("pico")
-
 
 class SessionMigrationError(ValueError):
     """A legacy session cannot be converted without losing transcript data."""
@@ -131,10 +129,10 @@ def migrate_session_to_v3(session):
             except MessageValidationError:
                 selected = None
         if selected is None:
-            if isinstance(history, list) and history:
+            if isinstance(messages, list) and not messages:
                 selected = _history_to_messages(history)
-            elif isinstance(messages, list) and not messages:
-                selected = []
+            elif isinstance(history, list) and history:
+                selected = _history_to_messages(history)
             else:
                 raise SessionMigrationError("session has no valid transcript")
     try:
@@ -152,55 +150,74 @@ def _identity(value):
     return value
 
 
-def _migrate_v1_to_v2(session: dict) -> dict:
-    if session.get("schema_version", 1) >= 2:
-        return session
-    old_history = session.pop("history", [])
-    messages = []
-    for entry in old_history:
-        role = entry.get("role")
-        created_at = entry.get("created_at")
-        if role == "tool":
-            tool_use_id = f"toolu_migrated_{uuid.uuid4().hex[:12]}"
-            messages.append({
-                "role": "assistant",
-                "content": [{
-                    "type": "tool_use",
-                    "id": tool_use_id,
-                    "name": entry.get("name", ""),
-                    "input": entry.get("args", {}),
-                }],
-                "_pico_meta": {"created_at": created_at, "tool_use_id": tool_use_id},
-            })
-            messages.append({
-                "role": "user",
-                "content": [{
-                    "type": "tool_result",
-                    "tool_use_id": tool_use_id,
-                    "content": entry.get("content", ""),
-                }],
-                "_pico_meta": {"created_at": created_at, "tool_use_id": tool_use_id},
-            })
-        elif role in ("user", "assistant"):
-            messages.append({
-                "role": role,
-                "content": entry.get("content", ""),
-                "_pico_meta": {"created_at": created_at},
-            })
-        else:
-            logger.debug("session migrator: unknown role %r, skipping entry", role)
-    session["messages"] = messages
-    session.setdefault("recently_recalled", [])
-    session["schema_version"] = 2
-    return session
+_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 
-def _write_backup(session_path, raw_bytes, session_id):
+def _session_id(value):
+    session_id = str(value or "")
+    if not _SESSION_ID_RE.fullmatch(session_id):
+        raise ValueError(f"invalid session id: {session_id!r}")
+    return session_id
+
+
+def _validate_v3_payload(payload, session_id):
+    if not isinstance(payload, dict):
+        raise SessionMigrationError("session payload must be an object")
+    if payload.get("id") != session_id:
+        raise SessionMigrationError("session id does not match file name")
+    if type(payload.get("schema_version")) is not int or payload["schema_version"] != 3:
+        raise SessionMigrationError("invalid session schema version")
+    if "history" in payload:
+        raise SessionMigrationError("v3 session must not contain history")
+    try:
+        validate_messages(payload.get("messages"), require_meta=True)
+    except MessageValidationError as exc:
+        raise SessionMigrationError(str(exc)) from exc
+
+
+def _prepare_v3_payload(value, session_id):
+    payload = deepcopy(value)
+    if not isinstance(payload, dict):
+        raise SessionMigrationError("session payload must be an object")
+    payload.pop("history", None)
+    _validate_v3_payload(payload, session_id)
+    return payload
+
+
+def _atomic_write_locked(path, payload):
+    temp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            delete=False,
+            dir=str(path.parent),
+            prefix=path.name + ".",
+            suffix=".tmp",
+        ) as handle:
+            temp_path = Path(handle.name)
+            json.dump(payload, handle, indent=2)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        temp_path.replace(path)
+    finally:
+        if temp_path is not None and temp_path.exists():
+            temp_path.unlink()
+
+
+def _write_backup_locked(session_path, raw_bytes, session_id, source_version):
     backup_dir = session_path.parent / "backup"
     backup_dir.mkdir(parents=True, exist_ok=True)
-    # Task A4: nanosecond precision prevents same-second filename collisions.
-    ts = time.time_ns()
-    (backup_dir / f"{session_id}.v1.{ts}.json").write_bytes(raw_bytes)
+    backup_path = backup_dir / (
+        f"{session_id}.v{source_version}.{time.time_ns()}."
+        f"{uuid.uuid4().hex}.json"
+    )
+    with backup_path.open("xb") as handle:
+        handle.write(raw_bytes)
+        handle.flush()
+        os.fsync(handle.fileno())
+    return backup_path
 
 
 class SessionStore:
@@ -214,39 +231,54 @@ class SessionStore:
         self._redactor = redactor or _identity
 
     def path(self, session_id):
+        session_id = _session_id(session_id)
         return self.root / f"{session_id}.json"
 
     def path_for(self, session_id):
-        return self.path(session_id)
+        return self.path(_session_id(session_id))
 
     def save(self, session):
-        path = self.path(session["id"])
-        payload = self._redactor(session)
+        session_id = _session_id(session["id"])
+        path = self.path(session_id)
+        try:
+            source_version = int(session.get("schema_version", 1) or 1)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise SessionMigrationError("invalid session schema version") from exc
+        if source_version == 3:
+            payload = _prepare_v3_payload(self._redactor(session), session_id)
+        else:
+            payload = deepcopy(self._redactor(session))
         with file_lock.locked_file(self.lock_path):
-            with tempfile.NamedTemporaryFile(
-                "w",
-                encoding="utf-8",
-                delete=False,
-                dir=str(path.parent),
-                prefix=path.name + ".",
-                suffix=".tmp",
-            ) as handle:
-                json.dump(payload, handle, indent=2)
-                handle.write("\n")
-                temp_name = handle.name
-            Path(temp_name).replace(path)
+            _atomic_write_locked(path, payload)
         return path
 
     def load(self, session_id):
-        p = self.path(session_id)
-        raw = p.read_bytes()
-        session = json.loads(raw.decode("utf-8"))
-        if session.get("schema_version", 1) < 2:
-            _write_backup(p, raw, session_id)
-            session = _migrate_v1_to_v2(session)
-            # 立即写回升级后的格式
-            p.write_text(json.dumps(session), encoding="utf-8")
-        return session
+        session_id = _session_id(session_id)
+        path = self.path(session_id)
+        with file_lock.locked_file(self.lock_path):
+            raw = path.read_bytes()
+            try:
+                decoded = json.loads(raw.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise SessionMigrationError(
+                    f"failed to decode session {session_id}"
+                ) from exc
+            if not isinstance(decoded, dict) or decoded.get("id") != session_id:
+                raise SessionMigrationError("session id does not match file name")
+            try:
+                version = int(decoded.get("schema_version", 1) or 1)
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise SessionMigrationError(
+                    "invalid session schema version"
+                ) from exc
+            migrated = migrate_session_to_v3(decoded)
+            if version == 3:
+                _validate_v3_payload(migrated, session_id)
+                return migrated
+            payload = _prepare_v3_payload(self._redactor(migrated), session_id)
+            _write_backup_locked(path, raw, session_id, version)
+            _atomic_write_locked(path, payload)
+            return payload
 
     def latest(self):
         files = sorted(self.root.glob("*.json"), key=lambda path: path.stat().st_mtime)

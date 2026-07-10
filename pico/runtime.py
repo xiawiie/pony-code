@@ -20,7 +20,7 @@ from .checkpoint_store import CheckpointStore
 from .context_manager import ContextManager
 from .memory.block_store import BlockStore
 from .memory.retrieval import Retrieval
-from .messages import message_metrics, tool_event_metrics
+from .messages import message_content_text, message_metrics, tool_event_metrics
 from .prompt_prefix import build_prompt_prefix, tool_signature
 from .repo_map import RepoMap
 from .recovery_checkpoint_writer import RecoveryCheckpointWriter
@@ -148,6 +148,41 @@ def build_report_request_metadata(task_state, last_prompt_metadata):
         )
         fragment["resume_status"] = task_state.resume_status
     return fragment
+
+
+def _legacy_history_from_messages(messages):
+    history = []
+    index = 0
+    while index < len(messages):
+        message = messages[index]
+        content = message["content"]
+        metadata = message.get("_pico_meta", {})
+        created_at = metadata.get("created_at", "")
+        first_type = content[0].get("type") if isinstance(content, list) else ""
+        if isinstance(content, str) or first_type == "text":
+            item = {
+                "role": message["role"],
+                "content": message_content_text(message),
+            }
+            if created_at:
+                item["created_at"] = created_at
+            history.append(item)
+            index += 1
+            continue
+        if first_type != "tool_use":
+            raise ValueError("unsupported canonical message for legacy bridge")
+        tool_use = content[0]
+        item = {
+            "role": "tool",
+            "name": tool_use["name"],
+            "args": dict(tool_use["input"]),
+            "content": message_content_text(messages[index + 1]),
+        }
+        if created_at:
+            item["created_at"] = created_at
+        history.append(item)
+        index += 2
+    return history
 
 
 class Pico:
@@ -306,7 +341,12 @@ class Pico:
 
     def _ensure_session_shape(self):
         if not isinstance(self.session.get("history"), list):
-            self.session["history"] = []
+            if self.session.get("schema_version") == 3:
+                self.session["history"] = _legacy_history_from_messages(
+                    self.session.get("messages", [])
+                )
+            else:
+                self.session["history"] = []
         if not isinstance(self.session.get("messages"), list):
             self.session["messages"] = []
         if not isinstance(self.session.get("recently_recalled"), list):
