@@ -305,7 +305,11 @@ def tool_search(context, args):
             capture_output=True,
             text=True,
         )
-        return result.stdout.strip() or result.stderr.strip() or "(no matches)"
+        if result.returncode > 1:
+            result.check_returncode()
+        if result.returncode == 1:
+            return "(no matches)"
+        return result.stdout.strip() or result.stderr.strip()
 
     matches = []
     files = [path] if path.is_file() else [

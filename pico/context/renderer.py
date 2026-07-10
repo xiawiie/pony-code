@@ -169,7 +169,7 @@ def render_current_user_message(agent, user_message):
     def _current_tokens():
         return sum(telemetry["injection_tokens"].get(s, 0) for s in SOURCE_ORDER)
 
-    if injection_budget > 0:
+    if injection_budget >= 0:
         for candidate in DROP_PRIORITY:
             if _current_tokens() <= injection_budget:
                 break

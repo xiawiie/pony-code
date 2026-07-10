@@ -116,6 +116,21 @@ def test_renderer_reads_injection_budget_from_agent_config(tmp_path):
     assert tele.get("injection_budget") == 10000
 
 
+def test_zero_injection_budget_drops_contributing_sources():
+    a = _agent()
+    a.context_config = {
+        "injection_budget_ratio": 0,
+        "total_budget_hard_cap": 100000,
+    }
+
+    text, tele = render_current_user_message(a, "raw user message")
+
+    assert text == "raw user message"
+    assert tele["injection_budget"] == 0
+    assert tele["injection_dropped"] == ["workspace_state"]
+    assert tele["injection_tokens"]["workspace_state"] == 0
+
+
 def test_injection_drops_checkpoint_before_recalled_memory():
     """When aggregate injection tokens exceed injection_budget, DROP_PRIORITY
     dictates checkpoint drops first, recalled_memory drops last."""

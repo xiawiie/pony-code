@@ -73,6 +73,28 @@ def test_leading_text_tool_protocol(raw, name, arguments):
     )
 
 
+def test_attribute_tool_with_unclosed_nested_tag_is_malformed():
+    raw = '<tool name="write_file" path="a.py"><content>oops</tool>'
+
+    action = decode_action(response(text(raw)))
+
+    assert isinstance(action, RetryAction)
+    assert action.reason_code == "malformed_tool_protocol"
+    assert action.origin == "text_protocol"
+
+
+def test_attribute_tool_with_repeated_unclosed_nested_tag_is_malformed():
+    raw = (
+        '<tool name="write_file" path="a.py">'
+        '<content>ok</content><content>oops</tool>'
+    )
+
+    action = decode_action(response(text(raw)))
+
+    assert isinstance(action, RetryAction)
+    assert action.reason_code == "malformed_tool_protocol"
+
+
 @pytest.mark.parametrize(
     "raw",
     [
@@ -118,6 +140,7 @@ def test_max_tokens_preserves_incomplete_final_body_as_truncated():
     ("raw", "reason"),
     [
         ("<tool>{bad json}</tool>", "malformed_tool_protocol"),
+        ("<tool>" + "x" * 200 + "</tool>", "malformed_tool_protocol"),
         ("<final></final>", "empty_final_protocol"),
         ("", "empty_response"),
     ],
@@ -126,7 +149,7 @@ def test_protocol_and_empty_failures_are_bounded_retries(raw, reason):
     action = decode_action(response(text(raw)) if raw else response())
     assert isinstance(action, RetryAction)
     assert action.reason_code == reason
-    assert len(action.excerpt) <= 160
+    assert action.excerpt == raw.strip()[:160]
     if raw:
         assert raw not in action.notice
 
@@ -157,3 +180,13 @@ def test_unsupported_content_shape_is_a_total_retry():
     action = decode_action(response({"type": "image", "source": "x"}))
     assert isinstance(action, RetryAction)
     assert action.reason_code == "unsupported_response_shape"
+
+
+def test_non_iterable_content_is_a_total_retry():
+    action = decode_action(
+        Response(stop_reason=StopReason.END_TURN, content=42, usage={})
+    )
+
+    assert isinstance(action, RetryAction)
+    assert action.reason_code == "unsupported_response_shape"
+    assert action.origin == "response"

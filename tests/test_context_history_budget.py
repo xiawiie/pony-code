@@ -99,6 +99,39 @@ def test_orphan_tool_use_never_produced():
     assert tool_use_ids == tool_result_ids
 
 
+def test_floor_aligns_to_current_plain_user_for_multi_tool_turn():
+    current_user = "<system-reminder>frozen</system-reminder>\ncurrent question"
+    msgs = [
+        _msg("user", "old question"),
+        _msg("assistant", "old answer"),
+        _msg("user", current_user),
+        _msg("assistant", [{"type": "tool_use", "id": "t1", "name": "read", "input": {}}]),
+        _msg("user", [{"type": "tool_result", "tool_use_id": "t1", "content": "r1"}]),
+        _msg("assistant", [{"type": "tool_use", "id": "t2", "name": "read", "input": {}}]),
+        _msg("user", [{"type": "tool_result", "tool_use_id": "t2", "content": "r2"}]),
+        _msg("assistant", [{"type": "tool_use", "id": "t3", "name": "read", "input": {}}]),
+        _msg("user", [{"type": "tool_result", "tool_use_id": "t3", "content": "r3"}]),
+    ]
+
+    kept, dropped = _drop_old_turns(
+        msgs,
+        soft_cap_tokens=0,
+        floor_count=6,
+        token_of=_flat_token_count,
+    )
+
+    assert dropped == 2
+    assert kept[0] == _msg("user", current_user)
+    assert [
+        (kept[index]["content"][0]["id"], kept[index + 1]["content"][0]["tool_use_id"])
+        for index in (1, 3, 5)
+    ] == [
+        ("t1", "t1"),
+        ("t2", "t2"),
+        ("t3", "t3"),
+    ]
+
+
 def test_build_v2_drops_old_messages_when_cap_exceeded(tmp_path):
     from unittest.mock import MagicMock
 

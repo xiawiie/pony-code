@@ -1,5 +1,7 @@
 # Agent Harness v1 Overview
 
+> **Archived / superseded:** This historical overview is retained for reference. The current runtime is Action Kernel and Messages v3; see the [current review pack](../review-pack/README.md).
+
 Agent Harness v1 is Pico's current runtime shape: a local control loop around a model, repository context, constrained tools, task state, memory, and auditable run artifacts.
 
 ## Runtime Flow

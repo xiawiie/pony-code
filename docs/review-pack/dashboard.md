@@ -9,7 +9,7 @@ This dashboard records the C-stage implementation status. Current local evidence
 | C-03 Messages v3 | Done | Messages-only runtime and atomic migration | session migration/full test gate |
 | C-04 Runtime integrity | Done | COW pair, truthful effects, terminal closure | runtime/tool/recovery tests |
 | C-05 Local evidence | Done | Local quality, ablation, perf gates | current evidence directory |
-| C-06 Real E2E | Pending final gate | One native DeepSeek or Anthropic tool turn | ignored local live report |
+| C-06 Real E2E | Done | Native-tool/runtime contracts | DeepSeek `qwen3.7-max`; 40/40 assertions; 6 native actions; 9/15 calls; JSON intentionally ignored |
 | A-stage security | Deferred | Separate approved design required after C | not in this implementation |
 
-The real E2E remains a final gate and is not claimed by this local evidence pack.
+The completed C-06 gate proves native-tool/runtime contracts rather than Provider answer quality; its JSON report remains intentionally ignored.

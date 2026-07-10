@@ -45,37 +45,14 @@ def _is_top_level_user_message(message):
     return message.get("role") == "user" and isinstance(message.get("content"), str)
 
 
-def _is_tool_use_message(message):
-    if message.get("role") != "assistant":
-        return False
-    content = message.get("content")
-    return isinstance(content, list) and any(
-        block.get("type") == "tool_use" for block in content if isinstance(block, dict)
-    )
-
-
-def _is_tool_result_message(message):
-    if message.get("role") != "user":
-        return False
-    content = message.get("content")
-    return isinstance(content, list) and any(
-        block.get("type") == "tool_result" for block in content if isinstance(block, dict)
-    )
-
-
 def _drop_old_turns(messages, soft_cap_tokens, floor_count, token_of):
     """Drop oldest complete turn units while preserving the message floor."""
     if not messages:
         return list(messages), 0
     message_count = len(messages)
     floor_start = max(0, message_count - floor_count)
-    while floor_start > 0:
-        message = messages[floor_start]
-        previous = messages[floor_start - 1]
-        if _is_tool_result_message(message) and _is_tool_use_message(previous):
-            floor_start -= 1
-            continue
-        break
+    while floor_start > 0 and not _is_top_level_user_message(messages[floor_start]):
+        floor_start -= 1
 
     turn_starts = [
         index

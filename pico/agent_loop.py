@@ -53,10 +53,16 @@ def _add_usage(totals, usage):
         value = usage.get(key)
         if isinstance(value, int) and not isinstance(value, bool):
             totals[key] += value
-    if "total_tokens" not in usage:
+    total_tokens = usage.get("total_tokens")
+    if not isinstance(total_tokens, int) or isinstance(total_tokens, bool):
         input_tokens = usage.get("input_tokens")
         output_tokens = usage.get("output_tokens")
-        if isinstance(input_tokens, int) and isinstance(output_tokens, int):
+        if (
+            isinstance(input_tokens, int)
+            and not isinstance(input_tokens, bool)
+            and isinstance(output_tokens, int)
+            and not isinstance(output_tokens, bool)
+        ):
             totals["total_tokens"] += input_tokens + output_tokens
     totals["cache_hit"] = totals["cache_hit"] or bool(usage.get("cache_hit"))
     return totals
@@ -238,6 +244,7 @@ class AgentLoop:
         task_state = TaskState.create(run_id=agent.new_run_id(), task_id=agent.new_task_id(), user_request=user_message)
         task_state.resume_status = agent.resume_state.get("status", CHECKPOINT_NONE_STATUS)
         agent.current_task_state = task_state
+        agent.last_request_metadata = {}
         # 每次 tool 执行后，如果生成了 Tool Change Record，就把 id 收集起来；
         # 一次 run 结束（无论成功、step_limit、retry_limit）时把这些 id 打包成一份
         # Turn Checkpoint，写进 .pico/checkpoints/records。
@@ -423,6 +430,10 @@ class AgentLoop:
                             "tool_use_id": tool_use_id,
                         },
                     )
+                    working_memory_before = deepcopy(agent.memory)
+                    file_summaries_before = deepcopy(
+                        agent.session["memory"]["file_summaries"]
+                    )
                     tool_result = agent.execute_tool(name, args)
                     result = tool_result.content
                     metadata = dict(tool_result.metadata or {})
@@ -447,10 +458,16 @@ class AgentLoop:
                         tool_change_id=tool_change_id,
                         result_meta=digest_meta,
                     )
-                    _commit_session(
-                        agent,
-                        messages=pair,
-                    )
+                    try:
+                        _commit_session(
+                            agent,
+                            messages=pair,
+                        )
+                    except SessionCommitError:
+                        agent.memory = working_memory_before
+                        agent._sync_working_memory()
+                        agent.session["memory"]["file_summaries"] = file_summaries_before
+                        raise
                     if metadata.get("tool_status") != "rejected":
                         tool_steps += 1
                         task_state.record_tool(name)

@@ -122,7 +122,7 @@ def _nested_value(body, key):
         return None
     start += len(opening)
     end = body.find(closing, start)
-    return body[start:] if end < 0 else body[start:end]
+    return None if end < 0 else body[start:end]
 
 
 def _attribute_tool(text):
@@ -140,6 +140,8 @@ def _attribute_tool(text):
     body = "" if self_closing else text[open_end + 1:close_start]
     arguments = dict(values)
     for key in ("content", "old_text", "new_text", "command", "task", "pattern", "path"):
+        if body.count(f"<{key}>") != body.count(f"</{key}>"):
+            return None
         nested = _nested_value(body, key)
         if nested is not None:
             arguments[key] = nested
@@ -181,7 +183,10 @@ def _text_tool(text):
 
 
 def decode_action(response: Response) -> Action:
-    content = list(response.content or [])
+    try:
+        content = list(response.content or [])
+    except TypeError:
+        return _retry("unsupported_response_shape", "response", response.content)
     tool_blocks = [
         block
         for block in content

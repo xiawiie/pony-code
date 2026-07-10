@@ -18,7 +18,7 @@ jobs:
       fail-fast: false
       matrix:
         python-version:
-          - "3.10"
+          - "3.11"
           - "3.12"
 
     steps:
@@ -44,3 +44,6 @@ jobs:
 
       - name: Test
         run: uv run pytest -q
+
+      - name: Offline live harness
+        run: uv run pytest benchmarks/live_e2e/tests/test_assertions.py -q

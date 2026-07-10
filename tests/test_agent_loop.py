@@ -137,7 +137,7 @@ def test_agent_loop_decodes_native_action_and_aggregates_response_usage_only(tmp
             Response(
                 stop_reason=StopReason.END_TURN,
                 content=[{"type": "text", "text": "done"}],
-                usage={"input_tokens": 20, "output_tokens": 5, "total_tokens": 25},
+                usage={"input_tokens": 20, "output_tokens": 5, "total_tokens": None},
             ),
         ]
     )
@@ -284,6 +284,55 @@ def test_side_effect_then_pair_save_failure_stops_before_another_provider_call(
         for message in messages
     )
     assert agent.current_task_state.recovery_checkpoint_id
+
+
+def test_pair_save_failure_restores_pre_tool_memory(tmp_path, monkeypatch):
+    (tmp_path / "baseline.txt").write_text("baseline\n", encoding="utf-8")
+    (tmp_path / "target.txt").write_text("target\n", encoding="utf-8")
+    provider = NativeScriptProvider([
+        Response(
+            stop_reason=StopReason.TOOL_USE,
+            content=[{
+                "type": "tool_use",
+                "id": "tu_read",
+                "name": "read_file",
+                "input": {"path": "target.txt"},
+            }],
+            usage={},
+        ),
+    ])
+    agent = build_native_agent(tmp_path, provider)
+    agent.update_memory_after_tool(
+        "read_file",
+        {"path": "baseline.txt"},
+        "# baseline.txt\n   1: baseline",
+    )
+    baseline_summaries = copy.deepcopy(agent.session["memory"]["file_summaries"])
+    original_save = agent.session_store.save
+
+    def fail_pair(session):
+        if any(
+            isinstance(message.get("content"), list)
+            and message["content"]
+            and message["content"][0].get("type") == "tool_use"
+            for message in session.get("messages", [])
+        ):
+            raise OSError("pair save failed")
+        return original_save(session)
+
+    monkeypatch.setattr(agent.session_store, "save", fail_pair)
+
+    with pytest.raises(OSError, match="pair save failed"):
+        agent.ask("read target")
+
+    persisted = agent.session_store.load(agent.session["id"])
+    assert persisted["messages"][-1]["_pico_meta"]["origin"] == "runtime_terminal"
+    assert persisted["working_memory"]["recent_files"] == ["baseline.txt"]
+    assert persisted["memory"]["file_summaries"] == baseline_summaries
+    assert agent.session["working_memory"] == persisted["working_memory"]
+    assert agent.session["memory"] == persisted["memory"]
+    assert agent.current_task_state.stop_reason == "persistence_error"
+    assert len(provider.calls) == 1
 
 
 def test_pair_save_primary_error_survives_terminal_persistence_failure(
@@ -452,6 +501,36 @@ def test_preflight_exception_becomes_runtime_error(tmp_path, monkeypatch):
     assert agent.current_task_state.status == "failed"
     assert agent.current_task_state.stop_reason == "runtime_error"
     assert agent.run_store.report_path(agent.current_task_state).exists()
+
+
+def test_build_failure_after_success_does_not_reuse_request_metadata(
+    tmp_path,
+    monkeypatch,
+):
+    agent = build_native_agent(
+        tmp_path,
+        NativeScriptProvider([
+            Response(
+                stop_reason=StopReason.END_TURN,
+                content=[{"type": "text", "text": "first"}],
+                usage={},
+            ),
+        ]),
+    )
+    assert agent.ask("first run") == "first"
+    assert agent.last_request_metadata["messages_count"] > 0
+    monkeypatch.setattr(
+        agent.context_manager,
+        "build_v2",
+        Mock(side_effect=ValueError("build failed")),
+    )
+
+    with pytest.raises(ValueError, match="build failed"):
+        agent.ask("second run")
+
+    report = agent.run_store.load_report(agent.current_task_state.run_id)
+    assert agent.last_request_metadata == {}
+    assert report["last_request_metadata"] == {}
 
 
 def test_keyboard_interrupt_closes_run_and_reraises(tmp_path):

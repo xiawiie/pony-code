@@ -141,6 +141,8 @@ def build_report_request_metadata(task_state, last_request_metadata):
     promoted into report metadata.
     """
     fragment = dict(last_request_metadata)
+    if not fragment:
+        return fragment
     if task_state.resume_status:
         fragment.setdefault(
             "last_prompt_resume_status",

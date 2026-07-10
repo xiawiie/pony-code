@@ -27,7 +27,7 @@ artifacts, and deterministic benchmark evidence.
 
 - Harness regression proves deterministic runtime behavior, not live Provider quality.
 - Context, memory, and recovery ablations measure their stated local mechanisms only.
-- The real E2E is a separate final gate and is not claimed by this local evidence pack.
+- C-06 is complete: DeepSeek `qwen3.7-max` passed 40/40 assertions with 6 native actions and 9/15 Provider calls. Its JSON report is intentionally ignored; the gate proves native-tool/runtime contracts rather than Provider answer quality.
 
 ## Sample run artifact list
 

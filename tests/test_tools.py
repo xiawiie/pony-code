@@ -1,3 +1,4 @@
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -11,6 +12,7 @@ from pico.tools import (
     tool_delegate,
     tool_read_file,
     tool_run_shell,
+    tool_search,
     validate_tool,
 )
 
@@ -91,6 +93,30 @@ def test_run_shell_uses_larger_default_timeout(tmp_path, monkeypatch):
     tool_run_shell(context, {"command": "echo ok"})
 
     assert captured["timeout"] == DEFAULT_RUN_SHELL_TIMEOUT == 60
+
+
+def test_search_rg_return_codes_are_truthful(tmp_path, monkeypatch):
+    results = iter([
+        subprocess.CompletedProcess([], 0, stdout="sample.txt:1:hit\n", stderr=""),
+        subprocess.CompletedProcess([], 1, stdout="", stderr=""),
+        subprocess.CompletedProcess([], 2, stdout="", stderr="regex parse error\n"),
+    ])
+    monkeypatch.setattr("pico.tools.shutil.which", lambda _name: "/usr/bin/rg")
+    monkeypatch.setattr("pico.tools.subprocess.run", lambda *_args, **_kwargs: next(results))
+    context = ToolContext(
+        root=tmp_path,
+        path_resolver=lambda raw_path: (tmp_path / raw_path).resolve(),
+        shell_env_provider=lambda: {"PWD": str(tmp_path)},
+        depth=0,
+        max_depth=1,
+        spawn_delegate=lambda args: "unused",
+    )
+
+    assert tool_search(context, {"pattern": "hit"}) == "sample.txt:1:hit"
+    assert tool_search(context, {"pattern": "missing"}) == "(no matches)"
+    with pytest.raises(subprocess.CalledProcessError) as exc_info:
+        tool_search(context, {"pattern": "["})
+    assert exc_info.value.returncode == 2
 
 
 @pytest.mark.parametrize(
