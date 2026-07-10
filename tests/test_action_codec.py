@@ -95,6 +95,27 @@ def test_attribute_tool_with_repeated_unclosed_nested_tag_is_malformed():
     assert action.reason_code == "malformed_tool_protocol"
 
 
+def test_attribute_tool_with_reversed_nested_tags_is_malformed():
+    raw = '<tool name="write_file" path="a.py"></content><content>oops</tool>'
+
+    action = decode_action(response(text(raw)))
+
+    assert isinstance(action, RetryAction)
+    assert action.reason_code == "malformed_tool_protocol"
+
+
+def test_attribute_tool_with_crossed_nested_tags_is_malformed():
+    raw = (
+        '<tool name="patch_file" path="a.py">'
+        '<old_text><new_text>x</old_text></new_text></tool>'
+    )
+
+    action = decode_action(response(text(raw)))
+
+    assert isinstance(action, RetryAction)
+    assert action.reason_code == "malformed_tool_protocol"
+
+
 @pytest.mark.parametrize(
     "raw",
     [

@@ -139,9 +139,19 @@ def _attribute_tool(text):
         return None
     body = "" if self_closing else text[open_end + 1:close_start]
     arguments = dict(values)
+    nested_stack = []
+    for match in re.finditer(
+        r"</?(content|old_text|new_text|command|task|pattern|path)>", body
+    ):
+        key = match.group(1)
+        if match.group(0).startswith("</"):
+            if not nested_stack or nested_stack.pop() != key:
+                return None
+        else:
+            nested_stack.append(key)
+    if nested_stack:
+        return None
     for key in ("content", "old_text", "new_text", "command", "task", "pattern", "path"):
-        if body.count(f"<{key}>") != body.count(f"</{key}>"):
-            return None
         nested = _nested_value(body, key)
         if nested is not None:
             arguments[key] = nested
