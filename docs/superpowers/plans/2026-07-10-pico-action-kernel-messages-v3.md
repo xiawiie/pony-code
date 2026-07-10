@@ -2000,7 +2000,7 @@ Update `build_stress_agent_metrics` and `run_context_stress_matrix` to call `_se
         unbounded["request_chars"],
     ),
     "current_request_preserved": bounded["current_request_preserved"],
-}
+    }
 ```
 
 Summary keys are `avg_bounded_request_chars`, `avg_unbounded_request_chars`, `avg_request_compression_ratio`, and `current_request_preserved_rate`.
@@ -5148,7 +5148,52 @@ git commit -m "refactor(session): cut runtime over to messages v3"
 - Modify: `benchmarks/live_e2e/run_live_session.py`
 - Modify: `benchmarks/live_e2e/tests/test_assertions.py`
 - Modify: `benchmarks/live_e2e/README.md`
-- Test: `tests/test_config.py`
+
+**Scope correction (2026-07-10, before Task 16 execution):**
+
+- Keep Task 16 completely offline. Its tests may call argument parsing,
+  project-env loading, trace/artifact readers, assertion logic, and reporter
+  serialization, but must not call `main()` past its reset branch,
+  `complete_v2()`, or any real Provider endpoint. Task 19 remains the only
+  real-provider process.
+- A turn must carry evidence for its own runtime artifacts, not rely on the
+  final `pico.current_task_state`: add `run_id`, `task_state_terminal`,
+  `report_terminal`, and `trace_terminal` to `TurnResult`. Read each turn's
+  `task_state.json`, `report.json`, and `trace.jsonl`; a state/report is
+  terminal only when its status is `completed`, `stopped`, or `failed` with a
+  non-empty stop reason, and a trace is terminal only when it contains a
+  `run_finished` event. Missing/unreadable artifacts are false.
+- Replace the current tool-pair set comparison with
+  `pico.messages.validate_messages(messages, require_meta=True)` and report
+  its failure as a false assertion. This proves the immediate matching
+  `tool_use` / `tool_result` adjacency required by canonical v3 messages.
+- DeepSeek is the default selected provider but does not promise Anthropic
+  prompt-cache support. Cache-token observation is not a pass criterion.
+  Require non-empty, stable `system_cache_key` values for every traced call
+  instead, and keep token fields as report-only observability data.
+- `metadata` and `provider_input_messages_len` retain their historical
+  first-call meaning: set them from the first `request_metadata` emitted in
+  that turn. Add `request_metadata_by_call`, `system_cache_keys`,
+  `action_origins`, and `actual_user_contents` as exact per-call evidence.
+  A missing or malformed trace is a controlled `usage_complete=False`
+  failure, never a session/provider fallback.
+- Construct `AssertionEngine(config)` so all budget assertions use the
+  current `RunConfig`, not hard-coded 15/200000 defaults. Every direct
+  `TurnResult(...)` fixture must supply every newly required field; production
+  dataclass fields must not gain permissive fake-success defaults.
+- A report may pass only if it is not aborted, records exactly the expected
+  number of turns, every recorded turn has a non-empty assertion list, and
+  the global assertion list is non-empty with zero failures. The persisted
+  session JSON, not only in-memory state, must be v3 and omit `history`.
+- Cover both canonical Anthropic and DeepSeek `.env` selections and prove
+  that `main` calls `load_project_env(repo_root)` before `parse_args` through
+  a reset-only mocked path. The harness test module is deliberately outside
+  `pytest`'s `testpaths`; Task 18 re-runs it explicitly. Do not add an
+  unrelated `tests/test_config.py` edit.
+- Rewrite the module docstring and README rather than appending to their old
+  Anthropic-only/cache-hit claims. They must describe one selected provider,
+  canonical environment variables, trace truth, unknown-usage failure, and
+  the fact that the two commands are alternatives, not a combined gate.
 
 **Interfaces:**
 
@@ -5163,6 +5208,9 @@ class RunConfig:
     reset: bool
     verbose: bool
 ```
+
+Each `TurnResult` additionally carries all per-call trace evidence plus
+`run_id`, `task_state_terminal`, `report_terminal`, and `trace_terminal`.
 
 The harness accepts one `--provider` value per process. It loads project `.env` first, uses existing `providers.defaults` canonical names/defaults, and does not add a runtime resolver.
 
@@ -5288,6 +5336,34 @@ def test_report_cannot_pass_when_aborted_short_or_assertions_empty(tmp_path):
 ```
 
 Add a reporter test with `PICO_DEEPSEEK_API_KEY=sentinel-secret` and assert `sentinel-secret` is absent from the entire JSON report.
+
+Also add these offline regressions in
+`benchmarks/live_e2e/tests/test_assertions.py`:
+
+- parameterize the project `.env` settings test for both `deepseek` and
+  `anthropic`, using only canonical `PICO_<PROVIDER>_API_KEY`, `_MODEL`, and
+  `_API_BASE` values;
+- mock `main`'s reset path and assert the event order is
+  `load_project_env(Path.cwd())`, `parse_args()`, then `do_reset(...)`;
+- call `read_turn_trace` with a missing file and a malformed JSON line and
+  assert zero provider calls plus `usage_complete is False`;
+- write a temporary RunStore-style task state, report, and trace for one
+  terminal run, call the artifact-status helper, then remove/alter one
+  artifact and assert its corresponding terminal flag becomes false;
+- build a v3 transcript whose tool result has the right id but is separated
+  from its tool use by a plain message, and assert the global canonical-pair
+  assertion fails;
+- prove a DeepSeek-configured assertion engine accepts zero cache-token
+  usage when all per-call cache keys are present and stable;
+- prove a non-default `RunConfig(max_provider_calls=1, ...)` changes the
+  global budget result;
+- prove a report with all expected results but one empty per-turn assertion
+  list, and a report with only global assertions, both set `overall_pass` to
+  false.
+
+Update `_turn_result_stub`, `_turn_2_result_stub`, `_turn_3_result_stub`,
+`_turn_4_result_stub`, and `_turn_5_result_stub` with real explicit defaults
+for every new `TurnResult` field.
 
 - [ ] **Step 2: Confirm current live harness uses mutable last-call state**
 
@@ -5455,6 +5531,27 @@ def read_turn_trace(trace_path):
     }
 ```
 
+Wrap the file read and every JSON decode in `try/except (OSError,
+json.JSONDecodeError)`. On either failure return the same capture shape with
+zero calls, empty tuples/lists, zero usage values, and `usage_complete=False`.
+Do not skip malformed trace lines, because the harness cannot honestly claim
+complete usage from a partial trace.
+
+Add a helper with this contract:
+
+```python
+_TERMINAL_STATUSES = {"completed", "stopped", "failed"}
+
+
+def read_run_terminal_status(run_store, task_state):
+    """Return (run_id, task_state_terminal, report_terminal, trace_terminal)."""
+```
+
+It returns all false flags when `task_state` is absent or an artifact cannot
+be parsed. Otherwise it reads the three RunStore paths for that task state,
+uses the terminal status/stop-reason rule above for task state and report,
+and requires a `run_finished` trace event.
+
 In `TurnRunner.run_turn`, snapshot the sniffer call count before `pico.ask`. Afterward:
 
 ```python
@@ -5468,6 +5565,13 @@ actual_user_contents = [
 ]
 ```
 
+Use the first trace request metadata for the legacy scalar `metadata` and
+`provider_input_messages_len`; make the complete sequence a tuple in
+`request_metadata_by_call`. Set `current_user_content` to the first sniffed
+content or `""`; do not inspect `session["messages"]` as a fallback. Call
+`read_run_terminal_status` after `pico.ask`, and include its four values in
+the returned `TurnResult`.
+
 Populate `TurnResult` from `captured`. Remove `_count_provider_calls`, `_extract_first_prompt_and_counts`, Provider metadata fallbacks, and session-based guesses. Add fields:
 
 ```python
@@ -5476,6 +5580,10 @@ request_metadata_by_call: tuple[dict, ...]
 system_cache_keys: tuple[str, ...]
 action_origins: tuple[str, ...]
 actual_user_contents: tuple[str, ...]
+run_id: str
+task_state_terminal: bool
+report_terminal: bool
+trace_terminal: bool
 ```
 
 - [ ] **Step 6: Make every guard use `RunConfig` and fail unknown usage**
@@ -5513,7 +5621,9 @@ def _budget_exceeded(all_results, config, wall_start_ns):
     return None
 ```
 
-Update every AssertionEngine expected/actual value that currently hard-codes 15 calls or 200,000 tokens to read the config passed to the engine.
+Define `AssertionEngine.__init__(self, config)` and update every construction
+and test to pass a `RunConfig`. Update every expected/actual value that
+currently hard-codes 15 calls or 200,000 tokens to read `self.config`.
 
 - [ ] **Step 7: Assert real native action, per-call injection, v3, cache, and terminal state**
 
@@ -5533,11 +5643,13 @@ For that turn assert:
 assert "native_tool_use" in result.action_origins
 assert result.provider_call_count_this_turn >= 2
 assert result.usage_complete is True
+assert len(result.actual_user_contents) == result.provider_call_count_this_turn > 0
 assert all(
     result.user_prompt in content
     and "<system-reminder>" in content
     for content in result.actual_user_contents
 )
+assert len(result.system_cache_keys) == result.provider_call_count_this_turn
 assert all(result.system_cache_keys)
 assert len(set(result.system_cache_keys)) == 1
 ```
@@ -5546,11 +5658,19 @@ Global assertions must validate:
 
 - at least one `action_decoded.origin == native_tool_use`;
 - session schema is 3 and has no history;
-- every canonical tool_use has its immediate matching tool_result;
-- every completed run TaskState/report/trace is terminal;
+- every canonical tool_use has its immediate matching tool_result by calling
+  `validate_messages(..., require_meta=True)`;
+- every `TurnResult` has terminal TaskState/report/trace flags;
+- the persisted JSON at `pico.session_path` has integer schema `3` and no
+  `history` key;
 - total calls/tokens are within current `RunConfig`.
 
 Text-protocol tool origin does not satisfy the native assertion.
+
+Do not require `cache_read_input_tokens` or `cache_creation_input_tokens` to
+be positive. Replace the old cache-token assertion with per-call
+`system_cache_key` presence/stability checks, so the selected DeepSeek gate is
+not falsely rejected for a capability it does not advertise.
 
 - [ ] **Step 8: Make reports unable to pass vacuously**
 
@@ -5574,11 +5694,15 @@ Compute:
 
 ```python
 completed_all_turns = len(all_results) == expected_turn_count
-has_assertions = assertion_total > 0
+turn_assertions_present = all(
+    bool(all_assertions.get(result.turn)) for result in all_results
+)
+global_assertions_present = bool(all_assertions.get("global"))
 payload["overall_pass"] = (
     aborted_reason is None
     and completed_all_turns
-    and has_assertions
+    and turn_assertions_present
+    and global_assertions_present
     and assertion_failed == 0
 )
 ```
@@ -5630,10 +5754,14 @@ PICO_ANTHROPIC_API_KEY / PICO_ANTHROPIC_MODEL / PICO_ANTHROPIC_API_BASE
 
 Do not claim both are run.
 
+Replace stale Anthropic-only cost/cache-hit and fixed-27-assertion claims in
+both the README and module docstring. State that incomplete/malformed trace
+usage fails the gate and that the report never contains configuration secrets.
+
 - [ ] **Step 10: Run all live-harness tests offline**
 
 ```bash
-uv run pytest benchmarks/live_e2e/tests/test_assertions.py tests/test_config.py -q
+uv run pytest benchmarks/live_e2e/tests/test_assertions.py -q
 ```
 
 Expected: all pass without network access or API credits.
@@ -5641,7 +5769,7 @@ Expected: all pass without network access or API credits.
 - [ ] **Step 11: Commit the offline live gate**
 
 ```bash
-git add benchmarks/live_e2e/run_live_session.py benchmarks/live_e2e/tests/test_assertions.py benchmarks/live_e2e/README.md tests/test_config.py
+git add benchmarks/live_e2e/run_live_session.py benchmarks/live_e2e/tests/test_assertions.py benchmarks/live_e2e/README.md
 git commit -m "test(live-e2e): verify one native provider from trace"
 ```
 
