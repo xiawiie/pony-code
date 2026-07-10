@@ -286,3 +286,4 @@ Plan: docs/superpowers/plans/2026-07-10-pico-action-kernel-messages-v3.md
 Task 1: complete (commits 1ba4ce6..0fe1d12, review clean; Ruff green; 668 passed, 1 skipped)
 Task 2: complete (commits 1995445..5426002, review approved; 26 focused + 20 regression passed)
   minor deferred to final review: excerpt-bound test uses only inputs shorter than 160 characters
+Task 3: complete (commits 8c6c8d0..2954335, review clean; 13 focused; 704 passed, 1 skipped full suite)
