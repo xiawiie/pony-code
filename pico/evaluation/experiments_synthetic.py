@@ -1,48 +1,52 @@
 import tempfile
-from contextlib import contextmanager
 from pathlib import Path
 
 from ..features import memory as memorylib
+from ..messages import message_content_text
 from ..providers.clients import FakeModelClient
 from ..runtime import Pico, SessionStore
 from ..workspace import WorkspaceContext
 from .metrics_common import _safe_mean, _safe_ratio
 
 
-@contextmanager
-def _temporary_feature_flags(agent, updates):
-    previous = dict(getattr(agent, "feature_flags", {}))
-    merged = dict(previous)
-    merged.update(updates)
-    agent.feature_flags = merged
-    try:
-        yield
-    finally:
-        agent.feature_flags = previous
+def _seed_plain_messages(agent, count, prefix, payload_size):
+    seeded = []
+    for index in range(int(count)):
+        seeded.append(
+            {
+                "role": "user" if index % 2 == 0 else "assistant",
+                "content": f"{prefix}-{index}-" + ("X" * int(payload_size)),
+                "_pico_meta": {"created_at": f"2026-04-08T11:{index:02d}:00+00:00"},
+            }
+        )
+    agent.session["messages"].extend(seeded)
 
 
-def measure_feature_ablation_metrics(agent, user_message):
-    variants = {
-        "full": {},
-        "no_context_reduction": {"context_reduction": False},
-        "no_memory": {"memory": False},
-    }
+def _sent_message_chars(request):
+    return sum(len(message_content_text(message)) for message in request["messages"])
+
+
+def _latest_plain_user(request):
+    for message in reversed(request["messages"]):
+        if message.get("role") == "user" and isinstance(message.get("content"), str):
+            return message["content"]
+    return ""
+
+
+def measure_request_ablation_metrics(agent, user_message):
+    original_cap = agent.context_config["history_soft_cap"]
     results = {}
-    for name, updates in variants.items():
-        with _temporary_feature_flags(agent, updates):
-            prompt, metadata = agent._build_prompt_and_metadata(user_message)
-        sections = metadata.get("sections") or {}
-        memory_section = sections.get("memory") or {}
-        history_section = sections.get("history") or {}
-        results[name] = {
-            "prompt_chars": int(metadata.get("prompt_chars", 0)),
-            "memory_chars": int(memory_section.get("rendered_chars", 0)),
-            "history_chars": int(history_section.get("rendered_chars", 0)),
-            # Task 8 dropped the never-consumed `relevant_memory` metadata block.
-            "relevant_selected_count": 0,
-            "budget_reduction_count": len(metadata.get("budget_reductions", [])),
-            "current_request_preserved": prompt.endswith(f"Current user request:\n{user_message}"),
-        }
+    try:
+        for name, cap in (("bounded", 4_000), ("unbounded", 1_000_000)):
+            agent.context_config["history_soft_cap"] = cap
+            request, metadata = agent.context_manager.build_v2(user_message)
+            results[name] = {
+                "request_chars": _sent_message_chars(request),
+                "dropped_messages": int(metadata["dropped_messages"]),
+                "current_request_preserved": user_message in _latest_plain_user(request),
+            }
+    finally:
+        agent.context_config["history_soft_cap"] = original_cap
     return results
 
 
@@ -70,15 +74,20 @@ def build_stress_agent_metrics():
             session_store=store,
             approval_policy="auto",
         )
-        for index in range(12):
-            agent.record(
-                {
-                    "role": "user" if index % 2 == 0 else "assistant",
-                    "content": f"stress-history-{index}-" + ("B" * 220),
-                    "created_at": f"2026-04-08T11:{index:02d}:00+00:00",
-                }
-            )
-        return measure_feature_ablation_metrics(agent, "recall")
+        _seed_plain_messages(agent, 12, "stress-history", 1_400)
+        metrics = measure_request_ablation_metrics(agent, "recall")
+        bounded = metrics["bounded"]
+        unbounded = metrics["unbounded"]
+        return {
+            "bounded_request_chars": bounded["request_chars"],
+            "unbounded_request_chars": unbounded["request_chars"],
+            "bounded_dropped_messages": bounded["dropped_messages"],
+            "compression_ratio": _safe_ratio(
+                unbounded["request_chars"] - bounded["request_chars"],
+                unbounded["request_chars"],
+            ),
+            "current_request_preserved": bounded["current_request_preserved"],
+        }
 
 
 class _MemoryExperimentModelClient(FakeModelClient):
@@ -311,32 +320,21 @@ def run_context_stress_matrix(repetitions=5):
                             session_store=store,
                             approval_policy="auto",
                         )
-                        for index in range(note_count):
-                            agent.record(
-                                {
-                                    "role": "user" if index % 2 == 0 else "assistant",
-                                    "content": f"matrix-note-{index}-" + ("A" * 180),
-                                    "created_at": f"2026-04-08T10:{index:02d}:00+00:00",
-                                }
-                            )
-                        for index in range(history_count):
-                            agent.record(
-                                {
-                                    "role": "user" if index % 2 == 0 else "assistant",
-                                    "content": f"matrix-history-{index}-" + ("B" * 220),
-                                    "created_at": f"2026-04-08T11:{index:02d}:00+00:00",
-                                }
-                            )
-                        metrics = measure_feature_ablation_metrics(agent, request_text)
-                        full_chars = metrics["full"]["prompt_chars"]
-                        raw_chars = metrics["no_context_reduction"]["prompt_chars"]
-                        ratio = _safe_ratio(raw_chars - full_chars, raw_chars)
+                        _seed_plain_messages(agent, note_count, "matrix-note", 180)
+                        _seed_plain_messages(agent, history_count, "matrix-history", 700)
+                        metrics = measure_request_ablation_metrics(agent, request_text)
+                        bounded = metrics["bounded"]
+                        unbounded = metrics["unbounded"]
                         per_run.append(
                             {
-                                "full_prompt_chars": full_chars,
-                                "raw_prompt_chars": raw_chars,
-                                "compression_ratio": ratio,
-                                "current_request_preserved": bool(metrics["full"]["current_request_preserved"]),
+                                "bounded_request_chars": bounded["request_chars"],
+                                "unbounded_request_chars": unbounded["request_chars"],
+                                "bounded_dropped_messages": bounded["dropped_messages"],
+                                "compression_ratio": _safe_ratio(
+                                    unbounded["request_chars"] - bounded["request_chars"],
+                                    unbounded["request_chars"],
+                                ),
+                                "current_request_preserved": bounded["current_request_preserved"],
                             }
                         )
                 configs.append(
@@ -345,27 +343,28 @@ def run_context_stress_matrix(repetitions=5):
                         "history_level": history_label,
                         "note_level": note_label,
                         "request_level": request_label,
-                        "avg_prompt_compression_ratio": _safe_mean(item["compression_ratio"] for item in per_run),
-                        "avg_full_prompt_chars": _safe_mean(item["full_prompt_chars"] for item in per_run),
-                        "avg_raw_prompt_chars": _safe_mean(item["raw_prompt_chars"] for item in per_run),
+                        "bounded_request_chars": _safe_mean(item["bounded_request_chars"] for item in per_run),
+                        "unbounded_request_chars": _safe_mean(item["unbounded_request_chars"] for item in per_run),
+                        "bounded_dropped_messages": _safe_mean(item["bounded_dropped_messages"] for item in per_run),
+                        "compression_ratio": _safe_mean(item["compression_ratio"] for item in per_run),
                         "current_request_preserved_rate": _safe_ratio(
                             sum(1 for item in per_run if item["current_request_preserved"]),
                             len(per_run),
                         ),
                     }
                 )
-    ratios = [config["avg_prompt_compression_ratio"] for config in configs]
-    full_chars = [config["avg_full_prompt_chars"] for config in configs]
-    raw_chars = [config["avg_raw_prompt_chars"] for config in configs]
+    ratios = [config["compression_ratio"] for config in configs]
+    bounded_chars = [config["bounded_request_chars"] for config in configs]
+    unbounded_chars = [config["unbounded_request_chars"] for config in configs]
     return {
         "config_count": len(configs),
         "configs": configs,
         "summary": {
-            "avg_full_prompt_chars": _safe_mean(full_chars),
-            "avg_raw_prompt_chars": _safe_mean(raw_chars),
-            "avg_prompt_compression_ratio": _safe_mean(ratios),
-            "max_prompt_compression_ratio": max(ratios) if ratios else 0.0,
-            "min_prompt_compression_ratio": min(ratios) if ratios else 0.0,
+            "avg_bounded_request_chars": _safe_mean(bounded_chars),
+            "avg_unbounded_request_chars": _safe_mean(unbounded_chars),
+            "avg_request_compression_ratio": _safe_mean(ratios),
+            "max_request_compression_ratio": max(ratios) if ratios else 0.0,
+            "min_request_compression_ratio": min(ratios) if ratios else 0.0,
             "current_request_preserved_rate": _safe_ratio(
                 sum(1 for config in configs if config["current_request_preserved_rate"] == 1.0),
                 len(configs),

@@ -7,8 +7,10 @@ from ..workspace import WorkspaceContext
 from .experiments_synthetic import (
     MEMORY_EXPERIMENT_TASKS,
     _clear_file_summary_memory,
+    _latest_plain_user,
+    _seed_plain_messages,
+    _sent_message_chars,
     _set_irrelevant_memory_for_task,
-    _temporary_feature_flags,
     _write_memory_task_files,
 )
 from .metrics_common import _safe_mean, _safe_ratio
@@ -22,27 +24,22 @@ def _followup_trace_metrics(agent):
     return repeated_reads
 
 
-def _inject_memory_noise(agent, rounds=8):
-    for index in range(int(rounds)):
-        agent.record(
-            {
-                "role": "user" if index % 2 == 0 else "assistant",
-                "content": f"filler-turn-{index}-" + ("context-noise-" * 40),
-                "created_at": f"2026-04-09T12:{index:02d}:00+00:00",
-            }
-        )
-
-
-def _truncate_read_history(agent):
+def _truncate_read_messages(agent):
     updated = []
-    for item in agent.session["history"]:
-        if item.get("role") == "tool" and item.get("name") == "read_file":
-            replacement = dict(item)
-            replacement["content"] = f"# {item.get('args', {}).get('path', 'file')}\n(truncated from transcript)"
-            updated.append(replacement)
-        else:
-            updated.append(item)
-    agent.session["history"] = updated
+    for message in agent.session.get("messages", []):
+        replacement = dict(message)
+        content = message.get("content")
+        if (
+            message.get("role") == "user"
+            and isinstance(content, list)
+            and content
+            and content[0].get("type") == "tool_result"
+        ):
+            block = dict(content[0])
+            block["content"] = "(truncated from transcript)"
+            replacement["content"] = [block]
+        updated.append(replacement)
+    agent.session["messages"] = updated
     agent.session_path = agent.session_store.save(agent.session)
 
 
@@ -78,8 +75,8 @@ def run_real_memory_experiment(provider="gpt", repetitions=1):
                         _clear_file_summary_memory(agent)
                     elif variant == "memory_irrelevant":
                         _set_irrelevant_memory_for_task(agent)
-                    _inject_memory_noise(agent)
-                    _truncate_read_history(agent)
+                    _seed_plain_messages(agent, 8, "filler-turn", 560)
+                    _truncate_read_messages(agent)
                     if task["category"] == "fact_lookup":
                         prompt = (
                             f"What exact line did you previously read from {task['filename']}? "
@@ -140,67 +137,66 @@ def run_real_context_experiment(provider="gpt", repetitions=1):
                 token = f"TOKEN-{history_label}-{note_label}-{request_label}"
                 per_run = []
                 for _ in range(repetitions):
-                    for variant_name, updates in (("full", {}), ("no_context_reduction", {"context_reduction": False})):
+                    for variant_name, cap in (("bounded", 4_000), ("unbounded", 1_000_000)):
                         with tempfile.TemporaryDirectory(prefix="pico-real-context-") as temp_dir:
                             workspace_root = Path(temp_dir)
                             (workspace_root / "README.md").write_text("demo\n", encoding="utf-8")
                             agent = _build_real_agent(workspace_root, provider)
-                            for index in range(note_count):
-                                note_text = f"target token is {token}" if index == 0 else f"decoy token is DECOY-{index}"
-                                agent.record(
-                                    {
-                                        "role": "user" if index % 2 == 0 else "assistant",
-                                        "content": note_text,
-                                        "created_at": f"2026-04-09T10:{index:02d}:00+00:00",
-                                    }
-                                )
-                            for index in range(history_count):
-                                agent.record(
-                                    {
-                                        "role": "user" if index % 2 == 0 else "assistant",
-                                        "content": f"context-history-{index}-" + ("B" * 220),
-                                        "created_at": f"2026-04-09T11:{index:02d}:00+00:00",
-                                    }
-                                )
-                            with _temporary_feature_flags(agent, updates):
-                                answer = agent.ask(f"What is the target token remembered in the notes? {request_text}")
+                            _seed_plain_messages(agent, note_count, "context-note", 180)
+                            agent.session["messages"][0]["content"] = f"target token is {token}"
+                            _seed_plain_messages(agent, history_count, "context-history", 700)
+                            agent.context_config["history_soft_cap"] = cap
+                            user_message = f"What is the target token remembered in the notes? {request_text}"
+                            request, metadata = agent.context_manager.build_v2(user_message)
+                            answer = agent.ask(user_message)
                             per_run.append(
                                 {
                                     "variant": variant_name,
-                                    "prompt_chars": int(agent.last_prompt_metadata.get("prompt_chars", 0)),
+                                    "request_chars": _sent_message_chars(request),
+                                    "dropped_messages": int(metadata["dropped_messages"]),
+                                    "current_request_preserved": user_message in _latest_plain_user(request),
                                     "correct": token.lower() in _normalize_text(answer),
                                 }
                             )
-                full_rows = [row for row in per_run if row["variant"] == "full"]
-                raw_rows = [row for row in per_run if row["variant"] == "no_context_reduction"]
-                avg_full = _safe_mean(row["prompt_chars"] for row in full_rows)
-                avg_raw = _safe_mean(row["prompt_chars"] for row in raw_rows)
+                bounded_rows = [row for row in per_run if row["variant"] == "bounded"]
+                unbounded_rows = [row for row in per_run if row["variant"] == "unbounded"]
+                avg_bounded = _safe_mean(row["request_chars"] for row in bounded_rows)
+                avg_unbounded = _safe_mean(row["request_chars"] for row in unbounded_rows)
                 configs.append(
                     {
                         "id": f"{history_label}-{note_label}-{request_label}",
                         "history_level": history_label,
                         "note_level": note_label,
                         "request_level": request_label,
-                        "avg_full_prompt_chars": avg_full,
-                        "avg_raw_prompt_chars": avg_raw,
-                        "avg_prompt_compression_ratio": _safe_ratio(avg_raw - avg_full, avg_raw),
-                        "full_correct_rate": _safe_ratio(sum(1 for row in full_rows if row["correct"]), len(full_rows)),
-                        "raw_correct_rate": _safe_ratio(sum(1 for row in raw_rows if row["correct"]), len(raw_rows)),
+                        "bounded_request_chars": avg_bounded,
+                        "unbounded_request_chars": avg_unbounded,
+                        "bounded_dropped_messages": _safe_mean(row["dropped_messages"] for row in bounded_rows),
+                        "compression_ratio": _safe_ratio(avg_unbounded - avg_bounded, avg_unbounded),
+                        "current_request_preserved_rate": _safe_ratio(
+                            sum(1 for row in bounded_rows if row["current_request_preserved"]),
+                            len(bounded_rows),
+                        ),
+                        "bounded_correct_rate": _safe_ratio(sum(1 for row in bounded_rows if row["correct"]), len(bounded_rows)),
+                        "unbounded_correct_rate": _safe_ratio(sum(1 for row in unbounded_rows if row["correct"]), len(unbounded_rows)),
                     }
                 )
-    ratios = [config["avg_prompt_compression_ratio"] for config in configs]
-    full_chars = [config["avg_full_prompt_chars"] for config in configs]
-    raw_chars = [config["avg_raw_prompt_chars"] for config in configs]
+    ratios = [config["compression_ratio"] for config in configs]
+    bounded_chars = [config["bounded_request_chars"] for config in configs]
+    unbounded_chars = [config["unbounded_request_chars"] for config in configs]
     return {
         "provider": provider,
         "config_count": len(configs),
         "configs": configs,
         "summary": {
-            "avg_prompt_compression_ratio": _safe_mean(ratios),
-            "max_prompt_compression_ratio": max(ratios) if ratios else 0.0,
-            "min_prompt_compression_ratio": min(ratios) if ratios else 0.0,
-            "avg_full_prompt_chars": _safe_mean(full_chars),
-            "avg_raw_prompt_chars": _safe_mean(raw_chars),
+            "avg_bounded_request_chars": _safe_mean(bounded_chars),
+            "avg_unbounded_request_chars": _safe_mean(unbounded_chars),
+            "avg_request_compression_ratio": _safe_mean(ratios),
+            "max_request_compression_ratio": max(ratios) if ratios else 0.0,
+            "min_request_compression_ratio": min(ratios) if ratios else 0.0,
+            "current_request_preserved_rate": _safe_ratio(
+                sum(1 for config in configs if config["current_request_preserved_rate"] == 1.0),
+                len(configs),
+            ),
         },
     }
 

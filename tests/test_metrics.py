@@ -96,6 +96,21 @@ def test_run_context_ablation_v2_writes_expected_artifact(tmp_path):
     assert "current_request_preserved_rate" in artifact["summary"]
 
 
+def test_context_ablation_compares_bounded_and_unbounded_sent_messages(tmp_path):
+    artifact = run_context_ablation_v2(
+        artifact_path=tmp_path / "context.json",
+        repetitions=1,
+    )
+    summary = artifact["summary"]
+    assert summary["avg_bounded_request_chars"] < summary["avg_unbounded_request_chars"]
+    assert summary["current_request_preserved_rate"] == 1.0
+    assert all(
+        config["bounded_dropped_messages"] > 0
+        for config in artifact["configs"]
+        if config["history_level"] == "long"
+    )
+
+
 def test_provider_profile_loads_project_env_before_reading_deepseek_config(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     (tmp_path / ".env").write_text(
