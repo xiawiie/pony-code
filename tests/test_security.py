@@ -1,5 +1,8 @@
+import pytest
+
 from pico.security import (
     REDACTED_VALUE,
+    contains_secret_material,
     detected_secret_env_items,
     looks_secret_shaped_text,
     looks_sensitive_env_name,
@@ -7,6 +10,8 @@ from pico.security import (
     redact_text,
     shell_env,
 )
+
+SECRET_SENTINEL = "github_pat_A123456789012345678901234567890"
 
 
 def test_sensitive_env_name_detection_matches_runtime_policy():
@@ -60,14 +65,94 @@ def test_short_secret_values_do_not_redact_broad_substrings():
     assert redact_artifact({"OPENAI_API_KEY": "abc"}, env=env)["OPENAI_API_KEY"] == REDACTED_VALUE
 
 
-def test_long_secret_values_redact_token_instances_not_embedded_text():
+def test_long_secret_values_redact_token_instances_including_embedded_text():
     env = {"OPENAI_API_KEY": "alpha123456789"}
 
     assert redact_text("token=alpha123456789", env=env) == f"token={REDACTED_VALUE}"
     assert redact_text("Use alpha123456789 for the request.", env=env) == (
         f"Use {REDACTED_VALUE} for the request."
     )
-    assert redact_text("identifier_alpha123456789_suffix", env=env) == "identifier_alpha123456789_suffix"
+    assert redact_text("identifier_alpha123456789_suffix", env=env) == f"identifier_{REDACTED_VALUE}_suffix"
+
+
+def test_redact_text_removes_known_secret_even_inside_identifier():
+    env = {"PICO_API_KEY": "alpha123456789"}
+    assert redact_text("prefix_alpha123456789_suffix", env=env) == "prefix_<redacted>_suffix"
+
+
+def test_redact_text_covers_high_confidence_material_without_env():
+    samples = [
+        SECRET_SENTINEL,
+        "Authorization: Bearer bearer-secret-123456789",
+        "password=correct-horse-battery-staple",
+        "-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----",
+        "https://user:secret-pass@example.test/v1?api_key=alpha123456789",
+        "https://user:secret-pass@example.test/v1",
+        "tool --api-key sk-cli-123456789",
+    ]
+    for sample in samples:
+        safe = redact_text(sample, env={})
+        assert sample not in safe
+        assert not contains_secret_material(safe, env={})
+
+
+def test_secret_detector_ignores_security_prose_and_sample_values():
+    for text in (
+        "token budget",
+        "password policy",
+        "credential rotation design",
+        "input_tokens",
+        "API_KEY=your-api-key",
+        "TOKEN=${TOKEN}",
+    ):
+        assert contains_secret_material(text, env={}) is False
+        assert redact_text(text, env={}) == text
+
+
+@pytest.mark.parametrize(
+    "key",
+    (
+        "api_key",
+        "access_key",
+        "auth_token",
+        "bearer_token",
+        "credential",
+        "credentials",
+        "client_secret",
+        "password",
+        "token",
+        "authorization",
+        "private_key",
+    ),
+)
+def test_redact_artifact_replaces_opaque_values_for_secret_mapping_keys(key):
+    value = "opaque-value-with-no-token-shape"
+    assert redact_artifact({key: value}, env={}) == {key: REDACTED_VALUE}
+
+
+def test_redact_artifact_preserves_non_secret_metric_keys():
+    value = {"input_tokens": 12, "token_budget": 2048, "credential_policy": "rotate quarterly"}
+    assert redact_artifact(value, env={}) == value
+
+
+@pytest.mark.parametrize(
+    "text",
+    (
+        '{"api_key":"opaque-json-value"}',
+        '{"apiKey":"opaque-json-value"}',
+        '{"clientSecret":"opaque-json-value"}',
+        '{"accessToken":"opaque-json-value"}',
+    ),
+)
+def test_quoted_json_secret_assignment_is_detected_and_redacted(text):
+    safe = redact_text(text, env={})
+    assert "opaque-json-value" not in safe
+    assert contains_secret_material(text, env={}) is True
+
+
+@pytest.mark.parametrize("key", ("apiKey", "clientSecret", "accessToken", "privateKey"))
+def test_camel_case_secret_mapping_key_is_redacted(key):
+    assert redact_artifact({key: "opaque-value"}, env={}) == {key: REDACTED_VALUE}
 
 
 def test_shell_env_uses_allowlist_and_sets_pwd_with_path_fallback(tmp_path):
