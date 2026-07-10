@@ -354,7 +354,8 @@ def test_protocol_and_empty_failures_are_bounded_retries(raw, reason):
     assert isinstance(action, RetryAction)
     assert action.reason_code == reason
     assert len(action.excerpt) <= 160
-    assert raw not in action.notice
+    if raw:
+        assert raw not in action.notice
 
 
 def test_stop_sequence_with_text_is_not_a_final_answer():
