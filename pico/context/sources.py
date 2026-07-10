@@ -51,24 +51,57 @@ def render_workspace_state(agent, budget_tokens):
 
 
 def render_memory_index(agent, budget_tokens):
-    """List of memory files (path, size, first line) available to the turn."""
+    """List durable memory files and summaries of recently worked files."""
+    entries = []
     store = getattr(agent, "memory_store", None)
-    if store is None:
+    if store is not None:
+        try:
+            entries = list(store.list() or [])
+        except Exception as exc:
+            logger.debug("memory_index source failed: %s", exc)
+
+    durable_lines = []
+    if entries:
+        durable_lines.append("Memory files:")
+        for entry in entries:
+            first = (getattr(entry, "first_line", "") or "")[:80]
+            durable_lines.append(f"- {entry.path} ({entry.size_chars} chars) {first}")
+
+    memory_enabled = True
+    feature_enabled = getattr(agent, "feature_enabled", None)
+    if callable(feature_enabled):
+        memory_enabled = bool(feature_enabled("memory"))
+    if memory_enabled:
+        recent_files = list(getattr(getattr(agent, "memory", None), "recent_files", []) or [])
+        session = getattr(agent, "session", {}) or {}
+        memory_state = session.get("memory", {}) if isinstance(session, dict) else {}
+        summaries = memory_state.get("file_summaries", {}) if isinstance(memory_state, dict) else {}
+        working_lines = []
+        for path in recent_files:
+            value = summaries.get(path)
+            summary = value.get("summary", "") if isinstance(value, dict) else value
+            summary = str(summary or "").strip()
+            if summary:
+                working_lines.append(f"{path} -> {summary}")
+        if working_lines:
+            working_text = "\n".join(["Recent working file summaries:", *working_lines])
+        else:
+            working_text = ""
+    else:
+        working_text = ""
+
+    durable_text = "\n".join(durable_lines)
+    if not durable_text and not working_text:
         return None
-    try:
-        entries = store.list()
-    except Exception as exc:
-        logger.debug("memory_index source failed: %s", exc)
-        return None
-    if not entries:
-        return None
-    lines = ["Memory files:"]
-    for e in entries:
-        first = getattr(e, "first_line", "") or ""
-        first = first[:80]
-        lines.append(f"- {e.path} ({e.size_chars} chars) {first}")
-    text = "\n".join(lines)
-    return _tail_clip(text, _budget_to_chars(budget_tokens))
+    char_budget = _budget_to_chars(budget_tokens)
+    if not working_text:
+        return _tail_clip(durable_text, char_budget)
+    if len(working_text) >= char_budget:
+        return _tail_clip(working_text, char_budget)
+    durable_budget = char_budget - len(working_text) - 2
+    if durable_text and durable_budget > 3:
+        return _tail_clip(durable_text, durable_budget) + "\n\n" + working_text
+    return working_text
 
 
 def render_project_structure(agent, budget_tokens):

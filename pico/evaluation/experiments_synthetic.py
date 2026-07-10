@@ -77,14 +77,18 @@ def measure_request_ablation_metrics(agent, user_message):
     return results
 
 
-def _prompt_has_reusable_file_summary(prompt, filename, expected_fact):
-    marker = f"{str(filename).strip().lower()} ->"
-    expected_fact = str(expected_fact).strip().lower()
-    if not marker or not expected_fact:
-        return False
+def _prompt_has_reusable_file_summary(prompt, expected_working_line):
+    marker = "Recent working file summaries:"
+    expected_working_line = str(expected_working_line).strip()
+    in_working_summaries = False
     for line in str(prompt).splitlines():
-        line = line.strip().lower()
-        if line.startswith(marker) and expected_fact in line:
+        line = line.strip()
+        if line == marker:
+            in_working_summaries = True
+            continue
+        if in_working_summaries and line == "</pico:memory_index>":
+            return False
+        if in_working_summaries and line == expected_working_line:
             return True
     return False
 
@@ -124,6 +128,8 @@ class _MemoryExperimentModelClient(FakeModelClient):
         self.filename = str(filename).strip()
         self.phase = "bootstrap_tool"
         self.followup_reads = 0
+        self.expected_working_line = ""
+        self.followup_prompt = ""
 
     def complete(self, prompt, max_new_tokens, **kwargs):
         del max_new_tokens, kwargs
@@ -135,7 +141,8 @@ class _MemoryExperimentModelClient(FakeModelClient):
             self.phase = "question"
             return "<final>Done.</final>"
         if self.phase == "question":
-            if _prompt_has_reusable_file_summary(prompt, self.filename, self.expected_fact):
+            self.followup_prompt = str(prompt)
+            if _prompt_has_reusable_file_summary(prompt, self.expected_working_line):
                 return f"<final>{self.expected_fact.capitalize()}.</final>"
             self.phase = "question_after_read"
             self.followup_reads += 1
@@ -161,21 +168,38 @@ def _set_irrelevant_memory(agent):
     summaries = agent.session.setdefault("memory", {}).setdefault("file_summaries", {})
     summaries.clear()
     memorylib.set_file_summary_dict(summaries, "other.txt", "team mascot is blue", workspace_root=agent.root)
+    agent.memory.remember_file("other.txt")
+    agent._sync_working_memory()
 
 
 def _clear_file_summary_memory(agent):
     agent.session.setdefault("memory", {})["file_summaries"] = {}
 
 
-def _age_bootstrap_read_history(agent, filler_count=8):
-    for index in range(int(filler_count)):
-        agent.record(
-            {
-                "role": "user" if index % 2 == 0 else "assistant",
-                "content": f"memory-ablation-filler-{index}",
-                "created_at": f"2026-04-08T12:{index:02d}:00+00:00",
-            }
-        )
+def _age_bootstrap_messages(agent, filler_count=8):
+    _seed_plain_messages(agent, filler_count, "memory-ablation-filler", 560)
+
+
+def _bootstrap_tool_use_id(agent):
+    for message in agent.session["messages"]:
+        for block in message.get("content", []) if isinstance(message.get("content"), list) else []:
+            if block.get("type") == "tool_use" and block.get("id"):
+                return block["id"]
+        else:
+            continue
+    raise AssertionError("bootstrap read did not produce a tool use")
+
+
+def _prepare_memory_followup(agent, filename):
+    bootstrap_tool_use_id = _bootstrap_tool_use_id(agent)
+
+    summary = agent.session["memory"]["file_summaries"][filename]["summary"]
+    model_client = getattr(agent.model_client, "_inner", agent.model_client)
+    model_client.expected_working_line = f"{filename} -> {summary}"
+    _age_bootstrap_messages(agent)
+    agent.context_config["history_soft_cap"] = 900
+    agent.context_config["history_floor_messages"] = 2
+    return bootstrap_tool_use_id, model_client
 
 
 def _run_memory_variant(mode):
@@ -185,7 +209,7 @@ def _run_memory_variant(mode):
         (workspace_root / "facts.txt").write_text("deploy key is red\n", encoding="utf-8")
         agent = _build_memory_experiment_agent(workspace_root, "deploy key is red", "facts.txt")
         assert agent.ask("Read facts.txt and remember the key fact.") == "Done."
-        _age_bootstrap_read_history(agent)
+        bootstrap_tool_use_id, model_client = _prepare_memory_followup(agent, "facts.txt")
 
         if mode == "memory_off":
             agent.feature_flags["memory"] = False
@@ -195,12 +219,13 @@ def _run_memory_variant(mode):
 
         result = agent.ask("What color is the deploy key?")
         task_state = agent.current_task_state
-        model_client = agent.model_client
         return {
             "correct": result.strip().lower() == "deploy key is red.",
             "tool_steps": int(task_state.tool_steps),
             "attempts": int(task_state.attempts),
-            "repeated_reads": int(getattr(model_client, "followup_reads", 0)),
+            "repeated_reads": int(model_client.followup_reads),
+            "bootstrap_tool_turn_dropped": bool(model_client.followup_prompt)
+            and bootstrap_tool_use_id not in model_client.followup_prompt,
         }
 
 
@@ -221,6 +246,9 @@ def run_memory_dependency_experiment(repetitions=3):
             "avg_tool_steps": _safe_mean(row["tool_steps"] for row in rows),
             "avg_attempts": _safe_mean(row["attempts"] for row in rows),
             "correct_rate": _safe_ratio(sum(1 for row in rows if row["correct"]), len(rows)),
+            "bootstrap_tool_turn_dropped": all(
+                row["bootstrap_tool_turn_dropped"] for row in rows
+            ),
         }
     return results
 
@@ -263,6 +291,8 @@ def _set_irrelevant_memory_for_task(agent):
     summaries = agent.session.setdefault("memory", {}).setdefault("file_summaries", {})
     summaries.clear()
     memorylib.set_file_summary_dict(summaries, "other.txt", "the team mascot is blue", workspace_root=agent.root)
+    agent.memory.remember_file("other.txt")
+    agent._sync_working_memory()
 
 
 def _run_memory_task_variant(task, variant):
@@ -272,7 +302,7 @@ def _run_memory_task_variant(task, variant):
         _write_memory_task_files(workspace_root, task)
         agent = _build_memory_experiment_agent(workspace_root, task["fact"], task["filename"])
         assert agent.ask(_bootstrap_prompt(task)) == "Done."
-        _age_bootstrap_read_history(agent)
+        bootstrap_tool_use_id, model_client = _prepare_memory_followup(agent, task["filename"])
         if variant == "memory_off":
             agent.feature_flags["memory"] = False
             _clear_file_summary_memory(agent)
@@ -284,7 +314,9 @@ def _run_memory_task_variant(task, variant):
             "correct": result.strip().lower() == f"{task['fact']}.",
             "tool_steps": int(task_state.tool_steps),
             "attempts": int(task_state.attempts),
-            "repeated_reads": int(getattr(agent.model_client, "followup_reads", 0)),
+            "repeated_reads": int(model_client.followup_reads),
+            "bootstrap_tool_turn_dropped": bool(model_client.followup_prompt)
+            and bootstrap_tool_use_id not in model_client.followup_prompt,
         }
 
 
@@ -316,6 +348,9 @@ def run_large_scale_memory_experiment(repetitions=5):
                 "avg_attempts": _safe_mean(row["attempts"] for row in rows),
                 "correct_rate": _safe_ratio(sum(1 for row in rows if row["correct"]), len(rows)),
                 "memory_hit_rate": _safe_ratio(sum(1 for row in rows if row["repeated_reads"] == 0), len(rows)),
+                "bootstrap_tool_turn_dropped": all(
+                    row["bootstrap_tool_turn_dropped"] for row in rows
+                ),
             }
             for variant, rows in variants.items()
         },

@@ -3,12 +3,14 @@ pre-escaping raw text or None for each injection source."""
 
 from unittest.mock import MagicMock
 
+from pico import FakeModelClient, Pico, SessionStore, WorkspaceContext
 from pico.context.sources import (
     render_checkpoint,
     render_memory_index,
     render_project_structure,
     render_workspace_state,
 )
+from pico.features.memory import set_file_summary_dict
 
 
 def _agent():
@@ -26,6 +28,16 @@ def _agent():
     a.repo_map.language_stats = MagicMock(return_value={"python": 30})
     a.render_checkpoint_text = MagicMock(return_value="")
     return a
+
+
+def build_agent(tmp_path):
+    (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
+    return Pico(
+        model_client=FakeModelClient([]),
+        workspace=WorkspaceContext.build(tmp_path),
+        session_store=SessionStore(tmp_path / ".pico" / "sessions"),
+        approval_policy="auto",
+    )
 
 
 def test_workspace_state_returns_content():
@@ -62,6 +74,62 @@ def test_memory_index_returns_none_when_no_entries():
     a = _agent()
     a.memory_store.list.return_value = []
     assert render_memory_index(a, budget_tokens=500) is None
+
+
+def test_memory_index_renders_recent_summary_without_durable_entries(tmp_path):
+    agent = build_agent(tmp_path)
+    agent.memory.remember_file("README.md")
+    agent._sync_working_memory()
+    set_file_summary_dict(
+        agent.session["memory"]["file_summaries"],
+        "README.md",
+        "project entry point",
+        workspace_root=agent.root,
+    )
+
+    text = render_memory_index(agent, budget_tokens=200)
+
+    assert "Recent working file summaries:" in text
+    assert "README.md -> project entry point" in text
+
+
+def test_memory_index_omits_working_summaries_when_memory_is_off(tmp_path):
+    agent = build_agent(tmp_path)
+    agent.memory.remember_file("README.md")
+    agent._sync_working_memory()
+    set_file_summary_dict(
+        agent.session["memory"]["file_summaries"],
+        "README.md",
+        "project entry point",
+        workspace_root=agent.root,
+    )
+    agent.feature_flags["memory"] = False
+
+    text = render_memory_index(agent, budget_tokens=200)
+
+    assert text is None or "Recent working file summaries:" not in text
+
+
+def test_memory_index_reserves_working_summary_when_durable_index_overflows(tmp_path):
+    agent = build_agent(tmp_path)
+    agent.memory.remember_file("README.md")
+    agent._sync_working_memory()
+    set_file_summary_dict(
+        agent.session["memory"]["file_summaries"],
+        "README.md",
+        "project entry point",
+        workspace_root=agent.root,
+    )
+    agent.memory_store = MagicMock()
+    agent.memory_store.list.return_value = [
+        MagicMock(path=f"notes/{index}.md", size_chars=1000, first_line="x" * 80)
+        for index in range(30)
+    ]
+
+    text = render_memory_index(agent, budget_tokens=60)
+
+    assert "Recent working file summaries:" in text
+    assert "README.md -> project entry point" in text
 
 
 def test_project_structure_shows_tree():

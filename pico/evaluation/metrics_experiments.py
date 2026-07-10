@@ -25,7 +25,7 @@ from .experiments_recovery import (
 from .experiments_synthetic import (
     MEMORY_EXPERIMENT_TASKS as MEMORY_EXPERIMENT_TASKS,
     SECURITY_SCENARIOS as SECURITY_SCENARIOS,
-    _age_bootstrap_read_history as _age_bootstrap_read_history,
+    _age_bootstrap_messages as _age_bootstrap_messages,
     _bootstrap_prompt as _bootstrap_prompt,
     _build_memory_experiment_agent as _build_memory_experiment_agent,
     _clear_file_summary_memory as _clear_file_summary_memory,
@@ -60,7 +60,6 @@ from .experiments_synthetic import (
     run_security_experiment_suite as run_security_experiment_suite,
 )
 
-measure_feature_ablation_metrics = measure_request_ablation_metrics
 from .metrics_common import (
     DEFAULT_CORE_REPORT_PATH as DEFAULT_CORE_REPORT_PATH,
     DEFAULT_CONTEXT_ABLATION_V2_PATH as DEFAULT_CONTEXT_ABLATION_V2_PATH,
@@ -89,6 +88,8 @@ from .provider_benchmark import (
     _provider_summary_from_artifact as _provider_summary_from_artifact,
     run_provider_experiments as run_provider_experiments,
 )
+
+measure_feature_ablation_metrics = measure_request_ablation_metrics
 
 __all__ = [
     'DEFAULT_CORE_REPORT_PATH',

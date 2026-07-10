@@ -178,14 +178,41 @@ def test_provider_profile_uses_right_codes_shared_key_for_gpt(tmp_path, monkeypa
     assert profile["model"] == "gpt-5.4"
 
 
-@pytest.mark.legacy_string_path
-@pytest.mark.skip(reason="synthetic memory experiment reads the legacy flattened prompt for file-summary line; needs v2 message inspection")
+def test_real_memory_request_recorder_captures_actual_native_or_fallback_input():
+    from pico.evaluation.experiments_real import (
+        _first_followup_drops_bootstrap_tool,
+        _recording_provider,
+    )
+
+    class NativeProvider:
+        def complete_v2(self, **kwargs):
+            return kwargs
+
+    native = _recording_provider(NativeProvider())
+    messages = [{"role": "assistant", "content": [{"id": "tu_1"}]}]
+    assert native.complete_v2(
+        system=[],
+        tools=[],
+        messages=messages,
+        max_tokens=10,
+    )["messages"] == messages
+    assert native.calls == [("messages", messages)]
+    assert _first_followup_drops_bootstrap_tool(native, 0, "tu_1") is False
+    assert _first_followup_drops_bootstrap_tool(native, 1, "tu_1") is False
+
+    class FallbackProvider:
+        def complete(self, prompt, max_new_tokens, **kwargs):
+            return prompt, max_new_tokens, kwargs
+
+    fallback = _recording_provider(FallbackProvider())
+    assert not hasattr(fallback, "complete_v2")
+    assert fallback.complete("sent prompt", 10) == ("sent prompt", 10, {})
+    assert fallback.calls == [("prompt", "sent prompt")]
+    assert _first_followup_drops_bootstrap_tool(fallback, 0, "tu_1") is True
+    assert _first_followup_drops_bootstrap_tool(fallback, 0, "") is False
+
+
 def test_run_memory_ablation_v2_writes_expected_artifact(tmp_path):
-    # TODO(P3 cleanup): _MemoryExperimentModelClient.complete() scans the
-    # flattened prompt for "<file> -> <fact>" markers produced by
-    # legacy flattened history compression. Once memory summaries are
-    # threaded through v2 messages / system prefix, this experiment should
-    # inspect session["messages"] directly.
     artifact_path = tmp_path / "artifacts" / "memory-ablation-v2.json"
 
     artifact = run_memory_ablation_v2(
@@ -198,12 +225,17 @@ def test_run_memory_ablation_v2_writes_expected_artifact(tmp_path):
     assert artifact["task_count"] == 12
     assert set(artifact["variants"]) == {"memory_on", "memory_off", "memory_irrelevant"}
     assert "memory_hit_rate" in artifact["variants"]["memory_on"]
-    assert artifact["variants"]["memory_on"]["repeated_reads"] == 0
-    assert artifact["variants"]["memory_on"]["memory_hit_rate"] == 1.0
-    assert artifact["variants"]["memory_off"]["repeated_reads"] > artifact["variants"]["memory_on"]["repeated_reads"]
-    assert artifact["variants"]["memory_irrelevant"]["repeated_reads"] > artifact["variants"]["memory_on"]["repeated_reads"]
-    assert artifact["variants"]["memory_off"]["memory_hit_rate"] < artifact["variants"]["memory_on"]["memory_hit_rate"]
-    assert artifact["variants"]["memory_irrelevant"]["memory_hit_rate"] < artifact["variants"]["memory_on"]["memory_hit_rate"]
+    on = artifact["variants"]["memory_on"]
+    off = artifact["variants"]["memory_off"]
+    irrelevant = artifact["variants"]["memory_irrelevant"]
+    assert on["bootstrap_tool_turn_dropped"] is True
+    assert off["bootstrap_tool_turn_dropped"] is True
+    assert irrelevant["bootstrap_tool_turn_dropped"] is True
+    assert on["repeated_reads"] < off["repeated_reads"]
+    assert on["repeated_reads"] < irrelevant["repeated_reads"]
+    assert on["memory_hit_rate"] > off["memory_hit_rate"]
+    assert on["memory_hit_rate"] > irrelevant["memory_hit_rate"]
+    assert on["correct_rate"] == off["correct_rate"] == irrelevant["correct_rate"] == 1.0
 
 
 def test_run_recovery_ablation_v2_writes_expected_artifact(tmp_path):

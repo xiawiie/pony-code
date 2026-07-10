@@ -1,11 +1,13 @@
 import json
 import tempfile
+from copy import deepcopy
 from pathlib import Path
 
 from ..runtime import Pico, SessionStore
 from ..workspace import WorkspaceContext
 from .experiments_synthetic import (
     MEMORY_EXPERIMENT_TASKS,
+    _bootstrap_tool_use_id,
     _clear_file_summary_memory,
     _latest_plain_user,
     _preview_request,
@@ -16,6 +18,48 @@ from .experiments_synthetic import (
 )
 from .metrics_common import _safe_mean, _safe_ratio
 from .provider_benchmark import _make_provider_client, _normalize_text
+
+
+class _RecordingProvider:
+    def __init__(self, inner):
+        self._inner = inner
+        self.calls = []
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+
+class _NativeRecordingProvider(_RecordingProvider):
+    def complete_v2(self, *, system, tools, messages, max_tokens, cache_breakpoints=None):
+        self.calls.append(("messages", deepcopy(messages)))
+        return self._inner.complete_v2(
+            system=system,
+            tools=tools,
+            messages=messages,
+            max_tokens=max_tokens,
+            cache_breakpoints=cache_breakpoints,
+        )
+
+
+class _FallbackRecordingProvider(_RecordingProvider):
+    def complete(self, prompt, max_new_tokens, **kwargs):
+        self.calls.append(("prompt", str(prompt)))
+        return self._inner.complete(prompt, max_new_tokens, **kwargs)
+
+
+def _recording_provider(provider):
+    if callable(getattr(provider, "complete_v2", None)):
+        return _NativeRecordingProvider(provider)
+    return _FallbackRecordingProvider(provider)
+
+
+def _first_followup_drops_bootstrap_tool(recorder, call_index, tool_use_id):
+    if not tool_use_id or len(recorder.calls) <= call_index:
+        return False
+    kind, payload = recorder.calls[call_index]
+    if kind == "messages":
+        return tool_use_id not in json.dumps(payload, sort_keys=True)
+    return tool_use_id not in payload
 
 
 def _followup_trace_metrics(agent):
@@ -47,13 +91,16 @@ def _truncate_read_messages(agent):
 def _build_real_agent(workspace_root, provider, approval_policy="auto", read_only=False):
     workspace = WorkspaceContext.build(workspace_root)
     store = SessionStore(workspace_root / ".pico" / "sessions")
-    return Pico(
-        model_client=_make_provider_client(provider),
+    recorder = _recording_provider(_make_provider_client(provider))
+    agent = Pico(
+        model_client=recorder,
         workspace=workspace,
         session_store=store,
         approval_policy=approval_policy,
         read_only=read_only,
     )
+    agent._real_request_recorder = recorder
+    return agent
 
 
 def run_real_memory_experiment(provider="gpt", repetitions=1):
@@ -71,13 +118,15 @@ def run_real_memory_experiment(provider="gpt", repetitions=1):
                     _write_memory_task_files(workspace_root, task)
                     agent = _build_real_agent(workspace_root, provider)
                     agent.ask(f"Read {task['filename']} and remember the exact line. After you know it, reply with Done only.")
+                    bootstrap_tool_use_id = _bootstrap_tool_use_id(agent)
                     if variant == "memory_off":
                         agent.feature_flags["memory"] = False
                         _clear_file_summary_memory(agent)
                     elif variant == "memory_irrelevant":
                         _set_irrelevant_memory_for_task(agent)
                     _seed_plain_messages(agent, 8, "filler-turn", 560)
-                    _truncate_read_messages(agent)
+                    agent.context_config["history_soft_cap"] = 900
+                    agent.context_config["history_floor_messages"] = 2
                     if task["category"] == "fact_lookup":
                         prompt = (
                             f"What exact line did you previously read from {task['filename']}? "
@@ -93,6 +142,7 @@ def run_real_memory_experiment(provider="gpt", repetitions=1):
                             f"What exact conclusion did you already establish from {task['filename']}? "
                             "Reply with the exact line only. If you are not certain, verify with tools instead of guessing."
                         )
+                    followup_call_index = len(agent._real_request_recorder.calls)
                     answer = agent.ask(prompt)
                     variants[variant].append(
                         {
@@ -102,6 +152,11 @@ def run_real_memory_experiment(provider="gpt", repetitions=1):
                             "tool_steps": int(agent.current_task_state.tool_steps),
                             "attempts": int(agent.current_task_state.attempts),
                             "repeated_reads": _followup_trace_metrics(agent),
+                            "bootstrap_tool_turn_dropped": _first_followup_drops_bootstrap_tool(
+                                agent._real_request_recorder,
+                                followup_call_index,
+                                bootstrap_tool_use_id,
+                            ),
                         }
                     )
     return {
@@ -115,6 +170,9 @@ def run_real_memory_experiment(provider="gpt", repetitions=1):
                 "avg_tool_steps": _safe_mean(row["tool_steps"] for row in rows),
                 "avg_attempts": _safe_mean(row["attempts"] for row in rows),
                 "correct_rate": _safe_ratio(sum(1 for row in rows if row["correct"]), len(rows)),
+                "bootstrap_tool_turn_dropped": all(
+                    row["bootstrap_tool_turn_dropped"] for row in rows
+                ),
             }
             for variant, rows in variants.items()
         },
