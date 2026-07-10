@@ -3522,6 +3522,23 @@ git commit -m "fix(runtime): persist tool messages as one pair"
 - Only `workspace_write` creates snapshots/file entries and joins a recoverable turn checkpoint.
 - `memory_write` creates a non-restorable Tool Change audit record but no workspace recovery checkpoint.
 
+**Boundary clarification (implementation review, 2026-07-10):**
+
+- Resolve an effect class as soon as the registry lookup is available, before
+  any approval decision. Every return from `ToolExecutor.execute()` — including
+  allowed-tools rejection, unknown tool, validation/repeat rejection and
+  command/approval rejection — must pass that class to `_metadata`.
+- A truly unknown tool has no trustworthy registry risk flag, so preserve the
+  current fail-safe `read_only=False` contract by assigning it
+  `effect_class="workspace_write"`. The `_effect_class(name, risky)` fallback
+  remains `read_only` for a future *registered* unknown-safe tool and
+  `workspace_write` for a registered risky one.
+- `tests/test_tool_executor.py::build_agent` must accept `outputs=None, **kwargs`
+  so the memory-write end-to-end test can construct its scripted/read-only
+  agents. Migrate existing direct-runner tests: unavailable/not-found/I/O/topic
+  failures now raise from the runner and become executor `error` results;
+  `delegate` is read-only and no longer receives a Tool Change record.
+
 - [ ] **Step 1: Add effect and status regression tests**
 
 Add focused cases to `tests/test_tool_executor.py`:
@@ -3602,6 +3619,10 @@ def test_runner_keyboard_interrupt_finalizes_pending_change_then_reraises(
 
 Add memory runner tests that missing store/retrieval, missing memory file, I/O error, and invalid topic do not produce `tool_status == "ok"`. Add a protected `.pico/memory/notes/**` write test that expects `rejected` before the runner.
 
+Also add a table-driven executor test that exercises an unknown tool and at
+least one known validation/approval rejection, asserting all result metadata
+contains a closed `effect_class` and derives `read_only` exclusively from it.
+
 - [ ] **Step 2: Confirm current false-ok/read-only behavior**
 
 ```bash
@@ -3647,6 +3668,10 @@ Make `effect_class` a required `_metadata` argument and derive:
 
 Update every `_metadata` and `_finalize_tool_side_effects` call to pass the already-computed effect class. Never derive read-only from `tool["risky"]`.
 
+For the unknown-tool branch, set `effect_class="workspace_write"` explicitly
+before calling `_metadata`; this is deliberately more conservative than the
+generic `_effect_class(name, False)` fallback.
+
 - [ ] **Step 4: Enforce agent read-only before approval and runner execution**
 
 Immediately after resolving the tool/effect class:
@@ -3680,6 +3705,9 @@ records_recovery = effect_class == "workspace_write"
 - Capture path snapshots, observer state, affected paths, file entries, and shell deltas only when `records_recovery`.
 - Finalize `memory_write` with empty affected paths/file entries.
 - In `AgentLoop` append `tool_change_id` to `run_tool_change_ids` only when `effect_class == "workspace_write"`.
+- Since every executor result now has an effect class, remove the old
+  AgentLoop `read_only`-derived fallback and consume `metadata["effect_class"]`
+  directly.
 
 - [ ] **Step 6: Move predictable failures into validation**
 
