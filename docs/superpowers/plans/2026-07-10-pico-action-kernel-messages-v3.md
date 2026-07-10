@@ -4369,15 +4369,44 @@ git commit -m "fix(runtime): close every started run terminally"
 **Files:**
 
 - Modify: `pico/session_store.py`
+- Modify: `pico/runtime.py`
 - Modify: `tests/test_session_store.py`
 - Modify: `tests/test_session_store_migrator.py`
 - Modify: `tests/test_file_lock.py`
+- Modify: `tests/test_pico.py`
 
 **Interfaces:**
 
 - `SessionStore.save(session) -> Path` keeps its public signature.
 - `SessionStore.load(session_id) -> dict` returns validated v3 or raises `SessionMigrationError` before a run starts.
 - Public methods acquire one store lock; `_atomic_write_locked` and `_write_backup_locked` require the caller to already hold it.
+
+**Transition clarifications (implementation review, 2026-07-10):**
+
+- Task 14 must preserve the temporary in-memory legacy `history` bridge until
+  Task 15, but a v3 file on disk must never contain it. For a v3
+  `SessionStore.save`, copy/redact the payload, remove only its top-level
+  `history` key, validate the resulting v3 payload, and atomically write that
+  copy. Do not mutate the caller's in-memory session.
+- Add a v2-load → `Pico.from_session` → second `Pico.from_session` regression:
+  both resumed runtimes may temporarily expose in-memory `history`, while the
+  saved v3 file remains messages-only and can be loaded again. This needs no
+  runtime schema change: in `Pico._ensure_session_shape`, when a loaded v3
+  session has no `history`, derive a temporary legacy mirror from validated
+  canonical messages. Plain user/assistant messages become same-role history
+  entries; each assistant `tool_use` plus its following user `tool_result`
+  becomes one `{role: "tool", name, args, content}` entry. This bridge exists
+  only until Task 15 and is never written back to disk.
+- Existing `SessionStore` redactor semantics must be preserved without
+  expanding C into the A-stage secret-policy work: raw backups remain exact
+  original bytes; v1/v2 migration applies the store's already-configured
+  redactor only to the replacement payload. Validate the post-redaction v3
+  copy before creating a backup or replacing the original. A corrupting
+  configured redactor raises `SessionMigrationError` and leaves the original
+  session unchanged.
+- `_atomic_write_locked` must record its temporary path immediately after the
+  temporary file opens, so `json.dump`, flush, fsync, and replace failures all
+  remove the temporary file in `finally`.
 
 - [ ] **Step 1: Add transaction, backup, and idempotence tests**
 
@@ -4469,6 +4498,66 @@ def test_session_id_must_be_basename_safe(store, session_id):
 
 Add a lock spy test showing `load` enters `locked_file` once across read/migrate/backup/replace and never calls public `save` from inside migration.
 
+Add these transition and failure tests:
+
+```python
+def test_v3_save_strips_transitional_history_without_mutating_caller(store):
+    session = {
+        "id": "s3",
+        "schema_version": 3,
+        "history": [{"role": "user", "content": "legacy"}],
+        "messages": [{"role": "user", "content": "q", "_pico_meta": {}}],
+    }
+    store.save(session)
+    on_disk = json.loads(store.path_for("s3").read_text(encoding="utf-8"))
+    assert "history" not in on_disk
+    assert session["history"][0]["content"] == "legacy"
+
+
+def test_migration_rejects_corrupting_redactor_before_backup_or_replace(tmp_path):
+    store = SessionStore(
+        tmp_path / ".pico" / "sessions",
+        redactor=lambda value: {**value, "messages": "not messages"},
+    )
+    path = store.path_for("s2")
+    original = json.dumps({
+        "id": "s2",
+        "schema_version": 2,
+        "messages": [{"role": "user", "content": "q", "_pico_meta": {}}],
+        "history": [],
+    }).encode("utf-8")
+    path.write_bytes(original)
+    with pytest.raises(SessionMigrationError, match="messages"):
+        store.load("s2")
+    assert path.read_bytes() == original
+    assert not (path.parent / "backup").exists()
+```
+
+In `tests/test_session_store_migrator.py`, import `FakeModelClient`, `Pico`,
+and `WorkspaceContext`, then add a v2 resume-roundtrip that writes a v2
+session, constructs `Pico.from_session` twice, and asserts the file is v3
+without `history` after each construction while both runtime sessions retain a
+list-valued transitional `history` bridge.
+
+Extend the replace-failure test with `assert not list(path.parent.glob("*.tmp"))`.
+Add a write-phase failure test by monkeypatching `pico.session_store.json.dump`
+to raise `OSError("encode failed")`, calling `store.save(...)`, and asserting
+no `*.tmp` remains.
+
+Add two raw-file load regressions: a `requested.json` whose body id is
+`"other"` must raise `SessionMigrationError("session id does not match file name")`
+without changing bytes; and a JSON file containing `"schema_version": Infinity`
+must raise `SessionMigrationError("invalid session schema version")` without
+changing bytes. Add the same unchanged-bytes assertion for a nominally v3
+file whose JSON schema version is the string `"3"`; only integer `3` is a
+valid persisted v3 schema marker.
+
+Migrate `tests/test_session_store.py::test_session_store_saves_loads_and_finds_latest_session`:
+its saved v2 fixture no longer round-trips by equality after `load`. Assert
+instead that the loaded transcript is schema v3, contains no history, has
+meta-normalized canonical messages, and passes `validate_messages(...,
+require_meta=True)`.
+
 - [ ] **Step 2: Confirm current migration is unlocked and non-atomic**
 
 ```bash
@@ -4508,11 +4597,11 @@ def _atomic_write_locked(path, payload):
             prefix=path.name + ".",
             suffix=".tmp",
         ) as handle:
+            temp_path = Path(handle.name)
             json.dump(payload, handle, indent=2)
             handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
-            temp_path = Path(handle.name)
         temp_path.replace(path)
     finally:
         if temp_path is not None and temp_path.exists():
@@ -4543,12 +4632,14 @@ Use:
 def save(self, session):
     session_id = _session_id(session["id"])
     path = self.path(session_id)
-    payload = self._redactor(session)
-    if int(payload.get("schema_version", 1) or 1) == 3:
-        try:
-            validate_messages(payload.get("messages"), require_meta=True)
-        except MessageValidationError as exc:
-            raise SessionMigrationError(str(exc)) from exc
+    try:
+        source_version = int(session.get("schema_version", 1) or 1)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise SessionMigrationError("invalid session schema version") from exc
+    payload = deepcopy(self._redactor(session))
+    if source_version == 3:
+        payload.pop("history", None)
+        _validate_v3_payload(payload, session_id)
     with file_lock.locked_file(self.lock_path):
         _atomic_write_locked(path, payload)
     return path
@@ -4569,37 +4660,112 @@ def load(self, session_id):
             raise SessionMigrationError("session id does not match file name")
         try:
             version = int(decoded.get("schema_version", 1) or 1)
-        except (TypeError, ValueError) as exc:
+        except (TypeError, ValueError, OverflowError) as exc:
             raise SessionMigrationError(
                 "invalid session schema version"
             ) from exc
         migrated = migrate_session_to_v3(decoded)
         if version == 3:
+            _validate_v3_payload(migrated, session_id)
             return migrated
+        payload = deepcopy(self._redactor(migrated))
+        payload.pop("history", None)
+        _validate_v3_payload(payload, session_id)
         _write_backup_locked(path, raw, session_id, version)
-        payload = self._redactor(migrated)
         _atomic_write_locked(path, payload)
         return payload
 ```
 
-The `load` lock covers read, decode, validate/migrate, backup, and replace. It does not call `save` and therefore cannot nest the lock.
+Define `_validate_v3_payload(payload, session_id)` above `SessionStore`: it
+requires a dictionary with the requested `id`, integer schema version `3`, no
+`history`, and `validate_messages(payload["messages"], require_meta=True)`;
+translate any shape failure to `SessionMigrationError`. The `load` lock covers
+read, decode, validate/migrate, redaction validation, backup, and replace. It
+does not call `save` and therefore cannot nest the lock.
 
-- [ ] **Step 6: Replace old v1→v2 tests with v1/v2→v3 tests**
+- [ ] **Step 6: Reconstruct only the temporary runtime history bridge**
+
+In `pico/runtime.py`, import `message_content_text` alongside the existing
+message helpers, then add a private `_legacy_history_from_messages(messages)`
+helper immediately above `Pico`. Its loop must preserve this exact temporary
+shape, including canonical text-block messages accepted by
+`validate_messages`:
+
+```python
+def _legacy_history_from_messages(messages):
+    history = []
+    index = 0
+    while index < len(messages):
+        message = messages[index]
+        content = message["content"]
+        metadata = message.get("_pico_meta", {})
+        created_at = metadata.get("created_at", "")
+        first_type = content[0].get("type") if isinstance(content, list) else ""
+        if isinstance(content, str) or first_type == "text":
+            item = {
+                "role": message["role"],
+                "content": message_content_text(message),
+            }
+            if created_at:
+                item["created_at"] = created_at
+            history.append(item)
+            index += 1
+            continue
+        if first_type != "tool_use":
+            raise ValueError("unsupported canonical message for legacy bridge")
+        tool_use = content[0]
+        tool_result = messages[index + 1]["content"][0]
+        item = {
+            "role": "tool",
+            "name": tool_use["name"],
+            "args": dict(tool_use["input"]),
+            "content": str(tool_result["content"]),
+        }
+        if created_at:
+            item["created_at"] = created_at
+        history.append(item)
+        index += 2
+    return history
+```
+
+In `_ensure_session_shape`, replace the unconditional empty-history fallback
+with:
+
+```python
+if not isinstance(self.session.get("history"), list):
+    if self.session.get("schema_version") == 3:
+        self.session["history"] = _legacy_history_from_messages(
+            self.session.get("messages", [])
+        )
+    else:
+        self.session["history"] = []
+```
+
+The helper consumes only a SessionStore-validated v3 transcript. It is an
+in-memory compatibility bridge for existing `repeated_tool_call`, reports,
+and legacy tests; `SessionStore.save` strips it from every v3 disk payload and
+Task 15 deletes this helper and its callers.
+
+Add a focused bridge regression using a v3 transcript containing a text-block
+assistant message plus a valid tool pair; assert the temporary history has the
+text entry and one legacy tool entry with matching name, args, and result.
+
+- [ ] **Step 7: Replace old v1→v2 tests with v1/v2→v3 tests**
 
 Delete assertions against `_migrate_v1_to_v2` and the `.v1.<timestamp>.json` exact old filename. Preserve tests for created_at and matching generated IDs through `migrate_session_to_v3` and the new `.v1.*.json`/`.v2.*.json` patterns.
 
-- [ ] **Step 7: Run the SessionStore transaction gate**
+- [ ] **Step 8: Run the SessionStore transaction gate**
 
 ```bash
-uv run pytest tests/test_session_store.py tests/test_session_store_migrator.py tests/test_file_lock.py -q
+uv run pytest tests/test_session_store.py tests/test_session_store_migrator.py tests/test_file_lock.py tests/test_pico.py tests/test_runtime_report.py -q
 ```
 
 Expected: all pass; repeated v3 load does not change mtime or create a backup.
 
-- [ ] **Step 8: Commit locked v3 migration**
+- [ ] **Step 9: Commit locked v3 migration**
 
 ```bash
-git add pico/session_store.py tests/test_session_store.py tests/test_session_store_migrator.py tests/test_file_lock.py
+git add pico/session_store.py pico/runtime.py tests/test_session_store.py tests/test_session_store_migrator.py tests/test_file_lock.py tests/test_pico.py
 git commit -m "feat(session): activate atomic v3 migration"
 ```
 
