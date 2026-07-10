@@ -28,12 +28,8 @@ DEFAULT_RUN_SHELL_TIMEOUT = 60
 MAX_RUN_SHELL_TIMEOUT = 120
 
 _RG_SENSITIVE_GLOBS = (
-    "[!.]*",
     "!.env",
     "!.env.*",
-    ".env.example",
-    ".env.sample",
-    ".env.template",
     "!.envrc",
     "!.netrc",
     "!.npmrc",
@@ -60,6 +56,9 @@ _RG_SENSITIVE_GLOBS = (
     "!**/.pico/sessions/**",
     "!**/.pico/runs/**",
     "!**/.pico/checkpoints/**",
+)
+_ALLOWED_ENV_TEMPLATES = frozenset(
+    {".env.example", ".env.sample", ".env.template"}
 )
 
 
@@ -426,7 +425,7 @@ def tool_search(context, args):
     rg_executable = context.trusted_executables.get("rg")
     if rg_executable:
         # 优先用 rg，因为搜索会非常频繁，搜索延迟会直接影响 agent 控制循环。
-        rg_args = [
+        base_rg_args = [
             "-n",
             "--with-filename",
             "--null",
@@ -434,6 +433,7 @@ def tool_search(context, args):
             "--max-count",
             "200",
         ]
+        rg_args = list(base_rg_args)
         try:
             target_is_directory = stat.S_ISDIR(path.lstat().st_mode)
         except OSError:
@@ -450,11 +450,39 @@ def tool_search(context, args):
         )
         if result.returncode > 1:
             result.check_returncode()
-        return (
+        filtered = (
             _filter_rg_output(context.root, result.stdout)
             if result.returncode == 0
             else "(no matches)"
         )
+        matches = [] if filtered == "(no matches)" else filtered.splitlines()
+
+        if target_is_directory and len(matches) < 200:
+            templates = _safe_env_template_files(context.root, path)
+            if templates:
+                template_args = [
+                    *base_rg_args,
+                    "-e",
+                    pattern,
+                    "--",
+                    *(str(template) for template in templates),
+                ]
+                template_result = run_hardened_rg(
+                    rg_executable,
+                    template_args,
+                    cwd=context.root,
+                )
+                if template_result.returncode > 1:
+                    template_result.check_returncode()
+                if template_result.returncode == 0:
+                    template_filtered = _filter_rg_output(
+                        context.root,
+                        template_result.stdout,
+                    )
+                    if template_filtered != "(no matches)":
+                        template_matches = template_filtered.splitlines()
+                        matches.extend(template_matches[: 200 - len(matches)])
+        return "\n".join(matches) or "(no matches)"
 
     matches = []
     try:
@@ -478,6 +506,18 @@ def _python_search_matches(root, files, pattern, limit=200):
                 if len(matches) >= limit:
                     return matches
     return matches
+
+
+def _safe_env_template_files(root, directory):
+    templates = []
+    for candidate in directory.rglob("*"):
+        if candidate.name.casefold() not in _ALLOWED_ENV_TEMPLATES:
+            continue
+        safe_file = _safe_search_file(root, candidate)
+        if safe_file is not None:
+            templates.append(safe_file)
+    templates.sort(key=lambda path: path.as_posix().casefold())
+    return templates
 
 
 def _relative_search_path(root, raw_path):

@@ -320,6 +320,70 @@ def test_run_shell_uses_command_policy_metadata(tmp_path):
     assert "generated.txt" in result.metadata["affected_paths"]
 
 
+def test_run_shell_rechecks_command_policy_after_approval_mutation(
+    tmp_path,
+    monkeypatch,
+):
+    import pico.tool_executor as tool_executor
+
+    agent = build_agent(tmp_path)
+    victim = tmp_path / "victim.txt"
+    victim.write_text("keep\n", encoding="utf-8")
+    runner = Mock(return_value="must not run")
+    agent.tools["run_shell"]["run"] = runner
+    policy_calls = []
+    real_policy = tool_executor.evaluate_command_approval
+
+    def record_policy(risk_class):
+        policy_calls.append(risk_class)
+        return real_policy(risk_class)
+
+    monkeypatch.setattr(tool_executor, "evaluate_command_approval", record_policy)
+
+    def approve(name, args):
+        args["command"] = "rm -f victim.txt"
+        return True
+
+    agent.approve = approve
+
+    result = agent.execute_tool(
+        "run_shell",
+        {"command": "printf safe > approved.txt", "timeout": 5},
+    )
+
+    assert result.metadata["tool_status"] == "rejected"
+    assert result.metadata["tool_error_code"] == "approval_arguments_changed"
+    assert result.metadata["command_risk_class"] == "workspace_write"
+    assert policy_calls == ["workspace_write", "workspace_write"]
+    assert victim.read_text(encoding="utf-8") == "keep\n"
+    runner.assert_not_called()
+    assert agent.checkpoint_store.list_tool_change_records() == []
+
+
+def test_run_shell_rejects_safe_arguments_changed_after_approval(tmp_path):
+    agent = build_agent(tmp_path)
+    runner = Mock(return_value="must not run")
+    agent.tools["run_shell"]["run"] = runner
+
+    def approve(name, args):
+        args["command"] = "printf changed > unapproved.txt"
+        return True
+
+    agent.approve = approve
+
+    result = agent.execute_tool(
+        "run_shell",
+        {"command": "printf safe > approved.txt", "timeout": 5},
+    )
+
+    assert result.metadata["tool_status"] == "rejected"
+    assert result.metadata["tool_error_code"] == "approval_arguments_changed"
+    assert not (tmp_path / "approved.txt").exists()
+    assert not (tmp_path / "unapproved.txt").exists()
+    runner.assert_not_called()
+    assert agent.checkpoint_store.list_tool_change_records() == []
+
+
 def test_destructive_run_shell_is_not_auto_approved(tmp_path):
     agent = build_agent(tmp_path)
     victim = tmp_path / "victim.txt"

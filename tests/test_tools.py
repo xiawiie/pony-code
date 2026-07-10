@@ -206,15 +206,22 @@ def test_search_filters_every_rg_result_path_defensively(tmp_path, monkeypatch):
     assert result == "safe.py:1:needle"
 
 
-def test_rg_search_includes_allowed_env_template_globs_after_exclusion(
+def test_rg_search_runs_allowed_env_template_through_frozen_rg(
     tmp_path,
     monkeypatch,
 ):
     (tmp_path / ".env.example").write_text("needle\n", encoding="utf-8")
-    captured = {}
+    calls = []
 
     def fake_rg(executable, args, **kwargs):
-        captured["args"] = list(args)
+        calls.append(list(args))
+        if len(calls) == 1:
+            return subprocess.CompletedProcess(
+                args,
+                1,
+                stdout="",
+                stderr="",
+            )
         return subprocess.CompletedProcess(
             args,
             0,
@@ -236,12 +243,13 @@ def test_rg_search_includes_allowed_env_template_globs_after_exclusion(
     result = tool_search(context, {"pattern": "needle", "path": "."})
 
     assert result == ".env.example:1:needle"
-    globs = [
-        captured["args"][index + 1]
-        for index, argument in enumerate(captured["args"])
-        if argument == "--glob"
+    assert len(calls) == 2
+    assert calls[1][-2:] == [
+        "--",
+        str(tmp_path / ".env.example"),
     ]
-    assert globs.index("!.env.*") < globs.index(".env.example")
+    assert "--smart-case" in calls[1]
+    assert "--glob" not in calls[1]
 
 
 def test_python_search_never_stats_or_reads_sensitive_or_symlink_files(

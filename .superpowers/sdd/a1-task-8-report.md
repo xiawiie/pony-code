@@ -21,10 +21,11 @@ PASS — implementation and local verification complete on top of
 - Hardened both search lanes. Trusted rg uses the frozen absolute executable,
   a child `PATH` containing only that executable's frozen parent directory,
   fixed case-insensitive sensitive globs, forced filename/NUL framing, and a
-  fail-closed result-path parser. Ordered rg override globs keep allowed
-  `.env.example/.sample/.template` files searchable with native regex and
-  smart-case semantics. The Python fallback filters sensitive and ignored
-  paths before a no-follow regular-file guard.
+  fail-closed result-path parser. A second hardened rg invocation receives
+  only safely discovered, regular, no-follow `.env.example/.sample/.template`
+  file paths, keeping native regex and smart-case semantics without changing
+  primary rg ignore behavior. The Python fallback filters sensitive and
+  ignored paths before a no-follow regular-file guard.
 - Made BlockStore append/topic writes independently reject supplied and
   complete would-be persisted secret content, consume Pico's immutable
   redaction snapshot, and reject symlinked note leaves or agent directories
@@ -75,7 +76,8 @@ uv run pytest +  tests/test_sensitive_tools.py::test_directory_search_excludes_s
 Trusted rg safely excluded all `.env.*` files but thereby hid the three
 explicitly allowed templates. The initial implementation supplemented them
 through Python; the formal-review follow-up below replaces that supplement
-with ordered rg override globs so one engine owns the search semantics.
+with a second hardened rg invocation over only safe exact template-file paths
+so one engine owns the search semantics.
 
 The rg return-code edge failed before the early-return fix:
 
@@ -154,10 +156,10 @@ follow-up commit containing this report:
 - Hardened rg no longer calls the live-PATH filtering path. Its child `PATH`
   is exactly the parent directory of the already frozen absolute executable;
   Git keeps its existing environment behavior.
-- The Python env-template search supplement was removed. Ordered positive
-  template globs follow the broad negative `.env.*` glob, preserving rg regex
-  and smart-case behavior while ordinary source remains searchable and hidden
-  `.git`/`.pico` trees stay excluded.
+- The Python env-template content-search supplement was removed. A second
+  hardened rg invocation receives only safely discovered exact template-file
+  paths, preserving regex and smart-case behavior while ordinary source,
+  ignore rules, and hidden `.git`/`.pico` exclusions remain intact.
 
 The follow-up RED probes failed before each production fix:
 
@@ -207,6 +209,74 @@ All checks passed!
 ```
 
 No real Provider or live E2E call was made during the follow-up.
+
+## Additional Adversarial Follow-up
+
+A read-only adversarial audit immediately after `3d5527c` found three more
+Important edge cases. They are closed in the subsequent commit containing
+this report:
+
+- Approval receives a deep copy of the validated arguments. Mutation of that
+  copy cannot alter execution input, any mutation makes the approval stale,
+  and validation plus command-risk policy are rerun before pending state or
+  the runner. One prompt is preserved and final risk metadata still describes
+  the immutable execution command.
+- Primary rg now has negative sensitive globs only. Removing positive
+  whitelist globs restores normal `.gitignore` behavior for ordinary files
+  and directories.
+- Allowed env templates are lexically discovered, accepted only as regular
+  no-follow files, and passed to a separate hardened rg call as exact paths.
+  Template-named directories and their descendants are never passed to rg;
+  their content is absent even from raw rg output before defensive filtering.
+
+The four narrow tests failed together before these fixes:
+
+```text
+uv run pytest \
+  tests/test_tool_executor.py::test_run_shell_rechecks_command_policy_after_approval_mutation \
+  tests/test_tool_executor.py::test_run_shell_rejects_safe_arguments_changed_after_approval \
+  tests/test_sensitive_tools.py::test_rg_search_preserves_ignore_rules_for_ordinary_files \
+  tests/test_sensitive_tools.py::test_rg_excludes_env_template_directory_descendants_before_filtering -q
+4 failed in 0.21s
+```
+
+The same exact gate after the fixes:
+
+```text
+4 passed in 0.13s
+```
+
+Final focused Task 8 gate after the additional audit:
+
+```text
+uv run pytest tests/test_sensitive_tools.py tests/test_tools.py \
+  tests/test_tool_executor.py tests/memory/test_memory_tools.py \
+  tests/memory/test_block_store.py tests/test_recovery_policy.py \
+  tests/test_workspace_snapshot.py tests/test_security.py \
+  tests/test_safe_subprocess.py tests/memory/test_repl_v2.py \
+  tests/test_safety_invariants.py -q
+301 passed in 3.04s
+```
+
+Adjacent verification and static checks:
+
+```text
+adjacent runtime/recovery/CLI/context gate: 223 passed in 7.56s
+uv run ruff check <additional follow-up production and test files>
+All checks passed!
+git diff --check
+exit 0
+```
+
+Fresh full local gate:
+
+```text
+./scripts/check.sh
+All checks passed!
+1117 passed in 61.41s
+```
+
+No real Provider or live E2E call was made during the additional follow-up.
 
 ## Files
 

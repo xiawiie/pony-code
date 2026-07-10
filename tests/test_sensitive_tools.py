@@ -370,6 +370,75 @@ def test_rg_search_preserves_rg_semantics_for_allowed_env_templates(
     assert unexpected not in result.content
 
 
+def test_rg_search_preserves_ignore_rules_for_ordinary_files(tmp_path):
+    sentinel = "ignored-search-sentinel"
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".gitignore").write_text(
+        "ignored.txt\nignored-dir/\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "ignored.txt").write_text(sentinel + "\n", encoding="utf-8")
+    ignored_dir = tmp_path / "ignored-dir"
+    ignored_dir.mkdir()
+    (ignored_dir / "child.txt").write_text(sentinel + "\n", encoding="utf-8")
+    (tmp_path / "source.py").write_text(sentinel + "\n", encoding="utf-8")
+    rg = build_trusted_executables(tmp_path, names=("rg",)).get("rg")
+    if not rg:
+        pytest.skip("trusted rg unavailable")
+    agent = build_agent(tmp_path, executables={"rg": rg})
+
+    result = agent.execute_tool(
+        "search",
+        {"pattern": sentinel, "path": "."},
+    )
+
+    assert f"source.py:1:{sentinel}" in result.content
+    assert "ignored.txt" not in result.content
+    assert "ignored-dir" not in result.content
+
+
+def test_rg_excludes_env_template_directory_descendants_before_filtering(
+    tmp_path,
+    monkeypatch,
+):
+    from pico import tools as tool_module
+
+    sentinel = "template-directory-sentinel"
+    template_dir = tmp_path / ".env.example"
+    template_dir.mkdir()
+    (template_dir / "child.txt").write_text(sentinel + "\n", encoding="utf-8")
+    rg = build_trusted_executables(tmp_path, names=("rg",)).get("rg")
+    if not rg:
+        pytest.skip("trusted rg unavailable")
+    raw_outputs = []
+    rg_calls = []
+    original_filter = tool_module._filter_rg_output
+    original_rg = tool_module.run_hardened_rg
+
+    def capture_raw_output(root, output):
+        raw_outputs.append(output)
+        return original_filter(root, output)
+
+    def capture_rg_call(executable, args, **kwargs):
+        rg_calls.append(list(args))
+        return original_rg(executable, args, **kwargs)
+
+    monkeypatch.setattr(tool_module, "_filter_rg_output", capture_raw_output)
+    monkeypatch.setattr(tool_module, "run_hardened_rg", capture_rg_call)
+    agent = build_agent(tmp_path, executables={"rg": rg})
+
+    result = agent.execute_tool(
+        "search",
+        {"pattern": sentinel, "path": "."},
+    )
+
+    assert result.content == "(no matches)"
+    assert rg_calls
+    assert all(str(template_dir) not in call for call in rg_calls)
+    assert all(str(template_dir / "child.txt") not in call for call in rg_calls)
+    assert all(".env.example/child.txt" not in output for output in raw_outputs)
+
+
 def test_execute_tool_returns_a_redacted_copy_and_preserves_metadata_types(
     tmp_path,
     monkeypatch,

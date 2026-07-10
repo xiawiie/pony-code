@@ -6,6 +6,7 @@ Phase 1 里这里承担两件事：
    pending → finalized/error/partial_success，中途无论走哪条路都要 finalize。
 """
 
+from copy import deepcopy
 from dataclasses import dataclass
 import re
 import subprocess
@@ -142,6 +143,49 @@ def _validation_rejection(agent, tool, name, args, effect_class):
     return None
 
 
+def _command_policy_rejection(agent, name, args, effect_class):
+    if name != "run_shell":
+        return "", {}, None
+
+    command_risk = command_risk_class(str(args.get("command", "")))
+    command_approval = evaluate_command_approval(command_risk)
+    if command_approval.get("decision") == "reject":
+        rejection = ToolExecutionResult(
+            content=f"error: command policy rejected {name}",
+            metadata=_add_command_policy(
+                _metadata(
+                    "rejected",
+                    effect_class=effect_class,
+                    tool_error_code="command_rejected",
+                    risk_level="high",
+                ),
+                command_risk,
+                command_approval,
+            ),
+        )
+        return command_risk, command_approval, rejection
+    if (
+        command_approval.get("decision") == "ask"
+        and agent.approval_policy != "ask"
+    ):
+        rejection = ToolExecutionResult(
+            content=f"error: command approval required for {name}",
+            metadata=_add_command_policy(
+                _metadata(
+                    "rejected",
+                    effect_class=effect_class,
+                    tool_error_code="command_approval_required",
+                    security_event_type="command_approval_required",
+                    risk_level="high",
+                ),
+                command_risk,
+                command_approval,
+            ),
+        )
+        return command_risk, command_approval, rejection
+    return command_risk, command_approval, None
+
+
 class ToolExecutor:
     def __init__(self, agent):
         self.agent = agent
@@ -210,44 +254,19 @@ class ToolExecutor:
             )
 
         # 命令策略只针对 run_shell 才有意义，其它工具的 approval 仍走原有的 risky/approve 路径。
-        command_risk = ""
-        command_approval = {}
-        if name == "run_shell":
-            command_text = str(args.get("command", ""))
-            command_risk = command_risk_class(command_text)
-            command_approval = evaluate_command_approval(command_risk)
-            if command_approval.get("decision") == "reject":
-                return ToolExecutionResult(
-                    content=f"error: command policy rejected {name}",
-                    metadata=_add_command_policy(
-                        _metadata(
-                            "rejected",
-                            effect_class=effect_class,
-                            tool_error_code="command_rejected",
-                            risk_level="high",
-                        ),
-                        command_risk,
-                        command_approval,
-                    ),
-                )
-            if command_approval.get("decision") == "ask" and agent.approval_policy != "ask":
-                return ToolExecutionResult(
-                    content=f"error: command approval required for {name}",
-                    metadata=_add_command_policy(
-                        _metadata(
-                            "rejected",
-                            effect_class=effect_class,
-                            tool_error_code="command_approval_required",
-                            security_event_type="command_approval_required",
-                            risk_level="high",
-                        ),
-                        command_risk,
-                        command_approval,
-                    ),
-                )
+        command_risk, command_approval, rejection = _command_policy_rejection(
+            agent,
+            name,
+            args,
+            effect_class,
+        )
+        if rejection is not None:
+            return rejection
 
         if tool["risky"]:
-            if not agent.approve(name, args):
+            approval_args_snapshot = deepcopy(args)
+            approval_args = deepcopy(approval_args_snapshot)
+            if not agent.approve(name, approval_args):
                 return ToolExecutionResult(
                     content=f"error: approval denied for {name}",
                     metadata=_add_command_policy(
@@ -272,6 +291,34 @@ class ToolExecutor:
             )
             if rejection is not None:
                 return rejection
+
+            command_risk, command_approval, rejection = _command_policy_rejection(
+                agent,
+                name,
+                args,
+                effect_class,
+            )
+            if rejection is not None:
+                return rejection
+
+            if (
+                args != approval_args_snapshot
+                or approval_args != approval_args_snapshot
+            ):
+                return ToolExecutionResult(
+                    content=f"error: approved arguments changed for {name}",
+                    metadata=_add_command_policy(
+                        _metadata(
+                            "rejected",
+                            effect_class=effect_class,
+                            tool_error_code="approval_arguments_changed",
+                            security_event_type="approval_arguments_changed",
+                            risk_level="high",
+                        ),
+                        command_risk,
+                        command_approval,
+                    ),
+                )
 
         # 到这里我们准备真的跑工具，可以开一条 pending 记录。
         turn_id = getattr(getattr(agent, "current_task_state", None), "task_id", "") or ""
