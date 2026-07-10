@@ -293,6 +293,43 @@ def test_empty_v1_history_migrates_to_empty_v3_messages():
     assert "history" not in migrated
 
 
+def test_v1_history_is_authoritative_over_stray_messages():
+    migrated = migrate_session_to_v3({
+        "id": "v1",
+        "schema_version": 1,
+        "messages": [{
+            "role": "user",
+            "content": "stray",
+            "_pico_meta": {},
+        }],
+        "history": [{
+            "role": "user",
+            "content": "authoritative",
+            "created_at": "t",
+        }],
+    })
+    assert migrated["messages"][0]["content"] == "authoritative"
+
+
+@pytest.mark.parametrize("schema_version", [None, True, "", 1.5, float("inf")])
+def test_invalid_schema_versions_raise_session_migration_error(schema_version):
+    with pytest.raises(SessionMigrationError, match="session schema version"):
+        migrate_session_to_v3({
+            "id": "bad-version",
+            "schema_version": schema_version,
+            "history": [],
+        })
+
+
+def test_unhashable_history_role_raises_session_migration_error():
+    with pytest.raises(SessionMigrationError, match="unknown history role"):
+        migrate_session_to_v3({
+            "id": "bad-role",
+            "schema_version": 1,
+            "history": [{"role": [], "content": "x"}],
+        })
+
+
 def test_v3_is_validated_and_returned_without_history():
     source = {"id": "s3", "schema_version": 3, "messages": _valid_v2_messages()}
     assert migrate_session_to_v3(source) == source

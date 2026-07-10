@@ -155,3 +155,11 @@ def test_validate_messages_rejects_non_dict_paired_result():
 def test_validate_messages_rejects_bad_roles_blocks_ids_and_orphans(messages):
     with pytest.raises(MessageValidationError):
         validate_messages(messages, require_meta=True)
+
+
+def test_validate_messages_rejects_unhashable_role():
+    with pytest.raises(MessageValidationError, match="role"):
+        validate_messages(
+            [{"role": [], "content": "bad", "_pico_meta": {}}],
+            require_meta=True,
+        )

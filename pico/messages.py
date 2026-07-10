@@ -174,7 +174,8 @@ def validate_messages(messages, *, require_meta):
         message = messages[index]
         if not isinstance(message, dict):
             raise MessageValidationError("message must be an object")
-        if message.get("role") not in {"user", "assistant"}:
+        role = message.get("role")
+        if not isinstance(role, str) or role not in {"user", "assistant"}:
             raise MessageValidationError("message role must be user or assistant")
         if require_meta and not isinstance(message.get("_pico_meta"), dict):
             raise MessageValidationError("_pico_meta must be an object")

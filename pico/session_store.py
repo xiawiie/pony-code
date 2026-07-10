@@ -27,6 +27,8 @@ def _history_to_messages(history):
             raise SessionMigrationError("history entry must be an object")
         role = entry.get("role")
         created_at = entry.get("created_at")
+        if not isinstance(role, str):
+            raise SessionMigrationError(f"unknown history role: {role!r}")
         if role in {"user", "assistant"}:
             content = entry.get("content")
             if not isinstance(content, str):
@@ -92,9 +94,16 @@ def migrate_session_to_v3(session):
     if not isinstance(session, dict):
         raise SessionMigrationError("session must be an object")
     migrated = deepcopy(session)
+    raw_version = migrated.get("schema_version", 1)
+    if (
+        isinstance(raw_version, bool)
+        or not isinstance(raw_version, (int, float, str))
+        or (isinstance(raw_version, float) and not raw_version.is_integer())
+    ):
+        raise SessionMigrationError("invalid session schema version")
     try:
-        version = int(migrated.get("schema_version", 1) or 1)
-    except (TypeError, ValueError) as exc:
+        version = int(raw_version)
+    except (TypeError, ValueError, OverflowError) as exc:
         raise SessionMigrationError("invalid session schema version") from exc
     if version not in {1, 2, 3}:
         raise SessionMigrationError(
@@ -111,27 +120,23 @@ def migrate_session_to_v3(session):
             raise SessionMigrationError(str(exc)) from exc
         return migrated
 
-    messages = migrated.get("messages")
-    selected = None
-    if isinstance(messages, list) and messages:
-        try:
-            selected = _normalized_messages(messages)
-        except MessageValidationError:
-            selected = None
-    if selected is None:
-        if isinstance(history, list) and history:
-            selected = _history_to_messages(history)
-        elif isinstance(messages, list) and not messages:
-            selected = []
-        elif (
-            version == 1
-            and "history" in migrated
-            and isinstance(history, list)
-            and not history
-        ):
-            selected = []
-        else:
-            raise SessionMigrationError("session has no valid transcript")
+    if version == 1:
+        selected = _history_to_messages(history)
+    else:
+        messages = migrated.get("messages")
+        selected = None
+        if isinstance(messages, list) and messages:
+            try:
+                selected = _normalized_messages(messages)
+            except MessageValidationError:
+                selected = None
+        if selected is None:
+            if isinstance(history, list) and history:
+                selected = _history_to_messages(history)
+            elif isinstance(messages, list) and not messages:
+                selected = []
+            else:
+                raise SessionMigrationError("session has no valid transcript")
     try:
         validate_messages(selected, require_meta=True)
     except MessageValidationError as exc:
