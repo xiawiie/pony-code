@@ -5794,12 +5794,25 @@ git commit -m "test(live-e2e): verify one native provider from trace"
 - Modify: `benchmarks/results/main-resume-repro-2026-06-07/DATA_PROVENANCE.md`
 - Test: `tests/test_metrics.py`
 - Test: `tests/test_evaluator.py`
+- Test: `tests/test_memory_quality_benchmark.py`
 
 **Interfaces:**
 
 - Generated JSON is the evidence truth; Markdown is generated from those files or links to them.
 - The 2026-06-07 directory remains immutable historical evidence and is explicitly labeled archived.
 - No document claims that Task 19's real E2E passed before it actually runs.
+
+**Scope correction (2026-07-10, before Task 17 evidence/docs edits):**
+
+- Keep the fixture-copy path test in `tests/test_evaluator.py`, but give it an
+  isolated temporary `workspace_root` instead of `Path(".")`. The assertion is
+  about paths relative to the supplied workspace, not permission to leave an
+  ignored `readme_intro_locked/` tree in the repository root.
+- Evidence validation must prove the specified semantic outcomes, not only
+  JSON parseability. `context_reduction_checkpoint` intentionally seeds
+  canonical messages to trigger compression, so the harness assertion is
+  presence of `initial_messages_empty` and absence of
+  `initial_history_empty`, not that every row is initially empty.
 
 - [ ] **Step 1: Run evidence-generator tests**
 
@@ -5898,11 +5911,12 @@ Add an archive notice to the top of `benchmarks/results/main-resume-repro-2026-0
 - [ ] **Step 7: Verify evidence structure and forbidden terminology**
 
 ```bash
-uv run python -c 'import json, pathlib; root=pathlib.Path("benchmarks/results/action-kernel-messages-v3-2026-07-10"); files=["harness-regression-v2.json","context-ablation-v2.json","memory-ablation-v2.json","recovery-ablation-v2.json"]; [json.loads((root/name).read_text()) for name in files]; print("valid json")'
+uv run python -c 'import json, pathlib; root=pathlib.Path("benchmarks/results/action-kernel-messages-v3-2026-07-10"); harness=json.loads((root/"harness-regression-v2.json").read_text()); context=json.loads((root/"context-ablation-v2.json").read_text()); memory=json.loads((root/"memory-ablation-v2.json").read_text()); recovery=json.loads((root/"recovery-ablation-v2.json").read_text()); assert harness["summary"]["failed"] == 0; assert all("initial_messages_empty" in row and "initial_history_empty" not in row for row in harness["rows"]); summary=context["summary"]; assert summary["current_request_preserved_rate"] == 1.0; assert summary["avg_bounded_request_chars"] < summary["avg_unbounded_request_chars"]; variants=memory["variants"]; assert all(item["bootstrap_tool_turn_dropped"] for item in variants.values()); assert variants["memory_on"]["repeated_reads"] < variants["memory_off"]["repeated_reads"] and variants["memory_on"]["repeated_reads"] < variants["memory_irrelevant"]["repeated_reads"]; assert variants["memory_on"]["memory_hit_rate"] > variants["memory_off"]["memory_hit_rate"] and variants["memory_on"]["memory_hit_rate"] > variants["memory_irrelevant"]["memory_hit_rate"]; assert all(item["correct_rate"] == 1.0 for item in variants.values()); assert recovery["variants"]["resume_enabled"]["summary"]["resume_false_accept_rate"] == 0.0; print("valid json and semantics")'
 ! rg -n 'avg_full_prompt_chars|avg_raw_prompt_chars|initial_history_empty|session\["history"\]' benchmarks/results/action-kernel-messages-v3-2026-07-10 docs/review-pack
+! rg -n 'last_prompt_metadata|prompt_metadata|prompt_cache_key' benchmarks/results/action-kernel-messages-v3-2026-07-10 docs/review-pack
 ```
 
-Expected: `valid json` and no forbidden-term output.
+Expected: `valid json and semantics` and no forbidden-term output.
 
 - [ ] **Step 8: Commit fresh evidence and review docs**
 
@@ -5969,6 +5983,9 @@ Expected: total 8, passed 8, failed 0.
 ```bash
 uv run python -c 'from pico.evaluation.metrics import run_memory_ablation_v2; run_memory_ablation_v2(repetitions=5)'
 ```
+
+This intentionally uses the existing ignored default artifact path as a local
+gate. It must not overwrite the committed Task 17 evidence directory.
 
 Expected:
 
