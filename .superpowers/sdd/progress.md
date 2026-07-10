@@ -304,3 +304,6 @@ Task 10: complete (commits 8ed818a + 85f9a7c + 706db9f, review clean after two f
   verification: 57 passed focused gate; fake benchmark 8/8; 723 passed full check
 Task 11: complete (commit aef10f2, independent review clean)
   verification: 59 passed task gate; 726 passed full check
+Task 12: complete (commits d9e127e + 5a50e2e, independent review clean after one interrupt-lifecycle fix)
+  plan scope corrections: c3c8c25 early-return fail-safe metadata; 971de12 lifecycle-wide Ctrl-C closure
+  verification: 91 passed task gate; full check passed
