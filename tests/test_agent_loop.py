@@ -1,5 +1,6 @@
 import copy
 import json
+from unittest.mock import Mock
 
 import pytest
 
@@ -31,6 +32,25 @@ class NativeScriptProvider:
         return self.responses.pop(0)
 
 
+class RaisingProvider:
+    supports_prompt_cache = False
+    supports_native_tools = True
+
+    def __init__(self, error):
+        self.error = error
+
+    def complete_v2(
+        self,
+        *,
+        system,
+        tools,
+        messages,
+        max_tokens,
+        cache_breakpoints=None,
+    ):
+        raise self.error
+
+
 def build_native_agent(tmp_path, provider, **kwargs):
     tmp_path.mkdir(parents=True, exist_ok=True)
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
@@ -55,6 +75,16 @@ def build_agent(tmp_path, outputs, max_steps=6):
         approval_policy="auto",
         max_steps=max_steps,
     )
+
+
+def read_trace(agent):
+    return [
+        json.loads(line)
+        for line in agent.run_store.trace_path(agent.current_task_state)
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if line.strip()
+    ]
 
 
 def test_agent_loop_runs_same_control_flow_as_pico_ask(tmp_path):
@@ -237,10 +267,22 @@ def test_side_effect_then_pair_save_failure_stops_before_another_provider_call(
     assert len(provider.calls) == 1
     assert agent.current_task_state.stop_reason == "persistence_error"
     assert agent.current_task_state.status == "failed"
-    assert [
-        (message["role"], message["content"])
-        for message in agent.session["messages"]
-    ] == [("user", "write file")]
+    messages = agent.session["messages"]
+    assert messages[0]["role"] == "user"
+    assert messages[0]["content"] == "write file"
+    assert messages[-1]["role"] == "assistant"
+    assert messages[-1]["_pico_meta"]["origin"] == "runtime_terminal"
+    assert messages[-1]["content"] == (
+        "This turn stopped because session state could not be saved."
+    )
+    assert all(
+        not (
+            isinstance(message.get("content"), list)
+            and message["content"]
+            and message["content"][0].get("type") == "tool_use"
+        )
+        for message in messages
+    )
     assert agent.current_task_state.recovery_checkpoint_id
 
 
@@ -350,15 +392,15 @@ def test_model_error_marks_run_failed_and_writes_report(tmp_path):
     assert trace_events[-1]["status"] == "failed"
 
 
-def test_terminal_paths_share_finish_run_helper(tmp_path, monkeypatch):
+def test_terminal_paths_share_finalizer(tmp_path, monkeypatch):
     calls = []
-    original_finish = agent_loop_module._finish_run
+    original_finalize = agent_loop_module._finalize_run
 
-    def spy_finish(**kwargs):
+    def spy_finalize(**kwargs):
         calls.append(kwargs["trigger"])
-        return original_finish(**kwargs)
+        return original_finalize(**kwargs)
 
-    monkeypatch.setattr(agent_loop_module, "_finish_run", spy_finish)
+    monkeypatch.setattr(agent_loop_module, "_finalize_run", spy_finalize)
 
     final_agent = build_agent(tmp_path / "final", ["<final>done</final>"])
     assert final_agent.ask("finish") == "done"
@@ -371,6 +413,233 @@ def test_terminal_paths_share_finish_run_helper(tmp_path, monkeypatch):
     assert "step limit" in limit_agent.ask("hit limit")
 
     assert calls == ["run_finished", "step_limit_reached"]
+
+
+@pytest.mark.parametrize(
+    "error",
+    [ValueError("provider bad"), OSError("provider io")],
+)
+def test_any_provider_exception_closes_model_error_and_reraises_original(
+    tmp_path,
+    error,
+):
+    provider = RaisingProvider(error)
+    agent = build_native_agent(tmp_path, provider)
+
+    with pytest.raises(type(error), match=str(error)):
+        agent.ask("fail")
+
+    assert agent.current_task_state.status == "failed"
+    assert agent.current_task_state.stop_reason == "model_error"
+    assert agent.run_store.report_path(agent.current_task_state).exists()
+    terminal = agent.session["messages"][-1]
+    assert terminal["role"] == "assistant"
+    assert terminal["_pico_meta"]["origin"] == "runtime_terminal"
+    assert str(error) not in terminal["content"]
+
+
+def test_preflight_exception_becomes_runtime_error(tmp_path, monkeypatch):
+    agent = build_native_agent(tmp_path, NativeScriptProvider([]))
+    monkeypatch.setattr(
+        agent,
+        "refresh_prefix",
+        Mock(side_effect=ValueError("preflight")),
+    )
+
+    with pytest.raises(ValueError, match="preflight"):
+        agent.ask("start")
+
+    assert agent.current_task_state.status == "failed"
+    assert agent.current_task_state.stop_reason == "runtime_error"
+    assert agent.run_store.report_path(agent.current_task_state).exists()
+
+
+def test_keyboard_interrupt_closes_run_and_reraises(tmp_path):
+    agent = build_native_agent(
+        tmp_path,
+        RaisingProvider(KeyboardInterrupt()),
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        agent.ask("interrupt")
+
+    assert agent.current_task_state.status == "stopped"
+    assert agent.current_task_state.stop_reason == "interrupted"
+    assert agent.run_store.report_path(agent.current_task_state).exists()
+    assert agent.session["messages"][-1]["_pico_meta"]["origin"] == "runtime_terminal"
+
+
+def test_finalizer_failure_does_not_mask_provider_exception(tmp_path, monkeypatch):
+    primary = ValueError("primary provider failure")
+    agent = build_native_agent(tmp_path, RaisingProvider(primary))
+    monkeypatch.setattr(
+        agent.run_store,
+        "write_report",
+        Mock(side_effect=OSError("report unavailable")),
+    )
+
+    with pytest.raises(ValueError, match="primary provider failure"):
+        agent.ask("fail")
+
+    assert agent.current_task_state.stop_reason == "model_error"
+    events = read_trace(agent)
+    assert any(event["event"] == "run_finished" for event in events)
+    failure = next(
+        event for event in events if event["event"] == "finalization_failed"
+    )
+    assert "report unavailable" in " ".join(failure["finalization_errors"])
+
+
+def test_provider_error_report_build_failure_does_not_mask_primary(tmp_path, monkeypatch):
+    primary = ValueError("primary provider failure")
+    agent = build_native_agent(tmp_path, RaisingProvider(primary))
+    monkeypatch.setattr(
+        agent,
+        "build_report",
+        Mock(side_effect=OSError("report build unavailable")),
+    )
+
+    with pytest.raises(ValueError, match="primary provider failure"):
+        agent.ask("fail")
+
+    assert agent.current_task_state.stop_reason == "model_error"
+    failure = next(
+        event for event in read_trace(agent) if event["event"] == "finalization_failed"
+    )
+    assert "report build unavailable" in " ".join(failure["finalization_errors"])
+    assert len(" ".join(failure["finalization_errors"])) <= 300
+
+
+def test_finalizer_failure_without_primary_is_raised(tmp_path, monkeypatch):
+    agent = build_native_agent(
+        tmp_path,
+        NativeScriptProvider([
+            Response(
+                stop_reason=StopReason.END_TURN,
+                content=[{"type": "text", "text": "done"}],
+                usage={},
+            ),
+        ]),
+    )
+    monkeypatch.setattr(
+        agent.run_store,
+        "write_report",
+        Mock(side_effect=OSError("report unavailable")),
+    )
+
+    with pytest.raises(OSError, match="report unavailable"):
+        agent.ask("finish")
+
+
+def test_final_message_save_failure_is_persistence_error(tmp_path, monkeypatch):
+    agent = build_native_agent(
+        tmp_path,
+        NativeScriptProvider([
+            Response(
+                stop_reason=StopReason.END_TURN,
+                content=[{"type": "text", "text": "done"}],
+                usage={},
+            ),
+        ]),
+    )
+    original_save = agent.session_store.save
+
+    def fail_assistant(session):
+        if (
+            session.get("messages")
+            and session["messages"][-1].get("role") == "assistant"
+        ):
+            raise OSError("assistant save failed")
+        return original_save(session)
+
+    monkeypatch.setattr(agent.session_store, "save", fail_assistant)
+
+    with pytest.raises(OSError, match="assistant save failed"):
+        agent.ask("finish")
+
+    assert agent.current_task_state.status == "failed"
+    assert agent.current_task_state.stop_reason == "persistence_error"
+
+
+def test_initial_user_save_failure_does_not_start_a_run(tmp_path, monkeypatch):
+    agent = build_native_agent(tmp_path, NativeScriptProvider([]))
+    monkeypatch.setattr(
+        agent.session_store,
+        "save",
+        Mock(side_effect=OSError("user save failed")),
+    )
+
+    with pytest.raises(OSError, match="user save failed"):
+        agent.ask("start")
+
+    assert agent.current_task_state is None
+    assert agent.session["messages"] == []
+    assert not list((tmp_path / ".pico" / "runs").glob("run_*"))
+
+
+@pytest.mark.parametrize("failure", ["start_run", "run_started"])
+def test_run_start_artifact_failure_is_runtime_terminal(tmp_path, monkeypatch, failure):
+    agent = build_native_agent(tmp_path, NativeScriptProvider([]))
+    if failure == "start_run":
+        monkeypatch.setattr(
+            agent.run_store,
+            "start_run",
+            Mock(side_effect=OSError("run start failed")),
+        )
+        expected = "run start failed"
+    else:
+        original_emit_trace = agent.emit_trace
+
+        def fail_run_started(task_state, event, payload=None):
+            if event == "run_started":
+                raise OSError("run trace failed")
+            return original_emit_trace(task_state, event, payload)
+
+        monkeypatch.setattr(agent, "emit_trace", fail_run_started)
+        expected = "run trace failed"
+
+    with pytest.raises(OSError, match=expected):
+        agent.ask("start")
+
+    assert agent.current_task_state.status == "failed"
+    assert agent.current_task_state.stop_reason == "runtime_error"
+
+
+def test_in_run_checkpoint_session_save_failure_is_persistence_error(
+    tmp_path,
+    monkeypatch,
+):
+    provider = NativeScriptProvider([
+        Response(
+            stop_reason=StopReason.TOOL_USE,
+            content=[{
+                "type": "tool_use",
+                "id": "tu_checkpoint",
+                "name": "write_file",
+                "input": {"path": "note.txt", "content": "saved\n"},
+            }],
+            usage={},
+        ),
+    ])
+    agent = build_native_agent(tmp_path, provider)
+    original_save = agent.session_store.save
+    saves = 0
+
+    def fail_checkpoint_save(session):
+        nonlocal saves
+        saves += 1
+        if saves == 3:
+            raise OSError("checkpoint save failed")
+        return original_save(session)
+
+    monkeypatch.setattr(agent.session_store, "save", fail_checkpoint_save)
+
+    with pytest.raises(OSError, match="checkpoint save failed"):
+        agent.ask("write")
+
+    assert len(provider.calls) == 1
+    assert agent.current_task_state.stop_reason == "persistence_error"
+    assert agent.current_task_state.status == "failed"
 
 
 def test_rejected_tool_calls_do_not_consume_step_budget(tmp_path):

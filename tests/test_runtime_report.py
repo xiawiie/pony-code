@@ -126,6 +126,7 @@ def test_successful_run_persists_run_artifacts_and_stop_reason(tmp_path):
     assert report["stop_reason"] == "final_answer_returned"
     assert report["task_state"]["stop_reason"] == "final_answer_returned"
     assert report["run_id"] == task_state["run_id"]
+    assert report["finalization_errors"] == []
     trace_events = [json.loads(line)["event"] for line in trace_lines]
     assert trace_events[0] == "run_started"
     assert trace_events[-1] == "run_finished"

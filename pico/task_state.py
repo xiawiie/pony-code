@@ -22,6 +22,8 @@ STOP_REASON_APPROVAL_DENIED = "approval_denied"
 STOP_REASON_DELEGATE_FAILED = "delegate_failed"
 STOP_REASON_PERSISTENCE_ERROR = "persistence_error"
 STOP_REASON_RESUME_LOAD_ERROR = "resume_load_error"
+STOP_REASON_INTERRUPTED = "interrupted"
+STOP_REASON_RUNTIME_ERROR = "runtime_error"
 
 
 @dataclass
@@ -93,6 +95,20 @@ class TaskState:
     def stop_persistence_error(self, final_answer=""):
         return self.stop(
             STOP_REASON_PERSISTENCE_ERROR,
+            status=STATUS_FAILED,
+            final_answer=final_answer,
+        )
+
+    def stop_interrupted(self, final_answer=""):
+        return self.stop(
+            STOP_REASON_INTERRUPTED,
+            status=STATUS_STOPPED,
+            final_answer=final_answer,
+        )
+
+    def stop_runtime_error(self, final_answer=""):
+        return self.stop(
+            STOP_REASON_RUNTIME_ERROR,
             status=STATUS_FAILED,
             final_answer=final_answer,
         )

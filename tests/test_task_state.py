@@ -1,6 +1,10 @@
+import pytest
+
 from pico.task_state import (
     STOP_REASON_FINAL_ANSWER_RETURNED,
+    STOP_REASON_INTERRUPTED,
     STOP_REASON_RETRY_LIMIT_REACHED,
+    STOP_REASON_RUNTIME_ERROR,
     STOP_REASON_STEP_LIMIT_REACHED,
     TaskState,
 )
@@ -83,3 +87,41 @@ def test_task_state_tracks_recovery_checkpoint_id_separately():
 
     assert restored.checkpoint_id == ""
     assert restored.recovery_checkpoint_id == "ckpt_recovery"
+
+
+@pytest.mark.parametrize(
+    ("stop", "expected_status", "expected_reason"),
+    [
+        ("stop_interrupted", "stopped", STOP_REASON_INTERRUPTED),
+        ("stop_runtime_error", "failed", STOP_REASON_RUNTIME_ERROR),
+    ],
+)
+def test_task_state_serializes_new_terminal_transitions(
+    stop,
+    expected_status,
+    expected_reason,
+):
+    state = TaskState.create(
+        task_id="task_terminal",
+        user_request="finish safely",
+        run_id="run_terminal",
+    )
+
+    getattr(state, stop)("terminal text")
+
+    snapshot = state.to_dict()
+    assert snapshot == {
+        "run_id": "run_terminal",
+        "task_id": "task_terminal",
+        "user_request": "finish safely",
+        "status": expected_status,
+        "tool_steps": 0,
+        "attempts": 0,
+        "last_tool": "",
+        "stop_reason": expected_reason,
+        "final_answer": "terminal text",
+        "checkpoint_id": "",
+        "resume_status": "",
+        "recovery_checkpoint_id": "",
+    }
+    assert TaskState.from_dict(snapshot).to_dict() == snapshot
