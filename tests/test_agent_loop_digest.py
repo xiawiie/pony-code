@@ -7,10 +7,13 @@
 - Returned ``digest_applied`` and ``source_hash`` reflect what happened.
 """
 
+import hashlib
 import os
 import stat
+from pathlib import Path
 from unittest.mock import MagicMock
 
+import pico.agent_loop as agent_loop_module
 from pico.agent_loop import _prepare_tool_result
 from pico.security import redact_text
 
@@ -73,6 +76,47 @@ def test_large_tool_result_writes_only_redacted_private_body(tmp_path):
     assert raw_file.stem == metadata["source_hash"]
     if os.name == "posix":
         assert stat.S_IMODE(raw_file.stat().st_mode) == 0o600
+
+
+def test_raw_tool_result_inode_swap_does_not_truncate_replacement(
+    tmp_path,
+    monkeypatch,
+):
+    agent = _stub_agent(tmp_path)
+    agent.context_config = {"digest_size_threshold": 100}
+    body = "safe body\n" * 200
+    source_hash = hashlib.sha256(body.encode("utf-8")).hexdigest()[:16]
+    raw_dir = agent.current_run_dir / "tool_results"
+    raw_dir.mkdir()
+    raw_path = raw_dir / f"{source_hash}.txt"
+    raw_path.write_text("original\n", encoding="utf-8")
+    outside = tmp_path / "outside.txt"
+    outside.write_text("replacement\n", encoding="utf-8")
+    real_open = agent_loop_module.os.open
+    swapped = False
+
+    def swap_before_open(path, flags, mode=0o777):
+        nonlocal swapped
+        if not swapped and Path(path) == raw_path:
+            swapped = True
+            raw_path.unlink()
+            os.link(outside, raw_path)
+        return real_open(path, flags, mode)
+
+    monkeypatch.setattr(agent_loop_module.os, "open", swap_before_open)
+
+    content, metadata = _prepare_tool_result(
+        agent,
+        content=body,
+        tool_name="read_file",
+        tool_args={"path": "x"},
+    )
+
+    assert swapped is True
+    assert metadata["source_hash"] == source_hash
+    assert outside.read_text(encoding="utf-8") == "replacement\n"
+    assert raw_path.read_text(encoding="utf-8") == "replacement\n"
+    assert "(raw at " not in content
 
 
 def test_large_result_without_run_dir_still_digests(tmp_path):

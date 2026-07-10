@@ -189,19 +189,34 @@ def _prepare_tool_result(
                 raw_dir = ensure_private_dir(run_dir / "tool_results")
                 raw_path = raw_dir / f"{source_hash}.txt"
                 checked_path = require_regular_no_symlink(raw_path, allow_missing=True)
-                flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+                try:
+                    before = checked_path.lstat()
+                except FileNotFoundError:
+                    before = None
+                if before is not None and not stat.S_ISREG(before.st_mode):
+                    raise ValueError("raw tool result changed")
+                flags = os.O_WRONLY
+                if before is None:
+                    flags |= os.O_CREAT | os.O_EXCL
                 flags |= getattr(os, "O_CLOEXEC", 0)
                 flags |= getattr(os, "O_NOFOLLOW", 0)
                 descriptor = os.open(checked_path, flags, 0o600)
                 try:
                     opened = os.fstat(descriptor)
                     current = os.stat(checked_path, follow_symlinks=False)
+                    identity = (opened.st_dev, opened.st_ino)
                     if not stat.S_ISREG(opened.st_mode) or (
                         current.st_dev,
                         current.st_ino,
-                    ) != (opened.st_dev, opened.st_ino):
+                    ) != identity:
+                        raise ValueError("raw tool result changed")
+                    if before is not None and (
+                        before.st_dev,
+                        before.st_ino,
+                    ) != identity:
                         raise ValueError("raw tool result changed")
                     os.fchmod(descriptor, 0o600)
+                    os.ftruncate(descriptor, 0)
                     with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
                         descriptor = -1
                         handle.write(safe_content)

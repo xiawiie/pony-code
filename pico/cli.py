@@ -314,6 +314,7 @@ def build_agent(args):
             max_new_tokens=args.max_new_tokens,
             secret_env_names=configured_secret_names,
             redaction_env=redaction_env,
+            _trusted_redaction_env=True,
         )
     return Pico(
         model_client=model,
@@ -324,6 +325,7 @@ def build_agent(args):
         max_new_tokens=args.max_new_tokens,
         secret_env_names=configured_secret_names,
         redaction_env=redaction_env,
+        _trusted_redaction_env=True,
     )
 
 

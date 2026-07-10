@@ -265,6 +265,7 @@ def test_cli_build_agent_loads_project_env_secrets_before_redaction_setup(tmp_pa
 
 def test_cli_resume_uses_immutable_collision_safe_snapshot_before_load(
     tmp_path,
+    monkeypatch,
 ):
     class DummyModelClient:
         def __init__(self, *args, **kwargs):
@@ -275,6 +276,15 @@ def test_cli_resume_uses_immutable_collision_safe_snapshot_before_load(
     preexisting_collision_secret = "opaque-preexisting-collision-123456789"
     project_secret = "opaque-project-only-value-123456789"
     session_id = "resume-safe"
+    built_snapshot = {}
+    original_build_snapshot = pico_cli._build_redaction_snapshot
+
+    def capture_snapshot(*args, **kwargs):
+        result = original_build_snapshot(*args, **kwargs)
+        built_snapshot["value"] = result[0]
+        return result
+
+    monkeypatch.setattr(pico_cli, "_build_redaction_snapshot", capture_snapshot)
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
     (tmp_path / ".env").write_text(
         "PICO_PROVIDER=ollama\n"
@@ -326,6 +336,7 @@ def test_cli_resume_uses_immutable_collision_safe_snapshot_before_load(
 
         assert "PROJECT_ONLY_CREDENTIAL" not in os.environ
         assert isinstance(agent.redaction_env, MappingProxyType)
+        assert agent.redaction_env is built_snapshot["value"]
         assert project_secret in agent.redaction_env.values()
         assert old_secret in agent.redaction_env.values()
         assert preexisting_collision_secret in agent.redaction_env.values()

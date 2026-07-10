@@ -131,16 +131,51 @@ def test_programmatic_resume_sanitizes_process_secret_before_first_request(
 def test_supplied_redaction_proxy_is_copied_before_backing_mutation(tmp_path):
     secret = "opaque-proxy-value-123456789"
     backing = {"PICO_TEST_API_KEY": secret}
+    supplied = MappingProxyType(backing)
     agent = build_agent(
         tmp_path,
         [],
-        redaction_env=MappingProxyType(backing),
+        redaction_env=supplied,
     )
 
     backing["PICO_TEST_API_KEY"] = "replacement-value-123456789"
 
     assert agent.redaction_env["PICO_TEST_API_KEY"] == secret
+    assert agent.redaction_env is not supplied
     assert agent.redact_text(secret) == "<redacted>"
+
+
+def test_delegate_reuses_snapshot_without_replacing_shared_store_redactors(
+    tmp_path,
+    monkeypatch,
+):
+    secret = "opaque-delegate-value-123456789"
+    agent = build_agent(
+        tmp_path,
+        [],
+        redaction_env=MappingProxyType({"PICO_TEST_API_KEY": secret}),
+    )
+    session_redactor = agent.session_store._redactor
+    run_redactor = agent.run_store._redactor
+    assert getattr(session_redactor, "__self__", None) is None
+    assert getattr(run_redactor, "__self__", None) is None
+    children = []
+
+    def fake_ask(child, task):
+        children.append(child)
+        return "safe"
+
+    monkeypatch.setattr(Pico, "ask", fake_ask)
+
+    assert agent.spawn_delegate({"task": "inspect", "max_steps": 1}) == (
+        "delegate_result:\nsafe"
+    )
+
+    assert children[0].redaction_env is agent.redaction_env
+    assert agent.session_store._redactor is session_redactor
+    assert agent.run_store._redactor is run_redactor
+    safe = session_redactor({"payload": secret})
+    assert secret not in json.dumps(safe)
 
 
 def test_supplied_raw_session_is_immediately_safe_in_memory_and_on_disk(

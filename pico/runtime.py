@@ -126,8 +126,17 @@ def _build_redaction_snapshot(
     )
 
 
-def _freeze_redaction_snapshot(redaction_env, secret_env_names=()):
-    snapshot = MappingProxyType(dict(redaction_env))
+def _freeze_redaction_snapshot(
+    redaction_env,
+    secret_env_names=(),
+    *,
+    trusted=False,
+):
+    snapshot = (
+        redaction_env
+        if trusted and isinstance(redaction_env, MappingProxyType)
+        else MappingProxyType(dict(redaction_env))
+    )
     configured_names = _configured_redaction_names(secret_env_names, snapshot)
     return snapshot, configured_names, _artifact_redactor(snapshot, configured_names)
 
@@ -258,6 +267,7 @@ class Pico:
         redaction_env=None,
         feature_flags=None,
         allowed_tools=None,
+        _trusted_redaction_env=False,
     ):
         # v2 迁移：模型后端约定的接口是 `complete_v2(system, tools, messages, ...)`。
         # 不支持这个方法的老 provider（FakeModelClient / OllamaModelClient /
@@ -288,6 +298,7 @@ class Pico:
             redaction_env, configured_names, _ = _freeze_redaction_snapshot(
                 redaction_env,
                 secret_env_names,
+                trusted=_trusted_redaction_env,
             )
         self.redaction_env = redaction_env
         self.secret_env_names = configured_names
@@ -296,10 +307,15 @@ class Pico:
             self.feature_flags.update({str(key): bool(value) for key, value in feature_flags.items()})
         self.allowed_tools = self._normalize_allowed_tools(allowed_tools)
         self.run_store = run_store or RunStore(Path(workspace.repo_root) / ".pico" / "runs")
-        if hasattr(self.run_store, "set_redactor"):
-            self.run_store.set_redactor(self.redact_artifact)
-        if hasattr(self.session_store, "set_redactor"):
-            self.session_store.set_redactor(self.redact_artifact)
+        if self.depth == 0:
+            redactor = _artifact_redactor(
+                self.redaction_env,
+                self.secret_env_names,
+            )
+            if hasattr(self.run_store, "set_redactor"):
+                self.run_store.set_redactor(redactor)
+            if hasattr(self.session_store, "set_redactor"):
+                self.session_store.set_redactor(redactor)
         # 可恢复编辑（recoverable editing）的组件在这里就位。
         # 它们和 resume-summary 用的 `checkpointlib` 是两条独立的通路：
         # CheckpointStore 落在 .pico/checkpoints/ 下，专门记 turn/restore/manual 类型。
@@ -405,19 +421,24 @@ class Pico:
     @classmethod
     def from_session(cls, model_client, workspace, session_store, session_id, **kwargs):
         redaction_env = kwargs.pop("redaction_env", None)
+        trusted_redaction_env = kwargs.pop("_trusted_redaction_env", False)
         secret_env_names = kwargs.get("secret_env_names", ())
         if redaction_env is None:
             redaction_env, configured_names, redactor = _build_redaction_snapshot(
                 workspace.repo_root,
                 secret_env_names=secret_env_names,
             )
+            trusted_redaction_env = True
         else:
             redaction_env, configured_names, redactor = _freeze_redaction_snapshot(
                 redaction_env,
                 secret_env_names,
+                trusted=trusted_redaction_env,
             )
+            trusted_redaction_env = True
         session_store.set_redactor(redactor)
         kwargs["redaction_env"] = redaction_env
+        kwargs["_trusted_redaction_env"] = trusted_redaction_env
         kwargs["secret_env_names"] = configured_names
         return cls(
             model_client=model_client,
@@ -849,6 +870,7 @@ class Pico:
             read_only=True,
             secret_env_names=self.secret_env_names,
             redaction_env=self.redaction_env,
+            _trusted_redaction_env=True,
             shell_env_allowlist=self.shell_env_allowlist,
         )
         # 委派的目标是“调查”，不是“放权执行”。
