@@ -1,7 +1,10 @@
 """Security and redaction helpers for runtime artifacts."""
 
 import os
+import posixpath
 import re
+import stat
+from pathlib import Path
 
 SENSITIVE_ENV_NAME_MARKERS = ("API_KEY", "TOKEN", "SECRET", "PASSWORD")
 REDACTED_VALUE = "<redacted>"
@@ -64,6 +67,125 @@ _SECRET_MAPPING_KEYS = {
     "authorization",
     "private_key",
 }
+_SENSITIVE_PATH_BASENAMES = {
+    ".env",
+    ".envrc",
+    ".netrc",
+    ".npmrc",
+    ".pypirc",
+    ".git-credentials",
+    "credentials.json",
+    "auth.json",
+    "secrets.json",
+    "secrets.yaml",
+    "secrets.yml",
+    "secrets.toml",
+}
+_ALLOWED_ENV_TEMPLATE_BASENAMES = {".env.example", ".env.sample", ".env.template"}
+_SENSITIVE_KEYSTORE_SUFFIXES = (".pem", ".key", ".p12", ".pfx", ".jks", ".keystore")
+
+
+def _normalized_posix_parts(raw_path):
+    raw = os.fsdecode(os.fspath(raw_path)).replace("\\", "/")
+    return tuple(
+        part.casefold()
+        for part in posixpath.normpath(raw).split("/")
+        if part not in {"", "."}
+    )
+
+
+def sensitive_path_reason(raw_path):
+    parts = _normalized_posix_parts(raw_path)
+    if not parts:
+        return ""
+
+    if ".ssh" in parts or ".gnupg" in parts:
+        return "sensitive_path"
+
+    for parent, child in zip(parts, parts[1:]):
+        if (parent, child) in {
+            (".aws", "credentials"),
+            (".docker", "config.json"),
+            (".kube", "config"),
+        }:
+            return "sensitive_path"
+        if parent == ".pico" and child in {"sessions", "runs", "checkpoints"}:
+            return "sensitive_path"
+
+    basename = parts[-1]
+    if basename in _ALLOWED_ENV_TEMPLATE_BASENAMES:
+        return ""
+    if basename in _SENSITIVE_PATH_BASENAMES or basename.startswith(".env."):
+        return "sensitive_path"
+    if basename.startswith("service-account") and basename.endswith(".json"):
+        return "sensitive_path"
+    if basename.endswith(_SENSITIVE_KEYSTORE_SUFFIXES):
+        return "sensitive_path"
+    return ""
+
+
+def is_sensitive_path(raw_path):
+    return bool(sensitive_path_reason(raw_path))
+
+
+def _lexical_absolute(path):
+    return Path(os.path.abspath(os.fspath(path)))
+
+
+def _lstat_chain(path, *, allow_missing_leaf=False):
+    target = _lexical_absolute(path)
+    current = Path(target.anchor)
+    parts = target.parts[1:]
+    for index, part in enumerate(parts):
+        current = current / part
+        try:
+            mode = current.lstat().st_mode
+        except FileNotFoundError:
+            if allow_missing_leaf and index == len(parts) - 1:
+                return target
+            raise
+        if stat.S_ISLNK(mode):
+            raise ValueError(f"refusing symlink component: {current}")
+        if index < len(parts) - 1 and not stat.S_ISDIR(mode):
+            raise ValueError(f"parent component is not a directory: {current}")
+    return target
+
+
+def require_regular_no_symlink(path, *, allow_missing=False):
+    path = _lstat_chain(path, allow_missing_leaf=allow_missing)
+    if allow_missing and not path.exists():
+        return path
+    if not stat.S_ISREG(path.lstat().st_mode):
+        raise ValueError(f"path is not a regular file: {path}")
+    return path
+
+
+def ensure_private_dir(path):
+    path = _lexical_absolute(path)
+    current = Path(path.anchor)
+    for part in path.parts[1:]:
+        current = current / part
+        created = False
+        try:
+            mode = current.lstat().st_mode
+        except FileNotFoundError:
+            current.mkdir(mode=0o700)
+            mode = current.lstat().st_mode
+            created = True
+        if stat.S_ISLNK(mode):
+            raise ValueError(f"private directory has symlink component: {current}")
+        if not stat.S_ISDIR(mode):
+            raise ValueError(f"private directory has unsafe component: {current}")
+        if created:
+            current.chmod(0o700, follow_symlinks=False)
+    path.chmod(0o700, follow_symlinks=False)
+    return path
+
+
+def ensure_private_file(path):
+    path = require_regular_no_symlink(path)
+    path.chmod(0o600, follow_symlinks=False)
+    return path
 
 
 def _normalized_secret_names(secret_env_names):

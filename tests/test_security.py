@@ -4,14 +4,113 @@ from pico.security import (
     REDACTED_VALUE,
     contains_secret_material,
     detected_secret_env_items,
+    is_sensitive_path,
     looks_secret_shaped_text,
     looks_sensitive_env_name,
     redact_artifact,
     redact_text,
+    sensitive_path_reason,
     shell_env,
 )
 
 SECRET_SENTINEL = "github_pat_A123456789012345678901234567890"
+
+
+@pytest.mark.parametrize(
+    "path",
+    (
+        ".env",
+        ".env.local",
+        ".envrc",
+        ".netrc",
+        ".npmrc",
+        ".pypirc",
+        ".git-credentials",
+        "config/credentials.json",
+        "config/auth.json",
+        "config/service-account.json",
+        "config/service-account-prod.json",
+        "config/secrets.json",
+        "config/secrets.yaml",
+        "config/secrets.yml",
+        "config/secrets.toml",
+        ".ssh",
+        ".ssh/id_ed25519",
+        ".gnupg/private-keys-v1.d/key",
+        ".aws/credentials",
+        ".docker/config.json",
+        ".kube/config",
+        "certs/client.pem",
+        "keys/signing.key",
+        "keys/client.p12",
+        "keys/client.pfx",
+        "keys/client.jks",
+        "keys/client.keystore",
+        ".pico/sessions",
+        ".pico/sessions/s.json",
+        ".pico/runs/r/trace.jsonl",
+        ".pico/checkpoints/blobs/aa/value",
+    ),
+)
+def test_sensitive_path_matrix(path):
+    assert is_sensitive_path(path)
+    assert sensitive_path_reason(path) == "sensitive_path"
+
+
+@pytest.mark.parametrize(
+    "path",
+    (
+        ".env.example",
+        ".env.sample",
+        ".env.template",
+        "certs/ca.crt",
+        "id_ed25519.pub",
+        "config/service-account.txt",
+        "config/secret.json",
+        ".aws/config",
+        ".pico/memory/agent_notes.md",
+    ),
+)
+def test_sensitive_path_templates_and_public_material_are_allowed(path):
+    assert not is_sensitive_path(path)
+    assert sensitive_path_reason(path) == ""
+
+
+@pytest.mark.parametrize(
+    "path",
+    (
+        "./.ENV.LOCAL",
+        "PROJECT/.SSH/ID_ED25519",
+        "PROJECT/.PICO/CHECKPOINTS/record.json",
+        "CERTS/CLIENT.PEM",
+        "PROJECT\\.SSH\\ID_ED25519",
+    ),
+)
+def test_sensitive_path_uses_casefolded_posix_lexical_normalization(path):
+    assert is_sensitive_path(path)
+
+
+@pytest.mark.parametrize(
+    "path",
+    (
+        ".aws/tmp/../credentials",
+        ".docker/tmp/../config.json",
+        ".kube/tmp/../config",
+        ".pico/tmp/../sessions/s.json",
+    ),
+)
+def test_sensitive_path_collapses_lexical_parent_components(path):
+    assert is_sensitive_path(path)
+
+
+def test_sensitive_path_classification_does_not_read_or_resolve(tmp_path):
+    ordinary = tmp_path / "README.md"
+    ordinary.write_text(SECRET_SENTINEL, encoding="utf-8")
+    alias = tmp_path / "alias"
+    alias.symlink_to(tmp_path / ".env")
+
+    assert not is_sensitive_path(ordinary)
+    assert not is_sensitive_path(alias)
 
 
 def test_sensitive_env_name_detection_matches_runtime_policy():
