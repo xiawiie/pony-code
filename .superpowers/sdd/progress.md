@@ -287,3 +287,5 @@ Task 1: complete (commits 1ba4ce6..0fe1d12, review clean; Ruff green; 668 passed
 Task 2: complete (commits 1995445..5426002, review approved; 26 focused + 20 regression passed)
   minor deferred to final review: excerpt-bound test uses only inputs shorter than 160 characters
 Task 3: complete (commits 8c6c8d0..2954335, review clean; 13 focused; 704 passed, 1 skipped full suite)
+Task 4: complete (commits cc546d0..16a0b6e, review clean after v1-authority/type-safety fix)
+  38 focused passed; 719 passed, 1 skipped full gate
