@@ -1,5 +1,6 @@
 import io
 import json
+from http.client import RemoteDisconnected
 import urllib.error
 import urllib.request
 from unittest.mock import Mock, patch
@@ -189,6 +190,41 @@ def test_openai_malformed_sse_is_fixed_invalid_response(
     assert caught.value.__cause__ is None
     assert secret not in str(caught.value) + caplog.text
     assert urlopen.call_count == 1
+
+
+@pytest.mark.parametrize(
+    "error_factory",
+    (
+        pytest.param(urllib.error.URLError, id="url-error"),
+        pytest.param(RemoteDisconnected, id="remote-disconnected"),
+    ),
+)
+def test_openai_stream_iterator_network_error_retries_and_is_stable(
+    monkeypatch,
+    caplog,
+    error_factory,
+):
+    secret = "github_pat_" + "N" * 32
+
+    class FailingStreamResponse(_RawResponse):
+        def __iter__(self):
+            raise error_factory(secret)
+
+    urlopen = Mock(
+        return_value=FailingStreamResponse(b"", "text/event-stream")
+    )
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(
+        "pico.providers.openai_compatible.time.sleep", lambda _: None
+    )
+
+    with pytest.raises(RuntimeError) as caught:
+        list(_openai_test_client().stream_complete("hello", 10))
+
+    assert str(caught.value) == "OpenAI-compatible request failed: network_error"
+    assert caught.value.__cause__ is None
+    assert secret not in str(caught.value) + caplog.text
+    assert urlopen.call_count == 3
 
 
 @pytest.mark.parametrize(

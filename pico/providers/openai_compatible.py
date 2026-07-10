@@ -385,6 +385,8 @@ class OpenAICompatibleModelClient:
                                     "prompt_cache_retention": prompt_cache_retention,
                                     **_extract_usage_cache_details(response_data),
                                 }
+                        except (urllib.error.URLError, RemoteDisconnected):
+                            raise
                         except Exception:
                             raise RuntimeError(
                                 "OpenAI-compatible error: invalid_response"
