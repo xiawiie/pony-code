@@ -20,7 +20,7 @@ SECRET_SHAPED_TEXT_PATTERNS = (
 _PLACEHOLDER_VALUE_RE = re.compile(
     r"(?i)^(?:example|dummy|changeme|replace[-_ ]?me|your[-_ ]?(?:api[-_ ]?)?key|x{3,}|\$\{[^}]+\}|<[^>]+>)$"
 )
-_PLACEHOLDER_SPAN_RE = re.compile(r"(\$\{[^}]+\}|<[^>]+>)")
+_PLACEHOLDER_SPAN_RE = re.compile(r"(\$\{[^}]+\}|<[^<>=\s\"']+>)")
 _QUOTED_OR_PLACEHOLDER_VALUE_PATTERN = (
     r'"(?:\\.|[^"\\])+"'
     r"|'(?:\\.|[^'\\])+'"
@@ -150,6 +150,8 @@ def _sub_concrete_token_outside_placeholders(pattern, text):
 
 
 def _replace_known_secret(text, secret):
+    if REDACTED_VALUE in secret:
+        return text.replace(secret, REDACTED_VALUE)
     return REDACTED_VALUE.join(
         part.replace(secret, REDACTED_VALUE)
         for part in text.split(REDACTED_VALUE)

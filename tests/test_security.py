@@ -148,6 +148,25 @@ def test_redact_text_preserves_marker_when_env_secret_overlaps_it():
     assert contains_secret_material(REDACTED_VALUE, env=env) is False
 
 
+def test_known_env_secret_containing_marker_is_replaced_as_one_value():
+    env = {"TOKEN": "prefix<redacted>suffix"}
+
+    safe = redact_text("prefix<redacted>suffix", env=env)
+
+    assert safe == REDACTED_VALUE
+    assert contains_secret_material("prefix<redacted>suffix", env=env) is True
+    assert contains_secret_material(safe, env=env) is False
+
+
+def test_concrete_token_inside_markup_is_redacted():
+    text = '<meta content="sk-real-secret-123456">'
+    safe = redact_text(text, env={})
+
+    assert safe == f'<meta content="{REDACTED_VALUE}">'
+    assert contains_secret_material(text, env={}) is True
+    assert contains_secret_material(safe, env={}) is False
+
+
 @pytest.mark.parametrize(
     "key",
     (
