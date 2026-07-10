@@ -1,3 +1,5 @@
+> Archived historical snapshot. Do not use its prompt/history or memory-ablation numbers as current Messages v3 evidence.
+
 # Pico 简历数据复现说明
 
 本目录用于复现这段简历描述里的核心数据。复现对象是 main 分支的本地 agent harness 指标，不是线上业务数据。

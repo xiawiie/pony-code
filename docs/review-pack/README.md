@@ -1,36 +1,28 @@
 # Pico Review Pack
 
-## Current local snapshot
+## Current C-stage evidence
 
-- Branch: `memory`
-- Current local baseline: `./scripts/check.sh` passes with `476 passed`
-- Phase 1 targeted tests: `uv run pytest tests/test_scripts.py tests/test_metrics.py tests/test_memory_quality_benchmark.py -q` passes with `34 passed`
-- Memory-quality gate: `uv run python benchmarks/memory_quality/run_benchmark.py --mode fake --format json` reports `total=8`, `failed=0`
-- Provider benchmark help: `uv run python scripts/run_provider_experiments.py --help` exposes `--provider {all,gpt,claude,deepseek}`
-- Provider smoke: `pico-cli doctor --format text` reports storage/recovery ok and provider connectivity ok
-- One-shot smoke: `pico-cli --no-input --approval never --max-steps 1 --max-new-tokens 32 --quiet run "Return exactly PICO_SMOKE_OK. Do not call tools."` returns `PICO_SMOKE_OK`
-- Worktree triage: Phase 1 tracked changes are committed on `memory`; two unrelated untracked design docs remain excluded from the branch.
+The current, committed evidence set is [Action Kernel and Messages v3](../../benchmarks/results/action-kernel-messages-v3-2026-07-10/DATA_PROVENANCE.md). Its JSON artifacts are the source of truth; the core Markdown report is generated from those artifacts.
 
-## Project pitch
-
-Pico is a lightweight local coding agent harness for repository-grounded engineering tasks. It wraps a model with workspace context, explicit tools, state tracking, memory, run artifacts, and benchmark evidence.
+- [Harness regression](../../benchmarks/results/action-kernel-messages-v3-2026-07-10/harness-regression-v2.json)
+- [Context ablation](../../benchmarks/results/action-kernel-messages-v3-2026-07-10/context-ablation-v2.json)
+- [Working-memory ablation](../../benchmarks/results/action-kernel-messages-v3-2026-07-10/memory-ablation-v2.json)
+- [Recovery ablation](../../benchmarks/results/action-kernel-messages-v3-2026-07-10/recovery-ablation-v2.json)
+- [Core report](../../benchmarks/results/action-kernel-messages-v3-2026-07-10/pico-benchmark-core-report.md)
 
 ## Architecture map
 
-- `pico.cli` wires configuration, provider clients, workspace context, and the runtime.
-- `pico.runtime.Pico` coordinates the agent control surface.
-- `pico.context_manager` builds bounded model context from prefix, memory, history, and the current request.
-- `pico.tools` defines the explicit tool allowlist used by the runtime.
-- `pico.run_store` writes per-run artifacts for review and replay.
+- Pico has one decision path: `Response -> decode_action -> Action -> AgentLoop`.
+- Request construction applies an overlay to canonical messages; sent-message metrics describe the actual request view.
+- Session v3 persists canonical messages and uses an atomic migration boundary for legacy sessions.
+- Runtime artifacts remain `task_state.json`, `trace.jsonl`, and `report.json` for each run.
 
-## Benchmark evidence
+## Evidence boundaries
 
-Benchmark runs should preserve reproducibility metadata, task rows, summary counts, and failure categories so reviewers can distinguish runtime regressions from task or provider failures.
+- Harness regression proves deterministic runtime behavior, not live Provider quality.
+- Context, memory, and recovery ablations measure their stated local mechanisms only.
+- The real E2E is a separate final gate and is not claimed by this local evidence pack.
 
-Memory quality evidence: `benchmarks/memory_quality/run_benchmark.py --mode fake --format json` runs deterministic tool-trace scoring through the real Pico runtime. Live-provider memory-quality evidence remains optional because it depends on provider credentials, quota, and model behavior.
+## Historical material
 
-## Sample run artifact list
-
-- `.pico/runs/<run_id>/task_state.json`
-- `.pico/runs/<run_id>/trace.jsonl`
-- `.pico/runs/<run_id>/report.json`
+The [2026-06-07 result directory](../../benchmarks/results/main-resume-repro-2026-06-07/DATA_PROVENANCE.md) is archived historical material and is not current Messages v3 evidence.

@@ -317,18 +317,19 @@ def test_run_harness_regression_v2_writes_named_artifact(tmp_path):
     assert artifact["summary"]["verifier_pass_rate"] == 1.0
 
 
-def test_run_task_anchors_paths_to_fixture_copy_even_inside_repo_workspace():
+def test_run_task_anchors_paths_to_fixture_copy_inside_workspace_root(tmp_path):
+    workspace_root = tmp_path / "workspace"
     evaluator = BenchmarkEvaluator(
         benchmark_path=Path("benchmarks/coding_tasks.json"),
-        artifact_path=Path("docs/review-pack/benchmark-v1.json"),
-        workspace_root=Path("."),
+        artifact_path=workspace_root / "benchmark-v1.json",
+        workspace_root=workspace_root,
     )
 
     task = next(item for item in evaluator.load()["tasks"] if item["id"] == "readme_intro_locked")
     row = evaluator.run_task(task)
 
     assert row["status"] == "pass"
-    fixture_copy = Path(row["fixture_copy_relpath"])
+    fixture_copy = workspace_root / row["fixture_copy_relpath"]
     readme_path = fixture_copy / "README.md"
     assert "This fixture is a locked benchmark workspace." in readme_path.read_text(encoding="utf-8")
 
