@@ -43,6 +43,6 @@ objects, request headers, or API keys.
 
 ## Safety
 
-- Pico runs with `read_only=True`.
+- Pico runs with `read_only=True` and exposes only the native `read_file` tool.
 - The fixture snapshots and restores `pico.toml` and removes its seed note.
 - Sessions and run artifacts remain available for diagnosis after a run.

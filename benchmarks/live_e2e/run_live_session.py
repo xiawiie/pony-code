@@ -1376,6 +1376,7 @@ def main() -> int:
                 session_store=session_store,
                 read_only=True,
                 max_steps=3,
+                allowed_tools=("read_file",),
             )
         except Exception as exc:
             print(f"[live-e2e] pico construction failed: {exc}", file=sys.stderr)

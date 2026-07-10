@@ -6,6 +6,7 @@ These tests never enter the normal ``main`` path or create a provider client.
 import json
 import os
 import sys
+from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -98,6 +99,41 @@ def test_main_loads_project_env_before_parse_args_on_reset_only_path(tmp_path, m
 
     assert run_live_session.main() == 0
     assert events == [("load", tmp_path), ("parse", None), ("reset", tmp_path)]
+
+
+def test_main_constructs_live_pico_with_only_read_file(tmp_path, monkeypatch):
+    import pico.runtime
+    import pico.session_store
+    import pico.workspace
+
+    captured = {}
+
+    def capture_pico(**kwargs):
+        captured.update(kwargs)
+        raise RuntimeError("construction captured")
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(run_live_session, "load_project_env", lambda _root: None)
+    monkeypatch.setattr(run_live_session, "parse_args", lambda: _config())
+    monkeypatch.setattr(run_live_session, "check_env", lambda _config: None)
+    monkeypatch.setattr(run_live_session, "verify_pico_repo", lambda _root: None)
+    monkeypatch.setattr(
+        run_live_session,
+        "warn_if_dirty_working_tree",
+        lambda _root: None,
+    )
+    monkeypatch.setattr(
+        run_live_session,
+        "FixtureManager",
+        lambda _root: nullcontext(),
+    )
+    monkeypatch.setattr(run_live_session, "make_live_client", lambda _config: object())
+    monkeypatch.setattr(pico.workspace.WorkspaceContext, "build", lambda _root: object())
+    monkeypatch.setattr(pico.session_store, "SessionStore", lambda _root: object())
+    monkeypatch.setattr(pico.runtime, "Pico", capture_pico)
+
+    assert run_live_session.main() == 4
+    assert captured["allowed_tools"] == ("read_file",)
 
 
 def test_read_turn_trace_aggregates_every_model_turn(tmp_path):
