@@ -324,3 +324,6 @@ Task 17: complete (commit bfe6157, independent review approved after provenance 
   plan scope correction: ee8d082 adds semantic evidence assertions, legacy-metadata scans, and evaluator fixture-workspace hygiene
   review fix: regenerated all evidence from parent ee8d082 so harness runtime.commit_sha exactly matches the evidence commit parent
   verification: 50 evidence tests; semantic JSON checks; two forbidden-term scans; diff check clean; no real Provider call
+  follow-up doc contract: ba7a1cc restores the required review-pack headings with current v3 wording; focused test and independent re-review approved
+Task 18: complete (verification only)
+  verification: 8 structural deletion scans; Ruff + 780 pytest passed; memory-quality 8/8; five-repetition memory ablation semantic checks; 3 perf JSON smokes; 48 offline live-harness tests; clean tracked worktree
