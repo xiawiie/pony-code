@@ -295,3 +295,6 @@ Task 6: complete (commits 0419ea9..309c749, review clean; 33 passed CLI/evaluato
 Task 7: complete (commits bc8366c..e0dce59, review clean; 52 passed, 1 skipped Phase 2 gate)
 Task 8: complete (commits 5de00d5..04fe97c, review clean; 68 focused passed)
   plan scope correction: 3ce1afc records the required runtime/evaluation side-channel cleanup
+Task 9: complete (commits 46f008b + a0f58a3, review clean after one fix round)
+  plan scope corrections: 2f68b96 consumer migration; f3977c1 trace/retry coverage
+  verification: 153 passed, 1 skipped task gate; 714 passed, 1 skipped full suite
