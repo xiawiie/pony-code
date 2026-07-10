@@ -3615,6 +3615,44 @@ def test_runner_keyboard_interrupt_finalizes_pending_change_then_reraises(
         agent.execute_tool("write_file", {"path": "x.txt", "content": "x"})
     records = agent.checkpoint_store.list_tool_change_records()
     assert records[-1]["status"] == "interrupted"
+
+
+def test_post_runner_interrupt_closes_workspace_change_then_reraises(
+    tmp_path,
+    monkeypatch,
+):
+    agent = build_agent(tmp_path)
+    original_capture = agent.workspace_observer.capture
+    capture_calls = 0
+
+    def interrupt_after_runner():
+        nonlocal capture_calls
+        capture_calls += 1
+        if capture_calls == 2:
+            raise KeyboardInterrupt()
+        return original_capture()
+
+    agent.tools["run_shell"]["run"] = lambda args: "exit_code: 0\nstdout:\nok\nstderr:\n(empty)"
+    monkeypatch.setattr(agent.workspace_observer, "capture", interrupt_after_runner)
+    with pytest.raises(KeyboardInterrupt):
+        agent.execute_tool("run_shell", {"command": "printf ok", "timeout": 5})
+    records = agent.checkpoint_store.list_tool_change_records()
+    assert records[-1]["status"] == "interrupted"
+
+
+def test_post_runner_interrupt_closes_memory_audit_then_reraises(tmp_path, monkeypatch):
+    agent = build_agent(tmp_path)
+    agent.tools["memory_save"]["run"] = lambda args: "saved"
+    monkeypatch.setattr(
+        agent,
+        "update_memory_after_tool",
+        lambda *args: (_ for _ in ()).throw(KeyboardInterrupt()),
+    )
+    with pytest.raises(KeyboardInterrupt):
+        agent.execute_tool("memory_save", {"note": "remember this"})
+    records = agent.checkpoint_store.list_tool_change_records()
+    assert records[-1]["effect_class"] == "memory_write"
+    assert records[-1]["status"] == "interrupted"
 ```
 
 Add memory runner tests that missing store/retrieval, missing memory file, I/O error, and invalid topic do not produce `tool_status == "ok"`. Add a protected `.pico/memory/notes/**` write test that expects `rejected` before the runner.
@@ -3751,24 +3789,47 @@ Only `ToolExecutor` formats model-visible failures using `error: tool {name} fai
 
 - [ ] **Step 8: Preserve Ctrl-C as Ctrl-C and close the current Tool Change**
 
-Immediately around `tool["run"](args)`:
+After a pending Tool Change has been created, cover the whole remaining
+execution lifecycle — pre/post snapshots, observer work, the runner, memory
+updates and side-effect finalization — with a dedicated `KeyboardInterrupt`
+handler. It must never be limited to `tool["run"](args)`, because an interrupt
+after a successful runner can otherwise leave the pending record unclosed.
+
+Use a small helper that only finalizes a record which is still pending:
 
 ```python
-try:
-    content = clip(tool["run"](args))
-except KeyboardInterrupt:
-    if pending_record is not None:
-        try:
+def _finalize_interrupted_pending(agent, pending_record):
+    if pending_record is None:
+        return
+    try:
+        current = agent.checkpoint_store.load_tool_change_record(
+            pending_record["tool_change_id"]
+        )
+        if current.get("status") == "pending":
             agent.tool_change_recorder.finalize(
                 pending_record["tool_change_id"],
                 status="interrupted",
             )
-        except Exception:
-            pass
+    except Exception:
+        pass
+```
+
+
+Place the existing snapshot setup, runner call, post-run observer/snapshot
+work, `agent.update_memory_after_tool`, `_finalize_tool_side_effects`,
+and its current ordinary `except Exception` body under this same outer
+`try`. Insert this dedicated branch immediately before the ordinary exception
+branch:
+
+```python
+except KeyboardInterrupt:
+    _finalize_interrupted_pending(agent, pending_record)
     raise
 ```
 
-Keep the existing `except Exception` path after this block; it must not catch `KeyboardInterrupt`.
+Initialize snapshot/observer locals before this `try` so the existing
+ordinary-error branch can still safely decide whether a workspace change was
+partial. The primary `KeyboardInterrupt` must always be re-raised.
 
 - [ ] **Step 9: Run tool/recovery integration**
 
