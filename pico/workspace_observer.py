@@ -6,11 +6,14 @@ mtime+size+存在性扫描兜底。两种模式返回同一个结构，`diff()` 
 """
 
 import os
+import stat
 import subprocess
+from collections.abc import Mapping
 from pathlib import Path
 from types import MappingProxyType
 
 from pico.safe_subprocess import run_hardened_git
+from pico.security import require_regular_no_symlink
 from pico.workspace import (
     _safe_index_directory,
     _safe_index_file,
@@ -21,10 +24,40 @@ from pico.workspace import (
 _MAX_FILE_SIZE_FOR_MTIME = 8 * 1024 * 1024
 
 
+def _validated_legacy_git(root, value):
+    try:
+        candidate = Path(os.fspath(value))
+    except TypeError:
+        return ""
+    if not candidate.is_absolute():
+        return ""
+    try:
+        executable = candidate.resolve(strict=True)
+        require_regular_no_symlink(executable)
+        mode = executable.stat().st_mode
+        workspace = Path(root).resolve(strict=True)
+    except (OSError, RuntimeError, ValueError):
+        return ""
+    if executable == workspace or workspace in executable.parents:
+        return ""
+    if mode & (stat.S_IWGRP | stat.S_IWOTH) or not os.access(executable, os.X_OK):
+        return ""
+    return str(executable)
+
+
 class WorkspaceObserver:
-    def __init__(self, root, executables=None):
+    def __init__(self, root, git_binary=None, *, executables=None):
         self.root = Path(os.path.abspath(os.fspath(root)))
-        self.trusted_executables = MappingProxyType(dict(executables or {}))
+        if executables is None and isinstance(git_binary, Mapping):
+            trusted = dict(git_binary)
+            git_binary = None
+        else:
+            trusted = dict(executables or {})
+        if "git" not in trusted:
+            legacy_git = _validated_legacy_git(self.root, git_binary)
+            if legacy_git:
+                trusted["git"] = legacy_git
+        self.trusted_executables = MappingProxyType(trusted)
 
     def _is_git_repo(self):
         git_executable = self.trusted_executables.get("git")

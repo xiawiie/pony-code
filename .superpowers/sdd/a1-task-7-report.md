@@ -113,3 +113,51 @@ No real Provider or live E2E call was made.
 ## Remaining concerns
 
 No known Task 7 defect remains. Sensitive direct-tool paths/content, Python fallback result filtering, snapshot eligibility/content scans, and BlockStore write-boundary secret rejection remain intentionally owned by A1 Task 8. Benchmark-only Git metadata collection outside Task 7 runtime/bootstrap paths is unchanged.
+
+## Formal Review Follow-up
+
+Status: PASS — one Important compatibility regression fixed after the initial `3c2ecea6b4e57536a02fd7c27eb28244a6151073` implementation commit.
+
+The review found that changing `WorkspaceObserver(root, git_binary="git")` to an executable-map-only second parameter broke both the legacy keyword and second-positional call shapes. The compatibility entry now accepts those shapes without restoring discovery or bare execution:
+
+- bare/relative legacy values are ignored and select filesystem mode with zero Git runner calls;
+- a legacy absolute value is canonicalized only after it resolves to an existing regular executable outside the workspace, is not group/world writable, and passes the no-symlink regular-file guard;
+- accepted legacy values still execute only through `run_hardened_git()`;
+- the new `executables=` map and a second-positional Mapping remain supported.
+
+### Follow-up RED
+
+```text
+uv run pytest tests/test_workspace_observer.py -q -k 'legacy or second_positional'
+8 failed, 1 passed, 6 deselected in 0.12s
+```
+
+The failures were the exact removed keyword signature and string-to-dict positional conversion errors. The pre-existing second-positional Mapping behavior remained green.
+
+### Follow-up GREEN and Verification
+
+```text
+uv run pytest tests/test_workspace_observer.py -q -k 'legacy or second_positional'
+9 passed, 6 deselected in 0.30s
+
+uv run pytest tests/test_workspace_observer.py tests/test_bootstrap_read_safety.py tests/test_tool_executor.py tests/test_safety_invariants.py -q
+84 passed in 2.69s
+
+uv run pytest tests/test_bootstrap_read_safety.py tests/test_context_sources.py tests/memory/test_repo_map.py tests/memory/test_block_store.py tests/test_workspace_observer.py tests/test_tools.py tests/test_tool_executor.py tests/test_safe_subprocess.py tests/test_safety_invariants.py -q
+160 passed in 2.86s
+
+uv run pytest tests/test_pico.py tests/memory/test_runtime_wiring.py tests/test_prompt_prefix.py tests/test_agent_loop.py tests/test_runtime_report.py tests/test_context_manager.py tests/test_agent_loop_injection_sent.py tests/test_recovery_e2e.py tests/memory/test_global_agents_md.py -q
+127 passed in 10.60s
+
+uv run ruff check .
+All checks passed!
+
+git diff --check
+exit 0
+
+./scripts/check.sh
+All checks passed!
+1058 passed in 62.14s
+```
+
+Follow-up files: `pico/workspace_observer.py`, `tests/test_workspace_observer.py`, and this report. No real Provider or live E2E call was made; `.superpowers/sdd/progress.md` remains controller-owned and excluded.
