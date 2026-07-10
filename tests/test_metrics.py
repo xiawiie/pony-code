@@ -179,10 +179,12 @@ def test_provider_profile_uses_right_codes_shared_key_for_gpt(tmp_path, monkeypa
 
 
 def test_real_memory_request_recorder_captures_actual_native_or_fallback_input():
+    from pico import FakeModelClient
     from pico.evaluation.experiments_real import (
         _first_followup_drops_bootstrap_tool,
         _recording_provider,
     )
+    from pico.providers.fallback_adapter import FallbackAdapter
 
     class NativeProvider:
         def complete_v2(self, **kwargs):
@@ -210,6 +212,18 @@ def test_real_memory_request_recorder_captures_actual_native_or_fallback_input()
     assert fallback.calls == [("prompt", "sent prompt")]
     assert _first_followup_drops_bootstrap_tool(fallback, 0, "tu_1") is True
     assert _first_followup_drops_bootstrap_tool(fallback, 0, "") is False
+
+    existing_fallback = _recording_provider(
+        FallbackAdapter(FakeModelClient(["<final>done</final>"]))
+    )
+    existing_fallback.complete_v2(
+        system=[],
+        tools=[],
+        messages=[{"role": "user", "content": "record the wire prompt"}],
+        max_tokens=10,
+    )
+    assert existing_fallback.calls[0][0] == "prompt"
+    assert "record the wire prompt" in existing_fallback.calls[0][1]
 
 
 def test_run_memory_ablation_v2_writes_expected_artifact(tmp_path):

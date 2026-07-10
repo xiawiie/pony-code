@@ -3,6 +3,7 @@ import tempfile
 from copy import deepcopy
 from pathlib import Path
 
+from ..providers.fallback_adapter import FallbackAdapter
 from ..runtime import Pico, SessionStore
 from ..workspace import WorkspaceContext
 from .experiments_synthetic import (
@@ -48,6 +49,8 @@ class _FallbackRecordingProvider(_RecordingProvider):
 
 
 def _recording_provider(provider):
+    if isinstance(provider, FallbackAdapter):
+        return FallbackAdapter(_FallbackRecordingProvider(provider._inner))
     if callable(getattr(provider, "complete_v2", None)):
         return _NativeRecordingProvider(provider)
     return _FallbackRecordingProvider(provider)
