@@ -7,7 +7,9 @@ import urllib.error
 import urllib.request
 
 from ._shared import (
+    _decode_json_object,
     _extract_usage_cache_details,
+    _iter_sse_data_payloads,
     _iter_openai_stream_chunks,
     _normalize_versioned_base_url,
     _validate_header_value,
@@ -17,68 +19,108 @@ OPENAI_COMPATIBLE_USER_AGENT = "pico/0.1"
 
 
 def _extract_openai_text(data):
-    if data.get("output_text"):
-        return data["output_text"]
+    if not isinstance(data, dict):
+        raise ValueError("response must be an object")
+    output_text = data.get("output_text")
+    if output_text is not None and not isinstance(output_text, str):
+        raise ValueError("output text must be a string")
+    if output_text:
+        return output_text
 
-    for item in data.get("output", []):
-        for content in item.get("content", []):
-            if isinstance(content, dict):
-                text = content.get("text")
-                if text:
-                    return text
+    output = data.get("output", [])
+    if not isinstance(output, list) or not all(
+        isinstance(item, dict) for item in output
+    ):
+        raise ValueError("output must be a list of objects")
+    for item in output:
+        content_items = item.get("content", [])
+        if not isinstance(content_items, list) or not all(
+            isinstance(content, dict) for content in content_items
+        ):
+            raise ValueError("output content must be a list of objects")
+        for content in content_items:
+            text = content.get("text")
+            if text is not None and not isinstance(text, str):
+                raise ValueError("content text must be a string")
+            if text:
+                return text
 
     choices = data.get("choices", [])
+    if not isinstance(choices, list) or not all(
+        isinstance(choice, dict) for choice in choices
+    ):
+        raise ValueError("choices must be a list of objects")
     if choices:
         message = choices[0].get("message", {})
+        if not isinstance(message, dict):
+            raise ValueError("choice message must be an object")
         content = message.get("content")
         if isinstance(content, str):
             return content
         if isinstance(content, list):
             for item in content:
-                if isinstance(item, dict):
-                    text = item.get("text")
-                    if text:
-                        return text
+                if not isinstance(item, dict):
+                    raise ValueError("message content must contain objects")
+                text = item.get("text")
+                if text is not None and not isinstance(text, str):
+                    raise ValueError("message text must be a string")
+                if text:
+                    return text
+        elif content is not None:
+            raise ValueError("message content must be text or a list")
 
     return ""
+
+
+def _iter_openai_sse_events(body_text):
+    if not isinstance(body_text, str):
+        raise ValueError("event stream body must be text")
+    for payload in _iter_sse_data_payloads(body_text.splitlines()):
+        if payload == "[DONE]":
+            break
+        event = json.loads(payload)
+        if not isinstance(event, dict):
+            raise ValueError("event stream item must be an object")
+        yield event
 
 
 def _extract_openai_text_from_sse(body_text):
     last_response = None
     deltas = []
-    for line in body_text.splitlines():
-        line = line.strip()
-        if not line.startswith("data:"):
-            continue
-        payload = line[len("data:") :].strip()
-        if not payload or payload == "[DONE]":
-            continue
-        try:
-            event = json.loads(payload)
-        except json.JSONDecodeError:
-            continue
+    for event in _iter_openai_sse_events(body_text):
         event_type = event.get("type", "")
+        if not isinstance(event_type, str):
+            raise ValueError("event type must be a string")
         if event_type == "response.output_text.delta":
             delta = event.get("delta")
-            if isinstance(delta, str):
-                deltas.append(delta)
+            if not isinstance(delta, str):
+                raise ValueError("text delta must be a string")
+            deltas.append(delta)
             continue
         if event_type == "response.output_text.done":
             text = event.get("text")
-            if isinstance(text, str) and text:
+            if not isinstance(text, str):
+                raise ValueError("completed text must be a string")
+            if text:
                 return text
         part = event.get("part")
-        if isinstance(part, dict):
+        if part is not None and not isinstance(part, dict):
+            raise ValueError("event part must be an object")
+        if part is not None:
             text = part.get("text")
             if isinstance(text, str) and text:
                 return text
         item = event.get("item")
-        if isinstance(item, dict):
+        if item is not None and not isinstance(item, dict):
+            raise ValueError("event item must be an object")
+        if item is not None:
             text = _extract_openai_text({"output": [item]})
             if text:
                 return text
         response = event.get("response")
-        if isinstance(response, dict):
+        if response is not None and not isinstance(response, dict):
+            raise ValueError("event response must be an object")
+        if response is not None:
             last_response = response
             text = _extract_openai_text(response)
             if text:
@@ -96,32 +138,31 @@ def _extract_openai_text_from_sse(body_text):
 def _extract_openai_response_from_sse(body_text):
     last_response = None
     deltas = []
-    for line in body_text.splitlines():
-        line = line.strip()
-        if not line.startswith("data:"):
-            continue
-        payload = line[len("data:") :].strip()
-        if not payload or payload == "[DONE]":
-            continue
-        try:
-            event = json.loads(payload)
-        except json.JSONDecodeError:
-            continue
+    for event in _iter_openai_sse_events(body_text):
         response = event.get("response")
-        if isinstance(response, dict):
+        if response is not None and not isinstance(response, dict):
+            raise ValueError("event response must be an object")
+        event_type = event.get("type", "")
+        if not isinstance(event_type, str):
+            raise ValueError("event type must be a string")
+        if response is not None:
             last_response = response
-            if event.get("type") == "response.completed":
+            if event_type == "response.completed":
                 text = _extract_openai_text(response)
                 if text:
                     return text, response
-        event_type = event.get("type", "")
+        elif event_type == "response.completed":
+            raise ValueError("completed event must contain a response")
         if event_type == "response.output_text.delta":
             delta = event.get("delta")
-            if isinstance(delta, str):
-                deltas.append(delta)
+            if not isinstance(delta, str):
+                raise ValueError("text delta must be a string")
+            deltas.append(delta)
         elif event_type == "response.output_text.done":
             text = event.get("text")
-            if isinstance(text, str) and text:
+            if not isinstance(text, str):
+                raise ValueError("completed text must be a string")
+            if text:
                 return text, last_response or {}
         else:
             text = _extract_openai_text(event)
@@ -223,9 +264,8 @@ class OpenAICompatibleModelClient:
         for attempt in range(attempts):
             try:
                 with urllib.request.urlopen(request, timeout=self.timeout) as response:
-                    body_text = response.read().decode("utf-8")
-                    headers = getattr(response, "headers", {}) or {}
-                    content_type = headers.get("Content-Type", "")
+                    response_body = response.read()
+                    response_headers = getattr(response, "headers", {}) or {}
                 break
             except urllib.error.HTTPError as exc:
                 if exc.code >= 500 and attempt < attempts - 1:
@@ -242,38 +282,65 @@ class OpenAICompatibleModelClient:
                     "OpenAI-compatible request failed: network_error"
                 ) from None
 
+        try:
+            content_type = response_headers.get("Content-Type", "")
+            if not isinstance(content_type, str):
+                raise ValueError("content type must be a string")
+            body_text = response_body.decode("utf-8")
+        except Exception:
+            raise RuntimeError(
+                "OpenAI-compatible error: invalid_response"
+            ) from None
+
         # 有些兼容后端返回普通 JSON，有些返回 SSE。
         # 这里两种都接住，并尽量统一抽取文本和 usage/cache 元数据。
-        if content_type.startswith("text/event-stream") or body_text.lstrip().startswith("data:"):
-            text, response_data = _extract_openai_response_from_sse(body_text)
-            if isinstance(response_data, dict) and response_data:
+        if content_type.startswith(
+            "text/event-stream"
+        ) or body_text.lstrip().startswith("data:"):
+            try:
+                text, response_data = _extract_openai_response_from_sse(body_text)
+                metadata = None
+                if response_data:
+                    metadata = {
+                        "prompt_cache_supported": self.supports_prompt_cache,
+                        "prompt_cache_key": prompt_cache_key,
+                        "prompt_cache_retention": prompt_cache_retention,
+                        **_extract_usage_cache_details(response_data),
+                    }
+            except Exception:
+                raise RuntimeError(
+                    "OpenAI-compatible error: invalid_response"
+                ) from None
+            if metadata is not None:
                 # 这些元数据会一路传回 runtime，进入 trace 和 report，
                 # 用来观察 prompt cache 是否真的命中。
-                self.last_completion_metadata = {
-                    "prompt_cache_supported": self.supports_prompt_cache,
-                    "prompt_cache_key": prompt_cache_key,
-                    "prompt_cache_retention": prompt_cache_retention,
-                    **_extract_usage_cache_details(response_data),
-                }
+                self.last_completion_metadata = metadata
             if text:
                 return text
             raise RuntimeError("OpenAI-compatible error: could not extract text from event stream response")
 
         try:
-            data = json.loads(body_text)
-        except json.JSONDecodeError:
+            data = _decode_json_object(body_text)
+        except Exception:
             raise RuntimeError(
                 "OpenAI-compatible error: invalid_response"
             ) from None
         if data.get("error"):
-            raise RuntimeError("OpenAI-compatible error: backend_error")
-        self.last_completion_metadata = {
-            "prompt_cache_supported": self.supports_prompt_cache,
-            "prompt_cache_key": prompt_cache_key,
-            "prompt_cache_retention": prompt_cache_retention,
-            **_extract_usage_cache_details(data),
-        }
-        return _extract_openai_text(data)
+            raise RuntimeError("OpenAI-compatible error: backend_error") from None
+        try:
+            metadata = {
+                "prompt_cache_supported": self.supports_prompt_cache,
+                "prompt_cache_key": prompt_cache_key,
+                "prompt_cache_retention": prompt_cache_retention,
+                **_extract_usage_cache_details(data),
+            }
+            text = _extract_openai_text(data)
+        except Exception:
+            raise RuntimeError(
+                "OpenAI-compatible error: invalid_response"
+            ) from None
+        self.last_completion_metadata = metadata
+        return text
 
     def stream_complete(self, prompt, max_new_tokens, prompt_cache_key=None, prompt_cache_retention=None):
         self.last_completion_metadata = {}
@@ -289,28 +356,45 @@ class OpenAICompatibleModelClient:
         for attempt in range(attempts):
             try:
                 with urllib.request.urlopen(request, timeout=self.timeout) as response:
-                    headers = getattr(response, "headers", {}) or {}
-                    content_type = headers.get("Content-Type", "")
+                    response_headers = getattr(response, "headers", {}) or {}
+                    try:
+                        content_type = response_headers.get("Content-Type", "")
+                        if not isinstance(content_type, str):
+                            raise ValueError("content type must be a string")
+                    except Exception:
+                        raise RuntimeError(
+                            "OpenAI-compatible error: invalid_response"
+                        ) from None
                     if content_type.startswith("text/event-stream"):
                         response_data = {}
                         emitted_text = False
-                        for chunk, event_response in _iter_openai_stream_chunks(response, _extract_openai_text):
-                            if event_response:
-                                response_data = event_response
-                            if chunk:
-                                emitted_text = True
-                                yield chunk
-                        if response_data:
-                            self.last_completion_metadata = {
-                                "prompt_cache_supported": self.supports_prompt_cache,
-                                "prompt_cache_key": prompt_cache_key,
-                                "prompt_cache_retention": prompt_cache_retention,
-                                **_extract_usage_cache_details(response_data),
-                            }
+                        try:
+                            for chunk, event_response in _iter_openai_stream_chunks(
+                                response, _extract_openai_text
+                            ):
+                                if event_response:
+                                    response_data = event_response
+                                if chunk:
+                                    emitted_text = True
+                                    yield chunk
+                            metadata = None
+                            if response_data:
+                                metadata = {
+                                    "prompt_cache_supported": self.supports_prompt_cache,
+                                    "prompt_cache_key": prompt_cache_key,
+                                    "prompt_cache_retention": prompt_cache_retention,
+                                    **_extract_usage_cache_details(response_data),
+                                }
+                        except Exception:
+                            raise RuntimeError(
+                                "OpenAI-compatible error: invalid_response"
+                            ) from None
+                        if metadata is not None:
+                            self.last_completion_metadata = metadata
                         if not emitted_text:
                             raise RuntimeError("OpenAI-compatible error: could not extract streamed text")
                         return
-                    body_text = response.read().decode("utf-8")
+                    response_body = response.read()
                 break
             except urllib.error.HTTPError as exc:
                 if exc.code >= 500 and attempt < attempts - 1:
@@ -328,20 +412,26 @@ class OpenAICompatibleModelClient:
                 ) from None
 
         try:
-            data = json.loads(body_text)
-        except json.JSONDecodeError:
+            data = _decode_json_object(response_body)
+        except Exception:
             raise RuntimeError(
                 "OpenAI-compatible error: invalid_response"
             ) from None
         if data.get("error"):
-            raise RuntimeError("OpenAI-compatible error: backend_error")
-        self.last_completion_metadata = {
-            "prompt_cache_supported": self.supports_prompt_cache,
-            "prompt_cache_key": prompt_cache_key,
-            "prompt_cache_retention": prompt_cache_retention,
-            **_extract_usage_cache_details(data),
-        }
-        text = _extract_openai_text(data)
+            raise RuntimeError("OpenAI-compatible error: backend_error") from None
+        try:
+            metadata = {
+                "prompt_cache_supported": self.supports_prompt_cache,
+                "prompt_cache_key": prompt_cache_key,
+                "prompt_cache_retention": prompt_cache_retention,
+                **_extract_usage_cache_details(data),
+            }
+            text = _extract_openai_text(data)
+        except Exception:
+            raise RuntimeError(
+                "OpenAI-compatible error: invalid_response"
+            ) from None
+        self.last_completion_metadata = metadata
         if not text:
             raise RuntimeError("OpenAI-compatible error: could not extract text from response")
         yield text

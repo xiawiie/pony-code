@@ -10,7 +10,359 @@ from pico.providers.clients import (
     AnthropicCompatibleModelClient,
     OllamaModelClient,
     OpenAICompatibleModelClient,
+    _extract_usage_cache_details,
 )
+
+
+class _RawResponse:
+    def __init__(self, body, content_type="application/json"):
+        self.body = body
+        self.headers = {"Content-Type": content_type}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def read(self):
+        return self.body
+
+    def __iter__(self):
+        return iter(self.body.splitlines(keepends=True))
+
+
+def _anthropic_test_client():
+    return AnthropicCompatibleModelClient(
+        model="test",
+        base_url="https://example.test/v1",
+        api_key="safe-test-key",
+        temperature=0.0,
+        timeout=1,
+    )
+
+
+def _openai_test_client():
+    return OpenAICompatibleModelClient(
+        model="test",
+        base_url="https://example.test/v1",
+        api_key="safe-test-key",
+        temperature=0.0,
+        timeout=1,
+    )
+
+
+def _ollama_test_client():
+    return OllamaModelClient(
+        model="test",
+        host="https://example.test",
+        temperature=0.0,
+        top_p=1.0,
+        timeout=1,
+    )
+
+
+_JSON_RESPONSE_CASES = (
+    pytest.param(
+        "Anthropic-compatible",
+        _anthropic_test_client,
+        lambda client: client.complete("hello", 10),
+        id="anthropic-legacy",
+    ),
+    pytest.param(
+        "Anthropic-compatible",
+        _anthropic_test_client,
+        lambda client: client.complete_v2(
+            system=[], tools=[], messages=[], max_tokens=10
+        ),
+        id="anthropic-v2",
+    ),
+    pytest.param(
+        "OpenAI-compatible",
+        _openai_test_client,
+        lambda client: client.complete("hello", 10),
+        id="openai-json",
+    ),
+    pytest.param(
+        "OpenAI-compatible",
+        _openai_test_client,
+        lambda client: list(client.stream_complete("hello", 10)),
+        id="openai-stream-json",
+    ),
+    pytest.param(
+        "Ollama",
+        _ollama_test_client,
+        lambda client: client.complete("hello", 10),
+        id="ollama",
+    ),
+)
+
+
+@pytest.mark.parametrize(("family", "client_factory", "invoke"), _JSON_RESPONSE_CASES)
+def test_provider_malformed_top_level_is_fixed_invalid_response(
+    monkeypatch,
+    caplog,
+    family,
+    client_factory,
+    invoke,
+):
+    secret = "github_pat_" + "J" * 32
+    urlopen = Mock(
+        return_value=_RawResponse(json.dumps([secret]).encode("utf-8"))
+    )
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+
+    with pytest.raises(RuntimeError) as caught:
+        invoke(client_factory())
+
+    assert str(caught.value) == f"{family} error: invalid_response"
+    assert caught.value.__cause__ is None
+    assert secret not in str(caught.value) + caplog.text
+    assert urlopen.call_count == 1
+
+
+@pytest.mark.parametrize(("family", "client_factory", "invoke"), _JSON_RESPONSE_CASES)
+def test_provider_invalid_utf8_is_fixed_invalid_response(
+    monkeypatch,
+    caplog,
+    family,
+    client_factory,
+    invoke,
+):
+    secret = "github_pat_" + "U" * 32
+    urlopen = Mock(return_value=_RawResponse(b"\xff" + secret.encode("utf-8")))
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+
+    with pytest.raises(RuntimeError) as caught:
+        invoke(client_factory())
+
+    assert str(caught.value) == f"{family} error: invalid_response"
+    assert caught.value.__cause__ is None
+    assert secret not in str(caught.value) + caplog.text
+    assert urlopen.call_count == 1
+
+
+@pytest.mark.parametrize(
+    "invoke",
+    (
+        pytest.param(
+            lambda client: client.complete("hello", 10),
+            id="openai-sse",
+        ),
+        pytest.param(
+            lambda client: list(client.stream_complete("hello", 10)),
+            id="openai-stream-sse",
+        ),
+    ),
+)
+@pytest.mark.parametrize(
+    "body_factory",
+    (
+        pytest.param(
+            lambda secret: b"data: "
+            + json.dumps([secret]).encode("utf-8")
+            + b"\n\n",
+            id="top-level-list",
+        ),
+        pytest.param(
+            lambda secret: b"data: \xff" + secret.encode("utf-8") + b"\n\n",
+            id="invalid-utf8",
+        ),
+    ),
+)
+def test_openai_malformed_sse_is_fixed_invalid_response(
+    monkeypatch,
+    caplog,
+    invoke,
+    body_factory,
+):
+    secret = "github_pat_" + "S" * 32
+    urlopen = Mock(
+        return_value=_RawResponse(body_factory(secret), "text/event-stream")
+    )
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+
+    with pytest.raises(RuntimeError) as caught:
+        invoke(_openai_test_client())
+
+    assert str(caught.value) == "OpenAI-compatible error: invalid_response"
+    assert caught.value.__cause__ is None
+    assert secret not in str(caught.value) + caplog.text
+    assert urlopen.call_count == 1
+
+
+@pytest.mark.parametrize(
+    ("family", "client_factory", "invoke", "payload", "content_type"),
+    (
+        pytest.param(
+            "Anthropic-compatible",
+            _anthropic_test_client,
+            lambda client: client.complete("hello", 10),
+            lambda secret: {
+                "content": [{"type": "text", "text": "ok"}],
+                "usage": {"cache_read_input_tokens": secret},
+            },
+            "application/json",
+            id="anthropic-legacy",
+        ),
+        pytest.param(
+            "Anthropic-compatible",
+            _anthropic_test_client,
+            lambda client: client.complete_v2(
+                system=[], tools=[], messages=[], max_tokens=10
+            ),
+            lambda secret: {
+                "content": [{"type": "text", "text": "ok"}],
+                "usage": {"cache_read_input_tokens": secret},
+            },
+            "application/json",
+            id="anthropic-v2",
+        ),
+        pytest.param(
+            "OpenAI-compatible",
+            _openai_test_client,
+            lambda client: client.complete("hello", 10),
+            lambda secret: {
+                "output_text": "ok",
+                "usage": {"input_tokens_details": {"cached_tokens": secret}},
+            },
+            "application/json",
+            id="openai-json",
+        ),
+        pytest.param(
+            "OpenAI-compatible",
+            _openai_test_client,
+            lambda client: list(client.stream_complete("hello", 10)),
+            lambda secret: {
+                "output_text": "ok",
+                "usage": {"input_tokens_details": {"cached_tokens": secret}},
+            },
+            "application/json",
+            id="openai-stream-json",
+        ),
+        pytest.param(
+            "OpenAI-compatible",
+            _openai_test_client,
+            lambda client: client.complete("hello", 10),
+            lambda secret: {
+                "type": "response.completed",
+                "response": {
+                    "output_text": "ok",
+                    "usage": {
+                        "input_tokens_details": {"cached_tokens": secret}
+                    },
+                },
+            },
+            "text/event-stream",
+            id="openai-sse",
+        ),
+        pytest.param(
+            "OpenAI-compatible",
+            _openai_test_client,
+            lambda client: list(client.stream_complete("hello", 10)),
+            lambda secret: {
+                "type": "response.completed",
+                "response": {
+                    "output_text": "ok",
+                    "usage": {
+                        "input_tokens_details": {"cached_tokens": secret}
+                    },
+                },
+            },
+            "text/event-stream",
+            id="openai-stream-sse",
+        ),
+    ),
+)
+def test_provider_secret_usage_is_fixed_invalid_response(
+    monkeypatch,
+    caplog,
+    family,
+    client_factory,
+    invoke,
+    payload,
+    content_type,
+):
+    secret = "github_pat_" + "G" * 32
+    encoded = json.dumps(payload(secret)).encode("utf-8")
+    body = b"data: " + encoded + b"\n\n" if content_type == "text/event-stream" else encoded
+    urlopen = Mock(return_value=_RawResponse(body, content_type))
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+
+    with pytest.raises(RuntimeError) as caught:
+        invoke(client_factory())
+
+    assert str(caught.value) == f"{family} error: invalid_response"
+    assert caught.value.__cause__ is None
+    assert secret not in str(caught.value) + caplog.text
+    assert urlopen.call_count == 1
+
+
+@pytest.mark.parametrize(
+    ("family", "client_factory", "invoke", "payload"),
+    (
+        pytest.param(
+            "Anthropic-compatible",
+            _anthropic_test_client,
+            lambda client: client.complete("hello", 10),
+            lambda secret: {
+                "content": [{"type": "text", "text": "ok"}],
+                "usage": {"input_tokens": secret},
+            },
+            id="anthropic-numeric-field",
+        ),
+        pytest.param(
+            "Anthropic-compatible",
+            _anthropic_test_client,
+            lambda client: client.complete("hello", 10),
+            lambda secret: {
+                "content": [{"type": "text", "text": "ok"}],
+                "usage": secret,
+            },
+            id="anthropic-usage-shape",
+        ),
+        pytest.param(
+            "OpenAI-compatible",
+            _openai_test_client,
+            lambda client: client.complete("hello", 10),
+            lambda secret: {
+                "output_text": "ok",
+                "usage": {"input_tokens": secret},
+            },
+            id="openai-numeric-field",
+        ),
+        pytest.param(
+            "OpenAI-compatible",
+            _openai_test_client,
+            lambda client: client.complete("hello", 10),
+            lambda secret: {
+                "output_text": "ok",
+                "usage": {"input_tokens_details": secret},
+            },
+            id="openai-details-shape",
+        ),
+    ),
+)
+def test_provider_malformed_usage_shape_is_fixed_invalid_response(
+    monkeypatch,
+    caplog,
+    family,
+    client_factory,
+    invoke,
+    payload,
+):
+    secret = "github_pat_" + "M" * 32
+    body = json.dumps(payload(secret)).encode("utf-8")
+    urlopen = Mock(return_value=_RawResponse(body))
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+
+    with pytest.raises(RuntimeError) as caught:
+        invoke(client_factory())
+
+    assert str(caught.value) == f"{family} error: invalid_response"
+    assert caught.value.__cause__ is None
+    assert secret not in str(caught.value) + caplog.text
+    assert urlopen.call_count == 1
 
 
 @pytest.mark.parametrize(
@@ -76,6 +428,79 @@ def test_provider_http_errors_expose_only_family_and_status(
     assert secret not in str(caught.value)
     assert credential_url not in str(caught.value)
     assert urlopen.call_count == 1
+
+
+@pytest.mark.parametrize(
+    ("family", "client_factory", "invoke", "expected_calls"),
+    (
+        pytest.param(
+            "Anthropic-compatible",
+            _anthropic_test_client,
+            lambda client: client.complete("hello", 10),
+            3,
+            id="anthropic-legacy",
+        ),
+        pytest.param(
+            "Anthropic-compatible",
+            _anthropic_test_client,
+            lambda client: client.complete_v2(
+                system=[], tools=[], messages=[], max_tokens=10
+            ),
+            1,
+            id="anthropic-v2",
+        ),
+        pytest.param(
+            "OpenAI-compatible",
+            _openai_test_client,
+            lambda client: client.complete("hello", 10),
+            3,
+            id="openai-json",
+        ),
+        pytest.param(
+            "OpenAI-compatible",
+            _openai_test_client,
+            lambda client: list(client.stream_complete("hello", 10)),
+            3,
+            id="openai-stream",
+        ),
+        pytest.param(
+            "Ollama",
+            _ollama_test_client,
+            lambda client: client.complete("hello", 10),
+            1,
+            id="ollama",
+        ),
+    ),
+)
+def test_provider_http_500_retry_counts_are_preserved(
+    monkeypatch,
+    family,
+    client_factory,
+    invoke,
+    expected_calls,
+):
+    error = urllib.error.HTTPError(
+        "https://example.test/v1",
+        500,
+        "server error",
+        hdrs={},
+        fp=io.BytesIO(b"backend failure"),
+    )
+    urlopen = Mock(side_effect=error)
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(
+        "pico.providers.anthropic_compatible.time.sleep", lambda _: None
+    )
+    monkeypatch.setattr(
+        "pico.providers.openai_compatible.time.sleep", lambda _: None
+    )
+
+    with pytest.raises(RuntimeError) as caught:
+        invoke(client_factory())
+
+    assert str(caught.value) == f"{family} request failed with HTTP 500"
+    assert caught.value.__cause__ is None
+    assert urlopen.call_count == expected_calls
 
 
 def test_anthropic_v2_http_error_is_stable(monkeypatch):
@@ -321,6 +746,19 @@ def test_openai_compatible_client_sends_prompt_cache_fields_and_records_usage():
     assert client.last_completion_metadata["cached_tokens"] == 1536
     assert client.last_completion_metadata["cache_hit"] is True
     assert client.last_completion_metadata["input_tokens"] == 2048
+
+
+def test_openai_usage_falls_back_from_empty_response_details():
+    details = _extract_usage_cache_details(
+        {
+            "usage": {
+                "input_tokens_details": {},
+                "prompt_tokens_details": {"cached_tokens": 9},
+            }
+        }
+    )
+
+    assert details["cached_tokens"] == 9
 
 
 def test_openai_compatible_client_extracts_text_from_event_stream():

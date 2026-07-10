@@ -8,6 +8,7 @@ import pytest
 from pico import Pico, SessionStore, WorkspaceContext
 from pico import security as securitylib
 from pico.cli_start import run_agent_once
+from pico.context.renderer import render_current_user_message
 from pico.messages import validate_messages
 from pico.providers.response import Response, StopReason
 from pico.security import SensitiveDataBlockedError
@@ -97,6 +98,46 @@ def test_provider_request_sanitizes_system_messages_and_injection(tmp_path):
 
     assert secret not in json.dumps(client.requests)
     assert secret in agent.prefix
+
+
+def test_injection_source_is_sanitized_before_tokenizer_and_request(tmp_path):
+    secret = "github_pat_" + "T" * 32
+    agent = build_agent_with_client(tmp_path, CapturingClient(final_response("done")))
+    agent.workspace.volatile_text = lambda: "branch: main\n" + secret
+    token_inputs = []
+    agent.model_client.count_tokens = lambda text: token_inputs.append(str(text)) or 1
+
+    rendered, telemetry = render_current_user_message(agent, "inspect")
+    agent.session["messages"].append({
+        "role": "user",
+        "content": "inspect",
+        "_pico_meta": {},
+    })
+    request, _ = agent.context_manager.build_v2(
+        injection_snapshot=rendered,
+        injection_telemetry=telemetry,
+        preflight_metadata={},
+    )
+
+    assert secret not in "\n".join(token_inputs)
+    assert secret not in json.dumps(request)
+
+
+def test_injection_residual_is_blocked_before_tokenizer(
+    tmp_path,
+    monkeypatch,
+):
+    secret = "github_pat_" + "Z" * 32
+    agent = build_agent_with_client(tmp_path, CapturingClient(final_response("done")))
+    agent.workspace.volatile_text = lambda: secret
+    tokenizer = Mock(return_value=1)
+    agent.model_client.count_tokens = tokenizer
+    monkeypatch.setattr(securitylib, "redact_artifact", lambda value, **kwargs: value)
+
+    with pytest.raises(SensitiveDataBlockedError):
+        render_current_user_message(agent, "inspect")
+
+    tokenizer.assert_not_called()
 
 
 def test_secret_tool_action_is_rejected_before_runner(tmp_path):

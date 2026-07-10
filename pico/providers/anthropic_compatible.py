@@ -8,12 +8,32 @@ import urllib.request
 
 from pico.messages import strip_pico_meta
 
-from ._shared import _normalize_versioned_base_url, _optional_int, _validate_header_value
+from ._shared import (
+    _decode_json_object,
+    _mapping_or_empty,
+    _normalize_versioned_base_url,
+    _optional_int,
+    _validate_header_value,
+)
+
+
+def _anthropic_content(data):
+    content = data.get("content", [])
+    if not isinstance(content, list) or not all(
+        isinstance(item, dict) for item in content
+    ):
+        raise ValueError("content must be a list of objects")
+    for item in content:
+        if item.get("type") is not None and not isinstance(item["type"], str):
+            raise ValueError("content type must be a string")
+        if item.get("text") is not None and not isinstance(item["text"], str):
+            raise ValueError("content text must be a string")
+    return content
 
 
 def _extract_anthropic_text(data):
-    for item in data.get("content", []):
-        if isinstance(item, dict) and (item.get("type") in ("", None, "text") or "text" in item):
+    for item in _anthropic_content(data):
+        if item.get("type") in ("", None, "text") or "text" in item:
             text = item.get("text")
             if isinstance(text, str) and text:
                 return text
@@ -21,8 +41,8 @@ def _extract_anthropic_text(data):
 
 
 def _anthropic_no_text_error(data, max_new_tokens):
-    content = data.get("content") or []
-    has_thinking = any(isinstance(item, dict) and item.get("type") == "thinking" for item in content)
+    content = _anthropic_content(data)
+    has_thinking = any(item.get("type") == "thinking" for item in content)
     if has_thinking and data.get("stop_reason") == "max_tokens":
         return (
             "Anthropic-compatible error: response contained thinking blocks but no text before max_tokens. "
@@ -43,14 +63,18 @@ def _anthropic_cache_control(prompt_cache_retention):
 
 
 def _extract_anthropic_usage_cache_details(data):
-    usage = data.get("usage") or {}
+    if not isinstance(data, dict):
+        raise ValueError("response must be an object")
+    usage = _mapping_or_empty(data.get("usage"))
     input_tokens = _optional_int(usage.get("input_tokens"))
     output_tokens = _optional_int(usage.get("output_tokens"))
     total_tokens = _optional_int(usage.get("total_tokens"))
     if total_tokens is None and input_tokens is not None and output_tokens is not None:
         total_tokens = input_tokens + output_tokens
-    cache_creation_tokens = int(usage.get("cache_creation_input_tokens") or 0)
-    cache_read_tokens = int(usage.get("cache_read_input_tokens") or 0)
+    cache_creation_tokens = (
+        _optional_int(usage.get("cache_creation_input_tokens")) or 0
+    )
+    cache_read_tokens = _optional_int(usage.get("cache_read_input_tokens")) or 0
     return {
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
@@ -114,7 +138,7 @@ class AnthropicCompatibleModelClient:
         for attempt in range(attempts):
             try:
                 with urllib.request.urlopen(request, timeout=self.timeout) as response:
-                    body_text = response.read().decode("utf-8")
+                    response_body = response.read()
                 break
             except urllib.error.HTTPError as exc:
                 if exc.code >= 500 and attempt < attempts - 1:
@@ -132,23 +156,30 @@ class AnthropicCompatibleModelClient:
                 ) from None
 
         try:
-            data = json.loads(body_text)
-        except json.JSONDecodeError:
+            data = _decode_json_object(response_body)
+        except Exception:
             raise RuntimeError(
                 "Anthropic-compatible error: invalid_response"
             ) from None
         if data.get("error"):
-            raise RuntimeError("Anthropic-compatible error: backend_error")
-        self.last_completion_metadata = {
-            "prompt_cache_supported": self.supports_prompt_cache,
-            "prompt_cache_key": prompt_cache_key,
-            "prompt_cache_retention": prompt_cache_retention,
-            **_extract_anthropic_usage_cache_details(data),
-        }
-        text = _extract_anthropic_text(data)
+            raise RuntimeError("Anthropic-compatible error: backend_error") from None
+        try:
+            metadata = {
+                "prompt_cache_supported": self.supports_prompt_cache,
+                "prompt_cache_key": prompt_cache_key,
+                "prompt_cache_retention": prompt_cache_retention,
+                **_extract_anthropic_usage_cache_details(data),
+            }
+            text = _extract_anthropic_text(data)
+            no_text_error = _anthropic_no_text_error(data, max_new_tokens)
+        except Exception:
+            raise RuntimeError(
+                "Anthropic-compatible error: invalid_response"
+            ) from None
+        self.last_completion_metadata = metadata
         if text:
             return text
-        raise RuntimeError(_anthropic_no_text_error(data, max_new_tokens))
+        raise RuntimeError(no_text_error)
 
     def stream_complete(self, prompt, max_new_tokens, prompt_cache_key=None, prompt_cache_retention=None):
         yield self.complete(
@@ -204,7 +235,7 @@ class AnthropicCompatibleModelClient:
 
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as raw:
-                body_text = raw.read().decode("utf-8")
+                response_body = raw.read()
         except urllib.error.HTTPError as exc:
             raise RuntimeError(
                 f"Anthropic-compatible request failed with HTTP {exc.code}"
@@ -214,13 +245,13 @@ class AnthropicCompatibleModelClient:
                 "Anthropic-compatible request failed: network_error"
             ) from None
         try:
-            data = json.loads(body_text)
-        except json.JSONDecodeError:
+            data = _decode_json_object(response_body)
+        except Exception:
             raise RuntimeError(
                 "Anthropic-compatible error: invalid_response"
             ) from None
         if data.get("error"):
-            raise RuntimeError("Anthropic-compatible error: backend_error")
+            raise RuntimeError("Anthropic-compatible error: backend_error") from None
 
         stop_map = {
             "end_turn": StopReason.END_TURN,
@@ -228,13 +259,21 @@ class AnthropicCompatibleModelClient:
             "max_tokens": StopReason.MAX_TOKENS,
             "stop_sequence": StopReason.STOP_SEQUENCE,
         }
-        stop_reason = stop_map.get(data.get("stop_reason"), StopReason.UNKNOWN)
-
-        usage_details = _extract_anthropic_usage_cache_details(data)
+        try:
+            raw_stop_reason = data.get("stop_reason")
+            if raw_stop_reason is not None and not isinstance(raw_stop_reason, str):
+                raise ValueError("stop reason must be a string")
+            stop_reason = stop_map.get(raw_stop_reason, StopReason.UNKNOWN)
+            content = _anthropic_content(data)
+            usage_details = _extract_anthropic_usage_cache_details(data)
+            response = Response(
+                stop_reason=stop_reason,
+                content=content,
+                usage=usage_details,
+            )
+        except Exception:
+            raise RuntimeError(
+                "Anthropic-compatible error: invalid_response"
+            ) from None
         self.last_completion_metadata = usage_details
-
-        return Response(
-            stop_reason=stop_reason,
-            content=list(data.get("content") or []),
-            usage=usage_details,
-        )
+        return response

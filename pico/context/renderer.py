@@ -33,7 +33,10 @@ Telemetry keys:
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 import logging
+
+from pico import security as securitylib
 
 from .escaping import escape_pico_tags
 from .intent import classify_intent
@@ -133,6 +136,13 @@ def render_current_user_message(agent, user_message):
     total = int(cfg.get("total_budget_hard_cap", 100000))
     telemetry["injection_budget"] = int(total * ratio)
 
+    redaction_env = getattr(agent, "redaction_env", None)
+    if not isinstance(redaction_env, Mapping):
+        redaction_env = None
+    secret_env_names = getattr(agent, "secret_env_names", ())
+    if not isinstance(secret_env_names, (list, tuple, set, frozenset)):
+        secret_env_names = ()
+
     blocks = []
     for source_name in SOURCE_ORDER:
         source_budget = int(budget.get(source_name, 0) or 0)
@@ -147,6 +157,12 @@ def render_current_user_message(agent, user_message):
         if not raw:
             telemetry["injection_tokens"][source_name] = 0
             continue
+        raw, _ = securitylib.sanitize_provider_payload(
+            raw,
+            [],
+            env=redaction_env,
+            secret_env_names=secret_env_names,
+        )
         original_tokens = _count_tokens(agent, raw)
         if original_tokens > source_budget:
             telemetry["injection_truncated"][source_name] = (
