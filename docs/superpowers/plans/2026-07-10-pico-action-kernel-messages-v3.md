@@ -5194,6 +5194,10 @@ git commit -m "refactor(session): cut runtime over to messages v3"
   Anthropic-only/cache-hit claims. They must describe one selected provider,
   canonical environment variables, trace truth, unknown-usage failure, and
   the fact that the two commands are alternatives, not a combined gate.
+- `prompt_cache_key` was removed from the v3 request-metadata contract. The
+  live harness metadata check must require only the 14 retained fields and
+  use `system_cache_key` as its cache identity; it must not resurrect the
+  deleted alias or read Provider-local completion metadata.
 
 **Interfaces:**
 
