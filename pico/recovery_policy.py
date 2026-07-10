@@ -534,6 +534,15 @@ def snapshot_eligibility(
     if missing:
         return result
 
+    if (
+        securitylib.is_allowed_env_template_leaf(normalized)
+        and final_mode is not None
+        and not stat.S_ISREG(final_mode)
+    ):
+        result["snapshot_eligible"] = False
+        result["ineligible_reason"] = "sensitive_path"
+        return result
+
     resolved = candidate
     if final_mode is not None and stat.S_ISDIR(final_mode):
         result["snapshot_eligible"] = False

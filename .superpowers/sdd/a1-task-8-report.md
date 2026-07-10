@@ -139,10 +139,12 @@ five Important findings and one semantic Minor. All six are closed in the
 follow-up commit containing this report:
 
 - Sensitive component rules now apply to every normalized path component.
-  Allowed env-template names are exceptions only when they are the final leaf,
-  so `.env/child`, `.env.example/child`, credential-name directories, key-name
+  Allowed env-template names are exceptions only when they are the final leaf;
+  at direct-tool and snapshot boundaries, an existing leaf must additionally
+  be a regular no-follow file. Thus `.env/child`, `.env.example/child`,
+  template-named directories, credential-name directories, key-name
   directories, direct tools, search, snapshots, and Git-HEAD fallback all fail
-  closed before read/Git/blob work.
+  closed before content read/Git/blob work.
 - Risky tools revalidate immediately after the single approval callback and
   before Tool Change pending state, snapshots, blobs, or the runner. Approval
   callbacks that swap a target to a symlink or alter patch input to contain a
@@ -277,6 +279,70 @@ All checks passed!
 ```
 
 No real Provider or live E2E call was made during the additional follow-up.
+
+## Type-Aware Env-Template Follow-up
+
+Final re-review through `3db240ada3666c11f5d02b17754a84485a27bb03`
+found one remaining Important case: the lexical allowed-template exception
+also admitted a directory when that directory was supplied as the explicit
+search root. Primary rg could therefore read its child before defensive output
+filtering discarded the match.
+
+The raw direct-tool boundary now combines the lexical exception with `lstat`
+type evidence:
+
+- An existing `.env.example`, `.env.sample`, or `.env.template` is allowed
+  only when the final leaf is a regular file.
+- A directory or other existing non-regular leaf receives the stable
+  `sensitive_path_block` before list/read/search/write runners or rg.
+- A symlink keeps the existing `invalid_arguments` no-follow rejection.
+- A missing template path remains valid for future `write_file` creation.
+- Snapshot eligibility applies the same existing-leaf decision and reports a
+  template-named directory as `sensitive_path` without reading a child.
+
+The initial narrow run demonstrated the boundary failures. One companion
+assertion incorrectly expected regex semantics from the Python search fallback
+and was corrected to a literal query before the production change:
+
+```text
+explicit template-directory/direct-tool/snapshot probes before fix:
+6 failed, 2 passed in 0.11s
+```
+
+The corrected exact gate after the fix:
+
+```text
+uv run pytest \
+  tests/test_sensitive_tools.py::test_explicit_env_template_directory_is_rejected_before_rg \
+  tests/test_sensitive_tools.py::test_env_template_directory_is_sensitive_for_direct_file_tools \
+  tests/test_sensitive_tools.py::test_env_template_symlink_keeps_invalid_argument_rejection \
+  tests/test_sensitive_tools.py::test_missing_then_regular_env_template_file_remains_allowed \
+  tests/test_recovery_policy.py::test_snapshot_classifies_env_template_directory_as_sensitive \
+  tests/test_recovery_policy.py::test_snapshot_allows_regular_env_template_file -q
+8 passed in 0.09s
+```
+
+Final Task 8 focused and adjacent gates:
+
+```text
+focused Task 8 gate: 309 passed in 2.99s
+adjacent runtime/recovery/CLI/context gate: 223 passed in 7.65s
+```
+
+Static and fresh full verification:
+
+```text
+uv run ruff check <type-aware follow-up production and test files>
+All checks passed!
+git diff --check
+exit 0
+
+./scripts/check.sh
+All checks passed!
+1125 passed in 61.91s
+```
+
+No real Provider or live E2E call was made during this follow-up.
 
 ## Files
 

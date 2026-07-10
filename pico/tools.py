@@ -192,6 +192,7 @@ def _lexical_tool_target(context, raw_path):
         raise SensitiveToolError("sensitive_path_block")
 
     current = root
+    leaf_mode = None
     for index, part in enumerate(relative.parts):
         current = current / part
         try:
@@ -204,6 +205,14 @@ def _lexical_tool_target(context, raw_path):
             raise ValueError("path escapes workspace: symlink component")
         if index < len(relative.parts) - 1 and not stat.S_ISDIR(mode):
             raise ValueError("path parent is not a directory")
+        if index == len(relative.parts) - 1:
+            leaf_mode = mode
+    if (
+        securitylib.is_allowed_env_template_leaf(relative_text)
+        and leaf_mode is not None
+        and not stat.S_ISREG(leaf_mode)
+    ):
+        raise SensitiveToolError("sensitive_path_block")
     return candidate, relative_text
 
 

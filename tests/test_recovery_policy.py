@@ -57,6 +57,26 @@ def test_snapshot_rejects_sensitive_descendant_before_read(tmp_path, monkeypatch
     assert result["ineligible_reason"] == "sensitive_path"
 
 
+def test_snapshot_classifies_env_template_directory_as_sensitive(tmp_path):
+    (tmp_path / ".env.example").mkdir()
+
+    result = snapshot_eligibility(tmp_path, ".env.example")
+
+    assert result["snapshot_eligible"] is False
+    assert result["ineligible_reason"] == "sensitive_path"
+
+
+def test_snapshot_allows_regular_env_template_file(tmp_path):
+    (tmp_path / ".env.example").write_text(
+        "PUBLIC_SETTING=demo\n",
+        encoding="utf-8",
+    )
+
+    result = snapshot_eligibility(tmp_path, ".env.example")
+
+    assert result["snapshot_eligible"] is True
+
+
 def test_snapshot_rejects_symlink_even_when_target_stays_in_workspace(tmp_path):
     target = tmp_path / "safe.txt"
     target.write_text("safe\n", encoding="utf-8")

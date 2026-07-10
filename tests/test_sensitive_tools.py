@@ -1,3 +1,4 @@
+import subprocess
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -128,6 +129,93 @@ def test_sensitive_descendant_is_rejected_before_direct_read_or_search(tmp_path)
     assert blocked.metadata["tool_error_code"] == "sensitive_path_block"
     read_runner.assert_not_called()
     assert ".env/child.txt" not in searched.content
+
+
+def test_explicit_env_template_directory_is_rejected_before_rg(
+    tmp_path,
+    monkeypatch,
+):
+    template_dir = tmp_path / ".env.example"
+    template_dir.mkdir()
+    canary = "explicit-template-directory-canary"
+    (template_dir / "child.txt").write_text(canary + "\n", encoding="utf-8")
+    rg = Mock(
+        return_value=subprocess.CompletedProcess(
+            [],
+            0,
+            stdout=f".env.example/child.txt\0" f"1:{canary}\n",
+            stderr="",
+        )
+    )
+    monkeypatch.setattr("pico.tools.run_hardened_rg", rg)
+    agent = build_agent(tmp_path, executables={"rg": "/frozen/rg"})
+
+    result = agent.execute_tool(
+        "search",
+        {"pattern": canary, "path": ".env.example"},
+    )
+
+    assert result.metadata["tool_status"] == "rejected"
+    assert result.metadata["tool_error_code"] == "sensitive_path_block"
+    assert result.metadata["security_event_type"] == "sensitive_access_block"
+    assert canary not in result.content
+    rg.assert_not_called()
+    assert list(agent.checkpoint_store.blobs_dir.rglob("*")) == []
+
+
+@pytest.mark.parametrize(
+    ("name", "arguments"),
+    (
+        ("list_files", {"path": ".env.example"}),
+        ("read_file", {"path": ".env.example"}),
+        ("write_file", {"path": ".env.example", "content": "safe"}),
+    ),
+)
+def test_env_template_directory_is_sensitive_for_direct_file_tools(
+    tmp_path,
+    name,
+    arguments,
+):
+    (tmp_path / ".env.example").mkdir()
+    agent = build_agent(tmp_path)
+    runner = Mock(return_value="must not run")
+    agent.tools[name]["run"] = runner
+
+    result = agent.execute_tool(name, arguments)
+
+    assert result.metadata["tool_status"] == "rejected"
+    assert result.metadata["tool_error_code"] == "sensitive_path_block"
+    runner.assert_not_called()
+
+
+def test_env_template_symlink_keeps_invalid_argument_rejection(tmp_path):
+    (tmp_path / ".env.example").symlink_to(tmp_path / "README.md")
+    agent = build_agent(tmp_path)
+    runner = Mock(return_value="must not run")
+    agent.tools["read_file"]["run"] = runner
+
+    result = agent.execute_tool("read_file", {"path": ".env.example"})
+
+    assert result.metadata["tool_status"] == "rejected"
+    assert result.metadata["tool_error_code"] == "invalid_arguments"
+    runner.assert_not_called()
+
+
+def test_missing_then_regular_env_template_file_remains_allowed(tmp_path):
+    agent = build_agent(tmp_path)
+
+    written = agent.execute_tool(
+        "write_file",
+        {"path": ".env.example", "content": "PUBLIC_SETTING=demo\n"},
+    )
+    searched = agent.execute_tool(
+        "search",
+        {"pattern": "PUBLIC_SETTING", "path": ".env.example"},
+    )
+
+    assert written.metadata["tool_status"] == "ok"
+    assert searched.metadata["tool_status"] == "ok"
+    assert ".env.example:1:PUBLIC_SETTING=demo" in searched.content
 
 
 def test_secret_content_write_is_rejected_but_security_prose_is_allowed(tmp_path):
