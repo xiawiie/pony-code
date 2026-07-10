@@ -132,6 +132,41 @@ def test_bad_path_entry_does_not_hide_later_trusted_executable(tmp_path):
     assert trusted == {"git": str(executable.resolve())}
 
 
+@pytest.mark.parametrize("path_kind", ["empty", "relative", "workspace", "writable"])
+def test_empty_safe_path_never_calls_which(path_kind, tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    process_cwd = tmp_path / "process-cwd"
+    process_cwd.mkdir(mode=0o755)
+    fake = _executable(process_cwd / "git")
+    monkeypatch.chdir(process_cwd)
+    if path_kind == "empty":
+        path_value = ""
+    elif path_kind == "relative":
+        path_value = "relative"
+    elif path_kind == "workspace":
+        path_value = str(workspace)
+    else:
+        process_cwd.chmod(process_cwd.stat().st_mode | stat.S_IWGRP)
+        path_value = str(process_cwd)
+    calls = []
+
+    def cwd_fallback(name, *, path):
+        calls.append((name, path))
+        return str(fake)
+
+    monkeypatch.setattr("pico.safe_subprocess.shutil.which", cwd_fallback)
+
+    trusted = build_trusted_executables(
+        workspace,
+        env={"PATH": path_value},
+        names=("git",),
+    )
+
+    assert trusted == {}
+    assert calls == []
+
+
 def test_hardened_git_disables_repo_config_execution(tmp_path, monkeypatch):
     captured = {}
 

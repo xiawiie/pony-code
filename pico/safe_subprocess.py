@@ -85,7 +85,10 @@ def _safe_path_dirs(workspace_root, env):
 
 def build_trusted_executables(workspace_root, *, env=None, names=()):
     root = Path(workspace_root).resolve()
-    search_path = os.pathsep.join(_safe_path_dirs(root, env))
+    safe_path_dirs = _safe_path_dirs(root, env)
+    if not safe_path_dirs:
+        return {}
+    search_path = os.pathsep.join(safe_path_dirs)
     result = {}
     for raw_name in tuple(names or DEFAULT_TRUSTED_EXECUTABLES):
         name = str(raw_name)
