@@ -3,9 +3,13 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from types import MappingProxyType
 from unittest.mock import patch
 
+import pytest
+
 import pico as pico_pkg
+from pico.agent_loop import _commit_session, _plain_message
 from pico.features import memory as memorylib
 from pico.messages import make_tool_pair, validate_messages
 from pico.runtime import DEFAULT_MAX_NEW_TOKENS, DEFAULT_MAX_STEPS
@@ -67,6 +71,103 @@ def test_new_runtime_persists_v3_messages_only(tmp_path):
     assert persisted["schema_version"] == 3
     assert "history" not in persisted
     validate_messages(persisted["messages"], require_meta=True)
+
+
+def test_commit_session_keeps_memory_and_disk_on_same_safe_payload(tmp_path):
+    secret = "sk-session-secret-123456789"
+    agent = build_agent(tmp_path, [])
+    agent.memory.set_task_summary(secret)
+    agent._sync_working_memory()
+
+    _commit_session(agent, messages=(_plain_message("user", secret),))
+
+    persisted = json.loads(Path(agent.session_path).read_text(encoding="utf-8"))
+    assert secret not in json.dumps(agent.session)
+    assert agent.session == persisted
+    assert secret not in json.dumps(agent.memory.to_dict())
+
+
+def test_turn_start_sanitizes_before_memory_and_task_state(tmp_path):
+    secret = "github_pat_A123456789012345678901234567890"
+    agent = build_agent(tmp_path, ["<final>safe</final>"])
+
+    agent.ask(secret)
+
+    assert secret not in json.dumps(agent.memory.to_dict())
+    assert secret not in json.dumps(agent.current_task_state.to_dict())
+
+
+def test_programmatic_resume_sanitizes_process_secret_before_first_request(
+    tmp_path,
+    monkeypatch,
+):
+    secret = "opaque-process-value-123456789"
+    monkeypatch.setenv("PICO_TEST_API_KEY", secret)
+    original = build_agent(tmp_path, [])
+    raw = dict(original.session)
+    raw["messages"] = [
+        {"role": "user", "content": secret, "_pico_meta": {"created_at": "test"}}
+    ]
+    original.session_store.path(raw["id"]).write_text(json.dumps(raw), encoding="utf-8")
+    client = FakeModelClient(["<final>safe</final>"])
+    resume_store = SessionStore(original.session_store.root)
+
+    resumed = Pico.from_session(
+        model_client=client,
+        workspace=original.workspace,
+        session_store=resume_store,
+        session_id=raw["id"],
+        approval_policy="auto",
+    )
+    resumed.ask("continue")
+
+    assert secret not in json.dumps(client.prompts)
+    assert secret not in json.dumps(resumed.session)
+    assert isinstance(resumed.redaction_env, MappingProxyType)
+    with pytest.raises(TypeError):
+        resumed.redaction_env["MUTATE"] = "blocked"
+
+
+def test_supplied_redaction_proxy_is_copied_before_backing_mutation(tmp_path):
+    secret = "opaque-proxy-value-123456789"
+    backing = {"PICO_TEST_API_KEY": secret}
+    agent = build_agent(
+        tmp_path,
+        [],
+        redaction_env=MappingProxyType(backing),
+    )
+
+    backing["PICO_TEST_API_KEY"] = "replacement-value-123456789"
+
+    assert agent.redaction_env["PICO_TEST_API_KEY"] == secret
+    assert agent.redact_text(secret) == "<redacted>"
+
+
+def test_supplied_raw_session_is_immediately_safe_in_memory_and_on_disk(
+    tmp_path,
+):
+    secret = "github_pat_A123456789012345678901234567890"
+    workspace = build_workspace(tmp_path)
+    store = SessionStore(tmp_path / ".pico" / "sessions")
+    raw_session = {
+        "id": "direct-raw",
+        "schema_version": 3,
+        "messages": [{"role": "user", "content": secret, "_pico_meta": {}}],
+        "working_memory": {"task_summary": secret, "recent_files": []},
+    }
+
+    agent = Pico(
+        model_client=FakeModelClient([]),
+        workspace=workspace,
+        session_store=store,
+        session=raw_session,
+        approval_policy="auto",
+    )
+
+    persisted = json.loads(Path(agent.session_path).read_text(encoding="utf-8"))
+    assert secret not in json.dumps(agent.session)
+    assert secret not in json.dumps(agent.memory.to_dict())
+    assert agent.session == persisted
 
 
 def test_repeated_tool_detection_reads_canonical_tool_use_blocks(tmp_path):

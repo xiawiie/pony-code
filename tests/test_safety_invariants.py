@@ -1,7 +1,9 @@
+import json
 import os
 import shlex
 import subprocess
 import sys
+from types import MappingProxyType
 from unittest.mock import Mock, patch
 
 import pytest
@@ -259,6 +261,80 @@ def test_cli_build_agent_loads_project_env_secrets_before_redaction_setup(tmp_pa
         args = pico_cli.build_arg_parser().parse_args(["--cwd", str(tmp_path), "--provider", "deepseek"])
         agent = pico_cli.build_agent(args)
         assert agent.secret_env_summary()["secret_env_names"] == ["PICO_DEEPSEEK_API_KEY"]
+
+
+def test_cli_resume_uses_immutable_collision_safe_snapshot_before_load(
+    tmp_path,
+):
+    class DummyModelClient:
+        def __init__(self, *args, **kwargs):
+            self.args = args
+            self.kwargs = kwargs
+
+    old_secret = "opaque-process-old-value-123456789"
+    preexisting_collision_secret = "opaque-preexisting-collision-123456789"
+    project_secret = "opaque-project-only-value-123456789"
+    session_id = "resume-safe"
+    (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
+    (tmp_path / ".env").write_text(
+        "PICO_PROVIDER=ollama\n"
+        "PICO_TEST_API_KEY=opaque-project-new-value-123456789\n"
+        "PICO_SECRET_ENV_NAMES=PROJECT_ONLY_CREDENTIAL\n"
+        f"PROJECT_ONLY_CREDENTIAL={project_secret}\n"
+        "PICO_REDACTION_COLLISION_1_SECRET=synthetic-shadow-value-123456789\n",
+        encoding="utf-8",
+    )
+    session_dir = tmp_path / ".pico" / "sessions"
+    session_dir.mkdir(parents=True)
+    (session_dir / f"{session_id}.json").write_text(
+        json.dumps({
+            "id": session_id,
+            "schema_version": 3,
+            "messages": [{
+                "role": "user",
+                "content": (
+                    old_secret
+                    + " "
+                    + project_secret
+                    + " "
+                    + preexisting_collision_secret
+                ),
+                "_pico_meta": {},
+            }],
+        }),
+        encoding="utf-8",
+    )
+
+    with patch.dict(
+        os.environ,
+        {
+            "PICO_TEST_API_KEY": old_secret,
+            "PICO_REDACTION_COLLISION_1_SECRET": preexisting_collision_secret,
+        },
+        clear=True,
+    ), patch(
+        "pico.cli.OllamaModelClient",
+        DummyModelClient,
+    ):
+        args = pico_cli.build_arg_parser().parse_args([
+            "--cwd",
+            str(tmp_path),
+            "--resume",
+            session_id,
+        ])
+        agent = pico_cli.build_agent(args)
+
+        assert "PROJECT_ONLY_CREDENTIAL" not in os.environ
+        assert isinstance(agent.redaction_env, MappingProxyType)
+        assert project_secret in agent.redaction_env.values()
+        assert old_secret in agent.redaction_env.values()
+        assert preexisting_collision_secret in agent.redaction_env.values()
+        with pytest.raises(TypeError):
+            agent.redaction_env["MUTATE"] = "blocked"
+
+    assert old_secret not in json.dumps(agent.session)
+    assert project_secret not in json.dumps(agent.session)
+    assert preexisting_collision_secret not in json.dumps(agent.session)
 
 
 def test_cli_build_agent_skips_malformed_project_env_lines_with_warning(tmp_path, capsys):

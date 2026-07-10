@@ -1,4 +1,8 @@
 import json
+import os
+import stat
+
+import pytest
 
 from pico.run_store import RunStore
 from pico.task_state import STOP_REASON_FINAL_ANSWER_RETURNED, TaskState
@@ -64,3 +68,32 @@ def test_run_store_tolerates_missing_final_report(tmp_path):
 
     assert store.trace_path(state.run_id).exists()
     assert not store.report_path(state.run_id).exists()
+
+
+def test_run_store_paths_are_private(tmp_path):
+    store = RunStore(tmp_path / ".pico" / "runs")
+    state = TaskState.create(run_id="private", task_id="task", user_request="private")
+
+    run_dir = store.start_run(state)
+    trace_path = store.append_trace(state, {"event": "private"})
+    report_path = store.write_report(state, {"status": "done"})
+
+    if os.name == "posix":
+        assert stat.S_IMODE(store.root.stat().st_mode) == 0o700
+        assert stat.S_IMODE(run_dir.stat().st_mode) == 0o700
+        for path in (store.task_state_path(state), trace_path, report_path):
+            assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+
+def test_append_trace_refuses_symlink_without_touching_target(tmp_path):
+    store = RunStore(tmp_path / ".pico" / "runs")
+    state = TaskState.create(run_id="linked", task_id="task", user_request="linked")
+    store.start_run(state)
+    outside = tmp_path / "outside.jsonl"
+    outside.write_text("outside\n", encoding="utf-8")
+    store.trace_path(state).symlink_to(outside)
+
+    with pytest.raises(ValueError, match="regular|symlink"):
+        store.append_trace(state, {"event": "must_not_land"})
+
+    assert outside.read_text(encoding="utf-8") == "outside\n"

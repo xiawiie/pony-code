@@ -1,6 +1,10 @@
 import json
+import os
+import stat
 from pathlib import Path
 from contextlib import contextmanager
+
+import pytest
 
 import pico.session_store as session_store_module
 from pico.messages import validate_messages
@@ -73,3 +77,27 @@ def test_session_store_save_uses_file_lock(tmp_path, monkeypatch):
     store.save({"id": "session_locked", "history": []})
 
     assert calls == [".session_store.lock"]
+
+
+def test_session_store_uses_private_owner_only_paths(tmp_path):
+    store = SessionStore(tmp_path / ".pico" / "sessions")
+
+    path = store.save({"id": "private", "history": []})
+
+    if os.name == "posix":
+        assert stat.S_IMODE(store.root.stat().st_mode) == 0o700
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+        assert stat.S_IMODE(store.lock_path.stat().st_mode) == 0o600
+
+
+def test_session_store_load_refuses_symlink_file(tmp_path):
+    store = SessionStore(tmp_path / ".pico" / "sessions")
+    outside = tmp_path / "outside.json"
+    original = b'{"id":"linked","schema_version":3,"messages":[]}'
+    outside.write_bytes(original)
+    store.path("linked").symlink_to(outside)
+
+    with pytest.raises(ValueError, match="symlink"):
+        store.load("linked")
+
+    assert outside.read_bytes() == original

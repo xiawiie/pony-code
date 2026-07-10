@@ -28,7 +28,12 @@ from .cli_errors import CLI_EXIT_USAGE, CliError
 from .cli_help import HELP_DETAILS  # noqa: F401
 from .cli_output import error_envelope, format_json
 from .cli_parser import parse_cli_invocation
-from .config import load_project_env, provider_env, validate_provider_base_url
+from .config import (
+    load_project_env,
+    provider_env,
+    read_project_env,
+    validate_provider_base_url,
+)
 from .providers.defaults import (
     DEFAULT_ANTHROPIC_BASE_URL,
     DEFAULT_ANTHROPIC_MODEL,
@@ -42,7 +47,13 @@ from .providers.defaults import (
     PROVIDER_CHOICES,
 )
 from .providers.clients import AnthropicCompatibleModelClient, OllamaModelClient, OpenAICompatibleModelClient
-from .runtime import DEFAULT_MAX_NEW_TOKENS, DEFAULT_MAX_STEPS, Pico, SessionStore
+from .runtime import (
+    DEFAULT_MAX_NEW_TOKENS,
+    DEFAULT_MAX_STEPS,
+    Pico,
+    SessionStore,
+    _build_redaction_snapshot,
+)
 from .workspace import WorkspaceContext, middle
 
 
@@ -95,21 +106,6 @@ def _looks_like_recovery_command(prompt_tokens):
         return True
     return prompt_tokens[1] in _RECOVERY_SUBCOMMANDS.get(head, set())
 
-DEFAULT_SECRET_ENV_NAMES = (
-    "PICO_OPENAI_API_KEY",
-    "OPENAI_API_KEY",
-    "OPENAI_API_TOKEN",
-    "PICO_ANTHROPIC_API_KEY",
-    "ANTHROPIC_API_KEY",
-    "ANTHROPIC_AUTH_TOKEN",
-    "PICO_DEEPSEEK_API_KEY",
-    "DEEPSEEK_API_KEY",
-    "PICO_RIGHT_CODES_API_KEY",
-    "RIGHT_CODES_API_KEY",
-    "GITHUB_PAT",
-    "GH_PAT",
-)
-
 WELCOME_ART = (
     "        /\\___/\\\\",
     "       (  o o  )",
@@ -119,9 +115,6 @@ WELCOME_ART = (
 WELCOME_NAME = "pico"
 WELCOME_SUBTITLE = "local coding agent"
 WELCOME_STATUS = "calm shell, ready for work"
-
-
-SECRET_ENV_NAMES_VAR = "PICO_SECRET_ENV_NAMES"
 
 
 def _effective_provider(args):
@@ -162,19 +155,6 @@ def _effective_model(args, provider):
             return model
         return DEFAULT_DEEPSEEK_MODEL
     return DEFAULT_OLLAMA_MODEL
-
-
-def _configured_secret_names(args):
-    configured_secret_names = set(DEFAULT_SECRET_ENV_NAMES)
-    configured_secret_names.update(str(name).upper() for name in args.secret_env_names)
-    extra_names = os.environ.get(SECRET_ENV_NAMES_VAR, "")
-    if extra_names.strip():
-        configured_secret_names.update(
-            item.strip().upper()
-            for item in extra_names.split(",")
-            if item.strip()
-        )
-    return sorted(configured_secret_names)
 
 
 def _build_model_client(args):
@@ -305,9 +285,19 @@ def build_agent(args):
     # 这里是 CLI 到 runtime 的装配点：
     # 先采集工作区快照和加载项目级环境，再整理 secret 名单、模型后端和 session。
     workspace = WorkspaceContext.build(args.cwd)
-    load_project_env(workspace.repo_root)
-    configured_secret_names = _configured_secret_names(args)
-    store = SessionStore(workspace.repo_root + "/.pico/sessions")
+    process_env = dict(os.environ)
+    project_env = read_project_env(workspace.repo_root, warn=True)
+    redaction_env, configured_secret_names, redactor = _build_redaction_snapshot(
+        workspace.repo_root,
+        secret_env_names=getattr(args, "secret_env_names", ()),
+        process_env=process_env,
+        project_env=project_env,
+    )
+    store = SessionStore(
+        workspace.repo_root + "/.pico/sessions",
+        redactor=redactor,
+    )
+    load_project_env(workspace.repo_root, warn=False)
     model = _build_model_client(args)
     session_id = args.resume
     approval_policy = "never" if getattr(args, "no_input", False) and args.approval == "ask" else args.approval
@@ -323,6 +313,7 @@ def build_agent(args):
             max_steps=args.max_steps,
             max_new_tokens=args.max_new_tokens,
             secret_env_names=configured_secret_names,
+            redaction_env=redaction_env,
         )
     return Pico(
         model_client=model,
@@ -332,6 +323,7 @@ def build_agent(args):
         max_steps=args.max_steps,
         max_new_tokens=args.max_new_tokens,
         secret_env_names=configured_secret_names,
+        redaction_env=redaction_env,
     )
 
 

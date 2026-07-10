@@ -4,6 +4,7 @@ from copy import deepcopy
 import json
 import os
 import re
+import stat
 import tempfile
 import time
 import uuid
@@ -11,6 +12,11 @@ from pathlib import Path
 
 from . import file_lock
 from .messages import MessageValidationError, validate_messages
+from .security import (
+    ensure_private_dir,
+    ensure_private_file,
+    require_regular_no_symlink,
+)
 
 class SessionMigrationError(ValueError):
     """A legacy session cannot be converted without losing transcript data."""
@@ -188,7 +194,9 @@ def _prepare_v3_payload(value, session_id):
 
 def _atomic_write_locked(path, payload):
     temp_path = None
+    temp_identity = None
     try:
+        path = require_regular_no_symlink(path, allow_missing=True)
         with tempfile.NamedTemporaryFile(
             "w",
             encoding="utf-8",
@@ -198,34 +206,85 @@ def _atomic_write_locked(path, payload):
             suffix=".tmp",
         ) as handle:
             temp_path = Path(handle.name)
+            opened = os.fstat(handle.fileno())
+            temp_identity = (opened.st_dev, opened.st_ino)
+            os.fchmod(handle.fileno(), 0o600)
             json.dump(payload, handle, indent=2)
             handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
+        current = temp_path.lstat()
+        if (
+            not stat.S_ISREG(current.st_mode)
+            or (current.st_dev, current.st_ino) != temp_identity
+        ):
+            raise ValueError("session temp changed")
         temp_path.replace(path)
+        ensure_private_file(path)
+        _fsync_directory(path.parent)
     finally:
-        if temp_path is not None and temp_path.exists():
-            temp_path.unlink()
+        if temp_path is not None and temp_identity is not None:
+            _remove_created_file(temp_path, temp_identity)
+
+
+def _fsync_directory(path):
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    descriptor = os.open(path, flags)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _remove_created_file(path, identity):
+    try:
+        current = path.lstat()
+    except FileNotFoundError:
+        return
+    if (current.st_dev, current.st_ino) == identity:
+        path.unlink()
 
 
 def _write_backup_locked(session_path, raw_bytes, session_id, source_version):
-    backup_dir = session_path.parent / "backup"
-    backup_dir.mkdir(parents=True, exist_ok=True)
+    backup_dir = ensure_private_dir(session_path.parent / "backup")
     backup_path = backup_dir / (
         f"{session_id}.v{source_version}.{time.time_ns()}."
         f"{uuid.uuid4().hex}.json"
     )
-    with backup_path.open("xb") as handle:
-        handle.write(raw_bytes)
-        handle.flush()
-        os.fsync(handle.fileno())
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(backup_path, flags, 0o600)
+    opened = os.fstat(descriptor)
+    identity = (opened.st_dev, opened.st_ino)
+    completed = False
+    try:
+        current = os.stat(backup_path, follow_symlinks=False)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or (current.st_dev, current.st_ino) != identity
+        ):
+            raise ValueError("session backup changed")
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "wb") as handle:
+            descriptor = -1
+            handle.write(raw_bytes)
+            handle.flush()
+            os.fsync(handle.fileno())
+        ensure_private_file(backup_path)
+        _fsync_directory(backup_dir)
+        completed = True
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        if not completed:
+            _remove_created_file(backup_path, identity)
     return backup_path
 
 
 class SessionStore:
     def __init__(self, root, redactor=None):
-        self.root = Path(root)
-        self.root.mkdir(parents=True, exist_ok=True)
+        self.root = ensure_private_dir(root)
         self.lock_path = self.root / ".session_store.lock"
         self._redactor = redactor or _identity
 
@@ -258,9 +317,24 @@ class SessionStore:
         session_id = _session_id(session_id)
         path = self.path(session_id)
         with file_lock.locked_file(self.lock_path):
+            path = ensure_private_file(require_regular_no_symlink(path))
             raw = path.read_bytes()
+            duplicate_keys = False
+
+            def decode_object(pairs):
+                nonlocal duplicate_keys
+                value = {}
+                for key, item in pairs:
+                    if key in value:
+                        duplicate_keys = True
+                    value[key] = item
+                return value
+
             try:
-                decoded = json.loads(raw.decode("utf-8"))
+                decoded = json.loads(
+                    raw.decode("utf-8"),
+                    object_pairs_hook=decode_object,
+                )
             except (UnicodeDecodeError, json.JSONDecodeError) as exc:
                 raise SessionMigrationError(
                     f"failed to decode session {session_id}"
@@ -274,12 +348,10 @@ class SessionStore:
                     "invalid session schema version"
                 ) from exc
             migrated = migrate_session_to_v3(decoded)
-            if version == 3:
-                _validate_v3_payload(migrated, session_id)
-                return migrated
             payload = _prepare_v3_payload(self._redactor(migrated), session_id)
-            _write_backup_locked(path, raw, session_id, version)
-            _atomic_write_locked(path, payload)
+            if duplicate_keys or payload != decoded:
+                _write_backup_locked(path, raw, session_id, version)
+                _atomic_write_locked(path, payload)
             return payload
 
     def latest(self):

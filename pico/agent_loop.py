@@ -2,6 +2,8 @@
 
 from copy import deepcopy
 import logging
+import os
+import stat
 import time
 import uuid
 
@@ -14,6 +16,7 @@ from .recovery_checkpoint_writer import (
     current_recovery_checkpoint_id,
     set_current_recovery_checkpoint_id,
 )
+from .security import ensure_private_dir, require_regular_no_symlink
 from .task_state import (
     STOP_REASON_PERSISTENCE_ERROR,
     STATUS_RUNNING,
@@ -96,8 +99,8 @@ class SessionCommitError(RuntimeError):
 
 
 def _commit_session(agent, *, messages=()):
+    candidate = agent.redact_artifact(deepcopy(agent.session))
     safe_messages = tuple(agent.redact_artifact(message) for message in messages)
-    candidate = deepcopy(agent.session)
     candidate["messages"] = append_messages(candidate.get("messages", []), *safe_messages)
     try:
         saved_path = agent.session_store.save(candidate)
@@ -105,6 +108,10 @@ def _commit_session(agent, *, messages=()):
         raise SessionCommitError(exc) from exc
     agent.session = candidate
     agent.session_path = saved_path
+    agent.memory = type(agent.memory).from_dict(
+        candidate.get("working_memory"),
+        workspace_root=agent.root,
+    )
 
 
 def _plain_message(role, text, *, origin=""):
@@ -150,6 +157,8 @@ def _prepare_tool_result(
     ``digest_applied=True`` up-front (used by explicit callers that
     have already digested the content themselves).
     """
+    safe_content = str(agent.redact_text(content))
+
     # Lazy import to avoid the agent_loop → context.digest → ... cycle risk.
     from pico.context.digest import (
         digest_tool_result,
@@ -157,7 +166,7 @@ def _prepare_tool_result(
         should_digest,
     )
 
-    display_content = content
+    display_content = safe_content
     tool_args = tool_args or {}
 
     # Task B3: threshold overridable via pico.toml → agent.context_config.
@@ -166,24 +175,44 @@ def _prepare_tool_result(
         cfg = {}
     threshold = int(cfg.get("digest_size_threshold", 1200))
     # Only run the digest heuristic if the caller hasn't already digested.
-    if not digest_applied and should_digest(content, threshold=threshold):
+    if not digest_applied and should_digest(safe_content, threshold=threshold):
         # Task D1: single-call digest. Compute the digest once (per-tool
         # summarizer runs exactly once); then update raw_path on the
         # dataclass via dataclasses.replace after we know where we wrote.
         from dataclasses import replace as _dc_replace
-        digest = digest_tool_result(tool_name, tool_args, content, raw_path="")
+        digest = digest_tool_result(tool_name, tool_args, safe_content, raw_path="")
         source_hash = digest.source_hash
         run_dir = getattr(agent, "current_run_dir", None)
         raw_path_str = ""
         if run_dir is not None:
             try:
-                raw_dir = run_dir / "tool_results"
-                raw_dir.mkdir(parents=True, exist_ok=True)
+                raw_dir = ensure_private_dir(run_dir / "tool_results")
                 raw_path = raw_dir / f"{source_hash}.txt"
-                raw_path.write_text(content, encoding="utf-8")
+                checked_path = require_regular_no_symlink(raw_path, allow_missing=True)
+                flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+                flags |= getattr(os, "O_CLOEXEC", 0)
+                flags |= getattr(os, "O_NOFOLLOW", 0)
+                descriptor = os.open(checked_path, flags, 0o600)
+                try:
+                    opened = os.fstat(descriptor)
+                    current = os.stat(checked_path, follow_symlinks=False)
+                    if not stat.S_ISREG(opened.st_mode) or (
+                        current.st_dev,
+                        current.st_ino,
+                    ) != (opened.st_dev, opened.st_ino):
+                        raise ValueError("raw tool result changed")
+                    os.fchmod(descriptor, 0o600)
+                    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                        descriptor = -1
+                        handle.write(safe_content)
+                        handle.flush()
+                        os.fsync(handle.fileno())
+                finally:
+                    if descriptor >= 0:
+                        os.close(descriptor)
                 raw_path_str = str(raw_path)
-            except OSError as exc:
-                logger.debug("raw tool_result write failed: %s", exc)
+            except (OSError, ValueError) as exc:
+                logger.debug("raw tool_result write failed: %s", type(exc).__name__)
                 raw_path_str = ""
         if raw_path_str:
             digest = _dc_replace(digest, raw_path=raw_path_str)
@@ -230,6 +259,7 @@ class AgentLoop:
 
     def run(self, user_message):
         agent = self.agent
+        user_message = agent.redact_text(user_message)
         run_started_at = time.monotonic()
         agent.memory.set_task_summary(user_message)
         agent._sync_working_memory()

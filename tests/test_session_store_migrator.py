@@ -1,5 +1,7 @@
 import copy
 import json
+import os
+import stat
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -8,6 +10,7 @@ import pytest
 import pico.session_store as session_store_module
 from pico import FakeModelClient, Pico, WorkspaceContext
 from pico.messages import validate_messages
+from pico.security import redact_artifact
 from pico.session_store import (
     SessionMigrationError,
     SessionStore,
@@ -76,6 +79,61 @@ def test_migrator_writes_backup(store, tmp_path):
     assert len(backups) == 1
     backup_body = json.loads(backups[0].read_text(encoding="utf-8"))
     assert "history" in backup_body
+
+
+def test_v3_load_sanitizes_before_return_and_rewrites_once(tmp_path):
+    secret = "github_pat_A123456789012345678901234567890"
+    store = SessionStore(
+        tmp_path / ".pico" / "sessions",
+        redactor=lambda value: redact_artifact(value, env={}),
+    )
+    session = {
+        "id": "resume-safe",
+        "schema_version": 3,
+        "messages": [{"role": "user", "content": secret, "_pico_meta": {}}],
+    }
+    path = store.path("resume-safe")
+    original = json.dumps(session).encode("utf-8")
+    path.write_bytes(original)
+
+    loaded = store.load("resume-safe")
+
+    assert secret not in json.dumps(loaded)
+    assert secret not in path.read_text(encoding="utf-8")
+    backups = list((store.root / "backup").glob("resume-safe*.json"))
+    assert len(backups) == 1
+    assert backups[0].read_bytes() == original
+    if os.name == "posix":
+        assert stat.S_IMODE(store.root.stat().st_mode) == 0o700
+        assert stat.S_IMODE((store.root / "backup").stat().st_mode) == 0o700
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+        assert stat.S_IMODE(backups[0].stat().st_mode) == 0o600
+        assert stat.S_IMODE(store.lock_path.stat().st_mode) == 0o600
+    store.load("resume-safe")
+    assert len(list((store.root / "backup").glob("resume-safe*.json"))) == 1
+
+
+def test_v3_load_rewrites_shadowed_duplicate_secret_once(tmp_path):
+    secret = "github_pat_A123456789012345678901234567890"
+    store = SessionStore(tmp_path / ".pico" / "sessions")
+    path = store.path("duplicate-safe")
+    original = (
+        b'{"id":"duplicate-safe","schema_version":3,"messages":['
+        b'{"role":"user","content":"'
+        + secret.encode("utf-8")
+        + b'","content":"safe","_pico_meta":{}}]}'
+    )
+    path.write_bytes(original)
+
+    loaded = store.load("duplicate-safe")
+
+    assert loaded["messages"][0]["content"] == "safe"
+    assert secret not in path.read_text(encoding="utf-8")
+    backups = list((store.root / "backup").glob("duplicate-safe*.json"))
+    assert len(backups) == 1
+    assert backups[0].read_bytes() == original
+    store.load("duplicate-safe")
+    assert len(list((store.root / "backup").glob("duplicate-safe*.json"))) == 1
 
 
 def test_migrator_upgrades_v2_once(store, tmp_path):

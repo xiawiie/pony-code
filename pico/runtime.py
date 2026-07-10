@@ -11,6 +11,7 @@ import threading
 import uuid
 from datetime import datetime
 from pathlib import Path
+from types import MappingProxyType
 
 from . import checkpoint as checkpointlib
 from . import workspace_snapshot
@@ -31,11 +32,26 @@ from .tool_change_recorder import ToolChangeRecorder
 from .tool_context import ToolContext
 from .tool_executor import ToolExecutor
 from . import tools as toolkit
+from .config import read_project_env
 from .verification import new_verification_record
 from .workspace import WorkspaceContext, now
 from .workspace_observer import WorkspaceObserver
 
 DEFAULT_SHELL_ENV_ALLOWLIST = ("HOME", "LANG", "LC_ALL", "LC_CTYPE", "LOGNAME", "PATH", "PWD", "SHELL", "TERM", "TMPDIR", "TMP", "TEMP", "USER")
+DEFAULT_SECRET_ENV_NAMES = (
+    "PICO_OPENAI_API_KEY",
+    "OPENAI_API_KEY",
+    "OPENAI_API_TOKEN",
+    "PICO_ANTHROPIC_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "PICO_DEEPSEEK_API_KEY",
+    "DEEPSEEK_API_KEY",
+    "PICO_RIGHT_CODES_API_KEY",
+    "RIGHT_CODES_API_KEY",
+    "GITHUB_PAT",
+    "GH_PAT",
+)
 DEFAULT_MAX_STEPS = 12
 DEFAULT_MAX_NEW_TOKENS = 2048
 DEFAULT_FEATURE_FLAGS = {
@@ -43,6 +59,77 @@ DEFAULT_FEATURE_FLAGS = {
     "prompt_cache": True,
 }
 __all__ = ["Pico", "SessionStore"]
+
+_SECRET_ENV_NAMES_VAR = "PICO_SECRET_ENV_NAMES"
+
+
+def _configured_redaction_names(explicit_names=(), *env_sources):
+    names = set(DEFAULT_SECRET_ENV_NAMES)
+    names.update(str(name).upper() for name in (explicit_names or ()))
+    for source in env_sources:
+        names.update(
+            item.strip().upper()
+            for item in source.get(_SECRET_ENV_NAMES_VAR, "").split(",")
+            if item.strip()
+        )
+    return frozenset(names)
+
+
+def _artifact_redactor(redaction_env, secret_env_names):
+    return lambda value: securitylib.redact_artifact(
+        value,
+        env=redaction_env,
+        secret_env_names=secret_env_names,
+    )
+
+
+def _build_redaction_snapshot(
+    workspace_root,
+    *,
+    secret_env_names=(),
+    process_env=None,
+    project_env=None,
+    warn=True,
+):
+    process_values = dict(os.environ if process_env is None else process_env)
+    project_values = (
+        read_project_env(workspace_root, warn=warn)
+        if project_env is None
+        else dict(project_env)
+    )
+    configured_names = _configured_redaction_names(
+        secret_env_names,
+        process_values,
+        project_values,
+    )
+    merged = dict(process_values)
+    for index, (name, value) in enumerate(project_values.items()):
+        if (
+            name in merged
+            and merged[name] != value
+            and securitylib.is_secret_env_name(name, configured_names)
+        ):
+            collision_name = f"PICO_REDACTION_COLLISION_{index}_SECRET"
+            suffix = 0
+            while collision_name in merged or collision_name in project_values:
+                suffix += 1
+                collision_name = (
+                    f"PICO_REDACTION_COLLISION_{index}_{suffix}_SECRET"
+                )
+            merged[collision_name] = merged[name]
+        merged[name] = value
+    redaction_env = MappingProxyType(merged)
+    return (
+        redaction_env,
+        configured_names,
+        _artifact_redactor(redaction_env, configured_names),
+    )
+
+
+def _freeze_redaction_snapshot(redaction_env, secret_env_names=()):
+    snapshot = MappingProxyType(dict(redaction_env))
+    configured_names = _configured_redaction_names(secret_env_names, snapshot)
+    return snapshot, configured_names, _artifact_redactor(snapshot, configured_names)
 
 
 # --- Inlined working-memory helper -----------------------------------------
@@ -168,6 +255,7 @@ class Pico:
         read_only=False,
         shell_env_allowlist=None,
         secret_env_names=None,
+        redaction_env=None,
         feature_flags=None,
         allowed_tools=None,
     ):
@@ -191,7 +279,18 @@ class Pico:
         self.max_depth = max_depth
         self.read_only = read_only
         self.shell_env_allowlist = tuple(shell_env_allowlist or DEFAULT_SHELL_ENV_ALLOWLIST)
-        self.secret_env_names = {str(name).upper() for name in (secret_env_names or ())}
+        if redaction_env is None:
+            redaction_env, configured_names, _ = _build_redaction_snapshot(
+                self.root,
+                secret_env_names=secret_env_names,
+            )
+        else:
+            redaction_env, configured_names, _ = _freeze_redaction_snapshot(
+                redaction_env,
+                secret_env_names,
+            )
+        self.redaction_env = redaction_env
+        self.secret_env_names = configured_names
         self.feature_flags = dict(DEFAULT_FEATURE_FLAGS)
         if feature_flags:
             self.feature_flags.update({str(key): bool(value) for key, value in feature_flags.items()})
@@ -263,7 +362,7 @@ class Pico:
                 "recovery": {"current_checkpoint_id": ""},
             }
         else:
-            self.session = migrate_session_to_v3(session)
+            self.session = self.redact_artifact(migrate_session_to_v3(session))
         self._ensure_session_shape()
         self.memory = WorkingMemory.from_dict(self.session.get("working_memory"), workspace_root=self.root)
         self._sync_working_memory()
@@ -305,6 +404,21 @@ class Pico:
 
     @classmethod
     def from_session(cls, model_client, workspace, session_store, session_id, **kwargs):
+        redaction_env = kwargs.pop("redaction_env", None)
+        secret_env_names = kwargs.get("secret_env_names", ())
+        if redaction_env is None:
+            redaction_env, configured_names, redactor = _build_redaction_snapshot(
+                workspace.repo_root,
+                secret_env_names=secret_env_names,
+            )
+        else:
+            redaction_env, configured_names, redactor = _freeze_redaction_snapshot(
+                redaction_env,
+                secret_env_names,
+            )
+        session_store.set_redactor(redactor)
+        kwargs["redaction_env"] = redaction_env
+        kwargs["secret_env_names"] = configured_names
         return cls(
             model_client=model_client,
             workspace=workspace,
@@ -451,22 +565,43 @@ class Pico:
         return securitylib.is_secret_env_name(name, secret_env_names=self.secret_env_names)
 
     def configured_secret_env_items(self):
-        return securitylib.configured_secret_env_items(secret_env_names=self.secret_env_names)
+        return securitylib.configured_secret_env_items(
+            env=self.redaction_env,
+            secret_env_names=self.secret_env_names,
+        )
 
     def detected_secret_env_items(self):
-        return securitylib.detected_secret_env_items(secret_env_names=self.secret_env_names)
+        return securitylib.detected_secret_env_items(
+            env=self.redaction_env,
+            secret_env_names=self.secret_env_names,
+        )
 
     def secret_env_summary(self):
-        return securitylib.secret_env_summary(secret_env_names=self.secret_env_names)
+        return securitylib.secret_env_summary(
+            env=self.redaction_env,
+            secret_env_names=self.secret_env_names,
+        )
 
     def detected_secret_env_summary(self):
-        return securitylib.detected_secret_env_summary(secret_env_names=self.secret_env_names)
+        return securitylib.detected_secret_env_summary(
+            env=self.redaction_env,
+            secret_env_names=self.secret_env_names,
+        )
 
     def redact_text(self, text):
-        return securitylib.redact_text(text, secret_env_names=self.secret_env_names)
+        return securitylib.redact_text(
+            text,
+            env=self.redaction_env,
+            secret_env_names=self.secret_env_names,
+        )
 
     def redact_artifact(self, value, key=None):
-        return securitylib.redact_artifact(value, key=key, secret_env_names=self.secret_env_names)
+        return securitylib.redact_artifact(
+            value,
+            key=key,
+            env=self.redaction_env,
+            secret_env_names=self.secret_env_names,
+        )
 
     def shell_env(self):
         return securitylib.shell_env(allowlist=self.shell_env_allowlist, root=self.root)
@@ -713,6 +848,7 @@ class Pico:
             max_depth=self.max_depth,
             read_only=True,
             secret_env_names=self.secret_env_names,
+            redaction_env=self.redaction_env,
             shell_env_allowlist=self.shell_env_allowlist,
         )
         # 委派的目标是“调查”，不是“放权执行”。
