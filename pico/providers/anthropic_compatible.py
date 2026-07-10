@@ -6,6 +6,8 @@ from http.client import RemoteDisconnected
 import urllib.error
 import urllib.request
 
+from pico.messages import strip_pico_meta
+
 from ._shared import _normalize_versioned_base_url, _optional_int, _validate_header_value
 
 
@@ -156,7 +158,6 @@ class AnthropicCompatibleModelClient:
         )
 
     def complete_v2(self, *, system, tools, messages, max_tokens, cache_breakpoints=None):
-        from .message_utils import strip_pico_meta
         messages = strip_pico_meta(messages)
         from .response import Response, StopReason
 
@@ -209,7 +210,7 @@ class AnthropicCompatibleModelClient:
             "max_tokens": StopReason.MAX_TOKENS,
             "stop_sequence": StopReason.STOP_SEQUENCE,
         }
-        stop_reason = stop_map.get(data.get("stop_reason", "end_turn"), StopReason.END_TURN)
+        stop_reason = stop_map.get(data.get("stop_reason"), StopReason.UNKNOWN)
 
         usage_details = _extract_anthropic_usage_cache_details(data)
         self.last_completion_metadata = usage_details

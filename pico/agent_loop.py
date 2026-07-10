@@ -4,8 +4,8 @@ import logging
 import time
 import uuid
 
+from .action_codec import FinalAction, RetryAction, ToolAction, decode_action
 from .checkpoint import CHECKPOINT_NONE_STATUS, CHECKPOINT_PARTIAL_STALE_STATUS, CHECKPOINT_WORKSPACE_MISMATCH_STATUS
-from .providers.response import StopReason
 from .recovery_models import TRACE_RECOVERY_CHECKPOINT_CREATED
 from .recovery_checkpoint_writer import (
     current_recovery_checkpoint_id,
@@ -16,6 +16,56 @@ from .verification import is_verification_command, parse_run_shell_result
 from .workspace import clip, now
 
 logger = logging.getLogger("pico")
+
+
+_USAGE_SUM_KEYS = (
+    "input_tokens",
+    "output_tokens",
+    "total_tokens",
+    "cached_tokens",
+    "cache_creation_input_tokens",
+    "cache_read_input_tokens",
+)
+
+
+def _empty_usage_totals():
+    return {**{key: 0 for key in _USAGE_SUM_KEYS}, "cache_hit": False}
+
+
+def _add_usage(totals, usage):
+    usage = dict(usage or {})
+    for key in _USAGE_SUM_KEYS:
+        value = usage.get(key)
+        if isinstance(value, int) and not isinstance(value, bool):
+            totals[key] += value
+    if "total_tokens" not in usage:
+        input_tokens = usage.get("input_tokens")
+        output_tokens = usage.get("output_tokens")
+        if isinstance(input_tokens, int) and isinstance(output_tokens, int):
+            totals["total_tokens"] += input_tokens + output_tokens
+    totals["cache_hit"] = totals["cache_hit"] or bool(usage.get("cache_hit"))
+    return totals
+
+
+def _action_trace_payload(action):
+    if isinstance(action, ToolAction):
+        return {
+            "action_type": "tool",
+            "origin": action.origin,
+            "ignored_tool_count": action.ignored_tool_count,
+        }
+    if isinstance(action, FinalAction):
+        return {
+            "action_type": "final",
+            "origin": action.origin,
+            "truncated": action.truncated,
+        }
+    return {
+        "action_type": "retry",
+        "origin": action.origin,
+        "reason_code": action.reason_code,
+        "excerpt": action.excerpt,
+    }
 
 
 def _append_user_turn(agent, text: str):
@@ -170,6 +220,7 @@ class AgentLoop:
         # Turn Checkpoint，写进 .pico/checkpoints/records。
         run_tool_change_ids = []
         run_verification_evidence = []
+        completion_usage_totals = _empty_usage_totals()
 
         # 这是 agent 的主循环，可以按“感知 -> 决策 -> 行动 -> 记录”来理解：
         # 1. 感知：build_v2 把 system / tools / messages 组装成一次 v2 请求
@@ -235,7 +286,6 @@ class AgentLoop:
                     "prompt_cache_key": prompt_metadata.get("prompt_cache_key"),
                 },
             )
-            model_started_at = time.monotonic()
             try:
                 raw_response = agent.model_client.complete_v2(
                     system=request["system"],
@@ -245,8 +295,7 @@ class AgentLoop:
                     cache_breakpoints=request["cache_control_breakpoints"],
                 )
             except RuntimeError as exc:
-                agent.last_completion_metadata = {}
-                agent.last_prompt_metadata = prompt_metadata
+                agent.last_prompt_metadata = dict(prompt_metadata)
                 final = f"Model error: {exc}"
                 task_state.stop_model_error(final)
                 _finish_run(
@@ -257,48 +306,21 @@ class AgentLoop:
                     run_started_at=run_started_at,
                     run_tool_change_ids=run_tool_change_ids,
                     run_verification_evidence=run_verification_evidence,
+                    completion_usage_totals=completion_usage_totals,
                     trigger="model_error",
                 )
                 raise
-            completion_metadata = dict(getattr(agent.model_client, "last_completion_metadata", {}) or {})
-            if completion_metadata:
-                # 把后端返回的 usage/cache 统计并回 prompt_metadata，
-                # 方便统一写入 report 和 trace。
-                prompt_metadata.update(completion_metadata)
-            agent.last_completion_metadata = completion_metadata
-            agent.last_prompt_metadata = prompt_metadata
-
-            # 解析 Response.content：过滤成 text_blocks / tool_use_blocks，
-            # tool_use 优先（Anthropic END_TURN 也可能同时带 text 与 tool_use，
-            # 但 STOP_REASON=tool_use 意味着模型希望我们执行工具）。
-            content_blocks = list(raw_response.content or [])
-            text_blocks = [b for b in content_blocks if isinstance(b, dict) and b.get("type") == "text"]
-            tool_use_blocks = [b for b in content_blocks if isinstance(b, dict) and b.get("type") == "tool_use"]
-
-            has_text = any(str(b.get("text", "")).strip() for b in text_blocks)
-            if tool_use_blocks:
-                kind = "tool"
-            elif raw_response.stop_reason == StopReason.STOP_SEQUENCE:
-                # STOP_SEQUENCE 在 v2 语义里表示“这一轮没有拿出可执行的动作”
-                # （FallbackAdapter 也用它承载 retry/malformed notice）。
-                # 即便 text 有内容也不视为 final，避免把 retry notice 当成答案返回。
-                kind = "retry"
-            elif raw_response.stop_reason == StopReason.END_TURN and has_text:
-                kind = "final"
-            elif raw_response.stop_reason == StopReason.MAX_TOKENS and has_text:
-                # 沿用旧循环对 MAX_TOKENS 的宽松处理：还有内容就落地成 final。
-                kind = "final"
-            else:
-                kind = "retry"
-
+            completion_usage = dict(raw_response.usage or {})
+            _add_usage(completion_usage_totals, completion_usage)
+            agent.last_prompt_metadata = dict(prompt_metadata)
+            action = decode_action(raw_response)
+            action_payload = _action_trace_payload(action)
             agent.emit_trace(
                 task_state,
-                "model_parsed",
+                "action_decoded",
                 {
-                    "kind": kind,
-                    "stop_reason": str(getattr(raw_response.stop_reason, "value", raw_response.stop_reason) or ""),
-                    "completion_metadata": completion_metadata,
-                    "duration_ms": int((time.monotonic() - model_started_at) * 1000),
+                    **action_payload,
+                    "request_metadata": prompt_metadata,
                 },
             )
             # 把一轮 model call 的 prompt 组装、请求、回包解析压成一条 model_turn，
@@ -308,24 +330,25 @@ class AgentLoop:
                 "model_turn",
                 {
                     "attempts": task_state.attempts,
-                    "kind": kind,
-                    "stop_reason": str(getattr(raw_response.stop_reason, "value", raw_response.stop_reason) or ""),
+                    "tool_steps": task_state.tool_steps,
+                    "stop_reason": str(
+                        getattr(raw_response.stop_reason, "value", raw_response.stop_reason)
+                    ),
+                    "request_metadata": prompt_metadata,
+                    "completion_usage": completion_usage,
+                    **action_payload,
                     "duration_ms": int((time.monotonic() - prompt_started_at) * 1000),
-                    "prompt_cache_key": prompt_metadata.get("prompt_cache_key"),
-                    "prompt_metadata": prompt_metadata,
-                    "completion_metadata": completion_metadata,
                 },
             )
 
-            if kind == "tool":
-                tool_block = tool_use_blocks[0]
-                name = str(tool_block.get("name", ""))
-                args = dict(tool_block.get("input", {}) or {})
+            if isinstance(action, ToolAction):
+                name = action.name
+                args = action.arguments
                 tool_use_id = _append_tool_use(
                     agent,
                     name=name,
                     input=args,
-                    id_hint=tool_block.get("id"),
+                    id_hint=action.tool_use_id,
                 )
                 tool_started_at = time.monotonic()
                 agent.emit_trace(
@@ -401,34 +424,17 @@ class AgentLoop:
                     run_verification_evidence.append(verification_evidence)
                 continue
 
-            if kind == "retry":
+            if isinstance(action, RetryAction):
                 # retry: log a diagnostic notice to legacy history (tests +
                 # trace consumers look for it). We do NOT append to v2
                 # messages — back-to-back assistant turns would violate
                 # Anthropic API constraints.
-                retry_text = ""
-                for block in text_blocks:
-                    candidate = str(block.get("text", "") or "").strip()
-                    if candidate:
-                        retry_text = candidate
-                        break
-                if not retry_text:
-                    retry_text = (
-                        "Runtime notice: model returned an empty response. "
-                        "Reply with a tool call or a final answer."
-                    )
-                agent.record({"role": "assistant", "content": retry_text, "created_at": now()})
+                agent.record({"role": "assistant", "content": action.notice, "created_at": now()})
                 agent.run_store.write_task_state(task_state)
                 continue
 
             # final path
-            final_text = ""
-            for block in text_blocks:
-                candidate = str(block.get("text", "") or "").strip()
-                if candidate:
-                    final_text = candidate
-                    break
-            final = final_text
+            final = action.text
             _append_assistant_text(agent, final)
             # Dual-write to legacy history for report/test consumers.
             agent.record({"role": "assistant", "content": final, "created_at": now()})
@@ -441,6 +447,7 @@ class AgentLoop:
                 run_started_at=run_started_at,
                 run_tool_change_ids=run_tool_change_ids,
                 run_verification_evidence=run_verification_evidence,
+                completion_usage_totals=completion_usage_totals,
                 trigger="run_finished",
             )
 
@@ -461,6 +468,7 @@ class AgentLoop:
             run_started_at=run_started_at,
             run_tool_change_ids=run_tool_change_ids,
             run_verification_evidence=run_verification_evidence,
+            completion_usage_totals=completion_usage_totals,
             trigger=final_trigger,
         )
 
@@ -474,6 +482,7 @@ def _finish_run(
     run_started_at,
     run_tool_change_ids,
     run_verification_evidence,
+    completion_usage_totals,
     trigger,
 ):
     agent.run_store.write_task_state(task_state)
@@ -493,7 +502,15 @@ def _finish_run(
             "run_duration_ms": int((time.monotonic() - run_started_at) * 1000),
         },
     )
-    agent.run_store.write_report(task_state, agent.redact_artifact(agent.build_report(task_state)))
+    agent.run_store.write_report(
+        task_state,
+        agent.redact_artifact(
+            agent.build_report(
+                task_state,
+                completion_usage_totals=completion_usage_totals,
+            )
+        ),
+    )
     return final
 
 

@@ -5,7 +5,6 @@ import json
 import textwrap
 from dataclasses import dataclass
 
-from .tools import TOOL_EXAMPLES
 from .workspace import now
 
 
@@ -18,9 +17,6 @@ class PromptPrefix:
     workspace_fingerprint: str
     tool_signature: str
     built_at: str
-
-
-TOOL_EXAMPLE_ORDER = ("list_files", "read_file", "search", "write_file", "patch_file", "run_shell", "delegate")
 
 
 def tool_signature(tools):
@@ -41,20 +37,6 @@ def tool_signature(tools):
 def _tool_specific_rules(tools):
     available = set(tools)
     lines = []
-    if "write_file" in available:
-        lines.extend(
-            [
-                "- For write_file with multi-line text, prefer XML style:",
-                '  <tool name="write_file" path="file.py"><content>...</content></tool>',
-            ]
-        )
-    if "patch_file" in available:
-        lines.extend(
-            [
-                "- For patch_file with multi-line text, prefer XML style:",
-                '  <tool name="patch_file" path="file.py"><old_text>old</old_text><new_text>new</new_text></tool>',
-            ]
-        )
     file_edit_tools = [name for name in ("write_file", "patch_file") if name in available]
     if file_edit_tools:
         lines.append(
@@ -68,16 +50,6 @@ def _tool_specific_rules(tools):
     return "\n".join(lines)
 
 
-def _response_examples(tools):
-    examples = [
-        TOOL_EXAMPLES[name]
-        for name in TOOL_EXAMPLE_ORDER
-        if name in tools and name in TOOL_EXAMPLES
-    ]
-    examples.append("<final>Done.</final>")
-    return "\n".join(examples)
-
-
 def build_prompt_prefix(workspace, tools, built_at=None):
     tool_lines = []
     for name, tool in tools.items():
@@ -86,7 +58,6 @@ def build_prompt_prefix(workspace, tools, built_at=None):
         tool_lines.append(f"- {name}({fields}) [{risk}] {tool['description']}")
     tool_text = "\n".join(tool_lines)
     tool_specific_rules = _tool_specific_rules(tools)
-    examples = _response_examples(tools)
     # prefix 可以理解成 agent 的“工作手册”：
     # 它是谁、工具怎么调用、当前仓库的稳定事实，都写在这里。
     # workspace 的易变部分（branch/status/commits）走 volatile section，不进 stable prefix。
@@ -95,12 +66,7 @@ def build_prompt_prefix(workspace, tools, built_at=None):
         You are pico, a small local coding agent working inside a local repository.
 
         Rules:
-        - Use tools instead of guessing about the workspace.
-        - Return exactly one <tool>...</tool> or one <final>...</final>.
-        - Tool calls must look like:
-          <tool>{{"name":"tool_name","args":{{...}}}}</tool>
-        - Final answers must look like:
-          <final>your answer</final>
+        - Use the provided native tools instead of guessing about the workspace.
         - Never invent tool results.
         - Keep answers concise and concrete.
         - Before writing tests for existing code, read the implementation first.
@@ -111,9 +77,6 @@ def build_prompt_prefix(workspace, tools, built_at=None):
 
         Tools:
         {tool_text}
-
-        Valid response examples:
-        {examples}
 
         {workspace.stable_text()}
         """

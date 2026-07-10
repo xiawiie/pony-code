@@ -39,15 +39,38 @@ def test_native_and_fallback_both_complete_a_final_turn(tmp_path):
     workspace = WorkspaceContext.build(tmp_path)
 
     # 1. Native path
-    native = _SniffProvider([
-        Response(stop_reason=StopReason.END_TURN, content=[{"type": "text", "text": "ok"}], usage={}),
-    ])
+    native = _SniffProvider(
+        [
+            Response(
+                stop_reason=StopReason.TOOL_USE,
+                content=[
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_native",
+                        "name": "read_file",
+                        "input": {"path": "README.md"},
+                    }
+                ],
+                usage={},
+            ),
+            Response(
+                stop_reason=StopReason.END_TURN,
+                content=[{"type": "text", "text": "ok"}],
+                usage={},
+            ),
+        ]
+    )
     store1 = SessionStore(tmp_path / ".pico" / "sessions_a")
     pico_native = Pico(model_client=native, workspace=workspace, session_store=store1, max_steps=3)
     answer_native = pico_native.ask("hello world")
 
     # 2. Fallback path
-    inner = _XmlStubInner(["<final>ok</final>"])
+    inner = _XmlStubInner(
+        [
+            '<tool>{"name":"read_file","args":{"path":"README.md"}}</tool>',
+            "<final>ok</final>",
+        ]
+    )
     fallback = FallbackAdapter(inner)
     store2 = SessionStore(tmp_path / ".pico" / "sessions_b")
     pico_fb = Pico(model_client=fallback, workspace=workspace, session_store=store2, max_steps=3)
@@ -55,6 +78,25 @@ def test_native_and_fallback_both_complete_a_final_turn(tmp_path):
 
     assert answer_native.strip() == "ok"
     assert answer_fb.strip() == "ok"
+    assert pico_native.current_task_state.tool_steps == 1
+    assert pico_fb.current_task_state.tool_steps == 1
+
+    native_events = [
+        event
+        for event in pico_native.run_store.trace_path(pico_native.current_task_state)
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if '"event": "action_decoded"' in event
+    ]
+    fallback_events = [
+        event
+        for event in pico_fb.run_store.trace_path(pico_fb.current_task_state)
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if '"event": "action_decoded"' in event
+    ]
+    assert '"origin": "native_tool_use"' in native_events[0]
+    assert '"origin": "text_protocol"' in fallback_events[0]
 
     # Native path saw <pico:*> blocks in messages.
     native_content = native.calls[0]["messages"][-1]["content"]

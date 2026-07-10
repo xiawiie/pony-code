@@ -101,7 +101,6 @@ class _MemoryExperimentModelClient(FakeModelClient):
     def complete(self, prompt, max_new_tokens, **kwargs):
         del max_new_tokens, kwargs
         self.prompts.append(prompt)
-        self.last_completion_metadata = {}
         if self.phase == "bootstrap_tool":
             self.phase = "bootstrap_final"
             return f'<tool>{{"name":"read_file","args":{{"path":"{self.filename}","start":1,"end":20}}}}</tool>'

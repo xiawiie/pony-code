@@ -762,7 +762,7 @@ def test_partial_success_records_metadata_without_process_notes(tmp_path):
     assert "notes" not in agent.session["memory"]
 
 
-def test_agent_records_model_cache_metadata_in_last_prompt_metadata(tmp_path):
+def test_agent_keeps_completion_usage_out_of_last_prompt_metadata(tmp_path):
     class CacheAwareFakeModelClient(FakeModelClient):
         def complete(self, prompt, max_new_tokens, **kwargs):
             self.last_completion_metadata = {
@@ -784,11 +784,15 @@ def test_agent_records_model_cache_metadata_in_last_prompt_metadata(tmp_path):
 
     assert agent.ask("Cache aware run") == "Done."
 
-    assert agent.last_prompt_metadata["prompt_cache_supported"] is True
-    assert agent.last_prompt_metadata["cached_tokens"] == 512
-    assert agent.last_prompt_metadata["cache_hit"] is True
+    assert agent.last_prompt_metadata["prompt_cache_supported"] is False
+    assert "cached_tokens" not in agent.last_prompt_metadata
+    assert "cache_hit" not in agent.last_prompt_metadata
     assert agent.last_prompt_metadata["system_cache_key"]
     assert agent.last_prompt_metadata["prompt_cache_key"] == agent.last_prompt_metadata["system_cache_key"]
+    report = agent.run_store.load_report(agent.current_task_state.run_id)
+    assert report["completion_usage_totals"]["cached_tokens"] == 512
+    assert report["completion_usage_totals"]["input_tokens"] == 1024
+    assert report["completion_usage_totals"]["cache_hit"] is True
 
 
 def test_recent_messages_preserved_older_digested(tmp_path):

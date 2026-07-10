@@ -36,3 +36,15 @@ def test_build_prompt_prefix_renders_tools_and_workspace_metadata(tmp_path):
     assert prefix.workspace_fingerprint == workspace.fingerprint()
     assert prefix.tool_signature == tool_signature(tools)
     assert prefix.built_at == "2026-06-02T00:00:00+08:00"
+
+
+def test_stable_prefix_is_native_tool_protocol_neutral(tmp_path):
+    (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
+    workspace = WorkspaceContext.build(tmp_path)
+    tools = build_tool_registry(_Agent(tmp_path))
+
+    prefix = build_prompt_prefix(workspace, tools).text
+
+    assert "Return exactly one <tool>" not in prefix
+    assert "<final>" not in prefix
+    assert '<tool>{"name":' not in prefix

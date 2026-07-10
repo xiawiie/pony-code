@@ -290,7 +290,6 @@ class Pico:
         self.current_task_state = None
         self.current_run_dir = None
         self.last_prompt_metadata = {}
-        self.last_completion_metadata = {}
         self._last_tool_result_metadata = {}
         self._last_prefix_refresh = {
             "workspace_changed": False,

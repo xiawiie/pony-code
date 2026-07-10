@@ -87,3 +87,26 @@ def test_complete_v2_tool_use_response():
     assert resp.stop_reason == StopReason.TOOL_USE
     assert resp.content[0]["name"] == "read_file"
     assert resp.content[0]["input"]["path"] == "a.py"
+
+
+def test_complete_v2_unknown_stop_reason_is_unknown():
+    client = _make_client()
+
+    def fake_urlopen(req, timeout=None):
+        return _mock_urlopen(
+            {
+                "content": [{"type": "text", "text": "ambiguous"}],
+                "stop_reason": "new_wire_value",
+                "usage": {},
+            }
+        )
+
+    with patch("urllib.request.urlopen", fake_urlopen):
+        response = client.complete_v2(
+            system=[{"type": "text", "text": "s"}],
+            tools=[],
+            messages=[{"role": "user", "content": "x"}],
+            max_tokens=10,
+        )
+
+    assert response.stop_reason == StopReason.UNKNOWN

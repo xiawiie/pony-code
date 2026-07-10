@@ -5,6 +5,41 @@ import pytest
 import pico.agent_loop as agent_loop_module
 from pico import FakeModelClient, Pico, SessionStore, WorkspaceContext
 from pico.agent_loop import AgentLoop
+from pico.providers.response import Response, StopReason
+
+
+class NativeScriptProvider:
+    supports_prompt_cache = True
+    supports_native_tools = True
+
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.calls = []
+        self.last_completion_metadata = {"input_tokens": 999999}
+
+    def complete_v2(self, *, system, tools, messages, max_tokens, cache_breakpoints=None):
+        self.calls.append(
+            {
+                "system": system,
+                "tools": tools,
+                "messages": messages,
+                "max_tokens": max_tokens,
+                "cache_breakpoints": cache_breakpoints,
+            }
+        )
+        return self.responses.pop(0)
+
+
+def build_native_agent(tmp_path, provider, **kwargs):
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
+    return Pico(
+        model_client=provider,
+        workspace=WorkspaceContext.build(tmp_path),
+        session_store=SessionStore(tmp_path / ".pico" / "sessions"),
+        approval_policy="auto",
+        **kwargs,
+    )
 
 
 def build_agent(tmp_path, outputs, max_steps=6):
@@ -42,6 +77,62 @@ def test_pico_ask_delegates_to_agent_loop(tmp_path):
     agent = build_agent(tmp_path, ["<final>Facade works.</final>"])
 
     assert agent.ask("Use facade") == "Facade works."
+
+
+def test_agent_loop_decodes_native_action_and_aggregates_response_usage_only(tmp_path):
+    (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
+    provider = NativeScriptProvider(
+        [
+            Response(
+                stop_reason=StopReason.TOOL_USE,
+                content=[
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_native",
+                        "name": "read_file",
+                        "input": {"path": "README.md"},
+                    }
+                ],
+                usage={
+                    "input_tokens": 10,
+                    "output_tokens": 2,
+                    "total_tokens": 12,
+                    "cached_tokens": 3,
+                    "cache_creation_input_tokens": 4,
+                    "cache_read_input_tokens": 3,
+                    "cache_hit": True,
+                },
+            ),
+            Response(
+                stop_reason=StopReason.END_TURN,
+                content=[{"type": "text", "text": "done"}],
+                usage={"input_tokens": 20, "output_tokens": 5, "total_tokens": 25},
+            ),
+        ]
+    )
+    agent = build_native_agent(tmp_path, provider)
+
+    assert agent.ask("read and finish") == "done"
+
+    events = [
+        json.loads(line)
+        for line in agent.run_store.trace_path(agent.current_task_state)
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    decoded = [event for event in events if event["event"] == "action_decoded"]
+    turns = [event for event in events if event["event"] == "model_turn"]
+    report = agent.run_store.load_report(agent.current_task_state.run_id)
+
+    assert decoded[0]["action_type"] == "tool"
+    assert decoded[0]["origin"] == "native_tool_use"
+    assert decoded[1]["action_type"] == "final"
+    assert [turn["completion_usage"]["input_tokens"] for turn in turns] == [10, 20]
+    assert report["completion_usage_totals"]["input_tokens"] == 30
+    assert report["completion_usage_totals"]["output_tokens"] == 7
+    assert report["completion_usage_totals"]["total_tokens"] == 37
+    assert report["completion_usage_totals"]["cache_hit"] is True
+    assert report["completion_usage_totals"]["input_tokens"] != 999999
 
 
 def test_agent_loop_emits_focused_recovery_trace_events(tmp_path):

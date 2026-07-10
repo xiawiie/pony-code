@@ -26,26 +26,25 @@ def test_fallback_flattens_system_tools_messages():
     )
     assert isinstance(resp, Response)
     assert resp.stop_reason == StopReason.END_TURN
-    assert resp.content == [{"type": "text", "text": "done"}]
+    assert resp.content == [{"type": "text", "text": "<final>done</final>"}]
     assert "SYSTEM_CORE" in inner.last_prompt
     assert "read_file" in inner.last_prompt
     assert "hi" in inner.last_prompt
 
 
-def test_fallback_parses_xml_tool_call_to_native_shape():
-    inner = _StubInner('<tool>{"name":"read_file","args":{"path":"a.py"}}</tool>')
-    adapter = FallbackAdapter(inner)
-    resp = adapter.complete_v2(
-        system=[{"type": "text", "text": "s"}],
-        tools=[],
-        messages=[{"role": "user", "content": "x"}],
-        max_tokens=10,
+def test_fallback_returns_raw_text_and_usage_for_the_shared_codec():
+    raw = '<tool>{"name":"read_file","args":{"path":"a.py"}}</tool>'
+    inner = _StubInner(raw)
+    response = FallbackAdapter(inner).complete_v2(
+        system=[{"type": "text", "text": "SYSTEM"}],
+        tools=[{"name": "read_file", "description": "d", "input_schema": {}}],
+        messages=[{"role": "user", "content": "q"}],
+        max_tokens=100,
     )
-    assert resp.stop_reason == StopReason.TOOL_USE
-    assert resp.content[0]["type"] == "tool_use"
-    assert resp.content[0]["name"] == "read_file"
-    assert resp.content[0]["input"] == {"path": "a.py"}
-    assert resp.content[0]["id"].startswith("toolu_local_")
+    assert response.stop_reason == StopReason.END_TURN
+    assert response.content == [{"type": "text", "text": raw}]
+    assert response.usage == {"input_tokens": 3, "output_tokens": 2}
+    assert inner.last_prompt.count("Text response protocol:") == 1
 
 
 def test_fallback_ignores_cache_breakpoints():
@@ -58,10 +57,10 @@ def test_fallback_ignores_cache_breakpoints():
     )
     # 不支持 prompt cache 的 provider 应静默忽略 breakpoints
     assert resp.stop_reason == StopReason.END_TURN
+    assert resp.content == [{"type": "text", "text": "<final>ok</final>"}]
 
 
-def test_fallback_malformed_output_maps_to_stop_sequence():
-    # <tool>{malformed json</tool> → parser returns ("retry", retry_notice_text)
+def test_fallback_preserves_malformed_output_for_the_shared_codec():
     inner = _StubInner("<tool>{not valid json</tool>")
     adapter = FallbackAdapter(inner)
     resp = adapter.complete_v2(
@@ -69,10 +68,8 @@ def test_fallback_malformed_output_maps_to_stop_sequence():
         messages=[{"role": "user", "content": "x"}],
         max_tokens=10,
     )
-    assert resp.stop_reason == StopReason.STOP_SEQUENCE
-    assert resp.content[0]["type"] == "text"
-    assert isinstance(resp.content[0]["text"], str)
-    assert resp.content[0]["text"]  # non-empty runtime notice
+    assert resp.stop_reason == StopReason.END_TURN
+    assert resp.content == [{"type": "text", "text": "<tool>{not valid json</tool>"}]
 
 
 def test_fallback_flatten_messages_handles_structured_content_blocks():
