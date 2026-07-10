@@ -66,8 +66,12 @@ def render_memory_index(agent, budget_tokens):
     if entries:
         durable_lines.append("Memory files:")
         for entry in entries:
+            if securitylib.is_sensitive_path(str(getattr(entry, "path", ""))):
+                continue
             first = (getattr(entry, "first_line", "") or "")[:80]
             durable_lines.append(f"- {entry.path} ({entry.size_chars} chars) {first}")
+        if len(durable_lines) == 1:
+            durable_lines.clear()
 
     memory_enabled = True
     feature_enabled = getattr(agent, "feature_enabled", None)
@@ -80,6 +84,8 @@ def render_memory_index(agent, budget_tokens):
         summaries = memory_state.get("file_summaries", {}) if isinstance(memory_state, dict) else {}
         working_lines = []
         for path in recent_files:
+            if securitylib.is_sensitive_path(str(path)):
+                continue
             value = summaries.get(path)
             summary = value.get("summary", "") if isinstance(value, dict) else value
             summary = str(summary or "").strip()
@@ -120,7 +126,11 @@ def render_project_structure(agent, budget_tokens):
         )
         return None
     try:
-        tree = repo_map.top_level_tree()
+        tree = [
+            entry
+            for entry in repo_map.top_level_tree()
+            if not securitylib.is_sensitive_path(str(entry.get("path", "")))
+        ]
     except Exception as exc:
         logger.debug("project_structure source failed (tree): %s", type(exc).__name__)
         return None

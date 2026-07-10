@@ -1,13 +1,18 @@
 import json
 import subprocess
-from types import SimpleNamespace
+from types import MappingProxyType, SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
 
 from pico import FakeModelClient, Pico, SessionStore, WorkspaceContext
 from pico.memory.tools import tool_memory_list, tool_memory_search
-from pico.tool_executor import ToolExecutor, ToolExecutionResult, _effect_class
+from pico.tool_executor import (
+    ToolExecutor,
+    ToolExecutionResult,
+    _effect_class,
+    _fill_git_head_before_file_states,
+)
 
 
 def build_agent(tmp_path, outputs=None, **kwargs):
@@ -430,6 +435,69 @@ def test_run_shell_recovery_populates_before_blob_from_git_head(tmp_path):
     assert agent.checkpoint_store.read_blob(entry["before_blob_ref"]) == b"demo\n"
     assert entry["snapshot_eligible"] is True
     assert result.metadata["diff_summary"] == ["modified:README.md"]
+
+
+def test_git_head_fallback_uses_frozen_hardened_git(tmp_path, monkeypatch):
+    import pico.tool_executor as tool_executor
+
+    calls = []
+
+    def fake_git(executable, args, **kwargs):
+        calls.append((executable, list(args), kwargs))
+        return subprocess.CompletedProcess([], 0, stdout=b"original\n", stderr=b"")
+
+    monkeypatch.setattr(tool_executor, "run_hardened_git", fake_git, raising=False)
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("bare git executed")
+        ),
+    )
+
+    class Store:
+        @staticmethod
+        def write_blob(data, content_kind):
+            assert data == b"original\n"
+            assert content_kind == "text"
+            return {"blob_ref": "a" * 64, "content_hash": "b" * 64}
+
+    agent = SimpleNamespace(
+        root=tmp_path,
+        trusted_executables=MappingProxyType({"git": "/frozen/git"}),
+        checkpoint_store=Store(),
+    )
+
+    states = _fill_git_head_before_file_states(agent, ["README.md"], {})
+
+    assert states["README.md"]["before_blob_ref"] == "a" * 64
+    assert calls == [
+        (
+            "/frozen/git",
+            ["show", "HEAD:README.md"],
+            {"cwd": tmp_path, "text": False},
+        )
+    ]
+
+
+def test_git_head_fallback_without_frozen_git_runs_nothing(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("bare git executed")
+        ),
+    )
+    agent = SimpleNamespace(
+        root=tmp_path,
+        trusted_executables=MappingProxyType({}),
+        checkpoint_store=Mock(),
+    )
+
+    states = _fill_git_head_before_file_states(agent, ["README.md"], {})
+
+    assert states == {}
+    agent.checkpoint_store.write_blob.assert_not_called()
 
 
 def test_workspace_write_tool_uses_generic_path_argument_for_recovery(tmp_path):

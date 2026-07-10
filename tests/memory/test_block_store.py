@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 
 from pico.memory.block_store import BlockStore
@@ -139,3 +141,65 @@ def test_size_chars_counts_characters_not_bytes(tmp_path):
     # 字节数会 > 字符数
     import os
     assert os.path.getsize(workspace / "notes" / "auth.md") > entry.size_chars
+
+
+@pytest.mark.parametrize("scope", ("workspace", "user"))
+def test_list_skips_symlinked_memory_files(tmp_path, scope):
+    workspace = tmp_path / "workspace"
+    user = tmp_path / "user"
+    (workspace / "notes").mkdir(parents=True)
+    (user / "notes").mkdir(parents=True)
+    outside = tmp_path / "outside.md"
+    outside.write_text("outside memory secret", encoding="utf-8")
+    root = workspace if scope == "workspace" else user
+    (root / "notes" / "linked.md").symlink_to(outside)
+
+    store = BlockStore(workspace_root=workspace, user_root=user)
+
+    assert all(entry.path != f"{scope}/notes/linked.md" for entry in store.list())
+
+
+def test_list_skips_symlinked_notes_directory(tmp_path):
+    workspace = tmp_path / "workspace"
+    user = tmp_path / "user"
+    outside = tmp_path / "outside-notes"
+    workspace.mkdir()
+    user.mkdir()
+    outside.mkdir()
+    (outside / "linked.md").write_text("outside memory secret", encoding="utf-8")
+    (workspace / "notes").symlink_to(outside, target_is_directory=True)
+
+    store = BlockStore(workspace_root=workspace, user_root=user)
+
+    assert store.list() == []
+
+
+@pytest.mark.parametrize("target_kind", ("inside", "outside"))
+def test_read_rejects_memory_symlink(target_kind, tmp_path):
+    workspace = tmp_path / "workspace"
+    user = tmp_path / "user"
+    (workspace / "notes").mkdir(parents=True)
+    user.mkdir()
+    if target_kind == "inside":
+        target = workspace / "notes" / "real.md"
+    else:
+        target = tmp_path / "outside.md"
+    target.write_text("must not be read", encoding="utf-8")
+    (workspace / "notes" / "linked.md").symlink_to(target)
+    store = BlockStore(workspace_root=workspace, user_root=user)
+
+    with pytest.raises((FileNotFoundError, ValueError)):
+        store.read("workspace/notes/linked.md")
+
+
+def test_relative_scope_roots_keep_existing_listing_behavior(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"
+    user = tmp_path / "user"
+    (workspace / "notes").mkdir(parents=True)
+    user.mkdir()
+    (workspace / "notes" / "safe.md").write_text("safe", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    store = BlockStore(workspace_root=Path("workspace"), user_root=Path("user"))
+
+    assert [entry.path for entry in store.list()] == ["workspace/notes/safe.md"]

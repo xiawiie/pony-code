@@ -268,6 +268,7 @@ class Pico:
         feature_flags=None,
         allowed_tools=None,
         _trusted_redaction_env=False,
+        _trusted_executables=None,
     ):
         # v2 迁移：模型后端约定的接口是 `complete_v2(system, tools, messages, ...)`。
         # 不支持这个方法的老 provider（FakeModelClient / OllamaModelClient /
@@ -281,6 +282,12 @@ class Pico:
         self.model_client = model_client
         self.workspace = workspace
         self.root = Path(workspace.repo_root)
+        executable_source = (
+            workspace.trusted_executables
+            if _trusted_executables is None
+            else _trusted_executables
+        )
+        self.trusted_executables = MappingProxyType(dict(executable_source or {}))
         self.session_store = session_store
         self.approval_policy = approval_policy
         self.max_steps = max_steps
@@ -329,7 +336,10 @@ class Pico:
         )
         self.recovery_checkpoint_writer = RecoveryCheckpointWriter(self.checkpoint_store, self.root)
         self.recovery_manager = RecoveryManager(self.checkpoint_store, self.root)
-        self.workspace_observer = WorkspaceObserver(self.root)
+        self.workspace_observer = WorkspaceObserver(
+            self.root,
+            executables=self.trusted_executables,
+        )
         # ADR-0034: pico.toml 里 `[policy] max_blob_size` 是唯一在第一阶段生效的覆盖项。
         # 构造期解析一次并缓存，后续 snapshot_eligibility 调用都读这个值。
         from .config import project_max_blob_size
@@ -555,7 +565,10 @@ class Pico:
 
         # 工作区事实相对稳定，所以这里按整体刷新；
         # 只有这些事实真的变化了，才重建完整 prefix。
-        refreshed_workspace = WorkspaceContext.build(self.root)
+        refreshed_workspace = WorkspaceContext.build(
+            self.root,
+            executables=self.trusted_executables,
+        )
         refreshed_workspace_fingerprint = refreshed_workspace.fingerprint()
         workspace_changed = force or refreshed_workspace_fingerprint != previous_workspace_fingerprint
         if workspace_changed:
@@ -853,6 +866,7 @@ class Pico:
             memory_store=self.memory_store,
             memory_retrieval=self.memory_retrieval,
             repo_map=self.repo_map,
+            trusted_executables=self.trusted_executables,
         )
 
     def spawn_delegate(self, args):
@@ -871,6 +885,7 @@ class Pico:
             secret_env_names=self.secret_env_names,
             redaction_env=self.redaction_env,
             _trusted_redaction_env=True,
+            _trusted_executables=self.trusted_executables,
             shell_env_allowlist=self.shell_env_allowlist,
         )
         # 委派的目标是“调查”，不是“放权执行”。

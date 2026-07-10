@@ -8,39 +8,60 @@ mtime+size+存在性扫描兜底。两种模式返回同一个结构，`diff()` 
 import os
 import subprocess
 from pathlib import Path
+from types import MappingProxyType
+
+from pico.safe_subprocess import run_hardened_git
+from pico.workspace import (
+    _safe_index_directory,
+    _safe_index_file,
+    _safe_index_path,
+)
 
 
 _MAX_FILE_SIZE_FOR_MTIME = 8 * 1024 * 1024
 
 
 class WorkspaceObserver:
-    def __init__(self, root, git_binary="git"):
-        self.root = Path(root).resolve()
-        self.git_binary = git_binary
+    def __init__(self, root, executables=None):
+        self.root = Path(os.path.abspath(os.fspath(root)))
+        self.trusted_executables = MappingProxyType(dict(executables or {}))
 
     def _is_git_repo(self):
+        git_executable = self.trusted_executables.get("git")
+        if not git_executable:
+            return False
         try:
-            result = subprocess.run(
-                [self.git_binary, "rev-parse", "--is-inside-work-tree"],
-                cwd=str(self.root),
-                capture_output=True,
+            result = run_hardened_git(
+                git_executable,
+                ["rev-parse", "--is-inside-work-tree"],
+                cwd=self.root,
                 text=True,
                 check=False,
             )
-        except (FileNotFoundError, PermissionError):
+        except (OSError, subprocess.SubprocessError, ValueError):
             return False
         return result.returncode == 0 and result.stdout.strip() == "true"
 
     def _capture_git(self):
         # git status 给出每一个非干净路径的状态。Phase 1 里我们把状态 token 也
         # 当作哈希前缀存起来，用来在 diff 时区分 clean 和 dirty。
-        proc = subprocess.run(
-            [self.git_binary, "status", "--porcelain=v1", "-z", "-uall"],
-            cwd=str(self.root),
-            capture_output=True,
-            check=False,
-        )
+        git_executable = self.trusted_executables.get("git")
+        if not git_executable:
+            return self._capture_filesystem()
+        try:
+            proc = run_hardened_git(
+                git_executable,
+                ["status", "--porcelain=v1", "-z", "-uall"],
+                cwd=self.root,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError, ValueError):
+            return self._capture_filesystem()
+        if proc.returncode != 0:
+            return self._capture_filesystem()
         raw = proc.stdout or b""
+        if isinstance(raw, str):
+            raw = raw.encode("utf-8", errors="replace")
         paths = {}
         entries = raw.split(b"\x00")
         i = 0
@@ -54,30 +75,49 @@ class WorkspaceObserver:
             if status.startswith("R"):
                 # renames give two entries separated by NUL
                 original = entries[i + 1].decode("utf-8", errors="replace") if i + 1 < len(entries) else ""
-                paths[original] = "R:removed"
-                paths[path] = "R:added"
+                original_path = _safe_index_path(self.root, self.root / original)
+                renamed_path = _safe_index_path(self.root, self.root / path)
+                if original_path is not None:
+                    paths[original_path.relative_to(self.root).as_posix()] = "R:removed"
+                if renamed_path is not None:
+                    paths[renamed_path.relative_to(self.root).as_posix()] = "R:added"
                 i += 2
                 continue
-            paths[path] = status.strip() or "?"
+            candidate = _safe_index_path(self.root, self.root / path)
+            if candidate is not None:
+                paths[candidate.relative_to(self.root).as_posix()] = status.strip() or "?"
             i += 1
         # 也顺带记录每个 dirty 文件的 size+mtime，用来精确 diff
         detail = {}
         for path in list(paths.keys()):
-            abs_path = self.root / path
-            if abs_path.is_file():
-                stat = abs_path.stat()
+            abs_path = _safe_index_file(self.root, self.root / path)
+            if abs_path is not None:
+                try:
+                    stat = abs_path.stat()
+                except OSError:
+                    continue
                 detail[path] = f"{stat.st_size}:{int(stat.st_mtime * 1_000_000)}"
         return {"mode": "git", "paths": paths, "detail": detail, "summaries": []}
 
     def _capture_filesystem(self):
         paths = {}
-        for dirpath, dirnames, filenames in os.walk(str(self.root)):
+        root = _safe_index_directory(self.root, self.root)
+        if root is None:
+            return {"mode": "filesystem", "paths": paths, "detail": paths, "summaries": []}
+        for dirpath, dirnames, filenames in os.walk(str(root), followlinks=False):
             # 跳过常见的构建产物和虚拟环境目录，避免把无关文件也算成 delta
-            dirnames[:] = [d for d in dirnames if d not in {".git", ".pico", "__pycache__", ".venv", "node_modules"}]
+            dirnames[:] = [
+                name
+                for name in dirnames
+                if name not in {".git", ".pico", "__pycache__", ".venv", "node_modules"}
+                and _safe_index_directory(root, Path(dirpath) / name) is not None
+            ]
             for filename in filenames:
-                abs_path = Path(dirpath) / filename
+                abs_path = _safe_index_file(root, Path(dirpath) / filename)
+                if abs_path is None:
+                    continue
                 try:
-                    rel = abs_path.relative_to(self.root).as_posix()
+                    rel = abs_path.relative_to(root).as_posix()
                 except ValueError:
                     continue
                 try:
@@ -92,6 +132,8 @@ class WorkspaceObserver:
         return {"mode": "filesystem", "paths": paths, "detail": paths, "summaries": []}
 
     def capture(self):
+        if _safe_index_directory(self.root, self.root) is None:
+            return self._capture_filesystem()
         if self._is_git_repo():
             return self._capture_git()
         return self._capture_filesystem()
@@ -116,7 +158,7 @@ class WorkspaceObserver:
             if before_marker == after_marker:
                 continue
             # 判断存在性变化
-            after_exists = (self.root / path).exists()
+            after_exists = _safe_index_file(self.root, self.root / path) is not None
             before_had_marker = before_marker is not None
             after_had_marker = after_marker is not None
             if not before_had_marker and after_had_marker and after_exists:

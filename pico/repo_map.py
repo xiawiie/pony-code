@@ -18,6 +18,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Literal, Optional
 
+from pico.workspace import _safe_index_directory, _safe_index_file
+
 SymbolKind = Literal["class", "function", "method"]
 
 # 复用 pico/workspace.py 的忽略列表 + 额外补充
@@ -75,7 +77,7 @@ class Symbol:
 
 class RepoMap:
     def __init__(self, repo_root: Path):
-        self.repo_root = Path(repo_root)
+        self.repo_root = Path(os.path.abspath(os.fspath(repo_root)))
         self._symbols: dict[str, list[Symbol]] = defaultdict(list)
         self._file_mtimes: dict[str, float] = {}
         self._file_count_by_top_dir: dict[str, int] = defaultdict(int)
@@ -97,6 +99,9 @@ class RepoMap:
         stale: list[tuple[Path, str]] = []
         seen: set[str] = set()
         for real_path, rel_path in self._walk():
+            real_path = _safe_index_file(self.repo_root, real_path)
+            if real_path is None:
+                continue
             seen.add(rel_path)
             try:
                 mtime = real_path.stat().st_mtime
@@ -134,12 +139,24 @@ class RepoMap:
 
     def _walk(self) -> Iterable[tuple[Path, str]]:
         indexed = 0
-        for dirpath, dirnames, filenames in os.walk(self.repo_root):
-            dirnames[:] = [d for d in dirnames if d not in IGNORED_DIRS and not d.startswith(".")]
+        root = _safe_index_directory(self.repo_root, self.repo_root)
+        if root is None:
+            return
+        for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+            dirnames[:] = [
+                name
+                for name in dirnames
+                if name not in IGNORED_DIRS
+                and not name.startswith(".")
+                and _safe_index_directory(root, Path(dirpath) / name) is not None
+            ]
             for fname in filenames:
                 real_path = Path(dirpath) / fname
+                real_path = _safe_index_file(root, real_path)
+                if real_path is None:
+                    continue
                 try:
-                    rel = real_path.relative_to(self.repo_root).as_posix()
+                    rel = real_path.relative_to(root).as_posix()
                 except ValueError:
                     continue
                 try:
@@ -162,6 +179,9 @@ class RepoMap:
                     return
 
     def _index_file(self, real_path: Path, rel_path: str) -> None:
+        real_path = _safe_index_file(self.repo_root, real_path)
+        if real_path is None:
+            return
         try:
             mtime = real_path.stat().st_mtime
         except OSError:

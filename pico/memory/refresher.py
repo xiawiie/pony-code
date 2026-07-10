@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from pico import security as securitylib
 from pico.memory.block_store import BlockStore
 from pico.repo_map import RepoMap
 
@@ -55,7 +56,11 @@ class MemoryRefresher:
         )
 
     def _render_memory_index(self) -> str:
-        entries = self.store.list()
+        entries = [
+            entry
+            for entry in self.store.list()
+            if not securitylib.is_sensitive_path(str(entry.path))
+        ]
         if not entries:
             return "<memory_index>\n(no memory files yet)\n</memory_index>"
         lines = ["<memory_index>"]
@@ -74,7 +79,11 @@ class MemoryRefresher:
         return "\n".join(lines)
 
     def _render_project_structure(self) -> str:
-        tree = self.repo_map.top_level_tree()
+        tree = [
+            entry
+            for entry in self.repo_map.top_level_tree()
+            if not securitylib.is_sensitive_path(str(entry.get("path", "")))
+        ]
         stats = self.repo_map.language_stats()
         if not tree:
             return "<project_structure>\n(empty repo)\n</project_structure>"

@@ -29,3 +29,73 @@ def test_workspace_observer_detects_git_dirty_delta(tmp_path):
     delta = observer.diff(before, after)
 
     assert delta["changed_paths"] == ["tracked.txt"]
+
+
+def test_workspace_observer_uses_frozen_hardened_git(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_git(executable, args, **kwargs):
+        calls.append((executable, list(args), kwargs))
+        stdout = "true\n" if args == ["rev-parse", "--is-inside-work-tree"] else b""
+        return subprocess.CompletedProcess([executable, *args], 0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(
+        "pico.workspace_observer.run_hardened_git",
+        fake_git,
+        raising=False,
+    )
+    observer = WorkspaceObserver(tmp_path, executables={"git": "/frozen/git"})
+
+    snapshot = observer.capture()
+
+    assert snapshot["mode"] == "git"
+    assert [call[1] for call in calls] == [
+        ["rev-parse", "--is-inside-work-tree"],
+        ["status", "--porcelain=v1", "-z", "-uall"],
+    ]
+    assert all(call[0] == "/frozen/git" for call in calls)
+
+
+def test_filesystem_observer_skips_symlink_and_sensitive_paths(tmp_path):
+    outside = tmp_path.parent / f"{tmp_path.name}-outside"
+    outside.write_text("secret", encoding="utf-8")
+    (tmp_path / "linked.txt").symlink_to(outside)
+    (tmp_path / ".env").write_text("PICO_TOKEN=opaque", encoding="utf-8")
+    (tmp_path / "safe.txt").write_text("safe", encoding="utf-8")
+
+    snapshot = WorkspaceObserver(tmp_path, executables={}).capture()
+
+    assert "linked.txt" not in snapshot["paths"]
+    assert ".env" not in snapshot["paths"]
+    assert snapshot["paths"].keys() == {"safe.txt"}
+
+
+def test_workspace_observer_rejects_symlinked_root(tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "must-not-scan.txt").write_text("outside", encoding="utf-8")
+    linked_root = tmp_path / "linked-root"
+    linked_root.symlink_to(outside, target_is_directory=True)
+
+    snapshot = WorkspaceObserver(linked_root, executables={}).capture()
+
+    assert snapshot["paths"] == {}
+
+
+def test_git_observer_preserves_tracked_deletion_marker(tmp_path, monkeypatch):
+    calls = iter(
+        [
+            subprocess.CompletedProcess([], 0, stdout="true\n", stderr=""),
+            subprocess.CompletedProcess([], 0, stdout=b" D deleted.txt\x00", stderr=b""),
+        ]
+    )
+    monkeypatch.setattr(
+        "pico.workspace_observer.run_hardened_git",
+        lambda *args, **kwargs: next(calls),
+        raising=False,
+    )
+
+    snapshot = WorkspaceObserver(tmp_path, executables={"git": "/frozen/git"}).capture()
+
+    assert snapshot["paths"] == {"deleted.txt": "D"}
+    assert snapshot["detail"] == {}

@@ -112,6 +112,62 @@ def test_cli_freezes_parent_path_before_project_env_loading(tmp_path, monkeypatc
     assert os.environ.get("PATH", "") == parent_path
 
 
+def test_runtime_preserves_frozen_executables_across_refresh(tmp_path, monkeypatch):
+    (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
+    frozen = {"git": "/frozen/git", "rg": "/frozen/rg"}
+    workspace = WorkspaceContext.build(tmp_path, executables=frozen)
+    agent = Pico(
+        model_client=FakeModelClient([]),
+        workspace=workspace,
+        session_store=SessionStore(tmp_path / ".pico" / "sessions"),
+        approval_policy="auto",
+    )
+    monkeypatch.setenv("PATH", str(tmp_path))
+    monkeypatch.setattr(
+        "pico.workspace.build_trusted_executables",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("runtime PATH rescan")
+        ),
+    )
+
+    agent.refresh_prefix(force=True)
+
+    assert dict(agent.trusted_executables) == frozen
+    assert dict(agent.workspace.trusted_executables) == frozen
+    assert dict(agent.workspace_observer.trusted_executables) == frozen
+    assert dict(agent.tool_context().trusted_executables) == frozen
+    with pytest.raises(TypeError):
+        agent.trusted_executables["git"] = "/changed/git"
+
+
+def test_delegate_inherits_parent_frozen_executables(tmp_path, monkeypatch):
+    (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
+    frozen = {"git": "/frozen/git", "rg": "/frozen/rg"}
+    workspace = WorkspaceContext.build(tmp_path, executables=frozen)
+    agent = Pico(
+        model_client=FakeModelClient([]),
+        workspace=workspace,
+        session_store=SessionStore(tmp_path / ".pico" / "sessions"),
+        approval_policy="auto",
+    )
+    children = []
+
+    def fake_ask(child, task):
+        children.append(child)
+        return "safe"
+
+    monkeypatch.setattr(Pico, "ask", fake_ask)
+    workspace.trusted_executables.clear()
+
+    assert agent.spawn_delegate({"task": "inspect", "max_steps": 1}) == (
+        "delegate_result:\nsafe"
+    )
+    child = children[0]
+    assert dict(child.trusted_executables) == frozen
+    assert dict(child.workspace_observer.trusted_executables) == frozen
+    assert dict(child.tool_context().trusted_executables) == frozen
+
+
 def test_runtime_rejects_credential_bearing_base_url_before_client_construction(monkeypatch):
     def fail_client(*args, **kwargs):
         raise AssertionError("client constructed")

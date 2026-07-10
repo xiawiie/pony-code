@@ -120,3 +120,47 @@ def test_syntax_error_does_not_crash(tmp_path):
     rm = RepoMap(repo_root=tmp_path)
     rm.scan()
     assert rm.lookup("ok")
+
+
+def test_scan_skips_symlinked_and_sensitive_sources(tmp_path):
+    outside = tmp_path.parent / f"{tmp_path.name}-outside.py"
+    outside.write_text("class SymlinkSecret: pass\n", encoding="utf-8")
+    (tmp_path / "linked.py").symlink_to(outside)
+    _write(tmp_path, "src/secrets.json", '{"token": "opaque"}\n')
+    _write(tmp_path, ".env.example", "PICO_API_KEY=your-api-key\n")
+
+    rm = RepoMap(repo_root=tmp_path)
+    rm.scan()
+
+    assert rm.lookup("SymlinkSecret") == []
+    assert rm.language_stats().get("json", 0) == 0
+    assert rm.language_stats().get("other", 0) == 1
+
+
+def test_refresh_removes_symbol_when_regular_file_becomes_symlink(tmp_path):
+    source = tmp_path / "source.py"
+    source.write_text("class OldSymbol: pass\n", encoding="utf-8")
+    outside = tmp_path.parent / f"{tmp_path.name}-replacement.py"
+    outside.write_text("class OutsideSymbol: pass\n", encoding="utf-8")
+    rm = RepoMap(repo_root=tmp_path)
+    rm.scan()
+    assert rm.lookup("OldSymbol")
+
+    source.unlink()
+    source.symlink_to(outside)
+    rm.refresh_if_stale()
+
+    assert rm.lookup("OldSymbol") == []
+    assert rm.lookup("OutsideSymbol") == []
+
+
+def test_relative_repo_root_keeps_existing_scan_behavior(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _write(repo, "source.py", "class RelativeRoot: pass\n")
+    monkeypatch.chdir(tmp_path)
+
+    rm = RepoMap(repo_root=Path("repo"))
+    rm.scan()
+
+    assert rm.lookup("RelativeRoot")

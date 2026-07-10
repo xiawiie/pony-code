@@ -5,7 +5,6 @@
 """
 
 import re
-import shutil
 import subprocess
 import textwrap
 from functools import partial
@@ -18,6 +17,7 @@ from .memory.tools import (
     tool_memory_search,
 )
 from .repo_map import tool_repo_lookup
+from .safe_subprocess import run_hardened_rg
 from .workspace import IGNORED_PATH_NAMES
 
 DEFAULT_RUN_SHELL_TIMEOUT = 60
@@ -297,13 +297,22 @@ def tool_search(context, args):
         raise ValueError("pattern must not be empty")
     path = context.path(args.get("path", "."))
 
-    if shutil.which("rg"):
+    rg_executable = context.trusted_executables.get("rg")
+    if rg_executable:
         # 优先用 rg，因为搜索会非常频繁，搜索延迟会直接影响 agent 控制循环。
-        result = subprocess.run(
-            ["rg", "-n", "--smart-case", "--max-count", "200", pattern, str(path)],
+        result = run_hardened_rg(
+            rg_executable,
+            [
+                "-n",
+                "--smart-case",
+                "--max-count",
+                "200",
+                "-e",
+                pattern,
+                "--",
+                str(path),
+            ],
             cwd=context.root,
-            capture_output=True,
-            text=True,
         )
         if result.returncode > 1:
             result.check_returncode()

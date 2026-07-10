@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import sys
 import tempfile
@@ -24,6 +25,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
+
+from pico.workspace import _safe_index_directory, _safe_index_file
 
 from .frontmatter import parse_frontmatter
 
@@ -47,8 +50,8 @@ class MemoryFile:
 
 class BlockStore:
     def __init__(self, workspace_root: Path, user_root: Path):
-        self.workspace_root = Path(workspace_root)
-        self.user_root = Path(user_root)
+        self.workspace_root = Path(os.path.abspath(os.fspath(workspace_root)))
+        self.user_root = Path(os.path.abspath(os.fspath(user_root)))
         self._size_warned: set[str] = set()
 
     # ---- listing / reading -------------------------------------------------
@@ -61,34 +64,46 @@ class BlockStore:
         return entries
 
     def _scan_scope(self, scope: str, root: Path) -> list[MemoryFile]:
-        if not root.exists():
+        root = _safe_index_directory(root, root)
+        if root is None:
             return []
         results: list[MemoryFile] = []
         # notes/*.md (nested allowed) — user-written, agent read-only
-        notes_dir = root / "notes"
-        if notes_dir.exists():
+        notes_dir = _safe_index_directory(root, root / "notes")
+        if notes_dir is not None:
             for md in sorted(notes_dir.rglob("*.md")):
-                if not md.is_file():
+                md = _safe_index_file(root, md)
+                if md is None:
                     continue
                 rel = md.relative_to(root).as_posix()
-                results.append(self._to_memory_file(f"{scope}/{rel}", md))
+                entry = self._to_memory_file(root, f"{scope}/{rel}", md)
+                if entry is not None:
+                    results.append(entry)
         # agent/*.md (Task 17) — agent-owned, per-topic
-        agent_dir = root / "agent"
-        if agent_dir.exists():
+        agent_dir = _safe_index_directory(root, root / "agent")
+        if agent_dir is not None:
             for md in sorted(agent_dir.rglob("*.md")):
-                if not md.is_file():
+                md = _safe_index_file(root, md)
+                if md is None:
                     continue
                 rel = md.relative_to(root).as_posix()
-                results.append(self._to_memory_file(f"{scope}/{rel}", md))
+                entry = self._to_memory_file(root, f"{scope}/{rel}", md)
+                if entry is not None:
+                    results.append(entry)
         # agent_notes.md (legacy single-file). We exclude anything with the
         # .legacy suffix (post-migration renames).
-        agent_notes = root / "agent_notes.md"
-        if agent_notes.is_file():
-            results.append(self._to_memory_file(f"{scope}/agent_notes.md", agent_notes))
+        agent_notes = _safe_index_file(root, root / "agent_notes.md")
+        if agent_notes is not None:
+            entry = self._to_memory_file(root, f"{scope}/agent_notes.md", agent_notes)
+            if entry is not None:
+                results.append(entry)
         return results
 
     @staticmethod
-    def _to_memory_file(rel_path: str, real_path: Path) -> MemoryFile:
+    def _to_memory_file(root: Path, rel_path: str, real_path: Path) -> MemoryFile | None:
+        real_path = _safe_index_file(root, real_path)
+        if real_path is None:
+            return None
         stat = real_path.stat()
         content = ""
         try:
@@ -118,11 +133,17 @@ class BlockStore:
 
     def read(self, rel_path: str) -> str:
         target = self._resolve(rel_path)
+        root = self.workspace_root if rel_path.startswith("workspace/") else self.user_root
+        target = _safe_index_file(root, target)
+        if target is None:
+            raise FileNotFoundError(rel_path)
         return target.read_text(encoding="utf-8", errors="replace")
 
     def exists(self, rel_path: str) -> bool:
         try:
-            return self._resolve(rel_path).is_file()
+            target = self._resolve(rel_path)
+            root = self.workspace_root if rel_path.startswith("workspace/") else self.user_root
+            return _safe_index_file(root, target) is not None
         except ValueError:
             return False
 
@@ -228,10 +249,10 @@ class BlockStore:
             root = self.user_root
         else:
             raise ValueError(f"invalid scope: {scope!r}")
-        target = (root / sub).resolve()
-        # symlink safety: target must live under root
+        root = Path(os.path.abspath(os.fspath(root)))
+        target = Path(os.path.abspath(os.fspath(root / sub)))
         try:
-            target.relative_to(root.resolve())
+            target.relative_to(root)
         except ValueError as exc:
             raise ValueError(f"invalid path (escapes scope root): {rel_path!r}") from exc
         return target

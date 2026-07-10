@@ -76,6 +76,33 @@ def test_memory_index_returns_none_when_no_entries():
     assert render_memory_index(a, budget_tokens=500) is None
 
 
+def test_memory_index_omits_sensitive_cached_entries_and_recent_files():
+    a = _agent()
+    a.memory_store.list.return_value = [
+        MagicMock(
+            path="workspace/notes/.env",
+            size_chars=100,
+            first_line="opaque-secret",
+        )
+    ]
+    a.memory.recent_files = [".env", "src/app.py"]
+    a.session = {
+        "memory": {
+            "file_summaries": {
+                ".env": "opaque-secret",
+                "src/app.py": "safe summary",
+            }
+        }
+    }
+    a.feature_enabled.return_value = True
+
+    text = render_memory_index(a, budget_tokens=500)
+
+    assert ".env" not in text
+    assert "opaque-secret" not in text
+    assert "src/app.py -> safe summary" in text
+
+
 def test_memory_index_renders_recent_summary_without_durable_entries(tmp_path):
     agent = build_agent(tmp_path)
     agent.memory.remember_file("README.md")
@@ -148,6 +175,19 @@ def test_project_structure_returns_none_when_empty_tree():
     a = _agent()
     a.repo_map.top_level_tree.return_value = []
     assert render_project_structure(a, budget_tokens=500) is None
+
+
+def test_project_structure_omits_sensitive_cached_tree_entries():
+    a = _agent()
+    a.repo_map.top_level_tree.return_value = [
+        {"path": ".ssh", "file_count": 2},
+        {"path": "src", "file_count": 3},
+    ]
+
+    text = render_project_structure(a, budget_tokens=500)
+
+    assert ".ssh" not in text
+    assert "src" in text
 
 
 def test_checkpoint_none_when_empty():

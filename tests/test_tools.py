@@ -101,8 +101,13 @@ def test_search_rg_return_codes_are_truthful(tmp_path, monkeypatch):
         subprocess.CompletedProcess([], 1, stdout="", stderr=""),
         subprocess.CompletedProcess([], 2, stdout="", stderr="regex parse error\n"),
     ])
-    monkeypatch.setattr("pico.tools.shutil.which", lambda _name: "/usr/bin/rg")
-    monkeypatch.setattr("pico.tools.subprocess.run", lambda *_args, **_kwargs: next(results))
+    calls = []
+
+    def fake_rg(executable, args, **kwargs):
+        calls.append((executable, list(args), kwargs))
+        return next(results)
+
+    monkeypatch.setattr("pico.tools.run_hardened_rg", fake_rg, raising=False)
     context = ToolContext(
         root=tmp_path,
         path_resolver=lambda raw_path: (tmp_path / raw_path).resolve(),
@@ -110,6 +115,7 @@ def test_search_rg_return_codes_are_truthful(tmp_path, monkeypatch):
         depth=0,
         max_depth=1,
         spawn_delegate=lambda args: "unused",
+        trusted_executables={"rg": "/frozen/rg"},
     )
 
     assert tool_search(context, {"pattern": "hit"}) == "sample.txt:1:hit"
@@ -117,6 +123,55 @@ def test_search_rg_return_codes_are_truthful(tmp_path, monkeypatch):
     with pytest.raises(subprocess.CalledProcessError) as exc_info:
         tool_search(context, {"pattern": "["})
     assert exc_info.value.returncode == 2
+    assert all(call[0] == "/frozen/rg" for call in calls)
+    assert all(call[1][-2] == "--" for call in calls)
+
+
+def test_search_without_frozen_rg_never_rescans_path(tmp_path, monkeypatch):
+    (tmp_path / "sample.txt").write_text("needle\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "shutil.which",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("runtime PATH rescan")
+        ),
+    )
+    context = ToolContext(
+        root=tmp_path,
+        path_resolver=lambda raw_path: (tmp_path / raw_path).resolve(),
+        shell_env_provider=lambda: {"PWD": str(tmp_path)},
+        depth=0,
+        max_depth=1,
+        spawn_delegate=lambda args: "unused",
+        trusted_executables={},
+    )
+
+    result = tool_search(context, {"pattern": "needle", "path": "."})
+
+    assert "sample.txt:1:needle" in result
+
+
+def test_search_passes_option_shaped_pattern_as_literal(tmp_path, monkeypatch):
+    captured = {}
+
+    def fake_rg(executable, args, **kwargs):
+        captured["executable"] = executable
+        captured["args"] = list(args)
+        return subprocess.CompletedProcess(args, 1, stdout="", stderr="")
+
+    monkeypatch.setattr("pico.tools.run_hardened_rg", fake_rg, raising=False)
+    context = ToolContext(
+        root=tmp_path,
+        path_resolver=lambda raw_path: (tmp_path / raw_path).resolve(),
+        shell_env_provider=lambda: {"PWD": str(tmp_path)},
+        depth=0,
+        max_depth=1,
+        spawn_delegate=lambda args: "unused",
+        trusted_executables={"rg": "/frozen/rg"},
+    )
+
+    assert tool_search(context, {"pattern": "--config=attack", "path": "."}) == "(no matches)"
+    assert captured["executable"] == "/frozen/rg"
+    assert captured["args"][-4:] == ["-e", "--config=attack", "--", str(tmp_path)]
 
 
 @pytest.mark.parametrize(

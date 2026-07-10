@@ -21,6 +21,7 @@ from .recovery_policy import (
     evaluate_command_approval,
     snapshot_eligibility,
 )
+from .safe_subprocess import run_hardened_git
 from .workspace import clip
 
 
@@ -634,13 +635,20 @@ def _fill_git_head_before_file_states(agent, raw_paths, before_file_states):
     if not missing_paths:
         return states
 
+    git_executable = getattr(agent, "trusted_executables", {}).get("git")
+    if not git_executable:
+        return states
+
     for path in missing_paths:
-        proc = subprocess.run(
-            ["git", "show", "HEAD:" + path],
-            cwd=str(agent.root),
-            capture_output=True,
-            check=False,
-        )
+        try:
+            proc = run_hardened_git(
+                git_executable,
+                ["show", "HEAD:" + path],
+                cwd=agent.root,
+                text=False,
+            )
+        except (OSError, subprocess.SubprocessError, ValueError):
+            continue
         if proc.returncode != 0:
             continue
         info = agent.checkpoint_store.write_blob(proc.stdout, "text")

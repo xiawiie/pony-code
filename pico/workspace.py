@@ -4,12 +4,15 @@
 这份快照刻意保持小而稳定：主要包含 Git 事实和少量白名单项目文档。
 """
 
-import textwrap
 import hashlib
 import json
+import os
+import stat
+import textwrap
 from datetime import datetime, timezone
 from pathlib import Path
 
+from pico import security as securitylib
 from pico.safe_subprocess import (
     build_trusted_executables,
     discover_lexical_repo_root,
@@ -21,6 +24,51 @@ MAX_TOOL_OUTPUT = 4000
 # 我们不会预加载整个仓库，只会先给模型一小份“导航包”。
 DOC_NAMES = ("AGENTS.md", "README.md", "pyproject.toml", "package.json")
 IGNORED_PATH_NAMES = {".git", ".pico", "__pycache__", ".pytest_cache", ".ruff_cache", ".venv", "venv"}
+
+
+def _safe_index_path(root, candidate):
+    """Return a lexical in-root, non-sensitive path without following it."""
+    root = Path(os.path.abspath(os.fspath(root)))
+    candidate = Path(candidate)
+    if not candidate.is_absolute():
+        candidate = root / candidate
+    candidate = Path(os.path.abspath(os.fspath(candidate)))
+    try:
+        relative = candidate.relative_to(root)
+    except ValueError:
+        return None
+    if securitylib.is_sensitive_path(relative.as_posix()):
+        return None
+    return candidate
+
+
+def _safe_index_file(root, candidate):
+    candidate = _safe_index_path(root, candidate)
+    if candidate is None:
+        return None
+    try:
+        return securitylib.require_regular_no_symlink(candidate)
+    except (FileNotFoundError, OSError, ValueError):
+        return None
+
+
+def _safe_index_directory(root, candidate):
+    candidate = _safe_index_path(root, candidate)
+    if candidate is None:
+        return None
+    current = Path(candidate.anchor)
+    mode = None
+    for part in candidate.parts[1:]:
+        current = current / part
+        try:
+            mode = current.lstat().st_mode
+        except OSError:
+            return None
+        if stat.S_ISLNK(mode):
+            return None
+        if current != candidate and not stat.S_ISDIR(mode):
+            return None
+    return candidate if mode is not None and stat.S_ISDIR(mode) else None
 
 
 def now():
@@ -108,23 +156,26 @@ class WorkspaceContext:
         for base in (repo_root, cwd):
             for name in DOC_NAMES:
                 path = base / name
-                if not path.exists():
+                safe_path = _safe_index_file(repo_root, path)
+                if safe_path is None:
                     continue
-                key = str(path.relative_to(repo_root))
+                key = str(safe_path.relative_to(repo_root))
                 if key in docs:
                     continue
-                docs[key] = clip(path.read_text(encoding="utf-8", errors="replace"), 1200)
+                text = safe_path.read_text(encoding="utf-8", errors="replace")
+                docs[key] = clip(securitylib.redact_text(text), 1200)
 
         # v2: 加载 ~/.pico/AGENTS.md 作为全局约定（可选，不存在或不可读时安静跳过）
         # 在函数内 lazy 求值 Path.home()，方便测试用 monkeypatch 隔离本机 home。
         try:
             global_agents_md = Path.home() / ".pico" / "AGENTS.md"
-            if global_agents_md.exists():
-                docs["<global>/AGENTS.md"] = clip(
-                    global_agents_md.read_text(encoding="utf-8", errors="replace"),
-                    1500,
-                )
-        except OSError:
+            global_agents_md = securitylib.require_regular_no_symlink(global_agents_md)
+            text = global_agents_md.read_text(encoding="utf-8", errors="replace")
+            docs["<global>/AGENTS.md"] = clip(
+                securitylib.redact_text(text),
+                1500,
+            )
+        except (OSError, ValueError):
             pass
 
         return cls(
