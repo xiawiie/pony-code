@@ -34,13 +34,14 @@ def test_case_insensitive():
     assert r.name == "structural"
 
 
-def test_budget_dict_has_four_sources():
+def test_budget_dict_has_five_sources():
     r = classify_intent("random")
     assert set(r.budget.keys()) == {
         "project_structure",
         "memory_index",
         "recalled_memory",
         "workspace_state",
+        "checkpoint",
     }
 
 

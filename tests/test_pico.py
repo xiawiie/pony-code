@@ -156,8 +156,17 @@ def test_agent_retries_after_empty_model_output(tmp_path):
     answer = agent.ask("Do the task")
 
     assert answer == "Recovered after retry."
+    notice = "model returned no actionable content"
     notices = [item["content"] for item in agent.session["history"] if item["role"] == "assistant"]
-    assert any("empty response" in item for item in notices)
+    assert not any(notice in item for item in notices)
+    assert not any(notice in str(item["content"]) for item in agent.session["messages"])
+    feedback_prompts = [
+        index
+        for index, prompt in enumerate(agent.model_client.prompts)
+        if "<pico:runtime_feedback>" in prompt
+    ]
+    assert feedback_prompts == [1]
+    assert notice in agent.model_client.prompts[1]
 
 
 def test_agent_retries_after_malformed_tool_payload(tmp_path):
@@ -175,8 +184,17 @@ def test_agent_retries_after_malformed_tool_payload(tmp_path):
 
     assert answer == "Recovered after malformed tool output."
     assert any(item["role"] == "tool" and item["name"] == "read_file" for item in agent.session["history"])
+    notice = "text tool call was malformed"
     notices = [item["content"] for item in agent.session["history"] if item["role"] == "assistant"]
-    assert any("valid <tool> call" in item for item in notices)
+    assert not any(notice in item for item in notices)
+    assert not any(notice in str(item["content"]) for item in agent.session["messages"])
+    feedback_prompts = [
+        index
+        for index, prompt in enumerate(agent.model_client.prompts)
+        if "<pico:runtime_feedback>" in prompt
+    ]
+    assert feedback_prompts == [1]
+    assert notice in agent.model_client.prompts[1]
 
 
 def test_agent_accepts_xml_write_file_tool(tmp_path):

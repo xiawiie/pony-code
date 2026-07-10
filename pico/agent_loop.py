@@ -280,7 +280,7 @@ class AgentLoop:
                 task_state,
                 "prompt_built",
                 {
-                    "prompt_metadata": request_metadata,
+                    "request_metadata": request_metadata,
                     "duration_ms": int((time.monotonic() - prompt_started_at) * 1000),
                 },
             )

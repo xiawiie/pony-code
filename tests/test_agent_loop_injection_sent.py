@@ -171,15 +171,21 @@ def test_one_snapshot_survives_retry_and_tool_step_while_feedback_is_one_shot(
         .read_text(encoding="utf-8")
         .splitlines()
     ]
-    prompt_metadata = [
-        event["prompt_metadata"]
+    prompt_built_metadata = [
+        event["request_metadata"]
         for event in events
         if event["event"] == "prompt_built"
     ]
+    assert prompt_built_metadata
+    assert all(
+        "prompt_metadata" not in event
+        for event in events
+        if event["event"] == "prompt_built"
+    )
     for event_name in ("model_requested", "action_decoded", "model_turn"):
         metadata = [
             event["request_metadata"]
             for event in events
             if event["event"] == event_name
         ]
-        assert metadata == prompt_metadata
+        assert metadata == prompt_built_metadata

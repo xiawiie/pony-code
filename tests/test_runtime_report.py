@@ -187,8 +187,9 @@ def test_trace_and_report_redact_secret_env_values(tmp_path):
 
     prompt_events = [event for event in trace_events if event["event"] == "prompt_built"]
     assert prompt_events
-    assert prompt_events[0]["prompt_metadata"]["secret_env_count"] >= 1
-    assert "OPENAI_API_KEY" in prompt_events[0]["prompt_metadata"]["secret_env_names"]
+    assert prompt_events[0]["request_metadata"]["secret_env_count"] >= 1
+    assert "OPENAI_API_KEY" in prompt_events[0]["request_metadata"]["secret_env_names"]
+    assert "prompt_metadata" not in prompt_events[0]
 
     tool_events = [event for event in trace_events if event["event"] == "tool_executed"]
     assert tool_events

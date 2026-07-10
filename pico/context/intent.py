@@ -8,8 +8,8 @@ The current-turn user message is scanned against four keyword sets:
 - ``default`` — anything else
 
 The intent picks a **budget profile** — a token budget for each of the
-four injection sources (project_structure, memory_index, recalled_memory,
-workspace_state). A debug intent, for example, gets a fatter
+five injection sources (project_structure, memory_index, recalled_memory,
+workspace_state, checkpoint). A debug intent, for example, gets a fatter
 workspace_state budget so branch/status/recent-commits reach the model.
 
 **First-match-wins.** Keywords are checked in a fixed priority order
