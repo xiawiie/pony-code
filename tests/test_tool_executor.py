@@ -1,18 +1,26 @@
+import json
 import subprocess
+from types import SimpleNamespace
+from unittest.mock import Mock
+
+import pytest
 
 from pico import FakeModelClient, Pico, SessionStore, WorkspaceContext
-from pico.tool_executor import ToolExecutor, ToolExecutionResult
+from pico.memory.tools import tool_memory_list, tool_memory_search
+from pico.tool_executor import ToolExecutor, ToolExecutionResult, _effect_class
 
 
-def build_agent(tmp_path):
+def build_agent(tmp_path, outputs=None, **kwargs):
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
     workspace = WorkspaceContext.build(tmp_path)
     store = SessionStore(tmp_path / ".pico" / "sessions")
+    approval_policy = kwargs.pop("approval_policy", "auto")
     return Pico(
-        model_client=FakeModelClient([]),
+        model_client=FakeModelClient([] if outputs is None else outputs),
         workspace=workspace,
         session_store=store,
-        approval_policy="auto",
+        approval_policy=approval_policy,
+        **kwargs,
     )
 
 
@@ -24,6 +32,14 @@ def init_git_repo(tmp_path):
     subprocess.run(["git", "commit", "-m", "initial"], cwd=tmp_path, check=True, capture_output=True)
 
 
+def read_trace(agent):
+    return [
+        json.loads(line)
+        for line in agent.run_store.trace_path(agent.current_task_state).read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+
 def test_tool_executor_returns_content_and_metadata_without_side_channel(tmp_path):
     agent = build_agent(tmp_path)
 
@@ -32,8 +48,150 @@ def test_tool_executor_returns_content_and_metadata_without_side_channel(tmp_pat
     assert isinstance(result, ToolExecutionResult)
     assert "# README.md" in result.content
     assert result.metadata["tool_status"] == "ok"
+    assert result.metadata["effect_class"] == "read_only"
     assert result.metadata["read_only"] is True
     assert result.metadata["workspace_changed"] is False
+
+
+def test_effect_class_table_is_explicit():
+    assert _effect_class("read_file", False) == "read_only"
+    assert _effect_class("delegate", False) == "read_only"
+    assert _effect_class("memory_save", False) == "memory_write"
+    assert _effect_class("write_file", True) == "workspace_write"
+    assert _effect_class("unknown_safe", False) == "read_only"
+    assert _effect_class("unknown_risky", True) == "workspace_write"
+
+
+@pytest.mark.parametrize(
+    ("name", "arguments", "options", "expected_effect"),
+    [
+        ("unknown_tool", {}, {}, "workspace_write"),
+        (
+            "write_file",
+            {"path": "blocked.txt", "content": "no"},
+            {"allowed_tools": {"read_file"}},
+            "workspace_write",
+        ),
+        ("read_file", {"path": "missing.txt"}, {}, "read_only"),
+        ("run_shell", {"command": "rm -f victim.txt", "timeout": 5}, {}, "workspace_write"),
+        (
+            "run_shell",
+            {"command": "printf no-op", "timeout": 5},
+            {"approval_policy": "never"},
+            "workspace_write",
+        ),
+    ],
+)
+def test_all_early_rejections_have_effect_class_metadata(tmp_path, name, arguments, options, expected_effect):
+    agent = build_agent(tmp_path, **options)
+
+    result = agent.execute_tool(name, arguments)
+
+    assert result.metadata["tool_status"] == "rejected"
+    assert result.metadata["effect_class"] in {"read_only", "memory_write", "workspace_write"}
+    assert result.metadata["effect_class"] == expected_effect
+    assert result.metadata["read_only"] is (expected_effect == "read_only")
+
+
+def test_read_only_agent_rejects_memory_write_before_runner(tmp_path):
+    agent = build_agent(tmp_path, read_only=True)
+    runner = Mock(return_value="must not run")
+    agent.tools["memory_save"]["run"] = runner
+
+    result = agent.execute_tool("memory_save", {"note": "remember this"})
+
+    assert result.metadata["tool_status"] == "rejected"
+    assert result.metadata["effect_class"] == "memory_write"
+    assert result.metadata["read_only"] is False
+    assert result.metadata["tool_error_code"] == "read_only_block"
+    runner.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("name", "arguments"),
+    [
+        ("read_file", {"path": "README.md"}),
+        ("delegate", {"task": "inspect README", "max_steps": 1}),
+    ],
+)
+def test_read_only_agent_allows_read_effects(tmp_path, name, arguments):
+    agent = build_agent(tmp_path, read_only=True)
+    agent.tools[name]["run"] = Mock(return_value="ok")
+
+    result = agent.execute_tool(name, arguments)
+
+    assert result.metadata["tool_status"] == "ok"
+    assert result.metadata["effect_class"] == "read_only"
+    assert result.metadata["read_only"] is True
+
+
+def test_memory_write_is_audited_without_workspace_snapshot_or_recovery_checkpoint(tmp_path):
+    agent = build_agent(
+        tmp_path,
+        outputs=[
+            '<tool>{"name":"memory_save","args":{"note":"remember this"}}</tool>',
+            "<final>done</final>",
+        ],
+    )
+
+    assert agent.ask("remember this") == "done"
+
+    memory_event = next(
+        event
+        for event in read_trace(agent)
+        if event.get("event") == "tool_executed" and event.get("name") == "memory_save"
+    )
+    assert memory_event["tool_status"] == "ok"
+    assert memory_event["effect_class"] == "memory_write"
+    assert memory_event["read_only"] is False
+    assert memory_event["tool_change_id"]
+    assert memory_event["affected_paths"] == []
+    assert agent.current_task_state.recovery_checkpoint_id == ""
+
+
+def test_runner_keyboard_interrupt_finalizes_pending_change_then_reraises(tmp_path):
+    agent = build_agent(tmp_path)
+    agent.tools["write_file"]["run"] = lambda args: (_ for _ in ()).throw(KeyboardInterrupt())
+
+    with pytest.raises(KeyboardInterrupt):
+        agent.execute_tool("write_file", {"path": "x.txt", "content": "x"})
+
+    records = agent.checkpoint_store.list_tool_change_records()
+    assert records[-1]["status"] == "interrupted"
+
+
+def test_missing_memory_dependencies_and_files_never_report_ok(tmp_path, monkeypatch):
+    agent = build_agent(tmp_path)
+    agent.tools["memory_list"]["run"] = lambda args: tool_memory_list(
+        SimpleNamespace(memory_store=None), args
+    )
+    missing_store = agent.execute_tool("memory_list", {})
+    assert missing_store.metadata["tool_status"] == "error"
+
+    agent.tools["memory_search"]["run"] = lambda args: tool_memory_search(
+        SimpleNamespace(memory_retrieval=None), args
+    )
+    missing_retrieval = agent.execute_tool("memory_search", {"query": "cache"})
+    assert missing_retrieval.metadata["tool_status"] == "error"
+
+    missing_file = agent.execute_tool("memory_read", {"path": "workspace/notes/missing.md"})
+    assert missing_file.metadata["tool_status"] == "error"
+
+    context = agent.tools["memory_read"]["run"].args[0]
+    monkeypatch.setattr(context.memory_store, "read", Mock(side_effect=OSError("memory disk failed")))
+    io_error = agent.execute_tool("memory_read", {"path": "workspace/notes/other.md"})
+    assert io_error.metadata["tool_status"] == "error"
+
+
+def test_invalid_memory_topic_is_rejected_before_runner(tmp_path):
+    agent = build_agent(tmp_path)
+    runner = Mock(return_value="must not run")
+    agent.tools["memory_save"]["run"] = runner
+
+    result = agent.execute_tool("memory_save", {"note": "remember this", "topic": "../invalid"})
+
+    assert result.metadata["tool_status"] == "rejected"
+    runner.assert_not_called()
 
 
 def test_pico_run_tool_keeps_compatibility_metadata(tmp_path):
@@ -307,13 +465,13 @@ def test_generic_path_arg_registry_covers_list_arg(tmp_path):
     assert affected == {"a.txt", "b.txt"}
 
 
-def test_recovery_lifecycle_uses_effect_class_not_risky_flag(tmp_path):
+def test_delegate_is_read_only_and_does_not_create_a_tool_change(tmp_path):
     agent = build_agent(tmp_path)
-    agent.model_client.outputs.append("<final>delegated</final>")
+    agent.tools["delegate"]["run"] = Mock(return_value="delegated")
 
     result = agent.execute_tool("delegate", {"task": "inspect README", "max_steps": 1})
 
-    assert result.metadata["tool_change_id"]
-    tool_change = agent.checkpoint_store.load_tool_change_record(result.metadata["tool_change_id"])
-    assert tool_change["tool_name"] == "delegate"
-    assert tool_change["effect_class"] == "workspace_write"
+    assert result.metadata["effect_class"] == "read_only"
+    assert result.metadata["read_only"] is True
+    assert "tool_change_id" not in result.metadata
+    assert agent.checkpoint_store.list_tool_change_records() == []

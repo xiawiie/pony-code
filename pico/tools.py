@@ -162,6 +162,9 @@ def validate_tool(context, name, args):
 
     if name == "write_file":
         path = context.path(args["path"])
+        refusal = _refuse_user_notes_write(context, path)
+        if refusal:
+            raise ValueError(refusal)
         if path.exists() and path.is_dir():
             raise ValueError("path is a directory")
         if "content" not in args:
@@ -172,6 +175,9 @@ def validate_tool(context, name, args):
         # patch_file 故意做得很严格：old_text 必须精确命中且只能出现一次，
         # 这样修改行为才是确定的，失败原因也更容易解释。
         path = context.path(args["path"])
+        refusal = _refuse_user_notes_write(context, path)
+        if refusal:
+            raise ValueError(refusal)
         if not path.is_file():
             raise ValueError("path is not a file")
         old_text = str(args.get("old_text", ""))
@@ -235,6 +241,12 @@ def validate_tool(context, name, args):
         scope = str(args.get("scope", "workspace"))
         if scope not in ("workspace", "user"):
             raise ValueError("scope must be 'workspace' or 'user'")
+        topic = str(args.get("topic", "")).strip()
+        if topic and not re.match(r"^[A-Za-z0-9][A-Za-z0-9_-]*$", topic):
+            raise ValueError("invalid topic")
+        note_type = str(args.get("type", "feedback")).strip()
+        if not note_type:
+            raise ValueError("type must not be empty")
         return
 
     if name == "repo_lookup":
@@ -359,9 +371,6 @@ def _refuse_user_notes_write(context, path):
 
 def tool_write_file(context, args):
     path = context.path(args["path"])
-    refusal = _refuse_user_notes_write(context, path)
-    if refusal:
-        return refusal
     content = str(args["content"])
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
@@ -370,9 +379,6 @@ def tool_write_file(context, args):
 
 def tool_patch_file(context, args):
     path = context.path(args["path"])
-    refusal = _refuse_user_notes_write(context, path)
-    if refusal:
-        return refusal
     if not path.is_file():
         raise ValueError("path is not a file")
     old_text = str(args.get("old_text", ""))

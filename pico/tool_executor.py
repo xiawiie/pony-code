@@ -37,11 +37,11 @@ _EFFECT_CLASS_BY_TOOL = {
     "run_shell": "workspace_write",
     "write_file": "workspace_write",
     "patch_file": "workspace_write",
-    "delegate": "workspace_write",
+    "delegate": "read_only",
     "memory_list": "read_only",
     "memory_read": "read_only",
     "memory_search": "read_only",
-    "memory_save": "read_only",
+    "memory_save": "memory_write",
     "repo_lookup": "read_only",
 }
 
@@ -62,10 +62,11 @@ def _effect_class(name, risky):
 
 def _metadata(
     tool_status,
+    *,
+    effect_class,
     tool_error_code="",
     security_event_type="",
     risk_level="low",
-    read_only=True,
     affected_paths=None,
     workspace_changed=False,
     workspace_fingerprint="",
@@ -76,7 +77,8 @@ def _metadata(
         "tool_error_code": tool_error_code,
         "security_event_type": security_event_type,
         "risk_level": risk_level,
-        "read_only": read_only,
+        "effect_class": effect_class,
+        "read_only": effect_class == "read_only",
         "affected_paths": list(affected_paths or []),
         "workspace_changed": bool(workspace_changed),
         "diff_summary": list(diff_summary or []),
@@ -106,26 +108,43 @@ class ToolExecutor:
 
     def execute(self, name, args):
         agent = self.agent
+        tool = agent.tools.get(name)
+        if tool is None and name not in _EFFECT_CLASS_BY_TOOL:
+            effect_class = "workspace_write"
+        else:
+            effect_class = _effect_class(name, bool(tool and tool["risky"]))
+
         if agent.allowed_tools is not None and name not in agent.allowed_tools:
             return ToolExecutionResult(
                 content=f"error: tool '{name}' is not allowed in this run",
                 metadata=_metadata(
                     "rejected",
+                    effect_class=effect_class,
                     tool_error_code="tool_not_allowed",
                     risk_level="high",
-                    read_only=False,
                 ),
             )
 
-        tool = agent.tools.get(name)
         if tool is None:
             return ToolExecutionResult(
                 content=f"error: unknown tool '{name}'",
                 metadata=_metadata(
                     "rejected",
+                    effect_class=effect_class,
                     tool_error_code="unknown_tool",
                     risk_level="high",
-                    read_only=False,
+                ),
+            )
+
+        if agent.read_only and effect_class != "read_only":
+            return ToolExecutionResult(
+                content=f"error: read-only mode blocks {name}",
+                metadata=_metadata(
+                    "rejected",
+                    effect_class=effect_class,
+                    tool_error_code="read_only_block",
+                    security_event_type="read_only_block",
+                    risk_level="high",
                 ),
             )
 
@@ -141,10 +160,10 @@ class ToolExecutor:
                 content=message,
                 metadata=_metadata(
                     "rejected",
+                    effect_class=effect_class,
                     tool_error_code="invalid_arguments",
                     security_event_type=security_event_type,
                     risk_level="high" if tool["risky"] else "low",
-                    read_only=not tool["risky"],
                 ),
             )
 
@@ -153,9 +172,9 @@ class ToolExecutor:
                 content=f"error: repeated identical tool call for {name}; choose a different tool or return a final answer",
                 metadata=_metadata(
                     "rejected",
+                    effect_class=effect_class,
                     tool_error_code="repeated_identical_call",
                     risk_level="high" if tool["risky"] else "low",
-                    read_only=not tool["risky"],
                 ),
             )
 
@@ -172,9 +191,9 @@ class ToolExecutor:
                     metadata=_add_command_policy(
                         _metadata(
                             "rejected",
+                            effect_class=effect_class,
                             tool_error_code="command_rejected",
                             risk_level="high",
-                            read_only=False,
                         ),
                         command_risk,
                         command_approval,
@@ -186,10 +205,10 @@ class ToolExecutor:
                     metadata=_add_command_policy(
                         _metadata(
                             "rejected",
+                            effect_class=effect_class,
                             tool_error_code="command_approval_required",
                             security_event_type="command_approval_required",
                             risk_level="high",
-                            read_only=False,
                         ),
                         command_risk,
                         command_approval,
@@ -202,10 +221,10 @@ class ToolExecutor:
                 metadata=_add_command_policy(
                     _metadata(
                         "rejected",
+                        effect_class=effect_class,
                         tool_error_code="approval_denied",
                         security_event_type="read_only_block" if agent.read_only else "approval_denied",
                         risk_level="high",
-                        read_only=False,
                     ),
                     command_risk,
                     command_approval,
@@ -215,10 +234,10 @@ class ToolExecutor:
         # 到这里我们准备真的跑工具，可以开一条 pending 记录。
         turn_id = getattr(getattr(agent, "current_task_state", None), "task_id", "") or ""
         parent_checkpoint = current_recovery_checkpoint_id(agent.session)
-        effect_class = _effect_class(name, tool["risky"])
-        records_recovery = effect_class != "read_only"
+        records_tool_change = effect_class in {"memory_write", "workspace_write"}
+        records_recovery = effect_class == "workspace_write"
         pending_record = None
-        if records_recovery:
+        if records_tool_change:
             pending_record = agent.tool_change_recorder.start(
                 checkpoint_id=parent_checkpoint,
                 turn_id=turn_id,
@@ -227,22 +246,33 @@ class ToolExecutor:
                 input_summary=_summarize_input(args),
             )
 
-        before_paths = _direct_tool_candidate_paths(name, args)
+        before_paths = _direct_tool_candidate_paths(name, args) if records_recovery else []
         # 直接改文件的工具（write_file/patch_file）在执行前只对它们要碰的那一小
         # 组路径落 blob；这样恢复能拿到真实字节，也不会去读整个 workspace。
         before_snapshot = _capture_path_snapshot(agent, before_paths) if records_recovery else {}
         before_file_states = _capture_before_file_states_for_paths(agent, before_paths) if records_recovery else {}
         before_existed = set(before_snapshot.keys())
         observer_before = None
-        if name == "run_shell":
+        if records_recovery and name == "run_shell":
             # run_shell 只做轻量的 before 观察，不预先落 blob。真正的 before-blob
             # 会在观察到 delta 之后按需生成（见下面的 _lazy_capture_before_file_states）。
             observer_before = agent.workspace_observer.capture()
 
         try:
-            content = clip(tool["run"](args))
+            try:
+                content = clip(tool["run"](args))
+            except KeyboardInterrupt:
+                if pending_record is not None:
+                    try:
+                        agent.tool_change_recorder.finalize(
+                            pending_record["tool_change_id"],
+                            status="interrupted",
+                        )
+                    except Exception:
+                        pass
+                raise
             shell_side_effects = []
-            if name == "run_shell" and observer_before is not None:
+            if records_recovery and name == "run_shell" and observer_before is not None:
                 observer_after = agent.workspace_observer.capture()
                 delta = agent.workspace_observer.diff(observer_before, observer_after)
                 affected_paths = list(delta.get("changed_paths", []))
@@ -262,10 +292,14 @@ class ToolExecutor:
                 shell_side_effects = _summaries_for_paths(agent, affected_paths, before_existed)
                 diff_summary = shell_side_effects
                 workspace_changed = bool(affected_paths)
-            else:
-                after_snapshot = _capture_path_snapshot(agent, before_paths) if records_recovery else before_snapshot
+            elif records_recovery:
+                after_snapshot = _capture_path_snapshot(agent, before_paths)
                 affected_paths, diff_summary = agent.diff_workspace_snapshots(before_snapshot, after_snapshot)
                 workspace_changed = bool(affected_paths)
+            else:
+                affected_paths = []
+                diff_summary = []
+                workspace_changed = False
 
             tool_status = "ok"
             tool_error_code = ""
@@ -293,7 +327,7 @@ class ToolExecutor:
                 tool_error_code=tool_error_code,
                 security_event_type="",
                 risk_level="high" if tool["risky"] else "low",
-                read_only=not tool["risky"],
+                effect_class=effect_class,
                 workspace_changed=workspace_changed,
                 diff_summary=diff_summary,
                 shell_side_effects=shell_side_effects if name == "run_shell" else [],
@@ -304,7 +338,7 @@ class ToolExecutor:
             return ToolExecutionResult(content=content, metadata=metadata)
         except Exception as exc:
             shell_side_effects = []
-            if name == "run_shell" and observer_before is not None:
+            if records_recovery and name == "run_shell" and observer_before is not None:
                 try:
                     observer_after = agent.workspace_observer.capture()
                     delta = agent.workspace_observer.diff(observer_before, observer_after)
@@ -328,10 +362,14 @@ class ToolExecutor:
                     diff_summary = []
                     workspace_changed = False
                     shell_side_effects = []
-            else:
-                after_snapshot = _capture_path_snapshot(agent, before_paths) if records_recovery else before_snapshot
+            elif records_recovery:
+                after_snapshot = _capture_path_snapshot(agent, before_paths)
                 affected_paths, diff_summary = agent.diff_workspace_snapshots(before_snapshot, after_snapshot)
                 workspace_changed = bool(affected_paths)
+            else:
+                affected_paths = []
+                diff_summary = []
+                workspace_changed = False
             security_event_type = "path_escape" if "path escapes workspace" in str(exc) else ""
             tool_status = "partial_success" if workspace_changed else "error"
             tool_error_code = "tool_partial_success" if workspace_changed else "tool_failed"
@@ -348,7 +386,7 @@ class ToolExecutor:
                 tool_error_code=tool_error_code,
                 security_event_type=security_event_type,
                 risk_level="high" if tool["risky"] else "low",
-                read_only=not tool["risky"],
+                effect_class=effect_class,
                 workspace_changed=workspace_changed,
                 diff_summary=diff_summary,
                 shell_side_effects=shell_side_effects if name == "run_shell" else [],
@@ -382,7 +420,7 @@ def _finalize_tool_side_effects(
     tool_error_code,
     security_event_type,
     risk_level,
-    read_only,
+    effect_class,
     workspace_changed,
     diff_summary,
     shell_side_effects,
@@ -396,23 +434,25 @@ def _finalize_tool_side_effects(
         tool_error_code=tool_error_code,
         security_event_type=security_event_type,
         risk_level=risk_level,
-        read_only=read_only,
+        effect_class=effect_class,
         affected_paths=affected_paths,
         workspace_changed=workspace_changed,
-        workspace_fingerprint=agent.workspace.fingerprint(),
+        workspace_fingerprint=agent.workspace.fingerprint() if effect_class == "workspace_write" else "",
         diff_summary=diff_summary,
     )
     metadata = _add_command_policy(metadata, command_risk, command_approval)
 
-    file_entries = _build_file_entries(
-        agent,
-        name,
-        args,
-        affected_paths,
-        before_snapshot,
-        before_file_states,
-        before_existed,
-    )
+    file_entries = []
+    if effect_class == "workspace_write":
+        file_entries = _build_file_entries(
+            agent,
+            name,
+            args,
+            affected_paths,
+            before_snapshot,
+            before_file_states,
+            before_existed,
+        )
     if pending_record is not None:
         terminal_status = _tool_change_terminal_status(tool_status)
         error_payload = _tool_change_error_payload(

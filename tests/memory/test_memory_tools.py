@@ -57,10 +57,10 @@ def test_read_supports_paging(tmp_path):
     assert "line200" not in out
 
 
-def test_read_missing_returns_error(tmp_path):
+def test_read_missing_raises(tmp_path):
     ctx = _context(tmp_path)
-    out = tool_memory_read(ctx, {"path": "workspace/notes/missing.md"})
-    assert "not found" in out.lower() or "error" in out.lower()
+    with pytest.raises(FileNotFoundError):
+        tool_memory_read(ctx, {"path": "workspace/notes/missing.md"})
 
 
 def test_search_returns_matches(tmp_path):
@@ -91,16 +91,16 @@ def test_save_appends_to_workspace_agent_notes(tmp_path):
     assert "bcrypt rounds > 12 timeout" in contents
 
 
-def test_save_rejects_empty(tmp_path):
+def test_save_empty_raises(tmp_path):
     ctx = _context(tmp_path)
-    out = tool_memory_save(ctx, {"note": ""})
-    assert "error" in out.lower()
+    with pytest.raises(ValueError, match="note must not be empty"):
+        tool_memory_save(ctx, {"note": ""})
 
 
-def test_save_rejects_too_long(tmp_path):
+def test_save_too_long_raises(tmp_path):
     ctx = _context(tmp_path)
-    out = tool_memory_save(ctx, {"note": "x" * 501})
-    assert "error" in out.lower()
+    with pytest.raises(ValueError, match="note exceeds"):
+        tool_memory_save(ctx, {"note": "x" * 501})
 
 
 def test_save_rejects_unknown_scope(tmp_path):
@@ -138,5 +138,33 @@ def test_tool_examples_present():
 
 def test_effect_class_for_new_tools_is_read_only():
     from pico.tool_executor import _EFFECT_CLASS_BY_TOOL
-    for name in ("memory_list", "memory_read", "memory_search", "memory_save", "repo_lookup"):
+    for name in ("memory_list", "memory_read", "memory_search", "repo_lookup"):
         assert _EFFECT_CLASS_BY_TOOL[name] == "read_only"
+    assert _EFFECT_CLASS_BY_TOOL["memory_save"] == "memory_write"
+
+
+@pytest.mark.parametrize(
+    ("runner", "args", "message"),
+    [
+        (tool_memory_list, {}, "memory_store unavailable"),
+        (tool_memory_read, {"path": "workspace/notes/auth.md"}, "memory_store unavailable"),
+        (tool_memory_save, {"note": "remember this"}, "memory_store unavailable"),
+        (tool_memory_search, {"query": "cache"}, "memory_retrieval unavailable"),
+    ],
+)
+def test_memory_runners_raise_when_dependencies_are_unavailable(runner, args, message):
+    context = SimpleNamespace(memory_store=None, memory_retrieval=None)
+
+    with pytest.raises(RuntimeError, match=message):
+        runner(context, args)
+
+
+def test_memory_read_propagates_io_error(tmp_path, monkeypatch):
+    ctx = _context(tmp_path)
+
+    def fail_read(path):
+        raise OSError("memory disk failed")
+
+    monkeypatch.setattr(ctx.memory_store, "read", fail_read)
+    with pytest.raises(OSError, match="memory disk failed"):
+        tool_memory_read(ctx, {"path": "workspace/notes/auth.md"})

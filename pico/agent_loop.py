@@ -385,12 +385,7 @@ class AgentLoop:
                 result = tool_result.content
                 metadata = dict(tool_result.metadata or {})
                 tool_change_id = str(metadata.get("tool_change_id", "") or "")
-                effect_class = str(
-                    metadata.get(
-                        "effect_class",
-                        "read_only" if metadata.get("read_only") else "workspace_write",
-                    )
-                )
+                effect_class = str(metadata["effect_class"])
                 if tool_change_id and effect_class == "workspace_write":
                     run_tool_change_ids.append(tool_change_id)
                 display_result, digest_meta = _prepare_tool_result(

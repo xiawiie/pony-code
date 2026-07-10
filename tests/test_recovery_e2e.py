@@ -57,6 +57,33 @@ def test_single_user_request_creates_one_turn_checkpoint_for_multiple_tool_chang
     assert checkpoint["checkpoint_id"] == agent.current_task_state.recovery_checkpoint_id
 
 
+def test_memory_save_creates_audit_without_recoverable_turn_checkpoint(tmp_path):
+    agent = build_agent(
+        tmp_path,
+        [
+            '<tool>{"name":"memory_save","args":{"note":"remember this"}}</tool>',
+            "<final>done</final>",
+        ],
+    )
+
+    assert agent.ask("remember this") == "done"
+
+    record = next(
+        item
+        for item in agent.checkpoint_store.list_tool_change_records()
+        if item["tool_name"] == "memory_save"
+    )
+    assert record["effect_class"] == "memory_write"
+    assert record["affected_paths"] == []
+    assert record["file_entries"] == []
+    assert not [
+        item
+        for item in agent.checkpoint_store.list_checkpoint_records()
+        if item["checkpoint_type"] == "turn"
+    ]
+    assert agent.current_task_state.recovery_checkpoint_id == ""
+
+
 def test_real_checkpoint_can_preview_and_apply_restore(tmp_path):
     agent = build_agent(
         tmp_path,

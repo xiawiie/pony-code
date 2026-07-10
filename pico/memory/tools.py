@@ -9,7 +9,7 @@
 
 from __future__ import annotations
 
-from pico.memory.block_store import MAX_NOTE_CHARS, BlockStore
+from pico.memory.block_store import BlockStore
 from pico.memory.retrieval import Retrieval
 
 
@@ -31,7 +31,7 @@ def _now_ts() -> float:
 def tool_memory_list(context, args: dict) -> str:
     store: BlockStore = getattr(context, "memory_store", None)
     if store is None:
-        return "memory_store unavailable"
+        raise RuntimeError("memory_store unavailable")
     prefix = str(args.get("prefix", "")).strip()
     entries = store.list()
     if prefix:
@@ -61,24 +61,13 @@ def tool_memory_list(context, args: dict) -> str:
 def tool_memory_read(context, args: dict) -> str:
     store: BlockStore = getattr(context, "memory_store", None)
     if store is None:
-        return "memory_store unavailable"
+        raise RuntimeError("memory_store unavailable")
     path = str(args.get("path", "")).strip()
-    if not path:
-        return "error: path must not be empty"
-    try:
-        raw = store.read(path)
-    except FileNotFoundError:
-        return f"error: memory file not found: {path}"
-    except ValueError as exc:
-        return f"error: {exc}"
-    except OSError as exc:
-        return f"error: {exc}"
+    raw = store.read(path)
 
     lines = raw.splitlines()
-    start = max(1, int(args.get("start", 1) or 1))
+    start = int(args.get("start", 1) or 1)
     end = int(args.get("end", 200) or 200)
-    if end < start:
-        return "error: end must be >= start"
     slice_lines = lines[start - 1 : end]
     numbered = [f"{start + i:>4}: {line}" for i, line in enumerate(slice_lines)]
     footer = ""
@@ -91,12 +80,9 @@ def tool_memory_read(context, args: dict) -> str:
 def tool_memory_search(context, args: dict) -> str:
     retrieval: Retrieval = getattr(context, "memory_retrieval", None)
     if retrieval is None:
-        return "memory_retrieval unavailable"
+        raise RuntimeError("memory_retrieval unavailable")
     query = str(args.get("query", "")).strip()
-    if not query:
-        return "error: query must not be empty"
     limit = int(args.get("limit", 5) or 5)
-    limit = max(1, min(limit, 20))
     hits = retrieval.search(query, limit=limit)
     if not hits:
         return f"No matches for {query!r}."
@@ -121,27 +107,15 @@ def tool_memory_save(context, args: dict) -> str:
     """
     store: BlockStore = getattr(context, "memory_store", None)
     if store is None:
-        return "memory_store unavailable"
+        raise RuntimeError("memory_store unavailable")
     note = str(args.get("note", "")).strip()
-    if not note:
-        return "error: note must not be empty"
-    if len(note) > MAX_NOTE_CHARS:
-        return f"error: note exceeds {MAX_NOTE_CHARS} chars"
-    scope = str(args.get("scope", "workspace")).strip() or "workspace"
-    if scope not in ("workspace", "user"):
-        return "error: scope must be 'workspace' or 'user'"
+    scope = str(args.get("scope", "workspace")).strip()
 
     topic = str(args.get("topic", "")).strip()
     if topic:
-        note_type = str(args.get("type", "feedback")).strip() or "feedback"
-        try:
-            store.write_agent_topic(scope=scope, topic=topic, note=note, note_type=note_type)
-        except ValueError as exc:
-            return f"error: {exc}"
+        note_type = str(args.get("type", "feedback")).strip()
+        store.write_agent_topic(scope=scope, topic=topic, note=note, note_type=note_type)
         return f"saved: {scope}/agent/{topic}.md"
 
-    try:
-        total = store.append_agent_note(scope=scope, note=note)  # type: ignore[arg-type]
-    except ValueError as exc:
-        return f"error: {exc}"
+    total = store.append_agent_note(scope=scope, note=note)  # type: ignore[arg-type]
     return f"saved: {scope}/agent_notes.md (chars_total={total})"

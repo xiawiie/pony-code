@@ -241,11 +241,9 @@ class RepoMap:
 def tool_repo_lookup(context, args: dict) -> str:
     repo_map: Optional[RepoMap] = getattr(context, "repo_map", None)
     if repo_map is None:
-        return "repo_map unavailable"
+        raise RuntimeError("repo_map unavailable")
     symbol = str(args.get("symbol", "")).strip()
     kind = str(args.get("kind", "")).strip() or None
-    if not symbol:
-        return "error: symbol must not be empty"
     repo_map.refresh_if_stale()
     hits = repo_map.lookup(symbol, kind=kind)
     if not hits:

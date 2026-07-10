@@ -1,7 +1,7 @@
 import os
 import shlex
 import sys
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from pico import FakeModelClient, Pico, SessionStore, WorkspaceContext
 from pico import cli as pico_cli
@@ -55,22 +55,26 @@ def test_risky_tool_deny_behavior(tmp_path):
     assert result == "error: approval denied for run_shell"
 
 
-def test_write_file_refuses_user_notes_path(tmp_path):
+def test_write_file_refuses_user_notes_path_before_runner(tmp_path):
     # 路径级硬拦截：approval=auto 也不能通过；不是靠审批模式挡的。
     agent = build_agent(tmp_path, [], approval_policy="auto")
     target_rel = ".pico/memory/notes/malicious.md"
     target_abs = tmp_path / target_rel
 
-    result = agent.run_tool(
+    runner = Mock(return_value="must not run")
+    agent.tools["write_file"]["run"] = runner
+    result = agent.execute_tool(
         "write_file",
         {"path": target_rel, "content": "should not land"},
     )
 
-    assert "refusing to write user note path" in result
+    assert result.metadata["tool_status"] == "rejected"
+    assert "refusing to write user note path" in result.content
     assert not target_abs.exists()
+    runner.assert_not_called()
 
 
-def test_patch_file_refuses_user_notes_path(tmp_path):
+def test_patch_file_refuses_user_notes_path_before_runner(tmp_path):
     # 预先手工放一份 user note；patch_file 也必须挡住。
     note_rel = ".pico/memory/notes/design.md"
     note_abs = tmp_path / note_rel
@@ -79,13 +83,17 @@ def test_patch_file_refuses_user_notes_path(tmp_path):
     note_abs.write_text(original, encoding="utf-8")
     agent = build_agent(tmp_path, [], approval_policy="auto")
 
-    result = agent.run_tool(
+    runner = Mock(return_value="must not run")
+    agent.tools["patch_file"]["run"] = runner
+    result = agent.execute_tool(
         "patch_file",
         {"path": note_rel, "old_text": "original", "new_text": "tampered"},
     )
 
-    assert "refusing to write user note path" in result
+    assert result.metadata["tool_status"] == "rejected"
+    assert "refusing to write user note path" in result.content
     assert note_abs.read_text(encoding="utf-8") == original
+    runner.assert_not_called()
 
 
 def test_cli_build_agent_wires_secret_env_names_from_parser(tmp_path):
