@@ -3460,10 +3460,11 @@ except SessionCommitError as exc:
     raise exc.cause
 ```
 
-The pair-save exception is always the primary error. Terminal state,
-checkpoint, recovery artifact, and report writes are best effort in this
-Task 11 path; a second persistence failure must never mask `exc.cause` or
-resume the loop. Task 13 later centralizes terminal finalization.
+The pair-save exception is always the primary error. The call to the current
+serial finalizer is best effort in this Task 11 path: a second persistence
+failure must never mask `exc.cause` or resume the loop, but it may stop later
+terminal artifacts. Task 13 later centralizes independent terminal
+finalization.
 
 Only after successful pair persistence should the loop update step counters, task state, tool-finished trace, resume checkpoint, and continue.
 
