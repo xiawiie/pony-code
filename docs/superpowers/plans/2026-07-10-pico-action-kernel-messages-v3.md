@@ -3854,17 +3854,47 @@ git commit -m "fix(tools): enforce truthful status and effects"
 
 - Modify: `pico/agent_loop.py`
 - Modify: `pico/task_state.py`
-- Modify: `pico/runtime.py`
 - Modify: `tests/test_agent_loop.py`
 - Modify: `tests/test_runtime_report.py`
 - Modify: `tests/test_task_state.py`
-- Modify: `tests/test_tool_executor.py`
 
 **Interfaces:**
 
 `_finalize_run` consumes agent, TaskState, user/final text, run timing, Tool Change ids, verification evidence, completion totals, trigger, optional terminal message, and optional primary exception; it returns the final text or raises an unmasked primary/finalization exception.
 
 TaskState adds `interrupted` and `runtime_error`. Provider errors of any `Exception` remain `model_error`. Persistence remains `persistence_error`. `KeyboardInterrupt` is never converted to a tool error.
+
+**Boundary clarifications (implementation review, 2026-07-10):**
+
+- Import `Mock` in `tests/test_agent_loop.py` and migrate the existing
+  `test_terminal_paths_share_finish_run_helper` to spy on `_finalize_run`.
+- The initial plain-user COW commit remains outside the started-run boundary:
+  its failure re-raises the original save error without creating a TaskState,
+  run directory, report, or runtime-terminal message. After `TaskState.create`
+  and assignment to `agent.current_task_state`, the outer boundary starts
+  *before* `RunStore.start_run` and the `run_started` trace so failures in
+  either are terminalized as `runtime_error` whenever their stores remain
+  writable.
+- Replace the Task 11 pair-save inner handler with propagation of its
+  `SessionCommitError` to the outer handler. The outer handler is the only
+  place that marks `persistence_error`, invokes `_finalize_run`, and re-raises
+  `exc.cause`; preserve the already-collected workspace `tool_change_id`.
+- In `_create_resume_checkpoint`, wrap the `OSError` from
+  `agent.create_checkpoint(...)` in `SessionCommitError`. This makes an
+  in-run checkpoint session-save failure reach the persistence handler rather
+  than the generic runtime handler. Leave other exceptions as runtime errors;
+  the helper's only actual session save is currently in
+  `pico/checkpoint.py::create_checkpoint`.
+- Split report construction and report writing into separate finalizer
+  attempts. The report produced before a successful write includes all errors
+  known so far as `finalization_errors`; a later write failure is represented
+  by a second best-effort `finalization_failed` trace event when trace storage
+  is available.
+- `pico/runtime.py::build_report()` remains a pure dictionary builder; add the
+  finalizer-only `finalization_errors` field in `pico/agent_loop.py` rather
+  than changing the runtime-wide report interface. Existing ToolExecutor
+  interrupt tests stay in Task 12; Task 13's run-level interrupt coverage
+  belongs in `tests/test_agent_loop.py`.
 
 - [ ] **Step 1: Add terminal-path tests**
 
@@ -4006,7 +4036,89 @@ def test_final_message_save_failure_is_persistence_error(tmp_path, monkeypatch):
         agent.ask("finish")
     assert agent.current_task_state.status == "failed"
     assert agent.current_task_state.stop_reason == "persistence_error"
+
+
+def test_initial_user_save_failure_does_not_start_a_run(tmp_path, monkeypatch):
+    agent = build_native_agent(tmp_path, NativeScriptProvider([]))
+    monkeypatch.setattr(
+        agent.session_store,
+        "save",
+        Mock(side_effect=OSError("user save failed")),
+    )
+    with pytest.raises(OSError, match="user save failed"):
+        agent.ask("start")
+    assert agent.current_task_state is None
+    assert agent.session["messages"] == []
+    assert not list((tmp_path / ".pico" / "runs").glob("run_*"))
+
+
+@pytest.mark.parametrize("failure", ["start_run", "run_started"])
+def test_run_start_artifact_failure_is_runtime_terminal(tmp_path, monkeypatch, failure):
+    agent = build_native_agent(tmp_path, NativeScriptProvider([]))
+    if failure == "start_run":
+        monkeypatch.setattr(agent.run_store, "start_run", Mock(side_effect=OSError("run start failed")))
+        expected = "run start failed"
+    else:
+        original_emit_trace = agent.emit_trace
+
+        def fail_run_started(task_state, event, payload=None):
+            if event == "run_started":
+                raise OSError("run trace failed")
+            return original_emit_trace(task_state, event, payload)
+
+        monkeypatch.setattr(agent, "emit_trace", fail_run_started)
+        expected = "run trace failed"
+    with pytest.raises(OSError, match=expected):
+        agent.ask("start")
+    assert agent.current_task_state.status == "failed"
+    assert agent.current_task_state.stop_reason == "runtime_error"
+
+
+def test_in_run_checkpoint_session_save_failure_is_persistence_error(tmp_path, monkeypatch):
+    provider = NativeScriptProvider([
+        Response(
+            stop_reason=StopReason.TOOL_USE,
+            content=[{
+                "type": "tool_use",
+                "id": "tu_checkpoint",
+                "name": "write_file",
+                "input": {"path": "note.txt", "content": "saved\\n"},
+            }],
+            usage={},
+        ),
+    ])
+    agent = build_native_agent(tmp_path, provider)
+    original_save = agent.session_store.save
+    saves = 0
+
+    def fail_checkpoint_save(session):
+        nonlocal saves
+        saves += 1
+        if saves == 3:
+            raise OSError("checkpoint save failed")
+        return original_save(session)
+
+    monkeypatch.setattr(agent.session_store, "save", fail_checkpoint_save)
+    with pytest.raises(OSError, match="checkpoint save failed"):
+        agent.ask("write")
+    assert len(provider.calls) == 1
+    assert agent.current_task_state.stop_reason == "persistence_error"
+    assert agent.current_task_state.status == "failed"
 ```
+
+Add a provider-error report-build regression by monkeypatching
+`agent.build_report` to raise `OSError("report build unavailable")`; it must
+re-raise the original provider exception, retain `model_error`, and emit a
+bounded `finalization_failed` trace when trace storage is writable. Add a
+normal successful-final report assertion that `finalization_errors == []`.
+
+Migrate the Task 11 pair-save failure assertion in
+`test_side_effect_then_pair_save_failure_stops_before_another_provider_call`:
+the canonical transcript must still contain no tool-use block or orphan, begin
+with the original user text, and end with an assistant message whose
+`_pico_meta.origin` is `runtime_terminal`. Its content must be the generic
+persistence terminal text, not the raw save error. Keep the one-provider-call
+and recovery-evidence assertions.
 
 - [ ] **Step 2: Confirm current exception coverage is incomplete**
 
@@ -4093,19 +4205,30 @@ def attempt(label, operation):
     try:
         return operation()
     except Exception as exc:
-        finalization_exceptions.append(exc)
+        stored_exception = exc.cause if isinstance(exc, SessionCommitError) else exc
+        finalization_exceptions.append(stored_exception)
         finalization_errors.append(
-            f"{label}: {type(exc).__name__}: {exc}"[:300]
+            f"{label}: {type(stored_exception).__name__}: {stored_exception}"[:300]
         )
         logger.exception("run finalization step failed: %s", label)
         return None
 ```
 
-If `run_finished` was emitted before a later report failure, append a second bounded `finalization_failed` trace only when trace storage is still writable; never rewrite the earlier event or mask a primary exception.
+Call `attempt("report_build", ...)` for `agent.build_report(...)`, add a copy
+of the current bounded `finalization_errors` to the returned dictionary, then
+call `attempt("report_write", ...)` only when the report build succeeded. If
+`run_finished` was emitted before a later report build/write failure, append a
+second bounded `finalization_failed` trace only when trace storage is still
+writable; never rewrite the earlier event or mask a primary exception.
 
 - [ ] **Step 6: Put the post-run-start lifecycle inside one outer boundary**
 
-Import `STATUS_RUNNING` and `STOP_REASON_PERSISTENCE_ERROR` from `pico.task_state`. After user COW persistence, create TaskState/RunStore and emit `run_started`. Put a `try` immediately before preflight, keep the existing preflight/attempt loop/normal-return body inside it, and add these exact outer handlers:
+Import `STATUS_RUNNING` and `STOP_REASON_PERSISTENCE_ERROR` from `pico.task_state`.
+After the initial user COW persistence succeeds, create and assign `TaskState`,
+initialize the per-run accumulator lists, then put `RunStore.start_run`, the
+`run_started` trace, preflight, attempt loop, and normal return body inside one
+outer `try`. The initial user COW stays before this boundary. Add these exact
+outer handlers:
 
 ```python
 except KeyboardInterrupt as exc:
@@ -4196,12 +4319,30 @@ except Exception as exc:
     raise
 ```
 
-For the Task 11 pair-save branch, pass the persistence runtime terminal message and the original save exception as primary. Because TaskState is already terminal, the outer boundary must not finalize it twice.
+For the Task 11 pair-save branch, remove its local `try/except
+SessionCommitError` block entirely. Let `_commit_session(...)` propagate to
+the outer `except SessionCommitError`, which supplies the persistence runtime
+terminal message, uses `exc.cause` as the primary exception, and finalizes
+exactly once. Do not move the already-collected workspace `tool_change_id`
+below the pair commit.
+
+In `_create_resume_checkpoint`, use this narrow transport wrapper around the
+existing `agent.create_checkpoint(...)` call:
+
+```python
+try:
+    checkpoint = agent.create_checkpoint(task_state, user_message, trigger=trigger)
+except OSError as exc:
+    raise SessionCommitError(exc) from exc
+```
+
+Keep the subsequent task-state write and checkpoint trace outside that
+wrapper; their failures remain ordinary runtime/finalization errors.
 
 - [ ] **Step 7: Run all terminal and tool-interrupt paths**
 
 ```bash
-uv run pytest tests/test_agent_loop.py tests/test_runtime_report.py tests/test_task_state.py tests/test_tool_executor.py -q
+uv run pytest tests/test_agent_loop.py tests/test_runtime_report.py tests/test_task_state.py -q
 ```
 
 Expected: all pass; primary exceptions retain their original type/message; terminal reports exist whenever their stores are writable.
@@ -4217,7 +4358,7 @@ Expected: Ruff and all tests pass; memory-ablation skip count is now zero.
 - [ ] **Step 9: Commit terminal lifecycle closure**
 
 ```bash
-git add pico/agent_loop.py pico/task_state.py pico/runtime.py tests/test_agent_loop.py tests/test_runtime_report.py tests/test_task_state.py tests/test_tool_executor.py
+git add pico/agent_loop.py pico/task_state.py tests/test_agent_loop.py tests/test_runtime_report.py tests/test_task_state.py
 git commit -m "fix(runtime): close every started run terminally"
 ```
 
