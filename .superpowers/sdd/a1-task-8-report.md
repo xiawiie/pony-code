@@ -19,10 +19,12 @@ PASS — implementation and local verification complete on top of
   its lexical name and rendered only as `<basename> [sensitive]`; no child
   stat, lstat, readlink, preview, digest, or content read occurs.
 - Hardened both search lanes. Trusted rg uses the frozen absolute executable,
+  a child `PATH` containing only that executable's frozen parent directory,
   fixed case-insensitive sensitive globs, forced filename/NUL framing, and a
-  fail-closed result-path parser. The Python fallback filters sensitive and
-  ignored paths before a no-follow regular-file guard. Allowed
-  `.env.example/.sample/.template` files remain searchable.
+  fail-closed result-path parser. Ordered rg override globs keep allowed
+  `.env.example/.sample/.template` files searchable with native regex and
+  smart-case semantics. The Python fallback filters sensitive and ignored
+  paths before a no-follow regular-file guard.
 - Made BlockStore append/topic writes independently reject supplied and
   complete would-be persisted secret content, consume Pico's immutable
   redaction snapshot, and reject symlinked note leaves or agent directories
@@ -71,9 +73,9 @@ uv run pytest +  tests/test_sensitive_tools.py::test_directory_search_excludes_s
 ```
 
 Trusted rg safely excluded all `.env.*` files but thereby hid the three
-explicitly allowed templates. The final implementation searches only those
-three lexically allowed template basenames through the same no-follow Python
-predicate.
+explicitly allowed templates. The initial implementation supplemented them
+through Python; the formal-review follow-up below replaces that supplement
+with ordered rg override globs so one engine owns the search semantics.
 
 The rg return-code edge failed before the early-return fix:
 
@@ -128,17 +130,96 @@ All checks passed!
 
 No real Provider or live E2E call was made.
 
+## Formal Review Follow-up
+
+Formal review of `409466d6bfdeab11b8e767ece7d888a13203f36c` returned
+five Important findings and one semantic Minor. All six are closed in the
+follow-up commit containing this report:
+
+- Sensitive component rules now apply to every normalized path component.
+  Allowed env-template names are exceptions only when they are the final leaf,
+  so `.env/child`, `.env.example/child`, credential-name directories, key-name
+  directories, direct tools, search, snapshots, and Git-HEAD fallback all fail
+  closed before read/Git/blob work.
+- Risky tools revalidate immediately after the single approval callback and
+  before Tool Change pending state, snapshots, blobs, or the runner. Approval
+  callbacks that swap a target to a symlink or alter patch input to contain a
+  secret now yield a stable rejection with zero runner/blob calls.
+- A directly constructed `BlockStore(redaction_env=None)` snapshots
+  `os.environ` at construction. Later process-environment changes cannot alter
+  its redaction decisions.
+- BlockStore screens note, topic, type, and scope before validation that could
+  reveal a value. Invalid topic and scope errors are stable and contain no
+  rejected input.
+- Hardened rg no longer calls the live-PATH filtering path. Its child `PATH`
+  is exactly the parent directory of the already frozen absolute executable;
+  Git keeps its existing environment behavior.
+- The Python env-template search supplement was removed. Ordered positive
+  template globs follow the broad negative `.env.*` glob, preserving rg regex
+  and smart-case behavior while ordinary source remains searchable and hidden
+  `.git`/`.pico` trees stay excluded.
+
+The follow-up RED probes failed before each production fix:
+
+```text
+sensitive descendant boundary probes: 10 failed
+post-approval write/patch revalidation probes: 2 failed
+BlockStore default-environment snapshot probe: 1 failed
+BlockStore pre-validation screening probes: 2 failed
+frozen-rg child-PATH probe: 1 failed
+allowed-template rg regex/smart-case probes: 2 failed
+```
+
+Final focused Task 8 gate after the review fixes:
+
+```text
+uv run pytest tests/test_sensitive_tools.py tests/test_tools.py \
+  tests/test_tool_executor.py tests/memory/test_memory_tools.py \
+  tests/memory/test_block_store.py tests/test_recovery_policy.py \
+  tests/test_workspace_snapshot.py tests/test_security.py \
+  tests/test_safe_subprocess.py tests/memory/test_repl_v2.py \
+  tests/test_safety_invariants.py -q
+297 passed in 2.93s
+```
+
+Adjacent runtime/recovery/CLI/context verification remained green:
+
+```text
+223 passed in 7.76s
+```
+
+Static and whitespace verification:
+
+```text
+uv run ruff check <all follow-up production and test files>
+All checks passed!
+
+git diff --check
+exit 0
+```
+
+Fresh full local gate after all follow-up changes:
+
+```text
+./scripts/check.sh
+All checks passed!
+1113 passed in 61.63s
+```
+
+No real Provider or live E2E call was made during the follow-up.
+
 ## Files
 
 - `pico/tools.py`, `pico/tool_context.py`, `pico/tool_executor.py`,
-  `pico/runtime.py`, `pico/security.py`
+  `pico/runtime.py`, `pico/security.py`, `pico/safe_subprocess.py`
 - `pico/memory/block_store.py`, `pico/recovery_policy.py`,
   `pico/workspace_snapshot.py`
 - `tests/test_sensitive_tools.py`, `tests/test_tools.py`,
   `tests/test_tool_executor.py`
 - `tests/memory/test_memory_tools.py`,
   `tests/memory/test_block_store.py`, `tests/memory/test_repl_v2.py`
-- `tests/test_recovery_policy.py`, `tests/test_workspace_snapshot.py`
+- `tests/test_recovery_policy.py`, `tests/test_workspace_snapshot.py`,
+  `tests/test_security.py`, `tests/test_safe_subprocess.py`
 - `.superpowers/sdd/a1-task-8-report.md`
 
 ## Self-check

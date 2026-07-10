@@ -128,6 +128,13 @@ def _minimal_env(cwd, executable):
     return env
 
 
+def _frozen_executable_env(executable):
+    source = os.environ
+    env = {name: source[name] for name in _ENV_ALLOWLIST if source.get(name)}
+    env["PATH"] = str(Path(executable).parent)
+    return env
+
+
 def run_hardened_git(executable, args, *, cwd, timeout=5, check=False, text=False):
     executable = _absolute_executable(executable)
     argv = [executable, "--no-pager"]
@@ -159,7 +166,7 @@ def run_hardened_rg(executable, args, *, cwd, timeout=20):
         for arg in argv_args
     ):
         raise ValueError("unsafe ripgrep preprocessing option")
-    env = _minimal_env(cwd, executable)
+    env = _frozen_executable_env(executable)
     env["RIPGREP_CONFIG_PATH"] = os.devnull
     return subprocess.run(
         [executable, *argv_args],

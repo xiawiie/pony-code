@@ -118,15 +118,22 @@ def sensitive_path_reason(raw_path):
         if parent == ".pico" and child in {"sessions", "runs", "checkpoints"}:
             return "sensitive_path"
 
-    basename = parts[-1]
-    if basename in _ALLOWED_ENV_TEMPLATE_BASENAMES:
-        return ""
-    if basename in _SENSITIVE_PATH_BASENAMES or basename.startswith(".env."):
-        return "sensitive_path"
-    if basename.startswith("service-account") and basename.endswith(".json"):
-        return "sensitive_path"
-    if basename.endswith(_SENSITIVE_KEYSTORE_SUFFIXES):
-        return "sensitive_path"
+    for index, component in enumerate(parts):
+        if (
+            index == len(parts) - 1
+            and component in _ALLOWED_ENV_TEMPLATE_BASENAMES
+        ):
+            continue
+        if (
+            component in _SENSITIVE_PATH_BASENAMES
+            or component.startswith(".env.")
+            or (
+                component.startswith("service-account")
+                and component.endswith(".json")
+            )
+            or component.endswith(_SENSITIVE_KEYSTORE_SUFFIXES)
+        ):
+            return "sensitive_path"
     return ""
 
 

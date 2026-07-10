@@ -524,6 +524,33 @@ def test_git_head_fallback_rejects_sensitive_path_before_git_or_blob(
     agent.checkpoint_store.write_blob.assert_not_called()
 
 
+def test_git_head_fallback_rejects_sensitive_descendant_before_git_or_blob(
+    tmp_path,
+    monkeypatch,
+):
+    import pico.tool_executor as tool_executor
+
+    git = Mock(side_effect=AssertionError("git must not run"))
+    monkeypatch.setattr(tool_executor, "run_hardened_git", git)
+    agent = SimpleNamespace(
+        root=tmp_path,
+        trusted_executables=MappingProxyType({"git": "/frozen/git"}),
+        checkpoint_store=Mock(),
+        redaction_env={},
+        secret_env_names=(),
+    )
+
+    states = _fill_git_head_before_file_states(
+        agent,
+        [".env/child.txt"],
+        {},
+    )
+
+    assert states == {}
+    git.assert_not_called()
+    agent.checkpoint_store.write_blob.assert_not_called()
+
+
 def test_git_head_fallback_rejects_secret_stdout_before_blob(
     tmp_path,
     monkeypatch,

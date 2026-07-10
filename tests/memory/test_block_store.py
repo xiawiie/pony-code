@@ -134,6 +134,84 @@ def test_block_store_uses_configured_secret_snapshot(tmp_path):
         store.append_agent_note(scope="workspace", note=secret)
 
 
+def test_block_store_freezes_process_env_when_constructed(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"
+    user = tmp_path / "user"
+    workspace.mkdir()
+    user.mkdir()
+    secret = "opaque-frozen-memory-value-123456789"
+    monkeypatch.setenv("PICO_FROZEN_SECRET", secret)
+    store = BlockStore(workspace_root=workspace, user_root=user)
+    monkeypatch.delenv("PICO_FROZEN_SECRET")
+
+    with pytest.raises(ValueError, match="sensitive_content"):
+        store.append_agent_note(scope="workspace", note=secret)
+
+    assert not (workspace / "agent_notes.md").exists()
+
+
+def test_block_store_screens_topic_and_scope_before_value_bearing_errors(
+    tmp_path,
+):
+    workspace = tmp_path / "workspace"
+    user = tmp_path / "user"
+    workspace.mkdir()
+    user.mkdir()
+    secret = "opaque/unsafe-memory-value-123456789"
+    store = BlockStore(
+        workspace_root=workspace,
+        user_root=user,
+        redaction_env={"CUSTOM_CREDENTIAL": secret},
+        secret_env_names=("CUSTOM_CREDENTIAL",),
+    )
+
+    calls = (
+        lambda: store.append_agent_note(scope=secret, note="safe note"),
+        lambda: store.write_agent_topic(
+            scope="workspace",
+            topic=secret,
+            note="safe note",
+        ),
+        lambda: store.write_agent_topic(
+            scope=secret,
+            topic="safe-topic",
+            note="safe note",
+        ),
+    )
+    for call in calls:
+        with pytest.raises(ValueError) as exc_info:
+            call()
+        assert str(exc_info.value) == "sensitive_content"
+        assert secret not in str(exc_info.value)
+
+    assert list(workspace.iterdir()) == []
+    assert list(user.iterdir()) == []
+
+
+def test_block_store_validation_errors_do_not_echo_invalid_values(tmp_path):
+    workspace = tmp_path / "workspace"
+    user = tmp_path / "user"
+    workspace.mkdir()
+    user.mkdir()
+    store = BlockStore(workspace_root=workspace, user_root=user, redaction_env={})
+
+    with pytest.raises(ValueError) as topic_error:
+        store.write_agent_topic(
+            scope="workspace",
+            topic="../invalid",
+            note="safe note",
+        )
+    with pytest.raises(ValueError) as scope_error:
+        store.write_agent_topic(
+            scope="invalid-scope",
+            topic="safe-topic",
+            note="safe note",
+        )
+
+    assert str(topic_error.value) == "invalid topic"
+    assert str(scope_error.value) == "invalid scope"
+
+
 def test_append_rejects_when_complete_existing_note_would_remain_sensitive(tmp_path):
     workspace = tmp_path / "workspace"
     user = tmp_path / "user"

@@ -105,6 +105,43 @@ def _summarize_input(args):
     return summary
 
 
+def _validation_rejection(agent, tool, name, args, effect_class):
+    try:
+        agent.validate_tool(name, args)
+    except SensitiveToolError as exc:
+        return ToolExecutionResult(
+            content=f"error: {exc.code}",
+            metadata=_metadata(
+                "rejected",
+                effect_class=effect_class,
+                tool_error_code=exc.code,
+                security_event_type="sensitive_access_block",
+                risk_level="high",
+            ),
+        )
+    except Exception as exc:
+        example = agent.tool_example(name)
+        message = f"error: invalid arguments for {name}: {exc}"
+        if example:
+            message += f"\nexample: {example}"
+        security_event_type = (
+            "path_escape"
+            if "path escapes workspace" in str(exc)
+            else ""
+        )
+        return ToolExecutionResult(
+            content=message,
+            metadata=_metadata(
+                "rejected",
+                effect_class=effect_class,
+                tool_error_code="invalid_arguments",
+                security_event_type=security_event_type,
+                risk_level="high" if tool["risky"] else "low",
+            ),
+        )
+    return None
+
+
 class ToolExecutor:
     def __init__(self, agent):
         self.agent = agent
@@ -151,35 +188,15 @@ class ToolExecutor:
                 ),
             )
 
-        try:
-            agent.validate_tool(name, args)
-        except SensitiveToolError as exc:
-            return ToolExecutionResult(
-                content=f"error: {exc.code}",
-                metadata=_metadata(
-                    "rejected",
-                    effect_class=effect_class,
-                    tool_error_code=exc.code,
-                    security_event_type="sensitive_access_block",
-                    risk_level="high",
-                ),
-            )
-        except Exception as exc:
-            example = agent.tool_example(name)
-            message = f"error: invalid arguments for {name}: {exc}"
-            if example:
-                message += f"\nexample: {example}"
-            security_event_type = "path_escape" if "path escapes workspace" in str(exc) else ""
-            return ToolExecutionResult(
-                content=message,
-                metadata=_metadata(
-                    "rejected",
-                    effect_class=effect_class,
-                    tool_error_code="invalid_arguments",
-                    security_event_type=security_event_type,
-                    risk_level="high" if tool["risky"] else "low",
-                ),
-            )
+        rejection = _validation_rejection(
+            agent,
+            tool,
+            name,
+            args,
+            effect_class,
+        )
+        if rejection is not None:
+            return rejection
 
         if agent.repeated_tool_call(name, args):
             return ToolExecutionResult(
@@ -229,21 +246,32 @@ class ToolExecutor:
                     ),
                 )
 
-        if tool["risky"] and not agent.approve(name, args):
-            return ToolExecutionResult(
-                content=f"error: approval denied for {name}",
-                metadata=_add_command_policy(
-                    _metadata(
-                        "rejected",
-                        effect_class=effect_class,
-                        tool_error_code="approval_denied",
-                        security_event_type="read_only_block" if agent.read_only else "approval_denied",
-                        risk_level="high",
+        if tool["risky"]:
+            if not agent.approve(name, args):
+                return ToolExecutionResult(
+                    content=f"error: approval denied for {name}",
+                    metadata=_add_command_policy(
+                        _metadata(
+                            "rejected",
+                            effect_class=effect_class,
+                            tool_error_code="approval_denied",
+                            security_event_type="read_only_block" if agent.read_only else "approval_denied",
+                            risk_level="high",
+                        ),
+                        command_risk,
+                        command_approval,
                     ),
-                    command_risk,
-                    command_approval,
-                ),
+                )
+
+            rejection = _validation_rejection(
+                agent,
+                tool,
+                name,
+                args,
+                effect_class,
             )
+            if rejection is not None:
+                return rejection
 
         # 到这里我们准备真的跑工具，可以开一条 pending 记录。
         turn_id = getattr(getattr(agent, "current_task_state", None), "task_id", "") or ""

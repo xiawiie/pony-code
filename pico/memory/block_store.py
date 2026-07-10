@@ -61,10 +61,8 @@ class BlockStore:
     ):
         self.workspace_root = Path(os.path.abspath(os.fspath(workspace_root)))
         self.user_root = Path(os.path.abspath(os.fspath(user_root)))
-        self.redaction_env = (
-            None
-            if redaction_env is None
-            else MappingProxyType(dict(redaction_env))
+        self.redaction_env = MappingProxyType(
+            dict(os.environ if redaction_env is None else redaction_env)
         )
         self.secret_env_names = tuple(secret_env_names or ())
         self._size_warned: set[str] = set()
@@ -168,12 +166,15 @@ class BlockStore:
     # ---- agent append ------------------------------------------------------
 
     def append_agent_note(self, scope: Literal["workspace", "user"], note: str) -> int:
+        scope = str(scope)
         note = str(note).strip()
+        self._reject_sensitive_content(note + "\n" + scope)
         if not note:
             raise ValueError("note must not be empty")
         if len(note) > MAX_NOTE_CHARS:
             raise ValueError(f"note exceeds {MAX_NOTE_CHARS} chars")
-        self._reject_sensitive_content(note)
+        if scope not in {"workspace", "user"}:
+            raise ValueError("invalid scope")
         target = self._agent_notes_path(scope)
         ensure_private_dir(target.parent)
         target = require_regular_no_symlink(target, allow_missing=True)
@@ -210,21 +211,23 @@ class BlockStore:
         would let the filename escape ``agent/`` (contains ``..``, ``/``, or
         non-``[A-Za-z0-9_-]`` chars).
         """
+        scope = str(scope)
+        topic = str(topic).strip()
         note = str(note).strip()
+        note_type = str(note_type)
+        self._reject_sensitive_content(
+            note + "\n" + topic + "\n" + note_type + "\n" + scope
+        )
         if not note:
             raise ValueError("note must not be empty")
-        topic = str(topic).strip()
         if not _TOPIC_RE.match(topic):
-            raise ValueError(f"invalid topic: {topic!r}")
-        self._reject_sensitive_content(
-            note + "\n" + topic + "\n" + str(note_type)
-        )
+            raise ValueError("invalid topic")
         if scope == "workspace":
             root = self.workspace_root
         elif scope == "user":
             root = self.user_root
         else:
-            raise ValueError(f"unknown scope: {scope!r}")
+            raise ValueError("invalid scope")
         agent_dir = ensure_private_dir(root / "agent")
         target = agent_dir / f"{topic}.md"
         target = require_regular_no_symlink(target, allow_missing=True)
@@ -255,7 +258,7 @@ class BlockStore:
             return self.workspace_root / "agent_notes.md"
         if scope == "user":
             return self.user_root / "agent_notes.md"
-        raise ValueError(f"unknown scope: {scope}")
+        raise ValueError("invalid scope")
 
     def _resolve(self, rel_path: str) -> Path:
         if not rel_path or ".." in rel_path.split("/") or rel_path.startswith("/"):

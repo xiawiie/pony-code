@@ -58,6 +58,18 @@ def test_workspace_snapshot_skips_leaf_symlinks(tmp_path):
     assert "alias.txt" not in snapshot
 
 
+def test_workspace_snapshot_skips_allowed_template_name_used_as_directory(
+    tmp_path,
+):
+    nested = tmp_path / ".env.example" / "child.txt"
+    nested.parent.mkdir()
+    nested.write_text("must not hash\n", encoding="utf-8")
+
+    snapshot = capture_workspace_snapshot(tmp_path)
+
+    assert ".env.example/child.txt" not in snapshot
+
+
 def test_workspace_snapshot_diff_reports_ordered_changes():
     changed, summaries = diff_workspace_snapshots(
         {"a.txt": "old", "b.txt": "same", "deleted.txt": "gone"},

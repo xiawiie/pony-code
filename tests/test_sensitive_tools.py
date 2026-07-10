@@ -110,6 +110,26 @@ def test_absolute_in_root_sensitive_path_is_rejected(tmp_path):
     runner.assert_not_called()
 
 
+def test_sensitive_descendant_is_rejected_before_direct_read_or_search(tmp_path):
+    agent = build_agent(tmp_path)
+    sensitive_dir = tmp_path / ".env"
+    sensitive_dir.mkdir()
+    child = sensitive_dir / "child.txt"
+    child.write_text("descendant sentinel\n", encoding="utf-8")
+    read_runner = Mock(return_value="must not run")
+    agent.tools["read_file"]["run"] = read_runner
+
+    blocked = agent.execute_tool("read_file", {"path": ".env/child.txt"})
+    searched = agent.execute_tool(
+        "search",
+        {"pattern": "descendant sentinel", "path": "."},
+    )
+
+    assert blocked.metadata["tool_error_code"] == "sensitive_path_block"
+    read_runner.assert_not_called()
+    assert ".env/child.txt" not in searched.content
+
+
 def test_secret_content_write_is_rejected_but_security_prose_is_allowed(tmp_path):
     secret = "opaque-project-value-123456789"
     agent = build_agent(
@@ -150,6 +170,68 @@ def test_patch_scans_complete_would_be_content_before_runner(tmp_path):
     assert result.metadata["tool_error_code"] == "sensitive_content_block"
     assert target.read_text(encoding="utf-8") == "safe body\n"
     runner.assert_not_called()
+
+
+def test_risky_write_revalidates_after_approval_swaps_target_to_symlink(
+    tmp_path,
+):
+    agent = build_agent(tmp_path)
+    sensitive = tmp_path / ".env"
+    sensitive.write_text("untouched\n", encoding="utf-8")
+    target = tmp_path / "safe.txt"
+    approvals = []
+
+    def approve(name, args):
+        approvals.append((name, args))
+        target.symlink_to(sensitive)
+        return True
+
+    agent.approve = approve
+    runner = Mock(return_value="must not run")
+    agent.tools["write_file"]["run"] = runner
+
+    result = agent.execute_tool(
+        "write_file",
+        {"path": "safe.txt", "content": "safe body"},
+    )
+
+    assert len(approvals) == 1
+    assert result.metadata["tool_status"] == "rejected"
+    assert result.metadata["tool_error_code"] == "invalid_arguments"
+    assert sensitive.read_text(encoding="utf-8") == "untouched\n"
+    runner.assert_not_called()
+    assert list(agent.checkpoint_store.blobs_dir.rglob("*")) == []
+    assert agent.checkpoint_store.list_tool_change_records() == []
+
+
+def test_risky_patch_revalidates_content_changed_during_approval(tmp_path):
+    secret = "github_pat_A123456789012345678901234567890"
+    target = tmp_path / "safe.txt"
+    target.write_text("old safe\n", encoding="utf-8")
+    agent = build_agent(tmp_path)
+    approvals = []
+
+    def approve(name, args):
+        approvals.append((name, args))
+        target.write_text("old " + secret + "\n", encoding="utf-8")
+        return True
+
+    agent.approve = approve
+    runner = Mock(return_value="must not run")
+    agent.tools["patch_file"]["run"] = runner
+
+    result = agent.execute_tool(
+        "patch_file",
+        {"path": "safe.txt", "old_text": "old", "new_text": "new"},
+    )
+
+    assert len(approvals) == 1
+    assert result.metadata["tool_status"] == "rejected"
+    assert result.metadata["tool_error_code"] == "sensitive_content_block"
+    assert target.read_text(encoding="utf-8") == "old " + secret + "\n"
+    runner.assert_not_called()
+    assert list(agent.checkpoint_store.blobs_dir.rglob("*")) == []
+    assert agent.checkpoint_store.list_tool_change_records() == []
 
 
 def test_memory_save_secret_is_rejected_before_runner(tmp_path):
@@ -213,6 +295,11 @@ def test_directory_search_excludes_sensitive_paths_without_path_rescan(
     (tmp_path / ".env.example").write_text(sentinel + "\n", encoding="utf-8")
     (tmp_path / "credentials.json").write_text(sentinel + "\n", encoding="utf-8")
     (tmp_path / "source.py").write_text(sentinel + "\n", encoding="utf-8")
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".git" / "config").write_text(sentinel + "\n", encoding="utf-8")
+    hidden_memory = tmp_path / ".pico" / "memory" / "cache.md"
+    hidden_memory.parent.mkdir(parents=True)
+    hidden_memory.write_text(sentinel + "\n", encoding="utf-8")
     executables = {}
     if use_rg:
         rg = build_trusted_executables(tmp_path, names=("rg",)).get("rg")
@@ -239,6 +326,48 @@ def test_directory_search_excludes_sensitive_paths_without_path_rescan(
         for line in result.content.splitlines()
     )
     assert "credentials.json" not in result.content
+    assert ".git/" not in result.content
+    assert ".pico/" not in result.content
+
+
+@pytest.mark.parametrize(
+    ("contents", "pattern", "expected", "unexpected"),
+    (
+        (
+            "PICO_TOKEN=one\nPICOxTOKEN=two\n",
+            r"^PICO_TOKEN=",
+            ".env.example:1:PICO_TOKEN=one",
+            ".env.example:2:PICOxTOKEN=two",
+        ),
+        (
+            "OTHER=Pico\nLOWER=pico\n",
+            "Pico",
+            ".env.example:1:OTHER=Pico",
+            ".env.example:2:LOWER=pico",
+        ),
+    ),
+    ids=("regex", "smart-case"),
+)
+def test_rg_search_preserves_rg_semantics_for_allowed_env_templates(
+    tmp_path,
+    contents,
+    pattern,
+    expected,
+    unexpected,
+):
+    rg = build_trusted_executables(tmp_path, names=("rg",)).get("rg")
+    if not rg:
+        pytest.skip("trusted rg unavailable")
+    (tmp_path / ".env.example").write_text(contents, encoding="utf-8")
+    agent = build_agent(tmp_path, executables={"rg": rg})
+
+    result = agent.execute_tool(
+        "search",
+        {"pattern": pattern, "path": "."},
+    )
+
+    assert expected in result.content
+    assert unexpected not in result.content
 
 
 def test_execute_tool_returns_a_redacted_copy_and_preserves_metadata_types(

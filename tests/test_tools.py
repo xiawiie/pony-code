@@ -206,20 +206,23 @@ def test_search_filters_every_rg_result_path_defensively(tmp_path, monkeypatch):
     assert result == "safe.py:1:needle"
 
 
-def test_rg_search_keeps_allowed_env_template_when_rg_has_no_other_match(
+def test_rg_search_includes_allowed_env_template_globs_after_exclusion(
     tmp_path,
     monkeypatch,
 ):
     (tmp_path / ".env.example").write_text("needle\n", encoding="utf-8")
-    monkeypatch.setattr(
-        "pico.tools.run_hardened_rg",
-        lambda executable, args, **kwargs: subprocess.CompletedProcess(
+    captured = {}
+
+    def fake_rg(executable, args, **kwargs):
+        captured["args"] = list(args)
+        return subprocess.CompletedProcess(
             args,
-            1,
-            stdout="",
+            0,
+            stdout=".env.example\0" "1:needle\n",
             stderr="",
-        ),
-    )
+        )
+
+    monkeypatch.setattr("pico.tools.run_hardened_rg", fake_rg)
     context = ToolContext(
         root=tmp_path,
         path_resolver=lambda raw_path: (tmp_path / raw_path).resolve(),
@@ -233,6 +236,12 @@ def test_rg_search_keeps_allowed_env_template_when_rg_has_no_other_match(
     result = tool_search(context, {"pattern": "needle", "path": "."})
 
     assert result == ".env.example:1:needle"
+    globs = [
+        captured["args"][index + 1]
+        for index, argument in enumerate(captured["args"])
+        if argument == "--glob"
+    ]
+    assert globs.index("!.env.*") < globs.index(".env.example")
 
 
 def test_python_search_never_stats_or_reads_sensitive_or_symlink_files(

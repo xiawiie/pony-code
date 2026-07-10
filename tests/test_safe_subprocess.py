@@ -233,6 +233,40 @@ def test_hardened_rg_uses_fixed_config_and_minimal_environment(tmp_path, monkeyp
     assert captured["kwargs"]["text"] is True
 
 
+def test_hardened_rg_child_path_comes_only_from_frozen_executable(
+    tmp_path,
+    monkeypatch,
+):
+    from pico import safe_subprocess
+
+    captured = {}
+
+    def fake_run(argv, **kwargs):
+        captured["argv"] = argv
+        captured["env"] = kwargs["env"]
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    monkeypatch.setenv("PATH", str(tmp_path / "poisoned"))
+    monkeypatch.setattr(
+        safe_subprocess,
+        "_safe_path_dirs",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("live PATH inspected")
+        ),
+    )
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    run_hardened_rg(
+        "/opt/pico-frozen/bin/rg",
+        ["needle", "."],
+        cwd=tmp_path,
+    )
+
+    assert captured["argv"][0] == "/opt/pico-frozen/bin/rg"
+    assert captured["env"]["PATH"] == "/opt/pico-frozen/bin"
+    assert captured["env"]["RIPGREP_CONFIG_PATH"] == os.devnull
+
+
 @pytest.mark.parametrize("option", ["--pre", "--pre=cat", "--pre-glob", "--pre-glob=*.py"])
 def test_hardened_rg_rejects_preprocessors(option, tmp_path, monkeypatch):
     def runner(*args, **kwargs):

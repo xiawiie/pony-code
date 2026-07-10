@@ -34,6 +34,29 @@ def test_snapshot_rejects_sensitive_path_before_resolution_or_read(
     assert result["ineligible_reason"] == "sensitive_path"
 
 
+def test_snapshot_rejects_sensitive_descendant_before_read(tmp_path, monkeypatch):
+    target = tmp_path / ".env" / "child.txt"
+    target.parent.mkdir()
+    target.write_text("must not read\n", encoding="utf-8")
+    real_lstat = target.__class__.lstat
+
+    def guarded_lstat(self, *args, **kwargs):
+        if self == target:
+            raise AssertionError("sensitive descendant read")
+        return real_lstat(self, *args, **kwargs)
+
+    monkeypatch.setattr(
+        target.__class__,
+        "lstat",
+        guarded_lstat,
+    )
+
+    result = snapshot_eligibility(tmp_path, ".env/child.txt")
+
+    assert result["snapshot_eligible"] is False
+    assert result["ineligible_reason"] == "sensitive_path"
+
+
 def test_snapshot_rejects_symlink_even_when_target_stays_in_workspace(tmp_path):
     target = tmp_path / "safe.txt"
     target.write_text("safe\n", encoding="utf-8")

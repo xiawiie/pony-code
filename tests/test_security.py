@@ -79,6 +79,22 @@ def test_sensitive_path_templates_and_public_material_are_allowed(path):
 @pytest.mark.parametrize(
     "path",
     (
+        ".env/child.txt",
+        ".env.local/child.txt",
+        ".env.example/child.txt",
+        "credentials.json/child.txt",
+        "service-account-prod.json/child.txt",
+        "client.pem/child.txt",
+    ),
+)
+def test_sensitive_path_rules_apply_to_every_component(path):
+    assert is_sensitive_path(path)
+    assert sensitive_path_reason(path) == "sensitive_path"
+
+
+@pytest.mark.parametrize(
+    "path",
+    (
         "./.ENV.LOCAL",
         "PROJECT/.SSH/ID_ED25519",
         "PROJECT/.PICO/CHECKPOINTS/record.json",

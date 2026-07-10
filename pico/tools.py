@@ -28,8 +28,12 @@ DEFAULT_RUN_SHELL_TIMEOUT = 60
 MAX_RUN_SHELL_TIMEOUT = 120
 
 _RG_SENSITIVE_GLOBS = (
+    "[!.]*",
     "!.env",
     "!.env.*",
+    ".env.example",
+    ".env.sample",
+    ".env.template",
     "!.envrc",
     "!.netrc",
     "!.npmrc",
@@ -56,9 +60,6 @@ _RG_SENSITIVE_GLOBS = (
     "!**/.pico/sessions/**",
     "!**/.pico/runs/**",
     "!**/.pico/checkpoints/**",
-)
-_ALLOWED_ENV_TEMPLATES = frozenset(
-    {".env.example", ".env.sample", ".env.template"}
 )
 
 
@@ -449,27 +450,11 @@ def tool_search(context, args):
         )
         if result.returncode > 1:
             result.check_returncode()
-        filtered = (
+        return (
             _filter_rg_output(context.root, result.stdout)
             if result.returncode == 0
             else "(no matches)"
         )
-        matches = [] if filtered == "(no matches)" else filtered.splitlines()
-        if target_is_directory and len(matches) < 200:
-            templates = (
-                item
-                for item in path.rglob("*")
-                if item.name.casefold() in _ALLOWED_ENV_TEMPLATES
-            )
-            matches.extend(
-                _python_search_matches(
-                    context.root,
-                    templates,
-                    pattern,
-                    limit=200 - len(matches),
-                )
-            )
-        return "\n".join(matches) or "(no matches)"
 
     matches = []
     try:
