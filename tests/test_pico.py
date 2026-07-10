@@ -1,3 +1,4 @@
+import json
 import os
 import subprocess
 import sys
@@ -6,6 +7,7 @@ from unittest.mock import patch
 
 import pico as pico_pkg
 from pico.features import memory as memorylib
+from pico.messages import make_tool_pair, validate_messages
 from pico.runtime import DEFAULT_MAX_NEW_TOKENS, DEFAULT_MAX_STEPS
 from pico import (
     FakeModelClient,
@@ -56,6 +58,68 @@ def test_pico_constructor_uses_coding_agent_defaults(tmp_path):
     assert agent.max_new_tokens == DEFAULT_MAX_NEW_TOKENS == 2048
 
 
+def test_new_runtime_persists_v3_messages_only(tmp_path):
+    agent = build_agent(tmp_path, ["<final>done</final>"])
+
+    assert agent.ask("q") == "done"
+
+    persisted = json.loads(Path(agent.session_path).read_text(encoding="utf-8"))
+    assert persisted["schema_version"] == 3
+    assert "history" not in persisted
+    validate_messages(persisted["messages"], require_meta=True)
+
+
+def test_repeated_tool_detection_reads_canonical_tool_use_blocks(tmp_path):
+    agent = build_agent(tmp_path, [])
+    pairs = []
+    for index, path in enumerate(("a.py", "b.py", "a.py", "b.py")):
+        pairs.extend(make_tool_pair(
+            name="read_file",
+            arguments={"path": path},
+            tool_use_id=f"tu_{index}",
+            result_content="body",
+            created_at="t",
+            tool_status="ok",
+            effect_class="read_only",
+        ))
+    agent.session["messages"].extend(pairs)
+
+    assert agent.repeated_tool_call("read_file", {"path": "a.py"}) is True
+    assert agent.repeated_tool_call("read_file", {"path": "c.py"}) is False
+
+
+def test_reset_clears_transient_v3_state_and_preserves_audit_items(tmp_path):
+    agent = build_agent(tmp_path, ["<final>done</final>"])
+    agent.ask("q")
+    session_id = agent.session["id"]
+    agent.session["recently_recalled"] = ["note"]
+    agent.session["_recall_errors"] = {"count": 2, "last": "x"}
+    agent.session["working_memory"] = {
+        "task_summary": "goal",
+        "recent_files": ["a.py"],
+    }
+    agent.session["memory"] = {"file_summaries": {"a.py": {"summary": "fact"}}}
+    agent.session["checkpoints"] = {
+        "current_id": "c1",
+        "items": {"c1": {"checkpoint_id": "c1"}},
+    }
+    agent.session["resume_state"] = {"status": "full-valid"}
+    agent.session["recovery"] = {"current_checkpoint_id": "r1"}
+
+    agent.reset()
+
+    assert agent.session["id"] == session_id
+    assert agent.session["messages"] == []
+    assert agent.session["recently_recalled"] == []
+    assert "_recall_errors" not in agent.session
+    assert agent.session["working_memory"] == {"task_summary": "", "recent_files": []}
+    assert agent.session["memory"] == {"file_summaries": {}}
+    assert agent.session["checkpoints"]["current_id"] == ""
+    assert agent.session["checkpoints"]["items"] == {"c1": {"checkpoint_id": "c1"}}
+    assert agent.session["resume_state"] == {}
+    assert agent.session["recovery"]["current_checkpoint_id"] == ""
+
+
 def test_agent_runs_tool_then_final(tmp_path):
     (tmp_path / "hello.txt").write_text("alpha\nbeta\n", encoding="utf-8")
     agent = build_agent(
@@ -69,7 +133,13 @@ def test_agent_runs_tool_then_final(tmp_path):
     answer = agent.ask("Inspect hello.txt")
 
     assert answer == "Read the file successfully."
-    assert any(item["role"] == "tool" and item["name"] == "read_file" for item in agent.session["history"])
+    assert any(
+        message["role"] == "assistant"
+        and isinstance(message["content"], list)
+        and message["content"][0].get("type") == "tool_use"
+        and message["content"][0].get("name") == "read_file"
+        for message in agent.session["messages"]
+    )
     assert "hello.txt" in agent.session["working_memory"]["recent_files"]
     assert "hello.txt" in agent.session["memory"]["file_summaries"]
 
@@ -157,8 +227,6 @@ def test_agent_retries_after_empty_model_output(tmp_path):
 
     assert answer == "Recovered after retry."
     notice = "model returned no actionable content"
-    notices = [item["content"] for item in agent.session["history"] if item["role"] == "assistant"]
-    assert not any(notice in item for item in notices)
     assert not any(notice in str(item["content"]) for item in agent.session["messages"])
     feedback_prompts = [
         index
@@ -183,10 +251,14 @@ def test_agent_retries_after_malformed_tool_payload(tmp_path):
     answer = agent.ask("Inspect hello.txt")
 
     assert answer == "Recovered after malformed tool output."
-    assert any(item["role"] == "tool" and item["name"] == "read_file" for item in agent.session["history"])
+    assert any(
+        message["role"] == "assistant"
+        and isinstance(message["content"], list)
+        and message["content"][0].get("type") == "tool_use"
+        and message["content"][0].get("name") == "read_file"
+        for message in agent.session["messages"]
+    )
     notice = "text tool call was malformed"
-    notices = [item["content"] for item in agent.session["history"] if item["role"] == "assistant"]
-    assert not any(notice in item for item in notices)
     assert not any(notice in str(item["content"]) for item in agent.session["messages"])
     feedback_prompts = [
         index
@@ -240,7 +312,7 @@ def test_agent_saves_and_resumes_session(tmp_path):
         approval_policy="auto",
     )
 
-    assert resumed.session["history"][0]["content"] == "Start a session"
+    assert resumed.session["messages"][0]["content"] == "Start a session"
     assert resumed.ask("Continue") == "Resumed."
 
 
@@ -257,9 +329,14 @@ def test_delegate_uses_child_agent(tmp_path):
     answer = agent.ask("Use delegation")
 
     assert answer == "Parent incorporated the child result."
-    tool_events = [item for item in agent.session["history"] if item["role"] == "tool"]
-    assert tool_events[0]["name"] == "delegate"
-    assert "delegate_result" in tool_events[0]["content"]
+    tool_results = [
+        message["content"][0]
+        for message in agent.session["messages"]
+        if message["role"] == "user"
+        and isinstance(message["content"], list)
+        and message["content"][0].get("type") == "tool_result"
+    ]
+    assert "delegate_result" in tool_results[0]["content"]
 
 
 def test_patch_file_replaces_exact_match(tmp_path):
@@ -306,8 +383,16 @@ def test_list_files_hides_internal_agent_state(tmp_path):
 
 def test_repeated_identical_tool_call_is_rejected(tmp_path):
     agent = build_agent(tmp_path, [])
-    agent.record({"role": "tool", "name": "list_files", "args": {}, "content": "(empty)", "created_at": "1"})
-    agent.record({"role": "tool", "name": "list_files", "args": {}, "content": "(empty)", "created_at": "2"})
+    for index in range(2):
+        agent.session["messages"].extend(make_tool_pair(
+            name="list_files",
+            arguments={},
+            tool_use_id=f"tu_{index}",
+            result_content="(empty)",
+            created_at=str(index),
+            tool_status="ok",
+            effect_class="read_only",
+        ))
 
     result = agent.run_tool("list_files", {})
 
@@ -316,26 +401,22 @@ def test_repeated_identical_tool_call_is_rejected(tmp_path):
 
 def test_repeated_tool_call_rejects_short_alternating_loops(tmp_path):
     agent = build_agent(tmp_path, [])
-    agent.record({"role": "tool", "name": "list_files", "args": {}, "content": "(empty)", "created_at": "1"})
-    agent.record(
-        {
-            "role": "tool",
-            "name": "read_file",
-            "args": {"path": "README.md", "start": 1, "end": 1},
-            "content": "demo",
-            "created_at": "2",
-        }
-    )
-    agent.record({"role": "tool", "name": "list_files", "args": {}, "content": "(empty)", "created_at": "3"})
-    agent.record(
-        {
-            "role": "tool",
-            "name": "read_file",
-            "args": {"path": "README.md", "start": 1, "end": 1},
-            "content": "demo",
-            "created_at": "4",
-        }
-    )
+    calls = [
+        ("list_files", {}, "(empty)"),
+        ("read_file", {"path": "README.md", "start": 1, "end": 1}, "demo"),
+        ("list_files", {}, "(empty)"),
+        ("read_file", {"path": "README.md", "start": 1, "end": 1}, "demo"),
+    ]
+    for index, (name, arguments, content) in enumerate(calls):
+        agent.session["messages"].extend(make_tool_pair(
+            name=name,
+            arguments=arguments,
+            tool_use_id=f"tu_{index}",
+            result_content=content,
+            created_at=str(index),
+            tool_status="ok",
+            effect_class="read_only",
+        ))
 
     result = agent.run_tool("list_files", {})
 

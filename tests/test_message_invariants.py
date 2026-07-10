@@ -5,7 +5,7 @@ from unittest.mock import MagicMock
 
 from pico.context.renderer import render_current_user_message
 from pico.context_manager import ContextManager
-from pico.providers.message_utils import strip_pico_meta
+from pico.messages import strip_pico_meta
 
 
 def _make_agent_with_messages(messages):

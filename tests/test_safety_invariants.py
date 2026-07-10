@@ -305,9 +305,22 @@ def test_delegate_child_is_read_only(tmp_path):
 
     assert result == "parent done"
     assert not target.exists()
-    tool_events = [item for item in agent.session["history"] if item["role"] == "tool"]
-    assert tool_events[0]["name"] == "delegate"
-    assert "delegate_result" in tool_events[0]["content"]
+    tool_uses = [
+        message["content"][0]
+        for message in agent.session["messages"]
+        if message["role"] == "assistant"
+        and isinstance(message["content"], list)
+        and message["content"][0].get("type") == "tool_use"
+    ]
+    tool_results = [
+        message["content"][0]
+        for message in agent.session["messages"]
+        if message["role"] == "user"
+        and isinstance(message["content"], list)
+        and message["content"][0].get("type") == "tool_result"
+    ]
+    assert tool_uses[0]["name"] == "delegate"
+    assert "delegate_result" in tool_results[0]["content"]
 
 
 def test_configured_secret_env_names_are_redacted_in_trace_and_report(tmp_path):

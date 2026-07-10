@@ -65,7 +65,7 @@ def test_report_separates_sent_request_session_transcript_and_all_completion_usa
         {"role": "user", "content": "older question", "_pico_meta": {"created_at": "t1"}},
         {"role": "assistant", "content": "older answer", "_pico_meta": {"created_at": "t2"}},
     ]
-    agent.last_prompt_metadata = {
+    agent.last_request_metadata = {
         "messages_count": 1,
         "messages_chars": 8,
         "messages_tokens": 2,
@@ -238,9 +238,9 @@ def test_turn_preflight_refreshes_prefix_when_workspace_changes(tmp_path):
     )
 
     assert agent.ask("first") == "first"
-    first = dict(agent.last_prompt_metadata)
+    first = dict(agent.last_request_metadata)
     assert agent.ask("second") == "second"
-    second = dict(agent.last_prompt_metadata)
+    second = dict(agent.last_request_metadata)
 
     assert first["system_cache_key"] == second["system_cache_key"]
     assert second["prefix_changed"] is False
@@ -249,7 +249,7 @@ def test_turn_preflight_refreshes_prefix_when_workspace_changes(tmp_path):
     (tmp_path / "README.md").write_text("demo changed\n", encoding="utf-8")
 
     assert agent.ask("third") == "third"
-    third = agent.last_prompt_metadata
+    third = agent.last_request_metadata
 
     assert third["system_cache_key"] != second["system_cache_key"]
     assert third["prefix_changed"] is True
@@ -281,7 +281,7 @@ def test_agent_creates_checkpoint_when_context_reduction_happens_and_artifacts_o
         if event["event"] == "checkpoint_created"
         and event.get("trigger") == "context_reduction"
     ]
-    assert agent.last_prompt_metadata["dropped_messages"] > 0
+    assert agent.last_request_metadata["dropped_messages"] > 0
     assert len(reduction_events) == 1
 
 
@@ -369,8 +369,8 @@ def test_resume_invalidates_stale_file_summaries_and_marks_partial_stale(tmp_pat
     assert resumed.ask("Continue the task") == "Resumed."
 
     assert "runtime.py" not in resumed.session["memory"]["file_summaries"]
-    assert resumed.last_prompt_metadata["resume_status"] == "partial-stale"
-    assert resumed.last_prompt_metadata["stale_summary_invalidations"] == 1
+    assert resumed.last_request_metadata["resume_status"] == "partial-stale"
+    assert resumed.last_request_metadata["stale_summary_invalidations"] == 1
 
 
 def test_report_last_request_metadata_preserves_initial_resume_status(tmp_path):
@@ -516,7 +516,7 @@ def test_resume_marks_workspace_mismatch_when_checkpoint_runtime_identity_is_sta
     )
 
     assert resumed.ask("Continue the task") == "Resumed."
-    assert resumed.last_prompt_metadata["resume_status"] == "workspace-mismatch"
+    assert resumed.last_request_metadata["resume_status"] == "workspace-mismatch"
 
 
 def test_write_file_trace_records_minimum_tool_contract_fields(tmp_path):
@@ -578,7 +578,7 @@ def test_resume_marks_schema_mismatch_when_checkpoint_version_is_incompatible(tm
     )
 
     assert resumed.ask("Continue the task") == "Resumed."
-    assert resumed.last_prompt_metadata["resume_status"] == "schema-mismatch"
+    assert resumed.last_request_metadata["resume_status"] == "schema-mismatch"
 
 
 def test_resume_marks_no_checkpoint_when_session_has_no_checkpoint_state(tmp_path):
@@ -595,7 +595,7 @@ def test_resume_marks_no_checkpoint_when_session_has_no_checkpoint_state(tmp_pat
     )
 
     assert resumed.ask("Continue the task") == "Resumed."
-    assert resumed.last_prompt_metadata["resume_status"] == "no-checkpoint"
+    assert resumed.last_request_metadata["resume_status"] == "no-checkpoint"
     assert "Task checkpoint:" not in resumed.model_client.prompts[-1]
 
 
@@ -715,8 +715,8 @@ def test_resume_records_runtime_identity_mismatch_fields_in_metadata_and_trace(t
 
     resumed.ask("Continue the task")
 
-    assert resumed.last_prompt_metadata["resume_status"] == "workspace-mismatch"
-    assert resumed.last_prompt_metadata["runtime_identity_mismatch_fields"] == [
+    assert resumed.last_request_metadata["resume_status"] == "workspace-mismatch"
+    assert resumed.last_request_metadata["runtime_identity_mismatch_fields"] == [
         "approval_policy",
         "feature_flags",
         "max_new_tokens",
@@ -758,7 +758,7 @@ def test_partial_success_records_metadata_without_process_notes(tmp_path):
     assert "notes" not in agent.session["memory"]
 
 
-def test_agent_keeps_completion_usage_out_of_last_prompt_metadata(tmp_path):
+def test_agent_keeps_completion_usage_out_of_last_request_metadata(tmp_path):
     class CacheAwareFakeModelClient(FakeModelClient):
         def complete(self, prompt, max_new_tokens, **kwargs):
             self.last_completion_metadata = {
@@ -780,10 +780,10 @@ def test_agent_keeps_completion_usage_out_of_last_prompt_metadata(tmp_path):
 
     assert agent.ask("Cache aware run") == "Done."
 
-    assert agent.last_prompt_metadata["prompt_cache_supported"] is False
-    assert "cached_tokens" not in agent.last_prompt_metadata
-    assert "cache_hit" not in agent.last_prompt_metadata
-    assert agent.last_prompt_metadata["system_cache_key"]
+    assert agent.last_request_metadata["prompt_cache_supported"] is False
+    assert "cached_tokens" not in agent.last_request_metadata
+    assert "cache_hit" not in agent.last_request_metadata
+    assert agent.last_request_metadata["system_cache_key"]
     report = agent.run_store.load_report(agent.current_task_state.run_id)
     assert report["completion_usage_totals"]["cached_tokens"] == 512
     assert report["completion_usage_totals"]["input_tokens"] == 1024

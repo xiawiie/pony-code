@@ -9,7 +9,7 @@ HELP_DETAILS = textwrap.dedent(
     /memory-review   Print agent_notes.md with an editing hint.
     /save <text>     Append a note to workspace agent_notes.md.
     /session         Show the path to the saved session file.
-    /reset           Clear the current session history and memory.
+    /reset           Clear canonical messages and working memory.
     /exit            Exit the agent.
     """
 ).strip()

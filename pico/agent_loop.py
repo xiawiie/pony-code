@@ -89,16 +89,10 @@ class SessionCommitError(RuntimeError):
         self.cause = cause
 
 
-def _commit_session(agent, *, messages=(), legacy_history=()):
+def _commit_session(agent, *, messages=()):
     safe_messages = tuple(agent.redact_artifact(message) for message in messages)
-    safe_history = tuple(agent.redact_artifact(item) for item in legacy_history)
     candidate = deepcopy(agent.session)
     candidate["messages"] = append_messages(candidate.get("messages", []), *safe_messages)
-    if "history" in candidate:
-        candidate["history"] = [
-            *list(candidate.get("history", []) or []),
-            *safe_history,
-        ]
     try:
         saved_path = agent.session_store.save(candidate)
     except Exception as exc:
@@ -233,21 +227,10 @@ class AgentLoop:
         run_started_at = time.monotonic()
         agent.memory.set_task_summary(user_message)
         agent._sync_working_memory()
-        # Task 28: session["messages"] is the primary transcript sent to
-        # the model. A parallel session["history"] dual-write is retained
-        # for legacy consumers — evaluation harness, runtime.build_report,
-        # and a handful of tests that inspect the flat history structure —
-        # until the memory/context redesign completes and those consumers
-        # migrate to v2 message inspection.
         try:
             _commit_session(
                 agent,
                 messages=(_plain_message("user", user_message),),
-                legacy_history=({
-                    "role": "user",
-                    "content": user_message,
-                    "created_at": now(),
-                },),
             )
         except SessionCommitError as exc:
             raise exc.cause
@@ -295,7 +278,7 @@ class AgentLoop:
                     runtime_feedback=pending_runtime_feedback,
                 )
                 pending_runtime_feedback = ""
-                agent.last_prompt_metadata = dict(request_metadata)
+                agent.last_request_metadata = dict(request_metadata)
                 if attempts == 1:
                     task_state.resume_status = request_metadata.get(
                         "resume_status",
@@ -467,13 +450,6 @@ class AgentLoop:
                     _commit_session(
                         agent,
                         messages=pair,
-                        legacy_history=({
-                            "role": "tool",
-                            "name": name,
-                            "args": args,
-                            "content": result,
-                            "created_at": now(),
-                        },),
                     )
                     if metadata.get("tool_status") != "rejected":
                         tool_steps += 1
@@ -535,11 +511,6 @@ class AgentLoop:
                 _commit_session(
                     agent,
                     messages=(_plain_message("assistant", final),),
-                    legacy_history=({
-                        "role": "assistant",
-                        "content": final,
-                        "created_at": now(),
-                    },),
                 )
                 task_state.finish_success(final)
                 return _finalize_run(
@@ -566,11 +537,6 @@ class AgentLoop:
             _commit_session(
                 agent,
                 messages=(_plain_message("assistant", final),),
-                legacy_history=({
-                    "role": "assistant",
-                    "content": final,
-                    "created_at": now(),
-                },),
             )
             final_trigger = task_state.stop_reason or "run_stopped"
             return _finalize_run(
@@ -670,21 +636,11 @@ def _finalize_run(
             return None
 
     if terminal_message:
-        terminal_content = str(terminal_message.get("content", ""))
-        terminal_created_at = terminal_message.get("_pico_meta", {}).get(
-            "created_at",
-            now(),
-        )
         attempt(
             "terminal_message",
             lambda: _commit_session(
                 agent,
                 messages=(terminal_message,),
-                legacy_history=({
-                    "role": "assistant",
-                    "content": terminal_content,
-                    "created_at": terminal_created_at,
-                },),
             ),
         )
     attempt("task_state_write", lambda: agent.run_store.write_task_state(task_state))

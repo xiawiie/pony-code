@@ -144,17 +144,21 @@ def test_invalidate_stale_memory_removes_changed_raw_summary(tmp_path, monkeypat
     assert agent.session["memory"] == {"file_summaries": {}}
 
 
-def test_reset_clears_history_working_memory_and_keeps_narrow_memory_shape(tmp_path, monkeypatch):
+def test_reset_clears_messages_working_memory_and_keeps_narrow_memory_shape(tmp_path, monkeypatch):
     (tmp_path / "sample.txt").write_text("alpha\nbeta\n", encoding="utf-8")
     agent = _build_agent(tmp_path, monkeypatch)
-    agent.session["history"].append({"role": "user", "content": "hello"})
+    agent.session["messages"].append({
+        "role": "user",
+        "content": "hello",
+        "_pico_meta": {"created_at": "t"},
+    })
     agent.memory.set_task_summary("Task")
     agent._sync_working_memory()
     agent.update_memory_after_tool("read_file", {"path": "sample.txt"}, "alpha\nbeta\n")
 
     agent.reset()
 
-    assert agent.session["history"] == []
+    assert agent.session["messages"] == []
     assert type(agent.memory).__name__ == "WorkingMemory"
     assert agent.session["working_memory"] == {"task_summary": "", "recent_files": []}
     assert agent.session["memory"] == {"file_summaries": {}}

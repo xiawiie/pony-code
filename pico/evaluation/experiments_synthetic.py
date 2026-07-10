@@ -3,7 +3,7 @@ from pathlib import Path
 
 from ..context.renderer import render_current_user_message
 from ..features import memory as memorylib
-from ..messages import message_content_text
+from ..messages import make_tool_pair, message_content_text
 from ..providers.clients import FakeModelClient
 from ..runtime import Pico, SessionStore
 from ..workspace import WorkspaceContext
@@ -525,9 +525,17 @@ def _scenario_repeated_call(workspace_root):
     (workspace_root / "README.md").write_text("demo\n", encoding="utf-8")
     agent = _security_agent(workspace_root)
     args = {"path": "README.md", "start": 1, "end": 1}
-    for _ in range(2):
+    for index in range(2):
         result = agent.run_tool("read_file", args)
-        agent.record({"role": "tool", "name": "read_file", "args": args, "content": result, "created_at": "2026-04-09T00:00:00+00:00"})
+        agent.session["messages"].extend(make_tool_pair(
+            name="read_file",
+            arguments=args,
+            tool_use_id=f"toolu_synthetic_{index}",
+            result_content=result,
+            created_at="2026-04-09T00:00:00+00:00",
+            tool_status="ok",
+            effect_class="read_only",
+        ))
     agent.run_tool("read_file", args)
     return dict(agent._last_tool_result_metadata)
 

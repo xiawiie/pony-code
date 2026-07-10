@@ -25,6 +25,3 @@ include = ["pico*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
-markers = [
-    "legacy_string_path: test asserts on the pre-v2 flattened prompt string (retained via FallbackAdapter); scheduled for cleanup at end of P3",
-]

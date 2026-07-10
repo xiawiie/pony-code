@@ -45,7 +45,7 @@ Available Commands:
   config       Configuration inspection
   runs         Run artifact inspection
   sessions     Session inspection
-  session      Session drift inspector (dual-write check)
+  session      Session v3 invariant inspector
   checkpoints  Checkpoint recovery inspection
   memory       Memory files inspection & migration
   help         Help about any command
@@ -69,9 +69,7 @@ def handle_help(tokens):
 def handle_session(tokens, root, args):
     """`pico-cli session {inspect} <session_id>`.
 
-    Task A5: static, read-only dual-write drift inspector. Bridges the
-    ``session["history"]`` (legacy) / ``session["messages"]`` (v2)
-    invariant without a runtime assertion.
+    Static, read-only inspector for the canonical v3 message invariant.
     """
     sessions_root = Path(root) / ".pico" / "sessions"
     return handle_session_command(list(tokens), sessions_root=sessions_root)

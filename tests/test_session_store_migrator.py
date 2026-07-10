@@ -588,45 +588,7 @@ def test_v2_empty_messages_rejects_non_list_history_without_mutating_input():
     assert source == before
 
 
-def test_legacy_history_bridge_handles_text_blocks_and_missing_tool_content():
-    from pico.runtime import _legacy_history_from_messages
-
-    history = _legacy_history_from_messages([
-        {
-            "role": "assistant",
-            "content": [{"type": "text", "text": "thinking"}],
-            "_pico_meta": {"created_at": "t1"},
-        },
-        {
-            "role": "assistant",
-            "content": [{
-                "type": "tool_use",
-                "id": "toolu_1",
-                "name": "read_file",
-                "input": {"path": "a.py"},
-            }],
-            "_pico_meta": {"created_at": "t2"},
-        },
-        {
-            "role": "user",
-            "content": [{"type": "tool_result", "tool_use_id": "toolu_1"}],
-            "_pico_meta": {"created_at": "t2"},
-        },
-    ])
-
-    assert history == [
-        {"role": "assistant", "content": "thinking", "created_at": "t1"},
-        {
-            "role": "tool",
-            "name": "read_file",
-            "args": {"path": "a.py"},
-            "content": "",
-            "created_at": "t2",
-        },
-    ]
-
-
-def test_v2_resume_roundtrip_keeps_history_only_in_memory(tmp_path):
+def test_v2_resume_roundtrip_uses_messages_only(tmp_path):
     store = SessionStore(tmp_path / ".pico" / "sessions")
     path = store.path_for("resume")
     path.write_text(json.dumps({
@@ -647,7 +609,7 @@ def test_v2_resume_roundtrip_keeps_history_only_in_memory(tmp_path):
     first_disk = json.loads(path.read_text(encoding="utf-8"))
     assert first_disk["schema_version"] == 3
     assert "history" not in first_disk
-    assert first.session["history"] == [{"role": "user", "content": "q"}]
+    assert "history" not in first.session
 
     second = Pico.from_session(
         model_client=FakeModelClient([]),
@@ -659,7 +621,7 @@ def test_v2_resume_roundtrip_keeps_history_only_in_memory(tmp_path):
     second_disk = json.loads(path.read_text(encoding="utf-8"))
     assert second_disk["schema_version"] == 3
     assert "history" not in second_disk
-    assert second.session["history"] == [{"role": "user", "content": "q"}]
+    assert "history" not in second.session
 
 
 def test_v3_with_orphan_is_rejected():

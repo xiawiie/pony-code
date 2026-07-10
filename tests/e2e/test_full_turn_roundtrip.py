@@ -58,7 +58,7 @@ def test_full_turn_injects_recall_and_digests_large_tool_result(tmp_path):
     assert "<pico:recalled_memory" in turn1_user_content
     assert "cache" in turn1_user_content.lower()
 
-    # Turn 2: history contains the tool_result. Because the raw README > 1200
+    # Turn 2: canonical messages contain the tool_result. Because the raw README > 1200
     # chars, digest_applied=True → content is the short [digest] rendering.
     turn2_msgs = provider.calls[1]["messages"]
     tool_result_msgs = [
@@ -66,7 +66,7 @@ def test_full_turn_injects_recall_and_digests_large_tool_result(tmp_path):
         if isinstance(m["content"], list)
         and any(b.get("type") == "tool_result" for b in m["content"])
     ]
-    assert tool_result_msgs, "no tool_result in turn 2 history"
+    assert tool_result_msgs, "no tool_result in turn 2 canonical messages"
     tr_content = tool_result_msgs[-1]["content"][0]["content"]
     assert "[digest]" in tr_content, f"expected digest, got: {tr_content[:200]!r}"
 
@@ -104,7 +104,7 @@ def test_history_budget_triggers_drop(tmp_path):
     pico.ask("new question")
 
     call = provider.calls[0]
-    metadata_dropped = getattr(pico, "last_prompt_metadata", {}).get("dropped_messages", 0)
+    metadata_dropped = pico.last_request_metadata.get("dropped_messages", 0)
     assert metadata_dropped > 0, "expected some messages to be dropped under tight cap"
     # Floor honored: last N ≥ 4 messages preserved.
     assert len(call["messages"]) >= 4
