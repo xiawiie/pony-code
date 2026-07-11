@@ -15,6 +15,7 @@ from .messages import MessageValidationError, validate_messages
 from .security import (
     ensure_private_dir,
     ensure_private_file,
+    harden_private_tree,
     require_regular_no_symlink,
 )
 
@@ -284,12 +285,14 @@ def _write_backup_locked(session_path, raw_bytes, session_id, source_version):
 
 class SessionStore:
     def __init__(self, root, redactor=None):
-        self.root = ensure_private_dir(root)
+        self.root = harden_private_tree(root)
         self.lock_path = self.root / ".session_store.lock"
         self._redactor = redactor or _identity
+        self._redactor_configured = redactor is not None
 
     def set_redactor(self, redactor):
         self._redactor = redactor or _identity
+        self._redactor_configured = redactor is not None
 
     def path(self, session_id):
         session_id = _session_id(session_id)
@@ -355,5 +358,11 @@ class SessionStore:
             return payload
 
     def latest(self):
-        files = sorted(self.root.glob("*.json"), key=lambda path: path.stat().st_mtime)
+        files = []
+        for path in self.root.glob("*.json"):
+            try:
+                files.append(ensure_private_file(require_regular_no_symlink(path)))
+            except (OSError, ValueError):
+                continue
+        files.sort(key=lambda path: path.stat().st_mtime)
         return files[-1].stem if files else None

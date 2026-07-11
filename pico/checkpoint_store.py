@@ -8,18 +8,31 @@
 所有写入都走原子 replace，防止在崩溃时留下半截 JSON。
 """
 
+from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 import json
+import os
 import re
+import stat
 import tempfile
 from pathlib import Path
 
 from pico import file_lock
 from pico.recovery_paths import hash_bytes
+from pico.security import (
+    ensure_private_dir,
+    ensure_private_file,
+    harden_private_tree,
+    require_regular_no_symlink,
+)
+
+
+def _identity(value):
+    return value
 
 
 class CheckpointStore:
-    def __init__(self, workspace_root):
+    def __init__(self, workspace_root, redactor=None):
         # workspace_root 通常就是 Pico 的 repo 根。真实存储放在 .pico/checkpoints 下。
         # 如果传入路径已经是 .pico/checkpoints，直接用；否则加子目录。
         workspace_root = Path(workspace_root)
@@ -27,12 +40,18 @@ class CheckpointStore:
             self.root = workspace_root
         else:
             self.root = workspace_root / ".pico" / "checkpoints"
+        self.root = ensure_private_dir(self.root)
         self.records_dir = self.root / "records"
         self.tool_changes_dir = self.root / "tool_changes"
         self.blobs_dir = self.root / "blobs"
         self.lock_path = self.root / ".checkpoint_store.lock"
+        self._redactor = redactor or _identity
         for directory in (self.records_dir, self.tool_changes_dir, self.blobs_dir):
-            directory.mkdir(parents=True, exist_ok=True)
+            ensure_private_dir(directory)
+        harden_private_tree(self.root)
+
+    def set_redactor(self, redactor):
+        self._redactor = redactor or _identity
 
     # -- blob 存取 --------------------------------------------------------
     def _blob_path(self, content_hash):
@@ -44,13 +63,15 @@ class CheckpointStore:
         info = hash_bytes(bytes(data))
         blob_ref = info["content_hash"]
         blob_path = self._blob_path(blob_ref)
-        blob_path.parent.mkdir(parents=True, exist_ok=True)
         with file_lock.locked_file(self.lock_path):
-            if not blob_path.exists():
-                with tempfile.NamedTemporaryFile(delete=False, dir=str(blob_path.parent), prefix=blob_ref + ".", suffix=".tmp") as handle:
-                    handle.write(data)
-                    temp_name = handle.name
-                Path(temp_name).replace(blob_path)
+            ensure_private_dir(blob_path.parent)
+            checked_path = require_regular_no_symlink(blob_path, allow_missing=True)
+            try:
+                checked_path.lstat()
+            except FileNotFoundError:
+                self._write_bytes_atomic(checked_path, bytes(data))
+            else:
+                ensure_private_file(checked_path)
         return {
             "blob_ref": blob_ref,
             "content_hash": blob_ref,
@@ -60,10 +81,22 @@ class CheckpointStore:
         }
 
     def read_blob(self, blob_ref):
-        return self._blob_path(str(blob_ref)).read_bytes()
+        path = ensure_private_file(
+            require_regular_no_symlink(self._blob_path(str(blob_ref)))
+        )
+        return path.read_bytes()
 
     def has_blob(self, blob_ref):
-        return self._blob_path(str(blob_ref)).exists()
+        path = require_regular_no_symlink(
+            self._blob_path(str(blob_ref)),
+            allow_missing=True,
+        )
+        try:
+            path.lstat()
+        except FileNotFoundError:
+            return False
+        ensure_private_file(path)
+        return True
 
     # -- checkpoint record ------------------------------------------------
     def _record_path(self, checkpoint_id):
@@ -77,14 +110,19 @@ class CheckpointStore:
         return path
 
     def load_checkpoint_record(self, checkpoint_id):
-        return json.loads(self._record_path(checkpoint_id).read_text(encoding="utf-8"))
+        path = ensure_private_file(
+            require_regular_no_symlink(self._record_path(checkpoint_id))
+        )
+        return json.loads(path.read_text(encoding="utf-8"))
 
     def list_checkpoint_records(self):
         records = []
+        ensure_private_dir(self.records_dir)
         for path in sorted(self.records_dir.glob("*.json")):
             try:
+                path = ensure_private_file(require_regular_no_symlink(path))
                 records.append(json.loads(path.read_text(encoding="utf-8")))
-            except (OSError, json.JSONDecodeError):
+            except (OSError, ValueError, json.JSONDecodeError):
                 continue
         records.sort(key=lambda item: item.get("created_at", ""))
         return records
@@ -101,14 +139,19 @@ class CheckpointStore:
         return path
 
     def load_tool_change_record(self, tool_change_id):
-        return json.loads(self._tool_change_path(tool_change_id).read_text(encoding="utf-8"))
+        path = ensure_private_file(
+            require_regular_no_symlink(self._tool_change_path(tool_change_id))
+        )
+        return json.loads(path.read_text(encoding="utf-8"))
 
     def list_tool_change_records(self):
         records = []
+        ensure_private_dir(self.tool_changes_dir)
         for path in sorted(self.tool_changes_dir.glob("*.json")):
             try:
+                path = ensure_private_file(require_regular_no_symlink(path))
                 records.append(json.loads(path.read_text(encoding="utf-8")))
-            except (OSError, json.JSONDecodeError):
+            except (OSError, ValueError, json.JSONDecodeError):
                 continue
         records.sort(key=lambda item: item.get("started_at", ""))
         return records
@@ -158,8 +201,11 @@ class CheckpointStore:
 
         unreferenced = []
         for blob_path in self.blobs_dir.rglob("*"):
-            if not blob_path.is_file():
+            try:
+                blob_path = require_regular_no_symlink(blob_path)
+            except (OSError, ValueError):
                 continue
+            ensure_private_file(blob_path)
             blob_ref = blob_path.name
             if not _looks_like_blob_ref(blob_ref):
                 continue
@@ -206,19 +252,91 @@ class CheckpointStore:
 
     # -- helpers ----------------------------------------------------------
     def _write_json_atomic(self, path, payload):
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with tempfile.NamedTemporaryFile(
-            "w",
-            encoding="utf-8",
-            delete=False,
-            dir=str(path.parent),
-            prefix=path.name + ".",
-            suffix=".tmp",
-        ) as handle:
-            json.dump(payload, handle, indent=2, sort_keys=True)
-            handle.write("\n")
-            temp_name = handle.name
-        Path(temp_name).replace(path)
+        ensure_private_dir(path.parent)
+        path = require_regular_no_symlink(path, allow_missing=True)
+        safe_payload = self._redactor(deepcopy(payload))
+        temp_path = None
+        temp_identity = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                "w",
+                encoding="utf-8",
+                delete=False,
+                dir=str(path.parent),
+                prefix=path.name + ".",
+                suffix=".tmp",
+            ) as handle:
+                temp_path = Path(handle.name)
+                opened = os.fstat(handle.fileno())
+                temp_identity = (opened.st_dev, opened.st_ino)
+                os.fchmod(handle.fileno(), 0o600)
+                json.dump(safe_payload, handle, indent=2, sort_keys=True)
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            self._verify_temp(temp_path, temp_identity)
+            require_regular_no_symlink(path, allow_missing=True)
+            temp_path.replace(path)
+            self._verify_installed(path, temp_identity)
+            ensure_private_file(path)
+        finally:
+            self._remove_temp(temp_path, temp_identity)
+
+    def _write_bytes_atomic(self, path, data):
+        temp_path = None
+        temp_identity = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                delete=False,
+                dir=str(path.parent),
+                prefix=path.name + ".",
+                suffix=".tmp",
+            ) as handle:
+                temp_path = Path(handle.name)
+                opened = os.fstat(handle.fileno())
+                temp_identity = (opened.st_dev, opened.st_ino)
+                os.fchmod(handle.fileno(), 0o600)
+                handle.write(data)
+                handle.flush()
+                os.fsync(handle.fileno())
+            self._verify_temp(temp_path, temp_identity)
+            require_regular_no_symlink(path, allow_missing=True)
+            temp_path.replace(path)
+            self._verify_installed(path, temp_identity)
+            ensure_private_file(path)
+        finally:
+            self._remove_temp(temp_path, temp_identity)
+
+    @staticmethod
+    def _verify_temp(path, identity):
+        current = path.lstat()
+        if (
+            not stat.S_ISREG(current.st_mode)
+            or (current.st_dev, current.st_ino) != identity
+        ):
+            raise ValueError("checkpoint temp changed")
+
+    @staticmethod
+    def _verify_installed(path, identity):
+        current = path.lstat()
+        if (
+            not stat.S_ISREG(current.st_mode)
+            or (current.st_dev, current.st_ino) != identity
+        ):
+            if not stat.S_ISREG(current.st_mode):
+                path.unlink()
+            raise ValueError("checkpoint temp changed")
+
+    @staticmethod
+    def _remove_temp(path, identity):
+        if path is None or identity is None:
+            return
+        try:
+            current = path.lstat()
+        except FileNotFoundError:
+            return
+        if (current.st_dev, current.st_ino) == identity:
+            path.unlink()
 
 
 def _collect_blob_refs(entry, sink):

@@ -206,6 +206,25 @@ def ensure_private_file(path):
     return path
 
 
+def harden_private_tree(path):
+    """Repair modes below one application-owned tree without following links."""
+    root = ensure_private_dir(path)
+    pending = [root]
+    while pending:
+        directory = pending.pop()
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                mode = entry.stat(follow_symlinks=False).st_mode
+                child = Path(entry.path)
+                if stat.S_ISDIR(mode):
+                    pending.append(ensure_private_dir(child))
+                elif stat.S_ISREG(mode):
+                    ensure_private_file(child)
+                else:
+                    raise ValueError("private tree has unsafe entry")
+    return root
+
+
 def _normalized_secret_names(secret_env_names):
     return {str(name).upper() for name in (secret_env_names or ())}
 

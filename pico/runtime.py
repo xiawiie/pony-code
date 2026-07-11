@@ -314,19 +314,24 @@ class Pico:
             self.feature_flags.update({str(key): bool(value) for key, value in feature_flags.items()})
         self.allowed_tools = self._normalize_allowed_tools(allowed_tools)
         self.run_store = run_store or RunStore(Path(workspace.repo_root) / ".pico" / "runs")
-        if self.depth == 0:
-            redactor = _artifact_redactor(
-                self.redaction_env,
-                self.secret_env_names,
-            )
-            if hasattr(self.run_store, "set_redactor"):
-                self.run_store.set_redactor(redactor)
-            if hasattr(self.session_store, "set_redactor"):
-                self.session_store.set_redactor(redactor)
+        redactor = _artifact_redactor(
+            self.redaction_env,
+            self.secret_env_names,
+        )
+        if (
+            hasattr(self.run_store, "set_redactor")
+            and (self.depth == 0 or not getattr(self.run_store, "_redactor_configured", False))
+        ):
+            self.run_store.set_redactor(redactor)
+        if (
+            hasattr(self.session_store, "set_redactor")
+            and (self.depth == 0 or not getattr(self.session_store, "_redactor_configured", False))
+        ):
+            self.session_store.set_redactor(redactor)
         # 可恢复编辑（recoverable editing）的组件在这里就位。
         # 它们和 resume-summary 用的 `checkpointlib` 是两条独立的通路：
         # CheckpointStore 落在 .pico/checkpoints/ 下，专门记 turn/restore/manual 类型。
-        self.checkpoint_store = CheckpointStore(self.root)
+        self.checkpoint_store = CheckpointStore(self.root, redactor=redactor)
         self.tool_change_owner_id = "runtime_" + uuid.uuid4().hex[:12]
         self.tool_change_recorder = ToolChangeRecorder(self.checkpoint_store, owner_id=self.tool_change_owner_id)
         self.interrupted_tool_changes = (

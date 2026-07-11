@@ -6,6 +6,7 @@ session.json 负责保存“可恢复的会话状态”；RunStore 负责保存�
 
 import json
 import os
+import re
 import stat
 import tempfile
 from pathlib import Path
@@ -13,14 +14,21 @@ from pathlib import Path
 from .security import (
     ensure_private_dir,
     ensure_private_file,
+    harden_private_tree,
     require_regular_no_symlink,
 )
 
 
+_RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
 def _run_id(value):
     if hasattr(value, "run_id"):
-        return value.run_id
-    return str(value)
+        value = value.run_id
+    run_id = str(value or "")
+    if not _RUN_ID_RE.fullmatch(run_id):
+        raise ValueError("invalid run id")
+    return run_id
 
 
 def _identity(value):
@@ -29,11 +37,13 @@ def _identity(value):
 
 class RunStore:
     def __init__(self, root, redactor=None):
-        self.root = ensure_private_dir(root)
+        self.root = harden_private_tree(root)
         self._redactor = redactor or _identity
+        self._redactor_configured = redactor is not None
 
     def set_redactor(self, redactor):
         self._redactor = redactor or _identity
+        self._redactor_configured = redactor is not None
 
     def run_dir(self, run_id):
         return self.root / _run_id(run_id)
@@ -146,6 +156,14 @@ class RunStore:
             ):
                 raise ValueError("run temp changed")
             temp_path.replace(path)
+            installed = path.lstat()
+            if (
+                not stat.S_ISREG(installed.st_mode)
+                or (installed.st_dev, installed.st_ino) != temp_identity
+            ):
+                if not stat.S_ISREG(installed.st_mode):
+                    path.unlink()
+                raise ValueError("run temp changed")
             ensure_private_file(path)
         finally:
             if temp_path is not None and temp_identity is not None:

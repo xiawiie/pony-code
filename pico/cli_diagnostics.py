@@ -374,21 +374,39 @@ def _read_project_env(start):
 
 
 def _latest_json_stem(root):
-    if not root.exists():
+    try:
+        if not stat.S_ISDIR(root.lstat().st_mode):
+            return None
+    except OSError:
         return None
-    files = [path for path in root.glob("*.json") if path.is_file()]
+    files = []
+    for path in root.glob("*.json"):
+        try:
+            if stat.S_ISREG(path.lstat().st_mode):
+                files.append(path)
+        except OSError:
+            continue
     if not files:
         return None
-    return max(files, key=lambda path: (path.stat().st_mtime, path.name)).stem
+    return max(files, key=lambda path: (path.lstat().st_mtime, path.name)).stem
 
 
 def _latest_dir_name(root):
-    if not root.exists():
+    try:
+        if not stat.S_ISDIR(root.lstat().st_mode):
+            return None
+    except OSError:
         return None
-    dirs = [path for path in root.iterdir() if path.is_dir()]
+    dirs = []
+    for path in root.iterdir():
+        try:
+            if stat.S_ISDIR(path.lstat().st_mode):
+                dirs.append(path)
+        except OSError:
+            continue
     if not dirs:
         return None
-    return max(dirs, key=lambda path: (path.stat().st_mtime, path.name)).name
+    return max(dirs, key=lambda path: (path.lstat().st_mtime, path.name)).name
 
 
 def _source_label(item):

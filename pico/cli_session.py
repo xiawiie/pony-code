@@ -4,8 +4,13 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 
 from pico.messages import MessageValidationError, validate_messages
+from pico.security import require_regular_no_symlink
+
+
+_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 
 def _pair_count(messages):
@@ -24,15 +29,18 @@ def inspect_session(session_id, sessions_root):
 
     The report is human-readable multi-line text — no JSON, no colors.
     """
+    session_id = str(session_id or "")
+    if not _SESSION_ID_RE.fullmatch(session_id):
+        return False, f"session not found: {session_id}"
     sessions_root = Path(sessions_root)
     path = sessions_root / f"{session_id}.json"
-    if not path.exists():
-        return False, f"session not found: {path}"
-
     try:
+        path = require_regular_no_symlink(path)
         session = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
-        return False, f"failed to read session {session_id}: {exc}"
+    except FileNotFoundError:
+        return False, f"session not found: {session_id}"
+    except (OSError, ValueError):
+        return False, f"failed to read session {session_id}: unsafe session artifact"
 
     version = session.get("schema_version", "unknown")
     messages = session.get("messages")
@@ -42,7 +50,7 @@ def inspect_session(session_id, sessions_root):
         f"messages: {len(messages) if isinstance(messages, list) else 0}",
         "role_sequence: " + (
             " -> ".join(
-                str(message.get("role", "?"))
+                role if (role := message.get("role")) in {"user", "assistant"} else "?"
                 for message in messages
                 if isinstance(message, dict)
             )

@@ -1,41 +1,87 @@
 """Recovery command handlers for Pico's explicit CLI surface."""
 
 import json
+import os
 from pathlib import Path
+import re
+import stat
 
 from .checkpoint_store import CheckpointStore
 from .cli_errors import CLI_EXIT_USAGE, CliError
-from .cli_output import print_result
+from .cli_output import build_inspection_redactor, print_inspection_result
 from .recovery_checkpoint_writer import RecoveryCheckpointWriter
 from .recovery_manager import RecoveryManager
+from .security import require_regular_no_symlink
 from .workspace import WorkspaceContext  # noqa: F401
 
 
+_ARTIFACT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
 def handle_checkpoints(root, tokens, args):
-    store = CheckpointStore(root)
+    redactor = build_inspection_redactor(root, args)
+    try:
+        store = CheckpointStore(root, redactor=redactor)
+    except (OSError, ValueError) as exc:
+        raise _unsafe_artifact_error() from exc
     sub = tokens[0] if tokens else "list"
     rest = tokens[1:]
     if sub == "list" and not rest:
         records = store.list_checkpoint_records()
-        return print_result("checkpoints_list", records, args, _render_checkpoints_list)
+        return print_inspection_result(
+            root,
+            "checkpoints_list",
+            records,
+            args,
+            _render_checkpoints_list,
+            redactor=redactor,
+        )
     if sub == "show" and len(rest) == 1:
         checkpoint_id = _resolve_checkpoint_id(store, rest[0])
         record = _load_checkpoint_record(store, checkpoint_id)
-        return print_result("checkpoints_show", record, args, _render_json_body)
+        return print_inspection_result(
+            root,
+            "checkpoints_show",
+            record,
+            args,
+            _render_json_body,
+            redactor=redactor,
+        )
     if sub == "preview-restore" and len(rest) == 1:
         manager = RecoveryManager(store, root, checkpoint_writer=RecoveryCheckpointWriter(store, root))
         checkpoint_id = _resolve_checkpoint_id(store, rest[0])
         plan = _preview_restore(manager, checkpoint_id)
-        return print_result("checkpoints_preview_restore", plan, args, _render_restore_plan)
+        return print_inspection_result(
+            root,
+            "checkpoints_preview_restore",
+            plan,
+            args,
+            _render_restore_plan,
+            redactor=redactor,
+        )
     if sub == "restore" and _is_restore_args(rest):
         checkpoint_id = _resolve_checkpoint_id(store, rest[0])
         apply_flag = "--apply" in rest[1:]
         manager = RecoveryManager(store, root, checkpoint_writer=RecoveryCheckpointWriter(store, root))
         if not apply_flag:
             plan = _preview_restore(manager, checkpoint_id)
-            return print_result("checkpoints_preview_restore", plan, args, _render_restore_plan)
+            return print_inspection_result(
+                root,
+                "checkpoints_preview_restore",
+                plan,
+                args,
+                _render_restore_plan,
+                redactor=redactor,
+            )
         result = _apply_restore(manager, checkpoint_id)
-        return print_result("checkpoints_restore", result, args, _render_json_body)
+        return print_inspection_result(
+            root,
+            "checkpoints_restore",
+            result,
+            args,
+            _render_json_body,
+            redactor=redactor,
+        )
     if sub == "prune":
         prune_options = _parse_prune_args(rest)
         try:
@@ -49,7 +95,14 @@ def handle_checkpoints(root, tokens, args):
                 message=str(exc),
                 exit_code=CLI_EXIT_USAGE,
             ) from exc
-        return print_result("checkpoints_prune", result, args, _render_json_body)
+        return print_inspection_result(
+            root,
+            "checkpoints_prune",
+            result,
+            args,
+            _render_json_body,
+            redactor=redactor,
+        )
     raise CliError(
         code="usage",
         message="usage: pico-cli checkpoints {list | show <id> | preview-restore <id> | restore <id> [--apply] | prune [--older-than <duration>] [--apply]}",
@@ -58,25 +111,39 @@ def handle_checkpoints(root, tokens, args):
 
 
 def handle_runs(root, tokens, args):
+    redactor = build_inspection_redactor(root, args)
     runs_root = Path(root) / ".pico" / "runs"
     sub = tokens[0] if tokens else "list"
     rest = tokens[1:]
     if sub == "list" and not rest:
-        data = []
-        if runs_root.exists():
-            data = [{"run_id": entry.name} for entry in sorted(runs_root.iterdir()) if entry.is_dir()]
-        return print_result("runs_list", data, args, _render_runs_list)
+        checked_root = _inspection_directory(runs_root, allow_missing=True)
+        data = [] if checked_root is None else [
+            {"run_id": entry.name}
+            for entry in sorted(checked_root.iterdir())
+            if stat.S_ISDIR(entry.lstat().st_mode)
+        ]
+        return print_inspection_result(
+            root,
+            "runs_list",
+            data,
+            args,
+            _render_runs_list,
+            redactor=redactor,
+        )
     if sub == "show" and len(rest) == 1:
-        run_dir = runs_root / rest[0]
-        if not run_dir.exists():
-            raise CliError(
-                code="run_not_found",
-                message=f"unknown run: {rest[0]}",
-                hint="Run `pico-cli runs list`.",
-                exit_code=CLI_EXIT_USAGE,
-            )
-        data = _load_run_artifacts(run_dir, rest[0])
-        return print_result("runs_show", data, args, _render_runs_show)
+        run_id = _inspection_id(rest[0], kind="run")
+        run_dir = _inspection_directory(runs_root / run_id, allow_missing=True)
+        if run_dir is None:
+            raise _not_found_error("run")
+        data = _load_run_artifacts(run_dir, run_id, redactor)
+        return print_inspection_result(
+            root,
+            "runs_show",
+            data,
+            args,
+            _render_runs_show,
+            redactor=redactor,
+        )
     raise CliError(
         code="usage",
         message="usage: pico-cli runs {list | show <run_id>}",
@@ -85,25 +152,38 @@ def handle_runs(root, tokens, args):
 
 
 def handle_sessions(root, tokens, args):
+    redactor = build_inspection_redactor(root, args)
     sessions_root = Path(root) / ".pico" / "sessions"
     sub = tokens[0] if tokens else "list"
     rest = tokens[1:]
     if sub == "list" and not rest:
         data = [{"session_id": path.stem} for path in _session_files(sessions_root)]
-        return print_result("sessions_list", data, args, _render_sessions_list)
+        return print_inspection_result(
+            root,
+            "sessions_list",
+            data,
+            args,
+            _render_sessions_list,
+            redactor=redactor,
+        )
     if sub == "show" and len(rest) == 1:
-        session_id = rest[0]
+        session_id = _inspection_id(rest[0], kind="session")
         session_paths = {path.stem: path for path in _session_files(sessions_root)}
         path = session_paths.get(session_id)
         if path is None:
-            raise CliError(
-                code="session_not_found",
-                message=f"unknown session: {session_id}",
-                hint="Run `pico-cli sessions list`.",
-                exit_code=CLI_EXIT_USAGE,
-            )
-        data = json.loads(path.read_text(encoding="utf-8"))
-        return print_result("sessions_show", data, args, _render_json_body)
+            raise _not_found_error("session")
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise _unsafe_artifact_error() from exc
+        return print_inspection_result(
+            root,
+            "sessions_show",
+            data,
+            args,
+            _render_json_body,
+            redactor=redactor,
+        )
     raise CliError(
         code="usage",
         message="usage: pico-cli sessions {list | show <session_id>}",
@@ -168,7 +248,11 @@ def _resolve_checkpoint_id(store, value):
         )
 
     records = store.list_checkpoint_records()
-    ids = [str(record.get("checkpoint_id", "")) for record in records if str(record.get("checkpoint_id", ""))]
+    ids = []
+    for record in records:
+        candidate = str(record.get("checkpoint_id", ""))
+        if candidate and _ARTIFACT_ID_RE.fullmatch(candidate):
+            ids.append(candidate)
     if checkpoint_id in ids:
         return checkpoint_id
 
@@ -227,23 +311,103 @@ def _apply_restore(manager, checkpoint_id):
         ) from exc
 
 
-def _load_run_artifacts(run_dir, run_id):
+def _load_run_artifacts(run_dir, run_id, redactor):
     artifacts = []
     for name in ("task_state.json", "report.json", "trace.jsonl"):
-        path = run_dir / name
-        if path.exists():
-            artifacts.append({"name": name, "content": path.read_text(encoding="utf-8")})
+        path = _inspection_file(run_dir / name)
+        if path is None:
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+            if name == "trace.jsonl":
+                lines = [
+                    json.dumps(
+                        redactor(json.loads(line)),
+                        sort_keys=True,
+                        ensure_ascii=True,
+                    )
+                    for line in text.splitlines()
+                    if line.strip()
+                ]
+                content = "\n".join(lines) + ("\n" if lines else "")
+            else:
+                content = json.dumps(
+                    redactor(json.loads(text)),
+                    indent=2,
+                    sort_keys=True,
+                    ensure_ascii=True,
+                ) + "\n"
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise _unsafe_artifact_error() from exc
+        artifacts.append({"name": name, "content": content})
     return {"run_id": run_id, "artifacts": artifacts}
 
 
 def _session_files(sessions_root):
-    if not sessions_root.exists():
+    sessions_root = _inspection_directory(sessions_root, allow_missing=True)
+    if sessions_root is None:
         return []
-    return [
-        path
-        for path in sorted(sessions_root.glob("*.json"))
-        if path.is_file()
-    ]
+    files = []
+    for path in sorted(sessions_root.iterdir()):
+        if path.suffix != ".json":
+            continue
+        try:
+            if stat.S_ISREG(path.lstat().st_mode):
+                files.append(require_regular_no_symlink(path))
+        except (OSError, ValueError):
+            continue
+    return files
+
+
+def _inspection_id(value, *, kind):
+    value = str(value or "")
+    if not _ARTIFACT_ID_RE.fullmatch(value):
+        raise _not_found_error(kind)
+    return value
+
+
+def _inspection_directory(path, *, allow_missing=False):
+    target = Path(os.path.abspath(os.fspath(path)))
+    current = Path(target.anchor)
+    for part in target.parts[1:]:
+        current = current / part
+        try:
+            mode = current.lstat().st_mode
+        except FileNotFoundError:
+            if allow_missing:
+                return None
+            raise
+        except OSError as exc:
+            raise _unsafe_artifact_error() from exc
+        if stat.S_ISLNK(mode) or not stat.S_ISDIR(mode):
+            raise _unsafe_artifact_error()
+    return target
+
+
+def _inspection_file(path):
+    try:
+        return require_regular_no_symlink(path)
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as exc:
+        raise _unsafe_artifact_error() from exc
+
+
+def _not_found_error(kind):
+    return CliError(
+        code=f"{kind}_not_found",
+        message=f"unknown {kind}",
+        hint=f"Run `pico-cli {kind}s list`.",
+        exit_code=CLI_EXIT_USAGE,
+    )
+
+
+def _unsafe_artifact_error():
+    return CliError(
+        code="unsafe_artifact",
+        message="unsafe local artifact",
+        exit_code=CLI_EXIT_USAGE,
+    )
 
 
 def _is_restore_args(args):

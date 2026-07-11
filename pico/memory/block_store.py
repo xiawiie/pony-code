@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import os
 import re
+import stat
 import sys
 import tempfile
 from dataclasses import dataclass, field
@@ -28,7 +29,12 @@ from types import MappingProxyType
 from typing import Literal
 
 from pico import security as securitylib
-from pico.security import ensure_private_dir, require_regular_no_symlink
+from pico.security import (
+    ensure_private_dir,
+    ensure_private_file,
+    harden_private_tree,
+    require_regular_no_symlink,
+)
 from pico.workspace import _safe_index_directory, _safe_index_file
 
 from .frontmatter import parse_frontmatter
@@ -61,11 +67,38 @@ class BlockStore:
     ):
         self.workspace_root = Path(os.path.abspath(os.fspath(workspace_root)))
         self.user_root = Path(os.path.abspath(os.fspath(user_root)))
+        for root in (self.workspace_root, self.user_root):
+            try:
+                root.lstat()
+            except FileNotFoundError:
+                continue
+            ensure_private_dir(root)
+            self._harden_agent_owned_paths(root)
         self.redaction_env = MappingProxyType(
             dict(os.environ if redaction_env is None else redaction_env)
         )
         self.secret_env_names = tuple(secret_env_names or ())
         self._size_warned: set[str] = set()
+
+    @staticmethod
+    def _harden_agent_owned_paths(root: Path) -> None:
+        agent_dir = root / "agent"
+        try:
+            agent_mode = agent_dir.lstat().st_mode
+        except FileNotFoundError:
+            pass
+        else:
+            if stat.S_ISDIR(agent_mode):
+                harden_private_tree(agent_dir)
+
+        agent_notes = root / "agent_notes.md"
+        try:
+            notes_mode = agent_notes.lstat().st_mode
+        except FileNotFoundError:
+            pass
+        else:
+            if stat.S_ISREG(notes_mode):
+                ensure_private_file(agent_notes)
 
     # ---- listing / reading -------------------------------------------------
 
@@ -292,15 +325,48 @@ class BlockStore:
     @staticmethod
     def _atomic_write(target: Path, content: str) -> None:
         ensure_private_dir(target.parent)
-        require_regular_no_symlink(target, allow_missing=True)
-        with tempfile.NamedTemporaryFile(
-            mode="w",
-            encoding="utf-8",
-            delete=False,
-            dir=str(target.parent),
-            prefix=target.name + ".",
-            suffix=".tmp",
-        ) as fh:
-            fh.write(content)
-            tmp_name = fh.name
-        Path(tmp_name).replace(target)
+        target = require_regular_no_symlink(target, allow_missing=True)
+        temp_path = None
+        temp_identity = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                delete=False,
+                dir=str(target.parent),
+                prefix=target.name + ".",
+                suffix=".tmp",
+            ) as handle:
+                temp_path = Path(handle.name)
+                opened = os.fstat(handle.fileno())
+                temp_identity = (opened.st_dev, opened.st_ino)
+                os.fchmod(handle.fileno(), 0o600)
+                handle.write(content)
+                handle.flush()
+                os.fsync(handle.fileno())
+            current = temp_path.lstat()
+            if (
+                not stat.S_ISREG(current.st_mode)
+                or (current.st_dev, current.st_ino) != temp_identity
+            ):
+                raise ValueError("memory temp changed")
+            require_regular_no_symlink(target, allow_missing=True)
+            temp_path.replace(target)
+            installed = target.lstat()
+            if (
+                not stat.S_ISREG(installed.st_mode)
+                or (installed.st_dev, installed.st_ino) != temp_identity
+            ):
+                if not stat.S_ISREG(installed.st_mode):
+                    target.unlink()
+                raise ValueError("memory temp changed")
+            ensure_private_file(target)
+        finally:
+            if temp_path is not None and temp_identity is not None:
+                try:
+                    current = temp_path.lstat()
+                except FileNotFoundError:
+                    pass
+                else:
+                    if (current.st_dev, current.st_ino) == temp_identity:
+                        temp_path.unlink()
