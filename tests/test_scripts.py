@@ -3,7 +3,7 @@ import sys
 from pathlib import Path
 import importlib.util
 
-from pico.evaluation import metrics_experiments
+from pico.evaluation import provider_benchmark
 
 
 def test_ci_tracks_and_uses_frozen_uv_lock():
@@ -56,7 +56,7 @@ def test_provider_experiment_defaults_allow_reasoning_budget():
 
     args = module.build_arg_parser().parse_args(["--output-json", "out.json"])
 
-    assert args.max_new_tokens == metrics_experiments.DEFAULT_PROVIDER_EXPERIMENT_MAX_NEW_TOKENS
+    assert args.max_new_tokens == provider_benchmark.DEFAULT_PROVIDER_EXPERIMENT_MAX_NEW_TOKENS
     assert args.max_new_tokens >= 2048
 
 

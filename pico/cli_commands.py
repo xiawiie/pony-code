@@ -5,11 +5,7 @@ from pathlib import Path
 from . import security as securitylib
 from .cli_errors import CLI_EXIT_CONFIG, CLI_EXIT_USAGE, CliError
 from .cli_diagnostics import _line
-from .cli_diagnostics import handle_config, handle_doctor, handle_status  # noqa: F401
-from .cli_start import run_agent_once, run_repl  # noqa: F401
-from .cli_memory import handle_memory  # noqa: F401
 from .cli_output import build_inspection_redactor, print_result
-from .cli_recovery import handle_checkpoints, handle_runs, handle_sessions  # noqa: F401
 from .cli_session import handle_session_command
 from .config import (
     project_env_metadata,

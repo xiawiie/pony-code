@@ -3,7 +3,8 @@
 import json
 from pathlib import Path
 
-from pico import FakeModelClient, Pico, SessionStore, WorkspaceContext
+from pico import Pico, SessionStore, WorkspaceContext
+from pico.providers.fake import FakeModelClient
 from pico.features import memory as memorylib
 from pico.task_state import TaskState
 

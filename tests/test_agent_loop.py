@@ -6,7 +6,8 @@ from unittest.mock import Mock
 import pytest
 
 import pico.agent_loop as agent_loop_module
-from pico import FakeModelClient, Pico, SessionStore, WorkspaceContext
+from pico import Pico, SessionStore, WorkspaceContext
+from pico.providers.fake import FakeModelClient
 from pico.agent_loop import AgentLoop
 from pico.providers.response import Response, StopReason
 

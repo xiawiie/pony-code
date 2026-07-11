@@ -1,4 +1,5 @@
-from pico import FakeModelClient, Pico, SessionStore, WorkspaceContext
+from pico import Pico, SessionStore, WorkspaceContext
+from pico.providers.fake import FakeModelClient
 from pico.checkpoint import (
     CHECKPOINT_FULL_VALID_STATUS,
     CHECKPOINT_NONE_STATUS,

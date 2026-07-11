@@ -5,23 +5,15 @@ from unittest.mock import patch
 
 import pytest
 
-from pico.evaluation.metrics import (
-    _provider_profile,
+from pico.evaluation.experiments_recovery import (
     run_context_ablation_v2,
     run_memory_ablation_v2,
     run_recovery_ablation_v2,
+)
+from pico.evaluation.metrics_reports import (
     write_benchmark_core_report,
 )
-
-
-def test_metrics_module_splits_report_and_experiment_entrypoints():
-    from pico.evaluation.metrics import run_context_ablation_v2 as compat_context_ablation
-    from pico.evaluation.metrics import write_benchmark_core_report as compat_core_report
-    from pico.evaluation.metrics_experiments import run_context_ablation_v2 as experiment_context_ablation
-    from pico.evaluation.metrics_reports import write_benchmark_core_report as report_core_report
-
-    assert compat_context_ablation is experiment_context_ablation
-    assert compat_core_report is report_core_report
+from pico.evaluation.provider_benchmark import _provider_profile
 
 
 def test_aggregate_run_artifacts_uses_canonical_report_truth_sources(tmp_path):
@@ -113,11 +105,12 @@ def test_context_ablation_compares_bounded_and_unbounded_sent_messages(tmp_path)
 
 
 def test_request_preview_restores_the_canonical_session(tmp_path):
-    from pico import FakeModelClient, Pico, SessionStore, WorkspaceContext
+    from pico import Pico, SessionStore, WorkspaceContext
     from pico.evaluation.experiments_synthetic import (
         _seed_plain_messages,
         measure_request_ablation_metrics,
     )
+    from pico.providers.fake import FakeModelClient
 
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
     agent = Pico(

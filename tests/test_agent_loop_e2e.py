@@ -80,7 +80,7 @@ def test_end_to_end_tool_call_then_final(tmp_path):
 
 
 def test_end_to_end_fake_provider_uses_structured_surface(tmp_path):
-    from pico import FakeModelClient
+    from pico.providers.fake import FakeModelClient
     from pico.runtime import Pico
     from pico.session_store import SessionStore
     from pico.workspace import WorkspaceContext

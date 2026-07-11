@@ -4,7 +4,8 @@ from copy import deepcopy
 from pathlib import Path
 
 from ..providers.text_protocol_adapter import TextProtocolAdapter
-from ..runtime import Pico, SessionStore
+from ..runtime import Pico
+from ..session_store import SessionStore
 from ..workspace import WorkspaceContext
 from .experiments_synthetic import (
     MEMORY_EXPERIMENT_TASKS,

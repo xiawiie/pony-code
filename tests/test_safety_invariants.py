@@ -7,8 +7,9 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from pico import FakeModelClient, Pico, SessionStore, WorkspaceContext
+from pico import Pico, SessionStore, WorkspaceContext
 from pico import cli as pico_cli
+from pico.providers.fake import FakeModelClient
 from pico.config import read_project_env
 from pico.task_state import TaskState
 

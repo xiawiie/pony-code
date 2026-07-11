@@ -2,10 +2,8 @@ import os
 from pathlib import Path
 
 from ..config import read_project_env, resolve_provider_config
-from ..providers.clients import (
-    AnthropicCompatibleModelClient,
-    OpenAICompatibleModelClient,
-)
+from ..providers.anthropic_compatible import AnthropicCompatibleModelClient
+from ..providers.openai_compatible import OpenAICompatibleModelClient
 from ..providers.defaults import API_KEY_ENV_NAMES
 from ..providers.text_protocol_adapter import TextProtocolAdapter
 from .fixed_benchmark import run_fixed_benchmark

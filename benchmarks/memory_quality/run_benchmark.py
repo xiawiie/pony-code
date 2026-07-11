@@ -25,7 +25,8 @@ from pico.evaluation.provider_benchmark import _make_provider_client  # noqa: E4
 from pico.memory.block_store import BlockStore  # noqa: E402
 from pico.memory.retrieval import Retrieval  # noqa: E402
 from pico.providers.fake import FakeModelClient  # noqa: E402
-from pico.runtime import Pico, SessionStore  # noqa: E402
+from pico.runtime import Pico  # noqa: E402
+from pico.session_store import SessionStore  # noqa: E402
 from pico.workspace import WorkspaceContext  # noqa: E402
 
 

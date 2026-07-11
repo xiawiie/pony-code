@@ -2,7 +2,8 @@ from contextlib import contextmanager
 
 import pytest
 
-from pico import FakeModelClient, Pico, SessionStore, WorkspaceContext
+from pico import Pico, SessionStore, WorkspaceContext
+from pico.providers.fake import FakeModelClient
 
 
 def build_agent(tmp_path):

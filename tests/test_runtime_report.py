@@ -6,12 +6,12 @@ from unittest.mock import patch
 
 from pico.features import memory as memorylib
 from pico import (
-    FakeModelClient,
     Pico,
     SessionStore,
     WorkspaceContext,
 )
 from pico.context.renderer import render_current_user_message
+from pico.providers.fake import FakeModelClient
 from pico.providers.response import Response, StopReason
 from pico.task_state import TaskState
 

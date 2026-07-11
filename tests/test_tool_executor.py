@@ -5,7 +5,8 @@ from unittest.mock import Mock
 
 import pytest
 
-from pico import FakeModelClient, Pico, SessionStore, WorkspaceContext
+from pico import Pico, SessionStore, WorkspaceContext
+from pico.providers.fake import FakeModelClient
 from pico.memory.tools import tool_memory_list, tool_memory_search
 from pico.tool_executor import (
     ToolExecutor,

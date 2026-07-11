@@ -2,7 +2,8 @@ import hashlib
 
 import pytest
 
-from pico import FakeModelClient, Pico, SessionStore, WorkspaceContext
+from pico import Pico, SessionStore, WorkspaceContext
+from pico.providers.fake import FakeModelClient
 from pico.checkpoint_store import CheckpointStore
 from pico.tool_change_recorder import ToolChangeRecorder
 

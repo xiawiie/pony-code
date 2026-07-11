@@ -4,14 +4,16 @@ from collections import Counter
 
 import pytest
 
-from pico.evaluation.evaluator import (
-    BenchmarkEvaluator,
+from pico.evaluation.benchmark_schema import (
     load_benchmark,
-    run_harness_regression_v2,
-    run_fixed_benchmark,
     summarize_rows,
 )
-from pico.evaluation.fixed_benchmark import _verifier_argv
+from pico.evaluation.fixed_benchmark import (
+    BenchmarkEvaluator,
+    _verifier_argv,
+    run_fixed_benchmark,
+    run_harness_regression_v2,
+)
 from pico.providers.fake import FakeModelClient
 
 
@@ -178,7 +180,7 @@ def test_failure_category_enum_is_stable():
 
 def test_benchmark_reproducibility_locale_is_stable(monkeypatch, tmp_path):
     monkeypatch.setattr(
-        "pico.evaluation.evaluator.locale_module.setlocale",
+        "pico.evaluation.fixed_benchmark.locale_module.setlocale",
         lambda category: "zh_CN.UTF-8",
     )
 

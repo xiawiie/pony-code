@@ -2,7 +2,8 @@
 
 
 def test_legacy_session_memory_normalizes_to_v2_shape(tmp_path):
-    from pico import FakeModelClient, Pico, SessionStore, WorkspaceContext
+    from pico import Pico, SessionStore, WorkspaceContext
+    from pico.providers.fake import FakeModelClient
 
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
     store = SessionStore(tmp_path / ".pico" / "sessions")

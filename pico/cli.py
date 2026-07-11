@@ -13,21 +13,17 @@ import sys
 
 from .cli_commands import (
     ROOT_HELP,
-    handle_checkpoints,
     handle_help,
     handle_init,
-    handle_memory,
-    handle_runs,
     handle_session,
-    handle_sessions,
-    run_agent_once,
-    run_repl,
 )
 from .cli_diagnostics import handle_config, handle_doctor, handle_status
 from .cli_errors import CLI_EXIT_CONFIG, CLI_EXIT_INTERNAL, CLI_EXIT_USAGE, CliError
-from .cli_help import HELP_DETAILS  # noqa: F401
+from .cli_memory import handle_memory
 from .cli_output import error_envelope, format_json
 from .cli_parser import parse_cli_invocation
+from .cli_recovery import handle_checkpoints, handle_runs, handle_sessions
+from .cli_start import run_agent_once, run_repl
 from .config import (
     read_project_env,
     resolve_provider_config,
@@ -40,15 +36,17 @@ from .providers.defaults import (
     DEFAULT_PROVIDER,  # noqa: F401
     PROVIDER_CHOICES,
 )
-from .providers.clients import AnthropicCompatibleModelClient, OllamaModelClient, OpenAICompatibleModelClient
+from .providers.anthropic_compatible import AnthropicCompatibleModelClient
+from .providers.ollama import OllamaModelClient
+from .providers.openai_compatible import OpenAICompatibleModelClient
 from .providers.text_protocol_adapter import TextProtocolAdapter
 from .runtime import (
     DEFAULT_MAX_NEW_TOKENS,
     DEFAULT_MAX_STEPS,
     Pico,
-    SessionStore,
     _build_redaction_snapshot,
 )
+from .session_store import SessionStore
 from .security import redact_artifact, redact_text
 from .workspace import WorkspaceContext, middle
 

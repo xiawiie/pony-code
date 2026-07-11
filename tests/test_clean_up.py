@@ -24,7 +24,8 @@ def test_default_feature_flags_no_relevant_memory():
 
 
 def test_metadata_uses_system_prefix_hash_only(tmp_path):
-    from pico import FakeModelClient, Pico, SessionStore, WorkspaceContext
+    from pico import Pico, SessionStore, WorkspaceContext
+    from pico.providers.fake import FakeModelClient
     from pico.context.renderer import render_current_user_message
 
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")

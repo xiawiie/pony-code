@@ -6,7 +6,8 @@ import stat
 import pytest
 
 from pico import security as security_module
-from pico import FakeModelClient, Pico, SessionStore, WorkspaceContext
+from pico import Pico, SessionStore, WorkspaceContext
+from pico.providers.fake import FakeModelClient
 from pico.checkpoint_store import CheckpointStore
 from pico.cli import main
 from pico.cli_session import inspect_session

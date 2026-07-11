@@ -4,7 +4,8 @@ from pathlib import Path
 
 from ..features import memory as memorylib
 from ..providers.fake import FakeModelClient
-from ..runtime import Pico, SessionStore
+from ..runtime import Pico
+from ..session_store import SessionStore
 from ..workspace import WorkspaceContext
 from .experiments_synthetic import run_context_stress_matrix, run_large_scale_memory_experiment
 from .metrics_common import (

@@ -27,7 +27,7 @@ from .repo_map import RepoMap
 from .recovery_checkpoint_writer import RecoveryCheckpointWriter
 from .recovery_manager import RecoveryManager
 from .run_store import RunStore
-from .session_store import SessionStore, migrate_session_to_v3
+from .session_store import migrate_session_to_v3
 from .tool_change_recorder import ToolChangeRecorder
 from .tool_context import ToolContext
 from .tool_executor import ToolExecutionResult, ToolExecutor
@@ -57,8 +57,6 @@ DEFAULT_FEATURE_FLAGS = {
     "memory": True,
     "prompt_cache": True,
 }
-__all__ = ["Pico", "SessionStore"]
-
 _SECRET_ENV_NAMES_VAR = "PICO_SECRET_ENV_NAMES"
 
 

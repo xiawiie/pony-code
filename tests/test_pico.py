@@ -14,13 +14,12 @@ from pico.features import memory as memorylib
 from pico.messages import make_tool_pair, validate_messages
 from pico.runtime import DEFAULT_MAX_NEW_TOKENS, DEFAULT_MAX_STEPS
 from pico import (
-    FakeModelClient,
     Pico,
-    OllamaModelClient,
     SessionStore,
     WorkspaceContext,
     build_welcome,
 )
+from pico.providers.fake import FakeModelClient
 
 
 def build_workspace(tmp_path):
@@ -937,9 +936,7 @@ def test_build_agent_uses_deepseek_provider_by_default(tmp_path):
 
 def test_public_api_exports_resolve_through_package_path():
     assert callable(build_welcome)
-    assert FakeModelClient is not None
     assert Pico is not None
-    assert OllamaModelClient is not None
     assert SessionStore is not None
     assert WorkspaceContext is not None
     assert Path(pico_pkg.__file__).as_posix().endswith("/pico/__init__.py")

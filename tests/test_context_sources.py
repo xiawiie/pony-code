@@ -3,7 +3,8 @@ pre-escaping raw text or None for each injection source."""
 
 from unittest.mock import MagicMock
 
-from pico import FakeModelClient, Pico, SessionStore, WorkspaceContext
+from pico import Pico, SessionStore, WorkspaceContext
+from pico.providers.fake import FakeModelClient
 from pico.context.sources import (
     render_checkpoint,
     render_memory_index,

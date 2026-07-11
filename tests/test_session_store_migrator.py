@@ -9,7 +9,8 @@ import pytest
 
 import pico.session_store as session_store_module
 from pico import security as security_module
-from pico import FakeModelClient, Pico, WorkspaceContext
+from pico import Pico, WorkspaceContext
+from pico.providers.fake import FakeModelClient
 from pico.messages import validate_messages
 from pico.security import redact_artifact
 from pico.session_store import (

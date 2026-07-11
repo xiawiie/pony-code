@@ -5,7 +5,8 @@ from unittest.mock import Mock
 import pytest
 
 import pico.verification as verification
-from pico import FakeModelClient, Pico, SessionStore, WorkspaceContext
+from pico import Pico, SessionStore, WorkspaceContext
+from pico.providers.fake import FakeModelClient
 
 
 ACCEPTED_PREFIXES = (

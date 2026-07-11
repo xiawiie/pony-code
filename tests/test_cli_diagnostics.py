@@ -3,6 +3,7 @@ import os
 import shutil
 import stat
 import subprocess
+from types import SimpleNamespace
 from unittest.mock import Mock
 from urllib import error
 
@@ -886,3 +887,52 @@ def test_sessions_show_rejects_path_escape(tmp_path, capsys):
     assert code == 2
     assert "leaked" not in captured.out
     assert "leaked" not in captured.err
+
+
+def test_doctor_flags_claude_md_without_agents_md(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "CLAUDE.md").write_text("# Claude\n")
+
+    result = collect_doctor(str(tmp_path), SimpleNamespace(cwd=str(tmp_path)), offline=True)
+
+    hints = (result.get("project_docs") or {}).get("hints") or []
+    text_dump = " ".join(hint.get("message", "") for hint in hints)
+    assert "CLAUDE.md" in text_dump
+    assert "AGENTS.md" in text_dump
+
+
+def test_doctor_no_claude_hint_when_agents_md_exists(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "AGENTS.md").write_text("# Agents\n")
+    (tmp_path / "CLAUDE.md").write_text("# Claude\n")
+
+    result = collect_doctor(str(tmp_path), SimpleNamespace(cwd=str(tmp_path)), offline=True)
+
+    hints = (result.get("project_docs") or {}).get("hints") or []
+    assert all("CLAUDE.md" not in hint.get("message", "") for hint in hints)
+
+
+def test_doctor_no_project_doc_hint_when_neither_file_exists(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    result = collect_doctor(str(tmp_path), SimpleNamespace(cwd=str(tmp_path)), offline=True)
+
+    assert ((result.get("project_docs") or {}).get("hints") or []) == []
+
+
+def test_doctor_text_output_shows_claude_md_hint(tmp_path, monkeypatch, capsys):
+    from pico.cli_diagnostics import handle_doctor
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "CLAUDE.md").write_text("# Claude\n")
+
+    rc = handle_doctor(
+        ["--offline"],
+        str(tmp_path),
+        SimpleNamespace(format="text", cwd=str(tmp_path)),
+    )
+
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "CLAUDE.md" in out
+    assert "AGENTS.md" in out

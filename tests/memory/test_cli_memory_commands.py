@@ -10,7 +10,7 @@ def _args(cwd, fmt="text"):
 
 
 def test_memory_list_empty(tmp_path, capsys):
-    from pico.cli_commands import handle_memory
+    from pico.cli_memory import handle_memory
     (tmp_path / ".pico" / "memory").mkdir(parents=True)
     rc = handle_memory(["list"], str(tmp_path), _args(tmp_path))
     assert rc == 0
@@ -19,7 +19,7 @@ def test_memory_list_empty(tmp_path, capsys):
 
 
 def test_memory_list_shows_workspace_files(tmp_path, capsys):
-    from pico.cli_commands import handle_memory
+    from pico.cli_memory import handle_memory
     (tmp_path / ".pico" / "memory" / "notes").mkdir(parents=True)
     (tmp_path / ".pico" / "memory" / "notes" / "auth.md").write_text("# Auth\n")
     rc = handle_memory(["list"], str(tmp_path), _args(tmp_path))
@@ -29,7 +29,7 @@ def test_memory_list_shows_workspace_files(tmp_path, capsys):
 
 
 def test_memory_list_json_format(tmp_path, capsys):
-    from pico.cli_commands import handle_memory
+    from pico.cli_memory import handle_memory
     (tmp_path / ".pico" / "memory" / "notes").mkdir(parents=True)
     (tmp_path / ".pico" / "memory" / "notes" / "auth.md").write_text("# Auth\n")
     rc = handle_memory(["list"], str(tmp_path), _args(tmp_path, fmt="json"))
@@ -43,7 +43,7 @@ def test_memory_list_json_format(tmp_path, capsys):
 
 
 def test_memory_show(tmp_path, capsys):
-    from pico.cli_commands import handle_memory
+    from pico.cli_memory import handle_memory
     (tmp_path / ".pico" / "memory" / "notes").mkdir(parents=True)
     (tmp_path / ".pico" / "memory" / "notes" / "auth.md").write_text("hello\nworld\n")
     rc = handle_memory(["show", "workspace/notes/auth.md"], str(tmp_path), _args(tmp_path))
@@ -54,7 +54,7 @@ def test_memory_show(tmp_path, capsys):
 
 
 def test_memory_show_missing(tmp_path):
-    from pico.cli_commands import handle_memory
+    from pico.cli_memory import handle_memory
     from pico.cli_errors import CliError
     import pytest
     with pytest.raises(CliError):
@@ -62,7 +62,7 @@ def test_memory_show_missing(tmp_path):
 
 
 def test_memory_search(tmp_path, capsys):
-    from pico.cli_commands import handle_memory
+    from pico.cli_memory import handle_memory
     (tmp_path / ".pico" / "memory" / "notes").mkdir(parents=True)
     (tmp_path / ".pico" / "memory" / "notes" / "auth.md").write_text("bcrypt info\n")
     rc = handle_memory(["search", "bcrypt"], str(tmp_path), _args(tmp_path))
@@ -72,7 +72,7 @@ def test_memory_search(tmp_path, capsys):
 
 
 def test_memory_search_no_match(tmp_path, capsys):
-    from pico.cli_commands import handle_memory
+    from pico.cli_memory import handle_memory
     (tmp_path / ".pico" / "memory" / "notes").mkdir(parents=True)
     (tmp_path / ".pico" / "memory" / "notes" / "auth.md").write_text("hello\n")
     rc = handle_memory(["search", "nonexistent"], str(tmp_path), _args(tmp_path))
@@ -82,7 +82,7 @@ def test_memory_search_no_match(tmp_path, capsys):
 
 
 def test_memory_search_limit(tmp_path, capsys):
-    from pico.cli_commands import handle_memory
+    from pico.cli_memory import handle_memory
     notes = tmp_path / ".pico" / "memory" / "notes"
     notes.mkdir(parents=True)
     for i in range(5):
@@ -95,7 +95,7 @@ def test_memory_search_limit(tmp_path, capsys):
 
 
 def test_memory_review_empty(tmp_path, capsys):
-    from pico.cli_commands import handle_memory
+    from pico.cli_memory import handle_memory
     (tmp_path / ".pico" / "memory").mkdir(parents=True)
     rc = handle_memory(["review"], str(tmp_path), _args(tmp_path))
     assert rc == 0
@@ -104,7 +104,7 @@ def test_memory_review_empty(tmp_path, capsys):
 
 
 def test_memory_review_shows_content(tmp_path, capsys):
-    from pico.cli_commands import handle_memory
+    from pico.cli_memory import handle_memory
     memory_dir = tmp_path / ".pico" / "memory"
     memory_dir.mkdir(parents=True)
     (memory_dir / "agent_notes.md").write_text("- 2026-07-03  bcrypt rounds > 12 timeout\n")
@@ -153,7 +153,7 @@ def test_memory_review_rejects_symlink_without_reading_canary(
 
 @pytest.mark.parametrize("tokens", (["migrate"], ["migrate", "--apply"]))
 def test_memory_migrate_is_not_a_command(tmp_path, tokens):
-    from pico.cli_commands import handle_memory
+    from pico.cli_memory import handle_memory
     from pico.cli_errors import CliError
 
     with pytest.raises(CliError) as raised:
@@ -164,7 +164,7 @@ def test_memory_migrate_is_not_a_command(tmp_path, tokens):
 
 
 def test_memory_unknown_subcommand(tmp_path):
-    from pico.cli_commands import handle_memory
+    from pico.cli_memory import handle_memory
     from pico.cli_errors import CliError
     with pytest.raises(CliError):
         handle_memory(["bogus"], str(tmp_path), _args(tmp_path))

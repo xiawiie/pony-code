@@ -529,10 +529,11 @@ def test_config_writes_keep_review_required_for_preserved_invalid_line(
 
 
 def test_repl_help_renders_help_details(tmp_path, monkeypatch, capsys):
-    from pico.cli import HELP_DETAILS
-    from pico.cli_commands import run_repl
+    from pico.cli_help import HELP_DETAILS
+    from pico.cli_start import run_repl
     from pico.providers.fake import FakeModelClient
-    from pico.runtime import Pico, SessionStore
+    from pico.runtime import Pico
+    from pico.session_store import SessionStore
     from pico.workspace import WorkspaceContext
 
     workspace = WorkspaceContext.build(tmp_path)

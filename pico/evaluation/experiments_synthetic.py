@@ -5,7 +5,8 @@ from ..context.renderer import render_current_user_message
 from ..features import memory as memorylib
 from ..messages import make_tool_pair, message_content_text
 from ..providers.fake import FakeModelClient
-from ..runtime import Pico, SessionStore
+from ..runtime import Pico
+from ..session_store import SessionStore
 from ..workspace import WorkspaceContext
 from .metrics_common import _safe_mean, _safe_ratio
 

@@ -11,8 +11,9 @@ from zoneinfo import ZoneInfo
 from ..features import memory as memorylib
 from ..messages import validate_messages
 from ..providers.fake import FakeModelClient
-from ..runtime import Pico, SessionStore
+from ..runtime import Pico
 from ..run_store import RunStore
+from ..session_store import SessionStore
 from ..safe_subprocess import (
     build_trusted_executables,
     run_hardened_command,

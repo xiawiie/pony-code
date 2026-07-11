@@ -2,7 +2,8 @@ from unittest.mock import Mock
 
 import pytest
 
-from pico import FakeModelClient, Pico, SessionStore, WorkspaceContext
+from pico import Pico, SessionStore, WorkspaceContext
+from pico.providers.fake import FakeModelClient
 from pico.recovery_policy import assess_command
 
 

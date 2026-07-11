@@ -6,7 +6,8 @@ from unittest.mock import Mock
 
 import pytest
 
-from pico import FakeModelClient, Pico, SessionStore, WorkspaceContext
+from pico import Pico, SessionStore, WorkspaceContext
+from pico.providers.fake import FakeModelClient
 
 
 def build_agent(
