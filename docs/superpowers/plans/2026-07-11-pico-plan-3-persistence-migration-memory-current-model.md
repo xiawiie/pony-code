@@ -63,6 +63,7 @@
 - `pico/recovery_models.py`
 - `pico/recovery_checkpoint_writer.py`
 - `pico/recovery_manager.py`
+- `pico/tool_executor.py`（仅同步 current `mode_unknown` file-entry writer；不做 Plan 4 协调器重构）
 - `pico/verification.py`
 - `pico/file_lock.py`
 - `pico/cli_session.py`
@@ -85,6 +86,7 @@
 - `tests/test_recovery_journal.py`
 - `tests/test_recovery_e2e.py`
 - `tests/test_recovery_durability_e2e.py`
+- `tests/test_tool_executor.py`（仅覆盖 current `mode_unknown` writer）
 - `tests/test_verification_security.py`
 - `tests/test_cli_session_inspect.py`
 - `tests/test_runtime_report.py`
