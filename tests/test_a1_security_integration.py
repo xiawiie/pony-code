@@ -7,6 +7,8 @@ import stat
 import sys
 from unittest.mock import Mock
 
+import pytest
+
 from pico import Pico, SessionStore, WorkspaceContext
 from pico.cli import main
 from pico.cli_start import run_agent_once
@@ -96,8 +98,11 @@ def test_offline_a1_canary_crosses_real_boundaries_without_normal_artifact_leak(
     write_project_env_assignments(tmp_path, {"PICO_PROVIDER": "deepseek"})
 
     candidate = {
+        "record_type": "session",
+        "format_version": 1,
         "id": "candidate-canary",
-        "schema_version": 3,
+        "created_at": "2026-01-01T00:00:00+00:00",
+        "workspace_root": str(tmp_path),
         "messages": [
             {"role": "user", "content": secret, "_pico_meta": {}}
         ],
@@ -105,6 +110,12 @@ def test_offline_a1_canary_crosses_real_boundaries_without_normal_artifact_leak(
             "task_summary": secret,
             "recent_files": [secret],
         },
+        "memory": {},
+        "recently_recalled": [],
+        "checkpoints": {},
+        "resume_state": {},
+        "recovery": {},
+        "runtime_identity": {},
     }
     provider = ScriptedProvider(
         [
@@ -263,7 +274,7 @@ def test_offline_a1_canary_crosses_real_boundaries_without_normal_artifact_leak(
         for entry in sensitive_result.metadata["file_entries"]
         if entry["path"] == "source.txt"
     )
-    assert sensitive_entry["ineligible_reason"] == "sensitive_content"
+    assert sensitive_entry["ineligible_reason"] == "mode_unknown"
     assert not sensitive_entry["after_blob_ref"]
     sensitive_file.write_text("clean\n", encoding="utf-8")
 
@@ -308,8 +319,7 @@ def test_offline_a1_canary_crosses_real_boundaries_without_normal_artifact_leak(
     assert error_provider.requests
     assert secret not in json.dumps(error_provider.requests)
 
-    # A real v1 load produces one byte-exact private migration backup while
-    # replacing the active session with a redacted v3 payload.
+    # Runtime load is strict: legacy bytes are neither rewritten nor backed up.
     legacy_id = "legacy-canary"
     legacy = {
         "id": legacy_id,
@@ -319,15 +329,13 @@ def test_offline_a1_canary_crosses_real_boundaries_without_normal_artifact_leak(
     legacy_raw = json.dumps(legacy).encode("utf-8")
     legacy_path = agent.session_store.path(legacy_id)
     legacy_path.write_bytes(legacy_raw)
-    loaded = agent.session_store.load(legacy_id)
-    backups = list((agent.session_store.root / "backup").glob("*.json"))
-    assert secret not in json.dumps(loaded)
-    assert secret.encode() not in legacy_path.read_bytes()
-    assert len(backups) == 1
-    assert backups[0].read_bytes() == legacy_raw
+    with pytest.raises(ValueError, match="session payload|format version|required"):
+        agent.session_store.load(legacy_id)
+    assert legacy_path.read_bytes() == legacy_raw
+    assert not (agent.session_store.root / "backup").exists()
 
     commands = (
-        ("sessions", "show", legacy_id),
+        ("sessions", "show", session_id),
         ("runs", "show", run_id),
         ("checkpoints", "show", checkpoint_id),
         ("doctor", "--offline"),
@@ -358,7 +366,7 @@ def test_offline_a1_canary_crosses_real_boundaries_without_normal_artifact_leak(
         for path in pico_root.rglob("*"):
             if path.is_file() and secret.encode() in path.read_bytes():
                 holders.append(path)
-    assert holders == backups
+    assert holders == [legacy_path]
 
     if os.name == "posix":
         assert stat.S_IMODE((tmp_path / ".env").stat().st_mode) == 0o600

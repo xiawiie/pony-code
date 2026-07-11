@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 
 from pico.features import memory as memorylib
 from pico import (
@@ -299,7 +300,6 @@ def test_resume_prompt_carries_checkpoint_via_v2_messages(tmp_path):
             "ckpt_manual": {
                 "checkpoint_id": "ckpt_manual",
                 "parent_checkpoint_id": "",
-                "schema_version": "phase1-v1",
                 "created_at": "2026-04-14T09:00:00+00:00",
                 "current_goal": "Fix failing resume flow",
                 "completed": ["Read runtime.py"],
@@ -344,7 +344,6 @@ def test_resume_invalidates_stale_file_summaries_and_marks_partial_stale(tmp_pat
             "ckpt_stale": {
                 "checkpoint_id": "ckpt_stale",
                 "parent_checkpoint_id": "",
-                "schema_version": "phase1-v1",
                 "created_at": "2026-04-14T09:00:00+00:00",
                 "current_goal": "Fix stale summary handling",
                 "completed": [],
@@ -388,7 +387,6 @@ def test_report_last_request_metadata_preserves_initial_resume_status(tmp_path):
             "ckpt_stale": {
                 "checkpoint_id": "ckpt_stale",
                 "parent_checkpoint_id": "",
-                "schema_version": "phase1-v1",
                 "created_at": "2026-04-14T09:00:00+00:00",
                 "current_goal": "Fix stale summary handling",
                 "completed": [],
@@ -444,7 +442,6 @@ def test_first_prompt_resume_status_updates_task_state_after_late_checkpoint_set
             "ckpt_stale": {
                 "checkpoint_id": "ckpt_stale",
                 "parent_checkpoint_id": "",
-                "schema_version": "phase1-v1",
                 "created_at": "2026-04-14T09:00:00+00:00",
                 "current_goal": "Fix stale summary handling",
                 "completed": [],
@@ -495,7 +492,6 @@ def test_resume_marks_workspace_mismatch_when_checkpoint_runtime_identity_is_sta
             "ckpt_workspace": {
                 "checkpoint_id": "ckpt_workspace",
                 "parent_checkpoint_id": "",
-                "schema_version": "phase1-v1",
                 "created_at": "2026-04-14T09:00:00+00:00",
                 "current_goal": "Continue after drift",
                 "completed": [],
@@ -549,7 +545,7 @@ def test_write_file_trace_records_minimum_tool_contract_fields(tmp_path):
     assert tool_event["diff_summary"] == ["created:notes.txt"]
 
 
-def test_resume_marks_schema_mismatch_when_checkpoint_version_is_incompatible(tmp_path):
+def test_resume_uses_session_version_for_embedded_checkpoint(tmp_path):
     agent = build_agent(tmp_path, ["<final>checkpoint ready.</final>"])
     agent.session["checkpoints"] = {
         "current_id": "ckpt_schema",
@@ -557,7 +553,6 @@ def test_resume_marks_schema_mismatch_when_checkpoint_version_is_incompatible(tm
             "ckpt_schema": {
                 "checkpoint_id": "ckpt_schema",
                 "parent_checkpoint_id": "",
-                "schema_version": "legacy-v0",
                 "created_at": "2026-04-14T09:00:00+00:00",
                 "current_goal": "Continue after schema change",
                 "completed": [],
@@ -582,25 +577,14 @@ def test_resume_marks_schema_mismatch_when_checkpoint_version_is_incompatible(tm
     )
 
     assert resumed.ask("Continue the task") == "Resumed."
-    assert resumed.last_request_metadata["resume_status"] == "schema-mismatch"
+    assert resumed.last_request_metadata["resume_status"] == "full-valid"
 
 
-def test_resume_marks_no_checkpoint_when_session_has_no_checkpoint_state(tmp_path):
+def test_session_save_rejects_missing_checkpoint_state(tmp_path):
     agent = build_agent(tmp_path, ["<final>checkpoint ready.</final>"])
     agent.session.pop("checkpoints", None)
-    agent.session_store.save(agent.session)
-
-    resumed = Pico.from_session(
-        model_client=FakeModelClient(["<final>Resumed.</final>"]),
-        workspace=build_workspace(tmp_path),
-        session_store=agent.session_store,
-        session_id=agent.session["id"],
-        approval_policy="auto",
-    )
-
-    assert resumed.ask("Continue the task") == "Resumed."
-    assert resumed.last_request_metadata["resume_status"] == "no-checkpoint"
-    assert "Task checkpoint:" not in json.dumps(resumed.model_client.requests[-1])
+    with pytest.raises(ValueError, match="missing required fields"):
+        agent.session_store.save(agent.session)
 
 
 def test_freshness_mismatch_creates_checkpoint_before_model_completion(tmp_path):
@@ -615,7 +599,6 @@ def test_freshness_mismatch_creates_checkpoint_before_model_completion(tmp_path)
             "ckpt_freshness": {
                 "checkpoint_id": "ckpt_freshness",
                 "parent_checkpoint_id": "",
-                "schema_version": "phase1-v1",
                 "created_at": "2026-04-14T09:00:00+00:00",
                 "current_goal": "Handle freshness mismatch",
                 "completed": [],
@@ -678,7 +661,6 @@ def test_resume_records_runtime_identity_mismatch_fields_in_metadata_and_trace(t
             "ckpt_identity": {
                 "checkpoint_id": "ckpt_identity",
                 "parent_checkpoint_id": "",
-                "schema_version": "phase1-v1",
                 "created_at": "2026-04-14T09:00:00+00:00",
                 "current_goal": "Resume with a different runtime identity",
                 "completed": [],

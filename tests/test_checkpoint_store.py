@@ -9,12 +9,42 @@ from pico.checkpoint_store import CheckpointStore
 from pico.recovery_models import new_checkpoint_record, new_tool_change_record
 
 
+def _entry(blob, path="note.txt", source_id="tc_1"):
+    value = blob["blob_ref"]
+    return {
+        "path": path,
+        "change_kind": "modified",
+        "snapshot_eligible": True,
+        "ineligible_reason": "",
+        "before_exists": True,
+        "before_blob_ref": value,
+        "before_hash": value,
+        "before_mode": 0o644,
+        "after_exists": True,
+        "after_blob_ref": value,
+        "after_hash": value,
+        "after_mode": 0o644,
+        "expected_current_hash": value,
+        "source_tool_change_ids": [source_id] if source_id else [],
+    }
+
+
+def _prepared_entry(blob, path="note.txt"):
+    return {
+        "path": path,
+        "before_exists": True,
+        "before_blob_ref": blob["blob_ref"],
+        "before_hash": blob["content_hash"],
+        "before_mode": 0o644,
+    }
+
+
 def test_checkpoint_store_round_trips_records_tool_changes_and_blobs(tmp_path):
     store = CheckpointStore(tmp_path)
     blob = store.write_blob(b"hello\r\n", content_kind="text")
 
     tool_change = new_tool_change_record("tc_1", "", "task_1", "write_file", "workspace_write")
-    tool_change["file_entries"].append({"path": "README.md", "after_blob_ref": blob["blob_ref"]})
+    tool_change["file_entries"].append(_entry(blob, "README.md"))
     store.write_tool_change_record(tool_change)
 
     record = new_checkpoint_record("ckpt_1", "turn", "s", "r", "task_1", "", str(tmp_path))
@@ -49,7 +79,7 @@ def test_prune_dry_run_scans_checkpoint_and_tool_change_blob_refs(tmp_path):
     referenced = store.write_blob(b"keep", "text")
     orphan = store.write_blob(b"remove", "text")
     tool_change = new_tool_change_record("tc_1", "", "task_1", "write_file", "workspace_write")
-    tool_change["file_entries"].append({"path": "a.txt", "after_blob_ref": referenced["blob_ref"]})
+    tool_change["file_entries"].append(_entry(referenced, "a.txt"))
     store.write_tool_change_record(tool_change)
 
     result = store.prune(dry_run=True)
@@ -66,9 +96,7 @@ def test_prune_preserves_prepared_and_restore_intent_blobs(tmp_path):
     tool = new_tool_change_record(
         "tc_refs", "", "turn", "write_file", "workspace_write", "owner"
     )
-    tool["prepared_file_entries"] = [
-        {"path": "a.txt", "before_blob_ref": prepared["blob_ref"]}
-    ]
+    tool["prepared_file_entries"] = [_prepared_entry(prepared, "a.txt")]
     store.write_tool_change_record(tool)
     checkpoint = new_checkpoint_record(
         "ckpt_refs", "restore", "", "", "", "", str(tmp_path.resolve())
@@ -160,7 +188,7 @@ def test_prune_record_unlink_failure_never_sweeps_surviving_reference(
         "ckpt_old", "turn", "", "", "", "", str(tmp_path.resolve())
     )
     record["created_at"] = "2000-01-01T00:00:00+00:00"
-    record["file_entries"] = [{"path": "note.txt", "before_blob_ref": kept["blob_ref"]}]
+    record["file_entries"] = [_entry(kept, source_id="")]
     store.write_checkpoint_record(record)
     monkeypatch.setattr(
         store,
@@ -187,7 +215,7 @@ def test_prune_retry_recovers_orphan_tool_after_mid_record_failure(
     )
     tool["status"] = "finalized"
     tool["ended_at"] = "2000-01-01T00:00:00+00:00"
-    tool["file_entries"] = [{"path": "note.txt", "before_blob_ref": blob["blob_ref"]}]
+    tool["file_entries"] = [_entry(blob, source_id="tc_old")]
     store.write_tool_change_record(tool)
     checkpoint = new_checkpoint_record(
         "ckpt_old", "turn", "", "", "", "", str(tmp_path.resolve())
@@ -252,21 +280,21 @@ def test_prune_older_than_previews_and_applies_expired_records(tmp_path):
     new_blob = store.write_blob(b"new", "text")
 
     old_tool_change = new_tool_change_record("tc_old", "", "task_old", "write_file", "workspace_write")
-    old_tool_change["file_entries"].append({"path": "old.txt", "after_blob_ref": old_blob["blob_ref"]})
+    old_tool_change["file_entries"].append(_entry(old_blob, "old.txt", "tc_old"))
     store.write_tool_change_record(old_tool_change)
     new_tool_change = new_tool_change_record("tc_new", "", "task_new", "write_file", "workspace_write")
-    new_tool_change["file_entries"].append({"path": "new.txt", "after_blob_ref": new_blob["blob_ref"]})
+    new_tool_change["file_entries"].append(_entry(new_blob, "new.txt", "tc_new"))
     store.write_tool_change_record(new_tool_change)
 
     old_record = new_checkpoint_record("ckpt_old", "turn", "s", "r", "task_old", "", str(tmp_path))
     old_record["created_at"] = "2026-06-01T00:00:00+00:00"
     old_record["tool_change_ids"] = ["tc_old"]
-    old_record["file_entries"].append({"path": "old.txt", "after_blob_ref": old_blob["blob_ref"]})
+    old_record["file_entries"].append(_entry(old_blob, "old.txt", "tc_old"))
     store.write_checkpoint_record(old_record)
     new_record = new_checkpoint_record("ckpt_new", "turn", "s", "r", "task_new", "", str(tmp_path))
     new_record["created_at"] = "2026-07-01T00:00:00+00:00"
     new_record["tool_change_ids"] = ["tc_new"]
-    new_record["file_entries"].append({"path": "new.txt", "after_blob_ref": new_blob["blob_ref"]})
+    new_record["file_entries"].append(_entry(new_blob, "new.txt", "tc_new"))
     store.write_checkpoint_record(new_record)
 
     now = datetime(2026, 7, 2, tzinfo=timezone.utc)

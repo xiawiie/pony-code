@@ -154,6 +154,7 @@ def test_plan_status_precedence_is_stable(tmp_path):
 def test_plan_revalidates_untrusted_file_entry_consistency(
     tmp_path, mutation, reason
 ):
+    del reason
     store = CheckpointStore(tmp_path)
     record = new_checkpoint_record(
         "ckpt_tampered", "turn", "", "", "", "", str(tmp_path.resolve())
@@ -161,12 +162,8 @@ def test_plan_revalidates_untrusted_file_entry_consistency(
     entry = _complete_modified_entry(store, tmp_path)
     mutation(entry)
     record["file_entries"] = [entry]
-    store.write_checkpoint_record(record)
-
-    plan = RecoveryManager(store, tmp_path).preview_restore(record["checkpoint_id"])
-
-    assert plan["status"] == "invalid"
-    assert plan["entries"][0]["reason"] == reason
+    with pytest.raises(ValueError, match="invalid_file_entry"):
+        store.write_checkpoint_record(record)
 
 
 def test_turn_preview_rejects_pending_source_history(tmp_path):
@@ -199,10 +196,8 @@ def test_turn_preview_rejects_malformed_or_unknown_entry_sources(tmp_path):
     entry["source_tool_change_ids"] = [{"unhashable": True}]
     record["tool_change_ids"] = ["tc_done"]
     record["file_entries"] = [entry]
-    store.write_checkpoint_record(record)
-    plan = RecoveryManager(store, tmp_path).preview_restore(record["checkpoint_id"])
-    assert plan["status"] == "invalid"
-    assert plan["entries"][0]["reason"] == "incomplete_tool_change_history"
+    with pytest.raises(ValueError, match="invalid_file_entry"):
+        store.write_checkpoint_record(record)
 
 
 def test_turn_preview_rejects_checkpoint_that_borrows_unrelated_source(tmp_path):
@@ -313,15 +308,20 @@ def test_restore_checkpoint_status_controls_preview(
     assert plan["status"] == expected
 
 
-def test_unreviewed_partial_and_legacy_missing_mode_are_not_ready(tmp_path):
+def test_unreviewed_partial_and_mode_unknown_are_not_ready(tmp_path):
     store = CheckpointStore(tmp_path)
     record = new_checkpoint_record(
         "ckpt_legacy_partial", "restore", "", "", "", "", str(tmp_path.resolve())
     )
     record["status"] = "partial"
     entry = _complete_modified_entry(store, tmp_path)
-    entry.pop("before_mode")
-    entry.pop("after_mode")
+    entry.update(
+        snapshot_eligible=False,
+        ineligible_reason="mode_unknown",
+        before_mode=None,
+        after_mode=None,
+        source_tool_change_ids=[],
+    )
     record["file_entries"] = [entry]
     store.write_checkpoint_record(record)
 
@@ -329,12 +329,12 @@ def test_unreviewed_partial_and_legacy_missing_mode_are_not_ready(tmp_path):
 
     assert plan["status"] == "review_required"
     assert {entry["reason"] for entry in plan["entries"]} == {
-        "legacy_mode_unknown",
+        "mode_unknown",
         "partial_review_required",
     }
 
 
-def test_preview_coalesces_legacy_duplicates_and_preserves_reason(tmp_path):
+def test_store_rejects_old_entries_missing_current_fields(tmp_path):
     store = CheckpointStore(tmp_path)
     a = store.write_blob(b"a")
     b = store.write_blob(b"b")
@@ -360,14 +360,11 @@ def test_preview_coalesces_legacy_duplicates_and_preserves_reason(tmp_path):
         }
 
     record["file_entries"] = [legacy_entry(a, b), legacy_entry(b, c)]
-    store.write_checkpoint_record(record)
-    plan = RecoveryManager(store, tmp_path).preview_restore(record["checkpoint_id"])
-    assert plan["status"] == "review_required"
-    assert len(plan["entries"]) == 1
-    assert plan["entries"][0]["reason"] == "legacy_ambiguous_history"
+    with pytest.raises(ValueError, match="invalid_file_entry"):
+        store.write_checkpoint_record(record)
 
 
-def test_legacy_entry_cannot_hide_a_symlink_path(tmp_path):
+def test_current_entry_cannot_hide_a_symlink_path(tmp_path):
     outside = tmp_path / "outside"
     outside.mkdir()
     os.symlink(outside, tmp_path / "linked")
@@ -377,7 +374,6 @@ def test_legacy_entry_cannot_hide_a_symlink_path(tmp_path):
     )
     entry = _complete_modified_entry(store, tmp_path)
     entry["path"] = "linked/note.txt"
-    entry.pop("before_mode")
     record["file_entries"] = [entry]
     store.write_checkpoint_record(record)
     plan = RecoveryManager(store, tmp_path).preview_restore(record["checkpoint_id"])
@@ -445,7 +441,7 @@ def test_restore_preview_conflicts_when_expected_empty_but_file_exists(tmp_path)
     assert plan["entries"][0]["reason"] == "unexpected_file_present"
 
 
-def test_preview_flags_review_when_before_blob_unavailable(tmp_path):
+def test_store_rejects_entry_when_before_blob_unavailable(tmp_path):
     # 直接构造一份 file_entry: snapshot_eligible=True, change_kind=modified, 但没有 before_blob_ref。
     # _build_file_entries 平时会把 snapshot_eligible flip 掉；这里保留原样是为了独立
     # 验证 _plan_entry 里的“before_blob_unavailable”防御分支不会静默漏掉。
@@ -467,12 +463,8 @@ def test_preview_flags_review_when_before_blob_unavailable(tmp_path):
             "ineligible_reason": "",
         }
     )
-    store.write_checkpoint_record(record)
-
-    plan = RecoveryManager(store, tmp_path).preview_restore("ckpt_1")
-
-    assert plan["entries"][0]["decision"] == "error"
-    assert plan["entries"][0]["reason"] == "invalid_file_entry"
+    with pytest.raises(ValueError, match="invalid_file_entry"):
+        store.write_checkpoint_record(record)
 
 
 def test_preview_explains_ineligible_binary_without_claiming_snapshot(tmp_path):

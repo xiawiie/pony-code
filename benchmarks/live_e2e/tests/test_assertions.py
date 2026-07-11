@@ -615,7 +615,11 @@ def _canonical_session_messages():
 
 
 def _pico_stub_with_persisted_v3(tmp_path):
-    session = {"schema_version": 3, "messages": _canonical_session_messages()}
+    session = {
+        "record_type": "session",
+        "format_version": 1,
+        "messages": _canonical_session_messages(),
+    }
     session_path = tmp_path / "session.json"
     session_path.write_text(json.dumps(session), encoding="utf-8")
     return SimpleNamespace(

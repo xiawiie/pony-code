@@ -1079,13 +1079,20 @@ class AssertionEngine:
         session = getattr(pico, "session", {})
         if not isinstance(session, dict):
             session = {}
-        schema = session.get("schema_version")
-        session_is_v3 = type(schema) is int and schema == 3 and "history" not in session
+        record_type = session.get("record_type")
+        version = session.get("format_version")
+        session_is_current = (
+            record_type == "session"
+            and type(version) is int
+            and version == 1
+            and "history" not in session
+            and "schema_version" not in session
+        )
         out.append(Assertion(
-            name="in_memory_session_is_v3_without_history",
-            passed=session_is_v3,
-            expected="session.schema_version is int 3 and history is absent",
-            actual=f"schema={schema!r}, has_history={'history' in session}",
+            name="in_memory_session_is_current_without_history",
+            passed=session_is_current,
+            expected="session has current type/version and no obsolete transcript fields",
+            actual=f"record_type={record_type!r}, version={version!r}",
         ))
 
         messages = session.get("messages", [])
@@ -1120,22 +1127,25 @@ class AssertionEngine:
             persisted = json.loads(
                 Path(getattr(pico, "session_path")).read_text(encoding="utf-8")
             )
-            persisted_schema = persisted.get("schema_version")
+            persisted_type = persisted.get("record_type")
+            persisted_version = persisted.get("format_version")
             persisted_valid = (
-                type(persisted_schema) is int
-                and persisted_schema == 3
+                persisted_type == "session"
+                and type(persisted_version) is int
+                and persisted_version == 1
                 and "history" not in persisted
+                and "schema_version" not in persisted
             )
             persisted_actual = (
-                f"schema={persisted_schema!r}, has_history={'history' in persisted}"
+                f"record_type={persisted_type!r}, version={persisted_version!r}"
             )
         except (AttributeError, OSError, TypeError, json.JSONDecodeError):
             persisted_valid = False
             persisted_actual = "persisted session unreadable"
         out.append(Assertion(
-            name="persisted_session_is_v3_without_history",
+            name="persisted_session_is_current_without_history",
             passed=persisted_valid,
-            expected="persisted session schema_version is int 3 and history is absent",
+            expected="persisted session has current type/version and no obsolete fields",
             actual=persisted_actual,
         ))
 
@@ -1695,7 +1705,7 @@ def main() -> int:
             wall_time_ms,
             aborted_reason=aborted_reason,
             expected_turn_count=len(TURNS),
-            session_schema=int(pico.session.get("schema_version", 0)),
+            session_schema=int(pico.session.get("format_version", 0)),
             git_head=git_head,
             artifact_security=artifact_security,
             redactor=lambda value: redact_artifact(

@@ -20,6 +20,12 @@ import stat
 from pathlib import Path
 
 from pico import file_lock
+from pico.recovery_models import (
+    CHECKPOINT_FORMAT_VERSION,
+    CHECKPOINT_RECORD_TYPE,
+    TOOL_CHANGE_FORMAT_VERSION,
+    TOOL_CHANGE_RECORD_TYPE,
+)
 from pico.recovery_paths import hash_bytes
 from pico.security import (
     ensure_private_dir,
@@ -50,42 +56,41 @@ class CheckpointStoreError(ValueError):
 
 
 def _safe_id(value, label):
-    text = str(value or "")
+    text = value if isinstance(value, str) else ""
     if text in {"", ".", ".."} or _SAFE_ID.fullmatch(text) is None:
         raise CheckpointStoreError("invalid_record_id", f"invalid {label}")
     return text
 
 
-def _with_additive_defaults(record, *, kind):
-    if not isinstance(record, dict):
-        return record
-    result = deepcopy(record)
-    if kind == "checkpoint" and result.get("schema_version") == "checkpoint-record-v1":
-        result.setdefault(
-            "status",
-            "applied" if result.get("checkpoint_type") == "restore" else "",
-        )
-        result.setdefault("owner_id", "")
-        result.setdefault("reviewed_at", "")
-        result.setdefault("review_reason", "")
-        result.setdefault("reviewed_by", "")
-        result.setdefault("integrity_errors", [])
-    if kind == "tool_change" and result.get("schema_version") == "tool-change-record-v1":
-        result.setdefault("status", "pending")
-        result.setdefault("owner_id", "")
-        result.setdefault("prepared_file_entries", [])
-        result.setdefault("recovery_context", {})
-        result.setdefault("reviewed_at", "")
-        result.setdefault("review_reason", "")
-        result.setdefault("reviewed_by", "")
-    return result
+def _decode_json(raw):
+    def object_from_pairs(pairs):
+        value = {}
+        for key, item in pairs:
+            if key in value:
+                raise CheckpointStoreError("duplicate_key", "duplicate record key")
+            value[key] = item
+        return value
+
+    try:
+        return json.loads(raw.decode("utf-8"), object_pairs_hook=object_from_pairs)
+    except CheckpointStoreError:
+        raise
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise CheckpointStoreError("invalid_json", "invalid record JSON") from None
 
 
 def _validate_checkpoint_record(record, expected_id=None):
     if not isinstance(record, dict):
         raise CheckpointStoreError("invalid_record", "checkpoint record must be an object")
-    if record.get("schema_version") != "checkpoint-record-v1":
-        raise CheckpointStoreError("unsupported_schema", "unsupported checkpoint schema")
+    if record.get("record_type") != CHECKPOINT_RECORD_TYPE:
+        raise CheckpointStoreError("unsupported_record_type", "unsupported checkpoint record type")
+    if (
+        type(record.get("format_version")) is not int
+        or record["format_version"] != CHECKPOINT_FORMAT_VERSION
+    ):
+        raise CheckpointStoreError("unsupported_format", "unsupported checkpoint format")
+    if "schema_version" in record:
+        raise CheckpointStoreError("obsolete_field", "obsolete checkpoint field")
     checkpoint_id = _safe_id(record.get("checkpoint_id"), "checkpoint id")
     if expected_id is not None and checkpoint_id != expected_id:
         raise CheckpointStoreError("internal_id_mismatch", "checkpoint internal id mismatch")
@@ -113,6 +118,12 @@ def _validate_checkpoint_record(record, expected_id=None):
         raise CheckpointStoreError("invalid_record_shape", "invalid checkpoint list field")
     if any(not isinstance(record.get(key), dict) for key in dict_fields):
         raise CheckpointStoreError("invalid_record_shape", "invalid checkpoint object field")
+    from pico.recovery_checkpoint_writer import validate_file_entry
+
+    if any(validate_file_entry(entry) for entry in record["file_entries"]):
+        raise CheckpointStoreError("invalid_file_entry", "invalid checkpoint file entry")
+    if any(not _valid_verification_evidence(item) for item in record["verification_evidence"]):
+        raise CheckpointStoreError("invalid_verification", "invalid verification evidence")
     for tool_change_id in record["tool_change_ids"] + record["missing_tool_change_ids"]:
         _safe_id(tool_change_id, "tool change id")
     return record
@@ -121,8 +132,15 @@ def _validate_checkpoint_record(record, expected_id=None):
 def _validate_tool_change_record(record, expected_id=None):
     if not isinstance(record, dict):
         raise CheckpointStoreError("invalid_record", "tool change record must be an object")
-    if record.get("schema_version") != "tool-change-record-v1":
-        raise CheckpointStoreError("unsupported_schema", "unsupported tool change schema")
+    if record.get("record_type") != TOOL_CHANGE_RECORD_TYPE:
+        raise CheckpointStoreError("unsupported_record_type", "unsupported tool change record type")
+    if (
+        type(record.get("format_version")) is not int
+        or record["format_version"] != TOOL_CHANGE_FORMAT_VERSION
+    ):
+        raise CheckpointStoreError("unsupported_format", "unsupported tool change format")
+    if "schema_version" in record:
+        raise CheckpointStoreError("obsolete_field", "obsolete tool change field")
     tool_change_id = _safe_id(record.get("tool_change_id"), "tool change id")
     if expected_id is not None and tool_change_id != expected_id:
         raise CheckpointStoreError("internal_id_mismatch", "tool change internal id mismatch")
@@ -143,7 +161,91 @@ def _validate_tool_change_record(record, expected_id=None):
         raise CheckpointStoreError("invalid_record_shape", "invalid tool change list field")
     if any(not isinstance(record.get(key), dict) for key in dict_fields):
         raise CheckpointStoreError("invalid_record_shape", "invalid tool change object field")
+    from pico.recovery_checkpoint_writer import validate_file_entry
+    from pico.recovery_paths import normalize_workspace_relative_path
+
+    if any(validate_file_entry(entry) for entry in record["file_entries"]):
+        raise CheckpointStoreError("invalid_file_entry", "invalid tool change file entry")
+    if any(not _valid_prepared_file_entry(entry) for entry in record["prepared_file_entries"]):
+        raise CheckpointStoreError("invalid_file_entry", "invalid prepared file entry")
+    try:
+        affected_paths = [
+            normalize_workspace_relative_path(path)
+            for path in record["affected_paths"]
+            if isinstance(path, str)
+        ]
+    except ValueError:
+        raise CheckpointStoreError("invalid_path", "invalid affected path") from None
+    if affected_paths != record["affected_paths"]:
+        raise CheckpointStoreError("invalid_path", "invalid affected path")
     return record
+
+
+def _valid_verification_evidence(item):
+    if not isinstance(item, dict) or "schema_version" in item:
+        return False
+    string_fields = (
+        "verification_id",
+        "created_at",
+        "execution_mode",
+        "command",
+        "risk_class",
+        "status",
+        "stdout_tail",
+        "stderr_tail",
+        "affected_checkpoint_id",
+        "trace_event_id",
+    )
+    return (
+        all(isinstance(item.get(key), str) for key in string_fields)
+        and isinstance(item.get("argv"), list)
+        and all(isinstance(value, str) for value in item["argv"])
+        and item.get("runner_executed") is True
+        and type(item.get("exit_code")) is int
+        and item.get("execution_mode") == "argv"
+        and item.get("status") in {"passed", "failed"}
+    )
+
+
+def _valid_prepared_file_entry(item):
+    if not isinstance(item, dict):
+        return False
+    required = {
+        "path",
+        "before_exists",
+        "before_blob_ref",
+        "before_hash",
+        "before_mode",
+    }
+    if not required <= item.keys() or type(item["before_exists"]) is not bool:
+        return False
+    from pico.recovery_paths import normalize_workspace_relative_path
+
+    try:
+        if normalize_workspace_relative_path(item["path"]) != item["path"]:
+            return False
+    except (TypeError, ValueError):
+        return False
+    if not item["before_exists"]:
+        return (
+            item["before_blob_ref"] == ""
+            and item["before_hash"] == ""
+            and item["before_mode"] is None
+        )
+    mode = item["before_mode"]
+    hashes_valid = (
+        item["before_hash"] == item["before_blob_ref"] == ""
+        or (
+            _looks_like_blob_ref(item["before_hash"])
+            and item["before_blob_ref"] == item["before_hash"]
+        )
+    )
+    return (
+        hashes_valid
+        and type(mode) is int
+        and mode >= 0
+        and stat.S_IMODE(mode) == mode
+    )
 
 
 class CheckpointStore:
@@ -278,14 +380,16 @@ class CheckpointStore:
             )
 
     def load_checkpoint_record(self, checkpoint_id):
-        return self._load_checkpoint_record_unlocked(checkpoint_id)
+        with file_lock.locked_file(self.lock_path):
+            return self._load_checkpoint_record_unlocked(checkpoint_id)
 
     def _load_checkpoint_record_unlocked(self, checkpoint_id):
         record, _ = self._load_checkpoint_record_snapshot_unlocked(checkpoint_id)
         return record
 
     def load_checkpoint_record_snapshot(self, checkpoint_id):
-        return self._load_checkpoint_record_snapshot_unlocked(checkpoint_id)
+        with file_lock.locked_file(self.lock_path):
+            return self._load_checkpoint_record_snapshot_unlocked(checkpoint_id)
 
     def _load_checkpoint_record_snapshot_unlocked(self, checkpoint_id):
         data = read_private_bytes(
@@ -294,13 +398,17 @@ class CheckpointStore:
             trusted_root_identity=self._records_identity,
             max_bytes=self.MAX_RECORD_BYTES,
         )
-        record = _with_additive_defaults(json.loads(data.decode("utf-8")), kind="checkpoint")
+        record = _decode_json(data)
         record = _validate_checkpoint_record(
             record, expected_id=_safe_id(checkpoint_id, "checkpoint id")
         )
         return record, data
 
     def list_checkpoint_records(self, strict=False):
+        with file_lock.locked_file(self.lock_path):
+            return self._list_checkpoint_records_unlocked(strict=strict)
+
+    def _list_checkpoint_records_unlocked(self, strict=False):
         records = self._list_records(
             self.records_dir,
             self._records_identity,
@@ -329,7 +437,8 @@ class CheckpointStore:
             )
 
     def load_tool_change_record(self, tool_change_id):
-        return self._load_tool_change_record_unlocked(tool_change_id)
+        with file_lock.locked_file(self.lock_path):
+            return self._load_tool_change_record_unlocked(tool_change_id)
 
     def _load_tool_change_record_unlocked(self, tool_change_id):
         record, _ = self._load_tool_change_record_snapshot_unlocked(
@@ -338,7 +447,8 @@ class CheckpointStore:
         return record
 
     def load_tool_change_record_snapshot(self, tool_change_id):
-        return self._load_tool_change_record_snapshot_unlocked(tool_change_id)
+        with file_lock.locked_file(self.lock_path):
+            return self._load_tool_change_record_snapshot_unlocked(tool_change_id)
 
     def _load_tool_change_record_snapshot_unlocked(self, tool_change_id):
         data = read_private_bytes(
@@ -347,7 +457,7 @@ class CheckpointStore:
             trusted_root_identity=self._tool_changes_identity,
             max_bytes=self.MAX_RECORD_BYTES,
         )
-        record = _with_additive_defaults(json.loads(data.decode("utf-8")), kind="tool_change")
+        record = _decode_json(data)
         record = _validate_tool_change_record(
             record,
             expected_id=_safe_id(tool_change_id, "tool change id"),
@@ -457,6 +567,10 @@ class CheckpointStore:
             )
 
     def list_tool_change_records(self, strict=False):
+        with file_lock.locked_file(self.lock_path):
+            return self._list_tool_change_records_unlocked(strict=strict)
+
+    def _list_tool_change_records_unlocked(self, strict=False):
         records = self._list_records(
             self.tool_changes_dir,
             self._tool_changes_identity,
@@ -483,8 +597,8 @@ class CheckpointStore:
           - tool change record 的 file_entries
         任何一处漏扫，都会误删仍被引用的 blob。
         """
-        checkpoint_records = self.list_checkpoint_records(strict=True)
-        tool_change_records = self.list_tool_change_records(strict=True)
+        checkpoint_records = self._list_checkpoint_records_unlocked(strict=True)
+        tool_change_records = self._list_tool_change_records_unlocked(strict=True)
         cutoff = _cutoff_datetime(older_than, now=now)
         prunable_checkpoint_ids = _prunable_checkpoint_ids(checkpoint_records, cutoff)
         prunable_checkpoint_id_set = set(prunable_checkpoint_ids)
@@ -734,8 +848,7 @@ class CheckpointStore:
                             "invalid_record_type", "invalid record type"
                         )
                     expected_id = _safe_id(name[:-5], f"{kind} id")
-                    record = json.loads(raw.decode("utf-8"))
-                    record = _with_additive_defaults(record, kind=kind)
+                    record = _decode_json(raw)
                     validator = (
                         _validate_checkpoint_record
                         if kind == "checkpoint"
@@ -1162,10 +1275,8 @@ class CheckpointStore:
 
     def _write_json_atomic(self, path, payload, *, kind=None, expected_id=None):
         if kind == "checkpoint":
-            payload = _with_additive_defaults(payload, kind=kind)
             _validate_checkpoint_record(payload, expected_id=expected_id)
         elif kind == "tool_change":
-            payload = _with_additive_defaults(payload, kind=kind)
             _validate_tool_change_record(payload, expected_id=expected_id)
         safe_payload = self._redactor(deepcopy(payload))
         if kind == "checkpoint":
@@ -1173,7 +1284,7 @@ class CheckpointStore:
         elif kind == "tool_change":
             _validate_tool_change_record(safe_payload, expected_id=expected_id)
         data = (json.dumps(safe_payload, indent=2, sort_keys=True) + "\n").encode()
-        canonical_payload = json.loads(data.decode("utf-8"))
+        canonical_payload = _decode_json(data)
         if kind == "checkpoint":
             _validate_checkpoint_record(canonical_payload, expected_id=expected_id)
         elif kind == "tool_change":

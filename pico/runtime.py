@@ -27,7 +27,7 @@ from .repo_map import RepoMap
 from .recovery_checkpoint_writer import RecoveryCheckpointWriter
 from .recovery_manager import RecoveryManager
 from .run_store import RunStore
-from .session_store import migrate_session_to_v3
+from .session_store import SESSION_FORMAT_VERSION, SESSION_RECORD_TYPE
 from .tool_change_recorder import ToolChangeRecorder
 from .tool_context import ToolContext
 from .tool_executor import ToolExecutionResult, ToolExecutor
@@ -55,7 +55,6 @@ DEFAULT_MAX_STEPS = 12
 DEFAULT_MAX_NEW_TOKENS = 2048
 DEFAULT_FEATURE_FLAGS = {
     "memory": True,
-    "prompt_cache": True,
 }
 _SECRET_ENV_NAMES_VAR = "PICO_SECRET_ENV_NAMES"
 
@@ -299,6 +298,8 @@ class Pico:
         self.secret_env_names = configured_names
         self.feature_flags = dict(DEFAULT_FEATURE_FLAGS)
         if feature_flags:
+            if "prompt_cache" in feature_flags:
+                raise ValueError("unsupported feature flag")
             self.feature_flags.update({str(key): bool(value) for key, value in feature_flags.items()})
         self.allowed_tools = self._normalize_allowed_tools(allowed_tools)
         self.run_store = run_store or RunStore(Path(workspace.repo_root) / ".pico" / "runs")
@@ -350,8 +351,9 @@ class Pico:
         }
         if session is None:
             self.session = {
+                "record_type": SESSION_RECORD_TYPE,
+                "format_version": SESSION_FORMAT_VERSION,
                 "id": datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6],
-                "schema_version": 3,
                 "created_at": now(),
                 "workspace_root": workspace.repo_root,
                 "messages": [],
@@ -364,7 +366,22 @@ class Pico:
                 "recovery": {"current_checkpoint_id": ""},
             }
         else:
-            self.session = self.redact_artifact(migrate_session_to_v3(session))
+            self.session = self.redact_artifact(deepcopy(session))
+            identities = [self.session.get("runtime_identity", {})]
+            items = self.session.get("checkpoints", {}).get("items", {})
+            if isinstance(items, dict):
+                identities.extend(
+                    checkpoint.get("runtime_identity", {})
+                    for checkpoint in items.values()
+                    if isinstance(checkpoint, dict)
+                )
+            if any(
+                "prompt_cache" in identity.get("feature_flags", {})
+                for identity in identities
+                if isinstance(identity, dict)
+                and isinstance(identity.get("feature_flags", {}), dict)
+            ):
+                raise ValueError("obsolete runtime identity flag")
         self._ensure_session_shape()
         self.memory = WorkingMemory.from_dict(self.session.get("working_memory"), workspace_root=self.root)
         self._sync_working_memory()
@@ -437,8 +454,12 @@ class Pico:
         )
 
     def _ensure_session_shape(self):
-        if type(self.session.get("schema_version")) is not int or self.session["schema_version"] != 3:
-            raise ValueError("Pico requires a v3 session")
+        if (
+            self.session.get("record_type") != SESSION_RECORD_TYPE
+            or type(self.session.get("format_version")) is not int
+            or self.session["format_version"] != SESSION_FORMAT_VERSION
+        ):
+            raise ValueError("Pico requires a current session")
         if not isinstance(self.session.get("messages"), list):
             raise ValueError("v3 session messages must be a list")
         if not isinstance(self.session.get("recently_recalled"), list):

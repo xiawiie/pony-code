@@ -386,10 +386,14 @@ def test_cli_resume_uses_immutable_collision_safe_snapshot_before_load(
     )
     session_dir = tmp_path / ".pico" / "sessions"
     session_dir.mkdir(parents=True)
+    (session_dir / ".session_store.lock").touch(mode=0o600)
     (session_dir / f"{session_id}.json").write_text(
         json.dumps({
+            "record_type": "session",
+            "format_version": 1,
             "id": session_id,
-            "schema_version": 3,
+            "created_at": "2026-01-01T00:00:00+00:00",
+            "workspace_root": str(tmp_path),
             "messages": [{
                 "role": "user",
                 "content": (
@@ -401,6 +405,13 @@ def test_cli_resume_uses_immutable_collision_safe_snapshot_before_load(
                 ),
                 "_pico_meta": {},
             }],
+            "working_memory": {},
+            "memory": {},
+            "recently_recalled": [],
+            "checkpoints": {},
+            "resume_state": {},
+            "recovery": {},
+            "runtime_identity": {},
         }),
         encoding="utf-8",
     )

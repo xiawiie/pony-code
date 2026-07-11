@@ -109,7 +109,13 @@ def test_pending_review_includes_same_and_foreign_owner(tmp_path):
 def test_start_persists_prepared_state_and_recovery_context(tmp_path):
     store = CheckpointStore(tmp_path)
     recorder = ToolChangeRecorder(store, owner_id="owner-a")
-    prepared = [{"path": "note.txt", "before_exists": False}]
+    prepared = [{
+        "path": "note.txt",
+        "before_exists": False,
+        "before_blob_ref": "",
+        "before_hash": "",
+        "before_mode": None,
+    }]
     context = {"observer_mode": "filesystem", "git_head": "abc123"}
 
     record = recorder.start(

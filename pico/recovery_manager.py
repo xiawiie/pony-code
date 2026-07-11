@@ -19,8 +19,6 @@ from pico.checkpoint_store import CheckpointStoreError
 from pico.recovery_checkpoint_writer import coalesce_file_entries, validate_file_entry
 from pico.recovery_policy import DEFAULT_MAX_BLOB_SIZE, snapshot_bytes_eligibility
 from pico.recovery_models import (
-    CHECKPOINT_RECORD_SCHEMA_VERSION,
-    RESTORE_PLAN_SCHEMA_VERSION,
     new_id,
     utc_now,
 )
@@ -283,7 +281,6 @@ class RecoveryManager:
     def preview_restore(self, checkpoint_id):
         def finish(entries):
             return {
-                "schema_version": RESTORE_PLAN_SCHEMA_VERSION,
                 "restore_plan_id": new_id("plan"),
                 "checkpoint_id": checkpoint_id,
                 "created_at": utc_now(),
@@ -303,8 +300,6 @@ class RecoveryManager:
                     )
                 ]
             )
-        if record.get("schema_version") != CHECKPOINT_RECORD_SCHEMA_VERSION:
-            return finish([self._plan_issue("error", "unsupported_schema")])
         try:
             recorded_root = Path(record.get("workspace_root", "")).resolve(
                 strict=True
@@ -355,9 +350,7 @@ class RecoveryManager:
                         [self._plan_issue("error", "incomplete_tool_change_history")]
                     )
                 loaded_source_entries.extend(source.get("file_entries", []) or [])
-            if known_sources and coalesce_file_entries(
-                loaded_source_entries, legacy=True
-            ) != raw_entries:
+            if known_sources and coalesce_file_entries(loaded_source_entries) != raw_entries:
                 return finish(
                     [self._plan_issue("error", "incomplete_tool_change_history")]
                 )
@@ -391,7 +384,6 @@ class RecoveryManager:
             return finish([self._plan_issue("error", "invalid_checkpoint_type")])
 
         valid_entries = []
-        legacy_entries = []
         counts = {}
         for file_entry in raw_entries:
             path = (
@@ -414,13 +406,6 @@ class RecoveryManager:
                     continue
             strict_reason = validate_file_entry(file_entry)
             if strict_reason:
-                legacy_reason = validate_file_entry(file_entry, legacy=True)
-                if legacy_reason in {
-                    "legacy_mode_unknown",
-                    "legacy_ambiguous_history",
-                }:
-                    legacy_entries.append(file_entry)
-                    continue
                 entries.append(
                     self._plan_issue(
                         "error",
@@ -430,28 +415,21 @@ class RecoveryManager:
                 )
                 continue
             path = file_entry["path"]
-            if file_entry.get("ineligible_reason") in {
-                "legacy_mode_unknown",
-                "legacy_ambiguous_history",
-            } or (
+            if file_entry.get("ineligible_reason") == "mode_unknown" or (
                 checkpoint_type == "turn"
                 and known_sources
                 and not file_entry.get("source_tool_change_ids")
             ):
-                legacy_entries.append(file_entry)
+                entries.append(
+                    self._plan_issue(
+                        "review",
+                        file_entry.get("ineligible_reason") or "incomplete_tool_change_history",
+                        file_entry=file_entry,
+                    )
+                )
                 continue
             counts[path] = counts.get(path, 0) + 1
             valid_entries.append(file_entry)
-        for file_entry in coalesce_file_entries(legacy_entries, legacy=True):
-            entries.append(
-                self._plan_issue(
-                    "review",
-                    file_entry.get(
-                        "ineligible_reason", "legacy_ambiguous_history"
-                    ),
-                    file_entry=file_entry,
-                )
-            )
         ambiguous_paths = {
             path
             for path, count in counts.items()

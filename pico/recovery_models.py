@@ -11,10 +11,10 @@ stdlib-only、零副作用、可离线构造。
 from datetime import datetime, timezone
 import uuid
 
-CHECKPOINT_RECORD_SCHEMA_VERSION = "checkpoint-record-v1"
-TOOL_CHANGE_RECORD_SCHEMA_VERSION = "tool-change-record-v1"
-RESTORE_PLAN_SCHEMA_VERSION = "restore-plan-v1"
-VERIFICATION_RECORD_SCHEMA_VERSION = "verification-record-v1"
+CHECKPOINT_RECORD_TYPE = "checkpoint"
+CHECKPOINT_FORMAT_VERSION = 1
+TOOL_CHANGE_RECORD_TYPE = "tool_change"
+TOOL_CHANGE_FORMAT_VERSION = 1
 
 TRACE_RUN_STARTED = "run_started"
 TRACE_MODEL_TURN = "model_turn"
@@ -38,7 +38,8 @@ def new_id(prefix):
 
 def new_checkpoint_record(checkpoint_id, checkpoint_type, session_id, run_id, turn_id, parent_checkpoint_id, workspace_root):
     return {
-        "schema_version": CHECKPOINT_RECORD_SCHEMA_VERSION,
+        "record_type": CHECKPOINT_RECORD_TYPE,
+        "format_version": CHECKPOINT_FORMAT_VERSION,
         "checkpoint_id": str(checkpoint_id),
         "checkpoint_type": str(checkpoint_type),
         "created_at": utc_now(),
@@ -64,7 +65,8 @@ def new_checkpoint_record(checkpoint_id, checkpoint_type, session_id, run_id, tu
 
 def new_tool_change_record(tool_change_id, checkpoint_id, turn_id, tool_name, effect_class, owner_id=""):
     return {
-        "schema_version": TOOL_CHANGE_RECORD_SCHEMA_VERSION,
+        "record_type": TOOL_CHANGE_RECORD_TYPE,
+        "format_version": TOOL_CHANGE_FORMAT_VERSION,
         "tool_change_id": str(tool_change_id),
         "checkpoint_id": str(checkpoint_id or ""),
         "turn_id": str(turn_id or ""),

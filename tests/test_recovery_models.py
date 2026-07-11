@@ -1,6 +1,8 @@
 from pico.recovery_models import (
-    CHECKPOINT_RECORD_SCHEMA_VERSION,
-    TOOL_CHANGE_RECORD_SCHEMA_VERSION,
+    CHECKPOINT_FORMAT_VERSION,
+    CHECKPOINT_RECORD_TYPE,
+    TOOL_CHANGE_FORMAT_VERSION,
+    TOOL_CHANGE_RECORD_TYPE,
     TRACE_CHECKPOINT_CREATED,
     TRACE_MODEL_TURN,
     TRACE_RECOVERY_CHECKPOINT_CREATED,
@@ -20,7 +22,9 @@ def test_checkpoint_record_builder_has_phase1_shape():
         workspace_root="/repo",
     )
 
-    assert record["schema_version"] == CHECKPOINT_RECORD_SCHEMA_VERSION
+    assert record["record_type"] == CHECKPOINT_RECORD_TYPE
+    assert record["format_version"] == CHECKPOINT_FORMAT_VERSION
+    assert "schema_version" not in record
     assert record["checkpoint_id"] == "ckpt_1"
     assert record["checkpoint_type"] == "turn"
     assert record["tool_change_ids"] == []
@@ -38,7 +42,9 @@ def test_tool_change_record_builder_starts_pending():
         effect_class="workspace_write",
     )
 
-    assert record["schema_version"] == TOOL_CHANGE_RECORD_SCHEMA_VERSION
+    assert record["record_type"] == TOOL_CHANGE_RECORD_TYPE
+    assert record["format_version"] == TOOL_CHANGE_FORMAT_VERSION
+    assert "schema_version" not in record
     assert record["status"] == "pending"
     assert record["tool_name"] == "write_file"
     assert record["affected_paths"] == []

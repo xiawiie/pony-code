@@ -10,6 +10,7 @@ from pico.recovery_models import new_checkpoint_record
 from pico.runtime import Pico
 from pico.session_store import SessionStore
 from pico.task_state import TaskState
+from pico.verification import new_verification_record
 from pico.workspace import WorkspaceContext
 
 
@@ -119,13 +120,15 @@ def test_cli_approval_and_verification_observations_hide_canary(
         "",
         str(tmp_path.resolve()),
     )
-    checkpoint["verification_evidence"] = [
-        {
-            "command": "python -m pytest",
-            "stdout_tail": secret,
-            "stderr_tail": secret,
-        }
-    ]
+    checkpoint["verification_evidence"] = [new_verification_record(
+        argv=["python", "-m", "pytest"],
+        risk_class="read_only",
+        runner_executed=True,
+        execution_mode="argv",
+        exit_code=0,
+        stdout=secret,
+        stderr=secret,
+    )]
     agent.checkpoint_store.write_checkpoint_record(checkpoint)
 
     prompts = []
@@ -198,7 +201,7 @@ def test_secret_bearing_tool_action_is_blocked_before_runner(
         assert secret.encode() not in path.read_bytes(), path
 
 
-def test_private_migration_backup_is_the_only_exact_canary_exception(
+def test_runtime_session_load_refuses_legacy_canary_without_backup_or_rewrite(
     tmp_path, monkeypatch
 ):
     if os.name != "posix":
@@ -206,6 +209,7 @@ def test_private_migration_backup_is_the_only_exact_canary_exception(
     secret = _sentinel()
     monkeypatch.setenv("PICO_TEST_TOKEN", secret)
     store = SessionStore(tmp_path / ".pico" / "sessions")
+    store.lock_path.touch(mode=0o600)
     session_id = "legacy-canary"
     legacy_path = store.root / (session_id + ".json")
     legacy_path.parent.mkdir(parents=True, exist_ok=True)
@@ -228,15 +232,11 @@ def test_private_migration_backup_is_the_only_exact_canary_exception(
         )
     )
 
-    safe = store.load(session_id)
-    backups = sorted((store.root / "backup").glob("*.json"))
-
-    assert secret not in json.dumps(safe, ensure_ascii=False)
-    assert len(backups) == 1
-    assert secret.encode() in backups[0].read_bytes()
-    assert backups[0].stat().st_mode & 0o777 == 0o600
-    for path in _normal_artifact_files(tmp_path):
-        assert secret.encode() not in path.read_bytes(), path
+    original = legacy_path.read_bytes()
+    with pytest.raises(ValueError, match="session payload|format version|required"):
+        store.load(session_id)
+    assert not (store.root / "backup").exists()
+    assert legacy_path.read_bytes() == original
 
 
 def test_provider_error_log_cli_and_run_artifacts_hide_canary(

@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 import re
 
+from pico import file_lock
 from pico.messages import MessageValidationError, validate_messages
-from pico.security import require_regular_no_symlink
+from pico.security import private_directory_identity
+from pico.session_store import (
+    SESSION_FORMAT_VERSION,
+    SESSION_RECORD_TYPE,
+    SessionMigrationError,
+    SessionStore,
+)
 
 
 _SESSION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
@@ -35,21 +41,37 @@ def inspect_session(session_id, sessions_root):
     sessions_root = Path(sessions_root)
     path = sessions_root / f"{session_id}.json"
     try:
-        path = require_regular_no_symlink(path)
-        session = json.loads(path.read_text(encoding="utf-8"))
+        path.lstat()
     except FileNotFoundError:
         return False, f"session not found: {session_id}"
-    except (OSError, ValueError):
+    except OSError:
+        return False, f"failed to read session {session_id}: unsafe session artifact"
+    try:
+        store = object.__new__(SessionStore)
+        store.root = sessions_root
+        store._root_identity = private_directory_identity(sessions_root)
+        store.lock_path = sessions_root / ".session_store.lock"
+        with file_lock.locked_file(store.lock_path, require_existing=True):
+            session = store._load_unlocked(session_id)
+    except FileNotFoundError:
+        return False, f"failed to read session {session_id}: unsafe session artifact"
+    except (OSError, ValueError, SessionMigrationError):
         return False, f"failed to read session {session_id}: unsafe session artifact"
 
     if not isinstance(session, dict):
         return False, f"session: {session_id}\ninvariants: failed (session must be an object)"
-    version = session.get("schema_version")
-    valid_version = type(version) is int and version in {1, 2, 3}
+    record_type = session.get("record_type")
+    version = session.get("format_version")
+    valid_version = (
+        record_type == SESSION_RECORD_TYPE
+        and type(version) is int
+        and version == SESSION_FORMAT_VERSION
+    )
     messages = session.get("messages")
     lines = [
         f"session: {session_id}",
-        f"schema_version: {version if valid_version else 'invalid'}",
+        f"record_type: {record_type if record_type == SESSION_RECORD_TYPE else 'invalid'}",
+        f"format_version: {version if valid_version else 'invalid'}",
         f"messages: {len(messages) if isinstance(messages, list) else 0}",
         "role_sequence: " + (
             " -> ".join(
@@ -68,12 +90,9 @@ def inspect_session(session_id, sessions_root):
             "invariants: failed (invalid schema version)",
         ])
         return False, "\n".join(lines)
-    if version == 3 and "history" in session:
-        lines.extend(["tool_pairs: 0", "orphans: unknown", "invariants: failed (v3 contains history)"])
-        return False, "\n".join(lines)
     try:
-        validate_messages(messages, require_meta=version == 3)
-    except MessageValidationError as exc:
+        validate_messages(messages, require_meta=True)
+    except (MessageValidationError, SessionMigrationError) as exc:
         lines.extend(["tool_pairs: 0", "orphans: 1", f"invariants: failed ({exc})"])
         return False, "\n".join(lines)
     lines.extend([

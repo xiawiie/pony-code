@@ -3,14 +3,29 @@ import json
 from pico.cli_session import inspect_session
 
 
-def _write_session(root, session_id, messages, schema_version=3):
+def _payload(session_id, messages):
+    return {
+        "record_type": "session",
+        "format_version": 1,
+        "id": session_id,
+        "created_at": "2026-01-01T00:00:00+00:00",
+        "workspace_root": "/repo",
+        "messages": messages,
+        "working_memory": {},
+        "memory": {},
+        "recently_recalled": [],
+        "checkpoints": {},
+        "resume_state": {},
+        "recovery": {},
+        "runtime_identity": {},
+    }
+
+
+def _write_session(root, session_id, messages):
     root.mkdir(parents=True, exist_ok=True)
+    (root / ".session_store.lock").touch(mode=0o600)
     (root / f"{session_id}.json").write_text(
-        json.dumps({
-            "id": session_id,
-            "schema_version": schema_version,
-            "messages": messages,
-        }),
+        json.dumps(_payload(session_id, messages)),
         encoding="utf-8",
     )
 
@@ -34,7 +49,8 @@ def test_inspect_reports_schema_roles_blocks_pairs_and_meta(tmp_path):
     _write_session(root, "s1", messages)
     ok, report = inspect_session("s1", root)
     assert ok is True
-    assert "schema_version: 3" in report
+    assert "record_type: session" in report
+    assert "format_version: 1" in report
     assert "messages: 4" in report
     assert "role_sequence: user -> assistant -> user -> assistant" in report
     assert "tool_pairs: 1" in report
@@ -51,19 +67,14 @@ def test_inspect_fails_on_orphan_without_consulting_history(tmp_path):
     }])
     ok, report = inspect_session("bad", root)
     assert ok is False
-    assert "orphan" in report.lower()
+    assert "failed to read session" in report.lower()
 
 
 def test_inspect_fails_when_v3_contains_history(tmp_path):
     root = tmp_path / "sessions"
     root.mkdir()
     (root / "bad-history.json").write_text(
-        json.dumps({
-            "id": "bad-history",
-            "schema_version": 3,
-            "messages": [],
-            "history": [],
-        }),
+        json.dumps({**_payload("bad-history", []), "history": []}),
         encoding="utf-8",
     )
     ok, report = inspect_session("bad-history", root)

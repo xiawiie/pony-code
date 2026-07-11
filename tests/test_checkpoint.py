@@ -3,8 +3,6 @@ from pico.providers.fake import FakeModelClient
 from pico.checkpoint import (
     CHECKPOINT_FULL_VALID_STATUS,
     CHECKPOINT_NONE_STATUS,
-    CHECKPOINT_SCHEMA_MISMATCH_STATUS,
-    CHECKPOINT_SCHEMA_VERSION,
     create_checkpoint,
     current_runtime_identity,
     evaluate_resume_state,
@@ -39,7 +37,7 @@ def test_current_runtime_identity_captures_execution_contract(tmp_path):
     assert identity["tool_signature"] == agent.tool_signature()
 
 
-def test_evaluate_resume_state_distinguishes_no_checkpoint_full_valid_and_schema_mismatch(tmp_path):
+def test_evaluate_resume_state_distinguishes_no_checkpoint_and_full_valid(tmp_path):
     agent = build_agent(tmp_path)
 
     assert evaluate_resume_state(agent)["status"] == CHECKPOINT_NONE_STATUS
@@ -50,17 +48,12 @@ def test_evaluate_resume_state_distinguishes_no_checkpoint_full_valid_and_schema
         "items": {
             "ckpt_valid": {
                 "checkpoint_id": "ckpt_valid",
-                "schema_version": CHECKPOINT_SCHEMA_VERSION,
                 "key_files": [],
                 "runtime_identity": identity,
             }
         },
     }
     assert evaluate_resume_state(agent)["status"] == CHECKPOINT_FULL_VALID_STATUS
-
-    agent.session["checkpoints"]["items"]["ckpt_valid"]["schema_version"] = "old"
-    assert evaluate_resume_state(agent)["status"] == CHECKPOINT_SCHEMA_MISMATCH_STATUS
-
 
 def test_create_checkpoint_records_recent_files_without_memory_state(tmp_path):
     agent = build_agent(tmp_path)

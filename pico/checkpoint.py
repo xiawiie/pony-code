@@ -5,12 +5,10 @@ import uuid
 from .features import memory as memorylib
 from .workspace import clip, now
 
-CHECKPOINT_SCHEMA_VERSION = "phase1-v1"
 CHECKPOINT_NONE_STATUS = "no-checkpoint"
 CHECKPOINT_FULL_VALID_STATUS = "full-valid"
 CHECKPOINT_PARTIAL_STALE_STATUS = "partial-stale"
 CHECKPOINT_WORKSPACE_MISMATCH_STATUS = "workspace-mismatch"
-CHECKPOINT_SCHEMA_MISMATCH_STATUS = "schema-mismatch"
 
 RUNTIME_IDENTITY_KEYS = (
     "cwd",
@@ -68,31 +66,28 @@ def evaluate_resume_state(agent):
     stale_paths = list(invalidated)
     mismatch_fields = []
     if checkpoint:
-        if checkpoint.get("schema_version") != CHECKPOINT_SCHEMA_VERSION:
-            status = CHECKPOINT_SCHEMA_MISMATCH_STATUS
+        for item in checkpoint.get("key_files", []):
+            path = str(item.get("path", "")).strip()
+            if not path:
+                continue
+            expected = item.get("freshness")
+            current = memorylib.file_freshness(path, agent.root)
+            if expected != current and path not in stale_paths:
+                stale_paths.append(path)
+        saved_identity = dict(checkpoint.get("runtime_identity", {}) or agent.session.get("runtime_identity", {}) or {})
+        current_identity = current_runtime_identity(agent)
+        for key in RUNTIME_IDENTITY_KEYS:
+            if key not in saved_identity:
+                continue
+            if saved_identity.get(key) != current_identity.get(key):
+                mismatch_fields.append(key)
+        mismatch_fields.sort()
+        if stale_paths:
+            status = CHECKPOINT_PARTIAL_STALE_STATUS
+        elif mismatch_fields:
+            status = CHECKPOINT_WORKSPACE_MISMATCH_STATUS
         else:
-            for item in checkpoint.get("key_files", []):
-                path = str(item.get("path", "")).strip()
-                if not path:
-                    continue
-                expected = item.get("freshness")
-                current = memorylib.file_freshness(path, agent.root)
-                if expected != current and path not in stale_paths:
-                    stale_paths.append(path)
-            saved_identity = dict(checkpoint.get("runtime_identity", {}) or agent.session.get("runtime_identity", {}) or {})
-            current_identity = current_runtime_identity(agent)
-            for key in RUNTIME_IDENTITY_KEYS:
-                if key not in saved_identity:
-                    continue
-                if saved_identity.get(key) != current_identity.get(key):
-                    mismatch_fields.append(key)
-            mismatch_fields.sort()
-            if stale_paths:
-                status = CHECKPOINT_PARTIAL_STALE_STATUS
-            elif mismatch_fields:
-                status = CHECKPOINT_WORKSPACE_MISMATCH_STATUS
-            else:
-                status = CHECKPOINT_FULL_VALID_STATUS
+            status = CHECKPOINT_FULL_VALID_STATUS
 
     resume_state = {
         "status": status,
@@ -160,7 +155,6 @@ def create_checkpoint(agent, task_state, user_message, trigger):
     checkpoint = {
         "checkpoint_id": checkpoint_id,
         "parent_checkpoint_id": current.get("checkpoint_id", "") if current else "",
-        "schema_version": CHECKPOINT_SCHEMA_VERSION,
         "created_at": now(),
         "current_goal": str(safe_user_message),
         "completed": [safe_final_answer] if safe_final_answer else [],

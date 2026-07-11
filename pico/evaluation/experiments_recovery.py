@@ -91,18 +91,6 @@ RECOVERY_ABLATION_TASKS = [
         "required_fragments": ["resume status: workspace-mismatch", "next step: rebuild runtime state from a fresh checkpoint"],
     },
     {
-        "id": "schema_mismatch_version",
-        "category": "schema_mismatch",
-        "setup": "schema_mismatch",
-        "required_fragments": ["resume status: schema-mismatch"],
-    },
-    {
-        "id": "schema_mismatch_missing",
-        "category": "schema_mismatch",
-        "setup": "no_checkpoint",
-        "required_fragments": ["resume status: no-checkpoint"],
-    },
-    {
         "id": "partial_success_shell",
         "category": "partial_success_recovery",
         "setup": "partial_success_shell",
@@ -145,7 +133,6 @@ def _apply_recovery_setup(agent, task, workspace_root):
                 "ckpt_resume": {
                     "checkpoint_id": "ckpt_resume",
                     "parent_checkpoint_id": "",
-                    "schema_version": "phase1-v1",
                     "created_at": "2026-04-15T08:00:00+00:00",
                     "current_goal": "Resume the benchmark task" if task["id"] == "checkpoint_resume_goal" else "Continue from the latest benchmark checkpoint",
                     "completed": ["Read sample.txt"],
@@ -183,7 +170,6 @@ def _apply_recovery_setup(agent, task, workspace_root):
                 "ckpt_stale": {
                     "checkpoint_id": "ckpt_stale",
                     "parent_checkpoint_id": "",
-                    "schema_version": "phase1-v1",
                     "created_at": "2026-04-15T08:00:00+00:00",
                     "current_goal": "Recover from stale benchmark summaries",
                     "completed": [],
@@ -210,7 +196,6 @@ def _apply_recovery_setup(agent, task, workspace_root):
                 "ckpt_workspace": {
                     "checkpoint_id": "ckpt_workspace",
                     "parent_checkpoint_id": "",
-                    "schema_version": "phase1-v1",
                     "created_at": "2026-04-15T08:00:00+00:00",
                     "current_goal": "Recover after workspace drift",
                     "completed": [],
@@ -227,35 +212,6 @@ def _apply_recovery_setup(agent, task, workspace_root):
         agent.session_store.save(agent.session)
         return
 
-    if setup == "schema_mismatch":
-        agent.session["checkpoints"] = {
-            "current_id": "ckpt_schema",
-            "items": {
-                "ckpt_schema": {
-                    "checkpoint_id": "ckpt_schema",
-                    "parent_checkpoint_id": "",
-                    "schema_version": "legacy-v0",
-                    "created_at": "2026-04-15T08:00:00+00:00",
-                    "current_goal": "Recover after schema mismatch",
-                    "completed": [],
-                    "excluded": [],
-                    "current_blocker": "",
-                    "next_step": "Migrate the stale checkpoint",
-                    "key_files": [],
-                    "freshness": {},
-                    "summary": "schema mismatch benchmark",
-                    "runtime_identity": {"workspace_fingerprint": agent.workspace.fingerprint()},
-                }
-            },
-        }
-        agent.session_store.save(agent.session)
-        return
-
-    if setup == "no_checkpoint":
-        agent.session.pop("checkpoints", None)
-        agent.session_store.save(agent.session)
-        return
-
     if setup in {"partial_success_shell", "partial_success_tool"}:
         blocker = "tool_partial_success" if setup == "partial_success_shell" else "tool_failed"
         next_step = "Inspect the diff before retry" if setup == "partial_success_shell" else "Retry after checking the workspace state"
@@ -265,7 +221,6 @@ def _apply_recovery_setup(agent, task, workspace_root):
                 "ckpt_partial": {
                     "checkpoint_id": "ckpt_partial",
                     "parent_checkpoint_id": "",
-                    "schema_version": "phase1-v1",
                     "created_at": "2026-04-15T08:00:00+00:00",
                     "current_goal": "Recover after partial tool success",
                     "completed": [],
@@ -289,7 +244,7 @@ def _run_recovery_task_variant(task, variant):
         agent = _build_recovery_agent(workspace_root, task["required_fragments"])
         _apply_recovery_setup(agent, task, workspace_root)
         if variant == "resume_disabled":
-            agent.session.pop("checkpoints", None)
+            agent.session["checkpoints"] = {"current_id": "", "items": {}}
             agent.session_store.save(agent.session)
         final_answer = agent.ask("Continue the recovery task.")
         report = agent.run_store.load_report(agent.current_task_state.run_id)
@@ -303,7 +258,7 @@ def _run_recovery_task_variant(task, variant):
             for event in trace
         )
         workspace_drift_detected = any(event.get("event") == "runtime_identity_mismatch" for event in trace)
-        invalid_resume = task["category"] in {"partial_stale", "workspace_mismatch", "schema_mismatch"}
+        invalid_resume = task["category"] in {"partial_stale", "workspace_mismatch"}
         return {
             "task_id": task["id"],
             "category": task["category"],
@@ -321,7 +276,7 @@ def _recovery_variant_summary(rows):
     rows = list(rows)
     stale_rows = [row for row in rows if row["category"] == "partial_stale"]
     drift_rows = [row for row in rows if row["category"] == "workspace_mismatch"]
-    invalid_rows = [row for row in rows if row["category"] in {"partial_stale", "workspace_mismatch", "schema_mismatch"}]
+    invalid_rows = [row for row in rows if row["category"] in {"partial_stale", "workspace_mismatch"}]
     return {
         "resume_success_rate": _safe_ratio(sum(1 for row in rows if row["resume_succeeded"]), len(rows)),
         "stale_reanchor_rate": _safe_ratio(sum(1 for row in stale_rows if row["stale_reanchored"]), len(stale_rows)),

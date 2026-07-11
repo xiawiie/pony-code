@@ -5,7 +5,6 @@ import unicodedata
 
 from pico import security as securitylib
 from pico.recovery_models import (
-    VERIFICATION_RECORD_SCHEMA_VERSION,
     new_id,
     utc_now,
 )
@@ -279,7 +278,6 @@ def new_verification_record(
     if evidence is None:
         return None
     return {
-        "schema_version": VERIFICATION_RECORD_SCHEMA_VERSION,
         "verification_id": new_id("verify"),
         "created_at": utc_now(),
         "argv": list(evidence["argv"]),

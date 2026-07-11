@@ -1,6 +1,7 @@
 """Small cross-process file lock helper."""
 
 from contextlib import contextmanager
+import errno
 import os
 from pathlib import Path
 import stat
@@ -31,7 +32,7 @@ def lock_is_active(path):
 
 
 @contextmanager
-def locked_file(path, *, require_lock=False):
+def locked_file(path, *, require_lock=False, require_existing=False, blocking=True):
     path = Path(os.path.abspath(os.fspath(path)))
     key = str(path)
     active = _active_lock_keys()
@@ -50,6 +51,8 @@ def locked_file(path, *, require_lock=False):
             )
         except FileNotFoundError:
             before = None
+        if require_existing and before is None:
+            raise FileNotFoundError("lock file missing")
         if before is not None and not stat.S_ISREG(before.st_mode):
             kind = (
                 "symlink"
@@ -62,7 +65,9 @@ def locked_file(path, *, require_lock=False):
         if require_lock and fcntl is None:
             raise RuntimeError("cross-process lock unavailable")
 
-        flags = os.O_RDWR | os.O_CREAT | os.O_APPEND
+        flags = os.O_RDWR | os.O_APPEND
+        if not require_existing:
+            flags |= os.O_CREAT
         flags |= getattr(os, "O_CLOEXEC", 0)
         flags |= getattr(os, "O_NOFOLLOW", 0)
         descriptor = os.open(
@@ -91,7 +96,15 @@ def locked_file(path, *, require_lock=False):
         with os.fdopen(descriptor, "a+", encoding="utf-8") as handle:
             descriptor = -1
             if fcntl is not None:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+                operation = fcntl.LOCK_EX
+                if not blocking:
+                    operation |= fcntl.LOCK_NB
+                try:
+                    fcntl.flock(handle.fileno(), operation)
+                except OSError as exc:
+                    if not blocking and exc.errno in {errno.EACCES, errno.EAGAIN}:
+                        raise RuntimeError("lock busy") from None
+                    raise
             try:
                 yield handle
             finally:

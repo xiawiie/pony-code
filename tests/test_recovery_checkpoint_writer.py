@@ -167,31 +167,24 @@ def test_file_entry_rejects_inconsistent_hash_and_kind():
     assert validate_file_entry(entry) == "change_kind_exists_mismatch"
 
 
-def test_legacy_missing_mode_and_ambiguous_sources_are_review_only():
+def test_mode_unknown_review_entry_is_current_and_preserved():
     before, after = "a" * 64, "b" * 64
     entry = _state_entry(
         "note.txt", (True, before, 0o644), (True, after, 0o644), "tc_1"
     )
-    entry.pop("before_mode")
-    assert validate_file_entry(entry, legacy=True) == "legacy_mode_unknown"
-
-    complete = _state_entry(
-        "note.txt", (True, before, 0o644), (True, after, 0o644), "tc_1"
+    entry.update(
+        snapshot_eligible=False,
+        ineligible_reason="mode_unknown",
+        before_mode=None,
+        after_mode=None,
+        source_tool_change_ids=[],
     )
-    complete["source_tool_change_ids"] = []
-    [merged] = coalesce_file_entries([complete], legacy=True)
+    assert validate_file_entry(entry) == ""
+    [merged] = coalesce_file_entries([entry])
     assert merged["snapshot_eligible"] is False
-    assert merged["ineligible_reason"] == "legacy_ambiguous_history"
-
-    combined = _state_entry(
-        "note.txt", (True, before, 0o644), (True, after, 0o644), "tc_1"
-    )
-    combined.pop("before_mode")
-    combined.pop("source_tool_change_ids")
-    assert (
-        validate_file_entry(combined, legacy=True)
-        == "legacy_ambiguous_history"
-    )
+    assert merged["ineligible_reason"] == "mode_unknown"
+    assert merged["before_mode"] is None
+    assert merged["after_mode"] is None
 
 
 def test_new_ineligible_source_downgrades_net_history():
@@ -356,10 +349,7 @@ def test_duplicate_requested_tool_change_is_stably_deduplicated(tmp_path):
     assert len(checkpoint["file_entries"]) == 1
 
 
-@pytest.mark.parametrize("source_value", [None, []])
-def test_turn_checkpoint_preserves_legacy_ambiguous_provenance_for_review(
-    tmp_path, source_value
-):
+def test_turn_checkpoint_rejects_missing_source_field(tmp_path):
     store = CheckpointStore(tmp_path)
     before = store.write_blob(b"before")
     after = store.write_blob(b"after")
@@ -373,19 +363,32 @@ def test_turn_checkpoint_preserves_legacy_ambiguous_provenance_for_review(
         (True, after["content_hash"], 0o644),
         "tc_legacy",
     )
-    if source_value is None:
-        entry.pop("source_tool_change_ids")
-    else:
-        entry["source_tool_change_ids"] = source_value
+    entry.pop("source_tool_change_ids")
+    record["file_entries"] = [entry]
+    with pytest.raises(ValueError, match="invalid_file_entry"):
+        store.write_tool_change_record(record)
+
+
+def test_turn_checkpoint_accepts_explicit_empty_source_history(tmp_path):
+    store = CheckpointStore(tmp_path)
+    before = store.write_blob(b"before")
+    after = store.write_blob(b"after")
+    record = new_tool_change_record(
+        "tc_current", "", "turn", "write_file", "workspace_write"
+    )
+    record["status"] = "finalized"
+    entry = _state_entry(
+        "note.txt",
+        (True, before["content_hash"], 0o644),
+        (True, after["content_hash"], 0o644),
+        "tc_current",
+    )
+    entry["source_tool_change_ids"] = []
     record["file_entries"] = [entry]
     store.write_tool_change_record(record)
     checkpoint = RecoveryCheckpointWriter(store, tmp_path).create_turn_checkpoint(
-        "session", "run", "turn", "", ["tc_legacy"]
+        "session", "run", "turn", "", ["tc_current"]
     )
-    assert checkpoint["tool_change_ids"] == ["tc_legacy"]
+    assert checkpoint["tool_change_ids"] == ["tc_current"]
     assert checkpoint["integrity_errors"] == []
-    assert checkpoint["file_entries"][0]["snapshot_eligible"] is False
-    assert (
-        checkpoint["file_entries"][0]["ineligible_reason"]
-        == "legacy_ambiguous_history"
-    )
+    assert checkpoint["file_entries"][0]["snapshot_eligible"] is True

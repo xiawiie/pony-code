@@ -61,13 +61,15 @@ def test_pico_constructor_uses_coding_agent_defaults(tmp_path):
     assert agent.max_new_tokens == DEFAULT_MAX_NEW_TOKENS == 2048
 
 
-def test_new_runtime_persists_v3_messages_only(tmp_path):
+def test_new_runtime_persists_current_messages_only(tmp_path):
     agent = build_agent(tmp_path, ["<final>done</final>"])
 
     assert agent.ask("q") == "done"
 
     persisted = json.loads(Path(agent.session_path).read_text(encoding="utf-8"))
-    assert persisted["schema_version"] == 3
+    assert persisted["record_type"] == "session"
+    assert persisted["format_version"] == 1
+    assert "schema_version" not in persisted
     assert "history" not in persisted
     validate_messages(persisted["messages"], require_meta=True)
 
@@ -184,10 +186,19 @@ def test_supplied_raw_session_is_immediately_safe_in_memory_and_on_disk(
     workspace = build_workspace(tmp_path)
     store = SessionStore(tmp_path / ".pico" / "sessions")
     raw_session = {
+        "record_type": "session",
+        "format_version": 1,
         "id": "direct-raw",
-        "schema_version": 3,
+        "created_at": "2026-01-01T00:00:00+00:00",
+        "workspace_root": str(tmp_path),
         "messages": [{"role": "user", "content": secret, "_pico_meta": {}}],
         "working_memory": {"task_summary": secret, "recent_files": []},
+        "memory": {},
+        "recently_recalled": [],
+        "checkpoints": {},
+        "resume_state": {},
+        "recovery": {},
+        "runtime_identity": {},
     }
 
     agent = Pico(
@@ -202,6 +213,11 @@ def test_supplied_raw_session_is_immediately_safe_in_memory_and_on_disk(
     assert secret not in json.dumps(agent.session)
     assert secret not in json.dumps(agent.memory.to_dict())
     assert agent.session == persisted
+
+
+def test_runtime_rejects_dead_prompt_cache_feature_flag(tmp_path):
+    with pytest.raises(ValueError, match="unsupported feature flag"):
+        build_agent(tmp_path, [], feature_flags={"prompt_cache": True})
 
 
 def test_repeated_tool_detection_reads_canonical_tool_use_blocks(tmp_path):

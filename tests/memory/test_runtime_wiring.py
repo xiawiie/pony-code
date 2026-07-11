@@ -6,6 +6,7 @@ from pathlib import Path
 from pico import Pico, SessionStore, WorkspaceContext
 from pico.providers.fake import FakeModelClient
 from pico.features import memory as memorylib
+from pico.session_store import SESSION_FORMAT_VERSION, SESSION_RECORD_TYPE
 from pico.task_state import TaskState
 
 
@@ -62,42 +63,45 @@ def _build_agent(tmp_path, monkeypatch, session=None):
     )
 
 
-def test_runtime_uses_working_memory_and_normalizes_legacy_v1_session(tmp_path, monkeypatch):
+def test_runtime_uses_current_working_memory(tmp_path, monkeypatch):
     sample = tmp_path / "sample.txt"
-    sample.write_text("legacy\n", encoding="utf-8")
-    legacy_session = {
-        "id": "legacy",
+    sample.write_text("current\n", encoding="utf-8")
+    current_session = {
+        "record_type": SESSION_RECORD_TYPE,
+        "format_version": SESSION_FORMAT_VERSION,
+        "id": "current",
         "created_at": "2026-04-07T10:00:00+00:00",
         "workspace_root": str(tmp_path),
-        "history": [],
+        "messages": [],
+        "working_memory": {
+            "task_summary": "Current task",
+            "recent_files": [sample],
+        },
         "memory": {
-            "working": {
-                "task_summary": "Legacy task",
-                "recent_files": [sample],
-            },
-            "episodic_notes": [{"text": "drop me"}],
             "file_summaries": {
                 sample: {
-                    "summary": "legacy summary",
+                    "summary": "current summary",
                     "created_at": "2026-04-07T10:00:00+00:00",
                     "freshness": memorylib.file_freshness(sample, tmp_path),
                 }
             },
-            "task": "flat task",
-            "files": ["other.txt"],
-            "notes": ["legacy note"],
         },
+        "recently_recalled": [],
+        "checkpoints": {"current_id": "", "items": {}},
+        "resume_state": {},
+        "recovery": {"current_checkpoint_id": ""},
+        "runtime_identity": {},
     }
 
-    agent = _build_agent(tmp_path, monkeypatch, session=legacy_session)
+    agent = _build_agent(tmp_path, monkeypatch, session=current_session)
 
     assert type(agent.memory).__name__ == "WorkingMemory"
     assert agent.session["working_memory"] == {
-        "task_summary": "Legacy task",
+        "task_summary": "Current task",
         "recent_files": ["sample.txt"],
     }
     assert set(agent.session["memory"]) == {"file_summaries"}
-    assert agent.session["memory"]["file_summaries"]["sample.txt"]["summary"] == "legacy summary"
+    assert agent.session["memory"]["file_summaries"]["sample.txt"]["summary"] == "current summary"
 
 
 def test_read_file_updates_working_memory_and_raw_file_summary(tmp_path, monkeypatch):

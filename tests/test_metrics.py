@@ -303,7 +303,7 @@ def test_run_recovery_ablation_v2_writes_expected_artifact(tmp_path):
 
     assert artifact_path.exists()
     assert artifact["artifact_type"] == "recovery-ablation-v2"
-    assert artifact["task_count"] == 10
+    assert artifact["task_count"] == 8
     assert set(artifact["variants"]) == {"resume_enabled", "resume_disabled"}
     assert set(artifact["variants"]["resume_enabled"]["summary"]) >= {
         "resume_success_rate",

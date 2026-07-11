@@ -114,7 +114,6 @@ def _checkpoint_payload(
     next_step,
     runtime_identity,
     *,
-    schema_version=BENCHMARK_SCHEMA_VERSION,
     current_blocker="",
     key_files=None,
     freshness=None,
@@ -123,7 +122,6 @@ def _checkpoint_payload(
     return {
         "checkpoint_id": checkpoint_id,
         "parent_checkpoint_id": "",
-        "schema_version": "phase1-v1" if schema_version == BENCHMARK_SCHEMA_VERSION else str(schema_version),
         "created_at": "2026-04-15T08:00:00+00:00",
         "current_goal": current_goal,
         "completed": [],

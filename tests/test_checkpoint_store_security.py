@@ -8,6 +8,7 @@ import pytest
 from pico import checkpoint_store as checkpoint_store_module
 from pico.checkpoint_store import CheckpointStore
 from pico.recovery_models import new_checkpoint_record, new_tool_change_record
+from pico.verification import new_verification_record
 
 
 def _checkpoint(tmp_path, checkpoint_id="ckpt_safe"):
@@ -129,7 +130,8 @@ def test_store_layout_uses_private_modes(tmp_path):
 @pytest.mark.parametrize(
     ("field", "value", "code"),
     [
-        ("schema_version", "checkpoint-record-v0", "unsupported_schema"),
+        ("record_type", "wrong", "unsupported_record_type"),
+        ("format_version", True, "unsupported_format"),
         ("checkpoint_type", "unknown", "invalid_checkpoint_type"),
         ("status", "mystery", "invalid_status"),
     ],
@@ -177,6 +179,24 @@ def test_record_schema_rejects_wrong_container_and_scalar_types(tmp_path):
         store.write_tool_change_record(tool_change)
 
 
+def test_prepared_existing_entry_allows_mode_only_when_snapshot_unavailable(tmp_path):
+    store = CheckpointStore(tmp_path)
+    tool_change = new_tool_change_record(
+        "tc_mode_only", "", "turn", "write_file", "workspace_write", "owner"
+    )
+    tool_change["prepared_file_entries"] = [{
+        "path": "large.bin",
+        "before_exists": True,
+        "before_blob_ref": "",
+        "before_hash": "",
+        "before_mode": 0o600,
+    }]
+
+    store.write_tool_change_record(tool_change)
+
+    assert store.load_tool_change_record("tc_mode_only")["prepared_file_entries"] == tool_change["prepared_file_entries"]
+
+
 def test_json_is_redacted_but_blob_bytes_remain_exact(tmp_path):
     sentinel = "sk-checkpoint-redactor-sentinel"
 
@@ -185,7 +205,15 @@ def test_json_is_redacted_but_blob_bytes_remain_exact(tmp_path):
 
     store = CheckpointStore(tmp_path, redactor=redact)
     record = _checkpoint(tmp_path, "ckpt_redacted")
-    record["verification_evidence"] = [{"stdout_tail": sentinel}]
+    record["verification_evidence"] = [new_verification_record(
+        argv=["pytest"],
+        risk_class="read_only",
+        runner_executed=True,
+        execution_mode="argv",
+        exit_code=0,
+        stdout=sentinel,
+        stderr="",
+    )]
     path = store.write_checkpoint_record(record)
     blob = store.write_blob(sentinel.encode())
     assert sentinel.encode() not in path.read_bytes()
@@ -195,7 +223,7 @@ def test_json_is_redacted_but_blob_bytes_remain_exact(tmp_path):
     assert loaded["verification_evidence"][0]["stdout_tail"] == "<redacted>"
 
 
-def test_legacy_v1_records_receive_only_additive_defaults(tmp_path):
+def test_current_records_reject_missing_required_fields(tmp_path):
     store = CheckpointStore(tmp_path)
     checkpoint = _checkpoint(tmp_path, "ckpt_legacy")
     for key in (
@@ -215,15 +243,13 @@ def test_legacy_v1_records_receive_only_additive_defaults(tmp_path):
     ):
         tool.pop(key, None)
     (store.tool_changes_dir / "tc_legacy.json").write_text(json.dumps(tool), encoding="utf-8")
-    loaded_checkpoint = store.load_checkpoint_record("ckpt_legacy")
-    loaded_tool = store.load_tool_change_record("tc_legacy")
-    assert loaded_checkpoint["status"] == ""
-    assert loaded_checkpoint["integrity_errors"] == []
-    assert loaded_tool["prepared_file_entries"] == []
-    assert loaded_tool["recovery_context"] == {}
+    with pytest.raises(ValueError, match="invalid_record_shape|invalid_status"):
+        store.load_checkpoint_record("ckpt_legacy")
+    with pytest.raises(ValueError, match="invalid_record_shape"):
+        store.load_tool_change_record("tc_legacy")
 
 
-def test_restore_v1_without_additive_status_defaults_to_applied(tmp_path):
+def test_restore_without_status_is_rejected(tmp_path):
     store = CheckpointStore(tmp_path)
     record = _checkpoint(tmp_path, "ckpt_restore_legacy")
     record["checkpoint_type"] = "restore"
@@ -231,7 +257,8 @@ def test_restore_v1_without_additive_status_defaults_to_applied(tmp_path):
     (store.records_dir / "ckpt_restore_legacy.json").write_text(
         json.dumps(record), encoding="utf-8"
     )
-    assert store.load_checkpoint_record("ckpt_restore_legacy")["status"] == "applied"
+    with pytest.raises(ValueError, match="invalid_status"):
+        store.load_checkpoint_record("ckpt_restore_legacy")
 
 
 def test_additive_defaulting_never_overwrites_present_wrong_type(tmp_path):

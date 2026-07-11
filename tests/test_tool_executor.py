@@ -541,7 +541,9 @@ def test_run_shell_recovery_marks_dirty_before_tracked_file_unrestorable(tmp_pat
     assert entry["change_kind"] == "modified"
     assert entry["before_blob_ref"] == ""
     assert entry["snapshot_eligible"] is False
-    assert entry["ineligible_reason"] == "before_blob_unavailable"
+    assert entry["ineligible_reason"] == "mode_unknown"
+    assert entry["before_mode"] is None
+    assert entry["after_mode"] is None
 
 
 def test_run_shell_recovery_populates_before_blob_from_git_head(tmp_path):

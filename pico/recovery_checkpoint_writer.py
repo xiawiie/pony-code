@@ -33,7 +33,7 @@ def _sha256(value):
     )
 
 
-def validate_file_entry(entry, *, legacy=False):
+def validate_file_entry(entry):
     if not isinstance(entry, dict):
         return "invalid_file_entry"
     try:
@@ -57,12 +57,6 @@ def validate_file_entry(entry, *, legacy=False):
         "expected_current_hash",
         "source_tool_change_ids",
     }
-    missing = required - set(entry)
-    legacy_additive = {"before_mode", "after_mode", "source_tool_change_ids"}
-    if legacy and missing and missing <= legacy_additive:
-        if "source_tool_change_ids" in missing:
-            return "legacy_ambiguous_history"
-        return "legacy_mode_unknown"
     if not required <= set(entry):
         return "invalid_file_entry"
     eligible = entry["snapshot_eligible"]
@@ -78,6 +72,12 @@ def validate_file_entry(entry, *, legacy=False):
     after_exists = entry["after_exists"]
     if type(before_exists) is not bool or type(after_exists) is not bool:
         return "invalid_file_entry"
+    mode_unknown = (
+        eligible is False
+        and ineligible_reason == "mode_unknown"
+        and entry.get("before_mode") is None
+        and entry.get("after_mode") is None
+    )
     for prefix, exists in (("before", before_exists), ("after", after_exists)):
         value_hash = entry.get(prefix + "_hash")
         blob_ref = entry.get(prefix + "_blob_ref")
@@ -86,9 +86,7 @@ def validate_file_entry(entry, *, legacy=False):
             if value_hash != "" or blob_ref != "" or mode is not None:
                 return "invalid_absent_state"
             continue
-        if mode is None and legacy:
-            return "legacy_mode_unknown"
-        if (
+        if not (mode is None and mode_unknown) and (
             not isinstance(mode, int)
             or isinstance(mode, bool)
             or mode < 0
@@ -126,9 +124,7 @@ def validate_file_entry(entry, *, legacy=False):
         or _SAFE_ID.fullmatch(item) is None
         for item in sources
     ):
-        return "legacy_ambiguous_history" if legacy else "invalid_sources"
-    if legacy and not sources:
-        return "legacy_ambiguous_history"
+        return "invalid_sources"
     return ""
 
 
@@ -201,7 +197,7 @@ def _review_entry(entries, reason):
     return result
 
 
-def coalesce_file_entries(entries, *, legacy=False):
+def coalesce_file_entries(entries):
     grouped = {}
     order = []
     for entry in entries or []:
@@ -213,13 +209,19 @@ def coalesce_file_entries(entries, *, legacy=False):
     merged = []
     for path in order:
         group = grouped[path]
-        reasons = [validate_file_entry(item, legacy=legacy) for item in group]
+        reasons = [validate_file_entry(item) for item in group]
         if any(reasons):
             reason = next(value for value in reasons if value)
-            if reason not in {"legacy_mode_unknown", "legacy_ambiguous_history"}:
-                reason = "discontinuous_history"
+            reason = "discontinuous_history"
             review = _review_entry(group, reason)
             if review is not None:
+                merged.append(review)
+            continue
+        if any(item.get("ineligible_reason") == "mode_unknown" for item in group):
+            review = _review_entry(group, "mode_unknown")
+            if review is not None:
+                review["before_mode"] = None
+                review["after_mode"] = None
                 merged.append(review)
             continue
         continuous = all(
@@ -319,13 +321,8 @@ class RecoveryCheckpointWriter:
             for entry in tool_change.get("file_entries", []) or []:
                 reason = validate_file_entry(entry)
                 if reason:
-                    reason = validate_file_entry(entry, legacy=True)
-                    if reason not in {
-                        "legacy_mode_unknown",
-                        "legacy_ambiguous_history",
-                    }:
-                        invalid_entries = True
-                        break
+                    invalid_entries = True
+                    break
                 sources = entry.get("source_tool_change_ids")
                 if sources not in (None, [], [tool_change_id]):
                     invalid_entries = True
@@ -337,9 +334,7 @@ class RecoveryCheckpointWriter:
             file_entries.extend(tool_change.get("file_entries", []) or [])
         record["tool_change_ids"] = [item["tool_change_id"] for item in loaded_tool_changes]
         record["missing_tool_change_ids"] = missing_tool_change_ids
-        record["file_entries"] = coalesce_file_entries(
-            file_entries, legacy=True
-        )
+        record["file_entries"] = coalesce_file_entries(file_entries)
         if missing_tool_change_ids:
             record["integrity_errors"] = [
                 {

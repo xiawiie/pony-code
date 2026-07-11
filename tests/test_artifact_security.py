@@ -33,6 +33,42 @@ def _assert_mode(path, expected):
         assert stat.S_IMODE(path.stat().st_mode) == expected
 
 
+def _verification(stdout):
+    return {
+        "verification_id": "verify_test",
+        "created_at": "2026-01-01T00:00:00+00:00",
+        "argv": ["pytest"],
+        "runner_executed": True,
+        "execution_mode": "argv",
+        "command": "pytest",
+        "risk_class": "read_only",
+        "exit_code": 0,
+        "status": "passed",
+        "stdout_tail": stdout,
+        "stderr_tail": "",
+        "affected_checkpoint_id": "",
+        "trace_event_id": "",
+    }
+
+
+def _session(session_id):
+    return {
+        "record_type": "session",
+        "format_version": 1,
+        "id": session_id,
+        "created_at": "2026-01-01T00:00:00+00:00",
+        "workspace_root": "/repo",
+        "messages": [],
+        "working_memory": {},
+        "memory": {},
+        "recently_recalled": [],
+        "checkpoints": {},
+        "resume_state": {},
+        "recovery": {},
+        "runtime_identity": {},
+    }
+
+
 def test_secret_canary_is_absent_from_normal_artifacts_and_inspection(
     tmp_path,
     monkeypatch,
@@ -70,7 +106,7 @@ def test_secret_canary_is_absent_from_normal_artifacts_and_inspection(
         "",
         str(tmp_path),
     )
-    record["verification_evidence"] = [{"stdout_tail": secret}]
+    record["verification_evidence"] = [_verification(secret)]
     agent.checkpoint_store.write_checkpoint_record(record)
 
     for path in (tmp_path / ".pico").rglob("*"):
@@ -118,7 +154,7 @@ def test_checkpoint_json_is_redacted_but_blob_bytes_remain_exact_and_private(
         "",
         str(tmp_path),
     )
-    record["verification_evidence"] = [{"stdout_tail": secret}]
+    record["verification_evidence"] = [_verification(secret)]
     record_path = store.write_checkpoint_record(record)
 
     assert secret not in record_path.read_text(encoding="utf-8")
@@ -276,7 +312,7 @@ def test_legacy_inspection_redacts_process_and_project_collision(
         "",
         str(tmp_path),
     )
-    checkpoint["verification_evidence"] = [{"stdout_tail": legacy_text}]
+    checkpoint["verification_evidence"] = [_verification(legacy_text)]
     (checkpoints / "ckpt_legacy.json").write_text(
         json.dumps(checkpoint),
         encoding="utf-8",
@@ -568,8 +604,23 @@ def test_singular_session_inspection_never_reads_unsafe_paths(
         assert "unsafe session read attempted" not in report
 
     safe = sessions_root / "safe.json"
+    (sessions_root / ".session_store.lock").touch(mode=0o600)
     safe.write_text(
-        '{"schema_version": 3, "messages": []}\n',
+        json.dumps({
+            "record_type": "session",
+            "format_version": 1,
+            "id": "safe",
+            "created_at": "2026-01-01T00:00:00+00:00",
+            "workspace_root": str(tmp_path),
+            "messages": [],
+            "working_memory": {},
+            "memory": {},
+            "recently_recalled": [],
+            "checkpoints": {},
+            "resume_state": {},
+            "recovery": {},
+            "runtime_identity": {},
+        }) + "\n",
         encoding="utf-8",
     )
     assert inspect_session("safe", sessions_root)[0] is True
@@ -620,7 +671,7 @@ def test_singular_session_cli_redacts_untrusted_summary_fields(
     output = capsys.readouterr().out
     assert code == 1
     assert secret not in output
-    assert "schema_version: invalid" in output
+    assert "unsafe session artifact" in output
 
 
 def test_checkpoint_ambiguity_errors_are_redacted(
@@ -805,7 +856,7 @@ def test_session_temp_swap_is_removed_without_touching_external_target(
     monkeypatch.setattr(security_module.os, "replace", swap_before_replace)
 
     with pytest.raises(ValueError, match="temp|changed|regular|symlink"):
-        store.save({"id": "swapped", "history": []})
+        store.save(_session("swapped"))
 
     assert outside.read_text(encoding="utf-8") == "outside\n"
     assert not store.path("swapped").exists()
@@ -831,9 +882,9 @@ def test_store_redactors_cannot_mutate_callers_or_leave_failed_trace(tmp_path):
         tmp_path / ".pico" / "sessions",
         redactor=mutating_redactor,
     )
-    session = {"id": "isolated", "history": []}
+    session = _session("isolated")
     session_store.save(session)
-    assert session == {"id": "isolated", "history": []}
+    assert session == _session("isolated")
 
     def failing_redactor(_value):
         raise RuntimeError("redactor failed")
@@ -935,7 +986,7 @@ def test_atomic_writers_remove_installed_temp_with_extra_hardlink(
     )
     cases = (
         (
-            lambda: session_store.save({"id": "hardlinked_temp", "history": []}),
+            lambda: session_store.save(_session("hardlinked_temp")),
             session_store.path("hardlinked_temp"),
         ),
         (

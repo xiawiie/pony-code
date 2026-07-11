@@ -1403,5 +1403,14 @@ def _build_file_entries(
         ):
             entry["snapshot_eligible"] = False
             entry["ineligible_reason"] = "before_blob_unavailable"
+        if (
+            entry["before_exists"] and entry["before_mode"] is None
+        ) or (
+            entry["after_exists"] and entry["after_mode"] is None
+        ):
+            entry["snapshot_eligible"] = False
+            entry["ineligible_reason"] = "mode_unknown"
+            entry["before_mode"] = None
+            entry["after_mode"] = None
         entries.append(entry)
     return entries
