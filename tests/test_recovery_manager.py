@@ -9,6 +9,23 @@ from pico.recovery_models import new_checkpoint_record, new_tool_change_record
 from pico.recovery_paths import hash_bytes
 
 
+def test_rename_swap_uses_linux_exchange_when_macos_api_is_unavailable(
+    monkeypatch,
+):
+    calls = []
+
+    def renameat2(*args):
+        calls.append(args)
+        return 0
+
+    monkeypatch.setattr(recovery_manager_module, "_RENAMEATX_NP", None)
+    monkeypatch.setattr(recovery_manager_module, "_RENAMEAT2", renameat2)
+
+    recovery_manager_module._rename_swap(7, "first", "second")
+
+    assert calls == [(7, b"first", 7, b"second", 2)]
+
+
 def _complete_modified_entry(store, root, path="note.txt"):
     before = store.write_blob(b"before")
     after = store.write_blob(b"after")

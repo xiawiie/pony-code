@@ -1145,11 +1145,25 @@ try:
 except AttributeError:
     _RENAMEATX_NP = None
 
+try:
+    _RENAMEAT2 = ctypes.CDLL(None, use_errno=True).renameat2
+    _RENAMEAT2.argtypes = (
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_uint,
+    )
+    _RENAMEAT2.restype = ctypes.c_int
+except AttributeError:
+    _RENAMEAT2 = None
+
 
 def _rename_swap(parent_descriptor, first, second):
-    if _RENAMEATX_NP is None:
+    rename = _RENAMEATX_NP or _RENAMEAT2
+    if rename is None:
         raise OSError(errno.ENOTSUP, "atomic restore swap unavailable")
-    result = _RENAMEATX_NP(
+    result = rename(
         parent_descriptor,
         os.fsencode(first),
         parent_descriptor,
