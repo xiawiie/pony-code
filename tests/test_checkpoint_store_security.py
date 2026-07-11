@@ -257,7 +257,7 @@ def test_restore_without_status_is_rejected(tmp_path):
     (store.records_dir / "ckpt_restore_legacy.json").write_text(
         json.dumps(record), encoding="utf-8"
     )
-    with pytest.raises(ValueError, match="invalid_status"):
+    with pytest.raises(ValueError, match="invalid_record_shape"):
         store.load_checkpoint_record("ckpt_restore_legacy")
 
 

@@ -20,7 +20,7 @@ SESSION_RECORD_TYPE = "session"
 SESSION_FORMAT_VERSION = 1
 
 
-class SessionMigrationError(ValueError):
+class SessionFormatError(ValueError):
     """A session record does not match the current on-disk contract."""
 
 
@@ -54,6 +54,23 @@ _DICT_FIELDS = (
     "recovery",
     "runtime_identity",
 )
+_TASK_CHECKPOINT_FIELDS = frozenset(
+    {
+        "checkpoint_id",
+        "parent_checkpoint_id",
+        "created_at",
+        "current_goal",
+        "completed",
+        "excluded",
+        "current_blocker",
+        "next_step",
+        "key_files",
+        "freshness",
+        "summary",
+        "runtime_identity",
+    }
+)
+_FEATURE_FLAG_FIELDS = frozenset({"memory"})
 
 
 def _session_id(value):
@@ -68,61 +85,61 @@ def _decode_json_object(raw):
         value = {}
         for key, item in pairs:
             if key in value:
-                raise SessionMigrationError("duplicate session key")
+                raise SessionFormatError("duplicate session key")
             value[key] = item
         return value
 
     try:
         return json.loads(raw.decode("utf-8"), object_pairs_hook=object_from_pairs)
-    except SessionMigrationError:
+    except SessionFormatError:
         raise
     except (UnicodeDecodeError, json.JSONDecodeError):
-        raise SessionMigrationError("failed to decode session") from None
+        raise SessionFormatError("failed to decode session") from None
 
 
 def _validate_payload(payload, session_id):
     if not isinstance(payload, dict):
-        raise SessionMigrationError("session payload must be an object")
-    if not _REQUIRED_FIELDS <= payload.keys():
-        raise SessionMigrationError("session payload missing required fields")
-    if "history" in payload or "schema_version" in payload:
-        raise SessionMigrationError("session payload contains obsolete fields")
+        raise SessionFormatError("session payload must be an object")
+    if payload.keys() != _REQUIRED_FIELDS:
+        raise SessionFormatError("session payload fields do not match current format")
     if payload.get("record_type") != SESSION_RECORD_TYPE:
-        raise SessionMigrationError("invalid session record type")
+        raise SessionFormatError("invalid session record type")
     if (
         type(payload.get("format_version")) is not int
         or payload["format_version"] != SESSION_FORMAT_VERSION
     ):
-        raise SessionMigrationError("invalid session format version")
+        raise SessionFormatError("invalid session format version")
     if payload.get("id") != session_id:
-        raise SessionMigrationError("session id does not match file name")
+        raise SessionFormatError("session id does not match file name")
     if any(not isinstance(payload.get(key), str) for key in ("id", "created_at", "workspace_root")):
-        raise SessionMigrationError("invalid session string field")
+        raise SessionFormatError("invalid session string field")
     if any(not isinstance(payload.get(key), dict) for key in _DICT_FIELDS):
-        raise SessionMigrationError("invalid session object field")
+        raise SessionFormatError("invalid session object field")
     if not isinstance(payload.get("recently_recalled"), list):
-        raise SessionMigrationError("invalid session list field")
+        raise SessionFormatError("invalid session list field")
     identities = [payload["runtime_identity"]]
     items = payload["checkpoints"].get("items", {})
     if isinstance(items, dict):
         for checkpoint in items.values():
             if not isinstance(checkpoint, dict):
-                raise SessionMigrationError("invalid embedded checkpoint")
-            if "schema_version" in checkpoint:
-                raise SessionMigrationError("obsolete embedded checkpoint version")
+                raise SessionFormatError("invalid embedded checkpoint")
+            if not checkpoint.keys() <= _TASK_CHECKPOINT_FIELDS:
+                raise SessionFormatError("invalid embedded checkpoint fields")
             identity = checkpoint.get("runtime_identity")
             if isinstance(identity, dict):
                 identities.append(identity)
-    if any(
-        "prompt_cache" in identity.get("feature_flags", {})
-        for identity in identities
-        if isinstance(identity.get("feature_flags", {}), dict)
-    ):
-        raise SessionMigrationError("obsolete runtime identity flag")
+    for identity in identities:
+        feature_flags = identity.get("feature_flags", {})
+        if not isinstance(feature_flags, dict):
+            raise SessionFormatError("invalid runtime identity feature flags")
+        if not feature_flags.keys() <= _FEATURE_FLAG_FIELDS or any(
+            type(value) is not bool for value in feature_flags.values()
+        ):
+            raise SessionFormatError("unsupported runtime identity feature flag")
     try:
         validate_messages(payload.get("messages"), require_meta=True)
     except MessageValidationError as exc:
-        raise SessionMigrationError(str(exc)) from None
+        raise SessionFormatError(str(exc)) from None
     return payload
 
 
@@ -157,7 +174,7 @@ class SessionStore:
 
     def save(self, session):
         if not isinstance(session, dict):
-            raise SessionMigrationError("session payload must be an object")
+            raise SessionFormatError("session payload must be an object")
         session_id = _session_id(session.get("id"))
         payload = self._redactor(deepcopy(session))
         _validate_payload(payload, session_id)

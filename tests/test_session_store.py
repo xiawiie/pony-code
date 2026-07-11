@@ -9,7 +9,7 @@ import pytest
 from pico import security as security_module
 import pico.session_store as session_store_module
 from pico.messages import validate_messages
-from pico.session_store import SessionMigrationError, SessionStore
+from pico.session_store import SessionFormatError, SessionStore
 
 
 def _session(session_id, content="hello"):
@@ -142,7 +142,7 @@ def test_session_store_rejects_non_current_versions_without_rewrite(tmp_path, ve
     path.write_text(json.dumps(payload), encoding="utf-8")
     before = path.read_bytes()
 
-    with pytest.raises(SessionMigrationError, match="format version|required"):
+    with pytest.raises(SessionFormatError, match="format version|fields"):
         store.load("strict")
 
     assert path.read_bytes() == before
@@ -157,12 +157,12 @@ def test_session_store_rejects_nested_duplicate_keys(tmp_path):
     store.lock_path.touch(mode=0o600)
     store.path("duplicate").write_text(payload, encoding="utf-8")
 
-    with pytest.raises(SessionMigrationError, match="duplicate"):
+    with pytest.raises(SessionFormatError, match="duplicate"):
         store.load("duplicate")
 
 
 @pytest.mark.parametrize("embedded", [False, True])
-def test_session_store_rejects_dead_prompt_cache_identity(tmp_path, embedded):
+def test_session_store_rejects_unknown_feature_flag_identity(tmp_path, embedded):
     store = SessionStore(tmp_path / ".pico" / "sessions")
     payload = _session("dead-flag")
     identity = {"feature_flags": {"prompt_cache": True}}
@@ -173,5 +173,5 @@ def test_session_store_rejects_dead_prompt_cache_identity(tmp_path, embedded):
     else:
         payload["runtime_identity"] = identity
 
-    with pytest.raises(SessionMigrationError, match="obsolete runtime identity flag"):
+    with pytest.raises(SessionFormatError, match="unsupported runtime identity feature flag"):
         store.save(payload)

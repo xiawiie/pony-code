@@ -11,7 +11,7 @@ from pico.security import private_directory_identity
 from pico.session_store import (
     SESSION_FORMAT_VERSION,
     SESSION_RECORD_TYPE,
-    SessionMigrationError,
+    SessionFormatError,
     SessionStore,
 )
 
@@ -55,7 +55,7 @@ def inspect_session(session_id, sessions_root):
             session = store._load_unlocked(session_id)
     except FileNotFoundError:
         return False, f"failed to read session {session_id}: unsafe session artifact"
-    except (OSError, ValueError, SessionMigrationError):
+    except (OSError, ValueError, SessionFormatError):
         return False, f"failed to read session {session_id}: unsafe session artifact"
 
     if not isinstance(session, dict):
@@ -92,7 +92,7 @@ def inspect_session(session_id, sessions_root):
         return False, "\n".join(lines)
     try:
         validate_messages(messages, require_meta=True)
-    except (MessageValidationError, SessionMigrationError) as exc:
+    except (MessageValidationError, SessionFormatError) as exc:
         lines.extend(["tool_pairs: 0", "orphans: 1", f"invariants: failed ({exc})"])
         return False, "\n".join(lines)
     lines.extend([

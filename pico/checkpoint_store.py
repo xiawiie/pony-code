@@ -47,6 +47,34 @@ _RESTORE_STATUSES = {"applying", "applied", "blocked", "failed", "partial", "noo
 _TOOL_CHANGE_STATUSES = {
     "pending", "finalized", "error", "partial_success", "interrupted"
 }
+_CHECKPOINT_FIELDS = frozenset(
+    {
+        "record_type", "format_version", "checkpoint_id", "checkpoint_type",
+        "created_at", "session_id", "run_id", "turn_id", "parent_checkpoint_id",
+        "workspace_root", "tool_change_ids", "missing_tool_change_ids",
+        "git_review_context", "file_entries", "verification_evidence",
+        "restore_provenance", "status", "owner_id", "reviewed_at",
+        "review_reason", "reviewed_by", "integrity_errors",
+    }
+)
+_TOOL_CHANGE_FIELDS = frozenset(
+    {
+        "record_type", "format_version", "tool_change_id", "checkpoint_id",
+        "turn_id", "owner_id", "tool_name", "effect_class", "status",
+        "started_at", "ended_at", "input_summary", "affected_paths",
+        "file_entries", "prepared_file_entries", "recovery_context",
+        "shell_side_effects", "approval", "error", "trace_event_ids",
+        "reviewed_at", "review_reason", "reviewed_by",
+    }
+)
+_VERIFICATION_FIELDS = frozenset(
+    {
+        "verification_id", "created_at", "execution_mode", "command",
+        "risk_class", "status", "stdout_tail", "stderr_tail",
+        "affected_checkpoint_id", "trace_event_id", "argv", "runner_executed",
+        "exit_code",
+    }
+)
 
 
 class CheckpointStoreError(ValueError):
@@ -82,6 +110,8 @@ def _decode_json(raw):
 def _validate_checkpoint_record(record, expected_id=None):
     if not isinstance(record, dict):
         raise CheckpointStoreError("invalid_record", "checkpoint record must be an object")
+    if record.keys() != _CHECKPOINT_FIELDS:
+        raise CheckpointStoreError("invalid_record_shape", "invalid checkpoint fields")
     if record.get("record_type") != CHECKPOINT_RECORD_TYPE:
         raise CheckpointStoreError("unsupported_record_type", "unsupported checkpoint record type")
     if (
@@ -89,8 +119,6 @@ def _validate_checkpoint_record(record, expected_id=None):
         or record["format_version"] != CHECKPOINT_FORMAT_VERSION
     ):
         raise CheckpointStoreError("unsupported_format", "unsupported checkpoint format")
-    if "schema_version" in record:
-        raise CheckpointStoreError("obsolete_field", "obsolete checkpoint field")
     checkpoint_id = _safe_id(record.get("checkpoint_id"), "checkpoint id")
     if expected_id is not None and checkpoint_id != expected_id:
         raise CheckpointStoreError("internal_id_mismatch", "checkpoint internal id mismatch")
@@ -132,6 +160,8 @@ def _validate_checkpoint_record(record, expected_id=None):
 def _validate_tool_change_record(record, expected_id=None):
     if not isinstance(record, dict):
         raise CheckpointStoreError("invalid_record", "tool change record must be an object")
+    if record.keys() != _TOOL_CHANGE_FIELDS:
+        raise CheckpointStoreError("invalid_record_shape", "invalid tool change fields")
     if record.get("record_type") != TOOL_CHANGE_RECORD_TYPE:
         raise CheckpointStoreError("unsupported_record_type", "unsupported tool change record type")
     if (
@@ -139,8 +169,6 @@ def _validate_tool_change_record(record, expected_id=None):
         or record["format_version"] != TOOL_CHANGE_FORMAT_VERSION
     ):
         raise CheckpointStoreError("unsupported_format", "unsupported tool change format")
-    if "schema_version" in record:
-        raise CheckpointStoreError("obsolete_field", "obsolete tool change field")
     tool_change_id = _safe_id(record.get("tool_change_id"), "tool change id")
     if expected_id is not None and tool_change_id != expected_id:
         raise CheckpointStoreError("internal_id_mismatch", "tool change internal id mismatch")
@@ -182,7 +210,7 @@ def _validate_tool_change_record(record, expected_id=None):
 
 
 def _valid_verification_evidence(item):
-    if not isinstance(item, dict) or "schema_version" in item:
+    if not isinstance(item, dict) or item.keys() != _VERIFICATION_FIELDS:
         return False
     string_fields = (
         "verification_id",

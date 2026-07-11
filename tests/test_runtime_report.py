@@ -583,7 +583,7 @@ def test_resume_uses_session_version_for_embedded_checkpoint(tmp_path):
 def test_session_save_rejects_missing_checkpoint_state(tmp_path):
     agent = build_agent(tmp_path, ["<final>checkpoint ready.</final>"])
     agent.session.pop("checkpoints", None)
-    with pytest.raises(ValueError, match="missing required fields"):
+    with pytest.raises(ValueError, match="fields do not match current format"):
         agent.session_store.save(agent.session)
 
 
@@ -637,7 +637,7 @@ def test_runtime_identity_persists_key_execution_metadata(tmp_path):
         approval_policy="never",
         max_steps=9,
         max_new_tokens=1024,
-        feature_flags={"memory": True, "relevant_memory": False},
+        feature_flags={"memory": True},
     )
 
     runtime_identity = agent.session["runtime_identity"]
@@ -649,7 +649,7 @@ def test_runtime_identity_persists_key_execution_metadata(tmp_path):
     assert runtime_identity["max_steps"] == 9
     assert runtime_identity["max_new_tokens"] == 1024
     assert runtime_identity["feature_flags"]["memory"] is True
-    assert runtime_identity["feature_flags"]["relevant_memory"] is False
+    assert runtime_identity["feature_flags"] == {"memory": True}
     assert runtime_identity["shell_env_allowlist"] == list(agent.shell_env_allowlist)
 
 
@@ -678,7 +678,7 @@ def test_resume_records_runtime_identity_mismatch_fields_in_metadata_and_trace(t
                     "max_new_tokens": 512,
                     "model": "old-model",
                     "model_client": "FakeModelClient",
-                    "feature_flags": {"memory": True, "relevant_memory": True},
+                    "feature_flags": {"memory": False},
                     "shell_env_allowlist": ["PATH"],
                     "session_id": agent.session["id"],
                     "cwd": str(tmp_path),
@@ -696,7 +696,7 @@ def test_resume_records_runtime_identity_mismatch_fields_in_metadata_and_trace(t
         approval_policy="never",
         max_steps=9,
         max_new_tokens=1024,
-        feature_flags={"memory": True, "relevant_memory": False},
+        feature_flags={"memory": True},
     )
 
     resumed.ask("Continue the task")

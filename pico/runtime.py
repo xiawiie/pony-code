@@ -298,7 +298,7 @@ class Pico:
         self.secret_env_names = configured_names
         self.feature_flags = dict(DEFAULT_FEATURE_FLAGS)
         if feature_flags:
-            if "prompt_cache" in feature_flags:
+            if not feature_flags.keys() <= DEFAULT_FEATURE_FLAGS.keys():
                 raise ValueError("unsupported feature flag")
             self.feature_flags.update({str(key): bool(value) for key, value in feature_flags.items()})
         self.allowed_tools = self._normalize_allowed_tools(allowed_tools)
@@ -375,13 +375,12 @@ class Pico:
                     for checkpoint in items.values()
                     if isinstance(checkpoint, dict)
                 )
-            if any(
-                "prompt_cache" in identity.get("feature_flags", {})
-                for identity in identities
-                if isinstance(identity, dict)
-                and isinstance(identity.get("feature_flags", {}), dict)
-            ):
-                raise ValueError("obsolete runtime identity flag")
+            for identity in identities:
+                if not isinstance(identity, dict):
+                    continue
+                identity_flags = identity.get("feature_flags", {})
+                if not isinstance(identity_flags, dict) or not identity_flags.keys() <= DEFAULT_FEATURE_FLAGS.keys():
+                    raise ValueError("unsupported runtime identity feature flag")
         self._ensure_session_shape()
         self.memory = WorkingMemory.from_dict(self.session.get("working_memory"), workspace_root=self.root)
         self._sync_working_memory()
