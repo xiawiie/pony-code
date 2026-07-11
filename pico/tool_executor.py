@@ -1,10 +1,4 @@
-"""Structured tool execution for the agent runtime.
-
-Phase 1 里这里承担两件事：
-1. 沿用原来的“校验 → 审批 → 执行 → 度量”流程，metadata 与旧字段保持兼容。
-2. 把每一次真正跑到 tool["run"] 的调用都记进一条 Tool Change Record：
-   pending → finalized/error/partial_success，中途无论走哪条路都要 finalize。
-"""
+"""Structured, audited tool execution for the agent runtime."""
 
 from collections.abc import Mapping
 from copy import deepcopy
@@ -432,506 +426,611 @@ def _prepare_shell_execution(agent, tool, args, effect_class, assessment):
     )
 
 
+def _assess_shell_request(agent, name, args, effect_class):
+    if name != "run_shell":
+        return None, None
+    assessment_args = args if isinstance(args, Mapping) else {}
+    assessment = assess_command(
+        str(assessment_args.get("command", "")),
+        agent.root,
+    )
+    if assessment["decision"] != "reject":
+        return assessment, None
+    sensitive = assessment["reason"] == "sensitive_path"
+    return assessment, _shell_rejection(
+        assessment=assessment,
+        mode=agent.approval_policy,
+        outcome="blocked",
+        effect_class=effect_class,
+        tool_error_code=(
+            "sensitive_path_block" if sensitive else "command_rejected"
+        ),
+        content=(
+            "error: sensitive_path_block"
+            if sensitive
+            else "error: command policy rejected run_shell"
+        ),
+        security_event_type=(
+            "sensitive_access_block" if sensitive else "command_rejected"
+        ),
+    )
+
+
+def _availability_rejection(
+    agent,
+    name,
+    tool,
+    effect_class,
+    command_assessment,
+):
+    if agent.allowed_tools is not None and name not in agent.allowed_tools:
+        rejection = ToolExecutionResult(
+            content=f"error: tool '{name}' is not allowed in this run",
+            metadata=_metadata(
+                "rejected",
+                effect_class=effect_class,
+                tool_error_code="tool_not_allowed",
+                risk_level="high",
+            ),
+        )
+    elif tool is None:
+        rejection = ToolExecutionResult(
+            content=f"error: unknown tool '{name}'",
+            metadata=_metadata(
+                "rejected",
+                effect_class=effect_class,
+                tool_error_code="unknown_tool",
+                risk_level="high",
+            ),
+        )
+    else:
+        return None
+    if command_assessment is None:
+        return rejection
+    return _add_initial_shell_policy(rejection, command_assessment, agent.approval_policy)
+
+
+def _prepare_non_shell_tool(agent, tool, name, args, effect_class):
+    if agent.read_only and effect_class != "read_only":
+        return ToolExecutionResult(
+            content=f"error: read-only mode blocks {name}",
+            metadata=_metadata(
+                "rejected",
+                effect_class=effect_class,
+                tool_error_code="read_only_block",
+                security_event_type="read_only_block",
+                risk_level="high",
+            ),
+        )
+    rejection = _validation_rejection(agent, tool, name, args, effect_class)
+    if rejection is not None:
+        return rejection
+    if agent.repeated_tool_call(name, args):
+        return ToolExecutionResult(
+            content=(
+                f"error: repeated identical tool call for {name}; "
+                "choose a different tool or return a final answer"
+            ),
+            metadata=_metadata(
+                "rejected",
+                effect_class=effect_class,
+                tool_error_code="repeated_identical_call",
+                risk_level="high" if tool["risky"] else "low",
+            ),
+        )
+    if not tool["risky"]:
+        return None
+    original_args = deepcopy(args)
+    approval_args = deepcopy(original_args)
+    if not agent.approve(name, approval_args):
+        return ToolExecutionResult(
+            content=f"error: approval denied for {name}",
+            metadata=_metadata(
+                "rejected",
+                effect_class=effect_class,
+                tool_error_code="approval_denied",
+                security_event_type=(
+                    "read_only_block" if agent.read_only else "approval_denied"
+                ),
+                risk_level="high",
+            ),
+        )
+    rejection = _validation_rejection(agent, tool, name, args, effect_class)
+    if rejection is not None:
+        return rejection
+    if args == original_args and approval_args == original_args:
+        return None
+    return ToolExecutionResult(
+        content=f"error: approved arguments changed for {name}",
+        metadata=_metadata(
+            "rejected",
+            effect_class=effect_class,
+            tool_error_code="approval_arguments_changed",
+            security_event_type="approval_arguments_changed",
+            risk_level="high",
+        ),
+    )
+
+
+def _prepare_tool_request(agent, name, args):
+    tool = agent.tools.get(name)
+    effect_class = (
+        "workspace_write"
+        if tool is None and name not in _EFFECT_CLASS_BY_TOOL
+        else _effect_class(name, bool(tool and tool["risky"]))
+    )
+    command_assessment, rejection = _assess_shell_request(
+        agent,
+        name,
+        args,
+        effect_class,
+    )
+    if rejection is not None:
+        return None, rejection
+    rejection = _availability_rejection(
+        agent,
+        name,
+        tool,
+        effect_class,
+        command_assessment,
+    )
+    if rejection is not None:
+        return None, rejection
+
+    shell_execution = None
+    command_risk = ""
+    command_approval = {}
+    if command_assessment is not None:
+        command_risk = command_assessment["risk_class"]
+        shell_execution, command_approval, rejection = _prepare_shell_execution(
+            agent,
+            tool,
+            args,
+            effect_class,
+            command_assessment,
+        )
+    else:
+        rejection = _prepare_non_shell_tool(
+            agent,
+            tool,
+            name,
+            args,
+            effect_class,
+        )
+    if rejection is not None:
+        return None, rejection
+
+    records_tool_change = effect_class in {"memory_write", "workspace_write"}
+    input_summary = None
+    if records_tool_change:
+        input_summary = _summarize_input(
+            agent.redact_artifact(deepcopy(args))
+        )
+        if command_assessment is not None:
+            input_summary["assessment"] = agent.redact_artifact(
+                command_assessment
+            )
+    task_state = getattr(agent, "current_task_state", None)
+    return {
+        "agent": agent,
+        "name": name,
+        "args": args,
+        "tool": tool,
+        "effect_class": effect_class,
+        "shell_execution": shell_execution,
+        "command_risk": command_risk,
+        "command_approval": command_approval,
+        "records_tool_change": records_tool_change,
+        "records_recovery": effect_class == "workspace_write",
+        "input_summary": input_summary,
+        "turn_id": getattr(task_state, "task_id", "") or "",
+        "parent_checkpoint": current_recovery_checkpoint_id(agent.session),
+    }, None
+
+
+def _begin_tool_change(prepared, lifecycle):
+    if not prepared["records_tool_change"]:
+        return None
+    agent = prepared["agent"]
+    try:
+        tool_reviews = agent.tool_change_recorder.pending_recovery_reviews()
+        restore_reviews = agent.recovery_manager.pending_restore_reviews()
+    except (OSError, ValueError):
+        tool_reviews = ["invalid"]
+        restore_reviews = []
+    if tool_reviews or restore_reviews:
+        return ToolExecutionResult(
+            content="error: recovery review required",
+            metadata=_metadata(
+                "rejected",
+                effect_class=prepared["effect_class"],
+                tool_error_code="recovery_review_required",
+                security_event_type="recovery_review_required",
+                risk_level="high",
+            ),
+        )
+
+    prepared_entries = []
+    recovery_context = {}
+    if prepared["records_recovery"]:
+        name = prepared["name"]
+        lifecycle["before_paths"] = _direct_tool_candidate_paths(
+            name,
+            prepared["args"],
+        )
+        if name == "run_shell":
+            observer = agent.workspace_observer.capture()
+            lifecycle["observer_before"] = observer
+            recovery_context = {
+                "observer_mode": str(observer.get("mode", "")),
+                "git_head": str(observer.get("head", "")),
+            }
+        else:
+            states = _capture_before_file_states_for_paths(
+                agent,
+                lifecycle["before_paths"],
+            )
+            lifecycle["before_file_states"] = states
+            lifecycle["before_snapshot"] = {
+                path: state["before_hash"]
+                for path, state in states.items()
+                if state.get("before_hash")
+            }
+            lifecycle["before_existed"] = set(states)
+            for raw_path in lifecycle["before_paths"]:
+                try:
+                    path = normalize_workspace_relative_path(raw_path)
+                except ValueError:
+                    continue
+                state = states.get(path, {})
+                prepared_entries.append(
+                    {
+                        "path": path,
+                        "before_exists": path in lifecycle["before_existed"],
+                        "before_blob_ref": state.get("before_blob_ref", ""),
+                        "before_hash": state.get("before_hash", ""),
+                        "before_mode": state.get("before_mode"),
+                    }
+                )
+    lifecycle["pending_record"] = agent.tool_change_recorder.start(
+        checkpoint_id=prepared["parent_checkpoint"],
+        turn_id=prepared["turn_id"],
+        tool_name=prepared["name"],
+        effect_class=prepared["effect_class"],
+        input_summary=prepared["input_summary"],
+        prepared_file_entries=prepared_entries,
+        recovery_context=recovery_context,
+    )
+    return None
+
+
+def _invoke_prepared_tool(prepared, execution):
+    agent = prepared["agent"]
+    if prepared["name"] != "run_shell":
+        raw_content = prepared["tool"]["run"](prepared["args"])
+        execution["runner_completed"] = True
+        execution["content"] = clip(agent.redact_text(raw_content))
+        return
+
+    shell_execution = prepared["shell_execution"]
+    approval = prepared["command_approval"]
+    approval["runner_executed"] = True
+    if (
+        shell_execution.execution_mode == "argv"
+        and shell_execution.argv[0] == "git"
+    ):
+        completed = run_hardened_git(
+            shell_execution.executable,
+            shell_execution.argv[1:],
+            cwd=agent.root,
+            timeout=shell_execution.timeout,
+            text=True,
+        )
+        raw_result = {
+            "stdout": completed.stdout,
+            "stderr": completed.stderr,
+            "exit_code": completed.returncode,
+        }
+    else:
+        raw_result = prepared["tool"]["run"](shell_execution)
+    shell_result = _structured_shell_result(agent, raw_result)
+    execution["shell_result"] = shell_result
+    execution["runner_completed"] = True
+    approval["exit_code"] = shell_result["exit_code"]
+    execution["verification_evidence"] = verification_evidence_for_execution(
+        argv=shell_execution.argv,
+        risk_class=prepared["command_risk"],
+        runner_executed=approval["runner_executed"],
+        execution_mode=shell_execution.execution_mode,
+        exit_code=shell_result["exit_code"],
+        stdout=shell_result["stdout"],
+        stderr=shell_result["stderr"],
+        redact_text=agent.redact_text,
+    )
+    execution["content"] = clip(_format_shell_result(shell_result))
+
+
+def _observe_tool_effects(prepared, lifecycle):
+    agent = prepared["agent"]
+    if (
+        prepared["records_recovery"]
+        and prepared["name"] == "run_shell"
+        and lifecycle["observer_before"] is not None
+    ):
+        observer_before = lifecycle["observer_before"]
+        observer_after = agent.workspace_observer.capture()
+        delta = agent.workspace_observer.diff(
+            observer_before,
+            observer_after,
+        )
+        paths = list(delta.get("changed_paths", []))
+        before_existed = _paths_present_in_observer(
+            observer_before,
+            paths,
+        )
+        head_paths = [path for path in paths if path not in before_existed]
+        states = _fill_git_head_before_file_states(
+            agent,
+            head_paths,
+            lifecycle["before_file_states"],
+        )
+        before_existed.update(states)
+        lifecycle["before_file_states"] = states
+        lifecycle["before_existed"] = before_existed
+        lifecycle["before_snapshot"] = _merge_before_snapshot({}, states)
+        summaries = _summaries_for_paths(agent, paths, before_existed)
+        return {
+            "affected_paths": paths,
+            "diff_summary": summaries,
+            "workspace_changed": bool(paths),
+            "shell_side_effects": summaries,
+        }
+    if prepared["records_recovery"]:
+        after = _capture_path_snapshot(agent, lifecycle["before_paths"])
+        paths, summaries = agent.diff_workspace_snapshots(
+            lifecycle["before_snapshot"],
+            after,
+        )
+        return {
+            "affected_paths": paths,
+            "diff_summary": summaries,
+            "workspace_changed": bool(paths),
+            "shell_side_effects": [],
+        }
+    return {
+        "affected_paths": [],
+        "diff_summary": [],
+        "workspace_changed": False,
+        "shell_side_effects": [],
+    }
+
+
+def _finish_tool_success(prepared, lifecycle, execution, effects):
+    agent = prepared["agent"]
+    agent.update_memory_after_tool(
+        prepared["name"], prepared["args"], execution["content"]
+    )
+    tool_status = "ok"
+    tool_error_code = ""
+    if prepared["name"] == "run_shell":
+        exit_code = execution["shell_result"]["exit_code"]
+        if exit_code != 0 and effects["workspace_changed"]:
+            tool_status = "partial_success"
+            tool_error_code = "tool_partial_success"
+        elif exit_code != 0:
+            tool_status = "error"
+            tool_error_code = "tool_failed"
+    metadata = _finalize_tool_side_effects(
+        agent=agent,
+        name=prepared["name"],
+        args=prepared["args"],
+        pending_record=lifecycle["pending_record"],
+        affected_paths=effects["affected_paths"],
+        before_snapshot=lifecycle["before_snapshot"],
+        before_file_states=lifecycle["before_file_states"],
+        before_existed=lifecycle["before_existed"],
+        tool_status=tool_status,
+        tool_error_code=tool_error_code,
+        security_event_type="",
+        risk_level="high" if prepared["tool"]["risky"] else "low",
+        effect_class=prepared["effect_class"],
+        workspace_changed=effects["workspace_changed"],
+        diff_summary=effects["diff_summary"],
+        shell_side_effects=effects["shell_side_effects"],
+        command_risk=prepared["command_risk"],
+        command_approval=prepared["command_approval"],
+        content=execution["content"],
+    )
+    evidence = execution["verification_evidence"]
+    if evidence is not None:
+        metadata["verification_evidence"] = evidence
+    return ToolExecutionResult(content=execution["content"], metadata=metadata)
+
+
+def _finish_tool_failure(prepared, lifecycle, execution, effects, exc):
+    agent = prepared["agent"]
+    safe_error = agent.redact_text(str(exc))
+    security_event = (
+        "path_escape" if "path escapes workspace" in str(exc) else ""
+    )
+    pending = lifecycle["pending_record"]
+    if execution["runner_completed"] and pending is not None:
+        metadata = _metadata(
+            "error",
+            tool_error_code="tool_finalize_failed",
+            security_event_type=security_event,
+            risk_level="high",
+            effect_class=prepared["effect_class"],
+            affected_paths=effects["affected_paths"],
+            workspace_changed=effects["workspace_changed"],
+            diff_summary=effects["diff_summary"],
+        )
+        metadata["tool_change_id"] = pending["tool_change_id"]
+        return ToolExecutionResult(
+            content=(
+                f"error: tool {prepared['name']} failed after execution: "
+                f"{safe_error}"
+            ),
+            metadata=metadata,
+        )
+
+    changed = effects["workspace_changed"]
+    status = "partial_success" if changed else "error"
+    error_code = "tool_partial_success" if changed else "tool_failed"
+    metadata = _finalize_tool_side_effects(
+        agent=agent,
+        name=prepared["name"],
+        args=prepared["args"],
+        pending_record=pending,
+        affected_paths=effects["affected_paths"],
+        before_snapshot=lifecycle["before_snapshot"],
+        before_file_states=lifecycle["before_file_states"],
+        before_existed=lifecycle["before_existed"],
+        tool_status=status,
+        tool_error_code=error_code,
+        security_event_type=security_event,
+        risk_level="high" if prepared["tool"]["risky"] else "low",
+        effect_class=prepared["effect_class"],
+        workspace_changed=changed,
+        diff_summary=effects["diff_summary"],
+        shell_side_effects=effects["shell_side_effects"],
+        command_risk=prepared["command_risk"],
+        command_approval=prepared["command_approval"],
+        content="",
+        error_message=safe_error,
+    )
+    evidence = execution["verification_evidence"]
+    if evidence is not None:
+        metadata["verification_evidence"] = evidence
+    return ToolExecutionResult(
+        content=f"error: tool {prepared['name']} failed: {safe_error}", metadata=metadata
+    )
+
+
+def _run_tool_lifecycle(prepared):
+    lifecycle = {
+        "pending_record": None,
+        "before_paths": [],
+        "before_snapshot": {},
+        "before_file_states": {},
+        "before_existed": set(),
+        "observer_before": None,
+    }
+    execution = {
+        "runner_completed": False,
+        "shell_result": None,
+        "verification_evidence": None,
+        "content": "",
+    }
+    empty_effects = {
+        "affected_paths": [],
+        "diff_summary": [],
+        "workspace_changed": False,
+        "shell_side_effects": [],
+    }
+    try:
+        try:
+            rejection = _begin_tool_change(prepared, lifecycle)
+        except Exception as exc:
+            safe_error = prepared["agent"].redact_text(str(exc))
+            metadata = _metadata(
+                "error",
+                effect_class=prepared["effect_class"],
+                tool_error_code="tool_failed",
+                risk_level=(
+                    "high" if prepared["tool"]["risky"] else "low"
+                ),
+            )
+            _add_command_policy(
+                metadata,
+                prepared["command_risk"],
+                prepared["command_approval"],
+            )
+            return ToolExecutionResult(
+                content=(
+                    f"error: tool {prepared['name']} failed: "
+                    f"{safe_error}"
+                ),
+                metadata=metadata,
+            )
+        if rejection is not None:
+            return rejection
+
+        effects = None
+        observation_attempted = False
+        try:
+            _invoke_prepared_tool(prepared, execution)
+            observation_attempted = True
+            effects = _observe_tool_effects(prepared, lifecycle)
+            return _finish_tool_success(
+                prepared,
+                lifecycle,
+                execution,
+                effects,
+            )
+        except Exception as exc:
+            if not observation_attempted:
+                observation_attempted = True
+                try:
+                    effects = _observe_tool_effects(prepared, lifecycle)
+                except Exception:
+                    effects = None
+            return _finish_tool_failure(
+                prepared,
+                lifecycle,
+                execution,
+                effects or empty_effects,
+                exc,
+            )
+    except BaseException as primary:
+        if not isinstance(primary, Exception):
+            _finalize_interrupted_pending(
+                prepared["agent"],
+                lifecycle["pending_record"],
+                (
+                    prepared["command_approval"]
+                    if prepared["name"] == "run_shell"
+                    else None
+                ),
+            )
+        raise
+
+
+def _exit_mutation_context(mutation_context, primary):
+    if primary is None:
+        mutation_context.__exit__(None, None, None)
+        return
+    try:
+        mutation_context.__exit__(
+            type(primary),
+            primary,
+            primary.__traceback__,
+        )
+    except BaseException:
+        pass
+
+
 class ToolExecutor:
     def __init__(self, agent):
         self.agent = agent
 
     def execute(self, name, args):
-        agent = self.agent
-        tool = agent.tools.get(name)
-        if tool is None and name not in _EFFECT_CLASS_BY_TOOL:
-            effect_class = "workspace_write"
-        else:
-            effect_class = _effect_class(name, bool(tool and tool["risky"]))
+        prepared, rejection = _prepare_tool_request(self.agent, name, args)
+        if rejection is not None:
+            return rejection
+        if not prepared["records_tool_change"]:
+            return _run_tool_lifecycle(prepared)
 
-        command_assessment = None
-        if name == "run_shell":
-            assessment_args = args if isinstance(args, Mapping) else {}
-            command_assessment = assess_command(
-                str(assessment_args.get("command", "")),
-                agent.root,
-            )
-            if command_assessment["decision"] == "reject":
-                sensitive = command_assessment["reason"] == "sensitive_path"
-                return _shell_rejection(
-                    assessment=command_assessment,
-                    mode=agent.approval_policy,
-                    outcome="blocked",
-                    effect_class=effect_class,
-                    tool_error_code=(
-                        "sensitive_path_block" if sensitive else "command_rejected"
-                    ),
-                    content=(
-                        "error: sensitive_path_block"
-                        if sensitive
-                        else "error: command policy rejected run_shell"
-                    ),
-                    security_event_type=(
-                        "sensitive_access_block" if sensitive else "command_rejected"
-                    ),
-                )
-
-        if agent.allowed_tools is not None and name not in agent.allowed_tools:
-            rejection = ToolExecutionResult(
-                content=f"error: tool '{name}' is not allowed in this run",
-                metadata=_metadata(
-                    "rejected",
-                    effect_class=effect_class,
-                    tool_error_code="tool_not_allowed",
-                    risk_level="high",
-                ),
-            )
-            return (
-                _add_initial_shell_policy(
-                    rejection,
-                    command_assessment,
-                    agent.approval_policy,
-                )
-                if command_assessment is not None
-                else rejection
-            )
-
-        if tool is None:
-            rejection = ToolExecutionResult(
-                content=f"error: unknown tool '{name}'",
-                metadata=_metadata(
-                    "rejected",
-                    effect_class=effect_class,
-                    tool_error_code="unknown_tool",
-                    risk_level="high",
-                ),
-            )
-            return (
-                _add_initial_shell_policy(
-                    rejection,
-                    command_assessment,
-                    agent.approval_policy,
-                )
-                if command_assessment is not None
-                else rejection
-            )
-
-        shell_execution = None
-        command_risk = ""
-        command_approval = {}
-        if command_assessment is not None:
-            command_risk = command_assessment["risk_class"]
-            shell_execution, command_approval, rejection = (
-                _prepare_shell_execution(
-                    agent,
-                    tool,
-                    args,
-                    effect_class,
-                    command_assessment,
-                )
-            )
-            if rejection is not None:
-                return rejection
-        else:
-            if agent.read_only and effect_class != "read_only":
-                return ToolExecutionResult(
-                    content=f"error: read-only mode blocks {name}",
-                    metadata=_metadata(
-                        "rejected",
-                        effect_class=effect_class,
-                        tool_error_code="read_only_block",
-                        security_event_type="read_only_block",
-                        risk_level="high",
-                    ),
-                )
-
-            rejection = _validation_rejection(
-                agent,
-                tool,
-                name,
-                args,
-                effect_class,
-            )
-            if rejection is not None:
-                return rejection
-
-            if agent.repeated_tool_call(name, args):
-                return ToolExecutionResult(
-                    content=f"error: repeated identical tool call for {name}; choose a different tool or return a final answer",
-                    metadata=_metadata(
-                        "rejected",
-                        effect_class=effect_class,
-                        tool_error_code="repeated_identical_call",
-                        risk_level="high" if tool["risky"] else "low",
-                    ),
-                )
-
-            if tool["risky"]:
-                approval_args_snapshot = deepcopy(args)
-                approval_args = deepcopy(approval_args_snapshot)
-                if not agent.approve(name, approval_args):
-                    return ToolExecutionResult(
-                        content=f"error: approval denied for {name}",
-                        metadata=_metadata(
-                            "rejected",
-                            effect_class=effect_class,
-                            tool_error_code="approval_denied",
-                            security_event_type=(
-                                "read_only_block"
-                                if agent.read_only
-                                else "approval_denied"
-                            ),
-                            risk_level="high",
-                        ),
-                    )
-
-                rejection = _validation_rejection(
-                    agent,
-                    tool,
-                    name,
-                    args,
-                    effect_class,
-                )
-                if rejection is not None:
-                    return rejection
-
-                if (
-                    args != approval_args_snapshot
-                    or approval_args != approval_args_snapshot
-                ):
-                    return ToolExecutionResult(
-                        content=f"error: approved arguments changed for {name}",
-                        metadata=_metadata(
-                            "rejected",
-                            effect_class=effect_class,
-                            tool_error_code="approval_arguments_changed",
-                            security_event_type="approval_arguments_changed",
-                            risk_level="high",
-                        ),
-                    )
-
-        # 到这里我们准备真的跑工具，可以开一条 pending 记录。
-        turn_id = getattr(getattr(agent, "current_task_state", None), "task_id", "") or ""
-        parent_checkpoint = current_recovery_checkpoint_id(agent.session)
-        records_tool_change = effect_class in {"memory_write", "workspace_write"}
-        records_recovery = effect_class == "workspace_write"
-        mutation_context = None
-        pending_record = None
-        input_summary = None
-        if records_tool_change:
-            input_summary = _summarize_input(
-                agent.redact_artifact(deepcopy(args))
-            )
-            if command_assessment is not None:
-                input_summary["assessment"] = agent.redact_artifact(
-                    command_assessment
-                )
-        if records_tool_change:
-            mutation_context = agent.checkpoint_store.mutation_lock()
-            mutation_context.__enter__()
-            try:
-                tool_reviews = (
-                    agent.tool_change_recorder.pending_recovery_reviews()
-                )
-                restore_reviews = agent.recovery_manager.pending_restore_reviews()
-            except (OSError, ValueError):
-                tool_reviews = ["invalid"]
-                restore_reviews = []
-            except BaseException:
-                mutation_context.__exit__(None, None, None)
-                mutation_context = None
-                raise
-            if tool_reviews or restore_reviews:
-                mutation_context.__exit__(None, None, None)
-                mutation_context = None
-                return ToolExecutionResult(
-                    content="error: recovery review required",
-                    metadata=_metadata(
-                        "rejected",
-                        effect_class=effect_class,
-                        tool_error_code="recovery_review_required",
-                        security_event_type="recovery_review_required",
-                        risk_level="high",
-                    ),
-                )
-        before_paths = []
-        before_snapshot = {}
-        before_file_states = {}
-        before_existed = set()
-        observer_before = None
-        verification_evidence = None
-        runner_completed = False
+        mutation_context = self.agent.checkpoint_store.mutation_lock()
+        mutation_context.__enter__()
+        primary = None
         try:
-            prepared_file_entries = []
-            recovery_context = {}
-            if records_recovery:
-                before_paths = _direct_tool_candidate_paths(name, args)
-            if records_recovery and name != "run_shell":
-                before_file_states = _capture_before_file_states_for_paths(
-                    agent, before_paths
-                )
-                before_snapshot = {
-                    path: state["before_hash"]
-                    for path, state in before_file_states.items()
-                    if state.get("before_hash")
-                }
-                before_existed = set(before_file_states)
-                for raw_path in before_paths:
-                    try:
-                        normalized = normalize_workspace_relative_path(raw_path)
-                    except ValueError:
-                        continue
-                    state = before_file_states.get(normalized, {})
-                    prepared_file_entries.append(
-                        {
-                            "path": normalized,
-                            "before_exists": normalized in before_existed,
-                            "before_blob_ref": state.get("before_blob_ref", ""),
-                            "before_hash": state.get("before_hash", ""),
-                            "before_mode": state.get("before_mode"),
-                        }
-                    )
-            elif records_recovery and name == "run_shell":
-                observer_before = agent.workspace_observer.capture()
-                recovery_context = {
-                    "observer_mode": str(observer_before.get("mode", "")),
-                    "git_head": str(observer_before.get("head", "")),
-                }
-            if records_tool_change:
-                pending_record = agent.tool_change_recorder.start(
-                    checkpoint_id=parent_checkpoint,
-                    turn_id=turn_id,
-                    tool_name=name,
-                    effect_class=effect_class,
-                    input_summary=input_summary,
-                    prepared_file_entries=prepared_file_entries,
-                    recovery_context=recovery_context,
-                )
-        except (KeyboardInterrupt, SystemExit):
-            if mutation_context is not None:
-                mutation_context.__exit__(None, None, None)
-                mutation_context = None
+            return _run_tool_lifecycle(prepared)
+        except BaseException as exc:
+            primary = exc
             raise
-        except Exception as exc:
-            if mutation_context is not None:
-                mutation_context.__exit__(None, None, None)
-                mutation_context = None
-            safe_error_message = agent.redact_text(str(exc))
-            metadata = _metadata(
-                "error",
-                effect_class=effect_class,
-                tool_error_code="tool_failed",
-                risk_level="high" if tool["risky"] else "low",
-            )
-            _add_command_policy(metadata, command_risk, command_approval)
-            return ToolExecutionResult(
-                content=f"error: tool {name} failed: {safe_error_message}",
-                metadata=metadata,
-            )
-        except BaseException:
-            if mutation_context is not None:
-                mutation_context.__exit__(None, None, None)
-                mutation_context = None
-            raise
-
-        try:
-            shell_result = None
-            if name == "run_shell":
-                command_approval["runner_executed"] = True
-                if (
-                    shell_execution.execution_mode == "argv"
-                    and shell_execution.argv[0] == "git"
-                ):
-                    completed = run_hardened_git(
-                        shell_execution.executable,
-                        shell_execution.argv[1:],
-                        cwd=agent.root,
-                        timeout=shell_execution.timeout,
-                        text=True,
-                    )
-                    raw_result = {
-                        "stdout": completed.stdout,
-                        "stderr": completed.stderr,
-                        "exit_code": completed.returncode,
-                    }
-                else:
-                    raw_result = tool["run"](shell_execution)
-                shell_result = _structured_shell_result(agent, raw_result)
-                runner_completed = True
-                command_approval["exit_code"] = shell_result["exit_code"]
-                verification_evidence = verification_evidence_for_execution(
-                    argv=shell_execution.argv,
-                    risk_class=command_risk,
-                    runner_executed=command_approval["runner_executed"],
-                    execution_mode=shell_execution.execution_mode,
-                    exit_code=shell_result["exit_code"],
-                    stdout=shell_result["stdout"],
-                    stderr=shell_result["stderr"],
-                    redact_text=agent.redact_text,
-                )
-                content = clip(_format_shell_result(shell_result))
-            else:
-                raw_content = tool["run"](args)
-                runner_completed = True
-                content = clip(agent.redact_text(raw_content))
-            shell_side_effects = []
-            if records_recovery and name == "run_shell" and observer_before is not None:
-                observer_after = agent.workspace_observer.capture()
-                delta = agent.workspace_observer.diff(observer_before, observer_after)
-                affected_paths = list(delta.get("changed_paths", []))
-                shell_side_effects = list(delta.get("summaries", []))
-                diff_summary = shell_side_effects
-                # 存在性来自 observer；HEAD 只对 observer 看不到（=clean tracked）的路径可靠。
-                before_existed = _paths_present_in_observer(observer_before, affected_paths)
-                dirty_before = set(before_existed)
-                head_candidates = [p for p in affected_paths if p not in dirty_before]
-                before_file_states = _fill_git_head_before_file_states(
-                    agent, head_candidates, before_file_states
-                )
-                # HEAD fallback 覆盖 clean tracked file 的存在性；命中即视为“执行前存在”。
-                for path in before_file_states.keys():
-                    before_existed.add(path)
-                before_snapshot = _merge_before_snapshot({}, before_file_states)
-                shell_side_effects = _summaries_for_paths(agent, affected_paths, before_existed)
-                diff_summary = shell_side_effects
-                workspace_changed = bool(affected_paths)
-            elif records_recovery:
-                after_snapshot = _capture_path_snapshot(agent, before_paths)
-                affected_paths, diff_summary = agent.diff_workspace_snapshots(before_snapshot, after_snapshot)
-                workspace_changed = bool(affected_paths)
-            else:
-                affected_paths = []
-                diff_summary = []
-                workspace_changed = False
-
-            tool_status = "ok"
-            tool_error_code = ""
-            if name == "run_shell":
-                exit_code = shell_result["exit_code"]
-                if exit_code != 0 and workspace_changed:
-                    tool_status = "partial_success"
-                    tool_error_code = "tool_partial_success"
-                elif exit_code != 0:
-                    tool_status = "error"
-                    tool_error_code = "tool_failed"
-
-            agent.update_memory_after_tool(name, args, content)
-            metadata = _finalize_tool_side_effects(
-                agent=agent,
-                name=name,
-                args=args,
-                pending_record=pending_record,
-                affected_paths=affected_paths,
-                before_snapshot=before_snapshot,
-                before_file_states=before_file_states,
-                before_existed=before_existed,
-                tool_status=tool_status,
-                tool_error_code=tool_error_code,
-                security_event_type="",
-                risk_level="high" if tool["risky"] else "low",
-                effect_class=effect_class,
-                workspace_changed=workspace_changed,
-                diff_summary=diff_summary,
-                shell_side_effects=shell_side_effects if name == "run_shell" else [],
-                command_risk=command_risk,
-                command_approval=command_approval,
-                content=content,
-            )
-            if verification_evidence is not None:
-                metadata["verification_evidence"] = verification_evidence
-            return ToolExecutionResult(content=content, metadata=metadata)
-        except KeyboardInterrupt:
-            _finalize_interrupted_pending(
-                agent,
-                pending_record,
-                command_approval if name == "run_shell" else None,
-            )
-            raise
-        except Exception as exc:
-            safe_error_message = agent.redact_text(str(exc))
-            shell_side_effects = []
-            if records_recovery and name == "run_shell" and observer_before is not None:
-                try:
-                    observer_after = agent.workspace_observer.capture()
-                    delta = agent.workspace_observer.diff(observer_before, observer_after)
-                    affected_paths = list(delta.get("changed_paths", []))
-                    shell_side_effects = list(delta.get("summaries", []))
-                    diff_summary = shell_side_effects
-                    before_existed = _paths_present_in_observer(observer_before, affected_paths)
-                    dirty_before = set(before_existed)
-                    head_candidates = [p for p in affected_paths if p not in dirty_before]
-                    before_file_states = _fill_git_head_before_file_states(
-                        agent, head_candidates, before_file_states
-                    )
-                    for path in before_file_states.keys():
-                        before_existed.add(path)
-                    before_snapshot = _merge_before_snapshot({}, before_file_states)
-                    shell_side_effects = _summaries_for_paths(agent, affected_paths, before_existed)
-                    diff_summary = shell_side_effects
-                    workspace_changed = bool(affected_paths)
-                except Exception:  # pragma: no cover - defensive
-                    affected_paths = []
-                    diff_summary = []
-                    workspace_changed = False
-                    shell_side_effects = []
-            elif records_recovery:
-                after_snapshot = _capture_path_snapshot(agent, before_paths)
-                affected_paths, diff_summary = agent.diff_workspace_snapshots(before_snapshot, after_snapshot)
-                workspace_changed = bool(affected_paths)
-            else:
-                affected_paths = []
-                diff_summary = []
-                workspace_changed = False
-            security_event_type = "path_escape" if "path escapes workspace" in str(exc) else ""
-            if runner_completed and pending_record is not None:
-                metadata = _metadata(
-                    "error",
-                    tool_error_code="tool_finalize_failed",
-                    security_event_type=security_event_type,
-                    risk_level="high",
-                    effect_class=effect_class,
-                    affected_paths=affected_paths,
-                    workspace_changed=workspace_changed,
-                    diff_summary=diff_summary,
-                )
-                metadata["tool_change_id"] = pending_record[
-                    "tool_change_id"
-                ]
-                return ToolExecutionResult(
-                    content=(
-                        f"error: tool {name} failed after execution: "
-                        + safe_error_message
-                    ),
-                    metadata=metadata,
-                )
-            tool_status = "partial_success" if workspace_changed else "error"
-            tool_error_code = "tool_partial_success" if workspace_changed else "tool_failed"
-            metadata = _finalize_tool_side_effects(
-                agent=agent,
-                name=name,
-                args=args,
-                pending_record=pending_record,
-                affected_paths=affected_paths,
-                before_snapshot=before_snapshot,
-                before_file_states=before_file_states,
-                before_existed=before_existed,
-                tool_status=tool_status,
-                tool_error_code=tool_error_code,
-                security_event_type=security_event_type,
-                risk_level="high" if tool["risky"] else "low",
-                effect_class=effect_class,
-                workspace_changed=workspace_changed,
-                diff_summary=diff_summary,
-                shell_side_effects=shell_side_effects if name == "run_shell" else [],
-                command_risk=command_risk,
-                command_approval=command_approval,
-                content="",
-                error_message=safe_error_message,
-            )
-            if verification_evidence is not None:
-                metadata["verification_evidence"] = verification_evidence
-            return ToolExecutionResult(
-                content=f"error: tool {name} failed: {safe_error_message}",
-                metadata=metadata,
-            )
         finally:
-            if mutation_context is not None:
-                mutation_context.__exit__(None, None, None)
+            _exit_mutation_context(mutation_context, primary)
 
 
 def _add_command_policy(metadata, command_risk, command_approval):
@@ -953,7 +1052,7 @@ def _finalize_interrupted_pending(agent, pending_record, command_approval=None):
                 status="interrupted",
                 approval=command_approval or None,
             )
-    except Exception:
+    except BaseException:
         pass
 
 

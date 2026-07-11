@@ -158,6 +158,51 @@ class FatalLockSignal(BaseException):
     pass
 
 
+def test_mutation_lock_exit_preserves_active_primary_but_raises_without_one(
+    tmp_path,
+    monkeypatch,
+):
+    class FailingExit:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc_info):
+            raise OSError("lock exit failed")
+
+    primary_root = tmp_path / "primary"
+    primary_root.mkdir()
+    primary_agent = build_agent(primary_root)
+    primary = FatalLockSignal("runner failed")
+    primary_agent.tools["write_file"]["run"] = Mock(side_effect=primary)
+    monkeypatch.setattr(
+        primary_agent.checkpoint_store,
+        "mutation_lock",
+        lambda: FailingExit(),
+    )
+
+    with pytest.raises(FatalLockSignal) as caught:
+        primary_agent.execute_tool(
+            "write_file", {"path": "note.txt", "content": "value"}
+        )
+
+    assert caught.value is primary
+    assert primary_agent.checkpoint_store.list_tool_change_records()[-1]["status"] == "interrupted"
+
+    success_root = tmp_path / "success"
+    success_root.mkdir()
+    success_agent = build_agent(success_root)
+    monkeypatch.setattr(
+        success_agent.checkpoint_store,
+        "mutation_lock",
+        lambda: FailingExit(),
+    )
+
+    with pytest.raises(OSError, match="lock exit failed"):
+        success_agent.execute_tool(
+            "write_file", {"path": "note.txt", "content": "value"}
+        )
+
+
 def test_mutation_lock_enter_failure_preserves_primary_identity(tmp_path, monkeypatch):
     agent = build_agent(tmp_path)
     primary = FatalLockSignal("enter")

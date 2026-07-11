@@ -303,6 +303,126 @@ def test_post_runner_interrupt_closes_memory_audit_then_reraises(tmp_path, monke
     assert records[-1]["status"] == "interrupted"
 
 
+class FatalToolSignal(BaseException):
+    pass
+
+
+def test_post_pending_system_exit_closes_change_and_preserves_primary(tmp_path):
+    agent = build_agent(tmp_path)
+    primary = SystemExit("runner stopped")
+    agent.tools["write_file"]["run"] = Mock(side_effect=primary)
+
+    with pytest.raises(SystemExit) as caught:
+        agent.execute_tool("write_file", {"path": "x.txt", "content": "x"})
+
+    assert caught.value is primary
+    assert agent.checkpoint_store.list_tool_change_records()[-1]["status"] == "interrupted"
+
+
+def test_post_pending_custom_base_exception_closes_change_and_preserves_primary(tmp_path):
+    agent = build_agent(tmp_path)
+    primary = FatalToolSignal("runner stopped")
+    agent.tools["write_file"]["run"] = Mock(side_effect=primary)
+
+    with pytest.raises(FatalToolSignal) as caught:
+        agent.execute_tool("write_file", {"path": "x.txt", "content": "x"})
+
+    assert caught.value is primary
+    assert agent.checkpoint_store.list_tool_change_records()[-1]["status"] == "interrupted"
+
+
+def test_post_pending_observer_base_exception_closes_change_and_preserves_primary(
+    tmp_path,
+    monkeypatch,
+):
+    agent = build_agent(tmp_path)
+    primary = FatalToolSignal("observer stopped")
+    original_capture = agent.workspace_observer.capture
+    captures = 0
+
+    def fail_after_runner():
+        nonlocal captures
+        captures += 1
+        if captures == 2:
+            raise primary
+        return original_capture()
+
+    agent.tools["run_shell"]["run"] = Mock(
+        return_value={"stdout": "ok\n", "stderr": "", "exit_code": 0}
+    )
+    monkeypatch.setattr(agent.workspace_observer, "capture", fail_after_runner)
+
+    with pytest.raises(FatalToolSignal) as caught:
+        agent.execute_tool("run_shell", {"command": "pwd", "timeout": 5})
+
+    assert caught.value is primary
+    assert agent.checkpoint_store.list_tool_change_records()[-1]["status"] == "interrupted"
+
+
+def test_post_pending_verification_base_exception_closes_change_and_preserves_primary(
+    tmp_path,
+    monkeypatch,
+):
+    agent = build_agent(tmp_path)
+    primary = FatalToolSignal("verification stopped")
+    agent.tools["run_shell"]["run"] = Mock(
+        return_value={"stdout": "ok\n", "stderr": "", "exit_code": 0}
+    )
+    monkeypatch.setattr(
+        "pico.tool_executor.verification_evidence_for_execution",
+        Mock(side_effect=primary),
+    )
+
+    with pytest.raises(FatalToolSignal) as caught:
+        agent.execute_tool("run_shell", {"command": "pwd", "timeout": 5})
+
+    assert caught.value is primary
+    assert agent.checkpoint_store.list_tool_change_records()[-1]["status"] == "interrupted"
+
+
+def test_post_pending_memory_update_base_exception_closes_change_and_preserves_primary(
+    tmp_path,
+    monkeypatch,
+):
+    agent = build_agent(tmp_path)
+    primary = FatalToolSignal("memory update stopped")
+    agent.tools["memory_save"]["run"] = Mock(return_value="saved")
+    monkeypatch.setattr(agent, "update_memory_after_tool", Mock(side_effect=primary))
+
+    with pytest.raises(FatalToolSignal) as caught:
+        agent.execute_tool("memory_save", {"note": "remember this"})
+
+    assert caught.value is primary
+    record = agent.checkpoint_store.list_tool_change_records()[-1]
+    assert record["effect_class"] == "memory_write"
+    assert record["status"] == "interrupted"
+
+
+def test_effect_observation_is_not_repeated_after_memory_update_failure(
+    tmp_path,
+    monkeypatch,
+):
+    agent = build_agent(tmp_path)
+    capture = Mock(wraps=agent.workspace_observer.capture)
+    agent.tools["run_shell"]["run"] = Mock(
+        return_value={"stdout": "ok\n", "stderr": "", "exit_code": 0}
+    )
+    monkeypatch.setattr(agent.workspace_observer, "capture", capture)
+    monkeypatch.setattr(
+        agent,
+        "update_memory_after_tool",
+        Mock(side_effect=OSError("memory update failed")),
+    )
+
+    result = agent.execute_tool(
+        "run_shell",
+        {"command": "pwd", "timeout": 5},
+    )
+
+    assert result.metadata["tool_error_code"] == "tool_finalize_failed"
+    assert capture.call_count == 2  # one before-state and one after-state read
+
+
 def test_recorder_start_persisted_then_raised_leaves_review_evidence(tmp_path, monkeypatch):
     agent = build_agent(tmp_path)
     real_start = agent.tool_change_recorder.start
