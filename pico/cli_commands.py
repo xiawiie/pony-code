@@ -54,7 +54,7 @@ Available Commands:
   sessions     Session inspection
   session      Session v3 invariant inspector
   checkpoints  Checkpoint recovery, pending review, and resolution
-  memory       Memory files inspection & migration
+  memory       Inspect and search memory files
   help         Help about any command
 
 Flags:

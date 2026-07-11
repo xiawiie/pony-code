@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 import pytest
@@ -370,6 +371,36 @@ def test_read_rejects_memory_symlink(target_kind, tmp_path):
 
     with pytest.raises((FileNotFoundError, ValueError)):
         store.read("workspace/notes/linked.md")
+
+
+@pytest.mark.parametrize(
+    "unsafe_kind",
+    ("symlink", "hardlink", "directory", "fifo"),
+)
+def test_read_rejects_unsafe_agent_notes_leaf(tmp_path, unsafe_kind):
+    workspace = tmp_path / "workspace"
+    user = tmp_path / "user"
+    workspace.mkdir()
+    user.mkdir()
+    outside = tmp_path / "outside-agent-notes.md"
+    outside.write_text("outside-canary", encoding="utf-8")
+    store = BlockStore(workspace_root=workspace, user_root=user)
+    agent_notes = workspace / "agent_notes.md"
+    if unsafe_kind == "symlink":
+        agent_notes.symlink_to(outside)
+    elif unsafe_kind == "hardlink":
+        os.link(outside, agent_notes)
+    elif unsafe_kind == "directory":
+        agent_notes.mkdir()
+    else:
+        if not hasattr(os, "mkfifo"):
+            pytest.skip("FIFO unavailable")
+        os.mkfifo(agent_notes)
+
+    with pytest.raises(ValueError, match="symlink|private|regular"):
+        store.read("workspace/agent_notes.md")
+
+    assert outside.read_text(encoding="utf-8") == "outside-canary"
 
 
 def test_relative_scope_roots_keep_existing_listing_behavior(tmp_path, monkeypatch):

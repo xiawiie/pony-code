@@ -1,9 +1,8 @@
-"""CLI `pico-cli memory {list, show, search, review, migrate}` 命令测试.
-
-用 `handle_memory` 直接调用（in-process），避免 subprocess 慢和环境依赖.
-"""
+"""CLI memory list/show/search/review command tests."""
 
 from types import SimpleNamespace
+
+import pytest
 
 
 def _args(cwd, fmt="text"):
@@ -115,49 +114,58 @@ def test_memory_review_shows_content(tmp_path, capsys):
     assert "bcrypt rounds > 12" in out
 
 
-def test_memory_migrate_preview(tmp_path, capsys):
+@pytest.mark.parametrize("output_format", ("text", "json"))
+def test_memory_review_rejects_symlink_without_reading_canary(
+    tmp_path,
+    capsys,
+    output_format,
+):
+    from pico.cli import main
+    from pico.cli_errors import CLI_EXIT_CONFIG
+
+    canary = "memory-review-outside-canary"
+    outside = tmp_path.parent / f"{tmp_path.name}-outside-agent-notes"
+    outside.write_text(canary, encoding="utf-8")
+    memory_root = tmp_path / ".pico" / "memory"
+    memory_root.mkdir(parents=True)
+    (memory_root / "agent_notes.md").symlink_to(outside)
+
+    code = main([
+        "--cwd",
+        str(tmp_path),
+        "--format",
+        output_format,
+        "memory",
+        "review",
+    ])
+
+    captured = capsys.readouterr()
+    assert code == CLI_EXIT_CONFIG
+    assert "agent notes could not be read safely" in captured.out + captured.err
+    assert canary not in captured.out + captured.err
+    assert str(outside) not in captured.out + captured.err
+    if output_format == "json":
+        import json
+
+        payload = json.loads(captured.out)
+        assert payload["error"]["code"] == "memory_unavailable"
+
+
+@pytest.mark.parametrize("tokens", (["migrate"], ["migrate", "--apply"]))
+def test_memory_migrate_is_not_a_command(tmp_path, tokens):
     from pico.cli_commands import handle_memory
-    topics = tmp_path / ".pico" / "memory" / "topics"
-    topics.mkdir(parents=True)
-    (topics / "project-conventions.md").write_text("- use uv\n")
-    rc = handle_memory(["migrate"], str(tmp_path), _args(tmp_path))
-    assert rc == 0
-    out = capsys.readouterr().out
-    assert "preview" in out.lower() or "would" in out.lower()
-    # preview 不应实际创建目标文件
-    assert not (tmp_path / ".pico" / "memory" / "notes" / "project-conventions.md").exists()
+    from pico.cli_errors import CliError
 
+    with pytest.raises(CliError) as raised:
+        handle_memory(tokens, str(tmp_path), _args(tmp_path))
 
-def test_memory_migrate_apply(tmp_path, capsys):
-    from pico.cli_commands import handle_memory
-    topics = tmp_path / ".pico" / "memory" / "topics"
-    topics.mkdir(parents=True)
-    (topics / "project-conventions.md").write_text("- use uv\n")
-    (topics / "dependency-facts.md").write_text("- Python 3.10+\n")
-    rc = handle_memory(["migrate", "--apply"], str(tmp_path), _args(tmp_path))
-    assert rc == 0
-    notes = tmp_path / ".pico" / "memory" / "notes"
-    assert (notes / "project-conventions.md").exists()
-    assert (notes / "dependency-facts.md").exists()
-    # 原文件加 .deprecated 后缀
-    assert (topics / "project-conventions.md.deprecated").exists()
-    # 原文件已重命名, 不再存在于原路径
-    assert not (topics / "project-conventions.md").exists()
-
-
-def test_memory_migrate_no_legacy(tmp_path, capsys):
-    from pico.cli_commands import handle_memory
-    (tmp_path / ".pico" / "memory").mkdir(parents=True)
-    rc = handle_memory(["migrate"], str(tmp_path), _args(tmp_path))
-    assert rc == 0
-    out = capsys.readouterr().out
-    assert "no legacy" in out.lower() or "no topics" in out.lower() or "nothing" in out.lower()
+    assert raised.value.code == "usage"
+    assert "migrate" not in raised.value.message
 
 
 def test_memory_unknown_subcommand(tmp_path):
     from pico.cli_commands import handle_memory
     from pico.cli_errors import CliError
-    import pytest
     with pytest.raises(CliError):
         handle_memory(["bogus"], str(tmp_path), _args(tmp_path))
 

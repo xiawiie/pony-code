@@ -280,14 +280,20 @@ class BlockStore:
 
     def read(self, rel_path: str) -> str:
         target = self._resolve(rel_path)
-        root = self.workspace_root if rel_path.startswith("workspace/") else self.user_root
-        target = _safe_index_file(root, target)
-        if target is None:
-            raise FileNotFoundError(rel_path)
+        agent_owned = _is_agent_owned_path(rel_path)
+        if not agent_owned:
+            root = (
+                self.workspace_root
+                if rel_path.startswith("workspace/")
+                else self.user_root
+            )
+            target = _safe_index_file(root, target)
+            if target is None:
+                raise FileNotFoundError(rel_path)
         data, _ = _read_bounded_regular(
             target,
             MAX_MEMORY_FILE_BYTES,
-            private=_is_agent_owned_path(rel_path),
+            private=agent_owned,
         )
         return data.decode("utf-8", errors="replace")
 
