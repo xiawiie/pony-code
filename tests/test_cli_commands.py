@@ -183,6 +183,11 @@ def test_init_creates_non_secret_project_env_without_building_agent(tmp_path, mo
 
     out = capsys.readouterr().out
     assert out.startswith("Pico init")
+    assert "Workspace" in out
+    assert str(tmp_path.resolve()) in out
+    assert "Project environment" in out
+    assert "repo_root_exact" in out
+    assert "loaded" in out
     assert "pico-cli config set-secret PICO_DEEPSEEK_API_KEY" in out
 
     code = main(["--cwd", str(tmp_path), "--format", "json", "config", "show"])
@@ -308,6 +313,11 @@ def test_config_set_secret_reads_stdin_and_writes_private_env(tmp_path, monkeypa
     assert read_project_env(tmp_path, warn=False)["PICO_DEEPSEEK_API_KEY"] == "sk-stdin-secret-123456789"
     captured = capsys.readouterr()
     assert "sk-stdin" not in captured.out + captured.err
+    assert "Workspace" in captured.out
+    assert str(tmp_path.resolve()) in captured.out
+    assert "Project environment" in captured.out
+    assert "repo_root_exact" in captured.out
+    assert "loaded" in captured.out
     if os.name == "posix":
         assert stat.S_IMODE((tmp_path / ".env").stat().st_mode) == 0o600
 
@@ -367,12 +377,15 @@ def test_init_writes_only_non_secret_configuration(tmp_path, monkeypatch):
     assert "PICO_DEEPSEEK_API_KEY" not in values
 
 
-def test_config_write_output_uses_canonical_env_path_without_workspace_path(tmp_path, monkeypatch, capsys):
-    marker = "sk-workspace-path-123456789"
-    root = tmp_path / marker
+def test_config_write_output_uses_canonical_project_env_metadata(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    root = tmp_path / "repo"
     root.mkdir()
 
-    code = main([
+    assert main([
         "--cwd",
         str(root),
         "--format",
@@ -380,15 +393,23 @@ def test_config_write_output_uses_canonical_env_path_without_workspace_path(tmp_
         "init",
         "--provider",
         "deepseek",
-    ])
+    ]) == 0
+    init_payload = json.loads(capsys.readouterr().out)["data"]
+    assert init_payload["workspace"] == {
+        "repo_root": str(root.resolve()),
+    }
+    assert init_payload["project_env"] == {
+        "path": str(root.resolve() / ".env"),
+        "scope": "repo_root_exact",
+        "status": "loaded",
+    }
+    assert "env_path" not in init_payload
 
-    assert code == 0
-    init_output = capsys.readouterr().out
-    assert json.loads(init_output)["data"]["env_path"] == ".env"
-    assert marker not in init_output
-
-    monkeypatch.setattr("sys.stdin", io.StringIO("sk-output-test-secret-123456789\n"))
-    code = main([
+    monkeypatch.setattr(
+        "sys.stdin",
+        io.StringIO("sk-output-test-secret-123456789\n"),
+    )
+    assert main([
         "--cwd",
         str(root),
         "--format",
@@ -397,12 +418,114 @@ def test_config_write_output_uses_canonical_env_path_without_workspace_path(tmp_
         "set-secret",
         "PICO_DEEPSEEK_API_KEY",
         "--stdin",
-    ])
+    ]) == 0
+    secret_payload = json.loads(capsys.readouterr().out)["data"]
+    assert secret_payload["workspace"] == {
+        "repo_root": str(root.resolve()),
+    }
+    assert secret_payload["project_env"] == {
+        "path": str(root.resolve() / ".env"),
+        "scope": "repo_root_exact",
+        "status": "loaded",
+    }
+    assert "env_path" not in secret_payload
 
-    assert code == 0
+
+def test_config_writes_redact_secret_shaped_workspace_in_project_env_path(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    marker = "sk-workspace-path-123456789"
+    root = tmp_path / marker
+    root.mkdir()
+
+    assert main([
+        "--cwd",
+        str(root),
+        "--format",
+        "json",
+        "init",
+        "--provider",
+        "deepseek",
+    ]) == 0
+    init_output = capsys.readouterr().out
+    init_data = json.loads(init_output)["data"]
+    assert set(init_data["workspace"]) == {"repo_root"}
+    assert init_data["project_env"]["scope"] == "repo_root_exact"
+    assert init_data["project_env"]["status"] == "loaded"
+    assert marker not in init_output
+
+    monkeypatch.setattr(
+        "sys.stdin",
+        io.StringIO("sk-output-test-secret-123456789\n"),
+    )
+    assert main([
+        "--cwd",
+        str(root),
+        "--format",
+        "json",
+        "config",
+        "set-secret",
+        "PICO_DEEPSEEK_API_KEY",
+        "--stdin",
+    ]) == 0
     secret_output = capsys.readouterr().out
-    assert json.loads(secret_output)["data"]["env_path"] == ".env"
+    secret_data = json.loads(secret_output)["data"]
+    assert set(secret_data["workspace"]) == {"repo_root"}
+    assert secret_data["project_env"]["scope"] == "repo_root_exact"
+    assert secret_data["project_env"]["status"] == "loaded"
     assert marker not in secret_output
+    assert "sk-output-test-secret" not in secret_output
+
+
+def test_config_writes_keep_review_required_for_preserved_invalid_line(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    marker = "sk-" + "preserved-invalid-line-123456789"
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        f"PICO_PROVIDER=deepseek\n{marker}\n",
+        encoding="utf-8",
+    )
+    env_path.chmod(0o600)
+
+    assert main([
+        "--cwd",
+        str(tmp_path),
+        "--format",
+        "json",
+        "init",
+        "--provider",
+        "deepseek",
+    ]) == 0
+    init_capture = capsys.readouterr()
+    init_data = json.loads(init_capture.out)["data"]
+    assert init_data["project_env"]["status"] == "review_required"
+    assert marker not in init_capture.out + init_capture.err
+
+    monkeypatch.setattr(
+        "sys.stdin",
+        io.StringIO("sk-output-test-secret-123456789\n"),
+    )
+    assert main([
+        "--cwd",
+        str(tmp_path),
+        "--format",
+        "json",
+        "config",
+        "set-secret",
+        "PICO_DEEPSEEK_API_KEY",
+        "--stdin",
+    ]) == 0
+    secret_capture = capsys.readouterr()
+    secret_data = json.loads(secret_capture.out)["data"]
+    assert secret_data["project_env"]["status"] == "review_required"
+    assert marker not in secret_capture.out + secret_capture.err
+    assert "sk-output-test-secret" not in secret_capture.out + secret_capture.err
+    assert marker in env_path.read_text(encoding="utf-8")
 
 
 def test_repl_help_renders_help_details(tmp_path, monkeypatch, capsys):

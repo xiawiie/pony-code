@@ -1,5 +1,8 @@
 import json
 import os
+import shutil
+import stat
+import subprocess
 from unittest.mock import Mock
 from urllib import error
 
@@ -7,7 +10,184 @@ import pytest
 
 import pico.cli_diagnostics as cli_diagnostics_module
 from pico.cli import main
-from pico.cli_diagnostics import check_provider_connectivity, collect_doctor
+from pico.cli_diagnostics import check_provider_connectivity, collect_config, collect_doctor
+
+
+def _run_git(cwd, *args):
+    return subprocess.run(
+        [shutil.which("git") or "git", *args],
+        cwd=cwd,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_config_show_reports_exact_project_env_path(tmp_path, capsys):
+    (tmp_path / ".env").write_text(
+        "PICO_PROVIDER=deepseek\n",
+        encoding="utf-8",
+    )
+    (tmp_path / ".env").chmod(0o600)
+
+    assert main([
+        "--cwd",
+        str(tmp_path),
+        "--format",
+        "json",
+        "config",
+        "show",
+    ]) == 0
+
+    payload = json.loads(capsys.readouterr().out)["data"]
+    assert payload["workspace"] == {"repo_root": str(tmp_path.resolve())}
+    assert payload["project_env"] == {
+        "path": str(tmp_path.resolve() / ".env"),
+        "scope": "repo_root_exact",
+        "status": "loaded",
+    }
+
+
+def test_doctor_reports_the_same_project_env_contract(tmp_path, capsys):
+    (tmp_path / ".env").write_text(
+        "PICO_PROVIDER=deepseek\n",
+        encoding="utf-8",
+    )
+    (tmp_path / ".env").chmod(0o600)
+
+    assert main([
+        "--cwd",
+        str(tmp_path),
+        "--format",
+        "json",
+        "doctor",
+        "--offline",
+    ]) == 0
+
+    payload = json.loads(capsys.readouterr().out)["data"]
+    assert payload["project_env"] == {
+        "path": str(tmp_path.resolve() / ".env"),
+        "scope": "repo_root_exact",
+        "status": "loaded",
+    }
+    assert payload["security"]["project_env"] == {
+        "status": "loaded",
+        "mode": "0600",
+    }
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX mode assertion")
+def test_config_show_preserves_permission_review_after_redactor(
+    tmp_path,
+    capsys,
+):
+    env_path = tmp_path / ".env"
+    env_path.write_text("PICO_PROVIDER=deepseek\n", encoding="utf-8")
+    env_path.chmod(0o644)
+
+    assert main([
+        "--cwd",
+        str(tmp_path),
+        "--format",
+        "json",
+        "config",
+        "show",
+    ]) == 0
+
+    project_env = json.loads(capsys.readouterr().out)["data"]["project_env"]
+    assert project_env["status"] == "review_required"
+    assert stat.S_IMODE(env_path.stat().st_mode) == 0o600
+
+
+def test_config_isolates_main_and_linked_worktree_env(tmp_path, monkeypatch):
+    if shutil.which("git") is None:
+        pytest.skip("git unavailable")
+
+    main_root = tmp_path / "main"
+    linked_root = tmp_path / "linked"
+    main_root.mkdir()
+    _run_git(main_root, "init", "-q")
+    _run_git(main_root, "config", "user.name", "Pico Test")
+    _run_git(main_root, "config", "user.email", "pico@example.invalid")
+    (main_root / "README.md").write_text("fixture\n", encoding="utf-8")
+    _run_git(main_root, "add", "README.md")
+    _run_git(main_root, "commit", "-qm", "fixture")
+    _run_git(
+        main_root,
+        "worktree",
+        "add",
+        "-q",
+        "-b",
+        "linked",
+        str(linked_root),
+    )
+
+    (main_root / ".env").write_text(
+        "PICO_PROVIDER=openai\n",
+        encoding="utf-8",
+    )
+    (main_root / ".env").chmod(0o600)
+    (linked_root / ".env").write_text(
+        "PICO_PROVIDER=deepseek\n",
+        encoding="utf-8",
+    )
+    (linked_root / ".env").chmod(0o600)
+    child = linked_root / "src"
+    child.mkdir()
+    monkeypatch.delenv("PICO_PROVIDER", raising=False)
+
+    main_data = collect_config(main_root)
+    linked_data = collect_config(child)
+
+    assert main_data["provider"]["value"] == "openai"
+    assert linked_data["provider"]["value"] == "deepseek"
+    assert main_data["project_env"]["path"] == str(main_root / ".env")
+    assert linked_data["project_env"]["path"] == str(linked_root / ".env")
+    assert main_data["project_env"]["path"] != linked_data["project_env"]["path"]
+
+    (linked_root / ".env").unlink()
+    missing = collect_config(child)
+    assert missing["project_env"]["status"] == "missing"
+    assert missing["provider"]["value"] != "openai"
+
+
+@pytest.mark.parametrize("unsafe_kind", ("symlink", "hardlink", "directory"))
+def test_config_show_marks_unsafe_project_env_for_review_without_canary(
+    tmp_path,
+    capsys,
+    unsafe_kind,
+):
+    canary = "project-env-outside-canary"
+    outside = tmp_path.parent / f"{tmp_path.name}-outside-env"
+    env_path = tmp_path / ".env"
+    if unsafe_kind == "directory":
+        env_path.mkdir()
+        (env_path / "canary").write_text(canary, encoding="utf-8")
+    else:
+        outside.write_text(
+            f"PICO_PROVIDER=deepseek\n{canary}\n",
+            encoding="utf-8",
+        )
+        if unsafe_kind == "symlink":
+            env_path.symlink_to(outside)
+        else:
+            os.link(outside, env_path)
+
+    assert main([
+        "--cwd",
+        str(tmp_path),
+        "--format",
+        "json",
+        "config",
+        "show",
+    ]) == 0
+
+    captured = capsys.readouterr()
+    metadata = json.loads(captured.out)["data"]["project_env"]
+    assert metadata["scope"] == "repo_root_exact"
+    assert metadata["status"] == "review_required"
+    assert canary not in captured.out + captured.err
+    assert str(outside) not in captured.out + captured.err
 
 
 def _clear_provider_env(monkeypatch):
@@ -57,7 +237,7 @@ def test_doctor_json_exposes_safe_security_contract(tmp_path, monkeypatch, capsy
     assert code == 0
     assert security == {
         "status": "ok",
-        "project_env": {"status": "ok", "mode": "0600"},
+        "project_env": {"status": "loaded", "mode": "0600"},
         "private_storage": {"status": "missing"},
         "trusted_executables": {"status": "ok", "missing": []},
         "recovery_review": {
@@ -178,6 +358,7 @@ def test_config_show_json_reports_sources_without_secret_values(tmp_path, monkey
         "PICO_PROVIDER=deepseek\nPICO_DEEPSEEK_API_KEY=secret-value\n",
         encoding="utf-8",
     )
+    (tmp_path / ".env").chmod(0o600)
 
     def fail_build_agent(args):
         raise AssertionError("config show must not build a Pico agent")
@@ -219,8 +400,21 @@ def test_config_show_skips_malformed_project_env_lines_with_warning(tmp_path, mo
     payload = json.loads(captured.out)
     assert payload["data"]["provider"]["value"] == "deepseek"
     assert payload["data"]["api_key"]["present"] is True
+    assert payload["data"]["project_env"]["status"] == "review_required"
     assert "warning: skipped invalid .env line 2" in captured.err
     assert "secret-value" not in captured.out
+
+    assert main([
+        "--cwd",
+        str(tmp_path),
+        "--format",
+        "json",
+        "doctor",
+        "--offline",
+    ]) == 0
+    doctor = json.loads(capsys.readouterr().out)["data"]
+    assert doctor["project_env"]["status"] == "review_required"
+    assert doctor["security"]["project_env"]["status"] == "review_required"
 
 
 def test_config_show_text_uses_grouped_cli_output_without_secret_value(tmp_path, monkeypatch, capsys):
@@ -229,12 +423,18 @@ def test_config_show_text_uses_grouped_cli_output_without_secret_value(tmp_path,
         "PICO_PROVIDER=deepseek\nPICO_DEEPSEEK_API_KEY=secret-value\n",
         encoding="utf-8",
     )
+    (tmp_path / ".env").chmod(0o600)
 
     code = main(["--cwd", str(tmp_path), "config", "show"])
 
     captured = capsys.readouterr()
     assert code == 0
     assert captured.out.startswith("Pico config — Effective configuration\n")
+    assert "Workspace" in captured.out
+    assert str(tmp_path.resolve()) in captured.out
+    assert "Project environment" in captured.out
+    assert "repo_root_exact" in captured.out
+    assert "loaded" in captured.out
     assert "Provider" in captured.out
     assert "Credentials" in captured.out
     assert "present" in captured.out
@@ -291,6 +491,11 @@ def test_collect_doctor_folds_unavailable_workspace_to_fixed_safe_shape(
     data = collect_doctor(cwd, offline=True)
 
     assert data["workspace"] == {"status": "review_required", "repo_root": ""}
+    assert data["project_env"] == {
+        "path": "",
+        "scope": "repo_root_exact",
+        "status": "review_required",
+    }
     assert data["security"] == {
         "status": "review_required",
         "project_env": {"status": "review_required", "mode": ""},
@@ -394,7 +599,7 @@ def test_doctor_security_metadata_has_only_safe_status_modes_and_missing_names(
     assert str(tmp_path) not in json.dumps(security)
     if os.name == "posix":
         assert security["project_env"] == {
-            "status": "ok",
+            "status": "review_required",
             "mode": "0600",
         }
         assert security["private_storage"] == {"status": "review_required"}
@@ -498,6 +703,10 @@ def test_doctor_text_uses_grouped_cli_output(tmp_path, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert out.startswith("Pico doctor — CLI health check\n")
     assert "Workspace" in out
+    assert str(tmp_path.resolve()) in out
+    assert "Project environment" in out
+    assert "repo_root_exact" in out
+    assert "missing" in out
     assert "Config" in out
     assert "Credentials" in out
     assert "Storage" in out

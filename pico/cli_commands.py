@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+from . import security as securitylib
 from .cli_errors import CLI_EXIT_CONFIG, CLI_EXIT_USAGE, CliError
 from .cli_diagnostics import _line
 from .cli_diagnostics import handle_config, handle_doctor, handle_status  # noqa: F401
@@ -11,8 +12,9 @@ from .cli_output import build_inspection_redactor, print_result
 from .cli_recovery import handle_checkpoints, handle_runs, handle_sessions  # noqa: F401
 from .cli_session import handle_session_command
 from .config import (
-    project_env_path,
+    project_env_metadata,
     read_project_env,
+    read_project_env_with_status,
     validate_provider_base_url,
     write_project_env_assignments,
 )
@@ -93,7 +95,6 @@ def handle_init(tokens, cwd, args):
     options = _parse_init_tokens(tokens)
     workspace = WorkspaceContext.build(cwd)
     root = Path(workspace.repo_root)
-    env_path = project_env_path(root)
     try:
         existing = read_project_env(root)
     except (OSError, ValueError) as exc:
@@ -142,8 +143,19 @@ def handle_init(tokens, cwd, args):
             message="project environment update failed",
             exit_code=CLI_EXIT_CONFIG,
         ) from exc
+    try:
+        _, project_env = read_project_env_with_status(root, warn=False)
+    except (OSError, RuntimeError, ValueError):
+        project_env = project_env_metadata(root, "review_required")
+    try:
+        redactor = build_inspection_redactor(root, args)
+    except (OSError, RuntimeError, ValueError):
+        redactor = securitylib.redact_artifact
+    workspace_info = redactor({"repo_root": str(root)})
+    project_env = redactor(project_env)
     data = {
-        "env_path": env_path.name,
+        "workspace": workspace_info,
+        "project_env": project_env,
         "provider": provider,
         "updated": written["updated"],
         "added": written["added"],
@@ -171,7 +183,14 @@ def _render_init(data):
     lines = [
         "Pico init — Project .env configured",
         "",
-        _line("env file", data["env_path"]),
+        "Workspace",
+        _line("repo root", data["workspace"]["repo_root"]),
+        "",
+        "Project environment",
+        _line("env file", data["project_env"]["path"]),
+        _line("env scope", data["project_env"]["scope"]),
+        _line("env status", data["project_env"]["status"]),
+        "",
         _line("provider", data["provider"]),
         _line("api key", api_key_text),
         _line("updated", ", ".join(changed) if changed else "-"),

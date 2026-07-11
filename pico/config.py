@@ -3,6 +3,7 @@
 import json
 import os
 import re
+import stat
 import sys
 import urllib.parse
 from pathlib import Path
@@ -97,6 +98,14 @@ def project_env_path(workspace_root):
     return Path(workspace_root).resolve() / ".env"
 
 
+def project_env_metadata(workspace_root, status):
+    return {
+        "path": str(project_env_path(workspace_root)),
+        "scope": "repo_root_exact",
+        "status": str(status),
+    }
+
+
 def find_project_env(start):
     """Compatibility wrapper with exact-root semantics."""
     env_path = project_env_path(start)
@@ -107,17 +116,24 @@ def _warn_invalid_env_line(env_path, line_number, error):
     print(f"warning: skipped invalid .env line {line_number}: {error}", file=sys.stderr)
 
 
-def read_project_env(start, warn=True):
+def read_project_env_with_status(start, warn=True):
     env_path = project_env_path(start)
     try:
+        initial_mode = env_path.lstat().st_mode
         text = read_private_text(env_path)
     except FileNotFoundError:
-        return {}
+        return {}, project_env_metadata(start, "missing")
     loaded = {}
+    status = (
+        "review_required"
+        if os.name == "posix" and stat.S_IMODE(initial_mode) != 0o600
+        else "loaded"
+    )
     for line_number, line in enumerate(text.splitlines(), start=1):
         try:
             parsed = _parse_env_line(line)
         except ValueError as exc:
+            status = "review_required"
             if warn:
                 _warn_invalid_env_line(env_path, line_number, exc)
             continue
@@ -125,6 +141,11 @@ def read_project_env(start, warn=True):
             continue
         name, value = parsed
         loaded[name] = value
+    return loaded, project_env_metadata(start, status)
+
+
+def read_project_env(start, warn=True):
+    loaded, _ = read_project_env_with_status(start, warn=warn)
     return loaded
 
 

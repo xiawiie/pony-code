@@ -11,8 +11,54 @@ from pico.config import (
     load_project_env,
     project_env_path,
     read_project_env,
+    read_project_env_with_status,
     write_project_env_assignments,
 )
+
+
+def test_project_env_status_distinguishes_missing_loaded_and_rejected_lines(
+    tmp_path,
+    capsys,
+):
+    values, metadata = read_project_env_with_status(tmp_path)
+    assert values == {}
+    assert metadata == {
+        "path": str(tmp_path.resolve() / ".env"),
+        "scope": "repo_root_exact",
+        "status": "missing",
+    }
+
+    (tmp_path / ".env").write_text(
+        "PICO_PROVIDER=deepseek\n",
+        encoding="utf-8",
+    )
+    (tmp_path / ".env").chmod(0o600)
+    values, metadata = read_project_env_with_status(tmp_path)
+    assert values == {"PICO_PROVIDER": "deepseek"}
+    assert metadata["status"] == "loaded"
+
+    (tmp_path / ".env").write_text(
+        "PICO_PROVIDER=deepseek\ninvalid project env line\n",
+        encoding="utf-8",
+    )
+    values, metadata = read_project_env_with_status(tmp_path)
+    captured = capsys.readouterr()
+    assert values == {"PICO_PROVIDER": "deepseek"}
+    assert metadata["status"] == "review_required"
+    assert "invalid project env line" not in captured.err
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX mode assertion")
+def test_project_env_status_records_permission_repair(tmp_path):
+    env_path = tmp_path / ".env"
+    env_path.write_text("PICO_PROVIDER=deepseek\n", encoding="utf-8")
+    env_path.chmod(0o644)
+
+    values, metadata = read_project_env_with_status(tmp_path, warn=False)
+
+    assert values == {"PICO_PROVIDER": "deepseek"}
+    assert metadata["status"] == "review_required"
+    assert stat.S_IMODE(env_path.stat().st_mode) == 0o600
 
 
 def test_project_env_never_falls_back_to_parent(tmp_path):

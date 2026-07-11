@@ -13,8 +13,9 @@ from .cli_errors import CLI_EXIT_CONFIG, CLI_EXIT_USAGE, CliError
 from .cli_output import build_inspection_redactor, print_result
 from .config import (
     ENV_KEY_PATTERN,
+    project_env_metadata,
     project_env_path,
-    read_project_env,
+    read_project_env_with_status,
     validate_provider_base_url,
     write_project_env_assignments,
 )
@@ -89,12 +90,16 @@ def collect_status(cwd, args=None):
 
 def collect_config(cwd, args=None):
     workspace = WorkspaceContext.build(cwd)
-    project_env = _read_project_env(workspace.repo_root)
+    project_env, project_env_info = _read_project_env_for_diagnostics(
+        workspace.repo_root
+    )
     provider = _resolve_provider(args, project_env)
     model = _resolve_model(args, provider["value"], project_env)
     api_key = _resolve_api_key(provider["value"], project_env)
     _resolve_base_url(args, provider["value"], project_env)
     return {
+        "workspace": {"repo_root": workspace.repo_root},
+        "project_env": project_env_info,
         "provider": provider,
         "model": model,
         "api_key": api_key,
@@ -111,10 +116,9 @@ def collect_doctor(cwd, args=None, offline=False):
             return _unavailable_workspace_doctor(offline=offline)
     root = Path(workspace.repo_root)
     pico_root = root / ".pico"
-    try:
-        project_env = _read_project_env(workspace.repo_root)
-    except (OSError, RuntimeError, ValueError):
-        project_env = {}
+    project_env, project_env_info = _read_project_env_for_diagnostics(
+        workspace.repo_root
+    )
     provider = _resolve_provider(args, project_env)
     config = {
         "provider": provider,
@@ -132,7 +136,7 @@ def collect_doctor(cwd, args=None, offline=False):
     checkpoints_root = pico_root / "checkpoints"
     security = _collect_security_status(
         root,
-        project_env_path(root),
+        project_env_info,
         pico_root,
     )
     doc_hints = []
@@ -148,6 +152,7 @@ def collect_doctor(cwd, args=None, offline=False):
             "status": "ok",
             "repo_root": workspace.repo_root,
         },
+        "project_env": project_env_info,
         "config": {
             "status": "ok",
             "provider": config["provider"],
@@ -174,6 +179,11 @@ def _unavailable_workspace_doctor(*, offline):
     connectivity_message = "offline mode" if offline else "workspace unavailable"
     return {
         "workspace": {"status": "review_required", "repo_root": ""},
+        "project_env": {
+            "path": "",
+            "scope": "repo_root_exact",
+            "status": "review_required",
+        },
         "config": {
             "status": "review_required",
             "provider": {"value": "", "source": "unavailable", "name": ""},
@@ -243,6 +253,7 @@ def handle_doctor(tokens, cwd, args):
         except (OSError, RuntimeError, ValueError):
             redactor = securitylib.redact_artifact
     data["workspace"] = redactor(data["workspace"])
+    data["project_env"] = redactor(data["project_env"])
     data["config"] = _redact_mapping_values(data["config"], redactor)
     data["credentials"] = _redact_mapping_values(data["credentials"], redactor)
     data["provider_connectivity"] = redactor(data["provider_connectivity"])
@@ -255,11 +266,17 @@ def handle_config(tokens, cwd, args):
     sub = tokens[0] if tokens else ""
     rest = tokens[1:]
     if sub == "show" and not rest:
-        workspace = WorkspaceContext.build(cwd)
-        redactor = build_inspection_redactor(workspace.repo_root, args)
+        data = collect_config(cwd, args)
+        try:
+            redactor = build_inspection_redactor(
+                data["workspace"]["repo_root"],
+                args,
+            )
+        except (OSError, RuntimeError, ValueError):
+            redactor = securitylib.redact_artifact
         return print_result(
             "config_show",
-            _redact_mapping_values(collect_config(cwd, args), redactor),
+            _redact_mapping_values(data, redactor),
             args,
             _render_config,
         )
@@ -325,13 +342,21 @@ def _handle_set_secret(tokens, cwd, args):
     mode = ""
     if os.name == "posix":
         mode = f"{stat.S_IMODE(env_path.stat().st_mode):04o}"
+    _, project_env = _read_project_env_for_diagnostics(root)
+    try:
+        redactor = build_inspection_redactor(root, args)
+    except (OSError, RuntimeError, ValueError):
+        redactor = securitylib.redact_artifact
+    workspace_info = redactor({"repo_root": str(root)})
+    project_env = redactor(project_env)
     status = "created" if name in written["added"] else "updated"
     return print_result(
         "config_set_secret",
         {
             "name": name,
             "status": status,
-            "env_path": env_path.name,
+            "workspace": workspace_info,
+            "project_env": project_env,
             "permission": mode,
         },
         args,
@@ -479,8 +504,11 @@ def _storage_status(path):
     return "ok" if _storage_exists(path) else "missing"
 
 
-def _collect_security_status(root, env_path, pico_root):
-    project_env = _project_env_security_status(env_path)
+def _collect_security_status(root, project_env_info, pico_root):
+    project_env = _project_env_security_status(
+        Path(project_env_info["path"]),
+        project_env_info["status"],
+    )
     private_storage = _private_storage_security_status(pico_root)
     try:
         trusted_names = set(
@@ -544,7 +572,7 @@ def _collect_security_status(root, env_path, pico_root):
     }
 
 
-def _project_env_security_status(path):
+def _project_env_security_status(path, read_status):
     try:
         mode = Path(path).lstat().st_mode
     except FileNotFoundError:
@@ -553,12 +581,14 @@ def _project_env_security_status(path):
         return {"status": "review_required", "mode": ""}
     if not stat.S_ISREG(mode):
         return {"status": "review_required", "mode": ""}
-    permission_mode = f"{stat.S_IMODE(mode):04o}" if os.name == "posix" else ""
-    status = (
-        "review_required"
-        if permission_mode and permission_mode != "0600"
-        else "ok"
+    permission_mode = (
+        f"{stat.S_IMODE(mode):04o}"
+        if os.name == "posix"
+        else ""
     )
+    status = str(read_status)
+    if permission_mode and permission_mode != "0600":
+        status = "review_required"
     return {"status": status, "mode": permission_mode}
 
 
@@ -614,8 +644,11 @@ def _storage_exists(path):
     return True
 
 
-def _read_project_env(start):
-    return read_project_env(start)
+def _read_project_env_for_diagnostics(root):
+    try:
+        return read_project_env_with_status(root)
+    except (OSError, RuntimeError, ValueError):
+        return {}, project_env_metadata(root, "review_required")
 
 
 def _latest_json_stem(root):
@@ -686,6 +719,14 @@ def _render_config(data):
     lines = [
         "Pico config — Effective configuration",
         "",
+        "Workspace",
+        _line("repo root", data["workspace"]["repo_root"]),
+        "",
+        "Project environment",
+        _line("path", data["project_env"]["path"]),
+        _line("scope", data["project_env"]["scope"]),
+        _line("status", data["project_env"]["status"]),
+        "",
         "Provider",
         _line("provider", _value_with_source(data["provider"])),
         _line("model", _value_with_source(data["model"])),
@@ -703,7 +744,14 @@ def _render_set_secret(data):
             "",
             _line("name", data["name"]),
             _line("status", data["status"]),
-            _line("env file", data["env_path"]),
+            "",
+            "Workspace",
+            _line("repo root", data["workspace"]["repo_root"]),
+            "",
+            "Project environment",
+            _line("env file", data["project_env"]["path"]),
+            _line("env scope", data["project_env"]["scope"]),
+            _line("env status", data["project_env"]["status"]),
             _line("permission", data["permission"] or "private"),
         ]
     )
@@ -723,6 +771,11 @@ def _render_doctor(data):
         "Workspace",
         _line("repo root", data["workspace"]["repo_root"]),
         _line("status", data["workspace"]["status"]),
+        "",
+        "Project environment",
+        _line("path", data["project_env"]["path"]),
+        _line("scope", data["project_env"]["scope"]),
+        _line("status", data["project_env"]["status"]),
         "",
         "Config",
         _line("provider", _value_with_source(config["provider"])),
