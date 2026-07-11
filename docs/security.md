@@ -42,3 +42,7 @@ approval 在 mutation lock 之前发生。runner 只调用一次；effect observ
 Pico 的 policy、approval、锁、记录和恢复不会阻止已获授权进程访问当前用户本来可访问的系统资源。
 不要在不可信仓库中批准复杂 shell；运行前审查命令与路径，使用最小权限凭证，并保留 Git/外部备份。
 恢复语义见[恢复](recovery.md)，可复现安全门禁见[验证](verification.md)。
+
+当前实现依赖 POSIX/macOS 的 descriptor、no-follow、file lock 与原子 replace。Git marker、结构元数据、
+config 或 index 即使通过初检，也仍按可能发生校验后并发修改处理；Pico 不是 OS sandbox 或 immutable
+snapshot。所需安全原语不可用时 fail closed，Windows 等价机制留待后续设计。

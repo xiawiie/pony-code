@@ -865,7 +865,10 @@ def test_session_temp_swap_is_removed_without_touching_external_target(
 
 def test_store_redactors_cannot_mutate_callers_or_leave_failed_trace(tmp_path):
     def mutating_redactor(value):
-        value["mutated"] = True
+        if value.get("record_type") == "session":
+            value["recovery"]["mutated"] = True
+        else:
+            value["mutated"] = True
         return value
 
     run_store = RunStore(tmp_path / ".pico" / "runs", redactor=mutating_redactor)

@@ -69,17 +69,21 @@ def _assert_private_tree(root):
             assert stat.S_IMODE(mode) == 0o600, path
 
 
-def test_readme_states_post_validation_and_platform_trust_boundaries():
-    readme = (Path(__file__).resolve().parents[1] / "README.md").read_text(
+def test_security_doc_states_post_validation_and_platform_trust_boundaries():
+    security_doc = (Path(__file__).resolve().parents[1] / "docs/security.md").read_text(
         encoding="utf-8"
     )
 
-    assert "Git marker、结构元数据、config 或 index" in readme
-    assert "校验后并发修改" in readme
-    assert "不是 OS sandbox 或 immutable snapshot" in readme
-    assert "POSIX/macOS" in readme
-    assert "所需安全原语不可用时 fail closed" in readme
-    assert "Windows 等价机制留待后续设计" in readme
+    assert "Git marker" in security_doc
+    assert "结构元数据" in security_doc
+    assert "config 或 index" in security_doc
+    assert "校验后并发修改" in security_doc
+    assert "不是 OS sandbox" in security_doc
+    assert "immutable" in security_doc
+    assert "snapshot" in security_doc
+    assert "POSIX/macOS" in security_doc
+    assert "所需安全原语不可用时 fail closed" in security_doc
+    assert "Windows 等价机制留待后续设计" in security_doc
 
 
 def test_offline_a1_canary_crosses_real_boundaries_without_normal_artifact_leak(

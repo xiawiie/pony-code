@@ -145,10 +145,21 @@ def test_cli_modules_do_not_reexport_test_helpers():
 
 
 def test_packaging_discovers_pico_subpackages():
-    pyproject_text = Path("pyproject.toml").read_text(encoding="utf-8")
+    import tomllib
 
-    assert "[tool.setuptools.packages.find]" in pyproject_text
-    assert 'include = ["pico*"]' in pyproject_text
+    pyproject = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+
+    assert pyproject["tool"]["setuptools"] == {
+        "packages": [
+            "pico",
+            "pico.context",
+            "pico.evaluation",
+            "pico.features",
+            "pico.memory",
+            "pico.providers",
+        ],
+        "include-package-data": False,
+    }
 
 
 def test_packaging_exposes_only_pico_cli_script():
