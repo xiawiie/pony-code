@@ -682,23 +682,24 @@ def build_trusted_executables(workspace_root, *, env=None, names=()):
     safe_path_dirs = _safe_path_dirs(root, env)
     if not safe_path_dirs:
         return {}
-    search_path = os.pathsep.join(safe_path_dirs)
     result = {}
     for raw_name in tuple(names or DEFAULT_TRUSTED_EXECUTABLES):
         name = str(raw_name)
         if not name or Path(name).name != name:
             continue
-        found = shutil.which(name, path=search_path)
-        if not found:
-            continue
-        try:
-            resolved = Path(found).resolve(strict=True)
-            if resolved == root or root in resolved.parents:
+        for directory in safe_path_dirs:
+            found = shutil.which(name, path=directory)
+            if not found:
                 continue
-            identity = _verified_executable_identity(resolved)
-        except (OSError, RuntimeError, ValueError):
-            continue
-        result[name] = _TrustedExecutable(str(resolved), identity, root)
+            try:
+                resolved = Path(found).resolve(strict=True)
+                if resolved == root or root in resolved.parents:
+                    continue
+                identity = _verified_executable_identity(resolved)
+            except (OSError, RuntimeError, ValueError):
+                continue
+            result[name] = _TrustedExecutable(str(resolved), identity, root)
+            break
     return result
 
 

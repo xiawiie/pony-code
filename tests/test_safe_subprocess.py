@@ -2,7 +2,6 @@ import multiprocessing
 import os
 from contextlib import contextmanager
 from pathlib import Path
-import shutil
 import stat
 import subprocess
 
@@ -24,9 +23,9 @@ def _executable(path, body="#!/bin/sh\nexit 0\n"):
 
 
 def _real_git():
-    executable = shutil.which("git")
-    assert executable
-    return str(Path(executable).resolve())
+    trusted = build_trusted_executables(Path.cwd(), names=("git",))
+    assert "git" in trusted
+    return str(trusted["git"])
 
 
 def _init_git_repo(path):
@@ -350,6 +349,22 @@ def test_bad_path_entry_does_not_hide_later_trusted_executable(tmp_path):
     trusted = build_trusted_executables(
         workspace,
         env={"PATH": f"{tmp_path / 'missing'}{os.pathsep}/usr/bin"},
+        names=("git",),
+    )
+
+    assert trusted == {"git": "/usr/bin/git"}
+
+
+def test_mutable_executable_does_not_hide_later_trusted_executable(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    owner_bin = tmp_path / "owner-bin"
+    owner_bin.mkdir(mode=0o755)
+    _executable(owner_bin / "git")
+
+    trusted = build_trusted_executables(
+        workspace,
+        env={"PATH": f"{owner_bin}{os.pathsep}/usr/bin"},
         names=("git",),
     )
 
