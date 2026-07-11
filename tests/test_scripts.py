@@ -18,6 +18,33 @@ def test_ci_tracks_and_uses_frozen_uv_lock():
     assert "run: uv sync --frozen --dev" in workflow
 
 
+def test_ci_has_macos_security_and_durability_gate():
+    workflow = Path(".github/workflows/ci.yml").read_text(encoding="utf-8")
+
+    assert "runs-on: macos-latest" in workflow
+    assert 'python-version: "3.12"' in workflow
+    assert workflow.count("run: uv sync --frozen --dev") == 2
+    assert "-W error::DeprecationWarning" in workflow
+    for path in (
+        "tests/test_project_env_security.py",
+        "tests/test_file_lock.py",
+        "tests/test_private_paths.py",
+        "tests/test_artifact_security.py",
+        "tests/test_safe_subprocess.py",
+        "tests/test_shell_execution_security.py",
+        "tests/test_shell_security_corpus.py",
+        "tests/test_checkpoint_store_durability.py",
+        "tests/test_recovery_durability_e2e.py",
+        "tests/test_recovery_journal.py",
+        "tests/memory/test_block_store.py",
+        "tests/memory/test_reader_bounds.py",
+        "tests/memory/test_retrieval.py",
+    ):
+        assert path in workflow
+    assert "continue-on-error" not in workflow
+    assert "-W ignore" not in workflow
+
+
 def test_maintenance_scripts_start_and_show_help():
     for script in (
         "scripts/collect_resume_metrics.py",

@@ -48,3 +48,47 @@ jobs:
 
       - name: Offline live harness
         run: uv run pytest benchmarks/live_e2e/tests/test_assertions.py -q
+
+  macos-focused:
+    name: macOS focused (Python 3.12)
+    runs-on: macos-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.2.0
+        with:
+          version: "0.11.26"
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --frozen --dev
+
+      - name: Prove FIFO metadata probes use spawn
+        run: >-
+          uv run pytest -vv -W error::DeprecationWarning
+          tests/test_safe_subprocess.py::test_hardened_git_rejects_fifo_metadata_without_blocking
+
+      - name: Focused security and durability tests
+        run: >-
+          uv run pytest -q -W error::DeprecationWarning
+          tests/test_project_env_security.py
+          tests/test_file_lock.py
+          tests/test_private_paths.py
+          tests/test_artifact_security.py
+          tests/test_safe_subprocess.py
+          tests/test_shell_execution_security.py
+          tests/test_shell_security_corpus.py
+          tests/test_checkpoint_store_durability.py
+          tests/test_recovery_durability_e2e.py
+          tests/test_recovery_journal.py
+          tests/memory/test_block_store.py
+          tests/memory/test_reader_bounds.py
+          tests/memory/test_retrieval.py
