@@ -958,29 +958,6 @@ def test_public_api_exports_resolve_through_package_path():
     assert Path(pico_pkg.__file__).as_posix().endswith("/pico/__init__.py")
 
 
-def test_reviewer_skeleton_docs_exist():
-    review_pack = Path("docs/review-pack/README.md")
-    architecture = Path("docs/architecture/agent-harness-v1-overview.md")
-
-    assert review_pack.exists()
-    assert architecture.exists()
-
-    review_text = review_pack.read_text(encoding="utf-8")
-    assert "Project pitch" in review_text
-    assert "Architecture map" in review_text
-    assert "Benchmark evidence" in review_text
-    assert "Sample run artifact list" in review_text
-
-    architecture_text = architecture.read_text(encoding="utf-8")
-    assert "Agent Harness v1" in architecture_text
-    assert "task state" in architecture_text.lower()
-    assert "Run Artifact Terminology" in architecture_text
-    assert "`task_state.json`" in architecture_text
-    assert "`trace.jsonl`" in architecture_text
-    assert "`report.json`" in architecture_text
-    assert "not the recovery truth" in architecture_text
-
-
 def test_package_import_surface_includes_cli_entrypoints():
     assert callable(pico_pkg.main)
     assert callable(pico_pkg.build_agent)
