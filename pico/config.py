@@ -30,14 +30,6 @@ from .security import (
 
 
 ENV_KEY_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-_EXECUTION_ENV_EXACT_DENY = {"PATH", "HOME", "SHELL", "PYTHONPATH", "BASH_ENV", "ENV"}
-_PROJECT_ENV_ALLOWED = {
-    "PICO_PROVIDER",
-    "PICO_SECRET_ENV_NAMES",
-    *(name for names in MODEL_ENV_NAMES.values() for name in names),
-    *(name for names in BASE_URL_ENV_NAMES.values() for name in names),
-    *(name for names in API_KEY_ENV_NAMES.values() for name in names),
-}
 _SECRET_QUERY_KEYS = {
     "api_key",
     "access_key",
@@ -116,12 +108,6 @@ def project_env_metadata(workspace_root, status):
     }
 
 
-def find_project_env(start):
-    """Compatibility wrapper with exact-root semantics."""
-    env_path = project_env_path(start)
-    return env_path if env_path.exists() else None
-
-
 def _warn_invalid_env_line(env_path, line_number, error):
     print(f"warning: skipped invalid .env line {line_number}: {error}", file=sys.stderr)
 
@@ -157,21 +143,6 @@ def read_project_env_with_status(start, warn=True):
 def read_project_env(start, warn=True):
     loaded, _ = read_project_env_with_status(start, warn=warn)
     return loaded
-
-
-def load_project_env(start, override=True, warn=True):
-    loaded = read_project_env(start, warn=warn)
-    for name, value in loaded.items():
-        if _may_import_project_env(name) and (override or name not in os.environ):
-            os.environ[name] = value
-    return loaded
-
-
-def _may_import_project_env(name):
-    upper = str(name).upper()
-    if upper in _EXECUTION_ENV_EXACT_DENY or upper.startswith(("LD_", "DYLD_")):
-        return False
-    return upper.startswith("PICO_") or upper in _PROJECT_ENV_ALLOWED
 
 
 def _validated_project_env_assignments(assignments):

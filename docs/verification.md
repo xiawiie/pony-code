@@ -70,4 +70,24 @@ Provider matrix。
 prompt、answer、key、header、request URL、response body 或 live JSON。执行后还必须验证 fixture 恢复、
 private mode、active artifact、session terminalization 与 secret absence。
 
-最终本地计数、CI run ID 和独立 review 结论在完成时更新本文；没有 exact HEAD 证据的项目保持未完成。
+## 基线与最终实现证据
+
+硬切前源码基线 `5f359bd18fb3a59968167bfe0196352d41a23a01` 的可重建结果是：本地
+`1997 passed, 6 skipped`，offline assertions `60 passed`；wheel/sdist 可构建但 sdist 携带完整 tests，
+macOS 全量有两条后台线程 `fork()` warning。此前单次获授权 DeepSeek E2E 为 `43/43` assertions、
+`10/15` Provider calls、13,842 input tokens、1,330 output tokens、5,248 cache-read tokens、44.253 秒；
+该授权与结果不用于最终 E2E。
+
+最终实现证据 commit `ffc5a60ce91885038264c0cfc4185e13c66a19a3`：
+
+- 本地 Python 3.12：Ruff 通过，`2021 passed, 6 skipped`，offline assertions `66 passed`；
+- macOS warning-as-error focused：显式 FIFO `2 passed`，完整 focused `453 passed`；
+- Memory quality Fake benchmark：`8/8`；四组 perf harness 均成功；
+- C901：全仓 60 个 finding；`ToolExecutor.execute` 与 `AgentLoop.run` 均无 finding；
+- wheel/sdist 精确归档检查、METADATA、零 runtime dependency、隔离 venv 安装、CLI/doctor smoke 全部通过；
+- GitHub Actions run [29167571366](https://github.com/xiawiie/pico/actions/runs/29167571366)：Ubuntu
+  Python 3.11/3.12 均为 `2021 passed, 6 skipped` 且 offline `66 passed`，Python 3.12 build/clean-install
+  成功；macOS Python 3.12 为 FIFO `2 passed` 与 focused `453 passed`。
+
+最终任务交付还必须给出交付 commit 的 exact-SHA CI run 和独立 review 结论。真实 Provider 仍保持未运行，
+等待新的明确授权。

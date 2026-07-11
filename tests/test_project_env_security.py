@@ -8,7 +8,6 @@ from pico import security as security_module
 import pico.config as config_module
 from pico.cli import main
 from pico.config import (
-    load_project_env,
     project_env_path,
     read_project_env,
     read_project_env_with_status,
@@ -71,7 +70,7 @@ def test_project_env_never_falls_back_to_parent(tmp_path):
     assert read_project_env(child, warn=False) == {}
 
 
-def test_secret_names_cannot_import_execution_control_env(tmp_path, monkeypatch):
+def test_read_project_env_never_mutates_process_environment(tmp_path, monkeypatch):
     (tmp_path / ".env").write_text(
         "PICO_SECRET_ENV_NAMES=PATH,PYTHONPATH\n"
         "PATH=./fake\n"
@@ -82,9 +81,11 @@ def test_secret_names_cannot_import_execution_control_env(tmp_path, monkeypatch)
     original_path = os.environ.get("PATH")
     monkeypatch.delenv("PYTHONPATH", raising=False)
 
-    loaded = load_project_env(tmp_path)
+    loaded = read_project_env(tmp_path)
 
     assert loaded["PICO_PROVIDER"] == "deepseek"
+    assert loaded["PATH"] == "./fake"
+    assert loaded["PYTHONPATH"] == "./payload"
     assert os.environ.get("PATH") == original_path
     assert "PYTHONPATH" not in os.environ
 
@@ -118,8 +119,6 @@ def test_project_env_rejects_control_characters_after_decoding(tmp_path, monkeyp
     parsed = read_project_env(tmp_path)
 
     assert parsed == {"PICO_PROVIDER": "deepseek"}
-    loaded = load_project_env(tmp_path, warn=False)
-    assert loaded == {"PICO_PROVIDER": "deepseek"}
     assert all(name not in os.environ for name in invalid_names)
     assert sentinel not in capsys.readouterr().err
 

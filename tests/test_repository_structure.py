@@ -41,11 +41,14 @@ FORBIDDEN_SYMBOLS = {
     "build_v2",
     "cli_memory_migrate",
     "complete_v2",
+    "find_project_env",
+    "load_project_env",
     "stat_all",
     "stream_complete",
     "supports_native_tools",
     "write_agent_topic",
     "_memory_migrate_cmd",
+    "_may_import_project_env",
 }
 
 
