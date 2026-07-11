@@ -20,7 +20,8 @@ from pico.providers.fake import FakeModelClient
 def test_load_benchmark_validates_fixed_schema():
     benchmark = load_benchmark(Path("benchmarks/coding_tasks.json"))
 
-    assert benchmark["schema_version"] == 1
+    assert benchmark["record_type"] == "fixed_benchmark_definition"
+    assert benchmark["format_version"] == 1
     assert len(benchmark["tasks"]) == 10
     assert Counter(task["category"] for task in benchmark["tasks"]) == {
         "documentation": 2,
@@ -39,7 +40,8 @@ def test_load_benchmark_rejects_missing_required_task_fields(tmp_path):
     benchmark_path.write_text(
         json.dumps(
             {
-                "schema_version": 1,
+                "record_type": "fixed_benchmark_definition",
+                "format_version": 1,
                 "tasks": [
                     {
                         "id": "broken",
@@ -53,6 +55,47 @@ def test_load_benchmark_rejects_missing_required_task_fields(tmp_path):
 
     with pytest.raises(ValueError, match="required"):
         load_benchmark(benchmark_path)
+
+
+@pytest.mark.parametrize("version", [None, True, 1.0, "1", 2])
+def test_load_benchmark_rejects_noncurrent_format_before_tasks(tmp_path, version):
+    payload = {
+        "record_type": "fixed_benchmark_definition",
+        "format_version": version,
+        "tasks": "poisoned-business-shape",
+    }
+    if version is None:
+        payload.pop("format_version")
+    path = tmp_path / "benchmark.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="format_version"):
+        load_benchmark(path)
+
+
+def test_load_benchmark_rejects_wrong_type_and_nested_duplicate_keys(tmp_path):
+    wrong_type = tmp_path / "wrong-type.json"
+    wrong_type.write_text(
+        json.dumps(
+            {
+                "record_type": "fixed_benchmark_result",
+                "format_version": 1,
+                "tasks": "poisoned-business-shape",
+            }
+        ),
+        encoding="utf-8",
+    )
+    duplicate = tmp_path / "duplicate.json"
+    duplicate.write_text(
+        '{"record_type":"fixed_benchmark_definition","format_version":1,'
+        '"tasks":[],"nested":{"key":1,"key":2}}',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="record_type"):
+        load_benchmark(wrong_type)
+    with pytest.raises(ValueError, match="duplicate"):
+        load_benchmark(duplicate)
 
 
 def test_verifier_is_parsed_as_structured_argv_without_shell_operators():
@@ -106,7 +149,8 @@ def test_run_fixed_benchmark_reports_metadata_and_success_definition(tmp_path):
     persisted = json.loads(artifact_path.read_text(encoding="utf-8"))
     assert persisted == artifact
 
-    assert artifact["schema_version"] == 1
+    assert artifact["record_type"] == "fixed_benchmark_result"
+    assert artifact["format_version"] == 1
     assert artifact["summary"] == {
         "total_tasks": 10,
         "passed": 10,
@@ -205,7 +249,8 @@ def test_benchmark_verifier_runs_with_reproducibility_locale(monkeypatch, tmp_pa
     benchmark_path.write_text(
         json.dumps(
             {
-                "schema_version": 1,
+                "record_type": "fixed_benchmark_definition",
+                "format_version": 1,
                 "tasks": [
                     {
                         "id": "locale_env",
@@ -253,7 +298,8 @@ def test_real_provider_benchmark_prompt_includes_success_criteria(tmp_path):
     benchmark_path.write_text(
         json.dumps(
             {
-                "schema_version": 1,
+                "record_type": "fixed_benchmark_definition",
+                "format_version": 1,
                 "tasks": [
                     {
                         "id": "criteria_prompt",

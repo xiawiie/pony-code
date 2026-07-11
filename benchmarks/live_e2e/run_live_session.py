@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Literal
 
 from pico.config import read_project_env, resolve_provider_config
+from pico.evaluation.metrics_common import _load_json_artifact
 from pico.messages import MessageValidationError, validate_messages
 from pico.providers.defaults import (
     API_KEY_ENV_NAMES,
@@ -36,6 +37,17 @@ from pico.security import (
     redact_artifact,
     write_private_bytes_atomic,
 )
+
+
+LIVE_E2E_REPORT_FORMAT_VERSION = 1
+
+
+def load_live_report(path):
+    return _load_json_artifact(
+        path,
+        "live_e2e_report",
+        LIVE_E2E_REPORT_FORMAT_VERSION,
+    )
 
 
 def _private_tree_entries(pico_root):
@@ -1269,7 +1281,8 @@ class Reporter:
         }
         run_id = f"live-e2e-{time.time_ns()}"
         payload = {
-            "schema_version": 1,
+            "record_type": "live_e2e_report",
+            "format_version": LIVE_E2E_REPORT_FORMAT_VERSION,
             "run_id": run_id,
             "provider": config.provider,
             "model": config.model,
@@ -1723,9 +1736,7 @@ def main() -> int:
                 total_asserts += 1
                 if a.passed:
                     passed_asserts += 1
-        overall_pass = bool(
-            json.loads(report_path.read_text(encoding="utf-8"))["overall_pass"]
-        )
+        overall_pass = bool(load_live_report(report_path)["overall_pass"])
 
         reporter.render_final(
             overall_pass=overall_pass,

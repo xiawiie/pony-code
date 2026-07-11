@@ -1,13 +1,13 @@
 import hashlib
-import json
 from pathlib import Path
 
 from ..tools import legal_tool_names
+from .metrics_common import _decode_json_object, _validate_record_header
 
-BENCHMARK_SCHEMA_VERSION = 1
+FIXED_BENCHMARK_DEFINITION_FORMAT_VERSION = 1
 DEFAULT_BENCHMARK_PATH = Path("benchmarks/coding_tasks.json")
 
-REQUIRED_BENCHMARK_KEYS = ("schema_version", "tasks")
+REQUIRED_BENCHMARK_KEYS = ("record_type", "format_version", "tasks")
 REQUIRED_TASK_KEYS = (
     "id",
     "prompt",
@@ -116,12 +116,15 @@ def validate_benchmark(data, repo_root=None):
     if not isinstance(data, dict):
         raise ValueError("benchmark must be a mapping")
 
+    _validate_record_header(
+        data,
+        "fixed_benchmark_definition",
+        FIXED_BENCHMARK_DEFINITION_FORMAT_VERSION,
+    )
+
     missing = [key for key in REQUIRED_BENCHMARK_KEYS if key not in data]
     if missing:
         raise ValueError(f"benchmark is missing required keys: {', '.join(missing)}")
-
-    if int(data.get("schema_version", 0)) != BENCHMARK_SCHEMA_VERSION:
-        raise ValueError("unsupported benchmark schema_version")
 
     tasks = data.get("tasks")
     if not isinstance(tasks, list) or not tasks:
@@ -180,14 +183,15 @@ def validate_benchmark(data, repo_root=None):
         normalized_tasks.append(normalized_task)
 
     normalized = dict(data)
-    normalized["schema_version"] = BENCHMARK_SCHEMA_VERSION
+    normalized["record_type"] = "fixed_benchmark_definition"
+    normalized["format_version"] = FIXED_BENCHMARK_DEFINITION_FORMAT_VERSION
     normalized["tasks"] = normalized_tasks
     return normalized
 
 
 def load_benchmark(path=DEFAULT_BENCHMARK_PATH, repo_root=None):
     path = Path(path)
-    data = json.loads(path.read_text(encoding="utf-8"))
+    data = _decode_json_object(path.read_text(encoding="utf-8"))
     if repo_root is None:
         repo_root = path.resolve().parent.parent
     return validate_benchmark(data, repo_root=repo_root)

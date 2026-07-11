@@ -7,9 +7,11 @@ from ..providers.openai_compatible import OpenAICompatibleModelClient
 from ..providers.defaults import API_KEY_ENV_NAMES
 from ..providers.text_protocol_adapter import TextProtocolAdapter
 from .fixed_benchmark import run_fixed_benchmark
-from .metrics_common import _safe_mean, _safe_ratio
+from .fixed_benchmark import FIXED_BENCHMARK_RESULT_FORMAT_VERSION
+from .metrics_common import _safe_mean, _safe_ratio, _validate_record_header
 
 DEFAULT_PROVIDER_EXPERIMENT_MAX_NEW_TOKENS = 2048
+PROVIDER_EXPERIMENT_FORMAT_VERSION = 1
 
 PROVIDER_BENCHMARK_CHOICES = ("gpt", "claude", "deepseek")
 
@@ -43,6 +45,11 @@ def _normalize_provider_selection(providers=None):
 
 
 def _provider_summary_from_artifact(payload):
+    _validate_record_header(
+        payload,
+        "fixed_benchmark_result",
+        FIXED_BENCHMARK_RESULT_FORMAT_VERSION,
+    )
     rows = list(payload.get("rows", []))
     cached_tokens = []
     cache_hits = []
@@ -185,4 +192,8 @@ def run_provider_experiments(
                     "reason": str(exc),
                 }
             )
-    return {"providers": provider_rows}
+    return {
+        "record_type": "provider_experiment_result",
+        "format_version": PROVIDER_EXPERIMENT_FORMAT_VERSION,
+        "providers": provider_rows,
+    }

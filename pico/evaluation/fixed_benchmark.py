@@ -22,7 +22,6 @@ from ..safe_subprocess import (
 from ..task_state import STOP_REASON_FINAL_ANSWER_RETURNED
 from ..workspace import WorkspaceContext
 from .benchmark_schema import (
-    BENCHMARK_SCHEMA_VERSION,
     DEFAULT_BENCHMARK_PATH,
     _artifact_path_for_task,
     _digest_file,
@@ -33,6 +32,7 @@ from .benchmark_schema import (
     summarize_rows,
 )
 
+FIXED_BENCHMARK_RESULT_FORMAT_VERSION = 1
 DEFAULT_ARTIFACT_PATH = Path("benchmarks/benchmark-v1.json")
 DEFAULT_HARNESS_REGRESSION_V2_ARTIFACT_PATH = Path("artifacts/harness-regression-v2.json")
 DEFAULT_MODEL_NAME = "FakeModelClient"
@@ -264,7 +264,8 @@ class BenchmarkEvaluator:
         rows = [self.run_task(task) for task in benchmark["tasks"]]
         summary = summarize_rows(rows)
         artifact = {
-            "schema_version": BENCHMARK_SCHEMA_VERSION,
+            "record_type": "fixed_benchmark_result",
+            "format_version": FIXED_BENCHMARK_RESULT_FORMAT_VERSION,
             "captured_at": _now_in_timezone(self.timezone_name),
             "runtime": {
                 "commit_sha": _git_value(["rev-parse", "HEAD"], cwd=self.repo_root),

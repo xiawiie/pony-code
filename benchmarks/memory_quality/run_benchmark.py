@@ -22,6 +22,10 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from pico.evaluation.provider_benchmark import _make_provider_client  # noqa: E402
+from pico.evaluation.metrics_common import (  # noqa: E402
+    _decode_json_object,
+    _validate_record_header,
+)
 from pico.memory.block_store import BlockStore  # noqa: E402
 from pico.memory.retrieval import Retrieval  # noqa: E402
 from pico.providers.fake import FakeModelClient  # noqa: E402
@@ -30,7 +34,8 @@ from pico.session_store import SessionStore  # noqa: E402
 from pico.workspace import WorkspaceContext  # noqa: E402
 
 
-SCHEMA_VERSION = 1
+MEMORY_QUALITY_SCENARIO_FORMAT_VERSION = 1
+MEMORY_QUALITY_RESULT_FORMAT_VERSION = 1
 SCENARIO_DIR = Path(__file__).parent
 VALID_MODES = ("fake", "live")
 VALID_FORMATS = ("text", "json")
@@ -48,9 +53,14 @@ def load_scenarios(filter_id: str | None = None, scenario_dir: Path = SCENARIO_D
             if not line.strip():
                 continue
             try:
-                data = json.loads(line)
-            except json.JSONDecodeError as exc:
-                raise ScenarioLoadError(f"{jsonl}:{line_number}: invalid JSON: {exc.msg}") from exc
+                data = _decode_json_object(line)
+                _validate_record_header(
+                    data,
+                    "memory_quality_scenario",
+                    MEMORY_QUALITY_SCENARIO_FORMAT_VERSION,
+                )
+            except ValueError as exc:
+                raise ScenarioLoadError(f"{jsonl}:{line_number}: {exc}") from exc
             if filter_id and filter_id not in str(data.get("id", "")):
                 continue
             scenario_id = str(data.get("id", "")).strip()
@@ -367,7 +377,8 @@ def summarize_rows(rows: list[dict]) -> dict:
 
 def build_payload(rows: list[dict], mode: str, provider: str) -> dict:
     payload = {
-        "schema_version": SCHEMA_VERSION,
+        "record_type": "memory_quality_result",
+        "format_version": MEMORY_QUALITY_RESULT_FORMAT_VERSION,
         "mode": mode,
         "summary": summarize_rows(rows),
         "rows": rows,
@@ -377,7 +388,27 @@ def build_payload(rows: list[dict], mode: str, provider: str) -> dict:
     return payload
 
 
+def validate_result(payload: dict) -> dict:
+    _validate_record_header(
+        payload,
+        "memory_quality_result",
+        MEMORY_QUALITY_RESULT_FORMAT_VERSION,
+    )
+    if not isinstance(payload.get("summary"), dict) or not isinstance(
+        payload.get("rows"), list
+    ):
+        raise ValueError("invalid memory quality result")
+    return payload
+
+
+def load_result(path: Path) -> dict:
+    return validate_result(
+        _decode_json_object(Path(path).read_text(encoding="utf-8"))
+    )
+
+
 def render_text(payload: dict) -> str:
+    validate_result(payload)
     lines = ["=== summary ==="]
     summary = payload["summary"]
     lines.append(

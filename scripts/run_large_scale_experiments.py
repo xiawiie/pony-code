@@ -13,7 +13,13 @@ from pico.evaluation.metrics_reports import (  # noqa: E402
     render_large_scale_experiment_report,
     render_resume_metrics_markdown,
 )
+from pico.evaluation.metrics_common import (  # noqa: E402
+    CONTEXT_ABLATION_FORMAT_VERSION,
+    MEMORY_ABLATION_FORMAT_VERSION,
+    _validate_record_header,
+)
 from pico.evaluation.provider_benchmark import (  # noqa: E402
+    PROVIDER_EXPERIMENT_FORMAT_VERSION,
     run_provider_experiments,
 )
 
@@ -49,6 +55,11 @@ def main(argv=None):
         workspace_root=args.provider_workspace_root,
         artifact_root=args.provider_artifact_root,
     )
+    _validate_record_header(
+        provider_payload,
+        "provider_experiment_result",
+        PROVIDER_EXPERIMENT_FORMAT_VERSION,
+    )
     provider_output = Path(args.provider_output_json)
     provider_output.parent.mkdir(parents=True, exist_ok=True)
     provider_output.write_text(json.dumps(provider_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -67,8 +78,16 @@ def main(argv=None):
 
     outputs = {
         args.resume_output_json: metrics,
-        args.memory_output_json: metrics["memory_large_experiment"],
-        args.context_output_json: metrics["context_experiment"],
+        args.memory_output_json: {
+            **metrics["memory_large_experiment"],
+            "record_type": "memory_ablation_result",
+            "format_version": MEMORY_ABLATION_FORMAT_VERSION,
+        },
+        args.context_output_json: {
+            **metrics["context_experiment"],
+            "record_type": "context_ablation_result",
+            "format_version": CONTEXT_ABLATION_FORMAT_VERSION,
+        },
         args.security_output_json: metrics["security_experiment"],
     }
     for path_str, payload in outputs.items():

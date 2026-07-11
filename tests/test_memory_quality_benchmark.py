@@ -25,6 +25,62 @@ def test_load_scenarios_reports_json_file_and_line(tmp_path):
         list(module.load_scenarios(scenario_dir=scenario_dir))
 
 
+@pytest.mark.parametrize("version", [None, True, 1.0, "1", 2])
+def test_load_scenarios_validates_header_before_filter(tmp_path, version):
+    module = _load_memory_benchmark_module()
+    scenario_dir = tmp_path / "scenarios"
+    scenario_dir.mkdir()
+    payload = {
+        "record_type": "memory_quality_scenario",
+        "format_version": version,
+        "id": "not-selected",
+        "session_turns": [],
+    }
+    if version is None:
+        payload.pop("format_version")
+    (scenario_dir / "scenario_bad.jsonl").write_text(
+        json.dumps(payload) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(module.ScenarioLoadError, match="format_version"):
+        list(
+            module.load_scenarios(
+                filter_id="selected",
+                scenario_dir=scenario_dir,
+            )
+        )
+
+
+def test_load_scenarios_rejects_wrong_type_and_nested_duplicate_keys(tmp_path):
+    module = _load_memory_benchmark_module()
+    scenario_dir = tmp_path / "scenarios"
+    scenario_dir.mkdir()
+    path = scenario_dir / "scenario_bad.jsonl"
+    path.write_text(
+        '{"record_type":"memory_quality_scenario","format_version":1,'
+        '"id":"bad","session_turns":[],"nested":{"key":1,"key":2}}\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(module.ScenarioLoadError, match="duplicate"):
+        list(module.load_scenarios(scenario_dir=scenario_dir))
+
+    path.write_text(
+        json.dumps(
+            {
+                "record_type": "memory_quality_result",
+                "format_version": 1,
+                "id": "bad",
+                "session_turns": [],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(module.ScenarioLoadError, match="record_type"):
+        list(module.load_scenarios(scenario_dir=scenario_dir))
+
+
 def test_setup_workspace_rejects_invalid_setup_path(tmp_path):
     module = _load_memory_benchmark_module()
 
@@ -426,13 +482,52 @@ def test_fake_mode_outputs_json_summary_without_human_text(capsys):
     assert code == 0
     assert captured.out.lstrip().startswith("{")
     assert "=== summary ===" not in captured.out
-    assert payload["schema_version"] == 1
+    assert payload["record_type"] == "memory_quality_result"
+    assert payload["format_version"] == 1
     assert payload["mode"] == "fake"
     assert payload["summary"]["total"] == 1
     assert payload["summary"]["failed"] == 0
     assert payload["rows"][0]["id"] == "recall_bcrypt"
     assert payload["rows"][0]["status"] == "pass"
     assert "memory_search" in payload["rows"][0]["tool_calls"]
+
+
+@pytest.mark.parametrize("version", [None, True, 1.0, "1", 2])
+def test_memory_result_render_rejects_noncurrent_header_before_business(version):
+    module = _load_memory_benchmark_module()
+    payload = {
+        "record_type": "memory_quality_result",
+        "format_version": version,
+        "summary": "poisoned-business-shape",
+        "rows": "poisoned-business-shape",
+    }
+    if version is None:
+        payload.pop("format_version")
+
+    with pytest.raises(ValueError, match="format_version"):
+        module.render_text(payload)
+
+
+def test_memory_result_rejects_wrong_type_and_nested_duplicate_file(tmp_path):
+    module = _load_memory_benchmark_module()
+    with pytest.raises(ValueError, match="record_type"):
+        module.render_text(
+            {
+                "record_type": "memory_quality_scenario",
+                "format_version": 1,
+                "summary": "poisoned-business-shape",
+                "rows": "poisoned-business-shape",
+            }
+        )
+
+    path = tmp_path / "result.json"
+    path.write_text(
+        '{"record_type":"memory_quality_result","format_version":1,'
+        '"summary":{"total":1,"total":2},"rows":[]}',
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="duplicate"):
+        module.load_result(path)
 
 
 def test_fake_mode_scores_update_scenario(capsys):

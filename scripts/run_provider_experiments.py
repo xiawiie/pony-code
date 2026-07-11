@@ -10,8 +10,10 @@ if str(ROOT) not in sys.path:
 
 from pico.evaluation.provider_benchmark import (  # noqa: E402
     DEFAULT_PROVIDER_EXPERIMENT_MAX_NEW_TOKENS,
+    PROVIDER_EXPERIMENT_FORMAT_VERSION,
     run_provider_experiments,
 )
+from pico.evaluation.metrics_common import _validate_record_header  # noqa: E402
 
 
 def build_arg_parser():
@@ -43,6 +45,11 @@ def main(argv=None):
         artifact_root=args.artifact_root,
         max_new_tokens=args.max_new_tokens,
         providers=args.provider,
+    )
+    _validate_record_header(
+        payload,
+        "provider_experiment_result",
+        PROVIDER_EXPERIMENT_FORMAT_VERSION,
     )
     output = Path(args.output_json)
     output.parent.mkdir(parents=True, exist_ok=True)

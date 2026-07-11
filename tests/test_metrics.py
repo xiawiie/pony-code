@@ -11,6 +11,7 @@ from pico.evaluation.experiments_recovery import (
     run_recovery_ablation_v2,
 )
 from pico.evaluation.metrics_reports import (
+    aggregate_benchmark_artifact,
     write_benchmark_core_report,
 )
 from pico.evaluation.provider_benchmark import _provider_profile
@@ -49,11 +50,57 @@ def test_aggregate_run_artifacts_uses_canonical_report_truth_sources(tmp_path):
     assert metrics["prefix_reuse_rate"] == 1.0
 
 
+@pytest.mark.parametrize("version", [None, True, 1.0, "1", 2])
+def test_fixed_result_reader_rejects_noncurrent_header_before_business(
+    tmp_path, version
+):
+    payload = {
+        "record_type": "fixed_benchmark_result",
+        "format_version": version,
+        "rows": "poisoned-business-shape",
+        "summary": "poisoned-business-shape",
+    }
+    if version is None:
+        payload.pop("format_version")
+    path = tmp_path / "result.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="format_version"):
+        aggregate_benchmark_artifact(path)
+
+
+def test_fixed_result_reader_rejects_wrong_type_and_nested_duplicates(tmp_path):
+    wrong_type = tmp_path / "wrong-type.json"
+    wrong_type.write_text(
+        json.dumps(
+            {
+                "record_type": "fixed_benchmark_definition",
+                "format_version": 1,
+                "rows": "poisoned-business-shape",
+            }
+        ),
+        encoding="utf-8",
+    )
+    duplicate = tmp_path / "duplicate.json"
+    duplicate.write_text(
+        '{"record_type":"fixed_benchmark_result","format_version":1,'
+        '"rows":[],"summary":{"passed":1,"passed":2}}',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="record_type"):
+        aggregate_benchmark_artifact(wrong_type)
+    with pytest.raises(ValueError, match="duplicate"):
+        aggregate_benchmark_artifact(duplicate)
+
+
 def test_provider_summary_reads_cache_from_completion_usage_totals():
     from pico.evaluation.provider_benchmark import _provider_summary_from_artifact
 
     summary = _provider_summary_from_artifact(
         {
+            "record_type": "fixed_benchmark_result",
+            "format_version": 1,
             "rows": [
                 {
                     "report": {
@@ -74,6 +121,76 @@ def test_provider_summary_reads_cache_from_completion_usage_totals():
     assert summary["cache_hit_rate"] == 1.0
 
 
+def test_provider_summary_validates_fixed_result_header_before_rows():
+    from pico.evaluation.provider_benchmark import _provider_summary_from_artifact
+
+    with pytest.raises(ValueError, match="format_version"):
+        _provider_summary_from_artifact(
+            {
+                "record_type": "fixed_benchmark_result",
+                "format_version": True,
+                "rows": "poisoned-business-shape",
+            }
+        )
+
+
+@pytest.mark.parametrize("corruption", ["version", "duplicate"])
+def test_collect_resume_metrics_rejects_invalid_provider_artifact(
+    tmp_path, monkeypatch, corruption
+):
+    from pico.evaluation import metrics_reports
+
+    benchmark = tmp_path / "fixed.json"
+    benchmark.write_text(
+        json.dumps(
+            {
+                "record_type": "fixed_benchmark_result",
+                "format_version": 1,
+                "rows": [],
+                "summary": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    provider = tmp_path / "provider.json"
+    if corruption == "version":
+        provider.write_text(
+            json.dumps(
+                {
+                    "record_type": "provider_experiment_result",
+                    "format_version": True,
+                    "providers": "poisoned-business-shape",
+                }
+            ),
+            encoding="utf-8",
+        )
+        expected = "format_version"
+    else:
+        provider.write_text(
+            '{"record_type":"provider_experiment_result","format_version":1,'
+            '"providers":[],"nested":{"key":1,"key":2}}',
+            encoding="utf-8",
+        )
+        expected = "duplicate"
+    for name in (
+        "build_stress_agent_metrics",
+        "run_memory_dependency_experiment",
+        "run_large_scale_memory_experiment",
+        "run_context_stress_matrix",
+        "run_security_experiment_suite",
+    ):
+        monkeypatch.setattr(metrics_reports, name, lambda **kwargs: {})
+
+    with pytest.raises(ValueError, match=expected):
+        metrics_reports.collect_resume_metrics(
+            benchmark,
+            runs,
+            provider_experiments=provider,
+        )
+
+
 def test_run_context_ablation_v2_writes_expected_artifact(tmp_path):
     artifact_path = tmp_path / "artifacts" / "context-ablation-v2.json"
 
@@ -83,7 +200,8 @@ def test_run_context_ablation_v2_writes_expected_artifact(tmp_path):
     )
 
     assert artifact_path.exists()
-    assert artifact["artifact_type"] == "context-ablation-v2"
+    assert artifact["record_type"] == "context_ablation_result"
+    assert artifact["format_version"] == 1
     assert artifact["config_count"] == 12
     assert len(artifact["configs"]) == 12
     assert "current_request_preserved_rate" in artifact["summary"]
@@ -276,7 +394,8 @@ def test_run_memory_ablation_v2_writes_expected_artifact(tmp_path):
     )
 
     assert artifact_path.exists()
-    assert artifact["artifact_type"] == "memory-ablation-v2"
+    assert artifact["record_type"] == "memory_ablation_result"
+    assert artifact["format_version"] == 1
     assert artifact["task_count"] == 12
     assert set(artifact["variants"]) == {"memory_on", "memory_off", "memory_irrelevant"}
     assert "memory_hit_rate" in artifact["variants"]["memory_on"]
@@ -302,7 +421,8 @@ def test_run_recovery_ablation_v2_writes_expected_artifact(tmp_path):
     )
 
     assert artifact_path.exists()
-    assert artifact["artifact_type"] == "recovery-ablation-v2"
+    assert artifact["record_type"] == "recovery_ablation_result"
+    assert artifact["format_version"] == 1
     assert artifact["task_count"] == 8
     assert set(artifact["variants"]) == {"resume_enabled", "resume_disabled"}
     assert set(artifact["variants"]["resume_enabled"]["summary"]) >= {
@@ -319,7 +439,7 @@ def test_write_benchmark_core_report_marks_resume_safe_metrics(tmp_path):
     run_recovery_ablation_v2(tmp_path / "artifacts" / "recovery-ablation-v2.json", repetitions=1)
     harness_artifact_path = tmp_path / "artifacts" / "harness-regression-v2.json"
     harness_artifact_path.write_text(
-        '{"summary":{"total_tasks":12,"pass_rate":1.0,"within_budget_rate":1.0,"verifier_pass_rate":1.0},"failure_category_counts":{}}',
+        '{"record_type":"fixed_benchmark_result","format_version":1,"summary":{"total_tasks":12,"pass_rate":1.0,"within_budget_rate":1.0,"verifier_pass_rate":1.0},"failure_category_counts":{}}',
         encoding="utf-8",
     )
 
@@ -337,6 +457,62 @@ def test_write_benchmark_core_report_marks_resume_safe_metrics(tmp_path):
     assert "只适合放文档/面试展开的指标" in report_text
     assert "resume_success_rate" in report_text
     assert "memory_hit_rate" in report_text
+
+
+@pytest.mark.parametrize(
+    ("name", "record_type"),
+    [
+        ("harness", "fixed_benchmark_result"),
+        ("context", "context_ablation_result"),
+        ("memory", "memory_ablation_result"),
+        ("recovery", "recovery_ablation_result"),
+    ],
+)
+def test_core_report_rejects_each_noncurrent_input_before_business(
+    tmp_path, name, record_type
+):
+    payloads = {
+        "harness": {
+            "record_type": "fixed_benchmark_result",
+            "format_version": 1,
+            "summary": {},
+        },
+        "context": {
+            "record_type": "context_ablation_result",
+            "format_version": 1,
+            "summary": {},
+        },
+        "memory": {
+            "record_type": "memory_ablation_result",
+            "format_version": 1,
+            "variants": {},
+        },
+        "recovery": {
+            "record_type": "recovery_ablation_result",
+            "format_version": 1,
+            "variants": {},
+        },
+    }
+    payloads[name] = {
+        "record_type": record_type,
+        "format_version": True,
+        "summary": "poisoned-business-shape",
+        "variants": "poisoned-business-shape",
+    }
+    paths = {}
+    for family, payload in payloads.items():
+        path = tmp_path / f"{family}.json"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        paths[family] = path
+
+    with pytest.raises(ValueError, match="format_version"):
+        write_benchmark_core_report(
+            report_path=tmp_path / "report.md",
+            harness_artifact_path=paths["harness"],
+            context_artifact_path=paths["context"],
+            memory_artifact_path=paths["memory"],
+            recovery_artifact_path=paths["recovery"],
+        )
 
 
 def test_provider_selection_normalizes_default_all_and_single_provider():
@@ -384,6 +560,8 @@ def test_run_provider_experiments_targets_selected_provider(tmp_path, monkeypatc
 
     assert seen == ["deepseek"]
     assert payload == {
+        "record_type": "provider_experiment_result",
+        "format_version": 1,
         "providers": [
             {
                 "provider": "deepseek",
@@ -419,8 +597,75 @@ def test_run_provider_experiments_default_keeps_three_provider_order(tmp_path, m
     )
 
     assert seen == ["gpt", "claude", "deepseek"]
+    assert payload["record_type"] == "provider_experiment_result"
+    assert payload["format_version"] == 1
     assert [row["provider"] for row in payload["providers"]] == [
         "gpt",
         "claude",
         "deepseek",
     ]
+
+
+def test_provider_script_writes_current_provider_family(tmp_path, monkeypatch):
+    from scripts import run_provider_experiments as script
+
+    payload = {
+        "record_type": "provider_experiment_result",
+        "format_version": 1,
+        "providers": [],
+    }
+    monkeypatch.setattr(script, "run_provider_experiments", lambda **kwargs: payload)
+    output = tmp_path / "providers.json"
+
+    assert script.main(["--output-json", str(output)]) == 0
+    assert json.loads(output.read_text(encoding="utf-8")) == payload
+
+
+def test_large_scale_script_versions_independent_family_outputs(
+    tmp_path, monkeypatch
+):
+    from scripts import run_large_scale_experiments as script
+
+    provider_payload = {
+        "record_type": "provider_experiment_result",
+        "format_version": 1,
+        "providers": [],
+    }
+    metrics = {
+        "memory_large_experiment": {"variants": {}},
+        "context_experiment": {"configs": []},
+        "security_experiment": {"scenarios": []},
+    }
+    monkeypatch.setattr(
+        script, "run_provider_experiments", lambda **kwargs: provider_payload
+    )
+    monkeypatch.setattr(script, "collect_resume_metrics", lambda *args, **kwargs: metrics)
+    monkeypatch.setattr(script, "render_resume_metrics_markdown", lambda payload: "resume")
+    monkeypatch.setattr(script, "render_large_scale_experiment_report", lambda payload: "report")
+    paths = {
+        name: tmp_path / f"{name}.json"
+        for name in ("provider", "resume", "memory", "context", "security")
+    }
+
+    assert script.main(
+        [
+            "--benchmark-artifact", str(tmp_path / "fixed.json"),
+            "--runs-root", str(tmp_path / "runs"),
+            "--provider-output-json", str(paths["provider"]),
+            "--resume-output-json", str(paths["resume"]),
+            "--resume-output-markdown", str(tmp_path / "resume.md"),
+            "--memory-output-json", str(paths["memory"]),
+            "--context-output-json", str(paths["context"]),
+            "--security-output-json", str(paths["security"]),
+            "--final-report-markdown", str(tmp_path / "report.md"),
+        ]
+    ) == 0
+    assert json.loads(paths["provider"].read_text(encoding="utf-8")) == provider_payload
+    memory = json.loads(paths["memory"].read_text(encoding="utf-8"))
+    context = json.loads(paths["context"].read_text(encoding="utf-8"))
+    assert (memory["record_type"], memory["format_version"]) == (
+        "memory_ablation_result", 1
+    )
+    assert (context["record_type"], context["format_version"]) == (
+        "context_ablation_result", 1
+    )

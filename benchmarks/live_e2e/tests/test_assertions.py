@@ -1264,8 +1264,40 @@ def test_report_cannot_pass_when_aborted_or_short(tmp_path):
     )
 
     payload = json.loads(report_path.read_text(encoding="utf-8"))
+    assert payload["record_type"] == "live_e2e_report"
+    assert payload["format_version"] == 1
     assert payload["overall_pass"] is False
     assert payload["aborted_reason"] == "provider_error_turn_1"
+
+
+@pytest.mark.parametrize("version", [None, True, 1.0, "1", 2])
+def test_live_report_reader_rejects_noncurrent_header_before_business(
+    tmp_path, version
+):
+    payload = {
+        "record_type": "live_e2e_report",
+        "format_version": version,
+        "overall_pass": "poisoned-business-shape",
+    }
+    if version is None:
+        payload.pop("format_version")
+    path = tmp_path / "report.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="format_version"):
+        run_live_session.load_live_report(path)
+
+
+def test_live_report_reader_rejects_nested_duplicate_keys(tmp_path):
+    path = tmp_path / "report.json"
+    path.write_text(
+        '{"record_type":"live_e2e_report","format_version":1,'
+        '"overall_pass":false,"totals":{"turns":1,"turns":2}}',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="duplicate"):
+        run_live_session.load_live_report(path)
 
 
 def test_report_cannot_pass_with_an_empty_turn_assertion_list(tmp_path):

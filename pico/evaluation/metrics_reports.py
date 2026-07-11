@@ -2,15 +2,21 @@ import json
 from pathlib import Path
 
 from .metrics_common import (
+    CONTEXT_ABLATION_FORMAT_VERSION,
     DEFAULT_CORE_REPORT_PATH,
     DEFAULT_CONTEXT_ABLATION_V2_PATH,
     DEFAULT_HARNESS_REGRESSION_V2_PATH,
     DEFAULT_MEMORY_ABLATION_V2_PATH,
     DEFAULT_RECOVERY_ABLATION_V2_PATH,
+    MEMORY_ABLATION_FORMAT_VERSION,
+    RECOVERY_ABLATION_FORMAT_VERSION,
+    _load_json_artifact,
     _parse_iso8601,
     _safe_mean,
     _safe_ratio,
 )
+from .fixed_benchmark import FIXED_BENCHMARK_RESULT_FORMAT_VERSION
+from .provider_benchmark import PROVIDER_EXPERIMENT_FORMAT_VERSION
 from .experiments_real import (
     run_real_context_experiment,
     run_real_memory_experiment,
@@ -26,7 +32,11 @@ from .experiments_synthetic import (
 
 
 def aggregate_benchmark_artifact(path):
-    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    payload = _load_json_artifact(
+        path,
+        "fixed_benchmark_result",
+        FIXED_BENCHMARK_RESULT_FORMAT_VERSION,
+    )
     rows = list(payload.get("rows", []))
     summary = dict(payload.get("summary", {}))
     task_count = int(summary.get("total_tasks", len(rows) or 0))
@@ -183,7 +193,11 @@ def collect_resume_metrics(
         security = run_security_experiment_suite(repetitions=security_repetitions)
     provider_payload = {"providers": []}
     if provider_experiments:
-        provider_payload = json.loads(Path(provider_experiments).read_text(encoding="utf-8"))
+        provider_payload = _load_json_artifact(
+            provider_experiments,
+            "provider_experiment_result",
+            PROVIDER_EXPERIMENT_FORMAT_VERSION,
+        )
     return {
         "experiment_mode": experiment_mode,
         "real_provider": real_provider if experiment_mode == "real" else "",
@@ -343,10 +357,26 @@ def write_benchmark_core_report(
     memory_artifact_path=DEFAULT_MEMORY_ABLATION_V2_PATH,
     recovery_artifact_path=DEFAULT_RECOVERY_ABLATION_V2_PATH,
 ):
-    harness = json.loads(Path(harness_artifact_path).read_text(encoding="utf-8"))
-    context = json.loads(Path(context_artifact_path).read_text(encoding="utf-8"))
-    memory = json.loads(Path(memory_artifact_path).read_text(encoding="utf-8"))
-    recovery = json.loads(Path(recovery_artifact_path).read_text(encoding="utf-8"))
+    harness = _load_json_artifact(
+        harness_artifact_path,
+        "fixed_benchmark_result",
+        FIXED_BENCHMARK_RESULT_FORMAT_VERSION,
+    )
+    context = _load_json_artifact(
+        context_artifact_path,
+        "context_ablation_result",
+        CONTEXT_ABLATION_FORMAT_VERSION,
+    )
+    memory = _load_json_artifact(
+        memory_artifact_path,
+        "memory_ablation_result",
+        MEMORY_ABLATION_FORMAT_VERSION,
+    )
+    recovery = _load_json_artifact(
+        recovery_artifact_path,
+        "recovery_ablation_result",
+        RECOVERY_ABLATION_FORMAT_VERSION,
+    )
 
     harness_summary = harness.get("summary", {})
     context_summary = context.get("summary", {})

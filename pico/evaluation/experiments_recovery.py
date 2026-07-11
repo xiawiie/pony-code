@@ -9,10 +9,12 @@ from ..session_store import SessionStore
 from ..workspace import WorkspaceContext
 from .experiments_synthetic import run_context_stress_matrix, run_large_scale_memory_experiment
 from .metrics_common import (
+    CONTEXT_ABLATION_FORMAT_VERSION,
     DEFAULT_CONTEXT_ABLATION_V2_PATH,
     DEFAULT_MEMORY_ABLATION_V2_PATH,
     DEFAULT_RECOVERY_ABLATION_V2_PATH,
-    METRICS_SCHEMA_VERSION,
+    MEMORY_ABLATION_FORMAT_VERSION,
+    RECOVERY_ABLATION_FORMAT_VERSION,
     _safe_ratio,
     _utc_timestamp,
 )
@@ -288,8 +290,8 @@ def _recovery_variant_summary(rows):
 def run_context_ablation_v2(artifact_path=DEFAULT_CONTEXT_ABLATION_V2_PATH, repetitions=5):
     payload = run_context_stress_matrix(repetitions=repetitions)
     artifact = {
-        "schema_version": METRICS_SCHEMA_VERSION,
-        "artifact_type": "context-ablation-v2",
+        "record_type": "context_ablation_result",
+        "format_version": CONTEXT_ABLATION_FORMAT_VERSION,
         "captured_at": _utc_timestamp(),
         "config_count": payload["config_count"],
         "configs": payload["configs"],
@@ -301,8 +303,8 @@ def run_context_ablation_v2(artifact_path=DEFAULT_CONTEXT_ABLATION_V2_PATH, repe
 def run_memory_ablation_v2(artifact_path=DEFAULT_MEMORY_ABLATION_V2_PATH, repetitions=5):
     payload = run_large_scale_memory_experiment(repetitions=repetitions)
     artifact = {
-        "schema_version": METRICS_SCHEMA_VERSION,
-        "artifact_type": "memory-ablation-v2",
+        "record_type": "memory_ablation_result",
+        "format_version": MEMORY_ABLATION_FORMAT_VERSION,
         "captured_at": _utc_timestamp(),
         "task_count": payload["task_count"],
         "runs_per_variant": payload["runs_per_variant"],
@@ -321,8 +323,8 @@ def run_recovery_ablation_v2(artifact_path=DEFAULT_RECOVERY_ABLATION_V2_PATH, re
             for variant in variants:
                 variants[variant].append(_run_recovery_task_variant(task, variant))
     artifact = {
-        "schema_version": METRICS_SCHEMA_VERSION,
-        "artifact_type": "recovery-ablation-v2",
+        "record_type": "recovery_ablation_result",
+        "format_version": RECOVERY_ABLATION_FORMAT_VERSION,
         "captured_at": _utc_timestamp(),
         "task_count": len(RECOVERY_ABLATION_TASKS),
         "variants": {
