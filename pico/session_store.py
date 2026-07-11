@@ -2,13 +2,9 @@
 
 from copy import deepcopy
 import json
-import os
 import re
-import stat
-import tempfile
 import time
 import uuid
-from pathlib import Path
 
 from . import file_lock
 from .messages import MessageValidationError, validate_messages
@@ -16,7 +12,10 @@ from .security import (
     ensure_private_dir,
     ensure_private_file,
     harden_private_tree,
+    private_directory_identity,
+    read_private_bytes,
     require_regular_no_symlink,
+    write_private_bytes_atomic,
 )
 
 class SessionMigrationError(ValueError):
@@ -33,7 +32,7 @@ def _history_to_messages(history):
         role = entry.get("role")
         created_at = entry.get("created_at")
         if not isinstance(role, str):
-            raise SessionMigrationError(f"unknown history role: {role!r}")
+            raise SessionMigrationError("unknown history role")
         if role in {"user", "assistant"}:
             content = entry.get("content")
             if not isinstance(content, str):
@@ -81,7 +80,7 @@ def _history_to_messages(history):
                 },
             ])
             continue
-        raise SessionMigrationError(f"unknown history role: {role!r}")
+        raise SessionMigrationError("unknown history role")
     return messages
 
 
@@ -108,12 +107,12 @@ def migrate_session_to_v3(session):
         raise SessionMigrationError("invalid session schema version")
     try:
         version = int(raw_version)
-    except (TypeError, ValueError, OverflowError) as exc:
-        raise SessionMigrationError("invalid session schema version") from exc
+    except (TypeError, ValueError, OverflowError):
+        version = None
+    if version is None:
+        raise SessionMigrationError("invalid session schema version")
     if version not in {1, 2, 3}:
-        raise SessionMigrationError(
-            f"unsupported session schema version: {version}"
-        )
+        raise SessionMigrationError("unsupported session schema version")
     history = migrated.get("history", [])
 
     if version == 3:
@@ -147,7 +146,7 @@ def migrate_session_to_v3(session):
     try:
         validate_messages(selected, require_meta=True)
     except MessageValidationError as exc:
-        raise SessionMigrationError(str(exc)) from exc
+        raise SessionMigrationError(str(exc)) from None
 
     migrated["messages"] = selected
     migrated.pop("history", None)
@@ -165,7 +164,7 @@ _SESSION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 def _session_id(value):
     session_id = str(value or "")
     if not _SESSION_ID_RE.fullmatch(session_id):
-        raise ValueError(f"invalid session id: {session_id!r}")
+        raise ValueError("invalid session id")
     return session_id
 
 
@@ -193,123 +192,44 @@ def _prepare_v3_payload(value, session_id):
     return payload
 
 
-def _atomic_write_locked(path, payload):
-    temp_path = None
-    temp_identity = None
-    try:
-        path = require_regular_no_symlink(path, allow_missing=True)
-        with tempfile.NamedTemporaryFile(
-            "w",
-            encoding="utf-8",
-            delete=False,
-            dir=str(path.parent),
-            prefix=path.name + ".",
-            suffix=".tmp",
-        ) as handle:
-            temp_path = Path(handle.name)
-            opened = os.fstat(handle.fileno())
-            temp_identity = (opened.st_dev, opened.st_ino)
-            os.fchmod(handle.fileno(), 0o600)
-            json.dump(payload, handle, indent=2)
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        current = temp_path.lstat()
-        if (
-            not stat.S_ISREG(current.st_mode)
-            or current.st_nlink != 1
-            or (current.st_dev, current.st_ino) != temp_identity
-        ):
-            raise ValueError("session temp changed")
-        temp_path.replace(path)
-        installed = path.lstat()
-        if (
-            not stat.S_ISREG(installed.st_mode)
-            or installed.st_nlink != 1
-            or (installed.st_dev, installed.st_ino) != temp_identity
-        ):
-            if (
-                not stat.S_ISREG(installed.st_mode)
-                or (installed.st_dev, installed.st_ino) == temp_identity
-            ):
-                path.unlink()
-            raise ValueError("session temp changed")
-        ensure_private_file(path)
-        _fsync_directory(path.parent)
-    finally:
-        if temp_path is not None and temp_identity is not None:
-            _remove_created_file(temp_path, temp_identity)
+def _atomic_write_locked(path, payload, root, root_identity):
+    rendered = (json.dumps(payload, indent=2) + "\n").encode("utf-8")
+    write_private_bytes_atomic(
+        path,
+        rendered,
+        trusted_root=root,
+        trusted_root_identity=root_identity,
+        error="session temp changed",
+    )
 
 
-def _fsync_directory(path):
-    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
-    descriptor = os.open(path, flags)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-
-
-def _remove_created_file(path, identity):
-    try:
-        current = path.lstat()
-    except FileNotFoundError:
-        return
-    if (current.st_dev, current.st_ino) == identity:
-        path.unlink()
-
-
-def _write_backup_locked(session_path, raw_bytes, session_id, source_version):
+def _write_backup_locked(
+    session_path,
+    raw_bytes,
+    session_id,
+    source_version,
+    root,
+    root_identity,
+):
     backup_dir = ensure_private_dir(session_path.parent / "backup")
     backup_path = backup_dir / (
         f"{session_id}.v{source_version}.{time.time_ns()}."
         f"{uuid.uuid4().hex}.json"
     )
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-    flags |= getattr(os, "O_CLOEXEC", 0)
-    flags |= getattr(os, "O_NOFOLLOW", 0)
-    descriptor = os.open(backup_path, flags, 0o600)
-    opened = os.fstat(descriptor)
-    identity = (opened.st_dev, opened.st_ino)
-    completed = False
-    try:
-        current = os.stat(backup_path, follow_symlinks=False)
-        if (
-            not stat.S_ISREG(opened.st_mode)
-            or opened.st_nlink != 1
-            or current.st_nlink != 1
-            or (current.st_dev, current.st_ino) != identity
-        ):
-            raise ValueError("session backup changed")
-        os.fchmod(descriptor, 0o600)
-        with os.fdopen(descriptor, "wb") as handle:
-            descriptor = -1
-            opened = os.fstat(handle.fileno())
-            current = os.stat(backup_path, follow_symlinks=False)
-            if (
-                opened.st_nlink != 1
-                or current.st_nlink != 1
-                or (opened.st_dev, opened.st_ino) != identity
-                or (current.st_dev, current.st_ino) != identity
-            ):
-                raise ValueError("session backup changed")
-            handle.write(raw_bytes)
-            handle.flush()
-            os.fsync(handle.fileno())
-        ensure_private_file(backup_path)
-        _fsync_directory(backup_dir)
-        completed = True
-    finally:
-        if descriptor >= 0:
-            os.close(descriptor)
-        if not completed:
-            _remove_created_file(backup_path, identity)
+    write_private_bytes_atomic(
+        backup_path,
+        raw_bytes,
+        trusted_root=root,
+        trusted_root_identity=root_identity,
+        error="session backup changed",
+    )
     return backup_path
 
 
 class SessionStore:
     def __init__(self, root, redactor=None):
         self.root = harden_private_tree(root)
+        self._root_identity = private_directory_identity(self.root)
         self.lock_path = self.root / ".session_store.lock"
         self._redactor = redactor or _identity
         self._redactor_configured = redactor is not None
@@ -330,23 +250,28 @@ class SessionStore:
         path = self.path(session_id)
         try:
             source_version = int(session.get("schema_version", 1) or 1)
-        except (TypeError, ValueError, OverflowError) as exc:
-            raise SessionMigrationError("invalid session schema version") from exc
+        except (TypeError, ValueError, OverflowError):
+            source_version = None
+        if source_version is None:
+            raise SessionMigrationError("invalid session schema version")
         safe_session = self._redactor(deepcopy(session))
         if source_version == 3:
             payload = _prepare_v3_payload(safe_session, session_id)
         else:
             payload = safe_session
         with file_lock.locked_file(self.lock_path):
-            _atomic_write_locked(path, payload)
+            _atomic_write_locked(path, payload, self.root, self._root_identity)
         return path
 
     def load(self, session_id):
         session_id = _session_id(session_id)
         path = self.path(session_id)
         with file_lock.locked_file(self.lock_path):
-            path = ensure_private_file(require_regular_no_symlink(path))
-            raw = path.read_bytes()
+            raw = read_private_bytes(
+                path,
+                trusted_root=self.root,
+                trusted_root_identity=self._root_identity,
+            )
             duplicate_keys = False
 
             def decode_object(pairs):
@@ -363,23 +288,38 @@ class SessionStore:
                     raw.decode("utf-8"),
                     object_pairs_hook=decode_object,
                 )
-            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-                raise SessionMigrationError(
-                    f"failed to decode session {session_id}"
-                ) from exc
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                decoded = None
+                decode_failed = True
+            else:
+                decode_failed = False
+            if decode_failed:
+                raise SessionMigrationError("failed to decode session")
             if not isinstance(decoded, dict) or decoded.get("id") != session_id:
                 raise SessionMigrationError("session id does not match file name")
             try:
                 version = int(decoded.get("schema_version", 1) or 1)
-            except (TypeError, ValueError, OverflowError) as exc:
-                raise SessionMigrationError(
-                    "invalid session schema version"
-                ) from exc
+            except (TypeError, ValueError, OverflowError):
+                version = None
+            if version is None:
+                raise SessionMigrationError("invalid session schema version")
             migrated = migrate_session_to_v3(decoded)
             payload = _prepare_v3_payload(self._redactor(migrated), session_id)
             if duplicate_keys or payload != decoded:
-                _write_backup_locked(path, raw, session_id, version)
-                _atomic_write_locked(path, payload)
+                _write_backup_locked(
+                    path,
+                    raw,
+                    session_id,
+                    version,
+                    self.root,
+                    self._root_identity,
+                )
+                _atomic_write_locked(
+                    path,
+                    payload,
+                    self.root,
+                    self._root_identity,
+                )
             return payload
 
     def latest(self):

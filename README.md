@@ -291,6 +291,9 @@ pico-cli --format json checkpoints list
 安全边界如下：
 
 - `pico-cli config set-secret NAME [--stdin]` 是唯一的 CLI secret 写入路径；`init` 不接受 API key 参数。
+- DeepSeek secret 可交互写入：`pico-cli --cwd <repo> config set-secret PICO_DEEPSEEK_API_KEY`。
+- DeepSeek secret 也可从标准输入写入：`pico-cli --cwd <repo> config set-secret PICO_DEEPSEEK_API_KEY --stdin`；secret value 从不接受 argv 传入。
+- Recovery Review 使用 `pico-cli --cwd <repo> checkpoints pending`、`pico-cli --cwd <repo> checkpoints resolve-pending <id>` 预览，以及 `pico-cli --cwd <repo> checkpoints resolve-pending <id> --apply` 显式应用。
 - 直接工具和自动 shell 都会拒绝敏感路径或敏感内容。
 - 自动 shell 只执行精确 allowlist 中可证明安全的 argv，并固定使用 `shell=False`。
 - 经用户批准的复杂 shell 是 human-authorized escape hatch，不是 OS sandbox，也不受自动路径策略的静态隔离保证。
@@ -298,6 +301,8 @@ pico-cli --format json checkpoints list
 - Pico 不提供 encryption、Vault integration、container 或 OS sandbox。
 - 外部进程在校验后并发修改 Git marker、结构元数据、config 或 index 仍是残余风险；Pico 的校验不是 OS sandbox 或 immutable snapshot。
 - 当前 A 阶段 hardened gitfile/locking 边界以 POSIX/macOS 为目标，所需安全原语不可用时 fail closed；Windows 等价机制留待后续设计。
+- restore 对单文件原子替换，对多文件使用持久化 journal；`partial`、`applying` 与无效 mutation evidence 必须进入 Recovery Review。
+- resolution 永远 preview-first；无效证据会被私有 quarantine，而不是直接删除。
 
 每次运行结束后，都会在 `.pico/runs/<run_id>/` 下写出这些文件：
 

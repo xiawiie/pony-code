@@ -9,10 +9,13 @@ locally before/after a change to spot regressions.
 uv run python -m benchmarks.perf.bench_build_v2 > results-build_v2.json
 uv run python -m benchmarks.perf.bench_retrieval > results-retrieval.json
 uv run python -m benchmarks.perf.bench_recall > results-recall.json
+uv run python -m benchmarks.perf.bench_security_recovery > results-security-recovery.json
 ```
 
 Each script prints a JSON document with per-scenario `median_ns`,
 `p95_ns`, and `min_ns`. Diff two runs to spot regressions.
+These are parseable local smokes only; no machine-specific latency threshold is
+part of the acceptance gate.
 
 ## When to re-run
 

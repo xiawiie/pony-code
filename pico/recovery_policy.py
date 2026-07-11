@@ -876,6 +876,63 @@ def _looks_binary(sample):
     return textish / len(sample) < 0.85
 
 
+def snapshot_bytes_eligibility(
+    workspace_root,
+    raw_path,
+    data,
+    *,
+    max_blob_size=DEFAULT_MAX_BLOB_SIZE,
+    env=None,
+    secret_env_names=(),
+):
+    """Classify the exact bytes a caller owns before they may enter blob storage."""
+    del workspace_root  # Kept in the public contract for policy-call consistency.
+    try:
+        normalized = normalize_workspace_relative_path(raw_path)
+    except ValueError:
+        return {
+            "snapshot_eligible": False,
+            "ineligible_reason": "invalid_path",
+            "path": "",
+        }
+    result = {
+        "snapshot_eligible": True,
+        "ineligible_reason": "",
+        "path": normalized,
+    }
+    if securitylib.is_sensitive_path(normalized):
+        result["snapshot_eligible"] = False
+        result["ineligible_reason"] = "sensitive_path"
+        return result
+    if not isinstance(data, (bytes, bytearray)):
+        result["snapshot_eligible"] = False
+        result["ineligible_reason"] = "read_failed"
+        return result
+    owned = bytes(data)
+    if len(owned) > max_blob_size:
+        result["snapshot_eligible"] = False
+        result["ineligible_reason"] = "file_too_large"
+        return result
+    if Path(normalized).suffix.casefold() in _BINARY_EXTENSIONS or _looks_binary(owned):
+        result["snapshot_eligible"] = False
+        result["ineligible_reason"] = "binary_file"
+        return result
+    try:
+        text = owned.decode("utf-8")
+    except UnicodeDecodeError:
+        result["snapshot_eligible"] = False
+        result["ineligible_reason"] = "binary_file"
+        return result
+    if securitylib.contains_secret_material(
+        text,
+        env=env,
+        secret_env_names=secret_env_names,
+    ):
+        result["snapshot_eligible"] = False
+        result["ineligible_reason"] = "sensitive_content"
+    return result
+
+
 def snapshot_eligibility(
     workspace_root,
     raw_path,
@@ -981,19 +1038,11 @@ def snapshot_eligibility(
         result["ineligible_reason"] = "read_failed"
         result["detail"] = "read failed"
         return result
-    if len(data) > max_blob_size:
-        result["snapshot_eligible"] = False
-        result["ineligible_reason"] = "file_too_large"
-        return result
-    if _looks_binary(data):
-        result["snapshot_eligible"] = False
-        result["ineligible_reason"] = "binary_file"
-        return result
-    if securitylib.contains_secret_material(
-        data.decode("utf-8", errors="replace"),
+    return snapshot_bytes_eligibility(
+        workspace_root,
+        normalized,
+        data,
+        max_blob_size=max_blob_size,
         env=env,
         secret_env_names=secret_env_names,
-    ):
-        result["snapshot_eligible"] = False
-        result["ineligible_reason"] = "sensitive_content"
-    return result
+    )

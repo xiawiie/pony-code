@@ -48,7 +48,7 @@ def main():
             ("full_recent", [[f"workspace/agent/note-{i}.md" for i in range(5)]]),
         ]:
             with tempfile.TemporaryDirectory() as td:
-                root = Path(td)
+                root = Path(td).resolve()
                 _populate(root, note_count)
                 store = BlockStore(workspace_root=root, user_root=root / "user")
                 ret = Retrieval(store)

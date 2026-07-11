@@ -1,17 +1,19 @@
 """Recovery command handlers for Pico's explicit CLI surface."""
 
 import json
+import hashlib
 import os
 from pathlib import Path
 import re
 import stat
 
 from .checkpoint_store import CheckpointStore
-from .cli_errors import CLI_EXIT_USAGE, CliError
+from .cli_errors import CLI_EXIT_RUNTIME, CLI_EXIT_USAGE, CliError
 from .cli_output import build_inspection_redactor, print_inspection_result
 from .recovery_checkpoint_writer import RecoveryCheckpointWriter
-from .recovery_manager import RecoveryManager
+from .recovery_manager import RecoveryManager, collect_recovery_review_items
 from .security import require_regular_no_symlink
+from .tool_change_recorder import ToolChangeRecorder
 from .workspace import WorkspaceContext  # noqa: F401
 
 
@@ -26,8 +28,36 @@ def handle_checkpoints(root, tokens, args):
         raise _unsafe_artifact_error() from exc
     sub = tokens[0] if tokens else "list"
     rest = tokens[1:]
+    if sub == "pending" and not rest:
+        data = collect_recovery_review_items(store, root)
+        return print_inspection_result(
+            root,
+            "checkpoints_pending",
+            data,
+            args,
+            _render_pending_reviews,
+            redactor=redactor,
+        )
+    if sub == "resolve-pending" and _is_resolve_pending_args(rest):
+        result = _resolve_pending_record(
+            store,
+            root,
+            rest[0],
+            apply_flag="--apply" in rest[1:],
+        )
+        return print_inspection_result(
+            root,
+            "checkpoints_resolve_pending",
+            result,
+            args,
+            _render_json_body,
+            redactor=redactor,
+        )
     if sub == "list" and not rest:
-        records = store.list_checkpoint_records()
+        try:
+            records = store.list_checkpoint_records(strict=True)
+        except (OSError, ValueError) as exc:
+            raise _unsafe_artifact_error() from exc
         return print_inspection_result(
             root,
             "checkpoints_list",
@@ -74,13 +104,18 @@ def handle_checkpoints(root, tokens, args):
                 redactor=redactor,
             )
         result = _apply_restore(manager, checkpoint_id, redactor=redactor)
-        return print_inspection_result(
+        exit_code = print_inspection_result(
             root,
             "checkpoints_restore",
             result,
             args,
             _render_json_body,
             redactor=redactor,
+        )
+        return (
+            CLI_EXIT_RUNTIME
+            if result.get("status") in {"blocked", "failed", "partial"}
+            else exit_code
         )
     if sub == "prune":
         prune_options = _parse_prune_args(rest)
@@ -105,7 +140,7 @@ def handle_checkpoints(root, tokens, args):
         )
     raise CliError(
         code="usage",
-        message="usage: pico-cli checkpoints {list | show <id> | preview-restore <id> | restore <id> [--apply] | prune [--older-than <duration>] [--apply]}",
+        message="usage: pico-cli checkpoints {list | show <id> | pending | resolve-pending <id> [--apply] | preview-restore <id> | restore <id> [--apply] | prune [--older-than <duration>] [--apply]}",
         exit_code=CLI_EXIT_USAGE,
     )
 
@@ -191,6 +226,117 @@ def handle_sessions(root, tokens, args):
     )
 
 
+def _is_resolve_pending_args(rest):
+    return len(rest) == 1 or (
+        len(rest) == 2 and rest[1] == "--apply"
+    )
+
+
+def _resolve_pending_record(store, root, record_id, *, apply_flag):
+    record_id = str(record_id or "")
+    items = collect_recovery_review_items(store, root)
+    invalid = next(
+        (
+            item
+            for item in items["invalid_records"]
+            if item.get("opaque_id") == record_id
+        ),
+        None,
+    )
+    tool_item = next(
+        (
+            item
+            for item in items["tool_changes"]
+            if item.get("tool_change_id") == record_id
+        ),
+        None,
+    )
+    restore_item = next(
+        (
+            item
+            for item in items["restore_journals"]
+            if item.get("checkpoint_id") == record_id
+        ),
+        None,
+    )
+    matches = [
+        (kind, item)
+        for kind, item in (
+            ("invalid", invalid),
+            ("tool_change", tool_item),
+            ("restore", restore_item),
+        )
+        if item is not None
+    ]
+    if len(matches) > 1:
+        raise CliError(
+            code="recovery_review_ambiguous",
+            message="ambiguous recovery review item",
+            hint="Resolve the conflicting local records before retrying.",
+            exit_code=CLI_EXIT_USAGE,
+        )
+    if not matches:
+        raise CliError(
+            code="recovery_review_not_found",
+            message="unknown recovery review item",
+            hint="Run `pico-cli checkpoints pending`.",
+            exit_code=CLI_EXIT_USAGE,
+        )
+    kind, _ = matches[0]
+    if kind == "invalid":
+        if not apply_flag:
+            return dict(invalid)
+        return store.quarantine_invalid_record(
+            record_id, expected_raw_hash=invalid["raw_hash"]
+        )
+    if kind == "tool_change":
+        record, raw = store.load_tool_change_record_snapshot(record_id)
+        record_hash = hashlib.sha256(raw).hexdigest()
+        if not apply_flag:
+            return {
+                **tool_item,
+                "record_hash": record_hash,
+            }
+        return ToolChangeRecorder(store, owner_id="cli").resolve_pending(
+            record_id,
+            reviewed_by="cli",
+            review_reason="explicit_cli_resolution",
+            expected_record_hash=record_hash,
+        )
+    if kind == "restore":
+        manager = RecoveryManager(
+            store,
+            root,
+            checkpoint_writer=RecoveryCheckpointWriter(store, root),
+        )
+        preview = manager.preview_restore_journal_resolution(record_id)
+        if not apply_flag:
+            return preview
+        return manager.resolve_restore_journal(
+            record_id,
+            expected_record_hash=preview["record_hash"],
+            reviewed_by="cli",
+            review_reason="explicit_cli_resolution",
+        )
+    raise AssertionError("unreachable recovery review kind")
+
+
+def _render_pending_reviews(data):
+    lines = []
+    for key in (
+        "tool_changes",
+        "restore_journals",
+        "invalid_records",
+        "quarantined_records",
+    ):
+        for item in data.get(key, []):
+            item_id = item.get("tool_change_id") or item.get(
+                "checkpoint_id"
+            ) or item.get("opaque_id", "-")
+            lines.append(f"{key}\t{item_id}\t{item.get('status', '')}")
+    return "\n".join(lines)
+
+
 def _render_checkpoints_list(records):
     lines = []
     for record in records:
@@ -248,7 +394,10 @@ def _resolve_checkpoint_id(store, value, *, redactor=None):
             exit_code=CLI_EXIT_USAGE,
         )
 
-    records = store.list_checkpoint_records()
+    try:
+        records = store.list_checkpoint_records(strict=True)
+    except (OSError, ValueError) as exc:
+        raise _unsafe_artifact_error() from exc
     ids = []
     for record in records:
         candidate = str(record.get("checkpoint_id", ""))

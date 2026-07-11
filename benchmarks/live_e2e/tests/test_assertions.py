@@ -41,6 +41,120 @@ def _engine(**overrides):
     return AssertionEngine(_config(**overrides))
 
 
+def test_active_artifact_scan_detects_secret_and_mode_failures(tmp_path):
+    secret = "ghp_" + "A" * 32
+    pico_root = tmp_path / ".pico"
+    before = run_live_session.snapshot_private_artifacts(pico_root)
+    run_dir = pico_root / "runs" / "run-test"
+    run_dir.mkdir(parents=True)
+    artifact = run_dir / "trace.jsonl"
+    artifact.write_text(secret, encoding="utf-8")
+    artifact.chmod(0o644)
+    if os.name == "posix":
+        for directory in (pico_root, pico_root / "runs", run_dir):
+            directory.chmod(0o700)
+
+    result = run_live_session.scan_active_private_artifacts(
+        pico_root,
+        before,
+        forbidden_values=(secret,),
+    )
+
+    assert result["files_scanned"] == 1
+    assert result["secret_hits"] == [".pico/runs/run-test/trace.jsonl"]
+    if os.name == "posix":
+        assert result["mode_failures"] == [
+            ".pico/runs/run-test/trace.jsonl:0644"
+        ]
+
+
+def test_active_artifact_scan_ignores_unchanged_baseline_file(tmp_path):
+    pico_root = tmp_path / ".pico"
+    session = pico_root / "sessions" / "old.json"
+    session.parent.mkdir(parents=True)
+    session.write_text("old", encoding="utf-8")
+    if os.name == "posix":
+        pico_root.chmod(0o700)
+        session.parent.chmod(0o700)
+        session.chmod(0o600)
+    before = run_live_session.snapshot_private_artifacts(pico_root)
+
+    result = run_live_session.scan_active_private_artifacts(
+        pico_root,
+        before,
+        forbidden_values=("old",),
+    )
+
+    assert result == {
+        "files_scanned": 0,
+        "secret_hits": [],
+        "mode_failures": [],
+    }
+
+
+def test_fixture_backup_is_private_before_fixture_mutation(tmp_path):
+    if os.name != "posix":
+        pytest.skip("POSIX permission assertion")
+    original = b"setting = 'ordinary-value'\n"
+    (tmp_path / "pico.toml").write_bytes(original)
+    seed = tmp_path / "seed.md"
+    seed.write_text("safe seed\n", encoding="utf-8")
+    fixture = run_live_session.FixtureManager(tmp_path)
+    fixture._seed_source = seed
+
+    fixture.__enter__()
+    try:
+        backup = tmp_path / run_live_session.BACKUP_REL
+        assert backup.read_bytes() == original
+        assert backup.stat().st_mode & 0o777 == 0o600
+        assert backup.parent.stat().st_mode & 0o777 == 0o700
+    finally:
+        fixture.__exit__(None, None, None)
+
+
+def test_fixture_rejects_selected_key_before_backup(tmp_path):
+    secret = "ghp_" + "K" * 32
+    original = ("setting = '" + secret + "'\n").encode()
+    (tmp_path / "pico.toml").write_bytes(original)
+    seed = tmp_path / "seed.md"
+    seed.write_text("safe seed\n", encoding="utf-8")
+    fixture = run_live_session.FixtureManager(
+        tmp_path,
+        forbidden_values=(secret,),
+    )
+    fixture._seed_source = seed
+
+    with pytest.raises(
+        run_live_session.SensitiveDataBlockedError,
+        match="fixture backup",
+    ):
+        fixture.__enter__()
+
+    assert (tmp_path / "pico.toml").read_bytes() == original
+    assert not (tmp_path / run_live_session.BACKUP_REL).exists()
+
+
+def test_fixture_rejects_unlisted_high_confidence_secret_before_backup(
+    tmp_path,
+):
+    secret = "ghp_" + "Z" * 32
+    original = ("setting = '" + secret + "'\n").encode()
+    (tmp_path / "pico.toml").write_bytes(original)
+    fixture = run_live_session.FixtureManager(
+        tmp_path,
+        forbidden_values=("different-selected-provider-key",),
+    )
+
+    with pytest.raises(
+        run_live_session.SensitiveDataBlockedError,
+        match="fixture backup",
+    ):
+        fixture.__enter__()
+
+    assert (tmp_path / "pico.toml").read_bytes() == original
+    assert not (tmp_path / run_live_session.BACKUP_REL).exists()
+
+
 def test_parse_args_selects_exactly_one_supported_provider(monkeypatch):
     monkeypatch.setattr(
         sys,
@@ -125,7 +239,7 @@ def test_main_constructs_live_pico_with_only_read_file(tmp_path, monkeypatch):
     monkeypatch.setattr(
         run_live_session,
         "FixtureManager",
-        lambda _root: nullcontext(),
+        lambda _root, **_kwargs: nullcontext(),
     )
     monkeypatch.setattr(run_live_session, "make_live_client", lambda _config: object())
     monkeypatch.setattr(pico.workspace.WorkspaceContext, "build", lambda _root: object())
@@ -502,7 +616,13 @@ def _pico_stub_with_persisted_v3(tmp_path):
     session = {"schema_version": 3, "messages": _canonical_session_messages()}
     session_path = tmp_path / "session.json"
     session_path.write_text(json.dumps(session), encoding="utf-8")
-    return SimpleNamespace(session=session, session_path=session_path)
+    return SimpleNamespace(
+        session=session,
+        session_path=session_path,
+        model_client=SimpleNamespace(
+            calls=[{"payload_secret_clean": True}]
+        ),
+    )
 
 
 def _turn_result_stub(**overrides):
@@ -607,7 +727,7 @@ def _turn_2_result_stub(**overrides):
         user_prompt="读一下 pico/runtime.py",
         expected_behavior="digest_applied",
         final_answer="ok",
-        metadata={},
+        metadata={"injection_tokens": {"recalled_memory": 1}},
         session_message_count_before=2,
         session_message_count_after=6,
         provider_call_count_this_turn=2,
@@ -618,7 +738,10 @@ def _turn_2_result_stub(**overrides):
         provider_input_messages_len=6,
         current_user_content="",
         usage_complete=True,
-        request_metadata_by_call=({}, {}),
+        request_metadata_by_call=(
+            {"injection_tokens": {"recalled_memory": 1}},
+            {"injection_tokens": {"recalled_memory": 1}},
+        ),
         system_cache_keys=("cache-key", "cache-key"),
         action_origins=("native_tool_use",),
         actual_user_contents=(
@@ -664,6 +787,54 @@ def test_check_turn_2_digest_passes_on_valid_state(tmp_path):
     asserts = engine.check_turn_2_digest(result, pico)
     assert len(asserts) == 12
     assert all(a.passed for a in asserts), [(a.name, a.actual) for a in asserts if not a.passed]
+
+
+def test_check_turn_2_allows_plain_prompt_when_nothing_was_injected(tmp_path):
+    pico, _ = _pico_stub_with_digested_message(
+        "x" * 5000,
+        tmp_path / "runs",
+    )
+    prompt = "读一下 pico/runtime.py"
+    result = _turn_2_result_stub(
+        metadata={"injection_tokens": {"recalled_memory": 0}},
+        request_metadata_by_call=(
+            {"injection_tokens": {"recalled_memory": 0}},
+            {"injection_tokens": {"recalled_memory": 0}},
+        ),
+        actual_user_contents=(prompt, prompt),
+    )
+
+    assertions = _engine().check_turn_2_digest(result, pico)
+
+    assert next(
+        assertion
+        for assertion in assertions
+        if assertion.name == "injected_user_prompt_reaches_every_provider_call"
+    ).passed
+
+
+def test_check_turn_2_fails_when_later_injected_call_lacks_reminder(tmp_path):
+    pico, _ = _pico_stub_with_digested_message(
+        "x" * 5000,
+        tmp_path / "runs",
+    )
+    prompt = "读一下 pico/runtime.py"
+    result = _turn_2_result_stub(
+        metadata={"injection_tokens": {"recalled_memory": 0}},
+        request_metadata_by_call=(
+            {"injection_tokens": {"recalled_memory": 0}},
+            {"injection_tokens": {"recalled_memory": 12}},
+        ),
+        actual_user_contents=(prompt, prompt),
+    )
+
+    assertions = _engine().check_turn_2_digest(result, pico)
+
+    assert not next(
+        assertion
+        for assertion in assertions
+        if assertion.name == "injected_user_prompt_reaches_every_provider_call"
+    ).passed
 
 
 def test_check_turn_2_requires_complete_native_trace_evidence(tmp_path):
@@ -1145,3 +1316,145 @@ def test_report_does_not_serialize_provider_api_key(tmp_path, monkeypatch):
     )
 
     assert "sentinel-secret" not in report_path.read_text(encoding="utf-8")
+
+
+def _security_assertions(artifact_security, calls):
+    pico = MagicMock()
+    pico.model_client.calls = calls
+    assertions = _engine().check_global(
+        [_turn_result_stub(action_origins=("native_tool_use",))],
+        pico,
+        artifact_security,
+    )
+    return {
+        assertion.name: assertion.passed
+        for assertion in assertions
+        if assertion.name
+        in {
+            "provider_payloads_exclude_api_key",
+            "active_artifacts_exclude_api_key",
+            "active_private_artifact_modes",
+        }
+    }
+
+
+def test_global_security_assertions_fail_independently():
+    clean = {"files_scanned": 3, "secret_hits": [], "mode_failures": []}
+    assert _security_assertions(
+        clean,
+        [{"payload_secret_clean": False}],
+    ) == {
+        "provider_payloads_exclude_api_key": False,
+        "active_artifacts_exclude_api_key": True,
+        "active_private_artifact_modes": True,
+    }
+    assert _security_assertions(
+        {**clean, "secret_hits": [".pico/runs/run/trace.jsonl"]},
+        [{"payload_secret_clean": True}],
+    ) == {
+        "provider_payloads_exclude_api_key": True,
+        "active_artifacts_exclude_api_key": False,
+        "active_private_artifact_modes": True,
+    }
+    assert _security_assertions(
+        {**clean, "mode_failures": [".pico/runs/run/trace.jsonl:0644"]},
+        [{"payload_secret_clean": True}],
+    ) == {
+        "provider_payloads_exclude_api_key": True,
+        "active_artifacts_exclude_api_key": True,
+        "active_private_artifact_modes": False,
+    }
+    assert all(
+        _security_assertions(
+            clean,
+            [{"payload_secret_clean": True}],
+        ).values()
+    )
+
+
+def test_report_redacts_full_payload_and_writes_safe_artifact_summary(tmp_path):
+    from pico.security import redact_artifact
+
+    secret = "ghp_" + "R" * 32
+    reporter = Reporter(_config(), tmp_path)
+    result = _turn_result_stub(user_prompt=secret, final_answer=secret)
+    assertion = Assertion(
+        name="safe",
+        passed=False,
+        expected=secret,
+        actual=secret,
+    )
+    artifact_security = {
+        "files_scanned": 2,
+        "secret_hits": [],
+        "mode_failures": [],
+    }
+
+    report_path = reporter.write_json(
+        [result],
+        {1: [assertion], "global": [_passing_assertion()]},
+        reporter.config,
+        {},
+        1,
+        aborted_reason=secret,
+        expected_turn_count=1,
+        session_schema=3,
+        git_head="abc",
+        artifact_security=artifact_security,
+        redactor=lambda value: redact_artifact(
+            value,
+            env={"PICO_LIVE_API_KEY": secret},
+        ),
+        forbidden_values=(secret,),
+    )
+
+    text = report_path.read_text(encoding="utf-8")
+    payload = json.loads(text)
+    assert secret not in text
+    assert payload["artifact_security"] == artifact_security
+    if os.name == "posix":
+        assert report_path.stat().st_mode & 0o777 == 0o600
+
+
+def test_provider_wrapper_blocks_payload_leak_before_delegate():
+    secret = "ghp_" + "W" * 32
+    delegate = MagicMock()
+    wrapper = run_live_session._SniffingProviderWrapper(
+        delegate,
+        forbidden_values=(secret,),
+    )
+
+    with pytest.raises(run_live_session.SensitiveDataBlockedError):
+        wrapper.complete_v2(
+            system="safe",
+            tools=[],
+            messages=[{"role": "user", "content": secret}],
+            max_tokens=10,
+        )
+
+    delegate.complete_v2.assert_not_called()
+    assert wrapper.calls == [
+        {
+            "last_user_content": secret,
+            "call_ts_ns": wrapper.calls[0]["call_ts_ns"],
+            "payload_secret_clean": False,
+        }
+    ]
+
+
+def test_main_preflight_failure_never_constructs_provider(tmp_path, monkeypatch):
+    make_client = MagicMock()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(run_live_session, "load_project_env", lambda root: None)
+    monkeypatch.setattr(run_live_session, "parse_args", lambda: _config())
+    monkeypatch.setattr(
+        run_live_session,
+        "check_env",
+        MagicMock(side_effect=SystemExit(2)),
+    )
+    monkeypatch.setattr(run_live_session, "make_live_client", make_client)
+
+    with pytest.raises(SystemExit, match="2"):
+        run_live_session.main()
+
+    make_client.assert_not_called()

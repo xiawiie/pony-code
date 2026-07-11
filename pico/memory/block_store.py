@@ -42,6 +42,9 @@ from .frontmatter import parse_frontmatter
 
 MAX_NOTE_CHARS = 500
 AGENT_NOTES_SOFT_LIMIT_CHARS = 8000
+MAX_MEMORY_INDEX_FILES = 512
+MAX_MEMORY_FILE_BYTES = 128 * 1024
+MAX_MEMORY_INDEX_BYTES = 2 * 1024 * 1024
 
 # Task 17: agent-owned topic slug — kebab-case, alphanumeric-first.
 # Rejects `..`, `/`, dots, spaces, and any other filesystem-fragile chars.
@@ -52,6 +55,58 @@ def _is_agent_owned_path(rel_path):
     parts = str(rel_path).split("/", 1)
     sub_path = parts[1] if len(parts) == 2 else parts[0]
     return sub_path == "agent_notes.md" or sub_path.startswith("agent/")
+
+
+def _read_bounded_regular(path, limit, *, private=False):
+    path = Path(os.path.abspath(os.fspath(path)))
+    descriptor = -1
+    if private:
+        _, descriptor = securitylib._open_private_file(path)
+        os.fchmod(descriptor, 0o600)
+    else:
+        nofollow = getattr(os, "O_NOFOLLOW", 0)
+        if not nofollow:
+            raise RuntimeError("bounded no-follow reads unavailable")
+        flags = (
+            os.O_RDONLY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NONBLOCK", 0)
+            | nofollow
+        )
+        parent_descriptor = securitylib._open_private_directory(path.parent)
+        try:
+            descriptor = os.open(path.name, flags, dir_fd=parent_descriptor)
+            current = os.stat(
+                path.name,
+                dir_fd=parent_descriptor,
+                follow_symlinks=False,
+            )
+        finally:
+            os.close(parent_descriptor)
+    try:
+        opened = os.fstat(descriptor)
+        path_current = os.stat(path, follow_symlinks=False)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or not private
+            and (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino)
+            or (opened.st_dev, opened.st_ino)
+            != (path_current.st_dev, path_current.st_ino)
+        ):
+            raise ValueError("unsafe automatic memory file")
+        if opened.st_size > limit:
+            raise ValueError("memory file too large")
+        with os.fdopen(descriptor, "rb") as handle:
+            descriptor = -1
+            data = handle.read(limit + 1)
+        if len(data) > limit:
+            error = ValueError("memory file too large")
+            error.bytes_read = len(data)
+            raise error
+        return data, opened
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
 
 
 @dataclass(frozen=True)
@@ -111,64 +166,94 @@ class BlockStore:
 
     def list(self) -> list[MemoryFile]:
         entries: list[MemoryFile] = []
-        entries.extend(self._scan_scope("workspace", self.workspace_root))
-        entries.extend(self._scan_scope("user", self.user_root))
+        file_count = 0
+        total_bytes = 0
+        for scope, root in (
+            ("workspace", self.workspace_root),
+            ("user", self.user_root),
+        ):
+            for rel_path, real_path in self._scope_files(scope, root):
+                if file_count >= MAX_MEMORY_INDEX_FILES:
+                    entries.sort(key=lambda entry: entry.path)
+                    return entries
+                file_count += 1
+                remaining = MAX_MEMORY_INDEX_BYTES - total_bytes
+                if remaining <= 0:
+                    entries.sort(key=lambda entry: entry.path)
+                    return entries
+                limit = min(MAX_MEMORY_FILE_BYTES, remaining)
+                try:
+                    entry, used_bytes = self._to_memory_file(
+                        root,
+                        rel_path,
+                        real_path,
+                        limit,
+                    )
+                except (OSError, RuntimeError, ValueError) as exc:
+                    total_bytes += getattr(exc, "bytes_read", 0)
+                    if total_bytes >= MAX_MEMORY_INDEX_BYTES:
+                        entries.sort(key=lambda item: item.path)
+                        return entries
+                    if str(exc) == "memory file too large" and limit < MAX_MEMORY_FILE_BYTES:
+                        entries.sort(key=lambda item: item.path)
+                        return entries
+                    continue
+                entries.append(entry)
+                total_bytes += used_bytes
         entries.sort(key=lambda e: e.path)
         return entries
 
-    def _scan_scope(self, scope: str, root: Path) -> list[MemoryFile]:
+    @staticmethod
+    def _markdown_files(root: Path, directory: Path):
+        for dirpath, dirnames, filenames in os.walk(directory, followlinks=False):
+            dirnames[:] = [
+                name
+                for name in sorted(dirnames)
+                if _safe_index_directory(root, Path(dirpath) / name) is not None
+            ]
+            for name in sorted(filenames):
+                if not name.endswith(".md"):
+                    continue
+                yield Path(dirpath) / name
+
+    def _scope_files(self, scope: str, root: Path):
         root = _safe_index_directory(root, root)
         if root is None:
-            return []
-        results: list[MemoryFile] = []
+            return
         # notes/*.md (nested allowed) — user-written, agent read-only
         notes_dir = _safe_index_directory(root, root / "notes")
         if notes_dir is not None:
-            for md in sorted(notes_dir.rglob("*.md")):
-                md = _safe_index_file(root, md)
-                if md is None:
-                    continue
+            for md in self._markdown_files(root, notes_dir):
                 rel = md.relative_to(root).as_posix()
-                entry = self._to_memory_file(root, f"{scope}/{rel}", md)
-                if entry is not None:
-                    results.append(entry)
+                yield f"{scope}/{rel}", md
         # agent/*.md (Task 17) — agent-owned, per-topic
         agent_dir = _safe_index_directory(root, root / "agent")
         if agent_dir is not None:
-            for md in sorted(agent_dir.rglob("*.md")):
-                md = _safe_index_file(root, md)
-                if md is None:
-                    continue
+            for md in self._markdown_files(root, agent_dir):
                 rel = md.relative_to(root).as_posix()
-                entry = self._to_memory_file(root, f"{scope}/{rel}", md)
-                if entry is not None:
-                    results.append(entry)
+                yield f"{scope}/{rel}", md
         # agent_notes.md (legacy single-file). We exclude anything with the
         # .legacy suffix (post-migration renames).
-        agent_notes = _safe_index_file(root, root / "agent_notes.md")
-        if agent_notes is not None:
-            entry = self._to_memory_file(root, f"{scope}/agent_notes.md", agent_notes)
-            if entry is not None:
-                results.append(entry)
-        return results
+        agent_notes = root / "agent_notes.md"
+        try:
+            agent_notes.lstat()
+        except OSError:
+            pass
+        else:
+            yield f"{scope}/agent_notes.md", agent_notes
 
     @staticmethod
-    def _to_memory_file(root: Path, rel_path: str, real_path: Path) -> MemoryFile | None:
+    def _to_memory_file(root: Path, rel_path: str, real_path: Path, limit: int):
         real_path = _safe_index_file(root, real_path)
         if real_path is None:
-            return None
-        stat_result = real_path.stat()
-        content = ""
+            raise ValueError("unsafe automatic memory file")
         agent_owned = _is_agent_owned_path(rel_path)
-        try:
-            if agent_owned:
-                content = read_private_text(real_path, errors="replace")
-            else:
-                content = real_path.read_text(encoding="utf-8", errors="replace")
-        except (OSError, ValueError):
-            if agent_owned:
-                return None
-            content = ""
+        data, stat_result = _read_bounded_regular(
+            real_path,
+            limit,
+            private=agent_owned,
+        )
+        content = data.decode("utf-8", errors="replace")
         # Task 17: parse frontmatter so retrieval / recall can boost by field.
         # When a file has a `description` header, prefer that as the display
         # first-line (memory_index shows it); otherwise fall back to the body's
@@ -182,12 +267,15 @@ class BlockStore:
                 # Body was empty (or file was body-only, no frontmatter case):
                 # fall back to the raw first line.
                 first_line = (content.splitlines()[0] if content else "").rstrip("\n")[:200]
-        return MemoryFile(
-            path=rel_path,
-            size_chars=len(content),
-            mtime=stat_result.st_mtime,
-            first_line=first_line,
-            frontmatter=meta or {},
+        return (
+            MemoryFile(
+                path=rel_path,
+                size_chars=len(content),
+                mtime=stat_result.st_mtime,
+                first_line=first_line,
+                frontmatter=meta or {},
+            ),
+            len(data),
         )
 
     def read(self, rel_path: str) -> str:
@@ -196,9 +284,12 @@ class BlockStore:
         target = _safe_index_file(root, target)
         if target is None:
             raise FileNotFoundError(rel_path)
-        if _is_agent_owned_path(rel_path):
-            return read_private_text(target, errors="replace")
-        return target.read_text(encoding="utf-8", errors="replace")
+        data, _ = _read_bounded_regular(
+            target,
+            MAX_MEMORY_FILE_BYTES,
+            private=_is_agent_owned_path(rel_path),
+        )
+        return data.decode("utf-8", errors="replace")
 
     def exists(self, rel_path: str) -> bool:
         try:

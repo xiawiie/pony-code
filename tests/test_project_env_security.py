@@ -1,10 +1,11 @@
 import os
 import stat
-from pathlib import Path
+from contextlib import contextmanager
 
 import pytest
 
 from pico import security as security_module
+import pico.config as config_module
 from pico.cli import main
 from pico.config import (
     load_project_env,
@@ -81,9 +82,9 @@ def test_project_env_replace_failure_preserves_original(tmp_path, monkeypatch):
     env_path = tmp_path / ".env"
     env_path.write_bytes(b"PICO_PROVIDER=deepseek\n")
     monkeypatch.setattr(
-        Path,
+        security_module.os,
         "replace",
-        lambda self, target: (_ for _ in ()).throw(OSError("replace failed")),
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError("replace failed")),
     )
 
     with pytest.raises(OSError, match="replace failed"):
@@ -137,6 +138,27 @@ def test_project_env_chmod_failure_fails_before_returning_values(tmp_path, monke
 
     with pytest.raises(PermissionError, match="chmod denied"):
         read_project_env(tmp_path, warn=False)
+
+
+def test_project_env_reads_verified_descriptor_after_leaf_swap(tmp_path, monkeypatch):
+    env_path = tmp_path / ".env"
+    env_path.write_text("PICO_PROVIDER=deepseek\n", encoding="utf-8")
+    outside = tmp_path / "outside.env"
+    outside.write_text("PICO_PROVIDER=anthropic\n", encoding="utf-8")
+    real_fchmod = security_module.os.fchmod
+    swapped = False
+
+    def swap_after_validation(descriptor, mode):
+        nonlocal swapped
+        real_fchmod(descriptor, mode)
+        if not swapped:
+            env_path.unlink()
+            env_path.symlink_to(outside)
+            swapped = True
+
+    monkeypatch.setattr(security_module.os, "fchmod", swap_after_validation)
+
+    assert read_project_env(tmp_path, warn=False) == {"PICO_PROVIDER": "deepseek"}
 
 
 def test_project_env_rejects_symlinked_private_parent_and_lock(tmp_path):
@@ -193,7 +215,7 @@ def test_project_env_rejects_swapped_temp_inode_before_replace(tmp_path, monkeyp
         real_fsync(fd)
         if swapped:
             return
-        temp_path = next(tmp_path.glob(".pico-env-*"))
+        temp_path = next(tmp_path.glob(".*.tmp"))
         temp_path.unlink()
         os.link(outside, temp_path)
         swapped["path"] = temp_path
@@ -206,6 +228,55 @@ def test_project_env_rejects_swapped_temp_inode_before_replace(tmp_path, monkeyp
     assert env_path.read_bytes() == original
     assert outside.read_bytes() == outside_bytes
     assert swapped["path"].samefile(outside)
+
+
+def test_project_env_rejects_temp_hardlink_before_replace(tmp_path, monkeypatch):
+    env_path = tmp_path / ".env"
+    original = b"PICO_PROVIDER=deepseek\n"
+    env_path.write_bytes(original)
+    alias = tmp_path.parent / f"{tmp_path.name}-outside-temp-alias"
+    real_fsync = os.fsync
+    linked = False
+
+    def hardlink_temp_after_fsync(descriptor):
+        nonlocal linked
+        real_fsync(descriptor)
+        if not linked:
+            temp_path = next(tmp_path.glob(".*.tmp"))
+            os.link(temp_path, alias)
+            linked = True
+
+    monkeypatch.setattr(os, "fsync", hardlink_temp_after_fsync)
+
+    with pytest.raises(ValueError, match="project env temp changed"):
+        write_project_env_assignments(tmp_path, {"PICO_PROVIDER": "anthropic"})
+
+    assert env_path.read_bytes() == original
+    assert alias.exists()
+    assert alias.read_bytes() == b""
+    assert not list(tmp_path.glob(".*.tmp"))
+
+
+def test_project_env_parent_swap_cannot_redirect_write(tmp_path, monkeypatch):
+    env_path = tmp_path / ".env"
+    original = b"PICO_PROVIDER=deepseek\n"
+    env_path.write_bytes(original)
+    original_root = tmp_path.parent / f"{tmp_path.name}-original-root"
+
+    @contextmanager
+    def swap_after_root_binding(*_args, **_kwargs):
+        tmp_path.rename(original_root)
+        tmp_path.mkdir()
+        (tmp_path / ".pico").mkdir()
+        yield
+
+    monkeypatch.setattr(config_module, "locked_file", swap_after_root_binding)
+
+    with pytest.raises(ValueError, match="private root changed"):
+        write_project_env_assignments(tmp_path, {"PICO_PROVIDER": "anthropic"})
+
+    assert (original_root / ".env").read_bytes() == original
+    assert not (tmp_path / ".env").exists()
 
 
 @pytest.mark.parametrize(

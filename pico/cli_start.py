@@ -6,6 +6,9 @@ from pathlib import Path
 from .security import redact_text
 
 
+_RUNTIME_ERROR_MESSAGE = "agent runtime failed"
+
+
 def _safe_text(agent, value):
     redactor = getattr(agent, "redact_text", None)
     return (redactor if callable(redactor) else redact_text)(value)
@@ -18,8 +21,8 @@ def run_agent_once(agent, prompt_tokens):
     print()
     try:
         print(_safe_text(agent, agent.ask(prompt)))
-    except RuntimeError as exc:
-        print(_safe_text(agent, str(exc))[:300], file=sys.stderr)
+    except Exception:  # noqa: BLE001 - the CLI is the ordinary-exception boundary
+        print(_RUNTIME_ERROR_MESSAGE, file=sys.stderr)
         return 1
     return 0
 
@@ -89,5 +92,6 @@ def run_repl(agent):
         print()
         try:
             print(_safe_text(agent, agent.ask(user_input)))
-        except RuntimeError as exc:
-            print(_safe_text(agent, str(exc))[:300], file=sys.stderr)
+        except Exception:  # noqa: BLE001 - preserve BaseException semantics
+            print(_RUNTIME_ERROR_MESSAGE, file=sys.stderr)
+            return 1

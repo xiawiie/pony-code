@@ -13,11 +13,13 @@ from __future__ import annotations
 import ast
 import os
 import re
+import stat
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Literal, Optional
 
+from pico import security as securitylib
 from pico.workspace import _safe_index_directory, _safe_index_file
 
 SymbolKind = Literal["class", "function", "method"]
@@ -31,6 +33,7 @@ IGNORED_DIRS = frozenset({
 
 MAX_FILE_SIZE = 500_000
 MAX_FILES = 10_000
+MAX_TOTAL_BYTES = 50 * 1024 * 1024
 
 
 LANGUAGE_BY_EXT = {
@@ -67,6 +70,52 @@ _RUST_PATTERNS = [
 ]
 
 
+def _read_bounded_regular(path, limit):
+    path = Path(os.path.abspath(os.fspath(path)))
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    if not nofollow:
+        raise RuntimeError("bounded no-follow reads unavailable")
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+        | nofollow
+    )
+    parent_descriptor = securitylib._open_private_directory(path.parent)
+    try:
+        descriptor = os.open(path.name, flags, dir_fd=parent_descriptor)
+        current = os.stat(
+            path.name,
+            dir_fd=parent_descriptor,
+            follow_symlinks=False,
+        )
+    finally:
+        os.close(parent_descriptor)
+    try:
+        opened = os.fstat(descriptor)
+        path_current = os.stat(path, follow_symlinks=False)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino)
+            or (opened.st_dev, opened.st_ino)
+            != (path_current.st_dev, path_current.st_ino)
+        ):
+            raise ValueError("unsafe repo-map source")
+        if opened.st_size > limit:
+            raise ValueError("repo-map source too large")
+        with os.fdopen(descriptor, "rb") as handle:
+            descriptor = -1
+            data = handle.read(limit + 1)
+        if len(data) > limit:
+            error = ValueError("repo-map source too large")
+            error.bytes_read = len(data)
+            raise error
+        return data, opened
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
 @dataclass(frozen=True)
 class Symbol:
     name: str
@@ -80,6 +129,7 @@ class RepoMap:
         self.repo_root = Path(os.path.abspath(os.fspath(repo_root)))
         self._symbols: dict[str, list[Symbol]] = defaultdict(list)
         self._file_mtimes: dict[str, float] = {}
+        self._file_sizes: dict[str, int] = {}
         self._file_count_by_top_dir: dict[str, int] = defaultdict(int)
         self._language_counts: dict[str, int] = defaultdict(int)
         self._warned_cap = False
@@ -89,10 +139,21 @@ class RepoMap:
     def scan(self) -> None:
         self._symbols.clear()
         self._file_mtimes.clear()
+        self._file_sizes.clear()
         self._file_count_by_top_dir.clear()
         self._language_counts.clear()
+        remaining = MAX_TOTAL_BYTES
         for real_path, rel_path in self._walk():
-            self._index_file(real_path, rel_path)
+            if remaining <= 0:
+                break
+            used_bytes, exhausted = self._index_file(
+                real_path,
+                rel_path,
+                remaining,
+            )
+            remaining -= used_bytes
+            if exhausted:
+                break
 
     def refresh_if_stale(self) -> None:
         existing = dict(self._file_mtimes)
@@ -113,9 +174,20 @@ class RepoMap:
         dead = set(existing) - seen
         for rel_path in dead:
             self._remove_file_entry(rel_path)
-        for real_path, rel_path in stale:
+        for _, rel_path in stale:
             self._remove_file_entry(rel_path)
-            self._index_file(real_path, rel_path)
+        remaining = max(0, MAX_TOTAL_BYTES - sum(self._file_sizes.values()))
+        for real_path, rel_path in stale:
+            if remaining <= 0:
+                break
+            used_bytes, exhausted = self._index_file(
+                real_path,
+                rel_path,
+                remaining,
+            )
+            remaining -= used_bytes
+            if exhausted:
+                break
         # Recount once after the batch — the previous per-file _recount was
         # O(N²) over the whole tree on every mutation.
         if dead or stale:
@@ -123,6 +195,7 @@ class RepoMap:
 
     def _remove_file_entry(self, rel_path: str) -> None:
         self._file_mtimes.pop(rel_path, None)
+        self._file_sizes.pop(rel_path, None)
         for symbols in self._symbols.values():
             symbols[:] = [s for s in symbols if s.file != rel_path]
 
@@ -145,12 +218,23 @@ class RepoMap:
         for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
             dirnames[:] = [
                 name
-                for name in dirnames
+                for name in sorted(dirnames)
                 if name not in IGNORED_DIRS
                 and not name.startswith(".")
                 and _safe_index_directory(root, Path(dirpath) / name) is not None
             ]
-            for fname in filenames:
+            for fname in sorted(filenames):
+                if indexed >= MAX_FILES:
+                    return
+                indexed += 1
+                if indexed == MAX_FILES and not self._warned_cap:
+                    self._warned_cap = True
+                    import sys
+                    print(
+                        f"warning: repo_map scan hit {MAX_FILES}-file cap; "
+                        f"symbols beyond this point are not indexed",
+                        file=sys.stderr,
+                    )
                 real_path = Path(dirpath) / fname
                 real_path = _safe_index_file(root, real_path)
                 if real_path is None:
@@ -159,41 +243,28 @@ class RepoMap:
                     rel = real_path.relative_to(root).as_posix()
                 except ValueError:
                     continue
-                try:
-                    size = real_path.stat().st_size
-                except OSError:
-                    continue
-                if size > MAX_FILE_SIZE:
-                    continue
                 yield real_path, rel
-                indexed += 1
-                if indexed >= MAX_FILES:
-                    if not self._warned_cap:
-                        self._warned_cap = True
-                        import sys
-                        print(
-                            f"warning: repo_map scan hit {MAX_FILES}-file cap; "
-                            f"symbols beyond this point are not indexed",
-                            file=sys.stderr,
-                        )
-                    return
 
-    def _index_file(self, real_path: Path, rel_path: str) -> None:
+    def _index_file(self, real_path: Path, rel_path: str, remaining: int):
         real_path = _safe_index_file(self.repo_root, real_path)
         if real_path is None:
-            return
+            return 0, False
+        limit = min(MAX_FILE_SIZE, remaining)
         try:
-            mtime = real_path.stat().st_mtime
-        except OSError:
-            return
+            data, opened = _read_bounded_regular(real_path, limit)
+        except (OSError, RuntimeError, ValueError) as exc:
+            used_bytes = getattr(exc, "bytes_read", 0)
+            exhausted = used_bytes >= remaining or (
+                str(exc) == "repo-map source too large"
+                and limit < MAX_FILE_SIZE
+            )
+            return used_bytes, exhausted
+        mtime = opened.st_mtime
         ext = real_path.suffix.lower()
         lang = LANGUAGE_BY_EXT.get(ext, "other")
 
         symbols: list[Symbol] = []
-        try:
-            text = real_path.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            return
+        text = data.decode("utf-8", errors="replace")
 
         if lang == "python":
             symbols = list(self._extract_python(rel_path, text))
@@ -208,10 +279,12 @@ class RepoMap:
             self._symbols[sym.name].append(sym)
 
         self._file_mtimes[rel_path] = mtime
+        self._file_sizes[rel_path] = len(data)
         if "/" in rel_path:
             top = rel_path.split("/", 1)[0]
             self._file_count_by_top_dir[top] += 1
         self._language_counts[lang] += 1
+        return len(data), False
 
     def _extract_python(self, rel_path: str, source: str) -> Iterable[Symbol]:
         try:

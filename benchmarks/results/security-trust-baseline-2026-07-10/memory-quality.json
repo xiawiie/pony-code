@@ -1,0 +1,120 @@
+{
+  "mode": "fake",
+  "rows": [
+    {
+      "agent_notes_changed": false,
+      "expected_hits": [
+        "workspace/notes/auth.md"
+      ],
+      "failure_reason": "",
+      "id": "recall_bcrypt",
+      "observed_hits": [
+        "workspace/notes/auth.md"
+      ],
+      "status": "pass",
+      "tool_calls": [
+        "memory_search"
+      ]
+    },
+    {
+      "agent_notes_changed": false,
+      "expected_hits": [
+        "workspace/notes/testing.md"
+      ],
+      "failure_reason": "",
+      "id": "recall_pytest_config",
+      "observed_hits": [
+        "workspace/notes/testing.md"
+      ],
+      "status": "pass",
+      "tool_calls": [
+        "memory_search"
+      ]
+    },
+    {
+      "agent_notes_changed": false,
+      "expected_hits": [
+        "workspace/notes/auth.md"
+      ],
+      "failure_reason": "",
+      "id": "cn_password",
+      "observed_hits": [
+        "workspace/notes/auth.md"
+      ],
+      "status": "pass",
+      "tool_calls": [
+        "memory_search"
+      ]
+    },
+    {
+      "agent_notes_changed": false,
+      "expected_hits": [
+        "workspace/notes/testing.md"
+      ],
+      "failure_reason": "",
+      "id": "cn_async_test",
+      "observed_hits": [
+        "workspace/notes/testing.md"
+      ],
+      "status": "pass",
+      "tool_calls": [
+        "memory_search"
+      ]
+    },
+    {
+      "agent_notes_changed": true,
+      "expected_hits": [],
+      "failure_reason": "",
+      "id": "update_bcrypt_lesson",
+      "observed_hits": [],
+      "status": "pass",
+      "tool_calls": [
+        "memory_save"
+      ]
+    },
+    {
+      "agent_notes_changed": true,
+      "expected_hits": [],
+      "failure_reason": "",
+      "id": "update_existing",
+      "observed_hits": [],
+      "status": "pass",
+      "tool_calls": [
+        "memory_save"
+      ]
+    },
+    {
+      "agent_notes_changed": false,
+      "expected_hits": [
+        "workspace/notes/auth.md",
+        "workspace/notes/session.md"
+      ],
+      "failure_reason": "",
+      "id": "multi_auth",
+      "observed_hits": [
+        "workspace/notes/auth.md",
+        "workspace/notes/session.md"
+      ],
+      "status": "pass",
+      "tool_calls": [
+        "memory_search"
+      ]
+    },
+    {
+      "agent_notes_changed": false,
+      "expected_hits": [],
+      "failure_reason": "",
+      "id": "no_noise_food",
+      "observed_hits": [],
+      "status": "pass",
+      "tool_calls": []
+    }
+  ],
+  "schema_version": 1,
+  "summary": {
+    "failed": 0,
+    "pass_rate": 1.0,
+    "passed": 8,
+    "total": 8
+  }
+}

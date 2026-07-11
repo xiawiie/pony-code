@@ -3,9 +3,7 @@
 import json
 import os
 import re
-import stat
 import sys
-import tempfile
 import urllib.parse
 from pathlib import Path
 
@@ -14,8 +12,9 @@ from .providers.defaults import API_KEY_ENV_NAMES, BASE_URL_ENV_NAMES, MODEL_ENV
 from .security import (
     contains_secret_material,
     ensure_private_dir,
-    ensure_private_file,
-    require_regular_no_symlink,
+    private_directory_identity,
+    read_private_text,
+    write_private_bytes_atomic,
 )
 
 
@@ -109,12 +108,13 @@ def _warn_invalid_env_line(env_path, line_number, error):
 
 
 def read_project_env(start, warn=True):
-    env_path = require_regular_no_symlink(project_env_path(start), allow_missing=True)
-    if not env_path.exists():
+    env_path = project_env_path(start)
+    try:
+        text = read_private_text(env_path)
+    except FileNotFoundError:
         return {}
-    env_path = ensure_private_file(env_path)
     loaded = {}
-    for line_number, line in enumerate(env_path.read_text(encoding="utf-8").splitlines(), start=1):
+    for line_number, line in enumerate(text.splitlines(), start=1):
         try:
             parsed = _parse_env_line(line)
         except ValueError as exc:
@@ -201,62 +201,31 @@ def _render_project_env_update(existing_text, assignments):
     }
 
 
-def _fsync_directory(path):
-    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
-    descriptor = os.open(path, flags)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-
-
-def _remove_created_temp(path, identity):
-    try:
-        current = path.lstat()
-    except FileNotFoundError:
-        return
-    if (current.st_dev, current.st_ino) == identity:
-        path.unlink()
-
-
 def write_project_env_assignments(workspace_root, assignments):
     assignments = _validated_project_env_assignments(assignments)
     root = Path(workspace_root).resolve()
+    root_identity = private_directory_identity(root)
     private_root = ensure_private_dir(root / ".pico")
     env_path = project_env_path(root)
     lock_path = private_root / "project-env.lock"
 
     with locked_file(lock_path, require_lock=True):
-        checked_path = require_regular_no_symlink(env_path, allow_missing=True)
-        existing_text = ""
-        if checked_path.exists():
-            existing_text = ensure_private_file(checked_path).read_text(encoding="utf-8")
-        content, result = _render_project_env_update(existing_text, assignments)
-
-        descriptor, temp_name = tempfile.mkstemp(prefix=".pico-env-", dir=root)
-        temp_path = Path(temp_name)
-        opened = os.fstat(descriptor)
-        identity = (opened.st_dev, opened.st_ino)
         try:
-            os.fchmod(descriptor, 0o600)
-            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-                descriptor = -1
-                handle.write(content)
-                handle.flush()
-                os.fsync(handle.fileno())
-            try:
-                current = temp_path.lstat()
-            except OSError:
-                raise ValueError("project env temp changed") from None
-            if not stat.S_ISREG(current.st_mode) or (current.st_dev, current.st_ino) != identity:
-                raise ValueError("project env temp changed")
-            temp_path.replace(env_path)
-            env_path.chmod(0o600, follow_symlinks=False)
-            _fsync_directory(root)
-        finally:
-            if descriptor >= 0:
-                os.close(descriptor)
-            _remove_created_temp(temp_path, identity)
+            existing_text = read_private_text(
+                env_path,
+                trusted_root=root,
+                trusted_root_identity=root_identity,
+            )
+        except FileNotFoundError:
+            existing_text = ""
+        content, result = _render_project_env_update(existing_text, assignments)
+        write_private_bytes_atomic(
+            env_path,
+            content.encode("utf-8"),
+            trusted_root=root,
+            trusted_root_identity=root_identity,
+            error="project env temp changed",
+        )
     return result
 
 

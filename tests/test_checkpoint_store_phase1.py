@@ -2,6 +2,8 @@ from datetime import datetime, timezone
 from contextlib import contextmanager
 from pathlib import Path
 
+import pytest
+
 import pico.checkpoint_store as checkpoint_store_module
 from pico.checkpoint_store import CheckpointStore
 from pico.recovery_models import new_checkpoint_record, new_tool_change_record
@@ -56,6 +58,166 @@ def test_prune_dry_run_scans_checkpoint_and_tool_change_blob_refs(tmp_path):
     assert orphan["blob_ref"] in result["unreferenced_blob_refs"]
 
 
+def test_prune_preserves_prepared_and_restore_intent_blobs(tmp_path):
+    store = CheckpointStore(tmp_path)
+    prepared = store.write_blob(b"prepared")
+    intent_pre = store.write_blob(b"intent-pre")
+    intent_post = store.write_blob(b"intent-post")
+    tool = new_tool_change_record(
+        "tc_refs", "", "turn", "write_file", "workspace_write", "owner"
+    )
+    tool["prepared_file_entries"] = [
+        {"path": "a.txt", "before_blob_ref": prepared["blob_ref"]}
+    ]
+    store.write_tool_change_record(tool)
+    checkpoint = new_checkpoint_record(
+        "ckpt_refs", "restore", "", "", "", "", str(tmp_path.resolve())
+    )
+    checkpoint["status"] = "applying"
+    checkpoint["restore_provenance"] = {
+        "entries": [
+            {
+                "path": "a.txt",
+                "pre_state": {
+                    "exists": True,
+                    "hash": intent_pre["content_hash"],
+                    "blob_ref": intent_pre["blob_ref"],
+                    "mode": 0o644,
+                },
+                "planned_post_state": {
+                    "exists": True,
+                    "hash": intent_post["content_hash"],
+                    "blob_ref": intent_post["blob_ref"],
+                    "mode": 0o644,
+                },
+                "outcome": "pending",
+                "reason": "",
+                "target_modified": False,
+                "actual_post_state": {},
+            }
+        ]
+    }
+    store.write_checkpoint_record(checkpoint)
+    result = store.prune(dry_run=True)
+    assert prepared["blob_ref"] not in result["unreferenced_blob_refs"]
+    assert intent_pre["blob_ref"] not in result["unreferenced_blob_refs"]
+    assert intent_post["blob_ref"] not in result["unreferenced_blob_refs"]
+
+
+def test_prune_holds_mutation_then_store_lock_through_scan_and_delete(
+    tmp_path, monkeypatch
+):
+    store = CheckpointStore(tmp_path)
+    orphan = store.write_blob(b"orphan")
+    held = {"mutation": False, "store": False}
+
+    @contextmanager
+    def mutation_lock():
+        assert held == {"mutation": False, "store": False}
+        held["mutation"] = True
+        try:
+            yield
+        finally:
+            assert held["store"] is False
+            held["mutation"] = False
+
+    @contextmanager
+    def store_lock(path, require_lock=False):
+        assert require_lock is True
+        assert held == {"mutation": True, "store": False}
+        held["store"] = True
+        try:
+            yield
+        finally:
+            held["store"] = False
+
+    real_scan = store._scan_records
+    real_unlink = store._unlink_blob
+
+    def scan(*args, **kwargs):
+        assert held == {"mutation": True, "store": True}
+        return real_scan(*args, **kwargs)
+
+    def unlink(blob_ref):
+        assert held == {"mutation": True, "store": True}
+        return real_unlink(blob_ref)
+
+    monkeypatch.setattr(store, "mutation_lock", mutation_lock)
+    monkeypatch.setattr(checkpoint_store_module.file_lock, "locked_file", store_lock)
+    monkeypatch.setattr(store, "_scan_records", scan)
+    monkeypatch.setattr(store, "_unlink_blob", unlink)
+    result = store.prune(dry_run=False)
+    assert result["removed_blob_refs"] == [orphan["blob_ref"]]
+    assert held == {"mutation": False, "store": False}
+
+
+def test_prune_record_unlink_failure_never_sweeps_surviving_reference(
+    tmp_path, monkeypatch
+):
+    store = CheckpointStore(tmp_path)
+    kept = store.write_blob(b"must survive")
+    record = new_checkpoint_record(
+        "ckpt_old", "turn", "", "", "", "", str(tmp_path.resolve())
+    )
+    record["created_at"] = "2000-01-01T00:00:00+00:00"
+    record["file_entries"] = [{"path": "note.txt", "before_blob_ref": kept["blob_ref"]}]
+    store.write_checkpoint_record(record)
+    monkeypatch.setattr(
+        store,
+        "_unlink_store_file",
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError("unlink failed")),
+    )
+    with pytest.raises(OSError, match="unlink failed"):
+        store.prune(
+            dry_run=False,
+            older_than="1d",
+            now=datetime(2026, 7, 10, tzinfo=timezone.utc),
+        )
+    assert store.load_checkpoint_record("ckpt_old")["checkpoint_id"] == "ckpt_old"
+    assert store.read_blob(kept["blob_ref"]) == b"must survive"
+
+
+def test_prune_retry_recovers_orphan_tool_after_mid_record_failure(
+    tmp_path, monkeypatch
+):
+    store = CheckpointStore(tmp_path)
+    blob = store.write_blob(b"tool history")
+    tool = new_tool_change_record(
+        "tc_old", "ckpt_old", "turn", "write_file", "workspace_write"
+    )
+    tool["status"] = "finalized"
+    tool["ended_at"] = "2000-01-01T00:00:00+00:00"
+    tool["file_entries"] = [{"path": "note.txt", "before_blob_ref": blob["blob_ref"]}]
+    store.write_tool_change_record(tool)
+    checkpoint = new_checkpoint_record(
+        "ckpt_old", "turn", "", "", "", "", str(tmp_path.resolve())
+    )
+    checkpoint["created_at"] = "2000-01-01T00:00:00+00:00"
+    checkpoint["tool_change_ids"] = ["tc_old"]
+    store.write_checkpoint_record(checkpoint)
+    real_unlink = store._unlink_store_file
+    failed = {"value": False}
+
+    def fail_tool_once(directory, identity, name):
+        if directory == store.tool_changes_dir and not failed["value"]:
+            failed["value"] = True
+            raise OSError("tool unlink failed")
+        return real_unlink(directory, identity, name)
+
+    monkeypatch.setattr(store, "_unlink_store_file", fail_tool_once)
+    now = datetime(2026, 7, 10, tzinfo=timezone.utc)
+    with pytest.raises(OSError, match="tool unlink failed"):
+        store.prune(dry_run=False, older_than="1d", now=now)
+    with pytest.raises(FileNotFoundError):
+        store.load_checkpoint_record("ckpt_old")
+    assert store.load_tool_change_record("tc_old")["status"] == "finalized"
+    assert store.read_blob(blob["blob_ref"]) == b"tool history"
+
+    retried = store.prune(dry_run=False, older_than="1d", now=now)
+    assert retried["removed_tool_change_ids"] == ["tc_old"]
+    assert blob["blob_ref"] in retried["removed_blob_refs"]
+
+
 def test_prune_ignores_atomic_write_temp_files(tmp_path):
     store = CheckpointStore(tmp_path)
     temp_dir = store.blobs_dir / "ab"
@@ -68,6 +230,20 @@ def test_prune_ignores_atomic_write_temp_files(tmp_path):
     assert temp_file.name not in result["unreferenced_blob_refs"]
     assert temp_file.name not in result["removed_blob_refs"]
     assert temp_file.exists()
+
+
+def test_prune_fails_closed_when_record_enumeration_is_invalid(tmp_path):
+    store = CheckpointStore(tmp_path)
+    unique = store.write_blob(b"unique-reference", "text")
+    (store.records_dir / "broken.json").write_text(
+        '{"before_blob_ref":"' + unique["blob_ref"] + '"}',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="invalid_record"):
+        store.prune(dry_run=False)
+
+    assert store.read_blob(unique["blob_ref"]) == b"unique-reference"
 
 
 def test_prune_older_than_previews_and_applies_expired_records(tmp_path):

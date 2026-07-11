@@ -1,6 +1,7 @@
 import json
 import os
 import subprocess
+from contextlib import contextmanager
 from unittest.mock import Mock
 
 import pytest
@@ -639,7 +640,12 @@ def test_execution_shape_uses_only_frozen_executables(
         calls.append((argv, kwargs))
         return subprocess.CompletedProcess(argv, 0, stdout="ok\n", stderr="")
 
-    monkeypatch.setattr("pico.tools.subprocess.run", fake_run)
+    @contextmanager
+    def passthrough(executable):
+        yield str(executable)
+
+    monkeypatch.setattr("pico.safe_subprocess._prepared_executable", passthrough)
+    monkeypatch.setattr("pico.safe_subprocess.subprocess.run", fake_run)
     agent = build_agent(
         tmp_path,
         approval_policy="ask",
@@ -672,7 +678,12 @@ def test_simple_unknown_command_is_not_rewrapped_in_shell(tmp_path, monkeypatch)
         calls.append((argv, kwargs))
         return subprocess.CompletedProcess(argv, 0, stdout="ok", stderr="")
 
-    monkeypatch.setattr("pico.tools.subprocess.run", fake_run)
+    @contextmanager
+    def passthrough(executable):
+        yield str(executable)
+
+    monkeypatch.setattr("pico.safe_subprocess._prepared_executable", passthrough)
+    monkeypatch.setattr("pico.safe_subprocess.subprocess.run", fake_run)
     agent = build_agent(
         tmp_path,
         approval_policy="ask",
@@ -688,7 +699,7 @@ def test_simple_unknown_command_is_not_rewrapped_in_shell(tmp_path, monkeypatch)
     assert result.metadata["tool_status"] == "ok"
     assert calls[0][0] == ["/frozen/echo", "hello"]
     assert calls[0][1]["shell"] is False
-    assert "executable" not in calls[0][1]
+    assert calls[0][1].get("executable") is None
 
 
 def test_runtime_path_spoof_cannot_replace_frozen_executable(tmp_path, monkeypatch):
@@ -706,7 +717,12 @@ def test_runtime_path_spoof_cannot_replace_frozen_executable(tmp_path, monkeypat
         executables={"pwd": "/frozen/pwd"},
     )
     monkeypatch.setenv("PATH", str(tmp_path))
-    monkeypatch.setattr("pico.tools.subprocess.run", fake_run)
+    @contextmanager
+    def passthrough(executable):
+        yield str(executable)
+
+    monkeypatch.setattr("pico.safe_subprocess._prepared_executable", passthrough)
+    monkeypatch.setattr("pico.safe_subprocess.subprocess.run", fake_run)
 
     result = agent.execute_tool(
         "run_shell",

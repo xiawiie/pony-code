@@ -1,8 +1,8 @@
 import json
 import locale as locale_module
 import os
+import shlex
 import shutil
-import subprocess
 import tempfile
 from datetime import datetime
 from pathlib import Path
@@ -13,6 +13,11 @@ from ..messages import validate_messages
 from ..providers.clients import FakeModelClient
 from ..runtime import Pico, SessionStore
 from ..run_store import RunStore
+from ..safe_subprocess import (
+    build_trusted_executables,
+    run_hardened_command,
+    run_hardened_git,
+)
 from ..task_state import STOP_REASON_FINAL_ANSWER_RETURNED
 from ..workspace import WorkspaceContext
 from .benchmark_schema import (
@@ -41,10 +46,10 @@ _CONTEXT_REDUCTION_SETUP = "context_reduction"
 
 def _git_value(args, fallback="", cwd=None):
     try:
-        result = subprocess.run(
-            ["git", *args],
+        result = run_hardened_git(
+            "/usr/bin/git",
+            args,
             cwd=cwd or Path.cwd(),
-            capture_output=True,
             text=True,
             check=True,
             timeout=5,
@@ -52,6 +57,35 @@ def _git_value(args, fallback="", cwd=None):
         return result.stdout.strip() or fallback
     except Exception:
         return fallback
+
+
+def _verifier_argv(command):
+    argv = shlex.split(str(command), posix=True)
+    if not argv:
+        raise ValueError("empty verifier")
+    shell_operators = {"&&", "||", ";", "|", "&", "<", ">", "<<", ">>"}
+    if any(token in shell_operators for token in argv):
+        raise ValueError("verifier shell operators are not allowed")
+    return argv
+
+
+def _run_verifier(command, *, cwd):
+    argv = _verifier_argv(command)
+    name = Path(argv[0]).name
+    if name in {"python", "python3"} and Path("/usr/bin/python3").exists():
+        executable = "/usr/bin/python3"
+    else:
+        trusted = build_trusted_executables(cwd, names=(name,))
+        executable = trusted.get(name)
+        if executable is None:
+            raise ValueError("trusted verifier executable unavailable")
+    return run_hardened_command(
+        executable,
+        args=argv[1:],
+        cwd=cwd,
+        timeout=30,
+        env=_reproducibility_env(),
+    )
 
 
 def _current_locale():
@@ -209,9 +243,11 @@ class BenchmarkEvaluator:
     ):
         self.benchmark_path = Path(benchmark_path)
         self.artifact_path = Path(artifact_path)
-        self.workspace_root = Path(workspace_root) if workspace_root is not None else Path(
-            tempfile.mkdtemp(prefix="pico-benchmark-")
-        )
+        self.workspace_root = (
+            Path(workspace_root)
+            if workspace_root is not None
+            else Path(tempfile.mkdtemp(prefix="pico-benchmark-"))
+        ).resolve()
         self.model_name = model_name
         self.model_version = model_version
         self.temperature = temperature
@@ -310,14 +346,7 @@ class BenchmarkEvaluator:
         expected_artifact_exists = artifact_file.exists()
         artifact_digest = _digest_file(artifact_file) if expected_artifact_exists else ""
 
-        verifier = subprocess.run(
-            task["verifier"],
-            cwd=fixture_copy_root,
-            shell=True,
-            capture_output=True,
-            text=True,
-            env=_reproducibility_env(),
-        )
+        verifier = _run_verifier(task["verifier"], cwd=fixture_copy_root)
 
         within_budget = task_state.tool_steps <= int(task["step_budget"])
         verifier_passed = verifier.returncode == 0

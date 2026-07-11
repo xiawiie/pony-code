@@ -4,6 +4,7 @@ import stat
 
 import pytest
 
+from pico import security as security_module
 from pico.run_store import RunStore
 from pico.task_state import STOP_REASON_FINAL_ANSWER_RETURNED, TaskState
 
@@ -97,3 +98,41 @@ def test_append_trace_refuses_symlink_without_touching_target(tmp_path):
         store.append_trace(state, {"event": "must_not_land"})
 
     assert outside.read_text(encoding="utf-8") == "outside\n"
+
+
+def test_run_store_parent_swap_cannot_redirect_record(tmp_path):
+    store = RunStore(tmp_path / ".pico" / "runs")
+    original_root = tmp_path / "runs-original"
+    store.root.rename(original_root)
+    store.root.mkdir()
+    state = TaskState.create(run_id="redirected", task_id="task", user_request="safe")
+
+    with pytest.raises(ValueError, match="private root changed"):
+        store.write_task_state(state)
+
+    assert not (store.root / "redirected" / "task_state.json").exists()
+    assert not (original_root / "redirected" / "task_state.json").exists()
+
+
+def test_trace_append_rolls_back_if_hardlinked_during_write(tmp_path, monkeypatch):
+    store = RunStore(tmp_path / ".pico" / "runs")
+    state = TaskState.create(run_id="raced", task_id="task", user_request="safe")
+    store.start_run(state)
+    alias = tmp_path / "trace-alias.jsonl"
+    real_fsync = security_module.os.fsync
+    linked = False
+
+    def link_after_write(descriptor):
+        nonlocal linked
+        real_fsync(descriptor)
+        trace = store.trace_path(state)
+        if not linked and trace.exists():
+            os.link(trace, alias)
+            linked = True
+
+    monkeypatch.setattr(security_module.os, "fsync", link_after_write)
+
+    with pytest.raises(ValueError, match="changed"):
+        store.append_trace(state, {"secret": "must-not-persist"})
+
+    assert alias.read_bytes() == b""

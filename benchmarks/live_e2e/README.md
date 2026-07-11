@@ -12,6 +12,9 @@ uv run python -m benchmarks.live_e2e.run_live_session --provider deepseek
 uv run python -m benchmarks.live_e2e.run_live_session --provider anthropic
 ```
 
+The A3 final authorized gate uses DeepSeek only. The existing five turns,
+15-call cap, and 200,000 input-plus-output token cap are unchanged.
+
 ## Configuration
 
 Use canonical project environment variables:
@@ -41,8 +44,18 @@ Reports include the selected provider, model, git revision, assertions, and
 trace evidence. They do not serialize environment dictionaries, provider
 objects, request headers, or API keys.
 
+Deterministic tests are the security source of truth. The live gate adds three
+integration checks: every captured Provider payload excludes the selected API
+key, every new or changed file under `.pico` excludes it, and active private
+files/directories use 0600/0700 modes on POSIX. The project `.env` is
+intentionally outside artifact scanning. Reports retain only safe relative
+paths, counts, and modes; the whole payload is redacted and checked before its
+private atomic write.
+
 ## Safety
 
 - Pico runs with `read_only=True` and exposes only the native `read_file` tool.
 - The fixture snapshots and restores `pico.toml` and removes its seed note.
 - Sessions and run artifacts remain available for diagnosis after a run.
+- This is a local integration harness, not an OS sandbox or network isolation
+  boundary.

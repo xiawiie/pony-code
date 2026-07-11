@@ -156,7 +156,7 @@ def test_step_limit_run_artifacts_reference_final_checkpoint(tmp_path):
 
 def test_trace_and_report_redact_secret_env_values(tmp_path):
     secret = "sk-test-secret-123"
-    with patch.dict(os.environ, {"OPENAI_API_KEY": secret}, clear=True):
+    with patch.dict(os.environ, {"HOME": str(tmp_path), "OPENAI_API_KEY": secret}, clear=True):
         agent = build_agent(
             tmp_path,
             [

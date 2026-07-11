@@ -34,9 +34,10 @@ class MemoryRefresher:
 
     def refresh_if_stale(self) -> RefreshSnapshot:
         # Memory index
-        current_stat = self.store.stat_all()
+        entries = self.store.list()
+        current_stat = {entry.path: entry.mtime for entry in entries}
         if current_stat != self._last_memory_stat or not self._cached_memory_text:
-            self._cached_memory_text = self._render_memory_index()
+            self._cached_memory_text = self._render_memory_index(entries)
             self._last_memory_stat = current_stat
 
         # Repo map (incremental) + project structure. Cache key must include
@@ -55,10 +56,11 @@ class MemoryRefresher:
             project_structure_text=self._cached_project_text,
         )
 
-    def _render_memory_index(self) -> str:
+    def _render_memory_index(self, entries=None) -> str:
+        entries = self.store.list() if entries is None else entries
         entries = [
             entry
-            for entry in self.store.list()
+            for entry in entries
             if not securitylib.is_sensitive_path(str(entry.path))
         ]
         if not entries:

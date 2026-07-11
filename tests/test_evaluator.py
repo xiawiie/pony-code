@@ -11,6 +11,7 @@ from pico.evaluation.evaluator import (
     run_fixed_benchmark,
     summarize_rows,
 )
+from pico.evaluation.fixed_benchmark import _verifier_argv
 from pico.providers.clients import FakeModelClient
 
 
@@ -50,6 +51,16 @@ def test_load_benchmark_rejects_missing_required_task_fields(tmp_path):
 
     with pytest.raises(ValueError, match="required"):
         load_benchmark(benchmark_path)
+
+
+def test_verifier_is_parsed_as_structured_argv_without_shell_operators():
+    assert _verifier_argv("python3 -c 'print(1)'") == [
+        "python3",
+        "-c",
+        "print(1)",
+    ]
+    with pytest.raises(ValueError, match="shell operators"):
+        _verifier_argv("python3 -c 'print(1)' && touch escaped")
 
 
 def test_run_fixed_benchmark_uses_fresh_fixture_copy_and_fresh_run_directory(tmp_path):
@@ -373,3 +384,21 @@ def test_summarize_rows_counts_failure_categories():
         "budget_exceeded": 1,
         "verifier_failed": 1,
     }
+
+
+def test_default_benchmark_workspace_resolves_temp_symlink(tmp_path, monkeypatch):
+    from pico.evaluation import fixed_benchmark
+
+    real_root = tmp_path / "real-temp"
+    real_root.mkdir()
+    linked_root = tmp_path / "linked-temp"
+    linked_root.symlink_to(real_root, target_is_directory=True)
+    monkeypatch.setattr(
+        fixed_benchmark.tempfile,
+        "mkdtemp",
+        lambda **kwargs: str(linked_root),
+    )
+
+    evaluator = fixed_benchmark.BenchmarkEvaluator()
+
+    assert evaluator.workspace_root == real_root.resolve()

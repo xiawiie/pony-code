@@ -23,7 +23,17 @@ class ToolChangeRecorder:
         self.store = store
         self.owner_id = str(owner_id or "")
 
-    def start(self, checkpoint_id, turn_id, tool_name, effect_class, input_summary):
+    def start(
+        self,
+        checkpoint_id,
+        turn_id,
+        tool_name,
+        effect_class,
+        input_summary,
+        *,
+        prepared_file_entries=None,
+        recovery_context=None,
+    ):
         tool_change_id = new_id("tc")
         record = new_tool_change_record(
             tool_change_id=tool_change_id,
@@ -34,8 +44,11 @@ class ToolChangeRecorder:
             owner_id=self.owner_id,
         )
         record["input_summary"] = dict(input_summary or {})
-        self.store.write_tool_change_record(record)
-        return record
+        record["prepared_file_entries"] = list(
+            prepared_file_entries or []
+        )
+        record["recovery_context"] = dict(recovery_context or {})
+        return self.store.create_tool_change_record(record)
 
     def finalize(
         self,
@@ -51,25 +64,73 @@ class ToolChangeRecorder:
     ):
         if status not in _ALLOWED_TERMINAL_STATUSES:
             raise ValueError("unsupported terminal status: " + str(status))
-        record = self.store.load_tool_change_record(tool_change_id)
-        record["status"] = status
-        record["ended_at"] = utc_now()
-        if affected_paths is not None:
-            record["affected_paths"] = list(affected_paths)
-        if file_entries is not None:
-            record["file_entries"] = list(file_entries)
-        if error is not None:
-            record["error"] = dict(error)
-        if shell_side_effects is not None:
-            record["shell_side_effects"] = list(shell_side_effects)
-        if approval is not None:
-            record["approval"] = dict(approval)
-        if trace_event_ids is not None:
-            record["trace_event_ids"] = list(trace_event_ids)
-        if checkpoint_id is not None:
-            record["checkpoint_id"] = str(checkpoint_id)
-        self.store.write_tool_change_record(record)
-        return record
+        def transform(record):
+            if record.get("owner_id", "") != self.owner_id:
+                raise ValueError("owner_mismatch")
+            if record.get("status") != "pending":
+                raise ValueError("status_conflict")
+            record["status"] = status
+            record["ended_at"] = utc_now()
+            if affected_paths is not None:
+                record["affected_paths"] = list(affected_paths)
+            if file_entries is not None:
+                record["file_entries"] = list(file_entries)
+            if error is not None:
+                record["error"] = dict(error)
+            if shell_side_effects is not None:
+                record["shell_side_effects"] = list(shell_side_effects)
+            if approval is not None:
+                record["approval"] = dict(approval)
+            if trace_event_ids is not None:
+                record["trace_event_ids"] = list(trace_event_ids)
+            if checkpoint_id is not None:
+                record["checkpoint_id"] = str(checkpoint_id)
+            return record
+
+        return self.store.update_tool_change_record(
+            tool_change_id,
+            transform,
+            expected_status="pending",
+        )
+
+    def pending_recovery_reviews(self):
+        return [
+            record
+            for record in self.store.list_tool_change_records(strict=True)
+            if record.get("status") == "pending"
+        ]
+
+    def resolve_pending(
+        self,
+        tool_change_id,
+        *,
+        reviewed_by,
+        review_reason,
+        expected_record_hash=None,
+    ):
+        def transform(record):
+            if record.get("status") != "pending":
+                raise ValueError("status_conflict")
+            record["status"] = "interrupted"
+            record["ended_at"] = utc_now()
+            record["reviewed_at"] = utc_now()
+            record["reviewed_by"] = str(reviewed_by)
+            record["review_reason"] = str(review_reason)
+            return record
+
+        with self.store.mutation_lock():
+            if expected_record_hash is not None:
+                return self.store.update_tool_change_record_if_hash(
+                    tool_change_id,
+                    expected_record_hash,
+                    transform,
+                    expected_status="pending",
+                )
+            return self.store.update_tool_change_record(
+                tool_change_id,
+                transform,
+                expected_status="pending",
+            )
 
     def mark_interrupted_pending(self, legacy_only=False):
         """把所有仍是 pending 的记录改成 interrupted，返回被改动的记录列表。
@@ -77,10 +138,12 @@ class ToolChangeRecorder:
         通常在会话重启/异常兜底时调用。已经 terminal 的记录不动。
         """
         touched = []
-        for record in self.store.list_tool_change_records():
+        for record in self.pending_recovery_reviews():
             if record.get("status") != "pending":
                 continue
             if legacy_only and record.get("owner_id"):
+                continue
+            if record.get("owner_id", "") != self.owner_id:
                 continue
             updated = self.finalize(
                 record["tool_change_id"],

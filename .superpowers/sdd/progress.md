@@ -343,3 +343,115 @@ Final whole-branch review repair: complete (commits 9376b0e + af08808 + b2c0246;
   re-review follow-up: b2c0246 rejects reversed/crossed recognized nested tags with a dependency-free stack; final reviewer found no Critical/Important issues and marked the branch Ready to merge
   controller verification at b2c0246: Ruff + 791 pytest; 8 structural deletion scans; 49 offline live-harness tests; memory-quality 8/8; five-repetition memory ablation (0 vs 60/60 repeated reads, 1.0 vs 0/0 hit rate, all correct 1.0, all bootstrap dropped); perf JSON smokes 3/3/4 scenarios; diff/status clean
   retained real evidence remains benchmarks/live_e2e/results/live-e2e-1783687362821655000.json at code commit 7217eac: DeepSeek qwen3.7-max, 40/40, schema 3, 6 native actions, 9/15 calls, 8,152 input + 1,674 output + 8,676 cache-read tokens, key scan clean
+
+## Security and Trust Baseline 2026-07-10
+Baseline: 101b561 (approved A-stage implementation plans)
+Branch: codex/action-kernel-messages-v3
+Plans:
+- docs/superpowers/plans/2026-07-10-pico-a1-sensitive-data-safe-execution.md
+- docs/superpowers/plans/2026-07-10-pico-a2-recovery-integrity-review.md
+- docs/superpowers/plans/2026-07-10-pico-a3-integration-evidence-live-e2e.md
+Execution order: A1 Tasks 1-12 → A2 Tasks 1-12 → A3 Tasks 1-8
+Review policy: fresh implementer per task, independent Critical/Important review, focused verification before ledger completion
+Live-provider budget: exactly one real DeepSeek E2E, reserved for A3 Task 8
+A1 Task 1: complete (commits 101b561..b580266, review clean; 59 focused passed; 826 passed full gate)
+A1 Task 2: complete (commits b580266..7e488b4, review clean; 110 focused passed; 894 passed full gate)
+A1 Task 3: complete (commits 7e488b4..e3954a3, review clean; 57 focused passed; 915 passed full gate)
+A1 Task 4: complete (commits e3954a3..11529f8, review clean; 122 focused passed; 954 passed full gate)
+A1 Task 5: complete (commits 11529f8..7057d62, review clean; 128 focused passed; 969 passed full gate)
+A1 Task 6: complete (commits 7057d62..dc6e8b6, review clean after two repair rounds; 251 focused passed; 1017 passed full gate)
+A1 Task 7: complete (commits dc6e8b6..d4fff8e, review clean after compatibility repair; 160 focused passed; 1058 passed full gate)
+A1 Task 8: complete (commits d4fff8e..da12b85, review clean after three repair rounds; 309 focused passed; 1125 passed full gate)
+A1 Task 9: complete (commits da12b85..544494c, final review clean after four security repair rounds; 213 focused passed; 1159 passed full gate; no Provider call)
+A1 Task 10: complete (commits 544494c..19a64ee, final review clean after adversarial shell/path repair; 455 review-focused passed; 1420 passed full gate; no Provider call; hardened Git execution carried as the blocking Task 11 dependency)
+A1 Task 11: complete (commit 5fcba939, two independent post-commit reviews clean; 530 controller-focused passed; 1560 passed controller full gate; Ruff/diff checks clean; no Provider call; regular gitfile policy and external config-write TOCTOU carried as blocking Task 12 integration decisions)
+A1 Task 12: complete (commits 5fcba939..976804e, gitfile and main reviews approved after adversarial repair rounds; 568 controller-focused passed; 1697 passed controller full gate; Ruff/diff/worktree checks clean; offline canary green; no Provider call; POSIX/macOS gitfile boundary and external post-validation Git marker/metadata/config/index TOCTOU documented honestly)
+A1 final repair wave: complete in worktree (commit pending: managed sandbox keeps .git read-only)
+  fixes: bounded/same-fd private readers and writes; stable CLI error envelopes; secret-safe recovery inputs; immutable-only executable discovery/execution; structured benchmark subprocesses; anchored/hash-validating CheckpointStore Task 1 boundary; atomic macOS restore swap/delete race handling; strict fail-closed prune
+  independent final review: PASS after three adversarial repair rounds; 0 Critical/Important/Minor; no Provider/network call
+  verification: Ruff clean; git diff --check clean; 1771 passed, 6 skipped full offline gate
+A2 Task 1: complete in worktree as part of the A1 trust-boundary repair (commit pending: managed sandbox keeps .git read-only)
+  coverage: safe IDs/blob refs, blob hash and size checks, private anchored store I/O, schema/status/type/internal-ID validation, additive legacy defaults, JSON redaction with exact blob bytes
+  review: independent final adversarial review PASS; focused store/recovery/security slice 190 passed; included in 1771 passed full gate
+A2 Task 2: complete in worktree (commit pending: managed sandbox keeps .git read-only)
+  coverage: anchored required locks, FIFO/symlink/hardlink/inode checks, thread reentry and store→mutation lock-order fast-fail, mutation lock, durable fsync ordering, CAS RMW, canonical redacted persisted-copy return
+  review: independent adversarial review PASS after two repair rounds; 51 focused passed; git diff --check clean; no Provider/network call
+A2 Task 3: complete in worktree (commit pending: managed sandbox keeps .git read-only)
+  coverage: strict/non-strict bounded enumeration, opaque invalid identities, no-follow/nonblocking regular and special-inode evidence, mutation→store hash/inode-CAS quarantine, exact private raw evidence, metadata whitelist, inactive quarantine inspection
+  review: independent adversarial review PASS after one repair round; 63 focused passed; git diff --check clean; no Provider/network call
+A2 Task 4: complete in worktree (commit pending: managed sandbox keeps .git read-only)
+  coverage: exact-byte secret/binary/size eligibility, anchored bounded same-fd before/after capture, independent existence/mode, complete FileEntry hash/ref/mode/provenance, strict regular Git object mode/type/size fallback
+  review: independent adversarial review PASS after two repair rounds; 172 focused passed; git diff --check clean; no Provider/network call
+A2 Task 5: complete in worktree (commit pending: managed sandbox keeps .git read-only)
+  coverage: prepared/recovery start state, canonical redacted start return, owner+pending CAS finalize, all-owner strict review, explicit reviewed interruption, startup zero auto-interruption, terminal transition protection
+  review: independent concurrency/adversarial review PASS after one repair; 19 focused passed; git diff --check clean; no Provider/network call
+A2 Task 6: complete in worktree (commit pending: managed sandbox keeps .git read-only)
+  coverage: one cross-process mutation lock spans guard, prepared capture, start, runner, after capture, and finalize; approval stays outside; read-only tools stay lock-free; all BaseException paths release; post-run finalize failure remains pending and blocks later mutation
+  review: independent final review PASS after one repair; 80 focused passed; Ruff and git diff --check clean; no Provider/network call
+A2 Task 7: complete in worktree (commit pending: managed sandbox keeps .git read-only)
+  coverage: strict canonical FileEntry validation, safe provenance binding, legacy review-only downgrade, ordered net-state coalescing, continuity/mode-aware no-op rules, terminal source and missing-history integrity errors
+  review: independent final review PASS after three repair rounds; 26 task-focused passed and 58 recovery-focused passed; Ruff and git diff --check clean; no Provider/network call
+A2 Task 8: complete in worktree (commit pending: managed sandbox keeps .git read-only)
+  coverage: no-symlink lexical resolution, root path+inode trust, strict source reconstruction/provenance, deep FileEntry/blob/current tuple validation, legacy coalescing, restore-status rules, stable whole-plan precedence, read-only preview
+  review: independent final adversarial review PASS after one repair round; 88 focused and 181 broader recovery tests passed; Ruff and git diff --check clean; no Provider/network call
+A2 Task 9: complete in worktree (commit pending: managed sandbox keeps .git read-only)
+  coverage: mutation-lock global review guard, locked plan rebuild, all-intent pre-state capture, persisted-canonical applying journal, anchored durable content+mode mutation, per-entry and terminal RMW, blocked/noop audits, crash-safe applying evidence
+  review: independent final review PASS after two durability repair rounds; 18 Task9-selected and 52 journal+manager tests passed; Ruff and git diff --check clean; no Provider/network call
+A2 Task 10: complete in worktree (commit pending: managed sandbox keeps .git read-only)
+  coverage: exact tuple reconciliation, same-fd root identity, raw-record hash CAS, replace/unlink outcome crash recovery, safe target-modified classification, partial acceptance, failure-tail mapping, proven-subset undo FileEntries
+  review: independent final review PASS after two repair rounds; 78 focused passed; Ruff and git diff --check clean; no Provider/network call
+A2 Task 11: complete in worktree (commit pending: managed sandbox keeps .git read-only)
+  coverage: fixed-shape read-only review collection, explicit pending/resolve CLI, cross-kind ambiguity rejection, Tool Change and journal hash CAS, opaque inode quarantine, partial acceptance, runtime exit semantics, status review summary
+  review: independent final review PASS after one repair; 117 broader focused passed; Ruff and git diff --check clean; no Provider/network call
+A2 Task 12: complete in worktree (commit pending: managed sandbox keeps .git read-only)
+  coverage: mutation→store locked prune transaction, prepared/journal/actual references, fail-closed record deletion, retryable orphan Tool Change cleanup, A→B→C restore and proven undo lifecycle
+  review: independent final review PASS after two repair rounds; 57 task-focused and 398 integrated A2/security tests passed; Ruff and git diff --check clean; no Provider/network call
+
+=== A2 RECOVERY INTEGRITY REVIEW COMPLETE ===
+Tasks 1-12 complete in worktree; all independent task reviews PASS; no Provider/network call. Full local gate pending final rerun after integration repairs.
+
+A3 Task 1: complete in worktree (commit pending: managed sandbox keeps .git read-only)
+  coverage: cross-boundary Provider/session/artifact/approval/verification/CLI canary; secret-bearing Action runner block; sole private migration-backup exception
+  verification: 179 focused passed; Ruff clean; no Provider/network call
+A3 Task 2: complete in worktree (commit pending: managed sandbox keeps .git read-only)
+  coverage: fixed allow/ask/reject Shell corpus, zero auto-mode runner bypass, approved argv preservation, trusted executable/config isolation
+  verification: 179 passed, 1 skipped; Ruff clean; no Provider/network call
+A3 Task 3: complete in worktree (commit pending: managed sandbox keeps .git read-only)
+  coverage: crash reconciliation, proven post-state, multi-file partial review/undo, mode round-trip, invalid-evidence quarantine, four-scenario perf smoke
+  verification: 193 recovery tests and 2 perf-harness tests passed; 4 security/recovery perf scenarios valid; no Provider/network call
+A3 Task 4: complete in worktree (commit pending: managed sandbox keeps .git read-only)
+  coverage: stable doctor security contract, fail-closed hardlink/review inspection, truthful help and README recovery/security boundaries
+  verification: 84 CLI tests passed before final review repairs; final combined diagnostic/live slice 83 passed; Ruff clean
+A3 Task 5: complete in worktree (commit pending: managed sandbox keeps .git read-only)
+  coverage: Provider payload canary, active `.pico` delta scan, private modes, full-payload report redaction and atomic 0600 write, sensitive fixture-backup preflight
+  review repairs: selected and unlisted high-confidence secrets block before backup/fixture mutation; ordinary backup is exact, atomic, and 0600
+  verification: offline live-harness tests passed; no Provider/network call
+A3 Task 6: complete in worktree (commit pending: managed sandbox keeps .git read-only)
+  evidence: benchmarks/results/security-trust-baseline-2026-07-10
+  deterministic semantics: valid; memory quality 8/8; perf scenario counts 3/3/4/4 without latency thresholds
+  full local gate: Ruff clean; 1997 passed, 6 skipped
+A3 Task 7: complete in worktree (commit pending: managed sandbox keeps .git read-only)
+  reviewed baseline: 976804e909790cafc4145c0d89796fa9ed1946b2 plus managed-sandbox working-tree diff
+  independent review repairs: private/secret-safe live fixture backup; fail-closed Doctor hardlink and Recovery Review inspection status
+  independent final verdict: Ready; 12/12 checklist PASS; Critical 0, Important 0, Minor 0
+  local review gate: 138 A3-focused passed before final repair; final full gate 1997 passed, 6 skipped; deterministic evidence valid; perf 3/3/4/4 valid
+A3 Task 8: complete after final explicitly authorized post-repair DeepSeek process
+  result: FAIL before the first successful Provider response (`network_error`, turn 1, 0 input tokens, 0 output tokens)
+  report: benchmarks/live_e2e/results/live-e2e-1783764479588555000.json (ignored, validated key-clean and artifact-security clean)
+  fixture restoration: PASS; no backup or seed-note residue
+  automatic retries: 0; no Anthropic process; no second DeepSeek process
+  user-authorized follow-up process: FAIL with HTTP 401 before the first successful Provider response (turn 1, 0 input tokens, 0 output tokens)
+  follow-up report: benchmarks/live_e2e/results/live-e2e-1783766977325592000.json (ignored, validated key-clean and artifact-security clean)
+  follow-up fixture restoration: PASS; automatic retries remain 0
+  additional authorized pre-sync check: FAIL with HTTP 401 before Provider usage; no automatic retry
+  corrected-config run: DeepSeek `qwen3.7-max`, all five turns completed, 42/43 assertions, 2 native Turn-2 actions, 14,024 input + 1,487 output + 9,304 cache-read tokens; key/artifact/mode checks PASS
+  corrected-config finding: Turn-2 assertion incorrectly required `<system-reminder>` when per-call injection tokens were zero
+  offline repair: per-call metadata/content alignment; prompt always required; reminder required only for the corresponding injected call; mixed-call fail-closed coverage
+  repair review: Ready, C0/I0/M0; 60 offline assertions passed; Ruff, py_compile, and diff check clean
+  final post-repair run: PASS; DeepSeek `qwen3.7-max`; 43/43 assertions; session schema 3; 8 native actions; 10/15 Provider calls
+  final usage: 13,842 input + 1,330 output + 5,248 cache-read tokens; wall time 44.253s
+  final report: benchmarks/live_e2e/results/live-e2e-1783768868731845000.json (ignored, validated key-clean and artifact-security clean)
+  final fixture restoration: PASS; automatic retries for the final authorized process: 0
+
+=== A3 LOCAL SECURITY AND TRUST REVIEW COMPLETE ===
+Tasks 1-8 complete in worktree. Independent final review Ready (C0/I0/M0); full local gate 1997 passed, 6 skipped; deterministic evidence valid; perf 3/3/4/4 valid; final DeepSeek native-tool gate PASS at 43/43 with key/artifact checks clean.

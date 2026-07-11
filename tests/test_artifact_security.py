@@ -11,7 +11,7 @@ from pico.checkpoint_store import CheckpointStore
 from pico.cli import main
 from pico.cli_session import inspect_session
 from pico.memory.block_store import BlockStore
-from pico.recovery_models import new_checkpoint_record
+from pico.recovery_models import new_checkpoint_record, new_tool_change_record
 from pico.run_store import RunStore
 from pico.task_state import TaskState
 
@@ -174,7 +174,11 @@ def test_checkpoint_rejects_fifo_leaf_and_symlinked_blob_bucket(tmp_path):
     fifo = store._tool_change_path("tc_fifo")
     os.mkfifo(fifo)
     with pytest.raises(ValueError, match="regular|unsafe"):
-        store.write_tool_change_record({"tool_change_id": "tc_fifo"})
+        store.write_tool_change_record(
+            new_tool_change_record(
+                "tc_fifo", "", "t", "write_file", "workspace_write"
+            )
+        )
 
     data = b"exact blob bytes"
     from pico.recovery_paths import hash_bytes
@@ -199,15 +203,22 @@ def test_checkpoint_temp_swap_is_detected_without_installing_symlink(
     store = CheckpointStore(tmp_path)
     outside = tmp_path / "outside-temp.json"
     outside.write_text("outside\n", encoding="utf-8")
-    original_replace = Path.replace
+    from pico import security as security_module
 
-    def swap_before_replace(path, target):
-        if path.name.endswith(".tmp"):
-            path.unlink()
-            path.symlink_to(outside)
-        return original_replace(path, target)
+    original_replace = security_module.os.replace
 
-    monkeypatch.setattr(Path, "replace", swap_before_replace)
+    def swap_before_replace(source, target, *, src_dir_fd=None, dst_dir_fd=None):
+        if str(source).endswith(".tmp"):
+            os.unlink(source, dir_fd=src_dir_fd)
+            os.symlink(outside, source, dir_fd=src_dir_fd)
+        return original_replace(
+            source,
+            target,
+            src_dir_fd=src_dir_fd,
+            dst_dir_fd=dst_dir_fd,
+        )
+
+    monkeypatch.setattr(security_module.os, "replace", swap_before_replace)
     record = new_checkpoint_record(
         "ckpt_swap",
         "turn",
@@ -781,15 +792,16 @@ def test_session_temp_swap_is_removed_without_touching_external_target(
     store = SessionStore(tmp_path / ".pico" / "sessions")
     outside = tmp_path / "outside-session.json"
     outside.write_text("outside\n", encoding="utf-8")
-    original_replace = Path.replace
+    original_replace = security_module.os.replace
 
-    def swap_before_replace(path, target):
-        if path.name.endswith(".tmp"):
-            path.unlink()
-            path.symlink_to(outside)
-        return original_replace(path, target)
+    def swap_before_replace(source, target, **kwargs):
+        source_dir_fd = kwargs.get("src_dir_fd")
+        if str(source).endswith(".tmp"):
+            os.unlink(source, dir_fd=source_dir_fd)
+            os.symlink(outside, source, dir_fd=source_dir_fd)
+        return original_replace(source, target, **kwargs)
 
-    monkeypatch.setattr(Path, "replace", swap_before_replace)
+    monkeypatch.setattr(security_module.os, "replace", swap_before_replace)
 
     with pytest.raises(ValueError, match="temp|changed|regular|symlink"):
         store.save({"id": "swapped", "history": []})
@@ -851,13 +863,18 @@ def test_private_chmod_rejects_leaf_swapped_to_external_hardlink(
     real_open = security_module.os.open
     swapped = False
 
-    def swap_before_open(path, flags, *args):
+    def swap_before_open(path, flags, mode=0o777, *, dir_fd=None):
         nonlocal swapped
-        if not swapped and Path(path) == target:
+        if not swapped and (
+            Path(path) == target
+            or (dir_fd is not None and os.fspath(path) == target.name)
+        ):
             swapped = True
             target.unlink()
             os.link(outside, target)
-        return real_open(path, flags, *args)
+        if dir_fd is None:
+            return real_open(path, flags, mode)
+        return real_open(path, flags, mode, dir_fd=dir_fd)
 
     monkeypatch.setattr(security_module.os, "open", swap_before_open)
 
@@ -884,15 +901,27 @@ def test_atomic_writers_remove_installed_temp_with_extra_hardlink(
     memory_user.mkdir(parents=True)
     memory_store = BlockStore(memory_workspace, memory_user, redaction_env={})
     aliases = []
-    real_replace = Path.replace
+    real_path_replace = Path.replace
+    real_os_replace = security_module.os.replace
 
-    def hardlink_before_replace(path, target):
+    def hardlink_before_path_replace(path, target):
         alias = tmp_path / f"temp-alias-{len(aliases)}"
         os.link(path, alias)
         aliases.append(alias)
-        return real_replace(path, target)
+        return real_path_replace(path, target)
 
-    monkeypatch.setattr(Path, "replace", hardlink_before_replace)
+    def hardlink_before_os_replace(source, target, **kwargs):
+        alias = tmp_path / f"temp-alias-{len(aliases)}"
+        os.link(source, alias, src_dir_fd=kwargs.get("src_dir_fd"))
+        aliases.append(alias)
+        return real_os_replace(source, target, **kwargs)
+
+    monkeypatch.setattr(Path, "replace", hardlink_before_path_replace)
+    monkeypatch.setattr(
+        security_module.os,
+        "replace",
+        hardlink_before_os_replace,
+    )
 
     record = new_checkpoint_record(
         "hardlinked_temp",

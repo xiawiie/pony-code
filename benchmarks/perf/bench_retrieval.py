@@ -31,7 +31,7 @@ def main():
     scenarios = []
     for name, count in [("small", 10), ("medium", 100), ("large", 1000)]:
         with tempfile.TemporaryDirectory() as td:
-            root = Path(td)
+            root = Path(td).resolve()
             _populate(root, count)
             store = BlockStore(workspace_root=root, user_root=root / "user")
             ret = Retrieval(store)

@@ -1,7 +1,8 @@
 from copy import deepcopy
 import json
-import sys
 from unittest.mock import Mock
+
+import pytest
 
 from pico import FakeModelClient, Pico, SessionStore, WorkspaceContext
 
@@ -279,7 +280,8 @@ def test_direct_verification_recording_rejects_loaded_foreign_checkpoint(
     )
 
     assert record is None
-    assert real_load(current_id)["verification_evidence"] == []
+    with pytest.raises(ValueError, match="internal_id_mismatch"):
+        real_load(current_id)
     assert real_load(foreign_id)["verification_evidence"] == []
     write_record.assert_not_called()
 
@@ -326,7 +328,7 @@ def test_run_shell_verification_command_attaches_evidence_to_checkpoint(tmp_path
     agent = build_agent(
         tmp_path,
         [f"<tool>{tool_call}</tool>", "<final>done</final>"],
-        executables={"python": sys.executable},
+        executables={"python": "/usr/bin/python3"},
     )
     agent.approval_policy = "ask"
     agent.approve = lambda name, args: True
@@ -337,4 +339,28 @@ def test_run_shell_verification_command_attaches_evidence_to_checkpoint(tmp_path
     evidence = checkpoint["verification_evidence"]
     assert len(evidence) == 1
     assert evidence[0]["command"] == command
-    assert evidence[0]["status"] == "passed"
+    assert evidence[0]["status"] == "failed"
+
+
+def test_recovery_e2e_a_b_c_restore_review_and_undo(tmp_path):
+    agent = build_agent(tmp_path, [])
+    (tmp_path / "note.txt").write_text("A", encoding="utf-8")
+    first = agent.execute_tool("write_file", {"path": "note.txt", "content": "B"})
+    second = agent.execute_tool("write_file", {"path": "note.txt", "content": "C"})
+    checkpoint = agent.recovery_checkpoint_writer.create_turn_checkpoint(
+        session_id="session",
+        run_id="run",
+        turn_id="turn",
+        parent_checkpoint_id="",
+        tool_change_ids=[
+            first.metadata["tool_change_id"],
+            second.metadata["tool_change_id"],
+        ],
+    )
+    restored = agent.recovery_manager.apply_restore(checkpoint["checkpoint_id"])
+    assert (tmp_path / "note.txt").read_text(encoding="utf-8") == "A"
+    undone = agent.recovery_manager.apply_restore(
+        restored["restore_checkpoint_id"]
+    )
+    assert undone["status"] == "applied"
+    assert (tmp_path / "note.txt").read_text(encoding="utf-8") == "C"

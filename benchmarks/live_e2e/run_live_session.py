@@ -11,8 +11,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import stat
 import subprocess
 import sys
+import tempfile
 import time
 from collections import Counter
 from dataclasses import dataclass
@@ -28,6 +31,94 @@ from pico.providers.defaults import (
     DEFAULT_MODELS,
     MODEL_ENV_NAMES,
 )
+from pico.security import (
+    SensitiveDataBlockedError,
+    contains_secret_material,
+    ensure_private_dir,
+    ensure_private_file,
+    private_directory_identity,
+    redact_artifact,
+    write_private_bytes_atomic,
+)
+
+
+def _private_tree_entries(pico_root):
+    try:
+        root_info = pico_root.lstat()
+    except FileNotFoundError:
+        return []
+    entries = [(pico_root, root_info)]
+    if stat.S_ISLNK(root_info.st_mode) or not stat.S_ISDIR(root_info.st_mode):
+        return entries
+    for current, dirnames, filenames in os.walk(
+        pico_root,
+        followlinks=False,
+    ):
+        dirnames.sort()
+        base = Path(current)
+        for name in sorted(dirnames + filenames):
+            path = base / name
+            try:
+                entries.append((path, path.lstat()))
+            except OSError:
+                entries.append((path, None))
+    return entries
+
+
+def snapshot_private_artifacts(pico_root):
+    pico_root = Path(pico_root)
+    snapshot = {}
+    for path, info in _private_tree_entries(pico_root):
+        if info is not None and stat.S_ISREG(info.st_mode):
+            snapshot[path.relative_to(pico_root).as_posix()] = (
+                info.st_ctime_ns,
+                info.st_mtime_ns,
+                info.st_size,
+            )
+    return snapshot
+
+
+def scan_active_private_artifacts(pico_root, before, *, forbidden_values):
+    pico_root = Path(pico_root)
+    forbidden = tuple(
+        str(value).encode() for value in forbidden_values if str(value)
+    )
+    secret_hits = []
+    mode_failures = []
+    files_scanned = 0
+    for path, info in _private_tree_entries(pico_root):
+        relative = path.relative_to(pico_root).as_posix()
+        display = ".pico" if relative == "." else ".pico/" + relative
+        if info is None:
+            mode_failures.append(display + ":unreadable")
+            continue
+        if stat.S_ISLNK(info.st_mode) or not (
+            stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode)
+        ):
+            mode_failures.append(display + ":unsafe-type")
+            continue
+        if stat.S_ISDIR(info.st_mode):
+            if os.name == "posix" and stat.S_IMODE(info.st_mode) != 0o700:
+                mode_failures.append(
+                    display + ":" + format(stat.S_IMODE(info.st_mode), "04o")
+                )
+            continue
+        if os.name == "posix" and stat.S_IMODE(info.st_mode) != 0o600:
+            mode_failures.append(
+                display + ":" + format(stat.S_IMODE(info.st_mode), "04o")
+            )
+        marker = (info.st_ctime_ns, info.st_mtime_ns, info.st_size)
+        if before.get(relative) == marker:
+            continue
+        files_scanned += 1
+        body = path.read_bytes()
+        if any(value in body for value in forbidden):
+            secret_hits.append(display)
+    return {
+        "files_scanned": files_scanned,
+        "secret_hits": secret_hits,
+        "mode_failures": mode_failures,
+    }
 
 
 @dataclass(frozen=True)
@@ -159,8 +250,11 @@ class FixtureManager:
          copy if no backup existed.
     """
 
-    def __init__(self, repo_root: Path):
+    def __init__(self, repo_root: Path, *, forbidden_values=()):
         self.repo_root = Path(repo_root)
+        self._forbidden_values = tuple(
+            str(value).encode() for value in forbidden_values if str(value)
+        )
         self._seed_source = (
             Path(__file__).resolve().parent / "fixtures" / "seed_cache_note.md"
         )
@@ -172,17 +266,34 @@ class FixtureManager:
         # 1. Snapshot if present
         if pico_toml.exists():
             self._had_pico_toml = True
-            backup.parent.mkdir(parents=True, exist_ok=True)
-            backup.write_bytes(pico_toml.read_bytes())
+            original = pico_toml.read_bytes()
+            contains_sensitive = contains_secret_material(
+                original.decode("utf-8", errors="replace"),
+                env=os.environ,
+            )
+            if contains_sensitive or any(
+                value in original for value in self._forbidden_values
+            ):
+                raise SensitiveDataBlockedError(
+                    "live fixture backup contains blocked sensitive material"
+                )
+            backup_root = ensure_private_dir(backup.parent)
+            write_private_bytes_atomic(
+                backup,
+                original,
+                trusted_root=backup_root,
+                trusted_root_identity=private_directory_identity(backup_root),
+            )
         # 2. Write fixture
         pico_toml.write_text(FIXTURE_PICO_TOML, encoding="utf-8")
         # 3. Write seed note
         seed_target = self.repo_root / SEED_NOTE_REL
-        seed_target.parent.mkdir(parents=True, exist_ok=True)
+        ensure_private_dir(seed_target.parent)
         seed_target.write_text(
             self._seed_source.read_text(encoding="utf-8"),
             encoding="utf-8",
         )
+        ensure_private_file(seed_target)
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
@@ -715,14 +826,31 @@ class AssertionEngine:
                 f"contents={len(actual_user_contents)}, calls={provider_calls}"
             ),
         ))
-        user_prompt_reached = contents_cover_calls and all(
-            result.user_prompt in content and "<system-reminder>" in content
-            for content in actual_user_contents
+        call_metadata = result.request_metadata_by_call
+        metadata_cover_calls = (
+            len(call_metadata) == provider_calls
+            and all(isinstance(metadata, dict) for metadata in call_metadata)
         )
+        user_prompt_reached = contents_cover_calls and metadata_cover_calls
+        if user_prompt_reached:
+            for metadata, content in zip(call_metadata, actual_user_contents):
+                injection_tokens = metadata.get("injection_tokens")
+                if not isinstance(injection_tokens, dict):
+                    user_prompt_reached = False
+                    break
+                injection_present = any(injection_tokens.values())
+                if result.user_prompt not in content or (
+                    injection_present and "<system-reminder>" not in content
+                ):
+                    user_prompt_reached = False
+                    break
         out.append(Assertion(
             name="injected_user_prompt_reaches_every_provider_call",
             passed=user_prompt_reached,
-            expected="each actual user content includes the prompt and <system-reminder>",
+            expected=(
+                "each call includes the prompt and includes <system-reminder> "
+                "when that call injected context"
+            ),
             actual=str(user_prompt_reached),
         ))
 
@@ -918,8 +1046,18 @@ class AssertionEngine:
         ))
         return out
 
-    def check_global(self, all_results, pico) -> list[Assertion]:
+    def check_global(
+        self,
+        all_results,
+        pico,
+        artifact_security=None,
+    ) -> list[Assertion]:
         """Cross-turn trace, persistence, terminal, and budget invariants."""
+        artifact_security = artifact_security or {
+            "files_scanned": 0,
+            "secret_hits": [],
+            "mode_failures": [],
+        }
         out = []
         usage_complete = bool(all_results) and all(
             result.usage_complete for result in all_results
@@ -1030,6 +1168,42 @@ class AssertionEngine:
             ),
             actual=str(total_tokens),
         ))
+        calls = getattr(getattr(pico, "model_client", None), "calls", ())
+        provider_clean = bool(calls) and all(
+            call.get("payload_secret_clean") is True for call in calls
+        )
+        out.append(
+            Assertion(
+                name="provider_payloads_exclude_api_key",
+                passed=provider_clean,
+                expected=(
+                    "every captured Provider payload excludes the selected API key"
+                ),
+                actual=str(provider_clean),
+            )
+        )
+        artifact_clean = not artifact_security["secret_hits"]
+        out.append(
+            Assertion(
+                name="active_artifacts_exclude_api_key",
+                passed=artifact_clean,
+                expected=(
+                    "new or changed .pico artifacts contain no selected API key"
+                ),
+                actual=str(artifact_security["secret_hits"]),
+            )
+        )
+        private_modes = not artifact_security["mode_failures"]
+        out.append(
+            Assertion(
+                name="active_private_artifact_modes",
+                passed=private_modes,
+                expected=(
+                    "active private files are 0600 and directories are 0700"
+                ),
+                actual=str(artifact_security["mode_failures"]),
+            )
+        )
         return out
 
 class Reporter:
@@ -1079,7 +1253,15 @@ class Reporter:
         expected_turn_count: int,
         session_schema: int,
         git_head: str,
+        artifact_security=None,
+        redactor=redact_artifact,
+        forbidden_values=(),
     ) -> Path:
+        artifact_security = artifact_security or {
+            "files_scanned": 0,
+            "secret_hits": [],
+            "mode_failures": [],
+        }
         run_id = f"live-e2e-{time.time_ns()}"
         payload = {
             "schema_version": 1,
@@ -1135,8 +1317,42 @@ class Reporter:
             and total == passed
         )
 
+        payload["artifact_security"] = {
+            "files_scanned": int(artifact_security["files_scanned"]),
+            "secret_hits": list(artifact_security["secret_hits"]),
+            "mode_failures": list(artifact_security["mode_failures"]),
+        }
+        safe_payload = redactor(payload)
+        serialized = json.dumps(safe_payload, indent=2, ensure_ascii=False)
+        if any(
+            str(value) and str(value) in serialized for value in forbidden_values
+        ):
+            raise SensitiveDataBlockedError(
+                "live report contains blocked sensitive material"
+            )
         report_path = self.output_dir / f"{run_id}.json"
-        report_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+        ensure_private_dir(self.output_dir)
+        descriptor, temp_name = tempfile.mkstemp(
+            prefix=report_path.name + ".",
+            dir=self.output_dir,
+        )
+        temp_path = Path(temp_name)
+        try:
+            os.fchmod(descriptor, 0o600)
+            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                handle.write(serialized)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temp_path, report_path)
+            ensure_private_file(report_path)
+            directory_fd = os.open(self.output_dir, os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+        finally:
+            if temp_path.exists():
+                temp_path.unlink()
         return report_path
 
     def _turn_to_json(self, r, assertions) -> dict:
@@ -1225,8 +1441,9 @@ class _SniffingProviderWrapper:
     so memory stays bounded across a 5-turn session.
     """
 
-    def __init__(self, inner):
+    def __init__(self, inner, *, forbidden_values=()):
         self._inner = inner
+        self._forbidden_values = tuple(str(value) for value in forbidden_values)
         # Per-call captures: list of {"last_user_content": str, "call_ts_ns": int}
         self.calls: list[dict] = []
         # Delegate attributes pico's runtime probes
@@ -1242,7 +1459,25 @@ class _SniffingProviderWrapper:
                     last_user = content
                     break
                 # tool_result carriers have list content — skip
-        self.calls.append({"last_user_content": last_user, "call_ts_ns": time.monotonic_ns()})
+        serialized = json.dumps(
+            {"system": system, "tools": tools, "messages": messages},
+            ensure_ascii=False,
+        )
+        payload_secret_clean = all(
+            not value or value not in serialized
+            for value in self._forbidden_values
+        )
+        self.calls.append(
+            {
+                "last_user_content": last_user,
+                "call_ts_ns": time.monotonic_ns(),
+                "payload_secret_clean": payload_secret_clean,
+            }
+        )
+        if not payload_secret_clean:
+            raise SensitiveDataBlockedError(
+                "live provider payload contains blocked sensitive material"
+            )
         return self._inner.complete_v2(
             system=system, tools=tools, messages=messages,
             max_tokens=max_tokens, cache_breakpoints=cache_breakpoints,
@@ -1265,7 +1500,10 @@ def make_live_client(config: RunConfig):
         temperature=0.0,
         timeout=120,
     )
-    return _SniffingProviderWrapper(inner)
+    return _SniffingProviderWrapper(
+        inner,
+        forbidden_values=(settings["api_key"],),
+    )
 
 
 def _budget_exceeded(all_results: list, config: RunConfig, wall_start_ns: int) -> str | None:
@@ -1336,6 +1574,7 @@ def main() -> int:
     check_env(config)
     verify_pico_repo(repo_root)
     warn_if_dirty_working_tree(repo_root)
+    selected_api_key = provider_settings(config.provider)["api_key"].strip()
 
     # Detect pre-existing seed note (unclean previous run)
     if (repo_root / SEED_NOTE_REL).exists():
@@ -1345,6 +1584,8 @@ def main() -> int:
         )
         return 2
 
+    pico_root = repo_root / ".pico"
+    artifact_baseline = snapshot_private_artifacts(pico_root)
     wall_start = time.monotonic_ns()
 
     TURNS = [
@@ -1359,7 +1600,10 @@ def main() -> int:
         (5, "最后 done", "cache_anchor_verified"),
     ]
 
-    with FixtureManager(repo_root):
+    with FixtureManager(
+        repo_root,
+        forbidden_values=(selected_api_key,),
+    ):
         # Lazy import of pico so a broken pico module produces exit 4 (not 2).
         from pico.providers.anthropic_compatible import AnthropicCompatibleModelClient  # noqa: F401
         from pico.runtime import Pico
@@ -1414,8 +1658,17 @@ def main() -> int:
                 print(f"[live-e2e] budget guard fired: {reason}", file=sys.stderr)
                 break
 
+        artifact_security = scan_active_private_artifacts(
+            pico_root,
+            artifact_baseline,
+            forbidden_values=(selected_api_key,),
+        )
         # Run global checks whether we finished or aborted early
-        global_asserts = engine.check_global(all_results, pico)
+        global_asserts = engine.check_global(
+            all_results,
+            pico,
+            artifact_security,
+        )
         all_assertions["global"] = global_asserts
         reporter.render_turn_summary("global", "cross-turn invariants", global_asserts)
 
@@ -1449,6 +1702,12 @@ def main() -> int:
             expected_turn_count=len(TURNS),
             session_schema=int(pico.session.get("schema_version", 0)),
             git_head=git_head,
+            artifact_security=artifact_security,
+            redactor=lambda value: redact_artifact(
+                value,
+                env={"PICO_LIVE_API_KEY": selected_api_key},
+            ),
+            forbidden_values=(selected_api_key,),
         )
 
         # Compute overall pass

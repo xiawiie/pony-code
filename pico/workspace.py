@@ -20,6 +20,9 @@ from pico.safe_subprocess import (
 )
 
 MAX_TOOL_OUTPUT = 4000
+MAX_BOOTSTRAP_FILES = 9
+MAX_BOOTSTRAP_FILE_BYTES = 64 * 1024
+MAX_BOOTSTRAP_TOTAL_BYTES = 256 * 1024
 # 这些文件最可能直接影响 agent 的行动方式。
 # 我们不会预加载整个仓库，只会先给模型一小份“导航包”。
 DOC_NAMES = ("AGENTS.md", "README.md", "pyproject.toml", "package.json")
@@ -69,6 +72,42 @@ def _safe_index_directory(root, candidate):
         if current != candidate and not stat.S_ISDIR(mode):
             return None
     return candidate if mode is not None and stat.S_ISDIR(mode) else None
+
+
+def _read_bounded_regular(path, limit):
+    path = Path(os.path.abspath(os.fspath(path)))
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    parent_descriptor = securitylib._open_private_directory(path.parent)
+    try:
+        descriptor = os.open(path.name, flags, dir_fd=parent_descriptor)
+        current = os.stat(
+            path.name,
+            dir_fd=parent_descriptor,
+            follow_symlinks=False,
+        )
+    finally:
+        os.close(parent_descriptor)
+    try:
+        opened = os.fstat(descriptor)
+        path_current = os.stat(path, follow_symlinks=False)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino)
+            or (opened.st_dev, opened.st_ino)
+            != (path_current.st_dev, path_current.st_ino)
+            or opened.st_size > limit
+        ):
+            raise ValueError("unsafe automatic workspace file")
+        with os.fdopen(descriptor, "rb") as handle:
+            descriptor = -1
+            data = handle.read(limit + 1)
+        if len(data) > limit:
+            raise ValueError("automatic workspace file is too large")
+        return data
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
 
 
 def now():
@@ -154,6 +193,19 @@ class WorkspaceContext:
             ).resolve()
             repo_root = reported_root if reported_root == lexical_root else lexical_root
         docs = {}
+        docs_bytes = 0
+
+        def add_doc(key, path, snippet_limit):
+            nonlocal docs_bytes
+            if len(docs) >= MAX_BOOTSTRAP_FILES:
+                return
+            data = _read_bounded_regular(path, MAX_BOOTSTRAP_FILE_BYTES)
+            if docs_bytes + len(data) > MAX_BOOTSTRAP_TOTAL_BYTES:
+                return
+            text = data.decode("utf-8", errors="replace")
+            docs[key] = clip(securitylib.redact_text(text), snippet_limit)
+            docs_bytes += len(data)
+
         # 同时扫描 repo_root 和 cwd，这样在子目录启动时也能看到本地文档；
         # 但用相对路径做 key，避免同一份文档被重复收集。
         for base in (repo_root, cwd):
@@ -165,19 +217,17 @@ class WorkspaceContext:
                 key = str(safe_path.relative_to(repo_root))
                 if key in docs:
                     continue
-                text = safe_path.read_text(encoding="utf-8", errors="replace")
-                docs[key] = clip(securitylib.redact_text(text), 1200)
+                try:
+                    add_doc(key, safe_path, 1200)
+                except (OSError, ValueError):
+                    continue
 
         # v2: 加载 ~/.pico/AGENTS.md 作为全局约定（可选，不存在或不可读时安静跳过）
         # 在函数内 lazy 求值 Path.home()，方便测试用 monkeypatch 隔离本机 home。
         try:
             global_agents_md = Path.home() / ".pico" / "AGENTS.md"
             global_agents_md = securitylib.require_regular_no_symlink(global_agents_md)
-            text = global_agents_md.read_text(encoding="utf-8", errors="replace")
-            docs["<global>/AGENTS.md"] = clip(
-                securitylib.redact_text(text),
-                1500,
-            )
+            add_doc("<global>/AGENTS.md", global_agents_md, 1500)
         except (OSError, ValueError):
             pass
 

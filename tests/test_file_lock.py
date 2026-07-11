@@ -2,6 +2,7 @@ import os
 import stat
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
@@ -103,3 +104,80 @@ def test_locked_file_required_lock_fails_closed_when_flock_fails(tmp_path, monke
     with pytest.raises(OSError, match="flock failed"):
         with file_lock.locked_file(tmp_path / "required.lock", require_lock=True):
             raise AssertionError("required lock yielded after flock failure")
+
+
+def test_locked_file_rejects_parent_symlink(tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    linked = tmp_path / "linked"
+    linked.symlink_to(outside, target_is_directory=True)
+    with pytest.raises(ValueError, match="symlink"):
+        with file_lock.locked_file(linked / "store.lock", require_lock=True):
+            raise AssertionError("symlinked parent lock yielded")
+
+
+def test_locked_file_rejects_fifo_without_blocking(tmp_path):
+    if not hasattr(os, "mkfifo"):
+        pytest.skip("FIFO unavailable")
+    fifo = tmp_path / "store.lock"
+    os.mkfifo(fifo, 0o600)
+    with pytest.raises(ValueError, match="regular"):
+        with file_lock.locked_file(fifo, require_lock=True):
+            raise AssertionError("FIFO lock yielded")
+
+
+def test_locked_file_detects_inode_replacement_before_open(tmp_path, monkeypatch):
+    lock_path = tmp_path / "store.lock"
+    lock_path.write_text("original", encoding="utf-8")
+    replacement = tmp_path / "replacement.lock"
+    replacement.write_text("replacement", encoding="utf-8")
+    real_open = os.open
+    swapped = False
+
+    def replace_then_open(path, flags, mode=0o777, **kwargs):
+        nonlocal swapped
+        if Path(path).name == lock_path.name and kwargs.get("dir_fd") is not None and not swapped:
+            swapped = True
+            lock_path.unlink()
+            replacement.replace(lock_path)
+        return real_open(path, flags, mode, **kwargs)
+
+    monkeypatch.setattr(file_lock.os, "open", replace_then_open)
+    with pytest.raises(ValueError, match="inode_changed"):
+        with file_lock.locked_file(lock_path, require_lock=True):
+            raise AssertionError("replaced lock yielded")
+
+
+def test_locked_file_hardens_existing_regular_file(tmp_path):
+    lock_path = tmp_path / "store.lock"
+    lock_path.write_text("", encoding="utf-8")
+    lock_path.chmod(0o644)
+    with file_lock.locked_file(lock_path, require_lock=True):
+        assert stat.S_IMODE(lock_path.stat().st_mode) == 0o600
+
+
+def test_locked_file_parent_swap_cannot_redirect_lock(tmp_path, monkeypatch):
+    parent = tmp_path / "parent"
+    parent.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    moved = tmp_path / "parent-original"
+    real_ensure = file_lock.ensure_private_dir
+    swapped = False
+
+    def ensure_then_swap(path):
+        nonlocal swapped
+        result = real_ensure(path)
+        if Path(path) == parent and not swapped:
+            parent.rename(moved)
+            parent.symlink_to(outside, target_is_directory=True)
+            swapped = True
+        return result
+
+    monkeypatch.setattr(file_lock, "ensure_private_dir", ensure_then_swap)
+
+    with pytest.raises((OSError, ValueError)):
+        with file_lock.locked_file(parent / "store.lock", require_lock=True):
+            raise AssertionError("redirected lock yielded")
+
+    assert list(outside.iterdir()) == []

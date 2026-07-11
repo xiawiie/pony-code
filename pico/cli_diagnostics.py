@@ -28,6 +28,7 @@ from .providers.defaults import (
     MODEL_ENV_NAMES,
 )
 from .security import is_secret_env_name, require_directory_no_symlink
+from .safe_subprocess import build_trusted_executables
 from .workspace import WorkspaceContext
 
 
@@ -39,6 +40,27 @@ def collect_status(cwd, args=None):
     runs_root = pico_root / "runs"
     checkpoint_records_root = pico_root / "checkpoints" / "records"
     config = collect_config(cwd, args)
+    try:
+        from .checkpoint_store import CheckpointStore
+        from .recovery_manager import collect_recovery_review_items
+
+        review_items = collect_recovery_review_items(
+            CheckpointStore(root), root
+        )
+        active_reviews = (
+            review_items["tool_changes"]
+            + review_items["restore_journals"]
+            + review_items["invalid_records"]
+        )
+        recovery_review = {
+            "active_count": len(active_reviews),
+            "opaque_ids": [
+                item["opaque_id"]
+                for item in review_items["invalid_records"]
+            ],
+        }
+    except (OSError, RuntimeError, ValueError):
+        recovery_review = {"active_count": 0, "opaque_ids": []}
     return {
         "workspace": {
             "cwd": workspace.cwd,
@@ -61,6 +83,7 @@ def collect_status(cwd, args=None):
             "run_id": _latest_dir_name(runs_root),
             "checkpoint_id": _latest_json_stem(checkpoint_records_root),
         },
+        "recovery_review": recovery_review,
     }
 
 
@@ -108,9 +131,9 @@ def collect_doctor(cwd, args=None, offline=False):
     )
     checkpoints_root = pico_root / "checkpoints"
     security = _collect_security_status(
+        root,
         project_env_path(root),
         pico_root,
-        workspace.trusted_executables,
     )
     doc_hints = []
     if (root / "CLAUDE.md").exists() and not (root / "AGENTS.md").exists():
@@ -179,6 +202,12 @@ def _unavailable_workspace_doctor(*, offline):
             "trusted_executables": {
                 "status": "degraded",
                 "missing": ["git", "rg"],
+            },
+            "recovery_review": {
+                "pending_count": 0,
+                "applying_count": 0,
+                "unreviewed_partial_count": 0,
+                "invalid_mutation_count": 0,
             },
         },
         "project_docs": {"hints": []},
@@ -450,12 +479,18 @@ def _storage_status(path):
     return "ok" if _storage_exists(path) else "missing"
 
 
-def _collect_security_status(env_path, pico_root, trusted_executables):
+def _collect_security_status(root, env_path, pico_root):
     project_env = _project_env_security_status(env_path)
     private_storage = _private_storage_security_status(pico_root)
     try:
-        trusted_names = set(dict(trusted_executables or {}))
-    except (RuntimeError, TypeError, ValueError):
+        trusted_names = set(
+            build_trusted_executables(
+                root,
+                env=os.environ,
+                names=("git", "rg"),
+            )
+        )
+    except (OSError, RuntimeError, TypeError, ValueError):
         trusted_names = set()
     missing = sorted(
         name
@@ -466,16 +501,46 @@ def _collect_security_status(env_path, pico_root, trusted_executables):
         "status": "degraded" if missing else "ok",
         "missing": missing,
     }
+    review_inspection_failed = False
+    try:
+        from .checkpoint_store import CheckpointStore
+        from .recovery_manager import collect_recovery_review_items
+
+        reviews = collect_recovery_review_items(CheckpointStore(root), root)
+    except (OSError, RuntimeError, TypeError, ValueError):
+        review_inspection_failed = True
+        reviews = {
+            "tool_changes": [],
+            "restore_journals": [],
+            "invalid_records": [],
+        }
+    recovery_review = {
+        "pending_count": len(reviews["tool_changes"]),
+        "applying_count": sum(
+            item.get("status") == "applying"
+            for item in reviews["restore_journals"]
+        ),
+        "unreviewed_partial_count": sum(
+            item.get("status") == "partial" and not item.get("reviewed_at")
+            for item in reviews["restore_journals"]
+        ),
+        "invalid_mutation_count": (
+            len(reviews["invalid_records"])
+            + int(review_inspection_failed)
+        ),
+    }
     needs_review = (
         project_env["status"] == "review_required"
         or private_storage["status"] == "review_required"
         or executables["status"] == "degraded"
+        or any(recovery_review.values())
     )
     return {
         "status": "review_required" if needs_review else "ok",
         "project_env": project_env,
         "private_storage": private_storage,
         "trusted_executables": executables,
+        "recovery_review": recovery_review,
     }
 
 
@@ -521,10 +586,15 @@ def _private_storage_security_status(root):
                 *((name, stat.S_ISDIR, 0o700) for name in dirnames),
                 *((name, stat.S_ISREG, 0o600) for name in filenames),
             ):
-                mode = (Path(directory) / name).lstat().st_mode
-                if not expected_type(mode) or (
+                info = (Path(directory) / name).lstat()
+                mode = info.st_mode
+                if (
+                    not expected_type(mode)
+                    or (stat.S_ISREG(mode) and info.st_nlink != 1)
+                    or (
                     os.name == "posix"
                     and stat.S_IMODE(mode) != expected_mode
+                    )
                 ):
                     return {"status": "review_required"}
     except OSError:
@@ -646,6 +716,7 @@ def _render_doctor(data):
     storage = data["storage"]
     security = data["security"]
     security_executables = security["trusted_executables"]
+    recovery_review = security["recovery_review"]
     lines = [
         "Pico doctor — CLI health check",
         "",
@@ -684,6 +755,10 @@ def _render_doctor(data):
         _line("private store", security["private_storage"]["status"]),
         _line("executables", security_executables["status"]),
         _line("missing", ", ".join(security_executables["missing"]) or "-"),
+        _line("pending", recovery_review["pending_count"]),
+        _line("applying", recovery_review["applying_count"]),
+        _line("partial", recovery_review["unreviewed_partial_count"]),
+        _line("invalid", recovery_review["invalid_mutation_count"]),
         "",
         "Provider connectivity",
         _line("status", connectivity.get("status", "-")),

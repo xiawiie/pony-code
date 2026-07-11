@@ -568,6 +568,17 @@ def test_git_head_fallback_uses_frozen_hardened_git(tmp_path, monkeypatch):
 
     def fake_git(executable, args, **kwargs):
         calls.append((executable, list(args), kwargs))
+        if args[0] == "ls-tree":
+            return subprocess.CompletedProcess(
+                [],
+                0,
+                stdout=(
+                    b"100644 blob "
+                    + b"c" * 40
+                    + b" 9\tREADME.md\0"
+                ),
+                stderr=b"",
+            )
         return subprocess.CompletedProcess([], 0, stdout=b"original\n", stderr=b"")
 
     monkeypatch.setattr(tool_executor, "run_hardened_git", fake_git, raising=False)
@@ -595,12 +606,18 @@ def test_git_head_fallback_uses_frozen_hardened_git(tmp_path, monkeypatch):
     states = _fill_git_head_before_file_states(agent, ["README.md"], {})
 
     assert states["README.md"]["before_blob_ref"] == "a" * 64
+    assert states["README.md"]["before_mode"] == 0o644
     assert calls == [
         (
             "/frozen/git",
-            ["show", "HEAD:README.md"],
+            ["ls-tree", "-l", "-z", "HEAD", "--", "README.md"],
             {"cwd": tmp_path, "text": False},
-        )
+        ),
+        (
+            "/frozen/git",
+            ["show", "c" * 40],
+            {"cwd": tmp_path, "text": False},
+        ),
     ]
 
 
@@ -705,6 +722,36 @@ def test_git_head_fallback_rejects_secret_stdout_before_blob(
     agent.checkpoint_store.write_blob.assert_not_called()
 
 
+def test_git_head_fallback_rejects_symlink_and_oversized_tree_entries(
+    tmp_path, monkeypatch
+):
+    import pico.tool_executor as tool_executor
+
+    git = Mock(
+        return_value=subprocess.CompletedProcess(
+            [],
+            0,
+            stdout=(
+                b"120000 blob " + b"c" * 40 + b" 12\tREADME.md\0"
+            ),
+            stderr=b"",
+        )
+    )
+    monkeypatch.setattr(tool_executor, "run_hardened_git", git)
+    agent = SimpleNamespace(
+        root=tmp_path,
+        trusted_executables=MappingProxyType({"git": "/frozen/git"}),
+        checkpoint_store=Mock(),
+        project_max_blob_size=8,
+    )
+
+    states = _fill_git_head_before_file_states(agent, ["README.md"], {})
+
+    assert states == {}
+    git.assert_called_once()
+    agent.checkpoint_store.write_blob.assert_not_called()
+
+
 def test_path_snapshot_never_hashes_safe_named_secret_content(
     tmp_path,
     monkeypatch,
@@ -715,7 +762,7 @@ def test_path_snapshot_never_hashes_safe_named_secret_content(
     (tmp_path / "source.py").write_text(secret, encoding="utf-8")
     monkeypatch.setattr(
         tool_executor,
-        "hash_file_bytes",
+        "hash_bytes",
         Mock(side_effect=AssertionError("secret content hashed")),
     )
     agent = SimpleNamespace(
@@ -810,3 +857,82 @@ def test_delegate_is_read_only_and_does_not_create_a_tool_change(tmp_path):
     assert result.metadata["read_only"] is True
     assert "tool_change_id" not in result.metadata
     assert agent.checkpoint_store.list_tool_change_records() == []
+
+
+def test_write_file_entry_records_complete_exists_hash_mode_and_source(tmp_path):
+    target = tmp_path / "note.txt"
+    target.write_text("before", encoding="utf-8")
+    target.chmod(0o640)
+    agent = build_agent(tmp_path)
+
+    result = agent.execute_tool(
+        "write_file", {"path": "note.txt", "content": "after"}
+    )
+    entry = result.metadata["file_entries"][0]
+
+    assert entry["before_exists"] is True
+    assert entry["after_exists"] is True
+    assert entry["before_blob_ref"] == entry["before_hash"]
+    assert entry["after_blob_ref"] == entry["after_hash"]
+    assert entry["expected_current_hash"] == entry["after_hash"]
+    assert entry["before_mode"] == 0o640
+    assert entry["after_mode"] == 0o640
+    assert entry["source_tool_change_ids"] == [result.metadata["tool_change_id"]]
+
+
+def test_sensitive_after_bytes_never_reach_blob_store(tmp_path, monkeypatch):
+    sentinel = "sk-sensitive-recovery-value"
+    monkeypatch.setenv("PICO_OPENAI_API_KEY", sentinel)
+    target = tmp_path / "safe.py"
+    target.write_text("before", encoding="utf-8")
+    agent = build_agent(tmp_path)
+
+    result = agent.execute_tool(
+        "write_file", {"path": "safe.py", "content": sentinel}
+    )
+
+    assert result.metadata["tool_status"] == "rejected"
+    assert all(
+        sentinel.encode() not in path.read_bytes()
+        for path in agent.checkpoint_store.blobs_dir.rglob("*")
+        if path.is_file()
+    )
+
+
+def test_existing_sensitive_before_file_is_modified_not_created(tmp_path, monkeypatch):
+    sentinel = "sk-sensitive-existing-before"
+    monkeypatch.setenv("PICO_OPENAI_API_KEY", sentinel)
+    target = tmp_path / "safe.py"
+    target.write_text(sentinel, encoding="utf-8")
+    target.chmod(0o640)
+    agent = build_agent(tmp_path)
+
+    result = agent.execute_tool(
+        "write_file", {"path": "safe.py", "content": "safe-after"}
+    )
+    entry = result.metadata["file_entries"][0]
+
+    assert entry["change_kind"] == "modified"
+    assert entry["before_exists"] is True
+    assert entry["before_mode"] == 0o640
+    assert entry["before_blob_ref"] == ""
+    assert entry["snapshot_eligible"] is False
+    assert entry["ineligible_reason"] == "before_blob_unavailable"
+
+
+def test_existing_oversized_before_file_keeps_presence_without_blob(tmp_path):
+    target = tmp_path / "large.txt"
+    target.write_bytes(b"x" * (8 * 1024 * 1024 + 1))
+    target.chmod(0o600)
+    agent = build_agent(tmp_path)
+
+    result = agent.execute_tool(
+        "write_file", {"path": "large.txt", "content": "safe-after"}
+    )
+    entry = result.metadata["file_entries"][0]
+
+    assert entry["change_kind"] == "modified"
+    assert entry["before_exists"] is True
+    assert entry["before_mode"] == 0o600
+    assert entry["before_blob_ref"] == ""
+    assert entry["ineligible_reason"] == "before_blob_unavailable"

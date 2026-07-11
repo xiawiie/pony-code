@@ -40,18 +40,20 @@ EXAMPLES:
     pico-cli --approval ask run "run the requested shell command"
     pico-cli doctor
     pico-cli checkpoints show <checkpoint-id>
+    pico-cli checkpoints pending
+    pico-cli checkpoints resolve-pending <id> [--apply]
 
 Available Commands:
   run          Run one prompt and exit
   repl         Start interactive REPL
   status       Show local workspace state
   doctor       Check config, storage, auth, and connectivity
-  init         Create or update project .env provider config
-  config       Configuration inspection and secret input
+  init         Create or update non-secret project provider config
+  config       Configuration inspection and set-secret input
   runs         Run artifact inspection
   sessions     Session inspection
   session      Session v3 invariant inspector
-  checkpoints  Checkpoint recovery inspection
+  checkpoints  Checkpoint recovery, pending review, and resolution
   memory       Memory files inspection & migration
   help         Help about any command
 
@@ -63,6 +65,9 @@ Flags:
 Compatibility:
     pico-cli "prompt"      Run a one-shot prompt
     pico                   Legacy entry point; may conflict with /usr/bin/pico
+
+Security:
+    Approved complex shell is a human-authorized escape hatch; Pico provides no OS sandbox.
 """
 
 
@@ -101,7 +106,7 @@ def handle_init(tokens, cwd, args):
     if provider not in PROVIDER_CHOICES:
         raise CliError(
             code="usage",
-            message=f"unknown provider: {provider}",
+            message="unknown provider",
             hint=f"Expected one of: {', '.join(PROVIDER_CHOICES)}.",
             exit_code=CLI_EXIT_USAGE,
         )

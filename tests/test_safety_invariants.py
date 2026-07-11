@@ -2,7 +2,6 @@ import json
 import os
 import shlex
 import subprocess
-import sys
 from types import MappingProxyType
 from unittest.mock import Mock, patch
 
@@ -297,7 +296,7 @@ def test_cli_build_agent_wires_secret_env_names_from_parser(tmp_path):
             raise AssertionError("model should not be invoked")
 
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
-    with patch.dict(os.environ, {"GITHUB_PAT": "ghp-1", "GH_PAT": "ghp-2"}, clear=True), patch(
+    with patch.dict(os.environ, {"HOME": str(tmp_path), "GITHUB_PAT": "ghp-1", "GH_PAT": "ghp-2"}, clear=True), patch(
         "pico.cli.OllamaModelClient",
         DummyModelClient,
     ):
@@ -327,7 +326,7 @@ def test_cli_build_agent_uses_default_configured_secret_names(tmp_path):
             raise AssertionError("model should not be invoked")
 
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
-    with patch.dict(os.environ, {"GH_PAT": "ghp-default-1"}, clear=True), patch(
+    with patch.dict(os.environ, {"HOME": str(tmp_path), "GH_PAT": "ghp-default-1"}, clear=True), patch(
         "pico.cli.OllamaModelClient",
         DummyModelClient,
     ):
@@ -347,7 +346,7 @@ def test_cli_build_agent_loads_project_env_secrets_before_redaction_setup(tmp_pa
 
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
     (tmp_path / ".env").write_text("PICO_DEEPSEEK_API_KEY=sk-project-secret\n", encoding="utf-8")
-    with patch.dict(os.environ, {}, clear=True), patch("pico.cli.AnthropicCompatibleModelClient", DummyModelClient):
+    with patch.dict(os.environ, {"HOME": str(tmp_path)}, clear=True), patch("pico.cli.AnthropicCompatibleModelClient", DummyModelClient):
         args = pico_cli.build_arg_parser().parse_args(["--cwd", str(tmp_path), "--provider", "deepseek"])
         agent = pico_cli.build_agent(args)
         assert agent.secret_env_summary()["secret_env_names"] == ["PICO_DEEPSEEK_API_KEY"]
@@ -408,6 +407,7 @@ def test_cli_resume_uses_immutable_collision_safe_snapshot_before_load(
     with patch.dict(
         os.environ,
         {
+            "HOME": str(tmp_path),
             "PICO_TEST_API_KEY": old_secret,
             "PICO_REDACTION_COLLISION_1_SECRET": preexisting_collision_secret,
         },
@@ -452,7 +452,7 @@ def test_cli_build_agent_skips_malformed_project_env_lines_with_warning(tmp_path
         "not a valid env line\nPICO_DEEPSEEK_API_KEY=sk-project-secret\n",
         encoding="utf-8",
     )
-    with patch.dict(os.environ, {}, clear=True), patch("pico.cli.AnthropicCompatibleModelClient", DummyModelClient):
+    with patch.dict(os.environ, {"HOME": str(tmp_path)}, clear=True), patch("pico.cli.AnthropicCompatibleModelClient", DummyModelClient):
         args = pico_cli.build_arg_parser().parse_args(["--cwd", str(tmp_path), "--provider", "deepseek"])
         agent = pico_cli.build_agent(args)
         secret_names = agent.secret_env_summary()["secret_env_names"]
@@ -492,6 +492,7 @@ def test_cli_build_agent_reads_secret_names_from_environment_config(tmp_path):
     with patch.dict(
         os.environ,
         {
+            "HOME": str(tmp_path),
             "PICO_CUSTOM_SECRET": "custom-secret-value",
             "PICO_SECRET_ENV_NAMES": "PICO_CUSTOM_SECRET",
         },
@@ -512,7 +513,7 @@ def test_cli_no_input_makes_default_approval_non_interactive(tmp_path):
             raise AssertionError("model should not be invoked")
 
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
-    with patch.dict(os.environ, {}, clear=True), patch("pico.cli.AnthropicCompatibleModelClient", DummyModelClient):
+    with patch.dict(os.environ, {"HOME": str(tmp_path)}, clear=True), patch("pico.cli.AnthropicCompatibleModelClient", DummyModelClient):
         args = pico_cli.build_arg_parser().parse_args(["--cwd", str(tmp_path), "--no-input"])
         agent = pico_cli.build_agent(args)
 
@@ -525,7 +526,7 @@ def test_run_shell_uses_allowlisted_environment_only(tmp_path):
         tmp_path,
         [],
         approval_policy="ask",
-        workspace_executables={"python": sys.executable},
+        workspace_executables={"python": "/usr/bin/python3"},
     )
     agent.approve = lambda name, args: True
     script = 'import os; print(os.getenv("PICO_ALLOWLIST_SECRET", "missing"))'
@@ -606,7 +607,7 @@ def test_delegate_child_is_read_only(tmp_path):
 def test_configured_secret_env_names_are_redacted_in_trace_and_report(tmp_path):
     github_pat = "ghp_configured_secret_123"
     gh_pat = "ghp_configured_secret_456"
-    with patch.dict(os.environ, {"GITHUB_PAT": github_pat, "GH_PAT": gh_pat}, clear=True):
+    with patch.dict(os.environ, {"HOME": str(tmp_path), "GITHUB_PAT": github_pat, "GH_PAT": gh_pat}, clear=True):
         agent = build_agent(
             tmp_path,
             [],

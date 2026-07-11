@@ -53,6 +53,12 @@ def new_checkpoint_record(checkpoint_id, checkpoint_type, session_id, run_id, tu
         "file_entries": [],
         "verification_evidence": [],
         "restore_provenance": {},
+        "status": "",
+        "owner_id": "",
+        "reviewed_at": "",
+        "review_reason": "",
+        "reviewed_by": "",
+        "integrity_errors": [],
     }
 
 
@@ -71,8 +77,13 @@ def new_tool_change_record(tool_change_id, checkpoint_id, turn_id, tool_name, ef
         "input_summary": {},
         "affected_paths": [],
         "file_entries": [],
+        "prepared_file_entries": [],
+        "recovery_context": {},
         "shell_side_effects": [],
         "approval": {},
         "error": {},
         "trace_event_ids": [],
+        "reviewed_at": "",
+        "review_reason": "",
+        "reviewed_by": "",
     }

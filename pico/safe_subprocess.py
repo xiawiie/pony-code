@@ -1,13 +1,12 @@
 """Trusted executable discovery and hardened internal subprocess runners."""
 
+from contextlib import contextmanager
 import os
 import re
 import shutil
 import stat
 import subprocess
 from pathlib import Path
-
-from pico.security import require_regular_no_symlink
 
 AUTO_TRUSTED_EXECUTABLES = ("git", "pwd", "ls", "stat", "file", "wc")
 INTERNAL_TRUSTED_EXECUTABLES = ("rg",)
@@ -83,6 +82,146 @@ _HAS_GIT_DIR_FD_TRAVERSAL = (
     and os.stat in getattr(os, "supports_dir_fd", ())
 )
 _ENV_ALLOWLIST = ("HOME", "LANG", "LANGUAGE", "LC_ALL", "LC_CTYPE", "TMPDIR", "TZ")
+
+
+class _TrustedExecutable(str):
+    def __new__(cls, value, identity, workspace_root):
+        instance = super().__new__(cls, value)
+        instance._identity = identity
+        instance._workspace_root = str(workspace_root)
+        return instance
+
+
+class _PreparedExecutable(str):
+    def __new__(cls, argv0, execution_path):
+        instance = super().__new__(cls, argv0)
+        instance._execution_path = str(execution_path)
+        return instance
+
+
+def _execution_path(executable):
+    return getattr(executable, "_execution_path", None)
+
+
+def _executable_identity(info):
+    return (
+        info.st_dev,
+        info.st_ino,
+        info.st_mode,
+        info.st_nlink,
+        info.st_uid,
+        info.st_gid,
+        info.st_size,
+        info.st_mtime_ns,
+        info.st_ctime_ns,
+    )
+
+
+def _writable_by_effective_user(info):
+    if not hasattr(os, "geteuid"):
+        return True
+    uid = os.geteuid()
+    if uid == 0:
+        return True
+    if info.st_uid == uid:
+        return True
+    groups = {os.getegid(), *os.getgroups()}
+    if info.st_gid in groups:
+        return bool(info.st_mode & stat.S_IWGRP)
+    return bool(info.st_mode & stat.S_IWOTH)
+
+
+def _open_verified_executable(path, *, expected=None):
+    if not _HAS_GIT_DIR_FD_TRAVERSAL:
+        raise RuntimeError("trusted executable traversal unavailable")
+    path = Path(os.path.abspath(os.fspath(path)))
+    directory_flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | os.O_DIRECTORY
+        | os.O_NOFOLLOW
+    )
+    parent_descriptor = os.open(path.anchor, directory_flags)
+    immutable_chain = not _writable_by_effective_user(os.fstat(parent_descriptor))
+    try:
+        for component in path.parts[1:-1]:
+            child_descriptor = os.open(
+                component,
+                directory_flags,
+                dir_fd=parent_descriptor,
+            )
+            child_info = os.fstat(child_descriptor)
+            if not stat.S_ISDIR(child_info.st_mode):
+                os.close(child_descriptor)
+                raise ValueError("unsafe trusted executable")
+            immutable_chain = immutable_chain and not _writable_by_effective_user(
+                child_info
+            )
+            os.close(parent_descriptor)
+            parent_descriptor = child_descriptor
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+        flags |= os.O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0)
+        descriptor = os.open(path.name, flags, dir_fd=parent_descriptor)
+        current = os.stat(
+            path.name,
+            dir_fd=parent_descriptor,
+            follow_symlinks=False,
+        )
+    finally:
+        os.close(parent_descriptor)
+    try:
+        opened = os.fstat(descriptor)
+        identity = _executable_identity(opened)
+        path_current = os.stat(path, follow_symlinks=False)
+        immutable_path = immutable_chain and not _writable_by_effective_user(opened)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or (opened.st_nlink != 1 and not immutable_path)
+            or identity != _executable_identity(current)
+            or identity != _executable_identity(path_current)
+            or (expected is not None and identity != expected)
+            or opened.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+            or not (
+                opened.st_mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+            )
+            or not os.access(path, os.X_OK)
+        ):
+            raise ValueError("unsafe trusted executable")
+        return descriptor, identity, immutable_path
+    except Exception:
+        os.close(descriptor)
+        raise
+
+
+def _verified_executable_identity(path, *, expected=None):
+    descriptor, identity, immutable_path = _open_verified_executable(
+        path, expected=expected
+    )
+    try:
+        if not immutable_path:
+            raise ValueError("mutable trusted executable")
+        return identity
+    finally:
+        os.close(descriptor)
+
+
+@contextmanager
+def _prepared_executable(executable):
+    argv0 = Path(executable)
+    if not argv0.is_absolute():
+        raise ValueError("trusted executable must be absolute")
+    expected = getattr(executable, "_identity", None)
+    path = argv0 if expected is not None else argv0.resolve(strict=True)
+    descriptor, _, immutable_path = _open_verified_executable(
+        path,
+        expected=expected,
+    )
+    try:
+        if not immutable_path:
+            raise ValueError("mutable trusted executable")
+        yield _PreparedExecutable(str(argv0), str(path))
+    finally:
+        os.close(descriptor)
 
 
 def _open_lexical_repo_root(cwd):
@@ -556,21 +695,11 @@ def build_trusted_executables(workspace_root, *, env=None, names=()):
             resolved = Path(found).resolve(strict=True)
             if resolved == root or root in resolved.parents:
                 continue
-            require_regular_no_symlink(resolved)
-            mode = resolved.stat().st_mode
+            identity = _verified_executable_identity(resolved)
         except (OSError, RuntimeError, ValueError):
             continue
-        if mode & (stat.S_IWGRP | stat.S_IWOTH) or not os.access(resolved, os.X_OK):
-            continue
-        result[name] = str(resolved)
+        result[name] = _TrustedExecutable(str(resolved), identity, root)
     return result
-
-
-def _absolute_executable(executable):
-    path = Path(executable)
-    if not path.is_absolute():
-        raise ValueError("trusted executable must be absolute")
-    return str(path)
 
 
 def _minimal_env(cwd, executable):
@@ -692,6 +821,7 @@ def _validate_gitfile_worktree_root(executable, *, cwd, timeout):
     argv.extend(("rev-parse", "--show-toplevel"))
     result = subprocess.run(
         argv,
+        executable=_execution_path(executable),
         cwd=Path(cwd).resolve(),
         capture_output=True,
         text=False,
@@ -710,7 +840,7 @@ def _validate_gitfile_worktree_root(executable, *, cwd, timeout):
         raise ValueError("unsafe git repository config")
 
 
-def _validate_hardened_git_repository(
+def _validate_hardened_git_repository_prepared(
     executable,
     *,
     cwd,
@@ -730,7 +860,6 @@ def _validate_hardened_git_repository(
         and args[1].startswith("HEAD:")
         and len(args[1]) > len("HEAD:")
     )
-    executable = _absolute_executable(executable)
     probe_timeout = min(int(timeout), 5)
     argv = _hardened_git_prefix(
         executable,
@@ -748,6 +877,7 @@ def _validate_hardened_git_repository(
     )
     result = subprocess.run(
         argv,
+        executable=_execution_path(executable),
         cwd=Path(cwd).resolve(),
         capture_output=True,
         text=False,
@@ -801,6 +931,7 @@ def _validate_hardened_git_repository(
     argv.extend(("ls-files", "--stage", "-z"))
     result = subprocess.run(
         argv,
+        executable=_execution_path(executable),
         cwd=Path(cwd).resolve(),
         capture_output=True,
         text=False,
@@ -823,45 +954,55 @@ def _validate_hardened_git_repository(
             raise ValueError("unsafe git repository config")
 
 
+def _validate_hardened_git_repository(executable, *, cwd, args, timeout=5):
+    with _prepared_executable(executable) as prepared:
+        return _validate_hardened_git_repository_prepared(
+            prepared,
+            cwd=cwd,
+            args=args,
+            timeout=timeout,
+        )
+
+
 def run_hardened_git(executable, args, *, cwd, timeout=5, check=False, text=False):
-    executable = _absolute_executable(executable)
     args, subcommand = _validate_hardened_git_args(args)
-    _validate_hardened_git_repository(
-        executable,
-        cwd=cwd,
-        args=args,
-        timeout=timeout,
-    )
-    argv = _hardened_git_prefix(executable)
-    if subcommand:
-        argv.extend(("-c", f"alias.{subcommand}="))
-    hardened_args = list(args)
-    if subcommand in _GIT_DIFF_RENDERING_SUBCOMMANDS:
-        hardened_args[1:1] = ["--no-ext-diff", "--no-textconv"]
-    elif subcommand == "reflog" and len(hardened_args) > 1:
-        if hardened_args[1] == "show":
-            hardened_args[2:2] = ["--no-ext-diff", "--no-textconv"]
-        elif hardened_args[1].startswith("-"):
-            hardened_args[1:1] = [
-                "show",
-                "--no-ext-diff",
-                "--no-textconv",
-            ]
-    argv.extend(hardened_args)
-    return subprocess.run(
-        argv,
-        cwd=Path(cwd).resolve(),
-        capture_output=True,
-        text=text,
-        check=check,
-        timeout=timeout,
-        env=_hardened_git_env(cwd, executable),
-        shell=False,
-    )
+    with _prepared_executable(executable) as prepared:
+        _validate_hardened_git_repository_prepared(
+            prepared,
+            cwd=cwd,
+            args=args,
+            timeout=timeout,
+        )
+        argv = _hardened_git_prefix(prepared)
+        if subcommand:
+            argv.extend(("-c", f"alias.{subcommand}="))
+        hardened_args = list(args)
+        if subcommand in _GIT_DIFF_RENDERING_SUBCOMMANDS:
+            hardened_args[1:1] = ["--no-ext-diff", "--no-textconv"]
+        elif subcommand == "reflog" and len(hardened_args) > 1:
+            if hardened_args[1] == "show":
+                hardened_args[2:2] = ["--no-ext-diff", "--no-textconv"]
+            elif hardened_args[1].startswith("-"):
+                hardened_args[1:1] = [
+                    "show",
+                    "--no-ext-diff",
+                    "--no-textconv",
+                ]
+        argv.extend(hardened_args)
+        return subprocess.run(
+            argv,
+            executable=_execution_path(prepared),
+            cwd=Path(cwd).resolve(),
+            capture_output=True,
+            text=text,
+            check=check,
+            timeout=timeout,
+            env=_hardened_git_env(cwd, prepared),
+            shell=False,
+        )
 
 
 def run_hardened_rg(executable, args, *, cwd, timeout=20):
-    executable = _absolute_executable(executable)
     argv_args = [str(arg) for arg in args]
     if any(
         arg == "--pre"
@@ -871,15 +1012,51 @@ def run_hardened_rg(executable, args, *, cwd, timeout=20):
         for arg in argv_args
     ):
         raise ValueError("unsafe ripgrep preprocessing option")
-    env = _frozen_executable_env(executable)
-    env["RIPGREP_CONFIG_PATH"] = os.devnull
-    return subprocess.run(
-        [executable, *argv_args],
-        cwd=Path(cwd).resolve(),
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=timeout,
-        env=env,
-        shell=False,
-    )
+    with _prepared_executable(executable) as prepared:
+        env = _frozen_executable_env(prepared)
+        env["RIPGREP_CONFIG_PATH"] = os.devnull
+        return subprocess.run(
+            [prepared, *argv_args],
+            executable=_execution_path(prepared),
+            cwd=Path(cwd).resolve(),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=timeout,
+            env=env,
+            shell=False,
+        )
+
+
+def run_hardened_command(
+    executable,
+    *,
+    args=(),
+    command="",
+    shell=False,
+    cwd,
+    timeout,
+    env,
+):
+    with _prepared_executable(executable) as prepared:
+        if shell:
+            return subprocess.run(
+                command,
+                shell=True,
+                executable=_execution_path(prepared) or str(prepared),
+                cwd=Path(cwd).resolve(),
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                env=env,
+            )
+        return subprocess.run(
+            [prepared, *(str(arg) for arg in args)],
+            executable=_execution_path(prepared),
+            shell=False,
+            cwd=Path(cwd).resolve(),
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=env,
+        )

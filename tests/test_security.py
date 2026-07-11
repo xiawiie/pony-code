@@ -1,9 +1,14 @@
+import os
+import stat
+
 import pytest
 
+from pico import security as security_module
 from pico.security import (
     REDACTED_VALUE,
     contains_secret_material,
     detected_secret_env_items,
+    ensure_private_file,
     has_sensitive_path_suffix,
     is_sensitive_path,
     looks_secret_shaped_text,
@@ -356,3 +361,73 @@ def test_shell_env_uses_allowlist_and_sets_pwd_with_path_fallback(tmp_path):
     filtered = shell_env(env=env, allowlist=("HOME",), root=tmp_path)
 
     assert filtered == {"HOME": "/home/user", "PWD": str(tmp_path), "PATH": "/usr/bin"}
+
+
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX descriptor traversal")
+def test_private_file_open_rejects_parent_swap_before_leaf_open(tmp_path, monkeypatch):
+    parent = tmp_path / "private"
+    parent.mkdir()
+    target = parent / "value.txt"
+    target.write_text("inside", encoding="utf-8")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    outside_target = outside / target.name
+    outside_target.write_text("outside", encoding="utf-8")
+    original_parent = tmp_path / "private-original"
+    real_open = security_module.os.open
+    swapped = False
+
+    def swap_parent(path, flags, mode=0o777, *, dir_fd=None):
+        nonlocal swapped
+        candidate = os.fspath(path)
+        if not swapped and (
+            candidate == os.fspath(target)
+            or (dir_fd is not None and candidate == target.name)
+        ):
+            parent.rename(original_parent)
+            parent.symlink_to(outside, target_is_directory=True)
+            swapped = True
+        if dir_fd is None:
+            return real_open(path, flags, mode)
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(security_module.os, "open", swap_parent)
+
+    with pytest.raises(ValueError, match="changed|unsafe"):
+        ensure_private_file(target)
+
+    assert stat.S_IMODE(outside_target.stat().st_mode) == 0o644
+    assert stat.S_IMODE((original_parent / target.name).stat().st_mode) == 0o644
+
+
+def test_anchored_regular_reader_fifo_swap_is_nonblocking(tmp_path, monkeypatch):
+    target = tmp_path / "note.txt"
+    target.write_bytes(b"safe")
+    real_open = os.open
+    swapped = False
+
+    def swap_to_fifo(path, flags, *args, **kwargs):
+        nonlocal swapped
+        if path == target.name and kwargs.get("dir_fd") is not None and not swapped:
+            swapped = True
+            assert flags & getattr(os, "O_NONBLOCK", 0)
+            target.unlink()
+            os.mkfifo(target, 0o600)
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(security_module.os, "open", swap_to_fifo)
+
+    with pytest.raises(ValueError, match="regular"):
+        security_module.read_regular_bytes_anchored(
+            tmp_path, "note.txt", max_bytes=1024
+        )
+    assert swapped is True
+
+
+def test_anchored_regular_reader_stops_at_max_plus_one(tmp_path):
+    (tmp_path / "large.txt").write_bytes(b"x" * 4096)
+    state = security_module.read_regular_bytes_anchored(
+        tmp_path, "large.txt", max_bytes=32
+    )
+    assert state["exists"] is True
+    assert len(state["data"]) == 33

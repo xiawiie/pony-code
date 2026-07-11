@@ -6,6 +6,7 @@ from contextlib import contextmanager
 
 import pytest
 
+from pico import security as security_module
 import pico.session_store as session_store_module
 from pico.messages import validate_messages
 from pico.session_store import SessionStore
@@ -48,13 +49,13 @@ def test_session_store_latest_is_none_when_empty(tmp_path):
 def test_session_store_saves_with_atomic_replace(tmp_path, monkeypatch):
     store = SessionStore(tmp_path / ".pico" / "sessions")
     replace_calls = []
-    original_replace = Path.replace
+    original_replace = security_module.os.replace
 
-    def tracking_replace(self, target):
-        replace_calls.append((self.name, Path(target).name))
-        return original_replace(self, target)
+    def tracking_replace(source, target, **kwargs):
+        replace_calls.append((Path(source).name, Path(target).name))
+        return original_replace(source, target, **kwargs)
 
-    monkeypatch.setattr(Path, "replace", tracking_replace)
+    monkeypatch.setattr(security_module.os, "replace", tracking_replace)
 
     store.save({"id": "session_atomic", "history": []})
 
@@ -77,6 +78,19 @@ def test_session_store_save_uses_file_lock(tmp_path, monkeypatch):
     store.save({"id": "session_locked", "history": []})
 
     assert calls == [".session_store.lock"]
+
+
+def test_session_store_parent_swap_cannot_redirect_record(tmp_path):
+    store = SessionStore(tmp_path / ".pico" / "sessions")
+    original_root = tmp_path / "sessions-original"
+    store.root.rename(original_root)
+    store.root.mkdir()
+
+    with pytest.raises(ValueError, match="private root changed"):
+        store.save({"id": "redirected", "history": []})
+
+    assert not (store.root / "redirected.json").exists()
+    assert not (original_root / "redirected.json").exists()
 
 
 def test_session_store_uses_private_owner_only_paths(tmp_path):

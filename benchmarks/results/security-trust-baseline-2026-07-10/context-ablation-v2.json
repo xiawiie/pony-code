@@ -1,0 +1,148 @@
+{
+  "artifact_type": "context-ablation-v2",
+  "captured_at": "2026-07-11T09:49:26.920799Z",
+  "config_count": 12,
+  "configs": [
+    {
+      "bounded_dropped_messages": 0.0,
+      "bounded_request_chars": 3445.0,
+      "compression_ratio": 0.0,
+      "current_request_preserved_rate": 1.0,
+      "history_level": "short",
+      "id": "short-low-short",
+      "note_level": "low",
+      "request_level": "short",
+      "unbounded_request_chars": 3445.0
+    },
+    {
+      "bounded_dropped_messages": 0.0,
+      "bounded_request_chars": 3517.0,
+      "compression_ratio": 0.0,
+      "current_request_preserved_rate": 1.0,
+      "history_level": "short",
+      "id": "short-low-long",
+      "note_level": "low",
+      "request_level": "long",
+      "unbounded_request_chars": 3517.0
+    },
+    {
+      "bounded_dropped_messages": 0.0,
+      "bounded_request_chars": 4997.0,
+      "compression_ratio": 0.0,
+      "current_request_preserved_rate": 1.0,
+      "history_level": "short",
+      "id": "short-high-short",
+      "note_level": "high",
+      "request_level": "short",
+      "unbounded_request_chars": 4997.0
+    },
+    {
+      "bounded_dropped_messages": 0.0,
+      "bounded_request_chars": 5069.0,
+      "compression_ratio": 0.0,
+      "current_request_preserved_rate": 1.0,
+      "history_level": "short",
+      "id": "short-high-long",
+      "note_level": "high",
+      "request_level": "long",
+      "unbounded_request_chars": 5069.0
+    },
+    {
+      "bounded_dropped_messages": 0.0,
+      "bounded_request_chars": 9183.0,
+      "compression_ratio": 0.0,
+      "current_request_preserved_rate": 1.0,
+      "history_level": "medium",
+      "id": "medium-low-short",
+      "note_level": "low",
+      "request_level": "short",
+      "unbounded_request_chars": 9183.0
+    },
+    {
+      "bounded_dropped_messages": 0.0,
+      "bounded_request_chars": 9255.0,
+      "compression_ratio": 0.0,
+      "current_request_preserved_rate": 1.0,
+      "history_level": "medium",
+      "id": "medium-low-long",
+      "note_level": "low",
+      "request_level": "long",
+      "unbounded_request_chars": 9255.0
+    },
+    {
+      "bounded_dropped_messages": 0.0,
+      "bounded_request_chars": 10735.0,
+      "compression_ratio": 0.0,
+      "current_request_preserved_rate": 1.0,
+      "history_level": "medium",
+      "id": "medium-high-short",
+      "note_level": "high",
+      "request_level": "short",
+      "unbounded_request_chars": 10735.0
+    },
+    {
+      "bounded_dropped_messages": 0.0,
+      "bounded_request_chars": 10807.0,
+      "compression_ratio": 0.0,
+      "current_request_preserved_rate": 1.0,
+      "history_level": "medium",
+      "id": "medium-high-long",
+      "note_level": "high",
+      "request_level": "long",
+      "unbounded_request_chars": 10807.0
+    },
+    {
+      "bounded_dropped_messages": 4.0,
+      "bounded_request_chars": 15977.0,
+      "compression_ratio": 0.10236530142142816,
+      "current_request_preserved_rate": 1.0,
+      "history_level": "long",
+      "id": "long-low-short",
+      "note_level": "low",
+      "request_level": "short",
+      "unbounded_request_chars": 17799.0
+    },
+    {
+      "bounded_dropped_messages": 6.0,
+      "bounded_request_chars": 14615.0,
+      "compression_ratio": 0.18219461697722567,
+      "current_request_preserved_rate": 1.0,
+      "history_level": "long",
+      "id": "long-low-long",
+      "note_level": "low",
+      "request_level": "long",
+      "unbounded_request_chars": 17871.0
+    },
+    {
+      "bounded_dropped_messages": 12.0,
+      "bounded_request_chars": 15977.0,
+      "compression_ratio": 0.1743579143196734,
+      "current_request_preserved_rate": 1.0,
+      "history_level": "long",
+      "id": "long-high-short",
+      "note_level": "high",
+      "request_level": "short",
+      "unbounded_request_chars": 19351.0
+    },
+    {
+      "bounded_dropped_messages": 14.0,
+      "bounded_request_chars": 14615.0,
+      "compression_ratio": 0.24754157442207694,
+      "current_request_preserved_rate": 1.0,
+      "history_level": "long",
+      "id": "long-high-long",
+      "note_level": "high",
+      "request_level": "long",
+      "unbounded_request_chars": 19423.0
+    }
+  ],
+  "schema_version": 2,
+  "summary": {
+    "avg_bounded_request_chars": 9849.333333333334,
+    "avg_request_compression_ratio": 0.05887161726170035,
+    "avg_unbounded_request_chars": 10954.333333333334,
+    "current_request_preserved_rate": 1.0,
+    "max_request_compression_ratio": 0.24754157442207694,
+    "min_request_compression_ratio": 0.0
+  }
+}

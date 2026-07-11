@@ -9,7 +9,6 @@ from dataclasses import dataclass
 from pathlib import Path
 import re
 import stat
-import subprocess
 from functools import partial
 
 from . import security as securitylib
@@ -21,7 +20,7 @@ from .memory.tools import (
     tool_memory_search,
 )
 from .repo_map import tool_repo_lookup
-from .safe_subprocess import run_hardened_rg
+from .safe_subprocess import run_hardened_command, run_hardened_rg
 from .workspace import IGNORED_PATH_NAMES
 
 DEFAULT_RUN_SHELL_TIMEOUT = 60
@@ -598,27 +597,24 @@ def _tool_run_shell(context, execution):
         raise ValueError("run_shell requires an approved execution plan")
     if not Path(execution.executable).is_absolute():
         raise ValueError("trusted executable must be absolute")
-    common = {
-        "cwd": Path(context.root).resolve(),
-        "capture_output": True,
-        "text": True,
-        "timeout": execution.timeout,
-        "env": context.shell_env(),
-    }
     if execution.execution_mode == "argv":
         if not execution.argv:
             raise ValueError("approved argv must not be empty")
-        result = subprocess.run(
-            [execution.executable, *execution.argv[1:]],
-            shell=False,
-            **common,
+        result = run_hardened_command(
+            execution.executable,
+            args=execution.argv[1:],
+            cwd=context.root,
+            timeout=execution.timeout,
+            env=context.shell_env(),
         )
     elif execution.execution_mode == "shell":
-        result = subprocess.run(
-            execution.command,
+        result = run_hardened_command(
+            execution.executable,
+            command=execution.command,
             shell=True,
-            executable=execution.executable,
-            **common,
+            cwd=context.root,
+            timeout=execution.timeout,
+            env=context.shell_env(),
         )
     else:
         raise ValueError("unsupported approved execution mode")

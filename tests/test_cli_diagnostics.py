@@ -27,6 +27,112 @@ def _symlink_loop(tmp_path):
     return path
 
 
+def test_doctor_json_exposes_safe_security_contract(tmp_path, monkeypatch, capsys):
+    (tmp_path / ".env").write_text(
+        "PICO_PROVIDER=deepseek\n",
+        encoding="utf-8",
+    )
+    (tmp_path / ".env").chmod(0o600)
+    monkeypatch.setattr(
+        "pico.cli_diagnostics.build_trusted_executables",
+        lambda root, env=None, names=(): {
+            "git": "/usr/bin/git",
+            "rg": "/usr/bin/rg",
+        },
+    )
+
+    code = main(
+        [
+            "--cwd",
+            str(tmp_path),
+            "--format",
+            "json",
+            "doctor",
+            "--offline",
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+    security = payload["data"]["security"]
+
+    assert code == 0
+    assert security == {
+        "status": "ok",
+        "project_env": {"status": "ok", "mode": "0600"},
+        "private_storage": {"status": "missing"},
+        "trusted_executables": {"status": "ok", "missing": []},
+        "recovery_review": {
+            "pending_count": 0,
+            "applying_count": 0,
+            "unreviewed_partial_count": 0,
+            "invalid_mutation_count": 0,
+        },
+    }
+    assert "PICO_PROVIDER=deepseek" not in json.dumps(payload)
+
+
+def test_doctor_security_requires_review_for_pending_tool_change(
+    tmp_path, monkeypatch, capsys
+):
+    from pico.checkpoint_store import CheckpointStore
+    from pico.tool_change_recorder import ToolChangeRecorder
+
+    monkeypatch.setattr(
+        "pico.cli_diagnostics.build_trusted_executables",
+        lambda root, env=None, names=(): {
+            "git": "/usr/bin/git",
+            "rg": "/usr/bin/rg",
+        },
+    )
+    store = CheckpointStore(tmp_path)
+    ToolChangeRecorder(store, owner_id="doctor-test").start(
+        "", "turn", "write_file", "workspace_write", {"path": "x.txt"}
+    )
+
+    assert (
+        main(
+            [
+                "--cwd",
+                str(tmp_path),
+                "--format",
+                "json",
+                "doctor",
+                "--offline",
+            ]
+        )
+        == 0
+    )
+    security = json.loads(capsys.readouterr().out)["data"]["security"]
+    assert security["status"] == "review_required"
+    assert security["recovery_review"]["pending_count"] == 1
+
+
+def test_doctor_fails_closed_for_hardlinked_private_record(
+    tmp_path, monkeypatch
+):
+    if os.name != "posix":
+        pytest.skip("POSIX hardlink assertion")
+    from pico.checkpoint_store import CheckpointStore
+
+    monkeypatch.setattr(
+        "pico.cli_diagnostics.build_trusted_executables",
+        lambda root, env=None, names=(): {
+            "git": "/usr/bin/git",
+            "rg": "/usr/bin/rg",
+        },
+    )
+    store = CheckpointStore(tmp_path)
+    record = store.records_dir / "hardlinked.json"
+    record.write_text("{}", encoding="utf-8")
+    record.chmod(0o600)
+    os.link(record, store.records_dir / "hardlinked-copy.json")
+
+    security = collect_doctor(tmp_path, offline=True)["security"]
+
+    assert security["status"] == "review_required"
+    assert security["private_storage"] == {"status": "review_required"}
+    assert security["recovery_review"]["invalid_mutation_count"] >= 1
+
+
 def test_status_json_reports_storage_without_building_agent(tmp_path, monkeypatch, capsys):
     _clear_provider_env(monkeypatch)
     (tmp_path / ".pico" / "sessions").mkdir(parents=True)
@@ -193,6 +299,12 @@ def test_collect_doctor_folds_unavailable_workspace_to_fixed_safe_shape(
             "status": "degraded",
             "missing": ["git", "rg"],
         },
+        "recovery_review": {
+            "pending_count": 0,
+            "applying_count": 0,
+            "unreviewed_partial_count": 0,
+            "invalid_mutation_count": 0,
+        },
     }
     rendered = json.dumps(data)
     assert "doctor-loop-canary" not in rendered
@@ -263,10 +375,17 @@ def test_doctor_security_metadata_has_only_safe_status_modes_and_missing_names(
         "project_env",
         "private_storage",
         "trusted_executables",
+        "recovery_review",
     }
     assert set(security["project_env"]) == {"status", "mode"}
     assert set(security["private_storage"]) == {"status"}
     assert set(security["trusted_executables"]) == {"status", "missing"}
+    assert set(security["recovery_review"]) == {
+        "pending_count",
+        "applying_count",
+        "unreviewed_partial_count",
+        "invalid_mutation_count",
+    }
     assert all(
         name and "/" not in name and "\\" not in name
         for name in security["trusted_executables"]["missing"]
@@ -318,6 +437,12 @@ def test_doctor_security_folds_unsafe_storage_and_executable_paths_to_status(
         "project_env": {"status": "review_required", "mode": ""},
         "private_storage": {"status": "review_required"},
         "trusted_executables": {"status": "degraded", "missing": ["rg"]},
+        "recovery_review": {
+            "pending_count": 0,
+            "applying_count": 0,
+            "unreviewed_partial_count": 0,
+            "invalid_mutation_count": 0,
+        },
     }
     assert secret not in json.dumps(security)
 
@@ -341,7 +466,7 @@ def test_doctor_security_folds_executable_discovery_error_without_leaking(
     secret = "ghp_" + "X" * 32
     monkeypatch.setenv("PICO_TEST_SECRET", secret)
     monkeypatch.setattr(
-        "pico.workspace.build_trusted_executables",
+        "pico.cli_diagnostics.build_trusted_executables",
         Mock(side_effect=RuntimeError("discovery failed " + secret)),
     )
 

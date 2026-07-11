@@ -24,7 +24,7 @@ from .cli_commands import (
     run_repl,
 )
 from .cli_diagnostics import handle_config, handle_doctor, handle_status
-from .cli_errors import CLI_EXIT_USAGE, CliError
+from .cli_errors import CLI_EXIT_CONFIG, CLI_EXIT_INTERNAL, CLI_EXIT_USAGE, CliError
 from .cli_help import HELP_DETAILS  # noqa: F401
 from .cli_output import error_envelope, format_json
 from .cli_parser import parse_cli_invocation
@@ -54,6 +54,7 @@ from .runtime import (
     SessionStore,
     _build_redaction_snapshot,
 )
+from .security import redact_artifact, redact_text
 from .workspace import WorkspaceContext, middle
 
 
@@ -65,7 +66,7 @@ COMMAND_SPECS = {
     "config": {"category": "inspection", "subcommands": {"set-secret", "show"}},
     "sessions": {"category": "inspection", "subcommands": {"list", "show"}},
     "session": {"category": "inspection", "subcommands": {"inspect"}},
-    "checkpoints": {"category": "recovery", "subcommands": {"list", "show", "preview-restore", "restore", "prune"}},
+    "checkpoints": {"category": "recovery", "subcommands": {"list", "show", "preview-restore", "restore", "prune", "pending", "resolve-pending"}},
     "runs": {"category": "recovery", "subcommands": {"list", "show"}},
 }
 _RECOVERY_TOP_LEVEL_COMMANDS = {
@@ -126,8 +127,7 @@ def _effective_provider(args):
         "PICO_PROVIDER", default=DEFAULT_PROVIDER
     )
     if provider not in PROVIDER_CHOICES:
-        choices = ", ".join(PROVIDER_CHOICES)
-        raise ValueError(f"unknown provider: {provider}. expected one of: {choices}")
+        raise ValueError("unknown provider")
     return provider
 
 
@@ -471,13 +471,34 @@ def _dispatch_pre_agent_command(invocation, args):
 
 
 def _print_cli_error(args, exc):
+    safe_details = redact_artifact(exc.details)
+    if len(str(safe_details)) > 2000:
+        safe_details = {"truncated": True}
+    safe_exc = CliError(
+        code=redact_text(exc.code)[:300],
+        message=redact_text(exc.message)[:300],
+        hint=redact_text(exc.hint)[:300],
+        exit_code=exc.exit_code,
+        details=safe_details,
+    )
     if getattr(args, "format", "text") == "json":
-        print(format_json(error_envelope(exc)), end="")
+        print(format_json(error_envelope(safe_exc)), end="")
     else:
-        print(exc.message, file=sys.stderr)
-        if exc.hint:
-            print(exc.hint, file=sys.stderr)
-    return exc.exit_code
+        print(safe_exc.message, file=sys.stderr)
+        if safe_exc.hint:
+            print(safe_exc.hint, file=sys.stderr)
+    return safe_exc.exit_code
+
+
+def _print_startup_error(args):
+    return _print_cli_error(
+        args,
+        CliError(
+            code="startup_failed",
+            message="pico startup failed",
+            exit_code=CLI_EXIT_INTERNAL,
+        ),
+    )
 
 
 def _raise_on_legacy_command_typo(invocation):
@@ -520,8 +541,24 @@ def main(argv=None):
     except CliError as exc:
         return _print_cli_error(args, exc)
     except ValueError as exc:
+        if str(exc) == "unknown provider":
+            return _print_cli_error(
+                args,
+                CliError(
+                    code="invalid_provider",
+                    message="invalid provider configuration",
+                    exit_code=CLI_EXIT_CONFIG,
+                ),
+            )
         if str(exc) != "provider_base_url_credentials":
-            raise
+            return _print_cli_error(
+                args,
+                CliError(
+                    code="invalid_configuration",
+                    message="invalid configuration",
+                    exit_code=CLI_EXIT_CONFIG,
+                ),
+            )
         return _print_cli_error(
             args,
             CliError(
@@ -530,17 +567,22 @@ def main(argv=None):
                 exit_code=CLI_EXIT_USAGE,
             ),
         )
+    except Exception:  # noqa: BLE001 - preserve KeyboardInterrupt/SystemExit
+        return _print_startup_error(args)
 
-    model = getattr(agent.model_client, "model", getattr(args, "model", DEFAULT_OLLAMA_MODEL))
-    host = getattr(agent.model_client, "host", getattr(agent.model_client, "base_url", getattr(args, "host", DEFAULT_OLLAMA_HOST)))
-    if not args.quiet:
-        print(build_welcome(agent, model=model, host=host))
+    try:
+        model = getattr(agent.model_client, "model", getattr(args, "model", DEFAULT_OLLAMA_MODEL))
+        host = getattr(agent.model_client, "host", getattr(agent.model_client, "base_url", getattr(args, "host", DEFAULT_OLLAMA_HOST)))
+        if not args.quiet:
+            print(build_welcome(agent, model=model, host=host))
 
-    if invocation.command == "run":
-        return run_agent_once(agent, invocation.command_args)
-    if invocation.command == "repl":
-        if args.no_input:
-            print("--no-input cannot be used with interactive repl", file=sys.stderr)
-            return 2
-        return run_repl(agent)
-    return run_agent_once(agent, [invocation.command, *invocation.command_args])
+        if invocation.command == "run":
+            return run_agent_once(agent, invocation.command_args)
+        if invocation.command == "repl":
+            if args.no_input:
+                print("--no-input cannot be used with interactive repl", file=sys.stderr)
+                return 2
+            return run_repl(agent)
+        return run_agent_once(agent, [invocation.command, *invocation.command_args])
+    except Exception:  # noqa: BLE001 - contain ordinary CLI runtime failures
+        return _print_startup_error(args)

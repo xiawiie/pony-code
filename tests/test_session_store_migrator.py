@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 import pico.session_store as session_store_module
+from pico import security as security_module
 from pico import FakeModelClient, Pico, WorkspaceContext
 from pico.messages import validate_messages
 from pico.security import redact_artifact
@@ -92,18 +93,18 @@ def test_migration_backup_rejects_hardlink_before_writing_raw_bytes(
     session_path = store.path_for(session["id"])
     session_path.write_text(json.dumps(session), encoding="utf-8")
     alias = tmp_path / "outside-backup-alias.json"
-    real_open = session_store_module.os.open
+    real_fsync = security_module.os.fsync
     linked = False
 
-    def hardlink_after_open(path, flags, mode=0o777):
+    def hardlink_after_write(descriptor):
         nonlocal linked
-        descriptor = real_open(path, flags, mode)
-        if not linked and Path(path).parent.name == "backup":
+        real_fsync(descriptor)
+        temps = list((store.root / "backup").glob(".*.tmp"))
+        if not linked and temps:
             linked = True
-            os.link(path, alias)
-        return descriptor
+            os.link(temps[0], alias)
 
-    monkeypatch.setattr(session_store_module.os, "open", hardlink_after_open)
+    monkeypatch.setattr(security_module.os, "fsync", hardlink_after_write)
 
     with pytest.raises(ValueError, match="backup|link|changed"):
         store.load("s1")
@@ -373,6 +374,20 @@ def test_unknown_history_role_fails_without_mutating_input():
     assert source == before
 
 
+def test_unknown_history_role_error_omits_hostile_value():
+    canary = "github_pat_A123456789012345678901234567890"
+
+    with pytest.raises(SessionMigrationError) as caught:
+        migrate_session_to_v3({
+            "id": "bad",
+            "schema_version": 1,
+            "history": [{"role": canary, "content": "do not expose"}],
+        })
+
+    assert str(caught.value) == "unknown history role"
+    assert canary not in str(caught.value)
+
+
 def test_empty_v1_history_migrates_to_empty_v3_messages():
     migrated = migrate_session_to_v3({
         "id": "empty",
@@ -410,6 +425,17 @@ def test_invalid_schema_versions_raise_session_migration_error(schema_version):
             "schema_version": schema_version,
             "history": [],
         })
+
+
+def test_invalid_schema_error_chain_omits_hostile_value():
+    canary = "github_pat_A123456789012345678901234567890"
+
+    with pytest.raises(SessionMigrationError) as caught:
+        migrate_session_to_v3({"schema_version": canary})
+
+    assert str(caught.value) == "invalid session schema version"
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
 
 
 def test_unhashable_history_role_raises_session_migration_error():
@@ -483,14 +509,14 @@ def test_replace_failure_preserves_original_and_may_leave_backup(store, monkeypa
         "messages": [{"role": "user", "content": "q"}],
     }).encode("utf-8")
     path.write_bytes(original)
-    original_replace = Path.replace
+    original_replace = security_module.os.replace
 
-    def fail_target_replace(self, target):
-        if Path(target) == path:
+    def fail_target_replace(source, target, **kwargs):
+        if Path(target).name == path.name:
             raise OSError("replace failed")
-        return original_replace(self, target)
+        return original_replace(source, target, **kwargs)
 
-    monkeypatch.setattr(Path, "replace", fail_target_replace)
+    monkeypatch.setattr(security_module.os, "replace", fail_target_replace)
 
     with pytest.raises(OSError, match="replace failed"):
         store.load("s2")
@@ -522,6 +548,16 @@ def test_migration_error_preserves_original_session_bytes(store):
 def test_session_id_must_be_basename_safe(store, session_id):
     with pytest.raises(ValueError, match="invalid session id"):
         store.path_for(session_id)
+
+
+def test_invalid_session_id_error_omits_hostile_value(store):
+    canary = "github_pat_A123456789012345678901234567890"
+
+    with pytest.raises(ValueError) as caught:
+        store.path_for(f"../{canary}")
+
+    assert str(caught.value) == "invalid session id"
+    assert canary not in str(caught.value)
 
 
 def test_load_uses_one_lock_and_never_calls_public_save(store, monkeypatch):
@@ -606,11 +642,11 @@ def test_migration_rejects_non_mapping_redactor_before_backup(tmp_path, redactor
     assert not (path.parent / "backup").exists()
 
 
-def test_save_removes_temp_file_when_json_dump_fails(store, monkeypatch):
+def test_save_creates_no_temp_file_when_json_encoding_fails(store, monkeypatch):
     def fail_dump(*args, **kwargs):
         raise OSError("encode failed")
 
-    monkeypatch.setattr(session_store_module.json, "dump", fail_dump)
+    monkeypatch.setattr(session_store_module.json, "dumps", fail_dump)
 
     with pytest.raises(OSError, match="encode failed"):
         store.save({

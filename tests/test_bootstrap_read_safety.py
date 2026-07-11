@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from pico import workspace as workspace_module
 from pico.memory.block_store import BlockStore
 from pico.repo_map import RepoMap
 from pico.safe_subprocess import build_trusted_executables
@@ -79,6 +80,110 @@ def test_global_agents_rejects_symlink_and_redacts_before_clip(tmp_path, monkeyp
     rendered = workspace.project_docs["<global>/AGENTS.md"]
     assert secret not in rendered
     assert "<redacted>" in rendered
+
+
+def test_workspace_context_rejects_mutable_executable_during_discovery(
+    tmp_path,
+    monkeypatch,
+):
+    repo = tmp_path / "repo"
+    safe_bin = tmp_path / "safe-bin"
+    repo.mkdir()
+    safe_bin.mkdir(mode=0o755)
+    executable = safe_bin / "git"
+    executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    executable.chmod(0o755)
+    real_build = build_trusted_executables
+
+    def discover_mutable(root):
+        trusted = real_build(
+            root,
+            env={"PATH": str(safe_bin)},
+            names=("git",),
+        )
+        assert trusted == {}
+        return trusted
+
+    monkeypatch.setattr(
+        workspace_module,
+        "build_trusted_executables",
+        discover_mutable,
+    )
+
+    workspace = WorkspaceContext.build(repo)
+
+    assert "git" not in workspace.trusted_executables
+    assert workspace.branch == "-"
+
+
+def test_workspace_context_skips_oversized_automatic_document(tmp_path):
+    oversized = b"x" * (workspace_module.MAX_BOOTSTRAP_FILE_BYTES + 1)
+    (tmp_path / "README.md").write_bytes(oversized)
+
+    workspace = WorkspaceContext.build(tmp_path, executables={})
+
+    assert "README.md" not in workspace.project_docs
+
+
+def test_workspace_context_limits_automatic_document_count(tmp_path, monkeypatch):
+    names = tuple(
+        f"bootstrap-{index}.txt"
+        for index in range(workspace_module.MAX_BOOTSTRAP_FILES + 1)
+    )
+    monkeypatch.setattr(workspace_module, "DOC_NAMES", names)
+    for name in names:
+        (tmp_path / name).write_text(name, encoding="utf-8")
+
+    workspace = WorkspaceContext.build(tmp_path, executables={})
+
+    assert len(workspace.project_docs) == workspace_module.MAX_BOOTSTRAP_FILES
+    assert names[-1] not in workspace.project_docs
+
+
+def test_workspace_context_limits_aggregate_automatic_document_bytes(
+    tmp_path,
+    monkeypatch,
+):
+    payload = b"x" * workspace_module.MAX_BOOTSTRAP_FILE_BYTES
+    count = workspace_module.MAX_BOOTSTRAP_TOTAL_BYTES // len(payload) + 1
+    assert count <= workspace_module.MAX_BOOTSTRAP_FILES
+    names = tuple(f"aggregate-{index}.txt" for index in range(count))
+    monkeypatch.setattr(workspace_module, "DOC_NAMES", names)
+    for name in names:
+        (tmp_path / name).write_bytes(payload)
+
+    workspace = WorkspaceContext.build(tmp_path, executables={})
+
+    assert names[-1] not in workspace.project_docs
+    assert len(workspace.project_docs) == count - 1
+
+
+def test_workspace_bounded_reader_rejects_parent_swap(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    docs = repo / "docs"
+    outside = tmp_path / "outside"
+    docs.mkdir(parents=True)
+    outside.mkdir()
+    target = docs / "README.md"
+    target.write_text("inside\n", encoding="utf-8")
+    (outside / "README.md").write_text("outside-canary\n", encoding="utf-8")
+    validated = workspace_module._safe_index_file(repo, target)
+    moved = repo / "docs-original"
+    real_open_directory = workspace_module.securitylib._open_private_directory
+
+    def swap_then_open(path):
+        docs.rename(moved)
+        docs.symlink_to(outside, target_is_directory=True)
+        return real_open_directory(path)
+
+    monkeypatch.setattr(
+        workspace_module.securitylib,
+        "_open_private_directory",
+        swap_then_open,
+    )
+
+    with pytest.raises((OSError, ValueError)):
+        workspace_module._read_bounded_regular(validated, 1024)
 
 
 def test_repo_map_and_memory_index_skip_symlink_files_in_both_scopes(tmp_path):

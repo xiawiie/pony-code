@@ -1,5 +1,6 @@
 import multiprocessing
 import os
+from contextlib import contextmanager
 from pathlib import Path
 import shutil
 import stat
@@ -7,6 +8,7 @@ import subprocess
 
 import pytest
 
+from pico import safe_subprocess as safe_subprocess_module
 from pico.safe_subprocess import (
     build_trusted_executables,
     discover_lexical_repo_root,
@@ -248,20 +250,119 @@ def test_external_path_symlink_to_workspace_binary_is_rejected(tmp_path):
     assert "git" not in trusted
 
 
-def test_bad_path_entry_does_not_hide_later_trusted_executable(tmp_path):
+def test_external_path_hardlink_to_workspace_binary_is_rejected(tmp_path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    safe_bin = tmp_path / "safe-bin"
-    safe_bin.mkdir(mode=0o755)
-    executable = _executable(safe_bin / "git")
+    external_bin = tmp_path / "external-bin"
+    external_bin.mkdir(mode=0o755)
+    controlled = _executable(workspace / "git")
+    os.link(controlled, external_bin / "git")
 
     trusted = build_trusted_executables(
         workspace,
-        env={"PATH": f"{tmp_path / 'missing'}{os.pathsep}{safe_bin}"},
+        env={"PATH": str(external_bin)},
         names=("git",),
     )
 
-    assert trusted == {"git": str(executable.resolve())}
+    assert "git" not in trusted
+
+
+def test_executable_parent_swap_is_rejected_by_anchored_traversal(
+    tmp_path,
+    monkeypatch,
+):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    controlled = _executable(workspace / "git")
+    safe_bin = tmp_path / "safe-bin"
+    safe_bin.mkdir()
+    candidate = _executable(safe_bin / "git")
+    moved = tmp_path / "safe-bin-original"
+    real_open = safe_subprocess_module.os.open
+    swapped = False
+
+    def swap_parent(path, flags, mode=0o777, *, dir_fd=None):
+        nonlocal swapped
+        if not swapped and dir_fd is not None and os.fspath(path) == safe_bin.name:
+            safe_bin.rename(moved)
+            safe_bin.symlink_to(workspace, target_is_directory=True)
+            swapped = True
+        if dir_fd is None:
+            return real_open(path, flags, mode)
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(safe_subprocess_module.os, "open", swap_parent)
+
+    with pytest.raises((OSError, ValueError)):
+        safe_subprocess_module._verified_executable_identity(candidate)
+
+    assert controlled.exists()
+
+
+def test_mutable_git_is_rejected_before_any_probe_executes(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_git_repo(repo)
+    safe_bin = tmp_path / "safe-bin"
+    safe_bin.mkdir()
+    source = _executable(
+        safe_bin / "git",
+        f"#!/bin/sh\nexec {_real_git()} \"$@\"\n",
+    )
+    trusted = build_trusted_executables(
+        repo,
+        env={"PATH": str(safe_bin)},
+        names=("git",),
+    )
+    calls = []
+
+    def record_probe(*args, **kwargs):
+        calls.append((args, kwargs))
+        raise AssertionError("mutable executable must not run")
+
+    monkeypatch.setattr(
+        safe_subprocess_module.subprocess,
+        "run",
+        record_probe,
+    )
+
+    with pytest.raises(ValueError, match="mutable trusted executable"):
+        run_hardened_git(str(source), ["status", "--short"], cwd=repo)
+
+    assert trusted == {}
+    assert source.exists()
+    assert calls == []
+
+
+def test_owner_can_chmod_nominally_read_only_executable_and_is_rejected(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    owner_bin = tmp_path / "owner-bin"
+    owner_bin.mkdir()
+    executable = _executable(owner_bin / "git")
+    executable.chmod(0o555)
+    owner_bin.chmod(0o555)
+
+    trusted = build_trusted_executables(
+        workspace,
+        env={"PATH": str(owner_bin)},
+        names=("git",),
+    )
+
+    assert trusted == {}
+
+
+def test_bad_path_entry_does_not_hide_later_trusted_executable(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    trusted = build_trusted_executables(
+        workspace,
+        env={"PATH": f"{tmp_path / 'missing'}{os.pathsep}/usr/bin"},
+        names=("git",),
+    )
+
+    assert trusted == {"git": "/usr/bin/git"}
 
 
 @pytest.mark.parametrize("path_kind", ["empty", "relative", "workspace", "writable"])
@@ -1333,6 +1434,11 @@ def test_hardened_rg_uses_fixed_config_and_minimal_environment(tmp_path, monkeyp
 
     monkeypatch.setenv("RIPGREP_CONFIG_PATH", str(tmp_path / "malicious.conf"))
     monkeypatch.setenv("UNRELATED_SECRET", "must-not-be-inherited")
+    @contextmanager
+    def passthrough(executable):
+        yield str(executable)
+
+    monkeypatch.setattr("pico.safe_subprocess._prepared_executable", passthrough)
     monkeypatch.setattr(subprocess, "run", fake_run)
 
     run_hardened_rg("/usr/bin/rg", ["needle", "."], cwd=tmp_path)
@@ -1365,6 +1471,11 @@ def test_hardened_rg_child_path_comes_only_from_frozen_executable(
             AssertionError("live PATH inspected")
         ),
     )
+    @contextmanager
+    def passthrough(executable):
+        yield str(executable)
+
+    monkeypatch.setattr(safe_subprocess, "_prepared_executable", passthrough)
     monkeypatch.setattr(subprocess, "run", fake_run)
 
     run_hardened_rg(

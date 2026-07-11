@@ -1,7 +1,12 @@
 import builtins
 
 from pico import recovery_policy
-from pico.recovery_policy import command_risk_class, evaluate_command_approval, snapshot_eligibility
+from pico.recovery_policy import (
+    command_risk_class,
+    evaluate_command_approval,
+    snapshot_bytes_eligibility,
+    snapshot_eligibility,
+)
 
 
 def test_snapshot_eligibility_is_conservative(tmp_path):
@@ -113,6 +118,39 @@ def test_snapshot_size_check_is_bounded(tmp_path):
 
     assert result["snapshot_eligible"] is False
     assert result["ineligible_reason"] == "file_too_large"
+
+
+def test_snapshot_bytes_eligibility_blocks_sensitive_content(tmp_path, monkeypatch):
+    sentinel = "sk-sensitive-recovery-value"
+    monkeypatch.setenv("PICO_OPENAI_API_KEY", sentinel)
+
+    result = snapshot_bytes_eligibility(
+        tmp_path,
+        "src/config.py",
+        f'KEY = "{sentinel}"\n'.encode(),
+        max_blob_size=1024,
+    )
+
+    assert result["snapshot_eligible"] is False
+    assert result["ineligible_reason"] == "sensitive_content"
+
+
+def test_snapshot_bytes_eligibility_reuses_exact_binary_and_size_policy(tmp_path):
+    binary = snapshot_bytes_eligibility(
+        tmp_path,
+        "artifact.dat",
+        b"text-prefix\x00text-suffix",
+        max_blob_size=1024,
+    )
+    oversized = snapshot_bytes_eligibility(
+        tmp_path,
+        "note.txt",
+        b"x" * 65,
+        max_blob_size=64,
+    )
+
+    assert binary["ineligible_reason"] == "binary_file"
+    assert oversized["ineligible_reason"] == "file_too_large"
 
 
 def test_snapshot_reads_safe_candidate_once_with_bounded_size(tmp_path, monkeypatch):

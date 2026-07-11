@@ -334,11 +334,7 @@ class Pico:
         self.checkpoint_store = CheckpointStore(self.root, redactor=redactor)
         self.tool_change_owner_id = "runtime_" + uuid.uuid4().hex[:12]
         self.tool_change_recorder = ToolChangeRecorder(self.checkpoint_store, owner_id=self.tool_change_owner_id)
-        self.interrupted_tool_changes = (
-            self.tool_change_recorder.mark_interrupted_pending(legacy_only=True)
-            if self.depth == 0
-            else []
-        )
+        self.interrupted_tool_changes = []
         self.recovery_checkpoint_writer = RecoveryCheckpointWriter(self.checkpoint_store, self.root)
         self.recovery_manager = RecoveryManager(self.checkpoint_store, self.root)
         self.workspace_observer = WorkspaceObserver(
@@ -759,7 +755,10 @@ class Pico:
         )
         if record is None:
             return None
-        checkpoint = self.checkpoint_store.load_checkpoint_record(target_id)
+        try:
+            checkpoint = self.checkpoint_store.load_checkpoint_record(target_id)
+        except (OSError, ValueError):
+            return None
         if (
             not isinstance(checkpoint, dict)
             or type(checkpoint.get("checkpoint_id")) is not str
@@ -932,7 +931,10 @@ class Pico:
         if self.approval_policy == "never":
             return False
         try:
-            answer = input(f"approve {name} {json.dumps(args, ensure_ascii=True)}? [y/N] ")
+            safe_args = self.redact_artifact(args)
+            answer = input(
+                f"approve {name} {json.dumps(safe_args, ensure_ascii=True)}? [y/N] "
+            )
         except EOFError:
             return False
         return answer.strip().lower() in {"y", "yes"}

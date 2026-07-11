@@ -84,6 +84,8 @@ def test_help_command_shows_examples(capsys):
     assert "pico-cli config set-secret NAME [--stdin]" in out
     assert "pico-cli --approval ask run" in out
     assert "pico-cli checkpoints show <checkpoint-id>" in out
+    assert "pico-cli checkpoints pending" in out
+    assert "no OS sandbox" in out
     assert "providers list" not in out
 
 

@@ -660,7 +660,7 @@ def test_build_agent_uses_right_codes_shared_key_for_openai_provider(tmp_path):
         },
     )()
 
-    with patch.dict(os.environ, {"PICO_RIGHT_CODES_API_KEY": "sk-right-codes"}, clear=True):
+    with patch.dict(os.environ, {"HOME": str(tmp_path), "PICO_RIGHT_CODES_API_KEY": "sk-right-codes"}, clear=True):
         with patch(
             "pico.cli.OllamaModelClient",
             side_effect=AssertionError("ollama client should not be used"),
@@ -707,7 +707,7 @@ def test_build_agent_uses_project_env_provider_when_cli_omitted(tmp_path):
     )
     args = pico_pkg.build_arg_parser().parse_args(["--cwd", str(tmp_path)])
 
-    with patch.dict(os.environ, {}, clear=True):
+    with patch.dict(os.environ, {"HOME": str(tmp_path)}, clear=True):
         with patch(
             "pico.cli.OllamaModelClient",
             side_effect=AssertionError("ollama client should not be used"),
@@ -743,7 +743,7 @@ def test_build_agent_prefers_cli_provider_over_project_env_provider(tmp_path):
         ["--cwd", str(tmp_path), "--provider", "deepseek"]
     )
 
-    with patch.dict(os.environ, {}, clear=True):
+    with patch.dict(os.environ, {"HOME": str(tmp_path)}, clear=True):
         with patch(
             "pico.cli.OllamaModelClient",
             side_effect=AssertionError("ollama client should not be used"),
@@ -786,6 +786,7 @@ def test_build_agent_uses_anthropic_provider_and_openai_key_fallback(tmp_path):
     with patch.dict(
         os.environ,
         {
+            "HOME": str(tmp_path),
             "OPENAI_API_KEY": "sk-openai-fallback",
         },
         clear=True,
@@ -858,6 +859,7 @@ def test_build_agent_uses_deepseek_provider_and_env_configuration(tmp_path):
     with patch.dict(
         os.environ,
         {
+            "HOME": str(tmp_path),
             "DEEPSEEK_API_BASE": "https://legacy.deepseek.example/anthropic",
             "DEEPSEEK_API_KEY": "sk-legacy-deepseek",
             "DEEPSEEK_MODEL": "legacy-deepseek-model",
@@ -886,7 +888,7 @@ def test_build_agent_uses_deepseek_provider_and_env_configuration(tmp_path):
 def test_build_agent_uses_deepseek_default_model_when_env_is_missing(tmp_path):
     args = pico_pkg.build_arg_parser().parse_args(["--cwd", str(tmp_path), "--provider", "deepseek"])
 
-    with patch.dict(os.environ, {"DEEPSEEK_API_KEY": "sk-deepseek"}, clear=True):
+    with patch.dict(os.environ, {"HOME": str(tmp_path), "DEEPSEEK_API_KEY": "sk-deepseek"}, clear=True):
         with patch("pico.cli.AnthropicCompatibleModelClient") as mock_anthropic:
             pico_pkg.build_agent(args)
 
