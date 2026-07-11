@@ -1,7 +1,6 @@
 """Small cross-process file lock helper."""
 
 from contextlib import contextmanager
-import errno
 import os
 from pathlib import Path
 import stat
@@ -32,7 +31,7 @@ def lock_is_active(path):
 
 
 @contextmanager
-def locked_file(path, *, require_lock=False, require_existing=False, blocking=True):
+def locked_file(path, *, require_lock=False, require_existing=False):
     path = Path(os.path.abspath(os.fspath(path)))
     key = str(path)
     active = _active_lock_keys()
@@ -96,15 +95,7 @@ def locked_file(path, *, require_lock=False, require_existing=False, blocking=Tr
         with os.fdopen(descriptor, "a+", encoding="utf-8") as handle:
             descriptor = -1
             if fcntl is not None:
-                operation = fcntl.LOCK_EX
-                if not blocking:
-                    operation |= fcntl.LOCK_NB
-                try:
-                    fcntl.flock(handle.fileno(), operation)
-                except OSError as exc:
-                    if not blocking and exc.errno in {errno.EACCES, errno.EAGAIN}:
-                        raise RuntimeError("lock busy") from None
-                    raise
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
             try:
                 yield handle
             finally:
