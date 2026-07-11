@@ -1,3 +1,9 @@
+import os
+from pathlib import Path
+
+import pytest
+
+from pico.memory import block_store as block_store_module
 from pico.memory.block_store import BlockStore
 from pico.memory.retrieval import Retrieval, tokenize
 
@@ -100,3 +106,81 @@ def test_search_no_match(tmp_path):
     })
     r = Retrieval(store)
     assert r.search("nonexistent") == []
+
+
+def test_search_reads_each_candidate_once_without_public_store_reads(
+    tmp_path,
+    monkeypatch,
+):
+    store = _make_store(
+        tmp_path,
+        {
+            "notes/a.md": "---\nname: a\ndescription: cache\n---\nsee [[b]]\n",
+            "notes/b.md": "---\nname: b\ndescription: related\n---\nbody\n",
+            "notes/c.md": "unrelated\n",
+        },
+    )
+    calls = []
+    real_read = block_store_module._read_bounded_regular
+
+    def counting_read(path, limit, *, private=False):
+        calls.append(Path(path).name)
+        return real_read(path, limit, private=private)
+
+    monkeypatch.setattr(block_store_module, "_read_bounded_regular", counting_read)
+    monkeypatch.setattr(store, "list", lambda: pytest.fail("search reopened list"))
+    monkeypatch.setattr(store, "read", lambda _path: pytest.fail("search reopened file"))
+
+    paths = [hit.path for hit in Retrieval(store).search("cache", limit=1)]
+
+    assert paths == ["workspace/notes/a.md", "workspace/notes/b.md"]
+    assert calls == ["a.md", "b.md", "c.md"]
+
+
+def test_same_retrieval_sees_add_modify_and_delete_on_next_query(tmp_path):
+    store = _make_store(tmp_path, {"notes/a.md": "alpha\n"})
+    retrieval = Retrieval(store)
+    note = store.workspace_root / "notes" / "a.md"
+
+    initial_hits = retrieval.search("alpha")
+    assert [hit.path for hit in initial_hits] == [
+        "workspace/notes/a.md"
+    ]
+    assert not hasattr(initial_hits[0], "raw")
+    assert not hasattr(retrieval, "_last_snapshot")
+    note.write_text("beta\n", encoding="utf-8")
+    assert retrieval.search("alpha") == []
+    assert [hit.path for hit in retrieval.search("beta")] == [
+        "workspace/notes/a.md"
+    ]
+    added = store.workspace_root / "notes" / "b.md"
+    added.write_text("gamma\n", encoding="utf-8")
+    assert [hit.path for hit in retrieval.search("gamma")] == [
+        "workspace/notes/b.md"
+    ]
+    note.unlink()
+    assert retrieval.search("beta") == []
+
+
+@pytest.mark.parametrize("unsafe_kind", ("symlink", "hardlink", "fifo"))
+def test_search_skips_unsafe_candidates(tmp_path, unsafe_kind):
+    store = _make_store(tmp_path, {"notes/safe.md": "safe cache\n"})
+    outside = tmp_path / "outside.md"
+    outside.write_text("outside-canary", encoding="utf-8")
+    unsafe = store.workspace_root / "notes" / "unsafe.md"
+    if unsafe_kind == "symlink":
+        unsafe.symlink_to(outside)
+    elif unsafe_kind == "hardlink":
+        os.link(outside, unsafe)
+    else:
+        if not hasattr(os, "mkfifo"):
+            pytest.skip("FIFO unavailable")
+        os.mkfifo(unsafe)
+
+    retrieval = Retrieval(store)
+
+    assert retrieval.search("outside-canary") == []
+    assert [hit.path for hit in retrieval.search("cache")] == [
+        "workspace/notes/safe.md"
+    ]
+    assert outside.read_text(encoding="utf-8") == "outside-canary"

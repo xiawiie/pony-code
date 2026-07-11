@@ -4,6 +4,9 @@ tombstone, recently-recalled) + provenance in the rendered block."""
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
+
+from pico.memory import block_store as block_store_module
 from pico.memory.block_store import BlockStore
 from pico.memory.recall import recall_for_turn
 from pico.memory.retrieval import Retrieval
@@ -114,34 +117,36 @@ def test_recall_none_when_no_retrieval(tmp_path):
     assert out is None
 
 
-def test_recall_uses_single_store_scan(tmp_path, monkeypatch):
-    """Task D2: recall_for_turn calls store.list() at most once per call,
-    not once per hit."""
-    from types import SimpleNamespace
-    from unittest.mock import MagicMock
-
-    from pico.memory.block_store import BlockStore
-    from pico.memory.recall import recall_for_turn
-    from pico.memory.retrieval import Retrieval
-
+def test_recall_reads_each_candidate_once_and_reuses_link_neighbor_snapshot(
+    tmp_path,
+    monkeypatch,
+):
     ws = tmp_path / "ws"
-    (ws / "notes").mkdir(parents=True)
-    (ws / "notes" / "a.md").write_text(
-        "---\nname: a\ntype: feedback\ndescription: cache one\n---\np1\n", encoding="utf-8"
+    _w(
+        ws,
+        "notes/a-hub.md",
+        "---\nname: hub\ntype: feedback\ndescription: cache\n---\n"
+        "Hub paragraph. See [[target]].\n",
     )
-    (ws / "notes" / "b.md").write_text(
-        "---\nname: b\ntype: feedback\ndescription: cache two\n---\np2\n", encoding="utf-8"
+    _w(
+        ws,
+        "notes/b-target.md",
+        "---\nname: target\ntype: reference\ndescription: unrelated\n---\n"
+        "Target paragraph.\n",
     )
+    _w(ws, "notes/c-other.md", "unrelated body\n")
     store = BlockStore(workspace_root=ws, user_root=tmp_path / "user")
     ret = Retrieval(store)
+    calls = []
+    real_read = block_store_module._read_bounded_regular
 
-    call_count = {"n": 0}
-    original_list = store.list
-    def counting_list(*args, **kwargs):
-        call_count["n"] += 1
-        return original_list(*args, **kwargs)
-    monkeypatch.setattr(store, "list", counting_list)
+    def counting_read(path, limit, *, private=False):
+        calls.append(path.name)
+        return real_read(path, limit, private=private)
 
+    monkeypatch.setattr(block_store_module, "_read_bounded_regular", counting_read)
+    monkeypatch.setattr(store, "list", lambda: pytest.fail("recall reopened list"))
+    monkeypatch.setattr(store, "read", lambda _path: pytest.fail("recall reopened file"))
     a = SimpleNamespace(
         memory_store=store,
         memory_retrieval=ret,
@@ -150,14 +155,29 @@ def test_recall_uses_single_store_scan(tmp_path, monkeypatch):
         memory=SimpleNamespace(task_summary=""),
         context_config={},
     )
-    # Reset counter to isolate recall's contribution.
-    call_count["n"] = 0
+
     out = recall_for_turn(a, "cache", budget_tokens=1000)
+
     assert out is not None
-    # recall_for_turn should scan the store at most once for the type index.
-    # Retrieval.search internally scans 4 times (_load_docs +
-    # _superseded_names + _name_to_path_index — an existing quirk, out of
-    # scope for this task). Recall's own contribution is exactly 1 (the
-    # store_index build). Pre-fix impl called store.list() once per picked
-    # hit (top_k=2), yielding 4+2=6 calls. Post-fix: 4+1=5.
-    assert call_count["n"] <= 5, f"store.list() called {call_count['n']} times"
+    assert "Target paragraph." in out
+    assert 'type="reference"' in out
+    assert calls == ["a-hub.md", "b-target.md", "c-other.md"]
+
+
+def test_recall_quote_escapes_provenance_attributes(tmp_path):
+    a, ws = _agent(tmp_path)
+    _w(
+        ws,
+        'notes/bad" onload="x.md',
+        "---\nname: bad\ntype: reference\" injected=\"yes\n"
+        'description: cache\n---\nSafe body evil="x.\n',
+    )
+
+    out = recall_for_turn(a, 'cache evil="x', budget_tokens=1000)
+
+    assert out is not None
+    assert ' onload="x.md"' not in out
+    assert ' injected="yes"' not in out
+    assert "&quot;" in out
+    assert 'why="cache,evil=&quot;x"' in out
+    assert "Safe body" in out

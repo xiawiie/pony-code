@@ -3,7 +3,7 @@
 职责:
 - 读写 `.pico/memory/notes/*.md`（用户手写）和 `.pico/memory/agent_notes.md`（agent 追加）
 - 原子写入（tempfile + rename）
-- 提供扁平化列表和 mtime 快照给 refresher
+- 提供单次扫描的私有 document snapshot 给列表与检索
 
 路径命名:
     "workspace/notes/auth.md"     -> <workspace_root>/notes/auth.md
@@ -119,6 +119,25 @@ class MemoryFile:
     frontmatter: dict = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class _MemoryDocument:
+    path: str
+    size_chars: int
+    mtime: float
+    first_line: str
+    frontmatter: dict
+    raw: str
+
+    def metadata(self) -> MemoryFile:
+        return MemoryFile(
+            path=self.path,
+            size_chars=self.size_chars,
+            mtime=self.mtime,
+            first_line=self.first_line,
+            frontmatter=self.frontmatter,
+        )
+
+
 class BlockStore:
     def __init__(
         self,
@@ -156,7 +175,10 @@ class BlockStore:
     # ---- listing / reading -------------------------------------------------
 
     def list(self) -> list[MemoryFile]:
-        entries: list[MemoryFile] = []
+        return [document.metadata() for document in self._load_documents()]
+
+    def _load_documents(self) -> list[_MemoryDocument]:
+        documents: list[_MemoryDocument] = []
         file_count = 0
         total_bytes = 0
         for scope, root in (
@@ -165,16 +187,16 @@ class BlockStore:
         ):
             for rel_path, real_path in self._scope_files(scope, root):
                 if file_count >= MAX_MEMORY_INDEX_FILES:
-                    entries.sort(key=lambda entry: entry.path)
-                    return entries
+                    documents.sort(key=lambda document: document.path)
+                    return documents
                 file_count += 1
                 remaining = MAX_MEMORY_INDEX_BYTES - total_bytes
                 if remaining <= 0:
-                    entries.sort(key=lambda entry: entry.path)
-                    return entries
+                    documents.sort(key=lambda document: document.path)
+                    return documents
                 limit = min(MAX_MEMORY_FILE_BYTES, remaining)
                 try:
-                    entry, used_bytes = self._to_memory_file(
+                    document, used_bytes = self._load_document(
                         root,
                         rel_path,
                         real_path,
@@ -183,16 +205,16 @@ class BlockStore:
                 except (OSError, RuntimeError, ValueError) as exc:
                     total_bytes += getattr(exc, "bytes_read", 0)
                     if total_bytes >= MAX_MEMORY_INDEX_BYTES:
-                        entries.sort(key=lambda item: item.path)
-                        return entries
+                        documents.sort(key=lambda item: item.path)
+                        return documents
                     if str(exc) == "memory file too large" and limit < MAX_MEMORY_FILE_BYTES:
-                        entries.sort(key=lambda item: item.path)
-                        return entries
+                        documents.sort(key=lambda item: item.path)
+                        return documents
                     continue
-                entries.append(entry)
+                documents.append(document)
                 total_bytes += used_bytes
-        entries.sort(key=lambda e: e.path)
-        return entries
+        documents.sort(key=lambda document: document.path)
+        return documents
 
     @staticmethod
     def _markdown_files(root: Path, directory: Path):
@@ -230,7 +252,7 @@ class BlockStore:
             yield f"{scope}/agent_notes.md", agent_notes
 
     @staticmethod
-    def _to_memory_file(root: Path, rel_path: str, real_path: Path, limit: int):
+    def _load_document(root: Path, rel_path: str, real_path: Path, limit: int):
         candidate = real_path
         real_path = _safe_index_file(root, candidate)
         if real_path is None:
@@ -261,12 +283,13 @@ class BlockStore:
                 # fall back to the raw first line.
                 first_line = (content.splitlines()[0] if content else "").rstrip("\n")[:200]
         return (
-            MemoryFile(
+            _MemoryDocument(
                 path=rel_path,
                 size_chars=len(content),
                 mtime=stat_result.st_mtime,
                 first_line=first_line,
                 frontmatter=meta or {},
+                raw=content,
             ),
             len(data),
         )

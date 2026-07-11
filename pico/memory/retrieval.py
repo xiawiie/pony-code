@@ -94,6 +94,15 @@ class SearchHit:
     snippets: tuple[str, ...] = field(default_factory=tuple)
 
 
+@dataclass(frozen=True)
+class _IndexedDocument:
+    path: str
+    raw: str
+    frontmatter: dict
+    fields: dict[str, list[str]]
+    flat_tokens: list[str]
+
+
 class Retrieval:
     def __init__(self, store: BlockStore, *, config=None):
         self.store = store
@@ -106,30 +115,48 @@ class Retrieval:
         self._link_max_added, self._link_decay = link_cfg
 
     def search(self, query: str, limit: int = 5) -> list[SearchHit]:
+        hits, _documents = self._search_with_documents(query, limit)
+        return hits
+
+    def _search_with_documents(self, query: str, limit: int):
         query_tokens = tokenize(query)
         if not query_tokens:
-            return []
+            return [], {}
 
-        docs = self._load_docs()
+        docs = self._index_documents(self.store._load_documents())
         if not docs:
-            return []
+            return [], {}
+        documents_by_path = {document.path: document for document in docs}
 
         # Flat token counts drive avg_doc_len and df — the length normalization
         # remains BM25 standard; only tf accumulation is field-weighted.
-        avg_doc_len = sum(len(flat) for _path, flat, _raw, _fields in docs) / len(docs)
+        avg_doc_len = sum(len(document.flat_tokens) for document in docs) / len(docs)
         df: Counter = Counter()
-        for _path, flat, _raw, _fields in docs:
-            for term in set(flat):
+        for document in docs:
+            for term in set(document.flat_tokens):
                 df[term] += 1
         N = len(docs)
 
         results: list[SearchHit] = []
-        for path, flat, raw, fields in docs:
-            score = self._bm25_field_score(query_tokens, fields, flat, avg_doc_len, N, df)
+        for document in docs:
+            score = self._bm25_field_score(
+                query_tokens,
+                document.fields,
+                document.flat_tokens,
+                avg_doc_len,
+                N,
+                df,
+            )
             if score <= 0:
                 continue
-            snippets = self._extract_snippets(raw, query_tokens)
-            results.append(SearchHit(path=path, score=score, snippets=snippets))
+            snippets = self._extract_snippets(document.raw, query_tokens)
+            results.append(
+                SearchHit(
+                    path=document.path,
+                    score=score,
+                    snippets=snippets,
+                )
+            )
 
         results.sort(key=lambda h: h.score, reverse=True)
         primary = results[:limit]
@@ -144,12 +171,11 @@ class Retrieval:
         for hit in primary:
             if len(expanded) >= self._link_max_added:
                 break
-            try:
-                body = self.store.read(hit.path)
-            except (OSError, ValueError):
+            source = documents_by_path.get(hit.path)
+            if source is None:
                 continue
             seen_here = {e.path for e in expanded}
-            for match in _LINK_RE.finditer(body):
+            for match in _LINK_RE.finditer(source.raw):
                 if len(expanded) >= self._link_max_added:
                     break
                 neighbor_name = match.group(1)
@@ -167,61 +193,51 @@ class Retrieval:
                 )
                 seen_here.add(neighbor_path)
 
-        return primary + expanded
+        return primary + expanded, documents_by_path
 
-    def _name_to_path_index(self, docs):
-        """Build ``frontmatter.name → store path``, excluding tombstoned names."""
-        superseded = self._superseded_names()
-        idx = {}
-        for entry in self.store.list():
-            fm = getattr(entry, "frontmatter", None) or {}
-            name = fm.get("name")
-            if not name or name in superseded:
-                continue
-            idx[name] = entry.path
-        return idx
+    @staticmethod
+    def _name_to_path_index(docs):
+        """Build ``frontmatter.name → store path`` from this query snapshot."""
+        return {
+            document.frontmatter["name"]: document.path
+            for document in docs
+            if document.frontmatter.get("name")
+        }
 
-    def _load_docs(self):
-        """Return ``[(path, flat_tokens, raw_text, per_field_tokens), ...]``.
+    @staticmethod
+    def _index_documents(snapshot):
+        """Tokenize one BlockStore snapshot and apply tombstones.
 
-        Task 20: notes named by any other note's ``supersedes: [...]`` list
-        are filtered out entirely — retrieval acts as if they no longer exist,
-        while the file itself stays on disk (a soft-delete tombstone).
+        Every consumer in one query reuses these raw documents: tombstones,
+        fields, snippets, names, and link expansion never reopen a file.
         """
-        superseded = self._superseded_names()
+        superseded = {
+            name
+            for document in snapshot
+            for name in (document.frontmatter.get("supersedes") or [])
+            if name
+        }
         docs = []
-        for entry in self.store.list():
-            fm_entry = getattr(entry, "frontmatter", None) or {}
-            entry_name = fm_entry.get("name")
+        for document in snapshot:
+            entry_name = document.frontmatter.get("name")
             if entry_name and entry_name in superseded:
                 continue
-            try:
-                raw = self.store.read(entry.path)
-            except (OSError, ValueError):
-                continue
-            fm, body = parse_frontmatter(raw)
-            fields = tokenize_by_field(fm, body if fm else raw)
+            fm, body = parse_frontmatter(document.raw)
+            fields = tokenize_by_field(fm, body if fm else document.raw)
             flat = []
             for ftokens in fields.values():
                 flat.extend(ftokens)
             if flat:
-                docs.append((entry.path, flat, raw, fields))
+                docs.append(
+                    _IndexedDocument(
+                        path=document.path,
+                        raw=document.raw,
+                        frontmatter=fm,
+                        fields=fields,
+                        flat_tokens=flat,
+                    )
+                )
         return docs
-
-    def _superseded_names(self):
-        """Collect the union of every note's ``supersedes`` list.
-
-        A single memory-store scan drives both the retrieval filter and the
-        link-expansion index. Kept as its own method so the tombstone rule
-        stays cheap to reason about (one place, two consumers).
-        """
-        superseded = set()
-        for entry in self.store.list():
-            fm = getattr(entry, "frontmatter", None) or {}
-            for name in fm.get("supersedes") or []:
-                if name:
-                    superseded.add(name)
-        return superseded
 
     def _bm25_field_score(
         self,

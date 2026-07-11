@@ -27,11 +27,9 @@ The rendered block carries provenance (``path=``, ``type=``, ``score=``,
 
 from __future__ import annotations
 
-import logging
+from html import escape as _html_escape
 
 from pico.context.escaping import escape_pico_tags
-
-logger = logging.getLogger("pico")
 
 RECALL_TOP_K = 2
 RECALL_MIN_SCORE = 0.3
@@ -85,12 +83,12 @@ def _flatten_recent(session_recent, skip_turns):
     return out
 
 
-def _lookup_type(store_index, path):
-    """Return frontmatter ``type`` for ``path`` from a pre-built index."""
-    entry = store_index.get(path)
-    if entry is None:
+def _lookup_type(documents, path):
+    """Return frontmatter ``type`` for ``path`` from this query snapshot."""
+    document = documents.get(path)
+    if document is None:
         return ""
-    return (entry.frontmatter or {}).get("type", "") or ""
+    return (document.frontmatter or {}).get("type", "") or ""
 
 
 def _why_terms(snippets, query_text, cap=3):
@@ -112,6 +110,10 @@ def _why_terms(snippets, query_text, cap=3):
         if len(terms) >= cap:
             break
     return ",".join(terms) if terms else "matched"
+
+
+def _escape_attribute(value):
+    return _html_escape(str(value), quote=True)
 
 
 def recall_for_turn(agent, user_message, budget_tokens):
@@ -139,7 +141,7 @@ def recall_for_turn(agent, user_message, budget_tokens):
         return None
 
     # Ask for more than top_k so the four-guard filter has room to skip.
-    hits = retrieval.search(query, limit=top_k * 3)
+    hits, documents = retrieval._search_with_documents(query, limit=top_k * 3)
     if not hits:
         return None
 
@@ -163,27 +165,23 @@ def recall_for_turn(agent, user_message, budget_tokens):
     if not picked:
         return None
 
-    store = agent.memory_store
-    # Task D2: build store index once per recall call, not per hit.
-    store_index = {entry.path: entry for entry in store.list()}
     blocks = []
     picked_paths = []
     for hit, norm_score in picked:
-        try:
-            raw = store.read(hit.path)
-        except (OSError, ValueError) as exc:
-            logger.debug("recall: store.read(%s) failed: %s", hit.path, exc)
+        document = documents.get(hit.path)
+        if document is None:
             continue
-        para = _first_paragraph(raw)
+        para = _first_paragraph(document.raw)
         para_tokens = _count_tokens(agent, para)
         if para_tokens > max_tokens_per_note:
             char_budget = max_tokens_per_note * 4
             para = para[: max(3, char_budget) - 3] + "..." if char_budget > 3 else para[:char_budget]
-        note_type = _lookup_type(store_index, hit.path)
+        note_type = _lookup_type(documents, hit.path)
         why = _why_terms(hit.snippets, query)
         block = (
-            f'<pico:recalled_memory path="{hit.path}" type="{note_type}" '
-            f'score="{norm_score:.2f}" why="{why}">\n'
+            f'<pico:recalled_memory path="{_escape_attribute(hit.path)}" '
+            f'type="{_escape_attribute(note_type)}" '
+            f'score="{norm_score:.2f}" why="{_escape_attribute(why)}">\n'
             f"{escape_pico_tags(para)}\n"
             f"</pico:recalled_memory>"
         )

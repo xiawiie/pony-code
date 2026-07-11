@@ -62,3 +62,37 @@ def test_tombstoned_note_disk_file_preserved(tmp_path):
     _hits = ret.search("cache")
     # Tombstone hides from retrieval but does NOT delete the file.
     assert (ws / "notes" / "old.md").exists()
+
+
+def test_next_query_rebuilds_tombstone_union_from_full_snapshot(tmp_path):
+    ws = tmp_path / "ws"
+    _w(
+        ws,
+        "notes/old.md",
+        "---\nname: old\ndescription: cache old\n---\nold\n",
+    )
+    store = BlockStore(workspace_root=ws, user_root=tmp_path / "user")
+    retrieval = Retrieval(store)
+
+    assert [hit.path for hit in retrieval.search("cache")] == [
+        "workspace/notes/old.md"
+    ]
+
+    _w(
+        ws,
+        "notes/middle.md",
+        "---\nname: middle\ndescription: cache middle\nsupersedes: [old]\n---\nmid\n",
+    )
+    _w(
+        ws,
+        "notes/new.md",
+        "---\nname: new\ndescription: cache new\nsupersedes: [middle]\n---\nnew\n",
+    )
+
+    paths = [hit.path for hit in retrieval.search("cache")]
+    assert paths == ["workspace/notes/new.md"]
+
+    (ws / "notes" / "new.md").unlink()
+    paths = [hit.path for hit in retrieval.search("cache")]
+    assert "workspace/notes/middle.md" in paths
+    assert "workspace/notes/old.md" not in paths

@@ -7,6 +7,7 @@ import pytest
 from pico.memory import block_store as block_store_module
 from pico.memory.block_store import BlockStore
 from pico.memory.refresher import MemoryRefresher
+from pico.memory.retrieval import Retrieval
 from pico.repo_map import RepoMap
 from pico import repo_map as repo_map_module
 
@@ -60,6 +61,23 @@ def test_memory_file_count_includes_unsafe_candidates(tmp_path, monkeypatch):
     assert store.list() == []
 
 
+def test_memory_list_reads_each_safe_candidate_exactly_once(tmp_path, monkeypatch):
+    store, workspace = _memory_store(tmp_path)
+    for name in ("a.md", "b.md", "c.md"):
+        (workspace / "notes" / name).write_text(name, encoding="utf-8")
+    calls = []
+    real_read = block_store_module._read_bounded_regular
+
+    def counting_read(path, limit, *, private=False):
+        calls.append(Path(path).name)
+        return real_read(path, limit, private=private)
+
+    monkeypatch.setattr(block_store_module, "_read_bounded_regular", counting_read)
+
+    assert len(store.list()) == 3
+    assert calls == ["a.md", "b.md", "c.md"]
+
+
 def test_memory_index_stops_before_aggregate_byte_limit(tmp_path, monkeypatch):
     store, workspace = _memory_store(tmp_path)
     monkeypatch.setattr(
@@ -78,6 +96,16 @@ def test_memory_index_stops_before_aggregate_byte_limit(tmp_path, monkeypatch):
     (workspace / "notes" / "b.md").write_bytes(b"bbbbb")
 
     assert [entry.path for entry in store.list()] == ["workspace/notes/a.md"]
+
+
+def test_retrieval_preserves_aggregate_byte_limit(tmp_path, monkeypatch):
+    store, workspace = _memory_store(tmp_path)
+    monkeypatch.setattr(block_store_module, "MAX_MEMORY_FILE_BYTES", 32)
+    monkeypatch.setattr(block_store_module, "MAX_MEMORY_INDEX_BYTES", 9)
+    (workspace / "notes" / "a.md").write_bytes(b"aaaaa")
+    (workspace / "notes" / "b.md").write_bytes(b"bbbbb")
+
+    assert Retrieval(store).search("bbbbb") == []
 
 
 def test_memory_aggregate_counts_bytes_read_while_detecting_growth(
@@ -149,6 +177,45 @@ def test_memory_index_rejects_leaf_replaced_after_descriptor_open(
     assert swapped is True
 
 
+def test_retrieval_fails_closed_on_descriptor_swap_then_refreshes_next_query(
+    tmp_path,
+    monkeypatch,
+):
+    store, workspace = _memory_store(tmp_path)
+    target = workspace / "notes" / "race.md"
+    target.write_text(
+        "---\nname: original\ndescription: cache\n---\noriginal body\n",
+        encoding="utf-8",
+    )
+    retrieval = Retrieval(store)
+    real_open = os.open
+    swapped = False
+
+    def swap_after_open(path, flags, *args, **kwargs):
+        nonlocal swapped
+        descriptor = real_open(path, flags, *args, **kwargs)
+        if (
+            not swapped
+            and kwargs.get("dir_fd") is not None
+            and Path(path).name == target.name
+        ):
+            swapped = True
+            target.unlink()
+            target.write_text(
+                "---\nname: replacement\ndescription: cache\n---\n"
+                "replacement body\n",
+                encoding="utf-8",
+            )
+        return descriptor
+
+    monkeypatch.setattr(block_store_module.os, "open", swap_after_open)
+
+    assert retrieval.search("cache") == []
+    hits = retrieval.search("replacement")
+    assert [hit.path for hit in hits] == ["workspace/notes/race.md"]
+    assert any("replacement" in snippet for snippet in hits[0].snippets)
+
+
 def test_memory_refresher_lists_once_per_refresh():
     entry = SimpleEntry("workspace/notes/a.md", 1, 1.0)
     store = MagicMock()
@@ -161,7 +228,6 @@ def test_memory_refresher_lists_once_per_refresh():
     refresher.refresh_if_stale()
 
     assert store.list.call_count == 1
-    store.stat_all.assert_not_called()
 
 
 class SimpleEntry:

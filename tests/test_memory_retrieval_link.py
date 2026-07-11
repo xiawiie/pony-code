@@ -82,3 +82,64 @@ def test_link_expansion_score_decays(tmp_path):
     # b came in via link expansion with decay=0.4
     assert b_hit.score < a_hit.score
     assert b_hit.score == a_hit.score * 0.4 or abs(b_hit.score - a_hit.score * 0.4) < 1e-9
+
+
+def test_next_query_sees_link_change(tmp_path):
+    ws = tmp_path / "ws"
+    hub = ws / "notes" / "hub.md"
+    _w(
+        ws,
+        "notes/hub.md",
+        "---\nname: hub\ndescription: cache\n---\nsee [[a]]\n",
+    )
+    _w(ws, "notes/a.md", "---\nname: a\ndescription: alpha\n---\na\n")
+    _w(ws, "notes/b.md", "---\nname: b\ndescription: beta\n---\nb\n")
+    retrieval = Retrieval(
+        BlockStore(workspace_root=ws, user_root=tmp_path / "user")
+    )
+
+    assert [hit.path for hit in retrieval.search("cache", limit=1)] == [
+        "workspace/notes/hub.md",
+        "workspace/notes/a.md",
+    ]
+
+    hub.write_text(
+        "---\nname: hub\ndescription: cache\n---\nsee [[b]]\n",
+        encoding="utf-8",
+    )
+
+    assert [hit.path for hit in retrieval.search("cache", limit=1)] == [
+        "workspace/notes/hub.md",
+        "workspace/notes/b.md",
+    ]
+
+
+def test_duplicate_link_name_keeps_sorted_last_wins_ordering(tmp_path):
+    ws = tmp_path / "ws"
+    _w(
+        ws,
+        "notes/hub.md",
+        "---\nname: hub\ndescription: cache\n---\nsee [[duplicate]]\n",
+    )
+    _w(
+        ws,
+        "notes/a-first.md",
+        "---\nname: duplicate\ndescription: first\n---\nfirst\n",
+    )
+    _w(
+        ws,
+        "notes/z-last.md",
+        "---\nname: duplicate\ndescription: last\n---\nlast\n",
+    )
+
+    paths = [
+        hit.path
+        for hit in Retrieval(
+            BlockStore(workspace_root=ws, user_root=tmp_path / "user")
+        ).search("cache", limit=1)
+    ]
+
+    assert paths == [
+        "workspace/notes/hub.md",
+        "workspace/notes/z-last.md",
+    ]
