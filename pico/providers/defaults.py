@@ -26,20 +26,14 @@ API_KEY_ENV_NAMES = {
     "openai": (
         "PICO_OPENAI_API_KEY",
         "OPENAI_API_KEY",
-        "PICO_RIGHT_CODES_API_KEY",
-        "RIGHT_CODES_API_KEY",
-        "PICO_ANTHROPIC_API_KEY",
-        "ANTHROPIC_API_KEY",
+        "PICO_API_KEY",
     ),
     "anthropic": (
         "PICO_ANTHROPIC_API_KEY",
         "ANTHROPIC_API_KEY",
-        "PICO_RIGHT_CODES_API_KEY",
-        "RIGHT_CODES_API_KEY",
-        "PICO_OPENAI_API_KEY",
-        "OPENAI_API_KEY",
+        "PICO_API_KEY",
     ),
-    "deepseek": ("PICO_DEEPSEEK_API_KEY", "DEEPSEEK_API_KEY"),
+    "deepseek": ("PICO_DEEPSEEK_API_KEY", "DEEPSEEK_API_KEY", "PICO_API_KEY"),
     "ollama": (),
 }
 BASE_URL_ENV_NAMES = {

@@ -16,18 +16,10 @@ from .config import (
     project_env_metadata,
     project_env_path,
     read_project_env_with_status,
-    validate_provider_base_url,
+    resolve_provider_config,
     write_project_env_assignments,
 )
-from .providers.defaults import (
-    API_KEY_ENV_NAMES,
-    BASE_URL_ENV_NAMES,
-    DEFAULT_BASE_URLS,
-    DEFAULT_MODELS,
-    DEFAULT_OLLAMA_HOST,
-    DEFAULT_PROVIDER,
-    MODEL_ENV_NAMES,
-)
+from .providers.defaults import DEFAULT_BASE_URLS, DEFAULT_MODELS, DEFAULT_PROVIDER  # noqa: F401
 from .security import is_secret_env_name, require_directory_no_symlink
 from .safe_subprocess import build_trusted_executables
 from .workspace import WorkspaceContext
@@ -93,16 +85,23 @@ def collect_config(cwd, args=None):
     project_env, project_env_info = _read_project_env_for_diagnostics(
         workspace.repo_root
     )
-    provider = _resolve_provider(args, project_env)
-    model = _resolve_model(args, provider["value"], project_env)
-    api_key = _resolve_api_key(provider["value"], project_env)
-    _resolve_base_url(args, provider["value"], project_env)
+    config = resolve_provider_config(
+        explicit=_explicit_provider_values(args),
+        project_env=project_env,
+        process_env=dict(os.environ),
+    )
+    api_key = config["api_key"]
     return {
         "workspace": {"repo_root": workspace.repo_root},
         "project_env": project_env_info,
-        "provider": provider,
-        "model": model,
-        "api_key": api_key,
+        "provider": config["provider"],
+        "model": config["model"],
+        "base_url": config["base_url"],
+        "api_key": {
+            "present": bool(api_key["value"]),
+            "source": api_key["source"],
+            "name": api_key["name"],
+        },
     }
 
 
@@ -119,12 +118,21 @@ def collect_doctor(cwd, args=None, offline=False):
     project_env, project_env_info = _read_project_env_for_diagnostics(
         workspace.repo_root
     )
-    provider = _resolve_provider(args, project_env)
+    resolved = resolve_provider_config(
+        explicit=_explicit_provider_values(args),
+        project_env=project_env,
+        process_env=dict(os.environ),
+    )
+    api_key = resolved["api_key"]
     config = {
-        "provider": provider,
-        "model": _resolve_model(args, provider["value"], project_env),
-        "api_key": _resolve_api_key(provider["value"], project_env),
-        "base_url": _resolve_base_url(args, provider["value"], project_env),
+        "provider": resolved["provider"],
+        "model": resolved["model"],
+        "api_key": {
+            "present": bool(api_key["value"]),
+            "source": api_key["source"],
+            "name": api_key["name"],
+        },
+        "base_url": resolved["base_url"],
     }
     diagnostic_base_url = dict(config["base_url"])
     diagnostic_base_url["value"] = _redact_url_for_diagnostics(diagnostic_base_url["value"])
@@ -396,81 +404,15 @@ def check_provider_connectivity(config, timeout=2):
         }
 
 
-def _resolve_provider(args, project_env):
-    explicit = getattr(args, "provider", None) if args is not None else None
-    if explicit:
-        return {"value": explicit, "source": "cli", "name": "--provider"}
-    value, source, name = _resolve_env_value(("PICO_PROVIDER",), project_env)
-    if value:
-        return {"value": value, "source": source, "name": name}
+def _explicit_provider_values(args):
+    if args is None:
+        return {}
     return {
-        "value": DEFAULT_PROVIDER,
-        "source": "default",
-        "name": "DEFAULT_PROVIDER",
+        "provider": getattr(args, "provider", None),
+        "model": getattr(args, "model", None),
+        "base_url": getattr(args, "base_url", None),
+        "host": getattr(args, "host", None),
     }
-
-
-def _resolve_model(args, provider, project_env):
-    explicit = getattr(args, "model", None) if args is not None else None
-    if explicit:
-        return {"value": explicit, "source": "cli", "name": "--model"}
-    env_names = MODEL_ENV_NAMES.get(provider, ())
-    value, source, name = _resolve_env_value(env_names, project_env)
-    if value:
-        return {"value": value, "source": source, "name": name}
-    default_value = DEFAULT_MODELS.get(provider, "")
-    return {
-        "value": default_value,
-        "source": "default",
-        "name": f"DEFAULT_{provider.upper()}_MODEL" if provider else "",
-    }
-
-
-def _resolve_api_key(provider, project_env):
-    env_names = API_KEY_ENV_NAMES.get(provider, ())
-    value, source, name = _resolve_env_value(env_names, project_env)
-    if value:
-        return {"present": True, "source": source, "name": name}
-    return {"present": False, "source": "unset", "name": ""}
-
-
-def _resolve_base_url(args, provider, project_env):
-    explicit = getattr(args, "base_url", None) if args is not None else None
-    if explicit:
-        result = {"value": explicit, "source": "cli", "name": "--base-url"}
-    elif provider == "ollama":
-        explicit_host = getattr(args, "host", None) if args is not None else None
-        if explicit_host and explicit_host != DEFAULT_OLLAMA_HOST:
-            result = {"value": explicit_host, "source": "cli", "name": "--host"}
-        else:
-            result = _base_url_from_env_or_default(provider, project_env)
-    else:
-        result = _base_url_from_env_or_default(provider, project_env)
-    result["value"] = validate_provider_base_url(result["value"])
-    return result
-
-
-def _base_url_from_env_or_default(provider, project_env):
-    value, source, name = _resolve_env_value(BASE_URL_ENV_NAMES.get(provider, ()), project_env)
-    if value:
-        return {"value": value, "source": source, "name": name}
-    return {
-        "value": DEFAULT_BASE_URLS.get(provider, ""),
-        "source": "default",
-        "name": f"DEFAULT_{provider.upper()}_BASE_URL" if provider != "ollama" else "DEFAULT_OLLAMA_HOST",
-    }
-
-
-def _resolve_env_value(env_names, project_env):
-    for name in env_names:
-        value = project_env.get(name)
-        if value:
-            return value, "project_env", name
-    for name in env_names:
-        value = os.environ.get(name)
-        if value:
-            return value, "environment", name
-    return "", "unset", ""
 
 
 def _connectivity_url(provider, base_url):
@@ -730,6 +672,7 @@ def _render_config(data):
         "Provider",
         _line("provider", _value_with_source(data["provider"])),
         _line("model", _value_with_source(data["model"])),
+        _line("base url", _value_with_source(data["base_url"])),
         "",
         "Credentials",
         _line("api key", _presence_text(data["api_key"])),

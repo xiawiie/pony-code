@@ -46,6 +46,11 @@ def test_config_show_reports_exact_project_env_path(tmp_path, capsys):
         "scope": "repo_root_exact",
         "status": "loaded",
     }
+    assert payload["base_url"] == {
+        "value": "https://api.deepseek.com/anthropic",
+        "source": "default",
+        "name": "DEFAULT_DEEPSEEK_BASE_URL",
+    }
 
 
 def test_doctor_reports_the_same_project_env_contract(tmp_path, capsys):

@@ -9,7 +9,15 @@ import urllib.parse
 from pathlib import Path
 
 from .file_lock import locked_file
-from .providers.defaults import API_KEY_ENV_NAMES, BASE_URL_ENV_NAMES, MODEL_ENV_NAMES
+from .providers.defaults import (
+    API_KEY_ENV_NAMES,
+    BASE_URL_ENV_NAMES,
+    DEFAULT_BASE_URLS,
+    DEFAULT_MODELS,
+    DEFAULT_PROVIDER,
+    MODEL_ENV_NAMES,
+    PROVIDER_CHOICES,
+)
 from .security import (
     contains_secret_material,
     ensure_private_dir,
@@ -263,12 +271,93 @@ def validate_provider_base_url(value):
     return raw
 
 
-def provider_env(name, legacy_names=(), default=""):
-    for env_name in (name, *legacy_names):
-        value = os.environ.get(env_name)
-        if value:
-            return value
-    return default
+def _resolve_provider_value(
+    explicit,
+    explicit_name,
+    env_names,
+    project_env,
+    process_env,
+    default,
+    default_name,
+):
+    if explicit:
+        return {"value": explicit, "source": "cli", "name": explicit_name}
+    for source_name, source in (
+        ("project_env", project_env),
+        ("environment", process_env),
+    ):
+        for name in env_names:
+            value = source.get(name)
+            if value:
+                return {"value": value, "source": source_name, "name": name}
+    if default:
+        return {"value": default, "source": "default", "name": default_name}
+    return {"value": "", "source": "unset", "name": ""}
+
+
+def resolve_provider_config(*, explicit=None, project_env=None, process_env=None):
+    """Resolve one provider configuration with shared value provenance."""
+    explicit = dict(explicit or {})
+    project_env = dict(project_env or {})
+    process_env = dict(os.environ if process_env is None else process_env)
+    provider = _resolve_provider_value(
+        explicit.get("provider"),
+        "--provider",
+        ("PICO_PROVIDER",),
+        project_env,
+        process_env,
+        DEFAULT_PROVIDER,
+        "DEFAULT_PROVIDER",
+    )
+    provider_name = provider["value"]
+    if provider_name not in PROVIDER_CHOICES:
+        raise ValueError("unknown provider")
+
+    model = _resolve_provider_value(
+        explicit.get("model"),
+        "--model",
+        MODEL_ENV_NAMES.get(provider_name, ()),
+        project_env,
+        process_env,
+        DEFAULT_MODELS[provider_name],
+        f"DEFAULT_{provider_name.upper()}_MODEL",
+    )
+    explicit_base_url = explicit.get("base_url")
+    explicit_base_name = "--base-url"
+    if provider_name == "ollama" and not explicit_base_url:
+        explicit_host = explicit.get("host")
+        if explicit_host != DEFAULT_BASE_URLS["ollama"]:
+            explicit_base_url = explicit_host
+            explicit_base_name = "--host"
+    base_url = _resolve_provider_value(
+        explicit_base_url,
+        explicit_base_name,
+        BASE_URL_ENV_NAMES.get(provider_name, ()),
+        project_env,
+        process_env,
+        DEFAULT_BASE_URLS[provider_name],
+        (
+            "DEFAULT_OLLAMA_HOST"
+            if provider_name == "ollama"
+            else f"DEFAULT_{provider_name.upper()}_BASE_URL"
+        ),
+    )
+    base_url["value"] = validate_provider_base_url(base_url["value"])
+    api_key = _resolve_provider_value(
+        explicit.get("api_key"),
+        "api_key",
+        API_KEY_ENV_NAMES.get(provider_name, ()),
+        project_env,
+        process_env,
+        "",
+        "",
+    )
+    return {
+        "provider": provider,
+        "model": model,
+        "base_url": base_url,
+        "api_key": api_key,
+    }
 
 
 def _parse_scalar(raw):

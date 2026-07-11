@@ -638,7 +638,7 @@ def test_build_agent_uses_openai_provider_and_model_override(tmp_path):
     assert agent.model_client is fake_client
 
 
-def test_build_agent_uses_right_codes_shared_key_for_openai_provider(tmp_path):
+def test_build_agent_uses_shared_key_for_openai_provider(tmp_path):
     args = type(
         "Args",
         (),
@@ -660,7 +660,7 @@ def test_build_agent_uses_right_codes_shared_key_for_openai_provider(tmp_path):
         },
     )()
 
-    with patch.dict(os.environ, {"HOME": str(tmp_path), "PICO_RIGHT_CODES_API_KEY": "sk-right-codes"}, clear=True):
+    with patch.dict(os.environ, {"HOME": str(tmp_path), "PICO_API_KEY": "sk-shared"}, clear=True):
         with patch(
             "pico.cli.OllamaModelClient",
             side_effect=AssertionError("ollama client should not be used"),
@@ -669,7 +669,7 @@ def test_build_agent_uses_right_codes_shared_key_for_openai_provider(tmp_path):
             agent = pico_pkg.build_agent(args)
 
     mock_openai.assert_called_once()
-    assert mock_openai.call_args.kwargs["api_key"] == "sk-right-codes"
+    assert mock_openai.call_args.kwargs["api_key"] == "sk-shared"
     assert agent.model_client is fake_client
 
 
@@ -761,7 +761,7 @@ def test_build_agent_prefers_cli_provider_over_project_env_provider(tmp_path):
     assert agent.model_client is fake_client
 
 
-def test_build_agent_uses_anthropic_provider_and_openai_key_fallback(tmp_path):
+def test_build_agent_rejects_openai_key_for_anthropic_provider(tmp_path):
     args = type(
         "Args",
         (),
@@ -804,7 +804,7 @@ def test_build_agent_uses_anthropic_provider_and_openai_key_fallback(tmp_path):
     mock_anthropic.assert_called_once()
     assert mock_anthropic.call_args.kwargs["model"] == "claude-sonnet-4-5-20250929"
     assert mock_anthropic.call_args.kwargs["base_url"] == "https://www.right.codes/claude/v1"
-    assert mock_anthropic.call_args.kwargs["api_key"] == "sk-openai-fallback"
+    assert mock_anthropic.call_args.kwargs["api_key"] == ""
     assert agent.model_client is fake_client
 
 

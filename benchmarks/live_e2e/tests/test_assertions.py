@@ -182,8 +182,11 @@ def test_project_env_uses_canonical_selected_provider_settings(tmp_path, provide
     )
 
     with patch.dict(os.environ, {}, clear=True):
-        run_live_session.load_project_env(tmp_path)
-        settings = run_live_session.provider_settings(provider)
+        settings = run_live_session.provider_settings(
+            provider,
+            project_env=run_live_session.read_project_env(tmp_path),
+            process_env={},
+        )
 
     assert settings == {
         "api_key": f"sentinel-{provider}",
@@ -192,18 +195,18 @@ def test_project_env_uses_canonical_selected_provider_settings(tmp_path, provide
     }
 
 
-def test_main_loads_project_env_before_parse_args_on_reset_only_path(tmp_path, monkeypatch):
+def test_main_reads_project_env_before_parse_args_on_reset_only_path(tmp_path, monkeypatch):
     events = []
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(
         run_live_session,
-        "load_project_env",
-        lambda root: events.append(("load", root)),
+        "read_project_env",
+        lambda root: events.append(("read", root)) or {},
     )
     monkeypatch.setattr(
         run_live_session,
         "parse_args",
-        lambda: events.append(("parse", None)) or _config(reset=True),
+        lambda **_kwargs: events.append(("parse", None)) or _config(reset=True),
     )
     monkeypatch.setattr(
         run_live_session,
@@ -212,7 +215,7 @@ def test_main_loads_project_env_before_parse_args_on_reset_only_path(tmp_path, m
     )
 
     assert run_live_session.main() == 0
-    assert events == [("load", tmp_path), ("parse", None), ("reset", tmp_path)]
+    assert events == [("read", tmp_path), ("parse", None), ("reset", tmp_path)]
 
 
 def test_main_constructs_live_pico_with_only_read_file(tmp_path, monkeypatch):
@@ -227,9 +230,8 @@ def test_main_constructs_live_pico_with_only_read_file(tmp_path, monkeypatch):
         raise RuntimeError("construction captured")
 
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(run_live_session, "load_project_env", lambda _root: None)
-    monkeypatch.setattr(run_live_session, "parse_args", lambda: _config())
-    monkeypatch.setattr(run_live_session, "check_env", lambda _config: None)
+    monkeypatch.setattr(run_live_session, "parse_args", lambda **_kwargs: _config())
+    monkeypatch.setattr(run_live_session, "check_env", lambda _config, **_kwargs: None)
     monkeypatch.setattr(run_live_session, "verify_pico_repo", lambda _root: None)
     monkeypatch.setattr(
         run_live_session,
@@ -241,7 +243,7 @@ def test_main_constructs_live_pico_with_only_read_file(tmp_path, monkeypatch):
         "FixtureManager",
         lambda _root, **_kwargs: nullcontext(),
     )
-    monkeypatch.setattr(run_live_session, "make_live_client", lambda _config: object())
+    monkeypatch.setattr(run_live_session, "make_live_client", lambda _config, **_kwargs: object())
     monkeypatch.setattr(pico.workspace.WorkspaceContext, "build", lambda _root: object())
     monkeypatch.setattr(pico.session_store, "SessionStore", lambda _root: object())
     monkeypatch.setattr(pico.runtime, "Pico", capture_pico)
@@ -1445,8 +1447,7 @@ def test_provider_wrapper_blocks_payload_leak_before_delegate():
 def test_main_preflight_failure_never_constructs_provider(tmp_path, monkeypatch):
     make_client = MagicMock()
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(run_live_session, "load_project_env", lambda root: None)
-    monkeypatch.setattr(run_live_session, "parse_args", lambda: _config())
+    monkeypatch.setattr(run_live_session, "parse_args", lambda **_kwargs: _config())
     monkeypatch.setattr(
         run_live_session,
         "check_env",

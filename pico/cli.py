@@ -29,21 +29,15 @@ from .cli_help import HELP_DETAILS  # noqa: F401
 from .cli_output import error_envelope, format_json
 from .cli_parser import parse_cli_invocation
 from .config import (
-    load_project_env,
-    provider_env,
     read_project_env,
-    validate_provider_base_url,
+    resolve_provider_config,
 )
 from .providers.defaults import (
-    DEFAULT_ANTHROPIC_BASE_URL,
-    DEFAULT_ANTHROPIC_MODEL,
-    DEFAULT_DEEPSEEK_BASE_URL,
-    DEFAULT_DEEPSEEK_MODEL,
+    DEFAULT_DEEPSEEK_BASE_URL,  # noqa: F401
+    DEFAULT_DEEPSEEK_MODEL,  # noqa: F401
     DEFAULT_OLLAMA_HOST,
     DEFAULT_OLLAMA_MODEL,
-    DEFAULT_OPENAI_BASE_URL,
-    DEFAULT_OPENAI_MODEL,
-    DEFAULT_PROVIDER,
+    DEFAULT_PROVIDER,  # noqa: F401
     PROVIDER_CHOICES,
 )
 from .providers.clients import AnthropicCompatibleModelClient, OllamaModelClient, OpenAICompatibleModelClient
@@ -118,59 +112,27 @@ WELCOME_SUBTITLE = "local coding agent"
 WELCOME_STATUS = "calm shell, ready for work"
 
 
-def _effective_provider(args):
-    # Provider 选择优先级：
-    # 1. 用户显式传入 --provider
-    # 2. 项目 .env / shell 里的 PICO_PROVIDER
-    # 3. 代码里的默认 provider
-    provider = getattr(args, "provider", None) or provider_env(
-        "PICO_PROVIDER", default=DEFAULT_PROVIDER
+def _build_model_client(args, *, project_env=None, process_env=None):
+    explicit = {
+        "provider": getattr(args, "provider", None),
+        "model": getattr(args, "model", None),
+        "base_url": getattr(args, "base_url", None),
+    }
+    host = getattr(args, "host", None)
+    if host and host != DEFAULT_OLLAMA_HOST:
+        explicit["host"] = host
+    config = resolve_provider_config(
+        explicit=explicit,
+        project_env=project_env,
+        process_env=process_env,
     )
-    if provider not in PROVIDER_CHOICES:
-        raise ValueError("unknown provider")
-    return provider
-
-
-def _effective_model(args, provider):
-    # 模型选择优先级：
-    # 1. 用户显式传入 --model
-    # 2. provider 对应的环境变量
-    # 3. 代码里的默认值
-    explicit_model = getattr(args, "model", None)
-    if explicit_model:
-        return explicit_model
-    if provider == "openai":
-        model = provider_env("PICO_OPENAI_MODEL", ("OPENAI_MODEL",))
-        if model:
-            return model
-        return DEFAULT_OPENAI_MODEL
-    if provider == "anthropic":
-        model = provider_env("PICO_ANTHROPIC_MODEL", ("ANTHROPIC_MODEL",))
-        if model:
-            return model
-        return DEFAULT_ANTHROPIC_MODEL
-    if provider == "deepseek":
-        model = provider_env("PICO_DEEPSEEK_MODEL", ("DEEPSEEK_MODEL",))
-        if model:
-            return model
-        return DEFAULT_DEEPSEEK_MODEL
-    return DEFAULT_OLLAMA_MODEL
-
-
-def _build_model_client(args):
-    provider = _effective_provider(args)
+    provider = config["provider"]["value"]
+    model = config["model"]["value"]
+    base_url = config["base_url"]["value"]
+    api_key = config["api_key"]["value"]
     # CLI 只负责把 provider 选择翻译成具体 client。
     # 真正的提示词格式、缓存支持、HTTP 协议差异，都封装在 models.py 里。
     if provider == "openai":
-        model = _effective_model(args, provider)
-        base_url = validate_provider_base_url(
-            getattr(args, "base_url", None)
-            or provider_env("PICO_OPENAI_API_BASE", ("OPENAI_API_BASE",), DEFAULT_OPENAI_BASE_URL)
-        )
-        api_key = provider_env(
-            "PICO_OPENAI_API_KEY",
-            ("OPENAI_API_KEY", "PICO_RIGHT_CODES_API_KEY", "RIGHT_CODES_API_KEY", "PICO_ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY"),
-        )
         return OpenAICompatibleModelClient(
             model=model,
             base_url=base_url,
@@ -179,15 +141,6 @@ def _build_model_client(args):
             timeout=getattr(args, "openai_timeout", getattr(args, "ollama_timeout", 300)),
         )
     if provider == "anthropic":
-        model = _effective_model(args, provider)
-        base_url = validate_provider_base_url(
-            getattr(args, "base_url", None)
-            or provider_env("PICO_ANTHROPIC_API_BASE", ("ANTHROPIC_API_BASE",), DEFAULT_ANTHROPIC_BASE_URL)
-        )
-        api_key = provider_env(
-            "PICO_ANTHROPIC_API_KEY",
-            ("ANTHROPIC_API_KEY", "PICO_RIGHT_CODES_API_KEY", "RIGHT_CODES_API_KEY", "PICO_OPENAI_API_KEY", "OPENAI_API_KEY"),
-        )
         return AnthropicCompatibleModelClient(
             model=model,
             base_url=base_url,
@@ -196,12 +149,6 @@ def _build_model_client(args):
             timeout=getattr(args, "openai_timeout", getattr(args, "ollama_timeout", 300)),
         )
     if provider == "deepseek":
-        model = _effective_model(args, provider)
-        base_url = validate_provider_base_url(
-            getattr(args, "base_url", None)
-            or provider_env("PICO_DEEPSEEK_API_BASE", ("DEEPSEEK_API_BASE",), DEFAULT_DEEPSEEK_BASE_URL)
-        )
-        api_key = provider_env("PICO_DEEPSEEK_API_KEY", ("DEEPSEEK_API_KEY",))
         return AnthropicCompatibleModelClient(
             model=model,
             base_url=base_url,
@@ -210,11 +157,9 @@ def _build_model_client(args):
             timeout=getattr(args, "openai_timeout", getattr(args, "ollama_timeout", 300)),
         )
 
-    model = _effective_model(args, provider)
-    host = validate_provider_base_url(getattr(args, "host", DEFAULT_OLLAMA_HOST))
     return OllamaModelClient(
         model=model,
-        host=host,
+        host=base_url,
         temperature=args.temperature,
         top_p=args.top_p,
         timeout=args.ollama_timeout,
@@ -297,8 +242,11 @@ def build_agent(args):
         workspace.repo_root + "/.pico/sessions",
         redactor=redactor,
     )
-    load_project_env(workspace.repo_root, warn=False)
-    model = _build_model_client(args)
+    model = _build_model_client(
+        args,
+        project_env=project_env,
+        process_env=process_env,
+    )
     session_id = args.resume
     approval_policy = "never" if getattr(args, "no_input", False) and args.approval == "ask" else args.approval
     if session_id == "latest":

@@ -22,14 +22,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from pico.config import load_project_env, provider_env
+from pico.config import read_project_env, resolve_provider_config
 from pico.messages import MessageValidationError, validate_messages
 from pico.providers.defaults import (
     API_KEY_ENV_NAMES,
-    BASE_URL_ENV_NAMES,
-    DEFAULT_BASE_URLS,
-    DEFAULT_MODELS,
-    MODEL_ENV_NAMES,
 )
 from pico.security import (
     SensitiveDataBlockedError,
@@ -134,27 +130,22 @@ class RunConfig:
     verbose: bool
 
 
-def _mapped_env(names, default=""):
-    return provider_env(names[0], legacy_names=names[1:], default=default)
-
-
-def provider_settings(provider):
+def provider_settings(provider, *, project_env=None, process_env=None):
     if provider not in {"anthropic", "deepseek"}:
         raise ValueError(f"unsupported live provider: {provider}")
+    config = resolve_provider_config(
+        explicit={"provider": provider},
+        project_env=project_env,
+        process_env=process_env,
+    )
     return {
-        "api_key": _mapped_env(API_KEY_ENV_NAMES[provider]),
-        "model": _mapped_env(
-            MODEL_ENV_NAMES[provider],
-            default=DEFAULT_MODELS[provider],
-        ),
-        "base_url": _mapped_env(
-            BASE_URL_ENV_NAMES[provider],
-            default=DEFAULT_BASE_URLS[provider],
-        ),
+        "api_key": config["api_key"]["value"],
+        "model": config["model"]["value"],
+        "base_url": config["base_url"]["value"],
     }
 
 
-def parse_args() -> RunConfig:
+def parse_args(*, project_env=None, process_env=None) -> RunConfig:
     """Parse CLI arguments and return a frozen RunConfig.
 
     The selected provider's canonical environment names supply defaults. A
@@ -173,7 +164,11 @@ def parse_args() -> RunConfig:
     parser.add_argument("--reset", action="store_true")
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
-    settings = provider_settings(args.provider)
+    settings = provider_settings(
+        args.provider,
+        project_env=project_env,
+        process_env=process_env,
+    )
     return RunConfig(
         provider=args.provider,
         model=args.model or settings["model"],
@@ -185,11 +180,11 @@ def parse_args() -> RunConfig:
     )
 
 
-def check_env(config: RunConfig) -> None:
+def check_env(config: RunConfig, *, settings=None) -> None:
     """Abort with exit 2 if the selected provider API key is missing."""
     if config.reset:
         return  # reset path doesn't need the API key
-    key = provider_settings(config.provider)["api_key"].strip()
+    key = (settings or provider_settings(config.provider))["api_key"].strip()
     if not key:
         required_name = API_KEY_ENV_NAMES[config.provider][0]
         print(f"[live-e2e] missing {required_name}, aborted", file=sys.stderr)
@@ -1488,11 +1483,11 @@ class _SniffingProviderWrapper:
         return self._inner.complete(*args, **kwargs)
 
 
-def make_live_client(config: RunConfig):
+def make_live_client(config: RunConfig, *, settings=None):
     """Instantiate the selected Anthropic-compatible live client."""
     from pico.providers.anthropic_compatible import AnthropicCompatibleModelClient
 
-    settings = provider_settings(config.provider)
+    settings = settings or provider_settings(config.provider)
     inner = AnthropicCompatibleModelClient(
         model=config.model,
         base_url=settings["base_url"],
@@ -1565,16 +1560,22 @@ def do_reset(repo_root: Path) -> int:
 
 def main() -> int:
     repo_root = Path.cwd()
-    load_project_env(repo_root)
-    config = parse_args()
+    project_env = read_project_env(repo_root)
+    process_env = dict(os.environ)
+    config = parse_args(project_env=project_env, process_env=process_env)
 
     if config.reset:
         return do_reset(repo_root)
 
-    check_env(config)
+    settings = provider_settings(
+        config.provider,
+        project_env=project_env,
+        process_env=process_env,
+    )
+    check_env(config, settings=settings)
     verify_pico_repo(repo_root)
     warn_if_dirty_working_tree(repo_root)
-    selected_api_key = provider_settings(config.provider)["api_key"].strip()
+    selected_api_key = settings["api_key"].strip()
 
     # Detect pre-existing seed note (unclean previous run)
     if (repo_root / SEED_NOTE_REL).exists():
@@ -1610,7 +1611,7 @@ def main() -> int:
         from pico.session_store import SessionStore
         from pico.workspace import WorkspaceContext
 
-        model_client = make_live_client(config)
+        model_client = make_live_client(config, settings=settings)
         workspace = WorkspaceContext.build(repo_root)
         session_store = SessionStore(repo_root / ".pico" / "sessions")
         try:
