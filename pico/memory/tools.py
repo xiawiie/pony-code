@@ -1,4 +1,4 @@
-"""Pico memory v2 · tool runners.
+"""Pico memory tool runners.
 
 4 个 agent tool:
     memory_list, memory_read, memory_search, memory_save
@@ -95,27 +95,13 @@ def tool_memory_search(context, args: dict) -> str:
 
 
 def tool_memory_save(context, args: dict) -> str:
-    """Task 21: dual-path save.
-
-    - With ``topic``: creates or appends ``agent/<topic>.md`` (per-topic file
-      with frontmatter). The optional ``type`` arg overrides the frontmatter
-      type field on first write (default ``feedback``); it is ignored on
-      subsequent appends since the header is already fixed.
-    - Without ``topic``: falls back to the legacy ``agent_notes.md`` single-file
-      append. Preserved so mid-migration workflows keep working; retired once
-      Task 22's migrator runs.
-    """
+    """Append one agent note to the selected scope."""
     store: BlockStore = getattr(context, "memory_store", None)
     if store is None:
         raise RuntimeError("memory_store unavailable")
+    if set(args) - {"note", "scope"}:
+        raise ValueError("memory_save accepts only note and scope")
     note = str(args.get("note", "")).strip()
     scope = str(args.get("scope", "workspace")).strip()
-
-    topic = str(args.get("topic", "")).strip()
-    if topic:
-        note_type = str(args.get("type", "feedback")).strip()
-        store.write_agent_topic(scope=scope, topic=topic, note=note, note_type=note_type)
-        return f"saved: {scope}/agent/{topic}.md"
-
     total = store.append_agent_note(scope=scope, note=note)  # type: ignore[arg-type]
     return f"saved: {scope}/agent_notes.md (chars_total={total})"

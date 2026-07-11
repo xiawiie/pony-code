@@ -43,15 +43,38 @@ def test_build_agent_returns_pico(tmp_path):
 def test_lightweight_package_split_uses_package_paths_without_legacy_shims():
     from pico.evaluation.experiments_recovery import run_context_ablation_v2
     from pico.evaluation.fixed_benchmark import BenchmarkEvaluator
-    from pico.features.memory import LayeredMemory
     from pico.providers.fake import FakeModelClient as ProviderFakeModelClient
 
     assert BenchmarkEvaluator is not None
-    assert LayeredMemory is not None
     assert ProviderFakeModelClient is not None
     assert callable(run_context_ablation_v2)
     for legacy_module in ("models.py", "memory.py", "working_memory.py"):
         assert not (Path("pico") / legacy_module).exists()
+
+
+def test_memory_feature_exports_exactly_seven_production_helpers():
+    from pico.features import memory
+
+    assert memory.__all__ == [
+        "canonicalize_path",
+        "file_freshness",
+        "normalize_file_summaries_dict",
+        "set_file_summary_dict",
+        "invalidate_file_summary_dict",
+        "invalidate_stale_file_summaries_dict",
+        "summarize_read_result",
+    ]
+    assert all(callable(getattr(memory, name)) for name in memory.__all__)
+    assert {
+        name for name in vars(memory) if not name.startswith("_")
+    } == set(memory.__all__)
+    for removed in (
+        "LayeredMemory",
+        "default_memory_state",
+        "normalize_memory_state",
+        "resolve_workspace_path",
+    ):
+        assert not hasattr(memory, removed)
 
 
 def test_all_four_provider_classes_importable_directly():

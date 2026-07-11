@@ -19,7 +19,7 @@ normalization keep the standard BM25 form. The intent is not to make
 scores comparable to any external corpus but to give the on-disk memory
 layout a consistent, explainable ranking behavior.
 
-Limitation (unchanged from v2): keyword-level matching, no semantic
+Limitation: keyword-level matching, no semantic
 similarity. "身份认证" will not surface a note containing only "auth".
 """
 
@@ -54,7 +54,7 @@ LINK_MAX_ADDED = 3       # at most this many neighbors per query
 LINK_DECAY = 0.4         # neighbor score = primary_score × decay
 LINK_DEPTH = 1           # depth cap — no recursion beyond one hop
 
-# `[[name]]` — kebab-case-friendly, matches what write_agent_topic accepts.
+# `[[name]]` — kebab-case-friendly User Note links.
 _LINK_RE = re.compile(r"\[\[([a-zA-Z0-9][a-zA-Z0-9_-]*)\]\]")
 
 
@@ -99,7 +99,7 @@ class Retrieval:
         self.store = store
         # Task B5: allow pico.toml overrides for field boosts + link config.
         # Passing None keeps the module-level constants active for callers
-        # (e.g. legacy tests) that don't wire config yet.
+        # that don't wire config yet.
         cfg = config or {}
         self._field_boosts = cfg.get("field_boosts", FIELD_BOOSTS)
         link_cfg = cfg.get("link_config", (LINK_MAX_ADDED, LINK_DECAY))

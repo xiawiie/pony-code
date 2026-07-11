@@ -651,7 +651,7 @@ def _turn_result_stub(**overrides):
         error=None,
         provider_input_messages_len=1,
         current_user_content=(
-            "<system-reminder><pico:recalled_memory path=\"workspace/agent/cache-invariant.md\">"
+            "<system-reminder><pico:recalled_memory path=\"workspace/notes/cache-invariant.md\">"
             "content</pico:recalled_memory></system-reminder>\n上次讨论过 cache invariant 的问题"
         ),
         usage_complete=True,

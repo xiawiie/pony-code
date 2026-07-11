@@ -142,7 +142,7 @@ def test_append_note_too_long_rejected(tmp_path):
         store.append_agent_note(scope="workspace", note="x" * 501)
 
 
-def test_write_entrypoints_reject_complete_secret_content_and_allow_prose(tmp_path):
+def test_append_rejects_complete_secret_content_and_allows_prose(tmp_path):
     workspace = tmp_path / "workspace"
     user = tmp_path / "user"
     workspace.mkdir()
@@ -152,25 +152,9 @@ def test_write_entrypoints_reject_complete_secret_content_and_allow_prose(tmp_pa
 
     with pytest.raises(ValueError, match="sensitive_content"):
         store.append_agent_note(scope="workspace", note=secret)
-    with pytest.raises(ValueError, match="sensitive_content"):
-        store.write_agent_topic(
-            scope="workspace",
-            topic="auth",
-            note="safe note",
-            note_type=secret,
-        )
 
     store.append_agent_note(scope="workspace", note="password policy")
-    store.write_agent_topic(
-        scope="workspace",
-        topic="policy",
-        note="password policy",
-        note_type="feedback",
-    )
     assert "password policy" in (workspace / "agent_notes.md").read_text(
-        encoding="utf-8"
-    )
-    assert "password policy" in (workspace / "agent" / "policy.md").read_text(
         encoding="utf-8"
     )
 
@@ -208,9 +192,7 @@ def test_block_store_freezes_process_env_when_constructed(tmp_path, monkeypatch)
     assert not (workspace / "agent_notes.md").exists()
 
 
-def test_block_store_screens_topic_and_scope_before_value_bearing_errors(
-    tmp_path,
-):
+def test_block_store_screens_scope_before_value_bearing_errors(tmp_path):
     workspace = tmp_path / "workspace"
     user = tmp_path / "user"
     workspace.mkdir()
@@ -223,50 +205,25 @@ def test_block_store_screens_topic_and_scope_before_value_bearing_errors(
         secret_env_names=("CUSTOM_CREDENTIAL",),
     )
 
-    calls = (
-        lambda: store.append_agent_note(scope=secret, note="safe note"),
-        lambda: store.write_agent_topic(
-            scope="workspace",
-            topic=secret,
-            note="safe note",
-        ),
-        lambda: store.write_agent_topic(
-            scope=secret,
-            topic="safe-topic",
-            note="safe note",
-        ),
-    )
-    for call in calls:
-        with pytest.raises(ValueError) as exc_info:
-            call()
-        assert str(exc_info.value) == "sensitive_content"
-        assert secret not in str(exc_info.value)
+    with pytest.raises(ValueError) as exc_info:
+        store.append_agent_note(scope=secret, note="safe note")
+    assert str(exc_info.value) == "sensitive_content"
+    assert secret not in str(exc_info.value)
 
     assert list(workspace.iterdir()) == []
     assert list(user.iterdir()) == []
 
 
-def test_block_store_validation_errors_do_not_echo_invalid_values(tmp_path):
+def test_block_store_scope_error_does_not_echo_invalid_value(tmp_path):
     workspace = tmp_path / "workspace"
     user = tmp_path / "user"
     workspace.mkdir()
     user.mkdir()
     store = BlockStore(workspace_root=workspace, user_root=user, redaction_env={})
 
-    with pytest.raises(ValueError) as topic_error:
-        store.write_agent_topic(
-            scope="workspace",
-            topic="../invalid",
-            note="safe note",
-        )
     with pytest.raises(ValueError) as scope_error:
-        store.write_agent_topic(
-            scope="invalid-scope",
-            topic="safe-topic",
-            note="safe note",
-        )
+        store.append_agent_note(scope="invalid-scope", note="safe note")
 
-    assert str(topic_error.value) == "invalid topic"
     assert str(scope_error.value) == "invalid scope"
 
 
@@ -302,26 +259,6 @@ def test_agent_note_write_rejects_leaf_symlink_without_touching_target(tmp_path)
     assert outside.read_text(encoding="utf-8") == "untouched\n"
 
 
-def test_agent_topic_write_rejects_symlinked_agent_directory(tmp_path):
-    workspace = tmp_path / "workspace"
-    user = tmp_path / "user"
-    outside = tmp_path / "outside-agent"
-    workspace.mkdir()
-    user.mkdir()
-    outside.mkdir()
-    (workspace / "agent").symlink_to(outside, target_is_directory=True)
-    store = BlockStore(workspace_root=workspace, user_root=user)
-
-    with pytest.raises(ValueError, match="symlink"):
-        store.write_agent_topic(
-            scope="workspace",
-            topic="policy",
-            note="safe note",
-        )
-
-    assert list(outside.iterdir()) == []
-
-
 def test_atomic_no_partial_write(tmp_path, monkeypatch):
     """If replace fails mid-way, main file must not exist half-written."""
     workspace = tmp_path / "workspace"
@@ -337,19 +274,6 @@ def test_atomic_no_partial_write(tmp_path, monkeypatch):
     contents = (workspace / "agent_notes.md").read_text()
     assert contents.startswith("original")
     assert "new" in contents
-
-
-def test_stat_all_returns_mtimes(tmp_path):
-    workspace = tmp_path / "workspace"
-    user = tmp_path / "user"
-    (workspace / "notes").mkdir(parents=True)
-    user.mkdir()
-    (workspace / "notes" / "auth.md").write_text("hi")
-
-    store = BlockStore(workspace_root=workspace, user_root=user)
-    stats = store.stat_all()
-    assert "workspace/notes/auth.md" in stats
-    assert isinstance(stats["workspace/notes/auth.md"], float)
 
 
 def test_reject_traversal(tmp_path):
@@ -412,6 +336,46 @@ def test_list_skips_symlinked_notes_directory(tmp_path):
     assert store.list() == []
 
 
+def test_nested_symlink_directory_consumes_file_scan_budget(tmp_path, monkeypatch):
+    from pico.memory import block_store as block_store_module
+
+    workspace = tmp_path / "workspace"
+    user = tmp_path / "user"
+    notes = workspace / "notes"
+    outside = tmp_path / "outside-notes"
+    notes.mkdir(parents=True)
+    user.mkdir()
+    outside.mkdir()
+    (notes / "a-unsafe").symlink_to(outside, target_is_directory=True)
+    (notes / "b-safe.md").write_text("safe", encoding="utf-8")
+    monkeypatch.setattr(block_store_module, "MAX_MEMORY_INDEX_FILES", 1)
+
+    store = BlockStore(workspace_root=workspace, user_root=user)
+
+    assert store.list() == []
+
+
+def test_unsafe_hardlink_consumes_aggregate_byte_budget(tmp_path, monkeypatch):
+    from pico.memory import block_store as block_store_module
+
+    workspace = tmp_path / "workspace"
+    user = tmp_path / "user"
+    notes = workspace / "notes"
+    notes.mkdir(parents=True)
+    user.mkdir()
+    outside = tmp_path / "outside.md"
+    outside.write_text("outside-canary", encoding="utf-8")
+    os.link(outside, notes / "a-unsafe.md")
+    (notes / "b-safe.md").write_text("safe", encoding="utf-8")
+    monkeypatch.setattr(block_store_module, "MAX_MEMORY_FILE_BYTES", 32)
+    monkeypatch.setattr(block_store_module, "MAX_MEMORY_INDEX_BYTES", 5)
+
+    store = BlockStore(workspace_root=workspace, user_root=user)
+
+    assert store.list() == []
+    assert outside.read_text(encoding="utf-8") == "outside-canary"
+
+
 @pytest.mark.parametrize("target_kind", ("inside", "outside"))
 def test_read_rejects_memory_symlink(target_kind, tmp_path):
     workspace = tmp_path / "workspace"
@@ -428,6 +392,34 @@ def test_read_rejects_memory_symlink(target_kind, tmp_path):
 
     with pytest.raises((FileNotFoundError, ValueError)):
         store.read("workspace/notes/linked.md")
+
+
+@pytest.mark.parametrize("unsafe_kind", ("hardlink", "directory", "fifo"))
+def test_user_note_read_and_list_reject_unsafe_leaf(tmp_path, unsafe_kind):
+    workspace = tmp_path / "workspace"
+    user = tmp_path / "user"
+    notes = workspace / "notes"
+    notes.mkdir(parents=True)
+    user.mkdir()
+    outside = tmp_path / "outside.md"
+    outside.write_text("outside-canary", encoding="utf-8")
+    target = notes / "unsafe.md"
+    if unsafe_kind == "hardlink":
+        os.link(outside, target)
+    elif unsafe_kind == "directory":
+        target.mkdir()
+    else:
+        if not hasattr(os, "mkfifo"):
+            pytest.skip("FIFO unavailable")
+        os.mkfifo(target)
+    store = BlockStore(workspace_root=workspace, user_root=user)
+
+    assert "workspace/notes/unsafe.md" not in {
+        entry.path for entry in store.list()
+    }
+    with pytest.raises((FileNotFoundError, ValueError)):
+        store.read("workspace/notes/unsafe.md")
+    assert outside.read_text(encoding="utf-8") == "outside-canary"
 
 
 @pytest.mark.parametrize(

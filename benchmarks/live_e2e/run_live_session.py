@@ -235,7 +235,7 @@ min_score = 0.2
 """
 
 
-SEED_NOTE_REL = Path(".pico/memory/agent/cache-invariant.md")
+SEED_NOTE_REL = Path(".pico/memory/notes/cache-invariant.md")
 PICO_TOML_REL = Path("pico.toml")
 BACKUP_REL = Path("benchmarks/live_e2e/results/pre-run-pico.toml.bak")
 
@@ -249,7 +249,7 @@ class FixtureManager:
          teardown can restore it.
       2. Write ``FIXTURE_PICO_TOML`` to ``<repo_root>/pico.toml``.
       3. Write the fixture seed note to
-         ``<repo_root>/.pico/memory/agent/cache-invariant.md``.
+         ``<repo_root>/.pico/memory/notes/cache-invariant.md``.
 
     On exit (never raises):
       1. Remove the seed note if present.

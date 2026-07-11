@@ -1,6 +1,6 @@
 """Stdlib-only frontmatter parser for pico memory notes.
 
-Memory files (``.pico/memory/agent/*.md``, ``.pico/memory/notes/*.md``)
+User notes under ``.pico/memory/notes/**/*.md``
 may open with a small YAML-ish header block bounded by ``---`` lines.
 The header carries structural metadata (name, type, tags, aliases,
 supersedes list, description) that drives retrieval boosts, tombstone

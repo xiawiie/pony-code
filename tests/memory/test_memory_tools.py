@@ -117,6 +117,29 @@ def test_save_rejects_secret_content_but_allows_security_prose(tmp_path):
     ).read_text(encoding="utf-8")
 
 
+@pytest.mark.parametrize("extra", ({"topic": ""}, {"type": ""}))
+def test_save_runner_rejects_removed_fields_even_when_empty(tmp_path, extra):
+    ctx = _context(tmp_path)
+
+    with pytest.raises(ValueError) as exc_info:
+        tool_memory_save(ctx, {"note": "remember this", **extra})
+
+    assert str(exc_info.value) == "memory_save accepts only note and scope"
+    assert not (ctx.memory_store.workspace_root / "agent_notes.md").exists()
+
+
+@pytest.mark.parametrize("extra", ({"topic": ""}, {"type": ""}))
+def test_save_validator_rejects_removed_fields_even_when_empty(tmp_path, extra):
+    from pico.tools import validate_tool
+
+    ctx = _context(tmp_path)
+
+    with pytest.raises(ValueError) as exc_info:
+        validate_tool(ctx, "memory_save", {"note": "remember this", **extra})
+
+    assert str(exc_info.value) == "memory_save accepts only note and scope"
+
+
 def test_save_rejects_unknown_scope(tmp_path):
     """validate_tool must reject scope values outside {workspace, user}."""
     from pico.tools import validate_tool

@@ -1036,10 +1036,9 @@ def test_block_store_rejects_agent_hardlinks_added_after_construction(tmp_path):
     os.link(outside, topic)
 
     assert "workspace/agent/policy.md" not in {entry.path for entry in store.list()}
-    with pytest.raises(ValueError, match="link|private"):
+    with pytest.raises(ValueError, match="invalid memory path"):
         store.read("workspace/agent/policy.md")
-    with pytest.raises(ValueError, match="link|private"):
-        store.write_agent_topic("workspace", "policy", "safe topic")
+    assert not hasattr(store, "write_agent_topic")
 
     assert outside.read_text(encoding="utf-8") == "outside private text\n"
     _assert_mode(outside, 0o644)
@@ -1053,15 +1052,15 @@ def test_block_store_owned_paths_are_private(tmp_path):
     store = BlockStore(workspace_root=workspace, user_root=user, redaction_env={})
 
     store.append_agent_note("workspace", "safe note")
-    topic_path = store.write_agent_topic("user", "policy", "safe topic")
+    store.append_agent_note("user", "safe user note")
 
-    for directory in (workspace, user, topic_path.parent):
+    for directory in (workspace, user):
         _assert_mode(directory, 0o700)
-    for path in (workspace / "agent_notes.md", topic_path):
+    for path in (workspace / "agent_notes.md", user / "agent_notes.md"):
         _assert_mode(path, 0o600)
 
 
-def test_block_store_repairs_legacy_agent_files_but_not_user_notes(tmp_path):
+def test_block_store_ignores_obsolete_agent_files_and_preserves_user_notes(tmp_path):
     workspace = tmp_path / "workspace-memory"
     user = tmp_path / "user-memory"
     agent_dir = workspace / "agent"
@@ -1082,12 +1081,14 @@ def test_block_store_repairs_legacy_agent_files_but_not_user_notes(tmp_path):
     nested_user_note.chmod(0o644)
 
     store = BlockStore(workspace_root=workspace, user_root=user, redaction_env={})
-    assert "workspace/notes/agent/user.md" in {entry.path for entry in store.list()}
+    paths = {entry.path for entry in store.list()}
+    assert "workspace/agent/legacy.md" not in paths
+    assert "workspace/notes/agent/user.md" in paths
 
     _assert_mode(workspace, 0o700)
     _assert_mode(user, 0o700)
-    _assert_mode(agent_dir, 0o700)
-    _assert_mode(agent_file, 0o600)
+    _assert_mode(agent_dir, 0o755)
+    _assert_mode(agent_file, 0o644)
     _assert_mode(notes_dir, 0o755)
     _assert_mode(user_note, 0o644)
     _assert_mode(nested_user_dir, 0o755)

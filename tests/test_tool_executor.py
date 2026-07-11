@@ -252,14 +252,22 @@ def test_missing_memory_dependencies_and_files_never_report_ok(tmp_path, monkeyp
     assert io_error.metadata["tool_status"] == "error"
 
 
-def test_invalid_memory_topic_is_rejected_before_runner(tmp_path):
+@pytest.mark.parametrize("removed_field", ("topic", "type"))
+def test_removed_memory_save_fields_are_rejected_before_runner(
+    tmp_path,
+    removed_field,
+):
     agent = build_agent(tmp_path)
     runner = Mock(return_value="must not run")
     agent.tools["memory_save"]["run"] = runner
 
-    result = agent.execute_tool("memory_save", {"note": "remember this", "topic": "../invalid"})
+    result = agent.execute_tool(
+        "memory_save",
+        {"note": "remember this", removed_field: ""},
+    )
 
     assert result.metadata["tool_status"] == "rejected"
+    assert "memory_save accepts only note and scope" in result.content
     runner.assert_not_called()
 
 

@@ -20,20 +20,20 @@ def test_link_expansion_adds_neighbor(tmp_path):
     ws = tmp_path / "ws"
     _w(
         ws,
-        "agent/a.md",
+        "notes/a.md",
         "---\nname: a\ntype: feedback\ndescription: about cache\n---\nsee [[b]] for related\n",
     )
     _w(
         ws,
-        "agent/b.md",
+        "notes/b.md",
         "---\nname: b\ntype: feedback\ndescription: unrelated\n---\nnothing about cache here\n",
     )
     store = BlockStore(workspace_root=ws, user_root=tmp_path / "user")
     ret = Retrieval(store)
     hits = ret.search("cache")
     paths = [h.path for h in hits]
-    assert "workspace/agent/a.md" in paths
-    assert "workspace/agent/b.md" in paths  # pulled in via one-hop link
+    assert "workspace/notes/a.md" in paths
+    assert "workspace/notes/b.md" in paths  # pulled in via one-hop link
 
 
 def test_link_expansion_capped_at_three(tmp_path):
@@ -41,44 +41,44 @@ def test_link_expansion_capped_at_three(tmp_path):
     body_links = "\n".join([f"see [[n{i}]]" for i in range(10)])
     _w(
         ws,
-        "agent/hub.md",
+        "notes/hub.md",
         f"---\nname: hub\ntype: feedback\ndescription: cache hub\n---\n{body_links}\n",
     )
     for i in range(10):
         _w(
             ws,
-            f"agent/n{i}.md",
+            f"notes/n{i}.md",
             f"---\nname: n{i}\ntype: feedback\ndescription: none\n---\ncontent\n",
         )
     store = BlockStore(workspace_root=ws, user_root=tmp_path / "user")
     ret = Retrieval(store)
     hits = ret.search("cache", limit=20)
-    expanded = [h for h in hits if h.path != "workspace/agent/hub.md"]
+    expanded = [h for h in hits if h.path != "workspace/notes/hub.md"]
     assert len(expanded) <= 3
 
 
 def test_link_expansion_does_not_recurse(tmp_path):
     ws = tmp_path / "ws"
-    _w(ws, "agent/a.md", "---\nname: a\ntype: feedback\ndescription: about cache\n---\nsee [[b]]\n")
-    _w(ws, "agent/b.md", "---\nname: b\ntype: feedback\ndescription: unrelated\n---\nsee [[c]]\n")
-    _w(ws, "agent/c.md", "---\nname: c\ntype: feedback\ndescription: unrelated too\n---\nno links\n")
+    _w(ws, "notes/a.md", "---\nname: a\ntype: feedback\ndescription: about cache\n---\nsee [[b]]\n")
+    _w(ws, "notes/b.md", "---\nname: b\ntype: feedback\ndescription: unrelated\n---\nsee [[c]]\n")
+    _w(ws, "notes/c.md", "---\nname: c\ntype: feedback\ndescription: unrelated too\n---\nno links\n")
     store = BlockStore(workspace_root=ws, user_root=tmp_path / "user")
     ret = Retrieval(store)
     hits = ret.search("cache")
     paths = [h.path for h in hits]
-    assert "workspace/agent/b.md" in paths
-    assert "workspace/agent/c.md" not in paths  # depth cap = 1
+    assert "workspace/notes/b.md" in paths
+    assert "workspace/notes/c.md" not in paths  # depth cap = 1
 
 
 def test_link_expansion_score_decays(tmp_path):
     ws = tmp_path / "ws"
-    _w(ws, "agent/a.md", "---\nname: a\ntype: feedback\ndescription: about cache cache cache\n---\nsee [[b]]\n")
-    _w(ws, "agent/b.md", "---\nname: b\ntype: feedback\ndescription: unrelated\n---\nnothing\n")
+    _w(ws, "notes/a.md", "---\nname: a\ntype: feedback\ndescription: about cache cache cache\n---\nsee [[b]]\n")
+    _w(ws, "notes/b.md", "---\nname: b\ntype: feedback\ndescription: unrelated\n---\nnothing\n")
     store = BlockStore(workspace_root=ws, user_root=tmp_path / "user")
     ret = Retrieval(store)
     hits = ret.search("cache")
-    a_hit = next(h for h in hits if h.path == "workspace/agent/a.md")
-    b_hit = next(h for h in hits if h.path == "workspace/agent/b.md")
+    a_hit = next(h for h in hits if h.path == "workspace/notes/a.md")
+    b_hit = next(h for h in hits if h.path == "workspace/notes/b.md")
     # b came in via link expansion with decay=0.4
     assert b_hit.score < a_hit.score
     assert b_hit.score == a_hit.score * 0.4 or abs(b_hit.score - a_hit.score * 0.4) < 1e-9

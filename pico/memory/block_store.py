@@ -1,4 +1,4 @@
-"""Pico memory v2 · block store.
+"""Pico memory block store.
 
 职责:
 - 读写 `.pico/memory/notes/*.md`（用户手写）和 `.pico/memory/agent_notes.md`（agent 追加）
@@ -18,7 +18,6 @@
 from __future__ import annotations
 
 import os
-import re
 import stat
 import sys
 import tempfile
@@ -33,7 +32,6 @@ from pico.file_lock import locked_file
 from pico.security import (
     ensure_private_dir,
     ensure_private_file,
-    harden_private_tree,
     read_private_text,
     require_regular_no_symlink,
 )
@@ -47,15 +45,11 @@ MAX_MEMORY_INDEX_FILES = 512
 MAX_MEMORY_FILE_BYTES = 128 * 1024
 MAX_MEMORY_INDEX_BYTES = 2 * 1024 * 1024
 
-# Task 17: agent-owned topic slug — kebab-case, alphanumeric-first.
-# Rejects `..`, `/`, dots, spaces, and any other filesystem-fragile chars.
-_TOPIC_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]*$")
-
 
 def _is_agent_owned_path(rel_path):
     parts = str(rel_path).split("/", 1)
     sub_path = parts[1] if len(parts) == 2 else parts[0]
-    return sub_path == "agent_notes.md" or sub_path.startswith("agent/")
+    return sub_path == "agent_notes.md"
 
 
 def _read_bounded_regular(path, limit, *, private=False):
@@ -89,14 +83,19 @@ def _read_bounded_regular(path, limit, *, private=False):
         path_current = os.stat(path, follow_symlinks=False)
         if (
             not stat.S_ISREG(opened.st_mode)
+            or opened.st_nlink != 1
             or not private
             and (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino)
             or (opened.st_dev, opened.st_ino)
             != (path_current.st_dev, path_current.st_ino)
         ):
-            raise ValueError("unsafe automatic memory file")
+            error = ValueError("unsafe automatic memory file")
+            error.bytes_read = min(opened.st_size, limit + 1)
+            raise error
         if opened.st_size > limit:
-            raise ValueError("memory file too large")
+            error = ValueError("memory file too large")
+            error.bytes_read = limit + 1
+            raise error
         with os.fdopen(descriptor, "rb") as handle:
             descriptor = -1
             data = handle.read(limit + 1)
@@ -136,7 +135,7 @@ class BlockStore:
             except FileNotFoundError:
                 continue
             ensure_private_dir(root)
-            self._harden_agent_owned_paths(root)
+            self._harden_agent_notes(root)
         self.redaction_env = MappingProxyType(
             dict(os.environ if redaction_env is None else redaction_env)
         )
@@ -144,16 +143,7 @@ class BlockStore:
         self._size_warned: set[str] = set()
 
     @staticmethod
-    def _harden_agent_owned_paths(root: Path) -> None:
-        agent_dir = root / "agent"
-        try:
-            agent_mode = agent_dir.lstat().st_mode
-        except FileNotFoundError:
-            pass
-        else:
-            if stat.S_ISDIR(agent_mode):
-                harden_private_tree(agent_dir)
-
+    def _harden_agent_notes(root: Path) -> None:
         agent_notes = root / "agent_notes.md"
         try:
             notes_mode = agent_notes.lstat().st_mode
@@ -207,11 +197,14 @@ class BlockStore:
     @staticmethod
     def _markdown_files(root: Path, directory: Path):
         for dirpath, dirnames, filenames in os.walk(directory, followlinks=False):
-            dirnames[:] = [
-                name
-                for name in sorted(dirnames)
-                if _safe_index_directory(root, Path(dirpath) / name) is not None
-            ]
+            safe_dirnames = []
+            for name in sorted(dirnames):
+                candidate = Path(dirpath) / name
+                if _safe_index_directory(root, candidate) is None:
+                    yield candidate
+                else:
+                    safe_dirnames.append(name)
+            dirnames[:] = safe_dirnames
             for name in sorted(filenames):
                 if not name.endswith(".md"):
                     continue
@@ -227,14 +220,7 @@ class BlockStore:
             for md in self._markdown_files(root, notes_dir):
                 rel = md.relative_to(root).as_posix()
                 yield f"{scope}/{rel}", md
-        # agent/*.md (Task 17) — agent-owned, per-topic
-        agent_dir = _safe_index_directory(root, root / "agent")
-        if agent_dir is not None:
-            for md in self._markdown_files(root, agent_dir):
-                rel = md.relative_to(root).as_posix()
-                yield f"{scope}/{rel}", md
-        # agent_notes.md (legacy single-file). We exclude anything with the
-        # .legacy suffix (post-migration renames).
+        # agent_notes.md — agent-owned, append-only
         agent_notes = root / "agent_notes.md"
         try:
             agent_notes.lstat()
@@ -245,9 +231,15 @@ class BlockStore:
 
     @staticmethod
     def _to_memory_file(root: Path, rel_path: str, real_path: Path, limit: int):
-        real_path = _safe_index_file(root, real_path)
+        candidate = real_path
+        real_path = _safe_index_file(root, candidate)
         if real_path is None:
-            raise ValueError("unsafe automatic memory file")
+            error = ValueError("unsafe automatic memory file")
+            try:
+                error.bytes_read = min(candidate.lstat().st_size, limit + 1)
+            except OSError:
+                error.bytes_read = 0
+            raise error
         agent_owned = _is_agent_owned_path(rel_path)
         data, stat_result = _read_bounded_regular(
             real_path,
@@ -311,9 +303,6 @@ class BlockStore:
         except ValueError:
             return False
 
-    def stat_all(self) -> dict[str, float]:
-        return {entry.path: entry.mtime for entry in self.list()}
-
     # ---- agent append ------------------------------------------------------
 
     def append_agent_note(self, scope: Literal["workspace", "user"], note: str) -> int:
@@ -358,60 +347,6 @@ class BlockStore:
             )
         return size
 
-    # ---- agent topic write (Task 17) ---------------------------------------
-
-    def write_agent_topic(self, scope, topic, note, note_type="feedback"):
-        """Create or append `agent/<topic>.md` with frontmatter on first write.
-
-        On first-time create the file gets a full frontmatter block with
-        ``name = topic``, ``type = note_type``, and ``description`` seeded
-        from the note's first line. On subsequent calls the body is
-        appended and the frontmatter is left untouched.
-
-        Raises ``ValueError`` on empty note, bad scope, or a topic slug that
-        would let the filename escape ``agent/`` (contains ``..``, ``/``, or
-        non-``[A-Za-z0-9_-]`` chars).
-        """
-        scope = str(scope)
-        topic = str(topic).strip()
-        note = str(note).strip()
-        note_type = str(note_type)
-        self._reject_sensitive_content(
-            note + "\n" + topic + "\n" + note_type + "\n" + scope
-        )
-        if not note:
-            raise ValueError("note must not be empty")
-        if not _TOPIC_RE.match(topic):
-            raise ValueError("invalid topic")
-        if scope == "workspace":
-            root = self.workspace_root
-        elif scope == "user":
-            root = self.user_root
-        else:
-            raise ValueError("invalid scope")
-        agent_dir = ensure_private_dir(root / "agent")
-        target = agent_dir / f"{topic}.md"
-        target = require_regular_no_symlink(target, allow_missing=True)
-        if target.exists():
-            existing = read_private_text(target)
-            new_content = existing.rstrip("\n") + "\n\n" + note + "\n"
-        else:
-            description = note.splitlines()[0][:80] if note else ""
-            new_content = (
-                "---\n"
-                f"name: {topic}\n"
-                f"type: {note_type}\n"
-                f"description: {description}\n"
-                "tags: []\n"
-                "aliases: []\n"
-                "supersedes: []\n"
-                "---\n"
-                f"\n{note}\n"
-            )
-        self._reject_sensitive_content(new_content)
-        self._atomic_write(target, new_content)
-        return target
-
     # ---- internals ---------------------------------------------------------
 
     def _agent_notes_path(self, scope: str) -> Path:
@@ -434,6 +369,10 @@ class BlockStore:
             root = self.user_root
         else:
             raise ValueError(f"invalid scope: {scope!r}")
+        if sub != "agent_notes.md" and not (
+            sub.startswith("notes/") and sub.endswith(".md")
+        ):
+            raise ValueError("invalid memory path")
         root = Path(os.path.abspath(os.fspath(root)))
         target = Path(os.path.abspath(os.fspath(root / sub)))
         try:

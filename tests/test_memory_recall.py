@@ -35,7 +35,7 @@ def test_recall_returns_recall_block(tmp_path):
     a, ws = _agent(tmp_path)
     _w(
         ws,
-        "agent/cache.md",
+        "notes/cache.md",
         "---\nname: cache\ntype: feedback\ndescription: cache invariant\n---\nParagraph one.\n\nSecond para.\n",
     )
     out = recall_for_turn(a, "how does cache work?", budget_tokens=1000)
@@ -50,7 +50,7 @@ def test_recall_min_score_filters(tmp_path):
     a, ws = _agent(tmp_path)
     _w(
         ws,
-        "agent/weakly.md",
+        "notes/weakly.md",
         "---\nname: weakly\ntype: feedback\ndescription: banana\n---\ntotally unrelated body\n",
     )
     out = recall_for_turn(a, "cache", budget_tokens=1000)
@@ -59,26 +59,26 @@ def test_recall_min_score_filters(tmp_path):
 
 def test_recall_tombstoned_skipped(tmp_path):
     a, ws = _agent(tmp_path)
-    _w(ws, "agent/old.md", "---\nname: old\ntype: feedback\ndescription: cache old\n---\nold.\n")
+    _w(ws, "notes/old.md", "---\nname: old\ntype: feedback\ndescription: cache old\n---\nold.\n")
     _w(
         ws,
-        "agent/new.md",
+        "notes/new.md",
         "---\nname: new\ntype: feedback\ndescription: cache new\nsupersedes: [old]\n---\nnew.\n",
     )
     out = recall_for_turn(a, "cache", budget_tokens=1000)
     assert out is not None
-    assert 'path="workspace/agent/new.md"' in out
-    assert 'path="workspace/agent/old.md"' not in out
+    assert 'path="workspace/notes/new.md"' in out
+    assert 'path="workspace/notes/old.md"' not in out
 
 
 def test_recall_recently_skipped(tmp_path):
     a, ws = _agent(tmp_path)
     _w(
         ws,
-        "agent/cache.md",
+        "notes/cache.md",
         "---\nname: cache\ntype: feedback\ndescription: cache invariant\n---\nP1\n",
     )
-    a.session["recently_recalled"] = [["workspace/agent/cache.md"], []]
+    a.session["recently_recalled"] = [["workspace/notes/cache.md"], []]
     out = recall_for_turn(a, "cache", budget_tokens=1000)
     assert out is None
 
@@ -87,19 +87,19 @@ def test_recall_updates_recently_recalled(tmp_path):
     a, ws = _agent(tmp_path)
     _w(
         ws,
-        "agent/cache.md",
+        "notes/cache.md",
         "---\nname: cache\ntype: feedback\ndescription: cache invariant\n---\nP1\n",
     )
     out = recall_for_turn(a, "cache", budget_tokens=1000)
     assert out is not None
-    assert a.session["recently_recalled"][-1] == ["workspace/agent/cache.md"]
+    assert a.session["recently_recalled"][-1] == ["workspace/notes/cache.md"]
 
 
 def test_recall_provenance_fields(tmp_path):
     a, ws = _agent(tmp_path)
     _w(
         ws,
-        "agent/cache.md",
+        "notes/cache.md",
         "---\nname: cache\ntype: reference\ndescription: cache invariant\n---\nP1\n",
     )
     out = recall_for_turn(a, "cache", budget_tokens=1000)
@@ -125,11 +125,11 @@ def test_recall_uses_single_store_scan(tmp_path, monkeypatch):
     from pico.memory.retrieval import Retrieval
 
     ws = tmp_path / "ws"
-    (ws / "agent").mkdir(parents=True)
-    (ws / "agent" / "a.md").write_text(
+    (ws / "notes").mkdir(parents=True)
+    (ws / "notes" / "a.md").write_text(
         "---\nname: a\ntype: feedback\ndescription: cache one\n---\np1\n", encoding="utf-8"
     )
-    (ws / "agent" / "b.md").write_text(
+    (ws / "notes" / "b.md").write_text(
         "---\nname: b\ntype: feedback\ndescription: cache two\n---\np2\n", encoding="utf-8"
     )
     store = BlockStore(workspace_root=ws, user_root=tmp_path / "user")

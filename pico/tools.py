@@ -116,9 +116,9 @@ BASE_TOOL_SPECS = {
         "description": "Full-text search across memory files (BM25 + CJK bigram). Query capped at 512 chars.",
     },
     "memory_save": {
-        "schema": {"note": "str", "scope": "str='workspace'", "topic": "str=''", "type": "str='feedback'"},
+        "schema": {"note": "str", "scope": "str='workspace'"},
         "risky": False,
-        "description": "Append a short note (<=500 chars). With topic → agent/<topic>.md per-topic (Task 21); without topic → agent_notes.md legacy path. Use only when the user explicitly asks to remember.",
+        "description": "Append a short note (<=500 chars) to agent_notes.md. Use only when the user explicitly asks to remember.",
     },
     "repo_lookup": {
         "schema": {"symbol": "str", "kind": "str=''"},
@@ -347,6 +347,8 @@ def validate_tool(context, name, args):
         return
 
     if name == "memory_save":
+        if set(args) - {"note", "scope"}:
+            raise ValueError("memory_save accepts only note and scope")
         note = str(args.get("note", "")).strip()
         if not note:
             raise ValueError("note must not be empty")
@@ -355,16 +357,7 @@ def validate_tool(context, name, args):
         scope = str(args.get("scope", "workspace"))
         if scope not in ("workspace", "user"):
             raise ValueError("scope must be 'workspace' or 'user'")
-        topic = str(args.get("topic", "")).strip()
-        if topic and not re.match(r"^[A-Za-z0-9][A-Za-z0-9_-]*$", topic):
-            raise ValueError("invalid topic")
-        note_type = str(args.get("type", "feedback")).strip()
-        if not note_type:
-            raise ValueError("type must not be empty")
-        if _contains_sensitive_content(
-            context,
-            note + "\n" + topic + "\n" + note_type,
-        ):
+        if _contains_sensitive_content(context, note):
             raise SensitiveToolError("sensitive_content_block")
         return
 

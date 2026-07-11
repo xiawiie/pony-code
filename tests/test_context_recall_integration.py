@@ -24,7 +24,7 @@ def test_renderer_injects_recalled_memory(tmp_path):
     ws = tmp_path / "ws"
     _w(
         ws,
-        "agent/cache.md",
+        "notes/cache.md",
         "---\nname: cache\ntype: reference\ndescription: cache note\n---\nCache is important.\n",
     )
     store = BlockStore(workspace_root=ws, user_root=tmp_path / "user")

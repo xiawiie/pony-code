@@ -20,9 +20,9 @@ from pico.memory.retrieval import Retrieval  # noqa: E402
 
 
 def _populate(root, count):
-    (root / "agent").mkdir(parents=True, exist_ok=True)
+    (root / "notes").mkdir(parents=True, exist_ok=True)
     for i in range(count):
-        (root / "agent" / f"note-{i}.md").write_text(
+        (root / "notes" / f"note-{i}.md").write_text(
             f"---\nname: note-{i}\ntype: feedback\ndescription: cache topic {i}\n---\n"
             f"Body {i} mentioning cache.\n",
             encoding="utf-8",
@@ -45,7 +45,7 @@ def main():
     for note_count in [10, 100]:
         for recent_name, recent_hist in [
             ("empty_recent", []),
-            ("full_recent", [[f"workspace/agent/note-{i}.md" for i in range(5)]]),
+            ("full_recent", [[f"workspace/notes/note-{i}.md" for i in range(5)]]),
         ]:
             with tempfile.TemporaryDirectory() as td:
                 root = Path(td).resolve()

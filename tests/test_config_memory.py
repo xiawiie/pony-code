@@ -114,12 +114,12 @@ def test_retrieval_uses_field_boosts_from_config(tmp_path):
     from pico.memory.retrieval import Retrieval
 
     ws = tmp_path / "ws"
-    (ws / "agent").mkdir(parents=True)
-    (ws / "agent" / "in_desc.md").write_text(
+    (ws / "notes").mkdir(parents=True)
+    (ws / "notes" / "in_desc.md").write_text(
         "---\nname: in_desc\ntype: feedback\ndescription: cache mention\n---\nother body\n",
         encoding="utf-8",
     )
-    (ws / "agent" / "in_body.md").write_text(
+    (ws / "notes" / "in_body.md").write_text(
         "---\nname: in_body\ntype: feedback\ndescription: unrelated\n---\ncache appears here\n",
         encoding="utf-8",
     )
@@ -130,4 +130,4 @@ def test_retrieval_uses_field_boosts_from_config(tmp_path):
         "link_config": (3, 0.4),
     })
     hits = ret.search("cache")
-    assert hits[0].path == "workspace/agent/in_body.md"
+    assert hits[0].path == "workspace/notes/in_body.md"

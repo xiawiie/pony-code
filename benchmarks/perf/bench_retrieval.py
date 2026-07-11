@@ -17,9 +17,9 @@ from pico.memory.retrieval import Retrieval  # noqa: E402
 
 
 def _populate(root, count):
-    (root / "agent").mkdir(parents=True, exist_ok=True)
+    (root / "notes").mkdir(parents=True, exist_ok=True)
     for i in range(count):
-        (root / "agent" / f"note-{i}.md").write_text(
+        (root / "notes" / f"note-{i}.md").write_text(
             f"---\nname: note-{i}\ntype: feedback\ndescription: cache and memory topic {i}\n---\n"
             f"Body text mentioning cache invalidation and memory retrieval. Note {i}.\n"
             f"See [[note-{(i + 1) % count}]] for related.\n",
