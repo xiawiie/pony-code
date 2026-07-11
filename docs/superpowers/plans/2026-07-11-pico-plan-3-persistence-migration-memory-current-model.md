@@ -75,6 +75,7 @@
 - 删除 `tests/test_session_store_migrator.py`（唯一安全/转换断言迁入 transaction tests）
 - 删除 `tests/memory/test_migration.py`（旧 session 自动 normalization 合同）
 - `tests/test_session_store.py`
+- `tests/memory/test_runtime_wiring.py`（删除 direct legacy session normalization 断言，保留 current WorkingMemory wiring）
 - `tests/test_checkpoint.py`
 - `tests/test_checkpoint_store.py`
 - `tests/test_checkpoint_store_durability.py`
@@ -87,6 +88,7 @@
 - `tests/test_recovery_e2e.py`
 - `tests/test_recovery_durability_e2e.py`
 - `tests/test_tool_executor.py`（仅覆盖 current `mode_unknown` writer）
+- `tests/test_tool_change_recorder.py`（同步 current prepared-entry fixture）
 - `tests/test_verification_security.py`
 - `tests/test_cli_session_inspect.py`
 - `tests/test_runtime_report.py`
