@@ -355,6 +355,383 @@ def _run_turn_preflight(agent, user_message):
     return metadata
 
 
+def _start_agent_run(agent, task_state, user_message):
+    agent.current_run_dir = agent.run_store.start_run(task_state)
+    agent.emit_trace(
+        task_state,
+        "run_started",
+        {
+            "task_id": task_state.task_id,
+            "user_request": clip(user_message, 300),
+        },
+    )
+    preflight_metadata = _run_turn_preflight(agent, user_message)
+    injection_snapshot, injection_telemetry = render_current_user_message(
+        agent,
+        user_message,
+    )
+    return preflight_metadata, injection_snapshot, injection_telemetry
+
+
+def _build_attempt_request(
+    agent,
+    task_state,
+    user_message,
+    attempts,
+    runtime_feedback,
+    injection_snapshot,
+    injection_telemetry,
+    preflight_metadata,
+    context_reduction_checkpoint_created,
+):
+    task_state.record_attempt()
+    agent.run_store.write_task_state(task_state)
+    prompt_started_at = time.monotonic()
+    request, request_metadata = agent.context_manager.build_request(
+        injection_snapshot=injection_snapshot,
+        injection_telemetry=injection_telemetry,
+        preflight_metadata=preflight_metadata,
+        runtime_feedback=runtime_feedback,
+    )
+    agent.last_request_metadata = dict(request_metadata)
+    if attempts == 1:
+        task_state.resume_status = request_metadata.get(
+            "resume_status",
+            task_state.resume_status,
+        )
+    agent.emit_trace(
+        task_state,
+        "prompt_built",
+        {
+            "request_metadata": request_metadata,
+            "duration_ms": int(
+                (time.monotonic() - prompt_started_at) * 1000
+            ),
+        },
+    )
+    if (
+        attempts == 1
+        and request_metadata.get("resume_status")
+        == CHECKPOINT_PARTIAL_STALE_STATUS
+    ):
+        _create_resume_checkpoint(
+            agent,
+            task_state,
+            user_message,
+            trigger="freshness_mismatch",
+        )
+    elif (
+        attempts == 1
+        and request_metadata.get("resume_status")
+        == CHECKPOINT_WORKSPACE_MISMATCH_STATUS
+    ):
+        agent.emit_trace(
+            task_state,
+            "runtime_identity_mismatch",
+            {
+                "fields": list(
+                    request_metadata.get(
+                        "runtime_identity_mismatch_fields",
+                        [],
+                    )
+                ),
+            },
+        )
+        _create_resume_checkpoint(
+            agent,
+            task_state,
+            user_message,
+            trigger="workspace_mismatch",
+        )
+    if (
+        request_metadata["dropped_messages"] > 0
+        and not context_reduction_checkpoint_created
+    ):
+        _create_resume_checkpoint(
+            agent,
+            task_state,
+            user_message,
+            trigger="context_reduction",
+        )
+        context_reduction_checkpoint_created = True
+    agent.emit_trace(
+        task_state,
+        "model_requested",
+        {
+            "attempts": task_state.attempts,
+            "tool_steps": task_state.tool_steps,
+            "request_metadata": request_metadata,
+        },
+    )
+    return (
+        request,
+        request_metadata,
+        prompt_started_at,
+        context_reduction_checkpoint_created,
+    )
+
+
+def _complete_model_attempt(
+    agent,
+    task_state,
+    request,
+    request_metadata,
+    prompt_started_at,
+    completion_usage_totals,
+):
+    try:
+        response = agent.model_client.complete(
+            system=request["system"],
+            tools=request["tools"],
+            messages=request["messages"],
+            max_tokens=agent.max_new_tokens,
+            cache_breakpoints=request["cache_control_breakpoints"],
+        )
+    except KeyboardInterrupt:
+        raise
+    except Exception as exc:
+        return None, None, exc
+
+    completion_usage = dict(response.usage or {})
+    _add_usage(completion_usage_totals, completion_usage)
+    action, blocked_tool_result = _sanitize_action(
+        agent,
+        decode_action(response),
+    )
+    action_payload = _action_trace_payload(action)
+    agent.emit_trace(
+        task_state,
+        "action_decoded",
+        {
+            **action_payload,
+            "request_metadata": request_metadata,
+        },
+    )
+    agent.emit_trace(
+        task_state,
+        "model_turn",
+        {
+            "attempts": task_state.attempts,
+            "tool_steps": task_state.tool_steps,
+            "stop_reason": str(
+                getattr(response.stop_reason, "value", response.stop_reason)
+            ),
+            "request_metadata": request_metadata,
+            "completion_usage": completion_usage,
+            **action_payload,
+            "duration_ms": int(
+                (time.monotonic() - prompt_started_at) * 1000
+            ),
+        },
+    )
+    return action, blocked_tool_result, None
+
+
+def _apply_tool_action(
+    agent,
+    task_state,
+    user_message,
+    action,
+    blocked_tool_result,
+    run_tool_change_ids,
+    run_verification_evidence,
+):
+    name = action.name
+    args = action.arguments
+    tool_use_id = action.tool_use_id or f"toolu_{uuid.uuid4().hex[:12]}"
+    tool_started_at = time.monotonic()
+    agent.emit_trace(
+        task_state,
+        "tool_started",
+        {"name": name, "args": args, "tool_use_id": tool_use_id},
+    )
+    working_memory_before = deepcopy(agent.memory)
+    file_summaries_before = deepcopy(
+        agent.session["memory"]["file_summaries"]
+    )
+    if blocked_tool_result is None:
+        tool_result = agent.execute_tool(name, args)
+    else:
+        tool_result = blocked_tool_result
+        agent._last_tool_result_metadata = dict(tool_result.metadata)
+    result = tool_result.content
+    metadata = dict(tool_result.metadata or {})
+    verification_evidence = _verification_evidence_for_tool(name, metadata)
+    if verification_evidence is not None:
+        run_verification_evidence.append(verification_evidence)
+    tool_change_id = str(metadata.get("tool_change_id", "") or "")
+    effect_class = str(metadata["effect_class"])
+    if tool_change_id and effect_class == "workspace_write":
+        run_tool_change_ids.append(tool_change_id)
+
+    display_result, digest_meta = _prepare_tool_result(
+        agent,
+        content=result,
+        tool_name=name,
+        tool_args=args,
+    )
+    if blocked_tool_result is not None:
+        digest_meta.update(
+            {
+                "tool_error_code": metadata["tool_error_code"],
+                "security_event_type": metadata["security_event_type"],
+            }
+        )
+    pair = make_tool_pair(
+        name=name,
+        arguments=args,
+        tool_use_id=tool_use_id,
+        result_content=display_result,
+        created_at=now(),
+        tool_status=metadata["tool_status"],
+        effect_class=effect_class,
+        tool_change_id=tool_change_id,
+        result_meta=digest_meta,
+    )
+    try:
+        _commit_session(agent, messages=pair)
+    except SessionCommitError:
+        agent.memory = working_memory_before
+        agent._sync_working_memory()
+        agent.session["memory"]["file_summaries"] = file_summaries_before
+        raise
+
+    consumed_step = metadata.get("tool_status") != "rejected"
+    if consumed_step:
+        task_state.record_tool(name)
+    agent.run_store.write_task_state(task_state)
+    agent.emit_trace(
+        task_state,
+        "tool_executed",
+        {
+            "name": name,
+            "args": args,
+            "result": clip(result, 500),
+            "tool_use_id": tool_use_id,
+            "duration_ms": int(
+                (time.monotonic() - tool_started_at) * 1000
+            ),
+            **metadata,
+        },
+    )
+    agent.emit_trace(
+        task_state,
+        "tool_finished",
+        {
+            "name": name,
+            "tool_change_id": tool_change_id,
+            "tool_use_id": tool_use_id,
+            "tool_status": metadata.get("tool_status", ""),
+            "affected_paths": list(metadata.get("affected_paths", [])),
+            "duration_ms": int(
+                (time.monotonic() - tool_started_at) * 1000
+            ),
+        },
+    )
+    _create_resume_checkpoint(
+        agent,
+        task_state,
+        user_message,
+        trigger="tool_executed",
+    )
+    return int(consumed_step)
+
+
+def _run_agent_attempts(
+    agent,
+    task_state,
+    user_message,
+    run_tool_change_ids,
+    run_verification_evidence,
+    completion_usage_totals,
+):
+    (
+        preflight_metadata,
+        injection_snapshot,
+        injection_telemetry,
+    ) = _start_agent_run(agent, task_state, user_message)
+    runtime_feedback = ""
+    context_reduction_checkpoint_created = False
+    tool_steps = 0
+    attempts = 0
+    max_attempts = max(agent.max_steps * 3, agent.max_steps + 4)
+
+    while tool_steps < agent.max_steps and attempts < max_attempts:
+        attempts += 1
+        (
+            request,
+            request_metadata,
+            prompt_started_at,
+            context_reduction_checkpoint_created,
+        ) = _build_attempt_request(
+            agent,
+            task_state,
+            user_message,
+            attempts,
+            runtime_feedback,
+            injection_snapshot,
+            injection_telemetry,
+            preflight_metadata,
+            context_reduction_checkpoint_created,
+        )
+        runtime_feedback = ""
+        action, blocked_result, model_error = _complete_model_attempt(
+            agent,
+            task_state,
+            request,
+            request_metadata,
+            prompt_started_at,
+            completion_usage_totals,
+        )
+        if model_error is not None:
+            final = _RUNTIME_TERMINAL_TEXT["model_error"]
+            task_state.stop_model_error(final)
+            return (
+                final,
+                "model_error",
+                _runtime_terminal_message("model_error"),
+                model_error,
+            )
+        if isinstance(action, ToolAction):
+            tool_steps += _apply_tool_action(
+                agent,
+                task_state,
+                user_message,
+                action,
+                blocked_result,
+                run_tool_change_ids,
+                run_verification_evidence,
+            )
+            continue
+        if isinstance(action, RetryAction):
+            runtime_feedback = action.notice
+            agent.run_store.write_task_state(task_state)
+            continue
+
+        final = agent.redact_text(action.text)
+        _commit_session(
+            agent,
+            messages=(_plain_message("assistant", final),),
+        )
+        task_state.finish_success(final)
+        return final, "run_finished", None, None
+
+    if attempts >= max_attempts and tool_steps < agent.max_steps:
+        final = (
+            "Stopped after too many malformed model responses without a valid "
+            "tool call or final answer."
+        )
+        task_state.stop_retry_limit(final)
+    else:
+        final = "Stopped after reaching the step limit without a final answer."
+        task_state.stop_step_limit(final)
+    _commit_session(
+        agent,
+        messages=(_plain_message("assistant", final),),
+    )
+    return final, task_state.stop_reason or "run_stopped", None, None
+
+
 class AgentLoop:
     def __init__(self, agent):
         self.agent = agent
@@ -373,396 +750,77 @@ class AgentLoop:
         except SessionCommitError as exc:
             raise exc.cause
 
-        task_state = TaskState.create(run_id=agent.new_run_id(), task_id=agent.new_task_id(), user_request=user_message)
-        task_state.resume_status = agent.resume_state.get("status", CHECKPOINT_NONE_STATUS)
+        task_state = TaskState.create(
+            run_id=agent.new_run_id(),
+            task_id=agent.new_task_id(),
+            user_request=user_message,
+        )
+        task_state.resume_status = agent.resume_state.get(
+            "status",
+            CHECKPOINT_NONE_STATUS,
+        )
         agent.current_task_state = task_state
         agent.last_request_metadata = {}
-        # 每次 tool 执行后，如果生成了 Tool Change Record，就把 id 收集起来；
-        # 一次 run 结束（无论成功、step_limit、retry_limit）时把这些 id 打包成一份
-        # Turn Checkpoint，写进 .pico/checkpoints/records。
         run_tool_change_ids = []
         run_verification_evidence = []
         completion_usage_totals = _empty_usage_totals()
         try:
-            agent.current_run_dir = agent.run_store.start_run(task_state)
-            agent.emit_trace(
+            outcome = _run_agent_attempts(
+                agent,
                 task_state,
-                "run_started",
-                {
-                    "task_id": task_state.task_id,
-                    "user_request": clip(user_message, 300),
-                },
-            )
-            preflight_metadata = _run_turn_preflight(agent, user_message)
-            injection_snapshot, injection_telemetry = render_current_user_message(
-                agent,
                 user_message,
+                run_tool_change_ids,
+                run_verification_evidence,
+                completion_usage_totals,
             )
-            pending_runtime_feedback = ""
-            context_reduction_checkpoint_created = False
-
-            tool_steps = 0
-            attempts = 0
-            max_attempts = max(agent.max_steps * 3, agent.max_steps + 4)
-
-            while tool_steps < agent.max_steps and attempts < max_attempts:
-                attempts += 1
-                task_state.record_attempt()
-                agent.run_store.write_task_state(task_state)
-                prompt_started_at = time.monotonic()
-                request, request_metadata = agent.context_manager.build_request(
-                    injection_snapshot=injection_snapshot,
-                    injection_telemetry=injection_telemetry,
-                    preflight_metadata=preflight_metadata,
-                    runtime_feedback=pending_runtime_feedback,
-                )
-                pending_runtime_feedback = ""
-                agent.last_request_metadata = dict(request_metadata)
-                if attempts == 1:
-                    task_state.resume_status = request_metadata.get(
-                        "resume_status",
-                        task_state.resume_status,
-                    )
-                agent.emit_trace(
-                    task_state,
-                    "prompt_built",
-                    {
-                        "request_metadata": request_metadata,
-                        "duration_ms": int((time.monotonic() - prompt_started_at) * 1000),
-                    },
-                )
-                if (
-                    attempts == 1
-                    and request_metadata.get("resume_status")
-                    == CHECKPOINT_PARTIAL_STALE_STATUS
-                ):
-                    _create_resume_checkpoint(
-                        agent,
-                        task_state,
-                        user_message,
-                        trigger="freshness_mismatch",
-                    )
-                elif (
-                    attempts == 1
-                    and request_metadata.get("resume_status")
-                    == CHECKPOINT_WORKSPACE_MISMATCH_STATUS
-                ):
-                    agent.emit_trace(
-                        task_state,
-                        "runtime_identity_mismatch",
-                        {
-                            "fields": list(
-                                request_metadata.get(
-                                    "runtime_identity_mismatch_fields",
-                                    [],
-                                )
-                            ),
-                        },
-                    )
-                    _create_resume_checkpoint(
-                        agent,
-                        task_state,
-                        user_message,
-                        trigger="workspace_mismatch",
-                    )
-                if (
-                    request_metadata["dropped_messages"] > 0
-                    and not context_reduction_checkpoint_created
-                ):
-                    _create_resume_checkpoint(
-                        agent,
-                        task_state,
-                        user_message,
-                        trigger="context_reduction",
-                    )
-                    context_reduction_checkpoint_created = True
-                agent.emit_trace(
-                    task_state,
-                    "model_requested",
-                    {
-                        "attempts": task_state.attempts,
-                        "tool_steps": task_state.tool_steps,
-                        "request_metadata": request_metadata,
-                    },
-                )
-                try:
-                    raw_response = agent.model_client.complete(
-                        system=request["system"],
-                        tools=request["tools"],
-                        messages=request["messages"],
-                        max_tokens=agent.max_new_tokens,
-                        cache_breakpoints=request["cache_control_breakpoints"],
-                    )
-                except KeyboardInterrupt:
-                    raise
-                except Exception as exc:
-                    final = _RUNTIME_TERMINAL_TEXT["model_error"]
-                    task_state.stop_model_error(final)
-                    _finalize_run(
-                        agent=agent,
-                        task_state=task_state,
-                        user_message=user_message,
-                        final=final,
-                        run_started_at=run_started_at,
-                        run_tool_change_ids=run_tool_change_ids,
-                        run_verification_evidence=run_verification_evidence,
-                        completion_usage_totals=completion_usage_totals,
-                        trigger="model_error",
-                        terminal_message=_runtime_terminal_message("model_error"),
-                        primary_exception=exc,
-                    )
-                    raise
-                completion_usage = dict(raw_response.usage or {})
-                _add_usage(completion_usage_totals, completion_usage)
-                action, blocked_tool_result = _sanitize_action(
-                    agent,
-                    decode_action(raw_response),
-                )
-                action_payload = _action_trace_payload(action)
-                agent.emit_trace(
-                    task_state,
-                    "action_decoded",
-                    {
-                        **action_payload,
-                        "request_metadata": request_metadata,
-                    },
-                )
-                # 把一轮 model call 的 prompt 组装、请求、回包解析压成一条 model_turn，
-                # 方便下游的 replay 和排查按“逻辑轮”遍历，不用挨个匹配三个事件。
-                agent.emit_trace(
-                    task_state,
-                    "model_turn",
-                    {
-                        "attempts": task_state.attempts,
-                        "tool_steps": task_state.tool_steps,
-                        "stop_reason": str(
-                            getattr(
-                                raw_response.stop_reason,
-                                "value",
-                                raw_response.stop_reason,
-                            )
-                        ),
-                        "request_metadata": request_metadata,
-                        "completion_usage": completion_usage,
-                        **action_payload,
-                        "duration_ms": int(
-                            (time.monotonic() - prompt_started_at) * 1000
-                        ),
-                    },
-                )
-
-                if isinstance(action, ToolAction):
-                    name = action.name
-                    args = action.arguments
-                    tool_use_id = action.tool_use_id or f"toolu_{uuid.uuid4().hex[:12]}"
-                    tool_started_at = time.monotonic()
-                    agent.emit_trace(
-                        task_state,
-                        "tool_started",
-                        {
-                            "name": name,
-                            "args": args,
-                            "tool_use_id": tool_use_id,
-                        },
-                    )
-                    working_memory_before = deepcopy(agent.memory)
-                    file_summaries_before = deepcopy(
-                        agent.session["memory"]["file_summaries"]
-                    )
-                    if blocked_tool_result is None:
-                        tool_result = agent.execute_tool(name, args)
-                    else:
-                        tool_result = blocked_tool_result
-                        agent._last_tool_result_metadata = dict(tool_result.metadata)
-                    result = tool_result.content
-                    metadata = dict(tool_result.metadata or {})
-                    verification_evidence = _verification_evidence_for_tool(
-                        name,
-                        metadata,
-                    )
-                    if verification_evidence is not None:
-                        run_verification_evidence.append(verification_evidence)
-                    tool_change_id = str(metadata.get("tool_change_id", "") or "")
-                    effect_class = str(metadata["effect_class"])
-                    if tool_change_id and effect_class == "workspace_write":
-                        run_tool_change_ids.append(tool_change_id)
-                    display_result, digest_meta = _prepare_tool_result(
-                        agent,
-                        content=result,
-                        tool_name=name,
-                        tool_args=args,
-                    )
-                    if blocked_tool_result is not None:
-                        digest_meta.update({
-                            "tool_error_code": metadata["tool_error_code"],
-                            "security_event_type": metadata["security_event_type"],
-                        })
-                    pair = make_tool_pair(
-                        name=name,
-                        arguments=args,
-                        tool_use_id=tool_use_id,
-                        result_content=display_result,
-                        created_at=now(),
-                        tool_status=metadata["tool_status"],
-                        effect_class=effect_class,
-                        tool_change_id=tool_change_id,
-                        result_meta=digest_meta,
-                    )
-                    try:
-                        _commit_session(
-                            agent,
-                            messages=pair,
-                        )
-                    except SessionCommitError:
-                        agent.memory = working_memory_before
-                        agent._sync_working_memory()
-                        agent.session["memory"]["file_summaries"] = file_summaries_before
-                        raise
-                    if metadata.get("tool_status") != "rejected":
-                        tool_steps += 1
-                        task_state.record_tool(name)
-                    agent.run_store.write_task_state(task_state)
-                    agent.emit_trace(
-                        task_state,
-                        "tool_executed",
-                        {
-                            "name": name,
-                            "args": args,
-                            "result": clip(result, 500),
-                            "tool_use_id": tool_use_id,
-                            "duration_ms": int(
-                                (time.monotonic() - tool_started_at) * 1000
-                            ),
-                            **metadata,
-                        },
-                    )
-                    agent.emit_trace(
-                        task_state,
-                        "tool_finished",
-                        {
-                            "name": name,
-                            "tool_change_id": tool_change_id,
-                            "tool_use_id": tool_use_id,
-                            "tool_status": metadata.get("tool_status", ""),
-                            "affected_paths": list(
-                                metadata.get("affected_paths", [])
-                            ),
-                            "duration_ms": int(
-                                (time.monotonic() - tool_started_at) * 1000
-                            ),
-                        },
-                    )
-                    _create_resume_checkpoint(
-                        agent,
-                        task_state,
-                        user_message,
-                        trigger="tool_executed",
-                    )
-                    continue
-
-                if isinstance(action, RetryAction):
-                    pending_runtime_feedback = action.notice
-                    agent.run_store.write_task_state(task_state)
-                    continue
-
-                # final path
-                final = agent.redact_text(action.text)
-                _commit_session(
-                    agent,
-                    messages=(_plain_message("assistant", final),),
-                )
-                task_state.finish_success(final)
-                return _finalize_run(
-                    agent=agent,
-                    task_state=task_state,
-                    user_message=user_message,
-                    final=final,
-                    run_started_at=run_started_at,
-                    run_tool_change_ids=run_tool_change_ids,
-                    run_verification_evidence=run_verification_evidence,
-                    completion_usage_totals=completion_usage_totals,
-                    trigger="run_finished",
-                )
-
-            if attempts >= max_attempts and tool_steps < agent.max_steps:
-                final = (
-                    "Stopped after too many malformed model responses without a valid "
-                    "tool call or final answer."
-                )
-                task_state.stop_retry_limit(final)
-            else:
-                final = "Stopped after reaching the step limit without a final answer."
-                task_state.stop_step_limit(final)
-            _commit_session(
-                agent,
-                messages=(_plain_message("assistant", final),),
+        except KeyboardInterrupt as primary:
+            final = _RUNTIME_TERMINAL_TEXT["interrupted"]
+            task_state.stop_interrupted(final)
+            outcome = (
+                final,
+                "interrupted",
+                _runtime_terminal_message("interrupted"),
+                primary,
             )
-            final_trigger = task_state.stop_reason or "run_stopped"
-            return _finalize_run(
-                agent=agent,
-                task_state=task_state,
-                user_message=user_message,
-                final=final,
-                run_started_at=run_started_at,
-                run_tool_change_ids=run_tool_change_ids,
-                run_verification_evidence=run_verification_evidence,
-                completion_usage_totals=completion_usage_totals,
-                trigger=final_trigger,
-            )
-        except KeyboardInterrupt as exc:
-            if task_state.status == STATUS_RUNNING:
-                final = _RUNTIME_TERMINAL_TEXT["interrupted"]
-                task_state.stop_interrupted(final)
-                _finalize_run(
-                    agent=agent,
-                    task_state=task_state,
-                    user_message=user_message,
-                    final=final,
-                    run_started_at=run_started_at,
-                    run_tool_change_ids=run_tool_change_ids,
-                    run_verification_evidence=run_verification_evidence,
-                    completion_usage_totals=completion_usage_totals,
-                    trigger="interrupted",
-                    terminal_message=_runtime_terminal_message("interrupted"),
-                    primary_exception=exc,
-                )
-            raise
         except SessionCommitError as exc:
+            primary = exc.cause
+            final = _RUNTIME_TERMINAL_TEXT["persistence_error"]
             if task_state.stop_reason != STOP_REASON_PERSISTENCE_ERROR:
-                final = _RUNTIME_TERMINAL_TEXT["persistence_error"]
                 task_state.stop_persistence_error(final)
-                _finalize_run(
-                    agent=agent,
-                    task_state=task_state,
-                    user_message=user_message,
-                    final=final,
-                    run_started_at=run_started_at,
-                    run_tool_change_ids=run_tool_change_ids,
-                    run_verification_evidence=run_verification_evidence,
-                    completion_usage_totals=completion_usage_totals,
-                    trigger="persistence_error",
-                    terminal_message=_runtime_terminal_message("persistence_error"),
-                    primary_exception=exc.cause,
-                )
-            raise exc.cause
-        except Exception as exc:
+            outcome = (
+                final,
+                "persistence_error",
+                _runtime_terminal_message("persistence_error"),
+                primary,
+            )
+        except Exception as primary:
+            final = _RUNTIME_TERMINAL_TEXT["runtime_error"]
             if task_state.status == STATUS_RUNNING:
-                final = _RUNTIME_TERMINAL_TEXT["runtime_error"]
                 task_state.stop_runtime_error(final)
-                _finalize_run(
-                    agent=agent,
-                    task_state=task_state,
-                    user_message=user_message,
-                    final=final,
-                    run_started_at=run_started_at,
-                    run_tool_change_ids=run_tool_change_ids,
-                    run_verification_evidence=run_verification_evidence,
-                    completion_usage_totals=completion_usage_totals,
-                    trigger="runtime_error",
-                    terminal_message=_runtime_terminal_message("runtime_error"),
-                    primary_exception=exc,
-                )
-            raise
+            outcome = (
+                final,
+                "runtime_error",
+                _runtime_terminal_message("runtime_error"),
+                primary,
+            )
+
+        final, trigger, terminal_message, primary = outcome
+        result = _finalize_run(
+            agent=agent,
+            task_state=task_state,
+            user_message=user_message,
+            final=final,
+            run_started_at=run_started_at,
+            run_tool_change_ids=run_tool_change_ids,
+            run_verification_evidence=run_verification_evidence,
+            completion_usage_totals=completion_usage_totals,
+            trigger=trigger,
+            terminal_message=terminal_message,
+            primary_exception=primary,
+        )
+        if primary is not None:
+            raise primary.with_traceback(primary.__traceback__)
+        return result
 
 
 def _finalize_run(
