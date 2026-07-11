@@ -1,3 +1,4 @@
+from copy import deepcopy
 import json
 import sys
 from unittest.mock import Mock
@@ -237,6 +238,85 @@ def test_direct_verification_recording_rejects_non_current_checkpoint_targets(
         checkpoint_id=current_id,
     ) is None
     load_record.assert_not_called()
+    write_record.assert_not_called()
+
+
+def test_direct_verification_recording_rejects_loaded_foreign_checkpoint(
+    tmp_path,
+    monkeypatch,
+):
+    agent = build_agent(
+        tmp_path,
+        [
+            '<tool>{"name":"write_file","args":{"path":"note.txt","content":"after\\n"}}</tool>',
+            "<final>done</final>",
+        ],
+    )
+    agent.ask("finish")
+    current_id = agent.current_task_state.recovery_checkpoint_id
+    current = agent.checkpoint_store.load_checkpoint_record(current_id)
+    foreign_id = "ckpt_foreign"
+    foreign = deepcopy(current)
+    foreign["checkpoint_id"] = foreign_id
+    agent.checkpoint_store.write_checkpoint_record(foreign)
+    corrupted_current = deepcopy(current)
+    corrupted_current["checkpoint_id"] = foreign_id
+    current_path = agent.checkpoint_store.records_dir / f"{current_id}.json"
+    current_path.write_text(json.dumps(corrupted_current), encoding="utf-8")
+    real_load = agent.checkpoint_store.load_checkpoint_record
+    write_record = Mock(wraps=agent.checkpoint_store.write_checkpoint_record)
+    monkeypatch.setattr(agent.checkpoint_store, "write_checkpoint_record", write_record)
+
+    record = agent.record_verification_evidence(
+        argv=("pytest", "-q"),
+        risk_class="external_effect",
+        runner_executed=True,
+        execution_mode="argv",
+        exit_code=0,
+        stdout="passed",
+        stderr="",
+        checkpoint_id=current_id,
+    )
+
+    assert record is None
+    assert real_load(current_id)["verification_evidence"] == []
+    assert real_load(foreign_id)["verification_evidence"] == []
+    write_record.assert_not_called()
+
+
+def test_direct_verification_recording_requires_loaded_evidence_list(
+    tmp_path,
+    monkeypatch,
+):
+    agent = build_agent(
+        tmp_path,
+        [
+            '<tool>{"name":"write_file","args":{"path":"note.txt","content":"after\\n"}}</tool>',
+            "<final>done</final>",
+        ],
+    )
+    agent.ask("finish")
+    current_id = agent.current_task_state.recovery_checkpoint_id
+    loaded = agent.checkpoint_store.load_checkpoint_record(current_id)
+    loaded["verification_evidence"] = ()
+    load_record = Mock(return_value=loaded)
+    write_record = Mock()
+    monkeypatch.setattr(agent.checkpoint_store, "load_checkpoint_record", load_record)
+    monkeypatch.setattr(agent.checkpoint_store, "write_checkpoint_record", write_record)
+
+    record = agent.record_verification_evidence(
+        argv=("pytest", "-q"),
+        risk_class="external_effect",
+        runner_executed=True,
+        execution_mode="argv",
+        exit_code=0,
+        stdout="passed",
+        stderr="",
+        checkpoint_id=current_id,
+    )
+
+    assert record is None
+    assert loaded["verification_evidence"] == ()
     write_record.assert_not_called()
 
 

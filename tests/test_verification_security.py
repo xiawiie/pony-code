@@ -53,13 +53,52 @@ def test_verification_argv_accepts_only_pinned_prefixes(prefix):
         ("pytest", "--config=.env"),
         ("pytest", "-c.env"),
         ("pytest", ".env::test_secret"),
+        ("go", "test", "-exec=/bin/true", "./..."),
+        ("go", "test", "-exec", "/bin/true", "./..."),
+        ("npm", "test", "--script-shell=/bin/true"),
+        ("npm", "test", "--node-options=--require=plugin.js"),
+        ("pytest", "--python-executable", "/bin/true"),
+        ("pytest", "-o", "cache_dir=.pico/checkpoints"),
+        ("pytest", "-o", "python_files=.env"),
+        ("pytest", "-o", "plugin_runner=/bin/true"),
+        ("pytest", "-o", "plugin.wrapper=/bin/true"),
         ("pytest", "tests/private.key"),
         ("pytest", "bad\x00operand"),
+        ("pytest", "bad\x1foperand"),
+        ("pytest", "bad\toperand"),
         ("pytest", "bad\noperand"),
+        ("pytest", "bad\u202eoperand"),
     ),
 )
 def test_verification_argv_rejects_wrappers_shell_tokens_and_sensitive_operands(argv):
     assert not verification.is_verification_argv(argv)
+
+
+@pytest.mark.parametrize(
+    "key",
+    (
+        "exec",
+        "executable",
+        "shell",
+        "runner",
+        "wrapper",
+        "command",
+        "cmd",
+        "pythonpath",
+        "program",
+        "node-options",
+    ),
+)
+def test_verification_argv_rejects_execution_control_config_keys(key):
+    assert not verification.is_verification_argv(
+        ("pytest", "-o", f"plugin_{key}=tests")
+    )
+
+
+def test_verification_argv_keeps_ordinary_relative_test_node_paths():
+    assert verification.is_verification_argv(
+        ("pytest", "tests/test_shell.py::test_exec")
+    )
 
 
 @pytest.mark.parametrize("prefix", ACCEPTED_PREFIXES)

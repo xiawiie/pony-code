@@ -81,8 +81,11 @@ def collect_config(cwd, args=None):
 def collect_doctor(cwd, args=None, offline=False):
     try:
         workspace = WorkspaceContext.build(cwd)
-    except RuntimeError:
-        workspace = WorkspaceContext.build(cwd, executables={})
+    except (OSError, RuntimeError, ValueError):
+        try:
+            workspace = WorkspaceContext.build(cwd, executables={})
+        except (OSError, RuntimeError, ValueError):
+            return _unavailable_workspace_doctor(offline=offline)
     root = Path(workspace.repo_root)
     pico_root = root / ".pico"
     try:
@@ -144,6 +147,44 @@ def collect_doctor(cwd, args=None, offline=False):
     }
 
 
+def _unavailable_workspace_doctor(*, offline):
+    connectivity_message = "offline mode" if offline else "workspace unavailable"
+    return {
+        "workspace": {"status": "review_required", "repo_root": ""},
+        "config": {
+            "status": "review_required",
+            "provider": {"value": "", "source": "unavailable", "name": ""},
+            "model": {"value": "", "source": "unavailable", "name": ""},
+            "base_url": {"value": "", "source": "unavailable", "name": ""},
+        },
+        "credentials": {
+            "status": "review_required",
+            "api_key": {"present": False, "source": "unavailable", "name": ""},
+        },
+        "provider_connectivity": {
+            "status": "skipped",
+            "category": "provider_connectivity",
+            "message": connectivity_message,
+        },
+        "storage": {
+            "sessions": "review_required",
+            "runs": "review_required",
+            "checkpoints": "review_required",
+        },
+        "recovery_store": "review_required",
+        "security": {
+            "status": "review_required",
+            "project_env": {"status": "review_required", "mode": ""},
+            "private_storage": {"status": "review_required"},
+            "trusted_executables": {
+                "status": "degraded",
+                "missing": ["git", "rg"],
+            },
+        },
+        "project_docs": {"hints": []},
+    }
+
+
 def handle_status(cwd, args):
     data = collect_status(cwd, args)
     redactor = build_inspection_redactor(data["workspace"]["repo_root"], args)
@@ -164,13 +205,14 @@ def handle_doctor(tokens, cwd, args):
             exit_code=CLI_EXIT_USAGE,
         )
     data = collect_doctor(cwd, args, offline=offline)
-    try:
-        redactor = build_inspection_redactor(
-            data["workspace"]["repo_root"],
-            args,
-        )
-    except (OSError, RuntimeError, ValueError):
+    repo_root = data["workspace"]["repo_root"]
+    if not repo_root:
         redactor = securitylib.redact_artifact
+    else:
+        try:
+            redactor = build_inspection_redactor(repo_root, args)
+        except (OSError, RuntimeError, ValueError):
+            redactor = securitylib.redact_artifact
     data["workspace"] = redactor(data["workspace"])
     data["config"] = _redact_mapping_values(data["config"], redactor)
     data["credentials"] = _redact_mapping_values(data["credentials"], redactor)

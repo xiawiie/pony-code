@@ -3,6 +3,8 @@ import os
 from unittest.mock import Mock
 from urllib import error
 
+import pytest
+
 import pico.cli_diagnostics as cli_diagnostics_module
 from pico.cli import main
 from pico.cli_diagnostics import check_provider_connectivity, collect_doctor
@@ -17,6 +19,12 @@ def _clear_provider_env(monkeypatch):
         "DEEPSEEK_API_KEY",
     ):
         monkeypatch.delenv(name, raising=False)
+
+
+def _symlink_loop(tmp_path):
+    path = tmp_path / "doctor-loop-canary"
+    path.symlink_to(path.name)
+    return path
 
 
 def test_status_json_reports_storage_without_building_agent(tmp_path, monkeypatch, capsys):
@@ -159,6 +167,81 @@ def test_doctor_offline_skips_connectivity(tmp_path, monkeypatch, capsys):
     assert payload["kind"] == "doctor"
     assert called == {}
     assert payload["data"]["provider_connectivity"]["status"] == "skipped"
+
+
+def test_collect_doctor_folds_unavailable_workspace_to_fixed_safe_shape(
+    tmp_path,
+    monkeypatch,
+):
+    _clear_provider_env(monkeypatch)
+    cwd = _symlink_loop(tmp_path)
+    connectivity = Mock(side_effect=AssertionError("offline doctor attempted network"))
+    monkeypatch.setattr(
+        cli_diagnostics_module,
+        "check_provider_connectivity",
+        connectivity,
+    )
+
+    data = collect_doctor(cwd, offline=True)
+
+    assert data["workspace"] == {"status": "review_required", "repo_root": ""}
+    assert data["security"] == {
+        "status": "review_required",
+        "project_env": {"status": "review_required", "mode": ""},
+        "private_storage": {"status": "review_required"},
+        "trusted_executables": {
+            "status": "degraded",
+            "missing": ["git", "rg"],
+        },
+    }
+    rendered = json.dumps(data)
+    assert "doctor-loop-canary" not in rendered
+    assert "RuntimeError" not in rendered
+    connectivity.assert_not_called()
+
+
+@pytest.mark.parametrize("output_format", ("json", "text"))
+def test_doctor_unavailable_workspace_is_safe_in_real_cli_output(
+    tmp_path,
+    monkeypatch,
+    capsys,
+    output_format,
+):
+    _clear_provider_env(monkeypatch)
+    cwd = _symlink_loop(tmp_path)
+    connectivity = Mock(side_effect=AssertionError("offline doctor attempted network"))
+    inspection_redactor = Mock(
+        side_effect=AssertionError("unavailable workspace must not inspect fallback cwd")
+    )
+    monkeypatch.setattr(
+        cli_diagnostics_module,
+        "check_provider_connectivity",
+        connectivity,
+    )
+    monkeypatch.setattr(
+        cli_diagnostics_module,
+        "build_inspection_redactor",
+        inspection_redactor,
+    )
+
+    code = main(
+        [
+            "--cwd",
+            str(cwd),
+            "--format",
+            output_format,
+            "doctor",
+            "--offline",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert code == 0
+    assert "review_required" in captured.out
+    assert "doctor-loop-canary" not in captured.out + captured.err
+    assert "RuntimeError" not in captured.out + captured.err
+    connectivity.assert_not_called()
+    inspection_redactor.assert_not_called()
 
 
 def test_doctor_security_metadata_has_only_safe_status_modes_and_missing_names(

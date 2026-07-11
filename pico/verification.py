@@ -1,6 +1,7 @@
 """Admit verification evidence from completed, exact argv executions."""
 
 import shlex
+import unicodedata
 
 from pico import security as securitylib
 from pico.recovery_models import (
@@ -32,6 +33,20 @@ _VERIFICATION_PREFIXES = (
     ("pyright",),
 )
 _SHELL_TOKEN_CHARS = frozenset("\0\r\n|&;<>()`")
+_OPERAND_DELIMITERS = ("=", ":", ",")
+_EXECUTION_CONTROL_KEY_MARKERS = (
+    "exec",
+    "executable",
+    "shell",
+    "runner",
+    "wrapper",
+    "command",
+    "cmd",
+    "pythonpath",
+    "program",
+    "nodeoptions",
+)
+_CONFIG_VALUE_OPTIONS = frozenset(("o", "overrideini", "config"))
 
 
 def _tail(text):
@@ -43,18 +58,92 @@ def _tail(text):
     return text[-_MAX_TAIL_CHARS:]
 
 
+def _strip_operand_syntax(value):
+    return str(value).strip().strip("\"'").strip()
+
+
+def _operand_fragments(token):
+    pending = [token]
+    seen = set()
+    while pending:
+        candidate = _strip_operand_syntax(pending.pop())
+        if not candidate or candidate in seen:
+            continue
+        seen.add(candidate)
+        yield candidate
+        for delimiter in _OPERAND_DELIMITERS:
+            if delimiter in candidate:
+                pending.extend(candidate.split(delimiter))
+        if candidate.startswith("-"):
+            pending.append(candidate.lstrip("-"))
+            if len(candidate) > 2:
+                pending.append(candidate[2:])
+            dot_index = candidate.find(".", 2)
+            if dot_index >= 0:
+                pending.append(candidate[dot_index:])
+
+
 def _sensitive_operand(token):
-    candidates = [token]
-    if ":" in token:
-        candidates.extend(part for part in token.split(":") if part)
-    if token.startswith("-") and len(token) > 2:
-        candidates.append(token[2:])
-    if token.startswith("-") and "=" in token:
-        candidates.append(token.split("=", 1)[1])
-    dot_index = token.find(".", 2)
-    if token.startswith("-") and dot_index >= 0:
-        candidates.append(token[dot_index:])
-    return any(securitylib.is_sensitive_path(candidate) for candidate in candidates)
+    return any(
+        securitylib.is_sensitive_path(candidate)
+        for candidate in _operand_fragments(token)
+    )
+
+
+def _execution_control_key(value):
+    compact = "".join(
+        char
+        for char in _strip_operand_syntax(value).casefold()
+        if char.isalnum()
+    )
+    return any(marker in compact for marker in _EXECUTION_CONTROL_KEY_MARKERS)
+
+
+def _option_parts(token):
+    candidate = _strip_operand_syntax(token)
+    if not candidate.startswith("-"):
+        return "", None
+    body = candidate.lstrip("-")
+    separator_indexes = [
+        body.index(separator)
+        for separator in ("=", ":")
+        if separator in body
+    ]
+    if not separator_indexes:
+        return body, None
+    index = min(separator_indexes)
+    return body[:index], body[index + 1:]
+
+
+def _config_key(value):
+    candidate = _strip_operand_syntax(value)
+    indexes = [
+        candidate.index(separator)
+        for separator in ("=", ":")
+        if separator in candidate
+    ]
+    return candidate if not indexes else candidate[:min(indexes)]
+
+
+def _has_execution_control_tail(tokens):
+    config_value_expected = False
+    for token in tokens:
+        if config_value_expected:
+            if _execution_control_key(_config_key(token)):
+                return True
+            config_value_expected = False
+        option_key, inline_value = _option_parts(token)
+        if option_key and _execution_control_key(option_key):
+            return True
+        compact_option = "".join(
+            char for char in option_key.casefold() if char.isalnum()
+        )
+        if compact_option in _CONFIG_VALUE_OPTIONS:
+            if inline_value is None:
+                config_value_expected = True
+            elif _execution_control_key(_config_key(inline_value)):
+                return True
+    return False
 
 
 def is_verification_argv(argv):
@@ -66,7 +155,14 @@ def is_verification_argv(argv):
         return False
     if not tokens or any(type(token) is not str or not token for token in tokens):
         return False
-    if any(any(char in _SHELL_TOKEN_CHARS for char in token) for token in tokens):
+    if any(
+        any(
+            char in _SHELL_TOKEN_CHARS
+            or unicodedata.category(char).startswith("C")
+            for char in token
+        )
+        for token in tokens
+    ):
         return False
     prefix = next(
         (
@@ -78,7 +174,10 @@ def is_verification_argv(argv):
     )
     if prefix is None:
         return False
-    return not any(_sensitive_operand(token) for token in tokens[len(prefix):])
+    tail = tokens[len(prefix):]
+    return not _has_execution_control_tail(tail) and not any(
+        _sensitive_operand(token) for token in tail
+    )
 
 
 def _redacted(redact_text, value):

@@ -2,6 +2,7 @@ from copy import deepcopy
 import json
 import logging
 import os
+from pathlib import Path
 import stat
 import sys
 from unittest.mock import Mock
@@ -65,6 +66,19 @@ def _assert_private_tree(root):
             assert stat.S_IMODE(mode) == 0o700, path
         elif stat.S_ISREG(mode):
             assert stat.S_IMODE(mode) == 0o600, path
+
+
+def test_readme_states_post_validation_and_platform_trust_boundaries():
+    readme = (Path(__file__).resolve().parents[1] / "README.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "Git marker、结构元数据、config 或 index" in readme
+    assert "校验后并发修改" in readme
+    assert "不是 OS sandbox 或 immutable snapshot" in readme
+    assert "POSIX/macOS" in readme
+    assert "所需安全原语不可用时 fail closed" in readme
+    assert "Windows 等价机制留待后续设计" in readme
 
 
 def test_offline_a1_canary_crosses_real_boundaries_without_normal_artifact_leak(

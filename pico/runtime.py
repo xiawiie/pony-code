@@ -760,7 +760,14 @@ class Pico:
         if record is None:
             return None
         checkpoint = self.checkpoint_store.load_checkpoint_record(target_id)
-        checkpoint.setdefault("verification_evidence", []).append(record)
+        if (
+            not isinstance(checkpoint, dict)
+            or type(checkpoint.get("checkpoint_id")) is not str
+            or checkpoint["checkpoint_id"] != target_id
+            or not isinstance(checkpoint.get("verification_evidence"), list)
+        ):
+            return None
+        checkpoint["verification_evidence"].append(record)
         self.checkpoint_store.write_checkpoint_record(checkpoint)
         if self.current_task_state is not None:
             self.emit_trace(

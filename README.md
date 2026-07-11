@@ -296,7 +296,8 @@ pico-cli --format json checkpoints list
 - 经用户批准的复杂 shell 是 human-authorized escape hatch，不是 OS sandbox，也不受自动路径策略的静态隔离保证。
 - 在 POSIX 上，Pico 自有的 secret/工件文件使用 `0600`，自有目录使用 `0700`。
 - Pico 不提供 encryption、Vault integration、container 或 OS sandbox。
-- 外部进程并发修改 Git config/index 仍是 TOCTOU residual risk；Pico 的结构校验不等同于操作系统隔离。
+- 外部进程在校验后并发修改 Git marker、结构元数据、config 或 index 仍是残余风险；Pico 的校验不是 OS sandbox 或 immutable snapshot。
+- 当前 A 阶段 hardened gitfile/locking 边界以 POSIX/macOS 为目标，所需安全原语不可用时 fail closed；Windows 等价机制留待后续设计。
 
 每次运行结束后，都会在 `.pico/runs/<run_id>/` 下写出这些文件：
 
