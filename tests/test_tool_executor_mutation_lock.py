@@ -1,4 +1,5 @@
 from contextlib import contextmanager
+from unittest.mock import Mock
 
 import pytest
 
@@ -110,19 +111,72 @@ def test_finalize_failure_blocks_next_same_owner_mutation(tmp_path, monkeypatch)
         return real_finalize(tool_change_id, status, **fields)
 
     monkeypatch.setattr(agent.tool_change_recorder, "finalize", fail_once)
-    try:
-        first = agent.execute_tool(
-            "write_file", {"path": "first.txt", "content": "first"}
-        )
-    except OSError:
-        first = None
+    first = agent.execute_tool(
+        "write_file", {"path": "first.txt", "content": "first"}
+    )
     second = agent.execute_tool(
         "write_file", {"path": "second.txt", "content": "second"}
     )
 
-    assert first is None or first.metadata["tool_status"] == "error"
+    assert first.metadata["tool_status"] == "error"
+    assert first.metadata["tool_error_code"] == "tool_finalize_failed"
+    records = agent.checkpoint_store.list_tool_change_records()
+    assert len(records) == 1
+    assert records[0]["status"] == "pending"
     assert second.metadata["tool_error_code"] == "recovery_review_required"
     assert not (tmp_path / "second.txt").exists()
+
+
+def test_interrupted_finalize_failure_preserves_primary_and_review_evidence(
+    tmp_path,
+    monkeypatch,
+):
+    agent = build_agent(tmp_path)
+    primary = KeyboardInterrupt("runner interrupted")
+    agent.tools["write_file"]["run"] = lambda _args: (_ for _ in ()).throw(primary)
+    monkeypatch.setattr(
+        agent.tool_change_recorder,
+        "finalize",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("finalize failed")),
+    )
+
+    with pytest.raises(KeyboardInterrupt) as caught:
+        agent.execute_tool("write_file", {"path": "first.txt", "content": "first"})
+
+    assert caught.value is primary
+    records = agent.checkpoint_store.list_tool_change_records()
+    assert len(records) == 1
+    assert records[0]["status"] == "pending"
+    second = agent.execute_tool(
+        "write_file", {"path": "second.txt", "content": "second"}
+    )
+    assert second.metadata["tool_error_code"] == "recovery_review_required"
+    assert not (tmp_path / "second.txt").exists()
+
+
+class FatalLockSignal(BaseException):
+    pass
+
+
+def test_mutation_lock_enter_failure_preserves_primary_identity(tmp_path, monkeypatch):
+    agent = build_agent(tmp_path)
+    primary = FatalLockSignal("enter")
+    runner = Mock(return_value="must not run")
+    agent.tools["write_file"]["run"] = runner
+
+    @contextmanager
+    def lock():
+        raise primary
+        yield
+
+    monkeypatch.setattr(agent.checkpoint_store, "mutation_lock", lock)
+
+    with pytest.raises(BaseException) as caught:
+        agent.execute_tool("write_file", {"path": "note.txt", "content": "value"})
+
+    assert caught.value is primary
+    runner.assert_not_called()
+    assert agent.checkpoint_store.list_tool_change_records() == []
 
 
 @pytest.mark.parametrize("failure_point", ["guard", "prepared"])

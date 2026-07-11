@@ -70,34 +70,108 @@ def test_effect_class_table_is_explicit():
 
 
 @pytest.mark.parametrize(
-    ("name", "arguments", "options", "expected_effect"),
+    (
+        "scenario",
+        "name",
+        "arguments",
+        "options",
+        "expected_code",
+        "expected_security",
+        "expected_effect",
+    ),
     [
-        ("unknown_tool", {}, {}, "workspace_write"),
+        ("unknown", "unknown_tool", {}, {}, "unknown_tool", "", "workspace_write"),
         (
+            "disallowed",
             "write_file",
             {"path": "blocked.txt", "content": "no"},
             {"allowed_tools": {"read_file"}},
+            "tool_not_allowed",
+            "",
             "workspace_write",
         ),
-        ("read_file", {"path": "missing.txt"}, {}, "read_only"),
-        ("run_shell", {"command": "rm -f victim.txt", "timeout": 5}, {}, "workspace_write"),
         (
-            "run_shell",
-            {"command": "printf no-op", "timeout": 5},
-            {"approval_policy": "never"},
+            "invalid",
+            "write_file",
+            {"path": "missing-content.txt"},
+            {},
+            "invalid_arguments",
+            "",
+            "workspace_write",
+        ),
+        (
+            "sensitive",
+            "memory_save",
+            {"note": "github_pat_A123456789012345678901234567890"},
+            {},
+            "sensitive_content_block",
+            "sensitive_access_block",
+            "memory_write",
+        ),
+        (
+            "read_only",
+            "memory_save",
+            {"note": "remember this"},
+            {"read_only": True},
+            "read_only_block",
+            "read_only_block",
+            "memory_write",
+        ),
+        (
+            "repeated",
+            "write_file",
+            {"path": "repeat.txt", "content": "no"},
+            {},
+            "repeated_identical_call",
+            "",
+            "workspace_write",
+        ),
+        (
+            "approval_denied",
+            "write_file",
+            {"path": "denied.txt", "content": "no"},
+            {},
+            "approval_denied",
+            "approval_denied",
             "workspace_write",
         ),
     ],
 )
-def test_all_early_rejections_have_effect_class_metadata(tmp_path, name, arguments, options, expected_effect):
+def test_early_rejection_matrix_has_exact_metadata_and_no_execution_evidence(
+    tmp_path,
+    monkeypatch,
+    scenario,
+    name,
+    arguments,
+    options,
+    expected_code,
+    expected_security,
+    expected_effect,
+):
     agent = build_agent(tmp_path, **options)
+    runner = Mock(return_value="must not run")
+    if name in agent.tools:
+        agent.tools[name]["run"] = runner
+    if scenario == "repeated":
+        monkeypatch.setattr(agent, "repeated_tool_call", lambda *_args: True)
+    if scenario == "approval_denied":
+        monkeypatch.setattr(agent, "approve", Mock(return_value=False))
 
     result = agent.execute_tool(name, arguments)
 
-    assert result.metadata["tool_status"] == "rejected"
-    assert result.metadata["effect_class"] in {"read_only", "memory_write", "workspace_write"}
-    assert result.metadata["effect_class"] == expected_effect
-    assert result.metadata["read_only"] is (expected_effect == "read_only")
+    assert result.metadata == {
+        "tool_status": "rejected",
+        "tool_error_code": expected_code,
+        "security_event_type": expected_security,
+        "risk_level": "high",
+        "effect_class": expected_effect,
+        "read_only": expected_effect == "read_only",
+        "affected_paths": [],
+        "workspace_changed": False,
+        "diff_summary": [],
+    }
+    runner.assert_not_called()
+    assert agent.checkpoint_store.list_tool_change_records() == []
 
 
 def test_read_only_agent_rejects_memory_write_before_runner(tmp_path):
@@ -229,6 +303,37 @@ def test_post_runner_interrupt_closes_memory_audit_then_reraises(tmp_path, monke
     assert records[-1]["status"] == "interrupted"
 
 
+def test_recorder_start_persisted_then_raised_leaves_review_evidence(tmp_path, monkeypatch):
+    agent = build_agent(tmp_path)
+    real_start = agent.tool_change_recorder.start
+    runner = Mock(return_value="must not run")
+    agent.tools["write_file"]["run"] = runner
+
+    def persisted_then_raised(*args, **kwargs):
+        real_start(*args, **kwargs)
+        raise OSError("start failed after persistence")
+
+    monkeypatch.setattr(agent.tool_change_recorder, "start", persisted_then_raised)
+
+    first = agent.execute_tool(
+        "write_file",
+        {"path": "first.txt", "content": "first"},
+    )
+    second = agent.execute_tool(
+        "write_file",
+        {"path": "second.txt", "content": "second"},
+    )
+
+    assert first.metadata["tool_status"] == "error"
+    assert first.metadata["tool_error_code"] == "tool_failed"
+    records = agent.checkpoint_store.list_tool_change_records()
+    assert len(records) == 1
+    assert records[0]["status"] == "pending"
+    assert second.metadata["tool_status"] == "rejected"
+    assert second.metadata["tool_error_code"] == "recovery_review_required"
+    runner.assert_not_called()
+
+
 def test_missing_memory_dependencies_and_files_never_report_ok(tmp_path, monkeypatch):
     agent = build_agent(tmp_path)
     agent.tools["memory_list"]["run"] = lambda args: tool_memory_list(
@@ -315,18 +420,7 @@ def test_tool_runtime_exception_finalizes_pending_record_as_error(tmp_path):
     assert tool_change["error"]["code"] == "tool_failed"
 
 
-def test_success_and_exception_paths_use_shared_side_effect_finalizer(tmp_path, monkeypatch):
-    import pico.tool_executor as tool_executor
-
-    calls = []
-    original = tool_executor._finalize_tool_side_effects
-
-    def spy_finalize(*args, **kwargs):
-        calls.append(kwargs["tool_status"])
-        return original(*args, **kwargs)
-
-    monkeypatch.setattr(tool_executor, "_finalize_tool_side_effects", spy_finalize)
-
+def test_success_and_exception_paths_persist_terminal_effect_evidence(tmp_path):
     agent = build_agent(tmp_path)
     success = agent.execute_tool("write_file", {"path": "ok.txt", "content": "ok\n"})
 
@@ -339,7 +433,17 @@ def test_success_and_exception_paths_use_shared_side_effect_finalizer(tmp_path, 
 
     assert success.metadata["tool_status"] == "ok"
     assert failure.metadata["tool_status"] == "partial_success"
-    assert calls == ["ok", "partial_success"]
+    success_record = agent.checkpoint_store.load_tool_change_record(
+        success.metadata["tool_change_id"]
+    )
+    failure_record = agent.checkpoint_store.load_tool_change_record(
+        failure.metadata["tool_change_id"]
+    )
+    assert success_record["status"] == "finalized"
+    assert success_record["affected_paths"] == ["ok.txt"]
+    assert failure_record["status"] == "partial_success"
+    assert failure_record["affected_paths"] == ["partial.txt"]
+    assert failure_record["error"]["code"] == "tool_partial_success"
 
 
 def test_run_shell_uses_command_policy_metadata(tmp_path):

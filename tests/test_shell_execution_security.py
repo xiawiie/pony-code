@@ -1039,6 +1039,39 @@ def test_malformed_structured_runner_result_fails_closed(
     assert record["status"] == "error"
 
 
+def test_malformed_shell_result_after_side_effect_preserves_recovery_evidence(
+    tmp_path,
+):
+    agent = build_agent(
+        tmp_path,
+        executables={"pwd": "/frozen/pwd"},
+    )
+    changed = tmp_path / "malformed-side-effect.txt"
+
+    def malformed_after_write(_execution):
+        changed.write_text("changed\n", encoding="utf-8")
+        return {"stdout": "", "stderr": ""}
+
+    agent.tools["run_shell"]["run"] = Mock(side_effect=malformed_after_write)
+
+    result = agent.execute_tool(
+        "run_shell",
+        {"command": "pwd", "timeout": 5},
+    )
+
+    assert result.metadata["tool_status"] == "partial_success"
+    assert result.metadata["tool_error_code"] == "tool_partial_success"
+    assert result.metadata["affected_paths"] == ["malformed-side-effect.txt"]
+    assert result.metadata["workspace_changed"] is True
+    record = agent.checkpoint_store.load_tool_change_record(
+        result.metadata["tool_change_id"]
+    )
+    assert record["status"] == "partial_success"
+    assert record["affected_paths"] == ["malformed-side-effect.txt"]
+    assert record["file_entries"][0]["path"] == "malformed-side-effect.txt"
+    assert record["error"]["code"] == "tool_partial_success"
+
+
 def test_pico_has_no_raw_tool_proxies_and_executor_remains_registered(tmp_path):
     agent = build_agent(tmp_path, executables={})
 
