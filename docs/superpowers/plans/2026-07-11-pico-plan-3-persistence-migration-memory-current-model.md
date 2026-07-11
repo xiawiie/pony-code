@@ -454,13 +454,16 @@ Focused：Memory tools/block/security、public API、ToolExecutor、安全与 li
 
 Task 5 focused gate 之后的全仓结构扫描发现三处不在原 allowlist 中的旧 `agent/*.md`
 fixture。它们仍违反本任务的 current note model，其中 full-turn E2E 会直接丢失 recall，另外
-两处会因空结果而假绿。先以独立测试提交同步为 `notes/*.md`，再进入 Task 6；不改生产代码。
+两处会因空结果而假绿。结构复核还发现原 Task 5 删除性断言保留了 Task 6 要求在
+production/tests 中完全消失的 `stat_all` token。先以独立测试提交完成这些补正，再进入
+Task 6；不改生产代码。
 
 补正 allowlist：
 
 - `tests/test_config_memory.py`
 - `tests/test_message_invariants.py`
 - `tests/e2e/test_full_turn_roundtrip.py`
+- `tests/test_memory_block_store_agent_scope.py`
 
 ## Task 6：一次 query 一个 document snapshot
 
