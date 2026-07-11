@@ -54,6 +54,63 @@ def _commit_readme(path):
     return git
 
 
+def _linked_worktree(tmp_path):
+    repo = tmp_path / "repo"
+    linked = tmp_path / "linked"
+    repo.mkdir()
+    git = _commit_readme(repo)
+    subprocess.run(
+        [git, "worktree", "add", "-q", str(linked)],
+        cwd=repo,
+        check=True,
+    )
+    return git, repo, linked
+
+
+def _absorbed_submodule(tmp_path):
+    source = tmp_path / "source"
+    main = tmp_path / "main"
+    source.mkdir()
+    main.mkdir()
+    git = _commit_readme(source)
+    _commit_readme(main)
+    subprocess.run(
+        [
+            git,
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            "-q",
+            str(source),
+            "child",
+        ],
+        cwd=main,
+        check=True,
+    )
+    return git, main / "child"
+
+
+def _gitfile_target(marker):
+    value = marker.read_text(encoding="utf-8").strip().removeprefix("gitdir: ")
+    return (marker.parent / value).resolve()
+
+
+def _assert_gitfile_rejected_before_git(monkeypatch, cwd, args=("status", "--short")):
+    calls = []
+
+    def fail_if_called(*call_args, **call_kwargs):
+        calls.append((call_args, call_kwargs))
+        raise AssertionError("git executed before gitfile validation")
+
+    monkeypatch.setattr(subprocess, "run", fail_if_called)
+
+    with pytest.raises(ValueError, match="unsafe git repository"):
+        run_hardened_git(_real_git(), args, cwd=cwd, text=True)
+
+    assert calls == []
+
+
 def test_discover_lexical_repo_root_never_executes_git(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
     child = repo / "src"
@@ -420,27 +477,7 @@ def test_hardened_git_fails_closed_for_bare_repo_config_symlink(tmp_path):
 
 
 def test_hardened_git_allows_absorbed_submodule_core_worktree(tmp_path):
-    source = tmp_path / "source"
-    main = tmp_path / "main"
-    source.mkdir()
-    main.mkdir()
-    git = _commit_readme(source)
-    _commit_readme(main)
-    subprocess.run(
-        [
-            git,
-            "-c",
-            "protocol.file.allow=always",
-            "submodule",
-            "add",
-            "-q",
-            str(source),
-            "child",
-        ],
-        cwd=main,
-        check=True,
-    )
-    child = main / "child"
+    git, child = _absorbed_submodule(tmp_path)
     assert (child / ".git").is_file()
     core_worktree = subprocess.run(
         [git, "config", "--local", "--get", "core.worktree"],
@@ -462,7 +499,24 @@ def test_hardened_git_allows_absorbed_submodule_core_worktree(tmp_path):
     assert result.stdout == ""
 
 
-def test_hardened_git_allows_separate_git_dir_layout(tmp_path):
+def test_hardened_git_allows_linked_worktree(tmp_path):
+    git, _, linked = _linked_worktree(tmp_path)
+
+    result = run_hardened_git(
+        git,
+        ["status", "--short"],
+        cwd=linked,
+        text=True,
+    )
+
+    assert result.returncode == 0
+    assert result.stdout == ""
+
+
+def test_hardened_git_rejects_separate_git_dir_before_git(
+    tmp_path,
+    monkeypatch,
+):
     git = _real_git()
     workspace = tmp_path / "workspace"
     git_dir = tmp_path / "separate.git"
@@ -473,17 +527,208 @@ def test_hardened_git_allows_separate_git_dir_layout(tmp_path):
     )
     assert (workspace / ".git").is_file()
 
-    result = run_hardened_git(
-        git,
-        ["status", "--short"],
+    _assert_gitfile_rejected_before_git(monkeypatch, workspace)
+
+
+def test_hardened_git_external_gitdir_cannot_read_head_env(
+    tmp_path,
+    monkeypatch,
+):
+    secret = "external-object-secret"
+    outside = tmp_path / "outside"
+    workspace = tmp_path / "workspace"
+    outside.mkdir()
+    workspace.mkdir()
+    git = _commit_readme(outside)
+    (outside / ".env").write_text(secret, encoding="utf-8")
+    subprocess.run([git, "add", ".env"], cwd=outside, check=True)
+    subprocess.run(
+        [git, "commit", "-q", "-m", "add external secret"],
+        cwd=outside,
+        check=True,
+    )
+    (workspace / ".git").write_text(
+        f"gitdir: {outside / '.git'}\n",
+        encoding="utf-8",
+    )
+    exposed = subprocess.run(
+        [git, "show", "HEAD:.env"],
         cwd=workspace,
+        check=True,
+        capture_output=True,
         text=True,
     )
+    assert exposed.stdout.strip() == secret
 
-    assert result.returncode == 0
+    _assert_gitfile_rejected_before_git(
+        monkeypatch,
+        workspace,
+        args=("show", "HEAD:.env"),
+    )
 
 
-def test_hardened_git_blocks_gitfile_core_worktree_escape(tmp_path):
+@pytest.mark.parametrize(
+    "marker_content",
+    [
+        b"not-a-gitdir\n",
+        b"gitdir: \n",
+        b"gitdir: target\nextra\n",
+        b"gitdir: " + b"x" * 70_000,
+    ],
+    ids=("wrong-prefix", "empty", "multiple-lines", "oversized"),
+)
+def test_hardened_git_rejects_malformed_gitfile_before_git(
+    marker_content,
+    tmp_path,
+    monkeypatch,
+):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / ".git").write_bytes(marker_content)
+
+    _assert_gitfile_rejected_before_git(monkeypatch, workspace)
+
+
+def test_hardened_git_rejects_symlinked_gitfile_target_before_git(
+    tmp_path,
+    monkeypatch,
+):
+    workspace = tmp_path / "workspace"
+    outside = tmp_path / "outside"
+    target_link = tmp_path / "target.git"
+    workspace.mkdir()
+    outside.mkdir()
+    (outside / "config").write_text("[core]\n\tbare = false\n", encoding="utf-8")
+    target_link.symlink_to(outside, target_is_directory=True)
+    (workspace / ".git").write_text(
+        f"gitdir: {target_link}\n",
+        encoding="utf-8",
+    )
+
+    _assert_gitfile_rejected_before_git(monkeypatch, workspace)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "mismatched-backlink",
+        "malformed-backlink",
+        "oversized-backlink",
+        "symlinked-backlink",
+        "mismatched-commondir",
+        "oversized-commondir",
+        "symlinked-commondir",
+        "symlinked-common-config",
+    ],
+)
+def test_hardened_git_rejects_invalid_linked_worktree_metadata_before_git(
+    mutation,
+    tmp_path,
+    monkeypatch,
+):
+    _, _, linked = _linked_worktree(tmp_path)
+    marker = linked / ".git"
+    target = _gitfile_target(marker)
+    backlink = target / "gitdir"
+    commondir = target / "commondir"
+
+    if mutation == "mismatched-backlink":
+        other = tmp_path / "other-marker"
+        other.write_text("gitdir: elsewhere\n", encoding="utf-8")
+        backlink.write_text(f"{other}\n", encoding="utf-8")
+    elif mutation == "malformed-backlink":
+        backlink.write_text(f"{marker}\nextra\n", encoding="utf-8")
+    elif mutation == "oversized-backlink":
+        backlink.write_bytes(b"x" * 70_000)
+    elif mutation == "symlinked-backlink":
+        saved = tmp_path / "saved-backlink"
+        backlink.replace(saved)
+        backlink.symlink_to(saved)
+    elif mutation == "mismatched-commondir":
+        other = tmp_path / "other-common"
+        other.mkdir()
+        (other / "config").write_text("[core]\n\tbare = false\n", encoding="utf-8")
+        commondir.write_text(f"{other}\n", encoding="utf-8")
+    elif mutation == "oversized-commondir":
+        commondir.write_bytes(b"x" * 70_000)
+    elif mutation == "symlinked-commondir":
+        saved = tmp_path / "saved-commondir"
+        commondir.replace(saved)
+        commondir.symlink_to(saved)
+    else:
+        common = (target / commondir.read_text(encoding="utf-8").strip()).resolve()
+        config = common / "config"
+        saved = tmp_path / "saved-common-config"
+        config.replace(saved)
+        config.symlink_to(saved)
+
+    _assert_gitfile_rejected_before_git(monkeypatch, linked)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "symlink",
+        "oversized",
+        "include",
+        "alias",
+        "helper",
+        "hook",
+        "duplicate-worktree",
+    ],
+)
+def test_hardened_git_rejects_invalid_absorbed_submodule_config_before_git(
+    mutation,
+    tmp_path,
+    monkeypatch,
+):
+    _, child = _absorbed_submodule(tmp_path)
+    target = _gitfile_target(child / ".git")
+    config = target / "config"
+
+    if mutation == "symlink":
+        saved = tmp_path / "saved-submodule-config"
+        config.replace(saved)
+        config.symlink_to(saved)
+    elif mutation == "oversized":
+        config.write_bytes(config.read_bytes() + b"#" + b"x" * 70_000)
+    elif mutation == "include":
+        included = tmp_path / "included-config"
+        included.write_text("[core]\n\tbare = false\n", encoding="utf-8")
+        config.write_text(
+            config.read_text(encoding="utf-8")
+            + f"\n[include]\n\tpath = {included}\n",
+            encoding="utf-8",
+        )
+    elif mutation == "alias":
+        config.write_text(
+            config.read_text(encoding="utf-8")
+            + "\n[alias]\n\tstatus = !dangerous-helper\n",
+            encoding="utf-8",
+        )
+    elif mutation == "helper":
+        config.write_text(
+            config.read_text(encoding="utf-8")
+            + "\n[credential]\n\thelper = dangerous-helper\n",
+            encoding="utf-8",
+        )
+    elif mutation == "hook":
+        config.write_text(
+            config.read_text(encoding="utf-8")
+            + "\n[core]\n\thooksPath = dangerous-hooks\n",
+            encoding="utf-8",
+        )
+    else:
+        config.write_text(
+            config.read_text(encoding="utf-8")
+            + f"\n[core]\n\tworktree = {child}\n",
+            encoding="utf-8",
+        )
+
+    _assert_gitfile_rejected_before_git(monkeypatch, child)
+
+
+def test_hardened_git_blocks_gitfile_core_worktree_escape(tmp_path, monkeypatch):
     outside = tmp_path / "outside"
     workspace = tmp_path / "workspace"
     outside.mkdir()
@@ -499,8 +744,7 @@ def test_hardened_git_blocks_gitfile_core_worktree_escape(tmp_path):
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match="unsafe git repository config"):
-        run_hardened_git(git, ["status", "--short"], cwd=workspace)
+    _assert_gitfile_rejected_before_git(monkeypatch, workspace)
 
 
 @pytest.mark.parametrize(
