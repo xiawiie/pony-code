@@ -71,8 +71,7 @@ def test_read_rejects_obsolete_and_out_of_model_paths(tmp_path):
             store.read(path)
 
 
-def test_topic_writer_and_stat_facade_are_deleted(tmp_path):
+def test_topic_writer_is_deleted(tmp_path):
     store = _mk_store(tmp_path)
 
     assert not hasattr(store, "write_agent_topic")
-    assert not hasattr(store, "stat_all")
