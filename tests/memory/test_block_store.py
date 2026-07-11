@@ -1,9 +1,17 @@
+import multiprocessing
 import os
 from pathlib import Path
 
 import pytest
 
 from pico.memory.block_store import BlockStore
+
+
+def _append_agent_note_process(workspace, user, note, started, finished):
+    store = BlockStore(workspace_root=workspace, user_root=user)
+    started.set()
+    store.append_agent_note(scope="workspace", note=note)
+    finished.set()
 
 
 def test_list_empty(tmp_path):
@@ -73,6 +81,55 @@ def test_append_agent_note_appends(tmp_path):
     assert "first" in contents
     assert "second" in contents
     assert contents.index("first") < contents.index("second")
+
+
+def test_append_agent_note_waits_for_cross_process_scope_lock(tmp_path):
+    from pico import file_lock
+
+    if file_lock.fcntl is None:
+        pytest.skip("cross-process file locks unavailable")
+
+    workspace = tmp_path / "workspace"
+    user = tmp_path / "user"
+    workspace.mkdir()
+    user.mkdir()
+    context = multiprocessing.get_context("spawn")
+    notes = ("child-note-one", "child-note-two")
+    started = [context.Event() for _ in notes]
+    finished = [context.Event() for _ in notes]
+    processes = [
+        context.Process(
+            target=_append_agent_note_process,
+            args=(workspace, user, note, started[index], finished[index]),
+        )
+        for index, note in enumerate(notes)
+    ]
+
+    try:
+        with file_lock.locked_file(
+            workspace / ".agent_notes.lock",
+            require_lock=True,
+        ):
+            for process in processes:
+                process.start()
+            assert all(event.wait(timeout=5) for event in started)
+            assert not any(event.wait(timeout=0.25) for event in finished)
+
+        assert all(event.wait(timeout=5) for event in finished)
+        for process in processes:
+            process.join(timeout=5)
+            assert process.exitcode == 0
+        lines = (workspace / "agent_notes.md").read_text(
+            encoding="utf-8"
+        ).splitlines()
+        assert len(lines) == 2
+        assert all(sum(note in line for line in lines) == 1 for note in notes)
+    finally:
+        for process in processes:
+            if process.pid is not None:
+                if process.is_alive():
+                    process.terminate()
+                process.join(timeout=5)
 
 
 def test_append_note_too_long_rejected(tmp_path):

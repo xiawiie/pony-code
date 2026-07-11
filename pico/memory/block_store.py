@@ -29,6 +29,7 @@ from types import MappingProxyType
 from typing import Literal
 
 from pico import security as securitylib
+from pico.file_lock import locked_file
 from pico.security import (
     ensure_private_dir,
     ensure_private_file,
@@ -327,21 +328,26 @@ class BlockStore:
             raise ValueError("invalid scope")
         target = self._agent_notes_path(scope)
         ensure_private_dir(target.parent)
-        target = require_regular_no_symlink(target, allow_missing=True)
+        lock_path = target.parent / ".agent_notes.lock"
 
-        try:
-            target.lstat()
-        except FileNotFoundError:
-            existing = ""
-        else:
-            existing = read_private_text(target)
-        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        new_line = f"- {timestamp}  {note}\n"
-        new_content = existing + new_line if existing.endswith("\n") or not existing else existing + "\n" + new_line
-        self._reject_sensitive_content(new_content)
-
-        self._atomic_write(target, new_content)
-        size = len(new_content)
+        with locked_file(lock_path, require_lock=True):
+            target = require_regular_no_symlink(target, allow_missing=True)
+            try:
+                target.lstat()
+            except FileNotFoundError:
+                existing = ""
+            else:
+                existing = read_private_text(target)
+            timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            new_line = f"- {timestamp}  {note}\n"
+            new_content = (
+                existing + new_line
+                if existing.endswith("\n") or not existing
+                else existing + "\n" + new_line
+            )
+            self._reject_sensitive_content(new_content)
+            self._atomic_write(target, new_content)
+            size = len(new_content)
         if size > AGENT_NOTES_SOFT_LIMIT_CHARS and scope not in self._size_warned:
             self._size_warned.add(scope)
             print(
