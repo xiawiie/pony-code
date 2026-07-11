@@ -73,8 +73,8 @@ def test_recently_recalled_deque_bounded(tmp_path):
     from pico.memory.recall import recall_for_turn
     from pico.memory.retrieval import Retrieval
 
-    (tmp_path / "agent").mkdir(parents=True)
-    (tmp_path / "agent" / "cache.md").write_text(
+    (tmp_path / "notes").mkdir(parents=True)
+    (tmp_path / "notes" / "cache.md").write_text(
         "---\nname: cache\ntype: feedback\ndescription: cache\n---\np1\n", encoding="utf-8"
     )
     store = BlockStore(workspace_root=tmp_path, user_root=tmp_path / "user")

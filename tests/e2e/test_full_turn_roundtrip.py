@@ -21,8 +21,8 @@ class _SniffProvider:
 
 def test_full_turn_injects_recall_and_digests_large_tool_result(tmp_path):
     # Seed a memory note that should match "cache".
-    (tmp_path / ".pico" / "memory" / "agent").mkdir(parents=True)
-    (tmp_path / ".pico" / "memory" / "agent" / "cache.md").write_text(
+    (tmp_path / ".pico" / "memory" / "notes").mkdir(parents=True)
+    (tmp_path / ".pico" / "memory" / "notes" / "cache.md").write_text(
         "---\nname: cache\ntype: reference\ndescription: cache invariant\n---\nCache stays stable across turns.\n",
         encoding="utf-8",
     )

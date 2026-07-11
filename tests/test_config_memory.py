@@ -41,8 +41,8 @@ def test_recall_for_turn_reads_min_score_from_agent(tmp_path):
     from pico.memory.retrieval import Retrieval
 
     ws = tmp_path / "ws"
-    (ws / "agent").mkdir(parents=True)
-    (ws / "agent" / "cache.md").write_text(
+    (ws / "notes").mkdir(parents=True)
+    (ws / "notes" / "cache.md").write_text(
         "---\nname: cache\ntype: feedback\ndescription: cache invariant\n---\nP1\n",
         encoding="utf-8",
     )
