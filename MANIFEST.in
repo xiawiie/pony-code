@@ -1,0 +1,13 @@
+include README.md
+include pyproject.toml
+recursive-include pico *.py
+prune tests
+prune benchmarks
+prune docs
+prune scripts
+prune .github
+prune .pico
+global-exclude *.py[cod]
+global-exclude __pycache__
+global-exclude .DS_Store
+exclude MANIFEST.in

@@ -50,6 +50,7 @@ def test_maintenance_scripts_start_and_show_help():
         "scripts/collect_resume_metrics.py",
         "scripts/run_large_scale_experiments.py",
         "scripts/run_provider_experiments.py",
+        "scripts/verify_distribution.py",
     ):
         result = subprocess.run(
             [sys.executable, script, "--help"],
@@ -60,6 +61,17 @@ def test_maintenance_scripts_start_and_show_help():
 
         assert result.returncode == 0, result.stderr
         assert "usage:" in result.stdout
+
+
+def test_distribution_verifier_freezes_archive_and_install_contract():
+    verifier = Path("scripts/verify_distribution.py").read_text(encoding="utf-8")
+
+    assert '"git", "ls-files", "--", "pico"' in verifier
+    assert "sdist file mismatch" in verifier
+    assert "wheel file mismatch" in verifier
+    assert 'metadata.get_all("Requires-Dist") is None' in verifier
+    assert '"command -v pico"' in verifier
+    assert '"doctor", "--offline"' in verifier
 
 
 def test_local_check_script_matches_ci_commands():
