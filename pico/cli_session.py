@@ -42,11 +42,14 @@ def inspect_session(session_id, sessions_root):
     except (OSError, ValueError):
         return False, f"failed to read session {session_id}: unsafe session artifact"
 
-    version = session.get("schema_version", "unknown")
+    if not isinstance(session, dict):
+        return False, f"session: {session_id}\ninvariants: failed (session must be an object)"
+    version = session.get("schema_version")
+    valid_version = type(version) is int and version in {1, 2, 3}
     messages = session.get("messages")
     lines = [
         f"session: {session_id}",
-        f"schema_version: {version}",
+        f"schema_version: {version if valid_version else 'invalid'}",
         f"messages: {len(messages) if isinstance(messages, list) else 0}",
         "role_sequence: " + (
             " -> ".join(
@@ -58,6 +61,13 @@ def inspect_session(session_id, sessions_root):
             else "invalid"
         ),
     ]
+    if not valid_version:
+        lines.extend([
+            "tool_pairs: 0",
+            "orphans: unknown",
+            "invariants: failed (invalid schema version)",
+        ])
+        return False, "\n".join(lines)
     if version == 3 and "history" in session:
         lines.extend(["tool_pairs: 0", "orphans: unknown", "invariants: failed (v3 contains history)"])
         return False, "\n".join(lines)
@@ -74,7 +84,7 @@ def inspect_session(session_id, sessions_root):
     return True, "\n".join(lines)
 
 
-def handle_session_command(argv, sessions_root=None):
+def handle_session_command(argv, sessions_root=None, redactor=None):
     """CLI entry point: `pico-cli session inspect <session_id>`.
 
     Returns an exit code (0 or 1). Prints the report to stdout.
@@ -86,5 +96,7 @@ def handle_session_command(argv, sessions_root=None):
     if sessions_root is None:
         sessions_root = Path.cwd() / ".pico" / "sessions"
     ok, report = inspect_session(session_id, sessions_root=sessions_root)
+    if redactor is not None:
+        report = redactor(report)
     print(report)
     return 0 if ok else 1

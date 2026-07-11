@@ -178,6 +178,13 @@ def require_regular_no_symlink(path, *, allow_missing=False):
     return path
 
 
+def require_directory_no_symlink(path):
+    path = _lstat_chain(path)
+    if not stat.S_ISDIR(path.lstat().st_mode):
+        raise ValueError("path is not a directory")
+    return path
+
+
 def ensure_private_dir(path):
     path = _lexical_absolute(path)
     current = Path(path.anchor)
@@ -202,6 +209,8 @@ def ensure_private_dir(path):
 
 def ensure_private_file(path):
     path = require_regular_no_symlink(path)
+    if path.lstat().st_nlink != 1:
+        raise ValueError("private file has multiple links")
     path.chmod(0o600, follow_symlinks=False)
     return path
 

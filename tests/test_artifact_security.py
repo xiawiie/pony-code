@@ -580,6 +580,232 @@ def test_singular_session_inspection_does_not_echo_invalid_role(tmp_path):
     assert secret not in report
 
 
+def test_singular_session_cli_redacts_untrusted_summary_fields(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    sessions_root = tmp_path / ".pico" / "sessions"
+    sessions_root.mkdir(parents=True)
+    secret = "opaque-session-summary-secret-123456789"
+    monkeypatch.setenv("CUSTOM_SESSION_TOKEN", secret)
+    (sessions_root / "legacy.json").write_text(
+        json.dumps({"schema_version": secret, "messages": []}),
+        encoding="utf-8",
+    )
+
+    code = main([
+        "--cwd",
+        str(tmp_path),
+        "--secret-env-name",
+        "CUSTOM_SESSION_TOKEN",
+        "session",
+        "inspect",
+        "legacy",
+    ])
+
+    output = capsys.readouterr().out
+    assert code == 1
+    assert secret not in output
+    assert "schema_version: invalid" in output
+
+
+def test_checkpoint_ambiguity_errors_are_redacted(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    secret = "opaquecheckpointsecret123456789"
+    monkeypatch.setenv("CUSTOM_CHECKPOINT_TOKEN", secret)
+    store = CheckpointStore(tmp_path)
+    for suffix in ("a", "b"):
+        store.write_checkpoint_record(new_checkpoint_record(
+            f"{secret}{suffix}",
+            "turn",
+            "s",
+            "r",
+            "t",
+            "",
+            str(tmp_path),
+        ))
+
+    for output_format in ("text", "json"):
+        code = main([
+            "--cwd",
+            str(tmp_path),
+            "--secret-env-name",
+            "CUSTOM_CHECKPOINT_TOKEN",
+            "--format",
+            output_format,
+            "checkpoints",
+            "show",
+            secret,
+        ])
+        captured = capsys.readouterr()
+        assert code == 2
+        assert secret not in captured.out + captured.err
+
+
+def test_status_redacts_latest_artifact_ids(tmp_path, monkeypatch, capsys):
+    secret = "opaque-status-secret-123456789"
+    monkeypatch.setenv("CUSTOM_STATUS_TOKEN", secret)
+    (tmp_path / ".pico" / "runs" / secret).mkdir(parents=True)
+
+    for output_format in ("text", "json"):
+        code = main([
+            "--cwd",
+            str(tmp_path),
+            "--secret-env-name",
+            "CUSTOM_STATUS_TOKEN",
+            "--format",
+            output_format,
+            "status",
+        ])
+        output = capsys.readouterr().out
+        assert code == 0
+        assert secret not in output
+        assert "<redacted>" in output
+
+
+def test_status_does_not_follow_symlinked_pico_ancestor(tmp_path, capsys):
+    workspace = tmp_path / "workspace"
+    outside = tmp_path / "outside"
+    workspace.mkdir()
+    (outside / "runs" / "external-run").mkdir(parents=True)
+    (workspace / ".pico").symlink_to(outside, target_is_directory=True)
+
+    code = main([
+        "--cwd",
+        str(workspace),
+        "--format",
+        "json",
+        "status",
+    ])
+
+    assert code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["data"]["storage"]["runs"] is False
+    assert payload["data"]["latest"]["run_id"] is None
+
+
+def test_owned_store_constructors_reject_hardlinks_without_chmod(tmp_path):
+    cases = []
+
+    run_root = tmp_path / "run-case" / ".pico" / "runs"
+    run_file = run_root / "legacy" / "report.json"
+    cases.append((run_file, lambda: RunStore(run_root)))
+
+    session_root = tmp_path / "session-case" / ".pico" / "sessions"
+    session_file = session_root / "legacy.json"
+    cases.append((session_file, lambda: SessionStore(session_root)))
+
+    checkpoint_root = tmp_path / "checkpoint-case"
+    checkpoint_file = checkpoint_root / ".pico" / "checkpoints" / "records" / "legacy.json"
+    cases.append((checkpoint_file, lambda: CheckpointStore(checkpoint_root)))
+
+    memory_workspace = tmp_path / "memory-case" / "workspace"
+    memory_user = tmp_path / "memory-case" / "user"
+    memory_file = memory_workspace / "agent_notes.md"
+    cases.append((
+        memory_file,
+        lambda: BlockStore(memory_workspace, memory_user, redaction_env={}),
+    ))
+
+    for index, (artifact, construct) in enumerate(cases):
+        outside = tmp_path / f"outside-hardlink-{index}.txt"
+        outside.write_text("outside\n", encoding="utf-8")
+        outside.chmod(0o644)
+        artifact.parent.mkdir(parents=True)
+        os.link(outside, artifact)
+
+        with pytest.raises(ValueError, match="link|private"):
+            construct()
+
+        assert outside.read_text(encoding="utf-8") == "outside\n"
+        _assert_mode(outside, 0o644)
+
+
+def test_run_trace_rejects_hardlink_without_touching_external_inode(tmp_path):
+    store = RunStore(tmp_path / ".pico" / "runs")
+    state = TaskState.create(run_id="hardlinked", task_id="task", user_request="safe")
+    store.start_run(state)
+    outside = tmp_path / "outside-trace.jsonl"
+    outside.write_text("outside\n", encoding="utf-8")
+    outside.chmod(0o644)
+    os.link(outside, store.trace_path(state))
+
+    with pytest.raises(ValueError, match="link|private"):
+        store.append_trace(state, {"event": "must_not_land"})
+
+    assert outside.read_text(encoding="utf-8") == "outside\n"
+    _assert_mode(outside, 0o644)
+
+
+def test_session_temp_swap_is_removed_without_touching_external_target(
+    tmp_path,
+    monkeypatch,
+):
+    store = SessionStore(tmp_path / ".pico" / "sessions")
+    outside = tmp_path / "outside-session.json"
+    outside.write_text("outside\n", encoding="utf-8")
+    original_replace = Path.replace
+
+    def swap_before_replace(path, target):
+        if path.name.endswith(".tmp"):
+            path.unlink()
+            path.symlink_to(outside)
+        return original_replace(path, target)
+
+    monkeypatch.setattr(Path, "replace", swap_before_replace)
+
+    with pytest.raises(ValueError, match="temp|changed|regular|symlink"):
+        store.save({"id": "swapped", "history": []})
+
+    assert outside.read_text(encoding="utf-8") == "outside\n"
+    assert not store.path("swapped").exists()
+    assert not store.path("swapped").is_symlink()
+
+
+def test_store_redactors_cannot_mutate_callers_or_leave_failed_trace(tmp_path):
+    def mutating_redactor(value):
+        value["mutated"] = True
+        return value
+
+    run_store = RunStore(tmp_path / ".pico" / "runs", redactor=mutating_redactor)
+    state = TaskState.create(run_id="isolated", task_id="task", user_request="safe")
+    run_store.start_run(state)
+    event = {"event": "safe"}
+    report = {"status": "safe"}
+    run_store.append_trace(state, event)
+    run_store.write_report(state, report)
+    assert event == {"event": "safe"}
+    assert report == {"status": "safe"}
+
+    session_store = SessionStore(
+        tmp_path / ".pico" / "sessions",
+        redactor=mutating_redactor,
+    )
+    session = {"id": "isolated", "history": []}
+    session_store.save(session)
+    assert session == {"id": "isolated", "history": []}
+
+    def failing_redactor(_value):
+        raise RuntimeError("redactor failed")
+
+    failing_store = RunStore(
+        tmp_path / ".pico" / "failed-runs",
+        redactor=failing_redactor,
+    )
+    failing_state = TaskState.create(
+        run_id="failed",
+        task_id="task",
+        user_request="safe",
+    )
+    with pytest.raises(RuntimeError, match="redactor failed"):
+        failing_store.append_trace(failing_state, {"event": "safe"})
+    assert not failing_store.trace_path(failing_state).exists()
+
+
 def test_block_store_owned_paths_are_private(tmp_path):
     workspace = tmp_path / "workspace-memory"
     user = tmp_path / "user-memory"

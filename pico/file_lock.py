@@ -24,6 +24,8 @@ def locked_file(path, *, require_lock=False):
     if before is not None and not stat.S_ISREG(before.st_mode):
         kind = "symlink" if stat.S_ISLNK(before.st_mode) else "regular file required"
         raise ValueError(kind)
+    if before is not None and before.st_nlink != 1:
+        raise ValueError("private file has multiple links")
     if require_lock and fcntl is None:
         raise RuntimeError("cross-process lock unavailable")
 
@@ -35,6 +37,8 @@ def locked_file(path, *, require_lock=False):
         opened = os.fstat(descriptor)
         if not stat.S_ISREG(opened.st_mode):
             raise ValueError("regular file required")
+        if opened.st_nlink != 1:
+            raise ValueError("private file has multiple links")
         current = os.stat(path, follow_symlinks=False)
         if (current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino):
             raise ValueError("inode_changed")

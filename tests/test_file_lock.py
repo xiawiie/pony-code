@@ -67,6 +67,22 @@ def test_locked_file_rejects_leaf_symlink(tmp_path):
     assert target.read_text(encoding="utf-8") == "untouched"
 
 
+def test_locked_file_rejects_hardlink_without_chmod(tmp_path):
+    target = tmp_path / "target"
+    target.write_text("untouched", encoding="utf-8")
+    target.chmod(0o644)
+    lock_path = tmp_path / "store.lock"
+    os.link(target, lock_path)
+
+    with pytest.raises(ValueError, match="link|private"):
+        with file_lock.locked_file(lock_path):
+            raise AssertionError("lock yielded through a hardlink")
+
+    assert target.read_text(encoding="utf-8") == "untouched"
+    if os.name == "posix":
+        assert stat.S_IMODE(target.stat().st_mode) == 0o644
+
+
 def test_locked_file_required_lock_fails_closed_without_fcntl(tmp_path, monkeypatch):
     monkeypatch.setattr(file_lock, "fcntl", None)
 

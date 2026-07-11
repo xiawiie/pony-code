@@ -7,7 +7,7 @@ from .cli_diagnostics import _line
 from .cli_diagnostics import handle_config, handle_doctor, handle_status  # noqa: F401
 from .cli_start import run_agent_once, run_repl  # noqa: F401
 from .cli_memory import handle_memory  # noqa: F401
-from .cli_output import print_result
+from .cli_output import build_inspection_redactor, print_result
 from .cli_recovery import handle_checkpoints, handle_runs, handle_sessions  # noqa: F401
 from .cli_session import handle_session_command
 from .config import (
@@ -76,7 +76,11 @@ def handle_session(tokens, root, args):
     Static, read-only inspector for the canonical v3 message invariant.
     """
     sessions_root = Path(root) / ".pico" / "sessions"
-    return handle_session_command(list(tokens), sessions_root=sessions_root)
+    return handle_session_command(
+        list(tokens),
+        sessions_root=sessions_root,
+        redactor=build_inspection_redactor(root, args),
+    )
 
 
 def handle_init(tokens, cwd, args):

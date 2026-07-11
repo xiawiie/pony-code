@@ -37,8 +37,8 @@ def handle_checkpoints(root, tokens, args):
             redactor=redactor,
         )
     if sub == "show" and len(rest) == 1:
-        checkpoint_id = _resolve_checkpoint_id(store, rest[0])
-        record = _load_checkpoint_record(store, checkpoint_id)
+        checkpoint_id = _resolve_checkpoint_id(store, rest[0], redactor=redactor)
+        record = _load_checkpoint_record(store, checkpoint_id, redactor=redactor)
         return print_inspection_result(
             root,
             "checkpoints_show",
@@ -49,8 +49,8 @@ def handle_checkpoints(root, tokens, args):
         )
     if sub == "preview-restore" and len(rest) == 1:
         manager = RecoveryManager(store, root, checkpoint_writer=RecoveryCheckpointWriter(store, root))
-        checkpoint_id = _resolve_checkpoint_id(store, rest[0])
-        plan = _preview_restore(manager, checkpoint_id)
+        checkpoint_id = _resolve_checkpoint_id(store, rest[0], redactor=redactor)
+        plan = _preview_restore(manager, checkpoint_id, redactor=redactor)
         return print_inspection_result(
             root,
             "checkpoints_preview_restore",
@@ -60,11 +60,11 @@ def handle_checkpoints(root, tokens, args):
             redactor=redactor,
         )
     if sub == "restore" and _is_restore_args(rest):
-        checkpoint_id = _resolve_checkpoint_id(store, rest[0])
+        checkpoint_id = _resolve_checkpoint_id(store, rest[0], redactor=redactor)
         apply_flag = "--apply" in rest[1:]
         manager = RecoveryManager(store, root, checkpoint_writer=RecoveryCheckpointWriter(store, root))
         if not apply_flag:
-            plan = _preview_restore(manager, checkpoint_id)
+            plan = _preview_restore(manager, checkpoint_id, redactor=redactor)
             return print_inspection_result(
                 root,
                 "checkpoints_preview_restore",
@@ -73,7 +73,7 @@ def handle_checkpoints(root, tokens, args):
                 _render_restore_plan,
                 redactor=redactor,
             )
-        result = _apply_restore(manager, checkpoint_id)
+        result = _apply_restore(manager, checkpoint_id, redactor=redactor)
         return print_inspection_result(
             root,
             "checkpoints_restore",
@@ -237,12 +237,13 @@ def _render_runs_show(data):
     return "\n".join(sections)
 
 
-def _resolve_checkpoint_id(store, value):
+def _resolve_checkpoint_id(store, value, *, redactor=None):
     checkpoint_id = str(value or "").strip()
+    display_id = redactor(checkpoint_id) if redactor is not None else checkpoint_id
     if not checkpoint_id:
         raise CliError(
             code="checkpoint_not_found",
-            message="unknown checkpoint: ",
+            message=f"unknown checkpoint: {display_id}",
             hint="Run `pico-cli checkpoints list`.",
             exit_code=CLI_EXIT_USAGE,
         )
@@ -260,52 +261,56 @@ def _resolve_checkpoint_id(store, value):
     if len(matches) == 1 and len(checkpoint_id) >= 6:
         return matches[0]
     if len(matches) > 1:
+        display_matches = redactor(matches) if redactor is not None else matches
         raise CliError(
             code="checkpoint_prefix_ambiguous",
-            message=f"ambiguous checkpoint prefix: {checkpoint_id}",
+            message=f"ambiguous checkpoint prefix: {display_id}",
             hint="Use a longer checkpoint id prefix.",
             exit_code=CLI_EXIT_USAGE,
-            details={"candidates": matches},
+            details={"candidates": display_matches},
         )
     raise CliError(
         code="checkpoint_not_found",
-        message=f"unknown checkpoint: {checkpoint_id}",
+        message=f"unknown checkpoint: {display_id}",
         hint="Run `pico-cli checkpoints list`.",
         exit_code=CLI_EXIT_USAGE,
     )
 
 
-def _load_checkpoint_record(store, checkpoint_id):
+def _load_checkpoint_record(store, checkpoint_id, *, redactor=None):
     try:
         return store.load_checkpoint_record(checkpoint_id)
     except FileNotFoundError as exc:
+        display_id = redactor(checkpoint_id) if redactor is not None else checkpoint_id
         raise CliError(
             code="checkpoint_not_found",
-            message=f"unknown checkpoint: {checkpoint_id}",
+            message=f"unknown checkpoint: {display_id}",
             hint="Run `pico-cli checkpoints list`.",
             exit_code=CLI_EXIT_USAGE,
         ) from exc
 
 
-def _preview_restore(manager, checkpoint_id):
+def _preview_restore(manager, checkpoint_id, *, redactor=None):
     try:
         return manager.preview_restore(checkpoint_id)
     except FileNotFoundError as exc:
+        display_id = redactor(checkpoint_id) if redactor is not None else checkpoint_id
         raise CliError(
             code="checkpoint_not_found",
-            message=f"unknown checkpoint: {checkpoint_id}",
+            message=f"unknown checkpoint: {display_id}",
             hint="Run `pico-cli checkpoints list`.",
             exit_code=CLI_EXIT_USAGE,
         ) from exc
 
 
-def _apply_restore(manager, checkpoint_id):
+def _apply_restore(manager, checkpoint_id, *, redactor=None):
     try:
         return manager.apply_restore(checkpoint_id)
     except FileNotFoundError as exc:
+        display_id = redactor(checkpoint_id) if redactor is not None else checkpoint_id
         raise CliError(
             code="checkpoint_not_found",
-            message=f"unknown checkpoint: {checkpoint_id}",
+            message=f"unknown checkpoint: {display_id}",
             hint="Run `pico-cli checkpoints list`.",
             exit_code=CLI_EXIT_USAGE,
         ) from exc

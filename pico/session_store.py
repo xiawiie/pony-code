@@ -221,6 +221,14 @@ def _atomic_write_locked(path, payload):
         ):
             raise ValueError("session temp changed")
         temp_path.replace(path)
+        installed = path.lstat()
+        if (
+            not stat.S_ISREG(installed.st_mode)
+            or (installed.st_dev, installed.st_ino) != temp_identity
+        ):
+            if not stat.S_ISREG(installed.st_mode):
+                path.unlink()
+            raise ValueError("session temp changed")
         ensure_private_file(path)
         _fsync_directory(path.parent)
     finally:
@@ -308,10 +316,11 @@ class SessionStore:
             source_version = int(session.get("schema_version", 1) or 1)
         except (TypeError, ValueError, OverflowError) as exc:
             raise SessionMigrationError("invalid session schema version") from exc
+        safe_session = self._redactor(deepcopy(session))
         if source_version == 3:
-            payload = _prepare_v3_payload(self._redactor(session), session_id)
+            payload = _prepare_v3_payload(safe_session, session_id)
         else:
-            payload = deepcopy(self._redactor(session))
+            payload = safe_session
         with file_lock.locked_file(self.lock_path):
             _atomic_write_locked(path, payload)
         return path

@@ -9,7 +9,7 @@ from urllib import error, request
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
 from .cli_errors import CLI_EXIT_CONFIG, CLI_EXIT_USAGE, CliError
-from .cli_output import print_result
+from .cli_output import build_inspection_redactor, print_result
 from .config import (
     ENV_KEY_PATTERN,
     project_env_path,
@@ -26,7 +26,7 @@ from .providers.defaults import (
     DEFAULT_PROVIDER,
     MODEL_ENV_NAMES,
 )
-from .security import is_secret_env_name
+from .security import is_secret_env_name, require_directory_no_symlink
 from .workspace import WorkspaceContext
 
 
@@ -46,9 +46,9 @@ def collect_status(cwd, args=None):
             "status": workspace.status,
         },
         "storage": {
-            "sessions": sessions_root.exists(),
-            "runs": runs_root.exists(),
-            "checkpoints": checkpoint_records_root.exists(),
+            "sessions": _storage_exists(sessions_root),
+            "runs": _storage_exists(runs_root),
+            "checkpoints": _storage_exists(checkpoint_records_root),
         },
         "provider": {
             "provider": config["provider"],
@@ -127,7 +127,11 @@ def collect_doctor(cwd, args=None, offline=False):
 
 
 def handle_status(cwd, args):
-    return print_result("status", collect_status(cwd, args), args, _render_status)
+    data = collect_status(cwd, args)
+    redactor = build_inspection_redactor(data["workspace"]["repo_root"], args)
+    data["workspace"] = redactor(data["workspace"])
+    data["latest"] = redactor(data["latest"])
+    return print_result("status", data, args, _render_status)
 
 
 def handle_doctor(tokens, cwd, args):
@@ -366,7 +370,15 @@ def _redact_url_for_diagnostics(value):
 
 
 def _storage_status(path):
-    return "ok" if path.exists() else "missing"
+    return "ok" if _storage_exists(path) else "missing"
+
+
+def _storage_exists(path):
+    try:
+        require_directory_no_symlink(path)
+    except (OSError, ValueError):
+        return False
+    return True
 
 
 def _read_project_env(start):
@@ -375,9 +387,8 @@ def _read_project_env(start):
 
 def _latest_json_stem(root):
     try:
-        if not stat.S_ISDIR(root.lstat().st_mode):
-            return None
-    except OSError:
+        root = require_directory_no_symlink(root)
+    except (OSError, ValueError):
         return None
     files = []
     for path in root.glob("*.json"):
@@ -393,9 +404,8 @@ def _latest_json_stem(root):
 
 def _latest_dir_name(root):
     try:
-        if not stat.S_ISDIR(root.lstat().st_mode):
-            return None
-    except OSError:
+        root = require_directory_no_symlink(root)
+    except (OSError, ValueError):
         return None
     dirs = []
     for path in root.iterdir():
