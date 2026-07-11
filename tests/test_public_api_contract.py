@@ -160,7 +160,7 @@ def test_packaging_exposes_only_pico_cli_script():
 
 def test_provider_defaults_have_single_source():
     from pico import cli, cli_diagnostics
-    from pico.providers import defaults
+    import pico.providers.defaults as defaults
 
     assert cli.DEFAULT_PROVIDER == defaults.DEFAULT_PROVIDER
     assert cli.DEFAULT_DEEPSEEK_MODEL == defaults.DEFAULT_DEEPSEEK_MODEL

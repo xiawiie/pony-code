@@ -435,7 +435,7 @@ def test_summarize_rows_counts_failure_categories():
 
 
 def test_default_benchmark_workspace_resolves_temp_symlink(tmp_path, monkeypatch):
-    from pico.evaluation import fixed_benchmark
+    import pico.evaluation.fixed_benchmark as fixed_benchmark
 
     real_root = tmp_path / "real-temp"
     real_root.mkdir()

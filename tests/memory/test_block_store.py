@@ -337,7 +337,7 @@ def test_list_skips_symlinked_notes_directory(tmp_path):
 
 
 def test_nested_symlink_directory_consumes_file_scan_budget(tmp_path, monkeypatch):
-    from pico.memory import block_store as block_store_module
+    import pico.memory.block_store as block_store_module
 
     workspace = tmp_path / "workspace"
     user = tmp_path / "user"
@@ -356,7 +356,7 @@ def test_nested_symlink_directory_consumes_file_scan_budget(tmp_path, monkeypatc
 
 
 def test_unsafe_hardlink_consumes_aggregate_byte_budget(tmp_path, monkeypatch):
-    from pico.memory import block_store as block_store_module
+    import pico.memory.block_store as block_store_module
 
     workspace = tmp_path / "workspace"
     user = tmp_path / "user"

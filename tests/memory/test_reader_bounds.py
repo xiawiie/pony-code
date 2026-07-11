@@ -4,7 +4,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from pico.memory import block_store as block_store_module
+import pico.memory.block_store as block_store_module
 from pico.memory.block_store import BlockStore
 from pico.memory.refresher import MemoryRefresher
 from pico.memory.retrieval import Retrieval

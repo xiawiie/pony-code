@@ -138,7 +138,7 @@ def test_provider_summary_validates_fixed_result_header_before_rows():
 def test_collect_resume_metrics_rejects_invalid_provider_artifact(
     tmp_path, monkeypatch, corruption
 ):
-    from pico.evaluation import metrics_reports
+    import pico.evaluation.metrics_reports as metrics_reports
 
     benchmark = tmp_path / "fixed.json"
     benchmark.write_text(

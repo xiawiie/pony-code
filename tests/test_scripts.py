@@ -3,7 +3,7 @@ import sys
 from pathlib import Path
 import importlib.util
 
-from pico.evaluation import provider_benchmark
+import pico.evaluation.provider_benchmark as provider_benchmark
 
 
 def test_ci_tracks_and_uses_frozen_uv_lock():
