@@ -81,6 +81,38 @@ def test_migrator_writes_backup(store, tmp_path):
     assert "history" in backup_body
 
 
+def test_migration_backup_rejects_hardlink_before_writing_raw_bytes(
+    store,
+    tmp_path,
+    monkeypatch,
+):
+    secret = "raw-migration-secret-123456789"
+    session = _v1_session(tmp_path)
+    session["history"][0]["content"] = secret
+    session_path = store.path_for(session["id"])
+    session_path.write_text(json.dumps(session), encoding="utf-8")
+    alias = tmp_path / "outside-backup-alias.json"
+    real_open = session_store_module.os.open
+    linked = False
+
+    def hardlink_after_open(path, flags, mode=0o777):
+        nonlocal linked
+        descriptor = real_open(path, flags, mode)
+        if not linked and Path(path).parent.name == "backup":
+            linked = True
+            os.link(path, alias)
+        return descriptor
+
+    monkeypatch.setattr(session_store_module.os, "open", hardlink_after_open)
+
+    with pytest.raises(ValueError, match="backup|link|changed"):
+        store.load("s1")
+
+    assert alias.read_bytes() == b""
+    assert secret.encode("utf-8") not in alias.read_bytes()
+    assert not list((store.root / "backup").glob("*.json"))
+
+
 def test_v3_load_sanitizes_before_return_and_rewrites_once(tmp_path):
     secret = "github_pat_A123456789012345678901234567890"
     store = SessionStore(

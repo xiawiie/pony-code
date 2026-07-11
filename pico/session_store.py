@@ -276,12 +276,23 @@ def _write_backup_locked(session_path, raw_bytes, session_id, source_version):
         current = os.stat(backup_path, follow_symlinks=False)
         if (
             not stat.S_ISREG(opened.st_mode)
+            or opened.st_nlink != 1
+            or current.st_nlink != 1
             or (current.st_dev, current.st_ino) != identity
         ):
             raise ValueError("session backup changed")
         os.fchmod(descriptor, 0o600)
         with os.fdopen(descriptor, "wb") as handle:
             descriptor = -1
+            opened = os.fstat(handle.fileno())
+            current = os.stat(backup_path, follow_symlinks=False)
+            if (
+                opened.st_nlink != 1
+                or current.st_nlink != 1
+                or (opened.st_dev, opened.st_ino) != identity
+                or (current.st_dev, current.st_ino) != identity
+            ):
+                raise ValueError("session backup changed")
             handle.write(raw_bytes)
             handle.flush()
             os.fsync(handle.fileno())
