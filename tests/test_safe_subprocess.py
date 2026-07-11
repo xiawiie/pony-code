@@ -499,6 +499,38 @@ def test_hardened_git_allows_absorbed_submodule_core_worktree(tmp_path):
     assert result.stdout == ""
 
 
+def test_hardened_git_allows_absorbed_submodule_in_linked_worktree(tmp_path):
+    git, _, linked = _linked_worktree(tmp_path)
+    source = tmp_path / "source"
+    source.mkdir()
+    _commit_readme(source)
+    subprocess.run(
+        [
+            git,
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            "-q",
+            str(source),
+            "child",
+        ],
+        cwd=linked,
+        check=True,
+    )
+    child = linked / "child"
+
+    result = run_hardened_git(
+        git,
+        ["status", "--short"],
+        cwd=child,
+        text=True,
+    )
+
+    assert result.returncode == 0
+    assert result.stdout == ""
+
+
 def test_hardened_git_allows_linked_worktree(tmp_path):
     git, _, linked = _linked_worktree(tmp_path)
 
@@ -544,6 +576,48 @@ def test_hardened_git_external_gitdir_cannot_read_head_env(
     subprocess.run([git, "add", ".env"], cwd=outside, check=True)
     subprocess.run(
         [git, "commit", "-q", "-m", "add external secret"],
+        cwd=outside,
+        check=True,
+    )
+    (workspace / ".git").write_text(
+        f"gitdir: {outside / '.git'}\n",
+        encoding="utf-8",
+    )
+    exposed = subprocess.run(
+        [git, "show", "HEAD:.env"],
+        cwd=workspace,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert exposed.stdout.strip() == secret
+
+    _assert_gitfile_rejected_before_git(
+        monkeypatch,
+        workspace,
+        args=("show", "HEAD:.env"),
+    )
+
+
+def test_hardened_git_rejects_forged_absorbed_external_gitdir(
+    tmp_path,
+    monkeypatch,
+):
+    secret = "forged-absorbed-secret"
+    outside = tmp_path / "outside"
+    workspace = tmp_path / "workspace"
+    outside.mkdir()
+    workspace.mkdir()
+    git = _commit_readme(outside)
+    (outside / ".env").write_text(secret, encoding="utf-8")
+    subprocess.run([git, "add", ".env"], cwd=outside, check=True)
+    subprocess.run(
+        [git, "commit", "-q", "-m", "add external secret"],
+        cwd=outside,
+        check=True,
+    )
+    subprocess.run(
+        [git, "config", "core.worktree", str(workspace)],
         cwd=outside,
         check=True,
     )
@@ -665,6 +739,34 @@ def test_hardened_git_rejects_invalid_linked_worktree_metadata_before_git(
     _assert_gitfile_rejected_before_git(monkeypatch, linked)
 
 
+def test_hardened_git_rejects_absorbed_worktree_config_extension_before_git(
+    tmp_path,
+    monkeypatch,
+):
+    git, child = _absorbed_submodule(tmp_path)
+    target = _gitfile_target(child / ".git")
+    config = target / "config"
+    config.write_text(
+        config.read_text(encoding="utf-8")
+        + "\n[extensions]\n\tworktreeConfig = true\n",
+        encoding="utf-8",
+    )
+    (target / "config.worktree").write_text(
+        "[pico]\n\tprobe = read-from-config-worktree\n",
+        encoding="utf-8",
+    )
+    observed = subprocess.run(
+        [git, "config", "--worktree", "--get", "pico.probe"],
+        cwd=child,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert observed.stdout.strip() == "read-from-config-worktree"
+
+    _assert_gitfile_rejected_before_git(monkeypatch, child)
+
+
 @pytest.mark.parametrize(
     "mutation",
     [
@@ -726,6 +828,95 @@ def test_hardened_git_rejects_invalid_absorbed_submodule_config_before_git(
         )
 
     _assert_gitfile_rejected_before_git(monkeypatch, child)
+
+
+@pytest.mark.parametrize("metadata", ["marker", "config"])
+def test_hardened_git_rejects_hardlinked_gitfile_metadata_before_git(
+    metadata,
+    tmp_path,
+    monkeypatch,
+):
+    _, child = _absorbed_submodule(tmp_path)
+    marker = child / ".git"
+    target = _gitfile_target(marker)
+    path = marker if metadata == "marker" else target / "config"
+    saved = tmp_path / f"saved-{metadata}"
+    path.replace(saved)
+    os.link(saved, path)
+    assert path.stat().st_nlink == 2
+
+    _assert_gitfile_rejected_before_git(monkeypatch, child)
+
+
+def test_hardened_git_marker_read_is_anchored_against_parent_swap(
+    tmp_path,
+    monkeypatch,
+):
+    _, child = _absorbed_submodule(tmp_path)
+    marker = child / ".git"
+    valid_marker = marker.read_bytes()
+    marker.write_text("not-a-gitdir\n", encoding="utf-8")
+    replacement = child.parent / "replacement-child"
+    replacement.mkdir()
+    (replacement / ".git").write_bytes(valid_marker)
+    displaced = child.parent / "displaced-child"
+    real_open = os.open
+    swapped = False
+
+    def racing_open(path, flags, mode=0o777, *, dir_fd=None):
+        nonlocal swapped
+        raw_path = os.fsdecode(path)
+        opening_marker = (dir_fd is None and Path(raw_path) == marker) or (
+            dir_fd is not None and raw_path == ".git"
+        )
+        if opening_marker and not swapped:
+            child.replace(displaced)
+            replacement.replace(child)
+            swapped = True
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(os, "open", racing_open)
+
+    _assert_gitfile_rejected_before_git(monkeypatch, child)
+    assert swapped is True
+
+
+def test_hardened_git_marker_kind_is_anchored_against_parent_swap(
+    tmp_path,
+    monkeypatch,
+):
+    _, child = _absorbed_submodule(tmp_path)
+    marker = child / ".git"
+    valid_marker = marker.read_bytes()
+    marker.write_text("not-a-gitdir\n", encoding="utf-8")
+    replacement = child.parent / "replacement-child"
+    replacement.mkdir()
+    (replacement / ".git").write_bytes(valid_marker)
+    displaced = child.parent / "displaced-child"
+    real_stat = os.stat
+    swapped = False
+
+    def racing_stat(path, *args, dir_fd=None, follow_symlinks=True):
+        nonlocal swapped
+        raw_path = os.fsdecode(path)
+        checking_marker = (dir_fd is None and Path(raw_path) == marker) or (
+            dir_fd is not None and raw_path == ".git"
+        )
+        if checking_marker and not swapped:
+            child.replace(displaced)
+            replacement.replace(child)
+            swapped = True
+        return real_stat(
+            path,
+            *args,
+            dir_fd=dir_fd,
+            follow_symlinks=follow_symlinks,
+        )
+
+    monkeypatch.setattr(os, "stat", racing_stat)
+
+    _assert_gitfile_rejected_before_git(monkeypatch, child)
+    assert swapped is True
 
 
 def test_hardened_git_blocks_gitfile_core_worktree_escape(tmp_path, monkeypatch):

@@ -7,7 +7,7 @@ import stat
 import subprocess
 from pathlib import Path
 
-from pico.security import require_directory_no_symlink, require_regular_no_symlink
+from pico.security import require_regular_no_symlink
 
 AUTO_TRUSTED_EXECUTABLES = ("git", "pwd", "ls", "stat", "file", "wc")
 INTERNAL_TRUSTED_EXECUTABLES = ("rg",)
@@ -74,10 +74,50 @@ _GIT_CONFIG_KEY_RE = re.compile(
     r"^(?P<name>[A-Za-z][A-Za-z0-9-]*)\s*(?:=\s*(?P<value>.*))?$"
 )
 _MAX_GIT_METADATA_BYTES = 64 * 1024
+# Regular gitfiles fail closed without race-safe component traversal.
+_HAS_GIT_DIR_FD_TRAVERSAL = (
+    os.name == "posix"
+    and bool(getattr(os, "O_DIRECTORY", 0))
+    and bool(getattr(os, "O_NOFOLLOW", 0))
+    and os.open in getattr(os, "supports_dir_fd", ())
+    and os.stat in getattr(os, "supports_dir_fd", ())
+)
 _ENV_ALLOWLIST = ("HOME", "LANG", "LANGUAGE", "LC_ALL", "LC_CTYPE", "TMPDIR", "TZ")
 
 
+def _open_lexical_repo_root(cwd):
+    current = Path(cwd).resolve()
+    for candidate in (current, *current.parents):
+        _, candidate_fd = _open_git_path(candidate, directory=True)
+        try:
+            mode = os.stat(
+                ".git",
+                dir_fd=candidate_fd,
+                follow_symlinks=False,
+            ).st_mode
+        except FileNotFoundError:
+            os.close(candidate_fd)
+            continue
+        except Exception:
+            os.close(candidate_fd)
+            raise
+        if stat.S_ISLNK(mode):
+            os.close(candidate_fd)
+            raise ValueError("unsafe .git symlink")
+        if stat.S_ISDIR(mode) or stat.S_ISREG(mode):
+            return candidate, candidate_fd, mode
+        os.close(candidate_fd)
+        raise ValueError("unsafe git repository")
+    _, current_fd = _open_git_path(current, directory=True)
+    return current, current_fd, None
+
+
 def discover_lexical_repo_root(cwd):
+    if _HAS_GIT_DIR_FD_TRAVERSAL:
+        root, root_fd, _ = _open_lexical_repo_root(cwd)
+        os.close(root_fd)
+        return root
+
     current = Path(cwd).resolve()
     for candidate in (current, *current.parents):
         marker = candidate / ".git"
@@ -95,17 +135,83 @@ def discover_lexical_repo_root(cwd):
     return current
 
 
-def _read_git_metadata(path):
-    path = require_regular_no_symlink(path)
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
-    flags |= getattr(os, "O_NOFOLLOW", 0)
-    descriptor = os.open(path, flags)
+def _metadata_candidate(base, value):
+    candidate = Path(value)
+    if not candidate.is_absolute():
+        candidate = base / candidate
+    return Path(os.path.abspath(candidate))
+
+
+def _git_open_flags(*, directory):
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | os.O_NOFOLLOW
+    if directory:
+        flags |= os.O_DIRECTORY
+    return flags
+
+
+def _open_git_path(path, *, directory):
+    if not _HAS_GIT_DIR_FD_TRAVERSAL:
+        raise ValueError("unsafe git repository")
+    candidate = Path(os.path.abspath(path))
+    descriptor = os.open(candidate.anchor, _git_open_flags(directory=True))
+    try:
+        components = candidate.parts[1:]
+        for index, component in enumerate(components):
+            final = index == len(components) - 1
+            next_descriptor = os.open(
+                component,
+                _git_open_flags(directory=not final or directory),
+                dir_fd=descriptor,
+            )
+            try:
+                opened = os.fstat(next_descriptor)
+                expected_type = stat.S_ISDIR if not final or directory else stat.S_ISREG
+                if not expected_type(opened.st_mode):
+                    raise ValueError("unsafe git repository")
+            except Exception:
+                os.close(next_descriptor)
+                raise
+            os.close(descriptor)
+            descriptor = next_descriptor
+        opened = os.fstat(descriptor)
+        expected_type = stat.S_ISDIR if directory else stat.S_ISREG
+        if not expected_type(opened.st_mode):
+            raise ValueError("unsafe git repository")
+        return candidate, descriptor
+    except Exception:
+        os.close(descriptor)
+        raise
+
+
+def _open_git_entry(directory_fd, name, *, directory):
+    raw_name = os.fsdecode(name)
+    if Path(raw_name).name != raw_name or raw_name in {"", ".", ".."}:
+        raise ValueError("unsafe git repository")
+    if not _HAS_GIT_DIR_FD_TRAVERSAL:
+        raise ValueError("unsafe git repository")
+    return os.open(
+        raw_name,
+        _git_open_flags(directory=directory),
+        dir_fd=directory_fd,
+    )
+
+
+def _read_git_metadata(path, *, dir_fd=None, allow_missing=False):
+    descriptor = -1
+    try:
+        if dir_fd is None:
+            _, descriptor = _open_git_path(path, directory=False)
+        else:
+            descriptor = _open_git_entry(dir_fd, path, directory=False)
+    except FileNotFoundError:
+        if allow_missing:
+            return None
+        raise
     try:
         opened = os.fstat(descriptor)
-        current = os.stat(path, follow_symlinks=False)
         if (
             not stat.S_ISREG(opened.st_mode)
-            or (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino)
+            or opened.st_nlink != 1
             or opened.st_size > _MAX_GIT_METADATA_BYTES
         ):
             raise ValueError("unsafe git repository")
@@ -138,23 +244,21 @@ def _single_git_path(data, *, prefix=""):
     return value
 
 
-def _metadata_candidate(base, value):
-    candidate = Path(value)
-    if not candidate.is_absolute():
-        candidate = base / candidate
-    return Path(os.path.abspath(candidate))
+def _open_metadata_directory(base, value):
+    candidate = _metadata_candidate(base, value)
+    return _open_git_path(candidate, directory=True)
 
 
 def _metadata_directory(base, value):
-    candidate = _metadata_candidate(base, value)
-    require_directory_no_symlink(candidate)
-    return candidate.resolve(strict=True)
+    candidate, descriptor = _open_metadata_directory(base, value)
+    os.close(descriptor)
+    return candidate
 
 
 def _metadata_file(base, value):
     candidate = _metadata_candidate(base, value)
-    require_regular_no_symlink(candidate)
-    return candidate.resolve(strict=True)
+    _read_git_metadata(candidate)
+    return candidate
 
 
 def _git_config_value(raw_value):
@@ -229,6 +333,7 @@ def _absorbed_submodule_worktree(config_data):
             "core.hookspath",
             "credential.helper",
             "diff.external",
+            "extensions.worktreeconfig",
         } or _is_executable_git_config_key(
             key,
             diff_config_is_neutralized=False,
@@ -241,66 +346,155 @@ def _absorbed_submodule_worktree(config_data):
     return worktrees[0]
 
 
-def _validate_linked_worktree_gitfile(marker, target):
+def _validate_linked_worktree_gitfile(marker, target, target_fd, backlink_data):
     backlink = _metadata_file(
         target,
-        _single_git_path(_read_git_metadata(target / "gitdir")),
+        _single_git_path(backlink_data),
     )
-    if backlink != marker.resolve(strict=True):
+    if backlink != marker:
         raise ValueError("unsafe git repository")
-    common = _metadata_directory(
+    common, common_fd = _open_metadata_directory(
         target,
-        _single_git_path(_read_git_metadata(target / "commondir")),
+        _single_git_path(_read_git_metadata("commondir", dir_fd=target_fd)),
     )
-    if target.parent.name != "worktrees" or target.parent.parent != common:
-        raise ValueError("unsafe git repository")
-    _read_git_metadata(target / "HEAD")
-    _read_git_metadata(common / "HEAD")
-    _read_git_metadata(common / "config")
-    worktree_config = target / "config.worktree"
     try:
-        worktree_config.lstat()
-    except FileNotFoundError:
-        pass
-    else:
-        _read_git_metadata(worktree_config)
+        if target.parent.name != "worktrees" or target.parent.parent != common:
+            raise ValueError("unsafe git repository")
+        _read_git_metadata("HEAD", dir_fd=target_fd)
+        _read_git_metadata("HEAD", dir_fd=common_fd)
+        _read_git_metadata("config", dir_fd=common_fd)
+        _read_git_metadata(
+            "config.worktree",
+            dir_fd=target_fd,
+            allow_missing=True,
+        )
+    finally:
+        os.close(common_fd)
+    return common
 
 
-def _validate_absorbed_submodule_gitfile(lexical_root, target):
-    worktree = _absorbed_submodule_worktree(_read_git_metadata(target / "config"))
+def _open_gitfile_target(marker, marker_data=None):
+    return _open_metadata_directory(
+        marker.parent,
+        _single_git_path(
+            _read_git_metadata(marker) if marker_data is None else marker_data,
+            prefix="gitdir: ",
+        ),
+    )
+
+
+def _enclosing_git_dir(lexical_root):
+    for super_root in lexical_root.parents:
+        marker = super_root / ".git"
+        _, super_fd = _open_git_path(super_root, directory=True)
+        marker_data = None
+        try:
+            try:
+                mode = os.stat(
+                    ".git",
+                    dir_fd=super_fd,
+                    follow_symlinks=False,
+                ).st_mode
+            except FileNotFoundError:
+                continue
+            if stat.S_ISLNK(mode):
+                raise ValueError("unsafe git repository")
+            if stat.S_ISDIR(mode):
+                common = _metadata_candidate(super_root, ".git")
+                common_fd = _open_git_entry(super_fd, ".git", directory=True)
+                try:
+                    _read_git_metadata("HEAD", dir_fd=common_fd)
+                    _read_git_metadata("config", dir_fd=common_fd)
+                finally:
+                    os.close(common_fd)
+                return common
+            if not stat.S_ISREG(mode):
+                raise ValueError("unsafe git repository")
+            marker_data = _read_git_metadata(".git", dir_fd=super_fd)
+        finally:
+            os.close(super_fd)
+        _, git_dir = _validate_gitfile_binding(
+            super_root,
+            marker,
+            marker_data=marker_data,
+        )
+        return git_dir
+    raise ValueError("unsafe git repository")
+
+
+def _validate_absorbed_submodule_gitfile(lexical_root, target, target_fd):
+    worktree = _absorbed_submodule_worktree(
+        _read_git_metadata("config", dir_fd=target_fd)
+    )
     if _metadata_directory(target, worktree) != lexical_root:
         raise ValueError("unsafe git repository")
-    _read_git_metadata(target / "HEAD")
-
-
-def _validate_gitfile_binding(lexical_root, marker):
+    super_git_dir = _enclosing_git_dir(lexical_root)
+    modules, modules_fd = _open_metadata_directory(super_git_dir, "modules")
+    os.close(modules_fd)
     try:
-        target = _metadata_directory(
-            marker.parent,
-            _single_git_path(
-                _read_git_metadata(marker),
-                prefix="gitdir: ",
-            ),
-        )
+        relative_target = target.relative_to(modules)
+    except ValueError:
+        raise ValueError("unsafe git repository") from None
+    if not relative_target.parts:
+        raise ValueError("unsafe git repository")
+    _read_git_metadata("HEAD", dir_fd=target_fd)
+
+
+def _validate_gitfile_binding(lexical_root, marker, *, marker_data=None):
+    try:
+        target, target_fd = _open_gitfile_target(marker, marker_data)
         try:
-            (target / "gitdir").lstat()
-        except FileNotFoundError:
-            _validate_absorbed_submodule_gitfile(lexical_root, target)
-            return "absorbed-submodule"
-        _validate_linked_worktree_gitfile(marker, target)
-        return "linked-worktree"
+            backlink_data = _read_git_metadata(
+                "gitdir",
+                dir_fd=target_fd,
+                allow_missing=True,
+            )
+            if backlink_data is None:
+                _validate_absorbed_submodule_gitfile(
+                    lexical_root,
+                    target,
+                    target_fd,
+                )
+                return "absorbed-submodule", target
+            _validate_linked_worktree_gitfile(
+                marker,
+                target,
+                target_fd,
+                backlink_data,
+            )
+            return "linked-worktree", target
+        finally:
+            os.close(target_fd)
     except (OSError, RuntimeError, ValueError):
         raise ValueError("unsafe git repository config") from None
 
 
 def _lexical_git_repository_kind(cwd):
     current = Path(cwd).resolve()
-    lexical_root = discover_lexical_repo_root(current)
-    marker = lexical_root / ".git"
-    if marker.is_dir():
-        return "directory"
-    if marker.is_file():
-        return _validate_gitfile_binding(lexical_root, marker)
+    if _HAS_GIT_DIR_FD_TRAVERSAL:
+        lexical_root, root_fd, marker_mode = _open_lexical_repo_root(current)
+        marker = lexical_root / ".git"
+        marker_data = None
+        try:
+            if marker_mode is not None:
+                if stat.S_ISDIR(marker_mode):
+                    return "directory"
+                marker_data = _read_git_metadata(".git", dir_fd=root_fd)
+        finally:
+            os.close(root_fd)
+        if marker_data is not None:
+            return _validate_gitfile_binding(
+                lexical_root,
+                marker,
+                marker_data=marker_data,
+            )[0]
+    else:
+        lexical_root = discover_lexical_repo_root(current)
+        marker = lexical_root / ".git"
+        if marker.is_dir():
+            return "directory"
+        if marker.is_file():
+            return _validate_gitfile_binding(lexical_root, marker)[0]
     for candidate in (current, *current.parents):
         try:
             head_mode = (candidate / "HEAD").lstat().st_mode
