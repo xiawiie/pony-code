@@ -117,21 +117,12 @@ def _assert_gitfile_rejected_before_git(monkeypatch, cwd, args=("status", "--sho
 def _fifo_gitfile_probe(executable, cwd, marker_to_replace, connection):
     from pico import safe_subprocess
 
-    real_open = safe_subprocess.os.open
     swapped = False
     if marker_to_replace is not None:
         marker = Path(marker_to_replace)
-
-        def replace_marker_with_fifo(path, flags, mode=0o777, *, dir_fd=None):
-            nonlocal swapped
-            raw_path = os.fsdecode(path)
-            if dir_fd is not None and raw_path == ".git" and not swapped:
-                marker.unlink()
-                os.mkfifo(marker)
-                swapped = True
-            return real_open(path, flags, mode, dir_fd=dir_fd)
-
-        safe_subprocess.os.open = replace_marker_with_fifo
+        marker.unlink()
+        os.mkfifo(marker)
+        swapped = True
 
     safe_subprocess.subprocess.run = lambda *args, **kwargs: (_ for _ in ()).throw(
         AssertionError("git executed before FIFO metadata rejection")
