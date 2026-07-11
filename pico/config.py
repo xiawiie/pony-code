@@ -1,10 +1,12 @@
 """Project-local configuration helpers."""
 
 import json
+import math
 import os
 import re
 import stat
 import sys
+import tomllib
 import urllib.parse
 from pathlib import Path
 
@@ -360,238 +362,112 @@ def resolve_provider_config(*, explicit=None, project_env=None, process_env=None
     }
 
 
-def _parse_scalar(raw):
-    text = raw.strip()
-    if not text:
-        return ""
-    if len(text) >= 2 and text[0] == text[-1] and text[0] in {"'", '"'}:
-        return text[1:-1]
-    lowered = text.lower()
-    if lowered == "true":
-        return True
-    if lowered == "false":
-        return False
-    try:
-        if "." in text:
-            return float(text)
-        return int(text)
-    except ValueError:
-        return text
+_PICO_TOML_WARNING = "warning: invalid pico.toml; using defaults"
 
 
-def project_max_blob_size(workspace_root):
-    """ADR-0034 承诺的 pico.toml 轻量 override：读取 `[policy] max_blob_size`。
-
-    没写 pico.toml、section 缺失、值非法（负数或非整数）都回退到 recovery_policy
-    里的默认值，让调用方可以无条件把返回值传给 snapshot_eligibility。
-    """
-    from .recovery_policy import DEFAULT_MAX_BLOB_SIZE
-
-    data = load_pico_toml(workspace_root)
-    raw = data.get("policy", {}).get("max_blob_size")
-    if isinstance(raw, bool) or not isinstance(raw, int):
-        return DEFAULT_MAX_BLOB_SIZE
-    if raw <= 0:
-        return DEFAULT_MAX_BLOB_SIZE
-    return raw
+def _positive_int(value, default):
+    return value if type(value) is int and value > 0 else default
 
 
-def load_pico_toml(workspace_root):
-    """极简的 pico.toml 解析器：只支持 `[section]` 头 + `key = scalar` 行。
-
-    Phase 1 只需要 `policy.max_blob_size` 之类的标量覆写，等真正的复杂
-    配置进来再切到 tomllib。
-    """
-    path = Path(workspace_root) / "pico.toml"
-    if not path.exists():
-        return {}
-    data = {}
-    current = data
-    for raw_line in path.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
-            continue
-        if line.startswith("[") and line.endswith("]"):
-            section = line[1:-1].strip()
-            if not section:
-                continue
-            node = data
-            for part in section.split("."):
-                node = node.setdefault(part, {})
-            current = node
-            continue
-        if "=" not in line:
-            continue
-        name, value = line.split("=", 1)
-        current[name.strip()] = _parse_scalar(value)
-    return data
-
-
-def load_pico_toml_full(workspace_root):
-    """Full-fidelity pico.toml parser.
-
-    Prefers :mod:`tomllib` (stdlib since Python 3.11) so nested tables and
-    typed values (arrays, floats, booleans) round-trip correctly. Falls
-    back to :func:`load_pico_toml` for environments where tomllib is
-    unavailable, or when the file is malformed enough that tomllib
-    raises. Returns ``{}`` if the file doesn't exist.
-
-    The function never raises: config errors surface as an empty dict
-    plus a stderr warning, keeping the config surface strictly opt-in.
-    """
-    path = Path(workspace_root) / "pico.toml"
-    if not path.exists():
-        return {}
-    try:
-        import tomllib
-    except ImportError:
-        # Python 3.10 or earlier — should not reach here after B1 bump,
-        # but be defensive so we never crash on config load.
-        return load_pico_toml(workspace_root)
-    try:
-        with path.open("rb") as f:
-            return tomllib.load(f)
-    except (tomllib.TOMLDecodeError, OSError) as exc:
-        print(f"warning: pico.toml is malformed, using simple parser fallback ({exc})", file=sys.stderr)
-        try:
-            return load_pico_toml(workspace_root)
-        except Exception:
-            return {}
-
-
-# ---------------------------------------------------------------------------
-# Task B2-B6: pico.toml surface for the context/memory subsystems.
-# Each helper is independent: missing file / missing section / bad type all
-# fall back to the hard-coded default. The pattern mirrors
-# ``project_max_blob_size`` above so future keys can be added without
-# building a shared config object.
-# ---------------------------------------------------------------------------
-
-def _context_int(root, key, default):
-    data = load_pico_toml_full(root)
-    raw = data.get("context", {}).get(key)
-    if isinstance(raw, bool) or not isinstance(raw, int):
+def _nonnegative_float(value, default):
+    if type(value) not in {int, float} or not math.isfinite(value) or value < 0:
         return default
-    if raw <= 0:
-        return default
-    return raw
+    return float(value)
 
 
-def _context_float(root, key, default):
-    data = load_pico_toml_full(root)
-    raw = data.get("context", {}).get(key)
-    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
-        return default
-    if raw < 0:
-        return default
-    return float(raw)
+def _validated_pico_toml(raw):
+    policy = raw.get("policy")
+    policy = policy if isinstance(policy, dict) else {}
+    context = raw.get("context")
+    context = context if isinstance(context, dict) else {}
+    digest = context.get("digest")
+    digest = digest if isinstance(digest, dict) else {}
+    memory = raw.get("memory")
+    memory = memory if isinstance(memory, dict) else {}
+    recall = memory.get("recall")
+    recall = recall if isinstance(recall, dict) else {}
+    retrieval = memory.get("retrieval")
+    retrieval = retrieval if isinstance(retrieval, dict) else {}
+    field_boost = retrieval.get("field_boost")
+    field_boost = field_boost if isinstance(field_boost, dict) else {}
+    link = retrieval.get("link")
+    link = link if isinstance(link, dict) else {}
 
-
-def context_history_soft_cap(root) -> int:
-    """Max tokens allowed in messages array before older turns are dropped."""
-    return _context_int(root, "history_soft_cap", 40000)
-
-
-def context_history_floor_messages(root) -> int:
-    """Minimum tail messages preserved regardless of budget."""
-    return _context_int(root, "history_floor_messages", 6)
-
-
-def context_injection_budget_ratio(root) -> float:
-    """Fraction of total budget available for <system-reminder> injection."""
-    return _context_float(root, "injection_budget_ratio", 0.15)
-
-
-def context_system_tools_hard_cap(root) -> int:
-    """Fail-loud threshold for system + tools token count."""
-    return _context_int(root, "system_tools_hard_cap", 20000)
-
-
-def context_total_budget_hard_cap(root) -> int:
-    """Ceiling for the whole prompt used to derive the injection budget.
-
-    The renderer computes ``injection_budget = ratio × total_budget_hard_cap``
-    to cap ``<system-reminder>`` blocks. Exposing this via pico.toml keeps
-    the config surface complete against ``renderer._compose_injection``,
-    which already reads ``cfg.get("total_budget_hard_cap", 100000)``.
-    """
-    return _context_int(root, "total_budget_hard_cap", 100000)
-
-
-def _context_digest_int(root, key, default):
-    data = load_pico_toml_full(root)
-    raw = data.get("context", {}).get("digest", {}).get(key)
-    if isinstance(raw, bool) or not isinstance(raw, int):
-        return default
-    if raw <= 0:
-        return default
-    return raw
-
-
-def context_digest_size_threshold(root) -> int:
-    """Threshold in characters above which a tool_result gets digested."""
-    return _context_digest_int(root, "size_threshold_chars", 1200)
-
-
-def memory_recall_config(root) -> dict:
-    """Recall subsystem config: min_score, top_k, max_tokens_per_note, skip_recent_turns."""
-    data = load_pico_toml_full(root)
-    raw = data.get("memory", {}).get("recall", {}) or {}
-
-    def _pick_float(key, default):
-        v = raw.get(key)
-        return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) and v >= 0 else default
-
-    def _pick_int(key, default):
-        v = raw.get(key)
-        return int(v) if isinstance(v, int) and not isinstance(v, bool) and v > 0 else default
-
+    field_boost_defaults = {
+        "name": 5.0,
+        "description": 3.0,
+        "tags": 4.0,
+        "aliases": 4.0,
+        "body": 1.0,
+    }
+    decay = _nonnegative_float(link.get("decay"), 0.4)
+    if decay > 1:
+        decay = 0.4
     return {
-        "min_score": _pick_float("min_score", 0.3),
-        "top_k": _pick_int("top_k", 2),
-        "max_tokens_per_note": _pick_int("max_tokens_per_note", 400),
-        "skip_recent_turns": _pick_int("skip_recent_turns", 2),
+        "policy": {
+            "max_blob_size": _positive_int(
+                policy.get("max_blob_size"), 8 * 1024 * 1024
+            ),
+        },
+        "context": {
+            "history_soft_cap": _positive_int(
+                context.get("history_soft_cap"), 40000
+            ),
+            "history_floor_messages": _positive_int(
+                context.get("history_floor_messages"), 6
+            ),
+            "injection_budget_ratio": _nonnegative_float(
+                context.get("injection_budget_ratio"), 0.15
+            ),
+            "system_tools_hard_cap": _positive_int(
+                context.get("system_tools_hard_cap"), 20000
+            ),
+            "total_budget_hard_cap": _positive_int(
+                context.get("total_budget_hard_cap"), 100000
+            ),
+            "digest": {
+                "size_threshold_chars": _positive_int(
+                    digest.get("size_threshold_chars"), 1200
+                ),
+            },
+        },
+        "memory": {
+            "recall": {
+                "min_score": _nonnegative_float(recall.get("min_score"), 0.3),
+                "top_k": _positive_int(recall.get("top_k"), 2),
+                "max_tokens_per_note": _positive_int(
+                    recall.get("max_tokens_per_note"), 400
+                ),
+                "skip_recent_turns": _positive_int(
+                    recall.get("skip_recent_turns"), 2
+                ),
+            },
+            "retrieval": {
+                "field_boost": {
+                    key: _nonnegative_float(field_boost.get(key), default)
+                    for key, default in field_boost_defaults.items()
+                },
+                "link": {
+                    "max_added": _positive_int(link.get("max_added"), 3),
+                    "decay": decay,
+                },
+            },
+        },
     }
 
 
-def memory_field_boosts(root) -> dict:
-    """BM25 field boost weights: {name, description, tags, aliases, body}.
-
-    Reads ``[memory.retrieval.field_boost]`` from pico.toml. Each key is
-    validated independently against a non-negative numeric type; missing
-    or malformed entries fall back to the module-level defaults, so a
-    partial override in pico.toml only affects the keys it names.
-    """
-    data = load_pico_toml_full(root)
-    raw = data.get("memory", {}).get("retrieval", {}).get("field_boost", {}) or {}
-    defaults = {"name": 5.0, "description": 3.0, "tags": 4.0, "aliases": 4.0, "body": 1.0}
-    out = dict(defaults)
-    for key in defaults:
-        v = raw.get(key)
-        if isinstance(v, (int, float)) and not isinstance(v, bool) and v >= 0:
-            out[key] = float(v)
-    return out
-
-
-def memory_link_config(root) -> tuple:
-    """(max_added, decay) for [[name]] link expansion.
-
-    Reads ``[memory.retrieval.link]`` from pico.toml. ``max_added`` must
-    be a positive int; ``decay`` must be a float in ``[0, 1]``. Either
-    invalid or missing falls back to the module-level defaults ``(3, 0.4)``.
-    """
-    data = load_pico_toml_full(root)
-    raw = data.get("memory", {}).get("retrieval", {}).get("link", {}) or {}
-    max_added_raw = raw.get("max_added")
-    decay_raw = raw.get("decay")
-    max_added = (
-        max_added_raw
-        if isinstance(max_added_raw, int) and not isinstance(max_added_raw, bool) and max_added_raw > 0
-        else 3
-    )
-    decay = (
-        float(decay_raw)
-        if isinstance(decay_raw, (int, float)) and not isinstance(decay_raw, bool) and 0 <= decay_raw <= 1
-        else 0.4
-    )
-    return (max_added, decay)
+def load_pico_toml(workspace_root):
+    """Return one complete, validated snapshot of the project TOML config."""
+    path = Path(workspace_root) / "pico.toml"
+    try:
+        with path.open("rb") as file:
+            raw = tomllib.load(file)
+    except FileNotFoundError:
+        return _validated_pico_toml({})
+    except (tomllib.TOMLDecodeError, OSError):
+        print(_PICO_TOML_WARNING, file=sys.stderr)
+        return _validated_pico_toml({})
+    if not isinstance(raw, dict):
+        print(_PICO_TOML_WARNING, file=sys.stderr)
+        return _validated_pico_toml({})
+    return _validated_pico_toml(raw)

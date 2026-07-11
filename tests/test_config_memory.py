@@ -1,12 +1,16 @@
-"""Task B4-B6: pico.toml overrides for memory subsystem."""
+"""pico.toml memory settings and their runtime consumers."""
 
 import pytest
 
-from pico.config import memory_recall_config
+from pico.config import load_pico_toml
+
+
+def _memory(root):
+    return load_pico_toml(root)["memory"]
 
 
 def test_recall_config_defaults(tmp_path):
-    cfg = memory_recall_config(tmp_path)
+    cfg = _memory(tmp_path)["recall"]
     assert cfg == {
         "min_score": pytest.approx(0.3),
         "top_k": 2,
@@ -19,7 +23,7 @@ def test_recall_config_partial_override(tmp_path):
     (tmp_path / "pico.toml").write_text(
         "[memory.recall]\nmin_score = 0.5\ntop_k = 4\n", encoding="utf-8"
     )
-    cfg = memory_recall_config(tmp_path)
+    cfg = _memory(tmp_path)["recall"]
     assert cfg["min_score"] == pytest.approx(0.5)
     assert cfg["top_k"] == 4
     # Un-overridden keys still take defaults.
@@ -63,8 +67,7 @@ def test_recall_for_turn_reads_min_score_from_agent(tmp_path):
 
 
 def test_field_boosts_defaults(tmp_path):
-    from pico.config import memory_field_boosts
-    fb = memory_field_boosts(tmp_path)
+    fb = _memory(tmp_path)["retrieval"]["field_boost"]
     assert fb == {
         "name": 5.0,
         "description": 3.0,
@@ -75,12 +78,11 @@ def test_field_boosts_defaults(tmp_path):
 
 
 def test_field_boosts_override(tmp_path):
-    from pico.config import memory_field_boosts
     (tmp_path / "pico.toml").write_text(
         "[memory.retrieval.field_boost]\nname = 8.0\ndescription = 2.0\n",
         encoding="utf-8",
     )
-    fb = memory_field_boosts(tmp_path)
+    fb = _memory(tmp_path)["retrieval"]["field_boost"]
     assert fb["name"] == 8.0
     assert fb["description"] == 2.0
     # Un-overridden keys retain defaults.
@@ -88,16 +90,20 @@ def test_field_boosts_override(tmp_path):
 
 
 def test_link_config_defaults(tmp_path):
-    from pico.config import memory_link_config
-    assert memory_link_config(tmp_path) == (3, 0.4)
+    assert _memory(tmp_path)["retrieval"]["link"] == {
+        "max_added": 3,
+        "decay": 0.4,
+    }
 
 
 def test_link_config_override(tmp_path):
-    from pico.config import memory_link_config
     (tmp_path / "pico.toml").write_text(
         "[memory.retrieval.link]\nmax_added = 5\ndecay = 0.6\n", encoding="utf-8"
     )
-    assert memory_link_config(tmp_path) == (5, 0.6)
+    assert _memory(tmp_path)["retrieval"]["link"] == {
+        "max_added": 5,
+        "decay": 0.6,
+    }
 
 
 def test_retrieval_uses_field_boosts_from_config(tmp_path):

@@ -1,6 +1,6 @@
 import pytest
 
-from pico.config import load_pico_toml, project_max_blob_size, resolve_provider_config
+from pico.config import load_pico_toml, resolve_provider_config
 from pico.recovery_policy import DEFAULT_MAX_BLOB_SIZE, snapshot_eligibility
 
 
@@ -16,7 +16,7 @@ def test_load_pico_toml_reads_simple_project_overrides(tmp_path):
 def test_project_max_blob_size_falls_back_to_default_when_missing(tmp_path):
     # 没有 pico.toml 时，project_max_blob_size 必须给出默认值，
     # 保证调用方可以无条件把返回值传给 snapshot_eligibility。
-    assert project_max_blob_size(tmp_path) == DEFAULT_MAX_BLOB_SIZE
+    assert load_pico_toml(tmp_path)["policy"]["max_blob_size"] == DEFAULT_MAX_BLOB_SIZE
 
 
 def test_pico_toml_max_blob_size_overrides_snapshot_eligibility(tmp_path):
@@ -34,7 +34,7 @@ def test_pico_toml_max_blob_size_overrides_snapshot_eligibility(tmp_path):
         encoding="utf-8",
     )
 
-    override_limit = project_max_blob_size(tmp_path)
+    override_limit = load_pico_toml(tmp_path)["policy"]["max_blob_size"]
     assert override_limit == 100
     tightened = snapshot_eligibility(tmp_path, file_rel, max_blob_size=override_limit)
     assert tightened["snapshot_eligible"] is False

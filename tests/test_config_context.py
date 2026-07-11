@@ -1,70 +1,67 @@
-"""Task B2: pico.toml overrides context settings via helper functions."""
+"""pico.toml context settings and their runtime consumers."""
 
 import pytest
 
-from pico.config import (
-    context_history_floor_messages,
-    context_history_soft_cap,
-    context_injection_budget_ratio,
-    context_system_tools_hard_cap,
-)
+from pico.config import load_pico_toml
+
+
+def _context(root):
+    return load_pico_toml(root)["context"]
 
 
 def test_history_soft_cap_default(tmp_path):
-    assert context_history_soft_cap(tmp_path) == 40000
+    assert _context(tmp_path)["history_soft_cap"] == 40000
 
 
 def test_history_soft_cap_override(tmp_path):
     (tmp_path / "pico.toml").write_text(
         "[context]\nhistory_soft_cap = 12345\n", encoding="utf-8"
     )
-    assert context_history_soft_cap(tmp_path) == 12345
+    assert _context(tmp_path)["history_soft_cap"] == 12345
 
 
 def test_history_floor_default(tmp_path):
-    assert context_history_floor_messages(tmp_path) == 6
+    assert _context(tmp_path)["history_floor_messages"] == 6
 
 
 def test_history_floor_override(tmp_path):
     (tmp_path / "pico.toml").write_text(
         "[context]\nhistory_floor_messages = 10\n", encoding="utf-8"
     )
-    assert context_history_floor_messages(tmp_path) == 10
+    assert _context(tmp_path)["history_floor_messages"] == 10
 
 
 def test_injection_budget_ratio_default(tmp_path):
-    assert context_injection_budget_ratio(tmp_path) == pytest.approx(0.15)
+    assert _context(tmp_path)["injection_budget_ratio"] == pytest.approx(0.15)
 
 
 def test_injection_budget_ratio_override(tmp_path):
     (tmp_path / "pico.toml").write_text(
         "[context]\ninjection_budget_ratio = 0.25\n", encoding="utf-8"
     )
-    assert context_injection_budget_ratio(tmp_path) == pytest.approx(0.25)
+    assert _context(tmp_path)["injection_budget_ratio"] == pytest.approx(0.25)
 
 
 def test_system_tools_hard_cap_default(tmp_path):
-    assert context_system_tools_hard_cap(tmp_path) == 20000
+    assert _context(tmp_path)["system_tools_hard_cap"] == 20000
 
 
 def test_system_tools_hard_cap_override(tmp_path):
     (tmp_path / "pico.toml").write_text(
         "[context]\nsystem_tools_hard_cap = 30000\n", encoding="utf-8"
     )
-    assert context_system_tools_hard_cap(tmp_path) == 30000
+    assert _context(tmp_path)["system_tools_hard_cap"] == 30000
 
 
 def test_total_budget_hard_cap_default(tmp_path):
-    from pico.config import context_total_budget_hard_cap
-    assert context_total_budget_hard_cap(tmp_path) == 100000
+    assert _context(tmp_path)["total_budget_hard_cap"] == 100000
 
 
 def test_total_budget_hard_cap_override(tmp_path):
-    from pico.config import context_total_budget_hard_cap
     (tmp_path / "pico.toml").write_text(
         "[context]\ntotal_budget_hard_cap = 50000\n", encoding="utf-8"
     )
-    assert context_total_budget_hard_cap(tmp_path) == 50000
+    assert _context(tmp_path)["total_budget_hard_cap"] == 50000
 
 
 def test_bad_type_falls_back_to_default(tmp_path):
@@ -72,20 +69,18 @@ def test_bad_type_falls_back_to_default(tmp_path):
         '[context]\nhistory_soft_cap = "not-an-int"\n', encoding="utf-8"
     )
     # Fallback rather than raise.
-    assert context_history_soft_cap(tmp_path) == 40000
+    assert _context(tmp_path)["history_soft_cap"] == 40000
 
 
 def test_digest_size_threshold_default(tmp_path):
-    from pico.config import context_digest_size_threshold
-    assert context_digest_size_threshold(tmp_path) == 1200
+    assert _context(tmp_path)["digest"]["size_threshold_chars"] == 1200
 
 
 def test_digest_size_threshold_override(tmp_path):
-    from pico.config import context_digest_size_threshold
     (tmp_path / "pico.toml").write_text(
         "[context.digest]\nsize_threshold_chars = 500\n", encoding="utf-8"
     )
-    assert context_digest_size_threshold(tmp_path) == 500
+    assert _context(tmp_path)["digest"]["size_threshold_chars"] == 500
 
 
 def test_prepare_tool_result_uses_config_threshold(tmp_path):

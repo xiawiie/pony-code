@@ -32,7 +32,7 @@ from .tool_change_recorder import ToolChangeRecorder
 from .tool_context import ToolContext
 from .tool_executor import ToolExecutionResult, ToolExecutor
 from . import tools as toolkit
-from .config import read_project_env
+from .config import load_pico_toml, read_project_env
 from .verification import new_verification_record
 from .workspace import WorkspaceContext, now
 from .workspace_observer import WorkspaceObserver
@@ -340,37 +340,24 @@ class Pico:
             self.root,
             executables=self.trusted_executables,
         )
-        # ADR-0034: pico.toml 里 `[policy] max_blob_size` 是唯一在第一阶段生效的覆盖项。
-        # 构造期解析一次并缓存，后续 snapshot_eligibility 调用都读这个值。
-        from .config import project_max_blob_size
-
-        self.project_max_blob_size = project_max_blob_size(self.root)
-        # Task B2: gather context/memory config from pico.toml. Downstream
-        # subsystems read via `self.agent.context_config[...]` with defaults
-        # already baked in by the helper functions. Must be populated BEFORE
-        # ContextManager is constructed below so build_v2 sees the overrides.
-        from .config import (
-            context_digest_size_threshold,
-            context_history_floor_messages,
-            context_history_soft_cap,
-            context_injection_budget_ratio,
-            context_system_tools_hard_cap,
-            context_total_budget_hard_cap,
-            memory_field_boosts,
-            memory_link_config,
-            memory_recall_config,
-        )
-
+        project_config = load_pico_toml(self.root)
+        context_config = project_config["context"]
+        memory_config = project_config["memory"]
+        retrieval_config = memory_config["retrieval"]
+        self.project_max_blob_size = project_config["policy"]["max_blob_size"]
         self.context_config = {
-            "history_soft_cap": context_history_soft_cap(self.root),
-            "history_floor_messages": context_history_floor_messages(self.root),
-            "injection_budget_ratio": context_injection_budget_ratio(self.root),
-            "system_tools_hard_cap": context_system_tools_hard_cap(self.root),
-            "total_budget_hard_cap": context_total_budget_hard_cap(self.root),
-            "digest_size_threshold": context_digest_size_threshold(self.root),
-            "recall": memory_recall_config(self.root),
-            "field_boosts": memory_field_boosts(self.root),
-            "link_config": memory_link_config(self.root),
+            "history_soft_cap": context_config["history_soft_cap"],
+            "history_floor_messages": context_config["history_floor_messages"],
+            "injection_budget_ratio": context_config["injection_budget_ratio"],
+            "system_tools_hard_cap": context_config["system_tools_hard_cap"],
+            "total_budget_hard_cap": context_config["total_budget_hard_cap"],
+            "digest_size_threshold": context_config["digest"]["size_threshold_chars"],
+            "recall": memory_config["recall"],
+            "field_boosts": retrieval_config["field_boost"],
+            "link_config": (
+                retrieval_config["link"]["max_added"],
+                retrieval_config["link"]["decay"],
+            ),
         }
         if session is None:
             self.session = {
