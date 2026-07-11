@@ -55,6 +55,20 @@ _CONTROL_KEYWORDS = {
     "done",
     "case",
     "esac",
+    "!",
+    "time",
+}
+_COMMAND_PREFIX_KEYWORDS = {
+    "{",
+    "!",
+    "time",
+    "if",
+    "then",
+    "elif",
+    "else",
+    "while",
+    "until",
+    "do",
 }
 _ASSIGNMENT_TOKEN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 
@@ -190,14 +204,17 @@ _WC_OPTIONS = {"-c", "-l", "-w"}
 _GIT_STATUS_OPTIONS = {"--short", "--porcelain", "--porcelain=v1", "--branch"}
 _AUTO_HEADS = {"pwd", "ls", "stat", "file", "wc", "git"}
 _SHELL_WRAPPERS = {"sh", "bash", "zsh"}
-_SHELL_OPTIONS_WITH_VALUE = {
-    "-O",
-    "+O",
-    "-o",
-    "+o",
+_SHELL_REQUIRED_VALUE_OPTIONS = {
     "--rcfile",
     "--init-file",
 }
+_ENV_REQUIRED_LONG_OPTIONS = {
+    "--unset",
+    "--chdir",
+    "--path",
+    "--argv0",
+}
+_ENV_SHORT_VALUE_OPTIONS = frozenset("uCPa")
 _INTERPRETERS = {"python", "python3", "node", "ruby", "perl", "php"}
 _PRIVILEGED = {"sudo", "doas", "pkexec"}
 _DESTRUCTIVE_HEADS = {
@@ -219,25 +236,65 @@ def _shell_wrapper_payload(argv):
         option = argv[index]
         if option == "--":
             return None
-        if option in _SHELL_OPTIONS_WITH_VALUE:
-            index += 1
-            if (
-                index < len(argv)
-                and not argv[index].startswith(("-", "+"))
-            ):
-                index += 1
+        if option in _SHELL_REQUIRED_VALUE_OPTIONS:
+            index += 2
             continue
-        if (
-            option.startswith("-")
-            and not option.startswith("--")
-            and "c" in option[1:]
-        ):
-            return argv[index + 1] if index + 1 < len(argv) else None
-        if option.startswith(("-", "+")):
+        if option.startswith("--"):
             index += 1
+            continue
+        if option.startswith(("-", "+")) and len(option) > 1:
+            cluster = option[1:]
+            for cluster_index, flag in enumerate(cluster):
+                if option[0] == "-" and flag == "c":
+                    return argv[index + 1] if index + 1 < len(argv) else None
+                if flag in "oO":
+                    index += 1
+                    if (
+                        cluster_index == len(cluster) - 1
+                        and index < len(argv)
+                        and not argv[index].startswith(("-", "+"))
+                    ):
+                        index += 1
+                    break
+            else:
+                index += 1
             continue
         return None
     return None
+
+
+def _env_prefix(argv):
+    if not argv or Path(argv[0]).name.casefold() != "env":
+        return False, 0
+    index = 1
+    while index < len(argv):
+        option = argv[index]
+        if option == "--":
+            return False, index + 1
+        if option == "-":
+            index += 1
+            continue
+        if option == "--split-string" or option.startswith("--split-string="):
+            return True, index
+        if option in _ENV_REQUIRED_LONG_OPTIONS:
+            index += 2
+            continue
+        if option.startswith("--"):
+            index += 1
+            continue
+        if option.startswith("-") and len(option) > 1:
+            cluster = option[1:]
+            consume_next = False
+            for cluster_index, flag in enumerate(cluster):
+                if flag == "S":
+                    return True, index
+                if flag in _ENV_SHORT_VALUE_OPTIONS:
+                    consume_next = cluster_index == len(cluster) - 1
+                    break
+            index += 2 if consume_next else 1
+            continue
+        return False, index
+    return False, index
 
 
 def _assessment(risk_class, decision, reason, argv, execution_mode):
@@ -250,7 +307,7 @@ def _assessment(risk_class, decision, reason, argv, execution_mode):
     }
 
 
-def _path_operand_reason(workspace_root, raw_path):
+def _path_operand_reason(workspace_root, raw_path, *, require_regular=False):
     raw = str(raw_path or "")
     if not raw or "\x00" in raw:
         return "unsafe_path"
@@ -274,6 +331,10 @@ def _path_operand_reason(workspace_root, raw_path):
         return "sensitive_path"
     env_template = securitylib.is_allowed_env_template_leaf(relative.as_posix())
     current = root
+    try:
+        mode = root.lstat().st_mode
+    except OSError:
+        return "unsafe_path"
     for index, part in enumerate(relative.parts):
         current = current / part
         try:
@@ -290,12 +351,18 @@ def _path_operand_reason(workspace_root, raw_path):
             return "unsafe_path"
     if env_template and not stat.S_ISREG(mode):
         return "sensitive_path"
+    if require_regular and not stat.S_ISREG(mode):
+        return "unsafe_path"
     return ""
 
 
-def _paths_reason(workspace_root, operands):
+def _paths_reason(workspace_root, operands, *, require_regular=False):
     for operand in operands:
-        reason = _path_operand_reason(workspace_root, operand)
+        reason = _path_operand_reason(
+            workspace_root,
+            operand,
+            require_regular=require_regular,
+        )
         if reason:
             return reason
     return ""
@@ -356,10 +423,136 @@ def _automatic_grammar_reason(argv, workspace_root):
             args = args[1:]
         if not args or any(item.startswith("-") for item in args):
             return "unknown_option_or_missing_path"
-        return _paths_reason(workspace_root, args)
+        return _paths_reason(workspace_root, args, require_regular=True)
     if head == "git":
         return _git_grammar_reason(argv)
     return "unknown_command"
+
+
+def _backtick_end(raw, start):
+    escaped = False
+    for index in range(start + 1, len(raw)):
+        char = raw[index]
+        if escaped:
+            escaped = False
+        elif char == "\\":
+            escaped = True
+        elif char == "`":
+            return index
+    return -1
+
+
+def _dollar_paren_end(raw, start):
+    depth = 1
+    quote = ""
+    escaped = False
+    in_backtick = False
+    quoted_substitutions = 0
+    index = start + 2
+    while index < len(raw):
+        char = raw[index]
+        if escaped:
+            escaped = False
+            index += 1
+            continue
+        if quote == "single":
+            if char == "'":
+                quote = ""
+            index += 1
+            continue
+        if char == "\\":
+            escaped = True
+            index += 1
+            continue
+        if in_backtick:
+            if char == "`":
+                in_backtick = False
+            index += 1
+            continue
+        pair = raw[index : index + 2]
+        if char == "`":
+            in_backtick = True
+            index += 1
+            continue
+        if quote == "double":
+            if char == '"':
+                quote = ""
+            elif pair == "$(":
+                depth += 1
+                quoted_substitutions += 1
+                index += 2
+                continue
+            elif char == ")" and quoted_substitutions:
+                depth -= 1
+                quoted_substitutions -= 1
+            index += 1
+            continue
+        if char == "'":
+            quote = "single"
+        elif char == '"':
+            quote = "double"
+        elif pair == "$(":
+            depth += 1
+            index += 2
+            continue
+        elif char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                return index
+        index += 1
+    return -1
+
+
+def _embedded_shell_payloads(command):
+    raw = str(command or "")
+    payloads = []
+    last_close = raw.rfind(")")
+    broad_payload_added = False
+    quote = ""
+    escaped = False
+    index = 0
+    while index < len(raw):
+        char = raw[index]
+        if escaped:
+            escaped = False
+            index += 1
+            continue
+        if quote == "single":
+            if char == "'":
+                quote = ""
+            index += 1
+            continue
+        if char == "\\":
+            escaped = True
+            index += 1
+            continue
+        if char == "'" and not quote:
+            quote = "single"
+            index += 1
+            continue
+        if char == '"':
+            quote = "" if quote == "double" else "double"
+            index += 1
+            continue
+        if char == "`":
+            end = _backtick_end(raw, index)
+            if end >= 0:
+                payloads.append(raw[index + 1 : end])
+                index = end + 1
+                continue
+        if raw[index : index + 2] == "$(":
+            end = _dollar_paren_end(raw, index)
+            if end >= 0:
+                payloads.append(raw[index + 2 : end])
+                if not broad_payload_added and last_close > end:
+                    payloads.append(raw[index + 2 : last_close])
+                    broad_payload_added = True
+                index = end + 1
+                continue
+        index += 1
+    return tuple(payloads)
 
 
 def _remove_shell_line_continuations(command):
@@ -375,17 +568,22 @@ def _remove_shell_line_continuations(command):
                 quote = ""
             index += 1
             continue
+        if not quote:
+            line_break_length = _line_break_length(raw, index)
+            if line_break_length:
+                result.append(";")
+                index += line_break_length
+                continue
         if char == "\\":
             line_break_length = _line_break_length(raw, index + 1)
             if line_break_length:
                 index += line_break_length + 1
                 continue
-            result.append(char)
-            if index + 1 < len(raw):
-                result.append(raw[index + 1])
-                index += 2
-            else:
+            if index + 1 >= len(raw):
                 index += 1
+                continue
+            result.extend((char, raw[index + 1]))
+            index += 2
             continue
         result.append(char)
         if char == "'" and not quote:
@@ -405,28 +603,107 @@ def _grammar_words(command):
     return list(lexer)
 
 
+def _literal_word_is_sensitive(word):
+    if is_sensitive_path(word):
+        return True
+    if not word.startswith("-") or len(word) <= 2:
+        return False
+    if securitylib.has_sensitive_path_suffix(word):
+        return True
+    candidates = [word[2:]]
+    if "=" in word:
+        candidates.append(word.split("=", 1)[1])
+    dot_index = word.find(".", 2)
+    if dot_index >= 0:
+        candidates.append(word[dot_index:])
+    return any(is_sensitive_path(candidate) for candidate in candidates)
+
+
+def _assignment_value_is_sensitive(token):
+    return bool(
+        _ASSIGNMENT_TOKEN_RE.match(token)
+        and _literal_word_is_sensitive(token.split("=", 1)[1])
+    )
+
+
+def _command_segments(words):
+    boundaries = {"&&", "||", ";", "|", "&", "(", ")"}
+    segments = [[]]
+    for word in words:
+        if word in boundaries:
+            segments.append([])
+        else:
+            segments[-1].append(word)
+    return segments
+
+
+def _is_redirect_run(token):
+    return bool(
+        token
+        and any(char in "<>" for char in token)
+        and all(char in _ONE_CHAR_SHELL_TOKENS for char in token)
+    )
+
+
 def _literal_sensitive_reason(command, workspace_root):
     pending = [str(command or "")]
     seen = set()
     while pending:
-        text = _remove_shell_line_continuations(pending.pop())
+        raw = pending.pop()
+        text = _remove_shell_line_continuations(raw)
         if text in seen:
             continue
         seen.add(text)
+        pending.extend(_embedded_shell_payloads(text))
         try:
             words = _grammar_words(text)
         except ValueError:
             words = re.split(r"[\s|&;<>]+", text)
-        if any(is_sensitive_path(word) for word in words):
+        for index, word in enumerate(words):
+            if Path(word).name.casefold() != "env":
+                continue
+            has_split_string, _ = _env_prefix(words[index:])
+            if has_split_string:
+                return "env_split_string_rejected"
+        if any(_literal_word_is_sensitive(word) for word in words):
             return "sensitive_path"
-        try:
-            argv = shlex.split(text, comments=False, posix=True)
-        except ValueError:
-            continue
-        for index, token in enumerate(argv):
+        for segment in _command_segments(words):
+            index = 0
+            while index < len(segment):
+                if segment[index].casefold() in _COMMAND_PREFIX_KEYWORDS:
+                    index += 1
+                    continue
+                if _ASSIGNMENT_TOKEN_RE.match(segment[index]):
+                    if _assignment_value_is_sensitive(segment[index]):
+                        return "sensitive_path"
+                    index += 1
+                    continue
+                if (
+                    segment[index].isdigit()
+                    and index + 1 < len(segment)
+                    and _is_redirect_run(segment[index + 1])
+                ):
+                    index += 1
+                if index < len(segment) and _is_redirect_run(segment[index]):
+                    index += 2
+                    continue
+                break
+            if (
+                index < len(segment)
+                and Path(segment[index]).name.casefold() == "env"
+            ):
+                _, env_index = _env_prefix(segment[index:])
+                index += env_index
+                while index < len(segment) and _ASSIGNMENT_TOKEN_RE.match(
+                    segment[index]
+                ):
+                    if _assignment_value_is_sensitive(segment[index]):
+                        return "sensitive_path"
+                    index += 1
+        for index, token in enumerate(words):
             if Path(token).name.casefold() not in _SHELL_WRAPPERS:
                 continue
-            payload = _shell_wrapper_payload(argv[index:])
+            payload = _shell_wrapper_payload(words[index:])
             if payload is not None:
                 pending.append(payload)
     return ""

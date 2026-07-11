@@ -4,6 +4,7 @@ from pico.security import (
     REDACTED_VALUE,
     contains_secret_material,
     detected_secret_env_items,
+    has_sensitive_path_suffix,
     is_sensitive_path,
     looks_secret_shaped_text,
     looks_sensitive_env_name,
@@ -127,6 +128,27 @@ def test_sensitive_path_classification_does_not_read_or_resolve(tmp_path):
 
     assert not is_sensitive_path(ordinary)
     assert not is_sensitive_path(alias)
+
+
+@pytest.mark.parametrize(
+    "token",
+    (
+        "-sKcredentials.json",
+        "--key=service-account-prod.json",
+        "-Kclient.pem",
+        "-K.env",
+    ),
+)
+def test_sensitive_path_suffix_detects_option_attached_material(token):
+    assert has_sensitive_path_suffix(token)
+
+
+@pytest.mark.parametrize(
+    "token",
+    ("README.md", "-K.env.example", "config/secret.json"),
+)
+def test_sensitive_path_suffix_ignores_public_material(token):
+    assert not has_sensitive_path_suffix(token)
 
 
 def test_sensitive_env_name_detection_matches_runtime_policy():

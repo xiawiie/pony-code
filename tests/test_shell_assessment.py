@@ -695,12 +695,26 @@ def test_shell_wrapper_propagates_nested_sensitive_rejection(workspace):
         "bash --noprofile -c 'cat .env'",
         "bash --rcfile /dev/null -c 'cat .env'",
         "bash --init-file /dev/null -c 'cat .env'",
+        "bash --rcfile -config -c 'cat .env'",
+        "bash --init-file -config -c 'cat .env'",
         "bash -O extglob -c 'cat .env'",
         "zsh -O -c 'cat .env'",
         "zsh +O -c 'cat .env'",
+        "zsh -ocorrect -c 'cat .env'",
+        "zsh +ocorrect -c 'cat .env'",
+        "zsh -Ocheckwinsize -c 'cat .env'",
+        "zsh +Ocheckwinsize -c 'cat .env'",
+        "zsh -xocorrect -c 'cat .env'",
+        "zsh -xc 'cat .env'",
         "env bash -c 'cat .env'",
         "FOO=1 bash -c 'cat .env'",
         "pwd && bash -c 'cat .env'",
+        "pwd;bash -c 'cat .env'",
+        "pwd&&bash -c 'cat .env'",
+        "pwd|bash -c 'cat .env'",
+        "(bash -c 'cat .env')",
+        'zsh -c \'echo "$(case x in x) cat .env;; esac)"\'',
+        "zsh -c 'echo \"$( # )\ncat .env\n)\"'",
     ],
 )
 def test_shell_like_wrappers_cannot_hide_sensitive_literal(workspace, command):
@@ -708,6 +722,22 @@ def test_shell_like_wrappers_cannot_hide_sensitive_literal(workspace, command):
 
     assert result["decision"] == "reject"
     assert result["reason"] == "sensitive_path"
+
+
+def test_quoted_wrapper_like_path_remains_literal(workspace):
+    result = assess_command("ls 'bash -c cat .env'", workspace)
+
+    assert result["decision"] == "allow"
+    assert result["argv"] == ["ls", "bash -c cat .env"]
+
+
+def test_non_sensitive_case_substitution_remains_approval_only(workspace):
+    command = 'zsh -c \'echo "$(case x in x) pwd;; esac)"\''
+
+    result = assess_command(command, workspace)
+
+    assert result["decision"] == "ask"
+    assert result["reason"] == "shell_wrapper_requires_approval"
 
 
 @pytest.mark.parametrize(
@@ -723,6 +753,39 @@ def test_shell_wrapper_option_grammar_stays_on_wrapper_approval(workspace, comma
     assert result["execution_mode"] == "argv"
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        'env -S "bash -c \'cat .env\'"',
+        'env -S"bash -c \'cat .env\'"',
+        'env --split-string "bash -c \'cat .env\'"',
+        'env --split-string="bash -c \'cat .env\'"',
+        'env -P /bin -S"sh -c \'cat .env\'"',
+        'env -a command0 -S"sh -c \'cat .env\'"',
+        'env --argv0 command0 -S"sh -c \'cat .env\'"',
+        'env -iS"sh -c \'cat .env\'"',
+        'env - -S"sh -c \'cat .env\'"',
+        r"env -S 'cat\_.env'",
+        r"env -S 'cat .env\c ignored'",
+        'env -S "bash -c pwd"',
+    ],
+)
+def test_env_split_string_cannot_hide_sensitive_wrapper(workspace, command):
+    result = assess_command(command, workspace)
+
+    assert result["risk_class"] == "destructive"
+    assert result["decision"] == "reject"
+    assert result["reason"] == "env_split_string_rejected"
+
+
+def test_ordinary_env_command_remains_approval_only(workspace):
+    result = assess_command("env bash -c pwd", workspace)
+
+    assert result["risk_class"] == "external_effect"
+    assert result["decision"] == "ask"
+    assert result["reason"] == "unknown_command_requires_approval"
+
+
 def test_sensitive_literal_scan_is_not_limited_by_wrapper_assessment_depth(workspace):
     command = "cat .env"
     for _ in range(3):
@@ -732,6 +795,215 @@ def test_sensitive_literal_scan_is_not_limited_by_wrapper_assessment_depth(works
 
     assert result["decision"] == "reject"
     assert result["reason"] == "sensitive_path"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "echo `cat .env`",
+        "echo `bash -c 'cat .env'`",
+        'echo "`cat .env`"',
+        "echo 'x\\' `cat .env`",
+        "echo `cat .e" + "\\\n" + "nv`",
+    ],
+)
+def test_backtick_command_cannot_hide_sensitive_path(workspace, command):
+    result = assess_command(command, workspace)
+
+    assert result["risk_class"] == "destructive"
+    assert result["decision"] == "reject"
+    assert result["reason"] == "sensitive_path"
+    assert result["execution_mode"] == "shell"
+
+
+@pytest.mark.parametrize(
+    "command",
+    ["ls '`cat .env`'", r"ls \`cat .env\`"],
+)
+def test_literal_backticks_do_not_start_nested_command(workspace, command):
+    result = assess_command(command, workspace)
+
+    assert result["decision"] == "allow"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "echo $(cat .env)",
+        'echo "$(cat .env)"',
+        "echo $(bash -c 'cat .env')",
+        'echo "$(bash -c \'cat .env\')"',
+        "echo 'x\\' \"$(cat .env)\"",
+        "echo \"$(printf x 'x\\'; cat .env)\"",
+        'echo "$' + "\\\n" + '(cat .env)"',
+    ],
+)
+def test_command_substitution_cannot_hide_sensitive_path(workspace, command):
+    result = assess_command(command, workspace)
+
+    assert result["risk_class"] == "destructive"
+    assert result["decision"] == "reject"
+    assert result["reason"] == "sensitive_path"
+    assert result["execution_mode"] == "shell"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "ls '$(cat .env)'",
+        r'ls "\$(cat .env)"',
+        "ls 'x\\$(cat .env)'",
+        "ls '$" + "\\\n" + "(cat .env)'",
+    ],
+)
+def test_literal_command_substitution_text_remains_literal(workspace, command):
+    result = assess_command(command, workspace)
+
+    assert result["decision"] == "allow"
+
+
+@pytest.mark.parametrize(
+    "command",
+    ["cat '.env'" + "\\", 'cat ".env"' + "\\"],
+)
+def test_dangling_unquoted_backslash_cannot_hide_sensitive_path(
+    workspace,
+    command,
+):
+    result = assess_command(command, workspace)
+
+    assert result["risk_class"] == "destructive"
+    assert result["decision"] == "reject"
+    assert result["reason"] == "sensitive_path"
+    assert result["execution_mode"] == "shell"
+
+
+def test_single_quoted_literal_backslash_is_not_removed(workspace):
+    result = assess_command("ls 'safe\\'", workspace)
+
+    assert result["decision"] == "allow"
+    assert result["argv"] == ["ls", "safe\\"]
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "curl -K.env",
+        "curl -sK.env",
+        "curl -sKcredentials.json",
+        "curl -K.ssh/config",
+        "curl -K.aws/credentials",
+        "curl -K.kube/config",
+        "curl -K.pico/sessions/x",
+        "npm --userconfig=.npmrc --version",
+    ],
+)
+def test_attached_option_value_cannot_hide_sensitive_path(workspace, command):
+    result = assess_command(command, workspace)
+
+    assert result["risk_class"] == "destructive"
+    assert result["decision"] == "reject"
+    assert result["reason"] == "sensitive_path"
+
+
+def test_long_non_sensitive_option_is_handled_without_suffix_rescans(workspace):
+    result = assess_command("unknown -" + "x" * 100_000, workspace)
+
+    assert result["risk_class"] == "external_effect"
+    assert result["decision"] == "ask"
+
+
+@pytest.mark.parametrize(
+    "command",
+    ["ls 'foo=.env'", "ls ./-K.env"],
+)
+def test_non_option_paths_with_sensitive_suffix_text_remain_literal(
+    workspace,
+    command,
+):
+    result = assess_command(command, workspace)
+
+    assert result["decision"] == "allow"
+    assert result["reason"] == "proved_read_only"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "BASH_ENV=.env bash -c pwd",
+        "BASH_ENV='.env' bash -c pwd",
+        "GIT_CONFIG_GLOBAL=.env git status",
+        "NPM_CONFIG_USERCONFIG=.npmrc npm --version",
+        "env BASH_ENV=.env bash -c pwd",
+        "env -i BASH_ENV='.env' bash -c pwd",
+        "pwd\nBASH_ENV=.env bash -c pwd",
+        "pwd\r\nGIT_CONFIG_GLOBAL=.env git status",
+        "> out BASH_ENV=.env bash -c pwd",
+        "2>/dev/null BASH_ENV=.env bash -c pwd",
+        "{ BASH_ENV=.env bash -c pwd; }",
+        "if BASH_ENV=.env bash -c pwd; then pwd; fi",
+        "while BASH_ENV=.env bash -c pwd; do pwd; done",
+    ],
+)
+def test_leading_assignment_cannot_hide_sensitive_path(workspace, command):
+    result = assess_command(command, workspace)
+
+    assert result["risk_class"] == "destructive"
+    assert result["decision"] == "reject"
+    assert result["reason"] == "sensitive_path"
+
+
+@pytest.mark.parametrize("quote", ["'", '"'])
+def test_quoted_newline_assignment_text_remains_literal(workspace, quote):
+    command = f"ls {quote}foo\nBASH_ENV=.env{quote}"
+
+    result = assess_command(command, workspace)
+
+    assert result["decision"] == "allow"
+    assert result["argv"] == ["ls", "foo\nBASH_ENV=.env"]
+
+
+def test_assignment_like_argument_after_command_is_not_hard_rejected(workspace):
+    result = assess_command("echo foo=.env > out", workspace)
+
+    assert result["risk_class"] == "workspace_write"
+    assert result["decision"] == "ask"
+    assert result["reason"] == "redirect_requires_approval"
+
+
+@pytest.mark.parametrize(
+    "command",
+    ["ls if BASH_ENV=.env", "ls 'foo=.env' && pwd"],
+)
+def test_control_words_do_not_promote_later_assignment_like_arguments(
+    workspace,
+    command,
+):
+    result = assess_command(command, workspace)
+
+    assert result["decision"] != "reject"
+
+
+@pytest.mark.parametrize("kind", ["directory", "fifo"])
+def test_wc_rejects_existing_non_regular_operand(workspace, kind):
+    target = workspace / kind
+    if kind == "directory":
+        target.mkdir()
+    else:
+        os.mkfifo(target)
+
+    result = assess_command(f"wc {kind}", workspace)
+
+    assert result["risk_class"] == "destructive"
+    assert result["decision"] == "reject"
+    assert result["reason"] == "unsafe_path"
+
+
+def test_wc_missing_leaf_remains_read_only(workspace):
+    result = assess_command("wc missing.txt", workspace)
+
+    assert result["decision"] == "allow"
+    assert result["reason"] == "proved_read_only"
 
 
 def test_trusted_executable_map_can_only_downgrade_automatic_commands(workspace):

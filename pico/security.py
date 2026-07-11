@@ -141,6 +141,16 @@ def is_sensitive_path(raw_path):
     return bool(sensitive_path_reason(raw_path))
 
 
+def has_sensitive_path_suffix(raw_path):
+    text = os.fsdecode(os.fspath(raw_path)).replace("\\", "/").casefold()
+    leaf = text.rsplit("/", 1)[-1]
+    return (
+        any(text.endswith(name) for name in _SENSITIVE_PATH_BASENAMES)
+        or text.endswith(_SENSITIVE_KEYSTORE_SUFFIXES)
+        or ("service-account" in leaf and leaf.endswith(".json"))
+    )
+
+
 def is_allowed_env_template_leaf(raw_path):
     parts = _normalized_posix_parts(raw_path)
     return bool(parts and parts[-1] in _ALLOWED_ENV_TEMPLATE_BASENAMES)
