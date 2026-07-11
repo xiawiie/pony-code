@@ -182,7 +182,7 @@ def test_post_runner_interrupt_closes_workspace_change_then_reraises(tmp_path, m
     monkeypatch.setattr(agent.workspace_observer, "capture", interrupt_after_runner)
 
     with pytest.raises(KeyboardInterrupt):
-        agent.execute_tool("run_shell", {"command": "printf ok", "timeout": 5})
+        agent.execute_tool("run_shell", {"command": "pwd", "timeout": 5})
 
     records = agent.checkpoint_store.list_tool_change_records()
     assert records[-1]["status"] == "interrupted"
@@ -393,7 +393,7 @@ def test_destructive_run_shell_is_not_auto_approved(tmp_path):
 
     assert result.metadata["tool_status"] == "rejected"
     assert result.metadata["tool_error_code"] == "command_approval_required"
-    assert result.metadata["command_risk_class"] == "destructive"
+    assert result.metadata["command_approval"]["decision"] == "ask"
     assert victim.exists()
     assert "tool_change_id" not in result.metadata
 
@@ -416,9 +416,33 @@ def test_destructive_run_shell_wrapped_forms_are_not_auto_approved(tmp_path):
 
         assert result.metadata["tool_status"] == "rejected"
         assert result.metadata["tool_error_code"] == "command_approval_required"
-        assert result.metadata["command_risk_class"] == "destructive"
+        assert result.metadata["command_approval"]["decision"] == "ask"
         assert victim.read_text(encoding="utf-8") == "keep\n"
         assert "tool_change_id" not in result.metadata
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "ls README.md\nrm victim.txt",
+        "cat README.md > .e\\\nnv",
+        "wc {,.}env",
+    ],
+)
+def test_shell_expansion_bypasses_never_reach_runner(tmp_path, command):
+    agent = build_agent(tmp_path)
+    victim = tmp_path / "victim.txt"
+    victim.write_text("keep\n", encoding="utf-8")
+    runner = Mock(return_value="must not run")
+    agent.tools["run_shell"]["run"] = runner
+
+    result = agent.execute_tool("run_shell", {"command": command, "timeout": 5})
+
+    assert result.metadata["tool_status"] == "rejected"
+    assert result.metadata["tool_error_code"] == "command_approval_required"
+    runner.assert_not_called()
+    assert victim.read_text(encoding="utf-8") == "keep\n"
+    assert not (tmp_path / ".env").exists()
 
 
 def test_write_file_recovery_does_not_use_full_workspace_snapshot(tmp_path):

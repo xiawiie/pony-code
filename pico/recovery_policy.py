@@ -12,18 +12,7 @@ from pathlib import Path
 
 from pico import security as securitylib
 from pico.recovery_paths import normalize_workspace_relative_path
-
-# 组合运算符：任何一种都能把“看似安全的第一段”后面拼上任意命令。
-# 早先版本只识别 > >> | && ;，漏掉 || & 后台运行、输入重定向、命令替换等。
-_COMPOSITE_OPERATORS = {">", ">>", "<", "<<", "|", "||", "&&", "&", ";"}
-
-# 命令替换/子 shell 也算复合结构；出现即触发递归分类。
-_SUBSHELL_INTRO_TOKENS = ("$(", "`", "(")
-
-# shell wrapper 递归的硬上限；深度到这个数还没有底就直接按最保守 destructive 兜底，
-# 避免恶意/失控输入把 Python 递归栈炸掉。
-_MAX_SHELL_WRAPPER_DEPTH = 32
-
+from pico.security import is_sensitive_path
 
 # 单文件快照上限：Phase 1 用固定值 8 MiB。真实用户覆写在 pico.toml 里。
 DEFAULT_MAX_BLOB_SIZE = 8 * 1024 * 1024
@@ -50,390 +39,535 @@ _BINARY_EXTENSIONS = {
     ".wasm",
 }
 
-_READ_ONLY_COMMANDS = {
-    "ls", "cat", "pwd", "echo", "printf", "head", "tail", "wc", "grep", "rg",
-    "find", "stat", "file", "sha256sum", "md5sum", "diff", "which", "type",
-    "env", "date", "hostname", "id", "whoami", "tree",
+_TWO_CHAR_SHELL_TOKENS = ("&&", "||", "<<", ">>")
+_ONE_CHAR_SHELL_TOKENS = frozenset("|;&<>()")
+_REDIRECT_TOKENS = {"<", ">", "<<", ">>"}
+_CONTROL_KEYWORDS = {
+    "if",
+    "then",
+    "elif",
+    "else",
+    "fi",
+    "while",
+    "until",
+    "for",
+    "do",
+    "done",
+    "case",
+    "esac",
 }
-
-_READ_ONLY_GIT_SUBCOMMANDS = {
-    "status", "log", "diff", "show", "branch", "rev-parse", "config",
-    "remote", "ls-files", "ls-tree", "blame", "shortlog", "describe",
-    "reflog", "tag", "worktree",
-}
-
-_DESTRUCTIVE_COMMANDS = {"rm", "rmdir", "shred", "trash", "mv", "dd", "shutdown", "reboot"}
-_DESTRUCTIVE_GIT_SUBCOMMANDS = {
-    "reset", "clean", "checkout", "restore", "push", "rebase", "merge", "commit", "branch", "tag", "gc",
-}
-
-_EXTERNAL_EFFECT_COMMANDS = {
-    "curl", "wget", "ssh", "scp", "rsync", "docker", "kubectl", "helm",
-    "aws", "gcloud", "az", "npm", "pnpm", "yarn", "pip", "uv", "cargo",
-    "gh", "git-lfs",
-}
-_ENV_OPTIONS_WITH_VALUE = {"-u", "--unset", "-C", "--chdir"}
-_ENV_OPTIONS_WITH_VALUE_PREFIXES = ("--unset=", "--chdir=")
-_ENV_FLAGS_WITHOUT_VALUE = {"-i", "-0", "--ignore-environment", "--null", "--debug"}
-_GIT_GLOBAL_OPTIONS_WITH_VALUE = {
-    "-C",
-    "-c",
-    "--git-dir",
-    "--work-tree",
-    "--namespace",
-    "--exec-path",
-    "--config-env",
-}
-_GIT_GLOBAL_OPTIONS_WITH_VALUE_PREFIXES = (
-    "--git-dir=",
-    "--work-tree=",
-    "--namespace=",
-    "--exec-path=",
-    "--config-env=",
-)
-
-# sh/bash/zsh 之类的 shell wrapper 会用 -c 参数把真正的命令藏在字符串里，
-# 单看第一个 token 会漏判。任何 shell wrapper 都必须递归解析 -c 后面的内容。
-_SHELL_WRAPPERS = {"sh", "bash", "zsh", "dash", "ash", "ksh", "fish"}
+_ASSIGNMENT_TOKEN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 
 
-def _classify_git(tokens):
-    sub = _git_subcommand(tokens)
-    if not sub:
-        return "read_only"
-    if sub in _READ_ONLY_GIT_SUBCOMMANDS and sub not in _DESTRUCTIVE_GIT_SUBCOMMANDS:
-        return "read_only"
-    if sub in _DESTRUCTIVE_GIT_SUBCOMMANDS:
-        return "destructive"
-    return "workspace_write"
+def _line_break_length(raw, index):
+    if raw[index : index + 2] == "\r\n":
+        return 2
+    return int(index < len(raw) and raw[index] in "\r\n")
 
 
-def _git_subcommand(tokens):
-    index = 1
-    while index < len(tokens):
-        token = tokens[index]
-        if token == "--":
+def _scan_shell_syntax(command):
+    raw = str(command or "")
+    operators = []
+    redirect_operators = []
+    has_expansion = False
+    quote = ""
+    escaped = False
+    index = 0
+    while index < len(raw):
+        char = raw[index]
+        if escaped:
+            escaped = False
             index += 1
-            break
-        if token in _GIT_GLOBAL_OPTIONS_WITH_VALUE:
+            continue
+        if quote == "single":
+            if char == "'":
+                quote = ""
+            index += 1
+            continue
+        if quote == "double":
+            if char == '"':
+                quote = ""
+            elif char == "\\":
+                line_break_length = _line_break_length(raw, index + 1)
+                if line_break_length:
+                    operators.append("\n")
+                    index += line_break_length + 1
+                    continue
+                escaped = True
+            elif char == "`" or char == "$":
+                has_expansion = True
+            index += 1
+            continue
+        if char == "\\":
+            line_break_length = _line_break_length(raw, index + 1)
+            if line_break_length:
+                operators.append("\n")
+                index += line_break_length + 1
+                continue
+            escaped = True
+            index += 1
+            continue
+        if char == "'":
+            quote = "single"
+            index += 1
+            continue
+        if char == '"':
+            quote = "double"
+            index += 1
+            continue
+        line_break_length = _line_break_length(raw, index)
+        if line_break_length:
+            operators.append("\n")
+            index += line_break_length
+            continue
+        pair = raw[index : index + 2]
+        if pair == "$(":
+            operators.append(pair)
+            has_expansion = True
             index += 2
             continue
-        if any(token.startswith(prefix) for prefix in _GIT_GLOBAL_OPTIONS_WITH_VALUE_PREFIXES):
+        if pair in _TWO_CHAR_SHELL_TOKENS:
+            operators.append(pair)
+            if pair in _REDIRECT_TOKENS:
+                redirect_operators.append(pair)
+            index += 2
+            continue
+        if char in _ONE_CHAR_SHELL_TOKENS:
+            operators.append(char)
+            if char in _REDIRECT_TOKENS:
+                redirect_operators.append(char)
             index += 1
             continue
-        if token.startswith("-") and token != "-":
+        if char in "`$*?[{" or (
+            char == "~" and (index == 0 or raw[index - 1].isspace())
+        ):
+            has_expansion = True
+        index += 1
+
+    parse_error = bool(quote or escaped)
+    argv = []
+    if not parse_error:
+        try:
+            argv = shlex.split(raw, comments=False, posix=True)
+        except ValueError:
+            parse_error = True
+    redirects = []
+    if not parse_error and redirect_operators:
+        lexer = shlex.shlex(raw, posix=True, punctuation_chars="|&;<>()")
+        lexer.whitespace_split = True
+        lexer.commenters = ""
+        grammar_tokens = list(lexer)
+        for token_index, token in enumerate(grammar_tokens):
+            if token in _REDIRECT_TOKENS:
+                target = (
+                    grammar_tokens[token_index + 1]
+                    if token_index + 1 < len(grammar_tokens)
+                    else ""
+                )
+                redirects.append((token, target))
+            elif (
+                any(char in "<>" for char in token)
+                and all(char in _ONE_CHAR_SHELL_TOKENS for char in token)
+            ):
+                redirects.append((token, ""))
+    has_assignment = bool(argv and _ASSIGNMENT_TOKEN_RE.match(argv[0]))
+    has_control_keyword = bool(
+        argv and argv[0].casefold() in _CONTROL_KEYWORDS
+    )
+    return {
+        "parse_error": parse_error,
+        "operators": tuple(operators),
+        "redirects": tuple(redirects),
+        "has_expansion": has_expansion,
+        "has_assignment": has_assignment,
+        "has_control_keyword": has_control_keyword,
+    }
+
+
+_LS_OPTIONS = {"-1", "-a", "-A", "-d", "-F", "-l"}
+_FILE_OPTIONS = {"-b", "--brief"}
+_WC_OPTIONS = {"-c", "-l", "-w"}
+_GIT_STATUS_OPTIONS = {"--short", "--porcelain", "--porcelain=v1", "--branch"}
+_AUTO_HEADS = {"pwd", "ls", "stat", "file", "wc", "git"}
+_SHELL_WRAPPERS = {"sh", "bash", "zsh"}
+_SHELL_OPTIONS_WITH_VALUE = {
+    "-O",
+    "+O",
+    "-o",
+    "+o",
+    "--rcfile",
+    "--init-file",
+}
+_INTERPRETERS = {"python", "python3", "node", "ruby", "perl", "php"}
+_PRIVILEGED = {"sudo", "doas", "pkexec"}
+_DESTRUCTIVE_HEADS = {
+    "shutdown",
+    "reboot",
+    "mount",
+    "umount",
+    "chown",
+    "chmod",
+    "kill",
+}
+
+
+def _shell_wrapper_payload(argv):
+    if not argv or Path(argv[0]).name.casefold() not in _SHELL_WRAPPERS:
+        return None
+    index = 1
+    while index < len(argv):
+        option = argv[index]
+        if option == "--":
+            return None
+        if option in _SHELL_OPTIONS_WITH_VALUE:
+            index += 1
+            if (
+                index < len(argv)
+                and not argv[index].startswith(("-", "+"))
+            ):
+                index += 1
+            continue
+        if (
+            option.startswith("-")
+            and not option.startswith("--")
+            and "c" in option[1:]
+        ):
+            return argv[index + 1] if index + 1 < len(argv) else None
+        if option.startswith(("-", "+")):
             index += 1
             continue
-        return token.lower()
-    if index < len(tokens):
-        return tokens[index].lower()
+        return None
+    return None
+
+
+def _assessment(risk_class, decision, reason, argv, execution_mode):
+    return {
+        "risk_class": risk_class,
+        "decision": decision,
+        "reason": reason,
+        "argv": list(argv),
+        "execution_mode": execution_mode,
+    }
+
+
+def _path_operand_reason(workspace_root, raw_path):
+    raw = str(raw_path or "")
+    if not raw or "\x00" in raw:
+        return "unsafe_path"
+    try:
+        root = Path(workspace_root).resolve(strict=True)
+        source = Path(raw)
+        candidate = Path(
+            os.path.abspath(
+                os.fspath(source if source.is_absolute() else root / source)
+            )
+        )
+    except (OSError, RuntimeError, ValueError):
+        return "unsafe_path"
+    try:
+        relative = candidate.relative_to(root)
+    except ValueError:
+        return "outside_path"
+    if ".." in source.parts:
+        return "unsafe_path"
+    if is_sensitive_path(relative.as_posix()):
+        return "sensitive_path"
+    env_template = securitylib.is_allowed_env_template_leaf(relative.as_posix())
+    current = root
+    for index, part in enumerate(relative.parts):
+        current = current / part
+        try:
+            mode = current.lstat().st_mode
+        except FileNotFoundError:
+            if index < len(relative.parts) - 1:
+                return "unsafe_path"
+            return "sensitive_path" if env_template else ""
+        except OSError:
+            return "unsafe_path"
+        if stat.S_ISLNK(mode):
+            return "unsafe_path"
+        if index < len(relative.parts) - 1 and not stat.S_ISDIR(mode):
+            return "unsafe_path"
+    if env_template and not stat.S_ISREG(mode):
+        return "sensitive_path"
     return ""
 
 
-def command_risk_class(command, _depth=0):
-    """把 shell 命令粗分成四个类别：read_only / workspace_write / destructive / external_effect。
+def _paths_reason(workspace_root, operands):
+    for operand in operands:
+        reason = _path_operand_reason(workspace_root, operand)
+        if reason:
+            return reason
+    return ""
 
-    只看命令头（第一个词）和几种常见的子命令。真正的沙箱决策要靠 approval 层。
-    """
-    if command is None:
-        return "workspace_write"
-    text = str(command).strip()
-    if not text:
-        return "workspace_write"
-    # 深度守卫：递归 shell wrapper 或命令替换过深，直接按最严格类别兜底。
-    if _depth >= _MAX_SHELL_WRAPPER_DEPTH:
-        return "destructive"
-    # 先处理“整个命令就是一个 shell group”的形态：`(...)` / `{ ...; }`。
-    # 这些 wrapper 里可以藏任意命令，必须递归分类内部内容。
-    group_verdict = _classify_shell_group(text, _depth)
-    if group_verdict is not None:
-        return group_verdict
-    # 命令替换本身要分类，但不能提前 return：外层命令也可能更危险，
-    # 例如 `rm -rf build $(echo ok)` 的内层是 read_only，外层才是 destructive。
-    embedded_verdict = _classify_embedded_commands(text, _depth)
-    try:
-        lexer = shlex.shlex(_normalize_shell_separators(text), posix=True, punctuation_chars=True)
-        lexer.whitespace_split = True
-        tokens = _expand_operator_tokens(list(lexer))
-    except (TypeError, ValueError):
-        tokens = text.split()
-    if not tokens:
-        return "workspace_write"
-    if any(token in _COMPOSITE_OPERATORS for token in tokens):
-        outer_verdict = _classify_composite_shell(tokens, _depth)
-        return _combine_with_embedded(outer_verdict, embedded_verdict)
-    head = Path(tokens[0]).name.lower()
 
-    if head in _SHELL_WRAPPERS:
-        outer_verdict = _classify_shell_wrapper(tokens, _depth)
-        return _combine_with_embedded(outer_verdict, embedded_verdict)
+def _git_grammar_reason(argv):
+    args = tuple(argv[1:])
+    if not args:
+        return "unknown_git_grammar"
+    subcommand, rest = args[0], args[1:]
+    if subcommand == "status":
+        return (
+            ""
+            if len(rest) == len(set(rest)) and set(rest) <= _GIT_STATUS_OPTIONS
+            else "unknown_git_grammar"
+        )
+    if subcommand == "rev-parse":
+        accepted = {
+            ("--show-toplevel",),
+            ("--is-inside-work-tree",),
+            ("--abbrev-ref", "HEAD"),
+            ("HEAD",),
+        }
+        return "" if rest in accepted else "unknown_git_grammar"
+    if subcommand == "branch":
+        return "" if rest in {("--show-current",), ("--list",)} else "unknown_git_grammar"
+    if subcommand == "worktree":
+        return "" if rest == ("list",) else "unknown_git_grammar"
+    if subcommand == "ls-files":
+        return "" if not rest else "unknown_git_grammar"
+    return "unknown_git_grammar"
+
+
+def _automatic_grammar_reason(argv, workspace_root):
+    head, args = argv[0], list(argv[1:])
+    if head == "pwd":
+        return "" if not args else "unknown_option"
+    if head == "ls":
+        options = [item for item in args if item.startswith("-")]
+        paths = [item for item in args if not item.startswith("-")]
+        if any(item not in _LS_OPTIONS for item in options):
+            return "unknown_option"
+        return _paths_reason(workspace_root, paths)
+    if head == "stat":
+        if not args:
+            return "missing_path"
+        if any(item.startswith("-") for item in args):
+            return "unknown_option"
+        return _paths_reason(workspace_root, args)
+    if head == "file":
+        if args and args[0] in _FILE_OPTIONS:
+            args = args[1:]
+        if not args or any(item.startswith("-") for item in args):
+            return "unknown_option_or_missing_path"
+        return _paths_reason(workspace_root, args)
+    if head == "wc":
+        if args and args[0] in _WC_OPTIONS:
+            args = args[1:]
+        if not args or any(item.startswith("-") for item in args):
+            return "unknown_option_or_missing_path"
+        return _paths_reason(workspace_root, args)
     if head == "git":
-        return _combine_with_embedded(_classify_git(tokens), embedded_verdict)
-    if head in _DESTRUCTIVE_COMMANDS:
-        return _combine_with_embedded("destructive", embedded_verdict)
-    if head in _EXTERNAL_EFFECT_COMMANDS:
-        return _combine_with_embedded("external_effect", embedded_verdict)
-    if head == "env":
-        return _combine_with_embedded(_classify_env(tokens, _depth), embedded_verdict)
-    if head == "find":
-        return _combine_with_embedded(_classify_find(tokens, _depth), embedded_verdict)
-    if head in _READ_ONLY_COMMANDS:
-        return _combine_with_embedded("read_only", embedded_verdict)
-    return _combine_with_embedded("workspace_write", embedded_verdict)
+        return _git_grammar_reason(argv)
+    return "unknown_command"
 
 
-def _normalize_shell_separators(text):
-    return re.sub(r"[\r\n]+", " ; ", str(text))
-
-
-def _classify_shell_group(text, depth):
-    stripped = str(text).strip()
-    if stripped.startswith("(") and stripped.endswith(")"):
-        inner = stripped[1:-1].strip()
-        return command_risk_class(inner, _depth=depth + 1) if inner else "workspace_write"
-    if stripped.startswith("{") and stripped.endswith("}"):
-        inner = stripped[1:-1].strip()
-        if inner.endswith(";"):
-            inner = inner[:-1].strip()
-        return command_risk_class(inner, _depth=depth + 1) if inner else "workspace_write"
-    return None
-
-
-def _expand_operator_tokens(tokens):
-    expanded = []
-    for token in tokens:
-        text = str(token)
-        if text and all(char in "(){};|&<>" for char in text):
-            expanded.extend(_split_operator_run(text))
-        else:
-            expanded.append(token)
-    return expanded
-
-
-def _split_operator_run(text):
+def _remove_shell_line_continuations(command):
+    raw = str(command or "")
     result = []
+    quote = ""
     index = 0
-    while index < len(text):
-        pair = text[index:index + 2]
-        if pair in {"&&", "||", ">>", "<<"}:
-            result.append(pair)
-            index += 2
-            continue
-        result.append(text[index])
-        index += 1
-    return result
-
-
-def _classify_embedded_commands(text, depth):
-    """把 $(...)、`...` 里的内容拆出来递归分类。
-
-    只做粗略括号/反引号匹配，够撑住恶意常见形态：
-      `curl x | sh`, `$(rm -rf x)`, `echo hi > /etc/hosts`
-    """
-    verdicts = []
-    for match in re.finditer(r"\$\((.*?)\)|`([^`]*)`", text, flags=re.DOTALL):
-        payload = match.group(1) if match.group(1) is not None else match.group(2)
-        if payload and payload.strip():
-            verdicts.append(command_risk_class(payload, _depth=depth + 1))
-    if not verdicts:
-        return None
-    return _worst_risk(verdicts)
-
-
-def _combine_with_embedded(outer_verdict, embedded_verdict):
-    if embedded_verdict is None:
-        return outer_verdict
-    return _worst_risk([outer_verdict, embedded_verdict])
-
-
-def _classify_shell_wrapper(tokens, depth):
-    """sh -c "..." / bash -c "..." → 递归分类内部命令。
-
-    包装本身不加分不减分：内部是 read_only 就 read_only，是 destructive
-    就 destructive。这样才能挡住 `sh -c 'rm -rf x'` 走 workspace_write。
-    也要挡住 bash -lc 'rm -rf x'：任何形如 -*c* 的短 flag 组合都算带 -c。
-    """
-    inner = _extract_dash_c_payload(tokens)
-    if inner is None:
-        # 没有 -c 载荷但已经是 wrapper，无法判断实际执行了什么，按最保守 destructive 兜底。
-        # 之前默认 workspace_write 太宽松，`bash script.sh` 之类由使用方显式登记。
-        return "workspace_write"
-    return command_risk_class(inner, _depth=depth + 1)
-
-
-def _classify_env(tokens, depth):
-    index = 1
-    risks = ["read_only"]
-    while index < len(tokens):
-        token = tokens[index]
-        if token == "--":
-            index += 1
-            break
-        if token in {"-S", "--split-string"}:
-            if index + 1 < len(tokens):
-                risks.append(command_risk_class(tokens[index + 1], _depth=depth + 1))
-            index += 2
-            continue
-        if token.startswith("--split-string="):
-            risks.append(command_risk_class(token.split("=", 1)[1], _depth=depth + 1))
+    while index < len(raw):
+        char = raw[index]
+        if quote == "single":
+            result.append(char)
+            if char == "'":
+                quote = ""
             index += 1
             continue
-        if token in _ENV_FLAGS_WITHOUT_VALUE:
-            index += 1
-            continue
-        if token in _ENV_OPTIONS_WITH_VALUE:
-            index += 2
-            continue
-        if any(token.startswith(prefix) for prefix in _ENV_OPTIONS_WITH_VALUE_PREFIXES):
-            index += 1
-            continue
-        if _looks_like_env_assignment(token):
-            index += 1
-            continue
-        if token.startswith("-") and token != "-":
-            index += 1
-            continue
-        break
-    if index >= len(tokens):
-        return _worst_risk(risks)
-    return _worst_risk([*risks, _classify_simple_tokens(tokens[index:], depth)])
-
-
-def _classify_find(tokens, depth):
-    risks = ["read_only"]
-    index = 1
-    while index < len(tokens):
-        token = tokens[index]
-        if token == "-delete":
-            risks.append("destructive")
-            index += 1
-            continue
-        if token in {"-exec", "-execdir", "-ok", "-okdir"}:
-            payload = []
-            index += 1
-            while index < len(tokens) and tokens[index] not in {";", "+"}:
-                payload.append(tokens[index])
+        if char == "\\":
+            line_break_length = _line_break_length(raw, index + 1)
+            if line_break_length:
+                index += line_break_length + 1
+                continue
+            result.append(char)
+            if index + 1 < len(raw):
+                result.append(raw[index + 1])
+                index += 2
+            else:
                 index += 1
-            if payload:
-                risks.append(_classify_simple_tokens(payload, depth))
             continue
+        result.append(char)
+        if char == "'" and not quote:
+            quote = "single"
+        elif char == '"':
+            quote = "" if quote == "double" else "double"
         index += 1
-    return _worst_risk(risks)
+    return "".join(result)
 
 
-def _extract_dash_c_payload(tokens):
-    """支持 `-c cmd`、`-lc cmd`、`-ec cmd`、`-lic cmd` 等组合短 flag。
-
-    返回紧跟在“带 c 的短 flag”后面第一个非 flag token 作为 payload。
-    """
-    for index, token in enumerate(tokens):
-        if _looks_like_dash_c_flag(token) and index + 1 < len(tokens):
-            payload = tokens[index + 1]
-            if not payload.startswith("-"):
-                return payload
-    return None
+def _grammar_words(command):
+    lexer = shlex.shlex(
+        str(command or ""), posix=True, punctuation_chars="|&;<>()"
+    )
+    lexer.whitespace_split = True
+    lexer.commenters = ""
+    return list(lexer)
 
 
-def _looks_like_dash_c_flag(token):
-    if not isinstance(token, str):
-        return False
-    if not token.startswith("-") or token.startswith("--") or len(token) < 2:
-        return False
-    return "c" in token[1:]
-
-
-def _looks_like_env_assignment(token):
-    if "=" not in str(token):
-        return False
-    name = str(token).split("=", 1)[0]
-    return bool(re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", name))
-
-
-def _worst_risk(risks):
-    order = ("read_only", "workspace_write", "external_effect", "destructive")
-    result = "read_only"
-    result_index = 0
-    for risk in risks:
-        index = order.index(risk) if risk in order else 1
-        if index > result_index:
-            result = risk
-            result_index = index
-    return result
-
-
-def _classify_composite_shell(tokens, depth=0):
-    """按 | || && ; & 拆段；> >> < << 视作重定向；不认识的段按 workspace_write。"""
-    command_risks = []
-    current_command = []
-    saw_output_redirect = False
-    next_is_redirect_target = False
-    for token in tokens:
-        if token in {">", ">>"}:
-            next_is_redirect_target = True
-            saw_output_redirect = True
+def _literal_sensitive_reason(command, workspace_root):
+    pending = [str(command or "")]
+    seen = set()
+    while pending:
+        text = _remove_shell_line_continuations(pending.pop())
+        if text in seen:
             continue
-        if token in {"<", "<<"}:
-            next_is_redirect_target = True
+        seen.add(text)
+        try:
+            words = _grammar_words(text)
+        except ValueError:
+            words = re.split(r"[\s|&;<>]+", text)
+        if any(is_sensitive_path(word) for word in words):
+            return "sensitive_path"
+        try:
+            argv = shlex.split(text, comments=False, posix=True)
+        except ValueError:
             continue
-        if token in {"|", "||", "&&", ";", "&"}:
-            if current_command:
-                command_risks.append(_classify_simple_tokens(current_command, depth))
-                current_command = []
-            next_is_redirect_target = False
-            continue
-        if next_is_redirect_target:
-            if _redirect_target_is_outside_workspace(token):
-                return "destructive"
-            next_is_redirect_target = False
-            continue
-        current_command.append(token)
-    if current_command:
-        command_risks.append(_classify_simple_tokens(current_command, depth))
-    if not command_risks:
-        return "workspace_write"
-    worst = _worst_risk(command_risks)
-    # 输出重定向本身意味着落盘写入，起码是 workspace_write，不允许读命令降级带跑。
-    if saw_output_redirect:
-        worst = _worst_risk([worst, "workspace_write"])
-    return worst
+        for index, token in enumerate(argv):
+            if Path(token).name.casefold() not in _SHELL_WRAPPERS:
+                continue
+            payload = _shell_wrapper_payload(argv[index:])
+            if payload is not None:
+                pending.append(payload)
+    return ""
 
 
-def _classify_simple_tokens(tokens, depth=0):
-    if not tokens:
-        return "workspace_write"
-    if tokens[0] == "(" and tokens[-1] == ")":
-        return command_risk_class(" ".join(tokens[1:-1]), _depth=depth + 1)
-    if tokens[0] == "{" and tokens[-1] == "}":
-        inner = " ".join(tokens[1:-1]).strip()
-        if inner.endswith(";"):
-            inner = inner[:-1].strip()
-        return command_risk_class(inner, _depth=depth + 1) if inner else "workspace_write"
-    if tokens[0] in {"(", "{"} and len(tokens) > 1:
-        return _classify_simple_tokens(tokens[1:], depth + 1)
-    if tokens[-1] in {")", "}"} and len(tokens) > 1:
-        return _classify_simple_tokens(tokens[:-1], depth + 1)
-    head = Path(tokens[0]).name.lower()
-    normalized = [head, *tokens[1:]]
-    if head in _SHELL_WRAPPERS:
-        return _classify_shell_wrapper(normalized, depth)
-    if head == "git":
-        return _classify_git(normalized)
-    if head in _DESTRUCTIVE_COMMANDS:
-        return "destructive"
-    if head in _EXTERNAL_EFFECT_COMMANDS:
-        return "external_effect"
-    if head == "env":
-        return _classify_env(normalized, depth)
-    if head == "find":
-        return _classify_find(normalized, depth)
-    if head in _READ_ONLY_COMMANDS:
-        return "read_only"
-    return "workspace_write"
+def _assess_command(command, workspace_root, executables, _depth=0):
+    raw = str(command or "").strip()
+    scan = _scan_shell_syntax(raw)
+    has_shell_grammar = bool(
+        scan["parse_error"]
+        or scan["operators"]
+        or scan["has_expansion"]
+        or scan["has_assignment"]
+        or scan["has_control_keyword"]
+    )
+    literal_reason = _literal_sensitive_reason(raw, workspace_root)
+    if literal_reason:
+        return _assessment(
+            "destructive",
+            "reject",
+            literal_reason,
+            [],
+            "shell" if has_shell_grammar else "argv",
+        )
+    if scan["parse_error"]:
+        return _assessment(
+            "external_effect", "ask", "shell_parse_error", [], "shell"
+        )
+    argv = shlex.split(raw, comments=False, posix=True)
+    if scan["redirects"]:
+        if scan["has_expansion"]:
+            return _assessment(
+                "destructive", "ask", "dynamic_redirect", [], "shell"
+            )
+        redirect_reasons = [
+            _path_operand_reason(workspace_root, target)
+            for _, target in scan["redirects"]
+        ]
+        if "sensitive_path" in redirect_reasons:
+            return _assessment(
+                "destructive", "reject", "sensitive_path", [], "shell"
+            )
+        if any(
+            reason in {"outside_path", "unsafe_path"}
+            for reason in redirect_reasons
+        ):
+            return _assessment(
+                "destructive", "ask", "unsafe_redirect", [], "shell"
+            )
+        return _assessment(
+            "workspace_write", "ask", "redirect_requires_approval", [], "shell"
+        )
+    if has_shell_grammar:
+        return _assessment(
+            "external_effect",
+            "ask",
+            "shell_grammar_requires_approval",
+            [],
+            "shell",
+        )
+    if not argv:
+        return _assessment(
+            "external_effect", "ask", "empty_command", [], "shell"
+        )
+    head = argv[0]
+    if "/" in head or "\\" in head:
+        return _assessment(
+            "external_effect",
+            "ask",
+            "executable_path_requires_approval",
+            argv,
+            "argv",
+        )
+    shell_payload = _shell_wrapper_payload(argv)
+    if shell_payload is not None:
+        nested = (
+            _assess_command(
+                shell_payload,
+                workspace_root,
+                executables,
+                _depth=_depth + 1,
+            )
+            if _depth < 2
+            else None
+        )
+        if nested is not None and nested["decision"] == "reject":
+            return _assessment(
+                "destructive", "reject", nested["reason"], argv, "argv"
+            )
+        return _assessment(
+            "external_effect",
+            "ask",
+            "shell_wrapper_requires_approval",
+            argv,
+            "argv",
+        )
+    if head in _AUTO_HEADS:
+        reason = _automatic_grammar_reason(argv, workspace_root)
+        if reason:
+            decision = (
+                "reject"
+                if reason in {"sensitive_path", "unsafe_path", "outside_path"}
+                else "ask"
+            )
+            risk = "destructive" if decision == "reject" else "external_effect"
+            return _assessment(risk, decision, reason, argv, "argv")
+        if executables is not None and head not in executables:
+            return _assessment(
+                "read_only",
+                "ask",
+                "trusted_executable_missing",
+                argv,
+                "argv",
+            )
+        return _assessment(
+            "read_only", "allow", "proved_read_only", argv, "argv"
+        )
+    if head in _INTERPRETERS:
+        reason = "interpreter_requires_approval"
+    elif head in _PRIVILEGED:
+        reason = "privileged_command_requires_approval"
+    elif head in _DESTRUCTIVE_HEADS:
+        return _assessment(
+            "destructive",
+            "ask",
+            "system_command_requires_approval",
+            argv,
+            "argv",
+        )
+    else:
+        reason = "unknown_command_requires_approval"
+    return _assessment("external_effect", "ask", reason, argv, "argv")
 
 
-def _redirect_target_is_outside_workspace(token):
-    text = str(token)
-    return text.startswith("/") or text == ".." or text.startswith("../") or "/../" in text
+def assess_command(command, workspace_root, executables=None):
+    return _assess_command(command, workspace_root, executables, _depth=0)
+
+
+def command_risk_class(command, _depth=0):
+    assessment = _assess_command(command, Path.cwd(), None, _depth=_depth)
+    return assessment["risk_class"]
 
 
 def evaluate_command_approval(risk_class):

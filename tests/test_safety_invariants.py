@@ -207,7 +207,7 @@ def test_symlink_path_traversal_is_rejected(tmp_path):
 def test_risky_tool_deny_behavior(tmp_path):
     agent = build_agent(tmp_path, [], approval_policy="never")
 
-    result = agent.run_tool("run_shell", {"command": "echo hi", "timeout": 20})
+    result = agent.run_tool("run_shell", {"command": "pwd", "timeout": 20})
 
     assert result == "error: approval denied for run_shell"
 
@@ -487,7 +487,8 @@ def test_cli_no_input_makes_default_approval_non_interactive(tmp_path):
 
 def test_run_shell_uses_allowlisted_environment_only(tmp_path):
     secret = "shh-allowlist-secret"
-    agent = build_agent(tmp_path, [], approval_policy="auto")
+    agent = build_agent(tmp_path, [], approval_policy="ask")
+    agent.approve = lambda name, args: True
     script = 'import os; print(os.getenv("PICO_ALLOWLIST_SECRET", "missing"))'
     command = f"{shlex.quote(sys.executable)} -c {shlex.quote(script)}"
 

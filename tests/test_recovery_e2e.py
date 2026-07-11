@@ -160,6 +160,8 @@ def test_run_shell_verification_command_attaches_evidence_to_checkpoint(tmp_path
     command = f"{sys.executable} -m pytest --version"
     tool_call = json.dumps({"name": "run_shell", "args": {"command": command, "timeout": 20}})
     agent = build_agent(tmp_path, [f"<tool>{tool_call}</tool>", "<final>done</final>"])
+    agent.approval_policy = "ask"
+    agent.approve = lambda name, args: True
 
     agent.ask("Run the verification command")
 
