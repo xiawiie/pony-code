@@ -14,6 +14,7 @@ from . import security as securitylib
 from .checkpoint import CHECKPOINT_NONE_STATUS, CHECKPOINT_PARTIAL_STALE_STATUS, CHECKPOINT_WORKSPACE_MISMATCH_STATUS
 from .context.renderer import render_current_user_message
 from .messages import append_messages, make_tool_pair
+from .recovery_policy import assess_command
 from .recovery_models import TRACE_RECOVERY_CHECKPOINT_CREATED
 from .recovery_checkpoint_writer import (
     current_recovery_checkpoint_id,
@@ -30,6 +31,8 @@ from .workspace import clip, now
 from .tool_executor import (
     ToolExecutionResult,
     _EFFECT_CLASS_BY_TOOL,
+    _add_command_policy,
+    _command_approval_metadata,
     _effect_class,
     _metadata,
 )
@@ -145,15 +148,30 @@ def _sanitize_action(agent, action):
         if tool is None and action.name not in _EFFECT_CLASS_BY_TOOL
         else _effect_class(action.name, bool(tool and tool["risky"]))
     )
+    metadata = _metadata(
+        "rejected",
+        effect_class=effect_class,
+        tool_error_code="sensitive_content_block",
+        security_event_type="sensitive_access_block",
+        risk_level="high",
+    )
+    if action.name == "run_shell":
+        assessment = assess_command(
+            str((original_arguments or {}).get("command", "")),
+            agent.root,
+        )
+        _add_command_policy(
+            metadata,
+            assessment["risk_class"],
+            _command_approval_metadata(
+                assessment,
+                agent.approval_policy,
+                "blocked",
+            ),
+        )
     result = ToolExecutionResult(
         content="error: sensitive_content_block",
-        metadata=_metadata(
-            "rejected",
-            effect_class=effect_class,
-            tool_error_code="sensitive_content_block",
-            security_event_type="sensitive_access_block",
-            risk_level="high",
-        ),
+        metadata=metadata,
     )
     return replace(action, arguments=safe_arguments), result
 

@@ -166,6 +166,21 @@ def test_runner_keyboard_interrupt_finalizes_pending_change_then_reraises(tmp_pa
     assert records[-1]["status"] == "interrupted"
 
 
+def test_shell_runner_interrupt_persists_attempted_approval_metadata(tmp_path):
+    agent = build_agent(tmp_path)
+    agent.tools["run_shell"]["run"] = Mock(side_effect=KeyboardInterrupt())
+
+    with pytest.raises(KeyboardInterrupt):
+        agent.execute_tool("run_shell", {"command": "pwd", "timeout": 5})
+
+    record = agent.checkpoint_store.list_tool_change_records()[-1]
+    assert record["status"] == "interrupted"
+    assert record["approval"]["runner_executed"] is True
+    assert record["approval"]["outcome"] == "allowed"
+    assert record["approval"]["execution_mode"] == "argv"
+    assert "exit_code" not in record["approval"]
+
+
 def test_post_runner_interrupt_closes_workspace_change_then_reraises(tmp_path, monkeypatch):
     agent = build_agent(tmp_path)
     original_capture = agent.workspace_observer.capture
@@ -178,7 +193,11 @@ def test_post_runner_interrupt_closes_workspace_change_then_reraises(tmp_path, m
             raise KeyboardInterrupt()
         return original_capture()
 
-    agent.tools["run_shell"]["run"] = lambda args: "exit_code: 0\nstdout:\nok\nstderr:\n(empty)"
+    agent.tools["run_shell"]["run"] = lambda execution: {
+        "stdout": "ok\n",
+        "stderr": "",
+        "exit_code": 0,
+    }
     monkeypatch.setattr(agent.workspace_observer, "capture", interrupt_after_runner)
 
     with pytest.raises(KeyboardInterrupt):
@@ -186,6 +205,10 @@ def test_post_runner_interrupt_closes_workspace_change_then_reraises(tmp_path, m
 
     records = agent.checkpoint_store.list_tool_change_records()
     assert records[-1]["status"] == "interrupted"
+    assert records[-1]["approval"]["runner_executed"] is True
+    assert records[-1]["approval"]["outcome"] == "allowed"
+    assert records[-1]["approval"]["execution_mode"] == "argv"
+    assert records[-1]["approval"]["exit_code"] == 0
 
 
 def test_post_runner_interrupt_closes_memory_audit_then_reraises(tmp_path, monkeypatch):
@@ -311,12 +334,15 @@ def test_success_and_exception_paths_use_shared_side_effect_finalizer(tmp_path, 
 
 
 def test_run_shell_uses_command_policy_metadata(tmp_path):
-    agent = build_agent(tmp_path)
+    agent = build_agent(tmp_path, approval_policy="ask")
+    agent.approve = Mock(return_value=True)
 
     result = agent.execute_tool("run_shell", {"command": "printf hello > generated.txt", "timeout": 5})
 
     assert result.metadata["command_risk_class"] == "workspace_write"
-    assert result.metadata["command_approval"]["decision"] == "allow"
+    assert result.metadata["command_approval"]["decision"] == "ask"
+    assert result.metadata["command_approval"]["outcome"] == "approved"
+    assert result.metadata["command_approval"]["runner_executed"] is True
     assert "generated.txt" in result.metadata["affected_paths"]
 
 
@@ -326,19 +352,20 @@ def test_run_shell_rechecks_command_policy_after_approval_mutation(
 ):
     import pico.tool_executor as tool_executor
 
-    agent = build_agent(tmp_path)
+    agent = build_agent(tmp_path, approval_policy="ask")
     victim = tmp_path / "victim.txt"
     victim.write_text("keep\n", encoding="utf-8")
-    runner = Mock(return_value="must not run")
+    runner = Mock(return_value={"stdout": "", "stderr": "", "exit_code": 0})
     agent.tools["run_shell"]["run"] = runner
     policy_calls = []
-    real_policy = tool_executor.evaluate_command_approval
+    real_policy = tool_executor.assess_command
 
-    def record_policy(risk_class):
-        policy_calls.append(risk_class)
-        return real_policy(risk_class)
+    def record_policy(command, workspace_root):
+        result = real_policy(command, workspace_root)
+        policy_calls.append(result["risk_class"])
+        return result
 
-    monkeypatch.setattr(tool_executor, "evaluate_command_approval", record_policy)
+    monkeypatch.setattr(tool_executor, "assess_command", record_policy)
 
     def approve(name, args):
         args["command"] = "rm -f victim.txt"
@@ -361,8 +388,8 @@ def test_run_shell_rechecks_command_policy_after_approval_mutation(
 
 
 def test_run_shell_rejects_safe_arguments_changed_after_approval(tmp_path):
-    agent = build_agent(tmp_path)
-    runner = Mock(return_value="must not run")
+    agent = build_agent(tmp_path, approval_policy="ask")
+    runner = Mock(return_value={"stdout": "", "stderr": "", "exit_code": 0})
     agent.tools["run_shell"]["run"] = runner
 
     def approve(name, args):
@@ -422,14 +449,18 @@ def test_destructive_run_shell_wrapped_forms_are_not_auto_approved(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "command",
+    ("command", "expected_error"),
     [
-        "ls README.md\nrm victim.txt",
-        "cat README.md > .e\\\nnv",
-        "wc {,.}env",
+        ("ls README.md\nrm victim.txt", "command_approval_required"),
+        ("cat README.md > .e\\\nnv", "sensitive_path_block"),
+        ("wc {,.}env", "command_approval_required"),
     ],
 )
-def test_shell_expansion_bypasses_never_reach_runner(tmp_path, command):
+def test_shell_expansion_bypasses_never_reach_runner(
+    tmp_path,
+    command,
+    expected_error,
+):
     agent = build_agent(tmp_path)
     victim = tmp_path / "victim.txt"
     victim.write_text("keep\n", encoding="utf-8")
@@ -439,7 +470,7 @@ def test_shell_expansion_bypasses_never_reach_runner(tmp_path, command):
     result = agent.execute_tool("run_shell", {"command": command, "timeout": 5})
 
     assert result.metadata["tool_status"] == "rejected"
-    assert result.metadata["tool_error_code"] == "command_approval_required"
+    assert result.metadata["tool_error_code"] == expected_error
     runner.assert_not_called()
     assert victim.read_text(encoding="utf-8") == "keep\n"
     assert not (tmp_path / ".env").exists()
@@ -460,7 +491,8 @@ def test_write_file_recovery_does_not_use_full_workspace_snapshot(tmp_path):
 
 
 def test_run_shell_recovery_does_not_use_full_workspace_snapshot(tmp_path):
-    agent = build_agent(tmp_path)
+    agent = build_agent(tmp_path, approval_policy="ask")
+    agent.approve = Mock(return_value=True)
 
     def fail_full_snapshot():
         raise AssertionError("full snapshot should not run")
@@ -474,7 +506,8 @@ def test_run_shell_recovery_does_not_use_full_workspace_snapshot(tmp_path):
 
 
 def test_run_shell_recovery_does_not_blob_unrelated_dirty_paths(tmp_path):
-    agent = build_agent(tmp_path)
+    agent = build_agent(tmp_path, approval_policy="ask")
+    agent.approve = Mock(return_value=True)
     init_git_repo(tmp_path)
     (tmp_path / "README.md").write_text("user dirty\n", encoding="utf-8")
     written_blobs = []
@@ -494,7 +527,8 @@ def test_run_shell_recovery_does_not_blob_unrelated_dirty_paths(tmp_path):
 
 
 def test_run_shell_recovery_marks_dirty_before_tracked_file_unrestorable(tmp_path):
-    agent = build_agent(tmp_path)
+    agent = build_agent(tmp_path, approval_policy="ask")
+    agent.approve = Mock(return_value=True)
     init_git_repo(tmp_path)
     (tmp_path / "README.md").write_text("user dirty\n", encoding="utf-8")
 
@@ -511,7 +545,8 @@ def test_run_shell_recovery_marks_dirty_before_tracked_file_unrestorable(tmp_pat
 
 def test_run_shell_recovery_populates_before_blob_from_git_head(tmp_path):
     # clean tracked file: observer 看不到，HEAD fallback 应该把 before-blob 抓下来。
-    agent = build_agent(tmp_path)
+    agent = build_agent(tmp_path, approval_policy="ask")
+    agent.approve = Mock(return_value=True)
     init_git_repo(tmp_path)
 
     result = agent.execute_tool("run_shell", {"command": "printf 'tool changed\\n' > README.md", "timeout": 5})

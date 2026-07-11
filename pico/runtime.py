@@ -907,27 +907,6 @@ class Pico:
         child._sync_working_memory()
         return "delegate_result:\n" + child.ask(task)
 
-    def tool_list_files(self, args):
-        return toolkit.tool_list_files(self.tool_context(), args)
-
-    def tool_read_file(self, args):
-        return toolkit.tool_read_file(self.tool_context(), args)
-
-    def tool_search(self, args):
-        return toolkit.tool_search(self.tool_context(), args)
-
-    def tool_run_shell(self, args):
-        return toolkit.tool_run_shell(self.tool_context(), args)
-
-    def tool_write_file(self, args):
-        return toolkit.tool_write_file(self.tool_context(), args)
-
-    def tool_patch_file(self, args):
-        return toolkit.tool_patch_file(self.tool_context(), args)
-
-    def tool_delegate(self, args):
-        return toolkit.tool_delegate(self.tool_context(), args)
-
     def approve(self, name, args):
         if self.read_only:
             return False

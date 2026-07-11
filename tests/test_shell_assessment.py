@@ -484,6 +484,42 @@ def test_literal_metacharacters_do_not_create_sensitive_false_positive(
 @pytest.mark.parametrize(
     "command",
     [
+        "git show HEAD:.env",
+        "git show HEAD:credentials.json",
+        "git show HEAD:.ssh/id_rsa",
+        "git cat-file blob HEAD:.env",
+        "git show :0:.env",
+    ],
+)
+def test_git_object_path_cannot_hide_sensitive_literal(workspace, command):
+    result = assess_command(command, workspace)
+
+    assert result == {
+        "risk_class": "destructive",
+        "decision": "reject",
+        "reason": "sensitive_path",
+        "argv": [],
+        "execution_mode": "argv",
+    }
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "ls image:tag",
+        "git log --format=%H:%s",
+    ],
+)
+def test_non_path_colon_literals_are_not_sensitive(workspace, command):
+    result = assess_command(command, workspace)
+
+    assert result["reason"] != "sensitive_path"
+    assert result["decision"] != "reject"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
         "ls -la",
         "ls --color",
         "wc -L README.md",

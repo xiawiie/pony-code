@@ -606,6 +606,12 @@ def _grammar_words(command):
 def _literal_word_is_sensitive(word):
     if is_sensitive_path(word):
         return True
+    if ":" in word and any(
+        is_sensitive_path(candidate)
+        for candidate in word.split(":")[1:]
+        if candidate
+    ):
+        return True
     if not word.startswith("-") or len(word) <= 2:
         return False
     if securitylib.has_sensitive_path_suffix(word):

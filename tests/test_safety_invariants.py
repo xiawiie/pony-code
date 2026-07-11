@@ -20,7 +20,15 @@ def build_workspace(tmp_path):
 
 
 def build_agent(tmp_path, outputs, **kwargs):
-    workspace = build_workspace(tmp_path)
+    workspace_executables = kwargs.pop("workspace_executables", None)
+    if workspace_executables is None:
+        workspace = build_workspace(tmp_path)
+    else:
+        (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
+        workspace = WorkspaceContext.build(
+            tmp_path,
+            executables=workspace_executables,
+        )
     store = SessionStore(tmp_path / ".pico" / "sessions")
     approval_policy = kwargs.pop("approval_policy", "auto")
     return Pico(
@@ -77,6 +85,32 @@ def test_workspace_bootstrap_uses_hardened_git_and_drops_startup_log(tmp_path, m
     assert calls[0][1] == ["rev-parse", "--show-toplevel"]
     assert calls[0][2]["cwd"] == repo.resolve()
     assert all(call[1][0] != "log" for call in calls)
+
+
+def test_workspace_bootstrap_never_accepts_reported_root_outside_lexical_repo(
+    tmp_path,
+    monkeypatch,
+):
+    repo = tmp_path / "repo"
+    outside = tmp_path / "outside"
+    repo.mkdir()
+    outside.mkdir()
+    (repo / ".git").mkdir()
+
+    def fake_git(executable, args, **kwargs):
+        stdout = {
+            ("rev-parse", "--show-toplevel"): f"{outside}\n",
+            ("branch", "--show-current"): "topic\n",
+            ("symbolic-ref", "--short", "refs/remotes/origin/HEAD"): "origin/main\n",
+            ("status", "--short"): "",
+        }[tuple(args)]
+        return subprocess.CompletedProcess([executable, *args], 0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr("pico.workspace.run_hardened_git", fake_git)
+
+    workspace = WorkspaceContext.build(repo, executables={"git": "/trusted/git"})
+
+    assert workspace.repo_root == str(repo.resolve())
 
 
 def test_cli_freezes_parent_path_before_project_env_loading(tmp_path, monkeypatch):
@@ -487,10 +521,15 @@ def test_cli_no_input_makes_default_approval_non_interactive(tmp_path):
 
 def test_run_shell_uses_allowlisted_environment_only(tmp_path):
     secret = "shh-allowlist-secret"
-    agent = build_agent(tmp_path, [], approval_policy="ask")
+    agent = build_agent(
+        tmp_path,
+        [],
+        approval_policy="ask",
+        workspace_executables={"python": sys.executable},
+    )
     agent.approve = lambda name, args: True
     script = 'import os; print(os.getenv("PICO_ALLOWLIST_SECRET", "missing"))'
-    command = f"{shlex.quote(sys.executable)} -c {shlex.quote(script)}"
+    command = f"python -c {shlex.quote(script)}"
 
     with patch.dict(os.environ, {"PICO_ALLOWLIST_SECRET": secret}, clear=False):
         result = agent.run_tool("run_shell", {"command": command, "timeout": 20})
@@ -499,26 +538,24 @@ def test_run_shell_uses_allowlisted_environment_only(tmp_path):
     assert "missing" in result
 
 
-def test_bound_tool_methods_delegate_into_tools_module(tmp_path):
+def test_pico_exposes_no_raw_tool_runner_proxies(tmp_path):
     agent = build_agent(tmp_path, [], approval_policy="auto")
 
-    with patch("pico.tools.subprocess.run") as fake_run:
-        fake_run.return_value = type(
-            "Result",
-            (),
-            {"returncode": 0, "stdout": "toolkit-shell\n", "stderr": ""},
-        )()
-        shell_result = agent.tool_run_shell({"command": "echo bypass", "timeout": 20})
-
-    assert "toolkit-shell" in shell_result
-    fake_run.assert_called_once()
-    assert agent.tool_run_shell.__func__.__module__ == "pico.runtime"
-
-    with patch("pico.tools.tool_delegate", return_value="toolkit-delegate") as fake_delegate:
-        delegate_result = agent.tool_delegate({"task": "inspect README.md", "max_steps": 2})
-
-    assert delegate_result == "toolkit-delegate"
-    fake_delegate.assert_called_once()
+    for name in (
+        "tool_list_files",
+        "tool_read_file",
+        "tool_search",
+        "tool_run_shell",
+        "tool_write_file",
+        "tool_patch_file",
+        "tool_delegate",
+    ):
+        assert not callable(getattr(agent, name, None)), name
+    assert agent.tool_executor.agent is agent
+    assert "# README.md" in agent.execute_tool(
+        "read_file",
+        {"path": "README.md", "start": 1, "end": 1},
+    ).content
 
 
 def test_delegate_depth_limit_is_enforced(tmp_path):

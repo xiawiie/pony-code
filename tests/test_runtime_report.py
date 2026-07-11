@@ -469,7 +469,8 @@ def test_first_prompt_resume_status_updates_task_state_after_late_checkpoint_set
 
 
 def test_run_shell_nonzero_with_workspace_change_is_recorded_as_partial_success(tmp_path):
-    agent = build_agent(tmp_path, [])
+    agent = build_agent(tmp_path, [], approval_policy="ask")
+    agent.approve = lambda name, args: True
 
     result = agent.run_tool(
         "run_shell",
@@ -744,7 +745,8 @@ def test_resume_records_runtime_identity_mismatch_fields_in_metadata_and_trace(t
 
 
 def test_partial_success_records_metadata_without_process_notes(tmp_path):
-    agent = build_agent(tmp_path, [])
+    agent = build_agent(tmp_path, [], approval_policy="ask")
+    agent.approve = lambda name, args: True
 
     agent.run_tool(
         "run_shell",

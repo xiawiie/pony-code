@@ -5,11 +5,11 @@
 """
 
 import os
+from dataclasses import dataclass
 from pathlib import Path
 import re
 import stat
 import subprocess
-import textwrap
 from functools import partial
 
 from . import security as securitylib
@@ -584,33 +584,49 @@ def _safe_search_file(root, candidate):
         return None
 
 
-def tool_run_shell(context, args):
-    command = str(args.get("command", "")).strip()
-    if not command:
-        raise ValueError("command must not be empty")
-    timeout = int(args.get("timeout", DEFAULT_RUN_SHELL_TIMEOUT))
-    if timeout < 1 or timeout > MAX_RUN_SHELL_TIMEOUT:
-        raise ValueError(f"timeout must be in [1, {MAX_RUN_SHELL_TIMEOUT}]")
-    result = subprocess.run(
-        command,
-        cwd=context.root,
-        shell=True,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-        # 这里传入的是过滤后的环境变量，而不是直接继承整个父 shell 环境，
-        # 目的是减少敏感信息被意外带进命令执行环境的风险。
-        env=context.shell_env(),
-    )
-    return textwrap.dedent(
-        f"""\
-        exit_code: {result.returncode}
-        stdout:
-        {result.stdout.strip() or "(empty)"}
-        stderr:
-        {result.stderr.strip() or "(empty)"}
-        """
-    ).strip()
+@dataclass(frozen=True)
+class _ApprovedShellExecution:
+    command: str
+    argv: tuple[str, ...]
+    execution_mode: str
+    executable: str
+    timeout: int
+
+
+def _tool_run_shell(context, execution):
+    if not isinstance(execution, _ApprovedShellExecution):
+        raise ValueError("run_shell requires an approved execution plan")
+    if not Path(execution.executable).is_absolute():
+        raise ValueError("trusted executable must be absolute")
+    common = {
+        "cwd": Path(context.root).resolve(),
+        "capture_output": True,
+        "text": True,
+        "timeout": execution.timeout,
+        "env": context.shell_env(),
+    }
+    if execution.execution_mode == "argv":
+        if not execution.argv:
+            raise ValueError("approved argv must not be empty")
+        result = subprocess.run(
+            [execution.executable, *execution.argv[1:]],
+            shell=False,
+            **common,
+        )
+    elif execution.execution_mode == "shell":
+        result = subprocess.run(
+            execution.command,
+            shell=True,
+            executable=execution.executable,
+            **common,
+        )
+    else:
+        raise ValueError("unsupported approved execution mode")
+    return {
+        "stdout": result.stdout,
+        "stderr": result.stderr,
+        "exit_code": result.returncode,
+    }
 
 
 USER_NOTES_PROTECTED_PREFIX = (".pico", "memory", "notes")
@@ -670,7 +686,7 @@ _TOOL_RUNNERS = {
     "list_files": tool_list_files,
     "read_file": tool_read_file,
     "search": tool_search,
-    "run_shell": tool_run_shell,
+    "run_shell": _tool_run_shell,
     "write_file": tool_write_file,
     "patch_file": tool_patch_file,
     "memory_list": tool_memory_list,

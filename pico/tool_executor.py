@@ -6,10 +6,12 @@ Phase 1 里这里承担两件事：
    pending → finalized/error/partial_success，中途无论走哪条路都要 finalize。
 """
 
+from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import dataclass
-import re
+from pathlib import Path
 import subprocess
+import textwrap
 
 from . import security as securitylib
 from .recovery_checkpoint_writer import current_recovery_checkpoint_id
@@ -19,12 +21,19 @@ from .recovery_paths import (
     resolve_workspace_relative_path,
 )
 from .recovery_policy import (
-    command_risk_class,
-    evaluate_command_approval,
+    assess_command,
     snapshot_eligibility,
 )
-from .safe_subprocess import run_hardened_git
-from .tools import SensitiveToolError
+from .safe_subprocess import (
+    _validate_hardened_git_args,
+    _validate_hardened_git_repository,
+    run_hardened_git,
+)
+from .tools import (
+    DEFAULT_RUN_SHELL_TIMEOUT,
+    _ApprovedShellExecution,
+    SensitiveToolError,
+)
 from .workspace import clip
 
 
@@ -100,7 +109,12 @@ def _summarize_input(args):
         if key in args:
             value = args[key]
             if isinstance(value, str) and len(value) > 240:
-                summary[key] = value[:240] + "..."
+                clipped = value[:240]
+                marker = "<redacted>"
+                marker_start = value.rfind(marker, 0, 240 + len(marker))
+                if 0 <= marker_start < 240 and marker not in clipped:
+                    clipped = value[:marker_start] + marker
+                summary[key] = clipped + "..."
             else:
                 summary[key] = value
     return summary
@@ -143,47 +157,277 @@ def _validation_rejection(agent, tool, name, args, effect_class):
     return None
 
 
-def _command_policy_rejection(agent, name, args, effect_class):
-    if name != "run_shell":
-        return "", {}, None
+def _command_approval_metadata(
+    assessment,
+    mode,
+    outcome,
+    *,
+    runner_executed=False,
+    exit_code=None,
+):
+    result = {
+        "decision": assessment["decision"],
+        "reason": assessment["reason"],
+        "mode": mode,
+        "outcome": outcome,
+        "runner_executed": bool(runner_executed),
+        "execution_mode": assessment["execution_mode"],
+    }
+    if exit_code is not None:
+        result["exit_code"] = exit_code
+    return result
 
-    command_risk = command_risk_class(str(args.get("command", "")))
-    command_approval = evaluate_command_approval(command_risk)
-    if command_approval.get("decision") == "reject":
-        rejection = ToolExecutionResult(
-            content=f"error: command policy rejected {name}",
-            metadata=_add_command_policy(
-                _metadata(
-                    "rejected",
-                    effect_class=effect_class,
-                    tool_error_code="command_rejected",
-                    risk_level="high",
-                ),
-                command_risk,
-                command_approval,
+
+def _shell_rejection(
+    *,
+    assessment,
+    mode,
+    outcome,
+    effect_class,
+    tool_error_code,
+    content,
+    security_event_type="",
+):
+    approval = _command_approval_metadata(assessment, mode, outcome)
+    return ToolExecutionResult(
+        content=content,
+        metadata=_add_command_policy(
+            _metadata(
+                "rejected",
+                effect_class=effect_class,
+                tool_error_code=tool_error_code,
+                security_event_type=security_event_type,
+                risk_level="high",
             ),
-        )
-        return command_risk, command_approval, rejection
-    if (
-        command_approval.get("decision") == "ask"
-        and agent.approval_policy != "ask"
+            assessment["risk_class"],
+            approval,
+        ),
+    )
+
+
+def _add_initial_shell_policy(result, assessment, mode, outcome="blocked"):
+    _add_command_policy(
+        result.metadata,
+        assessment["risk_class"],
+        _command_approval_metadata(assessment, mode, outcome),
+    )
+    return result
+
+
+def _structured_shell_result(agent, value):
+    if not isinstance(value, Mapping):
+        raise ValueError("shell runner returned invalid result")
+    if not {"stdout", "stderr", "exit_code"} <= set(value):
+        raise ValueError("shell runner returned invalid result")
+    exit_code = value["exit_code"]
+    if not isinstance(exit_code, int) or isinstance(exit_code, bool):
+        raise ValueError("shell runner returned invalid exit code")
+    if not isinstance(value["stdout"], str) or not isinstance(
+        value["stderr"],
+        str,
     ):
-        rejection = ToolExecutionResult(
-            content=f"error: command approval required for {name}",
-            metadata=_add_command_policy(
-                _metadata(
-                    "rejected",
-                    effect_class=effect_class,
-                    tool_error_code="command_approval_required",
-                    security_event_type="command_approval_required",
-                    risk_level="high",
-                ),
-                command_risk,
-                command_approval,
+        raise ValueError("shell runner returned invalid output")
+    return {
+        "stdout": agent.redact_text(value["stdout"]),
+        "stderr": agent.redact_text(value["stderr"]),
+        "exit_code": exit_code,
+    }
+
+
+def _format_shell_result(result):
+    return textwrap.dedent(
+        f"""\
+        exit_code: {result['exit_code']}
+        stdout:
+        {result['stdout'].strip() or '(empty)'}
+        stderr:
+        {result['stderr'].strip() or '(empty)'}
+        """
+    ).strip()
+
+
+def _prepare_shell_execution(agent, tool, args, effect_class, assessment):
+    mode = agent.approval_policy
+    if agent.read_only:
+        return None, None, _shell_rejection(
+            assessment=assessment,
+            mode=mode,
+            outcome="blocked",
+            effect_class=effect_class,
+            tool_error_code="read_only_block",
+            content="error: read-only mode blocks run_shell",
+            security_event_type="read_only_block",
+        )
+
+    rejection = _validation_rejection(
+        agent,
+        tool,
+        "run_shell",
+        args,
+        effect_class,
+    )
+    if rejection is not None:
+        return None, None, _add_initial_shell_policy(
+            rejection,
+            assessment,
+            mode,
+        )
+
+    if agent.repeated_tool_call("run_shell", args):
+        return None, None, _shell_rejection(
+            assessment=assessment,
+            mode=mode,
+            outcome="blocked",
+            effect_class=effect_class,
+            tool_error_code="repeated_identical_call",
+            content=(
+                "error: repeated identical tool call for run_shell; "
+                "choose a different tool or return a final answer"
             ),
         )
-        return command_risk, command_approval, rejection
-    return command_risk, command_approval, None
+
+    original_args = deepcopy(args)
+    original_assessment = deepcopy(assessment)
+    if mode == "never":
+        return None, None, _shell_rejection(
+            assessment=assessment,
+            mode=mode,
+            outcome="denied",
+            effect_class=effect_class,
+            tool_error_code="approval_denied",
+            content="error: approval denied for run_shell",
+            security_event_type="approval_denied",
+        )
+    if mode == "auto" and assessment["decision"] != "allow":
+        return None, None, _shell_rejection(
+            assessment=assessment,
+            mode=mode,
+            outcome="blocked",
+            effect_class=effect_class,
+            tool_error_code="command_approval_required",
+            content="error: command approval required for run_shell",
+            security_event_type="command_approval_required",
+        )
+    if mode == "ask":
+        approval_payload = agent.redact_artifact(deepcopy(original_args))
+        approval_payload_snapshot = deepcopy(approval_payload)
+        if not agent.approve("run_shell", approval_payload):
+            return None, None, _shell_rejection(
+                assessment=assessment,
+                mode=mode,
+                outcome="denied",
+                effect_class=effect_class,
+                tool_error_code="approval_denied",
+                content="error: approval denied for run_shell",
+                security_event_type="approval_denied",
+            )
+        rejection = _validation_rejection(
+            agent,
+            tool,
+            "run_shell",
+            args,
+            effect_class,
+        )
+        if rejection is not None:
+            return None, None, _add_initial_shell_policy(
+                rejection,
+                assessment,
+                mode,
+            )
+        reassessment = assess_command(str(args.get("command", "")), agent.root)
+        if (
+            args != original_args
+            or approval_payload != approval_payload_snapshot
+            or reassessment != original_assessment
+        ):
+            return None, None, _shell_rejection(
+                assessment=assessment,
+                mode=mode,
+                outcome="blocked",
+                effect_class=effect_class,
+                tool_error_code="approval_arguments_changed",
+                content="error: approved arguments changed for run_shell",
+                security_event_type="approval_arguments_changed",
+            )
+        outcome = "approved"
+    elif mode == "auto":
+        outcome = "allowed"
+    else:
+        return None, None, _shell_rejection(
+            assessment=assessment,
+            mode=mode,
+            outcome="denied",
+            effect_class=effect_class,
+            tool_error_code="approval_denied",
+            content="error: approval denied for run_shell",
+            security_event_type="approval_denied",
+        )
+
+    if assessment["execution_mode"] == "argv":
+        argv = tuple(assessment["argv"])
+        executable_name = argv[0]
+    else:
+        argv = ()
+        executable_name = "sh"
+    executable = (
+        agent.trusted_executables.get(executable_name)
+        if Path(executable_name).name == executable_name
+        else None
+    )
+    if not executable:
+        return None, None, _shell_rejection(
+            assessment=assessment,
+            mode=mode,
+            outcome="blocked",
+            effect_class=effect_class,
+            tool_error_code="trusted_executable_missing",
+            content="error: trusted executable missing for run_shell",
+            security_event_type="trusted_executable_missing",
+        )
+    if executable_name == "git":
+        try:
+            _validate_hardened_git_args(argv[1:])
+        except ValueError:
+            return None, None, _shell_rejection(
+                assessment=assessment,
+                mode=mode,
+                outcome="blocked",
+                effect_class=effect_class,
+                tool_error_code="unsafe_git_arguments",
+                content="error: unsafe git arguments",
+                security_event_type="unsafe_git_arguments",
+            )
+        try:
+            _validate_hardened_git_repository(
+                executable,
+                cwd=agent.root,
+                args=argv[1:],
+                timeout=int(
+                    original_args.get("timeout", DEFAULT_RUN_SHELL_TIMEOUT)
+                ),
+            )
+        except (OSError, subprocess.SubprocessError, ValueError):
+            return None, None, _shell_rejection(
+                assessment=assessment,
+                mode=mode,
+                outcome="blocked",
+                effect_class=effect_class,
+                tool_error_code="unsafe_git_config",
+                content="error: unsafe git repository config",
+                security_event_type="unsafe_git_config",
+            )
+    execution = _ApprovedShellExecution(
+        command=str(original_args.get("command", "")),
+        argv=argv,
+        execution_mode=assessment["execution_mode"],
+        executable=executable,
+        timeout=int(original_args.get("timeout", DEFAULT_RUN_SHELL_TIMEOUT)),
+    )
+    return (
+        execution,
+        _command_approval_metadata(assessment, mode, outcome),
+        None,
+    )
 
 
 class ToolExecutor:
@@ -198,8 +442,35 @@ class ToolExecutor:
         else:
             effect_class = _effect_class(name, bool(tool and tool["risky"]))
 
+        command_assessment = None
+        if name == "run_shell":
+            assessment_args = args if isinstance(args, Mapping) else {}
+            command_assessment = assess_command(
+                str(assessment_args.get("command", "")),
+                agent.root,
+            )
+            if command_assessment["decision"] == "reject":
+                sensitive = command_assessment["reason"] == "sensitive_path"
+                return _shell_rejection(
+                    assessment=command_assessment,
+                    mode=agent.approval_policy,
+                    outcome="blocked",
+                    effect_class=effect_class,
+                    tool_error_code=(
+                        "sensitive_path_block" if sensitive else "command_rejected"
+                    ),
+                    content=(
+                        "error: sensitive_path_block"
+                        if sensitive
+                        else "error: command policy rejected run_shell"
+                    ),
+                    security_event_type=(
+                        "sensitive_access_block" if sensitive else "command_rejected"
+                    ),
+                )
+
         if agent.allowed_tools is not None and name not in agent.allowed_tools:
-            return ToolExecutionResult(
+            rejection = ToolExecutionResult(
                 content=f"error: tool '{name}' is not allowed in this run",
                 metadata=_metadata(
                     "rejected",
@@ -208,9 +479,18 @@ class ToolExecutor:
                     risk_level="high",
                 ),
             )
+            return (
+                _add_initial_shell_policy(
+                    rejection,
+                    command_assessment,
+                    agent.approval_policy,
+                )
+                if command_assessment is not None
+                else rejection
+            )
 
         if tool is None:
-            return ToolExecutionResult(
+            rejection = ToolExecutionResult(
                 content=f"error: unknown tool '{name}'",
                 metadata=_metadata(
                     "rejected",
@@ -219,66 +499,42 @@ class ToolExecutor:
                     risk_level="high",
                 ),
             )
-
-        if agent.read_only and effect_class != "read_only":
-            return ToolExecutionResult(
-                content=f"error: read-only mode blocks {name}",
-                metadata=_metadata(
-                    "rejected",
-                    effect_class=effect_class,
-                    tool_error_code="read_only_block",
-                    security_event_type="read_only_block",
-                    risk_level="high",
-                ),
+            return (
+                _add_initial_shell_policy(
+                    rejection,
+                    command_assessment,
+                    agent.approval_policy,
+                )
+                if command_assessment is not None
+                else rejection
             )
 
-        rejection = _validation_rejection(
-            agent,
-            tool,
-            name,
-            args,
-            effect_class,
-        )
-        if rejection is not None:
-            return rejection
-
-        if agent.repeated_tool_call(name, args):
-            return ToolExecutionResult(
-                content=f"error: repeated identical tool call for {name}; choose a different tool or return a final answer",
-                metadata=_metadata(
-                    "rejected",
-                    effect_class=effect_class,
-                    tool_error_code="repeated_identical_call",
-                    risk_level="high" if tool["risky"] else "low",
-                ),
+        shell_execution = None
+        command_risk = ""
+        command_approval = {}
+        if command_assessment is not None:
+            command_risk = command_assessment["risk_class"]
+            shell_execution, command_approval, rejection = (
+                _prepare_shell_execution(
+                    agent,
+                    tool,
+                    args,
+                    effect_class,
+                    command_assessment,
+                )
             )
-
-        # 命令策略只针对 run_shell 才有意义，其它工具的 approval 仍走原有的 risky/approve 路径。
-        command_risk, command_approval, rejection = _command_policy_rejection(
-            agent,
-            name,
-            args,
-            effect_class,
-        )
-        if rejection is not None:
-            return rejection
-
-        if tool["risky"]:
-            approval_args_snapshot = deepcopy(args)
-            approval_args = deepcopy(approval_args_snapshot)
-            if not agent.approve(name, approval_args):
+            if rejection is not None:
+                return rejection
+        else:
+            if agent.read_only and effect_class != "read_only":
                 return ToolExecutionResult(
-                    content=f"error: approval denied for {name}",
-                    metadata=_add_command_policy(
-                        _metadata(
-                            "rejected",
-                            effect_class=effect_class,
-                            tool_error_code="approval_denied",
-                            security_event_type="read_only_block" if agent.read_only else "approval_denied",
-                            risk_level="high",
-                        ),
-                        command_risk,
-                        command_approval,
+                    content=f"error: read-only mode blocks {name}",
+                    metadata=_metadata(
+                        "rejected",
+                        effect_class=effect_class,
+                        tool_error_code="read_only_block",
+                        security_event_type="read_only_block",
+                        risk_level="high",
                     ),
                 )
 
@@ -292,33 +548,60 @@ class ToolExecutor:
             if rejection is not None:
                 return rejection
 
-            command_risk, command_approval, rejection = _command_policy_rejection(
-                agent,
-                name,
-                args,
-                effect_class,
-            )
-            if rejection is not None:
-                return rejection
-
-            if (
-                args != approval_args_snapshot
-                or approval_args != approval_args_snapshot
-            ):
+            if agent.repeated_tool_call(name, args):
                 return ToolExecutionResult(
-                    content=f"error: approved arguments changed for {name}",
-                    metadata=_add_command_policy(
-                        _metadata(
+                    content=f"error: repeated identical tool call for {name}; choose a different tool or return a final answer",
+                    metadata=_metadata(
+                        "rejected",
+                        effect_class=effect_class,
+                        tool_error_code="repeated_identical_call",
+                        risk_level="high" if tool["risky"] else "low",
+                    ),
+                )
+
+            if tool["risky"]:
+                approval_args_snapshot = deepcopy(args)
+                approval_args = deepcopy(approval_args_snapshot)
+                if not agent.approve(name, approval_args):
+                    return ToolExecutionResult(
+                        content=f"error: approval denied for {name}",
+                        metadata=_metadata(
+                            "rejected",
+                            effect_class=effect_class,
+                            tool_error_code="approval_denied",
+                            security_event_type=(
+                                "read_only_block"
+                                if agent.read_only
+                                else "approval_denied"
+                            ),
+                            risk_level="high",
+                        ),
+                    )
+
+                rejection = _validation_rejection(
+                    agent,
+                    tool,
+                    name,
+                    args,
+                    effect_class,
+                )
+                if rejection is not None:
+                    return rejection
+
+                if (
+                    args != approval_args_snapshot
+                    or approval_args != approval_args_snapshot
+                ):
+                    return ToolExecutionResult(
+                        content=f"error: approved arguments changed for {name}",
+                        metadata=_metadata(
                             "rejected",
                             effect_class=effect_class,
                             tool_error_code="approval_arguments_changed",
                             security_event_type="approval_arguments_changed",
                             risk_level="high",
                         ),
-                        command_risk,
-                        command_approval,
-                    ),
-                )
+                    )
 
         # 到这里我们准备真的跑工具，可以开一条 pending 记录。
         turn_id = getattr(getattr(agent, "current_task_state", None), "task_id", "") or ""
@@ -326,13 +609,22 @@ class ToolExecutor:
         records_tool_change = effect_class in {"memory_write", "workspace_write"}
         records_recovery = effect_class == "workspace_write"
         pending_record = None
+        input_summary = None
         if records_tool_change:
+            input_summary = _summarize_input(
+                agent.redact_artifact(deepcopy(args))
+            )
+            if command_assessment is not None:
+                input_summary["assessment"] = agent.redact_artifact(
+                    command_assessment
+                )
+        if records_tool_change and name != "run_shell":
             pending_record = agent.tool_change_recorder.start(
                 checkpoint_id=parent_checkpoint,
                 turn_id=turn_id,
                 tool_name=name,
                 effect_class=effect_class,
-                input_summary=_summarize_input(args),
+                input_summary=input_summary,
             )
 
         before_paths = []
@@ -352,8 +644,40 @@ class ToolExecutor:
                 # run_shell 只做轻量的 before 观察，不预先落 blob。真正的 before-blob
                 # 会在观察到 delta 之后按需生成（见下面的 _lazy_capture_before_file_states）。
                 observer_before = agent.workspace_observer.capture()
+                pending_record = agent.tool_change_recorder.start(
+                    checkpoint_id=parent_checkpoint,
+                    turn_id=turn_id,
+                    tool_name=name,
+                    effect_class=effect_class,
+                    input_summary=input_summary,
+                )
 
-            content = clip(agent.redact_text(tool["run"](args)))
+            shell_result = None
+            if name == "run_shell":
+                command_approval["runner_executed"] = True
+                if (
+                    shell_execution.execution_mode == "argv"
+                    and shell_execution.argv[0] == "git"
+                ):
+                    completed = run_hardened_git(
+                        shell_execution.executable,
+                        shell_execution.argv[1:],
+                        cwd=agent.root,
+                        timeout=shell_execution.timeout,
+                        text=True,
+                    )
+                    raw_result = {
+                        "stdout": completed.stdout,
+                        "stderr": completed.stderr,
+                        "exit_code": completed.returncode,
+                    }
+                else:
+                    raw_result = tool["run"](shell_execution)
+                shell_result = _structured_shell_result(agent, raw_result)
+                command_approval["exit_code"] = shell_result["exit_code"]
+                content = clip(_format_shell_result(shell_result))
+            else:
+                content = clip(agent.redact_text(tool["run"](args)))
             shell_side_effects = []
             if records_recovery and name == "run_shell" and observer_before is not None:
                 observer_after = agent.workspace_observer.capture()
@@ -387,8 +711,7 @@ class ToolExecutor:
             tool_status = "ok"
             tool_error_code = ""
             if name == "run_shell":
-                match = re.search(r"exit_code:\s*(-?\d+)", content)
-                exit_code = int(match.group(1)) if match else 0
+                exit_code = shell_result["exit_code"]
                 if exit_code != 0 and workspace_changed:
                     tool_status = "partial_success"
                     tool_error_code = "tool_partial_success"
@@ -420,7 +743,11 @@ class ToolExecutor:
             )
             return ToolExecutionResult(content=content, metadata=metadata)
         except KeyboardInterrupt:
-            _finalize_interrupted_pending(agent, pending_record)
+            _finalize_interrupted_pending(
+                agent,
+                pending_record,
+                command_approval if name == "run_shell" else None,
+            )
             raise
         except Exception as exc:
             safe_error_message = agent.redact_text(str(exc))
@@ -496,13 +823,17 @@ def _add_command_policy(metadata, command_risk, command_approval):
     return metadata
 
 
-def _finalize_interrupted_pending(agent, pending_record):
+def _finalize_interrupted_pending(agent, pending_record, command_approval=None):
     if pending_record is None:
         return
     try:
         current = agent.checkpoint_store.load_tool_change_record(pending_record["tool_change_id"])
         if current.get("status") == "pending":
-            agent.tool_change_recorder.finalize(pending_record["tool_change_id"], status="interrupted")
+            agent.tool_change_recorder.finalize(
+                pending_record["tool_change_id"],
+                status="interrupted",
+                approval=command_approval or None,
+            )
     except Exception:
         pass
 

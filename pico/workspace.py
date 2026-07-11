@@ -123,7 +123,7 @@ class WorkspaceContext:
         )
         git_executable = trusted_executables.get("git")
 
-        def git(args, fallback="", *, git_cwd):
+        def git(args, fallback="", *, git_cwd, empty=None):
             if not git_executable:
                 return fallback
             try:
@@ -135,21 +135,24 @@ class WorkspaceContext:
                     check=True,
                     timeout=5,
                 )
-                return result.stdout.strip() or fallback
+                output = result.stdout.strip()
+                if output:
+                    return output
+                return fallback if empty is None else empty
             except Exception:
                 return fallback
 
-        repo_root = (
-            Path(repo_root_override).resolve()
-            if repo_root_override is not None
-            else Path(
+        if repo_root_override is not None:
+            repo_root = Path(repo_root_override).resolve()
+        else:
+            reported_root = Path(
                 git(
                     ["rev-parse", "--show-toplevel"],
                     str(lexical_root),
                     git_cwd=lexical_root,
                 )
             ).resolve()
-        )
+            repo_root = reported_root if reported_root == lexical_root else lexical_root
         docs = {}
         # 同时扫描 repo_root 和 cwd，这样在子目录启动时也能看到本地文档；
         # 但用相对路径做 key，避免同一份文档被重复收集。
@@ -192,7 +195,15 @@ class WorkspaceContext:
                 )
                 or "origin/main"
             ),
-            status=clip(git(["status", "--short"], "clean", git_cwd=repo_root) or "clean", 1500),
+            status=clip(
+                git(
+                    ["status", "--short"],
+                    "(unavailable)",
+                    git_cwd=repo_root,
+                    empty="clean",
+                ),
+                1500,
+            ),
             recent_commits=[],
             project_docs=docs,
             trusted_executables=trusted_executables,

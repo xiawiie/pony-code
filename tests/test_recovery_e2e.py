@@ -4,9 +4,9 @@ import sys
 from pico import FakeModelClient, Pico, SessionStore, WorkspaceContext
 
 
-def build_agent(tmp_path, outputs):
+def build_agent(tmp_path, outputs, *, executables=None):
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
-    workspace = WorkspaceContext.build(tmp_path)
+    workspace = WorkspaceContext.build(tmp_path, executables=executables)
     return Pico(
         model_client=FakeModelClient(outputs),
         workspace=workspace,
@@ -157,9 +157,13 @@ def test_verification_evidence_can_attach_to_checkpoint(tmp_path):
 
 
 def test_run_shell_verification_command_attaches_evidence_to_checkpoint(tmp_path):
-    command = f"{sys.executable} -m pytest --version"
+    command = "python -m pytest --version"
     tool_call = json.dumps({"name": "run_shell", "args": {"command": command, "timeout": 20}})
-    agent = build_agent(tmp_path, [f"<tool>{tool_call}</tool>", "<final>done</final>"])
+    agent = build_agent(
+        tmp_path,
+        [f"<tool>{tool_call}</tool>", "<final>done</final>"],
+        executables={"python": sys.executable},
+    )
     agent.approval_policy = "ask"
     agent.approve = lambda name, args: True
 

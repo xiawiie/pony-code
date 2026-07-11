@@ -11,7 +11,6 @@ from pico.tools import (
     build_tool_registry,
     tool_delegate,
     tool_read_file,
-    tool_run_shell,
     tool_search,
     validate_tool,
 )
@@ -67,20 +66,7 @@ def test_build_tool_registry_binds_runners_to_tool_context(tmp_path):
     assert "delegate" not in tools
 
 
-def test_run_shell_uses_larger_default_timeout(tmp_path, monkeypatch):
-    captured = {}
-
-    def fake_run(*args, **kwargs):
-        captured["timeout"] = kwargs["timeout"]
-
-        class Result:
-            returncode = 0
-            stdout = "ok"
-            stderr = ""
-
-        return Result()
-
-    monkeypatch.setattr("subprocess.run", fake_run)
+def test_run_shell_registry_runner_is_not_a_raw_command_bypass(tmp_path):
     context = ToolContext(
         root=tmp_path,
         path_resolver=lambda raw_path: Path(tmp_path / raw_path),
@@ -89,10 +75,10 @@ def test_run_shell_uses_larger_default_timeout(tmp_path, monkeypatch):
         max_depth=1,
         spawn_delegate=lambda args: "unused",
     )
+    runner = build_tool_registry(context)["run_shell"]["run"]
 
-    tool_run_shell(context, {"command": "echo ok"})
-
-    assert captured["timeout"] == DEFAULT_RUN_SHELL_TIMEOUT == 60
+    with pytest.raises(ValueError, match="approved execution plan"):
+        runner({"command": "echo ok", "timeout": DEFAULT_RUN_SHELL_TIMEOUT})
 
 
 def test_search_rg_return_codes_are_truthful(tmp_path, monkeypatch):

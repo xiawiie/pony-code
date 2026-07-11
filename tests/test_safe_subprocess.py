@@ -1,4 +1,6 @@
 import os
+from pathlib import Path
+import shutil
 import stat
 import subprocess
 
@@ -16,6 +18,40 @@ def _executable(path, body="#!/bin/sh\nexit 0\n"):
     path.write_text(body, encoding="utf-8")
     path.chmod(0o755)
     return path
+
+
+def _real_git():
+    executable = shutil.which("git")
+    assert executable
+    return str(Path(executable).resolve())
+
+
+def _init_git_repo(path):
+    git = _real_git()
+    subprocess.run([git, "init", "-q"], cwd=path, check=True)
+    subprocess.run(
+        [git, "config", "user.email", "tests@example.com"],
+        cwd=path,
+        check=True,
+    )
+    subprocess.run(
+        [git, "config", "user.name", "Pico Tests"],
+        cwd=path,
+        check=True,
+    )
+    return git
+
+
+def _commit_readme(path):
+    git = _init_git_repo(path)
+    (path / "README.md").write_text("demo\n", encoding="utf-8")
+    subprocess.run([git, "add", "README.md"], cwd=path, check=True)
+    subprocess.run(
+        [git, "commit", "-q", "-m", "initial"],
+        cwd=path,
+        check=True,
+    )
+    return git
 
 
 def test_discover_lexical_repo_root_never_executes_git(tmp_path, monkeypatch):
@@ -188,6 +224,7 @@ def test_hardened_git_disables_repo_config_execution(tmp_path, monkeypatch):
     env = captured["kwargs"]["env"]
     assert argv[0] == "/usr/bin/git"
     assert argv[1] == "--no-pager"
+    assert argv[2] == "--no-optional-locks"
     assert argv[-2:] == ["status", "--short"]
     assert "core.fsmonitor=false" in argv
     assert "core.hooksPath=/dev/null" in argv
@@ -195,14 +232,504 @@ def test_hardened_git_disables_repo_config_execution(tmp_path, monkeypatch):
     assert "credential.helper=" in argv
     assert "protocol.ext.allow=never" in argv
     assert "pager.status=false" in argv
+    assert "core.askPass=" in argv
+    assert "alias.status=" in argv
     assert {name for name in env if name.startswith("GIT_")} == {
+        "GIT_ALLOW_PROTOCOL",
         "GIT_CONFIG_NOSYSTEM",
         "GIT_CONFIG_GLOBAL",
+        "GIT_TERMINAL_PROMPT",
     }
+    assert env["GIT_ALLOW_PROTOCOL"] == "git:http:https:ssh"
     assert env["GIT_CONFIG_NOSYSTEM"] == "1"
     assert env["GIT_CONFIG_GLOBAL"] == os.devnull
+    assert env["GIT_TERMINAL_PROMPT"] == "0"
     assert "UNRELATED_SECRET" not in env
     assert captured["kwargs"]["capture_output"] is True
+
+
+def test_hardened_git_blocks_real_repo_local_clean_filter(tmp_path):
+    git = _commit_readme(tmp_path)
+    marker = tmp_path / "filter-ran"
+    subprocess.run(
+        [git, "config", "filter.evil.clean", f"touch {marker}"],
+        cwd=tmp_path,
+        check=True,
+    )
+
+    with pytest.raises(ValueError, match="unsafe git repository config"):
+        run_hardened_git(git, ["status", "--short"], cwd=tmp_path)
+
+    assert not marker.exists()
+
+
+def test_hardened_git_blocks_filter_from_included_config(tmp_path):
+    git = _commit_readme(tmp_path)
+    marker = tmp_path / "included-filter-ran"
+    included = tmp_path / "included.gitconfig"
+    included.write_text(
+        f'[filter "evil"]\n\tclean = touch {marker}\n',
+        encoding="utf-8",
+    )
+    subprocess.run(
+        [git, "config", "include.path", str(included)],
+        cwd=tmp_path,
+        check=True,
+    )
+
+    with pytest.raises(ValueError, match="unsafe git repository config"):
+        run_hardened_git(git, ["status", "--short"], cwd=tmp_path)
+
+    assert not marker.exists()
+
+
+def test_hardened_git_blocks_mixed_case_filter_from_worktree_config(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    linked = tmp_path / "linked"
+    git = _commit_readme(repo)
+    subprocess.run(
+        [git, "worktree", "add", "-q", str(linked)],
+        cwd=repo,
+        check=True,
+    )
+    assert run_hardened_git(git, ["status", "--short"], cwd=linked).returncode == 0
+    marker = tmp_path / "worktree-filter-ran"
+    subprocess.run(
+        [git, "config", "extensions.worktreeConfig", "true"],
+        cwd=repo,
+        check=True,
+    )
+    subprocess.run(
+        [git, "config", "--worktree", "FiLtEr.EvIl.ClEaN", f"touch {marker}"],
+        cwd=linked,
+        check=True,
+    )
+    assert (linked / ".git").is_file()
+
+    with pytest.raises(ValueError, match="unsafe git repository config"):
+        run_hardened_git(git, ["status", "--short"], cwd=linked)
+
+    assert not marker.exists()
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "browser.evil.cmd",
+        "core.alternateRefsCommand",
+        "core.editor",
+        "core.sshCommand",
+        "core.gitProxy",
+        "core.askPass",
+        "core.worktree",
+        "difftool.evil.cmd",
+        "difftool.evil.path",
+        "gc.recentObjectsHook",
+        "gpg.program",
+        "gpg.ssh.defaultKeyCommand",
+        "guitool.evil.cmd",
+        "interactive.diffFilter",
+        "man.evil.cmd",
+        "merge.evil.driver",
+        "mergetool.evil.cmd",
+        "remote.origin.proxy",
+        "remote.origin.uploadpack",
+        "remote.origin.receivepack",
+        "remote.origin.vcs",
+        "credential.https://example.com.helper",
+        "sendemail.headerCmd",
+        "sendemail.smtpServer",
+        "sequence.editor",
+        "trailer.issue.command",
+        "uploadpack.packObjectsHook",
+    ],
+)
+def test_hardened_git_blocks_executable_config_key(tmp_path, key):
+    git = _commit_readme(tmp_path)
+    subprocess.run(
+        [git, "config", key, "dangerous-helper"],
+        cwd=tmp_path,
+        check=True,
+    )
+
+    with pytest.raises(ValueError, match="unsafe git repository config"):
+        run_hardened_git(git, ["fetch", "origin"], cwd=tmp_path)
+
+
+def test_hardened_git_allows_neutralized_exact_credential_helper(tmp_path):
+    git = _commit_readme(tmp_path)
+    marker = tmp_path / "credential-helper-ran"
+    subprocess.run(
+        [git, "config", "credential.helper", f"!touch {marker}"],
+        cwd=tmp_path,
+        check=True,
+    )
+
+    result = run_hardened_git(
+        git,
+        ["status", "--short"],
+        cwd=tmp_path,
+    )
+
+    assert result.returncode == 0
+    assert not marker.exists()
+
+
+def test_hardened_git_blocks_filter_config_in_bare_repo(tmp_path):
+    git = _real_git()
+    bare = tmp_path / "repo.git"
+    subprocess.run([git, "init", "-q", "--bare", str(bare)], check=True)
+    subprocess.run(
+        [git, "config", "filter.evil.clean", "dangerous-helper"],
+        cwd=bare,
+        check=True,
+    )
+
+    with pytest.raises(ValueError, match="unsafe git repository config"):
+        run_hardened_git(git, ["status", "--short"], cwd=bare)
+
+
+def test_hardened_git_fails_closed_for_bare_repo_config_symlink(tmp_path):
+    git = _real_git()
+    bare = tmp_path / "repo.git"
+    subprocess.run([git, "init", "-q", "--bare", str(bare)], check=True)
+    marker = tmp_path / "bare-ssh-command-ran"
+    ssh_command = _executable(
+        tmp_path / "bare-ssh-command",
+        f"#!/bin/sh\ntouch {marker}\nexit 1\n",
+    )
+    subprocess.run(
+        [git, "config", "core.sshCommand", str(ssh_command)],
+        cwd=bare,
+        check=True,
+    )
+    subprocess.run(
+        [git, "remote", "add", "origin", "ssh://example.invalid/repo"],
+        cwd=bare,
+        check=True,
+    )
+    external_config = tmp_path / "bare-config"
+    (bare / "config").replace(external_config)
+    (bare / "config").symlink_to(external_config)
+
+    with pytest.raises(ValueError, match="unsafe git repository"):
+        run_hardened_git(git, ["fetch", "origin"], cwd=bare)
+
+    assert not marker.exists()
+
+
+def test_hardened_git_allows_absorbed_submodule_core_worktree(tmp_path):
+    source = tmp_path / "source"
+    main = tmp_path / "main"
+    source.mkdir()
+    main.mkdir()
+    git = _commit_readme(source)
+    _commit_readme(main)
+    subprocess.run(
+        [
+            git,
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            "-q",
+            str(source),
+            "child",
+        ],
+        cwd=main,
+        check=True,
+    )
+    child = main / "child"
+    assert (child / ".git").is_file()
+    core_worktree = subprocess.run(
+        [git, "config", "--local", "--get", "core.worktree"],
+        cwd=child,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert core_worktree
+
+    result = run_hardened_git(
+        git,
+        ["status", "--short"],
+        cwd=child,
+        text=True,
+    )
+
+    assert result.returncode == 0
+    assert result.stdout == ""
+
+
+def test_hardened_git_allows_separate_git_dir_layout(tmp_path):
+    git = _real_git()
+    workspace = tmp_path / "workspace"
+    git_dir = tmp_path / "separate.git"
+    workspace.mkdir()
+    subprocess.run(
+        [git, "init", "-q", f"--separate-git-dir={git_dir}", str(workspace)],
+        check=True,
+    )
+    assert (workspace / ".git").is_file()
+
+    result = run_hardened_git(
+        git,
+        ["status", "--short"],
+        cwd=workspace,
+        text=True,
+    )
+
+    assert result.returncode == 0
+
+
+def test_hardened_git_blocks_gitfile_core_worktree_escape(tmp_path):
+    outside = tmp_path / "outside"
+    workspace = tmp_path / "workspace"
+    outside.mkdir()
+    workspace.mkdir()
+    git = _commit_readme(outside)
+    subprocess.run(
+        [git, "config", "core.worktree", str(outside)],
+        cwd=outside,
+        check=True,
+    )
+    (workspace / ".git").write_text(
+        f"gitdir: {outside / '.git'}\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="unsafe git repository config"):
+        run_hardened_git(git, ["status", "--short"], cwd=workspace)
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["rev-parse", "--show-toplevel"],
+        ["rev-parse", "--is-inside-work-tree"],
+        ["show", "HEAD:README.md"],
+    ],
+)
+def test_hardened_git_safe_exact_query_rejects_git_symlink(tmp_path, args):
+    workspace = tmp_path / "workspace"
+    outside = tmp_path / "outside"
+    workspace.mkdir()
+    outside.mkdir()
+    _commit_readme(workspace)
+    _commit_readme(outside)
+    saved_git = tmp_path / "workspace-git"
+    (workspace / ".git").replace(saved_git)
+    (workspace / ".git").symlink_to(outside / ".git")
+
+    with pytest.raises(ValueError, match=r"unsafe \.git symlink"):
+        run_hardened_git(_real_git(), args, cwd=workspace, text=True)
+
+
+def test_hardened_git_config_probe_nonzero_fails_closed(tmp_path, monkeypatch):
+    (tmp_path / ".git").mkdir()
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 3, stdout=b"", stderr=b"bad")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    with pytest.raises(ValueError, match="unsafe git repository config"):
+        run_hardened_git("/usr/bin/git", ["status"], cwd=tmp_path)
+
+    assert len(calls) == 1
+    assert "config" in calls[0]
+
+
+def test_hardened_git_config_probe_timeout_fails_closed(tmp_path, monkeypatch):
+    (tmp_path / ".git").mkdir()
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        run_hardened_git("/usr/bin/git", ["status"], cwd=tmp_path)
+
+    assert len(calls) == 1
+    assert "config" in calls[0]
+
+
+def test_hardened_git_blocks_index_gitlink(tmp_path):
+    git = _commit_readme(tmp_path)
+    head = subprocess.run(
+        [git, "rev-parse", "HEAD"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    subprocess.run(
+        [
+            git,
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            f"160000,{head},modules/child",
+        ],
+        cwd=tmp_path,
+        check=True,
+    )
+
+    with pytest.raises(ValueError, match="unsafe git repository config"):
+        run_hardened_git(git, ["status", "--short"], cwd=tmp_path)
+
+
+def test_hardened_git_rejects_malformed_ls_files_probe_output(
+    tmp_path,
+    monkeypatch,
+):
+    (tmp_path / ".git").mkdir()
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        if "config" in argv:
+            return subprocess.CompletedProcess(argv, 0, stdout=b"", stderr=b"")
+        if "ls-files" in argv:
+            return subprocess.CompletedProcess(
+                argv,
+                0,
+                stdout=b"not-an-index-record\x00",
+                stderr=b"",
+            )
+        return subprocess.CompletedProcess(argv, 0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    with pytest.raises(ValueError, match="unsafe git repository config"):
+        run_hardened_git("/usr/bin/git", ["status"], cwd=tmp_path)
+
+    assert len(calls) == 2
+
+
+def test_hardened_git_non_repo_status_reaches_git(tmp_path):
+    result = run_hardened_git(
+        _real_git(),
+        ["status", "--short"],
+        cwd=tmp_path,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "not a git repository" in result.stderr.casefold()
+
+
+@pytest.mark.parametrize(
+    ("args", "expected"),
+    [
+        (["rev-parse", "--show-toplevel"], "repo-root"),
+        (["rev-parse", "--is-inside-work-tree"], "true"),
+        (["show", "HEAD:README.md"], "demo"),
+    ],
+)
+def test_hardened_git_safe_exact_queries_work_with_dangerous_filter_config(
+    tmp_path,
+    args,
+    expected,
+):
+    git = _commit_readme(tmp_path)
+    (tmp_path / ".gitattributes").write_text(
+        "README.md filter=evil\n",
+        encoding="utf-8",
+    )
+    subprocess.run([git, "add", ".gitattributes"], cwd=tmp_path, check=True)
+    subprocess.run(
+        [git, "commit", "-q", "-m", "add filter attributes"],
+        cwd=tmp_path,
+        check=True,
+    )
+    marker = tmp_path / "filter-ran"
+    subprocess.run(
+        [git, "config", "filter.evil.clean", f"touch {marker}"],
+        cwd=tmp_path,
+        check=True,
+    )
+
+    result = run_hardened_git(
+        git,
+        args,
+        cwd=tmp_path,
+        check=True,
+        text=True,
+    )
+
+    output = result.stdout.strip()
+    if expected == "repo-root":
+        assert output == str(tmp_path.resolve())
+    else:
+        assert output == expected
+    assert not marker.exists()
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["-c", "core.fsmonitor=/tmp/marker", "status"],
+        ["-ccore.fsmonitor=/tmp/marker", "status"],
+        ["--config-env=core.fsmonitor=PICO_MARKER", "status"],
+        ["--paginate", "status"],
+        ["--exec-path=.", "status"],
+        ["--git-dir=../outside", "status"],
+        ["--work-tree=../outside", "status"],
+        ["diff", "--ext-diff"],
+        ["diff", "--textconv"],
+        ["submodule", "update"],
+    ],
+)
+def test_hardened_git_rejects_arguments_that_can_reenable_execution(
+    tmp_path,
+    monkeypatch,
+    args,
+):
+    called = []
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *a, **k: called.append((a, k)),
+    )
+
+    with pytest.raises(ValueError, match="unsafe git arguments"):
+        run_hardened_git("/usr/bin/git", args, cwd=tmp_path)
+
+    assert called == []
+
+
+def test_hardened_git_disables_textconv_for_diff_rendering_commands(
+    tmp_path,
+    monkeypatch,
+):
+    captured = []
+
+    def fake_run(argv, **kwargs):
+        captured.append(argv)
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    run_hardened_git(
+        "/usr/bin/git",
+        ["show", "HEAD:README.md"],
+        cwd=tmp_path,
+        text=True,
+    )
+
+    assert captured[0][-4:] == [
+        "show",
+        "--no-ext-diff",
+        "--no-textconv",
+        "HEAD:README.md",
+    ]
 
 
 def test_hardened_git_rejects_relative_executable_without_raw_path(tmp_path):
