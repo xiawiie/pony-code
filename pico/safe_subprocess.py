@@ -146,6 +146,8 @@ def _git_open_flags(*, directory):
     flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | os.O_NOFOLLOW
     if directory:
         flags |= os.O_DIRECTORY
+    else:
+        flags |= getattr(os, "O_NONBLOCK", 0)
     return flags
 
 

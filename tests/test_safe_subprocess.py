@@ -1,3 +1,4 @@
+import multiprocessing
 import os
 from pathlib import Path
 import shutil
@@ -109,6 +110,44 @@ def _assert_gitfile_rejected_before_git(monkeypatch, cwd, args=("status", "--sho
         run_hardened_git(_real_git(), args, cwd=cwd, text=True)
 
     assert calls == []
+
+
+def _fifo_gitfile_probe(executable, cwd, marker_to_replace, connection):
+    from pico import safe_subprocess
+
+    real_open = safe_subprocess.os.open
+    swapped = False
+    if marker_to_replace is not None:
+        marker = Path(marker_to_replace)
+
+        def replace_marker_with_fifo(path, flags, mode=0o777, *, dir_fd=None):
+            nonlocal swapped
+            raw_path = os.fsdecode(path)
+            if dir_fd is not None and raw_path == ".git" and not swapped:
+                marker.unlink()
+                os.mkfifo(marker)
+                swapped = True
+            return real_open(path, flags, mode, dir_fd=dir_fd)
+
+        safe_subprocess.os.open = replace_marker_with_fifo
+
+    safe_subprocess.subprocess.run = lambda *args, **kwargs: (_ for _ in ()).throw(
+        AssertionError("git executed before FIFO metadata rejection")
+    )
+    try:
+        safe_subprocess.run_hardened_git(
+            executable,
+            ["status", "--short"],
+            cwd=cwd,
+        )
+    except ValueError:
+        connection.send(("rejected", swapped))
+    except BaseException as exc:
+        connection.send((type(exc).__name__, swapped))
+    else:
+        connection.send(("accepted", swapped))
+    finally:
+        connection.close()
 
 
 def test_discover_lexical_repo_root_never_executes_git(tmp_path, monkeypatch):
@@ -531,6 +570,79 @@ def test_hardened_git_allows_absorbed_submodule_in_linked_worktree(tmp_path):
     assert result.stdout == ""
 
 
+def test_hardened_git_allows_nested_absorbed_submodule(tmp_path):
+    leaf_source = tmp_path / "leaf-source"
+    parent_source = tmp_path / "parent-source"
+    main = tmp_path / "main"
+    leaf_source.mkdir()
+    parent_source.mkdir()
+    main.mkdir()
+    git = _commit_readme(leaf_source)
+    _commit_readme(parent_source)
+    subprocess.run(
+        [
+            git,
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            "-q",
+            str(leaf_source),
+            "nested",
+        ],
+        cwd=parent_source,
+        check=True,
+    )
+    subprocess.run(
+        [git, "commit", "-q", "-m", "add nested submodule"],
+        cwd=parent_source,
+        check=True,
+    )
+    _commit_readme(main)
+    subprocess.run(
+        [
+            git,
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            "-q",
+            str(parent_source),
+            "parent",
+        ],
+        cwd=main,
+        check=True,
+    )
+    subprocess.run(
+        [
+            git,
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "update",
+            "--init",
+            "--recursive",
+        ],
+        cwd=main,
+        check=True,
+        capture_output=True,
+    )
+    nested = main / "parent" / "nested"
+    assert _gitfile_target(nested / ".git") == (
+        main / ".git" / "modules" / "parent" / "modules" / "nested"
+    ).resolve()
+
+    result = run_hardened_git(
+        git,
+        ["status", "--short"],
+        cwd=nested,
+        text=True,
+    )
+
+    assert result.returncode == 0
+    assert result.stdout == ""
+
+
 def test_hardened_git_allows_linked_worktree(tmp_path):
     git, _, linked = _linked_worktree(tmp_path)
 
@@ -846,6 +958,43 @@ def test_hardened_git_rejects_hardlinked_gitfile_metadata_before_git(
     assert path.stat().st_nlink == 2
 
     _assert_gitfile_rejected_before_git(monkeypatch, child)
+
+
+@pytest.mark.skipif(
+    not hasattr(os, "mkfifo") or "fork" not in multiprocessing.get_all_start_methods(),
+    reason="real FIFO probe requires POSIX fork support",
+)
+@pytest.mark.parametrize("metadata", ["marker", "linked-backlink"])
+def test_hardened_git_rejects_fifo_metadata_without_blocking(metadata, tmp_path):
+    marker_to_replace = None
+    if metadata == "marker":
+        _, cwd = _absorbed_submodule(tmp_path)
+        marker_to_replace = cwd / ".git"
+    else:
+        _, _, cwd = _linked_worktree(tmp_path)
+        target = _gitfile_target(cwd / ".git")
+        backlink = target / "gitdir"
+        backlink.unlink()
+        os.mkfifo(backlink)
+
+    context = multiprocessing.get_context("fork")
+    receiver, sender = context.Pipe(duplex=False)
+    process = context.Process(
+        target=_fifo_gitfile_probe,
+        args=(_real_git(), cwd, marker_to_replace, sender),
+    )
+    process.start()
+    sender.close()
+    process.join(timeout=2)
+    if process.is_alive():
+        process.terminate()
+        process.join()
+        pytest.fail(f"{metadata} FIFO blocked metadata validation")
+
+    assert process.exitcode == 0
+    assert receiver.poll()
+    assert receiver.recv() == ("rejected", metadata == "marker")
+    receiver.close()
 
 
 def test_hardened_git_marker_read_is_anchored_against_parent_swap(
