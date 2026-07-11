@@ -4,7 +4,7 @@ from pathlib import Path
 from ..context.renderer import render_current_user_message
 from ..features import memory as memorylib
 from ..messages import make_tool_pair, message_content_text
-from ..providers.clients import FakeModelClient
+from ..providers.fake import FakeModelClient
 from ..runtime import Pico, SessionStore
 from ..workspace import WorkspaceContext
 from .metrics_common import _safe_mean, _safe_ratio
@@ -51,7 +51,7 @@ def _preview_request(agent, user_message):
     agent.session = preview_session
     try:
         snapshot, telemetry = render_current_user_message(agent, user_message)
-        return agent.context_manager.build_v2(
+        return agent.context_manager.build_request(
             injection_snapshot=snapshot,
             injection_telemetry=telemetry,
             preflight_metadata={},
@@ -139,26 +139,37 @@ class _MemoryExperimentModelClient(FakeModelClient):
         self.expected_working_line = ""
         self.followup_prompt = ""
 
-    def complete(self, prompt, max_new_tokens, **kwargs):
-        del max_new_tokens, kwargs
-        self.prompts.append(prompt)
+    def complete(
+        self, *, system, tools, messages, max_tokens, cache_breakpoints=None
+    ):
+        prompt = "\n".join(message_content_text(message) for message in messages)
         if self.phase == "bootstrap_tool":
             self.phase = "bootstrap_final"
-            return f'<tool>{{"name":"read_file","args":{{"path":"{self.filename}","start":1,"end":20}}}}</tool>'
-        if self.phase == "bootstrap_final":
+            output = f'<tool>{{"name":"read_file","args":{{"path":"{self.filename}","start":1,"end":20}}}}</tool>'
+        elif self.phase == "bootstrap_final":
             self.phase = "question"
-            return "<final>Done.</final>"
-        if self.phase == "question":
+            output = "<final>Done.</final>"
+        elif self.phase == "question":
             self.followup_prompt = str(prompt)
             if _prompt_has_reusable_file_summary(prompt, self.expected_working_line):
-                return f"<final>{self.expected_fact.capitalize()}.</final>"
-            self.phase = "question_after_read"
-            self.followup_reads += 1
-            return f'<tool>{{"name":"read_file","args":{{"path":"{self.filename}","start":1,"end":20}}}}</tool>'
-        if self.phase == "question_after_read":
+                output = f"<final>{self.expected_fact.capitalize()}.</final>"
+            else:
+                self.phase = "question_after_read"
+                self.followup_reads += 1
+                output = f'<tool>{{"name":"read_file","args":{{"path":"{self.filename}","start":1,"end":20}}}}</tool>'
+        elif self.phase == "question_after_read":
             self.phase = "done"
-            return f"<final>{self.expected_fact.capitalize()}.</final>"
-        return f"<final>{self.expected_fact.capitalize()}.</final>"
+            output = f"<final>{self.expected_fact.capitalize()}.</final>"
+        else:
+            output = f"<final>{self.expected_fact.capitalize()}.</final>"
+        self.outputs.append(output)
+        return super().complete(
+            system=system,
+            tools=tools,
+            messages=messages,
+            max_tokens=max_tokens,
+            cache_breakpoints=cache_breakpoints,
+        )
 
 
 def _build_memory_experiment_agent(workspace_root, expected_fact, filename):

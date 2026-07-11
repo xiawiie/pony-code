@@ -8,14 +8,13 @@ from pico.workspace import WorkspaceContext
 
 class _SniffProvider:
     supports_prompt_cache = False
-    supports_native_tools = True
 
     def __init__(self, script):
         self.script = list(script)
         self.calls = []
         self.last_completion_metadata = {}
 
-    def complete_v2(self, *, system, tools, messages, max_tokens, cache_breakpoints=None):
+    def complete(self, *, system, tools, messages, max_tokens, cache_breakpoints=None):
         self.calls.append({"messages": [dict(m) for m in messages]})
         return self.script.pop(0)
 

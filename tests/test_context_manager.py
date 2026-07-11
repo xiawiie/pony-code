@@ -22,7 +22,7 @@ def _build_request(agent, user_message):
         {"role": "user", "content": user_message, "_pico_meta": {}}
     )
     snapshot, telemetry = render_current_user_message(agent, user_message)
-    return ContextManager(agent).build_v2(
+    return ContextManager(agent).build_request(
         injection_snapshot=snapshot,
         injection_telemetry=telemetry,
         preflight_metadata={},
@@ -53,7 +53,7 @@ def test_tool_schema_keeps_integer_and_risk_contract():
     assert "approval" in converted["description"].lower()
 
 
-def test_system_cache_key_depends_on_stable_prefix_only(tmp_path):
+def test_system_prefix_hash_depends_on_stable_prefix_only(tmp_path):
     agent = _agent(tmp_path)
     first_request, first_metadata = _build_request(agent, "first")
     agent.session["messages"] = []
@@ -62,8 +62,8 @@ def test_system_cache_key_depends_on_stable_prefix_only(tmp_path):
     second_request, second_metadata = _build_request(agent, "second")
 
     assert first_request["system"][0]["text"] == second_request["system"][0]["text"]
-    assert first_metadata["system_cache_key"] == second_metadata["system_cache_key"]
-    assert first_metadata["system_cache_key"] == hashlib.sha256(
+    assert first_metadata["system_prefix_hash"] == second_metadata["system_prefix_hash"]
+    assert first_metadata["system_prefix_hash"] == hashlib.sha256(
         agent.prefix.encode("utf-8")
     ).hexdigest()
 
@@ -109,6 +109,6 @@ def test_request_metrics_and_cache_key_use_sanitized_payload(tmp_path):
     assert secret not in sent_system
     assert secret not in str(request["messages"])
     assert secret not in "\n".join(counted)
-    assert metadata["system_cache_key"] == hashlib.sha256(
+    assert metadata["system_prefix_hash"] == hashlib.sha256(
         sent_system.encode("utf-8")
     ).hexdigest()

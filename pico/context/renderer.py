@@ -9,7 +9,7 @@ skipped entirely; a source that has no content to render also drops out.
 The renderer is a pure function of ``(agent, user_message)`` — it does
 not mutate the agent, does not append to any message list, and does not
 call the model. It returns ``(rendered_text, telemetry)`` and lets the
-caller (``ContextManager.build_v2``) decide what to do with the result.
+caller (``ContextManager.build_request``) decide what to do with the result.
 
 Escaping: any ``<pico:*>`` / ``</pico:*>`` substring inside source
 output is neutralized with a zero-width space (see :mod:`.escaping`).

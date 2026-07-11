@@ -531,6 +531,7 @@ def test_config_writes_keep_review_required_for_preserved_invalid_line(
 def test_repl_help_renders_help_details(tmp_path, monkeypatch, capsys):
     from pico.cli import HELP_DETAILS
     from pico.cli_commands import run_repl
+    from pico.providers.fake import FakeModelClient
     from pico.runtime import Pico, SessionStore
     from pico.workspace import WorkspaceContext
 
@@ -538,18 +539,8 @@ def test_repl_help_renders_help_details(tmp_path, monkeypatch, capsys):
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
     session_store = SessionStore(tmp_path / ".pico" / "sessions")
 
-    class _FakeModel:
-        supports_prompt_cache = False
-        last_completion_metadata = {}
-
-        def complete(self, prompt, max_new_tokens, **kwargs):
-            return "<final>ok</final>"
-
-        def stream_complete(self, *args, **kwargs):
-            return self.complete(*args, **kwargs)
-
     agent = Pico(
-        model_client=_FakeModel(),
+        model_client=FakeModelClient([]),
         workspace=workspace,
         session_store=session_store,
         approval_policy="auto",

@@ -7,6 +7,7 @@ from ..providers.clients import (
     OpenAICompatibleModelClient,
 )
 from ..providers.defaults import API_KEY_ENV_NAMES
+from ..providers.text_protocol_adapter import TextProtocolAdapter
 from .fixed_benchmark import run_fixed_benchmark
 from .metrics_common import _safe_mean, _safe_ratio
 
@@ -98,13 +99,13 @@ def _make_provider_client(provider):
         raise RuntimeError(profile["reason"])
     timeout = 60
     if provider == "gpt":
-        return OpenAICompatibleModelClient(
+        return TextProtocolAdapter(OpenAICompatibleModelClient(
             model=profile["model"],
             base_url=profile["base_url"],
             api_key=profile["api_key"],
             temperature=0.0,
             timeout=timeout,
-        )
+        ))
     return AnthropicCompatibleModelClient(
         model=profile["model"],
         base_url=profile["base_url"],
@@ -141,13 +142,13 @@ def run_provider_experiments(
 
             def factory(task, workspace, profile=profile):
                 del task, workspace
-                return OpenAICompatibleModelClient(
+                return TextProtocolAdapter(OpenAICompatibleModelClient(
                     model=profile["model"],
                     base_url=profile["base_url"],
                     api_key=profile["api_key"],
                     temperature=0.0,
                     timeout=300,
-                )
+                ))
 
         else:
 

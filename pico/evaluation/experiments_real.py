@@ -3,7 +3,7 @@ import tempfile
 from copy import deepcopy
 from pathlib import Path
 
-from ..providers.fallback_adapter import FallbackAdapter
+from ..providers.text_protocol_adapter import TextProtocolAdapter
 from ..runtime import Pico, SessionStore
 from ..workspace import WorkspaceContext
 from .experiments_synthetic import (
@@ -31,9 +31,9 @@ class _RecordingProvider:
 
 
 class _NativeRecordingProvider(_RecordingProvider):
-    def complete_v2(self, *, system, tools, messages, max_tokens, cache_breakpoints=None):
+    def complete(self, *, system, tools, messages, max_tokens, cache_breakpoints=None):
         self.calls.append(("messages", deepcopy(messages)))
-        return self._inner.complete_v2(
+        return self._inner.complete(
             system=system,
             tools=tools,
             messages=messages,
@@ -42,18 +42,19 @@ class _NativeRecordingProvider(_RecordingProvider):
         )
 
 
-class _FallbackRecordingProvider(_RecordingProvider):
-    def complete(self, prompt, max_new_tokens, **kwargs):
+class _TextRecordingProvider(_RecordingProvider):
+    def complete_text(self, prompt, max_tokens):
         self.calls.append(("prompt", str(prompt)))
-        return self._inner.complete(prompt, max_new_tokens, **kwargs)
+        return self._inner.complete_text(prompt, max_tokens)
 
 
 def _recording_provider(provider):
-    if isinstance(provider, FallbackAdapter):
-        return FallbackAdapter(_FallbackRecordingProvider(provider._inner))
-    if callable(getattr(provider, "complete_v2", None)):
-        return _NativeRecordingProvider(provider)
-    return _FallbackRecordingProvider(provider)
+    if isinstance(provider, TextProtocolAdapter):
+        recorder = _TextRecordingProvider(provider._inner)
+        adapter = TextProtocolAdapter(recorder)
+        adapter.calls = recorder.calls
+        return adapter
+    return _NativeRecordingProvider(provider)
 
 
 def _first_followup_drops_bootstrap_tool(recorder, call_index, tool_use_id):

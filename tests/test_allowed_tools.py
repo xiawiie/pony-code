@@ -105,8 +105,9 @@ def test_benchmark_evaluator_applies_allowed_tools_to_runtime_prompt(tmp_path):
     row = evaluator.run_task(evaluator.load()["tasks"][0])
 
     assert row["status"] == "pass"
-    assert "- read_file(" in captured_clients[0].prompts[0]
-    assert "- run_shell(" not in captured_clients[0].prompts[0]
+    tool_names = [tool["name"] for tool in captured_clients[0].requests[0]["tools"]]
+    assert "read_file" in tool_names
+    assert "run_shell" not in tool_names
 
 
 def test_allowed_tools_filter_prompt_examples_and_rules(tmp_path):

@@ -31,35 +31,11 @@ def _anthropic_content(data):
     return content
 
 
-def _extract_anthropic_text(data):
-    for item in _anthropic_content(data):
-        if item.get("type") in ("", None, "text") or "text" in item:
-            text = item.get("text")
-            if isinstance(text, str) and text:
-                return text
-    return ""
-
-
-def _anthropic_no_text_error(data, max_new_tokens):
-    content = _anthropic_content(data)
-    has_thinking = any(item.get("type") == "thinking" for item in content)
-    if has_thinking and data.get("stop_reason") == "max_tokens":
-        return (
-            "Anthropic-compatible error: response contained thinking blocks but no text before max_tokens. "
-            f"Increase max_new_tokens/--max-new-tokens above {max_new_tokens} for reasoning-heavy models."
-        )
-    return "Anthropic-compatible error: could not extract text from response"
-
-
 def _supports_anthropic_prompt_cache(base_url):
-    return any(host in base_url for host in ("anthropic.com", "right.codes"))
-
-
-def _anthropic_cache_control(prompt_cache_retention):
-    cache_control = {"type": "ephemeral"}
-    if prompt_cache_retention in {"1h", "one_hour"}:
-        cache_control["ttl"] = "1h"
-    return cache_control
+    return any(
+        host in base_url
+        for host in ("anthropic.com", "deepseek.com", "right.codes")
+    )
 
 
 def _extract_anthropic_usage_cache_details(data):
@@ -98,98 +74,8 @@ class AnthropicCompatibleModelClient:
         self.supports_prompt_cache = _supports_anthropic_prompt_cache(self.base_url)
         self.last_completion_metadata = {}
 
-    def complete(self, prompt, max_new_tokens, prompt_cache_key=None, prompt_cache_retention=None):
+    def complete(self, *, system, tools, messages, max_tokens, cache_breakpoints=None):
         self.last_completion_metadata = {}
-        payload = {
-            "model": self.model,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": prompt,
-                        }
-                    ],
-                }
-            ],
-            "max_tokens": max_new_tokens,
-            "stream": False,
-        }
-        if self.temperature is not None:
-            payload["temperature"] = self.temperature
-        if self.supports_prompt_cache and prompt_cache_key:
-            payload["cache_control"] = _anthropic_cache_control(prompt_cache_retention)
-
-        _validate_header_value("Anthropic-compatible API key", self.api_key)
-        headers = {
-            "Content-Type": "application/json",
-            "x-api-key": self.api_key,
-            "anthropic-version": "2023-06-01",
-        }
-
-        request = urllib.request.Request(
-            self.base_url + "/messages",
-            data=json.dumps(payload).encode("utf-8"),
-            headers=headers,
-            method="POST",
-        )
-        attempts = 3
-        for attempt in range(attempts):
-            try:
-                with urllib.request.urlopen(request, timeout=self.timeout) as response:
-                    response_body = response.read()
-                break
-            except urllib.error.HTTPError as exc:
-                if exc.code >= 500 and attempt < attempts - 1:
-                    time.sleep(0.5 * (attempt + 1))
-                    continue
-                raise RuntimeError(
-                    f"Anthropic-compatible request failed with HTTP {exc.code}"
-                ) from None
-            except (urllib.error.URLError, RemoteDisconnected):
-                if attempt < attempts - 1:
-                    time.sleep(0.5 * (attempt + 1))
-                    continue
-                raise RuntimeError(
-                    "Anthropic-compatible request failed: network_error"
-                ) from None
-
-        try:
-            data = _decode_json_object(response_body)
-        except Exception:
-            raise RuntimeError(
-                "Anthropic-compatible error: invalid_response"
-            ) from None
-        if data.get("error"):
-            raise RuntimeError("Anthropic-compatible error: backend_error") from None
-        try:
-            metadata = {
-                "prompt_cache_supported": self.supports_prompt_cache,
-                "prompt_cache_key": prompt_cache_key,
-                "prompt_cache_retention": prompt_cache_retention,
-                **_extract_anthropic_usage_cache_details(data),
-            }
-            text = _extract_anthropic_text(data)
-            no_text_error = _anthropic_no_text_error(data, max_new_tokens)
-        except Exception:
-            raise RuntimeError(
-                "Anthropic-compatible error: invalid_response"
-            ) from None
-        self.last_completion_metadata = metadata
-        if text:
-            return text
-        raise RuntimeError(no_text_error)
-
-    def stream_complete(self, prompt, max_new_tokens, prompt_cache_key=None, prompt_cache_retention=None):
-        yield self.complete(
-            prompt,
-            max_new_tokens,
-            prompt_cache_key=prompt_cache_key,
-            prompt_cache_retention=prompt_cache_retention,
-        )
-
-    def complete_v2(self, *, system, tools, messages, max_tokens, cache_breakpoints=None):
         messages = strip_pico_meta(messages)
         from .response import Response, StopReason
 
@@ -222,7 +108,8 @@ class AnthropicCompatibleModelClient:
         if not tools:
             payload.pop("tools")
 
-        req = urllib.request.Request(
+        _validate_header_value("Anthropic-compatible API key", self.api_key)
+        request = urllib.request.Request(
             f"{self.base_url}/messages",
             data=json.dumps(payload).encode("utf-8"),
             headers={
@@ -233,17 +120,26 @@ class AnthropicCompatibleModelClient:
             method="POST",
         )
 
-        try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as raw:
-                response_body = raw.read()
-        except urllib.error.HTTPError as exc:
-            raise RuntimeError(
-                f"Anthropic-compatible request failed with HTTP {exc.code}"
-            ) from None
-        except (urllib.error.URLError, RemoteDisconnected):
-            raise RuntimeError(
-                "Anthropic-compatible request failed: network_error"
-            ) from None
+        attempts = 3
+        for attempt in range(attempts):
+            try:
+                with urllib.request.urlopen(request, timeout=self.timeout) as raw:
+                    response_body = raw.read()
+                break
+            except urllib.error.HTTPError as exc:
+                if exc.code >= 500 and attempt < attempts - 1:
+                    time.sleep(0.5 * (attempt + 1))
+                    continue
+                raise RuntimeError(
+                    f"Anthropic-compatible request failed with HTTP {exc.code}"
+                ) from None
+            except (urllib.error.URLError, RemoteDisconnected):
+                if attempt < attempts - 1:
+                    time.sleep(0.5 * (attempt + 1))
+                    continue
+                raise RuntimeError(
+                    "Anthropic-compatible request failed: network_error"
+                ) from None
         try:
             data = _decode_json_object(response_body)
         except Exception:

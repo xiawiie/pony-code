@@ -410,7 +410,7 @@ class AgentLoop:
                 task_state.record_attempt()
                 agent.run_store.write_task_state(task_state)
                 prompt_started_at = time.monotonic()
-                request, request_metadata = agent.context_manager.build_v2(
+                request, request_metadata = agent.context_manager.build_request(
                     injection_snapshot=injection_snapshot,
                     injection_telemetry=injection_telemetry,
                     preflight_metadata=preflight_metadata,
@@ -486,7 +486,7 @@ class AgentLoop:
                     },
                 )
                 try:
-                    raw_response = agent.model_client.complete_v2(
+                    raw_response = agent.model_client.complete(
                         system=request["system"],
                         tools=request["tools"],
                         messages=request["messages"],

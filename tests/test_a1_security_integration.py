@@ -17,14 +17,13 @@ from pico.tools import _ApprovedShellExecution
 
 class ScriptedProvider:
     supports_prompt_cache = False
-    supports_native_tools = True
     last_completion_metadata = {}
 
     def __init__(self, responses):
         self.responses = list(responses)
         self.requests = []
 
-    def complete_v2(self, **request):
+    def complete(self, **request):
         self.requests.append(deepcopy(request))
         response = self.responses.pop(0)
         if isinstance(response, BaseException):

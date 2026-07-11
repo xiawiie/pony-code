@@ -6,7 +6,7 @@ locally before/after a change to spot regressions.
 ## Usage
 
 ```bash
-uv run python -m benchmarks.perf.bench_build_v2 > results-build_v2.json
+uv run python -m benchmarks.perf.bench_request_build > results-request-build.json
 uv run python -m benchmarks.perf.bench_retrieval > results-retrieval.json
 uv run python -m benchmarks.perf.bench_recall > results-recall.json
 uv run python -m benchmarks.perf.bench_security_recovery > results-security-recovery.json
@@ -30,7 +30,7 @@ part of the acceptance gate.
 {
   "scenarios": [
     {
-      "name": "build_v2/small",
+      "name": "build_request/small",
       "iterations": 100,
       "median_ns": 123456,
       "p95_ns": 234567,

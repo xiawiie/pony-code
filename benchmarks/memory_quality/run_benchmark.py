@@ -24,7 +24,7 @@ if str(ROOT) not in sys.path:
 from pico.evaluation.provider_benchmark import _make_provider_client  # noqa: E402
 from pico.memory.block_store import BlockStore  # noqa: E402
 from pico.memory.retrieval import Retrieval  # noqa: E402
-from pico.providers.clients import FakeModelClient  # noqa: E402
+from pico.providers.fake import FakeModelClient  # noqa: E402
 from pico.runtime import Pico, SessionStore  # noqa: E402
 from pico.workspace import WorkspaceContext  # noqa: E402
 

@@ -269,15 +269,6 @@ class Pico:
         _trusted_redaction_env=False,
         _trusted_executables=None,
     ):
-        # v2 迁移：模型后端约定的接口是 `complete_v2(system, tools, messages, ...)`。
-        # 不支持这个方法的老 provider（FakeModelClient / OllamaModelClient /
-        # OpenAICompatibleModelClient / 老的 Anthropic 客户端等）在这里统一被
-        # FallbackAdapter 包一层：外部看起来仍然是 complete_v2，内部把 v2 请求
-        # 拍扁成 <tool>/<final> XML prompt，再让老 provider.complete() 处理。
-        if not hasattr(model_client, "complete_v2"):
-            from .providers.fallback_adapter import FallbackAdapter
-
-            model_client = FallbackAdapter(model_client)
         self.model_client = model_client
         self.workspace = workspace
         self.root = Path(workspace.repo_root)
@@ -823,7 +814,7 @@ class Pico:
         )
         session_metrics = message_metrics(
             self.session.get("messages", []),
-            token_of=self.context_manager._count_tokens_for_v2,
+            token_of=self.context_manager.count_tokens,
         )
         tool_metrics = tool_event_metrics(self.session.get("messages", []))
         usage = {

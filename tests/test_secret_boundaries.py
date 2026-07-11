@@ -16,13 +16,12 @@ from pico.security import SensitiveDataBlockedError
 
 class CapturingClient:
     supports_prompt_cache = False
-    supports_native_tools = True
 
     def __init__(self, response):
         self.response = response
         self.requests = []
 
-    def complete_v2(self, **request):
+    def complete(self, **request):
         self.requests.append(request)
         if isinstance(self.response, list):
             return self.response.pop(0)
@@ -30,7 +29,7 @@ class CapturingClient:
 
 
 class RaisingClient(CapturingClient):
-    def complete_v2(self, **request):
+    def complete(self, **request):
         self.requests.append(request)
         raise self.response
 
@@ -113,7 +112,7 @@ def test_injection_source_is_sanitized_before_tokenizer_and_request(tmp_path):
         "content": "inspect",
         "_pico_meta": {},
     })
-    request, _ = agent.context_manager.build_v2(
+    request, _ = agent.context_manager.build_request(
         injection_snapshot=rendered,
         injection_telemetry=telemetry,
         preflight_metadata={},

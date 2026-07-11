@@ -1,6 +1,6 @@
 """Task C5: metadata surface completeness gate.
 
-Locks in that build_v2 populates every field spec §9 promised. Runs
+Locks in that build_request populates every field spec §9 promised. Runs
 with a fully-mocked agent so no external state matters."""
 
 from unittest.mock import MagicMock
@@ -10,7 +10,7 @@ from pico.context_manager import ContextManager
 
 
 REQUIRED_METADATA_FIELDS = {
-    "system_cache_key",
+    "system_prefix_hash",
     "system_tokens",
     "tools_tokens",
     "prompt_cache_supported",
@@ -63,7 +63,7 @@ def test_metadata_covers_spec_section_9():
 
     cm = ContextManager(a)
     snapshot, telemetry = render_current_user_message(a, "hi")
-    _request, metadata = cm.build_v2(
+    _request, metadata = cm.build_request(
         injection_snapshot=snapshot,
         injection_telemetry=telemetry,
         preflight_metadata={

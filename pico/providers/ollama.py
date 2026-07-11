@@ -16,12 +16,9 @@ class OllamaModelClient:
         self.temperature = temperature
         self.top_p = top_p
         self.timeout = timeout
-        self.supports_prompt_cache = False
         self.last_completion_metadata = {}
 
-    def complete(self, prompt, max_new_tokens, **kwargs):
-        # Ollama 当前不支持我们这里接入的 prompt cache 语义，
-        # 所以 runtime 传下来的缓存参数会被忽略。
+    def complete_text(self, prompt, max_tokens):
         self.last_completion_metadata = {}
         payload = {
             "model": self.model,
@@ -30,7 +27,7 @@ class OllamaModelClient:
             "raw": False,
             "think": False,
             "options": {
-                "num_predict": max_new_tokens,
+                "num_predict": max_tokens,
                 "temperature": self.temperature,
                 "top_p": self.top_p,
             },
@@ -62,6 +59,3 @@ class OllamaModelClient:
         if not isinstance(response_text, str):
             raise RuntimeError("Ollama error: invalid_response") from None
         return response_text
-
-    def stream_complete(self, prompt, max_new_tokens, **kwargs):
-        yield self.complete(prompt, max_new_tokens, **kwargs)

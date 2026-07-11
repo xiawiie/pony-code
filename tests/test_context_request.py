@@ -35,21 +35,21 @@ def _make_agent():
     return a
 
 
-def _build_v2(agent, user_message):
+def _build_request(agent, user_message):
     agent.session["messages"].append(
         {"role": "user", "content": user_message, "_pico_meta": {}}
     )
     snapshot, telemetry = render_current_user_message(agent, user_message)
-    return ContextManager(agent).build_v2(
+    return ContextManager(agent).build_request(
         injection_snapshot=snapshot,
         injection_telemetry=telemetry,
         preflight_metadata={},
     )
 
 
-def test_build_v2_returns_system_tools_messages():
+def test_build_request_returns_system_tools_messages():
     a = _make_agent()
-    request, metadata = _build_v2(a, "current input")
+    request, metadata = _build_request(a, "current input")
     assert isinstance(request, dict)
     assert isinstance(request["system"], list)
     assert request["system"][0]["type"] == "text"
@@ -64,37 +64,37 @@ def test_build_v2_returns_system_tools_messages():
     assert "approval" in tools_by_name["write_file"]["description"].lower()
 
 
-def test_build_v2_uses_persisted_current_user_message():
+def test_build_request_uses_persisted_current_user_message():
     a = _make_agent()
-    request, _ = _build_v2(a, "current input")
+    request, _ = _build_request(a, "current input")
     assert request["messages"][-1]["role"] == "user"
     text = request["messages"][-1]["content"]
     assert "current input" in text
 
 
-def test_build_v2_history_messages_preserved():
+def test_build_request_history_messages_preserved():
     a = _make_agent()
-    request, _ = _build_v2(a, "x")
+    request, _ = _build_request(a, "x")
     # 历史两条 + 当前一条
     assert len(request["messages"]) == 3
     assert request["messages"][0]["content"] == "hello"
     assert request["messages"][1]["content"] == "hi there"
 
 
-def test_build_v2_cache_breakpoint_on_second_to_last():
+def test_build_request_cache_breakpoint_on_second_to_last():
     a = _make_agent()
-    request, _ = _build_v2(a, "x")
+    request, _ = _build_request(a, "x")
     # messages 长度 3，断点 2 应位于 index 1（当前 user 消息的前一条）
     assert request["cache_control_breakpoints"] == [len(request["messages"]) - 2]
 
 
-def test_build_v2_metadata_contains_system_cache_key():
+def test_build_request_metadata_contains_system_prefix_hash():
     import hashlib
     a = _make_agent()
-    _, metadata = _build_v2(a, "x")
-    assert "system_cache_key" in metadata
+    _, metadata = _build_request(a, "x")
+    assert "system_prefix_hash" in metadata
     expected = hashlib.sha256(a.prefix.encode("utf-8")).hexdigest()
-    assert metadata["system_cache_key"] == expected
+    assert metadata["system_prefix_hash"] == expected
 
 
 def test_int_schema_field_maps_to_integer_json_type():

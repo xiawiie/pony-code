@@ -3,7 +3,7 @@ import tempfile
 from pathlib import Path
 
 from ..features import memory as memorylib
-from ..providers.clients import FakeModelClient
+from ..providers.fake import FakeModelClient
 from ..runtime import Pico, SessionStore
 from ..workspace import WorkspaceContext
 from .experiments_synthetic import run_context_stress_matrix, run_large_scale_memory_experiment
@@ -30,13 +30,26 @@ class _RecoveryScenarioModelClient(FakeModelClient):
         self.required_fragments = [str(fragment).lower() for fragment in required_fragments]
         self.success_answer = str(success_answer)
 
-    def complete(self, prompt, max_new_tokens, **kwargs):
-        del max_new_tokens, kwargs
-        self.prompts.append(prompt)
-        prompt_lower = str(prompt).lower()
+    def complete(
+        self, *, system, tools, messages, max_tokens, cache_breakpoints=None
+    ):
+        request_text = json.dumps(
+            {"system": system, "tools": tools, "messages": messages},
+            ensure_ascii=False,
+        )
+        prompt_lower = request_text.lower()
         if all(fragment in prompt_lower for fragment in self.required_fragments):
-            return f"<final>{self.success_answer}</final>"
-        return "<final>missing recovery state.</final>"
+            output = f"<final>{self.success_answer}</final>"
+        else:
+            output = "<final>missing recovery state.</final>"
+        self.outputs.append(output)
+        return super().complete(
+            system=system,
+            tools=tools,
+            messages=messages,
+            max_tokens=max_tokens,
+            cache_breakpoints=cache_breakpoints,
+        )
 
 
 RECOVERY_ABLATION_TASKS = [

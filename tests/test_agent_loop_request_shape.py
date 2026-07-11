@@ -1,4 +1,4 @@
-"""Canonical agent-loop message constructors preserve the v2 wire shape."""
+"""Canonical agent-loop message constructors preserve the request wire shape."""
 
 from pico.messages import make_tool_pair
 
@@ -14,7 +14,7 @@ def test_plain_message_builds_user_message():
     }
 
 
-def test_make_tool_pair_has_v2_wire_shape():
+def test_make_tool_pair_has_request_wire_shape():
     tool_use, tool_result = make_tool_pair(
         name="read_file",
         arguments={"path": "a.py"},

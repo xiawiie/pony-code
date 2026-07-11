@@ -1,4 +1,4 @@
-"""Tests for ContextManager.build_v2 injection wiring (Task 14):
+"""Tests for ContextManager.build_request injection wiring (Task 14):
 - current user message wrapped with <system-reminder> injection
 - pinned layer (system + tools) overflow raises SystemTooBig
 - telemetry from renderer merged into metadata
@@ -27,54 +27,54 @@ def _agent():
     return a
 
 
-def _build_v2(agent, user_message):
+def _build_request(agent, user_message):
     agent.session["messages"].append(
         {"role": "user", "content": user_message, "_pico_meta": {}}
     )
     snapshot, telemetry = render_current_user_message(agent, user_message)
-    return ContextManager(agent).build_v2(
+    return ContextManager(agent).build_request(
         injection_snapshot=snapshot,
         injection_telemetry=telemetry,
         preflight_metadata={},
     )
 
 
-def test_build_v2_current_message_contains_injection():
-    request, _metadata = _build_v2(_agent(), "hello")
+def test_build_request_current_message_contains_injection():
+    request, _metadata = _build_request(_agent(), "hello")
     current = request["messages"][-1]["content"]
     assert "<system-reminder>" in current
     assert "<pico:workspace_state>" in current
     assert current.strip().endswith("hello")
 
 
-def test_build_v2_telemetry_records_intent():
-    _request, metadata = _build_v2(_agent(), "上次讨论过什么？")
+def test_build_request_telemetry_records_intent():
+    _request, metadata = _build_request(_agent(), "上次讨论过什么？")
     assert metadata["intent"]["name"] == "recall"
     assert "injection_tokens" in metadata
     assert "injection_truncated" in metadata
 
 
-def test_build_v2_pinned_layer_overflow_failloud():
+def test_build_request_pinned_layer_overflow_failloud():
     a = _agent()
     a.prefix = "x" * 200_000  # ~50K tokens (via /4 fallback), well above 20K cap
     a.tools = {}
     with pytest.raises(RuntimeError, match="SystemTooBig"):
-        _build_v2(a, "hi")
+        _build_request(a, "hi")
 
 
-def test_build_v2_metadata_includes_system_and_tools_tokens():
-    _request, metadata = _build_v2(_agent(), "hello")
+def test_build_request_metadata_includes_system_and_tools_tokens():
+    _request, metadata = _build_request(_agent(), "hello")
     assert "system_tokens" in metadata
     assert "tools_tokens" in metadata
     assert isinstance(metadata["system_tokens"], int)
     assert isinstance(metadata["tools_tokens"], int)
 
 
-def test_build_v2_replaces_persisted_current_user_in_request_view():
+def test_build_request_replaces_persisted_current_user_in_request_view():
     a = _agent()
     a.session = {"messages": [{"role": "user", "content": "already here", "_pico_meta": {}}]}
     snapshot, telemetry = render_current_user_message(a, "already here")
-    request, _metadata = ContextManager(a).build_v2(
+    request, _metadata = ContextManager(a).build_request(
         injection_snapshot=snapshot,
         injection_telemetry=telemetry,
         preflight_metadata={},
@@ -83,7 +83,7 @@ def test_build_v2_replaces_persisted_current_user_in_request_view():
     assert request["messages"][0]["content"] == snapshot
 
 
-def test_build_v2_tools_tokens_uses_json_serialization():
+def test_build_request_tools_tokens_uses_json_serialization():
     """Task A3: tools_tokens must reflect JSON wire size, not Python repr."""
     import json
     from unittest.mock import MagicMock
@@ -105,7 +105,7 @@ def test_build_v2_tools_tokens_uses_json_serialization():
     a.render_checkpoint_text = MagicMock(return_value="")
     a.model_client = MagicMock(count_tokens=lambda t: max(1, len(t) // 4))
 
-    request, metadata = _build_v2(a, "hello")
+    request, metadata = _build_request(a, "hello")
     # Recompute the expected token count against the JSON-serialized tools.
     expected = max(1, len(json.dumps(request["tools"])) // 4)
     assert metadata["tools_tokens"] == expected

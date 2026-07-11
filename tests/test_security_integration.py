@@ -18,14 +18,13 @@ def _sentinel():
 
 
 class CapturingClient:
-    supports_native_tools = True
     supports_prompt_cache = False
 
     def __init__(self, responses):
         self.responses = list(responses)
         self.requests = []
 
-    def complete_v2(self, **request):
+    def complete(self, **request):
         self.requests.append(request)
         return self.responses.pop(0)
 
@@ -247,10 +246,9 @@ def test_provider_error_log_cli_and_run_artifacts_hide_canary(
     monkeypatch.setenv("PICO_TEST_TOKEN", secret)
 
     class FailingClient:
-        supports_native_tools = True
         supports_prompt_cache = False
 
-        def complete_v2(self, **request):
+        def complete(self, **request):
             raise RuntimeError(
                 "HTTP 500 body="
                 + secret

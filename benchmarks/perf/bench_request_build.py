@@ -1,4 +1,4 @@
-"""Benchmark ContextManager.build_v2 across session sizes."""
+"""Benchmark ContextManager.build_request across session sizes."""
 
 from __future__ import annotations
 
@@ -58,8 +58,8 @@ def main():
         )
         snapshot, telemetry = render_current_user_message(agent, user_message)
         result = bench(
-            f"build_v2/{name}",
-            lambda: cm.build_v2(
+            f"build_request/{name}",
+            lambda: cm.build_request(
                 injection_snapshot=snapshot,
                 injection_telemetry=telemetry,
                 preflight_metadata={},

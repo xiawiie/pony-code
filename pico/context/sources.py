@@ -174,7 +174,7 @@ def render_recalled_memory(agent, budget_tokens, user_message=""):
 
     Task C2: exceptions raised by ``recall_for_turn`` are recorded into
     ``session["_recall_errors"]`` (``{count, last}``) so operators can spot
-    silent failures via ``build_v2`` metadata. Behavior unchanged — the
+    silent failures via ``build_request`` metadata. Behavior unchanged — the
     turn still proceeds with ``recalled_memory`` omitted.
     """
     # Local import to avoid a hard cycle with the memory subsystem.

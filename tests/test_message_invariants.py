@@ -24,7 +24,7 @@ def _make_agent_with_messages(messages):
 
 
 def test_message_immutability_across_turns():
-    """build_v2 must not mutate session["messages"] entries."""
+    """build_request must not mutate session["messages"] entries."""
     msgs = [
         {"role": "user", "content": "q1"},
         {"role": "assistant", "content": "a1"},
@@ -41,7 +41,7 @@ def test_message_immutability_across_turns():
             }
         )
         snapshot, telemetry = render_current_user_message(agent, user_message)
-        cm.build_v2(
+        cm.build_request(
             injection_snapshot=snapshot,
             injection_telemetry=telemetry,
             preflight_metadata={},

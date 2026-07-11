@@ -1,8 +1,8 @@
 """Regression test for the final-review Finding 1:
 
 AgentLoop.run pre-appends the user turn via _append_user_turn, then
-build_v2 must still ensure the injection-wrapped content is what
-provider.complete_v2 actually receives — not the bare user string.
+build_request must still ensure the injection-wrapped content is what
+provider.complete actually receives — not the bare user string.
 This end-to-end check sniffs the provider payload.
 """
 
@@ -15,17 +15,16 @@ from pico.workspace import WorkspaceContext
 
 
 class _SniffProvider:
-    """v2 provider stub that records every complete_v2 call verbatim."""
+    """Structured provider stub that records every complete call verbatim."""
 
     supports_prompt_cache = False
-    supports_native_tools = True
 
     def __init__(self, script):
         self.script = list(script)
         self.calls = []
         self.last_completion_metadata = {}
 
-    def complete_v2(self, *, system, tools, messages, max_tokens, cache_breakpoints=None):
+    def complete(self, *, system, tools, messages, max_tokens, cache_breakpoints=None):
         self.calls.append(
             {
                 "system": system,
@@ -79,7 +78,7 @@ def test_provider_receives_injection_wrapped_user_message(tmp_path):
 
 
 def test_message_count_invariant_after_injection(tmp_path):
-    """build_v2 must NOT duplicate the user message when the loop pre-appended it."""
+    """build_request must NOT duplicate the user message when the loop pre-appended it."""
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
 
     provider = _SniffProvider(

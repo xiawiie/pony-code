@@ -77,7 +77,7 @@ class ContextManager:
     def __init__(self, agent):
         self.agent = agent
 
-    def build_v2(
+    def build_request(
         self,
         *,
         injection_snapshot,
@@ -107,8 +107,8 @@ class ContextManager:
             secret_env_names=self.agent.secret_env_names,
         )
         system_text = str(system[0].get("text", ""))
-        system_tokens = self._count_tokens_for_v2(system_text)
-        tools_tokens = self._count_tokens_for_v2(json.dumps(tools, sort_keys=False))
+        system_tokens = self.count_tokens(system_text)
+        tools_tokens = self.count_tokens(json.dumps(tools, sort_keys=False))
         config = getattr(self.agent, "context_config", None)
         if not isinstance(config, dict):
             config = {}
@@ -126,7 +126,7 @@ class ContextManager:
             messages,
             soft_cap_tokens=soft_cap,
             floor_count=floor_count,
-            token_of=lambda message: self._count_tokens_for_v2(
+            token_of=lambda message: self.count_tokens(
                 message_content_text(message)
             ),
         )
@@ -135,9 +135,9 @@ class ContextManager:
         recall_errors = session.get("_recall_errors", {}) if isinstance(session, dict) else {}
         if not isinstance(recall_errors, dict):
             recall_errors = {}
-        metrics = message_metrics(messages, token_of=self._count_tokens_for_v2)
+        metrics = message_metrics(messages, token_of=self.count_tokens)
         metadata = {
-            "system_cache_key": hashlib.sha256(system_text.encode("utf-8")).hexdigest(),
+            "system_prefix_hash": hashlib.sha256(system_text.encode("utf-8")).hexdigest(),
             "system_tokens": system_tokens,
             "tools_tokens": tools_tokens,
             "prompt_cache_supported": bool(
@@ -159,7 +159,7 @@ class ContextManager:
             "cache_control_breakpoints": breakpoints,
         }, metadata
 
-    def _count_tokens_for_v2(self, text):
+    def count_tokens(self, text):
         counter = getattr(getattr(self.agent, "model_client", None), "count_tokens", None)
         if callable(counter):
             try:

@@ -1,19 +1,18 @@
-"""端到端：AgentLoop 用 v2 provider + v2 messages 完成一轮 tool_use → tool_result → final."""
+"""端到端：AgentLoop 使用 structured request 完成一轮 tool_use → tool_result → final."""
 
 from pico.providers.response import Response, StopReason
 
 
-class _StubProviderV2:
+class _StubProvider:
     """按顺序返回 canned responses."""
     supports_prompt_cache = False
-    supports_native_tools = True
 
     def __init__(self, script):
         self.script = list(script)
         self.calls = []
         self.last_completion_metadata = {}
 
-    def complete_v2(self, *, system, tools, messages, max_tokens, cache_breakpoints=None):
+    def complete(self, *, system, tools, messages, max_tokens, cache_breakpoints=None):
         self.calls.append({
             "system": system,
             "tools": tools,
@@ -30,7 +29,7 @@ def test_end_to_end_tool_call_then_final(tmp_path):
 
     (tmp_path / "README.md").write_text("hello\n", encoding="utf-8")
 
-    provider = _StubProviderV2([
+    provider = _StubProvider([
         Response(
             stop_reason=StopReason.TOOL_USE,
             content=[{
@@ -80,10 +79,8 @@ def test_end_to_end_tool_call_then_final(tmp_path):
     assert "<system-reminder>" in turn1_user_content
 
 
-def test_end_to_end_wraps_non_v2_provider_with_fallback(tmp_path):
-    """FakeModelClient (no complete_v2) must be wrapped in FallbackAdapter."""
+def test_end_to_end_fake_provider_uses_structured_surface(tmp_path):
     from pico import FakeModelClient
-    from pico.providers.fallback_adapter import FallbackAdapter
     from pico.runtime import Pico
     from pico.session_store import SessionStore
     from pico.workspace import WorkspaceContext
@@ -98,18 +95,17 @@ def test_end_to_end_wraps_non_v2_provider_with_fallback(tmp_path):
         approval_policy="auto",
     )
 
-    assert isinstance(pico.model_client, FallbackAdapter)
+    assert pico.model_client is inner
     assert pico.ask("hi") == "ok"
 
 
-def test_end_to_end_v2_provider_not_double_wrapped(tmp_path):
-    """A provider that already has complete_v2 stays as-is."""
-    from pico.providers.fallback_adapter import FallbackAdapter
+def test_end_to_end_structured_provider_stays_as_is(tmp_path):
+    from pico.providers.text_protocol_adapter import TextProtocolAdapter
     from pico.runtime import Pico
     from pico.session_store import SessionStore
     from pico.workspace import WorkspaceContext
 
-    provider = _StubProviderV2([
+    provider = _StubProvider([
         Response(
             stop_reason=StopReason.END_TURN,
             content=[{"type": "text", "text": "hi"}],
@@ -126,5 +122,5 @@ def test_end_to_end_v2_provider_not_double_wrapped(tmp_path):
     )
 
     assert pico.model_client is provider
-    assert not isinstance(pico.model_client, FallbackAdapter)
+    assert not isinstance(pico.model_client, TextProtocolAdapter)
     assert pico.ask("hi") == "hi"

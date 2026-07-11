@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 
 from ..features import memory as memorylib
 from ..messages import validate_messages
-from ..providers.clients import FakeModelClient
+from ..providers.fake import FakeModelClient
 from ..runtime import Pico, SessionStore
 from ..run_store import RunStore
 from ..safe_subprocess import (

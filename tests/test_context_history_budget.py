@@ -132,7 +132,7 @@ def test_floor_aligns_to_current_plain_user_for_multi_tool_turn():
     ]
 
 
-def test_build_v2_drops_old_messages_when_cap_exceeded(tmp_path):
+def test_build_request_drops_old_messages_when_cap_exceeded(tmp_path):
     from unittest.mock import MagicMock
 
     from pico.context.renderer import render_current_user_message
@@ -161,7 +161,7 @@ def test_build_v2_drops_old_messages_when_cap_exceeded(tmp_path):
 
     cm = ContextManager(a)
     snapshot, telemetry = render_current_user_message(a, "current q")
-    request, metadata = cm.build_v2(
+    request, metadata = cm.build_request(
         injection_snapshot=snapshot,
         injection_telemetry=telemetry,
         preflight_metadata={},

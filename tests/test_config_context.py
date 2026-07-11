@@ -105,7 +105,7 @@ def test_prepare_tool_result_uses_config_threshold(tmp_path):
     assert metadata["digest_applied"] is True
 
 
-def test_build_v2_reads_system_tools_hard_cap_from_pico_toml(tmp_path):
+def test_build_request_reads_system_tools_hard_cap_from_pico_toml(tmp_path):
     """Overriding system_tools_hard_cap in pico.toml raises SystemTooBig sooner."""
     from unittest.mock import MagicMock
 
@@ -139,7 +139,7 @@ def test_build_v2_reads_system_tools_hard_cap_from_pico_toml(tmp_path):
     cm = ContextManager(a)
     snapshot, telemetry = render_current_user_message(a, "hi")
     with pytest.raises(RuntimeError, match="SystemTooBig"):
-        cm.build_v2(
+        cm.build_request(
             injection_snapshot=snapshot,
             injection_telemetry=telemetry,
             preflight_metadata={},

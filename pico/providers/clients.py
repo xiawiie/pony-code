@@ -11,12 +11,10 @@ from ._shared import (
 )
 from .anthropic_compatible import (  # noqa: F401
     AnthropicCompatibleModelClient,
-    _anthropic_cache_control,
-    _anthropic_no_text_error,
-    _extract_anthropic_text,
     _extract_anthropic_usage_cache_details,
     _supports_anthropic_prompt_cache,
 )
+from .fake import FakeModelClient  # noqa: F401
 from .ollama import OllamaModelClient  # noqa: F401
 from .openai_compatible import (  # noqa: F401
     OPENAI_COMPATIBLE_USER_AGENT,
@@ -25,22 +23,3 @@ from .openai_compatible import (  # noqa: F401
     _extract_openai_text,
     _extract_openai_text_from_sse,
 )
-
-
-class FakeModelClient:
-    def __init__(self, outputs):
-        self.outputs = list(outputs)
-        self.prompts = []
-        self.supports_prompt_cache = False
-        self.last_completion_metadata = {}
-
-    def complete(self, prompt, max_new_tokens, **kwargs):
-        self.prompts.append(prompt)
-        if not getattr(self, "last_completion_metadata", None):
-            self.last_completion_metadata = {}
-        if not self.outputs:
-            raise RuntimeError("fake model ran out of outputs")
-        return self.outputs.pop(0)
-
-    def stream_complete(self, prompt, max_new_tokens, **kwargs):
-        yield self.complete(prompt, max_new_tokens, **kwargs)

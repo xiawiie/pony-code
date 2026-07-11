@@ -2,7 +2,7 @@
 
 - `pico/working_memory.py` module is deleted (no producer/consumer since Task 5+).
 - `feature_flags["relevant_memory"]` is no longer a default flag (never consumed).
-- Prompt metadata carries a single cache-key field (`system_cache_key`);
+- Prompt metadata carries a single cache-key field (`system_prefix_hash`);
   the three synonymous hashes (`base_prefix_hash` / `stable_prefix_hash` /
   `prefix_hash` / `prompt_cache_key`) are gone.
 """
@@ -23,7 +23,7 @@ def test_default_feature_flags_no_relevant_memory():
     assert "relevant_memory" not in DEFAULT_FEATURE_FLAGS
 
 
-def test_metadata_uses_system_cache_key_only(tmp_path):
+def test_metadata_uses_system_prefix_hash_only(tmp_path):
     from pico import FakeModelClient, Pico, SessionStore, WorkspaceContext
     from pico.context.renderer import render_current_user_message
 
@@ -45,13 +45,13 @@ def test_metadata_uses_system_cache_key_only(tmp_path):
         }
     )
     snapshot, telemetry = render_current_user_message(agent, "x")
-    _, metadata = agent.context_manager.build_v2(
+    _, metadata = agent.context_manager.build_request(
         injection_snapshot=snapshot,
         injection_telemetry=telemetry,
         preflight_metadata={},
     )
 
-    assert "system_cache_key" in metadata
+    assert "system_prefix_hash" in metadata
     assert "prompt_cache_key" not in metadata
     assert "base_prefix_hash" not in metadata
     assert "stable_prefix_hash" not in metadata

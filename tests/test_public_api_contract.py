@@ -29,7 +29,7 @@ def test_lightweight_package_split_uses_package_paths_without_legacy_shims():
     from pico.evaluation.evaluator import BenchmarkEvaluator
     from pico.evaluation.metrics import run_context_ablation_v2
     from pico.features.memory import LayeredMemory
-    from pico.providers.clients import FakeModelClient as ProviderFakeModelClient
+    from pico.providers.fake import FakeModelClient as ProviderFakeModelClient
 
     assert BenchmarkEvaluator is not None
     assert LayeredMemory is not None

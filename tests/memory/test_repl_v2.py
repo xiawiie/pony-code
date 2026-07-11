@@ -10,7 +10,7 @@ import re
 def _build_agent(tmp_path):
     from pico.runtime import Pico, SessionStore
     from pico.workspace import WorkspaceContext
-    from pico.providers.clients import FakeModelClient
+    from pico.providers.fake import FakeModelClient
 
     workspace = WorkspaceContext.build(tmp_path)
     store = SessionStore(tmp_path / ".pico" / "sessions")

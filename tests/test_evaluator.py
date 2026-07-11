@@ -12,7 +12,7 @@ from pico.evaluation.evaluator import (
     summarize_rows,
 )
 from pico.evaluation.fixed_benchmark import _verifier_argv
-from pico.providers.clients import FakeModelClient
+from pico.providers.fake import FakeModelClient
 
 
 def test_load_benchmark_validates_fixed_schema():
@@ -286,7 +286,7 @@ def test_real_provider_benchmark_prompt_includes_success_criteria(tmp_path):
     row = evaluator.run_task(evaluator.load()["tasks"][0])
 
     assert row["status"] == "pass"
-    prompt = clients[0].prompts[0]
+    prompt = clients[0].requests[0]["messages"][-1]["content"]
     assert "Success criteria:" in prompt
     assert "README.md contains benchmark success text" in prompt
     assert "Verification command:" in prompt

@@ -178,21 +178,20 @@ def test_provider_profile_uses_shared_key_for_gpt(tmp_path, monkeypatch):
     assert profile["model"] == "gpt-5.4"
 
 
-def test_real_memory_request_recorder_captures_actual_native_or_fallback_input():
-    from pico import FakeModelClient
+def test_real_memory_request_recorder_captures_structured_and_text_input():
     from pico.evaluation.experiments_real import (
         _first_followup_drops_bootstrap_tool,
         _recording_provider,
     )
-    from pico.providers.fallback_adapter import FallbackAdapter
+    from pico.providers.text_protocol_adapter import TextProtocolAdapter
 
     class NativeProvider:
-        def complete_v2(self, **kwargs):
+        def complete(self, **kwargs):
             return kwargs
 
     native = _recording_provider(NativeProvider())
     messages = [{"role": "assistant", "content": [{"id": "tu_1"}]}]
-    assert native.complete_v2(
+    assert native.complete(
         system=[],
         tools=[],
         messages=messages,
@@ -202,28 +201,24 @@ def test_real_memory_request_recorder_captures_actual_native_or_fallback_input()
     assert _first_followup_drops_bootstrap_tool(native, 0, "tu_1") is False
     assert _first_followup_drops_bootstrap_tool(native, 1, "tu_1") is False
 
-    class FallbackProvider:
-        def complete(self, prompt, max_new_tokens, **kwargs):
-            return prompt, max_new_tokens, kwargs
+    class TextProvider:
+        last_completion_metadata = {}
 
-    fallback = _recording_provider(FallbackProvider())
-    assert not hasattr(fallback, "complete_v2")
-    assert fallback.complete("sent prompt", 10) == ("sent prompt", 10, {})
-    assert fallback.calls == [("prompt", "sent prompt")]
-    assert _first_followup_drops_bootstrap_tool(fallback, 0, "tu_1") is True
-    assert _first_followup_drops_bootstrap_tool(fallback, 0, "") is False
+        def complete_text(self, prompt, max_tokens):
+            del max_tokens
+            return prompt
 
-    existing_fallback = _recording_provider(
-        FallbackAdapter(FakeModelClient(["<final>done</final>"]))
-    )
-    existing_fallback.complete_v2(
+    text_adapter = _recording_provider(TextProtocolAdapter(TextProvider()))
+    text_adapter.complete(
         system=[],
         tools=[],
         messages=[{"role": "user", "content": "record the wire prompt"}],
         max_tokens=10,
     )
-    assert existing_fallback.calls[0][0] == "prompt"
-    assert "record the wire prompt" in existing_fallback.calls[0][1]
+    assert text_adapter.calls[0][0] == "prompt"
+    assert "record the wire prompt" in text_adapter.calls[0][1]
+    assert _first_followup_drops_bootstrap_tool(text_adapter, 0, "tu_1") is True
+    assert _first_followup_drops_bootstrap_tool(text_adapter, 0, "") is False
 
 
 def test_memory_summary_detector_requires_nonempty_index_bound_line():

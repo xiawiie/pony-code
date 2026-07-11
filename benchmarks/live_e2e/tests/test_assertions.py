@@ -261,7 +261,7 @@ def test_read_turn_trace_aggregates_every_model_turn(tmp_path):
             for event in [
                 {
                     "event": "model_turn",
-                    "request_metadata": {"system_cache_key": "k", "messages_count": 1},
+                    "request_metadata": {"system_prefix_hash": "k", "messages_count": 1},
                     "completion_usage": {"input_tokens": 10, "output_tokens": 2},
                 },
                 {
@@ -271,7 +271,7 @@ def test_read_turn_trace_aggregates_every_model_turn(tmp_path):
                 },
                 {
                     "event": "model_turn",
-                    "request_metadata": {"system_cache_key": "k", "messages_count": 3},
+                    "request_metadata": {"system_prefix_hash": "k", "messages_count": 3},
                     "completion_usage": {
                         "input_tokens": 20,
                         "output_tokens": 4,
@@ -296,11 +296,11 @@ def test_read_turn_trace_aggregates_every_model_turn(tmp_path):
     }
     assert captured["usage_complete"] is True
     assert captured["request_metadata"] == [
-        {"system_cache_key": "k", "messages_count": 1},
-        {"system_cache_key": "k", "messages_count": 3},
+        {"system_prefix_hash": "k", "messages_count": 1},
+        {"system_prefix_hash": "k", "messages_count": 3},
     ]
     assert captured["action_origins"] == ["native_tool_use"]
-    assert captured["system_cache_keys"] == ["k", "k"]
+    assert captured["system_prefix_hashes"] == ["k", "k"]
 
 
 def test_read_turn_trace_does_not_accept_a_nonstring_cache_key(tmp_path):
@@ -309,7 +309,7 @@ def test_read_turn_trace_does_not_accept_a_nonstring_cache_key(tmp_path):
         json.dumps(
             {
                 "event": "model_turn",
-                "request_metadata": {"system_cache_key": None},
+                "request_metadata": {"system_prefix_hash": None},
                 "completion_usage": {"input_tokens": 1, "output_tokens": 1},
             }
         ),
@@ -318,7 +318,7 @@ def test_read_turn_trace_does_not_accept_a_nonstring_cache_key(tmp_path):
 
     captured = run_live_session.read_turn_trace(trace)
 
-    assert captured["system_cache_keys"] == [""]
+    assert captured["system_prefix_hashes"] == [""]
 
 
 @pytest.mark.parametrize("contents", [None, '{"event":'])
@@ -476,7 +476,7 @@ def test_turn_runner_does_not_reuse_previous_run_evidence_after_pre_run_failure(
                 json.dumps(
                     {
                         "event": "model_turn",
-                        "request_metadata": {"system_cache_key": "old-key"},
+                        "request_metadata": {"system_prefix_hash": "old-key"},
                         "completion_usage": {"input_tokens": 1, "output_tokens": 1},
                     }
                 ),
@@ -520,8 +520,8 @@ def test_turn_runner_uses_first_trace_call_as_current_turn_evidence(tmp_path):
     run_store = RunStore(tmp_path)
     previous_task_state = SimpleNamespace(run_id="previous-run")
     current_task_state = SimpleNamespace(run_id="current-run")
-    first_metadata = {"messages_count": 3, "system_cache_key": "stable-key"}
-    second_metadata = {"messages_count": 4, "system_cache_key": "stable-key"}
+    first_metadata = {"messages_count": 3, "system_prefix_hash": "stable-key"}
+    second_metadata = {"messages_count": 4, "system_prefix_hash": "stable-key"}
     run_store.task_state_path(current_task_state).parent.mkdir(parents=True)
     run_store.task_state_path(current_task_state).write_text(
         json.dumps({"status": "completed", "stop_reason": "done"}),
@@ -595,7 +595,7 @@ def test_turn_runner_uses_first_trace_call_as_current_turn_evidence(tmp_path):
         "cache_creation_input_tokens": 0,
         "cache_read_input_tokens": 0,
     }
-    assert result.system_cache_keys == ("stable-key", "stable-key")
+    assert result.system_prefix_hashes == ("stable-key", "stable-key")
     assert result.action_origins == ("native_tool_use",)
     assert result.actual_user_contents == (
         "first current prompt",
@@ -652,7 +652,7 @@ def _turn_result_stub(**overrides):
         ),
         usage_complete=True,
         request_metadata_by_call=({},),
-        system_cache_keys=("cache-key",),
+        system_prefix_hashes=("cache-key",),
         action_origins=("provider_text",),
         actual_user_contents=("prompt",),
         run_id="run-1",
@@ -744,7 +744,7 @@ def _turn_2_result_stub(**overrides):
             {"injection_tokens": {"recalled_memory": 1}},
             {"injection_tokens": {"recalled_memory": 1}},
         ),
-        system_cache_keys=("cache-key", "cache-key"),
+        system_prefix_hashes=("cache-key", "cache-key"),
         action_origins=("native_tool_use",),
         actual_user_contents=(
             "<system-reminder>context</system-reminder>\n读一下 pico/runtime.py",
@@ -845,7 +845,7 @@ def test_check_turn_2_requires_complete_native_trace_evidence(tmp_path):
         action_origins=("provider_text",),
         usage_complete=False,
         actual_user_contents=("plain prompt",),
-        system_cache_keys=("",),
+        system_prefix_hashes=("",),
     )
 
     assertions = _engine().check_turn_2_digest(result, pico)
@@ -855,7 +855,7 @@ def test_check_turn_2_requires_complete_native_trace_evidence(tmp_path):
         "native_tool_action_observed",
         "turn_usage_complete",
         "injected_user_prompt_reaches_every_provider_call",
-        "system_cache_keys_cover_every_provider_call",
+        "system_prefix_hashes_cover_every_provider_call",
     } <= failed
 
 
@@ -911,7 +911,7 @@ def _turn_3_result_stub(**overrides):
         current_user_content="",
         usage_complete=True,
         request_metadata_by_call=({},),
-        system_cache_keys=("cache-key",),
+        system_prefix_hashes=("cache-key",),
         action_origins=("provider_text",),
         actual_user_contents=("prompt",),
         run_id="run-3",
@@ -980,7 +980,7 @@ def _turn_4_result_stub(**overrides):
         current_user_content="",
         usage_complete=True,
         request_metadata_by_call=({},),
-        system_cache_keys=("cache-key",),
+        system_prefix_hashes=("cache-key",),
         action_origins=("provider_text",),
         actual_user_contents=("prompt",),
         run_id="run-4",
@@ -1097,7 +1097,7 @@ def _turn_1_result_stub_for_cache(cache_key="k"):
             "intent": {"name": "recall", "matched_keyword": "上次", "matched_reason": ""},
             "injection_tokens": {"recalled_memory": 10},
             "recall.error_count": 0,
-            "system_cache_key": cache_key,
+            "system_prefix_hash": cache_key,
             "injection_budget": 500,
             "system_tokens": 100, "tools_tokens": 50,
             "messages_count": 2, "messages_tokens": 40, "injection_truncated": {},
@@ -1105,14 +1105,14 @@ def _turn_1_result_stub_for_cache(cache_key="k"):
             "dropped_messages": 0,
             "cache_control_breakpoints": [],
         },
-        system_cache_keys=(cache_key,),
+        system_prefix_hashes=(cache_key,),
     )
 
 
-def _turn_5_result_stub(system_cache_key="abc", **overrides):
+def _turn_5_result_stub(system_prefix_hash="abc", **overrides):
     metadata = {
         "cache_control_breakpoints": [10],
-        "system_cache_key": system_cache_key,
+        "system_prefix_hash": system_prefix_hash,
         "system_tokens": 100, "tools_tokens": 50, "messages_count": 12,
         "messages_tokens": 500, "injection_tokens": {}, "injection_truncated": {},
         "injection_dropped": [], "injection_budget": 500,
@@ -1133,7 +1133,7 @@ def _turn_5_result_stub(system_cache_key="abc", **overrides):
         provider_input_messages_len=12, current_user_content="",
         usage_complete=True,
         request_metadata_by_call=({},),
-        system_cache_keys=(system_cache_key,),
+        system_prefix_hashes=(system_prefix_hash,),
         action_origins=("provider_text",),
         actual_user_contents=("prompt",),
         run_id="run-5",
@@ -1152,7 +1152,7 @@ def test_check_turn_5_cache_anchor_passes_when_cache_key_stable():
         _turn_1_result_stub_for_cache(cache_key="k"),
         _turn_1_result_stub_for_cache(cache_key="k"),
         _turn_1_result_stub_for_cache(cache_key="k"),
-        _turn_5_result_stub(system_cache_key="k"),
+        _turn_5_result_stub(system_prefix_hash="k"),
     ]
     asserts = engine.check_turn_5_cache_anchor(all_results[-1], all_results)
     assert len(asserts) == 5
@@ -1165,10 +1165,10 @@ def test_check_turn_5_fails_when_cache_key_drifts():
         _turn_1_result_stub_for_cache(cache_key="k1"),
         _turn_1_result_stub_for_cache(cache_key="k2"),  # drift!
     ]
-    all_results.append(_turn_5_result_stub(system_cache_key="k1"))
+    all_results.append(_turn_5_result_stub(system_prefix_hash="k1"))
     asserts = engine.check_turn_5_cache_anchor(all_results[-1], all_results)
     failed = [a for a in asserts if not a.passed]
-    assert any(a.name == "system_cache_key_stable_across_turns" for a in failed)
+    assert any(a.name == "system_prefix_hash_stable_across_turns" for a in failed)
 
 
 def test_deepseek_cache_assertions_do_not_require_cache_tokens():
@@ -1177,7 +1177,7 @@ def test_deepseek_cache_assertions_do_not_require_cache_tokens():
         _turn_1_result_stub_for_cache(cache_key="stable"),
         _turn_1_result_stub_for_cache(cache_key="stable"),
         _turn_5_result_stub(
-            system_cache_key="stable",
+            system_prefix_hash="stable",
             usage={"input_tokens": 1, "output_tokens": 1},
         ),
     ]
@@ -1195,7 +1195,7 @@ def test_check_global_passes_under_budget(tmp_path):
             turn=2,
             usage={"input_tokens": 1500, "output_tokens": 300},
             provider_call_count_this_turn=2,
-            system_cache_keys=("cache-key", "cache-key"),
+            system_prefix_hashes=("cache-key", "cache-key"),
             action_origins=("native_tool_use",),
         ),
         _turn_result_stub(turn=3, usage={"input_tokens": 1200, "output_tokens": 250}, provider_call_count_this_turn=1),
@@ -1427,14 +1427,14 @@ def test_provider_wrapper_blocks_payload_leak_before_delegate():
     )
 
     with pytest.raises(run_live_session.SensitiveDataBlockedError):
-        wrapper.complete_v2(
+        wrapper.complete(
             system="safe",
             tools=[],
             messages=[{"role": "user", "content": secret}],
             max_tokens=10,
         )
 
-    delegate.complete_v2.assert_not_called()
+    delegate.complete.assert_not_called()
     assert wrapper.calls == [
         {
             "last_user_content": secret,

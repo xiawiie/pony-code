@@ -330,7 +330,7 @@ class TurnResult:
     current_user_content: str
     usage_complete: bool
     request_metadata_by_call: tuple[dict, ...]
-    system_cache_keys: tuple[str, ...]
+    system_prefix_hashes: tuple[str, ...]
     action_origins: tuple[str, ...]
     actual_user_contents: tuple[str, ...]
     run_id: str
@@ -356,7 +356,7 @@ def _empty_trace_capture():
         "usage": {key: 0 for key in _LIVE_USAGE_KEYS},
         "usage_complete": False,
         "request_metadata": [],
-        "system_cache_keys": [],
+        "system_prefix_hashes": [],
         "action_origins": [],
     }
 
@@ -400,7 +400,7 @@ def read_turn_trace(trace_path):
             usage_complete = False
             metadata = {}
         request_metadata.append(dict(metadata))
-        cache_key = metadata.get("system_cache_key", "")
+        cache_key = metadata.get("system_prefix_hash", "")
         cache_keys.append(cache_key if isinstance(cache_key, str) else "")
 
     return {
@@ -408,7 +408,7 @@ def read_turn_trace(trace_path):
         "usage": totals,
         "usage_complete": usage_complete,
         "request_metadata": request_metadata,
-        "system_cache_keys": cache_keys,
+        "system_prefix_hashes": cache_keys,
         "action_origins": [
             str(event.get("origin", ""))
             for event in actions
@@ -587,7 +587,7 @@ class TurnRunner:
             current_user_content=actual_user_contents[0] if actual_user_contents else "",
             usage_complete=captured["usage_complete"],
             request_metadata_by_call=request_metadata_by_call,
-            system_cache_keys=tuple(captured["system_cache_keys"]),
+            system_prefix_hashes=tuple(captured["system_prefix_hashes"]),
             action_origins=tuple(captured["action_origins"]),
             actual_user_contents=actual_user_contents,
             run_id=run_id,
@@ -849,23 +849,23 @@ class AssertionEngine:
             actual=str(user_prompt_reached),
         ))
 
-        cache_keys = result.system_cache_keys
+        cache_keys = result.system_prefix_hashes
         keys_cover_calls = (
             provider_calls > 0
             and len(cache_keys) == provider_calls
             and all(cache_keys)
         )
         out.append(Assertion(
-            name="system_cache_keys_cover_every_provider_call",
+            name="system_prefix_hashes_cover_every_provider_call",
             passed=keys_cover_calls,
-            expected="one non-empty system_cache_key for each provider call",
+            expected="one non-empty system_prefix_hash for each provider call",
             actual=f"keys={len(cache_keys)}, calls={provider_calls}",
         ))
         keys_stable = keys_cover_calls and len(set(cache_keys)) == 1
         out.append(Assertion(
-            name="system_cache_key_stable_within_turn",
+            name="system_prefix_hash_stable_within_turn",
             passed=keys_stable,
-            expected="all system_cache_key values within the turn are identical",
+            expected="all system_prefix_hash values within the turn are identical",
             actual=str(sorted(set(cache_keys))),
         ))
         return out
@@ -956,7 +956,7 @@ class AssertionEngine:
         ))
 
         # session["messages"] immutability check — the pre-drop entries
-        # still exist in session (build_v2 does not mutate session).
+        # still exist in session (build_request does not mutate session).
         # We can only assert non-empty here; a deeper check would require
         # capturing pre-turn session state (out of scope for a per-turn check).
         out.append(Assertion(
@@ -986,7 +986,7 @@ class AssertionEngine:
         cache_keys = [
             key
             for item in all_results
-            for key in item.system_cache_keys
+            for key in item.system_prefix_hashes
         ]
         expected_calls = sum(
             item.provider_call_count_this_turn for item in all_results
@@ -997,24 +997,24 @@ class AssertionEngine:
             and all(cache_keys)
         )
         out.append(Assertion(
-            name="system_cache_keys_present_per_call",
+            name="system_prefix_hashes_present_per_call",
             passed=keys_present,
-            expected="one non-empty system_cache_key per traced provider call",
+            expected="one non-empty system_prefix_hash per traced provider call",
             actual=f"keys={len(cache_keys)}, calls={expected_calls}",
         ))
 
-        # 3. system_cache_key identical across every traced call
+        # 3. system_prefix_hash identical across every traced call
         stable = keys_present and len(set(cache_keys)) == 1
         out.append(Assertion(
-            name="system_cache_key_stable_across_turns",
+            name="system_prefix_hash_stable_across_turns",
             passed=stable,
-            expected="all traced system_cache_key values are identical and non-empty",
+            expected="all traced system_prefix_hash values are identical and non-empty",
             actual=str(sorted(set(cache_keys))),
         ))
 
         # 4. metadata completeness for the retained v3 cache contract.
         required = {
-            "system_cache_key", "system_tokens", "tools_tokens",
+            "system_prefix_hash", "system_tokens", "tools_tokens",
             "messages_count", "messages_tokens", "cache_control_breakpoints",
             "injection_tokens", "injection_truncated", "injection_dropped",
             "injection_budget", "intent", "recall.error_count",
@@ -1363,7 +1363,7 @@ class Reporter:
             "usage": r.usage,
             "usage_complete": r.usage_complete,
             "request_metadata_by_call": r.request_metadata_by_call,
-            "system_cache_keys": r.system_cache_keys,
+            "system_prefix_hashes": r.system_prefix_hashes,
             "action_origins": r.action_origins,
             "actual_user_contents": r.actual_user_contents,
             "run_id": r.run_id,
@@ -1374,7 +1374,7 @@ class Reporter:
                 k: (r.metadata or {}).get(k) for k in [
                     "intent", "injection_tokens", "injection_dropped",
                     "injection_budget", "recall.error_count",
-                    "dropped_messages", "messages_tokens", "system_cache_key",
+                    "dropped_messages", "messages_tokens", "system_prefix_hash",
                     "cache_control_breakpoints",
                 ] if k in (r.metadata or {})
             },
@@ -1431,7 +1431,7 @@ def warn_if_dirty_working_tree(root: Path) -> None:
 class _SniffingProviderWrapper:
     """Wraps a real provider and records the messages sent on each call.
 
-    Preserves the ``complete_v2`` signature and forwards straight through.
+    Preserves the ``complete`` signature and forwards straight through.
     We record only what we need (the last user message content per call)
     so memory stays bounded across a 5-turn session.
     """
@@ -1441,11 +1441,10 @@ class _SniffingProviderWrapper:
         self._forbidden_values = tuple(str(value) for value in forbidden_values)
         # Per-call captures: list of {"last_user_content": str, "call_ts_ns": int}
         self.calls: list[dict] = []
-        # Delegate attributes pico's runtime probes
+        # Delegate the cache capability used by request metadata.
         self.supports_prompt_cache = getattr(inner, "supports_prompt_cache", False)
-        self.supports_native_tools = getattr(inner, "supports_native_tools", True)
 
-    def complete_v2(self, *, system, tools, messages, max_tokens, cache_breakpoints=None):
+    def complete(self, *, system, tools, messages, max_tokens, cache_breakpoints=None):
         last_user = ""
         for msg in reversed(messages):
             if msg.get("role") == "user":
@@ -1473,15 +1472,10 @@ class _SniffingProviderWrapper:
             raise SensitiveDataBlockedError(
                 "live provider payload contains blocked sensitive material"
             )
-        return self._inner.complete_v2(
+        return self._inner.complete(
             system=system, tools=tools, messages=messages,
             max_tokens=max_tokens, cache_breakpoints=cache_breakpoints,
         )
-
-    # Passthrough for legacy calls (FallbackAdapter uses `.complete`).
-    def complete(self, *args, **kwargs):
-        return self._inner.complete(*args, **kwargs)
-
 
 def make_live_client(config: RunConfig, *, settings=None):
     """Instantiate the selected Anthropic-compatible live client."""

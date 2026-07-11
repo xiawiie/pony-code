@@ -57,50 +57,6 @@ def _iter_sse_data_payloads(lines):
             yield payload
 
 
-def _iter_openai_stream_chunks(lines, extract_text):
-    yielded_delta = False
-    for payload in _iter_sse_data_payloads(lines):
-        if payload == "[DONE]":
-            break
-        event = json.loads(payload)
-        if not isinstance(event, dict):
-            raise ValueError("event stream item must be an object")
-        response = event.get("response")
-        if response is not None and not isinstance(response, dict):
-            raise ValueError("event response must be an object")
-        response_data = response if isinstance(response, dict) else {}
-        event_type = event.get("type", "")
-        if not isinstance(event_type, str):
-            raise ValueError("event type must be a string")
-        if event_type == "response.output_text.delta":
-            delta = event.get("delta")
-            if not isinstance(delta, str):
-                raise ValueError("text delta must be a string")
-            if delta:
-                yielded_delta = True
-                yield delta, response_data
-            continue
-        if event_type == "response.output_text.done":
-            text = event.get("text")
-            if not isinstance(text, str):
-                raise ValueError("completed text must be a string")
-            if text and not yielded_delta:
-                yield text, response_data
-            continue
-        if event_type == "response.completed":
-            if not isinstance(response, dict):
-                raise ValueError("completed event must contain a response")
-            text = extract_text(response_data)
-            if text and not yielded_delta:
-                yield text, response_data
-            else:
-                yield "", response_data
-            continue
-        text = extract_text(event)
-        if text and not yielded_delta:
-            yield text, event
-
-
 def _extract_usage_cache_details(data):
     # 把不同 OpenAI-compatible 返回里的 usage 字段整理成统一结构，
     # 让 runtime/trace/report 不需要关心 provider 细节。

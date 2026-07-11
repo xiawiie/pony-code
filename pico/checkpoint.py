@@ -28,10 +28,8 @@ RUNTIME_IDENTITY_KEYS = (
 
 
 def current_runtime_identity(agent):
-    # The runtime auto-wraps legacy providers with FallbackAdapter. For identity
-    # purposes we care about the underlying provider — otherwise every resumed
-    # session would report a spurious `model_client` mismatch just because the
-    # adapter class name differs from what the checkpoint captured.
+    # Text-only transports are explicitly wrapped; checkpoint the transport
+    # identity so resumes do not depend on the adapter class name.
     underlying_client = getattr(agent.model_client, "_inner", agent.model_client)
     return {
         "session_id": agent.session.get("id", ""),

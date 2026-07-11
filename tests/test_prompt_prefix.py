@@ -64,7 +64,7 @@ def test_memory_guidance_lives_once_in_prefix_not_current_user_request(tmp_path)
         {"role": "user", "content": "inspect the project", "_pico_meta": {}}
     )
     snapshot, telemetry = render_current_user_message(agent, "inspect the project")
-    request, _ = agent.context_manager.build_v2(
+    request, _ = agent.context_manager.build_request(
         injection_snapshot=snapshot,
         injection_telemetry=telemetry,
         preflight_metadata={},

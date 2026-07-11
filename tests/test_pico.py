@@ -121,7 +121,7 @@ def test_programmatic_resume_sanitizes_process_secret_before_first_request(
     )
     resumed.ask("continue")
 
-    assert secret not in json.dumps(client.prompts)
+    assert secret not in json.dumps(client.requests)
     assert secret not in json.dumps(resumed.session)
     assert isinstance(resumed.redaction_env, MappingProxyType)
     with pytest.raises(TypeError):
@@ -364,13 +364,13 @@ def test_agent_retries_after_empty_model_output(tmp_path):
     assert answer == "Recovered after retry."
     notice = "model returned no actionable content"
     assert not any(notice in str(item["content"]) for item in agent.session["messages"])
-    feedback_prompts = [
+    feedback_requests = [
         index
-        for index, prompt in enumerate(agent.model_client.prompts)
-        if "<pico:runtime_feedback>" in prompt
+        for index, request in enumerate(agent.model_client.requests)
+        if "<pico:runtime_feedback>" in json.dumps(request)
     ]
-    assert feedback_prompts == [1]
-    assert notice in agent.model_client.prompts[1]
+    assert feedback_requests == [1]
+    assert notice in json.dumps(agent.model_client.requests[1])
 
 
 def test_agent_retries_after_malformed_tool_payload(tmp_path):
@@ -396,13 +396,13 @@ def test_agent_retries_after_malformed_tool_payload(tmp_path):
     )
     notice = "text tool call was malformed"
     assert not any(notice in str(item["content"]) for item in agent.session["messages"])
-    feedback_prompts = [
+    feedback_requests = [
         index
-        for index, prompt in enumerate(agent.model_client.prompts)
-        if "<pico:runtime_feedback>" in prompt
+        for index, request in enumerate(agent.model_client.requests)
+        if "<pico:runtime_feedback>" in json.dumps(request)
     ]
-    assert feedback_prompts == [1]
-    assert notice in agent.model_client.prompts[1]
+    assert feedback_requests == [1]
+    assert notice in json.dumps(agent.model_client.requests[1])
 
 
 def test_agent_accepts_xml_write_file_tool(tmp_path):
@@ -635,7 +635,7 @@ def test_build_agent_uses_openai_provider_and_model_override(tmp_path):
     assert mock_openai.call_args.kwargs["model"] == "override-model"
     assert mock_openai.call_args.kwargs["base_url"] == "https://www.right.codes/codex/v1"
     assert mock_openai.call_args.kwargs["api_key"] == "sk-test"
-    assert agent.model_client is fake_client
+    assert agent.model_client._inner is fake_client
 
 
 def test_build_agent_uses_shared_key_for_openai_provider(tmp_path):
@@ -670,7 +670,7 @@ def test_build_agent_uses_shared_key_for_openai_provider(tmp_path):
 
     mock_openai.assert_called_once()
     assert mock_openai.call_args.kwargs["api_key"] == "sk-shared"
-    assert agent.model_client is fake_client
+    assert agent.model_client._inner is fake_client
 
 
 def test_build_arg_parser_leaves_provider_unset_for_runtime_resolution(tmp_path):
@@ -722,7 +722,7 @@ def test_build_agent_uses_project_env_provider_when_cli_omitted(tmp_path):
     assert mock_openai.call_args.kwargs["model"] == "gpt-5.4"
     assert mock_openai.call_args.kwargs["base_url"] == "https://www.right.codes/codex/v1"
     assert mock_openai.call_args.kwargs["api_key"] == "sk-project-openai"
-    assert agent.model_client is fake_client
+    assert agent.model_client._inner is fake_client
 
 
 def test_build_agent_prefers_cli_provider_over_project_env_provider(tmp_path):

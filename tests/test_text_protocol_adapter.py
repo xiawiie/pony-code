@@ -1,5 +1,5 @@
 from unittest.mock import MagicMock
-from pico.providers.fallback_adapter import FallbackAdapter
+from pico.providers.text_protocol_adapter import TextProtocolAdapter
 from pico.providers.response import Response, StopReason
 
 
@@ -9,16 +9,17 @@ class _StubInner:
         self.last_prompt = None
         self.last_completion_metadata = {}
 
-    def complete(self, prompt, max_new_tokens, prompt_cache_key=None, prompt_cache_retention=None):
+    def complete_text(self, prompt, max_tokens):
+        del max_tokens
         self.last_prompt = prompt
         self.last_completion_metadata = {"input_tokens": 3, "output_tokens": 2}
         return self.canned
 
 
-def test_fallback_flattens_system_tools_messages():
+def test_adapter_flattens_system_tools_messages():
     inner = _StubInner('<final>done</final>')
-    adapter = FallbackAdapter(inner)
-    resp = adapter.complete_v2(
+    adapter = TextProtocolAdapter(inner)
+    resp = adapter.complete(
         system=[{"type": "text", "text": "SYSTEM_CORE"}],
         tools=[{"name": "read_file", "description": "d", "input_schema": {}}],
         messages=[{"role": "user", "content": "hi"}],
@@ -32,10 +33,10 @@ def test_fallback_flattens_system_tools_messages():
     assert "hi" in inner.last_prompt
 
 
-def test_fallback_returns_raw_text_and_usage_for_the_shared_codec():
+def test_adapter_returns_raw_text_and_usage_for_the_shared_codec():
     raw = '<tool>{"name":"read_file","args":{"path":"a.py"}}</tool>'
     inner = _StubInner(raw)
-    response = FallbackAdapter(inner).complete_v2(
+    response = TextProtocolAdapter(inner).complete(
         system=[{"type": "text", "text": "SYSTEM"}],
         tools=[{"name": "read_file", "description": "d", "input_schema": {}}],
         messages=[{"role": "user", "content": "q"}],
@@ -47,10 +48,10 @@ def test_fallback_returns_raw_text_and_usage_for_the_shared_codec():
     assert inner.last_prompt.count("Text response protocol:") == 1
 
 
-def test_fallback_ignores_cache_breakpoints():
+def test_adapter_ignores_cache_breakpoints():
     inner = _StubInner('<final>ok</final>')
-    adapter = FallbackAdapter(inner)
-    resp = adapter.complete_v2(
+    adapter = TextProtocolAdapter(inner)
+    resp = adapter.complete(
         system=[{"type": "text", "text": "s"}], tools=[],
         messages=[{"role": "user", "content": "x"}],
         max_tokens=10, cache_breakpoints=[0],
@@ -60,10 +61,10 @@ def test_fallback_ignores_cache_breakpoints():
     assert resp.content == [{"type": "text", "text": "<final>ok</final>"}]
 
 
-def test_fallback_preserves_malformed_output_for_the_shared_codec():
+def test_adapter_preserves_malformed_output_for_the_shared_codec():
     inner = _StubInner("<tool>{not valid json</tool>")
-    adapter = FallbackAdapter(inner)
-    resp = adapter.complete_v2(
+    adapter = TextProtocolAdapter(inner)
+    resp = adapter.complete(
         system=[{"type": "text", "text": "s"}], tools=[],
         messages=[{"role": "user", "content": "x"}],
         max_tokens=10,
@@ -72,10 +73,10 @@ def test_fallback_preserves_malformed_output_for_the_shared_codec():
     assert resp.content == [{"type": "text", "text": "<tool>{not valid json</tool>"}]
 
 
-def test_fallback_flatten_messages_handles_structured_content_blocks():
+def test_adapter_flatten_messages_handles_structured_content_blocks():
     inner = _StubInner("<final>ok</final>")
-    adapter = FallbackAdapter(inner)
-    adapter.complete_v2(
+    adapter = TextProtocolAdapter(inner)
+    adapter.complete(
         system=[{"type": "text", "text": "s"}], tools=[],
         messages=[
             {"role": "user", "content": "plain string"},
@@ -114,45 +115,44 @@ def test_fallback_flatten_messages_handles_structured_content_blocks():
     assert "toolu_x" in prompt
 
 
-def test_fallback_does_not_forward_prompt_cache_kwargs():
+def test_adapter_does_not_forward_cache_breakpoints():
     inner = MagicMock()
     inner.last_completion_metadata = {}
-    inner.complete.return_value = "<final>ok</final>"
-    adapter = FallbackAdapter(inner)
-    adapter.complete_v2(
+    inner.complete_text.return_value = "<final>ok</final>"
+    adapter = TextProtocolAdapter(inner)
+    adapter.complete(
         system=[{"type": "text", "text": "s"}], tools=[],
         messages=[{"role": "user", "content": "x"}],
         max_tokens=42, cache_breakpoints=[0],  # cache_breakpoints must also be dropped
     )
-    # Verify inner.complete was called with positional (prompt, max_tokens) only,
-    # no prompt_cache_key / prompt_cache_retention kwargs.
-    inner.complete.assert_called_once()
-    call_args, call_kwargs = inner.complete.call_args
-    assert len(call_args) == 2  # prompt, max_tokens
+    inner.complete_text.assert_called_once()
+    call_args, call_kwargs = inner.complete_text.call_args
+    assert len(call_args) == 2
     assert call_args[1] == 42
     assert "prompt_cache_key" not in call_kwargs
     assert "prompt_cache_retention" not in call_kwargs
     assert "cache_breakpoints" not in call_kwargs
 
 
-def test_fallback_last_completion_metadata_mirrors_inner():
+def test_adapter_last_completion_metadata_mirrors_inner():
     class _VaryingStubInner:
         def __init__(self):
             self.n = 0
             self.last_completion_metadata = {}
-        def complete(self, prompt, max_new_tokens, prompt_cache_key=None, prompt_cache_retention=None):
+        def complete_text(self, prompt, max_tokens):
+            del prompt, max_tokens
             self.n += 1
             self.last_completion_metadata = {"input_tokens": self.n, "output_tokens": self.n * 2}
             return "<final>ok</final>"
 
     inner = _VaryingStubInner()
-    adapter = FallbackAdapter(inner)
-    adapter.complete_v2(
+    adapter = TextProtocolAdapter(inner)
+    adapter.complete(
         system=[{"type": "text", "text": "s"}], tools=[],
         messages=[{"role": "user", "content": "x"}], max_tokens=10,
     )
     assert adapter.last_completion_metadata == {"input_tokens": 1, "output_tokens": 2}
-    adapter.complete_v2(
+    adapter.complete(
         system=[{"type": "text", "text": "s"}], tools=[],
         messages=[{"role": "user", "content": "y"}], max_tokens=10,
     )

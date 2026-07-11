@@ -41,6 +41,7 @@ from .providers.defaults import (
     PROVIDER_CHOICES,
 )
 from .providers.clients import AnthropicCompatibleModelClient, OllamaModelClient, OpenAICompatibleModelClient
+from .providers.text_protocol_adapter import TextProtocolAdapter
 from .runtime import (
     DEFAULT_MAX_NEW_TOKENS,
     DEFAULT_MAX_STEPS,
@@ -133,13 +134,13 @@ def _build_model_client(args, *, project_env=None, process_env=None):
     # CLI 只负责把 provider 选择翻译成具体 client。
     # 真正的提示词格式、缓存支持、HTTP 协议差异，都封装在 models.py 里。
     if provider == "openai":
-        return OpenAICompatibleModelClient(
+        return TextProtocolAdapter(OpenAICompatibleModelClient(
             model=model,
             base_url=base_url,
             api_key=api_key,
             temperature=args.temperature,
             timeout=getattr(args, "openai_timeout", getattr(args, "ollama_timeout", 300)),
-        )
+        ))
     if provider == "anthropic":
         return AnthropicCompatibleModelClient(
             model=model,
@@ -157,13 +158,13 @@ def _build_model_client(args, *, project_env=None, process_env=None):
             timeout=getattr(args, "openai_timeout", getattr(args, "ollama_timeout", 300)),
         )
 
-    return OllamaModelClient(
+    return TextProtocolAdapter(OllamaModelClient(
         model=model,
         host=base_url,
         temperature=args.temperature,
         top_p=args.top_p,
         timeout=args.ollama_timeout,
-    )
+    ))
 
 
 def build_welcome(agent, model, host):
@@ -519,8 +520,9 @@ def main(argv=None):
         return _print_startup_error(args)
 
     try:
-        model = getattr(agent.model_client, "model", getattr(args, "model", DEFAULT_OLLAMA_MODEL))
-        host = getattr(agent.model_client, "host", getattr(agent.model_client, "base_url", getattr(args, "host", DEFAULT_OLLAMA_HOST)))
+        transport = getattr(agent.model_client, "_inner", agent.model_client)
+        model = getattr(transport, "model", getattr(args, "model", DEFAULT_OLLAMA_MODEL))
+        host = getattr(transport, "host", getattr(transport, "base_url", getattr(args, "host", DEFAULT_OLLAMA_HOST)))
         if not args.quiet:
             print(build_welcome(agent, model=model, host=host))
 

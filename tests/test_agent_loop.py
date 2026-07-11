@@ -13,14 +13,13 @@ from pico.providers.response import Response, StopReason
 
 class NativeScriptProvider:
     supports_prompt_cache = True
-    supports_native_tools = True
 
     def __init__(self, responses):
         self.responses = list(responses)
         self.calls = []
         self.last_completion_metadata = {"input_tokens": 999999}
 
-    def complete_v2(self, *, system, tools, messages, max_tokens, cache_breakpoints=None):
+    def complete(self, *, system, tools, messages, max_tokens, cache_breakpoints=None):
         self.calls.append(
             {
                 "system": system,
@@ -35,12 +34,11 @@ class NativeScriptProvider:
 
 class RaisingProvider:
     supports_prompt_cache = False
-    supports_native_tools = True
 
     def __init__(self, error):
         self.error = error
 
-    def complete_v2(
+    def complete(
         self,
         *,
         system,
@@ -529,7 +527,7 @@ def test_build_failure_after_success_does_not_reuse_request_metadata(
     assert agent.last_request_metadata["messages_count"] > 0
     monkeypatch.setattr(
         agent.context_manager,
-        "build_v2",
+        "build_request",
         Mock(side_effect=ValueError("build failed")),
     )
 

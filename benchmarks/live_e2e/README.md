@@ -31,7 +31,7 @@ provider's configured model for that one run.
 
 The harness treats the persisted run trace as the source of truth for every
 model call: usage totals, request metadata, action origins, and stable
-`system_cache_key` evidence are collected per call. A missing or malformed
+`system_prefix_hash` evidence are collected per call. A missing or malformed
 trace makes usage unknown and fails the gate; it never falls back to mutable
 provider or session state. Token cache counters are observability data, not a
 DeepSeek pass criterion.
