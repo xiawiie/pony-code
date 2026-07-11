@@ -49,6 +49,14 @@ jobs:
       - name: Offline live harness
         run: uv run pytest benchmarks/live_e2e/tests/test_assertions.py -q
 
+      - name: Build wheel and source distribution
+        if: matrix.python-version == '3.12'
+        run: uv build --clear
+
+      - name: Inspect distributions and smoke-test wheel install
+        if: matrix.python-version == '3.12'
+        run: uv run python scripts/verify_distribution.py --install-smoke
+
   macos-focused:
     name: macOS focused (Python 3.12)
     runs-on: macos-latest
