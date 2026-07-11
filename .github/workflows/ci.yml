@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - main
+      - memory
 
 permissions:
   contents: read
@@ -37,7 +38,7 @@ jobs:
           enable-cache: true
 
       - name: Install dependencies
-        run: uv sync --dev
+        run: uv sync --frozen --dev
 
       - name: Lint
         run: uv run ruff check .

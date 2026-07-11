@@ -6,6 +6,18 @@ import importlib.util
 from pico.evaluation import metrics_experiments
 
 
+def test_ci_tracks_and_uses_frozen_uv_lock():
+    workflow = Path(".github/workflows/ci.yml").read_text(encoding="utf-8")
+    ignored = Path(".gitignore").read_text(encoding="utf-8").splitlines()
+
+    assert Path("uv.lock").is_file()
+    assert "uv.lock" not in ignored
+    assert 'version: "0.11.26"' in workflow
+    assert "      - main" in workflow
+    assert "      - memory" in workflow
+    assert "run: uv sync --frozen --dev" in workflow
+
+
 def test_maintenance_scripts_start_and_show_help():
     for script in (
         "scripts/collect_resume_metrics.py",
