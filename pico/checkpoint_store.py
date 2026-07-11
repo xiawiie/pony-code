@@ -312,6 +312,7 @@ class CheckpointStore:
         current = path.lstat()
         if (
             not stat.S_ISREG(current.st_mode)
+            or current.st_nlink != 1
             or (current.st_dev, current.st_ino) != identity
         ):
             raise ValueError("checkpoint temp changed")
@@ -321,9 +322,13 @@ class CheckpointStore:
         current = path.lstat()
         if (
             not stat.S_ISREG(current.st_mode)
+            or current.st_nlink != 1
             or (current.st_dev, current.st_ino) != identity
         ):
-            if not stat.S_ISREG(current.st_mode):
+            if (
+                not stat.S_ISREG(current.st_mode)
+                or (current.st_dev, current.st_ino) == identity
+            ):
                 path.unlink()
             raise ValueError("checkpoint temp changed")
 

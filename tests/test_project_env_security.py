@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from pico import security as security_module
 from pico.cli import main
 from pico.config import (
     load_project_env,
@@ -128,14 +129,11 @@ def test_project_env_existing_file_is_private_before_read(tmp_path):
 def test_project_env_chmod_failure_fails_before_returning_values(tmp_path, monkeypatch):
     env_path = tmp_path / ".env"
     env_path.write_text("PICO_API_KEY=opaque-value\n", encoding="utf-8")
-    real_chmod = Path.chmod
 
-    def fail_env_chmod(self, *args, **kwargs):
-        if self == env_path:
-            raise PermissionError("chmod denied")
-        return real_chmod(self, *args, **kwargs)
+    def fail_env_chmod(_descriptor, _mode):
+        raise PermissionError("chmod denied")
 
-    monkeypatch.setattr(Path, "chmod", fail_env_chmod)
+    monkeypatch.setattr(security_module.os, "fchmod", fail_env_chmod)
 
     with pytest.raises(PermissionError, match="chmod denied"):
         read_project_env(tmp_path, warn=False)

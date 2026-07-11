@@ -261,6 +261,8 @@ def _prepare_tool_result(
                     before = None
                 if before is not None and not stat.S_ISREG(before.st_mode):
                     raise ValueError("raw tool result changed")
+                if before is not None and before.st_nlink != 1:
+                    raise ValueError("raw tool result changed")
                 flags = os.O_WRONLY
                 if before is None:
                     flags |= os.O_CREAT | os.O_EXCL
@@ -271,6 +273,8 @@ def _prepare_tool_result(
                     opened = os.fstat(descriptor)
                     current = os.stat(checked_path, follow_symlinks=False)
                     identity = (opened.st_dev, opened.st_ino)
+                    if opened.st_nlink != 1:
+                        raise ValueError("raw tool result changed")
                     if not stat.S_ISREG(opened.st_mode) or (
                         current.st_dev,
                         current.st_ino,

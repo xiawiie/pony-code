@@ -119,6 +119,34 @@ def test_raw_tool_result_inode_swap_does_not_truncate_replacement(
     assert "(raw at " not in content
 
 
+def test_raw_tool_result_rejects_hardlink_without_touching_external_inode(
+    tmp_path,
+):
+    agent = _stub_agent(tmp_path)
+    agent.context_config = {"digest_size_threshold": 100}
+    body = "safe body\n" * 200
+    source_hash = hashlib.sha256(body.encode("utf-8")).hexdigest()[:16]
+    raw_dir = agent.current_run_dir / "tool_results"
+    raw_dir.mkdir()
+    outside = tmp_path / "outside-raw.txt"
+    outside.write_text("outside\n", encoding="utf-8")
+    outside.chmod(0o644)
+    os.link(outside, raw_dir / f"{source_hash}.txt")
+
+    content, metadata = _prepare_tool_result(
+        agent,
+        content=body,
+        tool_name="read_file",
+        tool_args={"path": "x"},
+    )
+
+    assert metadata["source_hash"] == source_hash
+    assert outside.read_text(encoding="utf-8") == "outside\n"
+    if os.name == "posix":
+        assert stat.S_IMODE(outside.stat().st_mode) == 0o644
+    assert "(raw at " not in content
+
+
 def test_large_result_without_run_dir_still_digests(tmp_path):
     """When agent has no run_dir, the digest still applies but raw_path is empty."""
     a = _stub_agent(tmp_path)

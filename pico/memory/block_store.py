@@ -33,6 +33,7 @@ from pico.security import (
     ensure_private_dir,
     ensure_private_file,
     harden_private_tree,
+    read_private_text,
     require_regular_no_symlink,
 )
 from pico.workspace import _safe_index_directory, _safe_index_file
@@ -45,6 +46,12 @@ AGENT_NOTES_SOFT_LIMIT_CHARS = 8000
 # Task 17: agent-owned topic slug — kebab-case, alphanumeric-first.
 # Rejects `..`, `/`, dots, spaces, and any other filesystem-fragile chars.
 _TOPIC_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]*$")
+
+
+def _is_agent_owned_path(rel_path):
+    parts = str(rel_path).split("/", 1)
+    sub_path = parts[1] if len(parts) == 2 else parts[0]
+    return sub_path == "agent_notes.md" or sub_path.startswith("agent/")
 
 
 @dataclass(frozen=True)
@@ -150,11 +157,17 @@ class BlockStore:
         real_path = _safe_index_file(root, real_path)
         if real_path is None:
             return None
-        stat = real_path.stat()
+        stat_result = real_path.stat()
         content = ""
+        agent_owned = _is_agent_owned_path(rel_path)
         try:
-            content = real_path.read_text(encoding="utf-8", errors="replace")
-        except OSError:
+            if agent_owned:
+                content = read_private_text(real_path, errors="replace")
+            else:
+                content = real_path.read_text(encoding="utf-8", errors="replace")
+        except (OSError, ValueError):
+            if agent_owned:
+                return None
             content = ""
         # Task 17: parse frontmatter so retrieval / recall can boost by field.
         # When a file has a `description` header, prefer that as the display
@@ -172,7 +185,7 @@ class BlockStore:
         return MemoryFile(
             path=rel_path,
             size_chars=len(content),
-            mtime=stat.st_mtime,
+            mtime=stat_result.st_mtime,
             first_line=first_line,
             frontmatter=meta or {},
         )
@@ -183,13 +196,20 @@ class BlockStore:
         target = _safe_index_file(root, target)
         if target is None:
             raise FileNotFoundError(rel_path)
+        if _is_agent_owned_path(rel_path):
+            return read_private_text(target, errors="replace")
         return target.read_text(encoding="utf-8", errors="replace")
 
     def exists(self, rel_path: str) -> bool:
         try:
             target = self._resolve(rel_path)
             root = self.workspace_root if rel_path.startswith("workspace/") else self.user_root
-            return _safe_index_file(root, target) is not None
+            target = _safe_index_file(root, target)
+            if target is None:
+                return False
+            if _is_agent_owned_path(rel_path) and target.lstat().st_nlink != 1:
+                return False
+            return True
         except ValueError:
             return False
 
@@ -212,7 +232,12 @@ class BlockStore:
         ensure_private_dir(target.parent)
         target = require_regular_no_symlink(target, allow_missing=True)
 
-        existing = target.read_text(encoding="utf-8") if target.exists() else ""
+        try:
+            target.lstat()
+        except FileNotFoundError:
+            existing = ""
+        else:
+            existing = read_private_text(target)
         timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         new_line = f"- {timestamp}  {note}\n"
         new_content = existing + new_line if existing.endswith("\n") or not existing else existing + "\n" + new_line
@@ -265,7 +290,7 @@ class BlockStore:
         target = agent_dir / f"{topic}.md"
         target = require_regular_no_symlink(target, allow_missing=True)
         if target.exists():
-            existing = target.read_text(encoding="utf-8")
+            existing = read_private_text(target)
             new_content = existing.rstrip("\n") + "\n\n" + note + "\n"
         else:
             description = note.splitlines()[0][:80] if note else ""
@@ -347,6 +372,7 @@ class BlockStore:
             current = temp_path.lstat()
             if (
                 not stat.S_ISREG(current.st_mode)
+                or current.st_nlink != 1
                 or (current.st_dev, current.st_ino) != temp_identity
             ):
                 raise ValueError("memory temp changed")
@@ -355,9 +381,13 @@ class BlockStore:
             installed = target.lstat()
             if (
                 not stat.S_ISREG(installed.st_mode)
+                or installed.st_nlink != 1
                 or (installed.st_dev, installed.st_ino) != temp_identity
             ):
-                if not stat.S_ISREG(installed.st_mode):
+                if (
+                    not stat.S_ISREG(installed.st_mode)
+                    or (installed.st_dev, installed.st_ino) == temp_identity
+                ):
                     target.unlink()
                 raise ValueError("memory temp changed")
             ensure_private_file(target)

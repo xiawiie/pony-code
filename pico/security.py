@@ -208,11 +208,43 @@ def ensure_private_dir(path):
 
 
 def ensure_private_file(path):
-    path = require_regular_no_symlink(path)
-    if path.lstat().st_nlink != 1:
-        raise ValueError("private file has multiple links")
-    path.chmod(0o600, follow_symlinks=False)
+    path, descriptor = _open_private_file(path)
+    try:
+        os.fchmod(descriptor, 0o600)
+    finally:
+        os.close(descriptor)
     return path
+
+
+def read_private_text(path, *, encoding="utf-8", errors="strict"):
+    path, descriptor = _open_private_file(path)
+    try:
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "r", encoding=encoding, errors=errors) as handle:
+            descriptor = -1
+            return handle.read()
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+def _open_private_file(path):
+    path = require_regular_no_symlink(path)
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags)
+    try:
+        opened = os.fstat(descriptor)
+        current = os.stat(path, follow_symlinks=False)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_nlink != 1
+            or (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino)
+        ):
+            raise ValueError("private file changed or has multiple links")
+    except Exception:
+        os.close(descriptor)
+        raise
+    return path, descriptor
 
 
 def harden_private_tree(path):

@@ -131,6 +131,7 @@ def handle_status(cwd, args):
     redactor = build_inspection_redactor(data["workspace"]["repo_root"], args)
     data["workspace"] = redactor(data["workspace"])
     data["latest"] = redactor(data["latest"])
+    data["provider"] = _redact_mapping_values(data["provider"], redactor)
     return print_result("status", data, args, _render_status)
 
 
@@ -144,16 +145,25 @@ def handle_doctor(tokens, cwd, args):
             message="usage: pico-cli doctor [--offline]",
             exit_code=CLI_EXIT_USAGE,
         )
-    return print_result("doctor", collect_doctor(cwd, args, offline=offline), args, _render_doctor)
+    data = collect_doctor(cwd, args, offline=offline)
+    redactor = build_inspection_redactor(data["workspace"]["repo_root"], args)
+    data["workspace"] = redactor(data["workspace"])
+    data["config"] = _redact_mapping_values(data["config"], redactor)
+    data["credentials"] = _redact_mapping_values(data["credentials"], redactor)
+    data["provider_connectivity"] = redactor(data["provider_connectivity"])
+    data["project_docs"] = redactor(data["project_docs"])
+    return print_result("doctor", data, args, _render_doctor)
 
 
 def handle_config(tokens, cwd, args):
     sub = tokens[0] if tokens else ""
     rest = tokens[1:]
     if sub == "show" and not rest:
+        workspace = WorkspaceContext.build(cwd)
+        redactor = build_inspection_redactor(workspace.repo_root, args)
         return print_result(
             "config_show",
-            collect_config(cwd, args),
+            _redact_mapping_values(collect_config(cwd, args), redactor),
             args,
             _render_config,
         )
@@ -371,6 +381,10 @@ def _redact_url_for_diagnostics(value):
 
 def _storage_status(path):
     return "ok" if _storage_exists(path) else "missing"
+
+
+def _redact_mapping_values(data, redactor):
+    return {key: redactor(value) for key, value in data.items()}
 
 
 def _storage_exists(path):

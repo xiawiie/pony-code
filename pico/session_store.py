@@ -217,6 +217,7 @@ def _atomic_write_locked(path, payload):
         current = temp_path.lstat()
         if (
             not stat.S_ISREG(current.st_mode)
+            or current.st_nlink != 1
             or (current.st_dev, current.st_ino) != temp_identity
         ):
             raise ValueError("session temp changed")
@@ -224,9 +225,13 @@ def _atomic_write_locked(path, payload):
         installed = path.lstat()
         if (
             not stat.S_ISREG(installed.st_mode)
+            or installed.st_nlink != 1
             or (installed.st_dev, installed.st_ino) != temp_identity
         ):
-            if not stat.S_ISREG(installed.st_mode):
+            if (
+                not stat.S_ISREG(installed.st_mode)
+                or (installed.st_dev, installed.st_ino) == temp_identity
+            ):
                 path.unlink()
             raise ValueError("session temp changed")
         ensure_private_file(path)

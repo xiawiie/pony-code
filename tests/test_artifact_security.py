@@ -5,6 +5,7 @@ import stat
 
 import pytest
 
+from pico import security as security_module
 from pico import FakeModelClient, Pico, SessionStore, WorkspaceContext
 from pico.checkpoint_store import CheckpointStore
 from pico.cli import main
@@ -649,6 +650,10 @@ def test_checkpoint_ambiguity_errors_are_redacted(
 def test_status_redacts_latest_artifact_ids(tmp_path, monkeypatch, capsys):
     secret = "opaque-status-secret-123456789"
     monkeypatch.setenv("CUSTOM_STATUS_TOKEN", secret)
+    (tmp_path / ".env").write_text(
+        f"PICO_PROVIDER=deepseek\nPICO_DEEPSEEK_MODEL={secret}\n",
+        encoding="utf-8",
+    )
     (tmp_path / ".pico" / "runs" / secret).mkdir(parents=True)
 
     for output_format in ("text", "json"):
@@ -686,6 +691,34 @@ def test_status_does_not_follow_symlinked_pico_ancestor(tmp_path, capsys):
     payload = json.loads(capsys.readouterr().out)
     assert payload["data"]["storage"]["runs"] is False
     assert payload["data"]["latest"]["run_id"] is None
+
+
+def test_config_and_doctor_redact_configured_model_values(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    secret = "opaque-diagnostics-model-secret-123456789"
+    monkeypatch.setenv("CUSTOM_DIAGNOSTIC_TOKEN", secret)
+    (tmp_path / ".env").write_text(
+        f"PICO_PROVIDER=deepseek\nPICO_DEEPSEEK_MODEL={secret}\n",
+        encoding="utf-8",
+    )
+
+    for command in (("config", "show"), ("doctor", "--offline")):
+        for output_format in ("text", "json"):
+            code = main([
+                "--cwd",
+                str(tmp_path),
+                "--secret-env-name",
+                "CUSTOM_DIAGNOSTIC_TOKEN",
+                "--format",
+                output_format,
+                *command,
+            ])
+            output = capsys.readouterr().out
+            assert code == 0
+            assert secret not in output
 
 
 def test_owned_store_constructors_reject_hardlinks_without_chmod(tmp_path):
@@ -806,6 +839,131 @@ def test_store_redactors_cannot_mutate_callers_or_leave_failed_trace(tmp_path):
     assert not failing_store.trace_path(failing_state).exists()
 
 
+def test_private_chmod_rejects_leaf_swapped_to_external_hardlink(
+    tmp_path,
+    monkeypatch,
+):
+    target = tmp_path / "private.txt"
+    target.write_text("private\n", encoding="utf-8")
+    outside = tmp_path / "outside.txt"
+    outside.write_text("outside\n", encoding="utf-8")
+    outside.chmod(0o644)
+    real_open = security_module.os.open
+    swapped = False
+
+    def swap_before_open(path, flags, *args):
+        nonlocal swapped
+        if not swapped and Path(path) == target:
+            swapped = True
+            target.unlink()
+            os.link(outside, target)
+        return real_open(path, flags, *args)
+
+    monkeypatch.setattr(security_module.os, "open", swap_before_open)
+
+    with pytest.raises(ValueError, match="link|private|changed"):
+        security_module.ensure_private_file(target)
+
+    assert swapped is True
+    assert outside.read_text(encoding="utf-8") == "outside\n"
+    _assert_mode(outside, 0o644)
+
+
+def test_atomic_writers_remove_installed_temp_with_extra_hardlink(
+    tmp_path,
+    monkeypatch,
+):
+    session_store = SessionStore(tmp_path / "session" / ".pico" / "sessions")
+    run_store = RunStore(tmp_path / "run" / ".pico" / "runs")
+    run_state = TaskState.create(run_id="run", task_id="task", user_request="safe")
+    run_store.start_run(run_state)
+    checkpoint_store = CheckpointStore(tmp_path / "checkpoint")
+    memory_workspace = tmp_path / "memory" / "workspace"
+    memory_user = tmp_path / "memory" / "user"
+    memory_workspace.mkdir(parents=True)
+    memory_user.mkdir(parents=True)
+    memory_store = BlockStore(memory_workspace, memory_user, redaction_env={})
+    aliases = []
+    real_replace = Path.replace
+
+    def hardlink_before_replace(path, target):
+        alias = tmp_path / f"temp-alias-{len(aliases)}"
+        os.link(path, alias)
+        aliases.append(alias)
+        return real_replace(path, target)
+
+    monkeypatch.setattr(Path, "replace", hardlink_before_replace)
+
+    record = new_checkpoint_record(
+        "hardlinked_temp",
+        "turn",
+        "s",
+        "r",
+        "t",
+        "",
+        str(tmp_path),
+    )
+    cases = (
+        (
+            lambda: session_store.save({"id": "hardlinked_temp", "history": []}),
+            session_store.path("hardlinked_temp"),
+        ),
+        (
+            lambda: run_store.write_report(run_state, {"status": "safe"}),
+            run_store.report_path(run_state),
+        ),
+        (
+            lambda: checkpoint_store.write_checkpoint_record(record),
+            checkpoint_store._record_path("hardlinked_temp"),
+        ),
+        (
+            lambda: memory_store.append_agent_note("workspace", "safe note"),
+            memory_workspace / "agent_notes.md",
+        ),
+    )
+
+    for write, canonical in cases:
+        with pytest.raises(ValueError, match="link|private|temp"):
+            write()
+        assert not canonical.exists()
+
+
+def test_block_store_rejects_agent_hardlinks_added_after_construction(tmp_path):
+    workspace = tmp_path / "workspace-memory"
+    user = tmp_path / "user-memory"
+    workspace.mkdir()
+    user.mkdir()
+    store = BlockStore(workspace, user, redaction_env={})
+    outside = tmp_path / "outside-memory.md"
+    outside.write_text("outside private text\n", encoding="utf-8")
+    outside.chmod(0o644)
+    agent_notes = workspace / "agent_notes.md"
+    os.link(outside, agent_notes)
+
+    assert "workspace/agent_notes.md" not in {entry.path for entry in store.list()}
+    with pytest.raises(ValueError, match="link|private"):
+        store.read("workspace/agent_notes.md")
+    with pytest.raises(ValueError, match="link|private"):
+        store.append_agent_note("workspace", "safe note")
+
+    assert outside.read_text(encoding="utf-8") == "outside private text\n"
+    _assert_mode(outside, 0o644)
+    agent_notes.unlink()
+    agent_dir = workspace / "agent"
+    agent_dir.mkdir()
+    topic = agent_dir / "policy.md"
+    os.link(outside, topic)
+
+    assert "workspace/agent/policy.md" not in {entry.path for entry in store.list()}
+    with pytest.raises(ValueError, match="link|private"):
+        store.read("workspace/agent/policy.md")
+    with pytest.raises(ValueError, match="link|private"):
+        store.write_agent_topic("workspace", "policy", "safe topic")
+
+    assert outside.read_text(encoding="utf-8") == "outside private text\n"
+    _assert_mode(outside, 0o644)
+
+
 def test_block_store_owned_paths_are_private(tmp_path):
     workspace = tmp_path / "workspace-memory"
     user = tmp_path / "user-memory"
@@ -829,15 +987,21 @@ def test_block_store_repairs_legacy_agent_files_but_not_user_notes(tmp_path):
     notes_dir = workspace / "notes"
     agent_dir.mkdir(parents=True)
     notes_dir.mkdir()
+    nested_user_dir = notes_dir / "agent"
+    nested_user_dir.mkdir()
     agent_file = agent_dir / "legacy.md"
     user_note = notes_dir / "source.md"
+    nested_user_note = nested_user_dir / "user.md"
     agent_file.write_text("agent\n", encoding="utf-8")
     user_note.write_text("user\n", encoding="utf-8")
+    nested_user_note.write_text("nested user\n", encoding="utf-8")
     user.mkdir()
     agent_file.chmod(0o644)
     user_note.chmod(0o644)
+    nested_user_note.chmod(0o644)
 
-    BlockStore(workspace_root=workspace, user_root=user, redaction_env={})
+    store = BlockStore(workspace_root=workspace, user_root=user, redaction_env={})
+    assert "workspace/notes/agent/user.md" in {entry.path for entry in store.list()}
 
     _assert_mode(workspace, 0o700)
     _assert_mode(user, 0o700)
@@ -845,6 +1009,8 @@ def test_block_store_repairs_legacy_agent_files_but_not_user_notes(tmp_path):
     _assert_mode(agent_file, 0o600)
     _assert_mode(notes_dir, 0o755)
     _assert_mode(user_note, 0o644)
+    _assert_mode(nested_user_dir, 0o755)
+    _assert_mode(nested_user_note, 0o644)
 
 
 def test_block_store_temp_swap_is_detected_without_installing_symlink(
