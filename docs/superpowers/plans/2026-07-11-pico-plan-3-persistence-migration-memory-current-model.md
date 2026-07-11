@@ -381,6 +381,14 @@ uv run python -m pico.current_surface_migration --verify-original
 - Reader 先校验 type/version，再解析业务字段；duplicate-sensitive JSON 继续拒绝。
 - 历史 `benchmarks/results/**` 与 live results 不转换，Plan 5 整体删除。
 
+### Task 4 全量门禁补正
+
+Task 7 首次全量测试发现 `tests/test_allowed_tools.py` 的两份临时 fixed benchmark definition
+仍写旧 `schema_version`，因此在业务断言前被 strict header 拒绝。扩展 Task 4 allowlist，仅把这两份
+fixture 同步为 `record_type=fixed_benchmark_definition`、`format_version=1`，不改生产代码。
+
+- `tests/test_allowed_tools.py`
+
 ## Task 5：Memory 单一写入模型与 facade 删除
 
 提交：`refactor(memory): hard cut single note model`。
