@@ -1,4 +1,4 @@
-"""CLI parser helpers for explicit and compatibility command dispatch."""
+"""CLI parser helpers for explicit command dispatch."""
 
 from dataclasses import dataclass
 
@@ -24,7 +24,6 @@ class CliInvocation:
     command: str
     command_args: list
     runtime_args: object
-    legacy_prompt: bool = False
 
 
 def parse_cli_invocation(argv, parser):
@@ -34,10 +33,8 @@ def parse_cli_invocation(argv, parser):
     if extra:
         tokens.extend(extra)
     if getattr(args, "help", False):
-        return CliInvocation("help", [], args, legacy_prompt=False)
+        return CliInvocation("help", [], args)
     if not tokens:
-        return CliInvocation("repl", [], args, legacy_prompt=False)
+        return CliInvocation("help", [], args)
     head = tokens[0]
-    if head in KNOWN_TOP_LEVEL_COMMANDS:
-        return CliInvocation(head, tokens[1:], args, legacy_prompt=False)
-    return CliInvocation("run", tokens, args, legacy_prompt=True)
+    return CliInvocation(head, tokens[1:], args)

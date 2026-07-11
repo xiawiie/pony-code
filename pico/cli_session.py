@@ -85,12 +85,12 @@ def inspect_session(session_id, sessions_root):
 
 
 def handle_session_command(argv, sessions_root=None, redactor=None):
-    """CLI entry point: `pico-cli session inspect <session_id>`.
+    """CLI entry point: `pico session inspect <session_id>`.
 
     Returns an exit code (0 or 1). Prints the report to stdout.
     """
     if len(argv) < 2 or argv[0] != "inspect":
-        print("usage: pico-cli session inspect <session_id>")
+        print("usage: pico session inspect <session_id>")
         return 2
     session_id = argv[1]
     if sessions_root is None:

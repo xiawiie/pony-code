@@ -60,16 +60,34 @@ def test_repl_command_exits_on_eof(tmp_path, monkeypatch):
     assert called["built"] is True
 
 
-def test_legacy_prompt_remains_silent_compatibility(tmp_path, monkeypatch, capsys):
-    called = {}
-    _install_fake_agent(monkeypatch, tmp_path, called)
+@pytest.mark.parametrize(
+    ("tokens", "usage"),
+    [(["run"], "usage: pico run <prompt...>"), (["repl", "extra"], "usage: pico repl")],
+)
+def test_invalid_agent_command_arity_does_not_build_agent(
+    tmp_path, monkeypatch, capsys, tokens, usage
+):
+    monkeypatch.setattr(
+        "pico.cli.build_agent",
+        lambda args: (_ for _ in ()).throw(AssertionError("must not build agent")),
+    )
+
+    code = main(["--cwd", str(tmp_path), *tokens])
+
+    assert code == 2
+    assert usage in capsys.readouterr().err
+
+
+def test_bare_prompt_is_rejected_without_building_agent(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(
+        "pico.cli.build_agent",
+        lambda args: (_ for _ in ()).throw(AssertionError("must not build agent")),
+    )
 
     code = main(["--cwd", str(tmp_path), "fix", "tests"])
 
-    assert code == 0
-    out = capsys.readouterr().out
-    assert "answer" in out
-    assert "pico run" not in out
+    assert code == 2
+    assert "Unknown command: fix" in capsys.readouterr().err
 
 
 def test_help_command_shows_examples(capsys):
@@ -77,14 +95,15 @@ def test_help_command_shows_examples(capsys):
 
     assert code == 0
     out = capsys.readouterr().out
-    assert "pico-cli — Local coding agent" in out
+    assert "pico — Local coding agent" in out
     assert "USAGE:" in out
     assert "Available Commands:" in out
-    assert 'pico-cli run "inspect the failing tests"' in out
-    assert "pico-cli config set-secret NAME [--stdin]" in out
-    assert "pico-cli --approval ask run" in out
-    assert "pico-cli checkpoints show <checkpoint-id>" in out
-    assert "pico-cli checkpoints pending" in out
+    assert 'pico run "inspect the failing tests"' in out
+    assert "pico config set-secret NAME [--stdin]" in out
+    assert "pico --approval ask run" in out
+    assert "pico checkpoints show <checkpoint-id>" in out
+    assert "pico checkpoints pending" in out
+    assert "Compatibility:" not in out
     assert "no OS sandbox" in out
     assert "providers list" not in out
 
@@ -94,7 +113,7 @@ def test_help_flag_uses_root_help_without_argparse_dump(capsys):
 
     assert code == 0
     out = capsys.readouterr().out
-    assert out.startswith("pico-cli — Local coding agent")
+    assert out.startswith("pico — Local coding agent")
     assert "Available Commands:" in out
     assert "positional arguments:" not in out
 
@@ -108,28 +127,22 @@ def test_unknown_command_suggests_close_match(capsys):
     assert "Did you mean `checkpoints`?" in err
 
 
-@pytest.mark.parametrize(
-    ("tokens", "prompt"),
-    [
-        (["hello"], "hello"),
-        (["start", "a", "project"], "start a project"),
-        (["running", "tests"], "running tests"),
-        (["check", "tests"], "check tests"),
-    ],
-)
-def test_natural_language_legacy_prompts_are_not_command_typos(
+@pytest.mark.parametrize("tokens", [["hello"], ["start", "a", "project"]])
+def test_natural_language_requires_explicit_run(
     tmp_path,
     monkeypatch,
     tokens,
-    prompt,
+    capsys,
 ):
-    called = {}
-    _install_fake_agent(monkeypatch, tmp_path, called)
+    monkeypatch.setattr(
+        "pico.cli.build_agent",
+        lambda args: (_ for _ in ()).throw(AssertionError("must not build agent")),
+    )
 
     code = main(["--cwd", str(tmp_path), *tokens])
 
-    assert code == 0
-    assert called["asked"] == prompt
+    assert code == 2
+    assert f"Unknown command: {tokens[0]}" in capsys.readouterr().err
 
 
 def test_unknown_command_suggestion_uses_json_error_envelope(capsys):
@@ -141,23 +154,6 @@ def test_unknown_command_suggestion_uses_json_error_envelope(capsys):
     assert payload["error"]["code"] == "unknown_command"
     assert payload["error"]["message"] == "Unknown command: chekpoints"
     assert payload["error"]["hint"] == "Did you mean `checkpoints`?"
-
-
-def test_cli_command_specs_drive_namespace_tables():
-    from pico import cli
-
-    expected_namespaces = {
-        name: spec["subcommands"]
-        for name, spec in cli.COMMAND_SPECS.items()
-        if spec["subcommands"]
-    }
-
-    assert cli._COMMAND_NAMESPACE_SUBCOMMANDS == expected_namespaces
-    assert cli._RECOVERY_TOP_LEVEL_COMMANDS == {
-        name
-        for name, spec in cli.COMMAND_SPECS.items()
-        if spec["category"] == "recovery"
-    }
 
 
 def test_init_creates_non_secret_project_env_without_building_agent(tmp_path, monkeypatch, capsys):
@@ -188,7 +184,7 @@ def test_init_creates_non_secret_project_env_without_building_agent(tmp_path, mo
     assert "Project environment" in out
     assert "repo_root_exact" in out
     assert "loaded" in out
-    assert "pico-cli config set-secret PICO_DEEPSEEK_API_KEY" in out
+    assert "pico config set-secret PICO_DEEPSEEK_API_KEY" in out
 
     code = main(["--cwd", str(tmp_path), "--format", "json", "config", "show"])
 

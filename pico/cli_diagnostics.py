@@ -248,7 +248,7 @@ def handle_doctor(tokens, cwd, args):
     elif tokens:
         raise CliError(
             code="usage",
-            message="usage: pico-cli doctor [--offline]",
+            message="usage: pico doctor [--offline]",
             exit_code=CLI_EXIT_USAGE,
         )
     data = collect_doctor(cwd, args, offline=offline)
@@ -296,7 +296,7 @@ def handle_config(tokens, cwd, args):
 def _config_usage_error():
     return CliError(
         code="usage",
-        message="usage: pico-cli config show | pico-cli config set-secret <ENV_NAME> [--stdin]",
+        message="usage: pico config show | pico config set-secret <ENV_NAME> [--stdin]",
         exit_code=CLI_EXIT_USAGE,
     )
 

@@ -128,10 +128,11 @@ def test_packaging_discovers_pico_subpackages():
     assert 'include = ["pico*"]' in pyproject_text
 
 
-def test_packaging_exposes_non_conflicting_cli_script():
+def test_packaging_exposes_only_pico_cli_script():
     pyproject_text = Path("pyproject.toml").read_text(encoding="utf-8")
 
-    assert 'pico-cli = "pico.cli:main"' in pyproject_text
+    scripts = pyproject_text.split("[project.scripts]", 1)[1].split("[", 1)[0]
+    assert scripts.strip() == 'pico = "pico.cli:main"'
 
 
 def test_provider_defaults_have_single_source():

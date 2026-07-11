@@ -140,7 +140,7 @@ def handle_checkpoints(root, tokens, args):
         )
     raise CliError(
         code="usage",
-        message="usage: pico-cli checkpoints {list | show <id> | pending | resolve-pending <id> [--apply] | preview-restore <id> | restore <id> [--apply] | prune [--older-than <duration>] [--apply]}",
+        message="usage: pico checkpoints {list | show <id> | pending | resolve-pending <id> [--apply] | preview-restore <id> | restore <id> [--apply] | prune [--older-than <duration>] [--apply]}",
         exit_code=CLI_EXIT_USAGE,
     )
 
@@ -181,7 +181,7 @@ def handle_runs(root, tokens, args):
         )
     raise CliError(
         code="usage",
-        message="usage: pico-cli runs {list | show <run_id>}",
+        message="usage: pico runs {list | show <run_id>}",
         exit_code=CLI_EXIT_USAGE,
     )
 
@@ -221,7 +221,7 @@ def handle_sessions(root, tokens, args):
         )
     raise CliError(
         code="usage",
-        message="usage: pico-cli sessions {list | show <session_id>}",
+        message="usage: pico sessions {list | show <session_id>}",
         exit_code=CLI_EXIT_USAGE,
     )
 
@@ -279,7 +279,7 @@ def _resolve_pending_record(store, root, record_id, *, apply_flag):
         raise CliError(
             code="recovery_review_not_found",
             message="unknown recovery review item",
-            hint="Run `pico-cli checkpoints pending`.",
+            hint="Run `pico checkpoints pending`.",
             exit_code=CLI_EXIT_USAGE,
         )
     kind, _ = matches[0]
@@ -390,7 +390,7 @@ def _resolve_checkpoint_id(store, value, *, redactor=None):
         raise CliError(
             code="checkpoint_not_found",
             message=f"unknown checkpoint: {display_id}",
-            hint="Run `pico-cli checkpoints list`.",
+            hint="Run `pico checkpoints list`.",
             exit_code=CLI_EXIT_USAGE,
         )
 
@@ -421,7 +421,7 @@ def _resolve_checkpoint_id(store, value, *, redactor=None):
     raise CliError(
         code="checkpoint_not_found",
         message=f"unknown checkpoint: {display_id}",
-        hint="Run `pico-cli checkpoints list`.",
+        hint="Run `pico checkpoints list`.",
         exit_code=CLI_EXIT_USAGE,
     )
 
@@ -434,7 +434,7 @@ def _load_checkpoint_record(store, checkpoint_id, *, redactor=None):
         raise CliError(
             code="checkpoint_not_found",
             message=f"unknown checkpoint: {display_id}",
-            hint="Run `pico-cli checkpoints list`.",
+            hint="Run `pico checkpoints list`.",
             exit_code=CLI_EXIT_USAGE,
         ) from exc
 
@@ -447,7 +447,7 @@ def _preview_restore(manager, checkpoint_id, *, redactor=None):
         raise CliError(
             code="checkpoint_not_found",
             message=f"unknown checkpoint: {display_id}",
-            hint="Run `pico-cli checkpoints list`.",
+            hint="Run `pico checkpoints list`.",
             exit_code=CLI_EXIT_USAGE,
         ) from exc
 
@@ -460,7 +460,7 @@ def _apply_restore(manager, checkpoint_id, *, redactor=None):
         raise CliError(
             code="checkpoint_not_found",
             message=f"unknown checkpoint: {display_id}",
-            hint="Run `pico-cli checkpoints list`.",
+            hint="Run `pico checkpoints list`.",
             exit_code=CLI_EXIT_USAGE,
         ) from exc
 
@@ -551,7 +551,7 @@ def _not_found_error(kind):
     return CliError(
         code=f"{kind}_not_found",
         message=f"unknown {kind}",
-        hint=f"Run `pico-cli {kind}s list`.",
+        hint=f"Run `pico {kind}s list`.",
         exit_code=CLI_EXIT_USAGE,
     )
 
@@ -594,7 +594,7 @@ def _parse_prune_args(args):
 def _prune_usage_error():
     return CliError(
         code="usage",
-        message="usage: pico-cli checkpoints prune [--older-than <duration>] [--apply]",
+        message="usage: pico checkpoints prune [--older-than <duration>] [--apply]",
         exit_code=CLI_EXIT_USAGE,
     )
 

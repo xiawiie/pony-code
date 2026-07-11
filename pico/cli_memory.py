@@ -7,9 +7,9 @@ from .cli_output import print_result
 
 
 def handle_memory(tokens, root, args):
-    """`pico-cli memory {list | show <path> | search <query> | review}`.
+    """`pico memory {list | show <path> | search <query> | review}`.
 
-    4 个只读 / 半只读子命令，把 v2 记忆系统能力暴露给用户。
+    4 个只读 / 半只读子命令，把记忆系统能力暴露给用户。
     数据源：`<root>/.pico/memory/` （workspace）+ `~/.pico/memory/` （user global）。
     """
     from .memory.block_store import BlockStore
@@ -32,7 +32,7 @@ def handle_memory(tokens, root, args):
 
     raise CliError(
         code="usage",
-        message="usage: pico-cli memory {list | show <path> | search <query> | review}",
+        message="usage: pico memory {list | show <path> | search <query> | review}",
         exit_code=CLI_EXIT_USAGE,
     )
 
@@ -79,7 +79,7 @@ def _memory_show_cmd(store, rest, args):
     if not rest:
         raise CliError(
             code="usage",
-            message="usage: pico-cli memory show <path>",
+            message="usage: pico memory show <path>",
             exit_code=CLI_EXIT_USAGE,
         )
     path = rest[0]
@@ -89,7 +89,7 @@ def _memory_show_cmd(store, rest, args):
         raise CliError(
             code="memory_not_found",
             message=f"memory file not found: {path}",
-            hint="Run `pico-cli memory list` to see available paths.",
+            hint="Run `pico memory list` to see available paths.",
             exit_code=CLI_EXIT_USAGE,
         ) from exc
     except ValueError as exc:
@@ -116,7 +116,7 @@ def _memory_search_cmd(store, rest, args):
     if not rest:
         raise CliError(
             code="usage",
-            message="usage: pico-cli memory search <query> [--limit N]",
+            message="usage: pico memory search <query> [--limit N]",
             exit_code=CLI_EXIT_USAGE,
         )
     query = rest[0]
@@ -156,7 +156,7 @@ def _memory_review_cmd(store, rest, args):
     if rest:
         raise CliError(
             code="usage",
-            message="usage: pico-cli memory review",
+            message="usage: pico memory review",
             exit_code=CLI_EXIT_USAGE,
         )
     try:

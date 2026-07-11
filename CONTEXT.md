@@ -8,9 +8,45 @@ Pico is a coding-agent harness for repository-grounded engineering work. This gl
 The runtime boundary around a coding model that controls tool access, execution policy, task state, checkpoints, traces, and verification artifacts for repository-grounded engineering work.
 _Avoid_: coding agent product, chat assistant, IDE clone
 
-**CLI Surface**:
-The explicit command layer through which users and agentic workflows start Pico, inspect harness state, and request user-initiated recovery actions within the Coding-Agent Harness boundary.
-_Avoid_: TUI, global project manager, plugin marketplace, IDE shell
+**Pico CLI**:
+The single `pico` console command used to run Pico, inspect harness state, and request user-initiated recovery actions.
+_Avoid_: alternate console command, bare prompt dispatch, TUI, IDE shell
+
+**Model Request**:
+The runtime request containing system instructions, tools, canonical messages, token budget, and cache breakpoints.
+_Avoid_: flattened prompt, provider payload, transport string
+
+**Model Response**:
+The provider-neutral `Response` returned to the runtime.
+_Avoid_: raw JSON, SSE event, provider-specific response
+
+**Action**:
+The Tool, Final, or Retry decision produced by `decode_action` from a Model Response.
+_Avoid_: provider tool call, raw model text, command string
+
+**Canonical Messages**:
+The Session's single transcript used to construct each Model Request.
+_Avoid_: duplicate history, provider transcript, compatibility history
+
+**Text Protocol Adapter**:
+The explicit boundary that converts a structured Model Request to a text transport prompt.
+_Avoid_: automatic wrapping, provider registry, runtime capability probing
+
+**Project Environment**:
+The `.env` file at the current lexical repository root, read without global environment injection.
+_Avoid_: parent repository search, process mutation, cross-project env
+
+**Format Version**:
+The encoding version stored inside a record family that can be parsed independently.
+_Avoid_: release version, nested-object version, global benchmark version
+
+**Query Snapshot**:
+The path, metadata, frontmatter, and raw content shared within one memory query and released afterward.
+_Avoid_: process cache, watcher, persistent index copy
+
+**Recovery Record**:
+A persisted top-level checkpoint or tool-change record.
+_Avoid_: nested schema version, Git commit, conversation snapshot
 
 **Recoverable Editing**:
 A harness capability that makes agent-produced repository changes inspectable, explainable, resumable, and restorable across a task session.
@@ -145,7 +181,7 @@ A repository or environment change produced by command execution rather than by 
 _Avoid_: hidden change, bash diff, tracked edit
 
 **AGENTS.md**:
-The project-convention file read at session start. Pico loads AGENTS.md; it does not load CLAUDE.md. `pico-cli doctor` flags a repo that ships CLAUDE.md without AGENTS.md.
+The project-convention file read at session start. Pico loads AGENTS.md; it does not load CLAUDE.md. `pico doctor` flags a repo that ships CLAUDE.md without AGENTS.md.
 _Avoid_: CLAUDE.md loader, README fallback, prompt boilerplate
 
 **User Notes**:
@@ -153,7 +189,7 @@ Free-form Markdown files under `.pico/memory/notes/` (or `~/.pico/memory/notes/`
 _Avoid_: agent scratchpad, chat log, editable prompt
 
 **Agent Notes**:
-The single append-only file `.pico/memory/agent_notes.md` (or `~/.pico/memory/agent_notes.md`) where the agent records short timestamped lessons when the user explicitly asks it to remember something. Soft cap 8000 chars.
+The one append-only `agent_notes.md` file for each memory scope, where the agent records short timestamped lessons when the user explicitly asks it to remember something. Soft cap 8000 chars.
 _Avoid_: unbounded journal, user notes, generic scratch file
 
 **Repo Map**:
@@ -174,7 +210,7 @@ is missing, or the value has a bad type. Sample:
     history_soft_cap = 40000        # tokens; messages array trim threshold
     history_floor_messages = 6      # tail messages always preserved
     injection_budget_ratio = 0.15   # fraction of total budget for <system-reminder> blocks
-    system_tools_hard_cap = 20000   # tokens; build_v2 fails loud if system+tools exceed
+    system_tools_hard_cap = 20000   # tokens; request build fails loud if system+tools exceed
 
     [context.digest]
     size_threshold_chars = 1200     # tool_result char count above which digest applies

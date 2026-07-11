@@ -26,20 +26,20 @@ from .providers.defaults import (
 from .workspace import WorkspaceContext
 
 
-ROOT_HELP = """pico-cli — Local coding agent for repository-grounded engineering work.
+ROOT_HELP = """pico — Local coding agent for repository-grounded engineering work.
 
 USAGE:
-    pico-cli <command> [subcommand] [options]
-    pico-cli run <prompt...>
+    pico <command> [subcommand] [options]
+    pico run <prompt...>
 
 EXAMPLES:
-    pico-cli run "inspect the failing tests"
-    pico-cli config set-secret NAME [--stdin]
-    pico-cli --approval ask run "run the requested shell command"
-    pico-cli doctor
-    pico-cli checkpoints show <checkpoint-id>
-    pico-cli checkpoints pending
-    pico-cli checkpoints resolve-pending <id> [--apply]
+    pico run "inspect the failing tests"
+    pico config set-secret NAME [--stdin]
+    pico --approval ask run "run the requested shell command"
+    pico doctor
+    pico checkpoints show <checkpoint-id>
+    pico checkpoints pending
+    pico checkpoints resolve-pending <id> [--apply]
 
 Available Commands:
   run          Run one prompt and exit
@@ -50,19 +50,15 @@ Available Commands:
   config       Configuration inspection and set-secret input
   runs         Run artifact inspection
   sessions     Session inspection
-  session      Session v3 invariant inspector
+  session      Canonical session invariant inspector
   checkpoints  Checkpoint recovery, pending review, and resolution
   memory       Inspect and search memory files
   help         Help about any command
 
 Flags:
-  -h, --help       help for pico-cli
+  -h, --help       help for pico
       --format     output format for inspection commands: text or json
       --quiet      suppress non-essential human output
-
-Compatibility:
-    pico-cli "prompt"      Run a one-shot prompt
-    pico                   Legacy entry point; may conflict with /usr/bin/pico
 
 Security:
     Approved complex shell is a human-authorized escape hatch; Pico provides no OS sandbox.
@@ -75,9 +71,9 @@ def handle_help(tokens):
 
 
 def handle_session(tokens, root, args):
-    """`pico-cli session {inspect} <session_id>`.
+    """`pico session {inspect} <session_id>`.
 
-    Static, read-only inspector for the canonical v3 message invariant.
+    Static, read-only inspector for the canonical message invariant.
     """
     sessions_root = Path(root) / ".pico" / "sessions"
     return handle_session_command(
@@ -161,7 +157,7 @@ def handle_init(tokens, cwd, args):
             "name": api_key_name,
         },
         "set_secret_command": (
-            f"pico-cli config set-secret {api_key_name}"
+            f"pico config set-secret {api_key_name}"
             if api_key_name and not api_key_present
             else ""
         ),
@@ -226,7 +222,7 @@ def _parse_init_tokens(tokens):
 def _init_usage_error():
     return CliError(
         code="usage",
-        message="usage: pico-cli init [--provider <name>] [--model <name>] [--base-url <url>]",
+        message="usage: pico init [--provider <name>] [--model <name>] [--base-url <url>]",
         exit_code=CLI_EXIT_USAGE,
     )
 

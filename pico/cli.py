@@ -21,7 +21,7 @@ from .cli_diagnostics import handle_config, handle_doctor, handle_status
 from .cli_errors import CLI_EXIT_CONFIG, CLI_EXIT_INTERNAL, CLI_EXIT_USAGE, CliError
 from .cli_memory import handle_memory
 from .cli_output import error_envelope, format_json
-from .cli_parser import parse_cli_invocation
+from .cli_parser import KNOWN_TOP_LEVEL_COMMANDS, parse_cli_invocation
 from .cli_recovery import handle_checkpoints, handle_runs, handle_sessions
 from .cli_start import run_agent_once, run_repl
 from .config import (
@@ -51,54 +51,12 @@ from .security import redact_artifact, redact_text
 from .workspace import WorkspaceContext, middle
 
 
-COMMAND_SPECS = {
-    "help": {"category": "meta", "subcommands": set()},
-    "init": {"category": "config", "subcommands": set()},
-    "status": {"category": "inspection", "subcommands": set()},
-    "doctor": {"category": "inspection", "subcommands": {"--offline"}},
-    "config": {"category": "inspection", "subcommands": {"set-secret", "show"}},
-    "sessions": {"category": "inspection", "subcommands": {"list", "show"}},
-    "session": {"category": "inspection", "subcommands": {"inspect"}},
-    "checkpoints": {"category": "recovery", "subcommands": {"list", "show", "preview-restore", "restore", "prune", "pending", "resolve-pending"}},
-    "runs": {"category": "recovery", "subcommands": {"list", "show"}},
-}
-_RECOVERY_TOP_LEVEL_COMMANDS = {
-    name
-    for name, spec in COMMAND_SPECS.items()
-    if spec["category"] == "recovery"
-}
-# 只有在第一位是 recovery 顶级命令，且第二位落在下面这些子命令里的时候，
-# 才把 argv 当成 recovery inspection 命令。否则用户输入的 `pico "checkpoints ..."`
-# 就应该像普通 prompt 一样送进模型。
-_RECOVERY_SUBCOMMANDS = {
-    name: spec["subcommands"]
-    for name, spec in COMMAND_SPECS.items()
-    if spec["category"] == "recovery"
-}
-_COMMAND_NAMESPACE_SUBCOMMANDS = {
-    name: spec["subcommands"]
-    for name, spec in COMMAND_SPECS.items()
-    if spec["subcommands"]
-}
-
-
 class _RootHelpFormatter(
     argparse.ArgumentDefaultsHelpFormatter,
     argparse.RawDescriptionHelpFormatter,
 ):
     pass
 
-
-def _looks_like_recovery_command(prompt_tokens):
-    if not prompt_tokens:
-        return False
-    head = prompt_tokens[0]
-    if head not in _RECOVERY_TOP_LEVEL_COMMANDS:
-        return False
-    # `pico checkpoints` / `pico runs` 单独一个词也算：走默认子命令 list。
-    if len(prompt_tokens) == 1:
-        return True
-    return prompt_tokens[1] in _RECOVERY_SUBCOMMANDS.get(head, set())
 
 WELCOME_ART = (
     "        /\\___/\\\\",
@@ -129,8 +87,8 @@ def _build_model_client(args, *, project_env=None, process_env=None):
     model = config["model"]["value"]
     base_url = config["base_url"]["value"]
     api_key = config["api_key"]["value"]
-    # CLI 只负责把 provider 选择翻译成具体 client。
-    # 真正的提示词格式、缓存支持、HTTP 协议差异，都封装在 models.py 里。
+    # CLI 只负责把 provider 选择翻译成具体 client；请求格式、缓存与
+    # HTTP 协议差异留在具体 provider 模块和 TextProtocolAdapter 中。
     if provider == "openai":
         return TextProtocolAdapter(OpenAICompatibleModelClient(
             model=model,
@@ -278,14 +236,14 @@ def build_agent(args):
 
 def build_arg_parser():
     parser = argparse.ArgumentParser(
-        prog="pico-cli",
+        prog="pico",
         add_help=False,
         formatter_class=_RootHelpFormatter,
         description="Local coding agent for repository-grounded engineering work.",
         epilog=ROOT_HELP,
     )
-    parser.add_argument("-h", "--help", action="store_true", help="help for pico-cli")
-    parser.add_argument("prompt", nargs="*", help="Optional one-shot prompt.")
+    parser.add_argument("-h", "--help", action="store_true", help="help for pico")
+    parser.add_argument("prompt", nargs="*", help="Command and arguments.")
     parser.add_argument("--cwd", default=".", help="Workspace directory.")
     parser.add_argument(
         "--provider",
@@ -348,7 +306,7 @@ def _dispatch_status(args, tokens):
     if tokens:
         raise CliError(
             code="usage",
-            message="usage: pico-cli status",
+            message="usage: pico status",
             exit_code=CLI_EXIT_USAGE,
         )
     return handle_status(args.cwd, args)
@@ -381,19 +339,12 @@ def _dispatch_session(args, tokens):
     return handle_session(tokens, workspace.repo_root, args)
 
 
-def _dispatch_recovery(args, tokens, command):
-    recovery_tokens = [command, *tokens]
-    if not _looks_like_recovery_command(recovery_tokens):
-        return None
-    return _handle_recovery_command(args.cwd, recovery_tokens, args)
-
-
 def _dispatch_checkpoints(args, tokens):
-    return _dispatch_recovery(args, tokens, "checkpoints")
+    return _handle_recovery_command(args.cwd, ["checkpoints", *tokens], args)
 
 
 def _dispatch_runs(args, tokens):
-    return _dispatch_recovery(args, tokens, "runs")
+    return _handle_recovery_command(args.cwd, ["runs", *tokens], args)
 
 
 _PRE_AGENT_COMMAND_HANDLERS = {
@@ -415,6 +366,21 @@ def _dispatch_pre_agent_command(invocation, args):
     if handler is None:
         return None
     return handler(args, invocation.command_args)
+
+
+def _validate_agent_command(invocation):
+    if invocation.command == "run" and not invocation.command_args:
+        raise CliError(
+            code="usage",
+            message="usage: pico run <prompt...>",
+            exit_code=CLI_EXIT_USAGE,
+        )
+    if invocation.command == "repl" and invocation.command_args:
+        raise CliError(
+            code="usage",
+            message="usage: pico repl",
+            exit_code=CLI_EXIT_USAGE,
+        )
 
 
 def _print_cli_error(args, exc):
@@ -448,28 +414,20 @@ def _print_startup_error(args):
     )
 
 
-def _raise_on_legacy_command_typo(invocation):
-    if not invocation.legacy_prompt or not invocation.command_args:
-        return
-    head = invocation.command_args[0]
-    rest = invocation.command_args[1:]
-    if not rest:
+def _raise_on_unknown_command(invocation):
+    if invocation.command in KNOWN_TOP_LEVEL_COMMANDS:
         return
     matches = get_close_matches(
-        str(head),
-        sorted(_COMMAND_NAMESPACE_SUBCOMMANDS),
+        invocation.command,
+        sorted(KNOWN_TOP_LEVEL_COMMANDS),
         n=1,
         cutoff=0.8,
     )
     match = matches[0] if matches else ""
-    if match and rest[0] not in _COMMAND_NAMESPACE_SUBCOMMANDS[match]:
-        match = ""
-    if not match:
-        return
     raise CliError(
         code="unknown_command",
-        message=f"Unknown command: {head}",
-        hint=f"Did you mean `{match}`?",
+        message=f"Unknown command: {invocation.command}",
+        hint=f"Did you mean `{match}`?" if match else "Run `pico help` to see available commands.",
         exit_code=CLI_EXIT_USAGE,
     )
 
@@ -479,11 +437,11 @@ def main(argv=None):
     invocation = parse_cli_invocation(argv, parser)
     args = invocation.runtime_args
     try:
-        _raise_on_legacy_command_typo(invocation)
+        _raise_on_unknown_command(invocation)
+        _validate_agent_command(invocation)
         # 先分派只读检查命令，避免为它们启动模型 client 或 REPL。
-        pre_agent_result = _dispatch_pre_agent_command(invocation, args)
-        if pre_agent_result is not None:
-            return pre_agent_result
+        if invocation.command in _PRE_AGENT_COMMAND_HANDLERS:
+            return _dispatch_pre_agent_command(invocation, args)
         agent = build_agent(args)
     except CliError as exc:
         return _print_cli_error(args, exc)
@@ -524,13 +482,11 @@ def main(argv=None):
         if not args.quiet:
             print(build_welcome(agent, model=model, host=host))
 
-        if invocation.command == "run":
-            return run_agent_once(agent, invocation.command_args)
         if invocation.command == "repl":
             if args.no_input:
                 print("--no-input cannot be used with interactive repl", file=sys.stderr)
                 return 2
             return run_repl(agent)
-        return run_agent_once(agent, [invocation.command, *invocation.command_args])
+        return run_agent_once(agent, invocation.command_args)
     except Exception:  # noqa: BLE001 - contain ordinary CLI runtime failures
         return _print_startup_error(args)

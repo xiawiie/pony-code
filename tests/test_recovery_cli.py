@@ -2,7 +2,7 @@ import json
 import os
 
 from pico.checkpoint_store import CheckpointStore
-from pico.cli import COMMAND_SPECS, main
+from pico.cli import main
 from pico.recovery_manager import RecoveryManager, collect_recovery_review_items
 from pico.recovery_models import new_checkpoint_record, new_tool_change_record
 from pico.tool_change_recorder import ToolChangeRecorder
@@ -293,12 +293,6 @@ def test_collect_recovery_review_items_has_fixed_read_only_shape(tmp_path):
     assert before == after
 
 
-def test_command_specs_register_recovery_review_subcommands():
-    assert {"pending", "resolve-pending"} <= COMMAND_SPECS["checkpoints"][
-        "subcommands"
-    ]
-
-
 def test_resolve_pending_defaults_to_read_only_preview(tmp_path, capsys):
     store = CheckpointStore(tmp_path)
     pending = ToolChangeRecorder(store, owner_id="owner-a").start(
@@ -587,36 +581,20 @@ def test_runs_show_rejects_extra_args(tmp_path):
     assert code == 2
 
 
-def test_prompt_starting_with_checkpoints_word_is_not_hijacked(tmp_path, monkeypatch):
-    # 保护性回归：`pico "checkpoints look good"` 应该走模型，不被当成子命令。
-    called = {}
-
-    def fake_build_agent(args):
-        called["cwd"] = args.cwd
-        called["prompt"] = list(args.prompt)
-
-        class FakeAgent:
-            model_client = type("MC", (), {"model": "x"})()
-            workspace = type("W", (), {"cwd": str(tmp_path), "branch": "main"})()
-            approval_policy = "auto"
-            session = {"id": "s"}
-
-            def ask(self, message):
-                called["asked"] = message
-                return "ok"
-
-        return FakeAgent()
-
-    monkeypatch.setattr("pico.cli.build_agent", fake_build_agent)
-    monkeypatch.setattr("pico.cli.build_welcome", lambda agent, model, host: "")
+def test_invalid_checkpoints_subcommand_is_usage_error_without_agent(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(
+        "pico.cli.build_agent",
+        lambda args: (_ for _ in ()).throw(AssertionError("must not build agent")),
+    )
 
     code = main(["--cwd", str(tmp_path), "checkpoints", "look", "good"])
 
-    assert code == 0
-    assert called["asked"] == "checkpoints look good"
+    assert code == 2
 
 
-def test_legacy_prompt_still_runs_one_shot(tmp_path, monkeypatch, capsys):
+def test_run_accepts_prompt_starting_with_namespace(tmp_path, monkeypatch, capsys):
     called = {}
 
     def fake_build_agent(args):
@@ -638,46 +616,23 @@ def test_legacy_prompt_still_runs_one_shot(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr("pico.cli.build_agent", fake_build_agent)
     monkeypatch.setattr("pico.cli.build_welcome", lambda agent, model, host: "")
 
-    code = main(["--cwd", str(tmp_path), "inspect", "tests"])
+    code = main(["--cwd", str(tmp_path), "run", "checkpoints", "look", "good"])
 
     assert code == 0
-    assert called["asked"] == "inspect tests"
+    assert called["asked"] == "checkpoints look good"
     assert "answer" in capsys.readouterr().out
 
 
-def test_no_argument_cli_enters_repl_and_exits_on_eof(tmp_path, monkeypatch):
-    called = {}
-
-    def fake_build_agent(args):
-        called["built"] = True
-
-        class FakeAgent:
-            model_client = type("MC", (), {"model": "x"})()
-            workspace = type("W", (), {"cwd": str(tmp_path), "branch": "main"})()
-            approval_policy = "auto"
-            session = {"id": "s"}
-
-            def memory_text(self):
-                return ""
-
-            def reset(self):
-                called["reset"] = True
-
-        return FakeAgent()
-
-    def fake_input(prompt):
-        called["input"] = True
-        raise EOFError
-
-    monkeypatch.setattr("pico.cli.build_agent", fake_build_agent)
-    monkeypatch.setattr("pico.cli.build_welcome", lambda agent, model, host: "")
-    monkeypatch.setattr("builtins.input", fake_input)
+def test_no_argument_cli_shows_root_help_without_agent(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(
+        "pico.cli.build_agent",
+        lambda args: (_ for _ in ()).throw(AssertionError("must not build agent")),
+    )
 
     code = main(["--cwd", str(tmp_path)])
 
     assert code == 0
-    assert called["built"] is True
-    assert called["input"] is True
+    assert capsys.readouterr().out.startswith("pico — Local coding agent")
 
 
 def test_no_input_blocks_repl_before_input(tmp_path, monkeypatch, capsys):

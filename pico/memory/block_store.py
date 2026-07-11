@@ -353,7 +353,7 @@ class BlockStore:
             print(
                 f"warning: {scope}/agent_notes.md is at {size} chars "
                 f"(soft target {AGENT_NOTES_SOFT_LIMIT_CHARS}). "
-                f"Consider: pico-cli memory review",
+                "Consider: pico memory review",
                 file=sys.stderr,
             )
         return size

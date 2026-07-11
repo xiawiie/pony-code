@@ -14,8 +14,7 @@
 ## 主要特性
 
 - 包名是 `pico`
-- 推荐 CLI 命令是 `pico-cli`
-- 兼容 CLI 命令 `pico` 仍保留，但在 macOS 上可能和系统自带的 `/usr/bin/pico` 编辑器重名
+- CLI 命令是 `pico`
 - 模块入口是 `python -m pico`
 - 会话保存在 `.pico/sessions/`
 - 每次运行的工件保存在 `.pico/runs/<run_id>/`
@@ -56,7 +55,7 @@ source .venv/bin/activate
 pip install -e .
 ```
 
-安装并激活对应环境后，可以直接使用 `pico-cli`。如果不想激活虚拟环境，在当前仓库里也可以把下面所有 `pico-cli ...` 命令写成 `uv run pico-cli ...`。
+安装并激活对应环境后，可以直接使用 `pico`。如果不想激活虚拟环境，在当前仓库里也可以把下面所有 `pico ...` 命令写成 `uv run pico ...`。
 
 更完整的安装、激活和后续迭代说明见 [Pico CLI installation and update guide](docs/cli-installation-and-updates.md)。
 
@@ -65,27 +64,25 @@ pip install -e .
 在当前仓库里启动交互模式。默认 provider 是 DeepSeek：
 
 ```bash
-pico-cli
+pico repl
 ```
 
 指定另一个工作目录：
 
 ```bash
-pico-cli --cwd /path/to/repo
+pico --cwd /path/to/repo repl
 ```
 
 直接跑一次性任务：
 
 ```bash
-pico-cli run "inspect the test failures and propose a fix"
+pico run "inspect the test failures and propose a fix"
 ```
-
-旧形式 `pico-cli "prompt"` 仍然兼容；新示例使用显式的 `run` 子命令，便于和交互、诊断、恢复等命令区分。旧入口 `pico` 也仍可用，但在 macOS 上可能和系统自带的 `/usr/bin/pico` 编辑器重名。
 
 也可以通过模块入口启动：
 
 ```bash
-python -m pico
+python -m pico repl
 ```
 
 ## 模型后端
@@ -93,7 +90,7 @@ python -m pico
 Pico 启动时会读取项目根目录的 `.env`。本地真实 key 放在 `.env`，仓库只保留 `.env.example`。配置优先级是：
 
 ```text
-显式 CLI 参数 > .env 里的 PICO_* 变量 > 旧环境变量 > 代码默认值
+显式 CLI 参数 > 项目根目录 `.env` > 当前进程环境变量 > 代码默认值
 ```
 
 Provider 选择的具体顺序是：
@@ -104,7 +101,7 @@ Provider 选择的具体顺序是：
 
 不传 `--provider` 且没有 `PICO_PROVIDER` 时默认使用 `deepseek`。这是推荐配置路径：DeepSeek 的 Anthropic-compatible endpoint 比本地 Ollama 更少依赖本机模型环境，也比 OpenAI-compatible/Anthropic-compatible 代理少一层默认 gateway 假设。其他 provider 仍然保留，可以在 `.env` 里写 `PICO_PROVIDER=openai`、`PICO_PROVIDER=anthropic`、`PICO_PROVIDER=ollama`，也可以显式传 `--provider openai`、`--provider anthropic` 或 `--provider ollama`。
 
-`.env` 会在构建 provider client 前加载，并覆盖当前进程里的同名环境变量。模型名和 base URL 可以通过 `--model`、`--base-url` 临时覆盖；API key 只从环境变量读取。
+Pico 只读取当前 lexical repo root 下的 `.env`，不把其内容注入全局进程环境。模型名和 base URL 可以通过 `--model`、`--base-url` 临时覆盖；API key 从项目 `.env` 或当前进程环境变量读取。
 
 本地第一次配置：
 
@@ -132,13 +129,13 @@ PICO_DEEPSEEK_MODEL="deepseek-v4-pro"
 所以常规情况下 `.env` 里只填 `PICO_DEEPSEEK_API_KEY` 就能直接启动：
 
 ```bash
-pico-cli
+pico repl
 ```
 
 如果你需要临时切模型或代理地址，不必改 `.env`，可以直接覆盖：
 
 ```bash
-pico-cli --model deepseek-v4-pro --base-url https://api.deepseek.com/anthropic
+pico --model deepseek-v4-pro --base-url https://api.deepseek.com/anthropic repl
 ```
 
 DeepSeek 当前走 Anthropic-compatible Messages API，所以 runtime 里复用的是 Anthropic-compatible client；这只影响 HTTP 协议，不影响 CLI 用法。
@@ -150,17 +147,17 @@ right.codes 在 Pico 里有两条可选 provider 路径：
 - `--provider openai`：走 OpenAI-compatible `/responses`，默认 base URL 是 `https://www.right.codes/codex/v1`，默认模型是 `gpt-5.4`
 - `--provider anthropic`：走 Anthropic-compatible `/messages`，默认 base URL 是 `https://www.right.codes/claude/v1`，默认模型是 `claude-sonnet-4-6`
 
-如果 right.codes 给你的是一把共享 key，推荐只填这一项：
+如果 right.codes 给你的是一把共享 key，可以填通用 fallback：
 
 ```bash
-PICO_RIGHT_CODES_API_KEY="your-right-codes-key"
+PICO_API_KEY="your-right-codes-key"
 ```
 
 然后按需要选择 provider：
 
 ```bash
-pico-cli --provider openai
-pico-cli --provider anthropic
+pico --provider openai repl
+pico --provider anthropic repl
 ```
 
 如果你想显式区分两条 provider 的 key，也可以分别配置：
@@ -170,7 +167,7 @@ PICO_OPENAI_API_KEY="your-right-codes-key-for-codex"
 PICO_ANTHROPIC_API_KEY="your-right-codes-key-for-claude"
 ```
 
-不要在 `.env` 里写 `PICO_OPENAI_API_KEY=$PICO_RIGHT_CODES_API_KEY` 这种 shell 展开形式；Pico 的 `.env` 解析器只读取字面量，不展开变量引用。要么只写 `PICO_RIGHT_CODES_API_KEY`，要么把 key 字符串分别填到 provider-specific 变量里。
+不要在 `.env` 里写 `PICO_OPENAI_API_KEY=$PICO_API_KEY` 这种 shell 展开形式；Pico 的 `.env` 解析器只读取字面量，不展开变量引用。要么只写 `PICO_API_KEY`，要么把 key 字符串分别填到 provider-specific 变量里。
 
 如果请求 right.codes 返回 `API Key额度不足`，说明协议和 endpoint 已经打通，但当前 key 没有可用额度；换一把有额度的 key，或到 right.codes 后台处理额度。
 
@@ -178,9 +175,9 @@ PICO_ANTHROPIC_API_KEY="your-right-codes-key-for-claude"
 
 | provider | base URL | API key | model |
 | --- | --- | --- | --- |
-| `deepseek` | `PICO_DEEPSEEK_API_BASE`，回退 `DEEPSEEK_API_BASE`，默认 `https://api.deepseek.com/anthropic` | `PICO_DEEPSEEK_API_KEY`，回退 `DEEPSEEK_API_KEY` | `PICO_DEEPSEEK_MODEL`，回退 `DEEPSEEK_MODEL`，默认 `deepseek-v4-pro` |
-| `openai` | `PICO_OPENAI_API_BASE`，回退 `OPENAI_API_BASE`，默认 `https://www.right.codes/codex/v1` | `PICO_OPENAI_API_KEY`，回退 `OPENAI_API_KEY`、`PICO_RIGHT_CODES_API_KEY`、`RIGHT_CODES_API_KEY`、`PICO_ANTHROPIC_API_KEY`、`ANTHROPIC_API_KEY` | `PICO_OPENAI_MODEL`，回退 `OPENAI_MODEL`，默认 `gpt-5.4` |
-| `anthropic` | `PICO_ANTHROPIC_API_BASE`，回退 `ANTHROPIC_API_BASE`，默认 `https://www.right.codes/claude/v1` | `PICO_ANTHROPIC_API_KEY`，回退 `ANTHROPIC_API_KEY`、`PICO_RIGHT_CODES_API_KEY`、`RIGHT_CODES_API_KEY`、`PICO_OPENAI_API_KEY`、`OPENAI_API_KEY` | `PICO_ANTHROPIC_MODEL`，回退 `ANTHROPIC_MODEL`，默认 `claude-sonnet-4-6` |
+| `deepseek` | `PICO_DEEPSEEK_API_BASE`，回退 `DEEPSEEK_API_BASE`，默认 `https://api.deepseek.com/anthropic` | `PICO_DEEPSEEK_API_KEY`，回退 `DEEPSEEK_API_KEY`、`PICO_API_KEY` | `PICO_DEEPSEEK_MODEL`，回退 `DEEPSEEK_MODEL`，默认 `deepseek-v4-pro` |
+| `openai` | `PICO_OPENAI_API_BASE`，回退 `OPENAI_API_BASE`，默认 `https://www.right.codes/codex/v1` | `PICO_OPENAI_API_KEY`，回退 `OPENAI_API_KEY`、`PICO_API_KEY` | `PICO_OPENAI_MODEL`，回退 `OPENAI_MODEL`，默认 `gpt-5.4` |
+| `anthropic` | `PICO_ANTHROPIC_API_BASE`，回退 `ANTHROPIC_API_BASE`，默认 `https://www.right.codes/claude/v1` | `PICO_ANTHROPIC_API_KEY`，回退 `ANTHROPIC_API_KEY`、`PICO_API_KEY` | `PICO_ANTHROPIC_MODEL`，回退 `ANTHROPIC_MODEL`，默认 `claude-sonnet-4-6` |
 | `ollama` | `--host`，默认 `http://127.0.0.1:11434` | 不需要 | `--model`，默认 `qwen3.5:4b` |
 
 如果有额外的敏感环境变量需要从 trace/report 里脱敏，可以用 `PICO_SECRET_ENV_NAMES` 配置逗号分隔的变量名，或启动时重复传 `--secret-env-name NAME`。
@@ -190,14 +187,14 @@ PICO_ANTHROPIC_API_KEY="your-right-codes-key-for-claude"
 如果要改用 OpenAI-compatible `/responses` 服务，显式传 `--provider openai`：
 
 ```bash
-pico-cli --provider openai
+pico --provider openai repl
 ```
 
 默认 OpenAI 兼容接口使用 right.codes 的 Codex endpoint：
 
 ```bash
 PICO_OPENAI_API_BASE="https://www.right.codes/codex/v1"
-PICO_RIGHT_CODES_API_KEY="your-right-codes-key"
+PICO_API_KEY="your-right-codes-key"
 PICO_OPENAI_MODEL="gpt-5.4"
 ```
 
@@ -214,18 +211,18 @@ PICO_OPENAI_MODEL="gpt-5.4"
 如果要改用 Anthropic-compatible 服务，显式传 `--provider anthropic`：
 
 ```bash
-pico-cli --provider anthropic
+pico --provider anthropic repl
 ```
 
 默认 Anthropic 兼容接口使用 right.codes 的 Claude endpoint：
 
 ```bash
 PICO_ANTHROPIC_API_BASE="https://www.right.codes/claude/v1"
-PICO_RIGHT_CODES_API_KEY="your-right-codes-key"
+PICO_API_KEY="your-right-codes-key"
 PICO_ANTHROPIC_MODEL="claude-sonnet-4-6"
 ```
 
-如果你的服务端对多个兼容接口复用了同一套密钥，`pico` 也支持从 `PICO_ANTHROPIC_API_KEY` 回退到 `ANTHROPIC_API_KEY`、`PICO_RIGHT_CODES_API_KEY`、`RIGHT_CODES_API_KEY`、`PICO_OPENAI_API_KEY` 或 `OPENAI_API_KEY`。
+如果多个 provider 复用同一套密钥，使用 `PICO_API_KEY` 作为共享 fallback；Pico 不会在 provider-specific key 之间交叉回退。
 
 ### Ollama
 
@@ -234,7 +231,7 @@ PICO_ANTHROPIC_MODEL="claude-sonnet-4-6"
 ```bash
 ollama serve
 ollama pull qwen3.5:4b
-pico-cli --provider ollama --model qwen3.5:4b
+pico --provider ollama --model qwen3.5:4b repl
 ```
 
 ## 常用交互命令
@@ -249,33 +246,33 @@ pico-cli --provider ollama --model qwen3.5:4b
 
 ## 记忆系统
 
-Pico v2 把项目知识分成三处：`AGENTS.md` 里的项目约定、`.pico/memory/notes/*.md` 里的用户手写笔记、以及 `.pico/memory/agent_notes.md` 里 agent 显式追加的短笔记。用户笔记 agent 只读不写；agent 笔记只追加、原子写入。CLI 侧 `pico-cli memory list/show/search/review/migrate` 全部对齐这套模型，细节见 [`docs/memory-model.md`](docs/memory-model.md)。
+Pico 把项目知识分成三处：`AGENTS.md` 里的项目约定、`.pico/memory/notes/*.md` 里的用户手写笔记、以及 `.pico/memory/agent_notes.md` 里 agent 显式追加的短笔记。用户笔记 agent 只读不写；agent 笔记只追加、原子写入。CLI 侧 `pico memory list/show/search/review` 全部对齐这套模型，细节见 [`docs/memory-model.md`](docs/memory-model.md)。
 
 ## CLI Surface
 
 常用命令入口如下：
 
-- `pico-cli run [prompt...]`：执行一个 prompt，然后退出。
-- `pico-cli repl`：启动交互式 REPL。
-- `pico-cli help`：显示 CLI 帮助。
-- `pico-cli status`：显示本地 harness 状态，不启动模型会话。
-- `pico-cli doctor`：运行就绪诊断，包括 provider 连通性检查。
-- `pico-cli doctor --offline`：只运行本地诊断，不检查 provider 连通性。
-- `pico-cli config show`：显示最终生效的配置以及来源。
-- `pico-cli runs list` / `pico-cli runs show <run-id>`：查看历史 run 列表或单个 run 详情。
-- `pico-cli sessions list` / `pico-cli sessions show <session-id>`：查看历史 session 列表或单个 session 详情。
-- `pico-cli checkpoints list` / `pico-cli checkpoints show <checkpoint-id>`：查看 checkpoint 列表或详情。
-- `pico-cli checkpoints preview-restore <checkpoint-id>`：预览恢复 checkpoint 会带来的变化。
-- `pico-cli checkpoints restore <checkpoint-id> --apply`：实际恢复 checkpoint。
-- `pico-cli checkpoints prune` / `pico-cli checkpoints prune --older-than=7d --apply`：预览或实际清理 checkpoint。
+- `pico run <prompt...>`：执行一个 prompt，然后退出。
+- `pico repl`：启动交互式 REPL。
+- `pico help`：显示 CLI 帮助。
+- `pico status`：显示本地 harness 状态，不启动模型会话。
+- `pico doctor`：运行就绪诊断，包括 provider 连通性检查。
+- `pico doctor --offline`：只运行本地诊断，不检查 provider 连通性。
+- `pico config show`：显示最终生效的配置以及来源。
+- `pico runs list` / `pico runs show <run-id>`：查看历史 run 列表或单个 run 详情。
+- `pico sessions list` / `pico sessions show <session-id>`：查看历史 session 列表或单个 session 详情。
+- `pico checkpoints list` / `pico checkpoints show <checkpoint-id>`：查看 checkpoint 列表或详情。
+- `pico checkpoints preview-restore <checkpoint-id>`：预览恢复 checkpoint 会带来的变化。
+- `pico checkpoints restore <checkpoint-id> --apply`：实际恢复 checkpoint。
+- `pico checkpoints prune` / `pico checkpoints prune --older-than=7d --apply`：预览或实际清理 checkpoint。
 
 这里的 checkpoint 指用户可恢复入口：一次用户请求产生的文件改动会聚合成一个 Turn Checkpoint；逐次工具调用的影响会作为内部 Tool Change Record 记录，并由 Turn Checkpoint 引用。
 
 诊断和 inspection 命令需要机器可读输出时，可以在命令前加 `--format json`：
 
 ```bash
-pico-cli --format json status
-pico-cli --format json checkpoints list
+pico --format json status
+pico --format json checkpoints list
 ```
 
 恢复类命令默认先预览；`restore` 和 `prune` 只有显式传入 `--apply` 才会修改本地状态。
@@ -290,17 +287,17 @@ pico-cli --format json checkpoints list
 
 安全边界如下：
 
-- `pico-cli config set-secret NAME [--stdin]` 是唯一的 CLI secret 写入路径；`init` 不接受 API key 参数。
-- DeepSeek secret 可交互写入：`pico-cli --cwd <repo> config set-secret PICO_DEEPSEEK_API_KEY`。
-- DeepSeek secret 也可从标准输入写入：`pico-cli --cwd <repo> config set-secret PICO_DEEPSEEK_API_KEY --stdin`；secret value 从不接受 argv 传入。
-- Recovery Review 使用 `pico-cli --cwd <repo> checkpoints pending`、`pico-cli --cwd <repo> checkpoints resolve-pending <id>` 预览，以及 `pico-cli --cwd <repo> checkpoints resolve-pending <id> --apply` 显式应用。
+- `pico config set-secret NAME [--stdin]` 是唯一的 CLI secret 写入路径；`init` 不接受 API key 参数。
+- DeepSeek secret 可交互写入：`pico --cwd <repo> config set-secret PICO_DEEPSEEK_API_KEY`。
+- DeepSeek secret 也可从标准输入写入：`pico --cwd <repo> config set-secret PICO_DEEPSEEK_API_KEY --stdin`；secret value 从不接受 argv 传入。
+- Recovery Review 使用 `pico --cwd <repo> checkpoints pending`、`pico --cwd <repo> checkpoints resolve-pending <id>` 预览，以及 `pico --cwd <repo> checkpoints resolve-pending <id> --apply` 显式应用。
 - 直接工具和自动 shell 都会拒绝敏感路径或敏感内容。
 - 自动 shell 只执行精确 allowlist 中可证明安全的 argv，并固定使用 `shell=False`。
 - 经用户批准的复杂 shell 是 human-authorized escape hatch，不是 OS sandbox，也不受自动路径策略的静态隔离保证。
 - 在 POSIX 上，Pico 自有的 secret/工件文件使用 `0600`，自有目录使用 `0700`。
 - Pico 不提供 encryption、Vault integration、container 或 OS sandbox。
 - 外部进程在校验后并发修改 Git marker、结构元数据、config 或 index 仍是残余风险；Pico 的校验不是 OS sandbox 或 immutable snapshot。
-- 当前 A 阶段 hardened gitfile/locking 边界以 POSIX/macOS 为目标，所需安全原语不可用时 fail closed；Windows 等价机制留待后续设计。
+- Hardened gitfile/locking 边界当前以 POSIX/macOS 为目标，所需安全原语不可用时 fail closed；Windows 等价机制留待后续设计。
 - restore 对单文件原子替换，对多文件使用持久化 journal；`partial`、`applying` 与无效 mutation evidence 必须进入 Recovery Review。
 - resolution 永远 preview-first；无效证据会被私有 quarantine，而不是直接删除。
 

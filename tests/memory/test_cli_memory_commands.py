@@ -171,7 +171,7 @@ def test_memory_unknown_subcommand(tmp_path):
 
 
 def test_memory_top_level_command_dispatch(tmp_path, capsys, monkeypatch):
-    """`pico-cli memory list` via main() dispatch."""
+    """`pico memory list` via main() dispatch."""
     from pico.cli import main
     monkeypatch.chdir(tmp_path)
     (tmp_path / ".pico" / "memory").mkdir(parents=True)
