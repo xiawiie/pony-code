@@ -288,6 +288,16 @@ pico-cli --format json checkpoints list
 - `--approval auto`
 - `--approval never`
 
+安全边界如下：
+
+- `pico-cli config set-secret NAME [--stdin]` 是唯一的 CLI secret 写入路径；`init` 不接受 API key 参数。
+- 直接工具和自动 shell 都会拒绝敏感路径或敏感内容。
+- 自动 shell 只执行精确 allowlist 中可证明安全的 argv，并固定使用 `shell=False`。
+- 经用户批准的复杂 shell 是 human-authorized escape hatch，不是 OS sandbox，也不受自动路径策略的静态隔离保证。
+- 在 POSIX 上，Pico 自有的 secret/工件文件使用 `0600`，自有目录使用 `0700`。
+- Pico 不提供 encryption、Vault integration、container 或 OS sandbox。
+- 外部进程并发修改 Git config/index 仍是 TOCTOU residual risk；Pico 的结构校验不等同于操作系统隔离。
+
 每次运行结束后，都会在 `.pico/runs/<run_id>/` 下写出这些文件：
 
 - `task_state.json`

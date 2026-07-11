@@ -114,8 +114,6 @@ def test_pico_ask_delegates_to_agent_loop(tmp_path):
 def test_rejected_tool_action_never_creates_verification_evidence():
     assert agent_loop_module._verification_evidence_for_tool(
         "run_shell",
-        {"command": "pytest -q"},
-        "exit_code: 1\nstdout:\n(empty)\nstderr:\nblocked",
         {"tool_status": "rejected"},
     ) is None
 

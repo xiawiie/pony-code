@@ -81,7 +81,9 @@ def test_help_command_shows_examples(capsys):
     assert "USAGE:" in out
     assert "Available Commands:" in out
     assert 'pico-cli run "inspect the failing tests"' in out
-    assert "pico-cli config set-secret PICO_DEEPSEEK_API_KEY" in out
+    assert "pico-cli config set-secret NAME [--stdin]" in out
+    assert "pico-cli --approval ask run" in out
+    assert "pico-cli checkpoints show <checkpoint-id>" in out
     assert "providers list" not in out
 
 

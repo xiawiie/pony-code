@@ -36,9 +36,10 @@ USAGE:
 
 EXAMPLES:
     pico-cli run "inspect the failing tests"
-    pico-cli config set-secret PICO_DEEPSEEK_API_KEY
+    pico-cli config set-secret NAME [--stdin]
+    pico-cli --approval ask run "run the requested shell command"
     pico-cli doctor
-    pico-cli checkpoints preview-restore <checkpoint-id>
+    pico-cli checkpoints show <checkpoint-id>
 
 Available Commands:
   run          Run one prompt and exit

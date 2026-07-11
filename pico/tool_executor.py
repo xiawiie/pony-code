@@ -34,6 +34,7 @@ from .tools import (
     _ApprovedShellExecution,
     SensitiveToolError,
 )
+from .verification import verification_evidence_for_execution
 from .workspace import clip
 
 
@@ -632,6 +633,7 @@ class ToolExecutor:
         before_file_states = {}
         before_existed = set()
         observer_before = None
+        verification_evidence = None
 
         try:
             before_paths = _direct_tool_candidate_paths(name, args) if records_recovery else []
@@ -675,6 +677,16 @@ class ToolExecutor:
                     raw_result = tool["run"](shell_execution)
                 shell_result = _structured_shell_result(agent, raw_result)
                 command_approval["exit_code"] = shell_result["exit_code"]
+                verification_evidence = verification_evidence_for_execution(
+                    argv=shell_execution.argv,
+                    risk_class=command_risk,
+                    runner_executed=command_approval["runner_executed"],
+                    execution_mode=shell_execution.execution_mode,
+                    exit_code=shell_result["exit_code"],
+                    stdout=shell_result["stdout"],
+                    stderr=shell_result["stderr"],
+                    redact_text=agent.redact_text,
+                )
                 content = clip(_format_shell_result(shell_result))
             else:
                 content = clip(agent.redact_text(tool["run"](args)))
@@ -741,6 +753,8 @@ class ToolExecutor:
                 command_approval=command_approval,
                 content=content,
             )
+            if verification_evidence is not None:
+                metadata["verification_evidence"] = verification_evidence
             return ToolExecutionResult(content=content, metadata=metadata)
         except KeyboardInterrupt:
             _finalize_interrupted_pending(
@@ -809,6 +823,8 @@ class ToolExecutor:
                 content="",
                 error_message=safe_error_message,
             )
+            if verification_evidence is not None:
+                metadata["verification_evidence"] = verification_evidence
             return ToolExecutionResult(
                 content=f"error: tool {name} failed: {safe_error_message}",
                 metadata=metadata,

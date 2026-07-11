@@ -723,8 +723,10 @@ class Pico:
 
     def record_verification_evidence(
         self,
-        command,
+        argv,
         risk_class,
+        runner_executed,
+        execution_mode,
         exit_code,
         stdout,
         stderr,
@@ -733,25 +735,33 @@ class Pico:
     ):
         """在指定 checkpoint 上附加一条 Verification Evidence。
 
-        - 如果 checkpoint_id 为空，就挂在当前 turn 的 recovery checkpoint 上；
+        - 只接受当前 turn 已创建且显式传入的 recovery checkpoint id；
         - 记录同时写入 checkpoint record，并在 trace 里补一条 verification_recorded 事件。
         """
+        current_id = str(
+            getattr(self.current_task_state, "recovery_checkpoint_id", "")
+            or ""
+        )
         target_id = str(checkpoint_id or "")
-        if not target_id and self.current_task_state is not None:
-            target_id = self.current_task_state.recovery_checkpoint_id
+        if not current_id or not target_id or target_id != current_id:
+            return None
         record = new_verification_record(
-            command=command,
+            argv=argv,
             risk_class=risk_class,
+            runner_executed=runner_executed,
+            execution_mode=execution_mode,
             exit_code=exit_code,
             stdout=stdout,
             stderr=stderr,
             affected_checkpoint_id=target_id,
             trace_event_id=trace_event_id,
+            redact_text=self.redact_text,
         )
-        if target_id:
-            checkpoint = self.checkpoint_store.load_checkpoint_record(target_id)
-            checkpoint.setdefault("verification_evidence", []).append(record)
-            self.checkpoint_store.write_checkpoint_record(checkpoint)
+        if record is None:
+            return None
+        checkpoint = self.checkpoint_store.load_checkpoint_record(target_id)
+        checkpoint.setdefault("verification_evidence", []).append(record)
+        self.checkpoint_store.write_checkpoint_record(checkpoint)
         if self.current_task_state is not None:
             self.emit_trace(
                 self.current_task_state,

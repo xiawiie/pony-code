@@ -26,7 +26,6 @@ from .task_state import (
     STATUS_RUNNING,
     TaskState,
 )
-from .verification import is_verification_command, parse_run_shell_result
 from .workspace import clip, now
 from .tool_executor import (
     ToolExecutionResult,
@@ -577,6 +576,12 @@ class AgentLoop:
                         agent._last_tool_result_metadata = dict(tool_result.metadata)
                     result = tool_result.content
                     metadata = dict(tool_result.metadata or {})
+                    verification_evidence = _verification_evidence_for_tool(
+                        name,
+                        metadata,
+                    )
+                    if verification_evidence is not None:
+                        run_verification_evidence.append(verification_evidence)
                     tool_change_id = str(metadata.get("tool_change_id", "") or "")
                     effect_class = str(metadata["effect_class"])
                     if tool_change_id and effect_class == "workspace_write":
@@ -653,14 +658,6 @@ class AgentLoop:
                         user_message,
                         trigger="tool_executed",
                     )
-                    verification_evidence = _verification_evidence_for_tool(
-                        name,
-                        args,
-                        result,
-                        metadata,
-                    )
-                    if verification_evidence is not None:
-                        run_verification_evidence.append(verification_evidence)
                     continue
 
                 if isinstance(action, RetryAction):
@@ -971,17 +968,10 @@ def _record_pending_verification_evidence(agent, recovery_checkpoint, run_verifi
         run_verification_evidence.clear()
 
 
-def _verification_evidence_for_tool(name, args, result, metadata):
-    if name != "run_shell" or metadata.get("tool_status") == "rejected":
+def _verification_evidence_for_tool(name, metadata):
+    if name != "run_shell" or not isinstance(metadata, dict):
         return None
-    command = str(args.get("command", "")).strip()
-    if not is_verification_command(command):
+    evidence = metadata.get("verification_evidence")
+    if not isinstance(evidence, dict):
         return None
-    parsed = parse_run_shell_result(result)
-    return {
-        "command": command,
-        "risk_class": metadata.get("command_risk_class", ""),
-        "exit_code": parsed["exit_code"],
-        "stdout": parsed["stdout"],
-        "stderr": parsed["stderr"],
-    }
+    return deepcopy(evidence)

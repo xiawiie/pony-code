@@ -1,13 +1,8 @@
-"""在 checkpoint 上挂命令级别的验证证据。
+"""Admit verification evidence from completed, exact argv executions."""
 
-一次 `python -m pytest -q` 的成功或失败，是判断一个 turn 是否值得保留的关键
-证据。这里把命令、退出码、stdout/stderr 的尾部（避免过大）打包成一条
-Verification Record，方便 checkpoint 与 trace 双向引用。
-"""
-
-from pathlib import Path
 import shlex
 
+from pico import security as securitylib
 from pico.recovery_models import (
     VERIFICATION_RECORD_SCHEMA_VERSION,
     new_id,
@@ -16,19 +11,27 @@ from pico.recovery_models import (
 
 
 _MAX_TAIL_CHARS = 1000
-_VERIFICATION_COMMAND_MARKERS = (
-    "pytest",
-    "ruff",
-    "mypy",
-    "pyright",
-    "npm test",
-    "pnpm test",
-    "yarn test",
-    "cargo test",
-    "go test",
+_MAX_ARGV_TOKENS = 128
+_VERIFICATION_PREFIXES = (
+    ("uv", "run", "python3", "-m", "pytest"),
+    ("uv", "run", "python", "-m", "pytest"),
+    ("python3", "-m", "ruff", "check"),
+    ("python", "-m", "ruff", "check"),
+    ("uv", "run", "ruff", "check"),
+    ("python3", "-m", "pytest"),
+    ("python", "-m", "pytest"),
+    ("uv", "run", "pytest"),
+    ("ruff", "check"),
+    ("npm", "test"),
+    ("pnpm", "test"),
+    ("yarn", "test"),
+    ("cargo", "test"),
+    ("go", "test"),
+    ("pytest",),
+    ("mypy",),
+    ("pyright",),
 )
-_NON_VERIFICATION_HEADS = {"rg", "grep", "find", "cat", "echo", "printf", "sed", "awk"}
-_SINGLE_TOOL_PREDECESSORS = {"run", "-m", "exec"}
+_SHELL_TOKEN_CHARS = frozenset("\0\r\n|&;<>()`")
 
 
 def _tail(text):
@@ -40,77 +43,133 @@ def _tail(text):
     return text[-_MAX_TAIL_CHARS:]
 
 
-def is_verification_command(command):
+def _sensitive_operand(token):
+    candidates = [token]
+    if ":" in token:
+        candidates.extend(part for part in token.split(":") if part)
+    if token.startswith("-") and len(token) > 2:
+        candidates.append(token[2:])
+    if token.startswith("-") and "=" in token:
+        candidates.append(token.split("=", 1)[1])
+    dot_index = token.find(".", 2)
+    if token.startswith("-") and dot_index >= 0:
+        candidates.append(token[dot_index:])
+    return any(securitylib.is_sensitive_path(candidate) for candidate in candidates)
+
+
+def is_verification_argv(argv):
+    if isinstance(argv, (str, bytes)):
+        return False
     try:
-        tokens = shlex.split(str(command or ""))
-    except ValueError:
-        tokens = str(command or "").split()
-    normalized = [Path(token).name.lower() for token in tokens]
-    if not normalized:
+        tokens = tuple(argv)
+    except TypeError:
         return False
-    if normalized[0] in _NON_VERIFICATION_HEADS:
+    if not tokens or any(type(token) is not str or not token for token in tokens):
         return False
-    for marker in _VERIFICATION_COMMAND_MARKERS:
-        marker_tokens = marker.split()
-        if len(marker_tokens) == 1:
-            for index, token in enumerate(normalized):
-                if token != marker_tokens[0]:
-                    continue
-                if index == 0 or normalized[index - 1] in _SINGLE_TOOL_PREDECESSORS:
-                    return True
-            continue
-        for index in range(0, len(normalized) - len(marker_tokens) + 1):
-            if normalized[index:index + len(marker_tokens)] == marker_tokens:
-                return True
-    return False
+    if any(any(char in _SHELL_TOKEN_CHARS for char in token) for token in tokens):
+        return False
+    prefix = next(
+        (
+            candidate
+            for candidate in _VERIFICATION_PREFIXES
+            if tokens[:len(candidate)] == candidate
+        ),
+        None,
+    )
+    if prefix is None:
+        return False
+    return not any(_sensitive_operand(token) for token in tokens[len(prefix):])
 
 
-def parse_run_shell_result(text):
-    content = str(text or "")
-    exit_code = 1
-    stdout = ""
-    stderr = ""
-    lines = content.splitlines()
-    if lines and lines[0].startswith("exit_code:"):
-        try:
-            exit_code = int(lines[0].split(":", 1)[1].strip())
-        except ValueError:
-            exit_code = 1
-    stdout_marker = "\nstdout:\n"
-    stderr_marker = "\nstderr:\n"
-    if stdout_marker in content:
-        after_stdout = content.split(stdout_marker, 1)[1]
-        if stderr_marker in after_stdout:
-            stdout, stderr = after_stdout.split(stderr_marker, 1)
-        else:
-            stdout = after_stdout
+def _redacted(redact_text, value):
+    text = str(value)
+    return str(redact_text(text)) if callable(redact_text) else text
+
+
+def _head(text):
+    return str(text)[:_MAX_TAIL_CHARS]
+
+
+def verification_evidence_for_execution(
+    *,
+    argv,
+    risk_class,
+    runner_executed,
+    execution_mode,
+    exit_code,
+    stdout,
+    stderr,
+    redact_text=None,
+):
+    if (
+        runner_executed is not True
+        or execution_mode != "argv"
+        or type(exit_code) is not int
+        or type(risk_class) is not str
+        or type(stdout) is not str
+        or type(stderr) is not str
+        or not is_verification_argv(argv)
+    ):
+        return None
+    tokens = tuple(argv)
+    if len(tokens) > _MAX_ARGV_TOKENS or any(
+        len(token) > _MAX_TAIL_CHARS for token in tokens
+    ) or len(shlex.join(tokens)) > _MAX_TAIL_CHARS:
+        return None
+    safe_tokens = tuple(_redacted(redact_text, token) for token in tokens)
+    if safe_tokens != tokens:
+        return None
     return {
+        "argv": list(safe_tokens),
+        "runner_executed": True,
+        "execution_mode": "argv",
         "exit_code": exit_code,
-        "stdout": "" if stdout.strip() == "(empty)" else stdout.strip(),
-        "stderr": "" if stderr.strip() == "(empty)" else stderr.strip(),
+        "risk_class": _head(_redacted(redact_text, risk_class)),
+        "stdout": _tail(_redacted(redact_text, stdout)),
+        "stderr": _tail(_redacted(redact_text, stderr)),
     }
 
 
 def new_verification_record(
-    command,
+    *,
+    argv,
     risk_class,
+    runner_executed,
+    execution_mode,
     exit_code,
     stdout,
     stderr,
     affected_checkpoint_id="",
     trace_event_id="",
+    redact_text=None,
 ):
-    status = "passed" if int(exit_code) == 0 else "failed"
+    evidence = verification_evidence_for_execution(
+        argv=argv,
+        risk_class=risk_class,
+        runner_executed=runner_executed,
+        execution_mode=execution_mode,
+        exit_code=exit_code,
+        stdout=stdout,
+        stderr=stderr,
+        redact_text=redact_text,
+    )
+    if evidence is None:
+        return None
     return {
         "schema_version": VERIFICATION_RECORD_SCHEMA_VERSION,
         "verification_id": new_id("verify"),
         "created_at": utc_now(),
-        "command": str(command),
-        "risk_class": str(risk_class),
-        "exit_code": int(exit_code),
-        "status": status,
-        "stdout_tail": _tail(stdout),
-        "stderr_tail": _tail(stderr),
-        "affected_checkpoint_id": str(affected_checkpoint_id or ""),
-        "trace_event_id": str(trace_event_id or ""),
+        "argv": list(evidence["argv"]),
+        "runner_executed": True,
+        "execution_mode": "argv",
+        "command": _head(shlex.join(evidence["argv"])),
+        "risk_class": evidence["risk_class"],
+        "exit_code": evidence["exit_code"],
+        "status": "passed" if evidence["exit_code"] == 0 else "failed",
+        "stdout_tail": evidence["stdout"],
+        "stderr_tail": evidence["stderr"],
+        "affected_checkpoint_id": _head(
+            _redacted(redact_text, affected_checkpoint_id or "")
+        ),
+        "trace_event_id": _head(_redacted(redact_text, trace_event_id or "")),
     }

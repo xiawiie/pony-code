@@ -8,6 +8,7 @@ from pathlib import Path
 from urllib import error, request
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
+from . import security as securitylib
 from .cli_errors import CLI_EXIT_CONFIG, CLI_EXIT_USAGE, CliError
 from .cli_output import build_inspection_redactor, print_result
 from .config import (
@@ -78,12 +79,23 @@ def collect_config(cwd, args=None):
 
 
 def collect_doctor(cwd, args=None, offline=False):
-    workspace = WorkspaceContext.build(cwd)
+    try:
+        workspace = WorkspaceContext.build(cwd)
+    except RuntimeError:
+        workspace = WorkspaceContext.build(cwd, executables={})
     root = Path(workspace.repo_root)
     pico_root = root / ".pico"
-    project_env = _read_project_env(workspace.repo_root)
-    config = collect_config(cwd, args)
-    config["base_url"] = _resolve_base_url(args, config["provider"]["value"], project_env)
+    try:
+        project_env = _read_project_env(workspace.repo_root)
+    except (OSError, RuntimeError, ValueError):
+        project_env = {}
+    provider = _resolve_provider(args, project_env)
+    config = {
+        "provider": provider,
+        "model": _resolve_model(args, provider["value"], project_env),
+        "api_key": _resolve_api_key(provider["value"], project_env),
+        "base_url": _resolve_base_url(args, provider["value"], project_env),
+    }
     diagnostic_base_url = dict(config["base_url"])
     diagnostic_base_url["value"] = _redact_url_for_diagnostics(diagnostic_base_url["value"])
     provider_connectivity = (
@@ -92,6 +104,11 @@ def collect_doctor(cwd, args=None, offline=False):
         else check_provider_connectivity(config)
     )
     checkpoints_root = pico_root / "checkpoints"
+    security = _collect_security_status(
+        project_env_path(root),
+        pico_root,
+        workspace.trusted_executables,
+    )
     doc_hints = []
     if (root / "CLAUDE.md").exists() and not (root / "AGENTS.md").exists():
         doc_hints.append(
@@ -122,6 +139,7 @@ def collect_doctor(cwd, args=None, offline=False):
             "checkpoints": _storage_status(checkpoints_root / "records"),
         },
         "recovery_store": _storage_status(checkpoints_root),
+        "security": security,
         "project_docs": {"hints": doc_hints},
     }
 
@@ -146,11 +164,18 @@ def handle_doctor(tokens, cwd, args):
             exit_code=CLI_EXIT_USAGE,
         )
     data = collect_doctor(cwd, args, offline=offline)
-    redactor = build_inspection_redactor(data["workspace"]["repo_root"], args)
+    try:
+        redactor = build_inspection_redactor(
+            data["workspace"]["repo_root"],
+            args,
+        )
+    except (OSError, RuntimeError, ValueError):
+        redactor = securitylib.redact_artifact
     data["workspace"] = redactor(data["workspace"])
     data["config"] = _redact_mapping_values(data["config"], redactor)
     data["credentials"] = _redact_mapping_values(data["credentials"], redactor)
     data["provider_connectivity"] = redactor(data["provider_connectivity"])
+    data["security"] = redactor(data["security"])
     data["project_docs"] = redactor(data["project_docs"])
     return print_result("doctor", data, args, _render_doctor)
 
@@ -383,6 +408,88 @@ def _storage_status(path):
     return "ok" if _storage_exists(path) else "missing"
 
 
+def _collect_security_status(env_path, pico_root, trusted_executables):
+    project_env = _project_env_security_status(env_path)
+    private_storage = _private_storage_security_status(pico_root)
+    try:
+        trusted_names = set(dict(trusted_executables or {}))
+    except (RuntimeError, TypeError, ValueError):
+        trusted_names = set()
+    missing = sorted(
+        name
+        for name in ("git", "rg")
+        if name not in trusted_names
+    )
+    executables = {
+        "status": "degraded" if missing else "ok",
+        "missing": missing,
+    }
+    needs_review = (
+        project_env["status"] == "review_required"
+        or private_storage["status"] == "review_required"
+        or executables["status"] == "degraded"
+    )
+    return {
+        "status": "review_required" if needs_review else "ok",
+        "project_env": project_env,
+        "private_storage": private_storage,
+        "trusted_executables": executables,
+    }
+
+
+def _project_env_security_status(path):
+    try:
+        mode = Path(path).lstat().st_mode
+    except FileNotFoundError:
+        return {"status": "missing", "mode": ""}
+    except OSError:
+        return {"status": "review_required", "mode": ""}
+    if not stat.S_ISREG(mode):
+        return {"status": "review_required", "mode": ""}
+    permission_mode = f"{stat.S_IMODE(mode):04o}" if os.name == "posix" else ""
+    status = (
+        "review_required"
+        if permission_mode and permission_mode != "0600"
+        else "ok"
+    )
+    return {"status": status, "mode": permission_mode}
+
+
+def _private_storage_security_status(root):
+    root = Path(root)
+    try:
+        root_mode = root.lstat().st_mode
+    except FileNotFoundError:
+        return {"status": "missing"}
+    except OSError:
+        return {"status": "review_required"}
+    if not stat.S_ISDIR(root_mode) or (
+        os.name == "posix" and stat.S_IMODE(root_mode) != 0o700
+    ):
+        return {"status": "review_required"}
+
+    errors = []
+    try:
+        for directory, dirnames, filenames in os.walk(
+            root,
+            followlinks=False,
+            onerror=errors.append,
+        ):
+            for name, expected_type, expected_mode in (
+                *((name, stat.S_ISDIR, 0o700) for name in dirnames),
+                *((name, stat.S_ISREG, 0o600) for name in filenames),
+            ):
+                mode = (Path(directory) / name).lstat().st_mode
+                if not expected_type(mode) or (
+                    os.name == "posix"
+                    and stat.S_IMODE(mode) != expected_mode
+                ):
+                    return {"status": "review_required"}
+    except OSError:
+        return {"status": "review_required"}
+    return {"status": "review_required" if errors else "ok"}
+
+
 def _redact_mapping_values(data, redactor):
     return {key: redactor(value) for key, value in data.items()}
 
@@ -495,6 +602,8 @@ def _render_doctor(data):
     credentials = data["credentials"]
     connectivity = data["provider_connectivity"]
     storage = data["storage"]
+    security = data["security"]
+    security_executables = security["trusted_executables"]
     lines = [
         "Pico doctor — CLI health check",
         "",
@@ -516,6 +625,23 @@ def _render_doctor(data):
         _line("runs", storage["runs"]),
         _line("checkpoints", storage["checkpoints"]),
         _line("recovery", data["recovery_store"]),
+        "",
+        "Security",
+        _line("status", security["status"]),
+        _line(
+            "project env",
+            " ".join(
+                item
+                for item in (
+                    security["project_env"]["status"],
+                    security["project_env"]["mode"],
+                )
+                if item
+            ),
+        ),
+        _line("private store", security["private_storage"]["status"]),
+        _line("executables", security_executables["status"]),
+        _line("missing", ", ".join(security_executables["missing"]) or "-"),
         "",
         "Provider connectivity",
         _line("status", connectivity.get("status", "-")),

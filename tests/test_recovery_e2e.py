@@ -1,5 +1,6 @@
 import json
 import sys
+from unittest.mock import Mock
 
 from pico import FakeModelClient, Pico, SessionStore, WorkspaceContext
 
@@ -136,8 +137,10 @@ def test_verification_evidence_can_attach_to_checkpoint(tmp_path):
     checkpoint_id = agent.current_task_state.recovery_checkpoint_id
 
     record = agent.record_verification_evidence(
-        command="python -m pytest -q",
+        argv=("python", "-m", "pytest", "-q"),
         risk_class="workspace_write",
+        runner_executed=True,
+        execution_mode="argv",
         exit_code=0,
         stdout="passed",
         stderr="",
@@ -154,6 +157,87 @@ def test_verification_evidence_can_attach_to_checkpoint(tmp_path):
         event.get("event") == "verification_recorded" and event.get("verification_id") == record["verification_id"]
         for event in trace_events
     )
+
+
+def test_direct_verification_recording_rejects_unexecuted_or_unstructured_facts(
+    tmp_path,
+):
+    agent = build_agent(
+        tmp_path,
+        [
+            '<tool>{"name":"write_file","args":{"path":"note.txt","content":"after\\n"}}</tool>',
+            "<final>done</final>",
+        ],
+    )
+    agent.ask("finish")
+    checkpoint_id = agent.current_task_state.recovery_checkpoint_id
+
+    for overrides in (
+        {"runner_executed": False},
+        {"execution_mode": "shell"},
+        {"exit_code": None},
+        {"exit_code": False},
+        {"exit_code": "0"},
+    ):
+        facts = {
+            "argv": ("pytest", "-q"),
+            "risk_class": "external_effect",
+            "runner_executed": True,
+            "execution_mode": "argv",
+            "exit_code": 0,
+            "stdout": "passed",
+            "stderr": "",
+            "checkpoint_id": checkpoint_id,
+            **overrides,
+        }
+        assert agent.record_verification_evidence(**facts) is None
+
+    checkpoint = agent.checkpoint_store.load_checkpoint_record(checkpoint_id)
+    assert checkpoint["verification_evidence"] == []
+
+
+def test_direct_verification_recording_rejects_non_current_checkpoint_targets(
+    tmp_path,
+    monkeypatch,
+):
+    agent = build_agent(
+        tmp_path,
+        [
+            '<tool>{"name":"write_file","args":{"path":"note.txt","content":"after\\n"}}</tool>',
+            "<final>done</final>",
+        ],
+    )
+    agent.ask("finish")
+    current_id = agent.current_task_state.recovery_checkpoint_id
+    load_record = Mock(return_value={"verification_evidence": []})
+    write_record = Mock()
+    monkeypatch.setattr(agent.checkpoint_store, "load_checkpoint_record", load_record)
+    monkeypatch.setattr(agent.checkpoint_store, "write_checkpoint_record", write_record)
+
+    facts = {
+        "argv": ("pytest", "-q"),
+        "risk_class": "external_effect",
+        "runner_executed": True,
+        "execution_mode": "argv",
+        "exit_code": 0,
+        "stdout": "passed",
+        "stderr": "",
+    }
+    assert agent.record_verification_evidence(
+        **facts,
+        checkpoint_id="",
+    ) is None
+    assert agent.record_verification_evidence(
+        **facts,
+        checkpoint_id="ckpt_foreign",
+    ) is None
+    agent.current_task_state = None
+    assert agent.record_verification_evidence(
+        **facts,
+        checkpoint_id=current_id,
+    ) is None
+    load_record.assert_not_called()
+    write_record.assert_not_called()
 
 
 def test_run_shell_verification_command_attaches_evidence_to_checkpoint(tmp_path):

@@ -1,9 +1,11 @@
 import json
 import os
+from unittest.mock import Mock
 from urllib import error
 
+import pico.cli_diagnostics as cli_diagnostics_module
 from pico.cli import main
-from pico.cli_diagnostics import check_provider_connectivity
+from pico.cli_diagnostics import check_provider_connectivity, collect_doctor
 
 
 def _clear_provider_env(monkeypatch):
@@ -159,6 +161,128 @@ def test_doctor_offline_skips_connectivity(tmp_path, monkeypatch, capsys):
     assert payload["data"]["provider_connectivity"]["status"] == "skipped"
 
 
+def test_doctor_security_metadata_has_only_safe_status_modes_and_missing_names(
+    tmp_path,
+    monkeypatch,
+):
+    secret = "ghp_" + "D" * 32
+    monkeypatch.setenv("PICO_TEST_SECRET", secret)
+    (tmp_path / ".env").write_text(
+        f"PICO_TEST_SECRET={secret}\n",
+        encoding="utf-8",
+    )
+    (tmp_path / ".pico").mkdir()
+
+    security = collect_doctor(tmp_path, offline=True)["security"]
+
+    assert set(security) == {
+        "status",
+        "project_env",
+        "private_storage",
+        "trusted_executables",
+    }
+    assert set(security["project_env"]) == {"status", "mode"}
+    assert set(security["private_storage"]) == {"status"}
+    assert set(security["trusted_executables"]) == {"status", "missing"}
+    assert all(
+        name and "/" not in name and "\\" not in name
+        for name in security["trusted_executables"]["missing"]
+    )
+    assert secret not in json.dumps(security)
+    assert str(tmp_path) not in json.dumps(security)
+    if os.name == "posix":
+        assert security["project_env"] == {
+            "status": "ok",
+            "mode": "0600",
+        }
+        assert security["private_storage"] == {"status": "review_required"}
+        assert security["status"] == "review_required"
+
+
+def test_doctor_security_folds_unsafe_storage_and_executable_paths_to_status(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    secret = "ghp_" + "S" * 32
+    monkeypatch.setenv("PICO_TEST_SECRET", secret)
+    outside = tmp_path / ("outside-" + secret)
+    outside.write_text(secret, encoding="utf-8")
+    (tmp_path / ".env").symlink_to(outside)
+    private_root = tmp_path / ".pico"
+    private_root.mkdir(mode=0o700)
+    (private_root / "linked").symlink_to(outside)
+
+    original_build = cli_diagnostics_module.WorkspaceContext.build
+
+    def build_workspace(cwd):
+        workspace = original_build(cwd)
+        workspace.trusted_executables = {
+            "git": f"/{secret}/git",
+            "untrusted": f"/{secret}/evil",
+        }
+        return workspace
+
+    monkeypatch.setattr(
+        "pico.cli_diagnostics.WorkspaceContext.build",
+        build_workspace,
+    )
+
+    security = collect_doctor(tmp_path, offline=True)["security"]
+
+    assert security == {
+        "status": "review_required",
+        "project_env": {"status": "review_required", "mode": ""},
+        "private_storage": {"status": "review_required"},
+        "trusted_executables": {"status": "degraded", "missing": ["rg"]},
+    }
+    assert secret not in json.dumps(security)
+
+    assert main([
+        "--cwd",
+        str(tmp_path),
+        "--format",
+        "json",
+        "doctor",
+        "--offline",
+    ]) == 0
+    output = capsys.readouterr().out
+    assert secret not in output
+
+
+def test_doctor_security_folds_executable_discovery_error_without_leaking(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    secret = "ghp_" + "X" * 32
+    monkeypatch.setenv("PICO_TEST_SECRET", secret)
+    monkeypatch.setattr(
+        "pico.workspace.build_trusted_executables",
+        Mock(side_effect=RuntimeError("discovery failed " + secret)),
+    )
+
+    security = collect_doctor(tmp_path, offline=True)["security"]
+
+    assert security["trusted_executables"] == {
+        "status": "degraded",
+        "missing": ["git", "rg"],
+    }
+    assert secret not in json.dumps(security)
+
+    for output_format in ("json", "text"):
+        assert main([
+            "--cwd",
+            str(tmp_path),
+            "--format",
+            output_format,
+            "doctor",
+            "--offline",
+        ]) == 0
+        captured = capsys.readouterr()
+        assert secret not in captured.out + captured.err
+
+
 def test_doctor_text_uses_grouped_cli_output(tmp_path, monkeypatch, capsys):
     code = main(["--cwd", str(tmp_path), "doctor", "--offline"])
 
@@ -170,6 +294,7 @@ def test_doctor_text_uses_grouped_cli_output(tmp_path, monkeypatch, capsys):
     assert "Credentials" in out
     assert "Storage" in out
     assert "Provider connectivity" in out
+    assert "Security" in out
     assert "skipped" in out
     assert not out.lstrip().startswith("{")
 
