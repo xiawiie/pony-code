@@ -54,10 +54,10 @@ uv run python benchmarks/memory_quality/run_benchmark.py --mode fake --format te
 性能 harness 分项运行，输出只保存在终端或临时目录：
 
 ```bash
-uv run python benchmarks/perf/bench_request_build.py
-uv run python benchmarks/perf/bench_retrieval.py
-uv run python benchmarks/perf/bench_recall.py
-uv run python benchmarks/perf/bench_security_recovery.py
+uv run python -m benchmarks.perf.bench_request_build
+uv run python -m benchmarks.perf.bench_retrieval
+uv run python -m benchmarks.perf.bench_recall
+uv run python -m benchmarks.perf.bench_security_recovery
 ```
 
 ## 真实 Provider 授权边界
