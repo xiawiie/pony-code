@@ -1062,8 +1062,8 @@ def test_hardened_git_rejects_hardlinked_gitfile_metadata_before_git(
 
 
 @pytest.mark.skipif(
-    not hasattr(os, "mkfifo") or "fork" not in multiprocessing.get_all_start_methods(),
-    reason="real FIFO probe requires POSIX fork support",
+    not hasattr(os, "mkfifo"),
+    reason="real FIFO probe requires POSIX FIFO support",
 )
 @pytest.mark.parametrize("metadata", ["marker", "linked-backlink"])
 def test_hardened_git_rejects_fifo_metadata_without_blocking(metadata, tmp_path):
@@ -1078,7 +1078,7 @@ def test_hardened_git_rejects_fifo_metadata_without_blocking(metadata, tmp_path)
         backlink.unlink()
         os.mkfifo(backlink)
 
-    context = multiprocessing.get_context("fork")
+    context = multiprocessing.get_context("spawn")
     receiver, sender = context.Pipe(duplex=False)
     process = context.Process(
         target=_fifo_gitfile_probe,
@@ -1086,10 +1086,10 @@ def test_hardened_git_rejects_fifo_metadata_without_blocking(metadata, tmp_path)
     )
     process.start()
     sender.close()
-    process.join(timeout=2)
+    process.join(timeout=5)
     if process.is_alive():
         process.terminate()
-        process.join()
+        process.join(timeout=5)
         pytest.fail(f"{metadata} FIFO blocked metadata validation")
 
     assert process.exitcode == 0
