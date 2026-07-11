@@ -43,7 +43,8 @@ def test_validate_benchmark_rejects_unknown_allowed_tool(tmp_path):
     (fixture / "README.md").write_text("demo\n", encoding="utf-8")
 
     benchmark = {
-        "schema_version": 1,
+        "record_type": "fixed_benchmark_definition",
+        "format_version": 1,
         "tasks": [
             {
                 "id": "bad_allowed_tool",
@@ -72,7 +73,8 @@ def test_benchmark_evaluator_applies_allowed_tools_to_runtime_prompt(tmp_path):
     benchmark_path.write_text(
         json.dumps(
             {
-                "schema_version": 1,
+                "record_type": "fixed_benchmark_definition",
+                "format_version": 1,
                 "tasks": [
                     {
                         "id": "prompt_allowlist",
