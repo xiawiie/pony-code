@@ -33,6 +33,7 @@ _VERIFICATION_PREFIXES = (
     ("pyright",),
 )
 _SHELL_TOKEN_CHARS = frozenset("\0\r\n|&;<>()`")
+_REJECTED_UNICODE_CATEGORIES = frozenset(("Cc", "Cf", "Cs"))
 _OPERAND_DELIMITERS = ("=", ":", ",")
 _EXECUTION_CONTROL_KEY_MARKERS = (
     "exec",
@@ -47,6 +48,7 @@ _EXECUTION_CONTROL_KEY_MARKERS = (
     "nodeoptions",
 )
 _CONFIG_VALUE_OPTIONS = frozenset(("o", "overrideini", "config"))
+_REJECTED_CONFIG_KEYS = frozenset(("addopts",))
 
 
 def _tail(text):
@@ -90,19 +92,29 @@ def _sensitive_operand(token):
     )
 
 
-def _execution_control_key(value):
-    compact = "".join(
+def _compact_key(value):
+    return "".join(
         char
         for char in _strip_operand_syntax(value).casefold()
         if char.isalnum()
     )
-    return any(marker in compact for marker in _EXECUTION_CONTROL_KEY_MARKERS)
 
 
-def _option_parts(token):
+def _execution_control_key(value):
+    return any(
+        marker in _compact_key(value)
+        for marker in _EXECUTION_CONTROL_KEY_MARKERS
+    )
+
+
+def _option_parts(token, *, pytest_short_options=False):
     candidate = _strip_operand_syntax(token)
     if not candidate.startswith("-"):
         return "", None
+    if pytest_short_options and not candidate.startswith("--"):
+        body = candidate[1:]
+        inline_value = body[1:].lstrip("=:")
+        return body[:1], inline_value or None
     body = candidate.lstrip("-")
     separator_indexes = [
         body.index(separator)
@@ -125,23 +137,32 @@ def _config_key(value):
     return candidate if not indexes else candidate[:min(indexes)]
 
 
-def _has_execution_control_tail(tokens):
+def _unsafe_config_key(value):
+    key = _config_key(value)
+    return (
+        _compact_key(key) in _REJECTED_CONFIG_KEYS
+        or _execution_control_key(key)
+    )
+
+
+def _has_execution_control_tail(tokens, *, pytest_short_options=False):
     config_value_expected = False
     for token in tokens:
         if config_value_expected:
-            if _execution_control_key(_config_key(token)):
+            if _unsafe_config_key(token):
                 return True
             config_value_expected = False
-        option_key, inline_value = _option_parts(token)
+        option_key, inline_value = _option_parts(
+            token,
+            pytest_short_options=pytest_short_options,
+        )
         if option_key and _execution_control_key(option_key):
             return True
-        compact_option = "".join(
-            char for char in option_key.casefold() if char.isalnum()
-        )
+        compact_option = _compact_key(option_key)
         if compact_option in _CONFIG_VALUE_OPTIONS:
             if inline_value is None:
                 config_value_expected = True
-            elif _execution_control_key(_config_key(inline_value)):
+            elif _unsafe_config_key(inline_value):
                 return True
     return False
 
@@ -158,7 +179,7 @@ def is_verification_argv(argv):
     if any(
         any(
             char in _SHELL_TOKEN_CHARS
-            or unicodedata.category(char).startswith("C")
+            or unicodedata.category(char) in _REJECTED_UNICODE_CATEGORIES
             for char in token
         )
         for token in tokens
@@ -175,7 +196,10 @@ def is_verification_argv(argv):
     if prefix is None:
         return False
     tail = tokens[len(prefix):]
-    return not _has_execution_control_tail(tail) and not any(
+    return not _has_execution_control_tail(
+        tail,
+        pytest_short_options=prefix[-1] == "pytest",
+    ) and not any(
         _sensitive_operand(token) for token in tail
     )
 

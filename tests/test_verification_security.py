@@ -95,10 +95,37 @@ def test_verification_argv_rejects_execution_control_config_keys(key):
     )
 
 
+@pytest.mark.parametrize(
+    "argv",
+    (
+        ("pytest", "-o", "addopts=--override-ini=pythonpath=/tmp"),
+        ("pytest", "--override-ini", "addopts=-o pythonpath=/tmp"),
+        ("pytest", "-o", "addopts=--python-executable=/bin/true"),
+        ("pytest", "--override-ini", "addopts=plugin_runner=/bin/true"),
+        ("pytest", "-oaddopts=--script-shell=/bin/true"),
+        ("pytest", "--override-ini=addopts=-q"),
+    ),
+)
+def test_verification_argv_rejects_addopts_config_overrides(argv):
+    assert not verification.is_verification_argv(argv)
+
+
 def test_verification_argv_keeps_ordinary_relative_test_node_paths():
     assert verification.is_verification_argv(
         ("pytest", "tests/test_shell.py::test_exec")
     )
+
+
+@pytest.mark.parametrize(
+    "argv",
+    (
+        ("pytest", "-ktest_exec"),
+        ("pytest", "-k", "test_exec"),
+        ("pytest", "tests/test_\ue000.py"),
+    ),
+)
+def test_verification_argv_accepts_pytest_short_values_and_private_use_paths(argv):
+    assert verification.is_verification_argv(argv)
 
 
 @pytest.mark.parametrize("prefix", ACCEPTED_PREFIXES)
