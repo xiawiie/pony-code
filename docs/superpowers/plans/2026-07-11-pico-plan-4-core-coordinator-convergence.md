@@ -201,6 +201,11 @@ preflight
 - mutation lock enter/exit、runner/observer/verification/update-memory fault 的锁释放与 primary ordering；
 - malformed shell result 继续 fail closed，runner 产生副作用时仍保留 recovery evidence。
 
+其中现有行为冻结必须在 Task 1 提交前全绿。已知规范缺口对应的 post-pending
+`SystemExit`/custom `BaseException`、observer/verification/memory-update `BaseException` 与
+mutation-lock exit primary-order 测试，在 Task 1 先确认会精确失败，但不提交失败中间态；它们在
+Task 2 与生产修正同一原子提交重新加入并转绿。
+
 Allowlist：
 
 - `tests/test_tool_executor.py`
