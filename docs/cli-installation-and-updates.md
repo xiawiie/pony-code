@@ -1,224 +1,84 @@
-# Pico CLI installation and update guide
+# Pico CLI 安装与更新
 
-这份文档说明 `pico-cli` 应该如何安装、激活、直接使用，以及项目后续迭代时哪些改动会自动生效、哪些改动需要重新同步环境。
+本文只说明本地安装、环境解析、更新和 CLI 自救。命令语义与模块关系见[架构](architecture.md)。
 
-## 命令名选择
+## 在源码仓库中使用
 
-推荐使用：
-
-```bash
-pico-cli
-```
-
-不推荐直接使用：
+Pico 需要 Python 3.11+。开发环境使用仓库已跟踪的 `uv.lock`：
 
 ```bash
-pico
-```
-
-原因是 macOS 自带 `/usr/bin/pico` 编辑器。直接在 shell 里输入 `pico doctor` 时，可能会启动系统编辑器，而不是这个项目的 CLI。
-
-可以用下面的命令确认当前 shell 会执行哪个程序：
-
-```bash
-type -a pico
-type -a pico-cli
-```
-
-## 开发时使用项目虚拟环境
-
-在开发这个仓库时，推荐使用项目自己的 `.venv`：
-
-```bash
-cd /Users/wei/Desktop/pico
-uv sync
+cd /path/to/pico
+uv sync --frozen --dev
 source .venv/bin/activate
+command -v pico
+pico --help
 ```
 
-激活后验证：
+`command -v pico` 应输出当前 `.venv/bin/pico`。macOS 可能已有系统同名程序，所以环境是否激活必须
+以这条命令的结果为准。不能激活环境时使用：
 
 ```bash
-which pico-cli
-pico-cli --help
+uv run pico doctor --offline
+uv run pico run "inspect the repository"
 ```
 
-正常情况下，`which pico-cli` 应该指向：
+从构建产物做隔离安装时：
 
 ```bash
-/Users/wei/Desktop/pico/.venv/bin/pico-cli
+uv build --clear
+python3 -m venv /tmp/pico-venv
+source /tmp/pico-venv/bin/activate
+python -m pip install --no-deps dist/pico-0.1.0-py3-none-any.whl
+command -v pico
+pico doctor --offline
 ```
 
-之后可以直接运行：
+## 项目配置与凭证
+
+Pico 只读取当前 lexical repository root 的 `.env`。推荐先写非敏感配置，再通过 stdin 写 secret：
 
 ```bash
-pico-cli doctor
-pico-cli status
-pico-cli run "inspect the failing tests"
+pico init
+printf '%s' "$PROVIDER_KEY" | pico config set-secret PICO_DEEPSEEK_API_KEY --stdin
+chmod 600 .env
+pico doctor --offline
 ```
 
-退出当前虚拟环境：
+不要把真实 key 写入 shell history、命令参数、文档或测试 fixture。通用 `PICO_API_KEY` 只作为
+DeepSeek、Anthropic-compatible 与 OpenAI-compatible 各自 resolver 的共享 fallback；Provider 不会借用
+另一个 Provider 的专用 key。Ollama 不需要 API key。
+
+配置优先级为显式 CLI 参数、Project Environment、当前进程环境、代码默认值。`pico.toml` 只用
+stdlib TOML parser 在一个 Pico 实例构造时读取一次；malformed 文件整份回退默认值。
+
+## 更新
+
+源码更新后重新同步锁定环境：
 
 ```bash
-deactivate
+git pull --ff-only
+uv lock --check
+uv sync --frozen --dev
+pico doctor --offline
 ```
 
-`source .venv/bin/activate` 只对当前 shell 窗口生效。新开终端后，需要重新激活。
+修改 `pyproject.toml`、切换分支或 console entry 变化后必须重新同步。不要手工修改 `.venv/bin/pico`。
+当前项目没有运行时第三方依赖，但 dev tools 仍由 lock 冻结。
 
-## 不激活环境时临时运行
+## 本地自救
 
-如果只是临时运行一次，或者不想激活虚拟环境，可以在仓库目录里使用：
+如果命令解析错误：
 
 ```bash
-uv run pico-cli doctor
-uv run pico-cli status
-uv run pico-cli run "inspect the failing tests"
+deactivate 2>/dev/null || true
+source /path/to/pico/.venv/bin/activate
+command -v pico
+python -m pico --help
 ```
 
-这会通过当前项目环境运行 `pico-cli`，适合一次性命令和验证。
+如果环境损坏，可删除并重建生成的 `.venv`，然后重新执行 `uv sync --frozen --dev`。这不会删除
+仓库 `.pico/`、`~/.pico/` 或 recovery backup。
 
-## 全局安装为 editable tool
-
-如果希望在任何目录里都能直接输入 `pico-cli`，可以把当前源码目录安装成 uv tool：
-
-```bash
-uv tool install --editable /Users/wei/Desktop/pico --force
-uv tool update-shell
-exec zsh -l
-```
-
-验证：
-
-```bash
-which pico-cli
-pico-cli --help
-```
-
-这种方式会让全局 `pico-cli` 指向 `/Users/wei/Desktop/pico` 这份源码。后续源码改动通常会直接反映到全局命令里。
-
-需要注意：如果你在 `/Users/wei/Desktop/pico` 切换分支、修改未完成代码，或者把项目改坏，全局 `pico-cli` 也会受影响。
-
-## 后续迭代时如何更新
-
-### 源码改动
-
-普通源码改动通常不需要重新安装：
-
-```bash
-pico-cli --help
-```
-
-只要当前 shell 已经激活 `.venv`，或者全局工具是用 `uv tool install --editable` 安装的，命令会直接运行当前源码。
-
-### 依赖或入口改动
-
-下面这些情况需要重新同步环境：
-
-- 修改了 `pyproject.toml`
-- 新增、删除或升级依赖
-- 新增或修改 `[project.scripts]` 里的 CLI 入口
-- 切换分支后依赖或入口发生变化
-
-项目虚拟环境使用：
-
-```bash
-uv sync
-source .venv/bin/activate
-```
-
-全局 editable tool 使用：
-
-```bash
-uv tool install --editable /Users/wei/Desktop/pico --force
-```
-
-如果 PATH 没有更新，再运行：
-
-```bash
-uv tool update-shell
-exec zsh -l
-```
-
-## doctor 和 doctor --offline
-
-完整诊断使用：
-
-```bash
-pico-cli doctor
-```
-
-它会检查本地配置、存储、凭证，并尝试进行 provider connectivity 检查。
-
-只做本地诊断使用：
-
-```bash
-pico-cli doctor --offline
-```
-
-`--offline` 不会请求 provider，也不会消耗 API 额度。它适合检查 CLI 输出样式、配置来源、存储路径和本地 readiness。
-
-## 常见问题
-
-### pico-cli not found
-
-说明当前 shell 没有激活项目环境，或者全局 tool 目录不在 PATH 中。
-
-开发仓库时：
-
-```bash
-cd /Users/wei/Desktop/pico
-source .venv/bin/activate
-pico-cli --help
-```
-
-临时运行：
-
-```bash
-cd /Users/wei/Desktop/pico
-uv run pico-cli --help
-```
-
-全局安装：
-
-```bash
-uv tool install --editable /Users/wei/Desktop/pico --force
-uv tool update-shell
-exec zsh -l
-```
-
-### pico 打开了编辑器
-
-说明当前 shell 执行的是系统自带的 `/usr/bin/pico`。使用：
-
-```bash
-pico-cli doctor
-```
-
-不要用：
-
-```bash
-pico doctor
-```
-
-## 推荐工作流
-
-开发项目时：
-
-```bash
-cd /Users/wei/Desktop/pico
-source .venv/bin/activate
-pico-cli status
-```
-
-偶尔运行一次：
-
-```bash
-cd /Users/wei/Desktop/pico
-uv run pico-cli status
-```
-
-长期作为本机工具使用：
-
-```bash
-uv tool install --editable /Users/wei/Desktop/pico --force
-pico-cli status
-```
+如果 `doctor --offline` 报告 `review_required`，先检查 `.env` 权限、trusted executable、private store
+和 pending recovery evidence。不要通过降低权限检查或删除记录来让诊断变绿；处理方法见
+[安全](security.md)与[恢复](recovery.md)。

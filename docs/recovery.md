@@ -1,0 +1,65 @@
+# Pico 恢复模型
+
+Pico 的 recoverable editing 让 agent 产生的变更可检查、可归因和可选择恢复；它不替代 Git，也不承诺
+整机、环境变量或完整对话回滚。
+
+## Records
+
+**Tool Change Record** 在可能修改 workspace 的工具运行前写入 pending，执行后根据真实 effect 终结为
+finalized、error、partial_success 或 interrupted。记录包含 affected paths、file entries、approval、shell
+side effects、verification 和 trace references。
+
+**Checkpoint Record** 表示 turn、restore 或 manual recovery point，关联 tool changes、可恢复 file-state
+blobs、Git review context 与 integrity/review 状态。AgentLoop 还在 Session 内保存 task checkpoint，供 resume
+freshness 使用；它不是独立 Recovery Record。
+
+## 当前格式
+
+三个可独立读取的 family 只接受当前合同：
+
+| family | record type | format version |
+| --- | --- | ---: |
+| Session | `session` | 1 |
+| Checkpoint Record | `checkpoint` | 1 |
+| Tool Change Record | `tool_change` | 1 |
+
+type/version 必须精确、version 必须是整数，required fields 必须完整。reader 拒绝错误类型、未知版本、
+duplicate keys、缺失字段和不安全文件，不做读时转换或磁盘改写。run/report/trace 是当前审计 artifact，
+embedded task checkpoint、verification evidence 与 restore preview 不单独版本化。
+
+## Restore 流程
+
+先检查 pending/review evidence：
+
+```bash
+pico checkpoints pending
+pico checkpoints show <checkpoint-id>
+```
+
+restore preview 是非修改操作：它比较当前文件状态、预期 agent-produced state、blob integrity 和 workspace
+边界，输出可恢复、跳过或冲突项。只有用户明确请求 `--apply` 才修改仓库：
+
+```bash
+pico checkpoints resolve-pending <id>
+pico checkpoints resolve-pending <id> --apply
+```
+
+restore 使用 snapshot，而不是盲目 reverse patch；当前内容与预期不符时进入 Recovery Review。selective
+restore 只应用被选择且完全可恢复的 file entry。restore 后创建新的 Checkpoint Record，保留 provenance，
+不重写旧记录。
+
+## Backups 与故障处理
+
+历史的一次性格式硬切备份保存在 `~/.pico/backups/<repo-hash>/<timestamp>/`，目录与文件保持私有，
+journal 记录 prepared、applying、verified。当前 runtime 没有通用数据转换命令；这些备份不会自动删除，
+也不应在正常恢复中被手工复制回活动 store。
+
+如果发现 pending、interrupted、partial、invalid record 或 applying journal：
+
+1. 停止新的 workspace mutation；
+2. 运行 `pico doctor --offline` 与 `pico checkpoints pending`；
+3. 查看 record、trace 和 workspace diff，不编辑 store JSON；
+4. preview 后由用户选择 resolve/apply；
+5. 若 private identity、blob integrity 或 workspace root 不一致，保留证据并用 Git/外部备份人工恢复。
+
+安全文件与 exception-order 不变量见[安全](security.md)，验证命令见[验证](verification.md)。

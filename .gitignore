@@ -37,9 +37,8 @@ release/
 readme_intro_locked/
 /runs
 
-# Local editor and agent context files
+# Local editor files
 /.idea/
-/CONTEXT.md
 
 # Local secrets and provider configuration
 .env
@@ -47,16 +46,13 @@ readme_intro_locked/
 !.env.example
 
 # Local docs not intended for publication
-docs/*
-!docs/cli-installation-and-updates.md
-!docs/review-pack/
-!docs/review-pack/README.md
-!docs/architecture/
-!docs/architecture/agent-harness-v1-overview.md
-!docs/memory-model.md
-!docs/superpowers/
-!docs/superpowers/specs/
-!docs/superpowers/plans/
+/docs/*
+!/docs/cli-installation-and-updates.md
+!/docs/architecture.md
+!/docs/security.md
+!/docs/recovery.md
+!/docs/verification.md
+!/docs/memory.md
 
 # OS files
 .DS_Store
