@@ -8,11 +8,14 @@ class _StubInner:
         self.canned = canned
         self.last_prompt = None
         self.last_completion_metadata = {}
+        self.last_transport_attempts = 0
+        self.last_stop_reason = StopReason.END_TURN
 
     def complete_text(self, prompt, max_tokens):
         del max_tokens
         self.last_prompt = prompt
         self.last_completion_metadata = {"input_tokens": 3, "output_tokens": 2}
+        self.last_transport_attempts = 1
         return self.canned
 
 
@@ -31,6 +34,7 @@ def test_adapter_flattens_system_tools_messages():
     assert "SYSTEM_CORE" in inner.last_prompt
     assert "read_file" in inner.last_prompt
     assert "hi" in inner.last_prompt
+    assert "<transcript>" in inner.last_prompt
 
 
 def test_adapter_returns_raw_text_and_usage_for_the_shared_codec():
@@ -158,3 +162,56 @@ def test_adapter_last_completion_metadata_mirrors_inner():
     )
     # Mirror the LATEST inner metadata, not the accumulated union.
     assert adapter.last_completion_metadata == {"input_tokens": 2, "output_tokens": 4}
+
+
+def test_adapter_preserves_full_tool_schema():
+    inner = _StubInner("<final>ok</final>")
+    TextProtocolAdapter(inner).complete(
+        system=[],
+        tools=[{
+            "name": "write_file",
+            "description": "write",
+            "input_schema": {
+                "type": "object",
+                "required": ["path"],
+                "properties": {
+                    "path": {"type": "string"},
+                    "options": {
+                        "type": "object",
+                        "properties": {"mode": {"type": "string"}},
+                    },
+                },
+            },
+        }],
+        messages=[{"role": "user", "content": "x"}],
+        max_tokens=10,
+    )
+
+    assert '"required":["path"]' in inner.last_prompt
+    assert '"options"' in inner.last_prompt
+
+
+def test_adapter_propagates_stop_reason_and_transport_attempts():
+    inner = _StubInner("<final>partial")
+    inner.last_stop_reason = StopReason.MAX_TOKENS
+    adapter = TextProtocolAdapter(inner)
+
+    response = adapter.complete(
+        system=[], tools=[], messages=[{"role": "user", "content": "x"}], max_tokens=10
+    )
+
+    assert response.stop_reason == StopReason.MAX_TOKENS
+    assert adapter.last_transport_attempts == 1
+
+
+def test_adapter_marks_missing_transport_evidence_unknown():
+    inner = MagicMock()
+    inner.complete_text.return_value = "<final>ok</final>"
+    inner.last_completion_metadata = {}
+    adapter = TextProtocolAdapter(inner)
+
+    adapter.complete(
+        system=[], tools=[], messages=[{"role": "user", "content": "x"}], max_tokens=10
+    )
+
+    assert adapter.last_transport_attempts is None

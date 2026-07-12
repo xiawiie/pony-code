@@ -108,14 +108,14 @@ def _make_provider_client(provider):
             model=profile["model"],
             base_url=profile["base_url"],
             api_key=profile["api_key"],
-            temperature=0.0,
+            temperature=None,
             timeout=timeout,
         ))
     return AnthropicCompatibleModelClient(
         model=profile["model"],
         base_url=profile["base_url"],
         api_key=profile["api_key"],
-        temperature=0.0,
+        temperature=None,
         timeout=timeout,
     )
 
@@ -151,7 +151,7 @@ def run_provider_experiments(
                     model=profile["model"],
                     base_url=profile["base_url"],
                     api_key=profile["api_key"],
-                    temperature=0.0,
+                    temperature=None,
                     timeout=300,
                 ))
 
@@ -163,7 +163,7 @@ def run_provider_experiments(
                     model=profile["model"],
                     base_url=profile["base_url"],
                     api_key=profile["api_key"],
-                    temperature=0.0,
+                    temperature=None,
                     timeout=300,
                 )
 

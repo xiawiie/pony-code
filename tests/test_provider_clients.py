@@ -2,14 +2,15 @@ import io
 import json
 from http.client import RemoteDisconnected
 import urllib.error
-import urllib.request
 from unittest.mock import Mock
 
 import pytest
 
+import pico.providers._shared as provider_shared
 from pico.providers.anthropic_compatible import AnthropicCompatibleModelClient
 from pico.providers.ollama import OllamaModelClient
 from pico.providers.openai_compatible import OpenAICompatibleModelClient
+from pico.providers.response import StopReason
 
 
 class _Response:
@@ -23,7 +24,7 @@ class _Response:
     def __exit__(self, *_args):
         return False
 
-    def read(self):
+    def read(self, *_args):
         return self.body
 
 
@@ -78,7 +79,7 @@ def test_openai_text_only_payload_has_no_cache_request_fields(monkeypatch):
             ).encode()
         )
 
-    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(provider_shared, "_provider_urlopen", urlopen)
     client = _openai_client()
 
     assert client.complete_text("hello", 42) == "ok"
@@ -92,9 +93,10 @@ def test_openai_text_only_payload_has_no_cache_request_fields(monkeypatch):
                 "content": [{"type": "input_text", "text": "hello"}],
             }
         ],
-        "max_output_tokens": 42,
-        "stream": False,
-        "temperature": 0.0,
+            "max_output_tokens": 42,
+            "stream": False,
+            "store": False,
+            "temperature": 0.0,
     }
     assert "prompt_cache_key" not in captured["body"]
     assert "prompt_cache_retention" not in captured["body"]
@@ -120,8 +122,8 @@ def test_openai_non_streaming_call_accepts_sse_response(monkeypatch):
         ]
     )
     monkeypatch.setattr(
-        urllib.request,
-        "urlopen",
+        provider_shared,
+        "_provider_urlopen",
         lambda *_args, **_kwargs: _Response(body, "text/event-stream"),
     )
     client = _openai_client()
@@ -129,6 +131,7 @@ def test_openai_non_streaming_call_accepts_sse_response(monkeypatch):
     assert client.complete_text("hello", 10) == "hello"
     assert client.last_completion_metadata["cached_tokens"] == 4
     assert client.last_completion_metadata["cache_hit"] is True
+    assert client.last_transport_attempts == 1
 
 
 def test_openai_sse_done_waits_for_completed_usage(monkeypatch):
@@ -140,8 +143,8 @@ def test_openai_sse_done_waits_for_completed_usage(monkeypatch):
         ]
     )
     monkeypatch.setattr(
-        urllib.request,
-        "urlopen",
+        provider_shared,
+        "_provider_urlopen",
         lambda *_args, **_kwargs: _Response(body, "text/event-stream"),
     )
     client = _openai_client()
@@ -151,11 +154,51 @@ def test_openai_sse_done_waits_for_completed_usage(monkeypatch):
     assert client.last_completion_metadata["cache_hit"] is True
 
 
+def test_openai_incomplete_response_propagates_max_tokens(monkeypatch):
+    monkeypatch.setattr(
+        provider_shared,
+        "_provider_urlopen",
+        lambda *_args, **_kwargs: _Response(
+            b'{"output_text":"<final>partial","incomplete_details":{"reason":"max_output_tokens"},"usage":{"input_tokens":1,"output_tokens":2}}'
+        ),
+    )
+    client = _openai_client()
+
+    assert client.complete_text("hello", 10) == "<final>partial"
+    assert client.last_stop_reason == StopReason.MAX_TOKENS
+
+
+def test_openai_refusal_is_extracted_without_retry(monkeypatch):
+    monkeypatch.setattr(
+        provider_shared,
+        "_provider_urlopen",
+        lambda *_args, **_kwargs: _Response(
+            b'{"output":[{"content":[{"type":"refusal","refusal":"declined"}]}],"usage":{"input_tokens":1,"output_tokens":0}}'
+        ),
+    )
+    client = _openai_client()
+
+    assert client.complete_text("hello", 10) == "declined"
+    assert client.last_stop_reason == StopReason.REFUSAL
+
+
+def test_openai_aggregates_multiple_output_text_blocks(monkeypatch):
+    monkeypatch.setattr(
+        provider_shared,
+        "_provider_urlopen",
+        lambda *_args, **_kwargs: _Response(
+            b'{"output":[{"content":[{"type":"output_text","text":"one"},{"type":"output_text","text":"two"}]}],"usage":{}}'
+        ),
+    )
+
+    assert _openai_client().complete_text("hello", 10) == "one\ntwo"
+
+
 @pytest.mark.parametrize("body", [b"[]", b"\xff"])
 def test_openai_invalid_response_is_stable(monkeypatch, body):
     monkeypatch.setattr(
-        urllib.request,
-        "urlopen",
+        provider_shared,
+        "_provider_urlopen",
         lambda *_args, **_kwargs: _Response(body),
     )
 
@@ -164,30 +207,31 @@ def test_openai_invalid_response_is_stable(monkeypatch, body):
 
 
 @pytest.mark.parametrize(
-    "error",
+    ("error", "reason"),
     [
-        urllib.error.URLError("secret"),
-        RemoteDisconnected("secret"),
-        TimeoutError("secret"),
+        (urllib.error.URLError("secret"), "network_error"),
+        (RemoteDisconnected("secret"), "remote_disconnect"),
+        (TimeoutError("secret"), "timeout"),
     ],
 )
-def test_openai_network_error_retries_three_times(monkeypatch, error):
+def test_openai_network_error_is_classified_after_one_transport(monkeypatch, error, reason):
     urlopen = Mock(side_effect=error)
-    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
-    monkeypatch.setattr("pico.providers.openai_compatible.time.sleep", lambda _delay: None)
+    monkeypatch.setattr(provider_shared, "_provider_urlopen", urlopen)
+    client = _openai_client()
 
     with pytest.raises(
         RuntimeError,
-        match="^OpenAI-compatible request failed: network_error$",
+        match=rf"^OpenAI-compatible request failed: {reason}$",
     ):
-        _openai_client().complete_text("hello", 10)
+        client.complete_text("hello", 10)
 
-    assert urlopen.call_count == 3
+    assert urlopen.call_count == 1
+    assert client.last_transport_attempts == 1
 
 
 def test_openai_rejects_non_header_api_key_before_request(monkeypatch):
     urlopen = Mock()
-    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(provider_shared, "_provider_urlopen", urlopen)
 
     with pytest.raises(RuntimeError, match="cannot be sent in HTTP headers"):
         _openai_client("bad\u2603").complete_text("hello", 10)
@@ -203,10 +247,10 @@ def test_ollama_text_only_payload(monkeypatch):
         captured["timeout"] = timeout
         captured["body"] = json.loads(request.data)
         return _Response(
-            b'{"response":"ok","prompt_eval_count":12,"eval_count":3}'
+            b'{"response":"ok","done":true,"done_reason":"stop","prompt_eval_count":12,"eval_count":3}'
         )
 
-    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(provider_shared, "_provider_urlopen", urlopen)
     client = _ollama_client()
 
     assert client.complete_text("hello", 42) == "ok"
@@ -237,26 +281,56 @@ def test_ollama_text_only_payload(monkeypatch):
         "cache_creation_input_tokens": 0,
         "cache_read_input_tokens": 0,
     }
+    assert client.last_transport_attempts == 1
+    assert client.last_stop_reason == StopReason.END_TURN
 
 
-def test_ollama_timeout_is_stable_network_error(monkeypatch):
+def test_ollama_length_stop_is_propagated(monkeypatch):
     monkeypatch.setattr(
-        urllib.request,
-        "urlopen",
+        provider_shared,
+        "_provider_urlopen",
+        lambda *_args, **_kwargs: _Response(
+            b'{"response":"<final>partial","done":true,"done_reason":"length"}'
+        ),
+    )
+    client = _ollama_client()
+
+    assert client.complete_text("hello", 10) == "<final>partial"
+    assert client.last_stop_reason == StopReason.MAX_TOKENS
+
+
+def test_ollama_timeout_is_stable(monkeypatch):
+    monkeypatch.setattr(
+        provider_shared,
+        "_provider_urlopen",
         Mock(side_effect=TimeoutError("secret")),
     )
 
     with pytest.raises(
         RuntimeError,
-        match="^Ollama request failed: network_error$",
+        match="^Ollama request failed: timeout$",
     ):
         _ollama_client().complete_text("hello", 10)
 
 
+def test_provider_connection_reset_is_classified_without_raw_error(monkeypatch):
+    monkeypatch.setattr(
+        provider_shared,
+        "_provider_urlopen",
+        Mock(side_effect=ConnectionResetError("secret socket detail")),
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="^OpenAI-compatible request failed: network_error$",
+    ):
+        _openai_client().complete_text("hello", 10)
+
+
 def test_ollama_invalid_response_is_stable(monkeypatch):
     monkeypatch.setattr(
-        urllib.request,
-        "urlopen",
+        provider_shared,
+        "_provider_urlopen",
         lambda *_args, **_kwargs: _Response(b"[]"),
     )
 
@@ -299,7 +373,7 @@ def test_provider_http_errors_expose_only_family_and_status(
         fp=io.BytesIO(f'{{"error":"{secret}"}}'.encode()),
     )
     urlopen = Mock(side_effect=error)
-    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(provider_shared, "_provider_urlopen", urlopen)
 
     with pytest.raises(RuntimeError) as caught:
         invoke(client_factory())
@@ -320,13 +394,13 @@ def test_provider_http_errors_expose_only_family_and_status(
             lambda client: client.complete(
                 system=[], tools=[], messages=[], max_tokens=10
             ),
-            3,
+            1,
         ),
         (
             "OpenAI-compatible",
             _openai_client,
             lambda client: client.complete_text("hello", 10),
-            3,
+            1,
         ),
         (
             "Ollama",
@@ -347,13 +421,7 @@ def test_provider_http_500_retry_counts_are_preserved(
         fp=io.BytesIO(b"backend failure"),
     )
     urlopen = Mock(side_effect=error)
-    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
-    monkeypatch.setattr(
-        "pico.providers.anthropic_compatible.time.sleep", lambda _delay: None
-    )
-    monkeypatch.setattr(
-        "pico.providers.openai_compatible.time.sleep", lambda _delay: None
-    )
+    monkeypatch.setattr(provider_shared, "_provider_urlopen", urlopen)
 
     with pytest.raises(RuntimeError) as caught:
         invoke(client_factory())
@@ -394,7 +462,7 @@ def test_provider_malformed_usage_is_fixed_and_secret_free(
     secret = "github_pat_" + "M" * 32
     body = json.dumps(payload(secret)).encode()
     urlopen = Mock(return_value=_Response(body))
-    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(provider_shared, "_provider_urlopen", urlopen)
 
     with pytest.raises(RuntimeError) as caught:
         invoke(client_factory())
@@ -442,3 +510,33 @@ def test_provider_malformed_usage_is_fixed_and_secret_free(
 def test_provider_clients_reject_credential_bearing_base_url(url, client_factory):
     with pytest.raises(ValueError, match="provider_base_url_credentials"):
         client_factory(url)
+
+
+@pytest.mark.parametrize("value", ["file:///tmp/x", "ftp://example.test/v1", "not-a-url"])
+def test_provider_clients_reject_invalid_base_urls(value):
+    with pytest.raises(ValueError, match="provider_base_url_invalid"):
+        _openai_client().__class__(
+            model="test",
+            base_url=value,
+            api_key="test",
+            temperature=None,
+            timeout=1,
+        )
+
+
+def test_provider_response_size_is_bounded(monkeypatch):
+    monkeypatch.setattr(
+        provider_shared,
+        "_provider_urlopen",
+        lambda *_args, **_kwargs: _Response(
+            b"x" * (provider_shared.MAX_PROVIDER_RESPONSE_BYTES + 1)
+        ),
+    )
+    with pytest.raises(RuntimeError, match="response_too_large"):
+        _openai_client().complete_text("hello", 10)
+
+
+def test_redirect_handler_never_follows_provider_redirects():
+    assert provider_shared._NoRedirectHandler().redirect_request(
+        None, None, 302, "redirect", {}, "https://elsewhere.test"
+    ) is None

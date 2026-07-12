@@ -825,7 +825,13 @@ class Pico:
     def new_run_id():
         return "run_" + datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6]
 
-    def build_report(self, task_state, *, completion_usage_totals=None):
+    def build_report(
+        self,
+        task_state,
+        *,
+        completion_usage_totals=None,
+        model_execution=None,
+    ):
         request_metadata = build_report_request_metadata(
             task_state,
             self.last_request_metadata,
@@ -845,6 +851,10 @@ class Pico:
             "cache_hit": False,
             **dict(completion_usage_totals or {}),
         }
+        execution = dict(model_execution or {})
+        if execution and not execution.get("transport_evidence_complete", False):
+            execution["transport_attempts"] = None
+            execution["transport_retries"] = None
         # report 是一次运行的最终摘要；
         # 和 trace 的区别在于，trace 关注过程，report 关注结果与关键指标。
         return {
@@ -860,6 +870,7 @@ class Pico:
             "task_state": task_state.to_dict(),
             "last_request_metadata": request_metadata,
             "completion_usage_totals": usage,
+            "model_execution": execution,
             "session_messages_count": session_metrics["messages_count"],
             "session_messages_chars": session_metrics["messages_chars"],
             "session_messages_tokens": session_metrics["messages_tokens"],

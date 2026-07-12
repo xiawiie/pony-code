@@ -1,9 +1,6 @@
 """OpenAI-compatible provider adapter."""
 
 import json
-import time
-from http.client import RemoteDisconnected
-import urllib.error
 import urllib.request
 
 from ._shared import (
@@ -11,8 +8,12 @@ from ._shared import (
     _extract_usage_cache_details,
     _iter_sse_data_payloads,
     _normalize_versioned_base_url,
+    _open_provider_request,
     _validate_header_value,
+    _validate_number,
+    _validate_provider_credentials,
 )
+from .response import StopReason
 
 OPENAI_COMPATIBLE_USER_AGENT = "pico/0.1"
 
@@ -26,6 +27,7 @@ def _extract_openai_text(data):
     if output_text:
         return output_text
 
+    parts = []
     output = data.get("output", [])
     if not isinstance(output, list) or not all(
         isinstance(item, dict) for item in output
@@ -42,7 +44,16 @@ def _extract_openai_text(data):
             if text is not None and not isinstance(text, str):
                 raise ValueError("content text must be a string")
             if text:
-                return text
+                parts.append(text)
+                continue
+            refusal = content.get("refusal")
+            if refusal is not None and not isinstance(refusal, str):
+                raise ValueError("refusal must be a string")
+            if refusal:
+                parts.append(refusal)
+
+    if parts:
+        return "\n".join(parts)
 
     choices = data.get("choices", [])
     if not isinstance(choices, list) or not all(
@@ -57,6 +68,7 @@ def _extract_openai_text(data):
         if isinstance(content, str):
             return content
         if isinstance(content, list):
+            parts = []
             for item in content:
                 if not isinstance(item, dict):
                     raise ValueError("message content must contain objects")
@@ -64,11 +76,47 @@ def _extract_openai_text(data):
                 if text is not None and not isinstance(text, str):
                     raise ValueError("message text must be a string")
                 if text:
-                    return text
+                    parts.append(text)
+            if parts:
+                return "\n".join(parts)
         elif content is not None:
             raise ValueError("message content must be text or a list")
 
     return ""
+
+
+def _openai_stop_reason(data):
+    if not isinstance(data, dict):
+        raise ValueError("response must be an object")
+    incomplete = data.get("incomplete_details")
+    if incomplete is not None and not isinstance(incomplete, dict):
+        raise ValueError("incomplete details must be an object")
+    reason = (incomplete or {}).get("reason")
+    if reason == "max_output_tokens":
+        return StopReason.MAX_TOKENS
+    if reason == "content_filter":
+        return StopReason.REFUSAL
+
+    choices = data.get("choices", [])
+    if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+        finish_reason = choices[0].get("finish_reason")
+        if finish_reason == "length":
+            return StopReason.MAX_TOKENS
+        if finish_reason == "content_filter":
+            return StopReason.REFUSAL
+
+    output = data.get("output", [])
+    if isinstance(output, list):
+        for item in output:
+            if not isinstance(item, dict):
+                continue
+            content = item.get("content", [])
+            if isinstance(content, list) and any(
+                isinstance(block, dict) and block.get("type") == "refusal"
+                for block in content
+            ):
+                return StopReason.REFUSAL
+    return StopReason.END_TURN
 
 
 def _iter_openai_sse_events(body_text):
@@ -83,61 +131,11 @@ def _iter_openai_sse_events(body_text):
         yield event
 
 
-def _extract_openai_text_from_sse(body_text):
-    last_response = None
-    deltas = []
-    for event in _iter_openai_sse_events(body_text):
-        event_type = event.get("type", "")
-        if not isinstance(event_type, str):
-            raise ValueError("event type must be a string")
-        if event_type == "response.output_text.delta":
-            delta = event.get("delta")
-            if not isinstance(delta, str):
-                raise ValueError("text delta must be a string")
-            deltas.append(delta)
-            continue
-        if event_type == "response.output_text.done":
-            text = event.get("text")
-            if not isinstance(text, str):
-                raise ValueError("completed text must be a string")
-            if text:
-                return text
-        part = event.get("part")
-        if part is not None and not isinstance(part, dict):
-            raise ValueError("event part must be an object")
-        if part is not None:
-            text = part.get("text")
-            if isinstance(text, str) and text:
-                return text
-        item = event.get("item")
-        if item is not None and not isinstance(item, dict):
-            raise ValueError("event item must be an object")
-        if item is not None:
-            text = _extract_openai_text({"output": [item]})
-            if text:
-                return text
-        response = event.get("response")
-        if response is not None and not isinstance(response, dict):
-            raise ValueError("event response must be an object")
-        if response is not None:
-            last_response = response
-            text = _extract_openai_text(response)
-            if text:
-                return text
-        text = _extract_openai_text(event)
-        if text:
-            return text
-    if deltas:
-        return "".join(deltas)
-    if isinstance(last_response, dict):
-        return _extract_openai_text(last_response)
-    return ""
-
-
 def _extract_openai_response_from_sse(body_text):
     last_response = None
     deltas = []
-    completed_text = ""
+    completed_texts = []
+    fallback_texts = []
     for event in _iter_openai_sse_events(body_text):
         response = event.get("response")
         if response is not None and not isinstance(response, dict):
@@ -147,9 +145,6 @@ def _extract_openai_response_from_sse(body_text):
             raise ValueError("event type must be a string")
         if response is not None:
             last_response = response
-            if event_type == "response.completed":
-                text = _extract_openai_text(response)
-                return text or completed_text or "".join(deltas), response
         elif event_type == "response.completed":
             raise ValueError("completed event must contain a response")
         if event_type == "response.output_text.delta":
@@ -162,17 +157,21 @@ def _extract_openai_response_from_sse(body_text):
             if not isinstance(text, str):
                 raise ValueError("completed text must be a string")
             if text:
-                completed_text = text
+                completed_texts.append(text)
         else:
             text = _extract_openai_text(event)
             if text:
-                return text, event
-    if completed_text:
-        return completed_text, last_response or {}
+                fallback_texts.append(text)
+    if isinstance(last_response, dict):
+        text = _extract_openai_text(last_response)
+        if text:
+            return text, last_response
+    if completed_texts:
+        return "\n".join(completed_texts), last_response or {}
     if deltas:
         return "".join(deltas), last_response or {}
-    if isinstance(last_response, dict):
-        return _extract_openai_text(last_response), last_response
+    if fallback_texts:
+        return "\n".join(fallback_texts), last_response or {}
     return "", {}
 
 
@@ -183,9 +182,15 @@ class OpenAICompatibleModelClient:
         self.model = model
         self.base_url = _normalize_versioned_base_url(validate_provider_base_url(base_url))
         self.api_key = api_key
-        self.temperature = temperature
-        self.timeout = timeout
+        self.temperature = (
+            None
+            if temperature is None
+            else _validate_number("temperature", temperature, minimum=0, maximum=2)
+        )
+        self.timeout = _validate_number("timeout", timeout, minimum=0.001)
         self.last_completion_metadata = {}
+        self.last_transport_attempts = 0
+        self.last_stop_reason = StopReason.END_TURN
 
     def _responses_payload(self, prompt, max_tokens):
         payload = {
@@ -203,6 +208,7 @@ class OpenAICompatibleModelClient:
             ],
             "max_output_tokens": max_tokens,
             "stream": False,
+            "store": False,
         }
         if self.temperature is not None:
             payload["temperature"] = self.temperature
@@ -231,29 +237,22 @@ class OpenAICompatibleModelClient:
     def complete_text(self, prompt, max_tokens):
         """Return one text response from the non-streaming Responses API."""
         self.last_completion_metadata = {}
+        self.last_transport_attempts = 0
+        self.last_stop_reason = StopReason.END_TURN
+        _validate_number("max_tokens", max_tokens, minimum=1, integer=True)
+        _validate_provider_credentials(
+            self.base_url,
+            self.api_key,
+            family="OpenAI-compatible",
+        )
         payload = self._responses_payload(prompt, max_tokens)
         request = self._request(payload, self._headers("application/json"))
-        attempts = 3
-        for attempt in range(attempts):
-            try:
-                with urllib.request.urlopen(request, timeout=self.timeout) as response:
-                    response_body = response.read()
-                    response_headers = getattr(response, "headers", {}) or {}
-                break
-            except urllib.error.HTTPError as exc:
-                if exc.code >= 500 and attempt < attempts - 1:
-                    time.sleep(0.5 * (attempt + 1))
-                    continue
-                raise RuntimeError(
-                    f"OpenAI-compatible request failed with HTTP {exc.code}"
-                ) from None
-            except (urllib.error.URLError, RemoteDisconnected, TimeoutError):
-                if attempt < attempts - 1:
-                    time.sleep(0.5 * (attempt + 1))
-                    continue
-                raise RuntimeError(
-                    "OpenAI-compatible request failed: network_error"
-                ) from None
+        response_body, response_headers = _open_provider_request(
+            self,
+            request,
+            family="OpenAI-compatible",
+            retryable=True,
+        )
 
         try:
             content_type = response_headers.get("Content-Type", "")
@@ -281,6 +280,7 @@ class OpenAICompatibleModelClient:
                 ) from None
             if metadata is not None:
                 self.last_completion_metadata = metadata
+            self.last_stop_reason = _openai_stop_reason(response_data)
             if text:
                 return text
             raise RuntimeError("OpenAI-compatible error: could not extract text from event stream response")
@@ -291,7 +291,7 @@ class OpenAICompatibleModelClient:
             raise RuntimeError(
                 "OpenAI-compatible error: invalid_response"
             ) from None
-        if data.get("error"):
+        if data.get("error") or data.get("status") == "failed":
             raise RuntimeError("OpenAI-compatible error: backend_error") from None
         try:
             metadata = _extract_usage_cache_details(data)
@@ -301,4 +301,5 @@ class OpenAICompatibleModelClient:
                 "OpenAI-compatible error: invalid_response"
             ) from None
         self.last_completion_metadata = metadata
+        self.last_stop_reason = _openai_stop_reason(data)
         return text

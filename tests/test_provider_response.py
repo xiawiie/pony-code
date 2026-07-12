@@ -6,6 +6,7 @@ def test_stop_reason_enum_values():
     assert StopReason.TOOL_USE == "tool_use"
     assert StopReason.MAX_TOKENS == "max_tokens"
     assert StopReason.STOP_SEQUENCE == "stop_sequence"
+    assert StopReason.REFUSAL == "refusal"
     assert StopReason.UNKNOWN == "unknown"
 
 

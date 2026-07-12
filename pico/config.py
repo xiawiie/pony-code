@@ -21,7 +21,6 @@ from .providers.defaults import (
     PROVIDER_CHOICES,
 )
 from .security import (
-    contains_secret_material,
     ensure_private_dir,
     private_directory_identity,
     read_private_text,
@@ -40,8 +39,6 @@ _SECRET_QUERY_KEYS = {
     "password",
     "credential",
 }
-
-
 def _strip_quotes(value):
     value = value.strip()
     if len(value) >= 2 and value[0] == value[-1] == '"':
@@ -232,15 +229,21 @@ def write_project_env_assignments(workspace_root, assignments):
 
 
 def validate_provider_base_url(value):
-    raw = str(value or "")
+    raw = str(value or "").strip()
     parsed = urllib.parse.urlsplit(raw)
-    query = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+    if parsed.scheme.casefold() not in {"http", "https"} or not parsed.hostname:
+        raise ValueError("provider_base_url_invalid")
+    try:
+        parsed.port
+    except ValueError as exc:
+        raise ValueError("provider_base_url_invalid") from exc
     if parsed.username is not None or parsed.password is not None:
         raise ValueError("provider_base_url_credentials")
+    query = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
     if any(key.casefold().replace("-", "_") in _SECRET_QUERY_KEYS for key, _ in query):
         raise ValueError("provider_base_url_credentials")
-    if any(contains_secret_material(item, env={}) for _, item in query):
-        raise ValueError("provider_base_url_credentials")
+    if parsed.query or parsed.fragment:
+        raise ValueError("provider_base_url_query_or_fragment")
     return raw
 
 

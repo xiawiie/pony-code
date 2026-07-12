@@ -10,6 +10,7 @@ class StopReason(str, Enum):
     TOOL_USE = "tool_use"
     MAX_TOKENS = "max_tokens"
     STOP_SEQUENCE = "stop_sequence"
+    REFUSAL = "refusal"
     UNKNOWN = "unknown"
 
 

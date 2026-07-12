@@ -9,6 +9,7 @@ class FakeModelClient:
         self.requests = []
         self.supports_prompt_cache = False
         self.last_completion_metadata = {}
+        self.last_transport_attempts = 0
 
     def complete(
         self,

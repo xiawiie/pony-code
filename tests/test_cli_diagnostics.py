@@ -826,6 +826,68 @@ def test_provider_connectivity_http_404_is_reachable(monkeypatch):
     assert result["http_status"] == 404
 
 
+def test_ollama_connectivity_requires_configured_model(monkeypatch):
+    class Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def read(self, limit):
+            assert limit == 1_048_577
+            return b'{"models":[{"name":"other:latest"}]}'
+
+    monkeypatch.setattr(
+        "pico.cli_diagnostics.request.urlopen",
+        lambda url, timeout: Response(),
+    )
+
+    result = check_provider_connectivity(
+        {
+            "provider": {"value": "ollama"},
+            "model": {"value": "qwen3:latest"},
+            "base_url": {"value": "http://127.0.0.1:11434"},
+        }
+    )
+
+    assert result["status"] == "error"
+    assert result["model_status"] == "missing"
+    assert result["url"] == "http://127.0.0.1:11434/api/tags"
+
+
+def test_ollama_connectivity_confirms_configured_model(monkeypatch):
+    class Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def read(self, _limit):
+            return b'{"models":[{"model":"qwen3:latest"}]}'
+
+    monkeypatch.setattr(
+        "pico.cli_diagnostics.request.urlopen",
+        lambda url, timeout: Response(),
+    )
+
+    result = check_provider_connectivity(
+        {
+            "provider": {"value": "ollama"},
+            "model": {"value": "qwen3:latest"},
+            "base_url": {"value": "http://127.0.0.1:11434"},
+        }
+    )
+
+    assert result["status"] == "ok"
+    assert result["model_status"] == "available"
+
+
 def test_provider_connectivity_generic_error_sanitizes_url_in_message(monkeypatch):
     def fake_urlopen(url, timeout):
         raise RuntimeError(f"failed to open {url}")

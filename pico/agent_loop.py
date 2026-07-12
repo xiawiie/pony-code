@@ -10,6 +10,7 @@ import time
 import uuid
 
 from .action_codec import FinalAction, RetryAction, ToolAction, decode_action
+from .providers._shared import _ProviderFailure
 from . import security as securitylib
 from .checkpoint import CHECKPOINT_NONE_STATUS, CHECKPOINT_PARTIAL_STALE_STATUS, CHECKPOINT_WORKSPACE_MISMATCH_STATUS
 from .context.renderer import render_current_user_message
@@ -56,9 +57,88 @@ _USAGE_SUM_KEYS = (
     "cache_read_input_tokens",
 )
 
+_ATTEMPT_ORIGINS = ("initial", "tool_followup", "retry_action", "model_retry")
+_MODEL_RETRY_DELAYS = (0.5, 1.0)
+
 
 def _empty_usage_totals():
     return {**{key: 0 for key in _USAGE_SUM_KEYS}, "cache_hit": False}
+
+
+def _empty_model_execution():
+    return {
+        "model_attempts": 0,
+        "model_turns": 0,
+        "model_failures": 0,
+        "model_retries": 0,
+        "attempt_origin_counts": {origin: 0 for origin in _ATTEMPT_ORIGINS},
+        "transport_attempts": 0,
+        "transport_retries": 0,
+        "transport_evidence_complete": True,
+        "failure_reason_counts": {},
+    }
+
+
+def _transport_evidence(model_client):
+    attempts = getattr(model_client, "last_transport_attempts", None)
+    if type(attempts) is not int or attempts < 0:
+        return None, None, False
+    return attempts, max(0, attempts - 1), True
+
+
+def _record_transport(model_execution, model_client):
+    attempts, retries, complete = _transport_evidence(model_client)
+    if not complete:
+        model_execution["transport_evidence_complete"] = False
+        return attempts, retries, False
+    model_execution["transport_attempts"] += attempts
+    model_execution["transport_retries"] += retries
+    return attempts, retries, True
+
+
+def _record_model_failure(
+    agent,
+    task_state,
+    model_execution,
+    *,
+    attempt_origin,
+    outcome,
+    failure_phase,
+    error,
+):
+    attempts, retries, complete = _record_transport(
+        model_execution,
+        agent.model_client,
+    )
+    reason = (
+        error.code
+        if isinstance(error, _ProviderFailure)
+        else "response_processing" if failure_phase == "response_processing" else "provider_error"
+    )
+    model_execution["model_failures"] += 1
+    reasons = model_execution["failure_reason_counts"]
+    reasons[reason] = reasons.get(reason, 0) + 1
+    try:
+        agent.emit_trace(
+            task_state,
+            "model_failed",
+            {
+                "attempts": task_state.attempts,
+                "tool_steps": task_state.tool_steps,
+                "attempt_origin": attempt_origin,
+                "outcome": outcome,
+                "failure_phase": failure_phase,
+                "reason_code": reason,
+                "transport_attempts": attempts,
+                "transport_retries": retries,
+                "transport_evidence_complete": complete,
+            },
+        )
+    except Exception as trace_error:
+        logger.debug(
+            "model failure trace could not be written (%s)",
+            type(trace_error).__name__,
+        )
 
 
 def _add_usage(totals, usage):
@@ -383,8 +463,14 @@ def _build_attempt_request(
     injection_telemetry,
     preflight_metadata,
     context_reduction_checkpoint_created,
+    attempt_origin,
+    model_execution,
 ):
     task_state.record_attempt()
+    model_execution["model_attempts"] += 1
+    model_execution["attempt_origin_counts"][attempt_origin] += 1
+    if attempt_origin == "model_retry":
+        model_execution["model_retries"] += 1
     agent.run_store.write_task_state(task_state)
     prompt_started_at = time.monotonic()
     request, request_metadata = agent.context_manager.build_request(
@@ -460,6 +546,7 @@ def _build_attempt_request(
         {
             "attempts": task_state.attempts,
             "tool_steps": task_state.tool_steps,
+            "attempt_origin": attempt_origin,
             "request_metadata": request_metadata,
         },
     )
@@ -478,6 +565,8 @@ def _complete_model_attempt(
     request_metadata,
     prompt_started_at,
     completion_usage_totals,
+    model_execution,
+    attempt_origin,
 ):
     try:
         response = agent.model_client.complete(
@@ -487,43 +576,94 @@ def _complete_model_attempt(
             max_tokens=agent.max_new_tokens,
             cache_breakpoints=request["cache_control_breakpoints"],
         )
-    except KeyboardInterrupt:
+    except KeyboardInterrupt as exc:
+        _record_model_failure(
+            agent,
+            task_state,
+            model_execution,
+            attempt_origin=attempt_origin,
+            outcome="interrupted",
+            failure_phase="provider_complete",
+            error=exc,
+        )
         raise
     except Exception as exc:
+        _record_model_failure(
+            agent,
+            task_state,
+            model_execution,
+            attempt_origin=attempt_origin,
+            outcome="error",
+            failure_phase="provider_complete",
+            error=exc,
+        )
         return None, None, exc
 
     completion_usage = dict(response.usage or {})
     _add_usage(completion_usage_totals, completion_usage)
-    action, blocked_tool_result = _sanitize_action(
-        agent,
-        decode_action(response),
+    try:
+        action, blocked_tool_result = _sanitize_action(
+            agent,
+            decode_action(response),
+        )
+    except Exception as exc:
+        _record_model_failure(
+            agent,
+            task_state,
+            model_execution,
+            attempt_origin=attempt_origin,
+            outcome="error",
+            failure_phase="response_processing",
+            error=exc,
+        )
+        raise
+    transport_attempts, transport_retries, evidence_complete = _transport_evidence(
+        agent.model_client,
     )
     action_payload = _action_trace_payload(action)
-    agent.emit_trace(
-        task_state,
-        "action_decoded",
-        {
-            **action_payload,
-            "request_metadata": request_metadata,
-        },
-    )
-    agent.emit_trace(
-        task_state,
-        "model_turn",
-        {
-            "attempts": task_state.attempts,
-            "tool_steps": task_state.tool_steps,
-            "stop_reason": str(
-                getattr(response.stop_reason, "value", response.stop_reason)
-            ),
-            "request_metadata": request_metadata,
-            "completion_usage": completion_usage,
-            **action_payload,
-            "duration_ms": int(
-                (time.monotonic() - prompt_started_at) * 1000
-            ),
-        },
-    )
+    try:
+        agent.emit_trace(
+            task_state,
+            "action_decoded",
+            {
+                **action_payload,
+                "request_metadata": request_metadata,
+            },
+        )
+        agent.emit_trace(
+            task_state,
+            "model_turn",
+            {
+                "attempts": task_state.attempts,
+                "tool_steps": task_state.tool_steps,
+                "attempt_origin": attempt_origin,
+                "stop_reason": str(
+                    getattr(response.stop_reason, "value", response.stop_reason)
+                ),
+                "request_metadata": request_metadata,
+                "completion_usage": completion_usage,
+                "transport_attempts": transport_attempts,
+                "transport_retries": transport_retries,
+                "transport_evidence_complete": evidence_complete,
+                **action_payload,
+                "duration_ms": int(
+                    (time.monotonic() - prompt_started_at) * 1000
+                ),
+            },
+        )
+    except Exception as exc:
+        _record_model_failure(
+            agent,
+            task_state,
+            model_execution,
+            attempt_origin=attempt_origin,
+            outcome="error",
+            failure_phase="response_processing",
+            error=exc,
+        )
+        raise
+    _record_transport(model_execution, agent.model_client)
+    model_execution["model_turns"] += 1
     return action, blocked_tool_result, None
 
 
@@ -644,6 +784,7 @@ def _run_agent_attempts(
     run_tool_change_ids,
     run_verification_evidence,
     completion_usage_totals,
+    model_execution,
 ):
     (
         preflight_metadata,
@@ -654,6 +795,9 @@ def _run_agent_attempts(
     context_reduction_checkpoint_created = False
     tool_steps = 0
     attempts = 0
+    attempt_origin = "initial"
+    model_retry_count = 0
+    retry_action_count = 0
     max_attempts = max(agent.max_steps * 3, agent.max_steps + 4)
 
     while tool_steps < agent.max_steps and attempts < max_attempts:
@@ -673,8 +817,9 @@ def _run_agent_attempts(
             injection_telemetry,
             preflight_metadata,
             context_reduction_checkpoint_created,
+            attempt_origin,
+            model_execution,
         )
-        runtime_feedback = ""
         action, blocked_result, model_error = _complete_model_attempt(
             agent,
             task_state,
@@ -682,8 +827,20 @@ def _run_agent_attempts(
             request_metadata,
             prompt_started_at,
             completion_usage_totals,
+            model_execution,
+            attempt_origin,
         )
         if model_error is not None:
+            if (
+                isinstance(model_error, _ProviderFailure)
+                and model_error.retryable
+                and model_retry_count < len(_MODEL_RETRY_DELAYS)
+                and attempts < max_attempts
+            ):
+                time.sleep(_MODEL_RETRY_DELAYS[model_retry_count])
+                model_retry_count += 1
+                attempt_origin = "model_retry"
+                continue
             final = _RUNTIME_TERMINAL_TEXT["model_error"]
             task_state.stop_model_error(final)
             return (
@@ -692,6 +849,8 @@ def _run_agent_attempts(
                 _runtime_terminal_message("model_error"),
                 model_error,
             )
+        model_retry_count = 0
+        runtime_feedback = ""
         if isinstance(action, ToolAction):
             tool_steps += _apply_tool_action(
                 agent,
@@ -702,10 +861,24 @@ def _run_agent_attempts(
                 run_tool_change_ids,
                 run_verification_evidence,
             )
+            attempt_origin = "tool_followup"
             continue
         if isinstance(action, RetryAction):
+            if retry_action_count >= 1:
+                final = (
+                    "Stopped after repeated malformed model responses without "
+                    "a valid tool call or final answer."
+                )
+                task_state.stop_retry_limit(final)
+                _commit_session(
+                    agent,
+                    messages=(_plain_message("assistant", final),),
+                )
+                return final, task_state.stop_reason, None, None
+            retry_action_count += 1
             runtime_feedback = action.notice
             agent.run_store.write_task_state(task_state)
+            attempt_origin = "retry_action"
             continue
 
         final = agent.redact_text(action.text)
@@ -764,6 +937,7 @@ class AgentLoop:
         run_tool_change_ids = []
         run_verification_evidence = []
         completion_usage_totals = _empty_usage_totals()
+        model_execution = _empty_model_execution()
         try:
             outcome = _run_agent_attempts(
                 agent,
@@ -772,6 +946,7 @@ class AgentLoop:
                 run_tool_change_ids,
                 run_verification_evidence,
                 completion_usage_totals,
+                model_execution,
             )
         except KeyboardInterrupt as primary:
             final = _RUNTIME_TERMINAL_TEXT["interrupted"]
@@ -814,6 +989,7 @@ class AgentLoop:
             run_tool_change_ids=run_tool_change_ids,
             run_verification_evidence=run_verification_evidence,
             completion_usage_totals=completion_usage_totals,
+            model_execution=model_execution,
             trigger=trigger,
             terminal_message=terminal_message,
             primary_exception=primary,
@@ -833,6 +1009,7 @@ def _finalize_run(
     run_tool_change_ids,
     run_verification_evidence,
     completion_usage_totals,
+    model_execution,
     trigger,
     terminal_message=None,
     primary_exception=None,
@@ -923,6 +1100,7 @@ def _finalize_run(
         lambda: agent.build_report(
             task_state,
             completion_usage_totals=completion_usage_totals,
+            model_execution=model_execution,
         ),
     )
     if report is not None:

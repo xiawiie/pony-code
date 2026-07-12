@@ -9,6 +9,7 @@ import pico.agent_loop as agent_loop_module
 from pico import Pico, SessionStore, WorkspaceContext
 from pico.providers.fake import FakeModelClient
 from pico.agent_loop import AgentLoop
+from pico.providers._shared import _ProviderFailure
 from pico.providers.response import Response, StopReason
 
 
@@ -59,6 +60,31 @@ class RaisingProvider:
             }
         )
         raise self.error
+
+
+class EvidenceScriptProvider:
+    supports_prompt_cache = False
+
+    def __init__(self, outcomes):
+        self.outcomes = list(outcomes)
+        self.calls = []
+        self.last_transport_attempts = 0
+
+    def complete(
+        self,
+        *,
+        system,
+        tools,
+        messages,
+        max_tokens,
+        cache_breakpoints=None,
+    ):
+        self.last_transport_attempts = 1
+        self.calls.append(copy.deepcopy(messages))
+        outcome = self.outcomes.pop(0)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
 
 
 def build_native_agent(tmp_path, provider, **kwargs):
@@ -112,6 +138,170 @@ def test_agent_loop_runs_same_control_flow_as_pico_ask(tmp_path):
     assert answer == "Done."
     assert agent.current_task_state.status == "completed"
     assert agent.run_store.report_path(agent.current_task_state.run_id).exists()
+
+
+def test_transient_provider_failures_retry_in_agent_loop_with_explicit_origins(
+    tmp_path,
+    monkeypatch,
+):
+    provider = EvidenceScriptProvider([
+        _ProviderFailure(
+            "OpenAI-compatible request failed: timeout",
+            code="timeout",
+            retryable=True,
+        ),
+        _ProviderFailure(
+            "OpenAI-compatible request failed with HTTP 503",
+            code="http_5xx",
+            http_status=503,
+            retryable=True,
+        ),
+        Response(
+            stop_reason=StopReason.END_TURN,
+            content=[{"type": "text", "text": "done"}],
+            usage={"input_tokens": 3, "output_tokens": 1, "total_tokens": 4},
+        ),
+    ])
+    delays = []
+    monkeypatch.setattr(agent_loop_module.time, "sleep", delays.append)
+    agent = build_native_agent(tmp_path, provider)
+
+    assert agent.ask("recover") == "done"
+    assert delays == [0.5, 1.0]
+    assert len(provider.calls) == 3
+    events = read_trace(agent)
+    requested = [event for event in events if event["event"] == "model_requested"]
+    failed = [event for event in events if event["event"] == "model_failed"]
+    turns = [event for event in events if event["event"] == "model_turn"]
+    assert [event["attempt_origin"] for event in requested] == [
+        "initial",
+        "model_retry",
+        "model_retry",
+    ]
+    assert [event["reason_code"] for event in failed] == ["timeout", "http_5xx"]
+    assert turns[0]["attempt_origin"] == "model_retry"
+    report = agent.run_store.load_report(agent.current_task_state.run_id)
+    assert report["model_execution"] == {
+        "model_attempts": 3,
+        "model_turns": 1,
+        "model_failures": 2,
+        "model_retries": 2,
+        "attempt_origin_counts": {
+            "initial": 1,
+            "tool_followup": 0,
+            "retry_action": 0,
+            "model_retry": 2,
+        },
+        "transport_attempts": 3,
+        "transport_retries": 0,
+        "transport_evidence_complete": True,
+        "failure_reason_counts": {"timeout": 1, "http_5xx": 1},
+    }
+
+
+def test_nonretryable_provider_failure_is_not_replayed(tmp_path, monkeypatch):
+    failure = _ProviderFailure(
+        "OpenAI-compatible request failed with HTTP 429",
+        code="rate_limited",
+        http_status=429,
+    )
+    provider = EvidenceScriptProvider([failure])
+    sleep = Mock()
+    monkeypatch.setattr(agent_loop_module.time, "sleep", sleep)
+    agent = build_native_agent(tmp_path, provider)
+
+    with pytest.raises(RuntimeError) as caught:
+        agent.ask("do not replay")
+
+    assert caught.value is failure
+    assert len(provider.calls) == 1
+    sleep.assert_not_called()
+
+
+def test_model_retry_preserves_retry_action_feedback(tmp_path, monkeypatch):
+    provider = EvidenceScriptProvider([
+        Response(
+            stop_reason=StopReason.END_TURN,
+            content=[{"type": "text", "text": "<tool>{bad}</tool>"}],
+            usage={},
+        ),
+        _ProviderFailure(
+            "Anthropic-compatible request failed: network_error",
+            code="network_error",
+            retryable=True,
+        ),
+        Response(
+            stop_reason=StopReason.END_TURN,
+            content=[{"type": "text", "text": "done"}],
+            usage={},
+        ),
+    ])
+    monkeypatch.setattr(agent_loop_module.time, "sleep", lambda _delay: None)
+    agent = build_native_agent(tmp_path, provider)
+
+    assert agent.ask("recover protocol") == "done"
+    assert "pico:runtime_feedback" not in json.dumps(provider.calls[0])
+    assert "pico:runtime_feedback" in json.dumps(provider.calls[1])
+    assert "pico:runtime_feedback" in json.dumps(provider.calls[2])
+    requested = [
+        event for event in read_trace(agent) if event["event"] == "model_requested"
+    ]
+    assert [event["attempt_origin"] for event in requested] == [
+        "initial",
+        "retry_action",
+        "model_retry",
+    ]
+
+
+def test_retry_action_allows_only_one_protocol_correction_per_run(tmp_path):
+    provider = EvidenceScriptProvider([
+        Response(
+            stop_reason=StopReason.END_TURN,
+            content=[{"type": "text", "text": "<tool>{bad}</tool>"}],
+            usage={},
+        ),
+        Response(
+            stop_reason=StopReason.TOOL_USE,
+            content=[{
+                "type": "tool_use",
+                "id": "tu_read",
+                "name": "read_file",
+                "input": {"path": "README.md"},
+            }],
+            usage={},
+        ),
+        Response(
+            stop_reason=StopReason.END_TURN,
+            content=[{"type": "text", "text": "<tool>{bad-again}</tool>"}],
+            usage={},
+        ),
+    ])
+    agent = build_native_agent(tmp_path, provider, max_steps=2)
+
+    answer = agent.ask("one correction only")
+
+    assert answer.startswith("Stopped after repeated malformed model responses")
+    assert len(provider.calls) == 3
+    assert agent.current_task_state.attempts == 3
+
+
+def test_missing_custom_transport_evidence_is_null_in_report(tmp_path):
+    provider = NativeScriptProvider([
+        Response(
+            stop_reason=StopReason.END_TURN,
+            content=[{"type": "text", "text": "done"}],
+            usage={},
+        )
+    ])
+    agent = build_native_agent(tmp_path, provider)
+
+    assert agent.ask("custom") == "done"
+    execution = agent.run_store.load_report(agent.current_task_state.run_id)[
+        "model_execution"
+    ]
+    assert execution["transport_evidence_complete"] is False
+    assert execution["transport_attempts"] is None
+    assert execution["transport_retries"] is None
 
 
 def test_pico_ask_delegates_to_agent_loop(tmp_path):
@@ -620,7 +810,7 @@ def test_model_error_marks_run_failed_and_writes_report(tmp_path):
     [
         ("final", "completed", "final_answer_returned", 1, 0, 1, 2, 0),
         ("step_limit", "stopped", "step_limit_reached", 1, 1, 1, 2, 0),
-        ("retry_limit", "stopped", "retry_limit_reached", 5, 0, 5, 10, 0),
+        ("retry_limit", "stopped", "retry_limit_reached", 2, 0, 2, 4, 0),
         ("model_error", "failed", "model_error", 1, 0, 1, 0, 1),
         ("preflight_error", "failed", "runtime_error", 0, 0, 0, 0, 1),
         ("persistence_error", "failed", "persistence_error", 1, 0, 1, 2, 1),

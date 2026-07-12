@@ -1,10 +1,15 @@
 """Ollama provider client."""
 
 import json
-import urllib.error
 import urllib.request
 
-from ._shared import _decode_json_object, _optional_int
+from ._shared import (
+    _decode_json_object,
+    _open_provider_request,
+    _optional_int,
+    _validate_number,
+)
+from .response import StopReason
 
 
 class OllamaModelClient:
@@ -13,13 +18,18 @@ class OllamaModelClient:
 
         self.model = model
         self.host = validate_provider_base_url(host).rstrip("/")
-        self.temperature = temperature
-        self.top_p = top_p
-        self.timeout = timeout
+        self.temperature = _validate_number("temperature", temperature, minimum=0)
+        self.top_p = _validate_number("top_p", top_p, minimum=0, maximum=1)
+        self.timeout = _validate_number("timeout", timeout, minimum=0.001)
         self.last_completion_metadata = {}
+        self.last_transport_attempts = 0
+        self.last_stop_reason = StopReason.END_TURN
 
     def complete_text(self, prompt, max_tokens):
         self.last_completion_metadata = {}
+        self.last_transport_attempts = 0
+        self.last_stop_reason = StopReason.END_TURN
+        _validate_number("max_tokens", max_tokens, minimum=1, integer=True)
         payload = {
             "model": self.model,
             "prompt": prompt,
@@ -38,15 +48,12 @@ class OllamaModelClient:
             headers={"Content-Type": "application/json"},
             method="POST",
         )
-        try:
-            with urllib.request.urlopen(request, timeout=self.timeout) as response:
-                response_body = response.read()
-        except urllib.error.HTTPError as exc:
-            raise RuntimeError(
-                f"Ollama request failed with HTTP {exc.code}"
-            ) from None
-        except (urllib.error.URLError, TimeoutError):
-            raise RuntimeError("Ollama request failed: network_error") from None
+        response_body, _ = _open_provider_request(
+            self,
+            request,
+            family="Ollama",
+            retryable=False,
+        )
 
         try:
             data = _decode_json_object(response_body)
@@ -55,6 +62,8 @@ class OllamaModelClient:
 
         if data.get("error"):
             raise RuntimeError("Ollama error: backend_error") from None
+        if data.get("done") is not True:
+            raise RuntimeError("Ollama error: invalid_response") from None
         response_text = data.get("response")
         if not isinstance(response_text, str):
             raise RuntimeError("Ollama error: invalid_response") from None
@@ -74,4 +83,11 @@ class OllamaModelClient:
             "cache_creation_input_tokens": 0,
             "cache_read_input_tokens": 0,
         }
+        done_reason = data.get("done_reason")
+        if done_reason == "length":
+            self.last_stop_reason = StopReason.MAX_TOKENS
+        elif done_reason in {None, "stop"}:
+            self.last_stop_reason = StopReason.END_TURN
+        else:
+            self.last_stop_reason = StopReason.UNKNOWN
         return response_text

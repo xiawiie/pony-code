@@ -1,6 +1,7 @@
 """Read-only diagnostics for Pico's explicit CLI commands."""
 
 import getpass
+import json
 import os
 import stat
 import sys
@@ -380,12 +381,15 @@ def check_provider_connectivity(config, timeout=2):
     try:
         response = request.urlopen(url, timeout=timeout)
         with response:
-            return {
+            result = {
                 "status": "ok",
                 "category": "provider_connectivity",
                 "url": diagnostic_url,
                 "http_status": response.status,
             }
+            if provider == "ollama":
+                return _check_ollama_model(config, response, result)
+            return result
     except error.HTTPError as exc:
         status = "ok" if 400 <= exc.code < 500 else "error"
         return {
@@ -402,6 +406,36 @@ def check_provider_connectivity(config, timeout=2):
             "url": diagnostic_url,
             "message": f"{type(exc).__name__}: provider connectivity check failed",
         }
+
+
+def _check_ollama_model(config, response, result):
+    model = str(config.get("model", {}).get("value", "")).strip()
+    try:
+        payload = json.loads(response.read(1_048_577))
+        models = payload["models"]
+        if not isinstance(models, list):
+            raise TypeError("models must be a list")
+        installed = {
+            value
+            for item in models
+            if isinstance(item, dict)
+            for value in (item.get("name"), item.get("model"))
+            if isinstance(value, str)
+        }
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+        return {
+            **result,
+            "status": "error",
+            "message": "Ollama model inventory response was invalid",
+        }
+    if model not in installed:
+        return {
+            **result,
+            "status": "error",
+            "message": "configured Ollama model is not installed",
+            "model_status": "missing",
+        }
+    return {**result, "model_status": "available"}
 
 
 def _explicit_provider_values(args):

@@ -66,11 +66,20 @@ uv run python -m benchmarks.perf.bench_security_recovery
 与独立 review 都通过后，才能取得一次新的明确授权并运行一个 Provider；旧授权不能复用，也不运行
 Provider matrix。
 
-证据只记录 Provider/model、commit、命令、assertion/call/token caps、耗时和 redacted summary。不得提交
-prompt、answer、key、header、request URL、response body 或 live JSON。执行后还必须验证 fixture 恢复、
-private mode、active artifact、session terminalization 与 secret absence。
+Live report format v2 只记录 Provider/model、exact Git SHA、固定 caps、每 turn 的行为标签与计数、
+assertion name/gate/boolean、usage totals、墙钟时间和固定错误码。不得记录 prompt、answer、raw error、
+assertion raw actual、key、header、request URL 或 response body。fixture 退出并验证恢复后才能写最终报告。
 
-## 基线与最终实现证据
+四个 gate 必须独立展示：Behavior、Transport/Cost、Credential/Artifact Security、Persistence/Fixture。
+只有四者均为 pass 才能称为“全量通过”。Transport 行应显示 `model attempts N (cap 15)`、HTTP attempts 与
+retries；cap 是上限，不是通过分母。retry 或 billing ambiguity 为 degraded；证据/usage 缺失或 cap 超限
+为 fail，两者都使 `overall_pass=false`。
+
+Live CLI 使用 `--max-model-attempts`、`--request-timeout-seconds` 和 `--max-wall-seconds`。前者限制逻辑
+Model Attempt，request timeout 作用于单个 HTTP 请求，wall cap 只在 turn 边界观测。Ollama 只有 `/api/tags`
+可达且配置模型已安装时才进入 live；否则为 `not_configured`，不启动服务、不拉取模型、也不发送生成请求。
+
+## 历史基线证据
 
 硬切前源码基线 `5f359bd18fb3a59968167bfe0196352d41a23a01` 的可重建结果是：本地
 `1997 passed, 6 skipped`，offline assertions `60 passed`；wheel/sdist 可构建但 sdist 携带完整 tests，
@@ -78,7 +87,7 @@ macOS 全量有两条后台线程 `fork()` warning。此前单次获授权 DeepS
 `10/15` Provider calls、13,842 input tokens、1,330 output tokens、5,248 cache-read tokens、44.253 秒；
 该授权与结果不用于最终 E2E。
 
-最终实现证据 commit `ffc5a60ce91885038264c0cfc4185e13c66a19a3`：
+上一阶段实现证据 commit `ffc5a60ce91885038264c0cfc4185e13c66a19a3`（不代表当前 Provider v2）：
 
 - 本地 Python 3.12：Ruff 通过，`2021 passed, 6 skipped`，offline assertions `66 passed`；
 - macOS warning-as-error focused：显式 FIFO `2 passed`，完整 focused `453 passed`；
@@ -89,5 +98,5 @@ macOS 全量有两条后台线程 `fork()` warning。此前单次获授权 DeepS
   Python 3.11/3.12 均为 `2021 passed, 6 skipped` 且 offline `66 passed`，Python 3.12 build/clean-install
   成功；macOS Python 3.12 为 FIFO `2 passed` 与 focused `453 passed`。
 
-最终任务交付还必须给出交付 commit 的 exact-SHA CI run 和独立 review 结论。真实 Provider 仍保持未运行，
-等待新的明确授权。
+每次新交付仍必须给出交付 commit 的 exact-SHA CI run 和独立 review 结论。真实 Provider live 证据不得从
+历史 run 推断；必须在当前离线门禁、build 和 review 通过后取得新的明确授权，并对目标 exact SHA 单独运行。

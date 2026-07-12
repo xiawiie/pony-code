@@ -222,6 +222,12 @@ def decode_action(response: Response) -> Action:
             )
         return _retry("empty_final_protocol", "text_protocol", leading)
 
+    if response.stop_reason == StopReason.REFUSAL:
+        return FinalAction(
+            text=merged_text or "The model declined this request.",
+            origin="provider_text",
+        )
+
     if response.stop_reason == StopReason.END_TURN and merged_text:
         return FinalAction(text=merged_text, origin="provider_text")
     if response.stop_reason == StopReason.MAX_TOKENS and merged_text:

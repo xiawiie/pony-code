@@ -94,24 +94,24 @@ def _build_model_client(args, *, project_env=None, process_env=None):
             model=model,
             base_url=base_url,
             api_key=api_key,
-            temperature=args.temperature,
-            timeout=getattr(args, "openai_timeout", getattr(args, "ollama_timeout", 300)),
+            temperature=None,
+            timeout=args.request_timeout_seconds,
         ))
     if provider == "anthropic":
         return AnthropicCompatibleModelClient(
             model=model,
             base_url=base_url,
             api_key=api_key,
-            temperature=args.temperature,
-            timeout=getattr(args, "openai_timeout", getattr(args, "ollama_timeout", 300)),
+            temperature=None,
+            timeout=args.request_timeout_seconds,
         )
     if provider == "deepseek":
         return AnthropicCompatibleModelClient(
             model=model,
             base_url=base_url,
             api_key=api_key,
-            temperature=args.temperature,
-            timeout=getattr(args, "openai_timeout", getattr(args, "ollama_timeout", 300)),
+            temperature=None,
+            timeout=args.request_timeout_seconds,
         )
 
     return TextProtocolAdapter(OllamaModelClient(
@@ -119,7 +119,7 @@ def _build_model_client(args, *, project_env=None, process_env=None):
         host=base_url,
         temperature=args.temperature,
         top_p=args.top_p,
-        timeout=args.ollama_timeout,
+        timeout=args.request_timeout_seconds,
     ))
 
 
@@ -258,8 +258,12 @@ def build_arg_parser():
     )
     parser.add_argument("--host", default=DEFAULT_OLLAMA_HOST, help="Ollama server URL.")
     parser.add_argument("--base-url", default=None, help="Provider API base URL for deepseek, openai, or anthropic.")
-    parser.add_argument("--ollama-timeout", type=int, default=300, help="Ollama request timeout in seconds.")
-    parser.add_argument("--openai-timeout", type=int, default=300, help="OpenAI-compatible request timeout in seconds.")
+    parser.add_argument(
+        "--request-timeout-seconds",
+        type=int,
+        default=300,
+        help="Provider request timeout in seconds.",
+    )
     parser.add_argument("--resume", default=None, help="Session id to resume or 'latest'.")
     parser.add_argument("--approval", choices=("ask", "auto", "never"), default="ask", help="Approval policy for risky tools.")
     parser.add_argument(
@@ -271,8 +275,8 @@ def build_arg_parser():
     )
     parser.add_argument("--max-steps", type=int, default=DEFAULT_MAX_STEPS, help="Maximum tool/model iterations per request.")
     parser.add_argument("--max-new-tokens", type=int, default=DEFAULT_MAX_NEW_TOKENS, help="Maximum model output tokens per step.")
-    parser.add_argument("--temperature", type=float, default=0.2, help="Sampling temperature sent to Ollama.")
-    parser.add_argument("--top-p", type=float, default=0.9, help="Top-p sampling value sent to Ollama.")
+    parser.add_argument("--temperature", type=float, default=0.2, help="Ollama sampling temperature.")
+    parser.add_argument("--top-p", type=float, default=0.9, help="Ollama top-p sampling value.")
     parser.add_argument("--format", choices=("text", "json"), default="text", help="Output format for inspection commands.")
     parser.add_argument("--quiet", action="store_true", help="Suppress non-essential human output.")
     parser.add_argument("--no-color", action="store_true", help="Disable colored output.")

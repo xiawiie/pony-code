@@ -17,7 +17,6 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -39,7 +38,14 @@ from pico.security import (
 )
 
 
-LIVE_E2E_REPORT_FORMAT_VERSION = 1
+LIVE_E2E_REPORT_FORMAT_VERSION = 2
+
+
+def _positive_int(value):
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return parsed
 
 
 def load_live_report(path):
@@ -135,9 +141,10 @@ class RunConfig:
 
     provider: Literal["anthropic", "deepseek", "ollama", "openai"]
     model: str
-    max_provider_calls: int
+    max_model_attempts: int
     max_total_tokens: int
-    timeout_seconds: int
+    request_timeout_seconds: int
+    max_wall_seconds: int
     reset: bool
     verbose: bool
 
@@ -170,9 +177,10 @@ def parse_args(*, project_env=None, process_env=None) -> RunConfig:
         default="deepseek",
     )
     parser.add_argument("--model", default=None)
-    parser.add_argument("--max-provider-calls", type=int, default=15)
-    parser.add_argument("--max-total-tokens", type=int, default=200_000)
-    parser.add_argument("--timeout-seconds", type=int, default=300)
+    parser.add_argument("--max-model-attempts", type=_positive_int, default=15)
+    parser.add_argument("--max-total-tokens", type=_positive_int, default=200_000)
+    parser.add_argument("--request-timeout-seconds", type=_positive_int, default=300)
+    parser.add_argument("--max-wall-seconds", type=_positive_int, default=900)
     parser.add_argument("--reset", action="store_true")
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
@@ -184,9 +192,10 @@ def parse_args(*, project_env=None, process_env=None) -> RunConfig:
     return RunConfig(
         provider=args.provider,
         model=args.model or settings["model"],
-        max_provider_calls=args.max_provider_calls,
+        max_model_attempts=args.max_model_attempts,
         max_total_tokens=args.max_total_tokens,
-        timeout_seconds=args.timeout_seconds,
+        request_timeout_seconds=args.request_timeout_seconds,
+        max_wall_seconds=args.max_wall_seconds,
         reset=args.reset,
         verbose=args.verbose,
     )
@@ -201,6 +210,22 @@ def check_env(config: RunConfig, *, settings=None) -> None:
         required_name = API_KEY_ENV_NAMES[config.provider][0]
         print(f"[live-e2e] missing {required_name}, aborted", file=sys.stderr)
         raise SystemExit(2)
+
+
+def check_live_readiness(config: RunConfig, *, settings=None) -> bool:
+    if config.provider != "ollama":
+        return True
+    from pico.cli_diagnostics import check_provider_connectivity
+
+    settings = settings or provider_settings(config.provider)
+    result = check_provider_connectivity(
+        {
+            "provider": {"value": "ollama"},
+            "model": {"value": config.model},
+            "base_url": {"value": settings["base_url"]},
+        }
+    )
+    return result.get("status") == "ok" and result.get("model_status") == "available"
 
 
 def verify_pico_repo(root: Path) -> None:
@@ -266,6 +291,8 @@ class FixtureManager:
             Path(__file__).resolve().parent / "fixtures" / "seed_cache_note.md"
         )
         self._had_pico_toml = False
+        self._original_pico_toml: bytes | None = None
+        self.cleanup_errors: list[str] = []
 
     def __enter__(self) -> "FixtureManager":
         pico_toml = self.repo_root / PICO_TOML_REL
@@ -274,6 +301,7 @@ class FixtureManager:
         if pico_toml.exists():
             self._had_pico_toml = True
             original = pico_toml.read_bytes()
+            self._original_pico_toml = original
             contains_sensitive = contains_secret_material(
                 original.decode("utf-8", errors="replace"),
                 env=os.environ,
@@ -291,16 +319,20 @@ class FixtureManager:
                 trusted_root=backup_root,
                 trusted_root_identity=private_directory_identity(backup_root),
             )
-        # 2. Write fixture
-        pico_toml.write_text(FIXTURE_PICO_TOML, encoding="utf-8")
-        # 3. Write seed note
-        seed_target = self.repo_root / SEED_NOTE_REL
-        ensure_private_dir(seed_target.parent)
-        seed_target.write_text(
-            self._seed_source.read_text(encoding="utf-8"),
-            encoding="utf-8",
-        )
-        ensure_private_file(seed_target)
+        try:
+            # 2. Write fixture
+            pico_toml.write_text(FIXTURE_PICO_TOML, encoding="utf-8")
+            # 3. Write seed note
+            seed_target = self.repo_root / SEED_NOTE_REL
+            ensure_private_dir(seed_target.parent)
+            seed_target.write_text(
+                self._seed_source.read_text(encoding="utf-8"),
+                encoding="utf-8",
+            )
+            ensure_private_file(seed_target)
+        except Exception:
+            self.__exit__(*sys.exc_info())
+            raise
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
@@ -309,18 +341,49 @@ class FixtureManager:
             seed_target = self.repo_root / SEED_NOTE_REL
             if seed_target.exists():
                 seed_target.unlink()
-        except OSError as e:
-            print(f"[live-e2e] teardown: could not remove seed note: {e}", file=sys.stderr)
+        except OSError:
+            self.cleanup_errors.append("seed_remove_failed")
+            print("[live-e2e] teardown: could not remove seed note", file=sys.stderr)
         try:
             pico_toml = self.repo_root / PICO_TOML_REL
             backup = self.repo_root / BACKUP_REL
-            if self._had_pico_toml and backup.exists():
-                pico_toml.write_bytes(backup.read_bytes())
-                backup.unlink()
+            if self._had_pico_toml:
+                if not backup.exists():
+                    self.cleanup_errors.append("config_backup_missing")
+                else:
+                    pico_toml.write_bytes(backup.read_bytes())
+                    backup.unlink()
             elif pico_toml.exists():
                 pico_toml.unlink()
-        except OSError as e:
-            print(f"[live-e2e] teardown: pico.toml restore failed: {e}", file=sys.stderr)
+        except OSError:
+            self.cleanup_errors.append("config_restore_failed")
+            print("[live-e2e] teardown: pico.toml restore failed", file=sys.stderr)
+
+    def restoration_status(self):
+        pico_toml = self.repo_root / PICO_TOML_REL
+        backup = self.repo_root / BACKUP_REL
+        seed = self.repo_root / SEED_NOTE_REL
+        try:
+            config_restored = (
+                pico_toml.read_bytes() == self._original_pico_toml
+                if self._had_pico_toml and pico_toml.is_file()
+                else not self._had_pico_toml and not pico_toml.exists()
+            )
+            restored = (
+                not self.cleanup_errors
+                and not seed.exists()
+                and not backup.exists()
+                and config_restored
+            )
+        except OSError:
+            restored = False
+            if "restoration_check_failed" not in self.cleanup_errors:
+                self.cleanup_errors.append("restoration_check_failed")
+        return {
+            "restored": restored,
+            "cleanup_error_codes": tuple(self.cleanup_errors),
+        }
+
 
 @dataclass(frozen=True)
 class TurnResult:
@@ -333,7 +396,13 @@ class TurnResult:
     metadata: dict
     session_message_count_before: int
     session_message_count_after: int
-    provider_call_count_this_turn: int
+    model_turns_this_turn: int
+    model_attempts_this_turn: int
+    model_failures_this_turn: int
+    transport_attempts_this_turn: int | None
+    transport_retries_this_turn: int | None
+    transport_evidence_complete: bool
+    billing_ambiguous: bool
     duration_ms: int
     usage: dict
     stopped_at_step_limit: bool
@@ -364,7 +433,13 @@ _TERMINAL_STATUSES = {"completed", "stopped", "failed"}
 
 def _empty_trace_capture():
     return {
-        "provider_calls": 0,
+        "model_turns": 0,
+        "model_attempts": 0,
+        "model_failures": 0,
+        "transport_attempts": None,
+        "transport_retries": None,
+        "transport_evidence_complete": False,
+        "billing_ambiguous": True,
         "usage": {key: 0 for key in _LIVE_USAGE_KEYS},
         "usage_complete": False,
         "request_metadata": [],
@@ -386,12 +461,31 @@ def read_turn_trace(trace_path):
     if not all(isinstance(event, dict) for event in events):
         return _empty_trace_capture()
 
+    requests = [event for event in events if event.get("event") == "model_requested"]
     turns = [event for event in events if event.get("event") == "model_turn"]
+    failures = [event for event in events if event.get("event") == "model_failed"]
     actions = [event for event in events if event.get("event") == "action_decoded"]
     totals = {key: 0 for key in _LIVE_USAGE_KEYS}
     usage_complete = bool(turns)
     request_metadata = []
     cache_keys = []
+    transport_events = turns + failures
+    transport_complete = bool(requests) and all(
+        event.get("transport_evidence_complete") is True
+        and type(event.get("transport_attempts")) is int
+        and type(event.get("transport_retries")) is int
+        for event in transport_events
+    )
+    transport_attempts = (
+        sum(event["transport_attempts"] for event in transport_events)
+        if transport_complete
+        else None
+    )
+    transport_retries = (
+        sum(event["transport_retries"] for event in transport_events)
+        if transport_complete
+        else None
+    )
 
     for turn in turns:
         usage = turn.get("completion_usage")
@@ -416,7 +510,22 @@ def read_turn_trace(trace_path):
         cache_keys.append(cache_key if isinstance(cache_key, str) else "")
 
     return {
-        "provider_calls": len(turns),
+        "model_turns": len(turns),
+        "model_attempts": len(requests),
+        "model_failures": len(failures),
+        "transport_attempts": transport_attempts,
+        "transport_retries": transport_retries,
+        "transport_evidence_complete": transport_complete,
+        "billing_ambiguous": (
+            not transport_complete
+            or not usage_complete
+            or bool(transport_retries)
+            or any(
+                type(event.get("transport_attempts")) is int
+                and event["transport_attempts"] > 0
+                for event in failures
+            )
+        ),
         "usage": totals,
         "usage_complete": usage_complete,
         "request_metadata": request_metadata,
@@ -590,7 +699,13 @@ class TurnRunner:
             metadata=metadata,
             session_message_count_before=session_before,
             session_message_count_after=session_after,
-            provider_call_count_this_turn=captured["provider_calls"],
+            model_turns_this_turn=captured["model_turns"],
+            model_attempts_this_turn=captured["model_attempts"],
+            model_failures_this_turn=captured["model_failures"],
+            transport_attempts_this_turn=captured["transport_attempts"],
+            transport_retries_this_turn=captured["transport_retries"],
+            transport_evidence_complete=captured["transport_evidence_complete"],
+            billing_ambiguous=captured["billing_ambiguous"],
             duration_ms=duration_ms,
             usage=captured["usage"],
             stopped_at_step_limit=stopped_at_step_limit,
@@ -617,6 +732,24 @@ class Assertion:
     passed: bool
     expected: str
     actual: str
+    gate: str = ""
+
+    def __post_init__(self):
+        if not self.gate:
+            object.__setattr__(self, "gate", _assertion_gate(self.name))
+
+
+def _assertion_gate(name):
+    if any(part in name for part in ("usage", "tokens_under_cap", "attempts_under_cap")):
+        return "transport_cost"
+    if any(part in name for part in ("api_key", "artifact_modes")):
+        return "security"
+    if any(
+        part in name
+        for part in ("session_is_current", "tool_pairs", "artifacts_terminal", "fixture")
+    ):
+        return "persistence"
+    return "behavior"
 
 
 class AssertionEngine:
@@ -808,7 +941,7 @@ class AssertionEngine:
             actual=source_hash or "(empty)",
         ))
 
-        provider_calls = result.provider_call_count_this_turn
+        model_turns = result.model_turns_this_turn
         expected_origin = self.expected_action_origin
         out.append(Assertion(
             name="provider_tool_action_observed",
@@ -817,10 +950,10 @@ class AssertionEngine:
             actual=str(result.action_origins),
         ))
         out.append(Assertion(
-            name="native_tool_roundtrip_uses_multiple_provider_calls",
-            passed=provider_calls >= 2,
-            expected="provider_call_count_this_turn >= 2",
-            actual=str(provider_calls),
+            name="native_tool_roundtrip_uses_multiple_model_turns",
+            passed=model_turns >= 2,
+            expected="model_turns_this_turn >= 2",
+            actual=str(model_turns),
         ))
         out.append(Assertion(
             name="turn_usage_complete",
@@ -831,20 +964,20 @@ class AssertionEngine:
 
         actual_user_contents = result.actual_user_contents
         contents_cover_calls = (
-            provider_calls > 0
-            and len(actual_user_contents) == provider_calls
+            model_turns > 0
+            and len(actual_user_contents) == model_turns
         )
         out.append(Assertion(
-            name="actual_user_contents_cover_every_provider_call",
+            name="actual_user_contents_cover_every_model_turn",
             passed=contents_cover_calls,
             expected="one actual_user_content for each provider call",
             actual=(
-                f"contents={len(actual_user_contents)}, calls={provider_calls}"
+                f"contents={len(actual_user_contents)}, calls={model_turns}"
             ),
         ))
         call_metadata = result.request_metadata_by_call
         metadata_cover_calls = (
-            len(call_metadata) == provider_calls
+            len(call_metadata) == model_turns
             and all(isinstance(metadata, dict) for metadata in call_metadata)
         )
         user_prompt_reached = contents_cover_calls and metadata_cover_calls
@@ -861,7 +994,7 @@ class AssertionEngine:
                     user_prompt_reached = False
                     break
         out.append(Assertion(
-            name="injected_user_prompt_reaches_every_provider_call",
+            name="injected_user_prompt_reaches_every_model_turn",
             passed=user_prompt_reached,
             expected=(
                 "each call includes the prompt and includes <system-reminder> "
@@ -872,15 +1005,15 @@ class AssertionEngine:
 
         cache_keys = result.system_prefix_hashes
         keys_cover_calls = (
-            provider_calls > 0
-            and len(cache_keys) == provider_calls
+            model_turns > 0
+            and len(cache_keys) == model_turns
             and all(cache_keys)
         )
         out.append(Assertion(
-            name="system_prefix_hashes_cover_every_provider_call",
+            name="system_prefix_hashes_cover_every_model_turn",
             passed=keys_cover_calls,
             expected="one non-empty system_prefix_hash for each provider call",
-            actual=f"keys={len(cache_keys)}, calls={provider_calls}",
+            actual=f"keys={len(cache_keys)}, calls={model_turns}",
         ))
         keys_stable = keys_cover_calls and len(set(cache_keys)) == 1
         out.append(Assertion(
@@ -1010,7 +1143,7 @@ class AssertionEngine:
             for key in item.system_prefix_hashes
         ]
         expected_calls = sum(
-            item.provider_call_count_this_turn for item in all_results
+            item.model_turns_this_turn for item in all_results
         )
         keys_present = (
             expected_calls > 0
@@ -1171,13 +1304,13 @@ class AssertionEngine:
             actual=persisted_actual,
         ))
 
-        total_calls = sum(r.provider_call_count_this_turn for r in all_results)
+        total_calls = sum(r.model_attempts_this_turn for r in all_results)
         out.append(Assertion(
-            name="total_provider_calls_under_cap",
-            passed=total_calls <= self.config.max_provider_calls,
+            name="total_model_attempts_under_cap",
+            passed=total_calls <= self.config.max_model_attempts,
             expected=(
-                "sum(provider_call_count_this_turn) <= "
-                f"{self.config.max_provider_calls}"
+                "sum(model_attempts_this_turn) <= "
+                f"{self.config.max_model_attempts}"
             ),
             actual=str(total_calls),
         ))
@@ -1297,25 +1430,17 @@ class Reporter:
             "provider": config.provider,
             "model": config.model,
             "git_head": git_head,
-            "python_version": sys.version,
-            "session_schema": session_schema,
             "aborted_reason": aborted_reason or "",
             "wall_time_ms": wall_time_ms,
             "config": {
-                "max_provider_calls": config.max_provider_calls,
+                "max_model_attempts": config.max_model_attempts,
                 "max_total_tokens": config.max_total_tokens,
-                "timeout_seconds": config.timeout_seconds,
+                "request_timeout_seconds": config.request_timeout_seconds,
+                "max_wall_seconds": config.max_wall_seconds,
             },
             "turns": [self._turn_to_json(r, all_assertions.get(r.turn, [])) for r in all_results],
             "global_assertions": [self._assertion_to_json(a) for a in all_assertions.get("global", [])],
             "totals": totals,
-            "action_origin_summary": dict(
-                Counter(
-                    origin
-                    for result in all_results
-                    for origin in result.action_origins
-                )
-            ),
         }
 
         # assertion summary
@@ -1331,6 +1456,12 @@ class Reporter:
             "passed": passed,
             "failed": total - passed,
         }
+        payload["gates"] = self._build_gates(
+            all_results,
+            all_assertions,
+            totals,
+            wall_time_ms,
+        )
         completed_all_turns = len(all_results) == expected_turn_count
         turn_assertions_present = all(
             bool(all_assertions.get(result.turn)) for result in all_results
@@ -1342,7 +1473,7 @@ class Reporter:
             and turn_assertions_present
             and global_assertions_present
             and total > 0
-            and total == passed
+            and all(gate["status"] == "pass" for gate in payload["gates"].values())
         )
 
         payload["artifact_security"] = {
@@ -1386,31 +1517,26 @@ class Reporter:
     def _turn_to_json(self, r, assertions) -> dict:
         return {
             "turn": r.turn,
-            "user_prompt": r.user_prompt,
             "expected_behavior": r.expected_behavior,
             "duration_ms": r.duration_ms,
-            "provider_calls_this_turn": r.provider_call_count_this_turn,
-            "final_answer": r.final_answer[:500],
+            "model_attempts": r.model_attempts_this_turn,
+            "model_turns": r.model_turns_this_turn,
+            "model_failures": r.model_failures_this_turn,
+            "transport_attempts": r.transport_attempts_this_turn,
+            "transport_retries": r.transport_retries_this_turn,
+            "transport_retry_reason_counts": (
+                None
+                if not r.transport_evidence_complete
+                else {"unknown": r.transport_retries_this_turn}
+                if r.transport_retries_this_turn
+                else {}
+            ),
+            "transport_evidence_complete": r.transport_evidence_complete,
+            "billing_ambiguous": r.billing_ambiguous,
             "stopped_at_step_limit": r.stopped_at_step_limit,
-            "error": r.error,
+            "error_code": "turn_error" if r.error else "",
             "usage": r.usage,
             "usage_complete": r.usage_complete,
-            "request_metadata_by_call": r.request_metadata_by_call,
-            "system_prefix_hashes": r.system_prefix_hashes,
-            "action_origins": r.action_origins,
-            "actual_user_contents": r.actual_user_contents,
-            "run_id": r.run_id,
-            "task_state_terminal": r.task_state_terminal,
-            "report_terminal": r.report_terminal,
-            "trace_terminal": r.trace_terminal,
-            "metadata_subset": {
-                k: (r.metadata or {}).get(k) for k in [
-                    "intent", "injection_tokens", "injection_dropped",
-                    "injection_budget", "recall.error_count",
-                    "dropped_messages", "messages_tokens", "system_prefix_hash",
-                    "cache_control_breakpoints",
-                ] if k in (r.metadata or {})
-            },
             "assertions": [self._assertion_to_json(a) for a in assertions],
         }
 
@@ -1418,9 +1544,74 @@ class Reporter:
     def _assertion_to_json(a) -> dict:
         return {
             "name": a.name,
+            "gate": a.gate,
             "passed": a.passed,
-            "expected": a.expected,
-            "actual": a.actual,
+        }
+
+    def _build_gates(self, all_results, all_assertions, totals, wall_time_ms):
+        assertions = [item for group in all_assertions.values() for item in group]
+
+        def assertions_pass(gate):
+            selected = [item for item in assertions if item.gate == gate]
+            return bool(selected) and all(item.passed for item in selected)
+
+        model_attempts = sum(item.model_attempts_this_turn for item in all_results)
+        model_turns = sum(item.model_turns_this_turn for item in all_results)
+        model_failures = sum(item.model_failures_this_turn for item in all_results)
+        evidence_complete = bool(all_results) and all(
+            item.transport_evidence_complete for item in all_results
+        )
+        usage_complete = bool(all_results) and all(item.usage_complete for item in all_results)
+        transport_attempts = (
+            sum(item.transport_attempts_this_turn or 0 for item in all_results)
+            if evidence_complete else None
+        )
+        transport_retries = (
+            sum(item.transport_retries_this_turn or 0 for item in all_results)
+            if evidence_complete else None
+        )
+        transport_failed = (
+            not assertions_pass("transport_cost")
+            or not evidence_complete
+            or not usage_complete
+            or model_attempts > self.config.max_model_attempts
+            or wall_time_ms > self.config.max_wall_seconds * 1000
+        )
+        transport_degraded = (
+            not transport_failed
+            and (bool(transport_retries) or any(item.billing_ambiguous for item in all_results))
+        )
+        return {
+            "behavior": {
+                "status": "pass" if assertions_pass("behavior") and not model_failures else "fail",
+                "model_turns": model_turns,
+                "model_failures": model_failures,
+            },
+            "transport_cost": {
+                "status": "fail" if transport_failed else "degraded" if transport_degraded else "pass",
+                "model_attempts": model_attempts,
+                "model_attempt_cap": self.config.max_model_attempts,
+                "transport_attempts": transport_attempts,
+                "transport_retries": transport_retries,
+                "transport_retry_reason_counts": (
+                    None
+                    if transport_retries is None
+                    else {"unknown": transport_retries}
+                    if transport_retries
+                    else {}
+                ),
+                "transport_evidence_complete": evidence_complete,
+                "usage_complete": usage_complete,
+                "billing_ambiguous": any(item.billing_ambiguous for item in all_results),
+                "input_tokens": totals.get("input_tokens", 0),
+                "output_tokens": totals.get("output_tokens", 0),
+            },
+            "security": {
+                "status": "pass" if assertions_pass("security") else "fail",
+            },
+            "persistence": {
+                "status": "pass" if assertions_pass("persistence") else "fail",
+            },
         }
 
     def render_final(
@@ -1430,11 +1621,28 @@ class Reporter:
         wall_time_ms: int,
         report_path: Path,
         assertion_summary: tuple,
+        gates=None,
     ) -> None:
         passed, total = assertion_summary
         color = self._COLOR_GREEN if overall_pass else self._COLOR_RED
         label = "ALL PASS" if overall_pass else "FAIL"
-        print()
+        gates = gates or {}
+        transport = gates.get("transport_cost", {})
+        for gate_name, display_name in (
+            ("behavior", "Behavior"),
+            ("transport_cost", "Transport"),
+            ("security", "Security"),
+            ("persistence", "Persistence"),
+        ):
+            status = str(gates.get(gate_name, {}).get("status", "unknown")).upper()
+            print(f"[live-e2e] {display_name}: {status}")
+        print(
+            "[live-e2e] Transport evidence: "
+            f"model attempts {transport.get('model_attempts', 0)} "
+            f"(cap {transport.get('model_attempt_cap', self.config.max_model_attempts)}) · "
+            f"HTTP attempts {transport.get('transport_attempts')} · "
+            f"retries {transport.get('transport_retries')}"
+        )
         print(f"[live-e2e] OVERALL: {self._color(label, color)} · {passed}/{total} assertions")
         print(
             f"[live-e2e] wall_time={wall_time_ms/1000:.1f}s · "
@@ -1476,6 +1684,8 @@ class _SniffingProviderWrapper:
         self.calls: list[dict] = []
         # Delegate the cache capability used by request metadata.
         self.supports_prompt_cache = getattr(inner, "supports_prompt_cache", False)
+        self.last_transport_attempts = 0
+        self.last_stop_reason = None
 
     def complete(self, *, system, tools, messages, max_tokens, cache_breakpoints=None):
         last_user = ""
@@ -1505,10 +1715,18 @@ class _SniffingProviderWrapper:
             raise SensitiveDataBlockedError(
                 "live provider payload contains blocked sensitive material"
             )
-        return self._inner.complete(
-            system=system, tools=tools, messages=messages,
-            max_tokens=max_tokens, cache_breakpoints=cache_breakpoints,
-        )
+        try:
+            return self._inner.complete(
+                system=system, tools=tools, messages=messages,
+                max_tokens=max_tokens, cache_breakpoints=cache_breakpoints,
+            )
+        finally:
+            self.last_transport_attempts = getattr(
+                self._inner, "last_transport_attempts", None
+            )
+            self.last_stop_reason = getattr(
+                self._inner, "last_stop_reason", None
+            )
 
 def make_live_client(config: RunConfig, *, settings=None):
     """Instantiate the selected live client using its production transport."""
@@ -1524,8 +1742,8 @@ def make_live_client(config: RunConfig, *, settings=None):
                 model=config.model,
                 base_url=settings["base_url"],
                 api_key=settings["api_key"],
-                temperature=0.0,
-                timeout=config.timeout_seconds,
+                temperature=None,
+                timeout=config.request_timeout_seconds,
             )
         else:
             from pico.providers.ollama import OllamaModelClient
@@ -1535,7 +1753,7 @@ def make_live_client(config: RunConfig, *, settings=None):
                 host=settings["base_url"],
                 temperature=0.0,
                 top_p=0.9,
-                timeout=config.timeout_seconds,
+                timeout=config.request_timeout_seconds,
             )
         inner = TextProtocolAdapter(text_client)
     else:
@@ -1545,8 +1763,8 @@ def make_live_client(config: RunConfig, *, settings=None):
             model=config.model,
             base_url=settings["base_url"],
             api_key=settings["api_key"],
-            temperature=0.0,
-            timeout=config.timeout_seconds,
+            temperature=None,
+            timeout=config.request_timeout_seconds,
         )
     return _SniffingProviderWrapper(
         inner,
@@ -1558,9 +1776,12 @@ def _budget_exceeded(all_results: list, config: RunConfig, wall_start_ns: int) -
     """Return a short reason string if any cost guard has fired; else None."""
     if any(not result.usage_complete for result in all_results):
         return "usage_unknown"
-    total_calls = sum(r.provider_call_count_this_turn for r in all_results)
-    if total_calls > config.max_provider_calls:
-        return f"max_provider_calls exceeded ({total_calls}>{config.max_provider_calls})"
+    total_attempts = sum(r.model_attempts_this_turn for r in all_results)
+    if total_attempts > config.max_model_attempts:
+        return (
+            "max_model_attempts exceeded "
+            f"({total_attempts}>{config.max_model_attempts})"
+        )
     total_tokens = 0
     for r in all_results:
         u = r.usage or {}
@@ -1569,8 +1790,8 @@ def _budget_exceeded(all_results: list, config: RunConfig, wall_start_ns: int) -
     if total_tokens > config.max_total_tokens:
         return f"max_total_tokens exceeded ({total_tokens}>{config.max_total_tokens})"
     elapsed_s = (time.monotonic_ns() - wall_start_ns) / 1e9
-    if elapsed_s > config.timeout_seconds:
-        return f"timeout_seconds exceeded ({elapsed_s:.0f}>{config.timeout_seconds})"
+    if elapsed_s > config.max_wall_seconds:
+        return f"max_wall_seconds exceeded ({elapsed_s:.0f}>{config.max_wall_seconds})"
     return None
 
 
@@ -1626,6 +1847,9 @@ def main() -> int:
         process_env=process_env,
     )
     check_env(config, settings=settings)
+    if not check_live_readiness(config, settings=settings):
+        print("[live-e2e] not_configured", file=sys.stderr)
+        return 2
     verify_pico_repo(repo_root)
     warn_if_dirty_working_tree(repo_root)
     selected_api_key = settings["api_key"].strip()
@@ -1662,10 +1886,8 @@ def main() -> int:
         (5, "最后 done", "cache_anchor_verified"),
     ]
 
-    with FixtureManager(
-        repo_root,
-        forbidden_values=(selected_api_key,),
-    ):
+    fixture = FixtureManager(repo_root, forbidden_values=(selected_api_key,))
+    with fixture:
         # Lazy import of pico so a broken pico module produces exit 4 (not 2).
         from pico.runtime import Pico
         from pico.session_store import SessionStore
@@ -1683,8 +1905,8 @@ def main() -> int:
                 max_steps=2,
                 allowed_tools=("read_file",),
             )
-        except Exception as exc:
-            print(f"[live-e2e] pico construction failed: {exc}", file=sys.stderr)
+        except Exception:
+            print("[live-e2e] pico construction failed", file=sys.stderr)
             return 4
 
         runner = TurnRunner(pico, config)
@@ -1696,16 +1918,12 @@ def main() -> int:
         aborted_reason: str | None = None
 
         for turn_no, prompt, expected in TURNS:
-            try:
-                result = runner.run_turn(turn_no, prompt, expected)
-            except Exception as exc:
-                print(f"[live-e2e] turn {turn_no} uncaught exception: {exc}", file=sys.stderr)
-                return 4
+            result = runner.run_turn(turn_no, prompt, expected)
             if result.error is not None:
                 # provider or pico error mid-turn
                 all_results.append(result)
                 all_assertions[turn_no] = []
-                print(f"[live-e2e] turn {turn_no} error: {result.error}", file=sys.stderr)
+                print(f"[live-e2e] turn {turn_no} failed", file=sys.stderr)
                 aborted_reason = f"provider_error_turn_{turn_no}"
                 break
             all_results.append(result)
@@ -1735,7 +1953,19 @@ def main() -> int:
 
         # Assemble totals
         totals = {
-            "provider_calls": sum(r.provider_call_count_this_turn for r in all_results),
+            "model_attempts": sum(r.model_attempts_this_turn for r in all_results),
+            "model_turns": sum(r.model_turns_this_turn for r in all_results),
+            "model_failures": sum(r.model_failures_this_turn for r in all_results),
+            "transport_attempts": (
+                sum(r.transport_attempts_this_turn or 0 for r in all_results)
+                if all(r.transport_evidence_complete for r in all_results)
+                else None
+            ),
+            "transport_retries": (
+                sum(r.transport_retries_this_turn or 0 for r in all_results)
+                if all(r.transport_evidence_complete for r in all_results)
+                else None
+            ),
             "input_tokens": sum(int((r.usage or {}).get("input_tokens", 0) or 0) for r in all_results),
             "output_tokens": sum(int((r.usage or {}).get("output_tokens", 0) or 0) for r in all_results),
             "cache_creation_input_tokens": sum(
@@ -1746,59 +1976,64 @@ def main() -> int:
             ),
         }
 
-        wall_time_ms = (time.monotonic_ns() - wall_start) // 1_000_000
-        git_head = subprocess.run(
-            ["git", "-C", str(repo_root), "rev-parse", "HEAD"],
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout.strip()
-        report_path = reporter.write_json(
-            all_results,
-            all_assertions,
-            config,
-            totals,
-            wall_time_ms,
-            aborted_reason=aborted_reason,
-            expected_turn_count=len(TURNS),
-            session_schema=int(pico.session.get("format_version", 0)),
-            git_head=git_head,
-            artifact_security=artifact_security,
-            redactor=lambda value: redact_artifact(
-                value,
-                env={"PICO_LIVE_API_KEY": selected_api_key},
-            ),
-            forbidden_values=(selected_api_key,),
-        )
+        session_schema = int(pico.session.get("format_version", 0))
 
-        # Compute overall pass
-        total_asserts = 0
-        passed_asserts = 0
-        for asserts_list in all_assertions.values():
-            for a in asserts_list:
-                total_asserts += 1
-                if a.passed:
-                    passed_asserts += 1
-        overall_pass = bool(load_live_report(report_path)["overall_pass"])
+    restoration = fixture.restoration_status()
+    fixture_assertion = Assertion(
+        name="fixture_restored_after_context_exit",
+        passed=restoration["restored"],
+        expected="fixture and backup restored after context exit",
+        actual=str(restoration["cleanup_error_codes"]),
+        gate="persistence",
+    )
+    all_assertions["global"].append(fixture_assertion)
+    reporter.render_turn_summary("fixture", "fixture restoration", [fixture_assertion])
 
-        reporter.render_final(
-            overall_pass=overall_pass,
-            totals=totals,
-            wall_time_ms=wall_time_ms,
-            report_path=report_path,
-            assertion_summary=(passed_asserts, total_asserts),
-        )
+    wall_time_ms = (time.monotonic_ns() - wall_start) // 1_000_000
+    git_head = subprocess.run(
+        ["git", "-C", str(repo_root), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    report_path = reporter.write_json(
+        all_results,
+        all_assertions,
+        config,
+        totals,
+        wall_time_ms,
+        aborted_reason=aborted_reason,
+        expected_turn_count=len(TURNS),
+        session_schema=session_schema,
+        git_head=git_head,
+        artifact_security=artifact_security,
+        redactor=lambda value: redact_artifact(
+            value,
+            env={"PICO_LIVE_API_KEY": selected_api_key},
+        ),
+        forbidden_values=(selected_api_key,),
+    )
 
-        if aborted_reason:
-            # Distinguish budget from provider error
-            if aborted_reason.startswith("provider_error"):
-                return 3
-            if "max_total_tokens" in aborted_reason:
-                return 5
-            if "timeout_seconds" in aborted_reason:
-                return 6
-            return 5  # max_provider_calls falls under exit 5 too
-        return 0 if overall_pass else 1
+    report = load_live_report(report_path)
+    total_asserts = report["assertion_summary"]["total"]
+    passed_asserts = report["assertion_summary"]["passed"]
+    overall_pass = bool(report["overall_pass"])
+    reporter.render_final(
+        overall_pass=overall_pass,
+        totals=totals,
+        wall_time_ms=wall_time_ms,
+        report_path=report_path,
+        assertion_summary=(passed_asserts, total_asserts),
+        gates=report["gates"],
+    )
+
+    if aborted_reason:
+        if aborted_reason.startswith("provider_error"):
+            return 3
+        if "max_wall_seconds" in aborted_reason:
+            return 6
+        return 5
+    return 0 if overall_pass else 1
 
 
 if __name__ == "__main__":

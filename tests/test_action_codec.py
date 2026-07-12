@@ -197,6 +197,19 @@ def test_max_tokens_plain_text_is_marked_truncated():
     )
 
 
+def test_refusal_is_terminal_instead_of_retrying_same_model():
+    assert decode_action(
+        response(text("Request declined"), stop=StopReason.REFUSAL)
+    ) == FinalAction(text="Request declined", origin="provider_text")
+
+
+def test_empty_refusal_uses_safe_terminal_text():
+    assert decode_action(response(stop=StopReason.REFUSAL)) == FinalAction(
+        text="The model declined this request.",
+        origin="provider_text",
+    )
+
+
 def test_unsupported_content_shape_is_a_total_retry():
     action = decode_action(response({"type": "image", "source": "x"}))
     assert isinstance(action, RetryAction)

@@ -17,11 +17,19 @@ AgentLoop 合同。
 **Model Attempt**：AgentLoop 为当前 Run 构建一次 Model Request 并尝试取得一个 Action 的逻辑轮次。
 它由 `TaskState.attempts` 计数，不等于工具执行次数或底层网络请求次数。
 
+**Model Retry**：可重试 Provider 失败后，由 AgentLoop 重新发起的 Model Attempt。最多两次，延迟为
+0.5 秒和 1.0 秒；它保留尚未完成的 `RetryAction` 反馈，但不复用已经得到成功响应的请求。
+
 **Transport Attempt**：一个 Model Attempt 在 Provider client 内的一次真实 transport 执行，例如一次
 HTTP POST。它包含首次执行与可能的 Transport Retry，不等于 Model Attempt。
 
 **Transport Retry**：同一 Model Attempt 中，首次 Transport Attempt 之后对同一 Model Request 的再次
-执行。它不同于 `RetryAction`；后者会开始新的 Model Attempt。
+执行。当前 production Provider client 每个 Model Attempt 最多执行一次 HTTP 请求，因此该值应为零；
+live 证据若观察到非零值只能标记为 degraded。它不同于 `RetryAction`；后者会开始新的 Model Attempt。
+
+**Model Turn / Model Failure**：Model Turn 是成功取得并解码 Action 的 Model Attempt；Model Failure 是
+Provider complete 或 response processing 阶段失败的 Model Attempt。`model_attempts` 可以大于两者之和，
+例如 request build 或进程强杀发生在可配对 trace 写入之前。
 
 维护文档不得用含义不明确的 “Provider Call” 同时指代 Model Attempt 与 Transport Attempt。
 

@@ -1,5 +1,7 @@
 """Adapt a text-only provider to Pico's structured completion surface."""
 
+import json
+
 from pico.messages import render_transcript, strip_pico_meta
 
 from .response import Response, StopReason
@@ -21,16 +23,12 @@ def _flatten_system(system):
 def _flatten_tools(tools):
     if not tools:
         return ""
-    lines = ["Available tools:"]
-    for tool in tools:
-        schema = tool.get("input_schema", {}).get("properties", {})
-        fields = ", ".join(
-            f"{name}: {value.get('type', 'any')}" for name, value in schema.items()
-        )
-        lines.append(
-            f"- {tool['name']}({fields}): {tool.get('description', '')}"
-        )
-    return "\n".join(lines)
+    return "Available tools (JSON):\n" + json.dumps(
+        tools,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
 
 
 class TextProtocolAdapter:
@@ -38,6 +36,7 @@ class TextProtocolAdapter:
         self._inner = text_provider
         self.supports_prompt_cache = False
         self.last_completion_metadata = {}
+        self.last_transport_attempts = 0
 
     def complete(
         self,
@@ -49,21 +48,34 @@ class TextProtocolAdapter:
         cache_breakpoints=None,
     ):
         del cache_breakpoints
+        self.last_completion_metadata = {}
+        self.last_transport_attempts = 0
         prompt = "\n\n".join(
             part
             for part in (
                 _flatten_system(system),
                 _flatten_tools(tools),
                 _TEXT_PROTOCOL_INSTRUCTION,
-                render_transcript(strip_pico_meta(messages)),
+                "<transcript>\n"
+                + render_transcript(strip_pico_meta(messages))
+                + "\n</transcript>",
             )
             if part
         )
-        raw = self._inner.complete_text(prompt, max_tokens)
+        try:
+            raw = self._inner.complete_text(prompt, max_tokens)
+        finally:
+            attempts = getattr(self._inner, "last_transport_attempts", None)
+            self.last_transport_attempts = (
+                attempts if type(attempts) is int and attempts >= 0 else None
+            )
         usage = dict(getattr(self._inner, "last_completion_metadata", {}) or {})
         self.last_completion_metadata = usage
+        stop_reason = getattr(self._inner, "last_stop_reason", StopReason.END_TURN)
+        if not isinstance(stop_reason, StopReason):
+            stop_reason = StopReason.END_TURN
         return Response(
-            stop_reason=StopReason.END_TURN,
+            stop_reason=stop_reason,
             content=[{"type": "text", "text": str(raw)}],
             usage=usage,
         )

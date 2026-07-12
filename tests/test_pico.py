@@ -435,20 +435,19 @@ def test_agent_accepts_xml_write_file_tool(tmp_path):
     assert (tmp_path / "hello.py").read_text(encoding="utf-8") == 'print("hi")\n'
 
 
-def test_retries_do_not_consume_the_whole_budget(tmp_path):
+def test_one_protocol_correction_can_recover(tmp_path):
     agent = build_agent(
         tmp_path,
         [
             "",
-            "",
-            "<final>Recovered after several retries.</final>",
+            "<final>Recovered after one correction.</final>",
         ],
         max_steps=1,
     )
 
     answer = agent.ask("Do the task")
 
-    assert answer == "Recovered after several retries."
+    assert answer == "Recovered after one correction."
 
 
 def test_agent_saves_and_resumes_session(tmp_path):
@@ -619,7 +618,7 @@ def test_build_agent_uses_openai_provider_and_model_override(tmp_path):
             "model": "override-model",
             "base_url": None,
             "host": "http://127.0.0.1:11434",
-            "ollama_timeout": 300,
+            "request_timeout_seconds": 300,
             "temperature": 0.2,
             "top_p": 0.9,
             "resume": None,
@@ -663,8 +662,7 @@ def test_build_agent_uses_shared_key_for_openai_provider(tmp_path):
             "model": None,
             "base_url": None,
             "host": "http://127.0.0.1:11434",
-            "ollama_timeout": 300,
-            "openai_timeout": 300,
+            "request_timeout_seconds": 300,
             "temperature": 0.2,
             "top_p": 0.9,
             "resume": None,
@@ -786,8 +784,7 @@ def test_build_agent_rejects_openai_key_for_anthropic_provider(tmp_path):
             "model": "claude-sonnet-4-5-20250929",
             "base_url": None,
             "host": "http://127.0.0.1:11434",
-            "ollama_timeout": 300,
-            "openai_timeout": 300,
+            "request_timeout_seconds": 300,
             "temperature": 0.2,
             "top_p": 0.9,
             "resume": None,
@@ -859,8 +856,7 @@ def test_build_agent_uses_deepseek_provider_and_env_configuration(tmp_path):
             "model": None,
             "base_url": None,
             "host": "http://127.0.0.1:11434",
-            "ollama_timeout": 300,
-            "openai_timeout": 300,
+            "request_timeout_seconds": 300,
             "temperature": 0.2,
             "top_p": 0.9,
             "resume": None,

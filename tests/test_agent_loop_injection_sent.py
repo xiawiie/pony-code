@@ -256,9 +256,9 @@ def test_retry_limit_feedback_is_one_shot_and_respects_attempt_cap(tmp_path):
 
     answer = agent.ask("keep retrying")
 
-    assert answer.startswith("Stopped after too many malformed model responses")
-    assert len(provider.calls) == 5
-    assert agent.current_task_state.attempts == 5
+    assert answer.startswith("Stopped after repeated malformed model responses")
+    assert len(provider.calls) == 2
+    assert agent.current_task_state.attempts == 2
     assert agent.current_task_state.tool_steps == 0
     assert agent.current_task_state.stop_reason == "retry_limit_reached"
     sent_users = [
@@ -270,17 +270,14 @@ def test_retry_limit_feedback_is_one_shot_and_respects_attempt_cap(tmp_path):
         for call in provider.calls
     ]
     assert sent_users[0].count("<pico:runtime_feedback>") == 0
-    assert all(
-        content.count("<pico:runtime_feedback>") == 1
-        for content in sent_users[1:]
-    )
+    assert sent_users[1].count("<pico:runtime_feedback>") == 1
     report = agent.run_store.load_report(agent.current_task_state.run_id)
-    assert report["attempts"] == 5
+    assert report["attempts"] == 2
     assert report["tool_steps"] == 0
     assert report["stop_reason"] == "retry_limit_reached"
-    assert report["completion_usage_totals"]["input_tokens"] == 15
-    assert report["completion_usage_totals"]["output_tokens"] == 5
-    assert report["completion_usage_totals"]["total_tokens"] == 20
+    assert report["completion_usage_totals"]["input_tokens"] == 3
+    assert report["completion_usage_totals"]["output_tokens"] == 2
+    assert report["completion_usage_totals"]["total_tokens"] == 5
     assert agent.session["messages"][-1]["content"] == answer
     trace_events = [
         json.loads(line)

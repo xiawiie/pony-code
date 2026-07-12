@@ -30,9 +30,10 @@ def _config(**overrides):
     defaults = dict(
         provider="deepseek",
         model="test-model",
-        max_provider_calls=15,
+        max_model_attempts=15,
         max_total_tokens=200_000,
-        timeout_seconds=300,
+        request_timeout_seconds=300,
+        max_wall_seconds=900,
         reset=False,
         verbose=False,
     )
@@ -188,6 +189,38 @@ def test_fixture_rejects_unlisted_high_confidence_secret_before_backup(
     assert not (tmp_path / run_live_session.BACKUP_REL).exists()
 
 
+def test_fixture_missing_backup_never_deletes_existing_config(tmp_path):
+    original = b"ordinary = true\n"
+    config = tmp_path / "pico.toml"
+    config.write_bytes(original)
+    seed = tmp_path / "seed.md"
+    seed.write_text("safe seed\n", encoding="utf-8")
+    fixture = run_live_session.FixtureManager(tmp_path)
+    fixture._seed_source = seed
+    fixture.__enter__()
+    (tmp_path / run_live_session.BACKUP_REL).unlink()
+
+    fixture.__exit__(None, None, None)
+
+    assert config.exists()
+    assert fixture.cleanup_errors == ["config_backup_missing"]
+    assert fixture.restoration_status()["restored"] is False
+
+
+def test_fixture_enter_failure_restores_original_config(tmp_path):
+    original = b"ordinary = true\n"
+    config = tmp_path / "pico.toml"
+    config.write_bytes(original)
+    fixture = run_live_session.FixtureManager(tmp_path)
+    fixture._seed_source = tmp_path / "missing-seed.md"
+
+    with pytest.raises(FileNotFoundError):
+        fixture.__enter__()
+
+    assert config.read_bytes() == original
+    assert not (tmp_path / run_live_session.BACKUP_REL).exists()
+
+
 def test_parse_args_selects_exactly_one_supported_provider(monkeypatch):
     monkeypatch.setattr(
         sys,
@@ -253,7 +286,7 @@ def test_openai_live_client_uses_text_protocol_adapter():
     from pico.providers.text_protocol_adapter import TextProtocolAdapter
 
     client = run_live_session.make_live_client(
-        _config(provider="openai", timeout_seconds=321),
+        _config(provider="openai", request_timeout_seconds=321),
         settings={
             "api_key": "sentinel-openai",
             "model": "test-model",
@@ -271,7 +304,7 @@ def test_ollama_live_client_uses_text_protocol_adapter():
     from pico.providers.text_protocol_adapter import TextProtocolAdapter
 
     client = run_live_session.make_live_client(
-        _config(provider="ollama", timeout_seconds=321),
+        _config(provider="ollama", request_timeout_seconds=321),
         settings={
             "api_key": "",
             "model": "test-model",
@@ -355,11 +388,16 @@ def test_read_turn_trace_aggregates_every_model_turn(tmp_path):
         "\n".join(
             json.dumps(event)
             for event in [
+                {"event": "model_requested", "attempt_origin": "initial"},
                 {
                     "event": "model_turn",
                     "request_metadata": {"system_prefix_hash": "k", "messages_count": 1},
                     "completion_usage": {"input_tokens": 10, "output_tokens": 2},
+                    "transport_attempts": 1,
+                    "transport_retries": 0,
+                    "transport_evidence_complete": True,
                 },
+                {"event": "model_requested", "attempt_origin": "tool_followup"},
                 {
                     "event": "action_decoded",
                     "action_type": "tool",
@@ -373,6 +411,9 @@ def test_read_turn_trace_aggregates_every_model_turn(tmp_path):
                         "output_tokens": 4,
                         "cache_read_input_tokens": 8,
                     },
+                    "transport_attempts": 1,
+                    "transport_retries": 0,
+                    "transport_evidence_complete": True,
                 },
                 {
                     "event": "action_decoded",
@@ -386,7 +427,13 @@ def test_read_turn_trace_aggregates_every_model_turn(tmp_path):
 
     captured = run_live_session.read_turn_trace(trace)
 
-    assert captured["provider_calls"] == 2
+    assert captured["model_turns"] == 2
+    assert captured["model_attempts"] == 2
+    assert captured["model_failures"] == 0
+    assert captured["transport_attempts"] == 2
+    assert captured["transport_retries"] == 0
+    assert captured["transport_evidence_complete"] is True
+    assert captured["billing_ambiguous"] is False
     assert captured["usage"] == {
         "input_tokens": 30,
         "output_tokens": 6,
@@ -430,7 +477,7 @@ def test_read_turn_trace_marks_missing_or_malformed_usage_unknown(tmp_path, cont
 
     captured = run_live_session.read_turn_trace(trace)
 
-    assert captured["provider_calls"] == 0
+    assert captured["model_turns"] == 0
     assert captured["usage_complete"] is False
 
 
@@ -440,7 +487,7 @@ def test_read_turn_trace_marks_non_utf8_artifact_usage_unknown(tmp_path):
 
     captured = run_live_session.read_turn_trace(trace)
 
-    assert captured["provider_calls"] == 0
+    assert captured["model_turns"] == 0
     assert captured["usage_complete"] is False
 
 
@@ -605,7 +652,7 @@ def test_turn_runner_does_not_reuse_previous_run_evidence_after_pre_run_failure(
     )
 
     assert result.error == "OSError: initial user save failed"
-    assert result.provider_call_count_this_turn == 0
+    assert result.model_turns_this_turn == 0
     assert result.usage_complete is False
     assert result.metadata == {}
     assert result.actual_user_contents == ()
@@ -746,7 +793,13 @@ def _turn_result_stub(**overrides):
         },
         session_message_count_before=0,
         session_message_count_after=2,
-        provider_call_count_this_turn=1,
+        model_turns_this_turn=1,
+        model_attempts_this_turn=1,
+        model_failures_this_turn=0,
+        transport_attempts_this_turn=1,
+        transport_retries_this_turn=0,
+        transport_evidence_complete=True,
+        billing_ambiguous=False,
         duration_ms=100,
         usage={"input_tokens": 10, "output_tokens": 5},
         stopped_at_step_limit=False,
@@ -838,7 +891,13 @@ def _turn_2_result_stub(**overrides):
         metadata={"injection_tokens": {"recalled_memory": 1}},
         session_message_count_before=2,
         session_message_count_after=6,
-        provider_call_count_this_turn=2,
+        model_turns_this_turn=2,
+        model_attempts_this_turn=2,
+        model_failures_this_turn=0,
+        transport_attempts_this_turn=2,
+        transport_retries_this_turn=0,
+        transport_evidence_complete=True,
+        billing_ambiguous=False,
         duration_ms=100,
         usage={},
         stopped_at_step_limit=False,
@@ -937,7 +996,7 @@ def test_check_turn_2_allows_plain_prompt_when_nothing_was_injected(tmp_path):
     assert next(
         assertion
         for assertion in assertions
-        if assertion.name == "injected_user_prompt_reaches_every_provider_call"
+        if assertion.name == "injected_user_prompt_reaches_every_model_turn"
     ).passed
 
 
@@ -961,7 +1020,7 @@ def test_check_turn_2_fails_when_later_injected_call_lacks_reminder(tmp_path):
     assert not next(
         assertion
         for assertion in assertions
-        if assertion.name == "injected_user_prompt_reaches_every_provider_call"
+        if assertion.name == "injected_user_prompt_reaches_every_model_turn"
     ).passed
 
 
@@ -980,8 +1039,8 @@ def test_check_turn_2_requires_complete_native_trace_evidence(tmp_path):
     assert {
         "provider_tool_action_observed",
         "turn_usage_complete",
-        "injected_user_prompt_reaches_every_provider_call",
-        "system_prefix_hashes_cover_every_provider_call",
+        "injected_user_prompt_reaches_every_model_turn",
+        "system_prefix_hashes_cover_every_model_turn",
     } <= failed
 
 
@@ -1028,7 +1087,13 @@ def _turn_3_result_stub(**overrides):
         },
         session_message_count_before=6,
         session_message_count_after=8,
-        provider_call_count_this_turn=1,
+        model_turns_this_turn=1,
+        model_attempts_this_turn=1,
+        model_failures_this_turn=0,
+        transport_attempts_this_turn=1,
+        transport_retries_this_turn=0,
+        transport_evidence_complete=True,
+        billing_ambiguous=False,
         duration_ms=100,
         usage={},
         stopped_at_step_limit=False,
@@ -1097,7 +1162,13 @@ def _turn_4_result_stub(**overrides):
         },
         session_message_count_before=14,
         session_message_count_after=16,
-        provider_call_count_this_turn=1,
+        model_turns_this_turn=1,
+        model_attempts_this_turn=1,
+        model_failures_this_turn=0,
+        transport_attempts_this_turn=1,
+        transport_retries_this_turn=0,
+        transport_evidence_complete=True,
+        billing_ambiguous=False,
         duration_ms=100,
         usage={},
         stopped_at_step_limit=False,
@@ -1253,7 +1324,14 @@ def _turn_5_result_stub(system_prefix_hash="abc", **overrides):
         final_answer="ok",
         metadata=metadata,
         session_message_count_before=16, session_message_count_after=18,
-        provider_call_count_this_turn=1, duration_ms=100,
+        model_turns_this_turn=1,
+        model_attempts_this_turn=1,
+        model_failures_this_turn=0,
+        transport_attempts_this_turn=1,
+        transport_retries_this_turn=0,
+        transport_evidence_complete=True,
+        billing_ambiguous=False,
+        duration_ms=100,
         usage={"cache_read_input_tokens": 100, "cache_creation_input_tokens": 0},
         stopped_at_step_limit=False, error=None,
         provider_input_messages_len=12, current_user_content="",
@@ -1316,15 +1394,15 @@ def test_deepseek_cache_assertions_do_not_require_cache_tokens():
 def test_check_global_passes_under_budget(tmp_path):
     engine = _engine()
     all_results = [
-        _turn_result_stub(usage={"input_tokens": 1000, "output_tokens": 200}, provider_call_count_this_turn=1),
+        _turn_result_stub(usage={"input_tokens": 1000, "output_tokens": 200}, model_turns_this_turn=1),
         _turn_result_stub(
             turn=2,
             usage={"input_tokens": 1500, "output_tokens": 300},
-            provider_call_count_this_turn=2,
+            model_turns_this_turn=2,
             system_prefix_hashes=("cache-key", "cache-key"),
             action_origins=("native_tool_use",),
         ),
-        _turn_result_stub(turn=3, usage={"input_tokens": 1200, "output_tokens": 250}, provider_call_count_this_turn=1),
+        _turn_result_stub(turn=3, usage={"input_tokens": 1200, "output_tokens": 250}, model_turns_this_turn=1),
     ]
     asserts = engine.check_global(all_results, _pico_stub_with_persisted_v3(tmp_path))
     assert all(a.passed for a in asserts)
@@ -1346,28 +1424,28 @@ def test_text_provider_global_accepts_text_protocol_action(tmp_path, provider):
     assert action_assertion.expected.endswith("text_protocol")
 
 
-def test_check_global_fails_when_provider_calls_exceeded():
+def test_check_global_fails_when_model_attempts_exceeded():
     engine = _engine()
     all_results = [
-        _turn_result_stub(provider_call_count_this_turn=8),
-        _turn_result_stub(turn=2, provider_call_count_this_turn=8),  # sum = 16 > 15
+        _turn_result_stub(model_attempts_this_turn=8),
+        _turn_result_stub(turn=2, model_attempts_this_turn=8),  # sum = 16 > 15
     ]
     asserts = engine.check_global(all_results, MagicMock())
     failed = [a for a in asserts if not a.passed]
-    assert any(a.name == "total_provider_calls_under_cap" for a in failed)
+    assert any(a.name == "total_model_attempts_under_cap" for a in failed)
 
 
-def test_check_global_uses_nondefault_provider_call_cap():
-    assertions = _engine(max_provider_calls=1).check_global(
+def test_check_global_uses_nondefault_model_turn_cap():
+    assertions = _engine(max_model_attempts=1).check_global(
         [
-            _turn_result_stub(provider_call_count_this_turn=1),
-            _turn_result_stub(turn=2, provider_call_count_this_turn=1),
+            _turn_result_stub(model_attempts_this_turn=1),
+            _turn_result_stub(turn=2, model_attempts_this_turn=1),
         ],
         MagicMock(),
     )
 
     assert any(
-        assertion.name == "total_provider_calls_under_cap" and not assertion.passed
+        assertion.name == "total_model_attempts_under_cap" and not assertion.passed
         for assertion in assertions
     )
 
@@ -1403,12 +1481,12 @@ def test_report_cannot_pass_when_aborted_or_short(tmp_path):
 
     payload = json.loads(report_path.read_text(encoding="utf-8"))
     assert payload["record_type"] == "live_e2e_report"
-    assert payload["format_version"] == 1
+    assert payload["format_version"] == 2
     assert payload["overall_pass"] is False
     assert payload["aborted_reason"] == "provider_error_turn_1"
 
 
-@pytest.mark.parametrize("version", [None, True, 1.0, "1", 2])
+@pytest.mark.parametrize("version", [None, True, 1.0, "2", 1])
 def test_live_report_reader_rejects_noncurrent_header_before_business(
     tmp_path, version
 ):
@@ -1633,3 +1711,133 @@ def test_main_preflight_failure_never_constructs_provider(tmp_path, monkeypatch)
         run_live_session.main()
 
     make_client.assert_not_called()
+
+
+def test_v2_cli_rejects_removed_provider_call_and_mixed_timeout_flags(monkeypatch):
+    for flag in ("--max-provider-calls", "--timeout-seconds"):
+        monkeypatch.setattr(sys, "argv", ["run_live_session", flag, "1"])
+        with pytest.raises(SystemExit, match="2"):
+            run_live_session.parse_args()
+
+
+@pytest.mark.parametrize(
+    "flag",
+    ("--max-model-attempts", "--max-total-tokens", "--request-timeout-seconds", "--max-wall-seconds"),
+)
+def test_v2_cli_rejects_nonpositive_caps(monkeypatch, flag):
+    monkeypatch.setattr(sys, "argv", ["run_live_session", flag, "0"])
+    with pytest.raises(SystemExit, match="2"):
+        run_live_session.parse_args()
+
+
+def test_ollama_not_configured_readiness_does_not_construct_client(monkeypatch):
+    monkeypatch.setattr(
+        "pico.cli_diagnostics.check_provider_connectivity",
+        lambda _config: {"status": "error", "model_status": "missing"},
+    )
+
+    assert run_live_session.check_live_readiness(
+        _config(provider="ollama"),
+        settings={"api_key": "", "model": "test-model", "base_url": "http://127.0.0.1:11434"},
+    ) is False
+
+
+def _gate_assertions():
+    return {
+        1: [Assertion("behavior_ok", True, "", "", gate="behavior")],
+        "global": [
+            Assertion("transport_ok", True, "", "", gate="transport_cost"),
+            Assertion("security_ok", True, "", "", gate="security"),
+            Assertion("persistence_ok", True, "", "", gate="persistence"),
+        ],
+    }
+
+
+def test_v2_gates_pass_only_with_complete_zero_retry_evidence(tmp_path):
+    reporter = Reporter(_config(), tmp_path)
+    result = _turn_result_stub()
+
+    path = reporter.write_json(
+        [result], _gate_assertions(), reporter.config,
+        {"input_tokens": 10, "output_tokens": 5}, 10,
+        aborted_reason=None, expected_turn_count=1, session_schema=1, git_head="abc",
+    )
+    payload = run_live_session.load_live_report(path)
+
+    assert payload["overall_pass"] is True
+    assert {name: gate["status"] for name, gate in payload["gates"].items()} == {
+        "behavior": "pass",
+        "transport_cost": "pass",
+        "security": "pass",
+        "persistence": "pass",
+    }
+
+
+def test_v2_transport_retry_is_degraded_and_evidence_gap_is_fail(tmp_path):
+    reporter = Reporter(_config(), tmp_path)
+    retry = _turn_result_stub(
+        transport_attempts_this_turn=2,
+        transport_retries_this_turn=1,
+        billing_ambiguous=True,
+    )
+    retry_gates = reporter._build_gates(
+        [retry], _gate_assertions(), {}, 1
+    )
+    missing = _turn_result_stub(
+        transport_attempts_this_turn=None,
+        transport_retries_this_turn=None,
+        transport_evidence_complete=False,
+        billing_ambiguous=True,
+    )
+    missing_gates = reporter._build_gates(
+        [missing], _gate_assertions(), {}, 1
+    )
+
+    assert retry_gates["transport_cost"]["status"] == "degraded"
+    assert missing_gates["transport_cost"]["status"] == "fail"
+
+
+def test_v2_report_omits_prompt_answer_raw_assertion_and_exception(tmp_path):
+    secret_text = "sensitive-prompt-and-answer"
+    reporter = Reporter(_config(), tmp_path)
+    result = _turn_result_stub(
+        user_prompt=secret_text,
+        final_answer=secret_text,
+        error=f"RuntimeError: {secret_text}",
+    )
+    assertions = _gate_assertions()
+    assertions[1][0] = Assertion(
+        "behavior_ok", False, secret_text, secret_text, gate="behavior"
+    )
+
+    path = reporter.write_json(
+        [result], assertions, reporter.config, {}, 1,
+        aborted_reason="provider_error_turn_1", expected_turn_count=1,
+        session_schema=1, git_head="abc",
+    )
+    text = path.read_text(encoding="utf-8")
+    turn = json.loads(text)["turns"][0]
+
+    assert secret_text not in text
+    assert "user_prompt" not in turn
+    assert "final_answer" not in turn
+    assert turn["error_code"] == "turn_error"
+    assert set(turn["assertions"][0]) == {"name", "gate", "passed"}
+
+
+def test_fixture_restoration_is_verified_after_context_exit(tmp_path):
+    original = b"ordinary = true\n"
+    (tmp_path / "pico.toml").write_bytes(original)
+    seed = tmp_path / "seed.md"
+    seed.write_text("safe seed\n", encoding="utf-8")
+    fixture = run_live_session.FixtureManager(tmp_path)
+    fixture._seed_source = seed
+
+    with fixture:
+        assert fixture.restoration_status()["restored"] is False
+
+    assert fixture.restoration_status() == {
+        "restored": True,
+        "cleanup_error_codes": (),
+    }
+    assert (tmp_path / "pico.toml").read_bytes() == original
