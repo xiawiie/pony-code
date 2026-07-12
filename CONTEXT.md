@@ -14,6 +14,21 @@ runtime 请求，不等同于 Provider payload。
 **Model Response**：Provider-neutral `Response`。Provider wire JSON 和 streaming event 不进入
 AgentLoop 合同。
 
+**Model Attempt**：AgentLoop 为当前 Run 构建一次 Model Request 并尝试取得一个 Action 的逻辑轮次。
+它由 `TaskState.attempts` 计数，不等于工具执行次数或底层网络请求次数。
+
+**Provider Exchange**：AgentLoop 把一个已构建的 Model Request 交给 Provider 边界并等待一个 Model
+Response 的一次逻辑交换。维护文档不使用含义不明确的 “Provider Call” 代替它。
+
+**Transport Attempt**：Provider Exchange 内一次真实 transport 执行，例如一次 HTTP POST。它包含首次
+执行与可能的 Transport Retry，不等于 Model Attempt。
+
+**Transport Retry**：同一 Provider Exchange 中，首次 Transport Attempt 之后对同一 Model Request 的
+再次执行。它不同于 `RetryAction`；后者会开始新的 Model Attempt。
+
+**Provider Execution Evidence**：一个 Provider Exchange 的脱敏聚合证据，只包含 outcome、attempt/retry
+计数、耗时、usage 完整性与安全错误类别，不包含 prompt、payload、URL、header 或 response body。
+
 **Action**：`decode_action` 从 Model Response 产生的 Tool、Final 或 Retry 决策。一次 attempt 只处理
 一个 Action。
 
@@ -64,4 +79,5 @@ trace event 和 Git commit 是不同概念。
 - 运行时第三方依赖保持为零；安全与恢复代码不因复杂度指标机械拆分。
 
 详细不变量分别见[安全](docs/security.md)、[恢复](docs/recovery.md)与
-[Memory](docs/memory.md)。
+[Memory](docs/memory.md)。Provider 执行计数与审计目标见
+[Provider 执行与重试审计设计](docs/provider-execution.md)。
