@@ -53,7 +53,6 @@ readme_intro_locked/
 !/docs/recovery.md
 !/docs/verification.md
 !/docs/memory.md
-!/docs/provider-execution.md
 
 # OS files
 .DS_Store

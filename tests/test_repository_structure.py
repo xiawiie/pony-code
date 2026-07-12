@@ -16,7 +16,6 @@ MAINTAINER_DOCS = {
     "docs/recovery.md",
     "docs/verification.md",
     "docs/memory.md",
-    "docs/provider-execution.md",
 }
 MARKDOWN_FIXTURES = {
     "benchmarks/live_e2e/fixtures/seed_cache_note.md",
