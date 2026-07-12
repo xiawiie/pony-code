@@ -6,6 +6,7 @@ These tests never enter the normal ``main`` path or create a provider client.
 import json
 import os
 import sys
+import tomllib
 from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
@@ -21,6 +22,8 @@ from benchmarks.live_e2e.run_live_session import (
     RunConfig,
     TurnResult,
 )
+from pico.context_manager import _drop_old_turns
+from pico.messages import message_content_text
 
 
 def _config(**overrides):
@@ -39,6 +42,36 @@ def _config(**overrides):
 
 def _engine(**overrides):
     return AssertionEngine(_config(**overrides))
+
+
+def test_live_fixture_history_cap_handles_short_provider_transcripts():
+    fixture = tomllib.loads(run_live_session.FIXTURE_PICO_TOML)
+    context = fixture["context"]
+    messages = [
+        {"role": role, "content": char * size}
+        for _ in range(4)
+        for role, char, size in (
+            ("user", "u", 100),
+            ("assistant", "a", 300),
+        )
+    ]
+    before = [dict(message) for message in messages]
+    def token_of(message):
+        return max(1, len(message_content_text(message)) // 4)
+
+    kept, dropped = _drop_old_turns(
+        messages,
+        soft_cap_tokens=context["history_soft_cap"],
+        floor_count=context["history_floor_messages"],
+        token_of=token_of,
+    )
+
+    assert context["history_soft_cap"] == 300
+    assert context["history_floor_messages"] == 4
+    assert 300 < sum(map(token_of, messages)) < 800
+    assert dropped == 2
+    assert kept == messages[2:]
+    assert messages == before
 
 
 def test_active_artifact_scan_detects_secret_and_mode_failures(tmp_path):

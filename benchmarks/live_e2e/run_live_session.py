@@ -221,7 +221,7 @@ def verify_pico_repo(root: Path) -> None:
 
 FIXTURE_PICO_TOML = """\
 [context]
-history_soft_cap = 800
+history_soft_cap = 300
 history_floor_messages = 4
 injection_budget_ratio = 0.002
 total_budget_hard_cap = 100000
@@ -934,11 +934,11 @@ class AssertionEngine:
         ))
 
         msg_tokens = int(m.get("messages_tokens", 0) or 0)
-        # soft_cap 1200 + slop of 300 (per §5 assertion 17)
+        # The four-message floor may exceed the fixture's 300-token soft cap.
         out.append(Assertion(
             name="messages_tokens_under_cap_plus_slop",
             passed=msg_tokens <= 1500,
-            expected="messages_tokens <= 1500 (soft_cap 1200 + slop)",
+            expected="messages_tokens <= 1500 (soft cap plus floor overflow)",
             actual=str(msg_tokens),
         ))
 
