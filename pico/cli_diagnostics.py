@@ -387,7 +387,7 @@ def check_provider_connectivity(config, timeout=2):
                 "http_status": response.status,
             }
     except error.HTTPError as exc:
-        status = "ok" if exc.code in {401, 403, 405} else "error"
+        status = "ok" if 400 <= exc.code < 500 else "error"
         return {
             "status": status,
             "category": "provider_connectivity",

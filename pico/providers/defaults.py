@@ -12,6 +12,7 @@ DEFAULT_PROVIDER = "deepseek"
 PROVIDER_CHOICES = ("ollama", "openai", "anthropic", "deepseek")
 
 MODEL_ENV_NAMES = {
+    "ollama": ("PICO_OLLAMA_MODEL", "OLLAMA_MODEL"),
     "openai": ("PICO_OPENAI_MODEL", "OPENAI_MODEL"),
     "anthropic": ("PICO_ANTHROPIC_MODEL", "ANTHROPIC_MODEL"),
     "deepseek": ("PICO_DEEPSEEK_MODEL", "DEEPSEEK_MODEL"),

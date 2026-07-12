@@ -165,7 +165,11 @@ def test_openai_invalid_response_is_stable(monkeypatch, body):
 
 @pytest.mark.parametrize(
     "error",
-    [urllib.error.URLError("secret"), RemoteDisconnected("secret")],
+    [
+        urllib.error.URLError("secret"),
+        RemoteDisconnected("secret"),
+        TimeoutError("secret"),
+    ],
 )
 def test_openai_network_error_retries_three_times(monkeypatch, error):
     urlopen = Mock(side_effect=error)
@@ -198,7 +202,9 @@ def test_ollama_text_only_payload(monkeypatch):
         captured["url"] = request.full_url
         captured["timeout"] = timeout
         captured["body"] = json.loads(request.data)
-        return _Response(b'{"response":"ok"}')
+        return _Response(
+            b'{"response":"ok","prompt_eval_count":12,"eval_count":3}'
+        )
 
     monkeypatch.setattr(urllib.request, "urlopen", urlopen)
     client = _ollama_client()
@@ -222,6 +228,29 @@ def test_ollama_text_only_payload(monkeypatch):
     }
     assert not hasattr(client, "complete")
     assert not hasattr(client, "supports_prompt_cache")
+    assert client.last_completion_metadata == {
+        "input_tokens": 12,
+        "output_tokens": 3,
+        "total_tokens": 15,
+        "cached_tokens": 0,
+        "cache_hit": False,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+    }
+
+
+def test_ollama_timeout_is_stable_network_error(monkeypatch):
+    monkeypatch.setattr(
+        urllib.request,
+        "urlopen",
+        Mock(side_effect=TimeoutError("secret")),
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="^Ollama request failed: network_error$",
+    ):
+        _ollama_client().complete_text("hello", 10)
 
 
 def test_ollama_invalid_response_is_stable(monkeypatch):

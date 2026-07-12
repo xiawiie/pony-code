@@ -133,7 +133,7 @@ def scan_active_private_artifacts(pico_root, before, *, forbidden_values):
 class RunConfig:
     """CLI + env-derived configuration for one live-e2e run."""
 
-    provider: Literal["anthropic", "deepseek", "openai"]
+    provider: Literal["anthropic", "deepseek", "ollama", "openai"]
     model: str
     max_provider_calls: int
     max_total_tokens: int
@@ -143,7 +143,7 @@ class RunConfig:
 
 
 def provider_settings(provider, *, project_env=None, process_env=None):
-    if provider not in {"anthropic", "deepseek", "openai"}:
+    if provider not in {"anthropic", "deepseek", "ollama", "openai"}:
         raise ValueError(f"unsupported live provider: {provider}")
     config = resolve_provider_config(
         explicit={"provider": provider},
@@ -166,7 +166,7 @@ def parse_args(*, project_env=None, process_env=None) -> RunConfig:
     parser = argparse.ArgumentParser(prog="run_live_session")
     parser.add_argument(
         "--provider",
-        choices=("anthropic", "deepseek", "openai"),
+        choices=("anthropic", "deepseek", "ollama", "openai"),
         default="deepseek",
     )
     parser.add_argument("--model", default=None)
@@ -194,8 +194,8 @@ def parse_args(*, project_env=None, process_env=None) -> RunConfig:
 
 def check_env(config: RunConfig, *, settings=None) -> None:
     """Abort with exit 2 if the selected provider API key is missing."""
-    if config.reset:
-        return  # reset path doesn't need the API key
+    if config.reset or config.provider == "ollama":
+        return  # reset and local Ollama paths don't need an API key
     key = (settings or provider_settings(config.provider))["api_key"].strip()
     if not key:
         required_name = API_KEY_ENV_NAMES[config.provider][0]
@@ -627,7 +627,11 @@ class AssertionEngine:
 
     @property
     def expected_action_origin(self):
-        return "text_protocol" if self.config.provider == "openai" else "native_tool_use"
+        return (
+            "text_protocol"
+            if self.config.provider in {"ollama", "openai"}
+            else "native_tool_use"
+        )
 
     def dispatch(self, turn, result: TurnResult, pico, all_results):
         """Route to per-turn check_*.
@@ -1510,17 +1514,30 @@ def make_live_client(config: RunConfig, *, settings=None):
     """Instantiate the selected live client using its production transport."""
 
     settings = settings or provider_settings(config.provider)
-    if config.provider == "openai":
-        from pico.providers.openai_compatible import OpenAICompatibleModelClient
+    if config.provider in {"ollama", "openai"}:
         from pico.providers.text_protocol_adapter import TextProtocolAdapter
 
-        inner = TextProtocolAdapter(OpenAICompatibleModelClient(
-            model=config.model,
-            base_url=settings["base_url"],
-            api_key=settings["api_key"],
-            temperature=0.0,
-            timeout=120,
-        ))
+        if config.provider == "openai":
+            from pico.providers.openai_compatible import OpenAICompatibleModelClient
+
+            text_client = OpenAICompatibleModelClient(
+                model=config.model,
+                base_url=settings["base_url"],
+                api_key=settings["api_key"],
+                temperature=0.0,
+                timeout=config.timeout_seconds,
+            )
+        else:
+            from pico.providers.ollama import OllamaModelClient
+
+            text_client = OllamaModelClient(
+                model=config.model,
+                host=settings["base_url"],
+                temperature=0.0,
+                top_p=0.9,
+                timeout=config.timeout_seconds,
+            )
+        inner = TextProtocolAdapter(text_client)
     else:
         from pico.providers.anthropic_compatible import AnthropicCompatibleModelClient
 
@@ -1529,7 +1546,7 @@ def make_live_client(config: RunConfig, *, settings=None):
             base_url=settings["base_url"],
             api_key=settings["api_key"],
             temperature=0.0,
-            timeout=120,
+            timeout=config.timeout_seconds,
         )
     return _SniffingProviderWrapper(
         inner,
@@ -1629,7 +1646,7 @@ def main() -> int:
         "Your first action must call the available read_file tool for "
         "pico/runtime.py. Do not return a final answer before receiving the tool "
         "result; then summarize that result."
-        if config.provider == "openai"
+        if config.provider in {"ollama", "openai"}
         else "Use the API-provided native read_file tool to read pico/runtime.py, "
         "then summarize it. Do not emit XML tool text."
     )

@@ -228,12 +228,32 @@ def test_project_env_uses_canonical_selected_provider_settings(tmp_path, provide
     }
 
 
+def test_project_env_uses_canonical_ollama_settings(tmp_path):
+    (tmp_path / ".env").write_text(
+        "PICO_OLLAMA_MODEL=ollama-test-model\n"
+        "PICO_OLLAMA_HOST=http://127.0.0.1:11435\n",
+        encoding="utf-8",
+    )
+
+    settings = run_live_session.provider_settings(
+        "ollama",
+        project_env=run_live_session.read_project_env(tmp_path),
+        process_env={},
+    )
+
+    assert settings == {
+        "api_key": "",
+        "model": "ollama-test-model",
+        "base_url": "http://127.0.0.1:11435",
+    }
+
+
 def test_openai_live_client_uses_text_protocol_adapter():
     from pico.providers.openai_compatible import OpenAICompatibleModelClient
     from pico.providers.text_protocol_adapter import TextProtocolAdapter
 
     client = run_live_session.make_live_client(
-        _config(provider="openai"),
+        _config(provider="openai", timeout_seconds=321),
         settings={
             "api_key": "sentinel-openai",
             "model": "test-model",
@@ -243,6 +263,32 @@ def test_openai_live_client_uses_text_protocol_adapter():
 
     assert isinstance(client._inner, TextProtocolAdapter)
     assert isinstance(client._inner._inner, OpenAICompatibleModelClient)
+    assert client._inner._inner.timeout == 321
+
+
+def test_ollama_live_client_uses_text_protocol_adapter():
+    from pico.providers.ollama import OllamaModelClient
+    from pico.providers.text_protocol_adapter import TextProtocolAdapter
+
+    client = run_live_session.make_live_client(
+        _config(provider="ollama", timeout_seconds=321),
+        settings={
+            "api_key": "",
+            "model": "test-model",
+            "base_url": "http://127.0.0.1:11434",
+        },
+    )
+
+    assert isinstance(client._inner, TextProtocolAdapter)
+    assert isinstance(client._inner._inner, OllamaModelClient)
+    assert client._inner._inner.timeout == 321
+
+
+def test_ollama_live_preflight_does_not_require_api_key():
+    run_live_session.check_env(
+        _config(provider="ollama"),
+        settings={"api_key": "", "model": "test-model", "base_url": "local"},
+    )
 
 
 def test_main_reads_project_env_before_parse_args_on_reset_only_path(tmp_path, monkeypatch):
@@ -851,12 +897,13 @@ def test_check_turn_2_digest_passes_on_valid_state(tmp_path):
     assert all(a.passed for a in asserts), [(a.name, a.actual) for a in asserts if not a.passed]
 
 
-def test_openai_turn_2_accepts_text_protocol_action(tmp_path):
+@pytest.mark.parametrize("provider", ["openai", "ollama"])
+def test_text_provider_turn_2_accepts_text_protocol_action(tmp_path, provider):
     pico, _ = _pico_stub_with_digested_message(
         "x" * 5000,
         tmp_path / "runs" / "tool_results",
     )
-    assertions = _engine(provider="openai").check_turn_2_digest(
+    assertions = _engine(provider=provider).check_turn_2_digest(
         _turn_2_result_stub(action_origins=("text_protocol",)),
         pico,
     )
@@ -1283,8 +1330,9 @@ def test_check_global_passes_under_budget(tmp_path):
     assert all(a.passed for a in asserts)
 
 
-def test_openai_global_accepts_text_protocol_action(tmp_path):
-    assertions = _engine(provider="openai").check_global(
+@pytest.mark.parametrize("provider", ["openai", "ollama"])
+def test_text_provider_global_accepts_text_protocol_action(tmp_path, provider):
+    assertions = _engine(provider=provider).check_global(
         [_turn_result_stub(action_origins=("text_protocol",))],
         _pico_stub_with_persisted_v3(tmp_path),
     )

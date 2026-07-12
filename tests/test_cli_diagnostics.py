@@ -809,6 +809,23 @@ def test_provider_connectivity_http_500_is_non_ok_and_redacts_url(monkeypatch):
     assert "#frag" not in json.dumps(result)
 
 
+def test_provider_connectivity_http_404_is_reachable(monkeypatch):
+    def fake_urlopen(url, timeout):
+        raise error.HTTPError(url, 404, "not found", hdrs=None, fp=None)
+
+    monkeypatch.setattr("pico.cli_diagnostics.request.urlopen", fake_urlopen)
+
+    result = check_provider_connectivity(
+        {
+            "provider": {"value": "openai"},
+            "base_url": {"value": "https://example.com/v1"},
+        }
+    )
+
+    assert result["status"] == "ok"
+    assert result["http_status"] == 404
+
+
 def test_provider_connectivity_generic_error_sanitizes_url_in_message(monkeypatch):
     def fake_urlopen(url, timeout):
         raise RuntimeError(f"failed to open {url}")

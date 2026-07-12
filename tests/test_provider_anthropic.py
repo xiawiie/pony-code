@@ -142,7 +142,11 @@ def test_complete_records_cached_token_usage():
 
 @pytest.mark.parametrize(
     "error",
-    [urllib.error.URLError("secret"), RemoteDisconnected("secret")],
+    [
+        urllib.error.URLError("secret"),
+        RemoteDisconnected("secret"),
+        TimeoutError("secret"),
+    ],
 )
 def test_complete_network_error_retries_three_times(monkeypatch, error):
     urlopen = Mock(side_effect=error)

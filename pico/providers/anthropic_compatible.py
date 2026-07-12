@@ -133,7 +133,7 @@ class AnthropicCompatibleModelClient:
                 raise RuntimeError(
                     f"Anthropic-compatible request failed with HTTP {exc.code}"
                 ) from None
-            except (urllib.error.URLError, RemoteDisconnected):
+            except (urllib.error.URLError, RemoteDisconnected, TimeoutError):
                 if attempt < attempts - 1:
                     time.sleep(0.5 * (attempt + 1))
                     continue
