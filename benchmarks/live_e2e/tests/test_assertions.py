@@ -200,7 +200,7 @@ def test_parse_args_selects_exactly_one_supported_provider(monkeypatch):
     assert config.provider == "deepseek"
 
 
-@pytest.mark.parametrize("provider", ["deepseek", "anthropic"])
+@pytest.mark.parametrize("provider", ["deepseek", "anthropic", "openai"])
 def test_project_env_uses_canonical_selected_provider_settings(tmp_path, provider):
     prefix = provider.upper()
     (tmp_path / ".env").write_text(
@@ -226,6 +226,23 @@ def test_project_env_uses_canonical_selected_provider_settings(tmp_path, provide
         "model": f"{provider}-test-model",
         "base_url": f"https://{provider}.example.invalid/anthropic",
     }
+
+
+def test_openai_live_client_uses_text_protocol_adapter():
+    from pico.providers.openai_compatible import OpenAICompatibleModelClient
+    from pico.providers.text_protocol_adapter import TextProtocolAdapter
+
+    client = run_live_session.make_live_client(
+        _config(provider="openai"),
+        settings={
+            "api_key": "sentinel-openai",
+            "model": "test-model",
+            "base_url": "https://openai.example.invalid/v1",
+        },
+    )
+
+    assert isinstance(client._inner, TextProtocolAdapter)
+    assert isinstance(client._inner._inner, OpenAICompatibleModelClient)
 
 
 def test_main_reads_project_env_before_parse_args_on_reset_only_path(tmp_path, monkeypatch):
@@ -828,6 +845,25 @@ def test_check_turn_2_digest_passes_on_valid_state(tmp_path):
     assert all(a.passed for a in asserts), [(a.name, a.actual) for a in asserts if not a.passed]
 
 
+def test_openai_turn_2_accepts_text_protocol_action(tmp_path):
+    pico, _ = _pico_stub_with_digested_message(
+        "x" * 5000,
+        tmp_path / "runs" / "tool_results",
+    )
+    assertions = _engine(provider="openai").check_turn_2_digest(
+        _turn_2_result_stub(action_origins=("text_protocol",)),
+        pico,
+    )
+
+    action_assertion = next(
+        assertion
+        for assertion in assertions
+        if assertion.name == "provider_tool_action_observed"
+    )
+    assert action_assertion.passed
+    assert action_assertion.expected == "text_protocol in action_origins"
+
+
 def test_check_turn_2_allows_plain_prompt_when_nothing_was_injected(tmp_path):
     pico, _ = _pico_stub_with_digested_message(
         "x" * 5000,
@@ -889,7 +925,7 @@ def test_check_turn_2_requires_complete_native_trace_evidence(tmp_path):
 
     failed = {assertion.name for assertion in assertions if not assertion.passed}
     assert {
-        "native_tool_action_observed",
+        "provider_tool_action_observed",
         "turn_usage_complete",
         "injected_user_prompt_reaches_every_provider_call",
         "system_prefix_hashes_cover_every_provider_call",
@@ -1239,6 +1275,21 @@ def test_check_global_passes_under_budget(tmp_path):
     ]
     asserts = engine.check_global(all_results, _pico_stub_with_persisted_v3(tmp_path))
     assert all(a.passed for a in asserts)
+
+
+def test_openai_global_accepts_text_protocol_action(tmp_path):
+    assertions = _engine(provider="openai").check_global(
+        [_turn_result_stub(action_origins=("text_protocol",))],
+        _pico_stub_with_persisted_v3(tmp_path),
+    )
+
+    action_assertion = next(
+        assertion
+        for assertion in assertions
+        if assertion.name == "provider_tool_action_observed"
+    )
+    assert action_assertion.passed
+    assert action_assertion.expected.endswith("text_protocol")
 
 
 def test_check_global_fails_when_provider_calls_exceeded():

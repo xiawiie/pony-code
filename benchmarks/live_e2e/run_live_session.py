@@ -1,6 +1,6 @@
 """Pico live-provider end-to-end harness.
 
-One invocation selects either DeepSeek or Anthropic from the project ``.env``
+One invocation selects DeepSeek, Anthropic, or OpenAI from the project ``.env``
 and records trace-backed evidence for five designed turns. This standalone
 command consumes API credits; incomplete or malformed trace usage fails the
 gate instead of falling back to mutable provider state. Reports omit provider
@@ -133,7 +133,7 @@ def scan_active_private_artifacts(pico_root, before, *, forbidden_values):
 class RunConfig:
     """CLI + env-derived configuration for one live-e2e run."""
 
-    provider: Literal["anthropic", "deepseek"]
+    provider: Literal["anthropic", "deepseek", "openai"]
     model: str
     max_provider_calls: int
     max_total_tokens: int
@@ -143,7 +143,7 @@ class RunConfig:
 
 
 def provider_settings(provider, *, project_env=None, process_env=None):
-    if provider not in {"anthropic", "deepseek"}:
+    if provider not in {"anthropic", "deepseek", "openai"}:
         raise ValueError(f"unsupported live provider: {provider}")
     config = resolve_provider_config(
         explicit={"provider": provider},
@@ -166,7 +166,7 @@ def parse_args(*, project_env=None, process_env=None) -> RunConfig:
     parser = argparse.ArgumentParser(prog="run_live_session")
     parser.add_argument(
         "--provider",
-        choices=("anthropic", "deepseek"),
+        choices=("anthropic", "deepseek", "openai"),
         default="deepseek",
     )
     parser.add_argument("--model", default=None)
@@ -625,6 +625,10 @@ class AssertionEngine:
     def __init__(self, config: RunConfig):
         self.config = config
 
+    @property
+    def expected_action_origin(self):
+        return "text_protocol" if self.config.provider == "openai" else "native_tool_use"
+
     def dispatch(self, turn, result: TurnResult, pico, all_results):
         """Route to per-turn check_*.
 
@@ -801,10 +805,11 @@ class AssertionEngine:
         ))
 
         provider_calls = result.provider_call_count_this_turn
+        expected_origin = self.expected_action_origin
         out.append(Assertion(
-            name="native_tool_action_observed",
-            passed="native_tool_use" in result.action_origins,
-            expected="native_tool_use in action_origins",
+            name="provider_tool_action_observed",
+            passed=expected_origin in result.action_origins,
+            expected=f"{expected_origin} in action_origins",
             actual=str(result.action_origins),
         ))
         out.append(Assertion(
@@ -1081,10 +1086,11 @@ class AssertionEngine:
             for result in all_results
             for origin in result.action_origins
         ]
+        expected_origin = self.expected_action_origin
         out.append(Assertion(
-            name="native_tool_action_observed",
-            passed="native_tool_use" in action_origins,
-            expected="at least one action_decoded.origin == native_tool_use",
+            name="provider_tool_action_observed",
+            passed=expected_origin in action_origins,
+            expected=f"at least one action_decoded.origin == {expected_origin}",
             actual=str(action_origins),
         ))
 
@@ -1501,17 +1507,30 @@ class _SniffingProviderWrapper:
         )
 
 def make_live_client(config: RunConfig, *, settings=None):
-    """Instantiate the selected Anthropic-compatible live client."""
-    from pico.providers.anthropic_compatible import AnthropicCompatibleModelClient
+    """Instantiate the selected live client using its production transport."""
 
     settings = settings or provider_settings(config.provider)
-    inner = AnthropicCompatibleModelClient(
-        model=config.model,
-        base_url=settings["base_url"],
-        api_key=settings["api_key"],
-        temperature=0.0,
-        timeout=120,
-    )
+    if config.provider == "openai":
+        from pico.providers.openai_compatible import OpenAICompatibleModelClient
+        from pico.providers.text_protocol_adapter import TextProtocolAdapter
+
+        inner = TextProtocolAdapter(OpenAICompatibleModelClient(
+            model=config.model,
+            base_url=settings["base_url"],
+            api_key=settings["api_key"],
+            temperature=0.0,
+            timeout=120,
+        ))
+    else:
+        from pico.providers.anthropic_compatible import AnthropicCompatibleModelClient
+
+        inner = AnthropicCompatibleModelClient(
+            model=config.model,
+            base_url=settings["base_url"],
+            api_key=settings["api_key"],
+            temperature=0.0,
+            timeout=120,
+        )
     return _SniffingProviderWrapper(
         inner,
         forbidden_values=(settings["api_key"],),
@@ -1606,12 +1625,19 @@ def main() -> int:
     artifact_baseline = snapshot_private_artifacts(pico_root)
     wall_start = time.monotonic_ns()
 
+    tool_prompt = (
+        "Use the available read_file tool protocol to read pico/runtime.py, then "
+        "summarize it after receiving the tool result."
+        if config.provider == "openai"
+        else "Use the API-provided native read_file tool to read pico/runtime.py, "
+        "then summarize it. Do not emit XML tool text."
+    )
     TURNS = [
         (1, "上次讨论过 cache invariant 的问题，帮我看看这个仓库的 cache 相关代码", "recall_triggered"),
         (
             2,
-            "Use the API-provided native read_file tool to read pico/runtime.py, then summarize it. Do not emit XML tool text.",
-            "native_tool_roundtrip",
+            tool_prompt,
+            "provider_tool_roundtrip",
         ),
         (3, "再看一下 pico/context_manager.py", "injection_dropped"),
         (4, "总结一下我们目前讨论的所有内容", "history_dropped"),
@@ -1623,7 +1649,6 @@ def main() -> int:
         forbidden_values=(selected_api_key,),
     ):
         # Lazy import of pico so a broken pico module produces exit 4 (not 2).
-        from pico.providers.anthropic_compatible import AnthropicCompatibleModelClient  # noqa: F401
         from pico.runtime import Pico
         from pico.session_store import SessionStore
         from pico.workspace import WorkspaceContext
