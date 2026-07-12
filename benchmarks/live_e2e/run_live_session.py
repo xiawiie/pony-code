@@ -424,7 +424,7 @@ def read_turn_trace(trace_path):
         "action_origins": [
             str(event.get("origin", ""))
             for event in actions
-            if event.get("origin")
+            if event.get("action_type") == "tool" and event.get("origin")
         ],
     }
 
@@ -1626,8 +1626,9 @@ def main() -> int:
     wall_start = time.monotonic_ns()
 
     tool_prompt = (
-        "Use the available read_file tool protocol to read pico/runtime.py, then "
-        "summarize it after receiving the tool result."
+        "Your first action must call the available read_file tool for "
+        "pico/runtime.py. Do not return a final answer before receiving the tool "
+        "result; then summarize that result."
         if config.provider == "openai"
         else "Use the API-provided native read_file tool to read pico/runtime.py, "
         "then summarize it. Do not emit XML tool text."

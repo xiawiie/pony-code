@@ -328,6 +328,11 @@ def test_read_turn_trace_aggregates_every_model_turn(tmp_path):
                         "cache_read_input_tokens": 8,
                     },
                 },
+                {
+                    "event": "action_decoded",
+                    "action_type": "final",
+                    "origin": "text_protocol",
+                },
             ]
         ),
         encoding="utf-8",
@@ -594,6 +599,7 @@ def test_turn_runner_uses_first_trace_call_as_current_turn_evidence(tmp_path):
                 json.dumps(
                     {
                         "event": "action_decoded",
+                        "action_type": "tool",
                         "origin": "native_tool_use",
                     }
                 ),
