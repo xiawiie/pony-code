@@ -1,56 +1,54 @@
-# Pico 下一阶段优化与演进设计
+# Pico 下一阶段优化与演进设计（修订版）
 
-- 状态：Reviewed / Approved for implementation planning
+- 状态：Architecture Direction Approved；Implementation Contracts Approved
 - 代码基线：`99f9a8f5788231b5360c63426a3ebe2d3f20cf4c`
-- 工作树基线：dirty；审计结论必须记录 commit 与 dirty state
+- 工作树基线：dirty；审计、评测和迁移必须记录 commit 与 dirty state
 - 产品范围：本地运行、小团队共享
-- 实施约束：单人主导，目标 2–3 个月；macOS 本机 + GitHub Actions Linux
-- 兼容策略：运行时只读当前合同；旧私有工件通过一次性事务迁移，成功后删除旧工件，不保留兼容分支
+- 实施约束：单人主导；Release A 目标 2–3 个月；macOS Sandbox 首发；Linux Sandbox 独立发布
+- 兼容策略：运行时只读取当前合同；旧工件通过按合同切片的事务迁移转换，成功后删除旧工件，不保留兼容分支
 
-## 1. 设计结论
+## 1. 最终结论
 
-Pico 当前已经具备成熟的 Agent Loop、工具安全、effect observation、recovery、Memory 存储检索、运行工件和评测资产。本阶段不重写 runtime，不建设插件/MCP/RPC/daemon/vector database，不复制 Pi 或 Claude Code 的完整功能。
+Pico 当前已经具备成熟的 Agent Loop、工具安全、effect observation、recovery、Memory 存储检索、运行工件和评测资产。本阶段不重写 runtime，不建设 Plugins、MCP、RPC、daemon、OTel、Dashboard、Vector DB、Embedding、自动长期记忆、通用并行工具或 Sandbox backend registry。
 
-本阶段的核心问题不是缺少 Agent framework，而是已有能力尚未形成完整反馈闭环：Context 预算尚未覆盖整个 request，Tool policy 事实分散，Memory 的团队边界和显式写入尚未由 runtime 强制，批准后的 Shell 尚未具备 OS 隔离，Trace/Report/Summary 合同不够稳定，已有评测无法由一个 gate 统一回答是否回退。
+当前真正的缺口不是新的 Agent framework，而是已有能力没有形成闭环：Context 的总 request 硬预算尚未落实；Tool policy 事实分散；Memory 的显式写入和团队边界没有完全由 runtime 强制；审批后的 Shell 尚无 OS 隔离；Trace/Report/Summary 合同不够稳定；已有评测缺少统一 artifact/gate；合同升级没有按发布切片配套迁移。
 
-优化后的主线为：
+整体方案采用：
 
 ```text
-私有状态迁移与评测基础
-        ↓
-低敏感证据合同（Trace / Report / Summary）
-        ↓
-Context 全 request budget
-        ↓
-Tool Policy Decision
-        ↓
-Memory 边界与可解释召回
-        ↓
-SRT Shell Sandbox（先 feasibility，再 macOS，再 Linux CI）
+合同与迁移基础
+→ 低敏感证据合同
+→ Context 全 request budget
+→ Tool Policy Decision
+→ Memory 边界与可解释召回
+→ Approved Shell Execution
+→ macOS Sandbox Release A
+→ Linux Sandbox Release B
 ```
 
-六条产品主线保留，但工程上增加横向工作包 `MIG-001`，并提前增加 `SBOX-000` feasibility spike。
+六条产品主线保留，新增横向 `MIG-001`，并将 `SBOX-000` feasibility 提前到生产接入前。当前总纲由四份可执行子 Spec 支撑：Migration、Observability、Context Budget、Sandbox Release。每份子 Spec 必须独立完成合同、失败语义、测试和发布切片，不能等到最终阶段统一补迁移。
 
 ## 2. 不变量
 
-1. Canonical Messages 仍是唯一会话 transcript。
+1. Canonical Messages 是唯一会话 transcript。
 2. 一次 Model Attempt 只产生和执行一个 Action。
 3. 未知工具或无效工具定义 fail closed。
 4. approval、sandbox、effect observation、recovery 是四层不同能力，不能互相替代。
 5. 最新用户输入不得被静默截断；required-only 超限时 Provider 不得被调用。
 6. Shell 无论成功、失败、超时、被中断或部分执行，都进入 effect observation 和 terminalization。
-7. secret redaction、私有文件、路径、trusted executable、Git hardening、恢复记录的现有安全边界不得削弱。
+7. secret redaction、私有文件、路径、trusted executable、Git hardening 和恢复记录的现有边界不得削弱。
 8. Python core 保持标准库实现和零 runtime dependency。
 9. Sandbox 显式开启后任何 bootstrap、policy 或 runner 错误都不得回退宿主执行。
 10. 运行时只读取当前持久化合同；旧格式只由独立迁移器读取。
 11. 行为模块生产事实；Trace、Report、Summary 和 Evaluation 只投影或聚合事实，不通过 free-text 重新推断。
 12. 同一事实只计算一次，消费者不得各自重新分类。
+13. 每次持久化合同变更必须同时交付 writer、current-only reader、converter、cutover/recovery、inspection consumer 和 evaluation scenarios。
 
-## 3. 事实生产者与证据消费者
+## 3. 事实生产者与消费者
 
 | 事实 | 唯一生产者 | 消费者 |
 |---|---|---|
-| 最终 request token allocation | Context request builder | Report、Trace projection、Summary、Evaluation |
+| request token allocation | Context request builder | Report、Trace projection、Summary、Evaluation |
 | Memory selection | Retrieval selection | Context、Report、Trace projection、Evaluation |
 | Tool policy | ToolExecutor policy phase | Tool Result、Tool Change、Trace、Summary |
 | Approval outcome | Approval phase | Policy、Trace、Report |
@@ -59,35 +57,133 @@ SRT Shell Sandbox（先 feasibility，再 macOS，再 Linux CI）
 | Verification evidence | verification recorder | Checkpoint、Report、Evaluation |
 | Terminal run state | single run finalizer | TaskState、Trace、Report、Summary |
 
-## 4. MIG-001：私有状态事务迁移
+## 4. MIG-001：按合同切片的事务迁移
 
-### 4.1 范围
+### 4.1 迁移原则
 
-迁移对象限定为 Pico 私有状态：sessions、runs、checkpoints、Tool Change Records、私有 Agent Notes、相关 blobs 和新 migration metadata。User Notes (`.pico/memory/notes/**/*.md`) 是人维护的团队知识，不随私有 runtime 状态隐式改写；只做只读结构验证。
-
-locks、temp、cache 和可再生 evaluation artifacts 不迁移。
-
-### 4.2 事务流程
+迁移不是第 12 周一次性处理全部 `.pico`，而是每个合同发布切片的一部分：
 
 ```text
-获取 workspace migration lock
-→ 记录 inventory（commit、dirty、runtime、platform、hash）
-→ 检查权限、空间、source identity
-→ 在目标私有根同一文件系统的 staging 目录转换
-→ 校验所有新记录和跨工件引用
-→ fsync 文件与目录
-→ 旧私有根原子改名为 rollback staging
-→ 新私有根原子切换
-→ 用新 reader 做只读启动验证
-→ 验证成功后删除 rollback staging
-→ fsync 父目录
+新 schema + writer + current-only reader
++ source converter + transaction cutover/recovery
++ inspection/evaluation consumer
 ```
 
-禁止跨文件系统 copy-and-delete fallback。任一转换、校验、切换或新 reader 验证失败：保留完整旧状态，不产生新旧混合，runtime 拒绝继续使用该 workspace。
+只有同时满足以下条件的工件才迁移：合同结构或语义改变；新 runtime 必须继续读取；且不能从其他可信工件安全重建。未改变的工件不转换、不重写、不升级版本。
 
-正常 reader 不保留旧版本分支；旧解析器只能存在于 migration command。若本轮没有改变某一工件合同，不为 telemetry 变化强制升级其 format version。
+### 4.2 逐工件矩阵
 
-## 5. OBS-001：低敏感证据合同
+| 工件 | 当前合同 | 目标合同 | 本阶段处理 |
+|---|---|---|---|
+| Session | `session`, version 1 | 暂不改变 | 不迁移；strict reader 原样保留 |
+| TaskState | 当前私有状态 | 暂不改变 | 不迁移；新增持久字段需另开 slice |
+| Trace JSONL | 无统一 envelope | `trace_schema_version=1` | MIG-OBS；逐事件安全投影，无法判断则失败 |
+| Report | 无明确 record header | `run_report`, version 2 | MIG-OBS；优先从可信事实重建 |
+| Run Summary | 派生 inspection | `run_summary`, version 1 | 不落盘、不迁移 |
+| Checkpoint | `checkpoint`, version 1 | 暂不改变 | 不迁移 |
+| Tool Change | `tool_change`, version 1 | 仅在持久化 Policy/Sandbox 时 version 2 | 条件迁移；缺失事实写 unknown，不伪造 allow/deny |
+| Recovery blobs | hash 引用 | 暂不改变 | 不迁移；校验 hash/权限/引用 |
+| Working Memory | Session 内字段 | 暂不改变 | 不迁移 |
+| Workspace User Notes | Markdown/frontmatter | 不改变 | 永不由私有迁移改写，只读验证 |
+| Agent Notes | append-only Markdown | 不改变 | 排除，原样保留 |
+| Evaluation artifacts | 各自当前合同 | 可再生 artifact | 不迁移 |
+| locks/temp/cache | 临时状态 | 非合同 | 不迁移 |
+
+### 4.3 迁移目录与 Journal
+
+```text
+.pico/
+├── runs/                         # live
+├── .migration/
+│   ├── lock
+│   ├── journal.json
+│   ├── candidate/
+│   └── rollback/
+```
+
+`.migration` 位于同一文件系统、owner-only、不进入 Git、不被普通 Store 扫描；所有路径是 `.pico` 内相对路径，拒绝 symlink。Journal 合同：
+
+```json
+{
+  "record_type": "migration_journal",
+  "format_version": 1,
+  "migration_id": "mig_...",
+  "contract": "run_artifacts",
+  "source_version": 1,
+  "target_version": 2,
+  "state": "candidate_ready",
+  "created_at": "...",
+  "updated_at": "...",
+  "workspace_identity": {
+    "repo_commit": "99f9a8f...",
+    "repo_dirty": true
+  },
+  "paths": {
+    "live": "runs",
+    "candidate": ".migration/candidate/runs",
+    "rollback": ".migration/rollback/runs"
+  },
+  "source_identity": {"manifest_hash": "sha256:..."},
+  "candidate_identity": {"manifest_hash": "sha256:..."},
+  "error_code": ""
+}
+```
+
+Journal 禁止 prompt、completion、Tool args/result、Memory 正文、secret 和 workspace 绝对路径。
+
+### 4.4 迁移状态机
+
+```text
+ABSENT → PREPARING → CANDIDATE_READY
+CANDIDATE_READY → OLD_MOVED → NEW_INSTALLED → VALIDATED → COMMITTED → ABSENT
+NEW_INSTALLED → ROLLBACK_REQUIRED → ROLLED_BACK → ABSENT
+ROLLBACK_REQUIRED → ROLLBACK_FAILED
+```
+
+磁盘不变量：
+
+| 状态 | live | candidate | rollback | 普通 runtime |
+|---|---|---|---|---|
+| PREPARING | 旧 | 构建中 | 无 | 拒绝/等待 lock |
+| CANDIDATE_READY | 旧 | 完整新 | 无 | 不越过迁移 |
+| OLD_MOVED | 无 | 完整新 | 完整旧 | 拒绝启动 |
+| NEW_INSTALLED | 完整新 | 无 | 完整旧 | 只允许验证 reader |
+| VALIDATED | 完整新 | 无 | 完整旧 | 新状态权威，继续清理 |
+| ROLLBACK_REQUIRED | 失败新 | 无 | 完整旧 | 拒绝启动 |
+| ROLLED_BACK | 完整旧 | 可选失败副本 | 无 | 旧状态可读，报告迁移失败 |
+| ROLLBACK_FAILED | 不确定 | 可能存在 | 可能存在 | 无条件拒绝 |
+| COMMITTED | 完整新 | 无 | 无 | 正常启动 |
+
+每次 rename 后先 fsync 被修改目录，再原子写 journal、fsync journal、fsync `.migration`。状态只描述已 durable 的磁盘事实。`VALIDATED` 状态下 live 已验证，rollback 清理可恢复；`ROLLBACK_FAILED` 或目录组合与 journal 不一致时不自动删除、不猜测权威目录。
+
+### 4.5 启动恢复
+
+访问迁移 Store 前运行 migration preflight：
+
+- 无 journal/残留：正常启动；
+- `PREPARING`：验证 live，清理安全 candidate；
+- `CANDIDATE_READY`：继续 apply 或显式 abort；
+- `OLD_MOVED`：继续 candidate→live；
+- `NEW_INSTALLED`：current-only reader 验证，成功提交，失败回滚；
+- `VALIDATED`：继续清理 rollback；
+- `ROLLBACK_REQUIRED`：执行唯一可证明的反向切换；
+- `ROLLED_BACK`：验证旧 live，清理失败 candidate，拒绝新合同 runtime；
+- `ROLLBACK_FAILED`/identity mismatch：fail closed，仅允许 status/recover。
+
+入口：
+
+```bash
+pico migrate status
+pico migrate apply
+pico migrate abort
+pico migrate recover
+```
+
+### 4.6 发布规则与测试
+
+不得先合并新 writer、最后再补 migration。每个合同 slice 必须覆盖：candidate 中断、两次 rename 前后崩溃、reader 验证失败、反向 rename 失败、journal 损坏/重复 key、identity mismatch、symlink、磁盘不足、lock contention、跨文件系统 staging、成功删除旧工件和未改变工件不被重写。
+
+## 5. OBS-001：Trace、Report、Summary 合同
 
 ### 5.1 Trace Envelope
 
@@ -106,204 +202,217 @@ locks、temp、cache 和可再生 evaluation artifacts 不迁移。
 }
 ```
 
-Envelope 保持扁平结构，避免无必要的 payload nesting。attempt 和 tool-use correlation 通过显式可选参数传入，不建设 span tree。
+保持扁平结构，不建设 span tree。Trace 禁止用户 prompt、model completion、Tool args/result、Shell stdout/stderr、Memory query/snippet/body、文件正文、完整路径和 secret。`run_started` 不保存 user request，tool/verification 事件不保存 args/result/完整 command。
 
-### 5.2 Trace 禁止内容
+### 5.2 `run_report` v2
 
-Trace、Report、Summary 和 Evaluation artifact 默认不得包含：用户 prompt、模型 completion、tool args/result、Shell stdout/stderr、Memory query/snippet/body、文件正文、完整路径和 secret。Trace 只记录类型、ID、status、reason、token/count/usage、duration、effect 统计、approval/policy/sandbox metadata。
+固定 header：
 
-`run_started` 不再保存用户请求；tool 事件不保存 args/result；verification 事件不保存完整 command。私有 Session、TaskState、raw tool result、recovery artifact 继续承担内容存储，并经过既有 redaction。
-
-### 5.3 Report 与 Summary
-
-Report 是低敏感终态聚合，不再复制 final answer、完整 TaskState 或 Working Memory 正文。TaskState 和 Canonical Session 保留私有内容状态。
-
-Run Summary 以 Report 为主，Trace 只做完整性校验：schema、event count、terminal event count、correlation、malformed/lifecycle incomplete。Trace 损坏时仍展示安全可用的 Report 字段，但标记 `summary_complete=false`。
-
-Summary 必须来自同一结构化 payload 生成 text 和 JSON，不保存 prompt、completion、query、snippet、args、result 或 secret。
-
-## 6. CTX-001/002：Context 全 request budget
-
-### 6.1 预算
-
-```text
-input_limit = total_budget_hard_cap
-             - max_new_tokens
-             - context_safety_margin_tokens
+```json
+{"record_type":"run_report","format_version":2}
 ```
 
-`system_tools_hard_cap` 保留为固定前缀健康边界，不作为总预算真源。Injection source budgets、history soft cap 是选择偏好，不替代最终 hard cap。
+必填：`run_id`、`task_id`、`status`、`stop_reason`、`duration_ms`、`model`、`context`、`tools`、`memory`、`sandbox`、`effects`、`recovery`、`integrity`、`finalization`。
 
-### 6.2 构建顺序
+`status` 终态为 `completed|stopped|failed`；`running` 只允许 TaskState。`stop_reason` 复用现有枚举并增加 `context_budget_exceeded|sandbox_bootstrap_failed|migration_required`。
 
-```text
-冻结 injection snapshot
-→ 构建 Canonical Messages request
-→ sanitize provider payload
-→ 锁定本 request token_count_mode
-→ required-only feasibility check
-→ history soft-cap 删除最老完整 turn
-→ 按固定顺序删除 optional sources
-→ 必要时继续删除最老完整 turn
-→ 最终 payload 重计数并断言 within_budget
-→ 生成 Context Breakdown
-→ 返回 request
-```
+Report 禁止 final answer、完整 TaskState、Working Memory 正文、prompt、completion、Tool args/result、Shell output、Memory query/body、secret 和完整路径。Report 是终态聚合真源；TaskState/Session 保留私有内容。
 
-Provider token count 必须按 request 锁定模式：`provider_request`、`provider_text` 或 `estimate`。任一 component 的 Provider 计数失败时，整次 request 从头使用 estimate 重算，禁止逐 component 混用。默认不增加远程 count_tokens HTTP 请求。
-
-Source snapshot 只选择和裁剪，不重新 recall/render。required checkpoint 必须在生成时 bounded；request builder 不截断它，required-only 超限则返回 `context_budget_exceeded`，Provider 调用次数为 0。
-
-### 6.3 Breakdown
-
-Breakdown 至少包括：schema version、count mode、hard cap、reserved output、safety margin、input limit、final input、headroom、required feasibility、各 source 的 included/empty/truncated/dropped_budget/failed 状态、soft-cap 与 hard-cap dropped turns、digest count。不得包含正文、query、tool args、tool result、secret 或完整用户路径。
-
-## 7. TOOL-001：统一 Tool Policy
-
-### 7.1 Registry
-
-固定 tool registry 成为 schema、description、effect class 的唯一真源。effect 只使用 `read_only`、`workspace_write`、`memory_write`。注册工具缺失 effect 是 invalid tool definition 并拒绝；未知工具保守分类为 workspace_write 但 `decision=deny`。
-
-`risky` 不等于动态 `risk_class`。Shell 风险继续由 `assess_command()` 根据参数动态产生；effect、approval kind、risk class、decision 分层表达。
-
-### 7.2 Policy Decision
+最小示例：
 
 ```json
 {
-  "schema_version": 1,
-  "decision": "allow",
-  "reason_code": "allowed",
-  "effect_class": "workspace_write",
-  "risk_class": "complex",
-  "approval": {
-    "mode": "ask",
-    "required": true,
-    "outcome": "approved"
-  }
+  "record_type":"run_report",
+  "format_version":2,
+  "run_id":"run_ok",
+  "task_id":"task_ok",
+  "status":"completed",
+  "stop_reason":"final_answer_returned",
+  "duration_ms":1200,
+  "model":{"attempts":2,"turns":2,"failures":0,"retries":0,"transport_attempts":2,"transport_retries":0,"transport_evidence_complete":true,"usage":{"input_tokens":12000,"output_tokens":600,"total_tokens":12600,"cached_tokens":0,"cache_hit":false}},
+  "context":{"request_count":2,"budget_failure_count":0,"last_breakdown":{"schema_version":1,"count_mode":"estimate","within_budget":true,"final_input_tokens":6000,"headroom_tokens":89384}},
+  "tools":{"calls":1,"allowed":1,"denied":0,"runner_executed":1,"reason_code_counts":{"allowed":1},"status_counts":{"ok":1}},
+  "memory":{"candidate_count":0,"selected_count":0,"included_count":0,"dropped_budget_count":0,"filter_counts":{}},
+  "sandbox":{"requested":false,"active_calls":0,"outcome_counts":{},"host_fallback_count":0},
+  "effects":{"changed_file_count":0,"change_kind_counts":{},"partial_success_count":0,"recovery_review_required":false},
+  "recovery":{"checkpoint_count":0,"recovery_checkpoint_count":0,"verification_count":0,"pending_count":0},
+  "integrity":{"trace_status":"ok","trace_schema_version":1,"terminal_event_count":1,"correlation_complete":true,"summary_complete":true},
+  "finalization":{"errors":[],"observability_degraded":false}
 }
 ```
 
-`allow` 只在 validation、allowed-tools/read-only/repeated-call、approval revalidation、trusted executable/Git preflight、sandbox preflight 全部通过后冻结。Policy 不因 target exit code、effect 或 recovery outcome 重写。
+中断场景必须表达 `status=stopped`、`stop_reason=interrupted`、Tool status `interrupted`、Sandbox `timeout`（若适用）、partial effects、`recovery_review_required=true`，且 pending Tool Change 已 terminalize。
 
-Policy、Sandbox outcome、Tool status、Recovery status 分层。`sandbox_denied` 不作为最初 policy reason；target 在 OS sandbox 中被拒绝时 policy 仍可为 allow，sandbox outcome 表达拒绝。
+Trace 损坏但 Report 可读时：Report 终态仍可用；`integrity.trace_status=corrupt`、`terminal_event_count=0`、`correlation_complete=false`、`summary_complete=false`、固定 `error_code=trace_invalid_json`；Summary 不从坏 Trace 猜测状态、不重写原 Trace。
 
-被拒绝调用 runner count 必须为 0；被允许调用 runner count 必须为 1。允许且产生状态变化的调用把冻结 policy 写入 pending Tool Change；执行前拒绝不创建假的 Tool Change。
+### 5.3 `run_summary` v1
 
-## 8. MEM-001/002：Memory 边界与召回
+Summary 是 inspection-time 派生 payload，不落盘：
 
-### 8.1 三层记忆
-
-Canonical Messages 是会话事实；Working Memory 是 bounded session 状态；Durable Memory 只有 User Notes 和 Agent Notes。Agent 不自动保存长期总结，不把 Agent Notes 自动提升为 User Notes。
-
-User Notes 继续位于 `.pico/memory/notes/**/*.md`，Agent Notes 继续 append-only。`.gitignore` 改动必须配合真实 `git check-ignore` 和 repository structure tests：User Notes 可跟踪，Agent Notes、sessions、runs、checkpoints、locks 和其他私有工件仍被忽略。
-
-内建 write/patch 始终拒绝 User Notes。Sandbox 开启时 Shell 通过 OS denyWrite 保护；Sandbox 关闭时 Shell 仍是明确的宿主授权能力，不宣称 OS 强制保护。
-
-### 8.2 显式写入
-
-由当前 top-level 用户输入确定性识别 `memory_write_intent`。模型不能自行设置；历史消息不继承；delegate 默认关闭。无明确保存意图时：
-
-```text
-memory_save → deny → explicit_memory_request_required → runner=0
+```json
+{
+  "record_type":"run_summary",
+  "format_version":1,
+  "run":{"run_id":"run_ok","task_id":"task_ok","status":"completed","stop_reason":"final_answer_returned","duration_ms":1200},
+  "model":{"attempts":2,"failures":0,"input_tokens":12000,"output_tokens":600},
+  "context":{"request_count":2,"budget_failure_count":0,"within_budget":true},
+  "tools":{"calls":1,"allowed":1,"denied":0,"status_counts":{"ok":1},"reason_code_counts":{"allowed":1}},
+  "memory":{"candidate_count":0,"selected_count":0,"included_count":0,"dropped_budget_count":0},
+  "sandbox":{"requested":false,"active_calls":0,"outcome_counts":{},"host_fallback_count":0},
+  "effects":{"changed_file_count":0,"partial_success_count":0,"recovery_review_required":false},
+  "integrity":{"report_status":"ok","trace_status":"ok","terminal_event_count":1,"correlation_complete":true,"summary_complete":true}
+}
 ```
 
-不引入语义 intent classifier。
+Summary 必须验证 report/run_id/task_id/status/stop_reason 一致；Trace 的 run/task correlation 一致；Report 与 TaskState 冲突时标记 `report_task_state_mismatch`，不选择“看起来更新”的一个作为真源。text 和 JSON 来自同一 payload。
 
-### 8.3 召回
+发布切片：`OBS-BASE`（Envelope/projection/validator）、`REPORT-V2`（header/aggregate/rebuild）、`SUMMARY-V1`（Report 主导 + Trace integrity）、`MIG-OBS`（仅 Trace/Report）。
 
-Retrieval 拆为 selection/rendering 两步但复用同一 BlockStore snapshot，不重新扫描。分别统计 candidate、selected、included、dropped_budget 和 filter counts。`recently_recalled` 只在 note 最终进入 Model Request 后更新。`normalized_score` 仅表示本次 query primary score 内的相对排序，不表示概率。
+## 6. CTX-001/002：Context Snapshot 与全 request budget
 
-Trace/Report 不保存 query、snippet 或正文；工具输出可在 bounded 范围内展示 snippet。Doctor 只报告固定错误码、path/计数/限制值和 Git tracking 状态，不打印 Note 正文。
+### 6.1 Snapshot
 
-## 9. SBOX-000/001：SRT Sandbox
+不建设通用 Context framework。当前 renderer 拆为 source selection/rendering 与最终 request budget decision。内部结构：
 
-### 9.1 Feasibility first
+```python
+InjectionSource(name, required, text, token_count, status, reason_code, selected_memory_paths=())
+InjectionSnapshot(current_user, runtime_feedback, intent_name, sources)
+```
 
-在生产接入前验证固定 SRT 版本的真实 settings schema、allow/deny 优先级、macOS Seatbelt、Linux bubblewrap/user namespace/seccomp、网络/localhost/Unix socket、process tree timeout、npm package identity 和 Node 版本。Linux hosted runner mandatory capability 不可用时收缩支持范围，不降低隔离、不回退宿主。
+Snapshot 创建后不可修改；同一 Attempt 不重复 recall、workspace scan、checkpoint render 或 intent。`selected_memory_paths` 只保留内存，不进入 telemetry。
 
-### 9.2 执行边界
+### 6.2 Source 分类与固定 drop 顺序
 
-普通 argv、complex shell 和 hardened Git 必须汇入一个窄的 Approved Shell Execution 入口。保留 host runner 作为默认关闭模式，但 SRT adapter 不接受 host fallback callable；SRT 失败即失败。
+Required：`system`、`tools`、`current_user`、非空 `runtime_feedback`，以及依恢复正确性判定为 required 的 checkpoint。Optional：完整 `recent_history`、`recalled_memory`、`workspace_state`、`project_structure`、`memory_index`、optional checkpoint。
 
-Complex shell 使用显式 `[approved_shell, "-c", exact_approved_command]`，SRT adapter 不再使用额外 `shell=True`。SRT 不是普通 trusted executable，不进入通用 registry；使用独立 operator trust model：不在 workspace，launcher/manifest/package entry/Node identity 冻结并在每次调用前复验，child 无权修改其安装。
+固定删除顺序：
 
-### 9.3 Git
+```text
+1. history soft cap：最老完整 turn
+2. memory_index
+3. project_structure
+4. workspace_state
+5. recalled_memory
+6. optional_checkpoint
+7. 继续删除最老完整 history turn
+8. 仍超限 → context_budget_exceeded
+```
 
-纯文件系统的 `.git`、gitfile、linked worktree、submodule 和 argv 检查可在宿主 preflight；会启动 Git 的 `rev-parse`、`config --includes`、`ls-files` probe 和最终 target Git 必须进入 SRT。首版允许多个 SRT invocation，共享同一 call context/policy；不生成 shell helper。
+Tool-use 与紧随其后的 tool-result 不可拆。`history_floor_messages` 是软偏好，不能制造真实超限。required checkpoint 在生成时 bounded；request builder 不截断，required-only 超限直接失败。
 
-`.git`、`.pico`、User Notes 默认 denyWrite。必须明确 Sandbox 模式不支持需要修改 Git index/metadata 的 Git 工作流。
+### 6.3 最终预算算法
 
-### 9.4 生命周期与失败
+```text
+冻结 snapshot
+→ 构建 candidate request
+→ sanitize provider payload
+→ 锁定 count mode
+→ required-only feasibility
+→ history soft-cap
+→ optional source drop
+→ 继续 drop history
+→ 最终 sanitize + 同 mode 重计数 + assert
+→ 生成 Breakdown
+→ 仅在 recalled_memory 最终 included 时提交 recently_recalled
+```
 
-Sandbox bootstrap 在 Agent/run 创建前完成；每次 Shell call 复验 identity、生成 owner-only temp root/settings（0600）、覆盖 HOME/TMPDIR/cache，并删除临时状态。timeout 使用独立 process group、TERM、bounded grace、KILL、wrapper wait 和残留进程 smoke。wrapper 启动后任何异常都进入 effect observation 和 terminalization。
+`input_limit = total_budget_hard_cap - max_new_tokens - 512`。Mode 为 `provider_request|provider_text|estimate`；任一 Provider component 失败则整次从头 estimate，禁止混用；默认不增加远程 count_tokens 请求。Provider 调用只发生在最终断言成功后。
 
-Bootstrap outcome 与 call outcome 分层。target 普通非零 exit 属于 sandbox `completed`，由 tool status 表达命令失败。任何 unavailable、version mismatch、policy invalid、bootstrap failure 都不得宿主回退。
+Breakdown 必须记录 schema、mode、hard cap、reserved output、margin、input limit、final input、headroom、required feasibility、source status/reason、soft/hard dropped turns、digest count，不包含正文/query/args/result/secret/完整路径。
 
-## 10. EVAL-001：统一评测与门禁
+### 6.4 Recall 提交
 
-不新建 benchmark framework。`evaluate.py` 只编排现有 pytest、ruff、fixed benchmark、ablation、security corpus、build/distribution 和 sandbox runner，读取结构化 artifact，不复制评分逻辑、不解析自由文本作为主要真源、不自动调用真实 Provider。
+`recall_for_turn()` 不再直接写 `session["recently_recalled"]`，而返回 `RecallSelection`；ContextManager 只在最终 source included 且 request build 成功后提交 canonical selected paths。被 `dropped_budget` 的 note 不更新 recently-recalled。
 
-Suite 拆分为：
+### 6.5 Context scenarios
 
-- `core-fast`：PR 快速门禁；
-- `core-full`：固定 Linux/Python 3.12 完整 gate；
-- `sandbox-contract`：fake SRT 与 fail-closed contract；
-- `sandbox-real`：macOS/Linux 真实 smoke；
-- `live`：显式授权、限制请求数/时间/成本。
+`context.required-current-user-overflow`、`required-checkpoint-preserved`、`optional-source-drop-order`、`history-tool-pair-not-split`、`provider-counter-whole-request-fallback`、`recalled-memory-dropped-not-marked-recent`、`final-request-within-hard-cap`、`provider-not-called-on-budget-error`、`runtime-feedback-preserved`、`empty-checkpoint-not-emitted`。
 
-统一 artifact 记录 `record_type`、`format_version`、suite、baseline、scenario IDs、status、artifact 相对路径、repo commit、dirty state、Python、platform 和 machine class。功能场景 100% 通过；性能只比较同场景、同 machine class 的 median，默认仅在超过 baseline 2 倍且绝对增加超过 5ms 时失败；p95 只报告。性能失败允许一次确认重跑。
+## 7. TOOL-001 与 Memory 边界
 
-增加 canary corpus 扫描 Trace、Report、Summary、Eval artifact，验证 prompt、completion、tool args/result、Shell output、Memory query/body、secret 和绝对路径不泄漏。
+固定 registry 是 schema、description、effect class 唯一真源；`risky` 不等于动态 risk class。Policy 在 validation、allowlist/read-only/repeated-call、approval revalidation、trusted executable/Git preflight、sandbox preflight 全部通过后才冻结 `allow`。Policy、Sandbox、Tool status、Recovery 分层；deny runner=0，allow runner=1；policy 写入 pending Tool Change，但不因 exit/effect 重写。
 
-## 11. 12 周基准路线图
+Durable Memory 只有 User Notes 和 Agent Notes。User Notes 继续 `.pico/memory/notes/**/*.md`，只读、可 Git 跟踪；Agent Notes append-only、私有。内建 write/patch 始终拒绝 User Notes；Sandbox 开启时 Shell 由 OS denyWrite 保护，关闭时不宣称强制保护。
 
-| 周期 | 交付 |
-|---|---|
-| 第 1 周 | Spec 收口、MIG/SRT feasibility、真实基线和 go/no-go |
-| 第 2 周 | migration inventory/dry-run、core-fast、scenario/provenance、leakage canary |
-| 第 3–4 周 | Trace Envelope、低敏感 projection、Report、Run Summary、完整性测试 |
-| 第 5–6 周 | Context total budget、count mode、required feasibility、Breakdown、zero-call gate |
-| 第 7 周 | Tool registry effect、Policy Decision、reason/status 分层、runner 0/1 gate |
-| 第 8 周 | explicit memory gate、User Notes Git boundary、selection/render、doctor |
-| 第 9 周 | 统一 approved Shell execution、Git preflight/probe 拆分，host 行为保持 |
-| 第 10 周 | SRT bootstrap/doctor、private env、普通 argv/complex shell、macOS contract |
-| 第 11 周 | SRT Git、timeout/process group、partial effects、macOS real smoke |
-| 第 12 周 | Linux CI、atomic migration cutover、core-full、distribution、文档收口 |
+`memory_save` 由当前 top-level 用户输入确定性识别 `memory_write_intent`；模型不能设置，历史不继承，delegate 默认关闭。无明确保存意图：`memory_save → deny → explicit_memory_request_required → runner=0`。
 
-基准情形约 12 周；保守情形约 17 周。若延期，先删除非关键 doctor、Summary 文本、性能阻断、Linux支持承诺或高级 recall 展示；绝不削弱 fail-closed、effect observation、recovery、最新输入保留、runner 0/1、迁移失败保留旧状态和内容泄漏 gate。
+## 8. SBOX-000/001/002/003/004：Sandbox 发布合同
 
-## 12. 阶段 Go/No-Go
+### 8.1 发布策略
 
-SRT：macOS 固定版本真实启动、普通隔离、deny/read/write、timeout 和 Linux mandatory smoke 通过才 Go；否则收缩平台，不提供 best-effort fallback。
+**Release A：macOS Sandbox GA**。包含固定 SRT、bootstrap、operator identity、默认断网、敏感路径保护、普通 argv/complex shell/hardened Git、timeout/process group、effect/recovery、fail-closed、doctor 和 macOS real smoke。Release A 不宣称 Linux Sandbox 支持。
 
-Context：required-only overflow 时 Provider=0、单一 count mode、current user 不截断、tool pair 不拆、Breakdown 与真实 request 一致才 Go。
+**Release B：Linux Sandbox GA**。独立通过 GitHub-hosted runner 的 SRT/Node/bwrap/user namespace/seccomp/socket/filesystem/network/process-tree/Git smoke 和稳定性门禁。Linux 失败不阻塞 Release A；Linux 上 `--sandbox` 必须 unsupported/not_ready 并 fail closed，不得回退宿主。
 
-Tool：deny runner=0、allow runner=1、policy snapshot/effect/recovery 一致才 Go。
+### 8.2 平台状态
 
-Migration：inventory 完整、引用图验证、atomic cutover、新 reader 验证、成功删除旧工件、失败无混合状态才 Go。
+`supported|unsupported|not_ready|incompatible|unavailable|error`。只有 `supported` 允许 `--sandbox`。Doctor 无论是否启用 Sandbox 都报告能力，但不把依赖存在等同于真实隔离成功。
 
-## 13. 明确不做
+### 8.3 Identity 与启动
 
-本阶段不做 Plugins、Marketplace、MCP、RPC、daemon、OTel、Dashboard、Vector DB、Embedding、自动长期记忆、通用并行工具、Sandbox backend registry、Docker/OpenShell 多后端、项目网络白名单、Session tree/fork、默认开启 Sandbox、远程 token-count 请求和完整 Git 写工作流支持。
+SRT 精确锁定 `0.0.65`、Node `>=20.11.0`；不自动安装/更新。冻结 launcher、manifest、package entry、Node identity，每次调用复验；不进入普通 trusted executable registry。Bootstrap 在 Agent/run 创建前失败则不创建 Provider request/run/session mutation，不回退 host。
 
-## 14. 验收矩阵
+### 8.4 执行与 Git
 
-- Context：hard cap、reserved output、required overflow、latest input、tool pair、single count mode。
-- Tool：unknown/invalid/denied/approved/repeated、runner count、policy snapshot、effect一致。
-- Memory：explicit save、User Notes read-only、Git tracking、selection/included、no noisy recall。
-- Sandbox：普通读写、敏感读取拒绝、`.git/.pico`写拒绝、network/socket拒绝、child/grandchild、timeout、no fallback。
-- Recovery：pending、partial、interrupted、effect observation、verification、引用完整。
-- Observability：Envelope、correlation、terminal count、forbidden-content scan。
-- Migration：inventory、disk full、interruption、cutover failure、cleanup、无混合格式。
-- Evaluation：scenario IDs、baseline provenance、functional 100%、perf tolerance、相对 artifact path。
-- Distribution：sdist/wheel、clean install、zero runtime dependency。
+普通 argv、complex shell、hardened Git 汇入窄的 Approved Shell Execution；默认 host runner 保留，SRT adapter 不接受 fallback callable。Complex shell 使用显式 `[shell,"-c",exact_command]`，不再使用额外 `shell=True`。
 
-## 15. 最终价值判断
+纯文件系统 Git 检查可宿主执行；`rev-parse`、`config --includes`、`ls-files` 和最终 target Git 必须 SRT。首版允许多个 invocation，共享 policy/temp/hash。`.git`、`.pico`、User Notes 默认 denyWrite；不支持需要修改 Git index/metadata 的工作流。
 
-保留并列为 P0：全 request budget、Context Breakdown、Policy Decision、Trace 内容收缩、SRT fail-closed、统一 Evaluation gate、事务迁移、explicit memory gate。
+### 8.5 Policy、环境与 timeout
 
-保留但列为 P1：recall telemetry、Memory doctor、Summary 丰富文本、Linux real smoke、性能 gate、User Notes Git 共享。
+默认无外网、localhost、listener、Unix socket；必须真实分别验证 TCP/DNS/IPv6/socket/继承 fd。默认 denylist 阻断 `.env`、`.pico`、SSH/AWS/GCP/Kube/Docker credentials、netrc/npmrc/pypirc/history；不声称完整 HOME 隔离。每次 call 使用 owner-only temp HOME/TMPDIR/cache/settings 0600；Provider key/Project Environment 仍由 Pico env allowlist 排除。
 
-延后：高级 normalized score、远程 token count、read allowlist、SRT probe 性能优化、Memory index cache、Sandbox 默认开启。
+`Popen(start_new_session=True) → communicate(timeout) → TERM group → grace → KILL group → wait → residue check → effect observation → terminalize`。Bootstrap outcome：`ready|unavailable|version_mismatch|identity_changed|platform_unsupported|platform_not_ready|policy_invalid|bootstrap_failed`。Call outcome：`completed|policy_denied|timeout|wrapper_failed|target_not_started|cleanup_failed`。target 非零 exit 为 sandbox completed、tool error/partial_success。
 
-该方案的架构可行性和项目匹配度高，安全收益高；单人 2–3 个月按基准情形可行，按保守情形不可保证。必须通过阶段 Go/No-Go 和范围削减保持安全不变量，而不能通过降低 fail-closed 或 recovery 语义维持表面进度。
+### 8.6 Sandbox gates
+
+Release A macOS 必须通过 identity、argv/shell、filesystem、sensitive read、`.git/.pico/User Notes` write、network/socket、Git probe/target、timeout、partial effect、zero fallback、doctor 和 real smoke。Release B Linux 独立通过固定 CI 安装、bwrap、namespace、seccomp/socket、filesystem/network/process-tree/Git、zero fallback 和多次稳定运行。
+
+PR 运行 `sandbox-contract`；macOS focused job 是 Release A mandatory real smoke；Release A 阶段 Linux job 可见但不阻塞、不标记 supported、不静默 skip；Release B 前升级为 mandatory。
+
+## 9. EVAL-001
+
+不新建 benchmark framework。`evaluate.py` 只编排现有 runner，读取结构化 artifact，不复制评分逻辑、不解析自由文本作为主要真源、不自动调用真实 Provider。Suite：`core-fast`、`core-full`、`sandbox-contract`、`sandbox-real`、`live`。
+
+Artifact 必须记录 `record_type`、`format_version`、suite、baseline、scenario IDs、status、相对 artifact path、repo commit、dirty、Python、platform、machine class。功能 100% 通过；性能只比较同场景同 machine class 的 median，超过 baseline 2 倍且绝对增加 5ms 才失败，p95 只报告，允许一次确认重跑。Canary 扫描 Trace/Report/Summary/Eval，禁止 prompt/completion/args/result/shell output/memory query/body/secret/绝对路径泄漏。
+
+## 10. 发布顺序与路线图
+
+### Release A 基准 10–12 周
+
+1. MIG primitive、OBS/Report/Summary contracts、artifact provenance。
+2. Context Snapshot、全 request budget、Breakdown。
+3. Tool Policy、Memory explicit gate、recall commit。
+4. SBOX-000 feasibility、Approved Execution、Git probe split。
+5. macOS Sandbox GA、macOS real smoke、atomic migration slices。
+
+### Release B 额外 2–4 周
+
+1. Linux CI dependency/install contract。
+2. bwrap/user namespace/seccomp/socket。
+3. Linux filesystem/network/process-tree/Git smoke。
+4. 多次稳定运行和 Linux GA gate。
+
+每个合同 slice 完成 writer、current-only reader、converter、cutover/recovery、inspection/evaluation 后才可发布。若延期，先削减 Summary 文本、非关键 doctor、高级 recall 展示和性能阻断；不能削减 fail-closed、effect observation、recovery、latest input、runner 0/1、迁移失败保留旧状态和 leakage gate。
+
+## 11. Go/No-Go
+
+Migration：状态机、journal、每次 rename fsync、启动恢复、reader 验证、失败反向切换、无混合状态和旧工件清理通过才 Go。
+
+Observability：Report/Summary strict schema、成功/中断/Trace 损坏样例、Trace projection 和 leakage gate 通过才 Go。
+
+Context：required overflow Provider=0、单一 mode、latest input 不截断、tool pair 不拆、source/drop deterministic、recently-recalled 正确提交才 Go。
+
+Tool/Memory：deny/allow runner 0/1、policy/effect/recovery 一致、无明确请求不写 Memory、User Notes 只读/Git boundary 通过才 Go。
+
+Sandbox Release A：macOS mandatory 全部通过；Release B：Linux mandatory 全部通过。Linux 不作为 Release A 的隐含门槛。
+
+## 12. 不做与价值判断
+
+本阶段不做 Plugins、MCP、RPC、daemon、OTel、Dashboard、Vector DB、Embedding、自动长期记忆、通用并行、Sandbox backend registry、多后端、项目网络白名单、Session tree/fork、Sandbox 默认开启、远程 token count、完整 Git 写工作流和高级 score 校准。
+
+P0：全 request budget、Context Breakdown、Policy Decision、Trace 内容收缩、SRT fail-closed、Evaluation gate、按 slice 事务迁移、explicit memory gate。
+
+P1：Recall telemetry、Memory doctor、Summary text、Linux real smoke、性能 gate、User Notes Git 共享。
+
+最终判断：架构可行性高、项目匹配度高、安全收益高；Release A 单人 2–3 个月按基准可行，保守情形不可保证；Linux 应作为独立 Release B。任何平台或工期问题都通过发布范围收缩处理，不通过降低 fail-closed、effect observation、recovery 或内容安全不变量处理。
