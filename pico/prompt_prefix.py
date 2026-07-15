@@ -43,6 +43,7 @@ def tool_signature(tools):
                 "name": name,
                 "schema": tool["schema"],
                 "risky": tool["risky"],
+                "effect_class": tool.get("effect_class", "workspace_write"),
                 "description": tool["description"],
             }
         )

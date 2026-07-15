@@ -30,7 +30,6 @@ from .task_state import (
 from .workspace import clip, now
 from .tool_executor import (
     ToolExecutionResult,
-    _EFFECT_CLASS_BY_TOOL,
     _add_command_policy,
     _command_approval_metadata,
     _effect_class,
@@ -243,11 +242,7 @@ def _sanitize_action(agent, action):
     ):
         safe_arguments = {}
     tool = agent.tools.get(action.name)
-    effect_class = (
-        "workspace_write"
-        if tool is None and action.name not in _EFFECT_CLASS_BY_TOOL
-        else _effect_class(action.name, bool(tool and tool["risky"]))
-    )
+    effect_class = _effect_class(tool)
     metadata = _metadata(
         "rejected",
         effect_class=effect_class,

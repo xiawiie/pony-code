@@ -80,9 +80,7 @@ jobs:
 
       - name: Inspect distributions and smoke-test wheel install
         if: matrix.python-version == '3.12'
-        run: >-
-          uv run python scripts/verify_distribution.py
-          --install-smoke --offline-bundle-smoke
+        run: uv run python scripts/verify_distribution.py --install-smoke
 
   macos-focused:
     name: macOS focused (Python 3.12)

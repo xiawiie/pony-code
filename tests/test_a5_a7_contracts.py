@@ -1,18 +1,5 @@
-from pico.tools import ToolRegistry, memory_write_intent
+from pico.tools import memory_write_intent
 from pico.tool_executor import PolicyDecision
-
-
-def test_registry_is_effect_class_source_and_rejects_missing_effect():
-    registry = ToolRegistry()
-    registry.register("read", schema={}, description="read", effect_class="read_only", runner=lambda args: args)
-    assert registry.require("read").effect_class == "read_only"
-
-    try:
-        registry.register("bad", schema={}, description="bad", effect_class="", runner=lambda args: args)
-    except ValueError as exc:
-        assert str(exc) == "invalid_tool_definition"
-    else:
-        raise AssertionError("missing effect class accepted")
 
 
 def test_unknown_tool_policy_is_workspace_write_deny():

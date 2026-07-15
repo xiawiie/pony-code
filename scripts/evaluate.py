@@ -242,7 +242,6 @@ def _core_full_commands():
                 python,
                 "scripts/verify_distribution.py",
                 "--install-smoke",
-                "--offline-bundle-smoke",
             ),
             "exit",
         ),

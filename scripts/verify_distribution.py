@@ -11,6 +11,7 @@ from pathlib import Path, PurePosixPath
 import subprocess
 import tarfile
 import tempfile
+import tomllib
 import venv
 import zipfile
 
@@ -24,9 +25,6 @@ PROJECT_SUMMARY = (
 PACKAGE_DATA_FILES = {
     "pico/_docker_sandbox/image-manifest.json",
     "pico/_docker_sandbox/docker-config/config.json",
-    "pico/_sandbox_toolchain/manifest.json",
-    "pico/_sandbox_toolchain/package.json",
-    "pico/_sandbox_toolchain/package-lock.json",
 }
 EGG_INFO_FILES = {
     "PKG-INFO",
@@ -89,6 +87,18 @@ def _tracked_package_files(repo: Path) -> set[str]:
             f"untracked package Python files: {sorted(untracked_python)}"
         )
     return files | PACKAGE_DATA_FILES
+
+
+def _runtime_package_files(repo: Path, tracked_package_files: set[str]) -> set[str]:
+    config = tomllib.loads((repo / "pyproject.toml").read_text(encoding="utf-8"))
+    packages = set(config["tool"]["setuptools"]["packages"])
+    runtime_files = set(PACKAGE_DATA_FILES)
+    for name in tracked_package_files:
+        path = PurePosixPath(name)
+        package = path.parent.as_posix().replace("/", ".")
+        if path.suffix == ".py" and package in packages:
+            runtime_files.add(name)
+    return runtime_files
 
 
 def _single_artifact(dist_dir: Path, pattern: str) -> Path:
@@ -207,10 +217,11 @@ def install_smoke(wheel: Path) -> None:
         _run(
             str(python),
             "-c",
-            "from importlib.resources import files; "
-            "root=files('pico._sandbox_toolchain'); "
-            "[root.joinpath(name).read_bytes() for name in "
-            "('manifest.json','package.json','package-lock.json')]",
+            "import importlib.util; "
+            "forbidden=('pico.sandbox','pico.sandbox_macos','pico.sandbox_linux',"
+            "'pico.sandbox_toolchain','pico.sandbox_lifecycle',"
+            "'pico._sandbox_toolchain','pico.evaluation'); "
+            "assert all(importlib.util.find_spec(name) is None for name in forbidden)",
             cwd=cwd,
             env=env,
         )
@@ -297,47 +308,10 @@ def install_smoke(wheel: Path) -> None:
         _run(str(pico), "doctor", "--offline", cwd=cwd, env=env)
 
 
-def offline_bundle_smoke(wheel: Path) -> None:
-    """Exercise the packaged offline bundle helpers in a clean install."""
-    with tempfile.TemporaryDirectory(prefix="pico-offline-bundle-") as raw_tmp:
-        root = Path(raw_tmp)
-        environment = root / "venv"
-        home = root / "home"
-        cwd = root / "empty-project"
-        home.mkdir()
-        cwd.mkdir()
-        venv.EnvBuilder(with_pip=True, clear=True).create(environment)
-        bin_dir = environment / ("Scripts" if os.name == "nt" else "bin")
-        python = bin_dir / ("python.exe" if os.name == "nt" else "python")
-        env = _smoke_env(home, bin_dir)
-        _run(
-            str(python),
-            "-m",
-            "pip",
-            "install",
-            "--no-deps",
-            str(wheel.resolve()),
-            cwd=cwd,
-            env=env,
-        )
-        code = (
-            "from pathlib import Path; import tempfile, os, sys; "
-            "import pico.sandbox_lifecycle as lifecycle; "
-            "assert Path(lifecycle.__file__).resolve().is_relative_to(Path(sys.argv[1]).resolve()); "
-            "root=Path(tempfile.mkdtemp()).resolve(); src=root/'src'; src.mkdir(); "
-            "tool=src/'node'; tool.write_bytes(b'node'); os.chmod(tool, 0o700); "
-            "arc=root/'bundle.tar'; lifecycle.export_bundle(src, arc, identity='smoke', platform='test', arch='x'); "
-            "dst=root/'dst'; lifecycle.import_bundle(arc, dst, expected_platform='test', expected_arch='x'); "
-            "assert (dst/'node').stat().st_mode & 0o111"
-        )
-        _run(str(python), "-c", code, str(environment), cwd=cwd, env=env)
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dist-dir", type=Path, default=Path("dist"))
     parser.add_argument("--install-smoke", action="store_true")
-    parser.add_argument("--offline-bundle-smoke", action="store_true")
     args = parser.parse_args()
 
     repo = Path(__file__).resolve().parents[1]
@@ -345,12 +319,11 @@ def main() -> int:
     sdist = _single_artifact(dist_dir, "*.tar.gz")
     wheel = _single_artifact(dist_dir, "*.whl")
     tracked = _tracked_package_files(repo)
+    runtime = _runtime_package_files(repo, tracked)
     verify_sdist(sdist, tracked)
-    verify_wheel(wheel, tracked, (repo / "README.md").read_text(encoding="utf-8"))
+    verify_wheel(wheel, runtime, (repo / "README.md").read_text(encoding="utf-8"))
     if args.install_smoke:
         install_smoke(wheel)
-    if args.offline_bundle_smoke:
-        offline_bundle_smoke(wheel)
     print(f"verified {sdist.name} and {wheel.name}")
     return 0
 

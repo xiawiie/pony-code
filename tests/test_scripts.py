@@ -68,18 +68,17 @@ def test_ci_keeps_docker_sandbox_local_gate_read_only():
     assert "--real --managed" not in workflow
     assert "PICO_RUN_REAL_SRT" not in workflow
     assert "uv build --clear" in workflow
-    assert "--install-smoke --offline-bundle-smoke" in workflow
+    assert "scripts/verify_distribution.py --install-smoke" in workflow
+    assert "offline-bundle-smoke" not in workflow
 
 
 def test_maintenance_scripts_start_and_show_help():
     for script in (
         "scripts/aggregate_docker_sandbox_release.py",
         "scripts/collect_resume_metrics.py",
-        "scripts/aggregate_srt_feasibility.py",
         "scripts/evaluate.py",
         "scripts/run_large_scale_experiments.py",
         "scripts/run_provider_experiments.py",
-        "scripts/srt_feasibility.py",
         "scripts/verify_distribution.py",
     ):
         result = subprocess.run(
@@ -110,7 +109,9 @@ def test_distribution_verifier_freezes_archive_and_install_contract():
     assert "resources_after == resources_before" in verifier
     assert '"PYTHONHOME"' in verifier
     assert '"PYTHONPATH"' in verifier
-    assert "Path(lifecycle.__file__).resolve().is_relative_to" in verifier
+    assert "pico.sandbox_lifecycle" in verifier
+    assert "pico._sandbox_toolchain" in verifier
+    assert "offline_bundle_smoke" not in verifier
     assert "cwd=cwd, env=env" in verifier
 
 
@@ -185,6 +186,32 @@ def test_distribution_verifier_rejects_untracked_package_data(
 
     with pytest.raises(AssertionError, match="untracked package data files"):
         module._tracked_package_files(tmp_path)
+
+
+def test_distribution_verifier_excludes_development_packages_from_wheel(
+    tmp_path,
+):
+    spec = importlib.util.spec_from_file_location(
+        "verify_distribution_script",
+        Path("scripts/verify_distribution.py"),
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    module.PACKAGE_DATA_FILES = set()
+    (tmp_path / "pyproject.toml").write_text(
+        '[tool.setuptools]\npackages = ["pico"]\n',
+        encoding="utf-8",
+    )
+    tracked = {
+        "pico/__init__.py",
+        "pico/runtime.py",
+        "pico/evaluation/__init__.py",
+        "pico/evaluation/dev.py",
+    }
+
+    runtime = module._runtime_package_files(tmp_path, tracked)
+
+    assert runtime == {"pico/__init__.py", "pico/runtime.py"}
 
 
 def test_local_check_script_matches_ci_commands():

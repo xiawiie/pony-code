@@ -1,8 +1,0 @@
-{
-  "name": "pico-sandbox-toolchain",
-  "version": "0.0.0",
-  "private": true,
-  "dependencies": {
-    "@anthropic-ai/sandbox-runtime": "0.0.65"
-  }
-}

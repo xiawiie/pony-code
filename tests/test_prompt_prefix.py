@@ -24,6 +24,25 @@ def test_tool_signature_is_stable_across_registry_insertion_order(tmp_path):
     assert tool_signature(tools) == tool_signature(reordered)
 
 
+def test_tool_signature_binds_effect_class():
+    base = {
+        "read": {
+            "schema": {},
+            "risky": False,
+            "effect_class": "read_only",
+            "description": "Read.",
+        }
+    }
+    changed = {
+        "read": {
+            **base["read"],
+            "effect_class": "workspace_write",
+        }
+    }
+
+    assert tool_signature(base) != tool_signature(changed)
+
+
 def test_build_prompt_prefix_renders_tools_and_workspace_metadata(tmp_path):
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
     workspace = WorkspaceContext.build(tmp_path)

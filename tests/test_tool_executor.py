@@ -17,6 +17,7 @@ from pico.tool_executor import (
     _effect_class,
     _fill_git_head_before_file_states,
 )
+from pico.tools import BASE_TOOL_SPECS, DELEGATE_TOOL_SPEC
 
 
 def build_agent(tmp_path, outputs=None, **kwargs):
@@ -67,13 +68,13 @@ def test_tool_executor_returns_content_and_metadata_without_side_channel(tmp_pat
     assert result.metadata["workspace_changed"] is False
 
 
-def test_effect_class_table_is_explicit():
-    assert _effect_class("read_file", False) == "read_only"
-    assert _effect_class("delegate", False) == "read_only"
-    assert _effect_class("memory_save", False) == "memory_write"
-    assert _effect_class("write_file", True) == "workspace_write"
-    assert _effect_class("unknown_safe", False) == "read_only"
-    assert _effect_class("unknown_risky", True) == "workspace_write"
+def test_effect_class_comes_from_actual_tool_specs():
+    assert _effect_class(BASE_TOOL_SPECS["read_file"]) == "read_only"
+    assert _effect_class(DELEGATE_TOOL_SPEC) == "read_only"
+    assert _effect_class(BASE_TOOL_SPECS["memory_save"]) == "memory_write"
+    assert _effect_class(BASE_TOOL_SPECS["write_file"]) == "workspace_write"
+    assert _effect_class(None) == "workspace_write"
+    assert _effect_class({"risky": False}) == "workspace_write"
 
 
 @pytest.mark.parametrize(
@@ -1206,6 +1207,7 @@ def test_workspace_write_tool_uses_generic_path_argument_for_recovery(tmp_path):
     agent.tools["custom_write"] = {
         "schema": {"path": "str"},
         "risky": True,
+        "effect_class": "workspace_write",
         "description": "Custom write tool used by the test.",
         "run": custom_write,
     }
@@ -1232,6 +1234,7 @@ def test_generic_path_arg_registry_covers_destination_and_paths_list(tmp_path):
     agent.tools["custom_move"] = {
         "schema": {"source": "str", "destination": "str"},
         "risky": True,
+        "effect_class": "workspace_write",
         "description": "Move a file.",
         "run": custom_move,
     }
@@ -1257,6 +1260,7 @@ def test_generic_path_arg_registry_covers_list_arg(tmp_path):
     agent.tools["custom_delete"] = {
         "schema": {"paths": "list[str]"},
         "risky": True,
+        "effect_class": "workspace_write",
         "description": "Delete files.",
         "run": custom_delete,
     }

@@ -174,10 +174,10 @@ def test_tool_examples_present():
 
 
 def test_effect_class_for_new_tools_is_read_only():
-    from pico.tool_executor import _EFFECT_CLASS_BY_TOOL
+    from pico.tools import BASE_TOOL_SPECS
     for name in ("memory_list", "memory_read", "memory_search", "repo_lookup"):
-        assert _EFFECT_CLASS_BY_TOOL[name] == "read_only"
-    assert _EFFECT_CLASS_BY_TOOL["memory_save"] == "memory_write"
+        assert BASE_TOOL_SPECS[name]["effect_class"] == "read_only"
+    assert BASE_TOOL_SPECS["memory_save"]["effect_class"] == "memory_write"
 
 
 @pytest.mark.parametrize(

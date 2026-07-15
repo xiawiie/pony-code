@@ -23,9 +23,7 @@ dev = [
 packages = [
   "pico",
   "pico._docker_sandbox",
-  "pico._sandbox_toolchain",
   "pico.context",
-  "pico.evaluation",
   "pico.features",
   "pico.memory",
   "pico.providers",
@@ -34,7 +32,6 @@ include-package-data = false
 
 [tool.setuptools.package-data]
 "pico._docker_sandbox" = ["image-manifest.json", "docker-config/config.json"]
-"pico._sandbox_toolchain" = ["manifest.json", "package.json", "package-lock.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

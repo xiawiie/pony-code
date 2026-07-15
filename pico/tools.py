@@ -75,41 +75,6 @@ _ALLOWED_ENV_TEMPLATES = frozenset(
 _ALLOWED_EFFECT_CLASSES = frozenset({"read_only", "workspace_write", "memory_write"})
 
 
-@dataclass(frozen=True)
-class ToolDefinition:
-    name: str
-    schema: dict
-    description: str
-    effect_class: str
-    runner: object
-
-
-class ToolRegistry:
-    """工具 schema、描述与 effect class 的唯一注册真源。"""
-
-    def __init__(self):
-        self._definitions = {}
-
-    def register(self, name, *, schema, description, effect_class, runner):
-        if effect_class not in _ALLOWED_EFFECT_CLASSES or not callable(runner):
-            raise ValueError("invalid_tool_definition")
-        definition = ToolDefinition(
-            name=str(name),
-            schema=dict(schema),
-            description=str(description),
-            effect_class=effect_class,
-            runner=runner,
-        )
-        self._definitions[definition.name] = definition
-        return definition
-
-    def require(self, name):
-        return self._definitions[str(name)]
-
-    def get(self, name):
-        return self._definitions.get(str(name))
-
-
 def memory_write_intent(current_user, *, history=(), delegated=False):
     """保守识别当前用户输入中的显式持久记忆意图。"""
     del history  # 历史请求不得向当前 turn 继承授权。
@@ -196,56 +161,67 @@ BASE_TOOL_SPECS = {
     "list_files": {
         "schema": {"path": "str='.'"},
         "risky": False,
+        "effect_class": "read_only",
         "description": "List files in the workspace.",
     },
     "read_file": {
         "schema": {"path": "str", "start": "int=1", "end": "int=200"},
         "risky": False,
+        "effect_class": "read_only",
         "description": "Read a UTF-8 file by line range.",
     },
     "search": {
         "schema": {"pattern": "str", "path": "str='.'"},
         "risky": False,
+        "effect_class": "read_only",
         "description": "Search the workspace with rg or a simple fallback.",
     },
     "run_shell": {
         "schema": {"command": "str", "timeout": f"int={DEFAULT_RUN_SHELL_TIMEOUT}"},
         "risky": True,
+        "effect_class": "workspace_write",
         "description": "Run a shell command in the repo root.",
     },
     "write_file": {
         "schema": {"path": "str", "content": "str"},
         "risky": True,
+        "effect_class": "workspace_write",
         "description": "Write a text file.",
     },
     "patch_file": {
         "schema": {"path": "str", "old_text": "str", "new_text": "str"},
         "risky": True,
+        "effect_class": "workspace_write",
         "description": "Replace one exact text block in a file.",
     },
     "memory_list": {
         "schema": {"prefix": "str=''"},
         "risky": False,
+        "effect_class": "read_only",
         "description": "List memory files (user notes + agent_notes). Optional prefix filter.",
     },
     "memory_read": {
         "schema": {"path": "str", "start": "int=1", "end": "int=200"},
         "risky": False,
+        "effect_class": "read_only",
         "description": "Read a memory file by line range. Same paging as read_file.",
     },
     "memory_search": {
         "schema": {"query": "str", "limit": "int=5"},
         "risky": False,
+        "effect_class": "read_only",
         "description": "Full-text search across memory files (BM25 + CJK bigram). Query capped at 512 chars.",
     },
     "memory_save": {
         "schema": {"note": "str", "scope": "str='workspace'"},
         "risky": False,
+        "effect_class": "memory_write",
         "description": "Append a short note (<=500 chars) to agent_notes.md. Use only when the user explicitly asks to remember.",
     },
     "repo_lookup": {
         "schema": {"symbol": "str", "kind": "str=''"},
         "risky": False,
+        "effect_class": "read_only",
         "description": "Look up where a symbol is defined. Precise for Python (AST), best-effort for TS/Go/Rust (regex).",
     },
 }
@@ -253,6 +229,7 @@ BASE_TOOL_SPECS = {
 DELEGATE_TOOL_SPEC = {
     "schema": {"task": "str", "max_steps": "int=3"},
     "risky": False,
+    "effect_class": "read_only",
     "description": "Ask a bounded read-only child agent to investigate.",
 }
 

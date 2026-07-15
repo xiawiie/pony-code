@@ -2,7 +2,6 @@ include README.md
 include pyproject.toml
 recursive-include pico *.py
 recursive-include pico/_docker_sandbox *.json
-recursive-include pico/_sandbox_toolchain *.json
 prune tests
 prune benchmarks
 prune docs

@@ -31,6 +31,7 @@ from .safe_subprocess import (
     run_hardened_git,
 )
 from .tools import (
+    _ALLOWED_EFFECT_CLASSES,
     DEFAULT_RUN_SHELL_TIMEOUT,
     ApprovedShellExecution,
     _ApprovedShellExecution,
@@ -74,22 +75,6 @@ class PolicyDecision:
         }
 
 
-_EFFECT_CLASS_BY_TOOL = {
-    "read_file": "read_only",
-    "list_files": "read_only",
-    "search": "read_only",
-    "run_shell": "workspace_write",
-    "write_file": "workspace_write",
-    "patch_file": "workspace_write",
-    "delegate": "read_only",
-    "memory_list": "read_only",
-    "memory_read": "read_only",
-    "memory_search": "read_only",
-    "memory_save": "memory_write",
-    "repo_lookup": "read_only",
-}
-
-
 # 已知“直接改文件”的工具可以显式声明路径参数；未知 workspace_write 工具
 # 会退回到一组常见路径参数名，避免未来新工具静默丢失 recovery 记录。
 _PATH_ARG_NAMES_BY_TOOL = {
@@ -100,8 +85,12 @@ _PATH_ARG_NAMES_BY_TOOL = {
 _GENERIC_PATH_ARG_NAMES = ("path", "paths", "target", "targets", "source", "sources", "destination", "destinations")
 
 
-def _effect_class(name, risky):
-    return _EFFECT_CLASS_BY_TOOL.get(name, "workspace_write" if risky else "read_only")
+def _effect_class(tool):
+    if isinstance(tool, Mapping):
+        effect_class = tool.get("effect_class")
+        if effect_class in _ALLOWED_EFFECT_CLASSES:
+            return effect_class
+    return "workspace_write"
 
 
 def _metadata(
@@ -630,7 +619,7 @@ def _availability_rejection(
                 risk_level="high",
             ),
         )
-    elif tool is None:
+    elif tool is None or tool.get("effect_class") not in _ALLOWED_EFFECT_CLASSES:
         rejection = ToolExecutionResult(
             content=f"error: unknown tool '{name}'",
             metadata=_metadata(
@@ -731,11 +720,7 @@ def _prepare_non_shell_tool(agent, tool, name, args, effect_class):
 
 def _prepare_tool_request(agent, name, args):
     tool = agent.tools.get(name)
-    effect_class = (
-        "workspace_write"
-        if tool is None and name not in _EFFECT_CLASS_BY_TOOL
-        else _effect_class(name, bool(tool and tool["risky"]))
-    )
+    effect_class = _effect_class(tool)
     command_assessment, rejection = _assess_shell_request(
         agent,
         name,
@@ -1452,11 +1437,7 @@ class ToolExecutor:
     def execute(self, name, args):
         if getattr(self.agent, "docker_sandbox", False):
             tool = self.agent.tools.get(name)
-            effect_class = (
-                "workspace_write"
-                if tool is None and name not in _EFFECT_CLASS_BY_TOOL
-                else _effect_class(name, bool(tool and tool["risky"]))
-            )
+            effect_class = _effect_class(tool)
             try:
                 state = self.agent.sandbox_context.current_session().state
             except DockerSandboxError:
