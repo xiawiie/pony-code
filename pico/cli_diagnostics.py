@@ -220,6 +220,7 @@ def collect_config(cwd, args=None):
         "provider": config["provider"],
         "model": config["model"],
         "base_url": config["base_url"],
+        "destination": config["destination"],
         "api_key": {
             "present": bool(api_key["value"]),
             "source": api_key["source"],
@@ -256,6 +257,7 @@ def collect_doctor(cwd, args=None, offline=False):
             "name": api_key["name"],
         },
         "base_url": resolved["base_url"],
+        "destination": resolved["destination"],
     }
     diagnostic_base_url = dict(config["base_url"])
     diagnostic_base_url["value"] = _redact_url_for_diagnostics(diagnostic_base_url["value"])
@@ -306,6 +308,7 @@ def collect_doctor(cwd, args=None, offline=False):
             "provider": config["provider"],
             "model": config["model"],
             "base_url": diagnostic_base_url,
+            "destination": config["destination"],
         },
         "credentials": {
             "status": "ok" if config["api_key"]["present"] or config["provider"]["value"] == "ollama" else "missing",
@@ -340,6 +343,12 @@ def _unavailable_workspace_doctor(*, offline):
             "provider": {"value": "", "source": "unavailable", "name": ""},
             "model": {"value": "", "source": "unavailable", "name": ""},
             "base_url": {"value": "", "source": "unavailable", "name": ""},
+            "destination": {
+                "classification": "unknown",
+                "host": "",
+                "source": "unavailable",
+                "name": "",
+            },
         },
         "credentials": {
             "status": "review_required",
@@ -887,6 +896,7 @@ def _ok_missing(value):
 
 
 def _render_config(data):
+    destination = data.get("destination", {})
     lines = [
         "Pico config — Effective configuration",
         "",
@@ -902,6 +912,9 @@ def _render_config(data):
         _line("provider", _value_with_source(data["provider"])),
         _line("model", _value_with_source(data["model"])),
         _line("base url", _value_with_source(data["base_url"])),
+        _line("destination", destination.get("classification", "unknown")),
+        _line("destination host", destination.get("host", "-")),
+        _line("destination source", destination.get("source", "unknown")),
         "",
         "Credentials",
         _line("api key", _presence_text(data["api_key"])),
@@ -931,6 +944,7 @@ def _render_set_secret(data):
 
 def _render_doctor(data):
     config = data["config"]
+    destination = config.get("destination", {})
     credentials = data["credentials"]
     connectivity = data["provider_connectivity"]
     storage = data["storage"]
@@ -955,6 +969,9 @@ def _render_doctor(data):
         _line("provider", _value_with_source(config["provider"])),
         _line("model", _value_with_source(config["model"])),
         _line("base url", _value_with_source(config["base_url"])),
+        _line("destination", destination.get("classification", "unknown")),
+        _line("destination host", destination.get("host", "-")),
+        _line("destination source", destination.get("source", "unknown")),
         "",
         "Credentials",
         _line("api key", _presence_text(credentials["api_key"])),

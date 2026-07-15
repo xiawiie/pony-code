@@ -82,6 +82,44 @@ def test_doctor_reports_the_same_project_env_contract(tmp_path, capsys):
     }
 
 
+@pytest.mark.parametrize(
+    ("provider", "base_url", "expected_class", "expected_host"),
+    [
+        ("openai", None, "official", "api.openai.com"),
+        ("anthropic", None, "official", "api.anthropic.com"),
+        ("ollama", None, "local", "127.0.0.1"),
+        (
+            "openai",
+            "https://relay.example/v1",
+            "explicit_third_party",
+            "relay.example",
+        ),
+    ],
+)
+def test_doctor_reports_safe_provider_destination(
+    tmp_path,
+    provider,
+    base_url,
+    expected_class,
+    expected_host,
+):
+    args = SimpleNamespace(
+        provider=provider,
+        model=None,
+        base_url=base_url,
+        host=None,
+    )
+
+    data = collect_doctor(tmp_path, args, offline=True)
+
+    destination = data["config"]["destination"]
+    assert destination["classification"] == expected_class
+    assert destination["host"] == expected_host
+    assert destination["source"] == ("cli" if base_url else "default")
+    assert "api_key" not in destination
+    assert "Authorization" not in json.dumps(data)
+
+
 @pytest.mark.skipif(os.name != "posix", reason="POSIX mode assertion")
 def test_config_show_preserves_permission_review_after_redactor(
     tmp_path,

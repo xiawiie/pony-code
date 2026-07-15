@@ -36,9 +36,7 @@ def _anthropic_content(data):
 def _supports_anthropic_prompt_cache(base_url):
     parsed = urllib.parse.urlsplit(base_url)
     host = (parsed.hostname or "").casefold()
-    return host == "api.anthropic.com" or (
-        host == "www.right.codes" and parsed.path.startswith("/claude/")
-    )
+    return host == "api.anthropic.com"
 
 
 def _extract_anthropic_usage_cache_details(data):

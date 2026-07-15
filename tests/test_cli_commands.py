@@ -241,7 +241,7 @@ def test_init_updates_existing_env_without_dropping_unrelated_lines(tmp_path, ca
     values = read_project_env(tmp_path, warn=False)
     assert values["PICO_PROVIDER"] == "openai"
     assert values["PICO_OPENAI_MODEL"] == "gpt-project"
-    assert values["PICO_OPENAI_API_BASE"] == "https://www.right.codes/codex/v1"
+    assert values["PICO_OPENAI_API_BASE"] == "https://api.openai.com/v1"
     assert values["PICO_DEEPSEEK_API_KEY"] == "old-secret"
     assert "PICO_OPENAI_API_KEY" not in values
 

@@ -815,7 +815,7 @@ def test_build_agent_rejects_openai_key_for_anthropic_provider(tmp_path):
 
     mock_anthropic.assert_called_once()
     assert mock_anthropic.call_args.kwargs["model"] == "claude-sonnet-4-5-20250929"
-    assert mock_anthropic.call_args.kwargs["base_url"] == "https://www.right.codes/claude/v1"
+    assert mock_anthropic.call_args.kwargs["base_url"] == "https://api.anthropic.com"
     assert mock_anthropic.call_args.kwargs["api_key"] == ""
     assert agent.model_client is fake_client
 

@@ -3,13 +3,20 @@
 DEFAULT_OLLAMA_MODEL = "qwen3.5:4b"
 DEFAULT_OLLAMA_HOST = "http://127.0.0.1:11434"
 DEFAULT_OPENAI_MODEL = "gpt-5.4"
-DEFAULT_OPENAI_BASE_URL = "https://www.right.codes/codex/v1"
+DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-4-6"
-DEFAULT_ANTHROPIC_BASE_URL = "https://www.right.codes/claude/v1"
+DEFAULT_ANTHROPIC_BASE_URL = "https://api.anthropic.com"
 DEFAULT_DEEPSEEK_MODEL = "deepseek-v4-pro"
 DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com/anthropic"
 DEFAULT_PROVIDER = "deepseek"
 PROVIDER_CHOICES = ("ollama", "openai", "anthropic", "deepseek")
+
+OFFICIAL_PROVIDER_HOSTS = {
+    "openai": frozenset({"api.openai.com"}),
+    "anthropic": frozenset({"api.anthropic.com"}),
+    "deepseek": frozenset({"api.deepseek.com"}),
+    "ollama": frozenset(),
+}
 
 MODEL_ENV_NAMES = {
     "ollama": ("PICO_OLLAMA_MODEL", "OLLAMA_MODEL"),

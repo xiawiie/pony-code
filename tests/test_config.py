@@ -1,6 +1,11 @@
 import pytest
 
-from pico.config import load_pico_toml, resolve_provider_config
+import pico.config as config_module
+from pico.config import (
+    classify_provider_destination,
+    load_pico_toml,
+    resolve_provider_config,
+)
 from pico.recovery_policy import DEFAULT_MAX_BLOB_SIZE, snapshot_eligibility
 
 
@@ -95,10 +100,137 @@ def test_provider_resolver_explicit_values_override_both_env_sources():
         "provider": "cli",
         "model": "cli",
         "base_url": "cli",
+        "destination": "cli",
         "api_key": "cli",
     }
     assert resolved["model"]["value"] == "explicit-model"
     assert resolved["base_url"]["name"] == "--base-url"
+
+
+@pytest.mark.parametrize(
+    ("provider", "expected_url", "expected_class", "expected_host"),
+    [
+        ("openai", "https://api.openai.com/v1", "official", "api.openai.com"),
+        ("anthropic", "https://api.anthropic.com", "official", "api.anthropic.com"),
+        (
+            "deepseek",
+            "https://api.deepseek.com/anthropic",
+            "official",
+            "api.deepseek.com",
+        ),
+        ("ollama", "http://127.0.0.1:11434", "local", "127.0.0.1"),
+    ],
+)
+def test_provider_defaults_have_safe_destination_classification(
+    provider,
+    expected_url,
+    expected_class,
+    expected_host,
+):
+    resolved = resolve_provider_config(
+        explicit={"provider": provider},
+        project_env={},
+        process_env={},
+    )
+
+    assert resolved["base_url"]["value"] == expected_url
+    assert resolved["destination"] == {
+        "classification": expected_class,
+        "host": expected_host,
+        "source": "default",
+        "name": (
+            "DEFAULT_OLLAMA_HOST"
+            if provider == "ollama"
+            else f"DEFAULT_{provider.upper()}_BASE_URL"
+        ),
+    }
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://relay.example/v1",
+        "https://www.right.codes/codex/v1",
+        "https://gateway.corp.example/provider",
+    ],
+)
+def test_all_explicit_third_party_destinations_follow_one_rule(url):
+    result = classify_provider_destination("openai", url, source="cli")
+
+    assert result == {
+        "classification": "explicit_third_party",
+        "host": url.split("/")[2],
+        "source": "cli",
+    }
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "expected_source"),
+    [
+        ({"explicit": {"base_url": "https://relay.example/v1"}}, "cli"),
+        (
+            {"project_env": {"PICO_OPENAI_API_BASE": "https://relay.example/v1"}},
+            "project_env",
+        ),
+        (
+            {"process_env": {"OPENAI_API_BASE": "https://relay.example/v1"}},
+            "environment",
+        ),
+    ],
+)
+def test_resolver_allows_third_party_only_from_explicit_sources(
+    kwargs,
+    expected_source,
+):
+    explicit = {"provider": "openai", **kwargs.get("explicit", {})}
+    resolved = resolve_provider_config(
+        explicit=explicit,
+        project_env=kwargs.get("project_env", {}),
+        process_env=kwargs.get("process_env", {}),
+    )
+
+    assert resolved["destination"]["classification"] == "explicit_third_party"
+    assert resolved["destination"]["source"] == expected_source
+
+
+def test_implicit_third_party_default_fails_closed(monkeypatch):
+    monkeypatch.setitem(
+        config_module.DEFAULT_BASE_URLS,
+        "openai",
+        "https://relay.example/v1",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="provider_destination_implicit_third_party",
+    ):
+        resolve_provider_config(
+            explicit={"provider": "openai"},
+            project_env={},
+            process_env={},
+        )
+
+
+@pytest.mark.parametrize(
+    ("provider", "key_name", "expected_url"),
+    [
+        ("openai", "OPENAI_API_KEY", "https://api.openai.com/v1"),
+        ("anthropic", "ANTHROPIC_API_KEY", "https://api.anthropic.com"),
+    ],
+)
+def test_standard_provider_key_without_base_url_uses_official_destination(
+    provider,
+    key_name,
+    expected_url,
+):
+    resolved = resolve_provider_config(
+        explicit={"provider": provider},
+        project_env={},
+        process_env={key_name: "secret-value"},
+    )
+
+    assert resolved["base_url"]["value"] == expected_url
+    assert resolved["destination"]["classification"] == "official"
 
 
 @pytest.mark.parametrize(

@@ -1,5 +1,6 @@
 """Project-local configuration helpers."""
 
+import ipaddress
 import json
 import math
 import os
@@ -18,6 +19,7 @@ from .providers.defaults import (
     DEFAULT_MODELS,
     DEFAULT_PROVIDER,
     MODEL_ENV_NAMES,
+    OFFICIAL_PROVIDER_HOSTS,
     PROVIDER_CHOICES,
 )
 from .security import (
@@ -253,6 +255,32 @@ def validate_provider_base_url(value):
     return raw
 
 
+def classify_provider_destination(provider, base_url, *, source):
+    """Classify a validated endpoint without consulting a relay allowlist."""
+    raw = validate_provider_base_url(base_url)
+    parsed = urllib.parse.urlsplit(raw)
+    host = (parsed.hostname or "").casefold().rstrip(".")
+    loopback = host == "localhost" or host.endswith(".localhost")
+    if not loopback:
+        try:
+            loopback = ipaddress.ip_address(host).is_loopback
+        except ValueError:
+            pass
+    if loopback:
+        classification = "local"
+    elif host in OFFICIAL_PROVIDER_HOSTS.get(str(provider), ()):
+        classification = "official"
+    elif source in {"cli", "project_env", "environment"}:
+        classification = "explicit_third_party"
+    else:
+        raise ValueError("provider_destination_implicit_third_party")
+    return {
+        "classification": classification,
+        "host": host,
+        "source": str(source),
+    }
+
+
 def _resolve_provider_value(
     explicit,
     explicit_name,
@@ -325,6 +353,12 @@ def resolve_provider_config(*, explicit=None, project_env=None, process_env=None
         ),
     )
     base_url["value"] = validate_provider_base_url(base_url["value"])
+    destination = classify_provider_destination(
+        provider_name,
+        base_url["value"],
+        source=base_url["source"],
+    )
+    destination["name"] = base_url["name"]
     api_key = _resolve_provider_value(
         explicit.get("api_key"),
         "api_key",
@@ -338,6 +372,7 @@ def resolve_provider_config(*, explicit=None, project_env=None, process_env=None
         "provider": provider,
         "model": model,
         "base_url": base_url,
+        "destination": destination,
         "api_key": api_key,
     }
 

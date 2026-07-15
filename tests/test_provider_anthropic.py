@@ -193,6 +193,7 @@ def test_deepseek_anthropic_surface_does_not_claim_prompt_cache():
     [
         "https://notanthropic.com/v1",
         "https://example.test/anthropic.com/v1",
+        "https://www.right.codes/claude/v1",
     ],
 )
 def test_prompt_cache_capability_requires_exact_known_endpoint(base_url):
