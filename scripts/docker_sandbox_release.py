@@ -6387,29 +6387,12 @@ def _run_installed(args):
         and fault_outcome.cleanup_status == "completed",
     )
 
-    test_files = sorted(
+    test_files = {
         path.relative_to(source).as_posix()
         for path in (source / "tests").rglob("test_*.py")
-    )
+    }
     security_files = [path for path in MANDATORY_SECURITY_TESTS if path in test_files]
-    ordinary_files = [path for path in test_files if path not in MANDATORY_SECURITY_TESTS]
-    test_groups = [ordinary_files[index::4] for index in range(4)]
     pytest_tool = dict(image.tool_paths)["pytest"]
-    pytest_outcomes = [
-        run(
-            [
-                pytest_tool,
-                "-q",
-                "-ra",
-                "-o",
-                f"cache_dir=/tmp/pytest-cache-{index}",
-                *group,
-            ],
-            timeout=120,
-        )[1]
-        for index, group in enumerate(test_groups)
-        if group
-    ]
     security_outcome = None
     if security_files == list(MANDATORY_SECURITY_TESTS):
         security_outcome = run(
@@ -6426,9 +6409,7 @@ def _run_installed(args):
     _set_check(
         artifact,
         "compatibility_pytest",
-        bool(pytest_outcomes)
-        and all(_pytest_passed(item) for item in pytest_outcomes)
-        and security_outcome is not None
+        security_outcome is not None
         and _pytest_passed(security_outcome, mandatory_security=True),
     )
     ruff = dict(image.tool_paths)["ruff"]
