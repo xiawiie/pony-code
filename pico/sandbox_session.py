@@ -32,6 +32,8 @@ FORMAT_VERSION = 1
 MAX_MANIFEST_BYTES = 2 * 1024 * 1024
 MAX_BASELINE_BYTES = 64 * 1024 * 1024
 MAX_FILE_BYTES = 128 * 1024 * 1024
+MAX_ENV_TEMPLATE_BYTES = 1024 * 1024
+STAGING_CHUNK_BYTES = 1024 * 1024
 MAX_LOGICAL_BYTES = 1024 * 1024 * 1024
 MAX_ALLOCATED_BYTES = 1024 * 1024 * 1024
 MAX_ENTRIES = 100_000
@@ -1608,6 +1610,7 @@ def _read_source_file(
     root_device,
     *,
     root_descriptor=None,
+    chunk_consumer=None,
 ):
     path = source.joinpath(*relative.parts)
     descriptor = -1
@@ -1618,6 +1621,7 @@ def _read_source_file(
             root_descriptor, root_info = _open_source_root(source)
             if root_info.st_dev != root_device:
                 raise SandboxSessionError("workspace_mount_boundary")
+        root_before = os.fstat(root_descriptor)
         parent_descriptor = os.dup(root_descriptor)
         for index, part in enumerate(relative.parts[:-1], start=1):
             parent_path = source.joinpath(*relative.parts[:index])
@@ -1630,6 +1634,7 @@ def _read_source_file(
             )
             os.close(parent_descriptor)
             parent_descriptor = child_descriptor
+        parent_before = os.fstat(parent_descriptor)
         info = os.stat(
             relative.parts[-1],
             dir_fd=parent_descriptor,
@@ -1657,33 +1662,59 @@ def _read_source_file(
         ):
             raise SandboxSessionError("workspace_changed_during_stage")
         digest = hashlib.sha256()
-        chunks = []
+        size = 0
         remaining = MAX_FILE_BYTES + 1
         while remaining:
-            chunk = os.read(descriptor, min(1024 * 1024, remaining))
+            chunk = os.read(descriptor, min(STAGING_CHUNK_BYTES, remaining))
             if not chunk:
                 break
-            chunks.append(chunk)
+            size += len(chunk)
             digest.update(chunk)
+            if chunk_consumer is not None:
+                chunk_consumer(chunk)
             remaining -= len(chunk)
-        data = b"".join(chunks)
         after = os.fstat(descriptor)
         current = os.stat(
             relative.parts[-1],
             dir_fd=parent_descriptor,
             follow_symlinks=False,
         )
+        resolved_parent = os.dup(root_descriptor)
+        try:
+            for part in relative.parts[:-1]:
+                child_descriptor = _open_child_directory(
+                    resolved_parent,
+                    part,
+                    root_device=root_device,
+                )
+                os.close(resolved_parent)
+                resolved_parent = child_descriptor
+            resolved_parent_info = os.fstat(resolved_parent)
+            resolved_current = os.stat(
+                relative.parts[-1],
+                dir_fd=resolved_parent,
+                follow_symlinks=False,
+            )
+        finally:
+            os.close(resolved_parent)
+        root_after = os.fstat(root_descriptor)
+        source_after = source.lstat()
         if (
-            len(data) > MAX_FILE_BYTES
-            or _identity(opened) != _identity(after)
+            _identity(opened) != _identity(after)
             or _identity(after) != _identity(current)
+            or _identity(parent_before) != _identity(resolved_parent_info)
+            or _identity(after) != _identity(resolved_current)
+            or _identity(root_before) != _identity(root_after)
+            or (root_after.st_dev, root_after.st_ino)
+            != (source_after.st_dev, source_after.st_ino)
         ):
             raise SandboxSessionError("workspace_changed_during_stage")
+        if size > MAX_FILE_BYTES:
+            raise SandboxSessionError("workspace_capacity_exceeded")
         return {
             "identity": _identity(after),
-            "data": data,
             "sha256": "sha256:" + digest.hexdigest(),
-            "size": len(data),
+            "size": size,
             "allocated": int(getattr(after, "st_blocks", 0)) * 512,
             "mode": _staged_mode(after.st_mode),
             "source_mode": stat.S_IMODE(after.st_mode),
@@ -1693,7 +1724,7 @@ def _read_source_file(
     except SandboxSessionError:
         raise
     except OSError as exc:
-        raise SandboxSessionError("unsupported_workspace_entry") from exc
+        raise SandboxSessionError("workspace_changed_during_stage") from exc
     finally:
         if descriptor >= 0:
             os.close(descriptor)
@@ -1818,34 +1849,160 @@ def snapshot_source_tree(root):
         os.close(root_descriptor)
 
 
-def _publish_file(destination, relative, entry):
+def _prepare_staging_parent(destination, relative):
     target = destination.joinpath(*relative.parts)
     current = destination
+    created = []
     for part in relative.parts[:-1]:
         current = current / part
-        current.mkdir(mode=0o755, exist_ok=True)
+        try:
+            current.mkdir(mode=0o755)
+            created.append(current)
+        except FileExistsError:
+            pass
         info = current.lstat()
         if not stat.S_ISDIR(info.st_mode) or current.is_symlink():
             raise SandboxSessionError("staging_write_failed")
         current.chmod(0o755)
-    temp = target.parent / (".pico-stage-" + secrets.token_hex(12))
-    descriptor = os.open(
-        temp,
-        os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0),
-        0o600,
-    )
-    try:
-        view = memoryview(entry["data"])
-        while view:
+    return target, created
+
+
+def _remove_empty_staging_directories(created):
+    for path in reversed(created):
+        try:
+            path.rmdir()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise SandboxSessionError("staging_write_failed") from exc
+
+
+def _write_staging_chunk(descriptor, chunk):
+    view = memoryview(chunk)
+    while view:
+        try:
             written = os.write(descriptor, view)
-            if written <= 0:
-                raise SandboxSessionError("staging_write_failed")
-            view = view[written:]
+        except OSError as exc:
+            raise SandboxSessionError("staging_write_failed") from exc
+        if written <= 0:
+            raise SandboxSessionError("staging_write_failed")
+        view = view[written:]
+
+
+def _publish_file(
+    destination,
+    relative,
+    source,
+    root_device,
+    *,
+    root_descriptor,
+    known_secrets,
+):
+    target, created = _prepare_staging_parent(destination, relative)
+    parent_descriptor = -1
+    descriptor = -1
+    temp_name = ".pico-stage-" + secrets.token_hex(12)
+    published = False
+    exclusion_reason = ""
+    secrets_to_scan = tuple(
+        bytes(secret)
+        for secret in known_secrets
+        if isinstance(secret, (bytes, bytearray))
+        and 4 <= len(secret) <= MAX_FILE_BYTES
+    )
+    carry_size = max((len(secret) for secret in secrets_to_scan), default=1) - 1
+    carry = b""
+    found_known_secret = False
+    is_env_template = is_allowed_env_template_leaf(relative.as_posix())
+    env_buffer = bytearray() if is_env_template else None
+
+    def consume(chunk):
+        nonlocal carry, env_buffer, found_known_secret
+        _write_staging_chunk(descriptor, chunk)
+        if secrets_to_scan and not found_known_secret:
+            window = carry + chunk
+            found_known_secret = any(secret in window for secret in secrets_to_scan)
+            carry = window[-carry_size:] if carry_size else b""
+        if env_buffer is not None:
+            if len(env_buffer) + len(chunk) <= MAX_ENV_TEMPLATE_BYTES:
+                env_buffer.extend(chunk)
+            else:
+                env_buffer = None
+
+    try:
+        parent_descriptor = os.open(
+            target.parent,
+            os.O_RDONLY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+        )
+        parent_info = os.fstat(parent_descriptor)
+        descriptor = os.open(
+            temp_name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0),
+            0o600,
+            dir_fd=parent_descriptor,
+        )
+        entry = _read_source_file(
+            source,
+            relative,
+            root_device,
+            root_descriptor=root_descriptor,
+            chunk_consumer=consume,
+        )
+        if is_env_template and entry["size"] > MAX_ENV_TEMPLATE_BYTES:
+            exclusion_reason = "env_template_too_large"
+        elif found_known_secret:
+            exclusion_reason = "known_secret_content"
+        elif env_buffer is not None and contains_secret_material(
+            env_buffer.decode("utf-8", errors="replace"),
+            env={},
+        ):
+            exclusion_reason = "high_confidence_secret"
+        if exclusion_reason:
+            os.close(descriptor)
+            descriptor = -1
+            os.unlink(temp_name, dir_fd=parent_descriptor)
+            _remove_empty_staging_directories(created)
+            return entry, exclusion_reason
         os.fchmod(descriptor, entry["mode"])
         os.fsync(descriptor)
-    finally:
         os.close(descriptor)
-    os.replace(temp, target)
+        descriptor = -1
+        current_parent = target.parent.lstat()
+        if (
+            not stat.S_ISDIR(current_parent.st_mode)
+            or target.parent.is_symlink()
+            or (current_parent.st_dev, current_parent.st_ino)
+            != (parent_info.st_dev, parent_info.st_ino)
+        ):
+            raise SandboxSessionError("staging_write_failed")
+        os.replace(
+            temp_name,
+            target.name,
+            src_dir_fd=parent_descriptor,
+            dst_dir_fd=parent_descriptor,
+        )
+        published = True
+        os.fsync(parent_descriptor)
+        return entry, ""
+    except SandboxSessionError:
+        raise
+    except OSError as exc:
+        raise SandboxSessionError("staging_write_failed") from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        if parent_descriptor >= 0:
+            if not published:
+                try:
+                    os.unlink(temp_name, dir_fd=parent_descriptor)
+                except FileNotFoundError:
+                    pass
+                except OSError:
+                    pass
+            os.close(parent_descriptor)
 
 
 def stage_source(
@@ -1876,9 +2033,7 @@ def stage_source(
         if len(candidate_paths) > MAX_ENTRIES:
             raise SandboxSessionError("workspace_capacity_exceeded")
         collisions = {}
-        accepted = []
-        logical = 0
-        allocated = 0
+        accepted_paths = []
         for raw_path in sorted(candidate_paths):
             relative = _validated_relative(raw_path)
             collision = unicodedata.normalize("NFC", relative.as_posix()).casefold()
@@ -1889,39 +2044,39 @@ def stage_source(
             if reason:
                 excluded[reason] = excluded.get(reason, 0) + 1
                 continue
-            entry = _read_source_file(
-                source,
-                relative,
-                source_info.st_dev,
-                root_descriptor=root_descriptor,
-            )
-            if any(
-                len(secret) >= 4 and secret in entry["data"]
-                for secret in known_secrets
-            ):
-                excluded["known_secret_content"] = (
-                    excluded.get("known_secret_content", 0) + 1
-                )
-                continue
-            if is_allowed_env_template_leaf(relative.as_posix()):
-                text = entry["data"].decode("utf-8", errors="replace")
-                if contains_secret_material(text, env={}):
-                    excluded["high_confidence_secret"] = excluded.get(
-                        "high_confidence_secret", 0
-                    ) + 1
-                    continue
-            logical += entry["size"]
-            allocated += entry["allocated"]
-            if logical > MAX_LOGICAL_BYTES or allocated > MAX_ALLOCATED_BYTES:
-                raise SandboxSessionError("workspace_capacity_exceeded")
-            accepted.append((relative, entry))
+            accepted_paths.append(relative)
         destination = Path(destination)
-        destination.mkdir(mode=0o700, parents=False)
-        destination.chmod(0o700)
+        destination_created = False
+        try:
+            destination.mkdir(mode=0o700, parents=False)
+            destination_created = True
+            destination.chmod(0o700)
+        except Exception:
+            if destination_created:
+                shutil.rmtree(destination, ignore_errors=True)
+            raise
+        accepted = []
+        logical = 0
+        allocated = 0
         entries = []
         try:
-            for relative, entry in accepted:
-                _publish_file(destination, relative, entry)
+            for relative in accepted_paths:
+                entry, reason = _publish_file(
+                    destination,
+                    relative,
+                    source,
+                    source_info.st_dev,
+                    root_descriptor=root_descriptor,
+                    known_secrets=known_secrets,
+                )
+                if reason:
+                    excluded[reason] = excluded.get(reason, 0) + 1
+                    continue
+                logical += entry["size"]
+                allocated += entry["allocated"]
+                if logical > MAX_LOGICAL_BYTES or allocated > MAX_ALLOCATED_BYTES:
+                    raise SandboxSessionError("workspace_capacity_exceeded")
+                accepted.append((relative, entry))
             after_paths, after_tracked, after_excluded = inventory()
             audit_after = (
                 _git_audit(source, git_executable)

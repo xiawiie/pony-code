@@ -217,8 +217,9 @@ def test_stage_source_rejects_new_file_between_inventory_passes(
     original = session_module._publish_file
 
     def add_file_after_copy(*args, **kwargs):
-        original(*args, **kwargs)
+        result = original(*args, **kwargs)
         (source / "added.py").write_text("late\n", encoding="utf-8")
+        return result
 
     monkeypatch.setattr(session_module, "_publish_file", add_file_after_copy)
 
