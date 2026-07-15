@@ -14,7 +14,7 @@ import uuid
 CHECKPOINT_RECORD_TYPE = "checkpoint"
 CHECKPOINT_FORMAT_VERSION = 1
 TOOL_CHANGE_RECORD_TYPE = "tool_change"
-TOOL_CHANGE_FORMAT_VERSION = 1
+TOOL_CHANGE_FORMAT_VERSION = 2
 
 TRACE_RUN_STARTED = "run_started"
 TRACE_MODEL_TURN = "model_turn"
@@ -82,6 +82,8 @@ def new_tool_change_record(tool_change_id, checkpoint_id, turn_id, tool_name, ef
         "prepared_file_entries": [],
         "recovery_context": {},
         "shell_side_effects": [],
+        "policy": {},
+        "sandbox": {},
         "approval": {},
         "error": {},
         "trace_event_ids": [],

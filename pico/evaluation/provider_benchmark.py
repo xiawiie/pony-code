@@ -57,7 +57,7 @@ def _provider_summary_from_artifact(payload):
     attempts = []
     for row in rows:
         report = row.get("report", {})
-        completion_usage_totals = report.get("completion_usage_totals", {})
+        completion_usage_totals = report.get("model", {}).get("usage", {})
         cached_tokens.append(int(completion_usage_totals.get("cached_tokens", 0) or 0))
         cache_hits.append(bool(completion_usage_totals.get("cache_hit")))
         tool_steps.append(int(row.get("tool_steps", 0)))

@@ -637,16 +637,18 @@ def test_execution_shape_uses_only_frozen_executables(
 ):
     calls = []
 
-    def fake_run(argv, **kwargs):
+    def fake_popen(argv, **kwargs):
         calls.append((argv, kwargs))
-        return subprocess.CompletedProcess(argv, 0, stdout="ok\n", stderr="")
+        process = Mock(returncode=0)
+        process.communicate.return_value = ("ok\n", "")
+        return process
 
     @contextmanager
     def passthrough(executable):
         yield str(executable)
 
     monkeypatch.setattr("pico.safe_subprocess._prepared_executable", passthrough)
-    monkeypatch.setattr("pico.safe_subprocess.subprocess.run", fake_run)
+    monkeypatch.setattr("pico.safe_subprocess.subprocess.Popen", fake_popen)
     agent = build_agent(
         tmp_path,
         approval_policy="ask",
@@ -662,29 +664,36 @@ def test_execution_shape_uses_only_frozen_executables(
     assert result.metadata["tool_status"] == "ok"
     assert len(calls) == 1
     argv, kwargs = calls[0]
-    assert argv == expected_argv
-    assert kwargs["shell"] is expected_shell
+    assert argv == (
+        ["/frozen/sh", "-c", expected_argv]
+        if expected_shell
+        else expected_argv
+    )
+    assert kwargs["shell"] is False
     assert kwargs.get("executable") == expected_executable
     assert kwargs["cwd"] == tmp_path.resolve()
-    assert kwargs["timeout"] == 7
-    assert kwargs["capture_output"] is True
+    assert kwargs["stdout"] is subprocess.PIPE
+    assert kwargs["stderr"] is subprocess.PIPE
     assert kwargs["text"] is True
+    assert kwargs["start_new_session"] is True
     assert kwargs["env"] == agent.shell_env()
 
 
 def test_simple_unknown_command_is_not_rewrapped_in_shell(tmp_path, monkeypatch):
     calls = []
 
-    def fake_run(argv, **kwargs):
+    def fake_popen(argv, **kwargs):
         calls.append((argv, kwargs))
-        return subprocess.CompletedProcess(argv, 0, stdout="ok", stderr="")
+        process = Mock(returncode=0)
+        process.communicate.return_value = ("ok", "")
+        return process
 
     @contextmanager
     def passthrough(executable):
         yield str(executable)
 
     monkeypatch.setattr("pico.safe_subprocess._prepared_executable", passthrough)
-    monkeypatch.setattr("pico.safe_subprocess.subprocess.run", fake_run)
+    monkeypatch.setattr("pico.safe_subprocess.subprocess.Popen", fake_popen)
     agent = build_agent(
         tmp_path,
         approval_policy="ask",
@@ -709,9 +718,11 @@ def test_runtime_path_spoof_cannot_replace_frozen_executable(tmp_path, monkeypat
     fake_pwd.chmod(0o755)
     calls = []
 
-    def fake_run(argv, **kwargs):
+    def fake_popen(argv, **kwargs):
         calls.append((argv, kwargs))
-        return subprocess.CompletedProcess(argv, 0, stdout="safe\n", stderr="")
+        process = Mock(returncode=0)
+        process.communicate.return_value = ("safe\n", "")
+        return process
 
     agent = build_agent(
         tmp_path,
@@ -723,7 +734,7 @@ def test_runtime_path_spoof_cannot_replace_frozen_executable(tmp_path, monkeypat
         yield str(executable)
 
     monkeypatch.setattr("pico.safe_subprocess._prepared_executable", passthrough)
-    monkeypatch.setattr("pico.safe_subprocess.subprocess.run", fake_run)
+    monkeypatch.setattr("pico.safe_subprocess.subprocess.Popen", fake_popen)
 
     result = agent.execute_tool(
         "run_shell",
@@ -920,14 +931,8 @@ def test_decoded_secret_tool_action_is_blocked_before_prompt_and_runner(tmp_path
     )
     assert event["tool_error_code"] == "sensitive_content_block"
     assert event["command_risk_class"] == "external_effect"
-    assert event["command_approval"] == {
-        "decision": "ask",
-        "reason": "unknown_command_requires_approval",
-        "mode": "ask",
-        "outcome": "blocked",
-        "runner_executed": False,
-        "execution_mode": "argv",
-    }
+    assert "command_approval" not in event
+    assert event.get("runner_executed", False) is False
     assert secret not in json.dumps(event)
 
 

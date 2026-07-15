@@ -7,26 +7,47 @@
 
 import argparse
 from difflib import get_close_matches
+from importlib import metadata
 import os
+from pathlib import Path
 import shutil
 import sys
 
+from . import sandbox_release_authority as release_authority
+from . import security as securitylib
 from .cli_commands import (
     ROOT_HELP,
     handle_help,
     handle_init,
     handle_session,
 )
-from .cli_diagnostics import handle_config, handle_doctor, handle_status
+from .cli_docker_sandbox import handle_sandbox as handle_docker_sandbox
+from .cli_diagnostics import (
+    handle_config,
+    handle_doctor,
+    handle_status,
+)
 from .cli_errors import CLI_EXIT_CONFIG, CLI_EXIT_INTERNAL, CLI_EXIT_USAGE, CliError
 from .cli_memory import handle_memory
-from .cli_output import error_envelope, format_json
+from .cli_migration import handle_migrate, migration_preflight
+from .cli_output import error_envelope, format_json, print_result
 from .cli_parser import KNOWN_TOP_LEVEL_COMMANDS, parse_cli_invocation
 from .cli_recovery import handle_checkpoints, handle_runs, handle_sessions
 from .cli_start import run_agent_once, run_repl
 from .config import (
+    load_pico_toml,
     read_project_env,
     resolve_provider_config,
+)
+from .docker_sandbox import (
+    build_docker_sandbox_context,
+    default_image_manifest_path,
+    discover_local_docker,
+    DockerSandboxError,
+    ensure_runtime_docker_config,
+    local_docker_sandbox_runtime,
+    load_image_manifest,
+    verify_docker_sandbox_runtime_authorization,
 )
 from .providers.defaults import (
     DEFAULT_DEEPSEEK_BASE_URL,  # noqa: F401
@@ -47,6 +68,11 @@ from .runtime import (
     _build_redaction_snapshot,
 )
 from .session_store import SessionStore
+from .sandbox_session import (
+    find_project_sandbox_session,
+    SandboxSessionError,
+    source_mutation_authority,
+)
 from .security import redact_artifact, redact_text
 from .workspace import WorkspaceContext, middle
 
@@ -186,29 +212,94 @@ def build_agent(args):
     """
     # 这里是 CLI 到 runtime 的装配点：
     # 先采集工作区快照和加载项目级环境，再整理 secret 名单、模型后端和 session。
-    workspace = WorkspaceContext.build(args.cwd)
+    source_workspace = WorkspaceContext.build(args.cwd)
+    with source_mutation_authority(
+        Path.home() / ".pico" / "sandboxes",
+        Path(source_workspace.repo_root),
+    ):
+        return _build_agent_with_source_authority(args, source_workspace)
+
+
+def _build_agent_with_source_authority(args, source_workspace):
+    migration_preflight(source_workspace)
+    sandbox_enabled = getattr(args, "sandbox", False)
+    sandbox_product = _load_sandbox_runtime() if sandbox_enabled else None
+    sandbox_image, sandbox_authorization = (
+        sandbox_product if sandbox_product is not None else (None, None)
+    )
     process_env = dict(os.environ)
-    project_env = read_project_env(workspace.repo_root, warn=True)
+    project_env = read_project_env(source_workspace.repo_root, warn=True)
     redaction_env, configured_secret_names, redactor = _build_redaction_snapshot(
-        workspace.repo_root,
+        source_workspace.repo_root,
         secret_env_names=getattr(args, "secret_env_names", ()),
         process_env=process_env,
         project_env=project_env,
     )
-    store = SessionStore(
-        workspace.repo_root + "/.pico/sessions",
-        redactor=redactor,
+    project_config = (
+        load_pico_toml(source_workspace.repo_root) if sandbox_enabled else None
     )
+    session_store_root = source_workspace.repo_root + "/.pico/sessions"
+    store = None
+    session_id = args.resume
+    approval_policy = "never" if getattr(args, "no_input", False) and args.approval == "ask" else args.approval
+    if session_id == "latest":
+        store = SessionStore(session_store_root, redactor=redactor)
+        session_id = store.latest()
+    if sandbox_enabled and args.resume and not session_id:
+        raise CliError(
+            code="sandbox_session_not_found",
+            message="sandbox session not found",
+            exit_code=CLI_EXIT_CONFIG,
+        )
+    if sandbox_enabled and not args.resume:
+        session_id = Pico.new_session_id()
+    if not sandbox_enabled and args.resume and session_id:
+        try:
+            bound = find_project_sandbox_session(
+                Path(source_workspace.repo_root) / ".pico",
+                Path(source_workspace.repo_root),
+                session_id,
+            )
+        except SandboxSessionError as exc:
+            raise CliError(
+                code="sandbox_state_invalid",
+                message="Sandbox session binding is invalid",
+                details={"reason_code": exc.code},
+                exit_code=CLI_EXIT_CONFIG,
+            ) from exc
+        if bound is not None:
+            raise CliError(
+                code="sandbox_session_mode_mismatch",
+                message="Sandbox session cannot resume in host mode",
+                hint="Resume this session with --sandbox.",
+                exit_code=CLI_EXIT_CONFIG,
+            )
+    if sandbox_enabled:
+        sandbox_context, workspace = _build_sandbox_context(
+            source_workspace,
+            sandbox_image,
+            authorization=sandbox_authorization,
+            pico_session_id=session_id,
+            resume=bool(args.resume),
+            known_secrets=tuple(
+                value.encode("utf-8")
+                for _name, value in securitylib.detected_secret_env_items(
+                    redaction_env,
+                    configured_secret_names,
+                )
+            ),
+        )
+    else:
+        sandbox_context = None
+        workspace = source_workspace
+    if store is None:
+        store = SessionStore(session_store_root, redactor=redactor)
     model = _build_model_client(
         args,
         project_env=project_env,
         process_env=process_env,
     )
-    session_id = args.resume
-    approval_policy = "never" if getattr(args, "no_input", False) and args.approval == "ask" else args.approval
-    if session_id == "latest":
-        session_id = store.latest()
-    if session_id:
+    if args.resume and session_id:
         return Pico.from_session(
             model_client=model,
             workspace=workspace,
@@ -220,6 +311,8 @@ def build_agent(args):
             secret_env_names=configured_secret_names,
             redaction_env=redaction_env,
             _trusted_redaction_env=True,
+            sandbox_context=sandbox_context,
+            project_config=project_config,
         )
     return Pico(
         model_client=model,
@@ -231,13 +324,160 @@ def build_agent(args):
         secret_env_names=configured_secret_names,
         redaction_env=redaction_env,
         _trusted_redaction_env=True,
+        sandbox_context=sandbox_context,
+        project_config=project_config,
+        session_id=session_id,
     )
+
+
+def _sandbox_product_error(reason_code):
+    if reason_code in {"sandbox_product_not_enabled", "release_authority_unconfigured"}:
+        code = "sandbox_product_not_enabled"
+    elif reason_code == "release_attestation_expired":
+        code = "sandbox_product_enablement_expired"
+    elif reason_code.startswith("sandbox_candidate_attestation"):
+        code = reason_code
+    else:
+        code = "sandbox_product_enablement_invalid"
+    return CliError(
+        code=code,
+        message="Docker Sandbox is not product-enabled",
+        hint="Run `pico sandbox prepare` with a product-enabled Pico release.",
+        details={"reason_code": reason_code},
+        exit_code=CLI_EXIT_CONFIG,
+    )
+
+
+def _load_sandbox_runtime():
+    candidate_path = os.environ.get(
+        release_authority.CANDIDATE_ATTESTATION_ENV,
+        "",
+    )
+    candidate_nonce = os.environ.get(release_authority.CANDIDATE_NONCE_ENV, "")
+    if candidate_path or candidate_nonce:
+        if (
+            not candidate_path
+            or len(candidate_nonce) != 64
+            or any(character not in "0123456789abcdef" for character in candidate_nonce)
+        ):
+            raise _sandbox_product_error("sandbox_candidate_attestation_invalid")
+        try:
+            envelope = release_authority.read_candidate_attestation(candidate_path)
+        except release_authority.ReleaseAuthorityError as exc:
+            raise _sandbox_product_error(exc.code) from exc
+        attestation_kind = "candidate"
+    else:
+        try:
+            envelope, _payload = release_authority.load_cached_product_envelope()
+        except release_authority.ReleaseAuthorityError as exc:
+            if exc.code != "sandbox_product_not_enabled":
+                raise _sandbox_product_error(exc.code) from exc
+            cache_path = (
+                release_authority.product_enablement_cache_root()
+                / release_authority.PRODUCT_ENABLEMENT_CACHE_NAME
+            )
+            try:
+                cache_path.lstat()
+            except FileNotFoundError:
+                try:
+                    return local_docker_sandbox_runtime()
+                except DockerSandboxError as local_error:
+                    raise CliError(
+                        code=local_error.code,
+                        message="Docker Sandbox local authorization failed",
+                        details={"reason_code": local_error.code},
+                        exit_code=CLI_EXIT_CONFIG,
+                    ) from local_error
+            except OSError as cache_error:
+                raise _sandbox_product_error(
+                    "sandbox_product_enablement_invalid"
+                ) from cache_error
+            raise _sandbox_product_error(
+                "sandbox_product_enablement_invalid"
+            ) from exc
+        attestation_kind = "product"
+    try:
+        image = load_image_manifest(default_image_manifest_path())
+        identity = {
+            "package_root": Path(__file__).resolve().parent,
+            "distribution_version": metadata.version("pico"),
+            "image": image,
+        }
+        authorization = verify_docker_sandbox_runtime_authorization(
+            envelope,
+            attestation_kind=attestation_kind,
+            candidate_nonce=(candidate_nonce if attestation_kind == "candidate" else ""),
+            **identity,
+        )
+        return image, authorization
+    except release_authority.ReleaseAuthorityError as exc:
+        raise _sandbox_product_error(exc.code) from exc
+    except DockerSandboxError as exc:
+        raise CliError(
+            code=exc.code,
+            message="Docker Sandbox image is not available for this platform",
+            details={"reason_code": exc.code},
+            exit_code=CLI_EXIT_CONFIG,
+        ) from exc
+
+
+def _build_sandbox_context(
+    source_workspace,
+    image,
+    *,
+    authorization,
+    pico_session_id,
+    resume,
+    known_secrets,
+):
+    try:
+        docker_cli, docker_endpoint = discover_local_docker()
+        context = build_docker_sandbox_context(
+            source_workspace.repo_root,
+            authorization=authorization,
+            pico_session_id=pico_session_id,
+            docker_cli=docker_cli,
+            docker_endpoint=docker_endpoint,
+            docker_config=ensure_runtime_docker_config(),
+            image=image,
+            git_executable=source_workspace.trusted_executables.get("git"),
+            known_secrets=known_secrets,
+            resume=resume,
+            source_branch=source_workspace.branch,
+            source_status=source_workspace.status,
+            source_default_branch=source_workspace.default_branch,
+        )
+    except (DockerSandboxError, SandboxSessionError, OSError, ValueError) as exc:
+        code = getattr(exc, "code", "sandbox_startup_failed")
+        raise CliError(
+            code=code,
+            message="Docker Sandbox startup failed",
+            details={"reason_code": code},
+            exit_code=CLI_EXIT_CONFIG,
+        ) from exc
+    executables = {
+        name: path
+        for name, path in source_workspace.trusted_executables.items()
+        if name != "git"
+    }
+    workspace = WorkspaceContext.build(
+        context.execution_root,
+        executables=executables,
+        repo_root_override=context.execution_root,
+        inspect_git=False,
+        logical_root=context.logical_root,
+        branch_override="pico-sandbox",
+        default_branch_override="pico-sandbox",
+        status_override="sandbox_execution_state_unknown",
+    )
+    return context, workspace
 
 
 def build_arg_parser():
     parser = argparse.ArgumentParser(
         prog="pico",
         add_help=False,
+        allow_abbrev=False,
         formatter_class=_RootHelpFormatter,
         description="Local coding agent for repository-grounded engineering work.",
         epilog=ROOT_HELP,
@@ -281,6 +521,7 @@ def build_arg_parser():
     parser.add_argument("--quiet", action="store_true", help="Suppress non-essential human output.")
     parser.add_argument("--no-color", action="store_true", help="Disable colored output.")
     parser.add_argument("--no-input", action="store_true", help="Disable interactive prompts.")
+    parser.add_argument("--sandbox", action="store_true", help="Run shell tools in the managed sandbox.")
     return parser
 
 
@@ -351,6 +592,21 @@ def _dispatch_runs(args, tokens):
     return _handle_recovery_command(args.cwd, ["runs", *tokens], args)
 
 
+def _dispatch_sandbox(args, tokens):
+    return handle_docker_sandbox(args, tokens)
+
+
+def _dispatch_migrate(args, tokens):
+    workspace = WorkspaceContext.build(args.cwd)
+    payload = handle_migrate(workspace, tokens, args)
+    return print_result(
+        "migration_status",
+        payload,
+        args,
+        lambda value: "\n".join(f"{key}: {item}" for key, item in value.items()) + "\n",
+    )
+
+
 _PRE_AGENT_COMMAND_HANDLERS = {
     "help": _dispatch_help,
     "init": _dispatch_init,
@@ -362,6 +618,8 @@ _PRE_AGENT_COMMAND_HANDLERS = {
     "memory": _dispatch_memory,
     "checkpoints": _dispatch_checkpoints,
     "runs": _dispatch_runs,
+    "sandbox": _dispatch_sandbox,
+    "migrate": _dispatch_migrate,
 }
 
 
@@ -373,6 +631,15 @@ def _dispatch_pre_agent_command(invocation, args):
 
 
 def _validate_agent_command(invocation):
+    if getattr(invocation.runtime_args, "sandbox", False) and invocation.command not in {
+        "run",
+        "repl",
+    }:
+        raise CliError(
+            code="usage",
+            message="--sandbox is only valid with `pico run` or `pico repl`",
+            exit_code=CLI_EXIT_USAGE,
+        )
     if invocation.command == "run" and not invocation.command_args:
         raise CliError(
             code="usage",

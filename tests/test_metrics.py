@@ -15,39 +15,225 @@ from pico.evaluation.metrics_reports import (
     write_benchmark_core_report,
 )
 from pico.evaluation.provider_benchmark import _provider_profile
+from pico.observability import RunArtifactError, project_trace_event
+from pico.task_state import TaskState
+
+
+def _current_run_report(run_id):
+    return {
+        "record_type": "run_report",
+        "format_version": 3,
+        "run": {
+            "run_id": run_id,
+            "task_id": "task_1",
+            "status": "completed",
+            "stop_reason": "final_answer_returned",
+            "duration_ms": 12,
+            "commit": "",
+            "dirty": False,
+        },
+        "model": {
+            "attempts": 1,
+            "turns": 1,
+            "failures": 0,
+            "retries": 0,
+            "transport_attempts": 1,
+            "transport_retries": 0,
+            "evidence_complete": True,
+            "attempt_origin_counts": {"initial": 1},
+            "failure_reason_counts": {},
+            "usage": {
+                "input_tokens": 40,
+                "output_tokens": 5,
+                "total_tokens": 45,
+                "cached_tokens": 10,
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 10,
+                "cache_hit": True,
+            },
+        },
+        "context": {"messages_chars": 42, "prefix_changed": False},
+        "tools": {
+            "calls": 2,
+            "allowed": 2,
+            "denied": 0,
+            "name_counts": {"read_file": 2},
+            "status_counts": {"ok": 2},
+        },
+        "memory": {
+            "recall_candidates": 0,
+            "recall_selected": 0,
+            "filter_counts": {},
+        },
+        "sandbox": {
+            "active": False,
+            "implementation": "none",
+            "session_state": "not_applicable",
+            "engine_profile": "not_applicable",
+            "image_digest": "",
+            "policy_digest": "",
+            "network_mode": "not_applicable",
+            "source_mounted": False,
+            "state_mounted": False,
+            "container_calls": 0,
+            "target_started_count": 0,
+            "outcome_counts": {},
+            "cleanup_failure_count": 0,
+            "host_fallback_count": 0,
+            "diff": {"candidates": 0, "blocked": 0, "generated": 0},
+            "apply_status": "not_applicable",
+        },
+        "effects": {
+            "changed_files": 0,
+            "partial_successes": 0,
+            "recovery_review_required": False,
+        },
+        "recovery": {"checkpoint_id": "", "status": "", "review_required": False},
+        "integrity": {"writer": "current", "terminal_event_expected": True},
+        "finalization": {"status": "complete", "error_count": 0},
+    }
+
+
+def _write_current_run(runs_root, run_id):
+    report = _current_run_report(run_id)
+    state = TaskState.create(
+        task_id=report["run"]["task_id"],
+        run_id=run_id,
+        user_request="inspect",
+    )
+    state.attempts = report["model"]["attempts"]
+    state.tool_steps = report["tools"]["calls"]
+    state.finish_success("done")
+    events = [
+        project_trace_event(
+            state,
+            "run_started",
+            {},
+            created_at="2026-07-12T00:00:00Z",
+        ),
+        project_trace_event(
+            state,
+            "tool_started",
+            {"name": "read_file", "tool_use_id": "tool_1"},
+            created_at="2026-07-12T00:00:00.004Z",
+        ),
+        project_trace_event(
+            state,
+            "tool_executed",
+            {
+                "name": "read_file",
+                "tool_use_id": "tool_1",
+                "tool_status": "ok",
+            },
+            created_at="2026-07-12T00:00:00.008Z",
+        ),
+        project_trace_event(
+            state,
+            "tool_started",
+            {"name": "read_file", "tool_use_id": "tool_2"},
+            created_at="2026-07-12T00:00:00.009Z",
+        ),
+        project_trace_event(
+            state,
+            "tool_executed",
+            {
+                "name": "read_file",
+                "tool_use_id": "tool_2",
+                "tool_status": "ok",
+            },
+            created_at="2026-07-12T00:00:00.010Z",
+        ),
+        project_trace_event(
+            state,
+            "run_finished",
+            {"status": "completed", "run_duration_ms": 12},
+            created_at="2026-07-12T00:00:00.012Z",
+        ),
+    ]
+    run_dir = runs_root / run_id
+    run_dir.mkdir()
+    (run_dir / "report.json").write_text(json.dumps(report), encoding="utf-8")
+    (run_dir / "task_state.json").write_text(
+        json.dumps(state.to_dict()),
+        encoding="utf-8",
+    )
+    (run_dir / "trace.jsonl").write_text(
+        "".join(json.dumps(event) + "\n" for event in events),
+        encoding="utf-8",
+    )
+    return run_dir
 
 
 def test_aggregate_run_artifacts_uses_canonical_report_truth_sources(tmp_path):
     from pico.evaluation.metrics_reports import aggregate_run_artifacts
 
-    run_dir = tmp_path / "run_1"
-    run_dir.mkdir()
-    (run_dir / "report.json").write_text(
-        json.dumps(
-            {
-                "tool_steps": 2,
-                "attempts": 1,
-                "last_request_metadata": {
-                    "messages_chars": 42,
-                    "prefix_changed": False,
-                },
-                "completion_usage_totals": {
-                    "cached_tokens": 10,
-                    "cache_hit": True,
-                    "input_tokens": 40,
-                },
-            }
-        ),
-        encoding="utf-8",
-    )
+    _write_current_run(tmp_path, "run_1")
 
     metrics = aggregate_run_artifacts(tmp_path)
 
+    assert metrics["run_count"] == 1
+    assert metrics["avg_tool_steps"] == 2
     assert metrics["avg_request_messages_chars"] == 42
     assert "avg_prompt_chars" not in metrics
     assert metrics["cache_hit_rate"] == 1.0
     assert metrics["cached_token_ratio"] == 0.25
     assert metrics["prefix_reuse_rate"] == 1.0
+
+
+def test_aggregate_run_artifacts_ignores_damaged_duplicate_and_legacy_runs(
+    tmp_path,
+):
+    from pico.evaluation.metrics_reports import aggregate_run_artifacts
+
+    _write_current_run(tmp_path, "run_current")
+    damaged = _write_current_run(tmp_path, "run_damaged")
+    duplicate = _write_current_run(tmp_path, "run_duplicate")
+    legacy = _write_current_run(tmp_path, "run_legacy")
+    invalid_task = _write_current_run(tmp_path, "run_invalid_task")
+    (damaged / "trace.jsonl").write_text("not-json\n", encoding="utf-8")
+    (duplicate / "report.json").write_text(
+        '{"record_type":"run_report","record_type":"run_report"}',
+        encoding="utf-8",
+    )
+    (legacy / "report.json").write_text(
+        json.dumps({"tool_steps": 999, "attempts": 999}),
+        encoding="utf-8",
+    )
+    (invalid_task / "task_state.json").write_text("null", encoding="utf-8")
+
+    metrics = aggregate_run_artifacts(tmp_path)
+
+    assert metrics["run_count"] == 1
+    assert metrics["avg_tool_steps"] == 2
+    assert metrics["avg_attempts"] == 1
+    assert metrics["stop_reason_counts"] == {"final_answer_returned": 1}
+
+
+def test_aggregate_run_artifacts_counts_real_rejection_security_event(tmp_path):
+    from pico import Pico, SessionStore, WorkspaceContext
+    from pico.evaluation.metrics_reports import aggregate_run_artifacts
+    from pico.providers.fake import FakeModelClient
+
+    (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
+    agent = Pico(
+        model_client=FakeModelClient(
+            [
+                '<tool>{"name":"memory_save","args":{"note":"remember this"}}</tool>',
+                "<final>done</final>",
+            ]
+        ),
+        workspace=WorkspaceContext.build(tmp_path),
+        session_store=SessionStore(tmp_path / ".pico" / "sessions"),
+        approval_policy="auto",
+        read_only=True,
+    )
+
+    assert agent.ask("remember this") == "done"
+    metrics = aggregate_run_artifacts(tmp_path / ".pico" / "runs")
+
+    assert metrics["run_count"] == 1
+    assert metrics["tool_status_counts"] == {"rejected": 1}
+    assert metrics["security_event_counts"] == {"read_only_block": 1}
 
 
 @pytest.mark.parametrize("version", [None, True, 1.0, "1", 2])
@@ -104,10 +290,10 @@ def test_provider_summary_reads_cache_from_completion_usage_totals():
             "rows": [
                 {
                     "report": {
-                        "completion_usage_totals": {
+                        "model": {"usage": {
                             "cached_tokens": 12,
                             "cache_hit": True,
-                        }
+                        }}
                     },
                     "tool_steps": 1,
                     "attempts": 1,
@@ -332,6 +518,25 @@ def test_real_memory_request_recorder_captures_structured_and_text_input():
     assert _first_followup_drops_bootstrap_tool(text_adapter, 0, "") is False
 
 
+def test_real_followup_metrics_rejects_missing_run_artifact(tmp_path):
+    from pico import Pico, SessionStore, WorkspaceContext
+    from pico.evaluation.experiments_real import _followup_trace_metrics
+    from pico.providers.fake import FakeModelClient
+
+    (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
+    agent = Pico(
+        model_client=FakeModelClient(["<final>done</final>"]),
+        workspace=WorkspaceContext.build(tmp_path),
+        session_store=SessionStore(tmp_path / ".pico" / "sessions"),
+        approval_policy="auto",
+    )
+    agent.ask("finish")
+    agent.run_store.report_path(agent.current_task_state).unlink()
+
+    with pytest.raises(RunArtifactError, match="missing"):
+        _followup_trace_metrics(agent)
+
+
 def test_memory_summary_detector_requires_nonempty_index_bound_line():
     from pico.evaluation.experiments_synthetic import _prompt_has_reusable_file_summary
 
@@ -431,6 +636,28 @@ def test_run_recovery_ablation_v2_writes_expected_artifact(tmp_path):
         "workspace_drift_detection_rate",
         "resume_false_accept_rate",
     }
+
+
+def test_recovery_ablation_rejects_damaged_run_artifact(monkeypatch):
+    import pico.evaluation.experiments_recovery as recovery
+
+    real_ask = recovery.Pico.ask
+
+    def damage_task_state_after_ask(self, user_message):
+        result = real_ask(self, user_message)
+        self.run_store.task_state_path(self.current_task_state).write_text(
+            "not-json\n",
+            encoding="utf-8",
+        )
+        return result
+
+    monkeypatch.setattr(recovery.Pico, "ask", damage_task_state_after_ask)
+
+    with pytest.raises(RunArtifactError, match="damaged"):
+        recovery._run_recovery_task_variant(
+            recovery.RECOVERY_ABLATION_TASKS[0],
+            "resume_enabled",
+        )
 
 
 def test_write_benchmark_core_report_marks_resume_safe_metrics(tmp_path):

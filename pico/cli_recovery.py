@@ -12,6 +12,11 @@ from .cli_errors import CLI_EXIT_RUNTIME, CLI_EXIT_USAGE, CliError
 from .cli_output import build_inspection_redactor, print_inspection_result
 from .recovery_checkpoint_writer import RecoveryCheckpointWriter
 from .recovery_manager import RecoveryManager, collect_recovery_review_items
+from .sandbox_session import (
+    read_source_apply_authority,
+    source_apply_control_lock_path,
+)
+from .observability import RunArtifactError, load_run_summary, render_summary_text
 from .security import require_regular_no_symlink
 from .tool_change_recorder import ToolChangeRecorder
 from .workspace import WorkspaceContext  # noqa: F401
@@ -22,12 +27,33 @@ _ARTIFACT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 def handle_checkpoints(root, tokens, args):
     redactor = build_inspection_redactor(root, args)
-    try:
-        store = CheckpointStore(root, redactor=redactor)
-    except (OSError, ValueError) as exc:
-        raise _unsafe_artifact_error() from exc
     sub = tokens[0] if tokens else "list"
     rest = tokens[1:]
+    read_only = (
+        sub in {"pending", "list", "show", "preview-restore"}
+        or sub == "restore" and _is_restore_args(rest) and "--apply" not in rest[1:]
+        or sub == "resolve-pending"
+        and _is_resolve_pending_args(rest)
+        and "--apply" not in rest[1:]
+        or sub == "prune" and "--apply" not in rest
+    )
+    try:
+        sandbox_parent = Path.home() / ".pico" / "sandboxes"
+        store = CheckpointStore(
+            root,
+            redactor=redactor,
+            source_apply_authority=lambda: read_source_apply_authority(
+                sandbox_parent,
+                root,
+            ),
+            source_apply_control_lock=source_apply_control_lock_path(
+                sandbox_parent,
+                root,
+            ),
+            read_only=read_only,
+        )
+    except (OSError, ValueError) as exc:
+        raise _unsafe_artifact_error() from exc
     if sub == "pending" and not rest:
         data = collect_recovery_review_items(store, root)
         return print_inspection_result(
@@ -165,6 +191,28 @@ def handle_runs(root, tokens, args):
             _render_runs_list,
             redactor=redactor,
         )
+    if sub == "summary" and len(rest) == 1:
+        requested_id = rest[0]
+        if requested_id != "latest":
+            requested_id = _inspection_id(requested_id, kind="run")
+        try:
+            data = load_run_summary(runs_root, requested_id)
+        except FileNotFoundError as exc:
+            raise _not_found_error("run") from exc
+        except RunArtifactError as exc:
+            data = {
+                "summary_status": exc.status,
+                "requested_run_id": requested_id,
+                "reason": str(exc),
+            }
+        return print_inspection_result(
+            root,
+            "runs_summary",
+            data,
+            args,
+            _render_run_summary,
+            redactor=redactor,
+        )
     if sub == "show" and len(rest) == 1:
         run_id = _inspection_id(rest[0], kind="run")
         run_dir = _inspection_directory(runs_root / run_id, allow_missing=True)
@@ -181,7 +229,7 @@ def handle_runs(root, tokens, args):
         )
     raise CliError(
         code="usage",
-        message="usage: pico runs {list | show <run_id>}",
+        message="usage: pico runs {list | show <run_id> | summary <run_id|latest>}",
         exit_code=CLI_EXIT_USAGE,
     )
 
@@ -374,6 +422,12 @@ def _render_runs_list(runs):
 
 def _render_sessions_list(sessions):
     return "\n".join(session["session_id"] for session in sessions)
+
+
+def _render_run_summary(data):
+    if "summary_status" in data:
+        return f"{data['summary_status']}: {data['reason']}"
+    return render_summary_text(data)
 
 
 def _render_runs_show(data):

@@ -20,7 +20,6 @@ from __future__ import annotations
 import os
 import stat
 import sys
-import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -52,11 +51,22 @@ def _is_agent_owned_path(rel_path):
     return sub_path == "agent_notes.md"
 
 
-def _read_bounded_regular(path, limit, *, private=False):
+def _read_bounded_regular(
+    path,
+    limit,
+    *,
+    private=False,
+    trusted_root=None,
+    trusted_root_identity=None,
+):
     path = Path(os.path.abspath(os.fspath(path)))
     descriptor = -1
     if private:
-        _, descriptor = securitylib._open_private_file(path)
+        _, descriptor = securitylib._open_private_file(
+            path,
+            trusted_root=trusted_root,
+            trusted_root_identity=trusted_root_identity,
+        )
         os.fchmod(descriptor, 0o600)
     else:
         nofollow = getattr(os, "O_NOFOLLOW", 0)
@@ -148,13 +158,19 @@ class BlockStore:
     ):
         self.workspace_root = Path(os.path.abspath(os.fspath(workspace_root)))
         self.user_root = Path(os.path.abspath(os.fspath(user_root)))
-        for root in (self.workspace_root, self.user_root):
+        self._root_identities = {}
+        for scope, root in (
+            ("workspace", self.workspace_root),
+            ("user", self.user_root),
+        ):
             try:
                 root.lstat()
             except FileNotFoundError:
+                self._root_identities[scope] = None
                 continue
             ensure_private_dir(root)
             self._harden_agent_notes(root)
+            self._root_identities[scope] = securitylib.private_directory_identity(root)
         self.redaction_env = MappingProxyType(
             dict(os.environ if redaction_env is None else redaction_env)
         )
@@ -201,6 +217,7 @@ class BlockStore:
                         rel_path,
                         real_path,
                         limit,
+                        self._root_identities[scope],
                     )
                 except (OSError, RuntimeError, ValueError) as exc:
                     total_bytes += getattr(exc, "bytes_read", 0)
@@ -252,7 +269,13 @@ class BlockStore:
             yield f"{scope}/agent_notes.md", agent_notes
 
     @staticmethod
-    def _load_document(root: Path, rel_path: str, real_path: Path, limit: int):
+    def _load_document(
+        root: Path,
+        rel_path: str,
+        real_path: Path,
+        limit: int,
+        root_identity,
+    ):
         candidate = real_path
         real_path = _safe_index_file(root, candidate)
         if real_path is None:
@@ -263,10 +286,16 @@ class BlockStore:
                 error.bytes_read = 0
             raise error
         agent_owned = _is_agent_owned_path(rel_path)
+        read_options = {"private": agent_owned}
+        if agent_owned:
+            read_options.update(
+                trusted_root=root,
+                trusted_root_identity=root_identity,
+            )
         data, stat_result = _read_bounded_regular(
             real_path,
             limit,
-            private=agent_owned,
+            **read_options,
         )
         content = data.decode("utf-8", errors="replace")
         # Task 17: parse frontmatter so retrieval / recall can boost by field.
@@ -297,33 +326,37 @@ class BlockStore:
     def read(self, rel_path: str) -> str:
         target = self._resolve(rel_path)
         agent_owned = _is_agent_owned_path(rel_path)
+        scope = "workspace" if rel_path.startswith("workspace/") else "user"
+        root = self.workspace_root if scope == "workspace" else self.user_root
         if not agent_owned:
-            root = (
-                self.workspace_root
-                if rel_path.startswith("workspace/")
-                else self.user_root
-            )
             target = _safe_index_file(root, target)
             if target is None:
                 raise FileNotFoundError(rel_path)
+        read_options = {"private": agent_owned}
+        if agent_owned:
+            read_options.update(
+                trusted_root=root,
+                trusted_root_identity=self._root_identities[scope],
+            )
         data, _ = _read_bounded_regular(
             target,
             MAX_MEMORY_FILE_BYTES,
-            private=agent_owned,
+            **read_options,
         )
         return data.decode("utf-8", errors="replace")
 
     def exists(self, rel_path: str) -> bool:
         try:
+            if _is_agent_owned_path(rel_path):
+                self.read(rel_path)
+                return True
             target = self._resolve(rel_path)
             root = self.workspace_root if rel_path.startswith("workspace/") else self.user_root
             target = _safe_index_file(root, target)
             if target is None:
                 return False
-            if _is_agent_owned_path(rel_path) and target.lstat().st_nlink != 1:
-                return False
             return True
-        except ValueError:
+        except (OSError, RuntimeError, ValueError):
             return False
 
     # ---- agent append ------------------------------------------------------
@@ -339,17 +372,37 @@ class BlockStore:
         if scope not in {"workspace", "user"}:
             raise ValueError("invalid scope")
         target = self._agent_notes_path(scope)
-        ensure_private_dir(target.parent)
+        root_identity = self._root_identities[scope]
+        if root_identity is None:
+            ensure_private_dir(target.parent)
+        elif securitylib.private_directory_identity(target.parent) != root_identity:
+            raise ValueError("private root changed")
+        else:
+            ensure_private_dir(target.parent)
         lock_path = target.parent / ".agent_notes.lock"
 
         with locked_file(lock_path, require_lock=True):
+            current_root_identity = securitylib.private_directory_identity(
+                target.parent
+            )
+            root_identity = self._root_identities[scope]
+            if root_identity is None:
+                root_identity = current_root_identity
+                self._root_identities[scope] = root_identity
+            elif current_root_identity != root_identity:
+                raise ValueError("private root changed")
             target = require_regular_no_symlink(target, allow_missing=True)
             try:
                 target.lstat()
             except FileNotFoundError:
                 existing = ""
             else:
-                existing = read_private_text(target)
+                existing = read_private_text(
+                    target,
+                    trusted_root=target.parent,
+                    trusted_root_identity=root_identity,
+                    max_bytes=MAX_MEMORY_FILE_BYTES,
+                )
             timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
             new_line = f"- {timestamp}  {note}\n"
             new_content = (
@@ -358,7 +411,9 @@ class BlockStore:
                 else existing + "\n" + new_line
             )
             self._reject_sensitive_content(new_content)
-            self._atomic_write(target, new_content)
+            if len(new_content.encode("utf-8")) > MAX_MEMORY_FILE_BYTES:
+                raise ValueError("memory file too large")
+            self._atomic_write(target, new_content, root_identity)
             size = len(new_content)
         if size > AGENT_NOTES_SOFT_LIMIT_CHARS and scope not in self._size_warned:
             self._size_warned.add(scope)
@@ -413,55 +468,12 @@ class BlockStore:
             raise ValueError("sensitive_content")
 
     @staticmethod
-    def _atomic_write(target: Path, content: str) -> None:
-        ensure_private_dir(target.parent)
-        target = require_regular_no_symlink(target, allow_missing=True)
-        temp_path = None
-        temp_identity = None
-        try:
-            with tempfile.NamedTemporaryFile(
-                mode="w",
-                encoding="utf-8",
-                delete=False,
-                dir=str(target.parent),
-                prefix=target.name + ".",
-                suffix=".tmp",
-            ) as handle:
-                temp_path = Path(handle.name)
-                opened = os.fstat(handle.fileno())
-                temp_identity = (opened.st_dev, opened.st_ino)
-                os.fchmod(handle.fileno(), 0o600)
-                handle.write(content)
-                handle.flush()
-                os.fsync(handle.fileno())
-            current = temp_path.lstat()
-            if (
-                not stat.S_ISREG(current.st_mode)
-                or current.st_nlink != 1
-                or (current.st_dev, current.st_ino) != temp_identity
-            ):
-                raise ValueError("memory temp changed")
-            require_regular_no_symlink(target, allow_missing=True)
-            temp_path.replace(target)
-            installed = target.lstat()
-            if (
-                not stat.S_ISREG(installed.st_mode)
-                or installed.st_nlink != 1
-                or (installed.st_dev, installed.st_ino) != temp_identity
-            ):
-                if (
-                    not stat.S_ISREG(installed.st_mode)
-                    or (installed.st_dev, installed.st_ino) == temp_identity
-                ):
-                    target.unlink()
-                raise ValueError("memory temp changed")
-            ensure_private_file(target)
-        finally:
-            if temp_path is not None and temp_identity is not None:
-                try:
-                    current = temp_path.lstat()
-                except FileNotFoundError:
-                    pass
-                else:
-                    if (current.st_dev, current.st_ino) == temp_identity:
-                        temp_path.unlink()
+    def _atomic_write(target: Path, content: str, root_identity) -> None:
+        securitylib.write_private_bytes_atomic(
+            target,
+            content.encode("utf-8"),
+            trusted_root=target.parent,
+            trusted_root_identity=root_identity,
+            error="memory temp changed",
+            max_existing_bytes=MAX_MEMORY_FILE_BYTES,
+        )

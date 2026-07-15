@@ -2,6 +2,7 @@
 
 from copy import deepcopy
 import errno
+import hashlib
 import json
 import os
 import posixpath
@@ -93,6 +94,12 @@ _SENSITIVE_KEYSTORE_SUFFIXES = (".pem", ".key", ".p12", ".pfx", ".jks", ".keysto
 
 class SensitiveDataBlockedError(RuntimeError):
     """Provider-bound content still contains high-confidence secret material."""
+
+
+class PrivateAtomicWriteError(RuntimeError):
+    """An atomic write failed after its committed state became ambiguous."""
+
+    committed = True
 
 
 def _normalized_posix_parts(raw_path):
@@ -241,20 +248,14 @@ def read_private_text(
     errors="strict",
     trusted_root=None,
     trusted_root_identity=None,
+    max_bytes=None,
 ):
-    path, descriptor = _open_private_file(
+    return read_private_bytes(
         path,
         trusted_root=trusted_root,
         trusted_root_identity=trusted_root_identity,
-    )
-    try:
-        os.fchmod(descriptor, 0o600)
-        with os.fdopen(descriptor, "r", encoding=encoding, errors=errors) as handle:
-            descriptor = -1
-            return handle.read()
-    finally:
-        if descriptor >= 0:
-            os.close(descriptor)
+        max_bytes=max_bytes,
+    ).decode(encoding, errors=errors)
 
 
 def read_private_bytes(
@@ -263,6 +264,7 @@ def read_private_bytes(
     trusted_root=None,
     trusted_root_identity=None,
     max_bytes=None,
+    harden=True,
 ):
     path, descriptor = _open_private_file(
         path,
@@ -270,7 +272,12 @@ def read_private_bytes(
         trusted_root_identity=trusted_root_identity,
     )
     try:
-        os.fchmod(descriptor, 0o600)
+        opened = os.fstat(descriptor)
+        uid = os.geteuid() if hasattr(os, "geteuid") else opened.st_uid
+        if harden:
+            os.fchmod(descriptor, 0o600)
+        elif opened.st_uid != uid or stat.S_IMODE(opened.st_mode) != 0o600:
+            raise ValueError("private file permissions are unsafe")
         chunks = []
         remaining = None if max_bytes is None else int(max_bytes) + 1
         while remaining is None or remaining > 0:
@@ -550,9 +557,233 @@ def _remove_owned_entry(parent_descriptor, name, identity):
     try:
         current = _private_entry_stat(parent_descriptor, name)
     except FileNotFoundError:
-        return
+        return True
     if (current.st_dev, current.st_ino) == identity:
         os.unlink(name, dir_fd=parent_descriptor)
+        return True
+    return False
+
+
+def _private_entry_signature(value):
+    return (
+        value.st_dev,
+        value.st_ino,
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_ctime_ns,
+    )
+
+
+def _descriptor_digest(descriptor, size, error):
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    digest = hashlib.sha256()
+    remaining = int(size)
+    while remaining:
+        chunk = os.read(descriptor, min(64 * 1024, remaining))
+        if not chunk:
+            raise ValueError(error)
+        digest.update(chunk)
+        remaining -= len(chunk)
+    if os.read(descriptor, 1):
+        raise ValueError(error)
+    return digest.digest()
+
+
+def _validate_private_backup(
+    parent_descriptor,
+    name,
+    descriptor,
+    signature,
+    digest,
+    error,
+):
+    opened = os.fstat(descriptor)
+    try:
+        current = _private_entry_stat(parent_descriptor, name)
+    except FileNotFoundError:
+        raise ValueError(error) from None
+    if (
+        not stat.S_ISREG(opened.st_mode)
+        or opened.st_nlink != 1
+        or stat.S_IMODE(opened.st_mode) != 0o600
+        or _private_entry_signature(opened) != signature
+        or _private_entry_signature(current) != signature
+        or current.st_nlink != 1
+    ):
+        raise ValueError(error)
+    if _descriptor_digest(descriptor, signature[2], error) != digest:
+        raise ValueError(error)
+    try:
+        current = _private_entry_stat(parent_descriptor, name)
+    except FileNotFoundError:
+        raise ValueError(error) from None
+    if (
+        _private_entry_signature(os.fstat(descriptor)) != signature
+        or _private_entry_signature(current) != signature
+    ):
+        raise ValueError(error)
+
+
+def _validate_open_backup(descriptor, signature, digest, error):
+    opened = os.fstat(descriptor)
+    opened_signature = _private_entry_signature(opened)
+    if (
+        not stat.S_ISREG(opened.st_mode)
+        or stat.S_IMODE(opened.st_mode) != 0o600
+        or opened.st_nlink not in {0, 1}
+        or opened_signature[:4] != signature[:4]
+        or _descriptor_digest(descriptor, signature[2], error) != digest
+    ):
+        raise ValueError(error)
+    after = os.fstat(descriptor)
+    if (
+        _private_entry_signature(after) != opened_signature
+        or after.st_nlink != opened.st_nlink
+    ):
+        raise ValueError(error)
+
+
+def _restore_backup_from_descriptor(
+    parent_descriptor,
+    canonical_name,
+    backup_descriptor,
+    backup_signature,
+    backup_digest,
+    writer_identity,
+    existing_signature,
+    error,
+    sync_file,
+    sync_parent,
+):
+    _validate_open_backup(
+        backup_descriptor,
+        backup_signature,
+        backup_digest,
+        error,
+    )
+    restore_name = f".{canonical_name}.{secrets.token_hex(12)}.restore"
+    restore_descriptor = -1
+    restore_identity = None
+    try:
+        flags = os.O_RDWR | os.O_CREAT | os.O_EXCL
+        flags |= getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+        restore_descriptor = os.open(
+            restore_name,
+            flags,
+            0o600,
+            dir_fd=parent_descriptor,
+        )
+        opened = os.fstat(restore_descriptor)
+        restore_identity = (opened.st_dev, opened.st_ino)
+        os.fchmod(restore_descriptor, 0o600)
+        os.lseek(backup_descriptor, 0, os.SEEK_SET)
+        remaining = backup_signature[2]
+        while remaining:
+            chunk = os.read(backup_descriptor, min(64 * 1024, remaining))
+            if not chunk:
+                raise ValueError(error)
+            _write_all(restore_descriptor, chunk)
+            remaining -= len(chunk)
+        if os.read(backup_descriptor, 1):
+            raise ValueError(error)
+        sync_file(restore_descriptor)
+        restored = os.fstat(restore_descriptor)
+        current = _private_entry_stat(parent_descriptor, restore_name)
+        if (
+            not stat.S_ISREG(restored.st_mode)
+            or restored.st_nlink != 1
+            or stat.S_IMODE(restored.st_mode) != 0o600
+            or (restored.st_dev, restored.st_ino) != restore_identity
+            or (current.st_dev, current.st_ino) != restore_identity
+            or _descriptor_digest(
+                restore_descriptor,
+                backup_signature[2],
+                error,
+            )
+            != backup_digest
+        ):
+            raise ValueError(error)
+        _validate_open_backup(
+            backup_descriptor,
+            backup_signature,
+            backup_digest,
+            error,
+        )
+        if _canonical_state(
+            parent_descriptor,
+            canonical_name,
+            writer_identity,
+            existing_signature,
+        ) not in {"writer", "missing"}:
+            raise ValueError(error)
+        os.replace(
+            restore_name,
+            canonical_name,
+            src_dir_fd=parent_descriptor,
+            dst_dir_fd=parent_descriptor,
+        )
+        restored = _private_entry_stat(parent_descriptor, canonical_name)
+        if (
+            (restored.st_dev, restored.st_ino) != restore_identity
+            or restored.st_nlink != 1
+        ):
+            raise ValueError(error)
+        sync_parent(parent_descriptor)
+    finally:
+        if restore_descriptor >= 0:
+            os.close(restore_descriptor)
+        if restore_identity is not None:
+            try:
+                _remove_owned_entry(
+                    parent_descriptor,
+                    restore_name,
+                    restore_identity,
+                )
+            except OSError:
+                pass
+
+
+def _canonical_state(parent_descriptor, name, identity, existing_signature):
+    try:
+        current = _private_entry_stat(parent_descriptor, name)
+    except FileNotFoundError:
+        return "missing"
+    if (current.st_dev, current.st_ino) == identity:
+        return "writer"
+    if (
+        existing_signature is not None
+        and stat.S_ISREG(current.st_mode)
+        and current.st_nlink == 1
+        and _private_entry_signature(current) == existing_signature
+    ):
+        return "original"
+    return "unknown"
+
+
+def _require_current_private_parent(
+    path,
+    parent_descriptor,
+    *,
+    trusted_root,
+    trusted_root_identity,
+):
+    current_descriptor = -1
+    try:
+        try:
+            _, current_descriptor = _open_private_parent(
+                path,
+                trusted_root=trusted_root,
+                trusted_root_identity=trusted_root_identity,
+            )
+        except FileNotFoundError as exc:
+            raise ValueError("private root changed") from exc
+        opened = os.fstat(parent_descriptor)
+        current = os.fstat(current_descriptor)
+        if (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino):
+            raise ValueError("private root changed")
+    finally:
+        if current_descriptor >= 0:
+            os.close(current_descriptor)
 
 
 def write_private_bytes_atomic(
@@ -564,6 +795,7 @@ def write_private_bytes_atomic(
     error="private temp changed",
     fsync_file=None,
     fsync_parent=None,
+    max_existing_bytes=None,
 ):
     if not isinstance(data, (bytes, bytearray)):
         raise TypeError("private atomic write requires bytes")
@@ -573,9 +805,19 @@ def write_private_bytes_atomic(
         trusted_root_identity=trusted_root_identity,
     )
     temp_name = f".{path.name}.{secrets.token_hex(12)}.tmp"
+    backup_name = None
     descriptor = -1
+    backup_descriptor = -1
     identity = None
-    installed = False
+    backup_identity = None
+    backup_signature = None
+    backup_digest = None
+    backup_preserved = False
+    preserve_new = False
+    replace_started = False
+    committed = False
+    sync_file = fsync_file or os.fsync
+    sync_parent = fsync_parent or os.fsync
     try:
         try:
             existing = _private_entry_stat(parent_descriptor, path.name)
@@ -585,6 +827,12 @@ def write_private_bytes_atomic(
             not stat.S_ISREG(existing.st_mode) or existing.st_nlink != 1
         ):
             raise ValueError(error)
+        if (
+            existing is not None
+            and max_existing_bytes is not None
+            and existing.st_size > int(max_existing_bytes)
+        ):
+            raise ValueError("private file too large")
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
         flags |= getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
         descriptor = os.open(temp_name, flags, 0o600, dir_fd=parent_descriptor)
@@ -592,7 +840,7 @@ def write_private_bytes_atomic(
         identity = (opened.st_dev, opened.st_ino)
         os.fchmod(descriptor, 0o600)
         _write_all(descriptor, bytes(data))
-        (fsync_file or os.fsync)(descriptor)
+        sync_file(descriptor)
         opened = os.fstat(descriptor)
         current = _private_entry_stat(parent_descriptor, temp_name)
         if (
@@ -604,13 +852,153 @@ def write_private_bytes_atomic(
             or current.st_nlink != 1
         ):
             raise ValueError(error)
+
+        _require_current_private_parent(
+            path,
+            parent_descriptor,
+            trusted_root=trusted_root,
+            trusted_root_identity=trusted_root_identity,
+        )
+        existing_signature = (
+            _private_entry_signature(existing) if existing is not None else None
+        )
+        if existing is not None:
+            # Keep canonical at nlink=1 while retaining rollback bytes.
+            source_descriptor = -1
+            backup_name = f".{path.name}.{secrets.token_hex(12)}.bak"
+            try:
+                source_flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+                source_flags |= getattr(os, "O_NOFOLLOW", 0)
+                source_flags |= getattr(os, "O_NONBLOCK", 0)
+                source_descriptor = os.open(
+                    path.name,
+                    source_flags,
+                    dir_fd=parent_descriptor,
+                )
+                source_opened = os.fstat(source_descriptor)
+                source_current = _private_entry_stat(
+                    parent_descriptor,
+                    path.name,
+                )
+                if (
+                    not stat.S_ISREG(source_opened.st_mode)
+                    or source_opened.st_nlink != 1
+                    or _private_entry_signature(source_opened)
+                    != existing_signature
+                    or _private_entry_signature(source_current)
+                    != existing_signature
+                ):
+                    raise ValueError(error)
+
+                backup_flags = os.O_RDWR | os.O_CREAT | os.O_EXCL
+                backup_flags |= getattr(os, "O_CLOEXEC", 0)
+                backup_flags |= getattr(os, "O_NOFOLLOW", 0)
+                backup_descriptor = os.open(
+                    backup_name,
+                    backup_flags,
+                    0o600,
+                    dir_fd=parent_descriptor,
+                )
+                backup_opened = os.fstat(backup_descriptor)
+                backup_identity = (backup_opened.st_dev, backup_opened.st_ino)
+                os.fchmod(backup_descriptor, 0o600)
+                source_digest = hashlib.sha256()
+                remaining = source_opened.st_size
+                while remaining:
+                    chunk = os.read(source_descriptor, min(64 * 1024, remaining))
+                    if not chunk:
+                        raise ValueError(error)
+                    source_digest.update(chunk)
+                    _write_all(backup_descriptor, chunk)
+                    remaining -= len(chunk)
+                if os.read(source_descriptor, 1):
+                    raise ValueError(error)
+                sync_file(backup_descriptor)
+
+                source_opened = os.fstat(source_descriptor)
+                source_current = _private_entry_stat(
+                    parent_descriptor,
+                    path.name,
+                )
+                backup_opened = os.fstat(backup_descriptor)
+                backup_current = _private_entry_stat(
+                    parent_descriptor,
+                    backup_name,
+                )
+                backup_signature = _private_entry_signature(backup_opened)
+                backup_digest = source_digest.digest()
+                if (
+                    _private_entry_signature(source_opened)
+                    != existing_signature
+                    or _private_entry_signature(source_current)
+                    != existing_signature
+                    or not stat.S_ISREG(backup_opened.st_mode)
+                    or backup_opened.st_nlink != 1
+                    or stat.S_IMODE(backup_opened.st_mode) != 0o600
+                    or backup_opened.st_size != source_opened.st_size
+                    or (backup_opened.st_dev, backup_opened.st_ino)
+                    != backup_identity
+                    or (backup_current.st_dev, backup_current.st_ino)
+                    != backup_identity
+                    or backup_current.st_nlink != 1
+                    or _private_entry_signature(backup_current)
+                    != backup_signature
+                ):
+                    raise ValueError(error)
+                _validate_private_backup(
+                    parent_descriptor,
+                    backup_name,
+                    backup_descriptor,
+                    backup_signature,
+                    backup_digest,
+                    error,
+                )
+            finally:
+                if source_descriptor >= 0:
+                    os.close(source_descriptor)
+            sync_parent(parent_descriptor)
+
+        _require_current_private_parent(
+            path,
+            parent_descriptor,
+            trusted_root=trusted_root,
+            trusted_root_identity=trusted_root_identity,
+        )
+        opened = os.fstat(descriptor)
+        current = _private_entry_stat(parent_descriptor, temp_name)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_nlink != 1
+            or stat.S_IMODE(opened.st_mode) != 0o600
+            or (opened.st_dev, opened.st_ino) != identity
+            or (current.st_dev, current.st_ino) != identity
+            or current.st_nlink != 1
+        ):
+            raise ValueError(error)
+        try:
+            current = _private_entry_stat(parent_descriptor, path.name)
+        except FileNotFoundError:
+            current = None
+        if (
+            existing_signature is None
+            and current is not None
+            or existing_signature is not None
+            and (
+                current is None
+                or not stat.S_ISREG(current.st_mode)
+                or current.st_nlink != 1
+                or _private_entry_signature(current) != existing_signature
+            )
+        ):
+            raise ValueError(error)
+
+        replace_started = True
         os.replace(
             temp_name,
             path.name,
             src_dir_fd=parent_descriptor,
             dst_dir_fd=parent_descriptor,
         )
-        installed = True
         current = _private_entry_stat(parent_descriptor, path.name)
         opened = os.fstat(descriptor)
         if (
@@ -620,28 +1008,192 @@ def write_private_bytes_atomic(
             or (current.st_dev, current.st_ino) != identity
             or opened.st_nlink != 1
         ):
-            os.ftruncate(descriptor, 0)
-            os.fsync(descriptor)
-            if not stat.S_ISREG(current.st_mode):
-                os.unlink(path.name, dir_fd=parent_descriptor)
-            else:
-                _remove_owned_entry(parent_descriptor, path.name, identity)
-            os.fsync(parent_descriptor)
             raise ValueError(error)
-        (fsync_parent or os.fsync)(parent_descriptor)
+        _require_current_private_parent(
+            path,
+            parent_descriptor,
+            trusted_root=trusted_root,
+            trusted_root_identity=trusted_root_identity,
+        )
+        sync_parent(parent_descriptor)
+        _require_current_private_parent(
+            path,
+            parent_descriptor,
+            trusted_root=trusted_root,
+            trusted_root_identity=trusted_root_identity,
+        )
+        # This is the commit point; backup cleanup must now fail closed.
+        committed = True
         return path
+    except BaseException as primary:
+        if replace_started:
+            try:
+                state = _canonical_state(
+                    parent_descriptor,
+                    path.name,
+                    identity,
+                    existing_signature,
+                )
+                if state == "unknown":
+                    backup_preserved = backup_name is not None
+                    raise ValueError(error)
+
+                if existing_signature is None:
+                    if state == "writer":
+                        if not _remove_owned_entry(
+                            parent_descriptor,
+                            path.name,
+                            identity,
+                        ):
+                            raise ValueError(error)
+                        sync_parent(parent_descriptor)
+                elif state != "original":
+                    try:
+                        _validate_private_backup(
+                            parent_descriptor,
+                            backup_name,
+                            backup_descriptor,
+                            backup_signature,
+                            backup_digest,
+                            error,
+                        )
+                        state = _canonical_state(
+                            parent_descriptor,
+                            path.name,
+                            identity,
+                            existing_signature,
+                        )
+                        if state == "unknown":
+                            raise ValueError(error)
+                        if state != "original":
+                            os.replace(
+                                backup_name,
+                                path.name,
+                                src_dir_fd=parent_descriptor,
+                                dst_dir_fd=parent_descriptor,
+                            )
+                            backup_name = None
+                            restored = _private_entry_stat(
+                                parent_descriptor,
+                                path.name,
+                            )
+                            if (
+                                not stat.S_ISREG(restored.st_mode)
+                                or restored.st_nlink != 1
+                                or stat.S_IMODE(restored.st_mode) != 0o600
+                                or (restored.st_dev, restored.st_ino)
+                                != backup_identity
+                                or _descriptor_digest(
+                                    backup_descriptor,
+                                    backup_signature[2],
+                                    error,
+                                )
+                                != backup_digest
+                            ):
+                                raise ValueError(error)
+                            sync_parent(parent_descriptor)
+                    except BaseException:
+                        backup_preserved = backup_name is not None
+                        preserve_new = backup_name is not None
+                        raise
+
+                if descriptor >= 0 and identity is not None:
+                    os.ftruncate(descriptor, 0)
+                    os.fsync(descriptor)
+            except BaseException as rollback_error:
+                backup_preserved = backup_preserved or backup_name is not None
+                raise rollback_error from primary
+        raise
     finally:
-        if descriptor >= 0 and identity is not None and not installed:
+        cleanup_error = None
+        committed_error = None
+        committed_cause = None
+        if (
+            descriptor >= 0
+            and identity is not None
+            and not committed
+            and not preserve_new
+        ):
             try:
                 os.ftruncate(descriptor, 0)
                 os.fsync(descriptor)
             except OSError:
                 pass
+        if identity is not None and not committed and not preserve_new:
+            try:
+                _remove_owned_entry(parent_descriptor, temp_name, identity)
+            except OSError:
+                pass
+        if (
+            backup_descriptor >= 0
+            and backup_identity is not None
+            and backup_name is not None
+            and not backup_preserved
+        ):
+            if committed:
+                backup_removed = False
+                try:
+                    current = _private_entry_stat(
+                        parent_descriptor,
+                        backup_name,
+                    )
+                    if (current.st_dev, current.st_ino) != backup_identity:
+                        raise ValueError(error)
+                    os.unlink(backup_name, dir_fd=parent_descriptor)
+                    sync_parent(parent_descriptor)
+                    backup_removed = True
+                except BaseException as exc:
+                    cleanup_error = exc
+                if backup_removed:
+                    try:
+                        os.ftruncate(backup_descriptor, 0)
+                        os.fsync(backup_descriptor)
+                    except OSError:
+                        pass
+                else:
+                    try:
+                        _restore_backup_from_descriptor(
+                            parent_descriptor,
+                            path.name,
+                            backup_descriptor,
+                            backup_signature,
+                            backup_digest,
+                            identity,
+                            existing_signature,
+                            error,
+                            sync_file,
+                            sync_parent,
+                        )
+                        committed = False
+                        try:
+                            os.ftruncate(descriptor, 0)
+                            os.fsync(descriptor)
+                        except OSError:
+                            pass
+                    except BaseException as rollback_error:
+                        committed_error = PrivateAtomicWriteError(error)
+                        committed_cause = rollback_error
+            else:
+                try:
+                    os.ftruncate(backup_descriptor, 0)
+                    os.fsync(backup_descriptor)
+                    if _remove_owned_entry(
+                        parent_descriptor,
+                        backup_name,
+                        backup_identity,
+                    ):
+                        sync_parent(parent_descriptor)
+                except (OSError, ValueError):
+                    pass
         if descriptor >= 0:
             os.close(descriptor)
-        if identity is not None and not installed:
-            _remove_owned_entry(parent_descriptor, temp_name, identity)
+        if backup_descriptor >= 0:
+            os.close(backup_descriptor)
         os.close(parent_descriptor)
+        if committed_error is not None:
+            raise committed_error from committed_cause
+        if cleanup_error is not None:
+            raise cleanup_error
 
 
 def append_private_bytes(
@@ -650,9 +1202,12 @@ def append_private_bytes(
     *,
     trusted_root,
     trusted_root_identity,
+    max_total_bytes=None,
 ):
     if not isinstance(data, (bytes, bytearray)):
         raise TypeError("private append requires bytes")
+    if max_total_bytes is not None and len(data) > int(max_total_bytes):
+        raise ValueError("private file too large")
     path, parent_descriptor = _open_private_parent(
         path,
         trusted_root=trusted_root,
@@ -660,6 +1215,7 @@ def append_private_bytes(
     )
     descriptor = -1
     original_size = None
+    write_started = False
     completed = False
     try:
         try:
@@ -693,7 +1249,13 @@ def append_private_bytes(
             and (before.st_dev, before.st_ino) != identity
         ):
             raise ValueError("private file changed")
+        if (
+            max_total_bytes is not None
+            and opened.st_size + len(data) > int(max_total_bytes)
+        ):
+            raise ValueError("private file too large")
         os.fchmod(descriptor, 0o600)
+        write_started = True
         _write_all(descriptor, bytes(data))
         os.fsync(descriptor)
         after = os.fstat(descriptor)
@@ -708,7 +1270,12 @@ def append_private_bytes(
         completed = True
         return path
     finally:
-        if descriptor >= 0 and original_size is not None and not completed:
+        if (
+            descriptor >= 0
+            and original_size is not None
+            and write_started
+            and not completed
+        ):
             try:
                 os.ftruncate(descriptor, original_size)
                 os.fsync(descriptor)

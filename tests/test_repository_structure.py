@@ -62,7 +62,7 @@ def _tracked_files() -> set[str]:
     return {
         item.decode("utf-8")
         for item in result.stdout.split(b"\0")
-        if item
+        if item and (ROOT / item.decode("utf-8")).exists()
     }
 
 
@@ -137,6 +137,27 @@ def test_current_sources_do_not_read_obsolete_runtime_shapes():
     assert "RIGHT_CODES_" + "API_KEY" not in config_source
 
 
+def test_public_diagnostics_do_not_import_superseded_srt_owners():
+    tree = ast.parse(
+        (ROOT / "pico/cli_diagnostics.py").read_text(encoding="utf-8"),
+        filename="pico/cli_diagnostics.py",
+    )
+    imported = {
+        node.module
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.level == 1
+    }
+
+    assert imported.isdisjoint(
+        {
+            "sandbox_lifecycle",
+            "sandbox_linux",
+            "sandbox_macos",
+            "sandbox_toolchain",
+        }
+    )
+
+
 def test_structured_and_text_provider_methods_are_explicit():
     expected = {
         "pico/providers/anthropic_compatible.py": {
@@ -182,17 +203,21 @@ def test_maintainer_doc_links_and_cli_examples_resolve():
     tracked = _tracked_files()
     link_pattern = re.compile(r"!?\[[^]]*\]\(([^)]+)\)")
     allowed_commands = {
-        "--approval",
-        "--help",
+            "--approval",
+            "--cwd",
+            "--format",
+            "--help",
         "checkpoints",
         "config",
         "doctor",
         "help",
         "init",
         "memory",
+        "migrate",
         "repl",
         "run",
         "runs",
+        "sandbox",
         "session",
         "sessions",
         "status",
@@ -230,6 +255,28 @@ def test_gitignore_allows_current_docs_and_ignores_local_drafts():
         )
         assert result.returncode == 1, name
     for name in ("docs/local-draft.md", "docs/superpowers/local.md"):
+        result = subprocess.run(
+            ["git", "check-ignore", "--no-index", "--quiet", name],
+            cwd=ROOT,
+            check=False,
+        )
+        assert result.returncode == 0, name
+
+    for name in (
+        ".pico/memory/notes/team.md",
+        ".pico/memory/notes/nested/decision.md",
+    ):
+        result = subprocess.run(
+            ["git", "check-ignore", "--no-index", "--quiet", name],
+            cwd=ROOT,
+            check=False,
+        )
+        assert result.returncode == 1, name
+    for name in (
+        ".pico/memory/agent_notes.md",
+        ".pico/memory/notes/private.txt",
+        ".pico/runs/run.json",
+    ):
         result = subprocess.run(
             ["git", "check-ignore", "--no-index", "--quiet", name],
             cwd=ROOT,

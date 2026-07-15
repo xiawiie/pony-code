@@ -98,12 +98,39 @@ def test_pending_review_includes_same_and_foreign_owner(tmp_path):
     foreign = ToolChangeRecorder(store, owner_id="owner-b").start(
         "", "turn-2", "write_file", "workspace_write", {}
     )
+    store.update_tool_change_record(
+        current["tool_change_id"],
+        lambda record: {**record, "reviewed_at": "invalid-pending-review"},
+        expected_status="pending",
+    )
 
     ids = {
         item["tool_change_id"]
         for item in recorder.pending_recovery_reviews()
     }
     assert ids == {current["tool_change_id"], foreign["tool_change_id"]}
+
+
+def test_partial_success_requires_explicit_review(tmp_path):
+    store = CheckpointStore(tmp_path)
+    recorder = ToolChangeRecorder(store, owner_id="owner-a")
+    record = recorder.start(
+        "", "turn-1", "write_file", "workspace_write", {}
+    )
+    recorder.finalize(record["tool_change_id"], "partial_success")
+
+    assert [
+        item["tool_change_id"] for item in recorder.pending_recovery_reviews()
+    ] == [record["tool_change_id"]]
+
+    reviewed = recorder.resolve_pending(
+        record["tool_change_id"],
+        reviewed_by="operator",
+        review_reason="workspace inspected",
+    )
+    assert reviewed["status"] == "partial_success"
+    assert reviewed["reviewed_at"]
+    assert recorder.pending_recovery_reviews() == []
 
 
 def test_start_persists_prepared_state_and_recovery_context(tmp_path):

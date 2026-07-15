@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 
 from ..features import memory as memorylib
 from ..messages import validate_messages
+from ..observability import load_run_artifacts
 from ..providers.fake import FakeModelClient
 from ..runtime import Pico
 from ..run_store import RunStore
@@ -339,7 +340,7 @@ class BenchmarkEvaluator:
         run_dir = Path(agent.current_run_dir)
         task_state_path = agent.run_store.task_state_path(task_state)
         report_path = agent.run_store.report_path(task_state)
-        report = agent.run_store.load_report(task_state.run_id)
+        report, _trace = load_run_artifacts(agent.run_store.root, task_state.run_id)
 
         artifact_path = _artifact_path_for_task(task)
         artifact_file = fixture_copy_root / artifact_path

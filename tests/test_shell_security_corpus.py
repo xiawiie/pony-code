@@ -1,3 +1,4 @@
+import os
 from unittest.mock import Mock
 
 import pytest
@@ -237,7 +238,10 @@ def test_hardened_git_and_rg_ignore_executable_repo_config(tmp_path, monkeypatch
         joined = " ".join(argv)
         env = kwargs["env"]
         assert "core.fsmonitor=false" in joined or argv[0].endswith("rg")
-        assert "RIPGREP_CONFIG_PATH" not in env
+        if argv[0].endswith("rg"):
+            assert env["RIPGREP_CONFIG_PATH"] == os.devnull
+        else:
+            assert "RIPGREP_CONFIG_PATH" not in env
         assert "GIT_CONFIG_COUNT" not in env
         assert all(
             key

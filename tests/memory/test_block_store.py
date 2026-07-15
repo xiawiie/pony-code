@@ -1,9 +1,11 @@
 import multiprocessing
 import os
 from pathlib import Path
+import stat
 
 import pytest
 
+import pico.memory.block_store as block_store_module
 from pico.memory.block_store import BlockStore
 
 
@@ -81,6 +83,167 @@ def test_append_agent_note_appends(tmp_path):
     assert "first" in contents
     assert "second" in contents
     assert contents.index("first") < contents.index("second")
+
+
+def test_append_agent_note_rejects_scope_root_swapped_before_atomic_write(
+    tmp_path,
+    monkeypatch,
+):
+    workspace = tmp_path / "workspace"
+    user = tmp_path / "user"
+    workspace.mkdir()
+    user.mkdir()
+    store = BlockStore(workspace_root=workspace, user_root=user, redaction_env={})
+    trusted_workspace = tmp_path / "trusted-workspace"
+    real_atomic_write = store._atomic_write
+
+    def swap_scope_root(*args):
+        workspace.rename(trusted_workspace)
+        workspace.mkdir()
+        return real_atomic_write(*args)
+
+    monkeypatch.setattr(store, "_atomic_write", swap_scope_root)
+
+    with pytest.raises(ValueError, match="private root changed"):
+        store.append_agent_note(scope="workspace", note="must not land")
+
+    assert list(workspace.iterdir()) == []
+    assert not (trusted_workspace / "agent_notes.md").exists()
+
+
+def test_append_agent_note_fsyncs_file_then_parent(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"
+    user = tmp_path / "user"
+    workspace.mkdir()
+    user.mkdir()
+    store = BlockStore(workspace_root=workspace, user_root=user, redaction_env={})
+    events = []
+    real_fsync = os.fsync
+
+    def observed_fsync(descriptor):
+        mode = os.fstat(descriptor).st_mode
+        events.append("parent" if stat.S_ISDIR(mode) else "file")
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(os, "fsync", observed_fsync)
+
+    store.append_agent_note(scope="workspace", note="durable")
+
+    assert events == ["file", "parent"]
+
+
+def test_append_agent_note_passes_reader_limit_to_atomic_writer(
+    tmp_path,
+    monkeypatch,
+):
+    workspace = tmp_path / "workspace"
+    user = tmp_path / "user"
+    workspace.mkdir()
+    user.mkdir()
+    store = BlockStore(workspace_root=workspace, user_root=user, redaction_env={})
+    options = {}
+    real_write = block_store_module.securitylib.write_private_bytes_atomic
+
+    def track_limit(*args, **kwargs):
+        options.update(kwargs)
+        return real_write(*args, **kwargs)
+
+    monkeypatch.setattr(
+        block_store_module.securitylib,
+        "write_private_bytes_atomic",
+        track_limit,
+    )
+
+    store.append_agent_note(scope="workspace", note="bounded")
+
+    assert options["max_existing_bytes"] == block_store_module.MAX_MEMORY_FILE_BYTES
+
+
+def test_append_agent_note_does_not_retry_after_unlinked_backup_wipe_failure(
+    tmp_path,
+    monkeypatch,
+):
+    workspace = tmp_path / "workspace"
+    user = tmp_path / "user"
+    workspace.mkdir()
+    user.mkdir()
+    store = BlockStore(workspace_root=workspace, user_root=user, redaction_env={})
+    store.append_agent_note(scope="workspace", note="first")
+    monkeypatch.setattr(
+        block_store_module.securitylib.os,
+        "ftruncate",
+        lambda _descriptor, _length: (_ for _ in ()).throw(
+            OSError("open-unlinked wipe failed")
+        ),
+    )
+
+    try:
+        store.append_agent_note(scope="workspace", note="write exactly once")
+    except OSError:
+        store.append_agent_note(scope="workspace", note="write exactly once")
+
+    contents = (workspace / "agent_notes.md").read_text(encoding="utf-8")
+    assert contents.count("write exactly once") == 1
+    assert not list(workspace.glob(".*.bak"))
+
+
+def test_append_agent_note_rejects_oversized_existing_file(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"
+    user = tmp_path / "user"
+    workspace.mkdir()
+    user.mkdir()
+    target = workspace / "agent_notes.md"
+    target.write_bytes(b"x" * 9)
+    monkeypatch.setattr(block_store_module, "MAX_MEMORY_FILE_BYTES", 8)
+    store = BlockStore(workspace_root=workspace, user_root=user, redaction_env={})
+
+    with pytest.raises(ValueError, match="too large"):
+        store.append_agent_note(scope="workspace", note="safe note")
+
+    assert target.read_bytes() == b"x" * 9
+
+
+def test_agent_owned_reads_reject_replaced_scope_root(tmp_path):
+    workspace = tmp_path / "workspace"
+    user = tmp_path / "user"
+    workspace.mkdir()
+    user.mkdir()
+    target = workspace / "agent_notes.md"
+    target.write_text("trusted\n", encoding="utf-8")
+    store = BlockStore(workspace_root=workspace, user_root=user, redaction_env={})
+    workspace.rename(tmp_path / "trusted-workspace")
+    workspace.mkdir()
+    target.write_text("INJECTED\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="private root changed"):
+        store.read("workspace/agent_notes.md")
+
+    assert store.exists("workspace/agent_notes.md") is False
+    assert all(item.path != "workspace/agent_notes.md" for item in store.list())
+
+
+@pytest.mark.parametrize("existing", (False, True))
+def test_append_agent_note_never_writes_past_reader_limit(
+    tmp_path, monkeypatch, existing
+):
+    workspace = tmp_path / "workspace"
+    user = tmp_path / "user"
+    workspace.mkdir()
+    user.mkdir()
+    target = workspace / "agent_notes.md"
+    if existing:
+        target.write_text("original\n", encoding="utf-8")
+    original = target.read_bytes() if existing else None
+    store = BlockStore(workspace_root=workspace, user_root=user, redaction_env={})
+    monkeypatch.setattr(block_store_module, "MAX_MEMORY_FILE_BYTES", 32)
+
+    with pytest.raises(ValueError, match="memory file too large"):
+        store.append_agent_note(scope="workspace", note="safe note")
+
+    if existing:
+        assert target.read_bytes() == original
+    else:
+        assert not target.exists()
 
 
 def test_append_agent_note_waits_for_cross_process_scope_lock(tmp_path):

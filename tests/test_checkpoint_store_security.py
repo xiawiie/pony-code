@@ -59,6 +59,42 @@ def test_blob_read_is_bounded(tmp_path):
         store.read_blob(blob_ref)
 
 
+def test_blob_write_is_bounded(tmp_path):
+    store = CheckpointStore(tmp_path)
+    store.MAX_BLOB_BYTES = 8
+
+    with pytest.raises(ValueError, match="blob_too_large"):
+        store.write_blob(b"x" * 9)
+
+    assert not any(path.is_file() for path in store.blobs_dir.rglob("*"))
+
+
+def test_checkpoint_record_write_is_bounded(tmp_path):
+    store = CheckpointStore(tmp_path)
+    store.MAX_RECORD_BYTES = 256
+    record = _checkpoint(tmp_path, "ckpt_oversized")
+    record["review_reason"] = "x" * 1024
+
+    with pytest.raises(ValueError, match="private file too large"):
+        store.write_checkpoint_record(record)
+
+    assert not store._record_path("ckpt_oversized").exists()
+
+
+def test_checkpoint_record_rejects_oversized_existing_artifact_before_backup(tmp_path):
+    store = CheckpointStore(tmp_path)
+    store.MAX_RECORD_BYTES = 256
+    record = _checkpoint(tmp_path, "ckpt_existing_oversized")
+    path = store._record_path("ckpt_existing_oversized")
+    path.write_bytes(b"x" * 257)
+
+    with pytest.raises(ValueError, match="private file too large"):
+        store.write_checkpoint_record(record)
+
+    assert path.read_bytes() == b"x" * 257
+    assert not list(store.records_dir.glob(".*.bak"))
+
+
 @pytest.mark.parametrize("record_id", ["", ".", "..", "../escape", "a/b", "a\\b"])
 def test_record_ids_reject_unsafe_names(tmp_path, record_id):
     store = CheckpointStore(tmp_path)

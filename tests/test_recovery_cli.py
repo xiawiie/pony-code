@@ -46,6 +46,16 @@ def test_checkpoints_list_does_not_start_repl(tmp_path, capsys):
     assert "ckpt_1" in capsys.readouterr().out
 
 
+def test_checkpoints_list_is_zero_mutation_when_store_is_absent(tmp_path, capsys):
+    before = tmp_path.stat()
+
+    assert main(["--cwd", str(tmp_path), "checkpoints", "list"]) == 0
+
+    assert capsys.readouterr().out == ""
+    assert not (tmp_path / ".pico").exists()
+    assert tmp_path.stat() == before
+
+
 def test_runs_show_prints_run_artifact(tmp_path, capsys):
     run_dir = tmp_path / ".pico" / "runs" / "run_1"
     run_dir.mkdir(parents=True)
@@ -333,6 +343,47 @@ def test_resolve_pending_apply_interrupts_with_review_metadata(tmp_path):
     assert code == 0
     assert record["status"] == "interrupted"
     assert record["reviewed_by"] == "cli"
+
+
+def test_resolve_terminal_interrupted_marks_existing_review_complete(tmp_path):
+    store = CheckpointStore(tmp_path)
+    recorder = ToolChangeRecorder(store, owner_id="owner-a")
+    pending = recorder.start(
+        "", "turn-1", "write_file", "workspace_write", {}
+    )
+    recorder.finalize(
+        pending["tool_change_id"],
+        "interrupted",
+        affected_paths=["x.txt"],
+    )
+
+    reviews = collect_recovery_review_items(store, tmp_path)
+    assert reviews["tool_changes"] == [
+        {
+            "tool_change_id": pending["tool_change_id"],
+            "status": "interrupted",
+            "owner_id": "owner-a",
+            "tool_name": "write_file",
+            "effect_class": "workspace_write",
+            "started_at": pending["started_at"],
+        }
+    ]
+
+    assert main(
+        [
+            "--cwd",
+            str(tmp_path),
+            "checkpoints",
+            "resolve-pending",
+            pending["tool_change_id"],
+            "--apply",
+        ]
+    ) == 0
+    record = store.load_tool_change_record(pending["tool_change_id"])
+    assert record["status"] == "interrupted"
+    assert record["reviewed_by"] == "cli"
+    assert record["reviewed_at"]
+    assert collect_recovery_review_items(store, tmp_path)["tool_changes"] == []
 
 
 def test_resolve_pending_rejects_cross_kind_ambiguous_id(tmp_path, capsys):

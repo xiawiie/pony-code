@@ -3,6 +3,7 @@ import tempfile
 from copy import deepcopy
 from pathlib import Path
 
+from ..observability import load_run_artifacts
 from ..providers.text_protocol_adapter import TextProtocolAdapter
 from ..runtime import Pico
 from ..session_store import SessionStore
@@ -68,8 +69,10 @@ def _first_followup_drops_bootstrap_tool(recorder, call_index, tool_use_id):
 
 
 def _followup_trace_metrics(agent):
-    trace_path = agent.run_store.trace_path(agent.current_task_state)
-    events = [json.loads(line) for line in trace_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    _report, events = load_run_artifacts(
+        agent.run_store.root,
+        agent.current_task_state.run_id,
+    )
     repeated_reads = sum(1 for event in events if event.get("event") == "tool_executed" and event.get("name") == "read_file")
     return repeated_reads
 

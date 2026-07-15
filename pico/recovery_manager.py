@@ -52,11 +52,14 @@ def collect_recovery_review_items(store, workspace_root):
     for item in store.list_tool_change_records(strict=False):
         if item.get("status") == "invalid_record":
             invalid_records.append(dict(item))
-        elif item.get("status") == "pending":
+        elif item.get("status") == "pending" or (
+            item.get("status") == "interrupted"
+            and not item.get("reviewed_at")
+        ):
             tool_changes.append(
                 {
                     "tool_change_id": item["tool_change_id"],
-                    "status": "pending",
+                    "status": item["status"],
                     "owner_id": item.get("owner_id", ""),
                     "tool_name": item.get("tool_name", ""),
                     "effect_class": item.get("effect_class", ""),
@@ -1110,6 +1113,8 @@ class RestoreMutationError(OSError):
 
 
 _RENAME_SWAP = 0x00000002
+_RENAME_EXCL = 0x00000004
+_RENAME_NOREPLACE = 0x00000001
 try:
     _RENAMEATX_NP = ctypes.CDLL(None, use_errno=True).renameatx_np
     _RENAMEATX_NP.argtypes = (
@@ -1137,16 +1142,55 @@ except AttributeError:
     _RENAMEAT2 = None
 
 
-def _rename_swap(parent_descriptor, first, second):
+def _rename_swap(
+    parent_descriptor,
+    first,
+    second,
+    *,
+    second_parent_descriptor=None,
+):
     rename = _RENAMEATX_NP or _RENAMEAT2
     if rename is None:
         raise OSError(errno.ENOTSUP, "atomic restore swap unavailable")
+    second_parent_descriptor = (
+        parent_descriptor
+        if second_parent_descriptor is None
+        else second_parent_descriptor
+    )
+    ctypes.set_errno(0)
     result = rename(
         parent_descriptor,
         os.fsencode(first),
-        parent_descriptor,
+        second_parent_descriptor,
         os.fsencode(second),
         _RENAME_SWAP,
+    )
+    if result != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error))
+
+
+def _rename_noreplace(
+    source_parent_descriptor,
+    source_name,
+    destination_parent_descriptor,
+    destination_name,
+):
+    if _RENAMEATX_NP is not None:
+        rename = _RENAMEATX_NP
+        flags = _RENAME_EXCL
+    elif _RENAMEAT2 is not None:
+        rename = _RENAMEAT2
+        flags = _RENAME_NOREPLACE
+    else:
+        raise OSError(errno.ENOTSUP, "atomic no-replace rename unavailable")
+    ctypes.set_errno(0)
+    result = rename(
+        source_parent_descriptor,
+        os.fsencode(source_name),
+        destination_parent_descriptor,
+        os.fsencode(destination_name),
+        flags,
     )
     if result != 0:
         error = ctypes.get_errno()

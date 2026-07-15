@@ -13,7 +13,7 @@ from .action_codec import FinalAction, RetryAction, ToolAction, decode_action
 from .providers._shared import _ProviderFailure
 from . import security as securitylib
 from .checkpoint import CHECKPOINT_NONE_STATUS, CHECKPOINT_PARTIAL_STALE_STATUS, CHECKPOINT_WORKSPACE_MISMATCH_STATUS
-from .context.renderer import render_current_user_message
+from .context.renderer import build_injection_snapshot, render_current_user_message
 from .messages import append_messages, make_tool_pair
 from .recovery_policy import assess_command
 from .recovery_models import TRACE_RECOVERY_CHECKPOINT_CREATED
@@ -76,6 +76,21 @@ def _empty_model_execution():
         "transport_retries": 0,
         "transport_evidence_complete": True,
         "failure_reason_counts": {},
+        "tool_report": {
+            "calls": 0,
+            "allowed": 0,
+            "denied": 0,
+            "name_counts": {},
+            "status_counts": {},
+            "changed_paths": [],
+            "partial_successes": 0,
+            "recovery_review_required": False,
+            "sandbox_calls": 0,
+            "sandbox_target_started_count": 0,
+            "sandbox_outcome_counts": {},
+            "sandbox_cleanup_failure_count": 0,
+            "host_fallback_count": 0,
+        },
     }
 
 
@@ -134,7 +149,7 @@ def _record_model_failure(
                 "transport_evidence_complete": complete,
             },
         )
-    except Exception as trace_error:
+    except BaseException as trace_error:
         logger.debug(
             "model failure trace could not be written (%s)",
             type(trace_error).__name__,
@@ -183,6 +198,10 @@ def _action_trace_payload(action):
     }
 
 
+def _safe_tool_name(agent, name):
+    return name if name in agent.tools else "unknown_tool"
+
+
 def _sanitize_action(agent, action):
     if isinstance(action, FinalAction):
         return replace(action, text=agent.redact_text(action.text)), None
@@ -192,6 +211,8 @@ def _sanitize_action(agent, action):
             notice=agent.redact_text(action.notice),
             excerpt=agent.redact_text(action.excerpt),
         ), None
+
+    action = replace(action, name=_safe_tool_name(agent, action.name))
 
     original_arguments = action.arguments
     safe_arguments = agent.redact_artifact(original_arguments)
@@ -259,22 +280,52 @@ class SessionCommitError(RuntimeError):
     def __init__(self, cause):
         super().__init__(str(cause))
         self.cause = cause
+        self.committed = bool(getattr(cause, "committed", False))
+
+
+def _block_session_writes(agent, cause):
+    if getattr(cause, "committed", False):
+        agent._session_write_blocked_cause = cause
+
+
+def _session_writes_blocked(agent):
+    return getattr(agent, "_session_write_blocked_cause", None) is not None
+
+
+def _adopt_session(agent, session, path):
+    agent.session = session
+    agent.session_path = path
+    agent.memory = type(agent.memory).from_dict(
+        session.get("working_memory"),
+        workspace_root=agent.root,
+    )
 
 
 def _commit_session(agent, *, messages=()):
+    blocked_cause = getattr(agent, "_session_write_blocked_cause", None)
+    if blocked_cause is not None:
+        raise SessionCommitError(blocked_cause)
     candidate = agent.redact_artifact(deepcopy(agent.session))
     safe_messages = tuple(agent.redact_artifact(message) for message in messages)
     candidate["messages"] = append_messages(candidate.get("messages", []), *safe_messages)
     try:
         saved_path = agent.session_store.save(candidate)
     except Exception as exc:
+        if getattr(exc, "committed", False):
+            try:
+                persisted = agent.session_store.load(candidate["id"])
+            except Exception:
+                _block_session_writes(agent, exc)
+                raise SessionCommitError(exc) from exc
+            _adopt_session(
+                agent,
+                persisted,
+                agent.session_store.path_for(candidate["id"]),
+            )
+            if persisted == candidate:
+                return
         raise SessionCommitError(exc) from exc
-    agent.session = candidate
-    agent.session_path = saved_path
-    agent.memory = type(agent.memory).from_dict(
-        candidate.get("working_memory"),
-        workspace_root=agent.root,
-    )
+    _adopt_session(agent, candidate, saved_path)
 
 
 def _plain_message(role, text, *, origin=""):
@@ -446,9 +497,10 @@ def _start_agent_run(agent, task_state, user_message):
         },
     )
     preflight_metadata = _run_turn_preflight(agent, user_message)
-    injection_snapshot, injection_telemetry = render_current_user_message(
+    injection_snapshot, injection_telemetry = build_injection_snapshot(
         agent,
         user_message,
+        render_fn=render_current_user_message,
     )
     return preflight_metadata, injection_snapshot, injection_telemetry
 
@@ -479,7 +531,13 @@ def _build_attempt_request(
         preflight_metadata=preflight_metadata,
         runtime_feedback=runtime_feedback,
     )
+    recall_paths = list(request_metadata.pop("recall_commit_paths", []) or [])
     agent.last_request_metadata = dict(request_metadata)
+    if recall_paths:
+        recent = list(agent.session.get("recently_recalled") or [])
+        skip_turns = int((getattr(agent, "context_config", {}) or {}).get("recall", {}).get("skip_recent_turns", 2))
+        agent.session["recently_recalled"] = (recent + [recall_paths])[-(skip_turns + 1):]
+        _commit_session(agent)
     if attempts == 1:
         task_state.resume_status = request_metadata.get(
             "resume_status",
@@ -667,6 +725,103 @@ def _complete_model_attempt(
     return action, blocked_tool_result, None
 
 
+def _record_tool_report(agent, name, metadata, model_execution):
+    tool_report = model_execution["tool_report"]
+    tool_status = str(metadata["tool_status"])
+    tool_report["calls"] += 1
+    tool_report["allowed" if tool_status != "rejected" else "denied"] += 1
+    tool_report["name_counts"][name] = (
+        tool_report["name_counts"].get(name, 0) + 1
+    )
+    tool_report["status_counts"][tool_status] = (
+        tool_report["status_counts"].get(tool_status, 0) + 1
+    )
+    for path in metadata.get("affected_paths", []):
+        if isinstance(path, str) and path not in tool_report["changed_paths"]:
+            tool_report["changed_paths"].append(path)
+    if tool_status == "partial_success":
+        tool_report["partial_successes"] += 1
+    if (
+        metadata.get("recovery_review_required") is True
+        or metadata.get("tool_error_code") == "recovery_review_required"
+        or tool_status in {"interrupted", "partial_success"}
+    ):
+        tool_report["recovery_review_required"] = True
+
+    sandbox = metadata.get("sandbox")
+    sandbox = sandbox if isinstance(sandbox, dict) else {}
+    sandbox_status = str(sandbox.get("status", "") or "")
+    sandbox_outcome_observed = sandbox_status not in {
+        "",
+        "not_applicable",
+        "not_started",
+        "pending",
+    }
+    if sandbox_outcome_observed:
+        tool_report["sandbox_calls"] += 1
+        outcome_counts = tool_report["sandbox_outcome_counts"]
+        outcome_counts[sandbox_status] = outcome_counts.get(sandbox_status, 0) + 1
+        if sandbox.get("target_started") is True:
+            tool_report["sandbox_target_started_count"] += 1
+        if sandbox.get("cleanup_status") not in {
+            None,
+            "",
+            "completed",
+            "not_applicable",
+            "pending",
+        }:
+            tool_report["sandbox_cleanup_failure_count"] += 1
+    command_approval = metadata.get("command_approval")
+    runner_executed = (
+        isinstance(command_approval, dict)
+        and command_approval.get("runner_executed") is True
+    )
+    execution_plane = str(sandbox.get("execution_plane", "") or "")
+    if (
+        name == "run_shell"
+        and agent.sandbox_context is not None
+        and (
+            execution_plane == "host"
+            or (runner_executed and execution_plane != "sandbox")
+        )
+    ):
+        tool_report["host_fallback_count"] += 1
+
+
+def _sandbox_trace_payload(metadata):
+    sandbox = metadata.get("sandbox")
+    if not isinstance(sandbox, dict) or sandbox.get("status") in {
+        None,
+        "",
+        "not_applicable",
+        "not_started",
+        "pending",
+    }:
+        return {}
+    payload = {
+        "sandbox_outcome": sandbox.get("status"),
+        "execution_plane": sandbox.get("execution_plane") or "unknown",
+        "cleanup_status": sandbox.get("cleanup_status") or "unknown",
+        "sandbox_wrapper_status": sandbox.get("wrapper_status"),
+        "sandbox_error_code": sandbox.get("error_code"),
+        "sandbox_call_id": sandbox.get("call_id"),
+        "execution_plan_digest": sandbox.get("execution_plan_digest"),
+        "logical_intent_digest": sandbox.get("logical_intent_digest"),
+        "policy_digest": sandbox.get("policy_digest"),
+        "target_started": sandbox.get("target_started") is True,
+        "timed_out": sandbox.get("timed_out"),
+        "residue_detected": sandbox.get("residue_detected"),
+        "container_created": sandbox.get("container_created"),
+        "runner_executed": sandbox.get("runner_executed"),
+        "stdout_bytes": sandbox.get("stdout_bytes"),
+        "stderr_bytes": sandbox.get("stderr_bytes"),
+        "stdout_truncated": sandbox.get("stdout_truncated"),
+        "stderr_truncated": sandbox.get("stderr_truncated"),
+        "exit_code": sandbox.get("exit_code"),
+    }
+    return {key: value for key, value in payload.items() if value is not None}
+
+
 def _apply_tool_action(
     agent,
     task_state,
@@ -675,6 +830,7 @@ def _apply_tool_action(
     blocked_tool_result,
     run_tool_change_ids,
     run_verification_evidence,
+    model_execution,
 ):
     name = action.name
     args = action.arguments
@@ -690,12 +846,43 @@ def _apply_tool_action(
         agent.session["memory"]["file_summaries"]
     )
     if blocked_tool_result is None:
-        tool_result = agent.execute_tool(name, args)
+        agent._last_tool_result_metadata = {}
+        try:
+            tool_result = agent.execute_tool(name, args)
+        except BaseException:
+            metadata = dict(agent._last_tool_result_metadata or {})
+            if metadata.get("tool_status"):
+                _record_tool_report(agent, name, metadata, model_execution)
+                tool_change_id = str(metadata.get("tool_change_id", "") or "")
+                if (
+                    tool_change_id
+                    and metadata.get("effect_class") == "workspace_write"
+                ):
+                    run_tool_change_ids.append(tool_change_id)
+                try:
+                    agent.emit_trace(
+                        task_state,
+                        "tool_interrupted",
+                        {
+                            "name": name,
+                            "tool_use_id": tool_use_id,
+                            "tool_change_id": tool_change_id,
+                            "tool_status": metadata["tool_status"],
+                            "affected_paths": list(
+                                metadata.get("affected_paths", [])
+                            ),
+                            **_sandbox_trace_payload(metadata),
+                        },
+                    )
+                except BaseException:
+                    logger.debug("tool_interrupted trace failed", exc_info=True)
+            raise
     else:
         tool_result = blocked_tool_result
         agent._last_tool_result_metadata = dict(tool_result.metadata)
     result = tool_result.content
     metadata = dict(tool_result.metadata or {})
+    _record_tool_report(agent, name, metadata, model_execution)
     verification_evidence = _verification_evidence_for_tool(name, metadata)
     if verification_evidence is not None:
         run_verification_evidence.append(verification_evidence)
@@ -730,10 +917,11 @@ def _apply_tool_action(
     )
     try:
         _commit_session(agent, messages=pair)
-    except SessionCommitError:
-        agent.memory = working_memory_before
-        agent._sync_working_memory()
-        agent.session["memory"]["file_summaries"] = file_summaries_before
+    except SessionCommitError as exc:
+        if not exc.committed:
+            agent.memory = working_memory_before
+            agent._sync_working_memory()
+            agent.session["memory"]["file_summaries"] = file_summaries_before
         raise
 
     consumed_step = metadata.get("tool_status") != "rejected"
@@ -752,6 +940,7 @@ def _apply_tool_action(
                 (time.monotonic() - tool_started_at) * 1000
             ),
             **metadata,
+            **_sandbox_trace_payload(metadata),
         },
     )
     agent.emit_trace(
@@ -860,6 +1049,7 @@ def _run_agent_attempts(
                 blocked_result,
                 run_tool_change_ids,
                 run_verification_evidence,
+                model_execution,
             )
             attempt_origin = "tool_followup"
             continue
@@ -1034,7 +1224,11 @@ def _finalize_run(
             )
             return None
 
-    if terminal_message:
+    if (
+        terminal_message
+        and not getattr(primary_exception, "committed", False)
+        and not _session_writes_blocked(agent)
+    ):
         attempt(
             "terminal_message",
             lambda: _commit_session(
@@ -1043,25 +1237,28 @@ def _finalize_run(
             ),
         )
     attempt("task_state_write", lambda: agent.run_store.write_task_state(task_state))
-    attempt(
-        "resume_checkpoint",
-        lambda: _create_resume_checkpoint(
-            agent,
-            task_state,
-            user_message,
-            trigger=trigger,
-        ),
-    )
-    recovery_checkpoint = attempt(
-        "recovery_checkpoint",
-        lambda: _finalize_recovery_checkpoint(
-            agent,
-            task_state,
-            run_tool_change_ids,
-            run_verification_evidence,
-            trigger=trigger,
-        ),
-    )
+    if not _session_writes_blocked(agent):
+        attempt(
+            "resume_checkpoint",
+            lambda: _create_resume_checkpoint(
+                agent,
+                task_state,
+                user_message,
+                trigger=trigger,
+            ),
+        )
+    recovery_checkpoint = None
+    if not _session_writes_blocked(agent):
+        recovery_checkpoint = attempt(
+            "recovery_checkpoint",
+            lambda: _finalize_recovery_checkpoint(
+                agent,
+                task_state,
+                run_tool_change_ids,
+                run_verification_evidence,
+                trigger=trigger,
+            ),
+        )
     if recovery_checkpoint is not None:
         attempt(
             "recovery_checkpoint_trace",
@@ -1094,6 +1291,9 @@ def _finalize_run(
             },
         ),
     )
+    model_execution["run_duration_ms"] = int(
+        (time.monotonic() - run_started_at) * 1000
+    )
     errors_before_report = len(finalization_errors)
     report = attempt(
         "report_build",
@@ -1104,7 +1304,10 @@ def _finalize_run(
         ),
     )
     if report is not None:
-        report["finalization_errors"] = list(finalization_errors)
+        report["finalization"] = {
+            "status": "complete" if not finalization_errors else "incomplete",
+            "error_count": len(finalization_errors),
+        }
         attempt(
             "report_write",
             lambda: agent.run_store.write_report(
@@ -1132,8 +1335,11 @@ def _finalize_run(
 def _create_resume_checkpoint(agent, task_state, user_message, trigger):
     try:
         checkpoint = agent.create_checkpoint(task_state, user_message, trigger=trigger)
-    except OSError as exc:
-        raise SessionCommitError(exc) from exc
+    except Exception as exc:
+        _block_session_writes(agent, exc)
+        if isinstance(exc, OSError) or getattr(exc, "committed", False):
+            raise SessionCommitError(exc) from exc
+        raise
     agent.run_store.write_task_state(task_state)
     agent.emit_trace(
         task_state,
@@ -1186,7 +1392,11 @@ def _finalize_recovery_checkpoint(agent, task_state, run_tool_change_ids, run_ve
     )
     task_state.recovery_checkpoint_id = record["checkpoint_id"]
     set_current_recovery_checkpoint_id(agent.session, record["checkpoint_id"])
-    agent.session_path = agent.session_store.save(agent.session)
+    try:
+        agent.session_path = agent.session_store.save(agent.session)
+    except Exception as exc:
+        _block_session_writes(agent, exc)
+        raise
     agent.run_store.write_task_state(task_state)
     run_tool_change_ids.clear()
     return record

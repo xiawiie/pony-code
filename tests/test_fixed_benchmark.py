@@ -14,6 +14,7 @@ from pico.evaluation.fixed_benchmark import (
     run_fixed_benchmark,
     run_harness_regression_v2,
 )
+from pico.observability import RunArtifactError
 from pico.providers.fake import FakeModelClient
 
 
@@ -188,6 +189,28 @@ def test_run_fixed_benchmark_reports_metadata_and_success_definition(tmp_path):
         assert row["expected_artifact_exists"] is True
         assert row["non_failure_stop_reason"] is True
         assert row["stop_reason"] == "final_answer_returned"
+
+
+def test_run_task_rejects_missing_run_artifact(tmp_path, monkeypatch):
+    from pico.runtime import Pico
+
+    evaluator = BenchmarkEvaluator(
+        benchmark_path=Path("benchmarks/coding_tasks.json"),
+        artifact_path=tmp_path / "benchmark-v1.json",
+        workspace_root=tmp_path / "workspaces",
+    )
+    task = next(item for item in evaluator.load()["tasks"] if item["id"] == "readme_intro_locked")
+    real_ask = Pico.ask
+
+    def remove_task_state_after_ask(self, user_message):
+        result = real_ask(self, user_message)
+        self.run_store.task_state_path(self.current_task_state).unlink()
+        return result
+
+    monkeypatch.setattr(Pico, "ask", remove_task_state_after_ask)
+
+    with pytest.raises(RunArtifactError, match="missing"):
+        evaluator.run_task(task)
 
 
 def test_failure_category_enum_is_stable():

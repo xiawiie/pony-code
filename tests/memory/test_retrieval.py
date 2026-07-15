@@ -123,9 +123,9 @@ def test_search_reads_each_candidate_once_without_public_store_reads(
     calls = []
     real_read = block_store_module._read_bounded_regular
 
-    def counting_read(path, limit, *, private=False):
+    def counting_read(path, limit, *, private=False, **kwargs):
         calls.append(Path(path).name)
-        return real_read(path, limit, private=private)
+        return real_read(path, limit, private=private, **kwargs)
 
     monkeypatch.setattr(block_store_module, "_read_bounded_regular", counting_read)
     monkeypatch.setattr(store, "list", lambda: pytest.fail("search reopened list"))

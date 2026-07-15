@@ -34,6 +34,7 @@ Telemetry keys:
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 import logging
 
 from pico import security as securitylib
@@ -49,6 +50,30 @@ from .sources import (
 )
 
 logger = logging.getLogger("pico")
+
+
+@dataclass(frozen=True)
+class InjectionSource:
+    name: str
+    required: bool
+    text: str
+    token_count: int
+    status: str
+    reason_code: str
+    selected_memory_paths: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class InjectionSnapshot:
+    current_user: str
+    runtime_feedback: str
+    intent_name: str
+    sources: tuple[InjectionSource, ...]
+
+    def render(self, included_names=None):
+        allowed = set(included_names) if included_names is not None else None
+        blocks = [source.text for source in self.sources if source.text and (allowed is None or source.name in allowed)]
+        return "\n\n".join([*blocks, self.current_user]) if blocks else self.current_user
 
 SOURCE_ORDER = (
     "workspace_state",
@@ -93,6 +118,32 @@ def _count_tokens(agent, text):
         except Exception:
             pass
     return max(1, len(text) // 4)
+
+
+def build_injection_snapshot(agent, user_message, runtime_feedback="", render_fn=None):
+    """Build one immutable, side-effect-free snapshot for a model attempt."""
+    recent_before = list((getattr(agent, "session", {}) or {}).get("recently_recalled") or [])
+    renderer = render_fn or render_current_user_message
+    text, telemetry = renderer(agent, user_message)
+    session = getattr(agent, "session", {}) or {}
+    recent_after = list(session.get("recently_recalled") or [])
+    selected = tuple(recent_after[-1]) if len(recent_after) > len(recent_before) else ()
+    if isinstance(session, dict):
+        session["recently_recalled"] = recent_before
+    sources = []
+    for name in SOURCE_ORDER:
+        marker = f"<pico:{name}>"
+        block = next((part for part in text.split("\n\n") if marker in part), "")
+        tokens = int(telemetry["injection_tokens"].get(name, 0) or 0)
+        if name in telemetry["injection_dropped"]:
+            status, reason = "dropped_budget", "aggregate_budget"
+        elif tokens:
+            status, reason = "included", "recall_match" if name == "recalled_memory" else "source_available"
+        else:
+            status, reason = "empty", "source_empty"
+        sources.append(InjectionSource(name, name == "checkpoint" and bool(block), block, tokens, status, reason, selected if name == "recalled_memory" else ()))
+    snapshot = InjectionSnapshot(str(user_message), str(runtime_feedback or ""), telemetry["intent"]["name"], tuple(sources))
+    return snapshot, telemetry
 
 
 def render_current_user_message(agent, user_message):

@@ -640,6 +640,10 @@ def test_doctor_security_folds_unsafe_storage_and_executable_paths_to_status(
         "pico.cli_diagnostics.WorkspaceContext.build",
         build_workspace,
     )
+    monkeypatch.setattr(
+        "pico.cli_diagnostics.build_trusted_executables",
+        lambda *_args, **_kwargs: {"git": "/usr/bin/git"},
+    )
 
     security = collect_doctor(tmp_path, offline=True)["security"]
 
@@ -716,10 +720,76 @@ def test_doctor_text_uses_grouped_cli_output(tmp_path, monkeypatch, capsys):
     assert "Config" in out
     assert "Credentials" in out
     assert "Storage" in out
+    assert "runtime authorization local" in out
     assert "Provider connectivity" in out
     assert "Security" in out
     assert "skipped" in out
     assert not out.lstrip().startswith("{")
+
+
+def test_doctor_runtime_authorization_projection_drops_unknown_fields(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    secret = "ghp_" + "Z" * 32
+    runtime_authorization = {
+        "status": "enabled",
+        "kind": "local",
+        "reason_code": "local_authorization_verified",
+        "token": secret,
+    }
+    authorization_check = {
+        "status": "pass",
+        "reason_code": "local_authorization_verified",
+        "remediation": "",
+        "token": secret,
+    }
+    monkeypatch.setattr(
+        cli_diagnostics_module,
+        "_collect_docker_sandbox_diagnostic",
+        lambda **_kwargs: {
+            "status": "ready",
+            "reason_code": "ready",
+            "readiness": {
+                "status": "ready",
+                "runtime_authorization": dict(runtime_authorization),
+            },
+            "runtime_authorization": dict(runtime_authorization),
+            "product_enablement": {"status": "blocked"},
+            "checks": {
+                "runtime_authorization": dict(authorization_check),
+            },
+        },
+    )
+
+    assert main([
+        "--cwd",
+        str(tmp_path),
+        "--format",
+        "json",
+        "doctor",
+        "--offline",
+    ]) == 0
+
+    output = capsys.readouterr().out
+    sandbox = json.loads(output)["data"]["sandbox"]
+    assert set(sandbox["runtime_authorization"]) == {
+        "status",
+        "kind",
+        "reason_code",
+    }
+    assert set(sandbox["readiness"]["runtime_authorization"]) == {
+        "status",
+        "kind",
+        "reason_code",
+    }
+    assert set(sandbox["checks"]["runtime_authorization"]) == {
+        "status",
+        "reason_code",
+        "remediation",
+    }
+    assert secret not in output
 
 
 def test_doctor_json_does_not_build_agent(tmp_path, monkeypatch, capsys):

@@ -7,6 +7,7 @@ import pytest
 
 from pico import Pico, SessionStore, WorkspaceContext
 from pico.providers.fake import FakeModelClient
+import pico.tool_executor as tool_executor_module
 from pico.memory.tools import tool_memory_list, tool_memory_search
 from pico.tool_executor import (
     ToolExecutor,
@@ -169,6 +170,20 @@ def test_early_rejection_matrix_has_exact_metadata_and_no_execution_evidence(
         "affected_paths": [],
         "workspace_changed": False,
         "diff_summary": [],
+        "policy_decision": {
+            "schema_version": 1,
+            "decision": "deny",
+            "reason_code": expected_code,
+            "effect_class": expected_effect,
+            "risk_class": "complex",
+            "evidence_complete": True,
+            "approval": {
+                "mode": "auto",
+                "required": False,
+                "outcome": "denied",
+            },
+        },
+        "sandbox": {"status": "not_started"},
     }
     runner.assert_not_called()
     assert agent.checkpoint_store.list_tool_change_records() == []
@@ -239,6 +254,11 @@ def test_runner_keyboard_interrupt_finalizes_pending_change_then_reraises(tmp_pa
 
     records = agent.checkpoint_store.list_tool_change_records()
     assert records[-1]["status"] == "interrupted"
+
+
+def test_public_runtime_rejects_legacy_sandbox_context_before_runner(tmp_path):
+    with pytest.raises(ValueError, match="DockerSandboxContext"):
+        build_agent(tmp_path, sandbox_context=SimpleNamespace())
 
 
 def test_shell_runner_interrupt_persists_attempted_approval_metadata(tmp_path):
@@ -331,6 +351,31 @@ def test_post_pending_custom_base_exception_closes_change_and_preserves_primary(
     assert agent.checkpoint_store.list_tool_change_records()[-1]["status"] == "interrupted"
 
 
+def test_fatal_interrupt_observes_workspace_effect_before_terminalizing(tmp_path):
+    agent = build_agent(tmp_path)
+
+    def write_then_interrupt(args):
+        (tmp_path / args["path"]).write_text(args["content"], encoding="utf-8")
+        raise FatalToolSignal("interrupted after write")
+
+    agent.tools["write_file"]["run"] = write_then_interrupt
+    with pytest.raises(FatalToolSignal):
+        agent.execute_tool("write_file", {"path": "x.txt", "content": "x"})
+
+    record = agent.checkpoint_store.list_tool_change_records()[-1]
+    assert record["status"] == "interrupted"
+    assert record["affected_paths"] == ["x.txt"]
+    assert len(record["file_entries"]) == 1
+    assert record["file_entries"][0]["path"] == "x.txt"
+    assert record["file_entries"][0]["after_blob_ref"]
+
+    blocked = agent.execute_tool(
+        "write_file", {"path": "second.txt", "content": "second"}
+    )
+    assert blocked.metadata["tool_error_code"] == "recovery_review_required"
+    assert not (tmp_path / "second.txt").exists()
+
+
 def test_post_pending_observer_base_exception_closes_change_and_preserves_primary(
     tmp_path,
     monkeypatch,
@@ -421,6 +466,72 @@ def test_effect_observation_is_not_repeated_after_memory_update_failure(
 
     assert result.metadata["tool_error_code"] == "tool_finalize_failed"
     assert capture.call_count == 2  # one before-state and one after-state read
+
+
+def test_unknown_effect_after_runner_failure_requires_review(
+    tmp_path,
+    monkeypatch,
+):
+    agent = build_agent(tmp_path)
+
+    def write_then_fail(args):
+        (tmp_path / args["path"]).write_text("changed\n", encoding="utf-8")
+        raise RuntimeError("runner failed")
+
+    agent.tools["write_file"]["run"] = write_then_fail
+    monkeypatch.setattr(
+        tool_executor_module,
+        "_observe_tool_effects",
+        Mock(side_effect=OSError("observer failed")),
+    )
+
+    first = agent.execute_tool(
+        "write_file", {"path": "first.txt", "content": "unused"}
+    )
+
+    assert first.metadata["tool_status"] == "error"
+    assert first.metadata["tool_error_code"] == "recovery_review_required"
+    assert (tmp_path / "first.txt").read_text(encoding="utf-8") == "changed\n"
+    record = agent.checkpoint_store.load_tool_change_record(
+        first.metadata["tool_change_id"]
+    )
+    assert record["status"] == "interrupted"
+
+    second = agent.execute_tool(
+        "write_file", {"path": "second.txt", "content": "second"}
+    )
+    assert second.metadata["tool_error_code"] == "recovery_review_required"
+    assert not (tmp_path / "second.txt").exists()
+
+
+def test_post_runner_finalization_failure_keeps_effect_evidence(tmp_path, monkeypatch):
+    agent = build_agent(tmp_path)
+    changed = tmp_path / "after-run.txt"
+
+    def write_then_return(_execution):
+        changed.write_text("changed\n", encoding="utf-8")
+        return {"stdout": "", "stderr": "", "exit_code": 0}
+
+    agent.tools["run_shell"]["run"] = write_then_return
+    monkeypatch.setattr(
+        agent,
+        "update_memory_after_tool",
+        Mock(side_effect=OSError("memory update failed")),
+    )
+
+    result = agent.execute_tool(
+        "run_shell", {"command": "pwd", "timeout": 5}
+    )
+
+    assert result.metadata["tool_error_code"] == "tool_finalize_failed"
+    assert result.metadata["affected_paths"] == ["after-run.txt"]
+    assert result.metadata["file_entries"][0]["path"] == "after-run.txt"
+    record = agent.checkpoint_store.load_tool_change_record(
+        result.metadata["tool_change_id"]
+    )
+    assert record["status"] == "partial_success"
+    assert record["file_entries"][0]["path"] == "after-run.txt"
+    assert record["shell_side_effects"]
 
 
 def test_recorder_start_persisted_then_raised_leaves_review_evidence(tmp_path, monkeypatch):

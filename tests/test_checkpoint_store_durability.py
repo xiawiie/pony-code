@@ -3,7 +3,11 @@ import multiprocessing
 
 import pytest
 
-from pico.checkpoint_store import CheckpointStore
+from pico.checkpoint_store import (
+    CheckpointStore,
+    CheckpointStoreError,
+    source_apply_guard_present,
+)
 from pico.recovery_models import new_checkpoint_record, new_tool_change_record
 
 
@@ -27,6 +31,34 @@ def test_checkpoint_store_exposes_required_mutation_lock(tmp_path, monkeypatch):
         pass
 
     assert calls == [(store.mutation_lock_path, True)]
+
+
+def test_source_apply_guard_blocks_other_mutations_until_exact_owner_clears(tmp_path):
+    store = CheckpointStore(tmp_path)
+    journal_id = "apply_" + "1" * 32
+    with store.mutation_lock():
+        store.begin_source_apply_guard(
+            journal_id=journal_id,
+            sandbox_id="sandbox_" + "2" * 32,
+            diff_digest="sha256:" + "3" * 64,
+        )
+
+    assert source_apply_guard_present(tmp_path) is True
+    with pytest.raises(CheckpointStoreError, match="source_apply_review_required"):
+        with store.mutation_lock():
+            pass
+    with store.mutation_lock(source_apply_journal_id=journal_id):
+        store.finish_source_apply_guard(journal_id=journal_id)
+    assert source_apply_guard_present(tmp_path) is False
+
+
+def test_invalid_source_apply_guard_fails_closed(tmp_path):
+    store = CheckpointStore(tmp_path)
+    store.source_mutation_guard_path.write_bytes(b"{invalid")
+
+    with pytest.raises(CheckpointStoreError, match="source_apply_guard_invalid"):
+        with store.mutation_lock():
+            pass
 
 
 def test_checkpoint_rmw_rejects_status_conflict(tmp_path):

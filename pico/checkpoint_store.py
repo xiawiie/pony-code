@@ -20,6 +20,7 @@ import stat
 from pathlib import Path
 
 from pico import file_lock
+from pico import security as securitylib
 from pico.recovery_models import (
     CHECKPOINT_FORMAT_VERSION,
     CHECKPOINT_RECORD_TYPE,
@@ -41,12 +42,31 @@ def _identity(value):
     return value
 
 
+@contextmanager
+def _null_lock():
+    yield
+
+
 _SAFE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\Z")
 _CHECKPOINT_TYPES = {"turn", "restore", "manual"}
 _RESTORE_STATUSES = {"applying", "applied", "blocked", "failed", "partial", "noop"}
 _TOOL_CHANGE_STATUSES = {
-    "pending", "finalized", "error", "partial_success", "interrupted"
+    "pending", "finalized", "error", "partial_success", "interrupted",
+    "legacy_migrated",
 }
+_SOURCE_MUTATION_GUARD_FIELDS = frozenset(
+    {
+        "record_type",
+        "format_version",
+        "journal_id",
+        "sandbox_id",
+        "diff_digest",
+    }
+)
+_APPLY_ID = re.compile(r"apply_[0-9a-f]{32}\Z")
+_SANDBOX_ID = re.compile(r"sandbox_[0-9a-f]{32}\Z")
+_SHA256 = re.compile(r"sha256:[0-9a-f]{64}\Z")
+_SOURCE_MUTATION_GUARD_RELATIVE = ".pico/checkpoints/source-apply-guard.json"
 _CHECKPOINT_FIELDS = frozenset(
     {
         "record_type", "format_version", "checkpoint_id", "checkpoint_type",
@@ -63,7 +83,7 @@ _TOOL_CHANGE_FIELDS = frozenset(
         "turn_id", "owner_id", "tool_name", "effect_class", "status",
         "started_at", "ended_at", "input_summary", "affected_paths",
         "file_entries", "prepared_file_entries", "recovery_context",
-        "shell_side_effects", "approval", "error", "trace_event_ids",
+        "shell_side_effects", "policy", "sandbox", "approval", "error", "trace_event_ids",
         "reviewed_at", "review_reason", "reviewed_by",
     }
 )
@@ -182,7 +202,7 @@ def _validate_tool_change_record(record, expected_id=None):
         "affected_paths", "file_entries", "prepared_file_entries",
         "shell_side_effects", "trace_event_ids",
     )
-    dict_fields = ("input_summary", "recovery_context", "approval", "error")
+    dict_fields = ("input_summary", "recovery_context", "policy", "sandbox", "approval", "error")
     if any(not isinstance(record.get(key), str) for key in string_fields):
         raise CheckpointStoreError("invalid_record_shape", "invalid tool change string field")
     if any(not isinstance(record.get(key), list) for key in list_fields):
@@ -207,6 +227,43 @@ def _validate_tool_change_record(record, expected_id=None):
     if affected_paths != record["affected_paths"]:
         raise CheckpointStoreError("invalid_path", "invalid affected path")
     return record
+
+
+def source_apply_guard_present(workspace_root):
+    """Fail closed on an existing source Apply guard without creating state."""
+    root = Path(workspace_root)
+    info = root.lstat()
+    state = securitylib.read_regular_bytes_anchored(
+        root,
+        _SOURCE_MUTATION_GUARD_RELATIVE,
+        max_bytes=CheckpointStore.MAX_RECORD_BYTES,
+        expected_root_identity=(info.st_dev, info.st_ino),
+    )
+    if not state["exists"]:
+        return False
+    if len(state["data"]) > CheckpointStore.MAX_RECORD_BYTES:
+        raise CheckpointStoreError(
+            "source_apply_guard_invalid", "source apply guard is invalid"
+        )
+    try:
+        value = _decode_json(state["data"])
+    except CheckpointStoreError as exc:
+        raise CheckpointStoreError(
+            "source_apply_guard_invalid", "source apply guard is invalid"
+        ) from exc
+    if (
+        not isinstance(value, dict)
+        or value.keys() != _SOURCE_MUTATION_GUARD_FIELDS
+        or value["record_type"] != "docker_sandbox_source_apply_guard"
+        or value["format_version"] != 1
+        or _APPLY_ID.fullmatch(str(value["journal_id"])) is None
+        or _SANDBOX_ID.fullmatch(str(value["sandbox_id"])) is None
+        or _SHA256.fullmatch(str(value["diff_digest"])) is None
+    ):
+        raise CheckpointStoreError(
+            "source_apply_guard_invalid", "source apply guard is invalid"
+        )
+    return True
 
 
 def _valid_verification_evidence(item):
@@ -280,7 +337,15 @@ class CheckpointStore:
     MAX_BLOB_BYTES = 8 * 1024 * 1024
     MAX_RECORD_BYTES = 8 * 1024 * 1024
 
-    def __init__(self, workspace_root, redactor=None):
+    def __init__(
+        self,
+        workspace_root,
+        redactor=None,
+        *,
+        source_apply_authority=None,
+        source_apply_control_lock=None,
+        read_only=False,
+    ):
         # workspace_root 通常就是 Pico 的 repo 根。真实存储放在 .pico/checkpoints 下。
         # 如果传入路径已经是 .pico/checkpoints，直接用；否则加子目录。
         workspace_root = Path(workspace_root)
@@ -288,7 +353,15 @@ class CheckpointStore:
             self.root = workspace_root
         else:
             self.root = workspace_root / ".pico" / "checkpoints"
-        self.root = ensure_private_dir(self.root)
+        self._read_only = bool(read_only)
+        self._missing = False
+        if self._read_only:
+            try:
+                self.root.lstat()
+            except FileNotFoundError:
+                self._missing = True
+        else:
+            self.root = ensure_private_dir(self.root)
         self.records_dir = self.root / "records"
         self.tool_changes_dir = self.root / "tool_changes"
         self.blobs_dir = self.root / "blobs"
@@ -296,17 +369,46 @@ class CheckpointStore:
         self.quarantine_checkpoint_dir = self.quarantine_dir / "checkpoint"
         self.quarantine_tool_change_dir = self.quarantine_dir / "tool_change"
         self.lock_path = self.root / ".checkpoint_store.lock"
-        self.mutation_lock_path = self.root / ".mutation.lock"
+        self.mutation_lock_path = self.root.parent / ".source-mutation.lock"
+        self.source_mutation_guard_path = self.root / "source-apply-guard.json"
         self._redactor = redactor or _identity
+        self._source_apply_authority = source_apply_authority
+        self._source_apply_control_lock = source_apply_control_lock
+        if self._missing:
+            self._root_identity = None
+            self._records_identity = None
+            self._tool_changes_identity = None
+            self._blobs_identity = None
+            self._quarantine_identities = {
+                "checkpoint": None,
+                "tool_change": None,
+            }
+            return
+        read_only_identities = {}
+        if self._read_only:
+            self._root_identity = self._validate_existing_private_directory(
+                self.root
+            )
         for directory in (
             self.records_dir,
             self.tool_changes_dir,
             self.blobs_dir,
+            self.quarantine_dir,
             self.quarantine_checkpoint_dir,
             self.quarantine_tool_change_dir,
         ):
-            ensure_private_dir(directory)
+            if self._read_only:
+                try:
+                    read_only_identities[directory] = (
+                        self._validate_existing_private_directory(directory)
+                    )
+                except FileNotFoundError:
+                    read_only_identities[directory] = None
+            else:
+                ensure_private_dir(directory)
         for directory in (self.records_dir, self.tool_changes_dir):
+            if self._read_only and read_only_identities[directory] is None:
+                continue
             with os.scandir(directory) as entries:
                 for entry in entries:
                     info = entry.stat(follow_symlinks=False)
@@ -314,7 +416,23 @@ class CheckpointStore:
                         if info.st_nlink != 1:
                             raise ValueError("private file has unsafe link count")
                         require_regular_no_symlink(Path(entry.path))
-        harden_private_tree(self.blobs_dir)
+        if not self._read_only:
+            harden_private_tree(self.blobs_dir)
+        else:
+            self._records_identity = read_only_identities[self.records_dir]
+            self._tool_changes_identity = read_only_identities[
+                self.tool_changes_dir
+            ]
+            self._blobs_identity = read_only_identities[self.blobs_dir]
+            self._quarantine_identities = {
+                "checkpoint": read_only_identities[
+                    self.quarantine_checkpoint_dir
+                ],
+                "tool_change": read_only_identities[
+                    self.quarantine_tool_change_dir
+                ],
+            }
+            return
         self._root_identity = private_directory_identity(self.root)
         self._records_identity = private_directory_identity(self.records_dir)
         self._tool_changes_identity = private_directory_identity(self.tool_changes_dir)
@@ -328,15 +446,183 @@ class CheckpointStore:
             ),
         }
 
+    @staticmethod
+    def _validate_existing_private_directory(path):
+        path = Path(path)
+        info = path.lstat()
+        uid = os.geteuid() if hasattr(os, "geteuid") else info.st_uid
+        if (
+            path.is_symlink()
+            or not stat.S_ISDIR(info.st_mode)
+            or info.st_uid != uid
+            or stat.S_IMODE(info.st_mode) != 0o700
+            or private_directory_identity(path) != (info.st_dev, info.st_ino)
+        ):
+            raise ValueError("private directory permissions are unsafe")
+        return info.st_dev, info.st_ino
+
+    @contextmanager
+    def _read_lock(self):
+        if self._read_only:
+            yield
+        else:
+            with file_lock.locked_file(self.lock_path):
+                yield
+
+    def _read_private_bytes(
+        self,
+        path,
+        *,
+        trusted_root,
+        trusted_root_identity,
+        max_bytes,
+    ):
+        return read_private_bytes(
+            path,
+            trusted_root=trusted_root,
+            trusted_root_identity=trusted_root_identity,
+            max_bytes=max_bytes,
+            harden=not self._read_only,
+        )
+
     def set_redactor(self, redactor):
         self._redactor = redactor or _identity
 
     @contextmanager
-    def mutation_lock(self):
+    def mutation_lock(self, *, source_apply_journal_id=None):
+        if self._read_only:
+            raise CheckpointStoreError("read_only_store", "store is read-only")
         if file_lock.lock_is_active(self.lock_path):
             raise RuntimeError("lock order violation")
-        with file_lock.locked_file(self.mutation_lock_path, require_lock=True):
-            yield
+        external_lock = _null_lock()
+        if (
+            self._source_apply_control_lock is not None
+            and not file_lock.lock_is_active(self._source_apply_control_lock)
+        ):
+            external_lock = file_lock.locked_file(
+                self._source_apply_control_lock,
+                require_lock=True,
+            )
+        with external_lock:
+            with file_lock.locked_file(self.mutation_lock_path, require_lock=True):
+                if (
+                    self._source_apply_authority is not None
+                    and self._source_apply_authority() is not None
+                ):
+                    raise CheckpointStoreError(
+                        "source_apply_review_required",
+                        "source apply must be reconciled before another mutation",
+                    )
+                guard = self._load_source_mutation_guard()
+                if guard is not None and guard["journal_id"] != str(
+                    source_apply_journal_id or ""
+                ):
+                    raise CheckpointStoreError(
+                        "source_apply_review_required",
+                        "source apply must be reconciled before another mutation",
+                    )
+                yield
+
+    def _load_source_mutation_guard(self):
+        try:
+            raw = self._read_private_bytes(
+                self.source_mutation_guard_path,
+                trusted_root=self.root,
+                trusted_root_identity=self._root_identity,
+                max_bytes=self.MAX_RECORD_BYTES,
+            )
+        except FileNotFoundError:
+            return None
+        try:
+            value = _decode_json(raw)
+        except CheckpointStoreError as exc:
+            raise CheckpointStoreError(
+                "source_apply_guard_invalid", "source apply guard is invalid"
+            ) from exc
+        if (
+            not isinstance(value, dict)
+            or value.keys() != _SOURCE_MUTATION_GUARD_FIELDS
+            or value["record_type"] != "docker_sandbox_source_apply_guard"
+            or value["format_version"] != 1
+            or _APPLY_ID.fullmatch(str(value["journal_id"])) is None
+            or _SANDBOX_ID.fullmatch(str(value["sandbox_id"])) is None
+            or _SHA256.fullmatch(str(value["diff_digest"])) is None
+        ):
+            raise CheckpointStoreError(
+                "source_apply_guard_invalid", "source apply guard is invalid"
+            )
+        return value
+
+    def begin_source_apply_guard(self, *, journal_id, sandbox_id, diff_digest):
+        if not file_lock.lock_is_active(self.mutation_lock_path):
+            raise RuntimeError("source apply guard requires mutation lock")
+        value = {
+            "record_type": "docker_sandbox_source_apply_guard",
+            "format_version": 1,
+            "journal_id": str(journal_id),
+            "sandbox_id": str(sandbox_id),
+            "diff_digest": str(diff_digest),
+        }
+        if (
+            _APPLY_ID.fullmatch(value["journal_id"]) is None
+            or _SANDBOX_ID.fullmatch(value["sandbox_id"]) is None
+            or _SHA256.fullmatch(value["diff_digest"]) is None
+        ):
+            raise CheckpointStoreError(
+                "source_apply_guard_invalid", "source apply guard is invalid"
+            )
+        current = self._load_source_mutation_guard()
+        if current is not None and current != value:
+            raise CheckpointStoreError(
+                "source_apply_review_required", "another source apply is unresolved"
+            )
+        if current is None:
+            write_private_bytes_atomic(
+                self.source_mutation_guard_path,
+                json.dumps(
+                    value,
+                    ensure_ascii=True,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ).encode("ascii"),
+                trusted_root=self.root,
+                trusted_root_identity=self._root_identity,
+                fsync_file=self._fsync_file,
+                fsync_parent=self._fsync_parent,
+                max_existing_bytes=self.MAX_RECORD_BYTES,
+            )
+        return value
+
+    def source_apply_guard(self):
+        value = self._load_source_mutation_guard()
+        return None if value is None else deepcopy(value)
+
+    def finish_source_apply_guard(self, *, journal_id, allow_missing=False):
+        if not file_lock.lock_is_active(self.mutation_lock_path):
+            raise RuntimeError("source apply guard requires mutation lock")
+        current = self._load_source_mutation_guard()
+        if current is None and allow_missing:
+            return False
+        if current is None or current["journal_id"] != str(journal_id):
+            raise CheckpointStoreError(
+                "source_apply_guard_invalid", "source apply guard does not match"
+            )
+        path, parent = securitylib._open_private_parent(
+            self.source_mutation_guard_path,
+            trusted_root=self.root,
+            trusted_root_identity=self._root_identity,
+        )
+        try:
+            before = os.stat(path.name, dir_fd=parent, follow_symlinks=False)
+            if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+                raise CheckpointStoreError(
+                    "source_apply_guard_invalid", "source apply guard is invalid"
+                )
+            os.unlink(path.name, dir_fd=parent)
+            self._fsync_parent(parent)
+        finally:
+            os.close(parent)
+        return True
 
     # -- blob 存取 --------------------------------------------------------
     def _blob_path(self, content_hash):
@@ -347,6 +633,8 @@ class CheckpointStore:
     def write_blob(self, data, content_kind="text"):
         if not isinstance(data, (bytes, bytearray)):
             raise TypeError("write_blob requires bytes-like data")
+        if len(data) > self.MAX_BLOB_BYTES:
+            raise ValueError("blob_too_large")
         info = hash_bytes(bytes(data))
         blob_ref = info["content_hash"]
         blob_path = self._blob_path(blob_ref)
@@ -370,7 +658,7 @@ class CheckpointStore:
 
     def read_blob(self, blob_ref):
         try:
-            data = read_private_bytes(
+            data = self._read_private_bytes(
                 self._blob_path(str(blob_ref)),
                 trusted_root=self.blobs_dir,
                 trusted_root_identity=self._blobs_identity,
@@ -408,7 +696,7 @@ class CheckpointStore:
             )
 
     def load_checkpoint_record(self, checkpoint_id):
-        with file_lock.locked_file(self.lock_path):
+        with self._read_lock():
             return self._load_checkpoint_record_unlocked(checkpoint_id)
 
     def _load_checkpoint_record_unlocked(self, checkpoint_id):
@@ -416,11 +704,11 @@ class CheckpointStore:
         return record
 
     def load_checkpoint_record_snapshot(self, checkpoint_id):
-        with file_lock.locked_file(self.lock_path):
+        with self._read_lock():
             return self._load_checkpoint_record_snapshot_unlocked(checkpoint_id)
 
     def _load_checkpoint_record_snapshot_unlocked(self, checkpoint_id):
-        data = read_private_bytes(
+        data = self._read_private_bytes(
             self._record_path(checkpoint_id),
             trusted_root=self.records_dir,
             trusted_root_identity=self._records_identity,
@@ -433,7 +721,9 @@ class CheckpointStore:
         return record, data
 
     def list_checkpoint_records(self, strict=False):
-        with file_lock.locked_file(self.lock_path):
+        if self._records_identity is None:
+            return []
+        with self._read_lock():
             return self._list_checkpoint_records_unlocked(strict=strict)
 
     def _list_checkpoint_records_unlocked(self, strict=False):
@@ -465,7 +755,7 @@ class CheckpointStore:
             )
 
     def load_tool_change_record(self, tool_change_id):
-        with file_lock.locked_file(self.lock_path):
+        with self._read_lock():
             return self._load_tool_change_record_unlocked(tool_change_id)
 
     def _load_tool_change_record_unlocked(self, tool_change_id):
@@ -475,11 +765,11 @@ class CheckpointStore:
         return record
 
     def load_tool_change_record_snapshot(self, tool_change_id):
-        with file_lock.locked_file(self.lock_path):
+        with self._read_lock():
             return self._load_tool_change_record_snapshot_unlocked(tool_change_id)
 
     def _load_tool_change_record_snapshot_unlocked(self, tool_change_id):
-        data = read_private_bytes(
+        data = self._read_private_bytes(
             self._tool_change_path(tool_change_id),
             trusted_root=self.tool_changes_dir,
             trusted_root_identity=self._tool_changes_identity,
@@ -595,7 +885,9 @@ class CheckpointStore:
             )
 
     def list_tool_change_records(self, strict=False):
-        with file_lock.locked_file(self.lock_path):
+        if self._tool_changes_identity is None:
+            return []
+        with self._read_lock():
             return self._list_tool_change_records_unlocked(strict=strict)
 
     def _list_tool_change_records_unlocked(self, strict=False):
@@ -608,8 +900,128 @@ class CheckpointStore:
         records.sort(key=lambda item: item.get("started_at", ""))
         return records
 
+    def validate_tool_change_reference_graph(self, tool_changes_dir=None):
+        """Validate Checkpoint -> Tool Change -> Blob references without writes."""
+        directory = Path(tool_changes_dir or self.tool_changes_dir)
+        with file_lock.locked_file(self.lock_path, require_lock=True):
+            checkpoints = self._list_checkpoint_records_unlocked(strict=True)
+            identity = (
+                self._tool_changes_identity
+                if directory == self.tool_changes_dir
+                else private_directory_identity(directory)
+            )
+            tool_changes = self._list_records(
+                directory,
+                identity,
+                kind="tool_change",
+                strict=True,
+            )
+            tool_changes_by_id = {
+                record["tool_change_id"]: record for record in tool_changes
+            }
+
+            for tool_change_id, record in tool_changes_by_id.items():
+                for entry in record["file_entries"]:
+                    if entry["source_tool_change_ids"] not in (
+                        [],
+                        [tool_change_id],
+                    ):
+                        raise CheckpointStoreError(
+                            "reference_graph_mismatch",
+                            "tool change file entry has a foreign source",
+                        )
+
+            from pico.recovery_checkpoint_writer import coalesce_file_entries
+
+            for checkpoint in checkpoints:
+                tool_change_ids = checkpoint["tool_change_ids"]
+                missing_ids = checkpoint["missing_tool_change_ids"]
+                if (
+                    len(set(tool_change_ids)) != len(tool_change_ids)
+                    or len(set(missing_ids)) != len(missing_ids)
+                    or set(tool_change_ids) & set(missing_ids)
+                ):
+                    raise CheckpointStoreError(
+                        "reference_graph_mismatch",
+                        "checkpoint tool change references are ambiguous",
+                    )
+                linked = []
+                for tool_change_id in tool_change_ids:
+                    tool_change = tool_changes_by_id.get(tool_change_id)
+                    if tool_change is None:
+                        raise CheckpointStoreError(
+                            "dangling_reference",
+                            "checkpoint tool change reference does not resolve",
+                        )
+                    if tool_change["checkpoint_id"] != checkpoint["checkpoint_id"]:
+                        raise CheckpointStoreError(
+                            "reference_graph_mismatch",
+                            "checkpoint and tool change links disagree",
+                        )
+                    linked.extend(tool_change["file_entries"])
+                known_sources = set(tool_change_ids)
+                if any(
+                    source_id not in known_sources
+                    for entry in checkpoint["file_entries"]
+                    for source_id in entry["source_tool_change_ids"]
+                ):
+                    raise CheckpointStoreError(
+                        "reference_graph_mismatch",
+                        "checkpoint file entry has an unknown source",
+                    )
+                if tool_change_ids and (
+                    coalesce_file_entries(linked) != checkpoint["file_entries"]
+                ):
+                    raise CheckpointStoreError(
+                        "reference_graph_mismatch",
+                        "checkpoint file entries do not match tool changes",
+                    )
+                if any(
+                    tool_changes_by_id[tool_change_id]["status"]
+                    not in {"pending", "legacy_migrated"}
+                    for tool_change_id in missing_ids
+                    if tool_change_id in tool_changes_by_id
+                ):
+                    raise CheckpointStoreError(
+                        "reference_graph_mismatch",
+                        "available tool change is declared missing",
+                    )
+
+            for blob_ref in _referenced_blob_refs(checkpoints, tool_changes):
+                try:
+                    self.read_blob(blob_ref)
+                except FileNotFoundError:
+                    raise CheckpointStoreError(
+                        "dangling_reference", "referenced blob does not exist"
+                    ) from None
+            return len(tool_changes)
+
     # -- pruning ----------------------------------------------------------
     def prune(self, dry_run=True, older_than=None, now=None):
+        if self._read_only:
+            if not dry_run:
+                raise CheckpointStoreError("read_only_store", "store is read-only")
+            if self._missing:
+                cutoff = _cutoff_datetime(older_than, now=now)
+                return {
+                    "dry_run": True,
+                    "older_than": str(older_than or ""),
+                    "cutoff_created_before": (
+                        cutoff.isoformat() if cutoff is not None else ""
+                    ),
+                    "prunable_checkpoint_ids": [],
+                    "prunable_tool_change_ids": [],
+                    "removed_checkpoint_ids": [],
+                    "removed_tool_change_ids": [],
+                    "referenced_count": 0,
+                    "unreferenced_blob_refs": [],
+                    "removed_blob_refs": [],
+                }
+            return self._prune_locked(
+                dry_run=True,
+                older_than=older_than,
+                now=now,
+            )
         with self.mutation_lock():
             with file_lock.locked_file(self.lock_path, require_lock=True):
                 return self._prune_locked(
@@ -1140,12 +1552,16 @@ class CheckpointStore:
             os.close(source_descriptor)
 
     def list_quarantined_records(self):
+        if self._missing:
+            return []
         records = []
         for kind, directory in (
             ("checkpoint", self.quarantine_checkpoint_dir),
             ("tool_change", self.quarantine_tool_change_dir),
         ):
             identity = self._quarantine_identities[kind]
+            if identity is None:
+                continue
             descriptor = self._open_store_directory(directory, identity)
             try:
                 with os.scandir(descriptor) as entries:
@@ -1158,7 +1574,7 @@ class CheckpointStore:
                 os.close(descriptor)
             for name in names:
                 try:
-                    data = read_private_bytes(
+                    data = self._read_private_bytes(
                         directory / name,
                         trusted_root=directory,
                         trusted_root_identity=identity,
@@ -1312,6 +1728,8 @@ class CheckpointStore:
         elif kind == "tool_change":
             _validate_tool_change_record(safe_payload, expected_id=expected_id)
         data = (json.dumps(safe_payload, indent=2, sort_keys=True) + "\n").encode()
+        if len(data) > self.MAX_RECORD_BYTES:
+            raise ValueError("private file too large")
         canonical_payload = _decode_json(data)
         if kind == "checkpoint":
             _validate_checkpoint_record(canonical_payload, expected_id=expected_id)
@@ -1331,6 +1749,7 @@ class CheckpointStore:
             error="unsafe checkpoint temp changed",
             fsync_file=self._fsync_file,
             fsync_parent=self._fsync_parent,
+            max_existing_bytes=self.MAX_RECORD_BYTES,
         )
         return canonical_payload
 
@@ -1343,6 +1762,7 @@ class CheckpointStore:
             error="unsafe checkpoint temp changed",
             fsync_file=self._fsync_file,
             fsync_parent=self._fsync_parent,
+            max_existing_bytes=self.MAX_BLOB_BYTES,
         )
 
     @staticmethod

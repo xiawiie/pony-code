@@ -31,6 +31,8 @@ class ToolChangeRecorder:
         effect_class,
         input_summary,
         *,
+        policy=None,
+        sandbox=None,
         prepared_file_entries=None,
         recovery_context=None,
     ):
@@ -44,6 +46,8 @@ class ToolChangeRecorder:
             owner_id=self.owner_id,
         )
         record["input_summary"] = dict(input_summary or {})
+        record["policy"] = dict(policy or {})
+        record["sandbox"] = dict(sandbox or {})
         record["prepared_file_entries"] = list(
             prepared_file_entries or []
         )
@@ -59,6 +63,7 @@ class ToolChangeRecorder:
         error=None,
         shell_side_effects=None,
         approval=None,
+        sandbox=None,
         trace_event_ids=None,
         checkpoint_id=None,
     ):
@@ -81,6 +86,8 @@ class ToolChangeRecorder:
                 record["shell_side_effects"] = list(shell_side_effects)
             if approval is not None:
                 record["approval"] = dict(approval)
+            if sandbox is not None:
+                record["sandbox"] = dict(sandbox)
             if trace_event_ids is not None:
                 record["trace_event_ids"] = list(trace_event_ids)
             if checkpoint_id is not None:
@@ -98,6 +105,10 @@ class ToolChangeRecorder:
             record
             for record in self.store.list_tool_change_records(strict=True)
             if record.get("status") == "pending"
+            or (
+                record.get("status") in {"interrupted", "partial_success"}
+                and not record.get("reviewed_at")
+            )
         ]
 
     def resolve_pending(
@@ -109,10 +120,14 @@ class ToolChangeRecorder:
         expected_record_hash=None,
     ):
         def transform(record):
-            if record.get("status") != "pending":
+            status = record.get("status")
+            if status == "pending":
+                record["status"] = "interrupted"
+                record["ended_at"] = utc_now()
+            elif status not in {"interrupted", "partial_success"} or record.get(
+                "reviewed_at"
+            ):
                 raise ValueError("status_conflict")
-            record["status"] = "interrupted"
-            record["ended_at"] = utc_now()
             record["reviewed_at"] = utc_now()
             record["reviewed_by"] = str(reviewed_by)
             record["review_reason"] = str(review_reason)
@@ -124,12 +139,10 @@ class ToolChangeRecorder:
                     tool_change_id,
                     expected_record_hash,
                     transform,
-                    expected_status="pending",
                 )
             return self.store.update_tool_change_record(
                 tool_change_id,
                 transform,
-                expected_status="pending",
             )
 
     def mark_interrupted_pending(self, legacy_only=False):

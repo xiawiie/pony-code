@@ -8,6 +8,8 @@ from copy import deepcopy
 import json
 import re
 
+from . import file_lock
+from .observability import MAX_RUN_ARTIFACT_BYTES, _decode_json, validate_report
 from .security import (
     append_private_bytes,
     ensure_private_dir,
@@ -57,6 +59,9 @@ class RunStore:
     def report_path(self, run_id):
         return self.run_dir(run_id) / "report.json"
 
+    def trace_lock_path(self, run_id):
+        return self.run_dir(run_id) / ".trace.lock"
+
     def start_run(self, task_state):
         # 每次 ask() 都会生成一个 run 目录。
         # 这样一次用户请求对应一组独立工件，后续排查更容易。
@@ -67,7 +72,6 @@ class RunStore:
     def write_task_state(self, task_state):
         path = self.task_state_path(task_state)
         payload = self._redactor(deepcopy(task_state.to_dict()))
-        ensure_private_dir(path.parent)
         self._write_json_atomic(path, payload)
         return path
 
@@ -81,37 +85,45 @@ class RunStore:
         ensure_private_dir(path.parent)
         # trace 采用 jsonl 追加写入，原因是 agent 运行过程是流式事件序列，
         # 逐条落盘比“最后一次性写整份 trace”更稳，也更适合调试。
-        return append_private_bytes(
-            path,
-            serialized.encode("utf-8"),
-            trusted_root=self.root,
-            trusted_root_identity=self._root_identity,
-        )
+        with file_lock.locked_file(
+            self.trace_lock_path(task_state),
+            require_lock=True,
+        ):
+            return append_private_bytes(
+                path,
+                serialized.encode("utf-8"),
+                trusted_root=self.root,
+                trusted_root_identity=self._root_identity,
+                max_total_bytes=MAX_RUN_ARTIFACT_BYTES,
+            )
 
     def write_report(self, task_state, report):
         path = self.report_path(task_state)
         payload = self._redactor(deepcopy(report))
-        ensure_private_dir(path.parent)
         self._write_json_atomic(path, payload)
         return path
 
     def load_task_state(self, task_id):
-        return json.loads(
+        return _decode_json(
             read_private_text(
                 self.task_state_path(task_id),
                 trusted_root=self.root,
                 trusted_root_identity=self._root_identity,
+                max_bytes=MAX_RUN_ARTIFACT_BYTES,
             )
         )
 
     def load_report(self, task_id):
-        return json.loads(
+        run_id = _run_id(task_id)
+        report = _decode_json(
             read_private_text(
-                self.report_path(task_id),
+                self.report_path(run_id),
                 trusted_root=self.root,
                 trusted_root_identity=self._root_identity,
+                max_bytes=MAX_RUN_ARTIFACT_BYTES,
             )
         )
+        return validate_report(report, run_id=run_id)
 
     def _write_json_atomic(self, path, payload):
         # 原子写：先写临时文件，再 replace。
@@ -119,10 +131,14 @@ class RunStore:
         rendered = (
             json.dumps(payload, indent=2, sort_keys=True) + "\n"
         ).encode("utf-8")
+        if len(rendered) > MAX_RUN_ARTIFACT_BYTES:
+            raise ValueError("private file too large")
+        ensure_private_dir(path.parent)
         write_private_bytes_atomic(
             path,
             rendered,
             trusted_root=self.root,
             trusted_root_identity=self._root_identity,
             error="run temp changed",
+            max_existing_bytes=MAX_RUN_ARTIFACT_BYTES,
         )

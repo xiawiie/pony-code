@@ -1,8 +1,10 @@
 """Trusted executable discovery and hardened internal subprocess runners."""
 
+from dataclasses import dataclass
 from contextlib import contextmanager
 import os
 import re
+import signal
 import shutil
 import stat
 import subprocess
@@ -761,6 +763,28 @@ def _hardened_git_env(cwd, executable):
     return env
 
 
+def build_hardened_git_argv(executable, args):
+    """Build the fixed Git argv without inspecting or executing a repository."""
+    args, subcommand = _validate_hardened_git_args(args)
+    argv = _hardened_git_prefix(str(executable))
+    if subcommand:
+        argv.extend(("-c", f"alias.{subcommand}="))
+    hardened_args = list(args)
+    if subcommand in _GIT_DIFF_RENDERING_SUBCOMMANDS:
+        hardened_args[1:1] = ["--no-ext-diff", "--no-textconv"]
+    elif subcommand == "reflog" and len(hardened_args) > 1:
+        if hardened_args[1] == "show":
+            hardened_args[2:2] = ["--no-ext-diff", "--no-textconv"]
+        elif hardened_args[1].startswith("-"):
+            hardened_args[1:1] = [
+                "show",
+                "--no-ext-diff",
+                "--no-textconv",
+            ]
+    argv.extend(hardened_args)
+    return argv
+
+
 def _is_executable_git_config_key(key, *, diff_config_is_neutralized):
     suffix = key.rsplit(".", 1)[-1]
     if key in {
@@ -966,7 +990,7 @@ def _validate_hardened_git_repository(executable, *, cwd, args, timeout=5):
 
 
 def run_hardened_git(executable, args, *, cwd, timeout=5, check=False, text=False):
-    args, subcommand = _validate_hardened_git_args(args)
+    args, _ = _validate_hardened_git_args(args)
     with _prepared_executable(executable) as prepared:
         _validate_hardened_git_repository_prepared(
             prepared,
@@ -974,22 +998,7 @@ def run_hardened_git(executable, args, *, cwd, timeout=5, check=False, text=Fals
             args=args,
             timeout=timeout,
         )
-        argv = _hardened_git_prefix(prepared)
-        if subcommand:
-            argv.extend(("-c", f"alias.{subcommand}="))
-        hardened_args = list(args)
-        if subcommand in _GIT_DIFF_RENDERING_SUBCOMMANDS:
-            hardened_args[1:1] = ["--no-ext-diff", "--no-textconv"]
-        elif subcommand == "reflog" and len(hardened_args) > 1:
-            if hardened_args[1] == "show":
-                hardened_args[2:2] = ["--no-ext-diff", "--no-textconv"]
-            elif hardened_args[1].startswith("-"):
-                hardened_args[1:1] = [
-                    "show",
-                    "--no-ext-diff",
-                    "--no-textconv",
-                ]
-        argv.extend(hardened_args)
+        argv = build_hardened_git_argv(prepared, args)
         return subprocess.run(
             argv,
             executable=_execution_path(prepared),
@@ -1029,6 +1038,63 @@ def run_hardened_rg(executable, args, *, cwd, timeout=20):
         )
 
 
+@dataclass(frozen=True)
+class ProcessGroupResult:
+    stdout: str
+    stderr: str
+    exit_code: int
+    timed_out: bool
+
+    @property
+    def returncode(self):
+        return self.exit_code
+
+
+def run_process_group(
+    argv,
+    *,
+    cwd,
+    env,
+    timeout,
+    executable=None,
+    term_grace=2,
+):
+    """Run a process group and reap its pipes after TERM/KILL on timeout."""
+    process = subprocess.Popen(
+        [str(arg) for arg in argv],
+        executable=executable,
+        cwd=Path(cwd).resolve(),
+        env=env,
+        shell=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+        return ProcessGroupResult(stdout, stderr, process.returncode, False)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        try:
+            stdout, stderr = process.communicate(timeout=term_grace)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            stdout, stderr = process.communicate()
+        return ProcessGroupResult(
+            stdout,
+            stderr,
+            process.returncode if process.returncode is not None else -signal.SIGKILL,
+            True,
+        )
+
+
 def run_hardened_command(
     executable,
     *,
@@ -1038,26 +1104,32 @@ def run_hardened_command(
     cwd,
     timeout,
     env,
+    return_timeout=False,
 ):
     with _prepared_executable(executable) as prepared:
         if shell:
-            return subprocess.run(
-                command,
-                shell=True,
+            argv = [prepared, "-c", command]
+            result = run_process_group(
+                argv,
                 executable=_execution_path(prepared) or str(prepared),
                 cwd=Path(cwd).resolve(),
-                capture_output=True,
-                text=True,
                 timeout=timeout,
                 env=env,
             )
-        return subprocess.run(
-            [prepared, *(str(arg) for arg in args)],
-            executable=_execution_path(prepared),
-            shell=False,
-            cwd=Path(cwd).resolve(),
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            env=env,
-        )
+        else:
+            argv = [prepared, *(str(arg) for arg in args)]
+            result = run_process_group(
+                argv,
+                executable=_execution_path(prepared),
+                cwd=Path(cwd).resolve(),
+                timeout=timeout,
+                env=env,
+            )
+        if result.timed_out and not return_timeout:
+            raise subprocess.TimeoutExpired(
+                argv,
+                timeout,
+                output=result.stdout,
+                stderr=result.stderr,
+            )
+        return result

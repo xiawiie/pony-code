@@ -29,7 +29,14 @@ htmlcov/
 # Local scratch space
 tmp/
 .worktrees/
-.pico/
+!.pico/
+.pico/*
+!.pico/memory/
+.pico/memory/*
+!.pico/memory/notes/
+.pico/memory/notes/**
+!.pico/memory/notes/**/
+!.pico/memory/notes/**/*.md
 .mini-pico/
 .planning/
 artifacts/

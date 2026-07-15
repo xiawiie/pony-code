@@ -15,6 +15,8 @@ from pico.context.renderer import render_current_user_message
 from pico.providers.fake import FakeModelClient
 from pico.providers.response import Response, StopReason
 from pico.task_state import TaskState
+from pico.tool_executor import ToolExecutionResult
+from tests.test_docker_sandbox_runtime import _build_runtime
 
 
 def build_workspace(tmp_path):
@@ -33,6 +35,12 @@ def build_agent(tmp_path, outputs, **kwargs):
         approval_policy=approval_policy,
         **kwargs,
     )
+
+
+def build_sandbox_agent(tmp_path, monkeypatch, outputs):
+    _source, context, agent = _build_runtime(tmp_path, monkeypatch)
+    agent.model_client = FakeModelClient(outputs)
+    return agent, context
 
 
 def set_raw_file_summary(agent, path, summary):
@@ -87,11 +95,11 @@ def test_report_separates_sent_request_session_transcript_and_all_completion_usa
             "cache_hit": True,
         },
     )
-    assert report["last_request_metadata"]["messages_count"] == 1
-    assert report["session_messages_count"] == 2
-    assert report["session_messages_chars"] == len("older questionolder answer")
-    assert report["completion_usage_totals"]["total_tokens"] == 37
-    assert report["completion_usage_totals"]["cache_hit"] is True
+    assert report["context"]["messages_count"] == 1
+    assert report["model"]["usage"]["total_tokens"] == 37
+    assert report["model"]["usage"]["cache_hit"] is True
+    assert "session_messages_count" not in report
+    assert "session_messages_chars" not in report
     assert "prompt_metadata" not in report
     assert "older question" not in json.dumps(report)
     assert "older answer" not in json.dumps(report)
@@ -125,15 +133,298 @@ def test_successful_run_persists_run_artifacts_and_stop_reason(tmp_path):
     assert (run_dir / "report.json").exists()
     assert task_state["stop_reason"] == "final_answer_returned"
     assert task_state["final_answer"] == "Finished."
-    assert report["stop_reason"] == "final_answer_returned"
-    assert report["task_state"]["stop_reason"] == "final_answer_returned"
-    assert report["run_id"] == task_state["run_id"]
-    assert report["finalization_errors"] == []
+    assert report["run"]["stop_reason"] == "final_answer_returned"
+    assert report["run"]["run_id"] == task_state["run_id"]
+    assert report["finalization"] == {"status": "complete", "error_count": 0}
+    assert "task_state" not in report and "final_answer" not in report
     trace_events = [json.loads(line)["event"] for line in trace_lines]
     assert trace_events[0] == "run_started"
     assert trace_events[-1] == "run_finished"
     assert trace_events.count("prompt_built") == 2
     assert "tool_executed" in trace_events
+
+
+def test_report_tool_counts_are_per_run_and_include_rejections(tmp_path):
+    agent = build_agent(
+        tmp_path,
+        [
+            '<tool>{"name":"unknown_tool","args":{}}</tool>',
+            "<final>First run done.</final>",
+            "<final>Second run done.</final>",
+        ],
+    )
+
+    assert agent.ask("Reject one tool") == "First run done."
+    first = agent.run_store.load_report(agent.current_task_state.run_id)
+
+    assert agent.current_task_state.tool_steps == 0
+    assert first["tools"] == {
+        "calls": 1,
+        "allowed": 0,
+        "denied": 1,
+        "name_counts": {"unknown_tool": 1},
+        "status_counts": {"rejected": 1},
+    }
+
+    assert agent.ask("Return only a final answer") == "Second run done."
+    second = agent.run_store.load_report(agent.current_task_state.run_id)
+
+    assert second["tools"] == {
+        "calls": 0,
+        "allowed": 0,
+        "denied": 0,
+        "name_counts": {},
+        "status_counts": {},
+    }
+
+
+def test_report_projects_current_run_tool_change_effects(tmp_path):
+    agent = build_agent(
+        tmp_path,
+        [
+            '<tool>{"name":"run_shell","args":{"command":"printf \'changed\\n\' > README.md && exit 1","timeout":20}}</tool>',
+            "<final>Done.</final>",
+        ],
+        approval_policy="ask",
+    )
+    agent.approve = lambda name, args: True
+
+    assert agent.ask("Change README and fail") == "Done."
+    report = agent.run_store.load_report(agent.current_task_state.run_id)
+
+    assert report["effects"] == {
+        "changed_files": 1,
+        "partial_successes": 1,
+        "recovery_review_required": True,
+    }
+    assert report["recovery"]["review_required"] is True
+
+
+def test_report_projects_sandbox_outcome_and_host_fallback_from_tool_result(
+    tmp_path,
+    monkeypatch,
+):
+    agent, context = build_sandbox_agent(
+        tmp_path,
+        monkeypatch,
+        [
+            '<tool>{"name":"run_shell","args":{"command":"pwd","timeout":20}}</tool>',
+            "<final>Done.</final>",
+        ],
+    )
+    agent.execute_tool = lambda name, args: ToolExecutionResult(
+        content="exit_code: 0",
+        metadata={
+            "tool_status": "ok",
+            "tool_error_code": "",
+            "security_event_type": "",
+            "risk_level": "high",
+            "effect_class": "workspace_write",
+            "read_only": False,
+            "affected_paths": [],
+            "workspace_changed": False,
+            "diff_summary": [],
+            "sandbox": {
+                "status": "completed",
+                "execution_plane": "host",
+            },
+            "command_approval": {"runner_executed": True},
+        },
+    )
+
+    assert agent.ask("Run one sandbox command") == "Done."
+    report = agent.run_store.load_report(agent.current_task_state.run_id)
+    manifest = context.current_session().manifest
+
+    assert report["sandbox"] == {
+        "active": True,
+        "implementation": "docker_container",
+        "session_state": "ready",
+        "engine_profile": "desktop_vm",
+        "image_digest": Pico._public_sandbox_digest(
+            manifest["image"]["manifest_digest"]
+        ),
+        "policy_digest": Pico._public_sandbox_digest(
+            manifest["policy"]["digest"]
+        ),
+        "network_mode": "none",
+        "source_mounted": False,
+        "state_mounted": False,
+        "container_calls": 1,
+        "target_started_count": 0,
+        "outcome_counts": {"completed": 1},
+        "cleanup_failure_count": 0,
+        "host_fallback_count": 1,
+        "diff": {"candidates": 0, "blocked": 0, "generated": 0},
+        "apply_status": "not_started",
+    }
+
+
+def test_report_treats_missing_execution_plane_as_unproven_host_fallback(
+    tmp_path,
+    monkeypatch,
+):
+    agent, _context = build_sandbox_agent(
+        tmp_path,
+        monkeypatch,
+        [
+            '<tool>{"name":"run_shell","args":{"command":"pwd","timeout":20}}</tool>',
+            "<final>Done.</final>",
+        ],
+    )
+    agent.execute_tool = lambda name, args: ToolExecutionResult(
+        content="exit_code: 0",
+        metadata={
+            "tool_status": "ok",
+            "tool_error_code": "",
+            "security_event_type": "",
+            "risk_level": "high",
+            "effect_class": "workspace_write",
+            "read_only": False,
+            "affected_paths": [],
+            "workspace_changed": False,
+            "diff_summary": [],
+            "sandbox": {"status": "completed"},
+            "command_approval": {"runner_executed": True},
+        },
+    )
+
+    assert agent.ask("Run one sandbox command") == "Done."
+    report = agent.run_store.load_report(agent.current_task_state.run_id)
+
+    assert report["sandbox"]["host_fallback_count"] == 1
+
+
+def test_report_counts_explicit_host_plane_without_approval_evidence(
+    tmp_path,
+    monkeypatch,
+):
+    agent, _context = build_sandbox_agent(
+        tmp_path,
+        monkeypatch,
+        [
+            '<tool>{"name":"run_shell","args":{"command":"pwd","timeout":20}}</tool>',
+            "<final>Done.</final>",
+        ],
+    )
+    agent.execute_tool = lambda name, args: ToolExecutionResult(
+        content="exit_code: 0",
+        metadata={
+            "tool_status": "ok",
+            "tool_error_code": "",
+            "security_event_type": "",
+            "risk_level": "high",
+            "effect_class": "workspace_write",
+            "read_only": False,
+            "affected_paths": [],
+            "workspace_changed": False,
+            "diff_summary": [],
+            "sandbox": {
+                "status": "completed",
+                "execution_plane": "host",
+            },
+        },
+    )
+
+    assert agent.ask("Run one sandbox command") == "Done."
+    report = agent.run_store.load_report(agent.current_task_state.run_id)
+
+    assert report["sandbox"]["host_fallback_count"] == 1
+
+
+def test_report_counts_started_targets_and_cleanup_failures(tmp_path, monkeypatch):
+    agent, _context = build_sandbox_agent(
+        tmp_path,
+        monkeypatch,
+        [
+            '<tool>{"name":"run_shell","args":{"command":"pwd","timeout":20}}</tool>',
+            "<final>Done.</final>",
+        ],
+    )
+    agent.execute_tool = lambda name, args: ToolExecutionResult(
+        content="exit_code: 0",
+        metadata={
+            "tool_status": "partial_success",
+            "tool_error_code": "container_cleanup_failed",
+            "security_event_type": "",
+            "risk_level": "high",
+            "effect_class": "workspace_write",
+            "read_only": False,
+            "affected_paths": [],
+            "workspace_changed": False,
+            "diff_summary": [],
+            "sandbox": {
+                "status": "completed",
+                "execution_plane": "sandbox",
+                "target_started": True,
+                "cleanup_status": "failed",
+                "wrapper_status": "completed",
+                "timed_out": False,
+                "residue_detected": True,
+                "container_created": True,
+                "runner_executed": True,
+                "error_code": "container_cleanup_failed",
+                "call_id": "call_1234",
+                "execution_plan_digest": "sha256:" + "3" * 64,
+                "logical_intent_digest": "sha256:" + "4" * 64,
+                "policy_digest": "sha256:" + "5" * 64,
+                "stdout_bytes": 7,
+                "stderr_bytes": 0,
+                "stdout_truncated": False,
+                "stderr_truncated": False,
+                "container_id": "6" * 64,
+            },
+            "command_approval": {"runner_executed": True},
+        },
+    )
+
+    assert agent.ask("Run one sandbox command") == "Done."
+    sandbox = agent.run_store.load_report(agent.current_task_state.run_id)["sandbox"]
+
+    assert sandbox["container_calls"] == 1
+    assert sandbox["target_started_count"] == 1
+    assert sandbox["cleanup_failure_count"] == 1
+    assert sandbox["host_fallback_count"] == 0
+    trace = [
+        json.loads(line)
+        for line in agent.run_store.trace_path(agent.current_task_state).read_text(
+            encoding="utf-8"
+        ).splitlines()
+    ]
+    event = [item for item in trace if item["event"] == "tool_executed"][0]
+    assert event["sandbox_outcome"] == "completed"
+    assert event["execution_plane"] == "sandbox"
+    assert event["target_started"] is True
+    assert event["cleanup_status"] == "failed"
+    assert event["sandbox_error_code"] == "container_cleanup_failed"
+    assert event["execution_plan_digest"] == "sha256:" + "3" * 64
+    assert event["policy_digest"] == "sha256:" + "5" * 64
+    assert event["stdout_bytes"] == 7
+    assert "container_id" not in event
+
+
+def test_interrupted_tool_attempt_is_included_in_current_run_report(tmp_path):
+    agent = build_agent(
+        tmp_path,
+        ['<tool>{"name":"run_shell","args":{"command":"pwd","timeout":20}}</tool>'],
+    )
+    agent.tools["run_shell"]["run"] = lambda _execution: (_ for _ in ()).throw(
+        KeyboardInterrupt()
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        agent.ask("Interrupt one shell call")
+
+    report = agent.run_store.load_report(agent.current_task_state.run_id)
+    assert report["tools"] == {
+        "calls": 1,
+        "allowed": 1,
+        "denied": 0,
+        "name_counts": {"run_shell": 1},
+        "status_counts": {"interrupted": 1},
+    }
+    assert report["effects"]["recovery_review_required"] is True
+    assert report["recovery"]["review_required"] is True
 
 
 def test_step_limit_run_artifacts_reference_final_checkpoint(tmp_path):
@@ -152,8 +443,8 @@ def test_step_limit_run_artifacts_reference_final_checkpoint(tmp_path):
 
     assert task_state["stop_reason"] == "step_limit_reached"
     assert task_state["checkpoint_id"] == checkpoint_id
-    assert report["checkpoint_id"] == checkpoint_id
-    assert report["task_state"]["checkpoint_id"] == checkpoint_id
+    assert report["recovery"]["checkpoint_id"] == checkpoint_id
+    assert "task_state" not in report
 
 
 def test_trace_and_report_redact_secret_env_values(tmp_path):
@@ -196,10 +487,10 @@ def test_trace_and_report_redact_secret_env_values(tmp_path):
 
     tool_events = [event for event in trace_events if event["event"] == "tool_executed"]
     assert tool_events
-    assert "<redacted>" in tool_events[0]["args"]["command"]
-    assert tool_events[0]["result"] == "error: sensitive_content_block"
+    assert "args" not in tool_events[0]
+    assert "result" not in tool_events[0]
     assert tool_events[0]["tool_status"] == "rejected"
-    assert tool_events[0]["tool_error_code"] == "sensitive_content_block"
+    assert tool_events[0].get("reason_code", "") in {"", "sensitive_content_block"}
 
 
 def test_request_metadata_describes_actual_sent_view(tmp_path):
@@ -419,9 +710,9 @@ def test_report_last_request_metadata_preserves_initial_resume_status(tmp_path):
     assert resumed.ask("Continue the task") == "Resumed."
     report = resumed.run_store.load_report(resumed.current_task_state.run_id)
 
-    assert report["resume_status"] == "partial-stale"
-    assert report["last_request_metadata"]["resume_status"] == "partial-stale"
-    assert report["last_request_metadata"]["last_prompt_resume_status"] == "partial-stale"
+    assert report["recovery"]["status"] == "partial-stale"
+    assert report["context"]["resume_status"] == "partial-stale"
+    assert report["context"]["last_prompt_resume_status"] == "partial-stale"
 
 
 def test_first_prompt_resume_status_updates_task_state_after_late_checkpoint_setup(tmp_path):
@@ -461,9 +752,9 @@ def test_first_prompt_resume_status_updates_task_state_after_late_checkpoint_set
     assert agent.ask("Continue the task") == "Resumed."
     report = agent.run_store.load_report(agent.current_task_state.run_id)
 
-    assert report["resume_status"] == "partial-stale"
-    assert report["last_request_metadata"]["resume_status"] == "partial-stale"
-    assert report["last_request_metadata"]["last_prompt_resume_status"] == "partial-stale"
+    assert report["recovery"]["status"] == "partial-stale"
+    assert report["context"]["resume_status"] == "partial-stale"
+    assert report["context"]["last_prompt_resume_status"] == "partial-stale"
 
 
 def test_run_shell_nonzero_with_workspace_change_is_recorded_as_partial_success(tmp_path):
@@ -774,9 +1065,9 @@ def test_agent_keeps_completion_usage_out_of_last_request_metadata(tmp_path):
     assert "cache_hit" not in agent.last_request_metadata
     assert agent.last_request_metadata["system_prefix_hash"]
     report = agent.run_store.load_report(agent.current_task_state.run_id)
-    assert report["completion_usage_totals"]["cached_tokens"] == 512
-    assert report["completion_usage_totals"]["input_tokens"] == 1024
-    assert report["completion_usage_totals"]["cache_hit"] is True
+    assert report["model"]["usage"]["cached_tokens"] == 512
+    assert report["model"]["usage"]["input_tokens"] == 1024
+    assert report["model"]["usage"]["cache_hit"] is True
 
 
 def test_recent_messages_preserved_older_digested(tmp_path):

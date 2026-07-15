@@ -3,6 +3,7 @@ import tempfile
 from pathlib import Path
 
 from ..features import memory as memorylib
+from ..observability import load_run_artifacts
 from ..providers.fake import FakeModelClient
 from ..runtime import Pico
 from ..session_store import SessionStore
@@ -249,12 +250,11 @@ def _run_recovery_task_variant(task, variant):
             agent.session["checkpoints"] = {"current_id": "", "items": {}}
             agent.session_store.save(agent.session)
         final_answer = agent.ask("Continue the recovery task.")
-        report = agent.run_store.load_report(agent.current_task_state.run_id)
-        trace = [
-            json.loads(line)
-            for line in agent.run_store.trace_path(agent.current_task_state).read_text(encoding="utf-8").splitlines()
-        ]
-        resume_status = str(report.get("last_request_metadata", {}).get("resume_status", ""))
+        report, trace = load_run_artifacts(
+            agent.run_store.root,
+            agent.current_task_state.run_id,
+        )
+        resume_status = str(report.get("recovery", {}).get("status", ""))
         stale_reanchored = any(
             event.get("event") == "checkpoint_created" and event.get("trigger") == "freshness_mismatch"
             for event in trace

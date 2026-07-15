@@ -14,19 +14,27 @@ from pathlib import Path
 from types import MappingProxyType
 
 from . import checkpoint as checkpointlib
+from . import session_store as sessionstorelib
 from . import workspace_snapshot
 from .features import memory as memorylib
 from . import security as securitylib
 from .checkpoint_store import CheckpointStore
 from .context_manager import ContextManager
+from .docker_sandbox import DockerSandboxContext
 from .memory.block_store import BlockStore
 from .memory.retrieval import Retrieval
-from .messages import message_metrics, tool_event_metrics
 from .prompt_prefix import build_prompt_prefix, tool_signature
 from .repo_map import RepoMap
 from .recovery_checkpoint_writer import RecoveryCheckpointWriter
 from .recovery_manager import RecoveryManager
 from .run_store import RunStore
+from .observability import REPORT_SCHEMA_VERSION, project_trace_event
+from .sandbox_apply import StagingObserver
+from .sandbox_session import (
+    read_source_apply_authority,
+    SandboxSessionError,
+    source_apply_control_lock_path,
+)
 from .session_store import SESSION_FORMAT_VERSION, SESSION_RECORD_TYPE
 from .tool_change_recorder import ToolChangeRecorder
 from .tool_context import ToolContext
@@ -56,6 +64,9 @@ DEFAULT_MAX_NEW_TOKENS = 2048
 DEFAULT_FEATURE_FLAGS = {
     "memory": True,
 }
+SANDBOX_WORKSPACE_BRANCH = "pico-sandbox"
+SANDBOX_WORKSPACE_STATUS = "sandbox_execution_state_unknown"
+_DEVELOPMENT_RUNTIME_SEAL = object()
 _SECRET_ENV_NAMES_VAR = "PICO_SECRET_ENV_NAMES"
 
 
@@ -265,15 +276,82 @@ class Pico:
         allowed_tools=None,
         _trusted_redaction_env=False,
         _trusted_executables=None,
+        sandbox_context=None,
+        project_config=None,
+        session_id=None,
+        _development_runtime_seal=None,
     ):
         self.model_client = model_client
+        if sandbox_context is not None and not isinstance(
+            sandbox_context,
+            DockerSandboxContext,
+        ):
+            raise ValueError("sandbox_context must be a DockerSandboxContext")
+        self.sandbox_context = sandbox_context
+        self.docker_sandbox = isinstance(sandbox_context, DockerSandboxContext)
+        self._docker_sandbox_development = False
+        if self.docker_sandbox:
+            try:
+                authorization = sandbox_context.authorization.verify(
+                    sandbox_context.runner.image
+                )
+            except Exception as exc:
+                raise ValueError("docker sandbox runtime authorization invalid") from exc
+            if authorization.attestation_kind == "development":
+                if _development_runtime_seal is not _DEVELOPMENT_RUNTIME_SEAL:
+                    raise ValueError(
+                        "docker sandbox requires product or candidate authorization"
+                    )
+                self._docker_sandbox_development = True
+            elif authorization.attestation_kind not in {
+                "local",
+                "product",
+                "candidate",
+            }:
+                raise ValueError(
+                    "docker sandbox requires local, product, or candidate authorization"
+                )
+            self.source_root = sandbox_context.source_root
+            self.execution_root = sandbox_context.execution_root
+            self.project_state_root = sandbox_context.project_state_root
+            self.sandbox_session = sandbox_context.sandbox_session
+            if (
+                Path(workspace.repo_root) != self.execution_root
+                or workspace.logical_root != sandbox_context.logical_root
+                or redaction_env is None
+                or project_config is None
+            ):
+                raise ValueError("docker sandbox runtime context is incomplete")
+            workspace = WorkspaceContext(
+                cwd=workspace.cwd,
+                repo_root=workspace.repo_root,
+                branch=SANDBOX_WORKSPACE_BRANCH,
+                default_branch=SANDBOX_WORKSPACE_BRANCH,
+                status=SANDBOX_WORKSPACE_STATUS,
+                recent_commits=[],
+                project_docs=dict(workspace.project_docs),
+                trusted_executables=workspace.trusted_executables,
+                logical_root=sandbox_context.logical_root,
+            )
+        else:
+            self.source_root = Path(workspace.repo_root)
+            self.execution_root = self.source_root
+            self.project_state_root = self.source_root / ".pico"
+            self.sandbox_session = None
         self.workspace = workspace
-        self.root = Path(workspace.repo_root)
+        # Existing tool code treats root as the model-visible execution root.
+        self.root = self.execution_root
         executable_source = (
             workspace.trusted_executables
             if _trusted_executables is None
             else _trusted_executables
         )
+        if self.docker_sandbox:
+            executable_source = {
+                name: path
+                for name, path in dict(executable_source or {}).items()
+                if name != "git"
+            }
         self.trusted_executables = MappingProxyType(dict(executable_source or {}))
         self.session_store = session_store
         self.approval_policy = approval_policy
@@ -285,7 +363,7 @@ class Pico:
         self.shell_env_allowlist = tuple(shell_env_allowlist or DEFAULT_SHELL_ENV_ALLOWLIST)
         if redaction_env is None:
             redaction_env, configured_names, _ = _build_redaction_snapshot(
-                self.root,
+                self.source_root,
                 secret_env_names=secret_env_names,
             )
         else:
@@ -302,7 +380,7 @@ class Pico:
                 raise ValueError("unsupported feature flag")
             self.feature_flags.update({str(key): bool(value) for key, value in feature_flags.items()})
         self.allowed_tools = self._normalize_allowed_tools(allowed_tools)
-        self.run_store = run_store or RunStore(Path(workspace.repo_root) / ".pico" / "runs")
+        self.run_store = run_store or RunStore(self.project_state_root / "runs")
         redactor = _artifact_redactor(
             self.redaction_env,
             self.secret_env_names,
@@ -320,17 +398,58 @@ class Pico:
         # 可恢复编辑（recoverable editing）的组件在这里就位。
         # 它们和 resume-summary 用的 `checkpointlib` 是两条独立的通路：
         # CheckpointStore 落在 .pico/checkpoints/ 下，专门记 turn/restore/manual 类型。
-        self.checkpoint_store = CheckpointStore(self.root, redactor=redactor)
+        checkpoint_root = self.source_root
+        if self.docker_sandbox:
+            checkpoint_root = (
+                self.sandbox_context.sandbox_state_root
+                / "recovery"
+                / ".pico"
+                / "checkpoints"
+            )
+        source_apply_authority = None
+        source_apply_control_lock = None
+        if not self.docker_sandbox:
+            def source_apply_authority():
+                return read_source_apply_authority(
+                    Path.home() / ".pico" / "sandboxes",
+                    self.source_root,
+                )
+            source_apply_control_lock = source_apply_control_lock_path(
+                Path.home() / ".pico" / "sandboxes",
+                self.source_root,
+            )
+        self.checkpoint_store = CheckpointStore(
+            checkpoint_root,
+            redactor=redactor,
+            source_apply_authority=source_apply_authority,
+            source_apply_control_lock=source_apply_control_lock,
+        )
         self.tool_change_owner_id = "runtime_" + uuid.uuid4().hex[:12]
         self.tool_change_recorder = ToolChangeRecorder(self.checkpoint_store, owner_id=self.tool_change_owner_id)
         self.interrupted_tool_changes = []
         self.recovery_checkpoint_writer = RecoveryCheckpointWriter(self.checkpoint_store, self.root)
         self.recovery_manager = RecoveryManager(self.checkpoint_store, self.root)
-        self.workspace_observer = WorkspaceObserver(
-            self.root,
-            executables=self.trusted_executables,
+        if self.docker_sandbox:
+            self.workspace_observer = StagingObserver(
+                self.sandbox_context,
+                self.checkpoint_store,
+                redaction_env=self.redaction_env,
+                secret_env_names=self.secret_env_names,
+            )
+            self.workspace_observer.ensure_baseline(
+                resumed=self.sandbox_context.resumed or self.depth > 0
+            )
+        else:
+            self.workspace_observer = WorkspaceObserver(
+                self.root,
+                executables=self.trusted_executables,
+            )
+        project_config = (
+            load_pico_toml(self.source_root)
+            if project_config is None
+            else deepcopy(project_config)
         )
-        project_config = load_pico_toml(self.root)
+        self.project_config = deepcopy(project_config)
         context_config = project_config["context"]
         memory_config = project_config["memory"]
         retrieval_config = memory_config["retrieval"]
@@ -350,12 +469,20 @@ class Pico:
             ),
         }
         if session is None:
+            new_session_id = session_id or self.new_session_id()
+            if (
+                self.docker_sandbox
+                and self.depth == 0
+                and new_session_id
+                != self.sandbox_session.manifest["pico_session_id"]
+            ):
+                raise ValueError("sandbox session binding mismatch")
             self.session = {
                 "record_type": SESSION_RECORD_TYPE,
                 "format_version": SESSION_FORMAT_VERSION,
-                "id": datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6],
+                "id": new_session_id,
                 "created_at": now(),
-                "workspace_root": workspace.repo_root,
+                "workspace_root": str(self.source_root),
                 "messages": [],
                 "recently_recalled": [],
                 "working_memory": {"task_summary": "", "recent_files": []},
@@ -367,6 +494,16 @@ class Pico:
             }
         else:
             self.session = self.redact_artifact(deepcopy(session))
+            if (
+                self.docker_sandbox
+                and (
+                    self.session.get("workspace_root") != str(self.source_root)
+                    or self.depth == 0
+                    and self.session.get("id")
+                    != self.sandbox_session.manifest["pico_session_id"]
+                )
+            ):
+                raise ValueError("sandbox session binding mismatch")
             identities = [self.session.get("runtime_identity", {})]
             items = self.session.get("checkpoints", {}).get("items", {})
             if isinstance(items, dict):
@@ -385,7 +522,7 @@ class Pico:
         self.memory = WorkingMemory.from_dict(self.session.get("working_memory"), workspace_root=self.root)
         self._sync_working_memory()
         # v2 memory subsystem: BlockStore/Retrieval/RepoMap 在 tool_context 里被 wire 给 memory/repo_lookup 工具
-        workspace_memory_root = self.root / ".pico" / "memory"
+        workspace_memory_root = self.project_state_root / "memory"
         user_memory_root = Path.home() / ".pico" / "memory"
         self.memory_store = BlockStore(
             workspace_root=workspace_memory_root,
@@ -427,9 +564,17 @@ class Pico:
         redaction_env = kwargs.pop("redaction_env", None)
         trusted_redaction_env = kwargs.pop("_trusted_redaction_env", False)
         secret_env_names = kwargs.get("secret_env_names", ())
+        sandbox_context = kwargs.get("sandbox_context")
+        source_root = (
+            sandbox_context.source_root
+            if isinstance(sandbox_context, DockerSandboxContext)
+            else workspace.repo_root
+        )
+        if isinstance(sandbox_context, DockerSandboxContext) and redaction_env is None:
+            raise ValueError("docker sandbox redaction snapshot is required")
         if redaction_env is None:
             redaction_env, configured_names, redactor = _build_redaction_snapshot(
-                workspace.repo_root,
+                source_root,
                 secret_env_names=secret_env_names,
             )
             trusted_redaction_env = True
@@ -449,6 +594,29 @@ class Pico:
             workspace=workspace,
             session_store=session_store,
             session=session_store.load(session_id),
+            **kwargs,
+        )
+
+    @classmethod
+    def _for_docker_sandbox_development(cls, **kwargs):
+        kwargs["_development_runtime_seal"] = _DEVELOPMENT_RUNTIME_SEAL
+        return cls(**kwargs)
+
+    @classmethod
+    def _from_session_for_docker_sandbox_development(
+        cls,
+        model_client,
+        workspace,
+        session_store,
+        session_id,
+        **kwargs,
+    ):
+        kwargs["_development_runtime_seal"] = _DEVELOPMENT_RUNTIME_SEAL
+        return cls.from_session(
+            model_client,
+            workspace,
+            session_store,
+            session_id,
             **kwargs,
         )
 
@@ -566,6 +734,20 @@ class Pico:
         refreshed_workspace = WorkspaceContext.build(
             self.root,
             executables=self.trusted_executables,
+            repo_root_override=self.root,
+            inspect_git=not self.docker_sandbox,
+            logical_root=(
+                self.sandbox_context.logical_root if self.docker_sandbox else None
+            ),
+            branch_override=(
+                SANDBOX_WORKSPACE_BRANCH if self.docker_sandbox else None
+            ),
+            default_branch_override=(
+                SANDBOX_WORKSPACE_BRANCH if self.docker_sandbox else None
+            ),
+            status_override=(
+                SANDBOX_WORKSPACE_STATUS if self.docker_sandbox else None
+            ),
         )
         refreshed_workspace_fingerprint = refreshed_workspace.fingerprint()
         workspace_changed = force or refreshed_workspace_fingerprint != previous_workspace_fingerprint
@@ -621,6 +803,9 @@ class Pico:
         )
 
     def redact_text(self, text):
+        text = str(text)
+        if self.docker_sandbox:
+            text = text.replace(str(self.execution_root), self.sandbox_context.logical_root)
         return securitylib.redact_text(
             text,
             env=self.redaction_env,
@@ -639,12 +824,14 @@ class Pico:
         return securitylib.shell_env(allowlist=self.shell_env_allowlist, root=self.root)
 
     def emit_trace(self, task_state, event, payload=None):
-        payload = self.redact_artifact(payload or {})
-        payload["event"] = event
-        payload["created_at"] = now()
-        # trace 是运行中的逐事件时间线，适合回答“这一轮 agent 到底做了什么”。
-        self.run_store.append_trace(task_state, payload)
-        return payload
+        envelope = project_trace_event(
+            task_state,
+            event,
+            self.redact_artifact(payload or {}),
+            created_at=now(),
+        )
+        self.run_store.append_trace(task_state, envelope)
+        return envelope
 
     def capture_workspace_snapshot(self):
         return workspace_snapshot.capture_workspace_snapshot(self.root)
@@ -684,7 +871,10 @@ class Pico:
         if not path:
             return
 
-        canonical_path = self.memory.canonical_path(path)
+        try:
+            canonical_path = self.path(path).relative_to(self.root).as_posix()
+        except (OSError, ValueError):
+            canonical_path = self.memory.canonical_path(path)
         # 不是所有工具结果都进入工作记忆。
         # 读文件会生成摘要；写文件/patch 会让旧摘要失效，因为它们可能过期了。
         if name in {"read_file", "write_file", "patch_file"}:
@@ -702,6 +892,166 @@ class Pico:
         from .agent_loop import AgentLoop
 
         return AgentLoop(self).run(user_message)
+
+    @staticmethod
+    def _public_sandbox_digest(value):
+        value = str(value or "")
+        if (
+            len(value) == 71
+            and value.startswith("sha256:")
+            and all(character in "0123456789abcdef" for character in value[7:])
+        ):
+            return "sha256:" + value[7:23]
+        return ""
+
+    def _sandbox_report_section(self, tool_report=None, *, diff_counts=None):
+        tool_report = dict(tool_report or {})
+        if self.sandbox_context is None:
+            return {
+                "active": False,
+                "implementation": "none",
+                "session_state": "not_applicable",
+                "engine_profile": "not_applicable",
+                "image_digest": "",
+                "policy_digest": "",
+                "network_mode": "not_applicable",
+                "source_mounted": False,
+                "state_mounted": False,
+                "container_calls": 0,
+                "target_started_count": 0,
+                "outcome_counts": {},
+                "cleanup_failure_count": 0,
+                "host_fallback_count": 0,
+                "diff": {"candidates": 0, "blocked": 0, "generated": 0},
+                "apply_status": "not_applicable",
+            }
+        current = None
+        inspect = getattr(self.sandbox_context, "current_session", None)
+        if callable(inspect):
+            current = inspect()
+        if current is None:
+            current = getattr(self.sandbox_context, "sandbox_session", None)
+        manifest = dict(getattr(current, "manifest", {}) or {})
+        engine = dict(manifest.get("engine") or {})
+        image = dict(manifest.get("image") or {})
+        policy = dict(manifest.get("policy") or {})
+        diff = dict(manifest.get("diff") or {})
+        apply = dict(manifest.get("apply") or {})
+        counts = dict(diff_counts or {})
+        return {
+            "active": True,
+            "implementation": "docker_container",
+            "session_state": str(manifest.get("state") or "review_required"),
+            "engine_profile": str(
+                engine.get("platform_profile") or engine.get("profile") or "unknown"
+            ),
+            "image_digest": self._public_sandbox_digest(
+                image.get("manifest_digest") or image.get("reference")
+            ),
+            "policy_digest": self._public_sandbox_digest(policy.get("digest")),
+            "network_mode": str(policy.get("network") or "none"),
+            "source_mounted": False,
+            "state_mounted": False,
+            "container_calls": int(tool_report.get("sandbox_calls", 0) or 0),
+            "target_started_count": int(
+                tool_report.get("sandbox_target_started_count", 0) or 0
+            ),
+            "outcome_counts": dict(
+                tool_report.get("sandbox_outcome_counts", {})
+            ),
+            "cleanup_failure_count": int(
+                tool_report.get("sandbox_cleanup_failure_count", 0) or 0
+            ),
+            "host_fallback_count": int(
+                tool_report.get("host_fallback_count", 0) or 0
+            ),
+            "diff": {
+                "candidates": int(
+                    counts.get("candidates", diff.get("candidate_count", 0)) or 0
+                ),
+                "blocked": int(
+                    counts.get("blocked", diff.get("blocked_count", 0)) or 0
+                ),
+                "generated": int(counts.get("generated", 0) or 0),
+            },
+            "apply_status": str(apply.get("status") or "not_started"),
+        }
+
+    def _refresh_sandbox_run_report(self, *, diff_counts):
+        task_state = self.current_task_state
+        if task_state is None or not self.run_store.report_path(task_state).exists():
+            return
+        report = self.run_store.load_report(task_state.run_id)
+        sandbox = report["sandbox"]
+        report["sandbox"] = self._sandbox_report_section(
+            {
+                "sandbox_calls": sandbox["container_calls"],
+                "sandbox_target_started_count": sandbox["target_started_count"],
+                "sandbox_outcome_counts": sandbox["outcome_counts"],
+                "sandbox_cleanup_failure_count": sandbox[
+                    "cleanup_failure_count"
+                ],
+                "host_fallback_count": sandbox["host_fallback_count"],
+            },
+            diff_counts=diff_counts,
+        )
+        self.run_store.write_report(task_state, report)
+
+    def finalize_sandbox_session(self):
+        if not self.docker_sandbox or self.depth > 0:
+            return None
+        store = self.sandbox_context.runner.session_store
+        state_root = self.sandbox_context.sandbox_state_root
+        result = None
+        try:
+            result = self.workspace_observer.finalize_diff(self.redact_text)
+            if not result["artifact"]["entries"]:
+                store.discard(state_root)
+                result["status"] = "no_changes_discarded"
+                result["session_state"] = "discarded"
+            else:
+                result["session_state"] = "pending_review"
+            result["sandbox_id"] = self.sandbox_session.sandbox_id
+            counts = result["artifact"]["counts"]
+            self._refresh_sandbox_run_report(
+                diff_counts={
+                    "candidates": sum(
+                        counts.get(name, 0)
+                        for name in ("candidate", "high_risk_candidate")
+                    ),
+                    "blocked": sum(
+                        counts.get(name, 0)
+                        for name in (
+                            "blocked_sensitive",
+                            "blocked_size",
+                            "blocked_type",
+                        )
+                    ),
+                    "generated": result.get("generated_count", 0),
+                }
+            )
+            return result
+        except Exception:
+            try:
+                store.mark_review_required(
+                    state_root,
+                    error_code="sandbox_diff_finalization_failed",
+                )
+            except SandboxSessionError:
+                pass
+            try:
+                self._refresh_sandbox_run_report(diff_counts={})
+            except Exception:
+                pass
+            raise
+        finally:
+            try:
+                current = store.inspect(state_root)
+                lease = current.manifest["lease"]
+                if lease is not None:
+                    store.release(state_root, lease["owner_nonce"])
+            except SandboxSessionError:
+                pass
 
     def execute_tool(self, name, args):
         result = self.tool_executor.execute(name, args)
@@ -836,11 +1186,6 @@ class Pico:
             task_state,
             self.last_request_metadata,
         )
-        session_metrics = message_metrics(
-            self.session.get("messages", []),
-            token_of=self.context_manager.count_tokens,
-        )
-        tool_metrics = tool_event_metrics(self.session.get("messages", []))
         usage = {
             "input_tokens": 0,
             "output_tokens": 0,
@@ -852,33 +1197,86 @@ class Pico:
             **dict(completion_usage_totals or {}),
         }
         execution = dict(model_execution or {})
+        tool_report = dict(execution.get("tool_report") or {})
         if execution and not execution.get("transport_evidence_complete", False):
             execution["transport_attempts"] = None
             execution["transport_retries"] = None
         # report 是一次运行的最终摘要；
         # 和 trace 的区别在于，trace 关注过程，report 关注结果与关键指标。
+        duration_ms = int(execution.get("run_duration_ms", 0) or 0)
+        changed_paths = tool_report.get("changed_paths", [])
+        recovery_review_required = bool(
+            tool_report.get("recovery_review_required", False)
+        )
+        workspace_status = str(self.workspace.status or "").strip()
+        commit = ""
+        if self.workspace.recent_commits:
+            candidate = str(self.workspace.recent_commits[0]).split(maxsplit=1)[0]
+            if candidate and all(character in "0123456789abcdefABCDEF" for character in candidate):
+                commit = candidate
         return {
-            "run_id": task_state.run_id,
-            "task_id": task_state.task_id,
-            "status": task_state.status,
-            "stop_reason": task_state.stop_reason,
-            "final_answer": task_state.final_answer,
-            "tool_steps": task_state.tool_steps,
-            "attempts": task_state.attempts,
-            "checkpoint_id": task_state.checkpoint_id,
-            "resume_status": task_state.resume_status,
-            "task_state": task_state.to_dict(),
-            "last_request_metadata": request_metadata,
-            "completion_usage_totals": usage,
-            "model_execution": execution,
-            "session_messages_count": session_metrics["messages_count"],
-            "session_messages_chars": session_metrics["messages_chars"],
-            "session_messages_tokens": session_metrics["messages_tokens"],
-            "session_tool_event_count": tool_metrics["event_count"],
-            "session_tool_name_counts": tool_metrics["name_counts"],
-            "session_tool_status_counts": tool_metrics["status_counts"],
-            "working_memory": self.memory.to_dict(),
-            "redacted_env": self.detected_secret_env_summary(),
+            "record_type": "run_report",
+            "format_version": REPORT_SCHEMA_VERSION,
+            "run": {
+                "run_id": task_state.run_id,
+                "task_id": task_state.task_id,
+                "status": task_state.status,
+                "stop_reason": task_state.stop_reason,
+                "duration_ms": duration_ms,
+                "commit": commit,
+                "dirty": (
+                    bool(changed_paths)
+                    if self.docker_sandbox
+                    else workspace_status not in {"", "clean"}
+                ),
+            },
+            "model": {
+                "attempts": int(
+                    execution.get("model_attempts", task_state.attempts) or 0
+                ),
+                "turns": int(execution.get("model_turns", 0) or 0),
+                "failures": int(execution.get("model_failures", 0) or 0),
+                "retries": int(execution.get("model_retries", 0) or 0),
+                "transport_attempts": execution.get("transport_attempts"),
+                "transport_retries": execution.get("transport_retries"),
+                "evidence_complete": bool(execution.get("transport_evidence_complete", False)),
+                "attempt_origin_counts": dict(execution.get("attempt_origin_counts", {})),
+                "failure_reason_counts": dict(execution.get("failure_reason_counts", {})),
+                "usage": usage,
+            },
+            "context": request_metadata,
+            "tools": {
+                "calls": int(tool_report.get("calls", 0) or 0),
+                "allowed": int(tool_report.get("allowed", 0) or 0),
+                "denied": int(tool_report.get("denied", 0) or 0),
+                "name_counts": dict(tool_report.get("name_counts", {})),
+                "status_counts": dict(tool_report.get("status_counts", {})),
+            },
+            "memory": {
+                "recall_candidates": request_metadata.get("memory_candidate_count", 0),
+                "recall_selected": request_metadata.get("memory_selected_count", 0),
+                "filter_counts": request_metadata.get("memory_filter_counts", {}),
+            },
+            "sandbox": self._sandbox_report_section(tool_report),
+            "effects": {
+                "changed_files": len(changed_paths),
+                "partial_successes": int(
+                    tool_report.get("partial_successes", 0) or 0
+                ),
+                "recovery_review_required": recovery_review_required,
+            },
+            "recovery": {
+                "checkpoint_id": (
+                    task_state.recovery_checkpoint_id or task_state.checkpoint_id
+                ),
+                "status": task_state.resume_status,
+                "review_required": recovery_review_required,
+            },
+            "integrity": {
+                "writer": "current",
+                "terminal_event_expected": True,
+            },
+            "finalization": {"status": "complete", "error_count": 0},
         }
 
     def tool_example(self, name):
@@ -902,14 +1300,29 @@ class Pico:
             trusted_executables=self.trusted_executables,
             redaction_env=self.redaction_env,
             secret_env_names=self.secret_env_names,
+            sandbox_context=self.sandbox_context,
         )
 
     def spawn_delegate(self, args):
         task = str(args.get("task", "")).strip()
-        child = Pico(
+        child_session_store = self.session_store
+        if self.docker_sandbox:
+            child_session_store = sessionstorelib.SessionStore(
+                self.sandbox_context.sandbox_state_root / "delegate-sessions",
+                redactor=_artifact_redactor(
+                    self.redaction_env,
+                    self.secret_env_names,
+                ),
+            )
+        child_factory = (
+            Pico._for_docker_sandbox_development
+            if self._docker_sandbox_development
+            else Pico
+        )
+        child = child_factory(
             model_client=self.model_client,
             workspace=self.workspace,
-            session_store=self.session_store,
+            session_store=child_session_store,
             run_store=self.run_store,
             approval_policy="never",
             max_steps=int(args.get("max_steps", 3)),
@@ -922,6 +1335,8 @@ class Pico:
             _trusted_redaction_env=True,
             _trusted_executables=self.trusted_executables,
             shell_env_allowlist=self.shell_env_allowlist,
+            sandbox_context=self.sandbox_context,
+            project_config=self.project_config,
         )
         # 委派的目标是“调查”，不是“放权执行”。
         # 子 agent 以只读方式运行、步数更少，最后只把结论文本返回给父 agent。
@@ -969,6 +1384,8 @@ class Pico:
         self.last_request_metadata = {}
 
     def path(self, raw_path):
+        if self.docker_sandbox:
+            return self.sandbox_context.workspace_view.physical_path(raw_path)
         path = Path(raw_path)
         path = path if path.is_absolute() else self.root / path
         resolved = path.resolve()
@@ -977,3 +1394,7 @@ class Pico:
         if os.path.commonpath([str(self.root), str(resolved)]) != str(self.root):
             raise ValueError(f"path escapes workspace: {raw_path}")
         return resolved
+
+    @staticmethod
+    def new_session_id():
+        return datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6]

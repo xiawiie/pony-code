@@ -323,11 +323,35 @@ def _read_latest_trace(agent: Pico) -> list[dict]:
     if agent.current_task_state is None:
         return []
     trace_path = agent.run_store.trace_path(agent.current_task_state)
-    return [
+    events = [
         json.loads(line)
         for line in trace_path.read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
+    tool_calls = {}
+    for message in agent.session.get("messages", []):
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "tool_use":
+                tool_calls[block.get("id")] = {
+                    "name": block.get("name"),
+                    "args": block.get("input", {}),
+                }
+            elif block.get("type") == "tool_result":
+                call = tool_calls.get(block.get("tool_use_id"))
+                if call is not None:
+                    call["result"] = block.get("content", "")
+    completed = [call for call in tool_calls.values() if "result" in call]
+    for event, call in zip(
+        (item for item in events if item.get("event") == "tool_executed"),
+        completed,
+    ):
+        event.update(call)
+    return events
 
 
 def run_scenario(scenario_name: str, scenario: dict, keep: bool, mode: str, provider: str) -> dict:

@@ -99,7 +99,7 @@ def test_memory_write_uses_same_mutation_lock(tmp_path, monkeypatch):
     assert events == ["enter", "exit"]
 
 
-def test_finalize_failure_blocks_next_same_owner_mutation(tmp_path, monkeypatch):
+def test_finalize_failure_partial_success_blocks_next_mutation(tmp_path, monkeypatch):
     agent = build_agent(tmp_path)
     real_finalize = agent.tool_change_recorder.finalize
     calls = {"count": 0}
@@ -122,7 +122,7 @@ def test_finalize_failure_blocks_next_same_owner_mutation(tmp_path, monkeypatch)
     assert first.metadata["tool_error_code"] == "tool_finalize_failed"
     records = agent.checkpoint_store.list_tool_change_records()
     assert len(records) == 1
-    assert records[0]["status"] == "pending"
+    assert records[0]["status"] == "partial_success"
     assert second.metadata["tool_error_code"] == "recovery_review_required"
     assert not (tmp_path / "second.txt").exists()
 

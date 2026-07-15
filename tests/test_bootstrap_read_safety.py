@@ -82,6 +82,18 @@ def test_global_agents_rejects_symlink_and_redacts_before_clip(tmp_path, monkeyp
     assert "<redacted>" in rendered
 
 
+def test_global_agents_home_lookup_failure_is_optional(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        Path,
+        "home",
+        staticmethod(lambda: (_ for _ in ()).throw(RuntimeError("home unavailable"))),
+    )
+
+    workspace = WorkspaceContext.build(tmp_path)
+
+    assert "<global>/AGENTS.md" not in workspace.project_docs
+
+
 def test_workspace_context_rejects_mutable_executable_during_discovery(
     tmp_path,
     monkeypatch,
@@ -252,11 +264,12 @@ def test_workspace_observer_without_frozen_git_never_runs_subprocess(
     assert snapshot["mode"] == "filesystem"
 
 
-def test_search_ignores_inherited_ripgrep_preprocessor(tmp_path, monkeypatch):
+def test_search_ignores_inherited_ripgrep_preprocessor(
+    tmp_path, monkeypatch, contract_rg
+):
     from pico.tool_context import ToolContext
     from pico.tools import tool_search
 
-    trusted_rg = _trusted_binary(tmp_path, "rg")
     marker = tmp_path / "rg-pre-ran"
     pre = tmp_path / "pre.sh"
     pre.write_text(
@@ -278,7 +291,7 @@ def test_search_ignores_inherited_ripgrep_preprocessor(tmp_path, monkeypatch):
         depth=0,
         max_depth=1,
         spawn_delegate=lambda args: "unused",
-        trusted_executables={"rg": trusted_rg},
+        trusted_executables={"rg": contract_rg},
     )
 
     result = tool_search(context, {"pattern": "needle", "path": "."})

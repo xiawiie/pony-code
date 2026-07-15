@@ -26,6 +26,23 @@ def test_rename_swap_uses_linux_exchange_when_macos_api_is_unavailable(
     assert calls == [(7, b"first", 7, b"second", 2)]
 
 
+def test_rename_noreplace_uses_distinct_linux_directory_descriptors(
+    monkeypatch,
+):
+    calls = []
+
+    def renameat2(*args):
+        calls.append(args)
+        return 0
+
+    monkeypatch.setattr(recovery_manager_module, "_RENAMEATX_NP", None)
+    monkeypatch.setattr(recovery_manager_module, "_RENAMEAT2", renameat2)
+
+    recovery_manager_module._rename_noreplace(7, "source", 9, "destination")
+
+    assert calls == [(7, b"source", 9, b"destination", 1)]
+
+
 def _complete_modified_entry(store, root, path="note.txt"):
     before = store.write_blob(b"before")
     after = store.write_blob(b"after")

@@ -1,12 +1,10 @@
 import os
 from pathlib import Path
-from unittest.mock import MagicMock
 
 import pytest
 
 import pico.memory.block_store as block_store_module
 from pico.memory.block_store import BlockStore
-from pico.memory.refresher import MemoryRefresher
 from pico.memory.retrieval import Retrieval
 from pico.repo_map import RepoMap
 from pico import repo_map as repo_map_module
@@ -214,27 +212,6 @@ def test_retrieval_fails_closed_on_descriptor_swap_then_refreshes_next_query(
     hits = retrieval.search("replacement")
     assert [hit.path for hit in hits] == ["workspace/notes/race.md"]
     assert any("replacement" in snippet for snippet in hits[0].snippets)
-
-
-def test_memory_refresher_lists_once_per_refresh():
-    entry = SimpleEntry("workspace/notes/a.md", 1, 1.0)
-    store = MagicMock()
-    store.list.return_value = [entry]
-    repo_map = MagicMock()
-    repo_map.top_level_tree.return_value = []
-    repo_map.language_stats.return_value = {}
-    refresher = MemoryRefresher(store, repo_map)
-
-    refresher.refresh_if_stale()
-
-    assert store.list.call_count == 1
-
-
-class SimpleEntry:
-    def __init__(self, path, size_chars, mtime):
-        self.path = path
-        self.size_chars = size_chars
-        self.mtime = mtime
 
 
 def test_repo_map_uses_descriptor_reader(tmp_path, monkeypatch):

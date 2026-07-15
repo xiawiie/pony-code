@@ -272,12 +272,12 @@ def test_retry_limit_feedback_is_one_shot_and_respects_attempt_cap(tmp_path):
     assert sent_users[0].count("<pico:runtime_feedback>") == 0
     assert sent_users[1].count("<pico:runtime_feedback>") == 1
     report = agent.run_store.load_report(agent.current_task_state.run_id)
-    assert report["attempts"] == 2
-    assert report["tool_steps"] == 0
-    assert report["stop_reason"] == "retry_limit_reached"
-    assert report["completion_usage_totals"]["input_tokens"] == 3
-    assert report["completion_usage_totals"]["output_tokens"] == 2
-    assert report["completion_usage_totals"]["total_tokens"] == 5
+    assert report["model"]["attempts"] == 2
+    assert report["tools"]["calls"] == 0
+    assert report["run"]["stop_reason"] == "retry_limit_reached"
+    assert report["model"]["usage"]["input_tokens"] == 3
+    assert report["model"]["usage"]["output_tokens"] == 2
+    assert report["model"]["usage"]["total_tokens"] == 5
     assert agent.session["messages"][-1]["content"] == answer
     trace_events = [
         json.loads(line)

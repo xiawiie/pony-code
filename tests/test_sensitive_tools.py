@@ -6,7 +6,6 @@ import pytest
 
 from pico import Pico, SessionStore, WorkspaceContext
 from pico.providers.fake import FakeModelClient
-from pico.safe_subprocess import build_trusted_executables
 from pico.tool_executor import ToolExecutionResult
 
 
@@ -378,6 +377,7 @@ def test_directory_search_excludes_sensitive_paths_without_path_rescan(
     tmp_path,
     monkeypatch,
     use_rg,
+    contract_rg,
 ):
     sentinel = "shared-search-sentinel"
     (tmp_path / ".env").write_text(sentinel + "\n", encoding="utf-8")
@@ -391,10 +391,7 @@ def test_directory_search_excludes_sensitive_paths_without_path_rescan(
     hidden_memory.write_text(sentinel + "\n", encoding="utf-8")
     executables = {}
     if use_rg:
-        rg = build_trusted_executables(tmp_path, names=("rg",)).get("rg")
-        if not rg:
-            pytest.skip("trusted rg unavailable")
-        executables["rg"] = rg
+        executables["rg"] = contract_rg
     monkeypatch.setattr(
         "shutil.which",
         lambda *args, **kwargs: (_ for _ in ()).throw(
@@ -443,12 +440,10 @@ def test_rg_search_preserves_rg_semantics_for_allowed_env_templates(
     pattern,
     expected,
     unexpected,
+    contract_rg,
 ):
-    rg = build_trusted_executables(tmp_path, names=("rg",)).get("rg")
-    if not rg:
-        pytest.skip("trusted rg unavailable")
     (tmp_path / ".env.example").write_text(contents, encoding="utf-8")
-    agent = build_agent(tmp_path, executables={"rg": rg})
+    agent = build_agent(tmp_path, executables={"rg": contract_rg})
 
     result = agent.execute_tool(
         "search",
@@ -459,7 +454,9 @@ def test_rg_search_preserves_rg_semantics_for_allowed_env_templates(
     assert unexpected not in result.content
 
 
-def test_rg_search_preserves_ignore_rules_for_ordinary_files(tmp_path):
+def test_rg_search_preserves_ignore_rules_for_ordinary_files(
+    tmp_path, contract_rg
+):
     sentinel = "ignored-search-sentinel"
     (tmp_path / ".git").mkdir()
     (tmp_path / ".gitignore").write_text(
@@ -471,10 +468,7 @@ def test_rg_search_preserves_ignore_rules_for_ordinary_files(tmp_path):
     ignored_dir.mkdir()
     (ignored_dir / "child.txt").write_text(sentinel + "\n", encoding="utf-8")
     (tmp_path / "source.py").write_text(sentinel + "\n", encoding="utf-8")
-    rg = build_trusted_executables(tmp_path, names=("rg",)).get("rg")
-    if not rg:
-        pytest.skip("trusted rg unavailable")
-    agent = build_agent(tmp_path, executables={"rg": rg})
+    agent = build_agent(tmp_path, executables={"rg": contract_rg})
 
     result = agent.execute_tool(
         "search",
@@ -489,6 +483,7 @@ def test_rg_search_preserves_ignore_rules_for_ordinary_files(tmp_path):
 def test_rg_excludes_env_template_directory_descendants_before_filtering(
     tmp_path,
     monkeypatch,
+    contract_rg,
 ):
     from pico import tools as tool_module
 
@@ -496,9 +491,6 @@ def test_rg_excludes_env_template_directory_descendants_before_filtering(
     template_dir = tmp_path / ".env.example"
     template_dir.mkdir()
     (template_dir / "child.txt").write_text(sentinel + "\n", encoding="utf-8")
-    rg = build_trusted_executables(tmp_path, names=("rg",)).get("rg")
-    if not rg:
-        pytest.skip("trusted rg unavailable")
     raw_outputs = []
     rg_calls = []
     original_filter = tool_module._filter_rg_output
@@ -514,7 +506,7 @@ def test_rg_excludes_env_template_directory_descendants_before_filtering(
 
     monkeypatch.setattr(tool_module, "_filter_rg_output", capture_raw_output)
     monkeypatch.setattr(tool_module, "run_hardened_rg", capture_rg_call)
-    agent = build_agent(tmp_path, executables={"rg": rg})
+    agent = build_agent(tmp_path, executables={"rg": contract_rg})
 
     result = agent.execute_tool(
         "search",

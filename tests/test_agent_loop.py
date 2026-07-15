@@ -6,6 +6,7 @@ from unittest.mock import Mock
 import pytest
 
 import pico.agent_loop as agent_loop_module
+from pico import security as security_module
 from pico import Pico, SessionStore, WorkspaceContext
 from pico.providers.fake import FakeModelClient
 from pico.agent_loop import AgentLoop
@@ -181,11 +182,11 @@ def test_transient_provider_failures_retry_in_agent_loop_with_explicit_origins(
     assert [event["reason_code"] for event in failed] == ["timeout", "http_5xx"]
     assert turns[0]["attempt_origin"] == "model_retry"
     report = agent.run_store.load_report(agent.current_task_state.run_id)
-    assert report["model_execution"] == {
-        "model_attempts": 3,
-        "model_turns": 1,
-        "model_failures": 2,
-        "model_retries": 2,
+    assert report["model"] == {
+        "attempts": 3,
+        "turns": 1,
+        "failures": 2,
+        "retries": 2,
         "attempt_origin_counts": {
             "initial": 1,
             "tool_followup": 0,
@@ -194,8 +195,17 @@ def test_transient_provider_failures_retry_in_agent_loop_with_explicit_origins(
         },
         "transport_attempts": 3,
         "transport_retries": 0,
-        "transport_evidence_complete": True,
+        "evidence_complete": True,
         "failure_reason_counts": {"timeout": 1, "http_5xx": 1},
+        "usage": {
+            "input_tokens": 3,
+            "output_tokens": 1,
+            "total_tokens": 4,
+            "cached_tokens": 0,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "cache_hit": False,
+        },
     }
 
 
@@ -296,10 +306,8 @@ def test_missing_custom_transport_evidence_is_null_in_report(tmp_path):
     agent = build_native_agent(tmp_path, provider)
 
     assert agent.ask("custom") == "done"
-    execution = agent.run_store.load_report(agent.current_task_state.run_id)[
-        "model_execution"
-    ]
-    assert execution["transport_evidence_complete"] is False
+    execution = agent.run_store.load_report(agent.current_task_state.run_id)["model"]
+    assert execution["evidence_complete"] is False
     assert execution["transport_attempts"] is None
     assert execution["transport_retries"] is None
 
@@ -366,11 +374,11 @@ def test_agent_loop_decodes_native_action_and_aggregates_response_usage_only(tmp
     assert decoded[0]["origin"] == "native_tool_use"
     assert decoded[1]["action_type"] == "final"
     assert [turn["completion_usage"]["input_tokens"] for turn in turns] == [10, 20]
-    assert report["completion_usage_totals"]["input_tokens"] == 30
-    assert report["completion_usage_totals"]["output_tokens"] == 7
-    assert report["completion_usage_totals"]["total_tokens"] == 37
-    assert report["completion_usage_totals"]["cache_hit"] is True
-    assert report["completion_usage_totals"]["input_tokens"] != 999999
+    assert report["model"]["usage"]["input_tokens"] == 30
+    assert report["model"]["usage"]["output_tokens"] == 7
+    assert report["model"]["usage"]["total_tokens"] == 37
+    assert report["model"]["usage"]["cache_hit"] is True
+    assert report["model"]["usage"]["input_tokens"] != 999999
 
 
 def test_native_multiple_tool_response_executes_only_first_and_traces_ignored_count(
@@ -486,9 +494,9 @@ def test_ordinary_workspace_tool_error_commits_pair_consumes_step_and_finishes(
     checkpoint = agent.checkpoint_store.load_checkpoint_record(checkpoint_id)
     assert checkpoint["tool_change_ids"] == [tool_change_id]
     report = agent.run_store.load_report(agent.current_task_state.run_id)
-    assert report["status"] == "completed"
-    assert report["tool_steps"] == 1
-    assert report["completion_usage_totals"]["total_tokens"] == 7
+    assert report["run"]["status"] == "completed"
+    assert report["tools"]["calls"] == 1
+    assert report["model"]["usage"]["total_tokens"] == 7
     executed = [event for event in read_trace(agent) if event["event"] == "tool_executed"]
     assert executed[0]["tool_status"] == "error"
     snapshots_with_error_pair = []
@@ -639,6 +647,189 @@ def test_side_effect_then_pair_save_failure_stops_before_another_provider_call(
         for message in messages
     )
     assert agent.current_task_state.recovery_checkpoint_id
+
+
+def test_committed_pair_save_reloads_canonical_without_duplicate_or_loss(
+    tmp_path,
+    monkeypatch,
+):
+    (tmp_path / "target.txt").write_text("target\n", encoding="utf-8")
+    provider = NativeScriptProvider([
+        Response(
+            stop_reason=StopReason.TOOL_USE,
+            content=[{
+                "type": "tool_use",
+                "id": "tu_committed",
+                "name": "read_file",
+                "input": {"path": "target.txt"},
+            }],
+            usage={},
+        ),
+        Response(
+            stop_reason=StopReason.END_TURN,
+            content=[{"type": "text", "text": "done"}],
+            usage={},
+        ),
+    ])
+    agent = build_native_agent(tmp_path, provider)
+    original_save = agent.session_store.save
+    injected = False
+
+    def commit_then_raise(session):
+        nonlocal injected
+        has_tool_use = any(
+            isinstance(message.get("content"), list)
+            and message["content"]
+            and message["content"][0].get("type") == "tool_use"
+            for message in session.get("messages", [])
+        )
+        if has_tool_use and not injected:
+            injected = True
+            original_save(session)
+            raise security_module.PrivateAtomicWriteError("committed")
+        return original_save(session)
+
+    monkeypatch.setattr(agent.session_store, "save", commit_then_raise)
+
+    assert agent.ask("read target") == "done"
+
+    persisted = agent.session_store.load(agent.session["id"])
+    assert persisted == agent.session
+    tool_uses = [
+        block
+        for message in persisted["messages"]
+        if isinstance(message.get("content"), list)
+        for block in message["content"]
+        if block.get("type") == "tool_use" and block.get("id") == "tu_committed"
+    ]
+    tool_results = [
+        block
+        for message in persisted["messages"]
+        if isinstance(message.get("content"), list)
+        for block in message["content"]
+        if block.get("type") == "tool_result"
+        and block.get("tool_use_id") == "tu_committed"
+    ]
+    assert len(tool_uses) == len(tool_results) == 1
+    assert len(provider.calls) == 2
+
+
+def test_ambiguous_pair_save_never_overwrites_reloaded_canonical_with_terminal(
+    tmp_path,
+    monkeypatch,
+):
+    (tmp_path / "target.txt").write_text("target\n", encoding="utf-8")
+    provider = NativeScriptProvider([
+        Response(
+            stop_reason=StopReason.TOOL_USE,
+            content=[{
+                "type": "tool_use",
+                "id": "tu_ambiguous",
+                "name": "read_file",
+                "input": {"path": "target.txt"},
+            }],
+            usage={},
+        ),
+    ])
+    agent = build_native_agent(tmp_path, provider)
+    original_save = agent.session_store.save
+    injected = False
+
+    def replace_canonical_then_raise(session):
+        nonlocal injected
+        has_tool_use = any(
+            isinstance(message.get("content"), list)
+            and message["content"]
+            and message["content"][0].get("type") == "tool_use"
+            for message in session.get("messages", [])
+        )
+        if has_tool_use and not injected:
+            injected = True
+            original_save(session)
+            original_save(agent.session)
+            raise security_module.PrivateAtomicWriteError("ambiguous")
+        return original_save(session)
+
+    monkeypatch.setattr(agent.session_store, "save", replace_canonical_then_raise)
+
+    with pytest.raises(security_module.PrivateAtomicWriteError, match="ambiguous"):
+        agent.ask("read target")
+
+    persisted = agent.session_store.load(agent.session["id"])
+    assert persisted == agent.session
+    assert "tu_ambiguous" not in json.dumps(persisted["messages"])
+    assert all(
+        message.get("_pico_meta", {}).get("origin") != "runtime_terminal"
+        for message in persisted["messages"]
+    )
+
+
+def test_committed_pair_save_with_failed_reload_blocks_all_later_session_writes(
+    tmp_path,
+    monkeypatch,
+):
+    provider = NativeScriptProvider([
+        Response(
+            stop_reason=StopReason.TOOL_USE,
+            content=[{
+                "type": "tool_use",
+                "id": "tu_unreadable_commit",
+                "name": "write_file",
+                "input": {"path": "created.txt", "content": "created\n"},
+            }],
+            usage={},
+        ),
+    ])
+    agent = build_native_agent(tmp_path, provider)
+    original_load = agent.session_store.load
+    original_save = agent.session_store.save
+    injected = False
+    later_saves = 0
+
+    def commit_then_raise(session):
+        nonlocal injected, later_saves
+        if injected:
+            later_saves += 1
+        has_tool_use = any(
+            isinstance(message.get("content"), list)
+            and message["content"]
+            and message["content"][0].get("type") == "tool_use"
+            for message in session.get("messages", [])
+        )
+        if has_tool_use and not injected:
+            original_save(session)
+            injected = True
+            raise security_module.PrivateAtomicWriteError("unreadable commit")
+        return original_save(session)
+
+    def fail_reconciliation(session_id):
+        if injected:
+            raise OSError("canonical read failed")
+        return original_load(session_id)
+
+    monkeypatch.setattr(agent.session_store, "save", commit_then_raise)
+    monkeypatch.setattr(agent.session_store, "load", fail_reconciliation)
+
+    with pytest.raises(
+        security_module.PrivateAtomicWriteError,
+        match="unreadable commit",
+    ):
+        agent.ask("write file")
+
+    persisted = original_load(agent.session["id"])
+    assert "tu_unreadable_commit" in json.dumps(persisted["messages"])
+    assert persisted["checkpoints"]["current_id"] == ""
+    assert agent.current_task_state.recovery_checkpoint_id == ""
+    assert later_saves == 0
+    assert len(provider.calls) == 1
+
+    with pytest.raises(
+        security_module.PrivateAtomicWriteError,
+        match="unreadable commit",
+    ):
+        agent.ask("try again")
+    assert later_saves == 0
+    assert len(provider.calls) == 1
 
 
 def test_pair_save_failure_restores_pre_tool_memory(tmp_path, monkeypatch):
@@ -920,10 +1111,10 @@ def test_terminal_path_matrix_persists_exactly_one_finalization(
     events = read_trace(agent)
     assert len([event for event in events if event["event"] == "run_finished"]) == 1
     report = agent.run_store.load_report(state.run_id)
-    assert report["status"] == expected_status
-    assert report["stop_reason"] == expected_reason
-    assert report["completion_usage_totals"]["total_tokens"] == expected_total_tokens
-    assert report["finalization_errors"] == []
+    assert report["run"]["status"] == expected_status
+    assert report["run"]["stop_reason"] == expected_reason
+    assert report["model"]["usage"]["total_tokens"] == expected_total_tokens
+    assert report["finalization"] == {"status": "complete", "error_count": 0}
     runtime_terminals = [
         message
         for message in agent.session["messages"]
@@ -1021,7 +1212,7 @@ def test_post_response_runtime_fault_preserves_primary_usage_and_terminalizes_on
     assert agent.current_task_state.attempts == 1
     assert agent.current_task_state.tool_steps == 0
     report = agent.run_store.load_report(agent.current_task_state.run_id)
-    assert report["completion_usage_totals"]["total_tokens"] == 3
+    assert report["model"]["usage"]["total_tokens"] == 3
     events = read_trace(agent)
     assert len([event for event in events if event["event"] == "run_finished"]) == 1
     assert len(
@@ -1069,7 +1260,7 @@ def test_build_failure_after_success_does_not_reuse_request_metadata(
 
     report = agent.run_store.load_report(agent.current_task_state.run_id)
     assert agent.last_request_metadata == {}
-    assert report["last_request_metadata"] == {}
+    assert report["context"] == {}
 
 
 def test_keyboard_interrupt_closes_run_and_reraises(tmp_path):
@@ -1085,6 +1276,73 @@ def test_keyboard_interrupt_closes_run_and_reraises(tmp_path):
     assert agent.current_task_state.stop_reason == "interrupted"
     assert agent.run_store.report_path(agent.current_task_state).exists()
     assert agent.session["messages"][-1]["_pico_meta"]["origin"] == "runtime_terminal"
+
+
+@pytest.mark.parametrize("secondary", [OSError("trace unavailable"), SystemExit(2)])
+def test_interrupted_tool_trace_failure_does_not_mask_interrupt(
+    tmp_path,
+    monkeypatch,
+    secondary,
+):
+    agent = build_native_agent(
+        tmp_path,
+        NativeScriptProvider([
+            Response(
+                stop_reason=StopReason.TOOL_USE,
+                content=[{
+                    "type": "tool_use",
+                    "id": "tu_interrupt",
+                    "name": "write_file",
+                    "input": {"path": "note.txt", "content": "safe\n"},
+                }],
+                usage={},
+            ),
+        ]),
+    )
+    primary = KeyboardInterrupt("tool interrupted")
+
+    def interrupt_tool(_name, _args):
+        agent._last_tool_result_metadata = {
+            "tool_status": "interrupted",
+            "effect_class": "workspace_write",
+            "tool_change_id": "tc_interrupt",
+            "affected_paths": ["note.txt"],
+        }
+        raise primary
+
+    original_emit_trace = agent.emit_trace
+
+    def fail_interrupted_trace(task_state, event, payload=None):
+        if event == "tool_interrupted":
+            raise secondary
+        return original_emit_trace(task_state, event, payload)
+
+    monkeypatch.setattr(agent, "execute_tool", interrupt_tool)
+    monkeypatch.setattr(agent, "emit_trace", fail_interrupted_trace)
+
+    with pytest.raises(KeyboardInterrupt) as caught:
+        agent.ask("interrupt the tool")
+
+    assert caught.value is primary
+    assert agent.current_task_state.stop_reason == "interrupted"
+
+
+def test_model_failure_trace_fatal_does_not_mask_interrupt(tmp_path, monkeypatch):
+    primary = KeyboardInterrupt("provider interrupted")
+    agent = build_native_agent(tmp_path, RaisingProvider(primary))
+    original_emit_trace = agent.emit_trace
+
+    def fail_model_failure_trace(task_state, event, payload=None):
+        if event == "model_failed":
+            raise SystemExit(2)
+        return original_emit_trace(task_state, event, payload)
+
+    monkeypatch.setattr(agent, "emit_trace", fail_model_failure_trace)
+
+    with pytest.raises(KeyboardInterrupt) as caught:
+        agent.ask("interrupt the provider")
+
+    assert caught.value is primary
 
 
 def test_finalizer_failure_does_not_mask_provider_exception(

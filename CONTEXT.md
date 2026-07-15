@@ -59,6 +59,75 @@ trace event 和 Git commit 是不同概念。
 **Query Snapshot**：一次 retrieval query 内共享的 path、metadata、frontmatter 与原文；查询结束即释放，
 不形成跨查询 cache。
 
+**Source Root**：用户拥有的规范项目树；Sandbox 从它建立基线，只有 Source Apply Transaction 可以把
+已审查变更写回它。
+_Avoid_：Workspace Root、Container Workspace
+
+**Execution Root**：当前运行中所有模型可见工具共享的项目视图根；Host 模式使用 Source Root，Sandbox
+模式使用独立 staging。
+_Avoid_：Pico Root、Shell Root
+
+**Project State Root**：与 Source Root 关联的 Pico 私有项目状态根，保存 Session、Run、Checkpoint 和
+Memory；它不是 Execution Root。
+_Avoid_：Workspace State、Sandbox Files
+
+**Sandbox State Root**：某个 Sandbox Session 的私有宿主状态根，保存 staging、身份和审计状态；它与
+Project State Root 分属不同恢复域。
+_Avoid_：Project `.pico`、Container State
+
+**Workspace View**：Execution Root 的物理位置与模型所见逻辑 `/workspace` 之间的单一映射。
+_Avoid_：Virtual Filesystem、Sandbox Backend
+
+**Sandbox Session**：把一个 Pico Session、Source Root、Execution Root、Staging Baseline、Sandbox Identity
+和最终 diff/apply 状态绑定成同一生命周期的实体。
+_Avoid_：Container、Shell Call
+
+**Staging Baseline**：Sandbox Session 启动时对获准 source 内容形成的不可变可信快照；它是 effect 和
+Session diff 的比较起点。
+_Avoid_：Git Commit、Source HEAD
+
+**Source Apply Transaction**：把同一 immutable reviewed diff 从 Sandbox Session 写回 Source Root 的独立
+授权事务；external authority reservation先于journal/guard/Session applying发布，冲突或事实不明时不产生部分
+安全路径写入。
+_Avoid_：Restore、Auto Merge、Sandbox Save
+
+**Source Apply Authority**：按lexical Source Root索引的external、owner-only恢复锚点；完整绑定source、
+Sandbox/state root、control-directory identity、journal和diff，使source root replacement后仍能阻断mutation并由
+`sandbox reconcile --yes`定位证据。
+_Avoid_：Session Pointer、Apply Cache、Orphan Hint
+
+**Sandbox Contract**：Pico 对一次 sandboxed 执行定义的稳定合同，覆盖已批准输入、资源边界、启动与
+失败语义、结果和证据；合同不由具体 OS 隔离实现或其输出决定。
+_Avoid_：Docker Flags、Sandbox Backend
+
+**Sandbox Identity**：Pico 对installed distribution、Docker CLI/endpoint、canonical image set及宿主选择的OCI
+record、policy、corpus和当前runtime authorization形成的可验证执行身份；身份无法确认时target不得启动。
+_Avoid_：PATH Identity、Docker Tag、Executable Path
+
+**Sandbox Local Authorization**：每次本机启动由可信Pico代码密封生成、绑定当前安装树与packaged
+image/policy/corpus/platform的非发布执行能力；只接受already-present exact image，不缓存、不联网、不由环境开关提供。
+_Avoid_：Product Enablement、Development Approval、Local License
+
+**Sandbox Feasibility Approval**：D1 对 exact candidate envelope 和版本化 mandatory corpus 的不可变结论，
+只允许进入 D2-D6 实现，本身不解锁 local 或 distributed Sandbox 产品入口，也不跨 corpus 版本等价。
+_Avoid_：Sandbox Enabled、Release Approval
+
+**Sandbox Product Enablement**：D7 可信四目标聚合后签发、与 exact distribution/image/policy/evidence 绑定的
+detached 分布式发布执行门；它不等同于ADR-0042的严格本机授权。
+_Avoid_：Architecture Accepted、D1 Approved、Candidate Available
+
+**Sandbox Candidate Attestation**：release controller在92-job production aggregate后签发的24小时nonce-bound
+能力，只允许四平台最终public CLI smoke；它不供`prepare`下载、不写Product cache，也不表示产品已启用。
+_Avoid_：Product Enablement、Preview License、Cached Candidate
+
+**Sandbox Policy**：Pico 为 sandboxed Shell 及其完整子进程树定义的文件、网络与 IPC 资源边界；
+它不表达工具是否符合用户意图。
+_Avoid_：Tool Policy、Approval Policy、Permission Prompt
+
+**Sandbox Outcome**：Pico 对一次 sandboxed Shell call 的 wrapper、target lifecycle 与 cleanup 事实的
+规范化分类；它不同于 readiness、target exit code、Shell Result 和 Tool Change status。
+_Avoid_：Command Result、Exit Code、Tool Status
+
 ## 模块边界
 
 | 边界 | 当前职责 |
@@ -81,6 +150,14 @@ trace event 和 Git commit 是不同概念。
 - approval 发生在 mutation lock 之前；primary exception 不被 cleanup/finalizer 的次生错误覆盖。
 - Session、Checkpoint Record 与 Tool Change Record 只接受各自当前 type/version。
 - 运行时第三方依赖保持为零；安全与恢复代码不因复杂度指标机械拆分。
+- Sandbox 中所有模型可见工具共享同一 Workspace View；Source Root、Project State Root、Sandbox State Root
+  parent、host HOME 和 Docker socket 均不得进入 guest。
+- `sandbox status/list/inspect/diff/prune --dry-run` 零 mutation；Feasibility Approval缺失阻断实现/发布而非runtime。
+  本机runtime要求sealed local authorization，分布式release runtime要求Product Enablement；任一identity不一致均在
+  Provider/target前fail closed。Candidate Attestation仅是controller-owned final smoke例外，不能缓存或正式发布。
+- Source Apply固定为external control lock → source mutation lock → exact external reservation → journal/blobs →
+  source-local guard → Session applying → source mutation；authority清理使用anchored full-record CAS，公开diff reader
+  不得改变artifact ctime，显式`reconcile --yes`不依赖Session inventory猜测state root。
 
 详细不变量分别见[安全](docs/security.md)、[恢复](docs/recovery.md)与
 [Memory](docs/memory.md)。

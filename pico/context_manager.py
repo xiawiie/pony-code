@@ -11,6 +11,12 @@ from pico.messages import build_request_messages, message_content_text, message_
 
 # Pinned system/tools input is never a truncation candidate.
 SYSTEM_TOOLS_HARD_CAP = 20000
+CONTEXT_SAFETY_MARGIN_TOKENS = 512
+OPTIONAL_DROP_ORDER = ("memory_index", "project_structure", "workspace_state", "recalled_memory", "checkpoint")
+
+
+class ContextBudgetExceeded(RuntimeError):
+    code = "context_budget_exceeded"
 
 
 def _convert_pico_tool_to_anthropic(name, spec):
@@ -77,87 +83,84 @@ class ContextManager:
     def __init__(self, agent):
         self.agent = agent
 
-    def build_request(
-        self,
-        *,
-        injection_snapshot,
-        injection_telemetry,
-        preflight_metadata,
-        runtime_feedback="",
-    ):
-        """Return the single request shape that will be sent to the provider."""
+    def _build_with_counter(self, *, injection_snapshot, injection_telemetry, preflight_metadata, runtime_feedback, token_of, mode):
         system_text = str(getattr(self.agent, "prefix", "") or "")
-        system = [{
-            "type": "text",
-            "text": system_text,
-            "cache_control": {"type": "ephemeral"},
-        }]
+        system = [{"type": "text", "text": system_text, "cache_control": {"type": "ephemeral"}}]
         tools = _build_tools_list(getattr(self.agent, "tools", {}) or {})
-
         session = getattr(self.agent, "session", {}) or {}
-        messages = build_request_messages(
-            list(session.get("messages", []) or []),
-            rendered_user=injection_snapshot,
-            runtime_feedback=runtime_feedback,
-        )
-        system, messages = securitylib.sanitize_provider_payload(
-            system,
-            messages,
-            env=self.agent.redaction_env,
-            secret_env_names=self.agent.secret_env_names,
-        )
-        system_text = str(system[0].get("text", ""))
-        system_tokens = self.count_tokens(system_text)
-        tools_tokens = self.count_tokens(json.dumps(tools, sort_keys=False))
         config = getattr(self.agent, "context_config", None)
-        if not isinstance(config, dict):
-            config = {}
+        config = config if isinstance(config, dict) else {}
+        total = int(config.get("total_budget_hard_cap", 100000))
+        reserved = int(getattr(self.agent, "max_new_tokens", 2048))
+        input_limit = total - reserved - CONTEXT_SAFETY_MARGIN_TOKENS
+        system, _ = securitylib.sanitize_provider_payload(system, [], env=self.agent.redaction_env, secret_env_names=self.agent.secret_env_names)
+        system_text = str(system[0].get("text", ""))
+        system_tokens = token_of(system_text)
+        tools_tokens = token_of(json.dumps(tools, sort_keys=False))
         pinned_cap = int(config.get("system_tools_hard_cap", SYSTEM_TOOLS_HARD_CAP))
         if system_tokens + tools_tokens > pinned_cap:
-            raise RuntimeError(
-                f"SystemTooBig: system+tools tokens {system_tokens + tools_tokens} "
-                f"exceed {pinned_cap}. Inspect workspace.stable_text() or tools schema."
-            )
+            raise RuntimeError(f"SystemTooBig: system+tools tokens {system_tokens + tools_tokens} exceed {pinned_cap}. Inspect workspace.stable_text() or tools schema.")
 
-        runtime_feedback_present = bool(str(runtime_feedback or "").strip())
+        sources = list(getattr(injection_snapshot, "sources", ()) or ())
+        included = {source.name for source in sources if source.text}
+        rendered_user = injection_snapshot.render(included) if hasattr(injection_snapshot, "render") else injection_snapshot
+        messages = build_request_messages(list(session.get("messages", []) or []), rendered_user=rendered_user, runtime_feedback=runtime_feedback)
+        _, messages = securitylib.sanitize_provider_payload([], messages, env=self.agent.redaction_env, secret_env_names=self.agent.secret_env_names)
+        def msg_token(message):
+            return token_of(message_content_text(message))
+        before_tokens = sum(msg_token(message) for message in messages)
         soft_cap = int(config.get("history_soft_cap", 40000))
         floor_count = int(config.get("history_floor_messages", 6))
-        messages, dropped_messages = _drop_old_turns(
-            messages,
-            soft_cap_tokens=soft_cap,
-            floor_count=floor_count,
-            token_of=lambda message: self.count_tokens(
-                message_content_text(message)
-            ),
-        )
-        breakpoints = [len(messages) - 2] if len(messages) >= 2 else []
+        messages, dropped_messages = _drop_old_turns(messages, soft_cap, floor_count, msg_token)
 
+        def used():
+            return system_tokens + tools_tokens + sum(msg_token(message) for message in messages)
+
+        dropped_sources = []
+        for name in OPTIONAL_DROP_ORDER:
+            if used() <= input_limit:
+                break
+            source = next((item for item in sources if item.name == name), None)
+            if source is None or not source.text or source.required:
+                continue
+            included.discard(name)
+            dropped_sources.append(name)
+            rendered = injection_snapshot.render(included)
+            messages = build_request_messages(list(session.get("messages", []) or []), rendered_user=rendered, runtime_feedback=runtime_feedback)
+            _, messages = securitylib.sanitize_provider_payload([], messages, env=self.agent.redaction_env, secret_env_names=self.agent.secret_env_names)
+            messages, dropped_messages = _drop_old_turns(messages, soft_cap, floor_count, msg_token)
+        if used() > input_limit:
+            messages, extra = _drop_old_turns(messages, input_limit - system_tokens - tools_tokens, 1, msg_token)
+            dropped_messages += extra
+        final_used = used()
+        if final_used > input_limit:
+            raise ContextBudgetExceeded(f"context_budget_exceeded: required request uses {final_used} tokens; input limit is {input_limit}")
+
+        source_rows = []
+        for source in sources:
+            if source.name in dropped_sources:
+                status, reason = "dropped_budget", "aggregate_budget"
+            else:
+                status, reason = source.status, source.reason_code
+            source_rows.append({"name": source.name, "required": source.required, "budget_tokens": source.token_count, "actual_tokens": source.token_count if source.name in included else 0, "status": status, "reason": reason})
+        digest_count = sum(bool((message.get("_pico_meta") or {}).get("digest_applied")) for message in messages)
+        breakdown = {"schema_version": 1, "token_count_mode": mode, "budget": {"total": total, "reserved_output": reserved, "safety_margin": CONTEXT_SAFETY_MARGIN_TOKENS, "input_limit": input_limit, "used": final_used, "within_budget": True}, "sources": source_rows, "history": {"tokens_before": before_tokens, "tokens_after": sum(msg_token(message) for message in messages), "dropped_turns": dropped_messages}, "digest": {"applied_count": digest_count}}
+        breakpoints = [len(messages) - 2] if len(messages) >= 2 else []
         recall_errors = session.get("_recall_errors", {}) if isinstance(session, dict) else {}
-        if not isinstance(recall_errors, dict):
-            recall_errors = {}
-        metrics = message_metrics(messages, token_of=self.count_tokens)
-        metadata = {
-            "system_prefix_hash": hashlib.sha256(system_text.encode("utf-8")).hexdigest(),
-            "system_tokens": system_tokens,
-            "tools_tokens": tools_tokens,
-            "prompt_cache_supported": bool(
-                getattr(self.agent.model_client, "supports_prompt_cache", False)
-            ),
-            **metrics,
-            "dropped_messages": dropped_messages,
-            "cache_control_breakpoints": list(breakpoints),
-            "runtime_feedback_present": runtime_feedback_present,
-            "recall.error_count": int(recall_errors.get("count", 0) or 0),
-            "recall.last_error": str(recall_errors.get("last", "") or ""),
-            **dict(injection_telemetry or {}),
-            **dict(preflight_metadata or {}),
-        }
-        return {
-            "system": system,
-            "tools": tools,
-            "messages": messages,
-            "cache_control_breakpoints": breakpoints,
-        }, metadata
+        recall_errors = recall_errors if isinstance(recall_errors, dict) else {}
+        metadata = {"system_prefix_hash": hashlib.sha256(system_text.encode()).hexdigest(), "system_tokens": system_tokens, "tools_tokens": tools_tokens, "prompt_cache_supported": bool(getattr(self.agent.model_client, "supports_prompt_cache", False)), **message_metrics(messages, token_of=token_of), "dropped_messages": dropped_messages, "cache_control_breakpoints": list(breakpoints), "runtime_feedback_present": bool(str(runtime_feedback or "").strip()), "recall.error_count": int(recall_errors.get("count", 0) or 0), "recall.last_error": str(recall_errors.get("last", "") or ""), "token_count_mode": mode, "context_breakdown": breakdown, "recall_commit_paths": [path for source in sources if source.name == "recalled_memory" and source.name in included for path in source.selected_memory_paths], **dict(injection_telemetry or {}), **dict(preflight_metadata or {})}
+        return {"system": system, "tools": tools, "messages": messages, "cache_control_breakpoints": breakpoints}, metadata
+
+    def build_request(self, *, injection_snapshot, injection_telemetry, preflight_metadata, runtime_feedback=""):
+        counter = getattr(getattr(self.agent, "model_client", None), "count_tokens", None)
+        if callable(counter):
+            try:
+                return self._build_with_counter(injection_snapshot=injection_snapshot, injection_telemetry=injection_telemetry, preflight_metadata=preflight_metadata, runtime_feedback=runtime_feedback, token_of=lambda text: int(counter(text)), mode="provider_text")
+            except ContextBudgetExceeded:
+                raise
+            except Exception:
+                pass
+        return self._build_with_counter(injection_snapshot=injection_snapshot, injection_telemetry=injection_telemetry, preflight_metadata=preflight_metadata, runtime_feedback=runtime_feedback, token_of=lambda text: max(1, len(text) // 4), mode="estimate")
 
     def count_tokens(self, text):
         counter = getattr(getattr(self.agent, "model_client", None), "count_tokens", None)

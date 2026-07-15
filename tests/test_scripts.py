@@ -4,6 +4,7 @@ from pathlib import Path
 import importlib.util
 
 import pico.evaluation.provider_benchmark as provider_benchmark
+import pytest
 
 
 def test_ci_tracks_and_uses_frozen_uv_lock():
@@ -16,6 +17,13 @@ def test_ci_tracks_and_uses_frozen_uv_lock():
     assert "      - main" in workflow
     assert "      - memory" in workflow
     assert "run: uv sync --frozen --dev" in workflow
+
+
+def test_linux_ci_does_not_claim_the_darwin_performance_baseline():
+    workflow = Path(".github/workflows/ci.yml").read_text(encoding="utf-8")
+
+    assert "--suite core-functional" in workflow
+    assert "--suite core-full" not in workflow
 
 
 def test_ci_has_macos_security_and_durability_gate():
@@ -45,11 +53,33 @@ def test_ci_has_macos_security_and_durability_gate():
     assert "-W ignore" not in workflow
 
 
+def test_ci_keeps_docker_sandbox_local_gate_read_only():
+    workflow = Path(".github/workflows/ci.yml").read_text(encoding="utf-8")
+
+    assert workflow.count("Docker Sandbox local identity gate (zero mutation)") == 2
+    assert workflow.count("sandbox status") >= 2
+    assert workflow.count('status["runtime_authorization"]["kind"] == "local"') == 2
+    assert workflow.count('status["product_enablement"]["status"] == "blocked"') == 2
+    assert workflow.count('data["data"]["network_performed"] is False') == 2
+    assert workflow.count('data["data"]["mutation_performed"] is False') == 2
+    assert "--sandbox run smoke" not in workflow
+    assert "for command in status install repair" not in workflow
+    assert "candidate_rejected" not in workflow
+    assert "--real --managed" not in workflow
+    assert "PICO_RUN_REAL_SRT" not in workflow
+    assert "uv build --clear" in workflow
+    assert "--install-smoke --offline-bundle-smoke" in workflow
+
+
 def test_maintenance_scripts_start_and_show_help():
     for script in (
+        "scripts/aggregate_docker_sandbox_release.py",
         "scripts/collect_resume_metrics.py",
+        "scripts/aggregate_srt_feasibility.py",
+        "scripts/evaluate.py",
         "scripts/run_large_scale_experiments.py",
         "scripts/run_provider_experiments.py",
+        "scripts/srt_feasibility.py",
         "scripts/verify_distribution.py",
     ):
         result = subprocess.run(
@@ -72,6 +102,89 @@ def test_distribution_verifier_freezes_archive_and_install_contract():
     assert 'metadata.get_all("Requires-Dist") is None' in verifier
     assert '"command -v pico"' in verifier
     assert '"doctor", "--offline"' in verifier
+    assert '"sandbox",\n                "status"' in verifier
+    assert 'prepared["runtime_authorization"]["kind"] == "local"' in verifier
+    assert 'prepare.returncode in {0, 3}' in verifier
+    assert 'status["data"]["network_performed"] is False' in verifier
+    assert 'status["data"]["mutation_performed"] is False' in verifier
+    assert "resources_after == resources_before" in verifier
+    assert '"PYTHONHOME"' in verifier
+    assert '"PYTHONPATH"' in verifier
+    assert "Path(lifecycle.__file__).resolve().is_relative_to" in verifier
+    assert "cwd=cwd, env=env" in verifier
+
+
+def test_distribution_verifier_ignores_tracked_files_deleted_from_worktree(
+    tmp_path, monkeypatch
+):
+    spec = importlib.util.spec_from_file_location(
+        "verify_distribution_script",
+        Path("scripts/verify_distribution.py"),
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setattr(module, "PACKAGE_DATA_FILES", set())
+    package = tmp_path / "pico"
+    package.mkdir()
+    (package / "present.py").write_text("", encoding="utf-8")
+    monkeypatch.setattr(
+        module,
+        "_run",
+        lambda *args, **kwargs: "pico/present.py\npico/deleted.py\n",
+    )
+
+    tracked = module._tracked_package_files(tmp_path)
+
+    assert "pico/present.py" in tracked
+    assert "pico/deleted.py" not in tracked
+
+
+def test_distribution_verifier_rejects_untracked_package_python(
+    tmp_path, monkeypatch
+):
+    spec = importlib.util.spec_from_file_location(
+        "verify_distribution_script",
+        Path("scripts/verify_distribution.py"),
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setattr(module, "PACKAGE_DATA_FILES", set())
+    package = tmp_path / "pico"
+    package.mkdir()
+    (package / "tracked.py").write_text("", encoding="utf-8")
+    (package / "untracked.py").write_text("", encoding="utf-8")
+    monkeypatch.setattr(
+        module,
+        "_run",
+        lambda *args, **kwargs: "pico/tracked.py\n",
+    )
+
+    with pytest.raises(AssertionError, match="untracked package Python files"):
+        module._tracked_package_files(tmp_path)
+
+
+def test_distribution_verifier_rejects_untracked_package_data(
+    tmp_path, monkeypatch
+):
+    spec = importlib.util.spec_from_file_location(
+        "verify_distribution_script",
+        Path("scripts/verify_distribution.py"),
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setattr(module, "PACKAGE_DATA_FILES", {"pico/data.json"})
+    package = tmp_path / "pico"
+    package.mkdir()
+    (package / "tracked.py").write_text("", encoding="utf-8")
+    (package / "data.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(
+        module,
+        "_run",
+        lambda *args, **kwargs: "pico/tracked.py\n",
+    )
+
+    with pytest.raises(AssertionError, match="untracked package data files"):
+        module._tracked_package_files(tmp_path)
 
 
 def test_local_check_script_matches_ci_commands():

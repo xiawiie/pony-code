@@ -152,6 +152,8 @@ def test_packaging_discovers_pico_subpackages():
     assert pyproject["tool"]["setuptools"] == {
         "packages": [
             "pico",
+            "pico._docker_sandbox",
+            "pico._sandbox_toolchain",
             "pico.context",
             "pico.evaluation",
             "pico.features",
@@ -159,7 +161,61 @@ def test_packaging_discovers_pico_subpackages():
             "pico.providers",
         ],
         "include-package-data": False,
+        "package-data": {
+            "pico._docker_sandbox": [
+                "image-manifest.json",
+                "docker-config/config.json",
+            ],
+            "pico._sandbox_toolchain": [
+                "manifest.json",
+                "package.json",
+                "package-lock.json",
+            ],
+        },
     }
+
+
+def test_docker_sandbox_resources_are_readable():
+    import json
+    from importlib.resources import files
+
+    root = files("pico._docker_sandbox")
+    manifest = json.loads(
+        root.joinpath("image-manifest.json").read_text(encoding="utf-8")
+    )
+
+    assert manifest["record_type"] == "docker_sandbox_image_set_manifest"
+    assert set(manifest["platforms"]) == {"linux/arm64"}
+    assert root.joinpath("docker-config", "config.json").read_bytes() == b"{}\n"
+
+
+def test_sandbox_toolchain_resources_are_readable():
+    import json
+    from importlib.resources import files
+
+    root = files("pico._sandbox_toolchain")
+    manifest = json.loads(root.joinpath("manifest.json").read_text(encoding="utf-8"))
+    package = json.loads(root.joinpath("package.json").read_text(encoding="utf-8"))
+    lock = json.loads(root.joinpath("package-lock.json").read_text(encoding="utf-8"))
+
+    assert manifest["node"]["version"] == "24.18.0"
+    assert set(manifest["node"]["artifacts"]) == {
+        "darwin-arm64",
+        "darwin-x64",
+        "linux-arm64",
+        "linux-x64",
+    }
+    assert manifest["srt"]["version"] == "0.0.65"
+    assert manifest["f0"] == {
+        "status": "rejected",
+        "reason_code": "candidate_rejected",
+    }
+    assert manifest["product"] == {
+        "status": "blocked",
+        "reason_code": "sandbox_not_released",
+    }
+    assert package["dependencies"] == {"@anthropic-ai/sandbox-runtime": "0.0.65"}
+    assert lock["packages"]["node_modules/@anthropic-ai/sandbox-runtime"]["version"] == "0.0.65"
 
 
 def test_packaging_exposes_only_pico_cli_script():

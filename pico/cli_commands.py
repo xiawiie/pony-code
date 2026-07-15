@@ -23,6 +23,7 @@ from .providers.defaults import (
     MODEL_ENV_NAMES,
     PROVIDER_CHOICES,
 )
+from .sandbox_session import source_mutation_authority
 from .workspace import WorkspaceContext
 
 
@@ -37,21 +38,25 @@ EXAMPLES:
     pico config set-secret NAME [--stdin]
     pico --approval ask run "run the requested shell command"
     pico doctor
+    pico runs summary latest
     pico checkpoints show <checkpoint-id>
     pico checkpoints pending
     pico checkpoints resolve-pending <id> [--apply]
+    pico migrate status
 
 Available Commands:
   run          Run one prompt and exit
   repl         Start interactive REPL
   status       Show local workspace state
-  doctor       Check config, storage, auth, and connectivity
+  doctor       Check config, storage, auth, and sandbox readiness
+  sandbox      Inspect and manage Docker Sandbox sessions and image readiness
   init         Create or update non-secret project provider config
   config       Configuration inspection and set-secret input
   runs         Run artifact inspection
   sessions     Session inspection
   session      Canonical session invariant inspector
   checkpoints  Checkpoint recovery, pending review, and resolution
+  migrate      Inspect and apply explicit artifact migrations
   memory       Inspect and search memory files
   help         Help about any command
 
@@ -59,9 +64,10 @@ Flags:
   -h, --help       help for pico
       --format     output format for inspection commands: text or json
       --quiet      suppress non-essential human output
+      --sandbox    run shell tools in the managed sandbox (run/repl only)
 
 Security:
-    Approved complex shell is a human-authorized escape hatch; Pico provides no OS sandbox.
+    Host mode provides no OS sandbox; explicit Sandbox is fail-closed and still subject to approval.
 """
 
 
@@ -128,7 +134,11 @@ def handle_init(tokens, cwd, args):
 
     api_key_present = bool(api_key_name and existing.get(api_key_name))
     try:
-        written = write_project_env_assignments(root, assignments)
+        with source_mutation_authority(
+            Path.home() / ".pico" / "sandboxes",
+            root,
+        ):
+            written = write_project_env_assignments(root, assignments)
     except (OSError, RuntimeError, ValueError) as exc:
         raise CliError(
             code="config",

@@ -8,7 +8,9 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 import re
+import shlex
 import stat
+import unicodedata
 from functools import partial
 
 from . import security as securitylib
@@ -59,6 +61,120 @@ _RG_SENSITIVE_GLOBS = (
 _ALLOWED_ENV_TEMPLATES = frozenset(
     {".env.example", ".env.sample", ".env.template"}
 )
+
+
+
+
+_ALLOWED_EFFECT_CLASSES = frozenset({"read_only", "workspace_write", "memory_write"})
+
+
+@dataclass(frozen=True)
+class ToolDefinition:
+    name: str
+    schema: dict
+    description: str
+    effect_class: str
+    runner: object
+
+
+class ToolRegistry:
+    """工具 schema、描述与 effect class 的唯一注册真源。"""
+
+    def __init__(self):
+        self._definitions = {}
+
+    def register(self, name, *, schema, description, effect_class, runner):
+        if effect_class not in _ALLOWED_EFFECT_CLASSES or not callable(runner):
+            raise ValueError("invalid_tool_definition")
+        definition = ToolDefinition(
+            name=str(name),
+            schema=dict(schema),
+            description=str(description),
+            effect_class=effect_class,
+            runner=runner,
+        )
+        self._definitions[definition.name] = definition
+        return definition
+
+    def require(self, name):
+        return self._definitions[str(name)]
+
+    def get(self, name):
+        return self._definitions.get(str(name))
+
+
+def memory_write_intent(current_user, *, history=(), delegated=False):
+    """保守识别当前用户输入中的显式持久记忆意图。"""
+    del history  # 历史请求不得向当前 turn 继承授权。
+    if delegated:
+        return False
+    text = unicodedata.normalize("NFKC", str(current_user or "")).strip().casefold()
+    if not text or re.search(r"\b(?:do not|don't|dont|never)\s+(?:please\s+)?remember\b", text):
+        return False
+    if re.match(r"^/remember(?:\s|:|$)", text):
+        return True
+    if re.match(r"^(?:请记住|请保存到记忆|请存入记忆)(?:\s|[:：]|$|[一-鿿])", text):
+        return True
+    if re.match(r"^(?:remember|please remember)(?:\s|:|$)", text):
+        return True
+    return bool(re.match(r"^(?:please\s+)?save\b.+\b(?:to|in)\s+(?:the\s+)?memory\b", text))
+
+
+@dataclass(frozen=True)
+class ApprovedShellExecution:
+    argv: tuple
+    exact_command: str
+    execution_mode: str
+    executable: object
+    cwd: object
+    env: dict
+    timeout: int
+
+
+_SANDBOX_PRIVILEGED_EXECUTABLES = frozenset(
+    {"sudo", "doas", "pkexec", "open", "osascript", "launchctl"}
+)
+
+
+def sandbox_privilege_denial(
+    execution,
+    *,
+    sandbox_mode,
+    allow_git_metadata_writes=False,
+):
+    if not sandbox_mode:
+        return None
+    executable_name = Path(str(execution.executable)).name.casefold()
+    argv_name = Path(str(execution.argv[0])).name.casefold() if execution.argv else executable_name
+    command = str(getattr(execution, "exact_command", "") or "")
+    tokens = []
+    try:
+        tokens = shlex.split(command, posix=True)
+    except ValueError:
+        return "sandbox_privilege_denied"
+    # Inspect shell segments and wrapper payloads (sh -c, env, command) so an
+    # alias cannot turn a broker call into an apparently harmless argv.
+    normalized = re.sub(r"(?:&&|\|\||[;|])", " ", command)
+    try:
+        tokens.extend(shlex.split(normalized, posix=True))
+    except ValueError:
+        return "sandbox_privilege_denied"
+    expanded = [*tokens, *(str(value) for value in execution.argv)]
+    for token in tuple(expanded):
+        if any(character.isspace() for character in token):
+            try:
+                expanded.extend(shlex.split(token, posix=True))
+            except ValueError:
+                return "sandbox_privilege_denied"
+    names = {executable_name, argv_name}
+    names.update(Path(token).name.casefold() for token in expanded)
+    if any(name in _SANDBOX_PRIVILEGED_EXECUTABLES for name in names):
+        return "sandbox_privilege_denied"
+    if executable_name == "git" and not allow_git_metadata_writes:
+        git_subcommands = {"add", "commit", "reset", "checkout", "merge", "rebase", "update-index"}
+        if any(str(argument) in git_subcommands for argument in (*execution.argv[1:], *tokens)):
+            return "sandbox_git_metadata_write_denied"
+    return None
 
 
 class SensitiveToolError(ValueError):
@@ -177,11 +293,21 @@ def _lexical_tool_target(context, raw_path):
         raise ValueError("path must not be empty")
     root = Path(context.root).resolve(strict=True)
     source = Path(raw)
-    candidate = Path(
-        os.path.abspath(
-            os.fspath(source if source.is_absolute() else root / source)
+    if source.is_absolute() and getattr(
+        getattr(context, "sandbox_context", None),
+        "workspace_view",
+        None,
+    ) is not None:
+        try:
+            candidate = Path(context.path(raw))
+        except (OSError, RuntimeError, ValueError):
+            raise ValueError("path escapes workspace") from None
+    else:
+        candidate = Path(
+            os.path.abspath(
+                os.fspath(source if source.is_absolute() else root / source)
+            )
         )
-    )
     try:
         relative = candidate.relative_to(root)
     except ValueError:
@@ -583,6 +709,7 @@ class _ApprovedShellExecution:
     execution_mode: str
     executable: str
     timeout: int
+    sandbox_plan: object = None
 
 
 def _tool_run_shell(context, execution):
@@ -599,6 +726,7 @@ def _tool_run_shell(context, execution):
             cwd=context.root,
             timeout=execution.timeout,
             env=context.shell_env(),
+            return_timeout=True,
         )
     elif execution.execution_mode == "shell":
         result = run_hardened_command(
@@ -608,6 +736,7 @@ def _tool_run_shell(context, execution):
             cwd=context.root,
             timeout=execution.timeout,
             env=context.shell_env(),
+            return_timeout=True,
         )
     else:
         raise ValueError("unsupported approved execution mode")
@@ -615,6 +744,8 @@ def _tool_run_shell(context, execution):
         "stdout": result.stdout,
         "stderr": result.stderr,
         "exit_code": result.returncode,
+        "timed_out": result.timed_out,
+        "sandbox_outcome": "timeout" if result.timed_out else "not_applicable",
     }
 
 

@@ -143,6 +143,7 @@ class WorkspaceContext:
         recent_commits,
         project_docs,
         trusted_executables=None,
+        logical_root=None,
     ):
         self.cwd = cwd
         self.repo_root = repo_root
@@ -152,15 +153,27 @@ class WorkspaceContext:
         self.recent_commits = recent_commits
         self.project_docs = project_docs
         self.trusted_executables = dict(trusted_executables or {})
+        self.logical_root = str(logical_root or "")
 
     @classmethod
-    def build(cls, cwd, repo_root_override=None, executables=None):
+    def build(
+        cls,
+        cwd,
+        repo_root_override=None,
+        executables=None,
+        *,
+        inspect_git=True,
+        logical_root=None,
+        branch_override=None,
+        default_branch_override=None,
+        status_override=None,
+    ):
         cwd = Path(cwd).resolve()
-        lexical_root = discover_lexical_repo_root(cwd)
+        lexical_root = discover_lexical_repo_root(cwd) if inspect_git else cwd
         trusted_executables = (
             build_trusted_executables(lexical_root) if executables is None else dict(executables)
         )
-        git_executable = trusted_executables.get("git")
+        git_executable = trusted_executables.get("git") if inspect_git else None
 
         def git(args, fallback="", *, git_cwd, empty=None):
             if not git_executable:
@@ -228,45 +241,69 @@ class WorkspaceContext:
             global_agents_md = Path.home() / ".pico" / "AGENTS.md"
             global_agents_md = securitylib.require_regular_no_symlink(global_agents_md)
             add_doc("<global>/AGENTS.md", global_agents_md, 1500)
-        except (OSError, ValueError):
+        except (OSError, RuntimeError, ValueError):
             pass
 
         return cls(
             cwd=str(cwd),
             repo_root=str(repo_root),
-            branch=git(["branch", "--show-current"], "-", git_cwd=repo_root) or "-",
-            default_branch=(
-                lambda branch: branch[len("origin/") :] if branch.startswith("origin/") else branch
-            )(
-                git(
-                    ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
-                    "origin/main",
-                    git_cwd=repo_root,
-                )
-                or "origin/main"
+            branch=(
+                str(branch_override)
+                if branch_override is not None
+                else git(["branch", "--show-current"], "-", git_cwd=repo_root) or "-"
             ),
-            status=clip(
-                git(
-                    ["status", "--short"],
-                    "(unavailable)",
-                    git_cwd=repo_root,
-                    empty="clean",
-                ),
-                1500,
+            default_branch=(
+                str(default_branch_override)
+                if default_branch_override is not None
+                else (
+                    lambda branch: branch[len("origin/") :]
+                    if branch.startswith("origin/")
+                    else branch
+                )(
+                    git(
+                        ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
+                        "origin/main",
+                        git_cwd=repo_root,
+                    )
+                    or "origin/main"
+                )
+            ),
+            status=(
+                str(status_override)
+                if status_override is not None
+                else clip(
+                    git(
+                        ["status", "--short"],
+                        "(unavailable)",
+                        git_cwd=repo_root,
+                        empty="clean",
+                    ),
+                    1500,
+                )
             ),
             recent_commits=[],
             project_docs=docs,
             trusted_executables=trusted_executables,
+            logical_root=logical_root,
         )
 
     def stable_text(self):
         """稳定部分：cwd, repo_root, default_branch, project_docs。塞 stable prefix。"""
         docs = "\n".join(f"- {path}\n{snippet}" for path, snippet in self.project_docs.items()) or "- none"
+        display_root = self.logical_root or self.repo_root
+        display_cwd = display_root
+        if self.logical_root:
+            try:
+                relative = Path(self.cwd).relative_to(Path(self.repo_root))
+                if relative.parts:
+                    display_cwd = (Path(display_root) / relative).as_posix()
+            except ValueError:
+                display_cwd = display_root
         return textwrap.dedent(
             f"""\
             Workspace:
-            - cwd: {self.cwd}
-            - repo_root: {self.repo_root}
+            - cwd: {display_cwd}
+            - repo_root: {display_root}
             - default_branch: {self.default_branch}
             - project_docs:
             {docs}
@@ -303,5 +340,6 @@ class WorkspaceContext:
             "status": self.status,
             "recent_commits": list(self.recent_commits),
             "project_docs": dict(self.project_docs),
+            "logical_root": self.logical_root,
         }
         return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()

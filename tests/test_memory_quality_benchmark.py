@@ -563,7 +563,7 @@ def test_fake_mode_full_benchmark_outputs_zero_failures(capsys):
 
     payload = json.loads(capsys.readouterr().out)
     assert code == 0
-    assert payload["summary"]["total"] == 8
+    assert payload["summary"]["total"] == 9
     assert payload["summary"]["failed"] == 0
 
 

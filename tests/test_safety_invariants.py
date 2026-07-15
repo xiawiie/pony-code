@@ -650,5 +650,6 @@ def test_configured_secret_env_names_are_redacted_in_trace_and_report(tmp_path):
     assert gh_pat not in trace_text
     assert github_pat not in report_text
     assert gh_pat not in report_text
-    assert trace_text.count("<redacted>") >= 4
+    assert "GITHUB_PAT" not in trace_text
+    assert "GH_PAT" not in trace_text
     assert report_text.count("<redacted>") >= 4

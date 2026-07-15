@@ -98,14 +98,31 @@ def test_help_command_shows_examples(capsys):
     assert "pico — Local coding agent" in out
     assert "USAGE:" in out
     assert "Available Commands:" in out
+    assert "--sandbox    run shell tools" in out
     assert 'pico run "inspect the failing tests"' in out
     assert "pico config set-secret NAME [--stdin]" in out
     assert "pico --approval ask run" in out
     assert "pico checkpoints show <checkpoint-id>" in out
     assert "pico checkpoints pending" in out
+    assert "pico runs summary latest" in out
+    assert "migrate      Inspect and apply explicit artifact migrations" in out
     assert "Compatibility:" not in out
     assert "no OS sandbox" in out
     assert "providers list" not in out
+
+
+def test_sandbox_flag_is_rejected_for_non_agent_commands(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setattr(
+        "pico.cli._dispatch_status",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("must not dispatch")),
+    )
+
+    code = main(["--cwd", str(tmp_path), "--sandbox", "status"])
+
+    assert code == 2
+    assert "--sandbox is only valid" in capsys.readouterr().err
 
 
 def test_help_flag_uses_root_help_without_argparse_dump(capsys):

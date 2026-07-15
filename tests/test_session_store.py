@@ -48,6 +48,8 @@ def test_session_store_saves_loads_and_finds_latest_session(tmp_path):
         {"role": "user", "content": "second", "_pico_meta": {}},
     ]
     validate_messages(loaded["messages"], require_meta=True)
+    os.utime(first_path, ns=(1, 1))
+    os.utime(second_path, ns=(2, 2))
     assert store.latest() == second_path.stem
 
 
@@ -127,6 +129,85 @@ def test_session_store_load_refuses_symlink_file(tmp_path):
         store.load("linked")
 
     assert outside.read_bytes() == original
+
+
+def test_session_store_load_rejects_oversized_record(tmp_path, monkeypatch):
+    store = SessionStore(tmp_path / ".pico" / "sessions")
+    monkeypatch.setattr(session_store_module, "MAX_SESSION_BYTES", 8)
+    store.lock_path.touch(mode=0o600)
+    path = store.path("oversized")
+    path.write_bytes(b"x" * 9)
+
+    with pytest.raises(ValueError, match="too large"):
+        store.load("oversized")
+
+    assert path.read_bytes() == b"x" * 9
+
+
+def test_session_store_save_bounds_existing_record_before_backup(
+    tmp_path,
+    monkeypatch,
+):
+    store = SessionStore(tmp_path / ".pico" / "sessions")
+    session = _session("oversized_existing")
+    rendered = (json.dumps(session, indent=2) + "\n").encode("utf-8")
+    monkeypatch.setattr(session_store_module, "MAX_SESSION_BYTES", len(rendered))
+    path = store.path(session["id"])
+    original = b"x" * (len(rendered) + 1)
+    path.write_bytes(original)
+
+    with pytest.raises(ValueError, match="private file too large"):
+        store.save(session)
+
+    assert path.read_bytes() == original
+    assert not list(store.root.glob(".*.bak"))
+
+
+def test_session_store_save_advances_after_unlinked_backup_wipe_failure(
+    tmp_path,
+    monkeypatch,
+):
+    store = SessionStore(tmp_path / ".pico" / "sessions")
+    session = _session("cleanup_commit", "first")
+    store.save(session)
+    monkeypatch.setattr(
+        security_module.os,
+        "ftruncate",
+        lambda _descriptor, _length: (_ for _ in ()).throw(
+            OSError("open-unlinked wipe failed")
+        ),
+    )
+
+    session["messages"].append(
+        {"role": "user", "content": "second", "_pico_meta": {}}
+    )
+    assert store.save(session) == store.path(session["id"])
+    session["messages"].append(
+        {"role": "user", "content": "third", "_pico_meta": {}}
+    )
+    assert store.save(session) == store.path(session["id"])
+
+    assert store.load(session["id"])["messages"] == session["messages"]
+    assert not list(store.root.glob(".*.bak"))
+
+
+def test_session_store_save_rejects_oversized_record_without_replacing_canonical(
+    tmp_path,
+    monkeypatch,
+):
+    store = SessionStore(tmp_path / ".pico" / "sessions")
+    session = _session("bounded", "ok")
+    path = store.save(session)
+    canonical = path.read_bytes()
+    monkeypatch.setattr(session_store_module, "MAX_SESSION_BYTES", len(canonical))
+
+    assert store.save(session) == path
+    assert store.load("bounded") == session
+
+    with pytest.raises(ValueError, match="private file too large"):
+        store.save(_session("bounded", "x" * (len(canonical) + 1)))
+
+    assert path.read_bytes() == canonical
 
 
 @pytest.mark.parametrize("version", [None, True, 1.0, "1", 2])

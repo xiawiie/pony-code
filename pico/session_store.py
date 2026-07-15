@@ -18,6 +18,7 @@ from .security import (
 
 SESSION_RECORD_TYPE = "session"
 SESSION_FORMAT_VERSION = 1
+MAX_SESSION_BYTES = 8 * 1024 * 1024
 
 
 class SessionFormatError(ValueError):
@@ -143,14 +144,14 @@ def _validate_payload(payload, session_id):
     return payload
 
 
-def _atomic_write_locked(path, payload, root, root_identity):
-    rendered = (json.dumps(payload, indent=2) + "\n").encode("utf-8")
+def _atomic_write_locked(path, rendered, root, root_identity):
     write_private_bytes_atomic(
         path,
         rendered,
         trusted_root=root,
         trusted_root_identity=root_identity,
         error="session temp changed",
+        max_existing_bytes=MAX_SESSION_BYTES,
     )
 
 
@@ -179,8 +180,11 @@ class SessionStore:
         payload = self._redactor(deepcopy(session))
         _validate_payload(payload, session_id)
         path = self.path(session_id)
+        rendered = (json.dumps(payload, indent=2) + "\n").encode("utf-8")
+        if len(rendered) > MAX_SESSION_BYTES:
+            raise ValueError("private file too large")
         with file_lock.locked_file(self.lock_path):
-            _atomic_write_locked(path, payload, self.root, self._root_identity)
+            _atomic_write_locked(path, rendered, self.root, self._root_identity)
         return path
 
     def load(self, session_id):
@@ -194,6 +198,7 @@ class SessionStore:
             self.path(session_id),
             trusted_root=self.root,
             trusted_root_identity=self._root_identity,
+            max_bytes=MAX_SESSION_BYTES,
         )
         payload = _decode_json_object(raw)
         _validate_payload(payload, session_id)

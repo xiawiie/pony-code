@@ -181,7 +181,7 @@ def test_memory_text_returns_working_memory_json(tmp_path, monkeypatch):
     }
 
 
-def test_build_report_includes_top_level_working_memory(tmp_path, monkeypatch):
+def test_build_report_excludes_working_memory_content(tmp_path, monkeypatch):
     agent = _build_agent(tmp_path, monkeypatch)
     agent.memory.set_task_summary("Report task")
     agent.memory.remember_file("pico/runtime.py")
@@ -191,10 +191,9 @@ def test_build_report_includes_top_level_working_memory(tmp_path, monkeypatch):
 
     report = agent.build_report(task_state)
 
-    assert report["working_memory"] == {
-        "task_summary": "Report task",
-        "recent_files": ["pico/runtime.py"],
-    }
+    assert "working_memory" not in report
+    assert "Report task" not in json.dumps(report)
+    assert "pico/runtime.py" not in json.dumps(report)
 
 
 def test_normal_ask_final_answer_creates_checkpoint_and_syncs_working_memory(tmp_path, monkeypatch):

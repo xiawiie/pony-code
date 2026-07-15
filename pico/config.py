@@ -29,6 +29,7 @@ from .security import (
 
 
 ENV_KEY_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+MAX_PROJECT_ENV_BYTES = 1024 * 1024
 _SECRET_QUERY_KEYS = {
     "api_key",
     "access_key",
@@ -113,7 +114,7 @@ def read_project_env_with_status(start, warn=True):
     env_path = project_env_path(start)
     try:
         initial_mode = env_path.lstat().st_mode
-        text = read_private_text(env_path)
+        text = read_private_text(env_path, max_bytes=MAX_PROJECT_ENV_BYTES)
     except FileNotFoundError:
         return {}, project_env_metadata(start, "missing")
     loaded = {}
@@ -214,16 +215,21 @@ def write_project_env_assignments(workspace_root, assignments):
                 env_path,
                 trusted_root=root,
                 trusted_root_identity=root_identity,
+                max_bytes=MAX_PROJECT_ENV_BYTES,
             )
         except FileNotFoundError:
             existing_text = ""
         content, result = _render_project_env_update(existing_text, assignments)
+        rendered = content.encode("utf-8")
+        if len(rendered) > MAX_PROJECT_ENV_BYTES:
+            raise ValueError("private file too large")
         write_private_bytes_atomic(
             env_path,
-            content.encode("utf-8"),
+            rendered,
             trusted_root=root,
             trusted_root_identity=root_identity,
             error="project env temp changed",
+            max_existing_bytes=MAX_PROJECT_ENV_BYTES,
         )
     return result
 

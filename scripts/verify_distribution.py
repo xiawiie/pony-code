@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 from email.parser import BytesParser
+import json
 import os
 from pathlib import Path, PurePosixPath
 import subprocess
@@ -20,6 +21,13 @@ PROJECT_SUMMARY = (
     "Small local coding agent for DeepSeek, OpenAI-compatible, "
     "Anthropic-compatible, and Ollama models"
 )
+PACKAGE_DATA_FILES = {
+    "pico/_docker_sandbox/image-manifest.json",
+    "pico/_docker_sandbox/docker-config/config.json",
+    "pico/_sandbox_toolchain/manifest.json",
+    "pico/_sandbox_toolchain/package.json",
+    "pico/_sandbox_toolchain/package-lock.json",
+}
 EGG_INFO_FILES = {
     "PKG-INFO",
     "SOURCES.txt",
@@ -55,10 +63,32 @@ def _run(*args: str, cwd: Path | None = None, env: dict[str, str] | None = None)
 
 def _tracked_package_files(repo: Path) -> set[str]:
     output = _run("git", "ls-files", "--", "pico", cwd=repo)
-    files = {line for line in output.splitlines() if line}
-    if not files or any(not name.endswith(".py") for name in files):
+    files = {
+        line
+        for line in output.splitlines()
+        if line and os.path.lexists(repo / line)
+    }
+    if not files or any(
+        not name.endswith(".py") and name not in PACKAGE_DATA_FILES
+        for name in files
+    ):
         raise AssertionError(f"unexpected tracked package files: {sorted(files)}")
-    return files
+    untracked_package_data = PACKAGE_DATA_FILES - files
+    if untracked_package_data:
+        raise AssertionError(
+            f"untracked package data files: {sorted(untracked_package_data)}"
+        )
+    source_python = {
+        path.relative_to(repo).as_posix()
+        for path in (repo / "pico").rglob("*.py")
+        if path.is_file()
+    }
+    untracked_python = source_python - files
+    if untracked_python:
+        raise AssertionError(
+            f"untracked package Python files: {sorted(untracked_python)}"
+        )
+    return files | PACKAGE_DATA_FILES
 
 
 def _single_artifact(dist_dir: Path, pattern: str) -> Path:
@@ -132,6 +162,22 @@ def verify_wheel(wheel: Path, tracked_package_files: set[str], readme: str) -> N
     assert wheel_metadata.get_all("Tag") == ["py3-none-any"]
 
 
+def _smoke_env(home: Path, bin_dir: Path) -> dict[str, str]:
+    env = os.environ.copy()
+    for name in tuple(env):
+        if name.startswith("PICO_") or name in {
+            "PYTHONHOME",
+            "PYTHONPATH",
+            "OPENAI_API_KEY",
+            "ANTHROPIC_API_KEY",
+            "DEEPSEEK_API_KEY",
+        }:
+            env.pop(name)
+    env["HOME"] = str(home)
+    env["PATH"] = os.pathsep.join((str(bin_dir), env.get("PATH", "")))
+    return env
+
+
 def install_smoke(wheel: Path) -> None:
     with tempfile.TemporaryDirectory(prefix="pico-wheel-smoke-") as raw_tmp:
         root = Path(raw_tmp)
@@ -145,16 +191,7 @@ def install_smoke(wheel: Path) -> None:
         bin_dir = environment / ("Scripts" if os.name == "nt" else "bin")
         python = bin_dir / ("python.exe" if os.name == "nt" else "python")
         pico = bin_dir / ("pico.exe" if os.name == "nt" else "pico")
-        env = os.environ.copy()
-        for name in tuple(env):
-            if name.startswith("PICO_") or name in {
-                "OPENAI_API_KEY",
-                "ANTHROPIC_API_KEY",
-                "DEEPSEEK_API_KEY",
-            }:
-                env.pop(name)
-        env["HOME"] = str(home)
-        env["PATH"] = os.pathsep.join((str(bin_dir), env.get("PATH", "")))
+        env = _smoke_env(home, bin_dir)
 
         _run(str(python), "-m", "pip", "install", "--no-deps", str(wheel.resolve()), env=env)
         _run(str(python), "-m", "pip", "check", env=env)
@@ -167,14 +204,140 @@ def install_smoke(wheel: Path) -> None:
             cwd=cwd,
             env=env,
         )
+        _run(
+            str(python),
+            "-c",
+            "from importlib.resources import files; "
+            "root=files('pico._sandbox_toolchain'); "
+            "[root.joinpath(name).read_bytes() for name in "
+            "('manifest.json','package.json','package-lock.json')]",
+            cwd=cwd,
+            env=env,
+        )
+        _run(
+            str(python),
+            "-c",
+            "from importlib.resources import files; "
+            "root=files('pico._docker_sandbox'); "
+            "root.joinpath('image-manifest.json').read_bytes(); "
+            "root.joinpath('docker-config','config.json').read_bytes()",
+            cwd=cwd,
+            env=env,
+        )
+        resource_digest_code = (
+            "import hashlib,json; from importlib.resources import files; "
+            "root=files('pico._docker_sandbox'); "
+            "names=('image-manifest.json','docker-config/config.json'); "
+            "print(json.dumps({name:hashlib.sha256(root.joinpath(*name.split('/')).read_bytes()).hexdigest() "
+            "for name in names},sort_keys=True))"
+        )
+        resources_before = _run(
+            str(python),
+            "-c",
+            resource_digest_code,
+            cwd=cwd,
+            env=env,
+        ).strip()
+        status = json.loads(
+            _run(
+                str(pico),
+                "--format",
+                "json",
+                "sandbox",
+                "status",
+                cwd=cwd,
+                env=env,
+            )
+        )
+        assert status["ok"] is True
+        assert status["kind"] == "docker_sandbox_status"
+        assert status["data"]["network_performed"] is False
+        assert status["data"]["mutation_performed"] is False
+        assert status["data"]["runtime_authorization"]["kind"] == "local"
+        assert status["data"]["product_enablement"]["status"] == "blocked"
+        assert status["data"]["capacity"]["staging_bytes"] == 0
+        assert not (home / ".pico").exists()
+        prepare = subprocess.run(
+            (str(pico), "--format", "json", "sandbox", "prepare"),
+            cwd=cwd,
+            env=env,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        prepare_payload = json.loads(prepare.stdout)
+        assert prepare.returncode in {0, 3}, prepare.stderr
+        if prepare.returncode == 0:
+            prepared = prepare_payload["data"]
+            assert prepared["network_performed"] is False
+            assert prepared["mutation_performed"] is False
+            assert prepared["runtime_authorization"]["kind"] == "local"
+        else:
+            assert prepare_payload["error"]["code"] in {
+                "sandbox_image_not_released",
+                "sandbox_image_missing",
+                "sandbox_image_identity_mismatch",
+                "docker_cli_unavailable",
+                "docker_endpoint_untrusted",
+                "docker_daemon_unavailable",
+                "docker_server_unsupported",
+                "docker_seccomp_unavailable",
+                "docker_rootless_required",
+            }
+        assert not (home / ".pico").exists()
+        resources_after = _run(
+            str(python),
+            "-c",
+            resource_digest_code,
+            cwd=cwd,
+            env=env,
+        ).strip()
+        assert resources_after == resources_before
         _run(str(pico), "--help", cwd=cwd, env=env)
         _run(str(pico), "doctor", "--offline", cwd=cwd, env=env)
+
+
+def offline_bundle_smoke(wheel: Path) -> None:
+    """Exercise the packaged offline bundle helpers in a clean install."""
+    with tempfile.TemporaryDirectory(prefix="pico-offline-bundle-") as raw_tmp:
+        root = Path(raw_tmp)
+        environment = root / "venv"
+        home = root / "home"
+        cwd = root / "empty-project"
+        home.mkdir()
+        cwd.mkdir()
+        venv.EnvBuilder(with_pip=True, clear=True).create(environment)
+        bin_dir = environment / ("Scripts" if os.name == "nt" else "bin")
+        python = bin_dir / ("python.exe" if os.name == "nt" else "python")
+        env = _smoke_env(home, bin_dir)
+        _run(
+            str(python),
+            "-m",
+            "pip",
+            "install",
+            "--no-deps",
+            str(wheel.resolve()),
+            cwd=cwd,
+            env=env,
+        )
+        code = (
+            "from pathlib import Path; import tempfile, os, sys; "
+            "import pico.sandbox_lifecycle as lifecycle; "
+            "assert Path(lifecycle.__file__).resolve().is_relative_to(Path(sys.argv[1]).resolve()); "
+            "root=Path(tempfile.mkdtemp()).resolve(); src=root/'src'; src.mkdir(); "
+            "tool=src/'node'; tool.write_bytes(b'node'); os.chmod(tool, 0o700); "
+            "arc=root/'bundle.tar'; lifecycle.export_bundle(src, arc, identity='smoke', platform='test', arch='x'); "
+            "dst=root/'dst'; lifecycle.import_bundle(arc, dst, expected_platform='test', expected_arch='x'); "
+            "assert (dst/'node').stat().st_mode & 0o111"
+        )
+        _run(str(python), "-c", code, str(environment), cwd=cwd, env=env)
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dist-dir", type=Path, default=Path("dist"))
     parser.add_argument("--install-smoke", action="store_true")
+    parser.add_argument("--offline-bundle-smoke", action="store_true")
     args = parser.parse_args()
 
     repo = Path(__file__).resolve().parents[1]
@@ -186,6 +349,8 @@ def main() -> int:
     verify_wheel(wheel, tracked, (repo / "README.md").read_text(encoding="utf-8"))
     if args.install_smoke:
         install_smoke(wheel)
+    if args.offline_bundle_smoke:
+        offline_bundle_smoke(wheel)
     print(f"verified {sdist.name} and {wheel.name}")
     return 0
 

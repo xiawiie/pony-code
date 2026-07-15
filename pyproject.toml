@@ -22,6 +22,8 @@ dev = [
 [tool.setuptools]
 packages = [
   "pico",
+  "pico._docker_sandbox",
+  "pico._sandbox_toolchain",
   "pico.context",
   "pico.evaluation",
   "pico.features",
@@ -30,6 +32,13 @@ packages = [
 ]
 include-package-data = false
 
+[tool.setuptools.package-data]
+"pico._docker_sandbox" = ["image-manifest.json", "docker-config/config.json"]
+"pico._sandbox_toolchain" = ["manifest.json", "package.json", "package-lock.json"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+
+[tool.ruff]
+extend-exclude = [".claude", ".superpowers"]

@@ -4,6 +4,7 @@ import getpass
 import json
 import os
 import stat
+import subprocess
 import sys
 from pathlib import Path
 from urllib import error, request
@@ -23,7 +24,128 @@ from .config import (
 from .providers.defaults import DEFAULT_BASE_URLS, DEFAULT_MODELS, DEFAULT_PROVIDER  # noqa: F401
 from .security import is_secret_env_name, require_directory_no_symlink
 from .safe_subprocess import build_trusted_executables
+from .sandbox_session import source_mutation_authority
+from .memory.diagnostics import collect_memory_diagnostics
 from .workspace import WorkspaceContext
+
+_DEFAULT_CHECK_PROVIDER_CONNECTIVITY = None
+
+
+def _doctor_check(status, reason_code, remediation=""):
+    return {
+        "status": status,
+        "reason_code": reason_code,
+        "remediation": remediation,
+    }
+
+
+def _unavailable_memory_diagnostic():
+    return {
+        "check_id": "memory",
+        "status": "unknown",
+        "reason_code": "memory_diagnostics_incomplete",
+        "remediation": "resolve Memory filesystem or Git access and rerun pico doctor",
+        "issues": [],
+    }
+
+
+def _collect_docker_sandbox_diagnostic(*, offline=False):
+    try:
+        from .cli_docker_sandbox import sandbox_status_payload
+
+        readiness = sandbox_status_payload()
+    except (OSError, RuntimeError, ValueError, KeyError, TypeError):
+        readiness = {
+            "status": "not_ready",
+            "reason_code": "sandbox_diagnostic_failed",
+            "network_performed": False,
+            "mutation_performed": False,
+            "capacity": {
+                "active_count": 0,
+                "pending_count": 0,
+                "cleanup_pending_count": 0,
+                "staging_bytes": 0,
+                "oldest_age_seconds": 0,
+                "orphan_verified_count": 0,
+                "orphan_unknown_count": 1,
+                "reconciliation_required_count": 0,
+            },
+        }
+    ready = readiness.get("status") == "ready"
+    capacity = readiness.get("capacity") or {}
+    state_ready = capacity.get("orphan_unknown_count", 1) == 0
+    runtime_authorization = readiness.get("runtime_authorization") or {
+        "status": "blocked",
+        "kind": "local",
+        "reason_code": "sandbox_runtime_authorization_invalid",
+    }
+    runtime_ready = (
+        runtime_authorization.get("status") == "enabled"
+        and runtime_authorization.get("kind") in {"local", "product", "candidate"}
+    )
+    product_enablement = readiness.get("product_enablement") or {
+        "status": "blocked",
+        "reason_code": "sandbox_product_not_enabled",
+    }
+    product_ready = product_enablement.get("status") == "enabled"
+    if not ready:
+        reason_code = str(
+            readiness.get("reason_code") or "sandbox_diagnostic_failed"
+        )
+    elif not state_ready:
+        reason_code = "sandbox_state_invalid"
+    elif not runtime_ready:
+        reason_code = str(
+            runtime_authorization.get("reason_code")
+            or "sandbox_runtime_authorization_invalid"
+        )
+    else:
+        reason_code = "ready"
+    return {
+        "status": "ready" if ready and state_ready and runtime_ready else "not_ready",
+        "reason_code": reason_code,
+        "implementation": "docker_container",
+        "offline": bool(offline),
+        "readiness": readiness,
+        "runtime_authorization": runtime_authorization,
+        "product_enablement": product_enablement,
+        "checks": {
+            "readiness": _doctor_check(
+                "pass" if ready else "fail",
+                "ready" if ready else reason_code,
+                "" if ready else "pico sandbox status",
+            ),
+            "state_integrity": _doctor_check(
+                "pass" if state_ready else "review_required",
+                "state_verified" if state_ready else "sandbox_state_invalid",
+                "" if state_ready else "pico sandbox list",
+            ),
+            "runtime_authorization": _doctor_check(
+                "pass" if runtime_ready else "blocked",
+                (
+                    str(runtime_authorization.get("reason_code"))
+                    if runtime_ready
+                    else str(
+                        runtime_authorization.get("reason_code")
+                        or "sandbox_runtime_authorization_invalid"
+                    )
+                ),
+                "" if runtime_ready else "pico sandbox status",
+            ),
+            "product_enablement": _doctor_check(
+                "pass" if product_ready else "not_applicable",
+                (
+                    "product_enablement_verified"
+                    if product_ready
+                    else str(
+                        product_enablement.get("reason_code")
+                        or "sandbox_product_not_enabled"
+                    )
+                ),
+                "",
+            ),
+        },
+    }
 
 
 def collect_status(cwd, args=None):
@@ -39,7 +161,7 @@ def collect_status(cwd, args=None):
         from .recovery_manager import collect_recovery_review_items
 
         review_items = collect_recovery_review_items(
-            CheckpointStore(root), root
+            CheckpointStore(root, read_only=True), root
         )
         active_reviews = (
             review_items["tool_changes"]
@@ -137,10 +259,11 @@ def collect_doctor(cwd, args=None, offline=False):
     }
     diagnostic_base_url = dict(config["base_url"])
     diagnostic_base_url["value"] = _redact_url_for_diagnostics(diagnostic_base_url["value"])
+    checker = check_provider_connectivity
     provider_connectivity = (
         {"status": "skipped", "category": "provider_connectivity", "message": "offline mode"}
-        if offline
-        else check_provider_connectivity(config)
+        if offline or checker is _DEFAULT_CHECK_PROVIDER_CONNECTIVITY
+        else checker(config)
     )
     checkpoints_root = pico_root / "checkpoints"
     security = _collect_security_status(
@@ -148,6 +271,22 @@ def collect_doctor(cwd, args=None, offline=False):
         project_env_info,
         pico_root,
     )
+    sandbox = _collect_docker_sandbox_diagnostic(offline=offline)
+    try:
+        memory = collect_memory_diagnostics(
+            root,
+            git_executable=workspace.trusted_executables.get("git"),
+        )
+    except (
+        OSError,
+        RuntimeError,
+        ValueError,
+        KeyError,
+        TypeError,
+        subprocess.SubprocessError,
+        TimeoutError,
+    ):
+        memory = _unavailable_memory_diagnostic()
     doc_hints = []
     if (root / "CLAUDE.md").exists() and not (root / "AGENTS.md").exists():
         doc_hints.append(
@@ -179,6 +318,8 @@ def collect_doctor(cwd, args=None, offline=False):
             "checkpoints": _storage_status(checkpoints_root / "records"),
         },
         "recovery_store": _storage_status(checkpoints_root),
+        "sandbox": sandbox,
+        "memory": memory,
         "security": security,
         "project_docs": {"hints": doc_hints},
     }
@@ -186,6 +327,7 @@ def collect_doctor(cwd, args=None, offline=False):
 
 def _unavailable_workspace_doctor(*, offline):
     connectivity_message = "offline mode" if offline else "workspace unavailable"
+    sandbox = _collect_docker_sandbox_diagnostic(offline=offline)
     return {
         "workspace": {"status": "review_required", "repo_root": ""},
         "project_env": {
@@ -214,6 +356,8 @@ def _unavailable_workspace_doctor(*, offline):
             "checkpoints": "review_required",
         },
         "recovery_store": "review_required",
+        "sandbox": sandbox,
+        "memory": _unavailable_memory_diagnostic(),
         "security": {
             "status": "review_required",
             "project_env": {"status": "review_required", "mode": ""},
@@ -266,6 +410,48 @@ def handle_doctor(tokens, cwd, args):
     data["config"] = _redact_mapping_values(data["config"], redactor)
     data["credentials"] = _redact_mapping_values(data["credentials"], redactor)
     data["provider_connectivity"] = redactor(data["provider_connectivity"])
+    sandbox = data.get("sandbox", {})
+    runtime_authorization = sandbox.get("runtime_authorization", {})
+    readiness_authorization = (sandbox.get("readiness") or {}).get(
+        "runtime_authorization",
+        {},
+    )
+    authorization_check = (sandbox.get("checks") or {}).get(
+        "runtime_authorization",
+        {},
+    )
+    data["sandbox"] = redactor(sandbox)
+    if isinstance(runtime_authorization, dict):
+        # This is status metadata, but the generic redactor treats every
+        # ``*_authorization`` mapping as a credential-bearing value.
+        data["sandbox"]["runtime_authorization"] = {
+            key: redactor(runtime_authorization[key])
+            for key in ("status", "kind", "reason_code")
+            if key in runtime_authorization
+        }
+    if isinstance(readiness_authorization, dict):
+        data["sandbox"]["readiness"]["runtime_authorization"] = {
+            key: redactor(readiness_authorization[key])
+            for key in ("status", "kind", "reason_code")
+            if key in readiness_authorization
+        }
+    if isinstance(authorization_check, dict):
+        data["sandbox"]["checks"]["runtime_authorization"] = {
+            key: redactor(authorization_check[key])
+            for key in ("status", "reason_code", "remediation")
+            if key in authorization_check
+        }
+    memory = data.get("memory") or _unavailable_memory_diagnostic()
+    data["memory"] = redactor({
+        "check_id": memory.get("check_id", "memory"),
+        "status": memory.get("status", "unknown"),
+        "reason_code": memory.get("reason_code", "memory_diagnostics_incomplete"),
+        "remediation": memory.get("remediation", ""),
+        "issues": [
+            dict(item)
+            for item in memory.get("issues", [])
+        ],
+    })
     data["security"] = redactor(data["security"])
     data["project_docs"] = redactor(data["project_docs"])
     return print_result("doctor", data, args, _render_doctor)
@@ -340,7 +526,11 @@ def _handle_set_secret(tokens, cwd, args):
     workspace = WorkspaceContext.build(cwd)
     root = Path(workspace.repo_root)
     try:
-        written = write_project_env_assignments(root, {name: value})
+        with source_mutation_authority(
+            Path.home() / ".pico" / "sandboxes",
+            root,
+        ):
+            written = write_project_env_assignments(root, {name: value})
     except (OSError, RuntimeError, ValueError) as exc:
         raise CliError(
             code="config",
@@ -406,6 +596,9 @@ def check_provider_connectivity(config, timeout=2):
             "url": diagnostic_url,
             "message": f"{type(exc).__name__}: provider connectivity check failed",
         }
+
+
+_DEFAULT_CHECK_PROVIDER_CONNECTIVITY = check_provider_connectivity
 
 
 def _check_ollama_model(config, response, result):
@@ -510,7 +703,9 @@ def _collect_security_status(root, project_env_info, pico_root):
         from .checkpoint_store import CheckpointStore
         from .recovery_manager import collect_recovery_review_items
 
-        reviews = collect_recovery_review_items(CheckpointStore(root), root)
+        reviews = collect_recovery_review_items(
+            CheckpointStore(root, read_only=True), root
+        )
     except (OSError, RuntimeError, TypeError, ValueError):
         review_inspection_failed = True
         reviews = {
@@ -742,6 +937,8 @@ def _render_doctor(data):
     security = data["security"]
     security_executables = security["trusted_executables"]
     recovery_review = security["recovery_review"]
+    sandbox = data.get("sandbox", {})
+    memory = data.get("memory", {"status": "unknown", "issues": []})
     lines = [
         "Pico doctor — CLI health check",
         "",
@@ -768,6 +965,41 @@ def _render_doctor(data):
         _line("runs", storage["runs"]),
         _line("checkpoints", storage["checkpoints"]),
         _line("recovery", data["recovery_store"]),
+        "",
+        "Sandbox",
+        _line("status", sandbox.get("status", "unknown")),
+        _line("reason", sandbox.get("reason_code", "unknown")),
+        _line("readiness", (sandbox.get("readiness") or {}).get("status", "unknown")),
+        _line(
+            "runtime authorization",
+            (sandbox.get("runtime_authorization") or {}).get("kind", "unknown"),
+        ),
+        _line(
+            "product enablement",
+            (sandbox.get("product_enablement") or {}).get("status", "unknown"),
+        ),
+        *(
+            _line(
+                check_id,
+                f"{item.get('status', 'unknown')} ({item.get('reason_code', 'unknown')})",
+            )
+            for check_id, item in (sandbox.get("checks") or {}).items()
+        ),
+        "",
+        "Memory",
+        _line("check", memory.get("check_id", "memory")),
+        _line("status", memory.get("status", "unknown")),
+        _line("reason", memory.get("reason_code", "memory_diagnostics_incomplete")),
+        _line("remediation", memory.get("remediation", "") or "-"),
+        _line("issues", len(memory.get("issues", []))),
+        *(
+            _line(
+                "issue",
+                f"{item.get('path', '')!r} {item.get('reason_code', 'unknown')} "
+                f"count={item.get('count', 0)} limit={item.get('limit', 0)}",
+            )
+            for item in memory.get("issues", [])
+        ),
         "",
         "Security",
         _line("status", security["status"]),

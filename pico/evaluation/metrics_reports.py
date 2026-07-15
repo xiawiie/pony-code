@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 
+from ..observability import RunArtifactError, load_run_artifacts
 from .metrics_common import (
     CONTEXT_ABLATION_FORMAT_VERSION,
     DEFAULT_CORE_REPORT_PATH,
@@ -90,13 +91,11 @@ def aggregate_run_artifacts(runs_root):
     stop_reasons = {}
 
     for run_dir in run_dirs:
-        report_path = run_dir / "report.json"
-        trace_path = run_dir / "trace.jsonl"
-        if report_path.exists():
-            reports.append(json.loads(report_path.read_text(encoding="utf-8")))
-        events = []
-        if trace_path.exists():
-            events = [json.loads(line) for line in trace_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        try:
+            report, events = load_run_artifacts(runs_root, run_dir.name)
+        except RunArtifactError:
+            continue
+        reports.append(report)
         run_durations.append(_infer_run_duration_ms(events))
         for event in events:
             if event.get("event") == "prompt_built" and event.get("duration_ms") is not None:
@@ -115,36 +114,36 @@ def aggregate_run_artifacts(runs_root):
             if event.get("duration_ms") is not None:
                 tool_durations.append(float(event["duration_ms"]))
 
-    tool_steps = [int(report.get("tool_steps", 0)) for report in reports]
-    attempts = [int(report.get("attempts", 0)) for report in reports]
+    tool_steps = [int(report.get("tools", {}).get("calls", 0)) for report in reports]
+    attempts = [int(report.get("model", {}).get("attempts", 0)) for report in reports]
     request_messages_chars = [
-        int((report.get("last_request_metadata") or {}).get("messages_chars", 0))
+        int((report.get("context") or {}).get("messages_chars", 0))
         for report in reports
     ]
     cached_tokens = [
-        int((report.get("completion_usage_totals") or {}).get("cached_tokens", 0) or 0)
+        int((report.get("model", {}).get("usage") or {}).get("cached_tokens", 0) or 0)
         for report in reports
     ]
     cache_hits = [
-        bool((report.get("completion_usage_totals") or {}).get("cache_hit"))
+        bool((report.get("model", {}).get("usage") or {}).get("cache_hit"))
         for report in reports
     ]
     input_tokens = [
-        int((report.get("completion_usage_totals") or {}).get("input_tokens", 0) or 0)
+        int((report.get("model", {}).get("usage") or {}).get("input_tokens", 0) or 0)
         for report in reports
     ]
     prefix_reused = [
-        not bool((report.get("last_request_metadata") or {}).get("prefix_changed"))
+        not bool((report.get("context") or {}).get("prefix_changed"))
         for report in reports
-        if "prefix_changed" in (report.get("last_request_metadata") or {})
+        if "prefix_changed" in (report.get("context") or {})
     ]
     for report in reports:
-        stop_reason = str(report.get("stop_reason", "")).strip()
+        stop_reason = str(report.get("run", {}).get("stop_reason", "")).strip()
         if stop_reason:
             stop_reasons[stop_reason] = stop_reasons.get(stop_reason, 0) + 1
 
     return {
-        "run_count": len(reports) if reports else len(run_dirs),
+        "run_count": len(reports),
         "avg_tool_steps": _safe_mean(tool_steps),
         "avg_attempts": _safe_mean(attempts),
         "avg_request_messages_chars": _safe_mean(request_messages_chars),

@@ -70,6 +70,30 @@ def test_project_env_never_falls_back_to_parent(tmp_path):
     assert read_project_env(child, warn=False) == {}
 
 
+def test_project_env_read_and_write_are_bounded(tmp_path, monkeypatch):
+    monkeypatch.setattr(config_module, "MAX_PROJECT_ENV_BYTES", 32)
+    env_path = tmp_path / ".env"
+    oversized = b"PICO_VALUE=" + b"x" * 32 + b"\n"
+    env_path.write_bytes(oversized)
+
+    with pytest.raises(ValueError, match="private file too large"):
+        read_project_env(tmp_path, warn=False)
+    with pytest.raises(ValueError, match="private file too large"):
+        write_project_env_assignments(tmp_path, {"PICO_VALUE": "small"})
+
+    assert env_path.read_bytes() == oversized
+    assert not list(tmp_path.glob(".*.bak"))
+
+
+def test_project_env_rejects_oversized_new_content(tmp_path, monkeypatch):
+    monkeypatch.setattr(config_module, "MAX_PROJECT_ENV_BYTES", 32)
+
+    with pytest.raises(ValueError, match="private file too large"):
+        write_project_env_assignments(tmp_path, {"PICO_VALUE": "x" * 64})
+
+    assert not (tmp_path / ".env").exists()
+
+
 def test_read_project_env_never_mutates_process_environment(tmp_path, monkeypatch):
     (tmp_path / ".env").write_text(
         "PICO_SECRET_ENV_NAMES=PATH,PYTHONPATH\n"

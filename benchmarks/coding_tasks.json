@@ -80,7 +80,7 @@
       "allowed_tools": ["read_file"],
       "step_budget": 2,
       "expected_artifact": "README.md remains available while context reduction creates a checkpoint",
-      "verifier": "python3 -c \"import json; from pathlib import Path; report = json.loads(next(Path('.pico/runs').glob('*/report.json')).read_text(encoding='utf-8')); trace = [json.loads(line) for line in next(Path('.pico/runs').glob('*/trace.jsonl')).read_text(encoding='utf-8').splitlines()]; assert report['checkpoint_id']; assert any(event.get('event') == 'checkpoint_created' and event.get('trigger') == 'context_reduction' for event in trace)\"",
+      "verifier": "python3 -c \"import json; from pathlib import Path; report = json.loads(next(Path('.pico/runs').glob('*/report.json')).read_text(encoding='utf-8')); trace = [json.loads(line) for line in next(Path('.pico/runs').glob('*/trace.jsonl')).read_text(encoding='utf-8').splitlines()]; assert report['recovery']['checkpoint_id']; assert any(event.get('event') == 'checkpoint_created' and event.get('trigger') == 'context_reduction' for event in trace)\"",
       "category": "recovery",
       "setup": {
         "kind": "context_reduction",
@@ -96,7 +96,7 @@
       "allowed_tools": ["read_file"],
       "step_budget": 3,
       "expected_artifact": "sample.txt exists after stale freshness recovery",
-      "verifier": "python3 -c \"import json; from pathlib import Path; report = json.loads(next(Path('.pico/runs').glob('*/report.json')).read_text(encoding='utf-8')); trace = [json.loads(line) for line in next(Path('.pico/runs').glob('*/trace.jsonl')).read_text(encoding='utf-8').splitlines()]; assert report['last_request_metadata']['resume_status'] == 'partial-stale'; assert any(event.get('event') == 'checkpoint_created' and event.get('trigger') == 'freshness_mismatch' for event in trace)\"",
+      "verifier": "python3 -c \"import json; from pathlib import Path; report = json.loads(next(Path('.pico/runs').glob('*/report.json')).read_text(encoding='utf-8')); trace = [json.loads(line) for line in next(Path('.pico/runs').glob('*/trace.jsonl')).read_text(encoding='utf-8').splitlines()]; assert report['recovery']['status'] == 'partial-stale'; assert any(event.get('event') == 'checkpoint_created' and event.get('trigger') == 'freshness_mismatch' for event in trace)\"",
       "category": "recovery",
       "setup": {
         "kind": "freshness_mismatch",
@@ -112,7 +112,7 @@
       "allowed_tools": ["read_file"],
       "step_budget": 3,
       "expected_artifact": "README.md exists after workspace mismatch recovery",
-      "verifier": "python3 -c \"import json; from pathlib import Path; report = json.loads(next(Path('.pico/runs').glob('*/report.json')).read_text(encoding='utf-8')); trace = [json.loads(line) for line in next(Path('.pico/runs').glob('*/trace.jsonl')).read_text(encoding='utf-8').splitlines()]; assert report['last_request_metadata']['resume_status'] == 'workspace-mismatch'; assert any(event.get('event') == 'runtime_identity_mismatch' for event in trace)\"",
+      "verifier": "python3 -c \"import json; from pathlib import Path; report = json.loads(next(Path('.pico/runs').glob('*/report.json')).read_text(encoding='utf-8')); trace = [json.loads(line) for line in next(Path('.pico/runs').glob('*/trace.jsonl')).read_text(encoding='utf-8').splitlines()]; assert report['recovery']['status'] == 'workspace-mismatch'; assert any(event.get('event') == 'runtime_identity_mismatch' for event in trace)\"",
       "category": "recovery",
       "setup": {
         "kind": "workspace_mismatch"
