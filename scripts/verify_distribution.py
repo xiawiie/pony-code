@@ -16,12 +16,13 @@ import venv
 import zipfile
 
 
-PROJECT_NAME = "pico"
-PROJECT_VERSION = "0.1.0"
-PROJECT_SUMMARY = (
-    "Small local coding agent for DeepSeek, OpenAI-compatible, "
-    "Anthropic-compatible, and Ollama models"
-)
+_REPO = Path(__file__).resolve().parents[1]
+_PROJECT = tomllib.loads((_REPO / "pyproject.toml").read_text(encoding="utf-8"))[
+    "project"
+]
+PROJECT_NAME = _PROJECT["name"]
+PROJECT_VERSION = _PROJECT["version"]
+PROJECT_SUMMARY = _PROJECT["description"]
 PACKAGE_DATA_FILES = {
     "pico/_docker_sandbox/image-manifest.json",
     "pico/_docker_sandbox/docker-config/config.json",

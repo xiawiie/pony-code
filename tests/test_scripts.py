@@ -122,6 +122,13 @@ def test_maintenance_scripts_start_and_show_help():
         assert "usage:" in result.stdout
 
 
+def test_sandbox_evaluator_resolves_the_project_wheel_from_version_truth():
+    evaluator = Path("scripts/evaluate.py").read_text(encoding="utf-8")
+
+    assert "_matching_project_wheel(root)" in evaluator
+    assert "pico-0.1.0-py3-none-any.whl" not in evaluator
+
+
 def test_distribution_verifier_freezes_archive_and_install_contract():
     verifier = Path("scripts/verify_distribution.py").read_text(encoding="utf-8")
 
@@ -143,6 +150,8 @@ def test_distribution_verifier_freezes_archive_and_install_contract():
     assert "pico._sandbox_toolchain" in verifier
     assert "offline_bundle_smoke" not in verifier
     assert "cwd=cwd, env=env" in verifier
+    assert 'PROJECT_VERSION = _PROJECT["version"]' in verifier
+    assert 'PROJECT_VERSION = "' not in verifier
 
 
 def test_distribution_verifier_ignores_tracked_files_deleted_from_worktree(

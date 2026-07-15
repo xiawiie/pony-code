@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import tomllib
 
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
@@ -265,15 +266,34 @@ def _sandbox_contract_commands():
     return [("sandbox.contract", contract, "no_skip")]
 
 
-def _sandbox_real_commands(system_name):
+def _matching_project_wheel(root):
+    root = Path(root)
+    project = tomllib.loads(
+        (root / "pyproject.toml").read_text(encoding="utf-8")
+    )["project"]
+    name = project.get("name")
+    version = project.get("version")
+    if name != "pico" or not isinstance(version, str) or not version:
+        raise ValueError("project name/version is invalid")
+    normalized_version = version.replace("-", "_")
+    expected_name = f"pico-{normalized_version}-py3-none-any.whl"
+    wheels = sorted((root / "dist").glob("*.whl"))
+    if len(wheels) != 1 or wheels[0].name != expected_name:
+        raise ValueError(
+            f"expected exactly one project wheel named {expected_name}"
+        )
+    return wheels[0].relative_to(root).as_posix()
+
+
+def _sandbox_real_command(system_name, wheel):
     python = sys.executable
     if system_name not in {"darwin", "linux"}:
-        return []
+        return None
     vertical = [
         python,
         "scripts/docker_sandbox_release.py",
         "--wheel",
-        "dist/pico-0.1.0-py3-none-any.whl",
+        str(wheel),
         "--source",
         str(ROOT),
     ]
@@ -283,14 +303,11 @@ def _sandbox_real_commands(system_name):
     device_fixture = os.environ.get("PICO_SANDBOX_DEVICE_FIXTURE", "").strip()
     if device_fixture:
         vertical.extend(("--device-fixture-source", device_fixture))
-    return [
-        ("sandbox.release.build", ("uv", "build", "--clear"), "exit"),
-        (
-            f"sandbox.real.{system_name}",
-            tuple(vertical),
-            f"docker_vertical:{system_name}",
-        ),
-    ]
+    return (
+        f"sandbox.real.{system_name}",
+        tuple(vertical),
+        f"docker_vertical:{system_name}",
+    )
 
 
 def _execute(argv, *, runner, root):
@@ -1018,17 +1035,53 @@ def run_evaluation(
             artifact_path=artifact_ref,
         )
     elif suite in {"sandbox", "sandbox-real"}:
-        commands = _sandbox_real_commands(system_name)
+        rows = []
         if suite == "sandbox":
-            commands = [*_sandbox_contract_commands(), *commands]
-        rows = _run_functional(
-            commands,
-            runner=runner,
-            root=root,
-            artifact_path=artifact_ref,
-        )
-        if system_name not in {"darwin", "linux"} or not rows:
+            rows.extend(
+                _run_functional(
+                    _sandbox_contract_commands(),
+                    runner=runner,
+                    root=root,
+                    artifact_path=artifact_ref,
+                )
+            )
+        if system_name not in {"darwin", "linux"}:
             rows.append(_row("sandbox.real.unsupported", False, 2, 0, artifact_ref))
+        else:
+            build_rows = _run_functional(
+                (("sandbox.release.build", ("uv", "build", "--clear"), "exit"),),
+                runner=runner,
+                root=root,
+                artifact_path=artifact_ref,
+            )
+            rows.extend(build_rows)
+            if build_rows[0]["status"] == "pass":
+                try:
+                    wheel = _matching_project_wheel(root)
+                except (OSError, KeyError, TypeError, ValueError) as exc:
+                    print(
+                        "[evaluate] sandbox.release.wheel: "
+                        f"{redact_text(exc)}",
+                        file=sys.stderr,
+                    )
+                    rows.append(
+                        _row(
+                            "sandbox.release.wheel",
+                            False,
+                            2,
+                            0,
+                            artifact_ref,
+                        )
+                    )
+                else:
+                    rows.extend(
+                        _run_functional(
+                            (_sandbox_real_command(system_name, wheel),),
+                            runner=runner,
+                            root=root,
+                            artifact_path=artifact_ref,
+                        )
+                    )
     elif suite == "live":
         if provider not in LIVE_PROVIDERS:
             raise ValueError("live suite requires a supported provider")

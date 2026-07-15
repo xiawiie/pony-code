@@ -402,8 +402,11 @@ def test_sandbox_real_forwards_required_external_fixtures(monkeypatch, tmp_path)
     monkeypatch.setenv("PICO_SANDBOX_MOUNT_FIXTURE", str(mount_fixture))
     monkeypatch.setenv("PICO_SANDBOX_DEVICE_FIXTURE", str(device_fixture))
 
-    commands = evaluate._sandbox_real_commands("linux")
-    vertical = commands[1][1]
+    command = evaluate._sandbox_real_command(
+        "linux",
+        "dist/pico-0.2.0-py3-none-any.whl",
+    )
+    vertical = command[1]
 
     assert vertical[vertical.index("--mount-fixture-source") + 1] == str(
         mount_fixture
@@ -411,6 +414,28 @@ def test_sandbox_real_forwards_required_external_fixtures(monkeypatch, tmp_path)
     assert vertical[vertical.index("--device-fixture-source") + 1] == str(
         device_fixture
     )
+
+
+def test_sandbox_real_requires_the_single_exact_project_wheel(tmp_path):
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "pico"\nversion = "0.2.0"\n',
+        encoding="utf-8",
+    )
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    expected = dist / "pico-0.2.0-py3-none-any.whl"
+
+    with pytest.raises(ValueError, match="exactly one project wheel"):
+        evaluate._matching_project_wheel(tmp_path)
+
+    expected.write_bytes(b"wheel")
+    assert evaluate._matching_project_wheel(tmp_path) == expected.relative_to(
+        tmp_path
+    ).as_posix()
+
+    (dist / "pico-0.1.0-py3-none-any.whl").write_bytes(b"stale")
+    with pytest.raises(ValueError, match="exactly one project wheel"):
+        evaluate._matching_project_wheel(tmp_path)
 
 
 def test_pr_suites_do_not_require_baseline_or_real_sandbox(tmp_path):
@@ -466,13 +491,21 @@ def test_sandbox_contract_rejects_skip_and_xfail_summaries():
 
 def test_sandbox_fails_on_pytest_skip_and_invalid_vertical(tmp_path):
     calls = 0
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "pico"\nversion = "0.2.0"\n',
+        encoding="utf-8",
+    )
 
     def runner(argv, cwd):
         nonlocal calls
-        del cwd
         calls += 1
         if "pytest" in argv:
             return SimpleNamespace(returncode=0, stdout="1 passed, 1 skipped", stderr="")
+        if argv[:2] == ["uv", "build"]:
+            dist = cwd / "dist"
+            dist.mkdir()
+            (dist / "pico-0.2.0-py3-none-any.whl").write_bytes(b"wheel")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
         if "docker_sandbox_release.py" in argv:
             return SimpleNamespace(returncode=0, stdout="{}", stderr="")
         return SimpleNamespace(returncode=0, stdout="", stderr="")

@@ -9,6 +9,7 @@ import tomllib
 ROOT = Path(__file__).resolve().parents[1]
 MAINTAINER_DOCS = {
     "README.md",
+    "CHANGELOG.md",
     "CONTEXT.md",
     "docs/cli-installation-and-updates.md",
     "docs/architecture.md",
