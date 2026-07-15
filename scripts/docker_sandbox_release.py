@@ -6,18 +6,21 @@ from __future__ import annotations
 import argparse
 import _thread
 import hashlib
+import io
 from importlib import metadata
 import inspect
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import platform
 import re
 import signal
+import shutil
 import socket
 import stat
 import subprocess
 import sys
+import tarfile
 import tempfile
 import threading
 import time
@@ -30,6 +33,8 @@ from pico.safe_subprocess import build_trusted_executables, run_hardened_git
 
 MAX_ARTIFACT_BYTES = 4 * 1024 * 1024
 MAX_CANDIDATE_SMOKE_OUTPUT_BYTES = 1024 * 1024
+MAX_SOURCE_ARCHIVE_BYTES = 64 * 1024 * 1024
+MAX_SOURCE_ARCHIVE_ENTRIES = 100_000
 MANDATORY_SECURITY_TESTS = (
     "tests/test_tool_policy.py",
     "tests/test_shell_security_corpus.py",
@@ -5568,6 +5573,71 @@ def _snapshot_tree(root):
         raise ValueError("source snapshot failed") from exc
 
 
+def _export_clean_head_source(source, destination):
+    source = Path(source).resolve(strict=True)
+    destination = Path(destination)
+    git = build_trusted_executables(source, names=("git",)).get("git")
+    if git is None:
+        raise ValueError("trusted git is unavailable")
+    status = run_hardened_git(
+        git,
+        ["status", "--porcelain", "--untracked-files=no"],
+        cwd=source,
+        timeout=10,
+    )
+    if status.returncode != 0 or status.stdout:
+        raise ValueError("release source tracked tree is not clean")
+    exported = run_hardened_git(
+        git,
+        ["archive", "--format=tar", "HEAD"],
+        cwd=source,
+        timeout=30,
+    )
+    if (
+        exported.returncode != 0
+        or not exported.stdout
+        or len(exported.stdout) > MAX_SOURCE_ARCHIVE_BYTES
+    ):
+        raise ValueError("release source export failed")
+    try:
+        with tarfile.open(fileobj=io.BytesIO(exported.stdout), mode="r:") as archive:
+            members = archive.getmembers()
+            seen = set()
+            if not members or len(members) > MAX_SOURCE_ARCHIVE_ENTRIES:
+                raise ValueError("release source archive is invalid")
+            for member in members:
+                relative = PurePosixPath(member.name)
+                if (
+                    relative.is_absolute()
+                    or not relative.parts
+                    or any(part in {"", ".", ".."} for part in relative.parts)
+                    or member.name in seen
+                    or not (member.isdir() or member.isfile())
+                ):
+                    raise ValueError("release source archive is invalid")
+                seen.add(member.name)
+            destination.mkdir(mode=0o700)
+            try:
+                for member in members:
+                    target = destination.joinpath(*PurePosixPath(member.name).parts)
+                    if member.isdir():
+                        target.mkdir(mode=0o755, parents=True, exist_ok=True)
+                        continue
+                    target.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+                    source_file = archive.extractfile(member)
+                    if source_file is None:
+                        raise ValueError("release source archive is invalid")
+                    with source_file, target.open("xb") as output:
+                        shutil.copyfileobj(source_file, output)
+                    target.chmod(0o755 if member.mode & 0o111 else 0o644)
+            except Exception:
+                shutil.rmtree(destination, ignore_errors=True)
+                raise
+    except tarfile.TarError as exc:
+        raise ValueError("release source archive is invalid") from exc
+    return destination
+
+
 def _managed_container_ids(client):
     result = client.command(
         [
@@ -6599,6 +6669,12 @@ def _clean_wheel_run(args):
         raise ValueError("release input mismatch")
     with tempfile.TemporaryDirectory(prefix="pico-docker-release-") as raw:
         work_root = Path(raw).resolve()
+        worker_source = None
+        if not args.candidate_smoke and not args.release_expected:
+            worker_source = _export_clean_head_source(
+                args.source,
+                work_root / "source",
+            )
         docker_home = Path(args.docker_home or Path.home()).resolve(strict=True)
         environment = work_root / "venv"
         venv.EnvBuilder(with_pip=True, clear=True).create(environment)
@@ -6655,7 +6731,11 @@ def _clean_wheel_run(args):
             command.extend(
                 [
                     "--source",
-                    str(Path(args.source).resolve(strict=True)),
+                    str(
+                        worker_source
+                        if worker_source is not None
+                        else Path(args.source).resolve(strict=True)
+                    ),
                 ]
             )
         if args.release_expected and not args.candidate_smoke:

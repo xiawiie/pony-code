@@ -93,6 +93,37 @@ def test_worker_environment_inherits_only_local_linux_endpoint(monkeypatch, tmp_
     assert "DOCKER_CONTEXT" not in environment
 
 
+def test_local_vertical_exports_only_clean_tracked_head(tmp_path):
+    source = tmp_path / "source"
+    source.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=source, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "pico-tests@example.invalid"],
+        cwd=source,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Pico Tests"],
+        cwd=source,
+        check=True,
+    )
+    tracked = source / "tracked.txt"
+    tracked.write_text("tracked\n", encoding="utf-8")
+    subprocess.run(["git", "add", "tracked.txt"], cwd=source, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "fixture"], cwd=source, check=True)
+    outside = tmp_path / "outside.txt"
+    outside.write_text("outside\n", encoding="utf-8")
+    (source / "untracked-link").symlink_to(outside)
+
+    exported = release._export_clean_head_source(source, tmp_path / "exported")
+
+    assert (exported / "tracked.txt").read_text(encoding="utf-8") == "tracked\n"
+    assert not (exported / "untracked-link").exists()
+    tracked.write_text("dirty\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="tracked tree is not clean"):
+        release._export_clean_head_source(source, tmp_path / "dirty-export")
+
+
 def test_candidate_macos_home_points_to_verified_endpoint(tmp_path):
     home = tmp_path / "home"
     home.mkdir(mode=0o700)
