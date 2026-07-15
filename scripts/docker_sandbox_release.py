@@ -5601,6 +5601,7 @@ def _run_installed(args):
         DockerSandboxRunner,
         ensure_runtime_docker_config,
         load_image_manifest,
+        local_docker_sandbox_runtime,
     )
     from pico.sandbox_apply import SourceApplier, StagingObserver
     from pico.sandbox_session import SandboxSessionError
@@ -5610,11 +5611,6 @@ def _run_installed(args):
     if package_root.is_relative_to(repository_root):
         raise ValueError("release harness did not import the clean wheel")
     image = load_image_manifest(default_image_manifest_path())
-    development_authorization = _authorize_docker_sandbox_development(
-        package_root=package_root,
-        distribution_version=metadata.version("pico"),
-        image=image,
-    )
     artifact = _base_artifact(
         args.distribution_sha256,
         _installed_tree_digest(package_root),
@@ -5638,8 +5634,18 @@ def _run_installed(args):
             return _mark_not_run(artifact, "release_source_identity_mismatch")
     if image.corpus_digest != CORPUS_DIGEST:
         return _mark_not_run(artifact, "sandbox_corpus_identity_mismatch")
-    if not image.registry_reference:
-        return artifact
+    if release_job is None:
+        local_image, runtime_authorization = local_docker_sandbox_runtime()
+        if local_image != image:
+            return _mark_not_run(artifact, "sandbox_image_identity_mismatch")
+    else:
+        if not image.registry_reference:
+            return artifact
+        runtime_authorization = _authorize_docker_sandbox_development(
+            package_root=package_root,
+            distribution_version=metadata.version("pico"),
+            image=image,
+        )
 
     work_root = Path(args.work_root).resolve(strict=True)
     source_before = _snapshot_tree(source)
@@ -5673,7 +5679,7 @@ def _run_installed(args):
     artifact["state_mutation_performed"] = True
     context = build_docker_sandbox_context(
         source,
-        authorization=development_authorization,
+        authorization=runtime_authorization,
         pico_session_id="release-primary",
         docker_cli=docker_cli,
         docker_endpoint=docker_endpoint,
@@ -5712,7 +5718,7 @@ def _run_installed(args):
                 path.write_text(data, encoding="utf-8")
         return build_docker_sandbox_context(
             fixture_source,
-            authorization=development_authorization,
+            authorization=runtime_authorization,
             pico_session_id="release-" + name,
             docker_cli=docker_cli,
             docker_endpoint=docker_endpoint,
@@ -5727,7 +5733,7 @@ def _run_installed(args):
         root=work_root / "apply-release-cases",
         build_context=lambda fixture_source, **kwargs: build_docker_sandbox_context(
             fixture_source,
-            authorization=development_authorization,
+            authorization=runtime_authorization,
             docker_cli=docker_cli,
             docker_endpoint=docker_endpoint,
             docker_config=config,
@@ -5818,7 +5824,7 @@ def _run_installed(args):
         work_root=work_root,
         build_context=lambda fixture_source: build_docker_sandbox_context(
             fixture_source,
-            authorization=development_authorization,
+            authorization=runtime_authorization,
             pico_session_id="release-network-production",
             docker_cli=docker_cli,
             docker_endpoint=docker_endpoint,
@@ -6173,7 +6179,7 @@ def _run_installed(args):
         try:
             build_docker_sandbox_context(
                 fixture_source,
-                authorization=development_authorization,
+                authorization=runtime_authorization,
                 pico_session_id="release-unsupported-" + kind,
                 docker_cli=docker_cli,
                 docker_endpoint=docker_endpoint,
@@ -6200,7 +6206,7 @@ def _run_installed(args):
             try:
                 build_docker_sandbox_context(
                     device_source,
-                    authorization=development_authorization,
+                    authorization=runtime_authorization,
                     pico_session_id="release-unsupported-device",
                     docker_cli=docker_cli,
                     docker_endpoint=docker_endpoint,
@@ -6223,7 +6229,7 @@ def _run_installed(args):
         try:
             build_docker_sandbox_context(
                 mount_source,
-                authorization=development_authorization,
+                authorization=runtime_authorization,
                 pico_session_id="release-mount-boundary",
                 docker_cli=docker_cli,
                 docker_endpoint=docker_endpoint,
