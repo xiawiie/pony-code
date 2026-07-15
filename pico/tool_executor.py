@@ -879,7 +879,7 @@ def _begin_tool_change(prepared, lifecycle):
             prepared["args"],
         )
         if name == "run_shell":
-            observer = agent.workspace_observer.capture()
+            observer = agent.workspace_observer.capture_call_start()
             lifecycle["observer_before"] = observer
             recovery_context = {
                 "observer_mode": str(observer.get("mode", "")),
@@ -934,6 +934,8 @@ def _begin_tool_change(prepared, lifecycle):
 def _invoke_prepared_tool(prepared, execution):
     agent = prepared["agent"]
     if prepared["name"] != "run_shell":
+        if prepared["effect_class"] == "workspace_write":
+            agent.workspace_observer.invalidate_call_cache()
         raw_content = prepared["tool"]["run"](prepared["args"])
         execution["runner_completed"] = True
         execution["content"] = clip(agent.redact_text(raw_content))
@@ -1055,7 +1057,7 @@ def _observe_tool_effects(prepared, lifecycle):
         and lifecycle["observer_before"] is not None
     ):
         observer_before = lifecycle["observer_before"]
-        observer_after = agent.workspace_observer.capture()
+        observer_after = agent.workspace_observer.capture_call_end()
         delta = agent.workspace_observer.diff(
             observer_before,
             observer_after,

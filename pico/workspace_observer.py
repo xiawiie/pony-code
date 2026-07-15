@@ -171,6 +171,15 @@ class WorkspaceObserver:
             return self._capture_git()
         return self._capture_filesystem()
 
+    def capture_call_start(self):
+        return self.capture()
+
+    def capture_call_end(self):
+        return self.capture()
+
+    def invalidate_call_cache(self):
+        return None
+
     def diff(self, before, after):
         """比较两次 capture，只报告真的发生变化的路径。"""
         before_paths = dict(before.get("paths", {}))

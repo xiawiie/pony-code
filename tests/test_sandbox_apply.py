@@ -225,6 +225,192 @@ def _source_worktree_snapshot(root):
     return entries
 
 
+def _track_capture_hashes(monkeypatch):
+    calls = []
+    original = sandbox_apply._hash_capture_file
+
+    def tracked(root, relative, initial, **kwargs):
+        calls.append(relative.as_posix())
+        return original(root, relative, initial, **kwargs)
+
+    monkeypatch.setattr(sandbox_apply, "_hash_capture_file", tracked)
+    return calls
+
+
+def test_incremental_call_capture_reuses_baseline_without_hash_or_blob_write(
+    tmp_path,
+    monkeypatch,
+):
+    _source, _context, blobs, observer, _baseline = _observer(
+        tmp_path,
+        {"a.txt": "a\n", "nested/b.txt": "b\n"},
+    )
+    hashes = _track_capture_hashes(monkeypatch)
+    writes = []
+    original_write = blobs.write_blob
+
+    def tracked_write(*args, **kwargs):
+        writes.append(args[0])
+        return original_write(*args, **kwargs)
+
+    monkeypatch.setattr(blobs, "write_blob", tracked_write)
+
+    before = observer.capture_call_start()
+    after = observer.capture_call_end()
+
+    assert before["paths"] == after["paths"]
+    assert hashes == []
+    assert writes == []
+
+
+def test_incremental_call_capture_rehashes_only_changed_fingerprint(
+    tmp_path,
+    monkeypatch,
+):
+    _source, context, _blobs, observer, _baseline = _observer(
+        tmp_path,
+        {"a.txt": "before\n", "b.txt": "stable\n"},
+    )
+    before = observer.capture_call_start()
+    path = context.execution_root / "a.txt"
+    original = path.stat()
+    path.write_text("changed\n", encoding="utf-8")
+    os.utime(path, ns=(original.st_atime_ns, original.st_mtime_ns))
+    hashes = _track_capture_hashes(monkeypatch)
+
+    after = observer.capture_call_end()
+
+    assert hashes == ["a.txt"]
+    assert observer.diff(before, after)["changed_paths"] == ["a.txt"]
+
+
+def test_incremental_call_capture_rebuilds_only_missing_blob(
+    tmp_path,
+    monkeypatch,
+):
+    _source, _context, blobs, observer, baseline = _observer(
+        tmp_path,
+        {"a.txt": "a\n", "b.txt": "b\n"},
+    )
+    a_entry = next(entry for entry in baseline["entries"] if entry["path"] == "a.txt")
+    blobs._blob_path(a_entry["blob_ref"]).unlink()
+    hashes = _track_capture_hashes(monkeypatch)
+
+    observer.capture_call_start()
+
+    assert hashes == ["a.txt"]
+    assert blobs.blob_exists(a_entry["blob_ref"]) is True
+
+
+@pytest.mark.parametrize("mutation", ("chmod", "inode_replacement", "symlink"))
+def test_incremental_call_capture_observes_metadata_and_type_changes(
+    tmp_path,
+    monkeypatch,
+    mutation,
+):
+    _source, context, _blobs, observer, _baseline = _observer(
+        tmp_path,
+        {"a.txt": "a\n", "b.txt": "b\n"},
+    )
+    before = observer.capture_call_start()
+    path = context.execution_root / "a.txt"
+    if mutation == "chmod":
+        path.chmod(0o755)
+    elif mutation == "inode_replacement":
+        replacement = context.execution_root / "replacement.tmp"
+        replacement.write_text("c\n", encoding="utf-8")
+        os.replace(replacement, path)
+    else:
+        path.unlink()
+        path.symlink_to("b.txt")
+    hashes = _track_capture_hashes(monkeypatch)
+
+    after = observer.capture_call_end()
+    entry = next(
+        item for item in after["capture"]["entries"] if item["path"] == "a.txt"
+    )
+
+    assert observer.diff(before, after)["changed_paths"] == ["a.txt"]
+    assert hashes == ([] if mutation == "symlink" else ["a.txt"])
+    if mutation == "symlink":
+        assert entry["kind"] == "symlink"
+        assert entry["classification"] == "blocked_type"
+    elif mutation == "chmod":
+        assert entry["mode"] == 0o755
+
+
+def test_resumed_observer_first_call_capture_is_full(tmp_path, monkeypatch):
+    _source, context, blobs, _observer_one, _baseline = _observer(
+        tmp_path,
+        {"a.txt": "a\n", "b.txt": "b\n"},
+    )
+    resumed = StagingObserver(context, blobs)
+    resumed.ensure_baseline(resumed=True)
+    hashes = _track_capture_hashes(monkeypatch)
+
+    resumed.capture_call_start()
+
+    assert hashes == ["a.txt", "b.txt"]
+
+
+def test_invalidated_call_capture_cache_forces_full_capture(tmp_path, monkeypatch):
+    _source, _context, _blobs, observer, _baseline = _observer(
+        tmp_path,
+        {"a.txt": "a\n", "b.txt": "b\n"},
+    )
+    observer.capture_call_start()
+    observer.invalidate_call_cache()
+    hashes = _track_capture_hashes(monkeypatch)
+
+    observer.capture_call_end()
+
+    assert hashes == ["a.txt", "b.txt"]
+
+
+def test_explicit_capture_and_final_diff_always_hash_full_tree(tmp_path, monkeypatch):
+    _source, _context, _blobs, observer, _baseline = _observer(
+        tmp_path,
+        {"a.txt": "a\n", "b.txt": "b\n"},
+    )
+    observer.capture_call_start()
+    hashes = _track_capture_hashes(monkeypatch)
+
+    observer.capture()
+    assert hashes == ["a.txt", "b.txt"]
+
+    hashes.clear()
+    observer.finalize_diff(lambda text: text)
+    assert hashes == ["a.txt", "b.txt"]
+
+
+def test_incremental_capture_error_clears_cache_and_retries_full(
+    tmp_path,
+    monkeypatch,
+):
+    _source, _context, _blobs, observer, _baseline = _observer(
+        tmp_path,
+        {"a.txt": "a\n", "b.txt": "b\n"},
+    )
+    original = sandbox_apply.capture_staging
+    attempts = []
+
+    def fail_incremental_once(*args, **kwargs):
+        if kwargs.get("entry_cache") is not None and not attempts:
+            attempts.append("incremental_failed")
+            raise SandboxApplyError("sandbox_capture_failed")
+        attempts.append("full")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(sandbox_apply, "capture_staging", fail_incremental_once)
+    hashes = _track_capture_hashes(monkeypatch)
+
+    observer.capture_call_start()
+
+    assert attempts == ["incremental_failed", "full"]
+    assert hashes == ["a.txt", "b.txt"]
+    assert observer._call_cache is not None
+
+
 def test_final_diff_binds_baseline_blobs_and_all_ordinary_change_kinds(tmp_path):
     source, context, blobs, observer, baseline = _observer(
         tmp_path,

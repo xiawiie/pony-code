@@ -56,6 +56,21 @@ def test_checkpoint_store_round_trips_records_tool_changes_and_blobs(tmp_path):
     assert store.read_blob(blob["blob_ref"]) == b"hello\r\n"
 
 
+def test_checkpoint_store_blob_exists_is_metadata_only_and_fail_closed(tmp_path):
+    store = CheckpointStore(tmp_path)
+    blob = store.write_blob(b"cached")
+    path = store._blob_path(blob["blob_ref"])
+
+    assert store.blob_exists(blob["blob_ref"]) is True
+
+    path.chmod(0o644)
+    with pytest.raises(ValueError, match="blob file is unsafe"):
+        store.blob_exists(blob["blob_ref"])
+
+    path.unlink()
+    assert store.blob_exists(blob["blob_ref"]) is False
+
+
 def test_checkpoint_store_writes_use_file_lock(tmp_path, monkeypatch):
     calls = []
 

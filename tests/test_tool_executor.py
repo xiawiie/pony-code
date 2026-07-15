@@ -522,6 +522,27 @@ def test_effect_observation_is_not_repeated_after_memory_update_failure(
     assert capture.call_count == 2  # one before-state and one after-state read
 
 
+def test_non_shell_workspace_write_invalidates_call_capture_cache(
+    tmp_path,
+    monkeypatch,
+):
+    agent = build_agent(tmp_path)
+    invalidate = Mock(wraps=agent.workspace_observer.invalidate_call_cache)
+    monkeypatch.setattr(
+        agent.workspace_observer,
+        "invalidate_call_cache",
+        invalidate,
+    )
+
+    result = agent.execute_tool(
+        "write_file",
+        {"path": "created.txt", "content": "created\n"},
+    )
+
+    assert result.metadata["tool_status"] == "ok"
+    assert invalidate.call_count == 1
+
+
 def test_unknown_effect_after_runner_failure_requires_review(
     tmp_path,
     monkeypatch,

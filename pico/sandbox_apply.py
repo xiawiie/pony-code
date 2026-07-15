@@ -2171,6 +2171,38 @@ def _kind(mode):
     return "unknown"
 
 
+def _capture_fingerprint(info):
+    return (
+        info.st_dev,
+        info.st_ino,
+        info.st_mode,
+        info.st_nlink,
+        info.st_size,
+        info.st_mtime_ns,
+        info.st_ctime_ns,
+    )
+
+
+def _reuse_capture_entry(path, info, entry_cache, blob_store):
+    if not entry_cache:
+        return None
+    cached = entry_cache.get(path)
+    if (
+        not isinstance(cached, tuple)
+        or len(cached) != 2
+        or cached[0] != _capture_fingerprint(info)
+        or not isinstance(cached[1], dict)
+        or cached[1].get("path") != path
+    ):
+        return None
+    entry = cached[1]
+    if entry.get("snapshot_eligible"):
+        blob_ref = entry.get("blob_ref", "")
+        if blob_store is None or not blob_store.blob_exists(blob_ref):
+            return None
+    return dict(entry)
+
+
 def _high_risk(path, mode):
     candidate = PurePosixPath(path)
     parts = tuple(part.casefold() for part in candidate.parts)
@@ -2365,6 +2397,8 @@ def capture_staging(
     blob_store=None,
     redaction_env=None,
     secret_env_names=(),
+    entry_cache=None,
+    cache_out=None,
 ):
     root = Path(root)
     root_descriptor, root_info = _open_source_root(root)
@@ -2372,8 +2406,17 @@ def capture_staging(
     collisions = set()
     ignored = {}
 
-    def visit(directory_descriptor, prefix=()):
-        for name in sorted(os.listdir(directory_descriptor)):
+    def append_entry(entry, info):
+        entries.append(entry)
+        if cache_out is not None:
+            cache_out[entry["path"]] = (
+                _capture_fingerprint(info),
+                dict(entry),
+            )
+
+    def visit(directory_descriptor, directory_info, prefix=()):
+        names = sorted(os.listdir(directory_descriptor))
+        for name in names:
             relative = PurePosixPath(*prefix, name)
             normalized = _validated_relative(relative.as_posix()).as_posix()
             collision = unicodedata.normalize("NFC", normalized).casefold()
@@ -2398,8 +2441,15 @@ def capture_staging(
                 raise SandboxApplyError("workspace_mount_boundary")
             if stat.S_ISDIR(info.st_mode):
                 if _is_apply_sensitive_path(normalized):
-                    entries.append(
-                        {
+                    entry = _reuse_capture_entry(
+                        normalized,
+                        info,
+                        entry_cache,
+                        blob_store,
+                    )
+                    append_entry(
+                        entry
+                        or {
                             "path": normalized,
                             "kind": "directory",
                             "mode": stat.S_IMODE(info.st_mode),
@@ -2409,7 +2459,8 @@ def capture_staging(
                             "ineligible_reason": "sensitive_path",
                             "blob_ref": "",
                             "classification": "blocked_sensitive",
-                        }
+                        },
+                        info,
                     )
                     continue
                 child = _open_child_directory(
@@ -2418,12 +2469,19 @@ def capture_staging(
                     root_device=root_info.st_dev,
                 )
                 try:
-                    visit(child, (*prefix, name))
+                    visit(child, os.fstat(child), (*prefix, name))
                 finally:
                     os.close(child)
                 continue
-            entries.append(
-                _capture_entry(
+            entry = _reuse_capture_entry(
+                normalized,
+                info,
+                entry_cache,
+                blob_store,
+            )
+            append_entry(
+                entry
+                or _capture_entry(
                     root,
                     relative,
                     info,
@@ -2432,11 +2490,24 @@ def capture_staging(
                     blob_store=blob_store,
                     redaction_env=redaction_env,
                     secret_env_names=secret_env_names,
-                )
+                ),
+                info,
             )
+        if (
+            names != sorted(os.listdir(directory_descriptor))
+            or _identity(os.fstat(directory_descriptor)) != _identity(directory_info)
+        ):
+            raise SandboxApplyError("sandbox_capture_failed")
 
     try:
-        visit(root_descriptor)
+        visit(root_descriptor, root_info)
+        current_root = root.lstat()
+        opened_root = os.fstat(root_descriptor)
+        if (
+            _identity(opened_root) != _identity(root_info)
+            or _identity(current_root) != _identity(root_info)
+        ):
+            raise SandboxApplyError("sandbox_capture_failed")
     except SandboxApplyError:
         raise
     except (OSError, SandboxSessionError) as exc:
@@ -2880,8 +2951,9 @@ class StagingObserver:
         self.final_path = self.recovery_root / "final-capture.json"
         self.diff_path = self.recovery_root / "diff.json"
         self.trusted_executables = {}
+        self._call_cache = None
 
-    def _capture(self, kind):
+    def _capture(self, kind, *, entry_cache=None, cache_out=None):
         return capture_staging(
             self.root,
             self.context.sandbox_session.sandbox_id,
@@ -2889,10 +2961,12 @@ class StagingObserver:
             blob_store=self.blob_store,
             redaction_env=self.redaction_env,
             secret_env_names=self.secret_env_names,
+            entry_cache=entry_cache,
+            cache_out=cache_out,
         )
 
-    def capture(self):
-        record = self._capture("call")
+    @staticmethod
+    def _snapshot(record):
         paths = {
             entry["path"]: _sha256(_canonical_json(entry))
             for entry in record["entries"]
@@ -2921,6 +2995,40 @@ class StagingObserver:
             "complete": True,
         }
 
+    def capture(self):
+        return self._snapshot(self._capture("call"))
+
+    def invalidate_call_cache(self):
+        self._call_cache = None
+
+    def _capture_call(self):
+        had_cache = self._call_cache is not None
+        next_cache = {}
+        try:
+            record = self._capture(
+                "call",
+                entry_cache=self._call_cache,
+                cache_out=next_cache,
+            )
+        except BaseException as exc:
+            self.invalidate_call_cache()
+            if not had_cache or not isinstance(exc, Exception):
+                raise
+            next_cache = {}
+            try:
+                record = self._capture("call", cache_out=next_cache)
+            except BaseException:
+                self.invalidate_call_cache()
+                raise
+        self._call_cache = next_cache
+        return self._snapshot(record)
+
+    def capture_call_start(self):
+        return self._capture_call()
+
+    def capture_call_end(self):
+        return self._capture_call()
+
     @staticmethod
     def diff(before, after):
         before_paths = before.get("paths", {})
@@ -2947,6 +3055,7 @@ class StagingObserver:
 
     def ensure_baseline(self, *, resumed=False):
         if resumed:
+            self.invalidate_call_cache()
             value, _ = _read_json(
                 self.baseline_path,
                 self.recovery_root,
@@ -2959,36 +3068,42 @@ class StagingObserver:
             )
         if self.baseline_path.exists():
             raise SandboxApplyError("sandbox_baseline_already_exists")
-        value = self._capture("baseline")
-        source_baseline, _ = _read_json(
-            self.context.sandbox_state_root / "baseline.json",
-            self.context.sandbox_state_root,
-            max_bytes=MAX_CAPTURE_BYTES,
-        )
-        expected = {
-            entry["path"]: {
-                "sha256": entry["sha256"],
-                "size": entry["size"],
-                "mode": 0o755 if entry["mode"] & stat.S_IXUSR else 0o644,
+        baseline_cache = {}
+        try:
+            value = self._capture("baseline", cache_out=baseline_cache)
+            source_baseline, _ = _read_json(
+                self.context.sandbox_state_root / "baseline.json",
+                self.context.sandbox_state_root,
+                max_bytes=MAX_CAPTURE_BYTES,
+            )
+            expected = {
+                entry["path"]: {
+                    "sha256": entry["sha256"],
+                    "size": entry["size"],
+                    "mode": 0o755 if entry["mode"] & stat.S_IXUSR else 0o644,
+                }
+                for entry in source_baseline["entries"]
             }
-            for entry in source_baseline["entries"]
-        }
-        actual = {
-            entry["path"]: {
-                "sha256": entry["sha256"],
-                "size": entry["size"],
-                "mode": entry["mode"],
+            actual = {
+                entry["path"]: {
+                    "sha256": entry["sha256"],
+                    "size": entry["size"],
+                    "mode": entry["mode"],
+                }
+                for entry in value["entries"]
             }
-            for entry in value["entries"]
-        }
-        if actual != expected:
-            raise SandboxApplyError("sandbox_baseline_mismatch")
-        _write_json(
-            self.baseline_path,
-            self.recovery_root,
-            value,
-            max_bytes=MAX_CAPTURE_BYTES,
-        )
+            if actual != expected:
+                raise SandboxApplyError("sandbox_baseline_mismatch")
+            _write_json(
+                self.baseline_path,
+                self.recovery_root,
+                value,
+                max_bytes=MAX_CAPTURE_BYTES,
+            )
+        except BaseException:
+            self.invalidate_call_cache()
+            raise
+        self._call_cache = baseline_cache
         return value
 
     def load_baseline(self):

@@ -679,6 +679,42 @@ class CheckpointStore:
             return False
         return True
 
+    def blob_exists(self, blob_ref):
+        """Check that an immutable blob is still a safe regular file."""
+        if self._missing or self._blobs_identity is None:
+            return False
+        path = self._blob_path(str(blob_ref))
+        with self._read_lock():
+            try:
+                path, parent = securitylib._open_private_parent(
+                    path,
+                    trusted_root=self.blobs_dir,
+                    trusted_root_identity=self._blobs_identity,
+                )
+            except FileNotFoundError:
+                return False
+            try:
+                try:
+                    info = os.stat(
+                        path.name,
+                        dir_fd=parent,
+                        follow_symlinks=False,
+                    )
+                except FileNotFoundError:
+                    return False
+                uid = os.geteuid() if hasattr(os, "geteuid") else info.st_uid
+                if (
+                    not stat.S_ISREG(info.st_mode)
+                    or info.st_nlink != 1
+                    or info.st_uid != uid
+                    or stat.S_IMODE(info.st_mode) != 0o600
+                    or info.st_size > self.MAX_BLOB_BYTES
+                ):
+                    raise ValueError("blob file is unsafe")
+                return True
+            finally:
+                os.close(parent)
+
     # -- checkpoint record ------------------------------------------------
     def _record_path(self, checkpoint_id):
         return self.records_dir / (_safe_id(checkpoint_id, "checkpoint id") + ".json")
