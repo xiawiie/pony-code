@@ -19,7 +19,6 @@ import threading
 import time
 from types import MappingProxyType
 
-from . import file_lock
 from . import security as securitylib
 from .checkpoint_store import CheckpointStoreError, source_apply_guard_present
 from .sandbox_session import (
@@ -2826,35 +2825,31 @@ def build_docker_sandbox_context(
                 image,
                 readiness,
             )
-            with file_lock.locked_file(
-                source_root / ".pico" / ".source-mutation.lock",
-                require_lock=True,
-            ):
-                if source_apply_guard_present(source_root):
-                    raise CheckpointStoreError(
-                        "source_apply_review_required", "source apply is unresolved"
-                    )
-                if resume:
-                    session = _resume_sandbox_session(
-                        store,
-                        source_root,
-                        str(pico_session_id),
-                        engine=engine,
-                        image=image_metadata,
-                        policy=policy,
-                    )
-                else:
-                    session = store.create(
-                        source_root,
-                        pico_session_id=str(pico_session_id),
-                        bootstrap_git=runner.bootstrap_git,
-                        git_executable=git_executable,
-                        known_secrets=known_secrets,
-                        engine=engine,
-                        image=image_metadata,
-                        policy=policy,
-                        project_state_root=project_state_root,
-                    )
+            if source_apply_guard_present(source_root):
+                raise CheckpointStoreError(
+                    "source_apply_review_required", "source apply is unresolved"
+                )
+            if resume:
+                session = _resume_sandbox_session(
+                    store,
+                    source_root,
+                    str(pico_session_id),
+                    engine=engine,
+                    image=image_metadata,
+                    policy=policy,
+                )
+            else:
+                session = store.create(
+                    source_root,
+                    pico_session_id=str(pico_session_id),
+                    bootstrap_git=runner.bootstrap_git,
+                    git_executable=git_executable,
+                    known_secrets=known_secrets,
+                    engine=engine,
+                    image=image_metadata,
+                    policy=policy,
+                    project_state_root=project_state_root,
+                )
     except (CheckpointStoreError, SandboxSessionError) as exc:
         raise DockerSandboxError(exc.code) from exc
     view = session.workspace_view

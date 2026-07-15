@@ -19,7 +19,7 @@ from pico.docker_sandbox import (
 )
 from pico.providers.fake import FakeModelClient
 from pico.runtime import Pico
-from pico.sandbox_session import write_source_apply_authority
+from pico.sandbox_session import snapshot_source_tree, write_source_apply_authority
 from pico.session_store import SessionStore
 from pico.workspace import WorkspaceContext
 
@@ -422,6 +422,36 @@ def test_readiness_failure_precedes_staging_and_project_sidecar(
         )
 
     assert not any((tmp_path / "sandboxes").glob("*/sandbox_*"))
+    assert not (source / ".pico").exists()
+
+
+def test_external_project_state_build_leaves_source_tree_unchanged(
+    tmp_path,
+    monkeypatch,
+):
+    _install_fake_docker(monkeypatch)
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "README.md").write_text("source\n", encoding="utf-8")
+    before = snapshot_source_tree(source)
+    image = docker_module.load_image_manifest(
+        docker_module.default_image_manifest_path()
+    )
+    authorization = _development_authorization(monkeypatch, image)
+
+    context = build_docker_sandbox_context(
+        source,
+        authorization=authorization,
+        pico_session_id="session-external-state",
+        docker_cli="/unused/docker",
+        docker_endpoint="/unused/docker.sock",
+        project_state_root=tmp_path / "project-state",
+        sandbox_parent=tmp_path / "sandboxes",
+        image=image,
+    )
+
+    assert context.project_state_root == tmp_path / "project-state"
+    assert snapshot_source_tree(source) == before
     assert not (source / ".pico").exists()
 
 
