@@ -2362,6 +2362,21 @@ print(head)
             return False
         return True
 
+    def _kill(self, plan, container_id):
+        try:
+            verify_container_inspect(
+                self._inspect(container_id),
+                plan,
+                expected_id=container_id,
+            )
+            killed = self.client.command(
+                ["container", "kill", "--signal=KILL", container_id],
+                timeout=10,
+            )
+            return _command_succeeded(killed)
+        except DockerSandboxError:
+            return False
+
     def _reconcile_create(self, state_root, plan, *, preserve_absent=False):
         absence = {"confirmed": False}
 
@@ -2478,7 +2493,7 @@ print(head)
                     self.workspace_probe(workspace)
                 except BaseException:
                     watchdog_violation.set()
-                    self._stop(plan, container_id)
+                    self._kill(plan, container_id)
                     return
                 interval = _next_watchdog_interval(
                     time.monotonic() - started_at
@@ -2523,14 +2538,14 @@ print(head)
                 )
             except KeyboardInterrupt as exc:
                 interrupted = exc
-                self._stop(plan, container_id)
+                self._kill(plan, container_id)
             finally:
                 watchdog_joined = self._join_watchdog(watchdog, watchdog_stop)
                 if not watchdog_joined:
                     watchdog_violation.set()
-                    self._stop(plan, container_id)
+                    self._kill(plan, container_id)
             if start_result is not None and start_result.timed_out:
-                self._stop(plan, container_id)
+                self._kill(plan, container_id)
             terminal = self._inspect(container_id)
         except DockerSandboxError as exc:
             error_code = exc.code

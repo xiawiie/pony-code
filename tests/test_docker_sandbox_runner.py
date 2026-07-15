@@ -1347,8 +1347,8 @@ def test_terminal_inspect_failure_blocks_then_reconciles_after_recovery(tmp_path
     assert client.exists is False
 
 
-def test_timeout_stop_failure_escalates_to_kill_before_cleanup(tmp_path):
-    client = FakeDockerClient(timeout=True, stop_failure=True)
+def test_timeout_kills_immediately_before_cleanup(tmp_path):
+    client = FakeDockerClient(timeout=True)
     _source, store, session, runner, plan, client = _runner(
         tmp_path,
         client=client,
@@ -1358,35 +1358,30 @@ def test_timeout_stop_failure_escalates_to_kill_before_cleanup(tmp_path):
 
     assert outcome.sandbox_outcome == "timeout"
     assert outcome.cleanup_status == "completed"
-    assert any(args[:2] == ["container", "stop"] for args in client.commands)
+    assert not any(args[:2] == ["container", "stop"] for args in client.commands)
     assert any(args[:2] == ["container", "kill"] for args in client.commands)
     assert client.exists is False
     assert store.inspect(session.state_root).state == "ready"
 
 
 @pytest.mark.parametrize(
-    ("command_kind", "failure"),
+    "failure",
     (
-        ("stop", "timed_out"),
-        ("stop", "nonzero"),
-        ("stop", "stdout_truncated"),
-        ("stop", "stderr_truncated"),
-        ("kill", "exception"),
-        ("kill", "timed_out"),
-        ("kill", "nonzero"),
-        ("kill", "stdout_truncated"),
-        ("kill", "stderr_truncated"),
+        "exception",
+        "timed_out",
+        "nonzero",
+        "stdout_truncated",
+        "stderr_truncated",
     ),
 )
-def test_timeout_stop_and_kill_results_are_fail_closed(
+def test_timeout_kill_result_is_fail_closed_by_forced_cleanup(
     tmp_path,
-    command_kind,
     failure,
 ):
     class FaultClient(FakeDockerClient):
         def command(self, args, **kwargs):
             args = list(args)
-            if args[:2] == ["container", command_kind]:
+            if args[:2] == ["container", "kill"]:
                 self.commands.append(args)
                 if failure == "exception":
                     raise DockerSandboxError("docker_daemon_unavailable")
@@ -1406,8 +1401,7 @@ def test_timeout_stop_and_kill_results_are_fail_closed(
 
     outcome = runner.execute(session, plan)
 
-    if command_kind == "stop":
-        assert any(args[:2] == ["container", "kill"] for args in client.commands)
+    assert any(args[:2] == ["container", "kill"] for args in client.commands)
     assert outcome.sandbox_outcome == "timeout"
     assert outcome.cleanup_status == "completed"
     assert outcome.residue_detected is False
