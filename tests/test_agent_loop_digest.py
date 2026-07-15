@@ -3,7 +3,7 @@
 - Small results (<= threshold) go into messages verbatim.
 - Large results (> threshold) are digested; raw body written to
   ``<run_dir>/tool_results/<source_hash>.txt``; message content carries
-  the [digest] rendering with a `raw at ...` pointer.
+  the [digest] rendering with a content hash and logical raw-result id.
 - Returned ``digest_applied`` and ``source_hash`` reflect what happened.
 """
 
@@ -55,6 +55,9 @@ def test_large_result_digested_and_written_to_disk(tmp_path):
     assert raw_files[0].read_text(encoding="utf-8") == big
     assert "[digest]" in content
     assert source_hash in content
+    assert hashlib.sha256(big.encode("utf-8")).hexdigest() in content
+    assert f"raw_result_id: tool_result:{source_hash}" in content
+    assert str(a.current_run_dir) not in content
 
 
 def test_large_tool_result_writes_only_redacted_private_body(tmp_path):
@@ -116,7 +119,8 @@ def test_raw_tool_result_inode_swap_does_not_truncate_replacement(
     assert metadata["source_hash"] == source_hash
     assert outside.read_text(encoding="utf-8") == "replacement\n"
     assert raw_path.read_text(encoding="utf-8") == "replacement\n"
-    assert "(raw at " not in content
+    assert "raw_result_id:" not in content
+    assert str(agent.current_run_dir) not in content
 
 
 def test_raw_tool_result_rejects_hardlink_without_touching_external_inode(
@@ -144,11 +148,12 @@ def test_raw_tool_result_rejects_hardlink_without_touching_external_inode(
     assert outside.read_text(encoding="utf-8") == "outside\n"
     if os.name == "posix":
         assert stat.S_IMODE(outside.stat().st_mode) == 0o644
-    assert "(raw at " not in content
+    assert "raw_result_id:" not in content
+    assert str(agent.current_run_dir) not in content
 
 
 def test_large_result_without_run_dir_still_digests(tmp_path):
-    """When agent has no run_dir, the digest still applies but raw_path is empty."""
+    """Without a run dir, the digest applies without a logical raw-result id."""
     a = _stub_agent(tmp_path)
     a.current_run_dir = None
     big = "z" * 5000
@@ -160,6 +165,8 @@ def test_large_result_without_run_dir_still_digests(tmp_path):
     )
     assert metadata["digest_applied"] is True
     assert "[digest]" in content
+    assert "content_sha256: sha256:" in content
+    assert "raw_result_id:" not in content
 
 
 def test_digest_computed_exactly_once(tmp_path, monkeypatch):

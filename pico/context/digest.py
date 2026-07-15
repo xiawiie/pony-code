@@ -1,6 +1,6 @@
 """Tool result digest — replace long tool outputs with a short summary
 that keeps the shape of the result (title + ≤5 bullets + hash pointer)
-while stashing the full text to disk for later retrieval.
+while stashing the full text to disk for later recovery.
 
 The agent loop calls :func:`should_digest` right after the tool
 executor returns a payload. When the payload is small it goes into
@@ -17,10 +17,11 @@ generic "last 3 non-empty lines" summary. Any summarizer that raises
 also falls through to the generic path — a broken heuristic must never
 break the turn.
 
-The digest is *content-addressed* by the sha256 of the raw result
-(prefix 16 hex chars). Two identical tool outputs produce the same
-``source_hash`` regardless of tool or args, which lets the on-disk
-raw-file cache deduplicate.
+The digest is *content-addressed* by the sha256 of the raw result.
+``source_hash`` keeps the existing 16-character storage key while
+``content_sha256`` exposes the complete digest.  Provider-visible text
+uses only that digest and an optional logical ``raw_result_id``; it never
+contains the Project State host path used to persist the body.
 """
 
 from __future__ import annotations
@@ -46,16 +47,19 @@ class ToolResultDigest:
     source_hash
         First 16 hex chars of ``sha256(result)``; identical results
         share this hash.
-    raw_path
-        Filesystem path to the raw result on disk. Rendered into the
-        digest text so the agent can re-read the full body if needed.
+    content_sha256
+        Complete hexadecimal SHA-256 of the redacted raw result.
+    raw_result_id
+        Logical identifier for a successfully persisted raw result.  It
+        is deliberately not a host filesystem path.
     """
 
     tool: str
     title: str
     bullets: list = field(default_factory=list)
     source_hash: str = ""
-    raw_path: str = ""
+    content_sha256: str = ""
+    raw_result_id: str = ""
 
 
 def should_digest(result, threshold: int = 1200) -> bool:
@@ -64,7 +68,7 @@ def should_digest(result, threshold: int = 1200) -> bool:
 
 
 def _hash(content: str) -> str:
-    return hashlib.sha256(content.encode("utf-8", errors="replace")).hexdigest()[:16]
+    return hashlib.sha256(content.encode("utf-8", errors="replace")).hexdigest()
 
 
 # Match top-level Python constructs. Best-effort — the summarizer is
@@ -127,8 +131,13 @@ _DIGESTERS = {
 }
 
 
-def digest_tool_result(tool_name: str, args, result: str, raw_path: str) -> ToolResultDigest:
-    """Digest ``result`` for ``tool_name`` and attach hash + raw_path.
+def digest_tool_result(
+    tool_name: str,
+    args,
+    result: str,
+    raw_result_id: str = "",
+) -> ToolResultDigest:
+    """Digest ``result`` and attach its hash and logical raw-result id.
 
     Any exception from a per-tool summarizer falls through to the
     generic fallback (three-line tail). The digest always carries a
@@ -143,17 +152,21 @@ def digest_tool_result(tool_name: str, args, result: str, raw_path: str) -> Tool
             base = fn(args or {}, result or "")
         except Exception:
             base = _digest_fallback(tool_name, args or {}, result or "")
+    content_sha256 = _hash(result or "")
     return ToolResultDigest(
         tool=base.tool,
         title=base.title,
         bullets=list(base.bullets),
-        source_hash=_hash(result or ""),
-        raw_path=raw_path,
+        source_hash=content_sha256[:16],
+        content_sha256=content_sha256,
+        raw_result_id=raw_result_id,
     )
 
 
 def render_digest_content(digest: ToolResultDigest) -> str:
     """Format ``digest`` for insertion into a tool_result message."""
     bullet_text = "\n".join(f"- {b}" for b in digest.bullets)
-    footer = f"\n(raw at {digest.raw_path})" if digest.raw_path else ""
-    return f"[digest] {digest.title}\n{bullet_text}{footer}"
+    metadata = [f"content_sha256: sha256:{digest.content_sha256}"]
+    if digest.raw_result_id:
+        metadata.append(f"raw_result_id: {digest.raw_result_id}")
+    return f"[digest] {digest.title}\n{bullet_text}\n" + "\n".join(metadata)

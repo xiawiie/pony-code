@@ -360,13 +360,13 @@ def _prepare_tool_result(
     1. Write the raw body to ``<run_dir>/tool_results/<hash>.txt`` so a
        later turn can recover the full output on demand.
     2. Replace ``content`` with the rendered digest (title + bullets +
-       "raw at ..." pointer) — the agent still sees the shape of the
-       result, at a fraction of the token cost.
+       content SHA-256 and logical raw-result id) — the agent still sees
+       the shape of the result without learning a Project State host path.
     3. Return ``digest_applied`` and ``source_hash`` so the atomic pair
        commit can distinguish digested messages from inline ones.
 
     When ``agent.current_run_dir`` is unavailable (e.g. mid-test), we
-    still emit the digest but leave ``raw_path`` empty — no crash.
+    still emit the digest without a ``raw_result_id`` — no crash.
     Callers can override the auto-digest by passing
     ``digest_applied=True`` up-front (used by explicit callers that
     have already digested the content themselves).
@@ -391,13 +391,13 @@ def _prepare_tool_result(
     # Only run the digest heuristic if the caller hasn't already digested.
     if not digest_applied and should_digest(safe_content, threshold=threshold):
         # Task D1: single-call digest. Compute the digest once (per-tool
-        # summarizer runs exactly once); then update raw_path on the
-        # dataclass via dataclasses.replace after we know where we wrote.
+        # summarizer runs exactly once); then attach a logical result id
+        # after the content-addressed body is durably written.
         from dataclasses import replace as _dc_replace
-        digest = digest_tool_result(tool_name, tool_args, safe_content, raw_path="")
+        digest = digest_tool_result(tool_name, tool_args, safe_content)
         source_hash = digest.source_hash
         run_dir = getattr(agent, "current_run_dir", None)
-        raw_path_str = ""
+        raw_result_id = ""
         if run_dir is not None:
             try:
                 raw_dir = ensure_private_dir(run_dir / "tool_results")
@@ -443,12 +443,12 @@ def _prepare_tool_result(
                 finally:
                     if descriptor >= 0:
                         os.close(descriptor)
-                raw_path_str = str(raw_path)
+                raw_result_id = f"tool_result:{source_hash}"
             except (OSError, ValueError) as exc:
                 logger.debug("raw tool_result write failed: %s", type(exc).__name__)
-                raw_path_str = ""
-        if raw_path_str:
-            digest = _dc_replace(digest, raw_path=raw_path_str)
+                raw_result_id = ""
+        if raw_result_id:
+            digest = _dc_replace(digest, raw_result_id=raw_result_id)
         display_content = render_digest_content(digest)
         digest_applied = True
 

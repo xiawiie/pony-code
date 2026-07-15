@@ -10,6 +10,94 @@ from pico.migration import Migration
 from pico.observability import load_run_summary, validate_report, validate_trace
 
 
+def _write_legacy_run(root, run_id="run_1"):
+    run_dir = root / ".pico" / "runs" / run_id
+    run_dir.mkdir(parents=True)
+    (run_dir / "report.json").write_text(
+        json.dumps({"run_id": run_id, "task_id": "task_1"}),
+        encoding="utf-8",
+    )
+    (run_dir / "trace.jsonl").write_text("{}\n", encoding="utf-8")
+    (run_dir / "task_state.json").write_text("{}", encoding="utf-8")
+    return run_dir
+
+
+def test_migrate_status_separates_transaction_and_live_schema(tmp_path, capsys):
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    _write_legacy_run(tmp_path)
+
+    code = main(
+        [
+            "--cwd",
+            str(tmp_path),
+            "--format",
+            "json",
+            "migrate",
+            "observability",
+            "status",
+        ]
+    )
+
+    assert code == 0
+    data = json.loads(capsys.readouterr().out)["data"]
+    assert data["contract"] == "observability"
+    assert data["transaction_state"] == "absent"
+    assert data["live_schema_state"] == "migration_required"
+    assert "state" not in data
+
+
+def test_migrate_status_reports_both_states_absent_without_project_state(
+    tmp_path,
+    capsys,
+):
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+
+    code = main(
+        [
+            "--cwd",
+            str(tmp_path),
+            "--format",
+            "json",
+            "migrate",
+            "observability",
+            "status",
+        ]
+    )
+
+    assert code == 0
+    data = json.loads(capsys.readouterr().out)["data"]
+    assert data == {
+        "contract": "observability",
+        "live_schema_state": "absent",
+        "transaction_state": "absent",
+    }
+
+
+def test_runs_summary_names_exact_observability_migration_command(
+    tmp_path,
+    capsys,
+):
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    _write_legacy_run(tmp_path)
+
+    code = main(
+        [
+            "--cwd",
+            str(tmp_path),
+            "--format",
+            "json",
+            "runs",
+            "summary",
+            "run_1",
+        ]
+    )
+
+    assert code == 0
+    data = json.loads(capsys.readouterr().out)["data"]
+    assert data["summary_status"] == "migration_required"
+    assert data["migration_command"] == "pico migrate observability apply"
+
+
 def test_migrate_observability_apply_cuts_over_legacy_run(tmp_path, capsys):
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
     run_dir = tmp_path / ".pico" / "runs" / "run_1"

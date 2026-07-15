@@ -33,7 +33,7 @@ record 或 blob，Staging Recovery 不能冒充 Source Apply rollback，Host Rec
 | --- | --- | ---: |
 | Session | `session` | 1 |
 | Checkpoint Record | `checkpoint` | 1 |
-| Tool Change Record | `tool_change` | 1 |
+| Tool Change Record | `tool_change` | 2 |
 
 type/version 必须精确、version 必须是整数，required fields 必须完整。reader 拒绝错误类型、未知版本、
 duplicate keys、缺失字段和不安全文件，不做读时转换或磁盘改写。run/report/trace 是当前审计 artifact，

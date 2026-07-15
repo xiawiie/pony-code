@@ -244,6 +244,60 @@ def _migration(workspace, contract):
     ), validate
 
 
+def _live_schema_state(contract, live):
+    """Classify the live artifact schema independently of its transaction."""
+    live = Path(live)
+    try:
+        live.lstat()
+    except FileNotFoundError:
+        return ABSENT
+    if live.is_symlink() or not live.is_dir():
+        return "invalid"
+
+    migration_required = False
+    try:
+        if contract == "observability":
+            for entry in sorted(live.iterdir()):
+                if entry.is_symlink():
+                    return "invalid"
+                if not entry.is_dir():
+                    continue
+                try:
+                    load_run_summary(live, entry.name)
+                except RunArtifactError as exc:
+                    if exc.status == "migration_required":
+                        migration_required = True
+                        continue
+                    return "invalid"
+        else:
+            live_identity = private_directory_identity(live)
+            for path in sorted(live.glob("*.json")):
+                record = _read_json(
+                    path,
+                    trusted_root=live,
+                    trusted_root_identity=live_identity,
+                )
+                if isinstance(record, dict) and record.get("format_version") == 1:
+                    convert_tool_change_v1(record)
+                    migration_required = True
+                else:
+                    _validate_tool_change_record(record, expected_id=path.stem)
+    except (OSError, RuntimeError, ValueError, RunArtifactError):
+        return "invalid"
+    return "migration_required" if migration_required else "current"
+
+
+def _status_with_live_schema(migration, contract):
+    journal = dict(migration.status())
+    transaction_state = journal.pop("state", ABSENT)
+    journal["contract"] = contract
+    return {
+        **journal,
+        "transaction_state": transaction_state,
+        "live_schema_state": _live_schema_state(contract, migration.live),
+    }
+
+
 def migration_preflight(workspace):
     """Reject runtime startup while either explicit migration is active."""
     pico_root = Path(workspace.repo_root) / ".pico"
@@ -275,11 +329,15 @@ def handle_migrate(workspace, tokens, args):
         )
     contract, operation = tokens
     if operation == "status" and not (Path(workspace.repo_root) / ".pico").exists():
-        return {"state": ABSENT, "contract": contract}
+        return {
+            "contract": contract,
+            "transaction_state": ABSENT,
+            "live_schema_state": ABSENT,
+        }
     migration, validate = _migration(workspace, contract)
     try:
         if operation == "status":
-            result = migration.status()
+            result = _status_with_live_schema(migration, contract)
         else:
             with source_mutation_authority(
                 Path.home() / ".pico" / "sandboxes",

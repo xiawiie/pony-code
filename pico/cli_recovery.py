@@ -205,6 +205,8 @@ def handle_runs(root, tokens, args):
                 "requested_run_id": requested_id,
                 "reason": str(exc),
             }
+            if exc.status == "migration_required":
+                data["migration_command"] = "pico migrate observability apply"
         return print_inspection_result(
             root,
             "runs_summary",
@@ -426,7 +428,10 @@ def _render_sessions_list(sessions):
 
 def _render_run_summary(data):
     if "summary_status" in data:
-        return f"{data['summary_status']}: {data['reason']}"
+        text = f"{data['summary_status']}: {data['reason']}"
+        if data.get("migration_command"):
+            text += f"\nRun `{data['migration_command']}`."
+        return text
     return render_summary_text(data)
 
 

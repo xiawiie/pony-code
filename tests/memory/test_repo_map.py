@@ -1,6 +1,7 @@
+import os
 from pathlib import Path
 
-from pico.repo_map import RepoMap
+from pico.repo_map import RepoMap, tool_repo_lookup
 
 
 def _write(root: Path, rel: str, content: str) -> None:
@@ -21,6 +22,17 @@ def test_scan_python_class_and_function(tmp_path):
 
     hits = rm.lookup("hash_password")
     assert hits[0].kind == "function"
+
+
+def test_first_actual_consumer_builds_repo_map_synchronously(tmp_path):
+    _write(tmp_path, "source.py", "class LazySymbol: pass\n")
+    rm = RepoMap(repo_root=tmp_path)
+
+    assert rm.lookup("LazySymbol") == []
+
+    result = tool_repo_lookup(type("Context", (), {"repo_map": rm})(), {"symbol": "LazySymbol"})
+
+    assert "source.py:1" in result
 
 
 def test_scan_python_method(tmp_path):
@@ -112,6 +124,63 @@ def test_refresh_incremental(tmp_path):
     rm.refresh_if_stale()
     assert rm.lookup("New")
     assert not rm.lookup("Old")
+
+
+def test_refresh_detects_inode_replacement_with_restored_size_and_mtime(tmp_path):
+    source = tmp_path / "source.py"
+    source.write_text("class Old: pass\n", encoding="utf-8")
+    rm = RepoMap(repo_root=tmp_path)
+    rm.scan()
+    original = source.stat()
+
+    replacement = tmp_path / "replacement.py"
+    replacement.write_text("class New: pass\n", encoding="utf-8")
+    os.utime(
+        replacement,
+        ns=(original.st_atime_ns, original.st_mtime_ns),
+    )
+    replacement.replace(source)
+
+    rm.refresh_if_stale()
+
+    assert rm.lookup("Old") == []
+    assert rm.lookup("New")
+
+
+def test_refresh_publishes_complete_snapshot_once(tmp_path, monkeypatch):
+    first = tmp_path / "first.py"
+    second = tmp_path / "second.py"
+    first.write_text("class OldFirst: pass\n", encoding="utf-8")
+    second.write_text("class OldSecond: pass\n", encoding="utf-8")
+    rm = RepoMap(repo_root=tmp_path)
+    rm.scan()
+
+    first.write_text("class NewFirst: pass\n", encoding="utf-8")
+    second.write_text("class NewSecond: pass\n", encoding="utf-8")
+    original_index = rm._index_file_into
+    observations = []
+
+    def observe_during_rebuild(*args, **kwargs):
+        observations.append(
+            (
+                bool(rm.lookup("OldFirst")),
+                bool(rm.lookup("OldSecond")),
+                bool(rm.lookup("NewFirst")),
+                bool(rm.lookup("NewSecond")),
+            )
+        )
+        return original_index(*args, **kwargs)
+
+    monkeypatch.setattr(rm, "_index_file_into", observe_during_rebuild)
+
+    rm.refresh_if_stale()
+
+    assert observations
+    assert all(observation == (True, True, False, False) for observation in observations)
+    assert rm.lookup("OldFirst") == []
+    assert rm.lookup("OldSecond") == []
+    assert rm.lookup("NewFirst")
+    assert rm.lookup("NewSecond")
 
 
 def test_syntax_error_does_not_crash(tmp_path):
