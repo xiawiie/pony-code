@@ -6233,11 +6233,11 @@ def _run_installed(args):
 
     unsupported_results = []
     for kind in _UNSUPPORTED_LOCAL_ENTRY_KINDS:
-        fixture_source = work_root / ("fixture-unsupported-" + kind)
+        fixture_source = work_root / ("s" if kind == "socket" else "fixture-unsupported-" + kind)
         fixture_source.mkdir()
         ordinary = fixture_source / "ordinary"
         ordinary.write_text("data\n", encoding="utf-8")
-        candidate = fixture_source / "candidate"
+        candidate = fixture_source / ("c" if kind == "socket" else "candidate")
         if kind == "symlink":
             candidate.symlink_to("ordinary")
         elif kind == "hardlink":
