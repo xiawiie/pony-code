@@ -515,6 +515,10 @@ def test_candidate_smoke_worker_resolves_signed_inputs_before_public_cli(
         "installed_tree_digest",
         lambda _root, _version: _sha("5"),
     )
+    fixture_version = signed_chain_candidate_envelope()["payload"][
+        "distribution_version"
+    ]
+    monkeypatch.setattr(release.metadata, "version", lambda _name: fixture_version)
     monkeypatch.setattr(release, "_platform_identity", lambda: ("darwin", "arm64"))
     args = SimpleNamespace(
         candidate_smoke_expected=str(expected_path),
