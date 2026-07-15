@@ -1635,6 +1635,66 @@ def test_workspace_watchdog_stops_call_on_unprovable_scan(tmp_path):
     assert outcome.cleanup_status == "completed"
 
 
+def test_watchdog_interval_is_adaptive_and_bounded():
+    assert docker_module._next_watchdog_interval(0) == 0.25
+    assert docker_module._next_watchdog_interval(0.008) == 0.25
+    assert docker_module._next_watchdog_interval(0.05) == 0.5
+    assert docker_module._next_watchdog_interval(0.3) == 2.0
+
+
+def test_fast_command_cannot_bypass_final_workspace_scan(tmp_path):
+    class FastSpecialEntryClient(FakeDockerClient):
+        def command(self, args, **kwargs):
+            if list(args)[:3] == ["container", "start", "--attach"]:
+                workspace = Path(self.plan.workspace)
+                (workspace / "late-link").symlink_to("README.md")
+            return super().command(args, **kwargs)
+
+    client = FastSpecialEntryClient()
+    _source, _store, session, runner, plan, client = _runner(
+        tmp_path,
+        client=client,
+    )
+
+    outcome = runner.execute(session, plan)
+
+    assert outcome.sandbox_outcome == "container_runtime_failed"
+    assert outcome.error_code == "sandbox_workspace_limit_exceeded"
+    assert outcome.cleanup_status == "completed"
+    assert client.exists is False
+
+
+def test_final_workspace_scan_runs_before_cleanup(tmp_path, monkeypatch):
+    events = []
+    calls = 0
+
+    def probe(_workspace):
+        nonlocal calls
+        calls += 1
+        events.append(f"probe-{calls}")
+        if calls == 2:
+            raise DockerSandboxError("sandbox_workspace_limit_exceeded")
+        return {"entries": 1, "logical_bytes": 1, "allocated_bytes": 512}
+
+    _source, _store, session, runner, plan, _client = _runner(
+        tmp_path,
+        workspace_probe=probe,
+    )
+    original_cleanup = runner._cleanup
+
+    def tracked_cleanup(*args, **kwargs):
+        events.append("cleanup")
+        return original_cleanup(*args, **kwargs)
+
+    monkeypatch.setattr(runner, "_cleanup", tracked_cleanup)
+
+    outcome = runner.execute(session, plan)
+
+    assert events[:3] == ["probe-1", "probe-2", "cleanup"]
+    assert outcome.error_code == "sandbox_workspace_limit_exceeded"
+    assert outcome.cleanup_status == "completed"
+
+
 def test_live_watchdog_blocks_cleanup_and_requires_review(tmp_path, monkeypatch):
     client = FakeDockerClient()
     _source, store, session, runner, plan, client = _runner(

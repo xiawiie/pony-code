@@ -23,20 +23,25 @@ def _percentile(samples, p):
     return int(sorted_samples[f] + (sorted_samples[c] - sorted_samples[f]) * d)
 
 
-def bench(name, fn, iterations=100, warmup=5):
+def bench(name, fn, iterations=100, warmup=5, cleanup=None):
     """Time ``fn`` and return structured stats.
 
-    Warmup runs are discarded. Measured samples are collected via
-    ``time.perf_counter_ns``. Returns a dict with keys ``name``,
-    ``iterations``, ``median_ns``, ``p95_ns``, ``min_ns``.
+    Warmup runs are discarded. Optional cleanup runs after timing each call.
+    Measured samples are collected via ``time.perf_counter_ns``. Returns a
+    dict with keys ``name``, ``iterations``, ``median_ns``, ``p95_ns``,
+    ``min_ns``.
     """
     for _ in range(warmup):
-        fn()
+        result = fn()
+        if cleanup is not None:
+            cleanup(result)
     samples = []
     for _ in range(iterations):
         t0 = time.perf_counter_ns()
-        fn()
+        result = fn()
         samples.append(time.perf_counter_ns() - t0)
+        if cleanup is not None:
+            cleanup(result)
     return {
         "name": name,
         "iterations": iterations,

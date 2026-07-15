@@ -44,6 +44,9 @@ MAX_EXECUTABLE_BYTES = 256 * 1024 * 1024
 MAX_IMAGE_MANIFEST_BYTES = 1024 * 1024
 MAX_CALL_PLAN_BYTES = 1024 * 1024
 MAX_PRODUCT_TIMEOUT = 120
+_WATCHDOG_MIN_INTERVAL = 0.25
+_WATCHDOG_MAX_INTERVAL = 2.0
+_WATCHDOG_SCAN_MULTIPLIER = 10.0
 _CALL_PLAN_NAME = "active-call-plan.json"
 
 IMAGE_LABELS = {
@@ -1813,6 +1816,16 @@ def measure_workspace(root):
             os.close(root_descriptor)
 
 
+def _next_watchdog_interval(scan_duration):
+    return min(
+        _WATCHDOG_MAX_INTERVAL,
+        max(
+            _WATCHDOG_MIN_INTERVAL,
+            float(scan_duration) * _WATCHDOG_SCAN_MULTIPLIER,
+        ),
+    )
+
+
 class DockerSandboxRunner:
     def __init__(
         self,
@@ -1821,7 +1834,7 @@ class DockerSandboxRunner:
         image,
         *,
         workspace_probe=measure_workspace,
-        watchdog_interval=0.25,
+        watchdog_interval=_WATCHDOG_MIN_INTERVAL,
     ):
         self.client = client
         self.session_store = session_store
@@ -2459,13 +2472,18 @@ print(head)
         watchdog_joined = True
 
         def watch_workspace():
-            while not watchdog_stop.wait(max(0.01, self.watchdog_interval)):
+            interval = max(0.01, self.watchdog_interval)
+            while not watchdog_stop.wait(interval):
+                started_at = time.monotonic()
                 try:
                     self.workspace_probe(workspace)
                 except BaseException:
                     watchdog_violation.set()
                     self._stop(plan, container_id)
                     return
+                interval = _next_watchdog_interval(
+                    time.monotonic() - started_at
+                )
 
         try:
             try:
@@ -2536,6 +2554,12 @@ print(head)
                 review_required=not cleaned or not watchdog_joined,
             )
             raise
+        if container_id and watchdog_joined:
+            try:
+                self.workspace_probe(workspace)
+            except BaseException:
+                watchdog_violation.set()
+                error_code = "sandbox_workspace_limit_exceeded"
         cleaned = (
             bool(container_id)
             and watchdog_joined
@@ -2564,11 +2588,11 @@ print(head)
         elif started and state.get("OOMKilled") is True:
             outcome = "oom_killed"
             error_code = "sandbox_oom_killed"
-        elif error_code:
-            outcome = "container_runtime_failed" if started else "target_not_started"
         elif watchdog_violation.is_set():
             outcome = "container_runtime_failed"
             error_code = "sandbox_workspace_limit_exceeded"
+        elif error_code:
+            outcome = "container_runtime_failed" if started else "target_not_started"
         elif started and _target_finished(state) and exit_code is not None:
             outcome = "completed"
         elif not started:

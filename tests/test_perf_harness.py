@@ -14,6 +14,21 @@ def test_bench_returns_stats():
     assert result["p95_ns"] >= result["median_ns"] >= result["min_ns"]
 
 
+def test_bench_runs_cleanup_after_every_sample():
+    from benchmarks.perf.harness import bench
+
+    cleaned = []
+    bench(
+        "cleanup",
+        lambda: len(cleaned),
+        iterations=3,
+        warmup=2,
+        cleanup=cleaned.append,
+    )
+
+    assert len(cleaned) == 5
+
+
 def test_security_recovery_scenario_names_are_stable():
     from benchmarks.perf.bench_security_recovery import SCENARIO_NAMES
 
@@ -34,6 +49,13 @@ def test_sandbox_scenario_names_are_stable():
         "sandbox/inventory_parallel/1",
         "sandbox/inventory_parallel/4",
         "sandbox/inventory_parallel/16",
+        "sandbox/staging/5000x1k",
+        "sandbox/staging/128mib",
+        "sandbox/capture_call/noop_326",
+        "sandbox/shell_empty_observed/326",
+        "sandbox/shell_empty_before_capture/326",
+        "sandbox/shell_empty_container/326",
+        "sandbox/shell_empty_after_capture/326",
     )
 
 
@@ -59,6 +81,7 @@ def test_sandbox_perf_artifact_has_release_provenance(monkeypatch):
     assert artifact["runtime"]["platform"]
     assert artifact["runtime"]["architecture"]
     assert artifact["runtime"]["machine"]
+    assert artifact["runtime"]["docker"] == {"status": "not_measured"}
     assert artifact["sandbox"] == {
         "implementation": "docker_container",
         "image_digest": "sha256:61f5e86e344d4053b8f6c7053c965b2cde7fc5e77777974e6237ad2e4ec36904",
