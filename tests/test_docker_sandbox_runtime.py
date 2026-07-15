@@ -616,6 +616,10 @@ def test_builtin_and_docker_shell_share_staging_without_touching_source(
     )
 
     assert write.metadata["tool_status"] == "ok"
+    assert [entry["path"] for entry in write.metadata["file_entries"]] == [
+        "shared.txt"
+    ]
+    assert write.metadata["file_entries"][0]["snapshot_eligible"] is True
     assert "from-builtin" in shell_read.content
     assert shell_write.metadata["sandbox"]["execution_plane"] == "sandbox"
     assert shell_write.metadata["sandbox"]["runner_executed"] is True

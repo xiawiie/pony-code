@@ -35,6 +35,7 @@ from .tools import (
     DEFAULT_RUN_SHELL_TIMEOUT,
     ApprovedShellExecution,
     _ApprovedShellExecution,
+    _lexical_tool_target,
     SensitiveToolError,
     memory_write_intent,
     sandbox_privilege_denial,
@@ -860,6 +861,7 @@ def _begin_tool_change(prepared, lifecycle):
     if prepared["records_recovery"]:
         name = prepared["name"]
         lifecycle["before_paths"] = _direct_tool_candidate_paths(
+            agent,
             name,
             prepared["args"],
         )
@@ -1641,7 +1643,7 @@ def _tool_change_error_payload(terminal_status, tool_error_code, content, error_
     return None
 
 
-def _direct_tool_candidate_paths(name, args):
+def _direct_tool_candidate_paths(agent, name, args):
     if not isinstance(args, dict):
         return []
     arg_names = _PATH_ARG_NAMES_BY_TOOL.get(name, _GENERIC_PATH_ARG_NAMES)
@@ -1649,9 +1651,20 @@ def _direct_tool_candidate_paths(name, args):
     for key in arg_names:
         value = args.get(key)
         if isinstance(value, str) and value:
-            paths.append(value)
+            values = (value,)
         elif isinstance(value, (list, tuple)):
-            paths.extend(item for item in value if isinstance(item, str) and item)
+            values = tuple(
+                item for item in value if isinstance(item, str) and item
+            )
+        else:
+            values = ()
+        for raw_path in values:
+            try:
+                candidate, _relative = _lexical_tool_target(agent, raw_path)
+                relative = candidate.relative_to(Path(agent.root).resolve(strict=True))
+            except (OSError, RuntimeError, ValueError):
+                continue
+            paths.append(relative.as_posix())
     return paths
 
 
