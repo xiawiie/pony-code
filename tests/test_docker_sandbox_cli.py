@@ -422,7 +422,11 @@ def test_list_inspect_diff_and_apply_use_production_artifacts(
     assert main(
         ["--format", "json", "sandbox", "apply", sandbox_id, "--yes"]
     ) == 0
-    applied = json.loads(capsys.readouterr().out)["data"]
+    captured = capsys.readouterr()
+    applied = json.loads(captured.out)["data"]
+    assert finalized["diff_digest"] in captured.err
+    assert str(source) in captured.err
+    assert "README.md" not in captured.err
     assert applied["status"] == "apply_applied"
     assert (source / "README.md").read_text(encoding="utf-8") == "after\n"
     assert not context.execution_root.exists()
@@ -446,6 +450,104 @@ def test_apply_requires_separate_confirmation(tmp_path, monkeypatch, capsys):
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["error"]["code"] == "confirmation_required"
+
+
+def test_apply_review_summarizes_exact_artifact_and_risky_paths(
+    tmp_path,
+    monkeypatch,
+):
+    _home, source, context, observer = _session(tmp_path, monkeypatch)
+    (context.execution_root / "README.md").write_text("after\n", encoding="utf-8")
+    script = context.execution_root / "scripts" / "run.sh"
+    script.parent.mkdir()
+    script.write_text("#!/bin/sh\n", encoding="utf-8")
+    script.chmod(0o755)
+    (context.execution_root / ".env").write_text("TOKEN=value\n", encoding="utf-8")
+    finalized = observer.finalize_diff(lambda text: text)
+
+    review = cli_module._apply_review(context.current_session())
+
+    assert review == {
+        "sandbox_id": context.sandbox_session.sandbox_id,
+        "diff_digest": finalized["diff_digest"],
+        "source_root": str(source),
+        "candidate_count": 2,
+        "candidate_bytes": len(b"after\n") + len(b"#!/bin/sh\n"),
+        "change_counts": {
+            "created": 2,
+            "modified": 1,
+            "deleted": 0,
+            "type_changed": 0,
+        },
+        "high_risk_count": 1,
+        "blocked_count": 1,
+        "high_risk_or_blocked_paths": [
+            {"path": ".env", "classification": "blocked_sensitive"},
+            {"path": "scripts/run.sh", "classification": "high_risk_candidate"},
+        ],
+    }
+
+
+def test_apply_yes_loads_review_and_passes_displayed_digest(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    _home, _source, context, observer = _session(tmp_path, monkeypatch)
+    (context.execution_root / "README.md").write_text("after\n", encoding="utf-8")
+    finalized = observer.finalize_diff(lambda text: text)
+    received = []
+
+    def fake_apply(_store, _session, digest):
+        received.append(digest)
+        return {"status": "bound"}
+
+    monkeypatch.setattr(cli_module, "_apply", fake_apply)
+
+    assert main(
+        [
+            "--format",
+            "json",
+            "sandbox",
+            "apply",
+            context.sandbox_session.sandbox_id,
+            "--yes",
+        ]
+    ) == 0
+
+    captured = capsys.readouterr()
+    assert received == [finalized["diff_digest"]]
+    assert finalized["diff_digest"] in captured.err
+    assert json.loads(captured.out)["data"]["status"] == "bound"
+
+
+def test_apply_displays_loaded_review_before_interactive_confirmation(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    _home, _source, context, observer = _session(tmp_path, monkeypatch)
+    (context.execution_root / "README.md").write_text("after\n", encoding="utf-8")
+    finalized = observer.finalize_diff(lambda text: text)
+    events = []
+    monkeypatch.setattr(
+        cli_module,
+        "_display_apply_review",
+        lambda review: events.append(("display", review["diff_digest"])),
+    )
+    monkeypatch.setattr(
+        "builtins.input",
+        lambda _prompt: events.append(("confirm", "")) or "n",
+    )
+
+    assert main(
+        ["--format", "json", "sandbox", "apply", context.sandbox_session.sandbox_id]
+    ) == 2
+
+    assert events == [("display", finalized["diff_digest"]), ("confirm", "")]
+    assert json.loads(capsys.readouterr().out)["error"]["code"] == (
+        "confirmation_declined"
+    )
 
 
 def test_discard_removes_staging_and_preserves_terminal_audit(

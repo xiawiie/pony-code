@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 import hashlib
 from importlib import metadata
 from pathlib import Path
+import sys
 
 from . import file_lock
 from . import sandbox_release_authority as release_authority
@@ -398,6 +399,44 @@ def _confirm(args, action, sandbox_id, *, yes):
         )
 
 
+def _apply_review(session):
+    artifact, digest = load_finalized_diff_artifact(session)
+    counts = artifact["counts"]
+    blocked_count = sum(
+        counts.get(name, 0)
+        for name in ("blocked_sensitive", "blocked_size", "blocked_type")
+    )
+    risky = [
+        {
+            "path": entry["path"],
+            "classification": entry["classification"],
+        }
+        for entry in artifact["entries"]
+        if entry["classification"] != "candidate"
+    ]
+    return {
+        "sandbox_id": session.sandbox_id,
+        "diff_digest": digest,
+        "source_root": session.manifest["source"]["root"],
+        "candidate_count": counts.get("candidate", 0)
+        + counts.get("high_risk_candidate", 0),
+        "candidate_bytes": artifact["candidate_bytes"],
+        "change_counts": {
+            name: sum(
+                entry["change_kind"] == name for entry in artifact["entries"]
+            )
+            for name in ("created", "modified", "deleted", "type_changed")
+        },
+        "high_risk_count": counts.get("high_risk_candidate", 0),
+        "blocked_count": blocked_count,
+        "high_risk_or_blocked_paths": risky[:10],
+    }
+
+
+def _display_apply_review(review):
+    print(_render({"apply_review": review}), end="", file=sys.stderr)
+
+
 def _release_if_owned(store, state_root):
     try:
         current = store.inspect(state_root)
@@ -747,9 +786,29 @@ def handle_sandbox(args, tokens):
                 "rendered": artifact["rendered"],
             }
         else:
-            _confirm(args, command, session.sandbox_id, yes="--yes" in rest[1:])
             if command == "apply":
-                payload = _apply(store, session, session.manifest["diff"]["digest"])
+                try:
+                    review = _apply_review(session)
+                except SandboxApplyError as exc:
+                    raise CliError(
+                        code=exc.code,
+                        message="sandbox apply review unavailable",
+                        exit_code=CLI_EXIT_CONFIG,
+                    ) from exc
+                _display_apply_review(review)
+                _confirm(
+                    args,
+                    command,
+                    session.sandbox_id,
+                    yes="--yes" in rest[1:],
+                )
+                payload = _apply(store, session, review["diff_digest"])
             else:
+                _confirm(
+                    args,
+                    command,
+                    session.sandbox_id,
+                    yes="--yes" in rest[1:],
+                )
                 payload = _discard(store, session)
     return print_result("docker_sandbox_" + command, payload, args, _render)
