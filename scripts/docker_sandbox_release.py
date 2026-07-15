@@ -515,6 +515,14 @@ def udp_exchange(host, port):
         payload, _ = probe.recvfrom(len(nonce))
         return payload == nonce
 
+def reachable(action, *, refused_is_reachable=False):
+    try:
+        return action()
+    except ConnectionRefusedError:
+        return refused_is_reachable
+    except OSError:
+        return False
+
 try:
     resolved = {
         item[4][0]
@@ -528,15 +536,25 @@ except OSError:
     resolved = set()
 
 facts = {
-    "control_gateway_reachable": tcp_exchange(gateway, gateway_tcp_port),
-    "control_host_reachable": tcp_exchange(host_alias, host_tcp_port),
+    "control_gateway_reachable": reachable(
+        lambda: tcp_exchange(gateway, gateway_tcp_port),
+        refused_is_reachable=True,
+    ),
+    "control_host_reachable": reachable(
+        lambda: tcp_exchange(host_alias, host_tcp_port)
+    ),
     "control_peer_dns_reachable": peer_ipv4 in resolved,
-    "control_peer_tcp_reachable": tcp_exchange(peer_alias, peer_tcp_port),
-    "control_peer_udp_reachable": udp_exchange(peer_alias, peer_udp_port),
+    "control_peer_tcp_reachable": reachable(
+        lambda: tcp_exchange(peer_alias, peer_tcp_port)
+    ),
+    "control_peer_udp_reachable": reachable(
+        lambda: udp_exchange(peer_alias, peer_udp_port)
+    ),
 }
 print(json.dumps(facts, sort_keys=True, separators=(",", ":")))
 """.strip()
 _NETWORK_PRODUCTION_PROBE = r"""
+import errno
 import json
 import os
 import socket
@@ -575,11 +593,11 @@ def udp_exchange(host, port):
         payload, _ = probe.recvfrom(len(nonce))
         return payload == nonce
 
-def denied(action):
+def denied(action, *, refused_is_denied=True):
     try:
         action()
-    except (OSError, socket.gaierror):
-        return True
+    except OSError as exc:
+        return refused_is_denied or exc.errno != errno.ECONNREFUSED
     return False
 
 guest = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -636,7 +654,8 @@ try:
         guest_listener_armed=True,
         guest_loopback_control=loopback,
         production_gateway_denied=denied(
-            lambda: tcp_exchange(gateway, gateway_tcp_port)
+            lambda: tcp_exchange(gateway, gateway_tcp_port),
+            refused_is_denied=False,
         ),
         production_host_denied=denied(
             lambda: tcp_exchange(host_alias, host_tcp_port)
@@ -6375,12 +6394,11 @@ def _run_installed(args):
     security_files = [path for path in MANDATORY_SECURITY_TESTS if path in test_files]
     ordinary_files = [path for path in test_files if path not in MANDATORY_SECURITY_TESTS]
     test_groups = [ordinary_files[index::4] for index in range(4)]
+    pytest_tool = dict(image.tool_paths)["pytest"]
     pytest_outcomes = [
         run(
             [
-                python,
-                "-m",
-                "pytest",
+                pytest_tool,
                 "-q",
                 "-ra",
                 "-o",
@@ -6396,9 +6414,7 @@ def _run_installed(args):
     if security_files == list(MANDATORY_SECURITY_TESTS):
         security_outcome = run(
             [
-                python,
-                "-m",
-                "pytest",
+                pytest_tool,
                 "-q",
                 "-ra",
                 "-o",

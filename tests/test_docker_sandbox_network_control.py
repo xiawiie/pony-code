@@ -179,16 +179,30 @@ class FakeDockerClient:
 
     def _container_payload(self, container_id):
         value = self.containers[container_id]
-        image_id = value["image_id"]
+        image_reference = value["image_reference"]
         if "peer_identity_mismatch" in self.faults:
-            image_id = "sha256:" + "0" * 64
+            image_reference = "sha256:" + "0" * 64
+        labels = {
+            **value["labels"],
+            "io.pico.sandbox.managed": "true",
+            "org.opencontainers.image.title": "Pico Docker Sandbox",
+        }
+        if "peer_control_label_mismatch" in self.faults:
+            labels["io.pico.network-control.foreign"] = "true"
+        network_id = value["network_id"] if value["running"] else ""
+        address = "172.28.0.2" if value["running"] else ""
+        gateway = "172.28.0.1" if value["running"] else ""
         return {
             "Id": container_id,
             "Name": "/" + value["name"],
-            "Image": image_id,
+            "Image": image_reference,
+            "ImageManifestDescriptor": {
+                "digest": value["image_reference"],
+                "annotations": {"config.digest": value["image_id"]},
+            },
             "Config": {
                 "Image": value["image_reference"],
-                "Labels": value["labels"],
+                "Labels": labels,
                 "Cmd": value["argv"],
                 "Entrypoint": None,
             },
@@ -209,9 +223,9 @@ class FakeDockerClient:
             "NetworkSettings": {
                 "Networks": {
                     value["network_name"]: {
-                        "NetworkID": value["network_id"],
-                        "IPAddress": "172.28.0.2",
-                        "Gateway": "172.28.0.1",
+                        "NetworkID": network_id,
+                        "IPAddress": address,
+                        "Gateway": gateway,
                         "Aliases": [value["alias"]],
                     }
                 }
@@ -432,7 +446,14 @@ def test_malformed_create_without_inventory_proof_fails_closed(tmp_path):
     assert not client.removed
 
 
-@pytest.mark.parametrize("fault", ("network_identity_mismatch", "peer_identity_mismatch"))
+@pytest.mark.parametrize(
+    "fault",
+    (
+        "network_identity_mismatch",
+        "peer_identity_mismatch",
+        "peer_control_label_mismatch",
+    ),
+)
 def test_identity_mismatch_is_never_deleted(tmp_path, fault):
     client = FakeDockerClient(fault)
     control = _control(tmp_path, client)

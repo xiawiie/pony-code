@@ -654,18 +654,44 @@ class NetworkControl:
     def _peer_alias(self):
         return "pico-peer-" + self.owner["owner_digest"][7:19]
 
-    def _verify_peer(self, payload, peer_id):
+    def _verify_peer(self, payload, peer_id, *, require_running=False):
         try:
             host = payload["HostConfig"]
             config = payload["Config"]
+            descriptor = payload.get("ImageManifestDescriptor", {})
             networks = payload["NetworkSettings"]["Networks"]
             attachment = networks[self.owner["network_name"]]
+            labels = config["Labels"]
+            attachment_ready = (
+                attachment["NetworkID"] == self.owner["network_id"]
+                and isinstance(attachment["IPAddress"], str)
+                and bool(attachment["IPAddress"])
+                and isinstance(attachment["Gateway"], str)
+                and bool(attachment["Gateway"])
+            )
+            attachment_pending = (
+                attachment["NetworkID"] == ""
+                and attachment["IPAddress"] == ""
+                and attachment["Gateway"] == ""
+            )
             valid = (
                 payload["Id"] == peer_id
                 and payload["Name"] == "/" + self.owner["peer_name"]
-                and payload["Image"] == self.owner["image_id"]
+                and payload["Image"] == self.owner["image_reference"]
+                and descriptor.get("digest") == self.owner["image_reference"]
+                and descriptor.get("annotations", {}).get("config.digest")
+                == self.owner["image_id"]
                 and config["Image"] == self.owner["image_reference"]
-                and config["Labels"] == self.owner["labels"]
+                and isinstance(labels, dict)
+                and all(
+                    labels.get(key) == value
+                    for key, value in self.owner["labels"].items()
+                )
+                and not any(
+                    key.startswith("io.pico.network-control.")
+                    and key not in self.owner["labels"]
+                    for key in labels
+                )
                 and config["Cmd"] == self.owner["peer_argv"]
                 and config.get("Entrypoint") in (None, [])
                 and host["NetworkMode"] == self.owner["network_id"]
@@ -680,12 +706,13 @@ class NetworkControl:
                 and host["PublishAllPorts"] is False
                 and payload.get("Mounts") == []
                 and set(networks) == {self.owner["network_name"]}
-                and attachment["NetworkID"] == self.owner["network_id"]
-                and isinstance(attachment["IPAddress"], str)
-                and bool(attachment["IPAddress"])
-                and isinstance(attachment["Gateway"], str)
-                and bool(attachment["Gateway"])
+                and (attachment_ready or attachment_pending)
                 and attachment.get("Aliases") == [self._peer_alias]
+                and (
+                    not require_running
+                    or payload["State"]["Running"] is True
+                    and attachment_ready
+                )
             )
         except (KeyError, TypeError):
             valid = False
@@ -797,9 +824,9 @@ class NetworkControl:
             if not _clean_result(started):
                 raise NetworkControlError("network_control_peer_start_failed")
             peer = _inspect_json(self.client, "container", self.owner["peer_id"])
-            self._verify_peer(peer, self.owner["peer_id"])
             if peer.get("State", {}).get("Running") is not True:
                 raise NetworkControlError("network_control_peer_start_failed")
+        self._verify_peer(peer, self.owner["peer_id"], require_running=True)
         attachment = peer["NetworkSettings"]["Networks"][self.owner["network_name"]]
         topology_payload = {
             "owner_digest": self.owner["owner_digest"],
