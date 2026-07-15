@@ -1,3 +1,5 @@
+import os
+
 import pytest
 
 import pico.config as config_module
@@ -44,6 +46,41 @@ def test_pico_toml_max_blob_size_overrides_snapshot_eligibility(tmp_path):
     tightened = snapshot_eligibility(tmp_path, file_rel, max_blob_size=override_limit)
     assert tightened["snapshot_eligible"] is False
     assert tightened["ineligible_reason"] == "file_too_large"
+
+
+@pytest.mark.parametrize("kind", ("symlink", "hardlink", "fifo", "directory"))
+def test_pico_toml_unsafe_entry_warns_and_uses_defaults(
+    tmp_path,
+    capsys,
+    kind,
+):
+    outside = tmp_path / "outside.toml"
+    outside.write_text("[policy]\nmax_blob_size = 1\n", encoding="utf-8")
+    target = tmp_path / "pico.toml"
+    if kind == "symlink":
+        target.symlink_to(outside)
+    elif kind == "hardlink":
+        sibling = tmp_path.parent / f"{tmp_path.name}-outside.toml"
+        sibling.write_text("[policy]\nmax_blob_size = 1\n", encoding="utf-8")
+        os.link(sibling, target)
+    elif kind == "fifo":
+        os.mkfifo(target, 0o600)
+    else:
+        target.mkdir()
+
+    config = load_pico_toml(tmp_path)
+
+    assert config["policy"]["max_blob_size"] == DEFAULT_MAX_BLOB_SIZE
+    assert capsys.readouterr().err == "warning: invalid pico.toml; using defaults\n"
+
+
+def test_pico_toml_over_one_mib_warns_and_uses_defaults(tmp_path, capsys):
+    (tmp_path / "pico.toml").write_bytes(b"#" * (1024 * 1024 + 1))
+
+    config = load_pico_toml(tmp_path)
+
+    assert config["policy"]["max_blob_size"] == DEFAULT_MAX_BLOB_SIZE
+    assert capsys.readouterr().err == "warning: invalid pico.toml; using defaults\n"
 
 
 def test_provider_resolver_uses_source_then_provider_name_order():

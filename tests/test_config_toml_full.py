@@ -53,7 +53,7 @@ def test_malformed_uses_defaults_without_echoing_content(tmp_path, capsys):
 
 def test_non_table_uses_defaults(monkeypatch, tmp_path, capsys):
     (tmp_path / "pico.toml").write_text("", encoding="utf-8")
-    monkeypatch.setattr(config.tomllib, "load", lambda _file: [])
+    monkeypatch.setattr(config.tomllib, "loads", lambda _text: [])
 
     data = load_pico_toml(tmp_path)
 

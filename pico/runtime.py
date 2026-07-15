@@ -341,6 +341,12 @@ class Pico:
         self.workspace = workspace
         # Existing tool code treats root as the model-visible execution root.
         self.root = self.execution_root
+        self.source_root_identity = securitylib.private_directory_identity(
+            self.source_root
+        )
+        self.workspace_root_identity = securitylib.private_directory_identity(
+            self.root
+        )
         executable_source = (
             workspace.trusted_executables
             if _trusted_executables is None
@@ -445,7 +451,10 @@ class Pico:
                 executables=self.trusted_executables,
             )
         project_config = (
-            load_pico_toml(self.source_root)
+            load_pico_toml(
+                self.source_root,
+                expected_root_identity=self.source_root_identity,
+            )
             if project_config is None
             else deepcopy(project_config)
         )
@@ -1301,6 +1310,7 @@ class Pico:
             redaction_env=self.redaction_env,
             secret_env_names=self.secret_env_names,
             sandbox_context=self.sandbox_context,
+            workspace_root_identity=self.workspace_root_identity,
         )
 
     def spawn_delegate(self, args):

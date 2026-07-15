@@ -87,15 +87,15 @@ def test_pico_parses_once_per_instance_without_cross_instance_cache(
 ):
     toml_path = tmp_path / "pico.toml"
     toml_path.write_text(PICO_TOML, encoding="utf-8")
-    real_load = config.tomllib.load
+    real_loads = config.tomllib.loads
     parse_count = 0
 
-    def counting_load(file):
+    def counting_loads(text):
         nonlocal parse_count
         parse_count += 1
-        return real_load(file)
+        return real_loads(text)
 
-    monkeypatch.setattr(config.tomllib, "load", counting_load)
+    monkeypatch.setattr(config.tomllib, "loads", counting_loads)
     workspace = WorkspaceContext.build(tmp_path)
     store = SessionStore(tmp_path / ".pico" / "sessions")
     first = Pico(FakeModelClient([]), workspace, store)

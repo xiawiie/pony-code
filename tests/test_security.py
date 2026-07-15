@@ -424,10 +424,17 @@ def test_anchored_regular_reader_fifo_swap_is_nonblocking(tmp_path, monkeypatch)
     assert swapped is True
 
 
-def test_anchored_regular_reader_stops_at_max_plus_one(tmp_path):
+def test_anchored_regular_reader_rejects_file_over_limit(tmp_path):
     (tmp_path / "large.txt").write_bytes(b"x" * 4096)
-    state = security_module.read_regular_bytes_anchored(
-        tmp_path, "large.txt", max_bytes=32
-    )
-    assert state["exists"] is True
-    assert len(state["data"]) == 33
+
+    with pytest.raises(
+        security_module.WorkspaceIOError,
+        match="workspace_file_limit_exceeded",
+    ) as exc_info:
+        security_module.read_regular_bytes_anchored(
+            tmp_path,
+            "large.txt",
+            max_bytes=32,
+        )
+
+    assert exc_info.value.code == "workspace_file_limit_exceeded"

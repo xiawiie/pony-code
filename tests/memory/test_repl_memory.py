@@ -86,6 +86,36 @@ def test_repl_memory_review_shows_agent_notes(tmp_path, monkeypatch, capsys):
     assert "old note" in out
 
 
+def test_repl_memory_review_uses_block_store_not_direct_path_read(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    from pathlib import Path
+
+    from pico.cli_start import run_repl
+
+    memory = tmp_path / ".pico" / "memory"
+    memory.mkdir(parents=True)
+    notes = memory / "agent_notes.md"
+    notes.write_text("- anchored note\n", encoding="utf-8")
+    real_read_text = Path.read_text
+
+    def reject_direct_read(self, *args, **kwargs):
+        if self == notes:
+            raise AssertionError("REPL reopened Agent Notes directly")
+        return real_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", reject_direct_read)
+    agent = _build_agent(tmp_path)
+    inputs = iter(["/memory-review", "/exit"])
+    monkeypatch.setattr("builtins.input", lambda *_: next(inputs))
+
+    run_repl(agent)
+
+    assert "anchored note" in capsys.readouterr().out
+
+
 def test_repl_memory_review_when_empty(tmp_path, monkeypatch, capsys):
     from pico.cli_start import run_repl
 

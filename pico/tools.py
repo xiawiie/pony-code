@@ -27,6 +27,13 @@ from .workspace import IGNORED_PATH_NAMES
 
 DEFAULT_RUN_SHELL_TIMEOUT = 60
 MAX_RUN_SHELL_TIMEOUT = 120
+MAX_WORKSPACE_FILE_BYTES = 8 * 1024 * 1024
+MAX_WORKSPACE_DIRECTORY_ENTRIES = 10_000
+MAX_WORKSPACE_LIST_RESULTS = 200
+MAX_WORKSPACE_SEARCH_DEPTH = 32
+MAX_WORKSPACE_SEARCH_FILES = 10_000
+MAX_WORKSPACE_SEARCH_BYTES = 64 * 1024 * 1024
+MAX_WORKSPACE_SEARCH_MATCHES = 200
 
 _RG_SENSITIVE_GLOBS = (
     "!.env",
@@ -292,6 +299,16 @@ def _lexical_tool_target(context, raw_path):
     if not raw or "\x00" in raw:
         raise ValueError("path must not be empty")
     root = Path(context.root).resolve(strict=True)
+    expected_root_identity = getattr(context, "workspace_root_identity", None)
+    if (
+        expected_root_identity is not None
+        and securitylib.private_directory_identity(root)
+        != tuple(expected_root_identity)
+    ):
+        raise securitylib.WorkspaceIOError(
+            "workspace_entry_unsafe",
+            "workspace root changed",
+        )
     source = Path(raw)
     if source.is_absolute() and getattr(
         getattr(context, "sandbox_context", None),
@@ -325,11 +342,20 @@ def _lexical_tool_target(context, raw_path):
         except FileNotFoundError:
             break
         except OSError:
-            raise ValueError("path access failed") from None
+            raise securitylib.WorkspaceIOError(
+                "workspace_entry_unsafe",
+                "workspace path access failed",
+            ) from None
         if stat.S_ISLNK(mode):
-            raise ValueError("path escapes workspace: symlink component")
+            raise securitylib.WorkspaceIOError(
+                "workspace_entry_unsafe",
+                "workspace path has a symlink component",
+            )
         if index < len(relative.parts) - 1 and not stat.S_ISDIR(mode):
-            raise ValueError("path parent is not a directory")
+            raise securitylib.WorkspaceIOError(
+                "workspace_entry_unsafe",
+                "workspace parent is not a directory",
+            )
         if index == len(relative.parts) - 1:
             leaf_mode = mode
     if (
@@ -348,6 +374,70 @@ def _target_mode(path):
         return None
 
 
+def _target_stat(path):
+    try:
+        return path.lstat()
+    except OSError:
+        return None
+
+
+def _workspace_root_identity(context):
+    identity = getattr(context, "workspace_root_identity", None)
+    if identity is not None:
+        return tuple(identity)
+    return securitylib.private_directory_identity(context.root)
+
+
+def _anchored_tool_relative(context, raw_path, *, allow_root=False):
+    path, _relative_text = _lexical_tool_target(context, raw_path)
+    root = Path(os.path.abspath(os.fspath(context.root)))
+    try:
+        relative = path.relative_to(root)
+    except ValueError:
+        raise ValueError("path escapes workspace") from None
+    if not relative.parts:
+        if allow_root:
+            return "."
+        raise ValueError("path must name a workspace entry")
+    return relative.as_posix()
+
+
+def _read_workspace_file(context, raw_path):
+    relative = _anchored_tool_relative(context, raw_path)
+    state = securitylib.read_regular_bytes_anchored(
+        context.root,
+        relative,
+        max_bytes=MAX_WORKSPACE_FILE_BYTES,
+        expected_root_identity=_workspace_root_identity(context),
+    )
+    if not state["exists"]:
+        raise ValueError("path is not a file")
+    return relative, state
+
+
+def _decode_workspace_utf8(data):
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        raise securitylib.WorkspaceIOError(
+            "workspace_entry_unsafe",
+            "workspace file is not valid UTF-8",
+        ) from None
+
+
+def _encode_workspace_utf8(value):
+    try:
+        data = str(value).encode("utf-8")
+    except UnicodeEncodeError:
+        raise ValueError("content must be valid UTF-8") from None
+    if len(data) > MAX_WORKSPACE_FILE_BYTES:
+        raise securitylib.WorkspaceIOError(
+            "workspace_file_limit_exceeded",
+            "workspace file exceeds the configured limit",
+        )
+    return data
+
+
 def _contains_sensitive_content(context, value):
     return securitylib.contains_secret_material(
         value,
@@ -362,19 +452,36 @@ def validate_tool(context, name, args):
     if name == "list_files":
         path, _ = _lexical_tool_target(context, args.get("path", "."))
         mode = _target_mode(path)
-        if mode is None or not stat.S_ISDIR(mode):
+        if mode is None:
             raise ValueError("path is not a directory")
+        if not stat.S_ISDIR(mode):
+            raise securitylib.WorkspaceIOError(
+                "workspace_entry_unsafe",
+                "path is not a directory",
+            )
         return
 
     if name == "read_file":
         path, _ = _lexical_tool_target(context, args["path"])
-        mode = _target_mode(path)
-        if mode is None or not stat.S_ISREG(mode):
+        info = _target_stat(path)
+        if info is None:
             raise ValueError("path is not a file")
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise securitylib.WorkspaceIOError(
+                "workspace_entry_unsafe",
+                "path is not a regular file",
+            )
+        if info.st_size > MAX_WORKSPACE_FILE_BYTES:
+            raise securitylib.WorkspaceIOError(
+                "workspace_file_limit_exceeded",
+                "workspace file exceeds the configured limit",
+            )
         start = int(args.get("start", 1))
         end = int(args.get("end", 200))
         if start < 1 or end < start:
             raise ValueError("invalid line range")
+        if end - start + 1 > 200:
+            raise ValueError("read_file accepts at most 200 lines")
         return
 
     if name == "search":
@@ -398,11 +505,17 @@ def validate_tool(context, name, args):
         refusal = _refuse_user_notes_write(context, path)
         if refusal:
             raise ValueError(refusal)
-        mode = _target_mode(path)
-        if mode is not None and not stat.S_ISREG(mode):
-            raise ValueError("path is not a regular file")
+        info = _target_stat(path)
+        if info is not None and (
+            not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+        ):
+            raise securitylib.WorkspaceIOError(
+                "workspace_entry_unsafe",
+                "path is not a regular file",
+            )
         if "content" not in args:
             raise ValueError("missing content")
+        _encode_workspace_utf8(args["content"])
         if _contains_sensitive_content(context, str(args["content"])):
             raise SensitiveToolError("sensitive_content_block")
         return
@@ -414,19 +527,31 @@ def validate_tool(context, name, args):
         refusal = _refuse_user_notes_write(context, path)
         if refusal:
             raise ValueError(refusal)
-        mode = _target_mode(path)
-        if mode is None or not stat.S_ISREG(mode):
+        info = _target_stat(path)
+        if info is None:
             raise ValueError("path is not a file")
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise securitylib.WorkspaceIOError(
+                "workspace_entry_unsafe",
+                "path is not a regular file",
+            )
+        if info.st_size > MAX_WORKSPACE_FILE_BYTES:
+            raise securitylib.WorkspaceIOError(
+                "workspace_file_limit_exceeded",
+                "workspace file exceeds the configured limit",
+            )
         old_text = str(args.get("old_text", ""))
         if not old_text:
             raise ValueError("old_text must not be empty")
         if "new_text" not in args:
             raise ValueError("missing new_text")
-        text = path.read_text(encoding="utf-8")
+        _relative, state = _read_workspace_file(context, args["path"])
+        text = _decode_workspace_utf8(state["data"])
         count = text.count(old_text)
         if count != 1:
             raise ValueError(f"old_text must occur exactly once, found {count}")
         candidate = text.replace(old_text, str(args["new_text"]), 1)
+        _encode_workspace_utf8(candidate)
         if _contains_sensitive_content(context, candidate):
             raise SensitiveToolError("sensitive_content_block")
         return
@@ -502,22 +627,33 @@ def validate_tool(context, name, args):
 
 
 def tool_list_files(context, args):
-    path = context.path(args.get("path", "."))
-    if not path.is_dir():
-        raise ValueError("path is not a directory")
-    entries = sorted(path.iterdir(), key=lambda item: item.name.casefold())
+    relative_directory = _anchored_tool_relative(
+        context,
+        args.get("path", "."),
+        allow_root=True,
+    )
+    listing = securitylib.list_directory_names_anchored(
+        context.root,
+        relative_directory,
+        max_entries=MAX_WORKSPACE_DIRECTORY_ENTRIES,
+        expected_root_identity=_workspace_root_identity(context),
+    )
     lines = []
-    for entry in entries[:200]:
-        if entry.name in IGNORED_PATH_NAMES:
+    for entry in listing["entries"]:
+        name = entry["name"]
+        if name in IGNORED_PATH_NAMES:
             continue
-        relative = entry.relative_to(context.root).as_posix()
+        relative = (
+            name
+            if relative_directory == "."
+            else f"{relative_directory}/{name}"
+        )
         if securitylib.is_sensitive_path(relative):
-            lines.append(f"{entry.name} [sensitive]")
+            lines.append(f"{name} [sensitive]")
+            if len(lines) >= MAX_WORKSPACE_LIST_RESULTS:
+                break
             continue
-        try:
-            mode = entry.lstat().st_mode
-        except OSError:
-            continue
+        mode = entry["mode"]
         if stat.S_ISLNK(mode):
             kind = "[L]"
         elif stat.S_ISDIR(mode):
@@ -526,30 +662,42 @@ def tool_list_files(context, args):
             kind = "[F]"
         else:
             kind = "[?]"
-        lines.append(f"{kind} {entry.relative_to(context.root)}")
+        lines.append(f"{kind} {relative}")
+        if len(lines) >= MAX_WORKSPACE_LIST_RESULTS:
+            break
+    if listing["unsafe_count"]:
+        lines.append(f"[unsafe skipped: {listing['unsafe_count']}]")
     return "\n".join(lines) or "(empty)"
 
 
 def tool_read_file(context, args):
-    path = context.path(args["path"])
-    if not path.is_file():
-        raise ValueError("path is not a file")
+    relative, state = _read_workspace_file(context, args["path"])
     start = int(args.get("start", 1))
     end = int(args.get("end", 200))
     if start < 1 or end < start:
         raise ValueError("invalid line range")
-    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    if end - start + 1 > 200:
+        raise ValueError("read_file accepts at most 200 lines")
+    lines = _decode_workspace_utf8(state["data"]).splitlines()
     body = "\n".join(f"{number:>4}: {line}" for number, line in enumerate(lines[start - 1:end], start=start))
-    return f"# {path.relative_to(context.root)}\n{body}"
+    return f"# {relative}\n{body}"
 
 
 def tool_search(context, args):
     pattern = str(args.get("pattern", "")).strip()
     if not pattern:
         raise ValueError("pattern must not be empty")
-    path = context.path(args.get("path", "."))
+    raw_path = args.get("path", ".")
+    relative_path = _anchored_tool_relative(
+        context,
+        raw_path,
+        allow_root=True,
+    )
+    path = context.path(raw_path)
 
     rg_executable = context.trusted_executables.get("rg")
+    if rg_executable and not _rg_workspace_is_safe(context, relative_path):
+        rg_executable = None
     if rg_executable:
         # 优先用 rg，因为搜索会非常频繁，搜索延迟会直接影响 agent 控制循环。
         base_rg_args = [
@@ -559,6 +707,10 @@ def tool_search(context, args):
             "--smart-case",
             "--max-count",
             "200",
+            "--max-depth",
+            str(MAX_WORKSPACE_SEARCH_DEPTH),
+            "--max-filesize",
+            str(MAX_WORKSPACE_FILE_BYTES),
         ]
         rg_args = list(base_rg_args)
         try:
@@ -585,7 +737,7 @@ def tool_search(context, args):
         matches = [] if filtered == "(no matches)" else filtered.splitlines()
 
         if target_is_directory and len(matches) < 200:
-            templates = _safe_env_template_files(context.root, path)
+            templates = _safe_env_template_files(context, relative_path)
             if templates:
                 template_args = [
                     *base_rg_args,
@@ -611,38 +763,222 @@ def tool_search(context, args):
                         matches.extend(template_matches[: 200 - len(matches)])
         return "\n".join(matches) or "(no matches)"
 
-    matches = []
-    try:
-        mode = path.lstat().st_mode
-    except OSError:
-        mode = 0
-    files = [path] if stat.S_ISREG(mode) else path.rglob("*") if stat.S_ISDIR(mode) else []
-    matches = _python_search_matches(context.root, files, pattern)
+    matches = _python_search_matches(context, relative_path, pattern)
     return "\n".join(matches) or "(no matches)"
 
 
-def _python_search_matches(root, files, pattern, limit=200):
+def _rg_workspace_is_safe(context, target):
+    """Preflight rg's tree so static unsafe entries use the anchored fallback."""
+    root = Path(context.root)
+    candidate = root if target == "." else root / target
+    try:
+        target_info = candidate.lstat()
+    except OSError:
+        return False
+    if stat.S_ISREG(target_info.st_mode):
+        return (
+            target_info.st_nlink == 1
+            and target_info.st_size <= MAX_WORKSPACE_FILE_BYTES
+        )
+    if not stat.S_ISDIR(target_info.st_mode):
+        return False
+
+    root_identity = _workspace_root_identity(context)
+    stack = [(target, 0)]
+    scanned = 0
+    files = 0
+    while stack:
+        directory, depth = stack.pop()
+        listing = securitylib.list_directory_names_anchored(
+            root,
+            directory,
+            max_entries=MAX_WORKSPACE_DIRECTORY_ENTRIES,
+            expected_root_identity=root_identity,
+        )
+        if listing["unsafe_count"]:
+            return False
+        scanned += listing["scanned"]
+        if scanned > MAX_WORKSPACE_SEARCH_FILES:
+            raise securitylib.WorkspaceIOError(
+                "workspace_search_limit_exceeded",
+                "workspace search entry limit exceeded",
+            )
+        children = []
+        for entry in listing["entries"]:
+            relative = (
+                entry["name"]
+                if directory == "."
+                else f"{directory}/{entry['name']}"
+            )
+            if (
+                entry["name"] in IGNORED_PATH_NAMES
+                or securitylib.is_sensitive_path(relative)
+            ):
+                continue
+            if stat.S_ISDIR(entry["mode"]):
+                if depth >= MAX_WORKSPACE_SEARCH_DEPTH:
+                    raise securitylib.WorkspaceIOError(
+                        "workspace_search_limit_exceeded",
+                        "workspace search depth limit exceeded",
+                    )
+                children.append(relative)
+            elif stat.S_ISREG(entry["mode"]):
+                files += 1
+                if files > MAX_WORKSPACE_SEARCH_FILES:
+                    raise securitylib.WorkspaceIOError(
+                        "workspace_search_limit_exceeded",
+                        "workspace search file limit exceeded",
+                    )
+        for child in reversed(children):
+            stack.append((child, depth + 1))
+    return True
+
+
+def _python_search_matches(context, target, pattern, limit=MAX_WORKSPACE_SEARCH_MATCHES):
     matches = []
-    for file_path in files:
-        file_path = _safe_search_file(root, file_path)
-        if file_path is None:
+    root = Path(context.root)
+    root_identity = _workspace_root_identity(context)
+    candidate = root if target == "." else root / target
+    try:
+        target_mode = candidate.lstat().st_mode
+    except OSError:
+        raise ValueError("search path does not exist") from None
+
+    files = []
+    scanned_entries = 0
+    if stat.S_ISREG(target_mode):
+        files.append(target)
+    elif stat.S_ISDIR(target_mode):
+        stack = [(target, 0)]
+        while stack:
+            directory, depth = stack.pop()
+            listing = securitylib.list_directory_names_anchored(
+                root,
+                directory,
+                max_entries=MAX_WORKSPACE_DIRECTORY_ENTRIES,
+                expected_root_identity=root_identity,
+            )
+            scanned_entries += listing["scanned"]
+            if scanned_entries > MAX_WORKSPACE_SEARCH_FILES:
+                raise securitylib.WorkspaceIOError(
+                    "workspace_search_limit_exceeded",
+                    "workspace search entry limit exceeded",
+                )
+            child_directories = []
+            for entry in listing["entries"]:
+                relative = (
+                    entry["name"]
+                    if directory == "."
+                    else f"{directory}/{entry['name']}"
+                )
+                if (
+                    entry["name"] in IGNORED_PATH_NAMES
+                    or securitylib.is_sensitive_path(relative)
+                ):
+                    continue
+                if stat.S_ISDIR(entry["mode"]):
+                    if depth >= MAX_WORKSPACE_SEARCH_DEPTH:
+                        raise securitylib.WorkspaceIOError(
+                            "workspace_search_limit_exceeded",
+                            "workspace search depth limit exceeded",
+                        )
+                    child_directories.append(relative)
+                elif stat.S_ISREG(entry["mode"]):
+                    files.append(relative)
+                    if len(files) > MAX_WORKSPACE_SEARCH_FILES:
+                        raise securitylib.WorkspaceIOError(
+                            "workspace_search_limit_exceeded",
+                            "workspace search file limit exceeded",
+                        )
+            for child in reversed(child_directories):
+                stack.append((child, depth + 1))
+    else:
+        raise securitylib.WorkspaceIOError(
+            "workspace_entry_unsafe",
+            "search path is unsafe",
+        )
+
+    total_read = 0
+    folded_pattern = pattern.casefold()
+    for relative in files:
+        try:
+            state = securitylib.read_regular_bytes_anchored(
+                root,
+                relative,
+                max_bytes=MAX_WORKSPACE_FILE_BYTES,
+                expected_root_identity=root_identity,
+            )
+        except securitylib.WorkspaceIOError as exc:
+            if exc.code == "workspace_file_limit_exceeded":
+                raise securitylib.WorkspaceIOError(
+                    "workspace_search_limit_exceeded",
+                    "workspace search file limit exceeded",
+                ) from exc
+            raise
+        if not state["exists"]:
             continue
-        for number, line in enumerate(file_path.read_text(encoding="utf-8", errors="replace").splitlines(), start=1):
-            if pattern.lower() in line.lower():
-                matches.append(f"{file_path.relative_to(root)}:{number}:{line}")
+        total_read += len(state["data"])
+        if total_read > MAX_WORKSPACE_SEARCH_BYTES:
+            raise securitylib.WorkspaceIOError(
+                "workspace_search_limit_exceeded",
+                "workspace search byte limit exceeded",
+            )
+        text = _decode_workspace_utf8(state["data"])
+        for number, line in enumerate(text.splitlines(), start=1):
+            if folded_pattern in line.casefold():
+                matches.append(f"{relative}:{number}:{line}")
                 if len(matches) >= limit:
                     return matches
     return matches
 
 
-def _safe_env_template_files(root, directory):
+def _safe_env_template_files(context, directory):
+    root = Path(context.root)
+    root_identity = _workspace_root_identity(context)
     templates = []
-    for candidate in directory.rglob("*"):
-        if candidate.name.casefold() not in _ALLOWED_ENV_TEMPLATES:
-            continue
-        safe_file = _safe_search_file(root, candidate)
-        if safe_file is not None:
-            templates.append(safe_file)
+    stack = [(directory, 0)]
+    scanned = 0
+    while stack:
+        current, depth = stack.pop()
+        listing = securitylib.list_directory_names_anchored(
+            root,
+            current,
+            max_entries=MAX_WORKSPACE_DIRECTORY_ENTRIES,
+            expected_root_identity=root_identity,
+        )
+        scanned += listing["scanned"]
+        if scanned > MAX_WORKSPACE_SEARCH_FILES:
+            raise securitylib.WorkspaceIOError(
+                "workspace_search_limit_exceeded",
+                "workspace search entry limit exceeded",
+            )
+        children = []
+        for entry in listing["entries"]:
+            relative = (
+                entry["name"]
+                if current == "."
+                else f"{current}/{entry['name']}"
+            )
+            if entry["name"] in IGNORED_PATH_NAMES:
+                continue
+            if stat.S_ISDIR(entry["mode"]):
+                if entry["name"].casefold() in _ALLOWED_ENV_TEMPLATES:
+                    continue
+                if securitylib.is_sensitive_path(relative):
+                    continue
+                if depth >= MAX_WORKSPACE_SEARCH_DEPTH:
+                    raise securitylib.WorkspaceIOError(
+                        "workspace_search_limit_exceeded",
+                        "workspace search depth limit exceeded",
+                    )
+                children.append(relative)
+            elif (
+                stat.S_ISREG(entry["mode"])
+                and entry["name"].casefold() in _ALLOWED_ENV_TEMPLATES
+            ):
+                templates.append(root / relative)
+        for child in reversed(children):
+            stack.append((child, depth + 1))
     templates.sort(key=lambda path: path.as_posix().casefold())
     return templates
 
@@ -688,18 +1024,6 @@ def _filter_rg_output(root, output):
         if len(matches) >= 200:
             break
     return "\n".join(matches) or "(no matches)"
-
-
-def _safe_search_file(root, candidate):
-    relative = _relative_search_path(root, candidate)
-    if relative is None:
-        return None
-    if any(part in IGNORED_PATH_NAMES for part in Path(relative).parts):
-        return None
-    try:
-        return securitylib.require_regular_no_symlink(candidate)
-    except (FileNotFoundError, OSError, ValueError):
-        return None
 
 
 @dataclass(frozen=True)
@@ -769,28 +1093,45 @@ def _refuse_user_notes_write(context, path):
 
 
 def tool_write_file(context, args):
-    path = context.path(args["path"])
+    relative = _anchored_tool_relative(context, args["path"])
     content = str(args["content"])
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content, encoding="utf-8")
-    return f"wrote {path.relative_to(context.root)} ({len(content)} chars)"
+    data = _encode_workspace_utf8(content)
+    if _contains_sensitive_content(context, content):
+        raise SensitiveToolError("sensitive_content_block")
+    securitylib.write_regular_bytes_anchored_atomic(
+        context.root,
+        relative,
+        data,
+        max_bytes=MAX_WORKSPACE_FILE_BYTES,
+        expected_root_identity=_workspace_root_identity(context),
+    )
+    return f"wrote {relative} ({len(content)} chars)"
 
 
 def tool_patch_file(context, args):
-    path = context.path(args["path"])
-    if not path.is_file():
-        raise ValueError("path is not a file")
+    relative, state = _read_workspace_file(context, args["path"])
     old_text = str(args.get("old_text", ""))
     if not old_text:
         raise ValueError("old_text must not be empty")
     if "new_text" not in args:
         raise ValueError("missing new_text")
-    text = path.read_text(encoding="utf-8")
+    text = _decode_workspace_utf8(state["data"])
     count = text.count(old_text)
     if count != 1:
         raise ValueError(f"old_text must occur exactly once, found {count}")
-    path.write_text(text.replace(old_text, str(args["new_text"]), 1), encoding="utf-8")
-    return f"patched {path.relative_to(context.root)}"
+    candidate = text.replace(old_text, str(args["new_text"]), 1)
+    data = _encode_workspace_utf8(candidate)
+    if _contains_sensitive_content(context, candidate):
+        raise SensitiveToolError("sensitive_content_block")
+    securitylib.write_regular_bytes_anchored_atomic(
+        context.root,
+        relative,
+        data,
+        max_bytes=MAX_WORKSPACE_FILE_BYTES,
+        expected_sha256=state["sha256"],
+        expected_root_identity=_workspace_root_identity(context),
+    )
+    return f"patched {relative}"
 
 
 def tool_delegate(context, args):

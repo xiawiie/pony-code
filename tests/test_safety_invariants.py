@@ -235,7 +235,7 @@ def test_symlink_path_traversal_is_rejected(tmp_path):
 
     result = agent.run_tool("read_file", {"path": "linked.txt"})
 
-    assert "path escapes workspace" in result
+    assert result == "error: workspace_entry_unsafe"
 
 
 def test_risky_tool_deny_behavior(tmp_path):

@@ -306,7 +306,8 @@ def _build_agent(workspace: Path, model_client) -> Pico:
         approval_policy="never",
         max_steps=8,
         max_new_tokens=512,
-        depth=1,
+        depth=0,
+        max_depth=0,
     )
     agent.memory_store = BlockStore(
         workspace / ".pico" / "memory",

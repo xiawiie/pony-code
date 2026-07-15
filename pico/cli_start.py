@@ -4,7 +4,6 @@ from contextlib import contextmanager
 import signal
 import sys
 import threading
-from pathlib import Path
 
 from .security import redact_text
 
@@ -173,13 +172,17 @@ def run_repl(agent):
                     print(f"saved (chars_total={total})")
                     continue
                 if user_input == "/memory-review":
-                    notes_path = Path(agent.root) / ".pico" / "memory" / "agent_notes.md"
-                    if notes_path.exists():
-                        content = notes_path.read_text(encoding="utf-8")
+                    try:
+                        content = agent.memory_store.read(
+                            "workspace/agent_notes.md"
+                        )
+                    except FileNotFoundError:
+                        print("(no agent_notes.md yet)")
+                    except (OSError, RuntimeError, ValueError):
+                        print("error: agent notes could not be read safely")
+                    else:
                         print(f"agent_notes.md ({len(content)} chars):\n\n{content}")
                         print("To edit: vim .pico/memory/agent_notes.md")
-                    else:
-                        print("(no agent_notes.md yet)")
                     continue
 
                 print()

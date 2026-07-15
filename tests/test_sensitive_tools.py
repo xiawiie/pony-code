@@ -84,7 +84,7 @@ def test_raw_lexical_aliases_are_rejected_before_resolution(tmp_path, raw_path):
     assert list(agent.checkpoint_store.blobs_dir.rglob("*")) == []
 
 
-def test_benign_symlink_is_rejected_before_resolution_with_compatible_error(tmp_path):
+def test_benign_symlink_is_rejected_with_stable_workspace_error(tmp_path):
     agent = build_agent(tmp_path)
     (tmp_path / "alias.txt").symlink_to(tmp_path / "README.md")
     runner = Mock(return_value="must not run")
@@ -93,8 +93,8 @@ def test_benign_symlink_is_rejected_before_resolution_with_compatible_error(tmp_
     result = agent.execute_tool("read_file", {"path": "alias.txt"})
 
     assert result.metadata["tool_status"] == "rejected"
-    assert result.metadata["tool_error_code"] == "invalid_arguments"
-    assert "path escapes workspace" in result.content
+    assert result.metadata["tool_error_code"] == "workspace_entry_unsafe"
+    assert result.content == "error: workspace_entry_unsafe"
     runner.assert_not_called()
 
 
@@ -188,7 +188,7 @@ def test_env_template_directory_is_sensitive_for_direct_file_tools(
     runner.assert_not_called()
 
 
-def test_env_template_symlink_keeps_invalid_argument_rejection(tmp_path):
+def test_env_template_symlink_uses_stable_workspace_rejection(tmp_path):
     (tmp_path / ".env.example").symlink_to(tmp_path / "README.md")
     agent = build_agent(tmp_path)
     runner = Mock(return_value="must not run")
@@ -197,7 +197,7 @@ def test_env_template_symlink_keeps_invalid_argument_rejection(tmp_path):
     result = agent.execute_tool("read_file", {"path": ".env.example"})
 
     assert result.metadata["tool_status"] == "rejected"
-    assert result.metadata["tool_error_code"] == "invalid_arguments"
+    assert result.metadata["tool_error_code"] == "workspace_entry_unsafe"
     runner.assert_not_called()
 
 
@@ -285,7 +285,7 @@ def test_risky_write_revalidates_after_approval_swaps_target_to_symlink(
 
     assert len(approvals) == 1
     assert result.metadata["tool_status"] == "rejected"
-    assert result.metadata["tool_error_code"] == "invalid_arguments"
+    assert result.metadata["tool_error_code"] == "workspace_entry_unsafe"
     assert sensitive.read_text(encoding="utf-8") == "untouched\n"
     runner.assert_not_called()
     assert list(agent.checkpoint_store.blobs_dir.rglob("*")) == []

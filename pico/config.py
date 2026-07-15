@@ -25,6 +25,7 @@ from .providers.defaults import (
 from .security import (
     ensure_private_dir,
     private_directory_identity,
+    read_regular_bytes_anchored,
     read_private_text,
     write_private_bytes_atomic,
 )
@@ -378,6 +379,7 @@ def resolve_provider_config(*, explicit=None, project_env=None, process_env=None
 
 
 _PICO_TOML_WARNING = "warning: invalid pico.toml; using defaults"
+MAX_PICO_TOML_BYTES = 1024 * 1024
 
 
 def _positive_int(value, default):
@@ -471,15 +473,24 @@ def _validated_pico_toml(raw):
     }
 
 
-def load_pico_toml(workspace_root):
+def load_pico_toml(workspace_root, *, expected_root_identity=None):
     """Return one complete, validated snapshot of the project TOML config."""
-    path = Path(workspace_root) / "pico.toml"
     try:
-        with path.open("rb") as file:
-            raw = tomllib.load(file)
-    except FileNotFoundError:
-        return _validated_pico_toml({})
-    except (tomllib.TOMLDecodeError, OSError):
+        root_identity = (
+            private_directory_identity(workspace_root)
+            if expected_root_identity is None
+            else expected_root_identity
+        )
+        state = read_regular_bytes_anchored(
+            workspace_root,
+            "pico.toml",
+            max_bytes=MAX_PICO_TOML_BYTES,
+            expected_root_identity=root_identity,
+        )
+        if not state["exists"]:
+            return _validated_pico_toml({})
+        raw = tomllib.loads(state["data"].decode("utf-8"))
+    except (tomllib.TOMLDecodeError, UnicodeDecodeError, OSError, ValueError):
         print(_PICO_TOML_WARNING, file=sys.stderr)
         return _validated_pico_toml({})
     if not isinstance(raw, dict):

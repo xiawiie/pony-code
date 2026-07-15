@@ -165,6 +165,17 @@ def _validation_rejection(agent, tool, name, args, effect_class):
                 risk_level="high",
             ),
         )
+    except securitylib.WorkspaceIOError as exc:
+        return ToolExecutionResult(
+            content=f"error: {exc.code}",
+            metadata=_metadata(
+                "rejected",
+                effect_class=effect_class,
+                tool_error_code=exc.code,
+                security_event_type=exc.code,
+                risk_level="high",
+            ),
+        )
     except Exception as exc:
         example = agent.tool_example(name)
         message = f"error: invalid arguments for {name}: {exc}"
@@ -1163,9 +1174,15 @@ def _finish_tool_success(prepared, lifecycle, execution, effects):
 def _finish_tool_failure(prepared, lifecycle, execution, effects, exc):
     agent = prepared["agent"]
     safe_error = agent.redact_text(str(exc))
-    security_event = (
-        "path_escape" if "path escapes workspace" in str(exc) else ""
-    )
+    stable_error_code = getattr(exc, "code", "")
+    if isinstance(exc, SensitiveToolError):
+        security_event = "sensitive_access_block"
+    elif isinstance(exc, securitylib.WorkspaceIOError):
+        security_event = exc.code
+    else:
+        security_event = (
+            "path_escape" if "path escapes workspace" in str(exc) else ""
+        )
     pending = lifecycle["pending_record"]
     if execution["runner_completed"] and pending is not None:
         file_entries = []
@@ -1223,7 +1240,9 @@ def _finish_tool_failure(prepared, lifecycle, execution, effects, exc):
 
     changed = effects["workspace_changed"]
     status = "partial_success" if changed else "error"
-    error_code = "tool_partial_success" if changed else "tool_failed"
+    error_code = stable_error_code or (
+        "tool_partial_success" if changed else "tool_failed"
+    )
     metadata = _finalize_tool_side_effects(
         agent=agent,
         name=prepared["name"],
@@ -1666,7 +1685,14 @@ def _capture_path_snapshot(agent, raw_paths):
         )
         try:
             state = securitylib.read_regular_bytes_anchored(
-                workspace_root, normalized, max_bytes=limit
+                workspace_root,
+                normalized,
+                max_bytes=limit,
+                expected_root_identity=getattr(
+                    agent,
+                    "workspace_root_identity",
+                    None,
+                ),
             )
         except (OSError, ValueError):
             continue
@@ -1740,8 +1766,22 @@ def _capture_before_file_states_for_paths(agent, raw_paths):
         limit = agent.project_max_blob_size
         try:
             state = securitylib.read_regular_bytes_anchored(
-                workspace_root, normalized, max_bytes=limit
+                workspace_root,
+                normalized,
+                max_bytes=limit,
+                expected_root_identity=getattr(
+                    agent,
+                    "workspace_root_identity",
+                    None,
+                ),
             )
+        except securitylib.WorkspaceIOError as exc:
+            oversized = getattr(exc, "state", None)
+            if exc.code == "workspace_file_limit_exceeded" and oversized:
+                states[normalized] = {
+                    "before_mode": oversized["mode"],
+                }
+            continue
         except (OSError, ValueError):
             continue
         if not state["exists"]:
@@ -1920,8 +1960,21 @@ def _build_file_entries(
         limit = agent.project_max_blob_size
         try:
             after_state = securitylib.read_regular_bytes_anchored(
-                workspace_root, normalized, max_bytes=limit
+                workspace_root,
+                normalized,
+                max_bytes=limit,
+                expected_root_identity=getattr(
+                    agent,
+                    "workspace_root_identity",
+                    None,
+                ),
             )
+        except securitylib.WorkspaceIOError as exc:
+            after_state = getattr(exc, "state", None) or {
+                "exists": False,
+                "data": None,
+                "mode": None,
+            }
         except (OSError, ValueError):
             after_state = {"exists": False, "data": None, "mode": None}
         exists_after = after_state["exists"]
