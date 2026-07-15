@@ -9,6 +9,7 @@ from pico import Pico, SessionStore, WorkspaceContext
 from pico.providers.fake import FakeModelClient
 import pico.tool_executor as tool_executor_module
 from pico.memory.tools import tool_memory_list, tool_memory_search
+from pico.task_state import TaskState
 from pico.tool_executor import (
     ToolExecutor,
     ToolExecutionResult,
@@ -30,6 +31,11 @@ def build_agent(tmp_path, outputs=None, **kwargs):
         approval_policy=approval_policy,
         **kwargs,
     )
+
+
+def authorize_memory(agent, user_request="remember this"):
+    agent.current_task_state = TaskState.create("task-memory", user_request)
+    return agent
 
 
 def init_git_repo(tmp_path):
@@ -245,6 +251,54 @@ def test_memory_write_is_audited_without_workspace_snapshot_or_recovery_checkpoi
     assert agent.current_task_state.recovery_checkpoint_id == ""
 
 
+def test_memory_save_without_current_turn_authorization_has_no_side_effects(tmp_path):
+    agent = build_agent(tmp_path)
+    agent.current_task_state = TaskState.create(
+        "task-memory",
+        "Explain how the cache works without saving anything.",
+    )
+    runner = Mock(return_value="must not run")
+    agent.tools["memory_save"]["run"] = runner
+
+    result = agent.execute_tool("memory_save", {"note": "cache details"})
+
+    assert result.metadata["tool_status"] == "rejected"
+    assert result.metadata["tool_error_code"] == "memory_write_not_authorized"
+    assert result.metadata["security_event_type"] == "memory_write_not_authorized"
+    assert agent.checkpoint_store.list_tool_change_records() == []
+    assert agent.current_task_state.recovery_checkpoint_id == ""
+    runner.assert_not_called()
+
+
+def test_memory_save_does_not_inherit_authorization_from_history(tmp_path):
+    agent = build_agent(tmp_path)
+    agent.session["messages"].append(
+        {"role": "user", "content": "/remember the old request"}
+    )
+    agent.current_task_state = TaskState.create("task-memory", "Explain the cache")
+    runner = Mock(return_value="must not run")
+    agent.tools["memory_save"]["run"] = runner
+
+    result = agent.execute_tool("memory_save", {"note": "cache details"})
+
+    assert result.metadata["tool_error_code"] == "memory_write_not_authorized"
+    assert agent.checkpoint_store.list_tool_change_records() == []
+    runner.assert_not_called()
+
+
+def test_delegate_cannot_save_memory_even_with_explicit_request(tmp_path):
+    agent = authorize_memory(build_agent(tmp_path), "/remember delegated detail")
+    agent.depth = 1
+    runner = Mock(return_value="must not run")
+    agent.tools["memory_save"]["run"] = runner
+
+    result = agent.execute_tool("memory_save", {"note": "delegated detail"})
+
+    assert result.metadata["tool_error_code"] == "memory_write_not_authorized"
+    assert agent.checkpoint_store.list_tool_change_records() == []
+    runner.assert_not_called()
+
+
 def test_runner_keyboard_interrupt_finalizes_pending_change_then_reraises(tmp_path):
     agent = build_agent(tmp_path)
     agent.tools["write_file"]["run"] = lambda args: (_ for _ in ()).throw(KeyboardInterrupt())
@@ -307,7 +361,7 @@ def test_post_runner_interrupt_closes_workspace_change_then_reraises(tmp_path, m
 
 
 def test_post_runner_interrupt_closes_memory_audit_then_reraises(tmp_path, monkeypatch):
-    agent = build_agent(tmp_path)
+    agent = authorize_memory(build_agent(tmp_path))
     agent.tools["memory_save"]["run"] = lambda args: "saved"
     monkeypatch.setattr(
         agent,
@@ -429,7 +483,7 @@ def test_post_pending_memory_update_base_exception_closes_change_and_preserves_p
     tmp_path,
     monkeypatch,
 ):
-    agent = build_agent(tmp_path)
+    agent = authorize_memory(build_agent(tmp_path))
     primary = FatalToolSignal("memory update stopped")
     agent.tools["memory_save"]["run"] = Mock(return_value="saved")
     monkeypatch.setattr(agent, "update_memory_after_tool", Mock(side_effect=primary))

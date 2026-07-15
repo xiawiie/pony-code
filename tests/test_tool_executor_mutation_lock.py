@@ -5,6 +5,7 @@ import pytest
 
 from pico import Pico, SessionStore, WorkspaceContext
 from pico.providers.fake import FakeModelClient
+from pico.task_state import TaskState
 
 
 def build_agent(tmp_path):
@@ -82,6 +83,7 @@ def test_malformed_mutation_record_blocks_runner(tmp_path, monkeypatch):
 
 def test_memory_write_uses_same_mutation_lock(tmp_path, monkeypatch):
     agent = build_agent(tmp_path)
+    agent.current_task_state = TaskState.create("task-memory", "remember this")
     events = []
 
     @contextmanager

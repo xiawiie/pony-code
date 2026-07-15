@@ -35,6 +35,7 @@ from .tools import (
     ApprovedShellExecution,
     _ApprovedShellExecution,
     SensitiveToolError,
+    memory_write_intent,
     sandbox_privilege_denial,
 )
 from .verification import verification_evidence_for_execution
@@ -650,6 +651,26 @@ def _prepare_non_shell_tool(agent, tool, name, args, effect_class):
     rejection = _validation_rejection(agent, tool, name, args, effect_class)
     if rejection is not None:
         return rejection
+    if name == "memory_save":
+        task_state = getattr(agent, "current_task_state", None)
+        current_user = getattr(task_state, "user_request", "")
+        if not memory_write_intent(
+            current_user,
+            delegated=int(getattr(agent, "depth", 0) or 0) > 0,
+        ):
+            return ToolExecutionResult(
+                content=(
+                    "error: memory_save requires explicit authorization in "
+                    "the current user request"
+                ),
+                metadata=_metadata(
+                    "rejected",
+                    effect_class=effect_class,
+                    tool_error_code="memory_write_not_authorized",
+                    security_event_type="memory_write_not_authorized",
+                    risk_level="high",
+                ),
+            )
     if agent.repeated_tool_call(name, args):
         return ToolExecutionResult(
             content=(
