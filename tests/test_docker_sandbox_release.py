@@ -29,8 +29,7 @@ def _blocked_artifact():
 def test_production_vertical_corpus_is_bound_to_packaged_image():
     image = load_image_manifest(default_image_manifest_path())
 
-    # The package claim stays stale until the final real-corpus freeze.
-    assert image.corpus_digest != release.CORPUS_DIGEST
+    assert image.corpus_digest == release.CORPUS_DIGEST
     assert len(release.MANDATORY_CHECK_IDS) == 37
     assert len(set(release.MANDATORY_CHECK_IDS)) == 37
 
