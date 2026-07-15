@@ -5668,6 +5668,7 @@ def _run_installed(args):
         discover_local_docker,
         DockerClient,
         DockerCommandResult,
+        DockerSandboxError,
         DockerSandboxRunner,
         ensure_runtime_docker_config,
         load_image_manifest,
@@ -6257,7 +6258,7 @@ def _run_installed(args):
                 project_state_root=work_root / ("unsupported-" + kind + "-state"),
                 sandbox_parent=work_root / "sandboxes",
             )
-        except SandboxSessionError as exc:
+        except DockerSandboxError as exc:
             unsupported_results.append(exc.code == "unsupported_workspace_entry")
         else:
             unsupported_results.append(False)
@@ -6284,7 +6285,7 @@ def _run_installed(args):
                     project_state_root=work_root / "unsupported-device-state",
                     sandbox_parent=work_root / "sandboxes",
                 )
-            except SandboxSessionError as exc:
+            except DockerSandboxError as exc:
                 device_ok = exc.code == "unsupported_workspace_entry"
     unsupported_results.append(device_ok)
     _set_check(
@@ -6307,7 +6308,7 @@ def _run_installed(args):
                 project_state_root=work_root / "mount-project-state",
                 sandbox_parent=work_root / "sandboxes",
             )
-        except SandboxSessionError as exc:
+        except DockerSandboxError as exc:
             mount_ok = exc.code == "workspace_mount_boundary"
     _set_check(
         artifact,
