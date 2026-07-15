@@ -120,20 +120,21 @@ def _count_tokens(agent, text):
     return max(1, len(text) // 4)
 
 
-def build_injection_snapshot(agent, user_message, runtime_feedback="", render_fn=None):
+def build_injection_snapshot(agent, user_message, runtime_feedback=""):
     """Build one immutable, side-effect-free snapshot for a model attempt."""
     recent_before = list((getattr(agent, "session", {}) or {}).get("recently_recalled") or [])
-    renderer = render_fn or render_current_user_message
-    text, telemetry = renderer(agent, user_message)
     session = getattr(agent, "session", {}) or {}
-    recent_after = list(session.get("recently_recalled") or [])
+    try:
+        blocks, telemetry = _render_injection_sources(agent, user_message)
+        recent_after = list(session.get("recently_recalled") or [])
+    finally:
+        if isinstance(session, dict):
+            session["recently_recalled"] = recent_before
     selected = tuple(recent_after[-1]) if len(recent_after) > len(recent_before) else ()
-    if isinstance(session, dict):
-        session["recently_recalled"] = recent_before
+    blocks_by_name = dict(blocks)
     sources = []
     for name in SOURCE_ORDER:
-        marker = f"<pico:{name}>"
-        block = next((part for part in text.split("\n\n") if marker in part), "")
+        block = blocks_by_name.get(name, "")
         tokens = int(telemetry["injection_tokens"].get(name, 0) or 0)
         if name in telemetry["injection_dropped"]:
             status, reason = "dropped_budget", "aggregate_budget"
@@ -146,14 +147,8 @@ def build_injection_snapshot(agent, user_message, runtime_feedback="", render_fn
     return snapshot, telemetry
 
 
-def render_current_user_message(agent, user_message):
-    """Return ``(rendered_text, telemetry_dict)`` for the current turn.
-
-    ``rendered_text`` is the concatenation of one ``<system-reminder>``
-    block per non-empty injection source, followed by the raw
-    ``user_message``. If no source contributed, the raw user message is
-    returned unchanged.
-    """
+def _render_injection_sources(agent, user_message):
+    """Return ordered ``(source_name, exact_block)`` pairs and telemetry."""
     intent = classify_intent(user_message)
     budget = intent.budget
 
@@ -225,7 +220,7 @@ def render_current_user_message(agent, user_message):
             f"<pico:{source_name}>\n{escaped}\n</pico:{source_name}>\n"
             "</system-reminder>"
         )
-        blocks.append(block)
+        blocks.append((source_name, block))
         telemetry["injection_tokens"][source_name] = _count_tokens(agent, escaped)
 
     # Task C1: enforce aggregate injection budget by dropping sources in
@@ -242,10 +237,22 @@ def render_current_user_message(agent, user_message):
                 break
             if telemetry["injection_tokens"].get(candidate, 0) <= 0:
                 continue
-            # Remove any block whose tag matches this source name.
-            blocks = [b for b in blocks if f"<pico:{candidate}>" not in b]
+            blocks = [entry for entry in blocks if entry[0] != candidate]
             telemetry["injection_tokens"][candidate] = 0
             telemetry["injection_dropped"].append(candidate)
 
-    text = "\n\n".join(blocks + [user_message]) if blocks else user_message
+    return tuple(blocks), telemetry
+
+
+def render_current_user_message(agent, user_message):
+    """Return ``(rendered_text, telemetry_dict)`` for the current turn.
+
+    ``rendered_text`` is the concatenation of one ``<system-reminder>``
+    block per non-empty injection source, followed by the raw
+    ``user_message``. If no source contributed, the raw user message is
+    returned unchanged.
+    """
+    sources, telemetry = _render_injection_sources(agent, user_message)
+    blocks = [block for _name, block in sources]
+    text = "\n\n".join([*blocks, user_message]) if blocks else user_message
     return text, telemetry

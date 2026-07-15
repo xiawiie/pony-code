@@ -13,7 +13,7 @@ from .action_codec import FinalAction, RetryAction, ToolAction, decode_action
 from .providers._shared import _ProviderFailure
 from . import security as securitylib
 from .checkpoint import CHECKPOINT_NONE_STATUS, CHECKPOINT_PARTIAL_STALE_STATUS, CHECKPOINT_WORKSPACE_MISMATCH_STATUS
-from .context.renderer import build_injection_snapshot, render_current_user_message
+from .context.renderer import build_injection_snapshot
 from .messages import append_messages, make_tool_pair
 from .recovery_policy import assess_command
 from .recovery_models import TRACE_RECOVERY_CHECKPOINT_CREATED
@@ -500,7 +500,6 @@ def _start_agent_run(agent, task_state, user_message):
     injection_snapshot, injection_telemetry = build_injection_snapshot(
         agent,
         user_message,
-        render_fn=render_current_user_message,
     )
     return preflight_metadata, injection_snapshot, injection_telemetry
 

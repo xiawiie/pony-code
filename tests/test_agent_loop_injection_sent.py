@@ -8,6 +8,7 @@ This end-to-end check sniffs the provider payload.
 
 import json
 
+import pico.context.renderer as renderer_module
 from pico.providers.response import Response, StopReason
 from pico.runtime import Pico
 from pico.session_store import SessionStore
@@ -153,25 +154,16 @@ def test_one_snapshot_survives_retry_and_tool_step_while_feedback_is_one_shot(
 ):
     render_calls = []
 
-    def frozen_render(agent, user_message):
+    def frozen_source(agent, _budget, user_message):
         render_calls.append(user_message)
-        return (
-            "<system-reminder><pico:memory_index>SNAPSHOT</pico:memory_index></system-reminder>\n"
-            + user_message,
-            {
-                "intent": {"name": "default", "matched_keyword": "", "matched_reason": "test"},
-                "injection_tokens": {"memory_index": 1},
-                "injection_truncated": {},
-                "injection_dropped": [],
-                "injection_budget": 100,
-            },
-        )
+        return "SNAPSHOT"
 
-    monkeypatch.setattr(
-        "pico.agent_loop.render_current_user_message",
-        frozen_render,
-        raising=False,
-    )
+    for name in renderer_module.SOURCE_ORDER:
+        monkeypatch.setitem(
+            renderer_module._RENDERERS,
+            name,
+            frozen_source if name == "workspace_state" else lambda *_args: None,
+        )
     provider = _SniffProvider([
         Response(
             stop_reason=StopReason.END_TURN,
@@ -201,7 +193,16 @@ def test_one_snapshot_survives_retry_and_tool_step_while_feedback_is_one_shot(
             if message["role"] == "user" and isinstance(message["content"], str)
         )
         sent.append(current)
-    assert all("SNAPSHOT" in content for content in sent)
+    exact_snapshot = (
+        "<system-reminder>\n"
+        "<pico:workspace_state>\n"
+        "SNAPSHOT\n"
+        "</pico:workspace_state>\n"
+        "</system-reminder>\n\n"
+        "inspect"
+    )
+    assert sent[0] == exact_snapshot
+    assert all(exact_snapshot in content for content in sent)
     assert "runtime_feedback" not in sent[0]
     assert "runtime_feedback" in sent[1]
     assert "runtime_feedback" not in sent[2]
