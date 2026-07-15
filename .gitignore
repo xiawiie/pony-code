@@ -60,6 +60,9 @@ readme_intro_locked/
 !/docs/recovery.md
 !/docs/verification.md
 !/docs/memory.md
+!/docs/local-stable-execution.md
+!/docs/adr/
+!/docs/adr/*.md
 
 # OS files
 .DS_Store

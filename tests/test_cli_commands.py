@@ -98,7 +98,7 @@ def test_help_command_shows_examples(capsys):
     assert "pico — Local coding agent" in out
     assert "USAGE:" in out
     assert "Available Commands:" in out
-    assert "--sandbox    run shell tools" in out
+    assert "--sandbox    run/repl in local Docker Sandbox (macOS arm64 only)" in out
     assert 'pico run "inspect the failing tests"' in out
     assert "pico config set-secret NAME [--stdin]" in out
     assert "pico --approval ask run" in out
@@ -108,6 +108,7 @@ def test_help_command_shows_examples(capsys):
     assert "migrate      Inspect and apply explicit artifact migrations" in out
     assert "Compatibility:" not in out
     assert "no OS sandbox" in out
+    assert "all model-visible file tools use filtered" in out
     assert "providers list" not in out
 
 

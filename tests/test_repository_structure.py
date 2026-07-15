@@ -16,6 +16,10 @@ MAINTAINER_DOCS = {
     "docs/recovery.md",
     "docs/verification.md",
     "docs/memory.md",
+    "docs/local-stable-execution.md",
+    "docs/adr/0040-docker-filtered-staging.md",
+    "docs/adr/0041-distributed-release-authority.md",
+    "docs/adr/0042-sealed-local-authorization.md",
 }
 MARKDOWN_FIXTURES = {
     "benchmarks/live_e2e/fixtures/seed_cache_note.md",
@@ -24,7 +28,6 @@ MARKDOWN_FIXTURES = {
 FORBIDDEN_PREFIXES = (
     ".superpowers/sdd/",
     "benchmarks/results/",
-    "docs/adr/",
     "docs/review-pack/",
     "docs/superpowers/",
 )
@@ -207,6 +210,7 @@ def test_maintainer_doc_links_and_cli_examples_resolve():
             "--cwd",
             "--format",
             "--help",
+            "--sandbox",
         "checkpoints",
         "config",
         "doctor",

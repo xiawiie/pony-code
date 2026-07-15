@@ -19,6 +19,36 @@ def test_ci_tracks_and_uses_frozen_uv_lock():
     assert "run: uv sync --frozen --dev" in workflow
 
 
+def test_ci_actions_are_pinned_to_immutable_commits_with_version_comments():
+    workflow = Path(".github/workflows/ci.yml").read_text(encoding="utf-8")
+
+    pins = {
+        "actions/checkout": (
+            "9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
+            "v7",
+        ),
+        "actions/setup-python": (
+            "ece7cb06caefa5fff74198d8649806c4678c61a1",
+            "v6",
+        ),
+        "astral-sh/setup-uv": (
+            "fac544c07dec837d0ccb6301d7b5580bf5edae39",
+            "v8.2.0",
+        ),
+        "actions/upload-artifact": (
+            "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+            "v7",
+        ),
+    }
+    uses = [line.strip() for line in workflow.splitlines() if "uses:" in line]
+    assert uses
+    assert all("@v" not in line for line in uses)
+    for action, (commit, version) in pins.items():
+        matches = [line for line in uses if f"uses: {action}@" in line]
+        assert matches
+        assert all(line == f"uses: {action}@{commit} # {version}" for line in matches)
+
+
 def test_linux_ci_does_not_claim_the_darwin_performance_baseline():
     workflow = Path(".github/workflows/ci.yml").read_text(encoding="utf-8")
 

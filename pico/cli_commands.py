@@ -64,10 +64,11 @@ Flags:
   -h, --help       help for pico
       --format     output format for inspection commands: text or json
       --quiet      suppress non-essential human output
-      --sandbox    run shell tools in the managed sandbox (run/repl only)
+      --sandbox    run/repl in local Docker Sandbox (macOS arm64 only)
 
 Security:
-    Host mode provides no OS sandbox; explicit Sandbox is fail-closed and still subject to approval.
+    Host mode provides no OS sandbox. In Sandbox mode all model-visible file tools use filtered
+    staging; Source Apply requires separate review and authorization.
 """
 
 

@@ -602,7 +602,11 @@ def build_arg_parser():
     parser.add_argument("--quiet", action="store_true", help="Suppress non-essential human output.")
     parser.add_argument("--no-color", action="store_true", help="Disable colored output.")
     parser.add_argument("--no-input", action="store_true", help="Disable interactive prompts.")
-    parser.add_argument("--sandbox", action="store_true", help="Run shell tools in the managed sandbox.")
+    parser.add_argument(
+        "--sandbox",
+        action="store_true",
+        help="Run/repl in local Docker Sandbox (macOS arm64 only).",
+    )
     return parser
 
 

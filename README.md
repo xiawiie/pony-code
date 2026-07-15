@@ -1,12 +1,11 @@
 # Pico
 
-Pico 是一个面向代码仓库的轻量本地 coding-agent harness。它从当前仓库构建上下文，让模型通过
-受约束的工具读取、修改和验证文件，并把会话、运行证据与恢复记录保存在本地 `.pico/` 中。
+Pico 是一个面向代码仓库的轻量本地 coding-agent harness。它从当前仓库构建上下文，让模型通过受约束的工具
+读取、修改和验证文件，并把会话、运行证据与恢复记录保存在本地 `.pico/` 中。
 
 Pico 适合排查测试失败、实施小步代码改动、审阅仓库和继续先前任务。它不是聊天 UI 或 IDE，也不会替代 Git。
-默认运行保持 Host 行为。Docker + filtered staging 架构已由 ADR-0040 接受；ADR-0042允许在当前安装树、
-packaged image合同和本机Docker均精确验证时用sealed local authorization显式运行`--sandbox`。任一验证失败都在
-Provider/target前fail closed，且不会回退Host runner。
+默认 Host 模式不是 OS sandbox；显式 Sandbox 采用 Docker + filtered staging，并在任何身份或 readiness 失败时
+fail closed，不回退 Host runner。
 
 ## 安装
 
@@ -19,9 +18,8 @@ command -v pico
 pico --help
 ```
 
-激活环境后，`command -v pico` 必须指向该环境的 `bin/pico`，而不是系统中的同名程序。不激活环境时
-可以使用 `uv run pico ...`。安装、更新与 PATH 排查见
-[CLI 安装与更新](docs/cli-installation-and-updates.md)。
+`command -v pico` 必须指向当前环境的 `bin/pico`。不能激活环境时使用 `uv run pico ...`。完整安装、更新和 PATH
+排查见 [CLI 安装与更新](docs/cli-installation-and-updates.md)。
 
 ## 最短使用路径
 
@@ -33,42 +31,69 @@ pico config set-secret PICO_DEEPSEEK_API_KEY --stdin
 pico doctor --offline
 ```
 
-显式运行一次任务或进入交互模式：
+运行一次任务或进入交互模式：
 
 ```bash
 pico run "inspect the failing tests and make the smallest safe fix"
 pico repl
-python -m pico repl
 ```
 
 唯一 console command 是 `pico`。不带命令时显示帮助；一次性任务必须使用 `pico run`。
 
-## 能力与限制
+## Provider destination
 
-- 支持 DeepSeek、Anthropic-compatible、OpenAI-compatible 与 Ollama transport。
-- Canonical Messages 是唯一会话 transcript；run、trace、checkpoint 和 tool-change 都保留本地证据。
-- 文件访问、私有存储、secret redaction、shell policy 和恢复冲突检查是 runtime 边界的一部分。
-- Memory 分为用户维护的 User Notes 和 agent 追加的 Agent Notes。
-- SRT 路线已被 ADR-0040 supersede。目标 Sandbox 只支持用户已安装的 macOS Docker Desktop 或 Linux local
-  rootless Docker，以 exact managed image、container 外断网和 filtered staging 运行；它不是 microVM 或
-  hostile multi-tenant boundary，运行时也不会隐式 pull。
-- Sandbox 中模型工具只修改 staging；Source Root 只有在 Session 结束后审查同一 immutable diff并单独批准
-  Source Apply Transaction才会改变。本机授权不自动apply，也不接受custom image或host fallback。
-- 当前本机MVP只支持packaged record与already-present exact image匹配的平台。production trust root/KMS、registry、
-  `linux/amd64`与D7的92+4真实artifact仍缺失，因此分布式发布保持`NO-GO`，不冒充四平台GA。
-- 当前 runtime 只读取硬切合同；旧 OBS/Tool Change 仅通过显式事务化 `pico migrate` converter 升级，不保留兼容 alias。
-- 使用 `pico runs summary latest` 查看最近一次 Run 的低敏感摘要；指定 Run 时将 `latest` 替换为 `run_id`。
-- 未显式启用 Sandbox 时，经审批的复杂 shell 仍具有当前用户权限；本机Sandbox是受限container边界，不是
-  microVM或hostile multi-tenant隔离。
-- 真实 Provider 验证会产生网络请求和费用，必须单独授权；离线诊断不会连接 Provider。
+默认 endpoint 为：
+
+| Provider | 默认地址 | 分类 |
+| --- | --- | --- |
+| OpenAI | `https://api.openai.com/v1` | `official` |
+| Anthropic | `https://api.anthropic.com` | `official` |
+| DeepSeek | `https://api.deepseek.com/anthropic` | `official` |
+| Ollama | `http://127.0.0.1:11434` | `local` |
+
+企业网关、自建代理或其他 relay 只有通过 `--base-url`、项目环境变量或进程环境变量显式配置时才允许，并在
+`doctor` 中显示为 `explicit_third_party`。诊断会显示 destination host 和配置来源，但不会显示 API key。
+
+## Sandbox 本地稳定版
+
+v0.2.0 唯一正式支持的 Sandbox 平台是 macOS arm64 + Docker Desktop + already-present exact
+`linux/arm64` image。其他平台的公开 `pico --sandbox run/repl` 返回
+`sandbox_local_platform_not_released`。Linux、amd64、registry、KMS 和 distributed Product Enablement 均为
+`NO-GO`；这不是四平台 GA，也不是 hostile multi-tenant/microVM 边界。
+
+```bash
+pico sandbox status
+pico sandbox prepare
+pico --sandbox run "inspect and fix the failing test"
+pico sandbox diff <sandbox-id>
+pico sandbox apply <sandbox-id>
+```
+
+`status` 和 `prepare` 不联网、不 pull/build/repair，也不隐式修改状态。Sandbox 中 RepoMap、Context、`read_file`、
+`write_file`、`patch_file`、`list_files`、search 和 shell 等所有模型可见文件能力都只面向 filtered staging；
+Source Root 不挂载进容器。Session 结束后先生成 immutable redacted diff，只有用户审查同一 exact digest 并单独批准
+Source Apply，Source Root 才可能改变。`--yes` 不能跳过 artifact 加载、digest 绑定或 CAS。
+
+## Memory 与本地证据
+
+Memory 分为用户维护的 User Notes 和 agent 追加的 Agent Notes。`memory_save` 只接受当前用户请求中的明确授权，
+历史授权不会继承，delegate 不能写。自动召回的 Memory 会进入当次模型请求；配置远程 Provider 时会被发送到该
+endpoint。Memory 还可能留存在 Agent Notes、Tool Change、checkpoint、recovery 和其他本地私有审计 artifact 中，
+因此不要把“删除当前 note”等同于清除所有历史副本。
+
+Canonical Messages 是唯一会话 transcript；run、trace、checkpoint 和 Tool Change 保存可恢复、可审查证据。
+使用 `pico runs summary latest` 查看最近 Run 的低敏感摘要。真实 Provider 验证会产生网络请求和费用，必须针对
+exact HEAD 单独授权；离线诊断不会连接 Provider。
 
 ## 维护者入口
 
+- [本地稳定版执行与验收](docs/local-stable-execution.md)
 - [领域语言与模块边界](CONTEXT.md)
 - [架构](docs/architecture.md)
 - [安全](docs/security.md)
 - [恢复](docs/recovery.md)
 - [验证](docs/verification.md)
 - [Memory](docs/memory.md)
-
-![Pico CLI help](assets/screenshots/pico-help.png)
+- [ADR-0040：Docker + filtered staging](docs/adr/0040-docker-filtered-staging.md)
+- [ADR-0041：distributed release authority](docs/adr/0041-distributed-release-authority.md)
+- [ADR-0042：sealed local authorization](docs/adr/0042-sealed-local-authorization.md)
