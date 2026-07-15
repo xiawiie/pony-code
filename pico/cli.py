@@ -8,6 +8,7 @@
 import argparse
 from difflib import get_close_matches
 from importlib import metadata
+import math
 import os
 from pathlib import Path
 import shutil
@@ -192,6 +193,85 @@ def build_welcome(agent, model, host):
         ]
     )
     return "\n".join([line, *rows, line])
+
+
+def _bounded_int_argument(value, *, name, minimum, maximum):
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise argparse.ArgumentTypeError(f"{name} must be an integer") from exc
+    if not minimum <= parsed <= maximum:
+        raise argparse.ArgumentTypeError(
+            f"{name} must be in [{minimum}, {maximum}]"
+        )
+    return parsed
+
+
+def _bounded_float_argument(
+    value,
+    *,
+    name,
+    minimum,
+    maximum,
+    minimum_exclusive=False,
+):
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError) as exc:
+        raise argparse.ArgumentTypeError(f"{name} must be a number") from exc
+    lower_ok = parsed > minimum if minimum_exclusive else parsed >= minimum
+    if not math.isfinite(parsed) or not lower_ok or parsed > maximum:
+        lower = "(" if minimum_exclusive else "["
+        raise argparse.ArgumentTypeError(
+            f"{name} must be in {lower}{minimum}, {maximum}]"
+        )
+    return parsed
+
+
+def _request_timeout_argument(value):
+    return _bounded_int_argument(
+        value,
+        name="request timeout",
+        minimum=1,
+        maximum=900,
+    )
+
+
+def _max_steps_argument(value):
+    return _bounded_int_argument(
+        value,
+        name="max steps",
+        minimum=1,
+        maximum=100,
+    )
+
+
+def _max_new_tokens_argument(value):
+    return _bounded_int_argument(
+        value,
+        name="max new tokens",
+        minimum=1,
+        maximum=32768,
+    )
+
+
+def _temperature_argument(value):
+    return _bounded_float_argument(
+        value,
+        name="temperature",
+        minimum=0,
+        maximum=2,
+    )
+
+
+def _top_p_argument(value):
+    return _bounded_float_argument(
+        value,
+        name="top-p",
+        minimum=0,
+        maximum=1,
+        minimum_exclusive=True,
+    )
 
 
 def build_agent(args):
@@ -500,7 +580,7 @@ def build_arg_parser():
     parser.add_argument("--base-url", default=None, help="Provider API base URL for deepseek, openai, or anthropic.")
     parser.add_argument(
         "--request-timeout-seconds",
-        type=int,
+        type=_request_timeout_argument,
         default=300,
         help="Provider request timeout in seconds.",
     )
@@ -513,10 +593,10 @@ def build_arg_parser():
         default=[],
         help="Extra environment variable names to treat as secrets for trace/report redaction.",
     )
-    parser.add_argument("--max-steps", type=int, default=DEFAULT_MAX_STEPS, help="Maximum tool/model iterations per request.")
-    parser.add_argument("--max-new-tokens", type=int, default=DEFAULT_MAX_NEW_TOKENS, help="Maximum model output tokens per step.")
-    parser.add_argument("--temperature", type=float, default=0.2, help="Ollama sampling temperature.")
-    parser.add_argument("--top-p", type=float, default=0.9, help="Ollama top-p sampling value.")
+    parser.add_argument("--max-steps", type=_max_steps_argument, default=DEFAULT_MAX_STEPS, help="Maximum tool/model iterations per request.")
+    parser.add_argument("--max-new-tokens", type=_max_new_tokens_argument, default=DEFAULT_MAX_NEW_TOKENS, help="Maximum model output tokens per step.")
+    parser.add_argument("--temperature", type=_temperature_argument, default=0.2, help="Ollama sampling temperature.")
+    parser.add_argument("--top-p", type=_top_p_argument, default=0.9, help="Ollama top-p sampling value.")
     parser.add_argument("--format", choices=("text", "json"), default="text", help="Output format for inspection commands.")
     parser.add_argument("--quiet", action="store_true", help="Suppress non-essential human output.")
     parser.add_argument("--no-color", action="store_true", help="Disable colored output.")

@@ -380,35 +380,63 @@ def resolve_provider_config(*, explicit=None, project_env=None, process_env=None
 
 _PICO_TOML_WARNING = "warning: invalid pico.toml; using defaults"
 MAX_PICO_TOML_BYTES = 1024 * 1024
+_MISSING = object()
 
 
-def _positive_int(value, default):
-    return value if type(value) is int and value > 0 else default
+def _warn_invalid_pico_toml_field(path):
+    print(
+        f"warning: invalid pico.toml field {path}; using default",
+        file=sys.stderr,
+    )
 
 
-def _nonnegative_float(value, default):
-    if type(value) not in {int, float} or not math.isfinite(value) or value < 0:
+def _table(parent, key, path):
+    value = parent.get(key, _MISSING)
+    if value is _MISSING:
+        return {}
+    if not isinstance(value, dict):
+        _warn_invalid_pico_toml_field(path)
+        return {}
+    return value
+
+
+def _bounded_int(parent, key, default, minimum, maximum, path):
+    value = parent.get(key, _MISSING)
+    if value is _MISSING:
         return default
-    return float(value)
+    if type(value) is int and minimum <= value <= maximum:
+        return value
+    _warn_invalid_pico_toml_field(path)
+    return default
+
+
+def _bounded_float(parent, key, default, minimum, maximum, path):
+    value = parent.get(key, _MISSING)
+    if value is _MISSING:
+        return default
+    if (
+        type(value) in {int, float}
+        and math.isfinite(value)
+        and minimum <= value <= maximum
+    ):
+        return float(value)
+    _warn_invalid_pico_toml_field(path)
+    return default
 
 
 def _validated_pico_toml(raw):
-    policy = raw.get("policy")
-    policy = policy if isinstance(policy, dict) else {}
-    context = raw.get("context")
-    context = context if isinstance(context, dict) else {}
-    digest = context.get("digest")
-    digest = digest if isinstance(digest, dict) else {}
-    memory = raw.get("memory")
-    memory = memory if isinstance(memory, dict) else {}
-    recall = memory.get("recall")
-    recall = recall if isinstance(recall, dict) else {}
-    retrieval = memory.get("retrieval")
-    retrieval = retrieval if isinstance(retrieval, dict) else {}
-    field_boost = retrieval.get("field_boost")
-    field_boost = field_boost if isinstance(field_boost, dict) else {}
-    link = retrieval.get("link")
-    link = link if isinstance(link, dict) else {}
+    policy = _table(raw, "policy", "policy")
+    context = _table(raw, "context", "context")
+    digest = _table(context, "digest", "context.digest")
+    memory = _table(raw, "memory", "memory")
+    recall = _table(memory, "recall", "memory.recall")
+    retrieval = _table(memory, "retrieval", "memory.retrieval")
+    field_boost = _table(
+        retrieval,
+        "field_boost",
+        "memory.retrieval.field_boost",
+    )
+    link = _table(retrieval, "link", "memory.retrieval.link")
 
     field_boost_defaults = {
         "name": 5.0,
@@ -417,56 +445,142 @@ def _validated_pico_toml(raw):
         "aliases": 4.0,
         "body": 1.0,
     }
-    decay = _nonnegative_float(link.get("decay"), 0.4)
-    if decay > 1:
-        decay = 0.4
+    system_tools_hard_cap = _bounded_int(
+        context,
+        "system_tools_hard_cap",
+        20000,
+        1,
+        100000,
+        "context.system_tools_hard_cap",
+    )
+    total_budget_hard_cap = _bounded_int(
+        context,
+        "total_budget_hard_cap",
+        100000,
+        4096,
+        200000,
+        "context.total_budget_hard_cap",
+    )
+    if system_tools_hard_cap > total_budget_hard_cap:
+        print(
+            "warning: invalid pico.toml context resource caps; using defaults",
+            file=sys.stderr,
+        )
+        system_tools_hard_cap = 20000
+        total_budget_hard_cap = 100000
     return {
         "policy": {
-            "max_blob_size": _positive_int(
-                policy.get("max_blob_size"), 8 * 1024 * 1024
+            "max_blob_size": _bounded_int(
+                policy,
+                "max_blob_size",
+                8 * 1024 * 1024,
+                1,
+                8 * 1024 * 1024,
+                "policy.max_blob_size",
             ),
         },
         "context": {
-            "history_soft_cap": _positive_int(
-                context.get("history_soft_cap"), 40000
+            "history_soft_cap": _bounded_int(
+                context,
+                "history_soft_cap",
+                40000,
+                1,
+                200000,
+                "context.history_soft_cap",
             ),
-            "history_floor_messages": _positive_int(
-                context.get("history_floor_messages"), 6
+            "history_floor_messages": _bounded_int(
+                context,
+                "history_floor_messages",
+                6,
+                1,
+                100,
+                "context.history_floor_messages",
             ),
-            "injection_budget_ratio": _nonnegative_float(
-                context.get("injection_budget_ratio"), 0.15
+            "injection_budget_ratio": _bounded_float(
+                context,
+                "injection_budget_ratio",
+                0.15,
+                0,
+                0.5,
+                "context.injection_budget_ratio",
             ),
-            "system_tools_hard_cap": _positive_int(
-                context.get("system_tools_hard_cap"), 20000
-            ),
-            "total_budget_hard_cap": _positive_int(
-                context.get("total_budget_hard_cap"), 100000
-            ),
+            "system_tools_hard_cap": system_tools_hard_cap,
+            "total_budget_hard_cap": total_budget_hard_cap,
             "digest": {
-                "size_threshold_chars": _positive_int(
-                    digest.get("size_threshold_chars"), 1200
+                "size_threshold_chars": _bounded_int(
+                    digest,
+                    "size_threshold_chars",
+                    1200,
+                    1,
+                    1000000,
+                    "context.digest.size_threshold_chars",
                 ),
             },
         },
         "memory": {
             "recall": {
-                "min_score": _nonnegative_float(recall.get("min_score"), 0.3),
-                "top_k": _positive_int(recall.get("top_k"), 2),
-                "max_tokens_per_note": _positive_int(
-                    recall.get("max_tokens_per_note"), 400
+                "min_score": _bounded_float(
+                    recall,
+                    "min_score",
+                    0.3,
+                    0,
+                    1,
+                    "memory.recall.min_score",
                 ),
-                "skip_recent_turns": _positive_int(
-                    recall.get("skip_recent_turns"), 2
+                "top_k": _bounded_int(
+                    recall,
+                    "top_k",
+                    2,
+                    1,
+                    20,
+                    "memory.recall.top_k",
+                ),
+                "max_tokens_per_note": _bounded_int(
+                    recall,
+                    "max_tokens_per_note",
+                    400,
+                    1,
+                    4000,
+                    "memory.recall.max_tokens_per_note",
+                ),
+                "skip_recent_turns": _bounded_int(
+                    recall,
+                    "skip_recent_turns",
+                    2,
+                    0,
+                    100,
+                    "memory.recall.skip_recent_turns",
                 ),
             },
             "retrieval": {
                 "field_boost": {
-                    key: _nonnegative_float(field_boost.get(key), default)
+                    key: _bounded_float(
+                        field_boost,
+                        key,
+                        default,
+                        0,
+                        10,
+                        f"memory.retrieval.field_boost.{key}",
+                    )
                     for key, default in field_boost_defaults.items()
                 },
                 "link": {
-                    "max_added": _positive_int(link.get("max_added"), 3),
-                    "decay": decay,
+                    "max_added": _bounded_int(
+                        link,
+                        "max_added",
+                        3,
+                        0,
+                        20,
+                        "memory.retrieval.link.max_added",
+                    ),
+                    "decay": _bounded_float(
+                        link,
+                        "decay",
+                        0.4,
+                        0,
+                        1,
+                        "memory.retrieval.link.decay",
+                    ),
                 },
             },
         },

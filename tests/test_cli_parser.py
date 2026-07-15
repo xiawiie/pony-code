@@ -113,3 +113,55 @@ def test_parser_defaults_are_generous_for_coding_agent_runs():
     assert args.request_timeout_seconds == 300
     assert not hasattr(args, "ollama_timeout")
     assert not hasattr(args, "openai_timeout")
+
+
+@pytest.mark.parametrize(
+    ("flag", "value", "expected"),
+    (
+        ("--request-timeout-seconds", "1", 1),
+        ("--request-timeout-seconds", "900", 900),
+        ("--max-steps", "1", 1),
+        ("--max-steps", "100", 100),
+        ("--max-new-tokens", "1", 1),
+        ("--max-new-tokens", "32768", 32768),
+        ("--temperature", "0", 0.0),
+        ("--temperature", "2", 2.0),
+        ("--top-p", "0.0001", 0.0001),
+        ("--top-p", "1", 1.0),
+    ),
+)
+def test_runtime_resource_arguments_accept_documented_boundaries(
+    flag,
+    value,
+    expected,
+):
+    args = build_arg_parser().parse_args([flag, value])
+
+    attribute = flag.removeprefix("--").replace("-", "_")
+    assert getattr(args, attribute) == expected
+
+
+@pytest.mark.parametrize(
+    ("flag", "value"),
+    (
+        ("--request-timeout-seconds", "0"),
+        ("--request-timeout-seconds", "901"),
+        ("--max-steps", "0"),
+        ("--max-steps", "101"),
+        ("--max-new-tokens", "0"),
+        ("--max-new-tokens", "32769"),
+        ("--temperature", "-0.1"),
+        ("--temperature", "2.1"),
+        ("--temperature", "nan"),
+        ("--temperature", "inf"),
+        ("--top-p", "0"),
+        ("--top-p", "1.1"),
+        ("--top-p", "nan"),
+        ("--top-p", "inf"),
+    ),
+)
+def test_runtime_resource_arguments_reject_out_of_range_values(flag, value):
+    with pytest.raises(SystemExit) as caught:
+        build_arg_parser().parse_args([flag, value])
+
+    assert caught.value.code == 2
