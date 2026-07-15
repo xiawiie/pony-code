@@ -11,6 +11,7 @@ from importlib import metadata
 import math
 import os
 from pathlib import Path
+import platform
 import shutil
 import sys
 
@@ -719,6 +720,15 @@ def _validate_agent_command(invocation):
             code="usage",
             message="--sandbox is only valid with `pico run` or `pico repl`",
             exit_code=CLI_EXIT_USAGE,
+        )
+    if getattr(invocation.runtime_args, "sandbox", False) and (
+        platform.system() != "Darwin"
+        or platform.machine().casefold() not in {"arm64", "aarch64"}
+    ):
+        raise CliError(
+            code="sandbox_local_platform_not_released",
+            message="Docker Sandbox local stable is only released for macOS arm64",
+            exit_code=CLI_EXIT_CONFIG,
         )
     if invocation.command == "run" and not invocation.command_args:
         raise CliError(

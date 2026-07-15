@@ -779,6 +779,8 @@ def test_public_sandbox_runtime_fails_closed_on_local_authorization_before_agent
     monkeypatch,
     capsys,
 ):
+    monkeypatch.setattr("pico.cli.platform.system", lambda: "Darwin")
+    monkeypatch.setattr("pico.cli.platform.machine", lambda: "arm64")
     monkeypatch.setattr(
         "pico.cli._build_model_client",
         lambda *_args, **_kwargs: pytest.fail("provider construction reached"),
@@ -796,6 +798,32 @@ def test_public_sandbox_runtime_fails_closed_on_local_authorization_before_agent
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["error"]["code"] == "sandbox_runtime_authorization_mismatch"
+
+
+@pytest.mark.parametrize(
+    ("system", "machine"),
+    (("Linux", "arm64"), ("Darwin", "x86_64"), ("Windows", "AMD64")),
+)
+def test_public_sandbox_runtime_rejects_unreleased_local_platform_before_build(
+    tmp_path,
+    monkeypatch,
+    capsys,
+    system,
+    machine,
+):
+    monkeypatch.setattr("pico.cli.platform.system", lambda: system)
+    monkeypatch.setattr("pico.cli.platform.machine", lambda: machine)
+    monkeypatch.setattr(
+        "pico.cli.build_agent",
+        lambda *_args, **_kwargs: pytest.fail("agent construction reached"),
+    )
+
+    assert main(
+        ["--format", "json", "--cwd", str(tmp_path), "--sandbox", "run", "hello"]
+    ) == 3
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["error"]["code"] == "sandbox_local_platform_not_released"
 
 
 def test_sandbox_preflight_failure_precedes_source_session_store(
