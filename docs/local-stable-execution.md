@@ -1,6 +1,6 @@
-# Pico Sandbox 本地稳定版 v0.2.0 执行与验收
+# Pico Sandbox 本地稳定版 v0.2.1 执行与验收
 
-本文是 v0.2.0 本地稳定版的发布执行真源。架构理由见
+本文是 v0.2.1 本地稳定版的发布执行真源。架构理由见
 [ADR-0040](adr/0040-docker-filtered-staging.md)、[ADR-0041](adr/0041-distributed-release-authority.md) 和
 [ADR-0042](adr/0042-sealed-local-authorization.md)。历史规划和旧 benchmark 不能替代最终 exact HEAD 证据。
 
@@ -88,7 +88,7 @@ commit、dirty state、机器、OS、Python、Docker、image digest、median 和
 ## 交付与回滚
 
 通过全部门禁后才构建最终 wheel/sdist、在隔离 venv/HOME 且无源码 `PYTHONPATH` 下 clean-install，并创建本地
-`v0.2.0` 标签。外部 push、GitHub Release 和 PyPI 发布需要另行授权。
+`v0.2.1` 标签。外部 push、GitHub Release 和 PyPI 发布需要另行授权。
 
 各阶段保持独立提交；固定模型路径、P0、安全 I/O、staging、incremental capture 和遗留删除可独立回滚。没有
 持久化 schema migration，代码回滚不需要数据降级。旧 `~/.pico` 数据不自动删除；pending/interrupted/invalid

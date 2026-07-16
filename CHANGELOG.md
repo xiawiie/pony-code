@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.1 — 2026-07-16
+
+完整合并 Sandbox local stable、Memory/Context/Session 与 DeepSeek-first Anthropic CLI，并修复 clean-wheel
+`sandbox-real` 仍使用已删除文本工具协议的问题。发布门禁覆盖全量离线测试、distribution、真实 Docker Sandbox、
+同机性能、DeepSeek 官方与 Lumina 第三方网关；distributed Product Enablement 仍不属于本地 stable 范围。
+
 ## 0.2.0 — 2026-07-15
 
 Pico Sandbox 的首个本地稳定版。它是 pre-1.0 的单机交付，不代表 distributed production readiness。

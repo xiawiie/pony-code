@@ -28,7 +28,7 @@ uv run pico run "inspect the repository"
 uv build --clear
 python3 -m venv /tmp/pico-venv
 source /tmp/pico-venv/bin/activate
-python -m pip install --no-deps dist/pico-0.2.0-py3-none-any.whl
+python -m pip install --no-deps dist/pico-0.2.1-py3-none-any.whl
 command -v pico
 pico doctor
 ```
@@ -119,7 +119,7 @@ pico doctor
 
 ## Docker Sandbox
 
-普通 `run/repl` 不下载 Sandbox。v0.2.0 的公开 `--sandbox run/repl` 只在 macOS arm64 可用；其他宿主返回
+普通 `run/repl` 不下载 Sandbox。v0.2.1 的公开 `--sandbox run/repl` 只在 macOS arm64 可用；其他宿主返回
 `sandbox_local_platform_not_released`。受支持宿主每次生成 sealed local authorization，并验证当前安装树、
 packaged image 合同、already-present exact `linux/arm64` image 和 Docker Desktop；任一失败都发生在 Provider、
 Session staging 和 target 之前，且不会回退 Host。状态命令可用：
