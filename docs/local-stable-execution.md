@@ -67,6 +67,11 @@ uv run python -m benchmarks.perf.bench_sandbox --real
 git diff --check
 ```
 
+Darwin 的 `sandbox-real` 还要求两个外部 fixture：`PICO_SANDBOX_MOUNT_FIXTURE` 指向一个包含跨设备子挂载点的
+Source tree，`PICO_SANDBOX_DEVICE_FIXTURE` 指向包含 character/block device 的目录（macOS 通常使用 `/dev`）。
+这两个 fixture 必须在调用前由发布执行者显式准备并通过环境变量传入；评估命令不会隐式 mount、创建设备或降级跳过，
+缺失时以 `mount_boundary_fixture_required` / mandatory check failure 保持 `NO-GO`。
+
 门禁按 Authority、Static、Functional、Distribution、P0 Security、Sandbox Real、Performance、Provider Live 和
 Documentation 九组判定。任一 mandatory gate 失败、出现未解释 skip，或默认 DeepSeek exact-HEAD live 未获得新的
 费用授权/凭证并通过，发布保持 `NO-GO`，不得创建 stable 标签。

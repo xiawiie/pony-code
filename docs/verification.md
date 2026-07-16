@@ -20,6 +20,17 @@ uv run python -m benchmarks.perf.bench_sandbox --real
 git diff --check
 ```
 
+在 Darwin 上运行 `sandbox-real` 前，必须显式设置：
+
+```bash
+PICO_SANDBOX_MOUNT_FIXTURE=/path/to/source-with-mounted-child \
+PICO_SANDBOX_DEVICE_FIXTURE=/dev \
+uv run python scripts/evaluate.py --suite sandbox-real
+```
+
+mount fixture 的 Source tree 必须包含 `st_dev` 不同的已挂载子目录；device fixture 必须包含 character 或 block
+device。评估入口不会隐式创建这类宿主资源，也不会把缺失 fixture 记为通过。
+
 发布标准是零失败、零未解释 skip/xfail/xpass。删除 legacy SRT tests 后测试总数下降是预期行为；每次发布在最终
 artifact 中冻结 exact HEAD 的实际 count，不能用旧数量作为目标。
 
