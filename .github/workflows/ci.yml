@@ -37,6 +37,11 @@ jobs:
           version: "0.11.26"
           enable-cache: true
 
+      - name: Install system test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes ripgrep
+
       - name: Install dependencies
         run: uv sync --frozen --dev
 
