@@ -893,6 +893,10 @@ def test_runtime_vertical_helper_exception_uses_authorized_constructor_and_metad
     )
     assert [row["status"] for row in result["case_rows"]] == ["fail"] * 3
     assert [name for name, _kwargs in constructor_calls] == [expected_constructor]
+    assert all(
+        isinstance(output, dict)
+        for output in constructor_calls[0][1]["model_client"].outputs[:4]
+    )
     assert workspace_calls[1][1]["branch_override"] == "pico-sandbox"
     assert workspace_calls[1][1]["default_branch_override"] == "pico-sandbox"
     assert (

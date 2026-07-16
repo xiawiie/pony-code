@@ -3298,27 +3298,30 @@ def _run_runtime_tool_vertical(context):
         status_override=SANDBOX_WORKSPACE_STATUS,
     )
     outputs = [
-        '<tool>{"name":"read_file","args":'
-        '{"path":"/workspace/README.md","start":1,"end":20}}</tool>',
-        '<tool name="write_file" path="/workspace/'
-        + _RUNTIME_CANDIDATE_A
-        + '"><content>'
-        + _RUNTIME_CANDIDATE_A_CONTENT
-        + "</content></tool>",
-        "<tool>"
-        + json.dumps(
-            {
-                "name": "run_shell",
-                "args": {"command": _RUNTIME_SHELL_COMMAND, "timeout": 30},
+        {
+            "name": "read_file",
+            "args": {"path": "/workspace/README.md", "start": 1, "end": 20},
+        },
+        {
+            "name": "write_file",
+            "args": {
+                "path": "/workspace/" + _RUNTIME_CANDIDATE_A,
+                "content": _RUNTIME_CANDIDATE_A_CONTENT,
             },
-            separators=(",", ":"),
-        )
-        + "</tool>",
-        '<tool>{"name":"read_file","args":'
-        '{"path":"/workspace/'
-        + _RUNTIME_CANDIDATE_B
-        + '","start":1,"end":20}}</tool>',
-        "<final>runtime vertical complete</final>",
+        },
+        {
+            "name": "run_shell",
+            "args": {"command": _RUNTIME_SHELL_COMMAND, "timeout": 30},
+        },
+        {
+            "name": "read_file",
+            "args": {
+                "path": "/workspace/" + _RUNTIME_CANDIDATE_B,
+                "start": 1,
+                "end": 20,
+            },
+        },
+        "runtime vertical complete",
     ]
     build_agent = (
         Pico._for_docker_sandbox_development
