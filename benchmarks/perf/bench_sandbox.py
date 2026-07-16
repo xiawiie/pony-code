@@ -50,6 +50,14 @@ SCENARIO_NAMES = (
     "sandbox/shell_empty_after_capture/326",
 )
 ROOT = Path(__file__).resolve().parents[2]
+REPORT_IMAGE_PLATFORM = "linux/arm64"
+
+
+def _report_image():
+    return load_image_manifest(
+        default_image_manifest_path(),
+        target_platform=REPORT_IMAGE_PLATFORM,
+    )
 
 
 def _git_value(args):
@@ -68,7 +76,7 @@ def _git_value(args):
 
 
 def build_artifact(scenarios, *, docker=None):
-    image = load_image_manifest(default_image_manifest_path())
+    image = _report_image()
     dirty_value = _git_value(["status", "--porcelain"])
     return {
         "record_type": "sandbox_perf",
@@ -138,7 +146,7 @@ def _session_metadata(image):
 
 
 def _fixture(root):
-    image = load_image_manifest(default_image_manifest_path())
+    image = _report_image()
     source = root / "source"
     source.mkdir()
     (source / "README.md").write_text("benchmark\n", encoding="utf-8")
@@ -217,7 +225,7 @@ class _ObserverContext:
 
 def _capture_benchmark(root):
     root.mkdir()
-    image = load_image_manifest(default_image_manifest_path())
+    image = _report_image()
     source = root / "source"
     _populate_representative_source(source)
     store = SandboxSessionStore(root / "sandboxes")
@@ -343,7 +351,7 @@ def main(argv=None):
         scenarios = [
             bench(
                 SCENARIO_NAMES[0],
-                lambda: load_image_manifest(default_image_manifest_path()),
+                _report_image,
                 iterations=50,
             ),
             bench(

@@ -7,6 +7,7 @@ import logging
 import os
 import stat
 import time
+from time import sleep as _sleep
 import uuid
 
 from .action_codec import FinalAction, RetryAction, ToolAction, decode_action
@@ -1146,7 +1147,7 @@ def _run_agent_attempts(
                 and attempts < max_attempts
             ):
                 delay = getattr(model_error, "retry_after", None)
-                time.sleep(
+                _sleep(
                     delay
                     if type(delay) in {int, float}
                     else _MODEL_RETRY_DELAYS[model_retry_count]

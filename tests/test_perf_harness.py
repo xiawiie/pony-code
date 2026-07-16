@@ -118,3 +118,21 @@ def test_sandbox_perf_artifact_has_release_provenance(monkeypatch):
     }
     assert artifact["baseline"]["comparison"] == "report_only"
     assert artifact["scenarios"][0]["status"] == "measured"
+
+
+def test_sandbox_report_uses_the_released_image_platform(monkeypatch):
+    from benchmarks.perf import bench_sandbox
+
+    calls = []
+    sentinel = object()
+
+    def load_image_manifest(path, *, target_platform=None):
+        calls.append((path, target_platform))
+        return sentinel
+
+    monkeypatch.setattr(bench_sandbox, "load_image_manifest", load_image_manifest)
+
+    assert bench_sandbox._report_image() is sentinel
+    assert calls == [
+        (bench_sandbox.default_image_manifest_path(), "linux/arm64"),
+    ]

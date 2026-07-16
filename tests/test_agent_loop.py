@@ -164,7 +164,7 @@ def test_transient_provider_failures_retry_in_agent_loop_with_explicit_origins(
         ),
     ])
     delays = []
-    monkeypatch.setattr(agent_loop_module.time, "sleep", delays.append)
+    monkeypatch.setattr(agent_loop_module, "_sleep", delays.append)
     agent = build_native_agent(tmp_path, provider)
 
     assert agent.ask("recover") == "done"
@@ -276,7 +276,7 @@ def test_nonretryable_provider_failure_is_not_replayed(tmp_path, monkeypatch):
     )
     provider = EvidenceScriptProvider([failure])
     sleep = Mock()
-    monkeypatch.setattr(agent_loop_module.time, "sleep", sleep)
+    monkeypatch.setattr(agent_loop_module, "_sleep", sleep)
     agent = build_native_agent(tmp_path, provider)
 
     with pytest.raises(RuntimeError) as caught:
@@ -305,7 +305,7 @@ def test_model_retry_preserves_retry_action_feedback(tmp_path, monkeypatch):
             usage={},
         ),
     ])
-    monkeypatch.setattr(agent_loop_module.time, "sleep", lambda _delay: None)
+    monkeypatch.setattr(agent_loop_module, "_sleep", lambda _delay: None)
     agent = build_native_agent(tmp_path, provider)
 
     assert agent.ask("recover protocol") == "done"
