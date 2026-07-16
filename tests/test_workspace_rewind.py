@@ -24,8 +24,11 @@ def _agent(tmp_path, outputs=None, *, store=None):
 def _write_turn(agent):
     agent.model_client.outputs.extend(
         [
-            '<tool>{"name":"write_file","args":{"path":"note.txt","content":"after\\n"}}</tool>',
-            "<final>done</final>",
+            {
+                "name": "write_file",
+                "arguments": {"path": "note.txt", "content": "after\n"},
+            },
+            "done",
         ]
     )
     assert agent.ask("write note") == "done"

@@ -189,7 +189,7 @@ def _smoke_env(home: Path, bin_dir: Path) -> dict[str, str]:
     return env
 
 
-def install_smoke(wheel: Path) -> None:
+def install_smoke(wheel: Path, *, offline: bool = False) -> None:
     with tempfile.TemporaryDirectory(prefix="pico-wheel-smoke-") as raw_tmp:
         root = Path(raw_tmp)
         environment = root / "venv"
@@ -204,7 +204,11 @@ def install_smoke(wheel: Path) -> None:
         pico = bin_dir / ("pico.exe" if os.name == "nt" else "pico")
         env = _smoke_env(home, bin_dir)
 
-        _run(str(python), "-m", "pip", "install", "--no-deps", str(wheel.resolve()), env=env)
+        install_args = [str(python), "-m", "pip", "install", "--no-deps"]
+        if offline:
+            install_args.append("--no-index")
+        install_args.append(str(wheel.resolve()))
+        _run(*install_args, env=env)
         _run(str(python), "-m", "pip", "check", env=env)
         resolved = _run("/bin/sh", "-c", "command -v pico", cwd=cwd, env=env).strip()
         assert Path(resolved).resolve() == pico.resolve()
@@ -313,6 +317,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dist-dir", type=Path, default=Path("dist"))
     parser.add_argument("--install-smoke", action="store_true")
+    parser.add_argument("--offline-bundle-smoke", action="store_true")
     args = parser.parse_args()
 
     repo = Path(__file__).resolve().parents[1]
@@ -325,6 +330,8 @@ def main() -> int:
     verify_wheel(wheel, runtime, (repo / "README.md").read_text(encoding="utf-8"))
     if args.install_smoke:
         install_smoke(wheel)
+    if args.offline_bundle_smoke:
+        install_smoke(wheel, offline=True)
     print(f"verified {sdist.name} and {wheel.name}")
     return 0
 

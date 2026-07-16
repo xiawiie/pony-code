@@ -14,8 +14,9 @@ def test_ci_tracks_and_uses_frozen_uv_lock():
     assert Path("uv.lock").is_file()
     assert "uv.lock" not in ignored
     assert 'version: "0.11.26"' in workflow
-    assert "      - main" in workflow
-    assert "      - memory" in workflow
+    triggers = workflow.split("permissions:", 1)[0]
+    assert "  push:\n" in triggers
+    assert "branches:" not in triggers
     assert "run: uv sync --frozen --dev" in workflow
 
 
@@ -102,8 +103,8 @@ def test_ci_keeps_docker_sandbox_local_gate_read_only():
     assert "--real --managed" not in workflow
     assert "PICO_RUN_REAL_SRT" not in workflow
     assert "uv build --clear" in workflow
-    assert "scripts/verify_distribution.py --install-smoke" in workflow
-    assert "offline-bundle-smoke" not in workflow
+    assert "scripts/verify_distribution.py" in workflow
+    assert "--install-smoke --offline-bundle-smoke" in workflow
 
 
 def test_maintenance_scripts_start_and_show_help():
@@ -152,7 +153,8 @@ def test_distribution_verifier_freezes_archive_and_install_contract():
     assert '"PYTHONPATH"' in verifier
     assert "pico.sandbox_lifecycle" in verifier
     assert "pico._sandbox_toolchain" in verifier
-    assert "offline_bundle_smoke" not in verifier
+    assert "offline_bundle_smoke" in verifier
+    assert 'install_args.append("--no-index")' in verifier
     assert "cwd=cwd, env=env" in verifier
     assert 'PROJECT_VERSION = _PROJECT["version"]' in verifier
     assert 'PROJECT_VERSION = "' not in verifier

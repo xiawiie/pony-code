@@ -3,9 +3,6 @@ name: CI
 on:
   pull_request:
   push:
-    branches:
-      - main
-      - memory
 
 permissions:
   contents: read
@@ -44,9 +41,6 @@ jobs:
 
       - name: Install dependencies
         run: uv sync --frozen --dev
-
-      - name: Install system test tools
-        run: sudo apt-get update && sudo apt-get install -y ripgrep
 
       - name: Lint
         if: matrix.python-version == '3.11'
@@ -88,7 +82,9 @@ jobs:
 
       - name: Inspect distributions and smoke-test wheel install
         if: matrix.python-version == '3.12'
-        run: uv run python scripts/verify_distribution.py --install-smoke
+        run: >-
+          uv run python scripts/verify_distribution.py
+          --install-smoke --offline-bundle-smoke
 
   macos-focused:
     name: macOS focused (Python 3.12)

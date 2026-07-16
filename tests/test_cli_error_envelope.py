@@ -4,6 +4,8 @@ import signal
 
 from pico.cli import main
 from pico.cli_start import run_agent_once, run_repl
+from pico.config import DEFAULT_API_URL
+from pico.providers.fake import FakeModelClient
 
 
 CANARY = "hostile-config-canary-9f3d7a"
@@ -210,7 +212,7 @@ def test_invalid_project_api_url_uses_safe_config_envelope(
     assert CANARY not in captured.out + captured.err
 
 
-def test_project_key_without_url_fails_before_client_construction(
+def test_project_key_without_url_uses_official_default(
     tmp_path,
     monkeypatch,
     capsys,
@@ -219,16 +221,21 @@ def test_project_key_without_url_fails_before_client_construction(
         "PICO_DEEPSEEK_API_KEY=stale-project-key\n",
         encoding="utf-8",
     )
-    def constructor(*_args, **_kwargs):
-        raise AssertionError("client constructed")
+    captured = {}
+
+    def constructor(*args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return FakeModelClient(["done"])
 
     monkeypatch.setattr("pico.cli.build_model_client", constructor)
 
-    assert main(["--cwd", str(tmp_path), "--quiet", "run", "hello"]) == 3
+    assert main(["--cwd", str(tmp_path), "--quiet", "run", "hello"]) == 0
 
-    captured = capsys.readouterr()
-    assert captured.err.splitlines()[0] == "api_url_not_configured"
-    assert "pico init" in captured.err
+    output = capsys.readouterr()
+    assert output.err == ""
+    assert captured["args"] == ("anthropic_messages",)
+    assert captured["kwargs"]["base_url"] == DEFAULT_API_URL
 
 
 def test_init_invalid_url_does_not_echo_input_value(

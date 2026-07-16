@@ -11,7 +11,7 @@ from pico import Pico, SessionStore, WorkspaceContext
 from pico import cli as pico_cli
 from pico.providers.fake import FakeModelClient
 from pico.config import read_project_env
-from pico.session_store import SESSION_FORMAT_VERSION
+from pico.session_store import LEGACY_SESSION_FORMAT_VERSION
 from pico.task_state import TaskState
 
 
@@ -437,7 +437,7 @@ def test_cli_resume_uses_immutable_collision_safe_snapshot_before_load(
     (session_dir / f"{session_id}.json").write_text(
         json.dumps({
             "record_type": "session",
-            "format_version": SESSION_FORMAT_VERSION,
+                "format_version": LEGACY_SESSION_FORMAT_VERSION,
             "id": session_id,
             "created_at": "2026-01-01T00:00:00+00:00",
             "workspace_root": str(tmp_path),

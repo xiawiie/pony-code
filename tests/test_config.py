@@ -100,12 +100,17 @@ def test_model_config_uses_fixed_anthropic_contract():
     assert resolved["base_url"]["value"] == DEFAULT_API_URL
 
 
-def test_model_config_requires_explicit_url_when_key_is_configured():
-    with pytest.raises(ValueError, match="^api_url_not_configured$"):
-        resolve_model_config(
-            project_env={API_KEY_ENV_NAME: "project-key"},
-            process_env={},
-        )
+def test_model_config_uses_official_url_when_only_key_is_configured():
+    resolved = resolve_model_config(
+        project_env={API_KEY_ENV_NAME: "project-key"},
+        process_env={},
+    )
+
+    assert resolved["base_url"] == {
+        "value": DEFAULT_API_URL,
+        "source": "default",
+        "name": "DEFAULT_API_URL",
+    }
 
 
 def test_project_env_wins_over_process_env_for_url_and_key():
@@ -165,7 +170,11 @@ def test_only_legacy_or_vendor_variables_cannot_configure_runtime():
         process_env={},
         required=False,
     )
-    assert inspected["base_url"]["value"] == ""
+    assert inspected["base_url"] == {
+        "value": DEFAULT_API_URL,
+        "source": "default",
+        "name": "DEFAULT_API_URL",
+    }
     assert inspected["api_key"] == {"value": "", "source": "unset", "name": ""}
 
 

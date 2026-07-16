@@ -296,8 +296,12 @@ def resolve_model_config(*, project_env=None, process_env=None, required=True):
     )
     if api_url["value"]:
         api_url["value"] = validate_api_url(api_url["value"])
-    elif required:
-        raise ValueError("api_url_not_configured")
+    else:
+        api_url = {
+            "value": DEFAULT_API_URL,
+            "source": "default",
+            "name": "DEFAULT_API_URL",
+        }
     return {
         "protocol": {
             "value": PROTOCOL_FAMILY,

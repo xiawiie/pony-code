@@ -14,7 +14,7 @@ from pico.cli_session import inspect_session
 from pico.memory.block_store import BlockStore
 from pico.recovery_models import new_checkpoint_record, new_tool_change_record
 from pico.run_store import RunStore
-from pico.session_store import SESSION_FORMAT_VERSION
+from pico.session_store import LEGACY_SESSION_FORMAT_VERSION, SESSION_FORMAT_VERSION
 from pico.task_state import TaskState
 
 
@@ -650,7 +650,7 @@ def test_singular_session_inspection_never_reads_unsafe_paths(
     safe.write_text(
         json.dumps({
             "record_type": "session",
-                "format_version": SESSION_FORMAT_VERSION,
+                "format_version": LEGACY_SESSION_FORMAT_VERSION,
             "id": "safe",
             "created_at": "2026-01-01T00:00:00+00:00",
             "workspace_root": str(tmp_path),
