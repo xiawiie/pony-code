@@ -1,7 +1,7 @@
 # Pico 安全边界
 
 Pico 的目标是把模型发起的本地操作限制在可检查、可审批、可恢复的仓库边界内。默认 Host 模式不是 OS sandbox。
-v0.2.0 的显式 Sandbox 采用 [ADR-0040](adr/0040-docker-filtered-staging.md) 与
+v0.2.1 的显式 Sandbox 采用 [ADR-0040](adr/0040-docker-filtered-staging.md) 与
 [ADR-0042](adr/0042-sealed-local-authorization.md)；任一 identity/readiness 失败都在 Provider、staging 或 target 前
 fail closed，不回退 Host runner。
 

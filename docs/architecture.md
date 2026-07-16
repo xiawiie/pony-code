@@ -20,7 +20,7 @@ CLI → config → context → provider → response → action → tools → pe
 `PICO_DEEPSEEK_API_KEY`；model、Anthropic Messages 协议和 `x-api-key` 认证固定。runtime、doctor、evaluation 与
 live harness 共用窄 client builder，不做 Provider 注册、域名推断或协议回退。
 
-公开 `--sandbox` 在构造 Provider、Session staging 或 target 前验证宿主平台。v0.2.0 只接受 Darwin arm64；随后
+公开 `--sandbox` 在构造 Provider、Session staging 或 target 前验证宿主平台。v0.2.1 只接受 Darwin arm64；随后
 重算 sealed local authorization，绑定当前安装树、packaged canonical image set、policy 和 corpus。already-present
 exact image 不匹配时 fail closed，不隐式 pull/build/repair，也不回退 Host。
 

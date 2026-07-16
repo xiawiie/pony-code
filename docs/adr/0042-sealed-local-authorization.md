@@ -10,7 +10,7 @@ ADR-0041 的 distributed authority 尚未就绪，但经过验证的本机 Docke
 
 ## 决策
 
-v0.2.0 的唯一正式 Sandbox 平台是：
+v0.2.1 的唯一正式 Sandbox 平台是：
 
 - macOS arm64；
 - 本机 Docker Desktop；
@@ -29,4 +29,4 @@ repair、下载 Product Enablement 或写 release cache。任何 identity/readin
 - Host 模式仍可在所有现有 Python 支持平台使用，但它不是 OS sandbox。
 - Linux、amd64、rootless Docker、registry 和 distributed Product Enablement 继续 `NO-GO`。
 - local authorization 只允许使用 staging；Source Apply 仍需展示 immutable diff digest 并独立授权。
-- v0.2.0 是 pre-1.0 的本地稳定版，不代表 hostile multi-tenant 或 distributed production readiness。
+- v0.2.1 是 pre-1.0 的本地稳定版，不代表 hostile multi-tenant 或 distributed production readiness。
