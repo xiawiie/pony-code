@@ -85,7 +85,7 @@ def test_end_to_end_fake_provider_uses_structured_surface(tmp_path):
     from pico.session_store import SessionStore
     from pico.workspace import WorkspaceContext
 
-    inner = FakeModelClient(["<final>ok</final>"])
+    inner = FakeModelClient(["ok"])
     workspace = WorkspaceContext.build(tmp_path)
     store = SessionStore(tmp_path / ".pico" / "sessions")
     pico = Pico(
@@ -100,7 +100,6 @@ def test_end_to_end_fake_provider_uses_structured_surface(tmp_path):
 
 
 def test_end_to_end_structured_provider_stays_as_is(tmp_path):
-    from pico.providers.text_protocol_adapter import TextProtocolAdapter
     from pico.runtime import Pico
     from pico.session_store import SessionStore
     from pico.workspace import WorkspaceContext
@@ -122,5 +121,4 @@ def test_end_to_end_structured_provider_stays_as_is(tmp_path):
     )
 
     assert pico.model_client is provider
-    assert not isinstance(pico.model_client, TextProtocolAdapter)
     assert pico.ask("hi") == "hi"

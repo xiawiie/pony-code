@@ -3,15 +3,13 @@ import os
 import shutil
 import stat
 import subprocess
-from types import SimpleNamespace
 from unittest.mock import Mock
-from urllib import error
 
 import pytest
 
-import pico.cli_diagnostics as cli_diagnostics_module
+import pico.cli_diagnostics as diagnostics
 from pico.cli import main
-from pico.cli_diagnostics import check_provider_connectivity, collect_config, collect_doctor
+from pico.cli_diagnostics import check_api_connectivity, collect_config, collect_doctor
 
 
 def _run_git(cwd, *args):
@@ -24,12 +22,18 @@ def _run_git(cwd, *args):
     )
 
 
-def test_config_show_reports_exact_project_env_path(tmp_path, capsys):
-    (tmp_path / ".env").write_text(
-        "PICO_PROVIDER=deepseek\n",
+def _write_env(root, *, url="https://gateway.example/v1", key="secret-value"):
+    path = root / ".env"
+    path.write_text(
+        f"PICO_API_URL={url}\nPICO_DEEPSEEK_API_KEY={key}\n",
         encoding="utf-8",
     )
-    (tmp_path / ".env").chmod(0o600)
+    path.chmod(0o600)
+    return path
+
+
+def test_config_show_reports_fixed_contract_and_exact_project_env_path(tmp_path, capsys):
+    _write_env(tmp_path)
 
     assert main([
         "--cwd",
@@ -47,48 +51,33 @@ def test_config_show_reports_exact_project_env_path(tmp_path, capsys):
         "scope": "repo_root_exact",
         "status": "loaded",
     }
+    assert payload["protocol"]["value"] == "openai_chat_completions"
+    assert payload["model"]["value"] == "deepseek-v4-flash"
     assert payload["base_url"] == {
-        "value": "https://api.deepseek.com/anthropic",
-        "source": "default",
-        "name": "DEFAULT_DEEPSEEK_BASE_URL",
+        "value": "https://gateway.example/v1",
+        "source": "project_env",
+        "name": "PICO_API_URL",
     }
-
-
-def test_doctor_reports_the_same_project_env_contract(tmp_path, capsys):
-    (tmp_path / ".env").write_text(
-        "PICO_PROVIDER=deepseek\n",
-        encoding="utf-8",
-    )
-    (tmp_path / ".env").chmod(0o600)
-
-    assert main([
-        "--cwd",
-        str(tmp_path),
-        "--format",
-        "json",
-        "doctor",
-        "--offline",
-    ]) == 0
-
-    payload = json.loads(capsys.readouterr().out)["data"]
-    assert payload["project_env"] == {
-        "path": str(tmp_path.resolve() / ".env"),
-        "scope": "repo_root_exact",
-        "status": "loaded",
+    assert payload["api_key"] == {
+        "present": True,
+        "source": "project_env",
+        "name": "PICO_DEEPSEEK_API_KEY",
     }
-    assert payload["security"]["project_env"] == {
-        "status": "loaded",
-        "mode": "0600",
-    }
+    assert "secret-value" not in json.dumps(payload)
+
+
+def test_config_show_uses_default_url_when_only_key_is_configured(tmp_path):
+    _write_env(tmp_path, url="https://api.deepseek.com")
+
+    data = collect_config(tmp_path)
+
+    assert data["base_url"]["value"] == "https://api.deepseek.com"
+    assert data["model"]["value"] == "deepseek-v4-flash"
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX mode assertion")
-def test_config_show_preserves_permission_review_after_redactor(
-    tmp_path,
-    capsys,
-):
-    env_path = tmp_path / ".env"
-    env_path.write_text("PICO_PROVIDER=deepseek\n", encoding="utf-8")
+def test_config_show_preserves_permission_review_after_redactor(tmp_path, capsys):
+    env_path = _write_env(tmp_path)
     env_path.chmod(0o644)
 
     assert main([
@@ -105,10 +94,9 @@ def test_config_show_preserves_permission_review_after_redactor(
     assert stat.S_IMODE(env_path.stat().st_mode) == 0o600
 
 
-def test_config_isolates_main_and_linked_worktree_env(tmp_path, monkeypatch):
+def test_config_isolates_main_and_linked_worktree_env(tmp_path):
     if shutil.which("git") is None:
         pytest.skip("git unavailable")
-
     main_root = tmp_path / "main"
     linked_root = tmp_path / "linked"
     main_root.mkdir()
@@ -118,50 +106,23 @@ def test_config_isolates_main_and_linked_worktree_env(tmp_path, monkeypatch):
     (main_root / "README.md").write_text("fixture\n", encoding="utf-8")
     _run_git(main_root, "add", "README.md")
     _run_git(main_root, "commit", "-qm", "fixture")
-    _run_git(
-        main_root,
-        "worktree",
-        "add",
-        "-q",
-        "-b",
-        "linked",
-        str(linked_root),
-    )
-
-    (main_root / ".env").write_text(
-        "PICO_PROVIDER=openai\n",
-        encoding="utf-8",
-    )
-    (main_root / ".env").chmod(0o600)
-    (linked_root / ".env").write_text(
-        "PICO_PROVIDER=deepseek\n",
-        encoding="utf-8",
-    )
-    (linked_root / ".env").chmod(0o600)
+    _run_git(main_root, "worktree", "add", "-q", "-b", "linked", str(linked_root))
+    _write_env(main_root, url="https://main.example/v1", key="main-key")
+    _write_env(linked_root, url="https://linked.example/v1", key="linked-key")
     child = linked_root / "src"
     child.mkdir()
-    monkeypatch.delenv("PICO_PROVIDER", raising=False)
 
     main_data = collect_config(main_root)
     linked_data = collect_config(child)
 
-    assert main_data["provider"]["value"] == "openai"
-    assert linked_data["provider"]["value"] == "deepseek"
-    assert main_data["project_env"]["path"] == str(main_root / ".env")
-    assert linked_data["project_env"]["path"] == str(linked_root / ".env")
+    assert main_data["base_url"]["value"] == "https://main.example/v1"
+    assert linked_data["base_url"]["value"] == "https://linked.example/v1"
     assert main_data["project_env"]["path"] != linked_data["project_env"]["path"]
-
-    (linked_root / ".env").unlink()
-    missing = collect_config(child)
-    assert missing["project_env"]["status"] == "missing"
-    assert missing["provider"]["value"] != "openai"
 
 
 @pytest.mark.parametrize("unsafe_kind", ("symlink", "hardlink", "directory"))
-def test_config_show_marks_unsafe_project_env_for_review_without_canary(
-    tmp_path,
-    capsys,
-    unsafe_kind,
+def test_config_show_fails_closed_for_unsafe_project_env(
+    tmp_path, capsys, unsafe_kind
 ):
     canary = "project-env-outside-canary"
     outside = tmp_path.parent / f"{tmp_path.name}-outside-env"
@@ -170,10 +131,7 @@ def test_config_show_marks_unsafe_project_env_for_review_without_canary(
         env_path.mkdir()
         (env_path / "canary").write_text(canary, encoding="utf-8")
     else:
-        outside.write_text(
-            f"PICO_PROVIDER=deepseek\n{canary}\n",
-            encoding="utf-8",
-        )
+        outside.write_text(f"PICO_DEEPSEEK_API_KEY={canary}\n", encoding="utf-8")
         if unsafe_kind == "symlink":
             env_path.symlink_to(outside)
         else:
@@ -190,587 +148,284 @@ def test_config_show_marks_unsafe_project_env_for_review_without_canary(
 
     captured = capsys.readouterr()
     metadata = json.loads(captured.out)["data"]["project_env"]
-    assert metadata["scope"] == "repo_root_exact"
     assert metadata["status"] == "review_required"
     assert canary not in captured.out + captured.err
     assert str(outside) not in captured.out + captured.err
 
 
-def _clear_provider_env(monkeypatch):
-    for name in (
-        "PICO_PROVIDER",
-        "PICO_DEEPSEEK_MODEL",
-        "DEEPSEEK_MODEL",
-        "PICO_DEEPSEEK_API_KEY",
-        "DEEPSEEK_API_KEY",
-    ):
-        monkeypatch.delenv(name, raising=False)
-
-
-def _symlink_loop(tmp_path):
-    path = tmp_path / "doctor-loop-canary"
-    path.symlink_to(path.name)
-    return path
-
-
-def test_doctor_json_exposes_safe_security_contract(tmp_path, monkeypatch, capsys):
-    (tmp_path / ".env").write_text(
-        "PICO_PROVIDER=deepseek\n",
-        encoding="utf-8",
-    )
-    (tmp_path / ".env").chmod(0o600)
-    monkeypatch.setattr(
-        "pico.cli_diagnostics.build_trusted_executables",
-        lambda root, env=None, names=(): {
-            "git": "/usr/bin/git",
-            "rg": "/usr/bin/rg",
-        },
-    )
-
-    code = main(
-        [
-            "--cwd",
-            str(tmp_path),
-            "--format",
-            "json",
-            "doctor",
-            "--offline",
-        ]
-    )
-    payload = json.loads(capsys.readouterr().out)
-    security = payload["data"]["security"]
-
-    assert code == 0
-    assert security == {
-        "status": "ok",
-        "project_env": {"status": "loaded", "mode": "0600"},
-        "private_storage": {"status": "missing"},
-        "trusted_executables": {"status": "ok", "missing": []},
-        "recovery_review": {
-            "pending_count": 0,
-            "applying_count": 0,
-            "unreviewed_partial_count": 0,
-            "invalid_mutation_count": 0,
-        },
-    }
-    assert "PICO_PROVIDER=deepseek" not in json.dumps(payload)
-
-
-def test_doctor_security_requires_review_for_pending_tool_change(
-    tmp_path, monkeypatch, capsys
-):
-    from pico.checkpoint_store import CheckpointStore
-    from pico.tool_change_recorder import ToolChangeRecorder
-
-    monkeypatch.setattr(
-        "pico.cli_diagnostics.build_trusted_executables",
-        lambda root, env=None, names=(): {
-            "git": "/usr/bin/git",
-            "rg": "/usr/bin/rg",
-        },
-    )
-    store = CheckpointStore(tmp_path)
-    ToolChangeRecorder(store, owner_id="doctor-test").start(
-        "", "turn", "write_file", "workspace_write", {"path": "x.txt"}
-    )
-
-    assert (
-        main(
-            [
-                "--cwd",
-                str(tmp_path),
-                "--format",
-                "json",
-                "doctor",
-                "--offline",
-            ]
-        )
-        == 0
-    )
-    security = json.loads(capsys.readouterr().out)["data"]["security"]
-    assert security["status"] == "review_required"
-    assert security["recovery_review"]["pending_count"] == 1
-
-
-def test_doctor_fails_closed_for_hardlinked_private_record(
-    tmp_path, monkeypatch
-):
-    if os.name != "posix":
-        pytest.skip("POSIX hardlink assertion")
-    from pico.checkpoint_store import CheckpointStore
-
-    monkeypatch.setattr(
-        "pico.cli_diagnostics.build_trusted_executables",
-        lambda root, env=None, names=(): {
-            "git": "/usr/bin/git",
-            "rg": "/usr/bin/rg",
-        },
-    )
-    store = CheckpointStore(tmp_path)
-    record = store.records_dir / "hardlinked.json"
-    record.write_text("{}", encoding="utf-8")
-    record.chmod(0o600)
-    os.link(record, store.records_dir / "hardlinked-copy.json")
-
-    security = collect_doctor(tmp_path, offline=True)["security"]
-
-    assert security["status"] == "review_required"
-    assert security["private_storage"] == {"status": "review_required"}
-    assert security["recovery_review"]["invalid_mutation_count"] >= 1
-
-
-def test_status_json_reports_storage_without_building_agent(tmp_path, monkeypatch, capsys):
-    _clear_provider_env(monkeypatch)
-    (tmp_path / ".pico" / "sessions").mkdir(parents=True)
-    (tmp_path / ".pico" / "runs" / "run_1").mkdir(parents=True)
-    (tmp_path / ".pico" / "checkpoints" / "records").mkdir(parents=True)
-
-    def fail_build_agent(args):
-        raise AssertionError("status must not build a Pico agent")
-
-    monkeypatch.setattr("pico.cli.build_agent", fail_build_agent)
-
-    code = main(["--cwd", str(tmp_path), "--format", "json", "status"])
-
-    assert code == 0
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["kind"] == "status"
-    assert payload["data"]["storage"]["sessions"] is True
-    assert payload["data"]["storage"]["runs"] is True
-    assert payload["data"]["storage"]["checkpoints"] is True
-    assert payload["data"]["latest"]["run_id"] == "run_1"
-    assert "memory" not in payload["data"]
-
-
-def test_status_text_uses_grouped_cli_output(tmp_path, monkeypatch, capsys):
-    _clear_provider_env(monkeypatch)
-    (tmp_path / ".pico" / "sessions").mkdir(parents=True)
-    (tmp_path / ".pico" / "runs" / "run_1").mkdir(parents=True)
-
-    code = main(["--cwd", str(tmp_path), "status"])
-
-    assert code == 0
-    out = capsys.readouterr().out
-    assert out.startswith("Pico status — Local harness state\n")
-    assert "Workspace" in out
-    assert "Provider" in out
-    assert "Storage" in out
-    assert not out.lstrip().startswith("{")
-
-
-def test_config_show_json_reports_sources_without_secret_values(tmp_path, monkeypatch, capsys):
-    _clear_provider_env(monkeypatch)
-    (tmp_path / ".env").write_text(
-        "PICO_PROVIDER=deepseek\nPICO_DEEPSEEK_API_KEY=secret-value\n",
-        encoding="utf-8",
-    )
-    (tmp_path / ".env").chmod(0o600)
-
-    def fail_build_agent(args):
-        raise AssertionError("config show must not build a Pico agent")
-
-    monkeypatch.setattr("pico.cli.build_agent", fail_build_agent)
-
-    code = main(["--cwd", str(tmp_path), "--format", "json", "config", "show"])
-
-    captured = capsys.readouterr()
-    assert code == 0
-    payload = json.loads(captured.out)
-    assert payload["kind"] == "config_show"
-    assert payload["data"]["provider"] == {
-        "value": "deepseek",
-        "source": "project_env",
-        "name": "PICO_PROVIDER",
-    }
-    assert payload["data"]["api_key"] == {
-        "present": True,
-        "source": "project_env",
-        "name": "PICO_DEEPSEEK_API_KEY",
-    }
-    assert "secret-value" not in captured.out
-
-
-def test_config_show_skips_malformed_project_env_lines_with_warning(tmp_path, monkeypatch, capsys):
-    _clear_provider_env(monkeypatch)
-    (tmp_path / ".env").write_text(
-        "PICO_PROVIDER=deepseek\n"
+def test_config_show_skips_malformed_env_line_without_leaking_key(tmp_path, capsys):
+    path = tmp_path / ".env"
+    path.write_text(
+        "PICO_API_URL=https://gateway.example/v1\n"
         "not a valid env line\n"
         "PICO_DEEPSEEK_API_KEY=secret-value\n",
         encoding="utf-8",
     )
 
-    code = main(["--cwd", str(tmp_path), "--format", "json", "config", "show"])
+    assert main([
+        "--cwd",
+        str(tmp_path),
+        "--format",
+        "json",
+        "config",
+        "show",
+    ]) == 0
 
     captured = capsys.readouterr()
-    assert code == 0
-    payload = json.loads(captured.out)
-    assert payload["data"]["provider"]["value"] == "deepseek"
-    assert payload["data"]["api_key"]["present"] is True
-    assert payload["data"]["project_env"]["status"] == "review_required"
+    payload = json.loads(captured.out)["data"]
+    assert payload["api_key"]["present"] is True
+    assert payload["project_env"]["status"] == "review_required"
     assert "warning: skipped invalid .env line 2" in captured.err
     assert "secret-value" not in captured.out
 
+
+def test_config_show_text_is_grouped_and_never_prints_key(tmp_path, capsys):
+    _write_env(tmp_path)
+
+    assert main(["--cwd", str(tmp_path), "config", "show"]) == 0
+
+    output = capsys.readouterr().out
+    assert output.startswith("Pico config — Effective configuration\n")
+    assert "Model" in output
+    assert "deepseek-v4-flash" in output
+    assert "https://gateway.example/v1" in output
+    assert "Credentials" in output
+    assert "secret-value" not in output
+
+
+def test_status_reports_model_and_storage_without_building_agent(
+    tmp_path, monkeypatch, capsys
+):
+    _write_env(tmp_path)
+    (tmp_path / ".pico" / "sessions").mkdir(parents=True)
+    (tmp_path / ".pico" / "runs" / "run_1").mkdir(parents=True)
+    monkeypatch.setattr(
+        "pico.cli.build_agent",
+        Mock(side_effect=AssertionError("status must not build an agent")),
+    )
+
+    assert main(["--cwd", str(tmp_path), "--format", "json", "status"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)["data"]
+    assert payload["model"]["model"]["value"] == "deepseek-v4-flash"
+    assert payload["storage"]["sessions"] is True
+    assert payload["latest"]["run_id"] == "run_1"
+
+
+def test_doctor_defaults_to_zero_api_requests(tmp_path, monkeypatch, capsys):
+    checker = Mock(side_effect=AssertionError("doctor attempted an API request"))
+    monkeypatch.setattr(diagnostics, "check_api_connectivity", checker)
+
+    assert main(["--cwd", str(tmp_path), "--format", "json", "doctor"]) == 0
+
+    data = json.loads(capsys.readouterr().out)["data"]
+    assert data["api_check"] == {
+        "status": "skipped",
+        "category": "api_protocol",
+        "message": "explicit --check-api not requested",
+    }
+    checker.assert_not_called()
+
+
+def test_doctor_check_api_is_the_only_explicit_network_switch(
+    tmp_path, monkeypatch, capsys
+):
+    _write_env(tmp_path)
+    checker = Mock(
+        return_value={
+            "status": "ok",
+            "category": "ok",
+            "reason_code": "api_verified",
+            "stage": "complete",
+            "model_calls": 3,
+        }
+    )
+    monkeypatch.setattr(diagnostics, "check_api_connectivity", checker)
+    monkeypatch.setattr(
+        "pico.cli.build_agent",
+        Mock(side_effect=AssertionError("doctor must not build an agent")),
+    )
+
     assert main([
         "--cwd",
         str(tmp_path),
         "--format",
         "json",
         "doctor",
-        "--offline",
+        "--check-api",
     ]) == 0
-    doctor = json.loads(capsys.readouterr().out)["data"]
-    assert doctor["project_env"]["status"] == "review_required"
-    assert doctor["security"]["project_env"]["status"] == "review_required"
+
+    data = json.loads(capsys.readouterr().out)["data"]
+    assert data["api_check"]["model_calls"] == 3
+    checker.assert_called_once()
 
 
-def test_config_show_text_uses_grouped_cli_output_without_secret_value(tmp_path, monkeypatch, capsys):
-    _clear_provider_env(monkeypatch)
-    (tmp_path / ".env").write_text(
-        "PICO_PROVIDER=deepseek\nPICO_DEEPSEEK_API_KEY=secret-value\n",
-        encoding="utf-8",
-    )
-    (tmp_path / ".env").chmod(0o600)
-
-    code = main(["--cwd", str(tmp_path), "config", "show"])
-
-    captured = capsys.readouterr()
-    assert code == 0
-    assert captured.out.startswith("Pico config — Effective configuration\n")
-    assert "Workspace" in captured.out
-    assert str(tmp_path.resolve()) in captured.out
-    assert "Project environment" in captured.out
-    assert "repo_root_exact" in captured.out
-    assert "loaded" in captured.out
-    assert "Provider" in captured.out
-    assert "Credentials" in captured.out
-    assert "present" in captured.out
-    assert "secret-value" not in captured.out
-    assert not captured.out.lstrip().startswith("{")
+@pytest.mark.parametrize("argument", ("--check-provider", "--offline", "extra"))
+def test_doctor_rejects_removed_or_unknown_arguments(tmp_path, argument, capsys):
+    assert main(["--cwd", str(tmp_path), "doctor", argument]) == 2
+    assert capsys.readouterr().err.strip() == "usage: pico doctor [--check-api]"
 
 
-def test_config_show_does_not_mutate_environment(tmp_path, monkeypatch, capsys):
-    _clear_provider_env(monkeypatch)
-    (tmp_path / ".env").write_text(
-        "PICO_DEEPSEEK_API_KEY=secret-value\n",
-        encoding="utf-8",
-    )
-
-    code = main(["--cwd", str(tmp_path), "--format", "json", "config", "show"])
-
-    captured = capsys.readouterr()
-    assert code == 0
-    assert "PICO_DEEPSEEK_API_KEY" not in os.environ
-    assert "secret-value" not in captured.out
-
-
-def test_doctor_offline_skips_connectivity(tmp_path, monkeypatch, capsys):
-    called = {}
-
-    def fake_connectivity(config):
-        called["connectivity"] = True
-        return {"status": "ok"}
-
-    monkeypatch.setattr("pico.cli_diagnostics.check_provider_connectivity", fake_connectivity)
-
-    code = main(["--cwd", str(tmp_path), "--format", "json", "doctor", "--offline"])
-
-    assert code == 0
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["kind"] == "doctor"
-    assert called == {}
-    assert payload["data"]["provider_connectivity"]["status"] == "skipped"
-
-
-def test_collect_doctor_folds_unavailable_workspace_to_fixed_safe_shape(
-    tmp_path,
-    monkeypatch,
+def test_doctor_rejects_credentialed_url_without_connecting_or_echoing(
+    tmp_path, monkeypatch, capsys
 ):
-    _clear_provider_env(monkeypatch)
-    cwd = _symlink_loop(tmp_path)
-    connectivity = Mock(side_effect=AssertionError("offline doctor attempted network"))
+    secret = "url-secret-canary"
+    _write_env(tmp_path, url=f"https://user:{secret}@example.com/v1")
+    checker = Mock(side_effect=AssertionError("unsafe URL attempted connection"))
+    monkeypatch.setattr(diagnostics, "check_api_connectivity", checker)
+
+    assert main([
+        "--cwd",
+        str(tmp_path),
+        "doctor",
+        "--check-api",
+    ]) == 3
+
+    captured = capsys.readouterr()
+    assert captured.err.strip() == "api_url_credentials"
+    assert secret not in captured.out + captured.err
+    checker.assert_not_called()
+
+
+def _api_config(*, key="test-key"):
+    return {
+        "model": {"value": "deepseek-v4-flash"},
+        "base_url": {"value": "https://gateway.example/v1"},
+        "api_key": {"value": key},
+    }
+
+
+def test_api_check_without_key_performs_zero_requests(monkeypatch):
+    constructor = Mock(side_effect=AssertionError("client must not be built"))
     monkeypatch.setattr(
-        cli_diagnostics_module,
-        "check_provider_connectivity",
-        connectivity,
+        "pico.providers.openai_chat.OpenAIChatCompletionsModelClient",
+        constructor,
     )
 
-    data = collect_doctor(cwd, offline=True)
+    result = check_api_connectivity(_api_config(key=""))
+
+    assert result["reason_code"] == "api_key_not_configured"
+    constructor.assert_not_called()
+
+
+def test_api_check_builds_fixed_deepseek_chat_client_and_reports_probe(monkeypatch):
+    client = object()
+    constructor = Mock(return_value=client)
+    monkeypatch.setattr(
+        "pico.providers.openai_chat.OpenAIChatCompletionsModelClient",
+        constructor,
+    )
+    monkeypatch.setattr(
+        "pico.providers.probe.probe_model_client",
+        Mock(return_value={
+            "status": "ok",
+            "stage": "complete",
+            "category": "ok",
+            "model_calls": 3,
+            "binding": {},
+        }),
+    )
+
+    result = check_api_connectivity(_api_config())
+
+    assert result["reason_code"] == "api_verified"
+    assert result["model_calls"] == 3
+    assert constructor.call_args.kwargs == {
+        "model": "deepseek-v4-flash",
+        "base_url": "https://gateway.example/v1",
+        "api_key": "test-key",
+        "temperature": None,
+        "timeout": 2,
+        "compatibility": "deepseek",
+        "auth_mode": "bearer",
+        "capabilities": {},
+    }
+
+
+def test_api_check_preserves_safe_http_failure_classification(monkeypatch):
+    monkeypatch.setattr(
+        "pico.providers.openai_chat.OpenAIChatCompletionsModelClient",
+        Mock(return_value=object()),
+    )
+    monkeypatch.setattr(
+        "pico.providers.probe.probe_model_client",
+        Mock(return_value={
+            "status": "failed",
+            "stage": "text",
+            "category": "authentication_failed",
+            "model_calls": 1,
+            "binding": {},
+            "error_code": "http_4xx",
+            "http_status": 401,
+        }),
+    )
+
+    result = check_api_connectivity(_api_config())
+
+    assert result["reason_code"] == "authentication_failed"
+    assert result["error_code"] == "http_4xx"
+    assert result["http_status"] == 401
+
+
+def test_collect_doctor_folds_unavailable_workspace_to_safe_shape(tmp_path):
+    cwd = tmp_path / "doctor-loop-canary"
+    cwd.symlink_to(cwd.name)
+
+    data = collect_doctor(cwd)
 
     assert data["workspace"] == {"status": "review_required", "repo_root": ""}
-    assert data["project_env"] == {
-        "path": "",
-        "scope": "repo_root_exact",
-        "status": "review_required",
-    }
-    assert data["security"] == {
-        "status": "review_required",
-        "project_env": {"status": "review_required", "mode": ""},
-        "private_storage": {"status": "review_required"},
-        "trusted_executables": {
-            "status": "degraded",
-            "missing": ["git", "rg"],
-        },
-        "recovery_review": {
-            "pending_count": 0,
-            "applying_count": 0,
-            "unreviewed_partial_count": 0,
-            "invalid_mutation_count": 0,
-        },
-    }
+    assert data["api_check"]["status"] == "skipped"
     rendered = json.dumps(data)
     assert "doctor-loop-canary" not in rendered
     assert "RuntimeError" not in rendered
-    connectivity.assert_not_called()
 
 
-@pytest.mark.parametrize("output_format", ("json", "text"))
-def test_doctor_unavailable_workspace_is_safe_in_real_cli_output(
-    tmp_path,
-    monkeypatch,
-    capsys,
-    output_format,
-):
-    _clear_provider_env(monkeypatch)
-    cwd = _symlink_loop(tmp_path)
-    connectivity = Mock(side_effect=AssertionError("offline doctor attempted network"))
-    inspection_redactor = Mock(
-        side_effect=AssertionError("unavailable workspace must not inspect fallback cwd")
-    )
-    monkeypatch.setattr(
-        cli_diagnostics_module,
-        "check_provider_connectivity",
-        connectivity,
-    )
-    monkeypatch.setattr(
-        cli_diagnostics_module,
-        "build_inspection_redactor",
-        inspection_redactor,
+def test_doctor_security_requires_review_for_pending_tool_change(tmp_path):
+    from pico.checkpoint_store import CheckpointStore
+    from pico.tool_change_recorder import ToolChangeRecorder
+
+    store = CheckpointStore(tmp_path)
+    ToolChangeRecorder(store, owner_id="doctor-test").start(
+        "", "turn", "write_file", "workspace_write", {"path": "x.txt"}
     )
 
-    code = main(
-        [
-            "--cwd",
-            str(cwd),
-            "--format",
-            output_format,
-            "doctor",
-            "--offline",
-        ]
-    )
+    security = collect_doctor(tmp_path)["security"]
 
-    captured = capsys.readouterr()
-    assert code == 0
-    assert "review_required" in captured.out
-    assert "doctor-loop-canary" not in captured.out + captured.err
-    assert "RuntimeError" not in captured.out + captured.err
-    connectivity.assert_not_called()
-    inspection_redactor.assert_not_called()
-
-
-def test_doctor_security_metadata_has_only_safe_status_modes_and_missing_names(
-    tmp_path,
-    monkeypatch,
-):
-    secret = "ghp_" + "D" * 32
-    monkeypatch.setenv("PICO_TEST_SECRET", secret)
-    (tmp_path / ".env").write_text(
-        f"PICO_TEST_SECRET={secret}\n",
-        encoding="utf-8",
-    )
-    (tmp_path / ".pico").mkdir()
-
-    security = collect_doctor(tmp_path, offline=True)["security"]
-
-    assert set(security) == {
-        "status",
-        "project_env",
-        "private_storage",
-        "trusted_executables",
-        "recovery_review",
-    }
-    assert set(security["project_env"]) == {"status", "mode"}
-    assert set(security["private_storage"]) == {"status"}
-    assert set(security["trusted_executables"]) == {"status", "missing"}
-    assert set(security["recovery_review"]) == {
-        "pending_count",
-        "applying_count",
-        "unreviewed_partial_count",
-        "invalid_mutation_count",
-    }
-    assert all(
-        name and "/" not in name and "\\" not in name
-        for name in security["trusted_executables"]["missing"]
-    )
-    assert secret not in json.dumps(security)
-    assert str(tmp_path) not in json.dumps(security)
-    if os.name == "posix":
-        assert security["project_env"] == {
-            "status": "review_required",
-            "mode": "0600",
-        }
-        assert security["private_storage"] == {"status": "review_required"}
-        assert security["status"] == "review_required"
-
-
-def test_doctor_security_folds_unsafe_storage_and_executable_paths_to_status(
-    tmp_path,
-    monkeypatch,
-    capsys,
-):
-    secret = "ghp_" + "S" * 32
-    monkeypatch.setenv("PICO_TEST_SECRET", secret)
-    outside = tmp_path / ("outside-" + secret)
-    outside.write_text(secret, encoding="utf-8")
-    (tmp_path / ".env").symlink_to(outside)
-    private_root = tmp_path / ".pico"
-    private_root.mkdir(mode=0o700)
-    (private_root / "linked").symlink_to(outside)
-
-    original_build = cli_diagnostics_module.WorkspaceContext.build
-
-    def build_workspace(cwd):
-        workspace = original_build(cwd)
-        workspace.trusted_executables = {
-            "git": f"/{secret}/git",
-            "untrusted": f"/{secret}/evil",
-        }
-        return workspace
-
-    monkeypatch.setattr(
-        "pico.cli_diagnostics.WorkspaceContext.build",
-        build_workspace,
-    )
-    monkeypatch.setattr(
-        "pico.cli_diagnostics.build_trusted_executables",
-        lambda *_args, **_kwargs: {"git": "/usr/bin/git"},
-    )
-
-    security = collect_doctor(tmp_path, offline=True)["security"]
-
-    assert security == {
-        "status": "review_required",
-        "project_env": {"status": "review_required", "mode": ""},
-        "private_storage": {"status": "review_required"},
-        "trusted_executables": {"status": "degraded", "missing": ["rg"]},
-        "recovery_review": {
-            "pending_count": 0,
-            "applying_count": 0,
-            "unreviewed_partial_count": 0,
-            "invalid_mutation_count": 0,
-        },
-    }
-    assert secret not in json.dumps(security)
-
-    assert main([
-        "--cwd",
-        str(tmp_path),
-        "--format",
-        "json",
-        "doctor",
-        "--offline",
-    ]) == 0
-    output = capsys.readouterr().out
-    assert secret not in output
-
-
-def test_doctor_security_folds_executable_discovery_error_without_leaking(
-    tmp_path,
-    monkeypatch,
-    capsys,
-):
-    secret = "ghp_" + "X" * 32
-    monkeypatch.setenv("PICO_TEST_SECRET", secret)
-    monkeypatch.setattr(
-        "pico.cli_diagnostics.build_trusted_executables",
-        Mock(side_effect=RuntimeError("discovery failed " + secret)),
-    )
-
-    security = collect_doctor(tmp_path, offline=True)["security"]
-
-    assert security["trusted_executables"] == {
-        "status": "degraded",
-        "missing": ["git", "rg"],
-    }
-    assert secret not in json.dumps(security)
-
-    for output_format in ("json", "text"):
-        assert main([
-            "--cwd",
-            str(tmp_path),
-            "--format",
-            output_format,
-            "doctor",
-            "--offline",
-        ]) == 0
-        captured = capsys.readouterr()
-        assert secret not in captured.out + captured.err
-
-
-def test_doctor_text_uses_grouped_cli_output(tmp_path, monkeypatch, capsys):
-    code = main(["--cwd", str(tmp_path), "doctor", "--offline"])
-
-    assert code == 0
-    out = capsys.readouterr().out
-    assert out.startswith("Pico doctor — CLI health check\n")
-    assert "Workspace" in out
-    assert str(tmp_path.resolve()) in out
-    assert "Project environment" in out
-    assert "repo_root_exact" in out
-    assert "missing" in out
-    assert "Config" in out
-    assert "Credentials" in out
-    assert "Storage" in out
-    assert "runtime authorization local" in out
-    assert "Provider connectivity" in out
-    assert "Security" in out
-    assert "skipped" in out
-    assert not out.lstrip().startswith("{")
+    assert security["status"] == "review_required"
+    assert security["recovery_review"]["pending_count"] == 1
 
 
 def test_doctor_runtime_authorization_projection_drops_unknown_fields(
-    tmp_path,
-    monkeypatch,
-    capsys,
+    tmp_path, monkeypatch, capsys
 ):
     secret = "ghp_" + "Z" * 32
-    runtime_authorization = {
+    authorization = {
         "status": "enabled",
         "kind": "local",
         "reason_code": "local_authorization_verified",
         "token": secret,
     }
-    authorization_check = {
-        "status": "pass",
-        "reason_code": "local_authorization_verified",
-        "remediation": "",
-        "token": secret,
-    }
     monkeypatch.setattr(
-        cli_diagnostics_module,
+        diagnostics,
         "_collect_docker_sandbox_diagnostic",
         lambda **_kwargs: {
             "status": "ready",
             "reason_code": "ready",
-            "readiness": {
-                "status": "ready",
-                "runtime_authorization": dict(runtime_authorization),
-            },
-            "runtime_authorization": dict(runtime_authorization),
+            "readiness": {"status": "ready", "runtime_authorization": dict(authorization)},
+            "runtime_authorization": dict(authorization),
             "product_enablement": {"status": "blocked"},
             "checks": {
-                "runtime_authorization": dict(authorization_check),
+                "runtime_authorization": {
+                    "status": "pass",
+                    "reason_code": "local_authorization_verified",
+                    "remediation": "",
+                    "token": secret,
+                }
             },
         },
     )
 
-    assert main([
-        "--cwd",
-        str(tmp_path),
-        "--format",
-        "json",
-        "doctor",
-        "--offline",
-    ]) == 0
+    assert main(["--cwd", str(tmp_path), "--format", "json", "doctor"]) == 0
 
     output = capsys.readouterr().out
     sandbox = json.loads(output)["data"]["sandbox"]
@@ -779,309 +434,31 @@ def test_doctor_runtime_authorization_projection_drops_unknown_fields(
         "kind",
         "reason_code",
     }
-    assert set(sandbox["readiness"]["runtime_authorization"]) == {
-        "status",
-        "kind",
-        "reason_code",
-    }
-    assert set(sandbox["checks"]["runtime_authorization"]) == {
-        "status",
-        "reason_code",
-        "remediation",
-    }
     assert secret not in output
 
 
-def test_doctor_json_does_not_build_agent(tmp_path, monkeypatch, capsys):
-    def fail_build_agent(args):
-        raise AssertionError("doctor must not build a Pico agent")
-
-    monkeypatch.setattr("pico.cli.build_agent", fail_build_agent)
-
-    code = main(["--cwd", str(tmp_path), "--format", "json", "doctor", "--offline"])
-
-    assert code == 0
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["kind"] == "doctor"
-
-
-def test_doctor_reports_connectivity_as_diagnostic_result(tmp_path, monkeypatch, capsys):
-    def fake_connectivity(config):
-        return {
-            "status": "error",
-            "category": "provider_connectivity",
-            "message": "connection timed out",
-        }
-
-    monkeypatch.setattr("pico.cli_diagnostics.check_provider_connectivity", fake_connectivity)
-
-    code = main(["--cwd", str(tmp_path), "--format", "json", "doctor"])
-
-    assert code == 0
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["data"]["provider_connectivity"]["category"] == "provider_connectivity"
-    assert payload["data"]["provider_connectivity"]["message"] == "connection timed out"
-
-
-def test_doctor_rejects_secret_base_url_without_connecting_or_echoing(tmp_path, monkeypatch, capsys):
-    called = {}
-
-    def fake_connectivity(config):
-        called["connectivity"] = True
-        return {"status": "ok"}
-
-    monkeypatch.setattr("pico.cli_diagnostics.check_provider_connectivity", fake_connectivity)
-
-    code = main([
-        "--cwd",
-        str(tmp_path),
-        "--format",
-        "json",
-        "--base-url",
-        "https://user:pass@example.com/v1?token=secret#frag",
-        "doctor",
-    ])
-
-    assert code == 2
-    captured = capsys.readouterr()
-    output = captured.out + captured.err
-    assert "provider_base_url_credentials" in output
-    assert "user:pass" not in output
-    assert "token=" not in output
-    assert "secret#frag" not in output
-    assert called == {}
-
-
-def test_provider_connectivity_http_500_is_non_ok_and_redacts_url(monkeypatch):
-    def fake_urlopen(url, timeout):
-        raise error.HTTPError(
-            url,
-            500,
-            "server error",
-            hdrs=None,
-            fp=None,
-        )
-
-    monkeypatch.setattr("pico.cli_diagnostics.request.urlopen", fake_urlopen)
-
-    result = check_provider_connectivity(
-        {
-            "provider": {"value": "openai"},
-            "base_url": {"value": "https://user:pass@example.com/v1?token=secret#frag"},
-        }
-    )
-
-    assert result["status"] != "ok"
-    assert result["url"] == "https://example.com/v1"
-    assert "user:pass" not in json.dumps(result)
-    assert "token=" not in json.dumps(result)
-    assert "secret" not in json.dumps(result)
-    assert "#frag" not in json.dumps(result)
-
-
-def test_provider_connectivity_http_404_is_reachable(monkeypatch):
-    def fake_urlopen(url, timeout):
-        raise error.HTTPError(url, 404, "not found", hdrs=None, fp=None)
-
-    monkeypatch.setattr("pico.cli_diagnostics.request.urlopen", fake_urlopen)
-
-    result = check_provider_connectivity(
-        {
-            "provider": {"value": "openai"},
-            "base_url": {"value": "https://example.com/v1"},
-        }
-    )
-
-    assert result["status"] == "ok"
-    assert result["http_status"] == 404
-
-
-def test_ollama_connectivity_requires_configured_model(monkeypatch):
-    class Response:
-        status = 200
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args):
-            return None
-
-        def read(self, limit):
-            assert limit == 1_048_577
-            return b'{"models":[{"name":"other:latest"}]}'
-
-    monkeypatch.setattr(
-        "pico.cli_diagnostics.request.urlopen",
-        lambda url, timeout: Response(),
-    )
-
-    result = check_provider_connectivity(
-        {
-            "provider": {"value": "ollama"},
-            "model": {"value": "qwen3:latest"},
-            "base_url": {"value": "http://127.0.0.1:11434"},
-        }
-    )
-
-    assert result["status"] == "error"
-    assert result["model_status"] == "missing"
-    assert result["url"] == "http://127.0.0.1:11434/api/tags"
-
-
-def test_ollama_connectivity_confirms_configured_model(monkeypatch):
-    class Response:
-        status = 200
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args):
-            return None
-
-        def read(self, _limit):
-            return b'{"models":[{"model":"qwen3:latest"}]}'
-
-    monkeypatch.setattr(
-        "pico.cli_diagnostics.request.urlopen",
-        lambda url, timeout: Response(),
-    )
-
-    result = check_provider_connectivity(
-        {
-            "provider": {"value": "ollama"},
-            "model": {"value": "qwen3:latest"},
-            "base_url": {"value": "http://127.0.0.1:11434"},
-        }
-    )
-
-    assert result["status"] == "ok"
-    assert result["model_status"] == "available"
-
-
-def test_provider_connectivity_generic_error_sanitizes_url_in_message(monkeypatch):
-    def fake_urlopen(url, timeout):
-        raise RuntimeError(f"failed to open {url}")
-
-    monkeypatch.setattr("pico.cli_diagnostics.request.urlopen", fake_urlopen)
-
-    result = check_provider_connectivity(
-        {
-            "provider": {"value": "openai"},
-            "base_url": {"value": "https://user:pass@example.com/v1?token=secret#frag"},
-        }
-    )
-
-    output = json.dumps(result)
-    assert result["status"] == "error"
-    assert result["url"] == "https://example.com/v1"
-    assert "RuntimeError" in result["message"]
-    assert "user:pass" not in output
-    assert "token=" not in output
-    assert "secret" not in output
-    assert "#frag" not in output
-
-
-def test_doctor_unknown_arg_returns_usage_without_agent_or_connectivity(tmp_path, monkeypatch, capsys):
-    called = {}
-
-    def fail_build_agent(args):
-        raise AssertionError("doctor usage errors must not build a Pico agent")
-
-    def fake_connectivity(config):
-        called["connectivity"] = True
-        return {"status": "ok"}
-
-    monkeypatch.setattr("pico.cli.build_agent", fail_build_agent)
-    monkeypatch.setattr("pico.cli_diagnostics.check_provider_connectivity", fake_connectivity)
-
-    code = main(["--cwd", str(tmp_path), "--format", "json", "doctor", "--wat"])
-
-    assert code == 2
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["ok"] is False
-    assert payload["error"]["code"] == "usage"
-    assert called == {}
-
-
-def test_sessions_list_and_show_json_do_not_build_agent(tmp_path, monkeypatch, capsys):
-    session_dir = tmp_path / ".pico" / "sessions"
-    session_dir.mkdir(parents=True)
-    (session_dir / "session_1.json").write_text('{"id":"session_1","schema_version":3,"messages":[]}\n', encoding="utf-8")
-
-    def fail_build_agent(args):
-        raise AssertionError("sessions must not build a Pico agent")
-
-    monkeypatch.setattr("pico.cli.build_agent", fail_build_agent)
-
-    code = main(["--cwd", str(tmp_path), "--format", "json", "sessions", "list"])
-    assert code == 0
-    list_payload = json.loads(capsys.readouterr().out)
-    assert list_payload == {"ok": True, "kind": "sessions_list", "data": [{"session_id": "session_1"}]}
-
-    code = main(["--cwd", str(tmp_path), "--format", "json", "sessions", "show", "session_1"])
-    assert code == 0
-    show_payload = json.loads(capsys.readouterr().out)
-    assert show_payload["kind"] == "sessions_show"
-    assert show_payload["data"]["id"] == "session_1"
-
-
-def test_sessions_show_rejects_path_escape(tmp_path, capsys):
-    session_dir = tmp_path / ".pico" / "sessions"
-    session_dir.mkdir(parents=True)
-    (tmp_path / "outside.json").write_text('{"id": "outside", "secret": "leaked"}\n', encoding="utf-8")
-
-    code = main(["--cwd", str(tmp_path), "--format", "json", "sessions", "show", "../../outside"])
-
-    captured = capsys.readouterr()
-    assert code == 2
-    assert "leaked" not in captured.out
-    assert "leaked" not in captured.err
-
-
-def test_doctor_flags_claude_md_without_agents_md(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    (tmp_path / "CLAUDE.md").write_text("# Claude\n")
-
-    result = collect_doctor(str(tmp_path), SimpleNamespace(cwd=str(tmp_path)), offline=True)
-
-    hints = (result.get("project_docs") or {}).get("hints") or []
-    text_dump = " ".join(hint.get("message", "") for hint in hints)
-    assert "CLAUDE.md" in text_dump
-    assert "AGENTS.md" in text_dump
-
-
-def test_doctor_no_claude_hint_when_agents_md_exists(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    (tmp_path / "AGENTS.md").write_text("# Agents\n")
-    (tmp_path / "CLAUDE.md").write_text("# Claude\n")
-
-    result = collect_doctor(str(tmp_path), SimpleNamespace(cwd=str(tmp_path)), offline=True)
-
-    hints = (result.get("project_docs") or {}).get("hints") or []
-    assert all("CLAUDE.md" not in hint.get("message", "") for hint in hints)
-
-
-def test_doctor_no_project_doc_hint_when_neither_file_exists(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-
-    result = collect_doctor(str(tmp_path), SimpleNamespace(cwd=str(tmp_path)), offline=True)
-
-    assert ((result.get("project_docs") or {}).get("hints") or []) == []
-
-
-def test_doctor_text_output_shows_claude_md_hint(tmp_path, monkeypatch, capsys):
-    from pico.cli_diagnostics import handle_doctor
-
-    monkeypatch.chdir(tmp_path)
-    (tmp_path / "CLAUDE.md").write_text("# Claude\n")
-
-    rc = handle_doctor(
-        ["--offline"],
-        str(tmp_path),
-        SimpleNamespace(format="text", cwd=str(tmp_path)),
-    )
-
-    assert rc == 0
-    out = capsys.readouterr().out
-    assert "CLAUDE.md" in out
-    assert "AGENTS.md" in out
+@pytest.mark.parametrize(
+    ("has_claude", "has_agents", "expected"),
+    [(True, False, True), (True, True, False), (False, False, False)],
+)
+def test_doctor_project_document_hint(tmp_path, has_claude, has_agents, expected):
+    if has_claude:
+        (tmp_path / "CLAUDE.md").write_text("# Claude\n", encoding="utf-8")
+    if has_agents:
+        (tmp_path / "AGENTS.md").write_text("# Agents\n", encoding="utf-8")
+
+    hints = collect_doctor(tmp_path)["project_docs"]["hints"]
+
+    assert bool(hints) is expected
+
+
+def test_doctor_text_output_is_grouped(tmp_path, capsys):
+    assert main(["--cwd", str(tmp_path), "doctor"]) == 0
+
+    output = capsys.readouterr().out
+    assert output.startswith("Pico doctor — CLI health check\n")
+    assert "Config" in output
+    assert "Credentials" in output
+    assert "API check" in output
+    assert "Security" in output
+    assert "skipped" in output

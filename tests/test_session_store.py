@@ -9,13 +9,13 @@ import pytest
 from pico import security as security_module
 import pico.session_store as session_store_module
 from pico.messages import validate_messages
-from pico.session_store import SessionFormatError, SessionStore
+from pico.session_store import SESSION_FORMAT_VERSION, SessionFormatError, SessionStore
 
 
 def _session(session_id, content="hello"):
     return {
         "record_type": "session",
-        "format_version": 1,
+        "format_version": SESSION_FORMAT_VERSION,
         "id": session_id,
         "created_at": "2026-01-01T00:00:00+00:00",
         "workspace_root": "/repo",
@@ -30,6 +30,16 @@ def _session(session_id, content="hello"):
     }
 
 
+def _provider_binding(**overrides):
+    binding = {
+        "protocol_family": "openai_responses",
+        "model": "gpt-test",
+        "endpoint_hash": "sha256:" + "a" * 64,
+    }
+    binding.update(overrides)
+    return binding
+
+
 def test_session_store_saves_loads_and_finds_latest_session(tmp_path):
     store = SessionStore(tmp_path / ".pico" / "sessions")
     first = _session("session_001", "first")
@@ -42,7 +52,7 @@ def test_session_store_saves_loads_and_finds_latest_session(tmp_path):
     assert json.loads(first_path.read_text(encoding="utf-8"))["id"] == "session_001"
     loaded = store.load("session_002")
     assert loaded["record_type"] == "session"
-    assert loaded["format_version"] == 1
+    assert loaded["format_version"] == SESSION_FORMAT_VERSION == 2
     assert "history" not in loaded
     assert loaded["messages"] == [
         {"role": "user", "content": "second", "_pico_meta": {}},
@@ -51,6 +61,35 @@ def test_session_store_saves_loads_and_finds_latest_session(tmp_path):
     os.utime(first_path, ns=(1, 1))
     os.utime(second_path, ns=(2, 2))
     assert store.latest() == second_path.stem
+
+
+def test_session_store_round_trips_current_provider_binding(tmp_path):
+    store = SessionStore(tmp_path / ".pico" / "sessions")
+    session = _session("provider-bound")
+    session["provider_binding"] = _provider_binding()
+
+    store.save(session)
+
+    assert store.load("provider-bound")["provider_binding"] == _provider_binding()
+
+
+@pytest.mark.parametrize(
+    "binding",
+    [
+        _provider_binding(protocol_family="openai_chat"),
+        {**_provider_binding(), "profile": "deepseek"},
+        _provider_binding(endpoint_hash="sha256:" + "z" * 64),
+        _provider_binding(endpoint_hash="a" * 64),
+        {"protocol_family": "openai_responses"},
+    ],
+)
+def test_session_store_rejects_invalid_provider_binding(tmp_path, binding):
+    store = SessionStore(tmp_path / ".pico" / "sessions")
+    session = _session("provider-invalid")
+    session["provider_binding"] = binding
+
+    with pytest.raises(SessionFormatError, match="provider binding"):
+        store.save(session)
 
 
 def test_session_store_latest_is_none_when_empty(tmp_path):
@@ -210,7 +249,7 @@ def test_session_store_save_rejects_oversized_record_without_replacing_canonical
     assert path.read_bytes() == canonical
 
 
-@pytest.mark.parametrize("version", [None, True, 1.0, "1", 2])
+@pytest.mark.parametrize("version", [None, True, 2.0, "2", 1])
 def test_session_store_rejects_non_current_versions_without_rewrite(tmp_path, version):
     store = SessionStore(tmp_path / ".pico" / "sessions")
     payload = _session("strict")

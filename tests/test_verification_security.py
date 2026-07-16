@@ -167,11 +167,12 @@ def test_verification_evidence_rejects_aggregate_argv_over_field_bound():
 def _build_agent(root, command, *, approval_policy="ask", read_only=False):
     root.mkdir(parents=True)
     (root / "README.md").write_text("demo\n", encoding="utf-8")
-    call = json.dumps(
-        {"name": "run_shell", "args": {"command": command, "timeout": 5}}
-    )
+    call = {
+        "name": "run_shell",
+        "args": {"command": command, "timeout": 5},
+    }
     agent = Pico(
-        model_client=FakeModelClient([f"<tool>{call}</tool>", "<final>done</final>"]),
+        model_client=FakeModelClient([call, "done"]),
         workspace=WorkspaceContext.build(
             root,
             executables={

@@ -1,6 +1,7 @@
 """Project-local configuration helpers."""
 
 import json
+import ipaddress
 import math
 import os
 import re
@@ -11,15 +12,6 @@ import urllib.parse
 from pathlib import Path
 
 from .file_lock import locked_file
-from .providers.defaults import (
-    API_KEY_ENV_NAMES,
-    BASE_URL_ENV_NAMES,
-    DEFAULT_BASE_URLS,
-    DEFAULT_MODELS,
-    DEFAULT_PROVIDER,
-    MODEL_ENV_NAMES,
-    PROVIDER_CHOICES,
-)
 from .security import (
     ensure_private_dir,
     private_directory_identity,
@@ -30,6 +22,12 @@ from .security import (
 
 ENV_KEY_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 MAX_PROJECT_ENV_BYTES = 1024 * 1024
+DEFAULT_MODEL = "deepseek-v4-flash"
+DEFAULT_API_URL = "https://api.deepseek.com"
+API_URL_ENV_NAME = "PICO_API_URL"
+API_KEY_ENV_NAME = "PICO_DEEPSEEK_API_KEY"
+PROTOCOL_FAMILY = "openai_chat_completions"
+AUTH_MODE = "bearer"
 _SECRET_QUERY_KEYS = {
     "api_key",
     "access_key",
@@ -234,110 +232,87 @@ def write_project_env_assignments(workspace_root, assignments):
     return result
 
 
-def validate_provider_base_url(value):
+def validate_api_url(value):
     raw = str(value or "").strip()
     parsed = urllib.parse.urlsplit(raw)
     if parsed.scheme.casefold() not in {"http", "https"} or not parsed.hostname:
-        raise ValueError("provider_base_url_invalid")
+        raise ValueError("api_url_invalid")
     try:
         parsed.port
     except ValueError as exc:
-        raise ValueError("provider_base_url_invalid") from exc
+        raise ValueError("api_url_invalid") from exc
     if parsed.username is not None or parsed.password is not None:
-        raise ValueError("provider_base_url_credentials")
+        raise ValueError("api_url_credentials")
     query = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
     if any(key.casefold().replace("-", "_") in _SECRET_QUERY_KEYS for key, _ in query):
-        raise ValueError("provider_base_url_credentials")
+        raise ValueError("api_url_credentials")
     if parsed.query or parsed.fragment:
-        raise ValueError("provider_base_url_query_or_fragment")
-    return raw
+        raise ValueError("api_url_query_or_fragment")
+    if parsed.scheme.casefold() != "https" and not _loopback_api_url(raw):
+        raise ValueError("insecure_api_url")
+    return raw.rstrip("/")
 
 
-def _resolve_provider_value(
-    explicit,
-    explicit_name,
-    env_names,
-    project_env,
-    process_env,
-    default,
-    default_name,
-):
-    if explicit:
-        return {"value": explicit, "source": "cli", "name": explicit_name}
+def _resolve_env_value(name, project_env, process_env, default="", default_name=""):
     for source_name, source in (
         ("project_env", project_env),
         ("environment", process_env),
     ):
-        for name in env_names:
-            value = source.get(name)
-            if value:
-                return {"value": value, "source": source_name, "name": name}
+        value = source.get(name)
+        if value:
+            return {"value": value, "source": source_name, "name": name}
     if default:
         return {"value": default, "source": "default", "name": default_name}
     return {"value": "", "source": "unset", "name": ""}
 
 
-def resolve_provider_config(*, explicit=None, project_env=None, process_env=None):
-    """Resolve one provider configuration with shared value provenance."""
-    explicit = dict(explicit or {})
+def _loopback_api_url(value):
+    parsed = urllib.parse.urlsplit(str(value))
+    host = (parsed.hostname or "").casefold()
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def resolve_model_config(*, project_env=None, process_env=None, required=True):
+    """Resolve Pico's one fixed model endpoint without legacy fallbacks."""
     project_env = dict(project_env or {})
     process_env = dict(os.environ if process_env is None else process_env)
-    provider = _resolve_provider_value(
-        explicit.get("provider"),
-        "--provider",
-        ("PICO_PROVIDER",),
+    api_url = _resolve_env_value(
+        API_URL_ENV_NAME,
         project_env,
         process_env,
-        DEFAULT_PROVIDER,
-        "DEFAULT_PROVIDER",
+        DEFAULT_API_URL,
+        "DEFAULT_API_URL",
     )
-    provider_name = provider["value"]
-    if provider_name not in PROVIDER_CHOICES:
-        raise ValueError("unknown provider")
-
-    model = _resolve_provider_value(
-        explicit.get("model"),
-        "--model",
-        MODEL_ENV_NAMES.get(provider_name, ()),
+    api_url["value"] = validate_api_url(api_url["value"])
+    api_key = _resolve_env_value(
+        API_KEY_ENV_NAME,
         project_env,
         process_env,
-        DEFAULT_MODELS[provider_name],
-        f"DEFAULT_{provider_name.upper()}_MODEL",
     )
-    explicit_base_url = explicit.get("base_url")
-    explicit_base_name = "--base-url"
-    if provider_name == "ollama" and not explicit_base_url:
-        explicit_host = explicit.get("host")
-        if explicit_host != DEFAULT_BASE_URLS["ollama"]:
-            explicit_base_url = explicit_host
-            explicit_base_name = "--host"
-    base_url = _resolve_provider_value(
-        explicit_base_url,
-        explicit_base_name,
-        BASE_URL_ENV_NAMES.get(provider_name, ()),
-        project_env,
-        process_env,
-        DEFAULT_BASE_URLS[provider_name],
-        (
-            "DEFAULT_OLLAMA_HOST"
-            if provider_name == "ollama"
-            else f"DEFAULT_{provider_name.upper()}_BASE_URL"
-        ),
-    )
-    base_url["value"] = validate_provider_base_url(base_url["value"])
-    api_key = _resolve_provider_value(
-        explicit.get("api_key"),
-        "api_key",
-        API_KEY_ENV_NAMES.get(provider_name, ()),
-        project_env,
-        process_env,
-        "",
-        "",
-    )
+    if required and not api_key["value"]:
+        raise ValueError("api_key_not_configured")
     return {
-        "provider": provider,
-        "model": model,
-        "base_url": base_url,
+        "protocol": {
+            "value": PROTOCOL_FAMILY,
+            "source": "fixed",
+            "name": "OpenAI Chat Completions",
+        },
+        "model": {
+            "value": DEFAULT_MODEL,
+            "source": "fixed",
+            "name": "DEFAULT_MODEL",
+        },
+        "base_url": api_url,
+        "auth_mode": {
+            "value": AUTH_MODE,
+            "source": "fixed",
+            "name": "AUTH_MODE",
+        },
         "api_key": api_key,
     }
 
@@ -372,7 +347,6 @@ def _validated_pico_toml(raw):
     field_boost = field_boost if isinstance(field_boost, dict) else {}
     link = retrieval.get("link")
     link = link if isinstance(link, dict) else {}
-
     field_boost_defaults = {
         "name": 5.0,
         "description": 3.0,

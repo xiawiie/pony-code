@@ -1,12 +1,13 @@
 import json
 
 from pico.cli_session import inspect_session
+from pico.session_store import SESSION_FORMAT_VERSION
 
 
 def _payload(session_id, messages):
     return {
         "record_type": "session",
-        "format_version": 1,
+        "format_version": SESSION_FORMAT_VERSION,
         "id": session_id,
         "created_at": "2026-01-01T00:00:00+00:00",
         "workspace_root": "/repo",
@@ -50,7 +51,7 @@ def test_inspect_reports_schema_roles_blocks_pairs_and_meta(tmp_path):
     ok, report = inspect_session("s1", root)
     assert ok is True
     assert "record_type: session" in report
-    assert "format_version: 1" in report
+    assert f"format_version: {SESSION_FORMAT_VERSION}" in report
     assert "messages: 4" in report
     assert "role_sequence: user -> assistant -> user -> assistant" in report
     assert "tool_pairs: 1" in report

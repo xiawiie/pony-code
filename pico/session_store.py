@@ -17,7 +17,7 @@ from .security import (
 
 
 SESSION_RECORD_TYPE = "session"
-SESSION_FORMAT_VERSION = 1
+SESSION_FORMAT_VERSION = 2
 MAX_SESSION_BYTES = 8 * 1024 * 1024
 
 
@@ -47,6 +47,13 @@ _REQUIRED_FIELDS = frozenset(
         "runtime_identity",
     }
 )
+_OPTIONAL_FIELDS = frozenset({"provider_binding"})
+_PROTOCOL_FAMILIES = {
+    "anthropic_messages",
+    "openai_chat_completions",
+    "openai_responses",
+    "ollama_chat",
+}
 _DICT_FIELDS = (
     "working_memory",
     "memory",
@@ -101,7 +108,9 @@ def _decode_json_object(raw):
 def _validate_payload(payload, session_id):
     if not isinstance(payload, dict):
         raise SessionFormatError("session payload must be an object")
-    if payload.keys() != _REQUIRED_FIELDS:
+    if not _REQUIRED_FIELDS <= payload.keys() or not payload.keys() <= (
+        _REQUIRED_FIELDS | _OPTIONAL_FIELDS
+    ):
         raise SessionFormatError("session payload fields do not match current format")
     if payload.get("record_type") != SESSION_RECORD_TYPE:
         raise SessionFormatError("invalid session record type")
@@ -118,6 +127,17 @@ def _validate_payload(payload, session_id):
         raise SessionFormatError("invalid session object field")
     if not isinstance(payload.get("recently_recalled"), list):
         raise SessionFormatError("invalid session list field")
+    binding = payload.get("provider_binding")
+    if binding is not None and (
+        not isinstance(binding, dict)
+        or binding.keys()
+        != {"protocol_family", "model", "endpoint_hash"}
+        or any(not isinstance(value, str) or not value for value in binding.values())
+        or binding["protocol_family"] not in _PROTOCOL_FAMILIES
+        or re.fullmatch(r"sha256:[0-9a-f]{64}", binding["endpoint_hash"])
+        is None
+    ):
+        raise SessionFormatError("invalid provider binding")
     identities = [payload["runtime_identity"]]
     items = payload["checkpoints"].get("items", {})
     if isinstance(items, dict):

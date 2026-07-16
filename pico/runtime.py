@@ -255,6 +255,15 @@ def build_report_request_metadata(task_state, last_request_metadata):
     return fragment
 
 
+def _session_has_provider_state(session):
+    messages = session.get("messages", []) if isinstance(session, dict) else []
+    return any(
+        isinstance(message, dict)
+        and bool(message.get("_pico_provider_state"))
+        for message in messages
+    )
+
+
 class Pico:
     def __init__(
         self,
@@ -282,6 +291,12 @@ class Pico:
         _development_runtime_seal=None,
     ):
         self.model_client = model_client
+        model_binding = getattr(model_client, "provider_binding", None)
+        model_binding = (
+            deepcopy(model_binding)
+            if isinstance(model_binding, dict)
+            else None
+        )
         if sandbox_context is not None and not isinstance(
             sandbox_context,
             DockerSandboxContext,
@@ -492,8 +507,19 @@ class Pico:
                 "resume_state": {},
                 "recovery": {"current_checkpoint_id": ""},
             }
+            if model_binding:
+                self.session["provider_binding"] = model_binding
         else:
             self.session = self.redact_artifact(deepcopy(session))
+            saved_binding = self.session.get("provider_binding")
+            if saved_binding != model_binding:
+                raise ValueError("model_session_mismatch")
+            if _session_has_provider_state(self.session) and (
+                not isinstance(saved_binding, dict)
+                or saved_binding.get("protocol_family") != "openai_responses"
+                or saved_binding != model_binding
+            ):
+                raise ValueError("model_session_mismatch")
             if (
                 self.docker_sandbox
                 and (

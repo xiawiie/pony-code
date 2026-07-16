@@ -60,7 +60,8 @@ replace。文件锁保护 session、checkpoint、Project Environment 与 Agent N
 
 ## Secret 边界
 
-Provider key 只来自当前 Project Environment、当前进程环境或安全的 `config set-secret` 输入。解析器不做
+模型 API Key 只从当前 Project Environment 或当前进程环境的 `PICO_DEEPSEEK_API_KEY` 读取，也可通过安全的
+`config set-secret` 输入。解析器不做
 shell expansion，不允许 Project Environment 覆盖 PATH/HOME、loader variables 等 execution environment。
 
 redaction snapshot 在 Pico 构造时冻结。模型输入、tool args/result、session、trace、report、checkpoint 和

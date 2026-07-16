@@ -4,12 +4,14 @@
 - telemetry from renderer merged into metadata
 """
 
+import json
 from unittest.mock import MagicMock
 
 import pytest
 
 from pico.context.renderer import render_current_user_message
 from pico.context_manager import ContextManager
+from pico.messages import make_tool_pair
 
 
 def _agent():
@@ -85,7 +87,6 @@ def test_build_request_replaces_persisted_current_user_in_request_view():
 
 def test_build_request_tools_tokens_uses_json_serialization():
     """Task A3: tools_tokens must reflect JSON wire size, not Python repr."""
-    import json
     from unittest.mock import MagicMock
 
     a = MagicMock()
@@ -109,3 +110,39 @@ def test_build_request_tools_tokens_uses_json_serialization():
     # Recompute the expected token count against the JSON-serialized tools.
     expected = max(1, len(json.dumps(request["tools"])) // 4)
     assert metadata["tools_tokens"] == expected
+
+
+def test_build_request_budget_counts_opaque_provider_state():
+    state = [{"type": "reasoning", "encrypted_content": "x" * 200}]
+
+    def history_tokens(provider_state):
+        a = _agent()
+        a.model_client.count_tokens = lambda text: len(text)
+        pair = make_tool_pair(
+            name="read_file",
+            arguments={"path": "README.md"},
+            tool_use_id="toolu_state",
+            result_content="body",
+            created_at="now",
+            tool_status="ok",
+            effect_class="read_only",
+            provider_state=provider_state,
+        )
+        a.session = {
+            "messages": [
+                {"role": "user", "content": "question", "_pico_meta": {}},
+                *pair,
+                {"role": "user", "content": "next", "_pico_meta": {}},
+            ]
+        }
+        snapshot, telemetry = render_current_user_message(a, "next")
+        _request, metadata = ContextManager(a).build_request(
+            injection_snapshot=snapshot,
+            injection_telemetry=telemetry,
+            preflight_metadata={},
+        )
+        return metadata["context_breakdown"]["history"]["tokens_before"]
+
+    assert history_tokens(state) - history_tokens(()) == len(
+        json.dumps(state, ensure_ascii=False, separators=(",", ":"))
+    )

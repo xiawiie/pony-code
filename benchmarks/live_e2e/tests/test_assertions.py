@@ -235,15 +235,19 @@ def test_parse_args_selects_exactly_one_supported_provider(monkeypatch):
 
 @pytest.mark.parametrize("provider", ["deepseek", "anthropic", "openai"])
 def test_project_env_uses_canonical_selected_provider_settings(tmp_path, provider):
-    prefix = provider.upper()
+    if provider == "deepseek":
+        lines = [
+            "PICO_API_URL=https://deepseek-gateway.example/v1",
+            "PICO_DEEPSEEK_API_KEY=sentinel-deepseek",
+        ]
+    else:
+        prefix = provider.upper()
+        lines = [
+            f"PICO_{prefix}_API_KEY=sentinel-{provider}",
+            f"PICO_{prefix}_MODEL={provider}-test-model",
+        ]
     (tmp_path / ".env").write_text(
-        "\n".join(
-            [
-                f"PICO_{prefix}_API_KEY=sentinel-{provider}",
-                f"PICO_{prefix}_MODEL={provider}-test-model",
-                f"PICO_{prefix}_API_BASE=https://{provider}.example.invalid/anthropic",
-            ]
-        ),
+        "\n".join(lines),
         encoding="utf-8",
     )
 
@@ -254,11 +258,21 @@ def test_project_env_uses_canonical_selected_provider_settings(tmp_path, provide
             process_env={},
         )
 
-    assert settings == {
-        "api_key": f"sentinel-{provider}",
-        "model": f"{provider}-test-model",
-        "base_url": f"https://{provider}.example.invalid/anthropic",
-    }
+    expected_base_url = {
+        "deepseek": "https://deepseek-gateway.example/v1",
+        "anthropic": "https://api.anthropic.com/v1",
+        "openai": "https://api.openai.com/v1",
+    }[provider]
+    expected_auth_mode = "x-api-key" if provider == "anthropic" else "bearer"
+    assert settings["api_key"] == f"sentinel-{provider}"
+    assert settings["model"] == (
+        "deepseek-v4-flash" if provider == "deepseek" else f"{provider}-test-model"
+    )
+    assert settings["base_url"] == expected_base_url
+    assert settings["auth_mode"] == expected_auth_mode
+    assert settings["capabilities"].get("prompt_cache", False) is (
+        provider == "anthropic"
+    )
 
 
 def test_project_env_uses_canonical_ollama_settings(tmp_path):
@@ -276,14 +290,17 @@ def test_project_env_uses_canonical_ollama_settings(tmp_path):
 
     assert settings == {
         "api_key": "",
+        "api_key_env": "PICO_OLLAMA_API_KEY",
         "model": "ollama-test-model",
         "base_url": "http://127.0.0.1:11435",
+        "client_kind": "ollama_chat",
+        "auth_mode": "none",
+        "capabilities": {},
     }
 
 
-def test_openai_live_client_uses_text_protocol_adapter():
+def test_openai_live_client_uses_native_responses_adapter():
     from pico.providers.openai_compatible import OpenAICompatibleModelClient
-    from pico.providers.text_protocol_adapter import TextProtocolAdapter
 
     client = run_live_session.make_live_client(
         _config(provider="openai", request_timeout_seconds=321),
@@ -291,17 +308,17 @@ def test_openai_live_client_uses_text_protocol_adapter():
             "api_key": "sentinel-openai",
             "model": "test-model",
             "base_url": "https://openai.example.invalid/v1",
+            "auth_mode": "bearer",
+            "capabilities": {},
         },
     )
 
-    assert isinstance(client._inner, TextProtocolAdapter)
-    assert isinstance(client._inner._inner, OpenAICompatibleModelClient)
-    assert client._inner._inner.timeout == 321
+    assert isinstance(client._inner, OpenAICompatibleModelClient)
+    assert client._inner.timeout == 321
 
 
-def test_ollama_live_client_uses_text_protocol_adapter():
+def test_ollama_live_client_uses_native_chat_adapter():
     from pico.providers.ollama import OllamaModelClient
-    from pico.providers.text_protocol_adapter import TextProtocolAdapter
 
     client = run_live_session.make_live_client(
         _config(provider="ollama", request_timeout_seconds=321),
@@ -309,12 +326,13 @@ def test_ollama_live_client_uses_text_protocol_adapter():
             "api_key": "",
             "model": "test-model",
             "base_url": "http://127.0.0.1:11434",
+            "auth_mode": "none",
+            "capabilities": {},
         },
     )
 
-    assert isinstance(client._inner, TextProtocolAdapter)
-    assert isinstance(client._inner._inner, OllamaModelClient)
-    assert client._inner._inner.timeout == 321
+    assert isinstance(client._inner, OllamaModelClient)
+    assert client._inner.timeout == 321
 
 
 def test_ollama_live_preflight_does_not_require_api_key():
@@ -1554,7 +1572,7 @@ def test_report_cannot_pass_with_only_global_assertions(tmp_path):
 
 
 def test_report_does_not_serialize_provider_api_key(tmp_path, monkeypatch):
-    monkeypatch.setenv("PICO_DEEPSEEK_API_KEY", "sentinel-secret")
+    monkeypatch.setenv("PICO_ANTHROPIC_API_KEY", "sentinel-secret")
     reporter = Reporter(_config(), tmp_path)
 
     report_path = reporter.write_json(
@@ -1657,7 +1675,7 @@ def test_report_redacts_full_payload_and_writes_safe_artifact_summary(tmp_path):
         artifact_security=artifact_security,
         redactor=lambda value: redact_artifact(
             value,
-            env={"PICO_LIVE_API_KEY": secret},
+            env={"PICO_OPENAI_API_KEY": secret},
         ),
         forbidden_values=(secret,),
     )
@@ -1730,15 +1748,21 @@ def test_v2_cli_rejects_nonpositive_caps(monkeypatch, flag):
         run_live_session.parse_args()
 
 
-def test_ollama_not_configured_readiness_does_not_construct_client(monkeypatch):
+def test_ollama_readiness_uses_bounded_model_probe(monkeypatch):
     monkeypatch.setattr(
-        "pico.cli_diagnostics.check_provider_connectivity",
-        lambda _config: {"status": "error", "model_status": "missing"},
+        "pico.providers.probe.probe_model_client",
+        lambda _client: {"status": "failed"},
     )
 
     assert run_live_session.check_live_readiness(
         _config(provider="ollama"),
-        settings={"api_key": "", "model": "test-model", "base_url": "http://127.0.0.1:11434"},
+        settings={
+            "api_key": "",
+            "model": "test-model",
+            "base_url": "http://127.0.0.1:11434",
+            "auth_mode": "none",
+            "capabilities": {},
+        },
     ) is False
 
 

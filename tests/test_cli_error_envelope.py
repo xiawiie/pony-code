@@ -192,32 +192,33 @@ def test_cli_contains_welcome_render_failure(monkeypatch, capsys):
     assert CANARY not in captured.out + captured.err
 
 
-def test_invalid_project_provider_uses_safe_config_envelope(
+def test_invalid_project_api_url_uses_safe_config_envelope(
     tmp_path,
     monkeypatch,
     capsys,
 ):
-    monkeypatch.setenv("PICO_PROVIDER", "ollama")
     (tmp_path / ".env").write_text(
-        f"PICO_PROVIDER={CANARY}\n",
+        f"PICO_API_URL=https://user:{CANARY}@example.com/v1\n"
+        "PICO_DEEPSEEK_API_KEY=test-key\n",
         encoding="utf-8",
     )
 
     assert main(["--cwd", str(tmp_path), "--quiet", "run", "hello"]) == 3
 
     captured = capsys.readouterr()
-    assert captured.err.strip() == "invalid provider configuration"
+    assert captured.err.strip() == "api_url_credentials"
     assert CANARY not in captured.out + captured.err
 
 
-def test_init_invalid_provider_does_not_echo_project_value(tmp_path, capsys):
-    (tmp_path / ".env").write_text(
-        f"PICO_PROVIDER={CANARY}\n",
-        encoding="utf-8",
+def test_init_invalid_url_does_not_echo_input_value(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setattr(
+        "builtins.input",
+        lambda: f"https://user:{CANARY}@example.com/v1",
     )
-    # Exercise the real pre-agent command path, not the model-client builder.
-    assert main(["--cwd", str(tmp_path), "init"]) == 2
+    assert main(["--cwd", str(tmp_path), "init"]) == 3
 
     captured = capsys.readouterr()
-    assert "unknown provider" in captured.err
+    assert "api_url_credentials" in captured.err
     assert CANARY not in captured.out + captured.err

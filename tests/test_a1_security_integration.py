@@ -96,14 +96,20 @@ def test_offline_a1_canary_crosses_real_boundaries_without_normal_artifact_leak(
     safe_blob_bytes = b"safe recovery bytes\n"
     monkeypatch.setenv("PICO_DEEPSEEK_API_KEY", secret)
     monkeypatch.setattr(
-        "pico.cli_diagnostics.check_provider_connectivity",
+        "pico.cli_diagnostics.check_api_connectivity",
         Mock(side_effect=AssertionError("offline doctor attempted network")),
     )
-    write_project_env_assignments(tmp_path, {"PICO_PROVIDER": "deepseek"})
+    write_project_env_assignments(
+        tmp_path,
+        {
+            "PICO_API_URL": "https://api.deepseek.com",
+            "PICO_DEEPSEEK_API_KEY": secret,
+        },
+    )
 
     candidate = {
         "record_type": "session",
-        "format_version": 1,
+        "format_version": 2,
         "id": "candidate-canary",
         "created_at": "2026-01-01T00:00:00+00:00",
         "workspace_root": str(tmp_path),
@@ -342,7 +348,7 @@ def test_offline_a1_canary_crosses_real_boundaries_without_normal_artifact_leak(
         ("sessions", "show", session_id),
         ("runs", "show", run_id),
         ("checkpoints", "show", checkpoint_id),
-        ("doctor", "--offline"),
+        ("doctor",),
     )
     for output_format in ("json", "text"):
         for command in commands:

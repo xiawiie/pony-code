@@ -34,7 +34,12 @@ def _convert_pico_tool_to_anthropic(name, spec):
     return {
         "name": name,
         "description": description,
-        "input_schema": {"type": "object", "properties": props, "required": required},
+        "input_schema": {
+            "type": "object",
+            "properties": props,
+            "required": required,
+            "additionalProperties": False,
+        },
     }
 
 
@@ -107,7 +112,17 @@ class ContextManager:
         messages = build_request_messages(list(session.get("messages", []) or []), rendered_user=rendered_user, runtime_feedback=runtime_feedback)
         _, messages = securitylib.sanitize_provider_payload([], messages, env=self.agent.redaction_env, secret_env_names=self.agent.secret_env_names)
         def msg_token(message):
-            return token_of(message_content_text(message))
+            tokens = token_of(message_content_text(message))
+            provider_state = message.get("_pico_provider_state")
+            if provider_state:
+                tokens += token_of(
+                    json.dumps(
+                        provider_state,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    )
+                )
+            return tokens
         before_tokens = sum(msg_token(message) for message in messages)
         soft_cap = int(config.get("history_soft_cap", 40000))
         floor_count = int(config.get("history_floor_messages", 6))
@@ -148,7 +163,11 @@ class ContextManager:
         breakpoints = [len(messages) - 2] if len(messages) >= 2 else []
         recall_errors = session.get("_recall_errors", {}) if isinstance(session, dict) else {}
         recall_errors = recall_errors if isinstance(recall_errors, dict) else {}
-        metadata = {"system_prefix_hash": hashlib.sha256(system_text.encode()).hexdigest(), "system_tokens": system_tokens, "tools_tokens": tools_tokens, "prompt_cache_supported": bool(getattr(self.agent.model_client, "supports_prompt_cache", False)), **message_metrics(messages, token_of=token_of), "dropped_messages": dropped_messages, "cache_control_breakpoints": list(breakpoints), "runtime_feedback_present": bool(str(runtime_feedback or "").strip()), "recall.error_count": int(recall_errors.get("count", 0) or 0), "recall.last_error": str(recall_errors.get("last", "") or ""), "token_count_mode": mode, "context_breakdown": breakdown, "recall_commit_paths": [path for source in sources if source.name == "recalled_memory" and source.name in included for path in source.selected_memory_paths], **dict(injection_telemetry or {}), **dict(preflight_metadata or {})}
+        provider_metadata = getattr(self.agent.model_client, "provider_metadata", {})
+        provider_metadata = (
+            dict(provider_metadata) if isinstance(provider_metadata, dict) else {}
+        )
+        metadata = {"system_prefix_hash": hashlib.sha256(system_text.encode()).hexdigest(), "system_tokens": system_tokens, "tools_tokens": tools_tokens, "prompt_cache_supported": bool(getattr(self.agent.model_client, "supports_prompt_cache", False)), **message_metrics(messages, token_of=token_of), "dropped_messages": dropped_messages, "cache_control_breakpoints": list(breakpoints), "runtime_feedback_present": bool(str(runtime_feedback or "").strip()), "recall.error_count": int(recall_errors.get("count", 0) or 0), "recall.last_error": str(recall_errors.get("last", "") or ""), "token_count_mode": mode, "context_breakdown": breakdown, "recall_commit_paths": [path for source in sources if source.name == "recalled_memory" and source.name in included for path in source.selected_memory_paths], **dict(injection_telemetry or {}), **dict(preflight_metadata or {}), **provider_metadata}
         return {"system": system, "tools": tools, "messages": messages, "cache_control_breakpoints": breakpoints}, metadata
 
     def build_request(self, *, injection_snapshot, injection_telemetry, preflight_metadata, runtime_feedback=""):

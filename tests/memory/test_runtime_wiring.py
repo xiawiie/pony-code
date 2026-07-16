@@ -24,7 +24,7 @@ def test_pico_has_memory_store_and_repo_map(tmp_path, monkeypatch):
     workspace = WorkspaceContext.build(tmp_path)
     store = SessionStore(tmp_path / ".pico" / "sessions")
     agent = Pico(
-        model_client=FakeModelClient(["<final>done</final>"]),
+        model_client=FakeModelClient(["done"]),
         workspace=workspace,
         session_store=store,
         approval_policy="auto",
@@ -39,7 +39,7 @@ def test_tool_context_has_wiring(tmp_path, monkeypatch):
     workspace = WorkspaceContext.build(tmp_path)
     store = SessionStore(tmp_path / ".pico" / "sessions")
     agent = Pico(
-        model_client=FakeModelClient(["<final>done</final>"]),
+        model_client=FakeModelClient(["done"]),
         workspace=workspace,
         session_store=store,
         approval_policy="auto",
@@ -55,7 +55,7 @@ def _build_agent(tmp_path, monkeypatch, session=None):
     workspace = WorkspaceContext.build(tmp_path)
     store = SessionStore(tmp_path / ".pico" / "sessions")
     return Pico(
-        model_client=FakeModelClient(["<final>done</final>"]),
+        model_client=FakeModelClient(["done"]),
         workspace=workspace,
         session_store=store,
         session=session,

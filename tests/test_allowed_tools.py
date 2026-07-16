@@ -14,7 +14,7 @@ def build_agent(tmp_path, allowed_tools=None):
     workspace = WorkspaceContext.build(tmp_path)
     store = SessionStore(tmp_path / ".pico" / "sessions")
     return Pico(
-        model_client=FakeModelClient(["<final>Done.</final>"]),
+        model_client=FakeModelClient(["Done."]),
         workspace=workspace,
         session_store=store,
         approval_policy="auto",
@@ -96,7 +96,7 @@ def test_benchmark_evaluator_applies_allowed_tools_to_runtime_prompt(tmp_path):
 
     class CaptureModelClient(FakeModelClient):
         def __init__(self):
-            super().__init__(["<final>Done.</final>"])
+            super().__init__(["Done."])
             captured_clients.append(self)
 
     evaluator = BenchmarkEvaluator(
@@ -149,7 +149,7 @@ def test_prompt_examples_use_tools_module_as_single_source(tmp_path, monkeypatch
     monkeypatch.setitem(
         toolkit.TOOL_EXAMPLES,
         "search",
-        '<tool>{"name":"search","args":{"pattern":"SINGLE_SOURCE","path":"."}}</tool>',
+        '{"name":"search","arguments":{"pattern":"SINGLE_SOURCE","path":"."}}',
     )
     agent = build_agent(tmp_path, allowed_tools=["search"])
 

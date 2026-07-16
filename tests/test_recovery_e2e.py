@@ -23,8 +23,8 @@ def test_agent_write_file_creates_restorable_turn_checkpoint(tmp_path):
     agent = build_agent(
         tmp_path,
         [
-            '<tool>{"name":"write_file","args":{"path":"note.txt","content":"after\\n"}}</tool>',
-            "<final>done</final>",
+            {"name": "write_file", "args": {"path":"note.txt","content":"after\n"}},
+            "done",
         ],
     )
 
@@ -41,9 +41,9 @@ def test_single_user_request_creates_one_turn_checkpoint_for_multiple_tool_chang
     agent = build_agent(
         tmp_path,
         [
-            '<tool>{"name":"write_file","args":{"path":"first.txt","content":"one\\n"}}</tool>',
-            '<tool>{"name":"write_file","args":{"path":"second.txt","content":"two\\n"}}</tool>',
-            "<final>done</final>",
+            {"name": "write_file", "args": {"path":"first.txt","content":"one\n"}},
+            {"name": "write_file", "args": {"path":"second.txt","content":"two\n"}},
+            "done",
         ],
     )
 
@@ -65,8 +65,8 @@ def test_memory_save_creates_audit_without_recoverable_turn_checkpoint(tmp_path)
     agent = build_agent(
         tmp_path,
         [
-            '<tool>{"name":"memory_save","args":{"note":"remember this"}}</tool>',
-            "<final>done</final>",
+            {"name": "memory_save", "args": {"note":"remember this"}},
+            "done",
         ],
     )
 
@@ -92,8 +92,8 @@ def test_real_checkpoint_can_preview_and_apply_restore(tmp_path):
     agent = build_agent(
         tmp_path,
         [
-            '<tool>{"name":"write_file","args":{"path":"note.txt","content":"after\\n"}}</tool>',
-            "<final>done</final>",
+            {"name": "write_file", "args": {"path":"note.txt","content":"after\n"}},
+            "done",
         ],
     )
     agent.ask("write note")
@@ -113,8 +113,8 @@ def test_restore_existing_file_returns_to_previous_content(tmp_path):
     agent = build_agent(
         tmp_path,
         [
-            '<tool>{"name":"patch_file","args":{"path":"README.md","old_text":"demo\\n","new_text":"changed\\n"}}</tool>',
-            "<final>done</final>",
+            {"name": "patch_file", "args": {"path":"README.md","old_text":"demo\n","new_text":"changed\n"}},
+            "done",
         ],
     )
 
@@ -132,8 +132,8 @@ def test_verification_evidence_can_attach_to_checkpoint(tmp_path):
     agent = build_agent(
         tmp_path,
         [
-            '<tool>{"name":"write_file","args":{"path":"note.txt","content":"after\\n"}}</tool>',
-            "<final>done</final>",
+            {"name": "write_file", "args": {"path":"note.txt","content":"after\n"}},
+            "done",
         ],
     )
     agent.ask("finish")
@@ -168,8 +168,8 @@ def test_direct_verification_recording_rejects_unexecuted_or_unstructured_facts(
     agent = build_agent(
         tmp_path,
         [
-            '<tool>{"name":"write_file","args":{"path":"note.txt","content":"after\\n"}}</tool>',
-            "<final>done</final>",
+            {"name": "write_file", "args": {"path":"note.txt","content":"after\n"}},
+            "done",
         ],
     )
     agent.ask("finish")
@@ -206,8 +206,8 @@ def test_direct_verification_recording_rejects_non_current_checkpoint_targets(
     agent = build_agent(
         tmp_path,
         [
-            '<tool>{"name":"write_file","args":{"path":"note.txt","content":"after\\n"}}</tool>',
-            "<final>done</final>",
+            {"name": "write_file", "args": {"path":"note.txt","content":"after\n"}},
+            "done",
         ],
     )
     agent.ask("finish")
@@ -250,8 +250,8 @@ def test_direct_verification_recording_rejects_loaded_foreign_checkpoint(
     agent = build_agent(
         tmp_path,
         [
-            '<tool>{"name":"write_file","args":{"path":"note.txt","content":"after\\n"}}</tool>',
-            "<final>done</final>",
+            {"name": "write_file", "args": {"path":"note.txt","content":"after\n"}},
+            "done",
         ],
     )
     agent.ask("finish")
@@ -294,8 +294,8 @@ def test_direct_verification_recording_requires_loaded_evidence_list(
     agent = build_agent(
         tmp_path,
         [
-            '<tool>{"name":"write_file","args":{"path":"note.txt","content":"after\\n"}}</tool>',
-            "<final>done</final>",
+            {"name": "write_file", "args": {"path":"note.txt","content":"after\n"}},
+            "done",
         ],
     )
     agent.ask("finish")
@@ -325,10 +325,13 @@ def test_direct_verification_recording_requires_loaded_evidence_list(
 
 def test_run_shell_verification_command_attaches_evidence_to_checkpoint(tmp_path):
     command = "python -m pytest --version"
-    tool_call = json.dumps({"name": "run_shell", "args": {"command": command, "timeout": 20}})
+    tool_call = {
+        "name": "run_shell",
+        "args": {"command": command, "timeout": 20},
+    }
     agent = build_agent(
         tmp_path,
-        [f"<tool>{tool_call}</tool>", "<final>done</final>"],
+        [tool_call, "done"],
         executables={"python": "/usr/bin/python3"},
     )
     agent.approval_policy = "ask"

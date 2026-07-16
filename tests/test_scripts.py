@@ -101,7 +101,7 @@ def test_distribution_verifier_freezes_archive_and_install_contract():
     assert "wheel file mismatch" in verifier
     assert 'metadata.get_all("Requires-Dist") is None' in verifier
     assert '"command -v pico"' in verifier
-    assert '"doctor", "--offline"' in verifier
+    assert '_run(str(pico), "doctor", cwd=cwd, env=env)' in verifier
     assert '"sandbox",\n                "status"' in verifier
     assert 'prepared["runtime_authorization"]["kind"] == "local"' in verifier
     assert 'prepare.returncode in {0, 3}' in verifier

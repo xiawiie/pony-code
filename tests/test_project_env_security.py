@@ -28,21 +28,21 @@ def test_project_env_status_distinguishes_missing_loaded_and_rejected_lines(
     }
 
     (tmp_path / ".env").write_text(
-        "PICO_PROVIDER=deepseek\n",
+        "PICO_TEST_SETTING=deepseek\n",
         encoding="utf-8",
     )
     (tmp_path / ".env").chmod(0o600)
     values, metadata = read_project_env_with_status(tmp_path)
-    assert values == {"PICO_PROVIDER": "deepseek"}
+    assert values == {"PICO_TEST_SETTING": "deepseek"}
     assert metadata["status"] == "loaded"
 
     (tmp_path / ".env").write_text(
-        "PICO_PROVIDER=deepseek\ninvalid project env line\n",
+        "PICO_TEST_SETTING=deepseek\ninvalid project env line\n",
         encoding="utf-8",
     )
     values, metadata = read_project_env_with_status(tmp_path)
     captured = capsys.readouterr()
-    assert values == {"PICO_PROVIDER": "deepseek"}
+    assert values == {"PICO_TEST_SETTING": "deepseek"}
     assert metadata["status"] == "review_required"
     assert "invalid project env line" not in captured.err
 
@@ -50,12 +50,12 @@ def test_project_env_status_distinguishes_missing_loaded_and_rejected_lines(
 @pytest.mark.skipif(os.name != "posix", reason="POSIX mode assertion")
 def test_project_env_status_records_permission_repair(tmp_path):
     env_path = tmp_path / ".env"
-    env_path.write_text("PICO_PROVIDER=deepseek\n", encoding="utf-8")
+    env_path.write_text("PICO_TEST_SETTING=deepseek\n", encoding="utf-8")
     env_path.chmod(0o644)
 
     values, metadata = read_project_env_with_status(tmp_path, warn=False)
 
-    assert values == {"PICO_PROVIDER": "deepseek"}
+    assert values == {"PICO_TEST_SETTING": "deepseek"}
     assert metadata["status"] == "review_required"
     assert stat.S_IMODE(env_path.stat().st_mode) == 0o600
 
@@ -64,7 +64,7 @@ def test_project_env_never_falls_back_to_parent(tmp_path):
     parent = tmp_path / ".env"
     child = tmp_path / "repo"
     child.mkdir()
-    parent.write_text("PICO_PROVIDER=anthropic\n", encoding="utf-8")
+    parent.write_text("PICO_TEST_SETTING=anthropic\n", encoding="utf-8")
 
     assert project_env_path(child) == child.resolve() / ".env"
     assert read_project_env(child, warn=False) == {}
@@ -99,7 +99,7 @@ def test_read_project_env_never_mutates_process_environment(tmp_path, monkeypatc
         "PICO_SECRET_ENV_NAMES=PATH,PYTHONPATH\n"
         "PATH=./fake\n"
         "PYTHONPATH=./payload\n"
-        "PICO_PROVIDER=deepseek\n",
+        "PICO_TEST_SETTING=deepseek\n",
         encoding="utf-8",
     )
     original_path = os.environ.get("PATH")
@@ -107,7 +107,7 @@ def test_read_project_env_never_mutates_process_environment(tmp_path, monkeypatc
 
     loaded = read_project_env(tmp_path)
 
-    assert loaded["PICO_PROVIDER"] == "deepseek"
+    assert loaded["PICO_TEST_SETTING"] == "deepseek"
     assert loaded["PATH"] == "./fake"
     assert loaded["PYTHONPATH"] == "./payload"
     assert os.environ.get("PATH") == original_path
@@ -134,7 +134,7 @@ def test_project_env_rejects_control_characters_after_decoding(tmp_path, monkeyp
         f'PICO_JSON_NEWLINE="{sentinel}\\ntail"\n'
         f'PICO_JSON_CARRIAGE_RETURN="{sentinel}\\rtail"\n'
         f"PICO_UNQUOTED_NUL={sentinel}\0tail\n"
-        "PICO_PROVIDER=deepseek\n",
+        "PICO_TEST_SETTING=deepseek\n",
         encoding="utf-8",
     )
     for name in invalid_names:
@@ -142,14 +142,14 @@ def test_project_env_rejects_control_characters_after_decoding(tmp_path, monkeyp
 
     parsed = read_project_env(tmp_path)
 
-    assert parsed == {"PICO_PROVIDER": "deepseek"}
+    assert parsed == {"PICO_TEST_SETTING": "deepseek"}
     assert all(name not in os.environ for name in invalid_names)
     assert sentinel not in capsys.readouterr().err
 
 
 def test_project_env_replace_failure_preserves_original(tmp_path, monkeypatch):
     env_path = tmp_path / ".env"
-    env_path.write_bytes(b"PICO_PROVIDER=deepseek\n")
+    env_path.write_bytes(b"PICO_TEST_SETTING=deepseek\n")
     monkeypatch.setattr(
         security_module.os,
         "replace",
@@ -157,14 +157,14 @@ def test_project_env_replace_failure_preserves_original(tmp_path, monkeypatch):
     )
 
     with pytest.raises(OSError, match="replace failed"):
-        write_project_env_assignments(tmp_path, {"PICO_PROVIDER": "anthropic"})
+        write_project_env_assignments(tmp_path, {"PICO_TEST_SETTING": "anthropic"})
 
-    assert env_path.read_bytes() == b"PICO_PROVIDER=deepseek\n"
+    assert env_path.read_bytes() == b"PICO_TEST_SETTING=deepseek\n"
 
 
 def test_project_env_rejects_leaf_symlink(tmp_path):
     outside = tmp_path.parent / f"{tmp_path.name}-outside-env"
-    outside.write_text("PICO_PROVIDER=deepseek\n", encoding="utf-8")
+    outside.write_text("PICO_TEST_SETTING=deepseek\n", encoding="utf-8")
     (tmp_path / ".env").symlink_to(outside)
 
     with pytest.raises(ValueError, match="symlink"):
@@ -174,10 +174,14 @@ def test_project_env_rejects_leaf_symlink(tmp_path):
 def test_init_project_env_error_is_stable_and_omits_sensitive_path(tmp_path, capsys):
     marker = "sk-sensitive-config-path-123456789"
     outside = tmp_path.parent / marker
-    outside.write_text("PICO_PROVIDER=deepseek\n", encoding="utf-8")
+    outside.write_text("PICO_TEST_SETTING=deepseek\n", encoding="utf-8")
     (tmp_path / ".env").symlink_to(outside)
 
-    code = main(["--cwd", str(tmp_path), "init", "--provider", "deepseek"])
+    code = main([
+        "--cwd",
+        str(tmp_path),
+        "init",
+    ])
 
     captured = capsys.readouterr()
     assert code == 3
@@ -189,10 +193,10 @@ def test_project_env_existing_file_is_private_before_read(tmp_path):
     if os.name != "posix":
         pytest.skip("POSIX mode assertion")
     env_path = tmp_path / ".env"
-    env_path.write_text("PICO_PROVIDER=deepseek\n", encoding="utf-8")
+    env_path.write_text("PICO_TEST_SETTING=deepseek\n", encoding="utf-8")
     env_path.chmod(0o644)
 
-    assert read_project_env(tmp_path, warn=False)["PICO_PROVIDER"] == "deepseek"
+    assert read_project_env(tmp_path, warn=False)["PICO_TEST_SETTING"] == "deepseek"
     assert stat.S_IMODE(env_path.stat().st_mode) == 0o600
 
 
@@ -211,9 +215,9 @@ def test_project_env_chmod_failure_fails_before_returning_values(tmp_path, monke
 
 def test_project_env_reads_verified_descriptor_after_leaf_swap(tmp_path, monkeypatch):
     env_path = tmp_path / ".env"
-    env_path.write_text("PICO_PROVIDER=deepseek\n", encoding="utf-8")
+    env_path.write_text("PICO_TEST_SETTING=deepseek\n", encoding="utf-8")
     outside = tmp_path / "outside.env"
-    outside.write_text("PICO_PROVIDER=anthropic\n", encoding="utf-8")
+    outside.write_text("PICO_TEST_SETTING=anthropic\n", encoding="utf-8")
     real_fchmod = security_module.os.fchmod
     swapped = False
 
@@ -227,7 +231,7 @@ def test_project_env_reads_verified_descriptor_after_leaf_swap(tmp_path, monkeyp
 
     monkeypatch.setattr(security_module.os, "fchmod", swap_after_validation)
 
-    assert read_project_env(tmp_path, warn=False) == {"PICO_PROVIDER": "deepseek"}
+    assert read_project_env(tmp_path, warn=False) == {"PICO_TEST_SETTING": "deepseek"}
 
 
 def test_project_env_rejects_symlinked_private_parent_and_lock(tmp_path):
@@ -236,7 +240,7 @@ def test_project_env_rejects_symlinked_private_parent_and_lock(tmp_path):
     (tmp_path / ".pico").symlink_to(outside, target_is_directory=True)
 
     with pytest.raises(ValueError, match="symlink"):
-        write_project_env_assignments(tmp_path, {"PICO_PROVIDER": "deepseek"})
+        write_project_env_assignments(tmp_path, {"PICO_TEST_SETTING": "deepseek"})
     assert list(outside.iterdir()) == []
 
     (tmp_path / ".pico").unlink()
@@ -246,13 +250,13 @@ def test_project_env_rejects_symlinked_private_parent_and_lock(tmp_path):
     (tmp_path / ".pico" / "project-env.lock").symlink_to(lock_target)
 
     with pytest.raises(ValueError, match="symlink"):
-        write_project_env_assignments(tmp_path, {"PICO_PROVIDER": "deepseek"})
+        write_project_env_assignments(tmp_path, {"PICO_TEST_SETTING": "deepseek"})
     assert lock_target.read_text(encoding="utf-8") == "untouched"
 
 
 def test_project_env_temp_fsync_failure_preserves_original(tmp_path, monkeypatch):
     env_path = tmp_path / ".env"
-    original = b"PICO_PROVIDER=deepseek\n"
+    original = b"PICO_TEST_SETTING=deepseek\n"
     env_path.write_bytes(original)
     real_fsync = os.fsync
     calls = {"count": 0}
@@ -266,16 +270,16 @@ def test_project_env_temp_fsync_failure_preserves_original(tmp_path, monkeypatch
     monkeypatch.setattr(os, "fsync", fail_first_fsync)
 
     with pytest.raises(OSError, match="temp fsync failed"):
-        write_project_env_assignments(tmp_path, {"PICO_PROVIDER": "anthropic"})
+        write_project_env_assignments(tmp_path, {"PICO_TEST_SETTING": "anthropic"})
     assert env_path.read_bytes() == original
 
 
 def test_project_env_rejects_swapped_temp_inode_before_replace(tmp_path, monkeypatch):
     env_path = tmp_path / ".env"
-    original = b"PICO_PROVIDER=deepseek\n"
+    original = b"PICO_TEST_SETTING=deepseek\n"
     env_path.write_bytes(original)
     outside = tmp_path.parent / f"{tmp_path.name}-outside-swap"
-    outside_bytes = b"PICO_PROVIDER=outside\n"
+    outside_bytes = b"PICO_TEST_SETTING=outside\n"
     outside.write_bytes(outside_bytes)
     real_fsync = os.fsync
     swapped = {}
@@ -292,7 +296,7 @@ def test_project_env_rejects_swapped_temp_inode_before_replace(tmp_path, monkeyp
     monkeypatch.setattr(os, "fsync", swap_temp_after_fsync)
 
     with pytest.raises(ValueError, match="project env temp changed"):
-        write_project_env_assignments(tmp_path, {"PICO_PROVIDER": "anthropic"})
+        write_project_env_assignments(tmp_path, {"PICO_TEST_SETTING": "anthropic"})
 
     assert env_path.read_bytes() == original
     assert outside.read_bytes() == outside_bytes
@@ -301,7 +305,7 @@ def test_project_env_rejects_swapped_temp_inode_before_replace(tmp_path, monkeyp
 
 def test_project_env_rejects_temp_hardlink_before_replace(tmp_path, monkeypatch):
     env_path = tmp_path / ".env"
-    original = b"PICO_PROVIDER=deepseek\n"
+    original = b"PICO_TEST_SETTING=deepseek\n"
     env_path.write_bytes(original)
     alias = tmp_path.parent / f"{tmp_path.name}-outside-temp-alias"
     real_fsync = os.fsync
@@ -318,7 +322,7 @@ def test_project_env_rejects_temp_hardlink_before_replace(tmp_path, monkeypatch)
     monkeypatch.setattr(os, "fsync", hardlink_temp_after_fsync)
 
     with pytest.raises(ValueError, match="project env temp changed"):
-        write_project_env_assignments(tmp_path, {"PICO_PROVIDER": "anthropic"})
+        write_project_env_assignments(tmp_path, {"PICO_TEST_SETTING": "anthropic"})
 
     assert env_path.read_bytes() == original
     assert alias.exists()
@@ -328,7 +332,7 @@ def test_project_env_rejects_temp_hardlink_before_replace(tmp_path, monkeypatch)
 
 def test_project_env_parent_swap_cannot_redirect_write(tmp_path, monkeypatch):
     env_path = tmp_path / ".env"
-    original = b"PICO_PROVIDER=deepseek\n"
+    original = b"PICO_TEST_SETTING=deepseek\n"
     env_path.write_bytes(original)
     original_root = tmp_path.parent / f"{tmp_path.name}-original-root"
 
@@ -342,7 +346,7 @@ def test_project_env_parent_swap_cannot_redirect_write(tmp_path, monkeypatch):
     monkeypatch.setattr(config_module, "locked_file", swap_after_root_binding)
 
     with pytest.raises(ValueError, match="private root changed"):
-        write_project_env_assignments(tmp_path, {"PICO_PROVIDER": "anthropic"})
+        write_project_env_assignments(tmp_path, {"PICO_TEST_SETTING": "anthropic"})
 
     assert (original_root / ".env").read_bytes() == original
     assert not (tmp_path / ".env").exists()
@@ -356,18 +360,20 @@ def test_project_env_parent_swap_cannot_redirect_write(tmp_path, monkeypatch):
         "https://example.test/v1?token=opaque-value",
     ),
 )
-def test_credential_bearing_base_url_is_rejected_at_config_boundary(tmp_path, url, capsys):
+def test_credential_bearing_base_url_is_rejected_at_config_boundary(
+    tmp_path,
+    url,
+    monkeypatch,
+    capsys,
+):
+    monkeypatch.setattr("builtins.input", lambda: url)
     code = main([
         "--cwd",
         str(tmp_path),
         "init",
-        "--provider",
-        "deepseek",
-        "--base-url",
-        url,
     ])
 
     captured = capsys.readouterr()
-    assert code == 2
+    assert code == 3
     assert "opaque" not in captured.out + captured.err
     assert not (tmp_path / ".env").exists()

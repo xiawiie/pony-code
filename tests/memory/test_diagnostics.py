@@ -346,7 +346,7 @@ def test_doctor_contains_memory_git_timeout(tmp_path, monkeypatch):
 
     monkeypatch.setattr("pico.memory.diagnostics.run_hardened_git", timeout)
 
-    result = collect_doctor(tmp_path, offline=True)
+    result = collect_doctor(tmp_path)
 
     assert result["memory"]["status"] == "unknown"
     assert result["memory"]["reason_code"] == "memory_diagnostics_incomplete"
@@ -435,7 +435,7 @@ def test_doctor_memory_diagnostics_are_read_only_and_render_in_both_formats(
     before_mode = (workspace_memory / "agent_notes.md").stat().st_mode
     monkeypatch.setattr("pico.memory.diagnostics.Path.home", lambda: tmp_path / "user-home")
 
-    data = collect_doctor(tmp_path, offline=True)
+    data = collect_doctor(tmp_path)
 
     assert data["memory"]["issues"] == [
         {
@@ -455,7 +455,6 @@ def test_doctor_memory_diagnostics_are_read_only_and_render_in_both_formats(
             "--format",
             output_format,
             "doctor",
-            "--offline",
         ]) == 0
         output = capsys.readouterr().out
         assert "Memory" in output or '"memory"' in output
@@ -478,7 +477,7 @@ def test_doctor_does_not_create_missing_memory_directories(tmp_path, monkeypatch
     user_home = tmp_path / "user-home"
     monkeypatch.setattr("pico.memory.diagnostics.Path.home", lambda: user_home)
 
-    result = collect_doctor(tmp_path, offline=True)
+    result = collect_doctor(tmp_path)
 
     assert result["memory"] == {
         "check_id": "memory",

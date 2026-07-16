@@ -1,6 +1,8 @@
 """Command handlers for Pico's explicit CLI Surface."""
 
+import getpass
 from pathlib import Path
+import sys
 
 from . import security as securitylib
 from .cli_errors import CLI_EXIT_CONFIG, CLI_EXIT_USAGE, CliError
@@ -8,20 +10,17 @@ from .cli_diagnostics import _line
 from .cli_output import build_inspection_redactor, print_result
 from .cli_session import handle_session_command
 from .config import (
+    API_KEY_ENV_NAME,
+    API_URL_ENV_NAME,
+    AUTH_MODE,
+    DEFAULT_API_URL,
+    DEFAULT_MODEL,
+    PROTOCOL_FAMILY,
     project_env_metadata,
     read_project_env,
     read_project_env_with_status,
-    validate_provider_base_url,
+    validate_api_url,
     write_project_env_assignments,
-)
-from .providers.defaults import (
-    API_KEY_ENV_NAMES,
-    BASE_URL_ENV_NAMES,
-    DEFAULT_BASE_URLS,
-    DEFAULT_MODELS,
-    DEFAULT_PROVIDER,
-    MODEL_ENV_NAMES,
-    PROVIDER_CHOICES,
 )
 from .sandbox_session import source_mutation_authority
 from .workspace import WorkspaceContext
@@ -34,8 +33,9 @@ USAGE:
     pico run <prompt...>
 
 EXAMPLES:
+    pico init
     pico run "inspect the failing tests"
-    pico config set-secret NAME [--stdin]
+    pico config set-secret PICO_DEEPSEEK_API_KEY
     pico --approval ask run "run the requested shell command"
     pico doctor
     pico runs summary latest
@@ -50,7 +50,7 @@ Available Commands:
   status       Show local workspace state
   doctor       Check config, storage, auth, and sandbox readiness
   sandbox      Inspect and manage Docker Sandbox sessions and image readiness
-  init         Create or update non-secret project provider config
+  init         Configure the DeepSeek API URL and key
   config       Configuration inspection and set-secret input
   runs         Run artifact inspection
   sessions     Session inspection
@@ -90,7 +90,14 @@ def handle_session(tokens, root, args):
 
 
 def handle_init(tokens, cwd, args):
-    options = _parse_init_tokens(tokens)
+    if tokens:
+        raise _init_usage_error()
+    if getattr(args, "no_input", False):
+        raise CliError(
+            code="usage",
+            message="pico init requires interactive input",
+            exit_code=CLI_EXIT_USAGE,
+        )
     workspace = WorkspaceContext.build(cwd)
     root = Path(workspace.repo_root)
     try:
@@ -101,38 +108,45 @@ def handle_init(tokens, cwd, args):
             message="project environment read failed",
             exit_code=CLI_EXIT_CONFIG,
         ) from exc
-    provider = options["provider"] or getattr(args, "provider", None) or existing.get("PICO_PROVIDER") or DEFAULT_PROVIDER
-    if provider not in PROVIDER_CHOICES:
+    try:
+        current_url = validate_api_url(
+            existing.get(API_URL_ENV_NAME) or DEFAULT_API_URL
+        )
+        print(f"API URL [{current_url}]: ", end="", file=sys.stderr, flush=True)
+        entered_url = input()
+        api_url = validate_api_url(entered_url.strip() or current_url)
+        existing_key = existing.get(API_KEY_ENV_NAME, "")
+        key_prompt = (
+            "API Key [press Enter to keep existing]: "
+            if existing_key
+            else "API Key: "
+        )
+        entered_key = getpass.getpass(key_prompt)
+    except (EOFError, KeyboardInterrupt) as exc:
         raise CliError(
             code="usage",
-            message="unknown provider",
-            hint=f"Expected one of: {', '.join(PROVIDER_CHOICES)}.",
+            message="interactive input unavailable",
+            exit_code=CLI_EXIT_USAGE,
+        ) from exc
+    except ValueError as exc:
+        raise CliError(
+            code=str(exc),
+            message=str(exc),
+            exit_code=CLI_EXIT_CONFIG,
+        ) from exc
+    api_key = entered_key or existing_key
+    if not api_key.strip() or any(
+        character in api_key for character in ("\0", "\r", "\n")
+    ):
+        raise CliError(
+            code="usage",
+            message="API Key must be one non-empty line",
             exit_code=CLI_EXIT_USAGE,
         )
-
-    assignments = {"PICO_PROVIDER": provider}
-    model_name = _primary_env_name(MODEL_ENV_NAMES, provider)
-    base_url_name = _primary_env_name(BASE_URL_ENV_NAMES, provider)
-    api_key_name = _primary_env_name(API_KEY_ENV_NAMES, provider)
-
-    if model_name:
-        assignments[model_name] = (
-            options["model"]
-            or getattr(args, "model", None)
-            or existing.get(model_name)
-            or DEFAULT_MODELS.get(provider, "")
-        )
-    if base_url_name:
-        base_url = (
-            options["base_url"]
-            or getattr(args, "base_url", None)
-            or _host_override(args, provider)
-            or existing.get(base_url_name)
-            or DEFAULT_BASE_URLS.get(provider, "")
-        )
-        assignments[base_url_name] = validate_provider_base_url(base_url)
-
-    api_key_present = bool(api_key_name and existing.get(api_key_name))
+    assignments = {
+        API_URL_ENV_NAME: api_url,
+        API_KEY_ENV_NAME: api_key,
+    }
     try:
         with source_mutation_authority(
             Path.home() / ".pico" / "sandboxes",
@@ -158,29 +172,24 @@ def handle_init(tokens, cwd, args):
     data = {
         "workspace": workspace_info,
         "project_env": project_env,
-        "provider": provider,
+        "api_url": api_url,
+        "model": DEFAULT_MODEL,
+        "protocol": PROTOCOL_FAMILY,
+        "auth_mode": AUTH_MODE,
         "updated": written["updated"],
         "added": written["added"],
         "unchanged": written["unchanged"],
         "api_key": {
-            "present": api_key_present,
-            "name": api_key_name,
+            "present": True,
+            "name": API_KEY_ENV_NAME,
         },
-        "set_secret_command": (
-            f"pico config set-secret {api_key_name}"
-            if api_key_name and not api_key_present
-            else ""
-        ),
     }
     return print_result("config_init", data, args, _render_init)
 
 
 def _render_init(data):
     api_key = data["api_key"]
-    if api_key["name"]:
-        api_key_text = f"{'present' if api_key['present'] else 'missing'} ({api_key['name']})"
-    else:
-        api_key_text = "not required"
+    api_key_text = f"present ({api_key['name']})"
     changed = [*data["updated"], *data["added"]]
     lines = [
         "Pico init — Project .env configured",
@@ -193,59 +202,19 @@ def _render_init(data):
         _line("env scope", data["project_env"]["scope"]),
         _line("env status", data["project_env"]["status"]),
         "",
-        _line("provider", data["provider"]),
+        _line("api url", data["api_url"]),
+        _line("model", data["model"]),
+        _line("protocol", data["protocol"]),
+        _line("auth mode", data["auth_mode"]),
         _line("api key", api_key_text),
         _line("updated", ", ".join(changed) if changed else "-"),
     ]
-    if data.get("set_secret_command"):
-        lines.extend(("", _line("next", data["set_secret_command"])))
     return "\n".join(lines)
-
-
-def _parse_init_tokens(tokens):
-    options = {
-        "provider": None,
-        "model": None,
-        "base_url": None,
-    }
-    index = 0
-    while index < len(tokens):
-        token = tokens[index]
-        if token in {"--provider", "--model", "--base-url"}:
-            if index + 1 >= len(tokens):
-                raise _init_usage_error()
-            key = token[2:].replace("-", "_")
-            options[key] = tokens[index + 1]
-            index += 2
-            continue
-        for flag in ("--provider=", "--model=", "--base-url="):
-            if token.startswith(flag):
-                key = flag[2:-1].replace("-", "_")
-                options[key] = token[len(flag):]
-                break
-        else:
-            raise _init_usage_error()
-        index += 1
-    return options
 
 
 def _init_usage_error():
     return CliError(
         code="usage",
-        message="usage: pico init [--provider <name>] [--model <name>] [--base-url <url>]",
+        message="usage: pico init",
         exit_code=CLI_EXIT_USAGE,
     )
-
-
-def _primary_env_name(mapping, provider):
-    names = mapping.get(provider, ())
-    return names[0] if names else ""
-
-
-def _host_override(args, provider):
-    if provider != "ollama":
-        return None
-    host = getattr(args, "host", None)
-    if host and host != DEFAULT_BASE_URLS.get("ollama"):
-        return host
-    return None

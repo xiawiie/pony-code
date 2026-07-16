@@ -146,23 +146,29 @@ class _MemoryExperimentModelClient(FakeModelClient):
         prompt = "\n".join(message_content_text(message) for message in messages)
         if self.phase == "bootstrap_tool":
             self.phase = "bootstrap_final"
-            output = f'<tool>{{"name":"read_file","args":{{"path":"{self.filename}","start":1,"end":20}}}}</tool>'
+            output = {
+                "name": "read_file",
+                "args": {"path": self.filename, "start": 1, "end": 20},
+            }
         elif self.phase == "bootstrap_final":
             self.phase = "question"
-            output = "<final>Done.</final>"
+            output = "Done."
         elif self.phase == "question":
             self.followup_prompt = str(prompt)
             if _prompt_has_reusable_file_summary(prompt, self.expected_working_line):
-                output = f"<final>{self.expected_fact.capitalize()}.</final>"
+                output = f"{self.expected_fact.capitalize()}."
             else:
                 self.phase = "question_after_read"
                 self.followup_reads += 1
-                output = f'<tool>{{"name":"read_file","args":{{"path":"{self.filename}","start":1,"end":20}}}}</tool>'
+                output = {
+                    "name": "read_file",
+                    "args": {"path": self.filename, "start": 1, "end": 20},
+                }
         elif self.phase == "question_after_read":
             self.phase = "done"
-            output = f"<final>{self.expected_fact.capitalize()}.</final>"
+            output = f"{self.expected_fact.capitalize()}."
         else:
-            output = f"<final>{self.expected_fact.capitalize()}.</final>"
+            output = f"{self.expected_fact.capitalize()}."
         self.outputs.append(output)
         return super().complete(
             system=system,

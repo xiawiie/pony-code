@@ -18,8 +18,7 @@ import zipfile
 PROJECT_NAME = "pico"
 PROJECT_VERSION = "0.1.0"
 PROJECT_SUMMARY = (
-    "Small local coding agent for DeepSeek, OpenAI-compatible, "
-    "Anthropic-compatible, and Ollama models"
+    "Small local coding agent using DeepSeek via OpenAI Chat Completions"
 )
 PACKAGE_DATA_FILES = {
     "pico/_docker_sandbox/image-manifest.json",
@@ -294,7 +293,7 @@ def install_smoke(wheel: Path) -> None:
         ).strip()
         assert resources_after == resources_before
         _run(str(pico), "--help", cwd=cwd, env=env)
-        _run(str(pico), "doctor", "--offline", cwd=cwd, env=env)
+        _run(str(pico), "doctor", cwd=cwd, env=env)
 
 
 def offline_bundle_smoke(wheel: Path) -> None:

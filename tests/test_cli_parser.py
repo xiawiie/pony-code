@@ -63,7 +63,7 @@ def test_run_accepts_option_like_prompt_after_separator():
 @pytest.mark.parametrize(
     ("argv", "command_args"),
     (
-        (["doctor", "--offline"], ["--offline"]),
+        (["doctor", "--check-api"], ["--check-api"]),
         (["sandbox", "prune", "--apply"], ["prune", "--apply"]),
         (["config", "set-secret", "NAME", "--stdin"], ["set-secret", "NAME", "--stdin"]),
     ),

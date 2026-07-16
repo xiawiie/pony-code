@@ -1,35 +1,29 @@
 """Read-only diagnostics for Pico's explicit CLI commands."""
 
 import getpass
-import json
 import os
 import stat
 import subprocess
 import sys
 from pathlib import Path
-from urllib import error, request
-from urllib.parse import urljoin, urlsplit, urlunsplit
+from urllib.parse import urlsplit, urlunsplit
 
 from . import security as securitylib
 from .cli_errors import CLI_EXIT_CONFIG, CLI_EXIT_USAGE, CliError
 from .cli_output import build_inspection_redactor, print_result
 from .config import (
-    ENV_KEY_PATTERN,
+    API_KEY_ENV_NAME,
     project_env_metadata,
     project_env_path,
     read_project_env_with_status,
-    resolve_provider_config,
+    resolve_model_config,
     write_project_env_assignments,
 )
-from .providers.defaults import DEFAULT_BASE_URLS, DEFAULT_MODELS, DEFAULT_PROVIDER  # noqa: F401
-from .security import is_secret_env_name, require_directory_no_symlink
+from .security import require_directory_no_symlink
 from .safe_subprocess import build_trusted_executables
 from .sandbox_session import source_mutation_authority
 from .memory.diagnostics import collect_memory_diagnostics
 from .workspace import WorkspaceContext
-
-_DEFAULT_CHECK_PROVIDER_CONNECTIVITY = None
-
 
 def _doctor_check(status, reason_code, remediation=""):
     return {
@@ -189,9 +183,10 @@ def collect_status(cwd, args=None):
             "runs": _storage_exists(runs_root),
             "checkpoints": _storage_exists(checkpoint_records_root),
         },
-        "provider": {
-            "provider": config["provider"],
+        "model": {
+            "protocol": config["protocol"],
             "model": config["model"],
+            "base_url": config["base_url"],
             "api_key": config["api_key"],
         },
         "latest": {
@@ -208,18 +203,21 @@ def collect_config(cwd, args=None):
     project_env, project_env_info = _read_project_env_for_diagnostics(
         workspace.repo_root
     )
-    config = resolve_provider_config(
-        explicit=_explicit_provider_values(args),
+    config = resolve_model_config(
         project_env=project_env,
         process_env=dict(os.environ),
+        required=False,
     )
     api_key = config["api_key"]
     return {
         "workspace": {"repo_root": workspace.repo_root},
         "project_env": project_env_info,
-        "provider": config["provider"],
+        "protocol": config["protocol"],
         "model": config["model"],
-        "base_url": config["base_url"],
+        "base_url": {
+            **config["base_url"],
+            "value": _redact_url_for_diagnostics(config["base_url"]["value"]),
+        },
         "api_key": {
             "present": bool(api_key["value"]),
             "source": api_key["source"],
@@ -228,27 +226,27 @@ def collect_config(cwd, args=None):
     }
 
 
-def collect_doctor(cwd, args=None, offline=False):
+def collect_doctor(cwd, args=None, check_api=False):
     try:
         workspace = WorkspaceContext.build(cwd)
     except (OSError, RuntimeError, ValueError):
         try:
             workspace = WorkspaceContext.build(cwd, executables={})
         except (OSError, RuntimeError, ValueError):
-            return _unavailable_workspace_doctor(offline=offline)
+            return _unavailable_workspace_doctor()
     root = Path(workspace.repo_root)
     pico_root = root / ".pico"
     project_env, project_env_info = _read_project_env_for_diagnostics(
         workspace.repo_root
     )
-    resolved = resolve_provider_config(
-        explicit=_explicit_provider_values(args),
+    resolved = resolve_model_config(
         project_env=project_env,
         process_env=dict(os.environ),
+        required=False,
     )
     api_key = resolved["api_key"]
     config = {
-        "provider": resolved["provider"],
+        "protocol": resolved["protocol"],
         "model": resolved["model"],
         "api_key": {
             "present": bool(api_key["value"]),
@@ -259,19 +257,24 @@ def collect_doctor(cwd, args=None, offline=False):
     }
     diagnostic_base_url = dict(config["base_url"])
     diagnostic_base_url["value"] = _redact_url_for_diagnostics(diagnostic_base_url["value"])
-    checker = check_provider_connectivity
-    provider_connectivity = (
-        {"status": "skipped", "category": "provider_connectivity", "message": "offline mode"}
-        if offline or checker is _DEFAULT_CHECK_PROVIDER_CONNECTIVITY
-        else checker(config)
-    )
+    if not check_api:
+        api_check = {
+            "status": "skipped",
+            "category": "api_protocol",
+            "message": "explicit --check-api not requested",
+        }
+    else:
+        api_check = check_api_connectivity(
+            {**config, "api_key": resolved["api_key"]},
+            args=args,
+        )
     checkpoints_root = pico_root / "checkpoints"
     security = _collect_security_status(
         root,
         project_env_info,
         pico_root,
     )
-    sandbox = _collect_docker_sandbox_diagnostic(offline=offline)
+    sandbox = _collect_docker_sandbox_diagnostic(offline=True)
     try:
         memory = collect_memory_diagnostics(
             root,
@@ -303,15 +306,15 @@ def collect_doctor(cwd, args=None, offline=False):
         "project_env": project_env_info,
         "config": {
             "status": "ok",
-            "provider": config["provider"],
+            "protocol": config["protocol"],
             "model": config["model"],
             "base_url": diagnostic_base_url,
         },
         "credentials": {
-            "status": "ok" if config["api_key"]["present"] or config["provider"]["value"] == "ollama" else "missing",
+            "status": "ok" if config["api_key"]["present"] else "missing",
             "api_key": config["api_key"],
         },
-        "provider_connectivity": provider_connectivity,
+        "api_check": api_check,
         "storage": {
             "sessions": _storage_status(pico_root / "sessions"),
             "runs": _storage_status(pico_root / "runs"),
@@ -325,9 +328,8 @@ def collect_doctor(cwd, args=None, offline=False):
     }
 
 
-def _unavailable_workspace_doctor(*, offline):
-    connectivity_message = "offline mode" if offline else "workspace unavailable"
-    sandbox = _collect_docker_sandbox_diagnostic(offline=offline)
+def _unavailable_workspace_doctor():
+    sandbox = _collect_docker_sandbox_diagnostic(offline=True)
     return {
         "workspace": {"status": "review_required", "repo_root": ""},
         "project_env": {
@@ -337,7 +339,7 @@ def _unavailable_workspace_doctor(*, offline):
         },
         "config": {
             "status": "review_required",
-            "provider": {"value": "", "source": "unavailable", "name": ""},
+            "protocol": {"value": "", "source": "unavailable", "name": ""},
             "model": {"value": "", "source": "unavailable", "name": ""},
             "base_url": {"value": "", "source": "unavailable", "name": ""},
         },
@@ -345,10 +347,10 @@ def _unavailable_workspace_doctor(*, offline):
             "status": "review_required",
             "api_key": {"present": False, "source": "unavailable", "name": ""},
         },
-        "provider_connectivity": {
+        "api_check": {
             "status": "skipped",
-            "category": "provider_connectivity",
-            "message": connectivity_message,
+            "category": "api_protocol",
+            "message": "workspace unavailable",
         },
         "storage": {
             "sessions": "review_required",
@@ -382,21 +384,22 @@ def handle_status(cwd, args):
     redactor = build_inspection_redactor(data["workspace"]["repo_root"], args)
     data["workspace"] = redactor(data["workspace"])
     data["latest"] = redactor(data["latest"])
-    data["provider"] = _redact_mapping_values(data["provider"], redactor)
+    data["model"] = _redact_mapping_values(data["model"], redactor)
     return print_result("status", data, args, _render_status)
 
 
 def handle_doctor(tokens, cwd, args):
-    offline = False
-    if tokens == ["--offline"]:
-        offline = True
-    elif tokens:
+    if list(tokens) not in ([], ["--check-api"]):
         raise CliError(
             code="usage",
-            message="usage: pico doctor [--offline]",
+            message="usage: pico doctor [--check-api]",
             exit_code=CLI_EXIT_USAGE,
         )
-    data = collect_doctor(cwd, args, offline=offline)
+    data = collect_doctor(
+        cwd,
+        args,
+        check_api=bool(tokens),
+    )
     repo_root = data["workspace"]["repo_root"]
     if not repo_root:
         redactor = securitylib.redact_artifact
@@ -409,7 +412,7 @@ def handle_doctor(tokens, cwd, args):
     data["project_env"] = redactor(data["project_env"])
     data["config"] = _redact_mapping_values(data["config"], redactor)
     data["credentials"] = _redact_mapping_values(data["credentials"], redactor)
-    data["provider_connectivity"] = redactor(data["provider_connectivity"])
+    data["api_check"] = redactor(data["api_check"])
     sandbox = data.get("sandbox", {})
     runtime_authorization = sandbox.get("runtime_authorization", {})
     readiness_authorization = (sandbox.get("readiness") or {}).get(
@@ -492,10 +495,10 @@ def _handle_set_secret(tokens, cwd, args):
     if len(tokens) not in {1, 2} or (len(tokens) == 2 and tokens[1] != "--stdin"):
         raise _config_usage_error()
     name = tokens[0]
-    if not ENV_KEY_PATTERN.fullmatch(name) or not is_secret_env_name(name):
+    if name != API_KEY_ENV_NAME:
         raise CliError(
             code="usage",
-            message="secret environment variable name required",
+            message=f"expected {API_KEY_ENV_NAME}",
             exit_code=CLI_EXIT_USAGE,
         )
 
@@ -516,7 +519,7 @@ def _handle_set_secret(tokens, cwd, args):
         ) from exc
     if value.endswith("\n"):
         value = value[:-1]
-    if not value or any(char in value for char in ("\0", "\r", "\n")):
+    if not value.strip() or any(char in value for char in ("\0", "\r", "\n")):
         raise CliError(
             code="usage",
             message="secret input must be one non-empty line",
@@ -563,89 +566,51 @@ def _handle_set_secret(tokens, cwd, args):
     )
 
 
-def check_provider_connectivity(config, timeout=2):
-    provider = config["provider"]["value"]
+def check_api_connectivity(config, timeout=2, args=None):
+    """Run the explicit text/tool/tool-result API probe."""
     base_url = config.get("base_url", {}).get("value", "")
-    url = _connectivity_url(provider, base_url)
-    diagnostic_url = _redact_url_for_diagnostics(url)
+    result = {
+        "status": "error",
+        "category": "api_protocol",
+        "endpoint": _redact_url_for_diagnostics(base_url),
+        "model_calls": 0,
+    }
+    if not config.get("api_key", {}).get("value"):
+        return {**result, "reason_code": "api_key_not_configured"}
     try:
-        response = request.urlopen(url, timeout=timeout)
-        with response:
-            result = {
-                "status": "ok",
-                "category": "provider_connectivity",
-                "url": diagnostic_url,
-                "http_status": response.status,
-            }
-            if provider == "ollama":
-                return _check_ollama_model(config, response, result)
-            return result
-    except error.HTTPError as exc:
-        status = "ok" if 400 <= exc.code < 500 else "error"
-        return {
-            "status": status,
-            "category": "provider_connectivity",
-            "url": diagnostic_url,
-            "http_status": exc.code,
-            "message": f"provider endpoint responded with HTTP {exc.code}",
-        }
+        from .providers.openai_chat import OpenAIChatCompletionsModelClient
+        from .providers.probe import probe_model_client
+
+        client = OpenAIChatCompletionsModelClient(
+            model=config["model"]["value"],
+            base_url=base_url,
+            api_key=config["api_key"]["value"],
+            temperature=None,
+            timeout=getattr(args, "request_timeout_seconds", timeout),
+            compatibility="deepseek",
+            auth_mode="bearer",
+            capabilities={},
+        )
+        report = probe_model_client(client)
     except Exception as exc:
         return {
-            "status": "error",
-            "category": "provider_connectivity",
-            "url": diagnostic_url,
-            "message": f"{type(exc).__name__}: provider connectivity check failed",
-        }
-
-
-_DEFAULT_CHECK_PROVIDER_CONNECTIVITY = check_provider_connectivity
-
-
-def _check_ollama_model(config, response, result):
-    model = str(config.get("model", {}).get("value", "")).strip()
-    try:
-        payload = json.loads(response.read(1_048_577))
-        models = payload["models"]
-        if not isinstance(models, list):
-            raise TypeError("models must be a list")
-        installed = {
-            value
-            for item in models
-            if isinstance(item, dict)
-            for value in (item.get("name"), item.get("model"))
-            if isinstance(value, str)
-        }
-    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
-        return {
             **result,
-            "status": "error",
-            "message": "Ollama model inventory response was invalid",
+            "reason_code": str(getattr(exc, "code", "api_check_failed")),
+            "http_status": getattr(exc, "http_status", None),
         }
-    if model not in installed:
-        return {
-            **result,
-            "status": "error",
-            "message": "configured Ollama model is not installed",
-            "model_status": "missing",
-        }
-    return {**result, "model_status": "available"}
-
-
-def _explicit_provider_values(args):
-    if args is None:
-        return {}
-    return {
-        "provider": getattr(args, "provider", None),
-        "model": getattr(args, "model", None),
-        "base_url": getattr(args, "base_url", None),
-        "host": getattr(args, "host", None),
+    output = {
+        **result,
+        "status": report["status"],
+        "category": report["category"],
+        "reason_code": "api_verified" if report["status"] == "ok" else report["category"],
+        "stage": report["stage"],
+        "model_calls": report["model_calls"],
     }
-
-
-def _connectivity_url(provider, base_url):
-    if provider == "ollama":
-        return urljoin(base_url.rstrip("/") + "/", "api/tags")
-    return base_url
+    if report.get("http_status") is not None:
+        output["http_status"] = report["http_status"]
+    if report.get("error_code"):
+        output["error_code"] = report["error_code"]
+    return output
 
 
 def _redact_url_for_diagnostics(value):
@@ -664,7 +629,7 @@ def _redact_url_for_diagnostics(value):
         netloc = host
         if parts.port is not None:
             netloc = f"{netloc}:{parts.port}"
-        return urlunsplit((parts.scheme, netloc, parts.path, "", ""))
+        return urlunsplit((parts.scheme, netloc, parts.path.rstrip("/"), "", ""))
     except ValueError:
         return "[redacted-url]"
 
@@ -898,10 +863,10 @@ def _render_config(data):
         _line("scope", data["project_env"]["scope"]),
         _line("status", data["project_env"]["status"]),
         "",
-        "Provider",
-        _line("provider", _value_with_source(data["provider"])),
+        "Model",
+        _line("protocol", _value_with_source(data["protocol"])),
         _line("model", _value_with_source(data["model"])),
-        _line("base url", _value_with_source(data["base_url"])),
+        _line("api url", _value_with_source(data["base_url"])),
         "",
         "Credentials",
         _line("api key", _presence_text(data["api_key"])),
@@ -932,7 +897,7 @@ def _render_set_secret(data):
 def _render_doctor(data):
     config = data["config"]
     credentials = data["credentials"]
-    connectivity = data["provider_connectivity"]
+    connectivity = data["api_check"]
     storage = data["storage"]
     security = data["security"]
     security_executables = security["trusted_executables"]
@@ -952,9 +917,9 @@ def _render_doctor(data):
         _line("status", data["project_env"]["status"]),
         "",
         "Config",
-        _line("provider", _value_with_source(config["provider"])),
+        _line("protocol", _value_with_source(config["protocol"])),
         _line("model", _value_with_source(config["model"])),
-        _line("base url", _value_with_source(config["base_url"])),
+        _line("api url", _value_with_source(config["base_url"])),
         "",
         "Credentials",
         _line("api key", _presence_text(credentials["api_key"])),
@@ -1022,13 +987,16 @@ def _render_doctor(data):
         _line("partial", recovery_review["unreviewed_partial_count"]),
         _line("invalid", recovery_review["invalid_mutation_count"]),
         "",
-        "Provider connectivity",
+        "API check",
         _line("status", connectivity.get("status", "-")),
+        _line("reason", connectivity.get("reason_code", "-") or "-"),
+        _line("stage", connectivity.get("stage", "-") or "-"),
+        _line("model calls", connectivity.get("model_calls", 0)),
     ]
     if connectivity.get("http_status") is not None:
         lines.append(_line("http", connectivity["http_status"]))
-    if connectivity.get("url"):
-        lines.append(_line("url", connectivity["url"]))
+    if connectivity.get("endpoint"):
+        lines.append(_line("endpoint", connectivity["endpoint"]))
     if connectivity.get("message"):
         lines.append(_line("message", connectivity["message"]))
     hints = ((data.get("project_docs") or {}).get("hints")) or []
@@ -1052,10 +1020,11 @@ def _render_status(data):
         _line("branch", data["workspace"]["branch"]),
         _line("git status", data["workspace"]["status"]),
         "",
-        "Provider",
-        _line("provider", _value_with_source(data["provider"]["provider"])),
-        _line("model", _value_with_source(data["provider"]["model"])),
-        _line("api key", _presence_text(data["provider"]["api_key"])),
+        "Model",
+        _line("protocol", _value_with_source(data["model"]["protocol"])),
+        _line("model", _value_with_source(data["model"]["model"])),
+        _line("api url", _value_with_source(data["model"]["base_url"])),
+        _line("api key", _presence_text(data["model"]["api_key"])),
         "",
         "Storage",
         _line("sessions", _ok_missing(data["storage"]["sessions"])),

@@ -6,7 +6,7 @@ Pico 是一个面向代码仓库的轻量本地 coding-agent harness。它从当
 Pico 适合排查测试失败、实施小步代码改动、审阅仓库和继续先前任务。它不是聊天 UI 或 IDE，也不会替代 Git。
 默认运行保持 Host 行为。Docker + filtered staging 架构已由 ADR-0040 接受；ADR-0042允许在当前安装树、
 packaged image合同和本机Docker均精确验证时用sealed local authorization显式运行`--sandbox`。任一验证失败都在
-Provider/target前fail closed，且不会回退Host runner。
+模型请求/target前fail closed，且不会回退Host runner。
 
 ## 安装
 
@@ -25,13 +25,18 @@ pico --help
 
 ## 最短使用路径
 
-在仓库根目录创建非敏感配置，并通过安全输入写入凭证：
+在仓库根目录交互配置 API URL 与凭证：
 
 ```bash
 pico init
-pico config set-secret PICO_DEEPSEEK_API_KEY --stdin
-pico doctor --offline
+pico doctor
 ```
+
+`init` 只在本地校验并原子写入 `.env`，不会联网。URL 留空时使用
+`https://api.deepseek.com`，API Key 通过隐藏输入保存。Pico 固定使用
+`deepseek-v4-flash`、OpenAI Chat Completions 与 Bearer 认证；第三方兼容服务只需输入其精确 API 根地址。
+普通 `doctor` 不联网；只有显式执行 `pico doctor --check-api` 才会验证文本、工具调用和 tool result 续接，
+并可能产生少量费用。
 
 显式运行一次任务或进入交互模式：
 
@@ -45,7 +50,11 @@ python -m pico repl
 
 ## 能力与限制
 
-- 支持 DeepSeek、Anthropic-compatible、OpenAI-compatible 与 Ollama transport。
+- CLI 只有一条模型路径：`deepseek-v4-flash` + OpenAI Chat Completions。没有 Provider、Profile、Connection、
+  Compatibility 或 API 类型选择。
+- `PICO_API_URL` 是精确 API 根；客户端只追加 `/chat/completions`，不会补 `/v1`，也不会探测、降级或切换模型。
+- API Key 只读取 `PICO_DEEPSEEK_API_KEY`。项目 `.env` 优先于进程环境，旧配置变量不会激活运行时。
+- Anthropic Messages、OpenAI Responses 与 Ollama client 仍作为内部实现和测试对象保留，但不接入本轮 CLI。
 - Canonical Messages 是唯一会话 transcript；run、trace、checkpoint 和 tool-change 都保留本地证据。
 - 文件访问、私有存储、secret redaction、shell policy 和恢复冲突检查是 runtime 边界的一部分。
 - Memory 分为用户维护的 User Notes 和 agent 追加的 Agent Notes。
@@ -60,7 +69,7 @@ python -m pico repl
 - 使用 `pico runs summary latest` 查看最近一次 Run 的低敏感摘要；指定 Run 时将 `latest` 替换为 `run_id`。
 - 未显式启用 Sandbox 时，经审批的复杂 shell 仍具有当前用户权限；本机Sandbox是受限container边界，不是
   microVM或hostile multi-tenant隔离。
-- 真实 Provider 验证会产生网络请求和费用，必须单独授权；离线诊断不会连接 Provider。
+- `doctor --check-api` 会产生网络请求和费用；普通 `doctor` 始终离线。
 
 ## 维护者入口
 
@@ -70,5 +79,3 @@ python -m pico repl
 - [恢复](docs/recovery.md)
 - [验证](docs/verification.md)
 - [Memory](docs/memory.md)
-
-![Pico CLI help](assets/screenshots/pico-help.png)

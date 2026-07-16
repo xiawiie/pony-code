@@ -1,6 +1,9 @@
 """Shared provider helpers."""
 
 from http.client import HTTPException, RemoteDisconnected
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
+import hashlib
 import ipaddress
 import json
 import math
@@ -15,11 +18,24 @@ MAX_PROVIDER_RESPONSE_BYTES = 16 * 1024 * 1024
 class _ProviderFailure(RuntimeError):
     """Safe internal provider failure used by AgentLoop retry policy."""
 
-    def __init__(self, message, *, code, http_status=None, retryable=False):
+    def __init__(
+        self,
+        message,
+        *,
+        code,
+        http_status=None,
+        retryable=False,
+        retry_after=None,
+    ):
         super().__init__(message)
         self.code = str(code)
         self.http_status = http_status if type(http_status) is int else None
         self.retryable = bool(retryable)
+        self.retry_after = (
+            min(10.0, max(0.0, float(retry_after)))
+            if type(retry_after) in {int, float}
+            else None
+        )
 
 
 class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -35,11 +51,50 @@ def _provider_urlopen(request, timeout):
     return _PROVIDER_OPENER.open(request, timeout=timeout)
 
 
-def _normalize_versioned_base_url(base_url):
-    base = str(base_url).rstrip("/")
-    if not base.endswith("/v1"):
-        base += "/v1"
-    return base
+def _resource_url(base_url, resource):
+    return str(base_url).rstrip("/") + "/" + str(resource).lstrip("/")
+
+
+def _model_binding(protocol_family, model, base_url):
+    endpoint_hash = hashlib.sha256(str(base_url).encode("utf-8")).hexdigest()
+    return {
+        "protocol_family": str(protocol_family),
+        "model": str(model),
+        "endpoint_hash": f"sha256:{endpoint_hash}",
+    }
+
+
+def _model_runtime_metadata(protocol_family, model, base_url):
+    parsed = urllib.parse.urlsplit(str(base_url))
+    host = parsed.hostname or ""
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    netloc = host
+    if parsed.port is not None:
+        netloc = f"{netloc}:{parsed.port}"
+    return {
+        "protocol_family": str(protocol_family),
+        "requested_model": str(model),
+        "effective_model": str(model),
+        "endpoint_origin": urllib.parse.urlunsplit(
+            (parsed.scheme, netloc, "", "", "")
+        ),
+    }
+
+
+def _record_effective_model(client, data):
+    value = data.get("model")
+    if value is None:
+        return
+    if (
+        not isinstance(value, str)
+        or not value
+        or value != value.strip()
+        or len(value) > 200
+        or any(character in value for character in ("\0", "\r", "\n"))
+    ):
+        raise ValueError("invalid response model")
+    client.provider_metadata["effective_model"] = value
 
 
 def _validate_header_value(name, value):
@@ -54,7 +109,13 @@ def _validate_header_value(name, value):
         ) from exc
 
 
-def _validate_provider_credentials(base_url, api_key, *, family):
+def _validate_provider_credentials(
+    base_url,
+    api_key,
+    *,
+    family,
+    required=True,
+):
     key = str(api_key or "")
     parsed = urllib.parse.urlsplit(str(base_url))
     host = parsed.hostname or ""
@@ -64,7 +125,7 @@ def _validate_provider_credentials(base_url, api_key, *, family):
             loopback = ipaddress.ip_address(host).is_loopback
         except ValueError:
             pass
-    if not key.strip() and not loopback:
+    if required and not key.strip():
         raise _ProviderFailure(
             f"{family} request failed: missing_credentials",
             code="missing_credentials",
@@ -79,6 +140,28 @@ def _validate_provider_credentials(base_url, api_key, *, family):
             f"{family} request failed: insecure_credentials",
             code="invalid_configuration",
         )
+
+
+def _provider_auth_headers(base_url, api_key, *, auth_mode, family):
+    if auth_mode not in {"x-api-key", "bearer", "none"}:
+        raise _ProviderFailure(
+            f"{family} request failed: invalid_auth_mode",
+            code="invalid_configuration",
+        )
+    _validate_provider_credentials(
+        base_url,
+        api_key,
+        family=family,
+        required=auth_mode != "none",
+    )
+    if auth_mode == "none":
+        return {}
+    if auth_mode == "x-api-key":
+        _validate_header_value(f"{family} API key", api_key)
+        return {"x-api-key": str(api_key)}
+    authorization = f"Bearer {api_key}"
+    _validate_header_value(f"{family} authorization", authorization)
+    return {"Authorization": authorization}
 
 
 def _validate_number(name, value, *, minimum, maximum=None, integer=False):
@@ -118,6 +201,7 @@ def _open_provider_request(client, request, *, family, retryable):
             headers = getattr(response, "headers", {}) or {}
     except urllib.error.HTTPError as exc:
         status = int(exc.code)
+        retry_after = _retry_after_seconds(getattr(exc, "headers", None))
         try:
             exc.close()
         except Exception:
@@ -134,7 +218,8 @@ def _open_provider_request(client, request, *, family, retryable):
             f"{family} request failed with HTTP {status}",
             code=code,
             http_status=status,
-            retryable=retryable and code == "http_5xx",
+            retryable=retryable and code in {"rate_limited", "http_5xx"},
+            retry_after=retry_after if code == "rate_limited" else None,
         ) from None
     except (urllib.error.URLError, HTTPException, OSError) as exc:
         raise _network_failure(family, exc, retryable=retryable) from None
@@ -144,6 +229,25 @@ def _open_provider_request(client, request, *, family, retryable):
             code="response_too_large",
         )
     return body, headers
+
+
+def _retry_after_seconds(headers):
+    if headers is None:
+        return None
+    value = headers.get("Retry-After", "")
+    try:
+        seconds = float(str(value).strip())
+    except ValueError:
+        try:
+            target = parsedate_to_datetime(str(value))
+            if target.tzinfo is None:
+                target = target.replace(tzinfo=timezone.utc)
+            seconds = (target - datetime.now(timezone.utc)).total_seconds()
+        except (TypeError, ValueError, OverflowError):
+            return None
+    if not math.isfinite(seconds):
+        return None
+    return min(10.0, max(0.0, seconds))
 
 
 def _decode_json_object(body):
@@ -165,22 +269,6 @@ def _mapping_or_empty(value):
     if not isinstance(value, dict):
         raise ValueError("response field must be an object")
     return value
-
-
-def _iter_sse_data_payloads(lines):
-    for raw_line in lines:
-        if isinstance(raw_line, bytes):
-            line = raw_line.decode("utf-8")
-        elif isinstance(raw_line, str):
-            line = raw_line
-        else:
-            raise ValueError("invalid event stream line")
-        line = line.strip()
-        if not line.startswith("data:"):
-            continue
-        payload = line[len("data:"):].strip()
-        if payload:
-            yield payload
 
 
 def _extract_usage_cache_details(data):

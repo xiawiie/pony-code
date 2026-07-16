@@ -1,7 +1,5 @@
 from pathlib import Path
 
-import pytest
-
 from pico.cli_diagnostics import collect_doctor
 from pico.docker_sandbox import DockerSandboxError
 
@@ -71,7 +69,7 @@ def test_doctor_reports_docker_unavailable_without_creating_state(
         ),
     )
 
-    sandbox = collect_doctor(tmp_path, offline=True)["sandbox"]
+    sandbox = collect_doctor(tmp_path)["sandbox"]
 
     assert sandbox["status"] == "not_ready"
     assert sandbox["reason_code"] == "docker_cli_unavailable"
@@ -99,7 +97,7 @@ def test_doctor_uses_local_authorization_when_docker_is_ready(tmp_path, monkeypa
         _ready_status,
     )
 
-    sandbox = collect_doctor(tmp_path, offline=True)["sandbox"]
+    sandbox = collect_doctor(tmp_path)["sandbox"]
 
     assert sandbox["status"] == "ready"
     assert sandbox["reason_code"] == "ready"
@@ -119,7 +117,7 @@ def test_doctor_reports_unknown_sandbox_state_without_disclosing_paths(
         lambda: _ready_status(capacity=capacity),
     )
 
-    sandbox = collect_doctor(tmp_path, offline=True)["sandbox"]
+    sandbox = collect_doctor(tmp_path)["sandbox"]
 
     assert sandbox["checks"]["state_integrity"] == {
         "status": "review_required",
@@ -138,39 +136,38 @@ def test_doctor_maps_unexpected_sandbox_error_to_fixed_reason(
         lambda: (_ for _ in ()).throw(RuntimeError("private detail")),
     )
 
-    sandbox = collect_doctor(tmp_path, offline=True)["sandbox"]
+    sandbox = collect_doctor(tmp_path)["sandbox"]
 
     assert sandbox["reason_code"] == "sandbox_diagnostic_failed"
     assert sandbox["readiness"]["reason_code"] == "sandbox_diagnostic_failed"
     assert "private detail" not in str(sandbox)
 
 
-def test_online_doctor_does_not_use_http_for_sandbox_status(tmp_path, monkeypatch):
+def test_default_doctor_does_not_use_http_for_sandbox_status(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "pico.cli_docker_sandbox.sandbox_status_payload",
         _ready_status,
     )
     monkeypatch.setattr(
-        "pico.cli_diagnostics.request.urlopen",
+        "pico.cli_diagnostics.check_api_connectivity",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("doctor must not network")
         ),
     )
 
-    data = collect_doctor(tmp_path, offline=False)
+    data = collect_doctor(tmp_path)
 
-    assert data["provider_connectivity"]["status"] == "skipped"
+    assert data["api_check"]["status"] == "skipped"
     assert data["sandbox"]["reason_code"] == "ready"
 
 
-@pytest.mark.parametrize("offline", (False, True))
-def test_doctor_sandbox_shape_is_stable(tmp_path, monkeypatch, offline):
+def test_doctor_sandbox_shape_is_stable(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "pico.cli_docker_sandbox.sandbox_status_payload",
         _ready_status,
     )
 
-    sandbox = collect_doctor(tmp_path, offline=offline)["sandbox"]
+    sandbox = collect_doctor(tmp_path)["sandbox"]
 
     assert set(sandbox) == {
         "status",

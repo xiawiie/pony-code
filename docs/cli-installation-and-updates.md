@@ -18,7 +18,7 @@ pico --help
 以这条命令的结果为准。不能激活环境时使用：
 
 ```bash
-uv run pico doctor --offline
+uv run pico doctor
 uv run pico run "inspect the repository"
 ```
 
@@ -30,26 +30,40 @@ python3 -m venv /tmp/pico-venv
 source /tmp/pico-venv/bin/activate
 python -m pip install --no-deps dist/pico-0.1.0-py3-none-any.whl
 command -v pico
-pico doctor --offline
+pico doctor
 ```
 
 ## 项目配置与凭证
 
-Pico 只读取当前 lexical repository root 的 `.env`。推荐先写非敏感配置，再通过 stdin 写 secret：
+Pico 只读取当前 lexical repository root 的 `.env`。推荐通过交互式初始化同时配置精确 API 根和凭证：
 
 ```bash
 pico init
-printf '%s' "$PROVIDER_KEY" | pico config set-secret PICO_DEEPSEEK_API_KEY --stdin
 chmod 600 .env
-pico doctor --offline
+pico doctor
 ```
 
-不要把真实 key 写入 shell history、命令参数、文档或测试 fixture。通用 `PICO_API_KEY` 只作为
-DeepSeek、Anthropic-compatible 与 OpenAI-compatible 各自 resolver 的共享 fallback；Provider 不会借用
-另一个 Provider 的专用 key。Ollama 不需要 API key。
+`init` 依次询问 API URL 和 API Key。URL 留空时使用 `https://api.deepseek.com`；Key 使用隐藏输入，已有 Key
+时直接回车即可保留。`init` 只做本地校验和原子写入，不发送 API 请求。若只需轮换凭证，可运行：
 
-配置优先级为显式 CLI 参数、Project Environment、当前进程环境、代码默认值。`pico.toml` 只用
-stdlib TOML parser 在一个 Pico 实例构造时读取一次；malformed 文件整份回退默认值。
+```bash
+pico config set-secret PICO_DEEPSEEK_API_KEY
+```
+
+最终模型配置只有：
+
+```dotenv
+PICO_API_URL=https://api.deepseek.com
+PICO_DEEPSEEK_API_KEY=
+```
+
+模型固定为 `deepseek-v4-flash`，协议固定为 OpenAI Chat Completions，认证固定为 Bearer。`PICO_API_URL`
+必须是精确 API 根，Pico 只追加 `/chat/completions`，不自动补 `/v1`。第三方服务必须兼容相同协议和认证。
+URL 禁止 query、fragment、userinfo 或嵌入凭据；除 loopback 外只允许 HTTPS。
+
+项目 `.env` 优先于当前进程环境；只读取上述两个运行时变量，不回退标准厂商 Key 或旧 Pico 配置。
+不要把真实 Key 写入 shell history、命令参数、文档或测试 fixture。普通 `pico doctor` 不联网；仅
+`pico doctor --check-api` 执行可能产生费用的文本、工具调用与 tool result 续接验证。
 
 ## 更新
 
@@ -59,7 +73,7 @@ stdlib TOML parser 在一个 Pico 实例构造时读取一次；malformed 文件
 git pull --ff-only
 uv lock --check
 uv sync --frozen --dev
-pico doctor --offline
+pico doctor
 ```
 
 修改 `pyproject.toml`、切换分支或 console entry 变化后必须重新同步。不要手工修改 `.venv/bin/pico`。
@@ -68,7 +82,7 @@ pico doctor --offline
 ## Docker Sandbox
 
 普通`run/repl`不下载Sandbox。显式`--sandbox`每次生成sealed local authorization并验证当前安装树、packaged
-image合同和本机Docker；任一失败都发生在Provider、Session staging和target之前，且不会回退Host。状态命令可用：
+image合同和本机Docker；任一失败都发生在模型请求、Session staging和target之前，且不会回退Host。状态命令可用：
 
 ```bash
 pico --format json sandbox status
@@ -131,6 +145,6 @@ python -m pico --help
 如果环境损坏，可删除并重建生成的 `.venv`，然后重新执行 `uv sync --frozen --dev`。这不会删除
 仓库 `.pico/`、`~/.pico/` 或 recovery backup。
 
-如果 `doctor --offline` 报告 `review_required`，先检查 `.env` 权限、trusted executable、private store
+如果 `doctor` 报告 `review_required`，先检查 `.env` 权限、trusted executable、private store
 和 pending recovery evidence。不要通过降低权限检查或删除记录来让诊断变绿；处理方法见
 [安全](security.md)与[恢复](recovery.md)。

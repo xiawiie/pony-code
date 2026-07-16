@@ -16,7 +16,7 @@ def _build_agent(tmp_path):
     workspace = WorkspaceContext.build(tmp_path)
     store = SessionStore(tmp_path / ".pico" / "sessions")
     return Pico(
-        model_client=FakeModelClient(["<final>done</final>"]),
+        model_client=FakeModelClient(["done"]),
         workspace=workspace,
         session_store=store,
         approval_policy="auto",

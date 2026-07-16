@@ -43,9 +43,9 @@ class _RecoveryScenarioModelClient(FakeModelClient):
         )
         prompt_lower = request_text.lower()
         if all(fragment in prompt_lower for fragment in self.required_fragments):
-            output = f"<final>{self.success_answer}</final>"
+            output = self.success_answer
         else:
-            output = "<final>missing recovery state.</final>"
+            output = "missing recovery state."
         self.outputs.append(output)
         return super().complete(
             system=system,

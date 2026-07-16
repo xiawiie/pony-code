@@ -899,17 +899,15 @@ def test_post_prompt_reassessment_blocks_filesystem_swap_without_second_prompt(
 
 def test_decoded_secret_tool_action_is_blocked_before_prompt_and_runner(tmp_path):
     secret = "opaque-decoded-token-123456789"
-    tool_call = json.dumps(
-        {
-            "name": "run_shell",
-            "args": {"command": f"echo {secret}", "timeout": 5},
-        }
-    )
+    tool_call = {
+        "name": "run_shell",
+        "args": {"command": f"echo {secret}", "timeout": 5},
+    }
     agent = build_agent(
         tmp_path,
         approval_policy="ask",
         executables={"echo": "/frozen/echo"},
-        outputs=(f"<tool>{tool_call}</tool>", "<final>done</final>"),
+        outputs=(tool_call, "done"),
         redaction_env={"PICO_TEST_TOKEN": secret},
         secret_env_names=("PICO_TEST_TOKEN",),
     )

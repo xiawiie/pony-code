@@ -11,6 +11,7 @@ from pico import Pico, SessionStore, WorkspaceContext
 from pico import cli as pico_cli
 from pico.providers.fake import FakeModelClient
 from pico.config import read_project_env
+from pico.session_store import SESSION_FORMAT_VERSION
 from pico.task_state import TaskState
 
 
@@ -117,7 +118,7 @@ def test_cli_freezes_parent_path_before_project_env_loading(tmp_path, monkeypatc
     parent_path = os.environ.get("PATH", "")
     fake_path = str(tmp_path / "fake-bin")
     (tmp_path / ".env").write_text(
-        f"PATH={fake_path}\nPICO_PROVIDER=ollama\n",
+        f"PATH={fake_path}\nPICO_DEEPSEEK_API_KEY=test-key\n",
         encoding="utf-8",
     )
     observed = {}
@@ -132,12 +133,13 @@ def test_cli_freezes_parent_path_before_project_env_loading(tmp_path, monkeypatc
             self.kwargs = kwargs
 
     monkeypatch.setattr("pico.workspace.build_trusted_executables", capture_parent_path)
-    monkeypatch.setattr("pico.cli.OllamaModelClient", DummyModelClient)
+    monkeypatch.setattr(
+        "pico.cli.OpenAIChatCompletionsModelClient",
+        DummyModelClient,
+    )
     args = pico_cli.build_arg_parser().parse_args([
         "--cwd",
         str(tmp_path),
-        "--provider",
-        "ollama",
     ])
 
     pico_cli.build_agent(args)
@@ -206,16 +208,18 @@ def test_runtime_rejects_credential_bearing_base_url_before_client_construction(
     def fail_client(*args, **kwargs):
         raise AssertionError("client constructed")
 
-    monkeypatch.setattr(pico_cli, "AnthropicCompatibleModelClient", fail_client)
-    args = pico_cli.build_arg_parser().parse_args([
-        "--provider",
-        "deepseek",
-        "--base-url",
-        "https://user:opaque-password@example.test/v1",
-    ])
+    monkeypatch.setattr(pico_cli, "OpenAIChatCompletionsModelClient", fail_client)
+    args = pico_cli.build_arg_parser().parse_args([])
 
-    with pytest.raises(ValueError, match="provider_base_url_credentials"):
-        pico_cli._build_model_client(args)
+    with pytest.raises(ValueError, match="api_url_credentials"):
+        pico_cli._build_model_client(
+            args,
+            project_env={
+                "PICO_API_URL": "https://user:opaque-password@example.test/v1",
+                "PICO_DEEPSEEK_API_KEY": "test-key",
+            },
+            process_env={},
+        )
 
 
 def test_workspace_escape_is_rejected(tmp_path):
@@ -297,8 +301,17 @@ def test_cli_build_agent_wires_secret_env_names_from_parser(tmp_path):
             raise AssertionError("model should not be invoked")
 
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
-    with patch.dict(os.environ, {"HOME": str(tmp_path), "GITHUB_PAT": "ghp-1", "GH_PAT": "ghp-2"}, clear=True), patch(
-        "pico.cli.OllamaModelClient",
+    with patch.dict(
+        os.environ,
+        {
+            "HOME": str(tmp_path),
+            "GITHUB_PAT": "ghp-1",
+            "GH_PAT": "ghp-2",
+            "PICO_DEEPSEEK_API_KEY": "test-runtime-key",
+        },
+        clear=True,
+    ), patch(
+        "pico.cli.OpenAIChatCompletionsModelClient",
         DummyModelClient,
     ):
         args = pico_cli.build_arg_parser().parse_args(
@@ -314,7 +327,11 @@ def test_cli_build_agent_wires_secret_env_names_from_parser(tmp_path):
             ]
         )
         agent = pico_cli.build_agent(args)
-        assert set(agent.secret_env_summary()["secret_env_names"]) == {"GITHUB_PAT", "GH_PAT"}
+        assert set(agent.secret_env_summary()["secret_env_names"]) == {
+            "GITHUB_PAT",
+            "GH_PAT",
+            "PICO_DEEPSEEK_API_KEY",
+        }
 
 
 def test_cli_build_agent_uses_default_configured_secret_names(tmp_path):
@@ -327,13 +344,29 @@ def test_cli_build_agent_uses_default_configured_secret_names(tmp_path):
             raise AssertionError("model should not be invoked")
 
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
-    with patch.dict(os.environ, {"HOME": str(tmp_path), "GH_PAT": "ghp-default-1"}, clear=True), patch(
-        "pico.cli.OllamaModelClient",
+    with patch.dict(
+        os.environ,
+        {
+            "HOME": str(tmp_path),
+            "GH_PAT": "ghp-default-1",
+            "PICO_DEEPSEEK_API_KEY": "test-runtime-key",
+        },
+        clear=True,
+    ), patch(
+        "pico.cli.OpenAIChatCompletionsModelClient",
         DummyModelClient,
     ):
-        args = pico_cli.build_arg_parser().parse_args(["--cwd", str(tmp_path), "--approval", "auto"])
+        args = pico_cli.build_arg_parser().parse_args([
+            "--cwd",
+            str(tmp_path),
+            "--approval",
+            "auto",
+        ])
         agent = pico_cli.build_agent(args)
-        assert agent.secret_env_summary()["secret_env_names"] == ["GH_PAT"]
+        assert set(agent.secret_env_summary()["secret_env_names"]) == {
+            "GH_PAT",
+            "PICO_DEEPSEEK_API_KEY",
+        }
 
 
 def test_cli_build_agent_loads_project_env_secrets_before_redaction_setup(tmp_path):
@@ -346,11 +379,19 @@ def test_cli_build_agent_loads_project_env_secrets_before_redaction_setup(tmp_pa
             raise AssertionError("model should not be invoked")
 
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
-    (tmp_path / ".env").write_text("PICO_DEEPSEEK_API_KEY=sk-project-secret\n", encoding="utf-8")
-    with patch.dict(os.environ, {"HOME": str(tmp_path)}, clear=True), patch("pico.cli.AnthropicCompatibleModelClient", DummyModelClient):
-        args = pico_cli.build_arg_parser().parse_args(["--cwd", str(tmp_path), "--provider", "deepseek"])
+    (tmp_path / ".env").write_text(
+        "PICO_DEEPSEEK_API_KEY=sk-project-secret\n",
+        encoding="utf-8",
+    )
+    with patch.dict(os.environ, {"HOME": str(tmp_path)}, clear=True), patch(
+        "pico.cli.OpenAIChatCompletionsModelClient",
+        DummyModelClient,
+    ):
+        args = pico_cli.build_arg_parser().parse_args(["--cwd", str(tmp_path)])
         agent = pico_cli.build_agent(args)
-        assert agent.secret_env_summary()["secret_env_names"] == ["PICO_DEEPSEEK_API_KEY"]
+        assert agent.secret_env_summary()["secret_env_names"] == [
+            "PICO_DEEPSEEK_API_KEY"
+        ]
 
 
 def test_cli_resume_uses_immutable_collision_safe_snapshot_before_load(
@@ -377,7 +418,7 @@ def test_cli_resume_uses_immutable_collision_safe_snapshot_before_load(
     monkeypatch.setattr(pico_cli, "_build_redaction_snapshot", capture_snapshot)
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
     (tmp_path / ".env").write_text(
-        "PICO_PROVIDER=ollama\n"
+        "PICO_DEEPSEEK_API_KEY=test-runtime-key\n"
         "PICO_TEST_API_KEY=opaque-project-new-value-123456789\n"
         "PICO_SECRET_ENV_NAMES=PROJECT_ONLY_CREDENTIAL\n"
         f"PROJECT_ONLY_CREDENTIAL={project_secret}\n"
@@ -390,7 +431,7 @@ def test_cli_resume_uses_immutable_collision_safe_snapshot_before_load(
     (session_dir / f"{session_id}.json").write_text(
         json.dumps({
             "record_type": "session",
-            "format_version": 1,
+            "format_version": SESSION_FORMAT_VERSION,
             "id": session_id,
             "created_at": "2026-01-01T00:00:00+00:00",
             "workspace_root": str(tmp_path),
@@ -425,7 +466,7 @@ def test_cli_resume_uses_immutable_collision_safe_snapshot_before_load(
         },
         clear=True,
     ), patch(
-        "pico.cli.OllamaModelClient",
+        "pico.cli.OpenAIChatCompletionsModelClient",
         DummyModelClient,
     ):
         args = pico_cli.build_arg_parser().parse_args([
@@ -461,11 +502,15 @@ def test_cli_build_agent_skips_malformed_project_env_lines_with_warning(tmp_path
 
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
     (tmp_path / ".env").write_text(
-        "not a valid env line\nPICO_DEEPSEEK_API_KEY=sk-project-secret\n",
+        "not a valid env line\n"
+        "PICO_DEEPSEEK_API_KEY=sk-project-secret\n",
         encoding="utf-8",
     )
-    with patch.dict(os.environ, {"HOME": str(tmp_path)}, clear=True), patch("pico.cli.AnthropicCompatibleModelClient", DummyModelClient):
-        args = pico_cli.build_arg_parser().parse_args(["--cwd", str(tmp_path), "--provider", "deepseek"])
+    with patch.dict(os.environ, {"HOME": str(tmp_path)}, clear=True), patch(
+        "pico.cli.OpenAIChatCompletionsModelClient",
+        DummyModelClient,
+    ):
+        args = pico_cli.build_arg_parser().parse_args(["--cwd", str(tmp_path)])
         agent = pico_cli.build_agent(args)
         secret_names = agent.secret_env_summary()["secret_env_names"]
 
@@ -507,12 +552,21 @@ def test_cli_build_agent_reads_secret_names_from_environment_config(tmp_path):
             "HOME": str(tmp_path),
             "PICO_CUSTOM_SECRET": "custom-secret-value",
             "PICO_SECRET_ENV_NAMES": "PICO_CUSTOM_SECRET",
+            "PICO_DEEPSEEK_API_KEY": "test-runtime-key",
         },
         clear=True,
-    ), patch("pico.cli.OllamaModelClient", DummyModelClient):
-        args = pico_cli.build_arg_parser().parse_args(["--cwd", str(tmp_path), "--approval", "auto"])
+    ), patch("pico.cli.OpenAIChatCompletionsModelClient", DummyModelClient):
+        args = pico_cli.build_arg_parser().parse_args([
+            "--cwd",
+            str(tmp_path),
+            "--approval",
+            "auto",
+        ])
         agent = pico_cli.build_agent(args)
-        assert agent.secret_env_summary()["secret_env_names"] == ["PICO_CUSTOM_SECRET"]
+        assert set(agent.secret_env_summary()["secret_env_names"]) == {
+            "PICO_CUSTOM_SECRET",
+            "PICO_DEEPSEEK_API_KEY",
+        }
 
 
 def test_cli_no_input_makes_default_approval_non_interactive(tmp_path):
@@ -525,8 +579,16 @@ def test_cli_no_input_makes_default_approval_non_interactive(tmp_path):
             raise AssertionError("model should not be invoked")
 
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
-    with patch.dict(os.environ, {"HOME": str(tmp_path)}, clear=True), patch("pico.cli.AnthropicCompatibleModelClient", DummyModelClient):
-        args = pico_cli.build_arg_parser().parse_args(["--cwd", str(tmp_path), "--no-input"])
+    with patch.dict(
+        os.environ,
+        {"HOME": str(tmp_path), "PICO_DEEPSEEK_API_KEY": "test-runtime-key"},
+        clear=True,
+    ), patch("pico.cli.OpenAIChatCompletionsModelClient", DummyModelClient):
+        args = pico_cli.build_arg_parser().parse_args([
+            "--cwd",
+            str(tmp_path),
+            "--no-input",
+        ])
         agent = pico_cli.build_agent(args)
 
     assert agent.approval_policy == "never"
@@ -587,10 +649,10 @@ def test_delegate_child_is_read_only(tmp_path):
     agent = build_agent(
         tmp_path,
         [
-            '<tool>{"name":"delegate","args":{"task":"write a file","max_steps":2}}</tool>',
-            '<tool>{"name":"write_file","args":{"path":"child-was-not-allowed.txt","content":"nope"}}</tool>',
-            "<final>child done</final>",
-            "<final>parent done</final>",
+            {"name": "delegate", "args": {"task":"write a file","max_steps":2}},
+            {"name": "write_file", "args": {"path":"child-was-not-allowed.txt","content":"nope"}},
+            "child done",
+            "parent done",
         ],
     )
 

@@ -21,10 +21,16 @@ def _mock_urlopen(response_body):
 def _make_client():
     return AnthropicCompatibleModelClient(
         model="claude-3-5-sonnet-latest",
-        base_url="https://api.anthropic.com",
+        base_url="https://api.anthropic.com/v1",
         api_key="test-key",
         temperature=0.0,
         timeout=30,
+        auth_mode="x-api-key",
+        capabilities={
+            "prompt_cache": True,
+            "strict_tools": True,
+            "parallel_tool_control": True,
+        },
     )
 
 
@@ -37,6 +43,8 @@ def test_complete_payload_shape_and_cache_control():
     captured_payload = {}
 
     def fake_urlopen(req, timeout=None):
+        captured_payload["url"] = req.full_url
+        captured_payload["headers"] = dict(req.header_items())
         captured_payload["data"] = json.loads(req.data.decode("utf-8"))
         return _mock_urlopen({
             "content": [{"type": "text", "text": "ok"}],
@@ -47,8 +55,14 @@ def test_complete_payload_shape_and_cache_control():
     with patch("pico.providers._shared._provider_urlopen", fake_urlopen):
         resp = client.complete(system=system, tools=tools, messages=messages, max_tokens=100)
 
+    assert captured_payload["url"] == "https://api.anthropic.com/v1/messages"
+    assert captured_payload["headers"]["X-api-key"] == "test-key"
     assert captured_payload["data"]["system"] == system
-    assert captured_payload["data"]["tools"] == tools
+    assert captured_payload["data"]["tools"] == [{**tools[0], "strict": True}]
+    assert captured_payload["data"]["tool_choice"] == {
+        "type": "auto",
+        "disable_parallel_tool_use": True,
+    }
     assert captured_payload["data"]["messages"] == [{"role": "user", "content": "hi"}]
     assert isinstance(resp, Response)
     assert resp.stop_reason == StopReason.END_TURN
@@ -155,7 +169,7 @@ def test_complete_network_error_is_classified_after_one_transport(monkeypatch, e
 
     with pytest.raises(
         RuntimeError,
-        match=rf"^Anthropic-compatible request failed: {reason}$",
+        match=rf"^Anthropic request failed: {reason}$",
     ):
         _make_client().complete(
             system=[], tools=[], messages=[], max_tokens=10
@@ -176,16 +190,63 @@ def test_complete_rejects_non_header_api_key_before_request(monkeypatch):
     urlopen.assert_not_called()
 
 
-def test_deepseek_anthropic_surface_does_not_claim_prompt_cache():
+def test_deepseek_anthropic_surface_omits_unsupported_extension_fields(monkeypatch):
+    captured = {}
     client = AnthropicCompatibleModelClient(
         model="deepseek-test",
-        base_url="https://api.deepseek.com/anthropic",
+        base_url="https://api.deepseek.com/anthropic/v1",
         api_key="test-key",
         temperature=0.0,
         timeout=30,
+        auth_mode="x-api-key",
+        capabilities={
+            "prompt_cache": False,
+            "strict_tools": False,
+            "parallel_tool_control": False,
+            "thinking_disabled": True,
+        },
+    )
+    monkeypatch.setattr(
+        provider_shared,
+        "_provider_urlopen",
+        lambda request, timeout: (
+            captured.update({
+                "url": request.full_url,
+                "body": json.loads(request.data),
+            })
+            or _mock_urlopen({
+                "content": [{"type": "text", "text": "ok"}],
+                "stop_reason": "end_turn",
+                "usage": {},
+            })
+        ),
+    )
+
+    client.complete(
+        system=[{
+            "type": "text",
+            "text": "system",
+            "cache_control": {"type": "ephemeral"},
+        }],
+        tools=[{
+            "name": "read_file",
+            "description": "read",
+            "input_schema": {"type": "object", "properties": {}},
+        }],
+        messages=[{"role": "user", "content": "hello"}],
+        max_tokens=10,
+        cache_breakpoints=[0],
     )
 
     assert client.supports_prompt_cache is False
+    assert captured["url"] == "https://api.deepseek.com/anthropic/v1/messages"
+    assert "cache_control" not in captured["body"]["system"][0]
+    assert captured["body"]["messages"] == [
+        {"role": "user", "content": "hello"}
+    ]
+    assert "strict" not in captured["body"]["tools"][0]
+    assert "tool_choice" not in captured["body"]
+    assert captured["body"]["thinking"] == {"type": "disabled"}
 
 
 @pytest.mark.parametrize(
@@ -195,13 +256,15 @@ def test_deepseek_anthropic_surface_does_not_claim_prompt_cache():
         "https://example.test/anthropic.com/v1",
     ],
 )
-def test_prompt_cache_capability_requires_exact_known_endpoint(base_url):
+def test_custom_endpoint_never_claims_prompt_cache(base_url):
     client = AnthropicCompatibleModelClient(
         model="test",
         base_url=base_url,
         api_key="test-key",
         temperature=None,
         timeout=30,
+        auth_mode="x-api-key",
+        capabilities={},
     )
 
     assert client.supports_prompt_cache is False
