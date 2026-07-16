@@ -22,12 +22,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from pico.config import read_project_env, resolve_provider_config
+from pico.config import read_project_env
 from pico.evaluation.metrics_common import _load_json_artifact
+from pico.evaluation.provider_benchmark import _provider_target
 from pico.messages import MessageValidationError, validate_messages
-from pico.providers.defaults import (
-    API_KEY_ENV_NAMES,
-)
 from pico.security import (
     SensitiveDataBlockedError,
     contains_secret_material,
@@ -158,16 +156,28 @@ class RunConfig:
 def provider_settings(provider, *, project_env=None, process_env=None):
     if provider not in {"anthropic", "deepseek", "ollama", "openai"}:
         raise ValueError(f"unsupported live provider: {provider}")
-    config = resolve_provider_config(
-        explicit={"provider": provider},
+    if provider == "ollama":
+        project_env = dict(project_env or {})
+        process_env = dict(os.environ if process_env is None else process_env)
+        def value(name, default=""):
+            return project_env.get(name) or process_env.get(name) or default
+        return {
+            "api_key": value("PICO_OLLAMA_API_KEY"),
+            "api_key_env": "PICO_OLLAMA_API_KEY",
+            "model": value("PICO_OLLAMA_MODEL", "qwen3.5:4b"),
+            "base_url": value("PICO_OLLAMA_HOST", "http://127.0.0.1:11434"),
+            "client_kind": "ollama_chat",
+            "auth_mode": "none",
+            "capabilities": {},
+        }
+    target_name = {"anthropic": "claude", "openai": "gpt"}.get(
+        provider, provider
+    )
+    return _provider_target(
+        target_name,
         project_env=project_env,
         process_env=process_env,
     )
-    return {
-        "api_key": config["api_key"]["value"],
-        "model": config["model"]["value"],
-        "base_url": config["base_url"]["value"],
-    }
 
 
 def parse_args(*, project_env=None, process_env=None) -> RunConfig:
@@ -180,7 +190,7 @@ def parse_args(*, project_env=None, process_env=None) -> RunConfig:
     parser.add_argument(
         "--provider",
         choices=("anthropic", "deepseek", "ollama", "openai"),
-        default="deepseek",
+        required=True,
     )
     parser.add_argument("--model", default=None)
     parser.add_argument("--max-model-attempts", type=_positive_int, default=15)
@@ -213,7 +223,7 @@ def check_env(config: RunConfig, *, settings=None) -> None:
         return  # reset and local Ollama paths don't need an API key
     key = (settings or provider_settings(config.provider))["api_key"].strip()
     if not key:
-        required_name = API_KEY_ENV_NAMES[config.provider][0]
+        required_name = (settings or provider_settings(config.provider))["api_key_env"]
         print(f"[live-e2e] missing {required_name}, aborted", file=sys.stderr)
         raise SystemExit(2)
 
@@ -221,17 +231,11 @@ def check_env(config: RunConfig, *, settings=None) -> None:
 def check_live_readiness(config: RunConfig, *, settings=None) -> bool:
     if config.provider != "ollama":
         return True
-    from pico.cli_diagnostics import check_provider_connectivity
+    from pico.providers.probe import probe_model_client
 
     settings = settings or provider_settings(config.provider)
-    result = check_provider_connectivity(
-        {
-            "provider": {"value": "ollama"},
-            "model": {"value": config.model},
-            "base_url": {"value": settings["base_url"]},
-        }
-    )
-    return result.get("status") == "ok" and result.get("model_status") == "available"
+    result = probe_model_client(make_live_client(config, settings=settings))
+    return result.get("status") == "ok"
 
 
 def verify_pico_repo(root: Path) -> None:
@@ -1885,6 +1889,9 @@ class _SniffingProviderWrapper:
         self.calls: list[dict] = []
         # Delegate the cache capability used by request metadata.
         self.supports_prompt_cache = getattr(inner, "supports_prompt_cache", False)
+        self.provider_binding = getattr(inner, "provider_binding", None)
+        self.provider_metadata = getattr(inner, "provider_metadata", {})
+        self.last_completion_metadata = {}
         self.last_transport_attempts = 0
         self.last_stop_reason = None
 
@@ -1929,6 +1936,9 @@ class _SniffingProviderWrapper:
             call["usage"] = dict(getattr(response, "usage", None) or {})
             return response
         finally:
+            self.last_completion_metadata = dict(
+                getattr(self._inner, "last_completion_metadata", {}) or {}
+            )
             self.last_transport_attempts = getattr(
                 self._inner, "last_transport_attempts", None
             )
@@ -1946,40 +1956,18 @@ def make_live_client(config: RunConfig, *, settings=None):
     """Instantiate the selected live client using its production transport."""
 
     settings = settings or provider_settings(config.provider)
-    if config.provider in {"ollama", "openai"}:
-        from pico.providers.text_protocol_adapter import TextProtocolAdapter
+    from pico.providers._shared import build_model_client
 
-        if config.provider == "openai":
-            from pico.providers.openai_compatible import OpenAICompatibleModelClient
-
-            text_client = OpenAICompatibleModelClient(
-                model=config.model,
-                base_url=settings["base_url"],
-                api_key=settings["api_key"],
-                temperature=None,
-                timeout=config.request_timeout_seconds,
-            )
-        else:
-            from pico.providers.ollama import OllamaModelClient
-
-            text_client = OllamaModelClient(
-                model=config.model,
-                host=settings["base_url"],
-                temperature=0.0,
-                top_p=0.9,
-                timeout=config.request_timeout_seconds,
-            )
-        inner = TextProtocolAdapter(text_client)
-    else:
-        from pico.providers.anthropic_compatible import AnthropicCompatibleModelClient
-
-        inner = AnthropicCompatibleModelClient(
-            model=config.model,
-            base_url=settings["base_url"],
-            api_key=settings["api_key"],
-            temperature=None,
-            timeout=config.request_timeout_seconds,
-        )
+    inner = build_model_client(
+        settings["client_kind"],
+        model=config.model,
+        base_url=settings["base_url"],
+        api_key=settings["api_key"],
+        timeout=config.request_timeout_seconds,
+        auth_mode=settings["auth_mode"],
+        capabilities=settings["capabilities"],
+        compatibility=settings.get("compatibility", "standard"),
+    )
     return _SniffingProviderWrapper(
         inner,
         forbidden_values=(settings["api_key"],),
@@ -2076,6 +2064,7 @@ def main() -> int:
     verify_pico_repo(repo_root)
     warn_if_dirty_working_tree(repo_root)
     selected_api_key = settings["api_key"].strip()
+    selected_api_key_name = settings["api_key_env"]
 
     # Detect any unclean previous fixture without overwriting user files.
     if any(
@@ -2238,7 +2227,7 @@ def main() -> int:
         artifact_security=artifact_security,
         redactor=lambda value: redact_artifact(
             value,
-            env={"PICO_LIVE_API_KEY": selected_api_key},
+            env={selected_api_key_name: selected_api_key},
         ),
         forbidden_values=(selected_api_key,),
     )

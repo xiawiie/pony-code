@@ -61,7 +61,11 @@ def test_ci_has_macos_security_and_durability_gate():
 
     assert "runs-on: macos-latest" in workflow
     assert 'python-version: "3.12"' in workflow
-    assert workflow.count("run: uv sync --frozen --dev") == 2
+    assert workflow.count("run: uv sync --frozen --dev") == 3
+    linux_capability = workflow.split("linux-capability-evidence:", 1)[1]
+    assert "- name: Install package\n        run: uv sync --frozen --dev" in (
+        linux_capability
+    )
     assert "-W error::DeprecationWarning" in workflow
     for path in (
         "tests/test_project_env_security.py",
@@ -137,7 +141,7 @@ def test_distribution_verifier_freezes_archive_and_install_contract():
     assert "wheel file mismatch" in verifier
     assert 'metadata.get_all("Requires-Dist") is None' in verifier
     assert '"command -v pico"' in verifier
-    assert '"doctor", "--offline"' in verifier
+    assert '_run(str(pico), "doctor", cwd=cwd, env=env)' in verifier
     assert '"sandbox",\n                "status"' in verifier
     assert 'prepared["runtime_authorization"]["kind"] == "local"' in verifier
     assert 'prepare.returncode in {0, 3}' in verifier

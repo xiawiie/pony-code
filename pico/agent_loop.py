@@ -122,6 +122,19 @@ def _transport_evidence(model_client):
     return attempts, max(0, attempts - 1), True
 
 
+def _safe_provider_request_id(value):
+    if (
+        not isinstance(value, str)
+        or value != value.strip()
+        or not value
+        or len(value) > 200
+        or any(character in value for character in ("\0", "\r", "\n"))
+        or securitylib.looks_secret_shaped_text(value)
+    ):
+        return ""
+    return value
+
+
 def _record_transport(model_execution, model_client):
     attempts, retries, complete = _transport_evidence(model_client)
     if not complete:
@@ -203,7 +216,6 @@ def _action_trace_payload(action):
         return {
             "action_type": "tool",
             "origin": action.origin,
-            "ignored_tool_count": action.ignored_tool_count,
         }
     if isinstance(action, FinalAction):
         return {
@@ -744,6 +756,15 @@ def _complete_model_attempt(
     transport_attempts, transport_retries, evidence_complete = _transport_evidence(
         agent.model_client,
     )
+    request_id = _safe_provider_request_id(completion_usage.get("request_id"))
+    if request_id:
+        request_metadata["provider_request_id"] = request_id
+    if type(transport_attempts) is int and transport_attempts >= 0:
+        request_metadata["last_transport_attempts"] = transport_attempts
+    provider_metadata = getattr(agent.model_client, "provider_metadata", None)
+    if isinstance(provider_metadata, dict):
+        request_metadata.update(provider_metadata)
+    agent.last_request_metadata = dict(request_metadata)
     action_payload = _action_trace_payload(action)
     try:
         agent.emit_trace(
@@ -980,6 +1001,7 @@ def _apply_tool_action(
         effect_class=effect_class,
         tool_change_id=tool_change_id,
         result_meta=digest_meta,
+        provider_state=action.provider_state,
     )
     try:
         _commit_session(agent, messages=pair)
@@ -1123,7 +1145,12 @@ def _run_agent_attempts(
                 and model_retry_count < len(_MODEL_RETRY_DELAYS)
                 and attempts < max_attempts
             ):
-                time.sleep(_MODEL_RETRY_DELAYS[model_retry_count])
+                delay = getattr(model_error, "retry_after", None)
+                time.sleep(
+                    delay
+                    if type(delay) in {int, float}
+                    else _MODEL_RETRY_DELAYS[model_retry_count]
+                )
                 model_retry_count += 1
                 attempt_origin = "model_retry"
                 continue

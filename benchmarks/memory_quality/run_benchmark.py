@@ -291,8 +291,8 @@ def score_scenario(scenario: dict, trace_events: list[dict], workspace: Path) ->
     return row
 
 
-def _tool_call(name: str, args: dict) -> str:
-    return "<tool>" + json.dumps({"name": name, "args": args}, sort_keys=True) + "</tool>"
+def _tool_call(name: str, args: dict) -> dict:
+    return {"name": name, "arguments": dict(args)}
 
 
 def _fake_search_query_for_turn(turn: dict) -> str:
@@ -306,27 +306,27 @@ def _fake_search_query_for_turn(turn: dict) -> str:
     return " ".join(part for part in (user, stems) if part)
 
 
-def _fake_outputs_for_turn(turn: dict) -> list[str]:
+def _fake_outputs_for_turn(turn: dict) -> list[object]:
     if turn.get("expected_no_search_hit"):
         return [
             _tool_call(
                 "memory_search",
                 {"query": str(turn.get("user", "")), "limit": 5},
             ),
-            "<final>No relevant memory found.</final>",
+            "No relevant memory found.",
         ]
     if turn.get("expected_tool") == "memory_save":
         return [
             _tool_call("memory_save", {"note": _expected_note_from_turn(turn)}),
-            "<final>Saved the memory note.</final>",
+            "Saved the memory note.",
         ]
     return [
         _tool_call("memory_search", {"query": _fake_search_query_for_turn(turn), "limit": 5}),
-        "<final>Checked memory.</final>",
+        "Checked memory.",
     ]
 
 
-def _fake_outputs_for_scenario(scenario: dict) -> list[str]:
+def _fake_outputs_for_scenario(scenario: dict) -> list[object]:
     outputs = []
     for turn in scenario.get("session_turns", []):
         outputs.extend(_fake_outputs_for_turn(turn))

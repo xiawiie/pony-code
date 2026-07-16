@@ -238,18 +238,18 @@ def legal_tool_names():
     return set(BASE_TOOL_SPECS) | {"delegate"}
 
 TOOL_EXAMPLES = {
-    "list_files": '<tool>{"name":"list_files","args":{"path":"."}}</tool>',
-    "read_file": '<tool>{"name":"read_file","args":{"path":"README.md","start":1,"end":80}}</tool>',
-    "search": '<tool>{"name":"search","args":{"pattern":"binary_search","path":"."}}</tool>',
-    "run_shell": f'<tool>{{"name":"run_shell","args":{{"command":"uv run --with pytest python -m pytest -q","timeout":{DEFAULT_RUN_SHELL_TIMEOUT}}}}}</tool>',
-    "write_file": '<tool name="write_file" path="binary_search.py"><content>def binary_search(nums, target):\n    return -1\n</content></tool>',
-    "patch_file": '<tool name="patch_file" path="binary_search.py"><old_text>return -1</old_text><new_text>return mid</new_text></tool>',
-    "delegate": '<tool>{"name":"delegate","args":{"task":"inspect README.md","max_steps":3}}</tool>',
-    "memory_list": '<tool>{"name":"memory_list","args":{"prefix":"workspace/"}}</tool>',
-    "memory_read": '<tool>{"name":"memory_read","args":{"path":"workspace/notes/auth.md","start":1,"end":200}}</tool>',
-    "memory_search": '<tool>{"name":"memory_search","args":{"query":"bcrypt","limit":5}}</tool>',
-    "memory_save": '<tool>{"name":"memory_save","args":{"note":"bcrypt rounds > 12 causes CI timeout"}}</tool>',
-    "repo_lookup": '<tool>{"name":"repo_lookup","args":{"symbol":"AuthMiddleware"}}</tool>',
+    "list_files": '{"name":"list_files","arguments":{"path":"."}}',
+    "read_file": '{"name":"read_file","arguments":{"path":"README.md","start":1,"end":80}}',
+    "search": '{"name":"search","arguments":{"pattern":"binary_search","path":"."}}',
+    "run_shell": f'{{"name":"run_shell","arguments":{{"command":"uv run --with pytest python -m pytest -q","timeout":{DEFAULT_RUN_SHELL_TIMEOUT}}}}}',
+    "write_file": '{"name":"write_file","arguments":{"path":"binary_search.py","content":"def binary_search(nums, target):\\n    return -1\\n"}}',
+    "patch_file": '{"name":"patch_file","arguments":{"path":"binary_search.py","old_text":"return -1","new_text":"return mid"}}',
+    "delegate": '{"name":"delegate","arguments":{"task":"inspect README.md","max_steps":3}}',
+    "memory_list": '{"name":"memory_list","arguments":{"prefix":"workspace/"}}',
+    "memory_read": '{"name":"memory_read","arguments":{"path":"workspace/notes/auth.md","start":1,"end":200}}',
+    "memory_search": '{"name":"memory_search","arguments":{"query":"bcrypt","limit":5}}',
+    "memory_save": '{"name":"memory_save","arguments":{"note":"bcrypt rounds > 12 causes CI timeout"}}',
+    "repo_lookup": '{"name":"repo_lookup","arguments":{"symbol":"AuthMiddleware"}}',
 }
 
 

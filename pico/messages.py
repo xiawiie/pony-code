@@ -9,6 +9,43 @@ class MessageValidationError(ValueError):
     """A canonical transcript violates the v3 message contract."""
 
 
+def _valid_provider_state_item(item):
+    if not isinstance(item, dict):
+        return False
+    item_type = item.get("type")
+    if item_type == "reasoning":
+        if any(
+            key not in {
+                "id",
+                "type",
+                "encrypted_content",
+                "summary",
+                "content",
+                "status",
+            }
+            for key in item
+        ):
+            return False
+        encrypted = item.get("encrypted_content")
+        if not isinstance(encrypted, str) or not encrypted:
+            return False
+        return "content" not in item or isinstance(item["content"], list)
+    if item_type == "thinking":
+        return (
+            set(item) == {"type", "thinking", "signature"}
+            and isinstance(item.get("thinking"), str)
+            and isinstance(item.get("signature"), str)
+            and bool(item["signature"])
+        )
+    if item_type == "redacted_thinking":
+        return (
+            set(item) == {"type", "data"}
+            and isinstance(item.get("data"), str)
+            and bool(item["data"])
+        )
+    return False
+
+
 def append_messages(messages, *new_messages):
     return [*list(messages or []), *new_messages]
 
@@ -57,6 +94,7 @@ def make_tool_pair(
     effect_class,
     tool_change_id="",
     result_meta=None,
+    provider_state=(),
 ):
     result_meta = dict(result_meta or {})
     assistant = {
@@ -72,6 +110,10 @@ def make_tool_pair(
             "tool_use_id": str(tool_use_id),
         },
     }
+    if provider_state:
+        assistant["_pico_provider_state"] = [
+            dict(item) for item in provider_state
+        ]
     result_block = {
         "type": "tool_result",
         "tool_use_id": str(tool_use_id),
@@ -222,6 +264,10 @@ def validate_messages(messages, *, require_meta):
             raise MessageValidationError("_pico_meta must be an object")
         content = message.get("content")
         if isinstance(content, str):
+            if "_pico_provider_state" in message:
+                raise MessageValidationError(
+                    "provider state requires an assistant tool_use"
+                )
             index += 1
             continue
         if not isinstance(content, list) or not content:
@@ -229,6 +275,22 @@ def validate_messages(messages, *, require_meta):
         first_type = content[0].get("type") if isinstance(content[0], dict) else ""
         if first_type == "tool_use":
             block = _tool_block(message, "tool_use", "assistant")
+            provider_state = message.get("_pico_provider_state")
+            if provider_state is not None:
+                if (
+                    not isinstance(provider_state, list)
+                    or len(provider_state) > 32
+                    or any(not _valid_provider_state_item(item) for item in provider_state)
+                ):
+                    raise MessageValidationError("invalid provider state")
+                try:
+                    provider_state_size = len(
+                        json.dumps(provider_state, ensure_ascii=False).encode("utf-8")
+                    )
+                except (TypeError, ValueError):
+                    raise MessageValidationError("invalid provider state") from None
+                if provider_state_size > 1024 * 1024:
+                    raise MessageValidationError("provider state too large")
             tool_use_id = block.get("id")
             if (
                 not isinstance(tool_use_id, str)
@@ -251,6 +313,10 @@ def validate_messages(messages, *, require_meta):
                 result_message.get("_pico_meta"), dict
             ):
                 raise MessageValidationError("_pico_meta must be an object")
+            if "_pico_provider_state" in result_message:
+                raise MessageValidationError(
+                    "provider state requires an assistant tool_use"
+                )
             result = _tool_block(result_message, "tool_result", "user")
             if result.get("tool_use_id") != tool_use_id:
                 raise MessageValidationError("tool_result id does not match")
@@ -258,6 +324,10 @@ def validate_messages(messages, *, require_meta):
             continue
         if first_type == "tool_result":
             raise MessageValidationError("orphan tool_result")
+        if "_pico_provider_state" in message:
+            raise MessageValidationError(
+                "provider state requires an assistant tool_use"
+            )
         if any(
             not isinstance(block, dict)
             or block.get("type") != "text"

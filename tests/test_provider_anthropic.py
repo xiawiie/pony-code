@@ -21,10 +21,16 @@ def _mock_urlopen(response_body):
 def _make_client():
     return AnthropicCompatibleModelClient(
         model="claude-3-5-sonnet-latest",
-        base_url="https://api.anthropic.com",
+        base_url="https://api.anthropic.com/v1",
         api_key="test-key",
         temperature=0.0,
         timeout=30,
+        auth_mode="x-api-key",
+        capabilities={
+            "prompt_cache": True,
+            "strict_tools": True,
+            "parallel_tool_control": True,
+        },
     )
 
 
@@ -37,6 +43,8 @@ def test_complete_payload_shape_and_cache_control():
     captured_payload = {}
 
     def fake_urlopen(req, timeout=None):
+        captured_payload["url"] = req.full_url
+        captured_payload["headers"] = dict(req.header_items())
         captured_payload["data"] = json.loads(req.data.decode("utf-8"))
         return _mock_urlopen({
             "content": [{"type": "text", "text": "ok"}],
@@ -47,8 +55,14 @@ def test_complete_payload_shape_and_cache_control():
     with patch("pico.providers._shared._provider_urlopen", fake_urlopen):
         resp = client.complete(system=system, tools=tools, messages=messages, max_tokens=100)
 
+    assert captured_payload["url"] == "https://api.anthropic.com/v1/messages"
+    assert captured_payload["headers"]["X-api-key"] == "test-key"
     assert captured_payload["data"]["system"] == system
-    assert captured_payload["data"]["tools"] == tools
+    assert captured_payload["data"]["tools"] == [{**tools[0], "strict": True}]
+    assert captured_payload["data"]["tool_choice"] == {
+        "type": "auto",
+        "disable_parallel_tool_use": True,
+    }
     assert captured_payload["data"]["messages"] == [{"role": "user", "content": "hi"}]
     assert isinstance(resp, Response)
     assert resp.stop_reason == StopReason.END_TURN
@@ -88,6 +102,92 @@ def test_complete_tool_use_response():
     assert resp.stop_reason == StopReason.TOOL_USE
     assert resp.content[0]["name"] == "read_file"
     assert resp.content[0]["input"]["path"] == "a.py"
+
+
+def test_thinking_tool_state_is_preserved_and_replayed(monkeypatch):
+    thinking = {
+        "type": "thinking",
+        "thinking": "use the file tool",
+        "signature": "opaque-signature",
+    }
+    redacted = {"type": "redacted_thinking", "data": "opaque-redacted"}
+    queued = [
+        {
+            "content": [
+                thinking,
+                redacted,
+                {
+                    "type": "tool_use",
+                    "id": "toolu_thinking",
+                    "name": "read_file",
+                    "input": {"path": "README.md"},
+                },
+            ],
+            "stop_reason": "tool_use",
+            "usage": {},
+        },
+        {
+            "content": [{"type": "text", "text": "done"}],
+            "stop_reason": "end_turn",
+            "usage": {},
+        },
+    ]
+    captured = []
+
+    def fake_urlopen(request, timeout=None):
+        captured.append(json.loads(request.data))
+        return _mock_urlopen(queued.pop(0))
+
+    monkeypatch.setattr(provider_shared, "_provider_urlopen", fake_urlopen)
+    client = _make_client()
+    first = client.complete(
+        system=[],
+        tools=[],
+        messages=[{"role": "user", "content": "read"}],
+        max_tokens=10,
+    )
+    assert first.provider_state == [thinking, redacted]
+
+    client.complete(
+        system=[],
+        tools=[],
+        messages=[
+            {"role": "user", "content": "read"},
+            {
+                "role": "assistant",
+                "content": [first.content[-1]],
+                "_pico_provider_state": first.provider_state,
+            },
+            {
+                "role": "user",
+                "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": "toolu_thinking",
+                    "content": "body",
+                }],
+            },
+        ],
+        max_tokens=10,
+    )
+
+    assert captured[1]["messages"][1]["content"] == [
+        thinking,
+        redacted,
+        first.content[-1],
+    ]
+
+
+def test_empty_anthropic_object_is_protocol_mismatch(monkeypatch):
+    monkeypatch.setattr(
+        provider_shared,
+        "_provider_urlopen",
+        lambda *_args, **_kwargs: _mock_urlopen({}),
+    )
+
+    with pytest.raises(provider_shared._ProviderFailure) as caught:
+        _make_client().complete(system=[], tools=[], messages=[], max_tokens=10)
+
+    assert caught.value.code == "provider_protocol_mismatch"
 
 
 def test_complete_unknown_stop_reason_is_unknown():
@@ -155,7 +255,7 @@ def test_complete_network_error_is_classified_after_one_transport(monkeypatch, e
 
     with pytest.raises(
         RuntimeError,
-        match=rf"^Anthropic-compatible request failed: {reason}$",
+        match=rf"^Anthropic request failed: {reason}$",
     ):
         _make_client().complete(
             system=[], tools=[], messages=[], max_tokens=10
@@ -176,16 +276,80 @@ def test_complete_rejects_non_header_api_key_before_request(monkeypatch):
     urlopen.assert_not_called()
 
 
-def test_deepseek_anthropic_surface_does_not_claim_prompt_cache():
+@pytest.mark.parametrize(
+    ("base_url", "messages_url"),
+    [
+        (
+            "https://api.deepseek.com/anthropic/v1",
+            "https://api.deepseek.com/anthropic/v1/messages",
+        ),
+        (
+            "https://lumina.tripo3d.com/v1",
+            "https://lumina.tripo3d.com/v1/messages",
+        ),
+    ],
+)
+def test_deepseek_anthropic_surface_omits_unsupported_extension_fields(
+    monkeypatch,
+    base_url,
+    messages_url,
+):
+    captured = {}
     client = AnthropicCompatibleModelClient(
         model="deepseek-test",
-        base_url="https://api.deepseek.com/anthropic",
+        base_url=base_url,
         api_key="test-key",
         temperature=0.0,
         timeout=30,
+        auth_mode="x-api-key",
+        capabilities={
+            "prompt_cache": False,
+            "strict_tools": False,
+            "parallel_tool_control": False,
+            "thinking_disabled": True,
+        },
+    )
+    monkeypatch.setattr(
+        provider_shared,
+        "_provider_urlopen",
+        lambda request, timeout: (
+            captured.update({
+                "url": request.full_url,
+                "body": json.loads(request.data),
+            })
+            or _mock_urlopen({
+                "content": [{"type": "text", "text": "ok"}],
+                "stop_reason": "end_turn",
+                "usage": {},
+            })
+        ),
+    )
+
+    client.complete(
+        system=[{
+            "type": "text",
+            "text": "system",
+            "cache_control": {"type": "ephemeral"},
+        }],
+        tools=[{
+            "name": "read_file",
+            "description": "read",
+            "input_schema": {"type": "object", "properties": {}},
+        }],
+        messages=[{"role": "user", "content": "hello"}],
+        max_tokens=10,
+        cache_breakpoints=[0],
     )
 
     assert client.supports_prompt_cache is False
+    assert captured["url"] == messages_url
+    assert "cache_control" not in captured["body"]["system"][0]
+    assert captured["body"]["messages"] == [
+        {"role": "user", "content": "hello"}
+    ]
+    assert "strict" not in captured["body"]["tools"][0]
+    assert "tool_choice" not in captured["body"]
+    assert captured["body"]["thinking"] == {"type": "disabled"}
 
 
 @pytest.mark.parametrize(
@@ -196,13 +360,15 @@ def test_deepseek_anthropic_surface_does_not_claim_prompt_cache():
         "https://www.right.codes/claude/v1",
     ],
 )
-def test_prompt_cache_capability_requires_exact_known_endpoint(base_url):
+def test_custom_endpoint_never_claims_prompt_cache(base_url):
     client = AnthropicCompatibleModelClient(
         model="test",
         base_url=base_url,
         api_key="test-key",
         temperature=None,
         timeout=30,
+        auth_mode="x-api-key",
+        capabilities={},
     )
 
     assert client.supports_prompt_cache is False

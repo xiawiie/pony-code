@@ -132,6 +132,91 @@ def test_validate_messages_accepts_a_complete_pair():
     )
 
 
+def test_provider_state_is_validated_but_never_rendered_as_prompt_text():
+    pair = make_tool_pair(
+        name="read_file",
+        arguments={"path": "README.md"},
+        tool_use_id="toolu_state",
+        result_content="body",
+        created_at="now",
+        tool_status="ok",
+        effect_class="read_only",
+        provider_state=[{
+            "id": "reasoning_1",
+            "type": "reasoning",
+            "encrypted_content": "opaque-provider-state",
+            "summary": [],
+            "content": [],
+        }],
+    )
+
+    validate_messages(list(pair), require_meta=True)
+
+    assert pair[0]["_pico_provider_state"][0]["id"] == "reasoning_1"
+    assert "opaque-provider-state" not in render_transcript(pair)
+    assert "opaque-provider-state" not in str(
+        message_metrics(pair, token_of=lambda value: len(value))
+    )
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        [{
+            "type": "thinking",
+            "thinking": "summary",
+            "signature": "opaque-signature",
+        }],
+        [{"type": "redacted_thinking", "data": "opaque-data"}],
+    ],
+)
+def test_anthropic_provider_state_is_validated_but_not_rendered(state):
+    pair = make_tool_pair(
+        name="read_file",
+        arguments={"path": "README.md"},
+        tool_use_id="toolu_anthropic_state",
+        result_content="body",
+        created_at="now",
+        tool_status="ok",
+        effect_class="read_only",
+        provider_state=state,
+    )
+
+    validate_messages(list(pair), require_meta=True)
+    assert "opaque" not in render_transcript(pair)
+
+
+@pytest.mark.parametrize("target", ("assistant_text", "tool_result", "unknown_key"))
+def test_validate_messages_rejects_misplaced_or_unknown_provider_state(target):
+    state = [{"type": "reasoning", "encrypted_content": "opaque"}]
+    if target == "assistant_text":
+        messages = [{
+            "role": "assistant",
+            "content": "done",
+            "_pico_meta": {},
+            "_pico_provider_state": state,
+        }]
+    else:
+        assistant, result = make_tool_pair(
+            name="read_file",
+            arguments={"path": "README.md"},
+            tool_use_id="toolu_state_bad",
+            result_content="body",
+            created_at="now",
+            tool_status="ok",
+            effect_class="read_only",
+            provider_state=state,
+        )
+        if target == "tool_result":
+            result["_pico_provider_state"] = state
+        else:
+            assistant["_pico_provider_state"][0]["unexpected"] = True
+        messages = [assistant, result]
+
+    with pytest.raises(MessageValidationError, match="provider state"):
+        validate_messages(messages, require_meta=True)
+
+
 def test_validate_messages_requires_meta_on_tool_result_carrier():
     assistant, result = make_tool_pair(
         name="read_file",

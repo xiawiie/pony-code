@@ -41,6 +41,7 @@ def _convert_pico_tool_to_anthropic(name, spec):
             "type": "object",
             "properties": props,
             "required": required,
+            "additionalProperties": False,
         },
     }
 
@@ -297,6 +298,14 @@ class ContextManager:
             session.get("_recall_errors", {}) if isinstance(session, dict) else {}
         )
         recall_errors = recall_errors if isinstance(recall_errors, dict) else {}
+        provider_metadata = getattr(
+            self.agent.model_client,
+            "provider_metadata",
+            {},
+        )
+        provider_metadata = (
+            dict(provider_metadata) if isinstance(provider_metadata, dict) else {}
+        )
         metadata = {
             "system_prefix_hash": hashlib.sha256(system_text.encode()).hexdigest(),
             "system_tokens": counted.system,
@@ -318,6 +327,7 @@ class ContextManager:
                 if source.name == "recalled_memory"
                 for path in source.selected_memory_paths
             ],
+            **provider_metadata,
             **dict(injection_telemetry or {}),
             **dict(preflight_metadata or {}),
         }

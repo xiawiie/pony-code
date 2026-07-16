@@ -14,6 +14,7 @@ from pico.cli_session import inspect_session
 from pico.memory.block_store import BlockStore
 from pico.recovery_models import new_checkpoint_record, new_tool_change_record
 from pico.run_store import RunStore
+from pico.session_store import SESSION_FORMAT_VERSION
 from pico.task_state import TaskState
 
 
@@ -54,7 +55,7 @@ def _verification(stdout):
 def _session(session_id, workspace_root="/repo"):
     return {
         "record_type": "session",
-        "format_version": 2,
+        "format_version": SESSION_FORMAT_VERSION,
         "id": session_id,
         "created_at": "2026-01-01T00:00:00+00:00",
         "workspace_root": str(workspace_root),
@@ -649,7 +650,7 @@ def test_singular_session_inspection_never_reads_unsafe_paths(
     safe.write_text(
         json.dumps({
             "record_type": "session",
-            "format_version": 1,
+                "format_version": SESSION_FORMAT_VERSION,
             "id": "safe",
             "created_at": "2026-01-01T00:00:00+00:00",
             "workspace_root": str(tmp_path),
@@ -755,7 +756,7 @@ def test_status_redacts_latest_artifact_ids(tmp_path, monkeypatch, capsys):
     secret = "opaque-status-secret-123456789"
     monkeypatch.setenv("CUSTOM_STATUS_TOKEN", secret)
     (tmp_path / ".env").write_text(
-        f"PICO_PROVIDER=deepseek\nPICO_DEEPSEEK_MODEL={secret}\n",
+        "PICO_API_URL=https://api.deepseek.com\n",
         encoding="utf-8",
     )
     (tmp_path / ".pico" / "runs" / secret).mkdir(parents=True)
@@ -797,7 +798,7 @@ def test_status_does_not_follow_symlinked_pico_ancestor(tmp_path, capsys):
     assert payload["data"]["latest"]["run_id"] is None
 
 
-def test_config_and_doctor_redact_configured_model_values(
+def test_config_and_doctor_redact_configured_api_values(
     tmp_path,
     monkeypatch,
     capsys,
@@ -805,11 +806,11 @@ def test_config_and_doctor_redact_configured_model_values(
     secret = "opaque-diagnostics-model-secret-123456789"
     monkeypatch.setenv("CUSTOM_DIAGNOSTIC_TOKEN", secret)
     (tmp_path / ".env").write_text(
-        f"PICO_PROVIDER=deepseek\nPICO_DEEPSEEK_MODEL={secret}\n",
+        f"PICO_API_URL=https://example.com/{secret}\n",
         encoding="utf-8",
     )
 
-    for command in (("config", "show"), ("doctor", "--offline")):
+    for command in (("config", "show"), ("doctor",)):
         for output_format in ("text", "json"):
             code = main([
                 "--cwd",

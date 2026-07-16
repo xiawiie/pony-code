@@ -9,8 +9,6 @@ import math
 import unicodedata
 import warnings
 
-from .providers.defaults import DEFAULT_MODELS
-
 
 DEFAULT_CONTEXT_WINDOW = 128_000
 DEFAULT_MAX_OUTPUT_TOKENS = 16_384
@@ -70,11 +68,11 @@ class RequestTokenCount:
     anchor_candidate: tuple[str, tuple[str, ...]]
 
 
-# Pico only claims builtin knowledge for its own default model names. A custom
-# model remains configurable, but receives the documented conservative fallback.
+# Pico only claims builtin limits for its fixed public model. Internal benchmark
+# clients and custom endpoints use explicit project limits or the conservative
+# fallback.
 BUILTIN_MODEL_CAPABILITIES = {
-    model.casefold(): (DEFAULT_CONTEXT_WINDOW, DEFAULT_MAX_OUTPUT_TOKENS)
-    for model in DEFAULT_MODELS.values()
+    "deepseek-v4-flash": (DEFAULT_CONTEXT_WINDOW, DEFAULT_MAX_OUTPUT_TOKENS),
 }
 
 

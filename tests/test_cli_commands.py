@@ -100,7 +100,7 @@ def test_help_command_shows_examples(capsys):
     assert "Available Commands:" in out
     assert "--sandbox    run/repl in local Docker Sandbox (macOS arm64 only)" in out
     assert 'pico run "inspect the failing tests"' in out
-    assert "pico config set-secret NAME [--stdin]" in out
+    assert "pico config set-secret PICO_DEEPSEEK_API_KEY" in out
     assert "pico --approval ask run" in out
     assert "pico checkpoints show <checkpoint-id>" in out
     assert "pico checkpoints pending" in out
@@ -174,230 +174,308 @@ def test_unknown_command_suggestion_uses_json_error_envelope(capsys):
     assert payload["error"]["hint"] == "Did you mean `checkpoints`?"
 
 
-def test_init_creates_non_secret_project_env_without_building_agent(tmp_path, monkeypatch, capsys):
-    def fail_build_agent(args):
-        raise AssertionError("init must not build a Pico agent")
-
-    monkeypatch.setattr("pico.cli.build_agent", fail_build_agent)
-
-    code = main([
-        "--cwd",
-        str(tmp_path),
-        "init",
-        "--provider",
-        "deepseek",
-    ])
-
-    assert code == 0
-    values = read_project_env(tmp_path, warn=False)
-    assert values["PICO_PROVIDER"] == "deepseek"
-    assert values["PICO_DEEPSEEK_MODEL"] == "deepseek-v4-pro"
-    assert values["PICO_DEEPSEEK_API_BASE"] == "https://api.deepseek.com/anthropic"
-    assert "PICO_DEEPSEEK_API_KEY" not in values
-
-    out = capsys.readouterr().out
-    assert out.startswith("Pico init")
-    assert "Workspace" in out
-    assert str(tmp_path.resolve()) in out
-    assert "Project environment" in out
-    assert "repo_root_exact" in out
-    assert "loaded" in out
-    assert "pico config set-secret PICO_DEEPSEEK_API_KEY" in out
-
-    code = main(["--cwd", str(tmp_path), "--format", "json", "config", "show"])
-
-    assert code == 0
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["data"]["provider"]["value"] == "deepseek"
-    assert payload["data"]["api_key"] == {
-        "present": False,
-        "source": "unset",
-        "name": "",
-    }
+def _install_init_input(monkeypatch, *, url="", key="test-key"):
+    monkeypatch.setattr("builtins.input", lambda: url)
+    monkeypatch.setattr(getpass, "getpass", lambda prompt: key)
 
 
-def test_init_updates_existing_env_without_dropping_unrelated_lines(tmp_path, capsys):
-    (tmp_path / ".env").write_text(
-        "# keep this comment\n"
-        "OTHER_SETTING=kept\n"
-        "PICO_PROVIDER=deepseek\n"
-        "PICO_DEEPSEEK_API_KEY=old-secret\n",
-        encoding="utf-8",
-    )
-
-    code = main([
-        "--cwd",
-        str(tmp_path),
-        "init",
-        "--provider",
-        "openai",
-        "--model",
-        "gpt-project",
-    ])
-
-    assert code == 0
-    env_text = (tmp_path / ".env").read_text(encoding="utf-8")
-    assert "# keep this comment\n" in env_text
-    assert "OTHER_SETTING=kept\n" in env_text
-    values = read_project_env(tmp_path, warn=False)
-    assert values["PICO_PROVIDER"] == "openai"
-    assert values["PICO_OPENAI_MODEL"] == "gpt-project"
-    assert values["PICO_OPENAI_API_BASE"] == "https://api.openai.com/v1"
-    assert values["PICO_DEEPSEEK_API_KEY"] == "old-secret"
-    assert "PICO_OPENAI_API_KEY" not in values
-
-    out = capsys.readouterr().out
-    assert "updated" in out
-    assert "old-secret" not in out
-
-
-def test_init_json_reports_missing_api_key_without_prompting(tmp_path, monkeypatch, capsys):
+def test_init_prompts_for_url_and_hidden_key_without_building_agent_or_network(
+    tmp_path, monkeypatch, capsys
+):
+    _install_init_input(monkeypatch)
     monkeypatch.setattr(
-        getpass,
-        "getpass",
-        lambda prompt: (_ for _ in ()).throw(AssertionError("getpass called")),
+        "pico.cli.build_agent",
+        lambda args: (_ for _ in ()).throw(AssertionError("init built an agent")),
     )
-    code = main([
+    monkeypatch.setattr(
+        "pico.providers._shared._provider_urlopen",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("init attempted a request")
+        ),
+    )
+
+    assert main(["--cwd", str(tmp_path), "init"]) == 0
+
+    values = read_project_env(tmp_path, warn=False)
+    assert values == {
+        "PICO_API_URL": "https://api.deepseek.com/anthropic/v1",
+        "PICO_DEEPSEEK_API_KEY": "test-key",
+    }
+    captured = capsys.readouterr()
+    assert "API URL [https://api.deepseek.com/anthropic/v1]:" in captured.err
+    assert captured.out.startswith("Pico init")
+    assert "deepseek-v4-flash" in captured.out
+    assert "anthropic_messages" in captured.out
+    assert "test-key" not in captured.out + captured.err
+
+
+def test_init_accepts_exact_third_party_api_root(tmp_path, monkeypatch, capsys):
+    _install_init_input(
+        monkeypatch,
+        url="https://lumina.tripo3d.com/v1/",
+        key="gateway-key",
+    )
+
+    assert main([
         "--cwd",
         str(tmp_path),
         "--format",
         "json",
         "init",
-        "--provider",
-        "anthropic",
-    ])
+    ]) == 0
 
-    assert code == 0
     output = capsys.readouterr().out
-    payload = json.loads(output)
-    assert payload["kind"] == "config_init"
-    assert payload["data"]["provider"] == "anthropic"
-    assert payload["data"]["api_key"] == {
-        "present": False,
-        "name": "PICO_ANTHROPIC_API_KEY",
+    payload = json.loads(output)["data"]
+    assert payload["api_url"] == "https://lumina.tripo3d.com/v1"
+    assert payload["model"] == "deepseek-v4-flash"
+    assert payload["api_key"] == {
+        "present": True,
+        "name": "PICO_DEEPSEEK_API_KEY",
     }
-    assert "PICO_ANTHROPIC_API_KEY" in output
+    assert "gateway-key" not in output
 
 
-def test_init_preserves_existing_ollama_host_when_cli_host_is_default(tmp_path):
+def test_init_empty_key_keeps_existing_project_key(tmp_path, monkeypatch, capsys):
     (tmp_path / ".env").write_text(
-        "PICO_PROVIDER=ollama\n"
-        "PICO_OLLAMA_HOST=http://ollama.example:11434\n",
+        "PICO_API_URL=https://old.example/v1\n"
+        "PICO_DEEPSEEK_API_KEY=existing-key\n",
         encoding="utf-8",
     )
+    _install_init_input(monkeypatch, url="", key="")
 
-    code = main(["--cwd", str(tmp_path), "init", "--provider", "ollama"])
+    assert main(["--cwd", str(tmp_path), "init"]) == 0
 
-    assert code == 0
     values = read_project_env(tmp_path, warn=False)
-    assert values["PICO_PROVIDER"] == "ollama"
-    assert values["PICO_OLLAMA_HOST"] == "http://ollama.example:11434"
+    assert values["PICO_API_URL"] == "https://old.example/v1"
+    assert values["PICO_DEEPSEEK_API_KEY"] == "existing-key"
+    captured = capsys.readouterr()
+    assert "press Enter to keep existing" not in captured.out
+    assert "existing-key" not in captured.out + captured.err
 
 
-@pytest.mark.parametrize("flag", ("--api-key", "--api-key="))
-def test_init_rejects_api_key_argv_without_echoing_value(tmp_path, flag, capsys):
-    secret = "sk-cli-secret-123456789"
-    argv = ["--cwd", str(tmp_path), "init", flag]
-    if flag == "--api-key":
-        argv.append(secret)
-    else:
-        argv[-1] += secret
+def test_init_updates_config_without_dropping_unrelated_lines(
+    tmp_path, monkeypatch
+):
+    (tmp_path / ".env").write_text(
+        "# keep this comment\n"
+        "OTHER_SETTING=kept\n"
+        "PICO_API_URL=https://old.example/v1\n"
+        "PICO_DEEPSEEK_API_KEY=old-key\n",
+        encoding="utf-8",
+    )
+    _install_init_input(
+        monkeypatch,
+        url="https://new.example/v1",
+        key="new-key",
+    )
 
-    code = main(argv)
+    assert main(["--cwd", str(tmp_path), "init"]) == 0
+
+    text = (tmp_path / ".env").read_text(encoding="utf-8")
+    values = read_project_env(tmp_path, warn=False)
+    assert "# keep this comment\n" in text
+    assert "OTHER_SETTING=kept\n" in text
+    assert values["PICO_API_URL"] == "https://new.example/v1"
+    assert values["PICO_DEEPSEEK_API_KEY"] == "new-key"
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://user:password@example.com/v1",
+        "https://example.com/v1?token=x",
+        "https://example.com/v1#fragment",
+        "http://example.com/v1",
+        "not-a-url",
+    ],
+)
+def test_init_rejects_invalid_url_before_key_prompt(
+    tmp_path, monkeypatch, capsys, url
+):
+    monkeypatch.setattr("builtins.input", lambda: url)
+    key_prompt = pytest.fail
+    monkeypatch.setattr(getpass, "getpass", key_prompt)
+
+    assert main(["--cwd", str(tmp_path), "init"]) == 3
 
     captured = capsys.readouterr()
-    assert code == 2
+    assert "password" not in captured.out + captured.err
+    assert not (tmp_path / ".env").exists()
+
+
+def test_init_rejects_unsafe_existing_url_without_echo_or_prompt(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    secret = "existing-url-secret-canary"
+    (tmp_path / ".env").write_text(
+        f"PICO_API_URL=https://user:{secret}@example.com/v1\n"
+        "PICO_DEEPSEEK_API_KEY=existing-key\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "builtins.input",
+        lambda: (_ for _ in ()).throw(AssertionError("input called")),
+    )
+    monkeypatch.setattr(
+        getpass,
+        "getpass",
+        lambda prompt: (_ for _ in ()).throw(AssertionError("getpass called")),
+    )
+
+    assert main(["--cwd", str(tmp_path), "init"]) == 3
+
+    captured = capsys.readouterr()
+    assert secret not in captured.out + captured.err
+    assert "api_url_credentials" in captured.err
+
+
+def test_init_rejects_empty_new_key_without_writing(tmp_path, monkeypatch, capsys):
+    _install_init_input(monkeypatch, key="")
+
+    assert main(["--cwd", str(tmp_path), "init"]) == 2
+
+    assert "API Key must be one non-empty line" in capsys.readouterr().err
+    assert not (tmp_path / ".env").exists()
+
+
+def test_init_no_input_never_prompts_or_writes(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(
+        "builtins.input",
+        lambda: (_ for _ in ()).throw(AssertionError("input called")),
+    )
+    monkeypatch.setattr(
+        getpass,
+        "getpass",
+        lambda prompt: (_ for _ in ()).throw(AssertionError("getpass called")),
+    )
+
+    assert main(["--cwd", str(tmp_path), "--no-input", "init"]) == 2
+
+    assert "requires interactive input" in capsys.readouterr().err
+    assert not (tmp_path / ".env").exists()
+
+
+@pytest.mark.parametrize(
+    "tokens",
+    [
+        ["--provider", "openai"],
+        ["--profile", "official"],
+        ["--model", "other-model"],
+        ["--base-url", "https://example.com/v1"],
+        ["--api-key", "sk-cli-secret-123456789"],
+        ["--connection", "legacy"],
+    ],
+)
+def test_init_rejects_removed_arguments_without_writing_or_leaking(
+    tmp_path, tokens, capsys
+):
+    secret = "sk-cli-secret-123456789"
+
+    assert main(["--cwd", str(tmp_path), "init", *tokens]) == 2
+
+    captured = capsys.readouterr()
+    assert captured.err.strip() == "usage: pico init"
     assert secret not in captured.out + captured.err
     assert not (tmp_path / ".env").exists()
 
 
-def test_config_set_secret_reads_stdin_and_writes_private_env(tmp_path, monkeypatch, capsys):
+def test_config_set_secret_reads_stdin_and_writes_private_env(
+    tmp_path, monkeypatch, capsys
+):
     monkeypatch.setattr("sys.stdin", io.StringIO("sk-stdin-secret-123456789\n"))
 
-    code = main([
+    assert main([
         "--cwd",
         str(tmp_path),
         "config",
         "set-secret",
         "PICO_DEEPSEEK_API_KEY",
         "--stdin",
-    ])
+    ]) == 0
 
-    assert code == 0
-    assert read_project_env(tmp_path, warn=False)["PICO_DEEPSEEK_API_KEY"] == "sk-stdin-secret-123456789"
+    assert read_project_env(tmp_path, warn=False)["PICO_DEEPSEEK_API_KEY"] == (
+        "sk-stdin-secret-123456789"
+    )
     captured = capsys.readouterr()
     assert "sk-stdin" not in captured.out + captured.err
-    assert "Workspace" in captured.out
-    assert str(tmp_path.resolve()) in captured.out
-    assert "Project environment" in captured.out
-    assert "repo_root_exact" in captured.out
-    assert "loaded" in captured.out
     if os.name == "posix":
         assert stat.S_IMODE((tmp_path / ".env").stat().st_mode) == 0o600
 
 
-def test_config_set_secret_uses_getpass_without_rendering_value(tmp_path, monkeypatch, capsys):
+def test_config_set_secret_uses_getpass_without_rendering_value(
+    tmp_path, monkeypatch, capsys
+):
     secret = "sk-getpass-secret-123456789"
     monkeypatch.setattr(getpass, "getpass", lambda prompt: secret)
 
-    code = main([
+    assert main([
         "--cwd",
         str(tmp_path),
         "config",
         "set-secret",
         "PICO_DEEPSEEK_API_KEY",
-    ])
+    ]) == 0
 
-    captured = capsys.readouterr()
-    assert code == 0
     assert read_project_env(tmp_path, warn=False)["PICO_DEEPSEEK_API_KEY"] == secret
+    captured = capsys.readouterr()
     assert secret not in captured.out + captured.err
 
 
-def test_config_set_secret_storage_failure_is_stable(tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize(
+    "name",
+    [
+        "PICO_API_KEY",
+        "OPENAI_API_KEY",
+        "PICO_OPENAI_API_KEY",
+        "PICO_DEEPSEEK_TOKEN",
+    ],
+)
+def test_config_set_secret_rejects_every_other_name(
+    tmp_path, monkeypatch, capsys, name
+):
+    monkeypatch.setattr(
+        getpass,
+        "getpass",
+        lambda prompt: (_ for _ in ()).throw(AssertionError("getpass called")),
+    )
+
+    assert main(["--cwd", str(tmp_path), "config", "set-secret", name]) == 2
+
+    assert "expected PICO_DEEPSEEK_API_KEY" in capsys.readouterr().err
+    assert not (tmp_path / ".env").exists()
+
+
+def test_config_set_secret_storage_failure_is_stable(
+    tmp_path, monkeypatch, capsys
+):
     marker = "sk-sensitive-lock-path-123456789"
     outside = tmp_path.parent / marker
     outside.mkdir()
     (tmp_path / ".pico").symlink_to(outside, target_is_directory=True)
     monkeypatch.setattr("sys.stdin", io.StringIO("sk-input-secret-123456789\n"))
 
-    code = main([
+    assert main([
         "--cwd",
         str(tmp_path),
         "config",
         "set-secret",
         "PICO_DEEPSEEK_API_KEY",
         "--stdin",
-    ])
+    ]) == 3
 
     captured = capsys.readouterr()
-    assert code == 3
     assert marker not in captured.out + captured.err
     assert "project environment update failed" in captured.out + captured.err
 
 
-def test_init_writes_only_non_secret_configuration(tmp_path, monkeypatch):
-    monkeypatch.setattr(
-        getpass,
-        "getpass",
-        lambda prompt: (_ for _ in ()).throw(AssertionError("getpass called")),
-    )
-
-    code = main(["--cwd", str(tmp_path), "init", "--provider", "deepseek"])
-
-    assert code == 0
-    values = read_project_env(tmp_path, warn=False)
-    assert values["PICO_PROVIDER"] == "deepseek"
-    assert "PICO_DEEPSEEK_API_KEY" not in values
-
-
 def test_config_write_output_uses_canonical_project_env_metadata(
-    tmp_path,
-    monkeypatch,
-    capsys,
+    tmp_path, monkeypatch, capsys
 ):
     root = tmp_path / "repo"
     root.mkdir()
+    _install_init_input(monkeypatch)
 
     assert main([
         "--cwd",
@@ -405,54 +483,25 @@ def test_config_write_output_uses_canonical_project_env_metadata(
         "--format",
         "json",
         "init",
-        "--provider",
-        "deepseek",
     ]) == 0
-    init_payload = json.loads(capsys.readouterr().out)["data"]
-    assert init_payload["workspace"] == {
-        "repo_root": str(root.resolve()),
-    }
-    assert init_payload["project_env"] == {
+
+    payload = json.loads(capsys.readouterr().out)["data"]
+    assert payload["workspace"] == {"repo_root": str(root.resolve())}
+    assert payload["project_env"] == {
         "path": str(root.resolve() / ".env"),
         "scope": "repo_root_exact",
         "status": "loaded",
     }
-    assert "env_path" not in init_payload
-
-    monkeypatch.setattr(
-        "sys.stdin",
-        io.StringIO("sk-output-test-secret-123456789\n"),
-    )
-    assert main([
-        "--cwd",
-        str(root),
-        "--format",
-        "json",
-        "config",
-        "set-secret",
-        "PICO_DEEPSEEK_API_KEY",
-        "--stdin",
-    ]) == 0
-    secret_payload = json.loads(capsys.readouterr().out)["data"]
-    assert secret_payload["workspace"] == {
-        "repo_root": str(root.resolve()),
-    }
-    assert secret_payload["project_env"] == {
-        "path": str(root.resolve() / ".env"),
-        "scope": "repo_root_exact",
-        "status": "loaded",
-    }
-    assert "env_path" not in secret_payload
+    assert "env_path" not in payload
 
 
-def test_config_writes_redact_secret_shaped_workspace_in_project_env_path(
-    tmp_path,
-    monkeypatch,
-    capsys,
+def test_config_writes_redact_secret_shaped_workspace_path(
+    tmp_path, monkeypatch, capsys
 ):
     marker = "sk-workspace-path-123456789"
     root = tmp_path / marker
     root.mkdir()
+    _install_init_input(monkeypatch)
 
     assert main([
         "--cwd",
@@ -460,51 +509,28 @@ def test_config_writes_redact_secret_shaped_workspace_in_project_env_path(
         "--format",
         "json",
         "init",
-        "--provider",
-        "deepseek",
     ]) == 0
-    init_output = capsys.readouterr().out
-    init_data = json.loads(init_output)["data"]
-    assert set(init_data["workspace"]) == {"repo_root"}
-    assert init_data["project_env"]["scope"] == "repo_root_exact"
-    assert init_data["project_env"]["status"] == "loaded"
-    assert marker not in init_output
 
-    monkeypatch.setattr(
-        "sys.stdin",
-        io.StringIO("sk-output-test-secret-123456789\n"),
-    )
-    assert main([
-        "--cwd",
-        str(root),
-        "--format",
-        "json",
-        "config",
-        "set-secret",
-        "PICO_DEEPSEEK_API_KEY",
-        "--stdin",
-    ]) == 0
-    secret_output = capsys.readouterr().out
-    secret_data = json.loads(secret_output)["data"]
-    assert set(secret_data["workspace"]) == {"repo_root"}
-    assert secret_data["project_env"]["scope"] == "repo_root_exact"
-    assert secret_data["project_env"]["status"] == "loaded"
-    assert marker not in secret_output
-    assert "sk-output-test-secret" not in secret_output
+    output = capsys.readouterr().out
+    data = json.loads(output)["data"]
+    assert set(data["workspace"]) == {"repo_root"}
+    assert data["project_env"]["scope"] == "repo_root_exact"
+    assert marker not in output
+    assert "test-key" not in output
 
 
 def test_config_writes_keep_review_required_for_preserved_invalid_line(
-    tmp_path,
-    monkeypatch,
-    capsys,
+    tmp_path, monkeypatch, capsys
 ):
     marker = "sk-" + "preserved-invalid-line-123456789"
     env_path = tmp_path / ".env"
     env_path.write_text(
-        f"PICO_PROVIDER=deepseek\n{marker}\n",
+        f"PICO_API_URL=https://api.deepseek.com\n"
+        f"PICO_DEEPSEEK_API_KEY=old-key\n{marker}\n",
         encoding="utf-8",
     )
     env_path.chmod(0o600)
+    _install_init_input(monkeypatch, key="new-key")
 
     assert main([
         "--cwd",
@@ -512,33 +538,12 @@ def test_config_writes_keep_review_required_for_preserved_invalid_line(
         "--format",
         "json",
         "init",
-        "--provider",
-        "deepseek",
     ]) == 0
-    init_capture = capsys.readouterr()
-    init_data = json.loads(init_capture.out)["data"]
-    assert init_data["project_env"]["status"] == "review_required"
-    assert marker not in init_capture.out + init_capture.err
 
-    monkeypatch.setattr(
-        "sys.stdin",
-        io.StringIO("sk-output-test-secret-123456789\n"),
-    )
-    assert main([
-        "--cwd",
-        str(tmp_path),
-        "--format",
-        "json",
-        "config",
-        "set-secret",
-        "PICO_DEEPSEEK_API_KEY",
-        "--stdin",
-    ]) == 0
-    secret_capture = capsys.readouterr()
-    secret_data = json.loads(secret_capture.out)["data"]
-    assert secret_data["project_env"]["status"] == "review_required"
-    assert marker not in secret_capture.out + secret_capture.err
-    assert "sk-output-test-secret" not in secret_capture.out + secret_capture.err
+    captured = capsys.readouterr()
+    data = json.loads(captured.out)["data"]
+    assert data["project_env"]["status"] == "review_required"
+    assert marker not in captured.out + captured.err
     assert marker in env_path.read_text(encoding="utf-8")
 
 

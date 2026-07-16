@@ -40,7 +40,7 @@ _TRACE_STRING_FIELDS = {
     "execution_plan_digest", "logical_intent_digest", "policy_digest",
 }
 _TRACE_COUNT_FIELDS = {
-    "ignored_tool_count", "duration_ms", "run_duration_ms", "attempts", "attempt",
+    "duration_ms", "run_duration_ms", "attempts", "attempt",
     "tool_steps", "input_tokens", "output_tokens", "total_tokens", "cached_tokens",
     "changed_files", "stdout_bytes", "stderr_bytes",
 }

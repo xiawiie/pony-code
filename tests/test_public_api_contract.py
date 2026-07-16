@@ -33,7 +33,17 @@ def test_public_api_exports_current_names_only():
 
 def test_build_agent_returns_pico(tmp_path):
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
-    args = build_arg_parser().parse_args(["--cwd", str(tmp_path), "--approval", "auto"])
+    (tmp_path / ".env").write_text(
+        "PICO_API_URL=https://api.deepseek.com/anthropic/v1\n"
+        "PICO_DEEPSEEK_API_KEY=test-key\n",
+        encoding="utf-8",
+    )
+    args = build_arg_parser().parse_args([
+        "--cwd",
+        str(tmp_path),
+        "--approval",
+        "auto",
+    ])
 
     agent = build_agent(args)
 
@@ -77,16 +87,18 @@ def test_memory_feature_exports_exactly_seven_production_helpers():
         assert not hasattr(memory, removed)
 
 
-def test_all_four_provider_classes_importable_directly():
+def test_internal_model_client_classes_importable_directly():
     from pico.providers.anthropic_compatible import AnthropicCompatibleModelClient
     from pico.providers.fake import FakeModelClient
     from pico.providers.ollama import OllamaModelClient
     from pico.providers.openai_compatible import OpenAICompatibleModelClient
+    from pico.providers.openai_chat import OpenAIChatCompletionsModelClient
 
     for cls in (
         FakeModelClient,
         OllamaModelClient,
         OpenAICompatibleModelClient,
+        OpenAIChatCompletionsModelClient,
         AnthropicCompatibleModelClient,
     ):
         assert isinstance(cls, type), f"{cls!r} should be a class"
@@ -189,19 +201,14 @@ def test_packaging_exposes_only_pico_cli_script():
     assert scripts.strip() == 'pico = "pico.cli:main"'
 
 
-def test_provider_defaults_have_single_source():
-    from pico import cli, cli_diagnostics
-    import pico.providers.defaults as defaults
+def test_fixed_model_defaults_have_one_config_source():
+    from pico import config
 
-    assert cli.DEFAULT_PROVIDER == defaults.DEFAULT_PROVIDER
-    assert cli.DEFAULT_DEEPSEEK_MODEL == defaults.DEFAULT_DEEPSEEK_MODEL
-    assert cli.DEFAULT_DEEPSEEK_BASE_URL == defaults.DEFAULT_DEEPSEEK_BASE_URL
-    assert cli.PROVIDER_CHOICES == defaults.PROVIDER_CHOICES
-    assert cli_diagnostics.DEFAULT_PROVIDER == defaults.DEFAULT_PROVIDER
-    assert cli_diagnostics.DEFAULT_MODELS == defaults.DEFAULT_MODELS
-    assert cli_diagnostics.DEFAULT_BASE_URLS == defaults.DEFAULT_BASE_URLS
-
-    cli_source = Path("pico/cli.py").read_text(encoding="utf-8")
-    diagnostics_source = Path("pico/cli_diagnostics.py").read_text(encoding="utf-8")
-    assert 'DEFAULT_PROVIDER = "deepseek"' not in cli_source
-    assert 'DEFAULT_PROVIDER = "deepseek"' not in diagnostics_source
+    assert config.DEFAULT_MODEL == "deepseek-v4-flash"
+    assert config.DEFAULT_API_URL == "https://api.deepseek.com/anthropic/v1"
+    assert config.API_KEY_ENV_NAME == "PICO_DEEPSEEK_API_KEY"
+    assert config.API_URL_ENV_NAME == "PICO_API_URL"
+    destinations = {action.dest for action in build_arg_parser()._actions}
+    assert {"provider", "profile", "connection", "model", "base_url"}.isdisjoint(
+        destinations
+    )

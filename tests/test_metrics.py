@@ -14,7 +14,7 @@ from pico.evaluation.metrics_reports import (
     aggregate_benchmark_artifact,
     write_benchmark_core_report,
 )
-from pico.evaluation.provider_benchmark import _provider_profile
+from pico.evaluation.provider_benchmark import _provider_target
 from pico.observability import RunArtifactError, project_trace_event
 from pico.task_state import TaskState
 
@@ -218,8 +218,8 @@ def test_aggregate_run_artifacts_counts_real_rejection_security_event(tmp_path):
     agent = Pico(
         model_client=FakeModelClient(
             [
-                '<tool>{"name":"memory_save","args":{"note":"remember this"}}</tool>',
-                "<final>done</final>",
+                {"name": "memory_save", "args": {"note":"remember this"}},
+                "done",
             ]
         ),
         workspace=WorkspaceContext.build(tmp_path),
@@ -433,14 +433,13 @@ def test_request_preview_restores_the_canonical_session(tmp_path):
     assert agent.session["messages"] == before_messages
 
 
-def test_provider_profile_loads_project_env_before_reading_deepseek_config(tmp_path, monkeypatch):
+def test_provider_target_uses_deepseek_first_project_env(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     (tmp_path / ".env").write_text(
         "\n".join(
             [
+                "PICO_API_URL=https://gateway.example/v1",
                 "PICO_DEEPSEEK_API_KEY=sk-project-deepseek",
-                "PICO_DEEPSEEK_MODEL=deepseek-v4-pro",
-                "PICO_DEEPSEEK_API_BASE=https://api.deepseek.com/anthropic",
             ]
         )
         + "\n",
@@ -456,31 +455,33 @@ def test_provider_profile_loads_project_env_before_reading_deepseek_config(tmp_p
         },
         clear=True,
     ):
-        profile = _provider_profile("deepseek")
+        target = _provider_target("deepseek")
 
-    assert profile["status"] == "ready"
-    assert profile["api_key"] == "sk-project-deepseek"
-    assert profile["model"] == "deepseek-v4-pro"
-    assert profile["base_url"] == "https://api.deepseek.com/anthropic"
+    assert target["status"] == "ready"
+    assert target["api_key"] == "sk-project-deepseek"
+    assert target["model"] == "deepseek-v4-flash"
+    assert target["base_url"] == "https://gateway.example/v1"
+    assert target["client_kind"] == "anthropic_messages"
+    assert target["auth_mode"] == "x-api-key"
+    assert target["capabilities"] == {"thinking_disabled": True}
 
 
-def test_provider_profile_uses_shared_key_for_gpt(tmp_path, monkeypatch):
+def test_provider_target_uses_explicit_pico_key_for_gpt(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
 
-    with patch.dict(os.environ, {"PICO_API_KEY": "sk-shared"}, clear=True):
-        profile = _provider_profile("gpt")
+    with patch.dict(os.environ, {"PICO_OPENAI_API_KEY": "sk-official"}, clear=True):
+        target = _provider_target("gpt")
 
-    assert profile["status"] == "ready"
-    assert profile["api_key"] == "sk-shared"
-    assert profile["model"] == "gpt-5.4"
+    assert target["status"] == "ready"
+    assert target["api_key"] == "sk-official"
+    assert target["model"] == "gpt-5.4"
 
 
-def test_real_memory_request_recorder_captures_structured_and_text_input():
+def test_real_memory_request_recorder_captures_native_messages():
     from pico.evaluation.experiments_real import (
         _first_followup_drops_bootstrap_tool,
         _recording_provider,
     )
-    from pico.providers.text_protocol_adapter import TextProtocolAdapter
 
     class NativeProvider:
         def complete(self, **kwargs):
@@ -498,24 +499,7 @@ def test_real_memory_request_recorder_captures_structured_and_text_input():
     assert _first_followup_drops_bootstrap_tool(native, 0, "tu_1") is False
     assert _first_followup_drops_bootstrap_tool(native, 1, "tu_1") is False
 
-    class TextProvider:
-        last_completion_metadata = {}
-
-        def complete_text(self, prompt, max_tokens):
-            del max_tokens
-            return prompt
-
-    text_adapter = _recording_provider(TextProtocolAdapter(TextProvider()))
-    text_adapter.complete(
-        system=[],
-        tools=[],
-        messages=[{"role": "user", "content": "record the wire prompt"}],
-        max_tokens=10,
-    )
-    assert text_adapter.calls[0][0] == "prompt"
-    assert "record the wire prompt" in text_adapter.calls[0][1]
-    assert _first_followup_drops_bootstrap_tool(text_adapter, 0, "tu_1") is True
-    assert _first_followup_drops_bootstrap_tool(text_adapter, 0, "") is False
+    assert _first_followup_drops_bootstrap_tool(native, 0, "") is False
 
 
 def test_real_followup_metrics_rejects_missing_run_artifact(tmp_path):
@@ -525,7 +509,7 @@ def test_real_followup_metrics_rejects_missing_run_artifact(tmp_path):
 
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
     agent = Pico(
-        model_client=FakeModelClient(["<final>done</final>"]),
+        model_client=FakeModelClient(["done"]),
         workspace=WorkspaceContext.build(tmp_path),
         session_store=SessionStore(tmp_path / ".pico" / "sessions"),
         approval_policy="auto",
@@ -763,7 +747,7 @@ def test_run_provider_experiments_targets_selected_provider(tmp_path, monkeypatc
 
     seen = []
 
-    def fake_provider_profile(provider):
+    def fake_provider_target(provider):
         seen.append(provider)
         return {
             "provider": provider,
@@ -772,8 +756,8 @@ def test_run_provider_experiments_targets_selected_provider(tmp_path, monkeypatc
         }
 
     monkeypatch.setattr(
-        "pico.evaluation.provider_benchmark._provider_profile",
-        fake_provider_profile,
+        "pico.evaluation.provider_benchmark._provider_target",
+        fake_provider_target,
     )
 
     payload = run_provider_experiments(
@@ -802,7 +786,7 @@ def test_run_provider_experiments_default_keeps_three_provider_order(tmp_path, m
 
     seen = []
 
-    def fake_provider_profile(provider):
+    def fake_provider_target(provider):
         seen.append(provider)
         return {
             "provider": provider,
@@ -811,8 +795,8 @@ def test_run_provider_experiments_default_keeps_three_provider_order(tmp_path, m
         }
 
     monkeypatch.setattr(
-        "pico.evaluation.provider_benchmark._provider_profile",
-        fake_provider_profile,
+        "pico.evaluation.provider_benchmark._provider_target",
+        fake_provider_target,
     )
 
     payload = run_provider_experiments(

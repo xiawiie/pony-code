@@ -905,7 +905,7 @@ def test_runtime_finalization_releases_changed_session_for_review(
     monkeypatch,
 ):
     _source, context, agent = _build_runtime(tmp_path, monkeypatch)
-    agent.model_client = FakeModelClient(["<final>done</final>"])
+    agent.model_client = FakeModelClient(["done"])
     assert agent.ask("prepare review") == "done"
     (context.execution_root / "candidate.txt").write_text(
         "candidate\n",

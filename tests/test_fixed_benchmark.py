@@ -301,7 +301,7 @@ def test_benchmark_verifier_runs_with_reproducibility_locale(monkeypatch, tmp_pa
         benchmark_path=benchmark_path,
         artifact_path=tmp_path / "artifact.json",
         workspace_root=tmp_path / "workspaces",
-        model_client_factory=lambda task, workspace: FakeModelClient(["<final>done</final>"]),
+        model_client_factory=lambda task, workspace: FakeModelClient(["done"]),
     )
 
     row = evaluator.run_task(evaluator.load()["tasks"][0])
@@ -343,7 +343,7 @@ def test_real_provider_benchmark_prompt_includes_success_criteria(tmp_path):
 
     def factory(task, workspace):
         del task, workspace
-        client = FakeModelClient(["<final>done</final>"])
+        client = FakeModelClient(["done"])
         clients.append(client)
         return client
 

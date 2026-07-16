@@ -70,7 +70,7 @@ def build_request_view(agent, user_message):
 
 
 def test_report_separates_sent_request_session_transcript_and_all_completion_usage(tmp_path):
-    agent = build_agent(tmp_path, ["<final>done</final>"])
+    agent = build_agent(tmp_path, ["done"])
     agent.session["messages"] = [
         {"role": "user", "content": "older question", "_pico_meta": {"created_at": "t1"}},
         {"role": "assistant", "content": "older answer", "_pico_meta": {"created_at": "t2"}},
@@ -110,8 +110,8 @@ def test_successful_run_persists_run_artifacts_and_stop_reason(tmp_path):
     agent = build_agent(
         tmp_path,
         [
-            '<tool>{"name":"read_file","args":{"path":"hello.txt","start":1,"end":2}}</tool>',
-            "<final>Finished.</final>",
+            {"name": "read_file", "args": {"path":"hello.txt","start":1,"end":2}},
+            "Finished.",
         ],
     )
 
@@ -148,9 +148,9 @@ def test_report_tool_counts_are_per_run_and_include_rejections(tmp_path):
     agent = build_agent(
         tmp_path,
         [
-            '<tool>{"name":"unknown_tool","args":{}}</tool>',
-            "<final>First run done.</final>",
-            "<final>Second run done.</final>",
+            {"name": "unknown_tool", "args": {}},
+            "First run done.",
+            "Second run done.",
         ],
     )
 
@@ -182,8 +182,8 @@ def test_report_projects_current_run_tool_change_effects(tmp_path):
     agent = build_agent(
         tmp_path,
         [
-            '<tool>{"name":"run_shell","args":{"command":"printf \'changed\\n\' > README.md && exit 1","timeout":20}}</tool>',
-            "<final>Done.</final>",
+            {"name": "run_shell", "args": {"command":"printf \'changed\\n\' > README.md && exit 1","timeout":20}},
+            "Done.",
         ],
         approval_policy="ask",
     )
@@ -208,8 +208,8 @@ def test_report_projects_sandbox_outcome_and_host_fallback_from_tool_result(
         tmp_path,
         monkeypatch,
         [
-            '<tool>{"name":"run_shell","args":{"command":"pwd","timeout":20}}</tool>',
-            "<final>Done.</final>",
+            {"name": "run_shell", "args": {"command":"pwd","timeout":20}},
+            "Done.",
         ],
     )
     agent.execute_tool = lambda name, args: ToolExecutionResult(
@@ -268,8 +268,8 @@ def test_report_treats_missing_execution_plane_as_unproven_host_fallback(
         tmp_path,
         monkeypatch,
         [
-            '<tool>{"name":"run_shell","args":{"command":"pwd","timeout":20}}</tool>',
-            "<final>Done.</final>",
+            {"name": "run_shell", "args": {"command":"pwd","timeout":20}},
+            "Done.",
         ],
     )
     agent.execute_tool = lambda name, args: ToolExecutionResult(
@@ -303,8 +303,8 @@ def test_report_counts_explicit_host_plane_without_approval_evidence(
         tmp_path,
         monkeypatch,
         [
-            '<tool>{"name":"run_shell","args":{"command":"pwd","timeout":20}}</tool>',
-            "<final>Done.</final>",
+            {"name": "run_shell", "args": {"command":"pwd","timeout":20}},
+            "Done.",
         ],
     )
     agent.execute_tool = lambda name, args: ToolExecutionResult(
@@ -337,8 +337,8 @@ def test_report_counts_started_targets_and_cleanup_failures(tmp_path, monkeypatc
         tmp_path,
         monkeypatch,
         [
-            '<tool>{"name":"run_shell","args":{"command":"pwd","timeout":20}}</tool>',
-            "<final>Done.</final>",
+            {"name": "run_shell", "args": {"command":"pwd","timeout":20}},
+            "Done.",
         ],
     )
     agent.execute_tool = lambda name, args: ToolExecutionResult(
@@ -406,7 +406,7 @@ def test_report_counts_started_targets_and_cleanup_failures(tmp_path, monkeypatc
 def test_interrupted_tool_attempt_is_included_in_current_run_report(tmp_path):
     agent = build_agent(
         tmp_path,
-        ['<tool>{"name":"run_shell","args":{"command":"pwd","timeout":20}}</tool>'],
+        [{"name": "run_shell", "args": {"command":"pwd","timeout":20}}],
     )
     agent.tools["run_shell"]["run"] = lambda _execution: (_ for _ in ()).throw(
         KeyboardInterrupt()
@@ -430,7 +430,7 @@ def test_interrupted_tool_attempt_is_included_in_current_run_report(tmp_path):
 def test_step_limit_run_artifacts_reference_final_checkpoint(tmp_path):
     agent = build_agent(
         tmp_path,
-        ['<tool>{"name":"read_file","args":{"path":"README.md","start":1,"end":1}}</tool>'],
+        [{"name": "read_file", "args": {"path":"README.md","start":1,"end":1}}],
         max_steps=1,
     )
 
@@ -453,8 +453,8 @@ def test_trace_and_report_redact_secret_env_values(tmp_path):
         agent = build_agent(
             tmp_path,
             [
-                '<tool>{"name":"run_shell","args":{"command":"printf \'%s\' \'sk-test-secret-123\'","timeout":20}}</tool>',
-                "<final>Masked sk-test-secret-123</final>",
+                {"name": "run_shell", "args": {"command":"printf \'%s\' \'sk-test-secret-123\'","timeout":20}},
+                "Masked sk-test-secret-123",
             ],
         )
 
@@ -494,7 +494,7 @@ def test_trace_and_report_redact_secret_env_values(tmp_path):
 
 
 def test_request_metadata_describes_actual_sent_view(tmp_path):
-    agent = build_agent(tmp_path, ["<final>Done.</final>"])
+    agent = build_agent(tmp_path, ["Done."])
     agent.session["messages"] = [
         {
             "role": "user" if index % 2 == 0 else "assistant",
@@ -528,7 +528,7 @@ def test_request_metadata_describes_actual_sent_view(tmp_path):
 def test_turn_preflight_refreshes_prefix_when_workspace_changes(tmp_path):
     agent = build_agent(
         tmp_path,
-        ["<final>first</final>", "<final>second</final>", "<final>third</final>"],
+        ["first", "second", "third"],
     )
 
     assert agent.ask("first") == "first"
@@ -553,7 +553,7 @@ def test_turn_preflight_refreshes_prefix_when_workspace_changes(tmp_path):
 
 
 def test_agent_creates_one_task_checkpoint_without_silent_history_reduction(tmp_path):
-    agent = build_agent(tmp_path, ["<final>Done after checkpoint.</final>"])
+    agent = build_agent(tmp_path, ["Done after checkpoint."])
     for index in range(10):
         agent.session["messages"].append(
             {
@@ -585,7 +585,7 @@ def test_resume_prompt_carries_checkpoint_via_v2_messages(tmp_path):
     """Task E4 rewrite: the resume checkpoint state should surface in the
     injection block on the outgoing user message (v2 shape), not the
     legacy flattened prompt."""
-    agent = build_agent(tmp_path, ["<final>checkpoint ready.</final>"])
+    agent = build_agent(tmp_path, ["checkpoint ready."])
     agent.session["checkpoints"] = {
         "current_id": "ckpt_manual",
         "items": {
@@ -627,7 +627,7 @@ def test_resume_prompt_carries_checkpoint_via_v2_messages(tmp_path):
 def test_resume_invalidates_stale_file_summaries_and_marks_partial_stale(tmp_path):
     file_path = tmp_path / "runtime.py"
     file_path.write_text("alpha\n", encoding="utf-8")
-    agent = build_agent(tmp_path, ["<final>checkpoint ready.</final>"])
+    agent = build_agent(tmp_path, ["checkpoint ready."])
     set_raw_file_summary(agent, "runtime.py", "runtime.py: alpha")
     freshness = agent.session["memory"]["file_summaries"]["runtime.py"]["freshness"]
     agent.session["checkpoints"] = {
@@ -653,7 +653,7 @@ def test_resume_invalidates_stale_file_summaries_and_marks_partial_stale(tmp_pat
     file_path.write_text("beta\n", encoding="utf-8")
 
     resumed = Pico.from_session(
-        model_client=FakeModelClient(["<final>Resumed.</final>"]),
+        model_client=FakeModelClient(["Resumed."]),
         workspace=build_workspace(tmp_path),
         session_store=agent.session_store,
         session_id=agent.session["id"],
@@ -673,7 +673,7 @@ def test_resume_invalidates_stale_file_summaries_and_marks_partial_stale(tmp_pat
 def test_report_last_request_metadata_preserves_initial_resume_status(tmp_path):
     file_path = tmp_path / "runtime.py"
     file_path.write_text("alpha\n", encoding="utf-8")
-    agent = build_agent(tmp_path, ["<final>checkpoint ready.</final>"])
+    agent = build_agent(tmp_path, ["checkpoint ready."])
     set_raw_file_summary(agent, "runtime.py", "runtime.py: alpha")
     freshness = agent.session["memory"]["file_summaries"]["runtime.py"]["freshness"]
     agent.session["checkpoints"] = {
@@ -701,8 +701,8 @@ def test_report_last_request_metadata_preserves_initial_resume_status(tmp_path):
     resumed = Pico.from_session(
         model_client=FakeModelClient(
             [
-                '<tool>{"name":"read_file","args":{"path":"runtime.py","start":1,"end":1}}</tool>',
-                "<final>Resumed.</final>",
+                {"name": "read_file", "args": {"path":"runtime.py","start":1,"end":1}},
+                "Resumed.",
             ]
         ),
         workspace=build_workspace(tmp_path),
@@ -725,8 +725,8 @@ def test_first_prompt_resume_status_updates_task_state_after_late_checkpoint_set
     agent = build_agent(
         tmp_path,
         [
-            '<tool>{"name":"read_file","args":{"path":"runtime.py","start":1,"end":1}}</tool>',
-            "<final>Resumed.</final>",
+            {"name": "read_file", "args": {"path":"runtime.py","start":1,"end":1}},
+            "Resumed.",
         ],
     )
     set_raw_file_summary(agent, "runtime.py", "runtime.py: alpha")
@@ -780,7 +780,7 @@ def test_run_shell_nonzero_with_workspace_change_is_recorded_as_partial_success(
 
 
 def test_resume_marks_workspace_mismatch_when_checkpoint_runtime_identity_is_stale(tmp_path):
-    agent = build_agent(tmp_path, ["<final>checkpoint ready.</final>"])
+    agent = build_agent(tmp_path, ["checkpoint ready."])
     agent.session["checkpoints"] = {
         "current_id": "ckpt_workspace",
         "items": {
@@ -803,7 +803,7 @@ def test_resume_marks_workspace_mismatch_when_checkpoint_runtime_identity_is_sta
     agent.session_store.save(agent.session)
 
     resumed = Pico.from_session(
-        model_client=FakeModelClient(["<final>Resumed.</final>"]),
+        model_client=FakeModelClient(["Resumed."]),
         workspace=build_workspace(tmp_path),
         session_store=agent.session_store,
         session_id=agent.session["id"],
@@ -818,8 +818,8 @@ def test_write_file_trace_records_minimum_tool_contract_fields(tmp_path):
     agent = build_agent(
         tmp_path,
         [
-            '<tool>{"name":"write_file","args":{"path":"notes.txt","content":"hello\\n"}}</tool>',
-            "<final>Done.</final>",
+            {"name": "write_file", "args": {"path":"notes.txt","content":"hello\\n"}},
+            "Done.",
         ],
     )
 
@@ -841,7 +841,7 @@ def test_write_file_trace_records_minimum_tool_contract_fields(tmp_path):
 
 
 def test_resume_uses_session_version_for_embedded_checkpoint(tmp_path):
-    agent = build_agent(tmp_path, ["<final>checkpoint ready.</final>"])
+    agent = build_agent(tmp_path, ["checkpoint ready."])
     agent.session["checkpoints"] = {
         "current_id": "ckpt_schema",
         "items": {
@@ -864,7 +864,7 @@ def test_resume_uses_session_version_for_embedded_checkpoint(tmp_path):
     agent.session_store.save(agent.session)
 
     resumed = Pico.from_session(
-        model_client=FakeModelClient(["<final>Resumed.</final>"]),
+        model_client=FakeModelClient(["Resumed."]),
         workspace=build_workspace(tmp_path),
         session_store=agent.session_store,
         session_id=agent.session["id"],
@@ -876,7 +876,7 @@ def test_resume_uses_session_version_for_embedded_checkpoint(tmp_path):
 
 
 def test_session_save_rejects_missing_checkpoint_state(tmp_path):
-    agent = build_agent(tmp_path, ["<final>checkpoint ready.</final>"])
+    agent = build_agent(tmp_path, ["checkpoint ready."])
     agent.session.pop("checkpoints", None)
     with pytest.raises(ValueError, match="fields do not match current format"):
         agent.session_store.save(agent.session)
@@ -885,7 +885,7 @@ def test_session_save_rejects_missing_checkpoint_state(tmp_path):
 def test_freshness_mismatch_is_traced_and_final_task_checkpoint_is_single(tmp_path):
     file_path = tmp_path / "runtime.py"
     file_path.write_text("alpha\n", encoding="utf-8")
-    agent = build_agent(tmp_path, ["<final>Resumed.</final>"])
+    agent = build_agent(tmp_path, ["Resumed."])
     set_raw_file_summary(agent, "runtime.py", "runtime.py: alpha")
     freshness = agent.session["memory"]["file_summaries"]["runtime.py"]["freshness"]
     agent.session["checkpoints"] = {
@@ -934,7 +934,7 @@ def test_runtime_identity_persists_key_execution_metadata(tmp_path):
     workspace = build_workspace(tmp_path)
     store = SessionStore(tmp_path / ".pico" / "sessions")
     agent = Pico(
-        model_client=FakeModelClient(["<final>Done.</final>"]),
+        model_client=FakeModelClient(["Done."]),
         workspace=workspace,
         session_store=store,
         approval_policy="never",
@@ -957,7 +957,7 @@ def test_runtime_identity_persists_key_execution_metadata(tmp_path):
 
 
 def test_resume_records_runtime_identity_mismatch_fields_in_metadata_and_trace(tmp_path):
-    agent = build_agent(tmp_path, ["<final>checkpoint ready.</final>"])
+    agent = build_agent(tmp_path, ["checkpoint ready."])
     agent.session["checkpoints"] = {
         "current_id": "ckpt_identity",
         "items": {
@@ -992,7 +992,7 @@ def test_resume_records_runtime_identity_mismatch_fields_in_metadata_and_trace(t
     agent.session_store.save(agent.session)
 
     resumed = Pico.from_session(
-        model_client=FakeModelClient(["<final>Resumed.</final>"]),
+        model_client=FakeModelClient(["Resumed."]),
         workspace=build_workspace(tmp_path),
         session_store=agent.session_store,
         session_id=agent.session["id"],
@@ -1082,10 +1082,49 @@ def test_agent_keeps_completion_usage_out_of_last_request_metadata(tmp_path):
     assert report["model"]["usage"]["cache_hit"] is True
 
 
+def test_report_records_safe_model_identity_and_request_evidence(tmp_path):
+    workspace = build_workspace(tmp_path)
+    store = SessionStore(tmp_path / ".pico" / "sessions")
+    class EffectiveModelClient(FakeModelClient):
+        def complete(self, **request):
+            self.provider_metadata["effective_model"] = "gpt-effective"
+            return super().complete(**request)
+
+    client = EffectiveModelClient([
+        Response(
+            stop_reason=StopReason.END_TURN,
+            content=[{"type": "text", "text": "Done."}],
+            usage={"request_id": "request-123"},
+        )
+    ])
+    client.last_transport_attempts = 2
+    client.provider_metadata = {
+        "protocol_family": "openai_responses",
+        "requested_model": "gpt-test",
+        "effective_model": "gpt-test",
+        "endpoint_origin": "https://api.openai.com",
+    }
+    agent = Pico(
+        model_client=client,
+        workspace=workspace,
+        session_store=store,
+        approval_policy="auto",
+    )
+
+    assert agent.ask("record provider evidence") == "Done."
+
+    report = agent.run_store.load_report(agent.current_task_state.run_id)
+    assert client.provider_metadata.items() <= report["context"].items()
+    assert report["context"]["effective_model"] == "gpt-effective"
+    assert report["context"]["provider_request_id"] == "request-123"
+    assert report["context"]["last_transport_attempts"] == 2
+    assert report["model"]["transport_attempts"] == 2
+
+
 def test_recent_messages_preserved_older_digested(tmp_path):
     """Task E5 rewrite: recent messages stay intact; older tool_results
     over the digest threshold appear as [digest] entries."""
-    agent = build_agent(tmp_path, ["<final>Done.</final>"])
+    agent = build_agent(tmp_path, ["Done."])
 
     # Seed session["messages"] directly (v2 shape) — 4 older + 6 recent messages.
     agent.session["messages"] = [

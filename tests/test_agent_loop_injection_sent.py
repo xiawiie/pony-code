@@ -187,8 +187,8 @@ def test_one_snapshot_survives_retry_and_tool_step_while_feedback_is_one_shot(
     )
     provider = _SniffProvider([
         Response(
-            stop_reason=StopReason.END_TURN,
-            content=[{"type": "text", "text": "<tool>{bad}</tool>"}],
+            stop_reason=StopReason.UNKNOWN,
+            content=[{"type": "text", "text": "bad native response"}],
             usage={"input_tokens": 1, "output_tokens": 1},
         ),
         Response(
@@ -258,9 +258,9 @@ def test_one_snapshot_survives_retry_and_tool_step_while_feedback_is_one_shot(
 def test_retry_limit_feedback_is_one_shot_and_respects_attempt_cap(tmp_path):
     provider = _SniffProvider([
         Response(
-            stop_reason=StopReason.END_TURN,
+            stop_reason=StopReason.UNKNOWN,
             content=[
-                {"type": "text", "text": f"<tool>{{bad-{index}}}</tool>"}
+                {"type": "text", "text": f"bad-{index}"}
             ],
             usage={
                 "input_tokens": index + 1,

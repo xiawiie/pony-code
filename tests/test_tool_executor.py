@@ -258,8 +258,8 @@ def test_memory_write_is_audited_without_workspace_snapshot_or_recovery_checkpoi
     agent = build_agent(
         tmp_path,
         outputs=[
-            '<tool>{"name":"memory_save","args":{"note":"remember this"}}</tool>',
-            "<final>done</final>",
+            {"name": "memory_save", "args": {"note":"remember this"}},
+            "done",
         ],
     )
 

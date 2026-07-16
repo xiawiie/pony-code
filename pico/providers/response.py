@@ -19,3 +19,4 @@ class Response:
     stop_reason: StopReason
     content: list[dict] = field(default_factory=list)
     usage: dict = field(default_factory=dict)
+    provider_state: list[dict] = field(default_factory=list)

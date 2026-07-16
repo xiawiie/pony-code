@@ -37,9 +37,11 @@ from .cli_parser import KNOWN_TOP_LEVEL_COMMANDS, parse_cli_invocation
 from .cli_recovery import handle_checkpoints, handle_runs, handle_sessions
 from .cli_start import run_agent_once, run_repl
 from .config import (
+    DEFAULT_API_URL,
+    DEFAULT_MODEL,
     load_pico_toml,
     read_project_env,
-    resolve_provider_config,
+    resolve_model_config,
 )
 from .docker_sandbox import (
     build_docker_sandbox_context,
@@ -51,18 +53,7 @@ from .docker_sandbox import (
     load_image_manifest,
     verify_docker_sandbox_runtime_authorization,
 )
-from .providers.defaults import (
-    DEFAULT_DEEPSEEK_BASE_URL,  # noqa: F401
-    DEFAULT_DEEPSEEK_MODEL,  # noqa: F401
-    DEFAULT_OLLAMA_HOST,
-    DEFAULT_OLLAMA_MODEL,
-    DEFAULT_PROVIDER,  # noqa: F401
-    PROVIDER_CHOICES,
-)
-from .providers.anthropic_compatible import AnthropicCompatibleModelClient
-from .providers.ollama import OllamaModelClient
-from .providers.openai_compatible import OpenAICompatibleModelClient
-from .providers.text_protocol_adapter import TextProtocolAdapter
+from .providers._shared import build_model_client
 from .runtime import (
     DEFAULT_MAX_OUTPUT_TOKENS,
     DEFAULT_MAX_STEPS,
@@ -98,57 +89,19 @@ WELCOME_STATUS = "calm shell, ready for work"
 
 
 def _build_model_client(args, *, project_env=None, process_env=None):
-    explicit = {
-        "provider": getattr(args, "provider", None),
-        "model": getattr(args, "model", None),
-        "base_url": getattr(args, "base_url", None),
-    }
-    host = getattr(args, "host", None)
-    if host and host != DEFAULT_OLLAMA_HOST:
-        explicit["host"] = host
-    config = resolve_provider_config(
-        explicit=explicit,
+    config = resolve_model_config(
         project_env=project_env,
         process_env=process_env,
     )
-    provider = config["provider"]["value"]
-    model = config["model"]["value"]
-    base_url = config["base_url"]["value"]
-    api_key = config["api_key"]["value"]
-    # CLI 只负责把 provider 选择翻译成具体 client；请求格式、缓存与
-    # HTTP 协议差异留在具体 provider 模块和 TextProtocolAdapter 中。
-    if provider == "openai":
-        return TextProtocolAdapter(OpenAICompatibleModelClient(
-            model=model,
-            base_url=base_url,
-            api_key=api_key,
-            temperature=None,
-            timeout=args.request_timeout_seconds,
-        ))
-    if provider == "anthropic":
-        return AnthropicCompatibleModelClient(
-            model=model,
-            base_url=base_url,
-            api_key=api_key,
-            temperature=None,
-            timeout=args.request_timeout_seconds,
-        )
-    if provider == "deepseek":
-        return AnthropicCompatibleModelClient(
-            model=model,
-            base_url=base_url,
-            api_key=api_key,
-            temperature=None,
-            timeout=args.request_timeout_seconds,
-        )
-
-    return TextProtocolAdapter(OllamaModelClient(
-        model=model,
-        host=base_url,
-        temperature=args.temperature,
-        top_p=args.top_p,
+    return build_model_client(
+        "anthropic_messages",
+        model=config["model"]["value"],
+        base_url=config["base_url"]["value"],
+        api_key=config["api_key"]["value"],
         timeout=args.request_timeout_seconds,
-    ))
+        auth_mode="x-api-key",
+        capabilities={"thinking_disabled": True},
+    )
 
 
 def build_welcome(agent, model, host):
@@ -592,23 +545,10 @@ def build_arg_parser():
     parser.add_argument("prompt", nargs="*", help="Command and arguments.")
     parser.add_argument("--cwd", default=".", help="Workspace directory.")
     parser.add_argument(
-        "--provider",
-        choices=PROVIDER_CHOICES,
-        default=None,
-        help="Model backend to use. Defaults to PICO_PROVIDER or deepseek.",
-    )
-    parser.add_argument(
-        "--model",
-        default=None,
-        help="Model name override. Defaults to qwen3.5:4b for Ollama, PICO_OPENAI_MODEL for openai, PICO_ANTHROPIC_MODEL for anthropic, and PICO_DEEPSEEK_MODEL for deepseek when set.",
-    )
-    parser.add_argument("--host", default=DEFAULT_OLLAMA_HOST, help="Ollama server URL.")
-    parser.add_argument("--base-url", default=None, help="Provider API base URL for deepseek, openai, or anthropic.")
-    parser.add_argument(
         "--request-timeout-seconds",
         type=_request_timeout_argument,
         default=300,
-        help="Provider request timeout in seconds.",
+        help="Model API request timeout in seconds.",
     )
     parser.add_argument("--resume", default=None, help="Session id to resume or 'latest'.")
     parser.add_argument("--approval", choices=("ask", "auto", "never"), default="ask", help="Approval policy for risky tools.")
@@ -854,30 +794,36 @@ def main(argv=None):
     except CliError as exc:
         return _print_cli_error(args, exc)
     except ValueError as exc:
-        if str(exc) == "unknown provider":
+        reason = str(exc)
+        stable_codes = {
+            "api_key_not_configured",
+            "api_url_not_configured",
+            "api_url_invalid",
+            "api_url_credentials",
+            "api_url_query_or_fragment",
+            "insecure_api_url",
+            "model_session_mismatch",
+        }
+        if reason in stable_codes:
             return _print_cli_error(
                 args,
                 CliError(
-                    code="invalid_provider",
-                    message="invalid provider configuration",
-                    exit_code=CLI_EXIT_CONFIG,
-                ),
-            )
-        if str(exc) != "provider_base_url_credentials":
-            return _print_cli_error(
-                args,
-                CliError(
-                    code="invalid_configuration",
-                    message="invalid configuration",
+                    code=reason.replace(" ", "_"),
+                    message=reason,
+                    hint=(
+                        "Run `pico init`."
+                        if reason in {"api_key_not_configured", "api_url_not_configured"}
+                        else ""
+                    ),
                     exit_code=CLI_EXIT_CONFIG,
                 ),
             )
         return _print_cli_error(
             args,
             CliError(
-                code="provider_base_url_credentials",
-                message="provider_base_url_credentials",
-                exit_code=CLI_EXIT_USAGE,
+                code="invalid_configuration",
+                message="invalid configuration",
+                exit_code=CLI_EXIT_CONFIG,
             ),
         )
     except Exception:  # noqa: BLE001 - preserve KeyboardInterrupt/SystemExit
@@ -885,8 +831,8 @@ def main(argv=None):
 
     try:
         transport = getattr(agent.model_client, "_inner", agent.model_client)
-        model = getattr(transport, "model", getattr(args, "model", DEFAULT_OLLAMA_MODEL))
-        host = getattr(transport, "host", getattr(transport, "base_url", getattr(args, "host", DEFAULT_OLLAMA_HOST)))
+        model = getattr(transport, "model", DEFAULT_MODEL)
+        host = getattr(transport, "base_url", DEFAULT_API_URL)
         if not args.quiet:
             print(build_welcome(agent, model=model, host=host))
 

@@ -11,6 +11,7 @@ MAINTAINER_DOCS = {
     "README.md",
     "CHANGELOG.md",
     "CONTEXT.md",
+    "PICO_OPTIMIZATION_SPEC.md",
     "docs/cli-installation-and-updates.md",
     "docs/architecture.md",
     "docs/security.md",
@@ -163,16 +164,19 @@ def test_public_diagnostics_do_not_import_superseded_srt_owners():
     )
 
 
-def test_structured_and_text_provider_methods_are_explicit():
+def test_all_provider_methods_use_the_structured_completion_surface():
     expected = {
         "pico/providers/anthropic_compatible.py": {
             "AnthropicCompatibleModelClient": {"complete"},
         },
         "pico/providers/fake.py": {"FakeModelClient": {"complete"}},
         "pico/providers/openai_compatible.py": {
-            "OpenAICompatibleModelClient": {"complete_text"},
+            "OpenAICompatibleModelClient": {"complete"},
         },
-        "pico/providers/ollama.py": {"OllamaModelClient": {"complete_text"}},
+        "pico/providers/openai_chat.py": {
+            "OpenAIChatCompletionsModelClient": {"complete"},
+        },
+        "pico/providers/ollama.py": {"OllamaModelClient": {"complete"}},
     }
     for filename, classes in expected.items():
         tree = ast.parse((ROOT / filename).read_text(encoding="utf-8"))

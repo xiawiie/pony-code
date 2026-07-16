@@ -26,45 +26,45 @@ TASK_FIXTURE_ARTIFACTS = {
 
 SCRIPTED_MODEL_OUTPUTS = {
     "readme_intro_locked": [
-        '<tool name="patch_file" path="README.md"><old_text>This is a placeholder benchmark fixture.</old_text><new_text>This fixture is a locked benchmark workspace.</new_text></tool>',
-        "<final>Done.</final>",
+        {"name": "patch_file", "args": {"path": "README.md", "old_text": "This is a placeholder benchmark fixture.", "new_text": "This fixture is a locked benchmark workspace."}},
+        "Done.",
     ],
     "readme_schema_note": [
-        '<tool name="patch_file" path="README.md"><old_text>- Placeholder note about the repo.</old_text><new_text>- The benchmark schema and baseline are fixed.</new_text></tool>',
-        "<final>Done.</final>",
+        {"name": "patch_file", "args": {"path": "README.md", "old_text": "- Placeholder note about the repo.", "new_text": "- The benchmark schema and baseline are fixed."}},
+        "Done.",
     ],
     "readme_ordering_note": [
-        '<tool name="patch_file" path="README.md"><old_text>- Placeholder note about the file layout.</old_text><new_text>- Deterministic file ordering keeps benchmark diffs stable.</new_text></tool>',
-        "<final>Done.</final>",
+        {"name": "patch_file", "args": {"path": "README.md", "old_text": "- Placeholder note about the file layout.", "new_text": "- Deterministic file ordering keeps benchmark diffs stable."}},
+        "Done.",
     ],
     "sample_beta_locked": [
-        '<tool name="patch_file" path="sample.txt"><old_text>beta</old_text><new_text>beta-locked</new_text></tool>',
-        "<final>Done.</final>",
+        {"name": "patch_file", "args": {"path": "sample.txt", "old_text": "beta", "new_text": "beta-locked"}},
+        "Done.",
     ],
     "sample_gamma_locked": [
-        '<tool name="patch_file" path="sample.txt"><old_text>gamma</old_text><new_text>gamma-locked</new_text></tool>',
-        "<final>Done.</final>",
+        {"name": "patch_file", "args": {"path": "sample.txt", "old_text": "gamma", "new_text": "gamma-locked"}},
+        "Done.",
     ],
     "sample_placeholder_delta": [
-        '<tool name="patch_file" path="sample.txt"><old_text>placeholder</old_text><new_text>delta</new_text></tool>',
-        "<final>Done.</final>",
+        {"name": "patch_file", "args": {"path": "sample.txt", "old_text": "placeholder", "new_text": "delta"}},
+        "Done.",
     ],
     "invalid_patch_recovery": [
-        '<tool>{"name":"patch_file","args":{"path":"README.md","old_text":"This is a placeholder benchmark fixture."}}</tool>',
-        '<tool name="patch_file" path="README.md"><old_text>This is a placeholder benchmark fixture.</old_text><new_text>This fixture recovered after invalid patch args.</new_text></tool>',
-        "<final>Done.</final>",
+        {"name": "patch_file", "args": {"path": "README.md", "old_text": "This is a placeholder benchmark fixture."}},
+        {"name": "patch_file", "args": {"path": "README.md", "old_text": "This is a placeholder benchmark fixture.", "new_text": "This fixture recovered after invalid patch args."}},
+        "Done.",
     ],
     "path_escape_recovery": [
-        '<tool>{"name":"read_file","args":{"path":"../outside.txt","start":1,"end":1}}</tool>',
-        '<tool name="patch_file" path="sample.txt"><old_text>alpha</old_text><new_text>alpha-guarded</new_text></tool>',
-        "<final>Done.</final>",
+        {"name": "read_file", "args": {"path": "../outside.txt", "start": 1, "end": 1}},
+        {"name": "patch_file", "args": {"path": "sample.txt", "old_text": "alpha", "new_text": "alpha-guarded"}},
+        "Done.",
     ],
     "repeated_read_recovery": [
-        '<tool>{"name":"read_file","args":{"path":"sample.txt","start":1,"end":4}}</tool>',
-        '<tool>{"name":"read_file","args":{"path":"sample.txt","start":1,"end":4}}</tool>',
-        '<tool>{"name":"read_file","args":{"path":"sample.txt","start":1,"end":4}}</tool>',
-        '<tool name="patch_file" path="sample.txt"><old_text>placeholder</old_text><new_text>repeat-guarded</new_text></tool>',
-        "<final>Done.</final>",
+        {"name": "read_file", "args": {"path": "sample.txt", "start": 1, "end": 4}},
+        {"name": "read_file", "args": {"path": "sample.txt", "start": 1, "end": 4}},
+        {"name": "read_file", "args": {"path": "sample.txt", "start": 1, "end": 4}},
+        {"name": "patch_file", "args": {"path": "sample.txt", "old_text": "placeholder", "new_text": "repeat-guarded"}},
+        "Done.",
     ],
     "session_compaction_checkpoint": [
         "# Goal\nContinue the fixed benchmark after compaction.\n"
@@ -75,13 +75,13 @@ SCRIPTED_MODEL_OUTPUTS = {
         "# Next Steps\nReturn the benchmark result.\n"
         "# Critical Context\nREADME.md remains available.\n"
         "# Files & Errors\nREADME.md; no errors.",
-        "<final>Done.</final>",
+        "Done.",
     ],
     "freshness_reanchor_resume": [
-        "<final>Done.</final>",
+        "Done.",
     ],
     "workspace_mismatch_resume": [
-        "<final>Done.</final>",
+        "Done.",
     ],
 }
 

@@ -129,8 +129,8 @@ def test_agent_loop_runs_same_control_flow_as_pico_ask(tmp_path):
     agent = build_agent(
         tmp_path,
         [
-            '<tool>{"name":"read_file","args":{"path":"hello.txt","start":1,"end":1}}</tool>',
-            "<final>Done.</final>",
+            {"name": "read_file", "args": {"path":"hello.txt","start":1,"end":1}},
+            "Done.",
         ],
     )
 
@@ -290,8 +290,8 @@ def test_nonretryable_provider_failure_is_not_replayed(tmp_path, monkeypatch):
 def test_model_retry_preserves_retry_action_feedback(tmp_path, monkeypatch):
     provider = EvidenceScriptProvider([
         Response(
-            stop_reason=StopReason.END_TURN,
-            content=[{"type": "text", "text": "<tool>{bad}</tool>"}],
+            stop_reason=StopReason.UNKNOWN,
+            content=[{"type": "text", "text": "bad native response"}],
             usage={},
         ),
         _ProviderFailure(
@@ -325,8 +325,8 @@ def test_model_retry_preserves_retry_action_feedback(tmp_path, monkeypatch):
 def test_retry_action_allows_only_one_protocol_correction_per_run(tmp_path):
     provider = EvidenceScriptProvider([
         Response(
-            stop_reason=StopReason.END_TURN,
-            content=[{"type": "text", "text": "<tool>{bad}</tool>"}],
+            stop_reason=StopReason.UNKNOWN,
+            content=[{"type": "text", "text": "bad native response"}],
             usage={},
         ),
         Response(
@@ -340,8 +340,8 @@ def test_retry_action_allows_only_one_protocol_correction_per_run(tmp_path):
             usage={},
         ),
         Response(
-            stop_reason=StopReason.END_TURN,
-            content=[{"type": "text", "text": "<tool>{bad-again}</tool>"}],
+            stop_reason=StopReason.UNKNOWN,
+            content=[{"type": "text", "text": "bad native response again"}],
             usage={},
         ),
     ])
@@ -378,7 +378,7 @@ def test_missing_custom_transport_evidence_is_null_in_report(tmp_path):
 
 
 def test_pico_ask_delegates_to_agent_loop(tmp_path):
-    agent = build_agent(tmp_path, ["<final>Facade works.</final>"])
+    agent = build_agent(tmp_path, ["Facade works."])
 
     assert agent.ask("Use facade") == "Facade works."
 
@@ -446,7 +446,7 @@ def test_agent_loop_decodes_native_action_and_aggregates_response_usage_only(tmp
     assert report["model"]["usage"]["input_tokens"] != 999999
 
 
-def test_native_multiple_tool_response_executes_only_first_and_traces_ignored_count(
+def test_native_multiple_tool_response_executes_none_and_requests_correction(
     tmp_path,
 ):
     provider = NativeScriptProvider([
@@ -482,16 +482,16 @@ def test_native_multiple_tool_response_executes_only_first_and_traces_ignored_co
 
     assert agent.ask("use one tool") == "done"
 
-    first_runner.assert_called_once()
+    first_runner.assert_not_called()
     ignored_runner.assert_not_called()
     assert not (tmp_path / "ignored.txt").exists()
     assert agent.checkpoint_store.list_tool_change_records() == []
     events = read_trace(agent)
     decoded = [event for event in events if event["event"] == "action_decoded"]
-    assert decoded[0]["action_type"] == "tool"
-    assert decoded[0]["ignored_tool_count"] == 1
+    assert decoded[0]["action_type"] == "retry"
+    assert decoded[0]["reason_code"] == "multiple_actions_not_supported"
     model_turns = [event for event in events if event["event"] == "model_turn"]
-    assert model_turns[0]["ignored_tool_count"] == 1
+    assert model_turns[0]["reason_code"] == "multiple_actions_not_supported"
     tool_uses = []
     for message in agent.session["messages"]:
         content = message.get("content")
@@ -499,7 +499,7 @@ def test_native_multiple_tool_response_executes_only_first_and_traces_ignored_co
             tool_uses.extend(
                 block for block in content if block.get("type") == "tool_use"
             )
-    assert [block["id"] for block in tool_uses] == ["tu_first"]
+    assert tool_uses == []
 
 
 def test_ordinary_workspace_tool_error_commits_pair_consumes_step_and_finishes(
@@ -1054,7 +1054,7 @@ def test_pair_save_primary_error_survives_terminal_persistence_failure(
 
 
 def test_agent_loop_emits_focused_recovery_trace_events(tmp_path):
-    agent = build_agent(tmp_path, ["<final>done</final>"])
+    agent = build_agent(tmp_path, ["done"])
 
     agent.ask("say done")
 
@@ -1068,8 +1068,8 @@ def test_recovery_checkpoint_uses_distinct_trace_event(tmp_path):
     agent = build_agent(
         tmp_path,
         [
-            '<tool>{"name":"write_file","args":{"path":"note.txt","content":"after\\n"}}</tool>',
-            "<final>done</final>",
+            {"name": "write_file", "args": {"path":"note.txt","content":"after\\n"}},
+            "done",
         ],
     )
 
@@ -1168,8 +1168,8 @@ def test_terminal_path_matrix_persists_exactly_one_finalization(
     elif case == "retry_limit":
         provider = NativeScriptProvider([
             Response(
-                stop_reason=StopReason.END_TURN,
-                content=[{"type": "text", "text": f"<tool>{{bad-{index}}}</tool>"}],
+                stop_reason=StopReason.UNKNOWN,
+                content=[{"type": "text", "text": f"bad-{index}"}],
                 usage=usage,
             )
             for index in range(5)
@@ -1707,10 +1707,10 @@ def test_rejected_tool_calls_do_not_consume_step_budget(tmp_path):
     agent = build_agent(
         tmp_path,
         [
-            '<tool>{"name":"read_file","args":{"path":"README.md","start":1,"end":1}}</tool>',
-            '<tool>{"name":"read_file","args":{"path":"README.md","start":1,"end":1}}</tool>',
-            '<tool>{"name":"read_file","args":{"path":"README.md","start":1,"end":1}}</tool>',
-            "<final>done after rejected repeat</final>",
+            {"name": "read_file", "args": {"path":"README.md","start":1,"end":1}},
+            {"name": "read_file", "args": {"path":"README.md","start":1,"end":1}},
+            {"name": "read_file", "args": {"path":"README.md","start":1,"end":1}},
+            "done after rejected repeat",
         ],
         max_steps=3,
     )

@@ -393,6 +393,14 @@ def test_packaged_image_manifest_binds_d1_policy_and_image():
     assert image.env == GUEST_ENV
 
 
+def test_packaged_image_manifest_rejects_unreleased_amd64_target():
+    with pytest.raises(DockerSandboxError, match="sandbox_image_not_released"):
+        load_image_manifest(
+            default_image_manifest_path(),
+            target_platform="linux/amd64",
+        )
+
+
 def test_image_manifest_rejects_unknown_and_duplicate_fields(tmp_path):
     value = json.loads(default_image_manifest_path().read_text())
     value["unexpected"] = True

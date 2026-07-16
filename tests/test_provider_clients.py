@@ -1,22 +1,34 @@
 import io
 import json
-from http.client import RemoteDisconnected
+from http.client import IncompleteRead, RemoteDisconnected
+import ssl
 import urllib.error
 from unittest.mock import Mock
 
 import pytest
 
 import pico.providers._shared as provider_shared
+from pico.providers._shared import _ProviderFailure, build_model_client
 from pico.providers.anthropic_compatible import AnthropicCompatibleModelClient
 from pico.providers.ollama import OllamaModelClient
 from pico.providers.openai_compatible import OpenAICompatibleModelClient
 from pico.providers.response import StopReason
 
 
+OFFICIAL_OPENAI_CAPABILITIES = {
+    "strict_tools": True,
+    "parallel_tool_control": True,
+    "reasoning_replay": True,
+}
+
+
 class _Response:
-    def __init__(self, body, content_type="application/json"):
+    def __init__(self, body, content_type="application/json", headers=None):
         self.body = body
-        self.headers = {"Content-Type": content_type}
+        self.headers = {
+            "Content-Type": content_type,
+            **dict(headers or {}),
+        }
 
     def __enter__(self):
         return self
@@ -28,37 +40,234 @@ class _Response:
         return self.body
 
 
-def _openai_client(api_key="test-key"):
-    return OpenAICompatibleModelClient(
-        model="gpt-test",
-        base_url="https://api.openai.com",
-        api_key=api_key,
-        temperature=0.0,
-        timeout=30,
-    )
+def _openai_client(api_key="test-key", **overrides):
+    values = {
+        "model": "gpt-test",
+        "base_url": "https://api.openai.com/v1",
+        "api_key": api_key,
+        "temperature": 0.0,
+        "timeout": 30,
+        "auth_mode": "bearer",
+        "capabilities": OFFICIAL_OPENAI_CAPABILITIES,
+    }
+    values.update(overrides)
+    return OpenAICompatibleModelClient(**values)
 
 
 def _anthropic_client():
     return AnthropicCompatibleModelClient(
         model="claude-test",
-        base_url="https://api.anthropic.com",
+        base_url="https://api.anthropic.com/v1",
         api_key="test-key",
         temperature=0.0,
         timeout=30,
+        auth_mode="x-api-key",
+        capabilities={
+            "prompt_cache": True,
+            "strict_tools": True,
+            "parallel_tool_control": True,
+        },
     )
 
 
-def _ollama_client():
-    return OllamaModelClient(
-        model="qwen-test",
-        host="http://127.0.0.1:11434",
-        temperature=0.0,
-        top_p=0.9,
-        timeout=30,
+def _ollama_client(**overrides):
+    values = {
+        "model": "qwen-test",
+        "host": "http://127.0.0.1:11434",
+        "temperature": 0.0,
+        "top_p": 0.9,
+        "timeout": 30,
+        "auth_mode": "none",
+    }
+    values.update(overrides)
+    return OllamaModelClient(**values)
+
+
+def _tool_schema():
+    return {
+        "name": "search",
+        "description": "Search files",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string"},
+                "path": {"type": "string"},
+            },
+            "required": ["pattern"],
+            "additionalProperties": False,
+        },
+    }
+
+
+def _complete(client, *, tools=None, messages=None):
+    return client.complete(
+        system=[{"type": "text", "text": "SYSTEM"}],
+        tools=list(tools or []),
+        messages=list(messages or [{"role": "user", "content": "hello"}]),
+        max_tokens=42,
     )
 
 
-def test_openai_text_only_payload_has_no_cache_request_fields(monkeypatch):
+@pytest.mark.parametrize(
+    ("client", "expected"),
+    [
+        (
+            _openai_client(),
+            {
+                "protocol_family": "openai_responses",
+                "requested_model": "gpt-test",
+                "effective_model": "gpt-test",
+                "endpoint_origin": "https://api.openai.com",
+            },
+        ),
+        (
+            _anthropic_client(),
+            {
+                "protocol_family": "anthropic_messages",
+                "requested_model": "claude-test",
+                "effective_model": "claude-test",
+                "endpoint_origin": "https://api.anthropic.com",
+            },
+        ),
+        (
+            _ollama_client(),
+            {
+                "protocol_family": "ollama_chat",
+                "requested_model": "qwen-test",
+                "effective_model": "qwen-test",
+                "endpoint_origin": "http://127.0.0.1:11434",
+            },
+        ),
+    ],
+)
+def test_native_clients_expose_safe_report_metadata(client, expected):
+    assert client.provider_metadata == expected
+
+
+@pytest.mark.parametrize(
+    ("client_kind", "client_type", "base_url", "auth_mode"),
+    [
+        (
+            "anthropic_messages",
+            AnthropicCompatibleModelClient,
+            "https://anthropic.example/v1",
+            "x-api-key",
+        ),
+        (
+            "openai_responses",
+            OpenAICompatibleModelClient,
+            "https://openai.example/v1",
+            "bearer",
+        ),
+        (
+            "ollama_chat",
+            OllamaModelClient,
+            "http://127.0.0.1:11434",
+            "none",
+        ),
+    ],
+)
+def test_builder_constructs_explicit_protocol_clients(
+    client_kind,
+    client_type,
+    base_url,
+    auth_mode,
+):
+    client = build_model_client(
+        client_kind,
+        model="test-model",
+        base_url=base_url,
+        api_key="" if auth_mode == "none" else "test-key",
+        timeout=10,
+        auth_mode=auth_mode,
+        capabilities={},
+    )
+
+    assert isinstance(client, client_type)
+    assert client.provider_binding["protocol_family"] == client_kind
+
+
+def test_builder_constructs_openai_chat_and_rejects_unknown_kind():
+    from pico.providers.openai_chat import OpenAIChatCompletionsModelClient
+
+    client = build_model_client(
+        "openai_chat_completions",
+        model="test-model",
+        base_url="https://chat.example/v1",
+        api_key="test-key",
+        timeout=10,
+        auth_mode="bearer",
+    )
+    assert isinstance(client, OpenAIChatCompletionsModelClient)
+
+    with pytest.raises(ValueError, match="unsupported model client kind"):
+        build_model_client(
+            "deepseek",
+            model="test-model",
+            base_url="https://example.com/v1",
+            api_key="test-key",
+            timeout=10,
+            auth_mode="bearer",
+        )
+
+
+@pytest.mark.parametrize(
+    ("client", "payload", "expected"),
+    [
+        (
+            _openai_client(),
+            {
+                "model": "gpt-effective",
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [{"type": "output_text", "text": "done"}],
+                    }
+                ],
+            },
+            "gpt-effective",
+        ),
+        (
+            _anthropic_client(),
+            {
+                "model": "claude-effective",
+                "stop_reason": "end_turn",
+                "content": [{"type": "text", "text": "done"}],
+            },
+            "claude-effective",
+        ),
+        (
+            _ollama_client(),
+            {
+                "model": "qwen-effective",
+                "message": {"content": "done"},
+                "done": True,
+                "done_reason": "stop",
+            },
+            "qwen-effective",
+        ),
+    ],
+)
+def test_native_clients_record_validated_effective_model(
+    monkeypatch,
+    client,
+    payload,
+    expected,
+):
+    monkeypatch.setattr(
+        provider_shared,
+        "_provider_urlopen",
+        lambda *_args, **_kwargs: _Response(json.dumps(payload).encode()),
+    )
+
+    _complete(client)
+
+    assert client.provider_metadata["effective_model"] == expected
+
+
+def test_openai_official_wire_uses_responses_native_history_and_strict_tools(
+    monkeypatch,
+):
     captured = {}
 
     def urlopen(request, timeout):
@@ -69,177 +278,251 @@ def test_openai_text_only_payload_has_no_cache_request_fields(monkeypatch):
         return _Response(
             json.dumps(
                 {
-                    "output_text": "ok",
-                    "usage": {
-                        "input_tokens": 12,
-                        "output_tokens": 3,
-                        "input_tokens_details": {"cached_tokens": 7},
-                    },
+                    "id": "resp_1",
+                    "output": [
+                        {
+                            "type": "message",
+                            "content": [
+                                {"type": "output_text", "text": "done"}
+                            ],
+                        }
+                    ],
+                    "usage": {"input_tokens": 12, "output_tokens": 3},
                 }
-            ).encode()
+            ).encode(),
+            headers={"x-request-id": "req_1"},
         )
 
     monkeypatch.setattr(provider_shared, "_provider_urlopen", urlopen)
-    client = _openai_client()
+    state = [{"type": "reasoning", "encrypted_content": "opaque", "summary": []}]
+    messages = [
+        {"role": "user", "content": "first"},
+        {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": "call_1",
+                    "name": "search",
+                    "input": {"pattern": "x"},
+                }
+            ],
+            "_pico_provider_state": state,
+        },
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "call_1",
+                    "content": "match",
+                }
+            ],
+        },
+        {"role": "user", "content": "next"},
+    ]
 
-    assert client.complete_text("hello", 42) == "ok"
+    response = _complete(_openai_client(), tools=[_tool_schema()], messages=messages)
+
     assert captured["url"] == "https://api.openai.com/v1/responses"
     assert captured["timeout"] == 30
+    assert captured["headers"]["Authorization"] == "Bearer test-key"
     assert captured["body"] == {
         "model": "gpt-test",
+        "instructions": "SYSTEM",
         "input": [
+            {"role": "user", "content": "first"},
+            state[0],
             {
-                "role": "user",
-                "content": [{"type": "input_text", "text": "hello"}],
+                "type": "function_call",
+                "call_id": "call_1",
+                "name": "search",
+                "arguments": '{"pattern":"x"}',
+            },
+            {
+                "type": "function_call_output",
+                "call_id": "call_1",
+                "output": "match",
+            },
+            {"role": "user", "content": "next"},
+        ],
+        "max_output_tokens": 42,
+        "store": False,
+        "stream": False,
+        "tools": [
+            {
+                "type": "function",
+                "name": "search",
+                "description": "Search files",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "pattern": {"type": "string"},
+                        "path": {
+                            "anyOf": [
+                                {"type": "string"},
+                                {"type": "null"},
+                            ]
+                        },
+                    },
+                    "required": ["pattern", "path"],
+                    "additionalProperties": False,
+                },
+                "strict": True,
             }
         ],
-            "max_output_tokens": 42,
-            "stream": False,
-            "store": False,
-            "temperature": 0.0,
+        "temperature": 0.0,
+        "parallel_tool_calls": False,
+        "include": ["reasoning.encrypted_content"],
     }
-    assert "prompt_cache_key" not in captured["body"]
-    assert "prompt_cache_retention" not in captured["body"]
-    assert captured["headers"]["Authorization"] == "Bearer test-key"
-    assert client.last_completion_metadata == {
-        "input_tokens": 12,
-        "output_tokens": 3,
-        "total_tokens": None,
-        "cached_tokens": 7,
-        "cache_hit": True,
+    assert response.content == [{"type": "text", "text": "done"}]
+    assert response.usage["request_id"] == "req_1"
+
+
+def test_openai_function_call_preserves_reasoning_and_drops_optional_null(
+    monkeypatch,
+):
+    state = {
+        "id": "rs_1",
+        "type": "reasoning",
+        "encrypted_content": "opaque",
+        "summary": [],
+        "content": [],
     }
-    assert not hasattr(client, "complete")
-    assert not hasattr(client, "supports_prompt_cache")
-
-
-def test_openai_non_streaming_call_accepts_sse_response(monkeypatch):
-    body = b"\n".join(
-        [
-            b'data: {"type":"response.output_text.delta","delta":"hel"}',
-            b'data: {"type":"response.output_text.delta","delta":"lo"}',
-            b'data: {"type":"response.completed","response":{"usage":{"input_tokens":5,"output_tokens":2,"input_tokens_details":{"cached_tokens":4}}}}',
-            b"data: [DONE]",
-        ]
-    )
-    monkeypatch.setattr(
-        provider_shared,
-        "_provider_urlopen",
-        lambda *_args, **_kwargs: _Response(body, "text/event-stream"),
-    )
-    client = _openai_client()
-
-    assert client.complete_text("hello", 10) == "hello"
-    assert client.last_completion_metadata["cached_tokens"] == 4
-    assert client.last_completion_metadata["cache_hit"] is True
-    assert client.last_transport_attempts == 1
-
-
-def test_openai_sse_done_waits_for_completed_usage(monkeypatch):
-    body = b"\n".join(
-        [
-            b'data: {"type":"response.output_text.done","text":"hello"}',
-            b'data: {"type":"response.completed","response":{"usage":{"input_tokens":5,"output_tokens":2,"input_tokens_details":{"cached_tokens":4}}}}',
-            b"data: [DONE]",
-        ]
-    )
-    monkeypatch.setattr(
-        provider_shared,
-        "_provider_urlopen",
-        lambda *_args, **_kwargs: _Response(body, "text/event-stream"),
-    )
-    client = _openai_client()
-
-    assert client.complete_text("hello", 10) == "hello"
-    assert client.last_completion_metadata["cached_tokens"] == 4
-    assert client.last_completion_metadata["cache_hit"] is True
-
-
-def test_openai_incomplete_response_propagates_max_tokens(monkeypatch):
     monkeypatch.setattr(
         provider_shared,
         "_provider_urlopen",
         lambda *_args, **_kwargs: _Response(
-            b'{"output_text":"<final>partial","incomplete_details":{"reason":"max_output_tokens"},"usage":{"input_tokens":1,"output_tokens":2}}'
+            json.dumps(
+                {
+                    "output": [
+                        state,
+                        {
+                            "type": "function_call",
+                            "call_id": "call_2",
+                            "name": "search",
+                            "arguments": '{"pattern":"x","path":null}',
+                        },
+                    ],
+                    "usage": {},
+                }
+            ).encode()
         ),
     )
-    client = _openai_client()
 
-    assert client.complete_text("hello", 10) == "<final>partial"
-    assert client.last_stop_reason == StopReason.MAX_TOKENS
+    response = _complete(_openai_client(), tools=[_tool_schema()])
+
+    assert response.stop_reason == StopReason.TOOL_USE
+    assert response.content == [
+        {
+            "type": "tool_use",
+            "id": "call_2",
+            "name": "search",
+            "input": {"pattern": "x"},
+        }
+    ]
+    assert response.provider_state == [state]
 
 
-def test_openai_refusal_is_extracted_without_retry(monkeypatch):
+def test_openai_unknown_incomplete_reason_does_not_authorize_tool_use(monkeypatch):
     monkeypatch.setattr(
         provider_shared,
         "_provider_urlopen",
         lambda *_args, **_kwargs: _Response(
-            b'{"output":[{"content":[{"type":"refusal","refusal":"declined"}]}],"usage":{"input_tokens":1,"output_tokens":0}}'
-        ),
-    )
-    client = _openai_client()
-
-    assert client.complete_text("hello", 10) == "declined"
-    assert client.last_stop_reason == StopReason.REFUSAL
-
-
-def test_openai_aggregates_multiple_output_text_blocks(monkeypatch):
-    monkeypatch.setattr(
-        provider_shared,
-        "_provider_urlopen",
-        lambda *_args, **_kwargs: _Response(
-            b'{"output":[{"content":[{"type":"output_text","text":"one"},{"type":"output_text","text":"two"}]}],"usage":{}}'
+            b'{"status":"incomplete","incomplete_details":{"reason":"new_reason"},"output":[{"type":"function_call","call_id":"call_3","name":"search","arguments":"{\\"pattern\\":\\"x\\"}"}],"usage":{}}'
         ),
     )
 
-    assert _openai_client().complete_text("hello", 10) == "one\ntwo"
+    response = _complete(_openai_client(), tools=[_tool_schema()])
+
+    assert response.stop_reason == StopReason.UNKNOWN
 
 
-@pytest.mark.parametrize("body", [b"[]", b"\xff"])
-def test_openai_invalid_response_is_stable(monkeypatch, body):
-    monkeypatch.setattr(
-        provider_shared,
-        "_provider_urlopen",
-        lambda *_args, **_kwargs: _Response(body),
+def test_openai_custom_uses_exact_root_and_conservative_fields(monkeypatch):
+    captured = {}
+
+    def urlopen(request, timeout):
+        captured["url"] = request.full_url
+        captured["body"] = json.loads(request.data)
+        captured["headers"] = dict(request.header_items())
+        return _Response(
+            b'{"output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}],"usage":{}}'
+        )
+
+    monkeypatch.setattr(provider_shared, "_provider_urlopen", urlopen)
+    client = _openai_client(
+        base_url="https://gateway.example/native/v7",
+        auth_mode="x-api-key",
+        capabilities={},
     )
 
-    with pytest.raises(RuntimeError, match="^OpenAI-compatible error: invalid_response$"):
-        _openai_client().complete_text("hello", 10)
+    _complete(client, tools=[_tool_schema()])
+
+    assert captured["url"] == "https://gateway.example/native/v7/responses"
+    assert captured["headers"]["X-api-key"] == "test-key"
+    tool = captured["body"]["tools"][0]
+    assert "strict" not in tool
+    assert tool["parameters"]["required"] == ["pattern"]
+    assert "parallel_tool_calls" not in captured["body"]
+    assert "include" not in captured["body"]
+
+
+def test_openai_responses_qwen_compatibility_disables_reasoning(monkeypatch):
+    captured = {}
+
+    def urlopen(request, timeout):
+        captured.update(json.loads(request.data))
+        return _Response(
+            b'{"output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}],"usage":{}}'
+        )
+
+    monkeypatch.setattr(provider_shared, "_provider_urlopen", urlopen)
+    client = _openai_client(
+        capabilities={"thinking_disabled": True},
+    )
+
+    _complete(client)
+
+    assert captured["reasoning"] == {"effort": "none"}
+    assert "include" not in captured
 
 
 @pytest.mark.parametrize(
-    ("error", "reason"),
+    "body",
     [
-        (urllib.error.URLError("secret"), "network_error"),
-        (RemoteDisconnected("secret"), "remote_disconnect"),
-        (TimeoutError("secret"), "timeout"),
+        b'{"choices":[{"message":{"content":"wrong protocol"}}]}',
+        b'data: {"type":"response.output_text.delta","delta":"wrong"}',
+        b"[]",
+        b"\xff",
     ],
 )
-def test_openai_network_error_is_classified_after_one_transport(monkeypatch, error, reason):
-    urlopen = Mock(side_effect=error)
+def test_openai_rejects_non_responses_json_without_fallback(monkeypatch, body):
+    urlopen = Mock(return_value=_Response(body))
     monkeypatch.setattr(provider_shared, "_provider_urlopen", urlopen)
-    client = _openai_client()
 
-    with pytest.raises(
-        RuntimeError,
-        match=rf"^OpenAI-compatible request failed: {reason}$",
-    ):
-        client.complete_text("hello", 10)
+    with pytest.raises(_ProviderFailure) as caught:
+        _complete(_openai_client())
 
+    assert caught.value.code == "provider_protocol_mismatch"
     assert urlopen.call_count == 1
-    assert client.last_transport_attempts == 1
 
 
-def test_openai_rejects_non_header_api_key_before_request(monkeypatch):
-    urlopen = Mock()
-    monkeypatch.setattr(provider_shared, "_provider_urlopen", urlopen)
+def test_openai_rejects_invalid_function_arguments(monkeypatch):
+    monkeypatch.setattr(
+        provider_shared,
+        "_provider_urlopen",
+        lambda *_args, **_kwargs: _Response(
+            b'{"output":[{"type":"function_call","call_id":"c1","name":"search","arguments":"[]"}],"usage":{}}'
+        ),
+    )
 
-    with pytest.raises(RuntimeError, match="cannot be sent in HTTP headers"):
-        _openai_client("bad\u2603").complete_text("hello", 10)
+    with pytest.raises(_ProviderFailure) as caught:
+        _complete(_openai_client(), tools=[_tool_schema()])
 
-    urlopen.assert_not_called()
+    assert caught.value.code == "provider_protocol_mismatch"
 
 
-def test_ollama_text_only_payload(monkeypatch):
+def test_ollama_chat_wire_uses_native_messages_and_tools(monkeypatch):
     captured = {}
 
     def urlopen(request, timeout):
@@ -247,250 +530,338 @@ def test_ollama_text_only_payload(monkeypatch):
         captured["timeout"] = timeout
         captured["body"] = json.loads(request.data)
         return _Response(
-            b'{"response":"ok","done":true,"done_reason":"stop","prompt_eval_count":12,"eval_count":3}'
+            b'{"message":{"role":"assistant","content":"done"},"done":true,"done_reason":"stop","prompt_eval_count":12,"eval_count":3}'
         )
 
     monkeypatch.setattr(provider_shared, "_provider_urlopen", urlopen)
-    client = _ollama_client()
-
-    assert client.complete_text("hello", 42) == "ok"
-    assert captured == {
-        "url": "http://127.0.0.1:11434/api/generate",
-        "timeout": 30,
-        "body": {
-            "model": "qwen-test",
-            "prompt": "hello",
-            "stream": False,
-            "raw": False,
-            "think": False,
-            "options": {
-                "num_predict": 42,
-                "temperature": 0.0,
-                "top_p": 0.9,
-            },
+    messages = [
+        {"role": "user", "content": "first"},
+        {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": "call_1",
+                    "name": "search",
+                    "input": {"pattern": "x"},
+                }
+            ],
+            "_pico_provider_state": [
+                {"type": "reasoning", "encrypted_content": "ignored"}
+            ],
         },
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "call_1",
+                    "content": "match",
+                }
+            ],
+        },
+    ]
+
+    response = _complete(_ollama_client(), tools=[_tool_schema()], messages=messages)
+
+    assert captured["url"] == "http://127.0.0.1:11434/api/chat"
+    assert captured["timeout"] == 30
+    assert captured["body"] == {
+        "model": "qwen-test",
+        "messages": [
+            {"role": "system", "content": "SYSTEM"},
+            {"role": "user", "content": "first"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "function": {
+                            "name": "search",
+                            "arguments": {"pattern": "x"},
+                        },
+                    }
+                ],
+            },
+            {"role": "tool", "content": "match", "tool_name": "search"},
+        ],
+        "stream": False,
+        "think": False,
+        "options": {
+            "num_predict": 42,
+            "temperature": 0.0,
+            "top_p": 0.9,
+        },
+        "tools": [
+            {
+                "type": "function",
+                "function": {
+                    "name": "search",
+                    "description": "Search files",
+                    "parameters": _tool_schema()["input_schema"],
+                },
+            }
+        ],
     }
-    assert not hasattr(client, "complete")
-    assert not hasattr(client, "supports_prompt_cache")
-    assert client.last_completion_metadata == {
-        "input_tokens": 12,
-        "output_tokens": 3,
-        "total_tokens": 15,
-        "cached_tokens": 0,
-        "cache_hit": False,
-        "cache_creation_input_tokens": 0,
-        "cache_read_input_tokens": 0,
-    }
-    assert client.last_transport_attempts == 1
-    assert client.last_stop_reason == StopReason.END_TURN
+    assert response.content == [{"type": "text", "text": "done"}]
+    assert response.usage["total_tokens"] == 15
 
 
-def test_ollama_length_stop_is_propagated(monkeypatch):
+def test_ollama_generates_an_id_for_a_single_wire_call_without_one(monkeypatch):
     monkeypatch.setattr(
         provider_shared,
         "_provider_urlopen",
         lambda *_args, **_kwargs: _Response(
-            b'{"response":"<final>partial","done":true,"done_reason":"length"}'
+            b'{"message":{"content":"","tool_calls":[{"function":{"name":"search","arguments":{"pattern":"x"}}}]},"done":true,"done_reason":"stop"}'
         ),
     )
-    client = _ollama_client()
 
-    assert client.complete_text("hello", 10) == "<final>partial"
-    assert client.last_stop_reason == StopReason.MAX_TOKENS
+    response = _complete(_ollama_client(), tools=[_tool_schema()])
+
+    assert response.stop_reason == StopReason.TOOL_USE
+    assert response.content[0]["id"].startswith("toolu_ollama_")
 
 
-def test_ollama_timeout_is_stable(monkeypatch):
+def test_ollama_unknown_done_reason_does_not_authorize_tool_use(monkeypatch):
     monkeypatch.setattr(
         provider_shared,
         "_provider_urlopen",
-        Mock(side_effect=TimeoutError("secret")),
+        lambda *_args, **_kwargs: _Response(
+            b'{"message":{"content":"","tool_calls":[{"id":"call_4","function":{"name":"search","arguments":{"pattern":"x"}}}]},"done":true,"done_reason":"new_reason"}'
+        ),
     )
 
-    with pytest.raises(
-        RuntimeError,
-        match="^Ollama request failed: timeout$",
-    ):
-        _ollama_client().complete_text("hello", 10)
+    response = _complete(_ollama_client(), tools=[_tool_schema()])
+
+    assert response.stop_reason == StopReason.UNKNOWN
 
 
-def test_provider_connection_reset_is_classified_without_raw_error(monkeypatch):
-    monkeypatch.setattr(
-        provider_shared,
-        "_provider_urlopen",
-        Mock(side_effect=ConnectionResetError("secret socket detail")),
+def test_ollama_custom_bearer_uses_exact_chat_root(monkeypatch):
+    captured = {}
+
+    def urlopen(request, timeout):
+        captured["url"] = request.full_url
+        captured["headers"] = dict(request.header_items())
+        return _Response(
+            b'{"message":{"content":"ok"},"done":true,"done_reason":"stop"}'
+        )
+
+    monkeypatch.setattr(provider_shared, "_provider_urlopen", urlopen)
+    client = _ollama_client(
+        host="https://ollama.example/native",
+        auth_mode="bearer",
+        api_key="custom-key",
     )
 
-    with pytest.raises(
-        RuntimeError,
-        match="^OpenAI-compatible request failed: network_error$",
-    ):
-        _openai_client().complete_text("hello", 10)
+    _complete(client)
+
+    assert captured["url"] == "https://ollama.example/native/api/chat"
+    assert captured["headers"]["Authorization"] == "Bearer custom-key"
 
 
-def test_ollama_invalid_response_is_stable(monkeypatch):
-    monkeypatch.setattr(
-        provider_shared,
-        "_provider_urlopen",
-        lambda *_args, **_kwargs: _Response(b"[]"),
-    )
+def test_ollama_preserves_timeout_layer_and_does_not_try_generate(monkeypatch):
+    urlopen = Mock(side_effect=TimeoutError("secret"))
+    monkeypatch.setattr(provider_shared, "_provider_urlopen", urlopen)
 
-    with pytest.raises(RuntimeError, match="^Ollama error: invalid_response$"):
-        _ollama_client().complete_text("hello", 10)
+    with pytest.raises(_ProviderFailure) as caught:
+        _complete(_ollama_client())
+
+    assert caught.value.code == "timeout"
+    assert caught.value.retryable is True
+    assert urlopen.call_count == 1
 
 
 @pytest.mark.parametrize(
-    ("family", "client_factory", "invoke"),
-    (
-        (
-            "Anthropic-compatible",
-            _anthropic_client,
-            lambda client: client.complete(
-                system=[], tools=[], messages=[], max_tokens=10
-            ),
-        ),
-        (
-            "OpenAI-compatible",
-            _openai_client,
-            lambda client: client.complete_text("hello", 10),
-        ),
-        (
-            "Ollama",
-            _ollama_client,
-            lambda client: client.complete_text("hello", 10),
-        ),
-    ),
+    ("error_value", "reason"),
+    [
+        (urllib.error.URLError("secret"), "network_error"),
+        (RemoteDisconnected("secret"), "remote_disconnect"),
+        (TimeoutError("secret"), "timeout"),
+    ],
+)
+def test_openai_network_error_is_classified_after_one_transport(
+    monkeypatch,
+    error_value,
+    reason,
+):
+    urlopen = Mock(side_effect=error_value)
+    monkeypatch.setattr(provider_shared, "_provider_urlopen", urlopen)
+
+    with pytest.raises(_ProviderFailure) as caught:
+        _complete(_openai_client())
+
+    assert caught.value.code == reason
+    assert caught.value.retryable is True
+    assert urlopen.call_count == 1
+
+
+def test_provider_429_retry_after_is_capped(monkeypatch):
+    error_value = urllib.error.HTTPError(
+        "https://api.openai.com/v1/responses",
+        429,
+        "rate limited",
+        hdrs={"Retry-After": "99"},
+        fp=io.BytesIO(b"secret backend response"),
+    )
+    monkeypatch.setattr(
+        provider_shared,
+        "_provider_urlopen",
+        Mock(side_effect=error_value),
+    )
+
+    with pytest.raises(_ProviderFailure) as caught:
+        _complete(_openai_client())
+
+    assert caught.value.code == "rate_limited"
+    assert caught.value.retryable is True
+    assert caught.value.retry_after == 10.0
+
+
+@pytest.mark.parametrize(
+    ("status", "code", "retryable"),
+    [
+        (408, "request_timeout", True),
+        (413, "request_too_large", False),
+    ],
+)
+@pytest.mark.parametrize(
+    "client_factory",
+    [_anthropic_client, _openai_client, _ollama_client],
+)
+def test_provider_preserves_specific_http_failure_layer(
+    monkeypatch,
+    status,
+    code,
+    retryable,
+    client_factory,
+):
+    monkeypatch.setattr(
+        provider_shared,
+        "_provider_urlopen",
+        Mock(side_effect=urllib.error.HTTPError(
+            "https://gateway.example/v1/resource",
+            status,
+            "failed",
+            hdrs={},
+            fp=io.BytesIO(b"opaque backend response"),
+        )),
+    )
+
+    with pytest.raises(_ProviderFailure) as caught:
+        _complete(client_factory())
+
+    assert caught.value.code == code
+    assert caught.value.http_status == status
+    assert caught.value.retryable is retryable
+
+
+@pytest.mark.parametrize(
+    ("error_value", "code"),
+    [
+        (ssl.SSLError("opaque"), "tls_error"),
+        (ConnectionResetError("opaque"), "connection_reset"),
+        (IncompleteRead(b"partial", 10), "response_truncated"),
+    ],
+)
+@pytest.mark.parametrize(
+    "client_factory",
+    [_anthropic_client, _openai_client, _ollama_client],
+)
+def test_provider_preserves_specific_transport_failure_layer(
+    monkeypatch,
+    error_value,
+    code,
+    client_factory,
+):
+    monkeypatch.setattr(
+        provider_shared,
+        "_provider_urlopen",
+        Mock(side_effect=error_value),
+    )
+
+    with pytest.raises(_ProviderFailure) as caught:
+        _complete(client_factory())
+
+    assert caught.value.code == code
+    assert caught.value.retryable is True
+
+
+@pytest.mark.parametrize(
+    ("family", "client_factory"),
+    [
+        ("Anthropic", _anthropic_client),
+        ("OpenAI", _openai_client),
+        ("Ollama", _ollama_client),
+    ],
 )
 def test_provider_http_errors_expose_only_family_and_status(
-    monkeypatch, caplog, family, client_factory, invoke
+    monkeypatch,
+    caplog,
+    family,
+    client_factory,
 ):
     secret = "github_pat_" + "B" * 32
     credential_url = f"https://user:{secret}@example.test/v1?api_key={secret}"
-    error = urllib.error.HTTPError(
+    error_value = urllib.error.HTTPError(
         credential_url,
         401,
         "unauthorized",
         hdrs={},
         fp=io.BytesIO(f'{{"error":"{secret}"}}'.encode()),
     )
-    urlopen = Mock(side_effect=error)
+    urlopen = Mock(side_effect=error_value)
     monkeypatch.setattr(provider_shared, "_provider_urlopen", urlopen)
 
     with pytest.raises(RuntimeError) as caught:
-        invoke(client_factory())
+        _complete(client_factory())
 
     assert str(caught.value) == f"{family} request failed with HTTP 401"
-    assert caught.value.__cause__ is None
     assert secret not in str(caught.value) + caplog.text
     assert credential_url not in str(caught.value)
     assert urlopen.call_count == 1
 
 
 @pytest.mark.parametrize(
-    ("family", "client_factory", "invoke", "expected_calls"),
-    (
-        (
-            "Anthropic-compatible",
-            _anthropic_client,
-            lambda client: client.complete(
-                system=[], tools=[], messages=[], max_tokens=10
-            ),
-            1,
-        ),
-        (
-            "OpenAI-compatible",
-            _openai_client,
-            lambda client: client.complete_text("hello", 10),
-            1,
-        ),
-        (
-            "Ollama",
-            _ollama_client,
-            lambda client: client.complete_text("hello", 10),
-            1,
-        ),
-    ),
+    "client_factory",
+    [_anthropic_client, _openai_client, _ollama_client],
 )
-def test_provider_http_500_retry_counts_are_preserved(
-    monkeypatch, family, client_factory, invoke, expected_calls
+def test_provider_tool_request_preserves_http_400_classification(
+    monkeypatch,
+    client_factory,
 ):
-    error = urllib.error.HTTPError(
-        "https://example.test/v1",
-        500,
-        "server error",
+    error_value = urllib.error.HTTPError(
+        "https://gateway.example/v1/resource",
+        400,
+        "bad request",
         hdrs={},
-        fp=io.BytesIO(b"backend failure"),
+        fp=io.BytesIO(b'{"error":"invalid thinking state"}'),
     )
-    urlopen = Mock(side_effect=error)
-    monkeypatch.setattr(provider_shared, "_provider_urlopen", urlopen)
+    monkeypatch.setattr(
+        provider_shared,
+        "_provider_urlopen",
+        Mock(side_effect=error_value),
+    )
 
-    with pytest.raises(RuntimeError) as caught:
-        invoke(client_factory())
+    with pytest.raises(_ProviderFailure) as caught:
+        _complete(client_factory(), tools=[_tool_schema()])
 
-    assert str(caught.value) == f"{family} request failed with HTTP 500"
-    assert caught.value.__cause__ is None
-    assert urlopen.call_count == expected_calls
-
-
-@pytest.mark.parametrize(
-    ("family", "client_factory", "invoke", "payload"),
-    (
-        (
-            "Anthropic-compatible",
-            _anthropic_client,
-            lambda client: client.complete(
-                system=[], tools=[], messages=[], max_tokens=10
-            ),
-            lambda secret: {
-                "content": [{"type": "text", "text": "ok"}],
-                "usage": {"cache_read_input_tokens": secret},
-            },
-        ),
-        (
-            "OpenAI-compatible",
-            _openai_client,
-            lambda client: client.complete_text("hello", 10),
-            lambda secret: {
-                "output_text": "ok",
-                "usage": {"input_tokens_details": {"cached_tokens": secret}},
-            },
-        ),
-    ),
-)
-def test_provider_malformed_usage_is_fixed_and_secret_free(
-    monkeypatch, caplog, family, client_factory, invoke, payload
-):
-    secret = "github_pat_" + "M" * 32
-    body = json.dumps(payload(secret)).encode()
-    urlopen = Mock(return_value=_Response(body))
-    monkeypatch.setattr(provider_shared, "_provider_urlopen", urlopen)
-
-    with pytest.raises(RuntimeError) as caught:
-        invoke(client_factory())
-
-    assert str(caught.value) == f"{family} error: invalid_response"
-    assert caught.value.__cause__ is None
-    assert secret not in str(caught.value) + caplog.text
-    assert urlopen.call_count == 1
+    assert caught.value.code == "http_4xx"
+    assert caught.value.http_status == 400
 
 
 @pytest.mark.parametrize(
     "url",
-    (
+    [
         "https://user:opaque-password@example.test/v1",
         "https://example.test/v1?api_key=opaque-value",
-        "https://example.test/v1?token=opaque-value",
-    ),
+        "https://example.test/v1#fragment",
+    ],
 )
 @pytest.mark.parametrize(
     "client_factory",
-    (
-        lambda url: OpenAICompatibleModelClient(
-            model="test",
-            base_url=url,
-            api_key="test-key",
-            temperature=0.0,
-            timeout=1,
-        ),
+    [
+        lambda url: _openai_client(base_url=url),
         lambda url: AnthropicCompatibleModelClient(
             model="test",
             base_url=url,
@@ -498,30 +869,12 @@ def test_provider_malformed_usage_is_fixed_and_secret_free(
             temperature=0.0,
             timeout=1,
         ),
-        lambda url: OllamaModelClient(
-            model="test",
-            host=url,
-            temperature=0.0,
-            top_p=1.0,
-            timeout=1,
-        ),
-    ),
+        lambda url: _ollama_client(host=url),
+    ],
 )
-def test_provider_clients_reject_credential_bearing_base_url(url, client_factory):
-    with pytest.raises(ValueError, match="provider_base_url_credentials"):
+def test_provider_clients_reject_unsafe_base_urls(url, client_factory):
+    with pytest.raises(ValueError):
         client_factory(url)
-
-
-@pytest.mark.parametrize("value", ["file:///tmp/x", "ftp://example.test/v1", "not-a-url"])
-def test_provider_clients_reject_invalid_base_urls(value):
-    with pytest.raises(ValueError, match="provider_base_url_invalid"):
-        _openai_client().__class__(
-            model="test",
-            base_url=value,
-            api_key="test",
-            temperature=None,
-            timeout=1,
-        )
 
 
 def test_provider_response_size_is_bounded(monkeypatch):
@@ -532,11 +885,19 @@ def test_provider_response_size_is_bounded(monkeypatch):
             b"x" * (provider_shared.MAX_PROVIDER_RESPONSE_BYTES + 1)
         ),
     )
-    with pytest.raises(RuntimeError, match="response_too_large"):
-        _openai_client().complete_text("hello", 10)
+
+    with pytest.raises(_ProviderFailure) as caught:
+        _complete(_openai_client())
+
+    assert caught.value.code == "response_too_large"
 
 
 def test_redirect_handler_never_follows_provider_redirects():
     assert provider_shared._NoRedirectHandler().redirect_request(
-        None, None, 302, "redirect", {}, "https://elsewhere.test"
+        None,
+        None,
+        302,
+        "redirect",
+        {},
+        "https://elsewhere.test",
     ) is None

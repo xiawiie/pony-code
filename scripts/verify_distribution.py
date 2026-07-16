@@ -306,7 +306,7 @@ def install_smoke(wheel: Path) -> None:
         ).strip()
         assert resources_after == resources_before
         _run(str(pico), "--help", cwd=cwd, env=env)
-        _run(str(pico), "doctor", "--offline", cwd=cwd, env=env)
+        _run(str(pico), "doctor", cwd=cwd, env=env)
 
 
 def main() -> int:

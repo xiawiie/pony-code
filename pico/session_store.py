@@ -137,6 +137,13 @@ _REQUIRED_FIELDS = frozenset(
         "runtime_identity",
     }
 )
+_OPTIONAL_FIELDS = frozenset({"provider_binding"})
+_PROTOCOL_FAMILIES = {
+    "anthropic_messages",
+    "openai_chat_completions",
+    "openai_responses",
+    "ollama_chat",
+}
 _DICT_FIELDS = (
     "working_memory",
     "memory",
@@ -146,6 +153,9 @@ _DICT_FIELDS = (
     "runtime_identity",
 )
 _DERIVED_CACHE_FIELDS = frozenset({"working_memory", "memory", "recently_recalled"})
+_SESSION_INFO_FIELDS = (
+    _REQUIRED_FIELDS | _OPTIONAL_FIELDS
+) - {"messages"} - _DERIVED_CACHE_FIELDS
 _MUTABLE_SESSION_INFO_FIELDS = frozenset(
     {"resume_state", "recovery", "runtime_identity"}
 )
@@ -293,7 +303,9 @@ def _validate_rewind_intent(value, session_id):
 def _validate_projection(payload, session_id, *, version=SESSION_FORMAT_VERSION):
     if not isinstance(payload, dict):
         raise SessionFormatError("session payload must be an object")
-    if payload.keys() != _REQUIRED_FIELDS:
+    if not _REQUIRED_FIELDS <= payload.keys() or not payload.keys() <= (
+        _REQUIRED_FIELDS | _OPTIONAL_FIELDS
+    ):
         raise SessionFormatError("session payload fields do not match current format")
     if payload.get("record_type") != SESSION_RECORD_TYPE:
         raise SessionFormatError("invalid session record type")
@@ -310,6 +322,17 @@ def _validate_projection(payload, session_id, *, version=SESSION_FORMAT_VERSION)
         raise SessionFormatError("invalid session object field")
     if not isinstance(payload.get("recently_recalled"), list):
         raise SessionFormatError("invalid session list field")
+    binding = payload.get("provider_binding")
+    if binding is not None and (
+        not isinstance(binding, dict)
+        or binding.keys()
+        != {"protocol_family", "model", "endpoint_hash"}
+        or any(not isinstance(value, str) or not value for value in binding.values())
+        or binding["protocol_family"] not in _PROTOCOL_FAMILIES
+        or re.fullmatch(r"sha256:[0-9a-f]{64}", binding["endpoint_hash"])
+        is None
+    ):
+        raise SessionFormatError("invalid provider binding")
     identities = [payload["runtime_identity"]]
     items = payload["checkpoints"].get("items", {})
     if isinstance(items, dict):
@@ -572,9 +595,7 @@ def _apply_entry(projection, entry):
         values = data.get("set")
         if not isinstance(values, dict) or "messages" in values:
             raise SessionFormatError("invalid session info entry")
-        if not values.keys() <= (
-            _REQUIRED_FIELDS - {"messages"} - _DERIVED_CACHE_FIELDS
-        ):
+        if not values.keys() <= _SESSION_INFO_FIELDS:
             raise SessionFormatError("invalid session info field")
         projection.update(deepcopy(values))
     elif kind == "task_checkpoint":
@@ -879,9 +900,7 @@ def _state_values(projection):
     return {
         key: deepcopy(value)
         for key, value in projection.items()
-        if key in _REQUIRED_FIELDS
-        and key not in {"messages"}
-        and key not in _DERIVED_CACHE_FIELDS
+        if key in _SESSION_INFO_FIELDS
     }
 
 
@@ -1076,8 +1095,8 @@ def _restore_expected_projection(header, entries, expected):
         raise SessionFormatError("session message projection mismatch")
     changed = {
         key: deepcopy(expected[key])
-        for key in _REQUIRED_FIELDS - {"messages"} - _DERIVED_CACHE_FIELDS
-        if tree.projection[key] != expected[key]
+        for key in _SESSION_INFO_FIELDS & expected.keys()
+        if tree.projection.get(key) != expected[key]
     }
     if changed:
         parent_id = entries[-1]["id"] if entries else ""
@@ -1323,6 +1342,8 @@ class SessionStore:
             if tree.header["workspace_root"] != candidate["workspace_root"]:
                 raise SessionFormatError("session workspace root changed")
             current = tree.projection
+            if current.get("provider_binding") != candidate.get("provider_binding"):
+                raise SessionFormatError("session provider binding changed")
             parent_id = tree.leaf_id
             entries = []
             current_messages = current["messages"]

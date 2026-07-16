@@ -10,6 +10,7 @@ import pytest
 
 from pico.context.renderer import render_current_user_message
 from pico.context_manager import ContextManager
+from pico.messages import make_tool_pair
 
 
 def _agent():
@@ -108,3 +109,63 @@ def test_build_request_tools_tokens_uses_json_serialization():
     # Recompute the expected token count against the JSON-serialized tools.
     expected = ContextManager(a).accounting.count_json(request["tools"])
     assert metadata["tools_tokens"] == expected
+
+
+def test_build_request_budget_counts_opaque_provider_state():
+    state = [{"type": "reasoning", "encrypted_content": "x" * 200}]
+
+    def history_tokens(provider_state):
+        a = _agent()
+        a.model_client.count_tokens = lambda text: len(text)
+        pair = make_tool_pair(
+            name="read_file",
+            arguments={"path": "README.md"},
+            tool_use_id="toolu_state",
+            result_content="body",
+            created_at="now",
+            tool_status="ok",
+            effect_class="read_only",
+            provider_state=provider_state,
+        )
+        a.session = {
+            "messages": [
+                {"role": "user", "content": "question", "_pico_meta": {}},
+                *pair,
+                {"role": "user", "content": "next", "_pico_meta": {}},
+            ]
+        }
+        snapshot, telemetry = render_current_user_message(a, "next")
+        _request, metadata = ContextManager(a).build_request(
+            injection_snapshot=snapshot,
+            injection_telemetry=telemetry,
+            preflight_metadata={},
+        )
+        return metadata["context_breakdown"]["history"]["actual_tokens"]
+
+    counter_agent = _agent()
+    counter_agent.model_client.count_tokens = lambda text: len(text)
+    accounting = ContextManager(counter_agent).accounting
+    with_state = make_tool_pair(
+        name="read_file",
+        arguments={"path": "README.md"},
+        tool_use_id="toolu_state",
+        result_content="body",
+        created_at="now",
+        tool_status="ok",
+        effect_class="read_only",
+        provider_state=state,
+    )[0]
+    without_state = make_tool_pair(
+        name="read_file",
+        arguments={"path": "README.md"},
+        tool_use_id="toolu_state",
+        result_content="body",
+        created_at="now",
+        tool_status="ok",
+        effect_class="read_only",
+    )[0]
+
+    assert history_tokens(state) - history_tokens(()) == (
+        accounting.count_message(with_state)
+        - accounting.count_message(without_state)
+    )

@@ -18,7 +18,7 @@ pico --help
 以这条命令的结果为准。不能激活环境时使用：
 
 ```bash
-uv run pico doctor --offline
+uv run pico doctor
 uv run pico run "inspect the repository"
 ```
 
@@ -30,42 +30,43 @@ python3 -m venv /tmp/pico-venv
 source /tmp/pico-venv/bin/activate
 python -m pip install --no-deps dist/pico-0.2.0-py3-none-any.whl
 command -v pico
-pico doctor --offline
+pico doctor
 ```
 
 ## 项目配置与凭证
 
-Pico 只读取当前 lexical repository root 的 `.env`。推荐先写非敏感配置，再通过 stdin 写 secret：
+Pico 只读取当前 lexical repository root 的 `.env`。推荐通过交互式初始化同时配置精确 API 根和凭证：
 
 ```bash
 pico init
-printf '%s' "$PROVIDER_KEY" | pico config set-secret PICO_DEEPSEEK_API_KEY --stdin
 chmod 600 .env
-pico doctor --offline
+pico doctor
 ```
 
-不要把真实 key 写入 shell history、命令参数、文档或测试 fixture。通用 `PICO_API_KEY` 只作为
-DeepSeek、Anthropic-compatible 与 OpenAI-compatible 各自 resolver 的共享 fallback；Provider 不会借用
-另一个 Provider 的专用 key。Ollama 不需要 API key。
+`init` 依次询问 API URL 和 API Key。URL 留空时使用 `https://api.deepseek.com/anthropic/v1`；Key 使用隐藏输入，已有 Key
+时直接回车即可保留。`init` 只做本地校验和原子写入，不发送 API 请求。若只需轮换凭证，可运行：
 
-配置优先级为显式 CLI 参数、Project Environment、当前进程环境、代码默认值。`pico.toml` 只用
-stdlib TOML parser 在一个 Pico 实例构造时读取一次；malformed 文件整份回退默认值，单字段越界则告警并只回退
-该字段。Context caps 中 `system_tools_hard_cap > total_budget_hard_cap` 时整组回退默认。
+```bash
+pico config set-secret PICO_DEEPSEEK_API_KEY
+```
 
-Provider 默认地址为：
+最终模型配置只有：
 
-| Provider | 默认地址 |
-| --- | --- |
-| OpenAI | `https://api.openai.com/v1` |
-| Anthropic | `https://api.anthropic.com` |
-| DeepSeek | `https://api.deepseek.com/anthropic` |
-| Ollama | `http://127.0.0.1:11434` |
+```dotenv
+PICO_API_URL=https://api.deepseek.com/anthropic/v1
+PICO_DEEPSEEK_API_KEY=
+```
 
-OpenAI/Anthropic/DeepSeek 的标准 key 在没有显式 base URL 时只发送到对应 official host。企业网关、自建代理或
-其他 relay 必须用 `--base-url`、`PICO_<PROVIDER>_API_BASE` 或对应进程环境变量显式配置；`doctor` 会显示
-`explicit_third_party`、host 和配置来源，但不显示凭证。不要在 URL userinfo、query 或 fragment 中放 secret。
+模型固定为 `deepseek-v4-flash`，协议固定为 Anthropic Messages，认证固定为 `x-api-key`。`PICO_API_URL`
+必须是精确、已版本化 API 根，Pico 只追加 `/messages`，不自动补 `/v1`。第三方服务必须兼容相同协议和认证；
+例如 Lumina 的 Anthropic 根应写为 `https://lumina.tripo3d.com/v1`。
+URL 禁止 query、fragment、userinfo 或嵌入凭据；除 loopback 外只允许 HTTPS。
 
-模型和 Context 可显式配置：
+项目 `.env` 优先于当前进程环境；只读取上述两个运行时变量，不回退标准厂商 Key 或旧 Pico 配置。
+不要把真实 Key 写入 shell history、命令参数、文档或测试 fixture。普通 `pico doctor` 不联网；仅
+`pico doctor --check-api` 执行可能产生费用的文本、工具调用与 tool result 续接验证。
+
+模型预算和 Context 可以通过 `pico.toml` 调整，不改变固定 API 协议：
 
 ```toml
 [model]
@@ -82,8 +83,8 @@ reserve_tokens = 16384
 keep_recent_tokens = 20000
 ```
 
-CLI 的当前名称是 `--context-window` 和 `--max-output-tokens`。旧 `--max-new-tokens` 只作为带 warning 的迁移
-alias；`history_soft_cap`、`history_floor_messages` 和 `injection_budget_ratio` 已移除。
+CLI 的当前名称是 `--context-window` 和 `--max-output-tokens`；Context history 只通过 compaction 退出 active
+request，不按旧 soft cap 静默丢弃。
 
 ## Session 与长任务
 
@@ -98,10 +99,9 @@ pico session clone <session-id> --to-worktree <path>
 pico session tail-repair <session-id> --yes
 ```
 
-`pico sessions list/show` 是兼容的只读摘要入口；`pico session` 提供 Session Tree 操作。旧 JSON Session 只有
-显式 resume 才自动迁移，inspection 不写磁盘。普通 rewind 不改工作区；`--workspace` 总是先 preview，并且只
-接受合法 task checkpoint。详细预算、compaction、worktree 和 crash reconciliation 见
-[Context、Session 与长会话](context-and-sessions.md)。
+`pico sessions list/show` 是只读摘要入口；`pico session` 提供 Session Tree 操作。旧 JSON Session 只有显式 resume
+才自动迁移，inspection 不写磁盘。普通 rewind 不改工作区；`--workspace` 总是先 preview，并且只接受合法 task
+checkpoint。详细合同见 [Context、Session 与长会话](context-and-sessions.md)。
 
 ## 更新
 
@@ -111,7 +111,7 @@ pico session tail-repair <session-id> --yes
 git pull --ff-only
 uv lock --check
 uv sync --frozen --dev
-pico doctor --offline
+pico doctor
 ```
 
 修改 `pyproject.toml`、切换分支或 console entry 变化后必须重新同步。不要手工修改 `.venv/bin/pico`。
@@ -185,6 +185,6 @@ python -m pico --help
 如果环境损坏，可删除并重建生成的 `.venv`，然后重新执行 `uv sync --frozen --dev`。这不会删除
 仓库 `.pico/`、`~/.pico/` 或 recovery backup。
 
-如果 `doctor --offline` 报告 `review_required`，先检查 `.env` 权限、trusted executable、private store
+如果 `doctor` 报告 `review_required`，先检查 `.env` 权限、trusted executable、private store
 和 pending recovery evidence。不要通过降低权限检查或删除记录来让诊断变绿；处理方法见
 [安全](security.md)与[恢复](recovery.md)。

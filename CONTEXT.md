@@ -11,14 +11,15 @@
 **Model Request**：由 system、tools、Canonical Messages、token budget 和 cache breakpoints 组成的
 runtime 请求，不等同于 Provider payload。
 
-**Model Response**：Provider-neutral `Response`。Provider wire JSON 和 streaming event 不进入
-AgentLoop 合同。
+**Model Response**：Provider-neutral `Response`。Provider wire JSON 不进入 AgentLoop 合同；当前不支持
+streaming。
 
 **Model Attempt**：AgentLoop 为当前 Run 构建一次 Model Request 并尝试取得一个 Action 的逻辑轮次。
 它由 `TaskState.attempts` 计数，不等于工具执行次数或底层网络请求次数。
 
 **Model Retry**：可重试 Provider 失败后，由 AgentLoop 重新发起的 Model Attempt。最多两次，延迟为
-0.5 秒和 1.0 秒；它保留尚未完成的 `RetryAction` 反馈，但不复用已经得到成功响应的请求。
+0.5 秒和 1.0 秒；429 可使用上限 10 秒的 `Retry-After`。它保留尚未完成的 `RetryAction` 反馈，但不复用
+已经得到成功响应的请求，也不改变 endpoint、协议或 model。
 
 **Transport Attempt**：一个 Model Attempt 在 Provider client 内的一次真实 transport 执行，例如一次
 HTTP POST。它包含首次执行与可能的 Transport Retry，不等于 Model Attempt。
@@ -48,8 +49,26 @@ Durable Memory 写入、历史删除或 workspace restore。
 **Task Checkpoint**：每个 top-level turn 结束时写入 Session Tree 的 continuation state，包含目标、进度、文件、
 Recovery checkpoint 引用和 Context usage。它不同于 Recovery Record。
 
-**Text Protocol Adapter**：把结构化 Model Request 显式转换为 text transport prompt 的边界，用于
-OpenAI-compatible 与 Ollama；它不是自动 capability probe 或 Provider registry。
+**Model API Configuration**：CLI 唯一可配置的模型连接信息：精确 API 根 `PICO_API_URL` 与凭证
+`PICO_DEEPSEEK_API_KEY`。model、协议和认证不是用户选项。
+_Avoid_：Provider、Profile、Connection、Preset
+
+**CLI Protocol Family**：Pico CLI 与 Model API 交换 Model Request/Response 的固定 wire contract，即 Anthropic
+Messages。运行时不自动探测、降级或切换协议。
+_Avoid_：SDK、Model Family、Compatibility Mode
+
+**Model API Endpoint**：实现 Anthropic Messages 的精确、已版本化 API root；Pico 只追加
+`/messages`，不补 `/v1`。第三方 endpoint 必须满足相同协议和 `x-api-key` 认证。
+_Avoid_：Provider Type、Profile、Vendor
+
+**Model Session Binding**：Session 固化的 `protocol_family`、`model` 与 `endpoint_hash`。恢复时必须与当前
+固定模型配置完全一致；旧 binding 不读取、不迁移。
+_Avoid_：自动迁移、Provider fallback、Endpoint Cache
+
+**Provider State**：native tool continuation 中保存的受限 opaque state。当前包括 OpenAI Responses encrypted
+reasoning item，以及 Anthropic `thinking` / `redacted_thinking` block。它不渲染、不进入普通日志，只在同一
+Model Session Binding 中按原协议重放并计入上下文预算。
+_Avoid_：Prompt Text、Working Memory、Cross-provider State
 
 **Project Environment**：当前 lexical repository root 下唯一允许读取的 `.env`。读取不搜索父仓库，
 也不把值注入全局 `os.environ`。
@@ -144,7 +163,7 @@ _Avoid_：Command Result、Exit Code、Tool Status
 | 边界 | 当前职责 |
 | --- | --- |
 | `pico.cli*` | 解析显式命令、展示结果、调用 runtime/inspection/recovery API |
-| `pico.config` | 精确根目录 `.env`、Provider resolver、stdlib TOML 读取与安全 secret 写入 |
+| `pico.config` | 精确根目录 `.env`、固定模型配置解析、stdlib TOML 读取与安全 secret 写入 |
 | `pico.model_capabilities`、`pico.context*`、`pico.prompt_prefix` | 统一 token 账户、请求预算、Context Sources、digest 与稳定前缀 |
 | `pico.providers.*` | Provider wire transport 与 Provider-neutral `Response` |
 | `pico.action_codec`、`pico.agent_loop` | Action 解码与单 attempt/单 action 协调 |
@@ -166,7 +185,7 @@ _Avoid_：Command Result、Exit Code、Tool Status
   parent、host HOME 和 Docker socket 均不得进入 guest。
 - `sandbox status/list/inspect/diff/prune --dry-run` 零 mutation；Feasibility Approval缺失阻断实现/发布而非runtime。
   本机runtime要求sealed local authorization，分布式release runtime要求Product Enablement；任一identity不一致均在
-  Provider/target前fail closed。Candidate Attestation仅是controller-owned final smoke例外，不能缓存或正式发布。
+  模型请求/target前fail closed。Candidate Attestation仅是controller-owned final smoke例外，不能缓存或正式发布。
 - Source Apply固定为external control lock → source mutation lock → exact external reservation → journal/blobs →
   source-local guard → Session applying → source mutation；authority清理使用anchored full-record CAS，公开diff reader
   不得改变artifact ctime，显式`reconcile --yes`不依赖Session inventory猜测state root。

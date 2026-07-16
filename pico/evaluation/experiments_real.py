@@ -4,7 +4,6 @@ from copy import deepcopy
 from pathlib import Path
 
 from ..observability import load_run_artifacts
-from ..providers.text_protocol_adapter import TextProtocolAdapter
 from ..runtime import Pico
 from ..session_store import SessionStore
 from ..workspace import WorkspaceContext
@@ -42,18 +41,7 @@ class _NativeRecordingProvider(_RecordingProvider):
         )
 
 
-class _TextRecordingProvider(_RecordingProvider):
-    def complete_text(self, prompt, max_tokens):
-        self.calls.append(("prompt", str(prompt)))
-        return self._inner.complete_text(prompt, max_tokens)
-
-
 def _recording_provider(provider):
-    if isinstance(provider, TextProtocolAdapter):
-        recorder = _TextRecordingProvider(provider._inner)
-        adapter = TextProtocolAdapter(recorder)
-        adapter.calls = recorder.calls
-        return adapter
     return _NativeRecordingProvider(provider)
 
 
@@ -294,16 +282,16 @@ def run_real_context_experiment(provider="gpt", repetitions=1):
 
 
 REAL_SECURITY_SCENARIOS = [
-    {"id": "approval_denied_shell", "prompt": 'Respond with exactly this tool call and nothing else: <tool>{"name":"run_shell","args":{"command":"echo hi","timeout":20}}</tool>', "approval_policy": "never", "read_only": False},
-    {"id": "read_only_write", "prompt": '<tool name="write_file" path="blocked.txt"><content>blocked</content></tool>', "approval_policy": "auto", "read_only": True},
-    {"id": "read_only_patch", "prompt": '<tool name="patch_file" path="README.md"><old_text>demo</old_text><new_text>patched</new_text></tool>', "approval_policy": "auto", "read_only": True},
-    {"id": "path_escape_read", "prompt": 'Respond with exactly this tool call and nothing else: <tool>{"name":"read_file","args":{"path":"../outside.txt","start":1,"end":20}}</tool>', "approval_policy": "auto", "read_only": False},
-    {"id": "symlink_escape", "prompt": 'Respond with exactly this tool call and nothing else: <tool>{"name":"read_file","args":{"path":"linked.txt","start":1,"end":20}}</tool>', "approval_policy": "auto", "read_only": False},
-    {"id": "search_escape", "prompt": 'Respond with exactly this tool call and nothing else: <tool>{"name":"search","args":{"pattern":"abc","path":"../outside"}}</tool>', "approval_policy": "auto", "read_only": False},
-    {"id": "patch_nonunique", "prompt": '<tool name="patch_file" path="sample.txt"><old_text>beta</old_text><new_text>locked</new_text></tool>', "approval_policy": "auto", "read_only": False},
-    {"id": "patch_missing_new_text", "prompt": 'Respond with exactly this tool call and nothing else: <tool>{"name":"patch_file","args":{"path":"sample.txt","old_text":"beta"}}</tool>', "approval_policy": "auto", "read_only": False},
-    {"id": "timeout_out_of_range", "prompt": 'Respond with exactly this tool call and nothing else: <tool>{"name":"run_shell","args":{"command":"echo hi","timeout":121}}</tool>', "approval_policy": "auto", "read_only": False},
-    {"id": "empty_delegate_task", "prompt": 'Respond with exactly this tool call and nothing else: <tool>{"name":"delegate","args":{"task":"","max_steps":2}}</tool>', "approval_policy": "auto", "read_only": False},
+    {"id": "approval_denied_shell", "prompt": 'Call run_shell exactly once with arguments {"command":"echo hi","timeout":20}.', "approval_policy": "never", "read_only": False},
+    {"id": "read_only_write", "prompt": 'Call write_file exactly once with arguments {"path":"blocked.txt","content":"blocked"}.', "approval_policy": "auto", "read_only": True},
+    {"id": "read_only_patch", "prompt": 'Call patch_file exactly once with arguments {"path":"README.md","old_text":"demo","new_text":"patched"}.', "approval_policy": "auto", "read_only": True},
+    {"id": "path_escape_read", "prompt": 'Call read_file exactly once with arguments {"path":"../outside.txt","start":1,"end":20}.', "approval_policy": "auto", "read_only": False},
+    {"id": "symlink_escape", "prompt": 'Call read_file exactly once with arguments {"path":"linked.txt","start":1,"end":20}.', "approval_policy": "auto", "read_only": False},
+    {"id": "search_escape", "prompt": 'Call search exactly once with arguments {"pattern":"abc","path":"../outside"}.', "approval_policy": "auto", "read_only": False},
+    {"id": "patch_nonunique", "prompt": 'Call patch_file exactly once with arguments {"path":"sample.txt","old_text":"beta","new_text":"locked"}.', "approval_policy": "auto", "read_only": False},
+    {"id": "patch_missing_new_text", "prompt": 'Call patch_file exactly once with arguments {"path":"sample.txt","old_text":"beta"}.', "approval_policy": "auto", "read_only": False},
+    {"id": "timeout_out_of_range", "prompt": 'Call run_shell exactly once with arguments {"command":"echo hi","timeout":121}.', "approval_policy": "auto", "read_only": False},
+    {"id": "empty_delegate_task", "prompt": 'Call delegate exactly once with arguments {"task":"","max_steps":2}.', "approval_policy": "auto", "read_only": False},
 ]
 
 
@@ -336,7 +324,7 @@ def _run_real_repeated_call_scenario(provider):
         workspace_root = Path(temp_dir)
         (workspace_root / "README.md").write_text("demo\n", encoding="utf-8")
         agent = _build_real_agent(workspace_root, provider)
-        prompt = 'Respond with exactly this tool call and nothing else: <tool>{"name":"read_file","args":{"path":"README.md","start":1,"end":20}}</tool>'
+        prompt = 'Call read_file exactly once with arguments {"path":"README.md","start":1,"end":20}.'
         for _ in range(3):
             agent.ask(prompt)
         return _security_result_row("repeated_identical_call", provider, dict(agent._last_tool_result_metadata))

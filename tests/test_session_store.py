@@ -42,6 +42,16 @@ def _jsonl(path):
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
 
 
+def _provider_binding(**overrides):
+    binding = {
+        "protocol_family": "openai_responses",
+        "model": "gpt-test",
+        "endpoint_hash": "sha256:" + "a" * 64,
+    }
+    binding.update(overrides)
+    return binding
+
+
 def test_session_store_saves_loads_and_finds_latest_session(tmp_path):
     store = SessionStore(tmp_path / ".pico" / "sessions")
     first = _session(tmp_path, "session_001", "first")
@@ -55,6 +65,9 @@ def test_session_store_saves_loads_and_finds_latest_session(tmp_path):
     assert _jsonl(first_path)[0]["record_type"] == "session_header"
     loaded = store.load("session_002")
     assert loaded["format_version"] == SESSION_FORMAT_VERSION
+    assert loaded["record_type"] == "session"
+    assert loaded["format_version"] == SESSION_FORMAT_VERSION == 2
+    assert "history" not in loaded
     assert loaded["messages"] == [
         {"role": "user", "content": "second", "_pico_meta": {}},
     ]
@@ -147,6 +160,47 @@ def test_non_prefix_save_creates_new_branch_and_preserves_history(tmp_path):
     assert tree.projection == session
     assert old_ids < {entry["id"] for entry in tree.entries}
     assert any(entry["type"] == "rewind" for entry in tree.entries)
+
+
+def test_session_store_round_trips_current_provider_binding(tmp_path):
+    store = SessionStore(tmp_path / ".pico" / "sessions")
+    session = _session(tmp_path, "provider-bound")
+    session["provider_binding"] = _provider_binding()
+
+    store.save(session)
+
+    assert store.load("provider-bound")["provider_binding"] == _provider_binding()
+
+
+def test_session_store_rejects_provider_binding_change(tmp_path):
+    store = SessionStore(tmp_path / ".pico" / "sessions")
+    session = _session(tmp_path, "provider-bound")
+    session["provider_binding"] = _provider_binding()
+    store.save(session)
+
+    session["provider_binding"] = _provider_binding(model="another-model")
+
+    with pytest.raises(SessionFormatError, match="provider binding changed"):
+        store.save(session)
+
+
+@pytest.mark.parametrize(
+    "binding",
+    [
+        _provider_binding(protocol_family="openai_chat"),
+        {**_provider_binding(), "profile": "deepseek"},
+        _provider_binding(endpoint_hash="sha256:" + "z" * 64),
+        _provider_binding(endpoint_hash="a" * 64),
+        {"protocol_family": "openai_responses"},
+    ],
+)
+def test_session_store_rejects_invalid_provider_binding(tmp_path, binding):
+    store = SessionStore(tmp_path / ".pico" / "sessions")
+    session = _session(tmp_path, "provider-invalid")
+    session["provider_binding"] = binding
+
+    with pytest.raises(SessionFormatError, match="provider binding"):
+        store.save(session)
 
 
 def test_session_store_latest_is_none_when_empty(tmp_path):
