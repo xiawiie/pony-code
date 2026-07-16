@@ -372,7 +372,7 @@ def test_sensitive_git_object_path_is_rejected_before_prompt_or_runner(
     monkeypatch,
     command,
 ):
-    from pico import tool_executor as tool_executor_module
+    import pico.tools.executor as tool_executor_module
 
     agent = build_agent(
         tmp_path,
@@ -567,7 +567,7 @@ def test_repeated_shell_rejection_keeps_complete_assessment_metadata(tmp_path):
 
 
 def test_hard_reject_does_not_read_empty_argv(tmp_path, monkeypatch):
-    from pico import tool_executor as tool_executor_module
+    import pico.tools.executor as tool_executor_module
 
     assessment = {
         "risk_class": "destructive",
@@ -647,8 +647,8 @@ def test_execution_shape_uses_only_frozen_executables(
     def passthrough(executable):
         yield str(executable)
 
-    monkeypatch.setattr("pico.safe_subprocess._prepared_executable", passthrough)
-    monkeypatch.setattr("pico.safe_subprocess.subprocess.Popen", fake_popen)
+    monkeypatch.setattr("pico.tools.subprocess._prepared_executable", passthrough)
+    monkeypatch.setattr("pico.tools.subprocess.subprocess.Popen", fake_popen)
     agent = build_agent(
         tmp_path,
         approval_policy="ask",
@@ -692,8 +692,8 @@ def test_simple_unknown_command_is_not_rewrapped_in_shell(tmp_path, monkeypatch)
     def passthrough(executable):
         yield str(executable)
 
-    monkeypatch.setattr("pico.safe_subprocess._prepared_executable", passthrough)
-    monkeypatch.setattr("pico.safe_subprocess.subprocess.Popen", fake_popen)
+    monkeypatch.setattr("pico.tools.subprocess._prepared_executable", passthrough)
+    monkeypatch.setattr("pico.tools.subprocess.subprocess.Popen", fake_popen)
     agent = build_agent(
         tmp_path,
         approval_policy="ask",
@@ -733,8 +733,8 @@ def test_runtime_path_spoof_cannot_replace_frozen_executable(tmp_path, monkeypat
     def passthrough(executable):
         yield str(executable)
 
-    monkeypatch.setattr("pico.safe_subprocess._prepared_executable", passthrough)
-    monkeypatch.setattr("pico.safe_subprocess.subprocess.Popen", fake_popen)
+    monkeypatch.setattr("pico.tools.subprocess._prepared_executable", passthrough)
+    monkeypatch.setattr("pico.tools.subprocess.subprocess.Popen", fake_popen)
 
     result = agent.execute_tool(
         "run_shell",
@@ -1122,7 +1122,7 @@ def test_production_git_path_disables_fsmonitor_and_optional_index_writes(
     tmp_path,
     monkeypatch,
 ):
-    from pico import tool_executor as tool_executor_module
+    import pico.tools.executor as tool_executor_module
 
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
     _init_git_repo(tmp_path)
@@ -1224,7 +1224,7 @@ def test_approved_git_cannot_override_hardening_or_run_config_helpers(
     monkeypatch,
     command,
 ):
-    from pico import tool_executor as tool_executor_module
+    import pico.tools.executor as tool_executor_module
 
     agent = build_agent(
         tmp_path,
@@ -1290,7 +1290,7 @@ def test_approved_git_fetch_blocks_repo_ssh_command_before_runner(
     tmp_path,
     monkeypatch,
 ):
-    from pico import tool_executor as tool_executor_module
+    import pico.tools.executor as tool_executor_module
 
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
     _init_git_repo(tmp_path)
@@ -1500,7 +1500,7 @@ def test_approved_git_fetch_builtin_protocol_passes_preflight(
     monkeypatch,
     remote_url,
 ):
-    from pico import tool_executor as tool_executor_module
+    import pico.tools.executor as tool_executor_module
 
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
     _init_git_repo(tmp_path)
@@ -1541,7 +1541,7 @@ def test_approved_unknown_git_command_cannot_execute_repo_alias(
     tmp_path,
     monkeypatch,
 ):
-    from pico import tool_executor as tool_executor_module
+    import pico.tools.executor as tool_executor_module
 
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
     _init_git_repo(tmp_path)
@@ -1598,7 +1598,7 @@ def test_approved_git_diff_rendering_cannot_execute_repo_textconv(
     command,
     expected_status,
 ):
-    from pico import tool_executor as tool_executor_module
+    import pico.tools.executor as tool_executor_module
 
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
     _init_git_repo(tmp_path)
@@ -1671,7 +1671,7 @@ def test_automatic_git_status_blocks_repo_clean_filter_before_execution(
     tmp_path,
     monkeypatch,
 ):
-    from pico import tool_executor as tool_executor_module
+    import pico.tools.executor as tool_executor_module
 
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
     _init_git_repo(tmp_path)
@@ -1827,7 +1827,7 @@ def test_automatic_parent_git_status_blocks_uninspected_submodule_config(
     tmp_path,
     monkeypatch,
 ):
-    from pico import tool_executor as tool_executor_module
+    import pico.tools.executor as tool_executor_module
 
     (tmp_path / "README.md").write_text("parent\n", encoding="utf-8")
     _init_git_repo(tmp_path)

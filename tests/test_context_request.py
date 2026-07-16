@@ -3,8 +3,8 @@
 from unittest.mock import MagicMock
 
 from pico.context.renderer import render_current_user_message
-from pico.context_manager import ContextManager
-from pico.model_capabilities import (
+from pico.agent.context_manager import ContextManager
+from pico.agent.model_capabilities import (
     ModelCapabilities,
     TokenAccounting,
     build_model_budget,
@@ -112,7 +112,7 @@ def test_build_request_metadata_contains_system_prefix_hash():
 def test_int_schema_field_maps_to_integer_json_type():
     """Task E8: tool schema 'int' variants must map to Anthropic-shape
     input_schema.properties.<field>.type = 'integer', not 'string'."""
-    from pico.context_manager import _build_tools_list
+    from pico.agent.context_manager import _build_tools_list
 
     tools = {
         "read_file": {

@@ -9,7 +9,7 @@ import re
 
 def _build_agent(tmp_path):
     from pico.runtime import Pico
-    from pico.session_store import SessionStore
+    from pico.state.session_store import SessionStore
     from pico.workspace import WorkspaceContext
     from pico.providers.fake import FakeModelClient
 
@@ -24,7 +24,7 @@ def _build_agent(tmp_path):
 
 
 def test_repl_save_command_appends_agent_note(tmp_path, monkeypatch, capsys):
-    from pico.cli_start import run_repl
+    from pico.cli.start import run_repl
 
     agent = _build_agent(tmp_path)
     inputs = iter(["/save bcrypt rounds > 12 timeout", "/exit"])
@@ -40,7 +40,7 @@ def test_repl_remember_is_the_explicit_primary_memory_command(
     tmp_path,
     monkeypatch,
 ):
-    from pico.cli_start import run_repl
+    from pico.cli.start import run_repl
 
     agent = _build_agent(tmp_path)
     inputs = iter(["/remember keep the recovery invariant", "/exit"])
@@ -57,7 +57,7 @@ def test_repl_remember_enforces_1024_model_token_limit(
     monkeypatch,
     capsys,
 ):
-    from pico.cli_start import run_repl
+    from pico.cli.start import run_repl
 
     agent = _build_agent(tmp_path)
     inputs = iter(["/remember " + ("记忆" * 600), "/exit"])
@@ -71,7 +71,7 @@ def test_repl_remember_enforces_1024_model_token_limit(
 
 
 def test_repl_save_without_body_shows_usage(tmp_path, monkeypatch, capsys):
-    from pico.cli_start import run_repl
+    from pico.cli.start import run_repl
 
     agent = _build_agent(tmp_path)
     inputs = iter(["/save    ", "/exit"])
@@ -85,7 +85,7 @@ def test_repl_save_without_body_shows_usage(tmp_path, monkeypatch, capsys):
 
 
 def test_repl_save_rejects_secret_and_keeps_security_prose(tmp_path, monkeypatch, capsys):
-    from pico.cli_start import run_repl
+    from pico.cli.start import run_repl
 
     secret = "github_pat_A123456789012345678901234567890"
     agent = _build_agent(tmp_path)
@@ -105,7 +105,7 @@ def test_repl_save_rejects_secret_and_keeps_security_prose(tmp_path, monkeypatch
 
 
 def test_repl_memory_review_shows_agent_notes(tmp_path, monkeypatch, capsys):
-    from pico.cli_start import run_repl
+    from pico.cli.start import run_repl
 
     memory = tmp_path / ".pico" / "memory"
     memory.mkdir(parents=True)
@@ -127,7 +127,7 @@ def test_repl_memory_review_uses_block_store_not_direct_path_read(
 ):
     from pathlib import Path
 
-    from pico.cli_start import run_repl
+    from pico.cli.start import run_repl
 
     memory = tmp_path / ".pico" / "memory"
     memory.mkdir(parents=True)
@@ -151,7 +151,7 @@ def test_repl_memory_review_uses_block_store_not_direct_path_read(
 
 
 def test_repl_memory_review_when_empty(tmp_path, monkeypatch, capsys):
-    from pico.cli_start import run_repl
+    from pico.cli.start import run_repl
 
     agent = _build_agent(tmp_path)
     inputs = iter(["/memory-review", "/exit"])
@@ -167,7 +167,7 @@ def test_repl_memory_after_save_shows_memory_file(tmp_path, monkeypatch, capsys)
 
     Locks the DX contract: the three memory surfaces refer to the same store.
     """
-    from pico.cli_start import run_repl
+    from pico.cli.start import run_repl
 
     agent = _build_agent(tmp_path)
     inputs = iter(["/save something worth remembering", "/memory", "/exit"])
@@ -186,7 +186,7 @@ def test_repl_memory_after_save_shows_memory_file(tmp_path, monkeypatch, capsys)
 
 
 def test_repl_memory_shows_working_memory_summary(tmp_path, monkeypatch, capsys):
-    from pico.cli_start import run_repl
+    from pico.cli.start import run_repl
 
     sample = tmp_path / "sample.txt"
     sample.write_text("sample\n", encoding="utf-8")
@@ -206,7 +206,7 @@ def test_repl_memory_shows_working_memory_summary(tmp_path, monkeypatch, capsys)
 
 
 def test_repl_memory_does_not_call_memory_text(tmp_path, monkeypatch, capsys):
-    from pico.cli_start import run_repl
+    from pico.cli.start import run_repl
 
     agent = _build_agent(tmp_path)
 

@@ -23,7 +23,7 @@ from benchmarks.live_e2e.run_live_session import (
     RunConfig,
     TurnResult,
 )
-from pico.model_capabilities import (
+from pico.agent.model_capabilities import (
     TokenAccounting,
     build_model_budget,
     resolve_model_capabilities,
@@ -274,7 +274,7 @@ def test_project_env_uses_canonical_selected_provider_settings(tmp_path, provide
     if provider == "deepseek":
         lines = [
             "PICO_API_URL=https://deepseek-gateway.example/v1",
-            "PICO_DEEPSEEK_API_KEY=sentinel-deepseek",
+            "PICO_API_KEY=sentinel-deepseek",
         ]
     else:
         prefix = provider.upper()
@@ -407,7 +407,7 @@ def test_main_reads_project_env_before_parse_args_on_reset_only_path(tmp_path, m
 
 def test_main_constructs_live_pico_with_only_read_file(tmp_path, monkeypatch):
     import pico.runtime
-    import pico.session_store
+    import pico.state.session_store
     import pico.workspace
 
     captured = {}
@@ -432,7 +432,7 @@ def test_main_constructs_live_pico_with_only_read_file(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(run_live_session, "make_live_client", lambda _config, **_kwargs: object())
     monkeypatch.setattr(pico.workspace.WorkspaceContext, "build", lambda _root: object())
-    monkeypatch.setattr(pico.session_store, "SessionStore", lambda _root: object())
+    monkeypatch.setattr(pico.state.session_store, "SessionStore", lambda _root: object())
     monkeypatch.setattr(pico.runtime, "Pico", capture_pico)
 
     assert run_live_session.main() == 4
@@ -589,7 +589,7 @@ def test_read_turn_trace_marks_non_utf8_artifact_usage_unknown(tmp_path):
 
 
 def test_read_run_terminal_status_uses_each_persisted_artifact(tmp_path):
-    from pico.run_store import RunStore
+    from pico.state.run_store import RunStore
 
     run_store = RunStore(tmp_path)
     task_state = SimpleNamespace(run_id="run-1")
@@ -630,7 +630,7 @@ def test_read_run_terminal_status_rejects_nonstring_or_blank_stop_reason(
     tmp_path,
     stop_reason,
 ):
-    from pico.run_store import RunStore
+    from pico.state.run_store import RunStore
 
     run_store = RunStore(tmp_path)
     task_state = SimpleNamespace(run_id="run-invalid-reason")
@@ -669,7 +669,7 @@ def test_read_run_terminal_status_keeps_other_artifact_evidence(
     artifact,
     expected_terminal_flags,
 ):
-    from pico.run_store import RunStore
+    from pico.state.run_store import RunStore
 
     run_store = RunStore(tmp_path)
     task_state = SimpleNamespace(run_id="run-one-bad-artifact")
@@ -702,7 +702,7 @@ def test_read_run_terminal_status_keeps_other_artifact_evidence(
 def test_turn_runner_does_not_reuse_previous_run_evidence_after_pre_run_failure(
     tmp_path,
 ):
-    from pico.run_store import RunStore
+    from pico.state.run_store import RunStore
 
     run_store = RunStore(tmp_path)
     previous_task_state = SimpleNamespace(run_id="previous-run")
@@ -760,7 +760,7 @@ def test_turn_runner_does_not_reuse_previous_run_evidence_after_pre_run_failure(
 
 
 def test_turn_runner_uses_first_trace_call_as_current_turn_evidence(tmp_path):
-    from pico.run_store import RunStore
+    from pico.state.run_store import RunStore
 
     run_store = RunStore(tmp_path)
     previous_task_state = SimpleNamespace(run_id="previous-run")

@@ -1,6 +1,6 @@
 import pytest
 
-from pico.observability import RunArtifactError, validate_report
+from pico.agent.observability import RunArtifactError, validate_report
 
 
 def test_report_contract_rejects_legacy_top_level_aliases():

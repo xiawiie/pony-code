@@ -5,7 +5,7 @@ import pytest
 
 from pico import Pico, SessionStore, WorkspaceContext
 from pico.providers.fake import FakeModelClient
-from pico.recovery_policy import assess_command
+from pico.recovery.policy import assess_command
 
 
 def build_agent(tmp_path, outputs, **kwargs):
@@ -183,7 +183,7 @@ def test_workspace_binary_and_relative_path_never_win_trust(tmp_path):
     fake_git.chmod(0o755)
     unsafe_path = ".:" + str(fake_bin) + ":/usr/bin:/bin"
 
-    from pico.safe_subprocess import build_trusted_executables
+    from pico.tools.subprocess import build_trusted_executables
 
     trusted = build_trusted_executables(
         tmp_path,
@@ -195,7 +195,7 @@ def test_workspace_binary_and_relative_path_never_win_trust(tmp_path):
 
 
 def test_hardened_git_and_rg_ignore_executable_repo_config(tmp_path, monkeypatch):
-    from pico.safe_subprocess import (
+    from pico.tools.subprocess import (
         build_trusted_executables,
         run_hardened_git,
         run_hardened_rg,
@@ -211,7 +211,7 @@ def test_hardened_git_and_rg_ignore_executable_repo_config(tmp_path, monkeypatch
             {"returncode": 0, "stdout": b"", "stderr": b""},
         )()
 
-    monkeypatch.setattr("pico.safe_subprocess.subprocess.run", fake_run)
+    monkeypatch.setattr("pico.tools.subprocess.subprocess.run", fake_run)
     executables = build_trusted_executables(
         tmp_path,
         env={

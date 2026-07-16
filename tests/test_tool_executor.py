@@ -6,12 +6,12 @@ from unittest.mock import Mock
 import pytest
 
 from pico import Pico, SessionStore, WorkspaceContext
-from pico.agent_loop import _prepare_tool_result
+from pico.agent.loop import _prepare_tool_result
 from pico.providers.fake import FakeModelClient
-import pico.tool_executor as tool_executor_module
+import pico.tools.executor as tool_executor_module
 from pico.memory.tools import tool_memory_list, tool_memory_search
-from pico.task_state import TaskState
-from pico.tool_executor import (
+from pico.state.task_state import TaskState
+from pico.tools.executor import (
     ToolExecutor,
     ToolExecutionResult,
     _capture_path_snapshot,
@@ -507,7 +507,7 @@ def test_post_pending_verification_base_exception_closes_change_and_preserves_pr
         return_value={"stdout": "ok\n", "stderr": "", "exit_code": 0}
     )
     monkeypatch.setattr(
-        "pico.tool_executor.verification_evidence_for_execution",
+        "pico.tools.executor.verification_evidence_for_execution",
         Mock(side_effect=primary),
     )
 
@@ -808,7 +808,7 @@ def test_run_shell_rechecks_command_policy_after_approval_mutation(
     tmp_path,
     monkeypatch,
 ):
-    import pico.tool_executor as tool_executor
+    import pico.tools.executor as tool_executor
 
     agent = build_agent(tmp_path, approval_policy="ask")
     victim = tmp_path / "victim.txt"
@@ -1022,7 +1022,7 @@ def test_run_shell_recovery_populates_before_blob_from_git_head(tmp_path):
 
 
 def test_git_head_fallback_uses_frozen_hardened_git(tmp_path, monkeypatch):
-    import pico.tool_executor as tool_executor
+    import pico.tools.executor as tool_executor
 
     calls = []
 
@@ -1105,7 +1105,7 @@ def test_git_head_fallback_rejects_sensitive_path_before_git_or_blob(
     tmp_path,
     monkeypatch,
 ):
-    import pico.tool_executor as tool_executor
+    import pico.tools.executor as tool_executor
 
     git = Mock(side_effect=AssertionError("git must not run"))
     monkeypatch.setattr(tool_executor, "run_hardened_git", git)
@@ -1128,7 +1128,7 @@ def test_git_head_fallback_rejects_sensitive_descendant_before_git_or_blob(
     tmp_path,
     monkeypatch,
 ):
-    import pico.tool_executor as tool_executor
+    import pico.tools.executor as tool_executor
 
     git = Mock(side_effect=AssertionError("git must not run"))
     monkeypatch.setattr(tool_executor, "run_hardened_git", git)
@@ -1155,7 +1155,7 @@ def test_git_head_fallback_rejects_secret_stdout_before_blob(
     tmp_path,
     monkeypatch,
 ):
-    import pico.tool_executor as tool_executor
+    import pico.tools.executor as tool_executor
 
     secret = "opaque-head-value-123456789"
     git = Mock(
@@ -1185,7 +1185,7 @@ def test_git_head_fallback_rejects_secret_stdout_before_blob(
 def test_git_head_fallback_rejects_symlink_and_oversized_tree_entries(
     tmp_path, monkeypatch
 ):
-    import pico.tool_executor as tool_executor
+    import pico.tools.executor as tool_executor
 
     git = Mock(
         return_value=subprocess.CompletedProcess(
@@ -1216,7 +1216,7 @@ def test_path_snapshot_never_hashes_safe_named_secret_content(
     tmp_path,
     monkeypatch,
 ):
-    import pico.tool_executor as tool_executor
+    import pico.tools.executor as tool_executor
 
     secret = "opaque-snapshot-value-123456789"
     (tmp_path / "source.py").write_text(secret, encoding="utf-8")

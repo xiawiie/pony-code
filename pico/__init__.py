@@ -1,7 +1,7 @@
 from .cli import build_agent, build_arg_parser, build_welcome, main
-from .runtime import Pico
-from .session_store import SessionStore
-from .workspace import WorkspaceContext
+from pico.runtime import Pico
+from pico.state.session_store import SessionStore
+from pico.workspace import WorkspaceContext
 
 __all__ = [
     "Pico",

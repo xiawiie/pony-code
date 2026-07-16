@@ -1,13 +1,13 @@
 from pico import Pico, SessionStore, WorkspaceContext
 from pico.providers.fake import FakeModelClient
-from pico.checkpoint import (
+from pico.state.checkpoint import (
     CHECKPOINT_FULL_VALID_STATUS,
     CHECKPOINT_NONE_STATUS,
     create_checkpoint,
     current_runtime_identity,
     evaluate_resume_state,
 )
-from pico.task_state import TaskState
+from pico.state.task_state import TaskState
 
 
 def build_agent(tmp_path, outputs=None, **kwargs):

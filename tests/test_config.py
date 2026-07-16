@@ -3,15 +3,21 @@ import os
 import pytest
 
 from pico.config import (
+    API_VARIANT_ENV_NAME,
     API_KEY_ENV_NAME,
     API_URL_ENV_NAME,
+    AUTH_MODE_ENV_NAME,
     DEFAULT_API_URL,
     DEFAULT_MODEL,
+    DEFAULT_PROVIDER,
+    MODEL_ENV_NAME,
+    PROVIDER_ENV_NAME,
+    SUPPORTED_PROVIDERS,
     load_pico_toml,
     resolve_model_config,
     validate_api_url,
 )
-from pico.recovery_policy import DEFAULT_MAX_BLOB_SIZE, snapshot_eligibility
+from pico.recovery.policy import DEFAULT_MAX_BLOB_SIZE, snapshot_eligibility
 
 
 def test_load_pico_toml_reads_simple_project_overrides(tmp_path):
@@ -81,7 +87,7 @@ def test_pico_toml_over_one_mib_warns_and_uses_defaults(tmp_path, capsys):
     assert capsys.readouterr().err == "warning: invalid pico.toml; using defaults\n"
 
 
-def test_model_config_uses_fixed_anthropic_contract():
+def test_model_config_uses_default_anthropic_contract():
     resolved = resolve_model_config(
         project_env={
             API_URL_ENV_NAME: DEFAULT_API_URL,
@@ -90,12 +96,10 @@ def test_model_config_uses_fixed_anthropic_contract():
         process_env={},
     )
 
-    assert resolved["model"] == {
-        "value": DEFAULT_MODEL,
-        "source": "fixed",
-        "name": "DEFAULT_MODEL",
-    }
+    assert resolved["provider"]["value"] == DEFAULT_PROVIDER
+    assert resolved["model"]["value"] == DEFAULT_MODEL
     assert resolved["protocol"]["value"] == "anthropic_messages"
+    assert resolved["api_variant"]["value"] == "messages"
     assert resolved["auth_mode"]["value"] == "x-api-key"
     assert resolved["base_url"]["value"] == DEFAULT_API_URL
 
@@ -109,22 +113,95 @@ def test_model_config_uses_official_url_when_only_key_is_configured():
     assert resolved["base_url"] == {
         "value": DEFAULT_API_URL,
         "source": "default",
-        "name": "DEFAULT_API_URL",
+        "name": "anthropic_default_api_url",
     }
 
 
-def test_project_env_wins_over_process_env_for_url_and_key():
+@pytest.mark.parametrize(
+    ("provider", "protocol", "variant", "auth_mode", "model", "base_url"),
+    [
+        (
+            "anthropic",
+            "anthropic_messages",
+            "messages",
+            "x-api-key",
+            "claude-sonnet-4-6",
+            "https://api.anthropic.com/v1",
+        ),
+        (
+            "openai",
+            "openai_responses",
+            "responses",
+            "bearer",
+            "gpt-5.4",
+            "https://api.openai.com/v1",
+        ),
+        (
+            "ollama",
+            "ollama_chat",
+            "chat",
+            "none",
+            "qwen3:8b",
+            "http://127.0.0.1:11434",
+        ),
+    ],
+)
+def test_each_public_provider_resolves_its_default_transport(
+    provider, protocol, variant, auth_mode, model, base_url
+):
+    env = {PROVIDER_ENV_NAME: provider}
+    if auth_mode != "none":
+        env[API_KEY_ENV_NAME] = "test-key"
+
+    resolved = resolve_model_config(project_env=env, process_env={})
+
+    assert resolved["provider"]["value"] == provider
+    assert resolved["protocol"]["value"] == protocol
+    assert resolved["api_variant"]["value"] == variant
+    assert resolved["auth_mode"]["value"] == auth_mode
+    assert resolved["model"]["value"] == model
+    assert resolved["base_url"]["value"] == base_url
+
+
+def test_openai_chat_completions_is_an_explicit_variant():
     resolved = resolve_model_config(
         project_env={
+            PROVIDER_ENV_NAME: "openai",
+            API_VARIANT_ENV_NAME: "chat_completions",
+            API_KEY_ENV_NAME: "test-key",
+        },
+        process_env={},
+    )
+
+    assert resolved["protocol"]["value"] == "openai_chat_completions"
+    assert resolved["api_variant"]["value"] == "chat_completions"
+    assert "reasoning_replay" not in resolved["capabilities"]
+
+
+def test_project_env_wins_over_process_env_for_all_provider_fields():
+    resolved = resolve_model_config(
+        project_env={
+            PROVIDER_ENV_NAME: "openai",
+            MODEL_ENV_NAME: "project-model",
             API_URL_ENV_NAME: "https://project.example/v1",
             API_KEY_ENV_NAME: "project-key",
+            API_VARIANT_ENV_NAME: "chat_completions",
+            AUTH_MODE_ENV_NAME: "bearer",
         },
         process_env={
+            PROVIDER_ENV_NAME: "anthropic",
+            MODEL_ENV_NAME: "process-model",
             API_URL_ENV_NAME: "https://process.example/v1",
             API_KEY_ENV_NAME: "process-key",
+            API_VARIANT_ENV_NAME: "messages",
+            AUTH_MODE_ENV_NAME: "x-api-key",
         },
     )
 
+    assert resolved["provider"]["value"] == "openai"
+    assert resolved["model"]["value"] == "project-model"
+    assert resolved["protocol"]["value"] == "openai_chat_completions"
+    assert resolved["auth_mode"]["value"] == "bearer"
     assert resolved["base_url"] == {
         "value": "https://project.example/v1",
         "source": "project_env",
@@ -152,14 +229,13 @@ def test_process_env_is_used_when_project_values_are_unset():
 
 def test_only_legacy_or_vendor_variables_cannot_configure_runtime():
     legacy = {
-        "PICO_PROVIDER": "anthropic",
         "PICO_PROFILE": "deepseek",
         "PICO_CONNECTION": "old",
         "PICO_DEEPSEEK_API_BASE": "https://legacy.example/v1",
         "PICO_DEEPSEEK_MODEL": "legacy-model",
+        "PICO_DEEPSEEK_API_KEY": "deepseek-key",
         "OPENAI_API_KEY": "openai-key",
         "ANTHROPIC_API_KEY": "anthropic-key",
-        "PICO_API_KEY": "shared-key",
     }
 
     with pytest.raises(ValueError, match="^api_key_not_configured$"):
@@ -173,7 +249,7 @@ def test_only_legacy_or_vendor_variables_cannot_configure_runtime():
     assert inspected["base_url"] == {
         "value": DEFAULT_API_URL,
         "source": "default",
-        "name": "DEFAULT_API_URL",
+        "name": "anthropic_default_api_url",
     }
     assert inspected["api_key"] == {"value": "", "source": "unset", "name": ""}
 
@@ -185,6 +261,43 @@ def test_missing_key_is_allowed_only_for_read_only_diagnostics():
     assert resolve_model_config(
         project_env={}, process_env={}, required=False
     )["api_key"]["value"] == ""
+
+
+def test_ollama_does_not_require_an_api_key():
+    resolved = resolve_model_config(
+        project_env={PROVIDER_ENV_NAME: "ollama"},
+        process_env={},
+    )
+
+    assert resolved["auth_mode"]["value"] == "none"
+    assert resolved["api_key"]["value"] == ""
+
+
+@pytest.mark.parametrize(
+    ("env", "reason"),
+    [
+        ({PROVIDER_ENV_NAME: "unknown", API_KEY_ENV_NAME: "key"}, "provider_invalid"),
+        (
+            {
+                PROVIDER_ENV_NAME: "anthropic",
+                API_VARIANT_ENV_NAME: "responses",
+                API_KEY_ENV_NAME: "key",
+            },
+            "api_variant_invalid",
+        ),
+        (
+            {AUTH_MODE_ENV_NAME: "basic", API_KEY_ENV_NAME: "key"},
+            "auth_mode_invalid",
+        ),
+    ],
+)
+def test_invalid_provider_contract_values_fail_closed(env, reason):
+    with pytest.raises(ValueError, match=f"^{reason}$"):
+        resolve_model_config(project_env=env, process_env={})
+
+
+def test_supported_provider_list_is_the_public_contract():
+    assert SUPPORTED_PROVIDERS == ("anthropic", "openai", "ollama")
 
 
 @pytest.mark.parametrize(

@@ -5,14 +5,14 @@ from types import MappingProxyType
 
 import pytest
 
-import pico.docker_sandbox as docker_module
-import pico.sandbox_release_authority as release_authority
-import pico.tool_executor as tool_executor_module
+import pico.sandbox.docker as docker_module
+import pico.sandbox.identity as sandbox_identity
+import pico.tools.executor as tool_executor_module
 import pico.workspace as workspace_module
-from pico.checkpoint_store import CheckpointStore
+from pico.state.checkpoint_store import CheckpointStore
 from pico.config import load_pico_toml
 from pico.context.renderer import render_current_user_message
-from pico.docker_sandbox import (
+from pico.sandbox.docker import (
     build_docker_sandbox_context,
     compile_execution_plan,
     DockerExecutionOutcome,
@@ -20,8 +20,8 @@ from pico.docker_sandbox import (
 )
 from pico.providers.fake import FakeModelClient
 from pico.runtime import Pico
-from pico.sandbox_session import snapshot_source_tree, write_source_apply_authority
-from pico.session_store import SessionStore
+from pico.sandbox.session import snapshot_source_tree, write_source_apply_authority
+from pico.state.session_store import SessionStore
 from pico.workspace import WorkspaceContext
 
 
@@ -148,7 +148,7 @@ def _install_fake_docker(monkeypatch):
 
 def _development_authorization(monkeypatch, image):
     monkeypatch.setattr(
-        release_authority,
+        sandbox_identity,
         "installed_tree_digest",
         lambda _root, _version=None: "sha256:" + "9" * 64,
     )
@@ -266,7 +266,7 @@ def test_context_requires_exact_sealed_runtime_authorization_before_readiness(
 def test_public_pico_rejects_development_authorization(tmp_path, monkeypatch):
     source, context, agent = _build_runtime(tmp_path, monkeypatch)
 
-    with pytest.raises(ValueError, match="product or candidate authorization"):
+    with pytest.raises(ValueError, match="local authorization"):
         Pico(
             model_client=FakeModelClient([]),
             workspace=agent.workspace,
@@ -282,7 +282,7 @@ def test_public_pico_rejects_development_authorization(tmp_path, monkeypatch):
 def test_local_runtime_authorization_is_packaged_and_rechecks_tree(monkeypatch):
     current = {"digest": "sha256:" + "9" * 64}
     monkeypatch.setattr(
-        release_authority,
+        sandbox_identity,
         "installed_tree_digest",
         lambda _root, _version=None: current["digest"],
     )
@@ -328,7 +328,7 @@ def test_local_runtime_authorization_binds_exact_packaged_image(
     value,
 ):
     monkeypatch.setattr(
-        release_authority,
+        sandbox_identity,
         "installed_tree_digest",
         lambda _root, _version=None: "sha256:" + "9" * 64,
     )

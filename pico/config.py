@@ -11,8 +11,8 @@ import tomllib
 import urllib.parse
 from pathlib import Path
 
-from .file_lock import locked_file
-from .security import (
+from pico.state.file_lock import locked_file
+from pico.security import (
     ensure_private_dir,
     private_directory_identity,
     read_regular_bytes_anchored,
@@ -23,12 +23,74 @@ from .security import (
 
 ENV_KEY_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 MAX_PROJECT_ENV_BYTES = 1024 * 1024
-DEFAULT_MODEL = "deepseek-v4-flash"
-DEFAULT_API_URL = "https://api.deepseek.com/anthropic/v1"
+PROVIDER_ENV_NAME = "PICO_PROVIDER"
+MODEL_ENV_NAME = "PICO_MODEL"
 API_URL_ENV_NAME = "PICO_API_URL"
-API_KEY_ENV_NAME = "PICO_DEEPSEEK_API_KEY"
+API_KEY_ENV_NAME = "PICO_API_KEY"
+API_VARIANT_ENV_NAME = "PICO_API_VARIANT"
+AUTH_MODE_ENV_NAME = "PICO_AUTH_MODE"
+DEFAULT_PROVIDER = "anthropic"
+SUPPORTED_PROVIDERS = ("anthropic", "openai", "ollama")
+
+_PROVIDER_SPECS = {
+    "anthropic": {
+        "model": "claude-sonnet-4-6",
+        "base_url": "https://api.anthropic.com/v1",
+        "api_variant": "messages",
+        "auth_mode": "x-api-key",
+        "variants": {
+            "messages": {
+                "protocol": "anthropic_messages",
+                "capabilities": {
+                    "prompt_cache": True,
+                    "strict_tools": True,
+                    "parallel_tool_control": True,
+                },
+            },
+        },
+    },
+    "openai": {
+        "model": "gpt-5.4",
+        "base_url": "https://api.openai.com/v1",
+        "api_variant": "responses",
+        "auth_mode": "bearer",
+        "variants": {
+            "responses": {
+                "protocol": "openai_responses",
+                "capabilities": {
+                    "strict_tools": True,
+                    "parallel_tool_control": True,
+                    "reasoning_replay": True,
+                },
+            },
+            "chat_completions": {
+                "protocol": "openai_chat_completions",
+                "capabilities": {
+                    "strict_tools": True,
+                    "parallel_tool_control": True,
+                },
+            },
+        },
+    },
+    "ollama": {
+        "model": "qwen3:8b",
+        "base_url": "http://127.0.0.1:11434",
+        "api_variant": "chat",
+        "auth_mode": "none",
+        "variants": {
+            "chat": {
+                "protocol": "ollama_chat",
+                "capabilities": {},
+            },
+        },
+    },
+}
+
+# Import compatibility for callers that display Pico's default provider values.
+DEFAULT_MODEL = _PROVIDER_SPECS[DEFAULT_PROVIDER]["model"]
+DEFAULT_API_URL = _PROVIDER_SPECS[DEFAULT_PROVIDER]["base_url"]
 PROTOCOL_FAMILY = "anthropic_messages"
-AUTH_MODE = "x-api-key"
+AUTH_MODE = _PROVIDER_SPECS[DEFAULT_PROVIDER]["auth_mode"]
 _SECRET_QUERY_KEYS = {
     "api_key",
     "access_key",
@@ -278,48 +340,139 @@ def _loopback_api_url(value):
         return False
 
 
+def provider_defaults(provider):
+    """Return the public defaults for one supported provider."""
+    name = str(provider or "").strip().casefold()
+    if name not in _PROVIDER_SPECS:
+        raise ValueError("provider_invalid")
+    spec = _PROVIDER_SPECS[name]
+    return {
+        "provider": name,
+        "model": spec["model"],
+        "base_url": spec["base_url"],
+        "api_variant": spec["api_variant"],
+        "auth_mode": spec["auth_mode"],
+    }
+
+
+def _normalized_choice(item, *, allowed, error):
+    value = str(item["value"] or "").strip().casefold().replace("-", "_")
+    if value not in allowed:
+        raise ValueError(error)
+    return {**item, "value": value}
+
+
 def resolve_model_config(*, project_env=None, process_env=None, required=True):
-    """Resolve Pico's one fixed model endpoint without legacy fallbacks."""
+    """Resolve Pico's provider and transport exclusively from generic variables."""
     project_env = dict(project_env or {})
     process_env = dict(os.environ if process_env is None else process_env)
+
+    provider = _normalized_choice(
+        _resolve_env_value(
+            PROVIDER_ENV_NAME,
+            project_env,
+            process_env,
+            default=DEFAULT_PROVIDER,
+            default_name="DEFAULT_PROVIDER",
+        ),
+        allowed=_PROVIDER_SPECS,
+        error="provider_invalid",
+    )
+    spec = _PROVIDER_SPECS[provider["value"]]
+
+    model = _resolve_env_value(
+        MODEL_ENV_NAME,
+        project_env,
+        process_env,
+        default=spec["model"],
+        default_name=f"{provider['value']}_default_model",
+    )
+    model["value"] = str(model["value"]).strip()
+    if not model["value"]:
+        raise ValueError("model_invalid")
+
+    requested_variant = _normalized_choice(
+        _resolve_env_value(
+            API_VARIANT_ENV_NAME,
+            project_env,
+            process_env,
+            default="auto",
+            default_name="provider_default",
+        ),
+        allowed={"auto", *spec["variants"]},
+        error="api_variant_invalid",
+    )
+    variant_name = (
+        spec["api_variant"]
+        if requested_variant["value"] == "auto"
+        else requested_variant["value"]
+    )
+    api_variant = {
+        **requested_variant,
+        "value": variant_name,
+        "name": (
+            "provider_default"
+            if requested_variant["value"] == "auto"
+            else API_VARIANT_ENV_NAME
+        ),
+    }
+    variant = spec["variants"][variant_name]
+
+    requested_auth = _normalized_choice(
+        _resolve_env_value(
+            AUTH_MODE_ENV_NAME,
+            project_env,
+            process_env,
+            default="auto",
+            default_name="provider_default",
+        ),
+        allowed={"auto", "x_api_key", "bearer", "none"},
+        error="auth_mode_invalid",
+    )
+    auth_value = (
+        spec["auth_mode"]
+        if requested_auth["value"] == "auto"
+        else requested_auth["value"].replace("x_api_key", "x-api-key")
+    )
+    auth_mode = {
+        **requested_auth,
+        "value": auth_value,
+        "name": (
+            "provider_default"
+            if requested_auth["value"] == "auto"
+            else AUTH_MODE_ENV_NAME
+        ),
+    }
+
     api_key = _resolve_env_value(
         API_KEY_ENV_NAME,
         project_env,
         process_env,
     )
-    if required and not api_key["value"]:
+    if required and auth_mode["value"] != "none" and not api_key["value"]:
         raise ValueError("api_key_not_configured")
     api_url = _resolve_env_value(
         API_URL_ENV_NAME,
         project_env,
         process_env,
+        default=spec["base_url"],
+        default_name=f"{provider['value']}_default_api_url",
     )
-    if api_url["value"]:
-        api_url["value"] = validate_api_url(api_url["value"])
-    else:
-        api_url = {
-            "value": DEFAULT_API_URL,
-            "source": "default",
-            "name": "DEFAULT_API_URL",
-        }
+    api_url["value"] = validate_api_url(api_url["value"])
     return {
+        "provider": provider,
         "protocol": {
-            "value": PROTOCOL_FAMILY,
-            "source": "fixed",
-            "name": "Anthropic Messages",
+            "value": variant["protocol"],
+            "source": api_variant["source"],
+            "name": api_variant["name"],
         },
-        "model": {
-            "value": DEFAULT_MODEL,
-            "source": "fixed",
-            "name": "DEFAULT_MODEL",
-        },
+        "api_variant": api_variant,
+        "model": model,
         "base_url": api_url,
-        "auth_mode": {
-            "value": AUTH_MODE,
-            "source": "fixed",
-            "name": "AUTH_MODE",
-        },
+        "auth_mode": auth_mode,
         "api_key": api_key,
+        "capabilities": dict(variant["capabilities"]),
+        "compatibility": "standard",
     }
 
 

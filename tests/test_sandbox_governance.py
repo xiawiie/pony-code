@@ -1,4 +1,4 @@
-from pico.evaluation.sandbox_governance import (
+from benchmarks.evaluation.sandbox_governance import (
     REQUIRED_CRITERIA,
     REQUIRED_EVIDENCE,
     build_default_on_evidence,

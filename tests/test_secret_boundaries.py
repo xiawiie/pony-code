@@ -7,10 +7,10 @@ import pytest
 
 from pico import Pico, SessionStore, WorkspaceContext
 from pico import security as securitylib
-from pico.cli_start import run_agent_once
+from pico.cli.start import run_agent_once
 from pico.context.renderer import render_current_user_message
-from pico.messages import validate_messages
-from pico.model_capabilities import TokenAccounting
+from pico.agent.messages import validate_messages
+from pico.agent.model_capabilities import TokenAccounting
 from pico.providers.response import Response, StopReason
 from pico.security import SensitiveDataBlockedError
 

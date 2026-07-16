@@ -6,7 +6,7 @@ import pytest
 
 from pico import Pico, SessionStore, WorkspaceContext
 from pico.providers.fake import FakeModelClient
-from pico.tool_executor import ToolExecutionResult
+from pico.tools.executor import ToolExecutionResult
 
 
 SECRET = "github_pat_A123456789012345678901234567890"

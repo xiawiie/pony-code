@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import logging
 
 from pico import security as securitylib
-from pico.model_capabilities import TokenAccounting
+from pico.agent.model_capabilities import TokenAccounting
 
 from .chunks import SOURCE_HARD_CAPS, allocate_context_chunks
 from .escaping import escape_pico_tags

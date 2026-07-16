@@ -7,7 +7,7 @@ from pico.context.renderer import (
     build_injection_snapshot,
     render_current_user_message,
 )
-from pico.model_capabilities import TokenAccounting
+from pico.agent.model_capabilities import TokenAccounting
 from pico.security import SensitiveDataBlockedError
 
 

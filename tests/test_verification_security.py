@@ -4,7 +4,7 @@ from unittest.mock import Mock
 
 import pytest
 
-import pico.verification as verification
+import pico.agent.verification as verification
 from pico import Pico, SessionStore, WorkspaceContext
 from pico.providers.fake import FakeModelClient
 

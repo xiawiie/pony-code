@@ -247,7 +247,7 @@ def test_append_agent_note_never_writes_past_reader_limit(
 
 
 def test_append_agent_note_waits_for_cross_process_scope_lock(tmp_path):
-    from pico import file_lock
+    from pico.state import file_lock
 
     if file_lock.fcntl is None:
         pytest.skip("cross-process file locks unavailable")

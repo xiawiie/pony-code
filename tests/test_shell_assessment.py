@@ -4,7 +4,7 @@ import subprocess
 
 import pytest
 
-from pico import recovery_policy
+from pico.recovery import policy as recovery_policy
 
 
 def assess_command(*args, **kwargs):

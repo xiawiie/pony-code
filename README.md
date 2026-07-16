@@ -1,71 +1,159 @@
 # Pico
 
-Pico 是一个面向代码仓库的轻量本地 coding-agent harness。它从当前仓库构建上下文，让模型通过受约束的工具
-读取、修改和验证文件，并把会话、运行证据与恢复记录保存在本地 `.pico/` 中。
+Pico 是一个面向代码仓库的本地 coding agent。它从当前仓库建立受边界约束的上下文，让模型读取、修改并验证代码，
+同时把 Session、Run、Checkpoint、Memory 与恢复证据保存在本地 `.pico/` 中。
 
-Pico 适合排查测试失败、实施小步代码改动、审阅仓库和继续先前任务。它不是聊天 UI 或 IDE，也不会替代 Git。
-默认 Host 模式不是 OS sandbox；显式 Sandbox 采用 Docker + filtered staging，并在任何身份或 readiness 失败时
-fail closed，不回退 Host runner。
+Pico 1.0 的产品边界很明确：一个 `pico` CLI、三个用户可见 Provider、零运行时第三方依赖，以及一个可选的
+Docker filtered-staging Sandbox。Host 模式不是 OS sandbox；Sandbox 模式不会在失败时静默降级为 Host。
+
+## 能力概览
+
+| 能力 | 1.0 状态 | 说明 |
+| --- | --- | --- |
+| Anthropic | 支持 | Anthropic Messages |
+| OpenAI | 支持 | Responses 或 Chat Completions |
+| Ollama | 支持 | 本地 Ollama Chat，无 Key 也可运行 |
+| Host 执行 | 支持 | Python 3.11+；不是 OS sandbox |
+| Docker Sandbox | 有限支持 | macOS arm64、Docker Desktop、已存在的 exact `linux/arm64` image |
+| Session / Recovery / Memory | 支持 | 本地私有、可审查、可恢复 |
+| 自动协议探测或 Provider fallback | 不支持 | 所有路由都由 `.env` 显式决定 |
 
 ## 安装
 
-需要 Python 3.11+。在源码仓库中推荐使用锁定的 uv 环境：
+需要 Python 3.11 或 3.12。
 
 ```bash
-uv sync --frozen --dev
-source .venv/bin/activate
-command -v pico
+python -m pip install pico==1.0.0
+pico --version
 pico --help
 ```
 
-`command -v pico` 必须指向当前环境的 `bin/pico`。不能激活环境时使用 `uv run pico ...`。完整安装、更新和 PATH
-排查见 [CLI 安装与更新](docs/cli-installation-and-updates.md)。
+从源码开发时使用锁定环境：
 
-## 最短使用路径
+```bash
+git clone https://github.com/xiawiie/pico.git
+cd pico
+uv sync --frozen --dev
+uv run pico --version
+```
 
-在仓库根目录交互配置 API URL 与凭证：
+如果 `pico` 不在 PATH，使用 `uv run pico ...` 或检查当前虚拟环境。详见
+[CLI 安装与更新](docs/cli-installation-and-updates.md)。
+
+## 五分钟开始
+
+在需要操作的 Git 仓库根目录运行：
 
 ```bash
 pico init
+pico config show
 pico doctor
+pico run "inspect the failing tests and make the smallest safe fix"
 ```
 
-`init` 只在本地校验并原子写入 `.env`，不会联网。URL 留空时使用
-`https://api.deepseek.com/anthropic/v1`，API Key 通过隐藏输入保存。Pico 固定使用
-`deepseek-v4-flash`、Anthropic Messages 与 `x-api-key` 认证；第三方服务必须提供相同协议，并输入已经包含
-版本前缀的精确 API 根，例如 Lumina 使用 `https://lumina.tripo3d.com/v1`。
-普通 `doctor` 不联网；只有显式执行 `pico doctor --check-api` 才会验证文本、工具调用和 tool result 续接，
-并可能产生少量费用。
+`pico init` 只校验输入并以私有权限原子写入仓库根目录 `.env`，不会联网。普通 `doctor` 同样不联网；只有
+`pico doctor --check-api` 会发送最小的文本、工具调用和 tool-result 续接请求，可能产生 API 费用。
 
-显式运行一次任务或进入交互模式：
+## `.env` 是唯一 Provider 配置入口
+
+Pico 只读取当前 lexical repository root 的 `.env`，不向父目录搜索。项目 `.env` 高于进程环境；不会读取
+`OPENAI_API_KEY`、`ANTHROPIC_API_KEY`、`PICO_DEEPSEEK_API_KEY` 等厂商或旧版变量。
+
+| 变量 | 必填 | 含义 |
+| --- | --- | --- |
+| `PICO_PROVIDER` | 是 | `anthropic`、`openai` 或 `ollama` |
+| `PICO_MODEL` | 是 | Provider 侧的精确模型名 |
+| `PICO_API_URL` | 是 | 已包含版本前缀的精确 API root |
+| `PICO_API_KEY` | 云 Provider 是 | 唯一通用凭证；`auth=none` 可为空 |
+| `PICO_API_VARIANT` | 建议 | `auto` 或 Provider 支持的显式变体 |
+| `PICO_AUTH_MODE` | 建议 | `auto`、`x-api-key`、`bearer` 或 `none` |
+
+复制 [`.env.example`](.env.example) 即可手工切换。三个标准配置如下。
+
+### Anthropic
+
+```dotenv
+PICO_PROVIDER=anthropic
+PICO_MODEL=claude-sonnet-4-6
+PICO_API_URL=https://api.anthropic.com/v1
+PICO_API_KEY=your-anthropic-api-key
+PICO_API_VARIANT=auto
+PICO_AUTH_MODE=auto
+```
+
+### OpenAI Responses
+
+```dotenv
+PICO_PROVIDER=openai
+PICO_MODEL=gpt-5.4
+PICO_API_URL=https://api.openai.com/v1
+PICO_API_KEY=your-openai-api-key
+PICO_API_VARIANT=responses
+PICO_AUTH_MODE=bearer
+```
+
+OpenAI-compatible 网关如果只实现 Chat Completions，将 `PICO_API_VARIANT` 改为 `chat_completions`，并把模型、URL
+和认证方式改成网关实际值。Pico 不按域名猜测兼容模式。
+
+### Ollama
+
+```dotenv
+PICO_PROVIDER=ollama
+PICO_MODEL=qwen3:8b
+PICO_API_URL=http://127.0.0.1:11434
+PICO_API_KEY=
+PICO_API_VARIANT=auto
+PICO_AUTH_MODE=none
+```
+
+Pico 不启动 Ollama，也不自动拉取模型。除 loopback 外，API URL 必须使用 HTTPS；URL 中的 userinfo、query、
+fragment 和凭证会被拒绝。
+
+## Provider 与内部 Transport
+
+用户选择 Provider，运行时再解析成一个精确 Transport：
+
+```mermaid
+flowchart LR
+    E["Repository .env"] --> R["resolve_model_config"]
+    R --> A["anthropic / messages"]
+    R --> O1["openai / responses"]
+    R --> O2["openai / chat_completions"]
+    R --> L["ollama / chat"]
+    A --> F["Provider-neutral Response"]
+    O1 --> F
+    O2 --> F
+    L --> F
+```
+
+| Provider | API Variant | 内部协议 | 客户端追加路径 | 默认认证 |
+| --- | --- | --- | --- | --- |
+| `anthropic` | `messages` | `anthropic_messages` | `/messages` | `x-api-key` |
+| `openai` | `responses` | `openai_responses` | `/responses` | `bearer` |
+| `openai` | `chat_completions` | `openai_chat_completions` | `/chat/completions` | `bearer` |
+| `ollama` | `chat` | `ollama_chat` | `/api/chat` | `none` |
+
+## 常用命令
 
 ```bash
-pico run "inspect the failing tests and make the smallest safe fix"
+pico run "review the repository structure"
 pico repl
+pico status
+pico doctor
+pico doctor --check-api
+pico sessions list
+pico runs summary latest
+pico checkpoints pending
+pico memory search "release decision"
 ```
 
-唯一 console command 是 `pico`。不带命令时显示帮助；一次性任务必须使用 `pico run`。
+`run` 是一次性任务；`repl` 是交互会话。Session Tree 使用 append-only JSONL 保存 Canonical Messages、工具交换、
+compaction 和 task checkpoint。恢复工作区变更是独立操作，不会与会话 rewind 混在一起。
 
-Session 使用 append-only JSONL Tree 保存 Canonical Messages、工具交换、compaction 和 checkpoint。`pico repl`
-中的 `/tree`、`/compact`、`/checkpoint`、`/rewind` 用于检查和控制当前分支；恢复文件修改时使用
-`pico checkpoint restore --workspace`，不会把会话回退与工作区写入混为一谈。
+## Sandbox
 
-## 模型 API
-
-公开 CLI 只有一条模型路径：`deepseek-v4-flash` + Anthropic Messages + `x-api-key`。`PICO_API_URL` 是已经包含
-版本前缀的精确 API 根，未设置时使用 `https://api.deepseek.com/anthropic/v1`；客户端只追加 `/messages`；
-API Key 只读取 `PICO_DEEPSEEK_API_KEY`。项目 `.env` 优先于进程环境，旧 Provider/Profile/Connection 变量不会激活运行时。
-
-第三方网关通过替换 `PICO_API_URL` 接入，但必须实现相同协议和认证。运行时不按域名或模型推断能力，不探测候选
-路径，也不自动切换协议或模型。OpenAI Responses、OpenAI Chat Completions 与 Ollama client 仅作为内部实现和
-测试对象保留，不接入公开 CLI。
-
-## Sandbox 本地稳定版
-
-v0.2.1 唯一正式支持的 Sandbox 平台是 macOS arm64 + Docker Desktop + already-present exact
-`linux/arm64` image。其他平台的公开 `pico --sandbox run/repl` 返回
-`sandbox_local_platform_not_released`。Linux、amd64、registry、KMS 和 distributed Product Enablement 均为
-`NO-GO`；这不是四平台 GA，也不是 hostile multi-tenant/microVM 边界。
+Pico 1.0 的 Sandbox 是严格的本地产品能力：macOS arm64 + Docker Desktop + package manifest 中已经存在且身份匹配的
+`linux/arm64` image。它不联网 pull/build/repair；Linux、amd64、远程 Docker 和多租户隔离不在 1.0 支持范围内。
 
 ```bash
 pico sandbox status
@@ -75,32 +163,35 @@ pico sandbox diff <sandbox-id>
 pico sandbox apply <sandbox-id>
 ```
 
-`status` 和 `prepare` 不联网、不 pull/build/repair，也不隐式修改状态。Sandbox 中 RepoMap、Context、`read_file`、
-`write_file`、`patch_file`、`list_files`、search 和 shell 等所有模型可见文件能力都只面向 filtered staging；
-Source Root 不挂载进容器。Session 结束后先生成 immutable redacted diff，只有用户审查同一 exact digest 并单独批准
-Source Apply，Source Root 才可能改变。`--yes` 不能跳过 artifact 加载、digest 绑定或 CAS。
+模型可见的 Context、文件工具和 shell 只操作 filtered Execution Root，Source Root 不挂载到容器。运行结束后先生成
+immutable redacted diff；只有用户审查并批准同一 exact digest 后才允许 Source Apply。完整边界见
+[本地 Sandbox](docs/local-stable-execution.md)和[安全](docs/security.md)。
 
-## Memory 与本地证据
+## 开发与验收
 
-Memory 分为用户维护的 User Notes 和 agent 追加的 Agent Notes。`memory_save` 只接受当前用户请求中的明确授权，
-历史授权不会继承，delegate 不能写。自动召回的 Memory 会进入当次模型请求；配置远程 Provider 时会被发送到该
-endpoint。Memory 还可能留存在 Agent Notes、Tool Change、checkpoint、recovery 和其他本地私有审计 artifact 中，
-因此不要把“删除当前 note”等同于清除所有历史副本。
+```bash
+./scripts/check.sh
+uv run python scripts/evaluation/evaluate.py --suite core-functional
+uv build --clear
+uv run python scripts/release/verify_distribution.py --install-smoke --offline-bundle-smoke
+```
 
-Canonical Messages 是唯一会话 transcript；run、trace、checkpoint 和 Tool Change 保存可恢复、可审查证据。
-使用 `pico runs summary latest` 查看最近 Run 的低敏感摘要。真实 Provider 验证会产生网络请求和费用，必须针对
-exact HEAD 单独授权；离线诊断不会连接 Provider。
+产品包只包含 `pico/**` 与 Sandbox JSON 资源；`tests/`、`benchmarks/`、`scripts/`、`docs/` 和 `.github/` 不进入
+wheel/sdist。发布由 `v<project-version>` tag 触发，先重复完整离线门禁，再通过 PyPI Trusted Publishing 和 GitHub
+Release 发布相同构建产物。真实 Provider 测试必须单独授权费用，且不能替代离线门禁。
 
-## 维护者入口
+## 维护文档
 
-- [本地稳定版执行与验收](docs/local-stable-execution.md)
+- [Agent 工作约定](AGENTS.md)
 - [领域语言与模块边界](CONTEXT.md)
 - [架构](docs/architecture.md)
-- [Context、Session 与长会话](docs/context-and-sessions.md)
+- [CLI 安装与更新](docs/cli-installation-and-updates.md)
 - [安全](docs/security.md)
-- [恢复](docs/recovery.md)
-- [验证](docs/verification.md)
+- [验证与发布](docs/verification.md)
+- [Context 与 Session](docs/context-and-sessions.md)
 - [Memory](docs/memory.md)
-- [ADR-0040：Docker + filtered staging](docs/adr/0040-docker-filtered-staging.md)
-- [ADR-0041：distributed release authority](docs/adr/0041-distributed-release-authority.md)
+- [恢复](docs/recovery.md)
+- [ADR-0040：Docker filtered staging](docs/adr/0040-docker-filtered-staging.md)
 - [ADR-0042：sealed local authorization](docs/adr/0042-sealed-local-authorization.md)
+
+Pico 使用 [MIT License](LICENSE)。

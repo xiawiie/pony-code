@@ -4,8 +4,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from pico.tool_context import ToolContext
-from pico.repo_map import tool_repo_lookup
+from pico.tools.context import ToolContext
+from pico.memory.repo_map import tool_repo_lookup
 from pico.tools import (
     DEFAULT_RUN_SHELL_TIMEOUT,
     build_tool_registry,

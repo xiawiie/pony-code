@@ -6,8 +6,8 @@ from unittest.mock import MagicMock
 import pytest
 
 from pico.context.renderer import render_current_user_message
-from pico.context_manager import ContextBudgetExceeded, ContextManager
-from pico.model_capabilities import (
+from pico.agent.context_manager import ContextBudgetExceeded, ContextManager
+from pico.agent.model_capabilities import (
     build_model_budget,
     ModelCapabilities,
     TokenAccounting,

@@ -6,9 +6,9 @@ import stat
 
 import pytest
 
-import pico.session_store as session_store_module
-from pico.messages import make_tool_pair, validate_messages
-from pico.session_store import (
+import pico.state.session_store as session_store_module
+from pico.agent.messages import make_tool_pair, validate_messages
+from pico.state.session_store import (
     LEGACY_SESSION_FORMAT_VERSION,
     MAX_SESSION_ENTRY_BYTES,
     SESSION_FORMAT_VERSION,

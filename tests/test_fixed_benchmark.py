@@ -4,17 +4,17 @@ from collections import Counter
 
 import pytest
 
-from pico.evaluation.benchmark_schema import (
+from benchmarks.evaluation.benchmark_schema import (
     load_benchmark,
     summarize_rows,
 )
-from pico.evaluation.fixed_benchmark import (
+from benchmarks.evaluation.fixed_benchmark import (
     BenchmarkEvaluator,
     _verifier_argv,
     run_fixed_benchmark,
     run_harness_regression_v2,
 )
-from pico.observability import RunArtifactError
+from pico.agent.observability import RunArtifactError
 from pico.providers.fake import FakeModelClient
 
 
@@ -247,7 +247,7 @@ def test_failure_category_enum_is_stable():
 
 def test_benchmark_reproducibility_locale_is_stable(monkeypatch, tmp_path):
     monkeypatch.setattr(
-        "pico.evaluation.fixed_benchmark.locale_module.setlocale",
+        "benchmarks.evaluation.fixed_benchmark.locale_module.setlocale",
         lambda category: "zh_CN.UTF-8",
     )
 
@@ -475,7 +475,7 @@ def test_summarize_rows_counts_failure_categories():
 
 
 def test_default_benchmark_workspace_resolves_temp_symlink(tmp_path, monkeypatch):
-    import pico.evaluation.fixed_benchmark as fixed_benchmark
+    import benchmarks.evaluation.fixed_benchmark as fixed_benchmark
 
     real_root = tmp_path / "real-temp"
     real_root.mkdir()

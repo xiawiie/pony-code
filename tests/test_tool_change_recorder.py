@@ -4,8 +4,8 @@ import pytest
 
 from pico import Pico, SessionStore, WorkspaceContext
 from pico.providers.fake import FakeModelClient
-from pico.checkpoint_store import CheckpointStore
-from pico.tool_change_recorder import ToolChangeRecorder
+from pico.state.checkpoint_store import CheckpointStore
+from pico.tools.change_recorder import ToolChangeRecorder
 
 
 def test_finalize_records_success_and_error_states(tmp_path):

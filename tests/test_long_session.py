@@ -1,16 +1,16 @@
 from types import SimpleNamespace
 
-from pico.compaction import compact_session, rewind_with_branch_summary
+from pico.agent.compaction import compact_session, rewind_with_branch_summary
 from pico.context.renderer import InjectionSnapshot
-from pico.context_manager import ContextManager
-from pico.messages import make_tool_pair
-from pico.model_capabilities import (
+from pico.agent.context_manager import ContextManager
+from pico.agent.messages import make_tool_pair
+from pico.agent.model_capabilities import (
     ModelCapabilities,
     TokenAccounting,
     build_model_budget,
 )
 from pico.providers.fake import FakeModelClient
-from pico.session_store import SessionStore, entry_message_refs
+from pico.state.session_store import SessionStore, entry_message_refs
 from pico.workspace import now
 
 

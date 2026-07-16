@@ -10,7 +10,7 @@ import stat
 import subprocess
 
 from pico import security as securitylib
-from pico.safe_subprocess import run_hardened_git
+from pico.tools.subprocess import run_hardened_git
 
 from . import block_store
 from .block_store import _read_bounded_regular

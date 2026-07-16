@@ -8,7 +8,8 @@ from unittest.mock import Mock
 import pytest
 
 import pico.providers._shared as provider_shared
-from pico.providers._shared import _ProviderFailure, build_model_client
+from pico.providers._shared import _ProviderFailure
+from pico.providers.factory import build_model_client
 from pico.providers.anthropic_compatible import AnthropicCompatibleModelClient
 from pico.providers.ollama import OllamaModelClient
 from pico.providers.openai_compatible import OpenAICompatibleModelClient

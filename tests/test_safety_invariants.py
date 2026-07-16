@@ -11,8 +11,8 @@ from pico import Pico, SessionStore, WorkspaceContext
 from pico import cli as pico_cli
 from pico.providers.fake import FakeModelClient
 from pico.config import read_project_env
-from pico.session_store import LEGACY_SESSION_FORMAT_VERSION
-from pico.task_state import TaskState
+from pico.state.session_store import LEGACY_SESSION_FORMAT_VERSION
+from pico.state.task_state import TaskState
 
 
 def build_workspace(tmp_path):
@@ -47,7 +47,7 @@ def test_workspace_bootstrap_ignores_workspace_git_from_path(tmp_path, monkeypat
     fake_git.chmod(0o755)
     runner = Mock(side_effect=AssertionError("workspace git executed"))
     monkeypatch.setenv("PATH", str(tmp_path))
-    monkeypatch.setattr("pico.safe_subprocess.subprocess.run", runner)
+    monkeypatch.setattr("pico.tools.subprocess.subprocess.run", runner)
 
     workspace = WorkspaceContext.build(tmp_path)
 
@@ -120,7 +120,7 @@ def test_cli_freezes_parent_path_before_project_env_loading(tmp_path, monkeypatc
     (tmp_path / ".env").write_text(
         f"PATH={fake_path}\n"
         "PICO_API_URL=https://gateway.example/v1\n"
-        "PICO_DEEPSEEK_API_KEY=test-key\n",
+        "PICO_API_KEY=test-key\n",
         encoding="utf-8",
     )
     observed = {}
@@ -218,7 +218,7 @@ def test_runtime_rejects_credential_bearing_base_url_before_client_construction(
             args,
             project_env={
                 "PICO_API_URL": "https://user:opaque-password@example.test/v1",
-                "PICO_DEEPSEEK_API_KEY": "test-key",
+                "PICO_API_KEY": "test-key",
             },
             process_env={},
         )
@@ -310,7 +310,7 @@ def test_cli_build_agent_wires_secret_env_names_from_parser(tmp_path):
             "GITHUB_PAT": "ghp-1",
             "GH_PAT": "ghp-2",
             "PICO_API_URL": "https://gateway.example/v1",
-            "PICO_DEEPSEEK_API_KEY": "test-runtime-key",
+            "PICO_API_KEY": "test-runtime-key",
         },
         clear=True,
     ), patch(
@@ -333,7 +333,7 @@ def test_cli_build_agent_wires_secret_env_names_from_parser(tmp_path):
         assert set(agent.secret_env_summary()["secret_env_names"]) == {
             "GITHUB_PAT",
             "GH_PAT",
-            "PICO_DEEPSEEK_API_KEY",
+            "PICO_API_KEY",
         }
 
 
@@ -353,7 +353,7 @@ def test_cli_build_agent_uses_default_configured_secret_names(tmp_path):
             "HOME": str(tmp_path),
             "GH_PAT": "ghp-default-1",
             "PICO_API_URL": "https://gateway.example/v1",
-            "PICO_DEEPSEEK_API_KEY": "test-runtime-key",
+            "PICO_API_KEY": "test-runtime-key",
         },
         clear=True,
     ), patch(
@@ -369,7 +369,7 @@ def test_cli_build_agent_uses_default_configured_secret_names(tmp_path):
         agent = pico_cli.build_agent(args)
         assert set(agent.secret_env_summary()["secret_env_names"]) == {
             "GH_PAT",
-            "PICO_DEEPSEEK_API_KEY",
+            "PICO_API_KEY",
         }
 
 
@@ -385,7 +385,7 @@ def test_cli_build_agent_loads_project_env_secrets_before_redaction_setup(tmp_pa
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
     (tmp_path / ".env").write_text(
         "PICO_API_URL=https://gateway.example/v1\n"
-        "PICO_DEEPSEEK_API_KEY=sk-project-secret\n",
+        "PICO_API_KEY=sk-project-secret\n",
         encoding="utf-8",
     )
     with patch.dict(os.environ, {"HOME": str(tmp_path)}, clear=True), patch(
@@ -395,7 +395,7 @@ def test_cli_build_agent_loads_project_env_secrets_before_redaction_setup(tmp_pa
         args = pico_cli.build_arg_parser().parse_args(["--cwd", str(tmp_path)])
         agent = pico_cli.build_agent(args)
         assert agent.secret_env_summary()["secret_env_names"] == [
-            "PICO_DEEPSEEK_API_KEY"
+            "PICO_API_KEY"
         ]
 
 
@@ -424,7 +424,7 @@ def test_cli_resume_uses_immutable_collision_safe_snapshot_before_load(
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
     (tmp_path / ".env").write_text(
         "PICO_API_URL=https://gateway.example/v1\n"
-        "PICO_DEEPSEEK_API_KEY=test-runtime-key\n"
+        "PICO_API_KEY=test-runtime-key\n"
         "PICO_TEST_API_KEY=opaque-project-new-value-123456789\n"
         "PICO_SECRET_ENV_NAMES=PROJECT_ONLY_CREDENTIAL\n"
         f"PROJECT_ONLY_CREDENTIAL={project_secret}\n"
@@ -510,7 +510,7 @@ def test_cli_build_agent_skips_malformed_project_env_lines_with_warning(tmp_path
     (tmp_path / ".env").write_text(
         "not a valid env line\n"
         "PICO_API_URL=https://gateway.example/v1\n"
-        "PICO_DEEPSEEK_API_KEY=sk-project-secret\n",
+        "PICO_API_KEY=sk-project-secret\n",
         encoding="utf-8",
     )
     with patch.dict(os.environ, {"HOME": str(tmp_path)}, clear=True), patch(
@@ -523,7 +523,7 @@ def test_cli_build_agent_skips_malformed_project_env_lines_with_warning(tmp_path
 
     captured = capsys.readouterr()
     assert "warning: skipped invalid .env line 1" in captured.err
-    assert secret_names == ["PICO_DEEPSEEK_API_KEY"]
+    assert secret_names == ["PICO_API_KEY"]
 
 
 def test_project_env_strips_unquoted_inline_comments(tmp_path):
@@ -560,7 +560,7 @@ def test_cli_build_agent_reads_secret_names_from_environment_config(tmp_path):
             "PICO_CUSTOM_SECRET": "custom-secret-value",
             "PICO_SECRET_ENV_NAMES": "PICO_CUSTOM_SECRET",
             "PICO_API_URL": "https://gateway.example/v1",
-            "PICO_DEEPSEEK_API_KEY": "test-runtime-key",
+            "PICO_API_KEY": "test-runtime-key",
         },
         clear=True,
     ), patch("pico.cli.build_model_client", DummyModelClient):
@@ -573,7 +573,7 @@ def test_cli_build_agent_reads_secret_names_from_environment_config(tmp_path):
         agent = pico_cli.build_agent(args)
         assert set(agent.secret_env_summary()["secret_env_names"]) == {
             "PICO_CUSTOM_SECRET",
-            "PICO_DEEPSEEK_API_KEY",
+            "PICO_API_KEY",
         }
 
 
@@ -592,7 +592,7 @@ def test_cli_no_input_makes_default_approval_non_interactive(tmp_path):
         {
             "HOME": str(tmp_path),
             "PICO_API_URL": "https://gateway.example/v1",
-            "PICO_DEEPSEEK_API_KEY": "test-runtime-key",
+            "PICO_API_KEY": "test-runtime-key",
         },
         clear=True,
     ), patch("pico.cli.build_model_client", DummyModelClient):

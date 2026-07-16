@@ -21,8 +21,8 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from pico.evaluation.provider_benchmark import _make_provider_client  # noqa: E402
-from pico.evaluation.metrics_common import (  # noqa: E402
+from benchmarks.evaluation.provider_benchmark import _make_provider_client  # noqa: E402
+from benchmarks.evaluation.metrics_common import (  # noqa: E402
     _decode_json_object,
     _validate_record_header,
 )
@@ -30,7 +30,7 @@ from pico.memory.block_store import BlockStore  # noqa: E402
 from pico.memory.retrieval import Retrieval  # noqa: E402
 from pico.providers.fake import FakeModelClient  # noqa: E402
 from pico.runtime import Pico  # noqa: E402
-from pico.session_store import SessionStore  # noqa: E402
+from pico.state.session_store import SessionStore  # noqa: E402
 from pico.workspace import WorkspaceContext  # noqa: E402
 
 

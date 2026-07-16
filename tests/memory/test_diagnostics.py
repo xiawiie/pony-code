@@ -8,7 +8,7 @@ import pytest
 
 import pico.memory.block_store as block_store_module
 from pico.cli import main
-from pico.cli_diagnostics import collect_doctor
+from pico.cli.diagnostics import collect_doctor
 from pico.memory.diagnostics import collect_memory_diagnostics
 
 

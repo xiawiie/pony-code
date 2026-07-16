@@ -6,8 +6,8 @@ import stat
 
 import pytest
 
-from pico import docker_sandbox as docker_sandbox_module
-from pico import safe_subprocess as safe_subprocess_module
+from pico.sandbox import docker as docker_sandbox_module
+from pico.tools import subprocess as safe_subprocess_module
 
 
 _REAL_HOME = Path.home()
@@ -48,7 +48,7 @@ def isolated_home(tmp_path_factory, monkeypatch, request):
 def released_sandbox_test_platform(monkeypatch):
     """Exercise the packaged arm64 fixture independently of the CI host CPU."""
     monkeypatch.setattr(
-        "pico.docker_sandbox._host_image_platform",
+        "pico.sandbox.docker._host_image_platform",
         lambda: "linux/arm64",
     )
 

@@ -1,7 +1,7 @@
 """Explicit, bounded model/tool-loop probe primitives."""
 
-from pico.action_codec import FinalAction, ToolAction, decode_action
-from pico.messages import make_tool_pair
+from pico.agent.action_codec import FinalAction, ToolAction, decode_action
+from pico.agent.messages import make_tool_pair
 
 from ._shared import _ProviderFailure
 

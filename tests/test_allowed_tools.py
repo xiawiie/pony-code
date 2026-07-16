@@ -4,8 +4,8 @@ import pytest
 
 from pico import Pico, SessionStore, WorkspaceContext
 from pico import tools as toolkit
-from pico.evaluation.benchmark_schema import validate_benchmark
-from pico.evaluation.fixed_benchmark import BenchmarkEvaluator
+from benchmarks.evaluation.benchmark_schema import validate_benchmark
+from benchmarks.evaluation.fixed_benchmark import BenchmarkEvaluator
 from pico.providers.fake import FakeModelClient
 
 

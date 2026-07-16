@@ -1,7 +1,7 @@
 from pathlib import Path
 
-from pico.cli_diagnostics import collect_doctor
-from pico.docker_sandbox import DockerSandboxError
+from pico.cli.diagnostics import collect_doctor
+from pico.sandbox.docker import DockerSandboxError
 
 
 EMPTY_CAPACITY = {
@@ -48,10 +48,6 @@ def _ready_status(*, capacity=None):
             "kind": "local",
             "reason_code": "local_authorization_verified",
         },
-        "product_enablement": {
-            "status": "blocked",
-            "reason_code": "sandbox_product_not_enabled",
-        },
     }
 
 
@@ -63,7 +59,7 @@ def test_doctor_reports_docker_unavailable_without_creating_state(
     home.mkdir()
     monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
     monkeypatch.setattr(
-        "pico.cli_docker_sandbox.discover_local_docker",
+        "pico.cli.sandbox.discover_local_docker",
         lambda: (_ for _ in ()).throw(
             DockerSandboxError("docker_cli_unavailable")
         ),
@@ -83,17 +79,12 @@ def test_doctor_reports_docker_unavailable_without_creating_state(
         "reason_code": "local_authorization_verified",
         "remediation": "",
     }
-    assert sandbox["checks"]["product_enablement"] == {
-        "status": "not_applicable",
-        "reason_code": "sandbox_product_not_enabled",
-        "remediation": "",
-    }
     assert not (home / ".pico").exists()
 
 
 def test_doctor_uses_local_authorization_when_docker_is_ready(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        "pico.cli_docker_sandbox.sandbox_status_payload",
+        "pico.cli.sandbox.sandbox_status_payload",
         _ready_status,
     )
 
@@ -104,7 +95,6 @@ def test_doctor_uses_local_authorization_when_docker_is_ready(tmp_path, monkeypa
     assert sandbox["checks"]["readiness"]["status"] == "pass"
     assert sandbox["checks"]["state_integrity"]["status"] == "pass"
     assert sandbox["checks"]["runtime_authorization"]["status"] == "pass"
-    assert sandbox["product_enablement"]["status"] == "blocked"
 
 
 def test_doctor_reports_unknown_sandbox_state_without_disclosing_paths(
@@ -113,7 +103,7 @@ def test_doctor_reports_unknown_sandbox_state_without_disclosing_paths(
 ):
     capacity = {**EMPTY_CAPACITY, "orphan_unknown_count": 2}
     monkeypatch.setattr(
-        "pico.cli_docker_sandbox.sandbox_status_payload",
+        "pico.cli.sandbox.sandbox_status_payload",
         lambda: _ready_status(capacity=capacity),
     )
 
@@ -132,7 +122,7 @@ def test_doctor_maps_unexpected_sandbox_error_to_fixed_reason(
     monkeypatch,
 ):
     monkeypatch.setattr(
-        "pico.cli_docker_sandbox.sandbox_status_payload",
+        "pico.cli.sandbox.sandbox_status_payload",
         lambda: (_ for _ in ()).throw(RuntimeError("private detail")),
     )
 
@@ -145,11 +135,11 @@ def test_doctor_maps_unexpected_sandbox_error_to_fixed_reason(
 
 def test_default_doctor_does_not_use_http_for_sandbox_status(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        "pico.cli_docker_sandbox.sandbox_status_payload",
+        "pico.cli.sandbox.sandbox_status_payload",
         _ready_status,
     )
     monkeypatch.setattr(
-        "pico.cli_diagnostics.check_api_connectivity",
+        "pico.cli.diagnostics.check_api_connectivity",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("doctor must not network")
         ),
@@ -163,7 +153,7 @@ def test_default_doctor_does_not_use_http_for_sandbox_status(tmp_path, monkeypat
 
 def test_doctor_sandbox_shape_is_stable(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        "pico.cli_docker_sandbox.sandbox_status_payload",
+        "pico.cli.sandbox.sandbox_status_payload",
         _ready_status,
     )
 
@@ -176,12 +166,10 @@ def test_doctor_sandbox_shape_is_stable(tmp_path, monkeypatch):
         "offline",
         "readiness",
         "runtime_authorization",
-        "product_enablement",
         "checks",
     }
     assert tuple(sandbox["checks"]) == (
         "readiness",
         "state_integrity",
         "runtime_authorization",
-        "product_enablement",
     )

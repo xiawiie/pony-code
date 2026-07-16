@@ -8,14 +8,14 @@ import pytest
 from pico import security as security_module
 from pico import Pico, SessionStore, WorkspaceContext
 from pico.providers.fake import FakeModelClient
-from pico.checkpoint_store import CheckpointStore
+from pico.state.checkpoint_store import CheckpointStore
 from pico.cli import main
-from pico.cli_session import inspect_session
+from pico.cli.session import inspect_session
 from pico.memory.block_store import BlockStore
-from pico.recovery_models import new_checkpoint_record, new_tool_change_record
-from pico.run_store import RunStore
-from pico.session_store import LEGACY_SESSION_FORMAT_VERSION, SESSION_FORMAT_VERSION
-from pico.task_state import TaskState
+from pico.recovery.models import new_checkpoint_record, new_tool_change_record
+from pico.state.run_store import RunStore
+from pico.state.session_store import LEGACY_SESSION_FORMAT_VERSION, SESSION_FORMAT_VERSION
+from pico.state.task_state import TaskState
 
 
 def _build_agent(root, *, secret_env_names=()):
@@ -219,7 +219,7 @@ def test_checkpoint_rejects_fifo_leaf_and_symlinked_blob_bucket(tmp_path):
         )
 
     data = b"exact blob bytes"
-    from pico.recovery_paths import hash_bytes
+    from pico.recovery.paths import hash_bytes
 
     blob_ref = hash_bytes(data)["content_hash"]
     outside = tmp_path / "outside-blobs"

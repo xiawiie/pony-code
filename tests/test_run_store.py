@@ -7,9 +7,9 @@ import time
 import pytest
 
 from pico import security as security_module
-import pico.run_store as run_store_module
-from pico.run_store import RunStore
-from pico.task_state import STOP_REASON_FINAL_ANSWER_RETURNED, TaskState
+import pico.state.run_store as run_store_module
+from pico.state.run_store import RunStore
+from pico.state.task_state import STOP_REASON_FINAL_ANSWER_RETURNED, TaskState
 
 
 def test_run_store_creates_run_directory_and_state_file(tmp_path):

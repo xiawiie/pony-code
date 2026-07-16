@@ -1,7 +1,7 @@
 import json
 
-from pico.cli_errors import CLI_EXIT_USAGE, CliError, suggest
-from pico.cli_output import (
+from pico.cli.errors import CLI_EXIT_USAGE, CliError, suggest
+from pico.cli.output import (
     error_envelope,
     format_json,
     should_use_color,

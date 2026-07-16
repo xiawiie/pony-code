@@ -8,10 +8,10 @@ import tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
 MAINTAINER_DOCS = {
+    "AGENTS.md",
     "README.md",
     "CHANGELOG.md",
     "CONTEXT.md",
-    "PICO_OPTIMIZATION_SPEC.md",
     "docs/cli-installation-and-updates.md",
     "docs/architecture.md",
     "docs/security.md",
@@ -20,7 +20,6 @@ MAINTAINER_DOCS = {
     "docs/memory.md",
     "docs/local-stable-execution.md",
     "docs/adr/0040-docker-filtered-staging.md",
-    "docs/adr/0041-distributed-release-authority.md",
     "docs/adr/0042-sealed-local-authorization.md",
     "docs/context-and-sessions.md",
 }
@@ -36,9 +35,9 @@ FORBIDDEN_PREFIXES = (
 )
 FORBIDDEN_MODULES = {
     "pico/providers/clients.py",
-    "pico/evaluation/metrics.py",
-    "pico/evaluation/metrics_experiments.py",
-    "pico/evaluation/evaluator.py",
+    "benchmarks/evaluation/metrics.py",
+    "benchmarks/evaluation/metrics_experiments.py",
+    "benchmarks/evaluation/evaluator.py",
 }
 FORBIDDEN_SYMBOLS = {
     "FallbackAdapter",
@@ -90,6 +89,39 @@ def test_tracked_document_surface_is_exact():
         assert not any(name.startswith(prefix) for name in tracked)
 
 
+def test_agents_instructions_match_the_production_contract():
+    text = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+
+    for name in (
+        "PICO_PROVIDER",
+        "PICO_MODEL",
+        "PICO_API_URL",
+        "PICO_API_KEY",
+        "PICO_API_VARIANT",
+        "PICO_AUTH_MODE",
+    ):
+        assert name in text
+    for provider in ("anthropic", "openai", "ollama"):
+        assert f"`{provider}`" in text
+    for package in (
+        "agent",
+        "cli",
+        "context",
+        "memory",
+        "providers",
+        "recovery",
+        "sandbox",
+        "state",
+        "tools",
+        "workspace",
+    ):
+        assert f"`pico/{package}/`" in text
+    assert "./scripts/check.sh" in text
+    assert "live 未执行" in text
+    assert "不回退 Host" in text
+    assert "Definition of Done" in text
+
+
 def test_current_python_and_console_surfaces_are_exact():
     tracked = _tracked_files()
     assert FORBIDDEN_MODULES.isdisjoint(tracked)
@@ -123,14 +155,14 @@ def test_current_python_and_console_surfaces_are_exact():
         "build_welcome",
     ]
 
-    for package in ("providers", "evaluation", "memory"):
+    for package in ("agent", "memory", "providers", "recovery", "sandbox", "state"):
         tree = ast.parse((ROOT / f"pico/{package}/__init__.py").read_text(encoding="utf-8"))
         assert all(isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant) for node in tree.body)
 
 
 def test_current_sources_do_not_read_obsolete_runtime_shapes():
-    session_source = (ROOT / "pico/session_store.py").read_text(encoding="utf-8")
-    checkpoint_source = (ROOT / "pico/checkpoint_store.py").read_text(encoding="utf-8")
+    session_source = (ROOT / "pico/state/session_store.py").read_text(encoding="utf-8")
+    checkpoint_source = (ROOT / "pico/state/checkpoint_store.py").read_text(encoding="utf-8")
     runtime_source = (ROOT / "pico/runtime.py").read_text(encoding="utf-8")
     config_source = (ROOT / "pico/config.py").read_text(encoding="utf-8")
 
@@ -145,8 +177,8 @@ def test_current_sources_do_not_read_obsolete_runtime_shapes():
 
 def test_public_diagnostics_do_not_import_superseded_srt_owners():
     tree = ast.parse(
-        (ROOT / "pico/cli_diagnostics.py").read_text(encoding="utf-8"),
-        filename="pico/cli_diagnostics.py",
+        (ROOT / "pico/cli/diagnostics.py").read_text(encoding="utf-8"),
+        filename="pico/cli/diagnostics.py",
     )
     imported = {
         node.module
@@ -196,7 +228,7 @@ def test_all_provider_methods_use_the_structured_completion_surface():
 
 def test_code_imports_real_modules_not_empty_package_facades():
     tracked = _tracked_files()
-    facade_modules = {"pico.providers", "pico.evaluation", "pico.memory"}
+    facade_modules = {"pico.providers", "pico.memory"}
     offenders = []
     for name in sorted(tracked):
         if not name.endswith(".py") or not name.startswith(("pico/", "tests/", "benchmarks/", "scripts/")):
@@ -217,6 +249,7 @@ def test_maintainer_doc_links_and_cli_examples_resolve():
             "--format",
             "--help",
             "--sandbox",
+            "--version",
         "checkpoints",
         "config",
         "doctor",

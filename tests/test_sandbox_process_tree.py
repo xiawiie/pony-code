@@ -3,7 +3,7 @@ import signal
 import time
 from types import SimpleNamespace
 
-from pico.safe_subprocess import (
+from pico.tools.subprocess import (
     build_trusted_executables,
     run_process_group,
 )

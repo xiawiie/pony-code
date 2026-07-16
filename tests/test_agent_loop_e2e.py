@@ -24,7 +24,7 @@ class _StubProvider:
 
 def test_end_to_end_tool_call_then_final(tmp_path):
     from pico.runtime import Pico
-    from pico.session_store import SessionStore
+    from pico.state.session_store import SessionStore
     from pico.workspace import WorkspaceContext
 
     (tmp_path / "README.md").write_text("hello\n", encoding="utf-8")
@@ -82,7 +82,7 @@ def test_end_to_end_tool_call_then_final(tmp_path):
 def test_end_to_end_fake_provider_uses_structured_surface(tmp_path):
     from pico.providers.fake import FakeModelClient
     from pico.runtime import Pico
-    from pico.session_store import SessionStore
+    from pico.state.session_store import SessionStore
     from pico.workspace import WorkspaceContext
 
     inner = FakeModelClient(["ok"])
@@ -101,7 +101,7 @@ def test_end_to_end_fake_provider_uses_structured_surface(tmp_path):
 
 def test_end_to_end_structured_provider_stays_as_is(tmp_path):
     from pico.runtime import Pico
-    from pico.session_store import SessionStore
+    from pico.state.session_store import SessionStore
     from pico.workspace import WorkspaceContext
 
     provider = _StubProvider([

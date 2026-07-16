@@ -1,95 +1,120 @@
-# Pico Sandbox 本地稳定版 v0.2.1 执行与验收
+# Pico 1.0 Docker Sandbox：本地执行与验收
 
-本文是 v0.2.1 本地稳定版的发布执行真源。架构理由见
-[ADR-0040](adr/0040-docker-filtered-staging.md)、[ADR-0041](adr/0041-distributed-release-authority.md) 和
-[ADR-0042](adr/0042-sealed-local-authorization.md)。历史规划和旧 benchmark 不能替代最终 exact HEAD 证据。
+本文是 1.0 本地 Sandbox 的产品边界与维护入口。设计理由见
+[ADR-0040](adr/0040-docker-filtered-staging.md)和[ADR-0042](adr/0042-sealed-local-authorization.md)。
 
-## 交付范围
+## 支持矩阵
 
-唯一正式 Sandbox 组合是 macOS arm64 + Docker Desktop + already-present exact `linux/arm64` image。Host 模式、
-sealed local authorization、filtered staging、containerized shell、immutable diff 和显式 Source Apply 均保留。
+| 项目 | 1.0 状态 |
+| --- | --- |
+| macOS arm64 + Docker Desktop | 支持 |
+| already-present exact `linux/arm64` image | 必需 |
+| Host mode | 支持，但不是 OS sandbox |
+| Linux host / amd64 | 不支持公开 Sandbox runtime |
+| remote Docker endpoint | 不支持 |
+| 自动 pull/build/repair | 不支持 |
+| registry/KMS/distributed enablement | 不存在于 1.0 产品 |
+| hostile multi-tenant / microVM | 不保证 |
 
-以下内容明确延期：Linux/amd64 GA、registry、KMS、distributed Product Enablement、远程多租户、自定义 Sandbox
-backend、插件系统、向量数据库和 Sandbox 网络配置。authority reader 合同与测试保留，但当前发布判定为 `NO-GO`。
+## Runtime 路径
 
-## 不可违反的运行合同
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant P as Pico host process
+    participant S as Source Root
+    participant E as Filtered Execution Root
+    participant D as Docker container
 
-- Source Root 在 Source Apply 前不变；Sandbox 的所有模型可见文件工具只访问 filtered staging。
-- Source Root、Project State、Sandbox State、HOME、Docker socket 和凭证不挂载进容器。
-- `status`、`prepare` 和只读 inspection 不联网、不 pull/build/repair、不创建 state、不隐式 reconcile。
-- 不确定的文件类型、路径身份、capture 或恢复状态 fail closed。
-- incremental capture 只优化 shell 调用期；finalize 始终完整 capture。
-- `--yes` 只跳过交互，不能跳过 immutable artifact 加载、digest 绑定或 Source Apply CAS。
-- runtime 零第三方 Python 依赖；wheel 不包含 legacy SRT 或 `pico.evaluation`。
-
-## 一次 Sandbox Session
-
-```text
-platform/local authorization
-  → source identity + filtered staging baseline
-  → context/file tools on staging
-  → ephemeral no-network shell containers
-  → full final capture + immutable redacted diff
-  → pending review
-  → explicit apply(exact digest + source CAS) or discard
+    U->>P: pico --sandbox run
+    P->>P: verify platform, Docker endpoint, installed-tree identity
+    P->>P: verify packaged image manifest and exact local image
+    P->>S: anchored bounded scan
+    P->>E: stream filtered staging
+    P->>D: start no-network container with E only
+    D->>E: tools and shell effects
+    P->>E: final full capture
+    P-->>U: immutable redacted diff
+    U->>P: explicit apply of exact digest
+    P->>S: journaled CAS Source Apply
 ```
 
-Apply 确认必须显示 sandbox id、exact diff digest、Source Root、candidate count/bytes、created/modified/deleted、
-high-risk/blocked 数和最多 10 个高风险路径。确认后使用刚展示的 digest；确认期间 source 或 artifact 漂移会失败，
-不会降级为部分写入。
+任一 identity/readiness/staging/capture 失败都会终止 Sandbox，不发送模型请求或启动 target，也不切换到 Host。
 
-## Provider 与 Memory 边界
-
-公开 CLI 固定使用 `deepseek-v4-flash`、Anthropic Messages 和 `x-api-key`，默认精确 API 根为
-`https://api.deepseek.com/anthropic/v1`。`PICO_API_URL` 未设置时使用该官方默认值；第三方 Anthropic-compatible
-relay 只通过项目或进程环境中的该变量显式替换；凭证只读取 `PICO_DEEPSEEK_API_KEY`。客户端只追加 `/messages`，不按域名或模型名推断、
-探测、回退或切换协议。`pico doctor` 默认离线且只显示低敏配置状态；`pico doctor --check-api` 才会联网。
-
-OpenAI Responses、OpenAI Chat Completions、Anthropic Messages 与 Ollama Chat adapter 继续作为内部测试/benchmark
-边界存在，但不是公开 CLI 的模型选择面。公开运行时不读取旧 Provider/Profile/Connection 配置。
-
-`memory_save` 只接受当前 top-level user request 的明确记忆授权；历史请求不能继承，delegate 不能写。自动命中的
-Memory 会进入当次 Provider prompt：使用远程 Provider 时即会发送到该 endpoint。Memory 原文或其副本还可能存在于
-Agent Notes、Tool Change、checkpoint、recovery 和其他本地私有审计 artifact；删除当前 note 不代表所有历史副本消失。
-
-## 发布门禁
-
-在同一干净 exact HEAD 上执行：
+## 用户命令
 
 ```bash
-uv lock --check
-uv run ruff check .
-uv run pytest -q
-uv build --clear
-uv run python scripts/verify_distribution.py --install-smoke --offline-bundle-smoke
-uv run python scripts/evaluate.py --suite core-fast
-uv run python scripts/evaluate.py --suite core-functional
-uv run python scripts/evaluate.py --suite sandbox-contract
-uv run python scripts/evaluate.py --suite sandbox-real
-uv run python -m benchmarks.perf.bench_sandbox
-uv run python -m benchmarks.perf.bench_sandbox --real
-git diff --check
+pico sandbox status
+pico sandbox prepare
+pico sandbox list
+pico sandbox inspect <sandbox-id>
+pico sandbox diff <sandbox-id>
+pico sandbox apply <sandbox-id>
+pico sandbox prune --dry-run
 ```
 
-Darwin 的 `sandbox-real` 还要求两个外部 fixture：`PICO_SANDBOX_MOUNT_FIXTURE` 指向一个包含跨设备子挂载点的
-Source tree，`PICO_SANDBOX_DEVICE_FIXTURE` 指向包含 character/block device 的目录（macOS 通常使用 `/dev`）。
-这两个 fixture 必须在调用前由发布执行者显式准备并通过环境变量传入；评估命令不会隐式 mount、创建设备或降级跳过，
-缺失时以 `mount_boundary_fixture_required` / mandatory check failure 保持 `NO-GO`。
+`status` 与 `prepare` 必须保持零网络、零隐式修复。`prepare` 只检查 already-present image。Inspection 不得改变 artifact
+mtime/ctime 或创建 session state。
 
-门禁按 Authority、Static、Functional、Distribution、P0 Security、Sandbox Real、Performance、Provider Live 和
-Documentation 九组判定。任一 mandatory gate 失败、出现未解释 skip，或默认 DeepSeek exact-HEAD live 未获得新的
-费用授权/凭证并通过，发布保持 `NO-GO`，不得创建 stable 标签。
+## 本地镜像维护
 
-性能只做同机回归：普通场景 5 次 warmup + 20 次 measured；5000 文件和 128 MiB 场景 1 + 5 次。artifact 必须记录
-commit、dirty state、机器、OS、Python、Docker、image digest、median 和 p95。目标包括 128 MiB staging 额外 Python
-峰值不超过 32 MiB、326 文件 no-op shell observed median 不超过 1.40 s/p95 不超过 1.60 s、5000 文件 watchdog
-不超过单核 10% 且违规检测不超过 2 s。
+构建与验证脚本是仓库维护入口，不是公开 runtime 的自动安装器：
 
-## 交付与回滚
+```bash
+uv run python scripts/sandbox/build_image.py --help
+uv run python scripts/sandbox/verify_runtime.py --help
+```
 
-通过全部门禁后才构建最终 wheel/sdist、在隔离 venv/HOME 且无源码 `PYTHONPATH` 下 clean-install，并创建本地
-`v0.2.1` 标签。外部 push、GitHub Release 和 PyPI 发布分别需要显式授权；授权不会放宽上述门禁或证据绑定。
+Builder 只接受锁定输入和 `linux/arm64` 本地开发目标。最终 package manifest 的 image identity、Docker config 和安装树
+identity 必须由测试与 distribution smoke 一起验证。
 
-各阶段保持独立提交；固定模型路径、P0、安全 I/O、staging、incremental capture 和遗留删除可独立回滚。没有
-持久化 schema migration，代码回滚不需要数据降级。旧 `~/.pico` 数据不自动删除；pending/interrupted/invalid
-恢复记录必须先备份并人工 review。
+## 必须保持的边界
+
+- Container 只 bind Execution Root；不得挂载 Source Root、Project/Sandbox State、HOME 或 Docker socket。
+- 模型可见 Context、RepoMap、read/write/patch/list/search 和 shell 只操作 Execution Root。
+- Source `.git` 不复制；synthetic `.git` 不用于发现 source root 或分支事实。
+- Container network disabled；资源、进程、文件、输出与 timeout 有界。
+- shell 结束后无条件 final measure；快速命令不能绕过容量或特殊文件检查。
+- Final diff 使用完整 capture，不依赖调用期增量 cache。
+- Source Apply 使用刚审查的 exact digest，冲突时 fail closed。
+
+## 离线验收
+
+```bash
+uv run pytest -q \
+  tests/test_sandbox_identity.py \
+  tests/test_docker_sandbox_runtime.py \
+  tests/test_docker_sandbox_session.py \
+  tests/test_docker_sandbox_runner.py \
+  tests/test_docker_sandbox_cli.py \
+  tests/test_sandbox_staging_streaming.py \
+  tests/test_sandbox_process_tree.py \
+  tests/test_sandbox_apply.py
+
+uv run python scripts/evaluation/evaluate.py --suite sandbox-contract
+uv run python -m benchmarks.perf.bench_sandbox
+```
+
+这些测试可证明合同、身份、失败语义和 report-only performance，不证明用户机器上的 Docker daemon 与 exact image 已就绪。
+
+## 实机验收
+
+实机测试可能启动/删除容器并占用本地资源，应在目标 macOS arm64 机器上显式执行：
+
+```bash
+uv run python scripts/sandbox/verify_runtime.py --require-ready
+```
+
+验收至少确认：
+
+1. status/prepare 不联网、不改变 HOME state；
+2. exact image identity 与 package manifest 一致；
+3. Source Root 在 Apply 前完全不变；
+4. container 不可见 host secret/state/socket；
+5. timeout、进程树、特殊文件和容量限制生效；
+6. final diff 完整、脱敏、digest 稳定；
+7. apply 冲突不产生未记录部分写入；
+8. container、staging 和 journal cleanup 无未知残留。
+
+实机结果只对 exact HEAD、当前 package 和当前 Docker/image identity 有效。缺少受支持平台、Docker daemon 或 exact image
+时应记录为环境未就绪，不能把离线 contract 结果描述成实机通过。

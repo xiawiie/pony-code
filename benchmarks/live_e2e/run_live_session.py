@@ -23,9 +23,9 @@ from pathlib import Path
 from typing import Literal
 
 from pico.config import read_project_env
-from pico.evaluation.metrics_common import _load_json_artifact
-from pico.evaluation.provider_benchmark import _provider_target
-from pico.messages import MessageValidationError, validate_messages
+from benchmarks.evaluation.metrics_common import _load_json_artifact
+from benchmarks.evaluation.provider_benchmark import _provider_target
+from pico.agent.messages import MessageValidationError, validate_messages
 from pico.security import (
     SensitiveDataBlockedError,
     contains_secret_material,
@@ -35,7 +35,7 @@ from pico.security import (
     redact_artifact,
     write_private_bytes_atomic,
 )
-from pico.session_store import (
+from pico.state.session_store import (
     SESSION_FORMAT_VERSION,
     SESSION_HEADER_RECORD_TYPE,
     SESSION_RECORD_TYPE,
@@ -1956,7 +1956,7 @@ def make_live_client(config: RunConfig, *, settings=None):
     """Instantiate the selected live client using its production transport."""
 
     settings = settings or provider_settings(config.provider)
-    from pico.providers._shared import build_model_client
+    from pico.providers.factory import build_model_client
 
     inner = build_model_client(
         settings["client_kind"],
@@ -2106,7 +2106,7 @@ def main() -> int:
     with fixture:
         # Lazy import of pico so a broken pico module produces exit 4 (not 2).
         from pico.runtime import Pico
-        from pico.session_store import SessionStore
+        from pico.state.session_store import SessionStore
         from pico.workspace import WorkspaceContext
 
         model_client = make_live_client(config, settings=settings)

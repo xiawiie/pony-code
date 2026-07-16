@@ -5,10 +5,10 @@ import stat
 
 import pytest
 
-from pico import checkpoint_store as checkpoint_store_module
-from pico.checkpoint_store import CheckpointStore
-from pico.recovery_models import new_checkpoint_record, new_tool_change_record
-from pico.verification import new_verification_record
+from pico.state import checkpoint_store as checkpoint_store_module
+from pico.state.checkpoint_store import CheckpointStore
+from pico.recovery.models import new_checkpoint_record, new_tool_change_record
+from pico.agent.verification import new_verification_record
 
 
 def _checkpoint(tmp_path, checkpoint_id="ckpt_safe"):

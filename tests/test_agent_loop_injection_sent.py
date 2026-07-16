@@ -11,7 +11,7 @@ import json
 from pico.context.renderer import InjectionSnapshot, InjectionSource
 from pico.providers.response import Response, StopReason
 from pico.runtime import Pico
-from pico.session_store import SessionStore
+from pico.state.session_store import SessionStore
 from pico.workspace import WorkspaceContext
 
 
@@ -182,7 +182,7 @@ def test_one_snapshot_survives_retry_and_tool_step_while_feedback_is_one_shot(
         }
 
     monkeypatch.setattr(
-        "pico.agent_loop.build_injection_snapshot",
+        "pico.agent.loop.build_injection_snapshot",
         frozen_snapshot,
     )
     provider = _SniffProvider([

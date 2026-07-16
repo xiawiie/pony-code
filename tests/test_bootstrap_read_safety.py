@@ -7,10 +7,10 @@ import pytest
 
 from pico import workspace as workspace_module
 from pico.memory.block_store import BlockStore
-from pico.repo_map import RepoMap
-from pico.safe_subprocess import build_trusted_executables
+from pico.memory.repo_map import RepoMap
+from pico.tools.subprocess import build_trusted_executables
 from pico.workspace import WorkspaceContext
-from pico.workspace_observer import WorkspaceObserver
+from pico.workspace.observer import WorkspaceObserver
 
 
 def _trusted_binary(workspace, name):
@@ -267,7 +267,7 @@ def test_workspace_observer_without_frozen_git_never_runs_subprocess(
 def test_search_ignores_inherited_ripgrep_preprocessor(
     tmp_path, monkeypatch, contract_rg
 ):
-    from pico.tool_context import ToolContext
+    from pico.tools.context import ToolContext
     from pico.tools import tool_search
 
     marker = tmp_path / "rg-pre-ran"

@@ -3,7 +3,7 @@ import os
 import signal
 
 from pico.cli import main
-from pico.cli_start import run_agent_once, run_repl
+from pico.cli.start import run_agent_once, run_repl
 from pico.config import DEFAULT_API_URL
 from pico.providers.fake import FakeModelClient
 
@@ -201,7 +201,7 @@ def test_invalid_project_api_url_uses_safe_config_envelope(
 ):
     (tmp_path / ".env").write_text(
         f"PICO_API_URL=https://user:{CANARY}@example.com/v1\n"
-        "PICO_DEEPSEEK_API_KEY=test-key\n",
+        "PICO_API_KEY=test-key\n",
         encoding="utf-8",
     )
 
@@ -218,7 +218,7 @@ def test_project_key_without_url_uses_official_default(
     capsys,
 ):
     (tmp_path / ".env").write_text(
-        "PICO_DEEPSEEK_API_KEY=stale-project-key\n",
+        "PICO_API_KEY=stale-project-key\n",
         encoding="utf-8",
     )
     captured = {}
@@ -241,10 +241,8 @@ def test_project_key_without_url_uses_official_default(
 def test_init_invalid_url_does_not_echo_input_value(
     tmp_path, monkeypatch, capsys
 ):
-    monkeypatch.setattr(
-        "builtins.input",
-        lambda: f"https://user:{CANARY}@example.com/v1",
-    )
+    answers = iter(("", "", f"https://user:{CANARY}@example.com/v1"))
+    monkeypatch.setattr("builtins.input", lambda: next(answers))
     assert main(["--cwd", str(tmp_path), "init"]) == 3
 
     captured = capsys.readouterr()

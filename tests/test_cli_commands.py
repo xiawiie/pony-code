@@ -100,7 +100,7 @@ def test_help_command_shows_examples(capsys):
     assert "Available Commands:" in out
     assert "--sandbox    run/repl in local Docker Sandbox (macOS arm64 only)" in out
     assert 'pico run "inspect the failing tests"' in out
-    assert "pico config set-secret PICO_DEEPSEEK_API_KEY" in out
+    assert "pico config set-secret PICO_API_KEY" in out
     assert "pico --approval ask run" in out
     assert "pico checkpoints show <checkpoint-id>" in out
     assert "pico checkpoints pending" in out
@@ -174,8 +174,18 @@ def test_unknown_command_suggestion_uses_json_error_envelope(capsys):
     assert payload["error"]["hint"] == "Did you mean `checkpoints`?"
 
 
-def _install_init_input(monkeypatch, *, url="", key="test-key"):
-    monkeypatch.setattr("builtins.input", lambda: url)
+def _install_init_input(
+    monkeypatch,
+    *,
+    provider="",
+    model="",
+    url="",
+    api_variant="",
+    auth_mode="",
+    key="test-key",
+):
+    answers = iter((provider, model, url, api_variant, auth_mode))
+    monkeypatch.setattr("builtins.input", lambda: next(answers))
     monkeypatch.setattr(getpass, "getpass", lambda prompt: key)
 
 
@@ -198,13 +208,18 @@ def test_init_prompts_for_url_and_hidden_key_without_building_agent_or_network(
 
     values = read_project_env(tmp_path, warn=False)
     assert values == {
-        "PICO_API_URL": "https://api.deepseek.com/anthropic/v1",
-        "PICO_DEEPSEEK_API_KEY": "test-key",
+        "PICO_PROVIDER": "anthropic",
+        "PICO_MODEL": "claude-sonnet-4-6",
+        "PICO_API_URL": "https://api.anthropic.com/v1",
+        "PICO_API_KEY": "test-key",
+        "PICO_API_VARIANT": "auto",
+        "PICO_AUTH_MODE": "auto",
     }
     captured = capsys.readouterr()
-    assert "API URL [https://api.deepseek.com/anthropic/v1]:" in captured.err
+    assert "Provider [anthropic]:" in captured.err
+    assert "API URL [https://api.anthropic.com/v1]:" in captured.err
     assert captured.out.startswith("Pico init")
-    assert "deepseek-v4-flash" in captured.out
+    assert "claude-sonnet-4-6" in captured.out
     assert "anthropic_messages" in captured.out
     assert "test-key" not in captured.out + captured.err
 
@@ -227,18 +242,51 @@ def test_init_accepts_exact_third_party_api_root(tmp_path, monkeypatch, capsys):
     output = capsys.readouterr().out
     payload = json.loads(output)["data"]
     assert payload["api_url"] == "https://lumina.tripo3d.com/v1"
-    assert payload["model"] == "deepseek-v4-flash"
+    assert payload["provider"] == "anthropic"
+    assert payload["model"] == "claude-sonnet-4-6"
     assert payload["api_key"] == {
         "present": True,
-        "name": "PICO_DEEPSEEK_API_KEY",
+        "name": "PICO_API_KEY",
     }
     assert "gateway-key" not in output
+
+
+def test_init_can_switch_to_openai_using_only_generic_env_names(
+    tmp_path, monkeypatch
+):
+    _install_init_input(monkeypatch, provider="openai", key="openai-key")
+
+    assert main(["--cwd", str(tmp_path), "init"]) == 0
+
+    assert read_project_env(tmp_path, warn=False) == {
+        "PICO_PROVIDER": "openai",
+        "PICO_MODEL": "gpt-5.4",
+        "PICO_API_URL": "https://api.openai.com/v1",
+        "PICO_API_KEY": "openai-key",
+        "PICO_API_VARIANT": "auto",
+        "PICO_AUTH_MODE": "auto",
+    }
+
+
+def test_init_can_configure_local_ollama_without_api_key(tmp_path, monkeypatch):
+    _install_init_input(monkeypatch, provider="ollama", key="")
+
+    assert main(["--cwd", str(tmp_path), "init"]) == 0
+
+    assert read_project_env(tmp_path, warn=False) == {
+        "PICO_PROVIDER": "ollama",
+        "PICO_MODEL": "qwen3:8b",
+        "PICO_API_URL": "http://127.0.0.1:11434",
+        "PICO_API_KEY": "",
+        "PICO_API_VARIANT": "auto",
+        "PICO_AUTH_MODE": "auto",
+    }
 
 
 def test_init_empty_key_keeps_existing_project_key(tmp_path, monkeypatch, capsys):
     (tmp_path / ".env").write_text(
         "PICO_API_URL=https://old.example/v1\n"
-        "PICO_DEEPSEEK_API_KEY=existing-key\n",
+        "PICO_API_KEY=existing-key\n",
         encoding="utf-8",
     )
     _install_init_input(monkeypatch, url="", key="")
@@ -247,7 +295,7 @@ def test_init_empty_key_keeps_existing_project_key(tmp_path, monkeypatch, capsys
 
     values = read_project_env(tmp_path, warn=False)
     assert values["PICO_API_URL"] == "https://old.example/v1"
-    assert values["PICO_DEEPSEEK_API_KEY"] == "existing-key"
+    assert values["PICO_API_KEY"] == "existing-key"
     captured = capsys.readouterr()
     assert "press Enter to keep existing" not in captured.out
     assert "existing-key" not in captured.out + captured.err
@@ -260,7 +308,7 @@ def test_init_updates_config_without_dropping_unrelated_lines(
         "# keep this comment\n"
         "OTHER_SETTING=kept\n"
         "PICO_API_URL=https://old.example/v1\n"
-        "PICO_DEEPSEEK_API_KEY=old-key\n",
+        "PICO_API_KEY=old-key\n",
         encoding="utf-8",
     )
     _install_init_input(
@@ -276,7 +324,7 @@ def test_init_updates_config_without_dropping_unrelated_lines(
     assert "# keep this comment\n" in text
     assert "OTHER_SETTING=kept\n" in text
     assert values["PICO_API_URL"] == "https://new.example/v1"
-    assert values["PICO_DEEPSEEK_API_KEY"] == "new-key"
+    assert values["PICO_API_KEY"] == "new-key"
 
 
 @pytest.mark.parametrize(
@@ -292,7 +340,8 @@ def test_init_updates_config_without_dropping_unrelated_lines(
 def test_init_rejects_invalid_url_before_key_prompt(
     tmp_path, monkeypatch, capsys, url
 ):
-    monkeypatch.setattr("builtins.input", lambda: url)
+    answers = iter(("", "", url))
+    monkeypatch.setattr("builtins.input", lambda: next(answers))
     key_prompt = pytest.fail
     monkeypatch.setattr(getpass, "getpass", key_prompt)
 
@@ -311,7 +360,7 @@ def test_init_rejects_unsafe_existing_url_without_echo_or_prompt(
     secret = "existing-url-secret-canary"
     (tmp_path / ".env").write_text(
         f"PICO_API_URL=https://user:{secret}@example.com/v1\n"
-        "PICO_DEEPSEEK_API_KEY=existing-key\n",
+        "PICO_API_KEY=existing-key\n",
         encoding="utf-8",
     )
     monkeypatch.setattr(
@@ -336,7 +385,7 @@ def test_init_rejects_empty_new_key_without_writing(tmp_path, monkeypatch, capsy
 
     assert main(["--cwd", str(tmp_path), "init"]) == 2
 
-    assert "API Key must be one non-empty line" in capsys.readouterr().err
+    assert "API Key is required unless auth mode is none" in capsys.readouterr().err
     assert not (tmp_path / ".env").exists()
 
 
@@ -391,11 +440,11 @@ def test_config_set_secret_reads_stdin_and_writes_private_env(
         str(tmp_path),
         "config",
         "set-secret",
-        "PICO_DEEPSEEK_API_KEY",
+        "PICO_API_KEY",
         "--stdin",
     ]) == 0
 
-    assert read_project_env(tmp_path, warn=False)["PICO_DEEPSEEK_API_KEY"] == (
+    assert read_project_env(tmp_path, warn=False)["PICO_API_KEY"] == (
         "sk-stdin-secret-123456789"
     )
     captured = capsys.readouterr()
@@ -415,10 +464,10 @@ def test_config_set_secret_uses_getpass_without_rendering_value(
         str(tmp_path),
         "config",
         "set-secret",
-        "PICO_DEEPSEEK_API_KEY",
+        "PICO_API_KEY",
     ]) == 0
 
-    assert read_project_env(tmp_path, warn=False)["PICO_DEEPSEEK_API_KEY"] == secret
+    assert read_project_env(tmp_path, warn=False)["PICO_API_KEY"] == secret
     captured = capsys.readouterr()
     assert secret not in captured.out + captured.err
 
@@ -426,7 +475,6 @@ def test_config_set_secret_uses_getpass_without_rendering_value(
 @pytest.mark.parametrize(
     "name",
     [
-        "PICO_API_KEY",
         "OPENAI_API_KEY",
         "PICO_OPENAI_API_KEY",
         "PICO_DEEPSEEK_TOKEN",
@@ -443,7 +491,7 @@ def test_config_set_secret_rejects_every_other_name(
 
     assert main(["--cwd", str(tmp_path), "config", "set-secret", name]) == 2
 
-    assert "expected PICO_DEEPSEEK_API_KEY" in capsys.readouterr().err
+    assert "expected PICO_API_KEY" in capsys.readouterr().err
     assert not (tmp_path / ".env").exists()
 
 
@@ -461,7 +509,7 @@ def test_config_set_secret_storage_failure_is_stable(
         str(tmp_path),
         "config",
         "set-secret",
-        "PICO_DEEPSEEK_API_KEY",
+        "PICO_API_KEY",
         "--stdin",
     ]) == 3
 
@@ -526,7 +574,7 @@ def test_config_writes_keep_review_required_for_preserved_invalid_line(
     env_path = tmp_path / ".env"
     env_path.write_text(
         f"PICO_API_URL=https://api.deepseek.com\n"
-        f"PICO_DEEPSEEK_API_KEY=old-key\n{marker}\n",
+        f"PICO_API_KEY=old-key\n{marker}\n",
         encoding="utf-8",
     )
     env_path.chmod(0o600)
@@ -548,11 +596,11 @@ def test_config_writes_keep_review_required_for_preserved_invalid_line(
 
 
 def test_repl_help_renders_help_details(tmp_path, monkeypatch, capsys):
-    from pico.cli_help import HELP_DETAILS
-    from pico.cli_start import run_repl
+    from pico.cli.help import HELP_DETAILS
+    from pico.cli.start import run_repl
     from pico.providers.fake import FakeModelClient
     from pico.runtime import Pico
-    from pico.session_store import SessionStore
+    from pico.state.session_store import SessionStore
     from pico.workspace import WorkspaceContext
 
     workspace = WorkspaceContext.build(tmp_path)

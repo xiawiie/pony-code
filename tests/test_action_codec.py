@@ -1,6 +1,6 @@
 import pytest
 
-from pico.action_codec import FinalAction, RetryAction, ToolAction, decode_action
+from pico.agent.action_codec import FinalAction, RetryAction, ToolAction, decode_action
 from pico.providers.response import Response, StopReason
 
 

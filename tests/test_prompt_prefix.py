@@ -1,7 +1,7 @@
 from pico import Pico, SessionStore
 from pico.providers.fake import FakeModelClient
 from pico.context.renderer import render_current_user_message
-from pico.prompt_prefix import build_prompt_prefix, tool_signature
+from pico.agent.prompt_prefix import build_prompt_prefix, tool_signature
 from pico.tools import build_tool_registry
 from pico.workspace import WorkspaceContext
 

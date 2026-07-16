@@ -3,11 +3,11 @@ import os
 
 import pytest
 
-from pico.checkpoint_store import CheckpointStore
+from pico.state.checkpoint_store import CheckpointStore
 from pico.cli import main
-from pico.recovery_checkpoint_writer import RecoveryCheckpointWriter
-from pico.recovery_manager import RecoveryManager
-from pico.recovery_models import new_checkpoint_record
+from pico.recovery.checkpoint_writer import RecoveryCheckpointWriter
+from pico.recovery.manager import RecoveryManager
+from pico.recovery.models import new_checkpoint_record
 
 
 def _source_checkpoint(store, root, names=("one.txt",)):

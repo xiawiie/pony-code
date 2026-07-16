@@ -13,9 +13,9 @@ import stat
 from pathlib import Path
 from unittest.mock import MagicMock
 
-import pico.agent_loop as agent_loop_module
-from pico.agent_loop import _prepare_tool_result
-from pico.model_capabilities import TokenAccounting
+import pico.agent.loop as agent_loop_module
+from pico.agent.loop import _prepare_tool_result
+from pico.agent.model_capabilities import TokenAccounting
 from pico.security import redact_text
 
 
@@ -183,7 +183,7 @@ def test_large_result_without_run_dir_still_digests(tmp_path):
 def test_digest_computed_exactly_once(tmp_path, monkeypatch):
     """Task D1: _prepare_tool_result must not run per-tool summarizer twice."""
     import pico.context.digest as digest_mod
-    from pico.agent_loop import _prepare_tool_result
+    from pico.agent.loop import _prepare_tool_result
 
     original = digest_mod._digest_read_file
     call_count = {"n": 0}

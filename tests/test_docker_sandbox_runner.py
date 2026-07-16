@@ -10,8 +10,8 @@ import time
 
 import pytest
 
-import pico.docker_sandbox as docker_module
-from pico.docker_sandbox import (
+import pico.sandbox.docker as docker_module
+from pico.sandbox.docker import (
     compile_create_argv,
     default_image_manifest_path,
     discover_local_docker,
@@ -31,7 +31,7 @@ from pico.docker_sandbox import (
     verify_container_inspect,
     verify_image_inspect,
 )
-from pico.sandbox_session import SandboxSessionStore, WorkspaceView
+from pico.sandbox.session import SandboxSessionStore, WorkspaceView
 
 
 CONTAINER_ID = "e" * 64

@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 import pytest
 
-from pico.safe_subprocess import run_process_group
+from pico.tools.subprocess import run_process_group
 from pico.tools import ApprovedShellExecution, sandbox_privilege_denial
 
 
@@ -73,8 +73,8 @@ def test_process_group_timeout_terms_then_kills_and_waits():
 
     process.communicate = communicate
     process.pid = 4321
-    with patch("pico.safe_subprocess.subprocess.Popen", return_value=process) as popen, patch(
-        "pico.safe_subprocess.os.killpg"
+    with patch("pico.tools.subprocess.subprocess.Popen", return_value=process) as popen, patch(
+        "pico.tools.subprocess.os.killpg"
     ) as killpg:
         result = run_process_group(
             ["x"], cwd="/tmp", env={}, timeout=1, term_grace=2

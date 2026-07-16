@@ -4,26 +4,19 @@ from types import SimpleNamespace
 
 import pytest
 
-import pico.cli_docker_sandbox as cli_module
+import pico.cli.sandbox as cli_module
 import pico.cli as pico_cli
-from pico.checkpoint_store import CheckpointStore
+from pico.state.checkpoint_store import CheckpointStore
 from pico.cli import main
-from pico.cli_errors import CliError
-from pico.docker_sandbox import DockerSandboxError
-from pico.sandbox_apply import StagingObserver
-from pico.sandbox_apply import SandboxApplyError, SourceApplier, SourceApplyStore
-from pico.sandbox_session import (
+from pico.cli.errors import CliError
+from pico.sandbox.docker import DockerSandboxError
+from pico.sandbox.apply import StagingObserver
+from pico.sandbox.apply import SandboxApplyError, SourceApplier, SourceApplyStore
+from pico.sandbox.session import (
     read_source_apply_authority,
     SandboxSessionError,
     SandboxSessionStore,
 )
-from tests.release_authority_fixture import (
-    configure_test_authority,
-    signed_candidate_envelope,
-    signed_product_envelope,
-)
-
-
 EMPTY_CAPACITY = {
     "active_count": 0,
     "pending_count": 0,
@@ -201,17 +194,6 @@ def test_prepare_only_inspects_packaged_local_image_without_network_or_cache(
         "discover_local_docker",
         lambda: events.append("discover") or (Path("/docker"), Path("/docker.sock")),
     )
-    monkeypatch.setattr(
-        cli_module.release_authority,
-        "download_product_enablement",
-        lambda *_args, **_kwargs: pytest.fail("prepare attempted download"),
-    )
-    monkeypatch.setattr(
-        cli_module.release_authority,
-        "cache_product_enablement",
-        lambda *_args, **_kwargs: pytest.fail("prepare attempted cache write"),
-    )
-
     class Client:
         def __init__(self, cli, endpoint, selected_config):
             assert (cli, endpoint, selected_config) == (
@@ -873,15 +855,6 @@ def test_runtime_defaults_to_fresh_sealed_local_authorization(
     authorization = object()
     calls = []
     monkeypatch.setattr(
-        pico_cli.release_authority,
-        "load_cached_product_envelope",
-        lambda: (_ for _ in ()).throw(
-            pico_cli.release_authority.ReleaseAuthorityError(
-                "sandbox_product_not_enabled"
-            )
-        ),
-    )
-    monkeypatch.setattr(
         pico_cli,
         "local_docker_sandbox_runtime",
         lambda: calls.append("local") or (image, authorization),
@@ -891,190 +864,6 @@ def test_runtime_defaults_to_fresh_sealed_local_authorization(
     assert calls == ["local"]
     assert not (home / ".pico").exists()
 
-
-@pytest.mark.parametrize(
-    (
-        "release_reason",
-        "cache_present",
-        "expected_code",
-        "expected_reason",
-    ),
-    (
-        (
-            "sandbox_product_enablement_invalid",
-            False,
-            "sandbox_product_enablement_invalid",
-            "sandbox_product_enablement_invalid",
-        ),
-        (
-            "release_attestation_expired",
-            False,
-            "sandbox_product_enablement_expired",
-            "release_attestation_expired",
-        ),
-        (
-            "sandbox_product_not_enabled",
-            True,
-            "sandbox_product_enablement_invalid",
-            "sandbox_product_enablement_invalid",
-        ),
-    ),
-)
-def test_runtime_existing_product_cache_never_falls_back_to_local(
-    tmp_path,
-    monkeypatch,
-    release_reason,
-    cache_present,
-    expected_code,
-    expected_reason,
-):
-    home = tmp_path / "home"
-    home.mkdir()
-    monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
-    if cache_present:
-        cache_path = (
-            pico_cli.release_authority.product_enablement_cache_root()
-            / pico_cli.release_authority.PRODUCT_ENABLEMENT_CACHE_NAME
-        )
-        cache_path.parent.mkdir(parents=True)
-        cache_path.write_text("corrupt", encoding="utf-8")
-    monkeypatch.setattr(
-        pico_cli.release_authority,
-        "load_cached_product_envelope",
-        lambda: (_ for _ in ()).throw(
-            pico_cli.release_authority.ReleaseAuthorityError(release_reason)
-        ),
-    )
-    monkeypatch.setattr(
-        pico_cli,
-        "local_docker_sandbox_runtime",
-        lambda: pytest.fail("existing Product cache fell back to local"),
-    )
-
-    with pytest.raises(CliError) as caught:
-        pico_cli._load_sandbox_runtime()
-
-    assert caught.value.code == expected_code
-    assert caught.value.details == {"reason_code": expected_reason}
-
-
-def test_runtime_product_gate_reads_exact_cached_attestation(
-    tmp_path,
-    monkeypatch,
-):
-    home = tmp_path / "home"
-    home.mkdir()
-    monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
-    configure_test_authority(monkeypatch)
-    image = SimpleNamespace(
-        registry_reference="registry.example/pico@sha256:" + "d" * 64,
-        reference="sha256:" + "d" * 64,
-        image_set_digest="sha256:" + "4" * 64,
-        policy_digest="sha256:" + "5" * 64,
-        corpus_digest="sha256:" + "6" * 64,
-    )
-    monkeypatch.setattr(
-        pico_cli.release_authority,
-        "installed_tree_digest",
-        lambda _root, _version=None: "sha256:" + "3" * 64,
-    )
-    monkeypatch.setattr(pico_cli, "load_image_manifest", lambda _path: image)
-    monkeypatch.setattr(pico_cli.metadata, "version", lambda _name: "0.1.0")
-    envelope = signed_product_envelope()
-    pico_cli.release_authority.cache_product_enablement(
-        pico_cli.release_authority.canonical_json(envelope),
-        package_root=tmp_path,
-        distribution_version="0.1.0",
-        image=image,
-    )
-    authorization = object()
-    monkeypatch.setattr(
-        pico_cli,
-        "verify_docker_sandbox_runtime_authorization",
-        lambda *_args, **_kwargs: authorization,
-    )
-
-    assert pico_cli._load_sandbox_runtime() == (image, authorization)
-
-
-def test_candidate_attestation_is_process_scoped_and_never_cached(
-    tmp_path,
-    monkeypatch,
-):
-    home = tmp_path / "home"
-    home.mkdir()
-    monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
-    configure_test_authority(monkeypatch)
-    image = SimpleNamespace(
-        registry_reference="registry.example/pico@sha256:" + "d" * 64,
-        reference="sha256:" + "d" * 64,
-        image_set_digest="sha256:" + "4" * 64,
-        policy_digest="sha256:" + "5" * 64,
-        corpus_digest="sha256:" + "6" * 64,
-    )
-    monkeypatch.setattr(
-        pico_cli.release_authority,
-        "installed_tree_digest",
-        lambda _root, _version=None: "sha256:" + "3" * 64,
-    )
-    monkeypatch.setattr(pico_cli, "load_image_manifest", lambda _path: image)
-    monkeypatch.setattr(pico_cli.metadata, "version", lambda _name: "0.1.0")
-    candidate = tmp_path / "candidate.json"
-    candidate.write_bytes(
-        pico_cli.release_authority.canonical_json(signed_candidate_envelope())
-    )
-    candidate.chmod(0o600)
-    monkeypatch.setenv(
-        pico_cli.release_authority.CANDIDATE_ATTESTATION_ENV,
-        str(candidate),
-    )
-    monkeypatch.setenv(
-        pico_cli.release_authority.CANDIDATE_NONCE_ENV,
-        "c" * 64,
-    )
-    authorization = object()
-
-    def verify_candidate(envelope, **kwargs):
-        pico_cli.release_authority.verify_candidate_attestation(
-            envelope,
-            package_root=kwargs["package_root"],
-            distribution_version=kwargs["distribution_version"],
-            image=kwargs["image"],
-            candidate_nonce=kwargs["candidate_nonce"],
-        )
-        return authorization
-
-    monkeypatch.setattr(
-        pico_cli,
-        "verify_docker_sandbox_runtime_authorization",
-        verify_candidate,
-    )
-
-    monkeypatch.setattr(
-        pico_cli,
-        "local_docker_sandbox_runtime",
-        lambda: pytest.fail("explicit Candidate fell back to local"),
-    )
-
-    assert pico_cli._load_sandbox_runtime() == (image, authorization)
-    assert not (home / ".pico").exists()
-
-    monkeypatch.setenv(
-        pico_cli.release_authority.CANDIDATE_NONCE_ENV,
-        "d" * 64,
-    )
-    with pytest.raises(CliError) as caught:
-        pico_cli._load_sandbox_runtime()
-    assert caught.value.code == "sandbox_candidate_attestation_mismatch"
-
-    monkeypatch.setenv(
-        pico_cli.release_authority.CANDIDATE_NONCE_ENV,
-        "c" * 64,
-    )
-    candidate.chmod(0o644)
-    with pytest.raises(CliError) as caught:
-        pico_cli._load_sandbox_runtime()
-    assert caught.value.code == "sandbox_candidate_attestation_invalid"
 
 
 def test_build_agent_wires_verified_runtime_to_one_docker_context(

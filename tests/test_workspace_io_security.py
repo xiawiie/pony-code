@@ -9,7 +9,7 @@ from pico import Pico, SessionStore, WorkspaceContext
 from pico import security as securitylib
 from pico import tools as tool_module
 from pico.providers.fake import FakeModelClient
-from pico.tool_context import ToolContext
+from pico.tools.context import ToolContext
 
 
 def _context(root):

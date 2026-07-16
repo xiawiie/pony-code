@@ -5,9 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from scripts import docker_sandbox_release as sandbox_release
-from scripts import evaluate
-from tests.release_authority_fixture import runtime_case_rows
+from scripts.evaluation import evaluate
 
 
 BASELINE = {
@@ -437,46 +435,15 @@ def test_logical_suites_split_fast_full_contract_and_real_work():
     ]
 
 
-def test_sandbox_real_forwards_required_external_fixtures(monkeypatch, tmp_path):
-    mount_fixture = tmp_path / "mount-fixture"
-    device_fixture = tmp_path / "device-fixture"
-    monkeypatch.setenv("PICO_SANDBOX_MOUNT_FIXTURE", str(mount_fixture))
-    monkeypatch.setenv("PICO_SANDBOX_DEVICE_FIXTURE", str(device_fixture))
+def test_sandbox_real_uses_the_local_runtime_verifier():
+    command = evaluate._sandbox_real_command("linux")
 
-    command = evaluate._sandbox_real_command(
-        "linux",
-        "dist/pico-0.2.0-py3-none-any.whl",
+    assert command[0] == "sandbox.real.linux"
+    assert command[1][-2:] == (
+        "scripts/sandbox/verify_runtime.py",
+        "--require-ready",
     )
-    vertical = command[1]
-
-    assert vertical[vertical.index("--mount-fixture-source") + 1] == str(
-        mount_fixture
-    )
-    assert vertical[vertical.index("--device-fixture-source") + 1] == str(
-        device_fixture
-    )
-
-
-def test_sandbox_real_requires_the_single_exact_project_wheel(tmp_path):
-    (tmp_path / "pyproject.toml").write_text(
-        '[project]\nname = "pico"\nversion = "0.2.0"\n',
-        encoding="utf-8",
-    )
-    dist = tmp_path / "dist"
-    dist.mkdir()
-    expected = dist / "pico-0.2.0-py3-none-any.whl"
-
-    with pytest.raises(ValueError, match="exactly one project wheel"):
-        evaluate._matching_project_wheel(tmp_path)
-
-    expected.write_bytes(b"wheel")
-    assert evaluate._matching_project_wheel(tmp_path) == expected.relative_to(
-        tmp_path
-    ).as_posix()
-
-    (dist / "pico-0.1.0-py3-none-any.whl").write_bytes(b"stale")
-    with pytest.raises(ValueError, match="exactly one project wheel"):
-        evaluate._matching_project_wheel(tmp_path)
+    assert command[2] == "exit"
 
 
 def test_pr_suites_do_not_require_baseline_or_real_sandbox(tmp_path):
@@ -530,7 +497,7 @@ def test_sandbox_contract_rejects_skip_and_xfail_summaries():
         assert evaluate._functional_passed("no_skip", 0, output) is False
 
 
-def test_sandbox_fails_on_pytest_skip_and_invalid_vertical(tmp_path):
+def test_sandbox_fails_on_pytest_skip_and_unready_runtime(tmp_path):
     calls = 0
     (tmp_path / "pyproject.toml").write_text(
         '[project]\nname = "pico"\nversion = "0.2.0"\n',
@@ -542,13 +509,8 @@ def test_sandbox_fails_on_pytest_skip_and_invalid_vertical(tmp_path):
         calls += 1
         if "pytest" in argv:
             return SimpleNamespace(returncode=0, stdout="1 passed, 1 skipped", stderr="")
-        if argv[:2] == ["uv", "build"]:
-            dist = cwd / "dist"
-            dist.mkdir()
-            (dist / "pico-0.2.0-py3-none-any.whl").write_bytes(b"wheel")
-            return SimpleNamespace(returncode=0, stdout="", stderr="")
-        if "docker_sandbox_release.py" in argv:
-            return SimpleNamespace(returncode=0, stdout="{}", stderr="")
+        if any(item.endswith("verify_runtime.py") for item in argv):
+            return SimpleNamespace(returncode=1, stdout="{}", stderr="not ready")
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     payload, _json_path, _markdown_path = evaluate.run_evaluation(
@@ -559,94 +521,12 @@ def test_sandbox_fails_on_pytest_skip_and_invalid_vertical(tmp_path):
         system_name="darwin",
     )
 
-    assert calls == 3
+    assert calls == 2
     assert payload["status"] == "fail"
     assert [row["status"] for row in payload["scenarios"]] == [
         "fail",
-        "pass",
         "fail",
     ]
-
-
-def test_mandatory_sandbox_artifacts_require_exact_complete_schema():
-    assert evaluate._docker_vertical_passed("{}", "darwin") is False
-
-    expected = sandbox_release.validate_expected_manifest(
-        {
-            "record_type": "docker_sandbox_release_expected",
-            "format_version": 1,
-            "release_nonce": "a" * 64,
-            "commit": "b" * 40,
-            "distribution_sha256": "sha256:" + "1" * 64,
-            "sdist_sha256": "sha256:" + "6" * 64,
-            "image_set_digest": "sha256:" + "5" * 64,
-            "images": [
-                {
-                    "platform": "linux/arm64",
-                    "architecture": "arm64",
-                    "image_digest": "sha256:" + "3" * 64,
-                    "image_id": "sha256:" + "7" * 64,
-                    "registry_reference": (
-                        "registry.example/pico@sha256:" + "3" * 64
-                    ),
-                },
-                {
-                    "platform": "linux/amd64",
-                    "architecture": "amd64",
-                    "image_digest": "sha256:" + "8" * 64,
-                    "image_id": "sha256:" + "9" * 64,
-                    "registry_reference": (
-                        "registry.example/pico@sha256:" + "8" * 64
-                    ),
-                },
-            ],
-            "policy_digest": "sha256:" + "4" * 64,
-            "corpus_digest": sandbox_release.CORPUS_DIGEST,
-            "jobs": [dict(job) for job in sandbox_release.expected_release_jobs()],
-        }
-    )
-    job = expected["jobs"][0]
-    artifact = sandbox_release._base_artifact(
-        expected["distribution_sha256"],
-        "sha256:" + "2" * 64,
-        SimpleNamespace(
-            image_set_digest=expected["image_set_digest"],
-            reference=expected["images"][0]["image_digest"],
-            policy_digest=expected["policy_digest"],
-        ),
-    )
-    artifact.update(
-        {
-            "status": "passed",
-            "reason_code": "mandatory_checks_passed",
-            "platform": job["platform"],
-            "architecture": job["architecture"],
-            "engine_profile": job["engine_profile"],
-            "mandatory_passed": len(sandbox_release.MANDATORY_CHECK_IDS),
-            "mandatory_failed": 0,
-            "container_calls": 1,
-            "target_started_count": 1,
-            "release_binding": sandbox_release.release_binding(
-                expected,
-                job["job_id"],
-            ),
-        }
-    )
-    for check in artifact["checks"]:
-        check.update(status="pass", reason_code="verified")
-    sandbox_release._set_case_evidence(
-        artifact,
-        "complete",
-        "verified",
-        runtime_case_rows(),
-    )
-
-    serialized = json.dumps(artifact)
-    assert evaluate._docker_vertical_passed(serialized, "darwin") is True
-    assert evaluate._docker_vertical_passed(serialized, "linux") is False
-
-    artifact["unexpected"] = True
-    assert evaluate._docker_vertical_passed(json.dumps(artifact), "darwin") is False
 
 
 def test_live_requires_provider_before_calling_runner(tmp_path):

@@ -1,7 +1,7 @@
 import builtins
 
-from pico import recovery_policy
-from pico.recovery_policy import (
+from pico.recovery import policy as recovery_policy
+from pico.recovery.policy import (
     command_risk_class,
     evaluate_command_approval,
     snapshot_bytes_eligibility,

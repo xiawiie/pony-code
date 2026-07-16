@@ -4,11 +4,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from pico.checkpoint_store import CheckpointStore
-from pico.cli_migration import _build_tool_changes, _identity, _migration
-from pico.migration import ABSENT, CANDIDATE_READY, PREPARING
-from pico.recovery_models import new_checkpoint_record, new_tool_change_record
-from pico.tool_change_converter import convert_tool_change_v1
+from pico.state.checkpoint_store import CheckpointStore
+from pico.cli.migration import _build_tool_changes, _identity, _migration
+from pico.recovery.migration import ABSENT, CANDIDATE_READY, PREPARING
+from pico.recovery.models import new_checkpoint_record, new_tool_change_record
+from pico.tools.change_converter import convert_tool_change_v1
 from pico.workspace import WorkspaceContext
 
 

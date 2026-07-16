@@ -6,7 +6,7 @@ from pico.context.digest import (
     render_digest_content,
     should_digest,
 )
-from pico.model_capabilities import TokenAccounting
+from pico.agent.model_capabilities import TokenAccounting
 
 
 def test_should_digest_threshold():

@@ -8,7 +8,7 @@ import re
 
 from pico import security as securitylib
 from pico.context.escaping import escape_pico_tags
-from pico.model_capabilities import TokenAccounting
+from pico.agent.model_capabilities import TokenAccounting
 
 from .retrieval import MemoryQuerySnapshot, tokenize
 

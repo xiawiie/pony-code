@@ -1,11 +1,11 @@
 import json
 import os
 
-from pico.checkpoint_store import CheckpointStore
+from pico.state.checkpoint_store import CheckpointStore
 from pico.cli import main
-from pico.recovery_manager import RecoveryManager, collect_recovery_review_items
-from pico.recovery_models import new_checkpoint_record, new_tool_change_record
-from pico.tool_change_recorder import ToolChangeRecorder
+from pico.recovery.manager import RecoveryManager, collect_recovery_review_items
+from pico.recovery.models import new_checkpoint_record, new_tool_change_record
+from pico.tools.change_recorder import ToolChangeRecorder
 
 
 def write_restorable_checkpoint(store, tmp_path, checkpoint_id):
@@ -784,8 +784,8 @@ def test_quiet_suppresses_text_inspection_output(tmp_path, capsys):
 
 
 def test_collect_recovery_review_items_has_stable_shape(tmp_path):
-    from pico.checkpoint_store import CheckpointStore
-    from pico.cli_recovery import collect_recovery_review_items
+    from pico.state.checkpoint_store import CheckpointStore
+    from pico.cli.recovery import collect_recovery_review_items
 
     payload = collect_recovery_review_items(CheckpointStore(tmp_path), tmp_path)
 

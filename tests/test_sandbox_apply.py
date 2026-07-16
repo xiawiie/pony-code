@@ -12,12 +12,12 @@ from types import SimpleNamespace
 
 import pytest
 
-import pico.sandbox_apply as sandbox_apply
+import pico.sandbox.apply as sandbox_apply
 from pico import cli as pico_cli
-from pico.checkpoint_store import CheckpointStore, CheckpointStoreError
-from pico.recovery_policy import DEFAULT_MAX_BLOB_SIZE
-from pico.safe_subprocess import build_trusted_executables
-from pico.sandbox_apply import (
+from pico.state.checkpoint_store import CheckpointStore, CheckpointStoreError
+from pico.recovery.policy import DEFAULT_MAX_BLOB_SIZE
+from pico.tools.subprocess import build_trusted_executables
+from pico.sandbox.apply import (
     _validate_capture,
     _validate_apply_journal,
     _validate_diff,
@@ -26,7 +26,7 @@ from pico.sandbox_apply import (
     SourceApplyStore,
     StagingObserver,
 )
-from pico.sandbox_session import (
+from pico.sandbox.session import (
     clear_source_apply_authority,
     find_project_sandbox_session,
     read_source_apply_authority,

@@ -11,7 +11,7 @@ import pytest
 
 from pico import Pico, SessionStore, WorkspaceContext
 from pico.cli import main
-from pico.cli_start import run_agent_once
+from pico.cli.start import run_agent_once
 from pico.config import write_project_env_assignments
 from pico.providers.response import Response, StopReason
 from pico.tools import _ApprovedShellExecution
@@ -94,16 +94,16 @@ def test_offline_a1_canary_crosses_real_boundaries_without_normal_artifact_leak(
 ):
     secret = "ghp_" + "A" * 32
     safe_blob_bytes = b"safe recovery bytes\n"
-    monkeypatch.setenv("PICO_DEEPSEEK_API_KEY", secret)
+    monkeypatch.setenv("PICO_API_KEY", secret)
     monkeypatch.setattr(
-        "pico.cli_diagnostics.check_api_connectivity",
+        "pico.cli.diagnostics.check_api_connectivity",
         Mock(side_effect=AssertionError("offline doctor attempted network")),
     )
     write_project_env_assignments(
         tmp_path,
         {
             "PICO_API_URL": "https://api.deepseek.com",
-            "PICO_DEEPSEEK_API_KEY": secret,
+            "PICO_API_KEY": secret,
         },
     )
 

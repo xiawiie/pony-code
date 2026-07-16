@@ -2,7 +2,7 @@
 
 from pico.providers.response import Response, StopReason
 from pico.runtime import Pico
-from pico.session_store import SessionStore
+from pico.state.session_store import SessionStore
 from pico.workspace import WorkspaceContext
 
 

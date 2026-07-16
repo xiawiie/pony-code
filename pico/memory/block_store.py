@@ -27,7 +27,7 @@ from types import MappingProxyType
 from typing import Literal
 
 from pico import security as securitylib
-from pico.file_lock import locked_file
+from pico.state.file_lock import locked_file
 from pico.security import (
     ensure_private_dir,
     ensure_private_file,

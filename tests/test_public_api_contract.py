@@ -1,5 +1,6 @@
 import importlib
 import sys
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -35,7 +36,7 @@ def test_build_agent_returns_pico(tmp_path):
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
     (tmp_path / ".env").write_text(
         "PICO_API_URL=https://api.deepseek.com/anthropic/v1\n"
-        "PICO_DEEPSEEK_API_KEY=test-key\n",
+        "PICO_API_KEY=test-key\n",
         encoding="utf-8",
     )
     args = build_arg_parser().parse_args([
@@ -51,8 +52,8 @@ def test_build_agent_returns_pico(tmp_path):
 
 
 def test_lightweight_package_split_uses_package_paths_without_legacy_shims():
-    from pico.evaluation.experiments_recovery import run_context_ablation_v2
-    from pico.evaluation.fixed_benchmark import BenchmarkEvaluator
+    from benchmarks.evaluation.experiments_recovery import run_context_ablation_v2
+    from benchmarks.evaluation.fixed_benchmark import BenchmarkEvaluator
     from pico.providers.fake import FakeModelClient as ProviderFakeModelClient
 
     assert BenchmarkEvaluator is not None
@@ -63,7 +64,7 @@ def test_lightweight_package_split_uses_package_paths_without_legacy_shims():
 
 
 def test_memory_feature_exports_exactly_seven_production_helpers():
-    from pico.features import memory
+    import pico.memory.service as memory
 
     assert memory.__all__ == [
         "canonicalize_path",
@@ -118,7 +119,7 @@ def test_removed_facades_cannot_be_imported(module_parts):
     sys.modules.pop(module_name, None)
     with pytest.raises(ModuleNotFoundError) as caught:
         importlib.import_module(module_name)
-    assert caught.value.name == module_name
+    assert module_name.startswith(caught.value.name)
 
 
 def test_session_store_has_no_runtime_alias():
@@ -128,7 +129,8 @@ def test_session_store_has_no_runtime_alias():
 
 
 def test_subpackages_are_markers_without_reexports():
-    from pico import evaluation, memory, providers
+    from benchmarks import evaluation
+    from pico import memory, providers
 
     for package in (evaluation, memory, providers):
         assert not hasattr(package, "__all__")
@@ -139,7 +141,8 @@ def test_subpackages_are_markers_without_reexports():
 
 
 def test_cli_modules_do_not_reexport_test_helpers():
-    from pico import cli, cli_commands
+    from pico import cli
+    from pico.cli import commands as cli_commands
 
     assert not hasattr(cli, "HELP_DETAILS")
     for name in (
@@ -162,17 +165,15 @@ def test_packaging_discovers_pico_subpackages():
     pyproject = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
 
     assert pyproject["tool"]["setuptools"] == {
-        "packages": [
-            "pico",
-            "pico._docker_sandbox",
-            "pico.context",
-            "pico.features",
-            "pico.memory",
-            "pico.providers",
-        ],
         "include-package-data": False,
+        "packages": {
+            "find": {
+                "include": ["pico*"],
+                "namespaces": False,
+            }
+        },
         "package-data": {
-            "pico._docker_sandbox": [
+            "pico.sandbox.resources": [
                 "image-manifest.json",
                 "docker-config/config.json",
             ],
@@ -184,7 +185,7 @@ def test_docker_sandbox_resources_are_readable():
     import json
     from importlib.resources import files
 
-    root = files("pico._docker_sandbox")
+    root = files("pico.sandbox.resources")
     manifest = json.loads(
         root.joinpath("image-manifest.json").read_text(encoding="utf-8")
     )
@@ -201,13 +202,31 @@ def test_packaging_exposes_only_pico_cli_script():
     assert scripts.strip() == 'pico = "pico.cli:main"'
 
 
-def test_fixed_model_defaults_have_one_config_source():
+def test_packaging_declares_stable_version_license_and_project_urls():
+    project = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))[
+        "project"
+    ]
+
+    assert project["version"] in {"1.0.0rc1", "1.0.0"}
+    assert project["license"] == "MIT"
+    assert project["license-files"] == ["LICENSE"]
+    assert project["urls"]["Source"] == "https://github.com/xiawiie/pico"
+    assert Path("LICENSE").read_text(encoding="utf-8").startswith("MIT License\n")
+
+
+def test_provider_defaults_and_generic_env_names_have_one_config_source():
     from pico import config
 
-    assert config.DEFAULT_MODEL == "deepseek-v4-flash"
-    assert config.DEFAULT_API_URL == "https://api.deepseek.com/anthropic/v1"
-    assert config.API_KEY_ENV_NAME == "PICO_DEEPSEEK_API_KEY"
+    assert config.DEFAULT_PROVIDER == "anthropic"
+    assert config.SUPPORTED_PROVIDERS == ("anthropic", "openai", "ollama")
+    assert config.DEFAULT_MODEL == "claude-sonnet-4-6"
+    assert config.DEFAULT_API_URL == "https://api.anthropic.com/v1"
+    assert config.PROVIDER_ENV_NAME == "PICO_PROVIDER"
+    assert config.MODEL_ENV_NAME == "PICO_MODEL"
+    assert config.API_KEY_ENV_NAME == "PICO_API_KEY"
     assert config.API_URL_ENV_NAME == "PICO_API_URL"
+    assert config.API_VARIANT_ENV_NAME == "PICO_API_VARIANT"
+    assert config.AUTH_MODE_ENV_NAME == "PICO_AUTH_MODE"
     destinations = {action.dest for action in build_arg_parser()._actions}
     assert {"provider", "profile", "connection", "model", "base_url"}.isdisjoint(
         destinations

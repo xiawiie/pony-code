@@ -1,194 +1,113 @@
 # Pico 维护上下文
 
-本文是维护 Pico 时使用的领域语言和模块边界。操作说明见
-[CLI 安装与更新](docs/cli-installation-and-updates.md)，实现流向见[架构](docs/architecture.md)。
+本文定义 Pico 1.0 的通用语言和模块所有权。实现流向见[架构](docs/architecture.md)，操作和发布见
+[验证](docs/verification.md)。
 
-## 当前领域语言
+## 核心领域语言
 
-**Pico CLI**：唯一 console command `pico`。执行入口只有 `pico run`、`pico repl` 与
-`python -m pico`；inspection 与 recovery 使用显式子命令。
+| 术语 | 精确定义 | 不应混用 |
+| --- | --- | --- |
+| Source Root | 用户拥有的规范仓库；Sandbox 只能通过 Source Apply 修改 | Execution Root |
+| Execution Root | 当前模型可见工具共享的工作区；Host 为 Source Root，Sandbox 为 staging | Project State Root |
+| Project State Root | `.pico/` 下的 Session、Run、Checkpoint 与 Memory 状态 | Workspace 文件 |
+| Sandbox State Root | Sandbox capture、diff、apply journal 与恢复证据 | Project State Root |
+| Project Environment | lexical repository root 下唯一读取的 `.env` | shell 全局环境注入 |
+| Provider | 用户在 `.env` 中选择的 `anthropic`、`openai` 或 `ollama` | 内部 Transport |
+| API Variant | Provider 内显式选择的 wire API，例如 `responses` | 自动探测或 fallback |
+| Transport | `anthropic_messages`、`openai_responses`、`openai_chat_completions`、`ollama_chat` | Provider 品牌 |
+| Model Request | Pico 构造的 provider-neutral 请求视图 | 原始 HTTP payload |
+| Model Attempt | Agent Loop 为得到一个 Action 发起的逻辑尝试 | Transport Attempt |
+| Transport Attempt | Provider client 的一次真实 HTTP request | Tool step |
+| Action | 一个 Tool、Final 或 Retry 决策 | 任意模型文本 |
+| Canonical Messages | Session Tree 中唯一的对话 transcript | Provider 私有 history |
+| Session Tree | append-only JSONL 分支树；rewind/fork 追加而非覆写 | Git history |
+| Compaction | 用 summary + recent tail 重建 active request | 删除 Session 历史 |
+| Recovery Record | Checkpoint Record 或 Tool Change Record | Session task checkpoint |
+| Source Apply | 将已审查 exact diff 写回 Source Root 的独立事务 | Sandbox tool approval |
 
-**Model Request**：由 system、tools、Canonical Messages、token budget 和 cache breakpoints 组成的
-runtime 请求，不等同于 Provider payload。
+## Provider 配置合同
 
-**Model Response**：Provider-neutral `Response`。Provider wire JSON 不进入 AgentLoop 合同；当前不支持
-streaming。
+Model API Configuration 仅由六个通用变量组成：
 
-**Model Attempt**：AgentLoop 为当前 Run 构建一次 Model Request 并尝试取得一个 Action 的逻辑轮次。
-它由 `TaskState.attempts` 计数，不等于工具执行次数或底层网络请求次数。
+```text
+PICO_PROVIDER
+PICO_MODEL
+PICO_API_URL
+PICO_API_KEY
+PICO_API_VARIANT
+PICO_AUTH_MODE
+```
 
-**Model Retry**：可重试 Provider 失败后，由 AgentLoop 重新发起的 Model Attempt。最多两次，延迟为
-0.5 秒和 1.0 秒；429 可使用上限 10 秒的 `Retry-After`。它保留尚未完成的 `RetryAction` 反馈，但不复用
-已经得到成功响应的请求，也不改变 endpoint、协议或 model。
+项目 `.env` 高于进程环境。运行时不读取厂商变量，也不兼容 `PICO_DEEPSEEK_API_KEY`。`auto` 是 Provider 静态默认值，
+不是探测器。协议、模型、URL 或认证变更都必须能在 `pico config show` 与 `pico doctor` 中被观察。
 
-**Transport Attempt**：一个 Model Attempt 在 Provider client 内的一次真实 transport 执行，例如一次
-HTTP POST。它包含首次执行与可能的 Transport Retry，不等于 Model Attempt。
+Model Session Binding 固化 `protocol_family`、`model` 与 `endpoint_hash`。绑定变化时拒绝恢复，尤其不能把 OpenAI
+reasoning state 或 Anthropic thinking block 跨协议重放。
 
-**Transport Retry**：同一 Model Attempt 中，首次 Transport Attempt 之后对同一 Model Request 的再次
-执行。当前 production Provider client 每个 Model Attempt 最多执行一次 HTTP 请求，因此该值应为零；
-live 证据若观察到非零值只能标记为 degraded。它不同于 `RetryAction`；后者会开始新的 Model Attempt。
+## Agent 与状态不变量
 
-**Model Turn / Model Failure**：Model Turn 是成功取得并解码 Action 的 Model Attempt；Model Failure 是
-Provider complete 或 response processing 阶段失败的 Model Attempt。`model_attempts` 可以大于两者之和，
-例如 request build 或进程强杀发生在可配对 trace 写入之前。
+- 一个 attempt 只产生一个 Action；多个 tool calls 全部拒绝，不做部分执行。
+- Provider client 每个 Model Attempt 至多一个 Transport Attempt。
+- retry 与 tool follow-up 复用同一 top-level turn 的 immutable InjectionSnapshot。
+- Canonical Messages 是唯一 transcript；Provider adapter 不拥有第二套可变历史。
+- Session、Run、Checkpoint 和 Tool Change 分别有独立格式与 reader，不以 release version 代替 format version。
+- Compaction 不删除 append-only 历史，不授予 Memory 写权限，也不恢复 workspace。
+- `memory_save` 只看当前 top-level user request 的明确授权；delegate 永远不能写 Durable Memory。
+- primary failure 不能被 cleanup、observer 或 finalizer 的次生异常覆盖。
 
-维护文档不得用含义不明确的 “Provider Call” 同时指代 Model Attempt 与 Transport Attempt。
+## Workspace 与 Sandbox 不变量
 
-**Action**：`decode_action` 从 Model Response 产生的 Tool、Final 或 Retry 决策。一次 attempt 只处理
-一个 Action。
+- 所有文件 I/O 锚定可信 root，拒绝 symlink、hardlink、special file、越界路径和身份漂移。
+- Host 模式不是 OS sandbox，文档和输出不得暗示隔离保证。
+- Sandbox 中所有模型可见文件能力只面向 Execution Root；Source Root 不挂载到容器。
+- `sandbox status`、`prepare` 和只读 inspection 不联网、不 pull/build/repair，也不创建隐式 product state。
+- 公开 Sandbox runtime 只接受 sealed local authorization；1.0 不存在 candidate 或 distributed product enablement。
+- Source Apply 必须绑定刚审查的 immutable diff digest，并在独立 lock、journal、CAS 与 recovery 边界内执行。
+- 任一 identity、readiness、capture 或 apply 事实不明时 fail closed，不回退 Host。
 
-**Canonical Messages**：Session Tree 中唯一 transcript。Provider transport 不维护第二份历史；compaction 只改变
-active Model Request view，不删除 canonical entries。
+## 模块所有权
 
-**Session Tree**：append-only JSONL 中由 `id/parent_id` 形成的会话分支树。当前文件尾 entry 是 active leaf；
-rewind/fork 追加新分支，不重写旧历史。
-
-**Compaction**：把 active branch 的旧前缀总结为 Session entry，并保留 recent tail 的模型上下文变换。它不是
-Durable Memory 写入、历史删除或 workspace restore。
-
-**Task Checkpoint**：每个 top-level turn 结束时写入 Session Tree 的 continuation state，包含目标、进度、文件、
-Recovery checkpoint 引用和 Context usage。它不同于 Recovery Record。
-
-**Model API Configuration**：CLI 唯一可配置的模型连接信息：精确 API 根 `PICO_API_URL` 与凭证
-`PICO_DEEPSEEK_API_KEY`。model、协议和认证不是用户选项。
-_Avoid_：Provider、Profile、Connection、Preset
-
-**CLI Protocol Family**：Pico CLI 与 Model API 交换 Model Request/Response 的固定 wire contract，即 Anthropic
-Messages。运行时不自动探测、降级或切换协议。
-_Avoid_：SDK、Model Family、Compatibility Mode
-
-**Model API Endpoint**：实现 Anthropic Messages 的精确、已版本化 API root；Pico 只追加
-`/messages`，不补 `/v1`。第三方 endpoint 必须满足相同协议和 `x-api-key` 认证。
-_Avoid_：Provider Type、Profile、Vendor
-
-**Model Session Binding**：Session 固化的 `protocol_family`、`model` 与 `endpoint_hash`。恢复时必须与当前
-固定模型配置完全一致；旧 binding 不读取、不迁移。
-_Avoid_：自动迁移、Provider fallback、Endpoint Cache
-
-**Provider State**：native tool continuation 中保存的受限 opaque state。当前包括 OpenAI Responses encrypted
-reasoning item，以及 Anthropic `thinking` / `redacted_thinking` block。它不渲染、不进入普通日志，只在同一
-Model Session Binding 中按原协议重放并计入上下文预算。
-_Avoid_：Prompt Text、Working Memory、Cross-provider State
-
-**Project Environment**：当前 lexical repository root 下唯一允许读取的 `.env`。读取不搜索父仓库，
-也不把值注入全局 `os.environ`。
-
-**Format Version**：能被独立 reader 消费的顶层 record family 内部编码版本，不是项目 release 版本。
-
-**Recovery Record**：顶层 Checkpoint Record 或 Tool Change Record。它们与 embedded task checkpoint、
-trace event 和 Git commit 是不同概念。
-
-**Recovery Review**：发现 pending、interrupted、partial 或 conflict evidence 后，用户决定检查或恢复的
-显式步骤；runtime 不做静默回滚。
-
-**User Notes**：用户在 workspace 或 user scope 的 `notes/*.md` 中维护、agent 只读的 Markdown。
-
-**Agent Notes**：每个 scope 唯一的 append-only `agent_notes.md`，只在用户明确要求记忆时追加。
-
-**Memory Query Snapshot**：一个 top-level turn 内由 Memory index、recall 与 link expansion 共享的 path、metadata、
-frontmatter、原文和 lexical index。若 bounded no-follow inventory 完全一致，parsed snapshot 可跨 turn 复用；
-任何文件增删改、identity 变化或不安全 inventory 都使 cache 失效。
-
-**Source Root**：用户拥有的规范项目树；Sandbox 从它建立基线，只有 Source Apply Transaction 可以把
-已审查变更写回它。
-_Avoid_：Workspace Root、Container Workspace
-
-**Execution Root**：当前运行中所有模型可见工具共享的项目视图根；Host 模式使用 Source Root，Sandbox
-模式使用独立 staging。
-_Avoid_：Pico Root、Shell Root
-
-**Project State Root**：与 Source Root 关联的 Pico 私有项目状态根，保存 Session、Run、Checkpoint 和
-Memory；它不是 Execution Root。
-_Avoid_：Workspace State、Sandbox Files
-
-**Sandbox State Root**：某个 Sandbox Session 的私有宿主状态根，保存 staging、身份和审计状态；它与
-Project State Root 分属不同恢复域。
-_Avoid_：Project `.pico`、Container State
-
-**Workspace View**：Execution Root 的物理位置与模型所见逻辑 `/workspace` 之间的单一映射。
-_Avoid_：Virtual Filesystem、Sandbox Backend
-
-**Sandbox Session**：把一个 Pico Session、Source Root、Execution Root、Staging Baseline、Sandbox Identity
-和最终 diff/apply 状态绑定成同一生命周期的实体。
-_Avoid_：Container、Shell Call
-
-**Staging Baseline**：Sandbox Session 启动时对获准 source 内容形成的不可变可信快照；它是 effect 和
-Session diff 的比较起点。
-_Avoid_：Git Commit、Source HEAD
-
-**Source Apply Transaction**：把同一 immutable reviewed diff 从 Sandbox Session 写回 Source Root 的独立
-授权事务；external authority reservation先于journal/guard/Session applying发布，冲突或事实不明时不产生部分
-安全路径写入。
-_Avoid_：Restore、Auto Merge、Sandbox Save
-
-**Source Apply Authority**：按lexical Source Root索引的external、owner-only恢复锚点；完整绑定source、
-Sandbox/state root、control-directory identity、journal和diff，使source root replacement后仍能阻断mutation并由
-`sandbox reconcile --yes`定位证据。
-_Avoid_：Session Pointer、Apply Cache、Orphan Hint
-
-**Sandbox Contract**：Pico 对一次 sandboxed 执行定义的稳定合同，覆盖已批准输入、资源边界、启动与
-失败语义、结果和证据；合同不由具体 OS 隔离实现或其输出决定。
-_Avoid_：Docker Flags、Sandbox Backend
-
-**Sandbox Identity**：Pico 对installed distribution、Docker CLI/endpoint、canonical image set及宿主选择的OCI
-record、policy、corpus和当前runtime authorization形成的可验证执行身份；身份无法确认时target不得启动。
-_Avoid_：PATH Identity、Docker Tag、Executable Path
-
-**Sandbox Local Authorization**：每次本机启动由可信Pico代码密封生成、绑定当前安装树与packaged
-image/policy/corpus/platform的非发布执行能力；只接受already-present exact image，不缓存、不联网、不由环境开关提供。
-_Avoid_：Product Enablement、Development Approval、Local License
-
-**Sandbox Feasibility Approval**：D1 对 exact candidate envelope 和版本化 mandatory corpus 的不可变结论，
-只允许进入 D2-D6 实现，本身不解锁 local 或 distributed Sandbox 产品入口，也不跨 corpus 版本等价。
-_Avoid_：Sandbox Enabled、Release Approval
-
-**Sandbox Product Enablement**：D7 可信四目标聚合后签发、与 exact distribution/image/policy/evidence 绑定的
-detached 分布式发布执行门；它不等同于ADR-0042的严格本机授权。
-_Avoid_：Architecture Accepted、D1 Approved、Candidate Available
-
-**Sandbox Candidate Attestation**：release controller在92-job production aggregate后签发的24小时nonce-bound
-能力，只允许四平台最终public CLI smoke；它不供`prepare`下载、不写Product cache，也不表示产品已启用。
-_Avoid_：Product Enablement、Preview License、Cached Candidate
-
-**Sandbox Policy**：Pico 为 sandboxed Shell 及其完整子进程树定义的文件、网络与 IPC 资源边界；
-它不表达工具是否符合用户意图。
-_Avoid_：Tool Policy、Approval Policy、Permission Prompt
-
-**Sandbox Outcome**：Pico 对一次 sandboxed Shell call 的 wrapper、target lifecycle 与 cleanup 事实的
-规范化分类；它不同于 readiness、target exit code、Shell Result 和 Tool Change status。
-_Avoid_：Command Result、Exit Code、Tool Status
-
-## 模块边界
-
-| 边界 | 当前职责 |
+| 包 | 唯一责任 |
 | --- | --- |
-| `pico.cli*` | 解析显式命令、展示结果、调用 runtime/inspection/recovery API |
-| `pico.config` | 精确根目录 `.env`、固定模型配置解析、stdlib TOML 读取与安全 secret 写入 |
-| `pico.model_capabilities`、`pico.context*`、`pico.prompt_prefix` | 统一 token 账户、请求预算、Context Sources、digest 与稳定前缀 |
-| `pico.providers.*` | Provider wire transport 与 Provider-neutral `Response` |
-| `pico.action_codec`、`pico.agent_loop` | Action 解码与单 attempt/单 action 协调 |
-| `pico.tools`、`pico.tool_executor` | 工具 schema、policy/approval、单次执行与 effect terminalization |
-| `pico.session_store`、`pico.compaction`、`pico.run_store` | JSONL Session Tree、active context compaction 与 run/report/trace persistence |
-| `pico.checkpoint_store`、`pico.recovery_*` | recovery records、preview、restore 与 durability |
-| `pico.memory.*` | User Notes、Agent Notes、query snapshot 与 retrieval |
+| `pico.agent` | Action、Agent Loop、Canonical Messages、compaction、模型预算与观测 |
+| `pico.cli` | 显式命令、参数解析、人类/JSON 输出、inspection、doctor 与 REPL |
+| `pico.context` | Context sources、chunk、escaping、render 与 digest |
+| `pico.memory` | User/Agent Notes、recall、retrieval、RepoMap 与 memory service |
+| `pico.providers` | wire adapter、Provider-neutral Response、factory 与 API probe |
+| `pico.recovery` | 恢复模型、policy、migration、writer 与 manager |
+| `pico.sandbox` | Docker local runtime、identity、staging、network、diff/apply 与资源 |
+| `pico.state` | Session/Run/Checkpoint store、TaskState 与 file lock |
+| `pico.tools` | Tool schema、policy/approval 协调、effect recorder 与受限 subprocess |
+| `pico.workspace` | root discovery、workspace view、snapshot 与 observer |
+| `pico.config` | `.env`、`pico.toml`、Provider 解析和私有 secret 写入 |
+| `pico.runtime` | 跨领域对象装配和 Pico 公共运行时 |
+| `pico.security` | 共享 no-follow、private-file、redaction 与安全原语 |
 
-## 维护不变量
+## 依赖方向
 
-- 兼容边界必须显式且短期：旧 `--max-new-tokens` 仅 warning alias；legacy Session 仅在显式首次 resume 时
-  candidate+backup 迁移。正常 runtime 不维护多代 Session 分派。
-- 外部输入继续 fail closed；路径必须锚定 trusted root，私有文件拒绝 symlink、hardlink 和特殊文件。
-- secret 在 session、trace、report、tool result 与 recovery artifact 之前统一脱敏。
-- approval 发生在 mutation lock 之前；primary exception 不被 cleanup/finalizer 的次生错误覆盖。
-- Session、Checkpoint Record 与 Tool Change Record 只接受各自当前 type/version。
-- 运行时第三方依赖保持为零；安全与恢复代码不因复杂度指标机械拆分。
-- Sandbox 中所有模型可见工具共享同一 Workspace View；Source Root、Project State Root、Sandbox State Root
-  parent、host HOME 和 Docker socket 均不得进入 guest。
-- `sandbox status/list/inspect/diff/prune --dry-run` 零 mutation；Feasibility Approval缺失阻断实现/发布而非runtime。
-  本机runtime要求sealed local authorization，分布式release runtime要求Product Enablement；任一identity不一致均在
-  模型请求/target前fail closed。Candidate Attestation仅是controller-owned final smoke例外，不能缓存或正式发布。
-- Source Apply固定为external control lock → source mutation lock → exact external reservation → journal/blobs →
-  source-local guard → Session applying → source mutation；authority清理使用anchored full-record CAS，公开diff reader
-  不得改变artifact ctime，显式`reconcile --yes`不依赖Session inventory猜测state root。
+```mermaid
+flowchart LR
+    CLI["cli"] --> RT["runtime"]
+    CLI --> CFG["config"]
+    RT --> AG["agent"]
+    AG --> PR["providers"]
+    AG --> TL["tools"]
+    AG --> CT["context"]
+    AG --> ST["state"]
+    TL --> WS["workspace"]
+    TL --> RC["recovery"]
+    RT --> MM["memory"]
+    RT --> SB["sandbox"]
+```
 
-详细不变量分别见[安全](docs/security.md)、[恢复](docs/recovery.md)与
-[Memory](docs/memory.md)。
+Provider factory 位于 `pico.providers.factory`；adapter 之间不得互相选择。Package `__init__.py` 保持薄，新的内部实现
+应从所属模块导入，而不是扩大 facade。
+
+## 变更纪律
+
+- 优先做满足需求的最小改动，不为假设中的未来 Provider、分布式 Sandbox 或旧变量添加抽象。
+- 行为变化必须有聚焦测试；结构变化必须同时验证 import、distribution archive 和 clean install。
+- 不移动不相关代码，不在同一变更中做无关格式化。
+- 外部输入和安全边界的错误码应稳定、可测试、无敏感值。
+- 文档中的路径、命令、Provider 表和支持矩阵必须与当前代码一致。
+- 发布证据只对 exact HEAD 有效；真实 API 或 Docker 测试不能用旧 SHA 的结果替代。

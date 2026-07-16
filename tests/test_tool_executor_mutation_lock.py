@@ -5,7 +5,7 @@ import pytest
 
 from pico import Pico, SessionStore, WorkspaceContext
 from pico.providers.fake import FakeModelClient
-from pico.task_state import TaskState
+from pico.state.task_state import TaskState
 
 
 def build_agent(tmp_path):
@@ -254,7 +254,7 @@ def test_pre_runner_base_exception_releases_mutation_lock(
         )
     else:
         monkeypatch.setattr(
-            "pico.tool_executor._capture_before_file_states_for_paths",
+            "pico.tools.executor._capture_before_file_states_for_paths",
             lambda *args: (_ for _ in ()).throw(KeyboardInterrupt("prepared")),
         )
 

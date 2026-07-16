@@ -7,8 +7,8 @@ import subprocess
 
 import pytest
 
-from pico import safe_subprocess as safe_subprocess_module
-from pico.safe_subprocess import (
+from pico.tools import subprocess as safe_subprocess_module
+from pico.tools.subprocess import (
     build_trusted_executables,
     discover_lexical_repo_root,
     run_hardened_git,
@@ -114,7 +114,7 @@ def _assert_gitfile_rejected_before_git(monkeypatch, cwd, args=("status", "--sho
 
 
 def _fifo_gitfile_probe(executable, cwd, marker_to_replace, connection):
-    from pico import safe_subprocess
+    from pico.tools import subprocess as safe_subprocess
 
     swapped = False
     if marker_to_replace is not None:
@@ -394,7 +394,7 @@ def test_empty_safe_path_never_calls_which(path_kind, tmp_path, monkeypatch):
         calls.append((name, path))
         return str(fake)
 
-    monkeypatch.setattr("pico.safe_subprocess.shutil.which", cwd_fallback)
+    monkeypatch.setattr("pico.tools.subprocess.shutil.which", cwd_fallback)
 
     trusted = build_trusted_executables(
         workspace,
@@ -1444,7 +1444,7 @@ def test_hardened_rg_uses_fixed_config_and_minimal_environment(tmp_path, monkeyp
     def passthrough(executable):
         yield str(executable)
 
-    monkeypatch.setattr("pico.safe_subprocess._prepared_executable", passthrough)
+    monkeypatch.setattr("pico.tools.subprocess._prepared_executable", passthrough)
     monkeypatch.setattr(subprocess, "run", fake_run)
 
     run_hardened_rg("/usr/bin/rg", ["needle", "."], cwd=tmp_path)
@@ -1460,7 +1460,7 @@ def test_hardened_rg_child_path_comes_only_from_frozen_executable(
     tmp_path,
     monkeypatch,
 ):
-    from pico import safe_subprocess
+    from pico.tools import subprocess as safe_subprocess
 
     captured = {}
 

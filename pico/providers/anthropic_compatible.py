@@ -4,7 +4,7 @@ from copy import deepcopy
 import json
 import urllib.request
 
-from pico.messages import strip_pico_meta
+from pico.agent.messages import strip_pico_meta
 
 from ._shared import (
     _ProviderFailure,

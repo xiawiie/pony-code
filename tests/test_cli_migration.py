@@ -3,11 +3,11 @@ import subprocess
 
 import pytest
 
-import pico.cli_migration as cli_migration_module
+import pico.cli.migration as cli_migration_module
 from pico.cli import main
-from pico.cli_errors import CLI_EXIT_RUNTIME
-from pico.migration import Migration
-from pico.observability import load_run_summary, validate_report, validate_trace
+from pico.cli.errors import CLI_EXIT_RUNTIME
+from pico.recovery.migration import Migration
+from pico.agent.observability import load_run_summary, validate_report, validate_trace
 
 
 def _write_legacy_run(root, run_id="run_1"):
@@ -213,7 +213,7 @@ def test_migrate_observability_rejects_oversized_artifact_before_rename(
     monkeypatch,
     artifact,
 ):
-    import pico.cli_migration as cli_migration
+    import pico.cli.migration as cli_migration
 
     source = tmp_path / "source"
     run_dir = source / "run_1"

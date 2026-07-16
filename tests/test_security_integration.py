@@ -6,11 +6,11 @@ import pytest
 
 from pico.cli import main
 from pico.providers.response import Response, StopReason
-from pico.recovery_models import new_checkpoint_record
+from pico.recovery.models import new_checkpoint_record
 from pico.runtime import Pico
-from pico.session_store import SessionStore
-from pico.task_state import TaskState
-from pico.verification import new_verification_record
+from pico.state.session_store import SessionStore
+from pico.state.task_state import TaskState
+from pico.agent.verification import new_verification_record
 from pico.workspace import WorkspaceContext
 
 

@@ -1,4 +1,4 @@
-import pico.verification as verification
+import pico.agent.verification as verification
 
 
 def test_verification_record_captures_command_level_evidence():

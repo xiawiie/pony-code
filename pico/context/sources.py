@@ -9,7 +9,7 @@ from pathlib import Path
 from pico import security as securitylib
 from pico.memory.recall import recall_candidates
 from pico.memory.retrieval import Retrieval
-from pico.model_capabilities import TokenAccounting
+from pico.agent.model_capabilities import TokenAccounting
 
 from .chunks import make_chunk
 

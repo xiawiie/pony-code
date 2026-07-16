@@ -5,9 +5,9 @@ from pathlib import Path
 
 from pico import Pico, SessionStore, WorkspaceContext
 from pico.providers.fake import FakeModelClient
-from pico.features import memory as memorylib
-from pico.session_store import SESSION_FORMAT_VERSION, SESSION_RECORD_TYPE
-from pico.task_state import TaskState
+import pico.memory.service as memorylib
+from pico.state.session_store import SESSION_FORMAT_VERSION, SESSION_RECORD_TYPE
+from pico.state.task_state import TaskState
 
 
 def _isolate_home(monkeypatch, tmp_path):
@@ -226,7 +226,7 @@ def test_spawn_delegate_syncs_child_working_memory_without_notes(tmp_path, monke
 def test_process_note_hook_is_removed_from_runtime_and_tool_executor():
     hook_name = "record_process" + "_note_for_tool"
     runtime_source = Path("pico/runtime.py").read_text(encoding="utf-8")
-    tool_executor_source = Path("pico/tool_executor.py").read_text(encoding="utf-8")
+    tool_executor_source = Path("pico/tools/executor.py").read_text(encoding="utf-8")
 
     assert hook_name not in runtime_source
     assert hook_name not in tool_executor_source

@@ -1,9 +1,12 @@
+import hashlib
+import importlib.util
+import json
+from pathlib import Path
 import subprocess
 import sys
-from pathlib import Path
-import importlib.util
+import tomllib
 
-import pico.evaluation.provider_benchmark as provider_benchmark
+import benchmarks.evaluation.provider_benchmark as provider_benchmark
 import pytest
 
 
@@ -18,6 +21,25 @@ def test_ci_tracks_and_uses_frozen_uv_lock():
     assert "  push:\n" in triggers
     assert "branches:" not in triggers
     assert "run: uv sync --frozen --dev" in workflow
+
+
+def test_project_version_and_sandbox_build_inputs_are_locked():
+    project = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))[
+        "project"
+    ]
+    uv_lock = tomllib.loads(Path("uv.lock").read_text(encoding="utf-8"))
+    pico_lock = next(item for item in uv_lock["package"] if item["name"] == "pico")
+    image_lock = json.loads(
+        Path("docker/sandbox/image-inputs.lock.json").read_text(encoding="utf-8")
+    )
+
+    assert project["version"] == pico_lock["version"] == "1.0.0"
+    for filename, key in (
+        ("pyproject.toml", "pyproject_sha256"),
+        ("uv.lock", "uv_lock_sha256"),
+    ):
+        digest = hashlib.sha256(Path(filename).read_bytes()).hexdigest()
+        assert image_lock["build_inputs"][key] == digest
 
 
 def test_ci_actions_are_pinned_to_immutable_commits_with_version_comments():
@@ -48,6 +70,23 @@ def test_ci_actions_are_pinned_to_immutable_commits_with_version_comments():
         matches = [line for line in uses if f"uses: {action}@" in line]
         assert matches
         assert all(line == f"uses: {action}@{commit} # {version}" for line in matches)
+
+
+def test_release_workflow_is_tag_bound_and_uses_trusted_publishing():
+    workflow = Path(".github/workflows/release.yml").read_text(encoding="utf-8")
+
+    assert 'tags:\n      - "v*"' in workflow
+    assert "contents: write" in workflow
+    assert "id-token: write" in workflow
+    assert "environment: pypi" in workflow
+    assert "uv sync --frozen --dev" in workflow
+    assert "uv run pytest -q" in workflow
+    assert "uv build --clear" in workflow
+    assert "scripts/release/verify_distribution.py --install-smoke --offline-bundle-smoke" in workflow
+    assert "uv publish --trusted-publishing always" in workflow
+    assert "gh release create" in workflow
+    assert 'test "${GITHUB_REF_NAME}" = "v${project_version}"' in workflow
+    assert "secrets." not in workflow
 
 
 def test_linux_ci_does_not_claim_the_darwin_performance_baseline():
@@ -94,7 +133,7 @@ def test_ci_keeps_docker_sandbox_local_gate_read_only():
     assert workflow.count("Docker Sandbox local identity gate (zero mutation)") == 2
     assert workflow.count("sandbox status") >= 2
     assert workflow.count('status["runtime_authorization"]["kind"] == "local"') == 2
-    assert workflow.count('status["product_enablement"]["status"] == "blocked"') == 2
+    assert "product_enablement" not in workflow
     assert workflow.count('data["data"]["network_performed"] is False') == 2
     assert workflow.count('data["data"]["mutation_performed"] is False') == 2
     assert "--sandbox run smoke" not in workflow
@@ -103,18 +142,19 @@ def test_ci_keeps_docker_sandbox_local_gate_read_only():
     assert "--real --managed" not in workflow
     assert "PICO_RUN_REAL_SRT" not in workflow
     assert "uv build --clear" in workflow
-    assert "scripts/verify_distribution.py" in workflow
+    assert "scripts/release/verify_distribution.py" in workflow
     assert "--install-smoke --offline-bundle-smoke" in workflow
 
 
 def test_maintenance_scripts_start_and_show_help():
     for script in (
-        "scripts/aggregate_docker_sandbox_release.py",
-        "scripts/collect_resume_metrics.py",
-        "scripts/evaluate.py",
-        "scripts/run_large_scale_experiments.py",
-        "scripts/run_provider_experiments.py",
-        "scripts/verify_distribution.py",
+        "scripts/evaluation/collect_resume_metrics.py",
+        "scripts/evaluation/evaluate.py",
+        "scripts/evaluation/run_large_scale_experiments.py",
+        "scripts/evaluation/run_provider_experiments.py",
+        "scripts/sandbox/build_image.py",
+        "scripts/sandbox/verify_runtime.py",
+        "scripts/release/verify_distribution.py",
     ):
         result = subprocess.run(
             [sys.executable, script, "--help"],
@@ -127,20 +167,22 @@ def test_maintenance_scripts_start_and_show_help():
         assert "usage:" in result.stdout
 
 
-def test_sandbox_evaluator_resolves_the_project_wheel_from_version_truth():
-    evaluator = Path("scripts/evaluate.py").read_text(encoding="utf-8")
+def test_sandbox_evaluator_uses_the_local_runtime_verifier():
+    evaluator = Path("scripts/evaluation/evaluate.py").read_text(encoding="utf-8")
 
-    assert "_matching_project_wheel(root)" in evaluator
-    assert "pico-0.1.0-py3-none-any.whl" not in evaluator
+    assert "scripts/sandbox/verify_runtime.py" in evaluator
+    assert "docker_sandbox_release.py" not in evaluator
 
 
 def test_distribution_verifier_freezes_archive_and_install_contract():
-    verifier = Path("scripts/verify_distribution.py").read_text(encoding="utf-8")
+    verifier = Path("scripts/release/verify_distribution.py").read_text(encoding="utf-8")
 
     assert '"git", "ls-files", "--", "pico"' in verifier
     assert "sdist file mismatch" in verifier
     assert "wheel file mismatch" in verifier
     assert 'metadata.get_all("Requires-Dist") is None' in verifier
+    assert 'metadata["License-Expression"] == "MIT"' in verifier
+    assert 'installed_version == f"pico {PROJECT_VERSION}"' in verifier
     assert '"command -v pico"' in verifier
     assert '_run(str(pico), "doctor", cwd=cwd, env=env)' in verifier
     assert '"sandbox",\n                "status"' in verifier
@@ -165,7 +207,7 @@ def test_distribution_verifier_ignores_tracked_files_deleted_from_worktree(
 ):
     spec = importlib.util.spec_from_file_location(
         "verify_distribution_script",
-        Path("scripts/verify_distribution.py"),
+        Path("scripts/release/verify_distribution.py"),
     )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -190,7 +232,7 @@ def test_distribution_verifier_rejects_untracked_package_python(
 ):
     spec = importlib.util.spec_from_file_location(
         "verify_distribution_script",
-        Path("scripts/verify_distribution.py"),
+        Path("scripts/release/verify_distribution.py"),
     )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -214,7 +256,7 @@ def test_distribution_verifier_rejects_untracked_package_data(
 ):
     spec = importlib.util.spec_from_file_location(
         "verify_distribution_script",
-        Path("scripts/verify_distribution.py"),
+        Path("scripts/release/verify_distribution.py"),
     )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -233,30 +275,24 @@ def test_distribution_verifier_rejects_untracked_package_data(
         module._tracked_package_files(tmp_path)
 
 
-def test_distribution_verifier_excludes_development_packages_from_wheel(
-    tmp_path,
-):
+def test_distribution_verifier_includes_all_product_packages(tmp_path):
     spec = importlib.util.spec_from_file_location(
         "verify_distribution_script",
-        Path("scripts/verify_distribution.py"),
+        Path("scripts/release/verify_distribution.py"),
     )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     module.PACKAGE_DATA_FILES = set()
-    (tmp_path / "pyproject.toml").write_text(
-        '[tool.setuptools]\npackages = ["pico"]\n',
-        encoding="utf-8",
-    )
     tracked = {
         "pico/__init__.py",
         "pico/runtime.py",
-        "pico/evaluation/__init__.py",
-        "pico/evaluation/dev.py",
+        "pico/agent/__init__.py",
+        "pico/agent/loop.py",
     }
 
     runtime = module._runtime_package_files(tmp_path, tracked)
 
-    assert runtime == {"pico/__init__.py", "pico/runtime.py"}
+    assert runtime == tracked
 
 
 def test_local_check_script_matches_ci_commands():
@@ -266,14 +302,18 @@ def test_local_check_script_matches_ci_commands():
     assert script.stat().st_mode & 0o111
 
     text = script.read_text()
-    assert "uv run ruff check ." in text
-    assert "uv run pytest -q" in text
+    assert "uv lock --check" in text
+    assert "uv run --frozen ruff check ." in text
+    assert "uv run --frozen pytest -q" in text
+    assert "scripts/evaluation/evaluate.py --suite core-functional" in text
+    assert "scripts/release/verify_distribution.py" in text
+    assert "--install-smoke" in text
 
 
 def test_provider_experiment_defaults_allow_reasoning_budget():
     spec = importlib.util.spec_from_file_location(
         "run_provider_experiments_script",
-        Path("scripts/run_provider_experiments.py"),
+        Path("scripts/evaluation/run_provider_experiments.py"),
     )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -290,7 +330,7 @@ def test_provider_experiment_defaults_allow_reasoning_budget():
 def test_provider_experiment_parser_accepts_provider_selector():
     spec = importlib.util.spec_from_file_location(
         "run_provider_experiments_script",
-        Path("scripts/run_provider_experiments.py"),
+        Path("scripts/evaluation/run_provider_experiments.py"),
     )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

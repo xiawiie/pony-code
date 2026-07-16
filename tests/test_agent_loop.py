@@ -5,11 +5,11 @@ from unittest.mock import Mock
 
 import pytest
 
-import pico.agent_loop as agent_loop_module
+import pico.agent.loop as agent_loop_module
 from pico import security as security_module
 from pico import Pico, SessionStore, WorkspaceContext
 from pico.providers.fake import FakeModelClient
-from pico.agent_loop import AgentLoop
+from pico.agent.loop import AgentLoop
 from pico.providers._shared import _ProviderFailure
 from pico.providers.response import Response, StopReason
 

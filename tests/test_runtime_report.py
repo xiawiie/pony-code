@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 import pytest
 
-from pico.features import memory as memorylib
+import pico.memory.service as memorylib
 from pico import (
     Pico,
     SessionStore,
@@ -14,8 +14,8 @@ from pico import (
 from pico.context.renderer import render_current_user_message
 from pico.providers.fake import FakeModelClient
 from pico.providers.response import Response, StopReason
-from pico.task_state import TaskState
-from pico.tool_executor import ToolExecutionResult
+from pico.state.task_state import TaskState
+from pico.tools.executor import ToolExecutionResult
 from tests.test_docker_sandbox_runtime import _build_runtime
 
 

@@ -13,15 +13,15 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from benchmarks.perf.harness import bench  # noqa: E402
-from pico.compaction import build_compaction_plan  # noqa: E402
+from pico.agent.compaction import build_compaction_plan  # noqa: E402
 from pico.context.renderer import InjectionSnapshot  # noqa: E402
-from pico.context_manager import ContextManager  # noqa: E402
-from pico.model_capabilities import (  # noqa: E402
+from pico.agent.context_manager import ContextManager  # noqa: E402
+from pico.agent.model_capabilities import (  # noqa: E402
     ModelCapabilities,
     TokenAccounting,
     build_model_budget,
 )
-from pico.session_store import SessionStore  # noqa: E402
+from pico.state.session_store import SessionStore  # noqa: E402
 from pico.workspace import now  # noqa: E402
 
 

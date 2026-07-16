@@ -5,7 +5,7 @@ import pytest
 from pico import Pico, SessionStore, WorkspaceContext
 from pico.providers.fake import FakeModelClient
 from pico.context.renderer import render_current_user_message
-from pico.context_manager import ContextManager, _build_tools_list
+from pico.agent.context_manager import ContextManager, _build_tools_list
 
 
 def _agent(tmp_path):

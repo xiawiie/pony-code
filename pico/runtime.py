@@ -16,50 +16,50 @@ from datetime import datetime
 from pathlib import Path
 from types import MappingProxyType
 
-from . import checkpoint as checkpointlib
-from . import session_store as sessionstorelib
-from . import workspace_snapshot
-from .features import memory as memorylib
-from . import security as securitylib
-from .checkpoint_store import CheckpointStore
-from .compaction import (
+from pico.state import checkpoint as checkpointlib
+from pico.state import session_store as sessionstorelib
+from pico.workspace import snapshot as workspace_snapshot
+import pico.memory.service as memorylib
+from pico import security as securitylib
+from pico.state.checkpoint_store import CheckpointStore
+from pico.agent.compaction import (
     append_branch_rewind,
     compact_session as compact_session_tree,
     PreparedBranchSummary,
     prepare_branch_summary,
     rewind_with_branch_summary,
 )
-from .context_manager import ContextManager
-from .docker_sandbox import DockerSandboxContext
-from .memory.block_store import BlockStore
-from .memory.retrieval import Retrieval
-from .model_capabilities import (
+from pico.agent.context_manager import ContextManager
+from pico.sandbox.docker import DockerSandboxContext
+from pico.memory.block_store import BlockStore
+from pico.memory.retrieval import Retrieval
+from pico.agent.model_capabilities import (
     build_model_budget,
     DEFAULT_MAX_OUTPUT_TOKENS as MODEL_DEFAULT_MAX_OUTPUT_TOKENS,
     resolve_model_capabilities,
     TokenAccounting,
 )
-from .prompt_prefix import build_prompt_prefix, tool_signature
-from .repo_map import RepoMap
-from .recovery_checkpoint_writer import RecoveryCheckpointWriter
-from .recovery_manager import RecoveryManager
-from .run_store import RunStore
-from .observability import REPORT_SCHEMA_VERSION, project_trace_event
-from .sandbox_apply import StagingObserver
-from .sandbox_session import (
+from pico.agent.prompt_prefix import build_prompt_prefix, tool_signature
+from pico.memory.repo_map import RepoMap
+from pico.recovery.checkpoint_writer import RecoveryCheckpointWriter
+from pico.recovery.manager import RecoveryManager
+from pico.state.run_store import RunStore
+from pico.agent.observability import REPORT_SCHEMA_VERSION, project_trace_event
+from pico.sandbox.apply import StagingObserver
+from pico.sandbox.session import (
     read_source_apply_authority,
     SandboxSessionError,
     source_apply_control_lock_path,
 )
-from .session_store import SESSION_FORMAT_VERSION, SESSION_RECORD_TYPE
-from .tool_change_recorder import ToolChangeRecorder
-from .tool_context import ToolContext
-from .tool_executor import ToolExecutionResult, ToolExecutor
-from . import tools as toolkit
-from .config import load_pico_toml, read_project_env
-from .verification import new_verification_record
-from .workspace import WorkspaceContext, now
-from .workspace_observer import WorkspaceObserver
+from pico.state.session_store import SESSION_FORMAT_VERSION, SESSION_RECORD_TYPE
+from pico.tools.change_recorder import ToolChangeRecorder
+from pico.tools.context import ToolContext
+from pico.tools.executor import ToolExecutionResult, ToolExecutor
+from pico import tools as toolkit
+from pico.config import load_pico_toml, read_project_env
+from pico.agent.verification import new_verification_record
+from pico.workspace import WorkspaceContext, now
+from pico.workspace.observer import WorkspaceObserver
 
 DEFAULT_SHELL_ENV_ALLOWLIST = ("HOME", "LANG", "LC_ALL", "LC_CTYPE", "LOGNAME", "PATH", "PWD", "SHELL", "TERM", "TMPDIR", "TMP", "TEMP", "USER")
 DEFAULT_SECRET_ENV_NAMES = (
@@ -362,17 +362,11 @@ class Pico:
             if authorization.attestation_kind == "development":
                 if _development_runtime_seal is not _DEVELOPMENT_RUNTIME_SEAL:
                     raise ValueError(
-                        "docker sandbox requires product or candidate authorization"
+                        "docker sandbox requires local authorization"
                     )
                 self._docker_sandbox_development = True
-            elif authorization.attestation_kind not in {
-                "local",
-                "product",
-                "candidate",
-            }:
-                raise ValueError(
-                    "docker sandbox requires local, product, or candidate authorization"
-                )
+            elif authorization.attestation_kind != "local":
+                raise ValueError("docker sandbox requires local authorization")
             self.source_root = sandbox_context.source_root
             self.execution_root = sandbox_context.execution_root
             self.project_state_root = sandbox_context.project_state_root
@@ -1045,7 +1039,7 @@ class Pico:
         self.session["memory"] = {"file_summaries": summaries}
 
     def ask(self, user_message):
-        from .agent_loop import AgentLoop
+        from pico.agent.loop import AgentLoop
 
         return AgentLoop(self).run(user_message)
 

@@ -5,11 +5,11 @@ import subprocess
 
 import pytest
 
-import pico.recovery_manager as recovery_manager_module
-import pico.sandbox_session as session_module
-from pico.checkpoint_store import CheckpointStore
-from pico.safe_subprocess import build_trusted_executables
-from pico.sandbox_session import (
+import pico.recovery.manager as recovery_manager_module
+import pico.sandbox.session as session_module
+from pico.state.checkpoint_store import CheckpointStore
+from pico.tools.subprocess import build_trusted_executables
+from pico.sandbox.session import (
     find_project_sandbox_session,
     SandboxSessionError,
     SandboxSessionStore,

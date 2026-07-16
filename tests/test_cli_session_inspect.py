@@ -1,8 +1,8 @@
 import json
 import os
 
-from pico.cli_session import inspect_session
-from pico.session_store import SessionStore
+from pico.cli.session import inspect_session
+from pico.state.session_store import SessionStore
 
 
 def _payload(workspace, session_id, messages, *, version=1):

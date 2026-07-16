@@ -1,5 +1,48 @@
 # Changelog
 
+## 1.0.0 — 2026-07-16
+
+Pico 1.0 将预发布仓库收束为一个可安装、可验证、可发布的本地 coding-agent 产品。
+
+### Added
+
+- 三个用户可见 Provider：Anthropic、OpenAI、Ollama；OpenAI 支持 Responses 与 Chat Completions 两个 Variant。
+- 统一的六变量 `.env` 合同，以及能写全配置的交互式 `pico init`。
+- `pico --version`、MIT License、完整 package metadata、Project URLs 与 tag-bound release workflow。
+- PyPI Trusted Publishing、GitHub Release、SHA-256 release assets 和 clean-install distribution smoke。
+- 本地 Sandbox 镜像构建/验证维护入口。
+
+### Changed
+
+- 产品代码按 `agent`、`cli`、`context`、`memory`、`providers`、`recovery`、`sandbox`、`state`、`tools`、
+  `workspace` 十个领域包归位；`pico/` 顶层只保留五个稳定入口文件。
+- Provider 连接统一使用 `PICO_PROVIDER`、`PICO_MODEL`、`PICO_API_URL`、`PICO_API_KEY`、
+  `PICO_API_VARIANT`、`PICO_AUTH_MODE`；项目 `.env` 高于进程环境。
+- Provider factory 从 transport shared helpers 中独立，用户 Provider 与内部四种 wire transport 解耦。
+- Evaluation 移至 `benchmarks/evaluation`，维护脚本按 evaluation/release/sandbox 分类。
+- 全量检查入口同时覆盖 lock、Ruff、pytest、evaluation、build、archive 与隔离安装。
+
+### Removed
+
+- 固定 DeepSeek-first 公开路径，以及旧 `PICO_DEEPSEEK_API_KEY` runtime 兼容读取。
+- 未发布的 distributed Sandbox authority、candidate、product enablement、aggregate/release controller 与远程 cache/download 路径。
+- 重复的 `examples/mini-pico` 实现和过期的分布式 Sandbox 规格文档。
+- Evaluation 从 runtime wheel/sdist 中完全移除。
+
+### Security
+
+- Sandbox 只保留每次重算的 sealed local authorization；公开 runtime 仅接受 `local`，失败不回退 Host。
+- Provider URL 继续拒绝 userinfo、query、fragment、凭证和非 loopback HTTP；Ollama `auth=none` 是显式例外。
+- 通用 `PICO_API_KEY` 纳入项目环境优先级、diagnostics 脱敏、runtime redaction 与安全测试。
+
+### Migration
+
+1.0 是模型配置硬切换。旧 `.env` 中的 `PICO_DEEPSEEK_API_KEY`、厂商 Key、Provider/Profile/Connection 字段不会
+配置 runtime。运行 `pico init` 写入六个通用变量，或按 `.env.example` 手工迁移。切换 Provider、model、protocol
+或 endpoint 后，旧 Session 可能因 Model Session Binding 不一致而返回 `model_session_mismatch`；应新建 Session。
+
+升级不会自动删除 `.pico/` 或 `~/.pico/` 中的旧 Session、Run、Checkpoint、Memory 与 Sandbox artifact。
+
 ## 0.2.1 — 2026-07-16
 
 完整合并 Sandbox local stable、Memory/Context/Session 与 DeepSeek-first Anthropic CLI，并修复 clean-wheel

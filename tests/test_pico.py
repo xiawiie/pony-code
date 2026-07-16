@@ -9,11 +9,11 @@ from unittest.mock import patch
 import pytest
 
 import pico as pico_pkg
-from pico.agent_loop import _commit_session, _plain_message
-from pico.features import memory as memorylib
-from pico.messages import make_tool_pair, validate_messages
+from pico.agent.loop import _commit_session, _plain_message
+import pico.memory.service as memorylib
+from pico.agent.messages import make_tool_pair, validate_messages
 from pico.runtime import DEFAULT_MAX_OUTPUT_TOKENS, DEFAULT_MAX_STEPS
-from pico.session_store import LEGACY_SESSION_FORMAT_VERSION
+from pico.state.session_store import LEGACY_SESSION_FORMAT_VERSION
 from pico import (
     Pico,
     SessionStore,
@@ -743,10 +743,10 @@ def test_build_arg_parser_has_no_model_backend_selection_flags(tmp_path):
     }.isdisjoint(destinations)
 
 
-def test_build_agent_uses_fixed_chat_client_and_project_env(tmp_path):
+def test_build_agent_uses_resolved_anthropic_client_and_project_env(tmp_path):
     (tmp_path / ".env").write_text(
         "PICO_API_URL=https://gateway.example/v1\n"
-        "PICO_DEEPSEEK_API_KEY=sk-project\n",
+        "PICO_API_KEY=sk-project\n",
         encoding="utf-8",
     )
     args = pico_pkg.build_arg_parser().parse_args(["--cwd", str(tmp_path)])
@@ -759,12 +759,17 @@ def test_build_agent_uses_fixed_chat_client_and_project_env(tmp_path):
     model_client.assert_called_once()
     assert model_client.call_args.args == ("anthropic_messages",)
     assert model_client.call_args.kwargs == {
-        "model": "deepseek-v4-flash",
+        "model": "claude-sonnet-4-6",
         "base_url": "https://gateway.example/v1",
         "api_key": "sk-project",
         "timeout": 300,
         "auth_mode": "x-api-key",
-        "capabilities": {"thinking_disabled": True},
+        "capabilities": {
+            "prompt_cache": True,
+            "strict_tools": True,
+            "parallel_tool_control": True,
+        },
+        "compatibility": "standard",
     }
     assert agent.model_client is fake_client
 
@@ -777,7 +782,7 @@ def test_build_agent_uses_process_env_when_project_env_is_missing(tmp_path):
         {
             "HOME": str(tmp_path),
             "PICO_API_URL": "https://process.example/v1",
-            "PICO_DEEPSEEK_API_KEY": "sk-process",
+            "PICO_API_KEY": "sk-process",
         },
         clear=True,
     ):
@@ -788,7 +793,7 @@ def test_build_agent_uses_process_env_when_project_env_is_missing(tmp_path):
     assert model_client.call_args.kwargs["api_key"] == "sk-process"
 
 
-def test_build_agent_ignores_old_provider_environment(tmp_path):
+def test_build_agent_switches_provider_from_generic_environment(tmp_path):
     args = pico_pkg.build_arg_parser().parse_args(["--cwd", str(tmp_path)])
 
     with patch.dict(
@@ -796,13 +801,18 @@ def test_build_agent_ignores_old_provider_environment(tmp_path):
         {
             "HOME": str(tmp_path),
             "PICO_PROVIDER": "openai",
-            "PICO_CONNECTION": "legacy",
-            "OPENAI_API_KEY": "sk-old",
+            "PICO_MODEL": "gpt-test",
+            "PICO_API_KEY": "sk-openai",
         },
         clear=True,
     ):
-        with pytest.raises(ValueError, match="api_key_not_configured"):
+        with patch("pico.cli.build_model_client") as model_client:
             pico_pkg.build_agent(args)
+
+    assert model_client.call_args.args == ("openai_responses",)
+    assert model_client.call_args.kwargs["model"] == "gpt-test"
+    assert model_client.call_args.kwargs["api_key"] == "sk-openai"
+    assert model_client.call_args.kwargs["auth_mode"] == "bearer"
 
 
 # =============================================================================

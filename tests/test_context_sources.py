@@ -17,7 +17,7 @@ from pico.context.sources import (
     task_working_set_chunks,
     workspace_state_chunks,
 )
-from pico.model_capabilities import TokenAccounting
+from pico.agent.model_capabilities import TokenAccounting
 from pico.providers.fake import FakeModelClient
 from pico.security import SensitiveDataBlockedError
 

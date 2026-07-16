@@ -4,8 +4,8 @@ import shutil
 
 import pytest
 
-from pico.file_lock import locked_file
-from pico.migration import ABSENT, ROLLED_BACK, Migration, _MAX_JOURNAL_BYTES
+from pico.state.file_lock import locked_file
+from pico.recovery.migration import ABSENT, ROLLED_BACK, Migration, _MAX_JOURNAL_BYTES
 from pico.security import PrivateAtomicWriteError
 
 

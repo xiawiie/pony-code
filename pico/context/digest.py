@@ -30,7 +30,7 @@ import hashlib
 import re
 from dataclasses import dataclass, field
 
-from pico.model_capabilities import estimate_text_tokens
+from pico.agent.model_capabilities import estimate_text_tokens
 
 
 @dataclass(frozen=True)

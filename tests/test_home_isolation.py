@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 from pico import Pico, SessionStore, WorkspaceContext
 from pico.providers.fake import FakeModelClient
-from pico.sandbox_session import source_apply_control_lock_path
+from pico.sandbox.session import source_apply_control_lock_path
 
 
 def test_pico_control_lock_stays_in_isolated_home(tmp_path, isolated_home):

@@ -2,17 +2,17 @@ from types import SimpleNamespace
 
 import pytest
 
-from pico.compaction import (
+from pico.agent.compaction import (
     CompactionError,
     build_compaction_plan,
     compact_session,
     rewind_with_branch_summary,
 )
-from pico.messages import make_tool_pair
-from pico.model_capabilities import TokenAccounting
+from pico.agent.messages import make_tool_pair
+from pico.agent.model_capabilities import TokenAccounting
 from pico.providers.fake import FakeModelClient
 from pico.providers.response import Response, StopReason
-from pico.session_store import SessionStore
+from pico.state.session_store import SessionStore
 from pico.workspace import now
 
 

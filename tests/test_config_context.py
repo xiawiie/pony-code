@@ -3,11 +3,11 @@
 import pytest
 
 from pico import Pico, SessionStore, WorkspaceContext
-from pico.agent_loop import _prepare_tool_result
+from pico.agent.loop import _prepare_tool_result
 from pico.config import load_pico_toml
 from pico.context.renderer import render_current_user_message
-from pico.context_manager import SystemContextTooLarge
-from pico.model_capabilities import TokenAccounting
+from pico.agent.context_manager import SystemContextTooLarge
+from pico.agent.model_capabilities import TokenAccounting
 from pico.providers.fake import FakeModelClient
 
 

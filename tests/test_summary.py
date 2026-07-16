@@ -1,6 +1,6 @@
 from tests.test_observability_contract import _report
 
-from pico.observability import render_summary_text
+from pico.agent.observability import render_summary_text
 
 
 def test_summary_is_derived_from_current_report_without_content():

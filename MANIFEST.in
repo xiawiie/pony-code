@@ -1,7 +1,8 @@
 include README.md
+include LICENSE
 include pyproject.toml
 recursive-include pico *.py
-recursive-include pico/_docker_sandbox *.json
+recursive-include pico/sandbox/resources *.json
 prune tests
 prune benchmarks
 prune docs

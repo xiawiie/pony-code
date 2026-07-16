@@ -16,8 +16,8 @@ import tempfile
 import time
 
 from benchmarks.perf.harness import bench
-from pico.checkpoint_store import CheckpointStore
-from pico.docker_sandbox import (
+from pico.state.checkpoint_store import CheckpointStore
+from pico.sandbox.docker import (
     build_docker_sandbox_context,
     default_image_manifest_path,
     discover_local_docker,
@@ -27,8 +27,8 @@ from pico.docker_sandbox import (
     MOUNT_POLICY_DIGEST,
     RESOURCE_POLICY_DIGEST,
 )
-from pico.sandbox_apply import StagingObserver
-from pico.sandbox_session import (
+from pico.sandbox.apply import StagingObserver
+from pico.sandbox.session import (
     MAX_FILE_BYTES,
     SandboxSessionStore,
     stage_source,

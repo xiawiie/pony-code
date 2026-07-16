@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from pico.docker_sandbox_network_control import (
+from pico.sandbox.network_control import (
     NetworkControl,
     NetworkControlEndpoints,
     NetworkControlError,

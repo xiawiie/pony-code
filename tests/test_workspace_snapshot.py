@@ -1,8 +1,8 @@
 from pico import Pico, SessionStore, WorkspaceContext
 from pico import runtime as runtime_module
-from pico import workspace_snapshot as snapshot_module
+from pico.workspace import snapshot as snapshot_module
 from pico.providers.fake import FakeModelClient
-from pico.workspace_snapshot import capture_workspace_snapshot, diff_workspace_snapshots
+from pico.workspace.snapshot import capture_workspace_snapshot, diff_workspace_snapshots
 
 
 def test_workspace_snapshot_scan_has_file_limit(tmp_path):

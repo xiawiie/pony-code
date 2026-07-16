@@ -8,9 +8,9 @@ from unittest.mock import Mock
 
 import pytest
 
-import pico.cli_diagnostics as diagnostics
+import pico.cli.diagnostics as diagnostics
 from pico.cli import main
-from pico.cli_diagnostics import check_api_connectivity, collect_config, collect_doctor
+from pico.cli.diagnostics import check_api_connectivity, collect_config, collect_doctor
 
 
 def _run_git(cwd, *args):
@@ -27,7 +27,7 @@ def _run_git(cwd, *args):
 def _write_env(root, *, url="https://gateway.example/v1", key="secret-value"):
     path = root / ".env"
     path.write_text(
-        f"PICO_API_URL={url}\nPICO_DEEPSEEK_API_KEY={key}\n",
+        f"PICO_API_URL={url}\nPICO_API_KEY={key}\n",
         encoding="utf-8",
     )
     path.chmod(0o600)
@@ -54,7 +54,10 @@ def test_config_show_reports_fixed_contract_and_exact_project_env_path(tmp_path,
         "status": "loaded",
     }
     assert payload["protocol"]["value"] == "anthropic_messages"
-    assert payload["model"]["value"] == "deepseek-v4-flash"
+    assert payload["provider"]["value"] == "anthropic"
+    assert payload["api_variant"]["value"] == "messages"
+    assert payload["model"]["value"] == "claude-sonnet-4-6"
+    assert payload["auth_mode"]["value"] == "x-api-key"
     assert payload["base_url"] == {
         "value": "https://gateway.example/v1",
         "source": "project_env",
@@ -63,18 +66,18 @@ def test_config_show_reports_fixed_contract_and_exact_project_env_path(tmp_path,
     assert payload["api_key"] == {
         "present": True,
         "source": "project_env",
-        "name": "PICO_DEEPSEEK_API_KEY",
+        "name": "PICO_API_KEY",
     }
     assert "secret-value" not in json.dumps(payload)
 
 
-def test_config_show_reports_explicit_official_url(tmp_path):
-    _write_env(tmp_path, url="https://api.deepseek.com/anthropic/v1")
+def test_config_show_reports_explicit_custom_anthropic_url(tmp_path):
+    _write_env(tmp_path, url="https://gateway.anthropic.example/v1")
 
     data = collect_config(tmp_path)
 
-    assert data["base_url"]["value"] == "https://api.deepseek.com/anthropic/v1"
-    assert data["model"]["value"] == "deepseek-v4-flash"
+    assert data["base_url"]["value"] == "https://gateway.anthropic.example/v1"
+    assert data["model"]["value"] == "claude-sonnet-4-6"
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX mode assertion")
@@ -133,7 +136,7 @@ def test_config_show_fails_closed_for_unsafe_project_env(
         env_path.mkdir()
         (env_path / "canary").write_text(canary, encoding="utf-8")
     else:
-        outside.write_text(f"PICO_DEEPSEEK_API_KEY={canary}\n", encoding="utf-8")
+        outside.write_text(f"PICO_API_KEY={canary}\n", encoding="utf-8")
         if unsafe_kind == "symlink":
             env_path.symlink_to(outside)
         else:
@@ -160,7 +163,7 @@ def test_config_show_skips_malformed_env_line_without_leaking_key(tmp_path, caps
     path.write_text(
         "PICO_API_URL=https://gateway.example/v1\n"
         "not a valid env line\n"
-        "PICO_DEEPSEEK_API_KEY=secret-value\n",
+        "PICO_API_KEY=secret-value\n",
         encoding="utf-8",
     )
 
@@ -189,7 +192,7 @@ def test_config_show_text_is_grouped_and_never_prints_key(tmp_path, capsys):
     output = capsys.readouterr().out
     assert output.startswith("Pico config — Effective configuration\n")
     assert "Model" in output
-    assert "deepseek-v4-flash" in output
+    assert "claude-sonnet-4-6" in output
     assert "https://gateway.example/v1" in output
     assert "Credentials" in output
     assert "secret-value" not in output
@@ -209,7 +212,8 @@ def test_status_reports_model_and_storage_without_building_agent(
     assert main(["--cwd", str(tmp_path), "--format", "json", "status"]) == 0
 
     payload = json.loads(capsys.readouterr().out)["data"]
-    assert payload["model"]["model"]["value"] == "deepseek-v4-flash"
+    assert payload["model"]["provider"]["value"] == "anthropic"
+    assert payload["model"]["model"]["value"] == "claude-sonnet-4-6"
     assert payload["storage"]["sessions"] is True
     assert payload["latest"]["run_id"] == "run_1"
 
@@ -227,6 +231,24 @@ def test_doctor_defaults_to_zero_api_requests(tmp_path, monkeypatch, capsys):
         "message": "explicit --check-api not requested",
     }
     checker.assert_not_called()
+
+
+def test_doctor_marks_ollama_api_key_not_required(tmp_path):
+    (tmp_path / ".env").write_text(
+        "PICO_PROVIDER=ollama\n"
+        "PICO_MODEL=qwen3:8b\n"
+        "PICO_API_URL=http://127.0.0.1:11434\n"
+        "PICO_API_KEY=\n"
+        "PICO_API_VARIANT=auto\n"
+        "PICO_AUTH_MODE=auto\n",
+        encoding="utf-8",
+    )
+
+    data = collect_doctor(tmp_path)
+
+    assert data["config"]["provider"]["value"] == "ollama"
+    assert data["config"]["protocol"]["value"] == "ollama_chat"
+    assert data["credentials"]["status"] == "not_required"
 
 
 def test_doctor_check_api_is_the_only_explicit_network_switch(
@@ -323,16 +345,24 @@ def test_doctor_rejects_credentialed_url_without_connecting_or_echoing(
 
 def _api_config(*, key="test-key"):
     return {
-        "model": {"value": "deepseek-v4-flash"},
+        "protocol": {"value": "anthropic_messages"},
+        "model": {"value": "claude-sonnet-4-6"},
         "base_url": {"value": "https://gateway.example/v1"},
+        "auth_mode": {"value": "x-api-key"},
         "api_key": {"value": key},
+        "capabilities": {
+            "prompt_cache": True,
+            "strict_tools": True,
+            "parallel_tool_control": True,
+        },
+        "compatibility": "standard",
     }
 
 
 def test_api_check_without_key_performs_zero_requests(monkeypatch):
     constructor = Mock(side_effect=AssertionError("client must not be built"))
     monkeypatch.setattr(
-        "pico.providers._shared.build_model_client",
+        "pico.providers.factory.build_model_client",
         constructor,
     )
 
@@ -342,11 +372,11 @@ def test_api_check_without_key_performs_zero_requests(monkeypatch):
     constructor.assert_not_called()
 
 
-def test_api_check_builds_fixed_deepseek_anthropic_client_and_reports_probe(monkeypatch):
+def test_api_check_builds_resolved_anthropic_client_and_reports_probe(monkeypatch):
     client = object()
     constructor = Mock(return_value=client)
     monkeypatch.setattr(
-        "pico.providers._shared.build_model_client",
+        "pico.providers.factory.build_model_client",
         constructor,
     )
     monkeypatch.setattr(
@@ -366,18 +396,23 @@ def test_api_check_builds_fixed_deepseek_anthropic_client_and_reports_probe(monk
     assert result["model_calls"] == 3
     assert constructor.call_args.args == ("anthropic_messages",)
     assert constructor.call_args.kwargs == {
-        "model": "deepseek-v4-flash",
+        "model": "claude-sonnet-4-6",
         "base_url": "https://gateway.example/v1",
         "api_key": "test-key",
         "timeout": 2,
         "auth_mode": "x-api-key",
-        "capabilities": {"thinking_disabled": True},
+        "capabilities": {
+            "prompt_cache": True,
+            "strict_tools": True,
+            "parallel_tool_control": True,
+        },
+        "compatibility": "standard",
     }
 
 
 def test_api_check_preserves_safe_http_failure_classification(monkeypatch):
     monkeypatch.setattr(
-        "pico.providers._shared.build_model_client",
+        "pico.providers.factory.build_model_client",
         Mock(return_value=object()),
     )
     monkeypatch.setattr(
@@ -414,8 +449,8 @@ def test_collect_doctor_folds_unavailable_workspace_to_safe_shape(tmp_path):
 
 
 def test_doctor_security_requires_review_for_pending_tool_change(tmp_path):
-    from pico.checkpoint_store import CheckpointStore
-    from pico.tool_change_recorder import ToolChangeRecorder
+    from pico.state.checkpoint_store import CheckpointStore
+    from pico.tools.change_recorder import ToolChangeRecorder
 
     store = CheckpointStore(tmp_path)
     ToolChangeRecorder(store, owner_id="doctor-test").start(
@@ -446,7 +481,6 @@ def test_doctor_runtime_authorization_projection_drops_unknown_fields(
             "reason_code": "ready",
             "readiness": {"status": "ready", "runtime_authorization": dict(authorization)},
             "runtime_authorization": dict(authorization),
-            "product_enablement": {"status": "blocked"},
             "checks": {
                 "runtime_authorization": {
                     "status": "pass",

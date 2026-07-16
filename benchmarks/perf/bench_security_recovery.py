@@ -5,12 +5,12 @@ import tempfile
 from pathlib import Path
 
 from benchmarks.perf.harness import bench
-from pico.checkpoint_store import CheckpointStore
-from pico.recovery_manager import RecoveryManager
-from pico.recovery_models import new_checkpoint_record
-from pico.recovery_policy import assess_command
+from pico.state.checkpoint_store import CheckpointStore
+from pico.recovery.manager import RecoveryManager
+from pico.recovery.models import new_checkpoint_record
+from pico.recovery.policy import assess_command
 from pico.security import redact_artifact
-from pico.tool_change_recorder import ToolChangeRecorder
+from pico.tools.change_recorder import ToolChangeRecorder
 
 
 SCENARIO_NAMES = (
