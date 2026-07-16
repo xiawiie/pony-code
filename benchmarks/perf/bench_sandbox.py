@@ -97,7 +97,7 @@ def build_artifact(scenarios, *, docker=None):
         },
         "sandbox": {
             "implementation": "docker_container",
-            "image_digest": image.reference,
+            "image_digest": image.image_digest,
             "policy_digest": image.policy_digest,
             "network_mode": "none",
         },
@@ -130,8 +130,7 @@ def _session_metadata(image):
             "security_digest": "sha256:" + "2" * 64,
         },
         "image": {
-            "reference": image.registry_reference or image.reference,
-            "manifest_digest": image.reference,
+            "image_digest": image.image_digest,
             "image_id": image.image_id,
             "platform": image.platform,
         },

@@ -175,11 +175,8 @@ multi-tenant 或 microVM 安全边界。
 
 ## 8. 打包与发布边界
 
-wheel/sdist 只包含：
-
-- `pico/**` Python 文件；
-- `pico/sandbox/resources/**` JSON；
-- package metadata、README、MIT License。
+wheel 只包含 `pico/**`、Sandbox JSON 与安装 metadata；sdist 另含 `pyproject.toml`、README、LICENSE、`.gitignore` 和
+源码 metadata。两者都不包含 tests、benchmarks、scripts、docs、截图、缓存、`.env`、`.planning` 或 Fake Provider。
 
 运行时依赖为零。distribution verifier 将 Git tracked 产品文件与 archive 精确比对，并在新建虚拟环境中安装 wheel、
 检查入口、版本、资源、离线 Sandbox 状态和 doctor。Tag 发布工作流要求 `v<pyproject version>` 精确匹配，通过全部

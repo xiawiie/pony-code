@@ -100,8 +100,7 @@ _CALL_PLAN_FIELDS = {
     "call_id",
     "reconciliation_token",
     "container_name",
-    "image_reference",
-    "image_manifest_digest",
+    "image_digest",
     "image_id",
     "workspace",
     "workspace_device",
@@ -126,7 +125,7 @@ _IMAGE_SET_MANIFEST_FIELDS = {
     "tool_paths",
     "platforms",
 }
-_PLATFORM_IMAGE_FIELDS = {"reference", "image_id"}
+_PLATFORM_IMAGE_FIELDS = {"image_digest", "image_id"}
 _IMAGE_PLATFORMS = {"linux/arm64"}
 
 
@@ -532,7 +531,7 @@ class DockerImageManifest:
     image_set_digest: str
     policy_digest: str
     platform: str
-    reference: str
+    image_digest: str
     image_id: str
     user: str
     working_dir: str
@@ -570,7 +569,7 @@ class DockerSandboxRuntimeAuthorization:
     distribution_version: str
     installed_tree_digest: str
     image_set_digest: str
-    image_reference: str
+    image_digest: str
     image_id: str
     image_platform: str
     policy_digest: str
@@ -593,7 +592,7 @@ class DockerSandboxRuntimeAuthorization:
                 for value in (
                     self.installed_tree_digest,
                     self.image_set_digest,
-                    self.image_reference,
+                    self.image_digest,
                     self.image_id,
                     self.policy_digest,
                     self.attestation_digest,
@@ -649,7 +648,7 @@ class DockerSandboxRuntimeAuthorization:
             or current_tree_digest != self.installed_tree_digest
             or not local_identity_matches
             or self.image_set_digest != image.image_set_digest
-            or self.image_reference != image.reference
+            or self.image_digest != image.image_digest
             or self.image_id != image.image_id
             or self.image_platform != image.platform
             or self.policy_digest != image.policy_digest
@@ -671,7 +670,7 @@ def _runtime_authorization_digest(
             "record_type": record_type,
             "format_version": 1,
             **payload,
-            "image_reference": image.reference,
+            "image_digest": image.image_digest,
             "image_id": image.image_id,
             "image_platform": image.platform,
         }
@@ -692,7 +691,7 @@ def _sealed_runtime_authorization(
         distribution_version=payload.get("distribution_version", ""),
         installed_tree_digest=payload.get("installed_tree_digest", ""),
         image_set_digest=payload.get("image_set_digest", ""),
-        image_reference=image.reference,
+        image_digest=image.image_digest,
         image_id=image.image_id,
         image_platform=image.platform,
         policy_digest=payload.get("policy_digest", ""),
@@ -729,7 +728,7 @@ def _authorize_docker_sandbox_development(
             "record_type": "docker_sandbox_development_authorization",
             "format_version": 1,
             **payload,
-            "image_reference": image.reference,
+            "image_digest": image.image_digest,
             "image_id": image.image_id,
             "image_platform": image.platform,
         }
@@ -829,7 +828,7 @@ def load_image_manifest(path, *, target_platform=None):
             or any(
                 not isinstance(item[name], str)
                 or _SHA256_RE.fullmatch(item[name]) is None
-                for name in ("reference", "image_id")
+                for name in ("image_digest", "image_id")
             )
         ):
             raise DockerSandboxError("sandbox_image_identity_mismatch")
@@ -841,7 +840,7 @@ def load_image_manifest(path, *, target_platform=None):
         image_set_digest=_sha256(_canonical_json(value)),
         policy_digest=value["policy_digest"],
         platform=selected_platform,
-        reference=selected["reference"],
+        image_digest=selected["image_digest"],
         image_id=selected["image_id"],
         user=value["user"],
         working_dir=value["working_dir"],
@@ -920,12 +919,12 @@ def verify_image_inspect(payload, image):
             descriptor = data["Descriptor"]
             descriptor_matches = (
                 isinstance(descriptor, dict)
-                and descriptor.get("digest") == image.reference
+                and descriptor.get("digest") == image.image_digest
                 and descriptor.get("annotations", {}).get("config.digest")
                 == image.image_id
             )
         valid = (
-            data["Id"] == image.reference
+            data["Id"] == image.image_id
             and descriptor_matches
             and {"aarch64": "arm64", "x86_64": "amd64"}.get(
                 data["Architecture"],
@@ -1058,7 +1057,7 @@ class DockerClient:
             supported = server_supported and seccomp_supported and profile_supported
         except (KeyError, TypeError) as exc:
             raise DockerSandboxError("docker_server_unsupported") from exc
-        image_result = self.command(["image", "inspect", image.reference])
+        image_result = self.command(["image", "inspect", image.image_digest])
         if image_result.timed_out or image_result.stdout_truncated:
             raise DockerSandboxError("docker_daemon_unavailable")
         image_present = image_result.exit_code == 0
@@ -1140,8 +1139,7 @@ class DockerExecutionPlan:
     call_id: str
     reconciliation_token: str
     container_name: str
-    image_reference: str
-    image_manifest_digest: str
+    image_digest: str
     image_id: str
     workspace: str
     workspace_device: int
@@ -1192,14 +1190,9 @@ def _execution_plan_from_record(value):
     target_argv = value["target_argv"]
     labels = value["labels"]
     env = value["env"]
-    strings = (
-        "container_name",
-        "image_reference",
-        "workspace",
-        "user",
-    )
+    strings = ("container_name", "workspace", "user")
     digests = (
-        "image_manifest_digest",
+        "image_digest",
         "image_id",
         "policy_digest",
         "client_identity_digest",
@@ -1224,8 +1217,6 @@ def _execution_plan_from_record(value):
         )
         or not Path(value["workspace"]).is_absolute()
         or "," in value["workspace"]
-        or value["image_reference"] != value["image_manifest_digest"]
-        and not value["image_reference"].endswith("@" + value["image_manifest_digest"])
         or any(
             type(value[name]) is not int or value[name] <= 0
             for name in (
@@ -1264,8 +1255,7 @@ def _execution_plan_from_record(value):
         call_id=value["call_id"],
         reconciliation_token=value["reconciliation_token"],
         container_name=value["container_name"],
-        image_reference=value["image_reference"],
-        image_manifest_digest=value["image_manifest_digest"],
+        image_digest=value["image_digest"],
         image_id=value["image_id"],
         workspace=value["workspace"],
         workspace_device=value["workspace_device"],
@@ -1324,14 +1314,14 @@ def compile_execution_plan(
     labels = {
         **image.label_map,
         "io.pico.runtime.call": call_id,
-        "io.pico.runtime.image": image.reference,
+        "io.pico.runtime.image": image.image_digest,
         "io.pico.runtime.managed": "true",
         "io.pico.runtime.policy": image.policy_digest,
         "io.pico.runtime.sandbox": session.sandbox_id,
         "io.pico.runtime.token": token,
     }
     logical_payload = {
-        "image": image.reference,
+        "image": image.image_digest,
         "logical_cwd": "/workspace",
         "policy_digest": image.policy_digest,
         "target_argv": list(target_argv),
@@ -1348,8 +1338,7 @@ def compile_execution_plan(
         "call_id": call_id,
         "reconciliation_token": token,
         "container_name": "pico-sandbox-" + call_id[5:] + "-" + token[:12],
-        "image_reference": image.reference,
-        "image_manifest_digest": image.reference,
+        "image_digest": image.image_digest,
         "image_id": image.image_id,
         "workspace": str(workspace),
         "workspace_device": workspace_info.st_dev,
@@ -1403,7 +1392,7 @@ def compile_create_argv(plan):
     ]
     argv.extend("--env=" + item for item in plan.env)
     argv.extend(f"--label={key}={value}" for key, value in plan.labels)
-    argv.append(plan.image_reference)
+    argv.append(plan.image_digest)
     argv.extend(plan.target_argv)
     return argv
 
@@ -1426,8 +1415,8 @@ def verify_container_inspect(payload, plan, *, expected_id=None):
             and _HEX64_RE.fullmatch(payload["Id"]) is not None
             and (expected_id is None or payload["Id"] == expected_id)
             and payload["Name"] == "/" + plan.container_name
-            and payload["Image"] == plan.image_manifest_digest
-            and descriptor.get("digest") == plan.image_manifest_digest
+            and payload["Image"] == plan.image_id
+            and descriptor.get("digest") == plan.image_digest
             and descriptor.get("annotations", {}).get("config.digest") == plan.image_id
             and payload["Path"] == plan.target_argv[0]
             and payload["Args"] == list(plan.target_argv[1:])
@@ -1491,11 +1480,11 @@ def verify_cleanup_identity(payload, plan, container_id):
     try:
         valid = (
             payload["Id"] == container_id
-            and payload["Image"] == plan.image_manifest_digest
+            and payload["Image"] == plan.image_id
             and payload["Name"] == "/" + plan.container_name
             and payload["Config"]["Labels"] == plan.label_map
             and payload["ImageManifestDescriptor"]["digest"]
-            == plan.image_manifest_digest
+            == plan.image_digest
             and payload["ImageManifestDescriptor"]
             .get("annotations", {})
             .get("config.digest")
@@ -1782,7 +1771,7 @@ class DockerSandboxRunner:
         active = session.manifest.get("active_call")
         required_labels = {
             "io.pico.runtime.call": plan.call_id,
-            "io.pico.runtime.image": plan.image_manifest_digest,
+            "io.pico.runtime.image": plan.image_digest,
             "io.pico.runtime.managed": "true",
             "io.pico.runtime.policy": plan.policy_digest,
             "io.pico.runtime.sandbox": plan.sandbox_id,
@@ -1805,8 +1794,7 @@ class DockerSandboxRunner:
                 for key, value in required_labels.items()
             )
             or plan.execution_plan_digest != active["plan_digest"]
-            or plan.image_reference != session_image["reference"]
-            or plan.image_manifest_digest != session_image["manifest_digest"]
+            or plan.image_digest != session_image["image_digest"]
             or plan.image_id != session_image["image_id"]
             or plan.policy_digest != session.manifest["policy"]["digest"]
             or plan.client_identity_digest
@@ -1837,15 +1825,14 @@ class DockerSandboxRunner:
         expected_labels = {
             **self.image.label_map,
             "io.pico.runtime.call": plan.call_id,
-            "io.pico.runtime.image": self.image.reference,
+            "io.pico.runtime.image": self.image.image_digest,
             "io.pico.runtime.managed": "true",
             "io.pico.runtime.policy": self.image.policy_digest,
             "io.pico.runtime.sandbox": plan.sandbox_id,
             "io.pico.runtime.token": plan.reconciliation_token,
         }
         expected_image = {
-            "reference": self.image.reference,
-            "manifest_digest": self.image.reference,
+            "image_digest": self.image.image_digest,
             "image_id": self.image.image_id,
             "platform": self.image.platform,
         }
@@ -1861,8 +1848,7 @@ class DockerSandboxRunner:
             or plan.container_name
             != "pico-sandbox-" + plan.call_id[5:] + "-" + plan.reconciliation_token[:12]
             or plan.label_map != expected_labels
-            or plan.image_reference != self.image.reference
-            or plan.image_manifest_digest != self.image.reference
+            or plan.image_digest != self.image.image_digest
             or plan.image_id != self.image.image_id
             or plan.user != self.image.user
             or plan.env != self.image.env
@@ -2542,10 +2528,8 @@ class DockerSandboxContext:
             or self.sandbox_session.manifest["sidecar"] is None
             or Path(self.sandbox_session.manifest["sidecar"]["path"]).parent
             != project_state_root / "sandbox_sessions"
-            or self.sandbox_session.manifest["image"]["manifest_digest"]
-            != authorization.image_reference
-            or self.sandbox_session.manifest["image"]["reference"]
-            != authorization.image_reference
+            or self.sandbox_session.manifest["image"]["image_digest"]
+            != authorization.image_digest
             or self.sandbox_session.manifest["image"]["image_id"]
             != authorization.image_id
             or self.sandbox_session.manifest["image"]["platform"]
@@ -2590,8 +2574,7 @@ def _sandbox_manifest_metadata(client, image, readiness):
             "security_digest": _sha256(_canonical_json(readiness["security"])),
         },
         {
-            "reference": image.reference,
-            "manifest_digest": image.reference,
+            "image_digest": image.image_digest,
             "image_id": image.image_id,
             "platform": image.platform,
         },

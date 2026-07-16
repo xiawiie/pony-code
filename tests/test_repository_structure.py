@@ -221,6 +221,9 @@ def test_obsolete_provider_and_sandbox_names_are_absent():
     for obsolete in (
         "build_model_client",
         "_ProviderFailure",
+        "image_manifest_digest",
+        "image_reference",
+        "registry_reference",
         "thinking_disabled",
         "--max-new-tokens",
     ):

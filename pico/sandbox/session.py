@@ -95,7 +95,7 @@ _ENGINE_FIELDS = {
     "profile",
     "security_digest",
 }
-_IMAGE_FIELDS = {"reference", "manifest_digest", "image_id", "platform"}
+_IMAGE_FIELDS = {"image_digest", "image_id", "platform"}
 _POLICY_FIELDS = {
     "version",
     "digest",
@@ -293,16 +293,10 @@ def _validate_identity_metadata(engine, image, policy):
         )
         or not isinstance(image, dict)
         or set(image) != _IMAGE_FIELDS
-        or not isinstance(image["reference"], str)
-        or not image["reference"]
-        or len(image["reference"]) > 512
-        or _CONTROL_RE.search(image["reference"])
-        or not _matches(_SHA256_RE, image["manifest_digest"])
+        or not _matches(_SHA256_RE, image["image_digest"])
         or not _matches(_SHA256_RE, image["image_id"])
         or not isinstance(image["platform"], str)
         or image["platform"] not in {"linux/arm64", "linux/amd64"}
-        or image["reference"] != image["manifest_digest"]
-        and not image["reference"].endswith("@" + image["manifest_digest"])
         or not isinstance(policy, dict)
         or set(policy) != _POLICY_FIELDS
         or type(policy["version"]) is not int

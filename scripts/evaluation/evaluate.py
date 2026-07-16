@@ -725,7 +725,7 @@ def _provenance(root, suite, provider, system_name, machine_class):
     try:
         image = load_image_manifest(default_image_manifest_path())
         sandbox = {
-            "image": image.reference,
+            "image": image.image_digest,
             "policy": image.policy_digest,
         }
     except DockerSandboxError as exc:

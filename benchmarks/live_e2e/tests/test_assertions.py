@@ -65,6 +65,20 @@ def _settings(**overrides):
     return defaults
 
 
+def test_verify_pico_repo_uses_the_runtime_package_entry(tmp_path, capsys):
+    runtime = tmp_path / "pico" / "runtime"
+    runtime.mkdir(parents=True)
+    (runtime / "application.py").write_text("", encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
+
+    run_live_session.verify_pico_repo(tmp_path)
+    (runtime / "application.py").unlink()
+
+    with pytest.raises(SystemExit, match="2"):
+        run_live_session.verify_pico_repo(tmp_path)
+    assert "missing pico/runtime/application.py" in capsys.readouterr().err
+
+
 def test_live_fixture_uses_model_budget_and_compaction_contract():
     fixture = tomllib.loads(run_live_session.FIXTURE_PICO_TOML)
     model = fixture["model"]
@@ -1028,7 +1042,7 @@ def _turn_2_result_stub(**overrides):
     """Session state includes a tool_result message with digest applied."""
     defaults = dict(
         turn=2,
-        user_prompt="读一下 pico/runtime.py",
+        user_prompt="读一下 pico/runtime/application.py",
         expected_behavior="digest_applied",
         final_answer="ok",
         metadata={"injection_tokens": {"recalled_memory": 1}},
@@ -1055,8 +1069,8 @@ def _turn_2_result_stub(**overrides):
         system_prefix_hashes=("cache-key", "cache-key"),
         action_origins=("native_tool_use",),
         actual_user_contents=(
-            "<system-reminder>context</system-reminder>\n读一下 pico/runtime.py",
-            "<system-reminder>context</system-reminder>\n读一下 pico/runtime.py",
+            "<system-reminder>context</system-reminder>\n读一下 pico/runtime/application.py",
+            "<system-reminder>context</system-reminder>\n读一下 pico/runtime/application.py",
         ),
         run_id="run-2",
         task_state_terminal=True,
@@ -1157,7 +1171,7 @@ def test_check_turn_2_allows_plain_prompt_when_nothing_was_injected(tmp_path):
         "x" * 5000,
         tmp_path / "runs",
     )
-    prompt = "读一下 pico/runtime.py"
+    prompt = "读一下 pico/runtime/application.py"
     result = _turn_2_result_stub(
         metadata={"injection_tokens": {"recalled_memory": 0}},
         request_metadata_by_call=(
@@ -1181,7 +1195,7 @@ def test_check_turn_2_fails_when_later_injected_call_lacks_reminder(tmp_path):
         "x" * 5000,
         tmp_path / "runs",
     )
-    prompt = "读一下 pico/runtime.py"
+    prompt = "读一下 pico/runtime/application.py"
     result = _turn_2_result_stub(
         metadata={"injection_tokens": {"recalled_memory": 0}},
         request_metadata_by_call=(

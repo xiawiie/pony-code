@@ -136,3 +136,16 @@ def test_sandbox_report_uses_the_released_image_platform(monkeypatch):
     assert calls == [
         (bench_sandbox.default_image_manifest_path(), "linux/arm64"),
     ]
+
+
+def test_sandbox_session_metadata_has_one_local_image_digest():
+    from benchmarks.perf import bench_sandbox
+
+    image = bench_sandbox._report_image()
+    metadata = bench_sandbox._session_metadata(image)
+
+    assert metadata["image"] == {
+        "image_digest": image.image_digest,
+        "image_id": image.image_id,
+        "platform": image.platform,
+    }

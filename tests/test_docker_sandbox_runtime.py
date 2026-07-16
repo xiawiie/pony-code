@@ -322,7 +322,7 @@ def test_local_runtime_authorization_is_packaged_and_rechecks_tree(monkeypatch):
     ("field", "value"),
     (
         ("image_set_digest", "sha256:" + "0" * 64),
-        ("reference", "sha256:" + "0" * 64),
+        ("image_digest", "sha256:" + "0" * 64),
         ("image_id", "sha256:" + "0" * 64),
         ("platform", "linux/amd64"),
         ("policy_digest", "sha256:" + "0" * 64),
@@ -387,12 +387,11 @@ def test_runtime_context_persists_full_engine_image_and_policy_identity(
     assert manifest["engine"]["endpoint_hash"] == CLIENT_DIGEST
     assert manifest["engine"]["profile"] == "desktop_vm"
     assert set(manifest["image"]) == {
-        "reference",
-        "manifest_digest",
+        "image_digest",
         "image_id",
         "platform",
     }
-    assert manifest["image"]["manifest_digest"].startswith("sha256:")
+    assert manifest["image"]["image_digest"].startswith("sha256:")
     assert manifest["image"]["platform"] == "linux/arm64"
     assert set(manifest["policy"]) == {
         "version",

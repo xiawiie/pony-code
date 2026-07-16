@@ -50,8 +50,7 @@ def _session_metadata():
             "security_digest": "sha256:" + "1" * 64,
         },
         "image": {
-            "reference": image.reference,
-            "manifest_digest": image.reference,
+            "image_digest": image.image_digest,
             "image_id": image.image_id,
             "platform": image.platform,
         },
@@ -181,10 +180,10 @@ def _container_payload(plan, *, started=False, exit_code=0, oom=False):
             "UsernsMode": "",
         },
         "Id": CONTAINER_ID,
-        "Image": plan.image_manifest_digest,
+        "Image": plan.image_id,
         "ImageManifestDescriptor": {
             "annotations": {"config.digest": plan.image_id},
-            "digest": plan.image_manifest_digest,
+            "digest": plan.image_digest,
         },
         "Mounts": [
             {
@@ -220,9 +219,9 @@ def _image_payload(image):
         },
         "Descriptor": {
             "annotations": {"config.digest": image.image_id},
-            "digest": image.reference,
+            "digest": image.image_digest,
         },
-        "Id": image.reference,
+        "Id": image.image_id,
         "Os": image.operating_system,
         }
     ]
@@ -236,11 +235,11 @@ def test_image_inspect_accepts_real_containerd_shape_without_descriptor():
     verify_image_inspect(payload, image)
 
 
-def test_image_inspect_without_descriptor_requires_manifest_id():
+def test_image_inspect_without_descriptor_requires_image_id():
     image = load_image_manifest(default_image_manifest_path())
     payload = _image_payload(image)
     payload[0].pop("Descriptor")
-    payload[0]["Id"] = image.image_id
+    payload[0]["Id"] = image.image_digest
 
     with pytest.raises(DockerSandboxError, match="sandbox_image_identity_mismatch"):
         verify_image_inspect(payload, image)
@@ -390,7 +389,7 @@ def test_packaged_image_manifest_binds_d1_policy_and_image():
     assert image.policy_digest == POLICY_DIGEST
     assert image.image_set_digest.startswith("sha256:")
     assert (
-        image.reference
+        image.image_digest
         == "sha256:61f5e86e344d4053b8f6c7053c965b2cde7fc5e77777974e6237ad2e4ec36904"
     )
     assert (
@@ -435,7 +434,7 @@ def test_execution_plan_and_create_argv_are_frozen(tmp_path):
     assert "bind-recursive=disabled" in argv[argv.index("--mount") + 1]
     assert str(source) not in "\0".join(argv)
     assert argv[-3:] == ["/bin/sh", "-c", "printf ok"]
-    assert argv.index(plan.image_reference) < len(argv) - 3
+    assert argv.index(plan.image_digest) < len(argv) - 3
     assert sum(item.startswith("--mount") for item in argv) == 1
 
     with pytest.raises(DockerSandboxError, match="approved_execution_changed"):
@@ -448,7 +447,7 @@ def test_execution_plan_and_create_argv_are_frozen(tmp_path):
         )
 
 
-def test_create_uses_local_manifest_digest_and_keeps_oci_identities_distinct(tmp_path):
+def test_create_uses_local_image_digest_and_keeps_oci_identities_distinct(tmp_path):
     _source, _store, session, _runner_value, _plan, _client = _runner(tmp_path)
     image = load_image_manifest(default_image_manifest_path())
 
@@ -460,17 +459,16 @@ def test_create_uses_local_manifest_digest_and_keeps_oci_identities_distinct(tmp
     )
     argv = compile_create_argv(plan)
 
-    assert plan.image_reference == image.reference
-    assert plan.image_manifest_digest == image.reference
+    assert plan.image_digest == image.image_digest
     assert plan.image_id == image.image_id
-    assert argv[-4] == image.reference
+    assert argv[-4] == image.image_digest
 
 
 def test_runner_rejects_rehashed_plan_for_a_different_image(tmp_path):
     _source, _store, session, runner, plan, client = _runner(tmp_path)
     changed = replace(
         plan,
-        image_reference="sha256:" + "0" * 64,
+        image_digest="sha256:" + "0" * 64,
         execution_plan_digest="",
     )
     changed = replace(
@@ -805,9 +803,7 @@ def test_readiness_failures_prevent_call_state_and_target(
         lambda value: value["HostConfig"].update(NetworkMode="bridge"),
         lambda value: value["Config"].update(User="0:0"),
         lambda value: value["Mounts"].append(dict(value["Mounts"][0])),
-        lambda value: value.update(
-            Image=value["ImageManifestDescriptor"]["annotations"]["config.digest"]
-        ),
+        lambda value: value.update(Image=value["ImageManifestDescriptor"]["digest"]),
         lambda value: value["ImageManifestDescriptor"]["annotations"].update(
             {"config.digest": "sha256:" + "0" * 64}
         ),

@@ -256,7 +256,7 @@ def test_report_projects_sandbox_outcome_and_host_fallback_from_tool_result(
         "session_state": "ready",
         "engine_profile": "desktop_vm",
         "image_digest": Pico._public_sandbox_digest(
-            manifest["image"]["manifest_digest"]
+            manifest["image"]["image_digest"]
         ),
         "policy_digest": Pico._public_sandbox_digest(manifest["policy"]["digest"]),
         "network_mode": "none",

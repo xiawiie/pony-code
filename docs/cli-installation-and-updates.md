@@ -44,7 +44,7 @@ pico doctor
 ```
 
 `init` 依次询问 Provider、模型、API root、API Variant、认证方式和 API Key，将六个通用变量原子写入根目录
-`.env`。输入已有 Key 时，留空会保留原值；Ollama / `auth_mode=none` 允许空 Key。该命令不联网。
+`.env`。输入已有 Key 时，留空会保留原值；只有 Ollama / `auth_mode=none` 允许空 Key。该命令不联网。
 
 也可以复制仓库提供的 `.env.example`：
 
@@ -86,7 +86,7 @@ pico config set-secret PICO_API_KEY
 | --- | --- | --- | --- | --- |
 | Anthropic | `messages` | `https://api.anthropic.com/v1` | `x-api-key` | 必需 |
 | OpenAI | `responses` | `https://api.openai.com/v1` | `bearer` | 必需 |
-| OpenAI-compatible | `chat_completions` | 用户显式填写 | 通常 `bearer` | 取决于网关 |
+| OpenAI-compatible | `chat_completions` | 用户显式填写 | 通常 `bearer` | 必需 |
 | Ollama | `chat` | `http://127.0.0.1:11434` | `none` | 可空 |
 
 切换后运行：

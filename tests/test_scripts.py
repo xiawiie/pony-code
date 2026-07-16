@@ -294,7 +294,7 @@ def test_distribution_verifier_includes_all_product_packages(tmp_path):
     module.PACKAGE_DATA_FILES = set()
     tracked = {
         "pico/__init__.py",
-        "pico/runtime.py",
+        "pico/runtime/application.py",
         "pico/agent/__init__.py",
         "pico/agent/loop.py",
     }

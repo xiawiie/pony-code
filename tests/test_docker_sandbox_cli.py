@@ -42,8 +42,7 @@ def _session_metadata():
             "security_digest": "sha256:" + "2" * 64,
         },
         "image": {
-            "reference": "sha256:" + "3" * 64,
-            "manifest_digest": "sha256:" + "3" * 64,
+            "image_digest": "sha256:" + "3" * 64,
             "image_id": "sha256:" + "4" * 64,
             "platform": "linux/arm64",
         },

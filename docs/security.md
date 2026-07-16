@@ -45,7 +45,7 @@ URL 规则：
 - 除 loopback 外必须使用 HTTPS；
 - 禁止 userinfo、query、fragment 和 URL 内凭证；
 - adapter 不补版本前缀、不跟随 HTTP redirect、不探测候选路径；
-- `auth_mode=none` 可不发送凭证；其他模式缺 Key 即拒绝启动。
+- 云 Provider 即使显式选择 `auth_mode=none` 也必须配置通用 Key；只有 Ollama `auth_mode=none` 允许空 Key。
 
 `pico config show` 和 `doctor` 只显示 Key 是否存在、来源和变量名，从不显示值或认证 header。
 

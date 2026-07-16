@@ -1419,7 +1419,7 @@ class Pico:
                 engine.get("platform_profile") or engine.get("profile") or "unknown"
             ),
             "image_digest": self._public_sandbox_digest(
-                image.get("manifest_digest") or image.get("reference")
+                image.get("image_digest")
             ),
             "policy_digest": self._public_sandbox_digest(policy.get("digest")),
             "network_mode": str(policy.get("network") or "none"),

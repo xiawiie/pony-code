@@ -241,9 +241,11 @@ def check_live_readiness(config: RunConfig, *, settings=None) -> bool:
 
 def verify_pico_repo(root: Path) -> None:
     """Abort with exit 2 if ``root`` is not a pico repository."""
-    if not (root / "pico" / "runtime.py").is_file():
+    runtime_entry = root / "pico" / "runtime" / "application.py"
+    if not runtime_entry.is_file():
         print(
-            f"[live-e2e] {root} does not look like a pico repo (missing pico/runtime.py), aborted",
+            f"[live-e2e] {root} does not look like a pico repo "
+            "(missing pico/runtime/application.py), aborted",
             file=sys.stderr,
         )
         raise SystemExit(2)

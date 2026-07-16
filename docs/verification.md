@@ -41,7 +41,7 @@ uv run pytest -q \
   tests/test_cli_diagnostics.py \
   tests/test_provider_clients.py \
   tests/test_provider_anthropic.py \
-  tests/test_provider_openai_chat.py \
+  tests/test_provider_openai_chat_completions.py \
   tests/test_provider_response.py \
   tests/test_provider_probe.py
 ```

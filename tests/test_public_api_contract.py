@@ -210,7 +210,10 @@ def test_docker_sandbox_resources_are_readable():
         "platforms",
     }
     assert set(manifest["platforms"]) == {"linux/arm64"}
-    assert set(manifest["platforms"]["linux/arm64"]) == {"reference", "image_id"}
+    assert set(manifest["platforms"]["linux/arm64"]) == {
+        "image_digest",
+        "image_id",
+    }
     assert root.joinpath("docker-config", "config.json").read_bytes() == b"{}\n"
 
 

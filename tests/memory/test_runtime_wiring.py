@@ -189,19 +189,19 @@ def test_reset_clears_messages_working_memory_and_keeps_narrow_memory_shape(
 def test_memory_text_returns_working_memory_json(tmp_path, monkeypatch):
     agent = _build_agent(tmp_path, monkeypatch)
     agent.memory.set_task_summary("Inspect runtime")
-    agent.memory.remember_file("pico/runtime.py")
+    agent.memory.remember_file("pico/runtime/application.py")
     agent._sync_working_memory()
 
     assert json.loads(agent.memory_text()) == {
         "task_summary": "Inspect runtime",
-        "recent_files": ["pico/runtime.py"],
+        "recent_files": ["pico/runtime/application.py"],
     }
 
 
 def test_build_report_excludes_working_memory_content(tmp_path, monkeypatch):
     agent = _build_agent(tmp_path, monkeypatch)
     agent.memory.set_task_summary("Report task")
-    agent.memory.remember_file("pico/runtime.py")
+    agent.memory.remember_file("pico/runtime/application.py")
     agent._sync_working_memory()
     task_state = TaskState.create(
         run_id="run_test", task_id="task_test", user_request="Report task"
@@ -212,7 +212,7 @@ def test_build_report_excludes_working_memory_content(tmp_path, monkeypatch):
 
     assert "working_memory" not in report
     assert "Report task" not in json.dumps(report)
-    assert "pico/runtime.py" not in json.dumps(report)
+    assert "pico/runtime/application.py" not in json.dumps(report)
 
 
 def test_normal_ask_final_answer_creates_checkpoint_and_syncs_working_memory(

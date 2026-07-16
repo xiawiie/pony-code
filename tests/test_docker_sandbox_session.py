@@ -43,8 +43,7 @@ def _session_metadata():
             "security_digest": "sha256:" + "2" * 64,
         },
         "image": {
-            "reference": "example.invalid/pico@sha256:" + "3" * 64,
-            "manifest_digest": "sha256:" + "3" * 64,
+            "image_digest": "sha256:" + "3" * 64,
             "image_id": "sha256:" + "4" * 64,
             "platform": "linux/arm64",
         },
@@ -773,7 +772,7 @@ def test_inspect_rejects_duplicate_keys_and_symlink_manifest(tmp_path):
         ("engine", "unexpected", 1),
         ("engine", "profile", []),
         ("engine", "api_version", 1.54),
-        ("image", "manifest_digest", "invalid"),
+        ("image", "image_digest", "invalid"),
         ("image", "platform", []),
         ("policy", "network", "bridge"),
     ),
