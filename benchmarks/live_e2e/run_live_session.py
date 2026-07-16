@@ -10,6 +10,7 @@ configuration secrets.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import stat
@@ -575,7 +576,7 @@ def read_run_terminal_status(run_store, task_state):
         report_payload = json.loads(
             run_store.report_path(task_state).read_text(encoding="utf-8")
         )
-        report_terminal = _terminal_payload(report_payload)
+        report_terminal = _terminal_payload(report_payload.get("run"))
     except (
         AttributeError,
         OSError,
@@ -902,42 +903,71 @@ class AssertionEngine:
             actual=tr_content[:80] if tr_content else "(empty)",
         ))
 
-        # content contains "raw at "
+        source_hash = str(meta.get("source_hash", "") or "")
+        valid_source_hash = (
+            len(source_hash) == 16
+            and all(char in "0123456789abcdef" for char in source_hash)
+        )
+        expected_raw_result_id = f"raw_result_id: tool_result:{source_hash}"
         out.append(Assertion(
-            name="tool_result_content_contains_raw_pointer",
-            passed="raw at " in tr_content,
-            expected='"raw at " in tool_result content',
-            actual="found" if "raw at " in tr_content else "not found",
+            name="tool_result_content_contains_logical_raw_result_id",
+            passed=valid_source_hash and expected_raw_result_id in tr_content,
+            expected="tool_result content contains its logical raw-result id",
+            actual="found" if expected_raw_result_id in tr_content else "not found",
         ))
 
-        # extract raw path from content and check it exists on disk
-        raw_path_str = ""
-        marker = "raw at "
-        idx = tr_content.find(marker)
-        if idx != -1:
-            tail = tr_content[idx + len(marker):]
-            # path ends at ')' or end of line
-            end = tail.find(")")
-            if end == -1:
-                end = tail.find("\n")
-            raw_path_str = tail[:end].strip() if end != -1 else tail.strip()
-        raw_path = Path(raw_path_str) if raw_path_str else None
-        raw_exists = bool(raw_path and raw_path.exists())
+        try:
+            run_dir = Path(pico.run_store.run_dir(result.run_id))
+        except (AttributeError, TypeError, ValueError):
+            run_dir = None
+        host_path_hidden = bool(
+            run_dir
+            and str(run_dir) not in tr_content
+            and "raw at " not in tr_content
+        )
+        out.append(Assertion(
+            name="tool_result_content_hides_host_artifact_path",
+            passed=host_path_hidden,
+            expected="tool_result content excludes the Host artifact path",
+            actual="hidden" if host_path_hidden else "exposed",
+        ))
+
+        raw_path = (
+            run_dir / "tool_results" / f"{source_hash}.txt"
+            if run_dir is not None and valid_source_hash
+            else None
+        )
+        raw_exists = bool(raw_path and raw_path.is_file())
         out.append(Assertion(
             name="raw_file_exists_on_disk",
             passed=raw_exists,
-            expected=f"raw file at {raw_path_str!r} exists",
+            expected="trusted raw-result artifact exists",
             actual="exists" if raw_exists else "missing",
         ))
 
-        # raw file byte size matches original — for this we compare via
-        # ``source_hash`` presence in ``_pico_meta`` as a proxy: if digest
-        # was applied and file exists, we trust the runtime's write.
-        source_hash = str(meta.get("source_hash", "") or "")
+        raw_sha256 = ""
+        if raw_exists:
+            try:
+                with raw_path.open("rb") as handle:
+                    raw_sha256 = hashlib.file_digest(handle, "sha256").hexdigest()
+            except OSError:
+                raw_sha256 = ""
+        visible_sha256 = f"content_sha256: sha256:{raw_sha256}"
+        out.append(Assertion(
+            name="raw_file_digest_matches_visible_sha256",
+            passed=bool(
+                raw_sha256
+                and source_hash == raw_sha256[:16]
+                and visible_sha256 in tr_content
+            ),
+            expected="raw artifact digest matches the model-visible SHA-256",
+            actual="matches" if raw_sha256 and visible_sha256 in tr_content else "mismatch",
+        ))
+
         out.append(Assertion(
             name="raw_file_source_hash_recorded",
-            passed=bool(source_hash),
-            expected="_pico_meta.source_hash is a non-empty string",
+            passed=valid_source_hash,
+            expected="_pico_meta.source_hash is a 16-character lowercase hex digest",
             actual=source_hash or "(empty)",
         ))
 

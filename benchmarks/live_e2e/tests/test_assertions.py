@@ -3,6 +3,7 @@
 These tests never enter the normal ``main`` path or create a provider client.
 """
 
+import hashlib
 import json
 import os
 import sys
@@ -502,7 +503,7 @@ def test_read_run_terminal_status_uses_each_persisted_artifact(tmp_path):
         encoding="utf-8",
     )
     run_store.report_path(task_state).write_text(
-        json.dumps({"status": "stopped", "stop_reason": "step_limit_reached"}),
+        json.dumps({"run": {"status": "stopped", "stop_reason": "step_limit_reached"}}),
         encoding="utf-8",
     )
     run_store.trace_path(task_state).write_text(
@@ -518,7 +519,7 @@ def test_read_run_terminal_status_uses_each_persisted_artifact(tmp_path):
     )
 
     run_store.report_path(task_state).write_text(
-        json.dumps({"status": "failed", "stop_reason": ""}),
+        json.dumps({"run": {"status": "failed", "stop_reason": ""}}),
         encoding="utf-8",
     )
     _, _, report_terminal, _ = run_live_session.read_run_terminal_status(
@@ -543,7 +544,7 @@ def test_read_run_terminal_status_rejects_nonstring_or_blank_stop_reason(
         encoding="utf-8",
     )
     run_store.report_path(task_state).write_text(
-        json.dumps({"status": "completed", "stop_reason": stop_reason}),
+        json.dumps({"run": {"status": "completed", "stop_reason": stop_reason}}),
         encoding="utf-8",
     )
     run_store.trace_path(task_state).write_text(
@@ -582,7 +583,7 @@ def test_read_run_terminal_status_keeps_other_artifact_evidence(
         encoding="utf-8",
     )
     run_store.report_path(task_state).write_text(
-        json.dumps({"status": "completed", "stop_reason": "done"}),
+        json.dumps({"run": {"status": "completed", "stop_reason": "done"}}),
         encoding="utf-8",
     )
     run_store.trace_path(task_state).write_text(
@@ -615,7 +616,7 @@ def test_turn_runner_does_not_reuse_previous_run_evidence_after_pre_run_failure(
         encoding="utf-8",
     )
     run_store.report_path(previous_task_state).write_text(
-        json.dumps({"status": "completed", "stop_reason": "done"}),
+        json.dumps({"run": {"status": "completed", "stop_reason": "done"}}),
         encoding="utf-8",
     )
     run_store.trace_path(previous_task_state).write_text(
@@ -676,7 +677,7 @@ def test_turn_runner_uses_first_trace_call_as_current_turn_evidence(tmp_path):
         encoding="utf-8",
     )
     run_store.report_path(current_task_state).write_text(
-        json.dumps({"status": "completed", "stop_reason": "done"}),
+        json.dumps({"run": {"status": "completed", "stop_reason": "done"}}),
         encoding="utf-8",
     )
     run_store.trace_path(current_task_state).write_text(
@@ -924,13 +925,21 @@ def _turn_2_result_stub(**overrides):
     return TurnResult(**defaults)
 
 
-def _pico_stub_with_digested_message(raw_body: str, raw_dir: Path, source_hash: str = "abc12345"):
+def _pico_stub_with_digested_message(
+    raw_body: str,
+    run_dir: Path,
+    source_hash: str | None = None,
+):
     """Build a MagicMock pico whose session has a digested tool_result at the tail."""
+    content_sha256 = hashlib.sha256(raw_body.encode("utf-8")).hexdigest()
+    source_hash = source_hash or content_sha256[:16]
+    raw_dir = run_dir / "tool_results"
     raw_dir.mkdir(parents=True, exist_ok=True)
     raw_file = raw_dir / f"{source_hash}.txt"
     raw_file.write_text(raw_body, encoding="utf-8")
 
     pico = MagicMock()
+    pico.run_store.run_dir.return_value = run_dir
     pico.session = {
         "messages": [
             {"role": "user", "content": "read"},
@@ -938,7 +947,11 @@ def _pico_stub_with_digested_message(raw_body: str, raw_dir: Path, source_hash: 
             {
                 "role": "user",
                 "content": [{"type": "tool_result", "tool_use_id": "t1",
-                             "content": f"[digest] runtime.py (900 lines)\n- import\n(raw at {raw_file})"}],
+                             "content": (
+                                 "[digest] runtime.py (900 lines)\n- import\n"
+                                 f"content_sha256: sha256:{content_sha256}\n"
+                                 f"raw_result_id: tool_result:{source_hash}"
+                             )}],
                 "_pico_meta": {"digest_applied": True, "source_hash": source_hash, "tool_use_id": "t1"},
             },
         ]
@@ -949,10 +962,10 @@ def _pico_stub_with_digested_message(raw_body: str, raw_dir: Path, source_hash: 
 def test_check_turn_2_digest_passes_on_valid_state(tmp_path):
     engine = _engine()
     raw_body = "x" * 5000
-    pico, raw_file = _pico_stub_with_digested_message(raw_body, tmp_path / "runs" / "tool_results")
+    pico, raw_file = _pico_stub_with_digested_message(raw_body, tmp_path / "runs")
     result = _turn_2_result_stub()
     asserts = engine.check_turn_2_digest(result, pico)
-    assert len(asserts) == 12
+    assert len(asserts) == 14
     assert all(a.passed for a in asserts), [(a.name, a.actual) for a in asserts if not a.passed]
 
 
@@ -960,7 +973,7 @@ def test_check_turn_2_digest_passes_on_valid_state(tmp_path):
 def test_text_provider_turn_2_accepts_text_protocol_action(tmp_path, provider):
     pico, _ = _pico_stub_with_digested_message(
         "x" * 5000,
-        tmp_path / "runs" / "tool_results",
+        tmp_path / "runs",
     )
     assertions = _engine(provider=provider).check_turn_2_digest(
         _turn_2_result_stub(action_origins=("text_protocol",)),
@@ -1061,11 +1074,26 @@ def test_check_turn_2_digest_fails_when_no_digest_applied(tmp_path):
 def test_check_turn_2_digest_verifies_raw_file_exists(tmp_path):
     engine = _engine()
     raw_body = "x" * 5000
-    pico, raw_file = _pico_stub_with_digested_message(raw_body, tmp_path / "runs" / "tool_results")
+    pico, raw_file = _pico_stub_with_digested_message(raw_body, tmp_path / "runs")
     raw_file.unlink()  # remove the raw file → check should fail
     asserts = engine.check_turn_2_digest(_turn_2_result_stub(), pico)
     failed = [a for a in asserts if not a.passed]
     assert any(a.name == "raw_file_exists_on_disk" for a in failed)
+
+
+def test_check_turn_2_digest_rejects_model_visible_host_path(tmp_path):
+    pico, raw_file = _pico_stub_with_digested_message("x" * 5000, tmp_path / "runs")
+    tool_result = pico.session["messages"][-1]["content"][0]
+    tool_result["content"] += f"\n(raw at {raw_file})"
+
+    assertions = _engine().check_turn_2_digest(_turn_2_result_stub(), pico)
+
+    host_path_assertion = next(
+        assertion
+        for assertion in assertions
+        if assertion.name == "tool_result_content_hides_host_artifact_path"
+    )
+    assert not host_path_assertion.passed
 
 
 def _turn_3_result_stub(**overrides):
