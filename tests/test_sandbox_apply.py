@@ -16,6 +16,7 @@ import pico.sandbox_apply as sandbox_apply
 from pico import cli as pico_cli
 from pico.checkpoint_store import CheckpointStore, CheckpointStoreError
 from pico.recovery_policy import DEFAULT_MAX_BLOB_SIZE
+from pico.safe_subprocess import build_trusted_executables
 from pico.sandbox_apply import (
     _validate_capture,
     _validate_apply_journal,
@@ -1261,7 +1262,7 @@ def test_source_apply_contract_is_independent_of_source_profile(
     tmp_path,
     source_profile,
 ):
-    git_executable = shutil.which("git")
+    git_executable = build_trusted_executables(tmp_path, names=("git",)).get("git")
     if source_profile != "non_git" and git_executable is None:
         pytest.skip("git executable is required for Git source profiles")
     source, context, _blobs, observer, _baseline = _observer(

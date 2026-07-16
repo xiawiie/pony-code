@@ -165,7 +165,7 @@ jobs:
       - name: Probe Docker Sandbox readiness (report only)
         run: |
           set -o pipefail
-          uv run --no-sync pico --format json sandbox status | tee docker-sandbox-status.json
+          uv run --frozen pico --format json sandbox status | tee docker-sandbox-status.json
 
       - name: Docker Sandbox local identity gate (zero mutation)
         run: |
