@@ -44,9 +44,12 @@ def test_pico_toml_max_blob_size_overrides_snapshot_eligibility(tmp_path):
     assert tightened["ineligible_reason"] == "file_too_large"
 
 
-def test_model_config_uses_fixed_contract_and_default_url():
+def test_model_config_uses_fixed_anthropic_contract():
     resolved = resolve_model_config(
-        project_env={API_KEY_ENV_NAME: "project-key"},
+        project_env={
+            API_URL_ENV_NAME: DEFAULT_API_URL,
+            API_KEY_ENV_NAME: "project-key",
+        },
         process_env={},
     )
 
@@ -55,9 +58,17 @@ def test_model_config_uses_fixed_contract_and_default_url():
         "source": "fixed",
         "name": "DEFAULT_MODEL",
     }
-    assert resolved["protocol"]["value"] == "openai_chat_completions"
-    assert resolved["auth_mode"]["value"] == "bearer"
+    assert resolved["protocol"]["value"] == "anthropic_messages"
+    assert resolved["auth_mode"]["value"] == "x-api-key"
     assert resolved["base_url"]["value"] == DEFAULT_API_URL
+
+
+def test_model_config_requires_explicit_url_when_key_is_configured():
+    with pytest.raises(ValueError, match="^api_url_not_configured$"):
+        resolve_model_config(
+            project_env={API_KEY_ENV_NAME: "project-key"},
+            process_env={},
+        )
 
 
 def test_project_env_wins_over_process_env_for_url_and_key():
@@ -117,7 +128,7 @@ def test_only_legacy_or_vendor_variables_cannot_configure_runtime():
         process_env={},
         required=False,
     )
-    assert inspected["base_url"]["value"] == DEFAULT_API_URL
+    assert inspected["base_url"]["value"] == ""
     assert inspected["api_key"] == {"value": "", "source": "unset", "name": ""}
 
 

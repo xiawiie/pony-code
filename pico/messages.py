@@ -9,6 +9,43 @@ class MessageValidationError(ValueError):
     """A canonical transcript violates the v3 message contract."""
 
 
+def _valid_provider_state_item(item):
+    if not isinstance(item, dict):
+        return False
+    item_type = item.get("type")
+    if item_type == "reasoning":
+        if any(
+            key not in {
+                "id",
+                "type",
+                "encrypted_content",
+                "summary",
+                "content",
+                "status",
+            }
+            for key in item
+        ):
+            return False
+        encrypted = item.get("encrypted_content")
+        if not isinstance(encrypted, str) or not encrypted:
+            return False
+        return "content" not in item or isinstance(item["content"], list)
+    if item_type == "thinking":
+        return (
+            set(item) == {"type", "thinking", "signature"}
+            and isinstance(item.get("thinking"), str)
+            and isinstance(item.get("signature"), str)
+            and bool(item["signature"])
+        )
+    if item_type == "redacted_thinking":
+        return (
+            set(item) == {"type", "data"}
+            and isinstance(item.get("data"), str)
+            and bool(item["data"])
+        )
+    return False
+
+
 def append_messages(messages, *new_messages):
     return [*list(messages or []), *new_messages]
 
@@ -243,24 +280,7 @@ def validate_messages(messages, *, require_meta):
                 if (
                     not isinstance(provider_state, list)
                     or len(provider_state) > 32
-                    or any(
-                        not isinstance(item, dict)
-                        or item.get("type") != "reasoning"
-                        or not isinstance(item.get("encrypted_content"), str)
-                        or not item["encrypted_content"]
-                        or any(
-                            key
-                            not in {
-                                "id",
-                                "type",
-                                "encrypted_content",
-                                "summary",
-                                "status",
-                            }
-                            for key in item
-                        )
-                        for item in provider_state
-                    )
+                    or any(not _valid_provider_state_item(item) for item in provider_state)
                 ):
                     raise MessageValidationError("invalid provider state")
                 try:

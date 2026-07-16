@@ -197,21 +197,21 @@ def test_init_prompts_for_url_and_hidden_key_without_building_agent_or_network(
 
     values = read_project_env(tmp_path, warn=False)
     assert values == {
-        "PICO_API_URL": "https://api.deepseek.com",
+        "PICO_API_URL": "https://api.deepseek.com/anthropic/v1",
         "PICO_DEEPSEEK_API_KEY": "test-key",
     }
     captured = capsys.readouterr()
-    assert "API URL [https://api.deepseek.com]:" in captured.err
+    assert "API URL [https://api.deepseek.com/anthropic/v1]:" in captured.err
     assert captured.out.startswith("Pico init")
     assert "deepseek-v4-flash" in captured.out
-    assert "openai_chat_completions" in captured.out
+    assert "anthropic_messages" in captured.out
     assert "test-key" not in captured.out + captured.err
 
 
 def test_init_accepts_exact_third_party_api_root(tmp_path, monkeypatch, capsys):
     _install_init_input(
         monkeypatch,
-        url="https://gateway.example/openai/v1/",
+        url="https://lumina.tripo3d.com/v1/",
         key="gateway-key",
     )
 
@@ -225,7 +225,7 @@ def test_init_accepts_exact_third_party_api_root(tmp_path, monkeypatch, capsys):
 
     output = capsys.readouterr().out
     payload = json.loads(output)["data"]
-    assert payload["api_url"] == "https://gateway.example/openai/v1"
+    assert payload["api_url"] == "https://lumina.tripo3d.com/v1"
     assert payload["model"] == "deepseek-v4-flash"
     assert payload["api_key"] == {
         "present": True,

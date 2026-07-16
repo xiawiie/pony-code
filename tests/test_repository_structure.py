@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 MAINTAINER_DOCS = {
     "README.md",
     "CONTEXT.md",
+    "PICO_OPTIMIZATION_SPEC.md",
     "docs/cli-installation-and-updates.md",
     "docs/architecture.md",
     "docs/security.md",
@@ -166,6 +167,9 @@ def test_all_provider_methods_use_the_structured_completion_surface():
         "pico/providers/fake.py": {"FakeModelClient": {"complete"}},
         "pico/providers/openai_compatible.py": {
             "OpenAICompatibleModelClient": {"complete"},
+        },
+        "pico/providers/openai_chat.py": {
+            "OpenAIChatCompletionsModelClient": {"complete"},
         },
         "pico/providers/ollama.py": {"OllamaModelClient": {"complete"}},
     }

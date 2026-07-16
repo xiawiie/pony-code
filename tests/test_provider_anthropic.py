@@ -104,6 +104,92 @@ def test_complete_tool_use_response():
     assert resp.content[0]["input"]["path"] == "a.py"
 
 
+def test_thinking_tool_state_is_preserved_and_replayed(monkeypatch):
+    thinking = {
+        "type": "thinking",
+        "thinking": "use the file tool",
+        "signature": "opaque-signature",
+    }
+    redacted = {"type": "redacted_thinking", "data": "opaque-redacted"}
+    queued = [
+        {
+            "content": [
+                thinking,
+                redacted,
+                {
+                    "type": "tool_use",
+                    "id": "toolu_thinking",
+                    "name": "read_file",
+                    "input": {"path": "README.md"},
+                },
+            ],
+            "stop_reason": "tool_use",
+            "usage": {},
+        },
+        {
+            "content": [{"type": "text", "text": "done"}],
+            "stop_reason": "end_turn",
+            "usage": {},
+        },
+    ]
+    captured = []
+
+    def fake_urlopen(request, timeout=None):
+        captured.append(json.loads(request.data))
+        return _mock_urlopen(queued.pop(0))
+
+    monkeypatch.setattr(provider_shared, "_provider_urlopen", fake_urlopen)
+    client = _make_client()
+    first = client.complete(
+        system=[],
+        tools=[],
+        messages=[{"role": "user", "content": "read"}],
+        max_tokens=10,
+    )
+    assert first.provider_state == [thinking, redacted]
+
+    client.complete(
+        system=[],
+        tools=[],
+        messages=[
+            {"role": "user", "content": "read"},
+            {
+                "role": "assistant",
+                "content": [first.content[-1]],
+                "_pico_provider_state": first.provider_state,
+            },
+            {
+                "role": "user",
+                "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": "toolu_thinking",
+                    "content": "body",
+                }],
+            },
+        ],
+        max_tokens=10,
+    )
+
+    assert captured[1]["messages"][1]["content"] == [
+        thinking,
+        redacted,
+        first.content[-1],
+    ]
+
+
+def test_empty_anthropic_object_is_protocol_mismatch(monkeypatch):
+    monkeypatch.setattr(
+        provider_shared,
+        "_provider_urlopen",
+        lambda *_args, **_kwargs: _mock_urlopen({}),
+    )
+
+    with pytest.raises(provider_shared._ProviderFailure) as caught:
+        _make_client().complete(system=[], tools=[], messages=[], max_tokens=10)
+
+    assert caught.value.code == "provider_protocol_mismatch"
+
+
 def test_complete_unknown_stop_reason_is_unknown():
     client = _make_client()
 
@@ -190,11 +276,28 @@ def test_complete_rejects_non_header_api_key_before_request(monkeypatch):
     urlopen.assert_not_called()
 
 
-def test_deepseek_anthropic_surface_omits_unsupported_extension_fields(monkeypatch):
+@pytest.mark.parametrize(
+    ("base_url", "messages_url"),
+    [
+        (
+            "https://api.deepseek.com/anthropic/v1",
+            "https://api.deepseek.com/anthropic/v1/messages",
+        ),
+        (
+            "https://lumina.tripo3d.com/v1",
+            "https://lumina.tripo3d.com/v1/messages",
+        ),
+    ],
+)
+def test_deepseek_anthropic_surface_omits_unsupported_extension_fields(
+    monkeypatch,
+    base_url,
+    messages_url,
+):
     captured = {}
     client = AnthropicCompatibleModelClient(
         model="deepseek-test",
-        base_url="https://api.deepseek.com/anthropic/v1",
+        base_url=base_url,
         api_key="test-key",
         temperature=0.0,
         timeout=30,
@@ -239,7 +342,7 @@ def test_deepseek_anthropic_surface_omits_unsupported_extension_fields(monkeypat
     )
 
     assert client.supports_prompt_cache is False
-    assert captured["url"] == "https://api.deepseek.com/anthropic/v1/messages"
+    assert captured["url"] == messages_url
     assert "cache_control" not in captured["body"]["system"][0]
     assert captured["body"]["messages"] == [
         {"role": "user", "content": "hello"}

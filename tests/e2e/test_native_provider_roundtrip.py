@@ -8,6 +8,7 @@ import pytest
 from pico import Pico, SessionStore, WorkspaceContext
 from pico.providers.anthropic_compatible import AnthropicCompatibleModelClient
 from pico.providers.ollama import OllamaModelClient
+from pico.providers.openai_chat import OpenAIChatCompletionsModelClient
 from pico.providers.openai_compatible import OpenAICompatibleModelClient
 
 
@@ -60,12 +61,19 @@ def _provider_responses(family, scenario):
         return [
             {
                 "stop_reason": "tool_use",
-                "content": [{
-                    "type": "tool_use",
-                    "id": "call-1",
-                    "name": name,
-                    "input": arguments,
-                }],
+                "content": [
+                    {
+                        "type": "thinking",
+                        "thinking": "use the requested tool",
+                        "signature": "opaque-signature",
+                    },
+                    {
+                        "type": "tool_use",
+                        "id": "call-1",
+                        "name": name,
+                        "input": arguments,
+                    },
+                ],
                 "usage": {},
             },
             {
@@ -74,7 +82,7 @@ def _provider_responses(family, scenario):
                 "usage": {},
             },
         ]
-    if family == "openai":
+    if family == "responses":
         return [
             {
                 "id": "response-1",
@@ -94,6 +102,37 @@ def _provider_responses(family, scenario):
                         "type": "output_text",
                         "text": "closed-loop-finished",
                     }],
+                }],
+                "usage": {},
+            },
+        ]
+    if family == "chat":
+        return [
+            {
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [{
+                            "id": "call-1",
+                            "type": "function",
+                            "function": {
+                                "name": name,
+                                "arguments": json.dumps(arguments),
+                            },
+                        }],
+                    },
+                    "finish_reason": "tool_calls",
+                }],
+                "usage": {},
+            },
+            {
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": "closed-loop-finished",
+                    },
+                    "finish_reason": "stop",
                 }],
                 "usage": {},
             },
@@ -130,10 +169,20 @@ def _native_client(family, root):
             auth_mode="none",
             capabilities={},
         )
-    if family == "openai":
+    if family == "responses":
         return OpenAICompatibleModelClient(
             model="openai-custom",
             base_url=root + "/openai/v9",
+            api_key="",
+            temperature=None,
+            timeout=5,
+            auth_mode="none",
+            capabilities={},
+        )
+    if family == "chat":
+        return OpenAIChatCompletionsModelClient(
+            model="chat-custom",
+            base_url=root + "/chat/v9",
             api_key="",
             temperature=None,
             timeout=5,
@@ -155,16 +204,21 @@ def _native_client(family, root):
 def _tool_result_from_followup(family, body):
     if family == "anthropic":
         return body["messages"][-1]["content"][0]["content"]
-    if family == "openai":
+    if family == "responses":
         return next(
             item["output"]
             for item in reversed(body["input"])
             if item.get("type") == "function_call_output"
         )
+    if family == "chat":
+        return body["messages"][-1]["content"]
     return body["messages"][-1]["content"]
 
 
-@pytest.mark.parametrize("family", ("anthropic", "openai", "ollama"))
+@pytest.mark.parametrize(
+    "family",
+    ("anthropic", "responses", "chat", "ollama"),
+)
 @pytest.mark.parametrize(
     "scenario",
     ("read_success", "write_denied", "tool_error"),
@@ -190,13 +244,15 @@ def test_native_adapter_agent_loop_closes_two_round_tool_flow(
     assert len(captured) == 2
     expected_suffix = {
         "anthropic": "/messages",
-        "openai": "/responses",
+        "responses": "/responses",
+        "chat": "/chat/completions",
         "ollama": "/api/chat",
     }[family]
     assert [request["path"] for request in captured] == [
         {
             "anthropic": "/anthropic/v9/messages",
-            "openai": "/openai/v9/responses",
+            "responses": "/openai/v9/responses",
+            "chat": "/chat/v9/chat/completions",
             "ollama": "/ollama/v9/api/chat",
         }[family]
     ] * 2
@@ -206,4 +262,8 @@ def test_native_adapter_agent_loop_closes_two_round_tool_flow(
         assert "demo" in result
     else:
         assert "error:" in result
+    if family == "anthropic":
+        assert captured[1]["body"]["messages"][-2]["content"][0]["type"] == (
+            "thinking"
+        )
     assert not (tmp_path / "blocked.txt").exists()

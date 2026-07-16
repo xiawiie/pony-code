@@ -461,7 +461,9 @@ def test_provider_target_uses_deepseek_first_project_env(tmp_path, monkeypatch):
     assert target["api_key"] == "sk-project-deepseek"
     assert target["model"] == "deepseek-v4-flash"
     assert target["base_url"] == "https://gateway.example/v1"
-    assert target["client_kind"] == "openai_chat_completions"
+    assert target["client_kind"] == "anthropic_messages"
+    assert target["auth_mode"] == "x-api-key"
+    assert target["capabilities"] == {"thinking_disabled": True}
 
 
 def test_provider_target_uses_explicit_pico_key_for_gpt(tmp_path, monkeypatch):

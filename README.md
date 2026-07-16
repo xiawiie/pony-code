@@ -33,8 +33,9 @@ pico doctor
 ```
 
 `init` 只在本地校验并原子写入 `.env`，不会联网。URL 留空时使用
-`https://api.deepseek.com`，API Key 通过隐藏输入保存。Pico 固定使用
-`deepseek-v4-flash`、OpenAI Chat Completions 与 Bearer 认证；第三方兼容服务只需输入其精确 API 根地址。
+`https://api.deepseek.com/anthropic/v1`，API Key 通过隐藏输入保存。Pico 固定使用
+`deepseek-v4-flash`、Anthropic Messages 与 `x-api-key` 认证；第三方服务必须提供相同协议，并输入已经包含
+版本前缀的精确 API 根，例如 Lumina 使用 `https://lumina.tripo3d.com/v1`。
 普通 `doctor` 不联网；只有显式执行 `pico doctor --check-api` 才会验证文本、工具调用和 tool result 续接，
 并可能产生少量费用。
 
@@ -50,11 +51,12 @@ python -m pico repl
 
 ## 能力与限制
 
-- CLI 只有一条模型路径：`deepseek-v4-flash` + OpenAI Chat Completions。没有 Provider、Profile、Connection、
+- CLI 只有一条模型路径：`deepseek-v4-flash` + Anthropic Messages。没有 Provider、Profile、Connection、
   Compatibility 或 API 类型选择。
-- `PICO_API_URL` 是精确 API 根；客户端只追加 `/chat/completions`，不会补 `/v1`，也不会探测、降级或切换模型。
+- `PICO_API_URL` 是精确 API 根；客户端只追加 `/messages`，不会补 `/v1`，也不会探测、降级或切换模型。
 - API Key 只读取 `PICO_DEEPSEEK_API_KEY`。项目 `.env` 优先于进程环境，旧配置变量不会激活运行时。
-- Anthropic Messages、OpenAI Responses 与 Ollama client 仍作为内部实现和测试对象保留，但不接入本轮 CLI。
+- 只有 Key 而没有同一配置源解析出的显式 URL 时，运行时 fail closed，不把旧 Key 静默发送到默认地址。
+- OpenAI Responses、OpenAI Chat Completions 与 Ollama client 仍作为内部实现和测试对象保留，但不接入公开 CLI。
 - Canonical Messages 是唯一会话 transcript；run、trace、checkpoint 和 tool-change 都保留本地证据。
 - 文件访问、私有存储、secret redaction、shell policy 和恢复冲突检查是 runtime 边界的一部分。
 - Memory 分为用户维护的 User Notes 和 agent 追加的 Agent Notes。

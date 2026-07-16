@@ -1,5 +1,6 @@
 """Anthropic Messages native provider adapter."""
 
+from copy import deepcopy
 import json
 import urllib.request
 
@@ -20,17 +21,59 @@ from ._shared import (
 )
 
 
+def _validated_anthropic_provider_state(value):
+    if value in (None, (), []):
+        return []
+    if not isinstance(value, (list, tuple)) or len(value) > 32:
+        raise ValueError("invalid Anthropic provider state")
+    prepared = []
+    for item in value:
+        if not isinstance(item, dict):
+            raise ValueError("invalid Anthropic provider state")
+        item_type = item.get("type")
+        if item_type == "thinking":
+            valid = (
+                set(item) == {"type", "thinking", "signature"}
+                and isinstance(item.get("thinking"), str)
+                and isinstance(item.get("signature"), str)
+                and bool(item["signature"])
+            )
+        elif item_type == "redacted_thinking":
+            valid = (
+                set(item) == {"type", "data"}
+                and isinstance(item.get("data"), str)
+                and bool(item["data"])
+            )
+        else:
+            valid = False
+        if not valid:
+            raise ValueError("invalid Anthropic provider state")
+        prepared.append(deepcopy(item))
+    try:
+        encoded = json.dumps(prepared, ensure_ascii=False).encode("utf-8")
+    except (TypeError, ValueError):
+        raise ValueError("invalid Anthropic provider state") from None
+    if len(encoded) > 1024 * 1024:
+        raise ValueError("Anthropic provider state too large")
+    return prepared
+
+
 def _anthropic_content(data):
-    content = data.get("content", [])
+    content = data.get("content")
     if not isinstance(content, list) or not all(
         isinstance(item, dict) for item in content
     ):
         raise ValueError("content must be a list of objects")
+    action_content = []
+    provider_state = []
+    seen_action_content = False
     for item in content:
         item_type = item.get("type")
         if item_type == "text":
             if not isinstance(item.get("text"), str):
                 raise ValueError("content text must be a string")
+            seen_action_content = True
+            action_content.append(deepcopy(item))
         elif item_type == "tool_use":
             if (
                 not isinstance(item.get("id"), str)
@@ -40,9 +83,15 @@ def _anthropic_content(data):
                 or not isinstance(item.get("input"), dict)
             ):
                 raise ValueError("invalid tool_use block")
+            seen_action_content = True
+            action_content.append(deepcopy(item))
+        elif item_type in {"thinking", "redacted_thinking"}:
+            if seen_action_content:
+                raise ValueError("thinking blocks must precede response content")
+            provider_state.extend(_validated_anthropic_provider_state([item]))
         else:
             raise ValueError("unsupported content block")
-    return content
+    return action_content, provider_state
 
 
 def _anthropic_tools(tools, *, strict):
@@ -151,8 +200,26 @@ class AnthropicCompatibleModelClient:
             set(cache_breakpoints or []) if self.supports_prompt_cache else set()
         )
         for idx, msg in enumerate(messages):
+            content = msg["content"]
+            provider_state = _validated_anthropic_provider_state(
+                msg.get("_pico_provider_state")
+            )
+            if provider_state:
+                if (
+                    msg.get("role") != "assistant"
+                    or not isinstance(content, list)
+                    or not content
+                    or not all(
+                        isinstance(block, dict)
+                        and block.get("type") == "tool_use"
+                        for block in content
+                    )
+                ):
+                    raise ValueError(
+                        "Anthropic provider state requires assistant tool_use"
+                    )
+                content = [*provider_state, *deepcopy(content)]
             if idx in breakpoints:
-                content = msg["content"]
                 if isinstance(content, str):
                     blocks = [{"type": "text", "text": content, "cache_control": {"type": "ephemeral"}}]
                 else:
@@ -163,7 +230,7 @@ class AnthropicCompatibleModelClient:
                         blocks[-1] = last
                 prepared_messages.append({"role": msg["role"], "content": blocks})
             else:
-                prepared_messages.append({"role": msg["role"], "content": msg["content"]})
+                prepared_messages.append({"role": msg["role"], "content": content})
 
         prepared_system = system
         if not self.supports_prompt_cache:
@@ -236,7 +303,7 @@ class AnthropicCompatibleModelClient:
         }
         try:
             raw_stop_reason = data.get("stop_reason")
-            if raw_stop_reason is not None and not isinstance(raw_stop_reason, str):
+            if not isinstance(raw_stop_reason, str):
                 raise ValueError("stop reason must be a string")
             if raw_stop_reason == "pause_turn":
                 raise _ProviderFailure(
@@ -244,7 +311,7 @@ class AnthropicCompatibleModelClient:
                     code="unsupported_stop_reason",
                 )
             stop_reason = stop_map.get(raw_stop_reason, StopReason.UNKNOWN)
-            content = _anthropic_content(data)
+            content, provider_state = _anthropic_content(data)
             usage_details = _extract_anthropic_usage_cache_details(data)
             _record_effective_model(self, data)
             request_id = response_headers.get("request-id") or response_headers.get(
@@ -256,6 +323,7 @@ class AnthropicCompatibleModelClient:
                 stop_reason=stop_reason,
                 content=content,
                 usage=usage_details,
+                provider_state=provider_state,
             )
         except _ProviderFailure:
             raise

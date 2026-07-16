@@ -1261,7 +1261,9 @@ def test_source_apply_contract_is_independent_of_source_profile(
     tmp_path,
     source_profile,
 ):
-    git_executable = shutil.which("git")
+    git_executable = (
+        "/usr/bin/git" if Path("/usr/bin/git").is_file() else shutil.which("git")
+    )
     if source_profile != "non_git" and git_executable is None:
         pytest.skip("git executable is required for Git source profiles")
     source, context, _blobs, observer, _baseline = _observer(

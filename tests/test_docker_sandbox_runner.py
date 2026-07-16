@@ -393,6 +393,14 @@ def test_packaged_image_manifest_binds_d1_policy_and_image():
     assert image.env == GUEST_ENV
 
 
+def test_packaged_image_manifest_rejects_unreleased_amd64_target():
+    with pytest.raises(DockerSandboxError, match="sandbox_image_not_released"):
+        load_image_manifest(
+            default_image_manifest_path(),
+            target_platform="linux/amd64",
+        )
+
+
 def test_image_manifest_rejects_unknown_and_duplicate_fields(tmp_path):
     value = json.loads(default_image_manifest_path().read_text())
     value["unexpected"] = True
@@ -1769,7 +1777,7 @@ def test_discover_local_docker_binds_trusted_cli_and_desktop_socket(tmp_path):
     executable.write_bytes(b"#!/bin/sh\n")
     executable.chmod(0o755)
     (binary_dir / "docker").symlink_to(executable)
-    short_home = Path("/private/tmp") / f"pico-docker-discovery-{os.getpid()}-{time.time_ns()}"
+    short_home = Path("/tmp") / f"pico-docker-discovery-{os.getpid()}-{time.time_ns()}"
     socket_dir = short_home / ".docker" / "run"
     socket_dir.mkdir(parents=True)
     endpoint = socket_dir / "docker.sock"

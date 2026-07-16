@@ -1,5 +1,7 @@
 from unittest.mock import Mock
 
+import pytest
+
 import pico.providers._shared as provider_shared
 from pico.providers._shared import _ProviderFailure
 from pico.providers.openai_chat import OpenAIChatCompletionsModelClient
@@ -27,13 +29,15 @@ def _tool(value="ping"):
 class _ScriptedClient:
     def __init__(self, responses):
         self.responses = list(responses)
+        self.calls = []
         self.provider_binding = {
             "protocol_family": "test",
             "model": "test-model",
             "endpoint_hash": "sha256:test",
         }
 
-    def complete(self, **_kwargs):
+    def complete(self, **kwargs):
+        self.calls.append(kwargs)
         response = self.responses.pop(0)
         if isinstance(response, Exception):
             raise response
@@ -51,7 +55,9 @@ def _successful_client():
 
 
 def test_probe_verifies_text_tool_and_continuation():
-    report = probe_model_client(_successful_client())
+    client = _successful_client()
+
+    report = probe_model_client(client)
 
     assert report == {
         "status": "ok",
@@ -64,6 +70,7 @@ def test_probe_verifies_text_tool_and_continuation():
             "endpoint_hash": "sha256:test",
         },
     }
+    assert [call["max_tokens"] for call in client.calls] == [16, 128, 128]
 
 
 def test_probe_distinguishes_tool_and_continuation_failures():
@@ -107,6 +114,27 @@ def test_probe_reports_safe_provider_failure_category():
     assert report["error_code"] == "http_4xx"
     assert report["http_status"] == 401
     assert secret not in str(report)
+
+
+@pytest.mark.parametrize(
+    ("code", "category"),
+    [
+        ("connection_reset", "connection_failed"),
+        ("request_timeout", "timeout"),
+        ("tls_error", "tls_failed"),
+        ("request_too_large", "request_too_large"),
+        ("response_truncated", "response_truncated"),
+    ],
+)
+def test_probe_preserves_specific_safe_failure_category(code, category):
+    client = _ScriptedClient([
+        _ProviderFailure("provider request failed", code=code),
+    ])
+
+    report = probe_model_client(client)
+
+    assert report["category"] == category
+    assert report["error_code"] == code
 
 
 def test_probe_missing_key_performs_zero_network_requests(monkeypatch):

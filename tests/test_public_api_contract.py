@@ -34,6 +34,7 @@ def test_public_api_exports_current_names_only():
 def test_build_agent_returns_pico(tmp_path):
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
     (tmp_path / ".env").write_text(
+        "PICO_API_URL=https://api.deepseek.com/anthropic/v1\n"
         "PICO_DEEPSEEK_API_KEY=test-key\n",
         encoding="utf-8",
     )
@@ -240,7 +241,7 @@ def test_fixed_model_defaults_have_one_config_source():
     from pico import config
 
     assert config.DEFAULT_MODEL == "deepseek-v4-flash"
-    assert config.DEFAULT_API_URL == "https://api.deepseek.com"
+    assert config.DEFAULT_API_URL == "https://api.deepseek.com/anthropic/v1"
     assert config.API_KEY_ENV_NAME == "PICO_DEEPSEEK_API_KEY"
     assert config.API_URL_ENV_NAME == "PICO_API_URL"
     destinations = {action.dest for action in build_arg_parser()._actions}

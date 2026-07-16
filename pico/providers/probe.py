@@ -17,6 +17,8 @@ _PROBE_TOOL = {
     },
 }
 _PROBE_SYSTEM = [{"type": "text", "text": "Follow the probe request exactly."}]
+_PROBE_TEXT_MAX_TOKENS = 16
+_PROBE_TOOL_MAX_TOKENS = 128
 
 
 def _probe_identity(client):
@@ -42,10 +44,16 @@ def _failure_category(exc):
         return "forbidden"
     if exc.http_status == 404:
         return "not_found"
-    if exc.code in {"network_error", "remote_disconnect"}:
+    if exc.code in {"network_error", "remote_disconnect", "connection_reset"}:
         return "connection_failed"
-    if exc.code == "timeout":
+    if exc.code in {"timeout", "request_timeout"}:
         return "timeout"
+    if exc.code == "tls_error":
+        return "tls_failed"
+    if exc.code == "request_too_large":
+        return "request_too_large"
+    if exc.code == "response_truncated":
+        return "response_truncated"
     if exc.code == "rate_limited":
         return "rate_limited"
     if exc.code == "http_5xx":
@@ -81,7 +89,7 @@ def probe_model_client(client):
             system=_PROBE_SYSTEM,
             tools=[],
             messages=[{"role": "user", "content": "Reply with the word ready."}],
-            max_tokens=16,
+            max_tokens=_PROBE_TEXT_MAX_TOKENS,
         )
     except Exception as exc:
         return _failed(client, "text", exc, model_calls)
@@ -99,7 +107,7 @@ def probe_model_client(client):
                     "content": "Call pico_probe once with value ping.",
                 }
             ],
-            max_tokens=32,
+            max_tokens=_PROBE_TOOL_MAX_TOKENS,
         )
     except Exception as exc:
         return _failed(client, "tool_call", exc, model_calls)
@@ -141,7 +149,7 @@ def probe_model_client(client):
                 assistant,
                 result,
             ],
-            max_tokens=32,
+            max_tokens=_PROBE_TOOL_MAX_TOKENS,
         )
     except Exception as exc:
         return _failed(client, "tool_result", exc, model_calls)

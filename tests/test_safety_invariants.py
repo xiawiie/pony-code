@@ -118,7 +118,9 @@ def test_cli_freezes_parent_path_before_project_env_loading(tmp_path, monkeypatc
     parent_path = os.environ.get("PATH", "")
     fake_path = str(tmp_path / "fake-bin")
     (tmp_path / ".env").write_text(
-        f"PATH={fake_path}\nPICO_DEEPSEEK_API_KEY=test-key\n",
+        f"PATH={fake_path}\n"
+        "PICO_API_URL=https://gateway.example/v1\n"
+        "PICO_DEEPSEEK_API_KEY=test-key\n",
         encoding="utf-8",
     )
     observed = {}
@@ -134,7 +136,7 @@ def test_cli_freezes_parent_path_before_project_env_loading(tmp_path, monkeypatc
 
     monkeypatch.setattr("pico.workspace.build_trusted_executables", capture_parent_path)
     monkeypatch.setattr(
-        "pico.cli.OpenAIChatCompletionsModelClient",
+        "pico.cli.build_model_client",
         DummyModelClient,
     )
     args = pico_cli.build_arg_parser().parse_args([
@@ -208,7 +210,7 @@ def test_runtime_rejects_credential_bearing_base_url_before_client_construction(
     def fail_client(*args, **kwargs):
         raise AssertionError("client constructed")
 
-    monkeypatch.setattr(pico_cli, "OpenAIChatCompletionsModelClient", fail_client)
+    monkeypatch.setattr(pico_cli, "build_model_client", fail_client)
     args = pico_cli.build_arg_parser().parse_args([])
 
     with pytest.raises(ValueError, match="api_url_credentials"):
@@ -307,11 +309,12 @@ def test_cli_build_agent_wires_secret_env_names_from_parser(tmp_path):
             "HOME": str(tmp_path),
             "GITHUB_PAT": "ghp-1",
             "GH_PAT": "ghp-2",
+            "PICO_API_URL": "https://gateway.example/v1",
             "PICO_DEEPSEEK_API_KEY": "test-runtime-key",
         },
         clear=True,
     ), patch(
-        "pico.cli.OpenAIChatCompletionsModelClient",
+        "pico.cli.build_model_client",
         DummyModelClient,
     ):
         args = pico_cli.build_arg_parser().parse_args(
@@ -349,11 +352,12 @@ def test_cli_build_agent_uses_default_configured_secret_names(tmp_path):
         {
             "HOME": str(tmp_path),
             "GH_PAT": "ghp-default-1",
+            "PICO_API_URL": "https://gateway.example/v1",
             "PICO_DEEPSEEK_API_KEY": "test-runtime-key",
         },
         clear=True,
     ), patch(
-        "pico.cli.OpenAIChatCompletionsModelClient",
+        "pico.cli.build_model_client",
         DummyModelClient,
     ):
         args = pico_cli.build_arg_parser().parse_args([
@@ -380,11 +384,12 @@ def test_cli_build_agent_loads_project_env_secrets_before_redaction_setup(tmp_pa
 
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
     (tmp_path / ".env").write_text(
+        "PICO_API_URL=https://gateway.example/v1\n"
         "PICO_DEEPSEEK_API_KEY=sk-project-secret\n",
         encoding="utf-8",
     )
     with patch.dict(os.environ, {"HOME": str(tmp_path)}, clear=True), patch(
-        "pico.cli.OpenAIChatCompletionsModelClient",
+        "pico.cli.build_model_client",
         DummyModelClient,
     ):
         args = pico_cli.build_arg_parser().parse_args(["--cwd", str(tmp_path)])
@@ -418,6 +423,7 @@ def test_cli_resume_uses_immutable_collision_safe_snapshot_before_load(
     monkeypatch.setattr(pico_cli, "_build_redaction_snapshot", capture_snapshot)
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
     (tmp_path / ".env").write_text(
+        "PICO_API_URL=https://gateway.example/v1\n"
         "PICO_DEEPSEEK_API_KEY=test-runtime-key\n"
         "PICO_TEST_API_KEY=opaque-project-new-value-123456789\n"
         "PICO_SECRET_ENV_NAMES=PROJECT_ONLY_CREDENTIAL\n"
@@ -466,7 +472,7 @@ def test_cli_resume_uses_immutable_collision_safe_snapshot_before_load(
         },
         clear=True,
     ), patch(
-        "pico.cli.OpenAIChatCompletionsModelClient",
+        "pico.cli.build_model_client",
         DummyModelClient,
     ):
         args = pico_cli.build_arg_parser().parse_args([
@@ -503,11 +509,12 @@ def test_cli_build_agent_skips_malformed_project_env_lines_with_warning(tmp_path
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
     (tmp_path / ".env").write_text(
         "not a valid env line\n"
+        "PICO_API_URL=https://gateway.example/v1\n"
         "PICO_DEEPSEEK_API_KEY=sk-project-secret\n",
         encoding="utf-8",
     )
     with patch.dict(os.environ, {"HOME": str(tmp_path)}, clear=True), patch(
-        "pico.cli.OpenAIChatCompletionsModelClient",
+        "pico.cli.build_model_client",
         DummyModelClient,
     ):
         args = pico_cli.build_arg_parser().parse_args(["--cwd", str(tmp_path)])
@@ -552,10 +559,11 @@ def test_cli_build_agent_reads_secret_names_from_environment_config(tmp_path):
             "HOME": str(tmp_path),
             "PICO_CUSTOM_SECRET": "custom-secret-value",
             "PICO_SECRET_ENV_NAMES": "PICO_CUSTOM_SECRET",
+            "PICO_API_URL": "https://gateway.example/v1",
             "PICO_DEEPSEEK_API_KEY": "test-runtime-key",
         },
         clear=True,
-    ), patch("pico.cli.OpenAIChatCompletionsModelClient", DummyModelClient):
+    ), patch("pico.cli.build_model_client", DummyModelClient):
         args = pico_cli.build_arg_parser().parse_args([
             "--cwd",
             str(tmp_path),
@@ -581,9 +589,13 @@ def test_cli_no_input_makes_default_approval_non_interactive(tmp_path):
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
     with patch.dict(
         os.environ,
-        {"HOME": str(tmp_path), "PICO_DEEPSEEK_API_KEY": "test-runtime-key"},
+        {
+            "HOME": str(tmp_path),
+            "PICO_API_URL": "https://gateway.example/v1",
+            "PICO_DEEPSEEK_API_KEY": "test-runtime-key",
+        },
         clear=True,
-    ), patch("pico.cli.OpenAIChatCompletionsModelClient", DummyModelClient):
+    ), patch("pico.cli.build_model_client", DummyModelClient):
         args = pico_cli.build_arg_parser().parse_args([
             "--cwd",
             str(tmp_path),

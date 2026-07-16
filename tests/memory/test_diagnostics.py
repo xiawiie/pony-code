@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 import shutil
 import subprocess
 from types import SimpleNamespace
@@ -19,7 +20,7 @@ def _write_note(root, name, content):
 
 
 def _init_git(root):
-    git = shutil.which("git")
+    git = "/usr/bin/git" if Path("/usr/bin/git").is_file() else shutil.which("git")
     if git is None:
         pytest.skip("git unavailable")
     subprocess.run([git, "init", "-q"], cwd=root, check=True)

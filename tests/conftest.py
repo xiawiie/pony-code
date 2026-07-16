@@ -33,6 +33,15 @@ def isolated_home(tmp_path_factory, monkeypatch, request):
     return home
 
 
+@pytest.fixture(autouse=True)
+def released_sandbox_test_platform(monkeypatch):
+    """Exercise the packaged arm64 fixture independently of the CI host CPU."""
+    monkeypatch.setattr(
+        "pico.docker_sandbox._host_image_platform",
+        lambda: "linux/arm64",
+    )
+
+
 @pytest.fixture
 def contract_rg(monkeypatch):
     """Run real-rg contracts independently from host path ownership."""

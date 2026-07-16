@@ -1,5 +1,6 @@
 import json
 import os
+from pathlib import Path
 import shutil
 import stat
 import subprocess
@@ -13,8 +14,9 @@ from pico.cli_diagnostics import check_api_connectivity, collect_config, collect
 
 
 def _run_git(cwd, *args):
+    git = "/usr/bin/git" if Path("/usr/bin/git").is_file() else shutil.which("git")
     return subprocess.run(
-        [shutil.which("git") or "git", *args],
+        [git or "git", *args],
         cwd=cwd,
         check=True,
         capture_output=True,
@@ -51,7 +53,7 @@ def test_config_show_reports_fixed_contract_and_exact_project_env_path(tmp_path,
         "scope": "repo_root_exact",
         "status": "loaded",
     }
-    assert payload["protocol"]["value"] == "openai_chat_completions"
+    assert payload["protocol"]["value"] == "anthropic_messages"
     assert payload["model"]["value"] == "deepseek-v4-flash"
     assert payload["base_url"] == {
         "value": "https://gateway.example/v1",
@@ -66,12 +68,12 @@ def test_config_show_reports_fixed_contract_and_exact_project_env_path(tmp_path,
     assert "secret-value" not in json.dumps(payload)
 
 
-def test_config_show_uses_default_url_when_only_key_is_configured(tmp_path):
-    _write_env(tmp_path, url="https://api.deepseek.com")
+def test_config_show_reports_explicit_official_url(tmp_path):
+    _write_env(tmp_path, url="https://api.deepseek.com/anthropic/v1")
 
     data = collect_config(tmp_path)
 
-    assert data["base_url"]["value"] == "https://api.deepseek.com"
+    assert data["base_url"]["value"] == "https://api.deepseek.com/anthropic/v1"
     assert data["model"]["value"] == "deepseek-v4-flash"
 
 
@@ -260,6 +262,38 @@ def test_doctor_check_api_is_the_only_explicit_network_switch(
     checker.assert_called_once()
 
 
+def test_doctor_check_api_failure_returns_error_envelope(
+    tmp_path, monkeypatch, capsys
+):
+    _write_env(tmp_path)
+    monkeypatch.setattr(
+        diagnostics,
+        "check_api_connectivity",
+        Mock(return_value={
+            "status": "failed",
+            "category": "authentication_failed",
+            "reason_code": "authentication_failed",
+            "stage": "text",
+            "model_calls": 1,
+            "http_status": 401,
+        }),
+    )
+
+    assert main([
+        "--cwd",
+        str(tmp_path),
+        "--format",
+        "json",
+        "doctor",
+        "--check-api",
+    ]) == 1
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == "api_check_failed"
+    assert payload["error"]["details"]["reason_code"] == "authentication_failed"
+
+
 @pytest.mark.parametrize("argument", ("--check-provider", "--offline", "extra"))
 def test_doctor_rejects_removed_or_unknown_arguments(tmp_path, argument, capsys):
     assert main(["--cwd", str(tmp_path), "doctor", argument]) == 2
@@ -298,7 +332,7 @@ def _api_config(*, key="test-key"):
 def test_api_check_without_key_performs_zero_requests(monkeypatch):
     constructor = Mock(side_effect=AssertionError("client must not be built"))
     monkeypatch.setattr(
-        "pico.providers.openai_chat.OpenAIChatCompletionsModelClient",
+        "pico.providers._shared.build_model_client",
         constructor,
     )
 
@@ -308,11 +342,11 @@ def test_api_check_without_key_performs_zero_requests(monkeypatch):
     constructor.assert_not_called()
 
 
-def test_api_check_builds_fixed_deepseek_chat_client_and_reports_probe(monkeypatch):
+def test_api_check_builds_fixed_deepseek_anthropic_client_and_reports_probe(monkeypatch):
     client = object()
     constructor = Mock(return_value=client)
     monkeypatch.setattr(
-        "pico.providers.openai_chat.OpenAIChatCompletionsModelClient",
+        "pico.providers._shared.build_model_client",
         constructor,
     )
     monkeypatch.setattr(
@@ -330,21 +364,20 @@ def test_api_check_builds_fixed_deepseek_chat_client_and_reports_probe(monkeypat
 
     assert result["reason_code"] == "api_verified"
     assert result["model_calls"] == 3
+    assert constructor.call_args.args == ("anthropic_messages",)
     assert constructor.call_args.kwargs == {
         "model": "deepseek-v4-flash",
         "base_url": "https://gateway.example/v1",
         "api_key": "test-key",
-        "temperature": None,
         "timeout": 2,
-        "compatibility": "deepseek",
-        "auth_mode": "bearer",
-        "capabilities": {},
+        "auth_mode": "x-api-key",
+        "capabilities": {"thinking_disabled": True},
     }
 
 
 def test_api_check_preserves_safe_http_failure_classification(monkeypatch):
     monkeypatch.setattr(
-        "pico.providers.openai_chat.OpenAIChatCompletionsModelClient",
+        "pico.providers._shared.build_model_client",
         Mock(return_value=object()),
     )
     monkeypatch.setattr(

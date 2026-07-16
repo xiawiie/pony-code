@@ -739,20 +739,19 @@ def test_build_agent_uses_fixed_chat_client_and_project_env(tmp_path):
     args = pico_pkg.build_arg_parser().parse_args(["--cwd", str(tmp_path)])
 
     with patch.dict(os.environ, {"HOME": str(tmp_path)}, clear=True):
-        with patch("pico.cli.OpenAIChatCompletionsModelClient") as model_client:
+        with patch("pico.cli.build_model_client") as model_client:
             fake_client = model_client.return_value
             agent = pico_pkg.build_agent(args)
 
     model_client.assert_called_once()
+    assert model_client.call_args.args == ("anthropic_messages",)
     assert model_client.call_args.kwargs == {
         "model": "deepseek-v4-flash",
         "base_url": "https://gateway.example/v1",
         "api_key": "sk-project",
-        "temperature": None,
         "timeout": 300,
-        "compatibility": "deepseek",
-        "auth_mode": "bearer",
-        "capabilities": {},
+        "auth_mode": "x-api-key",
+        "capabilities": {"thinking_disabled": True},
     }
     assert agent.model_client is fake_client
 
@@ -769,7 +768,7 @@ def test_build_agent_uses_process_env_when_project_env_is_missing(tmp_path):
         },
         clear=True,
     ):
-        with patch("pico.cli.OpenAIChatCompletionsModelClient") as model_client:
+        with patch("pico.cli.build_model_client") as model_client:
             pico_pkg.build_agent(args)
 
     assert model_client.call_args.kwargs["base_url"] == "https://process.example/v1"

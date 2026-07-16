@@ -1,13 +1,14 @@
 import io
 import json
-from http.client import RemoteDisconnected
+from http.client import IncompleteRead, RemoteDisconnected
+import ssl
 import urllib.error
 from unittest.mock import Mock
 
 import pytest
 
 import pico.providers._shared as provider_shared
-from pico.providers._shared import _ProviderFailure
+from pico.providers._shared import _ProviderFailure, build_model_client
 from pico.providers.anthropic_compatible import AnthropicCompatibleModelClient
 from pico.providers.ollama import OllamaModelClient
 from pico.providers.openai_compatible import OpenAICompatibleModelClient
@@ -141,6 +142,73 @@ def _complete(client, *, tools=None, messages=None):
 )
 def test_native_clients_expose_safe_report_metadata(client, expected):
     assert client.provider_metadata == expected
+
+
+@pytest.mark.parametrize(
+    ("client_kind", "client_type", "base_url", "auth_mode"),
+    [
+        (
+            "anthropic_messages",
+            AnthropicCompatibleModelClient,
+            "https://anthropic.example/v1",
+            "x-api-key",
+        ),
+        (
+            "openai_responses",
+            OpenAICompatibleModelClient,
+            "https://openai.example/v1",
+            "bearer",
+        ),
+        (
+            "ollama_chat",
+            OllamaModelClient,
+            "http://127.0.0.1:11434",
+            "none",
+        ),
+    ],
+)
+def test_builder_constructs_explicit_protocol_clients(
+    client_kind,
+    client_type,
+    base_url,
+    auth_mode,
+):
+    client = build_model_client(
+        client_kind,
+        model="test-model",
+        base_url=base_url,
+        api_key="" if auth_mode == "none" else "test-key",
+        timeout=10,
+        auth_mode=auth_mode,
+        capabilities={},
+    )
+
+    assert isinstance(client, client_type)
+    assert client.provider_binding["protocol_family"] == client_kind
+
+
+def test_builder_constructs_openai_chat_and_rejects_unknown_kind():
+    from pico.providers.openai_chat import OpenAIChatCompletionsModelClient
+
+    client = build_model_client(
+        "openai_chat_completions",
+        model="test-model",
+        base_url="https://chat.example/v1",
+        api_key="test-key",
+        timeout=10,
+        auth_mode="bearer",
+    )
+    assert isinstance(client, OpenAIChatCompletionsModelClient)
+
+    with pytest.raises(ValueError, match="unsupported model client kind"):
+        build_model_client(
+            "deepseek",
+            model="test-model",
+            base_url="https://example.com/v1",
+            api_key="test-key",
+            timeout=10,
+            auth_mode="bearer",
+        )
 
 
 @pytest.mark.parametrize(
@@ -319,6 +387,7 @@ def test_openai_function_call_preserves_reasoning_and_drops_optional_null(
         "type": "reasoning",
         "encrypted_content": "opaque",
         "summary": [],
+        "content": [],
     }
     monkeypatch.setattr(
         provider_shared,
@@ -353,6 +422,20 @@ def test_openai_function_call_preserves_reasoning_and_drops_optional_null(
         }
     ]
     assert response.provider_state == [state]
+
+
+def test_openai_unknown_incomplete_reason_does_not_authorize_tool_use(monkeypatch):
+    monkeypatch.setattr(
+        provider_shared,
+        "_provider_urlopen",
+        lambda *_args, **_kwargs: _Response(
+            b'{"status":"incomplete","incomplete_details":{"reason":"new_reason"},"output":[{"type":"function_call","call_id":"call_3","name":"search","arguments":"{\\"pattern\\":\\"x\\"}"}],"usage":{}}'
+        ),
+    )
+
+    response = _complete(_openai_client(), tools=[_tool_schema()])
+
+    assert response.stop_reason == StopReason.UNKNOWN
 
 
 def test_openai_custom_uses_exact_root_and_conservative_fields(monkeypatch):
@@ -540,6 +623,20 @@ def test_ollama_generates_an_id_for_a_single_wire_call_without_one(monkeypatch):
     assert response.content[0]["id"].startswith("toolu_ollama_")
 
 
+def test_ollama_unknown_done_reason_does_not_authorize_tool_use(monkeypatch):
+    monkeypatch.setattr(
+        provider_shared,
+        "_provider_urlopen",
+        lambda *_args, **_kwargs: _Response(
+            b'{"message":{"content":"","tool_calls":[{"id":"call_4","function":{"name":"search","arguments":{"pattern":"x"}}}]},"done":true,"done_reason":"new_reason"}'
+        ),
+    )
+
+    response = _complete(_ollama_client(), tools=[_tool_schema()])
+
+    assert response.stop_reason == StopReason.UNKNOWN
+
+
 def test_ollama_custom_bearer_uses_exact_chat_root(monkeypatch):
     captured = {}
 
@@ -563,14 +660,14 @@ def test_ollama_custom_bearer_uses_exact_chat_root(monkeypatch):
     assert captured["headers"]["Authorization"] == "Bearer custom-key"
 
 
-def test_ollama_missing_service_is_stable_and_does_not_try_generate(monkeypatch):
+def test_ollama_preserves_timeout_layer_and_does_not_try_generate(monkeypatch):
     urlopen = Mock(side_effect=TimeoutError("secret"))
     monkeypatch.setattr(provider_shared, "_provider_urlopen", urlopen)
 
     with pytest.raises(_ProviderFailure) as caught:
         _complete(_ollama_client())
 
-    assert caught.value.code == "ollama_unavailable"
+    assert caught.value.code == "timeout"
     assert caught.value.retryable is True
     assert urlopen.call_count == 1
 
@@ -619,6 +716,75 @@ def test_provider_429_retry_after_is_capped(monkeypatch):
     assert caught.value.code == "rate_limited"
     assert caught.value.retryable is True
     assert caught.value.retry_after == 10.0
+
+
+@pytest.mark.parametrize(
+    ("status", "code", "retryable"),
+    [
+        (408, "request_timeout", True),
+        (413, "request_too_large", False),
+    ],
+)
+@pytest.mark.parametrize(
+    "client_factory",
+    [_anthropic_client, _openai_client, _ollama_client],
+)
+def test_provider_preserves_specific_http_failure_layer(
+    monkeypatch,
+    status,
+    code,
+    retryable,
+    client_factory,
+):
+    monkeypatch.setattr(
+        provider_shared,
+        "_provider_urlopen",
+        Mock(side_effect=urllib.error.HTTPError(
+            "https://gateway.example/v1/resource",
+            status,
+            "failed",
+            hdrs={},
+            fp=io.BytesIO(b"opaque backend response"),
+        )),
+    )
+
+    with pytest.raises(_ProviderFailure) as caught:
+        _complete(client_factory())
+
+    assert caught.value.code == code
+    assert caught.value.http_status == status
+    assert caught.value.retryable is retryable
+
+
+@pytest.mark.parametrize(
+    ("error_value", "code"),
+    [
+        (ssl.SSLError("opaque"), "tls_error"),
+        (ConnectionResetError("opaque"), "connection_reset"),
+        (IncompleteRead(b"partial", 10), "response_truncated"),
+    ],
+)
+@pytest.mark.parametrize(
+    "client_factory",
+    [_anthropic_client, _openai_client, _ollama_client],
+)
+def test_provider_preserves_specific_transport_failure_layer(
+    monkeypatch,
+    error_value,
+    code,
+    client_factory,
+):
+    monkeypatch.setattr(
+        provider_shared,
+        "_provider_urlopen",
+        Mock(side_effect=error_value),
+    )
+
+    with pytest.raises(_ProviderFailure) as caught:
+        _complete(client_factory())
+
+    assert caught.value.code == code
+    assert caught.value.retryable is True
 
 
 @pytest.mark.parametrize(

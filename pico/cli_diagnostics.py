@@ -9,7 +9,7 @@ from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
 from . import security as securitylib
-from .cli_errors import CLI_EXIT_CONFIG, CLI_EXIT_USAGE, CliError
+from .cli_errors import CLI_EXIT_CONFIG, CLI_EXIT_RUNTIME, CLI_EXIT_USAGE, CliError
 from .cli_output import build_inspection_redactor, print_result
 from .config import (
     API_KEY_ENV_NAME,
@@ -457,6 +457,13 @@ def handle_doctor(tokens, cwd, args):
     })
     data["security"] = redactor(data["security"])
     data["project_docs"] = redactor(data["project_docs"])
+    if tokens and data["api_check"].get("status") != "ok":
+        raise CliError(
+            code="api_check_failed",
+            message="API verification failed",
+            exit_code=CLI_EXIT_RUNTIME,
+            details=data["api_check"],
+        )
     return print_result("doctor", data, args, _render_doctor)
 
 
@@ -578,18 +585,17 @@ def check_api_connectivity(config, timeout=2, args=None):
     if not config.get("api_key", {}).get("value"):
         return {**result, "reason_code": "api_key_not_configured"}
     try:
-        from .providers.openai_chat import OpenAIChatCompletionsModelClient
+        from .providers._shared import build_model_client
         from .providers.probe import probe_model_client
 
-        client = OpenAIChatCompletionsModelClient(
+        client = build_model_client(
+            "anthropic_messages",
             model=config["model"]["value"],
             base_url=base_url,
             api_key=config["api_key"]["value"],
-            temperature=None,
             timeout=getattr(args, "request_timeout_seconds", timeout),
-            compatibility="deepseek",
-            auth_mode="bearer",
-            capabilities={},
+            auth_mode="x-api-key",
+            capabilities={"thinking_disabled": True},
         )
         report = probe_model_client(client)
     except Exception as exc:

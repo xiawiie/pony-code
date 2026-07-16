@@ -344,7 +344,7 @@ def test_snapshot_source_tree_rejects_source_root_replacement(tmp_path, monkeypa
 
 
 def test_git_staging_preserves_tracked_classification_and_audit(tmp_path):
-    git = shutil.which("git")
+    git = "/usr/bin/git" if Path("/usr/bin/git").is_file() else shutil.which("git")
     assert git is not None
     source = tmp_path / "source"
     source.mkdir()

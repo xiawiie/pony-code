@@ -43,7 +43,7 @@ chmod 600 .env
 pico doctor
 ```
 
-`init` 依次询问 API URL 和 API Key。URL 留空时使用 `https://api.deepseek.com`；Key 使用隐藏输入，已有 Key
+`init` 依次询问 API URL 和 API Key。URL 留空时使用 `https://api.deepseek.com/anthropic/v1`；Key 使用隐藏输入，已有 Key
 时直接回车即可保留。`init` 只做本地校验和原子写入，不发送 API 请求。若只需轮换凭证，可运行：
 
 ```bash
@@ -53,12 +53,13 @@ pico config set-secret PICO_DEEPSEEK_API_KEY
 最终模型配置只有：
 
 ```dotenv
-PICO_API_URL=https://api.deepseek.com
+PICO_API_URL=https://api.deepseek.com/anthropic/v1
 PICO_DEEPSEEK_API_KEY=
 ```
 
-模型固定为 `deepseek-v4-flash`，协议固定为 OpenAI Chat Completions，认证固定为 Bearer。`PICO_API_URL`
-必须是精确 API 根，Pico 只追加 `/chat/completions`，不自动补 `/v1`。第三方服务必须兼容相同协议和认证。
+模型固定为 `deepseek-v4-flash`，协议固定为 Anthropic Messages，认证固定为 `x-api-key`。`PICO_API_URL`
+必须是精确、已版本化 API 根，Pico 只追加 `/messages`，不自动补 `/v1`。第三方服务必须兼容相同协议和认证；
+例如 Lumina 的 Anthropic 根应写为 `https://lumina.tripo3d.com/v1`。
 URL 禁止 query、fragment、userinfo 或嵌入凭据；除 loopback 外只允许 HTTPS。
 
 项目 `.env` 优先于当前进程环境；只读取上述两个运行时变量，不回退标准厂商 Key 或旧 Pico 配置。

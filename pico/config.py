@@ -23,11 +23,11 @@ from .security import (
 ENV_KEY_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 MAX_PROJECT_ENV_BYTES = 1024 * 1024
 DEFAULT_MODEL = "deepseek-v4-flash"
-DEFAULT_API_URL = "https://api.deepseek.com"
+DEFAULT_API_URL = "https://api.deepseek.com/anthropic/v1"
 API_URL_ENV_NAME = "PICO_API_URL"
 API_KEY_ENV_NAME = "PICO_DEEPSEEK_API_KEY"
-PROTOCOL_FAMILY = "openai_chat_completions"
-AUTH_MODE = "bearer"
+PROTOCOL_FAMILY = "anthropic_messages"
+AUTH_MODE = "x-api-key"
 _SECRET_QUERY_KEYS = {
     "api_key",
     "access_key",
@@ -281,14 +281,6 @@ def resolve_model_config(*, project_env=None, process_env=None, required=True):
     """Resolve Pico's one fixed model endpoint without legacy fallbacks."""
     project_env = dict(project_env or {})
     process_env = dict(os.environ if process_env is None else process_env)
-    api_url = _resolve_env_value(
-        API_URL_ENV_NAME,
-        project_env,
-        process_env,
-        DEFAULT_API_URL,
-        "DEFAULT_API_URL",
-    )
-    api_url["value"] = validate_api_url(api_url["value"])
     api_key = _resolve_env_value(
         API_KEY_ENV_NAME,
         project_env,
@@ -296,11 +288,20 @@ def resolve_model_config(*, project_env=None, process_env=None, required=True):
     )
     if required and not api_key["value"]:
         raise ValueError("api_key_not_configured")
+    api_url = _resolve_env_value(
+        API_URL_ENV_NAME,
+        project_env,
+        process_env,
+    )
+    if api_url["value"]:
+        api_url["value"] = validate_api_url(api_url["value"])
+    elif required:
+        raise ValueError("api_url_not_configured")
     return {
         "protocol": {
             "value": PROTOCOL_FAMILY,
             "source": "fixed",
-            "name": "OpenAI Chat Completions",
+            "name": "Anthropic Messages",
         },
         "model": {
             "value": DEFAULT_MODEL,

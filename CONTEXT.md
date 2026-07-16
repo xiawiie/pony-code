@@ -43,21 +43,21 @@ Provider complete 或 response processing 阶段失败的 Model Attempt。`model
 `PICO_DEEPSEEK_API_KEY`。model、协议和认证不是用户选项。
 _Avoid_：Provider、Profile、Connection、Preset
 
-**CLI Protocol Family**：Pico CLI 与 Model API 交换 Model Request/Response 的固定 wire contract，即 OpenAI
-Chat Completions。运行时不自动探测、降级或切换协议。
+**CLI Protocol Family**：Pico CLI 与 Model API 交换 Model Request/Response 的固定 wire contract，即 Anthropic
+Messages。运行时不自动探测、降级或切换协议。
 _Avoid_：SDK、Model Family、Compatibility Mode
 
-**Model API Endpoint**：实现 OpenAI Chat Completions 的精确 API root；Pico 只追加
-`/chat/completions`，不补 `/v1`。第三方 endpoint 必须满足相同协议和 Bearer 认证。
+**Model API Endpoint**：实现 Anthropic Messages 的精确、已版本化 API root；Pico 只追加
+`/messages`，不补 `/v1`。第三方 endpoint 必须满足相同协议和 `x-api-key` 认证。
 _Avoid_：Provider Type、Profile、Vendor
 
 **Model Session Binding**：Session 固化的 `protocol_family`、`model` 与 `endpoint_hash`。恢复时必须与当前
 固定模型配置完全一致；旧 binding 不读取、不迁移。
 _Avoid_：自动迁移、Provider fallback、Endpoint Cache
 
-**Provider State**：内部 OpenAI Responses client 在 native tool continuation 中保存的、经过结构和大小校验的
-encrypted reasoning item。它不渲染、不进入普通日志，只在同一 Model Session Binding 中重放；CLI Chat
-Completions 路径不生成该状态。
+**Provider State**：native tool continuation 中保存的受限 opaque state。当前包括 OpenAI Responses encrypted
+reasoning item，以及 Anthropic `thinking` / `redacted_thinking` block。它不渲染、不进入普通日志，只在同一
+Model Session Binding 中按原协议重放并计入上下文预算。
 _Avoid_：Prompt Text、Working Memory、Cross-provider State
 
 **Project Environment**：当前 lexical repository root 下唯一允许读取的 `.env`。读取不搜索父仓库，

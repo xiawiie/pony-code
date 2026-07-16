@@ -121,9 +121,22 @@ def _validated_provider_state(value):
                 code="provider_protocol_mismatch",
             )
         if any(
-            key not in {"id", "type", "encrypted_content", "summary", "status"}
+            key
+            not in {
+                "id",
+                "type",
+                "encrypted_content",
+                "summary",
+                "content",
+                "status",
+            }
             for key in item
         ):
+            raise _ProviderFailure(
+                "OpenAI error: provider_protocol_mismatch",
+                code="provider_protocol_mismatch",
+            )
+        if "content" in item and not isinstance(item["content"], list):
             raise _ProviderFailure(
                 "OpenAI error: provider_protocol_mismatch",
                 code="provider_protocol_mismatch",
@@ -265,6 +278,9 @@ def _response_content(data, *, optional_by_name, preserve_reasoning):
 
 
 def _stop_reason(data, content, refusal):
+    status = data.get("status")
+    if status is not None and not isinstance(status, str):
+        raise ValueError("status must be a string")
     incomplete = data.get("incomplete_details")
     if incomplete is not None and not isinstance(incomplete, dict):
         raise ValueError("incomplete details must be an object")
@@ -273,6 +289,10 @@ def _stop_reason(data, content, refusal):
         return StopReason.MAX_TOKENS
     if reason == "content_filter" or refusal:
         return StopReason.REFUSAL
+    if incomplete is not None or status == "incomplete":
+        return StopReason.UNKNOWN
+    if status not in {None, "completed"}:
+        return StopReason.UNKNOWN
     if any(block.get("type") == "tool_use" for block in content):
         return StopReason.TOOL_USE
     return StopReason.END_TURN

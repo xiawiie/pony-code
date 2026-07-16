@@ -1,12 +1,13 @@
 """Shared provider helpers."""
 
-from http.client import HTTPException, RemoteDisconnected
+from http.client import HTTPException, IncompleteRead, RemoteDisconnected
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 import hashlib
 import ipaddress
 import json
 import math
+import ssl
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -177,12 +178,16 @@ def _validate_number(name, value, *, minimum, maximum=None, integer=False):
 
 
 def _network_failure(family, exc, *, retryable):
-    if isinstance(exc, RemoteDisconnected):
+    reason = exc.reason if isinstance(exc, urllib.error.URLError) else exc
+    if isinstance(reason, IncompleteRead):
+        code = "response_truncated"
+    elif isinstance(reason, RemoteDisconnected):
         code = "remote_disconnect"
-    elif isinstance(exc, TimeoutError) or (
-        isinstance(exc, urllib.error.URLError)
-        and isinstance(exc.reason, TimeoutError)
-    ):
+    elif isinstance(reason, ConnectionResetError):
+        code = "connection_reset"
+    elif isinstance(reason, ssl.SSLError):
+        code = "tls_error"
+    elif isinstance(reason, TimeoutError):
         code = "timeout"
     else:
         code = "network_error"
@@ -206,7 +211,11 @@ def _open_provider_request(client, request, *, family, retryable):
             exc.close()
         except Exception:
             pass
-        if status == 429:
+        if status == 408:
+            code = "request_timeout"
+        elif status == 413:
+            code = "request_too_large"
+        elif status == 429:
             code = "rate_limited"
         elif 500 <= status < 600:
             code = "http_5xx"
@@ -218,7 +227,8 @@ def _open_provider_request(client, request, *, family, retryable):
             f"{family} request failed with HTTP {status}",
             code=code,
             http_status=status,
-            retryable=retryable and code in {"rate_limited", "http_5xx"},
+            retryable=retryable
+            and code in {"request_timeout", "rate_limited", "http_5xx"},
             retry_after=retry_after if code == "rate_limited" else None,
         ) from None
     except (urllib.error.URLError, HTTPException, OSError) as exc:
@@ -315,3 +325,61 @@ def _optional_int(value):
                 raise ValueError("invalid integer field")
             return parsed
     raise ValueError("invalid integer field")
+
+
+def build_model_client(
+    client_kind,
+    *,
+    model,
+    base_url,
+    api_key,
+    timeout,
+    auth_mode,
+    capabilities=None,
+    temperature=None,
+    compatibility="standard",
+    top_p=0.9,
+):
+    """Build a client from an explicit protocol family without inference."""
+    common = {
+        "model": model,
+        "api_key": api_key,
+        "timeout": timeout,
+        "auth_mode": auth_mode,
+        "capabilities": dict(capabilities or {}),
+    }
+    if client_kind == "anthropic_messages":
+        from .anthropic_compatible import AnthropicCompatibleModelClient
+
+        return AnthropicCompatibleModelClient(
+            base_url=base_url,
+            temperature=temperature,
+            **common,
+        )
+    if client_kind == "openai_responses":
+        from .openai_compatible import OpenAICompatibleModelClient
+
+        return OpenAICompatibleModelClient(
+            base_url=base_url,
+            temperature=temperature,
+            **common,
+        )
+    if client_kind == "openai_chat_completions":
+        from .openai_chat import OpenAIChatCompletionsModelClient
+
+        return OpenAIChatCompletionsModelClient(
+            base_url=base_url,
+            temperature=temperature,
+            compatibility=compatibility,
+            **common,
+        )
+    if client_kind == "ollama_chat":
+        from .ollama import OllamaModelClient
+
+        return OllamaModelClient(
+            host=base_url,
+            temperature=0.0 if temperature is None else temperature,
+            top_p=top_p,
+            **common,
+        )
+    raise ValueError("unsupported model client kind")

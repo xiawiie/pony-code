@@ -8,9 +8,7 @@ from ..config import (
     DEFAULT_MODEL,
     read_project_env,
 )
-from ..providers.anthropic_compatible import AnthropicCompatibleModelClient
-from ..providers.openai_chat import OpenAIChatCompletionsModelClient
-from ..providers.openai_compatible import OpenAICompatibleModelClient
+from ..providers._shared import build_model_client
 from .fixed_benchmark import FIXED_BENCHMARK_RESULT_FORMAT_VERSION, run_fixed_benchmark
 from .metrics_common import _safe_mean, _safe_ratio, _validate_record_header
 
@@ -50,14 +48,14 @@ _TARGETS = {
         },
     },
     "deepseek": {
-        "client_kind": "openai_chat_completions",
+        "client_kind": "anthropic_messages",
         "model": DEFAULT_MODEL,
         "model_env": "",
         "base_url": DEFAULT_API_URL,
         "base_url_env": API_URL_ENV_NAME,
         "api_key_env": API_KEY_ENV_NAME,
-        "auth_mode": "bearer",
-        "capabilities": {},
+        "auth_mode": "x-api-key",
+        "capabilities": {"thinking_disabled": True},
     },
 }
 
@@ -119,23 +117,16 @@ def _provider_target(provider, *, project_env=None, process_env=None):
 
 
 def _client_from_target(target, *, timeout):
-    common = {
-        "model": target["model"],
-        "api_key": target["api_key"],
-        "temperature": None,
-        "timeout": timeout,
-        "auth_mode": target["auth_mode"],
-        "capabilities": target["capabilities"],
-    }
-    if target["client_kind"] == "openai_chat_completions":
-        return OpenAIChatCompletionsModelClient(
-            base_url=target["base_url"],
-            compatibility="deepseek",
-            **common,
-        )
-    if target["client_kind"] == "openai_responses":
-        return OpenAICompatibleModelClient(base_url=target["base_url"], **common)
-    return AnthropicCompatibleModelClient(base_url=target["base_url"], **common)
+    return build_model_client(
+        target["client_kind"],
+        model=target["model"],
+        base_url=target["base_url"],
+        api_key=target["api_key"],
+        timeout=timeout,
+        auth_mode=target["auth_mode"],
+        capabilities=target["capabilities"],
+        compatibility=target.get("compatibility", "standard"),
+    )
 
 
 def _make_provider_client(provider):

@@ -212,22 +212,12 @@ class OllamaModelClient:
             headers={"Content-Type": "application/json", **auth_headers},
             method="POST",
         )
-        try:
-            response_body, response_headers = _open_provider_request(
-                self,
-                request,
-                family="Ollama",
-                retryable=True,
-            )
-        except _ProviderFailure as exc:
-            if exc.code in {"network_error", "remote_disconnect", "timeout"}:
-                raise _ProviderFailure(
-                    "Ollama request failed: ollama_unavailable",
-                    code="ollama_unavailable",
-                    retryable=exc.retryable,
-                    retry_after=exc.retry_after,
-                ) from None
-            raise
+        response_body, response_headers = _open_provider_request(
+            self,
+            request,
+            family="Ollama",
+            retryable=True,
+        )
         try:
             data = _decode_json_object(response_body)
             if data.get("error") or data.get("done") is not True:
@@ -256,10 +246,12 @@ class OllamaModelClient:
             done_reason = data.get("done_reason")
             if done_reason == "length":
                 stop_reason = StopReason.MAX_TOKENS
-            elif any(block.get("type") == "tool_use" for block in content):
-                stop_reason = StopReason.TOOL_USE
             elif done_reason in {None, "stop"}:
-                stop_reason = StopReason.END_TURN
+                stop_reason = (
+                    StopReason.TOOL_USE
+                    if any(block.get("type") == "tool_use" for block in content)
+                    else StopReason.END_TURN
+                )
             else:
                 stop_reason = StopReason.UNKNOWN
             response = Response(

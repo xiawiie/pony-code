@@ -51,7 +51,7 @@ from .docker_sandbox import (
     load_image_manifest,
     verify_docker_sandbox_runtime_authorization,
 )
-from .providers.openai_chat import OpenAIChatCompletionsModelClient
+from .providers._shared import build_model_client
 from .runtime import (
     DEFAULT_MAX_NEW_TOKENS,
     DEFAULT_MAX_STEPS,
@@ -91,15 +91,14 @@ def _build_model_client(args, *, project_env=None, process_env=None):
         project_env=project_env,
         process_env=process_env,
     )
-    return OpenAIChatCompletionsModelClient(
+    return build_model_client(
+        "anthropic_messages",
         model=config["model"]["value"],
         base_url=config["base_url"]["value"],
         api_key=config["api_key"]["value"],
-        temperature=None,
         timeout=args.request_timeout_seconds,
-        compatibility="deepseek",
-        auth_mode="bearer",
-        capabilities={},
+        auth_mode="x-api-key",
+        capabilities={"thinking_disabled": True},
     )
 
 
@@ -659,6 +658,7 @@ def main(argv=None):
         reason = str(exc)
         stable_codes = {
             "api_key_not_configured",
+            "api_url_not_configured",
             "api_url_invalid",
             "api_url_credentials",
             "api_url_query_or_fragment",
@@ -671,7 +671,11 @@ def main(argv=None):
                 CliError(
                     code=reason.replace(" ", "_"),
                     message=reason,
-                    hint="Run `pico init`." if reason == "api_key_not_configured" else "",
+                    hint=(
+                        "Run `pico init`."
+                        if reason in {"api_key_not_configured", "api_url_not_configured"}
+                        else ""
+                    ),
                     exit_code=CLI_EXIT_CONFIG,
                 ),
             )

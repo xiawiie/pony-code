@@ -1742,47 +1742,18 @@ def make_live_client(config: RunConfig, *, settings=None):
     """Instantiate the selected live client using its production transport."""
 
     settings = settings or provider_settings(config.provider)
-    common = {
-        "model": config.model,
-        "api_key": settings["api_key"],
-        "timeout": config.request_timeout_seconds,
-        "auth_mode": settings["auth_mode"],
-        "capabilities": settings["capabilities"],
-    }
-    if config.provider == "deepseek":
-        from pico.providers.openai_chat import OpenAIChatCompletionsModelClient
+    from pico.providers._shared import build_model_client
 
-        inner = OpenAIChatCompletionsModelClient(
-            base_url=settings["base_url"],
-            temperature=None,
-            compatibility="deepseek",
-            **common,
-        )
-    elif config.provider == "openai":
-        from pico.providers.openai_compatible import OpenAICompatibleModelClient
-
-        inner = OpenAICompatibleModelClient(
-            base_url=settings["base_url"],
-            temperature=None,
-            **common,
-        )
-    elif config.provider == "ollama":
-        from pico.providers.ollama import OllamaModelClient
-
-        inner = OllamaModelClient(
-            host=settings["base_url"],
-            temperature=0.0,
-            top_p=0.9,
-            **common,
-        )
-    else:
-        from pico.providers.anthropic_compatible import AnthropicCompatibleModelClient
-
-        inner = AnthropicCompatibleModelClient(
-            base_url=settings["base_url"],
-            temperature=None,
-            **common,
-        )
+    inner = build_model_client(
+        settings["client_kind"],
+        model=config.model,
+        base_url=settings["base_url"],
+        api_key=settings["api_key"],
+        timeout=config.request_timeout_seconds,
+        auth_mode=settings["auth_mode"],
+        capabilities=settings["capabilities"],
+        compatibility=settings.get("compatibility", "standard"),
+    )
     return _SniffingProviderWrapper(
         inner,
         forbidden_values=(settings["api_key"],),

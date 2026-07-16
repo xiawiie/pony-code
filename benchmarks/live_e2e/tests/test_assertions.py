@@ -263,7 +263,9 @@ def test_project_env_uses_canonical_selected_provider_settings(tmp_path, provide
         "anthropic": "https://api.anthropic.com/v1",
         "openai": "https://api.openai.com/v1",
     }[provider]
-    expected_auth_mode = "x-api-key" if provider == "anthropic" else "bearer"
+    expected_auth_mode = (
+        "x-api-key" if provider in {"anthropic", "deepseek"} else "bearer"
+    )
     assert settings["api_key"] == f"sentinel-{provider}"
     assert settings["model"] == (
         "deepseek-v4-flash" if provider == "deepseek" else f"{provider}-test-model"
@@ -308,6 +310,7 @@ def test_openai_live_client_uses_native_responses_adapter():
             "api_key": "sentinel-openai",
             "model": "test-model",
             "base_url": "https://openai.example.invalid/v1",
+            "client_kind": "openai_responses",
             "auth_mode": "bearer",
             "capabilities": {},
         },
@@ -326,6 +329,7 @@ def test_ollama_live_client_uses_native_chat_adapter():
             "api_key": "",
             "model": "test-model",
             "base_url": "http://127.0.0.1:11434",
+            "client_kind": "ollama_chat",
             "auth_mode": "none",
             "capabilities": {},
         },
@@ -1760,6 +1764,7 @@ def test_ollama_readiness_uses_bounded_model_probe(monkeypatch):
             "api_key": "",
             "model": "test-model",
             "base_url": "http://127.0.0.1:11434",
+            "client_kind": "ollama_chat",
             "auth_mode": "none",
             "capabilities": {},
         },
