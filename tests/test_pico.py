@@ -12,7 +12,7 @@ import pico as pico_pkg
 from pico.agent_loop import _commit_session, _plain_message
 from pico.features import memory as memorylib
 from pico.messages import make_tool_pair, validate_messages
-from pico.runtime import DEFAULT_MAX_NEW_TOKENS, DEFAULT_MAX_STEPS
+from pico.runtime import DEFAULT_MAX_OUTPUT_TOKENS, DEFAULT_MAX_STEPS
 from pico import (
     Pico,
     SessionStore,
@@ -58,7 +58,7 @@ def test_pico_constructor_uses_coding_agent_defaults(tmp_path):
     agent = build_agent(tmp_path, [])
 
     assert agent.max_steps == DEFAULT_MAX_STEPS == 12
-    assert agent.max_new_tokens == DEFAULT_MAX_NEW_TOKENS == 2048
+    assert agent.max_output_tokens == DEFAULT_MAX_OUTPUT_TOKENS == 16_384
 
 
 def test_new_runtime_persists_current_messages_only(tmp_path):
@@ -66,11 +66,14 @@ def test_new_runtime_persists_current_messages_only(tmp_path):
 
     assert agent.ask("q") == "done"
 
-    persisted = json.loads(Path(agent.session_path).read_text(encoding="utf-8"))
-    assert persisted["record_type"] == "session"
-    assert persisted["format_version"] == 1
-    assert "schema_version" not in persisted
-    assert "history" not in persisted
+    rows = [
+        json.loads(line)
+        for line in Path(agent.session_path).read_text(encoding="utf-8").splitlines()
+    ]
+    assert rows[0]["record_type"] == "session_header"
+    assert rows[0]["format_version"] == 2
+    assert all("history" not in row for row in rows)
+    persisted = agent.session_store.load(agent.session["id"])
     validate_messages(persisted["messages"], require_meta=True)
 
 
@@ -82,9 +85,13 @@ def test_commit_session_keeps_memory_and_disk_on_same_safe_payload(tmp_path):
 
     _commit_session(agent, messages=(_plain_message("user", secret),))
 
-    persisted = json.loads(Path(agent.session_path).read_text(encoding="utf-8"))
+    persisted = agent.session_store.load(agent.session["id"])
     assert secret not in json.dumps(agent.session)
-    assert agent.session == persisted
+    assert agent.session["messages"] == persisted["messages"]
+    assert persisted["working_memory"] == {
+        "task_summary": "",
+        "recent_files": [],
+    }
     assert secret not in json.dumps(agent.memory.to_dict())
 
 
@@ -109,7 +116,11 @@ def test_programmatic_resume_sanitizes_process_secret_before_first_request(
     raw["messages"] = [
         {"role": "user", "content": secret, "_pico_meta": {"created_at": "test"}}
     ]
-    original.session_store.path(raw["id"]).write_text(json.dumps(raw), encoding="utf-8")
+    raw["format_version"] = 1
+    original.session_store.path(raw["id"]).unlink()
+    legacy = original.session_store.legacy_path(raw["id"])
+    legacy.write_text(json.dumps(raw), encoding="utf-8")
+    legacy.chmod(0o600)
     client = FakeModelClient(["<final>safe</final>"])
     resume_store = SessionStore(original.session_store.root)
 
@@ -179,7 +190,7 @@ def test_delegate_reuses_snapshot_without_replacing_shared_store_redactors(
     assert secret not in json.dumps(safe)
 
 
-def test_supplied_raw_session_is_immediately_safe_in_memory_and_on_disk(
+def test_supplied_legacy_session_is_rejected_outside_store_migration(
     tmp_path,
 ):
     secret = "github_pat_A123456789012345678901234567890"
@@ -201,18 +212,14 @@ def test_supplied_raw_session_is_immediately_safe_in_memory_and_on_disk(
         "runtime_identity": {},
     }
 
-    agent = Pico(
-        model_client=FakeModelClient([]),
-        workspace=workspace,
-        session_store=store,
-        session=raw_session,
-        approval_policy="auto",
-    )
-
-    persisted = json.loads(Path(agent.session_path).read_text(encoding="utf-8"))
-    assert secret not in json.dumps(agent.session)
-    assert secret not in json.dumps(agent.memory.to_dict())
-    assert agent.session == persisted
+    with pytest.raises(ValueError, match="current session"):
+        Pico(
+            model_client=FakeModelClient([]),
+            workspace=workspace,
+            session_store=store,
+            session=raw_session,
+            approval_policy="auto",
+        )
 
 
 def test_runtime_rejects_dead_prompt_cache_feature_flag(tmp_path):
@@ -324,7 +331,13 @@ def test_agent_stores_file_summaries_without_episodic_notes(tmp_path):
 
     assert agent.ask("Read the file and remember the fact") == "Done."
     assert "facts.txt" in agent.session["working_memory"]["recent_files"]
-    assert "deploy key is red" in agent.session["memory"]["file_summaries"]["facts.txt"]["summary"]
+    assert "deploy key is red" in agent.session["memory"]["file_summaries"]["facts.txt"]
+    checkpoint = agent.current_checkpoint()
+    assert any(
+        item.get("path") == "facts.txt"
+        and "deploy key is red" in item.get("summary", "")
+        for item in checkpoint["key_files"]
+    )
     assert "episodic_notes" not in agent.session["memory"]
     assert "notes" not in agent.session["memory"]
 
@@ -625,7 +638,7 @@ def test_build_agent_uses_openai_provider_and_model_override(tmp_path):
             "approval": "ask",
             "secret_env_names": [],
             "max_steps": 6,
-            "max_new_tokens": 512,
+            "max_output_tokens": 512,
         },
     )()
 
@@ -669,7 +682,7 @@ def test_build_agent_uses_shared_key_for_openai_provider(tmp_path):
             "approval": "ask",
             "secret_env_names": [],
             "max_steps": 6,
-            "max_new_tokens": 512,
+            "max_output_tokens": 512,
         },
     )()
 
@@ -791,7 +804,7 @@ def test_build_agent_rejects_openai_key_for_anthropic_provider(tmp_path):
             "approval": "ask",
             "secret_env_names": [],
             "max_steps": 6,
-            "max_new_tokens": 512,
+            "max_output_tokens": 512,
         },
     )()
 
@@ -863,7 +876,7 @@ def test_build_agent_uses_deepseek_provider_and_env_configuration(tmp_path):
             "approval": "ask",
             "secret_env_names": [],
             "max_steps": 6,
-            "max_new_tokens": 512,
+            "max_output_tokens": 512,
         },
     )()
 

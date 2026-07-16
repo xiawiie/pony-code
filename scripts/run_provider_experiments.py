@@ -9,7 +9,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from pico.evaluation.provider_benchmark import (  # noqa: E402
-    DEFAULT_PROVIDER_EXPERIMENT_MAX_NEW_TOKENS,
+    DEFAULT_PROVIDER_EXPERIMENT_MAX_OUTPUT_TOKENS,
     PROVIDER_EXPERIMENT_FORMAT_VERSION,
     run_provider_experiments,
 )
@@ -29,9 +29,9 @@ def build_arg_parser():
         help="Provider benchmark target. Use 'all' to run GPT, Claude, and DeepSeek.",
     )
     parser.add_argument(
-        "--max-new-tokens",
+        "--max-output-tokens",
         type=int,
-        default=DEFAULT_PROVIDER_EXPERIMENT_MAX_NEW_TOKENS,
+        default=DEFAULT_PROVIDER_EXPERIMENT_MAX_OUTPUT_TOKENS,
         help="Max output tokens per provider run.",
     )
     return parser
@@ -43,7 +43,7 @@ def main(argv=None):
         benchmark_path=args.benchmark_path,
         workspace_root=args.workspace_root,
         artifact_root=args.artifact_root,
-        max_new_tokens=args.max_new_tokens,
+        max_output_tokens=args.max_output_tokens,
         providers=args.provider,
     )
     _validate_record_header(

@@ -42,7 +42,7 @@ def test_renderer_injects_recalled_memory(tmp_path):
     text, tele = render_current_user_message(a, "上次讨论过 cache 的问题")
     assert "<pico:recalled_memory" in text
     assert "Cache is important." in text
-    assert tele["intent"]["name"] == "recall"
+    assert tele["context_source_allocator"]["memory_snapshot"] == "loaded"
 
 
 def test_renderer_no_recall_when_store_empty(tmp_path):
@@ -76,7 +76,7 @@ def test_recall_error_recorded_to_telemetry(tmp_path, monkeypatch):
     def _boom(*args, **kwargs):
         raise ValueError("simulated recall crash")
 
-    monkeypatch.setattr("pico.memory.recall.recall_for_turn", _boom)
+    monkeypatch.setattr("pico.context.sources.recall_candidates", _boom)
 
     a = SimpleNamespace(
         memory_store=MagicMock(),

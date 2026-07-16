@@ -11,6 +11,7 @@ import pico.tool_executor as tool_executor_module
 import pico.workspace as workspace_module
 from pico.checkpoint_store import CheckpointStore
 from pico.config import load_pico_toml
+from pico.context.renderer import render_current_user_message
 from pico.docker_sandbox import (
     build_docker_sandbox_context,
     compile_execution_plan,
@@ -533,7 +534,8 @@ def test_runtime_splits_roots_and_renders_only_logical_workspace(
     assert agent.workspace_observer.root == context.execution_root
     assert "git" not in agent.workspace_observer.trusted_executables
     assert agent.path("/workspace/README.md") == context.execution_root / "README.md"
-    assert "/workspace" in agent.prefix
+    dynamic_context, _ = render_current_user_message(agent, "inspect workspace")
+    assert "/workspace" in dynamic_context
     assert str(context.execution_root) not in agent.prefix
     assert str(source) not in agent.prefix
     assert not (context.execution_root / ".env").exists()
@@ -649,7 +651,7 @@ def test_refresh_and_delegate_keep_the_same_execution_root(
     monkeypatch.setattr(Pico, "ask", child_ask)
 
     project_sessions_before = {
-        path.name for path in agent.session_store.root.glob("*.json")
+        path.name for path in agent.session_store.root.glob("*.jsonl")
     }
     agent.refresh_prefix(force=True)
     result = agent.spawn_delegate({"task": "inspect README", "max_steps": 1})
@@ -665,11 +667,11 @@ def test_refresh_and_delegate_keep_the_same_execution_root(
     }
     assert result == "delegate_result:\ndone"
     assert {
-        path.name for path in agent.session_store.root.glob("*.json")
+        path.name for path in agent.session_store.root.glob("*.jsonl")
     } == project_sessions_before
     assert len(
         list(
-            (context.sandbox_state_root / "delegate-sessions").glob("*.json")
+            (context.sandbox_state_root / "delegate-sessions").glob("*.jsonl")
         )
     ) == 1
 

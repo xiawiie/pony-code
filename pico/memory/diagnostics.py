@@ -371,14 +371,14 @@ def collect_memory_diagnostics(
                     )
                     if (
                         canonical.endswith("/agent_notes.md")
-                        and used_bytes > block_store.AGENT_NOTES_SOFT_LIMIT_CHARS
+                        and used_bytes > block_store.AGENT_NOTES_SOFT_LIMIT_BYTES
                     ):
                         issues.append(
                             _issue(
                                 canonical,
                                 "agent_notes_soft_limit_exceeded",
                                 used_bytes,
-                                block_store.AGENT_NOTES_SOFT_LIMIT_CHARS,
+                                block_store.AGENT_NOTES_SOFT_LIMIT_BYTES,
                             )
                         )
                 else:
@@ -391,13 +391,13 @@ def collect_memory_diagnostics(
             total_bytes += len(data)
             content = data.decode("utf-8", errors="replace")
             if canonical.endswith("/agent_notes.md"):
-                if len(content) > block_store.AGENT_NOTES_SOFT_LIMIT_CHARS:
+                if len(data) > block_store.AGENT_NOTES_SOFT_LIMIT_BYTES:
                     issues.append(
                         _issue(
                             canonical,
                             "agent_notes_soft_limit_exceeded",
-                            len(content),
-                            block_store.AGENT_NOTES_SOFT_LIMIT_CHARS,
+                            len(data),
+                            block_store.AGENT_NOTES_SOFT_LIMIT_BYTES,
                         )
                     )
                 continue

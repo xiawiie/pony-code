@@ -10,6 +10,7 @@ from pico import security as securitylib
 from pico.cli_start import run_agent_once
 from pico.context.renderer import render_current_user_message
 from pico.messages import validate_messages
+from pico.model_capabilities import TokenAccounting
 from pico.providers.response import Response, StopReason
 from pico.security import SensitiveDataBlockedError
 
@@ -104,7 +105,9 @@ def test_injection_source_is_sanitized_before_tokenizer_and_request(tmp_path):
     agent = build_agent_with_client(tmp_path, CapturingClient(final_response("done")))
     agent.workspace.volatile_text = lambda: "branch: main\n" + secret
     token_inputs = []
-    agent.model_client.count_tokens = lambda text: token_inputs.append(str(text)) or 1
+    agent.token_accounting = TokenAccounting(
+        lambda text: token_inputs.append(str(text)) or 1
+    )
 
     rendered, telemetry = render_current_user_message(agent, "inspect")
     agent.session["messages"].append({
@@ -130,7 +133,7 @@ def test_injection_residual_is_blocked_before_tokenizer(
     agent = build_agent_with_client(tmp_path, CapturingClient(final_response("done")))
     agent.workspace.volatile_text = lambda: secret
     tokenizer = Mock(return_value=1)
-    agent.model_client.count_tokens = tokenizer
+    agent.token_accounting = TokenAccounting(tokenizer)
     monkeypatch.setattr(securitylib, "redact_artifact", lambda value, **kwargs: value)
 
     with pytest.raises(SensitiveDataBlockedError):

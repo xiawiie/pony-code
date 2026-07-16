@@ -1,6 +1,6 @@
 """运行工件落盘。
 
-session.json 负责保存“可恢复的会话状态”；RunStore 负责保存“单次运行的审计工件”，
+Session JSONL Tree 负责保存“可恢复的会话状态”；RunStore 负责保存“单次运行的审计工件”，
 例如 task_state、trace 和 report。两者分开后，恢复现场和复盘证据不会混在一起。
 """
 

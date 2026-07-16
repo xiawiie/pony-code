@@ -38,8 +38,8 @@ from pico.workspace import _safe_index_directory, _safe_index_file
 
 from .frontmatter import parse_frontmatter
 
-MAX_NOTE_CHARS = 500
-AGENT_NOTES_SOFT_LIMIT_CHARS = 8000
+MAX_NOTE_STORAGE_BYTES = 16 * 1024
+AGENT_NOTES_SOFT_LIMIT_BYTES = 64 * 1024
 MAX_MEMORY_INDEX_FILES = 512
 MAX_MEMORY_FILE_BYTES = 128 * 1024
 MAX_MEMORY_INDEX_BYTES = 2 * 1024 * 1024
@@ -67,7 +67,8 @@ def _read_bounded_regular(
             trusted_root=trusted_root,
             trusted_root_identity=trusted_root_identity,
         )
-        os.fchmod(descriptor, 0o600)
+        if stat.S_IMODE(os.fstat(descriptor).st_mode) != 0o600:
+            os.fchmod(descriptor, 0o600)
     else:
         nofollow = getattr(os, "O_NOFOLLOW", 0)
         if not nofollow:
@@ -233,6 +234,37 @@ class BlockStore:
         documents.sort(key=lambda document: document.path)
         return documents
 
+    def snapshot_signature(self):
+        """Return a bounded no-follow inventory for safe retrieval caching."""
+        rows = []
+        file_count = 0
+        for scope, root in (
+            ("workspace", self.workspace_root),
+            ("user", self.user_root),
+        ):
+            rows.append((scope, self._root_identities.get(scope)))
+            for rel_path, real_path in self._scope_files(scope, root):
+                if file_count >= MAX_MEMORY_INDEX_FILES:
+                    return tuple(rows)
+                file_count += 1
+                try:
+                    info = real_path.stat(follow_symlinks=False)
+                except OSError:
+                    return None
+                rows.append(
+                    (
+                        rel_path,
+                        info.st_dev,
+                        info.st_ino,
+                        info.st_size,
+                        info.st_mtime_ns,
+                        info.st_ctime_ns,
+                        info.st_nlink,
+                        stat.S_IFMT(info.st_mode),
+                    )
+                )
+        return tuple(rows)
+
     @staticmethod
     def _markdown_files(root: Path, directory: Path):
         for dirpath, dirnames, filenames in os.walk(directory, followlinks=False):
@@ -367,8 +399,8 @@ class BlockStore:
         self._reject_sensitive_content(note + "\n" + scope)
         if not note:
             raise ValueError("note must not be empty")
-        if len(note) > MAX_NOTE_CHARS:
-            raise ValueError(f"note exceeds {MAX_NOTE_CHARS} chars")
+        if len(note.encode("utf-8")) > MAX_NOTE_STORAGE_BYTES:
+            raise ValueError(f"note exceeds {MAX_NOTE_STORAGE_BYTES} bytes")
         if scope not in {"workspace", "user"}:
             raise ValueError("invalid scope")
         target = self._agent_notes_path(scope)
@@ -415,11 +447,12 @@ class BlockStore:
                 raise ValueError("memory file too large")
             self._atomic_write(target, new_content, root_identity)
             size = len(new_content)
-        if size > AGENT_NOTES_SOFT_LIMIT_CHARS and scope not in self._size_warned:
+        size_bytes = len(new_content.encode("utf-8"))
+        if size_bytes > AGENT_NOTES_SOFT_LIMIT_BYTES and scope not in self._size_warned:
             self._size_warned.add(scope)
             print(
-                f"warning: {scope}/agent_notes.md is at {size} chars "
-                f"(soft target {AGENT_NOTES_SOFT_LIMIT_CHARS}). "
+                f"warning: {scope}/agent_notes.md is at {size_bytes} bytes "
+                f"(soft target {AGENT_NOTES_SOFT_LIMIT_BYTES}). "
                 "Consider: pico memory review",
                 file=sys.stderr,
             )

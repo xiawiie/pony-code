@@ -61,13 +61,13 @@ RECOVERY_ABLATION_TASKS = [
         "id": "checkpoint_resume_goal",
         "category": "checkpoint_resume",
         "setup": "checkpoint_resume",
-        "required_fragments": ["task checkpoint:", "current goal: resume the benchmark task", "next step: apply the locked change"],
+        "required_fragments": ["task working set:", "goal: resume the benchmark task", "next steps: apply the locked change"],
     },
     {
         "id": "checkpoint_resume_files",
         "category": "checkpoint_resume",
         "setup": "checkpoint_resume",
-        "required_fragments": ["task checkpoint:", "current goal: continue from the latest benchmark checkpoint", "key files: sample.txt"],
+        "required_fragments": ["task working set:", "goal: continue from the latest benchmark checkpoint", "recent files: sample.txt"],
     },
     {
         "id": "partial_stale_single",
@@ -85,25 +85,25 @@ RECOVERY_ABLATION_TASKS = [
         "id": "workspace_mismatch_fingerprint",
         "category": "workspace_mismatch",
         "setup": "workspace_mismatch",
-        "required_fragments": ["resume status: workspace-mismatch", "current goal: recover after workspace drift"],
+        "required_fragments": ["resume status: workspace-mismatch", "goal: recover after workspace drift"],
     },
     {
         "id": "workspace_mismatch_runtime",
         "category": "workspace_mismatch",
         "setup": "workspace_mismatch",
-        "required_fragments": ["resume status: workspace-mismatch", "next step: rebuild runtime state from a fresh checkpoint"],
+        "required_fragments": ["resume status: workspace-mismatch", "next steps: rebuild runtime state from a fresh checkpoint"],
     },
     {
         "id": "partial_success_shell",
         "category": "partial_success_recovery",
         "setup": "partial_success_shell",
-        "required_fragments": ["current blocker: tool_partial_success", "next step: inspect the diff before retry"],
+        "required_fragments": ["blocker: tool_partial_success", "next steps: inspect the diff before retry"],
     },
     {
         "id": "partial_success_tool",
         "category": "partial_success_recovery",
         "setup": "partial_success_tool",
-        "required_fragments": ["current blocker: tool_failed", "next step: retry after checking the workspace state"],
+        "required_fragments": ["blocker: tool_failed", "next steps: retry after checking the workspace state"],
     },
 ]
 
@@ -120,12 +120,61 @@ def _build_recovery_agent(workspace_root, required_fragments):
     )
 
 
-def _apply_recovery_setup(agent, task, workspace_root):
+def _checkpoint_payload(
+    checkpoint_id,
+    *,
+    goal,
+    next_step,
+    runtime_identity,
+    blocker="",
+    key_files=(),
+    freshness=None,
+    summary="",
+):
+    paths = [str(item.get("path", "")) for item in key_files if item.get("path")]
+    return {
+        "checkpoint_id": checkpoint_id,
+        "parent_checkpoint_id": "",
+        "created_at": "2026-04-15T08:00:00+00:00",
+        "goal": goal,
+        "status": "in_progress",
+        "completed": [],
+        "in_progress": [goal],
+        "blocker": blocker,
+        "next_steps": [next_step] if next_step else [],
+        "key_files": list(key_files),
+        "read_files": paths,
+        "modified_files": [],
+        "workspace_checkpoint_id": "",
+        "worktree_identity_digest": "",
+        "context_usage": {},
+        "label": "recovery-ablation",
+        "trigger": "benchmark_setup",
+        "freshness": dict(freshness or {}),
+        "summary": summary or goal,
+        "runtime_identity": dict(runtime_identity),
+    }
+
+
+def _apply_recovery_setup(agent, task, workspace_root, *, checkpoint_enabled=True):
     setup = task["setup"]
     workspace_root = Path(workspace_root)
     (workspace_root / "sample.txt").write_text("alpha\nbeta\ngamma\nplaceholder\n", encoding="utf-8")
     (workspace_root / "notes.txt").write_text("note-one\nnote-two\n", encoding="utf-8")
     summaries = agent.session.setdefault("memory", {}).setdefault("file_summaries", {})
+
+    if not checkpoint_enabled:
+        if setup in {"partial_stale_single", "partial_stale_multi"}:
+            (workspace_root / "sample.txt").write_text(
+                "alpha\nbeta\nstale-shifted\nplaceholder\n",
+                encoding="utf-8",
+            )
+            if setup == "partial_stale_multi":
+                (workspace_root / "notes.txt").write_text(
+                    "note-one\nnote-two-shifted\n",
+                    encoding="utf-8",
+                )
+        return
 
     if setup == "checkpoint_resume":
         agent.memory.remember_file("sample.txt")
@@ -133,20 +182,24 @@ def _apply_recovery_setup(agent, task, workspace_root):
         agent.session["checkpoints"] = {
             "current_id": "ckpt_resume",
             "items": {
-                "ckpt_resume": {
-                    "checkpoint_id": "ckpt_resume",
-                    "parent_checkpoint_id": "",
-                    "created_at": "2026-04-15T08:00:00+00:00",
-                    "current_goal": "Resume the benchmark task" if task["id"] == "checkpoint_resume_goal" else "Continue from the latest benchmark checkpoint",
-                    "completed": ["Read sample.txt"],
-                    "excluded": [],
-                    "current_blocker": "",
-                    "next_step": "Apply the locked change" if task["id"] == "checkpoint_resume_goal" else "Continue from remembered file anchors",
-                    "key_files": [{"path": "sample.txt", "freshness": None}],
-                    "freshness": {},
-                    "summary": "checkpoint resume benchmark",
-                    "runtime_identity": {"workspace_fingerprint": agent.workspace.fingerprint()},
-                }
+                "ckpt_resume": _checkpoint_payload(
+                    "ckpt_resume",
+                    goal=(
+                        "Resume the benchmark task"
+                        if task["id"] == "checkpoint_resume_goal"
+                        else "Continue from the latest benchmark checkpoint"
+                    ),
+                    next_step=(
+                        "Apply the locked change"
+                        if task["id"] == "checkpoint_resume_goal"
+                        else "Continue from remembered file anchors"
+                    ),
+                    key_files=[{"path": "sample.txt", "freshness": None}],
+                    summary="checkpoint resume benchmark",
+                    runtime_identity={
+                        "workspace_fingerprint": agent.workspace.fingerprint()
+                    },
+                )
             },
         }
         if task["id"] == "checkpoint_resume_files":
@@ -170,20 +223,17 @@ def _apply_recovery_setup(agent, task, workspace_root):
         agent.session["checkpoints"] = {
             "current_id": "ckpt_stale",
             "items": {
-                "ckpt_stale": {
-                    "checkpoint_id": "ckpt_stale",
-                    "parent_checkpoint_id": "",
-                    "created_at": "2026-04-15T08:00:00+00:00",
-                    "current_goal": "Recover from stale benchmark summaries",
-                    "completed": [],
-                    "excluded": [],
-                    "current_blocker": "",
-                    "next_step": "Re-anchor the stale summaries",
-                    "key_files": key_files,
-                    "freshness": freshness,
-                    "summary": "partial stale benchmark",
-                    "runtime_identity": {"workspace_fingerprint": agent.workspace.fingerprint()},
-                }
+                "ckpt_stale": _checkpoint_payload(
+                    "ckpt_stale",
+                    goal="Recover from stale benchmark summaries",
+                    next_step="Re-anchor the stale summaries",
+                    key_files=key_files,
+                    freshness=freshness,
+                    summary="partial stale benchmark",
+                    runtime_identity={
+                        "workspace_fingerprint": agent.workspace.fingerprint()
+                    },
+                )
             },
         }
         agent.session_store.save(agent.session)
@@ -196,20 +246,15 @@ def _apply_recovery_setup(agent, task, workspace_root):
         agent.session["checkpoints"] = {
             "current_id": "ckpt_workspace",
             "items": {
-                "ckpt_workspace": {
-                    "checkpoint_id": "ckpt_workspace",
-                    "parent_checkpoint_id": "",
-                    "created_at": "2026-04-15T08:00:00+00:00",
-                    "current_goal": "Recover after workspace drift",
-                    "completed": [],
-                    "excluded": [],
-                    "current_blocker": "",
-                    "next_step": "Rebuild runtime state from a fresh checkpoint",
-                    "key_files": [],
-                    "freshness": {},
-                    "summary": "workspace mismatch benchmark",
-                    "runtime_identity": {"workspace_fingerprint": "outdated-workspace-fingerprint"},
-                }
+                "ckpt_workspace": _checkpoint_payload(
+                    "ckpt_workspace",
+                    goal="Recover after workspace drift",
+                    next_step="Rebuild runtime state from a fresh checkpoint",
+                    summary="workspace mismatch benchmark",
+                    runtime_identity={
+                        "workspace_fingerprint": "outdated-workspace-fingerprint"
+                    },
+                )
             },
         }
         agent.session_store.save(agent.session)
@@ -221,20 +266,17 @@ def _apply_recovery_setup(agent, task, workspace_root):
         agent.session["checkpoints"] = {
             "current_id": "ckpt_partial",
             "items": {
-                "ckpt_partial": {
-                    "checkpoint_id": "ckpt_partial",
-                    "parent_checkpoint_id": "",
-                    "created_at": "2026-04-15T08:00:00+00:00",
-                    "current_goal": "Recover after partial tool success",
-                    "completed": [],
-                    "excluded": [],
-                    "current_blocker": blocker,
-                    "next_step": next_step,
-                    "key_files": [{"path": "sample.txt", "freshness": None}],
-                    "freshness": {},
-                    "summary": "partial success benchmark",
-                    "runtime_identity": {"workspace_fingerprint": agent.workspace.fingerprint()},
-                }
+                "ckpt_partial": _checkpoint_payload(
+                    "ckpt_partial",
+                    goal="Recover after partial tool success",
+                    next_step=next_step,
+                    blocker=blocker,
+                    key_files=[{"path": "sample.txt", "freshness": None}],
+                    summary="partial success benchmark",
+                    runtime_identity={
+                        "workspace_fingerprint": agent.workspace.fingerprint()
+                    },
+                )
             },
         }
         agent.session_store.save(agent.session)
@@ -245,19 +287,27 @@ def _run_recovery_task_variant(task, variant):
         workspace_root = Path(temp_dir).resolve()
         (workspace_root / "README.md").write_text("demo\n", encoding="utf-8")
         agent = _build_recovery_agent(workspace_root, task["required_fragments"])
-        _apply_recovery_setup(agent, task, workspace_root)
-        if variant == "resume_disabled":
-            agent.session["checkpoints"] = {"current_id": "", "items": {}}
-            agent.session_store.save(agent.session)
+        _apply_recovery_setup(
+            agent,
+            task,
+            workspace_root,
+            checkpoint_enabled=variant == "resume_enabled",
+        )
         final_answer = agent.ask("Continue the recovery task.")
         report, trace = load_run_artifacts(
             agent.run_store.root,
             agent.current_task_state.run_id,
         )
         resume_status = str(report.get("recovery", {}).get("status", ""))
-        stale_reanchored = any(
-            event.get("event") == "checkpoint_created" and event.get("trigger") == "freshness_mismatch"
-            for event in trace
+        stale_reanchored = (
+            resume_status == "partial-stale"
+            and int(report.get("context", {}).get("stale_summary_invalidations", 0))
+            > 0
+            and any(
+                event.get("event") == "checkpoint_created"
+                and event.get("trigger") == "run_finished"
+                for event in trace
+            )
         )
         workspace_drift_detected = any(event.get("event") == "runtime_identity_mismatch" for event in trace)
         invalid_resume = task["category"] in {"partial_stale", "workspace_mismatch"}

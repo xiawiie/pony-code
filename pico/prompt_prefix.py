@@ -66,16 +66,10 @@ def _tool_specific_rules(tools):
 
 
 def build_prompt_prefix(workspace, tools, built_at=None):
-    tool_lines = []
-    for name, tool in tools.items():
-        fields = ", ".join(f"{key}: {value}" for key, value in tool["schema"].items())
-        risk = "approval required" if tool["risky"] else "safe"
-        tool_lines.append(f"- {name}({fields}) [{risk}] {tool['description']}")
-    tool_text = "\n".join(tool_lines)
+    available_tools = ", ".join(sorted(tools)) or "none"
     tool_specific_rules = _tool_specific_rules(tools)
-    # prefix 可以理解成 agent 的“工作手册”：
-    # 它是谁、工具怎么调用、当前仓库的稳定事实，都写在这里。
-    # workspace 的易变部分（branch/status/commits）走 volatile section，不进 stable prefix。
+    # Provider tool schemas are sent separately.  The pinned prefix keeps only
+    # core behavior, a compact availability hint, and applicable AGENTS files.
     text = textwrap.dedent(
         f"""\
         You are pico, a small local coding agent working inside a local repository.
@@ -90,14 +84,13 @@ def build_prompt_prefix(workspace, tools, built_at=None):
         - Do not repeat the same tool call with the same arguments if it did not help. Choose a different tool or return a final answer.
         {tool_specific_rules}
 
-        Tools:
-        {tool_text}
+        Available native tools: {available_tools}
 
         {MEMORY_USAGE_GUIDANCE}
 
         {MEMORY_READING_GUIDANCE}
 
-        {workspace.stable_text()}
+        {workspace.instruction_text()}
         """
     ).strip()
     signature = tool_signature(tools)

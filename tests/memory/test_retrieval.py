@@ -162,6 +162,25 @@ def test_same_retrieval_sees_add_modify_and_delete_on_next_query(tmp_path):
     assert retrieval.search("beta") == []
 
 
+def test_agent_notes_are_indexed_as_independent_timestamp_blocks(tmp_path):
+    store = _make_store(tmp_path, {})
+    (store.workspace_root / "agent_notes.md").write_text(
+        "- 2026-07-14T01:00:00Z  Keep the deploy procedure unchanged.\n"
+        "- 2026-07-15T02:00:00Z  Bcrypt rounds must stay above twelve.\n",
+        encoding="utf-8",
+    )
+
+    snapshot = Retrieval(store).snapshot()
+    logical_paths = [document.path for document in snapshot.documents]
+    hits = Retrieval(store).search_snapshot(snapshot, "bcrypt", limit=5)[0]
+
+    assert logical_paths == [
+        "workspace/agent_notes.md#entry-1",
+        "workspace/agent_notes.md#entry-2",
+    ]
+    assert [hit.path for hit in hits] == ["workspace/agent_notes.md#entry-2"]
+
+
 @pytest.mark.parametrize("unsafe_kind", ("symlink", "hardlink", "fifo"))
 def test_search_skips_unsafe_candidates(tmp_path, unsafe_kind):
     store = _make_store(tmp_path, {"notes/safe.md": "safe cache\n"})

@@ -103,7 +103,7 @@ def test_offline_a1_canary_crosses_real_boundaries_without_normal_artifact_leak(
 
     candidate = {
         "record_type": "session",
-        "format_version": 1,
+        "format_version": 2,
         "id": "candidate-canary",
         "created_at": "2026-01-01T00:00:00+00:00",
         "workspace_root": str(tmp_path),
@@ -331,7 +331,7 @@ def test_offline_a1_canary_crosses_real_boundaries_without_normal_artifact_leak(
         "history": [{"role": "user", "content": secret}],
     }
     legacy_raw = json.dumps(legacy).encode("utf-8")
-    legacy_path = agent.session_store.path(legacy_id)
+    legacy_path = agent.session_store.legacy_path(legacy_id)
     legacy_path.write_bytes(legacy_raw)
     with pytest.raises(ValueError, match="session payload|format version|required"):
         agent.session_store.load(legacy_id)

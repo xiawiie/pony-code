@@ -274,7 +274,7 @@ def read_private_bytes(
     try:
         opened = os.fstat(descriptor)
         uid = os.geteuid() if hasattr(os, "geteuid") else opened.st_uid
-        if harden:
+        if harden and stat.S_IMODE(opened.st_mode) != 0o600:
             os.fchmod(descriptor, 0o600)
         elif opened.st_uid != uid or stat.S_IMODE(opened.st_mode) != 0o600:
             raise ValueError("private file permissions are unsafe")
@@ -438,6 +438,29 @@ def private_directory_identity(path):
     try:
         opened = os.fstat(descriptor)
         return opened.st_dev, opened.st_ino
+    finally:
+        os.close(descriptor)
+
+
+def private_file_signature(path, *, trusted_root=None, trusted_root_identity=None):
+    """Return a no-follow identity/version signature for a private file."""
+    _path, descriptor = _open_private_file(
+        path,
+        trusted_root=trusted_root,
+        trusted_root_identity=trusted_root_identity,
+    )
+    try:
+        opened = os.fstat(descriptor)
+        return (
+            opened.st_dev,
+            opened.st_ino,
+            opened.st_size,
+            opened.st_mtime_ns,
+            opened.st_ctime_ns,
+            opened.st_nlink,
+            stat.S_IMODE(opened.st_mode),
+            opened.st_uid,
+        )
     finally:
         os.close(descriptor)
 
@@ -1203,6 +1226,7 @@ def append_private_bytes(
     trusted_root,
     trusted_root_identity,
     max_total_bytes=None,
+    expected_identity=None,
 ):
     if not isinstance(data, (bytes, bytearray)):
         raise TypeError("private append requires bytes")
@@ -1222,6 +1246,11 @@ def append_private_bytes(
             before = _private_entry_stat(parent_descriptor, path.name)
         except FileNotFoundError:
             before = None
+        if expected_identity is not None and (
+            before is None
+            or (before.st_dev, before.st_ino) != tuple(expected_identity)
+        ):
+            raise ValueError("private file changed")
         if before is not None:
             if stat.S_ISLNK(before.st_mode):
                 raise ValueError("refusing symlink component")
@@ -1463,6 +1492,30 @@ def sanitize_provider_payload(system, messages, env=None, secret_env_names=None)
         env=env,
         secret_env_names=secret_env_names,
     )
+
+    def has_sensitive_leaf(value):
+        if isinstance(value, dict):
+            return any(
+                contains_secret_material(
+                    key,
+                    env=env,
+                    secret_env_names=secret_env_names,
+                )
+                or has_sensitive_leaf(item)
+                for key, item in value.items()
+            )
+        if isinstance(value, (list, tuple)):
+            return any(has_sensitive_leaf(item) for item in value)
+        return isinstance(value, str) and contains_secret_material(
+            value,
+            env=env,
+            secret_env_names=secret_env_names,
+        )
+
+    # Check individual strings before JSON escaping can erase a token boundary
+    # (for example ``"line\ngithub_pat_..."`` becomes ``"line\\ngithub..."``).
+    if has_sensitive_leaf(safe_system) or has_sensitive_leaf(safe_messages):
+        raise SensitiveDataBlockedError("sensitive_data_blocked")
     serialized = json.dumps(
         {"system": safe_system, "messages": safe_messages},
         sort_keys=True,

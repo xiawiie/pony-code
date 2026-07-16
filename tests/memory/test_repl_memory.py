@@ -1,4 +1,4 @@
-"""REPL /save 和 /memory-review 命令.
+"""REPL /remember (/save alias) and /memory-review commands.
 
 /save 把一条 note 追加到 workspace 的 agent_notes.md.
 /memory-review 打印 agent_notes.md 内容与编辑提示.
@@ -34,6 +34,40 @@ def test_repl_save_command_appends_agent_note(tmp_path, monkeypatch, capsys):
     agent_notes = tmp_path / ".pico" / "memory" / "agent_notes.md"
     assert agent_notes.exists()
     assert "bcrypt rounds > 12 timeout" in agent_notes.read_text(encoding="utf-8")
+
+
+def test_repl_remember_is_the_explicit_primary_memory_command(
+    tmp_path,
+    monkeypatch,
+):
+    from pico.cli_start import run_repl
+
+    agent = _build_agent(tmp_path)
+    inputs = iter(["/remember keep the recovery invariant", "/exit"])
+    monkeypatch.setattr("builtins.input", lambda *_: next(inputs))
+
+    run_repl(agent)
+
+    notes = tmp_path / ".pico" / "memory" / "agent_notes.md"
+    assert "keep the recovery invariant" in notes.read_text(encoding="utf-8")
+
+
+def test_repl_remember_enforces_1024_model_token_limit(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    from pico.cli_start import run_repl
+
+    agent = _build_agent(tmp_path)
+    inputs = iter(["/remember " + ("记忆" * 600), "/exit"])
+    monkeypatch.setattr("builtins.input", lambda *_: next(inputs))
+
+    run_repl(agent)
+
+    assert "1024 model tokens" in capsys.readouterr().out
+    notes = tmp_path / ".pico" / "memory" / "agent_notes.md"
+    assert not notes.exists()
 
 
 def test_repl_save_without_body_shows_usage(tmp_path, monkeypatch, capsys):

@@ -65,7 +65,16 @@ def test_trace_projector_envelopes_and_drops_forbidden_content():
     event = project_trace_event(
         _state(),
         "tool_executed",
-        {"name": "run_shell", "args": {"command": "secret"}, "result": "secret", "stdout": "secret", "duration_ms": 3},
+        {
+            "name": "run_shell",
+            "args": {"command": "secret"},
+            "result": "secret",
+            "stdout": "secret",
+            "duration_ms": 3,
+            "transport_attempts": 1,
+            "transport_retries": 0,
+            "transport_evidence_complete": True,
+        },
         created_at="2026-07-12T00:00:00Z",
     )
     assert event["trace_schema_version"] == 1
@@ -73,6 +82,9 @@ def test_trace_projector_envelopes_and_drops_forbidden_content():
     assert event["run_id"] == "run_1"
     assert event["task_id"] == "task_1"
     assert event["attempt"] == 2
+    assert event["transport_attempts"] == 1
+    assert event["transport_retries"] == 0
+    assert event["transport_evidence_complete"] is True
     serialized = json.dumps(event)
     assert "secret" not in serialized
     assert not ({"args", "result", "stdout"} & event.keys())

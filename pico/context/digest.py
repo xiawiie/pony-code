@@ -29,6 +29,8 @@ import hashlib
 import re
 from dataclasses import dataclass, field
 
+from pico.model_capabilities import estimate_text_tokens
+
 
 @dataclass(frozen=True)
 class ToolResultDigest:
@@ -58,9 +60,13 @@ class ToolResultDigest:
     raw_path: str = ""
 
 
-def should_digest(result, threshold: int = 1200) -> bool:
-    """Return True when ``result`` is long enough to warrant a digest."""
-    return len(str(result or "")) > threshold
+def should_digest(result, threshold_tokens: int = 4096, token_counter=None) -> bool:
+    """Return True when a result exceeds the inline model-token budget."""
+    value = str(result or "")
+    if not value:
+        return False
+    counter = token_counter if callable(token_counter) else estimate_text_tokens
+    return int(counter(value)) > int(threshold_tokens)
 
 
 def _hash(content: str) -> str:
@@ -77,11 +83,14 @@ def _digest_read_file(args, result):
     path = str(args.get("path") or "unknown")
     line_count = result.count("\n") + 1
     symbols = _PY_TOP_LEVEL_RE.findall(result)[:5]
-    bullets = [f"{kind.strip()}{name}" for kind, name in symbols]
+    lines = [line for line in result.splitlines() if line.strip()]
+    bullets = [f"symbol: {kind.strip()}{name}" for kind, name in symbols]
+    if lines:
+        bullets.extend((f"head: {lines[0]}", f"tail: {lines[-1]}"))
     return ToolResultDigest(
         tool="read_file",
         title=f"{path} ({line_count} lines)",
-        bullets=bullets or [result.splitlines()[0][:80] if result else ""],
+        bullets=bullets,
     )
 
 
@@ -89,12 +98,17 @@ def _digest_run_shell(args, result):
     cmd = str(args.get("command") or "")[:80]
     lines = result.splitlines()
     exit_line = next((line for line in lines if "exit" in line.lower()), "exit_code: ?")
-    stdout_lines = [line for line in lines if line and "err" not in line.lower()][:3]
+    stdout_lines = [line for line in lines if line and "err" not in line.lower()]
     stderr_lines = [line for line in lines if "err" in line.lower()][-3:]
     return ToolResultDigest(
         tool="run_shell",
         title=f"$ {cmd}",
-        bullets=[exit_line] + stdout_lines[:3] + stderr_lines[-3:],
+        bullets=(
+            [exit_line]
+            + [f"stdout head: {line}" for line in stdout_lines[:2]]
+            + [f"stdout tail: {line}" for line in stdout_lines[-2:]]
+            + [f"stderr: {line}" for line in stderr_lines[-2:]]
+        ),
     )
 
 
@@ -152,8 +166,36 @@ def digest_tool_result(tool_name: str, args, result: str, raw_path: str) -> Tool
     )
 
 
-def render_digest_content(digest: ToolResultDigest) -> str:
-    """Format ``digest`` for insertion into a tool_result message."""
-    bullet_text = "\n".join(f"- {b}" for b in digest.bullets)
-    footer = f"\n(raw at {digest.raw_path})" if digest.raw_path else ""
-    return f"[digest] {digest.title}\n{bullet_text}{footer}"
+def render_digest_content(
+    digest: ToolResultDigest,
+    *,
+    max_tokens=512,
+    token_counter=None,
+) -> str:
+    """Format a digest under a token cap while retaining its durable reference."""
+    counter = token_counter if callable(token_counter) else estimate_text_tokens
+    references = [f"source_hash={digest.source_hash}"]
+    if digest.raw_path:
+        references.append(f"raw_path={digest.raw_path}")
+    footer = "[reference] " + " ".join(references)
+    lines = [f"[digest] {digest.title}"]
+    for bullet in digest.bullets:
+        candidate = "\n".join([*lines, f"- {bullet}", footer])
+        if int(counter(candidate)) > int(max_tokens):
+            continue
+        lines.append(f"- {bullet}")
+    rendered = "\n".join([*lines, footer])
+    if int(counter(rendered)) <= int(max_tokens):
+        return rendered
+    # A pathological path/title can itself exceed the cap. Keep the reference
+    # and shrink only the human title at a token boundary.
+    low = 0
+    high = len(digest.title)
+    while low < high:
+        middle = (low + high + 1) // 2
+        candidate = f"[digest] {digest.title[:middle]}\n{footer}"
+        if int(counter(candidate)) <= int(max_tokens):
+            low = middle
+        else:
+            high = middle - 1
+    return f"[digest] {digest.title[:low].rstrip()}\n{footer}"

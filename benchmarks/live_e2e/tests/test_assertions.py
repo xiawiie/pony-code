@@ -22,8 +22,11 @@ from benchmarks.live_e2e.run_live_session import (
     RunConfig,
     TurnResult,
 )
-from pico.context_manager import _drop_old_turns
-from pico.messages import message_content_text
+from pico.model_capabilities import (
+    TokenAccounting,
+    build_model_budget,
+    resolve_model_capabilities,
+)
 
 
 def _config(**overrides):
@@ -45,34 +48,66 @@ def _engine(**overrides):
     return AssertionEngine(_config(**overrides))
 
 
-def test_live_fixture_history_cap_handles_short_provider_transcripts():
+def test_live_fixture_uses_model_budget_and_compaction_contract():
     fixture = tomllib.loads(run_live_session.FIXTURE_PICO_TOML)
+    model = fixture["model"]
     context = fixture["context"]
-    messages = [
-        {"role": role, "content": char * size}
-        for _ in range(4)
-        for role, char, size in (
-            ("user", "u", 100),
-            ("assistant", "a", 300),
-        )
-    ]
-    before = [dict(message) for message in messages]
-    def token_of(message):
-        return max(1, len(message_content_text(message)) // 4)
-
-    kept, dropped = _drop_old_turns(
-        messages,
-        soft_cap_tokens=context["history_soft_cap"],
-        floor_count=context["history_floor_messages"],
-        token_of=token_of,
+    compaction = context["compaction"]
+    capabilities = resolve_model_capabilities(
+        "live-fixture",
+        model_config=model,
+    )
+    budget = build_model_budget(
+        capabilities,
+        reserve_tokens=compaction["reserve_tokens"],
+        keep_recent_tokens=compaction["keep_recent_tokens"],
+        system_tools_hard_cap=context["system_tools_hard_cap"],
+        source_pool_tokens=context["source_pool_tokens"],
     )
 
-    assert context["history_soft_cap"] == 300
-    assert context["history_floor_messages"] == 4
-    assert 300 < sum(map(token_of, messages)) < 800
-    assert dropped == 2
-    assert kept == messages[2:]
-    assert messages == before
+    assert budget.output_tokens == 4096
+    assert budget.reserve_tokens == 4096
+    assert budget.input_limit == 20480
+    assert budget.keep_recent_tokens == 4096
+    assert budget.system_tools_hard_cap == 4915
+    assert budget.source_pool_tokens == 3072
+    assert context["tool_results"] == {
+        "inline_tokens": 4096,
+        "digest_tokens": 512,
+    }
+
+
+def test_compaction_fixture_appends_valid_inert_canonical_history():
+    store = MagicMock()
+    pico = SimpleNamespace(
+        session={"id": "live-session", "messages": []},
+        session_store=store,
+    )
+
+    count = run_live_session.seed_compaction_fixture(pico)
+
+    assert count == run_live_session.COMPACTION_FIXTURE_MESSAGES
+    assert len(pico.session["messages"]) == count
+    validate_messages = run_live_session.validate_messages
+    validate_messages(pico.session["messages"], require_meta=True)
+    store.append_messages.assert_called_once_with(
+        "live-session",
+        pico.session["messages"],
+    )
+    assert all(
+        message["_pico_meta"]["origin"] == "live_e2e_compaction_fixture"
+        for message in pico.session["messages"]
+    )
+    accounting = TokenAccounting()
+    fixture_tokens = sum(
+        accounting.count_message(message)
+        for message in pico.session["messages"]
+    )
+    fixture_config = tomllib.loads(run_live_session.FIXTURE_PICO_TOML)
+    assert fixture_tokens > (
+        fixture_config["model"]["context_window"]
+        - fixture_config["context"]["compaction"]["reserve_tokens"]
+    )
 
 
 def test_active_artifact_scan_detects_secret_and_mode_failures(tmp_path):
@@ -451,6 +486,45 @@ def test_read_turn_trace_aggregates_every_model_turn(tmp_path):
     assert captured["system_prefix_hashes"] == ["k", "k"]
 
 
+def test_auxiliary_compaction_call_is_counted_without_inflating_agent_turns():
+    captured = {
+        "model_turns": 1,
+        "model_attempts": 1,
+        "model_failures": 0,
+        "transport_attempts": 1,
+        "transport_retries": 0,
+        "transport_evidence_complete": True,
+        "billing_ambiguous": False,
+        "usage": {key: 0 for key in run_live_session._LIVE_USAGE_KEYS},
+        "usage_complete": True,
+        "request_metadata": [{}],
+        "system_prefix_hashes": ["key"],
+        "action_origins": [],
+    }
+    captured["usage"].update({"input_tokens": 100, "output_tokens": 10})
+    summary_call = {
+        "call_kind": "session_summary",
+        "completed": True,
+        "usage": {"input_tokens": 50, "output_tokens": 5},
+        "transport_attempts": 1,
+        "transport_retries": 0,
+    }
+
+    merged = run_live_session._merge_auxiliary_call_evidence(
+        captured,
+        [summary_call],
+    )
+
+    assert merged["model_turns"] == 1
+    assert merged["model_attempts"] == 2
+    assert merged["model_failures"] == 0
+    assert merged["usage"]["input_tokens"] == 150
+    assert merged["usage"]["output_tokens"] == 15
+    assert merged["transport_attempts"] == 2
+    assert merged["usage_complete"] is True
+    assert merged["billing_ambiguous"] is False
+
+
 def test_read_turn_trace_does_not_accept_a_nonstring_cache_key(tmp_path):
     trace = tmp_path / "trace.jsonl"
     trace.write_text(
@@ -502,7 +576,7 @@ def test_read_run_terminal_status_uses_each_persisted_artifact(tmp_path):
         encoding="utf-8",
     )
     run_store.report_path(task_state).write_text(
-        json.dumps({"status": "stopped", "stop_reason": "step_limit_reached"}),
+        json.dumps({"run": {"status": "stopped", "stop_reason": "step_limit_reached"}}),
         encoding="utf-8",
     )
     run_store.trace_path(task_state).write_text(
@@ -518,7 +592,7 @@ def test_read_run_terminal_status_uses_each_persisted_artifact(tmp_path):
     )
 
     run_store.report_path(task_state).write_text(
-        json.dumps({"status": "failed", "stop_reason": ""}),
+        json.dumps({"run": {"status": "failed", "stop_reason": ""}}),
         encoding="utf-8",
     )
     _, _, report_terminal, _ = run_live_session.read_run_terminal_status(
@@ -543,7 +617,7 @@ def test_read_run_terminal_status_rejects_nonstring_or_blank_stop_reason(
         encoding="utf-8",
     )
     run_store.report_path(task_state).write_text(
-        json.dumps({"status": "completed", "stop_reason": stop_reason}),
+        json.dumps({"run": {"status": "completed", "stop_reason": stop_reason}}),
         encoding="utf-8",
     )
     run_store.trace_path(task_state).write_text(
@@ -582,7 +656,7 @@ def test_read_run_terminal_status_keeps_other_artifact_evidence(
         encoding="utf-8",
     )
     run_store.report_path(task_state).write_text(
-        json.dumps({"status": "completed", "stop_reason": "done"}),
+        json.dumps({"run": {"status": "completed", "stop_reason": "done"}}),
         encoding="utf-8",
     )
     run_store.trace_path(task_state).write_text(
@@ -615,7 +689,7 @@ def test_turn_runner_does_not_reuse_previous_run_evidence_after_pre_run_failure(
         encoding="utf-8",
     )
     run_store.report_path(previous_task_state).write_text(
-        json.dumps({"status": "completed", "stop_reason": "done"}),
+        json.dumps({"run": {"status": "completed", "stop_reason": "done"}}),
         encoding="utf-8",
     )
     run_store.trace_path(previous_task_state).write_text(
@@ -676,7 +750,7 @@ def test_turn_runner_uses_first_trace_call_as_current_turn_evidence(tmp_path):
         encoding="utf-8",
     )
     run_store.report_path(current_task_state).write_text(
-        json.dumps({"status": "completed", "stop_reason": "done"}),
+        json.dumps({"run": {"status": "completed", "stop_reason": "done"}}),
         encoding="utf-8",
     )
     run_store.trace_path(current_task_state).write_text(
@@ -763,21 +837,30 @@ def _canonical_session_messages():
     ]
 
 
-def _pico_stub_with_persisted_v3(tmp_path):
+def _pico_stub_with_persisted_tree(tmp_path):
+    del tmp_path
     session = {
         "record_type": "session",
-        "format_version": 1,
+        "format_version": run_live_session.SESSION_FORMAT_VERSION,
+        "id": "live-test-session",
         "messages": _canonical_session_messages(),
     }
-    session_path = tmp_path / "session.json"
-    session_path.write_text(json.dumps(session), encoding="utf-8")
-    return SimpleNamespace(
+    pico = SimpleNamespace(
         session=session,
-        session_path=session_path,
         model_client=SimpleNamespace(
             calls=[{"payload_secret_clean": True}]
         ),
     )
+    pico.session_store = SimpleNamespace(
+        load_tree=lambda _session_id: SimpleNamespace(
+            header={
+                "record_type": run_live_session.SESSION_HEADER_RECORD_TYPE,
+                "format_version": run_live_session.SESSION_FORMAT_VERSION,
+            },
+            projection=pico.session,
+        )
+    )
+    return pico
 
 
 def _turn_result_stub(**overrides):
@@ -787,7 +870,7 @@ def _turn_result_stub(**overrides):
         expected_behavior="recall_triggered",
         final_answer="ok",
         metadata={
-            "intent": {"name": "recall", "matched_keyword": "上次", "matched_reason": ""},
+            "context_source_allocator": {"name": "priority_allocator"},
             "injection_tokens": {"recalled_memory": 42, "workspace_state": 10},
             "recall.error_count": 0,
         },
@@ -832,22 +915,22 @@ def test_check_turn_1_recall_passes_on_valid_metadata():
     assert all(a.passed for a in asserts), [a for a in asserts if not a.passed]
 
 
-def test_check_turn_1_recall_fails_when_intent_not_recall():
+def test_check_turn_1_recall_fails_when_priority_allocator_is_missing():
     engine = _engine()
     result = _turn_result_stub(metadata={
-        "intent": {"name": "default", "matched_keyword": "", "matched_reason": ""},
+        "context_source_allocator": {"name": "unknown"},
         "injection_tokens": {"recalled_memory": 42},
         "recall.error_count": 0,
     })
     asserts = engine.check_turn_1_recall(result)
     failed = [a for a in asserts if not a.passed]
-    assert any(a.name == "intent_name_recall" for a in failed)
+    assert any(a.name == "priority_allocator_active" for a in failed)
 
 
 def test_check_turn_1_recall_fails_when_no_recall_block_rendered():
     engine = _engine()
     result = _turn_result_stub(current_user_content="上次讨论过什么", metadata={
-        "intent": {"name": "recall", "matched_keyword": "上次", "matched_reason": ""},
+        "context_source_allocator": {"name": "priority_allocator"},
         "injection_tokens": {"recalled_memory": 0},
         "recall.error_count": 0,
     })
@@ -859,7 +942,7 @@ def test_check_turn_1_recall_fails_when_no_recall_block_rendered():
 def test_check_turn_1_recall_fails_when_recall_error_nonzero():
     engine = _engine()
     result = _turn_result_stub(metadata={
-        "intent": {"name": "recall", "matched_keyword": "上次", "matched_reason": ""},
+        "context_source_allocator": {"name": "priority_allocator"},
         "injection_tokens": {"recalled_memory": 42},
         "recall.error_count": 3,
     })
@@ -938,7 +1021,7 @@ def _pico_stub_with_digested_message(raw_body: str, raw_dir: Path, source_hash: 
             {
                 "role": "user",
                 "content": [{"type": "tool_result", "tool_use_id": "t1",
-                             "content": f"[digest] runtime.py (900 lines)\n- import\n(raw at {raw_file})"}],
+                             "content": f"[digest] runtime.py (900 lines)\n- import\n[reference] source_hash={source_hash} raw_path={raw_file}"}],
                 "_pico_meta": {"digest_applied": True, "source_hash": source_hash, "tool_use_id": "t1"},
             },
         ]
@@ -1072,17 +1155,28 @@ def _turn_3_result_stub(**overrides):
     defaults = dict(
         turn=3,
         user_prompt="再看一下",
-        expected_behavior="injection_dropped",
+        expected_behavior="source_pool_bounded",
         final_answer="ok",
         metadata={
             "injection_budget": 500,
-            "injection_dropped": ["checkpoint", "project_structure"],
-            "injection_tokens": {
-                "workspace_state": 100,
-                "memory_index": 50,
-                "project_structure": 0,
-                "recalled_memory": 200,
-                "checkpoint": 0,
+            "injection_dropped": ["project_structure"],
+            "injection_truncated": {},
+            "context_source_allocator": {
+                "name": "priority_allocator",
+                "pool_tokens": 500,
+                "used_tokens": 450,
+                "source_tokens": {
+                    "workspace_state": 100,
+                    "memory_index": 50,
+                    "recalled_memory": 300,
+                },
+            },
+            "context_breakdown": {
+                "sources": [
+                    {"name": "workspace_state", "hard_cap": 3072},
+                    {"name": "memory_index", "hard_cap": 1024},
+                    {"name": "recalled_memory", "hard_cap": 6144},
+                ]
             },
         },
         session_message_count_before=6,
@@ -1114,51 +1208,67 @@ def _turn_3_result_stub(**overrides):
     return TurnResult(**defaults)
 
 
-def test_check_turn_3_injection_drop_passes_when_checkpoint_dropped():
+def test_check_turn_3_source_allocator_passes_when_contract_holds():
     engine = _engine()
-    asserts = engine.check_turn_3_injection_drop(_turn_3_result_stub())
-    assert len(asserts) == 4
+    asserts = engine.check_turn_3_source_allocator(_turn_3_result_stub())
+    assert len(asserts) == 5
     assert all(a.passed for a in asserts), [a for a in asserts if not a.passed]
 
 
-def test_check_turn_3_injection_drop_accepts_checkpoint_zero_tokens():
-    """Assertion 14 accepts either dropped OR zero-tokens-so-never-rendered."""
+def test_check_turn_3_source_allocator_rejects_global_pool_overflow():
     engine = _engine()
     result = _turn_3_result_stub(metadata={
-        "injection_budget": 500,
-        "injection_dropped": ["project_structure"],  # checkpoint NOT dropped
-        "injection_tokens": {
-            "workspace_state": 100, "memory_index": 50,
-            "project_structure": 0, "recalled_memory": 200,
-            "checkpoint": 0,  # zero tokens — never rendered — should still pass
+        "context_source_allocator": {
+            "name": "priority_allocator",
+            "pool_tokens": 500,
+            "used_tokens": 501,
+            "source_tokens": {"workspace_state": 501},
         },
+        "context_breakdown": {
+            "sources": [{"name": "workspace_state", "hard_cap": 3072}]
+        },
+        "injection_truncated": {},
     })
-    asserts = engine.check_turn_3_injection_drop(result)
+    asserts = engine.check_turn_3_source_allocator(result)
     failed = [a for a in asserts if not a.passed]
-    assert not any(a.name == "checkpoint_dropped_or_zero_tokens" for a in failed)
+    assert any(a.name == "source_pool_not_exceeded" for a in failed)
 
 
-def test_check_turn_3_injection_drop_fails_when_recalled_memory_dropped():
+def test_check_turn_3_source_allocator_rejects_partial_or_over_cap_source():
     engine = _engine()
     result = _turn_3_result_stub(metadata={
-        "injection_budget": 500,
-        "injection_dropped": ["checkpoint", "project_structure", "recalled_memory"],
-        "injection_tokens": {"recalled_memory": 0, "checkpoint": 0},
+        "context_source_allocator": {
+            "name": "priority_allocator",
+            "pool_tokens": 1000,
+            "used_tokens": 600,
+            "source_tokens": {"memory_index": 600},
+        },
+        "context_breakdown": {
+            "sources": [{"name": "memory_index", "hard_cap": 512}]
+        },
+        "injection_truncated": {"memory_index": True},
     })
-    asserts = engine.check_turn_3_injection_drop(result)
+    asserts = engine.check_turn_3_source_allocator(result)
     failed = [a for a in asserts if not a.passed]
-    assert any(a.name == "recalled_memory_not_dropped" for a in failed)
+    assert any(a.name == "whole_chunks_respect_source_caps" for a in failed)
 
 
 def _turn_4_result_stub(**overrides):
     defaults = dict(
         turn=4,
         user_prompt="总结",
-        expected_behavior="history_dropped",
+        expected_behavior="history_compacted",
         final_answer="ok",
         metadata={
-            "dropped_messages": 4,
-            "messages_tokens": 1000,
+            "dropped_messages": 0,
+            "context_breakdown": {
+                "compaction": {
+                    "entry_id": "compact-1",
+                    "summary_tokens": 800,
+                    "reason": "budget_exceeded",
+                    "compression_ratio": 0.25,
+                }
+            },
         },
         session_message_count_before=14,
         session_message_count_after=16,
@@ -1205,11 +1315,11 @@ def _pico_stub_with_history():
     return pico
 
 
-def test_check_turn_4_history_drop_passes_when_all_invariants_hold():
+def test_check_turn_4_compaction_passes_when_all_invariants_hold():
     engine = _engine()
     pico = _pico_stub_with_history()
-    asserts = engine.check_turn_4_history_drop(_turn_4_result_stub(), pico)
-    assert len(asserts) == 5
+    asserts = engine.check_turn_4_compaction(_turn_4_result_stub(), pico)
+    assert len(asserts) == 6
     assert all(a.passed for a in asserts), [(a.name, a.actual) for a in asserts if not a.passed]
 
 
@@ -1220,7 +1330,7 @@ def test_check_turn_4_pairing_invariant_catches_orphan_tool_use():
     pico.session = {"messages": [
         {"role": "assistant", "content": [{"type": "tool_use", "id": "orphan_x", "name": "read", "input": {}}], "_pico_meta": {}},
     ]}
-    asserts = engine.check_turn_4_history_drop(_turn_4_result_stub(), pico)
+    asserts = engine.check_turn_4_compaction(_turn_4_result_stub(), pico)
     failed = [a for a in asserts if not a.passed]
     assert any(a.name == "no_orphan_tool_use" for a in failed)
 
@@ -1243,7 +1353,7 @@ def test_check_turn_4_pairing_invariant_requires_immediate_tool_result():
         ]
     }
 
-    assertions = _engine().check_turn_4_history_drop(_turn_4_result_stub(), pico)
+    assertions = _engine().check_turn_4_compaction(_turn_4_result_stub(), pico)
 
     assert any(
         assertion.name == "no_orphan_tool_use" and not assertion.passed
@@ -1252,7 +1362,7 @@ def test_check_turn_4_pairing_invariant_requires_immediate_tool_result():
 
 
 def test_global_pairing_assertion_rejects_a_separated_tool_result(tmp_path):
-    pico = _pico_stub_with_persisted_v3(tmp_path)
+    pico = _pico_stub_with_persisted_tree(tmp_path)
     pico.session["messages"] = [
         {
             "role": "assistant",
@@ -1266,7 +1376,6 @@ def test_global_pairing_assertion_rejects_a_separated_tool_result(tmp_path):
             "_pico_meta": {},
         },
     ]
-    pico.session_path.write_text(json.dumps(pico.session), encoding="utf-8")
 
     assertions = _engine().check_global(
         [_turn_result_stub(action_origins=("native_tool_use",))],
@@ -1280,18 +1389,20 @@ def test_global_pairing_assertion_rejects_a_separated_tool_result(tmp_path):
     )
 
 
-def test_check_turn_4_fails_when_dropped_messages_zero():
+def test_check_turn_4_fails_when_messages_were_silently_dropped():
     engine = _engine()
     pico = _pico_stub_with_history()
-    asserts = engine.check_turn_4_history_drop(_turn_4_result_stub(metadata={"dropped_messages": 0, "messages_tokens": 500}), pico)
+    result = _turn_4_result_stub()
+    result.metadata["dropped_messages"] = 4
+    asserts = engine.check_turn_4_compaction(result, pico)
     failed = [a for a in asserts if not a.passed]
-    assert any(a.name == "dropped_messages_gt_zero" for a in failed)
+    assert any(a.name == "no_silent_history_drop" for a in failed)
 
 
 def _turn_1_result_stub_for_cache(cache_key="k"):
     return _turn_result_stub(
         metadata={
-            "intent": {"name": "recall", "matched_keyword": "上次", "matched_reason": ""},
+            "context_source_allocator": {"name": "priority_allocator"},
             "injection_tokens": {"recalled_memory": 10},
             "recall.error_count": 0,
             "system_prefix_hash": cache_key,
@@ -1313,7 +1424,7 @@ def _turn_5_result_stub(system_prefix_hash="abc", **overrides):
         "system_tokens": 100, "tools_tokens": 50, "messages_count": 12,
         "messages_tokens": 500, "injection_tokens": {}, "injection_truncated": {},
         "injection_dropped": [], "injection_budget": 500,
-        "intent": {"name": "default", "matched_keyword": "", "matched_reason": ""},
+        "context_source_allocator": {"name": "priority_allocator"},
         "recall.error_count": 0, "recall.last_error": "",
         "dropped_messages": 0,
     }
@@ -1404,7 +1515,7 @@ def test_check_global_passes_under_budget(tmp_path):
         ),
         _turn_result_stub(turn=3, usage={"input_tokens": 1200, "output_tokens": 250}, model_turns_this_turn=1),
     ]
-    asserts = engine.check_global(all_results, _pico_stub_with_persisted_v3(tmp_path))
+    asserts = engine.check_global(all_results, _pico_stub_with_persisted_tree(tmp_path))
     assert all(a.passed for a in asserts)
 
 
@@ -1412,7 +1523,7 @@ def test_check_global_passes_under_budget(tmp_path):
 def test_text_provider_global_accepts_text_protocol_action(tmp_path, provider):
     assertions = _engine(provider=provider).check_global(
         [_turn_result_stub(action_origins=("text_protocol",))],
-        _pico_stub_with_persisted_v3(tmp_path),
+        _pico_stub_with_persisted_tree(tmp_path),
     )
 
     action_assertion = next(
@@ -1692,8 +1803,39 @@ def test_provider_wrapper_blocks_payload_leak_before_delegate():
             "last_user_content": secret,
             "call_ts_ns": wrapper.calls[0]["call_ts_ns"],
             "payload_secret_clean": False,
+            "call_kind": "agent",
+            "completed": False,
+            "usage": {},
+            "transport_attempts": None,
+            "transport_retries": None,
         }
     ]
+
+
+def test_provider_wrapper_marks_and_accounts_for_compaction_call():
+    delegate = MagicMock()
+    delegate.complete.return_value = SimpleNamespace(
+        usage={"input_tokens": 120, "output_tokens": 12}
+    )
+    delegate.last_transport_attempts = 1
+    wrapper = run_live_session._SniffingProviderWrapper(delegate)
+
+    response = wrapper.complete(
+        system=[{"type": "text", "text": "You compact coding-agent history"}],
+        tools=[],
+        messages=[{"role": "user", "content": "history"}],
+        max_tokens=100,
+    )
+
+    assert response is delegate.complete.return_value
+    assert wrapper.calls[0]["call_kind"] == "session_summary"
+    assert wrapper.calls[0]["completed"] is True
+    assert wrapper.calls[0]["usage"] == {
+        "input_tokens": 120,
+        "output_tokens": 12,
+    }
+    assert wrapper.calls[0]["transport_attempts"] == 1
+    assert wrapper.calls[0]["transport_retries"] == 0
 
 
 def test_main_preflight_failure_never_constructs_provider(tmp_path, monkeypatch):
@@ -1835,9 +1977,29 @@ def test_fixture_restoration_is_verified_after_context_exit(tmp_path):
 
     with fixture:
         assert fixture.restoration_status()["restored"] is False
+        assert (tmp_path / run_live_session.TOOL_DIGEST_FIXTURE_REL).is_file()
 
     assert fixture.restoration_status() == {
         "restored": True,
         "cleanup_error_codes": (),
     }
     assert (tmp_path / "pico.toml").read_bytes() == original
+    assert not (tmp_path / run_live_session.TOOL_DIGEST_FIXTURE_REL).exists()
+
+
+def test_fixture_removes_dangling_digest_symlink_on_exit(tmp_path):
+    original = b"ordinary = true\n"
+    (tmp_path / "pico.toml").write_bytes(original)
+    seed = tmp_path / "seed.md"
+    seed.write_text("safe seed\n", encoding="utf-8")
+    fixture = run_live_session.FixtureManager(tmp_path)
+    fixture._seed_source = seed
+
+    fixture.__enter__()
+    digest = tmp_path / run_live_session.TOOL_DIGEST_FIXTURE_REL
+    digest.unlink()
+    digest.symlink_to(tmp_path / "missing-target")
+    fixture.__exit__(None, None, None)
+
+    assert not os.path.lexists(digest)
+    assert fixture.restoration_status()["restored"] is True

@@ -60,6 +60,7 @@ readme_intro_locked/
 !/docs/recovery.md
 !/docs/verification.md
 !/docs/memory.md
+!/docs/context-and-sessions.md
 
 # OS files
 .DS_Store

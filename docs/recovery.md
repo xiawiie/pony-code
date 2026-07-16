@@ -31,13 +31,15 @@ record 或 blob，Staging Recovery 不能冒充 Source Apply rollback，Host Rec
 
 | family | record type | format version |
 | --- | --- | ---: |
-| Session | `session` | 1 |
+| Session Tree header/entry | `session_header` / `session_entry` | 2 |
 | Checkpoint Record | `checkpoint` | 1 |
 | Tool Change Record | `tool_change` | 1 |
 
 type/version 必须精确、version 必须是整数，required fields 必须完整。reader 拒绝错误类型、未知版本、
-duplicate keys、缺失字段和不安全文件，不做读时转换或磁盘改写。run/report/trace 是当前审计 artifact，
-embedded task checkpoint、verification evidence 与 restore preview 不单独版本化。
+duplicate keys、缺失字段和不安全文件。Session inspection 不做转换；显式首次 resume 旧 `.json` 时，
+`SessionStore` 在锁下备份、写 candidate、完整复验并原子发布 JSONL。迁移失败保留旧文件并可幂等重试。
+Checkpoint/Tool Change runtime 仍不做读时转换或磁盘改写。run/report/trace 是当前审计 artifact，embedded
+task checkpoint、verification evidence 与 restore preview 不单独版本化。
 
 旧 OBS 与 Tool Change 数据只由显式事务迁移读取：
 
@@ -72,6 +74,24 @@ pico checkpoints resolve-pending <id> --apply
 restore 使用 snapshot，而不是盲目 reverse patch；当前内容与预期不符时进入 Recovery Review。selective
 restore 只应用被选择且完全可恢复的 file entry。restore 后创建新的 Checkpoint Record，保留 provenance，
 不重写旧记录。
+
+## Session rewind 与 workspace restore
+
+Session Tree rewind 和 Recovery restore 是两个显式层次：
+
+- `/rewind <entry-id>` 只从目标 entry 创建新 Session branch，文件保持不变；
+- `/rewind <checkpoint-id> --workspace` 只接受带 `workspace_checkpoint_id` 的 task checkpoint；
+- paired rewind 固定执行 preview、展示 restore/skip/conflict、一次确认、restore、最后追加 rewind；
+- restore 失败时旧 Session leaf 不变；mid-turn/tool entry 不能用于 workspace rewind；
+- intent journal 绑定 old leaf、target、唯一 operation ID、restore plan digest 与 worktree identity；Recovery
+  audit 同时保存 operation ID 与 digest，用于“文件已恢复但 Session append 崩溃”的精确 resume reconciliation。
+  owner、parent、operation ID 或 digest 任一不匹配时都不得自动认领较新的 restore。
+
+Host 模式恢复 Source Root；Sandbox 模式只恢复当前 active Execution staging。rewind 不触发 Source Apply，
+也不撤销已完成的 Source Apply。Session Header 绑定 exact Git worktree；sibling worktree 必须用
+`pico session clone ... --to-worktree` 创建清除旧 Recovery、workspace checkpoint 与文件状态，但保留 active
+conversation、summary 和去敏任务目标的新 Session。详见
+[Context、Session 与长会话](context-and-sessions.md)。
 
 Sandbox Session 结束时先关闭 mutation并持久化 immutable final manifest、redacted diff与tree digest。后续tree
 变化时禁止重新生成可apply的diff，只允许discard。Source Apply使用独立授权、source baseline CAS、durable

@@ -73,15 +73,26 @@ def load_scenarios(filter_id: str | None = None, scenario_dir: Path = SCENARIO_D
 
 def _setup_note_target(workspace: Path, rel_path: str) -> Path:
     parts = str(rel_path).split("/", 1)
-    if len(parts) != 2 or parts[0] != "workspace":
+    if len(parts) != 2 or parts[0] not in {"workspace", "user"}:
         raise ValueError(f"invalid setup note path: {rel_path}")
+    scope = parts[0]
     sub_path = parts[1]
     if not sub_path or sub_path.startswith("/") or ".." in sub_path.split("/"):
         raise ValueError(f"invalid setup note path: {rel_path}")
     if sub_path == "agent_notes.md":
-        return workspace / ".pico" / "memory" / "agent_notes.md"
+        root = (
+            workspace / ".pico" / "memory"
+            if scope == "workspace"
+            else workspace / ".pico" / "benchmark-user-memory"
+        )
+        return root / "agent_notes.md"
     if sub_path.startswith("notes/") and sub_path.endswith(".md"):
-        return workspace / ".pico" / "memory" / sub_path
+        root = (
+            workspace / ".pico" / "memory"
+            if scope == "workspace"
+            else workspace / ".pico" / "benchmark-user-memory"
+        )
+        return root / sub_path
     raise ValueError(f"invalid setup note path: {rel_path}")
 
 
@@ -111,7 +122,7 @@ def setup_workspace(scenario: dict, parent_dir: Path | None = None) -> Path:
 
 
 _MEMORY_HIT_RE = re.compile(
-    r"^- (?P<path>[a-z]+/[A-Za-z0-9_./-]+) \(score=(?P<score>[0-9.]+)\)"
+    r"^- (?P<path>[a-z]+/[A-Za-z0-9_./#-]+) \(score=(?P<score>[0-9.]+)\)"
 )
 
 
@@ -198,6 +209,18 @@ def _score_no_noise(row: dict, search_events: list[dict]) -> None:
         _mark_fail(row, "unexpected high-scoring memory hit")
 
 
+def _score_absent_hits(row: dict, absent_paths: list[str], search_events: list[dict]) -> None:
+    observed = [
+        hit["path"]
+        for event in search_events
+        for hit in parse_memory_search_hits(event.get("result", ""))
+    ]
+    row["observed_hits"] = list(dict.fromkeys([*row["observed_hits"], *observed]))
+    leaked = [path for path in absent_paths if path in observed]
+    if leaked:
+        _mark_fail(row, "stale or deleted memory was recalled: " + ", ".join(leaked))
+
+
 def _score_memory_save(
     row: dict,
     scenario: dict,
@@ -232,6 +255,7 @@ def score_scenario(scenario: dict, trace_events: list[dict], workspace: Path) ->
     tool_calls = [str(event.get("name", "")) for event in tool_events if event.get("name")]
     row = {
         "id": str(scenario.get("id", "")),
+        "category": str(scenario.get("category", "legacy") or "legacy"),
         "status": "pass",
         "tool_calls": tool_calls,
         "expected_hits": [],
@@ -250,8 +274,20 @@ def score_scenario(scenario: dict, trace_events: list[dict], workspace: Path) ->
         expected_hits_top = turn.get("expected_search_hits_top")
         if expected_hits_top:
             _score_expected_hits(row, [str(path) for path in expected_hits_top], search_events)
+        absent = turn.get("expected_absent_hit")
+        absent_paths = (
+            [str(absent)]
+            if absent
+            else [str(path) for path in turn.get("expected_absent_hits", [])]
+        )
+        if absent_paths:
+            _score_absent_hits(row, absent_paths, search_events)
         if turn.get("expected_tool") == "memory_save":
             _score_memory_save(row, scenario, turn, tool_events, Path(workspace))
+    forbidden = {str(name) for name in scenario.get("forbidden_tools", [])}
+    called_forbidden = sorted(forbidden & set(tool_calls))
+    if called_forbidden:
+        _mark_fail(row, "forbidden tool called: " + ", ".join(called_forbidden))
     return row
 
 
@@ -272,7 +308,13 @@ def _fake_search_query_for_turn(turn: dict) -> str:
 
 def _fake_outputs_for_turn(turn: dict) -> list[str]:
     if turn.get("expected_no_search_hit"):
-        return ["<final>No relevant memory needed.</final>"]
+        return [
+            _tool_call(
+                "memory_search",
+                {"query": str(turn.get("user", "")), "limit": 5},
+            ),
+            "<final>No relevant memory found.</final>",
+        ]
     if turn.get("expected_tool") == "memory_save":
         return [
             _tool_call("memory_save", {"note": _expected_note_from_turn(turn)}),
@@ -305,8 +347,8 @@ def _build_agent(workspace: Path, model_client) -> Pico:
         session_store=SessionStore(str(workspace / ".pico" / "sessions")),
         approval_policy="never",
         max_steps=8,
-        max_new_tokens=512,
-        depth=1,
+        max_output_tokens=512,
+        depth=0,
     )
     agent.memory_store = BlockStore(
         workspace / ".pico" / "memory",
@@ -372,6 +414,7 @@ def run_scenario(scenario_name: str, scenario: dict, keep: bool, mode: str, prov
     except Exception as exc:
         row = {
             "id": str(scenario.get("id", "")),
+            "category": str(scenario.get("category", "legacy") or "legacy"),
             "status": "fail",
             "tool_calls": [],
             "expected_hits": [],
@@ -391,11 +434,22 @@ def summarize_rows(rows: list[dict]) -> dict:
     total = len(rows)
     passed = sum(1 for row in rows if row.get("status") == "pass")
     failed = total - passed
+    categories = {}
+    for category in sorted({str(row.get("category", "legacy")) for row in rows}):
+        category_rows = [row for row in rows if row.get("category", "legacy") == category]
+        category_passed = sum(row.get("status") == "pass" for row in category_rows)
+        categories[category] = {
+            "total": len(category_rows),
+            "passed": category_passed,
+            "failed": len(category_rows) - category_passed,
+            "pass_rate": category_passed / len(category_rows),
+        }
     return {
         "total": total,
         "passed": passed,
         "failed": failed,
         "pass_rate": passed / total if total else 0.0,
+        "by_category": categories,
     }
 
 

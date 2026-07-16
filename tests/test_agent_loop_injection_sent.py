@@ -8,6 +8,7 @@ This end-to-end check sniffs the provider payload.
 
 import json
 
+from pico.context.renderer import InjectionSnapshot, InjectionSource
 from pico.providers.response import Response, StopReason
 from pico.runtime import Pico
 from pico.session_store import SessionStore
@@ -140,11 +141,9 @@ def test_tool_created_summary_appears_next_top_level_turn_not_current_turn(tmp_p
         )
         for call in provider.calls
     ]
-    marker = "Recent working file summaries:"
-    assert marker not in current_users[0]
-    assert marker not in current_users[1]
-    assert marker in current_users[2]
-    assert "README.md -> 1: demo" in current_users[2]
+    assert "- README.md: 1: demo" not in current_users[0]
+    assert "- README.md: 1: demo" not in current_users[1]
+    assert "- README.md: 1: demo" in current_users[2]
 
 
 def test_one_snapshot_survives_retry_and_tool_step_while_feedback_is_one_shot(
@@ -153,24 +152,38 @@ def test_one_snapshot_survives_retry_and_tool_step_while_feedback_is_one_shot(
 ):
     render_calls = []
 
-    def frozen_render(agent, user_message):
+    def frozen_snapshot(agent, user_message, runtime_feedback="", render_fn=None):
+        del agent, runtime_feedback, render_fn
         render_calls.append(user_message)
-        return (
-            "<system-reminder><pico:memory_index>SNAPSHOT</pico:memory_index></system-reminder>\n"
-            + user_message,
-            {
-                "intent": {"name": "default", "matched_keyword": "", "matched_reason": "test"},
-                "injection_tokens": {"memory_index": 1},
-                "injection_truncated": {},
-                "injection_dropped": [],
-                "injection_budget": 100,
-            },
+        source = InjectionSource(
+            name="memory_index",
+            required=False,
+            text=(
+                "<system-reminder><pico:memory_index>"
+                "SNAPSHOT</pico:memory_index></system-reminder>"
+            ),
+            token_count=1,
+            status="included",
+            reason_code="test",
+            hard_cap=1_024,
+            priority=2,
         )
+        return InjectionSnapshot(
+            current_user=user_message,
+            runtime_feedback="",
+            allocator_name="priority_allocator",
+            sources=(source,),
+        ), {
+            "context_source_allocator": {"pool_tokens": 100},
+            "injection_tokens": {"memory_index": 1},
+            "injection_truncated": {},
+            "injection_dropped": [],
+            "injection_budget": 100,
+        }
 
     monkeypatch.setattr(
-        "pico.agent_loop.render_current_user_message",
-        frozen_render,
-        raising=False,
+        "pico.agent_loop.build_injection_snapshot",
+        frozen_snapshot,
     )
     provider = _SniffProvider([
         Response(

@@ -2,6 +2,7 @@
 
 from contextlib import contextmanager
 import signal
+import shlex
 import sys
 import threading
 from pathlib import Path
@@ -20,6 +21,123 @@ def _safe_text(agent, value):
 def _interrupt_exit_code(exc):
     signal_number = getattr(exc, "signal_number", None)
     return 128 + signal_number if type(signal_number) is int else 130
+
+
+def _print_session_tree(agent):
+    tree = agent.session_store.load_tree(agent.session["id"])
+    active = {entry["id"] for entry in tree.active_path}
+    print(f"active leaf: {tree.leaf_id or '-'}")
+    for entry in tree.entries:
+        marker = "*" if entry["id"] in active else " "
+        print(f"{marker} {entry['id']} {entry['type']} parent={entry['parent_id'] or '-'}")
+
+
+def _rewind_options(tokens):
+    workspace = False
+    confirmed = False
+    summary = False
+    focus = ""
+    for token in tokens:
+        if token == "--workspace":
+            workspace = True
+        elif token == "--yes":
+            confirmed = True
+        elif token == "--summary":
+            summary = True
+        elif token.startswith("--summary="):
+            summary = True
+            focus = token.partition("=")[2]
+        else:
+            raise ValueError(f"unknown rewind option: {token}")
+    return workspace, confirmed, summary, focus
+
+
+def _print_workspace_rewind_preview(preview):
+    counts = preview.get("decision_counts", {})
+    rendered = ", ".join(
+        f"{name}={count}" for name, count in sorted(counts.items())
+    )
+    print(f"workspace restore plan: {preview.get('status', 'invalid')}")
+    print(f"checkpoint: {preview.get('workspace_checkpoint_id', '-')}")
+    print(f"entries: {rendered or 'none'}")
+    for entry in preview.get("entries", []):
+        print(
+            f"- {entry.get('decision', 'unknown')}: "
+            f"{entry.get('path', '-') or '-'} "
+            f"({entry.get('reason', '-') or '-'})"
+        )
+
+
+def _handle_repl_session_command(agent, user_input):
+    try:
+        tokens = shlex.split(user_input)
+    except ValueError as exc:
+        print(f"error: {_safe_text(agent, exc)}")
+        return True
+    command = tokens[0] if tokens else ""
+    try:
+        if command == "/tree" and len(tokens) == 1:
+            _print_session_tree(agent)
+            return True
+        if command == "/compact":
+            result = agent.compact_session(
+                focus=" ".join(tokens[1:]),
+                reason="manual_repl",
+            )
+            print(
+                "compacted: "
+                f"{result.tokens_before} -> {result.tokens_after} tokens "
+                f"({result.compression_ratio:.2%})"
+            )
+            return True
+        if command == "/fork" and len(tokens) == 2:
+            entry = agent.fork_session(tokens[1])
+            print(f"forked at {entry['parent_id']}; leaf={entry['id']}")
+            return True
+        if command == "/checkpoint":
+            checkpoint = agent.create_manual_checkpoint(" ".join(tokens[1:]))
+            print(f"checkpoint: {checkpoint['checkpoint_id']}")
+            return True
+        if command == "/rewind" and len(tokens) >= 2:
+            workspace, confirmed, summary, focus = _rewind_options(tokens[2:])
+            if workspace and not confirmed:
+                preview = agent.preview_workspace_rewind(tokens[1])
+                _print_workspace_rewind_preview(preview)
+                answer = input("restore workspace and rewind session? [y/N] ")
+                if answer.strip().lower() not in {"y", "yes"}:
+                    print("workspace rewind cancelled")
+                    return True
+                confirmed = True
+            result = agent.rewind_session(
+                tokens[1],
+                summary=summary,
+                focus=focus,
+                workspace=workspace,
+                confirmed=confirmed,
+            )
+            entry = result.rewind_entry if summary or workspace else result
+            print(f"rewound to {entry['parent_id']}; leaf={entry['id']}")
+            return True
+        if command == "/clone" and len(tokens) >= 3 and tokens[1] == "--to-worktree":
+            result = agent.session_store.clone_to_worktree(
+                agent.session["id"],
+                tokens[2],
+            )
+            print(
+                f"cloned session {result['session_id']} to {result['workspace_root']}"
+            )
+            return True
+    except (OSError, RuntimeError, ValueError) as exc:
+        print(f"error: {_safe_text(agent, exc)}")
+        return True
+    return command in {
+        "/tree",
+        "/compact",
+        "/checkpoint",
+        "/fork",
+        "/rewind",
+        "/clone",
+    }
 
 
 @contextmanager
@@ -156,14 +274,28 @@ def run_repl(agent):
                 if user_input == "/session":
                     print(agent.session_path)
                     continue
+                if _handle_repl_session_command(agent, user_input):
+                    continue
                 if user_input == "/reset":
                     agent.reset()
                     print("session reset")
                     continue
-                if user_input.startswith("/save"):
-                    note = user_input[len("/save"):].strip()
+                memory_command = next(
+                    (
+                        command
+                        for command in ("/remember", "/save")
+                        if user_input == command
+                        or user_input.startswith(command + " ")
+                    ),
+                    "",
+                )
+                if memory_command:
+                    note = user_input[len(memory_command):].strip()
                     if not note:
-                        print("usage: /save <text>")
+                        print("usage: /remember <text>")
+                        continue
+                    if agent.token_accounting.count_text(note) > 1_024:
+                        print("error: note exceeds 1024 model tokens")
                         continue
                     try:
                         total = agent.memory_store.append_agent_note(scope="workspace", note=note)

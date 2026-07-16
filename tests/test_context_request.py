@@ -4,6 +4,11 @@ from unittest.mock import MagicMock
 
 from pico.context.renderer import render_current_user_message
 from pico.context_manager import ContextManager
+from pico.model_capabilities import (
+    ModelCapabilities,
+    TokenAccounting,
+    build_model_budget,
+)
 
 
 def _make_agent():
@@ -32,6 +37,13 @@ def _make_agent():
     a.memory_store = None
     a.repo_map = None
     a.model_client = MagicMock(count_tokens=lambda t: len(t) // 4)
+    capabilities = ModelCapabilities(128_000, 16_384, "test", "test")
+    a.model_budget = build_model_budget(capabilities)
+    a.token_accounting = TokenAccounting(a.model_client.count_tokens)
+    a.context_config = {"compaction": {"enabled": True}}
+    a.redaction_env = {}
+    a.secret_env_names = ()
+    a.session_store = None
     return a
 
 

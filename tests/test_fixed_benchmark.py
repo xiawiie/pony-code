@@ -172,7 +172,7 @@ def test_run_fixed_benchmark_reports_metadata_and_success_definition(tmp_path):
     assert reproducibility["decoding"] == {
         "temperature": 0.0,
         "top_p": 1.0,
-        "max_new_tokens": 64,
+        "max_output_tokens": 64,
     }
     assert reproducibility["timezone"] == "Asia/Shanghai"
     assert reproducibility["locale"] == "C.UTF-8"
@@ -372,14 +372,31 @@ def test_run_fixed_benchmark_covers_recovery_rows(tmp_path):
         workspace_root=tmp_path / "workspaces",
     )
 
-    context_row = next(item for item in artifact["rows"] if item["id"] == "context_reduction_checkpoint")
+    context_row = next(
+        item
+        for item in artifact["rows"]
+        if item["id"] == "session_compaction_checkpoint"
+    )
 
     trace_path = (tmp_path / "workspaces" / context_row["run_dir_relpath"] / "trace.jsonl").resolve()
     trace_events = [json.loads(line) for line in trace_path.read_text(encoding="utf-8").splitlines()]
 
     assert any(
-        event.get("event") == "checkpoint_created" and event.get("trigger") == "context_reduction"
+        event.get("event") == "checkpoint_created"
+        and event.get("trigger") == "run_finished"
         for event in trace_events
+    )
+    session_path = next(
+        (tmp_path / "workspaces" / context_row["fixture_copy_relpath"] / ".pico" / "sessions").glob("*.jsonl")
+    )
+    session_entries = [
+        json.loads(line)
+        for line in session_path.read_text(encoding="utf-8").splitlines()[1:]
+    ]
+    assert any(
+        entry.get("type") == "compaction"
+        and entry.get("data", {}).get("reason") == "benchmark_setup"
+        for entry in session_entries
     )
 
 

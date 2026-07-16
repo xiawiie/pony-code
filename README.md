@@ -43,10 +43,16 @@ python -m pico repl
 
 唯一 console command 是 `pico`。不带命令时显示帮助；一次性任务必须使用 `pico run`。
 
+长任务默认使用 128k Context Window、16,384-token 输出上限和 Pi-style compaction。REPL 中可以用
+`/tree` 查看 Session Tree、`/compact` 主动压缩、`/checkpoint` 建立任务点、`/rewind` 创建分支；文件恢复只有
+显式 `--workspace` 才会发生。非交互入口使用 `pico session ...`。预算、迁移和完整语义见
+[Context、Session 与长会话](docs/context-and-sessions.md)。
+
 ## 能力与限制
 
 - 支持 DeepSeek、Anthropic-compatible、OpenAI-compatible 与 Ollama transport。
-- Canonical Messages 是唯一会话 transcript；run、trace、checkpoint 和 tool-change 都保留本地证据。
+- Canonical Messages 是唯一 transcript，并以 append-only JSONL Session Tree 保留分支和原始历史；模型只看到
+  active branch 的 summary + recent tail。
 - 文件访问、私有存储、secret redaction、shell policy 和恢复冲突检查是 runtime 边界的一部分。
 - Memory 分为用户维护的 User Notes 和 agent 追加的 Agent Notes。
 - SRT 路线已被 ADR-0040 supersede。目标 Sandbox 只支持用户已安装的 macOS Docker Desktop 或 Linux local
@@ -66,6 +72,7 @@ python -m pico repl
 
 - [领域语言与模块边界](CONTEXT.md)
 - [架构](docs/architecture.md)
+- [Context、Session 与长会话](docs/context-and-sessions.md)
 - [安全](docs/security.md)
 - [恢复](docs/recovery.md)
 - [验证](docs/verification.md)

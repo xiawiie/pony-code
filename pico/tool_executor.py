@@ -35,10 +35,10 @@ from .tools import (
     ApprovedShellExecution,
     _ApprovedShellExecution,
     SensitiveToolError,
+    memory_write_intent,
     sandbox_privilege_denial,
 )
 from .verification import verification_evidence_for_execution
-from .workspace import clip
 
 
 @dataclass(frozen=True)
@@ -650,6 +650,23 @@ def _prepare_non_shell_tool(agent, tool, name, args, effect_class):
     rejection = _validation_rejection(agent, tool, name, args, effect_class)
     if rejection is not None:
         return rejection
+    if name == "memory_save":
+        task_state = getattr(agent, "current_task_state", None)
+        current_user = str(getattr(task_state, "user_request", "") or "")
+        if not memory_write_intent(
+            current_user,
+            delegated=int(getattr(agent, "depth", 0) or 0) > 0,
+        ):
+            return ToolExecutionResult(
+                content="error: memory_write_not_authorized",
+                metadata=_metadata(
+                    "rejected",
+                    effect_class=effect_class,
+                    tool_error_code="memory_write_not_authorized",
+                    security_event_type="memory_write_not_authorized",
+                    risk_level="high",
+                ),
+            )
     if agent.repeated_tool_call(name, args):
         return ToolExecutionResult(
             content=(
@@ -904,7 +921,7 @@ def _invoke_prepared_tool(prepared, execution):
     if prepared["name"] != "run_shell":
         raw_content = prepared["tool"]["run"](prepared["args"])
         execution["runner_completed"] = True
-        execution["content"] = clip(agent.redact_text(raw_content))
+        execution["content"] = str(agent.redact_text(raw_content))
         return
 
     shell_execution = prepared["shell_execution"]
@@ -1010,7 +1027,7 @@ def _invoke_prepared_tool(prepared, execution):
             stderr=shell_result["stderr"],
             redact_text=agent.redact_text,
         )
-    execution["content"] = clip(_format_shell_result(shell_result))
+    execution["content"] = _format_shell_result(shell_result)
     if docker_plan is not None and interrupted is not None:
         raise interrupted
 

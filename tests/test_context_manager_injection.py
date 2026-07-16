@@ -47,9 +47,9 @@ def test_build_request_current_message_contains_injection():
     assert current.strip().endswith("hello")
 
 
-def test_build_request_telemetry_records_intent():
+def test_build_request_telemetry_records_source_allocator():
     _request, metadata = _build_request(_agent(), "上次讨论过什么？")
-    assert metadata["intent"]["name"] == "recall"
+    assert "context_source_allocator" in metadata
     assert "injection_tokens" in metadata
     assert "injection_truncated" in metadata
 
@@ -58,7 +58,7 @@ def test_build_request_pinned_layer_overflow_failloud():
     a = _agent()
     a.prefix = "x" * 200_000  # ~50K tokens (via /4 fallback), well above 20K cap
     a.tools = {}
-    with pytest.raises(RuntimeError, match="SystemTooBig"):
+    with pytest.raises(RuntimeError, match="SystemContextTooLarge"):
         _build_request(a, "hi")
 
 
@@ -85,7 +85,6 @@ def test_build_request_replaces_persisted_current_user_in_request_view():
 
 def test_build_request_tools_tokens_uses_json_serialization():
     """Task A3: tools_tokens must reflect JSON wire size, not Python repr."""
-    import json
     from unittest.mock import MagicMock
 
     a = MagicMock()
@@ -107,5 +106,5 @@ def test_build_request_tools_tokens_uses_json_serialization():
 
     request, metadata = _build_request(a, "hello")
     # Recompute the expected token count against the JSON-serialized tools.
-    expected = max(1, len(json.dumps(request["tools"])) // 4)
+    expected = ContextManager(a).accounting.count_json(request["tools"])
     assert metadata["tools_tokens"] == expected

@@ -606,7 +606,7 @@ class RecoveryManager:
             }
         return "restore", {"reason": "hash_match", "observed_current_hash": observed}
 
-    def apply_restore(self, checkpoint_id):
+    def apply_restore(self, checkpoint_id, *, operation_id="", plan_digest=""):
         with self.store.mutation_lock():
             try:
                 tool_reviews = ToolChangeRecorder(
@@ -618,6 +618,8 @@ class RecoveryManager:
             if tool_reviews or restore_reviews:
                 return self._write_recovery_review_blocked_audit(checkpoint_id)
             plan = self._preview_restore_locked(checkpoint_id)
+            plan["operation_id"] = str(operation_id or "")
+            plan["rewind_plan_digest"] = str(plan_digest or "")
             if plan["status"] in {"invalid", "conflicted", "review_required"}:
                 return self._write_non_mutating_restore_audit(
                     plan, status="blocked"
@@ -747,6 +749,8 @@ class RecoveryManager:
         provenance = {
             "source_checkpoint_id": checkpoint_id,
             "plan_id": plan.get("restore_plan_id", ""),
+            "operation_id": plan.get("operation_id", ""),
+            "rewind_plan_digest": plan.get("rewind_plan_digest", ""),
             "reason": reason,
             "entries": [],
             "restored_paths": [],
@@ -797,6 +801,8 @@ class RecoveryManager:
             restore_provenance={
                 "source_checkpoint_id": checkpoint_id,
                 "plan_id": plan["restore_plan_id"],
+                "operation_id": plan.get("operation_id", ""),
+                "rewind_plan_digest": plan.get("rewind_plan_digest", ""),
                 "entries": intents,
                 "restored_paths": [],
                 "skipped_entries": [],

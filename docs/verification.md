@@ -175,9 +175,72 @@ uv run python benchmarks/memory_quality/run_benchmark.py --mode fake --format te
 uv run python -m benchmarks.perf.bench_request_build
 uv run python -m benchmarks.perf.bench_retrieval
 uv run python -m benchmarks.perf.bench_recall
+uv run python -m benchmarks.perf.bench_session_context
 uv run python -m benchmarks.perf.bench_security_recovery
 uv run python -m benchmarks.perf.bench_sandbox
 ```
+
+Memory fake suite 当前包含 33 个场景，并按 category 单独报告中文、paraphrase、conflicting/stale fact、
+deletion、long notes、prompt injection、false recall、cross-scope、multi-hop 与 explicit write。它验证本地
+retrieval/tool contracts，不替代真实模型质量。2026-07-16 已在当前 dirty worktree 上取得两个 Provider 的
+全绿 live 结果；但报告只绑定 base commit、不能重建未提交 diff，因此仍不是 clean exact-SHA release evidence。
+
+当前 Memory/Context/Session 重构的本机最终证据为：全量 `3062 passed, 2 skipped`；Ruff、compileall 与
+`git diff --check` 通过；Memory fake quality `33/33`；200-turn、50-tool-exchange、两次 compaction、branch、
+rewind 和 resume 的长会话合同通过。该证据验证实现与确定性管线，不替代真实 Provider 语义质量。
+
+`bench_session_context` 是 10,000-entry report-only 门禁，目标为：冷加载 median ≤250 ms、warm append p95
+≤20 ms、compaction 本地规划 p95 ≤100 ms、compacted warm request build p95 ≤50 ms。`bench_recall` 额外报告
+512-note 单 snapshot 的 p95 ≤103 ms、相对 double-scan reference median 至少降低 20%，并记录每 turn scan
+count=1。绝对墙钟值应在同一机器、同一 corpus 下比较。
+
+本轮同机同 corpus 实测：10,000-entry cold load median `226.56 ms`、append p95 `2.93 ms`、compaction 本地
+规划 p95 `36.64 ms`、compacted warm request build p95 `14.05 ms`；512-note shared snapshot median/p95
+`27.78/28.25 ms`，相对 double-scan median 改善 `35.58%`。这些是本机 report-only 数值，不外推到其他机器。
+
+## 真实 Provider 矩阵（2026-07-16）
+
+用户明确授权使用外部私有 env 文件中的 API 配置。测试只通过 Pico 的 bounded/no-follow env reader读取该
+`0600` regular file，并把选定值注入 live 子进程内存；没有复制或输出 key。当前 uv Python 的
+默认 CA store 不能验证目标链，而系统 curl/OpenSSL 可以；live 子进程使用 `certifi.where()` 作为
+`SSL_CERT_FILE`，仍保持完整 TLS 验证，没有使用 unverified context。
+
+| Provider / model | Assertions | Gates | HTTP calls / retry | Input | Output | Cache read | Wall |
+|---|---:|---|---:|---:|---:|---:|---:|
+| DeepSeek / `qwen3.7-max` | 46/46 | B/T/S/P pass | 10 / 0 | 71,805 | 2,619 | 8,947 | 73.4s |
+| Anthropic / `claude-sonnet-4-6` | 41/46 | Behavior fail；T/S/P pass | 9 / 0 | 6,292 | 2,117 | 52,914 | 90.0s |
+| OpenAI / `gpt-5.4` | 46/46 | B/T/S/P pass | 10 / 0 | 99,095 | 6,817 | 0 | 165.5s |
+
+DeepSeek 与 OpenAI 的报告均通过 `load_live_report()` strict schema reader 和统一 release evaluator：
+
+- `benchmarks/live_e2e/results/live-e2e-1784167896030218000.json`
+- `benchmarks/live_e2e/results/live-e2e-1784168594698921000.json`
+
+Anthropic 的五项失败全部来自 turn 2：模型收到指定 fixture prompt，却改为分页读取 `pico/runtime.py`，没有走
+大结果 digest 路径。其 Memory recall、Context allocator、compaction、transport、artifact security、fixture
+restore 均通过。这个结果保留为模型/网关工具路径服从性差异，不由 Pico 偷换 tool input 来制造通过。
+
+三份真实 JSONL Session 的 canonical/active 分离如下：
+
+| Provider | Entries | Canonical messages | Active messages | Compaction before | Summary | Tail | Ratio | Checkpoints |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| DeepSeek | 108 | 104 | 21 | 27,261 | 1,618 | 3,771 | 0.199 | 5 |
+| Anthropic | 107 | 102 | 21 | 30,146 | 1,081 | 3,771 | 0.162 | 5 |
+| OpenAI | 107 | 102 | 21 | 29,717 | 2,863 | 3,771 | 0.224 | 5 |
+
+三个 Session 都只有一次 `budget_exceeded` compaction，并保留 `first_kept_entry_id`；磁盘原始消息没有删除。
+OpenAI Session 的隔离副本已通过 `Pico.from_session()`：exact worktree identity、2,863-token summary、21 条
+active messages和5个 checkpoints 均恢复，canonical message count不变，只追加一个 resume control entry。
+
+真实运行还暴露并关闭了三个共享链路缺陷：Trace projector 丢失 transport evidence；Report v3 terminal reader
+读取旧层级；ToolExecutor 的 legacy 4,000-character clip 使 4,096-token digest 在生产链路不可达。另修复了
+live harness 的当前 raw reference parser 与 dangling-symlink fixture cleanup。相关 focused tests 为
+`205 passed`。
+
+证据边界：每家只有 5 个真实用户 turn；80 条历史是 deterministic fixture，并只触发一次真实 summary调用。
+200-turn/50-tool/two-compaction/branch/rewind 仍是离线合同测试。报告记录 `git_head=500bc9e...`，但当前工作树
+存在未提交重构差异且 report v2 没有 source-tree digest；所以这是 current dirty-worktree evidence，不是可由
+base SHA 单独重建的 release evidence。Provider usage/cache 字段的计费语义也不完全一致，不能直接横向推导价格。
 
 `bench_sandbox`只测Docker production image manifest加载、Session inspect，以及1/4/16路并行inventory，输出绑定
 image/policy的未建立baseline结构化provenance。它不启动container，也不冒充D7真实运行；四平台mandatory/soak
@@ -185,13 +248,14 @@ evidence仍由release runner单独产生。
 
 ## 真实 Provider 授权边界
 
-真实 DeepSeek 或 Anthropic E2E 会产生网络请求、token 消耗和费用。只有最终本地全量、build、双平台 CI
-与独立 review 都通过后，才能取得一次新的明确授权并运行一个 Provider；旧授权不能复用，也不运行
-Provider matrix。
+真实 E2E 会产生网络请求、token 消耗和费用，必须取得本轮明确授权并设置请求、attempt、token 与 wall-time
+上限。2026-07-16 的授权覆盖上述三 Provider 串行矩阵；完成两个独立全绿结果后已停止继续产生模型费用。
 
-Live report format v2 只记录 Provider/model、exact Git SHA、固定 caps、每 turn 的行为标签与计数、
+Live report format v2 只记录 Provider/model、base Git HEAD、固定 caps、每 turn 的行为标签与计数、
 assertion name/gate/boolean、usage totals、墙钟时间和固定错误码。不得记录 prompt、answer、raw error、
 assertion raw actual、key、header、request URL 或 response body。fixture 退出并验证恢复后才能写最终报告。
+当前格式不绑定 dirty diff；作为 release evidence 时必须在 clean commit 上重跑，或另行设计并评审受控的
+source-tree digest，不能把 `git_head` 误称为 dirty worktree 的 exact code identity。
 
 四个 gate 必须独立展示：Behavior、Transport/Cost、Credential/Artifact Security、Persistence/Fixture。
 只有四者均为 pass 才能称为“全量通过”。Transport 行应显示 `model attempts N (cap 15)`、HTTP attempts 与

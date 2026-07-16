@@ -343,10 +343,19 @@ def resolve_provider_config(*, explicit=None, project_env=None, process_env=None
 
 
 _PICO_TOML_WARNING = "warning: invalid pico.toml; using defaults"
+_REMOVED_CONTEXT_KEYS = (
+    "history_soft_cap",
+    "history_floor_messages",
+    "injection_budget_ratio",
+)
 
 
 def _positive_int(value, default):
     return value if type(value) is int and value > 0 else default
+
+
+def _nonnegative_int(value, default):
+    return value if type(value) is int and value >= 0 else default
 
 
 def _nonnegative_float(value, default):
@@ -356,12 +365,16 @@ def _nonnegative_float(value, default):
 
 
 def _validated_pico_toml(raw):
+    model = raw.get("model")
+    model = model if isinstance(model, dict) else {}
     policy = raw.get("policy")
     policy = policy if isinstance(policy, dict) else {}
     context = raw.get("context")
     context = context if isinstance(context, dict) else {}
-    digest = context.get("digest")
-    digest = digest if isinstance(digest, dict) else {}
+    compaction = context.get("compaction")
+    compaction = compaction if isinstance(compaction, dict) else {}
+    tool_results = context.get("tool_results")
+    tool_results = tool_results if isinstance(tool_results, dict) else {}
     memory = raw.get("memory")
     memory = memory if isinstance(memory, dict) else {}
     recall = memory.get("recall")
@@ -383,42 +396,62 @@ def _validated_pico_toml(raw):
     decay = _nonnegative_float(link.get("decay"), 0.4)
     if decay > 1:
         decay = 0.4
+    legacy_total = context.get("total_budget_hard_cap")
+    model_context_explicit = "context_window" in model
+    model_output_explicit = "output_limit" in model
+    configured_context_window = model.get("context_window")
+    if configured_context_window is None and type(legacy_total) is int and legacy_total > 0:
+        configured_context_window = legacy_total
+        model_context_explicit = True
+    enabled = compaction.get("enabled")
+    enabled = enabled if type(enabled) is bool else True
     return {
+        "_meta": {
+            "model_context_explicit": model_context_explicit,
+            "model_output_explicit": model_output_explicit,
+        },
+        "model": {
+            "context_window": _positive_int(configured_context_window, 128000),
+            "output_limit": _positive_int(model.get("output_limit"), 16384),
+        },
         "policy": {
             "max_blob_size": _positive_int(
                 policy.get("max_blob_size"), 8 * 1024 * 1024
             ),
         },
         "context": {
-            "history_soft_cap": _positive_int(
-                context.get("history_soft_cap"), 40000
-            ),
-            "history_floor_messages": _positive_int(
-                context.get("history_floor_messages"), 6
-            ),
-            "injection_budget_ratio": _nonnegative_float(
-                context.get("injection_budget_ratio"), 0.15
-            ),
             "system_tools_hard_cap": _positive_int(
-                context.get("system_tools_hard_cap"), 20000
+                context.get("system_tools_hard_cap"), 24576
             ),
-            "total_budget_hard_cap": _positive_int(
-                context.get("total_budget_hard_cap"), 100000
+            "source_pool_tokens": _positive_int(
+                context.get("source_pool_tokens"), 16384
             ),
-            "digest": {
-                "size_threshold_chars": _positive_int(
-                    digest.get("size_threshold_chars"), 1200
+            "compaction": {
+                "enabled": enabled,
+                "reserve_tokens": _positive_int(
+                    compaction.get("reserve_tokens"), 16384
+                ),
+                "keep_recent_tokens": _positive_int(
+                    compaction.get("keep_recent_tokens"), 20000
+                ),
+            },
+            "tool_results": {
+                "inline_tokens": _positive_int(
+                    tool_results.get("inline_tokens"), 4096
+                ),
+                "digest_tokens": _positive_int(
+                    tool_results.get("digest_tokens"), 512
                 ),
             },
         },
         "memory": {
             "recall": {
                 "min_score": _nonnegative_float(recall.get("min_score"), 0.3),
-                "top_k": _positive_int(recall.get("top_k"), 2),
+                "top_k": _positive_int(recall.get("top_k"), 6),
                 "max_tokens_per_note": _positive_int(
-                    recall.get("max_tokens_per_note"), 400
+                    recall.get("max_tokens_per_note"), 1024
                 ),
-                "skip_recent_turns": _positive_int(
+                "skip_recent_turns": _nonnegative_int(
                     recall.get("skip_recent_turns"), 2
                 ),
             },
@@ -436,6 +469,34 @@ def _validated_pico_toml(raw):
     }
 
 
+def _warn_deprecated_pico_toml(raw):
+    context = raw.get("context") if isinstance(raw, dict) else None
+    if not isinstance(context, dict):
+        return
+    for key in _REMOVED_CONTEXT_KEYS:
+        if key in context:
+            replacement = (
+                "source_pool_tokens"
+                if key == "injection_budget_ratio"
+                else "automatic compaction"
+            )
+            print(
+                f"warning: [context].{key} was removed; use {replacement}",
+                file=sys.stderr,
+            )
+    if "total_budget_hard_cap" in context:
+        print(
+            "warning: [context].total_budget_hard_cap is deprecated; "
+            "migrating it to [model].context_window",
+            file=sys.stderr,
+        )
+    if "digest" in context:
+        print(
+            "warning: [context.digest] was removed; use [context.tool_results] token limits",
+            file=sys.stderr,
+        )
+
+
 def load_pico_toml(workspace_root):
     """Return one complete, validated snapshot of the project TOML config."""
     path = Path(workspace_root) / "pico.toml"
@@ -450,4 +511,5 @@ def load_pico_toml(workspace_root):
     if not isinstance(raw, dict):
         print(_PICO_TOML_WARNING, file=sys.stderr)
         return _validated_pico_toml({})
+    _warn_deprecated_pico_toml(raw)
     return _validated_pico_toml(raw)

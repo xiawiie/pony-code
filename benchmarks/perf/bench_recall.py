@@ -59,7 +59,60 @@ def main():
                     iterations=50,
                 )
                 scenarios.append(result)
-    print(json.dumps({"scenarios": scenarios}, indent=2))
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td).resolve()
+        _populate(root, 512)
+        store = BlockStore(workspace_root=root, user_root=root / "user")
+        ret = Retrieval(store)
+        agent = _make_agent(store, ret, [])
+
+        def shared_snapshot_turn():
+            agent.session["recently_recalled"] = []
+            snapshot = ret.snapshot()
+            # The same object supplies Memory index metadata and recall/link data.
+            len(snapshot.raw_documents)
+            return recall_for_turn(
+                agent,
+                "cache",
+                budget_tokens=6_144,
+                snapshot=snapshot,
+            )
+
+        def double_scan_reference():
+            agent.session["recently_recalled"] = []
+            len(ret.snapshot().raw_documents)
+            return recall_for_turn(agent, "cache", budget_tokens=6_144)
+
+        shared = bench(
+            "memory/turn/512/shared_snapshot",
+            shared_snapshot_turn,
+            iterations=30,
+        )
+        reference = bench(
+            "memory/turn/512/double_scan_reference",
+            double_scan_reference,
+            iterations=30,
+        )
+        scenarios.extend((shared, reference))
+        improvement = 1.0 - shared["median_ns"] / max(1, reference["median_ns"])
+    print(
+        json.dumps(
+            {
+                "suite": "memory-recall-performance-report-only",
+                "scenarios": scenarios,
+                "snapshot_512": {
+                    "scan_count_per_turn": 1,
+                    "p95_target_ns": 103_000_000,
+                    "p95_within_target": shared["p95_ns"] <= 103_000_000,
+                    "median_improvement_ratio": improvement,
+                    "median_improvement_target": 0.20,
+                    "median_improvement_within_target": improvement >= 0.20,
+                },
+            },
+            indent=2,
+        )
+    )
 
 
 if __name__ == "__main__":

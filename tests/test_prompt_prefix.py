@@ -24,17 +24,20 @@ def test_tool_signature_is_stable_across_registry_insertion_order(tmp_path):
     assert tool_signature(tools) == tool_signature(reordered)
 
 
-def test_build_prompt_prefix_renders_tools_and_workspace_metadata(tmp_path):
+def test_build_prompt_prefix_keeps_schemas_and_ordinary_docs_out_of_system(tmp_path):
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
+    (tmp_path / "AGENTS.md").write_text("Always run focused tests.\n", encoding="utf-8")
     workspace = WorkspaceContext.build(tmp_path)
     tools = build_tool_registry(_Agent(tmp_path))
 
     prefix = build_prompt_prefix(workspace=workspace, tools=tools, built_at="2026-06-02T00:00:00+08:00")
 
     assert "You are pico" in prefix.text
-    assert "Tools:" in prefix.text
-    assert "- read_file(" in prefix.text
-    assert "Workspace:" in prefix.text
+    assert "Available native tools:" in prefix.text
+    assert "read_file" in prefix.text
+    assert "Always run focused tests." in prefix.text
+    assert "demo" not in prefix.text
+    assert "path: str" not in prefix.text
     assert prefix.hash
     assert prefix.workspace_fingerprint == workspace.fingerprint()
     assert prefix.tool_signature == tool_signature(tools)

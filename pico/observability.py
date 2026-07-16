@@ -44,12 +44,13 @@ _TRACE_COUNT_FIELDS = {
     "tool_steps", "input_tokens", "output_tokens", "total_tokens", "cached_tokens",
     "changed_files", "stdout_bytes", "stderr_bytes",
 }
-_TRACE_OPTIONAL_COUNT_FIELDS = {"transport_attempts"}
+_TRACE_OPTIONAL_COUNT_FIELDS = {"transport_attempts", "transport_retries"}
 _TRACE_BOOL_FIELDS = {
     "cache_hit", "runner_executed", "read_only", "approval_required", "approved",
     "denied", "workspace_changed", "recovery_review_required",
     "target_started", "timed_out", "residue_detected", "container_created",
     "stdout_truncated", "stderr_truncated",
+    "transport_evidence_complete",
 }
 _TRACE_STRING_LIST_FIELDS = {"fields", "finalization_errors", "affected_paths"}
 _TRACE_LIST_FIELDS = {"diff_summary"}

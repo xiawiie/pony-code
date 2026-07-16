@@ -20,14 +20,18 @@ class _SniffProvider:
 
 
 def test_full_turn_injects_recall_and_digests_large_tool_result(tmp_path):
+    (tmp_path / "pico.toml").write_text(
+        "[context.tool_results]\ninline_tokens = 100\ndigest_tokens = 128\n",
+        encoding="utf-8",
+    )
     # Seed a memory note that should match "cache".
     (tmp_path / ".pico" / "memory" / "notes").mkdir(parents=True)
     (tmp_path / ".pico" / "memory" / "notes" / "cache.md").write_text(
         "---\nname: cache\ntype: reference\ndescription: cache invariant\n---\nCache stays stable across turns.\n",
         encoding="utf-8",
     )
-    # A big README so read_file returns > 1200 chars.
-    (tmp_path / "README.md").write_text("readme line\n" * 500, encoding="utf-8")
+    # A big README so the bounded read still exceeds this test's 100-token cap.
+    (tmp_path / "README.md").write_text("readme line\n" * 5000, encoding="utf-8")
 
     provider = _SniffProvider([
         # Turn 1: model asks read_file.
@@ -57,8 +61,8 @@ def test_full_turn_injects_recall_and_digests_large_tool_result(tmp_path):
     assert "<pico:recalled_memory" in turn1_user_content
     assert "cache" in turn1_user_content.lower()
 
-    # Turn 2: canonical messages contain the tool_result. Because the raw README > 1200
-    # chars, digest_applied=True → content is the short [digest] rendering.
+    # Turn 2: canonical messages contain the tool_result. Because the raw README exceeds
+    # the token-based inline cap, content is the short [digest] rendering.
     turn2_msgs = provider.calls[1]["messages"]
     tool_result_msgs = [
         m for m in turn2_msgs
@@ -73,24 +77,14 @@ def test_full_turn_injects_recall_and_digests_large_tool_result(tmp_path):
     assert pico.session.get("_recall_errors", {}).get("count", 0) == 0
 
 
-def test_history_budget_triggers_drop(tmp_path):
-    """A session with many pre-existing messages + a tight soft_cap should drop old turns."""
-    # Populate pico.toml so context_config picks up a tight soft_cap.
-    (tmp_path / "pico.toml").write_text(
-        "[context]\nhistory_soft_cap = 500\nhistory_floor_messages = 4\n",
-        encoding="utf-8",
-    )
-
+def test_history_is_never_silently_dropped(tmp_path):
+    """History below the request limit remains intact; compaction is the only exit."""
     provider = _SniffProvider([
         Response(stop_reason=StopReason.END_TURN, content=[{"type": "text", "text": "done"}], usage={}),
     ])
     workspace = WorkspaceContext.build(tmp_path)
     store = SessionStore(tmp_path / ".pico" / "sessions")
     pico = Pico(model_client=provider, workspace=workspace, session_store=store, max_steps=3)
-
-    # Sanity: pico.toml overrides actually reached context_config.
-    assert pico.context_config["history_soft_cap"] == 500
-    assert pico.context_config["history_floor_messages"] == 4
 
     # Prime session with many messages BEFORE calling ask.
     for i in range(30):
@@ -103,10 +97,10 @@ def test_history_budget_triggers_drop(tmp_path):
     pico.ask("new question")
 
     call = provider.calls[0]
-    metadata_dropped = pico.last_request_metadata.get("dropped_messages", 0)
-    assert metadata_dropped > 0, "expected some messages to be dropped under tight cap"
-    # Floor honored: last N ≥ 4 messages preserved.
-    assert len(call["messages"]) >= 4
+    assert pico.last_request_metadata.get("dropped_messages", 0) == 0
+    serialized = repr(call["messages"])
+    assert "old-msg-0" in serialized
+    assert "old-msg-29" in serialized
     # No orphan tool_use blocks (there were none seeded; this is a smoke).
     tool_use_ids = set()
     tool_result_ids = set()

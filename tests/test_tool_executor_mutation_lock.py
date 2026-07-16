@@ -5,6 +5,7 @@ import pytest
 
 from pico import Pico, SessionStore, WorkspaceContext
 from pico.providers.fake import FakeModelClient
+from pico.task_state import TaskState
 
 
 def build_agent(tmp_path):
@@ -93,6 +94,10 @@ def test_memory_write_uses_same_mutation_lock(tmp_path, monkeypatch):
             events.append("exit")
 
     monkeypatch.setattr(agent.checkpoint_store, "mutation_lock", lock)
+    agent.current_task_state = TaskState.create(
+        task_id="remember",
+        user_request="remember this safe local note",
+    )
     agent.execute_tool(
         "memory_save", {"note": "safe local note"}
     )

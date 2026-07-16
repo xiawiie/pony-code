@@ -6,6 +6,7 @@ from unittest.mock import Mock
 import pytest
 
 from pico import Pico, SessionStore, WorkspaceContext
+from pico.agent_loop import _prepare_tool_result
 from pico.providers.fake import FakeModelClient
 import pico.tool_executor as tool_executor_module
 from pico.memory.tools import tool_memory_list, tool_memory_search
@@ -59,6 +60,29 @@ def test_tool_executor_returns_content_and_metadata_without_side_channel(tmp_pat
     assert result.metadata["effect_class"] == "read_only"
     assert result.metadata["read_only"] is True
     assert result.metadata["workspace_changed"] is False
+
+
+def test_large_tool_result_reaches_token_digest_without_character_clip(tmp_path):
+    body = "\n".join(f"value_{index} = 'cache invariant'" for index in range(2_000))
+    (tmp_path / "large.py").write_text(body, encoding="utf-8")
+    agent = build_agent(tmp_path)
+    agent.current_run_dir = tmp_path / ".pico" / "runs" / "digest"
+    agent.current_run_dir.mkdir(parents=True)
+
+    result = ToolExecutor(agent).execute(
+        "read_file",
+        {"path": "large.py", "start": 1, "end": 2_000},
+    )
+    content, metadata = _prepare_tool_result(
+        agent,
+        content=result.content,
+        tool_name="read_file",
+        tool_args={"path": "large.py", "start": 1, "end": 2_000},
+    )
+
+    assert len(result.content) > 4_000
+    assert metadata["digest_applied"] is True
+    assert content.startswith("[digest]")
 
 
 def test_effect_class_table_is_explicit():
@@ -245,6 +269,58 @@ def test_memory_write_is_audited_without_workspace_snapshot_or_recovery_checkpoi
     assert agent.current_task_state.recovery_checkpoint_id == ""
 
 
+def test_model_cannot_save_memory_without_current_turn_authorization(tmp_path):
+    agent = build_agent(
+        tmp_path,
+        outputs=[
+            '<tool>{"name":"memory_save","args":{"note":"remember this"}}</tool>',
+            "<final>not saved</final>",
+        ],
+    )
+
+    assert agent.ask("explain this code") == "not saved"
+
+    memory_event = next(
+        event
+        for event in read_trace(agent)
+        if event.get("event") == "tool_executed" and event.get("name") == "memory_save"
+    )
+    assert memory_event["tool_status"] == "rejected"
+    assert memory_event["tool_error_code"] == "memory_write_not_authorized"
+    assert not (agent.memory_store.workspace_root / "agent_notes.md").exists()
+
+
+def test_delegated_agent_never_inherits_memory_write_authority(tmp_path):
+    agent = build_agent(tmp_path, depth=1)
+    agent.current_task_state = SimpleNamespace(
+        user_request="remember this",
+        task_id="delegated-memory",
+    )
+    runner = Mock(return_value="must not run")
+    agent.tools["memory_save"]["run"] = runner
+
+    result = agent.execute_tool("memory_save", {"note": "remember this"})
+
+    assert result.metadata["tool_error_code"] == "memory_write_not_authorized"
+    runner.assert_not_called()
+
+
+def test_memory_save_enforces_1024_model_token_cap(tmp_path):
+    agent = build_agent(tmp_path)
+    agent.current_task_state = SimpleNamespace(
+        user_request="请记住：一条较长规则",
+        task_id="authorized-memory",
+    )
+    runner = Mock(return_value="must not run")
+    agent.tools["memory_save"]["run"] = runner
+
+    result = agent.execute_tool("memory_save", {"note": "中" * 1_025})
+
+    assert result.metadata["tool_error_code"] == "invalid_arguments"
+    assert "1024 model tokens" in result.content
+    runner.assert_not_called()
+
+
 def test_runner_keyboard_interrupt_finalizes_pending_change_then_reraises(tmp_path):
     agent = build_agent(tmp_path)
     agent.tools["write_file"]["run"] = lambda args: (_ for _ in ()).throw(KeyboardInterrupt())
@@ -308,6 +384,10 @@ def test_post_runner_interrupt_closes_workspace_change_then_reraises(tmp_path, m
 
 def test_post_runner_interrupt_closes_memory_audit_then_reraises(tmp_path, monkeypatch):
     agent = build_agent(tmp_path)
+    agent.current_task_state = SimpleNamespace(
+        user_request="remember this",
+        task_id="authorized-memory",
+    )
     agent.tools["memory_save"]["run"] = lambda args: "saved"
     monkeypatch.setattr(
         agent,
@@ -430,6 +510,10 @@ def test_post_pending_memory_update_base_exception_closes_change_and_preserves_p
     monkeypatch,
 ):
     agent = build_agent(tmp_path)
+    agent.current_task_state = SimpleNamespace(
+        user_request="remember this",
+        task_id="authorized-memory",
+    )
     primary = FatalToolSignal("memory update stopped")
     agent.tools["memory_save"]["run"] = Mock(return_value="saved")
     monkeypatch.setattr(agent, "update_memory_after_tool", Mock(side_effect=primary))

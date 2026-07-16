@@ -66,7 +66,15 @@ SCRIPTED_MODEL_OUTPUTS = {
         '<tool name="patch_file" path="sample.txt"><old_text>placeholder</old_text><new_text>repeat-guarded</new_text></tool>',
         "<final>Done.</final>",
     ],
-    "context_reduction_checkpoint": [
+    "session_compaction_checkpoint": [
+        "# Goal\nContinue the fixed benchmark after compaction.\n"
+        "# Constraints & Preferences\nPreserve the active tail.\n"
+        "# Progress\n## Done\nOlder benchmark history was summarized.\n"
+        "## In Progress\nFinish the current benchmark task.\n"
+        "## Blocked\nNone.\n# Key Decisions\nUse Session Tree compaction.\n"
+        "# Next Steps\nReturn the benchmark result.\n"
+        "# Critical Context\nREADME.md remains available.\n"
+        "# Files & Errors\nREADME.md; no errors.",
         "<final>Done.</final>",
     ],
     "freshness_reanchor_resume": [
