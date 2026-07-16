@@ -24,6 +24,7 @@ from scripts.docker_sandbox_release import (  # noqa: E402
     validate_artifact as validate_sandbox_vertical_artifact,
 )
 from pico.docker_sandbox import (  # noqa: E402
+    DockerSandboxError,
     default_image_manifest_path,
     load_image_manifest,
 )
@@ -758,6 +759,10 @@ def _provenance(root, suite, provider, system_name, machine_class):
             "image": image.reference,
             "policy": image.policy_digest,
         }
+    except DockerSandboxError as exc:
+        if exc.code != "sandbox_image_not_released":
+            raise
+        sandbox = {"image": "not_released", "policy": "not_released"}
     except (OSError, TypeError, ValueError):
         pass
     provenance = {

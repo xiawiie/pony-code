@@ -363,6 +363,47 @@ def test_core_functional_runs_without_a_performance_baseline(tmp_path):
     assert not any(argv[-1] in dict(evaluate.PERF_RUNNERS) for argv, _cwd in calls)
 
 
+def test_provenance_records_unreleased_sandbox_platform(tmp_path, monkeypatch):
+    def unreleased(_path):
+        raise evaluate.DockerSandboxError("sandbox_image_not_released")
+
+    monkeypatch.setattr(
+        evaluate,
+        "load_image_manifest",
+        unreleased,
+    )
+
+    provenance = evaluate._provenance(
+        tmp_path,
+        "core-functional",
+        None,
+        "linux",
+        "linux-x86_64",
+    )
+
+    assert provenance["sandbox_image_digest"] == "not_released"
+    assert provenance["sandbox_policy_digest"] == "not_released"
+
+
+def test_provenance_rejects_invalid_sandbox_manifest(tmp_path, monkeypatch):
+    def invalid(_path):
+        raise evaluate.DockerSandboxError("sandbox_image_manifest_invalid")
+
+    monkeypatch.setattr(evaluate, "load_image_manifest", invalid)
+
+    with pytest.raises(
+        evaluate.DockerSandboxError,
+        match="sandbox_image_manifest_invalid",
+    ):
+        evaluate._provenance(
+            tmp_path,
+            "core-functional",
+            None,
+            "linux",
+            "linux-x86_64",
+        )
+
+
 def test_logical_suites_split_fast_full_contract_and_real_work():
     assert set(evaluate.SUITES) >= {
         "core-fast",

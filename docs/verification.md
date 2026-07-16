@@ -57,7 +57,7 @@ fail closed；不能 pull image、修改用户 Docker config 或把 Host fallbac
 
 ### DeepSeek-first CLI 硬切证据
 
-- 2026-07-16 集成分支 exact-worktree 离线全量为 `3086 passed`；`uv lock --check`、全仓 Ruff、
+- 2026-07-16 集成分支 exact-worktree 离线全量为 `3088 passed`；`uv lock --check`、全仓 Ruff、
   `git diff --check`、build、clean-install 与 offline-bundle verifier 全部通过。
 - `core-fast`、`core-functional` 与 `sandbox-contract` 聚合评测通过；CI push 对所有分支生效。
 - 原生双轮工具 E2E 覆盖 Anthropic Messages、OpenAI Responses、OpenAI Chat Completions 与 Ollama Chat，场景包括
