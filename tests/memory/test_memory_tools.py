@@ -100,7 +100,7 @@ def test_save_empty_raises(tmp_path):
 def test_save_too_long_raises(tmp_path):
     ctx = _context(tmp_path)
     with pytest.raises(ValueError, match="note exceeds"):
-        tool_memory_save(ctx, {"note": "x" * 501})
+        tool_memory_save(ctx, {"note": "x" * 16_385})
 
 
 def test_save_rejects_secret_content_but_allows_security_prose(tmp_path):

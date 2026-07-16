@@ -29,6 +29,7 @@ import math
 import re
 from collections import Counter
 from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import Iterable
 
 from pico.memory.block_store import BlockStore
@@ -97,15 +98,26 @@ class SearchHit:
 @dataclass(frozen=True)
 class _IndexedDocument:
     path: str
+    source_path: str
     raw: str
     frontmatter: dict
     fields: dict[str, list[str]]
     flat_tokens: list[str]
 
 
+@dataclass(frozen=True)
+class MemoryQuerySnapshot:
+    """One bounded BlockStore scan shared by index, recall, and link expansion."""
+
+    raw_documents: tuple[object, ...]
+    documents: tuple[_IndexedDocument, ...]
+    documents_by_path: object
+
+
 class Retrieval:
     def __init__(self, store: BlockStore, *, config=None):
         self.store = store
+        self._snapshot_cache = None
         # Task B5: allow pico.toml overrides for field boosts + link config.
         # Passing None keeps the module-level constants active for callers
         # that don't wire config yet.
@@ -118,15 +130,48 @@ class Retrieval:
         hits, _documents = self._search_with_documents(query, limit)
         return hits
 
+    def snapshot(self):
+        signature = self.store.snapshot_signature()
+        cached = self._snapshot_cache
+        if (
+            signature is not None
+            and cached is not None
+            and cached[0] == signature
+        ):
+            return cached[1]
+        raw_documents = tuple(self.store._load_documents())
+        documents = tuple(self._index_documents(raw_documents))
+        snapshot = MemoryQuerySnapshot(
+            raw_documents=raw_documents,
+            documents=documents,
+            documents_by_path=MappingProxyType(
+                {document.path: document for document in documents}
+            ),
+        )
+        final_signature = self.store.snapshot_signature()
+        if signature is not None and signature == final_signature:
+            self._snapshot_cache = (final_signature, snapshot)
+        else:
+            self._snapshot_cache = None
+        return snapshot
+
+    def search_snapshot(self, snapshot, query: str, limit: int = 5):
+        if not isinstance(snapshot, MemoryQuerySnapshot):
+            raise TypeError("snapshot must be a MemoryQuerySnapshot")
+        return self._search_indexed(snapshot, query, limit)
+
     def _search_with_documents(self, query: str, limit: int):
+        return self._search_indexed(self.snapshot(), query, limit)
+
+    def _search_indexed(self, snapshot, query: str, limit: int):
         query_tokens = tokenize(query)
         if not query_tokens:
             return [], {}
 
-        docs = self._index_documents(self.store._load_documents())
+        docs = list(snapshot.documents)
         if not docs:
             return [], {}
-        documents_by_path = {document.path: document for document in docs}
+        documents_by_path = snapshot.documents_by_path
 
         # Flat token counts drive avg_doc_len and df — the length normalization
         # remains BM25 standard; only tf accumulation is field-weighted.
@@ -222,22 +267,50 @@ class Retrieval:
             entry_name = document.frontmatter.get("name")
             if entry_name and entry_name in superseded:
                 continue
-            fm, body = parse_frontmatter(document.raw)
-            fields = tokenize_by_field(fm, body if fm else document.raw)
-            flat = []
-            for ftokens in fields.values():
-                flat.extend(ftokens)
-            if flat:
-                docs.append(
-                    _IndexedDocument(
-                        path=document.path,
-                        raw=document.raw,
-                        frontmatter=fm,
-                        fields=fields,
-                        flat_tokens=flat,
+            logical_documents = Retrieval._logical_documents(document)
+            for path, raw, fm, body in logical_documents:
+                fields = tokenize_by_field(fm, body if fm else raw)
+                flat = []
+                for ftokens in fields.values():
+                    flat.extend(ftokens)
+                if flat:
+                    docs.append(
+                        _IndexedDocument(
+                            path=path,
+                            source_path=document.path,
+                            raw=raw,
+                            frontmatter=fm,
+                            fields=fields,
+                            flat_tokens=flat,
+                        )
                     )
-                )
         return docs
+
+    @staticmethod
+    def _logical_documents(document):
+        if not document.path.endswith("/agent_notes.md"):
+            fm, body = parse_frontmatter(document.raw)
+            return [(document.path, document.raw, fm, body)]
+        blocks = []
+        current = []
+        for line in document.raw.splitlines():
+            if re.match(r"^- \d{4}-\d{2}-\d{2}T[^ ]+\s{2}", line) and current:
+                blocks.append("\n".join(current).strip())
+                current = []
+            if line.strip():
+                current.append(line)
+        if current:
+            blocks.append("\n".join(current).strip())
+        return [
+            (
+                f"{document.path}#entry-{index + 1}",
+                block,
+                {"type": "agent_note"},
+                block,
+            )
+            for index, block in enumerate(blocks)
+            if block
+        ]
 
     def _bm25_field_score(
         self,

@@ -1,5 +1,7 @@
 """Command handlers for Pico's explicit CLI Surface."""
 
+from copy import copy
+
 from pathlib import Path
 
 from . import security as securitylib
@@ -54,7 +56,7 @@ Available Commands:
   config       Configuration inspection and set-secret input
   runs         Run artifact inspection
   sessions     Session inspection
-  session      Canonical session invariant inspector
+  session      Inspect, compact, branch, rewind, label, or clone a Session Tree
   checkpoints  Checkpoint recovery, pending review, and resolution
   migrate      Inspect and apply explicit artifact migrations
   memory       Inspect and search memory files
@@ -78,15 +80,21 @@ def handle_help(tokens):
 
 
 def handle_session(tokens, root, args):
-    """`pico session {inspect} <session_id>`.
-
-    Static, read-only inspector for the canonical message invariant.
-    """
+    """``pico session ...`` tree inspection and explicit session operations."""
     sessions_root = Path(root) / ".pico" / "sessions"
+
+    def build_resumed_agent(session_id):
+        from .cli import build_agent
+
+        runtime_args = copy(args)
+        runtime_args.resume = session_id
+        return build_agent(runtime_args)
+
     return handle_session_command(
         list(tokens),
         sessions_root=sessions_root,
         redactor=build_inspection_redactor(root, args),
+        agent_factory=build_resumed_agent,
     )
 
 

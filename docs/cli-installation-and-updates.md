@@ -65,6 +65,44 @@ OpenAI/Anthropic/DeepSeek 的标准 key 在没有显式 base URL 时只发送到
 其他 relay 必须用 `--base-url`、`PICO_<PROVIDER>_API_BASE` 或对应进程环境变量显式配置；`doctor` 会显示
 `explicit_third_party`、host 和配置来源，但不显示凭证。不要在 URL userinfo、query 或 fragment 中放 secret。
 
+模型和 Context 可显式配置：
+
+```toml
+[model]
+context_window = 128000
+output_limit = 16384
+
+[context]
+system_tools_hard_cap = 24576
+source_pool_tokens = 16384
+
+[context.compaction]
+enabled = true
+reserve_tokens = 16384
+keep_recent_tokens = 20000
+```
+
+CLI 的当前名称是 `--context-window` 和 `--max-output-tokens`。旧 `--max-new-tokens` 只作为带 warning 的迁移
+alias；`history_soft_cap`、`history_floor_messages` 和 `injection_budget_ratio` 已移除。
+
+## Session 与长任务
+
+```bash
+pico session inspect <session-id>
+pico session tree <session-id>
+pico session compact <session-id> [focus]
+pico session checkpoint <session-id> [label]
+pico session fork <session-id> <entry-id>
+pico session rewind <session-id> <entry-or-checkpoint-id> [--summary] [--workspace --yes]
+pico session clone <session-id> --to-worktree <path>
+pico session tail-repair <session-id> --yes
+```
+
+`pico sessions list/show` 是兼容的只读摘要入口；`pico session` 提供 Session Tree 操作。旧 JSON Session 只有
+显式 resume 才自动迁移，inspection 不写磁盘。普通 rewind 不改工作区；`--workspace` 总是先 preview，并且只
+接受合法 task checkpoint。详细预算、compaction、worktree 和 crash reconciliation 见
+[Context、Session 与长会话](context-and-sessions.md)。
+
 ## 更新
 
 源码更新后重新同步锁定环境：

@@ -1,145 +1,195 @@
-"""pico.toml context settings and their runtime consumers."""
+"""New pico.toml model, Context, compaction, and tool-result budgets."""
 
 import pytest
 
+from pico import Pico, SessionStore, WorkspaceContext
+from pico.agent_loop import _prepare_tool_result
 from pico.config import load_pico_toml
+from pico.context.renderer import render_current_user_message
+from pico.context_manager import SystemContextTooLarge
+from pico.model_capabilities import TokenAccounting
+from pico.providers.fake import FakeModelClient
 
 
-def _context(root):
-    return load_pico_toml(root)["context"]
+def _config(root):
+    return load_pico_toml(root)
 
 
-def test_history_soft_cap_default(tmp_path):
-    assert _context(tmp_path)["history_soft_cap"] == 40000
+def test_model_and_context_defaults(tmp_path):
+    config = _config(tmp_path)
+
+    assert config["model"] == {
+        "context_window": 128_000,
+        "output_limit": 16_384,
+    }
+    assert config["context"] == {
+        "system_tools_hard_cap": 24_576,
+        "source_pool_tokens": 16_384,
+        "compaction": {
+            "enabled": True,
+            "reserve_tokens": 16_384,
+            "keep_recent_tokens": 20_000,
+        },
+        "tool_results": {"inline_tokens": 4_096, "digest_tokens": 512},
+    }
 
 
-def test_history_soft_cap_override(tmp_path):
+def test_new_budget_overrides(tmp_path):
     (tmp_path / "pico.toml").write_text(
-        "[context]\nhistory_soft_cap = 12345\n", encoding="utf-8"
+        """
+[model]
+context_window = 272000
+output_limit = 24000
+
+[context]
+system_tools_hard_cap = 30000
+source_pool_tokens = 18000
+
+[context.compaction]
+enabled = false
+reserve_tokens = 32000
+keep_recent_tokens = 24000
+
+[context.tool_results]
+inline_tokens = 2048
+digest_tokens = 384
+""",
+        encoding="utf-8",
     )
-    assert _context(tmp_path)["history_soft_cap"] == 12345
+
+    config = _config(tmp_path)
+
+    assert config["model"] == {
+        "context_window": 272_000,
+        "output_limit": 24_000,
+    }
+    assert config["context"]["system_tools_hard_cap"] == 30_000
+    assert config["context"]["source_pool_tokens"] == 18_000
+    assert config["context"]["compaction"] == {
+        "enabled": False,
+        "reserve_tokens": 32_000,
+        "keep_recent_tokens": 24_000,
+    }
+    assert config["context"]["tool_results"] == {
+        "inline_tokens": 2_048,
+        "digest_tokens": 384,
+    }
 
 
-def test_history_floor_default(tmp_path):
-    assert _context(tmp_path)["history_floor_messages"] == 6
-
-
-def test_history_floor_override(tmp_path):
+def test_removed_context_fields_warn_and_do_not_survive(tmp_path, capsys):
     (tmp_path / "pico.toml").write_text(
-        "[context]\nhistory_floor_messages = 10\n", encoding="utf-8"
+        """
+[context]
+history_soft_cap = 12345
+history_floor_messages = 4
+injection_budget_ratio = 0.2
+""",
+        encoding="utf-8",
     )
-    assert _context(tmp_path)["history_floor_messages"] == 10
+
+    context = _config(tmp_path)["context"]
+    warnings = capsys.readouterr().err
+
+    assert "history_soft_cap" not in context
+    assert "history_floor_messages" not in context
+    assert "injection_budget_ratio" not in context
+    assert "automatic compaction" in warnings
+    assert "source_pool_tokens" in warnings
 
 
-def test_injection_budget_ratio_default(tmp_path):
-    assert _context(tmp_path)["injection_budget_ratio"] == pytest.approx(0.15)
-
-
-def test_injection_budget_ratio_override(tmp_path):
+def test_legacy_total_budget_maps_to_model_context_window(tmp_path, capsys):
     (tmp_path / "pico.toml").write_text(
-        "[context]\ninjection_budget_ratio = 0.25\n", encoding="utf-8"
+        "[context]\ntotal_budget_hard_cap = 50000\n",
+        encoding="utf-8",
     )
-    assert _context(tmp_path)["injection_budget_ratio"] == pytest.approx(0.25)
+
+    config = _config(tmp_path)
+
+    assert config["model"]["context_window"] == 50_000
+    assert "deprecated" in capsys.readouterr().err
 
 
-def test_system_tools_hard_cap_default(tmp_path):
-    assert _context(tmp_path)["system_tools_hard_cap"] == 20000
-
-
-def test_system_tools_hard_cap_override(tmp_path):
+def test_explicit_model_context_wins_over_legacy_total(tmp_path):
     (tmp_path / "pico.toml").write_text(
-        "[context]\nsystem_tools_hard_cap = 30000\n", encoding="utf-8"
+        "[model]\ncontext_window = 128000\n"
+        "[context]\ntotal_budget_hard_cap = 50000\n",
+        encoding="utf-8",
     )
-    assert _context(tmp_path)["system_tools_hard_cap"] == 30000
+
+    assert _config(tmp_path)["model"]["context_window"] == 128_000
 
 
-def test_total_budget_hard_cap_default(tmp_path):
-    assert _context(tmp_path)["total_budget_hard_cap"] == 100000
-
-
-def test_total_budget_hard_cap_override(tmp_path):
+def test_invalid_budget_types_fall_back_independently(tmp_path):
     (tmp_path / "pico.toml").write_text(
-        "[context]\ntotal_budget_hard_cap = 50000\n", encoding="utf-8"
+        """
+[model]
+context_window = "large"
+output_limit = -1
+[context]
+source_pool_tokens = true
+[context.tool_results]
+inline_tokens = 0
+digest_tokens = 256
+""",
+        encoding="utf-8",
     )
-    assert _context(tmp_path)["total_budget_hard_cap"] == 50000
+
+    config = _config(tmp_path)
+
+    assert config["model"] == {
+        "context_window": 128_000,
+        "output_limit": 16_384,
+    }
+    assert config["context"]["source_pool_tokens"] == 16_384
+    assert config["context"]["tool_results"] == {
+        "inline_tokens": 4_096,
+        "digest_tokens": 256,
+    }
 
 
-def test_bad_type_falls_back_to_default(tmp_path):
-    (tmp_path / "pico.toml").write_text(
-        '[context]\nhistory_soft_cap = "not-an-int"\n', encoding="utf-8"
+def test_prepare_tool_result_uses_token_limits(tmp_path):
+    from types import SimpleNamespace
+
+    agent = SimpleNamespace(
+        current_run_dir=tmp_path / ".pico" / "runs" / "r1",
+        context_config={
+            "tool_results": {"inline_tokens": 20, "digest_tokens": 64}
+        },
+        token_accounting=TokenAccounting(),
+        redact_text=str,
     )
-    # Fallback rather than raise.
-    assert _context(tmp_path)["history_soft_cap"] == 40000
-
-
-def test_digest_size_threshold_default(tmp_path):
-    assert _context(tmp_path)["digest"]["size_threshold_chars"] == 1200
-
-
-def test_digest_size_threshold_override(tmp_path):
-    (tmp_path / "pico.toml").write_text(
-        "[context.digest]\nsize_threshold_chars = 500\n", encoding="utf-8"
-    )
-    assert _context(tmp_path)["digest"]["size_threshold_chars"] == 500
-
-
-def test_prepare_tool_result_uses_config_threshold(tmp_path):
-    """Overriding digest.size_threshold_chars produces a digest display."""
-    from unittest.mock import MagicMock
-
-    from pico.agent_loop import _prepare_tool_result
-
-    a = MagicMock()
-    a.current_run_dir = tmp_path / ".pico" / "runs" / "r1"
-    a.current_run_dir.mkdir(parents=True, exist_ok=True)
-    # Force a small threshold so a 100-char payload triggers digest.
-    a.context_config = {"digest_size_threshold": 50}
+    agent.current_run_dir.mkdir(parents=True)
 
     content, metadata = _prepare_tool_result(
-        a,
-        content="x" * 100,  # over threshold=50
+        agent,
+        content="x" * 100,
         tool_name="read_file",
         tool_args={"path": "a.py"},
     )
+
     assert "[digest]" in content
     assert metadata["digest_applied"] is True
+    assert agent.token_accounting.count_text(content) <= 64
 
 
-def test_build_request_reads_system_tools_hard_cap_from_pico_toml(tmp_path):
-    """Overriding system_tools_hard_cap in pico.toml raises SystemTooBig sooner."""
-    from unittest.mock import MagicMock
-
-    from pico.context.renderer import render_current_user_message
-    from pico.context_manager import ContextManager
-
+def test_system_tools_hard_cap_fails_loudly_instead_of_truncating(tmp_path):
     (tmp_path / "pico.toml").write_text(
-        "[context]\nsystem_tools_hard_cap = 100\n", encoding="utf-8"
+        "[context]\nsystem_tools_hard_cap = 100\n",
+        encoding="utf-8",
     )
+    workspace = WorkspaceContext.build(tmp_path)
+    agent = Pico(
+        FakeModelClient([]),
+        workspace,
+        SessionStore(tmp_path / ".pico" / "sessions"),
+    )
+    agent.session["messages"].append(
+        {"role": "user", "content": "hi", "_pico_meta": {"created_at": "t"}}
+    )
+    snapshot, telemetry = render_current_user_message(agent, "hi")
 
-    a = MagicMock()
-    a.prefix = "x" * 500  # ~125 tokens with /4 fallback -> over 100 cap
-    a.tools = {}
-    a.session = {
-        "messages": [
-            {
-                "role": "user",
-                "content": "hi",
-                "_pico_meta": {"created_at": "2026-07-10T00:00:00+00:00"},
-            }
-        ]
-    }
-    a.workspace = MagicMock()
-    a.workspace.volatile_text = MagicMock(return_value="")
-    a.memory_store = None
-    a.repo_map = None
-    a.render_checkpoint_text = MagicMock(return_value="")
-    a.model_client = MagicMock(count_tokens=lambda t: max(1, len(t) // 4))
-    a.context_config = {"system_tools_hard_cap": 100}
-
-    cm = ContextManager(a)
-    snapshot, telemetry = render_current_user_message(a, "hi")
-    with pytest.raises(RuntimeError, match="SystemTooBig"):
-        cm.build_request(
+    with pytest.raises(SystemContextTooLarge):
+        agent.context_manager.build_request(
             injection_snapshot=snapshot,
             injection_telemetry=telemetry,
             preflight_metadata={},

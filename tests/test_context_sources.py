@@ -1,37 +1,50 @@
-"""Tests for pico.context.sources — per-source renderers that produce
-pre-escaping raw text or None for each injection source."""
+"""Dynamic Context Source candidate generation and shared Memory snapshots."""
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
+
 from pico import Pico, SessionStore, WorkspaceContext
-from pico.providers.fake import FakeModelClient
+from pico.context.renderer import render_current_user_message
 from pico.context.sources import (
-    render_checkpoint,
-    render_memory_index,
+    memory_index_chunks,
+    project_structure_chunks,
+    recalled_memory_chunks,
+    recovery_state_chunks,
     render_project_structure,
     render_workspace_state,
+    task_working_set_chunks,
+    workspace_state_chunks,
 )
-from pico.features.memory import set_file_summary_dict
+from pico.model_capabilities import TokenAccounting
+from pico.providers.fake import FakeModelClient
+from pico.security import SensitiveDataBlockedError
 
 
 def _agent():
-    a = MagicMock()
-    a.workspace = MagicMock()
-    a.workspace.volatile_text = MagicMock(
-        return_value="<workspace_state>\n- branch: main\n</workspace_state>"
+    accounting = TokenAccounting()
+    workspace = MagicMock()
+    workspace.logical_root = ""
+    workspace.repo_root = "/repo"
+    workspace.cwd = "/repo"
+    workspace.default_branch = "main"
+    workspace.project_docs = {}
+    workspace.volatile_text.return_value = "- branch: main\n- status: clean"
+    return SimpleNamespace(
+        workspace=workspace,
+        repo_map=MagicMock(),
+        memory=SimpleNamespace(task_summary="", recent_files=[]),
+        session={"memory": {"file_summaries": {}}},
+        resume_state={},
+        sandbox_session=None,
+        render_checkpoint_text=lambda: "",
+        token_accounting=accounting,
+        model_client=MagicMock(),
     )
-    a.memory_store = MagicMock()
-    file_entry = MagicMock(path="workspace/notes/a.md", size_chars=100, first_line="# A")
-    a.memory_store.list = MagicMock(return_value=[file_entry])
-    a.repo_map = MagicMock()
-    a.repo_map.refresh_if_stale = MagicMock()
-    a.repo_map.top_level_tree = MagicMock(return_value=[{"path": "pico", "file_count": 30}])
-    a.repo_map.language_stats = MagicMock(return_value={"python": 30})
-    a.render_checkpoint_text = MagicMock(return_value="")
-    return a
 
 
-def build_agent(tmp_path):
+def _real_agent(tmp_path):
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
     return Pico(
         model_client=FakeModelClient([]),
@@ -41,172 +54,194 @@ def build_agent(tmp_path):
     )
 
 
-def test_workspace_state_returns_content():
-    out = render_workspace_state(_agent(), budget_tokens=500)
-    assert out is not None
-    assert "branch: main" in out
+def test_workspace_state_produces_ranked_whole_chunks():
+    agent = _agent()
+
+    chunks = workspace_state_chunks(agent, agent.token_accounting)
+
+    assert chunks
+    assert chunks[0].source == "workspace_state"
+    assert chunks[0].key == "workspace-identity"
+    assert "repo_root: /repo" in chunks[0].text
+    assert "branch: main" in chunks[1].text
 
 
-def test_workspace_state_returns_none_when_empty():
-    a = _agent()
-    a.workspace.volatile_text.return_value = ""
-    assert render_workspace_state(a, budget_tokens=500) is None
+def test_workspace_state_returns_empty_on_failure():
+    agent = _agent()
+    agent.workspace.volatile_text.side_effect = RuntimeError("boom")
+
+    assert workspace_state_chunks(agent, agent.token_accounting) == []
 
 
-def test_workspace_state_returns_none_on_exception():
-    a = _agent()
-    a.workspace.volatile_text.side_effect = RuntimeError("boom")
-    assert render_workspace_state(a, budget_tokens=500) is None
+def test_recall_source_security_failure_is_not_treated_as_retrieval_miss(
+    monkeypatch,
+):
+    agent = _agent()
+    monkeypatch.setattr(
+        "pico.context.sources.recall_candidates",
+        MagicMock(side_effect=SensitiveDataBlockedError("blocked recall")),
+    )
 
-
-def test_memory_index_lists_entries():
-    out = render_memory_index(_agent(), budget_tokens=500)
-    assert out is not None
-    assert "workspace/notes/a.md" in out
-
-
-def test_memory_index_returns_none_when_no_store():
-    a = MagicMock()
-    a.memory_store = None
-    assert render_memory_index(a, budget_tokens=500) is None
-
-
-def test_memory_index_returns_none_when_no_entries():
-    a = _agent()
-    a.memory_store.list.return_value = []
-    assert render_memory_index(a, budget_tokens=500) is None
-
-
-def test_memory_index_omits_sensitive_cached_entries_and_recent_files():
-    a = _agent()
-    a.memory_store.list.return_value = [
-        MagicMock(
-            path="workspace/notes/.env",
-            size_chars=100,
-            first_line="opaque-secret",
+    with pytest.raises(SensitiveDataBlockedError, match="blocked recall"):
+        recalled_memory_chunks(
+            agent,
+            agent.token_accounting,
+            "query",
+            MagicMock(),
         )
-    ]
-    a.memory.recent_files = [".env", "src/app.py"]
-    a.session = {
-        "memory": {
-            "file_summaries": {
-                ".env": "opaque-secret",
-                "src/app.py": "safe summary",
-            }
-        }
-    }
-    a.feature_enabled.return_value = True
-
-    text = render_memory_index(a, budget_tokens=500)
-
-    assert ".env" not in text
-    assert "opaque-secret" not in text
-    assert "src/app.py -> safe summary" in text
 
 
-def test_memory_index_renders_recent_summary_without_durable_entries(tmp_path):
-    agent = build_agent(tmp_path)
-    agent.memory.remember_file("README.md")
-    agent._sync_working_memory()
-    set_file_summary_dict(
-        agent.session["memory"]["file_summaries"],
-        "README.md",
-        "project entry point",
-        workspace_root=agent.root,
+def test_workspace_compat_renderer_enforces_token_budget():
+    agent = _agent()
+    agent.workspace.volatile_text.return_value = "\n".join(
+        f"- commit {index}: xxxx" for index in range(200)
     )
 
-    text = render_memory_index(agent, budget_tokens=200)
+    text = render_workspace_state(agent, budget_tokens=100)
 
-    assert "Recent working file summaries:" in text
-    assert "README.md -> project entry point" in text
-
-
-def test_memory_index_omits_working_summaries_when_memory_is_off(tmp_path):
-    agent = build_agent(tmp_path)
-    agent.memory.remember_file("README.md")
-    agent._sync_working_memory()
-    set_file_summary_dict(
-        agent.session["memory"]["file_summaries"],
-        "README.md",
-        "project entry point",
-        workspace_root=agent.root,
-    )
-    agent.feature_flags["memory"] = False
-
-    text = render_memory_index(agent, budget_tokens=200)
-
-    assert text is None or "Recent working file summaries:" not in text
+    assert text is not None
+    assert agent.token_accounting.count_text(text) <= 100
 
 
-def test_memory_index_reserves_working_summary_when_durable_index_overflows(tmp_path):
-    agent = build_agent(tmp_path)
-    agent.memory.remember_file("README.md")
-    agent._sync_working_memory()
-    set_file_summary_dict(
-        agent.session["memory"]["file_summaries"],
-        "README.md",
-        "project entry point",
-        workspace_root=agent.root,
-    )
-    agent.memory_store = MagicMock()
-    agent.memory_store.list.return_value = [
-        MagicMock(path=f"notes/{index}.md", size_chars=1000, first_line="x" * 80)
-        for index in range(30)
-    ]
-
-    text = render_memory_index(agent, budget_tokens=60)
-
-    assert "Recent working file summaries:" in text
-    assert "README.md -> project entry point" in text
-
-
-def test_project_structure_shows_tree():
-    out = render_project_structure(_agent(), budget_tokens=500)
-    assert out is not None
-    assert "pico" in out
-
-
-def test_project_structure_returns_none_when_no_repo_map():
-    a = MagicMock()
-    a.repo_map = None
-    assert render_project_structure(a, budget_tokens=500) is None
-
-
-def test_project_structure_returns_none_when_empty_tree():
-    a = _agent()
-    a.repo_map.top_level_tree.return_value = []
-    assert render_project_structure(a, budget_tokens=500) is None
-
-
-def test_project_structure_omits_sensitive_cached_tree_entries():
-    a = _agent()
-    a.repo_map.top_level_tree.return_value = [
+def test_project_structure_filters_sensitive_paths():
+    agent = _agent()
+    agent.repo_map.top_level_tree.return_value = [
         {"path": ".ssh", "file_count": 2},
         {"path": "src", "file_count": 3},
     ]
+    agent.repo_map.language_stats.return_value = {"python": 3}
 
-    text = render_project_structure(a, budget_tokens=500)
+    chunks = project_structure_chunks(agent, agent.token_accounting)
+    text = "\n".join(chunk.text for chunk in chunks)
 
     assert ".ssh" not in text
     assert "src" in text
+    assert "python=3" in text
+    assert render_project_structure(agent, 500) is not None
 
 
-def test_checkpoint_none_when_empty():
-    assert render_checkpoint(_agent(), budget_tokens=500) is None
+def test_project_structure_empty_without_repo_map():
+    agent = _agent()
+    agent.repo_map = None
+
+    assert project_structure_chunks(agent, agent.token_accounting) == []
 
 
-def test_checkpoint_returns_text_when_present():
-    a = _agent()
-    a.render_checkpoint_text.return_value = "Task checkpoint:\nNext step: continue"
-    out = render_checkpoint(a, budget_tokens=500)
-    assert out is not None
-    assert "Task checkpoint:" in out
+def test_readme_is_dynamic_project_context_not_a_pinned_instruction(tmp_path):
+    (tmp_path / "README.md").write_text("dynamic project overview\n", encoding="utf-8")
+    (tmp_path / "AGENTS.md").write_text("Pinned project rule.\n", encoding="utf-8")
+    agent = Pico(
+        model_client=FakeModelClient([]),
+        workspace=WorkspaceContext.build(tmp_path),
+        session_store=SessionStore(tmp_path / ".pico" / "sessions"),
+        approval_policy="auto",
+    )
+
+    chunks = project_structure_chunks(agent, agent.token_accounting)
+    rendered = "\n".join(chunk.text for chunk in chunks)
+
+    assert "dynamic project overview" in rendered
+    assert "Pinned project rule" not in rendered
+    assert "Pinned project rule" in agent.prefix
+    assert "dynamic project overview" not in agent.prefix
 
 
-def test_source_respects_budget_via_tail_clip():
-    a = _agent()
-    long_state = "\n".join([f"- commit {i}: xxxx" for i in range(200)])
-    a.workspace.volatile_text.return_value = long_state
-    # budget 100 token ≈ 400 char, output should be truncated
-    out = render_workspace_state(a, budget_tokens=100)
-    assert len(out) <= 400 + 20  # small tolerance for the ellipsis
+def test_task_working_set_contains_goal_files_and_required_checkpoint():
+    agent = _agent()
+    agent.memory.task_summary = "finish context allocation"
+    agent.memory.recent_files = ["pico/context/renderer.py"]
+    agent.session["memory"]["file_summaries"] = {
+        "pico/context/renderer.py": "allocator entry point"
+    }
+    agent.session["checkpoints"] = {
+        "current_id": "ckpt-context",
+        "items": {
+            "ckpt-context": {
+                "checkpoint_id": "ckpt-context",
+                "goal": "finish context allocation",
+                "status": "in_progress",
+                "next_steps": ["test"],
+                "key_files": [
+                    {
+                        "path": "pico/context/renderer.py",
+                        "summary": "allocator entry point",
+                    }
+                ],
+            }
+        },
+    }
+
+    chunks = task_working_set_chunks(agent, agent.token_accounting)
+    text = "\n".join(chunk.text for chunk in chunks)
+
+    assert chunks[0].required is True
+    assert "finish context allocation" in text
+    assert "allocator entry point" in text
+    assert "Checkpoint: ckpt-context" in text
+    assert "Next steps: test" in text
+
+
+def test_recovery_context_only_exists_for_actionable_state():
+    agent = _agent()
+    assert recovery_state_chunks(agent, agent.token_accounting) == []
+
+    agent.resume_state = {
+        "status": "workspace-mismatch",
+        "runtime_identity_mismatch_fields": ["workspace_root"],
+    }
+    chunks = recovery_state_chunks(agent, agent.token_accounting)
+
+    assert len(chunks) == 1
+    assert chunks[0].required is True
+    assert "workspace-mismatch" in chunks[0].text
+
+
+def test_memory_index_uses_snapshot_documents_without_rescanning(tmp_path):
+    agent = _real_agent(tmp_path)
+    note = tmp_path / ".pico" / "memory" / "notes" / "cache.md"
+    note.parent.mkdir(parents=True, exist_ok=True)
+    note.write_text(
+        "---\nname: cache\ntype: reference\ndescription: cache invariant\n---\n"
+        "Cache state stays stable.\n",
+        encoding="utf-8",
+    )
+    snapshot = agent.memory_retrieval.snapshot()
+
+    chunks = memory_index_chunks(agent, agent.token_accounting, snapshot)
+
+    assert [chunk.key for chunk in chunks] == ["workspace/notes/cache.md"]
+    assert "cache invariant" in chunks[0].text
+
+
+def test_one_top_level_render_scans_memory_once_for_index_recall_and_links(
+    tmp_path,
+    monkeypatch,
+):
+    agent = _real_agent(tmp_path)
+    notes = tmp_path / ".pico" / "memory" / "notes"
+    notes.mkdir(parents=True, exist_ok=True)
+    (notes / "cache.md").write_text(
+        "---\nname: cache\ntype: reference\ndescription: cache invariant\n---\n"
+        "Cache stays stable. See [[target]].\n",
+        encoding="utf-8",
+    )
+    (notes / "target.md").write_text(
+        "---\nname: target\ntype: reference\ndescription: linked detail\n---\n"
+        "Target cache detail.\n",
+        encoding="utf-8",
+    )
+    real_snapshot = agent.memory_retrieval.snapshot
+    calls = {"count": 0}
+
+    def counting_snapshot():
+        calls["count"] += 1
+        return real_snapshot()
+
+    monkeypatch.setattr(agent.memory_retrieval, "snapshot", counting_snapshot)
+
+    text, telemetry = render_current_user_message(agent, "explain cache")
+
+    assert calls["count"] == 1
+    assert "workspace/notes/cache.md" in text
+    assert "Target cache detail" in text
+    assert telemetry["context_source_allocator"]["memory_snapshot"] == "loaded"

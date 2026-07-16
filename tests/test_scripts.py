@@ -274,8 +274,11 @@ def test_provider_experiment_defaults_allow_reasoning_budget():
 
     args = module.build_arg_parser().parse_args(["--output-json", "out.json"])
 
-    assert args.max_new_tokens == provider_benchmark.DEFAULT_PROVIDER_EXPERIMENT_MAX_NEW_TOKENS
-    assert args.max_new_tokens >= 2048
+    assert (
+        args.max_output_tokens
+        == provider_benchmark.DEFAULT_PROVIDER_EXPERIMENT_MAX_OUTPUT_TOKENS
+    )
+    assert args.max_output_tokens == 16_384
 
 
 def test_provider_experiment_parser_accepts_provider_selector():

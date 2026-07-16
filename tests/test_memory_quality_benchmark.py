@@ -137,6 +137,23 @@ def test_setup_workspace_maps_workspace_notes_to_pico_memory(tmp_path):
     ).read_text(encoding="utf-8") == "- old lesson\n"
 
 
+def test_setup_workspace_maps_user_scope_notes(tmp_path):
+    module = _load_memory_benchmark_module()
+
+    ws = module.setup_workspace(
+        {
+            "id": "user_scope",
+            "setup_notes": {"user/notes/prefs.md": "Prefer grouped reviews.\n"},
+            "session_turns": [],
+        },
+        parent_dir=tmp_path,
+    )
+
+    assert (
+        ws / ".pico" / "benchmark-user-memory" / "notes" / "prefs.md"
+    ).read_text(encoding="utf-8") == "Prefer grouped reviews.\n"
+
+
 def test_parse_memory_search_hits_extracts_paths_and_scores():
     module = _load_memory_benchmark_module()
 
@@ -150,6 +167,13 @@ def test_parse_memory_search_hits_extracts_paths_and_scores():
     assert hits == [
         {"path": "workspace/notes/auth.md", "score": 1.23},
         {"path": "workspace/notes/session.md", "score": 0.75},
+    ]
+
+    logical = module.parse_memory_search_hits(
+        "- workspace/agent_notes.md#entry-4 (score=2.50)\n"
+    )
+    assert logical == [
+        {"path": "workspace/agent_notes.md#entry-4", "score": 2.5}
     ]
 
 
@@ -552,7 +576,7 @@ def test_fake_mode_scores_no_noise_without_memory_search(capsys):
     assert code == 0
     row = payload["rows"][0]
     assert row["status"] == "pass"
-    assert row["tool_calls"] == []
+    assert row["tool_calls"] == ["memory_search"]
     assert row["observed_hits"] == []
 
 
@@ -563,8 +587,30 @@ def test_fake_mode_full_benchmark_outputs_zero_failures(capsys):
 
     payload = json.loads(capsys.readouterr().out)
     assert code == 0
-    assert payload["summary"]["total"] == 9
+    assert payload["summary"]["total"] == 33
     assert payload["summary"]["failed"] == 0
+    assert payload["summary"]["by_category"]["conflicting_fact"]["total"] == 2
+    assert payload["summary"]["by_category"]["false_recall"]["total"] == 3
+    assert payload["summary"]["by_category"]["stale_fact"]["total"] == 2
+
+
+def test_semantic_benchmark_has_required_quality_categories():
+    module = _load_memory_benchmark_module()
+    scenarios = [scenario for _stem, scenario in module.load_scenarios()]
+
+    assert len(scenarios) >= 30
+    assert {
+        "chinese",
+        "paraphrase",
+        "conflicting_fact",
+        "stale_fact",
+        "long_notes",
+        "prompt_injection",
+        "false_recall",
+        "deletion",
+        "cross_scope",
+        "multi_hop",
+    } <= {scenario.get("category") for scenario in scenarios}
 
 
 def test_fake_mode_ignores_user_memory_root(monkeypatch, tmp_path, capsys):
@@ -588,4 +634,7 @@ def test_fake_mode_ignores_user_memory_root(monkeypatch, tmp_path, capsys):
     assert code == 0
     assert payload["summary"]["failed"] == 0
     for row in payload["rows"]:
-        assert not any(path.startswith("user/") for path in row["observed_hits"])
+        assert not any(
+            path.startswith("user/notes/noisy_")
+            for path in row["observed_hits"]
+        )

@@ -1,27 +1,35 @@
+from contextlib import contextmanager
 import json
 import os
-import stat
 from pathlib import Path
-from contextlib import contextmanager
+import stat
 
 import pytest
 
-from pico import security as security_module
 import pico.session_store as session_store_module
-from pico.messages import validate_messages
-from pico.session_store import SessionFormatError, SessionStore
+from pico.messages import make_tool_pair, validate_messages
+from pico.session_store import (
+    LEGACY_SESSION_FORMAT_VERSION,
+    MAX_SESSION_ENTRY_BYTES,
+    SESSION_FORMAT_VERSION,
+    SessionFormatError,
+    SessionStore,
+    SessionTailRepairRequired,
+)
 
 
-def _session(session_id, content="hello"):
+def _session(workspace, session_id, content="hello", *, legacy=False):
     return {
         "record_type": "session",
-        "format_version": 1,
+        "format_version": (
+            LEGACY_SESSION_FORMAT_VERSION if legacy else SESSION_FORMAT_VERSION
+        ),
         "id": session_id,
         "created_at": "2026-01-01T00:00:00+00:00",
-        "workspace_root": "/repo",
+        "workspace_root": str(workspace),
         "messages": [{"role": "user", "content": content, "_pico_meta": {}}],
-        "working_memory": {},
-        "memory": {},
+        "working_memory": {"task_summary": "", "recent_files": []},
+        "memory": {"file_summaries": {}},
         "recently_recalled": [],
         "checkpoints": {},
         "resume_state": {},
@@ -30,66 +38,132 @@ def _session(session_id, content="hello"):
     }
 
 
+def _jsonl(path):
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+
+
 def test_session_store_saves_loads_and_finds_latest_session(tmp_path):
     store = SessionStore(tmp_path / ".pico" / "sessions")
-    first = _session("session_001", "first")
-    second = _session("session_002", "second")
+    first = _session(tmp_path, "session_001", "first")
+    second = _session(tmp_path, "session_002", "second")
 
     first_path = store.save(first)
     second_path = store.save(second)
 
     assert first_path == store.path("session_001")
-    assert json.loads(first_path.read_text(encoding="utf-8"))["id"] == "session_001"
+    assert first_path.suffix == ".jsonl"
+    assert _jsonl(first_path)[0]["record_type"] == "session_header"
     loaded = store.load("session_002")
-    assert loaded["record_type"] == "session"
-    assert loaded["format_version"] == 1
-    assert "history" not in loaded
+    assert loaded["format_version"] == SESSION_FORMAT_VERSION
     assert loaded["messages"] == [
         {"role": "user", "content": "second", "_pico_meta": {}},
     ]
     validate_messages(loaded["messages"], require_meta=True)
     os.utime(first_path, ns=(1, 1))
     os.utime(second_path, ns=(2, 2))
-    assert store.latest() == second_path.stem
+    assert store.latest() == "session_002"
+
+
+def test_new_session_is_header_plus_append_only_entries(tmp_path):
+    store = SessionStore(tmp_path / ".pico" / "sessions")
+    session = _session(tmp_path, "tree")
+    path = store.save(session)
+    original = path.read_bytes()
+
+    session["messages"].append(
+        {"role": "assistant", "content": "done", "_pico_meta": {}}
+    )
+    store.save(session)
+
+    current = path.read_bytes()
+    assert current.startswith(original)
+    rows = _jsonl(path)
+    assert [row["type"] for row in rows[1:]] == [
+        "session_info",
+        "message",
+        "message",
+    ]
+    assert {"working_memory", "memory", "recently_recalled"}.isdisjoint(
+        rows[1]["data"]["set"]
+    )
+    assert store.load("tree") == session
+
+
+def test_tool_call_and_result_are_one_atomic_entry(tmp_path):
+    store = SessionStore(tmp_path / ".pico" / "sessions")
+    session = _session(tmp_path, "tools")
+    store.save(session)
+    assistant, result = make_tool_pair(
+        name="read_file",
+        arguments={"path": "a.py"},
+        tool_use_id="tool-1",
+        result_content="ok",
+        created_at="2026-01-01T00:00:01+00:00",
+        tool_status="ok",
+        effect_class="workspace_read",
+    )
+    session["messages"].extend((assistant, result))
+
+    store.save(session)
+
+    entries = store.entries("tools")
+    exchanges = [entry for entry in entries if entry["type"] == "tool_exchange"]
+    assert len(exchanges) == 1
+    assert exchanges[0]["data"] == {"assistant": assistant, "result": result}
+    assert store.load("tools")["messages"] == session["messages"]
+
+
+def test_fork_selects_parent_path_without_deleting_old_branch(tmp_path):
+    store = SessionStore(tmp_path / ".pico" / "sessions")
+    session = _session(tmp_path, "branch", "one")
+    session["messages"].append(
+        {"role": "assistant", "content": "two", "_pico_meta": {}}
+    )
+    store.save(session)
+    before = store.entries("branch")
+    first_message = next(entry for entry in before if entry["type"] == "message")
+
+    fork_entry = store.fork("branch", first_message["id"])
+    tree = store.load_tree("branch")
+
+    assert fork_entry["parent_id"] == first_message["id"]
+    assert len(tree.entries) == len(before) + 1
+    assert tree.projection["messages"] == [session["messages"][0]]
+    assert any(entry["id"] == before[-1]["id"] for entry in tree.entries)
+
+
+def test_non_prefix_save_creates_new_branch_and_preserves_history(tmp_path):
+    store = SessionStore(tmp_path / ".pico" / "sessions")
+    session = _session(tmp_path, "rewrite", "old")
+    store.save(session)
+    old_ids = {entry["id"] for entry in store.entries("rewrite")}
+    session["messages"] = [
+        {"role": "user", "content": "new", "_pico_meta": {}}
+    ]
+
+    store.save(session)
+
+    tree = store.load_tree("rewrite")
+    assert tree.projection == session
+    assert old_ids < {entry["id"] for entry in tree.entries}
+    assert any(entry["type"] == "rewind" for entry in tree.entries)
 
 
 def test_session_store_latest_is_none_when_empty(tmp_path):
-    store = SessionStore(tmp_path / ".pico" / "sessions")
-
-    assert store.latest() is None
-
-
-def test_session_store_saves_with_atomic_replace(tmp_path, monkeypatch):
-    store = SessionStore(tmp_path / ".pico" / "sessions")
-    replace_calls = []
-    original_replace = security_module.os.replace
-
-    def tracking_replace(source, target, **kwargs):
-        replace_calls.append((Path(source).name, Path(target).name))
-        return original_replace(source, target, **kwargs)
-
-    monkeypatch.setattr(security_module.os, "replace", tracking_replace)
-
-    store.save(_session("session_atomic"))
-
-    assert replace_calls
-    assert replace_calls[-1][1] == "session_atomic.json"
-    assert not list((tmp_path / ".pico" / "sessions").glob("*.tmp"))
+    assert SessionStore(tmp_path / ".pico" / "sessions").latest() is None
 
 
 def test_session_store_save_uses_file_lock(tmp_path, monkeypatch):
     calls = []
 
     @contextmanager
-    def fake_lock(path):
+    def fake_lock(path, **_kwargs):
         calls.append(Path(path).name)
         yield
 
     monkeypatch.setattr(session_store_module.file_lock, "locked_file", fake_lock)
-
     store = SessionStore(tmp_path / ".pico" / "sessions")
-    store.save(_session("session_locked"))
-
+    store.save(_session(tmp_path, "session_locked"))
     assert calls == [".session_store.lock"]
 
 
@@ -100,17 +174,15 @@ def test_session_store_parent_swap_cannot_redirect_record(tmp_path):
     store.root.mkdir()
 
     with pytest.raises(ValueError, match="private root changed"):
-        store.save(_session("redirected"))
+        store.save(_session(tmp_path, "redirected"))
 
-    assert not (store.root / "redirected.json").exists()
-    assert not (original_root / "redirected.json").exists()
+    assert not (store.root / "redirected.jsonl").exists()
+    assert not (original_root / "redirected.jsonl").exists()
 
 
 def test_session_store_uses_private_owner_only_paths(tmp_path):
     store = SessionStore(tmp_path / ".pico" / "sessions")
-
-    path = store.save(_session("private"))
-
+    path = store.save(_session(tmp_path, "private"))
     if os.name == "posix":
         assert stat.S_IMODE(store.root.stat().st_mode) == 0o700
         assert stat.S_IMODE(path.stat().st_mode) == 0o600
@@ -119,16 +191,14 @@ def test_session_store_uses_private_owner_only_paths(tmp_path):
 
 def test_session_store_load_refuses_symlink_file(tmp_path):
     store = SessionStore(tmp_path / ".pico" / "sessions")
-    outside = tmp_path / "outside.json"
-    original = b'{}'
-    outside.write_bytes(original)
+    outside = tmp_path / "outside.jsonl"
+    outside.write_bytes(b"{}\n")
     store.lock_path.touch(mode=0o600)
     store.path("linked").symlink_to(outside)
 
     with pytest.raises(ValueError, match="symlink"):
         store.load("linked")
-
-    assert outside.read_bytes() == original
+    assert outside.read_bytes() == b"{}\n"
 
 
 def test_session_store_load_rejects_oversized_record(tmp_path, monkeypatch):
@@ -137,122 +207,352 @@ def test_session_store_load_rejects_oversized_record(tmp_path, monkeypatch):
     store.lock_path.touch(mode=0o600)
     path = store.path("oversized")
     path.write_bytes(b"x" * 9)
-
     with pytest.raises(ValueError, match="too large"):
         store.load("oversized")
-
     assert path.read_bytes() == b"x" * 9
 
 
-def test_session_store_save_bounds_existing_record_before_backup(
-    tmp_path,
-    monkeypatch,
-):
+def test_incomplete_tail_requires_explicit_repair(tmp_path):
     store = SessionStore(tmp_path / ".pico" / "sessions")
-    session = _session("oversized_existing")
-    rendered = (json.dumps(session, indent=2) + "\n").encode("utf-8")
-    monkeypatch.setattr(session_store_module, "MAX_SESSION_BYTES", len(rendered))
-    path = store.path(session["id"])
-    original = b"x" * (len(rendered) + 1)
-    path.write_bytes(original)
-
-    with pytest.raises(ValueError, match="private file too large"):
-        store.save(session)
-
-    assert path.read_bytes() == original
-    assert not list(store.root.glob(".*.bak"))
-
-
-def test_session_store_save_advances_after_unlinked_backup_wipe_failure(
-    tmp_path,
-    monkeypatch,
-):
-    store = SessionStore(tmp_path / ".pico" / "sessions")
-    session = _session("cleanup_commit", "first")
-    store.save(session)
-    monkeypatch.setattr(
-        security_module.os,
-        "ftruncate",
-        lambda _descriptor, _length: (_ for _ in ()).throw(
-            OSError("open-unlinked wipe failed")
-        ),
-    )
-
-    session["messages"].append(
-        {"role": "user", "content": "second", "_pico_meta": {}}
-    )
-    assert store.save(session) == store.path(session["id"])
-    session["messages"].append(
-        {"role": "user", "content": "third", "_pico_meta": {}}
-    )
-    assert store.save(session) == store.path(session["id"])
-
-    assert store.load(session["id"])["messages"] == session["messages"]
-    assert not list(store.root.glob(".*.bak"))
-
-
-def test_session_store_save_rejects_oversized_record_without_replacing_canonical(
-    tmp_path,
-    monkeypatch,
-):
-    store = SessionStore(tmp_path / ".pico" / "sessions")
-    session = _session("bounded", "ok")
+    session = _session(tmp_path, "tail")
     path = store.save(session)
-    canonical = path.read_bytes()
-    monkeypatch.setattr(session_store_module, "MAX_SESSION_BYTES", len(canonical))
+    original = path.read_bytes()
+    path.write_bytes(original + b'{"record_type":"session_entry"')
 
-    assert store.save(session) == path
-    assert store.load("bounded") == session
+    with pytest.raises(SessionTailRepairRequired):
+        store.load("tail")
+    assert path.read_bytes() != original
 
-    with pytest.raises(ValueError, match="private file too large"):
-        store.save(_session("bounded", "x" * (len(canonical) + 1)))
+    assert store.repair_tail("tail") is True
+    assert path.read_bytes() == original
+    assert store.load("tail") == session
 
-    assert path.read_bytes() == canonical
 
-
-@pytest.mark.parametrize("version", [None, True, 1.0, "1", 2])
-def test_session_store_rejects_non_current_versions_without_rewrite(tmp_path, version):
+def test_session_entry_hard_cap_is_enforced_without_partial_append(
+    tmp_path,
+    monkeypatch,
+):
     store = SessionStore(tmp_path / ".pico" / "sessions")
-    payload = _session("strict")
-    if version is None:
-        payload.pop("format_version")
-    else:
-        payload["format_version"] = version
-    path = store.path("strict")
+    session = _session(tmp_path, "bounded")
+    path = store.save(session)
+    original = path.read_bytes()
+    monkeypatch.setattr(session_store_module, "MAX_SESSION_ENTRY_BYTES", 256)
+    session["messages"].append(
+        {"role": "assistant", "content": "x" * 512, "_pico_meta": {}}
+    )
+    with pytest.raises(ValueError, match="entry too large"):
+        store.save(session)
+    assert path.read_bytes() == original
+
+
+def test_legacy_json_migrates_on_first_load_with_backup(tmp_path):
+    store = SessionStore(tmp_path / ".pico" / "sessions")
+    legacy = _session(tmp_path, "legacy", legacy=True)
     store.lock_path.touch(mode=0o600)
-    path.write_text(json.dumps(payload), encoding="utf-8")
-    before = path.read_bytes()
+    store.legacy_path("legacy").write_text(
+        json.dumps(legacy),
+        encoding="utf-8",
+    )
 
-    with pytest.raises(SessionFormatError, match="format version|fields"):
-        store.load("strict")
+    loaded = store.load("legacy")
 
-    assert path.read_bytes() == before
+    assert loaded == {**legacy, "format_version": SESSION_FORMAT_VERSION}
+    assert store.path("legacy").exists()
+    assert not store.legacy_path("legacy").exists()
+    backups = list((store.root / "legacy-backups").glob("legacy.*.json"))
+    assert len(backups) == 1
+    assert json.loads(backups[0].read_text(encoding="utf-8")) == legacy
+    assert sum(entry["type"] == "migration" for entry in store.entries("legacy")) == 1
+    assert store.load("legacy") == loaded
 
 
-def test_session_store_rejects_nested_duplicate_keys(tmp_path):
+def test_legacy_migration_promotes_working_state_to_task_checkpoint(tmp_path):
     store = SessionStore(tmp_path / ".pico" / "sessions")
-    payload = json.dumps(_session("duplicate")).replace(
+    legacy = _session(tmp_path, "legacy-working", legacy=True)
+    legacy["working_memory"] = {
+        "task_summary": "finish migration",
+        "recent_files": ["src/current.py"],
+    }
+    legacy["memory"] = {
+        "file_summaries": {
+            "src/current.py": "current module",
+            "src/stale.py": "must not migrate",
+        }
+    }
+    store.lock_path.touch(mode=0o600)
+    store.legacy_path("legacy-working").write_text(
+        json.dumps(legacy),
+        encoding="utf-8",
+    )
+
+    loaded = store.load("legacy-working")
+
+    checkpoint_id = loaded["checkpoints"]["current_id"]
+    assert checkpoint_id.startswith("ckpt_migrated_")
+    checkpoint = loaded["checkpoints"]["items"][checkpoint_id]
+    assert checkpoint["goal"] == "finish migration"
+    assert checkpoint["key_files"] == [
+        {
+            "path": "src/current.py",
+            "freshness": {},
+            "summary": "current module",
+        }
+    ]
+    assert checkpoint["workspace_checkpoint_id"] == ""
+    assert loaded["working_memory"] == {
+        "task_summary": "finish migration",
+        "recent_files": ["src/current.py"],
+    }
+    assert loaded["memory"] == {
+        "file_summaries": {"src/current.py": "current module"}
+    }
+    assert any(
+        entry["type"] == "task_checkpoint"
+        and entry["data"]["checkpoint_id"] == checkpoint_id
+        for entry in store.entries("legacy-working")
+    )
+
+
+def test_legacy_migration_promotes_checkpoint_without_overwriting_current_state(
+    tmp_path,
+):
+    store = SessionStore(tmp_path / ".pico" / "sessions")
+    legacy = _session(tmp_path, "legacy-checkpoint", legacy=True)
+    legacy["runtime_identity"] = {
+        "model": "current-model",
+        "feature_flags": {},
+    }
+    legacy["recovery"] = {"current_checkpoint_id": "current-recovery"}
+    legacy["checkpoints"] = {
+        "current_id": "checkpoint-old",
+        "items": {
+            "checkpoint-old": {
+                "checkpoint_id": "checkpoint-old",
+                "created_at": "2026-01-01T00:00:00+00:00",
+                "runtime_identity": {
+                    "model": "old-model",
+                    "feature_flags": {},
+                },
+                "workspace_checkpoint_id": "old-recovery",
+            }
+        },
+    }
+    store.lock_path.touch(mode=0o600)
+    store.legacy_path("legacy-checkpoint").write_text(
+        json.dumps(legacy),
+        encoding="utf-8",
+    )
+
+    loaded = store.load("legacy-checkpoint")
+
+    assert loaded == {**legacy, "format_version": SESSION_FORMAT_VERSION}
+    assert any(
+        entry["type"] == "task_checkpoint"
+        for entry in store.entries("legacy-checkpoint")
+    )
+    assert loaded["runtime_identity"] == legacy["runtime_identity"]
+    assert loaded["recovery"] == legacy["recovery"]
+
+
+def test_failed_legacy_publish_keeps_old_session_and_is_retryable(
+    tmp_path,
+    monkeypatch,
+):
+    store = SessionStore(tmp_path / ".pico" / "sessions")
+    legacy = _session(tmp_path, "retry", legacy=True)
+    store.lock_path.touch(mode=0o600)
+    store.legacy_path("retry").write_text(json.dumps(legacy), encoding="utf-8")
+    real_replace = session_store_module.os.replace
+
+    def fail_replace(*_args, **_kwargs):
+        raise OSError("candidate publish crash")
+
+    monkeypatch.setattr(session_store_module.os, "replace", fail_replace)
+    with pytest.raises(OSError, match="publish crash"):
+        store.load("retry")
+    assert store.legacy_path("retry").exists()
+    assert not store.path("retry").exists()
+
+    monkeypatch.setattr(session_store_module.os, "replace", real_replace)
+    assert store.load("retry")["messages"] == legacy["messages"]
+
+
+def test_invalid_legacy_session_is_never_rewritten(tmp_path):
+    store = SessionStore(tmp_path / ".pico" / "sessions")
+    store.lock_path.touch(mode=0o600)
+    path = store.legacy_path("invalid")
+    path.write_text('{"record_type":"session","format_version":1}', encoding="utf-8")
+    original = path.read_bytes()
+
+    with pytest.raises(SessionFormatError):
+        store.load("invalid")
+    assert path.read_bytes() == original
+    assert not store.path("invalid").exists()
+
+
+def test_legacy_nested_duplicate_keys_are_rejected(tmp_path):
+    store = SessionStore(tmp_path / ".pico" / "sessions")
+    payload = json.dumps(_session(tmp_path, "duplicate", legacy=True)).replace(
         '"runtime_identity": {}',
         '"runtime_identity": {"feature_flags": {}, "feature_flags": {}}',
     )
     store.lock_path.touch(mode=0o600)
-    store.path("duplicate").write_text(payload, encoding="utf-8")
-
+    store.legacy_path("duplicate").write_text(payload, encoding="utf-8")
     with pytest.raises(SessionFormatError, match="duplicate"):
         store.load("duplicate")
 
 
 @pytest.mark.parametrize("embedded", [False, True])
-def test_session_store_rejects_unknown_feature_flag_identity(tmp_path, embedded):
+def test_session_store_rejects_unknown_feature_flag_identity(
+    tmp_path,
+    embedded,
+):
     store = SessionStore(tmp_path / ".pico" / "sessions")
-    payload = _session("dead-flag")
+    payload = _session(tmp_path, "dead-flag")
     identity = {"feature_flags": {"prompt_cache": True}}
     if embedded:
         payload["checkpoints"] = {
-            "items": {"ckpt": {"runtime_identity": identity}}
+            "current_id": "ckpt",
+            "items": {"ckpt": {"runtime_identity": identity}},
         }
     else:
         payload["runtime_identity"] = identity
-
-    with pytest.raises(SessionFormatError, match="unsupported runtime identity feature flag"):
+    with pytest.raises(
+        SessionFormatError,
+        match="unsupported runtime identity feature flag",
+    ):
         store.save(payload)
+
+
+def test_worktree_identity_tamper_is_rejected(tmp_path):
+    store = SessionStore(tmp_path / ".pico" / "sessions")
+    path = store.save(_session(tmp_path, "identity"))
+    rows = _jsonl(path)
+    rows[0]["worktree_identity"]["root_inode"] += 1
+    path.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+
+    with pytest.raises(SessionFormatError, match="identity digest mismatch"):
+        store.load("identity")
+
+
+def test_clone_to_worktree_copies_active_branch_and_clears_workspace_state(tmp_path):
+    source = tmp_path / "source"
+    target = tmp_path / "target"
+    source.mkdir()
+    target.mkdir()
+    store = SessionStore(source / ".pico" / "sessions")
+    session = _session(source, "source-session")
+    session["messages"].append(
+        {"role": "assistant", "content": "done", "_pico_meta": {}}
+    )
+    session["working_memory"] = {
+        "task_summary": "continue",
+        "recent_files": ["old.py"],
+    }
+    session["memory"] = {"file_summaries": {"old.py": "stale"}}
+    session["recovery"] = {"current_checkpoint_id": "recovery-old"}
+    session["checkpoints"] = {
+        "current_id": "checkpoint-old",
+        "items": {
+            "checkpoint-old": {
+                "checkpoint_id": "checkpoint-old",
+                "created_at": "2026-01-01T00:00:00+00:00",
+                "goal": "continue",
+                "status": "in_progress",
+            }
+        },
+    }
+    store.save(session)
+    first_message = next(
+        entry for entry in store.entries("source-session") if entry["type"] == "message"
+    )
+    store.append_control(
+        "source-session",
+        "compaction",
+        {
+            "summary": "source summary",
+            "first_kept_entry_id": first_message["id"],
+            "tokens_before": 100,
+            "summary_tokens": 5,
+            "tail_tokens": 10,
+            "reason": "test",
+        },
+    )
+
+    cloned = store.clone_to_worktree(
+        "source-session",
+        target,
+        new_session_id="target-session",
+    )
+    target_store = SessionStore(target / ".pico" / "sessions")
+    loaded = target_store.load("target-session")
+    view = target_store.context_view("target-session")
+
+    assert cloned["session_id"] == "target-session"
+    assert loaded["workspace_root"] == str(target)
+    assert loaded["messages"] == session["messages"]
+    assert loaded["working_memory"] == {
+        "task_summary": "continue",
+        "recent_files": [],
+    }
+    assert loaded["memory"] == {"file_summaries": {}}
+    cloned_checkpoint_id = loaded["checkpoints"]["current_id"]
+    assert cloned_checkpoint_id.startswith("checkpoint-old-clone-")
+    cloned_checkpoint = loaded["checkpoints"]["items"][cloned_checkpoint_id]
+    assert cloned_checkpoint["goal"] == "continue"
+    assert cloned_checkpoint["workspace_checkpoint_id"] == ""
+    assert cloned_checkpoint["context_usage"] == {}
+    assert cloned_checkpoint["key_files"] == []
+    assert cloned_checkpoint["read_files"] == []
+    assert cloned_checkpoint["modified_files"] == []
+    assert cloned_checkpoint["worktree_identity_digest"] == (
+        target_store.load_tree("target-session").header["worktree_identity"][
+            "digest"
+        ]
+    )
+    assert loaded["recovery"] == {"current_checkpoint_id": ""}
+    assert loaded["runtime_identity"] == {}
+    assert view.summary == "source summary"
+    assert target_store.load_tree("target-session").header["worktree_identity"][
+        "lexical_root"
+    ] == str(target)
+
+
+def test_session_tree_source_has_expected_line_limit_constant():
+    assert MAX_SESSION_ENTRY_BYTES == 8 * 1024 * 1024
+
+
+def test_save_checkpoint_preserves_current_runtime_state(tmp_path):
+    store = SessionStore(tmp_path / ".pico" / "sessions")
+    session = _session(tmp_path, "checkpoint-state")
+    session["runtime_identity"] = {
+        "model": "current-model",
+        "feature_flags": {},
+    }
+    session["recovery"] = {"current_checkpoint_id": "current-recovery"}
+    store.save(session)
+
+    session["checkpoints"] = {
+        "current_id": "checkpoint-old",
+        "items": {
+            "checkpoint-old": {
+                "checkpoint_id": "checkpoint-old",
+                "created_at": "2026-01-01T00:00:00+00:00",
+                "runtime_identity": {
+                    "model": "old-model",
+                    "feature_flags": {},
+                },
+                "workspace_checkpoint_id": "old-recovery",
+            }
+        },
+    }
+    store.save(session)
+
+    loaded = store.load("checkpoint-state")
+    assert loaded["checkpoints"] == session["checkpoints"]
+    assert loaded["runtime_identity"] == session["runtime_identity"]
+    assert loaded["recovery"] == session["recovery"]
+    assert [entry["type"] for entry in store.entries("checkpoint-state")][-2:] == [
+        "task_checkpoint",
+        "session_info",
+    ]

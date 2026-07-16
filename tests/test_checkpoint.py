@@ -24,7 +24,12 @@ def build_agent(tmp_path, outputs=None, **kwargs):
 
 
 def test_current_runtime_identity_captures_execution_contract(tmp_path):
-    agent = build_agent(tmp_path, max_steps=9, max_new_tokens=1024, read_only=True)
+    agent = build_agent(
+        tmp_path,
+        max_steps=9,
+        max_output_tokens=1024,
+        read_only=True,
+    )
 
     identity = current_runtime_identity(agent)
 
@@ -32,7 +37,7 @@ def test_current_runtime_identity_captures_execution_contract(tmp_path):
     assert identity["cwd"] == str(tmp_path)
     assert identity["read_only"] is True
     assert identity["max_steps"] == 9
-    assert identity["max_new_tokens"] == 1024
+    assert identity["max_output_tokens"] == 1024
     assert identity["workspace_fingerprint"] == agent.workspace.fingerprint()
     assert identity["tool_signature"] == agent.tool_signature()
 

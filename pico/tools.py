@@ -14,7 +14,7 @@ import unicodedata
 from functools import partial
 
 from . import security as securitylib
-from .memory.block_store import MAX_NOTE_CHARS
+from .memory.block_store import MAX_NOTE_STORAGE_BYTES
 from .memory.tools import (
     tool_memory_list,
     tool_memory_read,
@@ -216,7 +216,7 @@ BASE_TOOL_SPECS = {
         "schema": {"note": "str", "scope": "str='workspace'"},
         "risky": False,
         "effect_class": "memory_write",
-        "description": "Append a short note (<=500 chars) to agent_notes.md. Use only when the user explicitly asks to remember.",
+        "description": "Append an explicitly authorized note (<=1024 model tokens and 16 KiB) to agent_notes.md.",
     },
     "repo_lookup": {
         "schema": {"symbol": "str", "kind": "str=''"},
@@ -580,8 +580,8 @@ def validate_tool(context, name, args):
         note = str(args.get("note", "")).strip()
         if not note:
             raise ValueError("note must not be empty")
-        if len(note) > MAX_NOTE_CHARS:
-            raise ValueError(f"note exceeds {MAX_NOTE_CHARS} chars")
+        if len(note.encode("utf-8")) > MAX_NOTE_STORAGE_BYTES:
+            raise ValueError(f"note exceeds {MAX_NOTE_STORAGE_BYTES} bytes")
         scope = str(args.get("scope", "workspace"))
         if scope not in ("workspace", "user"):
             raise ValueError("scope must be 'workspace' or 'user'")

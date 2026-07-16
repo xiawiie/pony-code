@@ -12,10 +12,8 @@ from .experiments_synthetic import (
     MEMORY_EXPERIMENT_TASKS,
     _bootstrap_tool_use_id,
     _clear_file_summary_memory,
-    _latest_plain_user,
-    _preview_request,
+    _compact_with_neutral_summary,
     _seed_plain_messages,
-    _sent_message_chars,
     _set_irrelevant_memory_for_task,
     _write_memory_task_files,
 )
@@ -133,8 +131,11 @@ def run_real_memory_experiment(provider="gpt", repetitions=1):
                     elif variant == "memory_irrelevant":
                         _set_irrelevant_memory_for_task(agent)
                     _seed_plain_messages(agent, 8, "filler-turn", 560)
-                    agent.context_config["history_soft_cap"] = 900
-                    agent.context_config["history_floor_messages"] = 2
+                    agent.session_store.save(agent.session)
+                    _compact_with_neutral_summary(
+                        agent,
+                        reason="real_memory_ablation",
+                    )
                     if task["category"] == "fact_lookup":
                         prompt = (
                             f"What exact line did you previously read from {task['filename']}? "
@@ -204,7 +205,7 @@ def run_real_context_experiment(provider="gpt", repetitions=1):
                 token = f"TOKEN-{history_label}-{note_label}-{request_label}"
                 per_run = []
                 for _ in range(repetitions):
-                    for variant_name, cap in (("bounded", 4_000), ("unbounded", 1_000_000)):
+                    for variant_name in ("compacted", "uncompacted"):
                         with tempfile.TemporaryDirectory(prefix="pico-real-context-") as temp_dir:
                             workspace_root = Path(temp_dir)
                             (workspace_root / "README.md").write_text("demo\n", encoding="utf-8")
@@ -212,51 +213,75 @@ def run_real_context_experiment(provider="gpt", repetitions=1):
                             _seed_plain_messages(agent, note_count, "context-note", 180)
                             agent.session["messages"][0]["content"] = f"target token is {token}"
                             _seed_plain_messages(agent, history_count, "context-history", 700)
-                            agent.context_config["history_soft_cap"] = cap
+                            agent.session_store.save(agent.session)
+                            if variant_name == "compacted":
+                                agent.compact_session(
+                                    reason="real_context_ablation",
+                                    keep_recent_tokens=64,
+                                )
                             user_message = f"What is the target token remembered in the notes? {request_text}"
-                            request, metadata = _preview_request(agent, user_message)
+                            call_index = len(agent._real_request_recorder.calls)
                             answer = agent.ask(user_message)
+                            kind, sent = agent._real_request_recorder.calls[call_index]
+                            request_chars = (
+                                sum(
+                                    len(str(message.get("content", "")))
+                                    for message in sent
+                                )
+                                if kind == "messages"
+                                else len(str(sent))
+                            )
+                            sent_text = json.dumps(sent, ensure_ascii=False)
                             per_run.append(
                                 {
                                     "variant": variant_name,
-                                    "request_chars": _sent_message_chars(request),
-                                    "dropped_messages": int(metadata["dropped_messages"]),
-                                    "current_request_preserved": user_message in _latest_plain_user(request),
+                                    "request_chars": request_chars,
+                                    "canonical_messages_dropped": 0,
+                                    "current_request_preserved": user_message in sent_text,
                                     "correct": token.lower() in _normalize_text(answer),
                                 }
                             )
-                bounded_rows = [row for row in per_run if row["variant"] == "bounded"]
-                unbounded_rows = [row for row in per_run if row["variant"] == "unbounded"]
-                avg_bounded = _safe_mean(row["request_chars"] for row in bounded_rows)
-                avg_unbounded = _safe_mean(row["request_chars"] for row in unbounded_rows)
+                compacted_rows = [row for row in per_run if row["variant"] == "compacted"]
+                uncompacted_rows = [row for row in per_run if row["variant"] == "uncompacted"]
+                avg_compacted = _safe_mean(row["request_chars"] for row in compacted_rows)
+                avg_uncompacted = _safe_mean(row["request_chars"] for row in uncompacted_rows)
                 configs.append(
                     {
                         "id": f"{history_label}-{note_label}-{request_label}",
                         "history_level": history_label,
                         "note_level": note_label,
                         "request_level": request_label,
-                        "bounded_request_chars": avg_bounded,
-                        "unbounded_request_chars": avg_unbounded,
-                        "bounded_dropped_messages": _safe_mean(row["dropped_messages"] for row in bounded_rows),
-                        "compression_ratio": _safe_ratio(avg_unbounded - avg_bounded, avg_unbounded),
-                        "current_request_preserved_rate": _safe_ratio(
-                            sum(1 for row in bounded_rows if row["current_request_preserved"]),
-                            len(bounded_rows),
+                        "compacted_request_chars": avg_compacted,
+                        "uncompacted_request_chars": avg_uncompacted,
+                        "canonical_messages_dropped": 0,
+                        "compression_ratio": _safe_ratio(
+                            avg_uncompacted - avg_compacted,
+                            avg_uncompacted,
                         ),
-                        "bounded_correct_rate": _safe_ratio(sum(1 for row in bounded_rows if row["correct"]), len(bounded_rows)),
-                        "unbounded_correct_rate": _safe_ratio(sum(1 for row in unbounded_rows if row["correct"]), len(unbounded_rows)),
+                        "current_request_preserved_rate": _safe_ratio(
+                            sum(1 for row in compacted_rows if row["current_request_preserved"]),
+                            len(compacted_rows),
+                        ),
+                        "compacted_correct_rate": _safe_ratio(
+                            sum(1 for row in compacted_rows if row["correct"]),
+                            len(compacted_rows),
+                        ),
+                        "uncompacted_correct_rate": _safe_ratio(
+                            sum(1 for row in uncompacted_rows if row["correct"]),
+                            len(uncompacted_rows),
+                        ),
                     }
                 )
     ratios = [config["compression_ratio"] for config in configs]
-    bounded_chars = [config["bounded_request_chars"] for config in configs]
-    unbounded_chars = [config["unbounded_request_chars"] for config in configs]
+    compacted_chars = [config["compacted_request_chars"] for config in configs]
+    uncompacted_chars = [config["uncompacted_request_chars"] for config in configs]
     return {
         "provider": provider,
         "config_count": len(configs),
         "configs": configs,
         "summary": {
-            "avg_bounded_request_chars": _safe_mean(bounded_chars),
-            "avg_unbounded_request_chars": _safe_mean(unbounded_chars),
+            "avg_compacted_request_chars": _safe_mean(compacted_chars),
+            "avg_uncompacted_request_chars": _safe_mean(uncompacted_chars),
             "avg_request_compression_ratio": _safe_mean(ratios),
             "max_request_compression_ratio": max(ratios) if ratios else 0.0,
             "min_request_compression_ratio": min(ratios) if ratios else 0.0,

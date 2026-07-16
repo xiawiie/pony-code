@@ -1,26 +1,29 @@
-"""Build the provider request from Pico's canonical messages."""
+"""Build one provider request from canonical Session context."""
 
 from __future__ import annotations
 
 import hashlib
-import json
 
 from pico import security as securitylib
-from pico.messages import build_request_messages, message_content_text, message_metrics
-
-
-# Pinned system/tools input is never a truncation candidate.
-SYSTEM_TOOLS_HARD_CAP = 20000
-CONTEXT_SAFETY_MARGIN_TOKENS = 512
-OPTIONAL_DROP_ORDER = ("memory_index", "project_structure", "workspace_state", "recalled_memory", "checkpoint")
+from pico.messages import build_request_messages, message_metrics
+from pico.model_capabilities import (
+    ModelBudget,
+    ModelCapabilities,
+    TokenAccounting,
+    build_model_budget,
+)
+from pico.session_store import SessionContextView
 
 
 class ContextBudgetExceeded(RuntimeError):
     code = "context_budget_exceeded"
 
 
+class SystemContextTooLarge(ContextBudgetExceeded):
+    code = "system_context_too_large"
+
+
 def _convert_pico_tool_to_anthropic(name, spec):
-    """Convert one Pico tool definition to the Anthropic request shape."""
     props = {}
     required = []
     for arg_name, sig in (spec.get("schema") or {}).items():
@@ -34,12 +37,15 @@ def _convert_pico_tool_to_anthropic(name, spec):
     return {
         "name": name,
         "description": description,
-        "input_schema": {"type": "object", "properties": props, "required": required},
+        "input_schema": {
+            "type": "object",
+            "properties": props,
+            "required": required,
+        },
     }
 
 
 def _build_tools_list(pico_tools):
-    """Build a deterministic provider tool list."""
     if not pico_tools:
         return []
     return [
@@ -48,125 +54,279 @@ def _build_tools_list(pico_tools):
     ]
 
 
-def _is_top_level_user_message(message):
-    return message.get("role") == "user" and isinstance(message.get("content"), str)
-
-
-def _drop_old_turns(messages, soft_cap_tokens, floor_count, token_of):
-    """Drop oldest complete turn units while preserving the message floor."""
-    if not messages:
-        return list(messages), 0
-    message_count = len(messages)
-    floor_start = max(0, message_count - floor_count)
-    while floor_start > 0 and not _is_top_level_user_message(messages[floor_start]):
-        floor_start -= 1
-
-    turn_starts = [
-        index
-        for index in range(floor_start)
-        if _is_top_level_user_message(messages[index])
-    ]
-    boundaries = turn_starts + [floor_start]
-    kept_start = 0
-    total = sum(token_of(message) for message in messages)
-    for boundary in boundaries:
-        if total <= soft_cap_tokens:
-            break
-        if boundary <= kept_start:
-            continue
-        total -= sum(token_of(message) for message in messages[kept_start:boundary])
-        kept_start = boundary
-    return list(messages[kept_start:]), kept_start
-
-
 class ContextManager:
     def __init__(self, agent):
         self.agent = agent
 
-    def _build_with_counter(self, *, injection_snapshot, injection_telemetry, preflight_metadata, runtime_feedback, token_of, mode):
+    @property
+    def accounting(self):
+        value = getattr(self.agent, "token_accounting", None)
+        if isinstance(value, TokenAccounting):
+            return value
+        value = TokenAccounting(
+            getattr(getattr(self.agent, "model_client", None), "count_tokens", None)
+        )
+        self.agent.token_accounting = value
+        return value
+
+    @property
+    def budget(self):
+        value = getattr(self.agent, "model_budget", None)
+        if isinstance(value, ModelBudget):
+            return value
+        capabilities = getattr(self.agent, "model_capabilities", None)
+        if not isinstance(capabilities, ModelCapabilities):
+            capabilities = ModelCapabilities(
+                context_window=128_000,
+                max_output_tokens=16_384,
+                token_counter_mode="provider_usage_or_estimate",
+                source="fallback",
+            )
+        value = build_model_budget(capabilities)
+        self.agent.model_budget = value
+        return value
+
+    def build_request(
+        self,
+        *,
+        injection_snapshot,
+        injection_telemetry,
+        preflight_metadata,
+        runtime_feedback="",
+    ):
+        budget = self.budget
+        accounting = self.accounting
         system_text = str(getattr(self.agent, "prefix", "") or "")
-        system = [{"type": "text", "text": system_text, "cache_control": {"type": "ephemeral"}}]
+        system = [
+            {
+                "type": "text",
+                "text": system_text,
+                "cache_control": {"type": "ephemeral"},
+            }
+        ]
         tools = _build_tools_list(getattr(self.agent, "tools", {}) or {})
-        session = getattr(self.agent, "session", {}) or {}
-        config = getattr(self.agent, "context_config", None)
-        config = config if isinstance(config, dict) else {}
-        total = int(config.get("total_budget_hard_cap", 100000))
-        reserved = int(getattr(self.agent, "max_new_tokens", 2048))
-        input_limit = total - reserved - CONTEXT_SAFETY_MARGIN_TOKENS
-        system, _ = securitylib.sanitize_provider_payload(system, [], env=self.agent.redaction_env, secret_env_names=self.agent.secret_env_names)
+        system, _ = securitylib.sanitize_provider_payload(
+            system,
+            [],
+            env=self.agent.redaction_env,
+            secret_env_names=self.agent.secret_env_names,
+        )
         system_text = str(system[0].get("text", ""))
-        system_tokens = token_of(system_text)
-        tools_tokens = token_of(json.dumps(tools, sort_keys=False))
-        pinned_cap = int(config.get("system_tools_hard_cap", SYSTEM_TOOLS_HARD_CAP))
-        if system_tokens + tools_tokens > pinned_cap:
-            raise RuntimeError(f"SystemTooBig: system+tools tokens {system_tokens + tools_tokens} exceed {pinned_cap}. Inspect workspace.stable_text() or tools schema.")
+        pinned_tokens = accounting.count_json(system) + accounting.count_json(tools)
+        if pinned_tokens > budget.system_tools_hard_cap:
+            raise SystemContextTooLarge(
+                "SystemContextTooLarge: system+tools use "
+                f"{pinned_tokens} tokens; cap is {budget.system_tools_hard_cap}"
+            )
 
-        sources = list(getattr(injection_snapshot, "sources", ()) or ())
-        included = {source.name for source in sources if source.text}
-        rendered_user = injection_snapshot.render(included) if hasattr(injection_snapshot, "render") else injection_snapshot
-        messages = build_request_messages(list(session.get("messages", []) or []), rendered_user=rendered_user, runtime_feedback=runtime_feedback)
-        _, messages = securitylib.sanitize_provider_payload([], messages, env=self.agent.redaction_env, secret_env_names=self.agent.secret_env_names)
-        def msg_token(message):
-            return token_of(message_content_text(message))
-        before_tokens = sum(msg_token(message) for message in messages)
-        soft_cap = int(config.get("history_soft_cap", 40000))
-        floor_count = int(config.get("history_floor_messages", 6))
-        messages, dropped_messages = _drop_old_turns(messages, soft_cap, floor_count, msg_token)
-
-        def used():
-            return system_tokens + tools_tokens + sum(msg_token(message) for message in messages)
-
-        dropped_sources = []
-        for name in OPTIONAL_DROP_ORDER:
-            if used() <= input_limit:
-                break
-            source = next((item for item in sources if item.name == name), None)
-            if source is None or not source.text or source.required:
-                continue
-            included.discard(name)
-            dropped_sources.append(name)
-            rendered = injection_snapshot.render(included)
-            messages = build_request_messages(list(session.get("messages", []) or []), rendered_user=rendered, runtime_feedback=runtime_feedback)
-            _, messages = securitylib.sanitize_provider_payload([], messages, env=self.agent.redaction_env, secret_env_names=self.agent.secret_env_names)
-            messages, dropped_messages = _drop_old_turns(messages, soft_cap, floor_count, msg_token)
-        if used() > input_limit:
-            messages, extra = _drop_old_turns(messages, input_limit - system_tokens - tools_tokens, 1, msg_token)
-            dropped_messages += extra
-        final_used = used()
-        if final_used > input_limit:
-            raise ContextBudgetExceeded(f"context_budget_exceeded: required request uses {final_used} tokens; input limit is {input_limit}")
+        session = getattr(self.agent, "session", {}) or {}
+        context_view = None
+        session_store = getattr(self.agent, "session_store", None)
+        session_id = session.get("id") if isinstance(session, dict) else None
+        if session_store is not None and session_id:
+            candidate_view = session_store.context_view(session_id)
+            canonical_messages = list(session.get("messages", []) or [])
+            if isinstance(candidate_view, SessionContextView) and (
+                not canonical_messages
+                or (
+                    candidate_view.canonical_message_count
+                    == len(canonical_messages)
+                    and candidate_view.canonical_last_message
+                    == canonical_messages[-1]
+                )
+            ):
+                context_view = candidate_view
+        history_messages = (
+            list(context_view.messages)
+            if context_view is not None
+            else list(session.get("messages", []) or [])
+        )
+        sources = tuple(getattr(injection_snapshot, "sources", ()) or ())
+        rendered_user = (
+            injection_snapshot.render()
+            if hasattr(injection_snapshot, "render")
+            else str(injection_snapshot)
+        )
+        messages = build_request_messages(
+            history_messages,
+            rendered_user=rendered_user,
+            runtime_feedback=runtime_feedback,
+        )
+        _, messages = securitylib.sanitize_provider_payload(
+            [],
+            messages,
+            env=self.agent.redaction_env,
+            secret_env_names=self.agent.secret_env_names,
+        )
+        counted = accounting.count_request(
+            system=system,
+            tools=tools,
+            messages=messages,
+        )
+        if counted.total > budget.input_limit:
+            raise ContextBudgetExceeded(
+                "context_budget_exceeded: assembled request uses "
+                f"{counted.total} tokens; input limit is {budget.input_limit}. "
+                "Run /compact or enable automatic compaction."
+            )
+        self.agent._pending_token_anchor = counted.anchor_candidate
 
         source_rows = []
+        selected_source_tokens = 0
         for source in sources:
-            if source.name in dropped_sources:
-                status, reason = "dropped_budget", "aggregate_budget"
-            else:
-                status, reason = source.status, source.reason_code
-            source_rows.append({"name": source.name, "required": source.required, "budget_tokens": source.token_count, "actual_tokens": source.token_count if source.name in included else 0, "status": status, "reason": reason})
-        digest_count = sum(bool((message.get("_pico_meta") or {}).get("digest_applied")) for message in messages)
-        breakdown = {"schema_version": 1, "token_count_mode": mode, "budget": {"total": total, "reserved_output": reserved, "safety_margin": CONTEXT_SAFETY_MARGIN_TOKENS, "input_limit": input_limit, "used": final_used, "within_budget": True}, "sources": source_rows, "history": {"tokens_before": before_tokens, "tokens_after": sum(msg_token(message) for message in messages), "dropped_turns": dropped_messages}, "digest": {"applied_count": digest_count}}
+            actual = accounting.count_text(source.text) if source.text else 0
+            selected_source_tokens += actual
+            source_rows.append(
+                {
+                    "name": source.name,
+                    "required": bool(source.required),
+                    "hard_cap": int(getattr(source, "hard_cap", 0) or 0),
+                    "actual_tokens": actual,
+                    "priority": int(getattr(source, "priority", 0) or 0),
+                    "status": source.status,
+                    "reason": source.reason_code,
+                }
+            )
+        current_message_index = next(
+            (
+                index
+                for index in range(len(messages) - 1, -1, -1)
+                if messages[index].get("role") == "user"
+                and isinstance(messages[index].get("content"), str)
+            ),
+            None,
+        )
+        current_request_tokens = (
+            accounting.count_message(messages[current_message_index])
+            if current_message_index is not None
+            else 0
+        )
+        history_tokens = max(0, counted.messages - current_request_tokens)
+        raw_current_user = getattr(
+            injection_snapshot,
+            "current_user",
+            rendered_user,
+        )
+        safe_current_user, _ = securitylib.sanitize_provider_payload(
+            str(raw_current_user),
+            [],
+            env=self.agent.redaction_env,
+            secret_env_names=self.agent.secret_env_names,
+        )
+        current_user_tokens = accounting.count_text(safe_current_user)
+        if str(runtime_feedback or "").strip():
+            safe_runtime_feedback, _ = securitylib.sanitize_provider_payload(
+                str(runtime_feedback),
+                [],
+                env=self.agent.redaction_env,
+                secret_env_names=self.agent.secret_env_names,
+            )
+            runtime_feedback_tokens = accounting.count_text(safe_runtime_feedback)
+        else:
+            runtime_feedback_tokens = 0
+        capabilities = budget.capabilities
+        breakdown = {
+            "schema_version": 2,
+            "token_count_mode": counted.mode,
+            "model": {
+                "context_window": capabilities.context_window,
+                "max_output_tokens": capabilities.max_output_tokens,
+                "capabilities_source": capabilities.source,
+            },
+            "budget": {
+                "output": budget.output_tokens,
+                "reserve": budget.reserve_tokens,
+                "input_limit": budget.input_limit,
+                "used": counted.total,
+                "remaining": budget.input_limit - counted.total,
+                "within_budget": True,
+                "system_tools_hard_cap": budget.system_tools_hard_cap,
+                "source_pool": budget.source_pool_tokens,
+            },
+            "pinned": {
+                "system": counted.system,
+                "tools": counted.tools,
+                "actual": pinned_tokens,
+            },
+            "sources": source_rows,
+            "current_request": {
+                "actual_tokens": current_request_tokens,
+                "user_tokens": current_user_tokens,
+                "runtime_feedback_tokens": runtime_feedback_tokens,
+                "source_tokens": selected_source_tokens,
+            },
+            "history": {
+                "budget": max(
+                    0,
+                    budget.input_limit - pinned_tokens - current_request_tokens,
+                ),
+                "actual_tokens": history_tokens,
+                "dropped_turns": 0,
+            },
+            "compaction": {
+                "enabled": bool(
+                    self.agent.context_config.get("compaction", {}).get("enabled", True)
+                ),
+                "summary_tokens": (
+                    context_view.summary_tokens if context_view is not None else 0
+                ),
+                "tail_tokens": (
+                    context_view.tail_tokens
+                    if context_view is not None and context_view.compaction_entry_id
+                    else history_tokens + current_user_tokens
+                ),
+                "reason": (
+                    context_view.compaction_reason
+                    if context_view is not None
+                    else "not_compacted"
+                ),
+                "compression_ratio": (
+                    context_view.compression_ratio
+                    if context_view is not None
+                    else 1.0
+                ),
+                "entry_id": (
+                    context_view.compaction_entry_id
+                    if context_view is not None
+                    else ""
+                ),
+            },
+        }
         breakpoints = [len(messages) - 2] if len(messages) >= 2 else []
-        recall_errors = session.get("_recall_errors", {}) if isinstance(session, dict) else {}
+        recall_errors = (
+            session.get("_recall_errors", {}) if isinstance(session, dict) else {}
+        )
         recall_errors = recall_errors if isinstance(recall_errors, dict) else {}
-        metadata = {"system_prefix_hash": hashlib.sha256(system_text.encode()).hexdigest(), "system_tokens": system_tokens, "tools_tokens": tools_tokens, "prompt_cache_supported": bool(getattr(self.agent.model_client, "supports_prompt_cache", False)), **message_metrics(messages, token_of=token_of), "dropped_messages": dropped_messages, "cache_control_breakpoints": list(breakpoints), "runtime_feedback_present": bool(str(runtime_feedback or "").strip()), "recall.error_count": int(recall_errors.get("count", 0) or 0), "recall.last_error": str(recall_errors.get("last", "") or ""), "token_count_mode": mode, "context_breakdown": breakdown, "recall_commit_paths": [path for source in sources if source.name == "recalled_memory" and source.name in included for path in source.selected_memory_paths], **dict(injection_telemetry or {}), **dict(preflight_metadata or {})}
-        return {"system": system, "tools": tools, "messages": messages, "cache_control_breakpoints": breakpoints}, metadata
-
-    def build_request(self, *, injection_snapshot, injection_telemetry, preflight_metadata, runtime_feedback=""):
-        counter = getattr(getattr(self.agent, "model_client", None), "count_tokens", None)
-        if callable(counter):
-            try:
-                return self._build_with_counter(injection_snapshot=injection_snapshot, injection_telemetry=injection_telemetry, preflight_metadata=preflight_metadata, runtime_feedback=runtime_feedback, token_of=lambda text: int(counter(text)), mode="provider_text")
-            except ContextBudgetExceeded:
-                raise
-            except Exception:
-                pass
-        return self._build_with_counter(injection_snapshot=injection_snapshot, injection_telemetry=injection_telemetry, preflight_metadata=preflight_metadata, runtime_feedback=runtime_feedback, token_of=lambda text: max(1, len(text) // 4), mode="estimate")
+        metadata = {
+            "system_prefix_hash": hashlib.sha256(system_text.encode()).hexdigest(),
+            "system_tokens": counted.system,
+            "tools_tokens": counted.tools,
+            "prompt_cache_supported": bool(
+                getattr(self.agent.model_client, "supports_prompt_cache", False)
+            ),
+            **message_metrics(messages, token_of=accounting.count_text),
+            "dropped_messages": 0,
+            "cache_control_breakpoints": list(breakpoints),
+            "runtime_feedback_present": bool(str(runtime_feedback or "").strip()),
+            "recall.error_count": int(recall_errors.get("count", 0) or 0),
+            "recall.last_error": str(recall_errors.get("last", "") or ""),
+            "token_count_mode": counted.mode,
+            "context_breakdown": breakdown,
+            "recall_commit_paths": [
+                path
+                for source in sources
+                if source.name == "recalled_memory"
+                for path in source.selected_memory_paths
+            ],
+            **dict(injection_telemetry or {}),
+            **dict(preflight_metadata or {}),
+        }
+        return {
+            "system": system,
+            "tools": tools,
+            "messages": messages,
+            "cache_control_breakpoints": breakpoints,
+        }, metadata
 
     def count_tokens(self, text):
-        counter = getattr(getattr(self.agent, "model_client", None), "count_tokens", None)
-        if callable(counter):
-            try:
-                return int(counter(text))
-            except Exception:
-                pass
-        return max(1, len(text) // 4)
+        return self.accounting.count_text(text)

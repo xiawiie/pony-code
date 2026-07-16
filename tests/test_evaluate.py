@@ -123,8 +123,8 @@ def _live_report(*, git_head="unknown"):
                 (
                     "recall_triggered",
                     "provider_tool_roundtrip",
-                    "injection_dropped",
-                    "history_dropped",
+                    "source_pool_bounded",
+                    "history_compacted",
                     "cache_anchor_verified",
                 ),
                 start=1,

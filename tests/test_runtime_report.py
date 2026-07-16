@@ -495,8 +495,6 @@ def test_trace_and_report_redact_secret_env_values(tmp_path):
 
 def test_request_metadata_describes_actual_sent_view(tmp_path):
     agent = build_agent(tmp_path, ["<final>Done.</final>"])
-    agent.context_config["history_soft_cap"] = 500
-    agent.context_config["history_floor_messages"] = 3
     agent.session["messages"] = [
         {
             "role": "user" if index % 2 == 0 else "assistant",
@@ -520,10 +518,11 @@ def test_request_metadata_describes_actual_sent_view(tmp_path):
         if event["event"] == "model_turn"
     )
 
-    assert metadata["dropped_messages"] > 0
+    assert metadata["dropped_messages"] == 0
     assert metadata["messages_count"] > 0
     assert metadata["messages_chars"] > 0
     assert metadata["runtime_feedback_present"] is False
+    assert metadata["context_breakdown"]["history"]["dropped_turns"] == 0
 
 
 def test_turn_preflight_refreshes_prefix_when_workspace_changes(tmp_path):
@@ -546,13 +545,14 @@ def test_turn_preflight_refreshes_prefix_when_workspace_changes(tmp_path):
     assert agent.ask("third") == "third"
     third = agent.last_request_metadata
 
-    assert third["system_prefix_hash"] != second["system_prefix_hash"]
-    assert third["prefix_changed"] is True
+    assert third["system_prefix_hash"] == second["system_prefix_hash"]
+    assert third["prefix_changed"] is False
     assert third["workspace_changed"] is True
-    assert "demo changed" in agent.prefix
+    assert "demo changed" not in agent.prefix
+    assert "demo changed" in repr(agent.model_client.requests[-1]["messages"])
 
 
-def test_agent_creates_checkpoint_when_context_reduction_happens_and_artifacts_only_reference_it(tmp_path):
+def test_agent_creates_one_task_checkpoint_without_silent_history_reduction(tmp_path):
     agent = build_agent(tmp_path, ["<final>Done after checkpoint.</final>"])
     for index in range(10):
         agent.session["messages"].append(
@@ -562,22 +562,23 @@ def test_agent_creates_checkpoint_when_context_reduction_happens_and_artifacts_o
                 "_pico_meta": {"created_at": f"2026-04-07T10:{index:02d}:00+00:00"},
             }
         )
-    agent.context_config["history_soft_cap"] = 500
-    agent.context_config["history_floor_messages"] = 3
-
     assert agent.ask("Resume the long task") == "Done after checkpoint."
     trace_events = [
         json.loads(line)
         for line in agent.run_store.trace_path(agent.current_task_state).read_text(encoding="utf-8").splitlines()
     ]
-    reduction_events = [
+    checkpoint_events = [
         event
         for event in trace_events
         if event["event"] == "checkpoint_created"
-        and event.get("trigger") == "context_reduction"
     ]
-    assert agent.last_request_metadata["dropped_messages"] > 0
-    assert len(reduction_events) == 1
+    assert agent.last_request_metadata["dropped_messages"] == 0
+    assert len(checkpoint_events) == 1
+    assert checkpoint_events[0]["trigger"] == "run_finished"
+    assert sum(
+        entry["type"] == "task_checkpoint"
+        for entry in agent.session_store.load_tree(agent.session["id"]).active_path
+    ) == 1
 
 
 def test_resume_prompt_carries_checkpoint_via_v2_messages(tmp_path):
@@ -603,23 +604,23 @@ def test_resume_prompt_carries_checkpoint_via_v2_messages(tmp_path):
     }
     request, metadata = build_request_view(agent, "continue")
 
-    # The checkpoint text should appear inside a <pico:checkpoint> block on
+    # The checkpoint-derived working set appears in its dynamic source block on
     # the current turn's user message.
     current_content = request["messages"][-1]["content"]
     assert isinstance(current_content, str)
-    if "<pico:checkpoint>" in current_content:
+    if "<pico:task_working_set>" in current_content:
         # Injection is active — verify checkpoint fields flow through.
         assert (
             "Fix failing resume flow" in current_content
             or "current_goal" in current_content
         )
     else:
-        # No injection block emitted (renderer decided not to include checkpoint
+        # No source block emitted (the allocator could not include the working set
         # given the budget) — accept the graceful skip but ensure telemetry
         # explains why: either dropped in injection_dropped, or budget=0.
         assert (
-            "checkpoint" in metadata.get("injection_dropped", [])
-            or metadata.get("injection_tokens", {}).get("checkpoint", 0) == 0
+            "task_working_set" in metadata.get("injection_dropped", [])
+            or metadata.get("injection_tokens", {}).get("task_working_set", 0) == 0
         )
 
 
@@ -663,7 +664,10 @@ def test_resume_invalidates_stale_file_summaries_and_marks_partial_stale(tmp_pat
 
     assert "runtime.py" not in resumed.session["memory"]["file_summaries"]
     assert resumed.last_request_metadata["resume_status"] == "partial-stale"
-    assert resumed.last_request_metadata["stale_summary_invalidations"] == 1
+    # File-summary dictionaries are now rebuildable caches, not canonical
+    # Session state; the checkpoint freshness fact still marks the path stale.
+    assert resumed.last_request_metadata["stale_summary_invalidations"] == 0
+    assert resumed.last_request_metadata["stale_paths"] == ["runtime.py"]
 
 
 def test_report_last_request_metadata_preserves_initial_resume_status(tmp_path):
@@ -878,7 +882,7 @@ def test_session_save_rejects_missing_checkpoint_state(tmp_path):
         agent.session_store.save(agent.session)
 
 
-def test_freshness_mismatch_creates_checkpoint_before_model_completion(tmp_path):
+def test_freshness_mismatch_is_traced_and_final_task_checkpoint_is_single(tmp_path):
     file_path = tmp_path / "runtime.py"
     file_path.write_text("alpha\n", encoding="utf-8")
     agent = build_agent(tmp_path, ["<final>Resumed.</final>"])
@@ -912,10 +916,18 @@ def test_freshness_mismatch_creates_checkpoint_before_model_completion(tmp_path)
         json.loads(line)
         for line in agent.run_store.trace_path(agent.current_task_state).read_text(encoding="utf-8").splitlines()
     ]
-    checkpoint_events = [event for event in trace_events if event["event"] == "checkpoint_created"]
+    checkpoint_events = [
+        event for event in trace_events if event["event"] == "checkpoint_created"
+    ]
+    mismatch_events = [
+        event
+        for event in trace_events
+        if event["event"] == "checkpoint_freshness_mismatch"
+    ]
 
-    assert checkpoint_events
-    assert checkpoint_events[0]["trigger"] == "freshness_mismatch"
+    assert len(mismatch_events) == 1
+    assert len(checkpoint_events) == 1
+    assert checkpoint_events[0]["trigger"] == "run_finished"
 
 
 def test_runtime_identity_persists_key_execution_metadata(tmp_path):
@@ -927,7 +939,7 @@ def test_runtime_identity_persists_key_execution_metadata(tmp_path):
         session_store=store,
         approval_policy="never",
         max_steps=9,
-        max_new_tokens=1024,
+        max_output_tokens=1024,
         feature_flags={"memory": True},
     )
 
@@ -938,7 +950,7 @@ def test_runtime_identity_persists_key_execution_metadata(tmp_path):
     assert runtime_identity["approval_policy"] == "never"
     assert runtime_identity["read_only"] is False
     assert runtime_identity["max_steps"] == 9
-    assert runtime_identity["max_new_tokens"] == 1024
+    assert runtime_identity["max_output_tokens"] == 1024
     assert runtime_identity["feature_flags"]["memory"] is True
     assert runtime_identity["feature_flags"] == {"memory": True}
     assert runtime_identity["shell_env_allowlist"] == list(agent.shell_env_allowlist)
@@ -966,7 +978,7 @@ def test_resume_records_runtime_identity_mismatch_fields_in_metadata_and_trace(t
                     "approval_policy": "auto",
                     "read_only": False,
                     "max_steps": 6,
-                    "max_new_tokens": 512,
+                    "max_output_tokens": 512,
                     "model": "old-model",
                     "model_client": "FakeModelClient",
                     "feature_flags": {"memory": False},
@@ -986,7 +998,7 @@ def test_resume_records_runtime_identity_mismatch_fields_in_metadata_and_trace(t
         session_id=agent.session["id"],
         approval_policy="never",
         max_steps=9,
-        max_new_tokens=1024,
+        max_output_tokens=1024,
         feature_flags={"memory": True},
     )
 
@@ -996,7 +1008,7 @@ def test_resume_records_runtime_identity_mismatch_fields_in_metadata_and_trace(t
     assert resumed.last_request_metadata["runtime_identity_mismatch_fields"] == [
         "approval_policy",
         "feature_flags",
-        "max_new_tokens",
+        "max_output_tokens",
         "max_steps",
         "model",
         "shell_env_allowlist",
@@ -1011,7 +1023,7 @@ def test_resume_records_runtime_identity_mismatch_fields_in_metadata_and_trace(t
     assert mismatch_events[0]["fields"] == [
         "approval_policy",
         "feature_flags",
-        "max_new_tokens",
+        "max_output_tokens",
         "max_steps",
         "model",
         "shell_env_allowlist",

@@ -13,8 +13,8 @@ def test_recall_config_defaults(tmp_path):
     cfg = _memory(tmp_path)["recall"]
     assert cfg == {
         "min_score": pytest.approx(0.3),
-        "top_k": 2,
-        "max_tokens_per_note": 400,
+        "top_k": 6,
+        "max_tokens_per_note": 1024,
         "skip_recent_turns": 2,
     }
 
@@ -27,7 +27,7 @@ def test_recall_config_partial_override(tmp_path):
     assert cfg["min_score"] == pytest.approx(0.5)
     assert cfg["top_k"] == 4
     # Un-overridden keys still take defaults.
-    assert cfg["max_tokens_per_note"] == 400
+    assert cfg["max_tokens_per_note"] == 1024
     assert cfg["skip_recent_turns"] == 2
 
 

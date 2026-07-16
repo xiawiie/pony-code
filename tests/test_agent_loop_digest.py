@@ -15,6 +15,7 @@ from unittest.mock import MagicMock
 
 import pico.agent_loop as agent_loop_module
 from pico.agent_loop import _prepare_tool_result
+from pico.model_capabilities import TokenAccounting
 from pico.security import redact_text
 
 
@@ -23,6 +24,10 @@ def _stub_agent(tmp_path, run_id="run1"):
     a.current_run_dir = tmp_path / ".pico" / "runs" / run_id
     a.current_run_dir.mkdir(parents=True, exist_ok=True)
     a.redact_text.side_effect = lambda value: value
+    a.token_accounting = TokenAccounting()
+    a.context_config = {
+        "tool_results": {"inline_tokens": 4096, "digest_tokens": 512}
+    }
     return a
 
 
@@ -40,7 +45,7 @@ def test_small_result_stored_inline(tmp_path):
 
 def test_large_result_digested_and_written_to_disk(tmp_path):
     a = _stub_agent(tmp_path)
-    big = "x = 1\n" * 500  # > 1200 char
+    big = "x = 1\n" * 5000  # > 4,096 estimated model tokens
     content, metadata = _prepare_tool_result(
         a,
         content=big,
@@ -63,7 +68,9 @@ def test_large_result_digested_and_written_to_disk(tmp_path):
 def test_large_tool_result_writes_only_redacted_private_body(tmp_path):
     agent = _stub_agent(tmp_path)
     agent.redact_text.side_effect = lambda value: redact_text(value, env={})
-    agent.context_config = {"digest_size_threshold": 100}
+    agent.context_config = {
+        "tool_results": {"inline_tokens": 100, "digest_tokens": 512}
+    }
     secret = "github_pat_A123456789012345678901234567890"
 
     content, metadata = _prepare_tool_result(
@@ -86,7 +93,9 @@ def test_raw_tool_result_inode_swap_does_not_truncate_replacement(
     monkeypatch,
 ):
     agent = _stub_agent(tmp_path)
-    agent.context_config = {"digest_size_threshold": 100}
+    agent.context_config = {
+        "tool_results": {"inline_tokens": 100, "digest_tokens": 512}
+    }
     body = "safe body\n" * 200
     source_hash = hashlib.sha256(body.encode("utf-8")).hexdigest()[:16]
     raw_dir = agent.current_run_dir / "tool_results"
@@ -127,7 +136,9 @@ def test_raw_tool_result_rejects_hardlink_without_touching_external_inode(
     tmp_path,
 ):
     agent = _stub_agent(tmp_path)
-    agent.context_config = {"digest_size_threshold": 100}
+    agent.context_config = {
+        "tool_results": {"inline_tokens": 100, "digest_tokens": 512}
+    }
     body = "safe body\n" * 200
     source_hash = hashlib.sha256(body.encode("utf-8")).hexdigest()[:16]
     raw_dir = agent.current_run_dir / "tool_results"
@@ -156,7 +167,7 @@ def test_large_result_without_run_dir_still_digests(tmp_path):
     """Without a run dir, the digest applies without a logical raw-result id."""
     a = _stub_agent(tmp_path)
     a.current_run_dir = None
-    big = "z" * 5000
+    big = "z" * 20_000
     content, metadata = _prepare_tool_result(
         a,
         content=big,
@@ -187,7 +198,10 @@ def test_digest_computed_exactly_once(tmp_path, monkeypatch):
     a = MagicMock()
     a.current_run_dir = tmp_path / ".pico" / "runs" / "r1"
     a.current_run_dir.mkdir(parents=True, exist_ok=True)
-    a.context_config = {"digest_size_threshold": 100}
+    a.token_accounting = TokenAccounting()
+    a.context_config = {
+        "tool_results": {"inline_tokens": 100, "digest_tokens": 512}
+    }
     a.redact_text.side_effect = lambda value: value
 
     _prepare_tool_result(

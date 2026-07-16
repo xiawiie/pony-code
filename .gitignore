@@ -63,6 +63,7 @@ readme_intro_locked/
 !/docs/local-stable-execution.md
 !/docs/adr/
 !/docs/adr/*.md
+!/docs/context-and-sessions.md
 
 # OS files
 .DS_Store

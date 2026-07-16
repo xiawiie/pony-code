@@ -301,8 +301,8 @@ def test_append_note_too_long_rejected(tmp_path):
     workspace.mkdir()
     user.mkdir()
     store = BlockStore(workspace_root=workspace, user_root=user)
-    with pytest.raises(ValueError, match="500"):
-        store.append_agent_note(scope="workspace", note="x" * 501)
+    with pytest.raises(ValueError, match="16384 bytes"):
+        store.append_agent_note(scope="workspace", note="x" * 16_385)
 
 
 def test_append_rejects_complete_secret_content_and_allows_prose(tmp_path):

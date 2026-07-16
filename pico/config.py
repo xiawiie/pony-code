@@ -381,6 +381,11 @@ def resolve_provider_config(*, explicit=None, project_env=None, process_env=None
 _PICO_TOML_WARNING = "warning: invalid pico.toml; using defaults"
 MAX_PICO_TOML_BYTES = 1024 * 1024
 _MISSING = object()
+_REMOVED_CONTEXT_KEYS = (
+    "history_soft_cap",
+    "history_floor_messages",
+    "injection_budget_ratio",
+)
 
 
 def _warn_invalid_pico_toml_field(path):
@@ -410,6 +415,16 @@ def _bounded_int(parent, key, default, minimum, maximum, path):
     return default
 
 
+def _bounded_bool(parent, key, default, path):
+    value = parent.get(key, _MISSING)
+    if value is _MISSING:
+        return default
+    if type(value) is bool:
+        return value
+    _warn_invalid_pico_toml_field(path)
+    return default
+
+
 def _bounded_float(parent, key, default, minimum, maximum, path):
     value = parent.get(key, _MISSING)
     if value is _MISSING:
@@ -425,9 +440,11 @@ def _bounded_float(parent, key, default, minimum, maximum, path):
 
 
 def _validated_pico_toml(raw):
+    model = _table(raw, "model", "model")
     policy = _table(raw, "policy", "policy")
     context = _table(raw, "context", "context")
-    digest = _table(context, "digest", "context.digest")
+    compaction = _table(context, "compaction", "context.compaction")
+    tool_results = _table(context, "tool_results", "context.tool_results")
     memory = _table(raw, "memory", "memory")
     recall = _table(memory, "recall", "memory.recall")
     retrieval = _table(memory, "retrieval", "memory.retrieval")
@@ -445,30 +462,35 @@ def _validated_pico_toml(raw):
         "aliases": 4.0,
         "body": 1.0,
     }
-    system_tools_hard_cap = _bounded_int(
-        context,
-        "system_tools_hard_cap",
-        20000,
-        1,
-        100000,
-        "context.system_tools_hard_cap",
-    )
-    total_budget_hard_cap = _bounded_int(
-        context,
-        "total_budget_hard_cap",
-        100000,
-        4096,
-        200000,
-        "context.total_budget_hard_cap",
-    )
-    if system_tools_hard_cap > total_budget_hard_cap:
-        print(
-            "warning: invalid pico.toml context resource caps; using defaults",
-            file=sys.stderr,
+    model_context_explicit = "context_window" in model
+    model_output_explicit = "output_limit" in model
+    if model_context_explicit:
+        configured_context_window = _bounded_int(
+            model, "context_window", 128000, 4096, 2_000_000, "model.context_window"
         )
-        system_tools_hard_cap = 20000
-        total_budget_hard_cap = 100000
+    elif "total_budget_hard_cap" in context:
+        configured_context_window = _bounded_int(
+            context,
+            "total_budget_hard_cap",
+            128000,
+            4096,
+            2_000_000,
+            "context.total_budget_hard_cap",
+        )
+        model_context_explicit = True
+    else:
+        configured_context_window = 128000
     return {
+        "_meta": {
+            "model_context_explicit": model_context_explicit,
+            "model_output_explicit": model_output_explicit,
+        },
+        "model": {
+            "context_window": configured_context_window,
+            "output_limit": _bounded_int(
+                model, "output_limit", 16384, 1, 384000, "model.output_limit"
+            ),
+        },
         "policy": {
             "max_blob_size": _bounded_int(
                 policy,
@@ -480,40 +502,59 @@ def _validated_pico_toml(raw):
             ),
         },
         "context": {
-            "history_soft_cap": _bounded_int(
+            "system_tools_hard_cap": _bounded_int(
                 context,
-                "history_soft_cap",
-                40000,
+                "system_tools_hard_cap",
+                24576,
+                1,
+                100000,
+                "context.system_tools_hard_cap",
+            ),
+            "source_pool_tokens": _bounded_int(
+                context,
+                "source_pool_tokens",
+                16384,
                 1,
                 200000,
-                "context.history_soft_cap",
+                "context.source_pool_tokens",
             ),
-            "history_floor_messages": _bounded_int(
-                context,
-                "history_floor_messages",
-                6,
-                1,
-                100,
-                "context.history_floor_messages",
-            ),
-            "injection_budget_ratio": _bounded_float(
-                context,
-                "injection_budget_ratio",
-                0.15,
-                0,
-                0.5,
-                "context.injection_budget_ratio",
-            ),
-            "system_tools_hard_cap": system_tools_hard_cap,
-            "total_budget_hard_cap": total_budget_hard_cap,
-            "digest": {
-                "size_threshold_chars": _bounded_int(
-                    digest,
-                    "size_threshold_chars",
-                    1200,
+            "compaction": {
+                "enabled": _bounded_bool(
+                    compaction, "enabled", True, "context.compaction.enabled"
+                ),
+                "reserve_tokens": _bounded_int(
+                    compaction,
+                    "reserve_tokens",
+                    16384,
                     1,
-                    1000000,
-                    "context.digest.size_threshold_chars",
+                    1_000_000,
+                    "context.compaction.reserve_tokens",
+                ),
+                "keep_recent_tokens": _bounded_int(
+                    compaction,
+                    "keep_recent_tokens",
+                    20000,
+                    1,
+                    1_000_000,
+                    "context.compaction.keep_recent_tokens",
+                ),
+            },
+            "tool_results": {
+                "inline_tokens": _bounded_int(
+                    tool_results,
+                    "inline_tokens",
+                    4096,
+                    1,
+                    100000,
+                    "context.tool_results.inline_tokens",
+                ),
+                "digest_tokens": _bounded_int(
+                    tool_results,
+                    "digest_tokens",
+                    512,
+                    1,
+                    16384,
+                    "context.tool_results.digest_tokens",
                 ),
             },
         },
@@ -530,7 +571,7 @@ def _validated_pico_toml(raw):
                 "top_k": _bounded_int(
                     recall,
                     "top_k",
-                    2,
+                    6,
                     1,
                     20,
                     "memory.recall.top_k",
@@ -538,7 +579,7 @@ def _validated_pico_toml(raw):
                 "max_tokens_per_note": _bounded_int(
                     recall,
                     "max_tokens_per_note",
-                    400,
+                    1024,
                     1,
                     4000,
                     "memory.recall.max_tokens_per_note",
@@ -587,6 +628,34 @@ def _validated_pico_toml(raw):
     }
 
 
+def _warn_deprecated_pico_toml(raw):
+    context = raw.get("context") if isinstance(raw, dict) else None
+    if not isinstance(context, dict):
+        return
+    for key in _REMOVED_CONTEXT_KEYS:
+        if key in context:
+            replacement = (
+                "source_pool_tokens"
+                if key == "injection_budget_ratio"
+                else "automatic compaction"
+            )
+            print(
+                f"warning: [context].{key} was removed; use {replacement}",
+                file=sys.stderr,
+            )
+    if "total_budget_hard_cap" in context:
+        print(
+            "warning: [context].total_budget_hard_cap is deprecated; "
+            "migrating it to [model].context_window",
+            file=sys.stderr,
+        )
+    if "digest" in context:
+        print(
+            "warning: [context.digest] was removed; use [context.tool_results] token limits",
+            file=sys.stderr,
+        )
+
+
 def load_pico_toml(workspace_root, *, expected_root_identity=None):
     """Return one complete, validated snapshot of the project TOML config."""
     try:
@@ -610,4 +679,5 @@ def load_pico_toml(workspace_root, *, expected_root_identity=None):
     if not isinstance(raw, dict):
         print(_PICO_TOML_WARNING, file=sys.stderr)
         return _validated_pico_toml({})
+    _warn_deprecated_pico_toml(raw)
     return _validated_pico_toml(raw)

@@ -179,5 +179,22 @@ def test_recall_quote_escapes_provenance_attributes(tmp_path):
     assert ' onload="x.md"' not in out
     assert ' injected="yes"' not in out
     assert "&quot;" in out
-    assert 'why="cache,evil=&quot;x"' in out
+    assert 'why="cache,evil,x"' in out
     assert "Safe body" in out
+
+
+def test_recall_renders_best_matching_passage_not_first_paragraph(tmp_path):
+    a, ws = _agent(tmp_path)
+    _w(
+        ws,
+        "notes/database.md",
+        "---\nname: database\ntype: reference\ndescription: database guide\n---\n"
+        "This opening paragraph is only a broad introduction.\n\n"
+        "Connection pool saturation requires lowering checkout latency.\n",
+    )
+
+    out = recall_for_turn(a, "connection pool saturation", budget_tokens=1000)
+
+    assert out is not None
+    assert "Connection pool saturation" in out
+    assert "broad introduction" not in out

@@ -1823,7 +1823,7 @@ def test_discover_local_docker_binds_trusted_cli_and_desktop_socket(tmp_path):
     executable.write_bytes(b"#!/bin/sh\n")
     executable.chmod(0o755)
     (binary_dir / "docker").symlink_to(executable)
-    short_home = Path("/private/tmp") / f"pico-docker-discovery-{os.getpid()}-{time.time_ns()}"
+    short_home = Path("/tmp") / f"pico-docker-discovery-{os.getpid()}-{time.time_ns()}"
     socket_dir = short_home / ".docker" / "run"
     socket_dir.mkdir(parents=True)
     endpoint = socket_dir / "docker.sock"

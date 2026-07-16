@@ -1,0 +1,243 @@
+# Context、Session 与长会话
+
+Pico 的长会话模型由四层组成：模型能力与 token 账户、动态 Context Sources、append-only Session Tree、
+以及只改变 active view 的 compaction。Canonical history 永远保留在磁盘；模型只看到当前分支的
+summary + recent tail。
+
+## 1. ModelCapabilities 与总预算
+
+所有 Provider 共用同一个能力合同：
+
+```python
+ModelCapabilities(
+    context_window=...,
+    max_output_tokens=...,
+    token_counter_mode=...,
+    source="cli|config|builtin|fallback",
+)
+```
+
+能力按以下优先级解析：
+
+1. CLI `--context-window`、`--max-output-tokens`；
+2. `pico.toml` 的 `[model]`；
+3. Pico 内置默认模型记录；
+4. 未知模型回退到 128,000 context / 16,384 output，并输出显著告警。
+
+统一公式是：
+
+```text
+W = context_window
+O = min(configured output, model max output)
+R = max(compaction reserve, O)
+I = W - R
+```
+
+默认值：
+
+| 项目 | tokens |
+| --- | ---: |
+| Context Window `W` | 128,000 |
+| 输出上限 `O` | 16,384 |
+| Compaction reserve `R` | 16,384 |
+| 输入上限 `I` | 111,616 |
+| System + tools hard cap | 24,576 |
+| Context Sources pool | 16,384 |
+| Recent tail | 20,000 |
+| Compaction summary hard cap | 13,107，即 `floor(0.8 × R)` |
+| Split-turn summary hard cap | 8,192，即 `floor(0.5 × R)` |
+| Branch summary hard cap | 2,048 |
+| Inline tool result | 4,096 |
+| Tool digest | 512 |
+
+`W - R` 至少要留下 16,384 个输入 token，否则配置被拒绝。提高输出上限会同步提高 reserve，避免请求
+声明大输出却没有为它留出窗口。小模型的 pinned cap 缩放到 `min(24,576, floor(W × 0.20))`，source pool
+缩放到 `min(16,384, floor(W × 0.125))`。
+
+模型请求、summary、Memory recall 和 tool digest 全部使用 token；文件和 Session 限制使用 bytes。字符数只
+用于 CLI 展示。没有真实 Provider usage 时，估算器按 CJK code point 约 1 token、其他文本约 4 字符/token，
+再计入 JSON/message/tool schema 结构成本，并对完整请求增加 5% 余量。真实 usage 成功返回后，后续请求优先
+使用 usage anchor 加新增尾部估算。
+
+## 2. Pinned Context 与动态来源
+
+核心 system instructions、当前路径适用的项目指令和 tool schemas 共用 24,576-token hard cap。超过总 cap
+直接抛出 `SystemContextTooLarge`；安全指令或工具 schema 不会被静默截断。README、repo map 和普通项目元数据
+属于动态来源，不永久占用 system prefix。
+
+每个 top-level turn 先产生不可变的 `ContextChunk` 候选，再由一个 allocator 按 required、P0、P1、P2 顺序
+放入共享池。分配只接受完整 chunk，不从字符中间切断 XML、列表或结构化事实。
+
+| Source | hard cap | 典型内容 |
+| --- | ---: | --- |
+| `workspace_state` | 3,072 | branch、dirty state、近期 Git 事实 |
+| `project_structure` | 6,144 | repo map、语言、模块与入口 |
+| `task_working_set` | 3,072 | 目标、最新 task checkpoint、文件、阻塞、下一步 |
+| `recalled_memory` | 6,144 | 当前 query 相关 passages |
+| `memory_index` | 1,024 | 可用 Memory 文件及短描述 |
+| `recovery_state` | 2,048 | pending/conflict/review 状态 |
+
+未使用的 source tokens 直接归还 history。实际 history 预算是：
+
+```text
+history_budget = I
+  - actual(system + tools)
+  - actual(current user + runtime feedback)
+  - actual(selected sources)
+```
+
+Pico 不再使用关键词 intent profiles、静态 100k 总预算、40k history soft cap、固定 drop order 或
+`injection_budget_ratio`。历史过长只能通过 compaction 退出 active request，不能从磁盘静默删除。
+
+每次请求 telemetry 都记录 model limits、output/reserve/input limit、pinned/source/history 实际用量、token
+count mode、summary/tail、compaction 原因和 compression ratio。`dropped_turns` 在正常合同中恒为 0。
+
+## 3. Append-only JSONL Session Tree
+
+Session 文件位于 `.pico/sessions/<session-id>.jsonl`。第一行是 `session_header`，后续每行是一个
+`session_entry`：
+
+```text
+SessionHeader
+└─ SessionEntry(id, parent_id, timestamp)
+   ├─ message
+   ├─ tool_exchange
+   ├─ model_change
+   ├─ compaction
+   ├─ branch_summary
+   ├─ task_checkpoint
+   ├─ label
+   ├─ rewind
+   ├─ context_recovery
+   └─ session_info
+```
+
+`parent_id` 形成树，文件中最后追加的 entry 是当前 leaf。正常 context 只遍历 leaf 到 root 的 active path。
+rewind/fork 从目标 entry 追加一个新分支，旧分支和其中的工具证据仍留在 JSONL。
+
+工具调用和对应结果存入同一个 `tool_exchange` entry；崩溃不能留下“已提交 tool call、未提交 result”的合法
+Session 状态。运行时 message commit 只验证并追加本轮 message batch 和小型 state delta，不深拷贝或重写完整
+transcript。
+
+持久化约束：
+
+- append 在 Session lock 下执行并 `fsync` 文件和目录；
+- 单行 hard cap 8 MiB；
+- Session 在 128 MiB 发出 soft warning，512 MiB hard fail；
+- 私有目录/文件分别为 owner-only 0700/0600，并拒绝 symlink、hardlink、identity swap；
+- 尾部不完整 JSONL 只读到最后完整行并返回 `SessionTailRepairRequired`；必须显式执行
+  `pico session tail-repair <id> --yes`，reader 不会静默修证据。
+
+Session Header 绑定 exact lexical root、Git common-dir、Git-dir 以及 root device/inode。HEAD 和 branch 可以正常
+变化，但 sibling worktree 不能直接 resume 或 workspace rewind。`clone --to-worktree` 创建新 Session，复制 active
+conversation branch、当前 summaries 和去敏后的任务目标 checkpoint；它会清除 Recovery/workspace checkpoint、
+旧文件状态与旧 worktree freshness，并绑定目标 worktree 的新 identity。
+
+## 4. Legacy 自动迁移
+
+`session list/show` 能只读识别旧 `.json`，但不会迁移。显式 resume 旧 Session 时：
+
+1. 锁住 Session root，严格验证旧格式；
+2. 把原文件写入私有 `legacy-backups/`；
+3. 将 message 链转成 entry 链，相邻 tool call/result 合并；
+4. 把 embedded task checkpoint、runtime identity/recovery state 与非空 working state 转成 control entries；
+5. 写 `.jsonl.candidate`，`fsync` 后重新完整解析验证；
+6. 原子发布 JSONL 并删除活动 legacy 文件。
+
+任何一步失败都保留原文件；重复 resume 可幂等重试。迁移完成后 runtime 只读 JSONL，不长期保留双实现。
+
+## 5. Compaction
+
+当 assembled request 超过 `W - R`，或用户显式执行 `/compact`，Pico 从 active path 尾部向前累计并保留约
+`keep_recent_tokens`。cut point 只落在 entry/turn 边界，永远不会拆开 `tool_exchange`。
+
+普通压缩生成一个 structured history summary。若单个 turn 本身超过 recent-tail 目标，则该 turn 的前缀使用
+独立 split-turn summary，尾部继续逐字保留。summary 的 section 数值是 prompt 的软目标；真正 hard cap 只有
+总 tokens：
+
+| Compaction section | 软目标 |
+| --- | ---: |
+| Goal | 1,024 |
+| Constraints & Preferences | 1,024 |
+| Progress | 3,072 |
+| Key Decisions | 2,048 |
+| Next Steps | 1,024 |
+| Critical Context | 3,072 |
+| Files & Errors | 1,536 |
+| 格式开销 | 307 |
+
+Split-turn 的 8,192 tokens 分配给 current goal、actions/tool results、decisions、live workspace、next action、
+files/errors；branch summary 的 2,048 tokens 分配给 abandoned approach、discoveries/decisions、file operations
+和 carry-forward facts。
+
+成功生成 summary 后才追加 `compaction` entry，记录 `first_kept_entry_id`、tokens before/after、tail、读写文件、
+原因和 Provider usage。Summary 调用失败不会追加 entry，也不会删除历史。Context reconstruction 找到 active path
+上最新 compaction 后，只发送 summary、可选 split summary、recent tail 和其后的新 entries。
+
+Provider 返回明确 context-length error 时，AgentLoop 允许一次 forced compaction + retry，并追加
+`context_recovery` 审计 entry。若压缩后仍超限，最多再压缩一次并返回明确错误，不循环猜测。
+
+## 6. Task Checkpoint、Rewind 与 Recovery
+
+每个 top-level turn 结束时追加一个 `task_checkpoint` entry，包含：goal/status、completed/in-progress/blocker、
+next steps、key/read/modified files、`workspace_checkpoint_id`、worktree digest 和本次 context usage。Working Set、
+Working Memory 与 file summaries 从 active branch 最新 checkpoint 派生；它们不是另一份可变 canonical history。
+
+`/rewind <entry-id>` 只切换 Session branch，不改文件。`/rewind <checkpoint-id> --workspace` 只接受关联了
+Recovery checkpoint 的合法 turn/task checkpoint，并执行：preview → 展示 restore/skip/conflict → 一次确认 →
+restore → 成功/noop 后追加 rewind。restore 失败时 Session leaf 不变。
+
+paired rewind 使用小型 intent journal 绑定 old leaf、target、唯一 operation ID、restore plan digest 和 worktree
+identity；Recovery restore audit 同时持久化 operation ID 与 plan digest。若 workspace restore 已成功但 Session
+append 时崩溃，resume 只有在 owner、parent、operation ID 与 digest 全部精确匹配时才完成 reconciliation，不能
+误认同一 checkpoint 的较新 restore。mid-turn/tool entry 不能做 workspace rewind。
+
+Host 的 `--workspace` 目标是 Source Root；Sandbox 的目标是当前 active Execution staging。它不会触发 Source
+Apply，也不会撤销已经完成的 Source Apply。finalized/pending-review Sandbox Session 禁止 rewind。
+
+## 7. CLI 与配置
+
+交互命令：
+
+```text
+/compact [focus]
+/tree
+/checkpoint [label]
+/fork <entry-id>
+/rewind <entry-or-checkpoint-id> [--workspace] [--summary[=focus]] [--yes]
+/clone --to-worktree PATH
+/remember <text>
+```
+
+非交互等价入口使用 `pico session inspect|tree|compact|checkpoint|fork|rewind|label|clone|tail-repair`。
+
+推荐配置：
+
+```toml
+[model]
+context_window = 128000
+output_limit = 16384
+
+[context]
+system_tools_hard_cap = 24576
+source_pool_tokens = 16384
+
+[context.compaction]
+enabled = true
+reserve_tokens = 16384
+keep_recent_tokens = 20000
+
+[context.tool_results]
+inline_tokens = 4096
+digest_tokens = 512
+
+[memory.recall]
+top_k = 6
+min_score = 0.3
+max_tokens_per_note = 1024
+skip_recent_turns = 2
+```
+
+旧 `--max-new-tokens` 仅保留一个迁移周期并警告；新名称是 `--max-output-tokens`。旧
+`total_budget_hard_cap` 在缺少 `[model]` 时迁移为 `model.context_window`；`history_soft_cap`、
+`history_floor_messages` 与 `injection_budget_ratio` 已移除并告警。

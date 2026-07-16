@@ -50,7 +50,7 @@ def test_memory_diagnostics_reports_metadata_caps_and_git_ignore(tmp_path, monke
     )
     (workspace_memory / "agent_notes.md").write_text("workspace note", encoding="utf-8")
     (user_memory / "agent_notes.md").write_text("user note", encoding="utf-8")
-    monkeypatch.setattr(block_store_module, "AGENT_NOTES_SOFT_LIMIT_CHARS", 4)
+    monkeypatch.setattr(block_store_module, "AGENT_NOTES_SOFT_LIMIT_BYTES", 4)
 
     result = collect_memory_diagnostics(
         repo,

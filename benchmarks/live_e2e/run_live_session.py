@@ -37,6 +37,11 @@ from pico.security import (
     redact_artifact,
     write_private_bytes_atomic,
 )
+from pico.session_store import (
+    SESSION_FORMAT_VERSION,
+    SESSION_HEADER_RECORD_TYPE,
+    SESSION_RECORD_TYPE,
+)
 
 
 LIVE_E2E_REPORT_FORMAT_VERSION = 2
@@ -246,15 +251,22 @@ def verify_pico_repo(root: Path) -> None:
 
 
 FIXTURE_PICO_TOML = """\
-[context]
-history_soft_cap = 300
-history_floor_messages = 4
-injection_budget_ratio = 0.002
-total_budget_hard_cap = 100000
-system_tools_hard_cap = 30000
+[model]
+context_window = 24576
+output_limit = 4096
 
-[context.digest]
-size_threshold_chars = 800
+[context]
+system_tools_hard_cap = 4915
+source_pool_tokens = 3072
+
+[context.compaction]
+enabled = true
+reserve_tokens = 4096
+keep_recent_tokens = 4096
+
+[context.tool_results]
+inline_tokens = 4096
+digest_tokens = 512
 
 [memory.recall]
 min_score = 0.2
@@ -262,12 +274,41 @@ min_score = 0.2
 
 
 SEED_NOTE_REL = Path(".pico/memory/notes/cache-invariant.md")
+TOOL_DIGEST_FIXTURE_REL = Path(
+    "benchmarks/live_e2e/fixtures/live_tool_digest_fixture.txt"
+)
+TOOL_DIGEST_FIXTURE_TEXT = "digest-fixture-token " * 5_000 + "\n"
 PICO_TOML_REL = Path("pico.toml")
 BACKUP_REL = Path("benchmarks/live_e2e/results/pre-run-pico.toml.bak")
+COMPACTION_FIXTURE_MESSAGES = 80
+
+
+def seed_compaction_fixture(pico) -> int:
+    """Append enough inert history for turn four to exercise auto-compaction."""
+    messages = []
+    for index in range(COMPACTION_FIXTURE_MESSAGES):
+        payload = " ".join(
+            f"fixture{index:02d}token{part:03d}" for part in range(48)
+        )
+        messages.append(
+            {
+                "role": "user" if index % 2 == 0 else "assistant",
+                "content": f"compaction-fixture-{index:02d} {payload}",
+                "_pico_meta": {
+                    "created_at": (
+                        f"2026-07-15T{index // 60:02d}:{index % 60:02d}:00+00:00"
+                    ),
+                    "origin": "live_e2e_compaction_fixture",
+                },
+            }
+        )
+    pico.session_store.append_messages(pico.session["id"], messages)
+    pico.session["messages"].extend(messages)
+    return len(messages)
 
 
 class FixtureManager:
-    """Context manager that swaps in the live-e2e fixture pico.toml + seed note.
+    """Install and restore the live config, Memory, and tool-result fixtures.
 
     On enter:
       1. If a pre-existing pico.toml is present, copy it to
@@ -276,9 +317,10 @@ class FixtureManager:
       2. Write ``FIXTURE_PICO_TOML`` to ``<repo_root>/pico.toml``.
       3. Write the fixture seed note to
          ``<repo_root>/.pico/memory/notes/cache-invariant.md``.
+      4. Write one large-line read fixture that deterministically triggers digest.
 
     On exit (never raises):
-      1. Remove the seed note if present.
+      1. Remove the seed note and digest fixture if present.
       2. Restore original pico.toml from backup, or delete the fixture
          copy if no backup existed.
     """
@@ -298,6 +340,13 @@ class FixtureManager:
     def __enter__(self) -> "FixtureManager":
         pico_toml = self.repo_root / PICO_TOML_REL
         backup = self.repo_root / BACKUP_REL
+        digest_target = self.repo_root / TOOL_DIGEST_FIXTURE_REL
+        try:
+            digest_target.lstat()
+        except FileNotFoundError:
+            pass
+        else:
+            raise FileExistsError(f"live fixture already exists: {digest_target}")
         # 1. Snapshot if present
         if pico_toml.exists():
             self._had_pico_toml = True
@@ -331,6 +380,8 @@ class FixtureManager:
                 encoding="utf-8",
             )
             ensure_private_file(seed_target)
+            digest_target.parent.mkdir(parents=True, exist_ok=True)
+            digest_target.write_text(TOOL_DIGEST_FIXTURE_TEXT, encoding="utf-8")
         except Exception:
             self.__exit__(*sys.exc_info())
             raise
@@ -342,6 +393,9 @@ class FixtureManager:
             seed_target = self.repo_root / SEED_NOTE_REL
             if seed_target.exists():
                 seed_target.unlink()
+            digest_target = self.repo_root / TOOL_DIGEST_FIXTURE_REL
+            if os.path.lexists(digest_target):
+                digest_target.unlink()
         except OSError:
             self.cleanup_errors.append("seed_remove_failed")
             print("[live-e2e] teardown: could not remove seed note", file=sys.stderr)
@@ -364,6 +418,7 @@ class FixtureManager:
         pico_toml = self.repo_root / PICO_TOML_REL
         backup = self.repo_root / BACKUP_REL
         seed = self.repo_root / SEED_NOTE_REL
+        digest_target = self.repo_root / TOOL_DIGEST_FIXTURE_REL
         try:
             config_restored = (
                 pico_toml.read_bytes() == self._original_pico_toml
@@ -373,6 +428,7 @@ class FixtureManager:
             restored = (
                 not self.cleanup_errors
                 and not seed.exists()
+                and not os.path.lexists(digest_target)
                 and not backup.exists()
                 and config_restored
             )
@@ -539,6 +595,71 @@ def read_turn_trace(trace_path):
     }
 
 
+def _merge_auxiliary_call_evidence(captured, calls):
+    """Account for compaction/branch-summary calls omitted from run traces."""
+    auxiliary = [
+        call
+        for call in calls
+        if isinstance(call, dict) and call.get("call_kind", "agent") != "agent"
+    ]
+    if not auxiliary:
+        return captured
+
+    merged = dict(captured)
+    merged["usage"] = dict(captured["usage"])
+    merged["model_attempts"] += len(auxiliary)
+    merged["model_failures"] += sum(
+        call.get("completed") is False for call in auxiliary
+    )
+
+    auxiliary_usage_complete = True
+    for call in auxiliary:
+        usage = call.get("usage")
+        if not isinstance(usage, dict):
+            auxiliary_usage_complete = False
+            usage = {}
+        if any(
+            type(usage.get(required)) is not int
+            for required in ("input_tokens", "output_tokens")
+        ):
+            auxiliary_usage_complete = False
+        for key in _LIVE_USAGE_KEYS:
+            value = usage.get(key)
+            if type(value) is int:
+                merged["usage"][key] += value
+    merged["usage_complete"] = bool(
+        captured["usage_complete"] and auxiliary_usage_complete
+    )
+
+    auxiliary_transport_complete = all(
+        type(call.get("transport_attempts")) is int
+        and type(call.get("transport_retries")) is int
+        for call in auxiliary
+    )
+    transport_complete = bool(
+        captured["transport_evidence_complete"]
+        and auxiliary_transport_complete
+    )
+    merged["transport_evidence_complete"] = transport_complete
+    if transport_complete:
+        merged["transport_attempts"] = int(captured["transport_attempts"] or 0) + sum(
+            call["transport_attempts"] for call in auxiliary
+        )
+        merged["transport_retries"] = int(captured["transport_retries"] or 0) + sum(
+            call["transport_retries"] for call in auxiliary
+        )
+    else:
+        merged["transport_attempts"] = None
+        merged["transport_retries"] = None
+    merged["billing_ambiguous"] = bool(
+        captured["billing_ambiguous"]
+        or not merged["usage_complete"]
+        or not transport_complete
+        or (merged["transport_retries"] or 0) > 0
+    )
+    return merged
+
+
 def _terminal_payload(payload):
     if not isinstance(payload, dict):
         return False
@@ -671,10 +792,17 @@ class TurnRunner:
         )
         calls = getattr(self.pico.model_client, "calls", [])
         new_calls = calls[sniffer_before:] if isinstance(calls, list) else []
-        actual_user_contents = tuple(
-            str(call.get("last_user_content", ""))
+        captured = _merge_auxiliary_call_evidence(captured, new_calls)
+        agent_calls = [
+            call
             for call in new_calls
             if isinstance(call, dict)
+            and call.get("call_kind", "agent") == "agent"
+            and call.get("completed", True) is not False
+        ]
+        actual_user_contents = tuple(
+            str(call.get("last_user_content", ""))
+            for call in agent_calls
         )
         request_metadata_by_call = tuple(captured["request_metadata"])
         metadata = (
@@ -777,9 +905,9 @@ class AssertionEngine:
         if turn == 2:
             return self.check_turn_2_digest(result, pico)
         if turn == 3:
-            return self.check_turn_3_injection_drop(result)
+            return self.check_turn_3_source_allocator(result)
         if turn == 4:
-            return self.check_turn_4_history_drop(result, pico)
+            return self.check_turn_4_compaction(result, pico)
         if turn == 5:
             return self.check_turn_5_cache_anchor(result, all_results)
         if turn == "global":
@@ -791,17 +919,17 @@ class AssertionEngine:
     def check_turn_1_recall(self, result: TurnResult) -> list[Assertion]:
         """Six assertions verifying recall triggered correctly."""
         m = result.metadata or {}
-        intent = m.get("intent") or {}
+        allocator = m.get("context_source_allocator") or {}
         injection_tokens = m.get("injection_tokens") or {}
         content = result.current_user_content or ""
 
         out = []
-        intent_name = intent.get("name", "")
+        allocator_name = allocator.get("name", "")
         out.append(Assertion(
-            name="intent_name_recall",
-            passed=intent_name == "recall",
-            expected="recall",
-            actual=str(intent_name),
+            name="priority_allocator_active",
+            passed=allocator_name == "priority_allocator",
+            expected="priority_allocator",
+            actual=str(allocator_name),
         ))
         out.append(Assertion(
             name="recalled_memory_block_present",
@@ -1056,62 +1184,98 @@ class AssertionEngine:
 
     # -- Turn 3: injection drop -----------------------------------------
 
-    def check_turn_3_injection_drop(self, result: TurnResult) -> list[Assertion]:
-        """Four assertions verifying injection budget drop behavior."""
+    def check_turn_3_source_allocator(self, result: TurnResult) -> list[Assertion]:
+        """Five assertions verifying bounded whole-chunk source allocation."""
         m = result.metadata or {}
-        budget = int(m.get("injection_budget", 0) or 0)
-        dropped = list(m.get("injection_dropped") or [])
-        tokens = m.get("injection_tokens") or {}
+        allocator = m.get("context_source_allocator") or {}
+        pool = int(allocator.get("pool_tokens", 0) or 0)
+        used = int(allocator.get("used_tokens", 0) or 0)
+        source_tokens = allocator.get("source_tokens") or {}
+        rows = (m.get("context_breakdown") or {}).get("sources") or []
+        hard_caps = {
+            str(row.get("name", "")): int(row.get("hard_cap", 0) or 0)
+            for row in rows
+            if isinstance(row, dict)
+        }
 
         out = []
         out.append(Assertion(
-            name="injection_budget_gt_zero",
-            passed=budget > 0,
-            expected="injection_budget > 0",
-            actual=str(budget),
+            name="priority_allocator_active",
+            passed=allocator.get("name") == "priority_allocator",
+            expected="context_source_allocator.name == priority_allocator",
+            actual=str(allocator.get("name", "")),
         ))
         out.append(Assertion(
-            name="injection_dropped_nonempty",
-            passed=len(dropped) >= 1,
-            expected="len(injection_dropped) >= 1",
-            actual=str(dropped),
-        ))
-        # accept either checkpoint in dropped OR checkpoint had zero tokens
-        checkpoint_tokens = int(tokens.get("checkpoint", 0) or 0)
-        out.append(Assertion(
-            name="checkpoint_dropped_or_zero_tokens",
-            passed=("checkpoint" in dropped) or (checkpoint_tokens == 0),
-            expected='"checkpoint" in dropped OR injection_tokens[checkpoint] == 0',
-            actual=f"dropped={dropped}, checkpoint_tokens={checkpoint_tokens}",
+            name="source_pool_positive",
+            passed=pool > 0,
+            expected="source pool > 0",
+            actual=str(pool),
         ))
         out.append(Assertion(
-            name="recalled_memory_not_dropped",
-            passed="recalled_memory" not in dropped,
-            expected='"recalled_memory" NOT in dropped',
-            actual=str(dropped),
+            name="source_pool_not_exceeded",
+            passed=0 <= used <= pool,
+            expected="0 <= used_tokens <= pool_tokens",
+            actual=f"used={used}, pool={pool}",
+        ))
+        out.append(Assertion(
+            name="source_totals_match_allocator",
+            passed=sum(int(value) for value in source_tokens.values()) == used,
+            expected="sum(source_tokens) == used_tokens",
+            actual=f"source_tokens={source_tokens}, used={used}",
+        ))
+        caps_respected = all(
+            type(value) is int
+            and value >= 0
+            and source in hard_caps
+            and value <= hard_caps[source]
+            for source, value in source_tokens.items()
+        )
+        out.append(Assertion(
+            name="whole_chunks_respect_source_caps",
+            passed=caps_respected and not (m.get("injection_truncated") or {}),
+            expected="source token totals <= hard caps and no text truncation",
+            actual=(
+                f"source_tokens={source_tokens}, hard_caps={hard_caps}, "
+                f"truncated={m.get('injection_truncated') or {}}"
+            ),
         ))
         return out
 
-    def check_turn_4_history_drop(self, result: TurnResult, pico) -> list[Assertion]:
-        """Five assertions verifying history budget drop."""
+    def check_turn_4_compaction(self, result: TurnResult, pico) -> list[Assertion]:
+        """Six assertions verifying compaction without canonical history loss."""
         m = result.metadata or {}
         out = []
 
         dropped = int(m.get("dropped_messages", 0) or 0)
         out.append(Assertion(
-            name="dropped_messages_gt_zero",
-            passed=dropped > 0,
-            expected="dropped_messages > 0",
+            name="no_silent_history_drop",
+            passed=dropped == 0,
+            expected="dropped_messages == 0",
             actual=str(dropped),
         ))
 
-        msg_tokens = int(m.get("messages_tokens", 0) or 0)
-        # The four-message floor may exceed the fixture's 300-token soft cap.
+        compaction = (m.get("context_breakdown") or {}).get("compaction") or {}
+        entry_id = str(compaction.get("entry_id", "") or "")
+        summary_tokens = int(compaction.get("summary_tokens", 0) or 0)
         out.append(Assertion(
-            name="messages_tokens_under_cap_plus_slop",
-            passed=msg_tokens <= 1500,
-            expected="messages_tokens <= 1500 (soft cap plus floor overflow)",
-            actual=str(msg_tokens),
+            name="compaction_summary_active",
+            passed=bool(entry_id) and summary_tokens > 0,
+            expected="compaction entry and non-empty summary are active",
+            actual=f"entry={entry_id!r}, summary_tokens={summary_tokens}",
+        ))
+        reason = str(compaction.get("reason", "") or "")
+        out.append(Assertion(
+            name="compaction_reason_budget_exceeded",
+            passed=reason == "budget_exceeded",
+            expected="budget_exceeded",
+            actual=reason,
+        ))
+        ratio = compaction.get("compression_ratio", 1.0)
+        out.append(Assertion(
+            name="compaction_reduces_active_context",
+            passed=type(ratio) in {int, float} and 0 < ratio < 1,
+            expected="0 < compression_ratio < 1",
+            actual=str(ratio),
         ))
 
         session_msgs = getattr(pico, "session", {}).get("messages", []) or []
@@ -1129,25 +1293,14 @@ class AssertionEngine:
             actual=pairing_actual,
         ))
 
-        # drop reached the wire: provider-input messages < session messages
+        # Compaction reached the wire while canonical messages remain on disk.
         wire_len = int(result.provider_input_messages_len or 0)
         session_len = len(session_msgs)
         out.append(Assertion(
-            name="drop_reached_provider_wire",
+            name="summary_tail_reached_provider_wire",
             passed=wire_len < session_len,
             expected="provider_input_messages_len < len(session.messages)",
             actual=f"wire={wire_len}, session={session_len}",
-        ))
-
-        # session["messages"] immutability check — the pre-drop entries
-        # still exist in session (build_request does not mutate session).
-        # We can only assert non-empty here; a deeper check would require
-        # capturing pre-turn session state (out of scope for a per-turn check).
-        out.append(Assertion(
-            name="session_messages_still_populated",
-            passed=session_len > 0,
-            expected="len(session.messages) > 0 (immutability preserved)",
-            actual=str(session_len),
         ))
         return out
 
@@ -1201,14 +1354,14 @@ class AssertionEngine:
             "system_prefix_hash", "system_tokens", "tools_tokens",
             "messages_count", "messages_tokens", "cache_control_breakpoints",
             "injection_tokens", "injection_truncated", "injection_dropped",
-            "injection_budget", "intent", "recall.error_count",
+            "injection_budget", "context_source_allocator", "recall.error_count",
             "recall.last_error", "dropped_messages",
         }
         missing = required - set(m.keys())
         out.append(Assertion(
             name="metadata_schema_complete",
             passed=not missing,
-            expected="all 14 required metadata fields present",
+            expected="all required request metadata fields present",
             actual=("missing: " + str(sorted(missing))) if missing else "all present",
         ))
 
@@ -1267,9 +1420,9 @@ class AssertionEngine:
         record_type = session.get("record_type")
         version = session.get("format_version")
         session_is_current = (
-            record_type == "session"
+            record_type == SESSION_RECORD_TYPE
             and type(version) is int
-            and version == 1
+            and version == SESSION_FORMAT_VERSION
             and "history" not in session
             and "schema_version" not in session
         )
@@ -1309,28 +1462,28 @@ class AssertionEngine:
         ))
 
         try:
-            persisted = json.loads(
-                Path(getattr(pico, "session_path")).read_text(encoding="utf-8")
-            )
-            persisted_type = persisted.get("record_type")
-            persisted_version = persisted.get("format_version")
+            tree = pico.session_store.load_tree(session["id"])
+            persisted = tree.projection
+            persisted_type = tree.header.get("record_type")
+            persisted_version = tree.header.get("format_version")
             persisted_valid = (
-                persisted_type == "session"
+                persisted_type == SESSION_HEADER_RECORD_TYPE
                 and type(persisted_version) is int
-                and persisted_version == 1
-                and "history" not in persisted
-                and "schema_version" not in persisted
+                and persisted_version == SESSION_FORMAT_VERSION
+                and persisted.get("record_type") == SESSION_RECORD_TYPE
+                and persisted.get("format_version") == SESSION_FORMAT_VERSION
+                and persisted.get("messages") == session.get("messages")
             )
             persisted_actual = (
                 f"record_type={persisted_type!r}, version={persisted_version!r}"
             )
-        except (AttributeError, OSError, TypeError, json.JSONDecodeError):
+        except (AttributeError, KeyError, OSError, TypeError, ValueError):
             persisted_valid = False
-            persisted_actual = "persisted session unreadable"
+            persisted_actual = "persisted JSONL Session Tree unreadable"
         out.append(Assertion(
-            name="persisted_session_is_current_without_history",
+            name="persisted_jsonl_session_tree_is_current",
             passed=persisted_valid,
-            expected="persisted session has current type/version and no obsolete fields",
+            expected="JSONL header/projection use the current format and preserve messages",
             actual=persisted_actual,
         ))
 
@@ -1699,6 +1852,24 @@ def warn_if_dirty_working_tree(root: Path) -> None:
         )
 
 
+def _provider_call_kind(system):
+    text = "\n".join(
+        str(block.get("text", ""))
+        for block in system
+        if isinstance(block, dict)
+    )
+    if any(
+        marker in text
+        for marker in (
+            "You compact coding-agent history",
+            "You summarize the prefix of one oversized coding-agent turn",
+            "Summarize an abandoned coding-agent branch",
+        )
+    ):
+        return "session_summary"
+    return "agent"
+
+
 class _SniffingProviderWrapper:
     """Wraps a real provider and records the messages sent on each call.
 
@@ -1734,25 +1905,38 @@ class _SniffingProviderWrapper:
             not value or value not in serialized
             for value in self._forbidden_values
         )
-        self.calls.append(
-            {
-                "last_user_content": last_user,
-                "call_ts_ns": time.monotonic_ns(),
-                "payload_secret_clean": payload_secret_clean,
-            }
-        )
+        call = {
+            "last_user_content": last_user,
+            "call_ts_ns": time.monotonic_ns(),
+            "payload_secret_clean": payload_secret_clean,
+            "call_kind": _provider_call_kind(system),
+            "completed": False,
+            "usage": {},
+            "transport_attempts": None,
+            "transport_retries": None,
+        }
+        self.calls.append(call)
         if not payload_secret_clean:
             raise SensitiveDataBlockedError(
                 "live provider payload contains blocked sensitive material"
             )
         try:
-            return self._inner.complete(
+            response = self._inner.complete(
                 system=system, tools=tools, messages=messages,
                 max_tokens=max_tokens, cache_breakpoints=cache_breakpoints,
             )
+            call["completed"] = True
+            call["usage"] = dict(getattr(response, "usage", None) or {})
+            return response
         finally:
             self.last_transport_attempts = getattr(
                 self._inner, "last_transport_attempts", None
+            )
+            call["transport_attempts"] = self.last_transport_attempts
+            call["transport_retries"] = (
+                max(0, self.last_transport_attempts - 1)
+                if type(self.last_transport_attempts) is int
+                else None
             )
             self.last_stop_reason = getattr(
                 self._inner, "last_stop_reason", None
@@ -1833,6 +2017,15 @@ def do_reset(repo_root: Path) -> int:
         seed.unlink()
         removed.append(str(seed.relative_to(repo_root)))
 
+    digest_target = repo_root / TOOL_DIGEST_FIXTURE_REL
+    if (
+        digest_target.is_file()
+        and not digest_target.is_symlink()
+        and digest_target.read_text(encoding="utf-8") == TOOL_DIGEST_FIXTURE_TEXT
+    ):
+        digest_target.unlink()
+        removed.append(str(digest_target.relative_to(repo_root)))
+
     backup = repo_root / BACKUP_REL
     pico_toml = repo_root / PICO_TOML_REL
     if backup.exists():
@@ -1884,10 +2077,13 @@ def main() -> int:
     warn_if_dirty_working_tree(repo_root)
     selected_api_key = settings["api_key"].strip()
 
-    # Detect pre-existing seed note (unclean previous run)
-    if (repo_root / SEED_NOTE_REL).exists():
+    # Detect any unclean previous fixture without overwriting user files.
+    if any(
+        os.path.lexists(repo_root / relative)
+        for relative in (SEED_NOTE_REL, TOOL_DIGEST_FIXTURE_REL)
+    ):
         print(
-            f"[live-e2e] {SEED_NOTE_REL} already exists — run with --reset first",
+            "[live-e2e] live fixture already exists — run with --reset first",
             file=sys.stderr,
         )
         return 2
@@ -1896,13 +2092,14 @@ def main() -> int:
     artifact_baseline = snapshot_private_artifacts(pico_root)
     wall_start = time.monotonic_ns()
 
+    digest_fixture = TOOL_DIGEST_FIXTURE_REL.as_posix()
     tool_prompt = (
         "Your first action must call the available read_file tool for "
-        "pico/runtime.py. Do not return a final answer before receiving the tool "
-        "result; then summarize that result."
+        f"{digest_fixture}. Do not return a final answer before receiving the "
+        "tool result; then summarize that result."
         if config.provider in {"ollama", "openai"}
-        else "Use the API-provided native read_file tool to read pico/runtime.py, "
-        "then summarize it. Do not emit XML tool text."
+        else "Use the API-provided native read_file tool to read "
+        f"{digest_fixture}, then summarize it. Do not emit XML tool text."
     )
     TURNS = [
         (1, "上次讨论过 cache invariant 的问题，帮我看看这个仓库的 cache 相关代码", "recall_triggered"),
@@ -1911,8 +2108,8 @@ def main() -> int:
             tool_prompt,
             "provider_tool_roundtrip",
         ),
-        (3, "再看一下 pico/context_manager.py", "injection_dropped"),
-        (4, "总结一下我们目前讨论的所有内容", "history_dropped"),
+        (3, "再看一下 pico/context_manager.py", "source_pool_bounded"),
+        (4, "总结一下我们目前讨论的所有内容", "history_compacted"),
         (5, "最后 done", "cache_anchor_verified"),
     ]
 
@@ -1948,6 +2145,8 @@ def main() -> int:
         aborted_reason: str | None = None
 
         for turn_no, prompt, expected in TURNS:
+            if turn_no == 4:
+                seed_compaction_fixture(pico)
             result = runner.run_turn(turn_no, prompt, expected)
             if result.error is not None:
                 # provider or pico error mid-turn

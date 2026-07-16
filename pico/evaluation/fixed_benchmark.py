@@ -40,10 +40,10 @@ DEFAULT_MODEL_NAME = "FakeModelClient"
 DEFAULT_MODEL_VERSION = "scripted-deterministic"
 DEFAULT_TEMPERATURE = 0.0
 DEFAULT_TOP_P = 1.0
-DEFAULT_MAX_NEW_TOKENS = 64
+DEFAULT_MAX_OUTPUT_TOKENS = 64
 DEFAULT_TIMEZONE = "Asia/Shanghai"
 REPRODUCIBILITY_LOCALE = "C.UTF-8"
-_CONTEXT_REDUCTION_SETUP = "context_reduction"
+_COMPACTION_SETUP = "compaction"
 
 
 def _git_value(args, fallback="", cwd=None):
@@ -124,12 +124,20 @@ def _checkpoint_payload(
         "checkpoint_id": checkpoint_id,
         "parent_checkpoint_id": "",
         "created_at": "2026-04-15T08:00:00+00:00",
-        "current_goal": current_goal,
+        "goal": current_goal,
+        "status": "in_progress",
         "completed": [],
-        "excluded": [],
-        "current_blocker": current_blocker,
-        "next_step": next_step,
+        "in_progress": [current_goal],
+        "blocker": current_blocker,
+        "next_steps": [next_step] if next_step else [],
         "key_files": list(key_files or []),
+        "read_files": [],
+        "modified_files": [],
+        "workspace_checkpoint_id": "",
+        "worktree_identity_digest": "",
+        "context_usage": {},
+        "label": "benchmark-setup",
+        "trigger": "benchmark_setup",
         "freshness": dict(freshness or {}),
         "summary": summary or current_goal,
         "runtime_identity": dict(runtime_identity),
@@ -142,7 +150,7 @@ def _apply_task_setup(agent, task, fixture_copy_root):
         return
 
     kind = str(setup.get("kind", "")).strip()
-    if kind == _CONTEXT_REDUCTION_SETUP:
+    if kind == _COMPACTION_SETUP:
         history_count = int(setup.get("history_turns", setup.get("history_count", 12)))
         for index in range(history_count):
             agent.session["messages"].append(
@@ -154,11 +162,11 @@ def _apply_task_setup(agent, task, fixture_copy_root):
                     },
                 }
             )
-        agent.context_config["history_soft_cap"] = int(
-            setup.get("history_soft_cap", 900)
-        )
-        agent.context_config["history_floor_messages"] = int(
-            setup.get("history_floor_messages", 6)
+        agent.session_store.save(agent.session)
+        agent.compact_session(
+            focus="preserve the benchmark continuation state",
+            reason="benchmark_setup",
+            keep_recent_tokens=int(setup.get("keep_recent_tokens", 600)),
         )
         return
 
@@ -237,7 +245,7 @@ class BenchmarkEvaluator:
         model_version=DEFAULT_MODEL_VERSION,
         temperature=DEFAULT_TEMPERATURE,
         top_p=DEFAULT_TOP_P,
-        max_new_tokens=DEFAULT_MAX_NEW_TOKENS,
+        max_output_tokens=DEFAULT_MAX_OUTPUT_TOKENS,
         timezone_name=DEFAULT_TIMEZONE,
         model_client_factory=None,
     ):
@@ -252,7 +260,7 @@ class BenchmarkEvaluator:
         self.model_version = model_version
         self.temperature = temperature
         self.top_p = top_p
-        self.max_new_tokens = max_new_tokens
+        self.max_output_tokens = max_output_tokens
         self.timezone_name = timezone_name
         self.model_client_factory = model_client_factory
         self.repo_root = self.benchmark_path.resolve().parent.parent
@@ -285,7 +293,7 @@ class BenchmarkEvaluator:
                 "decoding": {
                     "temperature": self.temperature,
                     "top_p": self.top_p,
-                    "max_new_tokens": self.max_new_tokens,
+                    "max_output_tokens": self.max_output_tokens,
                 },
                 "timezone": self.timezone_name,
                 "locale": _current_locale(),
@@ -323,7 +331,7 @@ class BenchmarkEvaluator:
             run_store=run_store,
             approval_policy="auto",
             max_steps=int(task["step_budget"]),
-            max_new_tokens=self.max_new_tokens,
+            max_output_tokens=self.max_output_tokens,
             allowed_tools=task["allowed_tools"],
         )
         _apply_task_setup(agent, task, fixture_copy_root)
@@ -430,7 +438,7 @@ def run_fixed_benchmark(
     model_version=DEFAULT_MODEL_VERSION,
     temperature=DEFAULT_TEMPERATURE,
     top_p=DEFAULT_TOP_P,
-    max_new_tokens=DEFAULT_MAX_NEW_TOKENS,
+    max_output_tokens=DEFAULT_MAX_OUTPUT_TOKENS,
     timezone_name=DEFAULT_TIMEZONE,
     model_client_factory=None,
 ):
@@ -442,7 +450,7 @@ def run_fixed_benchmark(
         model_version=model_version,
         temperature=temperature,
         top_p=top_p,
-        max_new_tokens=max_new_tokens,
+        max_output_tokens=max_output_tokens,
         timezone_name=timezone_name,
         model_client_factory=model_client_factory,
     )
@@ -457,7 +465,7 @@ def run_harness_regression_v2(
     model_version=DEFAULT_MODEL_VERSION,
     temperature=DEFAULT_TEMPERATURE,
     top_p=DEFAULT_TOP_P,
-    max_new_tokens=DEFAULT_MAX_NEW_TOKENS,
+    max_output_tokens=DEFAULT_MAX_OUTPUT_TOKENS,
     timezone_name=DEFAULT_TIMEZONE,
     model_client_factory=None,
 ):
@@ -469,7 +477,7 @@ def run_harness_regression_v2(
         model_version=model_version,
         temperature=temperature,
         top_p=top_p,
-        max_new_tokens=max_new_tokens,
+        max_output_tokens=max_output_tokens,
         timezone_name=timezone_name,
         model_client_factory=model_client_factory,
     )

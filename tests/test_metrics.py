@@ -393,18 +393,18 @@ def test_run_context_ablation_v2_writes_expected_artifact(tmp_path):
     assert "current_request_preserved_rate" in artifact["summary"]
 
 
-def test_context_ablation_compares_bounded_and_unbounded_sent_messages(tmp_path):
+def test_context_ablation_compares_compacted_and_uncompacted_sent_messages(tmp_path):
     artifact = run_context_ablation_v2(
         artifact_path=tmp_path / "context.json",
         repetitions=1,
     )
     summary = artifact["summary"]
-    assert summary["avg_bounded_request_chars"] < summary["avg_unbounded_request_chars"]
+    assert summary["avg_compacted_request_chars"] < summary["avg_uncompacted_request_chars"]
     assert summary["current_request_preserved_rate"] == 1.0
+    assert summary["canonical_history_preserved_rate"] == 1.0
     assert all(
-        config["bounded_dropped_messages"] > 0
+        config["canonical_messages_dropped"] == 0
         for config in artifact["configs"]
-        if config["history_level"] == "long"
     )
 
 
@@ -537,33 +537,31 @@ def test_real_followup_metrics_rejects_missing_run_artifact(tmp_path):
         _followup_trace_metrics(agent)
 
 
-def test_memory_summary_detector_requires_nonempty_index_bound_line():
+def test_memory_summary_detector_requires_nonempty_working_set_line():
     from pico.evaluation.experiments_synthetic import _prompt_has_reusable_file_summary
 
-    expected_line = "facts.txt -> deploy key is red"
+    expected_line = "- facts.txt: deploy key is red"
     indexed_prompt = "\n".join(
         [
-            "<pico:memory_index>",
-            "Recent working file summaries:",
+            "<pico:task_working_set>",
             "",
             expected_line,
-            "</pico:memory_index>",
+            "</pico:task_working_set>",
         ]
     )
     assert _prompt_has_reusable_file_summary(indexed_prompt, expected_line)
     assert not _prompt_has_reusable_file_summary(indexed_prompt, "")
 
 
-def test_memory_summary_detector_rejects_line_after_closed_index():
+def test_memory_summary_detector_rejects_line_after_closed_working_set():
     from pico.evaluation.experiments_synthetic import _prompt_has_reusable_file_summary
 
-    expected_line = "facts.txt -> deploy key is red"
+    expected_line = "- facts.txt: deploy key is red"
     assert not _prompt_has_reusable_file_summary(
         "\n".join(
             [
-                "<pico:memory_index>",
-                "</pico:memory_index>",
-                "Recent working file summaries:",
+                "<pico:task_working_set>",
+                "</pico:task_working_set>",
                 expected_line,
             ]
         ),

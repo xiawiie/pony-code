@@ -40,6 +40,10 @@ pico repl
 
 唯一 console command 是 `pico`。不带命令时显示帮助；一次性任务必须使用 `pico run`。
 
+Session 使用 append-only JSONL Tree 保存 Canonical Messages、工具交换、compaction 和 checkpoint。`pico repl`
+中的 `/tree`、`/compact`、`/checkpoint`、`/rewind` 用于检查和控制当前分支；恢复文件修改时使用
+`pico checkpoint restore --workspace`，不会把会话回退与工作区写入混为一谈。
+
 ## Provider destination
 
 默认 endpoint 为：
@@ -90,6 +94,7 @@ exact HEAD 单独授权；离线诊断不会连接 Provider。
 - [本地稳定版执行与验收](docs/local-stable-execution.md)
 - [领域语言与模块边界](CONTEXT.md)
 - [架构](docs/architecture.md)
+- [Context、Session 与长会话](docs/context-and-sessions.md)
 - [安全](docs/security.md)
 - [恢复](docs/recovery.md)
 - [验证](docs/verification.md)

@@ -217,6 +217,57 @@ def test_transient_provider_failures_retry_in_agent_loop_with_explicit_origins(
     }
 
 
+def test_provider_context_error_forces_one_compaction_and_retry(tmp_path):
+    provider = EvidenceScriptProvider(
+        [
+            _ProviderFailure(
+                "context_length_exceeded",
+                code="context_length_exceeded",
+                http_status=400,
+            ),
+            Response(
+                stop_reason=StopReason.END_TURN,
+                content=[
+                    {
+                        "type": "text",
+                        "text": "# Goal\nContinue\n# Next Steps\nAnswer current request",
+                    }
+                ],
+                usage={"input_tokens": 14_000, "output_tokens": 40},
+            ),
+            Response(
+                stop_reason=StopReason.END_TURN,
+                content=[{"type": "text", "text": "recovered"}],
+                usage={"input_tokens": 8_000, "output_tokens": 1},
+            ),
+        ]
+    )
+    agent = build_native_agent(tmp_path, provider)
+    for index in range(60):
+        agent.session["messages"].append(
+            {
+                "role": "user" if index % 2 == 0 else "assistant",
+                "content": f"old-marker-{index} " + ("x" * 1_000),
+                "_pico_meta": {},
+            }
+        )
+    agent.session_store.save(agent.session)
+
+    answer = agent.ask("current request")
+
+    assert answer == "recovered"
+    assert len(provider.calls) == 3
+    tree = agent.session_store.load_tree(agent.session["id"])
+    assert sum(entry["type"] == "compaction" for entry in tree.entries) == 1
+    assert sum(entry["type"] == "context_recovery" for entry in tree.entries) == 1
+    retried_messages = provider.calls[-1]
+    assert any(
+        "<pico:session_summary>" in str(message.get("content", ""))
+        for message in retried_messages
+    )
+    assert "old-marker-0" not in json.dumps(retried_messages)
+
+
 def test_nonretryable_provider_failure_is_not_replayed(tmp_path, monkeypatch):
     failure = _ProviderFailure(
         "OpenAI-compatible request failed with HTTP 429",
@@ -476,13 +527,17 @@ def test_ordinary_workspace_tool_error_commits_pair_consumes_step_and_finishes(
     runner = Mock(side_effect=RuntimeError("ordinary tool failure"))
     agent.tools["write_file"]["run"] = runner
     saved_transcripts = []
-    original_save = agent.session_store.save
+    original_append = agent.session_store.append_messages
 
-    def capture_save(session):
-        saved_transcripts.append(copy.deepcopy(session.get("messages") or []))
-        return original_save(session)
+    def capture_append(session_id, messages, *, state_updates=None):
+        saved_transcripts.append(copy.deepcopy(list(messages)))
+        return original_append(
+            session_id,
+            messages,
+            state_updates=state_updates,
+        )
 
-    monkeypatch.setattr(agent.session_store, "save", capture_save)
+    monkeypatch.setattr(agent.session_store, "append_messages", capture_append)
 
     assert agent.ask("attempt write then finish") == "recovered"
 
@@ -563,13 +618,17 @@ def test_tool_pair_is_written_by_one_session_save_without_orphan(tmp_path, monke
     ])
     agent = build_native_agent(tmp_path, provider)
     saved_transcripts = []
-    original_save = agent.session_store.save
+    original_append = agent.session_store.append_messages
 
-    def spy_save(session):
-        saved_transcripts.append(copy.deepcopy(session["messages"]))
-        return original_save(session)
+    def spy_append(session_id, messages, *, state_updates=None):
+        saved_transcripts.append(copy.deepcopy(list(messages)))
+        return original_append(
+            session_id,
+            messages,
+            state_updates=state_updates,
+        )
 
-    monkeypatch.setattr(agent.session_store, "save", spy_save)
+    monkeypatch.setattr(agent.session_store, "append_messages", spy_append)
 
     assert agent.ask("read") == "done"
 
@@ -623,19 +682,23 @@ def test_side_effect_then_pair_save_failure_stops_before_another_provider_call(
         ),
     ])
     agent = build_native_agent(tmp_path, provider)
-    original_save = agent.session_store.save
+    original_append = agent.session_store.append_messages
 
-    def fail_pair(session):
+    def fail_pair(session_id, messages, *, state_updates=None):
         if any(
             isinstance(message.get("content"), list)
             and message["content"]
             and message["content"][0].get("type") == "tool_use"
-            for message in session.get("messages", [])
+            for message in messages
         ):
             raise OSError("pair save failed")
-        return original_save(session)
+        return original_append(
+            session_id,
+            messages,
+            state_updates=state_updates,
+        )
 
-    monkeypatch.setattr(agent.session_store, "save", fail_pair)
+    monkeypatch.setattr(agent.session_store, "append_messages", fail_pair)
 
     with pytest.raises(OSError, match="pair save failed"):
         agent.ask("write file")
@@ -686,24 +749,32 @@ def test_committed_pair_save_reloads_canonical_without_duplicate_or_loss(
         ),
     ])
     agent = build_native_agent(tmp_path, provider)
-    original_save = agent.session_store.save
+    original_append = agent.session_store.append_messages
     injected = False
 
-    def commit_then_raise(session):
+    def commit_then_raise(session_id, messages, *, state_updates=None):
         nonlocal injected
         has_tool_use = any(
             isinstance(message.get("content"), list)
             and message["content"]
             and message["content"][0].get("type") == "tool_use"
-            for message in session.get("messages", [])
+            for message in messages
         )
         if has_tool_use and not injected:
             injected = True
-            original_save(session)
+            original_append(
+                session_id,
+                messages,
+                state_updates=state_updates,
+            )
             raise security_module.PrivateAtomicWriteError("committed")
-        return original_save(session)
+        return original_append(
+            session_id,
+            messages,
+            state_updates=state_updates,
+        )
 
-    monkeypatch.setattr(agent.session_store, "save", commit_then_raise)
+    monkeypatch.setattr(agent.session_store, "append_messages", commit_then_raise)
 
     assert agent.ask("read target") == "done"
 
@@ -746,25 +817,38 @@ def test_ambiguous_pair_save_never_overwrites_reloaded_canonical_with_terminal(
         ),
     ])
     agent = build_native_agent(tmp_path, provider)
-    original_save = agent.session_store.save
+    original_append = agent.session_store.append_messages
     injected = False
 
-    def replace_canonical_then_raise(session):
+    def replace_canonical_then_raise(session_id, messages, *, state_updates=None):
         nonlocal injected
         has_tool_use = any(
             isinstance(message.get("content"), list)
             and message["content"]
             and message["content"][0].get("type") == "tool_use"
-            for message in session.get("messages", [])
+            for message in messages
         )
         if has_tool_use and not injected:
             injected = True
-            original_save(session)
-            original_save(agent.session)
+            old_leaf = agent.session_store.load_tree(session_id).leaf_id
+            original_append(
+                session_id,
+                messages,
+                state_updates=state_updates,
+            )
+            agent.session_store.rewind(session_id, old_leaf)
             raise security_module.PrivateAtomicWriteError("ambiguous")
-        return original_save(session)
+        return original_append(
+            session_id,
+            messages,
+            state_updates=state_updates,
+        )
 
-    monkeypatch.setattr(agent.session_store, "save", replace_canonical_then_raise)
+    monkeypatch.setattr(
+        agent.session_store,
+        "append_messages",
+        replace_canonical_then_raise,
+    )
 
     with pytest.raises(security_module.PrivateAtomicWriteError, match="ambiguous"):
         agent.ask("read target")
@@ -796,11 +880,11 @@ def test_committed_pair_save_with_failed_reload_blocks_all_later_session_writes(
     ])
     agent = build_native_agent(tmp_path, provider)
     original_load = agent.session_store.load
-    original_save = agent.session_store.save
+    original_append = agent.session_store.append_messages
     injected = False
     later_saves = 0
 
-    def commit_then_raise(session):
+    def commit_then_raise(session_id, messages, *, state_updates=None):
         nonlocal injected, later_saves
         if injected:
             later_saves += 1
@@ -808,20 +892,28 @@ def test_committed_pair_save_with_failed_reload_blocks_all_later_session_writes(
             isinstance(message.get("content"), list)
             and message["content"]
             and message["content"][0].get("type") == "tool_use"
-            for message in session.get("messages", [])
+            for message in messages
         )
         if has_tool_use and not injected:
-            original_save(session)
+            original_append(
+                session_id,
+                messages,
+                state_updates=state_updates,
+            )
             injected = True
             raise security_module.PrivateAtomicWriteError("unreadable commit")
-        return original_save(session)
+        return original_append(
+            session_id,
+            messages,
+            state_updates=state_updates,
+        )
 
     def fail_reconciliation(session_id):
         if injected:
             raise OSError("canonical read failed")
         return original_load(session_id)
 
-    monkeypatch.setattr(agent.session_store, "save", commit_then_raise)
+    monkeypatch.setattr(agent.session_store, "append_messages", commit_then_raise)
     monkeypatch.setattr(agent.session_store, "load", fail_reconciliation)
 
     with pytest.raises(
@@ -868,19 +960,23 @@ def test_pair_save_failure_restores_pre_tool_memory(tmp_path, monkeypatch):
         "# baseline.txt\n   1: baseline",
     )
     baseline_summaries = copy.deepcopy(agent.session["memory"]["file_summaries"])
-    original_save = agent.session_store.save
+    original_append = agent.session_store.append_messages
 
-    def fail_pair(session):
+    def fail_pair(session_id, messages, *, state_updates=None):
         if any(
             isinstance(message.get("content"), list)
             and message["content"]
             and message["content"][0].get("type") == "tool_use"
-            for message in session.get("messages", [])
+            for message in messages
         ):
             raise OSError("pair save failed")
-        return original_save(session)
+        return original_append(
+            session_id,
+            messages,
+            state_updates=state_updates,
+        )
 
-    monkeypatch.setattr(agent.session_store, "save", fail_pair)
+    monkeypatch.setattr(agent.session_store, "append_messages", fail_pair)
 
     with pytest.raises(OSError, match="pair save failed"):
         agent.ask("read target")
@@ -888,7 +984,10 @@ def test_pair_save_failure_restores_pre_tool_memory(tmp_path, monkeypatch):
     persisted = agent.session_store.load(agent.session["id"])
     assert persisted["messages"][-1]["_pico_meta"]["origin"] == "runtime_terminal"
     assert persisted["working_memory"]["recent_files"] == ["baseline.txt"]
-    assert persisted["memory"]["file_summaries"] == baseline_summaries
+    assert persisted["memory"]["file_summaries"] == {
+        "baseline.txt": baseline_summaries["baseline.txt"]["summary"]
+    }
+    assert "target.txt" not in persisted["memory"]["file_summaries"]
     assert agent.session["working_memory"] == persisted["working_memory"]
     assert agent.session["memory"] == persisted["memory"]
     assert agent.current_task_state.stop_reason == "persistence_error"
@@ -912,25 +1011,33 @@ def test_pair_save_primary_error_survives_terminal_persistence_failure(
         ),
     ])
     agent = build_native_agent(tmp_path, provider)
-    original_save = agent.session_store.save
+    original_append = agent.session_store.append_messages
     user_turn_saved = False
 
-    def fail_pair_then_terminal(session):
+    def fail_pair_then_terminal(session_id, messages, *, state_updates=None):
         nonlocal user_turn_saved
         has_tool_use = any(
             isinstance(message.get("content"), list)
             and message["content"]
             and message["content"][0].get("type") == "tool_use"
-            for message in session.get("messages", [])
+            for message in messages
         )
         if has_tool_use:
             raise OSError("pair save failed")
         if user_turn_saved:
             raise RuntimeError("terminal persistence failed")
         user_turn_saved = True
-        return original_save(session)
+        return original_append(
+            session_id,
+            messages,
+            state_updates=state_updates,
+        )
 
-    monkeypatch.setattr(agent.session_store, "save", fail_pair_then_terminal)
+    monkeypatch.setattr(
+        agent.session_store,
+        "append_messages",
+        fail_pair_then_terminal,
+    )
 
     with pytest.raises(OSError, match="pair save failed"):
         agent.ask("write file")
@@ -1090,10 +1197,9 @@ def test_terminal_path_matrix_persists_exactly_one_finalization(
     if case == "preflight_error":
         monkeypatch.setattr(agent, "refresh_prefix", Mock(side_effect=primary))
     elif case == "persistence_error":
-        original_save = agent.session_store.save
+        original_append = agent.session_store.append_messages
 
-        def fail_final_answer(session):
-            messages = session.get("messages") or []
+        def fail_final_answer(session_id, messages, *, state_updates=None):
             last = messages[-1] if messages else {}
             if (
                 last.get("role") == "assistant"
@@ -1101,9 +1207,17 @@ def test_terminal_path_matrix_persists_exactly_one_finalization(
                 != "runtime_terminal"
             ):
                 raise primary
-            return original_save(session)
+            return original_append(
+                session_id,
+                messages,
+                state_updates=state_updates,
+            )
 
-        monkeypatch.setattr(agent.session_store, "save", fail_final_answer)
+        monkeypatch.setattr(
+            agent.session_store,
+            "append_messages",
+            fail_final_answer,
+        )
 
     if primary is None:
         answer = agent.ask("exercise terminal path")
@@ -1440,17 +1554,21 @@ def test_final_message_save_failure_is_persistence_error(tmp_path, monkeypatch):
             ),
         ]),
     )
-    original_save = agent.session_store.save
+    original_append = agent.session_store.append_messages
 
-    def fail_assistant(session):
+    def fail_assistant(session_id, messages, *, state_updates=None):
         if (
-            session.get("messages")
-            and session["messages"][-1].get("role") == "assistant"
+            messages
+            and messages[-1].get("role") == "assistant"
         ):
             raise OSError("assistant save failed")
-        return original_save(session)
+        return original_append(
+            session_id,
+            messages,
+            state_updates=state_updates,
+        )
 
-    monkeypatch.setattr(agent.session_store, "save", fail_assistant)
+    monkeypatch.setattr(agent.session_store, "append_messages", fail_assistant)
 
     with pytest.raises(OSError, match="assistant save failed"):
         agent.ask("finish")
@@ -1463,7 +1581,7 @@ def test_initial_user_save_failure_does_not_start_a_run(tmp_path, monkeypatch):
     agent = build_native_agent(tmp_path, NativeScriptProvider([]))
     monkeypatch.setattr(
         agent.session_store,
-        "save",
+        "append_messages",
         Mock(side_effect=OSError("user save failed")),
     )
 
@@ -1518,18 +1636,20 @@ def test_in_run_checkpoint_session_save_failure_is_persistence_error(
             }],
             usage={},
         ),
+        Response(
+            stop_reason=StopReason.END_TURN,
+            content=[{"type": "text", "text": "saved"}],
+            usage={},
+        ),
     ])
     agent = build_native_agent(tmp_path, provider)
-    original_save = agent.session_store.save
+    original_append_checkpoint = agent.session_store.append_task_checkpoint
     fault_injected = False
     failed_payload = None
 
-    def fail_checkpoint_save(session):
+    def fail_checkpoint_save(session_id, checkpoint, *, parent_id=None):
         nonlocal fault_injected, failed_payload
-        checkpoints = session.get("checkpoints") or {}
-        current_id = checkpoints.get("current_id") or ""
-        items = checkpoints.get("items") or {}
-        current = items.get(current_id) or {}
+        session = agent.session
         tool_use_ids = []
         tool_result_ids = []
         for message in session.get("messages") or []:
@@ -1547,9 +1667,8 @@ def test_in_run_checkpoint_session_save_failure_is_persistence_error(
                 if block.get("type") == "tool_result"
             )
         checkpoint_for_this_run = (
-            current_id in items
-            and current.get("current_goal") == "write"
-            and current.get("summary", "").startswith("tool_executed:")
+            checkpoint.get("goal") == "write"
+            and checkpoint.get("trigger") == "run_finished"
         )
         pair_present = (
             "tu_checkpoint" in tool_use_ids
@@ -1559,14 +1678,22 @@ def test_in_run_checkpoint_session_save_failure_is_persistence_error(
             fault_injected = True
             failed_payload = copy.deepcopy(session)
             raise OSError("checkpoint save failed")
-        return original_save(session)
+        return original_append_checkpoint(
+            session_id,
+            checkpoint,
+            parent_id=parent_id,
+        )
 
-    monkeypatch.setattr(agent.session_store, "save", fail_checkpoint_save)
+    monkeypatch.setattr(
+        agent.session_store,
+        "append_task_checkpoint",
+        fail_checkpoint_save,
+    )
 
     with pytest.raises(OSError, match="checkpoint save failed"):
         agent.ask("write")
 
-    assert len(provider.calls) == 1
+    assert len(provider.calls) == 2
     assert fault_injected is True
     assert failed_payload["checkpoints"]["current_id"]
     assert failed_payload["checkpoints"]["current_id"] in failed_payload[

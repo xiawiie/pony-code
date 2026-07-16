@@ -27,8 +27,8 @@ def test_allowed_tools_filter_prompt_and_reject_direct_execution(tmp_path):
 
     prompt = agent.prefix
 
-    assert "- read_file(" in prompt
-    assert "- run_shell(" not in prompt
+    assert "Available native tools: read_file" in prompt
+    assert "run_shell" not in prompt
     assert agent.run_tool("run_shell", {"command": "echo hi", "timeout": 20}) == "error: tool 'run_shell' is not allowed in this run"
 
 
@@ -119,8 +119,8 @@ def test_allowed_tools_filter_prompt_examples_and_rules(tmp_path):
 
     prompt = agent.prefix
 
-    assert "- read_file(" in prompt
-    assert "- write_file(" not in prompt
+    assert "Available native tools: read_file" in prompt
+    assert "write_file" not in prompt
     assert "run_shell" not in prompt
 
 
@@ -129,8 +129,8 @@ def test_allowed_tools_filter_file_edit_rules_to_available_tools(tmp_path):
 
     prompt = agent.prefix
 
-    assert "- patch_file(" in prompt
-    assert "- write_file(" not in prompt
+    assert "Available native tools: patch_file" in prompt
+    assert "write_file" not in prompt
     assert "use patch_file" in prompt
     assert "use write_file" not in prompt
 
@@ -140,7 +140,7 @@ def test_allowed_tools_prompt_includes_search_example_and_required_args(tmp_path
 
     prompt = agent.prefix
 
-    assert "- search(" in prompt
+    assert "Available native tools: search" in prompt
     assert '"name":"search"' in agent.tool_example("search")
     assert "Do not call search with args={}" in prompt
 

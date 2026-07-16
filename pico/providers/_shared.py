@@ -119,10 +119,32 @@ def _open_provider_request(client, request, *, family, retryable):
     except urllib.error.HTTPError as exc:
         status = int(exc.code)
         try:
+            error_body = exc.read(MAX_PROVIDER_RESPONSE_BYTES + 1)
+        except Exception:
+            error_body = b""
+        try:
             exc.close()
         except Exception:
             pass
-        if status == 429:
+        error_text = (
+            error_body.decode("utf-8", errors="ignore").casefold()
+            if len(error_body) <= MAX_PROVIDER_RESPONSE_BYTES
+            else ""
+        )
+        context_markers = (
+            "context_length_exceeded",
+            "context window",
+            "maximum context length",
+            "prompt is too long",
+            "prompt too long",
+            "too many tokens",
+            "input token limit",
+        )
+        if status in {400, 413, 422} and any(
+            marker in error_text for marker in context_markers
+        ):
+            code = "context_length_exceeded"
+        elif status == 429:
             code = "rate_limited"
         elif 500 <= status < 600:
             code = "http_5xx"

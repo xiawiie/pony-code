@@ -181,8 +181,8 @@ def collect_resume_metrics(
         context = run_real_context_experiment(provider=real_provider, repetitions=context_repetitions)
         security = run_real_security_experiment_suite(provider=real_provider, repetitions=security_repetitions)
         stress = {
-            "bounded_request_chars": int(round(context["summary"]["avg_bounded_request_chars"])),
-            "unbounded_request_chars": int(round(context["summary"]["avg_unbounded_request_chars"])),
+            "compacted_request_chars": int(round(context["summary"]["avg_compacted_request_chars"])),
+            "uncompacted_request_chars": int(round(context["summary"]["avg_uncompacted_request_chars"])),
         }
     else:
         stress = build_stress_agent_metrics()
@@ -218,10 +218,10 @@ def collect_resume_metrics(
             f"Recorded 3 run artifacts per execution and structured runtime metadata across {runs['run_count']} aggregated runs.",
             f"Observed prompt-cache telemetry with average cached tokens of {runs['avg_cached_tokens']:.1f} and cache-hit rate of {runs['cache_hit_rate']:.2%} when available.",
             (
-                f"In a real-model long-context experiment ({real_provider}), bounded sent-message views shrank from "
-                f"{stress['unbounded_request_chars']} to {stress['bounded_request_chars']} chars."
+                f"In a real-model long-context experiment ({real_provider}), compaction shrank sent-message views from "
+                f"{stress['uncompacted_request_chars']} to {stress['compacted_request_chars']} chars without deleting canonical history."
                 if experiment_mode == "real"
-                else f"In a synthetic long-context stress scenario, bounded sent-message views shrank from {stress['unbounded_request_chars']} to {stress['bounded_request_chars']} chars."
+                else f"In a synthetic long-context stress scenario, compaction shrank sent-message views from {stress['uncompacted_request_chars']} to {stress['compacted_request_chars']} chars without deleting canonical history."
             ),
             f"In the memory dependency experiment, repeated follow-up reads dropped from {memory['memory_off']['repeated_reads']} to {memory['memory_on']['repeated_reads']}.",
             f"In the large-scale memory experiment, repeated reads dropped from {memory_large['variants']['memory_off']['repeated_reads']} to {memory_large['variants']['memory_on']['repeated_reads']} across {memory_large['task_count']} tasks.",
@@ -253,9 +253,9 @@ def render_resume_metrics_markdown(metrics):
         f"- Average sent request message chars: {runs['avg_request_messages_chars']:.2f}",
         f"- Cache hit rate: {runs['cache_hit_rate']:.2%}",
         (
-            f"- Real-model sent-message chars (bounded vs unbounded): {stress['bounded_request_chars']} / {stress['unbounded_request_chars']}"
+            f"- Real-model sent-message chars (compacted vs uncompacted): {stress['compacted_request_chars']} / {stress['uncompacted_request_chars']}"
             if metrics.get("experiment_mode") == "real"
-            else f"- Synthetic sent-message chars (bounded vs unbounded): {stress['bounded_request_chars']} / {stress['unbounded_request_chars']}"
+            else f"- Synthetic sent-message chars (compacted vs uncompacted): {stress['compacted_request_chars']} / {stress['uncompacted_request_chars']}"
         ),
         f"- Memory repeated reads (on vs off): {memory['memory_on']['repeated_reads']} / {memory['memory_off']['repeated_reads']}",
         f"- Large-scale memory tasks: {memory_large['task_count']}",
@@ -309,9 +309,9 @@ def render_large_scale_experiment_report(metrics):
         "",
         "## Context Governance",
         (
-            f"- Real-model sent-message chars ({report_provider}, bounded vs unbounded): {metrics['stress_ablation']['bounded_request_chars']} vs {metrics['stress_ablation']['unbounded_request_chars']}"
+            f"- Real-model sent-message chars ({report_provider}, compacted vs uncompacted): {metrics['stress_ablation']['compacted_request_chars']} vs {metrics['stress_ablation']['uncompacted_request_chars']}"
             if metrics.get("experiment_mode") == "real"
-            else f"- Synthetic sent-message chars (bounded vs unbounded): {metrics['stress_ablation']['bounded_request_chars']} vs {metrics['stress_ablation']['unbounded_request_chars']}"
+            else f"- Synthetic sent-message chars (compacted vs uncompacted): {metrics['stress_ablation']['compacted_request_chars']} vs {metrics['stress_ablation']['uncompacted_request_chars']}"
         ),
         f"- Average request compression ratio across context matrix: {context['summary']['avg_request_compression_ratio']:.2%}",
         f"- Max request compression ratio across context matrix: {context['summary']['max_request_compression_ratio']:.2%}",
@@ -341,7 +341,7 @@ def render_large_scale_experiment_report(metrics):
         [
             "",
             "## Resume-Safe Claims",
-            f"- Long-context stress scenario: sent-message chars reduced from {metrics['stress_ablation']['unbounded_request_chars']} to {metrics['stress_ablation']['bounded_request_chars']}.",
+            f"- Long-context stress scenario: sent-message chars reduced from {metrics['stress_ablation']['uncompacted_request_chars']} to {metrics['stress_ablation']['compacted_request_chars']} while canonical history stayed intact.",
             f"- Large-scale memory experiment: repeated reads reduced from {memory_large['variants']['memory_off']['repeated_reads']} to {memory_large['variants']['memory_on']['repeated_reads']}.",
             f"- Platform facts: {benchmark['task_count']} benchmark tasks, {metrics['facts']['tool_count']} tool types, {metrics['facts']['run_artifact_count']} run artifacts.",
             "",
@@ -396,11 +396,12 @@ def write_benchmark_core_report(
         "",
         "## Context Ablation",
         f"- 配置数：{context.get('config_count', 0)}",
-        f"- avg_bounded_request_chars：{context_summary.get('avg_bounded_request_chars', 0.0):.2f}",
-        f"- avg_unbounded_request_chars：{context_summary.get('avg_unbounded_request_chars', 0.0):.2f}",
+        f"- avg_compacted_request_chars：{context_summary.get('avg_compacted_request_chars', 0.0):.2f}",
+        f"- avg_uncompacted_request_chars：{context_summary.get('avg_uncompacted_request_chars', 0.0):.2f}",
         f"- avg_request_compression_ratio：{context_summary.get('avg_request_compression_ratio', 0.0):.2%}",
         f"- max_request_compression_ratio：{context_summary.get('max_request_compression_ratio', 0.0):.2%}",
         f"- current_request_preserved_rate：{context_summary.get('current_request_preserved_rate', 0.0):.2%}",
+        f"- canonical_history_preserved_rate：{context_summary.get('canonical_history_preserved_rate', 0.0):.2%}",
         "",
         "## Working Memory Ablation",
         f"- memory_on repeated_reads：{memory_on.get('repeated_reads', 0)}",
@@ -416,8 +417,8 @@ def write_benchmark_core_report(
         f"- resume_false_accept_rate：{enabled_recovery.get('resume_false_accept_rate', 0.0):.2%}",
         "",
         "## 可以安全写进简历的指标",
-        "- avg_bounded_request_chars",
-        "- avg_unbounded_request_chars",
+        "- avg_compacted_request_chars",
+        "- avg_uncompacted_request_chars",
         "- avg_request_compression_ratio",
         "- max_request_compression_ratio",
         "- repeated_reads",

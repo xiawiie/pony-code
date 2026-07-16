@@ -21,6 +21,7 @@ MAINTAINER_DOCS = {
     "docs/adr/0040-docker-filtered-staging.md",
     "docs/adr/0041-distributed-release-authority.md",
     "docs/adr/0042-sealed-local-authorization.md",
+    "docs/context-and-sessions.md",
 }
 MARKDOWN_FIXTURES = {
     "benchmarks/live_e2e/fixtures/seed_cache_note.md",

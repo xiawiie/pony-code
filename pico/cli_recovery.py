@@ -10,6 +10,7 @@ import stat
 from .checkpoint_store import CheckpointStore
 from .cli_errors import CLI_EXIT_RUNTIME, CLI_EXIT_USAGE, CliError
 from .cli_output import build_inspection_redactor, print_inspection_result
+from .cli_session import load_session_readonly
 from .recovery_checkpoint_writer import RecoveryCheckpointWriter
 from .recovery_manager import RecoveryManager, collect_recovery_review_items
 from .sandbox_session import (
@@ -258,8 +259,14 @@ def handle_sessions(root, tokens, args):
         if path is None:
             raise _not_found_error("session")
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            if path.suffix == ".jsonl":
+                _storage, data, _tree = load_session_readonly(
+                    session_id,
+                    sessions_root,
+                )
+            else:
+                data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
             raise _unsafe_artifact_error() from exc
         return print_inspection_result(
             root,
@@ -560,16 +567,19 @@ def _session_files(sessions_root):
     sessions_root = _inspection_directory(sessions_root, allow_missing=True)
     if sessions_root is None:
         return []
-    files = []
+    files = {}
     for path in sorted(sessions_root.iterdir()):
-        if path.suffix != ".json":
+        if path.suffix not in {".json", ".jsonl"}:
             continue
         try:
             if stat.S_ISREG(path.lstat().st_mode):
-                files.append(require_regular_no_symlink(path))
+                safe = require_regular_no_symlink(path)
+                session_id = safe.stem
+                if session_id not in files or safe.suffix == ".jsonl":
+                    files[session_id] = safe
         except (OSError, ValueError):
             continue
-    return files
+    return [files[key] for key in sorted(files)]
 
 
 def _inspection_id(value, *, kind):

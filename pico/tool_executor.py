@@ -41,7 +41,6 @@ from .tools import (
     sandbox_privilege_denial,
 )
 from .verification import verification_evidence_for_execution
-from .workspace import clip
 
 
 @dataclass(frozen=True)
@@ -654,7 +653,7 @@ def _prepare_non_shell_tool(agent, tool, name, args, effect_class):
         return rejection
     if name == "memory_save":
         task_state = getattr(agent, "current_task_state", None)
-        current_user = getattr(task_state, "user_request", "")
+        current_user = str(getattr(task_state, "user_request", "") or "")
         if not memory_write_intent(
             current_user,
             delegated=int(getattr(agent, "depth", 0) or 0) > 0,
@@ -925,7 +924,7 @@ def _invoke_prepared_tool(prepared, execution):
             agent.workspace_observer.invalidate_call_cache()
         raw_content = prepared["tool"]["run"](prepared["args"])
         execution["runner_completed"] = True
-        execution["content"] = clip(agent.redact_text(raw_content))
+        execution["content"] = str(agent.redact_text(raw_content))
         return
 
     shell_execution = prepared["shell_execution"]
@@ -1031,7 +1030,7 @@ def _invoke_prepared_tool(prepared, execution):
             stderr=shell_result["stderr"],
             redact_text=agent.redact_text,
         )
-    execution["content"] = clip(_format_shell_result(shell_result))
+    execution["content"] = _format_shell_result(shell_result)
     if docker_plan is not None and interrupted is not None:
         raise interrupted
 

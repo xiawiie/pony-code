@@ -6,6 +6,7 @@ from unittest.mock import Mock
 import pytest
 
 from pico import Pico, SessionStore, WorkspaceContext
+from pico.agent_loop import _prepare_tool_result
 from pico.providers.fake import FakeModelClient
 import pico.tool_executor as tool_executor_module
 from pico.memory.tools import tool_memory_list, tool_memory_search
@@ -75,6 +76,31 @@ def test_effect_class_comes_from_actual_tool_specs():
     assert _effect_class(BASE_TOOL_SPECS["write_file"]) == "workspace_write"
     assert _effect_class(None) == "workspace_write"
     assert _effect_class({"risky": False}) == "workspace_write"
+
+
+def test_large_tool_result_reaches_token_digest_without_character_clip(tmp_path):
+    body = "\n".join(
+        f"value_{index} = 'cache invariant {'x' * 96}'" for index in range(200)
+    )
+    (tmp_path / "large.py").write_text(body, encoding="utf-8")
+    agent = build_agent(tmp_path)
+    agent.current_run_dir = tmp_path / ".pico" / "runs" / "digest"
+    agent.current_run_dir.mkdir(parents=True)
+
+    result = ToolExecutor(agent).execute(
+        "read_file",
+        {"path": "large.py", "start": 1, "end": 200},
+    )
+    content, metadata = _prepare_tool_result(
+        agent,
+        content=result.content,
+        tool_name="read_file",
+        tool_args={"path": "large.py", "start": 1, "end": 200},
+    )
+
+    assert len(result.content) > 4_000
+    assert metadata["digest_applied"] is True
+    assert content.startswith("[digest]")
 
 
 @pytest.mark.parametrize(
@@ -297,6 +323,18 @@ def test_delegate_cannot_save_memory_even_with_explicit_request(tmp_path):
 
     assert result.metadata["tool_error_code"] == "memory_write_not_authorized"
     assert agent.checkpoint_store.list_tool_change_records() == []
+    runner.assert_not_called()
+
+
+def test_memory_save_enforces_1024_model_token_cap(tmp_path):
+    agent = authorize_memory(build_agent(tmp_path), "请记住：一条较长规则")
+    runner = Mock(return_value="must not run")
+    agent.tools["memory_save"]["run"] = runner
+
+    result = agent.execute_tool("memory_save", {"note": "中" * 1_025})
+
+    assert result.metadata["tool_error_code"] == "invalid_arguments"
+    assert "1024 model tokens" in result.content
     runner.assert_not_called()
 
 

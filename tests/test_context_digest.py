@@ -6,11 +6,12 @@ from pico.context.digest import (
     render_digest_content,
     should_digest,
 )
+from pico.model_capabilities import TokenAccounting
 
 
 def test_should_digest_threshold():
-    assert not should_digest("short")
-    assert should_digest("x" * 1201)
+    assert not should_digest("short", threshold_tokens=5, token_counter=len)
+    assert should_digest("x" * 6, threshold_tokens=5, token_counter=len)
 
 
 def test_digest_read_file_extracts_summary():
@@ -65,6 +66,25 @@ def test_render_content_shape():
     assert f"content_sha256: sha256:{'a' * 64}" in text
     assert "raw_result_id: tool_result:abc123" in text
     assert ".pico/" not in text
+
+
+def test_render_content_respects_model_token_cap():
+    accounting = TokenAccounting()
+    d = ToolResultDigest(
+        tool="read_file",
+        title="very long title " * 500,
+        bullets=["very long bullet " * 500 for _ in range(5)],
+        source_hash="abc123",
+        content_sha256="a" * 64,
+        raw_result_id="tool_result:abc123",
+    )
+    text = render_digest_content(
+        d,
+        max_tokens=64,
+        token_counter=accounting.count_text,
+    )
+    assert accounting.count_text(text) <= 64
+    assert "abc123" in text
 
 
 def test_summarizer_exception_falls_back():

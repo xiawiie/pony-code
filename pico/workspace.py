@@ -288,7 +288,7 @@ class WorkspaceContext:
         )
 
     def stable_text(self):
-        """稳定部分：cwd, repo_root, default_branch, project_docs。塞 stable prefix。"""
+        """Legacy diagnostic view of stable workspace facts and bootstrap docs."""
         docs = "\n".join(f"- {path}\n{snippet}" for path, snippet in self.project_docs.items()) or "- none"
         display_root = self.logical_root or self.repo_root
         display_cwd = display_root
@@ -310,6 +310,27 @@ class WorkspaceContext:
             """
         ).strip()
 
+    def instruction_text(self):
+        """Render only applicable AGENTS instructions for the pinned prefix.
+
+        README and package metadata are useful context, but they are ordinary
+        project sources rather than permanent instructions.  They are allocated
+        by the dynamic project-structure source instead.
+        """
+        instructions = [
+            (path, snippet)
+            for path, snippet in self.project_docs.items()
+            if path == "AGENTS.md"
+            or path == "<global>/AGENTS.md"
+            or path.replace("\\", "/").endswith("/AGENTS.md")
+        ]
+        if not instructions:
+            return "Project instructions:\n- none"
+        docs = "\n".join(
+            f"- {path}\n{snippet}" for path, snippet in instructions
+        )
+        return "Project instructions:\n" + docs
+
     def volatile_text(self):
         """易变部分：branch, status, recent_commits。塞 volatile section。"""
         commits = "\n".join(f"- {line}" for line in self.recent_commits) or "- none"
@@ -330,8 +351,7 @@ class WorkspaceContext:
         return self.stable_text() + "\n" + self.volatile_text()
 
     def fingerprint(self):
-        # 这个指纹用来判断仓库状态是否发生了足够大的变化，
-        # 从而决定是否需要重建缓存中的 prompt prefix。
+        # The fingerprint refreshes both pinned instructions and dynamic sources.
         payload = {
             "cwd": self.cwd,
             "repo_root": self.repo_root,

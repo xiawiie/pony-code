@@ -51,13 +51,13 @@ def _verification(stdout):
     }
 
 
-def _session(session_id):
+def _session(session_id, workspace_root="/repo"):
     return {
         "record_type": "session",
-        "format_version": 1,
+        "format_version": 2,
         "id": session_id,
         "created_at": "2026-01-01T00:00:00+00:00",
-        "workspace_root": "/repo",
+        "workspace_root": str(workspace_root),
         "messages": [],
         "working_memory": {},
         "memory": {},
@@ -897,7 +897,7 @@ def test_session_temp_swap_preserves_unknown_installed_symlink(
     monkeypatch.setattr(security_module.os, "replace", swap_before_replace)
 
     with pytest.raises(ValueError, match="temp|changed|regular|symlink"):
-        store.save(_session("swapped"))
+        store.save(_session("swapped", tmp_path))
 
     assert outside.read_text(encoding="utf-8") == "outside\n"
     assert store.path("swapped").is_symlink()
@@ -925,9 +925,9 @@ def test_store_redactors_cannot_mutate_callers_or_leave_failed_trace(tmp_path):
         tmp_path / ".pico" / "sessions",
         redactor=mutating_redactor,
     )
-    session = _session("isolated")
+    session = _session("isolated", tmp_path)
     session_store.save(session)
-    assert session == _session("isolated")
+    assert session == _session("isolated", tmp_path)
 
     def failing_redactor(_value):
         raise RuntimeError("redactor failed")
@@ -1029,7 +1029,7 @@ def test_atomic_writers_remove_installed_temp_with_extra_hardlink(
     )
     cases = (
         (
-            lambda: session_store.save(_session("hardlinked_temp")),
+            lambda: session_store.save(_session("hardlinked_temp", tmp_path)),
             session_store.path("hardlinked_temp"),
         ),
         (
@@ -1047,7 +1047,7 @@ def test_atomic_writers_remove_installed_temp_with_extra_hardlink(
     )
 
     for write, canonical in cases:
-        with pytest.raises(ValueError, match="link|private|temp"):
+        with pytest.raises(ValueError, match="link|private|temp|changed"):
             write()
         assert not canonical.exists()
 

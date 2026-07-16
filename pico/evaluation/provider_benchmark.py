@@ -10,7 +10,7 @@ from .fixed_benchmark import run_fixed_benchmark
 from .fixed_benchmark import FIXED_BENCHMARK_RESULT_FORMAT_VERSION
 from .metrics_common import _safe_mean, _safe_ratio, _validate_record_header
 
-DEFAULT_PROVIDER_EXPERIMENT_MAX_NEW_TOKENS = 2048
+DEFAULT_PROVIDER_EXPERIMENT_MAX_OUTPUT_TOKENS = 16_384
 PROVIDER_EXPERIMENT_FORMAT_VERSION = 1
 
 PROVIDER_BENCHMARK_CHOICES = ("gpt", "claude", "deepseek")
@@ -131,7 +131,7 @@ def run_provider_experiments(
     benchmark_path,
     workspace_root,
     artifact_root,
-    max_new_tokens=DEFAULT_PROVIDER_EXPERIMENT_MAX_NEW_TOKENS,
+    max_output_tokens=DEFAULT_PROVIDER_EXPERIMENT_MAX_OUTPUT_TOKENS,
     providers=None,
 ):
     benchmark_path = Path(benchmark_path)
@@ -175,7 +175,7 @@ def run_provider_experiments(
                 workspace_root=workspace_root / provider_name,
                 model_name=profile["provider"],
                 model_version=profile["model"],
-                max_new_tokens=max_new_tokens,
+                max_output_tokens=max_output_tokens,
                 model_client_factory=factory,
             )
             payload["_artifact_path"] = str(artifact_path)

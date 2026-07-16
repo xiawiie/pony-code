@@ -1,1 +1,1 @@
-"""pico context subsystem: injection, digest, intent, renderer."""
+"""Pico context subsystem: source allocation, digesting, and rendering."""

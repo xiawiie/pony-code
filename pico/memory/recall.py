@@ -1,114 +1,114 @@
-"""Per-turn relevance recall for pico memory (Task 23).
-
-The renderer (:mod:`pico.context.renderer`) calls :func:`recall_for_turn`
-once per turn to decide which memory notes should be surfaced to the
-model as ``<pico:recalled_memory>`` blocks. Retrieval itself lives in
-:mod:`pico.memory.retrieval`; this module adds the *contextual*
-decisions on top:
-
-**Four guards** — a recall candidate must clear all of them, or the note
-is silently skipped:
-
-1. **min_score** — BM25 score, normalized against the top hit of this
-   query, must be ≥ ``RECALL_MIN_SCORE``. Weak keyword overlap should
-   not push spurious notes into the prompt.
-2. **max_tokens_per_note** — a note's rendered first paragraph is tail-
-   clipped to ``RECALL_MAX_TOKENS_PER_NOTE`` tokens. Long notes never
-   dominate the injection budget.
-3. **tombstone** — retrieval already excludes notes whose ``name``
-   appears in some other note's ``supersedes`` list (Task 20).
-4. **recently-recalled** — a note recalled in any of the last
-   ``RECALL_SKIP_RECENT_TURNS`` turns is skipped to avoid re-hammering
-   the model with the same content each turn.
-
-The rendered block carries provenance (``path=``, ``type=``, ``score=``,
-``why=``) so the model can weight the memory appropriately.
-"""
+"""Per-turn lexical Memory recall over one shared query snapshot."""
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from html import escape as _html_escape
+import re
 
+from pico import security as securitylib
 from pico.context.escaping import escape_pico_tags
+from pico.model_capabilities import TokenAccounting
 
-RECALL_TOP_K = 2
+from .retrieval import MemoryQuerySnapshot, tokenize
+
+
+RECALL_TOP_K = 6
 RECALL_MIN_SCORE = 0.3
-RECALL_MAX_TOKENS_PER_NOTE = 400
+RECALL_MAX_TOKENS_PER_NOTE = 1_024
 RECALL_SKIP_RECENT_TURNS = 2
 
 
+@dataclass(frozen=True)
+class RecallCandidate:
+    path: str
+    text: str
+    tokens: int
+    score: float
+    rank: int
+    note_type: str
+    why: str
+
+
 def _strip_frontmatter(text):
-    """Return the body of a memory file, stripping a leading ``---`` block."""
     if not text.startswith("---\n"):
         return text
     rest = text[4:]
     end = rest.find("\n---\n")
-    if end == -1:
-        return text
-    return rest[end + len("\n---\n") :]
+    return text if end == -1 else rest[end + len("\n---\n") :]
 
 
-def _first_paragraph(text):
-    """Return the first non-empty paragraph of a note's body."""
+def _paragraphs(text):
     body = _strip_frontmatter(text)
-    lines = body.splitlines()
-    para = []
-    started = False
-    for line in lines:
-        if not line.strip():
-            if started:
-                break
-            continue
-        started = True
-        para.append(line)
-    return "\n".join(para)
+    values = [value.strip() for value in re.split(r"\n\s*\n", body) if value.strip()]
+    return values or ([body.strip()] if body.strip() else [])
 
 
-def _count_tokens(agent, text):
-    counter = getattr(getattr(agent, "model_client", None), "count_tokens", None)
-    if callable(counter):
-        try:
-            return int(counter(text))
-        except Exception:
-            pass
-    return max(1, len(text) // 4)
+def _accounting(agent):
+    value = getattr(agent, "token_accounting", None)
+    return value if isinstance(value, TokenAccounting) else TokenAccounting(
+        getattr(getattr(agent, "model_client", None), "count_tokens", None)
+    )
+
+
+def _sanitize_before_tokens(agent, text):
+    safe, _ = securitylib.sanitize_provider_payload(
+        str(text or ""),
+        [],
+        env=getattr(agent, "redaction_env", None),
+        secret_env_names=getattr(agent, "secret_env_names", ()),
+    )
+    return str(safe)
+
+
+def _clip_tokens(text, accounting, hard_cap):
+    value = str(text or "").strip()
+    if accounting.count_text(value) <= hard_cap:
+        return value
+    low = 0
+    high = len(value)
+    while low < high:
+        middle = (low + high + 1) // 2
+        if accounting.count_text(value[:middle]) <= hard_cap:
+            low = middle
+        else:
+            high = middle - 1
+    return value[:low].rstrip()
+
+
+def _best_passage(raw, query):
+    passages = _paragraphs(raw)
+    if not passages:
+        return ""
+    terms = set(tokenize(query))
+
+    def score(passage):
+        lowered = passage.casefold()
+        passage_tokens = set(tokenize(passage))
+        overlap = len(terms & passage_tokens)
+        literal = sum(term in lowered for term in terms)
+        return overlap * 2 + literal
+
+    return max(enumerate(passages), key=lambda item: (score(item[1]), -item[0]))[1]
 
 
 def _flatten_recent(session_recent, skip_turns):
-    """Union of paths recalled in the last ``skip_turns`` turns."""
-    out = set()
-    for turn in (session_recent or [])[-skip_turns:]:
-        for p in turn or []:
-            out.add(p)
-    return out
-
-
-def _lookup_type(documents, path):
-    """Return frontmatter ``type`` for ``path`` from this query snapshot."""
-    document = documents.get(path)
-    if document is None:
-        return ""
-    return (document.frontmatter or {}).get("type", "") or ""
+    return {
+        path
+        for turn in (session_recent or [])[-skip_turns:]
+        for path in (turn or [])
+    }
 
 
 def _why_terms(snippets, query_text, cap=3):
-    """Extract the query terms that survived into the retrieved snippets.
-
-    Serves as the ``why="..."`` provenance annotation on the rendered block
-    — it lets the model see *which* query words matched, not just that they
-    did. Falls back to ``"matched"`` when we can't identify overlap.
-    """
-    query_lower = (query_text or "").lower()
+    query_tokens = set(tokenize(query_text))
     terms = []
-    for snip in snippets:
-        for tok in snip.split():
-            clean = tok.strip(".,:;!?()[]{}\"'")
-            if clean and clean.lower() in query_lower and clean not in terms:
-                terms.append(clean)
+    for snippet in snippets:
+        for token in tokenize(snippet):
+            if token in query_tokens and token not in terms:
+                terms.append(token)
                 if len(terms) >= cap:
-                    break
-        if len(terms) >= cap:
-            break
+                    return ",".join(terms)
     return ",".join(terms) if terms else "matched"
 
 
@@ -116,86 +116,119 @@ def _escape_attribute(value):
     return _html_escape(str(value), quote=True)
 
 
-def recall_for_turn(agent, user_message, budget_tokens):
-    """Return one or more ``<pico:recalled_memory>`` blocks, or ``None``.
+def _recall_config(agent):
+    all_config = getattr(agent, "context_config", None)
+    all_config = all_config if isinstance(all_config, dict) else {}
+    config = all_config.get("recall")
+    config = config if isinstance(config, dict) else {}
+    return {
+        "min_score": float(config.get("min_score", RECALL_MIN_SCORE)),
+        "top_k": int(config.get("top_k", RECALL_TOP_K)),
+        "max_tokens_per_note": int(
+            config.get("max_tokens_per_note", RECALL_MAX_TOKENS_PER_NOTE)
+        ),
+        "skip_recent_turns": int(
+            config.get("skip_recent_turns", RECALL_SKIP_RECENT_TURNS)
+        ),
+    }
 
-    Callers pass ``budget_tokens`` for consistency with other injection
-    sources; this function respects ``RECALL_MAX_TOKENS_PER_NOTE`` per
-    note and drops candidates that fail any of the four guards.
-    """
+
+def build_recall_query(agent, user_message):
+    goal = str(getattr(getattr(agent, "memory", None), "task_summary", "") or "")
+    recent_files = list(
+        getattr(getattr(agent, "memory", None), "recent_files", []) or []
+    )
+    return " ".join(
+        part for part in (str(user_message or ""), goal, " ".join(recent_files)) if part
+    ).strip()
+
+
+def recall_candidates(agent, user_message, *, snapshot=None):
     retrieval = getattr(agent, "memory_retrieval", None)
     if retrieval is None:
-        return None
-    # Task B4: recall knobs overridable via pico.toml → agent.context_config["recall"].
-    cfg_all = getattr(agent, "context_config", None)
-    if not isinstance(cfg_all, dict):
-        cfg_all = {}
-    cfg = cfg_all.get("recall") if isinstance(cfg_all.get("recall"), dict) else {}
-    min_score = float(cfg.get("min_score", RECALL_MIN_SCORE))
-    top_k = int(cfg.get("top_k", RECALL_TOP_K))
-    max_tokens_per_note = int(cfg.get("max_tokens_per_note", RECALL_MAX_TOKENS_PER_NOTE))
-    skip_recent_turns = int(cfg.get("skip_recent_turns", RECALL_SKIP_RECENT_TURNS))
-    task_summary = getattr(getattr(agent, "memory", None), "task_summary", "") or ""
-    query = f"{user_message} {task_summary}".strip()
+        return []
+    if snapshot is None:
+        snapshot = retrieval.snapshot()
+    if not isinstance(snapshot, MemoryQuerySnapshot):
+        raise TypeError("snapshot must be a MemoryQuerySnapshot")
+    config = _recall_config(agent)
+    query = build_recall_query(agent, user_message)
     if not query:
-        return None
-
-    # Ask for more than top_k so the four-guard filter has room to skip.
-    hits, documents = retrieval._search_with_documents(query, limit=top_k * 3)
+        return []
+    hits, documents = retrieval.search_snapshot(
+        snapshot,
+        query,
+        limit=max(1, config["top_k"] * 3),
+    )
     if not hits:
-        return None
-
-    # Normalize score against this query's own maximum. Absolute BM25
-    # scores are corpus-dependent; per-query normalization makes the
-    # ``min_score`` threshold interpretable across different vocabularies.
-    max_score = max(h.score for h in hits) or 1.0
-    recent_skip = _flatten_recent(agent.session.get("recently_recalled"), skip_recent_turns)
-
-    picked = []
-    for h in hits:
-        if len(picked) >= top_k:
+        return []
+    max_score = max(hit.score for hit in hits) or 1.0
+    session = getattr(agent, "session", {}) or {}
+    recent_skip = _flatten_recent(
+        session.get("recently_recalled"),
+        config["skip_recent_turns"],
+    )
+    accounting = _accounting(agent)
+    selected = []
+    for hit in hits:
+        if len(selected) >= config["top_k"]:
             break
-        norm_score = h.score / max_score
-        if norm_score < min_score:
+        normalized = hit.score / max_score
+        if normalized < config["min_score"] or hit.path in recent_skip:
             continue
-        if h.path in recent_skip:
-            continue
-        picked.append((h, norm_score))
-
-    if not picked:
-        return None
-
-    blocks = []
-    picked_paths = []
-    for hit, norm_score in picked:
         document = documents.get(hit.path)
         if document is None:
             continue
-        para = _first_paragraph(document.raw)
-        para_tokens = _count_tokens(agent, para)
-        if para_tokens > max_tokens_per_note:
-            char_budget = max_tokens_per_note * 4
-            para = para[: max(3, char_budget) - 3] + "..." if char_budget > 3 else para[:char_budget]
-        note_type = _lookup_type(documents, hit.path)
-        why = _why_terms(hit.snippets, query)
-        block = (
-            f'<pico:recalled_memory path="{_escape_attribute(hit.path)}" '
-            f'type="{_escape_attribute(note_type)}" '
-            f'score="{norm_score:.2f}" why="{_escape_attribute(why)}">\n'
-            f"{escape_pico_tags(para)}\n"
-            f"</pico:recalled_memory>"
+        passage = _clip_tokens(
+            _sanitize_before_tokens(agent, _best_passage(document.raw, query)),
+            accounting,
+            config["max_tokens_per_note"],
         )
-        blocks.append(block)
-        picked_paths.append(hit.path)
+        if not passage:
+            continue
+        safe_path = _sanitize_before_tokens(agent, hit.path)
+        note_type = _sanitize_before_tokens(
+            agent,
+            str((document.frontmatter or {}).get("type", "") or ""),
+        )
+        why = _sanitize_before_tokens(agent, _why_terms(hit.snippets, query))
+        block = (
+            f'<pico:recalled_memory path="{_escape_attribute(safe_path)}" '
+            f'type="{_escape_attribute(note_type)}" '
+            f'score="{normalized:.2f}" why="{_escape_attribute(why)}">\n'
+            f"{escape_pico_tags(passage)}\n"
+            "</pico:recalled_memory>"
+        )
+        selected.append(
+            RecallCandidate(
+                path=safe_path,
+                text=block,
+                tokens=accounting.count_text(block),
+                score=normalized,
+                rank=len(selected),
+                note_type=note_type,
+                why=why,
+            )
+        )
+    return selected
 
-    if not blocks:
+
+def recall_for_turn(agent, user_message, budget_tokens, *, snapshot=None):
+    """Compatibility renderer; new Context assembly uses candidates directly."""
+    budget = max(0, int(budget_tokens))
+    selected = []
+    used = 0
+    for candidate in recall_candidates(agent, user_message, snapshot=snapshot):
+        if used + candidate.tokens > budget:
+            continue
+        selected.append(candidate)
+        used += candidate.tokens
+    if not selected:
         return None
-
-    # Record the recall in the session so subsequent turns can honor the
-    # recently-recalled guard. Bound the window at
-    # skip_recent_turns + 1 entries to keep the session dict small.
-    recent = list(agent.session.get("recently_recalled") or [])
-    recent.append(picked_paths)
-    agent.session["recently_recalled"] = recent[-(skip_recent_turns + 1) :]
-
-    return "\n".join(blocks)
+    config = _recall_config(agent)
+    session = getattr(agent, "session", None)
+    if isinstance(session, dict):
+        recent = list(session.get("recently_recalled") or [])
+        recent.append([candidate.path for candidate in selected])
+        session["recently_recalled"] = recent[-(config["skip_recent_turns"] + 1) :]
+    return "\n".join(candidate.text for candidate in selected)

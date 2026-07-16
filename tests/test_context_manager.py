@@ -34,7 +34,7 @@ def test_pinned_system_and_tools_overflow_fails_loudly(tmp_path):
     agent = _agent(tmp_path)
     agent.prefix = "x" * 200_000
 
-    with pytest.raises(RuntimeError, match="SystemTooBig"):
+    with pytest.raises(RuntimeError, match="SystemContextTooLarge"):
         _build_request(agent, "hi")
 
 
@@ -69,10 +69,8 @@ def test_system_prefix_hash_depends_on_stable_prefix_only(tmp_path):
     ).hexdigest()
 
 
-def test_message_drop_uses_actual_request_messages(tmp_path):
+def test_history_is_never_silently_dropped(tmp_path):
     agent = _agent(tmp_path)
-    agent.context_config["history_soft_cap"] = 500
-    agent.context_config["history_floor_messages"] = 3
     agent.session["messages"] = [
         {
             "role": "user" if index % 2 == 0 else "assistant",
@@ -84,12 +82,13 @@ def test_message_drop_uses_actual_request_messages(tmp_path):
 
     request, metadata = _build_request(agent, "current")
 
-    assert metadata["dropped_messages"] > 0
+    assert metadata["dropped_messages"] == 0
     assert metadata["messages_count"] == len(request["messages"])
     assert metadata["messages_chars"] == sum(
         len(str(message["content"])) for message in request["messages"]
     )
     assert request["messages"][-1]["content"].endswith("current")
+    assert len(request["messages"]) == 11
 
 
 def test_request_metrics_and_cache_key_use_sanitized_payload(tmp_path):

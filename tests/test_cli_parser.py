@@ -4,7 +4,7 @@ import pytest
 
 from pico.cli import build_arg_parser
 from pico.cli_parser import KNOWN_TOP_LEVEL_COMMANDS, parse_cli_invocation
-from pico.runtime import DEFAULT_MAX_NEW_TOKENS, DEFAULT_MAX_STEPS
+from pico.runtime import DEFAULT_MAX_OUTPUT_TOKENS, DEFAULT_MAX_STEPS
 
 
 class RecordingParser:
@@ -109,7 +109,10 @@ def test_parser_defaults_are_generous_for_coding_agent_runs():
     args = build_arg_parser().parse_args([])
 
     assert args.max_steps == DEFAULT_MAX_STEPS == 12
-    assert args.max_new_tokens == DEFAULT_MAX_NEW_TOKENS == 2048
+    assert args.max_output_tokens is None
+    assert args.legacy_max_new_tokens is None
+    assert args.context_window is None
+    assert DEFAULT_MAX_OUTPUT_TOKENS == 16_384
     assert args.request_timeout_seconds == 300
     assert not hasattr(args, "ollama_timeout")
     assert not hasattr(args, "openai_timeout")

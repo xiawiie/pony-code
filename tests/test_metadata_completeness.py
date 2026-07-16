@@ -24,7 +24,9 @@ REQUIRED_METADATA_FIELDS = {
     "injection_truncated",
     "injection_dropped",
     "injection_budget",
-    "intent",
+    "context_source_allocator",
+    "context_breakdown",
+    "token_count_mode",
     "prefix_chars",
     "workspace_changed",
     "prefix_changed",
@@ -85,10 +87,8 @@ def test_metadata_covers_spec_section_9():
     assert FORBIDDEN_METADATA_FIELDS.isdisjoint(metadata)
 
     # Structural checks on non-scalar fields
-    assert isinstance(metadata["intent"], dict)
-    assert "name" in metadata["intent"]
-    assert "matched_keyword" in metadata["intent"]
-    assert "matched_reason" in metadata["intent"]
+    assert isinstance(metadata["context_source_allocator"], dict)
+    assert isinstance(metadata["context_breakdown"], dict)
     assert isinstance(metadata["injection_tokens"], dict)
     assert isinstance(metadata["injection_dropped"], list)
     assert isinstance(metadata["cache_control_breakpoints"], list)

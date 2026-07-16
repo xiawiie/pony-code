@@ -6,10 +6,21 @@ import stat
 
 import pytest
 
+from pico import docker_sandbox as docker_sandbox_module
 from pico import safe_subprocess as safe_subprocess_module
 
 
 _REAL_HOME = Path.home()
+
+
+@pytest.fixture(autouse=True)
+def packaged_sandbox_image_platform(monkeypatch):
+    """Run contracts against the platform shipped in the test manifest."""
+    monkeypatch.setattr(
+        docker_sandbox_module,
+        "_host_image_platform",
+        lambda: "linux/arm64",
+    )
 
 
 @pytest.fixture

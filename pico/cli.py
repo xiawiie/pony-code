@@ -64,7 +64,7 @@ from .providers.ollama import OllamaModelClient
 from .providers.openai_compatible import OpenAICompatibleModelClient
 from .providers.text_protocol_adapter import TextProtocolAdapter
 from .runtime import (
-    DEFAULT_MAX_NEW_TOKENS,
+    DEFAULT_MAX_OUTPUT_TOKENS,
     DEFAULT_MAX_STEPS,
     Pico,
     _build_redaction_snapshot,
@@ -256,6 +256,15 @@ def _max_new_tokens_argument(value):
     )
 
 
+def _context_window_argument(value):
+    return _bounded_int_argument(
+        value,
+        name="context window",
+        minimum=4096,
+        maximum=2_000_000,
+    )
+
+
 def _temperature_argument(value):
     return _bounded_float_argument(
         value,
@@ -323,6 +332,20 @@ def _build_agent_with_source_authority(args, source_workspace):
     store = None
     session_id = args.resume
     approval_policy = "never" if getattr(args, "no_input", False) and args.approval == "ask" else args.approval
+    max_output_tokens = getattr(args, "max_output_tokens", None)
+    legacy_max_new_tokens = getattr(args, "legacy_max_new_tokens", None)
+    if legacy_max_new_tokens is not None:
+        if max_output_tokens is not None:
+            raise CliError(
+                code="conflicting_model_limits",
+                message="Use only --max-output-tokens",
+                exit_code=CLI_EXIT_CONFIG,
+            )
+        print(
+            "warning: --max-new-tokens is deprecated; use --max-output-tokens",
+            file=sys.stderr,
+        )
+        max_output_tokens = legacy_max_new_tokens
     if session_id == "latest":
         store = SessionStore(session_store_root, redactor=redactor)
         session_id = store.latest()
@@ -388,7 +411,8 @@ def _build_agent_with_source_authority(args, source_workspace):
             session_id=session_id,
             approval_policy=approval_policy,
             max_steps=args.max_steps,
-            max_new_tokens=args.max_new_tokens,
+            max_output_tokens=max_output_tokens,
+            context_window=getattr(args, "context_window", None),
             secret_env_names=configured_secret_names,
             redaction_env=redaction_env,
             _trusted_redaction_env=True,
@@ -401,7 +425,8 @@ def _build_agent_with_source_authority(args, source_workspace):
         session_store=store,
         approval_policy=approval_policy,
         max_steps=args.max_steps,
-        max_new_tokens=args.max_new_tokens,
+        max_output_tokens=max_output_tokens,
+        context_window=getattr(args, "context_window", None),
         secret_env_names=configured_secret_names,
         redaction_env=redaction_env,
         _trusted_redaction_env=True,
@@ -595,7 +620,25 @@ def build_arg_parser():
         help="Extra environment variable names to treat as secrets for trace/report redaction.",
     )
     parser.add_argument("--max-steps", type=_max_steps_argument, default=DEFAULT_MAX_STEPS, help="Maximum tool/model iterations per request.")
-    parser.add_argument("--max-new-tokens", type=_max_new_tokens_argument, default=DEFAULT_MAX_NEW_TOKENS, help="Maximum model output tokens per step.")
+    parser.add_argument(
+        "--max-output-tokens",
+        type=_max_new_tokens_argument,
+        default=None,
+        help=f"Maximum model output tokens per step (default {DEFAULT_MAX_OUTPUT_TOKENS}).",
+    )
+    parser.add_argument(
+        "--max-new-tokens",
+        dest="legacy_max_new_tokens",
+        type=_max_new_tokens_argument,
+        default=None,
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--context-window",
+        type=_context_window_argument,
+        default=None,
+        help="Model context window override.",
+    )
     parser.add_argument("--temperature", type=_temperature_argument, default=0.2, help="Ollama sampling temperature.")
     parser.add_argument("--top-p", type=_top_p_argument, default=0.9, help="Ollama top-p sampling value.")
     parser.add_argument("--format", choices=("text", "json"), default="text", help="Output format for inspection commands.")

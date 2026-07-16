@@ -1,7 +1,10 @@
+from copy import deepcopy
 import tempfile
 from pathlib import Path
+import uuid
 
-from ..context.renderer import render_current_user_message
+from ..compaction import CompactionNoProgress
+from ..context.renderer import build_injection_snapshot, render_current_user_message
 from ..features import memory as memorylib
 from ..messages import make_tool_pair, message_content_text
 from ..providers.fake import FakeModelClient
@@ -62,42 +65,98 @@ def _preview_request(agent, user_message):
 
 
 def measure_request_ablation_metrics(agent, user_message):
-    original_cap = agent.context_config["history_soft_cap"]
-    results = {}
-    try:
-        for name, cap in (("bounded", 4_000), ("unbounded", 1_000_000)):
-            agent.context_config["history_soft_cap"] = cap
-            request, metadata = _preview_request(agent, user_message)
-            results[name] = {
+    return {
+        "compacted": _measure_cloned_request(agent, user_message, compacted=True),
+        "uncompacted": _measure_cloned_request(
+            agent,
+            user_message,
+            compacted=False,
+        ),
+    }
+
+
+def _measure_cloned_request(agent, user_message, *, compacted):
+    original_session = agent.session
+    original_store = agent.session_store
+    original_client = agent.model_client
+    original_anchor = getattr(agent, "_pending_token_anchor", None)
+    clone = deepcopy(original_session)
+    clone["id"] = f"ablation-{uuid.uuid4().hex[:12]}"
+    with tempfile.TemporaryDirectory(prefix="pico-context-ablation-") as temp_dir:
+        store = SessionStore(
+            Path(temp_dir).resolve() / "sessions",
+            redactor=agent.redact_artifact,
+        )
+        try:
+            agent.session = clone
+            agent.session_store = store
+            store.save(clone)
+            compaction_entry = ""
+            if compacted:
+                compacted_summary = (
+                    "# Goal\nContinue the benchmark.\n"
+                    "# Progress\nOlder synthetic history was summarized.\n"
+                    "# Next Steps\nAnswer the current request."
+                )
+                agent.model_client = FakeModelClient(
+                    [compacted_summary, compacted_summary]
+                )
+                try:
+                    result = agent.compact_session(
+                        reason="ablation",
+                        keep_recent_tokens=64,
+                    )
+                    compaction_entry = result.entry["id"]
+                except CompactionNoProgress:
+                    compaction_entry = ""
+                agent.model_client = original_client
+            preview = {
+                "role": "user",
+                "content": str(user_message),
+                "_pico_meta": {"created_at": "2026-07-10T00:00:00+00:00"},
+            }
+            clone["messages"] = [*clone.get("messages", []), preview]
+            store.save(clone)
+            snapshot, telemetry = build_injection_snapshot(agent, user_message)
+            request, metadata = agent.context_manager.build_request(
+                injection_snapshot=snapshot,
+                injection_telemetry=telemetry,
+                preflight_metadata={},
+            )
+            persisted = store.load(clone["id"])
+            return {
                 "request_chars": _sent_message_chars(request),
                 "dropped_messages": int(metadata["dropped_messages"]),
-                "current_request_preserved": user_message in _latest_plain_user(request),
+                "current_request_preserved": user_message
+                in _latest_plain_user(request),
+                "canonical_message_count": len(persisted["messages"]),
+                "active_message_count": len(request["messages"]),
+                "canonical_history_preserved": persisted["messages"]
+                == clone["messages"],
+                "compaction_applied": bool(compaction_entry),
             }
-    finally:
-        agent.context_config["history_soft_cap"] = original_cap
-    return results
+        finally:
+            agent.session = original_session
+            agent.session_store = original_store
+            agent.model_client = original_client
+            agent._pending_token_anchor = original_anchor
 
 
 def _prompt_has_reusable_file_summary(prompt, expected_working_line):
-    marker = "Recent working file summaries:"
     expected_working_line = str(expected_working_line).strip()
     if not expected_working_line:
         return False
-    in_memory_index = False
-    in_working_summaries = False
+    in_working_set = False
     for line in str(prompt).splitlines():
         line = line.strip()
-        if line == "<pico:memory_index>":
-            in_memory_index = True
+        if line == "<pico:task_working_set>":
+            in_working_set = True
             continue
-        if in_memory_index and line == "</pico:memory_index>":
+        if in_working_set and line == "</pico:task_working_set>":
             return False
-        if not in_memory_index:
+        if not in_working_set:
             continue
-        if line == marker:
-            in_working_summaries = True
-            continue
-        if in_working_summaries and line == expected_working_line:
+        if line == expected_working_line:
             return True
     return False
 
@@ -116,17 +175,17 @@ def build_stress_agent_metrics():
         )
         _seed_plain_messages(agent, 12, "stress-history", 1_400)
         metrics = measure_request_ablation_metrics(agent, "recall")
-        bounded = metrics["bounded"]
-        unbounded = metrics["unbounded"]
+        compacted = metrics["compacted"]
+        uncompacted = metrics["uncompacted"]
         return {
-            "bounded_request_chars": bounded["request_chars"],
-            "unbounded_request_chars": unbounded["request_chars"],
-            "bounded_dropped_messages": bounded["dropped_messages"],
+            "compacted_request_chars": compacted["request_chars"],
+            "uncompacted_request_chars": uncompacted["request_chars"],
+            "canonical_messages_dropped": 0,
             "compression_ratio": _safe_ratio(
-                unbounded["request_chars"] - bounded["request_chars"],
-                unbounded["request_chars"],
+                uncompacted["request_chars"] - compacted["request_chars"],
+                uncompacted["request_chars"],
             ),
-            "current_request_preserved": bounded["current_request_preserved"],
+            "current_request_preserved": compacted["current_request_preserved"],
         }
 
 
@@ -188,12 +247,32 @@ def _set_irrelevant_memory(agent):
     summaries = agent.session.setdefault("memory", {}).setdefault("file_summaries", {})
     summaries.clear()
     memorylib.set_file_summary_dict(summaries, "other.txt", "team mascot is blue", workspace_root=agent.root)
-    agent.memory.remember_file("other.txt")
+    agent.memory.recent_files = ["other.txt"]
     agent._sync_working_memory()
+    _replace_checkpoint_files(agent, "other.txt", "team mascot is blue")
 
 
 def _clear_file_summary_memory(agent):
     agent.session.setdefault("memory", {})["file_summaries"] = {}
+    agent.memory.recent_files = []
+    agent._sync_working_memory()
+    _replace_checkpoint_files(agent)
+
+
+def _replace_checkpoint_files(agent, path="", summary=""):
+    checkpoints = agent.session.get("checkpoints", {})
+    checkpoints = checkpoints if isinstance(checkpoints, dict) else {}
+    items = checkpoints.get("items", {})
+    checkpoint = items.get(checkpoints.get("current_id", "")) if isinstance(items, dict) else None
+    if not isinstance(checkpoint, dict):
+        return
+    checkpoint["key_files"] = (
+        [{"path": path, "summary": summary, "freshness": None}]
+        if path
+        else []
+    )
+    checkpoint["read_files"] = [path] if path else []
+    checkpoint["modified_files"] = []
 
 
 def _age_bootstrap_messages(agent, filler_count=8):
@@ -213,13 +292,35 @@ def _bootstrap_tool_use_id(agent):
 def _prepare_memory_followup(agent, filename):
     bootstrap_tool_use_id = _bootstrap_tool_use_id(agent)
 
-    summary = agent.session["memory"]["file_summaries"][filename]["summary"]
+    summary_value = agent.session["memory"]["file_summaries"][filename]
+    summary = (
+        summary_value.get("summary", "")
+        if isinstance(summary_value, dict)
+        else str(summary_value)
+    )
     model_client = getattr(agent.model_client, "_inner", agent.model_client)
-    model_client.expected_working_line = f"{filename} -> {summary}"
+    model_client.expected_working_line = f"- {filename}: {summary}"
     _age_bootstrap_messages(agent)
-    agent.context_config["history_soft_cap"] = 900
-    agent.context_config["history_floor_messages"] = 2
+    agent.session_store.save(agent.session)
+    _compact_with_neutral_summary(agent, reason="memory_ablation")
     return bootstrap_tool_use_id, model_client
+
+
+def _compact_with_neutral_summary(agent, *, reason, keep_recent_tokens=256):
+    original_client = agent.model_client
+    summary_text = (
+        "# Goal\nAnswer from the latest task checkpoint.\n"
+        "# Progress\nThe source file was read.\n"
+        "# Next Steps\nUse the compacted working set."
+    )
+    agent.model_client = FakeModelClient([summary_text, summary_text])
+    try:
+        agent.compact_session(
+            reason=reason,
+            keep_recent_tokens=keep_recent_tokens,
+        )
+    finally:
+        agent.model_client = original_client
 
 
 def _run_memory_variant(mode):
@@ -311,8 +412,9 @@ def _set_irrelevant_memory_for_task(agent):
     summaries = agent.session.setdefault("memory", {}).setdefault("file_summaries", {})
     summaries.clear()
     memorylib.set_file_summary_dict(summaries, "other.txt", "the team mascot is blue", workspace_root=agent.root)
-    agent.memory.remember_file("other.txt")
+    agent.memory.recent_files = ["other.txt"]
     agent._sync_working_memory()
+    _replace_checkpoint_files(agent, "other.txt", "the team mascot is blue")
 
 
 def _run_memory_task_variant(task, variant):
@@ -404,18 +506,21 @@ def run_context_stress_matrix(repetitions=5):
                         _seed_plain_messages(agent, note_count, "matrix-note", 180)
                         _seed_plain_messages(agent, history_count, "matrix-history", 700)
                         metrics = measure_request_ablation_metrics(agent, request_text)
-                        bounded = metrics["bounded"]
-                        unbounded = metrics["unbounded"]
+                        compacted = metrics["compacted"]
+                        uncompacted = metrics["uncompacted"]
                         per_run.append(
                             {
-                                "bounded_request_chars": bounded["request_chars"],
-                                "unbounded_request_chars": unbounded["request_chars"],
-                                "bounded_dropped_messages": bounded["dropped_messages"],
+                                "compacted_request_chars": compacted["request_chars"],
+                                "uncompacted_request_chars": uncompacted["request_chars"],
+                                "canonical_messages_dropped": 0,
                                 "compression_ratio": _safe_ratio(
-                                    unbounded["request_chars"] - bounded["request_chars"],
-                                    unbounded["request_chars"],
+                                    uncompacted["request_chars"] - compacted["request_chars"],
+                                    uncompacted["request_chars"],
                                 ),
-                                "current_request_preserved": bounded["current_request_preserved"],
+                                "current_request_preserved": compacted["current_request_preserved"],
+                                "canonical_history_preserved": compacted[
+                                    "canonical_history_preserved"
+                                ],
                             }
                         )
                 configs.append(
@@ -424,30 +529,46 @@ def run_context_stress_matrix(repetitions=5):
                         "history_level": history_label,
                         "note_level": note_label,
                         "request_level": request_label,
-                        "bounded_request_chars": _safe_mean(item["bounded_request_chars"] for item in per_run),
-                        "unbounded_request_chars": _safe_mean(item["unbounded_request_chars"] for item in per_run),
-                        "bounded_dropped_messages": _safe_mean(item["bounded_dropped_messages"] for item in per_run),
+                        "compacted_request_chars": _safe_mean(item["compacted_request_chars"] for item in per_run),
+                        "uncompacted_request_chars": _safe_mean(item["uncompacted_request_chars"] for item in per_run),
+                        "canonical_messages_dropped": 0,
                         "compression_ratio": _safe_mean(item["compression_ratio"] for item in per_run),
                         "current_request_preserved_rate": _safe_ratio(
                             sum(1 for item in per_run if item["current_request_preserved"]),
                             len(per_run),
                         ),
+                        "canonical_history_preserved_rate": _safe_ratio(
+                            sum(
+                                1
+                                for item in per_run
+                                if item["canonical_history_preserved"]
+                            ),
+                            len(per_run),
+                        ),
                     }
                 )
     ratios = [config["compression_ratio"] for config in configs]
-    bounded_chars = [config["bounded_request_chars"] for config in configs]
-    unbounded_chars = [config["unbounded_request_chars"] for config in configs]
+    compacted_chars = [config["compacted_request_chars"] for config in configs]
+    uncompacted_chars = [config["uncompacted_request_chars"] for config in configs]
     return {
         "config_count": len(configs),
         "configs": configs,
         "summary": {
-            "avg_bounded_request_chars": _safe_mean(bounded_chars),
-            "avg_unbounded_request_chars": _safe_mean(unbounded_chars),
+            "avg_compacted_request_chars": _safe_mean(compacted_chars),
+            "avg_uncompacted_request_chars": _safe_mean(uncompacted_chars),
             "avg_request_compression_ratio": _safe_mean(ratios),
             "max_request_compression_ratio": max(ratios) if ratios else 0.0,
             "min_request_compression_ratio": min(ratios) if ratios else 0.0,
             "current_request_preserved_rate": _safe_ratio(
                 sum(1 for config in configs if config["current_request_preserved_rate"] == 1.0),
+                len(configs),
+            ),
+            "canonical_history_preserved_rate": _safe_ratio(
+                sum(
+                    1
+                    for config in configs
+                    if config["canonical_history_preserved_rate"] == 1.0
+                ),
                 len(configs),
             ),
         },

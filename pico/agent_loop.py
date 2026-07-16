@@ -13,8 +13,10 @@ from .action_codec import FinalAction, RetryAction, ToolAction, decode_action
 from .providers._shared import _ProviderFailure
 from . import security as securitylib
 from .checkpoint import CHECKPOINT_NONE_STATUS, CHECKPOINT_PARTIAL_STALE_STATUS, CHECKPOINT_WORKSPACE_MISMATCH_STATUS
+from .compaction import CompactionError, CompactionNoProgress
+from .context_manager import ContextBudgetExceeded
 from .context.renderer import build_injection_snapshot
-from .messages import append_messages, make_tool_pair
+from .messages import make_tool_pair
 from .recovery_policy import assess_command
 from .recovery_models import TRACE_RECOVERY_CHECKPOINT_CREATED
 from .recovery_checkpoint_writer import (
@@ -58,6 +60,26 @@ _USAGE_SUM_KEYS = (
 
 _ATTEMPT_ORIGINS = ("initial", "tool_followup", "retry_action", "model_retry")
 _MODEL_RETRY_DELAYS = (0.5, 1.0)
+
+
+def _is_context_length_error(error):
+    code = str(getattr(error, "code", "") or "").casefold()
+    if code in {
+        "context_length_exceeded",
+        "context_window_exceeded",
+        "context_too_long",
+    }:
+        return True
+    text = str(error).casefold()
+    return any(
+        marker in text
+        for marker in (
+            "context_length_exceeded",
+            "maximum context length",
+            "context window exceeded",
+            "prompt too long",
+        )
+    )
 
 
 def _empty_usage_totals():
@@ -300,27 +322,50 @@ def _commit_session(agent, *, messages=()):
     blocked_cause = getattr(agent, "_session_write_blocked_cause", None)
     if blocked_cause is not None:
         raise SessionCommitError(blocked_cause)
-    candidate = agent.redact_artifact(deepcopy(agent.session))
     safe_messages = tuple(agent.redact_artifact(message) for message in messages)
-    candidate["messages"] = append_messages(candidate.get("messages", []), *safe_messages)
+    session_id = agent.session["id"]
+    for key in ("working_memory", "memory", "recently_recalled"):
+        agent.session[key] = agent.redact_artifact(agent.session.get(key, {}))
+    agent.memory = type(agent.memory).from_dict(
+        agent.session.get("working_memory"),
+        workspace_root=agent.root,
+    )
+    state_updates = {
+        key: agent.redact_artifact(agent.session.get(key, {}))
+        for key in ("resume_state", "recovery", "runtime_identity")
+    }
     try:
-        saved_path = agent.session_store.save(candidate)
+        saved_path = agent.session_store.append_messages(
+            session_id,
+            safe_messages,
+            state_updates=state_updates,
+        )
     except Exception as exc:
         if getattr(exc, "committed", False):
             try:
-                persisted = agent.session_store.load(candidate["id"])
+                persisted = agent.session_store.load(session_id)
             except Exception:
                 _block_session_writes(agent, exc)
                 raise SessionCommitError(exc) from exc
             _adopt_session(
                 agent,
                 persisted,
-                agent.session_store.path_for(candidate["id"]),
+                agent.session_store.path_for(session_id),
             )
-            if persisted == candidate:
+            if (
+                persisted.get("messages", [])[-len(safe_messages) :]
+                == list(safe_messages)
+                if safe_messages
+                else True
+            ) and all(
+                persisted.get(key) == value
+                for key, value in state_updates.items()
+            ):
                 return
         raise SessionCommitError(exc) from exc
-    _adopt_session(agent, candidate, saved_path)
+    agent.session["messages"].extend(deepcopy(safe_messages))
+    agent.session.update(deepcopy(state_updates))
+    agent.session_path = saved_path
 
 
 def _plain_message(role, text, *, origin=""):
@@ -378,13 +423,22 @@ def _prepare_tool_result(
     display_content = safe_content
     tool_args = tool_args or {}
 
-    # Task B3: threshold overridable via pico.toml → agent.context_config.
+    # Tool result limits are model-token budgets, shared with Context accounting.
     cfg = getattr(agent, "context_config", None)
     if not isinstance(cfg, dict):
         cfg = {}
-    threshold = int(cfg.get("digest_size_threshold", 1200))
+    tool_result_config = cfg.get("tool_results")
+    tool_result_config = (
+        tool_result_config if isinstance(tool_result_config, dict) else {}
+    )
+    inline_tokens = int(tool_result_config.get("inline_tokens", 4_096))
+    digest_tokens = int(tool_result_config.get("digest_tokens", 512))
     # Only run the digest heuristic if the caller hasn't already digested.
-    if not digest_applied and should_digest(safe_content, threshold=threshold):
+    if not digest_applied and should_digest(
+        safe_content,
+        threshold_tokens=inline_tokens,
+        token_counter=agent.token_accounting.count_text,
+    ):
         # Task D1: single-call digest. Compute the digest once (per-tool
         # summarizer runs exactly once); then attach a logical result id
         # after the content-addressed body is durably written.
@@ -444,7 +498,11 @@ def _prepare_tool_result(
                 raw_result_id = ""
         if raw_result_id:
             digest = _dc_replace(digest, raw_result_id=raw_result_id)
-        display_content = render_digest_content(digest)
+        display_content = render_digest_content(
+            digest,
+            max_tokens=digest_tokens,
+            token_counter=agent.token_accounting.count_text,
+        )
         digest_applied = True
 
     return display_content, {
@@ -508,7 +566,6 @@ def _build_attempt_request(
     injection_snapshot,
     injection_telemetry,
     preflight_metadata,
-    context_reduction_checkpoint_created,
     attempt_origin,
     model_execution,
 ):
@@ -519,12 +576,47 @@ def _build_attempt_request(
         model_execution["model_retries"] += 1
     agent.run_store.write_task_state(task_state)
     prompt_started_at = time.monotonic()
-    request, request_metadata = agent.context_manager.build_request(
-        injection_snapshot=injection_snapshot,
-        injection_telemetry=injection_telemetry,
-        preflight_metadata=preflight_metadata,
-        runtime_feedback=runtime_feedback,
-    )
+    compaction_result = None
+    for compaction_attempt in range(3):
+        try:
+            request, request_metadata = agent.context_manager.build_request(
+                injection_snapshot=injection_snapshot,
+                injection_telemetry=injection_telemetry,
+                preflight_metadata=preflight_metadata,
+                runtime_feedback=runtime_feedback,
+            )
+            break
+        except ContextBudgetExceeded as budget_error:
+            enabled = bool(
+                agent.context_config.get("compaction", {}).get("enabled", True)
+            )
+            if not enabled or compaction_attempt >= 2:
+                raise
+            keep_recent = max(
+                1_024,
+                agent.model_budget.keep_recent_tokens // (2**compaction_attempt),
+            )
+            try:
+                compaction_result = agent.compact_session(
+                    reason="budget_exceeded",
+                    keep_recent_tokens=keep_recent,
+                )
+            except (CompactionError, CompactionNoProgress) as compaction_error:
+                raise budget_error from compaction_error
+            agent.emit_trace(
+                task_state,
+                "context_compacted",
+                {
+                    "reason": "budget_exceeded",
+                    "attempt": compaction_attempt + 1,
+                    "tokens_before": compaction_result.tokens_before,
+                    "tokens_after": compaction_result.tokens_after,
+                    "summary_tokens": compaction_result.summary_tokens,
+                    "tail_tokens": compaction_result.tail_tokens,
+                    "compression_ratio": compaction_result.compression_ratio,
+                    "entry_id": compaction_result.entry["id"],
+                },
+            )
     recall_paths = list(request_metadata.pop("recall_commit_paths", []) or [])
     agent.last_request_metadata = dict(request_metadata)
     if recall_paths:
@@ -552,11 +644,10 @@ def _build_attempt_request(
         and request_metadata.get("resume_status")
         == CHECKPOINT_PARTIAL_STALE_STATUS
     ):
-        _create_resume_checkpoint(
-            agent,
+        agent.emit_trace(
             task_state,
-            user_message,
-            trigger="freshness_mismatch",
+            "checkpoint_freshness_mismatch",
+            {"stale_paths": list(request_metadata.get("stale_paths", []))},
         )
     elif (
         attempts == 1
@@ -575,23 +666,6 @@ def _build_attempt_request(
                 ),
             },
         )
-        _create_resume_checkpoint(
-            agent,
-            task_state,
-            user_message,
-            trigger="workspace_mismatch",
-        )
-    if (
-        request_metadata["dropped_messages"] > 0
-        and not context_reduction_checkpoint_created
-    ):
-        _create_resume_checkpoint(
-            agent,
-            task_state,
-            user_message,
-            trigger="context_reduction",
-        )
-        context_reduction_checkpoint_created = True
     agent.emit_trace(
         task_state,
         "model_requested",
@@ -602,12 +676,7 @@ def _build_attempt_request(
             "request_metadata": request_metadata,
         },
     )
-    return (
-        request,
-        request_metadata,
-        prompt_started_at,
-        context_reduction_checkpoint_created,
-    )
+    return request, request_metadata, prompt_started_at
 
 
 def _complete_model_attempt(
@@ -625,7 +694,7 @@ def _complete_model_attempt(
             system=request["system"],
             tools=request["tools"],
             messages=request["messages"],
-            max_tokens=agent.max_new_tokens,
+            max_tokens=agent.max_output_tokens,
             cache_breakpoints=request["cache_control_breakpoints"],
         )
     except KeyboardInterrupt as exc:
@@ -653,6 +722,9 @@ def _complete_model_attempt(
 
     completion_usage = dict(response.usage or {})
     _add_usage(completion_usage_totals, completion_usage)
+    anchor = getattr(agent, "_pending_token_anchor", None)
+    if anchor is not None:
+        agent.token_accounting.commit_provider_usage(completion_usage, anchor)
     try:
         action, blocked_tool_result = _sanitize_action(
             agent,
@@ -951,12 +1023,6 @@ def _apply_tool_action(
             ),
         },
     )
-    _create_resume_checkpoint(
-        agent,
-        task_state,
-        user_message,
-        trigger="tool_executed",
-    )
     return int(consumed_step)
 
 
@@ -975,22 +1041,17 @@ def _run_agent_attempts(
         injection_telemetry,
     ) = _start_agent_run(agent, task_state, user_message)
     runtime_feedback = ""
-    context_reduction_checkpoint_created = False
     tool_steps = 0
     attempts = 0
     attempt_origin = "initial"
     model_retry_count = 0
     retry_action_count = 0
+    context_recovery_count = 0
     max_attempts = max(agent.max_steps * 3, agent.max_steps + 4)
 
     while tool_steps < agent.max_steps and attempts < max_attempts:
         attempts += 1
-        (
-            request,
-            request_metadata,
-            prompt_started_at,
-            context_reduction_checkpoint_created,
-        ) = _build_attempt_request(
+        request, request_metadata, prompt_started_at = _build_attempt_request(
             agent,
             task_state,
             user_message,
@@ -999,7 +1060,6 @@ def _run_agent_attempts(
             injection_snapshot,
             injection_telemetry,
             preflight_metadata,
-            context_reduction_checkpoint_created,
             attempt_origin,
             model_execution,
         )
@@ -1014,6 +1074,49 @@ def _run_agent_attempts(
             attempt_origin,
         )
         if model_error is not None:
+            if (
+                _is_context_length_error(model_error)
+                and context_recovery_count < 1
+                and attempts < max_attempts
+            ):
+                try:
+                    recovery = agent.compact_session(
+                        reason="provider_context_error",
+                        keep_recent_tokens=max(
+                            1_024,
+                            min(
+                                agent.model_budget.keep_recent_tokens // 2,
+                                agent.model_budget.input_limit // 4,
+                            ),
+                        ),
+                    )
+                except CompactionError:
+                    recovery = None
+                if recovery is not None:
+                    recovery_entry = agent.session_store.append_control(
+                        agent.session["id"],
+                        "context_recovery",
+                        {
+                            "failed_attempt": attempts,
+                            "compaction_entry_id": recovery.entry["id"],
+                            "tokens_before": recovery.tokens_before,
+                            "tokens_after": recovery.tokens_after,
+                        },
+                    )
+                    agent.emit_trace(
+                        task_state,
+                        "context_recovery",
+                        {
+                            "failed_attempt": attempts,
+                            "compaction_entry_id": recovery.entry["id"],
+                            "context_recovery_entry_id": recovery_entry["id"],
+                            "tokens_before": recovery.tokens_before,
+                            "tokens_after": recovery.tokens_after,
+                        },
+                    )
+                    context_recovery_count += 1
+                    attempt_origin = "model_retry"
+                    continue
             if (
                 isinstance(model_error, _ProviderFailure)
                 and model_error.retryable
@@ -1231,16 +1334,6 @@ def _finalize_run(
             ),
         )
     attempt("task_state_write", lambda: agent.run_store.write_task_state(task_state))
-    if not _session_writes_blocked(agent):
-        attempt(
-            "resume_checkpoint",
-            lambda: _create_resume_checkpoint(
-                agent,
-                task_state,
-                user_message,
-                trigger=trigger,
-            ),
-        )
     recovery_checkpoint = None
     if not _session_writes_blocked(agent):
         recovery_checkpoint = attempt(
@@ -1271,6 +1364,31 @@ def _finalize_run(
                 run_verification_evidence,
             ),
         )
+    if not _session_writes_blocked(agent):
+        changed_paths = list(
+            (model_execution.get("tool_report") or {}).get("changed_paths", [])
+        )
+        errors_before_checkpoint = len(finalization_errors)
+        task_checkpoint = attempt(
+            "task_checkpoint",
+            lambda: _create_resume_checkpoint(
+                agent,
+                task_state,
+                user_message,
+                trigger=trigger,
+                modified_files=changed_paths,
+            ),
+        )
+        if (
+            task_checkpoint is None
+            and primary_exception is None
+            and len(finalization_errors) > errors_before_checkpoint
+        ):
+            task_state.stop_persistence_error()
+            attempt(
+                "task_state_persistence_error",
+                lambda: agent.run_store.write_task_state(task_state),
+            )
     run_finished = attempt(
         "run_finished",
         lambda: agent.emit_trace(
@@ -1326,9 +1444,21 @@ def _finalize_run(
     return final
 
 
-def _create_resume_checkpoint(agent, task_state, user_message, trigger):
+def _create_resume_checkpoint(
+    agent,
+    task_state,
+    user_message,
+    trigger,
+    *,
+    modified_files=(),
+):
     try:
-        checkpoint = agent.create_checkpoint(task_state, user_message, trigger=trigger)
+        checkpoint = agent.create_checkpoint(
+            task_state,
+            user_message,
+            trigger=trigger,
+            modified_files=modified_files,
+        )
     except Exception as exc:
         _block_session_writes(agent, exc)
         if isinstance(exc, OSError) or getattr(exc, "committed", False):
@@ -1340,8 +1470,12 @@ def _create_resume_checkpoint(agent, task_state, user_message, trigger):
         "checkpoint_created",
         {
             "checkpoint_id": checkpoint["checkpoint_id"],
-            "checkpoint_kind": "resume_summary",
+            "checkpoint_kind": "task",
             "trigger": trigger,
+            "workspace_checkpoint_id": checkpoint.get(
+                "workspace_checkpoint_id",
+                "",
+            ),
         },
     )
     return checkpoint
@@ -1387,7 +1521,15 @@ def _finalize_recovery_checkpoint(agent, task_state, run_tool_change_ids, run_ve
     task_state.recovery_checkpoint_id = record["checkpoint_id"]
     set_current_recovery_checkpoint_id(agent.session, record["checkpoint_id"])
     try:
-        agent.session_path = agent.session_store.save(agent.session)
+        agent.session_path = agent.session_store.append_messages(
+            agent.session["id"],
+            (),
+            state_updates={
+                "resume_state": agent.session.get("resume_state", {}),
+                "recovery": agent.session.get("recovery", {}),
+                "runtime_identity": agent.session.get("runtime_identity", {}),
+            },
+        )
     except Exception as exc:
         _block_session_writes(agent, exc)
         raise

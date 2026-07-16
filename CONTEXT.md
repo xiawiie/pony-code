@@ -36,7 +36,17 @@ Provider complete 或 response processing 阶段失败的 Model Attempt。`model
 **Action**：`decode_action` 从 Model Response 产生的 Tool、Final 或 Retry 决策。一次 attempt 只处理
 一个 Action。
 
-**Canonical Messages**：Session 中唯一 transcript。Provider transport 不维护第二份历史。
+**Canonical Messages**：Session Tree 中唯一 transcript。Provider transport 不维护第二份历史；compaction 只改变
+active Model Request view，不删除 canonical entries。
+
+**Session Tree**：append-only JSONL 中由 `id/parent_id` 形成的会话分支树。当前文件尾 entry 是 active leaf；
+rewind/fork 追加新分支，不重写旧历史。
+
+**Compaction**：把 active branch 的旧前缀总结为 Session entry，并保留 recent tail 的模型上下文变换。它不是
+Durable Memory 写入、历史删除或 workspace restore。
+
+**Task Checkpoint**：每个 top-level turn 结束时写入 Session Tree 的 continuation state，包含目标、进度、文件、
+Recovery checkpoint 引用和 Context usage。它不同于 Recovery Record。
 
 **Text Protocol Adapter**：把结构化 Model Request 显式转换为 text transport prompt 的边界，用于
 OpenAI-compatible 与 Ollama；它不是自动 capability probe 或 Provider registry。
@@ -56,8 +66,9 @@ trace event 和 Git commit 是不同概念。
 
 **Agent Notes**：每个 scope 唯一的 append-only `agent_notes.md`，只在用户明确要求记忆时追加。
 
-**Query Snapshot**：一次 retrieval query 内共享的 path、metadata、frontmatter 与原文；查询结束即释放，
-不形成跨查询 cache。
+**Memory Query Snapshot**：一个 top-level turn 内由 Memory index、recall 与 link expansion 共享的 path、metadata、
+frontmatter、原文和 lexical index。若 bounded no-follow inventory 完全一致，parsed snapshot 可跨 turn 复用；
+任何文件增删改、identity 变化或不安全 inventory 都使 cache 失效。
 
 **Source Root**：用户拥有的规范项目树；Sandbox 从它建立基线，只有 Source Apply Transaction 可以把
 已审查变更写回它。
@@ -134,17 +145,18 @@ _Avoid_：Command Result、Exit Code、Tool Status
 | --- | --- |
 | `pico.cli*` | 解析显式命令、展示结果、调用 runtime/inspection/recovery API |
 | `pico.config` | 精确根目录 `.env`、Provider resolver、stdlib TOML 读取与安全 secret 写入 |
-| `pico.context*`、`pico.prompt_prefix` | 构建请求上下文、预算、注入、digest 与稳定前缀 |
+| `pico.model_capabilities`、`pico.context*`、`pico.prompt_prefix` | 统一 token 账户、请求预算、Context Sources、digest 与稳定前缀 |
 | `pico.providers.*` | Provider wire transport 与 Provider-neutral `Response` |
 | `pico.action_codec`、`pico.agent_loop` | Action 解码与单 attempt/单 action 协调 |
 | `pico.tools`、`pico.tool_executor` | 工具 schema、policy/approval、单次执行与 effect terminalization |
-| `pico.session_store`、`pico.run_store` | Canonical session 与 run/report/trace persistence |
+| `pico.session_store`、`pico.compaction`、`pico.run_store` | JSONL Session Tree、active context compaction 与 run/report/trace persistence |
 | `pico.checkpoint_store`、`pico.recovery_*` | recovery records、preview、restore 与 durability |
 | `pico.memory.*` | User Notes、Agent Notes、query snapshot 与 retrieval |
 
 ## 维护不变量
 
-- 删除优先于兼容：没有 deprecated alias、读时 converter 或多代 runtime 分派。
+- 兼容边界必须显式且短期：旧 `--max-new-tokens` 仅 warning alias；legacy Session 仅在显式首次 resume 时
+  candidate+backup 迁移。正常 runtime 不维护多代 Session 分派。
 - 外部输入继续 fail closed；路径必须锚定 trusted root，私有文件拒绝 symlink、hardlink 和特殊文件。
 - secret 在 session、trace、report、tool result 与 recovery artifact 之前统一脱敏。
 - approval 发生在 mutation lock 之前；primary exception 不被 cleanup/finalizer 的次生错误覆盖。
