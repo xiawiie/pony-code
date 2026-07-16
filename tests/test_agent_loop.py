@@ -181,6 +181,14 @@ def test_transient_provider_failures_retry_in_agent_loop_with_explicit_origins(
     ]
     assert [event["reason_code"] for event in failed] == ["timeout", "http_5xx"]
     assert turns[0]["attempt_origin"] == "model_retry"
+    assert [
+        (
+            event["transport_attempts"],
+            event["transport_retries"],
+            event["transport_evidence_complete"],
+        )
+        for event in failed + turns
+    ] == [(1, 0, True)] * 3
     report = agent.run_store.load_report(agent.current_task_state.run_id)
     assert report["model"] == {
         "attempts": 3,
@@ -310,6 +318,12 @@ def test_missing_custom_transport_evidence_is_null_in_report(tmp_path):
     assert execution["evidence_complete"] is False
     assert execution["transport_attempts"] is None
     assert execution["transport_retries"] is None
+    model_turn = next(
+        event for event in read_trace(agent) if event["event"] == "model_turn"
+    )
+    assert model_turn["transport_attempts"] is None
+    assert model_turn["transport_retries"] is None
+    assert model_turn["transport_evidence_complete"] is False
 
 
 def test_pico_ask_delegates_to_agent_loop(tmp_path):

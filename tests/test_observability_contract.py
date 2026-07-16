@@ -95,6 +95,23 @@ def test_trace_projector_drops_secret_shaped_and_absolute_metadata():
     assert "stop_reason" not in event
 
 
+def test_trace_projector_preserves_transport_evidence():
+    event = project_trace_event(
+        _state(),
+        "model_turn",
+        {
+            "transport_attempts": 1,
+            "transport_retries": 0,
+            "transport_evidence_complete": True,
+        },
+        created_at="2026-07-12T00:00:00Z",
+    )
+
+    assert event["transport_attempts"] == 1
+    assert event["transport_retries"] == 0
+    assert event["transport_evidence_complete"] is True
+
+
 def test_trace_reader_requires_complete_sandbox_evidence():
     started = project_trace_event(
         _state(),
