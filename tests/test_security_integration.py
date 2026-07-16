@@ -4,14 +4,15 @@ from unittest.mock import Mock
 
 import pytest
 
-from pico.cli import main
+from pico.cli.app import main
 from pico.providers.response import Response, StopReason
 from pico.recovery.models import new_checkpoint_record
-from pico.runtime import Pico
+from pico.runtime.application import Pico
 from pico.state.session_store import SessionStore
 from pico.state.task_state import TaskState
 from pico.agent.verification import new_verification_record
-from pico.workspace import WorkspaceContext
+from pico.workspace.context import WorkspaceContext
+from pico.runtime.options import RuntimeOptions
 
 
 def _sentinel():
@@ -37,8 +38,9 @@ def _agent(tmp_path, client, *, approval_policy="auto"):
         model_client=client,
         workspace=workspace,
         session_store=SessionStore(tmp_path / ".pico" / "sessions"),
-        approval_policy=approval_policy,
-        secret_env_names=("PICO_TEST_TOKEN",),
+        options=RuntimeOptions(
+            approval_policy=approval_policy, secret_env_names=("PICO_TEST_TOKEN",)
+        ),
     )
 
 
@@ -120,7 +122,8 @@ def test_cli_approval_and_verification_observations_hide_canary(
         "",
         str(tmp_path.resolve()),
     )
-    checkpoint["verification_evidence"] = [new_verification_record(
+    checkpoint["verification_evidence"] = [
+        new_verification_record(
         argv=["python", "-m", "pytest"],
         risk_class="read_only",
         runner_executed=True,
@@ -128,7 +131,8 @@ def test_cli_approval_and_verification_observations_hide_canary(
         exit_code=0,
         stdout=secret,
         stderr=secret,
-    )]
+        )
+    ]
     agent.checkpoint_store.write_checkpoint_record(checkpoint)
 
     prompts = []
@@ -136,10 +140,13 @@ def test_cli_approval_and_verification_observations_hide_canary(
         "builtins.input",
         lambda prompt: prompts.append(prompt) or "n",
     )
-    assert agent.approve(
+    assert (
+        agent.approve(
         "run_shell",
         {"command": "printf safe", "token": secret},
-    ) is False
+        )
+        is False
+    )
     assert secret not in "".join(prompts)
 
     assert (
@@ -159,9 +166,7 @@ def test_cli_approval_and_verification_observations_hide_canary(
     assert secret not in capsys.readouterr().out
 
 
-def test_secret_bearing_tool_action_is_blocked_before_runner(
-    tmp_path, monkeypatch
-):
+def test_secret_bearing_tool_action_is_blocked_before_runner(tmp_path, monkeypatch):
     secret = _sentinel()
     monkeypatch.setenv("PICO_TEST_TOKEN", secret)
     client = CapturingClient(
@@ -223,7 +228,7 @@ def test_runtime_session_load_refuses_legacy_canary_without_backup_or_rewrite(
         ),
         encoding="utf-8",
     )
-    from pico.security import redact_artifact
+    from pico.security.redaction import redact_artifact
 
     store.set_redactor(
         lambda value: redact_artifact(

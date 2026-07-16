@@ -14,7 +14,8 @@ from pathlib import Path
 import secrets
 import stat
 
-from pico import security as securitylib
+from pico.security import paths as security_paths
+from pico.security import workspace_files as workspace_files
 from pico.state.checkpoint_store import CheckpointStoreError
 from pico.recovery.checkpoint_writer import coalesce_file_entries, validate_file_entry
 from pico.recovery.policy import DEFAULT_MAX_BLOB_SIZE, snapshot_bytes_eligibility
@@ -53,8 +54,7 @@ def collect_recovery_review_items(store, workspace_root):
         if item.get("status") == "invalid_record":
             invalid_records.append(dict(item))
         elif item.get("status") == "pending" or (
-            item.get("status") == "interrupted"
-            and not item.get("reviewed_at")
+            item.get("status") == "interrupted" and not item.get("reviewed_at")
         ):
             tool_changes.append(
                 {
@@ -130,15 +130,12 @@ class RecoveryManager:
             if record.get("checkpoint_type") == "restore"
             and (
                 record.get("status") == "applying"
-                or (
-                    record.get("status") == "partial"
-                    and not record.get("reviewed_at")
-                )
+                or (record.get("status") == "partial" and not record.get("reviewed_at"))
             )
         ]
 
     def _observe_restore_state(self, path):
-        current = securitylib.read_regular_bytes_anchored(
+        current = workspace_files.read_regular_bytes_anchored(
             self.workspace_root,
             path,
             max_bytes=DEFAULT_MAX_BLOB_SIZE,
@@ -234,9 +231,7 @@ class RecoveryManager:
 
             def resolve(current):
                 intents = current["restore_provenance"].get("entries", [])
-                for intent, (classification, observed) in zip(
-                    intents, classifications
-                ):
+                for intent, (classification, observed) in zip(intents, classifications):
                     if intent.get("outcome") != "pending":
                         continue
                     if classification == "applied_unconfirmed":
@@ -287,9 +282,7 @@ class RecoveryManager:
                 "restore_plan_id": new_id("plan"),
                 "checkpoint_id": checkpoint_id,
                 "created_at": utc_now(),
-                "status": self._plan_status(
-                    [entry["decision"] for entry in entries]
-                ),
+                "status": self._plan_status([entry["decision"] for entry in entries]),
                 "entries": entries,
             }
 
@@ -297,16 +290,10 @@ class RecoveryManager:
             record = self.store.load_checkpoint_record(checkpoint_id)
         except (OSError, ValueError) as exc:
             return finish(
-                [
-                    self._plan_issue(
-                        "error", getattr(exc, "code", "invalid_checkpoint")
-                    )
-                ]
+                [self._plan_issue("error", getattr(exc, "code", "invalid_checkpoint"))]
             )
         try:
-            recorded_root = Path(record.get("workspace_root", "")).resolve(
-                strict=True
-            )
+            recorded_root = Path(record.get("workspace_root", "")).resolve(strict=True)
             live_root = self.workspace_root.resolve(strict=True)
         except (OSError, ValueError):
             return finish([self._plan_issue("error", "workspace_mismatch")])
@@ -324,12 +311,8 @@ class RecoveryManager:
             return finish([self._plan_issue("error", "workspace_mismatch")])
         if (current_root.st_dev, current_root.st_ino) != self._workspace_identity:
             return finish([self._plan_issue("error", "workspace_mismatch")])
-        if record.get("integrity_errors") or record.get(
-            "missing_tool_change_ids"
-        ):
-            return finish(
-                [self._plan_issue("error", "incomplete_tool_change_history")]
-            )
+        if record.get("integrity_errors") or record.get("missing_tool_change_ids"):
+            return finish([self._plan_issue("error", "incomplete_tool_change_history")])
 
         entries = []
         raw_entries = list(record.get("file_entries", []) or [])
@@ -353,7 +336,10 @@ class RecoveryManager:
                         [self._plan_issue("error", "incomplete_tool_change_history")]
                     )
                 loaded_source_entries.extend(source.get("file_entries", []) or [])
-            if known_sources and coalesce_file_entries(loaded_source_entries) != raw_entries:
+            if (
+                known_sources
+                and coalesce_file_entries(loaded_source_entries) != raw_entries
+            ):
                 return finish(
                     [self._plan_issue("error", "incomplete_tool_change_history")]
                 )
@@ -362,8 +348,7 @@ class RecoveryManager:
                     continue
                 sources = item.get("source_tool_change_ids", [])
                 if not isinstance(sources, list) or any(
-                    not isinstance(source_id, str)
-                    or source_id not in known_sources
+                    not isinstance(source_id, str) or source_id not in known_sources
                     for source_id in sources
                 ):
                     return finish(
@@ -372,9 +357,7 @@ class RecoveryManager:
         elif checkpoint_type == "restore":
             status = record.get("status")
             if status == "partial" and not record.get("reviewed_at"):
-                entries.append(
-                    self._plan_issue("review", "partial_review_required")
-                )
+                entries.append(self._plan_issue("review", "partial_review_required"))
             elif status == "applying":
                 return finish(
                     [self._plan_issue("review", "restore_applying_review_required")]
@@ -389,11 +372,7 @@ class RecoveryManager:
         valid_entries = []
         counts = {}
         for file_entry in raw_entries:
-            path = (
-                file_entry.get("path", "")
-                if isinstance(file_entry, dict)
-                else ""
-            )
+            path = file_entry.get("path", "") if isinstance(file_entry, dict) else ""
             if isinstance(file_entry, dict):
                 try:
                     resolve_workspace_relative_path_no_symlinks(
@@ -403,9 +382,7 @@ class RecoveryManager:
                     reason = str(exc)
                     if reason not in {"symlink", "missing_parent"}:
                         reason = "invalid_path"
-                    entries.append(
-                        self._plan_issue("error", reason, path=path)
-                    )
+                    entries.append(self._plan_issue("error", reason, path=path))
                     continue
             strict_reason = validate_file_entry(file_entry)
             if strict_reason:
@@ -426,7 +403,8 @@ class RecoveryManager:
                 entries.append(
                     self._plan_issue(
                         "review",
-                        file_entry.get("ineligible_reason") or "incomplete_tool_change_history",
+                        file_entry.get("ineligible_reason")
+                        or "incomplete_tool_change_history",
                         file_entry=file_entry,
                     )
                 )
@@ -444,9 +422,7 @@ class RecoveryManager:
         }
         if ambiguous_paths:
             valid_entries = [
-                item
-                for item in valid_entries
-                if item["path"] not in ambiguous_paths
+                item for item in valid_entries if item["path"] not in ambiguous_paths
             ]
             entries.extend(
                 self._plan_issue("review", "legacy_ambiguous_history", path=path)
@@ -459,9 +435,7 @@ class RecoveryManager:
                     decision,
                     detail.get("reason", ""),
                     file_entry=file_entry,
-                    observed_current_hash=detail.get(
-                        "observed_current_hash", ""
-                    ),
+                    observed_current_hash=detail.get("observed_current_hash", ""),
                     recovery_note=detail.get("recovery_note", ""),
                 )
             )
@@ -523,10 +497,15 @@ class RecoveryManager:
                 note = f"review required: {reason}; no restorable before-state snapshot was captured"
             return "review", {"reason": reason, "recovery_note": note}
         change_kind = file_entry.get("change_kind", "")
-        if change_kind in {"modified", "deleted"} and not file_entry.get("before_blob_ref", ""):
-            return "review", {"reason": "before_blob_unavailable", "observed_current_hash": ""}
+        if change_kind in {"modified", "deleted"} and not file_entry.get(
+            "before_blob_ref", ""
+        ):
+            return "review", {
+                "reason": "before_blob_unavailable",
+                "observed_current_hash": "",
+            }
         path = file_entry.get("path", "")
-        if securitylib.is_sensitive_path(path):
+        if security_paths.is_sensitive_path(path):
             return "review", {"reason": "sensitive_path", "observed_current_hash": ""}
         for prefix in ("before", "after"):
             if not file_entry.get(prefix + "_exists"):
@@ -569,7 +548,7 @@ class RecoveryManager:
                     "observed_current_hash": "",
                 }
         try:
-            current = securitylib.read_regular_bytes_anchored(
+            current = workspace_files.read_regular_bytes_anchored(
                 self.workspace_root,
                 path,
                 max_bytes=DEFAULT_MAX_BLOB_SIZE,
@@ -598,7 +577,10 @@ class RecoveryManager:
             reason = "unexpected_file_present" if current["exists"] else "file_missing"
             return "conflict", {"reason": reason, "observed_current_hash": observed}
         if expected != observed:
-            return "conflict", {"reason": "hash_mismatch", "observed_current_hash": observed}
+            return "conflict", {
+                "reason": "hash_mismatch",
+                "observed_current_hash": observed,
+            }
         if current["mode"] != file_entry.get("after_mode"):
             return "conflict", {
                 "reason": "mode_mismatch",
@@ -621,9 +603,7 @@ class RecoveryManager:
             plan["operation_id"] = str(operation_id or "")
             plan["rewind_plan_digest"] = str(plan_digest or "")
             if plan["status"] in {"invalid", "conflicted", "review_required"}:
-                return self._write_non_mutating_restore_audit(
-                    plan, status="blocked"
-                )
+                return self._write_non_mutating_restore_audit(plan, status="blocked")
             if plan["status"] == "noop":
                 return self._write_non_mutating_restore_audit(plan, status="noop")
             capture = self._capture_restore_intents(plan)
@@ -654,7 +634,7 @@ class RecoveryManager:
                     expected_root_identity=self._workspace_identity,
                     return_parent_identities=True,
                 )
-                current = securitylib.read_regular_bytes_anchored(
+                current = workspace_files.read_regular_bytes_anchored(
                     self.workspace_root,
                     path,
                     max_bytes=DEFAULT_MAX_BLOB_SIZE,
@@ -782,9 +762,7 @@ class RecoveryManager:
             {
                 "checkpoint_id": checkpoint_id,
                 "restore_plan_id": new_id("plan"),
-                "entries": [
-                    self._plan_issue("review", "recovery_review_required")
-                ],
+                "entries": [self._plan_issue("review", "recovery_review_required")],
             },
             status="blocked",
             reason="recovery_review_required",
@@ -887,9 +865,7 @@ class RecoveryManager:
                 )
                 if not eligibility["snapshot_eligible"]:
                     raise ValueError("ineligible_actual_post")
-                observed["blob_ref"] = self.store.write_blob(data, "text")[
-                    "blob_ref"
-                ]
+                observed["blob_ref"] = self.store.write_blob(data, "text")["blob_ref"]
             else:
                 observed["blob_ref"] = ""
         except (OSError, ValueError, _RestoreInputError):
@@ -937,13 +913,11 @@ class RecoveryManager:
             )
         except (ValueError, _RestoreInputError):
             return {"outcome": "failed", "reason": "read_failed"}
-        current = securitylib.read_regular_bytes_anchored(
+        current = workspace_files.read_regular_bytes_anchored(
             self.workspace_root, path, max_bytes=DEFAULT_MAX_BLOB_SIZE
         )
         current_hash = (
-            hash_bytes(current_data)["content_hash"]
-            if current_data is not None
-            else ""
+            hash_bytes(current_data)["content_hash"] if current_data is not None else ""
         )
         if (
             current["exists"] != pre["exists"]
@@ -951,9 +925,7 @@ class RecoveryManager:
             or current["mode"] != pre["mode"]
         ):
             return {"outcome": "failed", "reason": "current_state_changed"}
-        replacement = (
-            self.store.read_blob(post["blob_ref"]) if post["exists"] else None
-        )
+        replacement = self.store.read_blob(post["blob_ref"]) if post["exists"] else None
         result = _mutate_workspace_bytes_if_unchanged(
             self.workspace_root,
             path,
@@ -972,7 +944,7 @@ class RecoveryManager:
             }
         try:
             self._fsync_target_parent(self.workspace_root / path)
-            actual = securitylib.read_regular_bytes_anchored(
+            actual = workspace_files.read_regular_bytes_anchored(
                 self.workspace_root, path, max_bytes=DEFAULT_MAX_BLOB_SIZE
             )
         except (OSError, ValueError) as exc:
@@ -1032,9 +1004,7 @@ class RecoveryManager:
     def _terminalize_restore_record(self, record):
         entries = record["restore_provenance"].get("entries", [])
         applied = [item for item in entries if item.get("outcome") == "applied"]
-        uncertain = [
-            item for item in entries if item.get("outcome") == "uncertain"
-        ]
+        uncertain = [item for item in entries if item.get("outcome") == "uncertain"]
         if entries and len(applied) == len(entries):
             status = "applied"
         elif applied or uncertain:
@@ -1214,7 +1184,11 @@ def _read_workspace_bytes_no_follow(
     """Read one regular workspace file through an anchored, bounded descriptor chain."""
     nofollow = getattr(os, "O_NOFOLLOW", 0)
     directory = getattr(os, "O_DIRECTORY", 0)
-    if not nofollow or not directory or os.open not in getattr(os, "supports_dir_fd", ()):
+    if (
+        not nofollow
+        or not directory
+        or os.open not in getattr(os, "supports_dir_fd", ())
+    ):
         raise _RestoreInputError("read_failed")
     normalized = normalize_workspace_relative_path(raw_path)
     parts = Path(normalized).parts
@@ -1233,9 +1207,7 @@ def _read_workspace_bytes_no_follow(
         ) != tuple(expected_root_identity):
             raise _RestoreInputError("read_failed")
         for part in parts[:-1]:
-            descriptors.append(
-                os.open(part, directory_flags, dir_fd=descriptors[-1])
-            )
+            descriptors.append(os.open(part, directory_flags, dir_fd=descriptors[-1]))
         try:
             leaf = os.open(
                 parts[-1],
@@ -1339,8 +1311,7 @@ def _live_parent_identities(workspace_root, parts, expected_root_identity):
         for part in parts[:-1]:
             descriptors.append(os.open(part, flags, dir_fd=descriptors[-1]))
         return tuple(
-            (os.fstat(item).st_dev, os.fstat(item).st_ino)
-            for item in descriptors
+            (os.fstat(item).st_dev, os.fstat(item).st_ino) for item in descriptors
         )
     finally:
         for descriptor in reversed(descriptors):
@@ -1361,13 +1332,15 @@ def _mutate_workspace_bytes_if_unchanged(
     """Compare and mutate one workspace leaf through the same anchored parent fd."""
     nofollow = getattr(os, "O_NOFOLLOW", 0)
     directory = getattr(os, "O_DIRECTORY", 0)
-    if not nofollow or not directory or os.open not in getattr(os, "supports_dir_fd", ()):
+    if (
+        not nofollow
+        or not directory
+        or os.open not in getattr(os, "supports_dir_fd", ())
+    ):
         return {"status": "error", "reason": "read_failed", "observed_hash": ""}
     normalized = normalize_workspace_relative_path(raw_path)
     parts = Path(normalized).parts
-    directory_flags = (
-        os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | nofollow | directory
-    )
+    directory_flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | nofollow | directory
     descriptors = []
     temp_name = ""
     temp_identity = None
@@ -1383,38 +1356,43 @@ def _mutate_workspace_bytes_if_unchanged(
                 child = os.open(part, directory_flags, dir_fd=descriptors[-1])
             except FileNotFoundError:
                 if expected_data is not None:
-                    return {"status": "error", "reason": "current_state_changed", "observed_hash": ""}
+                    return {
+                        "status": "error",
+                        "reason": "current_state_changed",
+                        "observed_hash": "",
+                    }
                 os.mkdir(part, 0o755, dir_fd=descriptors[-1])
                 child = os.open(part, directory_flags, dir_fd=descriptors[-1])
             descriptors.append(child)
         opened_parent_identities = tuple(
-            (os.fstat(item).st_dev, os.fstat(item).st_ino)
-            for item in descriptors
+            (os.fstat(item).st_dev, os.fstat(item).st_ino) for item in descriptors
         )
         if opened_parent_identities != tuple(expected_parent_identities):
-            return {"status": "error", "reason": "current_state_changed", "observed_hash": ""}
+            return {
+                "status": "error",
+                "reason": "current_state_changed",
+                "observed_hash": "",
+            }
         parent = descriptors[-1]
         current = _read_restore_leaf(parent, parts[-1])
         if current != expected_data:
             return {
                 "status": "error",
                 "reason": "current_state_changed",
-                "observed_hash": hash_bytes(current)["content_hash"] if current is not None else "",
+                "observed_hash": hash_bytes(current)["content_hash"]
+                if current is not None
+                else "",
             }
         current_mode = None
         if current is not None:
-            current_info = os.stat(
-                parts[-1], dir_fd=parent, follow_symlinks=False
-            )
+            current_info = os.stat(parts[-1], dir_fd=parent, follow_symlinks=False)
             current_mode = stat.S_IMODE(current_info.st_mode)
         if current_mode != expected_mode:
             return {
                 "status": "error",
                 "reason": "current_state_changed",
                 "observed_hash": (
-                    hash_bytes(current)["content_hash"]
-                    if current is not None
-                    else ""
+                    hash_bytes(current)["content_hash"] if current is not None else ""
                 ),
             }
         if current is not None:
@@ -1425,7 +1403,11 @@ def _mutate_workspace_bytes_if_unchanged(
                 max_blob_size=DEFAULT_MAX_BLOB_SIZE,
             )
             if not eligibility["snapshot_eligible"]:
-                return {"status": "error", "reason": eligibility["ineligible_reason"], "observed_hash": ""}
+                return {
+                    "status": "error",
+                    "reason": eligibility["ineligible_reason"],
+                    "observed_hash": "",
+                }
         if replacement_data is None:
             if current is not None:
                 moved_name = f".{parts[-1]}.restore-delete.{secrets.token_hex(12)}.tmp"
@@ -1456,7 +1438,11 @@ def _mutate_workspace_bytes_if_unchanged(
                         raise RestoreMutationError(
                             "delete_rollback_failed", target_modified=True
                         )
-                    return {"status": "error", "reason": "current_state_changed", "observed_hash": ""}
+                    return {
+                        "status": "error",
+                        "reason": "current_state_changed",
+                        "observed_hash": "",
+                    }
                 if _read_restore_leaf(parent, parts[-1]) is not None:
                     raise RestoreMutationError(
                         "delete_target_reappeared", target_modified=True
@@ -1466,7 +1452,11 @@ def _mutate_workspace_bytes_if_unchanged(
             if _live_parent_identities(
                 workspace_root, parts, expected_root_identity
             ) != tuple(expected_parent_identities):
-                return {"status": "error", "reason": "current_state_changed", "observed_hash": ""}
+                return {
+                    "status": "error",
+                    "reason": "current_state_changed",
+                    "observed_hash": "",
+                }
             return {"status": "ok", "reason": "", "observed_hash": ""}
 
         temp_name = f".{parts[-1]}.restore.{secrets.token_hex(12)}.tmp"
@@ -1484,9 +1474,17 @@ def _mutate_workspace_bytes_if_unchanged(
             os.close(descriptor)
         temp_data = _read_restore_leaf(parent, temp_name)
         if temp_data != replacement_data:
-            return {"status": "error", "reason": "post_write_hash_mismatch", "observed_hash": hash_bytes(temp_data or b"")["content_hash"]}
+            return {
+                "status": "error",
+                "reason": "post_write_hash_mismatch",
+                "observed_hash": hash_bytes(temp_data or b"")["content_hash"],
+            }
         if _read_restore_leaf(parent, parts[-1]) != expected_data:
-            return {"status": "error", "reason": "current_state_changed", "observed_hash": ""}
+            return {
+                "status": "error",
+                "reason": "current_state_changed",
+                "observed_hash": "",
+            }
         if expected_data is None:
             try:
                 os.link(
@@ -1497,7 +1495,11 @@ def _mutate_workspace_bytes_if_unchanged(
                     follow_symlinks=False,
                 )
             except FileExistsError:
-                return {"status": "error", "reason": "current_state_changed", "observed_hash": ""}
+                return {
+                    "status": "error",
+                    "reason": "current_state_changed",
+                    "observed_hash": "",
+                }
             target_modified = True
             os.unlink(temp_name, dir_fd=parent)
             temp_name = ""
@@ -1508,7 +1510,11 @@ def _mutate_workspace_bytes_if_unchanged(
             if swapped_out != expected_data:
                 _rename_swap(parent, temp_name, parts[-1])
                 target_modified = False
-                return {"status": "error", "reason": "current_state_changed", "observed_hash": ""}
+                return {
+                    "status": "error",
+                    "reason": "current_state_changed",
+                    "observed_hash": "",
+                }
             os.unlink(temp_name, dir_fd=parent)
             temp_name = ""
         observed = _read_restore_leaf(parent, parts[-1])
@@ -1516,11 +1522,20 @@ def _mutate_workspace_bytes_if_unchanged(
         expected_hash = hash_bytes(replacement_data)["content_hash"]
         os.fsync(parent)
         if observed != replacement_data:
-            return {"status": "error", "reason": "reread_hash_mismatch_after_replace", "observed_hash": observed_hash, "target_modified": True}
+            return {
+                "status": "error",
+                "reason": "reread_hash_mismatch_after_replace",
+                "observed_hash": observed_hash,
+                "target_modified": True,
+            }
         if _live_parent_identities(
             workspace_root, parts, expected_root_identity
         ) != tuple(expected_parent_identities):
-            return {"status": "error", "reason": "current_state_changed", "observed_hash": ""}
+            return {
+                "status": "error",
+                "reason": "current_state_changed",
+                "observed_hash": "",
+            }
         return {"status": "ok", "reason": "", "observed_hash": expected_hash}
     except (OSError, ValueError, _RestoreInputError) as exc:
         if target_modified:
@@ -1533,7 +1548,9 @@ def _mutate_workspace_bytes_if_unchanged(
     finally:
         if temp_name and descriptors:
             try:
-                current = os.stat(temp_name, dir_fd=descriptors[-1], follow_symlinks=False)
+                current = os.stat(
+                    temp_name, dir_fd=descriptors[-1], follow_symlinks=False
+                )
                 if temp_identity == (current.st_dev, current.st_ino):
                     os.unlink(temp_name, dir_fd=descriptors[-1])
             except OSError:

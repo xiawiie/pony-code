@@ -17,10 +17,14 @@ from pico.sandbox.session import (
     read_source_apply_authority,
     source_apply_control_lock_path,
 )
-from pico.agent.observability import RunArtifactError, load_run_summary, render_summary_text
-from pico.security import require_regular_no_symlink
+from pico.agent.observability import (
+    RunArtifactError,
+    load_run_summary,
+    render_summary_text,
+)
+from pico.security.paths import require_regular_no_symlink
 from pico.tools.change_recorder import ToolChangeRecorder
-from pico.workspace import WorkspaceContext  # noqa: F401
+from pico.workspace.context import WorkspaceContext  # noqa: F401
 
 
 _ARTIFACT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
@@ -32,11 +36,14 @@ def handle_checkpoints(root, tokens, args):
     rest = tokens[1:]
     read_only = (
         sub in {"pending", "list", "show", "preview-restore"}
-        or sub == "restore" and _is_restore_args(rest) and "--apply" not in rest[1:]
+        or sub == "restore"
+        and _is_restore_args(rest)
+        and "--apply" not in rest[1:]
         or sub == "resolve-pending"
         and _is_resolve_pending_args(rest)
         and "--apply" not in rest[1:]
-        or sub == "prune" and "--apply" not in rest
+        or sub == "prune"
+        and "--apply" not in rest
     )
     try:
         sandbox_parent = Path.home() / ".pico" / "sandboxes"
@@ -105,7 +112,9 @@ def handle_checkpoints(root, tokens, args):
             redactor=redactor,
         )
     if sub == "preview-restore" and len(rest) == 1:
-        manager = RecoveryManager(store, root, checkpoint_writer=RecoveryCheckpointWriter(store, root))
+        manager = RecoveryManager(
+            store, root, checkpoint_writer=RecoveryCheckpointWriter(store, root)
+        )
         checkpoint_id = _resolve_checkpoint_id(store, rest[0], redactor=redactor)
         plan = _preview_restore(manager, checkpoint_id, redactor=redactor)
         return print_inspection_result(
@@ -119,7 +128,9 @@ def handle_checkpoints(root, tokens, args):
     if sub == "restore" and _is_restore_args(rest):
         checkpoint_id = _resolve_checkpoint_id(store, rest[0], redactor=redactor)
         apply_flag = "--apply" in rest[1:]
-        manager = RecoveryManager(store, root, checkpoint_writer=RecoveryCheckpointWriter(store, root))
+        manager = RecoveryManager(
+            store, root, checkpoint_writer=RecoveryCheckpointWriter(store, root)
+        )
         if not apply_flag:
             plan = _preview_restore(manager, checkpoint_id, redactor=redactor)
             return print_inspection_result(
@@ -179,11 +190,15 @@ def handle_runs(root, tokens, args):
     rest = tokens[1:]
     if sub == "list" and not rest:
         checked_root = _inspection_directory(runs_root, allow_missing=True)
-        data = [] if checked_root is None else [
+        data = (
+            []
+            if checked_root is None
+            else [
             {"run_id": entry.name}
             for entry in sorted(checked_root.iterdir())
             if stat.S_ISDIR(entry.lstat().st_mode)
         ]
+        )
         return print_inspection_result(
             root,
             "runs_list",
@@ -284,9 +299,7 @@ def handle_sessions(root, tokens, args):
 
 
 def _is_resolve_pending_args(rest):
-    return len(rest) == 1 or (
-        len(rest) == 2 and rest[1] == "--apply"
-    )
+    return len(rest) == 1 or (len(rest) == 2 and rest[1] == "--apply")
 
 
 def _resolve_pending_record(store, root, record_id, *, apply_flag):
@@ -387,9 +400,11 @@ def _render_pending_reviews(data):
         "quarantined_records",
     ):
         for item in data.get(key, []):
-            item_id = item.get("tool_change_id") or item.get(
-                "checkpoint_id"
-            ) or item.get("opaque_id", "-")
+            item_id = (
+                item.get("tool_change_id")
+                or item.get("checkpoint_id")
+                or item.get("opaque_id", "-")
+            )
             lines.append(f"{key}\t{item_id}\t{item.get('status', '')}")
     return "\n".join(lines)
 
@@ -397,7 +412,9 @@ def _render_pending_reviews(data):
 def _render_checkpoints_list(records):
     lines = []
     for record in records:
-        lines.append(f"{record['checkpoint_id']}\t{record['checkpoint_type']}\t{record.get('created_at', '')}")
+        lines.append(
+            f"{record['checkpoint_id']}\t{record['checkpoint_type']}\t{record.get('created_at', '')}"
+        )
     return "\n".join(lines)
 
 
@@ -413,7 +430,12 @@ def _render_restore_plan(plan):
     for entry in entries:
         decision = str(entry.get("decision", "-") or "-")
         path = str(entry.get("path", "-") or "-")
-        reason = str(entry.get("recovery_note", "") or entry.get("reason", "") or entry.get("change_kind", "") or "-")
+        reason = str(
+            entry.get("recovery_note", "")
+            or entry.get("reason", "")
+            or entry.get("change_kind", "")
+            or "-"
+        )
         observed = str(entry.get("observed_current_hash", "") or "")
         expected = str(entry.get("expected_current_hash", "") or "")
         details = reason
@@ -551,12 +573,15 @@ def _load_run_artifacts(run_dir, run_id, redactor):
                 ]
                 content = "\n".join(lines) + ("\n" if lines else "")
             else:
-                content = json.dumps(
+                content = (
+                    json.dumps(
                     redactor(json.loads(text)),
                     indent=2,
                     sort_keys=True,
                     ensure_ascii=True,
-                ) + "\n"
+                    )
+                    + "\n"
+                )
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise _unsafe_artifact_error() from exc
         artifacts.append({"name": name, "content": content})

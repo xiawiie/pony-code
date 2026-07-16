@@ -22,7 +22,7 @@ from pico.agent.model_capabilities import (  # noqa: E402
     build_model_budget,
 )
 from pico.state.session_store import SessionStore  # noqa: E402
-from pico.workspace import now  # noqa: E402
+from pico.workspace.context import now  # noqa: E402
 
 
 SCENARIO_TARGETS = {

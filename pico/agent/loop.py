@@ -11,9 +11,13 @@ from time import sleep as _sleep
 import uuid
 
 from pico.agent.action_codec import FinalAction, RetryAction, ToolAction, decode_action
-from pico.providers._shared import _ProviderFailure
-from pico import security as securitylib
-from pico.state.checkpoint import CHECKPOINT_NONE_STATUS, CHECKPOINT_PARTIAL_STALE_STATUS, CHECKPOINT_WORKSPACE_MISMATCH_STATUS
+from pico.providers.transport import ProviderTransportError
+from pico.security import redaction as securitylib
+from pico.state.checkpoint import (
+    CHECKPOINT_NONE_STATUS,
+    CHECKPOINT_PARTIAL_STALE_STATUS,
+    CHECKPOINT_WORKSPACE_MISMATCH_STATUS,
+)
 from pico.agent.compaction import CompactionError, CompactionNoProgress
 from pico.agent.context_manager import ContextBudgetExceeded
 from pico.context.renderer import build_injection_snapshot
@@ -24,13 +28,14 @@ from pico.recovery.checkpoint_writer import (
     current_recovery_checkpoint_id,
     set_current_recovery_checkpoint_id,
 )
-from pico.security import ensure_private_dir, require_regular_no_symlink
+from pico.security.private_files import ensure_private_dir
+from pico.security.paths import require_regular_no_symlink
 from pico.state.task_state import (
     STOP_REASON_PERSISTENCE_ERROR,
     STATUS_RUNNING,
     TaskState,
 )
-from pico.workspace import clip, now
+from pico.workspace.context import clip, now
 from pico.tools.executor import (
     ToolExecutionResult,
     _add_command_policy,
@@ -162,8 +167,10 @@ def _record_model_failure(
     )
     reason = (
         error.code
-        if isinstance(error, _ProviderFailure)
-        else "response_processing" if failure_phase == "response_processing" else "provider_error"
+        if isinstance(error, ProviderTransportError)
+        else "response_processing"
+        if failure_phase == "response_processing"
+        else "provider_error"
     )
     model_execution["model_failures"] += 1
     reasons = model_execution["failure_reason_counts"]
@@ -371,8 +378,7 @@ def _commit_session(agent, *, messages=()):
                 if safe_messages
                 else True
             ) and all(
-                persisted.get(key) == value
-                for key, value in state_updates.items()
+                persisted.get(key) == value for key, value in state_updates.items()
             ):
                 return
         raise SessionCommitError(exc) from exc
@@ -456,6 +462,7 @@ def _prepare_tool_result(
         # summarizer runs exactly once); then attach a logical result id
         # after the content-addressed body is durably written.
         from dataclasses import replace as _dc_replace
+
         digest = digest_tool_result(tool_name, tool_args, safe_content)
         source_hash = digest.source_hash
         run_dir = getattr(agent, "current_run_dir", None)
@@ -485,15 +492,23 @@ def _prepare_tool_result(
                     identity = (opened.st_dev, opened.st_ino)
                     if opened.st_nlink != 1:
                         raise ValueError("raw tool result changed")
-                    if not stat.S_ISREG(opened.st_mode) or (
+                    if (
+                        not stat.S_ISREG(opened.st_mode)
+                        or (
                         current.st_dev,
                         current.st_ino,
-                    ) != identity:
+                        )
+                        != identity
+                    ):
                         raise ValueError("raw tool result changed")
-                    if before is not None and (
+                    if (
+                        before is not None
+                        and (
                         before.st_dev,
                         before.st_ino,
-                    ) != identity:
+                        )
+                        != identity
+                    ):
                         raise ValueError("raw tool result changed")
                     os.fchmod(descriptor, 0o600)
                     os.ftruncate(descriptor, 0)
@@ -634,8 +649,14 @@ def _build_attempt_request(
     agent.last_request_metadata = dict(request_metadata)
     if recall_paths:
         recent = list(agent.session.get("recently_recalled") or [])
-        skip_turns = int((getattr(agent, "context_config", {}) or {}).get("recall", {}).get("skip_recent_turns", 2))
-        agent.session["recently_recalled"] = (recent + [recall_paths])[-(skip_turns + 1):]
+        skip_turns = int(
+            (getattr(agent, "context_config", {}) or {})
+            .get("recall", {})
+            .get("skip_recent_turns", 2)
+        )
+        agent.session["recently_recalled"] = (recent + [recall_paths])[
+            -(skip_turns + 1) :
+        ]
         _commit_session(agent)
     if attempts == 1:
         task_state.resume_status = request_metadata.get(
@@ -647,15 +668,12 @@ def _build_attempt_request(
         "prompt_built",
         {
             "request_metadata": request_metadata,
-            "duration_ms": int(
-                (time.monotonic() - prompt_started_at) * 1000
-            ),
+            "duration_ms": int((time.monotonic() - prompt_started_at) * 1000),
         },
     )
     if (
         attempts == 1
-        and request_metadata.get("resume_status")
-        == CHECKPOINT_PARTIAL_STALE_STATUS
+        and request_metadata.get("resume_status") == CHECKPOINT_PARTIAL_STALE_STATUS
     ):
         agent.emit_trace(
             task_state,
@@ -792,9 +810,7 @@ def _complete_model_attempt(
                 "transport_retries": transport_retries,
                 "transport_evidence_complete": evidence_complete,
                 **action_payload,
-                "duration_ms": int(
-                    (time.monotonic() - prompt_started_at) * 1000
-                ),
+                "duration_ms": int((time.monotonic() - prompt_started_at) * 1000),
             },
         )
     except Exception as exc:
@@ -818,9 +834,7 @@ def _record_tool_report(agent, name, metadata, model_execution):
     tool_status = str(metadata["tool_status"])
     tool_report["calls"] += 1
     tool_report["allowed" if tool_status != "rejected" else "denied"] += 1
-    tool_report["name_counts"][name] = (
-        tool_report["name_counts"].get(name, 0) + 1
-    )
+    tool_report["name_counts"][name] = tool_report["name_counts"].get(name, 0) + 1
     tool_report["status_counts"][tool_status] = (
         tool_report["status_counts"].get(tool_status, 0) + 1
     )
@@ -930,9 +944,7 @@ def _apply_tool_action(
         {"name": name, "args": args, "tool_use_id": tool_use_id},
     )
     working_memory_before = deepcopy(agent.memory)
-    file_summaries_before = deepcopy(
-        agent.session["memory"]["file_summaries"]
-    )
+    file_summaries_before = deepcopy(agent.session["memory"]["file_summaries"])
     if blocked_tool_result is None:
         agent._last_tool_result_metadata = {}
         try:
@@ -942,10 +954,7 @@ def _apply_tool_action(
             if metadata.get("tool_status"):
                 _record_tool_report(agent, name, metadata, model_execution)
                 tool_change_id = str(metadata.get("tool_change_id", "") or "")
-                if (
-                    tool_change_id
-                    and metadata.get("effect_class") == "workspace_write"
-                ):
+                if tool_change_id and metadata.get("effect_class") == "workspace_write":
                     run_tool_change_ids.append(tool_change_id)
                 try:
                     agent.emit_trace(
@@ -956,9 +965,7 @@ def _apply_tool_action(
                             "tool_use_id": tool_use_id,
                             "tool_change_id": tool_change_id,
                             "tool_status": metadata["tool_status"],
-                            "affected_paths": list(
-                                metadata.get("affected_paths", [])
-                            ),
+                            "affected_paths": list(metadata.get("affected_paths", [])),
                             **_sandbox_trace_payload(metadata),
                         },
                     )
@@ -1025,9 +1032,7 @@ def _apply_tool_action(
             "args": args,
             "result": clip(result, 500),
             "tool_use_id": tool_use_id,
-            "duration_ms": int(
-                (time.monotonic() - tool_started_at) * 1000
-            ),
+            "duration_ms": int((time.monotonic() - tool_started_at) * 1000),
             **metadata,
             **_sandbox_trace_payload(metadata),
         },
@@ -1041,9 +1046,7 @@ def _apply_tool_action(
             "tool_use_id": tool_use_id,
             "tool_status": metadata.get("tool_status", ""),
             "affected_paths": list(metadata.get("affected_paths", [])),
-            "duration_ms": int(
-                (time.monotonic() - tool_started_at) * 1000
-            ),
+            "duration_ms": int((time.monotonic() - tool_started_at) * 1000),
         },
     )
     return int(consumed_step)
@@ -1141,7 +1144,7 @@ def _run_agent_attempts(
                     attempt_origin = "model_retry"
                     continue
             if (
-                isinstance(model_error, _ProviderFailure)
+                isinstance(model_error, ProviderTransportError)
                 and model_error.retryable
                 and model_retry_count < len(_MODEL_RETRY_DELAYS)
                 and attempts < max_attempts
@@ -1431,9 +1434,7 @@ def _finalize_run(
             },
         ),
     )
-    model_execution["run_duration_ms"] = int(
-        (time.monotonic() - run_started_at) * 1000
-    )
+    model_execution["run_duration_ms"] = int((time.monotonic() - run_started_at) * 1000)
     errors_before_report = len(finalization_errors)
     report = attempt(
         "report_build",
@@ -1525,7 +1526,9 @@ def _emit_recovery_checkpoint_created(agent, task_state, recovery_checkpoint, tr
     )
 
 
-def _finalize_recovery_checkpoint(agent, task_state, run_tool_change_ids, run_verification_evidence, trigger):
+def _finalize_recovery_checkpoint(
+    agent, task_state, run_tool_change_ids, run_verification_evidence, trigger
+):
     """把当前累计到的 Tool Change 打包成一份 Turn Checkpoint。
 
     只有真的有 Tool Change 时才写，避免为纯回答型 turn 产生空 checkpoint。
@@ -1566,7 +1569,9 @@ def _finalize_recovery_checkpoint(agent, task_state, run_tool_change_ids, run_ve
     return record
 
 
-def _record_pending_verification_evidence(agent, recovery_checkpoint, run_verification_evidence):
+def _record_pending_verification_evidence(
+    agent, recovery_checkpoint, run_verification_evidence
+):
     if recovery_checkpoint is None:
         return
     for evidence in list(run_verification_evidence or []):

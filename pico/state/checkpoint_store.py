@@ -20,7 +20,8 @@ import stat
 from pathlib import Path
 
 from pico.state import file_lock
-from pico import security as securitylib
+from pico.security import private_files as private_files
+from pico.security import workspace_files as workspace_files
 from pico.recovery.models import (
     CHECKPOINT_FORMAT_VERSION,
     CHECKPOINT_RECORD_TYPE,
@@ -28,14 +29,14 @@ from pico.recovery.models import (
     TOOL_CHANGE_RECORD_TYPE,
 )
 from pico.recovery.paths import hash_bytes
-from pico.security import (
+from pico.security.private_files import (
     ensure_private_dir,
     harden_private_tree,
     private_directory_identity,
     read_private_bytes,
-    require_regular_no_symlink,
     write_private_bytes_atomic,
 )
+from pico.security.paths import require_regular_no_symlink
 
 
 def _identity(value):
@@ -51,7 +52,11 @@ _SAFE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\Z")
 _CHECKPOINT_TYPES = {"turn", "restore", "manual"}
 _RESTORE_STATUSES = {"applying", "applied", "blocked", "failed", "partial", "noop"}
 _TOOL_CHANGE_STATUSES = {
-    "pending", "finalized", "error", "partial_success", "interrupted",
+    "pending",
+    "finalized",
+    "error",
+    "partial_success",
+    "interrupted",
     "legacy_migrated",
 }
 _SOURCE_MUTATION_GUARD_FIELDS = frozenset(
@@ -69,29 +74,73 @@ _SHA256 = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _SOURCE_MUTATION_GUARD_RELATIVE = ".pico/checkpoints/source-apply-guard.json"
 _CHECKPOINT_FIELDS = frozenset(
     {
-        "record_type", "format_version", "checkpoint_id", "checkpoint_type",
-        "created_at", "session_id", "run_id", "turn_id", "parent_checkpoint_id",
-        "workspace_root", "tool_change_ids", "missing_tool_change_ids",
-        "git_review_context", "file_entries", "verification_evidence",
-        "restore_provenance", "status", "owner_id", "reviewed_at",
-        "review_reason", "reviewed_by", "integrity_errors",
+        "record_type",
+        "format_version",
+        "checkpoint_id",
+        "checkpoint_type",
+        "created_at",
+        "session_id",
+        "run_id",
+        "turn_id",
+        "parent_checkpoint_id",
+        "workspace_root",
+        "tool_change_ids",
+        "missing_tool_change_ids",
+        "git_review_context",
+        "file_entries",
+        "verification_evidence",
+        "restore_provenance",
+        "status",
+        "owner_id",
+        "reviewed_at",
+        "review_reason",
+        "reviewed_by",
+        "integrity_errors",
     }
 )
 _TOOL_CHANGE_FIELDS = frozenset(
     {
-        "record_type", "format_version", "tool_change_id", "checkpoint_id",
-        "turn_id", "owner_id", "tool_name", "effect_class", "status",
-        "started_at", "ended_at", "input_summary", "affected_paths",
-        "file_entries", "prepared_file_entries", "recovery_context",
-        "shell_side_effects", "policy", "sandbox", "approval", "error", "trace_event_ids",
-        "reviewed_at", "review_reason", "reviewed_by",
+        "record_type",
+        "format_version",
+        "tool_change_id",
+        "checkpoint_id",
+        "turn_id",
+        "owner_id",
+        "tool_name",
+        "effect_class",
+        "status",
+        "started_at",
+        "ended_at",
+        "input_summary",
+        "affected_paths",
+        "file_entries",
+        "prepared_file_entries",
+        "recovery_context",
+        "shell_side_effects",
+        "policy",
+        "sandbox",
+        "approval",
+        "error",
+        "trace_event_ids",
+        "reviewed_at",
+        "review_reason",
+        "reviewed_by",
     }
 )
 _VERIFICATION_FIELDS = frozenset(
     {
-        "verification_id", "created_at", "execution_mode", "command",
-        "risk_class", "status", "stdout_tail", "stderr_tail",
-        "affected_checkpoint_id", "trace_event_id", "argv", "runner_executed",
+        "verification_id",
+        "created_at",
+        "execution_mode",
+        "command",
+        "risk_class",
+        "status",
+        "stdout_tail",
+        "stderr_tail",
+        "affected_checkpoint_id",
+        "trace_event_id",
+        "argv",
+        "runner_executed",
         "exit_code",
     }
 )
@@ -129,19 +178,27 @@ def _decode_json(raw):
 
 def _validate_checkpoint_record(record, expected_id=None):
     if not isinstance(record, dict):
-        raise CheckpointStoreError("invalid_record", "checkpoint record must be an object")
+        raise CheckpointStoreError(
+            "invalid_record", "checkpoint record must be an object"
+        )
     if record.keys() != _CHECKPOINT_FIELDS:
         raise CheckpointStoreError("invalid_record_shape", "invalid checkpoint fields")
     if record.get("record_type") != CHECKPOINT_RECORD_TYPE:
-        raise CheckpointStoreError("unsupported_record_type", "unsupported checkpoint record type")
+        raise CheckpointStoreError(
+            "unsupported_record_type", "unsupported checkpoint record type"
+        )
     if (
         type(record.get("format_version")) is not int
         or record["format_version"] != CHECKPOINT_FORMAT_VERSION
     ):
-        raise CheckpointStoreError("unsupported_format", "unsupported checkpoint format")
+        raise CheckpointStoreError(
+            "unsupported_format", "unsupported checkpoint format"
+        )
     checkpoint_id = _safe_id(record.get("checkpoint_id"), "checkpoint id")
     if expected_id is not None and checkpoint_id != expected_id:
-        raise CheckpointStoreError("internal_id_mismatch", "checkpoint internal id mismatch")
+        raise CheckpointStoreError(
+            "internal_id_mismatch", "checkpoint internal id mismatch"
+        )
     checkpoint_type = record.get("checkpoint_type")
     if checkpoint_type not in _CHECKPOINT_TYPES:
         raise CheckpointStoreError("invalid_checkpoint_type", "invalid checkpoint type")
@@ -149,29 +206,55 @@ def _validate_checkpoint_record(record, expected_id=None):
     if checkpoint_type == "restore" and status not in _RESTORE_STATUSES:
         raise CheckpointStoreError("invalid_status", "invalid restore status")
     if checkpoint_type != "restore" and status != "":
-        raise CheckpointStoreError("invalid_status", "non-restore checkpoint has status")
+        raise CheckpointStoreError(
+            "invalid_status", "non-restore checkpoint has status"
+        )
     string_fields = (
-        "status", "created_at", "session_id", "run_id", "turn_id",
-        "parent_checkpoint_id", "workspace_root", "owner_id", "reviewed_at",
-        "review_reason", "reviewed_by",
+        "status",
+        "created_at",
+        "session_id",
+        "run_id",
+        "turn_id",
+        "parent_checkpoint_id",
+        "workspace_root",
+        "owner_id",
+        "reviewed_at",
+        "review_reason",
+        "reviewed_by",
     )
     list_fields = (
-        "tool_change_ids", "missing_tool_change_ids", "file_entries",
-        "verification_evidence", "integrity_errors",
+        "tool_change_ids",
+        "missing_tool_change_ids",
+        "file_entries",
+        "verification_evidence",
+        "integrity_errors",
     )
     dict_fields = ("git_review_context", "restore_provenance")
     if any(not isinstance(record.get(key), str) for key in string_fields):
-        raise CheckpointStoreError("invalid_record_shape", "invalid checkpoint string field")
+        raise CheckpointStoreError(
+            "invalid_record_shape", "invalid checkpoint string field"
+        )
     if any(not isinstance(record.get(key), list) for key in list_fields):
-        raise CheckpointStoreError("invalid_record_shape", "invalid checkpoint list field")
+        raise CheckpointStoreError(
+            "invalid_record_shape", "invalid checkpoint list field"
+        )
     if any(not isinstance(record.get(key), dict) for key in dict_fields):
-        raise CheckpointStoreError("invalid_record_shape", "invalid checkpoint object field")
+        raise CheckpointStoreError(
+            "invalid_record_shape", "invalid checkpoint object field"
+        )
     from pico.recovery.checkpoint_writer import validate_file_entry
 
     if any(validate_file_entry(entry) for entry in record["file_entries"]):
-        raise CheckpointStoreError("invalid_file_entry", "invalid checkpoint file entry")
-    if any(not _valid_verification_evidence(item) for item in record["verification_evidence"]):
-        raise CheckpointStoreError("invalid_verification", "invalid verification evidence")
+        raise CheckpointStoreError(
+            "invalid_file_entry", "invalid checkpoint file entry"
+        )
+    if any(
+        not _valid_verification_evidence(item)
+        for item in record["verification_evidence"]
+    ):
+        raise CheckpointStoreError(
+            "invalid_verification", "invalid verification evidence"
+        )
     for tool_change_id in record["tool_change_ids"] + record["missing_tool_change_ids"]:
         _safe_id(tool_change_id, "tool change id")
     return record
@@ -179,42 +262,79 @@ def _validate_checkpoint_record(record, expected_id=None):
 
 def _validate_tool_change_record(record, expected_id=None):
     if not isinstance(record, dict):
-        raise CheckpointStoreError("invalid_record", "tool change record must be an object")
+        raise CheckpointStoreError(
+            "invalid_record", "tool change record must be an object"
+        )
     if record.keys() != _TOOL_CHANGE_FIELDS:
         raise CheckpointStoreError("invalid_record_shape", "invalid tool change fields")
     if record.get("record_type") != TOOL_CHANGE_RECORD_TYPE:
-        raise CheckpointStoreError("unsupported_record_type", "unsupported tool change record type")
+        raise CheckpointStoreError(
+            "unsupported_record_type", "unsupported tool change record type"
+        )
     if (
         type(record.get("format_version")) is not int
         or record["format_version"] != TOOL_CHANGE_FORMAT_VERSION
     ):
-        raise CheckpointStoreError("unsupported_format", "unsupported tool change format")
+        raise CheckpointStoreError(
+            "unsupported_format", "unsupported tool change format"
+        )
     tool_change_id = _safe_id(record.get("tool_change_id"), "tool change id")
     if expected_id is not None and tool_change_id != expected_id:
-        raise CheckpointStoreError("internal_id_mismatch", "tool change internal id mismatch")
+        raise CheckpointStoreError(
+            "internal_id_mismatch", "tool change internal id mismatch"
+        )
     if record.get("status") not in _TOOL_CHANGE_STATUSES:
         raise CheckpointStoreError("invalid_status", "invalid tool change status")
     string_fields = (
-        "checkpoint_id", "turn_id", "owner_id", "tool_name", "effect_class",
-        "started_at", "ended_at", "reviewed_at", "review_reason", "reviewed_by",
+        "checkpoint_id",
+        "turn_id",
+        "owner_id",
+        "tool_name",
+        "effect_class",
+        "started_at",
+        "ended_at",
+        "reviewed_at",
+        "review_reason",
+        "reviewed_by",
     )
     list_fields = (
-        "affected_paths", "file_entries", "prepared_file_entries",
-        "shell_side_effects", "trace_event_ids",
+        "affected_paths",
+        "file_entries",
+        "prepared_file_entries",
+        "shell_side_effects",
+        "trace_event_ids",
     )
-    dict_fields = ("input_summary", "recovery_context", "policy", "sandbox", "approval", "error")
+    dict_fields = (
+        "input_summary",
+        "recovery_context",
+        "policy",
+        "sandbox",
+        "approval",
+        "error",
+    )
     if any(not isinstance(record.get(key), str) for key in string_fields):
-        raise CheckpointStoreError("invalid_record_shape", "invalid tool change string field")
+        raise CheckpointStoreError(
+            "invalid_record_shape", "invalid tool change string field"
+        )
     if any(not isinstance(record.get(key), list) for key in list_fields):
-        raise CheckpointStoreError("invalid_record_shape", "invalid tool change list field")
+        raise CheckpointStoreError(
+            "invalid_record_shape", "invalid tool change list field"
+        )
     if any(not isinstance(record.get(key), dict) for key in dict_fields):
-        raise CheckpointStoreError("invalid_record_shape", "invalid tool change object field")
+        raise CheckpointStoreError(
+            "invalid_record_shape", "invalid tool change object field"
+        )
     from pico.recovery.checkpoint_writer import validate_file_entry
     from pico.recovery.paths import normalize_workspace_relative_path
 
     if any(validate_file_entry(entry) for entry in record["file_entries"]):
-        raise CheckpointStoreError("invalid_file_entry", "invalid tool change file entry")
-    if any(not _valid_prepared_file_entry(entry) for entry in record["prepared_file_entries"]):
+        raise CheckpointStoreError(
+            "invalid_file_entry", "invalid tool change file entry"
+        )
+    if any(
+        not _valid_prepared_file_entry(entry)
+        for entry in record["prepared_file_entries"]
+    ):
         raise CheckpointStoreError("invalid_file_entry", "invalid prepared file entry")
     try:
         affected_paths = [
@@ -233,7 +353,7 @@ def source_apply_guard_present(workspace_root):
     """Fail closed on an existing source Apply guard without creating state."""
     root = Path(workspace_root)
     info = root.lstat()
-    state = securitylib.read_regular_bytes_anchored(
+    state = workspace_files.read_regular_bytes_anchored(
         root,
         _SOURCE_MUTATION_GUARD_RELATIVE,
         max_bytes=CheckpointStore.MAX_RECORD_BYTES,
@@ -318,18 +438,12 @@ def _valid_prepared_file_entry(item):
             and item["before_mode"] is None
         )
     mode = item["before_mode"]
-    hashes_valid = (
-        item["before_hash"] == item["before_blob_ref"] == ""
-        or (
+    hashes_valid = item["before_hash"] == item["before_blob_ref"] == "" or (
             _looks_like_blob_ref(item["before_hash"])
             and item["before_blob_ref"] == item["before_hash"]
         )
-    )
     return (
-        hashes_valid
-        and type(mode) is int
-        and mode >= 0
-        and stat.S_IMODE(mode) == mode
+        hashes_valid and type(mode) is int and mode >= 0 and stat.S_IMODE(mode) == mode
     )
 
 
@@ -349,7 +463,10 @@ class CheckpointStore:
         # workspace_root 通常就是 Pico 的 repo 根。真实存储放在 .pico/checkpoints 下。
         # 如果传入路径已经是 .pico/checkpoints，直接用；否则加子目录。
         workspace_root = Path(workspace_root)
-        if workspace_root.name == "checkpoints" and workspace_root.parent.name == ".pico":
+        if (
+            workspace_root.name == "checkpoints"
+            and workspace_root.parent.name == ".pico"
+        ):
             self.root = workspace_root
         else:
             self.root = workspace_root / ".pico" / "checkpoints"
@@ -386,9 +503,7 @@ class CheckpointStore:
             return
         read_only_identities = {}
         if self._read_only:
-            self._root_identity = self._validate_existing_private_directory(
-                self.root
-            )
+            self._root_identity = self._validate_existing_private_directory(self.root)
         for directory in (
             self.records_dir,
             self.tool_changes_dir,
@@ -420,17 +535,11 @@ class CheckpointStore:
             harden_private_tree(self.blobs_dir)
         else:
             self._records_identity = read_only_identities[self.records_dir]
-            self._tool_changes_identity = read_only_identities[
-                self.tool_changes_dir
-            ]
+            self._tool_changes_identity = read_only_identities[self.tool_changes_dir]
             self._blobs_identity = read_only_identities[self.blobs_dir]
             self._quarantine_identities = {
-                "checkpoint": read_only_identities[
-                    self.quarantine_checkpoint_dir
-                ],
-                "tool_change": read_only_identities[
-                    self.quarantine_tool_change_dir
-                ],
+                "checkpoint": read_only_identities[self.quarantine_checkpoint_dir],
+                "tool_change": read_only_identities[self.quarantine_tool_change_dir],
             }
             return
         self._root_identity = private_directory_identity(self.root)
@@ -438,12 +547,8 @@ class CheckpointStore:
         self._tool_changes_identity = private_directory_identity(self.tool_changes_dir)
         self._blobs_identity = private_directory_identity(self.blobs_dir)
         self._quarantine_identities = {
-            "checkpoint": private_directory_identity(
-                self.quarantine_checkpoint_dir
-            ),
-            "tool_change": private_directory_identity(
-                self.quarantine_tool_change_dir
-            ),
+            "checkpoint": private_directory_identity(self.quarantine_checkpoint_dir),
+            "tool_change": private_directory_identity(self.quarantine_tool_change_dir),
         }
 
     @staticmethod
@@ -495,9 +600,8 @@ class CheckpointStore:
         if file_lock.lock_is_active(self.lock_path):
             raise RuntimeError("lock order violation")
         external_lock = _null_lock()
-        if (
-            self._source_apply_control_lock is not None
-            and not file_lock.lock_is_active(self._source_apply_control_lock)
+        if self._source_apply_control_lock is not None and not file_lock.lock_is_active(
+            self._source_apply_control_lock
         ):
             external_lock = file_lock.locked_file(
                 self._source_apply_control_lock,
@@ -607,7 +711,7 @@ class CheckpointStore:
             raise CheckpointStoreError(
                 "source_apply_guard_invalid", "source apply guard does not match"
             )
-        path, parent = securitylib._open_private_parent(
+        path, parent = private_files._open_private_parent(
             self.source_mutation_guard_path,
             trusted_root=self.root,
             trusted_root_identity=self._root_identity,
@@ -686,7 +790,7 @@ class CheckpointStore:
         path = self._blob_path(str(blob_ref))
         with self._read_lock():
             try:
-                path, parent = securitylib._open_private_parent(
+                path, parent = private_files._open_private_parent(
                     path,
                     trusted_root=self.blobs_dir,
                     trusted_root_identity=self._blobs_identity,
@@ -795,9 +899,7 @@ class CheckpointStore:
             return self._load_tool_change_record_unlocked(tool_change_id)
 
     def _load_tool_change_record_unlocked(self, tool_change_id):
-        record, _ = self._load_tool_change_record_snapshot_unlocked(
-            tool_change_id
-        )
+        record, _ = self._load_tool_change_record_snapshot_unlocked(tool_change_id)
         return record
 
     def load_tool_change_record_snapshot(self, tool_change_id):
@@ -824,10 +926,7 @@ class CheckpointStore:
         checkpoint_id = _safe_id(checkpoint_id, "checkpoint id")
         with file_lock.locked_file(self.lock_path, require_lock=True):
             record = self._load_checkpoint_record_unlocked(checkpoint_id)
-            if (
-                expected_status is not None
-                and record.get("status") != expected_status
-            ):
+            if expected_status is not None and record.get("status") != expected_status:
                 raise CheckpointStoreError(
                     "status_conflict", "checkpoint status conflict"
                 )
@@ -849,15 +948,10 @@ class CheckpointStore:
     ):
         checkpoint_id = _safe_id(checkpoint_id, "checkpoint id")
         with file_lock.locked_file(self.lock_path, require_lock=True):
-            record, data = self._load_checkpoint_record_snapshot_unlocked(
-                checkpoint_id
-            )
+            record, data = self._load_checkpoint_record_snapshot_unlocked(checkpoint_id)
             if hashlib.sha256(data).hexdigest() != expected_record_hash:
                 raise CheckpointStoreError("record_changed", "record changed")
-            if (
-                expected_status is not None
-                and record.get("status") != expected_status
-            ):
+            if expected_status is not None and record.get("status") != expected_status:
                 raise CheckpointStoreError(
                     "status_conflict", "checkpoint status conflict"
                 )
@@ -875,10 +969,7 @@ class CheckpointStore:
         tool_change_id = _safe_id(tool_change_id, "tool change id")
         with file_lock.locked_file(self.lock_path, require_lock=True):
             record = self._load_tool_change_record_unlocked(tool_change_id)
-            if (
-                expected_status is not None
-                and record.get("status") != expected_status
-            ):
+            if expected_status is not None and record.get("status") != expected_status:
                 raise CheckpointStoreError(
                     "status_conflict", "tool change status conflict"
                 )
@@ -905,10 +996,7 @@ class CheckpointStore:
             )
             if hashlib.sha256(data).hexdigest() != expected_record_hash:
                 raise CheckpointStoreError("record_changed", "record changed")
-            if (
-                expected_status is not None
-                and record.get("status") != expected_status
-            ):
+            if expected_status is not None and record.get("status") != expected_status:
                 raise CheckpointStoreError(
                     "status_conflict", "tool change status conflict"
                 )
@@ -1113,7 +1201,9 @@ class CheckpointStore:
             < cutoff
         }
         candidate_tool_change_ids.update(orphan_tool_change_ids)
-        prunable_tool_change_ids = sorted(candidate_tool_change_ids - retained_tool_change_ids)
+        prunable_tool_change_ids = sorted(
+            candidate_tool_change_ids - retained_tool_change_ids
+        )
         prunable_tool_change_id_set = set(prunable_tool_change_ids)
         retained_tool_change_records = [
             record
@@ -1121,7 +1211,9 @@ class CheckpointStore:
             if record.get("tool_change_id") not in prunable_tool_change_id_set
         ]
 
-        referenced = _referenced_blob_refs(retained_checkpoint_records, retained_tool_change_records)
+        referenced = _referenced_blob_refs(
+            retained_checkpoint_records, retained_tool_change_records
+        )
 
         unreferenced = []
         for blob_ref in self._list_blob_refs():
@@ -1226,9 +1318,9 @@ class CheckpointStore:
         }
         if stat.S_ISLNK(info.st_mode):
             target = os.readlink(name, dir_fd=parent_descriptor)
-            payload["link_target_b64"] = base64.b64encode(
-                os.fsencode(target)
-            ).decode("ascii")
+            payload["link_target_b64"] = base64.b64encode(os.fsencode(target)).decode(
+                "ascii"
+            )
         after = os.stat(
             name,
             dir_fd=parent_descriptor,
@@ -1254,9 +1346,7 @@ class CheckpointStore:
         )
         identity = (before.st_dev, before.st_ino, before.st_mode)
         if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
-            evidence = self._non_regular_evidence(
-                parent_descriptor, name, before
-            )
+            evidence = self._non_regular_evidence(parent_descriptor, name, before)
             return None, evidence, identity, "inode"
         flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
         flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
@@ -1271,14 +1361,10 @@ class CheckpointStore:
             if (
                 not stat.S_ISREG(opened.st_mode)
                 or opened.st_nlink != 1
-                or (opened.st_dev, opened.st_ino)
-                != (before.st_dev, before.st_ino)
-                or (current.st_dev, current.st_ino)
-                != (opened.st_dev, opened.st_ino)
+                or (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino)
+                or (current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino)
             ):
-                raise CheckpointStoreError(
-                    "record_changed", "record inode changed"
-                )
+                raise CheckpointStoreError("record_changed", "record inode changed")
             chunks = []
             remaining = self.MAX_RECORD_BYTES + 1
             while remaining:
@@ -1289,9 +1375,7 @@ class CheckpointStore:
                 remaining -= len(chunk)
             raw = b"".join(chunks)
             if len(raw) > self.MAX_RECORD_BYTES:
-                evidence = self._non_regular_evidence(
-                    parent_descriptor, name, current
-                )
+                evidence = self._non_regular_evidence(parent_descriptor, name, current)
                 return None, evidence, identity, "inode"
             return raw, raw, identity, "raw"
         finally:
@@ -1302,9 +1386,7 @@ class CheckpointStore:
         try:
             with os.scandir(descriptor) as entries:
                 names = sorted(
-                    entry.name
-                    for entry in entries
-                    if entry.name.endswith(".json")
+                    entry.name for entry in entries if entry.name.endswith(".json")
                 )
             records = []
             invalid = []
@@ -1330,9 +1412,7 @@ class CheckpointStore:
                         if kind == "checkpoint"
                         else _validate_tool_change_record
                     )
-                    records.append(
-                        validator(record, expected_id=expected_id)
-                    )
+                    records.append(validator(record, expected_id=expected_id))
                 except (
                     OSError,
                     UnicodeDecodeError,
@@ -1361,9 +1441,7 @@ class CheckpointStore:
                         except OSError:
                             continue
                     raw_hash = hashlib.sha256(evidence).hexdigest()
-                    opaque_id = self._opaque_invalid_id(
-                        kind, relative, evidence
-                    )
+                    opaque_id = self._opaque_invalid_id(kind, relative, evidence)
                     placeholder = {
                         "opaque_id": opaque_id,
                         "record_kind": kind,
@@ -1381,9 +1459,7 @@ class CheckpointStore:
                         }
                     )
             if strict_invalid:
-                raise CheckpointStoreError(
-                    "invalid_record", "invalid record"
-                ) from None
+                raise CheckpointStoreError("invalid_record", "invalid record") from None
             return records, invalid
         finally:
             os.close(descriptor)
@@ -1477,9 +1553,7 @@ class CheckpointStore:
         regular,
         expected_raw_hash,
     ):
-        source_descriptor = self._open_store_directory(
-            source_dir, source_identity
-        )
+        source_descriptor = self._open_store_directory(source_dir, source_identity)
         destination_descriptor = self._open_store_directory(
             destination_dir, destination_identity
         )
@@ -1502,8 +1576,7 @@ class CheckpointStore:
                 if (
                     evidence_kind != "raw"
                     or raw is None
-                    or hashlib.sha256(raw).hexdigest()
-                    != expected_raw_hash
+                    or hashlib.sha256(raw).hexdigest() != expected_raw_hash
                 ):
                     raise CheckpointStoreError(
                         "invalid_record_changed", "invalid record changed"
@@ -1534,14 +1607,10 @@ class CheckpointStore:
             if (installed.st_dev, installed.st_ino, installed.st_mode) != tuple(
                 expected_identity
             ):
-                raise CheckpointStoreError(
-                    "record_changed", "quarantine inode changed"
-                )
+                raise CheckpointStoreError("record_changed", "quarantine inode changed")
             if regular:
                 flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
-                flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(
-                    os, "O_NONBLOCK", 0
-                )
+                flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
                 evidence_descriptor = os.open(
                     destination_name,
                     flags,
@@ -1572,8 +1641,7 @@ class CheckpointStore:
                     raw = b"".join(chunks)
                     if (
                         len(raw) > self.MAX_RECORD_BYTES
-                        or hashlib.sha256(raw).hexdigest()
-                        != expected_raw_hash
+                        or hashlib.sha256(raw).hexdigest() != expected_raw_hash
                     ):
                         raise CheckpointStoreError(
                             "invalid_record_changed", "invalid record changed"
@@ -1602,9 +1670,7 @@ class CheckpointStore:
             try:
                 with os.scandir(descriptor) as entries:
                     names = sorted(
-                        entry.name
-                        for entry in entries
-                        if entry.name.endswith(".json")
+                        entry.name for entry in entries if entry.name.endswith(".json")
                     )
             finally:
                 os.close(descriptor)
@@ -1701,7 +1767,9 @@ class CheckpointStore:
                     with os.scandir(descriptor) as entries:
                         names = sorted(entry.name for entry in entries)
                     for name in names:
-                        if not _looks_like_blob_ref(name) or not name.startswith(bucket):
+                        if not _looks_like_blob_ref(name) or not name.startswith(
+                            bucket
+                        ):
                             continue
                         try:
                             self.read_blob(name)
@@ -1736,9 +1804,7 @@ class CheckpointStore:
         try:
             flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
             flags |= getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
-            bucket_descriptor = os.open(
-                blob_ref[:2], flags, dir_fd=root_descriptor
-            )
+            bucket_descriptor = os.open(blob_ref[:2], flags, dir_fd=root_descriptor)
             current = os.stat(
                 blob_ref,
                 dir_fd=bucket_descriptor,

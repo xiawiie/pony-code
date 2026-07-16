@@ -1,8 +1,8 @@
 """Factory for Pico's internal model transport adapters."""
 
 
-def build_model_client(
-    client_kind,
+def build_transport_client(
+    transport_kind,
     *,
     model,
     base_url,
@@ -11,10 +11,9 @@ def build_model_client(
     auth_mode,
     capabilities=None,
     temperature=None,
-    compatibility="standard",
     top_p=0.9,
 ):
-    """Build a client from an explicit protocol family without inference."""
+    """Build a client from an explicit transport kind without inference."""
     common = {
         "model": model,
         "api_key": api_key,
@@ -22,38 +21,37 @@ def build_model_client(
         "auth_mode": auth_mode,
         "capabilities": dict(capabilities or {}),
     }
-    if client_kind == "anthropic_messages":
-        from .anthropic_compatible import AnthropicCompatibleModelClient
+    if transport_kind == "anthropic_messages":
+        from .anthropic_messages import AnthropicMessagesModelClient
 
-        return AnthropicCompatibleModelClient(
+        return AnthropicMessagesModelClient(
             base_url=base_url,
             temperature=temperature,
             **common,
         )
-    if client_kind == "openai_responses":
-        from .openai_compatible import OpenAICompatibleModelClient
+    if transport_kind == "openai_responses":
+        from .openai_responses import OpenAIResponsesModelClient
 
-        return OpenAICompatibleModelClient(
+        return OpenAIResponsesModelClient(
             base_url=base_url,
             temperature=temperature,
             **common,
         )
-    if client_kind == "openai_chat_completions":
-        from .openai_chat import OpenAIChatCompletionsModelClient
+    if transport_kind == "openai_chat_completions":
+        from .openai_chat_completions import OpenAIChatCompletionsModelClient
 
         return OpenAIChatCompletionsModelClient(
             base_url=base_url,
             temperature=temperature,
-            compatibility=compatibility,
             **common,
         )
-    if client_kind == "ollama_chat":
-        from .ollama import OllamaModelClient
+    if transport_kind == "ollama_chat":
+        from .ollama_chat import OllamaChatModelClient
 
-        return OllamaModelClient(
+        return OllamaChatModelClient(
             host=base_url,
             temperature=0.0 if temperature is None else temperature,
             top_p=top_p,
             **common,
         )
-    raise ValueError("unsupported model client kind")
+    raise ValueError("unsupported transport kind")

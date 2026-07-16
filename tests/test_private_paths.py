@@ -3,11 +3,8 @@ import stat
 
 import pytest
 
-from pico.security import (
-    ensure_private_dir,
-    ensure_private_file,
-    require_regular_no_symlink,
-)
+from pico.security.private_files import ensure_private_dir, ensure_private_file
+from pico.security.paths import require_regular_no_symlink
 
 SECRET_PATH_COMPONENT = "github_pat_A123456789012345678901234567890"
 
@@ -191,7 +188,9 @@ def test_regular_file_guard_allows_only_missing_leaf(tmp_path):
 
     assert require_regular_no_symlink(missing, allow_missing=True) == missing
     with pytest.raises(FileNotFoundError):
-        require_regular_no_symlink(tmp_path / "missing-parent" / "file.txt", allow_missing=True)
+        require_regular_no_symlink(
+            tmp_path / "missing-parent" / "file.txt", allow_missing=True
+        )
 
 
 def test_regular_file_guard_rejects_non_regular_leaf(tmp_path):

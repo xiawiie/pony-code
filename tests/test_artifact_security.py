@@ -5,17 +5,23 @@ import stat
 
 import pytest
 
-from pico import security as security_module
-from pico import Pico, SessionStore, WorkspaceContext
-from pico.providers.fake import FakeModelClient
+from pico.security import private_files as security_module
+from pico import Pico
+from pico.state.session_store import SessionStore
+from pico.workspace.context import WorkspaceContext
+from benchmarks.support.fake_provider import FakeModelClient
 from pico.state.checkpoint_store import CheckpointStore
-from pico.cli import main
+from pico.cli.app import main
 from pico.cli.session import inspect_session
 from pico.memory.block_store import BlockStore
 from pico.recovery.models import new_checkpoint_record, new_tool_change_record
 from pico.state.run_store import RunStore
-from pico.state.session_store import LEGACY_SESSION_FORMAT_VERSION, SESSION_FORMAT_VERSION
+from pico.state.session_store import (
+    LEGACY_SESSION_FORMAT_VERSION,
+    SESSION_FORMAT_VERSION,
+)
 from pico.state.task_state import TaskState
+from pico.runtime.options import RuntimeOptions
 
 
 def _build_agent(root, *, secret_env_names=()):
@@ -24,8 +30,9 @@ def _build_agent(root, *, secret_env_names=()):
         model_client=FakeModelClient([]),
         workspace=WorkspaceContext.build(root),
         session_store=SessionStore(root / ".pico" / "sessions"),
-        approval_policy="auto",
-        secret_env_names=secret_env_names,
+        options=RuntimeOptions(
+            approval_policy="auto", secret_env_names=secret_env_names
+        ),
     )
 
 
@@ -118,7 +125,9 @@ def test_secret_canary_is_absent_from_normal_artifacts_and_inspection(
         ):
             assert secret.encode() not in path.read_bytes(), path
 
-    assert main([
+    assert (
+        main(
+            [
         "--cwd",
         str(tmp_path),
         "--format",
@@ -126,7 +135,10 @@ def test_secret_canary_is_absent_from_normal_artifacts_and_inspection(
         "checkpoints",
         "show",
         "ckpt_canary",
-    ]) == 0
+            ]
+        )
+        == 0
+    )
     assert secret not in capsys.readouterr().out
 
 
@@ -213,9 +225,7 @@ def test_checkpoint_rejects_fifo_leaf_and_symlinked_blob_bucket(tmp_path):
     os.mkfifo(fifo)
     with pytest.raises(ValueError, match="regular|unsafe"):
         store.write_tool_change_record(
-            new_tool_change_record(
-                "tc_fifo", "", "t", "write_file", "workspace_write"
-            )
+            new_tool_change_record("tc_fifo", "", "t", "write_file", "workspace_write")
         )
 
     data = b"exact blob bytes"
@@ -241,7 +251,7 @@ def test_checkpoint_temp_swap_preserves_unknown_installed_symlink(
     store = CheckpointStore(tmp_path)
     outside = tmp_path / "outside-temp.json"
     outside.write_text("outside\n", encoding="utf-8")
-    from pico import security as security_module
+    from pico.security import private_files as security_module
 
     original_replace = security_module.os.replace
 
@@ -330,13 +340,18 @@ def test_legacy_inspection_redacts_process_and_project_collision(
     )
     for command in commands:
         for output_format in ("text", "json"):
-            assert main([
+            assert (
+                main(
+                    [
                 "--cwd",
                 str(tmp_path),
                 "--format",
                 output_format,
                 *command,
-            ]) == 0
+                    ]
+                )
+                == 0
+            )
             output = capsys.readouterr().out
             assert process_secret not in output
             assert project_secret not in output
@@ -401,7 +416,9 @@ def test_runs_show_redacts_structured_json_before_rendering(
     escaped = json.dumps(secret)[1:-1]
 
     for output_format in ("text", "json"):
-        assert main([
+        assert (
+            main(
+                [
             "--cwd",
             str(tmp_path),
             "--secret-env-name",
@@ -411,7 +428,10 @@ def test_runs_show_redacts_structured_json_before_rendering(
             "runs",
             "show",
             "escaped",
-        ]) == 0
+                ]
+            )
+            == 0
+        )
         output = capsys.readouterr().out
         assert secret not in output
         assert escaped not in output
@@ -428,7 +448,8 @@ def test_runs_show_rejects_path_escape_and_symlink(tmp_path, capsys):
     (runs_root / "linked").symlink_to(outside_run, target_is_directory=True)
 
     for run_id in ("../../outside-run", "linked"):
-        code = main([
+        code = main(
+            [
             "--cwd",
             str(tmp_path),
             "--format",
@@ -436,7 +457,8 @@ def test_runs_show_rejects_path_escape_and_symlink(tmp_path, capsys):
             "runs",
             "show",
             run_id,
-        ])
+            ]
+        )
         captured = capsys.readouterr()
         assert code == 2
         assert secret not in captured.out + captured.err
@@ -447,18 +469,21 @@ def test_checkpoint_prefix_never_resolves_traversing_record_id(tmp_path, capsys)
     records.mkdir(parents=True)
     malicious_id = "abcdef/../../../outside"
     (records / "entry.json").write_text(
-        json.dumps({
+        json.dumps(
+            {
             "checkpoint_id": malicious_id,
             "checkpoint_type": "turn",
             "created_at": "2026-07-11T00:00:00Z",
-        }),
+            }
+        ),
         encoding="utf-8",
     )
     outside = tmp_path / ".pico" / "outside.json"
     secret = "outside-checkpoint-secret"
     outside.write_text(json.dumps({"message": secret}), encoding="utf-8")
 
-    code = main([
+    code = main(
+        [
         "--cwd",
         str(tmp_path),
         "--format",
@@ -466,7 +491,8 @@ def test_checkpoint_prefix_never_resolves_traversing_record_id(tmp_path, capsys)
         "checkpoints",
         "show",
         "abcdef",
-    ])
+        ]
+    )
 
     captured = capsys.readouterr()
     assert code == 2
@@ -481,14 +507,16 @@ def test_checkpoint_cli_rejects_symlink_record_as_stable_error(tmp_path, capsys)
     outside.write_text(json.dumps({"message": secret}), encoding="utf-8")
     (records / "linked.json").symlink_to(outside)
 
-    code = main([
+    code = main(
+        [
         "--cwd",
         str(tmp_path),
         "--format",
         "json",
         "checkpoints",
         "list",
-    ])
+        ]
+    )
 
     captured = capsys.readouterr()
     assert code == 2
@@ -511,7 +539,8 @@ def test_runs_show_rejects_fifo_without_opening_it(tmp_path, monkeypatch, capsys
 
     monkeypatch.setattr(Path, "read_text", guarded_read_text)
 
-    code = main([
+    code = main(
+        [
         "--cwd",
         str(tmp_path),
         "--format",
@@ -519,7 +548,8 @@ def test_runs_show_rejects_fifo_without_opening_it(tmp_path, monkeypatch, capsys
         "runs",
         "show",
         "fifo",
-    ])
+        ]
+    )
 
     assert code == 2
     assert "unsafe FIFO read attempted" not in capsys.readouterr().out
@@ -555,11 +585,13 @@ def test_nested_runtime_redacts_custom_run_and_session_stores(tmp_path):
         model_client=FakeModelClient([]),
         workspace=WorkspaceContext.build(tmp_path),
         session_store=session_store,
+        options=RuntimeOptions(
         run_store=run_store,
         approval_policy="never",
         depth=1,
         redaction_env={"CUSTOM_OPAQUE": secret},
         secret_env_names=("CUSTOM_OPAQUE",),
+        ),
     )
     state = TaskState.create(
         run_id="nested",
@@ -618,9 +650,9 @@ def test_singular_session_inspection_never_reads_unsafe_paths(
     outside = outside_base.with_suffix(".json")
     outside.write_text('{"schema_version": 3, "messages": []}\n', encoding="utf-8")
     parent_outside = sessions_root.parent / "parent.json"
-    parent_outside.write_text('{}\n', encoding="utf-8")
+    parent_outside.write_text("{}\n", encoding="utf-8")
     backup_file = backup / "raw.json"
-    backup_file.write_text('{}\n', encoding="utf-8")
+    backup_file.write_text("{}\n", encoding="utf-8")
     linked = sessions_root / "linked.json"
     linked.symlink_to(outside)
     fifo = sessions_root / "fifo.json"
@@ -648,7 +680,8 @@ def test_singular_session_inspection_never_reads_unsafe_paths(
     safe = sessions_root / "safe.json"
     (sessions_root / ".session_store.lock").touch(mode=0o600)
     safe.write_text(
-        json.dumps({
+        json.dumps(
+            {
             "record_type": "session",
                 "format_version": LEGACY_SESSION_FORMAT_VERSION,
             "id": "safe",
@@ -662,7 +695,9 @@ def test_singular_session_inspection_never_reads_unsafe_paths(
             "resume_state": {},
             "recovery": {},
             "runtime_identity": {},
-        }) + "\n",
+            }
+        )
+        + "\n",
         encoding="utf-8",
     )
     assert inspect_session("safe", sessions_root)[0] is True
@@ -673,10 +708,12 @@ def test_singular_session_inspection_does_not_echo_invalid_role(tmp_path):
     sessions_root.mkdir(parents=True)
     secret = "opaque-invalid-role-secret-123456789"
     (sessions_root / "legacy.json").write_text(
-        json.dumps({
+        json.dumps(
+            {
             "schema_version": 3,
             "messages": [{"role": secret, "content": "safe"}],
-        }),
+            }
+        ),
         encoding="utf-8",
     )
 
@@ -700,7 +737,8 @@ def test_singular_session_cli_redacts_untrusted_summary_fields(
         encoding="utf-8",
     )
 
-    code = main([
+    code = main(
+        [
         "--cwd",
         str(tmp_path),
         "--secret-env-name",
@@ -708,7 +746,8 @@ def test_singular_session_cli_redacts_untrusted_summary_fields(
         "session",
         "inspect",
         "legacy",
-    ])
+        ]
+    )
 
     output = capsys.readouterr().out
     assert code == 1
@@ -725,7 +764,8 @@ def test_checkpoint_ambiguity_errors_are_redacted(
     monkeypatch.setenv("CUSTOM_CHECKPOINT_TOKEN", secret)
     store = CheckpointStore(tmp_path)
     for suffix in ("a", "b"):
-        store.write_checkpoint_record(new_checkpoint_record(
+        store.write_checkpoint_record(
+            new_checkpoint_record(
             f"{secret}{suffix}",
             "turn",
             "s",
@@ -733,10 +773,12 @@ def test_checkpoint_ambiguity_errors_are_redacted(
             "t",
             "",
             str(tmp_path),
-        ))
+            )
+        )
 
     for output_format in ("text", "json"):
-        code = main([
+        code = main(
+            [
             "--cwd",
             str(tmp_path),
             "--secret-env-name",
@@ -746,7 +788,8 @@ def test_checkpoint_ambiguity_errors_are_redacted(
             "checkpoints",
             "show",
             secret,
-        ])
+            ]
+        )
         captured = capsys.readouterr()
         assert code == 2
         assert secret not in captured.out + captured.err
@@ -762,7 +805,8 @@ def test_status_redacts_latest_artifact_ids(tmp_path, monkeypatch, capsys):
     (tmp_path / ".pico" / "runs" / secret).mkdir(parents=True)
 
     for output_format in ("text", "json"):
-        code = main([
+        code = main(
+            [
             "--cwd",
             str(tmp_path),
             "--secret-env-name",
@@ -770,7 +814,8 @@ def test_status_redacts_latest_artifact_ids(tmp_path, monkeypatch, capsys):
             "--format",
             output_format,
             "status",
-        ])
+            ]
+        )
         output = capsys.readouterr().out
         assert code == 0
         assert secret not in output
@@ -784,13 +829,15 @@ def test_status_does_not_follow_symlinked_pico_ancestor(tmp_path, capsys):
     (outside / "runs" / "external-run").mkdir(parents=True)
     (workspace / ".pico").symlink_to(outside, target_is_directory=True)
 
-    code = main([
+    code = main(
+        [
         "--cwd",
         str(workspace),
         "--format",
         "json",
         "status",
-    ])
+        ]
+    )
 
     assert code == 0
     payload = json.loads(capsys.readouterr().out)
@@ -812,7 +859,8 @@ def test_config_and_doctor_redact_configured_api_values(
 
     for command in (("config", "show"), ("doctor",)):
         for output_format in ("text", "json"):
-            code = main([
+            code = main(
+                [
                 "--cwd",
                 str(tmp_path),
                 "--secret-env-name",
@@ -820,7 +868,8 @@ def test_config_and_doctor_redact_configured_api_values(
                 "--format",
                 output_format,
                 *command,
-            ])
+                ]
+            )
             output = capsys.readouterr().out
             assert code == 0
             assert secret not in output
@@ -838,16 +887,20 @@ def test_owned_store_constructors_reject_hardlinks_without_chmod(tmp_path):
     cases.append((session_file, lambda: SessionStore(session_root)))
 
     checkpoint_root = tmp_path / "checkpoint-case"
-    checkpoint_file = checkpoint_root / ".pico" / "checkpoints" / "records" / "legacy.json"
+    checkpoint_file = (
+        checkpoint_root / ".pico" / "checkpoints" / "records" / "legacy.json"
+    )
     cases.append((checkpoint_file, lambda: CheckpointStore(checkpoint_root)))
 
     memory_workspace = tmp_path / "memory-case" / "workspace"
     memory_user = tmp_path / "memory-case" / "user"
     memory_file = memory_workspace / "agent_notes.md"
-    cases.append((
+    cases.append(
+        (
         memory_file,
         lambda: BlockStore(memory_workspace, memory_user, redaction_env={}),
-    ))
+        )
+    )
 
     for index, (artifact, construct) in enumerate(cases):
         outside = tmp_path / f"outside-hardlink-{index}.txt"
@@ -1130,7 +1183,11 @@ def test_atomic_writer_rejects_canonical_root_renamed_after_parent_open(
     assert swapped is True
     assert not target.exists()
     displaced_target = displaced / target.name
-    assert displaced_target.read_bytes() == original if existing else not displaced_target.exists()
+    assert (
+        displaced_target.read_bytes() == original
+        if existing
+        else not displaced_target.exists()
+    )
     assert not list(displaced.glob(".*.tmp"))
     assert not list(displaced.glob(".*.bak"))
 
@@ -1173,7 +1230,11 @@ def test_atomic_writer_rolls_back_if_root_moves_after_replace(
     assert swapped is True
     assert not target.exists()
     displaced_target = displaced / target.name
-    assert displaced_target.read_bytes() == original if existing else not displaced_target.exists()
+    assert (
+        displaced_target.read_bytes() == original
+        if existing
+        else not displaced_target.exists()
+    )
     assert not list(displaced.glob(".*.tmp"))
     assert not list(displaced.glob(".*.bak"))
 
@@ -1338,12 +1399,15 @@ def test_atomic_writer_ignores_unlinked_backup_wipe_failure(
         ),
     )
 
-    assert security_module.write_private_bytes_atomic(
+    assert (
+        security_module.write_private_bytes_atomic(
         target,
         replacement,
         trusted_root=root,
         trusted_root_identity=security_module.private_directory_identity(root),
-    ) == target
+        )
+        == target
+    )
 
     assert target.read_bytes() == replacement
     backups = list(root.glob(".*.bak"))

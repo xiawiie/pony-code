@@ -7,12 +7,12 @@ from unittest.mock import Mock
 
 import pytest
 
-import pico.providers._shared as provider_shared
-from pico.providers._shared import _ProviderFailure
-from pico.providers.factory import build_model_client
-from pico.providers.anthropic_compatible import AnthropicCompatibleModelClient
-from pico.providers.ollama import OllamaModelClient
-from pico.providers.openai_compatible import OpenAICompatibleModelClient
+import pico.providers.transport as provider_shared
+from pico.providers.transport import ProviderTransportError
+from pico.providers.factory import build_transport_client
+from pico.providers.anthropic_messages import AnthropicMessagesModelClient
+from pico.providers.ollama_chat import OllamaChatModelClient
+from pico.providers.openai_responses import OpenAIResponsesModelClient
 from pico.providers.response import StopReason
 
 
@@ -52,11 +52,11 @@ def _openai_client(api_key="test-key", **overrides):
         "capabilities": OFFICIAL_OPENAI_CAPABILITIES,
     }
     values.update(overrides)
-    return OpenAICompatibleModelClient(**values)
+    return OpenAIResponsesModelClient(**values)
 
 
 def _anthropic_client():
-    return AnthropicCompatibleModelClient(
+    return AnthropicMessagesModelClient(
         model="claude-test",
         base_url="https://api.anthropic.com/v1",
         api_key="test-key",
@@ -81,7 +81,7 @@ def _ollama_client(**overrides):
         "auth_mode": "none",
     }
     values.update(overrides)
-    return OllamaModelClient(**values)
+    return OllamaChatModelClient(**values)
 
 
 def _tool_schema():
@@ -150,19 +150,19 @@ def test_native_clients_expose_safe_report_metadata(client, expected):
     [
         (
             "anthropic_messages",
-            AnthropicCompatibleModelClient,
+            AnthropicMessagesModelClient,
             "https://anthropic.example/v1",
             "x-api-key",
         ),
         (
             "openai_responses",
-            OpenAICompatibleModelClient,
+            OpenAIResponsesModelClient,
             "https://openai.example/v1",
             "bearer",
         ),
         (
             "ollama_chat",
-            OllamaModelClient,
+            OllamaChatModelClient,
             "http://127.0.0.1:11434",
             "none",
         ),
@@ -174,7 +174,7 @@ def test_builder_constructs_explicit_protocol_clients(
     base_url,
     auth_mode,
 ):
-    client = build_model_client(
+    client = build_transport_client(
         client_kind,
         model="test-model",
         base_url=base_url,
@@ -188,10 +188,10 @@ def test_builder_constructs_explicit_protocol_clients(
     assert client.provider_binding["protocol_family"] == client_kind
 
 
-def test_builder_constructs_openai_chat_and_rejects_unknown_kind():
-    from pico.providers.openai_chat import OpenAIChatCompletionsModelClient
+def test_factory_constructs_openai_chat_and_rejects_unknown_transport():
+    from pico.providers.openai_chat_completions import OpenAIChatCompletionsModelClient
 
-    client = build_model_client(
+    client = build_transport_client(
         "openai_chat_completions",
         model="test-model",
         base_url="https://chat.example/v1",
@@ -201,8 +201,8 @@ def test_builder_constructs_openai_chat_and_rejects_unknown_kind():
     )
     assert isinstance(client, OpenAIChatCompletionsModelClient)
 
-    with pytest.raises(ValueError, match="unsupported model client kind"):
-        build_model_client(
+    with pytest.raises(ValueError, match="unsupported transport kind"):
+        build_transport_client(
             "deepseek",
             model="test-model",
             base_url="https://example.com/v1",
@@ -283,9 +283,7 @@ def test_openai_official_wire_uses_responses_native_history_and_strict_tools(
                     "output": [
                         {
                             "type": "message",
-                            "content": [
-                                {"type": "output_text", "text": "done"}
-                            ],
+                            "content": [{"type": "output_text", "text": "done"}],
                         }
                     ],
                     "usage": {"input_tokens": 12, "output_tokens": 3},
@@ -468,26 +466,6 @@ def test_openai_custom_uses_exact_root_and_conservative_fields(monkeypatch):
     assert "include" not in captured["body"]
 
 
-def test_openai_responses_qwen_compatibility_disables_reasoning(monkeypatch):
-    captured = {}
-
-    def urlopen(request, timeout):
-        captured.update(json.loads(request.data))
-        return _Response(
-            b'{"output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}],"usage":{}}'
-        )
-
-    monkeypatch.setattr(provider_shared, "_provider_urlopen", urlopen)
-    client = _openai_client(
-        capabilities={"thinking_disabled": True},
-    )
-
-    _complete(client)
-
-    assert captured["reasoning"] == {"effort": "none"}
-    assert "include" not in captured
-
-
 @pytest.mark.parametrize(
     "body",
     [
@@ -501,7 +479,7 @@ def test_openai_rejects_non_responses_json_without_fallback(monkeypatch, body):
     urlopen = Mock(return_value=_Response(body))
     monkeypatch.setattr(provider_shared, "_provider_urlopen", urlopen)
 
-    with pytest.raises(_ProviderFailure) as caught:
+    with pytest.raises(ProviderTransportError) as caught:
         _complete(_openai_client())
 
     assert caught.value.code == "provider_protocol_mismatch"
@@ -517,7 +495,7 @@ def test_openai_rejects_invalid_function_arguments(monkeypatch):
         ),
     )
 
-    with pytest.raises(_ProviderFailure) as caught:
+    with pytest.raises(ProviderTransportError) as caught:
         _complete(_openai_client(), tools=[_tool_schema()])
 
     assert caught.value.code == "provider_protocol_mismatch"
@@ -665,7 +643,7 @@ def test_ollama_preserves_timeout_layer_and_does_not_try_generate(monkeypatch):
     urlopen = Mock(side_effect=TimeoutError("secret"))
     monkeypatch.setattr(provider_shared, "_provider_urlopen", urlopen)
 
-    with pytest.raises(_ProviderFailure) as caught:
+    with pytest.raises(ProviderTransportError) as caught:
         _complete(_ollama_client())
 
     assert caught.value.code == "timeout"
@@ -689,7 +667,7 @@ def test_openai_network_error_is_classified_after_one_transport(
     urlopen = Mock(side_effect=error_value)
     monkeypatch.setattr(provider_shared, "_provider_urlopen", urlopen)
 
-    with pytest.raises(_ProviderFailure) as caught:
+    with pytest.raises(ProviderTransportError) as caught:
         _complete(_openai_client())
 
     assert caught.value.code == reason
@@ -711,7 +689,7 @@ def test_provider_429_retry_after_is_capped(monkeypatch):
         Mock(side_effect=error_value),
     )
 
-    with pytest.raises(_ProviderFailure) as caught:
+    with pytest.raises(ProviderTransportError) as caught:
         _complete(_openai_client())
 
     assert caught.value.code == "rate_limited"
@@ -740,16 +718,18 @@ def test_provider_preserves_specific_http_failure_layer(
     monkeypatch.setattr(
         provider_shared,
         "_provider_urlopen",
-        Mock(side_effect=urllib.error.HTTPError(
+        Mock(
+            side_effect=urllib.error.HTTPError(
             "https://gateway.example/v1/resource",
             status,
             "failed",
             hdrs={},
             fp=io.BytesIO(b"opaque backend response"),
-        )),
+            )
+        ),
     )
 
-    with pytest.raises(_ProviderFailure) as caught:
+    with pytest.raises(ProviderTransportError) as caught:
         _complete(client_factory())
 
     assert caught.value.code == code
@@ -781,7 +761,7 @@ def test_provider_preserves_specific_transport_failure_layer(
         Mock(side_effect=error_value),
     )
 
-    with pytest.raises(_ProviderFailure) as caught:
+    with pytest.raises(ProviderTransportError) as caught:
         _complete(client_factory())
 
     assert caught.value.code == code
@@ -844,7 +824,7 @@ def test_provider_tool_request_preserves_http_400_classification(
         Mock(side_effect=error_value),
     )
 
-    with pytest.raises(_ProviderFailure) as caught:
+    with pytest.raises(ProviderTransportError) as caught:
         _complete(client_factory(), tools=[_tool_schema()])
 
     assert caught.value.code == "http_4xx"
@@ -863,7 +843,7 @@ def test_provider_tool_request_preserves_http_400_classification(
     "client_factory",
     [
         lambda url: _openai_client(base_url=url),
-        lambda url: AnthropicCompatibleModelClient(
+        lambda url: AnthropicMessagesModelClient(
             model="test",
             base_url=url,
             api_key="test-key",
@@ -887,18 +867,21 @@ def test_provider_response_size_is_bounded(monkeypatch):
         ),
     )
 
-    with pytest.raises(_ProviderFailure) as caught:
+    with pytest.raises(ProviderTransportError) as caught:
         _complete(_openai_client())
 
     assert caught.value.code == "response_too_large"
 
 
 def test_redirect_handler_never_follows_provider_redirects():
-    assert provider_shared._NoRedirectHandler().redirect_request(
+    assert (
+        provider_shared._NoRedirectHandler().redirect_request(
         None,
         None,
         302,
         "redirect",
         {},
         "https://elsewhere.test",
-    ) is None
+        )
+        is None
+    )

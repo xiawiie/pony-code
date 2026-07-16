@@ -7,11 +7,12 @@ from pico.agent.compaction import CompactionNoProgress
 from pico.context.renderer import build_injection_snapshot, render_current_user_message
 import pico.memory.service as memorylib
 from pico.agent.messages import make_tool_pair, message_content_text
-from pico.providers.fake import FakeModelClient
-from pico.runtime import Pico
+from benchmarks.support.fake_provider import FakeModelClient
+from pico.runtime.application import Pico
 from pico.state.session_store import SessionStore
-from pico.workspace import WorkspaceContext
+from pico.workspace.context import WorkspaceContext
 from .metrics_common import _safe_mean, _safe_ratio
+from pico.runtime.options import RuntimeOptions
 
 
 def _seed_plain_messages(agent, count, prefix, payload_size):
@@ -171,7 +172,7 @@ def build_stress_agent_metrics():
             model_client=FakeModelClient([]),
             workspace=workspace,
             session_store=store,
-            approval_policy="auto",
+            options=RuntimeOptions(approval_policy="auto"),
         )
         _seed_plain_messages(agent, 12, "stress-history", 1_400)
         metrics = measure_request_ablation_metrics(agent, "recall")
@@ -199,9 +200,7 @@ class _MemoryExperimentModelClient(FakeModelClient):
         self.expected_working_line = ""
         self.followup_prompt = ""
 
-    def complete(
-        self, *, system, tools, messages, max_tokens, cache_breakpoints=None
-    ):
+    def complete(self, *, system, tools, messages, max_tokens, cache_breakpoints=None):
         prompt = "\n".join(message_content_text(message) for message in messages)
         if self.phase == "bootstrap_tool":
             self.phase = "bootstrap_final"
@@ -245,14 +244,16 @@ def _build_memory_experiment_agent(workspace_root, expected_fact, filename):
         model_client=_MemoryExperimentModelClient(expected_fact, filename),
         workspace=workspace,
         session_store=store,
-        approval_policy="auto",
+        options=RuntimeOptions(approval_policy="auto"),
     )
 
 
 def _set_irrelevant_memory(agent):
     summaries = agent.session.setdefault("memory", {}).setdefault("file_summaries", {})
     summaries.clear()
-    memorylib.set_file_summary_dict(summaries, "other.txt", "team mascot is blue", workspace_root=agent.root)
+    memorylib.set_file_summary_dict(
+        summaries, "other.txt", "team mascot is blue", workspace_root=agent.root
+    )
     agent.memory.recent_files = ["other.txt"]
     agent._sync_working_memory()
     _replace_checkpoint_files(agent, "other.txt", "team mascot is blue")
@@ -269,13 +270,15 @@ def _replace_checkpoint_files(agent, path="", summary=""):
     checkpoints = agent.session.get("checkpoints", {})
     checkpoints = checkpoints if isinstance(checkpoints, dict) else {}
     items = checkpoints.get("items", {})
-    checkpoint = items.get(checkpoints.get("current_id", "")) if isinstance(items, dict) else None
+    checkpoint = (
+        items.get(checkpoints.get("current_id", ""))
+        if isinstance(items, dict)
+        else None
+    )
     if not isinstance(checkpoint, dict):
         return
     checkpoint["key_files"] = (
-        [{"path": path, "summary": summary, "freshness": None}]
-        if path
-        else []
+        [{"path": path, "summary": summary, "freshness": None}] if path else []
     )
     checkpoint["read_files"] = [path] if path else []
     checkpoint["modified_files"] = []
@@ -287,7 +290,11 @@ def _age_bootstrap_messages(agent, filler_count=8):
 
 def _bootstrap_tool_use_id(agent):
     for message in agent.session["messages"]:
-        for block in message.get("content", []) if isinstance(message.get("content"), list) else []:
+        for block in (
+            message.get("content", [])
+            if isinstance(message.get("content"), list)
+            else []
+        ):
             if block.get("type") == "tool_use" and block.get("id"):
                 return block["id"]
         else:
@@ -333,10 +340,16 @@ def _run_memory_variant(mode):
     with tempfile.TemporaryDirectory(prefix="pico-memory-experiment-") as temp_dir:
         workspace_root = Path(temp_dir).resolve()
         (workspace_root / "README.md").write_text("demo\n", encoding="utf-8")
-        (workspace_root / "facts.txt").write_text("deploy key is red\n", encoding="utf-8")
-        agent = _build_memory_experiment_agent(workspace_root, "deploy key is red", "facts.txt")
+        (workspace_root / "facts.txt").write_text(
+            "deploy key is red\n", encoding="utf-8"
+        )
+        agent = _build_memory_experiment_agent(
+            workspace_root, "deploy key is red", "facts.txt"
+        )
         assert agent.ask("Read facts.txt and remember the key fact.") == "Done."
-        bootstrap_tool_use_id, model_client = _prepare_memory_followup(agent, "facts.txt")
+        bootstrap_tool_use_id, model_client = _prepare_memory_followup(
+            agent, "facts.txt"
+        )
 
         if mode == "memory_off":
             agent.feature_flags["memory"] = False
@@ -372,27 +385,88 @@ def run_memory_dependency_experiment(repetitions=3):
             "repeated_reads": sum(row["repeated_reads"] for row in rows),
             "avg_tool_steps": _safe_mean(row["tool_steps"] for row in rows),
             "avg_attempts": _safe_mean(row["attempts"] for row in rows),
-            "correct_rate": _safe_ratio(sum(1 for row in rows if row["correct"]), len(rows)),
-            "bootstrap_tool_turn_dropped": bool(rows) and all(
-                row["bootstrap_tool_turn_dropped"] for row in rows
+            "correct_rate": _safe_ratio(
+                sum(1 for row in rows if row["correct"]), len(rows)
             ),
+            "bootstrap_tool_turn_dropped": bool(rows)
+            and all(row["bootstrap_tool_turn_dropped"] for row in rows),
         }
     return results
 
 
 MEMORY_EXPERIMENT_TASKS = [
-    {"id": "fact_color", "category": "fact_lookup", "filename": "facts.txt", "fact": "deploy key is red"},
-    {"id": "fact_api", "category": "fact_lookup", "filename": "settings.txt", "fact": "api base path is /v1/internal"},
-    {"id": "fact_budget", "category": "fact_lookup", "filename": "limits.txt", "fact": "default step budget is 6"},
-    {"id": "fact_timeout", "category": "fact_lookup", "filename": "runtime.txt", "fact": "timeout ceiling is 120 seconds"},
-    {"id": "edit_intro", "category": "edit_dependency", "filename": "README.md", "fact": "first bullet is the locked intro line"},
-    {"id": "edit_token", "category": "edit_dependency", "filename": "sample.txt", "fact": "second token is placeholder"},
-    {"id": "edit_field", "category": "edit_dependency", "filename": "config.txt", "fact": "fixed field name is benchmark_schema"},
-    {"id": "edit_line", "category": "edit_dependency", "filename": "notes.txt", "fact": "locked marker is on line three"},
-    {"id": "history_file", "category": "history_reference", "filename": "history.txt", "fact": "deploy fact came from facts.txt"},
-    {"id": "history_line", "category": "history_reference", "filename": "history.txt", "fact": "benchmark note came from line two"},
-    {"id": "history_token", "category": "history_reference", "filename": "history.txt", "fact": "placeholder token was beta"},
-    {"id": "history_tool", "category": "history_reference", "filename": "history.txt", "fact": "inspection tool was read_file"},
+    {
+        "id": "fact_color",
+        "category": "fact_lookup",
+        "filename": "facts.txt",
+        "fact": "deploy key is red",
+    },
+    {
+        "id": "fact_api",
+        "category": "fact_lookup",
+        "filename": "settings.txt",
+        "fact": "api base path is /v1/internal",
+    },
+    {
+        "id": "fact_budget",
+        "category": "fact_lookup",
+        "filename": "limits.txt",
+        "fact": "default step budget is 6",
+    },
+    {
+        "id": "fact_timeout",
+        "category": "fact_lookup",
+        "filename": "runtime.txt",
+        "fact": "timeout ceiling is 120 seconds",
+    },
+    {
+        "id": "edit_intro",
+        "category": "edit_dependency",
+        "filename": "README.md",
+        "fact": "first bullet is the locked intro line",
+    },
+    {
+        "id": "edit_token",
+        "category": "edit_dependency",
+        "filename": "sample.txt",
+        "fact": "second token is placeholder",
+    },
+    {
+        "id": "edit_field",
+        "category": "edit_dependency",
+        "filename": "config.txt",
+        "fact": "fixed field name is benchmark_schema",
+    },
+    {
+        "id": "edit_line",
+        "category": "edit_dependency",
+        "filename": "notes.txt",
+        "fact": "locked marker is on line three",
+    },
+    {
+        "id": "history_file",
+        "category": "history_reference",
+        "filename": "history.txt",
+        "fact": "deploy fact came from facts.txt",
+    },
+    {
+        "id": "history_line",
+        "category": "history_reference",
+        "filename": "history.txt",
+        "fact": "benchmark note came from line two",
+    },
+    {
+        "id": "history_token",
+        "category": "history_reference",
+        "filename": "history.txt",
+        "fact": "placeholder token was beta",
+    },
+    {
+        "id": "history_tool",
+        "category": "history_reference",
+        "filename": "history.txt",
+        "fact": "inspection tool was read_file",
+    },
 ]
 
 
@@ -417,7 +491,9 @@ def _followup_prompt(task):
 def _set_irrelevant_memory_for_task(agent):
     summaries = agent.session.setdefault("memory", {}).setdefault("file_summaries", {})
     summaries.clear()
-    memorylib.set_file_summary_dict(summaries, "other.txt", "the team mascot is blue", workspace_root=agent.root)
+    memorylib.set_file_summary_dict(
+        summaries, "other.txt", "the team mascot is blue", workspace_root=agent.root
+    )
     agent.memory.recent_files = ["other.txt"]
     agent._sync_working_memory()
     _replace_checkpoint_files(agent, "other.txt", "the team mascot is blue")
@@ -428,9 +504,13 @@ def _run_memory_task_variant(task, variant):
         workspace_root = Path(temp_dir).resolve()
         (workspace_root / "README.md").write_text("demo\n", encoding="utf-8")
         _write_memory_task_files(workspace_root, task)
-        agent = _build_memory_experiment_agent(workspace_root, task["fact"], task["filename"])
+        agent = _build_memory_experiment_agent(
+            workspace_root, task["fact"], task["filename"]
+        )
         assert agent.ask(_bootstrap_prompt(task)) == "Done."
-        bootstrap_tool_use_id, model_client = _prepare_memory_followup(agent, task["filename"])
+        bootstrap_tool_use_id, model_client = _prepare_memory_followup(
+            agent, task["filename"]
+        )
         if variant == "memory_off":
             agent.feature_flags["memory"] = False
             _clear_file_summary_memory(agent)
@@ -474,11 +554,14 @@ def run_large_scale_memory_experiment(repetitions=5):
                 "repeated_reads": sum(row["repeated_reads"] for row in rows),
                 "avg_tool_steps": _safe_mean(row["tool_steps"] for row in rows),
                 "avg_attempts": _safe_mean(row["attempts"] for row in rows),
-                "correct_rate": _safe_ratio(sum(1 for row in rows if row["correct"]), len(rows)),
-                "memory_hit_rate": _safe_ratio(sum(1 for row in rows if row["repeated_reads"] == 0), len(rows)),
-                "bootstrap_tool_turn_dropped": bool(rows) and all(
-                    row["bootstrap_tool_turn_dropped"] for row in rows
+                "correct_rate": _safe_ratio(
+                    sum(1 for row in rows if row["correct"]), len(rows)
                 ),
+                "memory_hit_rate": _safe_ratio(
+                    sum(1 for row in rows if row["repeated_reads"] == 0), len(rows)
+                ),
+                "bootstrap_tool_turn_dropped": bool(rows)
+                and all(row["bootstrap_tool_turn_dropped"] for row in rows),
             }
             for variant, rows in variants.items()
         },
@@ -490,7 +573,13 @@ def run_context_stress_matrix(repetitions=5):
     repetitions = int(repetitions)
     history_levels = [("short", 4), ("medium", 12), ("long", 24)]
     note_levels = [("low", 2), ("high", 10)]
-    request_levels = [("short", "recall"), ("long", "recall the relevant benchmark fact without dropping the latest request details")]
+    request_levels = [
+        ("short", "recall"),
+        (
+            "long",
+            "recall the relevant benchmark fact without dropping the latest request details",
+        ),
+    ]
     configs = []
 
     for history_label, history_count in history_levels:
@@ -498,32 +587,43 @@ def run_context_stress_matrix(repetitions=5):
             for request_label, request_text in request_levels:
                 per_run = []
                 for _ in range(repetitions):
-                    with tempfile.TemporaryDirectory(prefix="pico-context-matrix-") as temp_dir:
+                    with tempfile.TemporaryDirectory(
+                        prefix="pico-context-matrix-"
+                    ) as temp_dir:
                         workspace_root = Path(temp_dir).resolve()
-                        (workspace_root / "README.md").write_text("demo\n", encoding="utf-8")
+                        (workspace_root / "README.md").write_text(
+                            "demo\n", encoding="utf-8"
+                        )
                         workspace = WorkspaceContext.build(workspace_root)
                         store = SessionStore(workspace_root / ".pico" / "sessions")
                         agent = Pico(
                             model_client=FakeModelClient([]),
                             workspace=workspace,
                             session_store=store,
-                            approval_policy="auto",
+                            options=RuntimeOptions(approval_policy="auto"),
                         )
                         _seed_plain_messages(agent, note_count, "matrix-note", 180)
-                        _seed_plain_messages(agent, history_count, "matrix-history", 700)
+                        _seed_plain_messages(
+                            agent, history_count, "matrix-history", 700
+                        )
                         metrics = measure_request_ablation_metrics(agent, request_text)
                         compacted = metrics["compacted"]
                         uncompacted = metrics["uncompacted"]
                         per_run.append(
                             {
                                 "compacted_request_chars": compacted["request_chars"],
-                                "uncompacted_request_chars": uncompacted["request_chars"],
+                                "uncompacted_request_chars": uncompacted[
+                                    "request_chars"
+                                ],
                                 "canonical_messages_dropped": 0,
                                 "compression_ratio": _safe_ratio(
-                                    uncompacted["request_chars"] - compacted["request_chars"],
+                                    uncompacted["request_chars"]
+                                    - compacted["request_chars"],
                                     uncompacted["request_chars"],
                                 ),
-                                "current_request_preserved": compacted["current_request_preserved"],
+                                "current_request_preserved": compacted[
+                                    "current_request_preserved"
+                                ],
                                 "canonical_history_preserved": compacted[
                                     "canonical_history_preserved"
                                 ],
@@ -535,12 +635,22 @@ def run_context_stress_matrix(repetitions=5):
                         "history_level": history_label,
                         "note_level": note_label,
                         "request_level": request_label,
-                        "compacted_request_chars": _safe_mean(item["compacted_request_chars"] for item in per_run),
-                        "uncompacted_request_chars": _safe_mean(item["uncompacted_request_chars"] for item in per_run),
+                        "compacted_request_chars": _safe_mean(
+                            item["compacted_request_chars"] for item in per_run
+                        ),
+                        "uncompacted_request_chars": _safe_mean(
+                            item["uncompacted_request_chars"] for item in per_run
+                        ),
                         "canonical_messages_dropped": 0,
-                        "compression_ratio": _safe_mean(item["compression_ratio"] for item in per_run),
+                        "compression_ratio": _safe_mean(
+                            item["compression_ratio"] for item in per_run
+                        ),
                         "current_request_preserved_rate": _safe_ratio(
-                            sum(1 for item in per_run if item["current_request_preserved"]),
+                            sum(
+                                1
+                                for item in per_run
+                                if item["current_request_preserved"]
+                            ),
                             len(per_run),
                         ),
                         "canonical_history_preserved_rate": _safe_ratio(
@@ -566,7 +676,11 @@ def run_context_stress_matrix(repetitions=5):
             "max_request_compression_ratio": max(ratios) if ratios else 0.0,
             "min_request_compression_ratio": min(ratios) if ratios else 0.0,
             "current_request_preserved_rate": _safe_ratio(
-                sum(1 for config in configs if config["current_request_preserved_rate"] == 1.0),
+                sum(
+                    1
+                    for config in configs
+                    if config["current_request_preserved_rate"] == 1.0
+                ),
                 len(configs),
             ),
             "canonical_history_preserved_rate": _safe_ratio(
@@ -588,15 +702,16 @@ def _security_agent(workspace_root, approval_policy="auto", read_only=False):
         model_client=FakeModelClient([]),
         workspace=workspace,
         session_store=store,
-        approval_policy=approval_policy,
-        read_only=read_only,
+        options=RuntimeOptions(approval_policy=approval_policy, read_only=read_only),
     )
 
 
 def _scenario_invalid_patch_nonunique(workspace_root):
     (workspace_root / "sample.txt").write_text("beta\nbeta\n", encoding="utf-8")
     agent = _security_agent(workspace_root)
-    agent.run_tool("patch_file", {"path": "sample.txt", "old_text": "beta", "new_text": "locked"})
+    agent.run_tool(
+        "patch_file", {"path": "sample.txt", "old_text": "beta", "new_text": "locked"}
+    )
     return dict(agent._last_tool_result_metadata)
 
 
@@ -666,7 +781,8 @@ def _scenario_repeated_call(workspace_root):
     args = {"path": "README.md", "start": 1, "end": 1}
     for index in range(2):
         result = agent.run_tool("read_file", args)
-        agent.session["messages"].extend(make_tool_pair(
+        agent.session["messages"].extend(
+            make_tool_pair(
             name="read_file",
             arguments=args,
             tool_use_id=f"toolu_synthetic_{index}",
@@ -674,7 +790,8 @@ def _scenario_repeated_call(workspace_root):
             created_at="2026-04-09T00:00:00+00:00",
             tool_status="ok",
             effect_class="read_only",
-        ))
+            )
+        )
     agent.run_tool("read_file", args)
     return dict(agent._last_tool_result_metadata)
 
@@ -708,10 +825,14 @@ def run_security_experiment_suite(repetitions=3):
                 rows.append(metadata)
                 event = str(metadata.get("security_event_type", "")).strip()
                 if event:
-                    security_event_counts[event] = security_event_counts.get(event, 0) + 1
+                    security_event_counts[event] = (
+                        security_event_counts.get(event, 0) + 1
+                    )
                 error_code = str(metadata.get("tool_error_code", "")).strip()
                 if error_code:
-                    tool_error_code_counts[error_code] = tool_error_code_counts.get(error_code, 0) + 1
+                    tool_error_code_counts[error_code] = (
+                        tool_error_code_counts.get(error_code, 0) + 1
+                    )
     return {
         "scenario_count": len(SECURITY_SCENARIOS),
         "runs": len(rows),

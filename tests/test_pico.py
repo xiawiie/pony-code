@@ -9,19 +9,18 @@ from unittest.mock import patch
 import pytest
 
 import pico as pico_pkg
+import pico.cli.app as pico_cli
 from pico.agent.loop import _commit_session, _plain_message
 import pico.memory.service as memorylib
 from pico.agent.messages import make_tool_pair, validate_messages
-from pico.runtime import DEFAULT_MAX_OUTPUT_TOKENS, DEFAULT_MAX_STEPS
-from pico.state.session_store import LEGACY_SESSION_FORMAT_VERSION
-from pico import (
-    Pico,
-    SessionStore,
-    WorkspaceContext,
-    build_welcome,
-)
-from pico.providers.fake import FakeModelClient
+from pico.runtime.application import DEFAULT_MAX_OUTPUT_TOKENS, DEFAULT_MAX_STEPS
+from pico.state.session_store import LEGACY_SESSION_FORMAT_VERSION, SessionStore
+from pico import Pico
+from pico.cli.app import build_welcome
+from pico.workspace.context import WorkspaceContext
+from benchmarks.support.fake_provider import FakeModelClient
 from pico.providers.response import Response, StopReason
+from pico.runtime.options import RuntimeOptions
 
 
 def build_workspace(tmp_path):
@@ -37,8 +36,7 @@ def build_agent(tmp_path, outputs, **kwargs):
         model_client=FakeModelClient(outputs),
         workspace=workspace,
         session_store=store,
-        approval_policy=approval_policy,
-        **kwargs,
+        options=RuntimeOptions(approval_policy=approval_policy, **kwargs),
     )
 
 
@@ -104,11 +102,13 @@ def test_new_session_persists_provider_binding(tmp_path):
         model_client=client,
         workspace=workspace,
         session_store=store,
-        approval_policy="auto",
+        options=RuntimeOptions(approval_policy="auto"),
     )
 
     assert agent.session["provider_binding"] == client.provider_binding
-    assert store.load(agent.session["id"])["provider_binding"] == client.provider_binding
+    assert (
+        store.load(agent.session["id"])["provider_binding"] == client.provider_binding
+    )
 
 
 def test_resume_rejects_a_different_model_session_binding(tmp_path):
@@ -118,7 +118,7 @@ def test_resume_rejects_a_different_model_session_binding(tmp_path):
         model_client=bound_fake_client([]),
         workspace=workspace,
         session_store=store,
-        approval_policy="auto",
+        options=RuntimeOptions(approval_policy="auto"),
     )
     different = bound_fake_client(
         [],
@@ -133,7 +133,7 @@ def test_resume_rejects_a_different_model_session_binding(tmp_path):
             workspace=workspace,
             session_store=store,
             session_id=original.session["id"],
-            approval_policy="auto",
+            options=RuntimeOptions(approval_policy="auto"),
         )
 
 
@@ -148,11 +148,13 @@ def test_unbound_legacy_session_cannot_replay_provider_state(tmp_path):
             created_at="now",
             tool_status="ok",
             effect_class="read_only",
-            provider_state=[{
+            provider_state=[
+                {
                 "type": "reasoning",
                 "encrypted_content": "opaque-state",
                 "summary": [],
-            }],
+                }
+            ],
         )
     )
     original.session_store.save(original.session)
@@ -163,7 +165,7 @@ def test_unbound_legacy_session_cannot_replay_provider_state(tmp_path):
             workspace=original.workspace,
             session_store=original.session_store,
             session_id=original.session["id"],
-            approval_policy="auto",
+            options=RuntimeOptions(approval_policy="auto"),
         )
 
 
@@ -176,7 +178,7 @@ def test_unbound_session_cannot_resume_with_a_bound_model(tmp_path):
             workspace=original.workspace,
             session_store=original.session_store,
             session_id=original.session["id"],
-            approval_policy="auto",
+            options=RuntimeOptions(approval_policy="auto"),
         )
 
 
@@ -232,7 +234,7 @@ def test_programmatic_resume_sanitizes_process_secret_before_first_request(
         workspace=original.workspace,
         session_store=resume_store,
         session_id=raw["id"],
-        approval_policy="auto",
+        options=RuntimeOptions(approval_policy="auto"),
     )
     resumed.ask("continue")
 
@@ -321,7 +323,7 @@ def test_supplied_legacy_session_is_rejected_outside_store_migration(
             workspace=workspace,
             session_store=store,
             session=raw_session,
-            approval_policy="auto",
+            options=RuntimeOptions(approval_policy="auto"),
         )
 
 
@@ -334,7 +336,8 @@ def test_repeated_tool_detection_reads_canonical_tool_use_blocks(tmp_path):
     agent = build_agent(tmp_path, [])
     pairs = []
     for index, path in enumerate(("a.py", "b.py", "a.py", "b.py")):
-        pairs.extend(make_tool_pair(
+        pairs.extend(
+            make_tool_pair(
             name="read_file",
             arguments={"path": path},
             tool_use_id=f"tu_{index}",
@@ -342,7 +345,8 @@ def test_repeated_tool_detection_reads_canonical_tool_use_blocks(tmp_path):
             created_at="t",
             tool_status="ok",
             effect_class="read_only",
-        ))
+            )
+        )
     agent.session["messages"].extend(pairs)
 
     assert agent.repeated_tool_call("read_file", {"path": "a.py"}) is True
@@ -449,7 +453,7 @@ def test_agent_stores_file_summaries_without_episodic_notes(tmp_path):
         workspace=agent.workspace,
         session_store=agent.session_store,
         session_id=agent.session["id"],
-        approval_policy="auto",
+        options=RuntimeOptions(approval_policy="auto"),
     )
 
     assert resumed.ask("What color is the deploy key?") == "It is red."
@@ -457,7 +461,9 @@ def test_agent_stores_file_summaries_without_episodic_notes(tmp_path):
     assert "notes" not in resumed.session["memory"]
 
 
-def test_file_summary_cache_is_invalidated_on_out_of_band_edit_and_path_spelling(tmp_path):
+def test_file_summary_cache_is_invalidated_on_out_of_band_edit_and_path_spelling(
+    tmp_path,
+):
     file_path = tmp_path / "sample.txt"
     file_path.write_text("alpha\n", encoding="utf-8")
     agent = build_agent(tmp_path, [])
@@ -475,7 +481,7 @@ def test_file_summary_cache_is_invalidated_on_out_of_band_edit_and_path_spelling
         workspace=agent.workspace,
         session_store=agent.session_store,
         session_id=agent.session["id"],
-        approval_policy="auto",
+        options=RuntimeOptions(approval_policy="auto"),
     )
 
     assert "sample.txt" not in resumed.session["memory"]["file_summaries"]
@@ -585,7 +591,7 @@ def test_agent_saves_and_resumes_session(tmp_path):
         workspace=agent.workspace,
         session_store=agent.session_store,
         session_id=agent.session["id"],
-        approval_policy="auto",
+        options=RuntimeOptions(approval_policy="auto"),
     )
 
     assert resumed.session["messages"][0]["content"] == "Start a session"
@@ -660,7 +666,8 @@ def test_list_files_hides_internal_agent_state(tmp_path):
 def test_repeated_identical_tool_call_is_rejected(tmp_path):
     agent = build_agent(tmp_path, [])
     for index in range(2):
-        agent.session["messages"].extend(make_tool_pair(
+        agent.session["messages"].extend(
+            make_tool_pair(
             name="list_files",
             arguments={},
             tool_use_id=f"tu_{index}",
@@ -668,11 +675,15 @@ def test_repeated_identical_tool_call_is_rejected(tmp_path):
             created_at=str(index),
             tool_status="ok",
             effect_class="read_only",
-        ))
+            )
+        )
 
     result = agent.run_tool("list_files", {})
 
-    assert result == "error: repeated identical tool call for list_files; choose a different tool or return a final answer"
+    assert (
+        result
+        == "error: repeated identical tool call for list_files; choose a different tool or return a final answer"
+    )
 
 
 def test_repeated_tool_call_rejects_short_alternating_loops(tmp_path):
@@ -684,7 +695,8 @@ def test_repeated_tool_call_rejects_short_alternating_loops(tmp_path):
         ("read_file", {"path": "README.md", "start": 1, "end": 1}, "demo"),
     ]
     for index, (name, arguments, content) in enumerate(calls):
-        agent.session["messages"].extend(make_tool_pair(
+        agent.session["messages"].extend(
+            make_tool_pair(
             name=name,
             arguments=arguments,
             tool_use_id=f"tu_{index}",
@@ -692,15 +704,30 @@ def test_repeated_tool_call_rejects_short_alternating_loops(tmp_path):
             created_at=str(index),
             tool_status="ok",
             effect_class="read_only",
-        ))
+            )
+        )
 
     result = agent.run_tool("list_files", {})
 
-    assert result == "error: repeated identical tool call for list_files; choose a different tool or return a final answer"
+    assert (
+        result
+        == "error: repeated identical tool call for list_files; choose a different tool or return a final answer"
+    )
 
 
 def test_welcome_screen_keeps_box_shape_for_long_paths(tmp_path):
-    deep = tmp_path / "very" / "long" / "path" / "for" / "the" / "pico" / "agent" / "welcome" / "screen"
+    deep = (
+        tmp_path
+        / "very"
+        / "long"
+        / "path"
+        / "for"
+        / "the"
+        / "pico"
+        / "agent"
+        / "welcome"
+        / "screen"
+    )
     deep.mkdir(parents=True)
     agent = build_agent(deep, [])
 
@@ -727,7 +754,7 @@ def test_welcome_screen_keeps_box_shape_for_long_paths(tmp_path):
 
 
 def test_build_arg_parser_has_no_model_backend_selection_flags(tmp_path):
-    parser = pico_pkg.build_arg_parser()
+    parser = pico_cli.build_arg_parser()
     destinations = {action.dest for action in parser._actions}
 
     assert {
@@ -745,16 +772,18 @@ def test_build_arg_parser_has_no_model_backend_selection_flags(tmp_path):
 
 def test_build_agent_uses_resolved_anthropic_client_and_project_env(tmp_path):
     (tmp_path / ".env").write_text(
+        "PICO_PROVIDER=anthropic\n"
+        "PICO_MODEL=claude-sonnet-4-6\n"
         "PICO_API_URL=https://gateway.example/v1\n"
         "PICO_API_KEY=sk-project\n",
         encoding="utf-8",
     )
-    args = pico_pkg.build_arg_parser().parse_args(["--cwd", str(tmp_path)])
+    args = pico_cli.build_arg_parser().parse_args(["--cwd", str(tmp_path)])
 
     with patch.dict(os.environ, {"HOME": str(tmp_path)}, clear=True):
-        with patch("pico.cli.build_model_client") as model_client:
+        with patch("pico.cli.assembly.build_transport_client") as model_client:
             fake_client = model_client.return_value
-            agent = pico_pkg.build_agent(args)
+            agent = pico_cli.build_agent(args)
 
     model_client.assert_called_once()
     assert model_client.call_args.args == ("anthropic_messages",)
@@ -769,32 +798,33 @@ def test_build_agent_uses_resolved_anthropic_client_and_project_env(tmp_path):
             "strict_tools": True,
             "parallel_tool_control": True,
         },
-        "compatibility": "standard",
     }
     assert agent.model_client is fake_client
 
 
 def test_build_agent_uses_process_env_when_project_env_is_missing(tmp_path):
-    args = pico_pkg.build_arg_parser().parse_args(["--cwd", str(tmp_path)])
+    args = pico_cli.build_arg_parser().parse_args(["--cwd", str(tmp_path)])
 
     with patch.dict(
         os.environ,
         {
             "HOME": str(tmp_path),
+            "PICO_PROVIDER": "anthropic",
+            "PICO_MODEL": "claude-sonnet-4-6",
             "PICO_API_URL": "https://process.example/v1",
             "PICO_API_KEY": "sk-process",
         },
         clear=True,
     ):
-        with patch("pico.cli.build_model_client") as model_client:
-            pico_pkg.build_agent(args)
+        with patch("pico.cli.assembly.build_transport_client") as model_client:
+            pico_cli.build_agent(args)
 
     assert model_client.call_args.kwargs["base_url"] == "https://process.example/v1"
     assert model_client.call_args.kwargs["api_key"] == "sk-process"
 
 
 def test_build_agent_switches_provider_from_generic_environment(tmp_path):
-    args = pico_pkg.build_arg_parser().parse_args(["--cwd", str(tmp_path)])
+    args = pico_cli.build_arg_parser().parse_args(["--cwd", str(tmp_path)])
 
     with patch.dict(
         os.environ,
@@ -802,12 +832,13 @@ def test_build_agent_switches_provider_from_generic_environment(tmp_path):
             "HOME": str(tmp_path),
             "PICO_PROVIDER": "openai",
             "PICO_MODEL": "gpt-test",
+            "PICO_API_URL": "https://api.openai.com/v1",
             "PICO_API_KEY": "sk-openai",
         },
         clear=True,
     ):
-        with patch("pico.cli.build_model_client") as model_client:
-            pico_pkg.build_agent(args)
+        with patch("pico.cli.assembly.build_transport_client") as model_client:
+            pico_cli.build_agent(args)
 
     assert model_client.call_args.args == ("openai_responses",)
     assert model_client.call_args.kwargs["model"] == "gpt-test"
@@ -834,10 +865,10 @@ def test_public_api_exports_resolve_through_package_path():
     assert Path(pico_pkg.__file__).as_posix().endswith("/pico/__init__.py")
 
 
-def test_package_import_surface_includes_cli_entrypoints():
-    assert callable(pico_pkg.main)
-    assert callable(pico_pkg.build_agent)
-    assert callable(pico_pkg.build_arg_parser)
+def test_package_import_surface_excludes_cli_entrypoints():
+    assert not hasattr(pico_pkg, "main")
+    assert not hasattr(pico_pkg, "build_agent")
+    assert not hasattr(pico_pkg, "build_arg_parser")
 
 
 def test_pico_initializes_recovery_components(tmp_path):

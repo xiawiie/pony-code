@@ -11,8 +11,8 @@ from zoneinfo import ZoneInfo
 import pico.memory.service as memorylib
 from pico.agent.messages import validate_messages
 from pico.agent.observability import load_run_artifacts
-from pico.providers.fake import FakeModelClient
-from pico.runtime import Pico
+from benchmarks.support.fake_provider import FakeModelClient
+from pico.runtime.application import Pico
 from pico.state.run_store import RunStore
 from pico.state.session_store import SessionStore
 from pico.tools.subprocess import (
@@ -21,7 +21,7 @@ from pico.tools.subprocess import (
     run_hardened_git,
 )
 from pico.state.task_state import STOP_REASON_FINAL_ANSWER_RETURNED
-from pico.workspace import WorkspaceContext
+from pico.workspace.context import WorkspaceContext
 from .benchmark_schema import (
     DEFAULT_BENCHMARK_PATH,
     _artifact_path_for_task,
@@ -32,10 +32,13 @@ from .benchmark_schema import (
     load_benchmark,
     summarize_rows,
 )
+from pico.runtime.options import RuntimeOptions
 
 FIXED_BENCHMARK_RESULT_FORMAT_VERSION = 1
 DEFAULT_ARTIFACT_PATH = Path("benchmarks/benchmark-v1.json")
-DEFAULT_HARNESS_REGRESSION_V2_ARTIFACT_PATH = Path("artifacts/harness-regression-v2.json")
+DEFAULT_HARNESS_REGRESSION_V2_ARTIFACT_PATH = Path(
+    "artifacts/harness-regression-v2.json"
+)
 DEFAULT_MODEL_NAME = "FakeModelClient"
 DEFAULT_MODEL_VERSION = "scripted-deterministic"
 DEFAULT_TEMPERATURE = 0.0
@@ -157,9 +160,7 @@ def _apply_task_setup(agent, task, fixture_copy_root):
                 {
                     "role": "user" if index % 2 == 0 else "assistant",
                     "content": f"benchmark-history-{index}-" + ("A" * 220),
-                    "_pico_meta": {
-                        "created_at": f"2026-04-15T09:{index:02d}:00+00:00"
-                    },
+                    "_pico_meta": {"created_at": f"2026-04-15T09:{index:02d}:00+00:00"},
                 }
             )
         agent.session_store.save(agent.session)
@@ -173,8 +174,12 @@ def _apply_task_setup(agent, task, fixture_copy_root):
     if kind == "freshness_mismatch":
         path = str(setup.get("path", "sample.txt"))
         summary_text = str(setup.get("summary", f"{path}: stale benchmark summary"))
-        summaries = agent.session.setdefault("memory", {}).setdefault("file_summaries", {})
-        memorylib.set_file_summary_dict(summaries, path, summary_text, workspace_root=agent.root)
+        summaries = agent.session.setdefault("memory", {}).setdefault(
+            "file_summaries", {}
+        )
+        memorylib.set_file_summary_dict(
+            summaries, path, summary_text, workspace_root=agent.root
+        )
         agent.memory.remember_file(path)
         agent._sync_working_memory()
         freshness = summaries[agent.memory.canonical_path(path)]["freshness"]
@@ -185,7 +190,9 @@ def _apply_task_setup(agent, task, fixture_copy_root):
                     "ckpt_freshness",
                     current_goal="Re-anchor stale benchmark file state",
                     next_step=f"Re-read {path}",
-                    runtime_identity={"workspace_fingerprint": agent.workspace.fingerprint()},
+                    runtime_identity={
+                        "workspace_fingerprint": agent.workspace.fingerprint()
+                    },
                     key_files=[{"path": path, "freshness": freshness}],
                     freshness={path: freshness},
                     summary="stale benchmark checkpoint",
@@ -193,7 +200,10 @@ def _apply_task_setup(agent, task, fixture_copy_root):
             },
         }
         agent.session_store.save(agent.session)
-        (fixture_copy_root / path).write_text(str(setup.get("mutated_text", "alpha\nbeta\nstale-updated\nplaceholder\n")), encoding="utf-8")
+        (fixture_copy_root / path).write_text(
+            str(setup.get("mutated_text", "alpha\nbeta\nstale-updated\nplaceholder\n")),
+            encoding="utf-8",
+        )
         return
 
     if kind == "workspace_mismatch":
@@ -204,7 +214,9 @@ def _apply_task_setup(agent, task, fixture_copy_root):
                     "ckpt_workspace",
                     current_goal="Recover after benchmark workspace drift",
                     next_step="Rebuild runtime state from a fresh checkpoint",
-                    runtime_identity={"workspace_fingerprint": "outdated-benchmark-fingerprint"},
+                    runtime_identity={
+                        "workspace_fingerprint": "outdated-benchmark-fingerprint"
+                    },
                     summary="workspace drift benchmark checkpoint",
                 )
             },
@@ -281,12 +293,15 @@ class BenchmarkEvaluator:
                 "branch": _git_value(["branch", "--show-current"], cwd=self.repo_root),
             },
             "benchmark": {
-                "source": str(self.benchmark_path.resolve().relative_to(self.repo_root)),
+                "source": str(
+                    self.benchmark_path.resolve().relative_to(self.repo_root)
+                ),
                 "task_count": len(benchmark["tasks"]),
             },
             "reproducibility": {
                 "fixture_snapshot_id": _fixture_snapshot_id(
-                    self.repo_root / str(task["fixture_repo"]) for task in benchmark["tasks"]
+                    self.repo_root / str(task["fixture_repo"])
+                    for task in benchmark["tasks"]
                 ),
                 "model_name": self.model_name,
                 "model_version": self.model_version,
@@ -328,18 +343,22 @@ class BenchmarkEvaluator:
             model_client=model_client,
             workspace=workspace,
             session_store=session_store,
+            options=RuntimeOptions(
             run_store=run_store,
             approval_policy="auto",
             max_steps=int(task["step_budget"]),
             max_output_tokens=self.max_output_tokens,
             allowed_tools=task["allowed_tools"],
+            ),
         )
         _apply_task_setup(agent, task, fixture_copy_root)
 
         initial_messages_empty = len(agent.session.get("messages", [])) == 0
         initial_task_summary_empty = not agent.memory.task_summary
         initial_episodic_notes_empty = True
-        initial_memory_empty = initial_task_summary_empty and not agent.memory.recent_files
+        initial_memory_empty = (
+            initial_task_summary_empty and not agent.memory.recent_files
+        )
 
         final_answer = agent.ask(_agent_prompt_for_task(task))
         validate_messages(agent.session["messages"], require_meta=True)
@@ -353,29 +372,46 @@ class BenchmarkEvaluator:
         artifact_path = _artifact_path_for_task(task)
         artifact_file = fixture_copy_root / artifact_path
         expected_artifact_exists = artifact_file.exists()
-        artifact_digest = _digest_file(artifact_file) if expected_artifact_exists else ""
+        artifact_digest = (
+            _digest_file(artifact_file) if expected_artifact_exists else ""
+        )
 
         verifier = _run_verifier(task["verifier"], cwd=fixture_copy_root)
 
         within_budget = task_state.tool_steps <= int(task["step_budget"])
         verifier_passed = verifier.returncode == 0
-        non_failure_stop_reason = task_state.stop_reason == STOP_REASON_FINAL_ANSWER_RETURNED
-        passed = within_budget and verifier_passed and expected_artifact_exists and non_failure_stop_reason
-        failure_category = None if passed else self._failure_category(
+        non_failure_stop_reason = (
+            task_state.stop_reason == STOP_REASON_FINAL_ANSWER_RETURNED
+        )
+        passed = (
+            within_budget
+            and verifier_passed
+            and expected_artifact_exists
+            and non_failure_stop_reason
+        )
+        failure_category = (
+            None
+            if passed
+            else self._failure_category(
             within_budget=within_budget,
             verifier_passed=verifier_passed,
             expected_artifact_exists=expected_artifact_exists,
             non_failure_stop_reason=non_failure_stop_reason,
+        )
         )
 
         return {
             "id": task["id"],
             "prompt": task["prompt"],
             "fixture_repo": task["fixture_repo"],
-            "fixture_copy_relpath": _workspace_relative(fixture_copy_root, self.workspace_root),
+            "fixture_copy_relpath": _workspace_relative(
+                fixture_copy_root, self.workspace_root
+            ),
             "run_id": task_state.run_id,
             "run_dir_relpath": _workspace_relative(run_dir, self.workspace_root),
-            "task_state_relpath": _workspace_relative(task_state_path, self.workspace_root),
+            "task_state_relpath": _workspace_relative(
+                task_state_path, self.workspace_root
+            ),
             "report_relpath": _workspace_relative(report_path, self.workspace_root),
             "allowed_tools": list(task["allowed_tools"]),
             "step_budget": int(task["step_budget"]),
@@ -427,7 +463,9 @@ class BenchmarkEvaluator:
 
     def _write_artifact(self, artifact):
         self.artifact_path.parent.mkdir(parents=True, exist_ok=True)
-        self.artifact_path.write_text(json.dumps(artifact, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        self.artifact_path.write_text(
+            json.dumps(artifact, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
 
 
 def run_fixed_benchmark(

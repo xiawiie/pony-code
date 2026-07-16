@@ -8,7 +8,11 @@ import stat
 import threading
 import time
 
-from pico.security import _open_private_directory, _open_private_parent, ensure_private_dir
+from pico.security.private_files import (
+    _open_private_directory,
+    _open_private_parent,
+    ensure_private_dir,
+)
 
 try:  # pragma: no cover - fcntl is unavailable on some platforms.
     import fcntl
@@ -144,9 +148,7 @@ def locked_file(path, *, require_lock=False, require_existing=False, lock_timeou
     descriptor = -1
     registered = False
     try:
-        authority = (
-            _acquire_authority(deadline) if fcntl is not None else None
-        )
+        authority = _acquire_authority(deadline) if fcntl is not None else None
         try:
             before = os.stat(
                 path.name,
@@ -159,9 +161,7 @@ def locked_file(path, *, require_lock=False, require_existing=False, lock_timeou
             raise FileNotFoundError("lock file missing")
         if before is not None and not stat.S_ISREG(before.st_mode):
             kind = (
-                "symlink"
-                if stat.S_ISLNK(before.st_mode)
-                else "regular file required"
+                "symlink" if stat.S_ISLNK(before.st_mode) else "regular file required"
             )
             raise ValueError(kind)
         if before is not None and before.st_nlink != 1:
@@ -191,7 +191,10 @@ def locked_file(path, *, require_lock=False, require_existing=False, lock_timeou
         )
         if (current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino):
             raise ValueError("inode_changed")
-        if before is not None and (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino):
+        if before is not None and (before.st_dev, before.st_ino) != (
+            opened.st_dev,
+            opened.st_ino,
+        ):
             raise ValueError("inode_changed")
         os.fchmod(descriptor, 0o600)
         with os.fdopen(descriptor, "a+", encoding="utf-8") as handle:

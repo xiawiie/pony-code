@@ -1,7 +1,7 @@
 import hashlib
 from pathlib import Path
 
-from pico.tools import legal_tool_names
+from pico.tools.registry import legal_tool_names
 from .metrics_common import _decode_json_object, _validate_record_header
 
 FIXED_BENCHMARK_DEFINITION_FORMAT_VERSION = 1
@@ -26,44 +26,113 @@ TASK_FIXTURE_ARTIFACTS = {
 
 SCRIPTED_MODEL_OUTPUTS = {
     "readme_intro_locked": [
-        {"name": "patch_file", "args": {"path": "README.md", "old_text": "This is a placeholder benchmark fixture.", "new_text": "This fixture is a locked benchmark workspace."}},
+        {
+            "name": "patch_file",
+            "args": {
+                "path": "README.md",
+                "old_text": "This is a placeholder benchmark fixture.",
+                "new_text": "This fixture is a locked benchmark workspace.",
+            },
+        },
         "Done.",
     ],
     "readme_schema_note": [
-        {"name": "patch_file", "args": {"path": "README.md", "old_text": "- Placeholder note about the repo.", "new_text": "- The benchmark schema and baseline are fixed."}},
+        {
+            "name": "patch_file",
+            "args": {
+                "path": "README.md",
+                "old_text": "- Placeholder note about the repo.",
+                "new_text": "- The benchmark schema and baseline are fixed.",
+            },
+        },
         "Done.",
     ],
     "readme_ordering_note": [
-        {"name": "patch_file", "args": {"path": "README.md", "old_text": "- Placeholder note about the file layout.", "new_text": "- Deterministic file ordering keeps benchmark diffs stable."}},
+        {
+            "name": "patch_file",
+            "args": {
+                "path": "README.md",
+                "old_text": "- Placeholder note about the file layout.",
+                "new_text": "- Deterministic file ordering keeps benchmark diffs stable.",
+            },
+        },
         "Done.",
     ],
     "sample_beta_locked": [
-        {"name": "patch_file", "args": {"path": "sample.txt", "old_text": "beta", "new_text": "beta-locked"}},
+        {
+            "name": "patch_file",
+            "args": {
+                "path": "sample.txt",
+                "old_text": "beta",
+                "new_text": "beta-locked",
+            },
+        },
         "Done.",
     ],
     "sample_gamma_locked": [
-        {"name": "patch_file", "args": {"path": "sample.txt", "old_text": "gamma", "new_text": "gamma-locked"}},
+        {
+            "name": "patch_file",
+            "args": {
+                "path": "sample.txt",
+                "old_text": "gamma",
+                "new_text": "gamma-locked",
+            },
+        },
         "Done.",
     ],
     "sample_placeholder_delta": [
-        {"name": "patch_file", "args": {"path": "sample.txt", "old_text": "placeholder", "new_text": "delta"}},
+        {
+            "name": "patch_file",
+            "args": {
+                "path": "sample.txt",
+                "old_text": "placeholder",
+                "new_text": "delta",
+            },
+        },
         "Done.",
     ],
     "invalid_patch_recovery": [
-        {"name": "patch_file", "args": {"path": "README.md", "old_text": "This is a placeholder benchmark fixture."}},
-        {"name": "patch_file", "args": {"path": "README.md", "old_text": "This is a placeholder benchmark fixture.", "new_text": "This fixture recovered after invalid patch args."}},
+        {
+            "name": "patch_file",
+            "args": {
+                "path": "README.md",
+                "old_text": "This is a placeholder benchmark fixture.",
+            },
+        },
+        {
+            "name": "patch_file",
+            "args": {
+                "path": "README.md",
+                "old_text": "This is a placeholder benchmark fixture.",
+                "new_text": "This fixture recovered after invalid patch args.",
+            },
+        },
         "Done.",
     ],
     "path_escape_recovery": [
         {"name": "read_file", "args": {"path": "../outside.txt", "start": 1, "end": 1}},
-        {"name": "patch_file", "args": {"path": "sample.txt", "old_text": "alpha", "new_text": "alpha-guarded"}},
+        {
+            "name": "patch_file",
+            "args": {
+                "path": "sample.txt",
+                "old_text": "alpha",
+                "new_text": "alpha-guarded",
+            },
+        },
         "Done.",
     ],
     "repeated_read_recovery": [
         {"name": "read_file", "args": {"path": "sample.txt", "start": 1, "end": 4}},
         {"name": "read_file", "args": {"path": "sample.txt", "start": 1, "end": 4}},
         {"name": "read_file", "args": {"path": "sample.txt", "start": 1, "end": 4}},
-        {"name": "patch_file", "args": {"path": "sample.txt", "old_text": "placeholder", "new_text": "repeat-guarded"}},
+        {
+            "name": "patch_file",
+            "args": {
+                "path": "sample.txt",
+                "old_text": "placeholder",
+                "new_text": "repeat-guarded",
+            },
+        },
         "Done.",
     ],
     "session_compaction_checkpoint": [
@@ -89,7 +158,9 @@ SCRIPTED_MODEL_OUTPUTS = {
 def _artifact_path_for_task(task):
     fixture_repo_name = Path(str(task["fixture_repo"])).name
     if fixture_repo_name not in TASK_FIXTURE_ARTIFACTS:
-        raise ValueError(f"unsupported fixture repo for artifact lookup: {fixture_repo_name}")
+        raise ValueError(
+            f"unsupported fixture repo for artifact lookup: {fixture_repo_name}"
+        )
     return TASK_FIXTURE_ARTIFACTS[fixture_repo_name]
 
 
@@ -106,7 +177,9 @@ def _scripted_outputs_for_task(task):
 
 def _fixture_snapshot_id(fixture_paths):
     sha = hashlib.sha256()
-    for fixture_path in sorted({Path(path).resolve() for path in fixture_paths}, key=lambda path: str(path)):
+    for fixture_path in sorted(
+        {Path(path).resolve() for path in fixture_paths}, key=lambda path: str(path)
+    ):
         for path in sorted(
             (item for item in fixture_path.rglob("*") if item.is_file()),
             key=lambda item: str(item.relative_to(fixture_path)),
@@ -160,19 +233,27 @@ def validate_benchmark(data, repo_root=None):
 
         fixture_repo = repo_root / str(task["fixture_repo"])
         if not fixture_repo.is_dir():
-            raise ValueError(f"benchmark task {task_id} fixture repo does not exist: {task['fixture_repo']}")
+            raise ValueError(
+                f"benchmark task {task_id} fixture repo does not exist: {task['fixture_repo']}"
+            )
 
         allowed_tools = task["allowed_tools"]
         if not isinstance(allowed_tools, list) or not allowed_tools:
-            raise ValueError(f"benchmark task {task_id} allowed_tools must be a non-empty list")
+            raise ValueError(
+                f"benchmark task {task_id} allowed_tools must be a non-empty list"
+            )
         valid_tools = legal_tool_names()
         normalized_allowed_tools = []
         for tool in allowed_tools:
             tool_name = str(tool).strip()
             if not tool_name:
-                raise ValueError(f"benchmark task {task_id} has an empty allowed_tools entry")
+                raise ValueError(
+                    f"benchmark task {task_id} has an empty allowed_tools entry"
+                )
             if tool_name not in valid_tools:
-                raise ValueError(f"benchmark task {task_id} has an unknown allowed_tools entry: {tool_name}")
+                raise ValueError(
+                    f"benchmark task {task_id} has an unknown allowed_tools entry: {tool_name}"
+                )
             normalized_allowed_tools.append(tool_name)
 
         step_budget = int(task["step_budget"])

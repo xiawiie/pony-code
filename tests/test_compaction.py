@@ -10,10 +10,10 @@ from pico.agent.compaction import (
 )
 from pico.agent.messages import make_tool_pair
 from pico.agent.model_capabilities import TokenAccounting
-from pico.providers.fake import FakeModelClient
+from benchmarks.support.fake_provider import FakeModelClient
 from pico.providers.response import Response, StopReason
 from pico.state.session_store import SessionStore
-from pico.workspace import now
+from pico.workspace.context import now
 
 
 def _session(workspace, session_id="compact"):
@@ -184,7 +184,9 @@ def test_repeated_compaction_summarizes_previous_summary_plus_new_prefix(tmp_pat
     assert "First summary" in second_request["messages"][0]["content"]
     tree = agent.session_store.load_tree("compact")
     assert sum(entry["type"] == "compaction" for entry in tree.entries) == 2
-    assert agent.session_store.context_view("compact").summary.startswith("# Goal\nSecond")
+    assert agent.session_store.context_view("compact").summary.startswith(
+        "# Goal\nSecond"
+    )
 
 
 def test_oversized_turn_gets_separate_split_prefix_summary(tmp_path):

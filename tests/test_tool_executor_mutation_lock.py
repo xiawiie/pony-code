@@ -3,9 +3,12 @@ from unittest.mock import Mock
 
 import pytest
 
-from pico import Pico, SessionStore, WorkspaceContext
-from pico.providers.fake import FakeModelClient
+from pico import Pico
+from pico.state.session_store import SessionStore
+from pico.workspace.context import WorkspaceContext
+from benchmarks.support.fake_provider import FakeModelClient
 from pico.state.task_state import TaskState
+from pico.runtime.options import RuntimeOptions
 
 
 def build_agent(tmp_path):
@@ -14,7 +17,7 @@ def build_agent(tmp_path):
         model_client=FakeModelClient([]),
         workspace=WorkspaceContext.build(tmp_path),
         session_store=SessionStore(tmp_path / ".pico" / "sessions"),
-        approval_policy="auto",
+        options=RuntimeOptions(approval_policy="auto"),
     )
 
 
@@ -52,9 +55,7 @@ def test_existing_same_owner_pending_blocks_runner(tmp_path, monkeypatch):
         lambda args: calls.append(args) or "ok",
     )
 
-    result = agent.execute_tool(
-        "write_file", {"path": "new.txt", "content": "value"}
-    )
+    result = agent.execute_tool("write_file", {"path": "new.txt", "content": "value"})
 
     assert result.metadata["tool_status"] == "rejected"
     assert result.metadata["tool_error_code"] == "recovery_review_required"
@@ -73,9 +74,7 @@ def test_malformed_mutation_record_blocks_runner(tmp_path, monkeypatch):
         lambda args: calls.append(args) or "ok",
     )
 
-    result = agent.execute_tool(
-        "write_file", {"path": "new.txt", "content": "value"}
-    )
+    result = agent.execute_tool("write_file", {"path": "new.txt", "content": "value"})
 
     assert result.metadata["tool_error_code"] == "recovery_review_required"
     assert calls == []
@@ -99,9 +98,7 @@ def test_memory_write_uses_same_mutation_lock(tmp_path, monkeypatch):
         task_id="remember",
         user_request="remember this safe local note",
     )
-    agent.execute_tool(
-        "memory_save", {"note": "safe local note"}
-    )
+    agent.execute_tool("memory_save", {"note": "safe local note"})
     assert events == ["enter", "exit"]
 
 
@@ -117,9 +114,7 @@ def test_finalize_failure_partial_success_blocks_next_mutation(tmp_path, monkeyp
         return real_finalize(tool_change_id, status, **fields)
 
     monkeypatch.setattr(agent.tool_change_recorder, "finalize", fail_once)
-    first = agent.execute_tool(
-        "write_file", {"path": "first.txt", "content": "first"}
-    )
+    first = agent.execute_tool("write_file", {"path": "first.txt", "content": "first"})
     second = agent.execute_tool(
         "write_file", {"path": "second.txt", "content": "second"}
     )
@@ -192,7 +187,10 @@ def test_mutation_lock_exit_preserves_active_primary_but_raises_without_one(
         )
 
     assert caught.value is primary
-    assert primary_agent.checkpoint_store.list_tool_change_records()[-1]["status"] == "interrupted"
+    assert (
+        primary_agent.checkpoint_store.list_tool_change_records()[-1]["status"]
+        == "interrupted"
+    )
 
     success_root = tmp_path / "success"
     success_root.mkdir()
@@ -259,7 +257,5 @@ def test_pre_runner_base_exception_releases_mutation_lock(
         )
 
     with pytest.raises(KeyboardInterrupt, match=failure_point):
-        agent.execute_tool(
-            "write_file", {"path": "note.txt", "content": "value"}
-        )
+        agent.execute_tool("write_file", {"path": "note.txt", "content": "value"})
     assert events == ["enter", "exit"]

@@ -2,11 +2,14 @@ import json
 
 import pytest
 
-from pico import Pico, SessionStore, WorkspaceContext
-from pico import tools as toolkit
+from pico import Pico
+from pico.state.session_store import SessionStore
+from pico.workspace.context import WorkspaceContext
+from pico.tools import registry as toolkit
 from benchmarks.evaluation.benchmark_schema import validate_benchmark
 from benchmarks.evaluation.fixed_benchmark import BenchmarkEvaluator
-from pico.providers.fake import FakeModelClient
+from benchmarks.support.fake_provider import FakeModelClient
+from pico.runtime.options import RuntimeOptions
 
 
 def build_agent(tmp_path, allowed_tools=None):
@@ -17,8 +20,7 @@ def build_agent(tmp_path, allowed_tools=None):
         model_client=FakeModelClient(["Done."]),
         workspace=workspace,
         session_store=store,
-        approval_policy="auto",
-        allowed_tools=allowed_tools,
+        options=RuntimeOptions(approval_policy="auto", allowed_tools=allowed_tools),
     )
 
 
@@ -29,7 +31,10 @@ def test_allowed_tools_filter_prompt_and_reject_direct_execution(tmp_path):
 
     assert "Available native tools: read_file" in prompt
     assert "run_shell" not in prompt
-    assert agent.run_tool("run_shell", {"command": "echo hi", "timeout": 20}) == "error: tool 'run_shell' is not allowed in this run"
+    assert (
+        agent.run_tool("run_shell", {"command": "echo hi", "timeout": 20})
+        == "error: tool 'run_shell' is not allowed in this run"
+    )
 
 
 def test_allowed_tools_reject_unknown_tool_at_construction(tmp_path):

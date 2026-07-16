@@ -4,9 +4,12 @@ from unittest.mock import Mock
 
 import pytest
 
-from pico import Pico, SessionStore, WorkspaceContext
-from pico.providers.fake import FakeModelClient
+from pico import Pico
+from pico.state.session_store import SessionStore
+from pico.workspace.context import WorkspaceContext
+from benchmarks.support.fake_provider import FakeModelClient
 from pico.tools.executor import ToolExecutionResult
+from pico.runtime.options import RuntimeOptions
 
 
 SECRET = "github_pat_A123456789012345678901234567890"
@@ -22,8 +25,7 @@ def build_agent(tmp_path, *, executables=None, **kwargs):
         model_client=FakeModelClient([]),
         workspace=workspace,
         session_store=SessionStore(tmp_path / ".pico" / "sessions"),
-        approval_policy="auto",
-        **kwargs,
+        options=RuntimeOptions(approval_policy="auto", **kwargs),
     )
 
 
@@ -143,11 +145,11 @@ def test_explicit_env_template_directory_is_rejected_before_rg(
         return_value=subprocess.CompletedProcess(
             [],
             0,
-            stdout=f".env.example/child.txt\0" f"1:{canary}\n",
+            stdout=f".env.example/child.txt\x001:{canary}\n",
             stderr="",
         )
     )
-    monkeypatch.setattr("pico.tools.run_hardened_rg", rg)
+    monkeypatch.setattr("pico.tools.search.run_hardened_rg", rg)
     agent = build_agent(tmp_path, executables={"rg": "/frozen/rg"})
 
     result = agent.execute_tool(
@@ -407,10 +409,7 @@ def test_directory_search_excludes_sensitive_paths_without_path_rescan(
 
     assert f"source.py:1:{sentinel}" in result.content
     assert f".env.example:1:{sentinel}" in result.content
-    assert not any(
-        line.startswith(".env:")
-        for line in result.content.splitlines()
-    )
+    assert not any(line.startswith(".env:") for line in result.content.splitlines())
     assert "credentials.json" not in result.content
     assert ".git/" not in result.content
     assert ".pico/" not in result.content
@@ -454,9 +453,7 @@ def test_rg_search_preserves_rg_semantics_for_allowed_env_templates(
     assert unexpected not in result.content
 
 
-def test_rg_search_preserves_ignore_rules_for_ordinary_files(
-    tmp_path, contract_rg
-):
+def test_rg_search_preserves_ignore_rules_for_ordinary_files(tmp_path, contract_rg):
     sentinel = "ignored-search-sentinel"
     (tmp_path / ".git").mkdir()
     (tmp_path / ".gitignore").write_text(
@@ -485,7 +482,7 @@ def test_rg_excludes_env_template_directory_descendants_before_filtering(
     monkeypatch,
     contract_rg,
 ):
-    from pico import tools as tool_module
+    from pico.tools import search as tool_module
 
     sentinel = "template-directory-sentinel"
     template_dir = tmp_path / ".env.example"
@@ -554,9 +551,7 @@ def test_runner_result_is_redacted_before_clip_can_split_known_secret(tmp_path):
         redaction_env={"CUSTOM_CREDENTIAL": secret},
         secret_env_names=("CUSTOM_CREDENTIAL",),
     )
-    agent.tools["read_file"]["run"] = Mock(
-        return_value="x" * 3990 + secret + "tail"
-    )
+    agent.tools["read_file"]["run"] = Mock(return_value="x" * 3990 + secret + "tail")
 
     result = agent.execute_tool("read_file", {"path": "README.md"})
 

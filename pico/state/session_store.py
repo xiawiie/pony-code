@@ -15,9 +15,13 @@ import warnings
 
 from pico.state import file_lock
 from pico.context.escaping import escape_pico_tags
-from pico.agent.messages import MessageValidationError, message_content_text, validate_messages
+from pico.agent.messages import (
+    MessageValidationError,
+    message_content_text,
+    validate_messages,
+)
 from pico.agent.model_capabilities import estimate_text_tokens
-from pico.security import (
+from pico.security.private_files import (
     append_private_bytes,
     ensure_private_dir,
     ensure_private_file,
@@ -25,10 +29,10 @@ from pico.security import (
     private_file_signature,
     private_directory_identity,
     read_private_bytes,
-    require_regular_no_symlink,
     write_private_bytes_atomic,
 )
-from pico.workspace import now
+from pico.security.paths import require_regular_no_symlink
+from pico.workspace.context import now
 
 
 SESSION_RECORD_TYPE = "session"
@@ -154,8 +158,8 @@ _DICT_FIELDS = (
 )
 _DERIVED_CACHE_FIELDS = frozenset({"working_memory", "memory", "recently_recalled"})
 _SESSION_INFO_FIELDS = (
-    _REQUIRED_FIELDS | _OPTIONAL_FIELDS
-) - {"messages"} - _DERIVED_CACHE_FIELDS
+    (_REQUIRED_FIELDS | _OPTIONAL_FIELDS) - {"messages"} - _DERIVED_CACHE_FIELDS
+)
 _MUTABLE_SESSION_INFO_FIELDS = frozenset(
     {"resume_state", "recovery", "runtime_identity"}
 )
@@ -309,7 +313,10 @@ def _validate_projection(payload, session_id, *, version=SESSION_FORMAT_VERSION)
         raise SessionFormatError("session payload fields do not match current format")
     if payload.get("record_type") != SESSION_RECORD_TYPE:
         raise SessionFormatError("invalid session record type")
-    if type(payload.get("format_version")) is not int or payload["format_version"] != version:
+    if (
+        type(payload.get("format_version")) is not int
+        or payload["format_version"] != version
+    ):
         raise SessionFormatError("invalid session format version")
     if payload.get("id") != session_id:
         raise SessionFormatError("session id does not match file name")
@@ -325,12 +332,10 @@ def _validate_projection(payload, session_id, *, version=SESSION_FORMAT_VERSION)
     binding = payload.get("provider_binding")
     if binding is not None and (
         not isinstance(binding, dict)
-        or binding.keys()
-        != {"protocol_family", "model", "endpoint_hash"}
+        or binding.keys() != {"protocol_family", "model", "endpoint_hash"}
         or any(not isinstance(value, str) or not value for value in binding.values())
         or binding["protocol_family"] not in _PROTOCOL_FAMILIES
-        or re.fullmatch(r"sha256:[0-9a-f]{64}", binding["endpoint_hash"])
-        is None
+        or re.fullmatch(r"sha256:[0-9a-f]{64}", binding["endpoint_hash"]) is None
     ):
         raise SessionFormatError("invalid provider binding")
     identities = [payload["runtime_identity"]]
@@ -360,7 +365,10 @@ def _validate_projection(payload, session_id, *, version=SESSION_FORMAT_VERSION)
 
 
 def _validate_session_info_updates(values):
-    if not isinstance(values, dict) or not values.keys() <= _MUTABLE_SESSION_INFO_FIELDS:
+    if (
+        not isinstance(values, dict)
+        or not values.keys() <= _MUTABLE_SESSION_INFO_FIELDS
+    ):
         raise SessionFormatError("invalid mutable session info fields")
     if any(not isinstance(value, dict) for value in values.values()):
         raise SessionFormatError("invalid mutable session info value")
@@ -603,12 +611,12 @@ def _apply_entry(projection, entry):
         checkpoint = data.get("checkpoint")
         if not isinstance(checkpoint_id, str) or not isinstance(checkpoint, dict):
             raise SessionFormatError("invalid task checkpoint entry")
-        checkpoints = projection.setdefault("checkpoints", {"current_id": "", "items": {}})
+        checkpoints = projection.setdefault(
+            "checkpoints", {"current_id": "", "items": {}}
+        )
         checkpoints.setdefault("items", {})[checkpoint_id] = deepcopy(checkpoint)
         checkpoints["current_id"] = checkpoint_id
-        goal = str(
-            checkpoint.get("goal", checkpoint.get("current_goal", "")) or ""
-        )
+        goal = str(checkpoint.get("goal", checkpoint.get("current_goal", "")) or "")
         key_files = checkpoint.get("key_files", [])
         key_files = key_files if isinstance(key_files, list) else []
         recent_files = [
@@ -637,9 +645,7 @@ def _apply_entry(projection, entry):
             checkpoint.get("workspace_checkpoint_id", "") or ""
         )
         if workspace_checkpoint_id:
-            projection["recovery"] = {
-                "current_checkpoint_id": workspace_checkpoint_id
-            }
+            projection["recovery"] = {"current_checkpoint_id": workspace_checkpoint_id}
     return projection
 
 
@@ -683,11 +689,7 @@ def _summary_message(summary, entry_id, created_at, *, kind="compaction"):
     safe_summary = escape_pico_tags(str(summary).strip())
     return {
         "role": "user",
-        "content": (
-            f"<{tag}>\n"
-            + safe_summary
-            + f"\n</{tag}>"
-        ),
+        "content": (f"<{tag}>\n" + safe_summary + f"\n</{tag}>"),
         "_pico_meta": {
             "created_at": str(created_at),
             "origin": origins[kind],
@@ -732,7 +734,9 @@ def context_view_from_tree(tree):
         summary_tokens = data["summary_tokens"]
         raw_split_tokens = data.get("split_turn_summary_tokens", 0)
         split_turn_summary_tokens = (
-            raw_split_tokens if type(raw_split_tokens) is int and raw_split_tokens >= 0 else 0
+            raw_split_tokens
+            if type(raw_split_tokens) is int and raw_split_tokens >= 0
+            else 0
         )
         tail_tokens = data["tail_tokens"]
         tokens_before = data["tokens_before"]
@@ -789,9 +793,7 @@ def context_view_from_tree(tree):
 
     messages = []
     if summary:
-        messages.append(
-            _summary_message(summary, compaction_id, compaction_created_at)
-        )
+        messages.append(_summary_message(summary, compaction_id, compaction_created_at))
     if split_turn_summary:
         messages.append(
             _summary_message(
@@ -961,11 +963,7 @@ def _promote_legacy_working_state(session, worktree_digest):
     recent_files = working.get("recent_files")
     recent_files = recent_files if isinstance(recent_files, list) else []
     recent_files = list(
-        dict.fromkeys(
-            str(path).strip()
-            for path in recent_files
-            if str(path).strip()
-        )
+        dict.fromkeys(str(path).strip() for path in recent_files if str(path).strip())
     )[:8]
     if not goal and not recent_files:
         return
@@ -1006,9 +1004,9 @@ def _promote_legacy_working_state(session, worktree_digest):
         sort_keys=True,
         separators=(",", ":"),
     )
-    checkpoint_id = "ckpt_migrated_" + hashlib.sha256(
-        seed.encode("utf-8")
-    ).hexdigest()[:16]
+    checkpoint_id = (
+        "ckpt_migrated_" + hashlib.sha256(seed.encode("utf-8")).hexdigest()[:16]
+    )
     checkpoint = {
         "checkpoint_id": checkpoint_id,
         "parent_checkpoint_id": parent_id,
@@ -1048,7 +1046,9 @@ def _serialize_line(value):
 
 
 def _render_tree(header, entries):
-    return b"".join([_serialize_line(header), *(_serialize_line(item) for item in entries)])
+    return b"".join(
+        [_serialize_line(header), *(_serialize_line(item) for item in entries)]
+    )
 
 
 def _parse_jsonl(raw, session_id):
@@ -1314,7 +1314,10 @@ class SessionStore:
         else:
             self._tree_cache.pop(session_id, None)
         size = path.stat().st_size
-        if size >= SESSION_SOFT_LIMIT_BYTES and session_id not in self._soft_limit_warned:
+        if (
+            size >= SESSION_SOFT_LIMIT_BYTES
+            and session_id not in self._soft_limit_warned
+        ):
             warnings.warn(
                 f"session {session_id} exceeds 128 MiB; compact or clone it",
                 RuntimeWarning,
@@ -1478,9 +1481,7 @@ class SessionStore:
                 if value != tree.projection.get(key)
             }
             if changed:
-                entries.append(
-                    _new_entry("session_info", {"set": changed}, parent_id)
-                )
+                entries.append(_new_entry("session_info", {"set": changed}, parent_id))
             return self._append_entries_unlocked(session_id, entries)
 
     def append_control(self, session_id, kind, data, *, parent_id=None):
@@ -1527,9 +1528,10 @@ class SessionStore:
             raise ValueError("rewind intent too large")
         with file_lock.locked_file(self.lock_path, require_existing=True):
             tree = self._read_tree_unlocked(session_id)
-            if safe["worktree_identity_digest"] != tree.header[
-                "worktree_identity"
-            ]["digest"]:
+            if (
+                safe["worktree_identity_digest"]
+                != tree.header["worktree_identity"]["digest"]
+            ):
                 raise SessionFormatError("rewind intent worktree mismatch")
             write_private_bytes_atomic(
                 self.rewind_intent_path(session_id),
@@ -1678,7 +1680,10 @@ class SessionStore:
             target_root / ".pico" / "sessions",
             redactor=self._redactor,
         )
-        if target_store.path(clone_id).exists() or target_store.legacy_path(clone_id).exists():
+        if (
+            target_store.path(clone_id).exists()
+            or target_store.legacy_path(clone_id).exists()
+        ):
             raise ValueError("clone session id already exists")
         target_store.save(projection)
         target_tree = target_store.load_tree(clone_id)
@@ -1742,9 +1747,9 @@ class SessionStore:
                     "parent_checkpoint_id": "",
                     "created_at": now(),
                     "workspace_checkpoint_id": "",
-                    "worktree_identity_digest": target_store.load_tree(
-                        clone_id
-                    ).header["worktree_identity"]["digest"],
+                    "worktree_identity_digest": target_store.load_tree(clone_id).header[
+                        "worktree_identity"
+                    ]["digest"],
                     "context_usage": {},
                     "key_files": [],
                     "read_files": [],
@@ -1899,7 +1904,9 @@ class SessionStore:
             raise SessionFormatError("session migration projection mismatch")
         parent_fd = os.open(self.root, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
         try:
-            before = os.stat(candidate_path.name, dir_fd=parent_fd, follow_symlinks=False)
+            before = os.stat(
+                candidate_path.name, dir_fd=parent_fd, follow_symlinks=False
+            )
             if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
                 raise SessionFormatError("unsafe session migration candidate")
             os.replace(

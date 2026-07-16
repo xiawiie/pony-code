@@ -6,19 +6,17 @@ from pathlib import Path
 import pytest
 
 import pico
-from pico import Pico, SessionStore, WorkspaceContext, build_agent, build_arg_parser, build_welcome, main
+from pico import Pico
+from pico.cli.app import main
+from pico.cli.arguments import build_arg_parser
+from pico.cli.assembly import build_agent
+from pico.cli.welcome import build_welcome
+from pico.state.session_store import SessionStore
+from pico.workspace.context import WorkspaceContext
 
 
 def test_public_api_exports_current_names_only():
-    assert pico.__all__ == [
-        "Pico",
-        "SessionStore",
-        "WorkspaceContext",
-        "main",
-        "build_agent",
-        "build_arg_parser",
-        "build_welcome",
-    ]
+    assert pico.__all__ == ["Pico"]
     assert Pico is not None
     assert SessionStore is not None
     assert WorkspaceContext is not None
@@ -26,25 +24,38 @@ def test_public_api_exports_current_names_only():
     assert callable(build_arg_parser)
     assert callable(build_welcome)
     assert callable(main)
+    for removed in (
+        "SessionStore",
+        "WorkspaceContext",
+        "main",
+        "build_agent",
+        "build_arg_parser",
+        "build_welcome",
+    ):
+        assert not hasattr(pico, removed)
     assert not hasattr(pico, "MiniAgent")
     assert not hasattr(pico, "FakeModelClient")
-    assert not hasattr(pico, "AnthropicCompatibleModelClient")
+    assert not hasattr(pico, "AnthropicMessagesModelClient")
     assert "MiniAgent" not in pico.__all__
 
 
 def test_build_agent_returns_pico(tmp_path):
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
     (tmp_path / ".env").write_text(
-        "PICO_API_URL=https://api.deepseek.com/anthropic/v1\n"
+        "PICO_PROVIDER=anthropic\n"
+        "PICO_MODEL=claude-sonnet-4-6\n"
+        "PICO_API_URL=https://api.anthropic.com/v1\n"
         "PICO_API_KEY=test-key\n",
         encoding="utf-8",
     )
-    args = build_arg_parser().parse_args([
-        "--cwd",
-        str(tmp_path),
-        "--approval",
-        "auto",
-    ])
+    args = build_arg_parser().parse_args(
+        [
+            "--cwd",
+            str(tmp_path),
+            "--approval",
+            "auto",
+        ]
+    )
 
     agent = build_agent(args)
 
@@ -54,7 +65,9 @@ def test_build_agent_returns_pico(tmp_path):
 def test_lightweight_package_split_uses_package_paths_without_legacy_shims():
     from benchmarks.evaluation.experiments_recovery import run_context_ablation_v2
     from benchmarks.evaluation.fixed_benchmark import BenchmarkEvaluator
-    from pico.providers.fake import FakeModelClient as ProviderFakeModelClient
+    from benchmarks.support.fake_provider import (
+        FakeModelClient as ProviderFakeModelClient,
+    )
 
     assert BenchmarkEvaluator is not None
     assert ProviderFakeModelClient is not None
@@ -76,9 +89,9 @@ def test_memory_feature_exports_exactly_seven_production_helpers():
         "summarize_read_result",
     ]
     assert all(callable(getattr(memory, name)) for name in memory.__all__)
-    assert {
-        name for name in vars(memory) if not name.startswith("_")
-    } == set(memory.__all__)
+    assert {name for name in vars(memory) if not name.startswith("_")} == set(
+        memory.__all__
+    )
     for removed in (
         "LayeredMemory",
         "default_memory_state",
@@ -89,18 +102,18 @@ def test_memory_feature_exports_exactly_seven_production_helpers():
 
 
 def test_internal_model_client_classes_importable_directly():
-    from pico.providers.anthropic_compatible import AnthropicCompatibleModelClient
-    from pico.providers.fake import FakeModelClient
-    from pico.providers.ollama import OllamaModelClient
-    from pico.providers.openai_compatible import OpenAICompatibleModelClient
-    from pico.providers.openai_chat import OpenAIChatCompletionsModelClient
+    from pico.providers.anthropic_messages import AnthropicMessagesModelClient
+    from benchmarks.support.fake_provider import FakeModelClient
+    from pico.providers.ollama_chat import OllamaChatModelClient
+    from pico.providers.openai_responses import OpenAIResponsesModelClient
+    from pico.providers.openai_chat_completions import OpenAIChatCompletionsModelClient
 
     for cls in (
         FakeModelClient,
-        OllamaModelClient,
-        OpenAICompatibleModelClient,
+        OllamaChatModelClient,
+        OpenAIResponsesModelClient,
         OpenAIChatCompletionsModelClient,
-        AnthropicCompatibleModelClient,
+        AnthropicMessagesModelClient,
     ):
         assert isinstance(cls, type), f"{cls!r} should be a class"
 
@@ -123,7 +136,7 @@ def test_removed_facades_cannot_be_imported(module_parts):
 
 
 def test_session_store_has_no_runtime_alias():
-    from pico import runtime
+    from pico.runtime import application as runtime
 
     assert not hasattr(runtime, "SessionStore")
 
@@ -191,7 +204,19 @@ def test_docker_sandbox_resources_are_readable():
     )
 
     assert manifest["record_type"] == "docker_sandbox_image_set_manifest"
+    assert manifest["format_version"] == 3
+    assert set(manifest) == {
+        "record_type",
+        "format_version",
+        "policy_digest",
+        "user",
+        "working_dir",
+        "env",
+        "tool_paths",
+        "platforms",
+    }
     assert set(manifest["platforms"]) == {"linux/arm64"}
+    assert set(manifest["platforms"]["linux/arm64"]) == {"reference", "image_id"}
     assert root.joinpath("docker-config", "config.json").read_bytes() == b"{}\n"
 
 
@@ -199,7 +224,7 @@ def test_packaging_exposes_only_pico_cli_script():
     pyproject_text = Path("pyproject.toml").read_text(encoding="utf-8")
 
     scripts = pyproject_text.split("[project.scripts]", 1)[1].split("[", 1)[0]
-    assert scripts.strip() == 'pico = "pico.cli:main"'
+    assert scripts.strip() == 'pico = "pico.cli.app:main"'
 
 
 def test_packaging_declares_stable_version_license_and_project_urls():
@@ -215,7 +240,7 @@ def test_packaging_declares_stable_version_license_and_project_urls():
 
 
 def test_provider_defaults_and_generic_env_names_have_one_config_source():
-    from pico import config
+    from pico.config import model as config
 
     assert config.DEFAULT_PROVIDER == "anthropic"
     assert config.SUPPORTED_PROVIDERS == ("anthropic", "openai", "ollama")

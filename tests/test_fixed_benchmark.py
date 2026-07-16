@@ -15,7 +15,7 @@ from benchmarks.evaluation.fixed_benchmark import (
     run_harness_regression_v2,
 )
 from pico.agent.observability import RunArtifactError
-from pico.providers.fake import FakeModelClient
+from benchmarks.support.fake_provider import FakeModelClient
 
 
 def test_load_benchmark_validates_fixed_schema():
@@ -31,7 +31,16 @@ def test_load_benchmark_validates_fixed_schema():
         "recovery": 3,
     }
     for task in benchmark["tasks"]:
-        assert {"id", "prompt", "fixture_repo", "allowed_tools", "step_budget", "expected_artifact", "verifier", "category"} <= set(task)
+        assert {
+            "id",
+            "prompt",
+            "fixture_repo",
+            "allowed_tools",
+            "step_budget",
+            "expected_artifact",
+            "verifier",
+            "category",
+        } <= set(task)
         assert isinstance(task["allowed_tools"], list)
         assert task["step_budget"] > 0
 
@@ -117,7 +126,9 @@ def test_run_fixed_benchmark_uses_fresh_fixture_copy_and_fresh_run_directory(tmp
         workspace_root=tmp_path / "workspaces",
     )
 
-    original_fixture = Path("tests/fixtures/bench_repo_patch/sample.txt").read_text(encoding="utf-8")
+    original_fixture = Path("tests/fixtures/bench_repo_patch/sample.txt").read_text(
+        encoding="utf-8"
+    )
     artifact = evaluator.run()
 
     row = next(item for item in artifact["rows"] if item["id"] == "sample_beta_locked")
@@ -134,7 +145,10 @@ def test_run_fixed_benchmark_uses_fresh_fixture_copy_and_fresh_run_directory(tmp
     assert "initial_history_empty" not in row
     assert row["initial_memory_empty"] is True
     assert row["initial_task_summary_empty"] is True
-    assert Path("tests/fixtures/bench_repo_patch/sample.txt").read_text(encoding="utf-8") == original_fixture
+    assert (
+        Path("tests/fixtures/bench_repo_patch/sample.txt").read_text(encoding="utf-8")
+        == original_fixture
+    )
     assert "beta-locked" in (copied_fixture / "sample.txt").read_text(encoding="utf-8")
 
 
@@ -192,14 +206,18 @@ def test_run_fixed_benchmark_reports_metadata_and_success_definition(tmp_path):
 
 
 def test_run_task_rejects_missing_run_artifact(tmp_path, monkeypatch):
-    from pico.runtime import Pico
+    from pico.runtime.application import Pico
 
     evaluator = BenchmarkEvaluator(
         benchmark_path=Path("benchmarks/coding_tasks.json"),
         artifact_path=tmp_path / "benchmark-v1.json",
         workspace_root=tmp_path / "workspaces",
     )
-    task = next(item for item in evaluator.load()["tasks"] if item["id"] == "readme_intro_locked")
+    task = next(
+        item
+        for item in evaluator.load()["tasks"]
+        if item["id"] == "readme_intro_locked"
+    )
     real_ask = Pico.ask
 
     def remove_task_state_after_ask(self, user_message):
@@ -284,10 +302,10 @@ def test_benchmark_verifier_runs_with_reproducibility_locale(monkeypatch, tmp_pa
                         "expected_artifact": "README.md",
                         "verifier": (
                             "python -c 'import os, pathlib; "
-                            "pathlib.Path(\"verifier-env.txt\").write_text("
-                            "os.environ.get(\"LC_ALL\", \"\") + \"\\n\" + os.environ.get(\"LANG\", \"\")); "
-                            "assert os.environ.get(\"LC_ALL\") == \"C.UTF-8\"; "
-                            "assert os.environ.get(\"LANG\") == \"C.UTF-8\"'"
+                            'pathlib.Path("verifier-env.txt").write_text('
+                            'os.environ.get("LC_ALL", "") + "\\n" + os.environ.get("LANG", "")); '
+                            'assert os.environ.get("LC_ALL") == "C.UTF-8"; '
+                            'assert os.environ.get("LANG") == "C.UTF-8"\''
                         ),
                         "category": "contract",
                     }
@@ -307,8 +325,13 @@ def test_benchmark_verifier_runs_with_reproducibility_locale(monkeypatch, tmp_pa
     row = evaluator.run_task(evaluator.load()["tasks"][0])
 
     assert row["status"] == "pass"
-    verifier_env = tmp_path / "workspaces" / row["fixture_copy_relpath"] / "verifier-env.txt"
-    assert verifier_env.read_text(encoding="utf-8").splitlines() == ["C.UTF-8", "C.UTF-8"]
+    verifier_env = (
+        tmp_path / "workspaces" / row["fixture_copy_relpath"] / "verifier-env.txt"
+    )
+    assert verifier_env.read_text(encoding="utf-8").splitlines() == [
+        "C.UTF-8",
+        "C.UTF-8",
+    ]
 
 
 def test_real_provider_benchmark_prompt_includes_success_criteria(tmp_path):
@@ -361,7 +384,7 @@ def test_real_provider_benchmark_prompt_includes_success_criteria(tmp_path):
     assert "Success criteria:" in prompt
     assert "README.md contains benchmark success text" in prompt
     assert "Verification command:" in prompt
-    assert "Path(\"README.md\").exists()" in prompt
+    assert 'Path("README.md").exists()' in prompt
     assert "Do not run the verification command yourself" in prompt
 
 
@@ -378,8 +401,12 @@ def test_run_fixed_benchmark_covers_recovery_rows(tmp_path):
         if item["id"] == "session_compaction_checkpoint"
     )
 
-    trace_path = (tmp_path / "workspaces" / context_row["run_dir_relpath"] / "trace.jsonl").resolve()
-    trace_events = [json.loads(line) for line in trace_path.read_text(encoding="utf-8").splitlines()]
+    trace_path = (
+        tmp_path / "workspaces" / context_row["run_dir_relpath"] / "trace.jsonl"
+    ).resolve()
+    trace_events = [
+        json.loads(line) for line in trace_path.read_text(encoding="utf-8").splitlines()
+    ]
 
     assert any(
         event.get("event") == "checkpoint_created"
@@ -387,7 +414,13 @@ def test_run_fixed_benchmark_covers_recovery_rows(tmp_path):
         for event in trace_events
     )
     session_path = next(
-        (tmp_path / "workspaces" / context_row["fixture_copy_relpath"] / ".pico" / "sessions").glob("*.jsonl")
+        (
+            tmp_path
+            / "workspaces"
+            / context_row["fixture_copy_relpath"]
+            / ".pico"
+            / "sessions"
+        ).glob("*.jsonl")
     )
     session_entries = [
         json.loads(line)
@@ -424,13 +457,19 @@ def test_run_task_anchors_paths_to_fixture_copy_inside_workspace_root(tmp_path):
         workspace_root=workspace_root,
     )
 
-    task = next(item for item in evaluator.load()["tasks"] if item["id"] == "readme_intro_locked")
+    task = next(
+        item
+        for item in evaluator.load()["tasks"]
+        if item["id"] == "readme_intro_locked"
+    )
     row = evaluator.run_task(task)
 
     assert row["status"] == "pass"
     fixture_copy = workspace_root / row["fixture_copy_relpath"]
     readme_path = fixture_copy / "README.md"
-    assert "This fixture is a locked benchmark workspace." in readme_path.read_text(encoding="utf-8")
+    assert "This fixture is a locked benchmark workspace." in readme_path.read_text(
+        encoding="utf-8"
+    )
 
 
 def test_summarize_rows_counts_failure_categories():

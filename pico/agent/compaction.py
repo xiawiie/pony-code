@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 
-from pico import security as securitylib
+from pico.security import redaction as securitylib
 from pico.agent.messages import render_transcript
 from pico.state.session_store import (
     context_view_from_tree,
@@ -46,9 +46,7 @@ class CompactionPlan:
     @property
     def kept_messages(self):
         return tuple(
-            message
-            for entry in self.kept_entries
-            for message in entry_messages(entry)
+            message for entry in self.kept_entries for message in entry_messages(entry)
         )
 
     @property
@@ -172,18 +170,13 @@ def _turn_groups(entries):
 def build_compaction_plan(tree, accounting, *, keep_recent_tokens):
     """Choose an atomic tail; a tool call/result entry can never be split."""
     has_context_control = any(
-        entry["type"] in {"compaction", "branch_summary"}
-        for entry in tree.active_path
+        entry["type"] in {"compaction", "branch_summary"} for entry in tree.active_path
     )
     view = context_view_from_tree(tree) if has_context_control else None
     entries = (
         list(view.message_entries)
         if view is not None
-        else [
-            entry
-            for entry in tree.active_path
-            if entry_message_refs(entry)
-        ]
+        else [entry for entry in tree.active_path if entry_message_refs(entry)]
     )
     if len(entries) < 2:
         raise CompactionNoProgress("compaction_no_progress: not enough active history")
@@ -210,9 +203,7 @@ def build_compaction_plan(tree, accounting, *, keep_recent_tokens):
         tail_tokens += candidate
         group_index -= 1
 
-    prefix_entries = [
-        entry for group in groups[:group_index] for entry in group
-    ]
+    prefix_entries = [entry for group in groups[:group_index] for entry in group]
     split_prefix_entries = []
     kept_entries = [entry for group in kept_groups for entry in group]
     if tail_tokens > target and len(groups[-1]) > 1:
@@ -227,9 +218,7 @@ def build_compaction_plan(tree, accounting, *, keep_recent_tokens):
             split_tail += candidate
         split_prefix_entries = oversized[:split_at]
         kept_entries = oversized[split_at:]
-        prefix_entries = [
-            entry for group in groups[:-1] for entry in group
-        ]
+        prefix_entries = [entry for group in groups[:-1] for entry in group]
         tail_tokens = split_tail
 
     if not prefix_entries and not split_prefix_entries:
@@ -272,9 +261,7 @@ def _render_summary_input(plan, focus, *, split_turn=False):
             + plan.previous_summary.strip()
             + "\n</previous_summary>"
         )
-    messages = (
-        plan.split_prefix_messages if split_turn else plan.prefix_messages
-    )
+    messages = plan.split_prefix_messages if split_turn else plan.prefix_messages
     pieces.append(
         "<history_to_compact>\n"
         + render_transcript(messages)
@@ -341,7 +328,9 @@ def _file_facts(entries):
             if not isinstance(block, dict) or block.get("type") != "tool_use":
                 continue
             name = str(block.get("name", "") or "")
-            arguments = block.get("input") if isinstance(block.get("input"), dict) else {}
+            arguments = (
+                block.get("input") if isinstance(block.get("input"), dict) else {}
+            )
             paths = []
             for key in ("path", "file", "target"):
                 value = arguments.get(key)
@@ -365,9 +354,9 @@ def _summary_request(agent, plan, *, focus, hard_cap, split_turn=False):
     system = [
         {
             "type": "text",
-            "text": (
-                _SPLIT_SUMMARY_SYSTEM if split_turn else _SUMMARY_SYSTEM
-            ).format(max_tokens=hard_cap),
+            "text": (_SPLIT_SUMMARY_SYSTEM if split_turn else _SUMMARY_SYSTEM).format(
+                max_tokens=hard_cap
+            ),
             "cache_control": {"type": "ephemeral"},
         }
     ]
@@ -449,13 +438,17 @@ def compact_session(
     if not summary and not split_summary:
         raise CompactionNoProgress("compaction_no_progress: nothing to summarize")
     summary_tokens = agent.token_accounting.count_text(summary)
-    split_summary_tokens = agent.token_accounting.count_text(split_summary) if split_summary else 0
+    split_summary_tokens = (
+        agent.token_accounting.count_text(split_summary) if split_summary else 0
+    )
     summary_messages = []
     if summary:
         summary_messages.append(
             {
                 "role": "user",
-                "content": "<pico:session_summary>\n" + summary + "\n</pico:session_summary>",
+                "content": "<pico:session_summary>\n"
+                + summary
+                + "\n</pico:session_summary>",
             }
         )
     if split_summary:

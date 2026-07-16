@@ -20,7 +20,7 @@ from pico.agent.observability import (
 from pico.recovery.models import TOOL_CHANGE_FORMAT_VERSION
 from pico.tools.subprocess import run_hardened_git
 from pico.sandbox.session import source_mutation_authority
-from pico.security import (
+from pico.security.private_files import (
     private_directory_identity,
     read_private_text,
     write_private_bytes_atomic,
@@ -83,11 +83,16 @@ def _build_observability(source, candidate):
         report_path = run_dir / "report.json"
         trace_path = run_dir / "trace.jsonl"
         task_state_path = run_dir / "task_state.json"
-        if not report_path.exists() or not trace_path.exists() or not task_state_path.exists():
+        if (
+            not report_path.exists()
+            or not trace_path.exists()
+            or not task_state_path.exists()
+        ):
             raise RunArtifactError(
                 "incomplete", "run artifact is missing report, trace, or task state"
             )
         run_identity = private_directory_identity(run_dir)
+
         def read(path):
             return read_private_text(
                 path,
@@ -95,15 +100,14 @@ def _build_observability(source, candidate):
                 trusted_root_identity=run_identity,
                 max_bytes=MAX_RUN_ARTIFACT_BYTES,
             )
+
         report = _read_json(
             report_path,
             trusted_root=run_dir,
             trusted_root_identity=run_identity,
         )
         events = [
-            _read_json(line)
-            for line in read(trace_path).splitlines()
-            if line.strip()
+            _read_json(line) for line in read(trace_path).splitlines() if line.strip()
         ]
         task_state = _read_json(
             task_state_path,
@@ -116,9 +120,10 @@ def _build_observability(source, candidate):
         ):
             load_run_summary(candidate, run_dir.name)
             continue
-        if report.get("record_type") == "run_report" and report.get(
-            "format_version"
-        ) == 2:
+        if (
+            report.get("record_type") == "run_report"
+            and report.get("format_version") == 2
+        ):
             converted_report = convert_observability_v2(report)
             converted_events = events
         else:
@@ -233,9 +238,7 @@ def _migration(workspace, contract):
         pico_root,
         contract="run_artifacts" if contract == "observability" else "tool_changes",
         source_version=1,
-        target_version=(
-            REPORT_SCHEMA_VERSION if contract == "observability" else 2
-        ),
+        target_version=(REPORT_SCHEMA_VERSION if contract == "observability" else 2),
         live=live,
         namespace=namespace,
         workspace_identity=_identity(workspace),
@@ -321,7 +324,11 @@ def handle_migrate(workspace, tokens, args):
             contract: handle_migrate(workspace, [contract, tokens[0]], args)
             for contract in ("observability", "tool_changes")
         }
-    if len(tokens) != 2 or tokens[0] not in {"observability", "tool_changes"} or tokens[1] not in {"status", "apply", "abort", "recover"}:
+    if (
+        len(tokens) != 2
+        or tokens[0] not in {"observability", "tool_changes"}
+        or tokens[1] not in {"status", "apply", "abort", "recover"}
+    ):
         raise CliError(
             code="usage",
             message="usage: pico migrate <status|apply|abort|recover>",
@@ -359,7 +366,11 @@ def handle_migrate(workspace, tokens, args):
                     )
 
                 state = migration.apply(builder)
-                result = {"state": state, "migrated": counter["value"], "validated": validate(migration.live) if state == ABSENT else 0}
+                result = {
+                    "state": state,
+                    "migrated": counter["value"],
+                    "validated": validate(migration.live) if state == ABSENT else 0,
+                }
     except (OSError, ValueError, RunArtifactError) as exc:
         raise CliError(
             code="migration_failed",

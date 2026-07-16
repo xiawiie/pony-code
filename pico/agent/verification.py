@@ -3,7 +3,7 @@
 import shlex
 import unicodedata
 
-from pico import security as securitylib
+from pico.security import paths as securitylib
 from pico.recovery.models import (
     new_id,
     utc_now,
@@ -93,16 +93,13 @@ def _sensitive_operand(token):
 
 def _compact_key(value):
     return "".join(
-        char
-        for char in _strip_operand_syntax(value).casefold()
-        if char.isalnum()
+        char for char in _strip_operand_syntax(value).casefold() if char.isalnum()
     )
 
 
 def _execution_control_key(value):
     return any(
-        marker in _compact_key(value)
-        for marker in _EXECUTION_CONTROL_KEY_MARKERS
+        marker in _compact_key(value) for marker in _EXECUTION_CONTROL_KEY_MARKERS
     )
 
 
@@ -116,32 +113,25 @@ def _option_parts(token, *, pytest_short_options=False):
         return body[:1], inline_value or None
     body = candidate.lstrip("-")
     separator_indexes = [
-        body.index(separator)
-        for separator in ("=", ":")
-        if separator in body
+        body.index(separator) for separator in ("=", ":") if separator in body
     ]
     if not separator_indexes:
         return body, None
     index = min(separator_indexes)
-    return body[:index], body[index + 1:]
+    return body[:index], body[index + 1 :]
 
 
 def _config_key(value):
     candidate = _strip_operand_syntax(value)
     indexes = [
-        candidate.index(separator)
-        for separator in ("=", ":")
-        if separator in candidate
+        candidate.index(separator) for separator in ("=", ":") if separator in candidate
     ]
-    return candidate if not indexes else candidate[:min(indexes)]
+    return candidate if not indexes else candidate[: min(indexes)]
 
 
 def _unsafe_config_key(value):
     key = _config_key(value)
-    return (
-        _compact_key(key) in _REJECTED_CONFIG_KEYS
-        or _execution_control_key(key)
-    )
+    return _compact_key(key) in _REJECTED_CONFIG_KEYS or _execution_control_key(key)
 
 
 def _has_execution_control_tail(tokens, *, pytest_short_options=False):
@@ -188,19 +178,17 @@ def is_verification_argv(argv):
         (
             candidate
             for candidate in _VERIFICATION_PREFIXES
-            if tokens[:len(candidate)] == candidate
+            if tokens[: len(candidate)] == candidate
         ),
         None,
     )
     if prefix is None:
         return False
-    tail = tokens[len(prefix):]
+    tail = tokens[len(prefix) :]
     return not _has_execution_control_tail(
         tail,
         pytest_short_options=prefix[-1] == "pytest",
-    ) and not any(
-        _sensitive_operand(token) for token in tail
-    )
+    ) and not any(_sensitive_operand(token) for token in tail)
 
 
 def _redacted(redact_text, value):
@@ -234,9 +222,11 @@ def verification_evidence_for_execution(
     ):
         return None
     tokens = tuple(argv)
-    if len(tokens) > _MAX_ARGV_TOKENS or any(
-        len(token) > _MAX_TAIL_CHARS for token in tokens
-    ) or len(shlex.join(tokens)) > _MAX_TAIL_CHARS:
+    if (
+        len(tokens) > _MAX_ARGV_TOKENS
+        or any(len(token) > _MAX_TAIL_CHARS for token in tokens)
+        or len(shlex.join(tokens)) > _MAX_TAIL_CHARS
+    ):
         return None
     safe_tokens = tuple(_redacted(redact_text, token) for token in tokens)
     if safe_tokens != tokens:

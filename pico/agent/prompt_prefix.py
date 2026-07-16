@@ -5,7 +5,7 @@ import json
 import textwrap
 from dataclasses import dataclass
 
-from pico.workspace import now
+from pico.workspace.context import now
 
 
 MEMORY_USAGE_GUIDANCE = """<memory_usage_guidance>
@@ -47,18 +47,33 @@ def tool_signature(tools):
                 "description": tool["description"],
             }
         )
-    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True).encode("utf-8")
+    ).hexdigest()
 
 
 def _tool_specific_rules(tools):
     available = set(tools)
     lines = []
-    file_edit_tools = [name for name in ("write_file", "patch_file") if name in available]
+    file_edit_tools = [
+        name for name in ("write_file", "patch_file") if name in available
+    ]
     if file_edit_tools:
         lines.append(
             f"- If the user asks you to create or update a specific file and the path is clear, use {' or '.join(file_edit_tools)} instead of repeatedly listing files."
         )
-    required_arg_tools = [name for name in ("read_file", "search", "write_file", "patch_file", "run_shell", "delegate") if name in available]
+    required_arg_tools = [
+        name
+        for name in (
+            "read_file",
+            "search",
+            "write_file",
+            "patch_file",
+            "run_shell",
+            "delegate",
+        )
+        if name in available
+    ]
     if required_arg_tools:
         lines.append(
             f"- Required tool arguments must not be empty. Do not call {', '.join(required_arg_tools)} with args={{}}."

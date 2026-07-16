@@ -17,15 +17,14 @@ import unicodedata
 
 from pico.state import file_lock
 from pico.tools.subprocess import run_hardened_git
-from pico.security import (
-    contains_secret_material,
+from pico.security.private_files import (
     ensure_private_dir,
-    is_allowed_env_template_leaf,
     private_directory_identity,
-    sensitive_path_reason,
     write_private_bytes_atomic,
 )
-from pico.workspace import now
+from pico.security.paths import is_allowed_env_template_leaf, sensitive_path_reason
+from pico.security.redaction import contains_secret_material
+from pico.workspace.context import now
 
 
 FORMAT_VERSION = 1
@@ -426,8 +425,7 @@ def _validate_manifest(value):
         or not isinstance(active["container_name"], str)
         or not active["container_name"]
         or not isinstance(active["reconciliation_token"], str)
-        or re.fullmatch(r"[0-9a-f]{64}", active["reconciliation_token"])
-        is None
+        or re.fullmatch(r"[0-9a-f]{64}", active["reconciliation_token"]) is None
         or not _matches(_SHA256_RE, active["plan_digest"])
         or not isinstance(active["container_id"], str)
         or active["container_id"]
@@ -443,8 +441,7 @@ def _validate_manifest(value):
         or not isinstance(active["reconciliation"], dict)
         or set(active["reconciliation"])
         != {"status", "target_started", "cleanup_status", "error_code"}
-        or active["reconciliation"]["status"]
-        not in {"not_started", "review_required"}
+        or active["reconciliation"]["status"] not in {"not_started", "review_required"}
         or active["reconciliation"]["target_started"] is not None
         and type(active["reconciliation"]["target_started"]) is not bool
         or active["reconciliation"]["cleanup_status"]
@@ -469,8 +466,7 @@ def _validate_manifest(value):
     apply = value["apply"]
     cleanup = value["cleanup"]
     if (
-        set(diff)
-        != {"digest", "status", "candidate_count", "blocked_count"}
+        set(diff) != {"digest", "status", "candidate_count", "blocked_count"}
         or not isinstance(diff["digest"], str)
         or diff["digest"]
         and not _matches(_SHA256_RE, diff["digest"])
@@ -617,8 +613,7 @@ def _validate_source_apply_authority(
         or (state_info.st_dev, state_info.st_ino)
         != (value["state_device"], value["state_inode"])
         or state_identity != (state_info.st_dev, state_info.st_ino)
-        or tuple(control_identity)
-        != (value["control_device"], value["control_inode"])
+        or tuple(control_identity) != (value["control_device"], value["control_inode"])
     ):
         raise SandboxSessionError("sandbox_state_invalid")
     return value
@@ -1299,8 +1294,7 @@ def _reconcile_creation_sidecar_orphans(store, project_state_root, source_root):
                 or state_info.st_uid != uid
                 or stat.S_IMODE(state_info.st_mode) != 0o700
                 or state_identity != (state_info.st_dev, state_info.st_ino)
-                or state_identity
-                != (pointer["state_device"], pointer["state_inode"])
+                or state_identity != (pointer["state_device"], pointer["state_inode"])
                 or entries
             ):
                 raise SandboxSessionError("sandbox_state_invalid")
@@ -1360,9 +1354,11 @@ def _reconcile_creation_sidecar_orphans(store, project_state_root, source_root):
     try:
         current_parent = sidecar_parent.lstat()
         if (
-            (current_parent.st_dev, current_parent.st_ino) != parent_identity
-            or private_directory_identity(sidecar_parent) != parent_identity
-        ):
+            current_parent.st_dev,
+            current_parent.st_ino,
+        ) != parent_identity or private_directory_identity(
+            sidecar_parent
+        ) != parent_identity:
             raise SandboxSessionError("sandbox_state_invalid")
     except (OSError, RuntimeError, ValueError) as exc:
         raise SandboxSessionError("sandbox_state_invalid") from exc
@@ -1407,8 +1403,10 @@ def _validated_relative(raw_path):
     if not isinstance(raw_path, str) or _CONTROL_RE.search(raw_path):
         raise SandboxSessionError("workspace_path_invalid")
     path = PurePosixPath(raw_path)
-    if path.is_absolute() or not path.parts or any(
-        part in {"", ".", ".."} for part in path.parts
+    if (
+        path.is_absolute()
+        or not path.parts
+        or any(part in {"", ".", ".."} for part in path.parts)
     ):
         raise SandboxSessionError("workspace_path_invalid")
     if len(path.parts) > MAX_DEPTH:
@@ -1446,9 +1444,9 @@ def _open_source_root(source):
         )
         opened = os.fstat(descriptor)
         current = source.lstat()
-        if (
-            not stat.S_ISDIR(opened.st_mode)
-            or (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino)
+        if not stat.S_ISDIR(opened.st_mode) or (opened.st_dev, opened.st_ino) != (
+            current.st_dev,
+            current.st_ino,
         ):
             raise SandboxSessionError("workspace_invalid")
         return descriptor, opened
@@ -1558,7 +1556,9 @@ def _git_inventory(source, git_executable):
 
     def decode(raw):
         try:
-            return {item for item in bytes(raw or b"").decode("utf-8").split("\0") if item}
+            return {
+                item for item in bytes(raw or b"").decode("utf-8").split("\0") if item
+            }
         except UnicodeDecodeError as exc:
             raise SandboxSessionError("workspace_path_invalid") from exc
 
@@ -1768,9 +1768,7 @@ def snapshot_source_tree(root):
                     try:
                         opened = os.fstat(child)
                         if _identity(opened) != _identity(info):
-                            raise SandboxSessionError(
-                                "workspace_changed_during_stage"
-                            )
+                            raise SandboxSessionError("workspace_changed_during_stage")
                         entries.append(
                             {
                                 "path": relative.as_posix(),
@@ -1788,9 +1786,7 @@ def snapshot_source_tree(root):
                             follow_symlinks=False,
                         )
                         if _identity(current) != _identity(opened):
-                            raise SandboxSessionError(
-                                "workspace_changed_during_stage"
-                            )
+                            raise SandboxSessionError("workspace_changed_during_stage")
                     finally:
                         os.close(child)
                     continue
@@ -1907,8 +1903,7 @@ def _publish_file(
     secrets_to_scan = tuple(
         bytes(secret)
         for secret in known_secrets
-        if isinstance(secret, (bytes, bytearray))
-        and 4 <= len(secret) <= MAX_FILE_BYTES
+        if isinstance(secret, (bytes, bytearray)) and 4 <= len(secret) <= MAX_FILE_BYTES
     )
     carry_size = max((len(secret) for secret in secrets_to_scan), default=1) - 1
     carry = b""
@@ -2015,7 +2010,9 @@ def stage_source(
     source = Path(os.path.abspath(os.fspath(source)))
     root_descriptor, source_info = _open_source_root(source)
     try:
-        audit_before = _git_audit(source, git_executable) if git_executable else ("", "")
+        audit_before = (
+            _git_audit(source, git_executable) if git_executable else ("", "")
+        )
 
         def inventory():
             return (
@@ -2079,9 +2076,7 @@ def stage_source(
                 accepted.append((relative, entry))
             after_paths, after_tracked, after_excluded = inventory()
             audit_after = (
-                _git_audit(source, git_executable)
-                if git_executable
-                else ("", "")
+                _git_audit(source, git_executable) if git_executable else ("", "")
             )
             if (
                 after_paths != candidate_paths
@@ -2115,11 +2110,12 @@ def stage_source(
                 )
             source_after = source.lstat()
             opened_after = os.fstat(root_descriptor)
-            if (
-                (source_after.st_dev, source_after.st_ino)
-                != (source_info.st_dev, source_info.st_ino)
-                or (opened_after.st_dev, opened_after.st_ino)
-                != (source_info.st_dev, source_info.st_ino)
+            if (source_after.st_dev, source_after.st_ino) != (
+                source_info.st_dev,
+                source_info.st_ino,
+            ) or (opened_after.st_dev, opened_after.st_ino) != (
+                source_info.st_dev,
+                source_info.st_ino,
             ):
                 raise SandboxSessionError("workspace_changed_during_stage")
         except Exception:
@@ -2516,7 +2512,9 @@ class WorkspaceView:
 
     def verify(self):
         info = self.physical_root.lstat()
-        if (info.st_dev, info.st_ino) != self._identity or not stat.S_ISDIR(info.st_mode):
+        if (info.st_dev, info.st_ino) != self._identity or not stat.S_ISDIR(
+            info.st_mode
+        ):
             raise SandboxSessionError("execution_root_changed")
 
     def physical_path(self, raw_path, *, allow_missing=True):
@@ -2589,6 +2587,18 @@ class SyntheticGitBootstrapRequest:
     tracked_paths: tuple[str, ...]
 
 
+@dataclass
+class _SandboxSessionCreation:
+    source_root: Path
+    sandbox_id: str
+    state_root: Path
+    candidate: Path
+    workspace: Path
+    manifest: dict
+    candidate_identity: object = None
+    workspace_identity: object = None
+
+
 class SandboxSessionStore:
     def __init__(self, parent):
         self.parent = Path(os.path.abspath(os.fspath(parent)))
@@ -2597,44 +2607,20 @@ class SandboxSessionStore:
     def _workspace_id(source_root):
         return hashlib.sha256(str(source_root).encode("utf-8")).hexdigest()[:24]
 
-    def create(
-        self,
+    @staticmethod
+    def _creation_manifest(
         source_root,
-        *,
+        source_info,
+        sandbox_id,
         pico_session_id,
-        bootstrap_git,
-        git_executable=None,
-        known_secrets=(),
-        engine=None,
-        image=None,
-        policy=None,
-        project_state_root=None,
+        workspace,
+        engine,
+        image,
+        policy,
+        sidecar,
     ):
-        if not callable(bootstrap_git):
-            raise SandboxSessionError("synthetic_git_bootstrap_required")
-        engine, image, policy = _validate_identity_metadata(engine, image, policy)
-        source_root = Path(os.path.abspath(os.fspath(source_root)))
-        source_info = source_root.lstat()
-        if not stat.S_ISDIR(source_info.st_mode) or source_root.is_symlink():
-            raise SandboxSessionError("workspace_invalid")
-        sandbox_id = "sandbox_" + secrets.token_hex(16)
-        workspace_parent = ensure_private_dir(
-            self.parent / self._workspace_id(source_root)
-        )
-        state_root = ensure_private_dir(workspace_parent / sandbox_id)
-        sidecar = _sidecar_metadata(project_state_root, sandbox_id)
-        candidate = state_root / "workspace.candidate"
-        workspace = state_root / "workspace"
-        candidate_identity = None
-        workspace_identity = None
         timestamp = now()
-        lease = {
-            "owner_pid": os.getpid(),
-            "owner_start": _process_start(os.getpid()),
-            "owner_nonce": secrets.token_hex(32),
-            "acquired_at": timestamp,
-        }
-        manifest = {
+        return {
             "record_type": "docker_sandbox_session",
             "format_version": FORMAT_VERSION,
             "sandbox_id": sandbox_id,
@@ -2663,7 +2649,12 @@ class SandboxSessionStore:
             "engine": engine,
             "image": image,
             "policy": policy,
-            "lease": lease,
+            "lease": {
+                "owner_pid": os.getpid(),
+                "owner_start": _process_start(os.getpid()),
+                "owner_nonce": secrets.token_hex(32),
+                "acquired_at": timestamp,
+            },
             "active_call": None,
             "diff": {
                 "digest": "",
@@ -2675,127 +2666,236 @@ class SandboxSessionStore:
             "cleanup": {"status": "not_started", "last_error_code": ""},
             "sidecar": sidecar,
         }
+
+    def _begin_session_creation(
+        self,
+        source_root,
+        pico_session_id,
+        engine,
+        image,
+        policy,
+        project_state_root,
+    ):
+        source_root = Path(os.path.abspath(os.fspath(source_root)))
+        source_info = source_root.lstat()
+        if not stat.S_ISDIR(source_info.st_mode) or source_root.is_symlink():
+            raise SandboxSessionError("workspace_invalid")
+        sandbox_id = "sandbox_" + secrets.token_hex(16)
+        workspace_parent = ensure_private_dir(
+            self.parent / self._workspace_id(source_root)
+        )
+        state_root = ensure_private_dir(workspace_parent / sandbox_id)
+        sidecar = _sidecar_metadata(project_state_root, sandbox_id)
+        candidate = state_root / "workspace.candidate"
+        workspace = state_root / "workspace"
+        manifest = self._creation_manifest(
+            source_root,
+            source_info,
+            sandbox_id,
+            pico_session_id,
+            workspace,
+            engine,
+            image,
+            policy,
+            sidecar,
+        )
+        creation = _SandboxSessionCreation(
+            source_root=source_root,
+            sandbox_id=sandbox_id,
+            state_root=state_root,
+            candidate=candidate,
+            workspace=workspace,
+            manifest=manifest,
+        )
+        self._write_initial_session_manifest(creation)
+        return creation
+
+    def _write_initial_session_manifest(self, creation):
+        sidecar = creation.manifest["sidecar"]
         if sidecar is None:
-            _write_session_manifest(state_root, manifest, create_sidecar=True)
-        else:
-            project_state_root = Path(sidecar["path"]).parent.parent
-            with file_lock.locked_file(
-                project_state_root / ".sandbox-session-create.lock"
-            ):
-                _reconcile_creation_sidecar_orphans(
-                    self,
-                    project_state_root,
-                    source_root,
-                )
-                _write_session_manifest(state_root, manifest, create_sidecar=True)
+            _write_session_manifest(
+                creation.state_root,
+                creation.manifest,
+                create_sidecar=True,
+            )
+            return
+        project_state_root = Path(sidecar["path"]).parent.parent
+        with file_lock.locked_file(project_state_root / ".sandbox-session-create.lock"):
+            _reconcile_creation_sidecar_orphans(
+                self,
+                project_state_root,
+                creation.source_root,
+            )
+            _write_session_manifest(
+                creation.state_root,
+                creation.manifest,
+                create_sidecar=True,
+            )
+
+    @staticmethod
+    def _baseline_from_staging(creation, staged):
+        return {
+            "record_type": "docker_sandbox_baseline",
+            "format_version": FORMAT_VERSION,
+            "sandbox_id": creation.sandbox_id,
+            "tree_digest": staged["tree_digest"],
+            "entries": staged["entries"],
+            "tracked_paths": staged["tracked_paths"],
+            "untracked_paths": staged["untracked_paths"],
+            "excluded_counts": staged["excluded_counts"],
+        }
+
+    def _stage_session_workspace(self, creation, git_executable, known_secrets):
+        staged = stage_source(
+            creation.source_root,
+            creation.candidate,
+            git_executable=git_executable,
+            known_secrets=known_secrets,
+        )
+        candidate_info = creation.candidate.lstat()
+        creation.candidate_identity = (
+            candidate_info.st_dev,
+            candidate_info.st_ino,
+        )
+        baseline = self._baseline_from_staging(creation, staged)
+        _atomic_json(
+            creation.state_root / "baseline.json",
+            creation.state_root,
+            baseline,
+            max_bytes=MAX_BASELINE_BYTES,
+        )
+        baseline_digest = _sha256(_canonical_json(baseline))
+        os.replace(creation.candidate, creation.workspace)
+        creation.workspace_identity = creation.candidate_identity
+        creation.candidate_identity = None
+        creation.workspace.chmod(0o755)
+        workspace_info = creation.workspace.lstat()
+        creation.manifest["source"].update(
+            baseline_digest=baseline_digest,
+            branch=staged["source_branch"],
+            head=staged["source_head"],
+        )
+        creation.manifest["execution"].update(
+            root=str(creation.workspace),
+            device=workspace_info.st_dev,
+            inode=workspace_info.st_ino,
+            tree_digest=staged["tree_digest"],
+            file_count=staged["file_count"],
+            logical_bytes=staged["logical_bytes"],
+            allocated_bytes=staged["allocated_bytes"],
+        )
+        creation.manifest["updated_at"] = now()
+        _write_session_manifest(creation.state_root, creation.manifest)
+        return staged, WorkspaceView(creation.workspace)
+
+    @staticmethod
+    def _expected_staged_entries(staged):
+        return [
+            {
+                "path": entry["path"],
+                "sha256": entry["sha256"],
+                "size": entry["size"],
+                "mode": _staged_mode(entry["mode"]),
+            }
+            for entry in staged["entries"]
+        ]
+
+    def _complete_session_creation(self, creation, staged, view, bootstrap_git):
+        request = SyntheticGitBootstrapRequest(
+            sandbox_id=creation.sandbox_id,
+            state_root=creation.state_root,
+            workspace_view=view,
+            tracked_paths=tuple(staged["tracked_paths"]),
+        )
+        commit = str(bootstrap_git(request) or "")
+        latest = self.inspect(creation.state_root)
+        if latest.state != "creating" or latest.manifest["active_call"] is not None:
+            raise SandboxSessionError("synthetic_git_bootstrap_incomplete")
+        creation.manifest = latest.manifest
+        captured = _capture_execution_entries(creation.workspace)
+        if captured != self._expected_staged_entries(staged):
+            raise SandboxSessionError("synthetic_git_modified_workspace")
+        creation.manifest["execution"]["synthetic_git_commit"] = commit
+        creation.manifest["state"] = "ready"
+        creation.manifest["updated_at"] = now()
+        _write_session_manifest(creation.state_root, creation.manifest)
+        return SandboxSession(creation.state_root, creation.manifest)
+
+    def _record_session_creation_failure(self, creation):
         try:
-            staged = stage_source(
-                source_root,
-                candidate,
-                git_executable=git_executable,
-                known_secrets=known_secrets,
-            )
-            candidate_info = candidate.lstat()
-            candidate_identity = (candidate_info.st_dev, candidate_info.st_ino)
-            baseline = {
-                "record_type": "docker_sandbox_baseline",
-                "format_version": FORMAT_VERSION,
-                "sandbox_id": sandbox_id,
-                "tree_digest": staged["tree_digest"],
-                "entries": staged["entries"],
-                "tracked_paths": staged["tracked_paths"],
-                "untracked_paths": staged["untracked_paths"],
-                "excluded_counts": staged["excluded_counts"],
-            }
-            _atomic_json(
-                state_root / "baseline.json",
-                state_root,
-                baseline,
-                max_bytes=MAX_BASELINE_BYTES,
-            )
-            baseline_digest = _sha256(_canonical_json(baseline))
-            os.replace(candidate, workspace)
-            workspace_identity = candidate_identity
-            candidate_identity = None
-            workspace.chmod(0o755)
-            view = WorkspaceView(workspace)
-            workspace_info = workspace.lstat()
-            manifest["source"].update(
-                baseline_digest=baseline_digest,
-                branch=staged["source_branch"],
-                head=staged["source_head"],
-            )
-            manifest["execution"].update(
-                root=str(workspace),
-                device=workspace_info.st_dev,
-                inode=workspace_info.st_ino,
-                tree_digest=staged["tree_digest"],
-                file_count=staged["file_count"],
-                logical_bytes=staged["logical_bytes"],
-                allocated_bytes=staged["allocated_bytes"],
-            )
+            creation.manifest = self.inspect(creation.state_root).manifest
+        except SandboxSessionError:
+            pass
+        manifest = creation.manifest
+        if (
+            manifest.get("active_call") is not None
+            or manifest["state"] == "review_required"
+        ):
+            manifest["state"] = "review_required"
             manifest["updated_at"] = now()
-            _write_session_manifest(state_root, manifest)
-            request = SyntheticGitBootstrapRequest(
-                sandbox_id=sandbox_id,
-                state_root=state_root,
-                workspace_view=view,
-                tracked_paths=tuple(staged["tracked_paths"]),
-            )
-            commit = str(bootstrap_git(request) or "")
-            latest = self.inspect(state_root)
-            if latest.state != "creating" or latest.manifest["active_call"] is not None:
-                raise SandboxSessionError("synthetic_git_bootstrap_incomplete")
-            manifest = latest.manifest
-            captured = _capture_execution_entries(workspace)
-            expected = [
-                {
-                    "path": entry["path"],
-                    "sha256": entry["sha256"],
-                    "size": entry["size"],
-                    "mode": _staged_mode(entry["mode"]),
-                }
-                for entry in staged["entries"]
-            ]
-            if captured != expected:
-                raise SandboxSessionError("synthetic_git_modified_workspace")
-            manifest["execution"]["synthetic_git_commit"] = commit
-            manifest["state"] = "ready"
-            manifest["updated_at"] = now()
-            _write_session_manifest(state_root, manifest)
-            return SandboxSession(state_root, manifest)
-        except Exception:
-            try:
-                manifest = self.inspect(state_root).manifest
-            except SandboxSessionError:
-                pass
-            if manifest.get("active_call") is not None or manifest["state"] == "review_required":
-                manifest["state"] = "review_required"
-                manifest["updated_at"] = now()
-                manifest["cleanup"] = {
-                    "status": "pending",
-                    "last_error_code": "sandbox_create_failed",
-                }
-                _write_session_manifest(state_root, manifest)
-                raise
-            manifest["state"] = "failed"
-            manifest["updated_at"] = now()
-            candidate_clean = _remove_generated_directory(
-                candidate,
-                state_root,
-                candidate_identity,
-            )
-            workspace_clean = _remove_generated_directory(
-                workspace,
-                state_root,
-                workspace_identity,
-            )
-            cleanup_complete = candidate_clean and workspace_clean
             manifest["cleanup"] = {
-                "status": "complete" if cleanup_complete else "pending",
-                "last_error_code": "" if cleanup_complete else "sandbox_create_failed",
+                "status": "pending",
+                "last_error_code": "sandbox_create_failed",
             }
-            _write_session_manifest(state_root, manifest)
+            _write_session_manifest(creation.state_root, manifest)
+            return
+        manifest["state"] = "failed"
+        manifest["updated_at"] = now()
+        candidate_clean = _remove_generated_directory(
+            creation.candidate,
+            creation.state_root,
+            creation.candidate_identity,
+        )
+        workspace_clean = _remove_generated_directory(
+            creation.workspace,
+            creation.state_root,
+            creation.workspace_identity,
+        )
+        cleanup_complete = candidate_clean and workspace_clean
+        manifest["cleanup"] = {
+            "status": "complete" if cleanup_complete else "pending",
+            "last_error_code": "" if cleanup_complete else "sandbox_create_failed",
+        }
+        _write_session_manifest(creation.state_root, manifest)
+
+    def create(
+        self,
+        source_root,
+        *,
+        pico_session_id,
+        bootstrap_git,
+        git_executable=None,
+        known_secrets=(),
+        engine=None,
+        image=None,
+        policy=None,
+        project_state_root=None,
+    ):
+        if not callable(bootstrap_git):
+            raise SandboxSessionError("synthetic_git_bootstrap_required")
+        engine, image, policy = _validate_identity_metadata(engine, image, policy)
+        creation = self._begin_session_creation(
+            source_root,
+            pico_session_id,
+            engine,
+            image,
+            policy,
+            project_state_root,
+        )
+        try:
+            staged, view = self._stage_session_workspace(
+                creation,
+                git_executable,
+                known_secrets,
+            )
+            return self._complete_session_creation(
+                creation,
+                staged,
+                view,
+                bootstrap_git,
+            )
+        except Exception:
+            self._record_session_creation_failure(creation)
             raise
 
     def inspect(self, state_root):
@@ -2838,9 +2938,13 @@ class SandboxSessionStore:
             source = manifest["source"]
             lease = manifest["lease"]
             current_start = _process_start(os.getpid())
-            if lease is not None and _lease_is_live(lease) and (
-                lease["owner_pid"] != os.getpid()
-                or lease["owner_start"] != current_start
+            if (
+                lease is not None
+                and _lease_is_live(lease)
+                and (
+                    lease["owner_pid"] != os.getpid()
+                    or lease["owner_start"] != current_start
+                )
             ):
                 raise SandboxSessionError("sandbox_session_busy")
             if (
@@ -2922,7 +3026,10 @@ class SandboxSessionStore:
             max_bytes=MAX_MANIFEST_BYTES,
         )
         manifest = _validate_manifest(_decode_json(manifest_raw))
-        if not require_live_source and not allow_missing_sidecar_after_source_replacement:
+        if (
+            not require_live_source
+            and not allow_missing_sidecar_after_source_replacement
+        ):
             raise SandboxSessionError("sandbox_manifest_invalid")
         if require_live_source:
             try:
@@ -2961,8 +3068,7 @@ class SandboxSessionStore:
             if (
                 _sha256(baseline_raw) != manifest["source"]["baseline_digest"]
                 or baseline["tree_digest"] != manifest["execution"]["tree_digest"]
-                or len(baseline["entries"])
-                != manifest["execution"]["file_count"]
+                or len(baseline["entries"]) != manifest["execution"]["file_count"]
             ):
                 raise SandboxSessionError("sandbox_manifest_invalid")
         _read_bound_sidecar(
@@ -2973,14 +3079,19 @@ class SandboxSessionStore:
                 allow_missing_sidecar_after_source_replacement
             ),
         )
-        if manifest["state"] in {
-            "ready",
-            "running",
-            "pending_review",
-            "applying",
-            "discarding",
-            "review_required",
-        } or manifest["state"] == "creating" and manifest["execution"]["device"]:
+        if (
+            manifest["state"]
+            in {
+                "ready",
+                "running",
+                "pending_review",
+                "applying",
+                "discarding",
+                "review_required",
+            }
+            or manifest["state"] == "creating"
+            and manifest["execution"]["device"]
+        ):
             workspace = Path(manifest["execution"]["root"])
             try:
                 workspace_info = workspace.lstat()
@@ -3037,9 +3148,7 @@ class SandboxSessionStore:
                 continue
             state_roots = sorted(workspace_dir.iterdir(), key=lambda item: item.name)
             control = [
-                item
-                for item in state_roots
-                if item.name == _SOURCE_APPLY_CONTROL_NAME
+                item for item in state_roots if item.name == _SOURCE_APPLY_CONTROL_NAME
             ]
             inactive_control_only = False
             control_unknown = False
@@ -3068,8 +3177,7 @@ class SandboxSessionStore:
                         and control_info.st_uid == uid
                         and stat.S_IMODE(control_info.st_mode) == 0o700
                         and ".lock" in control_names
-                        and control_names
-                        <= {".lock", _SOURCE_APPLY_AUTHORITY_NAME}
+                        and control_names <= {".lock", _SOURCE_APPLY_AUTHORITY_NAME}
                         and valid_control_files
                         and _read_strict_file(
                             control[0] / ".lock",
@@ -3099,9 +3207,7 @@ class SandboxSessionStore:
                     control_unknown = True
                     unknown_count += 1
             state_roots = [
-                item
-                for item in state_roots
-                if item.name != _SOURCE_APPLY_CONTROL_NAME
+                item for item in state_roots if item.name != _SOURCE_APPLY_CONTROL_NAME
             ]
             if not state_roots:
                 if not inactive_control_only and not control_unknown:
@@ -3121,15 +3227,11 @@ class SandboxSessionStore:
         if _SANDBOX_ID_RE.fullmatch(str(sandbox_id)) is None:
             raise SandboxSessionError("sandbox_session_not_found")
         matches = [
-            manifest
-            for manifest in self.list()
-            if manifest["sandbox_id"] == sandbox_id
+            manifest for manifest in self.list() if manifest["sandbox_id"] == sandbox_id
         ]
         if len(matches) != 1:
             raise SandboxSessionError(
-                "sandbox_session_not_found"
-                if not matches
-                else "sandbox_state_invalid"
+                "sandbox_session_not_found" if not matches else "sandbox_state_invalid"
             )
         return self.inspect(Path(matches[0]["execution"]["root"]).parent)
 
@@ -3215,7 +3317,10 @@ class SandboxSessionStore:
         session = self.inspect(state_root)
         manifest = session.manifest
         _require_owned_lease(manifest)
-        if manifest["state"] != "cleanup_pending" or manifest["active_call"] is not None:
+        if (
+            manifest["state"] != "cleanup_pending"
+            or manifest["active_call"] is not None
+        ):
             raise SandboxSessionError("sandbox_cleanup_not_allowed")
         try:
             cleaned = _cleanup_terminal_artifacts(
@@ -3409,7 +3514,9 @@ class SandboxSessionStore:
         if manifest["state"] != "running" or manifest["active_call"] is None:
             raise SandboxSessionError("sandbox_call_not_active")
         manifest["state"] = (
-            "review_required" if review_required else manifest["active_call"]["return_state"]
+            "review_required"
+            if review_required
+            else manifest["active_call"]["return_state"]
         )
         if not review_required:
             manifest["active_call"] = None
@@ -3433,8 +3540,7 @@ class SandboxSessionStore:
             or manifest["active_call"] is None
             or target_started is not None
             and type(target_started) is not bool
-            or cleanup_status
-            not in {"not_attempted", "pending", "completed", "failed"}
+            or cleanup_status not in {"not_attempted", "pending", "completed", "failed"}
             or not isinstance(error_code, str)
             or not error_code
         ):
@@ -3586,9 +3692,7 @@ class SandboxSessionStore:
             session.state_root,
             manifest,
             require_live_source=not relaxed_source_identity,
-            allow_missing_sidecar_after_source_replacement=(
-                relaxed_source_identity
-            ),
+            allow_missing_sidecar_after_source_replacement=(relaxed_source_identity),
         )
         return SandboxSession(session.state_root, manifest)
 
@@ -3602,9 +3706,7 @@ def find_project_sandbox_session(
     if not isinstance(pico_session_id, str):
         raise SandboxSessionError("sandbox_state_invalid")
     try:
-        project_state_root = Path(
-            os.path.abspath(os.fspath(project_state_root))
-        )
+        project_state_root = Path(os.path.abspath(os.fspath(project_state_root)))
         source_root = Path(os.path.abspath(os.fspath(source_root)))
     except (TypeError, ValueError) as exc:
         raise SandboxSessionError("sandbox_state_invalid") from exc

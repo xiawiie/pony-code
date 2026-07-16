@@ -6,7 +6,7 @@ import shlex
 import sys
 import threading
 
-from pico.security import redact_text
+from pico.security.redaction import redact_text
 
 
 _RUNTIME_ERROR_MESSAGE = "agent runtime failed"
@@ -28,7 +28,9 @@ def _print_session_tree(agent):
     print(f"active leaf: {tree.leaf_id or '-'}")
     for entry in tree.entries:
         marker = "*" if entry["id"] in active else " "
-        print(f"{marker} {entry['id']} {entry['type']} parent={entry['parent_id'] or '-'}")
+        print(
+            f"{marker} {entry['id']} {entry['type']} parent={entry['parent_id'] or '-'}"
+        )
 
 
 def _rewind_options(tokens):
@@ -53,9 +55,7 @@ def _rewind_options(tokens):
 
 def _print_workspace_rewind_preview(preview):
     counts = preview.get("decision_counts", {})
-    rendered = ", ".join(
-        f"{name}={count}" for name, count in sorted(counts.items())
-    )
+    rendered = ", ".join(f"{name}={count}" for name, count in sorted(counts.items()))
     print(f"workspace restore plan: {preview.get('status', 'invalid')}")
     print(f"checkpoint: {preview.get('workspace_checkpoint_id', '-')}")
     print(f"entries: {rendered or 'none'}")
@@ -141,7 +141,10 @@ def _handle_repl_session_command(agent, user_input):
 
 @contextmanager
 def _cli_interrupt_boundary():
-    if not hasattr(signal, "SIGTERM") or threading.current_thread() is not threading.main_thread():
+    if (
+        not hasattr(signal, "SIGTERM")
+        or threading.current_thread() is not threading.main_thread()
+    ):
         yield
         return
     previous = signal.getsignal(signal.SIGTERM)
@@ -200,7 +203,7 @@ def run_agent_once(agent, prompt_tokens):
                                 f"Apply: pico sandbox apply {sandbox['sandbox_id']}",
                                 f"Discard: pico sandbox discard {sandbox['sandbox_id']}",
                             )
-                        )
+                        ),
                     )
                 )
         except KeyboardInterrupt as exc:
@@ -258,7 +261,9 @@ def run_repl(agent):
                     task_summary = agent.memory.task_summary
                     recent_files = agent.memory.recent_files
                     print(f"task: {task_summary or '(empty)'}")
-                    print(f"recent: {', '.join(recent_files) if recent_files else '(empty)'}")
+                    print(
+                        f"recent: {', '.join(recent_files) if recent_files else '(empty)'}"
+                    )
                     try:
                         entries = agent.memory_store.list()
                     except Exception:  # noqa: BLE001 — REPL loop must never crash on a listing failure
@@ -268,7 +273,9 @@ def run_repl(agent):
                         for entry in entries:
                             print(f"- {entry.path} ({entry.size_chars} chars)")
                     else:
-                        print("\nMemory files: (none — use /save <text> or edit .pico/memory/notes/*.md)")
+                        print(
+                            "\nMemory files: (none — use /remember <text> or edit .pico/memory/notes/*.md)"
+                        )
                     continue
                 if user_input == "/session":
                     print(agent.session_path)
@@ -279,17 +286,8 @@ def run_repl(agent):
                     agent.reset()
                     print("session reset")
                     continue
-                memory_command = next(
-                    (
-                        command
-                        for command in ("/remember", "/save")
-                        if user_input == command
-                        or user_input.startswith(command + " ")
-                    ),
-                    "",
-                )
-                if memory_command:
-                    note = user_input[len(memory_command):].strip()
+                if user_input == "/remember" or user_input.startswith("/remember "):
+                    note = user_input[len("/remember") :].strip()
                     if not note:
                         print("usage: /remember <text>")
                         continue
@@ -297,7 +295,9 @@ def run_repl(agent):
                         print("error: note exceeds 1024 model tokens")
                         continue
                     try:
-                        total = agent.memory_store.append_agent_note(scope="workspace", note=note)
+                        total = agent.memory_store.append_agent_note(
+                            scope="workspace", note=note
+                        )
                     except ValueError as exc:
                         print(f"error: {exc}")
                         continue
@@ -305,9 +305,7 @@ def run_repl(agent):
                     continue
                 if user_input == "/memory-review":
                     try:
-                        content = agent.memory_store.read(
-                            "workspace/agent_notes.md"
-                        )
+                        content = agent.memory_store.read("workspace/agent_notes.md")
                     except FileNotFoundError:
                         print("(no agent_notes.md yet)")
                     except (OSError, RuntimeError, ValueError):
@@ -315,6 +313,10 @@ def run_repl(agent):
                     else:
                         print(f"agent_notes.md ({len(content)} chars):\n\n{content}")
                         print("To edit: vim .pico/memory/agent_notes.md")
+                    continue
+                if user_input.startswith("/"):
+                    command = user_input.split(maxsplit=1)[0]
+                    print(f"unknown command: {command}")
                     continue
 
                 print()

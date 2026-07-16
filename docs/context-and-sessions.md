@@ -238,6 +238,5 @@ max_tokens_per_note = 1024
 skip_recent_turns = 2
 ```
 
-旧 `--max-new-tokens` 仅保留一个迁移周期并警告；新名称是 `--max-output-tokens`。旧
 `total_budget_hard_cap` 在缺少 `[model]` 时迁移为 `model.context_window`；`history_soft_cap`、
 `history_floor_messages` 与 `injection_budget_ratio` 已移除并告警。

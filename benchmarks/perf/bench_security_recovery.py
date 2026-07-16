@@ -9,7 +9,7 @@ from pico.state.checkpoint_store import CheckpointStore
 from pico.recovery.manager import RecoveryManager
 from pico.recovery.models import new_checkpoint_record
 from pico.recovery.policy import assess_command
-from pico.security import redact_artifact
+from pico.security.redaction import redact_artifact
 from pico.tools.change_recorder import ToolChangeRecorder
 
 
@@ -64,9 +64,7 @@ def _restore_fixture(root, count):
 
 
 def main():
-    secrets = {
-        f"PICO_TOKEN_{index}": f"ghp_{index:032d}" for index in range(100)
-    }
+    secrets = {f"PICO_TOKEN_{index}": f"ghp_{index:032d}" for index in range(100)}
     artifact = {
         "items": list(secrets.values()),
         "nested": [{"token": value} for value in secrets.values()],
@@ -100,9 +98,7 @@ def main():
             ),
             bench(
                 SCENARIO_NAMES[1],
-                lambda: [
-                    assess_command(command, root) for command in command_batch
-                ],
+                lambda: [assess_command(command, root) for command in command_batch],
                 iterations=20,
             ),
             bench(

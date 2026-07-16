@@ -4,11 +4,14 @@ from pathlib import Path
 
 import pico.memory.service as memorylib
 from pico.agent.observability import load_run_artifacts
-from pico.providers.fake import FakeModelClient
-from pico.runtime import Pico
+from benchmarks.support.fake_provider import FakeModelClient
+from pico.runtime.application import Pico
 from pico.state.session_store import SessionStore
-from pico.workspace import WorkspaceContext
-from .experiments_synthetic import run_context_stress_matrix, run_large_scale_memory_experiment
+from pico.workspace.context import WorkspaceContext
+from .experiments_synthetic import (
+    run_context_stress_matrix,
+    run_large_scale_memory_experiment,
+)
 from .metrics_common import (
     CONTEXT_ABLATION_FORMAT_VERSION,
     DEFAULT_CONTEXT_ABLATION_V2_PATH,
@@ -19,24 +22,27 @@ from .metrics_common import (
     _safe_ratio,
     _utc_timestamp,
 )
+from pico.runtime.options import RuntimeOptions
 
 
 def _write_json_artifact(path, payload):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
     return payload
 
 
 class _RecoveryScenarioModelClient(FakeModelClient):
     def __init__(self, required_fragments, success_answer):
         super().__init__([])
-        self.required_fragments = [str(fragment).lower() for fragment in required_fragments]
+        self.required_fragments = [
+            str(fragment).lower() for fragment in required_fragments
+        ]
         self.success_answer = str(success_answer)
 
-    def complete(
-        self, *, system, tools, messages, max_tokens, cache_breakpoints=None
-    ):
+    def complete(self, *, system, tools, messages, max_tokens, cache_breakpoints=None):
         request_text = json.dumps(
             {"system": system, "tools": tools, "messages": messages},
             ensure_ascii=False,
@@ -61,49 +67,75 @@ RECOVERY_ABLATION_TASKS = [
         "id": "checkpoint_resume_goal",
         "category": "checkpoint_resume",
         "setup": "checkpoint_resume",
-        "required_fragments": ["task working set:", "goal: resume the benchmark task", "next steps: apply the locked change"],
+        "required_fragments": [
+            "task working set:",
+            "goal: resume the benchmark task",
+            "next steps: apply the locked change",
+        ],
     },
     {
         "id": "checkpoint_resume_files",
         "category": "checkpoint_resume",
         "setup": "checkpoint_resume",
-        "required_fragments": ["task working set:", "goal: continue from the latest benchmark checkpoint", "recent files: sample.txt"],
+        "required_fragments": [
+            "task working set:",
+            "goal: continue from the latest benchmark checkpoint",
+            "recent files: sample.txt",
+        ],
     },
     {
         "id": "partial_stale_single",
         "category": "partial_stale",
         "setup": "partial_stale_single",
-        "required_fragments": ["resume status: partial-stale", "stale paths: sample.txt"],
+        "required_fragments": [
+            "resume status: partial-stale",
+            "stale paths: sample.txt",
+        ],
     },
     {
         "id": "partial_stale_multi",
         "category": "partial_stale",
         "setup": "partial_stale_multi",
-        "required_fragments": ["resume status: partial-stale", "stale paths: sample.txt, notes.txt"],
+        "required_fragments": [
+            "resume status: partial-stale",
+            "stale paths: sample.txt, notes.txt",
+        ],
     },
     {
         "id": "workspace_mismatch_fingerprint",
         "category": "workspace_mismatch",
         "setup": "workspace_mismatch",
-        "required_fragments": ["resume status: workspace-mismatch", "goal: recover after workspace drift"],
+        "required_fragments": [
+            "resume status: workspace-mismatch",
+            "goal: recover after workspace drift",
+        ],
     },
     {
         "id": "workspace_mismatch_runtime",
         "category": "workspace_mismatch",
         "setup": "workspace_mismatch",
-        "required_fragments": ["resume status: workspace-mismatch", "next steps: rebuild runtime state from a fresh checkpoint"],
+        "required_fragments": [
+            "resume status: workspace-mismatch",
+            "next steps: rebuild runtime state from a fresh checkpoint",
+        ],
     },
     {
         "id": "partial_success_shell",
         "category": "partial_success_recovery",
         "setup": "partial_success_shell",
-        "required_fragments": ["blocker: tool_partial_success", "next steps: inspect the diff before retry"],
+        "required_fragments": [
+            "blocker: tool_partial_success",
+            "next steps: inspect the diff before retry",
+        ],
     },
     {
         "id": "partial_success_tool",
         "category": "partial_success_recovery",
         "setup": "partial_success_tool",
-        "required_fragments": ["blocker: tool_failed", "next steps: retry after checking the workspace state"],
+        "required_fragments": [
+            "blocker: tool_failed",
+            "next steps: retry after checking the workspace state",
+        ],
     },
 ]
 
@@ -112,11 +144,12 @@ def _build_recovery_agent(workspace_root, required_fragments):
     workspace = WorkspaceContext.build(workspace_root)
     store = SessionStore(workspace_root / ".pico" / "sessions")
     return Pico(
-        model_client=_RecoveryScenarioModelClient(required_fragments, "recovery state restored."),
+        model_client=_RecoveryScenarioModelClient(
+            required_fragments, "recovery state restored."
+        ),
         workspace=workspace,
         session_store=store,
-        approval_policy="auto",
-        max_steps=4,
+        options=RuntimeOptions(approval_policy="auto", max_steps=4),
     )
 
 
@@ -159,7 +192,9 @@ def _checkpoint_payload(
 def _apply_recovery_setup(agent, task, workspace_root, *, checkpoint_enabled=True):
     setup = task["setup"]
     workspace_root = Path(workspace_root)
-    (workspace_root / "sample.txt").write_text("alpha\nbeta\ngamma\nplaceholder\n", encoding="utf-8")
+    (workspace_root / "sample.txt").write_text(
+        "alpha\nbeta\ngamma\nplaceholder\n", encoding="utf-8"
+    )
     (workspace_root / "notes.txt").write_text("note-one\nnote-two\n", encoding="utf-8")
     summaries = agent.session.setdefault("memory", {}).setdefault("file_summaries", {})
 
@@ -203,18 +238,30 @@ def _apply_recovery_setup(agent, task, workspace_root, *, checkpoint_enabled=Tru
             },
         }
         if task["id"] == "checkpoint_resume_files":
-            agent.session["checkpoints"]["items"]["ckpt_resume"]["key_files"] = [{"path": "sample.txt", "freshness": None}]
+            agent.session["checkpoints"]["items"]["ckpt_resume"]["key_files"] = [
+                {"path": "sample.txt", "freshness": None}
+            ]
         agent.session_store.save(agent.session)
         return
 
     if setup in {"partial_stale_single", "partial_stale_multi"}:
-        memorylib.set_file_summary_dict(summaries, "sample.txt", "sample.txt: cached benchmark summary", workspace_root=agent.root)
+        memorylib.set_file_summary_dict(
+            summaries,
+            "sample.txt",
+            "sample.txt: cached benchmark summary",
+            workspace_root=agent.root,
+        )
         agent.memory.remember_file("sample.txt")
         sample_freshness = summaries["sample.txt"]["freshness"]
         key_files = [{"path": "sample.txt", "freshness": sample_freshness}]
         freshness = {"sample.txt": sample_freshness}
         if setup == "partial_stale_multi":
-            memorylib.set_file_summary_dict(summaries, "notes.txt", "notes.txt: cached note summary", workspace_root=agent.root)
+            memorylib.set_file_summary_dict(
+                summaries,
+                "notes.txt",
+                "notes.txt: cached note summary",
+                workspace_root=agent.root,
+            )
             agent.memory.remember_file("notes.txt")
             notes_freshness = summaries["notes.txt"]["freshness"]
             key_files.append({"path": "notes.txt", "freshness": notes_freshness})
@@ -237,9 +284,13 @@ def _apply_recovery_setup(agent, task, workspace_root, *, checkpoint_enabled=Tru
             },
         }
         agent.session_store.save(agent.session)
-        (workspace_root / "sample.txt").write_text("alpha\nbeta\nstale-shifted\nplaceholder\n", encoding="utf-8")
+        (workspace_root / "sample.txt").write_text(
+            "alpha\nbeta\nstale-shifted\nplaceholder\n", encoding="utf-8"
+        )
         if setup == "partial_stale_multi":
-            (workspace_root / "notes.txt").write_text("note-one\nnote-two-shifted\n", encoding="utf-8")
+            (workspace_root / "notes.txt").write_text(
+                "note-one\nnote-two-shifted\n", encoding="utf-8"
+            )
         return
 
     if setup == "workspace_mismatch":
@@ -261,8 +312,16 @@ def _apply_recovery_setup(agent, task, workspace_root, *, checkpoint_enabled=Tru
         return
 
     if setup in {"partial_success_shell", "partial_success_tool"}:
-        blocker = "tool_partial_success" if setup == "partial_success_shell" else "tool_failed"
-        next_step = "Inspect the diff before retry" if setup == "partial_success_shell" else "Retry after checking the workspace state"
+        blocker = (
+            "tool_partial_success"
+            if setup == "partial_success_shell"
+            else "tool_failed"
+        )
+        next_step = (
+            "Inspect the diff before retry"
+            if setup == "partial_success_shell"
+            else "Retry after checking the workspace state"
+        )
         agent.session["checkpoints"] = {
             "current_id": "ckpt_partial",
             "items": {
@@ -301,15 +360,16 @@ def _run_recovery_task_variant(task, variant):
         resume_status = str(report.get("recovery", {}).get("status", ""))
         stale_reanchored = (
             resume_status == "partial-stale"
-            and int(report.get("context", {}).get("stale_summary_invalidations", 0))
-            > 0
+            and int(report.get("context", {}).get("stale_summary_invalidations", 0)) > 0
             and any(
                 event.get("event") == "checkpoint_created"
                 and event.get("trigger") == "run_finished"
                 for event in trace
             )
         )
-        workspace_drift_detected = any(event.get("event") == "runtime_identity_mismatch" for event in trace)
+        workspace_drift_detected = any(
+            event.get("event") == "runtime_identity_mismatch" for event in trace
+        )
         invalid_resume = task["category"] in {"partial_stale", "workspace_mismatch"}
         return {
             "task_id": task["id"],
@@ -328,16 +388,31 @@ def _recovery_variant_summary(rows):
     rows = list(rows)
     stale_rows = [row for row in rows if row["category"] == "partial_stale"]
     drift_rows = [row for row in rows if row["category"] == "workspace_mismatch"]
-    invalid_rows = [row for row in rows if row["category"] in {"partial_stale", "workspace_mismatch"}]
+    invalid_rows = [
+        row
+        for row in rows
+        if row["category"] in {"partial_stale", "workspace_mismatch"}
+    ]
     return {
-        "resume_success_rate": _safe_ratio(sum(1 for row in rows if row["resume_succeeded"]), len(rows)),
-        "stale_reanchor_rate": _safe_ratio(sum(1 for row in stale_rows if row["stale_reanchored"]), len(stale_rows)),
-        "workspace_drift_detection_rate": _safe_ratio(sum(1 for row in drift_rows if row["workspace_drift_detected"]), len(drift_rows)),
-        "resume_false_accept_rate": _safe_ratio(sum(1 for row in invalid_rows if row["false_accept"]), len(invalid_rows)),
+        "resume_success_rate": _safe_ratio(
+            sum(1 for row in rows if row["resume_succeeded"]), len(rows)
+        ),
+        "stale_reanchor_rate": _safe_ratio(
+            sum(1 for row in stale_rows if row["stale_reanchored"]), len(stale_rows)
+        ),
+        "workspace_drift_detection_rate": _safe_ratio(
+            sum(1 for row in drift_rows if row["workspace_drift_detected"]),
+            len(drift_rows),
+        ),
+        "resume_false_accept_rate": _safe_ratio(
+            sum(1 for row in invalid_rows if row["false_accept"]), len(invalid_rows)
+        ),
     }
 
 
-def run_context_ablation_v2(artifact_path=DEFAULT_CONTEXT_ABLATION_V2_PATH, repetitions=5):
+def run_context_ablation_v2(
+    artifact_path=DEFAULT_CONTEXT_ABLATION_V2_PATH, repetitions=5
+):
     payload = run_context_stress_matrix(repetitions=repetitions)
     artifact = {
         "record_type": "context_ablation_result",
@@ -350,7 +425,9 @@ def run_context_ablation_v2(artifact_path=DEFAULT_CONTEXT_ABLATION_V2_PATH, repe
     return _write_json_artifact(artifact_path, artifact)
 
 
-def run_memory_ablation_v2(artifact_path=DEFAULT_MEMORY_ABLATION_V2_PATH, repetitions=5):
+def run_memory_ablation_v2(
+    artifact_path=DEFAULT_MEMORY_ABLATION_V2_PATH, repetitions=5
+):
     payload = run_large_scale_memory_experiment(repetitions=repetitions)
     artifact = {
         "record_type": "memory_ablation_result",
@@ -365,7 +442,9 @@ def run_memory_ablation_v2(artifact_path=DEFAULT_MEMORY_ABLATION_V2_PATH, repeti
     return _write_json_artifact(artifact_path, artifact)
 
 
-def run_recovery_ablation_v2(artifact_path=DEFAULT_RECOVERY_ABLATION_V2_PATH, repetitions=3):
+def run_recovery_ablation_v2(
+    artifact_path=DEFAULT_RECOVERY_ABLATION_V2_PATH, repetitions=3
+):
     repetitions = int(repetitions)
     variants = {"resume_enabled": [], "resume_disabled": []}
     for task in RECOVERY_ABLATION_TASKS:

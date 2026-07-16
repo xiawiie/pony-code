@@ -8,7 +8,6 @@ HELP_DETAILS = textwrap.dedent(
     /memory          Show working memory + a listing of memory files.
     /memory-review   Print agent_notes.md with an editing hint.
     /remember <text> Explicitly append a note to workspace agent_notes.md.
-    /save <text>     Compatibility alias for /remember.
     /session         Show the path to the saved session file.
     /tree            Show the append-only Session Tree and active branch.
     /compact [focus] Compact old history into a bounded Session summary.

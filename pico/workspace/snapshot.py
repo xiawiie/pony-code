@@ -3,9 +3,9 @@
 import os
 from pathlib import Path
 
-from pico import security as securitylib
+from pico.security import paths as securitylib
 from pico.recovery.paths import hash_file_bytes
-from pico.workspace import IGNORED_PATH_NAMES
+from pico.workspace.context import IGNORED_PATH_NAMES
 
 DEFAULT_MAX_SNAPSHOT_FILES = 5000
 DEFAULT_MAX_SNAPSHOT_BYTES = 64 * 1024 * 1024
@@ -49,10 +49,7 @@ def _iter_snapshot_files(root):
                 relative = candidate.relative_to(root).as_posix()
             except ValueError:
                 continue
-            if (
-                name in IGNORED_PATH_NAMES
-                or securitylib.is_sensitive_path(relative)
-            ):
+            if name in IGNORED_PATH_NAMES or securitylib.is_sensitive_path(relative):
                 continue
             safe_dirnames.append(name)
         dirnames[:] = safe_dirnames

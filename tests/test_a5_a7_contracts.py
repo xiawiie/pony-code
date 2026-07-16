@@ -1,4 +1,4 @@
-from pico.tools import memory_write_intent
+from pico.tools.registry import memory_write_intent
 from pico.tools.executor import PolicyDecision
 
 

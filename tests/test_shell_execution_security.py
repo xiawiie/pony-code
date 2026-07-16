@@ -6,8 +6,11 @@ from unittest.mock import Mock
 
 import pytest
 
-from pico import Pico, SessionStore, WorkspaceContext
-from pico.providers.fake import FakeModelClient
+from pico import Pico
+from pico.state.session_store import SessionStore
+from pico.workspace.context import WorkspaceContext
+from benchmarks.support.fake_provider import FakeModelClient
+from pico.runtime.options import RuntimeOptions
 
 
 def build_agent(
@@ -24,14 +27,15 @@ def build_agent(
     return Pico(
         model_client=FakeModelClient(list(outputs or [])),
         workspace=WorkspaceContext.build(
-            tmp_path,
-            executables={} if executables is None else executables,
+            tmp_path, executables={} if executables is None else executables
         ),
         session_store=SessionStore(tmp_path / ".pico" / "sessions"),
+        options=RuntimeOptions(
         approval_policy=approval_policy,
         read_only=read_only,
         redaction_env=redaction_env,
         secret_env_names=secret_env_names,
+        ),
     )
 
 
@@ -327,9 +331,7 @@ def test_single_shell_gate_mode_matrix(
     assert approve.call_count == prompt_count, case
     assert runner.call_count == runner_count, case
     assert result.metadata["tool_error_code"] == expected_error
-    assert result.metadata["tool_status"] == (
-        "ok" if runner_count else "rejected"
-    )
+    assert result.metadata["tool_status"] == ("ok" if runner_count else "rejected")
     assert_shell_metadata(
         result,
         risk_class=risk_class,
@@ -348,11 +350,7 @@ def test_single_shell_gate_mode_matrix(
             "risk_class": risk_class,
             "decision": decision,
             "reason": reason,
-            "argv": (
-                []
-                if execution_mode == "shell"
-                else command.split()
-            ),
+            "argv": ([] if execution_mode == "shell" else command.split()),
             "execution_mode": execution_mode,
         }
         assert records[-1]["approval"] == result.metadata["command_approval"]
@@ -600,7 +598,13 @@ def test_hard_reject_does_not_read_empty_argv(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize(
-    ("command", "executables", "expected_argv", "expected_shell", "expected_executable"),
+    (
+        "command",
+        "executables",
+        "expected_argv",
+        "expected_shell",
+        "expected_executable",
+    ),
     [
         ("pwd", {"pwd": "/frozen/pwd"}, ["/frozen/pwd"], False, None),
         (
@@ -665,9 +669,7 @@ def test_execution_shape_uses_only_frozen_executables(
     assert len(calls) == 1
     argv, kwargs = calls[0]
     assert argv == (
-        ["/frozen/sh", "-c", expected_argv]
-        if expected_shell
-        else expected_argv
+        ["/frozen/sh", "-c", expected_argv] if expected_shell else expected_argv
     )
     assert kwargs["shell"] is False
     assert kwargs.get("executable") == expected_executable
@@ -729,6 +731,7 @@ def test_runtime_path_spoof_cannot_replace_frozen_executable(tmp_path, monkeypat
         executables={"pwd": "/frozen/pwd"},
     )
     monkeypatch.setenv("PATH", str(tmp_path))
+
     @contextmanager
     def passthrough(executable):
         yield str(executable)
@@ -796,9 +799,7 @@ def test_approval_payload_and_runner_output_are_redacted(tmp_path):
 
     result = agent.execute_tool("run_shell", args)
 
-    assert seen_payloads == [
-        {"command": "pwd", "timeout": 5, "note": "<redacted>"}
-    ]
+    assert seen_payloads == [{"command": "pwd", "timeout": 5, "note": "<redacted>"}]
     serialized = result.content + json.dumps(result.metadata, sort_keys=True)
     assert secret not in serialized
     assert "<redacted>" in result.content
@@ -939,9 +940,7 @@ def test_runner_exception_records_attempt_without_invented_exit_code(tmp_path):
         tmp_path,
         executables={"pwd": "/frozen/pwd"},
     )
-    agent.tools["run_shell"]["run"] = Mock(
-        side_effect=RuntimeError("runner failed")
-    )
+    agent.tools["run_shell"]["run"] = Mock(side_effect=RuntimeError("runner failed"))
 
     result = agent.execute_tool(
         "run_shell",
@@ -970,9 +969,7 @@ def test_before_capture_failure_does_not_create_nonexecuted_shell_record(
     )
     runner = Mock(return_value=completed())
     agent.tools["run_shell"]["run"] = runner
-    agent.workspace_observer.capture = Mock(
-        side_effect=RuntimeError("capture failed")
-    )
+    agent.workspace_observer.capture = Mock(side_effect=RuntimeError("capture failed"))
 
     result = agent.execute_tool(
         "run_shell",
@@ -1091,10 +1088,13 @@ def test_pico_has_no_raw_tool_proxies_and_executor_remains_registered(tmp_path):
     assert agent.tool_executor.agent is agent
     assert "read_file" in agent.tools
     assert "run_shell" in agent.tools
-    assert "# README.md" in agent.execute_tool(
+    assert (
+        "# README.md"
+        in agent.execute_tool(
         "read_file",
         {"path": "README.md", "start": 1, "end": 1},
     ).content
+    )
 
 
 def _init_git_repo(root):
@@ -1605,7 +1605,7 @@ def test_approved_git_diff_rendering_cannot_execute_repo_textconv(
     marker = tmp_path / "git-textconv-ran"
     textconv = tmp_path / "textconv-hook"
     textconv.write_text(
-        f"#!/bin/sh\ntouch {marker}\ncat \"$1\"\n",
+        f'#!/bin/sh\ntouch {marker}\ncat "$1"\n',
         encoding="utf-8",
     )
     textconv.chmod(0o755)
@@ -1718,7 +1718,7 @@ def test_automatic_git_status_blocks_repo_clean_filter_before_execution(
         model_client=FakeModelClient([]),
         workspace=workspace,
         session_store=SessionStore(tmp_path / ".pico" / "sessions"),
-        approval_policy="auto",
+        options=RuntimeOptions(approval_policy="auto"),
     )
     assert agent.workspace_observer.capture()["mode"] == "filesystem"
     assert not marker.exists()
@@ -1902,7 +1902,7 @@ def test_automatic_parent_git_status_blocks_uninspected_submodule_config(
         model_client=FakeModelClient([]),
         workspace=workspace,
         session_store=SessionStore(tmp_path / ".pico" / "sessions"),
-        approval_policy="auto",
+        options=RuntimeOptions(approval_policy="auto"),
     )
     approve = Mock(return_value=True)
     user_git_runner = Mock(side_effect=AssertionError("user git reached runner"))

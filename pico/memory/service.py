@@ -3,7 +3,7 @@
 import hashlib as _hashlib
 from pathlib import Path as _Path
 
-from ..workspace import clip as _clip, now as _now
+from ..workspace.context import clip as _clip, now as _now
 
 __all__ = [
     "canonicalize_path",

@@ -9,7 +9,7 @@ from pico.cli.migration import _build_tool_changes, _identity, _migration
 from pico.recovery.migration import ABSENT, CANDIDATE_READY, PREPARING
 from pico.recovery.models import new_checkpoint_record, new_tool_change_record
 from pico.tools.change_converter import convert_tool_change_v1
-from pico.workspace import WorkspaceContext
+from pico.workspace.context import WorkspaceContext
 
 
 def _file_entry(blob_ref, *, source_id="tc_1", path="note.txt"):
@@ -91,7 +91,9 @@ def test_tool_change_migration_marks_all_valid_v1_evidence_incomplete(status):
     assert converted["approval"] == record["approval"]
 
 
-@pytest.mark.parametrize("corruption", ("invalid_status", "missing_field", "extra_field"))
+@pytest.mark.parametrize(
+    "corruption", ("invalid_status", "missing_field", "extra_field")
+)
 def test_tool_change_migration_rejects_invalid_v1_without_washing_status(corruption):
     record = _legacy_tool_change()
     if corruption == "invalid_status":
@@ -253,7 +255,9 @@ def test_tool_change_migration_rejects_invalid_graph_before_cutover(
         _apply(migration)
 
     assert renames == []
-    expected_state = PREPARING if corruption == "file_hash_mismatch" else CANDIDATE_READY
+    expected_state = (
+        PREPARING if corruption == "file_hash_mismatch" else CANDIDATE_READY
+    )
     assert migration.status()["state"] == expected_state
     assert json.loads(tool_path.read_text(encoding="utf-8"))["format_version"] == 1
 

@@ -4,10 +4,11 @@ from types import SimpleNamespace
 
 import pytest
 
+import pico.cli.assembly as cli_assembly
 import pico.cli.sandbox as cli_module
-import pico.cli as pico_cli
+import pico.cli.app as pico_cli
 from pico.state.checkpoint_store import CheckpointStore
-from pico.cli import main
+from pico.cli.app import main
 from pico.cli.errors import CliError
 from pico.sandbox.docker import DockerSandboxError
 from pico.sandbox.apply import StagingObserver
@@ -17,6 +18,7 @@ from pico.sandbox.session import (
     SandboxSessionError,
     SandboxSessionStore,
 )
+
 EMPTY_CAPACITY = {
     "active_count": 0,
     "pending_count": 0,
@@ -194,6 +196,7 @@ def test_prepare_only_inspects_packaged_local_image_without_network_or_cache(
         "discover_local_docker",
         lambda: events.append("discover") or (Path("/docker"), Path("/docker.sock")),
     )
+
     class Client:
         def __init__(self, cli, endpoint, selected_config):
             assert (cli, endpoint, selected_config) == (
@@ -401,9 +404,7 @@ def test_list_inspect_diff_and_apply_use_production_artifacts(
         diff_before.st_ctime_ns,
     )
 
-    assert main(
-        ["--format", "json", "sandbox", "apply", sandbox_id, "--yes"]
-    ) == 0
+    assert main(["--format", "json", "sandbox", "apply", sandbox_id, "--yes"]) == 0
     captured = capsys.readouterr()
     applied = json.loads(captured.out)["data"]
     assert finalized["diff_digest"] in captured.err
@@ -419,7 +420,8 @@ def test_apply_requires_separate_confirmation(tmp_path, monkeypatch, capsys):
     (context.execution_root / "README.md").write_text("after\n", encoding="utf-8")
     observer.finalize_diff(lambda text: text)
 
-    assert main(
+    assert (
+        main(
         [
             "--format",
             "json",
@@ -428,7 +430,9 @@ def test_apply_requires_separate_confirmation(tmp_path, monkeypatch, capsys):
             "apply",
             context.sandbox_session.sandbox_id,
         ]
-    ) == 2
+        )
+        == 2
+    )
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["error"]["code"] == "confirmation_required"
@@ -486,7 +490,8 @@ def test_apply_yes_loads_review_and_passes_displayed_digest(
 
     monkeypatch.setattr(cli_module, "_apply", fake_apply)
 
-    assert main(
+    assert (
+        main(
         [
             "--format",
             "json",
@@ -495,7 +500,9 @@ def test_apply_yes_loads_review_and_passes_displayed_digest(
             context.sandbox_session.sandbox_id,
             "--yes",
         ]
-    ) == 0
+        )
+        == 0
+    )
 
     captured = capsys.readouterr()
     assert received == [finalized["diff_digest"]]
@@ -522,9 +529,12 @@ def test_apply_displays_loaded_review_before_interactive_confirmation(
         lambda _prompt: events.append(("confirm", "")) or "n",
     )
 
-    assert main(
+    assert (
+        main(
         ["--format", "json", "sandbox", "apply", context.sandbox_session.sandbox_id]
-    ) == 2
+        )
+        == 2
+    )
 
     assert events == [("display", finalized["diff_digest"]), ("confirm", "")]
     assert json.loads(capsys.readouterr().out)["error"]["code"] == (
@@ -545,9 +555,7 @@ def test_discard_removes_staging_and_preserves_terminal_audit(
     observer.finalize_diff(lambda text: text)
     sandbox_id = context.sandbox_session.sandbox_id
 
-    assert main(
-        ["--format", "json", "sandbox", "discard", sandbox_id, "--yes"]
-    ) == 0
+    assert main(["--format", "json", "sandbox", "discard", sandbox_id, "--yes"]) == 0
 
     payload = json.loads(capsys.readouterr().out)["data"]
     assert payload["state"] == "discarded"
@@ -577,28 +585,30 @@ def test_discard_cannot_hide_pre_session_apply_crash(
         ).apply(diff["diff_digest"])
     sandbox_id = context.sandbox_session.sandbox_id
 
-    assert main(
-        ["--format", "json", "sandbox", "discard", sandbox_id, "--yes"]
-    ) == 3
+    assert main(["--format", "json", "sandbox", "discard", sandbox_id, "--yes"]) == 3
 
     refused = json.loads(capsys.readouterr().out)
     assert refused["error"]["code"] == "source_apply_review_required"
     assert context.current_session().state == "pending_review"
     assert context.execution_root.is_dir()
-    assert read_source_apply_authority(
+    assert (
+        read_source_apply_authority(
         context.runner.session_store.parent,
         source,
-    ) is not None
+        )
+        is not None
+    )
 
-    assert main(
-        ["--format", "json", "sandbox", "apply", sandbox_id, "--yes"]
-    ) == 0
+    assert main(["--format", "json", "sandbox", "apply", sandbox_id, "--yes"]) == 0
     recovered = json.loads(capsys.readouterr().out)["data"]
     assert recovered["status"] == "apply_failed_rolled_back"
-    assert read_source_apply_authority(
+    assert (
+        read_source_apply_authority(
         context.runner.session_store.parent,
         source,
-    ) is None
+        )
+        is None
+    )
 
 
 def test_reconcile_uses_lexical_authority_after_source_root_replacement(
@@ -636,7 +646,8 @@ def test_reconcile_uses_lexical_authority_after_source_root_replacement(
         lambda *_args: pytest.fail("global find reached"),
     )
 
-    assert main(
+    assert (
+        main(
         [
             "--format",
             "json",
@@ -646,7 +657,9 @@ def test_reconcile_uses_lexical_authority_after_source_root_replacement(
             "reconcile",
             "--yes",
         ]
-    ) == 0
+        )
+        == 0
+    )
 
     payload = json.loads(capsys.readouterr().out)["data"]
     assert payload == {
@@ -686,7 +699,8 @@ def test_reconcile_requires_explicit_confirmation(tmp_path, monkeypatch, capsys)
     journal_id = context.current_session().manifest["apply"]["journal_id"]
     before = SourceApplyStore(context.sandbox_state_root).load_journal(journal_id)
 
-    assert main(
+    assert (
+        main(
         [
             "--format",
             "json",
@@ -696,14 +710,16 @@ def test_reconcile_requires_explicit_confirmation(tmp_path, monkeypatch, capsys)
             "sandbox",
             "reconcile",
         ]
-    ) == 2
+        )
+        == 2
+    )
 
     assert json.loads(capsys.readouterr().out)["error"]["code"] == (
         "confirmation_required"
     )
-    assert SourceApplyStore(context.sandbox_state_root).load_journal(
-        journal_id
-    ) == before
+    assert (
+        SourceApplyStore(context.sandbox_state_root).load_journal(journal_id) == before
+    )
     assert context.current_session().state == "applying"
 
 
@@ -738,7 +754,8 @@ def test_reconcile_fails_closed_on_authority_journal_mismatch(
     path.write_text(json.dumps(journal), encoding="utf-8")
     path.chmod(0o600)
 
-    assert main(
+    assert (
+        main(
         [
             "--format",
             "json",
@@ -748,7 +765,9 @@ def test_reconcile_fails_closed_on_authority_journal_mismatch(
             "reconcile",
             "--yes",
         ]
-    ) == 3
+        )
+        == 3
+    )
 
     assert json.loads(capsys.readouterr().out)["error"]["code"] == (
         "sandbox_apply_journal_invalid"
@@ -761,22 +780,23 @@ def test_public_sandbox_runtime_fails_closed_on_local_authorization_before_agent
     monkeypatch,
     capsys,
 ):
-    monkeypatch.setattr("pico.cli.platform.system", lambda: "Darwin")
-    monkeypatch.setattr("pico.cli.platform.machine", lambda: "arm64")
+    monkeypatch.setattr("pico.cli.app.platform.system", lambda: "Darwin")
+    monkeypatch.setattr("pico.cli.app.platform.machine", lambda: "arm64")
     monkeypatch.setattr(
-        "pico.cli._build_model_client",
+        "pico.cli.assembly._build_transport_client",
         lambda *_args, **_kwargs: pytest.fail("provider construction reached"),
     )
     monkeypatch.setattr(
-        "pico.cli.local_docker_sandbox_runtime",
+        "pico.cli.assembly.local_docker_sandbox_runtime",
         lambda: (_ for _ in ()).throw(
             DockerSandboxError("sandbox_runtime_authorization_mismatch")
         ),
     )
 
-    assert main(
-        ["--format", "json", "--cwd", str(tmp_path), "--sandbox", "run", "hello"]
-    ) == 3
+    assert (
+        main(["--format", "json", "--cwd", str(tmp_path), "--sandbox", "run", "hello"])
+        == 3
+    )
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["error"]["code"] == "sandbox_runtime_authorization_mismatch"
@@ -793,16 +813,17 @@ def test_public_sandbox_runtime_rejects_unreleased_local_platform_before_build(
     system,
     machine,
 ):
-    monkeypatch.setattr("pico.cli.platform.system", lambda: system)
-    monkeypatch.setattr("pico.cli.platform.machine", lambda: machine)
+    monkeypatch.setattr("pico.cli.app.platform.system", lambda: system)
+    monkeypatch.setattr("pico.cli.app.platform.machine", lambda: machine)
     monkeypatch.setattr(
-        "pico.cli.build_agent",
+        "pico.cli.app.build_agent",
         lambda *_args, **_kwargs: pytest.fail("agent construction reached"),
     )
 
-    assert main(
-        ["--format", "json", "--cwd", str(tmp_path), "--sandbox", "run", "hello"]
-    ) == 3
+    assert (
+        main(["--format", "json", "--cwd", str(tmp_path), "--sandbox", "run", "hello"])
+        == 3
+    )
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["error"]["code"] == "sandbox_local_platform_not_released"
@@ -814,12 +835,12 @@ def test_sandbox_preflight_failure_precedes_source_session_store(
 ):
     monkeypatch.setenv("OPENAI_API_KEY", "source-secret")
     monkeypatch.setattr(
-        pico_cli,
+        cli_assembly,
         "_load_sandbox_runtime",
         lambda: (object(), object()),
     )
     monkeypatch.setattr(
-        pico_cli,
+        cli_assembly,
         "_build_sandbox_context",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             CliError(
@@ -830,8 +851,8 @@ def test_sandbox_preflight_failure_precedes_source_session_store(
         ),
     )
     monkeypatch.setattr(
-        pico_cli,
-        "_build_model_client",
+        cli_assembly,
+        "_build_transport_client",
         lambda *_args, **_kwargs: pytest.fail("provider construction reached"),
     )
     args = pico_cli.build_arg_parser().parse_args(
@@ -839,7 +860,7 @@ def test_sandbox_preflight_failure_precedes_source_session_store(
     )
 
     with pytest.raises(CliError, match="Docker Sandbox startup failed"):
-        pico_cli.build_agent(args)
+        cli_assembly.build_agent(args)
 
     assert not (tmp_path / ".pico").exists()
 
@@ -855,15 +876,14 @@ def test_runtime_defaults_to_fresh_sealed_local_authorization(
     authorization = object()
     calls = []
     monkeypatch.setattr(
-        pico_cli,
+        cli_assembly,
         "local_docker_sandbox_runtime",
         lambda: calls.append("local") or (image, authorization),
     )
 
-    assert pico_cli._load_sandbox_runtime() == (image, authorization)
+    assert cli_assembly._load_sandbox_runtime() == (image, authorization)
     assert calls == ["local"]
     assert not (home / ".pico").exists()
-
 
 
 def test_build_agent_wires_verified_runtime_to_one_docker_context(
@@ -887,13 +907,13 @@ def test_build_agent_wires_verified_runtime_to_one_docker_context(
 
     monkeypatch.setenv("OPENAI_API_KEY", "source-secret")
     monkeypatch.setattr(
-        pico_cli,
+        cli_assembly,
         "_load_sandbox_runtime",
         lambda: events.append("runtime") or (image, authorization),
     )
     monkeypatch.setattr(
-        pico_cli,
-        "_build_model_client",
+        cli_assembly,
+        "_build_transport_client",
         lambda *_args, **_kwargs: events.append("model") or model,
     )
 
@@ -906,19 +926,19 @@ def test_build_agent_wires_verified_runtime_to_one_docker_context(
         assert b"source-secret" in kwargs["known_secrets"]
         return context, source_workspace
 
-    monkeypatch.setattr(pico_cli, "_build_sandbox_context", build_context)
-    monkeypatch.setattr(pico_cli, "Pico", FakePico)
+    monkeypatch.setattr(cli_assembly, "_build_sandbox_context", build_context)
+    monkeypatch.setattr(cli_assembly, "Pico", FakePico)
     args = pico_cli.build_arg_parser().parse_args(
         ["--cwd", str(tmp_path), "--sandbox", "run", "hello"]
     )
 
-    agent = pico_cli.build_agent(args)
+    agent = cli_assembly.build_agent(args)
 
     assert isinstance(agent, FakePico)
     assert events == ["runtime", "context", "model"]
     assert captured["model_client"] is model
-    assert captured["sandbox_context"] is context
-    assert captured["session_id"] == "session-1"
+    assert captured["options"].sandbox_context is context
+    assert captured["options"].session_id == "session-1"
 
 
 def test_host_resume_rejects_bound_sandbox_before_model_construction(
@@ -928,7 +948,7 @@ def test_host_resume_rejects_bound_sandbox_before_model_construction(
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
     events = []
     monkeypatch.setattr(
-        pico_cli,
+        cli_assembly,
         "find_project_sandbox_session",
         lambda project_state_root, source_root, pico_session_id: (
             events.append(
@@ -943,8 +963,8 @@ def test_host_resume_rejects_bound_sandbox_before_model_construction(
         ),
     )
     monkeypatch.setattr(
-        pico_cli,
-        "_build_model_client",
+        cli_assembly,
+        "_build_transport_client",
         lambda *_args, **_kwargs: pytest.fail("model constructed"),
     )
     args = pico_cli.build_arg_parser().parse_args(
@@ -959,7 +979,7 @@ def test_host_resume_rejects_bound_sandbox_before_model_construction(
     )
 
     with pytest.raises(CliError) as caught:
-        pico_cli.build_agent(args)
+        cli_assembly.build_agent(args)
 
     assert caught.value.code == "sandbox_session_mode_mismatch"
     assert events == [
@@ -982,13 +1002,13 @@ def test_host_resume_fails_closed_on_invalid_sandbox_binding(
         raise SandboxSessionError("sandbox_manifest_invalid")
 
     monkeypatch.setattr(
-        pico_cli,
+        cli_assembly,
         "find_project_sandbox_session",
         invalid_binding,
     )
     monkeypatch.setattr(
-        pico_cli,
-        "_build_model_client",
+        cli_assembly,
+        "_build_transport_client",
         lambda *_args, **_kwargs: pytest.fail("model constructed"),
     )
     args = pico_cli.build_arg_parser().parse_args(
@@ -1003,7 +1023,7 @@ def test_host_resume_fails_closed_on_invalid_sandbox_binding(
     )
 
     with pytest.raises(CliError) as caught:
-        pico_cli.build_agent(args)
+        cli_assembly.build_agent(args)
 
     assert caught.value.code == "sandbox_state_invalid"
 
@@ -1133,7 +1153,8 @@ def test_prune_retries_source_apply_blob_cleanup_before_workspace_cleanup(
         ),
     )
 
-    assert main(
+    assert (
+        main(
         [
             "--format",
             "json",
@@ -1142,7 +1163,9 @@ def test_prune_retries_source_apply_blob_cleanup_before_workspace_cleanup(
             context.sandbox_session.sandbox_id,
             "--yes",
         ]
-    ) == 0
+        )
+        == 0
+    )
     applied = json.loads(capsys.readouterr().out)["data"]
     assert applied["status"] == "applied_cleanup_pending"
     apply_store = SourceApplyStore(context.source_apply_state_root)
@@ -1152,10 +1175,13 @@ def test_prune_retries_source_apply_blob_cleanup_before_workspace_cleanup(
     assert blob_path.is_file()
     assert context.execution_root.is_dir()
     assert CheckpointStore(context.source_root).source_apply_guard() is not None
-    assert read_source_apply_authority(
+    assert (
+        read_source_apply_authority(
         context.runner.session_store.parent,
         context.source_root,
-    ) is not None
+        )
+        is not None
+    )
     monkeypatch.setattr(SourceApplyStore, "cleanup_terminal_blobs", original)
 
     assert main(["--format", "json", "sandbox", "prune", "--apply"]) == 0
@@ -1167,10 +1193,13 @@ def test_prune_retries_source_apply_blob_cleanup_before_workspace_cleanup(
     assert not blob_path.exists()
     assert not context.execution_root.exists()
     assert CheckpointStore(context.source_root).source_apply_guard() is None
-    assert read_source_apply_authority(
+    assert (
+        read_source_apply_authority(
         context.runner.session_store.parent,
         context.source_root,
-    ) is None
+        )
+        is None
+    )
 
 
 def test_discard_cleans_rolled_back_source_apply_blobs(tmp_path, monkeypatch, capsys):
@@ -1195,7 +1224,8 @@ def test_discard_cleans_rolled_back_source_apply_blobs(tmp_path, monkeypatch, ca
     assert not blob_path.exists()
     assert (source / "README.md").read_text(encoding="utf-8") == "before\n"
 
-    assert main(
+    assert (
+        main(
         [
             "--format",
             "json",
@@ -1204,7 +1234,9 @@ def test_discard_cleans_rolled_back_source_apply_blobs(tmp_path, monkeypatch, ca
             context.sandbox_session.sandbox_id,
             "--yes",
         ]
-    ) == 0
+        )
+        == 0
+    )
 
     assert json.loads(capsys.readouterr().out)["data"]["state"] == "discarded"
     assert not blob_path.exists()

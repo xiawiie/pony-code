@@ -9,11 +9,8 @@ from types import SimpleNamespace
 import uuid
 from pathlib import Path, PureWindowsPath
 
-from pico.security import (
-    looks_secret_shaped_text,
-    private_directory_identity,
-    read_private_text,
-)
+from pico.security.private_files import private_directory_identity, read_private_text
+from pico.security.redaction import looks_secret_shaped_text
 
 TRACE_SCHEMA_VERSION = 1
 REPORT_SCHEMA_VERSION = 3
@@ -30,26 +27,69 @@ _TRACE_ENVELOPE_FIELDS = {
     "task_id",
 }
 _TRACE_STRING_FIELDS = {
-    "status", "stop_reason", "reason", "kind", "origin", "attempt_origin",
-    "action_type", "name", "tool_use_id", "tool_change_id", "checkpoint_id",
-    "trigger", "verification_id", "tool_status", "execution_mode", "risk_class",
-    "risk_level", "command_risk_class", "effect_class", "reason_code",
-    "tool_error_code", "security_event_type", "change_kind",
-    "sandbox_outcome", "execution_plane", "cleanup_status",
-    "sandbox_wrapper_status", "sandbox_error_code", "sandbox_call_id",
-    "execution_plan_digest", "logical_intent_digest", "policy_digest",
+    "status",
+    "stop_reason",
+    "reason",
+    "kind",
+    "origin",
+    "attempt_origin",
+    "action_type",
+    "name",
+    "tool_use_id",
+    "tool_change_id",
+    "checkpoint_id",
+    "trigger",
+    "verification_id",
+    "tool_status",
+    "execution_mode",
+    "risk_class",
+    "risk_level",
+    "command_risk_class",
+    "effect_class",
+    "reason_code",
+    "tool_error_code",
+    "security_event_type",
+    "change_kind",
+    "sandbox_outcome",
+    "execution_plane",
+    "cleanup_status",
+    "sandbox_wrapper_status",
+    "sandbox_error_code",
+    "sandbox_call_id",
+    "execution_plan_digest",
+    "logical_intent_digest",
+    "policy_digest",
 }
 _TRACE_COUNT_FIELDS = {
-    "duration_ms", "run_duration_ms", "attempts", "attempt",
-    "tool_steps", "input_tokens", "output_tokens", "total_tokens", "cached_tokens",
-    "changed_files", "stdout_bytes", "stderr_bytes",
+    "duration_ms",
+    "run_duration_ms",
+    "attempts",
+    "attempt",
+    "tool_steps",
+    "input_tokens",
+    "output_tokens",
+    "total_tokens",
+    "cached_tokens",
+    "changed_files",
+    "stdout_bytes",
+    "stderr_bytes",
 }
 _TRACE_OPTIONAL_COUNT_FIELDS = {"transport_attempts", "transport_retries"}
 _TRACE_BOOL_FIELDS = {
-    "cache_hit", "runner_executed", "read_only", "approval_required", "approved",
-    "denied", "workspace_changed", "recovery_review_required",
-    "target_started", "timed_out", "residue_detected", "container_created",
-    "stdout_truncated", "stderr_truncated",
+    "cache_hit",
+    "runner_executed",
+    "read_only",
+    "approval_required",
+    "approved",
+    "denied",
+    "workspace_changed",
+    "recovery_review_required",
+    "target_started",
+    "timed_out",
+    "residue_detected",
+    "container_created",
+    "stdout_truncated",
+    "stderr_truncated",
     "transport_evidence_complete",
 }
 _TRACE_STRING_LIST_FIELDS = {"fields", "finalization_errors", "affected_paths"}
@@ -69,12 +109,26 @@ _SAFE_TRACE_FIELDS = (
     | _TRACE_OPTIONAL_INT_FIELDS
 )
 _USAGE_FIELDS = {
-    "input_tokens", "output_tokens", "total_tokens", "cached_tokens",
-    "cache_creation_input_tokens", "cache_read_input_tokens", "cache_hit",
+    "input_tokens",
+    "output_tokens",
+    "total_tokens",
+    "cached_tokens",
+    "cache_creation_input_tokens",
+    "cache_read_input_tokens",
+    "cache_hit",
 }
 _FORBIDDEN_METADATA_KEYS = {
-    "prompt", "completion", "args", "result", "stdout", "stderr",
-    "query", "body", "content", "final_answer", "working_memory",
+    "prompt",
+    "completion",
+    "args",
+    "result",
+    "stdout",
+    "stderr",
+    "query",
+    "body",
+    "content",
+    "final_answer",
+    "working_memory",
 }
 _TOOL_STATUSES = {"ok", "error", "partial_success", "rejected", "interrupted"}
 _TERMINAL_STATE_PAIRS = {
@@ -99,19 +153,24 @@ class RunArtifactError(ValueError):
 def project_trace_event(task_state, event, payload, *, created_at):
     """Build the safe Trace v1 envelope without copying free-form content."""
     projected = {
-        key: value for key, value in dict(payload or {}).items()
+        key: value
+        for key, value in dict(payload or {}).items()
         if key in _SAFE_TRACE_FIELDS and _trace_field_safe(key, value)
     }
-    projected.update({
+    projected.update(
+        {
         "trace_schema_version": TRACE_SCHEMA_VERSION,
         "event_id": "evt_" + uuid.uuid4().hex,
         "event": str(event),
         "created_at": str(created_at),
         "run_id": str(task_state.run_id),
         "task_id": str(task_state.task_id),
-    })
+        }
+    )
     attempt = getattr(task_state, "attempts", 0)
-    if (str(event).startswith("model_") or event in {"prompt_built", "tool_executed"}) and attempt:
+    if (
+        str(event).startswith("model_") or event in {"prompt_built", "tool_executed"}
+    ) and attempt:
         projected["attempt"] = attempt
     return projected
 
@@ -143,11 +202,12 @@ def _safe_metadata(value, *, key=""):
     if isinstance(value, str):
         return _safe_string(value)
     if isinstance(value, list):
-        return len(value) <= 100 and all(_safe_metadata(item, key=key) for item in value)
+        return len(value) <= 100 and all(
+            _safe_metadata(item, key=key) for item in value
+        )
     if isinstance(value, dict):
         return len(value) <= 100 and all(
-            _safe_mapping_key(child_key)
-            and _safe_metadata(item, key=child_key)
+            _safe_mapping_key(child_key) and _safe_metadata(item, key=child_key)
             for child_key, item in value.items()
         )
     return False
@@ -216,7 +276,9 @@ def validate_trace(events, *, run_id=None, task_id=None):
             type(event["trace_schema_version"]) is not int
             or event["trace_schema_version"] != TRACE_SCHEMA_VERSION
         ):
-            raise RunArtifactError("migration_required", "trace schema migration required")
+            raise RunArtifactError(
+                "migration_required", "trace schema migration required"
+            )
         if (
             not isinstance(event["event_id"], str)
             or _TRACE_ID_RE.fullmatch(event["event_id"]) is None
@@ -246,15 +308,22 @@ def validate_trace(events, *, run_id=None, task_id=None):
             run_finished = True
             continue
         if event_name not in {
-            "tool_started", "tool_executed", "tool_interrupted", "tool_finished",
+            "tool_started",
+            "tool_executed",
+            "tool_interrupted",
+            "tool_finished",
         }:
             continue
         if run_finished:
-            raise RunArtifactError("incomplete", "trace contains tool event after run terminal")
+            raise RunArtifactError(
+                "incomplete", "trace contains tool event after run terminal"
+            )
         tool_use_id = event.get("tool_use_id", "")
         name = event.get("name", "")
         if not tool_use_id or not name:
-            raise RunArtifactError("incomplete", "trace tool event fields are incomplete")
+            raise RunArtifactError(
+                "incomplete", "trace tool event fields are incomplete"
+            )
         if "sandbox_outcome" in event:
             if (
                 not {
@@ -301,13 +370,17 @@ def validate_trace(events, *, run_id=None, task_id=None):
         if (
             tool_use_id in terminal_tools
             or pending_tools.pop(tool_use_id, None) != name
-            or event_name == "tool_interrupted" and tool_status != "interrupted"
-            or event_name == "tool_executed" and tool_status == "interrupted"
+            or event_name == "tool_interrupted"
+            and tool_status != "interrupted"
+            or event_name == "tool_executed"
+            and tool_status == "interrupted"
         ):
             raise RunArtifactError("incomplete", "trace tool lifecycle is invalid")
         terminal_tools[tool_use_id] = (name, tool_status, event_name)
     if terminal != 1:
-        raise RunArtifactError("incomplete", "trace must contain exactly one terminal event")
+        raise RunArtifactError(
+            "incomplete", "trace must contain exactly one terminal event"
+        )
     if pending_tools:
         raise RunArtifactError("incomplete", "trace tool lifecycle is incomplete")
     return events
@@ -326,8 +399,18 @@ def _count_map(value):
 
 def validate_report(report, *, run_id=None):
     required = {
-        "record_type", "format_version", "run", "model", "context", "tools",
-        "memory", "sandbox", "effects", "recovery", "integrity", "finalization",
+        "record_type",
+        "format_version",
+        "run",
+        "model",
+        "context",
+        "tools",
+        "memory",
+        "sandbox",
+        "effects",
+        "recovery",
+        "integrity",
+        "finalization",
     }
     if not isinstance(report, dict) or set(report) != required:
         raise RunArtifactError("migration_required", "report uses a legacy contract")
@@ -339,20 +422,46 @@ def validate_report(report, *, run_id=None):
     ):
         raise RunArtifactError("migration_required", "report schema migration required")
     section_fields = {
-        "run": {"run_id", "task_id", "status", "stop_reason", "duration_ms", "commit", "dirty"},
+        "run": {
+            "run_id",
+            "task_id",
+            "status",
+            "stop_reason",
+            "duration_ms",
+            "commit",
+            "dirty",
+        },
         "model": {
-            "attempts", "turns", "failures", "retries", "transport_attempts",
-            "transport_retries", "evidence_complete", "attempt_origin_counts",
-            "failure_reason_counts", "usage",
+            "attempts",
+            "turns",
+            "failures",
+            "retries",
+            "transport_attempts",
+            "transport_retries",
+            "evidence_complete",
+            "attempt_origin_counts",
+            "failure_reason_counts",
+            "usage",
         },
         "tools": {"calls", "allowed", "denied", "name_counts", "status_counts"},
         "memory": {"recall_candidates", "recall_selected", "filter_counts"},
         "sandbox": {
-            "active", "implementation", "session_state", "engine_profile",
-            "image_digest", "policy_digest", "network_mode", "source_mounted",
-            "state_mounted", "container_calls", "target_started_count",
-            "outcome_counts", "cleanup_failure_count", "host_fallback_count",
-            "diff", "apply_status",
+            "active",
+            "implementation",
+            "session_state",
+            "engine_profile",
+            "image_digest",
+            "policy_digest",
+            "network_mode",
+            "source_mounted",
+            "state_mounted",
+            "container_calls",
+            "target_started_count",
+            "outcome_counts",
+            "cleanup_failure_count",
+            "host_fallback_count",
+            "diff",
+            "apply_status",
         },
         "effects": {"changed_files", "partial_successes", "recovery_review_required"},
         "recovery": {"checkpoint_id", "status", "review_required"},
@@ -361,19 +470,25 @@ def validate_report(report, *, run_id=None):
     }
     for section, fields in section_fields.items():
         if not isinstance(report[section], dict) or set(report[section]) != fields:
-            raise RunArtifactError("migration_required", f"report {section} schema mismatch")
+            raise RunArtifactError(
+                "migration_required", f"report {section} schema mismatch"
+            )
     if not _safe_metadata(report, key="report"):
         raise RunArtifactError("incomplete", "report contains unsafe metadata")
     if not _usage_metadata(report["model"]["usage"], exact=True):
         raise RunArtifactError("migration_required", "report usage schema mismatch")
-    if not isinstance(report["context"], dict) or not _safe_metadata(report["context"], key="context"):
+    if not isinstance(report["context"], dict) or not _safe_metadata(
+        report["context"], key="context"
+    ):
         raise RunArtifactError("migration_required", "report context schema mismatch")
     counters = {
         "model": ("attempts", "turns", "failures", "retries"),
         "tools": ("calls", "allowed", "denied"),
         "memory": ("recall_candidates", "recall_selected"),
         "sandbox": (
-            "container_calls", "target_started_count", "cleanup_failure_count",
+            "container_calls",
+            "target_started_count",
+            "cleanup_failure_count",
             "host_fallback_count",
         ),
         "effects": ("changed_files", "partial_successes"),
@@ -388,7 +503,10 @@ def validate_report(report, *, run_id=None):
             raise RunArtifactError("incomplete", f"report {field} invalid")
     run = report["run"]
     if (
-        any(type(run[field]) is not str for field in ("run_id", "task_id", "status", "stop_reason", "commit"))
+        any(
+            type(run[field]) is not str
+            for field in ("run_id", "task_id", "status", "stop_reason", "commit")
+        )
         or not all(run[field] for field in ("run_id", "task_id", "status"))
         or not _nonnegative_int(run["duration_ms"])
         or type(run["dirty"]) is not bool
@@ -420,8 +538,13 @@ def validate_report(report, *, run_id=None):
         or any(
             type(sandbox[field]) is not str
             for field in (
-                "implementation", "session_state", "engine_profile",
-                "image_digest", "policy_digest", "network_mode", "apply_status",
+                "implementation",
+                "session_state",
+                "engine_profile",
+                "image_digest",
+                "policy_digest",
+                "network_mode",
+                "apply_status",
             )
         )
         or type(sandbox["source_mounted"]) is not bool
@@ -549,7 +672,9 @@ def load_run_artifacts(runs_root, run_id):
     except FileNotFoundError as exc:
         if latest and str(exc) == "no runs":
             raise
-        raise RunArtifactError("incomplete", "required run artifact is missing") from exc
+        raise RunArtifactError(
+            "incomplete", "required run artifact is missing"
+        ) from exc
     except (OSError, RuntimeError, UnicodeDecodeError, ValueError) as exc:
         raise RunArtifactError("incomplete", "run artifact is damaged") from exc
     validate_report(report, run_id=run_id)
@@ -597,19 +722,27 @@ def load_run_summary(runs_root, run_id):
 
 def convert_legacy_observability(report, events, task_state):
     """Pure MIG-OBS converter; callers must provide transactional cutover."""
-    if not isinstance(report, dict) or "run_id" not in report or "task_id" not in report:
-        raise RunArtifactError("migration_required", "legacy report is ambiguous")
     if (
-        isinstance(task_state, dict)
-        and (
+        not isinstance(report, dict)
+        or "run_id" not in report
+        or "task_id" not in report
+    ):
+        raise RunArtifactError("migration_required", "legacy report is ambiguous")
+    if isinstance(task_state, dict) and (
             task_state.get("run_id") != report["run_id"]
             or task_state.get("task_id") != report["task_id"]
-        )
     ):
         raise RunArtifactError("incomplete", "task state identity mismatch")
     task_string_fields = {
-        "run_id", "task_id", "user_request", "status", "last_tool",
-        "stop_reason", "final_answer", "checkpoint_id", "resume_status",
+        "run_id",
+        "task_id",
+        "user_request",
+        "status",
+        "last_tool",
+        "stop_reason",
+        "final_answer",
+        "checkpoint_id",
+        "resume_status",
         "recovery_checkpoint_id",
     }
     task_count_fields = {"attempts", "tool_steps"}
@@ -617,10 +750,7 @@ def convert_legacy_observability(report, events, task_state):
     if (
         not isinstance(task_state, dict)
         or set(task_state) != required_task_fields
-        or any(
-            type(task_state[field]) is not str
-            for field in task_string_fields
-        )
+        or any(type(task_state[field]) is not str for field in task_string_fields)
         or any(
             type(task_state[field]) is not int or task_state[field] < 0
             for field in task_count_fields
@@ -628,8 +758,17 @@ def convert_legacy_observability(report, events, task_state):
     ):
         raise RunArtifactError("migration_required", "legacy task state is ambiguous")
     if (task_state["status"], task_state["stop_reason"]) not in _TERMINAL_STATE_PAIRS:
-        raise RunArtifactError("migration_required", "legacy task state terminal state is ambiguous")
-    for field in ("run_id", "task_id", "status", "stop_reason", "attempts", "tool_steps"):
+        raise RunArtifactError(
+            "migration_required", "legacy task state terminal state is ambiguous"
+        )
+    for field in (
+        "run_id",
+        "task_id",
+        "status",
+        "stop_reason",
+        "attempts",
+        "tool_steps",
+    ):
         if report.get(field) != task_state[field]:
             raise RunArtifactError("incomplete", f"legacy {field} mismatch")
     usage = {
@@ -684,8 +823,7 @@ def convert_legacy_observability(report, events, task_state):
     denied = status_counts.get("rejected", 0)
     allowed = len(tool_events) - denied
     consumed_steps = sum(
-        event["event"] == "tool_executed"
-        and event["tool_status"] != "rejected"
+        event["event"] == "tool_executed" and event["tool_status"] != "rejected"
         for event in tool_events
     )
     if consumed_steps != task_state["tool_steps"]:
@@ -709,7 +847,9 @@ def convert_legacy_observability(report, events, task_state):
             "retries": int(execution.get("model_retries", 0) or 0),
             "transport_attempts": execution.get("transport_attempts"),
             "transport_retries": execution.get("transport_retries"),
-            "evidence_complete": bool(execution.get("transport_evidence_complete", False)),
+            "evidence_complete": bool(
+                execution.get("transport_evidence_complete", False)
+            ),
             "attempt_origin_counts": dict(execution.get("attempt_origin_counts") or {}),
             "failure_reason_counts": dict(execution.get("failure_reason_counts") or {}),
             "usage": usage,
@@ -741,7 +881,11 @@ def convert_legacy_observability(report, events, task_state):
             "diff": {"candidates": 0, "blocked": 0, "generated": 0},
             "apply_status": "not_applicable",
         },
-        "effects": {"changed_files": 0, "partial_successes": 0, "recovery_review_required": False},
+        "effects": {
+            "changed_files": 0,
+            "partial_successes": 0,
+            "recovery_review_required": False,
+        },
         "recovery": {
             "checkpoint_id": str(report.get("checkpoint_id", "")),
             "status": str(report.get("resume_status", "")),
@@ -762,7 +906,8 @@ def convert_observability_v2(report):
         or report.get("format_version") != 2
         or set(report.get("sandbox", {}))
         != {"active", "calls", "host_fallback_count", "outcome_counts"}
-        or report["sandbox"] != {
+        or report["sandbox"]
+        != {
             "active": False,
             "calls": 0,
             "host_fallback_count": 0,
@@ -803,11 +948,13 @@ def render_summary_text(summary):
     usage = model["usage"]
     tools = summary["tools"]
     effects = summary["effects"]
-    return "\n".join((
+    return "\n".join(
+        (
         f"Run {run['run_id']}",
         f"status: {run['status']} ({run.get('stop_reason') or '-'})",
         f"duration_ms: {run.get('duration_ms', 0)}",
         f"model: {model.get('attempts', 0)} attempts, {usage.get('input_tokens', 0)} input / {usage.get('output_tokens', 0)} output tokens",
         f"tools: {tools.get('calls', 0)} calls, {tools.get('denied', 0)} denied",
         f"effects: {effects.get('changed_files', 0)} changed files, recovery_review_required={str(bool(effects.get('recovery_review_required'))).lower()}",
-    ))
+        )
+    )

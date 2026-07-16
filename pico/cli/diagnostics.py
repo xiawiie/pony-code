@@ -8,22 +8,22 @@ import sys
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
-from pico import security as securitylib
+from pico.security import redaction as securitylib
 from .errors import CLI_EXIT_CONFIG, CLI_EXIT_RUNTIME, CLI_EXIT_USAGE, CliError
 from .output import build_inspection_redactor, print_result
-from pico.config import (
-    API_KEY_ENV_NAME,
+from pico.config.environment import (
     project_env_metadata,
     project_env_path,
     read_project_env_with_status,
-    resolve_model_config,
     write_project_env_assignments,
 )
-from pico.security import require_directory_no_symlink
+from pico.config.model import API_KEY_ENV_NAME, resolve_model_config
+from pico.security.paths import require_directory_no_symlink
 from pico.tools.subprocess import build_trusted_executables
 from pico.sandbox.session import source_mutation_authority
 from pico.memory.diagnostics import collect_memory_diagnostics
-from pico.workspace import WorkspaceContext
+from pico.workspace.context import WorkspaceContext
+
 
 def _doctor_check(status, reason_code, remediation=""):
     return {
@@ -78,9 +78,7 @@ def _collect_docker_sandbox_diagnostic(*, offline=False):
         and runtime_authorization.get("kind") == "local"
     )
     if not ready:
-        reason_code = str(
-            readiness.get("reason_code") or "sandbox_diagnostic_failed"
-        )
+        reason_code = str(readiness.get("reason_code") or "sandbox_diagnostic_failed")
     elif not state_ready:
         reason_code = "sandbox_state_invalid"
     elif not runtime_ready:
@@ -147,8 +145,7 @@ def collect_status(cwd, args=None):
         recovery_review = {
             "active_count": len(active_reviews),
             "opaque_ids": [
-                item["opaque_id"]
-                for item in review_items["invalid_records"]
+                item["opaque_id"] for item in review_items["invalid_records"]
             ],
         }
     except (OSError, RuntimeError, ValueError):
@@ -240,7 +237,6 @@ def collect_doctor(cwd, args=None, check_api=False):
         "model": resolved["model"],
         "auth_mode": resolved["auth_mode"],
         "capabilities": resolved["capabilities"],
-        "compatibility": resolved["compatibility"],
         "api_key": {
             "present": bool(api_key["value"]),
             "source": api_key["source"],
@@ -249,7 +245,9 @@ def collect_doctor(cwd, args=None, check_api=False):
         "base_url": resolved["base_url"],
     }
     diagnostic_base_url = dict(config["base_url"])
-    diagnostic_base_url["value"] = _redact_url_for_diagnostics(diagnostic_base_url["value"])
+    diagnostic_base_url["value"] = _redact_url_for_diagnostics(
+        diagnostic_base_url["value"]
+    )
     if not check_api:
         api_check = {
             "status": "skipped",
@@ -310,7 +308,9 @@ def collect_doctor(cwd, args=None, check_api=False):
             "status": (
                 "not_required"
                 if resolved["auth_mode"]["value"] == "none"
-                else "ok" if config["api_key"]["present"] else "missing"
+                else "ok"
+                if config["api_key"]["present"]
+                else "missing"
             ),
             "api_key": config["api_key"],
         },
@@ -448,16 +448,15 @@ def handle_doctor(tokens, cwd, args):
             if key in authorization_check
         }
     memory = data.get("memory") or _unavailable_memory_diagnostic()
-    data["memory"] = redactor({
+    data["memory"] = redactor(
+        {
         "check_id": memory.get("check_id", "memory"),
         "status": memory.get("status", "unknown"),
         "reason_code": memory.get("reason_code", "memory_diagnostics_incomplete"),
         "remediation": memory.get("remediation", ""),
-        "issues": [
-            dict(item)
-            for item in memory.get("issues", [])
-        ],
-    })
+            "issues": [dict(item) for item in memory.get("issues", [])],
+        }
+    )
     data["security"] = redactor(data["security"])
     data["project_docs"] = redactor(data["project_docs"])
     if tokens and data["api_check"].get("status") != "ok":
@@ -585,16 +584,15 @@ def check_api_connectivity(config, timeout=2, args=None):
         "endpoint": _redact_url_for_diagnostics(base_url),
         "model_calls": 0,
     }
-    if (
-        config.get("auth_mode", {}).get("value") != "none"
-        and not config.get("api_key", {}).get("value")
-    ):
+    if config.get("auth_mode", {}).get("value") != "none" and not config.get(
+        "api_key", {}
+    ).get("value"):
         return {**result, "reason_code": "api_key_not_configured"}
     try:
-        from pico.providers.factory import build_model_client
+        from pico.providers.factory import build_transport_client
         from pico.providers.probe import probe_model_client
 
-        client = build_model_client(
+        client = build_transport_client(
             config["protocol"]["value"],
             model=config["model"]["value"],
             base_url=base_url,
@@ -602,7 +600,6 @@ def check_api_connectivity(config, timeout=2, args=None):
             timeout=getattr(args, "request_timeout_seconds", timeout),
             auth_mode=config["auth_mode"]["value"],
             capabilities=config["capabilities"],
-            compatibility=config["compatibility"],
         )
         report = probe_model_client(client)
     except Exception as exc:
@@ -615,7 +612,9 @@ def check_api_connectivity(config, timeout=2, args=None):
         **result,
         "status": report["status"],
         "category": report["category"],
-        "reason_code": "api_verified" if report["status"] == "ok" else report["category"],
+        "reason_code": "api_verified"
+        if report["status"] == "ok"
+        else report["category"],
         "stage": report["stage"],
         "model_calls": report["model_calls"],
     }
@@ -667,11 +666,7 @@ def _collect_security_status(root, project_env_info, pico_root):
         )
     except (OSError, RuntimeError, TypeError, ValueError):
         trusted_names = set()
-    missing = sorted(
-        name
-        for name in ("git", "rg")
-        if name not in trusted_names
-    )
+    missing = sorted(name for name in ("git", "rg") if name not in trusted_names)
     executables = {
         "status": "degraded" if missing else "ok",
         "missing": missing,
@@ -694,16 +689,14 @@ def _collect_security_status(root, project_env_info, pico_root):
     recovery_review = {
         "pending_count": len(reviews["tool_changes"]),
         "applying_count": sum(
-            item.get("status") == "applying"
-            for item in reviews["restore_journals"]
+            item.get("status") == "applying" for item in reviews["restore_journals"]
         ),
         "unreviewed_partial_count": sum(
             item.get("status") == "partial" and not item.get("reviewed_at")
             for item in reviews["restore_journals"]
         ),
         "invalid_mutation_count": (
-            len(reviews["invalid_records"])
-            + int(review_inspection_failed)
+            len(reviews["invalid_records"]) + int(review_inspection_failed)
         ),
     }
     needs_review = (
@@ -730,11 +723,7 @@ def _project_env_security_status(path, read_status):
         return {"status": "review_required", "mode": ""}
     if not stat.S_ISREG(mode):
         return {"status": "review_required", "mode": ""}
-    permission_mode = (
-        f"{stat.S_IMODE(mode):04o}"
-        if os.name == "posix"
-        else ""
-    )
+    permission_mode = f"{stat.S_IMODE(mode):04o}" if os.name == "posix" else ""
     status = str(read_status)
     if permission_mode and permission_mode != "0600":
         status = "review_required"
@@ -770,10 +759,7 @@ def _private_storage_security_status(root):
                 if (
                     not expected_type(mode)
                     or (stat.S_ISREG(mode) and info.st_nlink != 1)
-                    or (
-                    os.name == "posix"
-                    and stat.S_IMODE(mode) != expected_mode
-                    )
+                    or (os.name == "posix" and stat.S_IMODE(mode) != expected_mode)
                 ):
                     return {"status": "review_required"}
     except OSError:

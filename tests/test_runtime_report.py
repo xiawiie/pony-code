@@ -6,17 +6,16 @@ from unittest.mock import patch
 import pytest
 
 import pico.memory.service as memorylib
-from pico import (
-    Pico,
-    SessionStore,
-    WorkspaceContext,
-)
+from pico import Pico
+from pico.state.session_store import SessionStore
+from pico.workspace.context import WorkspaceContext
 from pico.context.renderer import render_current_user_message
-from pico.providers.fake import FakeModelClient
+from benchmarks.support.fake_provider import FakeModelClient
 from pico.providers.response import Response, StopReason
 from pico.state.task_state import TaskState
 from pico.tools.executor import ToolExecutionResult
 from tests.test_docker_sandbox_runtime import _build_runtime
+from pico.runtime.options import RuntimeOptions
 
 
 def build_workspace(tmp_path):
@@ -32,8 +31,7 @@ def build_agent(tmp_path, outputs, **kwargs):
         model_client=FakeModelClient(outputs),
         workspace=workspace,
         session_store=store,
-        approval_policy=approval_policy,
-        **kwargs,
+        options=RuntimeOptions(approval_policy=approval_policy, **kwargs),
     )
 
 
@@ -69,11 +67,21 @@ def build_request_view(agent, user_message):
 # =============================================================================
 
 
-def test_report_separates_sent_request_session_transcript_and_all_completion_usage(tmp_path):
+def test_report_separates_sent_request_session_transcript_and_all_completion_usage(
+    tmp_path,
+):
     agent = build_agent(tmp_path, ["done"])
     agent.session["messages"] = [
-        {"role": "user", "content": "older question", "_pico_meta": {"created_at": "t1"}},
-        {"role": "assistant", "content": "older answer", "_pico_meta": {"created_at": "t2"}},
+        {
+            "role": "user",
+            "content": "older question",
+            "_pico_meta": {"created_at": "t1"},
+        },
+        {
+            "role": "assistant",
+            "content": "older answer",
+            "_pico_meta": {"created_at": "t2"},
+        },
     ]
     agent.last_request_metadata = {
         "messages_count": 1,
@@ -182,7 +190,13 @@ def test_report_projects_current_run_tool_change_effects(tmp_path):
     agent = build_agent(
         tmp_path,
         [
-            {"name": "run_shell", "args": {"command":"printf \'changed\\n\' > README.md && exit 1","timeout":20}},
+            {
+                "name": "run_shell",
+                "args": {
+                    "command": "printf 'changed\\n' > README.md && exit 1",
+                    "timeout": 20,
+                },
+            },
             "Done.",
         ],
         approval_policy="ask",
@@ -244,9 +258,7 @@ def test_report_projects_sandbox_outcome_and_host_fallback_from_tool_result(
         "image_digest": Pico._public_sandbox_digest(
             manifest["image"]["manifest_digest"]
         ),
-        "policy_digest": Pico._public_sandbox_digest(
-            manifest["policy"]["digest"]
-        ),
+        "policy_digest": Pico._public_sandbox_digest(manifest["policy"]["digest"]),
         "network_mode": "none",
         "source_mounted": False,
         "state_mounted": False,
@@ -387,9 +399,9 @@ def test_report_counts_started_targets_and_cleanup_failures(tmp_path, monkeypatc
     assert sandbox["host_fallback_count"] == 0
     trace = [
         json.loads(line)
-        for line in agent.run_store.trace_path(agent.current_task_state).read_text(
-            encoding="utf-8"
-        ).splitlines()
+        for line in agent.run_store.trace_path(agent.current_task_state)
+        .read_text(encoding="utf-8")
+        .splitlines()
     ]
     event = [item for item in trace if item["event"] == "tool_executed"][0]
     assert event["sandbox_outcome"] == "completed"
@@ -437,8 +449,16 @@ def test_step_limit_run_artifacts_reference_final_checkpoint(tmp_path):
     answer = agent.ask("Inspect README")
 
     assert "step limit" in answer
-    task_state = json.loads(agent.run_store.task_state_path(agent.current_task_state).read_text(encoding="utf-8"))
-    report = json.loads(agent.run_store.report_path(agent.current_task_state).read_text(encoding="utf-8"))
+    task_state = json.loads(
+        agent.run_store.task_state_path(agent.current_task_state).read_text(
+            encoding="utf-8"
+        )
+    )
+    report = json.loads(
+        agent.run_store.report_path(agent.current_task_state).read_text(
+            encoding="utf-8"
+        )
+    )
     checkpoint_id = agent.session["checkpoints"]["current_id"]
 
     assert task_state["stop_reason"] == "step_limit_reached"
@@ -449,11 +469,19 @@ def test_step_limit_run_artifacts_reference_final_checkpoint(tmp_path):
 
 def test_trace_and_report_redact_secret_env_values(tmp_path):
     secret = "sk-test-secret-123"
-    with patch.dict(os.environ, {"HOME": str(tmp_path), "OPENAI_API_KEY": secret}, clear=True):
+    with patch.dict(
+        os.environ, {"HOME": str(tmp_path), "OPENAI_API_KEY": secret}, clear=True
+    ):
         agent = build_agent(
             tmp_path,
             [
-                {"name": "run_shell", "args": {"command":"printf \'%s\' \'sk-test-secret-123\'","timeout":20}},
+                {
+                    "name": "run_shell",
+                    "args": {
+                        "command": "printf '%s' 'sk-test-secret-123'",
+                        "timeout": 20,
+                    },
+                },
                 "Masked sk-test-secret-123",
             ],
         )
@@ -479,7 +507,9 @@ def test_trace_and_report_redact_secret_env_values(tmp_path):
     assert "<redacted>" in session_text
     assert "<redacted>" in task_state_text
 
-    prompt_events = [event for event in trace_events if event["event"] == "prompt_built"]
+    prompt_events = [
+        event for event in trace_events if event["event"] == "prompt_built"
+    ]
     assert prompt_events
     assert prompt_events[0]["request_metadata"]["secret_env_count"] >= 1
     assert "OPENAI_API_KEY" in prompt_events[0]["request_metadata"]["secret_env_names"]
@@ -565,20 +595,23 @@ def test_agent_creates_one_task_checkpoint_without_silent_history_reduction(tmp_
     assert agent.ask("Resume the long task") == "Done after checkpoint."
     trace_events = [
         json.loads(line)
-        for line in agent.run_store.trace_path(agent.current_task_state).read_text(encoding="utf-8").splitlines()
+        for line in agent.run_store.trace_path(agent.current_task_state)
+        .read_text(encoding="utf-8")
+        .splitlines()
     ]
     checkpoint_events = [
-        event
-        for event in trace_events
-        if event["event"] == "checkpoint_created"
+        event for event in trace_events if event["event"] == "checkpoint_created"
     ]
     assert agent.last_request_metadata["dropped_messages"] == 0
     assert len(checkpoint_events) == 1
     assert checkpoint_events[0]["trigger"] == "run_finished"
-    assert sum(
+    assert (
+        sum(
         entry["type"] == "task_checkpoint"
         for entry in agent.session_store.load_tree(agent.session["id"]).active_path
-    ) == 1
+        )
+        == 1
+    )
 
 
 def test_resume_prompt_carries_checkpoint_via_v2_messages(tmp_path):
@@ -645,7 +678,9 @@ def test_resume_invalidates_stale_file_summaries_and_marks_partial_stale(tmp_pat
                 "key_files": [{"path": "runtime.py", "freshness": freshness}],
                 "freshness": {"runtime.py": freshness},
                 "summary": "runtime.py is important",
-                "runtime_identity": {"workspace_fingerprint": agent.workspace.fingerprint()},
+                "runtime_identity": {
+                    "workspace_fingerprint": agent.workspace.fingerprint()
+                },
             }
         },
     }
@@ -657,7 +692,7 @@ def test_resume_invalidates_stale_file_summaries_and_marks_partial_stale(tmp_pat
         workspace=build_workspace(tmp_path),
         session_store=agent.session_store,
         session_id=agent.session["id"],
-        approval_policy="auto",
+        options=RuntimeOptions(approval_policy="auto"),
     )
 
     assert resumed.ask("Continue the task") == "Resumed."
@@ -691,7 +726,9 @@ def test_report_last_request_metadata_preserves_initial_resume_status(tmp_path):
                 "key_files": [{"path": "runtime.py", "freshness": freshness}],
                 "freshness": {"runtime.py": freshness},
                 "summary": "runtime.py is important",
-                "runtime_identity": {"workspace_fingerprint": agent.workspace.fingerprint()},
+                "runtime_identity": {
+                    "workspace_fingerprint": agent.workspace.fingerprint()
+                },
             }
         },
     }
@@ -701,14 +738,17 @@ def test_report_last_request_metadata_preserves_initial_resume_status(tmp_path):
     resumed = Pico.from_session(
         model_client=FakeModelClient(
             [
-                {"name": "read_file", "args": {"path":"runtime.py","start":1,"end":1}},
+                {
+                    "name": "read_file",
+                    "args": {"path": "runtime.py", "start": 1, "end": 1},
+                },
                 "Resumed.",
             ]
         ),
         workspace=build_workspace(tmp_path),
         session_store=agent.session_store,
         session_id=agent.session["id"],
-        approval_policy="auto",
+        options=RuntimeOptions(approval_policy="auto"),
     )
 
     assert resumed.ask("Continue the task") == "Resumed."
@@ -719,7 +759,9 @@ def test_report_last_request_metadata_preserves_initial_resume_status(tmp_path):
     assert report["context"]["last_prompt_resume_status"] == "partial-stale"
 
 
-def test_first_prompt_resume_status_updates_task_state_after_late_checkpoint_setup(tmp_path):
+def test_first_prompt_resume_status_updates_task_state_after_late_checkpoint_setup(
+    tmp_path,
+):
     file_path = tmp_path / "runtime.py"
     file_path.write_text("alpha\n", encoding="utf-8")
     agent = build_agent(
@@ -746,7 +788,9 @@ def test_first_prompt_resume_status_updates_task_state_after_late_checkpoint_set
                 "key_files": [{"path": "runtime.py", "freshness": freshness}],
                 "freshness": {"runtime.py": freshness},
                 "summary": "runtime.py is important",
-                "runtime_identity": {"workspace_fingerprint": agent.workspace.fingerprint()},
+                "runtime_identity": {
+                    "workspace_fingerprint": agent.workspace.fingerprint()
+                },
             }
         },
     }
@@ -761,7 +805,9 @@ def test_first_prompt_resume_status_updates_task_state_after_late_checkpoint_set
     assert report["context"]["last_prompt_resume_status"] == "partial-stale"
 
 
-def test_run_shell_nonzero_with_workspace_change_is_recorded_as_partial_success(tmp_path):
+def test_run_shell_nonzero_with_workspace_change_is_recorded_as_partial_success(
+    tmp_path,
+):
     agent = build_agent(tmp_path, [], approval_policy="ask")
     agent.approve = lambda name, args: True
 
@@ -779,7 +825,9 @@ def test_run_shell_nonzero_with_workspace_change_is_recorded_as_partial_success(
     assert agent._last_tool_result_metadata["workspace_changed"] is True
 
 
-def test_resume_marks_workspace_mismatch_when_checkpoint_runtime_identity_is_stale(tmp_path):
+def test_resume_marks_workspace_mismatch_when_checkpoint_runtime_identity_is_stale(
+    tmp_path,
+):
     agent = build_agent(tmp_path, ["checkpoint ready."])
     agent.session["checkpoints"] = {
         "current_id": "ckpt_workspace",
@@ -807,7 +855,7 @@ def test_resume_marks_workspace_mismatch_when_checkpoint_runtime_identity_is_sta
         workspace=build_workspace(tmp_path),
         session_store=agent.session_store,
         session_id=agent.session["id"],
-        approval_policy="auto",
+        options=RuntimeOptions(approval_policy="auto"),
     )
 
     assert resumed.ask("Continue the task") == "Resumed."
@@ -818,7 +866,10 @@ def test_write_file_trace_records_minimum_tool_contract_fields(tmp_path):
     agent = build_agent(
         tmp_path,
         [
-            {"name": "write_file", "args": {"path":"notes.txt","content":"hello\\n"}},
+            {
+                "name": "write_file",
+                "args": {"path": "notes.txt", "content": "hello\\n"},
+            },
             "Done.",
         ],
     )
@@ -827,9 +878,13 @@ def test_write_file_trace_records_minimum_tool_contract_fields(tmp_path):
 
     trace_events = [
         json.loads(line)
-        for line in agent.run_store.trace_path(agent.current_task_state).read_text(encoding="utf-8").splitlines()
+        for line in agent.run_store.trace_path(agent.current_task_state)
+        .read_text(encoding="utf-8")
+        .splitlines()
     ]
-    tool_event = [event for event in trace_events if event["event"] == "tool_executed"][-1]
+    tool_event = [event for event in trace_events if event["event"] == "tool_executed"][
+        -1
+    ]
 
     assert tool_event["name"] == "write_file"
     assert tool_event["risk_level"] == "high"
@@ -857,7 +912,9 @@ def test_resume_uses_session_version_for_embedded_checkpoint(tmp_path):
                 "key_files": [],
                 "freshness": {},
                 "summary": "schema changed",
-                "runtime_identity": {"workspace_fingerprint": agent.workspace.fingerprint()},
+                "runtime_identity": {
+                    "workspace_fingerprint": agent.workspace.fingerprint()
+                },
             }
         },
     }
@@ -868,7 +925,7 @@ def test_resume_uses_session_version_for_embedded_checkpoint(tmp_path):
         workspace=build_workspace(tmp_path),
         session_store=agent.session_store,
         session_id=agent.session["id"],
-        approval_policy="auto",
+        options=RuntimeOptions(approval_policy="auto"),
     )
 
     assert resumed.ask("Continue the task") == "Resumed."
@@ -903,7 +960,9 @@ def test_freshness_mismatch_is_traced_and_final_task_checkpoint_is_single(tmp_pa
                 "key_files": [{"path": "runtime.py", "freshness": freshness}],
                 "freshness": {"runtime.py": freshness},
                 "summary": "runtime.py changed",
-                "runtime_identity": {"workspace_fingerprint": agent.workspace.fingerprint()},
+                "runtime_identity": {
+                    "workspace_fingerprint": agent.workspace.fingerprint()
+                },
             }
         },
     }
@@ -914,7 +973,9 @@ def test_freshness_mismatch_is_traced_and_final_task_checkpoint_is_single(tmp_pa
 
     trace_events = [
         json.loads(line)
-        for line in agent.run_store.trace_path(agent.current_task_state).read_text(encoding="utf-8").splitlines()
+        for line in agent.run_store.trace_path(agent.current_task_state)
+        .read_text(encoding="utf-8")
+        .splitlines()
     ]
     checkpoint_events = [
         event for event in trace_events if event["event"] == "checkpoint_created"
@@ -937,10 +998,12 @@ def test_runtime_identity_persists_key_execution_metadata(tmp_path):
         model_client=FakeModelClient(["Done."]),
         workspace=workspace,
         session_store=store,
+        options=RuntimeOptions(
         approval_policy="never",
         max_steps=9,
         max_output_tokens=1024,
         feature_flags={"memory": True},
+        ),
     )
 
     runtime_identity = agent.session["runtime_identity"]
@@ -956,7 +1019,9 @@ def test_runtime_identity_persists_key_execution_metadata(tmp_path):
     assert runtime_identity["shell_env_allowlist"] == list(agent.shell_env_allowlist)
 
 
-def test_resume_records_runtime_identity_mismatch_fields_in_metadata_and_trace(tmp_path):
+def test_resume_records_runtime_identity_mismatch_fields_in_metadata_and_trace(
+    tmp_path,
+):
     agent = build_agent(tmp_path, ["checkpoint ready."])
     agent.session["checkpoints"] = {
         "current_id": "ckpt_identity",
@@ -996,10 +1061,12 @@ def test_resume_records_runtime_identity_mismatch_fields_in_metadata_and_trace(t
         workspace=build_workspace(tmp_path),
         session_store=agent.session_store,
         session_id=agent.session["id"],
+        options=RuntimeOptions(
         approval_policy="never",
         max_steps=9,
         max_output_tokens=1024,
         feature_flags={"memory": True},
+        ),
     )
 
     resumed.ask("Continue the task")
@@ -1016,9 +1083,13 @@ def test_resume_records_runtime_identity_mismatch_fields_in_metadata_and_trace(t
 
     trace_events = [
         json.loads(line)
-        for line in resumed.run_store.trace_path(resumed.current_task_state).read_text(encoding="utf-8").splitlines()
+        for line in resumed.run_store.trace_path(resumed.current_task_state)
+        .read_text(encoding="utf-8")
+        .splitlines()
     ]
-    mismatch_events = [event for event in trace_events if event["event"] == "runtime_identity_mismatch"]
+    mismatch_events = [
+        event for event in trace_events if event["event"] == "runtime_identity_mismatch"
+    ]
     assert mismatch_events
     assert mismatch_events[0]["fields"] == [
         "approval_policy",
@@ -1067,7 +1138,7 @@ def test_agent_keeps_completion_usage_out_of_last_request_metadata(tmp_path):
         ),
         workspace=workspace,
         session_store=store,
-        approval_policy="auto",
+        options=RuntimeOptions(approval_policy="auto"),
     )
 
     assert agent.ask("Cache aware run") == "Done."
@@ -1085,18 +1156,21 @@ def test_agent_keeps_completion_usage_out_of_last_request_metadata(tmp_path):
 def test_report_records_safe_model_identity_and_request_evidence(tmp_path):
     workspace = build_workspace(tmp_path)
     store = SessionStore(tmp_path / ".pico" / "sessions")
+
     class EffectiveModelClient(FakeModelClient):
         def complete(self, **request):
             self.provider_metadata["effective_model"] = "gpt-effective"
             return super().complete(**request)
 
-    client = EffectiveModelClient([
+    client = EffectiveModelClient(
+        [
         Response(
             stop_reason=StopReason.END_TURN,
             content=[{"type": "text", "text": "Done."}],
             usage={"request_id": "request-123"},
         )
-    ])
+        ]
+    )
     client.last_transport_attempts = 2
     client.provider_metadata = {
         "protocol_family": "openai_responses",
@@ -1108,7 +1182,7 @@ def test_report_records_safe_model_identity_and_request_evidence(tmp_path):
         model_client=client,
         workspace=workspace,
         session_store=store,
-        approval_policy="auto",
+        options=RuntimeOptions(approval_policy="auto"),
     )
 
     assert agent.ask("record provider evidence") == "Done."
@@ -1133,14 +1207,23 @@ def test_recent_messages_preserved_older_digested(tmp_path):
         {
             "role": "assistant",
             "content": [
-                {"type": "tool_use", "id": "t1", "name": "read_file", "input": {"path": "x.py"}}
+                {
+                    "type": "tool_use",
+                    "id": "t1",
+                    "name": "read_file",
+                    "input": {"path": "x.py"},
+                }
             ],
             "_pico_meta": {"tool_use_id": "t1"},
         },
         {
             "role": "user",
             "content": [
-                {"type": "tool_result", "tool_use_id": "t1", "content": "[digest] x.py (500 lines)\n- import os"}
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "t1",
+                    "content": "[digest] x.py (500 lines)\n- import os",
+                }
             ],
             "_pico_meta": {"tool_use_id": "t1", "digest_applied": True},
         },

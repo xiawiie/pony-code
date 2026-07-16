@@ -13,8 +13,8 @@ from pathlib import Path
 from types import MappingProxyType
 
 from pico.tools.subprocess import run_hardened_git
-from pico.security import require_regular_no_symlink
-from pico.workspace import (
+from pico.security.paths import require_regular_no_symlink
+from pico.workspace.context import (
     _safe_index_directory,
     _safe_index_file,
     _safe_index_path,
@@ -107,7 +107,11 @@ class WorkspaceObserver:
             path = entry[3:].decode("utf-8", errors="replace")
             if status.startswith("R"):
                 # renames give two entries separated by NUL
-                original = entries[i + 1].decode("utf-8", errors="replace") if i + 1 < len(entries) else ""
+                original = (
+                    entries[i + 1].decode("utf-8", errors="replace")
+                    if i + 1 < len(entries)
+                    else ""
+                )
                 original_path = _safe_index_path(self.root, self.root / original)
                 renamed_path = _safe_index_path(self.root, self.root / path)
                 if original_path is not None:
@@ -118,7 +122,9 @@ class WorkspaceObserver:
                 continue
             candidate = _safe_index_path(self.root, self.root / path)
             if candidate is not None:
-                paths[candidate.relative_to(self.root).as_posix()] = status.strip() or "?"
+                paths[candidate.relative_to(self.root).as_posix()] = (
+                    status.strip() or "?"
+                )
             i += 1
         # 也顺带记录每个 dirty 文件的 size+mtime，用来精确 diff
         detail = {}
@@ -136,7 +142,12 @@ class WorkspaceObserver:
         paths = {}
         root = _safe_index_directory(self.root, self.root)
         if root is None:
-            return {"mode": "filesystem", "paths": paths, "detail": paths, "summaries": []}
+            return {
+                "mode": "filesystem",
+                "paths": paths,
+                "detail": paths,
+                "summaries": [],
+            }
         for dirpath, dirnames, filenames in os.walk(str(root), followlinks=False):
             # 跳过常见的构建产物和虚拟环境目录，避免把无关文件也算成 delta
             dirnames[:] = [
@@ -190,7 +201,12 @@ class WorkspaceObserver:
         mode = after.get("mode") or before.get("mode") or "filesystem"
 
         # 用两侧 keys ∪，得到所有候选路径
-        candidates = set(before_paths.keys()) | set(after_paths.keys()) | set(before_detail.keys()) | set(after_detail.keys())
+        candidates = (
+            set(before_paths.keys())
+            | set(after_paths.keys())
+            | set(before_detail.keys())
+            | set(after_detail.keys())
+        )
         changed = []
         summaries = []
 

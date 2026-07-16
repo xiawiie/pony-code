@@ -6,7 +6,7 @@ from pathlib import Path
 import re
 
 from pico.agent.messages import MessageValidationError, validate_messages
-from pico.security import private_directory_identity
+from pico.security.private_files import private_directory_identity
 from pico.state.session_store import (
     LEGACY_SESSION_FORMAT_VERSION,
     SESSION_FORMAT_VERSION,
@@ -64,9 +64,7 @@ def _tree_facts(tree):
         "active_path": len(tree.active_path),
         "leaf": tree.leaf_id or "-",
         "branch_points": sum(count > 1 for count in child_counts.values()),
-        "compactions": sum(
-            entry["type"] == "compaction" for entry in tree.entries
-        ),
+        "compactions": sum(entry["type"] == "compaction" for entry in tree.entries),
         "task_checkpoints": sum(
             entry["type"] == "task_checkpoint" for entry in tree.entries
         ),
@@ -104,7 +102,10 @@ def inspect_session(session_id, sessions_root):
         return False, f"failed to read session {session_id}: unsafe session artifact"
 
     if not isinstance(session, dict):
-        return False, f"session: {session_id}\ninvariants: failed (session must be an object)"
+        return (
+            False,
+            f"session: {session_id}\ninvariants: failed (session must be an object)",
+        )
     record_type = session.get("record_type")
     version = session.get("format_version")
     expected_version = (
@@ -192,9 +193,7 @@ def _tree_report(session_id, sessions_root):
     def walk(parent_id, depth):
         for entry in children.get(parent_id, []):
             marker = "*" if entry["id"] in active else " "
-            lines.append(
-                f"{marker} {'  ' * depth}{entry['id']} {entry['type']}"
-            )
+            lines.append(f"{marker} {'  ' * depth}{entry['id']} {entry['type']}")
             walk(entry["id"], depth + 1)
 
     walk("", 0)
@@ -259,9 +258,7 @@ def _rewind_flags(tokens):
 
 def _workspace_preview_report(preview):
     counts = preview.get("decision_counts", {})
-    decisions = ", ".join(
-        f"{key}={value}" for key, value in sorted(counts.items())
-    )
+    decisions = ", ".join(f"{key}={value}" for key, value in sorted(counts.items()))
     lines = [
         f"restore_plan_status: {preview.get('status', 'invalid')}",
         f"workspace_checkpoint: {preview.get('workspace_checkpoint_id', '-')}",
@@ -396,9 +393,7 @@ def handle_session_command(
                 f"workspace_root: {result['workspace_root']}\npath: {result['path']}"
             )
         elif command == "tail-repair" and len(argv) == 3 and argv[2] == "--yes":
-            repaired = _store_for_write(sessions_root, redactor).repair_tail(
-                session_id
-            )
+            repaired = _store_for_write(sessions_root, redactor).repair_tail(session_id)
             ok = True
             report = "tail_repaired: yes" if repaired else "tail_repaired: not_needed"
         elif command == "compact" and agent_factory is not None:

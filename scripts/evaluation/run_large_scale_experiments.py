@@ -25,14 +25,34 @@ from benchmarks.evaluation.provider_benchmark import (  # noqa: E402
 
 
 def build_arg_parser():
-    parser = argparse.ArgumentParser(description="Run pico large-scale experiments and write all experiment artifacts.")
-    parser.add_argument("--benchmark-artifact", required=True, help="Path to benchmark artifact JSON.")
+    parser = argparse.ArgumentParser(
+        description="Run pico large-scale experiments and write all experiment artifacts."
+    )
+    parser.add_argument(
+        "--repo-root", default=".", help="Repository whose .env selects the Provider."
+    )
+    parser.add_argument(
+        "--benchmark-artifact", required=True, help="Path to benchmark artifact JSON."
+    )
     parser.add_argument("--runs-root", required=True, help="Path to .pico/runs root.")
-    parser.add_argument("--provider-benchmark-path", default="benchmarks/coding_tasks.json", help="Benchmark task source for provider experiments.")
-    parser.add_argument("--provider-workspace-root", default="artifacts/provider-workspaces", help="Workspace root for provider experiment copies.")
-    parser.add_argument("--provider-artifact-root", default="artifacts/provider-artifacts", help="Artifact root for provider benchmark outputs.")
-    parser.add_argument("--experiment-mode", choices=("synthetic", "real"), default="synthetic")
-    parser.add_argument("--real-provider", choices=("gpt", "claude", "deepseek"), default="gpt")
+    parser.add_argument(
+        "--provider-benchmark-path",
+        default="benchmarks/coding_tasks.json",
+        help="Benchmark task source for provider experiments.",
+    )
+    parser.add_argument(
+        "--provider-workspace-root",
+        default="artifacts/provider-workspaces",
+        help="Workspace root for provider experiment copies.",
+    )
+    parser.add_argument(
+        "--provider-artifact-root",
+        default="artifacts/provider-artifacts",
+        help="Artifact root for provider benchmark outputs.",
+    )
+    parser.add_argument(
+        "--experiment-mode", choices=("synthetic", "real"), default="synthetic"
+    )
     parser.add_argument("--memory-repetitions", type=int, default=3)
     parser.add_argument("--large-memory-repetitions", type=int, default=5)
     parser.add_argument("--context-repetitions", type=int, default=5)
@@ -54,6 +74,7 @@ def main(argv=None):
         benchmark_path=args.provider_benchmark_path,
         workspace_root=args.provider_workspace_root,
         artifact_root=args.provider_artifact_root,
+        repo_root=args.repo_root,
     )
     _validate_record_header(
         provider_payload,
@@ -62,7 +83,9 @@ def main(argv=None):
     )
     provider_output = Path(args.provider_output_json)
     provider_output.parent.mkdir(parents=True, exist_ok=True)
-    provider_output.write_text(json.dumps(provider_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    provider_output.write_text(
+        json.dumps(provider_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
 
     metrics = collect_resume_metrics(
         args.benchmark_artifact,
@@ -73,7 +96,7 @@ def main(argv=None):
         context_repetitions=args.context_repetitions,
         security_repetitions=args.security_repetitions,
         experiment_mode=args.experiment_mode,
-        real_provider=args.real_provider,
+        repo_root=args.repo_root,
     )
 
     outputs = {
@@ -93,15 +116,21 @@ def main(argv=None):
     for path_str, payload in outputs.items():
         path = Path(path_str)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        path.write_text(
+            json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
 
     resume_md = Path(args.resume_output_markdown)
     resume_md.parent.mkdir(parents=True, exist_ok=True)
-    resume_md.write_text(render_resume_metrics_markdown(metrics) + "\n", encoding="utf-8")
+    resume_md.write_text(
+        render_resume_metrics_markdown(metrics) + "\n", encoding="utf-8"
+    )
 
     final_report = Path(args.final_report_markdown)
     final_report.parent.mkdir(parents=True, exist_ok=True)
-    final_report.write_text(render_large_scale_experiment_report(metrics) + "\n", encoding="utf-8")
+    final_report.write_text(
+        render_large_scale_experiment_report(metrics) + "\n", encoding="utf-8"
+    )
     return 0
 
 

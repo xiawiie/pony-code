@@ -10,7 +10,14 @@ import shutil
 import stat
 
 from pico.state.file_lock import locked_file
-from pico.security import PrivateAtomicWriteError, ensure_private_dir, private_directory_identity, read_private_bytes, require_directory_no_symlink, write_private_bytes_atomic
+from pico.security.private_files import (
+    PrivateAtomicWriteError,
+    ensure_private_dir,
+    private_directory_identity,
+    read_private_bytes,
+    write_private_bytes_atomic,
+)
+from pico.security.paths import require_directory_no_symlink
 
 ABSENT = "absent"
 PREPARING = "preparing"
@@ -22,8 +29,33 @@ COMMITTED = "committed"
 ROLLBACK_REQUIRED = "rollback_required"
 ROLLED_BACK = "rolled_back"
 ROLLBACK_FAILED = "rollback_failed"
-STATES = {PREPARING, CANDIDATE_READY, OLD_MOVED, NEW_INSTALLED, VALIDATED, COMMITTED, ROLLBACK_REQUIRED, ROLLED_BACK, ROLLBACK_FAILED}
-_KEYS = {"record_type", "format_version", "migration_id", "contract", "source_version", "target_version", "state", "created_at", "updated_at", "workspace_identity", "paths", "source_identity", "candidate_identity", "error_code"}
+STATES = {
+    PREPARING,
+    CANDIDATE_READY,
+    OLD_MOVED,
+    NEW_INSTALLED,
+    VALIDATED,
+    COMMITTED,
+    ROLLBACK_REQUIRED,
+    ROLLED_BACK,
+    ROLLBACK_FAILED,
+}
+_KEYS = {
+    "record_type",
+    "format_version",
+    "migration_id",
+    "contract",
+    "source_version",
+    "target_version",
+    "state",
+    "created_at",
+    "updated_at",
+    "workspace_identity",
+    "paths",
+    "source_identity",
+    "candidate_identity",
+    "error_code",
+}
 _MAX_JOURNAL_BYTES = 1024 * 1024
 
 
@@ -42,7 +74,11 @@ def _object(pairs):
 
 def _relative(value):
     path = Path(value)
-    if path.is_absolute() or not path.parts or any(part in {"", ".", ".."} for part in path.parts):
+    if (
+        path.is_absolute()
+        or not path.parts
+        or any(part in {"", ".", ".."} for part in path.parts)
+    ):
         raise ValueError("invalid migration path")
     return path
 
@@ -50,9 +86,13 @@ def _relative(value):
 def _manifest(path):
     root = require_directory_no_symlink(path)
     digest = hashlib.sha256()
-    for item in sorted(root.rglob("*"), key=lambda value: value.relative_to(root).as_posix()):
+    for item in sorted(
+        root.rglob("*"), key=lambda value: value.relative_to(root).as_posix()
+    ):
         info = item.lstat()
-        if stat.S_ISLNK(info.st_mode) or not (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)):
+        if stat.S_ISLNK(info.st_mode) or not (
+            stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)
+        ):
             raise ValueError("unsafe migration tree")
         if stat.S_ISREG(info.st_mode) and info.st_nlink != 1:
             raise ValueError("migration file has multiple links")
@@ -76,7 +116,12 @@ def _manifest(path):
                 if (
                     (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
                     != (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns)
-                    or (current.st_dev, current.st_ino, current.st_size, current.st_mtime_ns)
+                    or (
+                        current.st_dev,
+                        current.st_ino,
+                        current.st_size,
+                        current.st_mtime_ns,
+                    )
                     != (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns)
                     or after.st_nlink != 1
                     or current.st_nlink != 1
@@ -90,20 +135,45 @@ def _manifest(path):
 class Migration:
     """A single live/candidate/rollback directory transaction."""
 
-    def __init__(self, pico_root, *, contract, source_version, target_version, live, workspace_identity, validate, namespace="", validate_candidate=None):
+    def __init__(
+        self,
+        pico_root,
+        *,
+        contract,
+        source_version,
+        target_version,
+        live,
+        workspace_identity,
+        validate,
+        namespace="",
+        validate_candidate=None,
+    ):
         self.root = require_directory_no_symlink(pico_root)
         namespace = str(namespace or "")
-        if namespace and ("/" in namespace or "\\" in namespace or namespace in {".", ".."}):
+        if namespace and (
+            "/" in namespace or "\\" in namespace or namespace in {".", ".."}
+        ):
             raise ValueError("invalid migration namespace")
-        self.area = self.root / ".migration" / namespace if namespace else self.root / ".migration"
+        self.area = (
+            self.root / ".migration" / namespace
+            if namespace
+            else self.root / ".migration"
+        )
         self.live_rel = _relative(live)
         area_rel = Path(".migration") / namespace if namespace else Path(".migration")
         self.candidate_rel = area_rel / "candidate" / self.live_rel
         self.rollback_rel = area_rel / "rollback" / self.live_rel
-        self.live, self.candidate, self.rollback = (self.root / item for item in (self.live_rel, self.candidate_rel, self.rollback_rel))
+        self.live, self.candidate, self.rollback = (
+            self.root / item
+            for item in (self.live_rel, self.candidate_rel, self.rollback_rel)
+        )
         self.journal = self.area / "journal.json"
         self.lock = self.area / "lock"
-        self.contract, self.source_version, self.target_version = str(contract), int(source_version), int(target_version)
+        self.contract, self.source_version, self.target_version = (
+            str(contract),
+            int(source_version),
+            int(target_version),
+        )
         self.workspace_identity, self.validate = dict(workspace_identity), validate
         self.validate_candidate = validate_candidate
         self._area_identity = None
@@ -112,7 +182,9 @@ class Migration:
         if not self.area.exists():
             return {"state": ABSENT, "contract": self.contract}
         value = self._read()
-        return value if value is not None else {"state": ABSENT, "contract": self.contract}
+        return (
+            value if value is not None else {"state": ABSENT, "contract": self.contract}
+        )
 
     def _setup(self):
         ensure_private_dir(self.area)
@@ -143,18 +215,36 @@ class Migration:
             )
         except FileNotFoundError:
             return None
-        paths = {"live": self.live_rel.as_posix(), "candidate": self.candidate_rel.as_posix(), "rollback": self.rollback_rel.as_posix()}
-        if not isinstance(value, dict) or set(value) != _KEYS or value["record_type"] != "migration_journal" or value["format_version"] != 1 or value["state"] not in STATES or value["paths"] != paths:
+        paths = {
+            "live": self.live_rel.as_posix(),
+            "candidate": self.candidate_rel.as_posix(),
+            "rollback": self.rollback_rel.as_posix(),
+        }
+        if (
+            not isinstance(value, dict)
+            or set(value) != _KEYS
+            or value["record_type"] != "migration_journal"
+            or value["format_version"] != 1
+            or value["state"] not in STATES
+            or value["paths"] != paths
+        ):
             raise ValueError("invalid journal schema")
         for path in value["paths"].values():
             _relative(path)
-        if value["workspace_identity"] != self.workspace_identity or value["contract"] != self.contract or value["source_version"] != self.source_version or value["target_version"] != self.target_version:
+        if (
+            value["workspace_identity"] != self.workspace_identity
+            or value["contract"] != self.contract
+            or value["source_version"] != self.source_version
+            or value["target_version"] != self.target_version
+        ):
             raise ValueError("migration_identity_mismatch")
         return value
 
     def _write(self, value, state, error=""):
         value = dict(value, state=state, updated_at=_now(), error_code=error)
-        data = (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode()
+        data = (
+            json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n"
+        ).encode()
         if len(data) > _MAX_JOURNAL_BYTES:
             raise ValueError("private file too large")
         write_private_bytes_atomic(
@@ -198,12 +288,34 @@ class Migration:
                 if build_candidate is None:
                     raise ValueError("candidate builder required")
                 created = _now()
-                value = {"record_type": "migration_journal", "format_version": 1, "migration_id": "mig_" + secrets.token_hex(12), "contract": self.contract, "source_version": self.source_version, "target_version": self.target_version, "state": PREPARING, "created_at": created, "updated_at": created, "workspace_identity": self.workspace_identity, "paths": {"live": self.live_rel.as_posix(), "candidate": self.candidate_rel.as_posix(), "rollback": self.rollback_rel.as_posix()}, "source_identity": _manifest(self.live), "candidate_identity": {}, "error_code": ""}
+                value = {
+                    "record_type": "migration_journal",
+                    "format_version": 1,
+                    "migration_id": "mig_" + secrets.token_hex(12),
+                    "contract": self.contract,
+                    "source_version": self.source_version,
+                    "target_version": self.target_version,
+                    "state": PREPARING,
+                    "created_at": created,
+                    "updated_at": created,
+                    "workspace_identity": self.workspace_identity,
+                    "paths": {
+                        "live": self.live_rel.as_posix(),
+                        "candidate": self.candidate_rel.as_posix(),
+                        "rollback": self.rollback_rel.as_posix(),
+                    },
+                    "source_identity": _manifest(self.live),
+                    "candidate_identity": {},
+                    "error_code": "",
+                }
                 value = self._write(value, PREPARING)
                 if self.candidate.exists():
                     self._remove_tree(self.candidate)
                 build_candidate(self.live, self.candidate)
-                if private_directory_identity(self.candidate)[0] != private_directory_identity(self.root)[0]:
+                if (
+                    private_directory_identity(self.candidate)[0]
+                    != private_directory_identity(self.root)[0]
+                ):
                     raise ValueError("candidate is on another filesystem")
                 value["candidate_identity"] = _manifest(self.candidate)
                 value = self._write(value, CANDIDATE_READY)
@@ -212,7 +324,10 @@ class Migration:
     def _advance(self, value):
         state = value["state"]
         if state == CANDIDATE_READY:
-            if _manifest(self.live) != value["source_identity"] or _manifest(self.candidate) != value["candidate_identity"]:
+            if (
+                _manifest(self.live) != value["source_identity"]
+                or _manifest(self.candidate) != value["candidate_identity"]
+            ):
                 raise ValueError("migration_identity_mismatch")
             if (
                 self.validate_candidate is not None
@@ -229,7 +344,9 @@ class Migration:
                 if self.validate(self.live) is False:
                     raise ValueError("validation failed")
             except Exception:
-                return self._rollback(self._write(value, ROLLBACK_REQUIRED, "validation_failed"))
+                return self._rollback(
+                    self._write(value, ROLLBACK_REQUIRED, "validation_failed")
+                )
             value, state = self._write(value, VALIDATED), VALIDATED
         if state == VALIDATED:
             self._remove_tree(self.rollback)
@@ -308,7 +425,13 @@ class Migration:
                 # An abort can finish candidate deletion before its parent fsync.
                 self._remove_journal()
                 return ABSENT
-            if state in {CANDIDATE_READY, OLD_MOVED, NEW_INSTALLED, VALIDATED, COMMITTED}:
+            if state in {
+                CANDIDATE_READY,
+                OLD_MOVED,
+                NEW_INSTALLED,
+                VALIDATED,
+                COMMITTED,
+            }:
                 return self._advance(value)
             if state == ROLLBACK_REQUIRED:
                 return self._rollback(value)

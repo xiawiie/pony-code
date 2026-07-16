@@ -7,7 +7,8 @@ from pathlib import Path
 import subprocess
 import textwrap
 
-from pico import security as securitylib
+from pico.security import paths as security_paths
+from pico.security import workspace_files as workspace_files
 from pico.sandbox.docker import (
     DockerExecutionOutcome,
     DockerSandboxContext,
@@ -30,16 +31,13 @@ from pico.tools.subprocess import (
     build_hardened_git_argv,
     run_hardened_git,
 )
-from pico.tools import (
-    _ALLOWED_EFFECT_CLASSES,
+from pico.tools.registry import _ALLOWED_EFFECT_CLASSES, memory_write_intent
+from pico.tools.shell import (
     DEFAULT_RUN_SHELL_TIMEOUT,
     ApprovedShellExecution,
-    _ApprovedShellExecution,
-    _lexical_tool_target,
-    SensitiveToolError,
-    memory_write_intent,
     sandbox_privilege_denial,
 )
+from pico.tools.validation import SensitiveToolError, _lexical_tool_target
 from pico.agent.verification import verification_evidence_for_execution
 
 
@@ -82,7 +80,16 @@ _PATH_ARG_NAMES_BY_TOOL = {
     "patch_file": ("path",),
     # 未来的 move_file 之类工具可以在这里加 ("source", "destination")
 }
-_GENERIC_PATH_ARG_NAMES = ("path", "paths", "target", "targets", "source", "sources", "destination", "destinations")
+_GENERIC_PATH_ARG_NAMES = (
+    "path",
+    "paths",
+    "target",
+    "targets",
+    "source",
+    "sources",
+    "destination",
+    "destinations",
+)
 
 
 def _effect_class(tool):
@@ -154,7 +161,7 @@ def _validation_rejection(agent, tool, name, args, effect_class):
                 risk_level="high",
             ),
         )
-    except securitylib.WorkspaceIOError as exc:
+    except workspace_files.WorkspaceIOError as exc:
         return ToolExecutionResult(
             content=f"error: {exc.code}",
             metadata=_metadata(
@@ -171,9 +178,7 @@ def _validation_rejection(agent, tool, name, args, effect_class):
         if example:
             message += f"\nexample: {example}"
         security_event_type = (
-            "path_escape"
-            if "path escapes workspace" in str(exc)
-            else ""
+            "path_escape" if "path escapes workspace" in str(exc) else ""
         )
         return ToolExecutionResult(
             content=message,
@@ -252,9 +257,8 @@ def _structured_shell_result(agent, value):
         raise ValueError("shell runner returned invalid result")
     exit_code = value["exit_code"]
     target_started = bool(value.get("target_started", True))
-    if (
-        (not isinstance(exit_code, int) or isinstance(exit_code, bool))
-        and not (exit_code is None and not target_started)
+    if (not isinstance(exit_code, int) or isinstance(exit_code, bool)) and not (
+        exit_code is None and not target_started
     ):
         raise ValueError("shell runner returned invalid exit code")
     if not isinstance(value["stdout"], str) or not isinstance(
@@ -275,34 +279,37 @@ def _structured_shell_result(agent, value):
     }
 
 
-def _approved_sandbox_execution(agent, shell_execution, *, argv=None):
-    return ApprovedShellExecution(
-        argv=tuple(shell_execution.argv if argv is None else argv),
-        exact_command=shell_execution.command,
-        execution_mode=shell_execution.execution_mode,
-        executable=shell_execution.executable,
-        cwd=agent.root,
-        env=agent.shell_env(),
-        timeout=shell_execution.timeout,
-    )
-
-
 def _format_shell_result(result):
     return textwrap.dedent(
         f"""\
-        exit_code: {result['exit_code']}
+        exit_code: {result["exit_code"]}
         stdout:
-        {result['stdout'].strip() or '(empty)'}
+        {result["stdout"].strip() or "(empty)"}
         stderr:
-        {result['stderr'].strip() or '(empty)'}
+        {result["stderr"].strip() or "(empty)"}
         """
     ).strip()
 
 
-def _prepare_shell_execution(agent, tool, args, effect_class, assessment):
-    mode = agent.approval_policy
+@dataclass(frozen=True)
+class _ShellPreparation:
+    agent: object
+    tool: Mapping
+    args: dict
+    effect_class: str
+    assessment: dict
+    mode: str
+    original_args: dict
+    original_assessment: dict
+    timeout: int
+    docker_context: object
+    executable_name: str
+    argv: tuple
+
+
+def _shell_preflight_rejection(agent, tool, args, effect_class, assessment, mode):
     if agent.read_only:
-        return None, None, _shell_rejection(
+        return _shell_rejection(
             assessment=assessment,
             mode=mode,
             outcome="blocked",
@@ -311,23 +318,11 @@ def _prepare_shell_execution(agent, tool, args, effect_class, assessment):
             content="error: read-only mode blocks run_shell",
             security_event_type="read_only_block",
         )
-
-    rejection = _validation_rejection(
-        agent,
-        tool,
-        "run_shell",
-        args,
-        effect_class,
-    )
+    rejection = _validation_rejection(agent, tool, "run_shell", args, effect_class)
     if rejection is not None:
-        return None, None, _add_initial_shell_policy(
-            rejection,
-            assessment,
-            mode,
-        )
-
+        return _add_initial_shell_policy(rejection, assessment, mode)
     if agent.repeated_tool_call("run_shell", args):
-        return None, None, _shell_rejection(
+        return _shell_rejection(
             assessment=assessment,
             mode=mode,
             outcome="blocked",
@@ -338,11 +333,8 @@ def _prepare_shell_execution(agent, tool, args, effect_class, assessment):
                 "choose a different tool or return a final answer"
             ),
         )
-
-    original_args = deepcopy(args)
-    original_assessment = deepcopy(assessment)
     if mode == "never":
-        return None, None, _shell_rejection(
+        return _shell_rejection(
             assessment=assessment,
             mode=mode,
             outcome="denied",
@@ -352,7 +344,7 @@ def _prepare_shell_execution(agent, tool, args, effect_class, assessment):
             security_event_type="approval_denied",
         )
     if mode == "auto" and assessment["decision"] != "allow":
-        return None, None, _shell_rejection(
+        return _shell_rejection(
             assessment=assessment,
             mode=mode,
             outcome="blocked",
@@ -361,210 +353,270 @@ def _prepare_shell_execution(agent, tool, args, effect_class, assessment):
             content="error: command approval required for run_shell",
             security_event_type="command_approval_required",
         )
+    return None
 
-    timeout = int(original_args.get("timeout", DEFAULT_RUN_SHELL_TIMEOUT))
-    docker_context = (
-        agent.sandbox_context
-        if isinstance(getattr(agent, "sandbox_context", None), DockerSandboxContext)
-        else None
-    )
+
+def _freeze_shell_preparation(agent, tool, args, effect_class, assessment, mode):
+    original_args = deepcopy(args)
     if assessment["execution_mode"] == "argv":
         argv = tuple(assessment["argv"])
         executable_name = argv[0]
     else:
         argv = ()
         executable_name = "sh"
-    sandbox_plan = None
-    if docker_context is not None:
-        tools = docker_context.runner.image.tool_map
-        if executable_name == "git":
-            try:
-                target_argv = build_hardened_git_argv(tools["git"], argv[1:])
-            except (KeyError, ValueError):
-                return None, None, _shell_rejection(
-                    assessment=assessment,
-                    mode=mode,
-                    outcome="blocked",
-                    effect_class=effect_class,
-                    tool_error_code="unsafe_git_arguments",
-                    content="error: unsafe git arguments",
-                    security_event_type="unsafe_git_arguments",
-                )
-            execution_mode = "argv"
-        else:
-            try:
-                target_argv = (
-                    tools["shell"],
-                    "-c",
-                    str(original_args.get("command", "")),
-                )
-            except KeyError:
-                return None, None, _shell_rejection(
-                    assessment=assessment,
-                    mode=mode,
-                    outcome="blocked",
-                    effect_class=effect_class,
-                    tool_error_code="sandbox_image_identity_mismatch",
-                    content="error: sandbox image tool missing",
-                    security_event_type="sandbox_image_identity_mismatch",
-                )
-            execution_mode = "shell"
+    sandbox_context = getattr(agent, "sandbox_context", None)
+    docker_context = (
+        sandbox_context if isinstance(sandbox_context, DockerSandboxContext) else None
+    )
+    return _ShellPreparation(
+        agent=agent,
+        tool=tool,
+        args=args,
+        effect_class=effect_class,
+        assessment=assessment,
+        mode=mode,
+        original_args=original_args,
+        original_assessment=deepcopy(assessment),
+        timeout=int(original_args.get("timeout", DEFAULT_RUN_SHELL_TIMEOUT)),
+        docker_context=docker_context,
+        executable_name=executable_name,
+        argv=argv,
+    )
+
+
+def _preparation_rejection(preparation, *, code, content, outcome="blocked"):
+    return _shell_rejection(
+        assessment=preparation.assessment,
+        mode=preparation.mode,
+        outcome=outcome,
+        effect_class=preparation.effect_class,
+        tool_error_code=code,
+        content=content,
+        security_event_type=code,
+    )
+
+
+def _sandbox_target_argv(preparation):
+    tools = preparation.docker_context.runner.image.tool_map
+    if preparation.executable_name == "git":
         try:
-            sandbox_plan = docker_context.runner.compile(
-                docker_context.current_session(),
-                target_argv,
-                timeout=timeout,
+            return (
+                build_hardened_git_argv(tools["git"], preparation.argv[1:]),
+                "argv",
+                None,
             )
-        except DockerSandboxError as exc:
-            return None, None, _shell_rejection(
-                assessment=assessment,
-                mode=mode,
-                outcome="blocked",
-                effect_class=effect_class,
-                tool_error_code=exc.code,
-                content=f"error: {exc.code}",
-                security_event_type=exc.code,
+        except (KeyError, ValueError):
+            return (
+                None,
+                None,
+                _preparation_rejection(
+                    preparation,
+                    code="unsafe_git_arguments",
+                    content="error: unsafe git arguments",
+                ),
             )
-        executable = target_argv[0]
-        argv = tuple(target_argv)
-        execution = _ApprovedShellExecution(
-            command=str(original_args.get("command", "")),
-            argv=argv,
-            execution_mode=execution_mode,
-            executable=executable,
-            timeout=timeout,
-            sandbox_plan=sandbox_plan,
+    try:
+        target_argv = (
+            tools["shell"],
+            "-c",
+            str(preparation.original_args.get("command", "")),
         )
-        denial = sandbox_privilege_denial(
-            _approved_sandbox_execution(agent, execution),
-            sandbox_mode=True,
-            allow_git_metadata_writes=True,
+    except KeyError:
+        return (
+            None,
+            None,
+            _preparation_rejection(
+                preparation,
+                code="sandbox_image_identity_mismatch",
+                content="error: sandbox image tool missing",
+            ),
         )
-        if denial:
-            return None, None, _shell_rejection(
-                assessment=assessment,
-                mode=mode,
-                outcome="blocked",
-                effect_class=effect_class,
-                tool_error_code=denial,
-                content="error: sandbox privilege or system broker command denied",
-                security_event_type=denial,
-            )
-    if mode == "ask":
-        approval_payload = agent.redact_artifact(deepcopy(original_args))
-        if sandbox_plan is not None:
-            approval_payload["sandbox"] = {
-                "logical_cwd": docker_context.logical_root,
-                "logical_intent_digest": sandbox_plan.logical_intent_digest,
-                "policy_digest": sandbox_plan.policy_digest,
-            }
-        approval_payload_snapshot = deepcopy(approval_payload)
-        if not agent.approve("run_shell", approval_payload):
-            return None, None, _shell_rejection(
-                assessment=assessment,
-                mode=mode,
-                outcome="denied",
-                effect_class=effect_class,
-                tool_error_code="approval_denied",
-                content="error: approval denied for run_shell",
-                security_event_type="approval_denied",
-            )
-        rejection = _validation_rejection(
-            agent,
-            tool,
-            "run_shell",
-            args,
-            effect_class,
+    return target_argv, "shell", None
+
+
+def _compile_sandbox_shell(preparation):
+    if preparation.docker_context is None:
+        return None, None
+    target_argv, execution_mode, rejection = _sandbox_target_argv(preparation)
+    if rejection is not None:
+        return None, rejection
+    try:
+        sandbox_plan = preparation.docker_context.runner.compile(
+            preparation.docker_context.current_session(),
+            target_argv,
+            timeout=preparation.timeout,
         )
-        if rejection is not None:
-            return None, None, _add_initial_shell_policy(
-                rejection,
-                assessment,
-                mode,
-            )
-        reassessment = assess_command(str(args.get("command", "")), agent.root)
-        if (
-            args != original_args
-            or approval_payload != approval_payload_snapshot
-            or reassessment != original_assessment
-        ):
-            return None, None, _shell_rejection(
-                assessment=assessment,
-                mode=mode,
-                outcome="blocked",
-                effect_class=effect_class,
-                tool_error_code="approval_arguments_changed",
-                content="error: approved arguments changed for run_shell",
-                security_event_type="approval_arguments_changed",
-            )
-        outcome = "approved"
-    elif mode == "auto":
-        outcome = "allowed"
-    else:
-        return None, None, _shell_rejection(
-            assessment=assessment,
-            mode=mode,
-            outcome="denied",
-            effect_class=effect_class,
-            tool_error_code="approval_denied",
+    except DockerSandboxError as exc:
+        return None, _preparation_rejection(
+            preparation,
+            code=exc.code,
+            content=f"error: {exc.code}",
+        )
+    execution = ApprovedShellExecution(
+        exact_command=str(preparation.original_args.get("command", "")),
+        argv=tuple(target_argv),
+        execution_mode=execution_mode,
+        executable=target_argv[0],
+        timeout=preparation.timeout,
+        sandbox_plan=sandbox_plan,
+    )
+    denial = sandbox_privilege_denial(
+        execution,
+        sandbox_mode=True,
+        allow_git_metadata_writes=True,
+    )
+    if denial:
+        return None, _preparation_rejection(
+            preparation,
+            code=denial,
+            content="error: sandbox privilege or system broker command denied",
+        )
+    return execution, None
+
+
+def _approval_payload(preparation, sandbox_plan):
+    payload = preparation.agent.redact_artifact(deepcopy(preparation.original_args))
+    if sandbox_plan is not None:
+        payload["sandbox"] = {
+            "logical_cwd": preparation.docker_context.logical_root,
+            "logical_intent_digest": sandbox_plan.logical_intent_digest,
+            "policy_digest": sandbox_plan.policy_digest,
+        }
+    return payload
+
+
+def _revalidate_approved_shell(preparation, approval_payload, payload_snapshot):
+    rejection = _validation_rejection(
+        preparation.agent,
+        preparation.tool,
+        "run_shell",
+        preparation.args,
+        preparation.effect_class,
+    )
+    if rejection is not None:
+        return _add_initial_shell_policy(
+            rejection,
+            preparation.assessment,
+            preparation.mode,
+        )
+    reassessment = assess_command(
+        str(preparation.args.get("command", "")),
+        preparation.agent.root,
+    )
+    if (
+        preparation.args != preparation.original_args
+        or approval_payload != payload_snapshot
+        or reassessment != preparation.original_assessment
+    ):
+        return _preparation_rejection(
+            preparation,
+            code="approval_arguments_changed",
+            content="error: approved arguments changed for run_shell",
+        )
+    return None
+
+
+def _approve_shell(preparation, sandbox_plan):
+    if preparation.mode == "auto":
+        return "allowed", None
+    if preparation.mode != "ask":
+        return None, _preparation_rejection(
+            preparation,
+            code="approval_denied",
             content="error: approval denied for run_shell",
-            security_event_type="approval_denied",
+            outcome="denied",
         )
+    payload = _approval_payload(preparation, sandbox_plan)
+    payload_snapshot = deepcopy(payload)
+    if not preparation.agent.approve("run_shell", payload):
+        return None, _preparation_rejection(
+            preparation,
+            code="approval_denied",
+            content="error: approval denied for run_shell",
+            outcome="denied",
+        )
+    rejection = _revalidate_approved_shell(preparation, payload, payload_snapshot)
+    return (None, rejection) if rejection is not None else ("approved", None)
+
+
+def _validate_host_git(preparation, executable):
+    try:
+        _validate_hardened_git_args(preparation.argv[1:])
+    except ValueError:
+        return _preparation_rejection(
+            preparation,
+            code="unsafe_git_arguments",
+            content="error: unsafe git arguments",
+        )
+    try:
+        _validate_hardened_git_repository(
+            executable,
+            cwd=preparation.agent.root,
+            args=preparation.argv[1:],
+            timeout=preparation.timeout,
+        )
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return _preparation_rejection(
+            preparation,
+            code="unsafe_git_config",
+            content="error: unsafe git repository config",
+        )
+    return None
+
+
+def _compile_host_shell(preparation):
+    executable = (
+        preparation.agent.trusted_executables.get(preparation.executable_name)
+        if Path(preparation.executable_name).name == preparation.executable_name
+        else None
+    )
+    if not executable:
+        return None, _preparation_rejection(
+            preparation,
+            code="trusted_executable_missing",
+            content="error: trusted executable missing for run_shell",
+        )
+    if preparation.executable_name == "git":
+        rejection = _validate_host_git(preparation, executable)
+        if rejection is not None:
+            return None, rejection
+    return (
+        ApprovedShellExecution(
+            exact_command=str(preparation.original_args.get("command", "")),
+            argv=preparation.argv,
+            execution_mode=preparation.assessment["execution_mode"],
+            executable=executable,
+            timeout=preparation.timeout,
+        ),
+        None,
+    )
+
+
+def _prepare_shell_execution(agent, tool, args, effect_class, assessment):
+    mode = agent.approval_policy
+    rejection = _shell_preflight_rejection(
+        agent, tool, args, effect_class, assessment, mode
+    )
+    if rejection is not None:
+        return None, None, rejection
+
+    preparation = _freeze_shell_preparation(
+        agent, tool, args, effect_class, assessment, mode
+    )
+    execution, rejection = _compile_sandbox_shell(preparation)
+    if rejection is not None:
+        return None, None, rejection
+    sandbox_plan = execution.sandbox_plan if execution is not None else None
+
+    outcome, rejection = _approve_shell(preparation, sandbox_plan)
+    if rejection is not None:
+        return None, None, rejection
     if sandbox_plan is not None:
         sandbox_plan.verify()
     else:
-        executable = (
-            agent.trusted_executables.get(executable_name)
-            if Path(executable_name).name == executable_name
-            else None
-        )
-        if not executable:
-            return None, None, _shell_rejection(
-                assessment=assessment,
-                mode=mode,
-                outcome="blocked",
-                effect_class=effect_class,
-                tool_error_code="trusted_executable_missing",
-                content="error: trusted executable missing for run_shell",
-                security_event_type="trusted_executable_missing",
-            )
-        if executable_name == "git":
-            try:
-                _validate_hardened_git_args(argv[1:])
-            except ValueError:
-                return None, None, _shell_rejection(
-                    assessment=assessment,
-                    mode=mode,
-                    outcome="blocked",
-                    effect_class=effect_class,
-                    tool_error_code="unsafe_git_arguments",
-                    content="error: unsafe git arguments",
-                    security_event_type="unsafe_git_arguments",
-                )
-            try:
-                _validate_hardened_git_repository(
-                    executable,
-                    cwd=agent.root,
-                    args=argv[1:],
-                    timeout=timeout,
-                )
-            except (OSError, subprocess.SubprocessError, ValueError):
-                return None, None, _shell_rejection(
-                    assessment=assessment,
-                    mode=mode,
-                    outcome="blocked",
-                    effect_class=effect_class,
-                    tool_error_code="unsafe_git_config",
-                    content="error: unsafe git repository config",
-                    security_event_type="unsafe_git_config",
-                )
-        execution = _ApprovedShellExecution(
-            command=str(original_args.get("command", "")),
-            argv=argv,
-            execution_mode=assessment["execution_mode"],
-            executable=executable,
-            timeout=timeout,
-        )
+        execution, rejection = _compile_host_shell(preparation)
+        if rejection is not None:
+            return None, None, rejection
     return (
         execution,
         _command_approval_metadata(assessment, mode, outcome),
@@ -588,9 +640,7 @@ def _assess_shell_request(agent, name, args, effect_class):
         mode=agent.approval_policy,
         outcome="blocked",
         effect_class=effect_class,
-        tool_error_code=(
-            "sensitive_path_block" if sensitive else "command_rejected"
-        ),
+        tool_error_code=("sensitive_path_block" if sensitive else "command_rejected"),
         content=(
             "error: sensitive_path_block"
             if sensitive
@@ -633,7 +683,9 @@ def _availability_rejection(
         return None
     if command_assessment is None:
         return rejection
-    return _add_initial_shell_policy(rejection, command_assessment, agent.approval_policy)
+    return _add_initial_shell_policy(
+        rejection, command_assessment, agent.approval_policy
+    )
 
 
 def _prepare_non_shell_tool(agent, tool, name, args, effect_class):
@@ -762,9 +814,12 @@ def _prepare_tool_request(agent, name, args):
     if rejection is not None:
         return None, rejection
 
-    if shell_execution is not None and getattr(agent, "sandbox_context", None) is not None:
+    if (
+        shell_execution is not None
+        and getattr(agent, "sandbox_context", None) is not None
+    ):
         denial = sandbox_privilege_denial(
-            _approved_sandbox_execution(agent, shell_execution),
+            shell_execution,
             sandbox_mode=True,
             allow_git_metadata_writes=isinstance(
                 agent.sandbox_context,
@@ -786,13 +841,9 @@ def _prepare_tool_request(agent, name, args):
     records_tool_change = effect_class in {"memory_write", "workspace_write"}
     input_summary = None
     if records_tool_change:
-        input_summary = _summarize_input(
-            agent.redact_artifact(deepcopy(args))
-        )
+        input_summary = _summarize_input(agent.redact_artifact(deepcopy(args)))
         if command_assessment is not None:
-            input_summary["assessment"] = agent.redact_artifact(
-                command_assessment
-            )
+            input_summary["assessment"] = agent.redact_artifact(command_assessment)
     task_state = getattr(agent, "current_task_state", None)
     policy_decision = PolicyDecision(
         1,
@@ -808,8 +859,7 @@ def _prepare_tool_request(agent, name, args):
         },
     ).to_dict()
     sandbox_active = (
-        name == "run_shell"
-        and getattr(agent, "sandbox_context", None) is not None
+        name == "run_shell" and getattr(agent, "sandbox_context", None) is not None
     )
     sandbox = {"status": "pending" if sandbox_active else "not_applicable"}
     if name == "run_shell":
@@ -953,9 +1003,7 @@ def _invoke_prepared_tool(prepared, execution):
             "exit_code": outcome.exit_code,
             "timed_out": outcome.timed_out,
             "target_started": outcome.target_started,
-            "wrapper_status": (
-                "completed" if outcome.runner_executed else "failed"
-            ),
+            "wrapper_status": ("completed" if outcome.runner_executed else "failed"),
             "sandbox_outcome": outcome.sandbox_outcome,
             "cleanup_status": outcome.cleanup_status,
             "residue_detected": outcome.residue_detected,
@@ -967,10 +1015,7 @@ def _invoke_prepared_tool(prepared, execution):
             "stderr_truncated": outcome.stderr_truncated,
             "error_code": outcome.error_code,
         }
-    elif (
-        shell_execution.execution_mode == "argv"
-        and shell_execution.argv[0] == "git"
-    ):
+    elif shell_execution.execution_mode == "argv" and shell_execution.argv[0] == "git":
         approval["runner_executed"] = True
         completed = run_hardened_git(
             shell_execution.executable,
@@ -991,9 +1036,7 @@ def _invoke_prepared_tool(prepared, execution):
     execution["shell_result"] = shell_result
     execution["sandbox"] = {
         "status": shell_result["sandbox_outcome"],
-        "execution_plane": (
-            "sandbox" if sandbox_context is not None else "host"
-        ),
+        "execution_plane": ("sandbox" if sandbox_context is not None else "host"),
         "wrapper_status": shell_result["wrapper_status"],
         "cleanup_status": shell_result["cleanup_status"],
         "target_started": shell_result["target_started"],
@@ -1104,15 +1147,15 @@ def _finish_tool_success(prepared, lifecycle, execution, effects):
         exit_code = execution["shell_result"]["exit_code"]
         sandbox_status = execution["sandbox"].get("status", "not_applicable")
         cleanup_failed = (
-            execution["sandbox"].get("cleanup_status") not in {
+            execution["sandbox"].get("cleanup_status")
+            not in {
                 "completed",
                 "not_applicable",
             }
             or execution["sandbox"].get("residue_detected") is True
         )
         sandbox_failed = (
-            sandbox_status not in {"completed", "not_applicable"}
-            or cleanup_failed
+            sandbox_status not in {"completed", "not_applicable"} or cleanup_failed
         )
         if (exit_code != 0 or sandbox_failed) and effects["workspace_changed"]:
             tool_status = "partial_success"
@@ -1165,12 +1208,10 @@ def _finish_tool_failure(prepared, lifecycle, execution, effects, exc):
     stable_error_code = getattr(exc, "code", "")
     if isinstance(exc, SensitiveToolError):
         security_event = "sensitive_access_block"
-    elif isinstance(exc, securitylib.WorkspaceIOError):
+    elif isinstance(exc, workspace_files.WorkspaceIOError):
         security_event = exc.code
     else:
-        security_event = (
-            "path_escape" if "path escapes workspace" in str(exc) else ""
-        )
+        security_event = "path_escape" if "path escapes workspace" in str(exc) else ""
     pending = lifecycle["pending_record"]
     if execution["runner_completed"] and pending is not None:
         file_entries = []
@@ -1220,8 +1261,7 @@ def _finish_tool_failure(prepared, lifecycle, execution, effects, exc):
             metadata["shell_side_effects"] = list(effects["shell_side_effects"])
         return ToolExecutionResult(
             content=(
-                f"error: tool {prepared['name']} failed after execution: "
-                f"{safe_error}"
+                f"error: tool {prepared['name']} failed after execution: {safe_error}"
             ),
             metadata=metadata,
         )
@@ -1259,7 +1299,8 @@ def _finish_tool_failure(prepared, lifecycle, execution, effects, exc):
     if evidence is not None:
         metadata["verification_evidence"] = evidence
     return ToolExecutionResult(
-        content=f"error: tool {prepared['name']} failed: {safe_error}", metadata=metadata
+        content=f"error: tool {prepared['name']} failed: {safe_error}",
+        metadata=metadata,
     )
 
 
@@ -1288,9 +1329,7 @@ def _run_tool_lifecycle(prepared):
                 "error",
                 effect_class=prepared["effect_class"],
                 tool_error_code="tool_failed",
-                risk_level=(
-                    "high" if prepared["tool"]["risky"] else "low"
-                ),
+                risk_level=("high" if prepared["tool"]["risky"] else "low"),
             )
             _add_command_policy(
                 metadata,
@@ -1298,10 +1337,7 @@ def _run_tool_lifecycle(prepared):
                 prepared["command_approval"],
             )
             return ToolExecutionResult(
-                content=(
-                    f"error: tool {prepared['name']} failed: "
-                    f"{safe_error}"
-                ),
+                content=(f"error: tool {prepared['name']} failed: {safe_error}"),
                 metadata=metadata,
             )
         if rejection is not None:
@@ -1386,9 +1422,7 @@ def _run_tool_lifecycle(prepared):
                 effects=interrupted_effects,
                 sandbox=execution["sandbox"],
             )
-            affected_paths = (interrupted_effects or {}).get(
-                "affected_paths", []
-            )
+            affected_paths = (interrupted_effects or {}).get("affected_paths", [])
             metadata = _metadata(
                 "interrupted",
                 effect_class=prepared["effect_class"],
@@ -1411,9 +1445,9 @@ def _run_tool_lifecycle(prepared):
                 prepared["command_risk"],
                 prepared["command_approval"],
             )
-            prepared["agent"]._last_tool_result_metadata = (
-                prepared["agent"].redact_artifact(metadata)
-            )
+            prepared["agent"]._last_tool_result_metadata = prepared[
+                "agent"
+            ].redact_artifact(metadata)
         raise
 
 
@@ -1519,7 +1553,9 @@ def _finalize_interrupted_pending(
     if pending_record is None:
         return None
     try:
-        current = agent.checkpoint_store.load_tool_change_record(pending_record["tool_change_id"])
+        current = agent.checkpoint_store.load_tool_change_record(
+            pending_record["tool_change_id"]
+        )
         if current.get("status") == "pending":
             affected_paths = (effects or {}).get("affected_paths") or []
             file_entries = []
@@ -1584,7 +1620,9 @@ def _finalize_tool_side_effects(
         effect_class=effect_class,
         affected_paths=affected_paths,
         workspace_changed=workspace_changed,
-        workspace_fingerprint=agent.workspace.fingerprint() if effect_class == "workspace_write" else "",
+        workspace_fingerprint=agent.workspace.fingerprint()
+        if effect_class == "workspace_write"
+        else "",
         diff_summary=diff_summary,
     )
     metadata = _add_command_policy(metadata, command_risk, command_approval)
@@ -1634,11 +1672,19 @@ def _tool_change_terminal_status(tool_status):
     return "finalized"
 
 
-def _tool_change_error_payload(terminal_status, tool_error_code, content, error_message=""):
+def _tool_change_error_payload(
+    terminal_status, tool_error_code, content, error_message=""
+):
     if error_message and terminal_status in {"partial_success", "error"}:
-        return {"code": tool_error_code or "tool_failed", "message": str(error_message)[:400]}
+        return {
+            "code": tool_error_code or "tool_failed",
+            "message": str(error_message)[:400],
+        }
     if terminal_status == "error":
-        return {"code": tool_error_code or "tool_failed", "message": str(content or "")[:400]}
+        return {
+            "code": tool_error_code or "tool_failed",
+            "message": str(content or "")[:400],
+        }
     return None
 
 
@@ -1652,9 +1698,7 @@ def _direct_tool_candidate_paths(agent, name, args):
         if isinstance(value, str) and value:
             values = (value,)
         elif isinstance(value, (list, tuple)):
-            values = tuple(
-                item for item in value if isinstance(item, str) and item
-            )
+            values = tuple(item for item in value if isinstance(item, str) and item)
         else:
             values = ()
         for raw_path in values:
@@ -1675,11 +1719,9 @@ def _capture_path_snapshot(agent, raw_paths):
             normalized = normalize_workspace_relative_path(raw_path)
         except ValueError:
             continue
-        limit = getattr(
-            agent, "project_max_blob_size", DEFAULT_MAX_BLOB_SIZE
-        )
+        limit = getattr(agent, "project_max_blob_size", DEFAULT_MAX_BLOB_SIZE)
         try:
-            state = securitylib.read_regular_bytes_anchored(
+            state = workspace_files.read_regular_bytes_anchored(
                 workspace_root,
                 normalized,
                 max_bytes=limit,
@@ -1760,7 +1802,7 @@ def _capture_before_file_states_for_paths(agent, raw_paths):
             continue
         limit = agent.project_max_blob_size
         try:
-            state = securitylib.read_regular_bytes_anchored(
+            state = workspace_files.read_regular_bytes_anchored(
                 workspace_root,
                 normalized,
                 max_bytes=limit,
@@ -1770,7 +1812,7 @@ def _capture_before_file_states_for_paths(agent, raw_paths):
                     None,
                 ),
             )
-        except securitylib.WorkspaceIOError as exc:
+        except workspace_files.WorkspaceIOError as exc:
             oversized = getattr(exc, "state", None)
             if exc.code == "workspace_file_limit_exceeded" and oversized:
                 states[normalized] = {
@@ -1794,10 +1836,12 @@ def _capture_before_file_states_for_paths(agent, raw_paths):
         if not eligibility.get("snapshot_eligible", False):
             continue
         info = store.write_blob(data, "text")
-        states[normalized].update({
-            "before_blob_ref": info["blob_ref"],
-            "before_hash": info["content_hash"],
-        })
+        states[normalized].update(
+            {
+                "before_blob_ref": info["blob_ref"],
+                "before_hash": info["content_hash"],
+            }
+        )
     return states
 
 
@@ -1825,7 +1869,7 @@ def _fill_git_head_before_file_states(agent, raw_paths, before_file_states):
             normalized = normalize_workspace_relative_path(raw_path)
         except ValueError:
             continue
-        if securitylib.is_sensitive_path(normalized):
+        if security_paths.is_sensitive_path(normalized):
             continue
         if normalized in states:
             continue
@@ -1838,9 +1882,7 @@ def _fill_git_head_before_file_states(agent, raw_paths, before_file_states):
         return states
 
     for path in missing_paths:
-        limit = getattr(
-            agent, "project_max_blob_size", DEFAULT_MAX_BLOB_SIZE
-        )
+        limit = getattr(agent, "project_max_blob_size", DEFAULT_MAX_BLOB_SIZE)
         try:
             tree = run_hardened_git(
                 git_executable,
@@ -1954,7 +1996,7 @@ def _build_file_entries(
             existed_before = normalized in (before_snapshot or {})
         limit = agent.project_max_blob_size
         try:
-            after_state = securitylib.read_regular_bytes_anchored(
+            after_state = workspace_files.read_regular_bytes_anchored(
                 workspace_root,
                 normalized,
                 max_bytes=limit,
@@ -1964,7 +2006,7 @@ def _build_file_entries(
                     None,
                 ),
             )
-        except securitylib.WorkspaceIOError as exc:
+        except workspace_files.WorkspaceIOError as exc:
             after_state = getattr(exc, "state", None) or {
                 "exists": False,
                 "data": None,
@@ -1983,7 +2025,7 @@ def _build_file_entries(
         else:
             change_kind = "modified"
 
-        path_sensitive = securitylib.is_sensitive_path(normalized)
+        path_sensitive = security_paths.is_sensitive_path(normalized)
         entry = {
             "path": normalized,
             "change_kind": change_kind,
@@ -2017,9 +2059,7 @@ def _build_file_entries(
                 )
                 if not eligibility.get("snapshot_eligible", False):
                     entry["snapshot_eligible"] = False
-                    entry["ineligible_reason"] = eligibility[
-                        "ineligible_reason"
-                    ]
+                    entry["ineligible_reason"] = eligibility["ineligible_reason"]
                 else:
                     info = store.write_blob(data, "text")
                     entry["after_blob_ref"] = info["blob_ref"]
@@ -2038,7 +2078,9 @@ def _build_file_entries(
         elif existed_before:
             candidate = str((before_snapshot or {}).get(normalized) or "")
             # 只接受合法 sha256 十六进制；observer 的 git 状态标记不会通过。
-            if len(candidate) == 64 and all(char in "0123456789abcdef" for char in candidate):
+            if len(candidate) == 64 and all(
+                char in "0123456789abcdef" for char in candidate
+            ):
                 entry["before_hash"] = candidate
         if (
             entry["snapshot_eligible"]
@@ -2047,9 +2089,7 @@ def _build_file_entries(
         ):
             entry["snapshot_eligible"] = False
             entry["ineligible_reason"] = "before_blob_unavailable"
-        if (
-            entry["before_exists"] and entry["before_mode"] is None
-        ) or (
+        if (entry["before_exists"] and entry["before_mode"] is None) or (
             entry["after_exists"] and entry["after_mode"] is None
         ):
             entry["snapshot_eligible"] = False

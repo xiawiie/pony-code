@@ -65,10 +65,15 @@ def aggregate_benchmark_artifact(path):
 
 
 def _infer_run_duration_ms(events):
-    finished = next((event for event in reversed(events) if event.get("event") == "run_finished"), None)
+    finished = next(
+        (event for event in reversed(events) if event.get("event") == "run_finished"),
+        None,
+    )
     if finished and finished.get("run_duration_ms") is not None:
         return float(finished["run_duration_ms"])
-    started = next((event for event in events if event.get("event") == "run_started"), None)
+    started = next(
+        (event for event in events if event.get("event") == "run_started"), None
+    )
     if not started or not finished:
         return 0.0
     start_dt = _parse_iso8601(started.get("created_at"))
@@ -98,7 +103,10 @@ def aggregate_run_artifacts(runs_root):
         reports.append(report)
         run_durations.append(_infer_run_duration_ms(events))
         for event in events:
-            if event.get("event") == "prompt_built" and event.get("duration_ms") is not None:
+            if (
+                event.get("event") == "prompt_built"
+                and event.get("duration_ms") is not None
+            ):
                 prompt_durations.append(float(event["duration_ms"]))
             if event.get("event") != "tool_executed":
                 continue
@@ -107,10 +115,14 @@ def aggregate_run_artifacts(runs_root):
                 tool_name_counts[tool_name] = tool_name_counts.get(tool_name, 0) + 1
             tool_status = str(event.get("tool_status", "")).strip()
             if tool_status:
-                tool_status_counts[tool_status] = tool_status_counts.get(tool_status, 0) + 1
+                tool_status_counts[tool_status] = (
+                    tool_status_counts.get(tool_status, 0) + 1
+                )
             security_event = str(event.get("security_event_type", "")).strip()
             if security_event:
-                security_event_counts[security_event] = security_event_counts.get(security_event, 0) + 1
+                security_event_counts[security_event] = (
+                    security_event_counts.get(security_event, 0) + 1
+                )
             if event.get("duration_ms") is not None:
                 tool_durations.append(float(event["duration_ms"]))
 
@@ -147,10 +159,14 @@ def aggregate_run_artifacts(runs_root):
         "avg_tool_steps": _safe_mean(tool_steps),
         "avg_attempts": _safe_mean(attempts),
         "avg_request_messages_chars": _safe_mean(request_messages_chars),
-        "cache_hit_rate": _safe_ratio(sum(1 for hit in cache_hits if hit), len(cache_hits)),
+        "cache_hit_rate": _safe_ratio(
+            sum(1 for hit in cache_hits if hit), len(cache_hits)
+        ),
         "cached_token_ratio": _safe_ratio(sum(cached_tokens), sum(input_tokens)),
         "avg_cached_tokens": _safe_mean(cached_tokens),
-        "prefix_reuse_rate": _safe_ratio(sum(1 for reused in prefix_reused if reused), len(prefix_reused)),
+        "prefix_reuse_rate": _safe_ratio(
+            sum(1 for reused in prefix_reused if reused), len(prefix_reused)
+        ),
         "tool_status_counts": tool_status_counts,
         "tool_name_counts": tool_name_counts,
         "security_event_counts": security_event_counts,
@@ -159,6 +175,7 @@ def aggregate_run_artifacts(runs_root):
         "avg_tool_duration_ms": _safe_mean(tool_durations),
         "avg_prompt_build_duration_ms": _safe_mean(prompt_durations),
     }
+
 
 def collect_resume_metrics(
     benchmark_artifact_path,
@@ -169,25 +186,43 @@ def collect_resume_metrics(
     context_repetitions=5,
     security_repetitions=3,
     experiment_mode="synthetic",
-    real_provider="gpt",
+    repo_root=None,
 ):
     benchmark = aggregate_benchmark_artifact(benchmark_artifact_path)
     runs = aggregate_run_artifacts(runs_root)
     experiment_mode = str(experiment_mode)
-    real_provider = str(real_provider)
+    real_provider = ""
     if experiment_mode == "real":
-        memory_large = run_real_memory_experiment(provider=real_provider, repetitions=large_memory_repetitions)
-        memory = {name: dict(values) for name, values in memory_large["variants"].items()}
-        context = run_real_context_experiment(provider=real_provider, repetitions=context_repetitions)
-        security = run_real_security_experiment_suite(provider=real_provider, repetitions=security_repetitions)
+        memory_large = run_real_memory_experiment(
+            repo_root=repo_root,
+            repetitions=large_memory_repetitions,
+        )
+        real_provider = memory_large["provider"]
+        memory = {
+            name: dict(values) for name, values in memory_large["variants"].items()
+        }
+        context = run_real_context_experiment(
+            repo_root=repo_root,
+            repetitions=context_repetitions,
+        )
+        security = run_real_security_experiment_suite(
+            repo_root=repo_root,
+            repetitions=security_repetitions,
+        )
         stress = {
-            "compacted_request_chars": int(round(context["summary"]["avg_compacted_request_chars"])),
-            "uncompacted_request_chars": int(round(context["summary"]["avg_uncompacted_request_chars"])),
+            "compacted_request_chars": int(
+                round(context["summary"]["avg_compacted_request_chars"])
+            ),
+            "uncompacted_request_chars": int(
+                round(context["summary"]["avg_uncompacted_request_chars"])
+            ),
         }
     else:
         stress = build_stress_agent_metrics()
         memory = run_memory_dependency_experiment(repetitions=memory_repetitions)
-        memory_large = run_large_scale_memory_experiment(repetitions=large_memory_repetitions)
+        memory_large = run_large_scale_memory_experiment(
+            repetitions=large_memory_repetitions
+        )
         context = run_context_stress_matrix(repetitions=context_repetitions)
         security = run_security_experiment_suite(repetitions=security_repetitions)
     provider_payload = {"providers": []}
@@ -274,7 +309,9 @@ def render_resume_metrics_markdown(metrics):
                     f"- {provider['provider']}: pass_rate={provider['pass_rate']:.2%}, avg_attempts={provider['avg_attempts']:.2f}, avg_tool_steps={provider['avg_tool_steps']:.2f}, cache_hit_rate={provider['cache_hit_rate']:.2%}"
                 )
             else:
-                lines.append(f"- {provider['provider']}: {provider['status']} ({provider.get('reason', 'unknown')})")
+                lines.append(
+                    f"- {provider['provider']}: {provider['status']} ({provider.get('reason', 'unknown')})"
+                )
     lines.append("")
     return "\n".join(lines)
 
@@ -334,7 +371,9 @@ def render_large_scale_experiment_report(metrics):
                     f"- {provider['provider']}: pass_rate={provider['pass_rate']:.2%}, avg_attempts={provider['avg_attempts']:.2f}, avg_tool_steps={provider['avg_tool_steps']:.2f}, cache_hit_rate={provider['cache_hit_rate']:.2%}"
                 )
             else:
-                lines.append(f"- {provider['provider']}: {provider['status']} ({provider.get('reason', 'unknown')})")
+                lines.append(
+                    f"- {provider['provider']}: {provider['status']} ({provider.get('reason', 'unknown')})"
+                )
     else:
         lines.append("- none")
     lines.extend(
@@ -348,6 +387,7 @@ def render_large_scale_experiment_report(metrics):
         ]
     )
     return "\n".join(lines)
+
 
 def write_benchmark_core_report(
     report_path=DEFAULT_CORE_REPORT_PATH,
@@ -382,7 +422,9 @@ def write_benchmark_core_report(
     memory_variants = memory.get("variants", {})
     memory_on = memory_variants.get("memory_on", {})
     memory_off = memory_variants.get("memory_off", {})
-    enabled_recovery = recovery.get("variants", {}).get("resume_enabled", {}).get("summary", {})
+    enabled_recovery = (
+        recovery.get("variants", {}).get("resume_enabled", {}).get("summary", {})
+    )
     lines = [
         "# Pico Benchmark Core Report",
         "",

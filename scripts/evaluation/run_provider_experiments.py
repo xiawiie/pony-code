@@ -17,16 +17,31 @@ from benchmarks.evaluation.metrics_common import _validate_record_header  # noqa
 
 
 def build_arg_parser():
-    parser = argparse.ArgumentParser(description="Run GPT, Claude, and DeepSeek provider experiments for pico benchmark tasks.")
-    parser.add_argument("--benchmark-path", default="benchmarks/coding_tasks.json", help="Path to benchmark task JSON.")
-    parser.add_argument("--workspace-root", default="artifacts/provider-workspaces", help="Workspace root for provider experiment copies.")
-    parser.add_argument("--artifact-root", default="artifacts/provider-artifacts", help="Directory to store provider benchmark artifacts.")
-    parser.add_argument("--output-json", required=True, help="Path to output provider experiment JSON.")
+    parser = argparse.ArgumentParser(
+        description="Run the Provider selected by a Pico repository's .env."
+    )
     parser.add_argument(
-        "--provider",
-        choices=("all", "gpt", "claude", "deepseek"),
-        default="all",
-        help="Provider benchmark target. Use 'all' to run GPT, Claude, and DeepSeek.",
+        "--repo-root",
+        default=".",
+        help="Repository whose .env selects the Provider and Transport.",
+    )
+    parser.add_argument(
+        "--benchmark-path",
+        default="benchmarks/coding_tasks.json",
+        help="Path to benchmark task JSON.",
+    )
+    parser.add_argument(
+        "--workspace-root",
+        default="artifacts/provider-workspaces",
+        help="Workspace root for provider experiment copies.",
+    )
+    parser.add_argument(
+        "--artifact-root",
+        default="artifacts/provider-artifacts",
+        help="Directory to store provider benchmark artifacts.",
+    )
+    parser.add_argument(
+        "--output-json", required=True, help="Path to output provider experiment JSON."
     )
     parser.add_argument(
         "--max-output-tokens",
@@ -43,8 +58,8 @@ def main(argv=None):
         benchmark_path=args.benchmark_path,
         workspace_root=args.workspace_root,
         artifact_root=args.artifact_root,
+        repo_root=args.repo_root,
         max_output_tokens=args.max_output_tokens,
-        providers=args.provider,
     )
     _validate_record_header(
         payload,
@@ -53,7 +68,9 @@ def main(argv=None):
     )
     output = Path(args.output_json)
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    output.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
     return 0
 
 

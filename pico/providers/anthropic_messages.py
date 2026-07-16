@@ -6,8 +6,8 @@ import urllib.request
 
 from pico.agent.messages import strip_pico_meta
 
-from ._shared import (
-    _ProviderFailure,
+from .transport import (
+    ProviderTransportError,
     _decode_json_object,
     _mapping_or_empty,
     _open_provider_request,
@@ -123,17 +123,12 @@ def _extract_anthropic_usage_cache_details(data):
     input_tokens = _optional_int(usage.get("input_tokens"))
     output_tokens = _optional_int(usage.get("output_tokens"))
     reported_total_tokens = _optional_int(usage.get("total_tokens"))
-    cache_creation_tokens = (
-        _optional_int(usage.get("cache_creation_input_tokens")) or 0
-    )
+    cache_creation_tokens = _optional_int(usage.get("cache_creation_input_tokens")) or 0
     cache_read_tokens = _optional_int(usage.get("cache_read_input_tokens")) or 0
     total_tokens = reported_total_tokens
     if input_tokens is not None and output_tokens is not None:
         total_tokens = (
-            input_tokens
-            + cache_creation_tokens
-            + cache_read_tokens
-            + output_tokens
+            input_tokens + cache_creation_tokens + cache_read_tokens + output_tokens
         )
     return {
         "input_tokens": input_tokens,
@@ -146,7 +141,7 @@ def _extract_anthropic_usage_cache_details(data):
     }
 
 
-class AnthropicCompatibleModelClient:
+class AnthropicMessagesModelClient:
     def __init__(
         self,
         model,
@@ -158,7 +153,7 @@ class AnthropicCompatibleModelClient:
         auth_mode=None,
         capabilities=None,
     ):
-        from pico.config import validate_api_url
+        from pico.config.model import validate_api_url
 
         self.model = model
         self.base_url = validate_api_url(base_url)
@@ -171,9 +166,7 @@ class AnthropicCompatibleModelClient:
             else _validate_number("temperature", temperature, minimum=0, maximum=1)
         )
         self.timeout = _validate_number("timeout", timeout, minimum=0.001)
-        self.supports_prompt_cache = bool(
-            self.capabilities.get("prompt_cache", False)
-        )
+        self.supports_prompt_cache = bool(self.capabilities.get("prompt_cache", False))
         self.provider_binding = _model_binding(
             "anthropic_messages",
             self.model,
@@ -216,8 +209,7 @@ class AnthropicCompatibleModelClient:
                     or not isinstance(content, list)
                     or not content
                     or not all(
-                        isinstance(block, dict)
-                        and block.get("type") == "tool_use"
+                        isinstance(block, dict) and block.get("type") == "tool_use"
                         for block in content
                     )
                 ):
@@ -227,7 +219,13 @@ class AnthropicCompatibleModelClient:
                 content = [*provider_state, *deepcopy(content)]
             if idx in breakpoints:
                 if isinstance(content, str):
-                    blocks = [{"type": "text", "text": content, "cache_control": {"type": "ephemeral"}}]
+                    blocks = [
+                        {
+                            "type": "text",
+                            "text": content,
+                            "cache_control": {"type": "ephemeral"},
+                        }
+                    ]
                 else:
                     blocks = list(content)
                     if blocks:
@@ -259,8 +257,6 @@ class AnthropicCompatibleModelClient:
         }
         if self.temperature is not None:
             payload["temperature"] = self.temperature
-        if self.capabilities.get("thinking_disabled"):
-            payload["thinking"] = {"type": "disabled"}
         if not prepared_tools:
             payload.pop("tools")
         elif self.capabilities.get("parallel_tool_control"):
@@ -289,12 +285,12 @@ class AnthropicCompatibleModelClient:
         try:
             data = _decode_json_object(response_body)
         except Exception:
-            raise _ProviderFailure(
+            raise ProviderTransportError(
                 "Anthropic error: provider_protocol_mismatch",
                 code="provider_protocol_mismatch",
             ) from None
         if data.get("error"):
-            raise _ProviderFailure(
+            raise ProviderTransportError(
                 "Anthropic error: backend_error",
                 code="backend_error",
             ) from None
@@ -312,7 +308,7 @@ class AnthropicCompatibleModelClient:
             if not isinstance(raw_stop_reason, str):
                 raise ValueError("stop reason must be a string")
             if raw_stop_reason == "pause_turn":
-                raise _ProviderFailure(
+                raise ProviderTransportError(
                     "Anthropic error: unsupported_stop_reason",
                     code="unsupported_stop_reason",
                 )
@@ -331,10 +327,10 @@ class AnthropicCompatibleModelClient:
                 usage=usage_details,
                 provider_state=provider_state,
             )
-        except _ProviderFailure:
+        except ProviderTransportError:
             raise
         except Exception:
-            raise _ProviderFailure(
+            raise ProviderTransportError(
                 "Anthropic error: provider_protocol_mismatch",
                 code="provider_protocol_mismatch",
             ) from None

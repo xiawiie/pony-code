@@ -2,9 +2,9 @@ from unittest.mock import Mock
 
 import pytest
 
-import pico.providers._shared as provider_shared
-from pico.providers._shared import _ProviderFailure
-from pico.providers.openai_chat import OpenAIChatCompletionsModelClient
+import pico.providers.transport as provider_shared
+from pico.providers.transport import ProviderTransportError
+from pico.providers.openai_chat_completions import OpenAIChatCompletionsModelClient
 from pico.providers.probe import probe_model_client
 from pico.providers.response import Response, StopReason
 
@@ -99,7 +99,7 @@ def test_probe_reports_safe_provider_failure_category():
     secret = "secret-token-value"
     client = _ScriptedClient(
         [
-            _ProviderFailure(
+            ProviderTransportError(
                 f"provider rejected {secret}",
                 code="http_4xx",
                 http_status=401,
@@ -127,9 +127,11 @@ def test_probe_reports_safe_provider_failure_category():
     ],
 )
 def test_probe_preserves_specific_safe_failure_category(code, category):
-    client = _ScriptedClient([
-        _ProviderFailure("provider request failed", code=code),
-    ])
+    client = _ScriptedClient(
+        [
+            ProviderTransportError("provider request failed", code=code),
+        ]
+    )
 
     report = probe_model_client(client)
 
@@ -146,7 +148,6 @@ def test_probe_missing_key_performs_zero_network_requests(monkeypatch):
         api_key="",
         temperature=0.0,
         timeout=1,
-        compatibility="deepseek",
     )
 
     report = probe_model_client(client)

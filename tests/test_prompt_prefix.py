@@ -1,9 +1,11 @@
-from pico import Pico, SessionStore
-from pico.providers.fake import FakeModelClient
+from pico import Pico
+from pico.state.session_store import SessionStore
+from benchmarks.support.fake_provider import FakeModelClient
 from pico.context.renderer import render_current_user_message
 from pico.agent.prompt_prefix import build_prompt_prefix, tool_signature
-from pico.tools import build_tool_registry
-from pico.workspace import WorkspaceContext
+from pico.tools.registry import build_tool_registry
+from pico.workspace.context import WorkspaceContext
+from pico.runtime.options import RuntimeOptions
 
 
 class _Agent:
@@ -16,8 +18,18 @@ class _Agent:
 
 def test_tool_signature_is_stable_across_registry_insertion_order(tmp_path):
     tools = {
-        "b": {"schema": {"path": "str"}, "risky": False, "description": "B", "run": object()},
-        "a": {"schema": {"command": "str"}, "risky": True, "description": "A", "run": object()},
+        "b": {
+            "schema": {"path": "str"},
+            "risky": False,
+            "description": "B",
+            "run": object(),
+        },
+        "a": {
+            "schema": {"command": "str"},
+            "risky": True,
+            "description": "A",
+            "run": object(),
+        },
     }
     reordered = {"a": tools["a"], "b": tools["b"]}
 
@@ -49,7 +61,9 @@ def test_build_prompt_prefix_keeps_schemas_and_ordinary_docs_out_of_system(tmp_p
     workspace = WorkspaceContext.build(tmp_path)
     tools = build_tool_registry(_Agent(tmp_path))
 
-    prefix = build_prompt_prefix(workspace=workspace, tools=tools, built_at="2026-06-02T00:00:00+08:00")
+    prefix = build_prompt_prefix(
+        workspace=workspace, tools=tools, built_at="2026-06-02T00:00:00+08:00"
+    )
 
     assert "You are pico" in prefix.text
     assert "Available native tools:" in prefix.text
@@ -81,7 +95,7 @@ def test_memory_guidance_lives_once_in_prefix_not_current_user_request(tmp_path)
         model_client=FakeModelClient([]),
         workspace=WorkspaceContext.build(tmp_path),
         session_store=SessionStore(tmp_path / ".pico" / "sessions"),
-        approval_policy="auto",
+        options=RuntimeOptions(approval_policy="auto"),
     )
     agent.session["messages"].append(
         {"role": "user", "content": "inspect the project", "_pico_meta": {}}

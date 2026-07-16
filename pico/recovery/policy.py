@@ -10,9 +10,10 @@ import shlex
 import stat
 from pathlib import Path
 
-from pico import security as securitylib
+from pico.security import paths as security_paths
+from pico.security import redaction as redaction
 from pico.recovery.paths import normalize_workspace_relative_path
-from pico.security import is_sensitive_path
+from pico.security.paths import is_sensitive_path
 
 # 单文件快照上限：Phase 1 用固定值 8 MiB。真实用户覆写在 pico.toml 里。
 DEFAULT_MAX_BLOB_SIZE = 8 * 1024 * 1024
@@ -179,15 +180,12 @@ def _scan_shell_syntax(command):
                     else ""
                 )
                 redirects.append((token, target))
-            elif (
-                any(char in "<>" for char in token)
-                and all(char in _ONE_CHAR_SHELL_TOKENS for char in token)
+            elif any(char in "<>" for char in token) and all(
+                char in _ONE_CHAR_SHELL_TOKENS for char in token
             ):
                 redirects.append((token, ""))
     has_assignment = bool(argv and _ASSIGNMENT_TOKEN_RE.match(argv[0]))
-    has_control_keyword = bool(
-        argv and argv[0].casefold() in _CONTROL_KEYWORDS
-    )
+    has_control_keyword = bool(argv and argv[0].casefold() in _CONTROL_KEYWORDS)
     return {
         "parse_error": parse_error,
         "operators": tuple(operators),
@@ -329,7 +327,7 @@ def _path_operand_reason(workspace_root, raw_path, *, require_regular=False):
         return "unsafe_path"
     if is_sensitive_path(relative.as_posix()):
         return "sensitive_path"
-    env_template = securitylib.is_allowed_env_template_leaf(relative.as_posix())
+    env_template = security_paths.is_allowed_env_template_leaf(relative.as_posix())
     current = root
     try:
         mode = root.lstat().st_mode
@@ -388,7 +386,9 @@ def _git_grammar_reason(argv):
         }
         return "" if rest in accepted else "unknown_git_grammar"
     if subcommand == "branch":
-        return "" if rest in {("--show-current",), ("--list",)} else "unknown_git_grammar"
+        return (
+            "" if rest in {("--show-current",), ("--list",)} else "unknown_git_grammar"
+        )
     if subcommand == "worktree":
         return "" if rest == ("list",) else "unknown_git_grammar"
     if subcommand == "ls-files":
@@ -595,9 +595,7 @@ def _remove_shell_line_continuations(command):
 
 
 def _grammar_words(command):
-    lexer = shlex.shlex(
-        str(command or ""), posix=True, punctuation_chars="|&;<>()"
-    )
+    lexer = shlex.shlex(str(command or ""), posix=True, punctuation_chars="|&;<>()")
     lexer.whitespace_split = True
     lexer.commenters = ""
     return list(lexer)
@@ -607,14 +605,12 @@ def _literal_word_is_sensitive(word):
     if is_sensitive_path(word):
         return True
     if ":" in word and any(
-        is_sensitive_path(candidate)
-        for candidate in word.split(":")[1:]
-        if candidate
+        is_sensitive_path(candidate) for candidate in word.split(":")[1:] if candidate
     ):
         return True
     if not word.startswith("-") or len(word) <= 2:
         return False
-    if securitylib.has_sensitive_path_suffix(word):
+    if security_paths.has_sensitive_path_suffix(word):
         return True
     candidates = [word[2:]]
     if "=" in word:
@@ -694,10 +690,7 @@ def _literal_sensitive_reason(command, workspace_root):
                     index += 2
                     continue
                 break
-            if (
-                index < len(segment)
-                and Path(segment[index]).name.casefold() == "env"
-            ):
+            if index < len(segment) and Path(segment[index]).name.casefold() == "env":
                 _, env_index = _env_prefix(segment[index:])
                 index += env_index
                 while index < len(segment) and _ASSIGNMENT_TOKEN_RE.match(
@@ -735,30 +728,21 @@ def _assess_command(command, workspace_root, executables, _depth=0):
             "shell" if has_shell_grammar else "argv",
         )
     if scan["parse_error"]:
-        return _assessment(
-            "external_effect", "ask", "shell_parse_error", [], "shell"
-        )
+        return _assessment("external_effect", "ask", "shell_parse_error", [], "shell")
     argv = shlex.split(raw, comments=False, posix=True)
     if scan["redirects"]:
         if scan["has_expansion"]:
-            return _assessment(
-                "destructive", "ask", "dynamic_redirect", [], "shell"
-            )
+            return _assessment("destructive", "ask", "dynamic_redirect", [], "shell")
         redirect_reasons = [
             _path_operand_reason(workspace_root, target)
             for _, target in scan["redirects"]
         ]
         if "sensitive_path" in redirect_reasons:
-            return _assessment(
-                "destructive", "reject", "sensitive_path", [], "shell"
-            )
+            return _assessment("destructive", "reject", "sensitive_path", [], "shell")
         if any(
-            reason in {"outside_path", "unsafe_path"}
-            for reason in redirect_reasons
+            reason in {"outside_path", "unsafe_path"} for reason in redirect_reasons
         ):
-            return _assessment(
-                "destructive", "ask", "unsafe_redirect", [], "shell"
-            )
+            return _assessment("destructive", "ask", "unsafe_redirect", [], "shell")
         return _assessment(
             "workspace_write", "ask", "redirect_requires_approval", [], "shell"
         )
@@ -771,9 +755,7 @@ def _assess_command(command, workspace_root, executables, _depth=0):
             "shell",
         )
     if not argv:
-        return _assessment(
-            "external_effect", "ask", "empty_command", [], "shell"
-        )
+        return _assessment("external_effect", "ask", "empty_command", [], "shell")
     head = argv[0]
     if "/" in head or "\\" in head:
         return _assessment(
@@ -796,9 +778,7 @@ def _assess_command(command, workspace_root, executables, _depth=0):
             else None
         )
         if nested is not None and nested["decision"] == "reject":
-            return _assessment(
-                "destructive", "reject", nested["reason"], argv, "argv"
-            )
+            return _assessment("destructive", "reject", nested["reason"], argv, "argv")
         return _assessment(
             "external_effect",
             "ask",
@@ -824,9 +804,7 @@ def _assess_command(command, workspace_root, executables, _depth=0):
                 argv,
                 "argv",
             )
-        return _assessment(
-            "read_only", "allow", "proved_read_only", argv, "argv"
-        )
+        return _assessment("read_only", "allow", "proved_read_only", argv, "argv")
     if head in _INTERPRETERS:
         reason = "interpreter_requires_approval"
     elif head in _PRIVILEGED:
@@ -872,7 +850,11 @@ def _looks_binary(sample):
     if not sample:
         return False
     # 高比例的不可打印字节视作二进制
-    textish = sum(1 for byte in sample if byte == 9 or byte == 10 or byte == 13 or 32 <= byte < 127)
+    textish = sum(
+        1
+        for byte in sample
+        if byte == 9 or byte == 10 or byte == 13 or 32 <= byte < 127
+    )
     return textish / len(sample) < 0.85
 
 
@@ -900,7 +882,7 @@ def snapshot_bytes_eligibility(
         "ineligible_reason": "",
         "path": normalized,
     }
-    if securitylib.is_sensitive_path(normalized):
+    if security_paths.is_sensitive_path(normalized):
         result["snapshot_eligible"] = False
         result["ineligible_reason"] = "sensitive_path"
         return result
@@ -923,7 +905,7 @@ def snapshot_bytes_eligibility(
         result["snapshot_eligible"] = False
         result["ineligible_reason"] = "binary_file"
         return result
-    if securitylib.contains_secret_material(
+    if redaction.contains_secret_material(
         text,
         env=env,
         secret_env_names=secret_env_names,
@@ -952,7 +934,7 @@ def snapshot_eligibility(
             "snapshot_eligible": False,
             "ineligible_reason": "invalid_path",
             "detail": "invalid path",
-            "path": securitylib.redact_text(
+            "path": redaction.redact_text(
                 raw_path,
                 env=env,
                 secret_env_names=secret_env_names,
@@ -963,16 +945,14 @@ def snapshot_eligibility(
         "ineligible_reason": "",
         "path": normalized,
     }
-    if securitylib.is_sensitive_path(normalized):
+    if security_paths.is_sensitive_path(normalized):
         result["snapshot_eligible"] = False
         result["ineligible_reason"] = "sensitive_path"
         return result
 
     try:
         root = Path(workspace_root).resolve(strict=True)
-        candidate = Path(
-            os.path.abspath(os.fspath(root / normalized))
-        )
+        candidate = Path(os.path.abspath(os.fspath(root / normalized)))
         candidate.relative_to(root)
     except (OSError, ValueError):
         result["snapshot_eligible"] = False
@@ -1009,7 +989,7 @@ def snapshot_eligibility(
         return result
 
     if (
-        securitylib.is_allowed_env_template_leaf(normalized)
+        security_paths.is_allowed_env_template_leaf(normalized)
         and final_mode is not None
         and not stat.S_ISREG(final_mode)
     ):

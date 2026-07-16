@@ -16,7 +16,7 @@ from unittest.mock import MagicMock
 import pico.agent.loop as agent_loop_module
 from pico.agent.loop import _prepare_tool_result
 from pico.agent.model_capabilities import TokenAccounting
-from pico.security import redact_text
+from pico.security.redaction import redact_text
 
 
 def _stub_agent(tmp_path, run_id="run1"):
@@ -25,9 +25,7 @@ def _stub_agent(tmp_path, run_id="run1"):
     a.current_run_dir.mkdir(parents=True, exist_ok=True)
     a.redact_text.side_effect = lambda value: value
     a.token_accounting = TokenAccounting()
-    a.context_config = {
-        "tool_results": {"inline_tokens": 4096, "digest_tokens": 512}
-    }
+    a.context_config = {"tool_results": {"inline_tokens": 4096, "digest_tokens": 512}}
     return a
 
 
@@ -199,9 +197,7 @@ def test_digest_computed_exactly_once(tmp_path, monkeypatch):
     a.current_run_dir = tmp_path / ".pico" / "runs" / "r1"
     a.current_run_dir.mkdir(parents=True, exist_ok=True)
     a.token_accounting = TokenAccounting()
-    a.context_config = {
-        "tool_results": {"inline_tokens": 100, "digest_tokens": 512}
-    }
+    a.context_config = {"tool_results": {"inline_tokens": 100, "digest_tokens": 512}}
     a.redact_text.side_effect = lambda value: value
 
     _prepare_tool_result(

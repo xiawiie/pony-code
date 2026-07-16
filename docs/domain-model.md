@@ -1,7 +1,7 @@
 # Pico 维护上下文
 
-本文定义 Pico 1.0 的通用语言和模块所有权。实现流向见[架构](docs/architecture.md)，操作和发布见
-[验证](docs/verification.md)。
+本文定义 Pico 1.0 的通用语言和模块所有权。实现流向见[架构](architecture.md)，操作和发布见
+[验证](verification.md)。
 
 ## 核心领域语言
 
@@ -75,7 +75,7 @@ reasoning state 或 Anthropic thinking block 跨协议重放。
 | `pico.memory` | User/Agent Notes、recall、retrieval、RepoMap 与 memory service |
 | `pico.providers` | wire adapter、Provider-neutral Response、factory 与 API probe |
 | `pico.recovery` | 恢复模型、policy、migration、writer 与 manager |
-| `pico.sandbox` | Docker local runtime、identity、staging、network、diff/apply 与资源 |
+| `pico.sandbox` | Docker local runtime、identity、隔离策略、staging、diff/apply 与资源 |
 | `pico.state` | Session/Run/Checkpoint store、TaskState 与 file lock |
 | `pico.tools` | Tool schema、policy/approval 协调、effect recorder 与受限 subprocess |
 | `pico.workspace` | root discovery、workspace view、snapshot 与 observer |

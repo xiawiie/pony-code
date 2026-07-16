@@ -1,4 +1,4 @@
-"""Shared provider helpers."""
+"""Shared HTTP transport, validation, and response helpers."""
 
 from http.client import HTTPException, IncompleteRead, RemoteDisconnected
 from datetime import datetime, timezone
@@ -16,7 +16,7 @@ import urllib.request
 MAX_PROVIDER_RESPONSE_BYTES = 16 * 1024 * 1024
 
 
-class _ProviderFailure(RuntimeError):
+class ProviderTransportError(RuntimeError):
     """Safe internal provider failure used by AgentLoop retry policy."""
 
     def __init__(
@@ -77,9 +77,7 @@ def _model_runtime_metadata(protocol_family, model, base_url):
         "protocol_family": str(protocol_family),
         "requested_model": str(model),
         "effective_model": str(model),
-        "endpoint_origin": urllib.parse.urlunsplit(
-            (parsed.scheme, netloc, "", "", "")
-        ),
+        "endpoint_origin": urllib.parse.urlunsplit((parsed.scheme, netloc, "", "", "")),
     }
 
 
@@ -127,17 +125,17 @@ def _validate_provider_credentials(
         except ValueError:
             pass
     if required and not key.strip():
-        raise _ProviderFailure(
+        raise ProviderTransportError(
             f"{family} request failed: missing_credentials",
             code="missing_credentials",
         )
     if key != key.strip():
-        raise _ProviderFailure(
+        raise ProviderTransportError(
             f"{family} request failed: invalid_credentials",
             code="invalid_configuration",
         )
     if key and parsed.scheme.casefold() != "https" and not loopback:
-        raise _ProviderFailure(
+        raise ProviderTransportError(
             f"{family} request failed: insecure_credentials",
             code="invalid_configuration",
         )
@@ -145,7 +143,7 @@ def _validate_provider_credentials(
 
 def _provider_auth_headers(base_url, api_key, *, auth_mode, family):
     if auth_mode not in {"x-api-key", "bearer", "none"}:
-        raise _ProviderFailure(
+        raise ProviderTransportError(
             f"{family} request failed: invalid_auth_mode",
             code="invalid_configuration",
         )
@@ -191,7 +189,7 @@ def _network_failure(family, exc, *, retryable):
         code = "timeout"
     else:
         code = "network_error"
-    return _ProviderFailure(
+    return ProviderTransportError(
         f"{family} request failed: {code}",
         code=code,
         retryable=retryable,
@@ -245,7 +243,7 @@ def _open_provider_request(client, request, *, family, retryable):
             code = "redirect_blocked"
         else:
             code = "http_4xx"
-        raise _ProviderFailure(
+        raise ProviderTransportError(
             f"{family} request failed with HTTP {status}",
             code=code,
             http_status=status,
@@ -256,7 +254,7 @@ def _open_provider_request(client, request, *, family, retryable):
     except (urllib.error.URLError, HTTPException, OSError) as exc:
         raise _network_failure(family, exc, retryable=retryable) from None
     if len(body) > MAX_PROVIDER_RESPONSE_BYTES:
-        raise _ProviderFailure(
+        raise ProviderTransportError(
             f"{family} error: response_too_large",
             code="response_too_large",
         )
@@ -309,9 +307,7 @@ def _extract_usage_cache_details(data):
     if not isinstance(data, dict):
         raise ValueError("response must be an object")
     usage = _mapping_or_empty(data.get("usage"))
-    input_tokens = _optional_int(
-        usage.get("input_tokens", usage.get("prompt_tokens"))
-    )
+    input_tokens = _optional_int(usage.get("input_tokens", usage.get("prompt_tokens")))
     output_tokens = _optional_int(
         usage.get("output_tokens", usage.get("completion_tokens"))
     )

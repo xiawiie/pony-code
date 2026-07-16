@@ -64,13 +64,10 @@ def _run(*args: str, cwd: Path | None = None, env: dict[str, str] | None = None)
 def _tracked_package_files(repo: Path) -> set[str]:
     output = _run("git", "ls-files", "--", "pico", cwd=repo)
     files = {
-        line
-        for line in output.splitlines()
-        if line and os.path.lexists(repo / line)
+        line for line in output.splitlines() if line and os.path.lexists(repo / line)
     }
     if not files or any(
-        not name.endswith(".py") and name not in PACKAGE_DATA_FILES
-        for name in files
+        not name.endswith(".py") and name not in PACKAGE_DATA_FILES for name in files
     ):
         raise AssertionError(f"unexpected tracked package files: {sorted(files)}")
     untracked_package_data = PACKAGE_DATA_FILES - files
@@ -119,13 +116,17 @@ def verify_sdist(sdist: Path, tracked_package_files: set[str]) -> None:
         }
 
     egg_info = {f"pico.egg-info/{name}" for name in EGG_INFO_FILES}
-    expected = tracked_package_files | {
-        "PKG-INFO",
-        "LICENSE",
-        "README.md",
-        "pyproject.toml",
-        "setup.cfg",
-    } | egg_info
+    expected = (
+        tracked_package_files
+        | {
+            "PKG-INFO",
+            "LICENSE",
+            "README.md",
+            "pyproject.toml",
+            "setup.cfg",
+        }
+        | egg_info
+    )
     if files != expected:
         raise AssertionError(
             f"sdist file mismatch\nmissing: {sorted(expected - files)}\n"
@@ -143,7 +144,9 @@ def verify_wheel(wheel: Path, tracked_package_files: set[str], readme: str) -> N
         f"{dist_info}/{name}" for name in DIST_INFO_FILES
     }
     with zipfile.ZipFile(wheel) as archive:
-        files = {name.rstrip("/") for name in archive.namelist() if not name.endswith("/")}
+        files = {
+            name.rstrip("/") for name in archive.namelist() if not name.endswith("/")
+        }
         if files != expected:
             raise AssertionError(
                 f"wheel file mismatch\nmissing: {sorted(expected - files)}\n"
@@ -171,7 +174,7 @@ def verify_wheel(wheel: Path, tracked_package_files: set[str], readme: str) -> N
     ]
     assert metadata.get_all("Requires-Dist") is None
     assert metadata_body.decode("utf-8").strip() == readme.strip()
-    assert entry_points == "[console_scripts]\npico = pico.cli:main\n"
+    assert entry_points == "[console_scripts]\npico = pico.cli.app:main\n"
     assert wheel_metadata["Root-Is-Purelib"] == "true"
     assert wheel_metadata.get_all("Tag") == ["py3-none-any"]
 
@@ -228,7 +231,10 @@ def install_smoke(wheel: Path, *, offline: bool = False) -> None:
             "import importlib.util; "
             "forbidden=('pico.sandbox_macos','pico.sandbox_linux',"
             "'pico.sandbox_toolchain','pico.sandbox_lifecycle',"
-            "'pico._sandbox_toolchain'); "
+            "'pico._sandbox_toolchain','pico.sandbox.network_control',"
+            "'pico.providers.fake','pico.providers.anthropic_compatible',"
+            "'pico.providers.openai_compatible','pico.providers.openai_chat',"
+            "'pico.providers.ollama'); "
             "assert all(importlib.util.find_spec(name) is None for name in forbidden); "
             "assert importlib.util.find_spec('benchmarks') is None",
             cwd=cwd,

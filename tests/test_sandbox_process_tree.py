@@ -7,7 +7,7 @@ from pico.tools.subprocess import (
     build_trusted_executables,
     run_process_group,
 )
-from pico.tools import _ApprovedShellExecution, _tool_run_shell
+from pico.tools.shell import ApprovedShellExecution, _tool_run_shell
 
 
 def _pid_exists(pid):
@@ -86,8 +86,8 @@ time.sleep(30)
                 root=tmp_path,
                 shell_env=lambda: {"PATH": "/usr/bin:/bin"},
             ),
-            _ApprovedShellExecution(
-                command="",
+            ApprovedShellExecution(
+                exact_command="",
                 argv=(
                     "python3",
                     str(script),

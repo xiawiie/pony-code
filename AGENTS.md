@@ -216,7 +216,7 @@ uv run python scripts/sandbox/verify_runtime.py --require-ready
 用户可见行为变化必须同步更新最接近的真源：
 
 - 快速使用与支持矩阵：`README.md`；
-- 领域词汇与模块责任：`CONTEXT.md`；
+- 领域词汇与模块责任：`docs/domain-model.md`；
 - 结构和数据流：`docs/architecture.md`；
 - 安全边界：`docs/security.md`；
 - 安装和 `.env`：`docs/cli-installation-and-updates.md`；

@@ -6,12 +6,15 @@ from unittest.mock import Mock
 import pytest
 
 import pico.agent.loop as agent_loop_module
-from pico import security as security_module
-from pico import Pico, SessionStore, WorkspaceContext
-from pico.providers.fake import FakeModelClient
+from pico.security import private_files as security_module
+from pico import Pico
+from pico.state.session_store import SessionStore
+from pico.workspace.context import WorkspaceContext
+from benchmarks.support.fake_provider import FakeModelClient
 from pico.agent.loop import AgentLoop
-from pico.providers._shared import _ProviderFailure
+from pico.providers.transport import ProviderTransportError
 from pico.providers.response import Response, StopReason
+from pico.runtime.options import RuntimeOptions
 
 
 class NativeScriptProvider:
@@ -95,8 +98,7 @@ def build_native_agent(tmp_path, provider, **kwargs):
         model_client=provider,
         workspace=WorkspaceContext.build(tmp_path),
         session_store=SessionStore(tmp_path / ".pico" / "sessions"),
-        approval_policy="auto",
-        **kwargs,
+        options=RuntimeOptions(approval_policy="auto", **kwargs),
     )
 
 
@@ -109,8 +111,7 @@ def build_agent(tmp_path, outputs, max_steps=6):
         model_client=FakeModelClient(outputs),
         workspace=workspace,
         session_store=store,
-        approval_policy="auto",
-        max_steps=max_steps,
+        options=RuntimeOptions(approval_policy="auto", max_steps=max_steps),
     )
 
 
@@ -145,13 +146,14 @@ def test_transient_provider_failures_retry_in_agent_loop_with_explicit_origins(
     tmp_path,
     monkeypatch,
 ):
-    provider = EvidenceScriptProvider([
-        _ProviderFailure(
+    provider = EvidenceScriptProvider(
+        [
+            ProviderTransportError(
             "OpenAI-compatible request failed: timeout",
             code="timeout",
             retryable=True,
         ),
-        _ProviderFailure(
+            ProviderTransportError(
             "OpenAI-compatible request failed with HTTP 503",
             code="http_5xx",
             http_status=503,
@@ -162,7 +164,8 @@ def test_transient_provider_failures_retry_in_agent_loop_with_explicit_origins(
             content=[{"type": "text", "text": "done"}],
             usage={"input_tokens": 3, "output_tokens": 1, "total_tokens": 4},
         ),
-    ])
+        ]
+    )
     delays = []
     monkeypatch.setattr(agent_loop_module, "_sleep", delays.append)
     agent = build_native_agent(tmp_path, provider)
@@ -220,7 +223,7 @@ def test_transient_provider_failures_retry_in_agent_loop_with_explicit_origins(
 def test_provider_context_error_forces_one_compaction_and_retry(tmp_path):
     provider = EvidenceScriptProvider(
         [
-            _ProviderFailure(
+            ProviderTransportError(
                 "context_length_exceeded",
                 code="context_length_exceeded",
                 http_status=400,
@@ -269,7 +272,7 @@ def test_provider_context_error_forces_one_compaction_and_retry(tmp_path):
 
 
 def test_nonretryable_provider_failure_is_not_replayed(tmp_path, monkeypatch):
-    failure = _ProviderFailure(
+    failure = ProviderTransportError(
         "OpenAI-compatible request failed with HTTP 429",
         code="rate_limited",
         http_status=429,
@@ -288,13 +291,14 @@ def test_nonretryable_provider_failure_is_not_replayed(tmp_path, monkeypatch):
 
 
 def test_model_retry_preserves_retry_action_feedback(tmp_path, monkeypatch):
-    provider = EvidenceScriptProvider([
+    provider = EvidenceScriptProvider(
+        [
         Response(
             stop_reason=StopReason.UNKNOWN,
             content=[{"type": "text", "text": "bad native response"}],
             usage={},
         ),
-        _ProviderFailure(
+            ProviderTransportError(
             "Anthropic-compatible request failed: network_error",
             code="network_error",
             retryable=True,
@@ -304,7 +308,8 @@ def test_model_retry_preserves_retry_action_feedback(tmp_path, monkeypatch):
             content=[{"type": "text", "text": "done"}],
             usage={},
         ),
-    ])
+        ]
+    )
     monkeypatch.setattr(agent_loop_module, "_sleep", lambda _delay: None)
     agent = build_native_agent(tmp_path, provider)
 
@@ -323,7 +328,8 @@ def test_model_retry_preserves_retry_action_feedback(tmp_path, monkeypatch):
 
 
 def test_retry_action_allows_only_one_protocol_correction_per_run(tmp_path):
-    provider = EvidenceScriptProvider([
+    provider = EvidenceScriptProvider(
+        [
         Response(
             stop_reason=StopReason.UNKNOWN,
             content=[{"type": "text", "text": "bad native response"}],
@@ -331,12 +337,14 @@ def test_retry_action_allows_only_one_protocol_correction_per_run(tmp_path):
         ),
         Response(
             stop_reason=StopReason.TOOL_USE,
-            content=[{
+                content=[
+                    {
                 "type": "tool_use",
                 "id": "tu_read",
                 "name": "read_file",
                 "input": {"path": "README.md"},
-            }],
+                    }
+                ],
             usage={},
         ),
         Response(
@@ -344,7 +352,8 @@ def test_retry_action_allows_only_one_protocol_correction_per_run(tmp_path):
             content=[{"type": "text", "text": "bad native response again"}],
             usage={},
         ),
-    ])
+        ]
+    )
     agent = build_native_agent(tmp_path, provider, max_steps=2)
 
     answer = agent.ask("one correction only")
@@ -355,13 +364,15 @@ def test_retry_action_allows_only_one_protocol_correction_per_run(tmp_path):
 
 
 def test_missing_custom_transport_evidence_is_null_in_report(tmp_path):
-    provider = NativeScriptProvider([
+    provider = NativeScriptProvider(
+        [
         Response(
             stop_reason=StopReason.END_TURN,
             content=[{"type": "text", "text": "done"}],
             usage={},
         )
-    ])
+        ]
+    )
     agent = build_native_agent(tmp_path, provider)
 
     assert agent.ask("custom") == "done"
@@ -384,10 +395,13 @@ def test_pico_ask_delegates_to_agent_loop(tmp_path):
 
 
 def test_rejected_tool_action_never_creates_verification_evidence():
-    assert agent_loop_module._verification_evidence_for_tool(
+    assert (
+        agent_loop_module._verification_evidence_for_tool(
         "run_shell",
         {"tool_status": "rejected"},
-    ) is None
+        )
+        is None
+    )
 
 
 def test_agent_loop_decodes_native_action_and_aggregates_response_usage_only(tmp_path):
@@ -449,7 +463,8 @@ def test_agent_loop_decodes_native_action_and_aggregates_response_usage_only(tmp
 def test_native_multiple_tool_response_executes_none_and_requests_correction(
     tmp_path,
 ):
-    provider = NativeScriptProvider([
+    provider = NativeScriptProvider(
+        [
         Response(
             stop_reason=StopReason.TOOL_USE,
             content=[
@@ -473,7 +488,8 @@ def test_native_multiple_tool_response_executes_none_and_requests_correction(
             content=[{"type": "text", "text": "done"}],
             usage={},
         ),
-    ])
+        ]
+    )
     agent = build_native_agent(tmp_path, provider)
     first_runner = Mock(return_value="# README.md\n1: demo")
     ignored_runner = Mock(return_value="must not run")
@@ -506,15 +522,18 @@ def test_ordinary_workspace_tool_error_commits_pair_consumes_step_and_finishes(
     tmp_path,
     monkeypatch,
 ):
-    provider = NativeScriptProvider([
+    provider = NativeScriptProvider(
+        [
         Response(
             stop_reason=StopReason.TOOL_USE,
-            content=[{
+                content=[
+                    {
                 "type": "tool_use",
                 "id": "tu_error",
                 "name": "write_file",
                 "input": {"path": "failed.txt", "content": "no\n"},
-            }],
+                    }
+                ],
             usage={"input_tokens": 2, "output_tokens": 1, "total_tokens": 3},
         ),
         Response(
@@ -522,7 +541,8 @@ def test_ordinary_workspace_tool_error_commits_pair_consumes_step_and_finishes(
             content=[{"type": "text", "text": "recovered"}],
             usage={"input_tokens": 3, "output_tokens": 1, "total_tokens": 4},
         ),
-    ])
+        ]
+    )
     agent = build_native_agent(tmp_path, provider)
     runner = Mock(side_effect=RuntimeError("ordinary tool failure"))
     agent.tools["write_file"]["run"] = runner
@@ -566,7 +586,9 @@ def test_ordinary_workspace_tool_error_commits_pair_consumes_step_and_finishes(
     assert report["run"]["status"] == "completed"
     assert report["tools"]["calls"] == 1
     assert report["model"]["usage"]["total_tokens"] == 7
-    executed = [event for event in read_trace(agent) if event["event"] == "tool_executed"]
+    executed = [
+        event for event in read_trace(agent) if event["event"] == "tool_executed"
+    ]
     assert executed[0]["tool_status"] == "error"
     snapshots_with_error_pair = []
     for messages in saved_transcripts:
@@ -577,9 +599,7 @@ def test_ordinary_workspace_tool_error_commits_pair_consumes_step_and_finishes(
             if not isinstance(content, list):
                 continue
             use_ids.extend(
-                block.get("id")
-                for block in content
-                if block.get("type") == "tool_use"
+                block.get("id") for block in content if block.get("type") == "tool_use"
             )
             result_ids.extend(
                 block.get("tool_use_id")
@@ -599,15 +619,18 @@ def test_ordinary_workspace_tool_error_commits_pair_consumes_step_and_finishes(
 
 
 def test_tool_pair_is_written_by_one_session_save_without_orphan(tmp_path, monkeypatch):
-    provider = NativeScriptProvider([
+    provider = NativeScriptProvider(
+        [
         Response(
             stop_reason=StopReason.TOOL_USE,
-            content=[{
+                content=[
+                    {
                 "type": "tool_use",
                 "id": "tu_pair",
                 "name": "read_file",
                 "input": {"path": "README.md"},
-            }],
+                    }
+                ],
             usage={},
         ),
         Response(
@@ -615,7 +638,8 @@ def test_tool_pair_is_written_by_one_session_save_without_orphan(tmp_path, monke
             content=[{"type": "text", "text": "done"}],
             usage={},
         ),
-    ])
+        ]
+    )
     agent = build_native_agent(tmp_path, provider)
     saved_transcripts = []
     original_append = agent.session_store.append_messages
@@ -664,15 +688,18 @@ def test_side_effect_then_pair_save_failure_stops_before_another_provider_call(
     tmp_path,
     monkeypatch,
 ):
-    provider = NativeScriptProvider([
+    provider = NativeScriptProvider(
+        [
         Response(
             stop_reason=StopReason.TOOL_USE,
-            content=[{
+                content=[
+                    {
                 "type": "tool_use",
                 "id": "tu_write",
                 "name": "write_file",
                 "input": {"path": "created.txt", "content": "created\n"},
-            }],
+                    }
+                ],
             usage={},
         ),
         Response(
@@ -680,7 +707,8 @@ def test_side_effect_then_pair_save_failure_stops_before_another_provider_call(
             content=[{"type": "text", "text": "must not be requested"}],
             usage={},
         ),
-    ])
+        ]
+    )
     agent = build_native_agent(tmp_path, provider)
     original_append = agent.session_store.append_messages
 
@@ -731,15 +759,18 @@ def test_committed_pair_save_reloads_canonical_without_duplicate_or_loss(
     monkeypatch,
 ):
     (tmp_path / "target.txt").write_text("target\n", encoding="utf-8")
-    provider = NativeScriptProvider([
+    provider = NativeScriptProvider(
+        [
         Response(
             stop_reason=StopReason.TOOL_USE,
-            content=[{
+                content=[
+                    {
                 "type": "tool_use",
                 "id": "tu_committed",
                 "name": "read_file",
                 "input": {"path": "target.txt"},
-            }],
+                    }
+                ],
             usage={},
         ),
         Response(
@@ -747,7 +778,8 @@ def test_committed_pair_save_reloads_canonical_without_duplicate_or_loss(
             content=[{"type": "text", "text": "done"}],
             usage={},
         ),
-    ])
+        ]
+    )
     agent = build_native_agent(tmp_path, provider)
     original_append = agent.session_store.append_messages
     injected = False
@@ -804,18 +836,22 @@ def test_ambiguous_pair_save_never_overwrites_reloaded_canonical_with_terminal(
     monkeypatch,
 ):
     (tmp_path / "target.txt").write_text("target\n", encoding="utf-8")
-    provider = NativeScriptProvider([
+    provider = NativeScriptProvider(
+        [
         Response(
             stop_reason=StopReason.TOOL_USE,
-            content=[{
+                content=[
+                    {
                 "type": "tool_use",
                 "id": "tu_ambiguous",
                 "name": "read_file",
                 "input": {"path": "target.txt"},
-            }],
+                    }
+                ],
             usage={},
         ),
-    ])
+        ]
+    )
     agent = build_native_agent(tmp_path, provider)
     original_append = agent.session_store.append_messages
     injected = False
@@ -866,18 +902,22 @@ def test_committed_pair_save_with_failed_reload_blocks_all_later_session_writes(
     tmp_path,
     monkeypatch,
 ):
-    provider = NativeScriptProvider([
+    provider = NativeScriptProvider(
+        [
         Response(
             stop_reason=StopReason.TOOL_USE,
-            content=[{
+                content=[
+                    {
                 "type": "tool_use",
                 "id": "tu_unreadable_commit",
                 "name": "write_file",
                 "input": {"path": "created.txt", "content": "created\n"},
-            }],
+                    }
+                ],
             usage={},
         ),
-    ])
+        ]
+    )
     agent = build_native_agent(tmp_path, provider)
     original_load = agent.session_store.load
     original_append = agent.session_store.append_messages
@@ -941,18 +981,22 @@ def test_committed_pair_save_with_failed_reload_blocks_all_later_session_writes(
 def test_pair_save_failure_restores_pre_tool_memory(tmp_path, monkeypatch):
     (tmp_path / "baseline.txt").write_text("baseline\n", encoding="utf-8")
     (tmp_path / "target.txt").write_text("target\n", encoding="utf-8")
-    provider = NativeScriptProvider([
+    provider = NativeScriptProvider(
+        [
         Response(
             stop_reason=StopReason.TOOL_USE,
-            content=[{
+                content=[
+                    {
                 "type": "tool_use",
                 "id": "tu_read",
                 "name": "read_file",
                 "input": {"path": "target.txt"},
-            }],
+                    }
+                ],
             usage={},
         ),
-    ])
+        ]
+    )
     agent = build_native_agent(tmp_path, provider)
     agent.update_memory_after_tool(
         "read_file",
@@ -998,18 +1042,22 @@ def test_pair_save_primary_error_survives_terminal_persistence_failure(
     tmp_path,
     monkeypatch,
 ):
-    provider = NativeScriptProvider([
+    provider = NativeScriptProvider(
+        [
         Response(
             stop_reason=StopReason.TOOL_USE,
-            content=[{
+                content=[
+                    {
                 "type": "tool_use",
                 "id": "tu_write",
                 "name": "write_file",
                 "input": {"path": "created.txt", "content": "created\n"},
-            }],
+                    }
+                ],
             usage={},
         ),
-    ])
+        ]
+    )
     agent = build_native_agent(tmp_path, provider)
     original_append = agent.session_store.append_messages
     user_turn_saved = False
@@ -1058,7 +1106,9 @@ def test_agent_loop_emits_focused_recovery_trace_events(tmp_path):
 
     agent.ask("say done")
 
-    trace_text = agent.run_store.trace_path(agent.current_task_state).read_text(encoding="utf-8")
+    trace_text = agent.run_store.trace_path(agent.current_task_state).read_text(
+        encoding="utf-8"
+    )
     assert '"event": "run_started"' in trace_text
     assert '"event": "model_turn"' in trace_text
     assert '"event": "checkpoint_created"' in trace_text
@@ -1077,14 +1127,24 @@ def test_recovery_checkpoint_uses_distinct_trace_event(tmp_path):
 
     trace_events = [
         json.loads(line)
-        for line in agent.run_store.trace_path(agent.current_task_state).read_text(encoding="utf-8").splitlines()
+        for line in agent.run_store.trace_path(agent.current_task_state)
+        .read_text(encoding="utf-8")
+        .splitlines()
     ]
-    recovery_events = [event for event in trace_events if event["event"] == "recovery_checkpoint_created"]
+    recovery_events = [
+        event
+        for event in trace_events
+        if event["event"] == "recovery_checkpoint_created"
+    ]
 
     assert recovery_events
-    assert recovery_events[0]["checkpoint_id"] == agent.current_task_state.recovery_checkpoint_id
+    assert (
+        recovery_events[0]["checkpoint_id"]
+        == agent.current_task_state.recovery_checkpoint_id
+    )
     assert not any(
-        event["event"] == "checkpoint_created" and event.get("checkpoint_kind") == "recovery"
+        event["event"] == "checkpoint_created"
+        and event.get("checkpoint_kind") == "recovery"
         for event in trace_events
     )
 
@@ -1102,7 +1162,9 @@ def test_model_error_marks_run_failed_and_writes_report(tmp_path):
 
     trace_events = [
         json.loads(line)
-        for line in agent.run_store.trace_path(task_state).read_text(encoding="utf-8").splitlines()
+        for line in agent.run_store.trace_path(task_state)
+        .read_text(encoding="utf-8")
+        .splitlines()
     ]
     assert trace_events[-1]["event"] == "run_finished"
     assert trace_events[-1]["status"] == "failed"
@@ -1145,35 +1207,43 @@ def test_terminal_path_matrix_persists_exactly_one_finalization(
     primary = None
     max_steps = 1
     if case == "final":
-        provider = NativeScriptProvider([
+        provider = NativeScriptProvider(
+            [
             Response(
                 stop_reason=StopReason.END_TURN,
                 content=[{"type": "text", "text": "done"}],
                 usage=usage,
             )
-        ])
+            ]
+        )
     elif case == "step_limit":
-        provider = NativeScriptProvider([
+        provider = NativeScriptProvider(
+            [
             Response(
                 stop_reason=StopReason.TOOL_USE,
-                content=[{
+                    content=[
+                        {
                     "type": "tool_use",
                     "id": "tu_limit",
                     "name": "read_file",
                     "input": {"path": "README.md"},
-                }],
+                        }
+                    ],
                 usage=usage,
             )
-        ])
+            ]
+        )
     elif case == "retry_limit":
-        provider = NativeScriptProvider([
+        provider = NativeScriptProvider(
+            [
             Response(
                 stop_reason=StopReason.UNKNOWN,
                 content=[{"type": "text", "text": f"bad-{index}"}],
                 usage=usage,
             )
             for index in range(5)
-        ])
+            ]
+        )
     elif case == "model_error":
         primary = ValueError("provider failed")
         provider = RaisingProvider(primary)
@@ -1182,13 +1252,15 @@ def test_terminal_path_matrix_persists_exactly_one_finalization(
         provider = NativeScriptProvider([])
     elif case == "persistence_error":
         primary = OSError("assistant save failed")
-        provider = NativeScriptProvider([
+        provider = NativeScriptProvider(
+            [
             Response(
                 stop_reason=StopReason.END_TURN,
                 content=[{"type": "text", "text": "done"}],
                 usage=usage,
             )
-        ])
+            ]
+        )
     else:
         primary = KeyboardInterrupt("interrupted")
         provider = RaisingProvider(primary)
@@ -1203,8 +1275,7 @@ def test_terminal_path_matrix_persists_exactly_one_finalization(
             last = messages[-1] if messages else {}
             if (
                 last.get("role") == "assistant"
-                and (last.get("_pico_meta") or {}).get("origin")
-                != "runtime_terminal"
+                and (last.get("_pico_meta") or {}).get("origin") != "runtime_terminal"
             ):
                 raise primary
             return original_append(
@@ -1300,12 +1371,14 @@ def test_post_response_runtime_fault_preserves_primary_usage_and_terminalizes_on
     if fault_point == "apply":
         response = Response(
             stop_reason=StopReason.TOOL_USE,
-            content=[{
+            content=[
+                {
                 "type": "tool_use",
                 "id": "tu_fault",
                 "name": "read_file",
                 "input": {"path": "README.md"},
-            }],
+                }
+            ],
             usage={"input_tokens": 2, "output_tokens": 1, "total_tokens": 3},
         )
     else:
@@ -1317,7 +1390,9 @@ def test_post_response_runtime_fault_preserves_primary_usage_and_terminalizes_on
     provider = NativeScriptProvider([response])
     agent = build_native_agent(tmp_path, provider)
     if fault_point == "decode":
-        monkeypatch.setattr(agent_loop_module, "decode_action", Mock(side_effect=primary))
+        monkeypatch.setattr(
+            agent_loop_module, "decode_action", Mock(side_effect=primary)
+        )
     elif fault_point == "action_trace":
         original_emit_trace = agent.emit_trace
 
@@ -1343,14 +1418,16 @@ def test_post_response_runtime_fault_preserves_primary_usage_and_terminalizes_on
     assert report["model"]["usage"]["total_tokens"] == 3
     events = read_trace(agent)
     assert len([event for event in events if event["event"] == "run_finished"]) == 1
-    assert len(
+    assert (
+        len(
         [
             message
             for message in agent.session["messages"]
-            if (message.get("_pico_meta") or {}).get("origin")
-            == "runtime_terminal"
+                if (message.get("_pico_meta") or {}).get("origin") == "runtime_terminal"
         ]
-    ) == 1
+        )
+        == 1
+    )
     assert all(
         not (
             isinstance(message.get("content"), list)
@@ -1367,13 +1444,15 @@ def test_build_failure_after_success_does_not_reuse_request_metadata(
 ):
     agent = build_native_agent(
         tmp_path,
-        NativeScriptProvider([
+        NativeScriptProvider(
+            [
             Response(
                 stop_reason=StopReason.END_TURN,
                 content=[{"type": "text", "text": "first"}],
                 usage={},
             ),
-        ]),
+            ]
+        ),
     )
     assert agent.ask("first run") == "first"
     assert agent.last_request_metadata["messages_count"] > 0
@@ -1414,18 +1493,22 @@ def test_interrupted_tool_trace_failure_does_not_mask_interrupt(
 ):
     agent = build_native_agent(
         tmp_path,
-        NativeScriptProvider([
+        NativeScriptProvider(
+            [
             Response(
                 stop_reason=StopReason.TOOL_USE,
-                content=[{
+                    content=[
+                        {
                     "type": "tool_use",
                     "id": "tu_interrupt",
                     "name": "write_file",
                     "input": {"path": "note.txt", "content": "safe\n"},
-                }],
+                        }
+                    ],
                 usage={},
             ),
-        ]),
+            ]
+        ),
     )
     primary = KeyboardInterrupt("tool interrupted")
 
@@ -1494,15 +1577,15 @@ def test_finalizer_failure_does_not_mask_provider_exception(
     assert agent.current_task_state.stop_reason == "model_error"
     events = read_trace(agent)
     assert any(event["event"] == "run_finished" for event in events)
-    failure = next(
-        event for event in events if event["event"] == "finalization_failed"
-    )
+    failure = next(event for event in events if event["event"] == "finalization_failed")
     assert "report unavailable" in " ".join(failure["finalization_errors"])
     assert secret not in json.dumps(events) + caplog.text
     assert "OSError" in caplog.text
 
 
-def test_provider_error_report_build_failure_does_not_mask_primary(tmp_path, monkeypatch):
+def test_provider_error_report_build_failure_does_not_mask_primary(
+    tmp_path, monkeypatch
+):
     primary = ValueError("primary provider failure")
     agent = build_native_agent(tmp_path, RaisingProvider(primary))
     monkeypatch.setattr(
@@ -1525,13 +1608,15 @@ def test_provider_error_report_build_failure_does_not_mask_primary(tmp_path, mon
 def test_finalizer_failure_without_primary_is_raised(tmp_path, monkeypatch):
     agent = build_native_agent(
         tmp_path,
-        NativeScriptProvider([
+        NativeScriptProvider(
+            [
             Response(
                 stop_reason=StopReason.END_TURN,
                 content=[{"type": "text", "text": "done"}],
                 usage={},
             ),
-        ]),
+            ]
+        ),
     )
     monkeypatch.setattr(
         agent.run_store,
@@ -1546,21 +1631,20 @@ def test_finalizer_failure_without_primary_is_raised(tmp_path, monkeypatch):
 def test_final_message_save_failure_is_persistence_error(tmp_path, monkeypatch):
     agent = build_native_agent(
         tmp_path,
-        NativeScriptProvider([
+        NativeScriptProvider(
+            [
             Response(
                 stop_reason=StopReason.END_TURN,
                 content=[{"type": "text", "text": "done"}],
                 usage={},
             ),
-        ]),
+            ]
+        ),
     )
     original_append = agent.session_store.append_messages
 
     def fail_assistant(session_id, messages, *, state_updates=None):
-        if (
-            messages
-            and messages[-1].get("role") == "assistant"
-        ):
+        if messages and messages[-1].get("role") == "assistant":
             raise OSError("assistant save failed")
         return original_append(
             session_id,
@@ -1625,15 +1709,18 @@ def test_in_run_checkpoint_session_save_failure_is_persistence_error(
     tmp_path,
     monkeypatch,
 ):
-    provider = NativeScriptProvider([
+    provider = NativeScriptProvider(
+        [
         Response(
             stop_reason=StopReason.TOOL_USE,
-            content=[{
+                content=[
+                    {
                 "type": "tool_use",
                 "id": "tu_checkpoint",
                 "name": "write_file",
                 "input": {"path": "note.txt", "content": "saved\n"},
-            }],
+                    }
+                ],
             usage={},
         ),
         Response(
@@ -1641,7 +1728,8 @@ def test_in_run_checkpoint_session_save_failure_is_persistence_error(
             content=[{"type": "text", "text": "saved"}],
             usage={},
         ),
-    ])
+        ]
+    )
     agent = build_native_agent(tmp_path, provider)
     original_append_checkpoint = agent.session_store.append_task_checkpoint
     fault_injected = False
@@ -1657,9 +1745,7 @@ def test_in_run_checkpoint_session_save_failure_is_persistence_error(
             if not isinstance(content, list):
                 continue
             tool_use_ids.extend(
-                block.get("id")
-                for block in content
-                if block.get("type") == "tool_use"
+                block.get("id") for block in content if block.get("type") == "tool_use"
             )
             tool_result_ids.extend(
                 block.get("tool_use_id")
@@ -1671,8 +1757,7 @@ def test_in_run_checkpoint_session_save_failure_is_persistence_error(
             and checkpoint.get("trigger") == "run_finished"
         )
         pair_present = (
-            "tu_checkpoint" in tool_use_ids
-            and "tu_checkpoint" in tool_result_ids
+            "tu_checkpoint" in tool_use_ids and "tu_checkpoint" in tool_result_ids
         )
         if not fault_injected and checkpoint_for_this_run and pair_present:
             fault_injected = True
@@ -1696,9 +1781,10 @@ def test_in_run_checkpoint_session_save_failure_is_persistence_error(
     assert len(provider.calls) == 2
     assert fault_injected is True
     assert failed_payload["checkpoints"]["current_id"]
-    assert failed_payload["checkpoints"]["current_id"] in failed_payload[
-        "checkpoints"
-    ]["items"]
+    assert (
+        failed_payload["checkpoints"]["current_id"]
+        in failed_payload["checkpoints"]["items"]
+    )
     assert agent.current_task_state.stop_reason == "persistence_error"
     assert agent.current_task_state.status == "failed"
 
@@ -1722,11 +1808,14 @@ def test_rejected_tool_calls_do_not_consume_step_budget(tmp_path):
     assert agent.current_task_state.stop_reason == "final_answer_returned"
     trace_events = [
         json.loads(line)
-        for line in agent.run_store.trace_path(agent.current_task_state).read_text(encoding="utf-8").splitlines()
+        for line in agent.run_store.trace_path(agent.current_task_state)
+        .read_text(encoding="utf-8")
+        .splitlines()
     ]
     rejected = [
         event
         for event in trace_events
-        if event.get("event") == "tool_executed" and event.get("tool_status") == "rejected"
+        if event.get("event") == "tool_executed"
+        and event.get("tool_status") == "rejected"
     ]
     assert rejected

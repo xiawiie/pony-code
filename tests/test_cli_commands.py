@@ -6,8 +6,9 @@ import stat
 
 import pytest
 
-from pico.cli import main
-from pico.config import read_project_env
+from pico.cli.app import main
+from pico.config.environment import read_project_env
+from pico.runtime.options import RuntimeOptions
 
 
 def _install_fake_agent(monkeypatch, tmp_path, called):
@@ -34,8 +35,8 @@ def _install_fake_agent(monkeypatch, tmp_path, called):
 
         return FakeAgent()
 
-    monkeypatch.setattr("pico.cli.build_agent", fake_build_agent)
-    monkeypatch.setattr("pico.cli.build_welcome", lambda agent, model, host: "")
+    monkeypatch.setattr("pico.cli.app.build_agent", fake_build_agent)
+    monkeypatch.setattr("pico.cli.app.build_welcome", lambda agent, model, host: "")
 
 
 def test_run_command_calls_agent_once(tmp_path, monkeypatch, capsys):
@@ -52,7 +53,9 @@ def test_run_command_calls_agent_once(tmp_path, monkeypatch, capsys):
 def test_repl_command_exits_on_eof(tmp_path, monkeypatch):
     called = {}
     _install_fake_agent(monkeypatch, tmp_path, called)
-    monkeypatch.setattr("builtins.input", lambda prompt: (_ for _ in ()).throw(EOFError()))
+    monkeypatch.setattr(
+        "builtins.input", lambda prompt: (_ for _ in ()).throw(EOFError())
+    )
 
     code = main(["--cwd", str(tmp_path), "repl"])
 
@@ -68,7 +71,7 @@ def test_invalid_agent_command_arity_does_not_build_agent(
     tmp_path, monkeypatch, capsys, tokens, usage
 ):
     monkeypatch.setattr(
-        "pico.cli.build_agent",
+        "pico.cli.app.build_agent",
         lambda args: (_ for _ in ()).throw(AssertionError("must not build agent")),
     )
 
@@ -80,7 +83,7 @@ def test_invalid_agent_command_arity_does_not_build_agent(
 
 def test_bare_prompt_is_rejected_without_building_agent(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(
-        "pico.cli.build_agent",
+        "pico.cli.app.build_agent",
         lambda args: (_ for _ in ()).throw(AssertionError("must not build agent")),
     )
 
@@ -112,11 +115,9 @@ def test_help_command_shows_examples(capsys):
     assert "providers list" not in out
 
 
-def test_sandbox_flag_is_rejected_for_non_agent_commands(
-    tmp_path, monkeypatch, capsys
-):
+def test_sandbox_flag_is_rejected_for_non_agent_commands(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(
-        "pico.cli._dispatch_status",
+        "pico.cli.app._dispatch_status",
         lambda *_args: (_ for _ in ()).throw(AssertionError("must not dispatch")),
     )
 
@@ -153,7 +154,7 @@ def test_natural_language_requires_explicit_run(
     capsys,
 ):
     monkeypatch.setattr(
-        "pico.cli.build_agent",
+        "pico.cli.app.build_agent",
         lambda args: (_ for _ in ()).throw(AssertionError("must not build agent")),
     )
 
@@ -194,11 +195,11 @@ def test_init_prompts_for_url_and_hidden_key_without_building_agent_or_network(
 ):
     _install_init_input(monkeypatch)
     monkeypatch.setattr(
-        "pico.cli.build_agent",
+        "pico.cli.app.build_agent",
         lambda args: (_ for _ in ()).throw(AssertionError("init built an agent")),
     )
     monkeypatch.setattr(
-        "pico.providers._shared._provider_urlopen",
+        "pico.providers.transport._provider_urlopen",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("init attempted a request")
         ),
@@ -231,13 +232,18 @@ def test_init_accepts_exact_third_party_api_root(tmp_path, monkeypatch, capsys):
         key="gateway-key",
     )
 
-    assert main([
+    assert (
+        main(
+            [
         "--cwd",
         str(tmp_path),
         "--format",
         "json",
         "init",
-    ]) == 0
+            ]
+        )
+        == 0
+    )
 
     output = capsys.readouterr().out
     payload = json.loads(output)["data"]
@@ -251,9 +257,7 @@ def test_init_accepts_exact_third_party_api_root(tmp_path, monkeypatch, capsys):
     assert "gateway-key" not in output
 
 
-def test_init_can_switch_to_openai_using_only_generic_env_names(
-    tmp_path, monkeypatch
-):
+def test_init_can_switch_to_openai_using_only_generic_env_names(tmp_path, monkeypatch):
     _install_init_input(monkeypatch, provider="openai", key="openai-key")
 
     assert main(["--cwd", str(tmp_path), "init"]) == 0
@@ -285,8 +289,7 @@ def test_init_can_configure_local_ollama_without_api_key(tmp_path, monkeypatch):
 
 def test_init_empty_key_keeps_existing_project_key(tmp_path, monkeypatch, capsys):
     (tmp_path / ".env").write_text(
-        "PICO_API_URL=https://old.example/v1\n"
-        "PICO_API_KEY=existing-key\n",
+        "PICO_API_URL=https://old.example/v1\nPICO_API_KEY=existing-key\n",
         encoding="utf-8",
     )
     _install_init_input(monkeypatch, url="", key="")
@@ -301,9 +304,7 @@ def test_init_empty_key_keeps_existing_project_key(tmp_path, monkeypatch, capsys
     assert "existing-key" not in captured.out + captured.err
 
 
-def test_init_updates_config_without_dropping_unrelated_lines(
-    tmp_path, monkeypatch
-):
+def test_init_updates_config_without_dropping_unrelated_lines(tmp_path, monkeypatch):
     (tmp_path / ".env").write_text(
         "# keep this comment\n"
         "OTHER_SETTING=kept\n"
@@ -337,9 +338,7 @@ def test_init_updates_config_without_dropping_unrelated_lines(
         "not-a-url",
     ],
 )
-def test_init_rejects_invalid_url_before_key_prompt(
-    tmp_path, monkeypatch, capsys, url
-):
+def test_init_rejects_invalid_url_before_key_prompt(tmp_path, monkeypatch, capsys, url):
     answers = iter(("", "", url))
     monkeypatch.setattr("builtins.input", lambda: next(answers))
     key_prompt = pytest.fail
@@ -435,14 +434,19 @@ def test_config_set_secret_reads_stdin_and_writes_private_env(
 ):
     monkeypatch.setattr("sys.stdin", io.StringIO("sk-stdin-secret-123456789\n"))
 
-    assert main([
+    assert (
+        main(
+            [
         "--cwd",
         str(tmp_path),
         "config",
         "set-secret",
         "PICO_API_KEY",
         "--stdin",
-    ]) == 0
+            ]
+        )
+        == 0
+    )
 
     assert read_project_env(tmp_path, warn=False)["PICO_API_KEY"] == (
         "sk-stdin-secret-123456789"
@@ -459,13 +463,18 @@ def test_config_set_secret_uses_getpass_without_rendering_value(
     secret = "sk-getpass-secret-123456789"
     monkeypatch.setattr(getpass, "getpass", lambda prompt: secret)
 
-    assert main([
+    assert (
+        main(
+            [
         "--cwd",
         str(tmp_path),
         "config",
         "set-secret",
         "PICO_API_KEY",
-    ]) == 0
+            ]
+        )
+        == 0
+    )
 
     assert read_project_env(tmp_path, warn=False)["PICO_API_KEY"] == secret
     captured = capsys.readouterr()
@@ -495,23 +504,26 @@ def test_config_set_secret_rejects_every_other_name(
     assert not (tmp_path / ".env").exists()
 
 
-def test_config_set_secret_storage_failure_is_stable(
-    tmp_path, monkeypatch, capsys
-):
+def test_config_set_secret_storage_failure_is_stable(tmp_path, monkeypatch, capsys):
     marker = "sk-sensitive-lock-path-123456789"
     outside = tmp_path.parent / marker
     outside.mkdir()
     (tmp_path / ".pico").symlink_to(outside, target_is_directory=True)
     monkeypatch.setattr("sys.stdin", io.StringIO("sk-input-secret-123456789\n"))
 
-    assert main([
+    assert (
+        main(
+            [
         "--cwd",
         str(tmp_path),
         "config",
         "set-secret",
         "PICO_API_KEY",
         "--stdin",
-    ]) == 3
+            ]
+        )
+        == 3
+    )
 
     captured = capsys.readouterr()
     assert marker not in captured.out + captured.err
@@ -525,13 +537,18 @@ def test_config_write_output_uses_canonical_project_env_metadata(
     root.mkdir()
     _install_init_input(monkeypatch)
 
-    assert main([
+    assert (
+        main(
+            [
         "--cwd",
         str(root),
         "--format",
         "json",
         "init",
-    ]) == 0
+            ]
+        )
+        == 0
+    )
 
     payload = json.loads(capsys.readouterr().out)["data"]
     assert payload["workspace"] == {"repo_root": str(root.resolve())}
@@ -551,13 +568,18 @@ def test_config_writes_redact_secret_shaped_workspace_path(
     root.mkdir()
     _install_init_input(monkeypatch)
 
-    assert main([
+    assert (
+        main(
+            [
         "--cwd",
         str(root),
         "--format",
         "json",
         "init",
-    ]) == 0
+            ]
+        )
+        == 0
+    )
 
     output = capsys.readouterr().out
     data = json.loads(output)["data"]
@@ -573,20 +595,24 @@ def test_config_writes_keep_review_required_for_preserved_invalid_line(
     marker = "sk-" + "preserved-invalid-line-123456789"
     env_path = tmp_path / ".env"
     env_path.write_text(
-        f"PICO_API_URL=https://api.deepseek.com\n"
-        f"PICO_API_KEY=old-key\n{marker}\n",
+        f"PICO_API_URL=https://api.deepseek.com\nPICO_API_KEY=old-key\n{marker}\n",
         encoding="utf-8",
     )
     env_path.chmod(0o600)
     _install_init_input(monkeypatch, key="new-key")
 
-    assert main([
+    assert (
+        main(
+            [
         "--cwd",
         str(tmp_path),
         "--format",
         "json",
         "init",
-    ]) == 0
+            ]
+        )
+        == 0
+    )
 
     captured = capsys.readouterr()
     data = json.loads(captured.out)["data"]
@@ -598,10 +624,10 @@ def test_config_writes_keep_review_required_for_preserved_invalid_line(
 def test_repl_help_renders_help_details(tmp_path, monkeypatch, capsys):
     from pico.cli.help import HELP_DETAILS
     from pico.cli.start import run_repl
-    from pico.providers.fake import FakeModelClient
-    from pico.runtime import Pico
+    from benchmarks.support.fake_provider import FakeModelClient
+    from pico.runtime.application import Pico
     from pico.state.session_store import SessionStore
-    from pico.workspace import WorkspaceContext
+    from pico.workspace.context import WorkspaceContext
 
     workspace = WorkspaceContext.build(tmp_path)
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
@@ -611,7 +637,7 @@ def test_repl_help_renders_help_details(tmp_path, monkeypatch, capsys):
         model_client=FakeModelClient([]),
         workspace=workspace,
         session_store=session_store,
-        approval_policy="auto",
+        options=RuntimeOptions(approval_policy="auto"),
     )
 
     inputs = iter(["/help", "/exit"])

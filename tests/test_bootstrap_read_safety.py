@@ -5,11 +5,11 @@ from pathlib import Path
 
 import pytest
 
-from pico import workspace as workspace_module
+from pico.workspace import context as workspace_module
 from pico.memory.block_store import BlockStore
 from pico.memory.repo_map import RepoMap
 from pico.tools.subprocess import build_trusted_executables
-from pico.workspace import WorkspaceContext
+from pico.workspace.context import WorkspaceContext
 from pico.workspace.observer import WorkspaceObserver
 
 
@@ -44,7 +44,7 @@ def test_workspace_context_does_not_follow_project_doc_symlink(tmp_path, name):
 
 
 def test_bootstrap_reader_rejects_symlinked_parent_and_sensitive_file(tmp_path):
-    from pico.workspace import _safe_index_file
+    from pico.workspace.context import _safe_index_file
 
     outside = tmp_path.parent / f"{tmp_path.name}-outside-docs"
     outside.mkdir()
@@ -181,7 +181,7 @@ def test_workspace_bounded_reader_rejects_parent_swap(tmp_path, monkeypatch):
     (outside / "README.md").write_text("outside-canary\n", encoding="utf-8")
     validated = workspace_module._safe_index_file(repo, target)
     moved = repo / "docs-original"
-    real_open_directory = workspace_module.securitylib._open_private_directory
+    real_open_directory = workspace_module.private_files._open_private_directory
 
     def swap_then_open(path):
         docs.rename(moved)
@@ -189,7 +189,7 @@ def test_workspace_bounded_reader_rejects_parent_swap(tmp_path, monkeypatch):
         return real_open_directory(path)
 
     monkeypatch.setattr(
-        workspace_module.securitylib,
+        workspace_module.private_files,
         "_open_private_directory",
         swap_then_open,
     )
@@ -268,12 +268,12 @@ def test_search_ignores_inherited_ripgrep_preprocessor(
     tmp_path, monkeypatch, contract_rg
 ):
     from pico.tools.context import ToolContext
-    from pico.tools import tool_search
+    from pico.tools.search import tool_search
 
     marker = tmp_path / "rg-pre-ran"
     pre = tmp_path / "pre.sh"
     pre.write_text(
-        f"#!/bin/sh\ntouch {marker!s}\ncat \"$1\"\n",
+        f'#!/bin/sh\ntouch {marker!s}\ncat "$1"\n',
         encoding="utf-8",
     )
     pre.chmod(0o755)

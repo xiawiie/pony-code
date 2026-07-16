@@ -19,7 +19,7 @@ import threading
 import time
 from types import MappingProxyType
 
-from pico import security as securitylib
+from pico.security import private_files as securitylib
 from pico.state.checkpoint_store import CheckpointStoreError, source_apply_guard_present
 from pico.sandbox.session import (
     MAX_ALLOCATED_BYTES,
@@ -54,6 +54,7 @@ IMAGE_LABELS = {
     "org.opencontainers.image.title": "Pico Docker Sandbox",
     "org.opencontainers.image.version": "d1",
 }
+MINIMUM_DOCKER_API_VERSION = "1.44"
 GUEST_ENV = (
     "PATH=/opt/pico-venv/bin:/usr/local/bin:/usr/bin:/bin",
     "HOME=/home/pico",
@@ -82,9 +83,7 @@ DOCKER_POLICY = {
     "log_driver": "none",
     "tmpfs": {
         "/tmp": "rw,nosuid,nodev,exec,size=768m,mode=1777",
-        "/home/pico": (
-            "rw,nosuid,nodev,noexec,size=64m,mode=700,uid=10001,gid=10001"
-        ),
+        "/home/pico": ("rw,nosuid,nodev,noexec,size=64m,mode=700,uid=10001,gid=10001"),
         "/run": "rw,nosuid,nodev,noexec,size=16m,mode=755,uid=10001,gid=10001",
     },
 }
@@ -121,29 +120,14 @@ _IMAGE_SET_MANIFEST_FIELDS = {
     "record_type",
     "format_version",
     "policy_digest",
-    "corpus_digest",
-    "dockerfile_digest",
-    "lock_digest",
     "user",
     "working_dir",
     "env",
-    "labels",
     "tool_paths",
-    "minimum_api_version",
     "platforms",
 }
-_PLATFORM_IMAGE_FIELDS = {
-    "candidate_digest",
-    "base_manifest_digest",
-    "reference",
-    "registry_reference",
-    "image_id",
-    "architecture",
-    "os",
-    "sbom_present",
-    "provenance_present",
-}
-_IMAGE_PLATFORMS = {"linux/arm64", "linux/amd64"}
+_PLATFORM_IMAGE_FIELDS = {"reference", "image_id"}
+_IMAGE_PLATFORMS = {"linux/arm64"}
 
 
 class DockerSandboxError(RuntimeError):
@@ -507,7 +491,12 @@ def _run_bounded_process(argv, *, env, timeout, max_bytes, terminate_on_overflow
         except BaseException as exc:
             interrupted = exc
             break
-    if timed_out or interrupted is not None or terminate_on_overflow and overflow.is_set():
+    if (
+        timed_out
+        or interrupted is not None
+        or terminate_on_overflow
+        and overflow.is_set()
+    ):
         for signal_number in (signal.SIGTERM, signal.SIGKILL):
             try:
                 os.killpg(process.pid, signal_number)
@@ -541,34 +530,34 @@ def _run_bounded_process(argv, *, env, timeout, max_bytes, terminate_on_overflow
 @dataclass(frozen=True)
 class DockerImageManifest:
     image_set_digest: str
-    candidate_digest: str
     policy_digest: str
-    corpus_digest: str
-    base_manifest_digest: str
-    dockerfile_digest: str
-    lock_digest: str
     platform: str
     reference: str
-    registry_reference: str
     image_id: str
-    architecture: str
-    operating_system: str
     user: str
     working_dir: str
     env: tuple[str, ...]
-    labels: tuple[tuple[str, str], ...]
     tool_paths: tuple[tuple[str, str], ...]
-    minimum_api_version: str
-    sbom_present: bool
-    provenance_present: bool
 
     @property
     def label_map(self):
-        return dict(self.labels)
+        return dict(IMAGE_LABELS)
 
     @property
     def tool_map(self):
         return dict(self.tool_paths)
+
+    @property
+    def architecture(self):
+        return self.platform.removeprefix("linux/")
+
+    @property
+    def operating_system(self):
+        return "linux"
+
+    @property
+    def minimum_api_version(self):
+        return MINIMUM_DOCKER_API_VERSION
 
 
 _RUNTIME_AUTHORIZATION_SEAL = object()
@@ -582,11 +571,9 @@ class DockerSandboxRuntimeAuthorization:
     installed_tree_digest: str
     image_set_digest: str
     image_reference: str
-    image_registry_reference: str
     image_id: str
     image_platform: str
     policy_digest: str
-    corpus_digest: str
     attestation_kind: str
     attestation_digest: str
     release_sequence: int
@@ -609,12 +596,10 @@ class DockerSandboxRuntimeAuthorization:
                     self.image_reference,
                     self.image_id,
                     self.policy_digest,
-                    self.corpus_digest,
                     self.attestation_digest,
                 )
             )
             or self.image_platform not in _IMAGE_PLATFORMS
-            or not isinstance(self.image_registry_reference, str)
             or not isinstance(self._package_root, Path)
             or not self._package_root.is_absolute()
         ):
@@ -637,8 +622,7 @@ class DockerSandboxRuntimeAuthorization:
             local_identity_matches = self.attestation_kind != "local" or (
                 self._package_root == Path(__file__).resolve().parent
                 and self.distribution_version == metadata.version("pico")
-                and image
-                == load_image_manifest(default_image_manifest_path())
+                and image == load_image_manifest(default_image_manifest_path())
                 and self.attestation_digest
                 == _runtime_authorization_digest(
                     record_type="docker_sandbox_local_authorization",
@@ -647,7 +631,6 @@ class DockerSandboxRuntimeAuthorization:
                         "installed_tree_digest": self.installed_tree_digest,
                         "image_set_digest": self.image_set_digest,
                         "policy_digest": self.policy_digest,
-                        "corpus_digest": self.corpus_digest,
                         "release_sequence": self.release_sequence,
                     },
                     image=image,
@@ -667,11 +650,9 @@ class DockerSandboxRuntimeAuthorization:
             or not local_identity_matches
             or self.image_set_digest != image.image_set_digest
             or self.image_reference != image.reference
-            or self.image_registry_reference != image.registry_reference
             or self.image_id != image.image_id
             or self.image_platform != image.platform
             or self.policy_digest != image.policy_digest
-            or self.corpus_digest != image.corpus_digest
         ):
             raise DockerSandboxError("sandbox_runtime_authorization_mismatch")
         return self
@@ -691,7 +672,6 @@ def _runtime_authorization_digest(
             "format_version": 1,
             **payload,
             "image_reference": image.reference,
-            "image_registry_reference": image.registry_reference,
             "image_id": image.image_id,
             "image_platform": image.platform,
         }
@@ -713,11 +693,9 @@ def _sealed_runtime_authorization(
         installed_tree_digest=payload.get("installed_tree_digest", ""),
         image_set_digest=payload.get("image_set_digest", ""),
         image_reference=image.reference,
-        image_registry_reference=image.registry_reference,
         image_id=image.image_id,
         image_platform=image.platform,
         policy_digest=payload.get("policy_digest", ""),
-        corpus_digest=payload.get("corpus_digest", ""),
         attestation_kind=kind,
         attestation_digest=digest,
         release_sequence=payload.get("release_sequence", -1),
@@ -744,7 +722,6 @@ def _authorize_docker_sandbox_development(
         ),
         "image_set_digest": image.image_set_digest,
         "policy_digest": image.policy_digest,
-        "corpus_digest": image.corpus_digest,
         "release_sequence": 0,
     }
     digest = identity.canonical_digest(
@@ -753,7 +730,6 @@ def _authorize_docker_sandbox_development(
             "format_version": 1,
             **payload,
             "image_reference": image.reference,
-            "image_registry_reference": image.registry_reference,
             "image_id": image.image_id,
             "image_platform": image.platform,
         }
@@ -788,7 +764,6 @@ def local_docker_sandbox_runtime():
         "installed_tree_digest": installed_tree_digest,
         "image_set_digest": image.image_set_digest,
         "policy_digest": image.policy_digest,
-        "corpus_digest": image.corpus_digest,
         "release_sequence": 0,
     }
     authorization = _sealed_runtime_authorization(
@@ -824,36 +799,24 @@ def load_image_manifest(path, *, target_platform=None):
     value = _decode_json(raw, error_code="sandbox_image_identity_mismatch")
     if not isinstance(value, dict) or set(value) != _IMAGE_SET_MANIFEST_FIELDS:
         raise DockerSandboxError("sandbox_image_identity_mismatch")
-    common_digests = (
-        "policy_digest",
-        "corpus_digest",
-        "dockerfile_digest",
-        "lock_digest",
-    )
-    labels = value["labels"]
     tools = value["tool_paths"]
     platforms = value["platforms"]
     if (
         value["record_type"] != "docker_sandbox_image_set_manifest"
-        or value["format_version"] != 2
-        or any(
-            not isinstance(value[name], str)
-            or _SHA256_RE.fullmatch(value[name]) is None
-            for name in common_digests
-        )
+        or value["format_version"] != 3
+        or not isinstance(value["policy_digest"], str)
+        or _SHA256_RE.fullmatch(value["policy_digest"]) is None
         or value["policy_digest"] != POLICY_DIGEST
         or value["working_dir"] != "/workspace"
         or not isinstance(value["user"], str)
         or not value["user"]
         or value["env"] != list(GUEST_ENV)
-        or labels != IMAGE_LABELS
         or not isinstance(tools, dict)
         or set(tools) != {"git", "pytest", "python", "rg", "ruff", "shell", "uv"}
         or any(
             not isinstance(item, str) or not item.startswith("/")
             for item in tools.values()
         )
-        or not re.fullmatch(r"[0-9]+\.[0-9]+", value["minimum_api_version"] or "")
         or not isinstance(platforms, dict)
         or not platforms
         or not set(platforms) <= _IMAGE_PLATFORMS
@@ -866,21 +829,8 @@ def load_image_manifest(path, *, target_platform=None):
             or any(
                 not isinstance(item[name], str)
                 or _SHA256_RE.fullmatch(item[name]) is None
-                for name in (
-                    "candidate_digest",
-                    "base_manifest_digest",
-                    "reference",
-                    "image_id",
-                )
+                for name in ("reference", "image_id")
             )
-            or item["architecture"] not in {"arm64", "amd64"}
-            or platform_name != "linux/" + item["architecture"]
-            or item["os"] != "linux"
-            or not isinstance(item["registry_reference"], str)
-            or item["registry_reference"]
-            and not item["registry_reference"].endswith("@" + item["reference"])
-            or type(item["sbom_present"]) is not bool
-            or type(item["provenance_present"]) is not bool
         ):
             raise DockerSandboxError("sandbox_image_identity_mismatch")
     selected_platform = target_platform or _host_image_platform()
@@ -889,26 +839,14 @@ def load_image_manifest(path, *, target_platform=None):
         raise DockerSandboxError("sandbox_image_not_released")
     return DockerImageManifest(
         image_set_digest=_sha256(_canonical_json(value)),
-        candidate_digest=selected["candidate_digest"],
         policy_digest=value["policy_digest"],
-        corpus_digest=value["corpus_digest"],
-        base_manifest_digest=selected["base_manifest_digest"],
-        dockerfile_digest=value["dockerfile_digest"],
-        lock_digest=value["lock_digest"],
         platform=selected_platform,
         reference=selected["reference"],
-        registry_reference=selected["registry_reference"],
         image_id=selected["image_id"],
-        architecture=selected["architecture"],
-        operating_system=selected["os"],
         user=value["user"],
         working_dir=value["working_dir"],
         env=tuple(value["env"]),
-        labels=tuple(sorted(labels.items())),
         tool_paths=tuple(sorted(tools.items())),
-        minimum_api_version=value["minimum_api_version"],
-        sbom_present=selected["sbom_present"],
-        provenance_present=selected["provenance_present"],
     )
 
 
@@ -925,9 +863,7 @@ def runtime_docker_config_path(home=None):
 
 
 def ensure_runtime_docker_config(path=None):
-    root = securitylib.ensure_private_dir(
-        path or runtime_docker_config_path()
-    )
+    root = securitylib.ensure_private_dir(path or runtime_docker_config_path())
     config = root / "config.json"
     try:
         config.lstat()
@@ -1082,9 +1018,8 @@ class DockerClient:
             client = version["Client"]
             server = version["Server"]
             security_options = info["SecurityOptions"]
-            if (
-                type(security_options) is not list
-                or any(type(item) is not str or not item for item in security_options)
+            if type(security_options) is not list or any(
+                type(item) is not str or not item for item in security_options
             ):
                 raise TypeError("invalid Docker security options")
             system = (host_system or platform.system()).casefold()
@@ -1093,9 +1028,7 @@ class DockerClient:
             normalized_security = [item.casefold() for item in security_options]
             rootless = normalized_security.count("name=rootless") == 1
             seccomp_options = [
-                item
-                for item in normalized_security
-                if item.startswith("name=seccomp")
+                item for item in normalized_security if item.startswith("name=seccomp")
             ]
             seccomp_profile = (
                 {
@@ -1122,14 +1055,10 @@ class DockerClient:
             )
             seccomp_supported = bool(seccomp_profile)
             profile_supported = desktop or rootless
-            supported = (
-                server_supported and seccomp_supported and profile_supported
-            )
+            supported = server_supported and seccomp_supported and profile_supported
         except (KeyError, TypeError) as exc:
             raise DockerSandboxError("docker_server_unsupported") from exc
-        image_result = self.command(
-            ["image", "inspect", image.reference]
-        )
+        image_result = self.command(["image", "inspect", image.reference])
         if image_result.timed_out or image_result.stdout_truncated:
             raise DockerSandboxError("docker_daemon_unavailable")
         image_present = image_result.exit_code == 0
@@ -1176,7 +1105,10 @@ class DockerClient:
                 "cgroup_limits": limits,
                 "eci": (
                     "enabled"
-                    if any("enhanced container isolation" in str(item).casefold() for item in security_options)
+                    if any(
+                        "enhanced container isolation" in str(item).casefold()
+                        for item in security_options
+                    )
                     else "unknown"
                 ),
             },
@@ -1237,7 +1169,10 @@ class DockerExecutionPlan:
         return value
 
     def verify(self):
-        if _sha256(_canonical_json(self.digest_payload())) != self.execution_plan_digest:
+        if (
+            _sha256(_canonical_json(self.digest_payload()))
+            != self.execution_plan_digest
+        ):
             raise DockerSandboxError("approved_execution_changed")
 
 
@@ -1290,25 +1225,24 @@ def _execution_plan_from_record(value):
         or not Path(value["workspace"]).is_absolute()
         or "," in value["workspace"]
         or value["image_reference"] != value["image_manifest_digest"]
-        and not value["image_reference"].endswith(
-            "@" + value["image_manifest_digest"]
-        )
-        or any(type(value[name]) is not int or value[name] <= 0 for name in (
+        and not value["image_reference"].endswith("@" + value["image_manifest_digest"])
+        or any(
+            type(value[name]) is not int or value[name] <= 0
+            for name in (
             "workspace_device",
             "workspace_inode",
-        ))
+            )
+        )
         or type(value["timeout"]) is not int
         or not 0 < value["timeout"] <= MAX_PRODUCT_TIMEOUT
         or any(
-            type(value[name]) is not str
-            or _SHA256_RE.fullmatch(value[name]) is None
+            type(value[name]) is not str or _SHA256_RE.fullmatch(value[name]) is None
             for name in digests
         )
         or not isinstance(target_argv, list)
         or not target_argv
         or any(
-            type(item) is not str or not item or "\x00" in item
-            for item in target_argv
+            type(item) is not str or not item or "\x00" in item for item in target_argv
         )
         or not isinstance(env, list)
         or any(type(item) is not str or "\x00" in item for item in env)
@@ -1363,15 +1297,14 @@ def compile_execution_plan(
     logical_intent_digest=None,
     _allowed_states=("ready",),
 ):
-    if (
-        not isinstance(session, SandboxSession)
-        or session.state not in _allowed_states
-    ):
+    if not isinstance(session, SandboxSession) or session.state not in _allowed_states:
         raise DockerSandboxError("sandbox_state_invalid")
     if (
         not isinstance(target_argv, (list, tuple))
         or not target_argv
-        or any(type(item) is not str or not item or "\x00" in item for item in target_argv)
+        or any(
+            type(item) is not str or not item or "\x00" in item for item in target_argv
+        )
         or type(timeout) is not int
         or timeout <= 0
         or timeout > MAX_PRODUCT_TIMEOUT
@@ -1415,7 +1348,7 @@ def compile_execution_plan(
         "call_id": call_id,
         "reconciliation_token": token,
         "container_name": "pico-sandbox-" + call_id[5:] + "-" + token[:12],
-        "image_reference": image.registry_reference or image.reference,
+        "image_reference": image.reference,
         "image_manifest_digest": image.reference,
         "image_id": image.image_id,
         "workspace": str(workspace),
@@ -1482,8 +1415,7 @@ def verify_container_inspect(payload, plan, *, expected_id=None):
         mounts = payload["Mounts"]
         host_mounts = host["Mounts"]
         ulimits = {
-            item["Name"]: (item["Soft"], item["Hard"])
-            for item in host["Ulimits"]
+            item["Name"]: (item["Soft"], item["Hard"]) for item in host["Ulimits"]
         }
         mount = mounts[0]
         host_mount = host_mounts[0]
@@ -1725,9 +1657,7 @@ def measure_workspace(root):
                             info.st_dev,
                             info.st_ino,
                         ):
-                            raise DockerSandboxError(
-                                "sandbox_workspace_limit_exceeded"
-                            )
+                            raise DockerSandboxError("sandbox_workspace_limit_exceeded")
                         visit(child, depth + 1)
                     finally:
                         os.close(child)
@@ -1740,10 +1670,7 @@ def measure_workspace(root):
                     raise DockerSandboxError("sandbox_workspace_limit_exceeded")
                 logical += info.st_size
                 allocated += int(getattr(info, "st_blocks", 0)) * 512
-                if (
-                    logical > MAX_LOGICAL_BYTES
-                    or allocated > MAX_ALLOCATED_BYTES
-                ):
+                if logical > MAX_LOGICAL_BYTES or allocated > MAX_ALLOCATED_BYTES:
                     raise DockerSandboxError("sandbox_workspace_limit_exceeded")
 
         visit(root_descriptor, 0)
@@ -1871,10 +1798,7 @@ class DockerSandboxRunner:
             or plan.reconciliation_token != active["reconciliation_token"]
             or plan.container_name != active["container_name"]
             or plan.container_name
-            != "pico-sandbox-"
-            + plan.call_id[5:]
-            + "-"
-            + plan.reconciliation_token[:12]
+            != "pico-sandbox-" + plan.call_id[5:] + "-" + plan.reconciliation_token[:12]
             or plan.label_map != active["expected_labels"]
             or any(
                 plan.label_map.get(key) != value
@@ -1920,7 +1844,7 @@ class DockerSandboxRunner:
             "io.pico.runtime.token": plan.reconciliation_token,
         }
         expected_image = {
-            "reference": self.image.registry_reference or self.image.reference,
+            "reference": self.image.reference,
             "manifest_digest": self.image.reference,
             "image_id": self.image.image_id,
             "platform": self.image.platform,
@@ -1937,8 +1861,7 @@ class DockerSandboxRunner:
             or plan.container_name
             != "pico-sandbox-" + plan.call_id[5:] + "-" + plan.reconciliation_token[:12]
             or plan.label_map != expected_labels
-            or plan.image_reference
-            != (self.image.registry_reference or self.image.reference)
+            or plan.image_reference != self.image.reference
             or plan.image_manifest_digest != self.image.reference
             or plan.image_id != self.image.image_id
             or plan.user != self.image.user
@@ -1968,9 +1891,7 @@ class DockerSandboxRunner:
         if (
             current.manifest["active_call"]["reconciliation"]["status"]
             == "review_required"
-            and current.manifest["active_call"]["reconciliation"][
-                "cleanup_status"
-            ]
+            and current.manifest["active_call"]["reconciliation"]["cleanup_status"]
             == "completed"
         ):
             return current
@@ -2002,9 +1923,7 @@ class DockerSandboxRunner:
             return self._record_reconciliation(
                 current.state_root,
                 target_started=previous_started,
-                cleanup_status=(
-                    "completed" if absence_confirmed else "not_attempted"
-                ),
+                cleanup_status=("completed" if absence_confirmed else "not_attempted"),
                 error_code=(
                     "target_started_before_reconciliation"
                     if previous_started is True
@@ -2447,9 +2366,7 @@ print(head)
                     watchdog_violation.set()
                     self._kill(plan, container_id)
                     return
-                interval = _next_watchdog_interval(
-                    time.monotonic() - started_at
-                )
+                interval = _next_watchdog_interval(time.monotonic() - started_at)
 
         try:
             try:
@@ -2527,9 +2444,7 @@ print(head)
                 watchdog_violation.set()
                 error_code = "sandbox_workspace_limit_exceeded"
         cleaned = (
-            bool(container_id)
-            and watchdog_joined
-            and self._cleanup(plan, container_id)
+            bool(container_id) and watchdog_joined and self._cleanup(plan, container_id)
         )
         self._finish(current.state_root, review_required=not cleaned)
         if interrupted is None and terminal is None:
@@ -2611,35 +2526,26 @@ class DockerSandboxContext:
     def __post_init__(self):
         source_root = Path(os.path.abspath(os.fspath(self.source_root)))
         execution_root = Path(os.path.abspath(os.fspath(self.execution_root)))
-        project_state_root = Path(
-            os.path.abspath(os.fspath(self.project_state_root))
-        )
-        sandbox_state_root = Path(
-            os.path.abspath(os.fspath(self.sandbox_state_root))
-        )
+        project_state_root = Path(os.path.abspath(os.fspath(self.project_state_root)))
+        sandbox_state_root = Path(os.path.abspath(os.fspath(self.sandbox_state_root)))
         try:
             authorization = self.authorization.verify(self.runner.image)
         except (AttributeError, DockerSandboxError) as exc:
             raise DockerSandboxError("sandbox_context_invalid") from exc
         if (
             type(self.resumed) is not bool
-            or
-            execution_root != self.workspace_view.physical_root
+            or execution_root != self.workspace_view.physical_root
             or sandbox_state_root != self.sandbox_session.state_root
             or self.sandbox_session.state != "ready"
             or self.sandbox_session.manifest["source"]["root"] != str(source_root)
-            or self.sandbox_session.manifest["execution"]["root"]
-            != str(execution_root)
+            or self.sandbox_session.manifest["execution"]["root"] != str(execution_root)
             or self.sandbox_session.manifest["sidecar"] is None
             or Path(self.sandbox_session.manifest["sidecar"]["path"]).parent
             != project_state_root / "sandbox_sessions"
             or self.sandbox_session.manifest["image"]["manifest_digest"]
             != authorization.image_reference
             or self.sandbox_session.manifest["image"]["reference"]
-            != (
-                authorization.image_registry_reference
-                or authorization.image_reference
-            )
+            != authorization.image_reference
             or self.sandbox_session.manifest["image"]["image_id"]
             != authorization.image_id
             or self.sandbox_session.manifest["image"]["platform"]
@@ -2684,7 +2590,7 @@ def _sandbox_manifest_metadata(client, image, readiness):
             "security_digest": _sha256(_canonical_json(readiness["security"])),
         },
         {
-            "reference": image.registry_reference or image.reference,
+            "reference": image.reference,
             "manifest_digest": image.reference,
             "image_id": image.image_id,
             "platform": image.platform,
@@ -2758,9 +2664,7 @@ def build_docker_sandbox_context(
     """Build the production D2+D3 context, with readiness before staging."""
     source_root = Path(os.path.abspath(os.fspath(source_root)))
     project_state_root = Path(
-        os.path.abspath(
-            os.fspath(project_state_root or source_root / ".pico")
-        )
+        os.path.abspath(os.fspath(project_state_root or source_root / ".pico"))
     )
     sandbox_parent = Path(
         os.path.abspath(

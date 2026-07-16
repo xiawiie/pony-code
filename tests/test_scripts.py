@@ -82,7 +82,10 @@ def test_release_workflow_is_tag_bound_and_uses_trusted_publishing():
     assert "uv sync --frozen --dev" in workflow
     assert "uv run pytest -q" in workflow
     assert "uv build --clear" in workflow
-    assert "scripts/release/verify_distribution.py --install-smoke --offline-bundle-smoke" in workflow
+    assert (
+        "scripts/release/verify_distribution.py --install-smoke --offline-bundle-smoke"
+        in workflow
+    )
     assert "uv publish --trusted-publishing always" in workflow
     assert "gh release create" in workflow
     assert 'test "${GITHUB_REF_NAME}" = "v${project_version}"' in workflow
@@ -175,7 +178,9 @@ def test_sandbox_evaluator_uses_the_local_runtime_verifier():
 
 
 def test_distribution_verifier_freezes_archive_and_install_contract():
-    verifier = Path("scripts/release/verify_distribution.py").read_text(encoding="utf-8")
+    verifier = Path("scripts/release/verify_distribution.py").read_text(
+        encoding="utf-8"
+    )
 
     assert '"git", "ls-files", "--", "pico"' in verifier
     assert "sdist file mismatch" in verifier
@@ -187,7 +192,7 @@ def test_distribution_verifier_freezes_archive_and_install_contract():
     assert '_run(str(pico), "doctor", cwd=cwd, env=env)' in verifier
     assert '"sandbox",\n                "status"' in verifier
     assert 'prepared["runtime_authorization"]["kind"] == "local"' in verifier
-    assert 'prepare.returncode in {0, 3}' in verifier
+    assert "prepare.returncode in {0, 3}" in verifier
     assert 'status["data"]["network_performed"] is False' in verifier
     assert 'status["data"]["mutation_performed"] is False' in verifier
     assert "resources_after == resources_before" in verifier
@@ -195,6 +200,9 @@ def test_distribution_verifier_freezes_archive_and_install_contract():
     assert '"PYTHONPATH"' in verifier
     assert "pico.sandbox_lifecycle" in verifier
     assert "pico._sandbox_toolchain" in verifier
+    assert "pico.sandbox.network_control" in verifier
+    assert "pico.providers.fake" in verifier
+    assert "pico = pico.cli.app:main" in verifier
     assert "offline_bundle_smoke" in verifier
     assert 'install_args.append("--no-index")' in verifier
     assert "cwd=cwd, env=env" in verifier
@@ -227,9 +235,7 @@ def test_distribution_verifier_ignores_tracked_files_deleted_from_worktree(
     assert "pico/deleted.py" not in tracked
 
 
-def test_distribution_verifier_rejects_untracked_package_python(
-    tmp_path, monkeypatch
-):
+def test_distribution_verifier_rejects_untracked_package_python(tmp_path, monkeypatch):
     spec = importlib.util.spec_from_file_location(
         "verify_distribution_script",
         Path("scripts/release/verify_distribution.py"),
@@ -251,9 +257,7 @@ def test_distribution_verifier_rejects_untracked_package_python(
         module._tracked_package_files(tmp_path)
 
 
-def test_distribution_verifier_rejects_untracked_package_data(
-    tmp_path, monkeypatch
-):
+def test_distribution_verifier_rejects_untracked_package_data(tmp_path, monkeypatch):
     spec = importlib.util.spec_from_file_location(
         "verify_distribution_script",
         Path("scripts/release/verify_distribution.py"),
@@ -327,7 +331,7 @@ def test_provider_experiment_defaults_allow_reasoning_budget():
     assert args.max_output_tokens == 16_384
 
 
-def test_provider_experiment_parser_accepts_provider_selector():
+def test_provider_experiment_parser_uses_repo_root_and_rejects_provider_selector():
     spec = importlib.util.spec_from_file_location(
         "run_provider_experiments_script",
         Path("scripts/evaluation/run_provider_experiments.py"),
@@ -337,8 +341,13 @@ def test_provider_experiment_parser_accepts_provider_selector():
 
     default_args = module.build_arg_parser().parse_args(["--output-json", "out.json"])
     selected_args = module.build_arg_parser().parse_args(
-        ["--output-json", "out.json", "--provider", "deepseek"]
+        ["--output-json", "out.json", "--repo-root", "/repo"]
     )
 
-    assert default_args.provider == "all"
-    assert selected_args.provider == "deepseek"
+    assert default_args.repo_root == "."
+    assert selected_args.repo_root == "/repo"
+    with pytest.raises(SystemExit) as caught:
+        module.build_arg_parser().parse_args(
+            ["--output-json", "out.json", "--provider", "openai"]
+        )
+    assert caught.value.code == 2

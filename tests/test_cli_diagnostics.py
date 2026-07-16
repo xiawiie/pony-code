@@ -9,7 +9,7 @@ from unittest.mock import Mock
 import pytest
 
 import pico.cli.diagnostics as diagnostics
-from pico.cli import main
+from pico.cli.app import main
 from pico.cli.diagnostics import check_api_connectivity, collect_config, collect_doctor
 
 
@@ -34,17 +34,24 @@ def _write_env(root, *, url="https://gateway.example/v1", key="secret-value"):
     return path
 
 
-def test_config_show_reports_fixed_contract_and_exact_project_env_path(tmp_path, capsys):
+def test_config_show_reports_fixed_contract_and_exact_project_env_path(
+    tmp_path, capsys
+):
     _write_env(tmp_path)
 
-    assert main([
+    assert (
+        main(
+            [
         "--cwd",
         str(tmp_path),
         "--format",
         "json",
         "config",
         "show",
-    ]) == 0
+            ]
+        )
+        == 0
+    )
 
     payload = json.loads(capsys.readouterr().out)["data"]
     assert payload["workspace"] == {"repo_root": str(tmp_path.resolve())}
@@ -85,14 +92,19 @@ def test_config_show_preserves_permission_review_after_redactor(tmp_path, capsys
     env_path = _write_env(tmp_path)
     env_path.chmod(0o644)
 
-    assert main([
+    assert (
+        main(
+            [
         "--cwd",
         str(tmp_path),
         "--format",
         "json",
         "config",
         "show",
-    ]) == 0
+            ]
+        )
+        == 0
+    )
 
     project_env = json.loads(capsys.readouterr().out)["data"]["project_env"]
     assert project_env["status"] == "review_required"
@@ -126,9 +138,7 @@ def test_config_isolates_main_and_linked_worktree_env(tmp_path):
 
 
 @pytest.mark.parametrize("unsafe_kind", ("symlink", "hardlink", "directory"))
-def test_config_show_fails_closed_for_unsafe_project_env(
-    tmp_path, capsys, unsafe_kind
-):
+def test_config_show_fails_closed_for_unsafe_project_env(tmp_path, capsys, unsafe_kind):
     canary = "project-env-outside-canary"
     outside = tmp_path.parent / f"{tmp_path.name}-outside-env"
     env_path = tmp_path / ".env"
@@ -142,14 +152,19 @@ def test_config_show_fails_closed_for_unsafe_project_env(
         else:
             os.link(outside, env_path)
 
-    assert main([
+    assert (
+        main(
+            [
         "--cwd",
         str(tmp_path),
         "--format",
         "json",
         "config",
         "show",
-    ]) == 0
+            ]
+        )
+        == 0
+    )
 
     captured = capsys.readouterr()
     metadata = json.loads(captured.out)["data"]["project_env"]
@@ -167,14 +182,19 @@ def test_config_show_skips_malformed_env_line_without_leaking_key(tmp_path, caps
         encoding="utf-8",
     )
 
-    assert main([
+    assert (
+        main(
+            [
         "--cwd",
         str(tmp_path),
         "--format",
         "json",
         "config",
         "show",
-    ]) == 0
+            ]
+        )
+        == 0
+    )
 
     captured = capsys.readouterr()
     payload = json.loads(captured.out)["data"]
@@ -205,7 +225,7 @@ def test_status_reports_model_and_storage_without_building_agent(
     (tmp_path / ".pico" / "sessions").mkdir(parents=True)
     (tmp_path / ".pico" / "runs" / "run_1").mkdir(parents=True)
     monkeypatch.setattr(
-        "pico.cli.build_agent",
+        "pico.cli.app.build_agent",
         Mock(side_effect=AssertionError("status must not build an agent")),
     )
 
@@ -266,49 +286,59 @@ def test_doctor_check_api_is_the_only_explicit_network_switch(
     )
     monkeypatch.setattr(diagnostics, "check_api_connectivity", checker)
     monkeypatch.setattr(
-        "pico.cli.build_agent",
+        "pico.cli.app.build_agent",
         Mock(side_effect=AssertionError("doctor must not build an agent")),
     )
 
-    assert main([
+    assert (
+        main(
+            [
         "--cwd",
         str(tmp_path),
         "--format",
         "json",
         "doctor",
         "--check-api",
-    ]) == 0
+            ]
+        )
+        == 0
+    )
 
     data = json.loads(capsys.readouterr().out)["data"]
     assert data["api_check"]["model_calls"] == 3
     checker.assert_called_once()
 
 
-def test_doctor_check_api_failure_returns_error_envelope(
-    tmp_path, monkeypatch, capsys
-):
+def test_doctor_check_api_failure_returns_error_envelope(tmp_path, monkeypatch, capsys):
     _write_env(tmp_path)
     monkeypatch.setattr(
         diagnostics,
         "check_api_connectivity",
-        Mock(return_value={
+        Mock(
+            return_value={
             "status": "failed",
             "category": "authentication_failed",
             "reason_code": "authentication_failed",
             "stage": "text",
             "model_calls": 1,
             "http_status": 401,
-        }),
+            }
+        ),
     )
 
-    assert main([
+    assert (
+        main(
+            [
         "--cwd",
         str(tmp_path),
         "--format",
         "json",
         "doctor",
         "--check-api",
-    ]) == 1
+            ]
+        )
+        == 1
+    )
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["ok"] is False
@@ -330,12 +360,17 @@ def test_doctor_rejects_credentialed_url_without_connecting_or_echoing(
     checker = Mock(side_effect=AssertionError("unsafe URL attempted connection"))
     monkeypatch.setattr(diagnostics, "check_api_connectivity", checker)
 
-    assert main([
+    assert (
+        main(
+            [
         "--cwd",
         str(tmp_path),
         "doctor",
         "--check-api",
-    ]) == 3
+            ]
+        )
+        == 3
+    )
 
     captured = capsys.readouterr()
     assert captured.err.strip() == "api_url_credentials"
@@ -355,14 +390,13 @@ def _api_config(*, key="test-key"):
             "strict_tools": True,
             "parallel_tool_control": True,
         },
-        "compatibility": "standard",
     }
 
 
 def test_api_check_without_key_performs_zero_requests(monkeypatch):
     constructor = Mock(side_effect=AssertionError("client must not be built"))
     monkeypatch.setattr(
-        "pico.providers.factory.build_model_client",
+        "pico.providers.factory.build_transport_client",
         constructor,
     )
 
@@ -376,18 +410,20 @@ def test_api_check_builds_resolved_anthropic_client_and_reports_probe(monkeypatc
     client = object()
     constructor = Mock(return_value=client)
     monkeypatch.setattr(
-        "pico.providers.factory.build_model_client",
+        "pico.providers.factory.build_transport_client",
         constructor,
     )
     monkeypatch.setattr(
         "pico.providers.probe.probe_model_client",
-        Mock(return_value={
+        Mock(
+            return_value={
             "status": "ok",
             "stage": "complete",
             "category": "ok",
             "model_calls": 3,
             "binding": {},
-        }),
+            }
+        ),
     )
 
     result = check_api_connectivity(_api_config())
@@ -406,18 +442,18 @@ def test_api_check_builds_resolved_anthropic_client_and_reports_probe(monkeypatc
             "strict_tools": True,
             "parallel_tool_control": True,
         },
-        "compatibility": "standard",
     }
 
 
 def test_api_check_preserves_safe_http_failure_classification(monkeypatch):
     monkeypatch.setattr(
-        "pico.providers.factory.build_model_client",
+        "pico.providers.factory.build_transport_client",
         Mock(return_value=object()),
     )
     monkeypatch.setattr(
         "pico.providers.probe.probe_model_client",
-        Mock(return_value={
+        Mock(
+            return_value={
             "status": "failed",
             "stage": "text",
             "category": "authentication_failed",
@@ -425,7 +461,8 @@ def test_api_check_preserves_safe_http_failure_classification(monkeypatch):
             "binding": {},
             "error_code": "http_4xx",
             "http_status": 401,
-        }),
+            }
+        ),
     )
 
     result = check_api_connectivity(_api_config())
@@ -479,7 +516,10 @@ def test_doctor_runtime_authorization_projection_drops_unknown_fields(
         lambda **_kwargs: {
             "status": "ready",
             "reason_code": "ready",
-            "readiness": {"status": "ready", "runtime_authorization": dict(authorization)},
+            "readiness": {
+                "status": "ready",
+                "runtime_authorization": dict(authorization),
+            },
             "runtime_authorization": dict(authorization),
             "checks": {
                 "runtime_authorization": {

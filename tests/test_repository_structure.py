@@ -11,7 +11,7 @@ MAINTAINER_DOCS = {
     "AGENTS.md",
     "README.md",
     "CHANGELOG.md",
-    "CONTEXT.md",
+    "docs/domain-model.md",
     "docs/cli-installation-and-updates.md",
     "docs/architecture.md",
     "docs/security.md",
@@ -34,10 +34,28 @@ FORBIDDEN_PREFIXES = (
     "docs/superpowers/",
 )
 FORBIDDEN_MODULES = {
+    "benchmarks/evaluation/sandbox_governance.py",
     "pico/providers/clients.py",
+    "pico/providers/fake.py",
+    "pico/providers/anthropic_compatible.py",
+    "pico/providers/openai_compatible.py",
+    "pico/providers/openai_chat.py",
+    "pico/providers/ollama.py",
+    "pico/providers/_shared.py",
+    "pico/sandbox/network_control.py",
     "benchmarks/evaluation/metrics.py",
     "benchmarks/evaluation/metrics_experiments.py",
     "benchmarks/evaluation/evaluator.py",
+}
+ROOT_FILES = {
+    ".env.example",
+    ".gitignore",
+    "AGENTS.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "README.md",
+    "pyproject.toml",
+    "uv.lock",
 }
 FORBIDDEN_SYMBOLS = {
     "FallbackAdapter",
@@ -74,7 +92,10 @@ def _tracked_files() -> set[str]:
 def _production_trees(tracked: set[str]):
     for name in sorted(tracked):
         if name.startswith("pico/") and name.endswith(".py"):
-            yield name, ast.parse((ROOT / name).read_text(encoding="utf-8"), filename=name)
+            yield (
+                name,
+                ast.parse((ROOT / name).read_text(encoding="utf-8"), filename=name),
+            )
 
 
 def test_tracked_document_surface_is_exact():
@@ -87,6 +108,19 @@ def test_tracked_document_surface_is_exact():
     }
     for prefix in FORBIDDEN_PREFIXES:
         assert not any(name.startswith(prefix) for name in tracked)
+
+
+def test_product_root_and_package_surface_are_exact():
+    tracked = _tracked_files()
+    root_files = {name for name in tracked if "/" not in name}
+    assert root_files == ROOT_FILES
+    assert {
+        name for name in tracked if name.startswith("pico/") and name.count("/") == 1
+    } == {
+        "pico/__init__.py",
+        "pico/__main__.py",
+    }
+    assert not any(name.startswith("assets/screenshots/") for name in tracked)
 
 
 def test_agents_instructions_match_the_production_contract():
@@ -136,35 +170,71 @@ def test_current_python_and_console_surfaces_are_exact():
     assert FORBIDDEN_SYMBOLS.isdisjoint(names)
 
     project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-    assert project["project"]["scripts"] == {"pico": "pico.cli:main"}
+    assert project["project"]["scripts"] == {"pico": "pico.cli.app:main"}
 
     init_tree = ast.parse((ROOT / "pico/__init__.py").read_text(encoding="utf-8"))
     exports = next(
         ast.literal_eval(node.value)
         for node in init_tree.body
         if isinstance(node, ast.Assign)
-        and any(isinstance(target, ast.Name) and target.id == "__all__" for target in node.targets)
+        and any(
+            isinstance(target, ast.Name) and target.id == "__all__"
+            for target in node.targets
+        )
     )
-    assert exports == [
-        "Pico",
-        "SessionStore",
-        "WorkspaceContext",
-        "main",
-        "build_agent",
-        "build_arg_parser",
-        "build_welcome",
-    ]
+    assert exports == ["Pico"]
 
-    for package in ("agent", "memory", "providers", "recovery", "sandbox", "state"):
-        tree = ast.parse((ROOT / f"pico/{package}/__init__.py").read_text(encoding="utf-8"))
-        assert all(isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant) for node in tree.body)
+    for package in (
+        "agent",
+        "cli",
+        "config",
+        "context",
+        "memory",
+        "providers",
+        "recovery",
+        "runtime",
+        "sandbox",
+        "security",
+        "state",
+        "tools",
+        "workspace",
+    ):
+        tree = ast.parse(
+            (ROOT / f"pico/{package}/__init__.py").read_text(encoding="utf-8")
+        )
+        assert all(
+            isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant)
+            for node in tree.body
+        )
+
+
+def test_obsolete_provider_and_sandbox_names_are_absent():
+    tracked = _tracked_files()
+    assert FORBIDDEN_MODULES.isdisjoint(tracked)
+    source = "\n".join(
+        (ROOT / name).read_text(encoding="utf-8")
+        for name in sorted(tracked)
+        if name.endswith(".py")
+        and name.startswith(("pico/", "benchmarks/", "scripts/"))
+        and "/tests/" not in name
+    )
+    for obsolete in (
+        "build_model_client",
+        "_ProviderFailure",
+        "thinking_disabled",
+        "--max-new-tokens",
+    ):
+        assert obsolete not in source
+    assert re.search(r"\b_TARGETS\b", source) is None
 
 
 def test_current_sources_do_not_read_obsolete_runtime_shapes():
     session_source = (ROOT / "pico/state/session_store.py").read_text(encoding="utf-8")
-    checkpoint_source = (ROOT / "pico/state/checkpoint_store.py").read_text(encoding="utf-8")
-    runtime_source = (ROOT / "pico/runtime.py").read_text(encoding="utf-8")
-    config_source = (ROOT / "pico/config.py").read_text(encoding="utf-8")
+    checkpoint_source = (ROOT / "pico/state/checkpoint_store.py").read_text(
+        encoding="utf-8"
+    )
+    runtime_source = (ROOT / "pico/runtime/application.py").read_text(encoding="utf-8")
+    config_source = (ROOT / "pico/config/model.py").read_text(encoding="utf-8")
 
     assert '"schema_' + 'version"' not in session_source
     assert '"schema_' + 'version"' not in checkpoint_source
@@ -198,17 +268,17 @@ def test_public_diagnostics_do_not_import_superseded_srt_owners():
 
 def test_all_provider_methods_use_the_structured_completion_surface():
     expected = {
-        "pico/providers/anthropic_compatible.py": {
-            "AnthropicCompatibleModelClient": {"complete"},
+        "pico/providers/anthropic_messages.py": {
+            "AnthropicMessagesModelClient": {"complete"},
         },
-        "pico/providers/fake.py": {"FakeModelClient": {"complete"}},
-        "pico/providers/openai_compatible.py": {
-            "OpenAICompatibleModelClient": {"complete"},
+        "benchmarks/support/fake_provider.py": {"FakeModelClient": {"complete"}},
+        "pico/providers/openai_responses.py": {
+            "OpenAIResponsesModelClient": {"complete"},
         },
-        "pico/providers/openai_chat.py": {
+        "pico/providers/openai_chat_completions.py": {
             "OpenAIChatCompletionsModelClient": {"complete"},
         },
-        "pico/providers/ollama.py": {"OllamaModelClient": {"complete"}},
+        "pico/providers/ollama_chat.py": {"OllamaChatModelClient": {"complete"}},
     }
     for filename, classes in expected.items():
         tree = ast.parse((ROOT / filename).read_text(encoding="utf-8"))
@@ -231,11 +301,17 @@ def test_code_imports_real_modules_not_empty_package_facades():
     facade_modules = {"pico.providers", "pico.memory"}
     offenders = []
     for name in sorted(tracked):
-        if not name.endswith(".py") or not name.startswith(("pico/", "tests/", "benchmarks/", "scripts/")):
+        if not name.endswith(".py") or not name.startswith(
+            ("pico/", "tests/", "benchmarks/", "scripts/")
+        ):
             continue
         tree = ast.parse((ROOT / name).read_text(encoding="utf-8"), filename=name)
         for node in ast.walk(tree):
-            if isinstance(node, ast.ImportFrom) and node.level == 0 and node.module in facade_modules:
+            if (
+                isinstance(node, ast.ImportFrom)
+                and node.level == 0
+                and node.module in facade_modules
+            ):
                 offenders.append((name, node.lineno, node.module))
     assert offenders == []
 
@@ -244,12 +320,12 @@ def test_maintainer_doc_links_and_cli_examples_resolve():
     tracked = _tracked_files()
     link_pattern = re.compile(r"!?\[[^]]*\]\(([^)]+)\)")
     allowed_commands = {
-            "--approval",
-            "--cwd",
-            "--format",
-            "--help",
-            "--sandbox",
-            "--version",
+        "--approval",
+        "--cwd",
+        "--format",
+        "--help",
+        "--sandbox",
+        "--version",
         "checkpoints",
         "config",
         "doctor",

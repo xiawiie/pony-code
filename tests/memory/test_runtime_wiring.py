@@ -3,11 +3,14 @@
 import json
 from pathlib import Path
 
-from pico import Pico, SessionStore, WorkspaceContext
-from pico.providers.fake import FakeModelClient
+from pico import Pico
+from pico.state.session_store import SessionStore
+from pico.workspace.context import WorkspaceContext
+from benchmarks.support.fake_provider import FakeModelClient
 import pico.memory.service as memorylib
 from pico.state.session_store import SESSION_FORMAT_VERSION, SESSION_RECORD_TYPE
 from pico.state.task_state import TaskState
+from pico.runtime.options import RuntimeOptions
 
 
 def _isolate_home(monkeypatch, tmp_path):
@@ -27,7 +30,7 @@ def test_pico_has_memory_store_and_repo_map(tmp_path, monkeypatch):
         model_client=FakeModelClient(["done"]),
         workspace=workspace,
         session_store=store,
-        approval_policy="auto",
+        options=RuntimeOptions(approval_policy="auto"),
     )
     assert agent.memory_store is not None
     assert agent.memory_retrieval is not None
@@ -42,7 +45,7 @@ def test_tool_context_has_wiring(tmp_path, monkeypatch):
         model_client=FakeModelClient(["done"]),
         workspace=workspace,
         session_store=store,
-        approval_policy="auto",
+        options=RuntimeOptions(approval_policy="auto"),
     )
     ctx = agent.tool_context()
     assert ctx.memory_store is agent.memory_store
@@ -59,7 +62,7 @@ def _build_agent(tmp_path, monkeypatch, session=None):
         workspace=workspace,
         session_store=store,
         session=session,
-        approval_policy="auto",
+        options=RuntimeOptions(approval_policy="auto"),
     )
 
 
@@ -101,7 +104,10 @@ def test_runtime_uses_current_working_memory(tmp_path, monkeypatch):
         "recent_files": ["sample.txt"],
     }
     assert set(agent.session["memory"]) == {"file_summaries"}
-    assert agent.session["memory"]["file_summaries"]["sample.txt"]["summary"] == "current summary"
+    assert (
+        agent.session["memory"]["file_summaries"]["sample.txt"]["summary"]
+        == "current summary"
+    )
 
 
 def test_read_file_updates_working_memory_and_raw_file_summary(tmp_path, monkeypatch):
@@ -111,10 +117,15 @@ def test_read_file_updates_working_memory_and_raw_file_summary(tmp_path, monkeyp
     agent.update_memory_after_tool("read_file", {"path": "sample.txt"}, "alpha\nbeta\n")
 
     assert agent.session["working_memory"]["recent_files"] == ["sample.txt"]
-    assert agent.session["memory"]["file_summaries"]["sample.txt"]["summary"] == "alpha | beta"
+    assert (
+        agent.session["memory"]["file_summaries"]["sample.txt"]["summary"]
+        == "alpha | beta"
+    )
 
 
-def test_write_file_invalidates_raw_summary_and_keeps_recent_files_synced(tmp_path, monkeypatch):
+def test_write_file_invalidates_raw_summary_and_keeps_recent_files_synced(
+    tmp_path, monkeypatch
+):
     (tmp_path / "sample.txt").write_text("alpha\nbeta\n", encoding="utf-8")
     agent = _build_agent(tmp_path, monkeypatch)
     agent.update_memory_after_tool("read_file", {"path": "sample.txt"}, "alpha\nbeta\n")
@@ -125,7 +136,9 @@ def test_write_file_invalidates_raw_summary_and_keeps_recent_files_synced(tmp_pa
     assert "sample.txt" not in agent.session["memory"]["file_summaries"]
 
 
-def test_patch_file_invalidates_raw_summary_and_keeps_recent_files_synced(tmp_path, monkeypatch):
+def test_patch_file_invalidates_raw_summary_and_keeps_recent_files_synced(
+    tmp_path, monkeypatch
+):
     (tmp_path / "sample.txt").write_text("alpha\nbeta\n", encoding="utf-8")
     agent = _build_agent(tmp_path, monkeypatch)
     agent.update_memory_after_tool("read_file", {"path": "sample.txt"}, "alpha\nbeta\n")
@@ -149,14 +162,18 @@ def test_invalidate_stale_memory_removes_changed_raw_summary(tmp_path, monkeypat
     assert agent.session["memory"] == {"file_summaries": {}}
 
 
-def test_reset_clears_messages_working_memory_and_keeps_narrow_memory_shape(tmp_path, monkeypatch):
+def test_reset_clears_messages_working_memory_and_keeps_narrow_memory_shape(
+    tmp_path, monkeypatch
+):
     (tmp_path / "sample.txt").write_text("alpha\nbeta\n", encoding="utf-8")
     agent = _build_agent(tmp_path, monkeypatch)
-    agent.session["messages"].append({
+    agent.session["messages"].append(
+        {
         "role": "user",
         "content": "hello",
         "_pico_meta": {"created_at": "t"},
-    })
+        }
+    )
     agent.memory.set_task_summary("Task")
     agent._sync_working_memory()
     agent.update_memory_after_tool("read_file", {"path": "sample.txt"}, "alpha\nbeta\n")
@@ -186,7 +203,9 @@ def test_build_report_excludes_working_memory_content(tmp_path, monkeypatch):
     agent.memory.set_task_summary("Report task")
     agent.memory.remember_file("pico/runtime.py")
     agent._sync_working_memory()
-    task_state = TaskState.create(run_id="run_test", task_id="task_test", user_request="Report task")
+    task_state = TaskState.create(
+        run_id="run_test", task_id="task_test", user_request="Report task"
+    )
     task_state.finish_success("done")
 
     report = agent.build_report(task_state)
@@ -196,7 +215,9 @@ def test_build_report_excludes_working_memory_content(tmp_path, monkeypatch):
     assert "pico/runtime.py" not in json.dumps(report)
 
 
-def test_normal_ask_final_answer_creates_checkpoint_and_syncs_working_memory(tmp_path, monkeypatch):
+def test_normal_ask_final_answer_creates_checkpoint_and_syncs_working_memory(
+    tmp_path, monkeypatch
+):
     agent = _build_agent(tmp_path, monkeypatch)
 
     assert agent.ask("Final only") == "done"
@@ -217,15 +238,21 @@ def test_spawn_delegate_syncs_child_working_memory_without_notes(tmp_path, monke
 
     monkeypatch.setattr(Pico, "ask", fake_ask)
 
-    assert agent.spawn_delegate({"task": "Inspect child state", "max_steps": 1}) == "delegate_result:\nchild done"
+    assert (
+        agent.spawn_delegate({"task": "Inspect child state", "max_steps": 1})
+        == "delegate_result:\nchild done"
+    )
     assert captured["user_message"] == "Inspect child state"
-    assert captured["working_memory"] == {"task_summary": "Inspect child state", "recent_files": []}
+    assert captured["working_memory"] == {
+        "task_summary": "Inspect child state",
+        "recent_files": [],
+    }
     assert captured["memory"] == {"file_summaries": {}}
 
 
 def test_process_note_hook_is_removed_from_runtime_and_tool_executor():
     hook_name = "record_process" + "_note_for_tool"
-    runtime_source = Path("pico/runtime.py").read_text(encoding="utf-8")
+    runtime_source = Path("pico/runtime/application.py").read_text(encoding="utf-8")
     tool_executor_source = Path("pico/tools/executor.py").read_text(encoding="utf-8")
 
     assert hook_name not in runtime_source

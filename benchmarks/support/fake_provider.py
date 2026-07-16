@@ -1,6 +1,6 @@
 """Structured fake provider for tests and offline benchmarks."""
 
-from .response import Response, StopReason
+from pico.providers.response import Response, StopReason
 
 
 class FakeModelClient:

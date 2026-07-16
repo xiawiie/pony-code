@@ -13,7 +13,7 @@ from types import SimpleNamespace
 import pytest
 
 import pico.sandbox.apply as sandbox_apply
-from pico import cli as pico_cli
+from pico.cli import app as pico_cli
 from pico.state.checkpoint_store import CheckpointStore, CheckpointStoreError
 from pico.recovery.policy import DEFAULT_MAX_BLOB_SIZE
 from pico.tools.subprocess import build_trusted_executables
@@ -627,9 +627,9 @@ def test_final_diff_adopts_exact_crash_residue(tmp_path, monkeypatch, crash_afte
 
     assert adopted["status"] == "diff_ready"
     assert context.current_session().state == "pending_review"
-    assert observer.load_finalized_diff(adopted["diff_digest"])[0] == adopted[
-        "artifact"
-    ]
+    assert (
+        observer.load_finalized_diff(adopted["diff_digest"])[0] == adopted["artifact"]
+    )
 
 
 def test_final_diff_refuses_changed_tree_after_partial_crash(tmp_path, monkeypatch):
@@ -786,9 +786,7 @@ def test_source_apply_creates_modifies_deletes_and_preserves_metadata(tmp_path):
         if entry["before_blob_ref"]
     }
     assert before_refs
-    assert all(
-        not (apply_store.blobs / ref[:2] / ref).exists() for ref in before_refs
-    )
+    assert all(not (apply_store.blobs / ref[:2] / ref).exists() for ref in before_refs)
 
 
 def test_source_apply_rejects_custom_xattr_before_source_writes(tmp_path):
@@ -826,7 +824,9 @@ def test_source_apply_rejects_custom_xattr_before_source_writes(tmp_path):
         "journal_id": "",
         "status": "not_started",
     }
-    assert list(SourceApplyStore(context.source_apply_state_root).journals.iterdir()) == []
+    assert (
+        list(SourceApplyStore(context.source_apply_state_root).journals.iterdir()) == []
+    )
     assert CheckpointStore(source).source_apply_guard() is None
 
 
@@ -999,9 +999,9 @@ def test_source_apply_delete_crash_keeps_journal_bound_tombstone(tmp_path):
 
     journal_id = context.current_session().manifest["apply"]["journal_id"]
     journal = SourceApplyStore(context.source_apply_state_root).load_journal(journal_id)
-    tombstone = _apply_quarantine(source, journal_id) / journal["entries"][0][
-        "temp_name"
-    ]
+    tombstone = (
+        _apply_quarantine(source, journal_id) / journal["entries"][0]["temp_name"]
+    )
     assert not (source / "delete.txt").exists()
     assert not list(source.glob(".pico-apply-*.tmp"))
     assert tombstone.read_text(encoding="utf-8") == "before\n"
@@ -1034,9 +1034,9 @@ def test_source_apply_delete_missing_active_tombstone_requires_review(tmp_path):
 
     journal_id = context.current_session().manifest["apply"]["journal_id"]
     journal = SourceApplyStore(context.source_apply_state_root).load_journal(journal_id)
-    tombstone = _apply_quarantine(source, journal_id) / journal["entries"][0][
-        "temp_name"
-    ]
+    tombstone = (
+        _apply_quarantine(source, journal_id) / journal["entries"][0]["temp_name"]
+    )
     tombstone.unlink()
 
     result = SourceApplier(context, observer).reconcile()
@@ -1098,9 +1098,9 @@ def test_source_apply_delete_quarantine_collision_does_not_overwrite(tmp_path):
         journal = SourceApplyStore(context.source_apply_state_root).load_journal(
             journal_id
         )
-        collision = _apply_quarantine(source, journal_id) / journal["entries"][0][
-            "temp_name"
-        ]
+        collision = (
+            _apply_quarantine(source, journal_id) / journal["entries"][0]["temp_name"]
+        )
         collision.write_text("external\n", encoding="utf-8")
         collision.chmod(0o600)
 
@@ -1280,9 +1280,9 @@ def test_source_apply_delete_tombstone_counts_against_cleanup_budget(tmp_path):
 
     journal_id = context.current_session().manifest["apply"]["journal_id"]
     journal = SourceApplyStore(context.source_apply_state_root).load_journal(journal_id)
-    tombstone = _apply_quarantine(source, journal_id) / journal["entries"][0][
-        "temp_name"
-    ]
+    tombstone = (
+        _apply_quarantine(source, journal_id) / journal["entries"][0]["temp_name"]
+    )
     cleanup = SourceApplyStore(context.source_apply_state_root).cleanup_terminal_blobs(
         journal_id,
         max_entries=0,
@@ -1496,11 +1496,14 @@ def test_source_apply_contract_is_independent_of_source_profile(
         assert staging_baseline["untracked_paths"] == (
             ["untracked-profile.txt"] if source_profile == "untracked" else []
         )
-        assert status_before == {
+        assert (
+            status_before
+            == {
             "clean": b"",
             "dirty": b" M profile.txt\0",
             "untracked": b"?? untracked-profile.txt\0",
         }[source_profile]
+        )
         assert context.current_session().manifest["source"]["branch"]
         assert context.current_session().manifest["source"]["head"]
     (context.execution_root / "modified.txt").write_text(
@@ -1550,9 +1553,7 @@ def test_source_apply_conflict_and_blocked_diff_write_no_candidate_files(tmp_pat
     )
     (context2.execution_root / ".env").write_text("TOKEN=secret\n", encoding="utf-8")
     blocked = observer2.finalize_diff(lambda text: text)
-    blocked_result = SourceApplier(context2, observer2).apply(
-        blocked["diff_digest"]
-    )
+    blocked_result = SourceApplier(context2, observer2).apply(blocked["diff_digest"])
 
     assert blocked_result["status"] == "diff_blocked"
     assert not (source2 / ".env").exists()
@@ -1569,7 +1570,9 @@ def test_source_apply_staging_change_and_symlink_parent_are_conflicts(tmp_path):
     )
     (context.execution_root / "README.md").write_text("candidate\n", encoding="utf-8")
     diff = observer.finalize_diff(lambda text: text)
-    (context.execution_root / "README.md").write_text("changed later\n", encoding="utf-8")
+    (context.execution_root / "README.md").write_text(
+        "changed later\n", encoding="utf-8"
+    )
 
     result = SourceApplier(context, observer).apply(diff["diff_digest"])
 
@@ -2334,9 +2337,7 @@ def test_external_apply_authority_closes_pre_journal_crash_window(tmp_path):
     )
     assert authority is not None
     assert not list(
-        SourceApplyStore(context.source_apply_state_root).journals.glob(
-            "apply_*.json"
-        )
+        SourceApplyStore(context.source_apply_state_root).journals.glob("apply_*.json")
     )
     assert context.current_session().state == "pending_review"
 
@@ -2353,10 +2354,13 @@ def test_external_apply_authority_closes_pre_journal_crash_window(tmp_path):
     result = SourceApplier(context, observer).apply(diff_digest)
     assert result["status"] == "apply_applied"
     assert result["journal_id"] == authority["journal_id"]
-    assert read_source_apply_authority(
+    assert (
+        read_source_apply_authority(
         context.runner.session_store.parent,
         source,
-    ) is None
+        )
+        is None
+    )
 
 
 @pytest.mark.parametrize("changed_root", ("source", "staging"))
@@ -2394,14 +2398,15 @@ def test_reservation_only_conflict_clears_exact_authority(
         "journal_id": "",
         "status": "apply_conflicted",
     }
-    assert read_source_apply_authority(
+    assert (
+        read_source_apply_authority(
         context.runner.session_store.parent,
         source,
-    ) is None
-    assert not list(
-        SourceApplyStore(context.source_apply_state_root).journals.glob(
-            "apply_*.json"
         )
+        is None
+    )
+    assert not list(
+        SourceApplyStore(context.source_apply_state_root).journals.glob("apply_*.json")
     )
     assert CheckpointStore(source).source_apply_guard() is None
     assert authority["journal_id"]
@@ -2429,9 +2434,7 @@ def test_external_apply_authority_tamper_blocks_without_docker(tmp_path):
         source,
         expected_authority=authority,
     )
-    control = next(
-        context.sandbox_state_root.parent.glob(".source-apply-control")
-    )
+    control = next(context.sandbox_state_root.parent.glob(".source-apply-control"))
     (control / "active.json").write_bytes(b"{invalid")
     (control / "active.json").chmod(0o600)
 
@@ -2467,10 +2470,13 @@ def test_external_apply_authority_cleanup_rejects_bound_field_tamper(tmp_path):
             },
         )
 
-    assert read_source_apply_authority(
+    assert (
+        read_source_apply_authority(
         context.runner.session_store.parent,
         source,
-    ) == authority
+        )
+        == authority
+    )
 
 
 def test_external_apply_authority_cleanup_requires_present_exact_record(tmp_path):
@@ -2737,15 +2743,9 @@ def test_empty_directory_only_is_not_an_apply_candidate(tmp_path):
         lambda value: value.__setitem__("journal_id", []),
         lambda value: value["source"].__setitem__("root", []),
         lambda value: value["entries"][0].__setitem__("before_blob_ref", "0" * 64),
-        lambda value: value["entries"][0]["before_identity"].__setitem__(
-            "inode", 0
-        ),
-        lambda value: value["entries"][0]["prepared_identity"].__setitem__(
-            "inode", 0
-        ),
-        lambda value: value["entries"][0]["after_identity"].__setitem__(
-            "inode", 0
-        ),
+        lambda value: value["entries"][0]["before_identity"].__setitem__("inode", 0),
+        lambda value: value["entries"][0]["prepared_identity"].__setitem__("inode", 0),
+        lambda value: value["entries"][0]["after_identity"].__setitem__("inode", 0),
         lambda value: value["entries"][0].__setitem__("change_kind", []),
         lambda value: value["entries"][0].__setitem__("status", "pending"),
         lambda value: value["entries"][0].__setitem__(

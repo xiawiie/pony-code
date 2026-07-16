@@ -18,7 +18,7 @@ from pico.sandbox.session import (
     snapshot_source_tree,
     stage_source,
 )
-from pico.security import ensure_private_dir
+from pico.security.private_files import ensure_private_dir
 
 
 def _bootstrap(request):
@@ -119,7 +119,9 @@ def test_stage_source_filters_state_secrets_and_generated_files(tmp_path):
     (source / "main.py").write_text("print('ok')\n", encoding="utf-8")
     (source / "secret.txt").write_text("known-secret\n", encoding="utf-8")
     (source / ".env").write_text("TOKEN=value\n", encoding="utf-8")
-    (source / ".env.example").write_text("URL=https://example.invalid\n", encoding="utf-8")
+    (source / ".env.example").write_text(
+        "URL=https://example.invalid\n", encoding="utf-8"
+    )
     (source / ".pico").mkdir()
     (source / ".pico" / "run.json").write_text("{}", encoding="utf-8")
     (source / "node_modules").mkdir()
@@ -447,7 +449,10 @@ def test_sidecar_is_immutable_across_manifest_state_updates(tmp_path):
     )
     store.finish_call(session.state_root)
 
-    assert (sidecar.read_bytes(), (sidecar.stat().st_dev, sidecar.stat().st_ino)) == before
+    assert (
+        sidecar.read_bytes(),
+        (sidecar.stat().st_dev, sidecar.stat().st_ino),
+    ) == before
 
 
 def test_manifest_update_does_not_attempt_old_second_sidecar_write(
@@ -891,6 +896,7 @@ def test_list_and_inspect_are_zero_mutation(tmp_path):
     assert [item["sandbox_id"] for item in store.list()] == [session.sandbox_id]
 
     assert _tree_snapshot(tmp_path) == before
+
 
 def test_lease_acquire_release_and_busy_detection(tmp_path, monkeypatch):
     _, store, session = _create(tmp_path)

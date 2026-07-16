@@ -68,6 +68,10 @@ uv run python scripts/sandbox/verify_runtime.py --help
 Builder 只接受锁定输入和 `linux/arm64` 本地开发目标。最终 package manifest 的 image identity、Docker config 和安装树
 identity 必须由测试与 distribution smoke 一起验证。
 
+运行时 image manifest 使用 local-only format v3。顶层只保存 policy digest、用户、工作目录、环境、工具路径与平台映射；
+每个平台只保存本地 manifest digest 和 image ID。registry reference、candidate/base manifest、SBOM 与 provenance 不属于
+运行时 schema；格式版本或字段不匹配时直接拒绝，不兼容读取旧 manifest。
+
 ## 必须保持的边界
 
 - Container 只 bind Execution Root；不得挂载 Source Root、Project/Sandbox State、HOME 或 Docker socket。

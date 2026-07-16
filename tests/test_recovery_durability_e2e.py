@@ -4,7 +4,7 @@ import os
 import pytest
 
 from pico.state.checkpoint_store import CheckpointStore
-from pico.cli import main
+from pico.cli.app import main
 from pico.recovery.checkpoint_writer import RecoveryCheckpointWriter
 from pico.recovery.manager import RecoveryManager
 from pico.recovery.models import new_checkpoint_record
@@ -90,9 +90,7 @@ def test_replace_then_crash_before_outcome_reconciles_applied_unconfirmed(
 
     journal = _applying_journal(store)
     assert target.read_bytes() == b"before-0"
-    preview = manager.preview_restore_journal_resolution(
-        journal["checkpoint_id"]
-    )
+    preview = manager.preview_restore_journal_resolution(journal["checkpoint_id"])
     assert preview["entries"][0]["classification"] == "applied_unconfirmed"
     assert store.load_checkpoint_record(journal["checkpoint_id"]) == journal
 
@@ -116,9 +114,7 @@ def test_outer_parent_fsync_failure_uses_proven_post_state(tmp_path, monkeypatch
     assert journal["restore_provenance"]["entries"][0]["outcome"] == "applied"
 
 
-def test_second_file_failure_records_partial_and_proven_undo(
-    tmp_path, monkeypatch
-):
+def test_second_file_failure_records_partial_and_proven_undo(tmp_path, monkeypatch):
     store = CheckpointStore(tmp_path)
     targets = _source_checkpoint(
         store,

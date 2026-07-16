@@ -4,8 +4,8 @@ import json
 import urllib.request
 import uuid
 
-from ._shared import (
-    _ProviderFailure,
+from .transport import (
+    ProviderTransportError,
     _decode_json_object,
     _open_provider_request,
     _optional_int,
@@ -136,7 +136,7 @@ def _ollama_content(data):
     return content
 
 
-class OllamaModelClient:
+class OllamaChatModelClient:
     def __init__(
         self,
         model,
@@ -149,7 +149,7 @@ class OllamaModelClient:
         api_key="",
         capabilities=None,
     ):
-        from pico.config import validate_api_url
+        from pico.config.model import validate_api_url
 
         self.model = str(model)
         self.host = validate_api_url(host)
@@ -260,7 +260,7 @@ class OllamaModelClient:
                 usage=usage,
             )
         except Exception:
-            raise _ProviderFailure(
+            raise ProviderTransportError(
                 "Ollama error: provider_protocol_mismatch",
                 code="provider_protocol_mismatch",
             ) from None

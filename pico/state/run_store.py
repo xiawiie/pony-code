@@ -9,8 +9,12 @@ import json
 import re
 
 from pico.state import file_lock
-from pico.agent.observability import MAX_RUN_ARTIFACT_BYTES, _decode_json, validate_report
-from pico.security import (
+from pico.agent.observability import (
+    MAX_RUN_ARTIFACT_BYTES,
+    _decode_json,
+    validate_report,
+)
+from pico.security.private_files import (
     append_private_bytes,
     ensure_private_dir,
     harden_private_tree,
@@ -77,11 +81,14 @@ class RunStore:
 
     def append_trace(self, task_state, event):
         path = self.trace_path(task_state)
-        serialized = json.dumps(
+        serialized = (
+            json.dumps(
             self._redactor(deepcopy(event)),
             sort_keys=True,
             ensure_ascii=True,
-        ) + "\n"
+            )
+            + "\n"
+        )
         ensure_private_dir(path.parent)
         # trace 采用 jsonl 追加写入，原因是 agent 运行过程是流式事件序列，
         # 逐条落盘比“最后一次性写整份 trace”更稳，也更适合调试。
@@ -128,9 +135,9 @@ class RunStore:
     def _write_json_atomic(self, path, payload):
         # 原子写：先写临时文件，再 replace。
         # 这样即使中途异常，也不容易留下半截 JSON。
-        rendered = (
-            json.dumps(payload, indent=2, sort_keys=True) + "\n"
-        ).encode("utf-8")
+        rendered = (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode(
+            "utf-8"
+        )
         if len(rendered) > MAX_RUN_ARTIFACT_BYTES:
             raise ValueError("private file too large")
         ensure_private_dir(path.parent)

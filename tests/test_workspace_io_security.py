@@ -5,11 +5,17 @@ from unittest.mock import Mock
 
 import pytest
 
-from pico import Pico, SessionStore, WorkspaceContext
-from pico import security as securitylib
-from pico import tools as tool_module
-from pico.providers.fake import FakeModelClient
+from pico import Pico
+from pico.state.session_store import SessionStore
+from pico.workspace.context import WorkspaceContext
+from pico.security import private_files as private_files
+from pico.security import workspace_files as workspace_files
+from pico.tools import files as file_tools
+from pico.tools import search as search_tools
+from pico.tools import validation as tool_validation
+from benchmarks.support.fake_provider import FakeModelClient
 from pico.tools.context import ToolContext
+from pico.runtime.options import RuntimeOptions
 
 
 def _context(root):
@@ -21,7 +27,7 @@ def _context(root):
         max_depth=1,
         spawn_delegate=lambda _args: "unused",
         trusted_executables={},
-        workspace_root_identity=securitylib.private_directory_identity(root),
+        workspace_root_identity=private_files.private_directory_identity(root),
     )
 
 
@@ -31,7 +37,7 @@ def _agent(root):
         model_client=FakeModelClient([]),
         workspace=WorkspaceContext.build(root),
         session_store=SessionStore(root / ".pico" / "sessions"),
-        approval_policy="auto",
+        options=RuntimeOptions(approval_policy="auto"),
     )
 
 
@@ -63,12 +69,12 @@ def test_anchored_reader_rejects_unsafe_leaf_without_exposing_outside(
     outside.mkdir()
     _target, outside_file = _make_unsafe_entry(root, outside, kind)
 
-    with pytest.raises(securitylib.WorkspaceIOError) as exc_info:
-        securitylib.read_regular_bytes_anchored(
+    with pytest.raises(workspace_files.WorkspaceIOError) as exc_info:
+        workspace_files.read_regular_bytes_anchored(
             root,
             "unsafe",
             max_bytes=1024,
-            expected_root_identity=securitylib.private_directory_identity(root),
+            expected_root_identity=private_files.private_directory_identity(root),
         )
 
     assert exc_info.value.code == "workspace_entry_unsafe"
@@ -78,14 +84,14 @@ def test_anchored_reader_rejects_unsafe_leaf_without_exposing_outside(
 @pytest.mark.skipif(not Path("/dev/null").exists(), reason="no /dev/null")
 def test_anchored_reader_rejects_device_before_read(monkeypatch):
     reads = Mock(side_effect=AssertionError("device content was read"))
-    monkeypatch.setattr(securitylib.os, "read", reads)
+    monkeypatch.setattr(workspace_files.os, "read", reads)
 
-    with pytest.raises(securitylib.WorkspaceIOError) as exc_info:
-        securitylib.read_regular_bytes_anchored(
+    with pytest.raises(workspace_files.WorkspaceIOError) as exc_info:
+        workspace_files.read_regular_bytes_anchored(
             "/dev",
             "null",
             max_bytes=1024,
-            expected_root_identity=securitylib.private_directory_identity("/dev"),
+            expected_root_identity=private_files.private_directory_identity("/dev"),
         )
 
     assert exc_info.value.code == "workspace_entry_unsafe"
@@ -109,8 +115,8 @@ def test_reader_revalidates_parent_before_reading_after_final_open_swap(
         outside_target.stat().st_dev,
         outside_target.stat().st_ino,
     )
-    real_open = securitylib.os.open
-    real_read = securitylib.os.read
+    real_open = workspace_files.os.open
+    real_read = workspace_files.os.read
     swapped = False
     outside_reads = 0
 
@@ -129,15 +135,15 @@ def test_reader_revalidates_parent_before_reading_after_final_open_swap(
             outside_reads += 1
         return real_read(descriptor, size)
 
-    monkeypatch.setattr(securitylib.os, "open", swap_parent)
-    monkeypatch.setattr(securitylib.os, "read", track_read)
+    monkeypatch.setattr(workspace_files.os, "open", swap_parent)
+    monkeypatch.setattr(workspace_files.os, "read", track_read)
 
-    with pytest.raises(securitylib.WorkspaceIOError) as exc_info:
-        securitylib.read_regular_bytes_anchored(
+    with pytest.raises(workspace_files.WorkspaceIOError) as exc_info:
+        workspace_files.read_regular_bytes_anchored(
             root,
             "parent/note.txt",
             max_bytes=1024,
-            expected_root_identity=securitylib.private_directory_identity(root),
+            expected_root_identity=private_files.private_directory_identity(root),
         )
 
     assert exc_info.value.code == "workspace_entry_unsafe"
@@ -162,8 +168,8 @@ def test_reader_rejects_target_inode_exchange_before_any_content_read(
         outside_target.stat().st_dev,
         outside_target.stat().st_ino,
     )
-    real_open = securitylib.os.open
-    real_read = securitylib.os.read
+    real_open = workspace_files.os.open
+    real_read = workspace_files.os.read
     swapped = False
     outside_reads = 0
 
@@ -182,15 +188,15 @@ def test_reader_rejects_target_inode_exchange_before_any_content_read(
             outside_reads += 1
         return real_read(descriptor, size)
 
-    monkeypatch.setattr(securitylib.os, "open", swap_target)
-    monkeypatch.setattr(securitylib.os, "read", track_read)
+    monkeypatch.setattr(workspace_files.os, "open", swap_target)
+    monkeypatch.setattr(workspace_files.os, "read", track_read)
 
-    with pytest.raises(securitylib.WorkspaceIOError) as exc_info:
-        securitylib.read_regular_bytes_anchored(
+    with pytest.raises(workspace_files.WorkspaceIOError) as exc_info:
+        workspace_files.read_regular_bytes_anchored(
             root,
             "note.txt",
             max_bytes=1024,
-            expected_root_identity=securitylib.private_directory_identity(root),
+            expected_root_identity=private_files.private_directory_identity(root),
         )
 
     assert exc_info.value.code == "workspace_entry_unsafe"
@@ -203,13 +209,13 @@ def test_reader_rejects_workspace_root_replacement_before_leaf_open(tmp_path):
     detached = tmp_path / "detached"
     root.mkdir()
     (root / "note.txt").write_text("inside\n", encoding="utf-8")
-    identity = securitylib.private_directory_identity(root)
+    identity = private_files.private_directory_identity(root)
     root.rename(detached)
     root.mkdir()
     (root / "note.txt").write_text("replacement-canary\n", encoding="utf-8")
 
-    with pytest.raises(securitylib.WorkspaceIOError) as exc_info:
-        securitylib.read_regular_bytes_anchored(
+    with pytest.raises(workspace_files.WorkspaceIOError) as exc_info:
+        workspace_files.read_regular_bytes_anchored(
             root,
             "note.txt",
             max_bytes=1024,
@@ -230,13 +236,13 @@ def test_atomic_writer_rejects_unsafe_target_without_outside_write(
     outside.mkdir()
     _target, outside_file = _make_unsafe_entry(root, outside, kind)
 
-    with pytest.raises(securitylib.WorkspaceIOError) as exc_info:
-        securitylib.write_regular_bytes_anchored_atomic(
+    with pytest.raises(workspace_files.WorkspaceIOError) as exc_info:
+        workspace_files.write_regular_bytes_anchored_atomic(
             root,
             "unsafe",
             b"replacement\n",
             max_bytes=1024,
-            expected_root_identity=securitylib.private_directory_identity(root),
+            expected_root_identity=private_files.private_directory_identity(root),
         )
 
     assert exc_info.value.code == "workspace_entry_unsafe"
@@ -255,7 +261,7 @@ def test_atomic_writer_revalidates_parent_before_writing_temp(
     outside.mkdir()
     outside_target = outside / "note.txt"
     outside_target.write_text("outside-canary\n", encoding="utf-8")
-    real_open = securitylib.os.open
+    real_open = workspace_files.os.open
     swapped = False
 
     def swap_parent(path, flags, *args, **kwargs):
@@ -271,15 +277,15 @@ def test_atomic_writer_revalidates_parent_before_writing_temp(
             swapped = True
         return real_open(path, flags, *args, **kwargs)
 
-    monkeypatch.setattr(securitylib.os, "open", swap_parent)
+    monkeypatch.setattr(workspace_files.os, "open", swap_parent)
 
-    with pytest.raises(securitylib.WorkspaceIOError) as exc_info:
-        securitylib.write_regular_bytes_anchored_atomic(
+    with pytest.raises(workspace_files.WorkspaceIOError) as exc_info:
+        workspace_files.write_regular_bytes_anchored_atomic(
             root,
             "parent/note.txt",
             b"pico-write\n",
             max_bytes=1024,
-            expected_root_identity=securitylib.private_directory_identity(root),
+            expected_root_identity=private_files.private_directory_identity(root),
         )
 
     assert exc_info.value.code == "workspace_changed_during_write"
@@ -292,20 +298,20 @@ def test_patch_uses_read_digest_as_atomic_write_cas(tmp_path, monkeypatch):
     target = tmp_path / "note.txt"
     target.write_text("before\n", encoding="utf-8")
     context = _context(tmp_path)
-    original_write = securitylib.write_regular_bytes_anchored_atomic
+    original_write = workspace_files.write_regular_bytes_anchored_atomic
 
     def external_change(*args, **kwargs):
         target.write_text("external-change\n", encoding="utf-8")
         return original_write(*args, **kwargs)
 
     monkeypatch.setattr(
-        securitylib,
+        workspace_files,
         "write_regular_bytes_anchored_atomic",
         external_change,
     )
 
-    with pytest.raises(securitylib.WorkspaceIOError) as exc_info:
-        tool_module.tool_patch_file(
+    with pytest.raises(workspace_files.WorkspaceIOError) as exc_info:
+        file_tools.tool_patch_file(
             context,
             {"path": "note.txt", "old_text": "before", "new_text": "after"},
         )
@@ -320,16 +326,16 @@ def test_atomic_writer_preserves_existing_mode_and_uses_0644_for_new_file(
     existing = tmp_path / "existing.txt"
     existing.write_text("old\n", encoding="utf-8")
     existing.chmod(0o640)
-    identity = securitylib.private_directory_identity(tmp_path)
+    identity = private_files.private_directory_identity(tmp_path)
 
-    securitylib.write_regular_bytes_anchored_atomic(
+    workspace_files.write_regular_bytes_anchored_atomic(
         tmp_path,
         "existing.txt",
         b"new\n",
         max_bytes=1024,
         expected_root_identity=identity,
     )
-    securitylib.write_regular_bytes_anchored_atomic(
+    workspace_files.write_regular_bytes_anchored_atomic(
         tmp_path,
         "nested/new.txt",
         b"new\n",
@@ -348,7 +354,7 @@ def test_directory_listing_bounds_results_and_counts_unsafe_entries(tmp_path):
     (tmp_path / "unsafe-link").symlink_to(tmp_path / "safe-000.txt")
     context = _context(tmp_path)
 
-    result = tool_module.tool_list_files(context, {"path": "."})
+    result = file_tools.tool_list_files(context, {"path": "."})
 
     result_lines = [line for line in result.splitlines() if line.startswith("[F]")]
     assert len(result_lines) == 200
@@ -359,12 +365,12 @@ def test_directory_scan_limit_has_stable_reason(tmp_path):
     for name in ("a", "b", "c"):
         (tmp_path / name).write_text(name, encoding="utf-8")
 
-    with pytest.raises(securitylib.WorkspaceIOError) as exc_info:
-        securitylib.list_directory_names_anchored(
+    with pytest.raises(workspace_files.WorkspaceIOError) as exc_info:
+        workspace_files.list_directory_names_anchored(
             tmp_path,
             ".",
             max_entries=2,
-            expected_root_identity=securitylib.private_directory_identity(tmp_path),
+            expected_root_identity=private_files.private_directory_identity(tmp_path),
         )
 
     assert exc_info.value.code == "workspace_directory_limit_exceeded"
@@ -374,10 +380,10 @@ def test_python_search_limit_has_stable_reason(tmp_path, monkeypatch):
     for name in ("a.txt", "b.txt", "c.txt"):
         (tmp_path / name).write_text("needle\n", encoding="utf-8")
     context = _context(tmp_path)
-    monkeypatch.setattr(tool_module, "MAX_WORKSPACE_SEARCH_FILES", 2)
+    monkeypatch.setattr(search_tools, "MAX_WORKSPACE_SEARCH_FILES", 2)
 
-    with pytest.raises(securitylib.WorkspaceIOError) as exc_info:
-        tool_module.tool_search(context, {"pattern": "needle", "path": "."})
+    with pytest.raises(workspace_files.WorkspaceIOError) as exc_info:
+        search_tools.tool_search(context, {"pattern": "needle", "path": "."})
 
     assert exc_info.value.code == "workspace_search_limit_exceeded"
 
@@ -387,10 +393,10 @@ def test_python_search_depth_limit_has_stable_reason(tmp_path, monkeypatch):
     nested.mkdir()
     (nested / "note.txt").write_text("needle\n", encoding="utf-8")
     context = _context(tmp_path)
-    monkeypatch.setattr(tool_module, "MAX_WORKSPACE_SEARCH_DEPTH", 0)
+    monkeypatch.setattr(search_tools, "MAX_WORKSPACE_SEARCH_DEPTH", 0)
 
-    with pytest.raises(securitylib.WorkspaceIOError) as exc_info:
-        tool_module.tool_search(context, {"pattern": "needle", "path": "."})
+    with pytest.raises(workspace_files.WorkspaceIOError) as exc_info:
+        search_tools.tool_search(context, {"pattern": "needle", "path": "."})
 
     assert exc_info.value.code == "workspace_search_limit_exceeded"
 
@@ -398,10 +404,10 @@ def test_python_search_depth_limit_has_stable_reason(tmp_path, monkeypatch):
 def test_python_search_total_byte_limit_has_stable_reason(tmp_path, monkeypatch):
     (tmp_path / "note.txt").write_text("needle\n", encoding="utf-8")
     context = _context(tmp_path)
-    monkeypatch.setattr(tool_module, "MAX_WORKSPACE_SEARCH_BYTES", 3)
+    monkeypatch.setattr(search_tools, "MAX_WORKSPACE_SEARCH_BYTES", 3)
 
-    with pytest.raises(securitylib.WorkspaceIOError) as exc_info:
-        tool_module.tool_search(context, {"pattern": "needle", "path": "."})
+    with pytest.raises(workspace_files.WorkspaceIOError) as exc_info:
+        search_tools.tool_search(context, {"pattern": "needle", "path": "."})
 
     assert exc_info.value.code == "workspace_search_limit_exceeded"
 
@@ -417,9 +423,9 @@ def test_rg_path_falls_back_to_anchored_search_when_tree_has_hardlink(
     context = _context(tmp_path)
     context.trusted_executables = {"rg": "/frozen/rg"}
     rg = Mock(side_effect=AssertionError("rg received an unsafe tree"))
-    monkeypatch.setattr(tool_module, "run_hardened_rg", rg)
+    monkeypatch.setattr(search_tools, "run_hardened_rg", rg)
 
-    result = tool_module.tool_search(
+    result = search_tools.tool_search(
         context,
         {"pattern": "needle", "path": "."},
     )
@@ -465,7 +471,7 @@ def test_tool_executor_surfaces_stable_workspace_reason_codes(
     if setup == "hardlink":
         os.link(outside, target)
     else:
-        target.write_bytes(b"x" * (tool_module.MAX_WORKSPACE_FILE_BYTES + 1))
+        target.write_bytes(b"x" * (tool_validation.MAX_WORKSPACE_FILE_BYTES + 1))
     agent = _agent(tmp_path)
     runner = Mock(return_value="must not run")
     agent.tools[tool_name]["run"] = runner
@@ -502,7 +508,7 @@ def test_tool_executor_patch_cas_reason_is_not_collapsed(tmp_path, monkeypatch):
     target = tmp_path / "note.txt"
     target.write_text("before\n", encoding="utf-8")
     agent = _agent(tmp_path)
-    original_write = securitylib.write_regular_bytes_anchored_atomic
+    original_write = workspace_files.write_regular_bytes_anchored_atomic
     calls = 0
 
     def external_change(*args, **kwargs):
@@ -512,7 +518,7 @@ def test_tool_executor_patch_cas_reason_is_not_collapsed(tmp_path, monkeypatch):
         return original_write(*args, **kwargs)
 
     monkeypatch.setattr(
-        securitylib,
+        workspace_files,
         "write_regular_bytes_anchored_atomic",
         external_change,
     )

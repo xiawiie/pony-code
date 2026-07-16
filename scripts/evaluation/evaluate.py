@@ -24,11 +24,12 @@ from pico.sandbox.docker import (  # noqa: E402
     default_image_manifest_path,
     load_image_manifest,
 )
-from pico.security import redact_text  # noqa: E402
+from pico.config.environment import read_project_env  # noqa: E402
+from pico.config.model import resolve_model_config  # noqa: E402
+from pico.security.redaction import redact_text  # noqa: E402
 
 
 BASELINE_PATH = Path("benchmarks/baselines/core-v1.json")
-LIVE_PROVIDERS = ("anthropic", "deepseek", "ollama", "openai")
 SUITES = (
     "core",
     "core-fast",
@@ -94,7 +95,11 @@ MAX_FAILURE_OUTPUT = 20_000
 def build_arg_parser():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--suite", required=True, choices=SUITES)
-    parser.add_argument("--provider", choices=LIVE_PROVIDERS)
+    parser.add_argument(
+        "--repo-root",
+        default=None,
+        help="Repository whose .env selects the live Provider.",
+    )
     return parser
 
 
@@ -186,7 +191,11 @@ def _core_fast_commands():
         ),
         (
             "core.tool-security",
-            (*pytest, "tests/test_tool_policy.py", "tests/test_shell_security_corpus.py"),
+            (
+                *pytest,
+                "tests/test_tool_policy.py",
+                "tests/test_shell_security_corpus.py",
+            ),
             "exit",
         ),
     )
@@ -491,7 +500,9 @@ def _live_report_passed(report, provider, expected_commit):
         return False
     if summary["total"] != len(assertions):
         return False
-    if not any(item["name"] == "fixture_restored_after_context_exit" for item in assertions):
+    if not any(
+        item["name"] == "fixture_restored_after_context_exit" for item in assertions
+    ):
         return False
     if not isinstance(gates, dict) or set(gates) != LIVE_GATES:
         return False
@@ -564,8 +575,8 @@ def _run_live(provider, *, runner, root, artifact_path):
         (
             sys.executable,
             "benchmarks/live_e2e/run_live_session.py",
-            "--provider",
-            provider,
+            "--repo-root",
+            str(root),
         ),
         runner=runner,
         root=root,
@@ -603,7 +614,10 @@ def _run_perf_process(module, scenario_ids, *, runner, root):
             scenarios = payload.get("scenarios")
             if isinstance(scenarios, list):
                 for item in scenarios:
-                    if not isinstance(item, dict) or item.get("name") not in scenario_ids:
+                    if (
+                        not isinstance(item, dict)
+                        or item.get("name") not in scenario_ids
+                    ):
                         continue
                     name = item["name"]
                     if name in observed:
@@ -619,12 +633,7 @@ def _run_perf_process(module, scenario_ids, *, runner, root):
 def _valid_perf_metrics(item):
     actual = item.get("median_ns")
     p95 = item.get("p95_ns")
-    return (
-        type(actual) is int
-        and actual > 0
-        and type(p95) is int
-        and p95 >= actual
-    )
+    return type(actual) is int and actual > 0 and type(p95) is int and p95 >= actual
 
 
 def _run_performance(baseline, *, runner, root, artifact_path):
@@ -653,7 +662,11 @@ def _run_performance(baseline, *, runner, root, artifact_path):
             else None
         )
         for scenario_id in scenario_ids:
-            process = confirmation if confirmation is not None and scenario_id in regressed else first
+            process = (
+                confirmation
+                if confirmation is not None and scenario_id in regressed
+                else first
+            )
             exit_code, observed, stdout, stderr, duration_ms = process
             if process is confirmation:
                 duration_ms += first_duration
@@ -748,8 +761,7 @@ def _render_markdown(payload):
         f"- Artifact: `{payload['artifact_path']}`",
     ]
     lines.extend(
-        f"- Provenance {key}: `{value}`"
-        for key, value in payload["provenance"].items()
+        f"- Provenance {key}: `{value}`" for key, value in payload["provenance"].items()
     )
     lines.extend(
         (
@@ -861,6 +873,7 @@ def _validate_low_sensitivity(payload, markdown, root):
         "stdout",
         "tool_result",
     }
+
     def scan(value):
         if isinstance(value, dict):
             for key, child in value.items():
@@ -888,7 +901,9 @@ def _validate_low_sensitivity(payload, markdown, root):
         for name, value in os.environ.items()
         if value
         and len(value) >= 8
-        and any(marker in name.upper() for marker in ("KEY", "TOKEN", "SECRET", "PASSWORD"))
+        and any(
+            marker in name.upper() for marker in ("KEY", "TOKEN", "SECRET", "PASSWORD")
+        )
     }
     for forbidden in {str(root), *secret_values}:
         if forbidden and (forbidden in serialized or forbidden in markdown):
@@ -928,12 +943,13 @@ def _failure_message(row):
             f"baseline_median_ns={metrics['baseline_median_ns']}; "
             "expected median <=2x baseline or increase <=5000000ns"
         )
-    return f"current exit={row['exit_code']}; expected exit=0 and complete gate evidence"
+    return (
+        f"current exit={row['exit_code']}; expected exit=0 and complete gate evidence"
+    )
 
 
 def run_evaluation(
     suite,
-    provider=None,
     *,
     runner=_run_command,
     root=ROOT,
@@ -953,6 +969,7 @@ def run_evaluation(
     artifact_dir.mkdir(parents=True, exist_ok=True)
     if not artifact_dir.resolve().is_relative_to(root):
         raise ValueError("evaluation artifact directory escapes repository")
+    provider = ""
     json_path = root / artifact_rel
     markdown_path = root / markdown_rel
     if os.path.lexists(json_path) or os.path.lexists(markdown_path):
@@ -1018,8 +1035,12 @@ def run_evaluation(
                 )
             )
     elif suite == "live":
-        if provider not in LIVE_PROVIDERS:
-            raise ValueError("live suite requires a supported provider")
+        resolved = resolve_model_config(
+            project_env=read_project_env(root),
+            process_env=dict(os.environ),
+            required=True,
+        )
+        provider = resolved["provider"]["value"]
         rows = _run_live(
             provider,
             runner=runner,
@@ -1033,7 +1054,9 @@ def run_evaluation(
         "record_type": "pico_evaluation_result",
         "format_version": 1,
         "suite": suite,
-        "status": "pass" if rows and all(row["status"] == "pass" for row in rows) else "fail",
+        "status": "pass"
+        if rows and all(row["status"] == "pass" for row in rows)
+        else "fail",
         "duration_ms": max(0, (time.monotonic_ns() - started) // 1_000_000),
         "provenance": _provenance(
             root,
@@ -1059,16 +1082,12 @@ def run_evaluation(
 def main(argv=None, *, runner=_run_command, root=ROOT, now=None, system_name=None):
     parser = build_arg_parser()
     args = parser.parse_args(argv)
-    if args.suite == "live" and args.provider is None:
-        parser.error("--suite live requires --provider")
-    if args.suite != "live" and args.provider is not None:
-        parser.error("--provider is only valid with --suite live")
+    selected_root = args.repo_root if args.repo_root is not None else root
     try:
         payload, artifact_path, markdown_path = run_evaluation(
             args.suite,
-            args.provider,
             runner=runner,
-            root=root,
+            root=selected_root,
             now=now,
             system_name=system_name,
         )

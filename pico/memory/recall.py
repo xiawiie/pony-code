@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from html import escape as _html_escape
 import re
 
-from pico import security as securitylib
+from pico.security import redaction as securitylib
 from pico.context.escaping import escape_pico_tags
 from pico.agent.model_capabilities import TokenAccounting
 
@@ -46,8 +46,12 @@ def _paragraphs(text):
 
 def _accounting(agent):
     value = getattr(agent, "token_accounting", None)
-    return value if isinstance(value, TokenAccounting) else TokenAccounting(
+    return (
+        value
+        if isinstance(value, TokenAccounting)
+        else TokenAccounting(
         getattr(getattr(agent, "model_client", None), "count_tokens", None)
+    )
     )
 
 
@@ -94,9 +98,7 @@ def _best_passage(raw, query):
 
 def _flatten_recent(session_recent, skip_turns):
     return {
-        path
-        for turn in (session_recent or [])[-skip_turns:]
-        for path in (turn or [])
+        path for turn in (session_recent or [])[-skip_turns:] for path in (turn or [])
     }
 
 

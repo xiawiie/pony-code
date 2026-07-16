@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager, nullcontext
 import ctypes
+from dataclasses import dataclass
 import difflib
 import errno
 import fcntl
@@ -19,7 +20,9 @@ import sys
 import unicodedata
 
 from pico.state import file_lock
-from pico import security as securitylib
+from pico.security import private_files as private_files
+from pico.security import paths as security_paths
+from pico.security import redaction as redaction
 from pico.state.checkpoint_store import CheckpointStore, CheckpointStoreError
 from pico.recovery.policy import DEFAULT_MAX_BLOB_SIZE
 from pico.recovery.manager import _rename_noreplace, _rename_swap
@@ -43,7 +46,7 @@ from pico.sandbox.session import (
     source_apply_control_lock_path,
     write_source_apply_authority,
 )
-from pico.workspace import now
+from pico.workspace.context import now
 
 
 FORMAT_VERSION = 1
@@ -202,6 +205,21 @@ class SandboxApplyError(RuntimeError):
         super().__init__(self.code)
 
 
+@dataclass(frozen=True)
+class _ApplyPreparation:
+    artifact: dict
+    final: dict
+    diff_digest: str
+    current: object
+    source_binding: dict
+    source_identity: tuple
+    staging_identity: tuple
+    guard: object
+    authority: object
+    orphan: object
+    reserved_journal_id: object
+
+
 def _matches_re(pattern, value):
     return isinstance(value, str) and pattern.fullmatch(value) is not None
 
@@ -210,7 +228,7 @@ def _is_apply_sensitive_path(path):
     parts = PurePosixPath(path).parts
     return bool(
         (parts and parts[0].casefold() == ".pico")
-        or securitylib.is_sensitive_path(path)
+        or security_paths.is_sensitive_path(path)
     )
 
 
@@ -265,7 +283,7 @@ def _ensure_apply_quarantine(checkpoint_store, journal_id):
         raise SandboxApplyError("sandbox_apply_journal_invalid")
     descriptor = -1
     try:
-        descriptor = securitylib._open_private_directory(checkpoint_store.root)
+        descriptor = private_files._open_private_directory(checkpoint_store.root)
         root_info = os.fstat(descriptor)
         expected_uid = os.geteuid() if hasattr(os, "geteuid") else os.getuid()
         if (
@@ -309,8 +327,7 @@ def _ensure_apply_quarantine(checkpoint_store, journal_id):
             if (
                 not stat.S_ISDIR(current.st_mode)
                 or stat.S_ISLNK(current.st_mode)
-                or (current.st_dev, current.st_ino)
-                != (opened.st_dev, opened.st_ino)
+                or (current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino)
                 or opened.st_dev != root_info.st_dev
                 or stat.S_IMODE(opened.st_mode) != 0o700
                 or opened.st_uid != expected_uid
@@ -401,29 +418,24 @@ def _validate_apply_journal(value, *, journal_id=None, sandbox_id=None):
                 for name in _LEAF_IDENTITY_FIELDS
             )
             or entry["before"]["exists"]
-            and any(entry["before_identity"][name] < 1 for name in _LEAF_IDENTITY_FIELDS)
+            and any(
+                entry["before_identity"][name] < 1 for name in _LEAF_IDENTITY_FIELDS
+            )
             or not entry["before"]["exists"]
             and any(entry["before_identity"].values())
             or any(entry["prepared_identity"].values())
             and any(
-                entry["prepared_identity"][name] < 1
-                for name in _LEAF_IDENTITY_FIELDS
+                entry["prepared_identity"][name] < 1 for name in _LEAF_IDENTITY_FIELDS
             )
             or not entry["after"]["exists"]
             and any(entry["prepared_identity"].values())
             or any(entry["after_identity"].values())
-            and any(
-                entry["after_identity"][name] < 1
-                for name in _LEAF_IDENTITY_FIELDS
-            )
+            and any(entry["after_identity"][name] < 1 for name in _LEAF_IDENTITY_FIELDS)
             or not entry["after"]["exists"]
             and any(entry["after_identity"].values())
             or entry["status"] == "applied"
             and entry["after"]["exists"]
-            and any(
-                entry["after_identity"][name] < 1
-                for name in _LEAF_IDENTITY_FIELDS
-            )
+            and any(entry["after_identity"][name] < 1 for name in _LEAF_IDENTITY_FIELDS)
             or not isinstance(entry["before_blob_ref"], str)
             or entry["before"]["exists"]
             and not _matches_re(_BLOB_REF_RE, entry["before_blob_ref"])
@@ -431,8 +443,7 @@ def _validate_apply_journal(value, *, journal_id=None, sandbox_id=None):
             and entry["before_blob_ref"]
             or not isinstance(entry["temp_name"], str)
             or not _matches_re(_TEMP_NAME_RE, entry["temp_name"])
-            or entry["temp_name"]
-            != _apply_temp_name(value["journal_id"], path)
+            or entry["temp_name"] != _apply_temp_name(value["journal_id"], path)
             or not isinstance(entry["status"], str)
             or entry["status"] not in {"pending", "applied", "rolled_back"}
             or not isinstance(entry["parent_identities"], list)
@@ -451,8 +462,7 @@ def _validate_apply_journal(value, *, journal_id=None, sandbox_id=None):
             entry["change_kind"] != expected_change
             or _is_apply_sensitive_path(path)
             or entry["before"]["exists"]
-            and "sha256:" + entry["before_blob_ref"]
-            != entry["before"]["sha256"]
+            and "sha256:" + entry["before_blob_ref"] != entry["before"]["sha256"]
         ):
             raise SandboxApplyError("sandbox_apply_journal_invalid")
         parent_paths = []
@@ -476,7 +486,9 @@ def _validate_apply_journal(value, *, journal_id=None, sandbox_id=None):
             parent_candidate = PurePosixPath(parent_path)
             if candidate.parts[: len(parent_candidate.parts)] != parent_candidate.parts:
                 raise SandboxApplyError("sandbox_apply_journal_invalid")
-        if parent_paths != sorted(set(parent_paths), key=lambda item: (item.count("/"), item)):
+        if parent_paths != sorted(
+            set(parent_paths), key=lambda item: (item.count("/"), item)
+        ):
             raise SandboxApplyError("sandbox_apply_journal_invalid")
         paths.append(path)
     directories = []
@@ -491,7 +503,10 @@ def _validate_apply_journal(value, *, journal_id=None, sandbox_id=None):
             path != item["path"]
             or not isinstance(item["status"], str)
             or item["status"] not in {"planned", "created", "removed"}
-            or any(type(item[name]) is not int or item[name] < 0 for name in ("device", "inode", "mode", "uid", "gid"))
+            or any(
+                type(item[name]) is not int or item[name] < 0
+                for name in ("device", "inode", "mode", "uid", "gid")
+            )
             or item["status"] == "planned"
             and any(item[name] for name in ("device", "inode", "mode", "uid", "gid"))
         ):
@@ -522,32 +537,39 @@ def _validate_apply_journal(value, *, journal_id=None, sandbox_id=None):
 
 class SourceApplyStore:
     def __init__(self, project_state_root):
-        self.root = securitylib.ensure_private_dir(
+        self.root = private_files.ensure_private_dir(
             Path(project_state_root) / "sandbox_apply"
         )
-        self.journals = securitylib.ensure_private_dir(self.root / "journals")
-        self.blobs = securitylib.ensure_private_dir(self.root / "blobs")
+        self.journals = private_files.ensure_private_dir(self.root / "journals")
+        self.blobs = private_files.ensure_private_dir(self.root / "blobs")
 
     def write_blob(self, data):
-        if not isinstance(data, (bytes, bytearray)) or len(data) > DEFAULT_MAX_BLOB_SIZE:
+        if (
+            not isinstance(data, (bytes, bytearray))
+            or len(data) > DEFAULT_MAX_BLOB_SIZE
+        ):
             raise SandboxApplyError("sandbox_apply_blob_invalid")
         raw = bytes(data)
         digest = hashlib.sha256(raw).hexdigest()
-        parent = securitylib.ensure_private_dir(self.blobs / digest[:2])
+        parent = private_files.ensure_private_dir(self.blobs / digest[:2])
         path = parent / digest
         try:
-            existing = securitylib.read_private_bytes(
+            existing = private_files.read_private_bytes(
                 path,
                 trusted_root=self.root,
-                trusted_root_identity=securitylib.private_directory_identity(self.root),
+                trusted_root_identity=private_files.private_directory_identity(
+                    self.root
+                ),
                 max_bytes=DEFAULT_MAX_BLOB_SIZE,
             )
         except FileNotFoundError:
-            securitylib.write_private_bytes_atomic(
+            private_files.write_private_bytes_atomic(
                 path,
                 raw,
                 trusted_root=self.root,
-                trusted_root_identity=securitylib.private_directory_identity(self.root),
+                trusted_root_identity=private_files.private_directory_identity(
+                    self.root
+                ),
                 max_existing_bytes=DEFAULT_MAX_BLOB_SIZE,
             )
         else:
@@ -558,10 +580,10 @@ class SourceApplyStore:
     def read_blob(self, digest):
         if not _matches_re(_BLOB_REF_RE, digest):
             raise SandboxApplyError("sandbox_apply_blob_invalid")
-        data = securitylib.read_private_bytes(
+        data = private_files.read_private_bytes(
             self.blobs / digest[:2] / digest,
             trusted_root=self.root,
-            trusted_root_identity=securitylib.private_directory_identity(self.root),
+            trusted_root_identity=private_files.private_directory_identity(self.root),
             max_bytes=DEFAULT_MAX_BLOB_SIZE,
         )
         if hashlib.sha256(data).hexdigest() != digest:
@@ -638,7 +660,6 @@ class SourceApplyStore:
             raise SandboxApplyError("sandbox_apply_journal_invalid")
         return journal
 
-
     @staticmethod
     def _journal_blob_refs(journal):
         return {
@@ -649,9 +670,9 @@ class SourceApplyStore:
 
     def _journals_snapshot(self):
         try:
-            before = securitylib.private_directory_identity(self.journals)
+            before = private_files.private_directory_identity(self.journals)
             paths = sorted(self.journals.iterdir(), key=lambda item: item.name)
-            after = securitylib.private_directory_identity(self.journals)
+            after = private_files.private_directory_identity(self.journals)
         except (OSError, ValueError) as exc:
             raise SandboxApplyError("sandbox_apply_cleanup_failed") from exc
         if before != after or len(paths) > MAX_APPLY_JOURNALS:
@@ -676,10 +697,10 @@ class SourceApplyStore:
 
     def _read_optional_blob(self, path, digest):
         try:
-            data = securitylib.read_private_bytes(
+            data = private_files.read_private_bytes(
                 path,
                 trusted_root=self.root,
-                trusted_root_identity=securitylib.private_directory_identity(
+                trusted_root_identity=private_files.private_directory_identity(
                     self.root
                 ),
                 max_bytes=DEFAULT_MAX_BLOB_SIZE,
@@ -698,9 +719,9 @@ class SourceApplyStore:
         except FileNotFoundError:
             return set()
         try:
-            before = securitylib.private_directory_identity(trash)
+            before = private_files.private_directory_identity(trash)
             paths = sorted(trash.iterdir(), key=lambda item: item.name)
-            after = securitylib.private_directory_identity(trash)
+            after = private_files.private_directory_identity(trash)
         except (OSError, ValueError) as exc:
             raise SandboxApplyError("sandbox_apply_cleanup_failed") from exc
         refs = {path.name for path in paths}
@@ -736,9 +757,7 @@ class SourceApplyStore:
                     try:
                         self.read_blob(ref)
                     except (FileNotFoundError, OSError, ValueError) as exc:
-                        raise SandboxApplyError(
-                            "sandbox_apply_cleanup_failed"
-                        ) from exc
+                        raise SandboxApplyError("sandbox_apply_cleanup_failed") from exc
                     protected.add(ref)
         removed = 0
         mutation_store = CheckpointStore(Path(target["source"]["root"]))
@@ -837,7 +856,7 @@ class SourceApplyStore:
                         "removed_count": removed,
                         "protected_count": len(target_refs & protected),
                     }
-                trash = securitylib.ensure_private_dir(trash)
+                trash = private_files.ensure_private_dir(trash)
                 try:
                     os.replace(canonical, trashed)
                     _fsync_directory(canonical.parent)
@@ -1016,17 +1035,17 @@ def _descriptor_file_flags(descriptor, info):
 
 def _validate_descriptor_metadata(descriptor, info):
     xattrs = _descriptor_xattrs(descriptor)
-    allowed_xattrs = (
-        {_DARWIN_PROVENANCE_XATTR} if sys.platform == "darwin" else set()
-    )
+    allowed_xattrs = {_DARWIN_PROVENANCE_XATTR} if sys.platform == "darwin" else set()
     if (
         xattrs - allowed_xattrs
         or _DARWIN_PROVENANCE_XATTR in xattrs
         and (
-            len(provenance := _descriptor_xattr(
-                descriptor,
-                _DARWIN_PROVENANCE_XATTR,
-            ))
+            len(
+                provenance := _descriptor_xattr(
+                    descriptor,
+                    _DARWIN_PROVENANCE_XATTR,
+                )
+            )
             != 11
             or provenance[:3] != b"\x01\x02\x00"
         )
@@ -1116,8 +1135,7 @@ class _SourceTree:
             not stat.S_ISDIR(opened.st_mode)
             or stat.S_ISLNK(current.st_mode)
             or opened.st_dev != self.root_device
-            or (current.st_dev, current.st_ino)
-            != (opened.st_dev, opened.st_ino)
+            or (current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino)
             or (opened.st_dev, opened.st_ino) != tuple(expected_identity)
             or stat.S_IMODE(opened.st_mode) != 0o700
             or opened.st_uid != expected_uid
@@ -1131,11 +1149,10 @@ class _SourceTree:
             raise
         after = os.fstat(descriptor)
         current = path.lstat()
-        if (
-            (after.st_dev, after.st_ino) != (opened.st_dev, opened.st_ino)
-            or (current.st_dev, current.st_ino)
-            != (opened.st_dev, opened.st_ino)
-        ):
+        if (after.st_dev, after.st_ino) != (opened.st_dev, opened.st_ino) or (
+            current.st_dev,
+            current.st_ino,
+        ) != (opened.st_dev, opened.st_ino):
             os.close(descriptor)
             raise SandboxApplyError("source_apply_unsupported")
         self.quarantine_descriptor = descriptor
@@ -1197,8 +1214,7 @@ class _SourceTree:
         relative = _validated_relative(raw_path)
         descriptors = [os.dup(self.descriptor)]
         expected = {
-            item["path"]: (item["device"], item["inode"])
-            for item in expected_parents
+            item["path"]: (item["device"], item["inode"]) for item in expected_parents
         }
         planned = set(planned_missing)
         prefix = []
@@ -1238,9 +1254,7 @@ class _SourceTree:
                     if on_created is not None:
                         on_created(path, before)
                 else:
-                    if path in planned and (
-                        created is None or path not in created
-                    ):
+                    if path in planned and (created is None or path not in created):
                         raise SandboxApplyError("source_apply_conflicted")
                 if (
                     not stat.S_ISDIR(before.st_mode)
@@ -1259,9 +1273,14 @@ class _SourceTree:
                 ):
                     os.close(child)
                     raise SandboxApplyError("source_apply_conflicted")
-                if created is not None and path in created and created[path] != (
-                    opened.st_dev,
-                    opened.st_ino,
+                if (
+                    created is not None
+                    and path in created
+                    and created[path]
+                    != (
+                        opened.st_dev,
+                        opened.st_ino,
+                    )
                 ):
                     os.close(child)
                     raise SandboxApplyError("source_apply_conflicted")
@@ -1470,8 +1489,7 @@ class _SourceTree:
                 len(data) > max_bytes
                 or (after.st_dev, after.st_ino) != (opened.st_dev, opened.st_ino)
                 or _identity(after_metadata) != _identity(after)
-                or (current.st_dev, current.st_ino)
-                != (opened.st_dev, opened.st_ino)
+                or (current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino)
                 or after.st_size != len(data)
                 or after.st_mode != opened.st_mode
                 or after.st_uid != opened.st_uid
@@ -1541,9 +1559,7 @@ class _SourceTree:
             name = relative.parts[-1]
             current = self._inspect_leaf(parent, name)
             expected_identity = tuple(expected_identity)
-            current_identity = (
-                current["identity"] if current["exists"] else (0, 0)
-            )
+            current_identity = current["identity"] if current["exists"] else (0, 0)
             if (
                 not _observed_matches(current, expected)
                 or current_identity != expected_identity
@@ -1625,9 +1641,7 @@ class _SourceTree:
             if on_step is not None:
                 on_step("after_prepare")
             current = self._inspect_leaf(parent, name)
-            current_identity = (
-                current["identity"] if current["exists"] else (0, 0)
-            )
+            current_identity = current["identity"] if current["exists"] else (0, 0)
             if (
                 not _observed_matches(current, expected)
                 or current_identity != expected_identity
@@ -1778,9 +1792,8 @@ class _SourceTree:
             )
             if missing:
                 if temp["exists"]:
-                    if (
-                        entry["before"]["exists"]
-                        or not _observed_matches(temp, entry["after"])
+                    if entry["before"]["exists"] or not _observed_matches(
+                        temp, entry["after"]
                     ):
                         raise SandboxApplyError("source_apply_uncertain")
                     self._retire_quarantine_leaf(
@@ -1809,9 +1822,7 @@ class _SourceTree:
                 entry["prepared_identity"]["inode"],
             )
             published_identity = (
-                after_identity
-                if after_identity != (0, 0)
-                else prepared_identity
+                after_identity if after_identity != (0, 0) else prepared_identity
             )
             if not temp["exists"]:
                 if (
@@ -1838,9 +1849,8 @@ class _SourceTree:
                 )
                 return 1
             elif not entry["after"]["exists"]:
-                if (
-                    temp["identity"] != before_identity
-                    or not _observed_matches(temp, entry["before"])
+                if temp["identity"] != before_identity or not _observed_matches(
+                    temp, entry["before"]
                 ):
                     raise SandboxApplyError("source_apply_uncertain")
                 if not target["exists"]:
@@ -1957,14 +1967,10 @@ class _SourceTree:
             tombstone = self._quarantine_leaf(entry["temp_name"])
             if not tombstone["exists"]:
                 return 0
-            if (
-                tombstone["identity"]
-                != (
-                    entry["before_identity"]["device"],
-                    entry["before_identity"]["inode"],
-                )
-                or not _observed_matches(tombstone, entry["before"])
-            ):
+            if tombstone["identity"] != (
+                entry["before_identity"]["device"],
+                entry["before_identity"]["inode"],
+            ) or not _observed_matches(tombstone, entry["before"]):
                 raise SandboxApplyError("source_apply_uncertain")
             self._retire_quarantine_leaf(
                 entry["temp_name"],
@@ -2002,10 +2008,9 @@ class _SourceTree:
                     )
                 except FileNotFoundError:
                     return None
-                if (
-                    not stat.S_ISDIR(info.st_mode)
-                    or (info.st_dev, info.st_ino)
-                    != (item["device"], item["inode"])
+                if not stat.S_ISDIR(info.st_mode) or (info.st_dev, info.st_ino) != (
+                    item["device"],
+                    item["inode"],
                 ):
                     raise SandboxApplyError("source_apply_uncertain")
                 child = os.open(quarantine_name, self.flags, dir_fd=quarantine)
@@ -2134,21 +2139,21 @@ def _write_json(path, root, value, *, max_bytes):
     raw = _canonical_json(value)
     if len(raw) > max_bytes:
         raise SandboxApplyError("sandbox_apply_artifact_too_large")
-    securitylib.write_private_bytes_atomic(
+    private_files.write_private_bytes_atomic(
         path,
         raw,
         trusted_root=root,
-        trusted_root_identity=securitylib.private_directory_identity(root),
+        trusted_root_identity=private_files.private_directory_identity(root),
         max_existing_bytes=max_bytes,
     )
     return raw
 
 
 def _read_json(path, root, *, max_bytes, harden=True):
-    raw = securitylib.read_private_bytes(
+    raw = private_files.read_private_bytes(
         path,
         trusted_root=root,
-        trusted_root_identity=securitylib.private_directory_identity(root),
+        trusted_root_identity=private_files.private_directory_identity(root),
         max_bytes=max_bytes,
         harden=harden,
     )
@@ -2210,13 +2215,14 @@ def _high_risk(path, mode):
         mode & stat.S_IXUSR
         or candidate.name.casefold() in _HIGH_RISK_NAMES
         or parts[:2] == (".github", "workflows")
-        or parts and parts[0] in {"scripts", ".circleci"}
+        or parts
+        and parts[0] in {"scripts", ".circleci"}
     )
 
 
 def _contains_known_secret(data, redaction_env, secret_env_names):
     text = data.decode("utf-8", errors="replace")
-    return securitylib.contains_secret_material(
+    return redaction.contains_secret_material(
         text,
         env=redaction_env,
         secret_env_names=secret_env_names,
@@ -2367,7 +2373,9 @@ def _capture_entry(
         classification = "blocked_sensitive"
         reason = "sensitive_content"
     else:
-        classification = "high_risk_candidate" if _high_risk(path, mode) else "candidate"
+        classification = (
+            "high_risk_candidate" if _high_risk(path, mode) else "candidate"
+        )
         reason = ""
     eligible = not reason
     blob_ref = ""
@@ -2493,20 +2501,18 @@ def capture_staging(
                 ),
                 info,
             )
-        if (
-            names != sorted(os.listdir(directory_descriptor))
-            or _identity(os.fstat(directory_descriptor)) != _identity(directory_info)
-        ):
+        if names != sorted(os.listdir(directory_descriptor)) or _identity(
+            os.fstat(directory_descriptor)
+        ) != _identity(directory_info):
             raise SandboxApplyError("sandbox_capture_failed")
 
     try:
         visit(root_descriptor, root_info)
         current_root = root.lstat()
         opened_root = os.fstat(root_descriptor)
-        if (
-            _identity(opened_root) != _identity(root_info)
-            or _identity(current_root) != _identity(root_info)
-        ):
+        if _identity(opened_root) != _identity(root_info) or _identity(
+            current_root
+        ) != _identity(root_info):
             raise SandboxApplyError("sandbox_capture_failed")
     except SandboxApplyError:
         raise
@@ -2588,15 +2594,20 @@ def _validate_capture(value, *, sandbox_id=None, capture_kind=None):
         value["record_type"] != "docker_sandbox_capture"
         or value["format_version"] != FORMAT_VERSION
         or not _matches_re(_SANDBOX_ID_RE, value["sandbox_id"])
-        or sandbox_id is not None and value["sandbox_id"] != sandbox_id
+        or sandbox_id is not None
+        and value["sandbox_id"] != sandbox_id
         or not isinstance(value["capture_kind"], str)
         or value["capture_kind"] not in {"baseline", "final", "call"}
-        or capture_kind is not None and value["capture_kind"] != capture_kind
+        or capture_kind is not None
+        and value["capture_kind"] != capture_kind
         or not isinstance(value["entries"], list)
         or not isinstance(value["ignored_counts"], dict)
         or set(value["ignored_counts"]) - {"ignored_generated"}
         or not _matches_re(_SHA256_RE, value["tree_digest"])
-        or any(type(item) is not int or item < 0 for item in value["ignored_counts"].values())
+        or any(
+            type(item) is not int or item < 0
+            for item in value["ignored_counts"].values()
+        )
     ):
         raise SandboxApplyError("sandbox_capture_invalid")
     paths = []
@@ -2620,7 +2631,8 @@ def _validate_capture(value, *, sandbox_id=None, capture_kind=None):
             or not isinstance(entry["ineligible_reason"], str)
             or not isinstance(entry["blob_ref"], str)
             or not isinstance(entry["classification"], str)
-            or entry["classification"] not in {
+            or entry["classification"]
+            not in {
                 "candidate",
                 "high_risk_candidate",
                 "blocked_sensitive",
@@ -2661,9 +2673,8 @@ def _validate_capture(value, *, sandbox_id=None, capture_kind=None):
         }:
             raise SandboxApplyError("sandbox_capture_invalid")
         paths.append(path)
-    if (
-        paths != sorted(set(paths))
-        or value["tree_digest"] != _sha256(_canonical_json(value["entries"]))
+    if paths != sorted(set(paths)) or value["tree_digest"] != _sha256(
+        _canonical_json(value["entries"])
     ):
         raise SandboxApplyError("sandbox_capture_invalid")
     return value
@@ -2728,9 +2739,7 @@ def _classification_from_states(path, before, after):
     }:
         return "blocked_sensitive"
     if any(item["kind"] != "regular" for item in values) or (
-        before["exists"]
-        and after["exists"]
-        and before["kind"] != after["kind"]
+        before["exists"] and after["exists"] and before["kind"] != after["kind"]
     ):
         return "blocked_type"
     if "file_too_large" in reasons:
@@ -2805,7 +2814,10 @@ def build_diff(baseline, final, *, blob_store, redact_text):
     rendered_parts = []
     for entry in entries:
         part = _render_entry(entry, blob_store, redact_text)
-        if sum(len(item) for item in rendered_parts) + len(part) > MAX_RENDERED_DIFF_CHARS:
+        if (
+            sum(len(item) for item in rendered_parts) + len(part)
+            > MAX_RENDERED_DIFF_CHARS
+        ):
             rendered_parts.append("diff_truncated")
             break
         rendered_parts.append(part)
@@ -2831,7 +2843,8 @@ def _validate_diff(value, *, sandbox_id=None):
         value["record_type"] != "docker_sandbox_diff"
         or value["format_version"] != FORMAT_VERSION
         or not _matches_re(_SANDBOX_ID_RE, value["sandbox_id"])
-        or sandbox_id is not None and value["sandbox_id"] != sandbox_id
+        or sandbox_id is not None
+        and value["sandbox_id"] != sandbox_id
         or not _matches_re(_SHA256_RE, value["baseline_capture_digest"])
         or not _matches_re(_SHA256_RE, value["final_capture_digest"])
         or not isinstance(value["entries"], list)
@@ -2851,14 +2864,16 @@ def _validate_diff(value, *, sandbox_id=None):
             raise SandboxApplyError("sandbox_diff_invalid")
         if (
             not isinstance(entry["change_kind"], str)
-            or entry["change_kind"] not in {
+            or entry["change_kind"]
+            not in {
                 "created",
                 "modified",
                 "deleted",
                 "type_changed",
             }
             or not isinstance(entry["classification"], str)
-            or entry["classification"] not in {
+            or entry["classification"]
+            not in {
                 "candidate",
                 "high_risk_candidate",
                 *_BLOCKED_CLASSIFICATIONS,
@@ -2879,9 +2894,7 @@ def _validate_diff(value, *, sandbox_id=None):
             else "deleted"
             if before["exists"] and not after["exists"]
             else "type_changed"
-            if before["exists"]
-            and after["exists"]
-            and before["kind"] != after["kind"]
+            if before["exists"] and after["exists"] and before["kind"] != after["kind"]
             else "modified"
         )
         if (
@@ -2903,7 +2916,9 @@ def _validate_diff(value, *, sandbox_id=None):
         if expected_classification not in {"blocked_sensitive", "blocked_type"}:
             candidate_bytes += (after if after["exists"] else before)["size"]
         paths.append(path)
-    over_limit = len(value["entries"]) > MAX_APPLY_PATHS or candidate_bytes > MAX_APPLY_BYTES
+    over_limit = (
+        len(value["entries"]) > MAX_APPLY_PATHS or candidate_bytes > MAX_APPLY_BYTES
+    )
     for entry in value["entries"]:
         expected_classification = _classification_from_states(
             entry["path"],
@@ -2944,7 +2959,7 @@ class StagingObserver:
         self.blob_store = blob_store
         self.redaction_env = redaction_env
         self.secret_env_names = tuple(secret_env_names)
-        self.recovery_root = securitylib.ensure_private_dir(
+        self.recovery_root = private_files.ensure_private_dir(
             context.sandbox_state_root / "recovery"
         )
         self.baseline_path = self.recovery_root / "baseline-capture.json"
@@ -3179,8 +3194,7 @@ class StagingObserver:
             )
         diff_digest = _sha256(diff_raw)
         blocked = sum(
-            artifact["counts"].get(name, 0)
-            for name in _BLOCKED_CLASSIFICATIONS
+            artifact["counts"].get(name, 0) for name in _BLOCKED_CLASSIFICATIONS
         )
         candidates = len(artifact["entries"]) - blocked
         try:
@@ -3273,12 +3287,7 @@ class SandboxMaintenanceContext:
             raise SandboxApplyError("sandbox_state_invalid") from exc
 
     def observer(self):
-        checkpoint_root = (
-            self.sandbox_state_root
-            / "recovery"
-            / ".pico"
-            / "checkpoints"
-        )
+        checkpoint_root = self.sandbox_state_root / "recovery" / ".pico" / "checkpoints"
         if not checkpoint_root.is_dir() or checkpoint_root.is_symlink():
             raise SandboxApplyError("sandbox_recovery_state_invalid")
         checkpoint_store = CheckpointStore(checkpoint_root)
@@ -3389,9 +3398,10 @@ class SourceApplier:
                 else:
                     raise SandboxApplyError("source_apply_review_required")
                 current = self.context.current_session()
-                if current.state != "pending_review" or current.manifest[
-                    "apply"
-                ] != {"journal_id": "", "status": "not_started"}:
+                if current.state != "pending_review" or current.manifest["apply"] != {
+                    "journal_id": "",
+                    "status": "not_started",
+                }:
                     raise SandboxApplyError("sandbox_apply_not_allowed")
                 clear_source_apply_authority(
                     self.session_store.parent,
@@ -3696,8 +3706,7 @@ class SourceApplier:
                 for item in current["parent_identities"]
             }
             if any(
-                current_parents.get(item["path"])
-                != (item["device"], item["inode"])
+                current_parents.get(item["path"]) != (item["device"], item["inode"])
                 for item in entry["parent_identities"]
             ):
                 raise SandboxApplyError("source_apply_uncertain")
@@ -3734,9 +3743,7 @@ class SourceApplier:
                 entry["prepared_identity"]["inode"],
             )
             published_identity = (
-                after_identity
-                if after_identity != (0, 0)
-                else prepared_identity
+                after_identity if after_identity != (0, 0) else prepared_identity
             )
             if not current["exists"] or published_identity == (0, 0):
                 raise SandboxApplyError("source_apply_uncertain")
@@ -3802,9 +3809,7 @@ class SourceApplier:
                     expected_authority=authority,
                 )
                 if outcome == "apply_applied":
-                    self.session_store.cleanup_applied(
-                        self.context.sandbox_state_root
-                    )
+                    self.session_store.cleanup_applied(self.context.sandbox_state_root)
             except (
                 OSError,
                 CheckpointStoreError,
@@ -3817,17 +3822,8 @@ class SourceApplier:
                     result["cleanup_status"] = "pending"
         return result
 
-    def apply(self, expected_diff_digest):
-        expected_diff_digest = str(expected_diff_digest)
-        try:
-            artifact, final, diff_digest = self.observer.load_finalized_diff(
-                expected_diff_digest
-            )
-        except SandboxApplyError as exc:
-            if exc.code == "sandbox_final_tree_changed":
-                return self._record_reservation_conflict(expected_diff_digest)
-            raise
-        current = self.context.current_session()
+    @staticmethod
+    def _validate_apply_review_state(current, diff_digest):
         if current.state != "pending_review":
             raise SandboxApplyError("sandbox_apply_not_allowed")
         if current.manifest["diff"]["status"] == "diff_blocked":
@@ -3843,11 +3839,14 @@ class SourceApplier:
             "status": "not_started",
         }:
             raise SandboxApplyError("sandbox_apply_not_allowed")
+        return None
 
+    def _prepare_apply(self, artifact, final, diff_digest, current):
+        source = current.manifest["source"]
         source_binding = {
-            "root": current.manifest["source"]["root"],
-            "device": current.manifest["source"]["device"],
-            "inode": current.manifest["source"]["inode"],
+            "root": source["root"],
+            "device": source["device"],
+            "inode": source["inode"],
         }
         with self._external_mutation_store() as mutation_store:
             guard = mutation_store.source_apply_guard()
@@ -3875,77 +3874,245 @@ class SourceApplier:
             or guard["diff_digest"] != diff_digest
         ):
             raise SandboxApplyError("source_apply_review_required")
-        source_identity = (
-            current.manifest["source"]["device"],
-            current.manifest["source"]["inode"],
-        )
-        staging_identity = (
-            current.manifest["execution"]["device"],
-            current.manifest["execution"]["inode"],
-        )
         if orphan is not None and (
-            guard is not None and orphan["journal_id"] != guard["journal_id"]
+            guard is not None
+            and orphan["journal_id"] != guard["journal_id"]
             or authority is None
             or orphan["journal_id"] != authority["journal_id"]
         ):
             raise SandboxApplyError("source_apply_review_required")
-        if orphan is not None:
-            with self._source_mutation_lock(orphan["journal_id"]) as mutation_store:
-                orphan = self.store.load_unclaimed_journal(
-                    sandbox_id=current.sandbox_id,
-                    diff_digest=diff_digest,
-                    source=source_binding,
-                )
-                expected_authority = make_source_apply_authority(
-                    self.session_store.parent,
-                    self.context.source_root,
-                    source_device=orphan["source"]["device"],
-                    source_inode=orphan["source"]["inode"],
-                    state_root=self.context.sandbox_state_root,
-                    sandbox_id=orphan["sandbox_id"],
-                    journal_id=orphan["journal_id"],
-                    diff_digest=orphan["diff_digest"],
-                )
-                existing = self._external_authority()
-                if existing is not None and existing != expected_authority:
-                    raise SandboxApplyError("source_apply_review_required")
-                mutation_store.begin_source_apply_guard(
-                    journal_id=orphan["journal_id"],
-                    sandbox_id=current.sandbox_id,
-                    diff_digest=diff_digest,
-                )
+
+        reserved_journal_id = authority["journal_id"] if authority is not None else None
+        if orphan is None:
+            if guard is not None and guard["journal_id"] != reserved_journal_id:
+                raise SandboxApplyError("source_apply_review_required")
+            if reserved_journal_id is not None:
                 try:
-                    self.session_store.begin_apply(
-                        self.context.sandbox_state_root,
-                        diff_digest=diff_digest,
-                        journal_id=orphan["journal_id"],
+                    stale = self.store.load_journal(
+                        reserved_journal_id,
+                        sandbox_id=current.sandbox_id,
                     )
-                except SandboxSessionError as exc:
-                    raise SandboxApplyError(exc.code) from exc
-            return self.reconcile()
-        reserved_journal_id = (
-            authority["journal_id"] if authority is not None else None
+                except FileNotFoundError:
+                    stale = None
+                if stale is not None or guard is not None:
+                    raise SandboxApplyError("source_apply_review_required")
+        return _ApplyPreparation(
+            artifact=artifact,
+            final=final,
+            diff_digest=diff_digest,
+            current=current,
+            source_binding=source_binding,
+            source_identity=(source["device"], source["inode"]),
+            staging_identity=(
+                current.manifest["execution"]["device"],
+                current.manifest["execution"]["inode"],
+            ),
+            guard=guard,
+            authority=authority,
+            orphan=orphan,
+            reserved_journal_id=reserved_journal_id,
         )
-        if guard is not None and guard["journal_id"] != reserved_journal_id:
-            raise SandboxApplyError("source_apply_review_required")
-        if reserved_journal_id is not None:
+
+    def _claim_unclaimed_journal(self, preparation):
+        with self._source_mutation_lock(
+            preparation.orphan["journal_id"]
+        ) as mutation_store:
+            orphan = self.store.load_unclaimed_journal(
+                sandbox_id=preparation.current.sandbox_id,
+                diff_digest=preparation.diff_digest,
+                source=preparation.source_binding,
+            )
+            expected_authority = make_source_apply_authority(
+                self.session_store.parent,
+                self.context.source_root,
+                source_device=orphan["source"]["device"],
+                source_inode=orphan["source"]["inode"],
+                state_root=self.context.sandbox_state_root,
+                sandbox_id=orphan["sandbox_id"],
+                journal_id=orphan["journal_id"],
+                diff_digest=orphan["diff_digest"],
+            )
+            existing = self._external_authority()
+            if existing is not None and existing != expected_authority:
+                raise SandboxApplyError("source_apply_review_required")
+            mutation_store.begin_source_apply_guard(
+                journal_id=orphan["journal_id"],
+                sandbox_id=preparation.current.sandbox_id,
+                diff_digest=preparation.diff_digest,
+            )
             try:
-                stale = self.store.load_journal(
-                    reserved_journal_id,
-                    sandbox_id=current.sandbox_id,
+                self.session_store.begin_apply(
+                    self.context.sandbox_state_root,
+                    diff_digest=preparation.diff_digest,
+                    journal_id=orphan["journal_id"],
                 )
-            except FileNotFoundError:
-                stale = None
-            if stale is not None:
+            except SandboxSessionError as exc:
+                raise SandboxApplyError(exc.code) from exc
+        return self.reconcile()
+
+    def _record_locked_preflight_conflict(self, preparation):
+        if preparation.reserved_journal_id is not None:
+            authority = self._external_authority()
+            if authority is None:
                 raise SandboxApplyError("source_apply_review_required")
-            if guard is not None:
-                raise SandboxApplyError("source_apply_review_required")
-        with self._source_mutation_lock(reserved_journal_id) as mutation_store:
-            if self.store.load_unclaimed_journal(
-                sandbox_id=current.sandbox_id,
-                diff_digest=diff_digest,
-                source=source_binding,
-            ) is not None:
+            clear_source_apply_authority(
+                self.session_store.parent,
+                self.context.source_root,
+                expected_authority=authority,
+            )
+        return self._record_conflict(preparation.diff_digest)
+
+    def _preflight_locked_apply(self, preparation, source_tree, staging_tree):
+        try:
+            intents, missing_dirs = self._preflight(
+                preparation.artifact,
+                preparation.final,
+                source_tree,
+                staging_tree,
+            )
+            live = self.observer._capture("final")
+            if live["tree_digest"] != preparation.final["tree_digest"]:
+                raise SandboxApplyError("source_apply_conflicted")
+            return intents, missing_dirs
+        except SandboxApplyError as exc:
+            if exc.code != "source_apply_conflicted":
+                raise
+            return self._record_locked_preflight_conflict(preparation)
+
+    def _begin_apply_journal(
+        self,
+        preparation,
+        current,
+        mutation_store,
+        intents,
+        missing_dirs,
+    ):
+        journal_id = preparation.reserved_journal_id or (
+            "apply_" + secrets.token_hex(16)
+        )
+        expected_authority = make_source_apply_authority(
+            self.session_store.parent,
+            self.context.source_root,
+            source_device=preparation.source_binding["device"],
+            source_inode=preparation.source_binding["inode"],
+            state_root=self.context.sandbox_state_root,
+            sandbox_id=current.sandbox_id,
+            journal_id=journal_id,
+            diff_digest=preparation.diff_digest,
+        )
+        existing = self._external_authority()
+        if existing is not None and existing != expected_authority:
+            raise SandboxApplyError("source_apply_review_required")
+        self._reserve_external_authority(
+            current,
+            journal_id,
+            preparation.diff_digest,
+        )
+        self._fault("after_reservation", "")
+        journal = self._new_journal(
+            preparation.diff_digest,
+            intents,
+            missing_dirs,
+            journal_id=journal_id,
+        )
+        self._write_journal(journal)
+        self._fault("after_journal_before_guard", "")
+        mutation_store.begin_source_apply_guard(
+            journal_id=journal["journal_id"],
+            sandbox_id=current.sandbox_id,
+            diff_digest=preparation.diff_digest,
+        )
+        self._fault("after_guard", "")
+        try:
+            self.session_store.begin_apply(
+                self.context.sandbox_state_root,
+                diff_digest=preparation.diff_digest,
+                journal_id=journal["journal_id"],
+            )
+        except SandboxSessionError as exc:
+            raise SandboxApplyError(exc.code) from exc
+        return journal
+
+    @staticmethod
+    def _require_applied_intents(source_tree, journal, intents):
+        by_path = {item["path"]: item for item in journal["entries"]}
+        for intent in intents:
+            observed = source_tree.inspect(intent["path"])
+            entry = by_path[intent["path"]]
+            after_identity = (
+                entry["after_identity"]["device"],
+                entry["after_identity"]["inode"],
+            )
+            prepared_identity = (
+                entry["prepared_identity"]["device"],
+                entry["prepared_identity"]["inode"],
+            )
+            published_identity = (
+                after_identity if after_identity != (0, 0) else prepared_identity
+            )
+            if (
+                not _observed_matches(observed, intent["after"])
+                or observed["exists"]
+                and (
+                    published_identity == (0, 0)
+                    or observed["identity"] != published_identity
+                )
+            ):
+                raise SandboxApplyError("source_apply_uncertain")
+
+    def _run_apply_transaction(
+        self,
+        source_tree,
+        journal,
+        intents,
+        missing_dirs,
+        mutation_store,
+    ):
+        created = {}
+        try:
+            source_tree.attach_quarantine(
+                *_ensure_apply_quarantine(
+                    mutation_store,
+                    journal["journal_id"],
+                )
+            )
+            self._fault("after_journal", "")
+            self._apply_intents(
+                source_tree,
+                journal,
+                intents,
+                missing_dirs,
+                created,
+            )
+            self._require_applied_intents(source_tree, journal, intents)
+        except Exception:
+            try:
+                self._rollback(source_tree, journal, missing_dirs, created)
+            except Exception:
+                return self._finish(
+                    journal,
+                    "apply_review_required",
+                    mutation_store,
+                    error_code="source_apply_uncertain",
+                )
+            return self._finish(
+                journal,
+                "apply_failed_rolled_back",
+                mutation_store,
+                error_code="source_apply_failed",
+            )
+        return self._finish(journal, "apply_applied", mutation_store)
+
+    def _apply_new_journal(self, preparation):
+        with self._source_mutation_lock(
+            preparation.reserved_journal_id
+        ) as mutation_store:
+            orphan = self.store.load_unclaimed_journal(
+                sandbox_id=preparation.current.sandbox_id,
+                diff_digest=preparation.diff_digest,
+                source=preparation.source_binding,
+            )
+            if orphan is not None:
                 raise SandboxApplyError("sandbox_apply_not_allowed")
             current = self.context.current_session()
             if current.state != "pending_review" or current.manifest["apply"] != {
@@ -3954,149 +4121,61 @@ class SourceApplier:
             }:
                 raise SandboxApplyError("sandbox_apply_not_allowed")
             self._fault("after_lock", "")
-            source_tree = _SourceTree(self.context.source_root, source_identity)
-            staging_tree = _SourceTree(self.context.execution_root, staging_identity)
+            source_tree = _SourceTree(
+                self.context.source_root,
+                preparation.source_identity,
+            )
+            staging_tree = _SourceTree(
+                self.context.execution_root,
+                preparation.staging_identity,
+            )
             try:
-                try:
-                    intents, missing_dirs = self._preflight(
-                        artifact,
-                        final,
-                        source_tree,
-                        staging_tree,
-                    )
-                    live = self.observer._capture("final")
-                    if live["tree_digest"] != final["tree_digest"]:
-                        raise SandboxApplyError("source_apply_conflicted")
-                except SandboxApplyError as exc:
-                    if exc.code == "source_apply_conflicted":
-                        if reserved_journal_id is not None:
-                            authority = self._external_authority()
-                            if authority is None:
-                                raise SandboxApplyError(
-                                    "source_apply_review_required"
-                                )
-                            clear_source_apply_authority(
-                                self.session_store.parent,
-                                self.context.source_root,
-                                expected_authority=authority,
-                            )
-                        return self._record_conflict(diff_digest)
-                    raise
-                journal_id = reserved_journal_id or (
-                    "apply_" + secrets.token_hex(16)
+                preflight = self._preflight_locked_apply(
+                    preparation,
+                    source_tree,
+                    staging_tree,
                 )
-                expected_authority = make_source_apply_authority(
-                    self.session_store.parent,
-                    self.context.source_root,
-                    source_device=source_binding["device"],
-                    source_inode=source_binding["inode"],
-                    state_root=self.context.sandbox_state_root,
-                    sandbox_id=current.sandbox_id,
-                    journal_id=journal_id,
-                    diff_digest=diff_digest,
-                )
-                existing = self._external_authority()
-                if existing is not None and existing != expected_authority:
-                    raise SandboxApplyError("source_apply_review_required")
-                self._reserve_external_authority(
+                if isinstance(preflight, dict):
+                    return preflight
+                intents, missing_dirs = preflight
+                journal = self._begin_apply_journal(
+                    preparation,
                     current,
-                    journal_id,
-                    diff_digest,
-                )
-                self._fault("after_reservation", "")
-                journal = self._new_journal(
-                    diff_digest,
+                    mutation_store,
                     intents,
                     missing_dirs,
-                    journal_id=journal_id,
                 )
-                self._write_journal(journal)
-                self._fault("after_journal_before_guard", "")
-                mutation_store.begin_source_apply_guard(
-                    journal_id=journal["journal_id"],
-                    sandbox_id=current.sandbox_id,
-                    diff_digest=diff_digest,
+                return self._run_apply_transaction(
+                    source_tree,
+                    journal,
+                    intents,
+                    missing_dirs,
+                    mutation_store,
                 )
-                self._fault("after_guard", "")
-                try:
-                    self.session_store.begin_apply(
-                        self.context.sandbox_state_root,
-                        diff_digest=diff_digest,
-                        journal_id=journal["journal_id"],
-                    )
-                except SandboxSessionError as exc:
-                    raise SandboxApplyError(exc.code) from exc
-                created = {}
-                try:
-                    source_tree.attach_quarantine(
-                        *_ensure_apply_quarantine(
-                            mutation_store,
-                            journal["journal_id"],
-                        )
-                    )
-                    self._fault("after_journal", "")
-                    self._apply_intents(
-                        source_tree,
-                        journal,
-                        intents,
-                        missing_dirs,
-                        created,
-                    )
-                    by_path = {
-                        item["path"]: item for item in journal["entries"]
-                    }
-                    for intent in intents:
-                        observed = source_tree.inspect(intent["path"])
-                        entry = by_path[intent["path"]]
-                        after_identity = (
-                            entry["after_identity"]["device"],
-                            entry["after_identity"]["inode"],
-                        )
-                        prepared_identity = (
-                            entry["prepared_identity"]["device"],
-                            entry["prepared_identity"]["inode"],
-                        )
-                        published_identity = (
-                            after_identity
-                            if after_identity != (0, 0)
-                            else prepared_identity
-                        )
-                        if (
-                            not _observed_matches(observed, intent["after"])
-                            or observed["exists"]
-                            and (
-                                published_identity == (0, 0)
-                                or observed["identity"] != published_identity
-                            )
-                        ):
-                            raise SandboxApplyError("source_apply_uncertain")
-                except Exception:
-                    try:
-                        self._rollback(
-                            source_tree,
-                            journal,
-                            missing_dirs,
-                            created,
-                        )
-                    except Exception:
-                        return self._finish(
-                            journal,
-                            "apply_review_required",
-                            mutation_store,
-                            error_code="source_apply_uncertain",
-                        )
-                    return self._finish(
-                        journal,
-                        "apply_failed_rolled_back",
-                        mutation_store,
-                        error_code="source_apply_failed",
-                    )
-                return self._finish(journal, "apply_applied", mutation_store)
             finally:
                 staging_tree.close()
                 source_tree.close()
 
-    def reconcile(self):
+    def apply(self, expected_diff_digest):
+        expected_diff_digest = str(expected_diff_digest)
+        try:
+            artifact, final, diff_digest = self.observer.load_finalized_diff(
+                expected_diff_digest
+            )
+        except SandboxApplyError as exc:
+            if exc.code == "sandbox_final_tree_changed":
+                return self._record_reservation_conflict(expected_diff_digest)
+            raise
+        current = self.context.current_session()
+        terminal = self._validate_apply_review_state(current, diff_digest)
+        if terminal is not None:
+            return terminal
+        preparation = self._prepare_apply(artifact, final, diff_digest, current)
+        if preparation.orphan is not None:
+            return self._claim_unclaimed_journal(preparation)
+        return self._apply_new_journal(preparation)
+
+    def _load_reconcile_journal(self):
         current = self.context.current_session()
         apply_state = current.manifest["apply"]
         if current.state != "applying" or apply_state["status"] != "applying":
@@ -4105,16 +4184,134 @@ class SourceApplier:
             apply_state["journal_id"],
             sandbox_id=current.sandbox_id,
         )
-        if (
-            journal["diff_digest"] != current.manifest["diff"]["digest"]
-            or journal["source"]
-            != {
-                "root": current.manifest["source"]["root"],
-                "device": current.manifest["source"]["device"],
-                "inode": current.manifest["source"]["inode"],
-            }
-        ):
+        if journal["diff_digest"] != current.manifest["diff"]["digest"] or journal[
+            "source"
+        ] != {
+            "root": current.manifest["source"]["root"],
+            "device": current.manifest["source"]["device"],
+            "inode": current.manifest["source"]["inode"],
+        }:
             raise SandboxApplyError("sandbox_apply_journal_invalid")
+        return current, apply_state, journal
+
+    @staticmethod
+    def _classify_reconcile_entry(tree, entry):
+        observed = tree.inspect(entry["path"])
+        current_parents = {
+            item["path"]: (item["device"], item["inode"])
+            for item in observed["parent_identities"]
+        }
+        if any(
+            current_parents.get(item["path"]) != (item["device"], item["inode"])
+            for item in entry["parent_identities"]
+        ):
+            return "unknown", False
+        before_identity = (
+            entry["before_identity"]["device"],
+            entry["before_identity"]["inode"],
+        )
+        after_identity = (
+            entry["after_identity"]["device"],
+            entry["after_identity"]["inode"],
+        )
+        prepared_identity = (
+            entry["prepared_identity"]["device"],
+            entry["prepared_identity"]["inode"],
+        )
+        published_identity = (
+            after_identity if after_identity != (0, 0) else prepared_identity
+        )
+        rollback_started = bool(
+            after_identity != (0, 0) and prepared_identity != after_identity
+        )
+        before_matches = bool(
+            _observed_matches(observed, entry["before"])
+            and (
+                not observed["exists"]
+                or observed["identity"] in {before_identity, prepared_identity}
+            )
+        )
+        after_matches = bool(
+            _observed_matches(observed, entry["after"])
+            and (
+                not observed["exists"]
+                or published_identity != (0, 0)
+                and observed["identity"] == published_identity
+            )
+        )
+        if before_matches:
+            return "before", rollback_started
+        if after_matches:
+            return "after", rollback_started
+        return "unknown", rollback_started
+
+    def _classify_reconcile_entries(self, tree, journal):
+        created = {
+            item["path"]: (item["device"], item["inode"])
+            for item in journal["created_dirs"]
+            if item["status"] == "created"
+        }
+        missing_dirs = [item["path"] for item in journal["created_dirs"]]
+        classifications = []
+        rollback_started = False
+        for entry in journal["entries"]:
+            try:
+                tree.reconcile_temp(
+                    entry,
+                    planned_missing=missing_dirs,
+                    created=created,
+                )
+            except SandboxApplyError:
+                return None
+            classification, entry_rollback_started = self._classify_reconcile_entry(
+                tree,
+                entry,
+            )
+            classifications.append(classification)
+            rollback_started = rollback_started or entry_rollback_started
+        return classifications, rollback_started, missing_dirs, created
+
+    @staticmethod
+    def _mark_reconciled_entries_applied(journal):
+        for entry in journal["entries"]:
+            if entry["after"]["exists"] and not any(entry["after_identity"].values()):
+                entry["after_identity"] = dict(entry["prepared_identity"])
+            entry["status"] = "applied"
+
+    def _finish_reconciliation(self, tree, journal, mutation_store, reconciliation):
+        classifications, rollback_started, missing_dirs, created = reconciliation
+        if "unknown" in classifications:
+            return self._finish(
+                journal,
+                "apply_review_required",
+                mutation_store,
+                error_code="source_apply_uncertain",
+            )
+        if (
+            not rollback_started
+            and classifications
+            and all(item == "after" for item in classifications)
+        ):
+            self._mark_reconciled_entries_applied(journal)
+            return self._finish(journal, "apply_applied", mutation_store)
+        try:
+            self._rollback(tree, journal, missing_dirs, created)
+        except Exception:
+            return self._finish(
+                journal,
+                "apply_review_required",
+                mutation_store,
+                error_code="source_apply_uncertain",
+            )
+        return self._finish(
+            journal,
+            "apply_failed_rolled_back",
+            mutation_store,
+            error_code="source_apply_failed",
+        )
+
+    def reconcile(self):
+        current, apply_state, journal = self._load_reconcile_journal()
         with self._source_mutation_lock(apply_state["journal_id"]) as mutation_store:
             try:
                 mutation_store.begin_source_apply_guard(
@@ -4143,122 +4340,19 @@ class SourceApplier:
                         mutation_store,
                         error_code="source_apply_uncertain",
                     )
-                created = {
-                    item["path"]: (item["device"], item["inode"])
-                    for item in journal["created_dirs"]
-                    if item["status"] == "created"
-                }
-                missing_dirs = [item["path"] for item in journal["created_dirs"]]
-                classifications = []
-                rollback_started = False
-                for entry in journal["entries"]:
-                    try:
-                        tree.reconcile_temp(
-                            entry,
-                            planned_missing=missing_dirs,
-                            created=created,
-                        )
-                    except SandboxApplyError:
-                        return self._finish(
-                            journal,
-                            "apply_review_required",
-                            mutation_store,
-                            error_code="source_apply_uncertain",
-                        )
-                    observed = tree.inspect(entry["path"])
-                    current_parents = {
-                        item["path"]: (item["device"], item["inode"])
-                        for item in observed["parent_identities"]
-                    }
-                    if any(
-                        current_parents.get(item["path"])
-                        != (item["device"], item["inode"])
-                        for item in entry["parent_identities"]
-                    ):
-                        classifications.append("unknown")
-                    else:
-                        before_identity = (
-                            entry["before_identity"]["device"],
-                            entry["before_identity"]["inode"],
-                        )
-                        after_identity = (
-                            entry["after_identity"]["device"],
-                            entry["after_identity"]["inode"],
-                        )
-                        prepared_identity = (
-                            entry["prepared_identity"]["device"],
-                            entry["prepared_identity"]["inode"],
-                        )
-                        published_identity = (
-                            after_identity
-                            if after_identity != (0, 0)
-                            else prepared_identity
-                        )
-                        rollback_started = rollback_started or bool(
-                            after_identity != (0, 0)
-                            and prepared_identity != after_identity
-                        )
-                        before_matches = bool(
-                            _observed_matches(observed, entry["before"])
-                            and (
-                                not observed["exists"]
-                                or observed["identity"]
-                                in {before_identity, prepared_identity}
-                            )
-                        )
-                        after_matches = bool(
-                            _observed_matches(observed, entry["after"])
-                            and (
-                                not observed["exists"]
-                                or published_identity != (0, 0)
-                                and observed["identity"] == published_identity
-                            )
-                        )
-                        if before_matches:
-                            classifications.append("before")
-                        elif after_matches:
-                            classifications.append("after")
-                        else:
-                            classifications.append("unknown")
-                if "unknown" in classifications:
+                reconciliation = self._classify_reconcile_entries(tree, journal)
+                if reconciliation is None:
                     return self._finish(
                         journal,
                         "apply_review_required",
                         mutation_store,
                         error_code="source_apply_uncertain",
                     )
-                if not rollback_started and classifications and all(
-                    item == "after" for item in classifications
-                ):
-                    for entry in journal["entries"]:
-                        if (
-                            entry["after"]["exists"]
-                            and not any(entry["after_identity"].values())
-                        ):
-                            entry["after_identity"] = dict(
-                                entry["prepared_identity"]
-                            )
-                        entry["status"] = "applied"
-                    return self._finish(journal, "apply_applied", mutation_store)
-                try:
-                    self._rollback(
-                        tree,
-                        journal,
-                        missing_dirs,
-                        created,
-                    )
-                except Exception:
-                    return self._finish(
-                        journal,
-                        "apply_review_required",
-                        mutation_store,
-                        error_code="source_apply_uncertain",
-                    )
-                return self._finish(
+                return self._finish_reconciliation(
+                    tree,
                     journal,
-                    "apply_failed_rolled_back",
                     mutation_store,
-                    error_code="source_apply_failed",
+                    reconciliation,
                 )
             finally:
                 tree.close()

@@ -4,7 +4,7 @@ import subprocess
 import pytest
 
 import pico.cli.migration as cli_migration_module
-from pico.cli import main
+from pico.cli.app import main
 from pico.cli.errors import CLI_EXIT_RUNTIME
 from pico.recovery.migration import Migration
 from pico.agent.observability import load_run_summary, validate_report, validate_trace
@@ -110,7 +110,11 @@ def test_migrate_observability_apply_cuts_over_legacy_run(tmp_path, capsys):
         "final_answer": "must not be copied",
         "attempts": 1,
         "tool_steps": 0,
-        "completion_usage_totals": {"input_tokens": 3, "output_tokens": 1, "total_tokens": 4},
+        "completion_usage_totals": {
+            "input_tokens": 3,
+            "output_tokens": 1,
+            "total_tokens": 4,
+        },
         "last_request_metadata": {},
     }
     (run_dir / "report.json").write_text(json.dumps(legacy), encoding="utf-8")
@@ -123,7 +127,8 @@ def test_migrate_observability_apply_cuts_over_legacy_run(tmp_path, capsys):
         encoding="utf-8",
     )
     (run_dir / "task_state.json").write_text(
-        json.dumps({
+        json.dumps(
+            {
             "run_id": "run_1",
             "task_id": "task_1",
             "user_request": "inspect",
@@ -136,15 +141,31 @@ def test_migrate_observability_apply_cuts_over_legacy_run(tmp_path, capsys):
             "checkpoint_id": "",
             "resume_status": "",
             "recovery_checkpoint_id": "",
-        }),
+            }
+        ),
         encoding="utf-8",
     )
 
-    assert main(["--cwd", str(tmp_path), "--format", "json", "migrate", "observability", "apply"]) == 0
+    assert (
+        main(
+            [
+                "--cwd",
+                str(tmp_path),
+                "--format",
+                "json",
+                "migrate",
+                "observability",
+                "apply",
+            ]
+        )
+        == 0
+    )
     payload = json.loads(capsys.readouterr().out)
     assert payload["ok"] is True
     report = json.loads((run_dir / "report.json").read_text(encoding="utf-8"))
-    trace = [json.loads(line) for line in (run_dir / "trace.jsonl").read_text().splitlines()]
+    trace = [
+        json.loads(line) for line in (run_dir / "trace.jsonl").read_text().splitlines()
+    ]
     validate_report(report, run_id="run_1")
     validate_trace(trace, run_id="run_1", task_id="task_1")
     assert load_run_summary(tmp_path / ".pico" / "runs", "run_1") == report

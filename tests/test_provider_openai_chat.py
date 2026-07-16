@@ -5,9 +5,9 @@ from unittest.mock import Mock
 
 import pytest
 
-import pico.providers._shared as provider_shared
-from pico.providers._shared import _ProviderFailure
-from pico.providers.openai_chat import OpenAIChatCompletionsModelClient
+import pico.providers.transport as provider_shared
+from pico.providers.transport import ProviderTransportError
+from pico.providers.openai_chat_completions import OpenAIChatCompletionsModelClient
 from pico.providers.response import StopReason
 
 
@@ -33,7 +33,6 @@ def _client(**overrides):
         "api_key": "test-key",
         "temperature": 0.0,
         "timeout": 30,
-        "compatibility": "standard",
         "auth_mode": "bearer",
         "capabilities": {},
     }
@@ -120,14 +119,15 @@ def test_chat_uses_exact_gateway_root_and_native_tool_history(monkeypatch):
     ]
 
     response = _complete(
-        _client(compatibility="qwen"),
+        _client(),
         tools=[_tool_schema()],
         messages=messages,
     )
 
     assert captured["url"] == "https://gateway.example/v7/chat/completions"
     assert captured["headers"]["Authorization"] == "Bearer test-key"
-    assert captured["body"]["enable_thinking"] is False
+    assert "enable_thinking" not in captured["body"]
+    assert "thinking" not in captured["body"]
     assert captured["body"]["messages"] == [
         {"role": "system", "content": "SYSTEM"},
         {"role": "user", "content": "find x"},
@@ -265,37 +265,10 @@ def test_chat_tool_reasoning_without_replay_fails_closed(monkeypatch):
         ),
     )
 
-    with pytest.raises(_ProviderFailure) as caught:
+    with pytest.raises(ProviderTransportError) as caught:
         _complete(_client(), tools=[_tool_schema()])
 
     assert caught.value.code == "provider_protocol_mismatch"
-
-
-@pytest.mark.parametrize("compatibility", ["deepseek", "glm"])
-def test_chat_disables_thinking_for_reasoning_compatibility(
-    monkeypatch,
-    compatibility,
-):
-    captured = {}
-
-    def urlopen(request, timeout):
-        captured.update(json.loads(request.data))
-        return _Response(
-            {
-                "choices": [
-                    {
-                        "finish_reason": "stop",
-                        "message": {"role": "assistant", "content": "done"},
-                    }
-                ],
-                "usage": {},
-            }
-        )
-
-    monkeypatch.setattr(provider_shared, "_provider_urlopen", urlopen)
-    _complete(_client(compatibility=compatibility))
-
-    assert captured["thinking"] == {"type": "disabled"}
 
 
 def test_chat_preserves_http_400_classification(monkeypatch):
@@ -313,7 +286,7 @@ def test_chat_preserves_http_400_classification(monkeypatch):
         ),
     )
 
-    with pytest.raises(_ProviderFailure) as caught:
+    with pytest.raises(ProviderTransportError) as caught:
         _complete(_client(), tools=[_tool_schema()])
 
     assert caught.value.code == "http_4xx"

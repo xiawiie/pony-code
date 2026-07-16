@@ -5,12 +5,12 @@ import getpass
 from pathlib import Path
 import sys
 
-from pico import security as securitylib
+from pico.security import redaction as securitylib
 from .errors import CLI_EXIT_CONFIG, CLI_EXIT_USAGE, CliError
 from .diagnostics import _line
 from .output import build_inspection_redactor, print_result
 from .session import handle_session_command
-from pico.config import (
+from pico.config.model import (
     API_VARIANT_ENV_NAME,
     API_KEY_ENV_NAME,
     API_URL_ENV_NAME,
@@ -18,16 +18,18 @@ from pico.config import (
     DEFAULT_PROVIDER,
     MODEL_ENV_NAME,
     PROVIDER_ENV_NAME,
-    project_env_metadata,
     provider_defaults,
-    read_project_env,
-    read_project_env_with_status,
     resolve_model_config,
     validate_api_url,
+)
+from pico.config.environment import (
+    project_env_metadata,
+    read_project_env,
+    read_project_env_with_status,
     write_project_env_assignments,
 )
 from pico.sandbox.session import source_mutation_authority
-from pico.workspace import WorkspaceContext
+from pico.workspace.context import WorkspaceContext
 
 
 ROOT_HELP = """pico — Local coding agent for repository-grounded engineering work.
@@ -123,9 +125,9 @@ def handle_init(tokens, cwd, args):
     try:
         if existing.get(API_URL_ENV_NAME):
             validate_api_url(existing[API_URL_ENV_NAME])
-        current_provider = str(
-            existing.get(PROVIDER_ENV_NAME) or DEFAULT_PROVIDER
-        ).strip().casefold()
+        current_provider = (
+            str(existing.get(PROVIDER_ENV_NAME) or DEFAULT_PROVIDER).strip().casefold()
+        )
         try:
             provider_defaults(current_provider)
         except ValueError:

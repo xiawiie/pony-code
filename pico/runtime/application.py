@@ -5,13 +5,12 @@ Pico 就是包在模型外面的控制循环：负责组 prompt、解析模型�
 """
 
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import replace
 import hashlib
 import json
 import os
 import sys
 import uuid
-import warnings
 from datetime import datetime
 from pathlib import Path
 from types import MappingProxyType
@@ -20,7 +19,8 @@ from pico.state import checkpoint as checkpointlib
 from pico.state import session_store as sessionstorelib
 from pico.workspace import snapshot as workspace_snapshot
 import pico.memory.service as memorylib
-from pico import security as securitylib
+from pico.security import private_files as private_files
+from pico.security import redaction as redaction
 from pico.state.checkpoint_store import CheckpointStore
 from pico.agent.compaction import (
     append_branch_rewind,
@@ -55,13 +55,38 @@ from pico.state.session_store import SESSION_FORMAT_VERSION, SESSION_RECORD_TYPE
 from pico.tools.change_recorder import ToolChangeRecorder
 from pico.tools.context import ToolContext
 from pico.tools.executor import ToolExecutionResult, ToolExecutor
-from pico import tools as toolkit
-from pico.config import load_pico_toml, read_project_env
+from pico.tools import registry as toolkit
+from pico.tools.validation import validate_tool as validate_tool_arguments
+from pico.config.environment import read_project_env
+from pico.config.project import load_pico_toml
+from pico.runtime.options import RuntimeOptions
+from pico.runtime.reporting import build_report_request_metadata
+from pico.runtime.rewind import (
+    lexical_workspace_root,
+    WorkspaceRewindConfirmationRequired,
+    WorkspaceRewindError,
+    WorkspaceRewindResult,
+)
+from pico.runtime.working_memory import WorkingMemory
 from pico.agent.verification import new_verification_record
-from pico.workspace import WorkspaceContext, now
+from pico.workspace.context import WorkspaceContext, now
 from pico.workspace.observer import WorkspaceObserver
 
-DEFAULT_SHELL_ENV_ALLOWLIST = ("HOME", "LANG", "LC_ALL", "LC_CTYPE", "LOGNAME", "PATH", "PWD", "SHELL", "TERM", "TMPDIR", "TMP", "TEMP", "USER")
+DEFAULT_SHELL_ENV_ALLOWLIST = (
+    "HOME",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "LOGNAME",
+    "PATH",
+    "PWD",
+    "SHELL",
+    "TERM",
+    "TMPDIR",
+    "TMP",
+    "TEMP",
+    "USER",
+)
 DEFAULT_SECRET_ENV_NAMES = (
     "PICO_OPENAI_API_KEY",
     "OPENAI_API_KEY",
@@ -77,8 +102,6 @@ DEFAULT_SECRET_ENV_NAMES = (
 )
 DEFAULT_MAX_STEPS = 12
 DEFAULT_MAX_OUTPUT_TOKENS = MODEL_DEFAULT_MAX_OUTPUT_TOKENS
-# Import compatibility for one release; new code must use DEFAULT_MAX_OUTPUT_TOKENS.
-DEFAULT_MAX_NEW_TOKENS = DEFAULT_MAX_OUTPUT_TOKENS
 DEFAULT_FEATURE_FLAGS = {
     "memory": True,
 }
@@ -86,32 +109,6 @@ SANDBOX_WORKSPACE_BRANCH = "pico-sandbox"
 SANDBOX_WORKSPACE_STATUS = "sandbox_execution_state_unknown"
 _DEVELOPMENT_RUNTIME_SEAL = object()
 _SECRET_ENV_NAMES_VAR = "PICO_SECRET_ENV_NAMES"
-
-
-class WorkspaceRewindError(RuntimeError):
-    code = "workspace_rewind_failed"
-
-
-class WorkspaceRewindConfirmationRequired(WorkspaceRewindError):
-    code = "workspace_rewind_confirmation_required"
-
-    def __init__(self, preview):
-        super().__init__(
-            "workspace_rewind_confirmation_required: review the restore plan and confirm once"
-        )
-        self.preview = preview
-
-
-@dataclass(frozen=True)
-class WorkspaceRewindResult:
-    rewind_entry: dict
-    summary_entry: dict | None
-    restore_result: dict
-    preview: dict
-
-
-def _lexical_workspace_root(value):
-    return os.path.abspath(os.path.expanduser(str(value)))
 
 
 def _configured_redaction_names(explicit_names=(), *env_sources):
@@ -127,7 +124,7 @@ def _configured_redaction_names(explicit_names=(), *env_sources):
 
 
 def _artifact_redactor(redaction_env, secret_env_names):
-    return lambda value: securitylib.redact_artifact(
+    return lambda value: redaction.redact_artifact(
         value,
         env=redaction_env,
         secret_env_names=secret_env_names,
@@ -158,15 +155,13 @@ def _build_redaction_snapshot(
         if (
             name in merged
             and merged[name] != value
-            and securitylib.is_secret_env_name(name, configured_names)
+            and redaction.is_secret_env_name(name, configured_names)
         ):
             collision_name = f"PICO_REDACTION_COLLISION_{index}_SECRET"
             suffix = 0
             while collision_name in merged or collision_name in project_values:
                 suffix += 1
-                collision_name = (
-                    f"PICO_REDACTION_COLLISION_{index}_{suffix}_SECRET"
-                )
+                collision_name = f"PICO_REDACTION_COLLISION_{index}_{suffix}_SECRET"
             merged[collision_name] = merged[name]
         merged[name] = value
     redaction_env = MappingProxyType(merged)
@@ -192,119 +187,10 @@ def _freeze_redaction_snapshot(
     return snapshot, configured_names, _artifact_redactor(snapshot, configured_names)
 
 
-# --- Inlined working-memory helper -----------------------------------------
-# Task 8 retired `pico/working_memory.py` as a standalone module. The tiny
-# task_summary + recent_files state it carried is still consumed internally by
-# `checkpoint.py` (recent_files → checkpoint key_files) and the REPL /memory
-# command, so we keep the same object shape here as a runtime-private helper.
-# External callers should treat `agent.memory` and the similarly shaped Session
-# projection field as rebuildable caches. Canonical JSONL state lives in the
-# active branch's task checkpoint and file-operation entries.
-
-_WORKING_TASK_SUMMARY_LIMIT = 300
-_WORKING_RECENT_FILES_LIMIT = 8
-
-
-def _working_truncate(text, limit):
-    return str(text)[:limit]
-
-
-def _working_normalize_task_summary(summary, limit):
-    if summary is None:
-        return ""
-    return _working_truncate(str(summary).strip(), limit)
-
-
-def _working_ensure_file_list(value):
-    if not isinstance(value, list):
-        return []
-    return [str(item).strip() for item in value if str(item).strip()]
-
-
-def _working_dedupe_preserve_order(items):
-    seen = set()
-    result = []
-    for item in items:
-        if item in seen:
-            continue
-        seen.add(item)
-        result.append(item)
-    return result
-
-
-class WorkingMemory:
-    TASK_SUMMARY_LIMIT = _WORKING_TASK_SUMMARY_LIMIT
-    RECENT_FILES_LIMIT = _WORKING_RECENT_FILES_LIMIT
-
-    def __init__(self, task_summary="", recent_files=None, workspace_root=None):
-        self.workspace_root = workspace_root
-        self.task_summary = _working_normalize_task_summary(task_summary, self.TASK_SUMMARY_LIMIT)
-        self.recent_files = _working_dedupe_preserve_order(
-            [self.canonical_path(path).strip() for path in _working_ensure_file_list(recent_files or [])]
-        )[: self.RECENT_FILES_LIMIT]
-
-    def to_dict(self):
-        return {
-            "task_summary": self.task_summary,
-            "recent_files": list(self.recent_files),
-        }
-
-    @classmethod
-    def from_dict(cls, data, workspace_root=None):
-        if not isinstance(data, dict):
-            return cls(workspace_root=workspace_root)
-
-        source = data
-        if isinstance(data.get("working"), dict):
-            source = data["working"]
-
-        task_summary = source.get("task_summary", source.get("task", ""))
-        if not isinstance(task_summary, str):
-            task_summary = ""
-        recent_files = source.get("recent_files", source.get("files", []))
-        return cls(task_summary=task_summary, recent_files=recent_files, workspace_root=workspace_root)
-
-    def canonical_path(self, path):
-        return memorylib.canonicalize_path(path, self.workspace_root)
-
-    def set_task_summary(self, summary):
-        self.task_summary = _working_normalize_task_summary(summary, self.TASK_SUMMARY_LIMIT)
-        return self
-
-    def remember_file(self, path):
-        path = self.canonical_path(path).strip()
-        if not path:
-            return self
-        self.recent_files = [item for item in self.recent_files if item != path]
-        self.recent_files.insert(0, path)
-        self.recent_files = self.recent_files[: self.RECENT_FILES_LIMIT]
-        return self
-
-
-def build_report_request_metadata(task_state, last_request_metadata):
-    """Return a dict fragment to merge into report last_request_metadata.
-
-    Preserves the invariant that the initial prompt-time resume_status is kept
-    under last_prompt_resume_status when a later task_state.resume_status is
-    promoted into report metadata.
-    """
-    fragment = dict(last_request_metadata)
-    if not fragment:
-        return fragment
-    if task_state.resume_status:
-        fragment.setdefault(
-            "last_prompt_resume_status",
-            fragment.get("resume_status", ""),
-        )
-        fragment["resume_status"] = task_state.resume_status
-    return fragment
-
-
 def _session_has_provider_state(session):
     messages = session.get("messages", []) if isinstance(session, dict) else []
     return any(
-        isinstance(message, dict)
-        and bool(message.get("_pico_provider_state"))
+        isinstance(message, dict) and bool(message.get("_pico_provider_state"))
         for message in messages
     )
 
@@ -315,35 +201,47 @@ class Pico:
         model_client,
         workspace,
         session_store,
+        *,
         session=None,
-        run_store=None,
-        approval_policy="ask",
-        max_steps=DEFAULT_MAX_STEPS,
-        max_output_tokens=None,
-        context_window=None,
-        max_new_tokens=None,
-        depth=0,
-        max_depth=1,
-        read_only=False,
-        shell_env_allowlist=None,
-        secret_env_names=None,
-        redaction_env=None,
-        feature_flags=None,
-        allowed_tools=None,
-        _trusted_redaction_env=False,
-        _trusted_executables=None,
-        sandbox_context=None,
-        project_config=None,
-        session_id=None,
-        _development_runtime_seal=None,
+        options=None,
     ):
+        self._initialize(
+            model_client,
+            workspace,
+            session_store,
+            session=session,
+            options=options,
+        )
+
+    def _initialize(
+        self,
+        model_client,
+        workspace,
+        session_store,
+        *,
+        session=None,
+        options=None,
+    ):
+        if options is None:
+            options = RuntimeOptions()
+        if not isinstance(options, RuntimeOptions):
+            raise TypeError("options must be a RuntimeOptions instance")
         self.model_client = model_client
         model_binding = getattr(model_client, "provider_binding", None)
         model_binding = (
-            deepcopy(model_binding)
-            if isinstance(model_binding, dict)
-            else None
+            deepcopy(model_binding) if isinstance(model_binding, dict) else None
         )
+        self._configure_workspace(workspace, options)
+        redactor = self._configure_runtime_options(session_store, options)
+        self._configure_recovery_services(redactor)
+        self._configure_project_model(options)
+        self._configure_session(session, model_binding, options.session_id)
+        self._configure_memory_and_tools()
+        self._persist_initialized_session()
+        self._reset_turn_state()
+
+    def _configure_workspace(self, workspace, options):
+        sandbox_context = options.sandbox_context
         if sandbox_context is not None and not isinstance(
             sandbox_context,
             DockerSandboxContext,
@@ -358,12 +256,12 @@ class Pico:
                     sandbox_context.runner.image
                 )
             except Exception as exc:
-                raise ValueError("docker sandbox runtime authorization invalid") from exc
+                raise ValueError(
+                    "docker sandbox runtime authorization invalid"
+                ) from exc
             if authorization.attestation_kind == "development":
-                if _development_runtime_seal is not _DEVELOPMENT_RUNTIME_SEAL:
-                    raise ValueError(
-                        "docker sandbox requires local authorization"
-                    )
+                if options.development_runtime_seal is not _DEVELOPMENT_RUNTIME_SEAL:
+                    raise ValueError("docker sandbox requires local authorization")
                 self._docker_sandbox_development = True
             elif authorization.attestation_kind != "local":
                 raise ValueError("docker sandbox requires local authorization")
@@ -374,8 +272,8 @@ class Pico:
             if (
                 Path(workspace.repo_root) != self.execution_root
                 or workspace.logical_root != sandbox_context.logical_root
-                or redaction_env is None
-                or project_config is None
+                or options.redaction_env is None
+                or options.project_config is None
             ):
                 raise ValueError("docker sandbox runtime context is incomplete")
             workspace = WorkspaceContext(
@@ -397,16 +295,16 @@ class Pico:
         self.workspace = workspace
         # Existing tool code treats root as the model-visible execution root.
         self.root = self.execution_root
-        self.source_root_identity = securitylib.private_directory_identity(
+        self.source_root_identity = private_files.private_directory_identity(
             self.source_root
         )
-        self.workspace_root_identity = securitylib.private_directory_identity(
+        self.workspace_root_identity = private_files.private_directory_identity(
             self.root
         )
         executable_source = (
             workspace.trusted_executables
-            if _trusted_executables is None
-            else _trusted_executables
+            if options.trusted_executables is None
+            else options.trusted_executables
         )
         if self.docker_sandbox:
             executable_source = {
@@ -415,50 +313,56 @@ class Pico:
                 if name != "git"
             }
         self.trusted_executables = MappingProxyType(dict(executable_source or {}))
+
+    def _configure_runtime_options(self, session_store, options):
         self.session_store = session_store
-        self.approval_policy = approval_policy
-        self.max_steps = max_steps
-        self.depth = depth
-        self.max_depth = max_depth
-        self.read_only = read_only
-        self.shell_env_allowlist = tuple(shell_env_allowlist or DEFAULT_SHELL_ENV_ALLOWLIST)
-        if redaction_env is None:
+        self.approval_policy = options.approval_policy
+        self.max_steps = options.max_steps
+        self.depth = options.depth
+        self.max_depth = options.max_depth
+        self.read_only = options.read_only
+        self.shell_env_allowlist = tuple(
+            options.shell_env_allowlist or DEFAULT_SHELL_ENV_ALLOWLIST
+        )
+        if options.redaction_env is None:
             redaction_env, configured_names, _ = _build_redaction_snapshot(
                 self.source_root,
-                secret_env_names=secret_env_names,
+                secret_env_names=options.secret_env_names,
             )
         else:
             redaction_env, configured_names, _ = _freeze_redaction_snapshot(
-                redaction_env,
-                secret_env_names,
-                trusted=_trusted_redaction_env,
+                options.redaction_env,
+                options.secret_env_names,
+                trusted=options.trusted_redaction_env,
             )
         self.redaction_env = redaction_env
         self.secret_env_names = configured_names
         self.feature_flags = dict(DEFAULT_FEATURE_FLAGS)
-        if feature_flags:
-            if not feature_flags.keys() <= DEFAULT_FEATURE_FLAGS.keys():
+        if options.feature_flags:
+            if not options.feature_flags.keys() <= DEFAULT_FEATURE_FLAGS.keys():
                 raise ValueError("unsupported feature flag")
-            self.feature_flags.update({str(key): bool(value) for key, value in feature_flags.items()})
-        self.allowed_tools = self._normalize_allowed_tools(allowed_tools)
-        self.run_store = run_store or RunStore(self.project_state_root / "runs")
+            self.feature_flags.update(
+                {str(key): bool(value) for key, value in options.feature_flags.items()}
+            )
+        self.allowed_tools = self._normalize_allowed_tools(options.allowed_tools)
+        self.run_store = options.run_store or RunStore(self.project_state_root / "runs")
         redactor = _artifact_redactor(
             self.redaction_env,
             self.secret_env_names,
         )
-        if (
-            hasattr(self.run_store, "set_redactor")
-            and (self.depth == 0 or not getattr(self.run_store, "_redactor_configured", False))
+        if hasattr(self.run_store, "set_redactor") and (
+            self.depth == 0
+            or not getattr(self.run_store, "_redactor_configured", False)
         ):
             self.run_store.set_redactor(redactor)
-        if (
-            hasattr(self.session_store, "set_redactor")
-            and (self.depth == 0 or not getattr(self.session_store, "_redactor_configured", False))
+        if hasattr(self.session_store, "set_redactor") and (
+            self.depth == 0
+            or not getattr(self.session_store, "_redactor_configured", False)
         ):
             self.session_store.set_redactor(redactor)
-        # 可恢复编辑（recoverable editing）的组件在这里就位。
-        # 它们和 resume-summary 用的 `checkpointlib` 是两条独立的通路：
-        # CheckpointStore 落在 .pico/checkpoints/ 下，专门记 turn/restore/manual 类型。
+        return redactor
+
+    def _configure_recovery_services(self, redactor):
         checkpoint_root = self.source_root
         if self.docker_sandbox:
             checkpoint_root = (
@@ -470,11 +374,13 @@ class Pico:
         source_apply_authority = None
         source_apply_control_lock = None
         if not self.docker_sandbox:
+
             def source_apply_authority():
                 return read_source_apply_authority(
                     Path.home() / ".pico" / "sandboxes",
                     self.source_root,
                 )
+
             source_apply_control_lock = source_apply_control_lock_path(
                 Path.home() / ".pico" / "sandboxes",
                 self.source_root,
@@ -486,9 +392,13 @@ class Pico:
             source_apply_control_lock=source_apply_control_lock,
         )
         self.tool_change_owner_id = "runtime_" + uuid.uuid4().hex[:12]
-        self.tool_change_recorder = ToolChangeRecorder(self.checkpoint_store, owner_id=self.tool_change_owner_id)
+        self.tool_change_recorder = ToolChangeRecorder(
+            self.checkpoint_store, owner_id=self.tool_change_owner_id
+        )
         self.interrupted_tool_changes = []
-        self.recovery_checkpoint_writer = RecoveryCheckpointWriter(self.checkpoint_store, self.root)
+        self.recovery_checkpoint_writer = RecoveryCheckpointWriter(
+            self.checkpoint_store, self.root
+        )
         self.recovery_manager = RecoveryManager(self.checkpoint_store, self.root)
         if self.docker_sandbox:
             self.workspace_observer = StagingObserver(
@@ -505,24 +415,17 @@ class Pico:
                 self.root,
                 executables=self.trusted_executables,
             )
+
+    def _configure_project_model(self, options):
         project_config = (
             load_pico_toml(
                 self.source_root,
                 expected_root_identity=self.source_root_identity,
             )
-            if project_config is None
-            else deepcopy(project_config)
+            if options.project_config is None
+            else deepcopy(options.project_config)
         )
         self.project_config = deepcopy(project_config)
-        if max_output_tokens is not None and max_new_tokens is not None:
-            raise ValueError("use max_output_tokens, not max_new_tokens")
-        if max_new_tokens is not None:
-            warnings.warn(
-                "max_new_tokens is deprecated; use max_output_tokens",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-            max_output_tokens = max_new_tokens
         model_config = project_config["model"]
         config_meta = project_config.get("_meta", {})
         config_meta = config_meta if isinstance(config_meta, dict) else {}
@@ -535,8 +438,8 @@ class Pico:
         self.model_capabilities = resolve_model_capabilities(
             model_name,
             model_config=explicit_model_config,
-            context_window=context_window,
-            max_output_tokens=max_output_tokens,
+            context_window=options.context_window,
+            max_output_tokens=options.max_output_tokens,
             warning_sink=lambda message: print(message, file=sys.stderr),
         )
         context_config = project_config["context"]
@@ -547,8 +450,8 @@ class Pico:
         self.model_budget = build_model_budget(
             self.model_capabilities,
             output_limit=(
-                max_output_tokens
-                if max_output_tokens is not None
+                options.max_output_tokens
+                if options.max_output_tokens is not None
                 else (
                     model_config["output_limit"]
                     if config_meta.get("model_output_explicit") is True
@@ -576,73 +479,92 @@ class Pico:
                 retrieval_config["link"]["decay"],
             ),
         }
-        if session is None:
-            new_session_id = session_id or self.new_session_id()
+
+    def _new_runtime_session(self, session_id, model_binding):
+        if (
+            self.docker_sandbox
+            and self.depth == 0
+            and session_id != self.sandbox_session.manifest["pico_session_id"]
+        ):
+            raise ValueError("sandbox session binding mismatch")
+        session = {
+            "record_type": SESSION_RECORD_TYPE,
+            "format_version": SESSION_FORMAT_VERSION,
+            "id": session_id,
+            "created_at": now(),
+            "workspace_root": str(self.source_root),
+            "messages": [],
+            "recently_recalled": [],
+            "working_memory": {"task_summary": "", "recent_files": []},
+            "memory": {"file_summaries": {}},
+            "checkpoints": {"current_id": "", "items": {}},
+            "runtime_identity": {},
+            "resume_state": {},
+            "recovery": {"current_checkpoint_id": ""},
+        }
+        if model_binding:
+            session["provider_binding"] = model_binding
+        return session
+
+    def _validate_restored_session_binding(self, session, model_binding):
+        if lexical_workspace_root(
+            session.get("workspace_root", "")
+        ) != lexical_workspace_root(self.source_root):
+            raise ValueError("session worktree root mismatch")
+        saved_binding = session.get("provider_binding")
+        if saved_binding != model_binding:
+            raise ValueError("model_session_mismatch")
+        if _session_has_provider_state(session) and (
+            not isinstance(saved_binding, dict)
+            or saved_binding.get("protocol_family") != "openai_responses"
+            or saved_binding != model_binding
+        ):
+            raise ValueError("model_session_mismatch")
+        if self.docker_sandbox and (
+            session.get("workspace_root") != str(self.source_root)
+            or self.depth == 0
+            and session.get("id") != self.sandbox_session.manifest["pico_session_id"]
+        ):
+            raise ValueError("sandbox session binding mismatch")
+
+    @staticmethod
+    def _session_runtime_identities(session):
+        identities = [session.get("runtime_identity", {})]
+        items = session.get("checkpoints", {}).get("items", {})
+        if isinstance(items, dict):
+            identities.extend(
+                checkpoint.get("runtime_identity", {})
+                for checkpoint in items.values()
+                if isinstance(checkpoint, dict)
+            )
+        return identities
+
+    def _validate_session_feature_flags(self, session):
+        for identity in self._session_runtime_identities(session):
+            if not isinstance(identity, dict):
+                continue
+            identity_flags = identity.get("feature_flags", {})
             if (
-                self.docker_sandbox
-                and self.depth == 0
-                and new_session_id
-                != self.sandbox_session.manifest["pico_session_id"]
+                not isinstance(identity_flags, dict)
+                or not identity_flags.keys() <= DEFAULT_FEATURE_FLAGS.keys()
             ):
-                raise ValueError("sandbox session binding mismatch")
-            self.session = {
-                "record_type": SESSION_RECORD_TYPE,
-                "format_version": SESSION_FORMAT_VERSION,
-                "id": new_session_id,
-                "created_at": now(),
-                "workspace_root": str(self.source_root),
-                "messages": [],
-                "recently_recalled": [],
-                "working_memory": {"task_summary": "", "recent_files": []},
-                "memory": {"file_summaries": {}},
-                "checkpoints": {"current_id": "", "items": {}},
-                "runtime_identity": {},
-                "resume_state": {},
-                "recovery": {"current_checkpoint_id": ""},
-            }
-            if model_binding:
-                self.session["provider_binding"] = model_binding
+                raise ValueError("unsupported runtime identity feature flag")
+
+    def _configure_session(self, session, model_binding, requested_session_id):
+        if session is None:
+            session_id = requested_session_id or self.new_session_id()
+            self.session = self._new_runtime_session(session_id, model_binding)
         else:
             self.session = self.redact_artifact(deepcopy(session))
-            if _lexical_workspace_root(self.session.get("workspace_root", "")) != _lexical_workspace_root(self.source_root):
-                raise ValueError("session worktree root mismatch")
-            saved_binding = self.session.get("provider_binding")
-            if saved_binding != model_binding:
-                raise ValueError("model_session_mismatch")
-            if _session_has_provider_state(self.session) and (
-                not isinstance(saved_binding, dict)
-                or saved_binding.get("protocol_family") != "openai_responses"
-                or saved_binding != model_binding
-            ):
-                raise ValueError("model_session_mismatch")
-            if (
-                self.docker_sandbox
-                and (
-                    self.session.get("workspace_root") != str(self.source_root)
-                    or self.depth == 0
-                    and self.session.get("id")
-                    != self.sandbox_session.manifest["pico_session_id"]
-                )
-            ):
-                raise ValueError("sandbox session binding mismatch")
-            identities = [self.session.get("runtime_identity", {})]
-            items = self.session.get("checkpoints", {}).get("items", {})
-            if isinstance(items, dict):
-                identities.extend(
-                    checkpoint.get("runtime_identity", {})
-                    for checkpoint in items.values()
-                    if isinstance(checkpoint, dict)
-                )
-            for identity in identities:
-                if not isinstance(identity, dict):
-                    continue
-                identity_flags = identity.get("feature_flags", {})
-                if not isinstance(identity_flags, dict) or not identity_flags.keys() <= DEFAULT_FEATURE_FLAGS.keys():
-                    raise ValueError("unsupported runtime identity feature flag")
+            self._validate_restored_session_binding(self.session, model_binding)
+            self._validate_session_feature_flags(self.session)
         self._ensure_session_shape()
-        self.memory = WorkingMemory.from_dict(self.session.get("working_memory"), workspace_root=self.root)
+        self.memory = WorkingMemory.from_dict(
+            self.session.get("working_memory"), workspace_root=self.root
+        )
         self._sync_working_memory()
-        # Durable Memory services are shared by recall rendering and memory tools.
+
+    def _configure_memory_and_tools(self):
         workspace_memory_root = self.project_state_root / "memory"
         user_memory_root = Path.home() / ".pico" / "memory"
         self.memory_store = BlockStore(
@@ -664,6 +586,8 @@ class Pico:
         self.prefix_state = self.build_prefix()
         self.prefix = self.prefix_state.text
         self.context_manager = ContextManager(self)
+
+    def _persist_initialized_session(self):
         session_exists = self.session_store.path_for(self.session["id"]).exists()
         if session_exists:
             self._reconcile_rewind_intent()
@@ -680,6 +604,8 @@ class Pico:
             )
         else:
             self.session_path = self.session_store.save(self.session)
+
+    def _reset_turn_state(self):
         self.current_task_state = None
         self.current_run_dir = None
         self.last_request_metadata = {}
@@ -690,11 +616,22 @@ class Pico:
         }
 
     @classmethod
-    def from_session(cls, model_client, workspace, session_store, session_id, **kwargs):
-        redaction_env = kwargs.pop("redaction_env", None)
-        trusted_redaction_env = kwargs.pop("_trusted_redaction_env", False)
-        secret_env_names = kwargs.get("secret_env_names", ())
-        sandbox_context = kwargs.get("sandbox_context")
+    def from_session(
+        cls,
+        model_client,
+        workspace,
+        session_store,
+        session_id,
+        *,
+        options=None,
+    ):
+        options = RuntimeOptions() if options is None else options
+        if not isinstance(options, RuntimeOptions):
+            raise TypeError("options must be a RuntimeOptions instance")
+        redaction_env = options.redaction_env
+        trusted_redaction_env = options.trusted_redaction_env
+        secret_env_names = options.secret_env_names or ()
+        sandbox_context = options.sandbox_context
         source_root = (
             sandbox_context.source_root
             if isinstance(sandbox_context, DockerSandboxContext)
@@ -716,21 +653,41 @@ class Pico:
             )
             trusted_redaction_env = True
         session_store.set_redactor(redactor)
-        kwargs["redaction_env"] = redaction_env
-        kwargs["_trusted_redaction_env"] = trusted_redaction_env
-        kwargs["secret_env_names"] = configured_names
+        options = replace(
+            options,
+            redaction_env=redaction_env,
+            trusted_redaction_env=trusted_redaction_env,
+            secret_env_names=tuple(configured_names),
+        )
         return cls(
             model_client=model_client,
             workspace=workspace,
             session_store=session_store,
             session=session_store.load(session_id),
-            **kwargs,
+            options=options,
         )
 
     @classmethod
-    def _for_docker_sandbox_development(cls, **kwargs):
-        kwargs["_development_runtime_seal"] = _DEVELOPMENT_RUNTIME_SEAL
-        return cls(**kwargs)
+    def _for_docker_sandbox_development(
+        cls,
+        model_client,
+        workspace,
+        session_store,
+        *,
+        session=None,
+        options=None,
+    ):
+        options = RuntimeOptions() if options is None else options
+        return cls(
+            model_client,
+            workspace,
+            session_store,
+            session=session,
+            options=replace(
+                options,
+                development_runtime_seal=_DEVELOPMENT_RUNTIME_SEAL,
+            ),
+        )
 
     @classmethod
     def _from_session_for_docker_sandbox_development(
@@ -739,15 +696,19 @@ class Pico:
         workspace,
         session_store,
         session_id,
-        **kwargs,
+        *,
+        options=None,
     ):
-        kwargs["_development_runtime_seal"] = _DEVELOPMENT_RUNTIME_SEAL
+        options = RuntimeOptions() if options is None else options
         return cls.from_session(
             model_client,
             workspace,
             session_store,
             session_id,
-            **kwargs,
+            options=replace(
+                options,
+                development_runtime_seal=_DEVELOPMENT_RUNTIME_SEAL,
+            ),
         )
 
     def _ensure_session_shape(self):
@@ -765,7 +726,9 @@ class Pico:
         if not isinstance(existing_memory, dict):
             existing_memory = {}
         working_source = self.session.get("working_memory") or existing_memory or {}
-        self.session["working_memory"] = WorkingMemory.from_dict(working_source, workspace_root=self.root).to_dict()
+        self.session["working_memory"] = WorkingMemory.from_dict(
+            working_source, workspace_root=self.root
+        ).to_dict()
         self.session["memory"] = {
             "file_summaries": memorylib.normalize_file_summaries_dict(
                 existing_memory.get("file_summaries", {}),
@@ -796,7 +759,9 @@ class Pico:
 
     def invalidate_stale_memory(self):
         summaries = self.session["memory"]["file_summaries"]
-        invalidated = memorylib.invalidate_stale_file_summaries_dict(summaries, self.root)
+        invalidated = memorylib.invalidate_stale_file_summaries_dict(
+            summaries, self.root
+        )
         self.session["memory"] = {"file_summaries": summaries}
         return invalidated
 
@@ -839,11 +804,7 @@ class Pico:
         if unknown:
             raise ValueError(f"unknown allowed tool: {', '.join(unknown)}")
         allowed = set(self.allowed_tools)
-        return {
-            name: tool
-            for name, tool in tools.items()
-            if name in allowed
-        }
+        return {name: tool for name, tool in tools.items() if name in allowed}
 
     def tool_signature(self):
         return tool_signature(self.tools)
@@ -857,7 +818,9 @@ class Pico:
 
     def refresh_prefix(self, force=False):
         previous_hash = getattr(getattr(self, "prefix_state", None), "hash", None)
-        previous_workspace_fingerprint = getattr(getattr(self, "prefix_state", None), "workspace_fingerprint", None)
+        previous_workspace_fingerprint = getattr(
+            getattr(self, "prefix_state", None), "workspace_fingerprint", None
+        )
 
         # 工作区事实相对稳定，所以这里按整体刷新；
         # 只有这些事实真的变化了，才重建完整 prefix。
@@ -869,22 +832,24 @@ class Pico:
             logical_root=(
                 self.sandbox_context.logical_root if self.docker_sandbox else None
             ),
-            branch_override=(
-                SANDBOX_WORKSPACE_BRANCH if self.docker_sandbox else None
-            ),
+            branch_override=(SANDBOX_WORKSPACE_BRANCH if self.docker_sandbox else None),
             default_branch_override=(
                 SANDBOX_WORKSPACE_BRANCH if self.docker_sandbox else None
             ),
-            status_override=(
-                SANDBOX_WORKSPACE_STATUS if self.docker_sandbox else None
-            ),
+            status_override=(SANDBOX_WORKSPACE_STATUS if self.docker_sandbox else None),
         )
         refreshed_workspace_fingerprint = refreshed_workspace.fingerprint()
-        workspace_changed = force or refreshed_workspace_fingerprint != previous_workspace_fingerprint
+        workspace_changed = (
+            force or refreshed_workspace_fingerprint != previous_workspace_fingerprint
+        )
         if workspace_changed:
             self.workspace = refreshed_workspace
 
-        prefix_state = self.build_prefix() if workspace_changed or force or previous_hash is None else self.prefix_state
+        prefix_state = (
+            self.build_prefix()
+            if workspace_changed or force or previous_hash is None
+            else self.prefix_state
+        )
         prefix_changed = force or previous_hash != prefix_state.hash
         if prefix_changed:
             self._apply_prefix_state(prefix_state)
@@ -903,31 +868,33 @@ class Pico:
 
     @staticmethod
     def looks_sensitive_env_name(name):
-        return securitylib.looks_sensitive_env_name(name)
+        return redaction.looks_sensitive_env_name(name)
 
     def is_secret_env_name(self, name):
-        return securitylib.is_secret_env_name(name, secret_env_names=self.secret_env_names)
+        return redaction.is_secret_env_name(
+            name, secret_env_names=self.secret_env_names
+        )
 
     def configured_secret_env_items(self):
-        return securitylib.configured_secret_env_items(
+        return redaction.configured_secret_env_items(
             env=self.redaction_env,
             secret_env_names=self.secret_env_names,
         )
 
     def detected_secret_env_items(self):
-        return securitylib.detected_secret_env_items(
+        return redaction.detected_secret_env_items(
             env=self.redaction_env,
             secret_env_names=self.secret_env_names,
         )
 
     def secret_env_summary(self):
-        return securitylib.secret_env_summary(
+        return redaction.secret_env_summary(
             env=self.redaction_env,
             secret_env_names=self.secret_env_names,
         )
 
     def detected_secret_env_summary(self):
-        return securitylib.detected_secret_env_summary(
+        return redaction.detected_secret_env_summary(
             env=self.redaction_env,
             secret_env_names=self.secret_env_names,
         )
@@ -935,15 +902,17 @@ class Pico:
     def redact_text(self, text):
         text = str(text)
         if self.docker_sandbox:
-            text = text.replace(str(self.execution_root), self.sandbox_context.logical_root)
-        return securitylib.redact_text(
+            text = text.replace(
+                str(self.execution_root), self.sandbox_context.logical_root
+            )
+        return redaction.redact_text(
             text,
             env=self.redaction_env,
             secret_env_names=self.secret_env_names,
         )
 
     def redact_artifact(self, value, key=None):
-        return securitylib.redact_artifact(
+        return redaction.redact_artifact(
             value,
             key=key,
             env=self.redaction_env,
@@ -951,7 +920,7 @@ class Pico:
         )
 
     def shell_env(self):
-        return securitylib.shell_env(allowlist=self.shell_env_allowlist, root=self.root)
+        return redaction.shell_env(allowlist=self.shell_env_allowlist, root=self.root)
 
     def emit_trace(self, task_state, event, payload=None):
         envelope = project_trace_event(
@@ -1033,9 +1002,13 @@ class Pico:
         summaries = self.session["memory"]["file_summaries"]
         if name == "read_file":
             summary = memorylib.summarize_read_result(result)
-            memorylib.set_file_summary_dict(summaries, canonical_path, summary, workspace_root=self.root)
+            memorylib.set_file_summary_dict(
+                summaries, canonical_path, summary, workspace_root=self.root
+            )
         elif name in {"write_file", "patch_file"}:
-            memorylib.invalidate_file_summary_dict(summaries, canonical_path, workspace_root=self.root)
+            memorylib.invalidate_file_summary_dict(
+                summaries, canonical_path, workspace_root=self.root
+            )
         self.session["memory"] = {"file_summaries": summaries}
 
     def ask(self, user_message):
@@ -1102,7 +1075,9 @@ class Pico:
         if not self.docker_sandbox:
             return
         manifest = getattr(self.sandbox_session, "manifest", {})
-        state = str(manifest.get("state", "") or "") if isinstance(manifest, dict) else ""
+        state = (
+            str(manifest.get("state", "") or "") if isinstance(manifest, dict) else ""
+        )
         if state not in {"ready", "running"}:
             raise WorkspaceRewindError(
                 f"sandbox workspace rewind is forbidden in state {state or 'unknown'}"
@@ -1182,9 +1157,7 @@ class Pico:
             "branch_summary": prepared_summary.summary,
             "branch_summary_tokens": prepared_summary.summary_tokens,
             "branch_summary_focus": prepared_summary.focus,
-            "branch_summary_provider_usage": dict(
-                prepared_summary.provider_usage
-            ),
+            "branch_summary_provider_usage": dict(prepared_summary.provider_usage),
             "recovery_owner_id": self.recovery_manager.owner_id,
         }
 
@@ -1225,8 +1198,7 @@ class Pico:
                 and record.get("parent_checkpoint_id")
                 == intent.get("workspace_checkpoint_id")
                 and provenance.get("operation_id") == intent.get("operation_id")
-                and provenance.get("rewind_plan_digest")
-                == intent.get("plan_digest")
+                and provenance.get("rewind_plan_digest") == intent.get("plan_digest")
             )
 
         restore_id = str(intent.get("restore_checkpoint_id", "") or "")
@@ -1262,8 +1234,7 @@ class Pico:
                 index
                 for index, entry in enumerate(tree.active_path)
                 if entry["type"] == "rewind"
-                and entry["data"].get("target_entry_id")
-                == intent["target_entry_id"]
+                and entry["data"].get("target_entry_id") == intent["target_entry_id"]
                 and entry["data"].get("workspace_checkpoint_id")
                 == intent["workspace_checkpoint_id"]
             ),
@@ -1273,8 +1244,7 @@ class Pico:
             rewind_entry = tree.active_path[rewind_index]
             if intent["branch_summary"] and not any(
                 entry["type"] == "branch_summary"
-                and entry["data"].get("target_entry_id")
-                == intent["target_entry_id"]
+                and entry["data"].get("target_entry_id") == intent["target_entry_id"]
                 for entry in tree.active_path[rewind_index + 1 :]
             ):
                 self.session_store.append_control(
@@ -1286,9 +1256,7 @@ class Pico:
                         "abandoned_leaf_id": intent["old_leaf_id"],
                         "target_entry_id": intent["target_entry_id"],
                         "focus": intent["branch_summary_focus"],
-                        "provider_usage": dict(
-                            intent["branch_summary_provider_usage"]
-                        ),
+                        "provider_usage": dict(intent["branch_summary_provider_usage"]),
                     },
                     parent_id=rewind_entry["id"],
                 )
@@ -1383,9 +1351,7 @@ class Pico:
             self.session["id"],
             restored_intent,
         )
-        rewind_entry, summary_entry = self._append_workspace_rewind(
-            restored_intent
-        )
+        rewind_entry, summary_entry = self._append_workspace_rewind(restored_intent)
         self.session_store.clear_rewind_intent(self.session["id"])
         self._reload_session_projection()
         return WorkspaceRewindResult(
@@ -1463,15 +1429,11 @@ class Pico:
             "target_started_count": int(
                 tool_report.get("sandbox_target_started_count", 0) or 0
             ),
-            "outcome_counts": dict(
-                tool_report.get("sandbox_outcome_counts", {})
-            ),
+            "outcome_counts": dict(tool_report.get("sandbox_outcome_counts", {})),
             "cleanup_failure_count": int(
                 tool_report.get("sandbox_cleanup_failure_count", 0) or 0
             ),
-            "host_fallback_count": int(
-                tool_report.get("host_fallback_count", 0) or 0
-            ),
+            "host_fallback_count": int(tool_report.get("host_fallback_count", 0) or 0),
             "diff": {
                 "candidates": int(
                     counts.get("candidates", diff.get("candidate_count", 0)) or 0
@@ -1495,9 +1457,7 @@ class Pico:
                 "sandbox_calls": sandbox["container_calls"],
                 "sandbox_target_started_count": sandbox["target_started_count"],
                 "sandbox_outcome_counts": sandbox["outcome_counts"],
-                "sandbox_cleanup_failure_count": sandbox[
-                    "cleanup_failure_count"
-                ],
+                "sandbox_cleanup_failure_count": sandbox["cleanup_failure_count"],
                 "host_fallback_count": sandbox["host_fallback_count"],
             },
             diff_counts=diff_counts,
@@ -1587,8 +1547,7 @@ class Pico:
         - 记录同时写入 checkpoint record，并在 trace 里补一条 verification_recorded 事件。
         """
         current_id = str(
-            getattr(self.current_task_state, "recovery_checkpoint_id", "")
-            or ""
+            getattr(self.current_task_state, "recovery_checkpoint_id", "") or ""
         )
         target_id = str(checkpoint_id or "")
         if not current_id or not target_id or target_id != current_id:
@@ -1676,11 +1635,21 @@ class Pico:
 
     @staticmethod
     def new_task_id():
-        return "task_" + datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6]
+        return (
+            "task_"
+            + datetime.now().strftime("%Y%m%d-%H%M%S")
+            + "-"
+            + uuid.uuid4().hex[:6]
+        )
 
     @staticmethod
     def new_run_id():
-        return "run_" + datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6]
+        return (
+            "run_"
+            + datetime.now().strftime("%Y%m%d-%H%M%S")
+            + "-"
+            + uuid.uuid4().hex[:6]
+        )
 
     def build_report(
         self,
@@ -1719,7 +1688,9 @@ class Pico:
         commit = ""
         if self.workspace.recent_commits:
             candidate = str(self.workspace.recent_commits[0]).split(maxsplit=1)[0]
-            if candidate and all(character in "0123456789abcdefABCDEF" for character in candidate):
+            if candidate and all(
+                character in "0123456789abcdefABCDEF" for character in candidate
+            ):
                 commit = candidate
         return {
             "record_type": "run_report",
@@ -1746,9 +1717,15 @@ class Pico:
                 "retries": int(execution.get("model_retries", 0) or 0),
                 "transport_attempts": execution.get("transport_attempts"),
                 "transport_retries": execution.get("transport_retries"),
-                "evidence_complete": bool(execution.get("transport_evidence_complete", False)),
-                "attempt_origin_counts": dict(execution.get("attempt_origin_counts", {})),
-                "failure_reason_counts": dict(execution.get("failure_reason_counts", {})),
+                "evidence_complete": bool(
+                    execution.get("transport_evidence_complete", False)
+                ),
+                "attempt_origin_counts": dict(
+                    execution.get("attempt_origin_counts", {})
+                ),
+                "failure_reason_counts": dict(
+                    execution.get("failure_reason_counts", {})
+                ),
                 "usage": usage,
             },
             "context": request_metadata,
@@ -1767,9 +1744,7 @@ class Pico:
             "sandbox": self._sandbox_report_section(tool_report),
             "effects": {
                 "changed_files": len(changed_paths),
-                "partial_successes": int(
-                    tool_report.get("partial_successes", 0) or 0
-                ),
+                "partial_successes": int(tool_report.get("partial_successes", 0) or 0),
                 "recovery_review_required": recovery_review_required,
             },
             "recovery": {
@@ -1791,7 +1766,7 @@ class Pico:
 
     def validate_tool(self, name, args):
         """把通用工具校验和 runtime 级额外约束串起来。"""
-        toolkit.validate_tool(self.tool_context(), name, args)
+        validate_tool_arguments(self.tool_context(), name, args)
         if name == "memory_save":
             note_tokens = self.token_accounting.count_text(args.get("note", ""))
             if note_tokens > 1_024:
@@ -1835,21 +1810,23 @@ class Pico:
             model_client=self.model_client,
             workspace=self.workspace,
             session_store=child_session_store,
-            run_store=self.run_store,
-            approval_policy="never",
-            max_steps=int(args.get("max_steps", 3)),
-            max_output_tokens=self.max_output_tokens,
-            context_window=self.model_capabilities.context_window,
-            depth=self.depth + 1,
-            max_depth=self.max_depth,
-            read_only=True,
-            secret_env_names=self.secret_env_names,
-            redaction_env=self.redaction_env,
-            _trusted_redaction_env=True,
-            _trusted_executables=self.trusted_executables,
-            shell_env_allowlist=self.shell_env_allowlist,
-            sandbox_context=self.sandbox_context,
-            project_config=self.project_config,
+            options=RuntimeOptions(
+                run_store=self.run_store,
+                approval_policy="never",
+                max_steps=int(args.get("max_steps", 3)),
+                max_output_tokens=self.max_output_tokens,
+                context_window=self.model_capabilities.context_window,
+                depth=self.depth + 1,
+                max_depth=self.max_depth,
+                read_only=True,
+                secret_env_names=self.secret_env_names,
+                redaction_env=self.redaction_env,
+                trusted_redaction_env=True,
+                trusted_executables=self.trusted_executables,
+                shell_env_allowlist=self.shell_env_allowlist,
+                sandbox_context=self.sandbox_context,
+                project_config=self.project_config,
+            ),
         )
         # 委派的目标是“调查”，不是“放权执行”。
         # 子 agent 以只读方式运行、步数更少，最后只把结论文本返回给父 agent。
@@ -1883,7 +1860,9 @@ class Pico:
             "recent_files": [],
         }
         candidate["memory"] = {"file_summaries": {}}
-        checkpoints = candidate.setdefault("checkpoints", {"current_id": "", "items": {}})
+        checkpoints = candidate.setdefault(
+            "checkpoints", {"current_id": "", "items": {}}
+        )
         checkpoints["current_id"] = ""
         checkpoints.setdefault("items", {})
         candidate["resume_state"] = {}

@@ -1,7 +1,7 @@
 """The pico.toml loader is strict, complete, and content-free on errors."""
 
-import pico.config as config
-from pico.config import load_pico_toml
+import pico.config.project as config
+from pico.config.project import load_pico_toml
 
 
 def test_reads_flat_and_nested_budget_tables(tmp_path):

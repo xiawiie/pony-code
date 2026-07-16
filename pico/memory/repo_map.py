@@ -19,17 +19,30 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Literal, Optional
 
-from pico import security as securitylib
-from pico.workspace import _safe_index_directory, _safe_index_file
+from pico.security import private_files as securitylib
+from pico.workspace.context import _safe_index_directory, _safe_index_file
 
 SymbolKind = Literal["class", "function", "method"]
 
 # 复用 pico/workspace.py 的忽略列表 + 额外补充
-IGNORED_DIRS = frozenset({
-    ".git", ".pico", "__pycache__", ".pytest_cache", ".ruff_cache",
-    ".venv", "venv", "node_modules", "dist", "build", "target",
-    ".next", ".turbo", "vendor",
-})
+IGNORED_DIRS = frozenset(
+    {
+        ".git",
+        ".pico",
+        "__pycache__",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".venv",
+        "venv",
+        "node_modules",
+        "dist",
+        "build",
+        "target",
+        ".next",
+        ".turbo",
+        "vendor",
+    }
+)
 
 MAX_FILE_SIZE = 500_000
 MAX_FILES = 10_000
@@ -52,21 +65,43 @@ LANGUAGE_BY_EXT = {
 }
 
 _JS_TS_PATTERNS = [
-    (re.compile(r"^\s*(?:export\s+)?(?:abstract\s+)?class\s+([A-Za-z_$][A-Za-z0-9_$]*)"), "class"),
-    (re.compile(r"^\s*(?:export\s+)?function\s+([A-Za-z_$][A-Za-z0-9_$]*)"), "function"),
-    (re.compile(r"^\s*(?:export\s+)?const\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:async\s*)?(?:\(|function)"), "function"),
+    (
+        re.compile(
+            r"^\s*(?:export\s+)?(?:abstract\s+)?class\s+([A-Za-z_$][A-Za-z0-9_$]*)"
+        ),
+        "class",
+    ),
+    (
+        re.compile(r"^\s*(?:export\s+)?function\s+([A-Za-z_$][A-Za-z0-9_$]*)"),
+        "function",
+    ),
+    (
+        re.compile(
+            r"^\s*(?:export\s+)?const\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:async\s*)?(?:\(|function)"
+        ),
+        "function",
+    ),
     (re.compile(r"^\s*(?:export\s+)?interface\s+([A-Za-z_$][A-Za-z0-9_$]*)"), "class"),
     (re.compile(r"^\s*(?:export\s+)?type\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*="), "class"),
 ]
 
 _GO_PATTERNS = [
-    (re.compile(r"^\s*func\s+(?:\([^)]*\)\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*\("), "function"),
-    (re.compile(r"^\s*type\s+([A-Za-z_][A-Za-z0-9_]*)\s+(?:struct|interface)\b"), "class"),
+    (
+        re.compile(r"^\s*func\s+(?:\([^)]*\)\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*\("),
+        "function",
+    ),
+    (
+        re.compile(r"^\s*type\s+([A-Za-z_][A-Za-z0-9_]*)\s+(?:struct|interface)\b"),
+        "class",
+    ),
 ]
 
 _RUST_PATTERNS = [
     (re.compile(r"^\s*(?:pub\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*)"), "function"),
-    (re.compile(r"^\s*(?:pub\s+)?(?:struct|enum|trait)\s+([A-Za-z_][A-Za-z0-9_]*)"), "class"),
+    (
+        re.compile(r"^\s*(?:pub\s+)?(?:struct|enum|trait)\s+([A-Za-z_][A-Za-z0-9_]*)"),
+        "class",
+    ),
 ]
 
 
@@ -280,6 +315,7 @@ class RepoMap:
                 if indexed == MAX_FILES and not self._warned_cap:
                     self._warned_cap = True
                     import sys
+
                     print(
                         f"warning: repo_map scan hit {MAX_FILES}-file cap; "
                         f"symbols beyond this point are not indexed",
@@ -313,8 +349,7 @@ class RepoMap:
         except (OSError, RuntimeError, ValueError) as exc:
             used_bytes = getattr(exc, "bytes_read", 0)
             exhausted = used_bytes >= remaining or (
-                str(exc) == "repo-map source too large"
-                and limit < MAX_FILE_SIZE
+                str(exc) == "repo-map source too large" and limit < MAX_FILE_SIZE
             )
             return used_bytes, exhausted
         ext = real_path.suffix.lower()
@@ -346,16 +381,27 @@ class RepoMap:
             return
         for node in ast.walk(tree):
             if isinstance(node, ast.ClassDef):
-                yield Symbol(name=node.name, file=rel_path, line=node.lineno, kind="class")
+                yield Symbol(
+                    name=node.name, file=rel_path, line=node.lineno, kind="class"
+                )
                 for child in node.body:
                     if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                        yield Symbol(name=child.name, file=rel_path, line=child.lineno, kind="method")
+                        yield Symbol(
+                            name=child.name,
+                            file=rel_path,
+                            line=child.lineno,
+                            kind="method",
+                        )
         for node in tree.body:
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                yield Symbol(name=node.name, file=rel_path, line=node.lineno, kind="function")
+                yield Symbol(
+                    name=node.name, file=rel_path, line=node.lineno, kind="function"
+                )
 
     @staticmethod
-    def _extract_regex(rel_path: str, source: str, patterns: list[tuple[re.Pattern, str]]) -> Iterable[Symbol]:
+    def _extract_regex(
+        rel_path: str, source: str, patterns: list[tuple[re.Pattern, str]]
+    ) -> Iterable[Symbol]:
         for line_no, line in enumerate(source.splitlines(), start=1):
             for pattern, kind in patterns:
                 match = pattern.match(line)
@@ -385,6 +431,7 @@ class RepoMap:
 
 
 # ---- tool runner -----------------------------------------------------------
+
 
 def tool_repo_lookup(context, args: dict) -> str:
     repo_map: Optional[RepoMap] = getattr(context, "repo_map", None)

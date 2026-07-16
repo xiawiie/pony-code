@@ -1,9 +1,10 @@
 """E2E: one Pico.ask exercises injection + digest + recall together."""
 
 from pico.providers.response import Response, StopReason
-from pico.runtime import Pico
+from pico.runtime.application import Pico
 from pico.state.session_store import SessionStore
-from pico.workspace import WorkspaceContext
+from pico.workspace.context import WorkspaceContext
+from pico.runtime.options import RuntimeOptions
 
 
 class _SniffProvider:
@@ -33,19 +34,37 @@ def test_full_turn_injects_recall_and_digests_large_tool_result(tmp_path):
     # A big README so the bounded read still exceeds this test's 100-token cap.
     (tmp_path / "README.md").write_text("readme line\n" * 5000, encoding="utf-8")
 
-    provider = _SniffProvider([
+    provider = _SniffProvider(
+        [
         # Turn 1: model asks read_file.
         Response(
             stop_reason=StopReason.TOOL_USE,
-            content=[{"type": "tool_use", "id": "toolu_a", "name": "read_file", "input": {"path": "README.md"}}],
+                content=[
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_a",
+                        "name": "read_file",
+                        "input": {"path": "README.md"},
+                    }
+                ],
             usage={},
         ),
         # Turn 2: model returns final text after seeing the tool_result.
-        Response(stop_reason=StopReason.END_TURN, content=[{"type": "text", "text": "cache stays stable"}], usage={}),
-    ])
+            Response(
+                stop_reason=StopReason.END_TURN,
+                content=[{"type": "text", "text": "cache stays stable"}],
+                usage={},
+            ),
+        ]
+    )
     workspace = WorkspaceContext.build(tmp_path)
     store = SessionStore(tmp_path / ".pico" / "sessions")
-    pico = Pico(model_client=provider, workspace=workspace, session_store=store, max_steps=3)
+    pico = Pico(
+        model_client=provider,
+        workspace=workspace,
+        session_store=store,
+        options=RuntimeOptions(max_steps=3),
+    )
 
     answer = pico.ask("上次讨论过 cache 的问题")
     assert "cache" in answer
@@ -56,7 +75,10 @@ def test_full_turn_injects_recall_and_digests_large_tool_result(tmp_path):
     # Turn 1 provider input carries injection wrapping around user text.
     turn1_user_content = provider.calls[0]["messages"][-1]["content"]
     assert isinstance(turn1_user_content, str)
-    assert "<pico:workspace_state>" in turn1_user_content or "<system-reminder>" in turn1_user_content
+    assert (
+        "<pico:workspace_state>" in turn1_user_content
+        or "<system-reminder>" in turn1_user_content
+    )
     # Recall block should be present (memory note matched "cache" keyword).
     assert "<pico:recalled_memory" in turn1_user_content
     assert "cache" in turn1_user_content.lower()
@@ -65,7 +87,8 @@ def test_full_turn_injects_recall_and_digests_large_tool_result(tmp_path):
     # the token-based inline cap, content is the short [digest] rendering.
     turn2_msgs = provider.calls[1]["messages"]
     tool_result_msgs = [
-        m for m in turn2_msgs
+        m
+        for m in turn2_msgs
         if isinstance(m["content"], list)
         and any(b.get("type") == "tool_result" for b in m["content"])
     ]
@@ -79,20 +102,33 @@ def test_full_turn_injects_recall_and_digests_large_tool_result(tmp_path):
 
 def test_history_is_never_silently_dropped(tmp_path):
     """History below the request limit remains intact; compaction is the only exit."""
-    provider = _SniffProvider([
-        Response(stop_reason=StopReason.END_TURN, content=[{"type": "text", "text": "done"}], usage={}),
-    ])
+    provider = _SniffProvider(
+        [
+            Response(
+                stop_reason=StopReason.END_TURN,
+                content=[{"type": "text", "text": "done"}],
+                usage={},
+            ),
+        ]
+    )
     workspace = WorkspaceContext.build(tmp_path)
     store = SessionStore(tmp_path / ".pico" / "sessions")
-    pico = Pico(model_client=provider, workspace=workspace, session_store=store, max_steps=3)
+    pico = Pico(
+        model_client=provider,
+        workspace=workspace,
+        session_store=store,
+        options=RuntimeOptions(max_steps=3),
+    )
 
     # Prime session with many messages BEFORE calling ask.
     for i in range(30):
-        pico.session["messages"].append({
+        pico.session["messages"].append(
+            {
             "role": "user" if i % 2 == 0 else "assistant",
             "content": f"old-msg-{i} " + ("x" * 200),
             "_pico_meta": {"created_at": "t"},
-        })
+            }
+        )
 
     pico.ask("new question")
 

@@ -1,6 +1,6 @@
 # Pico 1.0 架构
 
-本文描述 1.0 产品代码的真实结构。领域术语以 [`CONTEXT.md`](../CONTEXT.md) 为准；安全和恢复细节分别见
+本文描述 1.0 产品代码的真实结构。领域术语以 [`domain-model.md`](domain-model.md) 为准；安全和恢复细节分别见
 [安全](security.md)与[恢复](recovery.md)。
 
 ## 1. 系统全景
@@ -28,22 +28,22 @@ Pico 是一个分层的本地控制循环，不是 Provider SDK 的薄包装。P
 
 ## 2. 产品目录
 
-`pico/` 顶层只保留五个稳定入口文件，其余实现按领域归位：
+`pico/` 顶层只保留两个标准入口文件，其余实现按领域归位：
 
 ```text
 pico/
-├── __init__.py        # 小型公共 Python API
+├── __init__.py        # 仅公开 Pico
 ├── __main__.py        # python -m pico
-├── config.py          # .env、pico.toml、安全配置解析
-├── runtime.py         # Pico 运行时装配和跨领域协调
-├── security.py        # 共享安全原语和脱敏
 ├── agent/             # loop、action、message、compaction、预算、观测
-├── cli/               # parser、commands、doctor、inspection、REPL
+├── cli/               # app、arguments、assembly、commands、doctor、REPL
+├── config/            # environment、Provider model、pico.toml
 ├── context/           # source、chunk、render、digest、escaping
 ├── memory/            # notes、recall、retrieval、repo map
 ├── providers/         # 三 Provider、四 Transport、probe、factory
 ├── recovery/          # checkpoint writer、manager、migration、policy
+├── runtime/            # Pico 装配、options、reporting、rewind、working memory
 ├── sandbox/           # Docker、identity、session、diff/apply、resources
+├── security/          # private/workspace file、path、redaction
 ├── state/             # session/run/checkpoint store、task state、file lock
 ├── tools/             # tool registry、executor、effect recorder、subprocess
 └── workspace/         # root discovery、snapshot、observer
@@ -63,7 +63,7 @@ pico/
 
 ## 3. 启动与配置
 
-`pico.cli:main` 是唯一 console entry。只读命令如 `status`、`config show` 和普通 `doctor` 不构造 Agent，也不发送
+`pico.cli.app:main` 是唯一 console entry。只读命令如 `status`、`config show` 和普通 `doctor` 不构造 Agent，也不发送
 网络请求。`run` / `repl` 的装配顺序为：
 
 ```mermaid
@@ -91,10 +91,10 @@ sequenceDiagram
 
 | 用户 Provider | 用户 Variant | 内部协议 | 适配器 |
 | --- | --- | --- | --- |
-| `anthropic` | `messages` | `anthropic_messages` | `AnthropicCompatibleModelClient` |
-| `openai` | `responses` | `openai_responses` | `OpenAICompatibleModelClient` |
+| `anthropic` | `messages` | `anthropic_messages` | `AnthropicMessagesModelClient` |
+| `openai` | `responses` | `openai_responses` | `OpenAIResponsesModelClient` |
 | `openai` | `chat_completions` | `openai_chat_completions` | `OpenAIChatCompletionsModelClient` |
-| `ollama` | `chat` | `ollama_chat` | `OllamaModelClient` |
+| `ollama` | `chat` | `ollama_chat` | `OllamaChatModelClient` |
 
 `auto` 只表示选择当前 Provider 的静态默认值，不表示运行时探测。Factory 接收已经解析完成的内部协议，不根据域名、
 模型名或响应失败更换路径。每种 adapter 返回统一的 `Response`。

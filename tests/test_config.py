@@ -2,7 +2,7 @@ import os
 
 import pytest
 
-from pico.config import (
+from pico.config.model import (
     API_VARIANT_ENV_NAME,
     API_KEY_ENV_NAME,
     API_URL_ENV_NAME,
@@ -13,10 +13,10 @@ from pico.config import (
     MODEL_ENV_NAME,
     PROVIDER_ENV_NAME,
     SUPPORTED_PROVIDERS,
-    load_pico_toml,
     resolve_model_config,
     validate_api_url,
 )
+from pico.config.project import load_pico_toml
 from pico.recovery.policy import DEFAULT_MAX_BLOB_SIZE, snapshot_eligibility
 
 
@@ -87,13 +87,11 @@ def test_pico_toml_over_one_mib_warns_and_uses_defaults(tmp_path, capsys):
     assert capsys.readouterr().err == "warning: invalid pico.toml; using defaults\n"
 
 
-def test_model_config_uses_default_anthropic_contract():
+def test_diagnostics_use_static_anthropic_defaults():
     resolved = resolve_model_config(
-        project_env={
-            API_URL_ENV_NAME: DEFAULT_API_URL,
-            API_KEY_ENV_NAME: "project-key",
-        },
+        project_env={},
         process_env={},
+        required=False,
     )
 
     assert resolved["provider"]["value"] == DEFAULT_PROVIDER
@@ -104,10 +102,11 @@ def test_model_config_uses_default_anthropic_contract():
     assert resolved["base_url"]["value"] == DEFAULT_API_URL
 
 
-def test_model_config_uses_official_url_when_only_key_is_configured():
+def test_diagnostics_use_official_url_when_only_key_is_configured():
     resolved = resolve_model_config(
         project_env={API_KEY_ENV_NAME: "project-key"},
         process_env={},
+        required=False,
     )
 
     assert resolved["base_url"] == {
@@ -153,7 +152,11 @@ def test_each_public_provider_resolves_its_default_transport(
     if auth_mode != "none":
         env[API_KEY_ENV_NAME] = "test-key"
 
-    resolved = resolve_model_config(project_env=env, process_env={})
+    resolved = resolve_model_config(
+        project_env=env,
+        process_env={},
+        required=False,
+    )
 
     assert resolved["provider"]["value"] == provider
     assert resolved["protocol"]["value"] == protocol
@@ -171,6 +174,7 @@ def test_openai_chat_completions_is_an_explicit_variant():
             API_KEY_ENV_NAME: "test-key",
         },
         process_env={},
+        required=False,
     )
 
     assert resolved["protocol"]["value"] == "openai_chat_completions"
@@ -214,10 +218,12 @@ def test_project_env_wins_over_process_env_for_all_provider_fields():
     }
 
 
-def test_process_env_is_used_when_project_values_are_unset():
+def test_process_env_is_used_when_project_values_are_absent():
     resolved = resolve_model_config(
-        project_env={API_URL_ENV_NAME: "", API_KEY_ENV_NAME: ""},
+        project_env={},
         process_env={
+            PROVIDER_ENV_NAME: "anthropic",
+            MODEL_ENV_NAME: "process-model",
             API_URL_ENV_NAME: "https://process.example/v1/",
             API_KEY_ENV_NAME: "process-key",
         },
@@ -225,6 +231,20 @@ def test_process_env_is_used_when_project_values_are_unset():
 
     assert resolved["base_url"]["value"] == "https://process.example/v1"
     assert resolved["api_key"]["value"] == "process-key"
+
+
+def test_blank_project_value_blocks_same_named_process_value():
+    resolved = resolve_model_config(
+        project_env={API_KEY_ENV_NAME: ""},
+        process_env={API_KEY_ENV_NAME: "process-key"},
+        required=False,
+    )
+
+    assert resolved["api_key"] == {
+        "value": "",
+        "source": "project_env",
+        "name": API_KEY_ENV_NAME,
+    }
 
 
 def test_only_legacy_or_vendor_variables_cannot_configure_runtime():
@@ -238,7 +258,7 @@ def test_only_legacy_or_vendor_variables_cannot_configure_runtime():
         "ANTHROPIC_API_KEY": "anthropic-key",
     }
 
-    with pytest.raises(ValueError, match="^api_key_not_configured$"):
+    with pytest.raises(ValueError, match="^provider_not_configured$"):
         resolve_model_config(project_env=legacy, process_env={})
 
     inspected = resolve_model_config(
@@ -255,22 +275,65 @@ def test_only_legacy_or_vendor_variables_cannot_configure_runtime():
 
 
 def test_missing_key_is_allowed_only_for_read_only_diagnostics():
-    with pytest.raises(ValueError, match="^api_key_not_configured$"):
+    with pytest.raises(ValueError, match="^provider_not_configured$"):
         resolve_model_config(project_env={}, process_env={})
 
-    assert resolve_model_config(
-        project_env={}, process_env={}, required=False
-    )["api_key"]["value"] == ""
+    assert (
+        resolve_model_config(project_env={}, process_env={}, required=False)["api_key"][
+            "value"
+        ]
+        == ""
+    )
+
+
+@pytest.mark.parametrize(
+    ("missing_name", "reason"),
+    [
+        (PROVIDER_ENV_NAME, "provider_not_configured"),
+        (MODEL_ENV_NAME, "model_not_configured"),
+        (API_URL_ENV_NAME, "api_url_not_configured"),
+        (API_KEY_ENV_NAME, "api_key_not_configured"),
+    ],
+)
+def test_runtime_requires_each_provider_connection_setting(missing_name, reason):
+    env = {
+        PROVIDER_ENV_NAME: "anthropic",
+        MODEL_ENV_NAME: "claude-test",
+        API_URL_ENV_NAME: "https://api.anthropic.com/v1",
+        API_KEY_ENV_NAME: "test-key",
+    }
+    env.pop(missing_name)
+
+    with pytest.raises(ValueError, match=f"^{reason}$"):
+        resolve_model_config(project_env=env, process_env={})
 
 
 def test_ollama_does_not_require_an_api_key():
     resolved = resolve_model_config(
-        project_env={PROVIDER_ENV_NAME: "ollama"},
+        project_env={
+            PROVIDER_ENV_NAME: "ollama",
+            MODEL_ENV_NAME: "qwen3:8b",
+            API_URL_ENV_NAME: "http://127.0.0.1:11434",
+        },
         process_env={},
     )
 
     assert resolved["auth_mode"]["value"] == "none"
     assert resolved["api_key"]["value"] == ""
+
+
+@pytest.mark.parametrize("provider", ["anthropic", "openai"])
+def test_cloud_providers_require_key_even_when_auth_mode_is_none(provider):
+    with pytest.raises(ValueError, match="^api_key_not_configured$"):
+        resolve_model_config(
+            project_env={
+                PROVIDER_ENV_NAME: provider,
+                MODEL_ENV_NAME: "cloud-test-model",
+                API_URL_ENV_NAME: "https://cloud.example/v1",
+                AUTH_MODE_ENV_NAME: "none",
+            },
+            process_env={},
+        )
 
 
 @pytest.mark.parametrize(
@@ -280,13 +343,21 @@ def test_ollama_does_not_require_an_api_key():
         (
             {
                 PROVIDER_ENV_NAME: "anthropic",
+                MODEL_ENV_NAME: "claude-test",
+                API_URL_ENV_NAME: "https://api.anthropic.com/v1",
                 API_VARIANT_ENV_NAME: "responses",
                 API_KEY_ENV_NAME: "key",
             },
             "api_variant_invalid",
         ),
         (
-            {AUTH_MODE_ENV_NAME: "basic", API_KEY_ENV_NAME: "key"},
+            {
+                PROVIDER_ENV_NAME: "anthropic",
+                MODEL_ENV_NAME: "claude-test",
+                API_URL_ENV_NAME: "https://api.anthropic.com/v1",
+                AUTH_MODE_ENV_NAME: "basic",
+                API_KEY_ENV_NAME: "key",
+            },
             "auth_mode_invalid",
         ),
     ],

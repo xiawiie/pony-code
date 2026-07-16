@@ -2,9 +2,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from pico.cli import build_arg_parser
+from pico.cli.app import build_arg_parser
 from pico.cli.parser import KNOWN_TOP_LEVEL_COMMANDS, parse_cli_invocation
-from pico.runtime import DEFAULT_MAX_OUTPUT_TOKENS, DEFAULT_MAX_STEPS
+from pico.runtime.application import DEFAULT_MAX_OUTPUT_TOKENS, DEFAULT_MAX_STEPS
 
 
 class RecordingParser:
@@ -65,7 +65,10 @@ def test_run_accepts_option_like_prompt_after_separator():
     (
         (["doctor", "--check-api"], ["--check-api"]),
         (["sandbox", "prune", "--apply"], ["prune", "--apply"]),
-        (["config", "set-secret", "NAME", "--stdin"], ["set-secret", "NAME", "--stdin"]),
+        (
+            ["config", "set-secret", "NAME", "--stdin"],
+            ["set-secret", "NAME", "--stdin"],
+        ),
     ),
 )
 def test_subcommand_options_remain_command_arguments(argv, command_args):
@@ -110,12 +113,18 @@ def test_parser_defaults_are_generous_for_coding_agent_runs():
 
     assert args.max_steps == DEFAULT_MAX_STEPS == 12
     assert args.max_output_tokens is None
-    assert args.legacy_max_new_tokens is None
     assert args.context_window is None
     assert DEFAULT_MAX_OUTPUT_TOKENS == 16_384
     assert args.request_timeout_seconds == 300
     assert not hasattr(args, "ollama_timeout")
     assert not hasattr(args, "openai_timeout")
+
+
+def test_parser_rejects_removed_max_new_tokens_flag():
+    with pytest.raises(SystemExit) as caught:
+        build_arg_parser().parse_args(["--max-new-tokens", "1024"])
+
+    assert caught.value.code == 2
 
 
 @pytest.mark.parametrize(

@@ -2,13 +2,15 @@
 
 import pytest
 
-from pico import Pico, SessionStore, WorkspaceContext
+from pico import Pico
+from pico.state.session_store import SessionStore
+from pico.workspace.context import WorkspaceContext
 from pico.agent.loop import _prepare_tool_result
-from pico.config import load_pico_toml
+from pico.config.project import load_pico_toml
 from pico.context.renderer import render_current_user_message
 from pico.agent.context_manager import SystemContextTooLarge
 from pico.agent.model_capabilities import TokenAccounting
-from pico.providers.fake import FakeModelClient
+from benchmarks.support.fake_provider import FakeModelClient
 
 
 def _config(root):
@@ -111,8 +113,7 @@ def test_legacy_total_budget_maps_to_model_context_window(tmp_path, capsys):
 
 def test_explicit_model_context_wins_over_legacy_total(tmp_path):
     (tmp_path / "pico.toml").write_text(
-        "[model]\ncontext_window = 128000\n"
-        "[context]\ntotal_budget_hard_cap = 50000\n",
+        "[model]\ncontext_window = 128000\n[context]\ntotal_budget_hard_cap = 50000\n",
         encoding="utf-8",
     )
 
@@ -152,9 +153,7 @@ def test_prepare_tool_result_uses_token_limits(tmp_path):
 
     agent = SimpleNamespace(
         current_run_dir=tmp_path / ".pico" / "runs" / "r1",
-        context_config={
-            "tool_results": {"inline_tokens": 20, "digest_tokens": 64}
-        },
+        context_config={"tool_results": {"inline_tokens": 20, "digest_tokens": 64}},
         token_accounting=TokenAccounting(),
         redact_text=str,
     )

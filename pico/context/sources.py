@@ -6,7 +6,8 @@ from collections.abc import Mapping
 import logging
 from pathlib import Path
 
-from pico import security as securitylib
+from pico.security import paths as security_paths
+from pico.security import redaction as redaction
 from pico.memory.recall import recall_candidates
 from pico.memory.retrieval import Retrieval
 from pico.agent.model_capabilities import TokenAccounting
@@ -24,7 +25,7 @@ def _sanitize_source_text(agent, text):
     secret_env_names = getattr(agent, "secret_env_names", ())
     if not isinstance(secret_env_names, (list, tuple, set, frozenset)):
         secret_env_names = ()
-    safe, _ = securitylib.sanitize_provider_payload(
+    safe, _ = redaction.sanitize_provider_payload(
         str(text or ""),
         [],
         env=redaction_env,
@@ -35,8 +36,12 @@ def _sanitize_source_text(agent, text):
 
 def _accounting(agent):
     value = getattr(agent, "token_accounting", None)
-    return value if isinstance(value, TokenAccounting) else TokenAccounting(
+    return (
+        value
+        if isinstance(value, TokenAccounting)
+        else TokenAccounting(
         getattr(getattr(agent, "model_client", None), "count_tokens", None)
+    )
     )
 
 
@@ -99,7 +104,7 @@ def workspace_state_chunks(agent, accounting):
         volatile = str(workspace.volatile_text() or "").strip()
         identity = _sanitize_source_text(agent, identity)
         volatile = _sanitize_source_text(agent, volatile)
-    except securitylib.SensitiveDataBlockedError:
+    except redaction.SensitiveDataBlockedError:
         raise
     except Exception as exc:
         logger.debug("workspace_state source failed: %s", type(exc).__name__)
@@ -138,19 +143,17 @@ def project_structure_chunks(agent, accounting):
             tree = [
                 entry
                 for entry in repo_map.top_level_tree()
-                if not securitylib.is_sensitive_path(str(entry.get("path", "")))
+                if not security_paths.is_sensitive_path(str(entry.get("path", "")))
             ]
             stats = repo_map.language_stats() or {}
-        except securitylib.SensitiveDataBlockedError:
+        except redaction.SensitiveDataBlockedError:
             raise
         except Exception as exc:
             logger.debug("project_structure source failed: %s", type(exc).__name__)
 
     chunks = []
     if tree:
-        languages = ", ".join(
-            f"{key}={value}" for key, value in sorted(stats.items())
-        )
+        languages = ", ".join(f"{key}={value}" for key, value in sorted(stats.items()))
         lines = [f"Project structure (languages: {languages or '-'}):"]
         lines.extend(
             f"- {entry['path']}/ ({entry['file_count']} files)" for entry in tree
@@ -178,7 +181,7 @@ def project_structure_chunks(agent, accounting):
         normalized = str(path).replace("\\", "/")
         if normalized == "AGENTS.md" or normalized.endswith("/AGENTS.md"):
             continue
-        if securitylib.is_sensitive_path(normalized):
+        if security_paths.is_sensitive_path(normalized):
             continue
         for index, part in enumerate(
             _line_groups(
@@ -207,7 +210,9 @@ def project_structure_chunks(agent, accounting):
 def task_working_set_chunks(agent, accounting):
     memory = getattr(agent, "memory", None)
     session = getattr(agent, "session", {}) or {}
-    checkpoint_state = session.get("checkpoints", {}) if isinstance(session, dict) else {}
+    checkpoint_state = (
+        session.get("checkpoints", {}) if isinstance(session, dict) else {}
+    )
     checkpoint_state = checkpoint_state if isinstance(checkpoint_state, dict) else {}
     checkpoint_id = str(checkpoint_state.get("current_id", "") or "")
     checkpoint_items = checkpoint_state.get("items", {})
@@ -251,12 +256,10 @@ def task_working_set_chunks(agent, accounting):
         lines.append("- Recent files: " + ", ".join(recent_files))
     memory_state = session.get("memory", {}) if isinstance(session, dict) else {}
     summaries = (
-        memory_state.get("file_summaries", {})
-        if isinstance(memory_state, dict)
-        else {}
+        memory_state.get("file_summaries", {}) if isinstance(memory_state, dict) else {}
     )
     for path in recent_files:
-        if securitylib.is_sensitive_path(str(path)):
+        if security_paths.is_sensitive_path(str(path)):
             continue
         checkpoint_item = next(
             (
@@ -284,9 +287,7 @@ def task_working_set_chunks(agent, accounting):
             required=required and index == 0,
             provenance={"rank": index},
         )
-        for index, part in enumerate(
-            _line_groups(safe_working_set, accounting, 1_024)
-        )
+        for index, part in enumerate(_line_groups(safe_working_set, accounting, 1_024))
     ]
 
 
@@ -295,7 +296,7 @@ def memory_index_chunks(agent, accounting, memory_snapshot):
         return []
     chunks = []
     for index, document in enumerate(memory_snapshot.raw_documents):
-        if securitylib.is_sensitive_path(str(document.path)):
+        if security_paths.is_sensitive_path(str(document.path)):
             continue
         description = str(document.first_line or "").strip()
         text = f"- {document.path} ({document.size_chars} chars)"
@@ -324,7 +325,7 @@ def recalled_memory_chunks(agent, accounting, user_message, memory_snapshot):
             user_message,
             snapshot=memory_snapshot,
         )
-    except securitylib.SensitiveDataBlockedError:
+    except redaction.SensitiveDataBlockedError:
         raise
     except Exception as exc:
         session = getattr(agent, "session", None)
@@ -359,7 +360,9 @@ def recovery_state_chunks(agent, accounting):
     status = str(resume_state.get("status", "") or "")
     sandbox = getattr(agent, "sandbox_session", None)
     manifest = getattr(sandbox, "manifest", {}) if sandbox is not None else {}
-    sandbox_state = str(manifest.get("state", "") or "") if isinstance(manifest, dict) else ""
+    sandbox_state = (
+        str(manifest.get("state", "") or "") if isinstance(manifest, dict) else ""
+    )
     noteworthy = status in {"partial-stale", "workspace-mismatch"} or sandbox_state in {
         "pending_review",
         "review_required",
@@ -407,7 +410,7 @@ def build_source_chunks(agent, user_message, *, memory_snapshot=None):
     for builder in builders:
         try:
             chunks.extend(chunk for chunk in builder() if chunk is not None)
-        except securitylib.SensitiveDataBlockedError:
+        except redaction.SensitiveDataBlockedError:
             raise
         except Exception as exc:
             logger.debug("context source failed: %s", type(exc).__name__)
@@ -443,7 +446,7 @@ def render_checkpoint(agent, budget_tokens):
         return None
     try:
         text = str(renderer() or "").strip()
-    except securitylib.SensitiveDataBlockedError:
+    except redaction.SensitiveDataBlockedError:
         raise
     except Exception:
         return None

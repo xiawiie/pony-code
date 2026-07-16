@@ -2,7 +2,7 @@ import json
 import os
 
 from pico.state.checkpoint_store import CheckpointStore
-from pico.cli import main
+from pico.cli.app import main
 from pico.recovery.manager import RecoveryManager, collect_recovery_review_items
 from pico.recovery.models import new_checkpoint_record, new_tool_change_record
 from pico.tools.change_recorder import ToolChangeRecorder
@@ -12,7 +12,9 @@ def write_restorable_checkpoint(store, tmp_path, checkpoint_id):
     before = store.write_blob(b"before\n", "text")
     after = store.write_blob(b"after\n", "text")
     (tmp_path / "note.txt").write_text("after\n", encoding="utf-8")
-    record = new_checkpoint_record(checkpoint_id, "turn", "s", "r", "t", "", str(tmp_path))
+    record = new_checkpoint_record(
+        checkpoint_id, "turn", "s", "r", "t", "", str(tmp_path)
+    )
     record["file_entries"].append(
         {
             "path": "note.txt",
@@ -38,7 +40,9 @@ def write_restorable_checkpoint(store, tmp_path, checkpoint_id):
 
 def test_checkpoints_list_does_not_start_repl(tmp_path, capsys):
     store = CheckpointStore(tmp_path)
-    store.write_checkpoint_record(new_checkpoint_record("ckpt_1", "turn", "s", "r", "t", "", str(tmp_path)))
+    store.write_checkpoint_record(
+        new_checkpoint_record("ckpt_1", "turn", "s", "r", "t", "", str(tmp_path))
+    )
 
     code = main(["--cwd", str(tmp_path), "checkpoints", "list"])
 
@@ -86,7 +90,17 @@ def test_checkpoints_preview_restore_json_keeps_success_envelope(tmp_path, capsy
     store = CheckpointStore(tmp_path)
     write_restorable_checkpoint(store, tmp_path, "ckpt_1")
 
-    code = main(["--cwd", str(tmp_path), "--format", "json", "checkpoints", "preview-restore", "ckpt_1"])
+    code = main(
+        [
+            "--cwd",
+            str(tmp_path),
+            "--format",
+            "json",
+            "checkpoints",
+            "preview-restore",
+            "ckpt_1",
+        ]
+    )
 
     assert code == 0
     payload = json.loads(capsys.readouterr().out)
@@ -99,7 +113,9 @@ def test_checkpoints_preview_restore_json_keeps_success_envelope(tmp_path, capsy
 def test_checkpoints_preview_restore_text_explains_ineligible_binary(tmp_path, capsys):
     store = CheckpointStore(tmp_path)
     (tmp_path / "image.bin").write_bytes(b"\x00\x01after")
-    record = new_checkpoint_record("ckpt_binary", "turn", "s", "r", "t", "", str(tmp_path))
+    record = new_checkpoint_record(
+        "ckpt_binary", "turn", "s", "r", "t", "", str(tmp_path)
+    )
     record["file_entries"].append(
         {
             "path": "image.bin",
@@ -121,7 +137,9 @@ def test_checkpoints_preview_restore_text_explains_ineligible_binary(tmp_path, c
     )
     store.write_checkpoint_record(record)
 
-    code = main(["--cwd", str(tmp_path), "checkpoints", "preview-restore", "ckpt_binary"])
+    code = main(
+        ["--cwd", str(tmp_path), "checkpoints", "preview-restore", "ckpt_binary"]
+    )
 
     assert code == 0
     out = capsys.readouterr().out
@@ -156,29 +174,60 @@ def test_checkpoints_restore_apply_changes_disk_state(tmp_path, capsys):
 
 def test_checkpoints_prune_accepts_older_than_preview_and_apply(tmp_path, capsys):
     store = CheckpointStore(tmp_path)
-    old_record = new_checkpoint_record("ckpt_old", "turn", "s", "r", "t", "", str(tmp_path))
+    old_record = new_checkpoint_record(
+        "ckpt_old", "turn", "s", "r", "t", "", str(tmp_path)
+    )
     old_record["created_at"] = "2000-01-01T00:00:00+00:00"
     store.write_checkpoint_record(old_record)
-    new_record = new_checkpoint_record("ckpt_new", "turn", "s", "r", "t", "", str(tmp_path))
+    new_record = new_checkpoint_record(
+        "ckpt_new", "turn", "s", "r", "t", "", str(tmp_path)
+    )
     new_record["created_at"] = "2999-01-01T00:00:00+00:00"
     store.write_checkpoint_record(new_record)
 
-    preview_code = main(["--cwd", str(tmp_path), "--format", "json", "checkpoints", "prune", "--older-than=7d"])
+    preview_code = main(
+        [
+            "--cwd",
+            str(tmp_path),
+            "--format",
+            "json",
+            "checkpoints",
+            "prune",
+            "--older-than=7d",
+        ]
+    )
     preview = json.loads(capsys.readouterr().out)
 
     assert preview_code == 0
     assert preview["kind"] == "checkpoints_prune"
     assert preview["data"]["dry_run"] is True
     assert preview["data"]["prunable_checkpoint_ids"] == ["ckpt_old"]
-    assert [item["checkpoint_id"] for item in store.list_checkpoint_records()] == ["ckpt_old", "ckpt_new"]
+    assert [item["checkpoint_id"] for item in store.list_checkpoint_records()] == [
+        "ckpt_old",
+        "ckpt_new",
+    ]
 
-    apply_code = main(["--cwd", str(tmp_path), "--format", "json", "checkpoints", "prune", "--older-than", "7d", "--apply"])
+    apply_code = main(
+        [
+            "--cwd",
+            str(tmp_path),
+            "--format",
+            "json",
+            "checkpoints",
+            "prune",
+            "--older-than",
+            "7d",
+            "--apply",
+        ]
+    )
     applied = json.loads(capsys.readouterr().out)
 
     assert apply_code == 0
     assert applied["data"]["dry_run"] is False
     assert applied["data"]["removed_checkpoint_ids"] == ["ckpt_old"]
-    assert [item["checkpoint_id"] for item in store.list_checkpoint_records()] == ["ckpt_new"]
+    assert [item["checkpoint_id"] for item in store.list_checkpoint_records()] == [
+        "ckpt_new"
+    ]
 
 
 def test_checkpoints_prune_rejects_invalid_older_than(tmp_path, capsys):
@@ -190,14 +239,22 @@ def test_checkpoints_prune_rejects_invalid_older_than(tmp_path, capsys):
 
 def test_checkpoint_commands_accept_unique_id_prefix(tmp_path, capsys):
     store = CheckpointStore(tmp_path)
-    store.write_checkpoint_record(new_checkpoint_record("ckpt_alpha1234", "turn", "s", "r", "t", "", str(tmp_path)))
+    store.write_checkpoint_record(
+        new_checkpoint_record(
+            "ckpt_alpha1234", "turn", "s", "r", "t", "", str(tmp_path)
+        )
+    )
     write_restorable_checkpoint(store, tmp_path, "ckpt_restore5678")
 
     show_code = main(["--cwd", str(tmp_path), "checkpoints", "show", "ckpt_alpha"])
     show_out = capsys.readouterr().out
-    preview_code = main(["--cwd", str(tmp_path), "checkpoints", "preview-restore", "ckpt_restore"])
+    preview_code = main(
+        ["--cwd", str(tmp_path), "checkpoints", "preview-restore", "ckpt_restore"]
+    )
     preview_out = capsys.readouterr().out
-    restore_code = main(["--cwd", str(tmp_path), "checkpoints", "restore", "ckpt_restore", "--apply"])
+    restore_code = main(
+        ["--cwd", str(tmp_path), "checkpoints", "restore", "ckpt_restore", "--apply"]
+    )
     restore_out = capsys.readouterr().out
 
     assert show_code == 0
@@ -206,22 +263,43 @@ def test_checkpoint_commands_accept_unique_id_prefix(tmp_path, capsys):
     assert "Restore plan ckpt_restore5678 (1 entry)" in preview_out
     assert restore_code == 0
     assert '"restored_paths": [' in restore_out
-    restore_records = [record for record in store.list_checkpoint_records() if record["checkpoint_type"] == "restore"]
+    restore_records = [
+        record
+        for record in store.list_checkpoint_records()
+        if record["checkpoint_type"] == "restore"
+    ]
     assert restore_records[-1]["parent_checkpoint_id"] == "ckpt_restore5678"
     assert (tmp_path / "note.txt").read_text(encoding="utf-8") == "before\n"
 
 
 def test_checkpoint_prefix_errors_include_candidates(tmp_path, capsys):
     store = CheckpointStore(tmp_path)
-    store.write_checkpoint_record(new_checkpoint_record("ckpt_abcdef01", "turn", "s", "r", "t", "", str(tmp_path)))
-    store.write_checkpoint_record(new_checkpoint_record("ckpt_abcdef99", "turn", "s", "r", "t", "", str(tmp_path)))
+    store.write_checkpoint_record(
+        new_checkpoint_record("ckpt_abcdef01", "turn", "s", "r", "t", "", str(tmp_path))
+    )
+    store.write_checkpoint_record(
+        new_checkpoint_record("ckpt_abcdef99", "turn", "s", "r", "t", "", str(tmp_path))
+    )
 
-    code = main(["--cwd", str(tmp_path), "--format", "json", "checkpoints", "show", "ckpt_abcdef"])
+    code = main(
+        [
+            "--cwd",
+            str(tmp_path),
+            "--format",
+            "json",
+            "checkpoints",
+            "show",
+            "ckpt_abcdef",
+        ]
+    )
 
     assert code == 2
     payload = json.loads(capsys.readouterr().out)
     assert payload["error"]["code"] == "checkpoint_prefix_ambiguous"
-    assert payload["error"]["details"]["candidates"] == ["ckpt_abcdef01", "ckpt_abcdef99"]
+    assert payload["error"]["details"]["candidates"] == [
+        "ckpt_abcdef01",
+        "ckpt_abcdef99",
+    ]
 
 
 def test_checkpoints_prune_apply_removes_orphan_blob(tmp_path, capsys):
@@ -237,7 +315,9 @@ def test_checkpoints_prune_apply_removes_orphan_blob(tmp_path, capsys):
 
 def test_checkpoints_restore_rejects_unknown_flag(tmp_path):
     store = CheckpointStore(tmp_path)
-    store.write_checkpoint_record(new_checkpoint_record("ckpt_1", "turn", "s", "r", "t", "", str(tmp_path)))
+    store.write_checkpoint_record(
+        new_checkpoint_record("ckpt_1", "turn", "s", "r", "t", "", str(tmp_path))
+    )
 
     code = main(["--cwd", str(tmp_path), "checkpoints", "restore", "ckpt_1", "--aply"])
 
@@ -252,15 +332,11 @@ def test_checkpoints_pending_lists_tool_change_and_invalid_record(tmp_path, caps
     (store.tool_changes_dir / "github_pat_secret_filename.json").write_bytes(
         b"{private-invalid-evidence"
     )
-    code = main(
-        ["--cwd", str(tmp_path), "--format", "json", "checkpoints", "pending"]
-    )
+    code = main(["--cwd", str(tmp_path), "--format", "json", "checkpoints", "pending"])
     payload = json.loads(capsys.readouterr().out)
     assert code == 0
     assert payload["kind"] == "checkpoints_pending"
-    assert {item["status"] for item in payload["data"]["tool_changes"]} == {
-        "pending"
-    }
+    assert {item["status"] for item in payload["data"]["tool_changes"]} == {"pending"}
     assert {item["status"] for item in payload["data"]["invalid_records"]} == {
         "invalid_record"
     }
@@ -274,19 +350,13 @@ def test_collect_recovery_review_items_has_fixed_read_only_shape(tmp_path):
     ToolChangeRecorder(store, owner_id="owner-a").start(
         "", "turn-1", "write_file", "workspace_write", {}
     )
-    (store.records_dir / "secret-filename.json").write_bytes(
-        b"{invalid-private-bytes"
-    )
+    (store.records_dir / "secret-filename.json").write_bytes(b"{invalid-private-bytes")
     before = {
-        path: path.read_bytes()
-        for path in store.root.rglob("*")
-        if path.is_file()
+        path: path.read_bytes() for path in store.root.rglob("*") if path.is_file()
     }
     items = collect_recovery_review_items(store, tmp_path)
     after = {
-        path: path.read_bytes()
-        for path in store.root.rglob("*")
-        if path.is_file()
+        path: path.read_bytes() for path in store.root.rglob("*") if path.is_file()
     }
     assert set(items) == {
         "tool_changes",
@@ -320,7 +390,9 @@ def test_resolve_pending_defaults_to_read_only_preview(tmp_path, capsys):
         ]
     )
     assert code == 0
-    assert store.load_tool_change_record(pending["tool_change_id"])["status"] == "pending"
+    assert (
+        store.load_tool_change_record(pending["tool_change_id"])["status"] == "pending"
+    )
     assert json.loads(capsys.readouterr().out)["data"]["status"] == "pending"
 
 
@@ -348,9 +420,7 @@ def test_resolve_pending_apply_interrupts_with_review_metadata(tmp_path):
 def test_resolve_terminal_interrupted_marks_existing_review_complete(tmp_path):
     store = CheckpointStore(tmp_path)
     recorder = ToolChangeRecorder(store, owner_id="owner-a")
-    pending = recorder.start(
-        "", "turn-1", "write_file", "workspace_write", {}
-    )
+    pending = recorder.start("", "turn-1", "write_file", "workspace_write", {})
     recorder.finalize(
         pending["tool_change_id"],
         "interrupted",
@@ -369,7 +439,8 @@ def test_resolve_terminal_interrupted_marks_existing_review_complete(tmp_path):
         }
     ]
 
-    assert main(
+    assert (
+        main(
         [
             "--cwd",
             str(tmp_path),
@@ -378,7 +449,9 @@ def test_resolve_terminal_interrupted_marks_existing_review_complete(tmp_path):
             pending["tool_change_id"],
             "--apply",
         ]
-    ) == 0
+        )
+        == 0
+    )
     record = store.load_tool_change_record(pending["tool_change_id"])
     assert record["status"] == "interrupted"
     assert record["reviewed_by"] == "cli"
@@ -430,7 +503,8 @@ def test_resolve_invalid_apply_quarantines_without_deleting_bytes(tmp_path):
     source = store.records_dir / "secret-token-filename.json"
     source.write_bytes(raw)
     [invalid] = store.list_checkpoint_records(strict=False)
-    assert main(
+    assert (
+        main(
         [
             "--cwd",
             str(tmp_path),
@@ -438,9 +512,12 @@ def test_resolve_invalid_apply_quarantines_without_deleting_bytes(tmp_path):
             "resolve-pending",
             invalid["opaque_id"],
         ]
-    ) == 0
+        )
+        == 0
+    )
     assert source.read_bytes() == raw
-    assert main(
+    assert (
+        main(
         [
             "--cwd",
             str(tmp_path),
@@ -449,7 +526,9 @@ def test_resolve_invalid_apply_quarantines_without_deleting_bytes(tmp_path):
             invalid["opaque_id"],
             "--apply",
         ]
-    ) == 0
+        )
+        == 0
+    )
     inspected = store.list_quarantined_records()[0]
     assert inspected["opaque_id"] == invalid["opaque_id"]
     assert (store.root / inspected["quarantine_raw_path"]).read_bytes() == raw
@@ -462,7 +541,8 @@ def test_resolve_non_regular_invalid_apply_moves_inode_without_following(tmp_pat
     source = store.records_dir / "linked.json"
     source.symlink_to(outside)
     [invalid] = store.list_checkpoint_records(strict=False)
-    assert main(
+    assert (
+        main(
         [
             "--cwd",
             str(tmp_path),
@@ -470,9 +550,12 @@ def test_resolve_non_regular_invalid_apply_moves_inode_without_following(tmp_pat
             "resolve-pending",
             invalid["opaque_id"],
         ]
-    ) == 0
+        )
+        == 0
+    )
     assert os.path.lexists(source)
-    assert main(
+    assert (
+        main(
         [
             "--cwd",
             str(tmp_path),
@@ -481,23 +564,21 @@ def test_resolve_non_regular_invalid_apply_moves_inode_without_following(tmp_pat
             invalid["opaque_id"],
             "--apply",
         ]
-    ) == 0
+        )
+        == 0
+    )
     assert not os.path.lexists(source)
     assert outside.read_bytes() == b"must-not-be-read-or-moved"
 
 
-def test_quarantined_record_remains_visible_as_inactive_inspection(
-    tmp_path, capsys
-):
+def test_quarantined_record_remains_visible_as_inactive_inspection(tmp_path, capsys):
     store = CheckpointStore(tmp_path)
     (store.records_dir / "secret-filename.json").write_bytes(b"{invalid")
     [invalid] = store.list_checkpoint_records(strict=False)
     store.quarantine_invalid_record(
         invalid["opaque_id"], expected_raw_hash=invalid["raw_hash"]
     )
-    code = main(
-        ["--cwd", str(tmp_path), "--format", "json", "checkpoints", "pending"]
-    )
+    code = main(["--cwd", str(tmp_path), "--format", "json", "checkpoints", "pending"])
     payload = json.loads(capsys.readouterr().out)
     assert code == 0
     assert any(
@@ -549,7 +630,8 @@ def test_partial_review_requires_preview_then_explicit_apply_acceptance(
         ]
     }
     store.write_checkpoint_record(record)
-    assert main(
+    assert (
+        main(
         [
             "--cwd",
             str(tmp_path),
@@ -559,11 +641,14 @@ def test_partial_review_requires_preview_then_explicit_apply_acceptance(
             "resolve-pending",
             record["checkpoint_id"],
         ]
-    ) == 0
+        )
+        == 0
+    )
     preview = json.loads(capsys.readouterr().out)
     assert preview["data"]["status"] == "partial_review_required"
     assert store.load_checkpoint_record(record["checkpoint_id"])["reviewed_at"] == ""
-    assert main(
+    assert (
+        main(
         [
             "--cwd",
             str(tmp_path),
@@ -572,16 +657,16 @@ def test_partial_review_requires_preview_then_explicit_apply_acceptance(
             record["checkpoint_id"],
             "--apply",
         ]
-    ) == 0
+        )
+        == 0
+    )
     accepted = store.load_checkpoint_record(record["checkpoint_id"])
     assert accepted["status"] == "partial"
     assert accepted["reviewed_at"]
     assert accepted["restore_provenance"]["entries"][0]["outcome"] == "uncertain"
 
 
-def test_blocked_and_partial_restore_apply_return_runtime_exit(
-    tmp_path, monkeypatch
-):
+def test_blocked_and_partial_restore_apply_return_runtime_exit(tmp_path, monkeypatch):
     store = CheckpointStore(tmp_path)
     checkpoint = write_restorable_checkpoint(store, tmp_path, "ckpt_exit")
     (tmp_path / "note.txt").write_text("external\n", encoding="utf-8")
@@ -636,7 +721,7 @@ def test_invalid_checkpoints_subcommand_is_usage_error_without_agent(
     tmp_path, monkeypatch
 ):
     monkeypatch.setattr(
-        "pico.cli.build_agent",
+        "pico.cli.app.build_agent",
         lambda args: (_ for _ in ()).throw(AssertionError("must not build agent")),
     )
 
@@ -664,8 +749,8 @@ def test_run_accepts_prompt_starting_with_namespace(tmp_path, monkeypatch, capsy
 
         return FakeAgent()
 
-    monkeypatch.setattr("pico.cli.build_agent", fake_build_agent)
-    monkeypatch.setattr("pico.cli.build_welcome", lambda agent, model, host: "")
+    monkeypatch.setattr("pico.cli.app.build_agent", fake_build_agent)
+    monkeypatch.setattr("pico.cli.app.build_welcome", lambda agent, model, host: "")
 
     code = main(["--cwd", str(tmp_path), "run", "checkpoints", "look", "good"])
 
@@ -676,7 +761,7 @@ def test_run_accepts_prompt_starting_with_namespace(tmp_path, monkeypatch, capsy
 
 def test_no_argument_cli_shows_root_help_without_agent(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(
-        "pico.cli.build_agent",
+        "pico.cli.app.build_agent",
         lambda args: (_ for _ in ()).throw(AssertionError("must not build agent")),
     )
 
@@ -700,9 +785,12 @@ def test_no_input_blocks_repl_before_input(tmp_path, monkeypatch, capsys):
 
         return FakeAgent()
 
-    monkeypatch.setattr("pico.cli.build_agent", fake_build_agent)
-    monkeypatch.setattr("pico.cli.build_welcome", lambda agent, model, host: "")
-    monkeypatch.setattr("builtins.input", lambda prompt: (_ for _ in ()).throw(AssertionError("input called")))
+    monkeypatch.setattr("pico.cli.app.build_agent", fake_build_agent)
+    monkeypatch.setattr("pico.cli.app.build_welcome", lambda agent, model, host: "")
+    monkeypatch.setattr(
+        "builtins.input",
+        lambda prompt: (_ for _ in ()).throw(AssertionError("input called")),
+    )
 
     code = main(["--cwd", str(tmp_path), "--no-input", "repl"])
 
@@ -728,8 +816,10 @@ def test_quiet_suppresses_welcome_for_run(tmp_path, monkeypatch, capsys):
 
         return FakeAgent()
 
-    monkeypatch.setattr("pico.cli.build_agent", fake_build_agent)
-    monkeypatch.setattr("pico.cli.build_welcome", lambda agent, model, host: "WELCOME")
+    monkeypatch.setattr("pico.cli.app.build_agent", fake_build_agent)
+    monkeypatch.setattr(
+        "pico.cli.app.build_welcome", lambda agent, model, host: "WELCOME"
+    )
 
     code = main(["--cwd", str(tmp_path), "--quiet", "run", "fix"])
 
@@ -741,7 +831,9 @@ def test_quiet_suppresses_welcome_for_run(tmp_path, monkeypatch, capsys):
 
 def test_checkpoints_list_json_uses_success_envelope(tmp_path, capsys):
     store = CheckpointStore(tmp_path)
-    store.write_checkpoint_record(new_checkpoint_record("ckpt_1", "turn", "s", "r", "t", "", str(tmp_path)))
+    store.write_checkpoint_record(
+        new_checkpoint_record("ckpt_1", "turn", "s", "r", "t", "", str(tmp_path))
+    )
 
     code = main(["--cwd", str(tmp_path), "--format", "json", "checkpoints", "list"])
 

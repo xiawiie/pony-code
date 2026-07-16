@@ -44,7 +44,7 @@ def print_result(kind, data, args, text_renderer):
 
 
 def build_inspection_redactor(root, args=None):
-    from pico.runtime import _build_redaction_snapshot
+    from pico.runtime.application import _build_redaction_snapshot
 
     _, _, redactor = _build_redaction_snapshot(
         root,

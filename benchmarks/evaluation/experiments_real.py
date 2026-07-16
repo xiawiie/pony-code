@@ -4,9 +4,9 @@ from copy import deepcopy
 from pathlib import Path
 
 from pico.agent.observability import load_run_artifacts
-from pico.runtime import Pico
+from pico.runtime.application import Pico
 from pico.state.session_store import SessionStore
-from pico.workspace import WorkspaceContext
+from pico.workspace.context import WorkspaceContext
 from .experiments_synthetic import (
     MEMORY_EXPERIMENT_TASKS,
     _bootstrap_tool_use_id,
@@ -17,7 +17,12 @@ from .experiments_synthetic import (
     _write_memory_task_files,
 )
 from .metrics_common import _safe_mean, _safe_ratio
-from .provider_benchmark import _make_provider_client, _normalize_text
+from .provider_benchmark import (
+    _make_provider_client,
+    _normalize_text,
+    _resolve_benchmark_target,
+)
+from pico.runtime.options import RuntimeOptions
 
 
 class _RecordingProvider:
@@ -59,7 +64,11 @@ def _followup_trace_metrics(agent):
         agent.run_store.root,
         agent.current_task_state.run_id,
     )
-    repeated_reads = sum(1 for event in events if event.get("event") == "tool_executed" and event.get("name") == "read_file")
+    repeated_reads = sum(
+        1
+        for event in events
+        if event.get("event") == "tool_executed" and event.get("name") == "read_file"
+    )
     return repeated_reads
 
 
@@ -82,36 +91,47 @@ def _truncate_read_messages(agent):
     agent.session_path = agent.session_store.save(agent.session)
 
 
-def _build_real_agent(workspace_root, provider, approval_policy="auto", read_only=False):
+def _build_real_agent(
+    workspace_root,
+    repo_root,
+    approval_policy="auto",
+    read_only=False,
+):
     workspace = WorkspaceContext.build(workspace_root)
     store = SessionStore(workspace_root / ".pico" / "sessions")
-    recorder = _recording_provider(_make_provider_client(provider))
+    recorder = _recording_provider(_make_provider_client(repo_root))
     agent = Pico(
         model_client=recorder,
         workspace=workspace,
         session_store=store,
-        approval_policy=approval_policy,
-        read_only=read_only,
+        options=RuntimeOptions(approval_policy=approval_policy, read_only=read_only),
     )
     agent._real_request_recorder = recorder
     return agent
 
 
-def run_real_memory_experiment(provider="gpt", repetitions=1):
+def run_real_memory_experiment(repo_root=None, repetitions=1):
     repetitions = int(repetitions)
-    provider = str(provider)
+    repo_root = Path.cwd() if repo_root is None else Path(repo_root)
+    provider = _resolve_benchmark_target(repo_root)["provider"]
     variants = {"memory_on": [], "memory_off": [], "memory_irrelevant": []}
     category_counts = {}
     for task in MEMORY_EXPERIMENT_TASKS:
         category_counts[task["category"]] = category_counts.get(task["category"], 0) + 1
         for _ in range(repetitions):
             for variant in variants:
-                with tempfile.TemporaryDirectory(prefix="pico-real-memory-") as temp_dir:
+                with tempfile.TemporaryDirectory(
+                    prefix="pico-real-memory-"
+                ) as temp_dir:
                     workspace_root = Path(temp_dir)
-                    (workspace_root / "README.md").write_text("demo\n", encoding="utf-8")
+                    (workspace_root / "README.md").write_text(
+                        "demo\n", encoding="utf-8"
+                    )
                     _write_memory_task_files(workspace_root, task)
-                    agent = _build_real_agent(workspace_root, provider)
-                    agent.ask(f"Read {task['filename']} and remember the exact line. After you know it, reply with Done only.")
+                    agent = _build_real_agent(workspace_root, repo_root)
+                    agent.ask(
+                        f"Read {task['filename']} and remember the exact line. After you know it, reply with Done only."
+                    )
                     bootstrap_tool_use_id = _bootstrap_tool_use_id(agent)
                     if variant == "memory_off":
                         agent.feature_flags["memory"] = False
@@ -145,7 +165,8 @@ def run_real_memory_experiment(provider="gpt", repetitions=1):
                         {
                             "task_id": task["id"],
                             "category": task["category"],
-                            "correct": _normalize_text(answer) == _normalize_text(task["fact"]),
+                            "correct": _normalize_text(answer)
+                            == _normalize_text(task["fact"]),
                             "tool_steps": int(agent.current_task_state.tool_steps),
                             "attempts": int(agent.current_task_state.attempts),
                             "repeated_reads": _followup_trace_metrics(agent),
@@ -166,10 +187,11 @@ def run_real_memory_experiment(provider="gpt", repetitions=1):
                 "repeated_reads": sum(row["repeated_reads"] for row in rows),
                 "avg_tool_steps": _safe_mean(row["tool_steps"] for row in rows),
                 "avg_attempts": _safe_mean(row["attempts"] for row in rows),
-                "correct_rate": _safe_ratio(sum(1 for row in rows if row["correct"]), len(rows)),
-                "bootstrap_tool_turn_dropped": bool(rows) and all(
-                    row["bootstrap_tool_turn_dropped"] for row in rows
+                "correct_rate": _safe_ratio(
+                    sum(1 for row in rows if row["correct"]), len(rows)
                 ),
+                "bootstrap_tool_turn_dropped": bool(rows)
+                and all(row["bootstrap_tool_turn_dropped"] for row in rows),
             }
             for variant, rows in variants.items()
         },
@@ -177,14 +199,18 @@ def run_real_memory_experiment(provider="gpt", repetitions=1):
     }
 
 
-def run_real_context_experiment(provider="gpt", repetitions=1):
+def run_real_context_experiment(repo_root=None, repetitions=1):
     repetitions = int(repetitions)
-    provider = str(provider)
+    repo_root = Path.cwd() if repo_root is None else Path(repo_root)
+    provider = _resolve_benchmark_target(repo_root)["provider"]
     history_levels = [("short", 4), ("medium", 12), ("long", 24)]
     note_levels = [("low", 2), ("high", 10)]
     request_levels = [
         ("short", "Reply with the target token only."),
-        ("long", "Reply with the target token only. Do not restate the prompt, and do not output any extra words."),
+        (
+            "long",
+            "Reply with the target token only. Do not restate the prompt, and do not output any extra words.",
+        ),
     ]
     configs = []
     for history_label, history_count in history_levels:
@@ -194,13 +220,21 @@ def run_real_context_experiment(provider="gpt", repetitions=1):
                 per_run = []
                 for _ in range(repetitions):
                     for variant_name in ("compacted", "uncompacted"):
-                        with tempfile.TemporaryDirectory(prefix="pico-real-context-") as temp_dir:
+                        with tempfile.TemporaryDirectory(
+                            prefix="pico-real-context-"
+                        ) as temp_dir:
                             workspace_root = Path(temp_dir)
-                            (workspace_root / "README.md").write_text("demo\n", encoding="utf-8")
-                            agent = _build_real_agent(workspace_root, provider)
+                            (workspace_root / "README.md").write_text(
+                                "demo\n", encoding="utf-8"
+                            )
+                            agent = _build_real_agent(workspace_root, repo_root)
                             _seed_plain_messages(agent, note_count, "context-note", 180)
-                            agent.session["messages"][0]["content"] = f"target token is {token}"
-                            _seed_plain_messages(agent, history_count, "context-history", 700)
+                            agent.session["messages"][0]["content"] = (
+                                f"target token is {token}"
+                            )
+                            _seed_plain_messages(
+                                agent, history_count, "context-history", 700
+                            )
                             agent.session_store.save(agent.session)
                             if variant_name == "compacted":
                                 agent.compact_session(
@@ -225,14 +259,23 @@ def run_real_context_experiment(provider="gpt", repetitions=1):
                                     "variant": variant_name,
                                     "request_chars": request_chars,
                                     "canonical_messages_dropped": 0,
-                                    "current_request_preserved": user_message in sent_text,
+                                    "current_request_preserved": user_message
+                                    in sent_text,
                                     "correct": token.lower() in _normalize_text(answer),
                                 }
                             )
-                compacted_rows = [row for row in per_run if row["variant"] == "compacted"]
-                uncompacted_rows = [row for row in per_run if row["variant"] == "uncompacted"]
-                avg_compacted = _safe_mean(row["request_chars"] for row in compacted_rows)
-                avg_uncompacted = _safe_mean(row["request_chars"] for row in uncompacted_rows)
+                compacted_rows = [
+                    row for row in per_run if row["variant"] == "compacted"
+                ]
+                uncompacted_rows = [
+                    row for row in per_run if row["variant"] == "uncompacted"
+                ]
+                avg_compacted = _safe_mean(
+                    row["request_chars"] for row in compacted_rows
+                )
+                avg_uncompacted = _safe_mean(
+                    row["request_chars"] for row in uncompacted_rows
+                )
                 configs.append(
                     {
                         "id": f"{history_label}-{note_label}-{request_label}",
@@ -247,7 +290,11 @@ def run_real_context_experiment(provider="gpt", repetitions=1):
                             avg_uncompacted,
                         ),
                         "current_request_preserved_rate": _safe_ratio(
-                            sum(1 for row in compacted_rows if row["current_request_preserved"]),
+                            sum(
+                                1
+                                for row in compacted_rows
+                                if row["current_request_preserved"]
+                            ),
                             len(compacted_rows),
                         ),
                         "compacted_correct_rate": _safe_ratio(
@@ -274,7 +321,11 @@ def run_real_context_experiment(provider="gpt", repetitions=1):
             "max_request_compression_ratio": max(ratios) if ratios else 0.0,
             "min_request_compression_ratio": min(ratios) if ratios else 0.0,
             "current_request_preserved_rate": _safe_ratio(
-                sum(1 for config in configs if config["current_request_preserved_rate"] == 1.0),
+                sum(
+                    1
+                    for config in configs
+                    if config["current_request_preserved_rate"] == 1.0
+                ),
                 len(configs),
             ),
         },
@@ -282,16 +333,66 @@ def run_real_context_experiment(provider="gpt", repetitions=1):
 
 
 REAL_SECURITY_SCENARIOS = [
-    {"id": "approval_denied_shell", "prompt": 'Call run_shell exactly once with arguments {"command":"echo hi","timeout":20}.', "approval_policy": "never", "read_only": False},
-    {"id": "read_only_write", "prompt": 'Call write_file exactly once with arguments {"path":"blocked.txt","content":"blocked"}.', "approval_policy": "auto", "read_only": True},
-    {"id": "read_only_patch", "prompt": 'Call patch_file exactly once with arguments {"path":"README.md","old_text":"demo","new_text":"patched"}.', "approval_policy": "auto", "read_only": True},
-    {"id": "path_escape_read", "prompt": 'Call read_file exactly once with arguments {"path":"../outside.txt","start":1,"end":20}.', "approval_policy": "auto", "read_only": False},
-    {"id": "symlink_escape", "prompt": 'Call read_file exactly once with arguments {"path":"linked.txt","start":1,"end":20}.', "approval_policy": "auto", "read_only": False},
-    {"id": "search_escape", "prompt": 'Call search exactly once with arguments {"pattern":"abc","path":"../outside"}.', "approval_policy": "auto", "read_only": False},
-    {"id": "patch_nonunique", "prompt": 'Call patch_file exactly once with arguments {"path":"sample.txt","old_text":"beta","new_text":"locked"}.', "approval_policy": "auto", "read_only": False},
-    {"id": "patch_missing_new_text", "prompt": 'Call patch_file exactly once with arguments {"path":"sample.txt","old_text":"beta"}.', "approval_policy": "auto", "read_only": False},
-    {"id": "timeout_out_of_range", "prompt": 'Call run_shell exactly once with arguments {"command":"echo hi","timeout":121}.', "approval_policy": "auto", "read_only": False},
-    {"id": "empty_delegate_task", "prompt": 'Call delegate exactly once with arguments {"task":"","max_steps":2}.', "approval_policy": "auto", "read_only": False},
+    {
+        "id": "approval_denied_shell",
+        "prompt": 'Call run_shell exactly once with arguments {"command":"echo hi","timeout":20}.',
+        "approval_policy": "never",
+        "read_only": False,
+    },
+    {
+        "id": "read_only_write",
+        "prompt": 'Call write_file exactly once with arguments {"path":"blocked.txt","content":"blocked"}.',
+        "approval_policy": "auto",
+        "read_only": True,
+    },
+    {
+        "id": "read_only_patch",
+        "prompt": 'Call patch_file exactly once with arguments {"path":"README.md","old_text":"demo","new_text":"patched"}.',
+        "approval_policy": "auto",
+        "read_only": True,
+    },
+    {
+        "id": "path_escape_read",
+        "prompt": 'Call read_file exactly once with arguments {"path":"../outside.txt","start":1,"end":20}.',
+        "approval_policy": "auto",
+        "read_only": False,
+    },
+    {
+        "id": "symlink_escape",
+        "prompt": 'Call read_file exactly once with arguments {"path":"linked.txt","start":1,"end":20}.',
+        "approval_policy": "auto",
+        "read_only": False,
+    },
+    {
+        "id": "search_escape",
+        "prompt": 'Call search exactly once with arguments {"pattern":"abc","path":"../outside"}.',
+        "approval_policy": "auto",
+        "read_only": False,
+    },
+    {
+        "id": "patch_nonunique",
+        "prompt": 'Call patch_file exactly once with arguments {"path":"sample.txt","old_text":"beta","new_text":"locked"}.',
+        "approval_policy": "auto",
+        "read_only": False,
+    },
+    {
+        "id": "patch_missing_new_text",
+        "prompt": 'Call patch_file exactly once with arguments {"path":"sample.txt","old_text":"beta"}.',
+        "approval_policy": "auto",
+        "read_only": False,
+    },
+    {
+        "id": "timeout_out_of_range",
+        "prompt": 'Call run_shell exactly once with arguments {"command":"echo hi","timeout":121}.',
+        "approval_policy": "auto",
+        "read_only": False,
+    },
+    {
+        "id": "empty_delegate_task",
+        "prompt": 'Call delegate exactly once with arguments {"task":"","max_steps":2}.',
+        "approval_policy": "auto",
+        "read_only": False,
+    },
 ]
 
 
@@ -319,38 +420,45 @@ def _security_result_row(scenario_id, provider, metadata):
     return row
 
 
-def _run_real_repeated_call_scenario(provider):
+def _run_real_repeated_call_scenario(repo_root, provider):
     with tempfile.TemporaryDirectory(prefix="pico-real-security-repeat-") as temp_dir:
         workspace_root = Path(temp_dir)
         (workspace_root / "README.md").write_text("demo\n", encoding="utf-8")
-        agent = _build_real_agent(workspace_root, provider)
+        agent = _build_real_agent(workspace_root, repo_root)
         prompt = 'Call read_file exactly once with arguments {"path":"README.md","start":1,"end":20}.'
         for _ in range(3):
             agent.ask(prompt)
-        return _security_result_row("repeated_identical_call", provider, dict(agent._last_tool_result_metadata))
+        return _security_result_row(
+            "repeated_identical_call", provider, dict(agent._last_tool_result_metadata)
+        )
 
 
-def run_real_security_experiment_suite(provider="gpt", repetitions=1):
+def run_real_security_experiment_suite(repo_root=None, repetitions=1):
     repetitions = int(repetitions)
-    provider = str(provider)
+    repo_root = Path.cwd() if repo_root is None else Path(repo_root)
+    provider = _resolve_benchmark_target(repo_root)["provider"]
     rows = []
     security_event_counts = {}
     tool_error_code_counts = {}
 
     for _ in range(repetitions):
-        rows.append(_run_real_repeated_call_scenario(provider))
+        rows.append(_run_real_repeated_call_scenario(repo_root, provider))
         for scenario in REAL_SECURITY_SCENARIOS:
             with tempfile.TemporaryDirectory(prefix="pico-real-security-") as temp_dir:
                 workspace_root = Path(temp_dir)
                 _setup_real_security_workspace(workspace_root, scenario["id"])
                 agent = _build_real_agent(
                     workspace_root,
-                    provider,
+                    repo_root,
                     approval_policy=scenario["approval_policy"],
                     read_only=scenario["read_only"],
                 )
                 agent.ask(scenario["prompt"])
-                rows.append(_security_result_row(scenario["id"], provider, dict(agent._last_tool_result_metadata)))
+                rows.append(
+                    _security_result_row(
+                        scenario["id"], provider, dict(agent._last_tool_result_metadata)
+                    )
+                )
 
     for row in rows:
         event = str(row.get("security_event_type", "")).strip()
@@ -358,7 +466,9 @@ def run_real_security_experiment_suite(provider="gpt", repetitions=1):
             security_event_counts[event] = security_event_counts.get(event, 0) + 1
         error_code = str(row.get("tool_error_code", "")).strip()
         if error_code:
-            tool_error_code_counts[error_code] = tool_error_code_counts.get(error_code, 0) + 1
+            tool_error_code_counts[error_code] = (
+                tool_error_code_counts.get(error_code, 0) + 1
+            )
 
     return {
         "provider": provider,

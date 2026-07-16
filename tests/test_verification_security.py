@@ -5,8 +5,11 @@ from unittest.mock import Mock
 import pytest
 
 import pico.agent.verification as verification
-from pico import Pico, SessionStore, WorkspaceContext
-from pico.providers.fake import FakeModelClient
+from pico import Pico
+from pico.state.session_store import SessionStore
+from pico.workspace.context import WorkspaceContext
+from benchmarks.support.fake_provider import FakeModelClient
+from pico.runtime.options import RuntimeOptions
 
 
 ACCEPTED_PREFIXES = (
@@ -141,19 +144,27 @@ def test_verification_evidence_requires_completed_structured_argv_execution(pref
         "stderr": "",
     }
 
-    assert verification.verification_evidence_for_execution(
+    assert (
+        verification.verification_evidence_for_execution(
         **{**facts, "runner_executed": False}
-    ) is None
-    assert verification.verification_evidence_for_execution(
+        )
+        is None
+    )
+    assert (
+        verification.verification_evidence_for_execution(
         **{**facts, "execution_mode": "shell"}
-    ) is None
-    assert verification.verification_evidence_for_execution(
-        **{**facts, "exit_code": None}
-    ) is None
+        )
+        is None
+    )
+    assert (
+        verification.verification_evidence_for_execution(**{**facts, "exit_code": None})
+        is None
+    )
 
 
 def test_verification_evidence_rejects_aggregate_argv_over_field_bound():
-    assert verification.verification_evidence_for_execution(
+    assert (
+        verification.verification_evidence_for_execution(
         argv=("pytest", "a" * 600, "b" * 600),
         risk_class="external_effect",
         runner_executed=True,
@@ -161,7 +172,9 @@ def test_verification_evidence_rejects_aggregate_argv_over_field_bound():
         exit_code=0,
         stdout="passed",
         stderr="",
-    ) is None
+        )
+        is None
+    )
 
 
 def _build_agent(root, command, *, approval_policy="ask", read_only=False):
@@ -182,8 +195,7 @@ def _build_agent(root, command, *, approval_policy="ask", read_only=False):
             },
         ),
         session_store=SessionStore(root / ".pico" / "sessions"),
-        approval_policy=approval_policy,
-        read_only=read_only,
+        options=RuntimeOptions(approval_policy=approval_policy, read_only=read_only),
     )
     return agent
 
@@ -236,9 +248,7 @@ def test_blocked_shell_paths_create_no_verification_records(
         read_only=read_only,
     )
     agent.approve = Mock(return_value=False)
-    runner = Mock(
-        return_value={"stdout": "passed", "stderr": "", "exit_code": 0}
-    )
+    runner = Mock(return_value={"stdout": "passed", "stderr": "", "exit_code": 0})
     agent.tools["run_shell"]["run"] = runner
 
     assert agent.ask("run it") == "done"

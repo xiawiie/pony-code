@@ -3,9 +3,12 @@ from unittest.mock import Mock
 
 import pytest
 
-from pico import Pico, SessionStore, WorkspaceContext
-from pico.providers.fake import FakeModelClient
+from pico import Pico
+from pico.state.session_store import SessionStore
+from pico.workspace.context import WorkspaceContext
+from benchmarks.support.fake_provider import FakeModelClient
 from pico.recovery.policy import assess_command
+from pico.runtime.options import RuntimeOptions
 
 
 def build_agent(tmp_path, outputs, **kwargs):
@@ -21,8 +24,7 @@ def build_agent(tmp_path, outputs, **kwargs):
         model_client=FakeModelClient(outputs),
         workspace=workspace,
         session_store=store,
-        approval_policy=approval_policy,
-        **kwargs,
+        options=RuntimeOptions(approval_policy=approval_policy, **kwargs),
     )
 
 
@@ -136,9 +138,7 @@ def test_ask_mode_approved_simple_command_stays_argv(tmp_path, monkeypatch):
         executables={"python": "/frozen/python"},
     )
     monkeypatch.setattr(agent, "approve", lambda name, args: True)
-    runner = Mock(
-        return_value={"stdout": "passed\n", "stderr": "", "exit_code": 0}
-    )
+    runner = Mock(return_value={"stdout": "passed\n", "stderr": "", "exit_code": 0})
     agent.tools["run_shell"]["run"] = runner
 
     result = agent.execute_tool(

@@ -3,7 +3,7 @@
 import uuid
 
 import pico.memory.service as memorylib
-from pico.workspace import clip, now
+from pico.workspace.context import clip, now
 
 CHECKPOINT_NONE_STATUS = "no-checkpoint"
 CHECKPOINT_FULL_VALID_STATUS = "full-valid"
@@ -40,7 +40,11 @@ def current_runtime_identity(agent):
         "max_output_tokens": int(agent.max_output_tokens),
         "feature_flags": dict(agent.feature_flags),
         "shell_env_allowlist": list(agent.shell_env_allowlist),
-        "workspace_fingerprint": getattr(getattr(agent, "prefix_state", None), "workspace_fingerprint", agent.workspace.fingerprint()),
+        "workspace_fingerprint": getattr(
+            getattr(agent, "prefix_state", None),
+            "workspace_fingerprint",
+            agent.workspace.fingerprint(),
+        ),
         "tool_signature": agent.tool_signature(),
     }
 
@@ -74,7 +78,11 @@ def evaluate_resume_state(agent):
             current = memorylib.file_freshness(path, agent.root)
             if expected != current and path not in stale_paths:
                 stale_paths.append(path)
-        saved_identity = dict(checkpoint.get("runtime_identity", {}) or agent.session.get("runtime_identity", {}) or {})
+        saved_identity = dict(
+            checkpoint.get("runtime_identity", {})
+            or agent.session.get("runtime_identity", {})
+            or {}
+        )
         current_identity = current_runtime_identity(agent)
         for key in RUNTIME_IDENTITY_KEYS:
             if key not in saved_identity:
@@ -123,10 +131,17 @@ def render_checkpoint_text(agent):
         str(item) for item in next_steps if str(item).strip()
     )
     lines.append(f"- Next steps: {rendered_next_steps or '-'}")
-    key_files = [str(item.get("path", "")).strip() for item in checkpoint.get("key_files", []) if str(item.get("path", "")).strip()]
+    key_files = [
+        str(item.get("path", "")).strip()
+        for item in checkpoint.get("key_files", [])
+        if str(item.get("path", "")).strip()
+    ]
     lines.append(f"- Key files: {', '.join(key_files) or '-'}")
     if checkpoint.get("completed"):
-        lines.append("- Completed: " + " | ".join(str(item) for item in checkpoint.get("completed", [])))
+        lines.append(
+            "- Completed: "
+            + " | ".join(str(item) for item in checkpoint.get("completed", []))
+        )
     if checkpoint.get("in_progress"):
         lines.append(
             "- In progress: "

@@ -4,8 +4,8 @@ from copy import deepcopy
 import json
 import urllib.request
 
-from ._shared import (
-    _ProviderFailure,
+from .transport import (
+    ProviderTransportError,
     _decode_json_object,
     _extract_usage_cache_details,
     _open_provider_request,
@@ -34,8 +34,7 @@ def _closed_object_schema(schema):
         if not isinstance(properties, dict):
             raise ValueError("tool properties must be an object")
         copied["properties"] = {
-            name: _closed_object_schema(value)
-            for name, value in properties.items()
+            name: _closed_object_schema(value) for name, value in properties.items()
         }
     if copied.get("type") == "array" and "items" in copied:
         copied["items"] = _closed_object_schema(copied["items"])
@@ -103,20 +102,20 @@ def _validated_provider_state(value):
     if value in (None, (), []):
         return []
     if not isinstance(value, (list, tuple)) or len(value) > MAX_PROVIDER_STATE_ITEMS:
-        raise _ProviderFailure(
+        raise ProviderTransportError(
             "OpenAI error: provider_protocol_mismatch",
             code="provider_protocol_mismatch",
         )
     prepared = []
     for item in value:
         if not isinstance(item, dict) or item.get("type") != "reasoning":
-            raise _ProviderFailure(
+            raise ProviderTransportError(
                 "OpenAI error: provider_protocol_mismatch",
                 code="provider_protocol_mismatch",
             )
         encrypted = item.get("encrypted_content")
         if not isinstance(encrypted, str) or not encrypted:
-            raise _ProviderFailure(
+            raise ProviderTransportError(
                 "OpenAI error: provider_protocol_mismatch",
                 code="provider_protocol_mismatch",
             )
@@ -132,12 +131,12 @@ def _validated_provider_state(value):
             }
             for key in item
         ):
-            raise _ProviderFailure(
+            raise ProviderTransportError(
                 "OpenAI error: provider_protocol_mismatch",
                 code="provider_protocol_mismatch",
             )
         if "content" in item and not isinstance(item["content"], list):
-            raise _ProviderFailure(
+            raise ProviderTransportError(
                 "OpenAI error: provider_protocol_mismatch",
                 code="provider_protocol_mismatch",
             )
@@ -145,13 +144,13 @@ def _validated_provider_state(value):
         try:
             encoded = json.dumps(copied, ensure_ascii=False).encode("utf-8")
         except (TypeError, ValueError):
-            raise _ProviderFailure(
+            raise ProviderTransportError(
                 "OpenAI error: provider_protocol_mismatch",
                 code="provider_protocol_mismatch",
             ) from None
         prepared.append((copied, len(encoded)))
     if sum(size for _item, size in prepared) > MAX_PROVIDER_STATE_BYTES:
-        raise _ProviderFailure(
+        raise ProviderTransportError(
             "OpenAI error: provider_protocol_mismatch",
             code="provider_protocol_mismatch",
         )
@@ -178,9 +177,7 @@ def _canonical_input(messages, *, replay_reasoning):
         if role == "assistant" and block.get("type") == "tool_use":
             if replay_reasoning:
                 output.extend(
-                    _validated_provider_state(
-                        message.get("_pico_provider_state", [])
-                    )
+                    _validated_provider_state(message.get("_pico_provider_state", []))
                 )
             output.append(
                 {
@@ -298,7 +295,7 @@ def _stop_reason(data, content, refusal):
     return StopReason.END_TURN
 
 
-class OpenAICompatibleModelClient:
+class OpenAIResponsesModelClient:
     def __init__(
         self,
         model,
@@ -310,7 +307,7 @@ class OpenAICompatibleModelClient:
         auth_mode=None,
         capabilities=None,
     ):
-        from pico.config import validate_api_url
+        from pico.config.model import validate_api_url
 
         self.model = str(model)
         self.base_url = validate_api_url(base_url)
@@ -378,8 +375,6 @@ class OpenAICompatibleModelClient:
             payload["parallel_tool_calls"] = False
         if replay_reasoning:
             payload["include"] = ["reasoning.encrypted_content"]
-        elif self.capabilities.get("thinking_disabled"):
-            payload["reasoning"] = {"effort": "none"}
         request = urllib.request.Request(
             _resource_url(self.base_url, "responses"),
             data=json.dumps(payload).encode("utf-8"),
@@ -417,10 +412,10 @@ class OpenAICompatibleModelClient:
                 usage=usage,
                 provider_state=provider_state,
             )
-        except _ProviderFailure:
+        except ProviderTransportError:
             raise
         except Exception:
-            raise _ProviderFailure(
+            raise ProviderTransportError(
                 "OpenAI error: provider_protocol_mismatch",
                 code="provider_protocol_mismatch",
             ) from None

@@ -3,8 +3,8 @@
 import json
 import urllib.request
 
-from ._shared import (
-    _ProviderFailure,
+from .transport import (
+    ProviderTransportError,
     _decode_json_object,
     _extract_usage_cache_details,
     _model_binding,
@@ -15,11 +15,8 @@ from ._shared import (
     _resource_url,
     _validate_number,
 )
-from .openai_compatible import OPENAI_USER_AGENT, _openai_tools, _system_instructions
+from .openai_responses import OPENAI_USER_AGENT, _openai_tools, _system_instructions
 from .response import Response, StopReason
-
-
-_COMPATIBILITY_CHOICES = {"standard", "openai", "deepseek", "glm", "qwen"}
 
 
 def _chat_tools(tools, *, strict):
@@ -27,11 +24,7 @@ def _chat_tools(tools, *, strict):
     return [
         {
             "type": "function",
-            "function": {
-                key: value
-                for key, value in tool.items()
-                if key != "type"
-            },
+            "function": {key: value for key, value in tool.items() if key != "type"},
         }
         for tool in prepared
     ], optional_by_name
@@ -194,18 +187,14 @@ class OpenAIChatCompletionsModelClient:
         temperature,
         timeout,
         *,
-        compatibility="standard",
         auth_mode="bearer",
         capabilities=None,
     ):
-        from pico.config import validate_api_url
+        from pico.config.model import validate_api_url
 
-        if compatibility not in _COMPATIBILITY_CHOICES:
-            raise ValueError("invalid OpenAI Chat compatibility")
         self.model = str(model)
         self.base_url = validate_api_url(base_url)
         self.api_key = str(api_key or "")
-        self.compatibility = str(compatibility)
         self.auth_mode = str(auth_mode)
         self.capabilities = dict(capabilities or {})
         self.temperature = (
@@ -263,10 +252,6 @@ class OpenAIChatCompletionsModelClient:
             payload["temperature"] = self.temperature
         if self.capabilities.get("parallel_tool_control"):
             payload["parallel_tool_calls"] = False
-        if self.compatibility in {"deepseek", "glm"}:
-            payload["thinking"] = {"type": "disabled"}
-        elif self.compatibility == "qwen":
-            payload["enable_thinking"] = False
         request = urllib.request.Request(
             _resource_url(self.base_url, "chat/completions"),
             data=json.dumps(payload).encode("utf-8"),
@@ -300,7 +285,7 @@ class OpenAIChatCompletionsModelClient:
                 usage=usage,
             )
         except Exception:
-            raise _ProviderFailure(
+            raise ProviderTransportError(
                 "OpenAI Chat error: provider_protocol_mismatch",
                 code="provider_protocol_mismatch",
             ) from None

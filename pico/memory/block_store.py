@@ -26,15 +26,16 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Literal
 
-from pico import security as securitylib
+from pico.security import private_files as private_files
+from pico.security import redaction as redaction
 from pico.state.file_lock import locked_file
-from pico.security import (
+from pico.security.private_files import (
     ensure_private_dir,
     ensure_private_file,
     read_private_text,
-    require_regular_no_symlink,
 )
-from pico.workspace import _safe_index_directory, _safe_index_file
+from pico.security.paths import require_regular_no_symlink
+from pico.workspace.context import _safe_index_directory, _safe_index_file
 
 from .frontmatter import parse_frontmatter
 
@@ -62,7 +63,7 @@ def _read_bounded_regular(
     path = Path(os.path.abspath(os.fspath(path)))
     descriptor = -1
     if private:
-        _, descriptor = securitylib._open_private_file(
+        _, descriptor = private_files._open_private_file(
             path,
             trusted_root=trusted_root,
             trusted_root_identity=trusted_root_identity,
@@ -79,7 +80,7 @@ def _read_bounded_regular(
             | getattr(os, "O_NONBLOCK", 0)
             | nofollow
         )
-        parent_descriptor = securitylib._open_private_directory(path.parent)
+        parent_descriptor = private_files._open_private_directory(path.parent)
         try:
             descriptor = os.open(path.name, flags, dir_fd=parent_descriptor)
             current = os.stat(
@@ -171,7 +172,9 @@ class BlockStore:
                 continue
             ensure_private_dir(root)
             self._harden_agent_notes(root)
-            self._root_identities[scope] = securitylib.private_directory_identity(root)
+            self._root_identities[scope] = private_files.private_directory_identity(
+                root
+            )
         self.redaction_env = MappingProxyType(
             dict(os.environ if redaction_env is None else redaction_env)
         )
@@ -225,7 +228,10 @@ class BlockStore:
                     if total_bytes >= MAX_MEMORY_INDEX_BYTES:
                         documents.sort(key=lambda item: item.path)
                         return documents
-                    if str(exc) == "memory file too large" and limit < MAX_MEMORY_FILE_BYTES:
+                    if (
+                        str(exc) == "memory file too large"
+                        and limit < MAX_MEMORY_FILE_BYTES
+                    ):
                         documents.sort(key=lambda item: item.path)
                         return documents
                     continue
@@ -338,11 +344,17 @@ class BlockStore:
         if meta.get("description"):
             first_line = str(meta["description"])[:200]
         else:
-            first_line = (body.splitlines()[0] if body else "").rstrip("\n")[:200] if body else ""
+            first_line = (
+                (body.splitlines()[0] if body else "").rstrip("\n")[:200]
+                if body
+                else ""
+            )
             if not first_line:
                 # Body was empty (or file was body-only, no frontmatter case):
                 # fall back to the raw first line.
-                first_line = (content.splitlines()[0] if content else "").rstrip("\n")[:200]
+                first_line = (content.splitlines()[0] if content else "").rstrip("\n")[
+                    :200
+                ]
         return (
             _MemoryDocument(
                 path=rel_path,
@@ -383,7 +395,11 @@ class BlockStore:
                 self.read(rel_path)
                 return True
             target = self._resolve(rel_path)
-            root = self.workspace_root if rel_path.startswith("workspace/") else self.user_root
+            root = (
+                self.workspace_root
+                if rel_path.startswith("workspace/")
+                else self.user_root
+            )
             target = _safe_index_file(root, target)
             if target is None:
                 return False
@@ -407,14 +423,14 @@ class BlockStore:
         root_identity = self._root_identities[scope]
         if root_identity is None:
             ensure_private_dir(target.parent)
-        elif securitylib.private_directory_identity(target.parent) != root_identity:
+        elif private_files.private_directory_identity(target.parent) != root_identity:
             raise ValueError("private root changed")
         else:
             ensure_private_dir(target.parent)
         lock_path = target.parent / ".agent_notes.lock"
 
         with locked_file(lock_path, require_lock=True):
-            current_root_identity = securitylib.private_directory_identity(
+            current_root_identity = private_files.private_directory_identity(
                 target.parent
             )
             root_identity = self._root_identities[scope]
@@ -489,11 +505,13 @@ class BlockStore:
         try:
             target.relative_to(root)
         except ValueError as exc:
-            raise ValueError(f"invalid path (escapes scope root): {rel_path!r}") from exc
+            raise ValueError(
+                f"invalid path (escapes scope root): {rel_path!r}"
+            ) from exc
         return target
 
     def _reject_sensitive_content(self, content):
-        if securitylib.contains_secret_material(
+        if redaction.contains_secret_material(
             content,
             env=self.redaction_env,
             secret_env_names=self.secret_env_names,
@@ -502,7 +520,7 @@ class BlockStore:
 
     @staticmethod
     def _atomic_write(target: Path, content: str, root_identity) -> None:
-        securitylib.write_private_bytes_atomic(
+        private_files.write_private_bytes_atomic(
             target,
             content.encode("utf-8"),
             trusted_root=target.parent,

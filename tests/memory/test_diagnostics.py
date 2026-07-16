@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 import pico.memory.block_store as block_store_module
-from pico.cli import main
+from pico.cli.app import main
 from pico.cli.diagnostics import collect_doctor
 from pico.memory.diagnostics import collect_memory_diagnostics
 
@@ -81,7 +81,9 @@ def test_memory_diagnostics_reports_metadata_caps_and_git_ignore(tmp_path, monke
         4,
     )
     assert issues[("workspace/notes/a.md", "workspace_user_note_git_ignored")] == (1, 0)
-    assert issues[("workspace/notes/invalid.md", "workspace_user_note_git_ignored")] == (1, 0)
+    assert issues[
+        ("workspace/notes/invalid.md", "workspace_user_note_git_ignored")
+    ] == (1, 0)
 
 
 def test_memory_diagnostics_do_not_leak_content_frontmatter_or_user_root(tmp_path):
@@ -157,9 +159,13 @@ def test_memory_diagnostics_report_scan_limits(
         (notes / name).write_bytes(content)
     monkeypatch.setattr(block_store_module, limit_name, limit)
 
-    result = collect_memory_diagnostics(repo, user_memory_root=tmp_path / "missing-user")
+    result = collect_memory_diagnostics(
+        repo, user_memory_root=tmp_path / "missing-user"
+    )
 
-    issue = next(item for item in result["issues"] if item["reason_code"] == reason_code)
+    issue = next(
+        item for item in result["issues"] if item["reason_code"] == reason_code
+    )
     assert issue == {
         "path": expected_path,
         "count": count,
@@ -268,8 +274,7 @@ def test_memory_diagnostics_fail_closed_on_read_and_scan_errors(tmp_path, monkey
 
     assert scan_result["status"] == "unknown"
     assert any(
-        item["reason_code"] == "memory_scan_failed"
-        for item in scan_result["issues"]
+        item["reason_code"] == "memory_scan_failed" for item in scan_result["issues"]
     )
     assert "private-scan-canary" not in json.dumps(scan_result)
 
@@ -323,7 +328,8 @@ def test_memory_diagnostics_git_failure_is_unknown_and_low_sensitivity(
 
     assert result["status"] == "unknown"
     assert any(
-        item == {
+        item
+        == {
             "path": "workspace/notes/__pico_git_ignore_probe__.md",
             "count": 1,
             "reason_code": "memory_git_ignore_check_failed",
@@ -434,7 +440,9 @@ def test_doctor_memory_diagnostics_are_read_only_and_render_in_both_formats(
     (workspace_memory / "agent_notes.md").write_text("agent", encoding="utf-8")
     (workspace_memory / "agent_notes.md").chmod(0o644)
     before_mode = (workspace_memory / "agent_notes.md").stat().st_mode
-    monkeypatch.setattr("pico.memory.diagnostics.Path.home", lambda: tmp_path / "user-home")
+    monkeypatch.setattr(
+        "pico.memory.diagnostics.Path.home", lambda: tmp_path / "user-home"
+    )
 
     data = collect_doctor(tmp_path)
 
@@ -450,13 +458,18 @@ def test_doctor_memory_diagnostics_are_read_only_and_render_in_both_formats(
     assert not user_memory.exists()
 
     for output_format in ("json", "text"):
-        assert main([
+        assert (
+            main(
+                [
             "--cwd",
             str(tmp_path),
             "--format",
             output_format,
             "doctor",
-        ]) == 0
+                ]
+            )
+            == 0
+        )
         output = capsys.readouterr().out
         assert "Memory" in output or '"memory"' in output
         assert "invalid_frontmatter" in output
