@@ -1,6 +1,6 @@
 [build-system]
-requires = ["setuptools>=77.0", "wheel"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling>=1.30,<2"]
+build-backend = "hatchling.build"
 
 [project]
 name = "pico"
@@ -37,15 +37,16 @@ dev = [
   "ruff>=0.4.4",
 ]
 
-[tool.setuptools]
-include-package-data = false
+[tool.hatch.build.targets.sdist]
+include = [
+  "/LICENSE",
+  "/README.md",
+  "/pyproject.toml",
+  "/pico",
+]
 
-[tool.setuptools.packages.find]
-include = ["pico*"]
-namespaces = false
-
-[tool.setuptools.package-data]
-"pico.sandbox.resources" = ["image-manifest.json", "docker-config/config.json"]
+[tool.hatch.build.targets.wheel]
+packages = ["pico"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

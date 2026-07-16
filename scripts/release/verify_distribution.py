@@ -27,20 +27,12 @@ PACKAGE_DATA_FILES = {
     "pico/sandbox/resources/image-manifest.json",
     "pico/sandbox/resources/docker-config/config.json",
 }
-EGG_INFO_FILES = {
-    "PKG-INFO",
-    "SOURCES.txt",
-    "dependency_links.txt",
-    "entry_points.txt",
-    "top_level.txt",
-}
 DIST_INFO_FILES = {
     "METADATA",
     "RECORD",
     "WHEEL",
     "entry_points.txt",
     "licenses/LICENSE",
-    "top_level.txt",
 }
 
 
@@ -115,17 +107,15 @@ def verify_sdist(sdist: Path, tracked_package_files: set[str]) -> None:
             if member.isfile()
         }
 
-    egg_info = {f"pico.egg-info/{name}" for name in EGG_INFO_FILES}
     expected = (
         tracked_package_files
         | {
+            ".gitignore",
             "PKG-INFO",
             "LICENSE",
             "README.md",
             "pyproject.toml",
-            "setup.cfg",
         }
-        | egg_info
     )
     if files != expected:
         raise AssertionError(

@@ -178,10 +178,15 @@ def test_sandbox_evaluator_uses_the_local_runtime_verifier():
 
 
 def test_distribution_verifier_freezes_archive_and_install_contract():
+    project = Path("pyproject.toml").read_text(encoding="utf-8")
     verifier = Path("scripts/release/verify_distribution.py").read_text(
         encoding="utf-8"
     )
 
+    assert 'build-backend = "hatchling.build"' in project
+    assert '[tool.hatch.build.targets.sdist]' in project
+    assert 'packages = ["pico"]' in project
+    assert "MANIFEST.in" not in project
     assert '"git", "ls-files", "--", "pico"' in verifier
     assert "sdist file mismatch" in verifier
     assert "wheel file mismatch" in verifier

@@ -172,25 +172,19 @@ def test_cli_modules_do_not_reexport_test_helpers():
         assert not hasattr(cli_commands, name)
 
 
-def test_packaging_discovers_pico_subpackages():
+def test_packaging_builds_only_the_pico_runtime():
     import tomllib
 
     pyproject = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
 
-    assert pyproject["tool"]["setuptools"] == {
-        "include-package-data": False,
-        "packages": {
-            "find": {
-                "include": ["pico*"],
-                "namespaces": False,
-            }
-        },
-        "package-data": {
-            "pico.sandbox.resources": [
-                "image-manifest.json",
-                "docker-config/config.json",
-            ],
-        },
+    assert pyproject["build-system"] == {
+        "requires": ["hatchling>=1.30,<2"],
+        "build-backend": "hatchling.build",
+    }
+    targets = pyproject["tool"]["hatch"]["build"]["targets"]
+    assert targets["wheel"] == {"packages": ["pico"]}
+    assert targets["sdist"] == {
+        "include": ["/LICENSE", "/README.md", "/pyproject.toml", "/pico"]
     }
 
 
