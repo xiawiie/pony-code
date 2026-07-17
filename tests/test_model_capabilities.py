@@ -1,6 +1,6 @@
 import pytest
 
-from pico.agent.model_capabilities import (
+from pony.agent.model_capabilities import (
     build_model_budget,
     ModelCapabilities,
     resolve_model_capabilities,

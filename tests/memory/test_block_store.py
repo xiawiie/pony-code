@@ -5,8 +5,8 @@ import stat
 
 import pytest
 
-import pico.memory.block_store as block_store_module
-from pico.memory.block_store import BlockStore
+import pony.memory.block_store as block_store_module
+from pony.memory.block_store import BlockStore
 
 
 def _append_agent_note_process(workspace, user, note, started, finished):
@@ -247,7 +247,7 @@ def test_append_agent_note_never_writes_past_reader_limit(
 
 
 def test_append_agent_note_waits_for_cross_process_scope_lock(tmp_path):
-    from pico.state import file_lock
+    from pony.state import file_lock
 
     if file_lock.fcntl is None:
         pytest.skip("cross-process file locks unavailable")
@@ -345,9 +345,9 @@ def test_block_store_freezes_process_env_when_constructed(tmp_path, monkeypatch)
     workspace.mkdir()
     user.mkdir()
     secret = "opaque-frozen-memory-value-123456789"
-    monkeypatch.setenv("PICO_FROZEN_SECRET", secret)
+    monkeypatch.setenv("PONY_FROZEN_SECRET", secret)
     store = BlockStore(workspace_root=workspace, user_root=user)
-    monkeypatch.delenv("PICO_FROZEN_SECRET")
+    monkeypatch.delenv("PONY_FROZEN_SECRET")
 
     with pytest.raises(ValueError, match="sensitive_content"):
         store.append_agent_note(scope="workspace", note=secret)
@@ -500,7 +500,7 @@ def test_list_skips_symlinked_notes_directory(tmp_path):
 
 
 def test_nested_symlink_directory_consumes_file_scan_budget(tmp_path, monkeypatch):
-    import pico.memory.block_store as block_store_module
+    import pony.memory.block_store as block_store_module
 
     workspace = tmp_path / "workspace"
     user = tmp_path / "user"
@@ -519,7 +519,7 @@ def test_nested_symlink_directory_consumes_file_scan_budget(tmp_path, monkeypatc
 
 
 def test_unsafe_hardlink_consumes_aggregate_byte_budget(tmp_path, monkeypatch):
-    import pico.memory.block_store as block_store_module
+    import pony.memory.block_store as block_store_module
 
     workspace = tmp_path / "workspace"
     user = tmp_path / "user"

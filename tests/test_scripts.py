@@ -28,12 +28,14 @@ def test_project_version_and_sandbox_build_inputs_are_locked():
         "project"
     ]
     uv_lock = tomllib.loads(Path("uv.lock").read_text(encoding="utf-8"))
-    pico_lock = next(item for item in uv_lock["package"] if item["name"] == "pico")
+    pony_code_lock = next(
+        item for item in uv_lock["package"] if item["name"] == "pony-code"
+    )
     image_lock = json.loads(
         Path("docker/sandbox/image-inputs.lock.json").read_text(encoding="utf-8")
     )
 
-    assert project["version"] == pico_lock["version"] == "1.0.0"
+    assert project["version"] == pony_code_lock["version"] == "1.0.0"
     for filename, key in (
         ("pyproject.toml", "pyproject_sha256"),
         ("uv.lock", "uv_lock_sha256"),
@@ -150,7 +152,7 @@ def test_ci_keeps_docker_sandbox_local_gate_read_only():
     assert "for command in status install repair" not in workflow
     assert "candidate_rejected" not in workflow
     assert "--real --managed" not in workflow
-    assert "PICO_RUN_REAL_SRT" not in workflow
+    assert "PONY_RUN_REAL_SRT" not in workflow
     assert "uv build --clear" in workflow
     assert "scripts/release/verify_distribution.py" in workflow
     assert "--install-smoke --offline-bundle-smoke" in workflow
@@ -192,9 +194,9 @@ def test_distribution_verifier_freezes_archive_and_install_contract():
 
     assert 'build-backend = "hatchling.build"' in project
     assert '[tool.hatch.build.targets.sdist]' in project
-    assert 'packages = ["pico"]' in project
+    assert 'packages = ["pony"]' in project
     assert "MANIFEST.in" not in project
-    assert '"git", "ls-files", "--", "pico"' in verifier
+    assert '"git", "ls-files", "--", "pony"' in verifier
     assert "sdist file mismatch" in verifier
     assert "wheel file mismatch" in verifier
     assert (
@@ -203,9 +205,9 @@ def test_distribution_verifier_freezes_archive_and_install_contract():
     )
     assert 'EXPECTED_RUNTIME_REQUIREMENTS = ["prompt-toolkit<4,>=3.0.52"]' in verifier
     assert 'metadata["License-Expression"] == "MIT"' in verifier
-    assert 'installed_version == f"pico {PROJECT_VERSION}"' in verifier
-    assert '"command -v pico"' in verifier
-    assert '_run(str(pico), "doctor", cwd=cwd, env=env)' in verifier
+    assert 'installed_version == f"pony {PROJECT_VERSION}"' in verifier
+    assert '"command -v pony"' in verifier
+    assert '_run(str(pony), "doctor", cwd=cwd, env=env)' in verifier
     assert '"sandbox",\n                "status"' in verifier
     assert 'prepared["runtime_authorization"]["kind"] == "local"' in verifier
     assert "prepare.returncode in {0, 3}" in verifier
@@ -214,16 +216,16 @@ def test_distribution_verifier_freezes_archive_and_install_contract():
     assert "resources_after == resources_before" in verifier
     assert '"PYTHONHOME"' in verifier
     assert '"PYTHONPATH"' in verifier
-    assert "pico.sandbox_lifecycle" in verifier
-    assert "pico._sandbox_toolchain" in verifier
-    assert "pico.sandbox.network_control" in verifier
-    assert "pico.providers.fake" in verifier
-    assert "pico = pico.cli.app:main" in verifier
+    assert "pony.sandbox_lifecycle" in verifier
+    assert "pony._sandbox_toolchain" in verifier
+    assert "pony.sandbox.network_control" in verifier
+    assert "pony.providers.fake" in verifier
+    assert "pony = pony.cli.app:main" in verifier
     assert "offline_bundle_smoke" in verifier
     assert '"--no-index"' in verifier
     assert '"--offline"' in verifier
     assert "_locked_runtime_requirements" in verifier
-    assert "import prompt_toolkit; import pico.tui.app" in verifier
+    assert "import prompt_toolkit; import pony.tui.app" in verifier
     assert "cwd=cwd, env=env" in verifier
     assert 'PROJECT_VERSION = _PROJECT["version"]' in verifier
     assert 'PROJECT_VERSION = "' not in verifier
@@ -239,19 +241,19 @@ def test_distribution_verifier_ignores_tracked_files_deleted_from_worktree(
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     monkeypatch.setattr(module, "PACKAGE_DATA_FILES", set())
-    package = tmp_path / "pico"
+    package = tmp_path / "pony"
     package.mkdir()
     (package / "present.py").write_text("", encoding="utf-8")
     monkeypatch.setattr(
         module,
         "_run",
-        lambda *args, **kwargs: "pico/present.py\npico/deleted.py\n",
+        lambda *args, **kwargs: "pony/present.py\npony/deleted.py\n",
     )
 
     tracked = module._tracked_package_files(tmp_path)
 
-    assert "pico/present.py" in tracked
-    assert "pico/deleted.py" not in tracked
+    assert "pony/present.py" in tracked
+    assert "pony/deleted.py" not in tracked
 
 
 def test_distribution_verifier_rejects_untracked_package_python(tmp_path, monkeypatch):
@@ -262,14 +264,14 @@ def test_distribution_verifier_rejects_untracked_package_python(tmp_path, monkey
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     monkeypatch.setattr(module, "PACKAGE_DATA_FILES", set())
-    package = tmp_path / "pico"
+    package = tmp_path / "pony"
     package.mkdir()
     (package / "tracked.py").write_text("", encoding="utf-8")
     (package / "untracked.py").write_text("", encoding="utf-8")
     monkeypatch.setattr(
         module,
         "_run",
-        lambda *args, **kwargs: "pico/tracked.py\n",
+        lambda *args, **kwargs: "pony/tracked.py\n",
     )
 
     with pytest.raises(AssertionError, match="untracked package Python files"):
@@ -283,15 +285,15 @@ def test_distribution_verifier_rejects_untracked_package_data(tmp_path, monkeypa
     )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    monkeypatch.setattr(module, "PACKAGE_DATA_FILES", {"pico/data.json"})
-    package = tmp_path / "pico"
+    monkeypatch.setattr(module, "PACKAGE_DATA_FILES", {"pony/data.json"})
+    package = tmp_path / "pony"
     package.mkdir()
     (package / "tracked.py").write_text("", encoding="utf-8")
     (package / "data.json").write_text("{}", encoding="utf-8")
     monkeypatch.setattr(
         module,
         "_run",
-        lambda *args, **kwargs: "pico/tracked.py\n",
+        lambda *args, **kwargs: "pony/tracked.py\n",
     )
 
     with pytest.raises(AssertionError, match="untracked package data files"):
@@ -307,10 +309,10 @@ def test_distribution_verifier_includes_all_product_packages(tmp_path):
     spec.loader.exec_module(module)
     module.PACKAGE_DATA_FILES = set()
     tracked = {
-        "pico/__init__.py",
-        "pico/runtime/application.py",
-        "pico/agent/__init__.py",
-        "pico/agent/loop.py",
+        "pony/__init__.py",
+        "pony/runtime/application.py",
+        "pony/agent/__init__.py",
+        "pony/agent/loop.py",
     }
 
     runtime = module._runtime_package_files(tmp_path, tracked)

@@ -35,14 +35,14 @@ FORBIDDEN_PREFIXES = (
 )
 FORBIDDEN_MODULES = {
     "benchmarks/evaluation/sandbox_governance.py",
-    "pico/providers/clients.py",
-    "pico/providers/fake.py",
-    "pico/providers/anthropic_compatible.py",
-    "pico/providers/openai_compatible.py",
-    "pico/providers/openai_chat.py",
-    "pico/providers/ollama.py",
-    "pico/providers/_shared.py",
-    "pico/sandbox/network_control.py",
+    "pony/providers/clients.py",
+    "pony/providers/fake.py",
+    "pony/providers/anthropic_compatible.py",
+    "pony/providers/openai_compatible.py",
+    "pony/providers/openai_chat.py",
+    "pony/providers/ollama.py",
+    "pony/providers/_shared.py",
+    "pony/sandbox/network_control.py",
     "benchmarks/evaluation/metrics.py",
     "benchmarks/evaluation/metrics_experiments.py",
     "benchmarks/evaluation/evaluator.py",
@@ -91,7 +91,7 @@ def _tracked_files() -> set[str]:
 
 def _production_trees(tracked: set[str]):
     for name in sorted(tracked):
-        if name.startswith("pico/") and name.endswith(".py"):
+        if name.startswith("pony/") and name.endswith(".py"):
             yield (
                 name,
                 ast.parse((ROOT / name).read_text(encoding="utf-8"), filename=name),
@@ -115,10 +115,10 @@ def test_product_root_and_package_surface_are_exact():
     root_files = {name for name in tracked if "/" not in name}
     assert root_files == ROOT_FILES
     assert {
-        name for name in tracked if name.startswith("pico/") and name.count("/") == 1
+        name for name in tracked if name.startswith("pony/") and name.count("/") == 1
     } == {
-        "pico/__init__.py",
-        "pico/__main__.py",
+        "pony/__init__.py",
+        "pony/__main__.py",
     }
     assert not any(name.startswith("assets/screenshots/") for name in tracked)
 
@@ -127,9 +127,9 @@ def test_agents_instructions_match_the_production_contract():
     text = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
 
     for name in (
-        "PICO_API_BASE",
-        "PICO_MODEL",
-        "PICO_API_KEY",
+        "PONY_API_BASE",
+        "PONY_MODEL",
+        "PONY_API_KEY",
     ):
         assert name in text
     for provider in ("anthropic", "openai", "ollama"):
@@ -147,7 +147,7 @@ def test_agents_instructions_match_the_production_contract():
         "tools",
         "workspace",
     ):
-        assert f"`pico/{package}/`" in text
+        assert f"`pony/{package}/`" in text
     assert "./scripts/check.sh" in text
     assert "live 未执行" in text
     assert "不回退 Host" in text
@@ -168,9 +168,9 @@ def test_current_python_and_console_surfaces_are_exact():
     assert FORBIDDEN_SYMBOLS.isdisjoint(names)
 
     project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-    assert project["project"]["scripts"] == {"pico": "pico.cli.app:main"}
+    assert project["project"]["scripts"] == {"pony": "pony.cli.app:main"}
 
-    init_tree = ast.parse((ROOT / "pico/__init__.py").read_text(encoding="utf-8"))
+    init_tree = ast.parse((ROOT / "pony/__init__.py").read_text(encoding="utf-8"))
     exports = next(
         ast.literal_eval(node.value)
         for node in init_tree.body
@@ -180,7 +180,7 @@ def test_current_python_and_console_surfaces_are_exact():
             for target in node.targets
         )
     )
-    assert exports == ["Pico"]
+    assert exports == ["Pony"]
 
     for package in (
         "agent",
@@ -199,7 +199,7 @@ def test_current_python_and_console_surfaces_are_exact():
         "workspace",
     ):
         tree = ast.parse(
-            (ROOT / f"pico/{package}/__init__.py").read_text(encoding="utf-8")
+            (ROOT / f"pony/{package}/__init__.py").read_text(encoding="utf-8")
         )
         assert all(
             isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant)
@@ -214,7 +214,7 @@ def test_obsolete_provider_and_sandbox_names_are_absent():
         (ROOT / name).read_text(encoding="utf-8")
         for name in sorted(tracked)
         if name.endswith(".py")
-        and name.startswith(("pico/", "benchmarks/", "scripts/"))
+        and name.startswith(("pony/", "benchmarks/", "scripts/"))
         and "/tests/" not in name
     )
     for obsolete in (
@@ -231,26 +231,26 @@ def test_obsolete_provider_and_sandbox_names_are_absent():
 
 
 def test_current_sources_do_not_read_obsolete_runtime_shapes():
-    session_source = (ROOT / "pico/state/session_store.py").read_text(encoding="utf-8")
-    checkpoint_source = (ROOT / "pico/state/checkpoint_store.py").read_text(
+    session_source = (ROOT / "pony/state/session_store.py").read_text(encoding="utf-8")
+    checkpoint_source = (ROOT / "pony/state/checkpoint_store.py").read_text(
         encoding="utf-8"
     )
-    runtime_source = (ROOT / "pico/runtime/application.py").read_text(encoding="utf-8")
-    config_source = (ROOT / "pico/config/model.py").read_text(encoding="utf-8")
+    runtime_source = (ROOT / "pony/runtime/application.py").read_text(encoding="utf-8")
+    config_source = (ROOT / "pony/config/model.py").read_text(encoding="utf-8")
 
     assert '"schema_' + 'version"' not in session_source
     assert '"schema_' + 'version"' not in checkpoint_source
     assert '"hist' + 'ory"' not in session_source
     assert '"prompt_' + 'cache"' not in session_source
     assert '"prompt_' + 'cache"' not in runtime_source
-    assert "PICO_" + "RIGHT_CODES_API_KEY" not in config_source
+    assert "PONY_" + "RIGHT_CODES_API_KEY" not in config_source
     assert "RIGHT_CODES_" + "API_KEY" not in config_source
 
 
 def test_public_diagnostics_do_not_import_superseded_srt_owners():
     tree = ast.parse(
-        (ROOT / "pico/cli/diagnostics.py").read_text(encoding="utf-8"),
-        filename="pico/cli/diagnostics.py",
+        (ROOT / "pony/cli/diagnostics.py").read_text(encoding="utf-8"),
+        filename="pony/cli/diagnostics.py",
     )
     imported = {
         node.module
@@ -270,17 +270,17 @@ def test_public_diagnostics_do_not_import_superseded_srt_owners():
 
 def test_all_provider_methods_use_the_structured_completion_surface():
     expected = {
-        "pico/providers/anthropic_messages.py": {
+        "pony/providers/anthropic_messages.py": {
             "AnthropicMessagesModelClient": {"complete"},
         },
         "benchmarks/support/fake_provider.py": {"FakeModelClient": {"complete"}},
-        "pico/providers/openai_responses.py": {
+        "pony/providers/openai_responses.py": {
             "OpenAIResponsesModelClient": {"complete"},
         },
-        "pico/providers/openai_chat_completions.py": {
+        "pony/providers/openai_chat_completions.py": {
             "OpenAIChatCompletionsModelClient": {"complete"},
         },
-        "pico/providers/ollama_chat.py": {"OllamaChatModelClient": {"complete"}},
+        "pony/providers/ollama_chat.py": {"OllamaChatModelClient": {"complete"}},
     }
     for filename, classes in expected.items():
         tree = ast.parse((ROOT / filename).read_text(encoding="utf-8"))
@@ -300,11 +300,11 @@ def test_all_provider_methods_use_the_structured_completion_surface():
 
 def test_code_imports_real_modules_not_empty_package_facades():
     tracked = _tracked_files()
-    facade_modules = {"pico.providers", "pico.memory"}
+    facade_modules = {"pony.providers", "pony.memory"}
     offenders = []
     for name in sorted(tracked):
         if not name.endswith(".py") or not name.startswith(
-            ("pico/", "tests/", "benchmarks/", "scripts/")
+            ("pony/", "tests/", "benchmarks/", "scripts/")
         ):
             continue
         tree = ast.parse((ROOT / name).read_text(encoding="utf-8"), filename=name)
@@ -362,7 +362,7 @@ def test_maintainer_doc_links_and_cli_examples_resolve():
                 continue
             if not in_fence:
                 continue
-            for match in re.finditer(r"(?:^|\|\s*|uv run )pico\s+([^\s]+)", line):
+            for match in re.finditer(r"(?:^|\|\s*|uv run )pony\s+([^\s]+)", line):
                 token = shlex.split(match.group(1))[0]
                 assert token in allowed_commands, (name, line)
 
@@ -384,8 +384,8 @@ def test_gitignore_allows_current_docs_and_ignores_local_drafts():
         assert result.returncode == 0, name
 
     for name in (
-        ".pico/memory/notes/team.md",
-        ".pico/memory/notes/nested/decision.md",
+        ".pony/memory/notes/team.md",
+        ".pony/memory/notes/nested/decision.md",
     ):
         result = subprocess.run(
             ["git", "check-ignore", "--no-index", "--quiet", name],
@@ -394,9 +394,9 @@ def test_gitignore_allows_current_docs_and_ignores_local_drafts():
         )
         assert result.returncode == 1, name
     for name in (
-        ".pico/memory/agent_notes.md",
-        ".pico/memory/notes/private.txt",
-        ".pico/runs/run.json",
+        ".pony/memory/agent_notes.md",
+        ".pony/memory/notes/private.txt",
+        ".pony/runs/run.json",
     ):
         result = subprocess.run(
             ["git", "check-ignore", "--no-index", "--quiet", name],

@@ -1,11 +1,11 @@
 import json
 import os
 
-from pico.state.checkpoint_store import CheckpointStore
-from pico.cli.app import main
-from pico.recovery.manager import RecoveryManager, collect_recovery_review_items
-from pico.recovery.models import new_checkpoint_record, new_tool_change_record
-from pico.tools.change_recorder import ToolChangeRecorder
+from pony.state.checkpoint_store import CheckpointStore
+from pony.cli.app import main
+from pony.recovery.manager import RecoveryManager, collect_recovery_review_items
+from pony.recovery.models import new_checkpoint_record, new_tool_change_record
+from pony.tools.change_recorder import ToolChangeRecorder
 
 
 def write_restorable_checkpoint(store, tmp_path, checkpoint_id):
@@ -56,12 +56,12 @@ def test_checkpoints_list_is_zero_mutation_when_store_is_absent(tmp_path, capsys
     assert main(["--cwd", str(tmp_path), "checkpoints", "list"]) == 0
 
     assert capsys.readouterr().out == ""
-    assert not (tmp_path / ".pico").exists()
+    assert not (tmp_path / ".pony").exists()
     assert tmp_path.stat() == before
 
 
 def test_runs_show_prints_run_artifact(tmp_path, capsys):
-    run_dir = tmp_path / ".pico" / "runs" / "run_1"
+    run_dir = tmp_path / ".pony" / "runs" / "run_1"
     run_dir.mkdir(parents=True)
     (run_dir / "task_state.json").write_text('{"run_id": "run_1"}\n', encoding="utf-8")
 
@@ -709,7 +709,7 @@ def test_checkpoints_prune_rejects_unknown_flag(tmp_path):
 
 
 def test_runs_show_rejects_extra_args(tmp_path):
-    run_dir = tmp_path / ".pico" / "runs" / "run_1"
+    run_dir = tmp_path / ".pony" / "runs" / "run_1"
     run_dir.mkdir(parents=True)
 
     code = main(["--cwd", str(tmp_path), "runs", "show", "run_1", "extra"])
@@ -721,7 +721,7 @@ def test_invalid_checkpoints_subcommand_is_usage_error_without_agent(
     tmp_path, monkeypatch
 ):
     monkeypatch.setattr(
-        "pico.cli.app.build_agent",
+        "pony.cli.app.build_agent",
         lambda args: (_ for _ in ()).throw(AssertionError("must not build agent")),
     )
 
@@ -749,7 +749,7 @@ def test_run_accepts_prompt_starting_with_namespace(tmp_path, monkeypatch, capsy
 
         return FakeAgent()
 
-    monkeypatch.setattr("pico.cli.app.build_agent", fake_build_agent)
+    monkeypatch.setattr("pony.cli.app.build_agent", fake_build_agent)
 
     code = main(["--cwd", str(tmp_path), "run", "checkpoints", "look", "good"])
 
@@ -760,14 +760,14 @@ def test_run_accepts_prompt_starting_with_namespace(tmp_path, monkeypatch, capsy
 
 def test_explicit_help_shows_root_help_without_agent(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(
-        "pico.cli.app.build_agent",
+        "pony.cli.app.build_agent",
         lambda args: (_ for _ in ()).throw(AssertionError("must not build agent")),
     )
 
     code = main(["--cwd", str(tmp_path), "--help"])
 
     assert code == 0
-    assert capsys.readouterr().out.startswith("pico — Local coding agent")
+    assert capsys.readouterr().out.startswith("pony — Local coding agent")
 
 
 def test_no_input_blocks_repl_before_input(tmp_path, monkeypatch, capsys):
@@ -784,7 +784,7 @@ def test_no_input_blocks_repl_before_input(tmp_path, monkeypatch, capsys):
 
         return FakeAgent()
 
-    monkeypatch.setattr("pico.cli.app.build_agent", fake_build_agent)
+    monkeypatch.setattr("pony.cli.app.build_agent", fake_build_agent)
     monkeypatch.setattr(
         "builtins.input",
         lambda prompt: (_ for _ in ()).throw(AssertionError("input called")),
@@ -814,7 +814,7 @@ def test_run_output_has_no_decorative_banner(tmp_path, monkeypatch, capsys):
 
         return FakeAgent()
 
-    monkeypatch.setattr("pico.cli.app.build_agent", fake_build_agent)
+    monkeypatch.setattr("pony.cli.app.build_agent", fake_build_agent)
 
     code = main(["--cwd", str(tmp_path), "run", "fix"])
 
@@ -838,7 +838,7 @@ def test_checkpoints_list_json_uses_success_envelope(tmp_path, capsys):
 
 
 def test_runs_list_json_uses_success_envelope(tmp_path, capsys):
-    run_dir = tmp_path / ".pico" / "runs" / "run_1"
+    run_dir = tmp_path / ".pony" / "runs" / "run_1"
     run_dir.mkdir(parents=True)
 
     code = main(["--cwd", str(tmp_path), "--format", "json", "runs", "list"])
@@ -859,7 +859,7 @@ def test_json_output_contains_no_human_tip_text(tmp_path, capsys):
 
 
 def test_quiet_suppresses_text_inspection_output(tmp_path, capsys):
-    run_dir = tmp_path / ".pico" / "runs" / "run_1"
+    run_dir = tmp_path / ".pony" / "runs" / "run_1"
     run_dir.mkdir(parents=True)
 
     code = main(["--cwd", str(tmp_path), "--quiet", "runs", "list"])
@@ -869,8 +869,8 @@ def test_quiet_suppresses_text_inspection_output(tmp_path, capsys):
 
 
 def test_collect_recovery_review_items_has_stable_shape(tmp_path):
-    from pico.state.checkpoint_store import CheckpointStore
-    from pico.cli.recovery import collect_recovery_review_items
+    from pony.state.checkpoint_store import CheckpointStore
+    from pony.cli.recovery import collect_recovery_review_items
 
     payload = collect_recovery_review_items(CheckpointStore(tmp_path), tmp_path)
 

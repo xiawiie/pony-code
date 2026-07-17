@@ -3,16 +3,16 @@ import tempfile
 from pathlib import Path
 import uuid
 
-from pico.agent.compaction import CompactionNoProgress
-from pico.context.renderer import build_injection_snapshot, render_current_user_message
-import pico.memory.service as memorylib
-from pico.agent.messages import make_tool_pair, message_content_text
+from pony.agent.compaction import CompactionNoProgress
+from pony.context.renderer import build_injection_snapshot, render_current_user_message
+import pony.memory.service as memorylib
+from pony.agent.messages import make_tool_pair, message_content_text
 from benchmarks.support.fake_provider import FakeModelClient
-from pico.runtime.application import Pico
-from pico.state.session_store import SessionStore
-from pico.workspace.context import WorkspaceContext
+from pony.runtime.application import Pony
+from pony.state.session_store import SessionStore
+from pony.workspace.context import WorkspaceContext
 from .metrics_common import _safe_mean, _safe_ratio
-from pico.runtime.options import RuntimeOptions
+from pony.runtime.options import RuntimeOptions
 
 
 def _seed_plain_messages(agent, count, prefix, payload_size):
@@ -22,7 +22,7 @@ def _seed_plain_messages(agent, count, prefix, payload_size):
             {
                 "role": "user" if index % 2 == 0 else "assistant",
                 "content": f"{prefix}-{index}-" + ("X" * int(payload_size)),
-                "_pico_meta": {"created_at": f"2026-04-08T11:{index:02d}:00+00:00"},
+                "_pony_meta": {"created_at": f"2026-04-08T11:{index:02d}:00+00:00"},
             }
         )
     agent.session["messages"].extend(seeded)
@@ -43,7 +43,7 @@ def _preview_request(agent, user_message):
     preview = {
         "role": "user",
         "content": user_message,
-        "_pico_meta": {"created_at": "2026-07-10T00:00:00+00:00"},
+        "_pony_meta": {"created_at": "2026-07-10T00:00:00+00:00"},
     }
     original_session = agent.session
     preview_session = {
@@ -83,7 +83,7 @@ def _measure_cloned_request(agent, user_message, *, compacted):
     original_anchor = getattr(agent, "_pending_token_anchor", None)
     clone = deepcopy(original_session)
     clone["id"] = f"ablation-{uuid.uuid4().hex[:12]}"
-    with tempfile.TemporaryDirectory(prefix="pico-context-ablation-") as temp_dir:
+    with tempfile.TemporaryDirectory(prefix="pony-context-ablation-") as temp_dir:
         store = SessionStore(
             Path(temp_dir).resolve() / "sessions",
             redactor=agent.redact_artifact,
@@ -114,7 +114,7 @@ def _measure_cloned_request(agent, user_message, *, compacted):
             preview = {
                 "role": "user",
                 "content": str(user_message),
-                "_pico_meta": {"created_at": "2026-07-10T00:00:00+00:00"},
+                "_pony_meta": {"created_at": "2026-07-10T00:00:00+00:00"},
             }
             clone["messages"] = [*clone.get("messages", []), preview]
             store.save(clone)
@@ -150,10 +150,10 @@ def _prompt_has_reusable_file_summary(prompt, expected_working_line):
     in_working_set = False
     for line in str(prompt).splitlines():
         line = line.strip()
-        if line == "<pico:task_working_set>":
+        if line == "<pony:task_working_set>":
             in_working_set = True
             continue
-        if in_working_set and line == "</pico:task_working_set>":
+        if in_working_set and line == "</pony:task_working_set>":
             return False
         if not in_working_set:
             continue
@@ -163,12 +163,12 @@ def _prompt_has_reusable_file_summary(prompt, expected_working_line):
 
 
 def build_stress_agent_metrics():
-    with tempfile.TemporaryDirectory(prefix="pico-metrics-") as temp_dir:
+    with tempfile.TemporaryDirectory(prefix="pony-metrics-") as temp_dir:
         workspace_root = Path(temp_dir).resolve()
         (workspace_root / "README.md").write_text("demo\n", encoding="utf-8")
         workspace = WorkspaceContext.build(workspace_root)
-        store = SessionStore(workspace_root / ".pico" / "sessions")
-        agent = Pico(
+        store = SessionStore(workspace_root / ".pony" / "sessions")
+        agent = Pony(
             model_client=FakeModelClient([]),
             workspace=workspace,
             session_store=store,
@@ -239,8 +239,8 @@ class _MemoryExperimentModelClient(FakeModelClient):
 
 def _build_memory_experiment_agent(workspace_root, expected_fact, filename):
     workspace = WorkspaceContext.build(workspace_root)
-    store = SessionStore(workspace_root / ".pico" / "sessions")
-    return Pico(
+    store = SessionStore(workspace_root / ".pony" / "sessions")
+    return Pony(
         model_client=_MemoryExperimentModelClient(expected_fact, filename),
         workspace=workspace,
         session_store=store,
@@ -337,7 +337,7 @@ def _compact_with_neutral_summary(agent, *, reason, keep_recent_tokens=256):
 
 
 def _run_memory_variant(mode):
-    with tempfile.TemporaryDirectory(prefix="pico-memory-experiment-") as temp_dir:
+    with tempfile.TemporaryDirectory(prefix="pony-memory-experiment-") as temp_dir:
         workspace_root = Path(temp_dir).resolve()
         (workspace_root / "README.md").write_text("demo\n", encoding="utf-8")
         (workspace_root / "facts.txt").write_text(
@@ -500,7 +500,7 @@ def _set_irrelevant_memory_for_task(agent):
 
 
 def _run_memory_task_variant(task, variant):
-    with tempfile.TemporaryDirectory(prefix="pico-memory-large-") as temp_dir:
+    with tempfile.TemporaryDirectory(prefix="pony-memory-large-") as temp_dir:
         workspace_root = Path(temp_dir).resolve()
         (workspace_root / "README.md").write_text("demo\n", encoding="utf-8")
         _write_memory_task_files(workspace_root, task)
@@ -588,15 +588,15 @@ def run_context_stress_matrix(repetitions=5):
                 per_run = []
                 for _ in range(repetitions):
                     with tempfile.TemporaryDirectory(
-                        prefix="pico-context-matrix-"
+                        prefix="pony-context-matrix-"
                     ) as temp_dir:
                         workspace_root = Path(temp_dir).resolve()
                         (workspace_root / "README.md").write_text(
                             "demo\n", encoding="utf-8"
                         )
                         workspace = WorkspaceContext.build(workspace_root)
-                        store = SessionStore(workspace_root / ".pico" / "sessions")
-                        agent = Pico(
+                        store = SessionStore(workspace_root / ".pony" / "sessions")
+                        agent = Pony(
                             model_client=FakeModelClient([]),
                             workspace=workspace,
                             session_store=store,
@@ -697,8 +697,8 @@ def run_context_stress_matrix(repetitions=5):
 
 def _security_agent(workspace_root, approval_policy="auto", read_only=False):
     workspace = WorkspaceContext.build(workspace_root)
-    store = SessionStore(workspace_root / ".pico" / "sessions")
-    return Pico(
+    store = SessionStore(workspace_root / ".pony" / "sessions")
+    return Pony(
         model_client=FakeModelClient([]),
         workspace=workspace,
         session_store=store,
@@ -817,7 +817,7 @@ def run_security_experiment_suite(repetitions=3):
     tool_error_code_counts = {}
     for scenario_id, runner in SECURITY_SCENARIOS:
         for _ in range(repetitions):
-            with tempfile.TemporaryDirectory(prefix="pico-security-exp-") as temp_dir:
+            with tempfile.TemporaryDirectory(prefix="pony-security-exp-") as temp_dir:
                 workspace_root = Path(temp_dir).resolve()
                 (workspace_root / "README.md").write_text("demo\n", encoding="utf-8")
                 metadata = runner(workspace_root)

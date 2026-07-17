@@ -3,12 +3,12 @@ import multiprocessing
 
 import pytest
 
-from pico.state.checkpoint_store import (
+from pony.state.checkpoint_store import (
     CheckpointStore,
     CheckpointStoreError,
     source_apply_guard_present,
 )
-from pico.recovery.models import new_checkpoint_record, new_tool_change_record
+from pony.recovery.models import new_checkpoint_record, new_tool_change_record
 
 
 def _checkpoint(tmp_path, checkpoint_id="ckpt_durable"):
@@ -26,7 +26,7 @@ def test_checkpoint_store_exposes_required_mutation_lock(tmp_path, monkeypatch):
         calls.append((path, require_lock))
         yield
 
-    monkeypatch.setattr("pico.state.checkpoint_store.file_lock.locked_file", required_lock)
+    monkeypatch.setattr("pony.state.checkpoint_store.file_lock.locked_file", required_lock)
     with store.mutation_lock():
         pass
 

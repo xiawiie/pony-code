@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from pico.state import file_lock
+from pony.state import file_lock
 
 
 @pytest.fixture(autouse=True)
@@ -187,7 +187,7 @@ def test_file_lock_import_does_not_resolve_home():
     script = (
         "from pathlib import Path\n"
         "Path.home = classmethod(lambda cls: (_ for _ in ()).throw(RuntimeError('no home')))\n"
-        "import pico.state.file_lock\n"
+        "import pony.state.file_lock\n"
         "print('imported')\n"
     )
     result = subprocess.run(
@@ -219,14 +219,14 @@ def test_authority_serializes_replacement_across_different_homes(
     second_home.mkdir()
     holder_script = (
         "import sys\n"
-        "from pico.state.file_lock import locked_file\n"
+        "from pony.state.file_lock import locked_file\n"
         "with locked_file(sys.argv[1], require_lock=True):\n"
         "    print('entered', flush=True)\n"
         "    sys.stdin.readline()\n"
     )
     contender_script = (
         "import sys\n"
-        "from pico.state.file_lock import locked_file\n"
+        "from pony.state.file_lock import locked_file\n"
         "try:\n"
         "    with locked_file(sys.argv[1], require_lock=True, lock_timeout=0.2):\n"
         "        print('entered')\n"
@@ -296,7 +296,7 @@ def test_forked_child_closes_inherited_context_without_unlocking_parent(tmp_path
     lock_path = tmp_path / "fork.lock"
     script = (
         "import os, sys\n"
-        "from pico.state.file_lock import locked_file\n"
+        "from pony.state.file_lock import locked_file\n"
         "child = False\n"
         "with locked_file(sys.argv[1], require_lock=True):\n"
         "    pid = os.fork()\n"
@@ -410,7 +410,7 @@ def test_locked_file_real_process_contention_times_out_then_releases(tmp_path):
     lock_path = tmp_path / "process.lock"
     script = (
         "import sys\n"
-        "from pico.state.file_lock import locked_file\n"
+        "from pony.state.file_lock import locked_file\n"
         "with locked_file(sys.argv[1], require_lock=True):\n"
         "    print('locked', flush=True)\n"
         "    sys.stdin.readline()\n"

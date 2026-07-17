@@ -4,8 +4,8 @@ from unittest.mock import patch
 
 import pytest
 
-from pico.tools.subprocess import run_process_group
-from pico.tools.shell import ApprovedShellExecution, sandbox_privilege_denial
+from pony.tools.subprocess import run_process_group
+from pony.tools.shell import ApprovedShellExecution, sandbox_privilege_denial
 
 
 def test_approved_shell_execution_is_immutable_and_complete(tmp_path):
@@ -82,8 +82,8 @@ def test_process_group_timeout_terms_then_kills_and_waits():
     process.communicate = communicate
     process.pid = 4321
     with (
-        patch("pico.tools.subprocess.subprocess.Popen", return_value=process) as popen,
-        patch("pico.tools.subprocess.os.killpg") as killpg,
+        patch("pony.tools.subprocess.subprocess.Popen", return_value=process) as popen,
+        patch("pony.tools.subprocess.os.killpg") as killpg,
     ):
         result = run_process_group(["x"], cwd="/tmp", env={}, timeout=1, term_grace=2)
     assert popen.call_args.kwargs["start_new_session"] is True

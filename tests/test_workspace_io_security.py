@@ -5,17 +5,17 @@ from unittest.mock import Mock
 
 import pytest
 
-from pico import Pico
-from pico.state.session_store import SessionStore
-from pico.workspace.context import WorkspaceContext
-from pico.security import private_files as private_files
-from pico.security import workspace_files as workspace_files
-from pico.tools import files as file_tools
-from pico.tools import search as search_tools
-from pico.tools import validation as tool_validation
+from pony import Pony
+from pony.state.session_store import SessionStore
+from pony.workspace.context import WorkspaceContext
+from pony.security import private_files as private_files
+from pony.security import workspace_files as workspace_files
+from pony.tools import files as file_tools
+from pony.tools import search as search_tools
+from pony.tools import validation as tool_validation
 from benchmarks.support.fake_provider import FakeModelClient
-from pico.tools.context import ToolContext
-from pico.runtime.options import RuntimeOptions
+from pony.tools.context import ToolContext
+from pony.runtime.options import RuntimeOptions
 
 
 def _context(root):
@@ -33,10 +33,10 @@ def _context(root):
 
 def _agent(root):
     (root / "README.md").write_text("demo\n", encoding="utf-8")
-    return Pico(
+    return Pony(
         model_client=FakeModelClient([]),
         workspace=WorkspaceContext.build(root),
-        session_store=SessionStore(root / ".pico" / "sessions"),
+        session_store=SessionStore(root / ".pony" / "sessions"),
         options=RuntimeOptions(approval_policy="auto"),
     )
 
@@ -283,7 +283,7 @@ def test_atomic_writer_revalidates_parent_before_writing_temp(
         workspace_files.write_regular_bytes_anchored_atomic(
             root,
             "parent/note.txt",
-            b"pico-write\n",
+            b"pony-write\n",
             max_bytes=1024,
             expected_root_identity=private_files.private_directory_identity(root),
         )

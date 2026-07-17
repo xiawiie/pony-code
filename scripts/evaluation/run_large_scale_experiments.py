@@ -26,7 +26,7 @@ from benchmarks.evaluation.provider_benchmark import (  # noqa: E402
 
 def build_arg_parser():
     parser = argparse.ArgumentParser(
-        description="Run pico large-scale experiments and write all experiment artifacts."
+        description="Run pony large-scale experiments and write all experiment artifacts."
     )
     parser.add_argument(
         "--repo-root", default=".", help="Repository whose .env selects the Provider."
@@ -34,7 +34,7 @@ def build_arg_parser():
     parser.add_argument(
         "--benchmark-artifact", required=True, help="Path to benchmark artifact JSON."
     )
-    parser.add_argument("--runs-root", required=True, help="Path to .pico/runs root.")
+    parser.add_argument("--runs-root", required=True, help="Path to .pony/runs root.")
     parser.add_argument(
         "--provider-benchmark-path",
         default="benchmarks/coding_tasks.json",

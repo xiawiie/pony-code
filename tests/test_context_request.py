@@ -2,9 +2,9 @@
 
 from unittest.mock import MagicMock
 
-from pico.context.renderer import render_current_user_message
-from pico.agent.context_manager import ContextManager
-from pico.agent.model_capabilities import (
+from pony.context.renderer import render_current_user_message
+from pony.agent.context_manager import ContextManager
+from pony.agent.model_capabilities import (
     ModelCapabilities,
     TokenAccounting,
     build_model_budget,
@@ -49,7 +49,7 @@ def _make_agent():
 
 def _build_request(agent, user_message):
     agent.session["messages"].append(
-        {"role": "user", "content": user_message, "_pico_meta": {}}
+        {"role": "user", "content": user_message, "_pony_meta": {}}
     )
     snapshot, telemetry = render_current_user_message(agent, user_message)
     return ContextManager(agent).build_request(
@@ -112,7 +112,7 @@ def test_build_request_metadata_contains_system_prefix_hash():
 def test_int_schema_field_maps_to_integer_json_type():
     """Task E8: tool schema 'int' variants must map to Anthropic-shape
     input_schema.properties.<field>.type = 'integer', not 'string'."""
-    from pico.agent.context_manager import _build_tools_list
+    from pony.agent.context_manager import _build_tools_list
 
     tools = {
         "read_file": {

@@ -2,12 +2,12 @@ import json
 import tempfile
 from pathlib import Path
 
-import pico.memory.service as memorylib
-from pico.agent.observability import load_run_artifacts
+import pony.memory.service as memorylib
+from pony.agent.observability import load_run_artifacts
 from benchmarks.support.fake_provider import FakeModelClient
-from pico.runtime.application import Pico
-from pico.state.session_store import SessionStore
-from pico.workspace.context import WorkspaceContext
+from pony.runtime.application import Pony
+from pony.state.session_store import SessionStore
+from pony.workspace.context import WorkspaceContext
 from .experiments_synthetic import (
     run_context_stress_matrix,
     run_large_scale_memory_experiment,
@@ -22,7 +22,7 @@ from .metrics_common import (
     _safe_ratio,
     _utc_timestamp,
 )
-from pico.runtime.options import RuntimeOptions
+from pony.runtime.options import RuntimeOptions
 
 
 def _write_json_artifact(path, payload):
@@ -142,8 +142,8 @@ RECOVERY_ABLATION_TASKS = [
 
 def _build_recovery_agent(workspace_root, required_fragments):
     workspace = WorkspaceContext.build(workspace_root)
-    store = SessionStore(workspace_root / ".pico" / "sessions")
-    return Pico(
+    store = SessionStore(workspace_root / ".pony" / "sessions")
+    return Pony(
         model_client=_RecoveryScenarioModelClient(
             required_fragments, "recovery state restored."
         ),
@@ -342,7 +342,7 @@ def _apply_recovery_setup(agent, task, workspace_root, *, checkpoint_enabled=Tru
 
 
 def _run_recovery_task_variant(task, variant):
-    with tempfile.TemporaryDirectory(prefix="pico-recovery-ablation-") as temp_dir:
+    with tempfile.TemporaryDirectory(prefix="pony-recovery-ablation-") as temp_dir:
         workspace_root = Path(temp_dir).resolve()
         (workspace_root / "README.md").write_text("demo\n", encoding="utf-8")
         agent = _build_recovery_agent(workspace_root, task["required_fragments"])

@@ -5,31 +5,31 @@ from unittest.mock import Mock
 
 import pytest
 
-from pico import Pico
-from pico.state.session_store import SessionStore
-from pico.workspace.context import WorkspaceContext
-from pico.agent.loop import _prepare_tool_result
+from pony import Pony
+from pony.state.session_store import SessionStore
+from pony.workspace.context import WorkspaceContext
+from pony.agent.loop import _prepare_tool_result
 from benchmarks.support.fake_provider import FakeModelClient
-import pico.tools.executor as tool_executor_module
-from pico.memory.tools import tool_memory_list, tool_memory_search
-from pico.state.task_state import TaskState
-from pico.tools.executor import (
+import pony.tools.executor as tool_executor_module
+from pony.memory.tools import tool_memory_list, tool_memory_search
+from pony.state.task_state import TaskState
+from pony.tools.executor import (
     ToolExecutor,
     ToolExecutionResult,
     _capture_path_snapshot,
     _effect_class,
     _fill_git_head_before_file_states,
 )
-from pico.tools.registry import BASE_TOOL_SPECS, DELEGATE_TOOL_SPEC
-from pico.runtime.options import RuntimeOptions
+from pony.tools.registry import BASE_TOOL_SPECS, DELEGATE_TOOL_SPEC
+from pony.runtime.options import RuntimeOptions
 
 
 def build_agent(tmp_path, outputs=None, **kwargs):
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
     workspace = WorkspaceContext.build(tmp_path)
-    store = SessionStore(tmp_path / ".pico" / "sessions")
+    store = SessionStore(tmp_path / ".pony" / "sessions")
     approval_policy = kwargs.pop("approval_policy", "auto")
-    return Pico(
+    return Pony(
         model_client=FakeModelClient([] if outputs is None else outputs),
         workspace=workspace,
         session_store=store,
@@ -45,10 +45,10 @@ def authorize_memory(agent, user_request="remember this"):
 def init_git_repo(tmp_path):
     subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
     subprocess.run(
-        ["git", "config", "user.email", "pico@example.test"], cwd=tmp_path, check=True
+        ["git", "config", "user.email", "pony@example.test"], cwd=tmp_path, check=True
     )
     subprocess.run(
-        ["git", "config", "user.name", "Pico Test"], cwd=tmp_path, check=True
+        ["git", "config", "user.name", "Pony Test"], cwd=tmp_path, check=True
     )
     subprocess.run(["git", "add", "README.md"], cwd=tmp_path, check=True)
     subprocess.run(
@@ -99,7 +99,7 @@ def test_large_tool_result_reaches_token_digest_without_character_clip(tmp_path)
     )
     (tmp_path / "large.py").write_text(body, encoding="utf-8")
     agent = build_agent(tmp_path)
-    agent.current_run_dir = tmp_path / ".pico" / "runs" / "digest"
+    agent.current_run_dir = tmp_path / ".pony" / "runs" / "digest"
     agent.current_run_dir.mkdir(parents=True)
 
     result = ToolExecutor(agent).execute(
@@ -536,7 +536,7 @@ def test_post_pending_verification_base_exception_closes_change_and_preserves_pr
         return_value={"stdout": "ok\n", "stderr": "", "exit_code": 0}
     )
     monkeypatch.setattr(
-        "pico.tools.executor.verification_evidence_for_execution",
+        "pony.tools.executor.verification_evidence_for_execution",
         Mock(side_effect=primary),
     )
 
@@ -754,7 +754,7 @@ def test_removed_memory_save_fields_are_rejected_before_runner(
     runner.assert_not_called()
 
 
-def test_pico_run_tool_keeps_compatibility_metadata(tmp_path):
+def test_pony_run_tool_keeps_compatibility_metadata(tmp_path):
     agent = build_agent(tmp_path)
 
     content = agent.run_tool("read_file", {"path": "README.md", "start": 1, "end": 1})
@@ -858,7 +858,7 @@ def test_run_shell_rechecks_command_policy_after_approval_mutation(
     tmp_path,
     monkeypatch,
 ):
-    import pico.tools.executor as tool_executor
+    import pony.tools.executor as tool_executor
 
     agent = build_agent(tmp_path, approval_policy="ask")
     victim = tmp_path / "victim.txt"
@@ -1084,7 +1084,7 @@ def test_run_shell_recovery_populates_before_blob_from_git_head(tmp_path):
 
 
 def test_git_head_fallback_uses_frozen_hardened_git(tmp_path, monkeypatch):
-    import pico.tools.executor as tool_executor
+    import pony.tools.executor as tool_executor
 
     calls = []
 
@@ -1163,7 +1163,7 @@ def test_git_head_fallback_rejects_sensitive_path_before_git_or_blob(
     tmp_path,
     monkeypatch,
 ):
-    import pico.tools.executor as tool_executor
+    import pony.tools.executor as tool_executor
 
     git = Mock(side_effect=AssertionError("git must not run"))
     monkeypatch.setattr(tool_executor, "run_hardened_git", git)
@@ -1186,7 +1186,7 @@ def test_git_head_fallback_rejects_sensitive_descendant_before_git_or_blob(
     tmp_path,
     monkeypatch,
 ):
-    import pico.tools.executor as tool_executor
+    import pony.tools.executor as tool_executor
 
     git = Mock(side_effect=AssertionError("git must not run"))
     monkeypatch.setattr(tool_executor, "run_hardened_git", git)
@@ -1213,7 +1213,7 @@ def test_git_head_fallback_rejects_secret_stdout_before_blob(
     tmp_path,
     monkeypatch,
 ):
-    import pico.tools.executor as tool_executor
+    import pony.tools.executor as tool_executor
 
     secret = "opaque-head-value-123456789"
     git = Mock(
@@ -1243,7 +1243,7 @@ def test_git_head_fallback_rejects_secret_stdout_before_blob(
 def test_git_head_fallback_rejects_symlink_and_oversized_tree_entries(
     tmp_path, monkeypatch
 ):
-    import pico.tools.executor as tool_executor
+    import pony.tools.executor as tool_executor
 
     git = Mock(
         return_value=subprocess.CompletedProcess(
@@ -1272,7 +1272,7 @@ def test_path_snapshot_never_hashes_safe_named_secret_content(
     tmp_path,
     monkeypatch,
 ):
-    import pico.tools.executor as tool_executor
+    import pony.tools.executor as tool_executor
 
     secret = "opaque-snapshot-value-123456789"
     (tmp_path / "source.py").write_text(secret, encoding="utf-8")
@@ -1401,7 +1401,7 @@ def test_write_file_entry_records_complete_exists_hash_mode_and_source(tmp_path)
 
 def test_sensitive_after_bytes_never_reach_blob_store(tmp_path, monkeypatch):
     sentinel = "sk-sensitive-recovery-value"
-    monkeypatch.setenv("PICO_OPENAI_API_KEY", sentinel)
+    monkeypatch.setenv("PONY_OPENAI_API_KEY", sentinel)
     target = tmp_path / "safe.py"
     target.write_text("before", encoding="utf-8")
     agent = build_agent(tmp_path)
@@ -1418,7 +1418,7 @@ def test_sensitive_after_bytes_never_reach_blob_store(tmp_path, monkeypatch):
 
 def test_existing_sensitive_before_file_is_modified_not_created(tmp_path, monkeypatch):
     sentinel = "sk-sensitive-existing-before"
-    monkeypatch.setenv("PICO_OPENAI_API_KEY", sentinel)
+    monkeypatch.setenv("PONY_OPENAI_API_KEY", sentinel)
     target = tmp_path / "safe.py"
     target.write_text(sentinel, encoding="utf-8")
     target.chmod(0o640)

@@ -3,9 +3,9 @@
 import os
 from pathlib import Path
 
-from pico.config.environment import read_project_env
-from pico.config.model import resolve_model_config
-from pico.providers.factory import build_transport_client
+from pony.config.environment import read_project_env
+from pony.config.model import resolve_model_config
+from pony.providers.factory import build_transport_client
 
 from .fixed_benchmark import FIXED_BENCHMARK_RESULT_FORMAT_VERSION, run_fixed_benchmark
 from .metrics_common import _safe_mean, _safe_ratio, _validate_record_header
@@ -21,7 +21,7 @@ def _resolve_benchmark_target(
     project_env=None,
     process_env=None,
 ):
-    """Resolve the single benchmark target through Pico's product config path."""
+    """Resolve the single benchmark target through Pony's product config path."""
     root = Path(repo_root)
     project_values = (
         read_project_env(root) if project_env is None else dict(project_env)

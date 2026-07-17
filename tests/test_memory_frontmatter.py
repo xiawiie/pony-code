@@ -1,7 +1,7 @@
-"""Tests for pico.memory.frontmatter.parse_frontmatter — stdlib-only
+"""Tests for pony.memory.frontmatter.parse_frontmatter — stdlib-only
 one-level `key: value` (with bracket-list) parser."""
 
-from pico.memory.frontmatter import parse_frontmatter
+from pony.memory.frontmatter import parse_frontmatter
 
 
 def test_valid_frontmatter():

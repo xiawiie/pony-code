@@ -5,25 +5,25 @@ from types import MappingProxyType
 
 import pytest
 
-import pico.sandbox.docker as docker_module
-import pico.sandbox.identity as sandbox_identity
-import pico.tools.executor as tool_executor_module
-import pico.workspace.context as workspace_module
-from pico.state.checkpoint_store import CheckpointStore
-from pico.config.project import load_pico_toml
-from pico.context.renderer import render_current_user_message
-from pico.sandbox.docker import (
+import pony.sandbox.docker as docker_module
+import pony.sandbox.identity as sandbox_identity
+import pony.tools.executor as tool_executor_module
+import pony.workspace.context as workspace_module
+from pony.state.checkpoint_store import CheckpointStore
+from pony.config.project import load_pony_toml
+from pony.context.renderer import render_current_user_message
+from pony.sandbox.docker import (
     build_docker_sandbox_context,
     compile_execution_plan,
     DockerExecutionOutcome,
     DockerSandboxError,
 )
 from benchmarks.support.fake_provider import FakeModelClient
-from pico.runtime.application import Pico
-from pico.sandbox.session import snapshot_source_tree, write_source_apply_authority
-from pico.state.session_store import SessionStore
-from pico.workspace.context import WorkspaceContext
-from pico.runtime.options import RuntimeOptions
+from pony.runtime.application import Pony
+from pony.sandbox.session import snapshot_source_tree, write_source_apply_authority
+from pony.state.session_store import SessionStore
+from pony.workspace.context import WorkspaceContext
+from pony.runtime.options import RuntimeOptions
 
 
 CLIENT_DIGEST = "sha256:" + "d" * 64
@@ -76,7 +76,7 @@ class FakeDockerRunner:
         git = request.workspace_view.physical_root / ".git"
         git.mkdir()
         (git / "HEAD").write_text(
-            "ref: refs/heads/pico-sandbox\n",
+            "ref: refs/heads/pony-sandbox\n",
             encoding="utf-8",
         )
         return "a" * 40
@@ -177,7 +177,7 @@ def _build_runtime(
         "OPENAI_API_KEY=source-secret\n",
         encoding="utf-8",
     )
-    project_config = load_pico_toml(source)
+    project_config = load_pony_toml(source)
     source_workspace = WorkspaceContext.build(source)
     image = docker_module.load_image_manifest(
         docker_module.default_image_manifest_path()
@@ -186,10 +186,10 @@ def _build_runtime(
     context = build_docker_sandbox_context(
         source,
         authorization=authorization,
-        pico_session_id="session-1",
+        pony_session_id="session-1",
         docker_cli="/unused/docker",
         docker_endpoint="/unused/docker.sock",
-        project_state_root=source / ".pico",
+        project_state_root=source / ".pony",
         sandbox_parent=tmp_path / "sandboxes",
         git_executable=None,
         known_secrets=(b"source-secret",),
@@ -209,13 +209,13 @@ def _build_runtime(
         executables=executables,
         inspect_git=False,
         logical_root=context.logical_root,
-        branch_override="pico-sandbox",
-        default_branch_override="pico-sandbox",
+        branch_override="pony-sandbox",
+        default_branch_override="pony-sandbox",
         status_override="clean",
     )
     redaction_env = MappingProxyType({"OPENAI_API_KEY": "source-secret"})
-    store = SessionStore(source / ".pico" / "sessions")
-    agent = Pico._for_docker_sandbox_development(
+    store = SessionStore(source / ".pony" / "sessions")
+    agent = Pony._for_docker_sandbox_development(
         model_client=FakeModelClient([]),
         workspace=workspace,
         session_store=store,
@@ -248,7 +248,7 @@ def test_context_requires_exact_sealed_runtime_authorization_before_readiness(
     with pytest.raises(TypeError, match="authorization"):
         build_docker_sandbox_context(
             source,
-            pico_session_id="missing-authorization",
+            pony_session_id="missing-authorization",
             docker_cli="/unused/docker",
             docker_endpoint="/unused/docker.sock",
             image=image,
@@ -259,7 +259,7 @@ def test_context_requires_exact_sealed_runtime_authorization_before_readiness(
         build_docker_sandbox_context(
             source,
             authorization=wrong,
-            pico_session_id="wrong-authorization",
+            pony_session_id="wrong-authorization",
             docker_cli="/unused/docker",
             docker_endpoint="/unused/docker.sock",
             image=image,
@@ -268,14 +268,14 @@ def test_context_requires_exact_sealed_runtime_authorization_before_readiness(
     assert not any((tmp_path / "sandboxes").glob("*/sandbox_*"))
 
 
-def test_public_pico_rejects_development_authorization(tmp_path, monkeypatch):
+def test_public_pony_rejects_development_authorization(tmp_path, monkeypatch):
     source, context, agent = _build_runtime(tmp_path, monkeypatch)
 
     with pytest.raises(ValueError, match="local authorization"):
-        Pico(
+        Pony(
             model_client=FakeModelClient([]),
             workspace=agent.workspace,
-            session_store=SessionStore(source / ".pico" / "other-sessions"),
+            session_store=SessionStore(source / ".pony" / "other-sessions"),
             options=RuntimeOptions(
             redaction_env=agent.redaction_env,
                 trusted_redaction_env=True,
@@ -347,15 +347,15 @@ def test_local_runtime_authorization_binds_exact_packaged_image(
         authorization.verify(replace(image, **{field: value}))
 
 
-def test_public_pico_accepts_local_authorization(tmp_path, monkeypatch):
+def test_public_pony_accepts_local_authorization(tmp_path, monkeypatch):
     source, context, agent = _build_runtime(tmp_path, monkeypatch)
     _image, authorization = docker_module.local_docker_sandbox_runtime()
     local_context = replace(context, authorization=authorization)
 
-    local_agent = Pico(
+    local_agent = Pony(
         model_client=FakeModelClient([]),
         workspace=agent.workspace,
-        session_store=SessionStore(source / ".pico" / "local-sessions"),
+        session_store=SessionStore(source / ".pony" / "local-sessions"),
         options=RuntimeOptions(
         redaction_env=agent.redaction_env,
             trusted_redaction_env=True,
@@ -421,16 +421,16 @@ def test_readiness_failure_precedes_staging_and_project_sidecar(
         build_docker_sandbox_context(
             source,
             authorization=authorization,
-            pico_session_id="session-1",
+            pony_session_id="session-1",
             docker_cli="/unused/docker",
             docker_endpoint="/unused/docker.sock",
-            project_state_root=source / ".pico",
+            project_state_root=source / ".pony",
             sandbox_parent=tmp_path / "sandboxes",
             image=image,
         )
 
     assert not any((tmp_path / "sandboxes").glob("*/sandbox_*"))
-    assert not (source / ".pico").exists()
+    assert not (source / ".pony").exists()
 
 
 def test_external_project_state_build_leaves_source_tree_unchanged(
@@ -450,7 +450,7 @@ def test_external_project_state_build_leaves_source_tree_unchanged(
     context = build_docker_sandbox_context(
         source,
         authorization=authorization,
-        pico_session_id="session-external-state",
+        pony_session_id="session-external-state",
         docker_cli="/unused/docker",
         docker_endpoint="/unused/docker.sock",
         project_state_root=tmp_path / "project-state",
@@ -460,7 +460,7 @@ def test_external_project_state_build_leaves_source_tree_unchanged(
 
     assert context.project_state_root == tmp_path / "project-state"
     assert snapshot_source_tree(source) == before
-    assert not (source / ".pico").exists()
+    assert not (source / ".pony").exists()
 
 
 def test_unresolved_source_apply_guard_blocks_new_sandbox_before_staging(
@@ -487,10 +487,10 @@ def test_unresolved_source_apply_guard_blocks_new_sandbox_before_staging(
         build_docker_sandbox_context(
             source,
             authorization=authorization,
-            pico_session_id="session-guarded",
+            pony_session_id="session-guarded",
             docker_cli="/unused/docker",
             docker_endpoint="/unused/docker.sock",
-            project_state_root=source / ".pico",
+            project_state_root=source / ".pony",
             sandbox_parent=tmp_path / "sandboxes",
             image=image,
         )
@@ -539,10 +539,10 @@ def test_external_source_apply_authority_blocks_replacement_before_docker(
         build_docker_sandbox_context(
             source,
             authorization=authorization,
-            pico_session_id="session-replacement",
+            pony_session_id="session-replacement",
             docker_cli="/unused/docker",
             docker_endpoint="/unused/docker.sock",
-            project_state_root=source / ".pico",
+            project_state_root=source / ".pony",
             sandbox_parent=sandbox_parent,
             image=image,
         )
@@ -559,14 +559,14 @@ def test_runtime_splits_roots_and_renders_only_logical_workspace(
     assert agent.source_root == source
     assert agent.execution_root == context.execution_root
     assert agent.root == context.execution_root
-    assert agent.project_state_root == source / ".pico"
+    assert agent.project_state_root == source / ".pony"
     assert agent.session["workspace_root"] == str(source)
-    assert agent.run_store.root == source / ".pico" / "runs"
+    assert agent.run_store.root == source / ".pony" / "runs"
     assert agent.checkpoint_store.root == (
-        context.sandbox_state_root / "recovery" / ".pico" / "checkpoints"
+        context.sandbox_state_root / "recovery" / ".pony" / "checkpoints"
     )
-    assert not (source / ".pico" / "checkpoints").exists()
-    assert agent.memory_store.workspace_root == source / ".pico" / "memory"
+    assert not (source / ".pony" / "checkpoints").exists()
+    assert agent.memory_store.workspace_root == source / ".pony" / "memory"
     assert agent.repo_map.repo_root == context.execution_root
     assert agent.workspace_observer.root == context.execution_root
     assert "git" not in agent.workspace_observer.trusted_executables
@@ -587,8 +587,8 @@ def test_model_workspace_never_uses_source_git_metadata(tmp_path, monkeypatch):
     )
 
     assert context.source_status == f"?? {source_only}"
-    assert agent.workspace.branch == "pico-sandbox"
-    assert agent.workspace.default_branch == "pico-sandbox"
+    assert agent.workspace.branch == "pony-sandbox"
+    assert agent.workspace.default_branch == "pony-sandbox"
     assert agent.workspace.status == "sandbox_execution_state_unknown"
     assert source_only not in agent.prefix
     assert source_only not in agent.workspace.volatile_text()
@@ -687,7 +687,7 @@ def test_refresh_and_delegate_keep_the_same_execution_root(
         )
         return "done"
 
-    monkeypatch.setattr(Pico, "ask", child_ask)
+    monkeypatch.setattr(Pony, "ask", child_ask)
 
     project_sessions_before = {
         path.name for path in agent.session_store.root.glob("*.jsonl")
@@ -727,10 +727,10 @@ def test_resume_reuses_bound_staging_and_current_host_session(
     resumed_context = build_docker_sandbox_context(
         source,
         authorization=context.authorization,
-        pico_session_id="session-1",
+        pony_session_id="session-1",
         docker_cli="/unused/docker",
         docker_endpoint="/unused/docker.sock",
-        project_state_root=source / ".pico",
+        project_state_root=source / ".pony",
         sandbox_parent=tmp_path / "sandboxes",
         resume=True,
     )
@@ -740,21 +740,21 @@ def test_resume_reuses_bound_staging_and_current_host_session(
         executables=agent.trusted_executables,
         inspect_git=False,
         logical_root=resumed_context.logical_root,
-        branch_override="pico-sandbox",
-        default_branch_override="pico-sandbox",
+        branch_override="pony-sandbox",
+        default_branch_override="pony-sandbox",
         status_override="sandbox_execution_state_unknown",
     )
-    resumed = Pico._from_session_for_docker_sandbox_development(
+    resumed = Pony._from_session_for_docker_sandbox_development(
         model_client=FakeModelClient([]),
         workspace=workspace,
-        session_store=SessionStore(source / ".pico" / "sessions"),
+        session_store=SessionStore(source / ".pony" / "sessions"),
         session_id="session-1",
         options=RuntimeOptions(
         approval_policy="ask",
             redaction_env=MappingProxyType({"OPENAI_API_KEY": "source-secret"}),
             trusted_redaction_env=True,
         sandbox_context=resumed_context,
-        project_config=load_pico_toml(source),
+        project_config=load_pony_toml(source),
         ),
     )
 
@@ -831,7 +831,7 @@ def test_shell_tool_change_uses_staging_recovery_before_and_after_blobs(
     assert agent.checkpoint_store.root.is_relative_to(
         context.sandbox_state_root / "recovery"
     )
-    assert not (source / ".pico" / "checkpoints").exists()
+    assert not (source / ".pony" / "checkpoints").exists()
     assert (source / "README.md").read_bytes() == b"source\n"
 
 
@@ -976,16 +976,16 @@ def test_docker_runtime_requires_prefrozen_config_and_redaction(
 ):
     source, context, agent = _build_runtime(tmp_path, monkeypatch)
     workspace = agent.workspace
-    store = SessionStore(source / ".pico" / "other-sessions")
+    store = SessionStore(source / ".pony" / "other-sessions")
 
     with pytest.raises(ValueError, match="runtime context is incomplete"):
-        Pico._for_docker_sandbox_development(
+        Pony._for_docker_sandbox_development(
             model_client=FakeModelClient([]),
             workspace=workspace,
             session_store=store,
             options=RuntimeOptions(
             sandbox_context=context,
-            project_config=load_pico_toml(source),
+            project_config=load_pony_toml(source),
             session_id="session-1",
             ),
         )
@@ -998,15 +998,15 @@ def test_host_runtime_root_contract_is_unchanged(tmp_path, monkeypatch):
     source = tmp_path / "source"
     source.mkdir()
     workspace = WorkspaceContext.build(source)
-    agent = Pico(
+    agent = Pony(
         model_client=FakeModelClient([]),
         workspace=workspace,
-        session_store=SessionStore(source / ".pico" / "sessions"),
+        session_store=SessionStore(source / ".pony" / "sessions"),
     )
 
     assert agent.source_root == source
     assert agent.execution_root == source
-    assert agent.project_state_root == source / ".pico"
+    assert agent.project_state_root == source / ".pony"
     assert agent.root == source
     assert agent.session["workspace_root"] == str(source)
     assert shutil.which("git") is None or "git" in agent.trusted_executables

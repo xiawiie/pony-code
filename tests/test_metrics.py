@@ -13,9 +13,9 @@ from benchmarks.evaluation.metrics_reports import (
     write_benchmark_core_report,
 )
 from benchmarks.evaluation.provider_benchmark import _resolve_benchmark_target
-from pico.agent.observability import RunArtifactError, project_trace_event
-from pico.state.task_state import TaskState
-from pico.runtime.options import RuntimeOptions
+from pony.agent.observability import RunArtifactError, project_trace_event
+from pony.state.task_state import TaskState
+from pony.runtime.options import RuntimeOptions
 
 
 def _current_run_report(run_id):
@@ -209,24 +209,24 @@ def test_aggregate_run_artifacts_ignores_damaged_duplicate_and_legacy_runs(
 
 
 def test_aggregate_run_artifacts_counts_real_rejection_security_event(tmp_path):
-    from pico import Pico
-    from pico.state.session_store import SessionStore
-    from pico.workspace.context import WorkspaceContext
+    from pony import Pony
+    from pony.state.session_store import SessionStore
+    from pony.workspace.context import WorkspaceContext
     from benchmarks.evaluation.metrics_reports import aggregate_run_artifacts
     from benchmarks.support.fake_provider import FakeModelClient
 
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
-    agent = Pico(
+    agent = Pony(
         model_client=FakeModelClient(
             [{"name": "memory_save", "args": {"note": "remember this"}}, "done"]
         ),
         workspace=WorkspaceContext.build(tmp_path),
-        session_store=SessionStore(tmp_path / ".pico" / "sessions"),
+        session_store=SessionStore(tmp_path / ".pony" / "sessions"),
         options=RuntimeOptions(approval_policy="auto", read_only=True),
     )
 
     assert agent.ask("remember this") == "done"
-    metrics = aggregate_run_artifacts(tmp_path / ".pico" / "runs")
+    metrics = aggregate_run_artifacts(tmp_path / ".pony" / "runs")
 
     assert metrics["run_count"] == 1
     assert metrics["tool_status_counts"] == {"rejected": 1}
@@ -410,9 +410,9 @@ def test_context_ablation_compares_compacted_and_uncompacted_sent_messages(tmp_p
 
 
 def test_request_preview_restores_the_canonical_session(tmp_path):
-    from pico import Pico
-    from pico.state.session_store import SessionStore
-    from pico.workspace.context import WorkspaceContext
+    from pony import Pony
+    from pony.state.session_store import SessionStore
+    from pony.workspace.context import WorkspaceContext
     from benchmarks.evaluation.experiments_synthetic import (
         _seed_plain_messages,
         measure_request_ablation_metrics,
@@ -420,10 +420,10 @@ def test_request_preview_restores_the_canonical_session(tmp_path):
     from benchmarks.support.fake_provider import FakeModelClient
 
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
-    agent = Pico(
+    agent = Pony(
         model_client=FakeModelClient([]),
         workspace=WorkspaceContext.build(tmp_path),
-        session_store=SessionStore(tmp_path / ".pico" / "sessions"),
+        session_store=SessionStore(tmp_path / ".pony" / "sessions"),
         options=RuntimeOptions(approval_policy="auto"),
     )
     _seed_plain_messages(agent, 4, "history", 80)
@@ -440,10 +440,10 @@ def test_provider_benchmark_uses_canonical_project_env(tmp_path):
     (tmp_path / ".env").write_text(
         "\n".join(
             [
-                "PICO_PROVIDER=openai",
-                "PICO_API_BASE=https://gateway.example/v1",
-                "PICO_MODEL=gpt-test",
-                "PICO_API_KEY=sk-project",
+                "PONY_PROVIDER=openai",
+                "PONY_API_BASE=https://gateway.example/v1",
+                "PONY_MODEL=gpt-test",
+                "PONY_API_KEY=sk-project",
             ]
         )
         + "\n",
@@ -464,7 +464,7 @@ def test_provider_benchmark_rejects_vendor_only_environment(tmp_path):
     with pytest.raises(ValueError, match="^provider_not_configured$"):
         _resolve_benchmark_target(
             tmp_path,
-            process_env={"PICO_OPENAI_API_KEY": "sk-old"},
+            process_env={"PONY_OPENAI_API_KEY": "sk-old"},
         )
 
 
@@ -497,17 +497,17 @@ def test_real_memory_request_recorder_captures_native_messages():
 
 
 def test_real_followup_metrics_rejects_missing_run_artifact(tmp_path):
-    from pico import Pico
-    from pico.state.session_store import SessionStore
-    from pico.workspace.context import WorkspaceContext
+    from pony import Pony
+    from pony.state.session_store import SessionStore
+    from pony.workspace.context import WorkspaceContext
     from benchmarks.evaluation.experiments_real import _followup_trace_metrics
     from benchmarks.support.fake_provider import FakeModelClient
 
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
-    agent = Pico(
+    agent = Pony(
         model_client=FakeModelClient(["done"]),
         workspace=WorkspaceContext.build(tmp_path),
-        session_store=SessionStore(tmp_path / ".pico" / "sessions"),
+        session_store=SessionStore(tmp_path / ".pony" / "sessions"),
         options=RuntimeOptions(approval_policy="auto"),
     )
     agent.ask("finish")
@@ -525,10 +525,10 @@ def test_memory_summary_detector_requires_nonempty_working_set_line():
     expected_line = "- facts.txt: deploy key is red"
     indexed_prompt = "\n".join(
         [
-            "<pico:task_working_set>",
+            "<pony:task_working_set>",
             "",
             expected_line,
-            "</pico:task_working_set>",
+            "</pony:task_working_set>",
         ]
     )
     assert _prompt_has_reusable_file_summary(indexed_prompt, expected_line)
@@ -544,8 +544,8 @@ def test_memory_summary_detector_rejects_line_after_closed_working_set():
     assert not _prompt_has_reusable_file_summary(
         "\n".join(
             [
-                "<pico:task_working_set>",
-                "</pico:task_working_set>",
+                "<pony:task_working_set>",
+                "</pony:task_working_set>",
                 expected_line,
             ]
         ),
@@ -561,10 +561,10 @@ def test_memory_ablation_reports_no_bootstrap_drop_without_samples(tmp_path):
     )
 
     (tmp_path / ".env").write_text(
-        "PICO_PROVIDER=ollama\n"
-        "PICO_API_BASE=http://127.0.0.1:11434\n"
-        "PICO_MODEL=qwen-test\n"
-        "PICO_API_KEY=\n",
+        "PONY_PROVIDER=ollama\n"
+        "PONY_API_BASE=http://127.0.0.1:11434\n"
+        "PONY_MODEL=qwen-test\n"
+        "PONY_API_KEY=\n",
         encoding="utf-8",
     )
     variant_sets = (
@@ -631,7 +631,7 @@ def test_run_recovery_ablation_v2_writes_expected_artifact(tmp_path):
 def test_recovery_ablation_rejects_damaged_run_artifact(monkeypatch):
     import benchmarks.evaluation.experiments_recovery as recovery
 
-    real_ask = recovery.Pico.ask
+    real_ask = recovery.Pony.ask
 
     def damage_task_state_after_ask(self, user_message):
         result = real_ask(self, user_message)
@@ -641,7 +641,7 @@ def test_recovery_ablation_rejects_damaged_run_artifact(monkeypatch):
         )
         return result
 
-    monkeypatch.setattr(recovery.Pico, "ask", damage_task_state_after_ask)
+    monkeypatch.setattr(recovery.Pony, "ask", damage_task_state_after_ask)
 
     with pytest.raises(RunArtifactError, match="damaged"):
         recovery._run_recovery_task_variant(
@@ -666,7 +666,7 @@ def test_write_benchmark_core_report_marks_resume_safe_metrics(tmp_path):
         encoding="utf-8",
     )
 
-    report_path = tmp_path / "docs" / "metrics" / "pico-benchmark-core-report.md"
+    report_path = tmp_path / "docs" / "metrics" / "pony-benchmark-core-report.md"
     report_text = write_benchmark_core_report(
         report_path=report_path,
         harness_artifact_path=harness_artifact_path,

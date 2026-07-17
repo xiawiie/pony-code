@@ -2,8 +2,8 @@
 declarations remove the listed notes from retrieval + link expansion.
 The disk files stay untouched; retrieval simply skips them."""
 
-from pico.memory.block_store import BlockStore
-from pico.memory.retrieval import Retrieval
+from pony.memory.block_store import BlockStore
+from pony.memory.retrieval import Retrieval
 
 
 def _w(root, rel, body):

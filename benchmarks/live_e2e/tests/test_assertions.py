@@ -23,7 +23,7 @@ from benchmarks.live_e2e.run_live_session import (
     RunConfig,
     TurnResult,
 )
-from pico.agent.model_capabilities import (
+from pony.agent.model_capabilities import (
     TokenAccounting,
     build_model_budget,
     resolve_model_capabilities,
@@ -56,7 +56,7 @@ def _settings(**overrides):
         "model": "test-model",
         "base_url": "https://api.anthropic.com/v1",
         "api_key": "test-key",
-        "api_key_env": "PICO_API_KEY",
+        "api_key_env": "PONY_API_KEY",
         "transport": "anthropic_messages",
         "auth_mode": "x-api-key",
         "capabilities": {},
@@ -65,22 +65,22 @@ def _settings(**overrides):
     return defaults
 
 
-def test_verify_pico_repo_uses_the_runtime_package_entry(tmp_path, capsys):
-    runtime = tmp_path / "pico" / "runtime"
+def test_verify_pony_repo_uses_the_runtime_package_entry(tmp_path, capsys):
+    runtime = tmp_path / "pony" / "runtime"
     runtime.mkdir(parents=True)
     (runtime / "application.py").write_text("", encoding="utf-8")
     (tmp_path / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
 
-    run_live_session.verify_pico_repo(tmp_path)
+    run_live_session.verify_pony_repo(tmp_path)
     (runtime / "application.py").unlink()
 
     with pytest.raises(SystemExit, match="2"):
-        run_live_session.verify_pico_repo(tmp_path)
-    assert "missing pico/runtime/application.py" in capsys.readouterr().err
+        run_live_session.verify_pony_repo(tmp_path)
+    assert "missing pony/runtime/application.py" in capsys.readouterr().err
 
 
 def test_live_fixture_uses_model_budget_and_compaction_contract():
-    fixture = tomllib.loads(run_live_session.FIXTURE_PICO_TOML)
+    fixture = tomllib.loads(run_live_session.FIXTURE_PONY_TOML)
     model = fixture["model"]
     context = fixture["context"]
     compaction = context["compaction"]
@@ -110,30 +110,30 @@ def test_live_fixture_uses_model_budget_and_compaction_contract():
 
 def test_compaction_fixture_appends_valid_inert_canonical_history():
     store = MagicMock()
-    pico = SimpleNamespace(
+    pony = SimpleNamespace(
         session={"id": "live-session", "messages": []},
         session_store=store,
     )
 
-    count = run_live_session.seed_compaction_fixture(pico)
+    count = run_live_session.seed_compaction_fixture(pony)
 
     assert count == run_live_session.COMPACTION_FIXTURE_MESSAGES
-    assert len(pico.session["messages"]) == count
+    assert len(pony.session["messages"]) == count
     validate_messages = run_live_session.validate_messages
-    validate_messages(pico.session["messages"], require_meta=True)
+    validate_messages(pony.session["messages"], require_meta=True)
     store.append_messages.assert_called_once_with(
         "live-session",
-        pico.session["messages"],
+        pony.session["messages"],
     )
     assert all(
-        message["_pico_meta"]["origin"] == "live_e2e_compaction_fixture"
-        for message in pico.session["messages"]
+        message["_pony_meta"]["origin"] == "live_e2e_compaction_fixture"
+        for message in pony.session["messages"]
     )
     accounting = TokenAccounting()
     fixture_tokens = sum(
-        accounting.count_message(message) for message in pico.session["messages"]
+        accounting.count_message(message) for message in pony.session["messages"]
     )
-    fixture_config = tomllib.loads(run_live_session.FIXTURE_PICO_TOML)
+    fixture_config = tomllib.loads(run_live_session.FIXTURE_PONY_TOML)
     assert fixture_tokens > (
         fixture_config["model"]["context_window"]
         - fixture_config["context"]["compaction"]["reserve_tokens"]
@@ -142,42 +142,42 @@ def test_compaction_fixture_appends_valid_inert_canonical_history():
 
 def test_active_artifact_scan_detects_secret_and_mode_failures(tmp_path):
     secret = "ghp_" + "A" * 32
-    pico_root = tmp_path / ".pico"
-    before = run_live_session.snapshot_private_artifacts(pico_root)
-    run_dir = pico_root / "runs" / "run-test"
+    pony_root = tmp_path / ".pony"
+    before = run_live_session.snapshot_private_artifacts(pony_root)
+    run_dir = pony_root / "runs" / "run-test"
     run_dir.mkdir(parents=True)
     artifact = run_dir / "trace.jsonl"
     artifact.write_text(secret, encoding="utf-8")
     artifact.chmod(0o644)
     if os.name == "posix":
-        for directory in (pico_root, pico_root / "runs", run_dir):
+        for directory in (pony_root, pony_root / "runs", run_dir):
             directory.chmod(0o700)
 
     result = run_live_session.scan_active_private_artifacts(
-        pico_root,
+        pony_root,
         before,
         forbidden_values=(secret,),
     )
 
     assert result["files_scanned"] == 1
-    assert result["secret_hits"] == [".pico/runs/run-test/trace.jsonl"]
+    assert result["secret_hits"] == [".pony/runs/run-test/trace.jsonl"]
     if os.name == "posix":
-        assert result["mode_failures"] == [".pico/runs/run-test/trace.jsonl:0644"]
+        assert result["mode_failures"] == [".pony/runs/run-test/trace.jsonl:0644"]
 
 
 def test_active_artifact_scan_ignores_unchanged_baseline_file(tmp_path):
-    pico_root = tmp_path / ".pico"
-    session = pico_root / "sessions" / "old.json"
+    pony_root = tmp_path / ".pony"
+    session = pony_root / "sessions" / "old.json"
     session.parent.mkdir(parents=True)
     session.write_text("old", encoding="utf-8")
     if os.name == "posix":
-        pico_root.chmod(0o700)
+        pony_root.chmod(0o700)
         session.parent.chmod(0o700)
         session.chmod(0o600)
-    before = run_live_session.snapshot_private_artifacts(pico_root)
+    before = run_live_session.snapshot_private_artifacts(pony_root)
 
     result = run_live_session.scan_active_private_artifacts(
-        pico_root,
+        pony_root,
         before,
         forbidden_values=("old",),
     )
@@ -193,7 +193,7 @@ def test_fixture_backup_is_private_before_fixture_mutation(tmp_path):
     if os.name != "posix":
         pytest.skip("POSIX permission assertion")
     original = b"setting = 'ordinary-value'\n"
-    (tmp_path / "pico.toml").write_bytes(original)
+    (tmp_path / "pony.toml").write_bytes(original)
     seed = tmp_path / "seed.md"
     seed.write_text("safe seed\n", encoding="utf-8")
     fixture = run_live_session.FixtureManager(tmp_path)
@@ -212,7 +212,7 @@ def test_fixture_backup_is_private_before_fixture_mutation(tmp_path):
 def test_fixture_rejects_selected_key_before_backup(tmp_path):
     secret = "ghp_" + "K" * 32
     original = ("setting = '" + secret + "'\n").encode()
-    (tmp_path / "pico.toml").write_bytes(original)
+    (tmp_path / "pony.toml").write_bytes(original)
     seed = tmp_path / "seed.md"
     seed.write_text("safe seed\n", encoding="utf-8")
     fixture = run_live_session.FixtureManager(
@@ -227,7 +227,7 @@ def test_fixture_rejects_selected_key_before_backup(tmp_path):
     ):
         fixture.__enter__()
 
-    assert (tmp_path / "pico.toml").read_bytes() == original
+    assert (tmp_path / "pony.toml").read_bytes() == original
     assert not (tmp_path / run_live_session.BACKUP_REL).exists()
 
 
@@ -236,7 +236,7 @@ def test_fixture_rejects_unlisted_high_confidence_secret_before_backup(
 ):
     secret = "ghp_" + "Z" * 32
     original = ("setting = '" + secret + "'\n").encode()
-    (tmp_path / "pico.toml").write_bytes(original)
+    (tmp_path / "pony.toml").write_bytes(original)
     fixture = run_live_session.FixtureManager(
         tmp_path,
         forbidden_values=("different-selected-provider-key",),
@@ -248,13 +248,13 @@ def test_fixture_rejects_unlisted_high_confidence_secret_before_backup(
     ):
         fixture.__enter__()
 
-    assert (tmp_path / "pico.toml").read_bytes() == original
+    assert (tmp_path / "pony.toml").read_bytes() == original
     assert not (tmp_path / run_live_session.BACKUP_REL).exists()
 
 
 def test_fixture_missing_backup_never_deletes_existing_config(tmp_path):
     original = b"ordinary = true\n"
-    config = tmp_path / "pico.toml"
+    config = tmp_path / "pony.toml"
     config.write_bytes(original)
     seed = tmp_path / "seed.md"
     seed.write_text("safe seed\n", encoding="utf-8")
@@ -272,7 +272,7 @@ def test_fixture_missing_backup_never_deletes_existing_config(tmp_path):
 
 def test_fixture_enter_failure_restores_original_config(tmp_path):
     original = b"ordinary = true\n"
-    config = tmp_path / "pico.toml"
+    config = tmp_path / "pony.toml"
     config.write_bytes(original)
     fixture = run_live_session.FixtureManager(tmp_path)
     fixture._seed_source = tmp_path / "missing-seed.md"
@@ -286,10 +286,10 @@ def test_fixture_enter_failure_restores_original_config(tmp_path):
 
 def test_parse_args_uses_repo_env_and_rejects_provider_override(tmp_path):
     (tmp_path / ".env").write_text(
-        "PICO_PROVIDER=openai\n"
-        "PICO_API_BASE=https://api.openai.com/v1\n"
-        "PICO_MODEL=gpt-test\n"
-        "PICO_API_KEY=test-key\n",
+        "PONY_PROVIDER=openai\n"
+        "PONY_API_BASE=https://api.openai.com/v1\n"
+        "PONY_MODEL=gpt-test\n"
+        "PONY_API_KEY=test-key\n",
         encoding="utf-8",
     )
 
@@ -309,10 +309,10 @@ def test_parse_args_uses_repo_env_and_rejects_provider_override(tmp_path):
 def test_project_env_uses_canonical_selected_provider_settings(tmp_path, provider):
     base_url = f"https://api.{provider}.com/v1"
     lines = [
-        f"PICO_PROVIDER={provider}",
-        f"PICO_API_BASE={base_url}",
-        f"PICO_MODEL={provider}-test-model",
-        f"PICO_API_KEY=sentinel-{provider}",
+        f"PONY_PROVIDER={provider}",
+        f"PONY_API_BASE={base_url}",
+        f"PONY_MODEL={provider}-test-model",
+        f"PONY_API_KEY=sentinel-{provider}",
     ]
     (tmp_path / ".env").write_text(
         "\n".join(lines),
@@ -338,10 +338,10 @@ def test_project_env_uses_canonical_selected_provider_settings(tmp_path, provide
 
 def test_project_env_uses_canonical_ollama_settings(tmp_path):
     (tmp_path / ".env").write_text(
-        "PICO_PROVIDER=ollama\n"
-        "PICO_API_BASE=http://127.0.0.1:11435\n"
-        "PICO_MODEL=ollama-test-model\n"
-        "PICO_API_KEY=\n",
+        "PONY_PROVIDER=ollama\n"
+        "PONY_API_BASE=http://127.0.0.1:11435\n"
+        "PONY_MODEL=ollama-test-model\n"
+        "PONY_API_KEY=\n",
         encoding="utf-8",
     )
 
@@ -354,7 +354,7 @@ def test_project_env_uses_canonical_ollama_settings(tmp_path):
     assert settings == {
         "provider": "ollama",
         "api_key": "",
-        "api_key_env": "PICO_API_KEY",
+        "api_key_env": "PONY_API_KEY",
         "model": "ollama-test-model",
         "base_url": "http://127.0.0.1:11435",
         "transport": "ollama_chat",
@@ -364,7 +364,7 @@ def test_project_env_uses_canonical_ollama_settings(tmp_path):
 
 
 def test_openai_live_client_uses_native_responses_adapter():
-    from pico.providers.openai_responses import OpenAIResponsesModelClient
+    from pony.providers.openai_responses import OpenAIResponsesModelClient
 
     client = run_live_session.make_live_client(
         _config(provider="openai", request_timeout_seconds=321),
@@ -383,7 +383,7 @@ def test_openai_live_client_uses_native_responses_adapter():
 
 
 def test_ollama_live_client_uses_native_chat_adapter():
-    from pico.providers.ollama_chat import OllamaChatModelClient
+    from pony.providers.ollama_chat import OllamaChatModelClient
 
     client = run_live_session.make_live_client(
         _config(provider="ollama", request_timeout_seconds=321),
@@ -426,14 +426,14 @@ def test_main_reset_uses_repo_root_without_reading_provider_env(tmp_path, monkey
     assert events == [("parse", None), ("reset", tmp_path)]
 
 
-def test_main_constructs_live_pico_with_only_read_file(tmp_path, monkeypatch):
-    import pico.runtime.application
-    import pico.state.session_store
-    import pico.workspace.context
+def test_main_constructs_live_pony_with_only_read_file(tmp_path, monkeypatch):
+    import pony.runtime.application
+    import pony.state.session_store
+    import pony.workspace.context
 
     captured = {}
 
-    def capture_pico(**kwargs):
+    def capture_pony(**kwargs):
         captured.update(kwargs)
         raise RuntimeError("construction captured")
 
@@ -443,7 +443,7 @@ def test_main_constructs_live_pico_with_only_read_file(tmp_path, monkeypatch):
         run_live_session, "provider_settings", lambda *_args, **_kwargs: _settings()
     )
     monkeypatch.setattr(run_live_session, "check_env", lambda _config, **_kwargs: None)
-    monkeypatch.setattr(run_live_session, "verify_pico_repo", lambda _root: None)
+    monkeypatch.setattr(run_live_session, "verify_pony_repo", lambda _root: None)
     monkeypatch.setattr(
         run_live_session,
         "warn_if_dirty_working_tree",
@@ -458,14 +458,14 @@ def test_main_constructs_live_pico_with_only_read_file(tmp_path, monkeypatch):
         run_live_session, "make_live_client", lambda _config, **_kwargs: object()
     )
     monkeypatch.setattr(
-        pico.workspace.context.WorkspaceContext,
+        pony.workspace.context.WorkspaceContext,
         "build",
         lambda _root: object(),
     )
     monkeypatch.setattr(
-        pico.state.session_store, "SessionStore", lambda _root: object()
+        pony.state.session_store, "SessionStore", lambda _root: object()
     )
-    monkeypatch.setattr(pico.runtime.application, "Pico", capture_pico)
+    monkeypatch.setattr(pony.runtime.application, "Pony", capture_pony)
 
     assert run_live_session.main() == 4
     assert captured["options"].allowed_tools == ("read_file",)
@@ -627,7 +627,7 @@ def test_read_turn_trace_marks_non_utf8_artifact_usage_unknown(tmp_path):
 
 
 def test_read_run_terminal_status_uses_each_persisted_artifact(tmp_path):
-    from pico.state.run_store import RunStore
+    from pony.state.run_store import RunStore
 
     run_store = RunStore(tmp_path)
     task_state = SimpleNamespace(run_id="run-1")
@@ -668,7 +668,7 @@ def test_read_run_terminal_status_rejects_nonstring_or_blank_stop_reason(
     tmp_path,
     stop_reason,
 ):
-    from pico.state.run_store import RunStore
+    from pony.state.run_store import RunStore
 
     run_store = RunStore(tmp_path)
     task_state = SimpleNamespace(run_id="run-invalid-reason")
@@ -707,7 +707,7 @@ def test_read_run_terminal_status_keeps_other_artifact_evidence(
     artifact,
     expected_terminal_flags,
 ):
-    from pico.state.run_store import RunStore
+    from pony.state.run_store import RunStore
 
     run_store = RunStore(tmp_path)
     task_state = SimpleNamespace(run_id="run-one-bad-artifact")
@@ -740,7 +740,7 @@ def test_read_run_terminal_status_keeps_other_artifact_evidence(
 def test_turn_runner_does_not_reuse_previous_run_evidence_after_pre_run_failure(
     tmp_path,
 ):
-    from pico.state.run_store import RunStore
+    from pony.state.run_store import RunStore
 
     run_store = RunStore(tmp_path)
     previous_task_state = SimpleNamespace(run_id="previous-run")
@@ -772,7 +772,7 @@ def test_turn_runner_does_not_reuse_previous_run_evidence_after_pre_run_failure(
     def fail_before_starting_new_run(_prompt):
         raise OSError("initial user save failed")
 
-    pico = SimpleNamespace(
+    pony = SimpleNamespace(
         session={"messages": []},
         model_client=SimpleNamespace(calls=[]),
         run_store=run_store,
@@ -780,7 +780,7 @@ def test_turn_runner_does_not_reuse_previous_run_evidence_after_pre_run_failure(
         ask=fail_before_starting_new_run,
     )
 
-    result = run_live_session.TurnRunner(pico, _config()).run_turn(
+    result = run_live_session.TurnRunner(pony, _config()).run_turn(
         2,
         "new request",
         "must not reuse old evidence",
@@ -798,7 +798,7 @@ def test_turn_runner_does_not_reuse_previous_run_evidence_after_pre_run_failure(
 
 
 def test_turn_runner_uses_first_trace_call_as_current_turn_evidence(tmp_path):
-    from pico.state.run_store import RunStore
+    from pony.state.run_store import RunStore
 
     run_store = RunStore(tmp_path)
     previous_task_state = SimpleNamespace(run_id="previous-run")
@@ -844,7 +844,7 @@ def test_turn_runner_uses_first_trace_call_as_current_turn_evidence(tmp_path):
         encoding="utf-8",
     )
 
-    pico = SimpleNamespace(
+    pony = SimpleNamespace(
         session={"messages": []},
         model_client=SimpleNamespace(calls=[{"last_user_content": "old prompt"}]),
         run_store=run_store,
@@ -852,8 +852,8 @@ def test_turn_runner_uses_first_trace_call_as_current_turn_evidence(tmp_path):
     )
 
     def start_current_run(_prompt):
-        pico.current_task_state = current_task_state
-        pico.model_client.calls.extend(
+        pony.current_task_state = current_task_state
+        pony.model_client.calls.extend(
             [
                 {"last_user_content": "first current prompt"},
                 {"last_user_content": "second current prompt"},
@@ -861,8 +861,8 @@ def test_turn_runner_uses_first_trace_call_as_current_turn_evidence(tmp_path):
         )
         return "ok"
 
-    pico.ask = start_current_run
-    result = run_live_session.TurnRunner(pico, _config()).run_turn(
+    pony.ask = start_current_run
+    result = run_live_session.TurnRunner(pony, _config()).run_turn(
         2,
         "new request",
         "trace truth",
@@ -893,12 +893,12 @@ def test_turn_runner_uses_first_trace_call_as_current_turn_evidence(tmp_path):
 
 def _canonical_session_messages():
     return [
-        {"role": "user", "content": "question", "_pico_meta": {}},
-        {"role": "assistant", "content": "answer", "_pico_meta": {}},
+        {"role": "user", "content": "question", "_pony_meta": {}},
+        {"role": "assistant", "content": "answer", "_pony_meta": {}},
     ]
 
 
-def _pico_stub_with_persisted_tree(tmp_path):
+def _pony_stub_with_persisted_tree(tmp_path):
     del tmp_path
     session = {
         "record_type": "session",
@@ -906,20 +906,20 @@ def _pico_stub_with_persisted_tree(tmp_path):
         "id": "live-test-session",
         "messages": _canonical_session_messages(),
     }
-    pico = SimpleNamespace(
+    pony = SimpleNamespace(
         session=session,
         model_client=SimpleNamespace(calls=[{"payload_secret_clean": True}]),
     )
-    pico.session_store = SimpleNamespace(
+    pony.session_store = SimpleNamespace(
         load_tree=lambda _session_id: SimpleNamespace(
             header={
                 "record_type": run_live_session.SESSION_HEADER_RECORD_TYPE,
                 "format_version": run_live_session.SESSION_FORMAT_VERSION,
             },
-            projection=pico.session,
+            projection=pony.session,
         )
     )
-    return pico
+    return pony
 
 
 def _turn_result_stub(**overrides):
@@ -948,8 +948,8 @@ def _turn_result_stub(**overrides):
         error=None,
         provider_input_messages_len=1,
         current_user_content=(
-            '<system-reminder><pico:recalled_memory path="workspace/notes/cache-invariant.md">'
-            "content</pico:recalled_memory></system-reminder>\n上次讨论过 cache invariant 的问题"
+            '<system-reminder><pony:recalled_memory path="workspace/notes/cache-invariant.md">'
+            "content</pony:recalled_memory></system-reminder>\n上次讨论过 cache invariant 的问题"
         ),
         usage_complete=True,
         request_metadata_by_call=({},),
@@ -1028,7 +1028,7 @@ def test_assertion_is_frozen():
 def test_dispatch_routes_turn_1_to_recall_check():
     engine = _engine()
     result = _turn_result_stub()
-    asserts = engine.dispatch(1, result, pico=MagicMock(), all_results=[result])
+    asserts = engine.dispatch(1, result, pony=MagicMock(), all_results=[result])
     assert len(asserts) == 6
 
 
@@ -1036,7 +1036,7 @@ def _turn_2_result_stub(**overrides):
     """Session state includes a tool_result message with digest applied."""
     defaults = dict(
         turn=2,
-        user_prompt="读一下 pico/runtime/application.py",
+        user_prompt="读一下 pony/runtime/application.py",
         expected_behavior="digest_applied",
         final_answer="ok",
         metadata={"injection_tokens": {"recalled_memory": 1}},
@@ -1063,8 +1063,8 @@ def _turn_2_result_stub(**overrides):
         system_prefix_hashes=("cache-key", "cache-key"),
         action_origins=("native_tool_use",),
         actual_user_contents=(
-            "<system-reminder>context</system-reminder>\n读一下 pico/runtime/application.py",
-            "<system-reminder>context</system-reminder>\n读一下 pico/runtime/application.py",
+            "<system-reminder>context</system-reminder>\n读一下 pony/runtime/application.py",
+            "<system-reminder>context</system-reminder>\n读一下 pony/runtime/application.py",
         ),
         run_id="run-2",
         task_state_terminal=True,
@@ -1075,12 +1075,12 @@ def _turn_2_result_stub(**overrides):
     return TurnResult(**defaults)
 
 
-def _pico_stub_with_digested_message(
+def _pony_stub_with_digested_message(
     raw_body: str,
     run_dir: Path,
     source_hash: str | None = None,
 ):
-    """Build a MagicMock pico whose session has a digested tool_result at the tail."""
+    """Build a MagicMock pony whose session has a digested tool_result at the tail."""
     content_sha256 = hashlib.sha256(raw_body.encode("utf-8")).hexdigest()
     source_hash = source_hash or content_sha256[:16]
     raw_dir = run_dir / "tool_results"
@@ -1088,9 +1088,9 @@ def _pico_stub_with_digested_message(
     raw_file = raw_dir / f"{source_hash}.txt"
     raw_file.write_text(raw_body, encoding="utf-8")
 
-    pico = MagicMock()
-    pico.run_store.run_dir.return_value = run_dir
-    pico.session = {
+    pony = MagicMock()
+    pony.run_store.run_dir.return_value = run_dir
+    pony.session = {
         "messages": [
             {"role": "user", "content": "read"},
             {
@@ -1117,7 +1117,7 @@ def _pico_stub_with_digested_message(
                         ),
                     }
                 ],
-                "_pico_meta": {
+                "_pony_meta": {
                     "digest_applied": True,
                     "source_hash": source_hash,
                     "tool_use_id": "t1",
@@ -1125,15 +1125,15 @@ def _pico_stub_with_digested_message(
             },
         ]
     }
-    return pico, raw_file
+    return pony, raw_file
 
 
 def test_check_turn_2_digest_passes_on_valid_state(tmp_path):
     engine = _engine()
     raw_body = "x" * 5000
-    pico, raw_file = _pico_stub_with_digested_message(raw_body, tmp_path / "runs")
+    pony, raw_file = _pony_stub_with_digested_message(raw_body, tmp_path / "runs")
     result = _turn_2_result_stub()
-    asserts = engine.check_turn_2_digest(result, pico)
+    asserts = engine.check_turn_2_digest(result, pony)
     assert len(asserts) == 14
     assert all(a.passed for a in asserts), [
         (a.name, a.actual) for a in asserts if not a.passed
@@ -1142,13 +1142,13 @@ def test_check_turn_2_digest_passes_on_valid_state(tmp_path):
 
 @pytest.mark.parametrize("provider", ["openai", "ollama"])
 def test_text_provider_turn_2_accepts_text_protocol_action(tmp_path, provider):
-    pico, _ = _pico_stub_with_digested_message(
+    pony, _ = _pony_stub_with_digested_message(
         "x" * 5000,
         tmp_path / "runs",
     )
     assertions = _engine(provider=provider).check_turn_2_digest(
         _turn_2_result_stub(action_origins=("text_protocol",)),
-        pico,
+        pony,
     )
 
     action_assertion = next(
@@ -1161,11 +1161,11 @@ def test_text_provider_turn_2_accepts_text_protocol_action(tmp_path, provider):
 
 
 def test_check_turn_2_allows_plain_prompt_when_nothing_was_injected(tmp_path):
-    pico, _ = _pico_stub_with_digested_message(
+    pony, _ = _pony_stub_with_digested_message(
         "x" * 5000,
         tmp_path / "runs",
     )
-    prompt = "读一下 pico/runtime/application.py"
+    prompt = "读一下 pony/runtime/application.py"
     result = _turn_2_result_stub(
         metadata={"injection_tokens": {"recalled_memory": 0}},
         request_metadata_by_call=(
@@ -1175,7 +1175,7 @@ def test_check_turn_2_allows_plain_prompt_when_nothing_was_injected(tmp_path):
         actual_user_contents=(prompt, prompt),
     )
 
-    assertions = _engine().check_turn_2_digest(result, pico)
+    assertions = _engine().check_turn_2_digest(result, pony)
 
     assert next(
         assertion
@@ -1185,11 +1185,11 @@ def test_check_turn_2_allows_plain_prompt_when_nothing_was_injected(tmp_path):
 
 
 def test_check_turn_2_fails_when_later_injected_call_lacks_reminder(tmp_path):
-    pico, _ = _pico_stub_with_digested_message(
+    pony, _ = _pony_stub_with_digested_message(
         "x" * 5000,
         tmp_path / "runs",
     )
-    prompt = "读一下 pico/runtime/application.py"
+    prompt = "读一下 pony/runtime/application.py"
     result = _turn_2_result_stub(
         metadata={"injection_tokens": {"recalled_memory": 0}},
         request_metadata_by_call=(
@@ -1199,7 +1199,7 @@ def test_check_turn_2_fails_when_later_injected_call_lacks_reminder(tmp_path):
         actual_user_contents=(prompt, prompt),
     )
 
-    assertions = _engine().check_turn_2_digest(result, pico)
+    assertions = _engine().check_turn_2_digest(result, pony)
 
     assert not next(
         assertion
@@ -1209,7 +1209,7 @@ def test_check_turn_2_fails_when_later_injected_call_lacks_reminder(tmp_path):
 
 
 def test_check_turn_2_requires_complete_native_trace_evidence(tmp_path):
-    pico, _ = _pico_stub_with_digested_message("x" * 5000, tmp_path / "runs")
+    pony, _ = _pony_stub_with_digested_message("x" * 5000, tmp_path / "runs")
     result = _turn_2_result_stub(
         action_origins=("provider_text",),
         usage_complete=False,
@@ -1217,7 +1217,7 @@ def test_check_turn_2_requires_complete_native_trace_evidence(tmp_path):
         system_prefix_hashes=("",),
     )
 
-    assertions = _engine().check_turn_2_digest(result, pico)
+    assertions = _engine().check_turn_2_digest(result, pony)
 
     failed = {assertion.name for assertion in assertions if not assertion.passed}
     assert {
@@ -1230,8 +1230,8 @@ def test_check_turn_2_requires_complete_native_trace_evidence(tmp_path):
 
 def test_check_turn_2_digest_fails_when_no_digest_applied(tmp_path):
     engine = _engine()
-    pico = MagicMock()
-    pico.session = {
+    pony = MagicMock()
+    pony.session = {
         "messages": [
             {
                 "role": "user",
@@ -1242,11 +1242,11 @@ def test_check_turn_2_digest_fails_when_no_digest_applied(tmp_path):
                         "content": "raw output",
                     }
                 ],
-                "_pico_meta": {"digest_applied": False, "tool_use_id": "t1"},
+                "_pony_meta": {"digest_applied": False, "tool_use_id": "t1"},
             },
         ]
     }
-    asserts = engine.check_turn_2_digest(_turn_2_result_stub(), pico)
+    asserts = engine.check_turn_2_digest(_turn_2_result_stub(), pony)
     failed = [a for a in asserts if not a.passed]
     assert any(a.name == "digest_applied_flag_true" for a in failed)
 
@@ -1254,19 +1254,19 @@ def test_check_turn_2_digest_fails_when_no_digest_applied(tmp_path):
 def test_check_turn_2_digest_verifies_raw_file_exists(tmp_path):
     engine = _engine()
     raw_body = "x" * 5000
-    pico, raw_file = _pico_stub_with_digested_message(raw_body, tmp_path / "runs")
+    pony, raw_file = _pony_stub_with_digested_message(raw_body, tmp_path / "runs")
     raw_file.unlink()  # remove the raw file → check should fail
-    asserts = engine.check_turn_2_digest(_turn_2_result_stub(), pico)
+    asserts = engine.check_turn_2_digest(_turn_2_result_stub(), pony)
     failed = [a for a in asserts if not a.passed]
     assert any(a.name == "raw_file_exists_on_disk" for a in failed)
 
 
 def test_check_turn_2_digest_rejects_model_visible_host_path(tmp_path):
-    pico, raw_file = _pico_stub_with_digested_message("x" * 5000, tmp_path / "runs")
-    tool_result = pico.session["messages"][-1]["content"][0]
+    pony, raw_file = _pony_stub_with_digested_message("x" * 5000, tmp_path / "runs")
+    tool_result = pony.session["messages"][-1]["content"][0]
     tool_result["content"] += f"\n(raw at {raw_file})"
 
-    assertions = _engine().check_turn_2_digest(_turn_2_result_stub(), pico)
+    assertions = _engine().check_turn_2_digest(_turn_2_result_stub(), pony)
 
     host_path_assertion = next(
         assertion
@@ -1428,46 +1428,46 @@ def _turn_4_result_stub(**overrides):
     return TurnResult(**defaults)
 
 
-def _pico_stub_with_history():
-    """A pico session with 16 messages including one balanced tool_use pair."""
-    pico = MagicMock()
-    pico.session = {
+def _pony_stub_with_history():
+    """A pony session with 16 messages including one balanced tool_use pair."""
+    pony = MagicMock()
+    pony.session = {
         "messages": [
-            {"role": "user", "content": "q1", "_pico_meta": {}},
-            {"role": "assistant", "content": "a1", "_pico_meta": {}},
-            {"role": "user", "content": "q2", "_pico_meta": {}},
+            {"role": "user", "content": "q1", "_pony_meta": {}},
+            {"role": "assistant", "content": "a1", "_pony_meta": {}},
+            {"role": "user", "content": "q2", "_pony_meta": {}},
             {
                 "role": "assistant",
                 "content": [
                     {"type": "tool_use", "id": "t1", "name": "read", "input": {}}
                 ],
-                "_pico_meta": {},
+                "_pony_meta": {},
             },
             {
                 "role": "user",
                 "content": [
                     {"type": "tool_result", "tool_use_id": "t1", "content": "r"}
                 ],
-                "_pico_meta": {},
+                "_pony_meta": {},
             },
-            {"role": "assistant", "content": "a2", "_pico_meta": {}},
+            {"role": "assistant", "content": "a2", "_pony_meta": {}},
         ]
         + [
             {
                 "role": "user" if i % 2 == 0 else "assistant",
                 "content": f"m{i}",
-                "_pico_meta": {},
+                "_pony_meta": {},
             }
             for i in range(10)
         ]
     }
-    return pico
+    return pony
 
 
 def test_check_turn_4_compaction_passes_when_all_invariants_hold():
     engine = _engine()
-    pico = _pico_stub_with_history()
-    asserts = engine.check_turn_4_compaction(_turn_4_result_stub(), pico)
+    pony = _pony_stub_with_history()
+    asserts = engine.check_turn_4_compaction(_turn_4_result_stub(), pony)
     assert len(asserts) == 6
     assert all(a.passed for a in asserts), [
         (a.name, a.actual) for a in asserts if not a.passed
@@ -1476,36 +1476,36 @@ def test_check_turn_4_compaction_passes_when_all_invariants_hold():
 
 def test_check_turn_4_pairing_invariant_catches_orphan_tool_use():
     engine = _engine()
-    pico = MagicMock()
+    pony = MagicMock()
     # orphan tool_use — no matching tool_result
-    pico.session = {
+    pony.session = {
         "messages": [
             {
                 "role": "assistant",
                 "content": [
                     {"type": "tool_use", "id": "orphan_x", "name": "read", "input": {}}
                 ],
-                "_pico_meta": {},
+                "_pony_meta": {},
             },
         ]
     }
-    asserts = engine.check_turn_4_compaction(_turn_4_result_stub(), pico)
+    asserts = engine.check_turn_4_compaction(_turn_4_result_stub(), pony)
     failed = [a for a in asserts if not a.passed]
     assert any(a.name == "no_orphan_tool_use" for a in failed)
 
 
 def test_check_turn_4_pairing_invariant_requires_immediate_tool_result():
-    pico = MagicMock()
-    pico.session = {
+    pony = MagicMock()
+    pony.session = {
         "messages": [
             {
                 "role": "assistant",
                 "content": [
                     {"type": "tool_use", "id": "tool-1", "name": "read", "input": {}}
                 ],
-                "_pico_meta": {},
+                "_pony_meta": {},
             },
-            {"role": "assistant", "content": "intervening", "_pico_meta": {}},
+            {"role": "assistant", "content": "intervening", "_pony_meta": {}},
             {
                 "role": "user",
                 "content": [
@@ -1515,12 +1515,12 @@ def test_check_turn_4_pairing_invariant_requires_immediate_tool_result():
                         "content": "result",
                     }
                 ],
-                "_pico_meta": {},
+                "_pony_meta": {},
             },
         ]
     }
 
-    assertions = _engine().check_turn_4_compaction(_turn_4_result_stub(), pico)
+    assertions = _engine().check_turn_4_compaction(_turn_4_result_stub(), pony)
 
     assert any(
         assertion.name == "no_orphan_tool_use" and not assertion.passed
@@ -1529,28 +1529,28 @@ def test_check_turn_4_pairing_invariant_requires_immediate_tool_result():
 
 
 def test_global_pairing_assertion_rejects_a_separated_tool_result(tmp_path):
-    pico = _pico_stub_with_persisted_tree(tmp_path)
-    pico.session["messages"] = [
+    pony = _pony_stub_with_persisted_tree(tmp_path)
+    pony.session["messages"] = [
         {
             "role": "assistant",
             "content": [
                 {"type": "tool_use", "id": "tool-1", "name": "read", "input": {}}
             ],
-            "_pico_meta": {},
+            "_pony_meta": {},
         },
-        {"role": "assistant", "content": "intervening", "_pico_meta": {}},
+        {"role": "assistant", "content": "intervening", "_pony_meta": {}},
         {
             "role": "user",
             "content": [
                 {"type": "tool_result", "tool_use_id": "tool-1", "content": "result"}
             ],
-            "_pico_meta": {},
+            "_pony_meta": {},
         },
     ]
 
     assertions = _engine().check_global(
         [_turn_result_stub(action_origins=("native_tool_use",))],
-        pico,
+        pony,
     )
 
     assert any(
@@ -1562,10 +1562,10 @@ def test_global_pairing_assertion_rejects_a_separated_tool_result(tmp_path):
 
 def test_check_turn_4_fails_when_messages_were_silently_dropped():
     engine = _engine()
-    pico = _pico_stub_with_history()
+    pony = _pony_stub_with_history()
     result = _turn_4_result_stub()
     result.metadata["dropped_messages"] = 4
-    asserts = engine.check_turn_4_compaction(result, pico)
+    asserts = engine.check_turn_4_compaction(result, pony)
     failed = [a for a in asserts if not a.passed]
     assert any(a.name == "no_silent_history_drop" for a in failed)
 
@@ -1707,7 +1707,7 @@ def test_check_global_passes_under_budget(tmp_path):
             model_turns_this_turn=1,
         ),
     ]
-    asserts = engine.check_global(all_results, _pico_stub_with_persisted_tree(tmp_path))
+    asserts = engine.check_global(all_results, _pony_stub_with_persisted_tree(tmp_path))
     assert all(a.passed for a in asserts)
 
 
@@ -1715,7 +1715,7 @@ def test_check_global_passes_under_budget(tmp_path):
 def test_text_provider_global_accepts_text_protocol_action(tmp_path, provider):
     assertions = _engine(provider=provider).check_global(
         [_turn_result_stub(action_origins=("text_protocol",))],
-        _pico_stub_with_persisted_tree(tmp_path),
+        _pony_stub_with_persisted_tree(tmp_path),
     )
 
     action_assertion = next(
@@ -1857,7 +1857,7 @@ def test_report_cannot_pass_with_only_global_assertions(tmp_path):
 
 
 def test_report_does_not_serialize_provider_api_key(tmp_path, monkeypatch):
-    monkeypatch.setenv("PICO_API_KEY", "sentinel-secret")
+    monkeypatch.setenv("PONY_API_KEY", "sentinel-secret")
     reporter = Reporter(_config(), tmp_path)
 
     report_path = reporter.write_json(
@@ -1876,11 +1876,11 @@ def test_report_does_not_serialize_provider_api_key(tmp_path, monkeypatch):
 
 
 def _security_assertions(artifact_security, calls):
-    pico = MagicMock()
-    pico.model_client.calls = calls
+    pony = MagicMock()
+    pony.model_client.calls = calls
     assertions = _engine().check_global(
         [_turn_result_stub(action_origins=("native_tool_use",))],
-        pico,
+        pony,
         artifact_security,
     )
     return {
@@ -1906,7 +1906,7 @@ def test_global_security_assertions_fail_independently():
         "active_private_artifact_modes": True,
     }
     assert _security_assertions(
-        {**clean, "secret_hits": [".pico/runs/run/trace.jsonl"]},
+        {**clean, "secret_hits": [".pony/runs/run/trace.jsonl"]},
         [{"payload_secret_clean": True}],
     ) == {
         "provider_payloads_exclude_api_key": True,
@@ -1914,7 +1914,7 @@ def test_global_security_assertions_fail_independently():
         "active_private_artifact_modes": True,
     }
     assert _security_assertions(
-        {**clean, "mode_failures": [".pico/runs/run/trace.jsonl:0644"]},
+        {**clean, "mode_failures": [".pony/runs/run/trace.jsonl:0644"]},
         [{"payload_secret_clean": True}],
     ) == {
         "provider_payloads_exclude_api_key": True,
@@ -1930,7 +1930,7 @@ def test_global_security_assertions_fail_independently():
 
 
 def test_report_redacts_full_payload_and_writes_safe_artifact_summary(tmp_path):
-    from pico.security.redaction import redact_artifact
+    from pony.security.redaction import redact_artifact
 
     secret = "ghp_" + "R" * 32
     reporter = Reporter(_config(), tmp_path)
@@ -1960,7 +1960,7 @@ def test_report_redacts_full_payload_and_writes_safe_artifact_summary(tmp_path):
         artifact_security=artifact_security,
         redactor=lambda value: redact_artifact(
             value,
-            env={"PICO_OPENAI_API_KEY": secret},
+            env={"PONY_OPENAI_API_KEY": secret},
         ),
         forbidden_values=(secret,),
     )
@@ -2074,7 +2074,7 @@ def test_v2_cli_rejects_nonpositive_caps(monkeypatch, flag):
 
 def test_ollama_readiness_uses_bounded_model_probe(monkeypatch):
     monkeypatch.setattr(
-        "pico.providers.probe.probe_model_client",
+        "pony.providers.probe.probe_model_client",
         lambda _client: {"status": "failed"},
     )
 
@@ -2187,7 +2187,7 @@ def test_v2_report_omits_prompt_answer_raw_assertion_and_exception(tmp_path):
 
 def test_fixture_restoration_is_verified_after_context_exit(tmp_path):
     original = b"ordinary = true\n"
-    (tmp_path / "pico.toml").write_bytes(original)
+    (tmp_path / "pony.toml").write_bytes(original)
     seed = tmp_path / "seed.md"
     seed.write_text("safe seed\n", encoding="utf-8")
     fixture = run_live_session.FixtureManager(tmp_path)
@@ -2201,13 +2201,13 @@ def test_fixture_restoration_is_verified_after_context_exit(tmp_path):
         "restored": True,
         "cleanup_error_codes": (),
     }
-    assert (tmp_path / "pico.toml").read_bytes() == original
+    assert (tmp_path / "pony.toml").read_bytes() == original
     assert not (tmp_path / run_live_session.TOOL_DIGEST_FIXTURE_REL).exists()
 
 
 def test_fixture_removes_dangling_digest_symlink_on_exit(tmp_path):
     original = b"ordinary = true\n"
-    (tmp_path / "pico.toml").write_bytes(original)
+    (tmp_path / "pony.toml").write_bytes(original)
     seed = tmp_path / "seed.md"
     seed.write_text("safe seed\n", encoding="utf-8")
     fixture = run_live_session.FixtureManager(tmp_path)

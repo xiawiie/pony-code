@@ -6,10 +6,10 @@ from unittest.mock import MagicMock
 
 import pytest
 
-import pico.memory.block_store as block_store_module
-from pico.memory.block_store import BlockStore
-from pico.memory.recall import recall_for_turn
-from pico.memory.retrieval import Retrieval
+import pony.memory.block_store as block_store_module
+from pony.memory.block_store import BlockStore
+from pony.memory.recall import recall_for_turn
+from pony.memory.retrieval import Retrieval
 
 
 def _w(root, rel, body):
@@ -43,7 +43,7 @@ def test_recall_returns_recall_block(tmp_path):
     )
     out = recall_for_turn(a, "how does cache work?", budget_tokens=1000)
     assert out is not None
-    assert "<pico:recalled_memory" in out
+    assert "<pony:recalled_memory" in out
     assert "score=" in out
     assert "path=" in out
     assert "Paragraph one." in out

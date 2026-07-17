@@ -4,11 +4,11 @@ from contextlib import contextmanager
 
 import pytest
 
-from pico.state.checkpoint_store import CheckpointStore
-from pico.recovery.checkpoint_writer import RecoveryCheckpointWriter
-from pico.recovery.manager import RecoveryManager, RestoreMutationError
-from pico.recovery import manager as recovery_manager_module
-from pico.recovery.models import new_checkpoint_record, new_tool_change_record
+from pony.state.checkpoint_store import CheckpointStore
+from pony.recovery.checkpoint_writer import RecoveryCheckpointWriter
+from pony.recovery.manager import RecoveryManager, RestoreMutationError
+from pony.recovery import manager as recovery_manager_module
+from pony.recovery.models import new_checkpoint_record, new_tool_change_record
 
 
 def _modified_checkpoint(store, root, *, checkpoint_id="ckpt_source"):

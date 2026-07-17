@@ -4,7 +4,7 @@ import os
 
 import pytest
 
-from pico.memory.block_store import BlockStore
+from pony.memory.block_store import BlockStore
 
 
 def _mk_store(tmp_path):

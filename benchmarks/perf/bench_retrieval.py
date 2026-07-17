@@ -12,8 +12,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from benchmarks.perf.harness import bench  # noqa: E402
-from pico.memory.block_store import BlockStore  # noqa: E402
-from pico.memory.retrieval import Retrieval  # noqa: E402
+from pony.memory.block_store import BlockStore  # noqa: E402
+from pony.memory.retrieval import Retrieval  # noqa: E402
 
 
 def _populate(root, count):

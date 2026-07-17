@@ -3,8 +3,8 @@ from types import SimpleNamespace
 
 import pytest
 
-import pico.agent.observability as observability_module
-from pico.agent.observability import (
+import pony.agent.observability as observability_module
+from pony.agent.observability import (
     RunArtifactError,
     load_run_summary,
     project_trace_event,

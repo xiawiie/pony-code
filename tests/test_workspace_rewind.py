@@ -3,23 +3,23 @@ from types import SimpleNamespace
 
 import pytest
 
-from pico import Pico
-from pico.state.session_store import SessionStore
-from pico.workspace.context import WorkspaceContext
+from pony import Pony
+from pony.state.session_store import SessionStore
+from pony.workspace.context import WorkspaceContext
 from benchmarks.support.fake_provider import FakeModelClient
-from pico.runtime.rewind import (
+from pony.runtime.rewind import (
     WorkspaceRewindConfirmationRequired,
     WorkspaceRewindError,
 )
-from pico.runtime.options import RuntimeOptions
+from pony.runtime.options import RuntimeOptions
 
 
 def _agent(tmp_path, outputs=None, *, store=None):
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
-    return Pico(
+    return Pony(
         model_client=FakeModelClient(outputs or []),
         workspace=WorkspaceContext.build(tmp_path),
-        session_store=store or SessionStore(tmp_path / ".pico" / "sessions"),
+        session_store=store or SessionStore(tmp_path / ".pony" / "sessions"),
         options=RuntimeOptions(approval_policy="auto"),
     )
 
@@ -135,8 +135,8 @@ def test_resume_reconciles_restore_success_after_session_append_crash(
     intent = agent.session_store.load_rewind_intent(session_id)
     assert intent["state"] == "restored"
 
-    resumed_store = SessionStore(Path(tmp_path) / ".pico" / "sessions")
-    resumed = Pico.from_session(
+    resumed_store = SessionStore(Path(tmp_path) / ".pony" / "sessions")
+    resumed = Pony.from_session(
         model_client=FakeModelClient([]),
         workspace=WorkspaceContext.build(tmp_path),
         session_store=resumed_store,
@@ -187,8 +187,8 @@ def test_prepared_rewind_intent_matches_exact_restore_operation_after_crash(
     # this rewind's restore operation.
     agent.recovery_manager.apply_restore(checkpoint["workspace_checkpoint_id"])
 
-    resumed_store = SessionStore(Path(tmp_path) / ".pico" / "sessions")
-    resumed = Pico.from_session(
+    resumed_store = SessionStore(Path(tmp_path) / ".pony" / "sessions")
+    resumed = Pony.from_session(
         model_client=FakeModelClient([]),
         workspace=WorkspaceContext.build(tmp_path),
         session_store=resumed_store,

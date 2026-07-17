@@ -4,16 +4,16 @@ from types import SimpleNamespace
 
 import pytest
 
-import pico.cli.assembly as cli_assembly
-import pico.cli.sandbox as cli_module
-import pico.cli.app as pico_cli
-from pico.state.checkpoint_store import CheckpointStore
-from pico.cli.app import main
-from pico.cli.errors import CliError
-from pico.sandbox.docker import DockerSandboxError
-from pico.sandbox.apply import StagingObserver
-from pico.sandbox.apply import SandboxApplyError, SourceApplier, SourceApplyStore
-from pico.sandbox.session import (
+import pony.cli.assembly as cli_assembly
+import pony.cli.sandbox as cli_module
+import pony.cli.app as pony_cli
+from pony.state.checkpoint_store import CheckpointStore
+from pony.cli.app import main
+from pony.cli.errors import CliError
+from pony.sandbox.docker import DockerSandboxError
+from pony.sandbox.apply import StagingObserver
+from pony.sandbox.apply import SandboxApplyError, SourceApplier, SourceApplyStore
+from pony.sandbox.session import (
     read_source_apply_authority,
     SandboxSessionError,
     SandboxSessionStore,
@@ -60,7 +60,7 @@ def _bootstrap(request):
     git = request.workspace_view.physical_root / ".git"
     git.mkdir()
     (git / "HEAD").write_text(
-        "ref: refs/heads/pico-sandbox\n",
+        "ref: refs/heads/pony-sandbox\n",
         encoding="utf-8",
     )
     return "a" * 40
@@ -70,7 +70,7 @@ class _Context:
     def __init__(self, source, store, session):
         self.source_root = source
         self.execution_root = session.workspace_view.physical_root
-        self.project_state_root = source / ".pico"
+        self.project_state_root = source / ".pony"
         self.sandbox_state_root = session.state_root
         self.source_apply_state_root = session.state_root
         self.sandbox_session = session
@@ -87,17 +87,17 @@ def _session(tmp_path, monkeypatch):
     source = tmp_path / "source"
     source.mkdir()
     (source / "README.md").write_text("before\n", encoding="utf-8")
-    store = SandboxSessionStore(home / ".pico" / "sandboxes")
+    store = SandboxSessionStore(home / ".pony" / "sandboxes")
     session = store.create(
         source,
-        pico_session_id="session-1",
+        pony_session_id="session-1",
         bootstrap_git=_bootstrap,
-        project_state_root=source / ".pico",
+        project_state_root=source / ".pony",
         **_session_metadata(),
     )
     context = _Context(source, store, session)
     checkpoint_store = CheckpointStore(
-        session.state_root / "recovery" / ".pico" / "checkpoints"
+        session.state_root / "recovery" / ".pony" / "checkpoints"
     )
     observer = StagingObserver(context, checkpoint_store)
     observer.ensure_baseline()
@@ -132,7 +132,7 @@ def test_status_is_read_only_and_reports_fixed_unavailable_reason(
         "kind": "local",
         "reason_code": "local_authorization_verified",
     }
-    assert not (home / ".pico").exists()
+    assert not (home / ".pony").exists()
 
 
 def test_prepare_fails_closed_before_state_mutation_when_image_is_missing(
@@ -169,7 +169,7 @@ def test_prepare_fails_closed_before_state_mutation_when_image_is_missing(
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["error"]["code"] == "sandbox_image_missing"
-    assert not (home / ".pico").exists()
+    assert not (home / ".pony").exists()
 
 
 def test_prepare_only_inspects_packaged_local_image_without_network_or_cache(
@@ -247,7 +247,7 @@ def test_list_on_missing_root_is_read_only(tmp_path, monkeypatch, capsys):
 
     payload = json.loads(capsys.readouterr().out)["data"]
     assert payload == {"sessions": [], "capacity": EMPTY_CAPACITY}
-    assert not (home / ".pico").exists()
+    assert not (home / ".pony").exists()
 
 
 def test_list_counts_unknown_state_without_disclosing_or_mutating_it(
@@ -256,7 +256,7 @@ def test_list_counts_unknown_state_without_disclosing_or_mutating_it(
     capsys,
 ):
     home = tmp_path / "home"
-    parent = home / ".pico" / "sandboxes"
+    parent = home / ".pony" / "sandboxes"
     parent.mkdir(parents=True)
     parent.chmod(0o700)
     unknown = parent / "operator-note"
@@ -282,7 +282,7 @@ def test_status_and_list_map_invalid_state_root_to_fixed_errors(
     capsys,
 ):
     home = tmp_path / "home"
-    parent = home / ".pico" / "sandboxes"
+    parent = home / ".pony" / "sandboxes"
     parent.mkdir(parents=True)
     parent.chmod(0o755)
     monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
@@ -333,7 +333,7 @@ def test_prune_refuses_all_mutation_when_unknown_state_exists(
     capsys,
 ):
     home = tmp_path / "home"
-    parent = home / ".pico" / "sandboxes"
+    parent = home / ".pony" / "sandboxes"
     parent.mkdir(parents=True)
     parent.chmod(0o700)
     unknown = parent / "operator-note"
@@ -779,14 +779,14 @@ def test_public_sandbox_runtime_fails_closed_on_local_authorization_before_agent
     monkeypatch,
     capsys,
 ):
-    monkeypatch.setattr("pico.cli.app.platform.system", lambda: "Darwin")
-    monkeypatch.setattr("pico.cli.app.platform.machine", lambda: "arm64")
+    monkeypatch.setattr("pony.cli.app.platform.system", lambda: "Darwin")
+    monkeypatch.setattr("pony.cli.app.platform.machine", lambda: "arm64")
     monkeypatch.setattr(
-        "pico.cli.assembly._build_transport_client",
+        "pony.cli.assembly._build_transport_client",
         lambda *_args, **_kwargs: pytest.fail("provider construction reached"),
     )
     monkeypatch.setattr(
-        "pico.cli.assembly.local_docker_sandbox_runtime",
+        "pony.cli.assembly.local_docker_sandbox_runtime",
         lambda: (_ for _ in ()).throw(
             DockerSandboxError("sandbox_runtime_authorization_mismatch")
         ),
@@ -812,10 +812,10 @@ def test_public_sandbox_runtime_rejects_unreleased_local_platform_before_build(
     system,
     machine,
 ):
-    monkeypatch.setattr("pico.cli.app.platform.system", lambda: system)
-    monkeypatch.setattr("pico.cli.app.platform.machine", lambda: machine)
+    monkeypatch.setattr("pony.cli.app.platform.system", lambda: system)
+    monkeypatch.setattr("pony.cli.app.platform.machine", lambda: machine)
     monkeypatch.setattr(
-        "pico.cli.app.build_agent",
+        "pony.cli.app.build_agent",
         lambda *_args, **_kwargs: pytest.fail("agent construction reached"),
     )
 
@@ -854,14 +854,14 @@ def test_sandbox_preflight_failure_precedes_source_session_store(
         "_build_transport_client",
         lambda *_args, **_kwargs: pytest.fail("provider construction reached"),
     )
-    args = pico_cli.build_arg_parser().parse_args(
+    args = pony_cli.build_arg_parser().parse_args(
         ["--cwd", str(tmp_path), "--sandbox", "run", "hello"]
     )
 
     with pytest.raises(CliError, match="Docker Sandbox startup failed"):
         cli_assembly.build_agent(args)
 
-    assert not (tmp_path / ".pico").exists()
+    assert not (tmp_path / ".pony").exists()
 
 
 def test_runtime_defaults_to_fresh_sealed_local_authorization(
@@ -882,7 +882,7 @@ def test_runtime_defaults_to_fresh_sealed_local_authorization(
 
     assert cli_assembly._load_sandbox_runtime() == (image, authorization)
     assert calls == ["local"]
-    assert not (home / ".pico").exists()
+    assert not (home / ".pony").exists()
 
 
 def test_build_agent_wires_verified_runtime_to_one_docker_context(
@@ -896,7 +896,7 @@ def test_build_agent_wires_verified_runtime_to_one_docker_context(
     model = object()
     captured = {}
 
-    class FakePico:
+    class FakePony:
         @staticmethod
         def new_session_id():
             return "session-1"
@@ -920,20 +920,20 @@ def test_build_agent_wires_verified_runtime_to_one_docker_context(
         events.append("context")
         assert selected is image
         assert kwargs["authorization"] is authorization
-        assert kwargs["pico_session_id"] == "session-1"
+        assert kwargs["pony_session_id"] == "session-1"
         assert kwargs["resume"] is False
         assert b"source-secret" in kwargs["known_secrets"]
         return context, source_workspace
 
     monkeypatch.setattr(cli_assembly, "_build_sandbox_context", build_context)
-    monkeypatch.setattr(cli_assembly, "Pico", FakePico)
-    args = pico_cli.build_arg_parser().parse_args(
+    monkeypatch.setattr(cli_assembly, "Pony", FakePony)
+    args = pony_cli.build_arg_parser().parse_args(
         ["--cwd", str(tmp_path), "--sandbox", "run", "hello"]
     )
 
     agent = cli_assembly.build_agent(args)
 
-    assert isinstance(agent, FakePico)
+    assert isinstance(agent, FakePony)
     assert events == ["runtime", "context", "model"]
     assert captured["model_client"] is model
     assert captured["options"].sandbox_context is context
@@ -949,13 +949,13 @@ def test_host_resume_rejects_bound_sandbox_before_model_construction(
     monkeypatch.setattr(
         cli_assembly,
         "find_project_sandbox_session",
-        lambda project_state_root, source_root, pico_session_id: (
+        lambda project_state_root, source_root, pony_session_id: (
             events.append(
                 (
                     "finder",
                     project_state_root,
                     source_root,
-                    pico_session_id,
+                    pony_session_id,
                 )
             )
             or object()
@@ -966,7 +966,7 @@ def test_host_resume_rejects_bound_sandbox_before_model_construction(
         "_build_transport_client",
         lambda *_args, **_kwargs: pytest.fail("model constructed"),
     )
-    args = pico_cli.build_arg_parser().parse_args(
+    args = pony_cli.build_arg_parser().parse_args(
         [
             "--cwd",
             str(tmp_path),
@@ -984,7 +984,7 @@ def test_host_resume_rejects_bound_sandbox_before_model_construction(
     assert events == [
         (
             "finder",
-            tmp_path / ".pico",
+            tmp_path / ".pony",
             tmp_path,
             "session-1",
         )
@@ -1010,7 +1010,7 @@ def test_host_resume_fails_closed_on_invalid_sandbox_binding(
         "_build_transport_client",
         lambda *_args, **_kwargs: pytest.fail("model constructed"),
     )
-    args = pico_cli.build_arg_parser().parse_args(
+    args = pony_cli.build_arg_parser().parse_args(
         [
             "--cwd",
             str(tmp_path),
@@ -1103,8 +1103,8 @@ def test_prune_apply_reconciles_active_call_before_staging_candidates(
         current.state_root,
         call_id="call-1",
         reconciliation_token="c" * 64,
-        container_name="pico-call-1",
-        expected_labels={"io.pico.call": "call-1"},
+        container_name="pony-call-1",
+        expected_labels={"io.pony.call": "call-1"},
         plan_digest="sha256:" + "d" * 64,
     )
 

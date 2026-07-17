@@ -2,9 +2,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from pico.cli.app import build_arg_parser
-from pico.cli.parser import KNOWN_TOP_LEVEL_COMMANDS, parse_cli_invocation
-from pico.runtime.application import DEFAULT_MAX_OUTPUT_TOKENS, DEFAULT_MAX_STEPS
+from pony.cli.app import build_arg_parser
+from pony.cli.parser import KNOWN_TOP_LEVEL_COMMANDS, parse_cli_invocation
+from pony.runtime.application import DEFAULT_MAX_OUTPUT_TOKENS, DEFAULT_MAX_STEPS
 
 
 class RecordingParser:
@@ -33,7 +33,7 @@ def test_parse_repl_command():
     assert invocation.command_args == []
 
 
-def test_parse_bare_pico_as_interactive_repl():
+def test_parse_bare_pony_as_interactive_repl():
     invocation = parse_cli_invocation([], build_arg_parser())
 
     assert invocation.command == "repl"

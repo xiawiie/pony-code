@@ -1,10 +1,10 @@
-from pico import Pico
-from pico.state.session_store import SessionStore
-from pico.workspace.context import WorkspaceContext
-from pico.runtime import application as runtime_module
-from pico.workspace import snapshot as snapshot_module
+from pony import Pony
+from pony.state.session_store import SessionStore
+from pony.workspace.context import WorkspaceContext
+from pony.runtime import application as runtime_module
+from pony.workspace import snapshot as snapshot_module
 from benchmarks.support.fake_provider import FakeModelClient
-from pico.workspace.snapshot import capture_workspace_snapshot, diff_workspace_snapshots
+from pony.workspace.snapshot import capture_workspace_snapshot, diff_workspace_snapshots
 
 
 def test_workspace_snapshot_scan_has_file_limit(tmp_path):
@@ -21,7 +21,7 @@ def test_workspace_snapshot_skips_sensitive_paths_before_stat_or_hash(
     monkeypatch,
 ):
     sensitive = tmp_path / ".env"
-    sensitive.write_text("PICO_TOKEN=opaque\n", encoding="utf-8")
+    sensitive.write_text("PONY_TOKEN=opaque\n", encoding="utf-8")
     safe = tmp_path / "safe.txt"
     safe.write_text("safe\n", encoding="utf-8")
     real_stat = type(safe).stat
@@ -83,12 +83,12 @@ def test_workspace_snapshot_diff_reports_ordered_changes():
     assert summaries == ["modified:a.txt", "created:created.txt", "deleted:deleted.txt"]
 
 
-def test_pico_workspace_snapshot_methods_delegate(tmp_path, monkeypatch):
+def test_pony_workspace_snapshot_methods_delegate(tmp_path, monkeypatch):
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
-    agent = Pico(
+    agent = Pony(
         model_client=FakeModelClient([]),
         workspace=WorkspaceContext.build(tmp_path),
-        session_store=SessionStore(tmp_path / ".pico" / "sessions"),
+        session_store=SessionStore(tmp_path / ".pony" / "sessions"),
     )
     calls = []
 

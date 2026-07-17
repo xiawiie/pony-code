@@ -1,17 +1,17 @@
 from benchmarks.support.fake_provider import FakeModelClient
-from pico import Pico
-from pico.runtime.options import RuntimeOptions
-from pico.state.session_store import SessionStore
-from pico.state.task_state import TaskState
-from pico.workspace.context import WorkspaceContext
+from pony import Pony
+from pony.runtime.options import RuntimeOptions
+from pony.state.session_store import SessionStore
+from pony.state.task_state import TaskState
+from pony.workspace.context import WorkspaceContext
 
 
 def _agent(tmp_path, *, approval_policy="ask"):
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
-    return Pico(
+    return Pony(
         model_client=FakeModelClient([]),
         workspace=WorkspaceContext.build(tmp_path),
-        session_store=SessionStore(tmp_path / ".pico" / "sessions"),
+        session_store=SessionStore(tmp_path / ".pony" / "sessions"),
         options=RuntimeOptions(approval_policy=approval_policy),
     )
 

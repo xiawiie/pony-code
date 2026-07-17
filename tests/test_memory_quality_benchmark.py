@@ -113,7 +113,7 @@ def test_setup_workspace_rejects_non_dict_setup_notes_without_side_effects(tmp_p
     assert not any(tmp_path.iterdir())
 
 
-def test_setup_workspace_maps_workspace_notes_to_pico_memory(tmp_path):
+def test_setup_workspace_maps_workspace_notes_to_pony_memory(tmp_path):
     module = _load_memory_benchmark_module()
 
     ws = module.setup_workspace(
@@ -130,10 +130,10 @@ def test_setup_workspace_maps_workspace_notes_to_pico_memory(tmp_path):
 
     assert (ws / "AGENTS.md").read_text(encoding="utf-8") == "# Test project\n"
     assert (
-        ws / ".pico" / "memory" / "notes" / "auth.md"
+        ws / ".pony" / "memory" / "notes" / "auth.md"
     ).read_text(encoding="utf-8") == "# Auth\n\n- bcrypt rounds must be <= 12\n"
     assert (
-        ws / ".pico" / "memory" / "agent_notes.md"
+        ws / ".pony" / "memory" / "agent_notes.md"
     ).read_text(encoding="utf-8") == "- old lesson\n"
 
 
@@ -150,7 +150,7 @@ def test_setup_workspace_maps_user_scope_notes(tmp_path):
     )
 
     assert (
-        ws / ".pico" / "benchmark-user-memory" / "notes" / "prefs.md"
+        ws / ".pony" / "benchmark-user-memory" / "notes" / "prefs.md"
     ).read_text(encoding="utf-8") == "Prefer grouped reviews.\n"
 
 
@@ -210,7 +210,7 @@ def test_score_recall_requires_expected_hit_in_top_three(tmp_path):
 
 def test_score_update_requires_memory_save_and_preserves_existing_note(tmp_path):
     module = _load_memory_benchmark_module()
-    memory_root = tmp_path / ".pico" / "memory"
+    memory_root = tmp_path / ".pony" / "memory"
     memory_root.mkdir(parents=True)
     (memory_root / "agent_notes.md").write_text(
         "- old lesson\n- bcrypt rounds > 12 causes CI timeout\n",
@@ -430,7 +430,7 @@ def test_score_expected_hits_top_requires_all_hits_in_one_search_event(tmp_path)
 
 def test_score_memory_save_requires_successful_tool_status(tmp_path):
     module = _load_memory_benchmark_module()
-    memory_root = tmp_path / ".pico" / "memory"
+    memory_root = tmp_path / ".pony" / "memory"
     memory_root.mkdir(parents=True)
     (memory_root / "agent_notes.md").write_text(
         "- old lesson\n- bcrypt rounds > 12 causes CI timeout\n",
@@ -464,7 +464,7 @@ def test_score_memory_save_requires_successful_tool_status(tmp_path):
 
 def test_score_memory_save_requires_expected_note_in_args(tmp_path):
     module = _load_memory_benchmark_module()
-    memory_root = tmp_path / ".pico" / "memory"
+    memory_root = tmp_path / ".pony" / "memory"
     memory_root.mkdir(parents=True)
     (memory_root / "agent_notes.md").write_text(
         "- old lesson\n- bcrypt rounds > 12 causes CI timeout\n",
@@ -615,7 +615,7 @@ def test_semantic_benchmark_has_required_quality_categories():
 
 def test_fake_mode_ignores_user_memory_root(monkeypatch, tmp_path, capsys):
     home = tmp_path / "home"
-    user_notes = home / ".pico" / "memory" / "notes"
+    user_notes = home / ".pony" / "memory" / "notes"
     user_notes.mkdir(parents=True)
     noisy_note = (
         "auth session testing bcrypt hash passwords login endpoint async tests "

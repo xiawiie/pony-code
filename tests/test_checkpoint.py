@@ -1,23 +1,23 @@
-from pico import Pico
-from pico.state.session_store import SessionStore
-from pico.workspace.context import WorkspaceContext
+from pony import Pony
+from pony.state.session_store import SessionStore
+from pony.workspace.context import WorkspaceContext
 from benchmarks.support.fake_provider import FakeModelClient
-from pico.state.checkpoint import (
+from pony.state.checkpoint import (
     CHECKPOINT_FULL_VALID_STATUS,
     CHECKPOINT_NONE_STATUS,
     create_checkpoint,
     current_runtime_identity,
     evaluate_resume_state,
 )
-from pico.state.task_state import TaskState
-from pico.runtime.options import RuntimeOptions
+from pony.state.task_state import TaskState
+from pony.runtime.options import RuntimeOptions
 
 
 def build_agent(tmp_path, outputs=None, **kwargs):
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
     workspace = WorkspaceContext.build(tmp_path)
-    store = SessionStore(tmp_path / ".pico" / "sessions")
-    return Pico(
+    store = SessionStore(tmp_path / ".pony" / "sessions")
+    return Pony(
         model_client=FakeModelClient(outputs or []),
         workspace=workspace,
         session_store=store,

@@ -1,7 +1,7 @@
 import builtins
 
-from pico.recovery import policy as recovery_policy
-from pico.recovery.policy import (
+from pony.recovery import policy as recovery_policy
+from pony.recovery.policy import (
     command_risk_class,
     evaluate_command_approval,
     snapshot_bytes_eligibility,
@@ -24,7 +24,7 @@ def test_snapshot_rejects_sensitive_path_before_resolution_or_read(
     tmp_path,
     monkeypatch,
 ):
-    (tmp_path / ".env").write_text("PICO_TOKEN=opaque\n", encoding="utf-8")
+    (tmp_path / ".env").write_text("PONY_TOKEN=opaque\n", encoding="utf-8")
     monkeypatch.setattr(
         recovery_policy.Path,
         "resolve",
@@ -107,7 +107,7 @@ def test_snapshot_scans_complete_bounded_content_with_custom_secret_name(tmp_pat
 
     assert result["snapshot_eligible"] is False
     assert result["ineligible_reason"] == "sensitive_content"
-    assert not (tmp_path / ".pico").exists()
+    assert not (tmp_path / ".pony").exists()
 
 
 def test_snapshot_size_check_is_bounded(tmp_path):
@@ -122,7 +122,7 @@ def test_snapshot_size_check_is_bounded(tmp_path):
 
 def test_snapshot_bytes_eligibility_blocks_sensitive_content(tmp_path, monkeypatch):
     sentinel = "sk-sensitive-recovery-value"
-    monkeypatch.setenv("PICO_OPENAI_API_KEY", sentinel)
+    monkeypatch.setenv("PONY_OPENAI_API_KEY", sentinel)
 
     result = snapshot_bytes_eligibility(
         tmp_path,
@@ -197,7 +197,7 @@ def test_command_policy_compatibility_wrapper_returns_all_four_risk_classes():
     assert command_risk_class("git status --short") == "read_only"
     assert command_risk_class("cat README.md > output.txt") == "workspace_write"
     assert command_risk_class("cat .env") == "destructive"
-    assert command_risk_class("python -m black pico") == "external_effect"
+    assert command_risk_class("python -m black pony") == "external_effect"
 
 
 def test_command_approval_is_risk_class_driven():

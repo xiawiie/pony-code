@@ -5,17 +5,17 @@ from unittest.mock import Mock
 
 import pytest
 
-from pico import Pico
-from pico.state.session_store import SessionStore
-from pico.workspace.context import WorkspaceContext
-from pico.security import redaction as securitylib
-from pico.cli.start import run_agent_once
-from pico.context.renderer import render_current_user_message
-from pico.agent.messages import validate_messages
-from pico.agent.model_capabilities import TokenAccounting
-from pico.providers.response import Response, StopReason
-from pico.security.redaction import SensitiveDataBlockedError
-from pico.runtime.options import RuntimeOptions
+from pony import Pony
+from pony.state.session_store import SessionStore
+from pony.workspace.context import WorkspaceContext
+from pony.security import redaction as securitylib
+from pony.cli.start import run_agent_once
+from pony.context.renderer import render_current_user_message
+from pony.agent.messages import validate_messages
+from pony.agent.model_capabilities import TokenAccounting
+from pony.providers.response import Response, StopReason
+from pony.security.redaction import SensitiveDataBlockedError
+from pony.runtime.options import RuntimeOptions
 
 
 class CapturingClient:
@@ -47,17 +47,17 @@ def final_response(text):
 
 def build_agent_with_client(tmp_path, client):
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
-    return Pico(
+    return Pony(
         model_client=client,
         workspace=WorkspaceContext.build(tmp_path),
-        session_store=SessionStore(tmp_path / ".pico" / "sessions"),
+        session_store=SessionStore(tmp_path / ".pony" / "sessions"),
         options=RuntimeOptions(approval_policy="auto", max_steps=2),
     )
 
 
 def all_normal_artifact_bytes(root):
     chunks = []
-    for path in (Path(root) / ".pico").rglob("*"):
+    for path in (Path(root) / ".pony").rglob("*"):
         if (
             path.is_file()
             and "/backup/" not in path.as_posix()
@@ -116,7 +116,7 @@ def test_injection_source_is_sanitized_before_tokenizer_and_request(tmp_path):
         {
         "role": "user",
         "content": "inspect",
-        "_pico_meta": {},
+        "_pony_meta": {},
         }
     )
     request, _ = agent.context_manager.build_request(
@@ -203,10 +203,10 @@ def test_opaque_secret_mapping_value_in_action_is_rejected_as_native_pair(tmp_pa
     assert tool_use["content"][0]["id"] == "toolu_opaque"
     assert tool_use["content"][0]["input"]["credential"] == "<redacted>"
     assert tool_result["content"][0]["tool_use_id"] == "toolu_opaque"
-    assert tool_result["_pico_meta"]["tool_status"] == "rejected"
-    assert tool_result["_pico_meta"]["effect_class"] == "workspace_write"
-    assert tool_result["_pico_meta"]["tool_error_code"] == ("sensitive_content_block")
-    assert tool_result["_pico_meta"]["security_event_type"] == (
+    assert tool_result["_pony_meta"]["tool_status"] == "rejected"
+    assert tool_result["_pony_meta"]["effect_class"] == "workspace_write"
+    assert tool_result["_pony_meta"]["tool_error_code"] == ("sensitive_content_block")
+    assert tool_result["_pony_meta"]["security_event_type"] == (
         "sensitive_access_block"
     )
     assert agent._last_tool_result_metadata["tool_error_code"] == (
@@ -253,7 +253,7 @@ def test_cli_and_agent_loop_bound_provider_error_text(tmp_path, capsys, caplog):
     error = RuntimeError(credential_url + " " + ("x" * 500))
     client = RaisingClient(error)
     agent = build_agent_with_client(tmp_path, client)
-    caplog.set_level(logging.DEBUG, logger="pico")
+    caplog.set_level(logging.DEBUG, logger="pony")
 
     assert run_agent_once(agent, ["fail"]) == 1
 

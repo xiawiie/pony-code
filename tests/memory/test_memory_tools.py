@@ -2,9 +2,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from pico.memory.block_store import BlockStore
-from pico.memory.retrieval import Retrieval
-from pico.memory.tools import (
+from pony.memory.block_store import BlockStore
+from pony.memory.retrieval import Retrieval
+from pony.memory.tools import (
     tool_memory_list,
     tool_memory_read,
     tool_memory_save,
@@ -136,7 +136,7 @@ def test_save_runner_rejects_removed_fields_even_when_empty(tmp_path, extra):
 
 @pytest.mark.parametrize("extra", ({"topic": ""}, {"type": ""}))
 def test_save_validator_rejects_removed_fields_even_when_empty(tmp_path, extra):
-    from pico.tools.validation import validate_tool
+    from pony.tools.validation import validate_tool
 
     ctx = _context(tmp_path)
 
@@ -148,7 +148,7 @@ def test_save_validator_rejects_removed_fields_even_when_empty(tmp_path, extra):
 
 def test_save_rejects_unknown_scope(tmp_path):
     """validate_tool must reject scope values outside {workspace, user}."""
-    from pico.tools.validation import validate_tool
+    from pony.tools.validation import validate_tool
 
     ctx = _context(tmp_path)
     with pytest.raises(ValueError, match="scope"):
@@ -167,7 +167,7 @@ def test_list_with_prefix(tmp_path):
 
 
 def test_tool_registry_includes_new_tools():
-    from pico.tools.registry import legal_tool_names
+    from pony.tools.registry import legal_tool_names
 
     names = legal_tool_names()
     for expected in (
@@ -181,7 +181,7 @@ def test_tool_registry_includes_new_tools():
 
 
 def test_tool_examples_present():
-    from pico.tools.registry import tool_example
+    from pony.tools.registry import tool_example
 
     for name in (
         "memory_list",
@@ -194,7 +194,7 @@ def test_tool_examples_present():
 
 
 def test_effect_class_for_new_tools_is_read_only():
-    from pico.tools.registry import BASE_TOOL_SPECS
+    from pony.tools.registry import BASE_TOOL_SPECS
 
     for name in ("memory_list", "memory_read", "memory_search", "repo_lookup"):
         assert BASE_TOOL_SPECS[name]["effect_class"] == "read_only"

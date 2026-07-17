@@ -1,6 +1,6 @@
 import pytest
 
-from pico.state.task_state import (
+from pony.state.task_state import (
     STOP_REASON_FINAL_ANSWER_RETURNED,
     STOP_REASON_INTERRUPTED,
     STOP_REASON_RETRY_LIMIT_REACHED,

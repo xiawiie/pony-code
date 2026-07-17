@@ -9,9 +9,9 @@ Verifies:
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from pico.context.renderer import render_current_user_message
-from pico.memory.block_store import BlockStore
-from pico.memory.retrieval import Retrieval
+from pony.context.renderer import render_current_user_message
+from pony.memory.block_store import BlockStore
+from pony.memory.retrieval import Retrieval
 
 
 def _w(root, rel, body):
@@ -40,7 +40,7 @@ def test_renderer_injects_recalled_memory(tmp_path):
         memory=SimpleNamespace(task_summary=""),
     )
     text, tele = render_current_user_message(a, "上次讨论过 cache 的问题")
-    assert "<pico:recalled_memory" in text
+    assert "<pony:recalled_memory" in text
     assert "Cache is important." in text
     assert tele["context_source_allocator"]["memory_snapshot"] == "loaded"
 
@@ -61,7 +61,7 @@ def test_renderer_no_recall_when_store_empty(tmp_path):
         memory=SimpleNamespace(task_summary=""),
     )
     text, _tele = render_current_user_message(a, "上次讨论过 cache")
-    assert "<pico:recalled_memory" not in text
+    assert "<pony:recalled_memory" not in text
     assert "上次讨论过 cache" in text
 
 
@@ -70,13 +70,13 @@ def test_recall_error_recorded_to_telemetry(tmp_path, monkeypatch):
     from types import SimpleNamespace
     from unittest.mock import MagicMock
 
-    from pico.context.renderer import render_current_user_message
+    from pony.context.renderer import render_current_user_message
 
     # Force recall_for_turn to raise.
     def _boom(*args, **kwargs):
         raise ValueError("simulated recall crash")
 
-    monkeypatch.setattr("pico.context.sources.recall_candidates", _boom)
+    monkeypatch.setattr("pony.context.sources.recall_candidates", _boom)
 
     a = SimpleNamespace(
         memory_store=MagicMock(),

@@ -1,6 +1,6 @@
 import pytest
 
-from pico.context.chunks import (
+from pony.context.chunks import (
     ContextChunk,
     RequiredContextTooLarge,
     allocate_context_chunks,

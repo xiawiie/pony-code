@@ -5,11 +5,11 @@ import subprocess
 
 import pytest
 
-import pico.recovery.manager as recovery_manager_module
-import pico.sandbox.session as session_module
-from pico.state.checkpoint_store import CheckpointStore
-from pico.tools.subprocess import build_trusted_executables
-from pico.sandbox.session import (
+import pony.recovery.manager as recovery_manager_module
+import pony.sandbox.session as session_module
+from pony.state.checkpoint_store import CheckpointStore
+from pony.tools.subprocess import build_trusted_executables
+from pony.sandbox.session import (
     find_project_sandbox_session,
     SandboxSessionError,
     SandboxSessionStore,
@@ -18,7 +18,7 @@ from pico.sandbox.session import (
     snapshot_source_tree,
     stage_source,
 )
-from pico.security.private_files import ensure_private_dir
+from pony.security.private_files import ensure_private_dir
 
 
 def _bootstrap(request):
@@ -28,7 +28,7 @@ def _bootstrap(request):
     assert isinstance(tracked_paths, tuple)
     git = view.physical_root / ".git"
     git.mkdir()
-    (git / "HEAD").write_text("ref: refs/heads/pico-sandbox\n", encoding="utf-8")
+    (git / "HEAD").write_text("ref: refs/heads/pony-sandbox\n", encoding="utf-8")
     return "a" * 40
 
 
@@ -66,7 +66,7 @@ def _create(tmp_path, **kwargs):
     options.update(kwargs)
     session = store.create(
         source,
-        pico_session_id="session-1",
+        pony_session_id="session-1",
         bootstrap_git=_bootstrap,
         **options,
     )
@@ -121,8 +121,8 @@ def test_stage_source_filters_state_secrets_and_generated_files(tmp_path):
     (source / ".env.example").write_text(
         "URL=https://example.invalid\n", encoding="utf-8"
     )
-    (source / ".pico").mkdir()
-    (source / ".pico" / "run.json").write_text("{}", encoding="utf-8")
+    (source / ".pony").mkdir()
+    (source / ".pony" / "run.json").write_text("{}", encoding="utf-8")
     (source / "node_modules").mkdir()
     (source / "node_modules" / "package.js").write_text("x", encoding="utf-8")
 
@@ -138,7 +138,7 @@ def test_stage_source_filters_state_secrets_and_generated_files(tmp_path):
     }
     assert result["excluded_counts"] == {
         "excluded_generated": 1,
-        "excluded_pico_state": 1,
+        "excluded_pony_state": 1,
         "known_secret_content": 1,
         "sensitive_path": 1,
     }
@@ -246,11 +246,11 @@ def test_stage_source_rejects_nested_mount_before_copy(tmp_path, monkeypatch):
 def test_snapshot_source_tree_is_stable_unfiltered_and_metadata_bound(tmp_path):
     source = tmp_path / "source"
     (source / ".git").mkdir(parents=True)
-    (source / ".pico").mkdir()
+    (source / ".pony").mkdir()
     path = source / "main.py"
     path.write_text("before\n", encoding="utf-8")
     (source / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
-    (source / ".pico" / "state").write_text("state\n", encoding="utf-8")
+    (source / ".pony" / "state").write_text("state\n", encoding="utf-8")
 
     initial = snapshot_source_tree(source)
 
@@ -264,7 +264,7 @@ def test_snapshot_source_tree_is_stable_unfiltered_and_metadata_bound(tmp_path):
     (source / ".git" / "HEAD").write_text("ref: refs/heads/other\n", encoding="utf-8")
     git_changed = snapshot_source_tree(source)
     assert git_changed != mode_changed
-    (source / ".pico" / "state").write_text("changed\n", encoding="utf-8")
+    (source / ".pony" / "state").write_text("changed\n", encoding="utf-8")
     assert snapshot_source_tree(source) != git_changed
 
 
@@ -352,11 +352,11 @@ def test_git_staging_preserves_tracked_classification_and_audit(tmp_path):
     source.mkdir()
     subprocess.run([git, "init", "-q", source], check=True)
     subprocess.run(
-        [git, "-C", source, "config", "user.name", "Pico Test"],
+        [git, "-C", source, "config", "user.name", "Pony Test"],
         check=True,
     )
     subprocess.run(
-        [git, "-C", source, "config", "user.email", "pico@example.invalid"],
+        [git, "-C", source, "config", "user.email", "pony@example.invalid"],
         check=True,
     )
     (source / "tracked.txt").write_text("tracked\n", encoding="utf-8")
@@ -379,7 +379,7 @@ def test_git_staging_preserves_tracked_classification_and_audit(tmp_path):
 
     session = store.create(
         source,
-        pico_session_id="session-1",
+        pony_session_id="session-1",
         bootstrap_git=_bootstrap,
         git_executable=git,
         **_session_metadata(),
@@ -416,7 +416,7 @@ def test_create_persists_exact_manifest_baseline_and_sidecar(tmp_path):
     state_info = session.state_root.lstat()
     assert json.loads(sidecar.read_text()) == {
         "format_version": 1,
-        "pico_session_id": "session-1",
+        "pony_session_id": "session-1",
         "record_type": "docker_sandbox_session_pointer",
         "sandbox_id": session.sandbox_id,
         "source_device": source_info.st_dev,
@@ -442,8 +442,8 @@ def test_sidecar_is_immutable_across_manifest_state_updates(tmp_path):
         session.state_root,
         call_id="call-1",
         reconciliation_token="c" * 64,
-        container_name="pico-call-1",
-        expected_labels={"io.pico.call": "call-1"},
+        container_name="pony-call-1",
+        expected_labels={"io.pony.call": "call-1"},
         plan_digest="sha256:" + "d" * 64,
     )
     store.finish_call(session.state_root)
@@ -522,7 +522,7 @@ def test_create_reconciles_sidecar_published_before_initial_manifest(
     store = SandboxSessionStore(tmp_path / "sandboxes")
     session = store.create(
         source,
-        pico_session_id="session-2",
+        pony_session_id="session-2",
         bootstrap_git=_bootstrap,
         project_state_root=project_state,
         **_session_metadata(),
@@ -557,7 +557,7 @@ def test_create_resumes_creation_orphan_cleanup_after_root_removal(
     store = SandboxSessionStore(tmp_path / "sandboxes")
     store.create(
         source,
-        pico_session_id="session-2",
+        pony_session_id="session-2",
         bootstrap_git=_bootstrap,
         project_state_root=project_state,
         **_session_metadata(),
@@ -625,7 +625,7 @@ def test_create_reconciles_sidecar_after_publish_fsync_failure(
     store = SandboxSessionStore(tmp_path / "sandboxes")
     store.create(
         source,
-        pico_session_id="session-2",
+        pony_session_id="session-2",
         bootstrap_git=_bootstrap,
         project_state_root=project_state,
         **_session_metadata(),
@@ -652,7 +652,7 @@ def test_create_rejects_bootstrap_modifying_ordinary_workspace(tmp_path):
     ):
         store.create(
             source,
-            pico_session_id="session-1",
+            pony_session_id="session-1",
             bootstrap_git=tamper,
             **_session_metadata(),
         )
@@ -675,7 +675,7 @@ def test_create_verifies_normalized_staging_mode_after_bootstrap(tmp_path):
 
     session = store.create(
         source,
-        pico_session_id="session-1",
+        pony_session_id="session-1",
         bootstrap_git=_bootstrap,
         **_session_metadata(),
     )
@@ -741,7 +741,7 @@ def test_create_rejects_missing_identity_metadata_before_state_mutation(tmp_path
     with pytest.raises(SandboxSessionError, match="sandbox_manifest_invalid"):
         store.create(
             source,
-            pico_session_id="session-1",
+            pony_session_id="session-1",
             bootstrap_git=_bootstrap,
         )
 
@@ -808,7 +808,7 @@ def test_inspect_rejects_baseline_and_sidecar_identity_tampering(tmp_path):
 
     session = store.create(
         tmp_path / "source",
-        pico_session_id="session-2",
+        pony_session_id="session-2",
         bootstrap_git=_bootstrap,
         project_state_root=project_state,
         **_session_metadata(),
@@ -852,7 +852,7 @@ def test_find_project_sandbox_session_rejects_duplicate_binding(tmp_path):
     )
     store.create(
         source,
-        pico_session_id="session-1",
+        pony_session_id="session-1",
         bootstrap_git=_bootstrap,
         project_state_root=project_state,
         **_session_metadata(),
@@ -953,20 +953,20 @@ def test_mutating_methods_require_current_live_lease(tmp_path):
             session.state_root,
             call_id="call-1",
             reconciliation_token="c" * 64,
-            container_name="pico-call-1",
-            expected_labels={"io.pico.call": "call-1"},
+            container_name="pony-call-1",
+            expected_labels={"io.pony.call": "call-1"},
             plan_digest="sha256:" + "d" * 64,
         )
 
 
 def test_active_call_is_persisted_before_id_and_reconciled(tmp_path):
     _, store, session = _create(tmp_path)
-    labels = {"io.pico.call": "call-1", "io.pico.token": "c" * 64}
+    labels = {"io.pony.call": "call-1", "io.pony.token": "c" * 64}
     running = store.begin_call(
         session.state_root,
         call_id="call-1",
         reconciliation_token="c" * 64,
-        container_name="pico-call-1",
+        container_name="pony-call-1",
         expected_labels=labels,
         plan_digest="sha256:" + "d" * 64,
     )
@@ -978,7 +978,7 @@ def test_active_call_is_persisted_before_id_and_reconciled(tmp_path):
         lambda _active: [
             {
                 "id": "e" * 64,
-                "name": "pico-call-1",
+                "name": "pony-call-1",
                 "labels": labels,
                 "contract_matches": True,
             }
@@ -990,12 +990,12 @@ def test_active_call_is_persisted_before_id_and_reconciled(tmp_path):
 
 def test_reconciliation_refuses_multiple_or_mismatched_matches(tmp_path):
     _, store, session = _create(tmp_path)
-    labels = {"io.pico.call": "call-1"}
+    labels = {"io.pony.call": "call-1"}
     store.begin_call(
         session.state_root,
         call_id="call-1",
         reconciliation_token="c" * 64,
-        container_name="pico-call-1",
+        container_name="pony-call-1",
         expected_labels=labels,
         plan_digest="sha256:" + "d" * 64,
     )
@@ -1008,12 +1008,12 @@ def test_reconciliation_refuses_multiple_or_mismatched_matches(tmp_path):
 
 def test_reconciliation_requires_full_inspect_match(tmp_path):
     _, store, session = _create(tmp_path)
-    labels = {"io.pico.call": "call-1"}
+    labels = {"io.pony.call": "call-1"}
     store.begin_call(
         session.state_root,
         call_id="call-1",
         reconciliation_token="c" * 64,
-        container_name="pico-call-1",
+        container_name="pony-call-1",
         expected_labels=labels,
         plan_digest="sha256:" + "d" * 64,
     )
@@ -1023,7 +1023,7 @@ def test_reconciliation_requires_full_inspect_match(tmp_path):
         lambda _active: [
             {
                 "id": "e" * 64,
-                "name": "pico-call-1",
+                "name": "pony-call-1",
                 "labels": labels,
                 "contract_matches": False,
             }
@@ -1039,8 +1039,8 @@ def test_reconciliation_with_recorded_id_refuses_missing_container(tmp_path):
         session.state_root,
         call_id="call-1",
         reconciliation_token="c" * 64,
-        container_name="pico-call-1",
-        expected_labels={"io.pico.call": "call-1"},
+        container_name="pony-call-1",
+        expected_labels={"io.pony.call": "call-1"},
         plan_digest="sha256:" + "d" * 64,
     )
     store.record_container_id(session.state_root, "e" * 64)
@@ -1071,8 +1071,8 @@ def test_reconciliation_with_recorded_id_accepts_confirmed_exact_absence(
         session.state_root,
         call_id="call-1",
         reconciliation_token="c" * 64,
-        container_name="pico-call-1",
-        expected_labels={"io.pico.call": "call-1"},
+        container_name="pony-call-1",
+        expected_labels={"io.pony.call": "call-1"},
         plan_digest="sha256:" + "d" * 64,
         return_state=return_state,
     )
@@ -1097,8 +1097,8 @@ def test_finish_call_preserves_identity_when_review_is_required(tmp_path):
         session.state_root,
         call_id="call-1",
         reconciliation_token="c" * 64,
-        container_name="pico-call-1",
-        expected_labels={"io.pico.call": "call-1"},
+        container_name="pony-call-1",
+        expected_labels={"io.pony.call": "call-1"},
         plan_digest="sha256:" + "d" * 64,
     )
     store.record_container_id(session.state_root, "e" * 64)
@@ -1111,12 +1111,12 @@ def test_finish_call_preserves_identity_when_review_is_required(tmp_path):
 
 def test_reviewed_active_call_returns_to_running_only_after_exact_match(tmp_path):
     _, store, session = _create(tmp_path)
-    labels = {"io.pico.call": "call-1"}
+    labels = {"io.pony.call": "call-1"}
     store.begin_call(
         session.state_root,
         call_id="call-1",
         reconciliation_token="c" * 64,
-        container_name="pico-call-1",
+        container_name="pony-call-1",
         expected_labels=labels,
         plan_digest="sha256:" + "d" * 64,
     )
@@ -1128,7 +1128,7 @@ def test_reviewed_active_call_returns_to_running_only_after_exact_match(tmp_path
         lambda _active: [
             {
                 "id": "e" * 64,
-                "name": "pico-call-1",
+                "name": "pony-call-1",
                 "labels": labels,
                 "contract_matches": True,
             }
@@ -1182,7 +1182,7 @@ def test_discard_removes_staging_blobs_but_preserves_audit_metadata(tmp_path):
     metadata = recovery / "diff.json"
     metadata.write_text('{"audit":true}\n', encoding="utf-8")
     metadata.chmod(0o600)
-    checkpoints = CheckpointStore(recovery / ".pico" / "checkpoints")
+    checkpoints = CheckpointStore(recovery / ".pony" / "checkpoints")
     blob_ref = checkpoints.write_blob(b"sensitive-before-bytes")["blob_ref"]
     blob_path = checkpoints.blobs_dir / blob_ref[:2] / blob_ref
     assert blob_path.is_file()
@@ -1199,7 +1199,7 @@ def test_discard_removes_staging_blobs_but_preserves_audit_metadata(tmp_path):
 def test_staging_blob_cleanup_shares_budget_and_resumes_from_trash(tmp_path):
     _source, store, session = _create(tmp_path)
     checkpoints = CheckpointStore(
-        session.state_root / "recovery" / ".pico" / "checkpoints"
+        session.state_root / "recovery" / ".pony" / "checkpoints"
     )
     checkpoints.write_blob(b"before")
     workspace = session.workspace_view.physical_root
@@ -1221,7 +1221,7 @@ def test_staging_blob_cleanup_shares_budget_and_resumes_from_trash(tmp_path):
 def test_discard_refuses_symlink_staging_blob_root_without_following(tmp_path):
     _source, store, session = _create(tmp_path)
     checkpoints = ensure_private_dir(
-        session.state_root / "recovery" / ".pico" / "checkpoints"
+        session.state_root / "recovery" / ".pony" / "checkpoints"
     )
     outside = tmp_path / "outside-blobs"
     outside.mkdir()

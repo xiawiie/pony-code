@@ -1,6 +1,6 @@
 # Context、Session 与长会话
 
-Pico 的长会话模型由四层组成：模型能力与 token 账户、动态 Context Sources、append-only Session Tree、
+Pony 的长会话模型由四层组成：模型能力与 token 账户、动态 Context Sources、append-only Session Tree、
 以及只改变 active view 的 compaction。Canonical history 永远保留在磁盘；模型只看到当前分支的
 summary + recent tail。
 
@@ -20,8 +20,8 @@ ModelCapabilities(
 能力按以下优先级解析：
 
 1. CLI `--context-window`、`--max-output-tokens`；
-2. `pico.toml` 的 `[model]`；
-3. Pico 内置默认模型记录；
+2. `pony.toml` 的 `[model]`；
+3. Pony 内置默认模型记录；
 4. 未知模型回退到 128,000 context / 16,384 output，并输出显著告警。
 
 统一公式是：
@@ -86,7 +86,7 @@ history_budget = I
   - actual(selected sources)
 ```
 
-Pico 不再使用关键词 intent profiles、静态 100k 总预算、40k history soft cap、固定 drop order 或
+Pony 不再使用关键词 intent profiles、静态 100k 总预算、40k history soft cap、固定 drop order 或
 `injection_budget_ratio`。历史过长只能通过 compaction 退出 active request，不能从磁盘静默删除。
 
 每次请求 telemetry 都记录 model limits、output/reserve/input limit、pinned/source/history 实际用量、token
@@ -94,7 +94,7 @@ count mode、summary/tail、compaction 原因和 compression ratio。`dropped_tu
 
 ## 3. Append-only JSONL Session Tree
 
-Session 文件位于 `.pico/sessions/<session-id>.jsonl`。第一行是 `session_header`，后续每行是一个
+Session 文件位于 `.pony/sessions/<session-id>.jsonl`。第一行是 `session_header`，后续每行是一个
 `session_entry`：
 
 ```text
@@ -126,7 +126,7 @@ transcript。
 - Session 在 128 MiB 发出 soft warning，512 MiB hard fail；
 - 私有目录/文件分别为 owner-only 0700/0600，并拒绝 symlink、hardlink、identity swap；
 - 尾部不完整 JSONL 只读到最后完整行并返回 `SessionTailRepairRequired`；必须显式执行
-  `pico session tail-repair <id> --yes`，reader 不会静默修证据。
+  `pony session tail-repair <id> --yes`，reader 不会静默修证据。
 
 Session Header 绑定 exact lexical root、Git common-dir、Git-dir 以及 root device/inode。HEAD 和 branch 可以正常
 变化，但 sibling worktree 不能直接 resume 或 workspace rewind。`clone --to-worktree` 创建新 Session，复制 active
@@ -148,7 +148,7 @@ conversation branch、当前 summaries 和去敏后的任务目标 checkpoint；
 
 ## 5. Compaction
 
-当 assembled request 超过 `W - R`，或用户显式执行 `/compact`，Pico 从 active path 尾部向前累计并保留约
+当 assembled request 超过 `W - R`，或用户显式执行 `/compact`，Pony 从 active path 尾部向前累计并保留约
 `keep_recent_tokens`。cut point 只落在 entry/turn 边界，永远不会拆开 `tool_exchange`。
 
 普通压缩生成一个 structured history summary。若单个 turn 本身超过 recent-tail 目标，则该 turn 的前缀使用
@@ -209,7 +209,7 @@ Apply，也不会撤销已经完成的 Source Apply。finalized/pending-review S
 /remember <text>
 ```
 
-非交互等价入口使用 `pico session inspect|tree|compact|checkpoint|fork|rewind|label|clone|tail-repair`。
+非交互等价入口使用 `pony session inspect|tree|compact|checkpoint|fork|rewind|label|clone|tail-repair`。
 
 推荐配置：
 

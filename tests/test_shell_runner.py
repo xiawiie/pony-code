@@ -1,4 +1,4 @@
-from pico.tools.subprocess import build_trusted_executables, run_process_group
+from pony.tools.subprocess import build_trusted_executables, run_process_group
 
 
 def test_approved_shell_runner_returns_structured_process_result(tmp_path):

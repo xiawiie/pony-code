@@ -1,4 +1,4 @@
-from pico.memory.service import (
+from pony.memory.service import (
     invalidate_file_summary_dict,
     invalidate_stale_file_summaries_dict,
     normalize_file_summaries_dict,

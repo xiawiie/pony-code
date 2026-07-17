@@ -5,8 +5,8 @@ import tracemalloc
 
 import pytest
 
-import pico.sandbox.session as session_module
-from pico.sandbox.session import SandboxSessionError, stage_source
+import pony.sandbox.session as session_module
+from pony.sandbox.session import SandboxSessionError, stage_source
 
 
 def _hash_file(path):
@@ -103,7 +103,7 @@ def test_stage_source_detects_mode_change_during_copy_and_cleans(tmp_path, monke
         stage_source(source, tmp_path / "staging")
 
     assert not (tmp_path / "staging").exists()
-    assert not list(tmp_path.rglob(".pico-stage-*"))
+    assert not list(tmp_path.rglob(".pony-stage-*"))
 
 
 def test_stage_source_detects_parent_exchange_during_copy_and_cleans(
@@ -136,7 +136,7 @@ def test_stage_source_detects_parent_exchange_during_copy_and_cleans(
         stage_source(source, tmp_path / "staging")
 
     assert not (tmp_path / "staging").exists()
-    assert not list(tmp_path.rglob(".pico-stage-*"))
+    assert not list(tmp_path.rglob(".pony-stage-*"))
 
 
 def test_stage_source_write_failure_removes_temp_and_destination(
@@ -164,4 +164,4 @@ def test_stage_source_write_failure_removes_temp_and_destination(
         stage_source(source, tmp_path / "staging")
 
     assert not (tmp_path / "staging").exists()
-    assert not list(tmp_path.rglob(".pico-stage-*"))
+    assert not list(tmp_path.rglob(".pony-stage-*"))

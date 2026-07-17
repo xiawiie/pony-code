@@ -8,9 +8,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from pico.context.renderer import render_current_user_message
-from pico.agent.context_manager import ContextManager
-from pico.agent.messages import make_tool_pair
+from pony.context.renderer import render_current_user_message
+from pony.agent.context_manager import ContextManager
+from pony.agent.messages import make_tool_pair
 
 
 def _agent():
@@ -30,7 +30,7 @@ def _agent():
 
 def _build_request(agent, user_message):
     agent.session["messages"].append(
-        {"role": "user", "content": user_message, "_pico_meta": {}}
+        {"role": "user", "content": user_message, "_pony_meta": {}}
     )
     snapshot, telemetry = render_current_user_message(agent, user_message)
     return ContextManager(agent).build_request(
@@ -44,7 +44,7 @@ def test_build_request_current_message_contains_injection():
     request, _metadata = _build_request(_agent(), "hello")
     current = request["messages"][-1]["content"]
     assert "<system-reminder>" in current
-    assert "<pico:workspace_state>" in current
+    assert "<pony:workspace_state>" in current
     assert current.strip().endswith("hello")
 
 
@@ -73,7 +73,7 @@ def test_build_request_metadata_includes_system_and_tools_tokens():
 
 def test_build_request_replaces_persisted_current_user_in_request_view():
     a = _agent()
-    a.session = {"messages": [{"role": "user", "content": "already here", "_pico_meta": {}}]}
+    a.session = {"messages": [{"role": "user", "content": "already here", "_pony_meta": {}}]}
     snapshot, telemetry = render_current_user_message(a, "already here")
     request, _metadata = ContextManager(a).build_request(
         injection_snapshot=snapshot,
@@ -129,9 +129,9 @@ def test_build_request_budget_counts_opaque_provider_state():
         )
         a.session = {
             "messages": [
-                {"role": "user", "content": "question", "_pico_meta": {}},
+                {"role": "user", "content": "question", "_pony_meta": {}},
                 *pair,
-                {"role": "user", "content": "next", "_pico_meta": {}},
+                {"role": "user", "content": "next", "_pony_meta": {}},
             ]
         }
         snapshot, telemetry = render_current_user_message(a, "next")

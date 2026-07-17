@@ -2,13 +2,13 @@ import hashlib
 
 import pytest
 
-from pico import Pico
-from pico.state.session_store import SessionStore
-from pico.workspace.context import WorkspaceContext
+from pony import Pony
+from pony.state.session_store import SessionStore
+from pony.workspace.context import WorkspaceContext
 from benchmarks.support.fake_provider import FakeModelClient
-from pico.state.checkpoint_store import CheckpointStore
-from pico.tools.change_recorder import ToolChangeRecorder
-from pico.runtime.options import RuntimeOptions
+from pony.state.checkpoint_store import CheckpointStore
+from pony.tools.change_recorder import ToolChangeRecorder
+from pony.runtime.options import RuntimeOptions
 
 
 def test_finalize_records_success_and_error_states(tmp_path):
@@ -55,10 +55,10 @@ def test_runtime_marks_existing_pending_tool_changes_interrupted_on_startup(tmp_
         "", "task_1", "run_shell", "workspace_write", {}
     )
 
-    Pico(
+    Pony(
         model_client=FakeModelClient([]),
         workspace=WorkspaceContext.build(tmp_path),
-        session_store=SessionStore(tmp_path / ".pico" / "sessions"),
+        session_store=SessionStore(tmp_path / ".pony" / "sessions"),
         options=RuntimeOptions(approval_policy="auto"),
     )
 
@@ -81,10 +81,10 @@ def test_runtime_startup_does_not_interrupt_owned_pending_tool_changes(tmp_path)
         "", "task_legacy", "run_shell", "workspace_write", {}
     )
 
-    Pico(
+    Pony(
         model_client=FakeModelClient([]),
         workspace=WorkspaceContext.build(tmp_path),
-        session_store=SessionStore(tmp_path / ".pico" / "sessions"),
+        session_store=SessionStore(tmp_path / ".pony" / "sessions"),
         options=RuntimeOptions(approval_policy="auto"),
     )
 

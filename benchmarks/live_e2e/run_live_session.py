@@ -1,4 +1,4 @@
-"""Pico live-provider end-to-end harness.
+"""Pony live-provider end-to-end harness.
 
 One invocation uses the Provider selected by the target repository's ``.env``
 and records trace-backed evidence for five designed turns. This standalone
@@ -22,27 +22,27 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from pico.config.environment import read_project_env
-from pico.config.model import API_KEY_ENV_NAME, resolve_model_config
+from pony.config.environment import read_project_env
+from pony.config.model import API_KEY_ENV_NAME, resolve_model_config
 from benchmarks.evaluation.metrics_common import _load_json_artifact
-from pico.agent.messages import MessageValidationError, validate_messages
-from pico.security.private_files import (
+from pony.agent.messages import MessageValidationError, validate_messages
+from pony.security.private_files import (
     ensure_private_dir,
     ensure_private_file,
     private_directory_identity,
     write_private_bytes_atomic,
 )
-from pico.security.redaction import (
+from pony.security.redaction import (
     SensitiveDataBlockedError,
     contains_secret_material,
     redact_artifact,
 )
-from pico.state.session_store import (
+from pony.state.session_store import (
     SESSION_FORMAT_VERSION,
     SESSION_HEADER_RECORD_TYPE,
     SESSION_RECORD_TYPE,
 )
-from pico.runtime.options import RuntimeOptions
+from pony.runtime.options import RuntimeOptions
 
 
 LIVE_E2E_REPORT_FORMAT_VERSION = 2
@@ -63,16 +63,16 @@ def load_live_report(path):
     )
 
 
-def _private_tree_entries(pico_root):
+def _private_tree_entries(pony_root):
     try:
-        root_info = pico_root.lstat()
+        root_info = pony_root.lstat()
     except FileNotFoundError:
         return []
-    entries = [(pico_root, root_info)]
+    entries = [(pony_root, root_info)]
     if stat.S_ISLNK(root_info.st_mode) or not stat.S_ISDIR(root_info.st_mode):
         return entries
     for current, dirnames, filenames in os.walk(
-        pico_root,
+        pony_root,
         followlinks=False,
     ):
         dirnames.sort()
@@ -86,12 +86,12 @@ def _private_tree_entries(pico_root):
     return entries
 
 
-def snapshot_private_artifacts(pico_root):
-    pico_root = Path(pico_root)
+def snapshot_private_artifacts(pony_root):
+    pony_root = Path(pony_root)
     snapshot = {}
-    for path, info in _private_tree_entries(pico_root):
+    for path, info in _private_tree_entries(pony_root):
         if info is not None and stat.S_ISREG(info.st_mode):
-            snapshot[path.relative_to(pico_root).as_posix()] = (
+            snapshot[path.relative_to(pony_root).as_posix()] = (
                 info.st_ctime_ns,
                 info.st_mtime_ns,
                 info.st_size,
@@ -99,15 +99,15 @@ def snapshot_private_artifacts(pico_root):
     return snapshot
 
 
-def scan_active_private_artifacts(pico_root, before, *, forbidden_values):
-    pico_root = Path(pico_root)
+def scan_active_private_artifacts(pony_root, before, *, forbidden_values):
+    pony_root = Path(pony_root)
     forbidden = tuple(str(value).encode() for value in forbidden_values if str(value))
     secret_hits = []
     mode_failures = []
     files_scanned = 0
-    for path, info in _private_tree_entries(pico_root):
-        relative = path.relative_to(pico_root).as_posix()
-        display = ".pico" if relative == "." else ".pico/" + relative
+    for path, info in _private_tree_entries(pony_root):
+        relative = path.relative_to(pony_root).as_posix()
+        display = ".pony" if relative == "." else ".pony/" + relative
         if info is None:
             mode_failures.append(display + ":unreadable")
             continue
@@ -232,20 +232,20 @@ def check_env(config: RunConfig, *, settings=None) -> None:
 def check_live_readiness(config: RunConfig, *, settings=None) -> bool:
     if config.provider != "ollama":
         return True
-    from pico.providers.probe import probe_model_client
+    from pony.providers.probe import probe_model_client
 
     settings = settings or provider_settings(config.repo_root)
     result = probe_model_client(make_live_client(config, settings=settings))
     return result.get("status") == "ok"
 
 
-def verify_pico_repo(root: Path) -> None:
-    """Abort with exit 2 if ``root`` is not a pico repository."""
-    runtime_entry = root / "pico" / "runtime" / "application.py"
+def verify_pony_repo(root: Path) -> None:
+    """Abort with exit 2 if ``root`` is not a pony repository."""
+    runtime_entry = root / "pony" / "runtime" / "application.py"
     if not runtime_entry.is_file():
         print(
-            f"[live-e2e] {root} does not look like a pico repo "
-            "(missing pico/runtime/application.py), aborted",
+            f"[live-e2e] {root} does not look like a pony repo "
+            "(missing pony/runtime/application.py), aborted",
             file=sys.stderr,
         )
         raise SystemExit(2)
@@ -257,7 +257,7 @@ def verify_pico_repo(root: Path) -> None:
         raise SystemExit(2)
 
 
-FIXTURE_PICO_TOML = """\
+FIXTURE_PONY_TOML = """\
 [model]
 context_window = 24576
 output_limit = 4096
@@ -280,17 +280,17 @@ min_score = 0.2
 """
 
 
-SEED_NOTE_REL = Path(".pico/memory/notes/cache-invariant.md")
+SEED_NOTE_REL = Path(".pony/memory/notes/cache-invariant.md")
 TOOL_DIGEST_FIXTURE_REL = Path(
     "benchmarks/live_e2e/fixtures/live_tool_digest_fixture.txt"
 )
 TOOL_DIGEST_FIXTURE_TEXT = "digest-fixture-token " * 5_000 + "\n"
-PICO_TOML_REL = Path("pico.toml")
-BACKUP_REL = Path("benchmarks/live_e2e/results/pre-run-pico.toml.bak")
+PONY_TOML_REL = Path("pony.toml")
+BACKUP_REL = Path("benchmarks/live_e2e/results/pre-run-pony.toml.bak")
 COMPACTION_FIXTURE_MESSAGES = 80
 
 
-def seed_compaction_fixture(pico) -> int:
+def seed_compaction_fixture(pony) -> int:
     """Append enough inert history for turn four to exercise auto-compaction."""
     messages = []
     for index in range(COMPACTION_FIXTURE_MESSAGES):
@@ -299,7 +299,7 @@ def seed_compaction_fixture(pico) -> int:
             {
                 "role": "user" if index % 2 == 0 else "assistant",
                 "content": f"compaction-fixture-{index:02d} {payload}",
-                "_pico_meta": {
+                "_pony_meta": {
                     "created_at": (
                         f"2026-07-15T{index // 60:02d}:{index % 60:02d}:00+00:00"
                     ),
@@ -307,8 +307,8 @@ def seed_compaction_fixture(pico) -> int:
                 },
             }
         )
-    pico.session_store.append_messages(pico.session["id"], messages)
-    pico.session["messages"].extend(messages)
+    pony.session_store.append_messages(pony.session["id"], messages)
+    pony.session["messages"].extend(messages)
     return len(messages)
 
 
@@ -316,17 +316,17 @@ class FixtureManager:
     """Install and restore the live config, Memory, and tool-result fixtures.
 
     On enter:
-      1. If a pre-existing pico.toml is present, copy it to
-         ``benchmarks/live_e2e/results/pre-run-pico.toml.bak`` so
+      1. If a pre-existing pony.toml is present, copy it to
+         ``benchmarks/live_e2e/results/pre-run-pony.toml.bak`` so
          teardown can restore it.
-      2. Write ``FIXTURE_PICO_TOML`` to ``<repo_root>/pico.toml``.
+      2. Write ``FIXTURE_PONY_TOML`` to ``<repo_root>/pony.toml``.
       3. Write the fixture seed note to
-         ``<repo_root>/.pico/memory/notes/cache-invariant.md``.
+         ``<repo_root>/.pony/memory/notes/cache-invariant.md``.
       4. Write one large-line read fixture that deterministically triggers digest.
 
     On exit (never raises):
       1. Remove the seed note and digest fixture if present.
-      2. Restore original pico.toml from backup, or delete the fixture
+      2. Restore original pony.toml from backup, or delete the fixture
          copy if no backup existed.
     """
 
@@ -338,12 +338,12 @@ class FixtureManager:
         self._seed_source = (
             Path(__file__).resolve().parent / "fixtures" / "seed_cache_note.md"
         )
-        self._had_pico_toml = False
-        self._original_pico_toml: bytes | None = None
+        self._had_pony_toml = False
+        self._original_pony_toml: bytes | None = None
         self.cleanup_errors: list[str] = []
 
     def __enter__(self) -> "FixtureManager":
-        pico_toml = self.repo_root / PICO_TOML_REL
+        pony_toml = self.repo_root / PONY_TOML_REL
         backup = self.repo_root / BACKUP_REL
         digest_target = self.repo_root / TOOL_DIGEST_FIXTURE_REL
         try:
@@ -353,10 +353,10 @@ class FixtureManager:
         else:
             raise FileExistsError(f"live fixture already exists: {digest_target}")
         # 1. Snapshot if present
-        if pico_toml.exists():
-            self._had_pico_toml = True
-            original = pico_toml.read_bytes()
-            self._original_pico_toml = original
+        if pony_toml.exists():
+            self._had_pony_toml = True
+            original = pony_toml.read_bytes()
+            self._original_pony_toml = original
             contains_sensitive = contains_secret_material(
                 original.decode("utf-8", errors="replace"),
                 env=os.environ,
@@ -376,7 +376,7 @@ class FixtureManager:
             )
         try:
             # 2. Write fixture
-            pico_toml.write_text(FIXTURE_PICO_TOML, encoding="utf-8")
+            pony_toml.write_text(FIXTURE_PONY_TOML, encoding="utf-8")
             # 3. Write seed note
             seed_target = self.repo_root / SEED_NOTE_REL
             ensure_private_dir(seed_target.parent)
@@ -405,30 +405,30 @@ class FixtureManager:
             self.cleanup_errors.append("seed_remove_failed")
             print("[live-e2e] teardown: could not remove seed note", file=sys.stderr)
         try:
-            pico_toml = self.repo_root / PICO_TOML_REL
+            pony_toml = self.repo_root / PONY_TOML_REL
             backup = self.repo_root / BACKUP_REL
-            if self._had_pico_toml:
+            if self._had_pony_toml:
                 if not backup.exists():
                     self.cleanup_errors.append("config_backup_missing")
                 else:
-                    pico_toml.write_bytes(backup.read_bytes())
+                    pony_toml.write_bytes(backup.read_bytes())
                     backup.unlink()
-            elif pico_toml.exists():
-                pico_toml.unlink()
+            elif pony_toml.exists():
+                pony_toml.unlink()
         except OSError:
             self.cleanup_errors.append("config_restore_failed")
-            print("[live-e2e] teardown: pico.toml restore failed", file=sys.stderr)
+            print("[live-e2e] teardown: pony.toml restore failed", file=sys.stderr)
 
     def restoration_status(self):
-        pico_toml = self.repo_root / PICO_TOML_REL
+        pony_toml = self.repo_root / PONY_TOML_REL
         backup = self.repo_root / BACKUP_REL
         seed = self.repo_root / SEED_NOTE_REL
         digest_target = self.repo_root / TOOL_DIGEST_FIXTURE_REL
         try:
             config_restored = (
-                pico_toml.read_bytes() == self._original_pico_toml
-                if self._had_pico_toml and pico_toml.is_file()
-                else not self._had_pico_toml and not pico_toml.exists()
+                pony_toml.read_bytes() == self._original_pony_toml
+                if self._had_pony_toml and pony_toml.is_file()
+                else not self._had_pony_toml and not pony_toml.exists()
             )
             restored = (
                 not self.cleanup_errors
@@ -741,44 +741,44 @@ def read_run_terminal_status(run_store, task_state):
 
 
 class TurnRunner:
-    """Runs one turn against a real Pico + provider; captures TurnResult.
+    """Runs one turn against a real Pony + provider; captures TurnResult.
 
-    The runner does NOT catch exceptions raised by ``pico.ask`` — the
+    The runner does NOT catch exceptions raised by ``pony.ask`` — the
     caller (``main``) decides whether to abort or continue.
     """
 
-    def __init__(self, pico, config: RunConfig):
-        self.pico = pico
+    def __init__(self, pony, config: RunConfig):
+        self.pony = pony
         self.config = config
 
     def run_turn(
         self, turn: int, user_prompt: str, expected_behavior: str
     ) -> TurnResult:
         """Execute one turn and capture only persisted trace/artifact truth."""
-        session_before = len(self.pico.session.get("messages", []))
+        session_before = len(self.pony.session.get("messages", []))
         started_ns = time.monotonic_ns()
         error: str | None = None
         final_answer = ""
         stopped_at_step_limit = False
-        calls = getattr(self.pico.model_client, "calls", [])
+        calls = getattr(self.pony.model_client, "calls", [])
         sniffer_before = len(calls) if isinstance(calls, list) else 0
-        previous_task_state = getattr(self.pico, "current_task_state", None)
+        previous_task_state = getattr(self.pony, "current_task_state", None)
         previous_run_id = str(getattr(previous_task_state, "run_id", "") or "")
 
         try:
-            final_answer = self.pico.ask(user_prompt)
+            final_answer = self.pony.ask(user_prompt)
         except Exception as exc:  # capture and continue; caller decides
             error = f"{type(exc).__name__}: {exc}"
 
         duration_ms = (time.monotonic_ns() - started_ns) // 1_000_000
-        session_after = len(self.pico.session.get("messages", []))
+        session_after = len(self.pony.session.get("messages", []))
 
         # detect step-limit stops (no exception, but final answer starts with the
         # runtime's canned "Stopped after..." message)
         if final_answer.startswith("Stopped after"):
             stopped_at_step_limit = True
 
-        current_task_state = getattr(self.pico, "current_task_state", None)
+        current_task_state = getattr(self.pony, "current_task_state", None)
         current_run_id = str(getattr(current_task_state, "run_id", "") or "")
         task_state = (
             current_task_state
@@ -786,11 +786,11 @@ class TurnRunner:
             else None
         )
         captured = (
-            read_turn_trace(self.pico.run_store.trace_path(task_state))
+            read_turn_trace(self.pony.run_store.trace_path(task_state))
             if task_state is not None
             else _empty_trace_capture()
         )
-        calls = getattr(self.pico.model_client, "calls", [])
+        calls = getattr(self.pony.model_client, "calls", [])
         new_calls = calls[sniffer_before:] if isinstance(calls, list) else []
         captured = _merge_auxiliary_call_evidence(captured, new_calls)
         agent_calls = [
@@ -812,7 +812,7 @@ class TurnRunner:
             else 0
         )
         run_id, task_state_terminal, report_terminal, trace_terminal = (
-            read_run_terminal_status(self.pico.run_store, task_state)
+            read_run_terminal_status(self.pony.run_store, task_state)
         )
 
         return TurnResult(
@@ -899,7 +899,7 @@ class AssertionEngine:
             else "native_tool_use"
         )
 
-    def dispatch(self, turn, result: TurnResult, pico, all_results):
+    def dispatch(self, turn, result: TurnResult, pony, all_results):
         """Route to per-turn check_*.
 
         ``turn`` may be an int (1..5) or the string ``"global"``.
@@ -907,15 +907,15 @@ class AssertionEngine:
         if turn == 1:
             return self.check_turn_1_recall(result)
         if turn == 2:
-            return self.check_turn_2_digest(result, pico)
+            return self.check_turn_2_digest(result, pony)
         if turn == 3:
             return self.check_turn_3_source_allocator(result)
         if turn == 4:
-            return self.check_turn_4_compaction(result, pico)
+            return self.check_turn_4_compaction(result, pony)
         if turn == 5:
             return self.check_turn_5_cache_anchor(result, all_results)
         if turn == "global":
-            return self.check_global(all_results, pico)
+            return self.check_global(all_results, pony)
         return []
 
     # -- Turn 1: recall --------------------------------------------------
@@ -940,9 +940,9 @@ class AssertionEngine:
         out.append(
             Assertion(
                 name="recalled_memory_block_present",
-                passed="<pico:recalled_memory" in content,
-                expected='"<pico:recalled_memory" in current_user_content',
-                actual=("<pico:recalled_memory" in content) and "found" or "not found",
+                passed="<pony:recalled_memory" in content,
+                expected='"<pony:recalled_memory" in current_user_content',
+                actual=("<pony:recalled_memory" in content) and "found" or "not found",
             )
         )
         out.append(
@@ -982,7 +982,7 @@ class AssertionEngine:
             Assertion(
                 name="turn_1_completed_without_error",
                 passed=no_error_and_answered,
-                expected="pico.ask returned without exception",
+                expected="pony.ask returned without exception",
                 actual=result.error
                 or ("stopped_at_step_limit" if result.stopped_at_step_limit else "ok"),
             )
@@ -991,19 +991,19 @@ class AssertionEngine:
 
     # -- Turn 2: digest --------------------------------------------------
 
-    def check_turn_2_digest(self, result: TurnResult, pico) -> list[Assertion]:
+    def check_turn_2_digest(self, result: TurnResult, pony) -> list[Assertion]:
         """Verify digest application and native per-call trace evidence.
 
         Search is restricted to messages added THIS turn (via the
         session-count-before/after window on ``result``). Within that
-        window, we prefer the FIRST tool_result whose _pico_meta says
+        window, we prefer the FIRST tool_result whose _pony_meta says
         digest_applied=True — that's the read_file result we intended
         to observe. If none is digested, we fall back to the last
         tool_result in the window so failures still surface a concrete
         actual value.
         """
         out = []
-        messages = getattr(pico, "session", {}).get("messages", []) or []
+        messages = getattr(pony, "session", {}).get("messages", []) or []
         turn_slice = messages[
             result.session_message_count_before : result.session_message_count_after
         ]
@@ -1013,7 +1013,7 @@ class AssertionEngine:
             if isinstance(content, list) and any(
                 isinstance(b, dict) and b.get("type") == "tool_result" for b in content
             ):
-                pm = msg.get("_pico_meta") or {}
+                pm = msg.get("_pony_meta") or {}
                 if pm.get("digest_applied"):
                     tool_result_msg = msg
                     break
@@ -1027,13 +1027,13 @@ class AssertionEngine:
                     tool_result_msg = msg
                     break
 
-        meta = (tool_result_msg or {}).get("_pico_meta") or {}
+        meta = (tool_result_msg or {}).get("_pony_meta") or {}
         digest_applied = bool(meta.get("digest_applied"))
         out.append(
             Assertion(
                 name="digest_applied_flag_true",
                 passed=digest_applied,
-                expected="last tool_result message has _pico_meta.digest_applied=True",
+                expected="last tool_result message has _pony_meta.digest_applied=True",
                 actual=str(digest_applied),
             )
         )
@@ -1070,7 +1070,7 @@ class AssertionEngine:
         )
 
         try:
-            run_dir = Path(pico.run_store.run_dir(result.run_id))
+            run_dir = Path(pony.run_store.run_dir(result.run_id))
         except (AttributeError, TypeError, ValueError):
             run_dir = None
         host_path_hidden = bool(
@@ -1127,7 +1127,7 @@ class AssertionEngine:
             Assertion(
                 name="raw_file_source_hash_recorded",
                 passed=valid_source_hash,
-                expected="_pico_meta.source_hash is a 16-character lowercase hex digest",
+                expected="_pony_meta.source_hash is a 16-character lowercase hex digest",
                 actual=source_hash or "(empty)",
             )
         )
@@ -1292,7 +1292,7 @@ class AssertionEngine:
         )
         return out
 
-    def check_turn_4_compaction(self, result: TurnResult, pico) -> list[Assertion]:
+    def check_turn_4_compaction(self, result: TurnResult, pony) -> list[Assertion]:
         """Six assertions verifying compaction without canonical history loss."""
         m = result.metadata or {}
         out = []
@@ -1337,7 +1337,7 @@ class AssertionEngine:
             )
         )
 
-        session_msgs = getattr(pico, "session", {}).get("messages", []) or []
+        session_msgs = getattr(pony, "session", {}).get("messages", []) or []
         try:
             validate_messages(session_msgs, require_meta=True)
             pairing_actual = "valid canonical messages"
@@ -1461,7 +1461,7 @@ class AssertionEngine:
     def check_global(
         self,
         all_results,
-        pico,
+        pony,
         artifact_security=None,
     ) -> list[Assertion]:
         """Cross-turn trace, persistence, terminal, and budget invariants."""
@@ -1496,7 +1496,7 @@ class AssertionEngine:
             )
         )
 
-        session = getattr(pico, "session", {})
+        session = getattr(pony, "session", {})
         if not isinstance(session, dict):
             session = {}
         record_type = session.get("record_type")
@@ -1550,7 +1550,7 @@ class AssertionEngine:
         )
 
         try:
-            tree = pico.session_store.load_tree(session["id"])
+            tree = pony.session_store.load_tree(session["id"])
             persisted = tree.projection
             persisted_type = tree.header.get("record_type")
             persisted_version = tree.header.get("format_version")
@@ -1603,7 +1603,7 @@ class AssertionEngine:
                 actual=str(total_tokens),
             )
         )
-        calls = getattr(getattr(pico, "model_client", None), "calls", ())
+        calls = getattr(getattr(pony, "model_client", None), "calls", ())
         provider_clean = bool(calls) and all(
             call.get("payload_secret_clean") is True for call in calls
         )
@@ -1622,7 +1622,7 @@ class AssertionEngine:
             Assertion(
                 name="active_artifacts_exclude_api_key",
                 passed=artifact_clean,
-                expected=("new or changed .pico artifacts contain no selected API key"),
+                expected=("new or changed .pony artifacts contain no selected API key"),
                 actual=str(artifact_security["secret_hits"]),
             )
         )
@@ -2059,7 +2059,7 @@ def make_live_client(config: RunConfig, *, settings=None):
     """Instantiate the selected live client using its production transport."""
 
     settings = settings or provider_settings(config.repo_root)
-    from pico.providers.factory import build_transport_client
+    from pony.providers.factory import build_transport_client
 
     inner = build_transport_client(
         settings["transport"],
@@ -2102,7 +2102,7 @@ def _budget_exceeded(
 
 
 def do_reset(repo_root: Path) -> int:
-    """Remove leftover seed note, restore pico.toml backup, clear results/*.json."""
+    """Remove leftover seed note, restore pony.toml backup, clear results/*.json."""
     removed = []
     seed = repo_root / SEED_NOTE_REL
     if seed.exists():
@@ -2119,18 +2119,18 @@ def do_reset(repo_root: Path) -> int:
         removed.append(str(digest_target.relative_to(repo_root)))
 
     backup = repo_root / BACKUP_REL
-    pico_toml = repo_root / PICO_TOML_REL
+    pony_toml = repo_root / PONY_TOML_REL
     if backup.exists():
-        pico_toml.write_bytes(backup.read_bytes())
+        pony_toml.write_bytes(backup.read_bytes())
         backup.unlink()
-        removed.append(f"restored {pico_toml.name} from backup")
-    elif pico_toml.exists():
-        # No backup means the fixture pico.toml is the only one — delete it
+        removed.append(f"restored {pony_toml.name} from backup")
+    elif pony_toml.exists():
+        # No backup means the fixture pony.toml is the only one — delete it
         # if it matches the fixture; else leave alone.
-        current = pico_toml.read_text(encoding="utf-8")
-        if current == FIXTURE_PICO_TOML:
-            pico_toml.unlink()
-            removed.append(f"deleted fixture {pico_toml.name}")
+        current = pony_toml.read_text(encoding="utf-8")
+        if current == FIXTURE_PONY_TOML:
+            pony_toml.unlink()
+            removed.append(f"deleted fixture {pony_toml.name}")
 
     results_dir = repo_root / "benchmarks" / "live_e2e" / "results"
     if results_dir.exists():
@@ -2168,7 +2168,7 @@ def main() -> int:
     if not check_live_readiness(config, settings=settings):
         print("[live-e2e] not_configured", file=sys.stderr)
         return 2
-    verify_pico_repo(repo_root)
+    verify_pony_repo(repo_root)
     warn_if_dirty_working_tree(repo_root)
     selected_api_key = settings["api_key"].strip()
     selected_api_key_name = settings["api_key_env"]
@@ -2184,8 +2184,8 @@ def main() -> int:
         )
         return 2
 
-    pico_root = repo_root / ".pico"
-    artifact_baseline = snapshot_private_artifacts(pico_root)
+    pony_root = repo_root / ".pony"
+    artifact_baseline = snapshot_private_artifacts(pony_root)
     wall_start = time.monotonic_ns()
 
     digest_fixture = TOOL_DIGEST_FIXTURE_REL.as_posix()
@@ -2208,23 +2208,23 @@ def main() -> int:
             tool_prompt,
             "provider_tool_roundtrip",
         ),
-        (3, "再看一下 pico/context_manager.py", "source_pool_bounded"),
+        (3, "再看一下 pony/context_manager.py", "source_pool_bounded"),
         (4, "总结一下我们目前讨论的所有内容", "history_compacted"),
         (5, "最后 done", "cache_anchor_verified"),
     ]
 
     fixture = FixtureManager(repo_root, forbidden_values=(selected_api_key,))
     with fixture:
-        # Lazy import of pico so a broken pico module produces exit 4 (not 2).
-        from pico.runtime.application import Pico
-        from pico.state.session_store import SessionStore
-        from pico.workspace.context import WorkspaceContext
+        # Lazy import of pony so a broken pony module produces exit 4 (not 2).
+        from pony.runtime.application import Pony
+        from pony.state.session_store import SessionStore
+        from pony.workspace.context import WorkspaceContext
 
         model_client = make_live_client(config, settings=settings)
         workspace = WorkspaceContext.build(repo_root)
-        session_store = SessionStore(repo_root / ".pico" / "sessions")
+        session_store = SessionStore(repo_root / ".pony" / "sessions")
         try:
-            pico = Pico(
+            pony = Pony(
                 model_client=model_client,
                 workspace=workspace,
                 session_store=session_store,
@@ -2233,10 +2233,10 @@ def main() -> int:
                 ),
             )
         except Exception:
-            print("[live-e2e] pico construction failed", file=sys.stderr)
+            print("[live-e2e] pony construction failed", file=sys.stderr)
             return 4
 
-        runner = TurnRunner(pico, config)
+        runner = TurnRunner(pony, config)
         reporter = Reporter(config, repo_root / "benchmarks" / "live_e2e" / "results")
         engine = AssertionEngine(config)
 
@@ -2246,17 +2246,17 @@ def main() -> int:
 
         for turn_no, prompt, expected in TURNS:
             if turn_no == 4:
-                seed_compaction_fixture(pico)
+                seed_compaction_fixture(pony)
             result = runner.run_turn(turn_no, prompt, expected)
             if result.error is not None:
-                # provider or pico error mid-turn
+                # provider or pony error mid-turn
                 all_results.append(result)
                 all_assertions[turn_no] = []
                 print(f"[live-e2e] turn {turn_no} failed", file=sys.stderr)
                 aborted_reason = f"provider_error_turn_{turn_no}"
                 break
             all_results.append(result)
-            turn_asserts = engine.dispatch(turn_no, result, pico, all_results)
+            turn_asserts = engine.dispatch(turn_no, result, pony, all_results)
             all_assertions[turn_no] = turn_asserts
             reporter.render_turn_summary(turn_no, expected, turn_asserts)
 
@@ -2267,14 +2267,14 @@ def main() -> int:
                 break
 
         artifact_security = scan_active_private_artifacts(
-            pico_root,
+            pony_root,
             artifact_baseline,
             forbidden_values=(selected_api_key,),
         )
         # Run global checks whether we finished or aborted early
         global_asserts = engine.check_global(
             all_results,
-            pico,
+            pony,
             artifact_security,
         )
         all_assertions["global"] = global_asserts
@@ -2311,7 +2311,7 @@ def main() -> int:
             ),
         }
 
-        session_schema = int(pico.session.get("format_version", 0))
+        session_schema = int(pony.session.get("format_version", 0))
 
     restoration = fixture.restoration_status()
     fixture_assertion = Assertion(

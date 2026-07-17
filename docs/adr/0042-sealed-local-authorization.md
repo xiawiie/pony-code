@@ -1,11 +1,11 @@
 # ADR-0042：sealed local authorization 与 macOS arm64 Sandbox
 
-- 状态：Accepted；由 Pico 1.0 重新确认
+- 状态：Accepted；由 Pony 1.0 重新确认
 - 日期：2026-07-15；2026-07-16 更新
 
 ## 背景
 
-Pico 需要在不引入 registry、远程签名服务、运行时下载或缓存授权的情况下，严格绑定当前安装代码与本机 already-present
+Pony 需要在不引入 registry、远程签名服务、运行时下载或缓存授权的情况下，严格绑定当前安装代码与本机 already-present
 Docker image。授权不能由项目 `.env`、workspace 内容或普通 CLI flag 伪造，也不能被描述为跨平台或多租户能力。
 
 ## 决策
@@ -16,11 +16,11 @@ Docker image。授权不能由项目 `.env`、workspace 内容或普通 CLI flag
 - 本机 Docker Desktop 的受信 endpoint；
 - package manifest 中已存在且 identity 完全匹配的 exact `linux/arm64` image。
 
-每次 `pico --sandbox run/repl` 都在 Provider request、Session staging 与 target 创建前验证宿主平台，并从可信 Pico
+每次 `pony --sandbox run/repl` 都在 Provider request、Session staging 与 target 创建前验证宿主平台，并从可信 Pony
 安装树生成 sealed local authorization。授权绑定 distribution version、installed-tree digest、canonical image set、
 policy 和 corpus；不缓存、不联网，不接受 workspace、环境变量或自定义 image 注入。
 
-`pico sandbox status` 是只读诊断；`pico sandbox prepare` 只核验 already-present image。两者都不 pull、build、repair
+`pony sandbox status` 是只读诊断；`pony sandbox prepare` 只核验 already-present image。两者都不 pull、build、repair
 或下载外部授权。任何 identity/readiness 失败都 fail closed，不回退 Host runner。
 
 ## 结果

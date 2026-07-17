@@ -4,15 +4,15 @@ from unittest.mock import Mock
 
 import pytest
 
-from pico.cli.app import main
-from pico.providers.response import Response, StopReason
-from pico.recovery.models import new_checkpoint_record
-from pico.runtime.application import Pico
-from pico.state.session_store import SessionStore
-from pico.state.task_state import TaskState
-from pico.agent.verification import new_verification_record
-from pico.workspace.context import WorkspaceContext
-from pico.runtime.options import RuntimeOptions
+from pony.cli.app import main
+from pony.providers.response import Response, StopReason
+from pony.recovery.models import new_checkpoint_record
+from pony.runtime.application import Pony
+from pony.state.session_store import SessionStore
+from pony.state.task_state import TaskState
+from pony.agent.verification import new_verification_record
+from pony.workspace.context import WorkspaceContext
+from pony.runtime.options import RuntimeOptions
 
 
 def _sentinel():
@@ -34,18 +34,18 @@ class CapturingClient:
 def _agent(tmp_path, client, *, approval_policy="auto"):
     (tmp_path / "README.md").write_text("safe fixture\n", encoding="utf-8")
     workspace = WorkspaceContext.build(tmp_path)
-    return Pico(
+    return Pony(
         model_client=client,
         workspace=workspace,
-        session_store=SessionStore(tmp_path / ".pico" / "sessions"),
+        session_store=SessionStore(tmp_path / ".pony" / "sessions"),
         options=RuntimeOptions(
-            approval_policy=approval_policy, secret_env_names=("PICO_TEST_TOKEN",)
+            approval_policy=approval_policy, secret_env_names=("PONY_TEST_TOKEN",)
         ),
     )
 
 
 def _normal_artifact_files(root):
-    for path in sorted((root / ".pico").rglob("*")):
+    for path in sorted((root / ".pony").rglob("*")):
         if not path.is_file():
             continue
         if "/sessions/backup/" in path.as_posix():
@@ -57,7 +57,7 @@ def test_canary_is_absent_from_provider_session_and_normal_artifacts(
     tmp_path, monkeypatch
 ):
     secret = _sentinel()
-    monkeypatch.setenv("PICO_TEST_TOKEN", secret)
+    monkeypatch.setenv("PONY_TEST_TOKEN", secret)
     client = CapturingClient(
         [
             Response(
@@ -95,7 +95,7 @@ def test_cli_approval_and_verification_observations_hide_canary(
     tmp_path, monkeypatch, capsys
 ):
     secret = _sentinel()
-    monkeypatch.setenv("PICO_TEST_TOKEN", secret)
+    monkeypatch.setenv("PONY_TEST_TOKEN", secret)
     client = CapturingClient(
         [
             Response(
@@ -168,7 +168,7 @@ def test_cli_approval_and_verification_observations_hide_canary(
 
 def test_secret_bearing_tool_action_is_blocked_before_runner(tmp_path, monkeypatch):
     secret = _sentinel()
-    monkeypatch.setenv("PICO_TEST_TOKEN", secret)
+    monkeypatch.setenv("PONY_TEST_TOKEN", secret)
     client = CapturingClient(
         [
             Response(
@@ -212,8 +212,8 @@ def test_runtime_session_load_refuses_legacy_canary_without_backup_or_rewrite(
     if os.name != "posix":
         pytest.skip("POSIX permission assertion")
     secret = _sentinel()
-    monkeypatch.setenv("PICO_TEST_TOKEN", secret)
-    store = SessionStore(tmp_path / ".pico" / "sessions")
+    monkeypatch.setenv("PONY_TEST_TOKEN", secret)
+    store = SessionStore(tmp_path / ".pony" / "sessions")
     store.lock_path.touch(mode=0o600)
     session_id = "legacy-canary"
     legacy_path = store.root / (session_id + ".json")
@@ -228,12 +228,12 @@ def test_runtime_session_load_refuses_legacy_canary_without_backup_or_rewrite(
         ),
         encoding="utf-8",
     )
-    from pico.security.redaction import redact_artifact
+    from pony.security.redaction import redact_artifact
 
     store.set_redactor(
         lambda value: redact_artifact(
             value,
-            secret_env_names=("PICO_TEST_TOKEN",),
+            secret_env_names=("PONY_TEST_TOKEN",),
         )
     )
 
@@ -248,7 +248,7 @@ def test_provider_error_log_cli_and_run_artifacts_hide_canary(
     tmp_path, monkeypatch, caplog, capsys
 ):
     secret = _sentinel()
-    monkeypatch.setenv("PICO_TEST_TOKEN", secret)
+    monkeypatch.setenv("PONY_TEST_TOKEN", secret)
 
     class FailingClient:
         supports_prompt_cache = False

@@ -6,14 +6,14 @@ import time
 
 import pytest
 
-import pico.state.run_store as run_store_module
-from pico.security import private_files as security_module
-from pico.state.run_store import RunStore
-from pico.state.task_state import STOP_REASON_FINAL_ANSWER_RETURNED, TaskState
+import pony.state.run_store as run_store_module
+from pony.security import private_files as security_module
+from pony.state.run_store import RunStore
+from pony.state.task_state import STOP_REASON_FINAL_ANSWER_RETURNED, TaskState
 
 
 def test_run_store_creates_run_directory_and_state_file(tmp_path):
-    store = RunStore(tmp_path / ".pico" / "runs")
+    store = RunStore(tmp_path / ".pony" / "runs")
     state = TaskState.create(
         run_id="run_001", task_id="task_001", user_request="Inspect the repo."
     )
@@ -29,7 +29,7 @@ def test_run_store_creates_run_directory_and_state_file(tmp_path):
 
 
 def test_run_store_appends_trace_jsonl(tmp_path):
-    store = RunStore(tmp_path / ".pico" / "runs")
+    store = RunStore(tmp_path / ".pony" / "runs")
     state = TaskState.create(
         run_id="run_002", task_id="task_002", user_request="Trace the run."
     )
@@ -59,7 +59,7 @@ def test_run_store_appends_trace_jsonl(tmp_path):
 
 
 def test_run_store_rejects_trace_append_past_artifact_limit(tmp_path, monkeypatch):
-    store = RunStore(tmp_path / ".pico" / "runs")
+    store = RunStore(tmp_path / ".pony" / "runs")
     state = TaskState.create(
         run_id="bounded_trace", task_id="task", user_request="safe"
     )
@@ -84,7 +84,7 @@ def test_run_store_serializes_concurrent_bounded_trace_appends(
     tmp_path,
     monkeypatch,
 ):
-    store = RunStore(tmp_path / ".pico" / "runs")
+    store = RunStore(tmp_path / ".pony" / "runs")
     state = TaskState.create(
         run_id="concurrent_trace", task_id="task", user_request="safe"
     )
@@ -127,7 +127,7 @@ def test_run_store_serializes_concurrent_bounded_trace_appends(
 
 
 def test_run_store_trace_append_requires_cross_process_lock(tmp_path, monkeypatch):
-    store = RunStore(tmp_path / ".pico" / "runs")
+    store = RunStore(tmp_path / ".pony" / "runs")
     state = TaskState.create(run_id="locked_trace", task_id="task", user_request="safe")
     store.start_run(state)
     real_lock = run_store_module.file_lock.locked_file
@@ -145,7 +145,7 @@ def test_run_store_trace_append_requires_cross_process_lock(tmp_path, monkeypatc
 
 
 def test_run_store_writes_report_json(tmp_path):
-    store = RunStore(tmp_path / ".pico" / "runs")
+    store = RunStore(tmp_path / ".pony" / "runs")
     state = TaskState.create(
         run_id="run_003", task_id="task_003", user_request="Report the run."
     )
@@ -163,7 +163,7 @@ def test_run_store_writes_report_json(tmp_path):
 
 
 def test_run_store_tolerates_missing_final_report(tmp_path):
-    store = RunStore(tmp_path / ".pico" / "runs")
+    store = RunStore(tmp_path / ".pony" / "runs")
     state = TaskState.create(
         run_id="run_004", task_id="task_004", user_request="Crash before finalize."
     )
@@ -177,7 +177,7 @@ def test_run_store_tolerates_missing_final_report(tmp_path):
 
 @pytest.mark.parametrize("artifact", ("task_state", "report"))
 def test_run_store_load_rejects_duplicate_json_keys(tmp_path, artifact):
-    store = RunStore(tmp_path / ".pico" / "runs")
+    store = RunStore(tmp_path / ".pony" / "runs")
     run_dir = store.run_dir("duplicate")
     run_dir.mkdir(mode=0o700)
     path = (
@@ -194,7 +194,7 @@ def test_run_store_load_rejects_duplicate_json_keys(tmp_path, artifact):
 
 @pytest.mark.parametrize("artifact", ("task_state", "report"))
 def test_run_store_load_rejects_oversized_artifact(tmp_path, monkeypatch, artifact):
-    store = RunStore(tmp_path / ".pico" / "runs")
+    store = RunStore(tmp_path / ".pony" / "runs")
     monkeypatch.setattr(run_store_module, "MAX_RUN_ARTIFACT_BYTES", 8)
     run_dir = store.run_dir("oversized")
     run_dir.mkdir(mode=0o700)
@@ -216,7 +216,7 @@ def test_run_store_write_bounds_existing_artifact_before_backup(
     tmp_path,
     monkeypatch,
 ):
-    store = RunStore(tmp_path / ".pico" / "runs")
+    store = RunStore(tmp_path / ".pony" / "runs")
     state = TaskState.create(
         run_id="oversized_existing", task_id="task", user_request="ok"
     )
@@ -242,7 +242,7 @@ def test_run_store_write_rejects_oversized_artifact_without_replacing_canonical(
     monkeypatch,
     artifact,
 ):
-    store = RunStore(tmp_path / ".pico" / "runs")
+    store = RunStore(tmp_path / ".pony" / "runs")
     state = TaskState.create(run_id="bounded", task_id="task", user_request="ok")
     report = {"status": "ok"}
     if artifact == "task_state":
@@ -289,7 +289,7 @@ def test_run_store_write_rejects_oversized_artifact_without_replacing_canonical(
 
 
 def test_run_store_paths_are_private(tmp_path):
-    store = RunStore(tmp_path / ".pico" / "runs")
+    store = RunStore(tmp_path / ".pony" / "runs")
     state = TaskState.create(run_id="private", task_id="task", user_request="private")
 
     run_dir = store.start_run(state)
@@ -304,7 +304,7 @@ def test_run_store_paths_are_private(tmp_path):
 
 
 def test_append_trace_refuses_symlink_without_touching_target(tmp_path):
-    store = RunStore(tmp_path / ".pico" / "runs")
+    store = RunStore(tmp_path / ".pony" / "runs")
     state = TaskState.create(run_id="linked", task_id="task", user_request="linked")
     store.start_run(state)
     outside = tmp_path / "outside.jsonl"
@@ -318,7 +318,7 @@ def test_append_trace_refuses_symlink_without_touching_target(tmp_path):
 
 
 def test_run_store_parent_swap_cannot_redirect_record(tmp_path):
-    store = RunStore(tmp_path / ".pico" / "runs")
+    store = RunStore(tmp_path / ".pony" / "runs")
     original_root = tmp_path / "runs-original"
     store.root.rename(original_root)
     store.root.mkdir()
@@ -332,7 +332,7 @@ def test_run_store_parent_swap_cannot_redirect_record(tmp_path):
 
 
 def test_trace_append_rolls_back_if_hardlinked_during_write(tmp_path, monkeypatch):
-    store = RunStore(tmp_path / ".pico" / "runs")
+    store = RunStore(tmp_path / ".pony" / "runs")
     state = TaskState.create(run_id="raced", task_id="task", user_request="safe")
     store.start_run(state)
     alias = tmp_path / "trace-alias.jsonl"

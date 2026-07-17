@@ -16,8 +16,8 @@ import tempfile
 import time
 
 from benchmarks.perf.harness import bench
-from pico.state.checkpoint_store import CheckpointStore
-from pico.sandbox.docker import (
+from pony.state.checkpoint_store import CheckpointStore
+from pony.sandbox.docker import (
     build_docker_sandbox_context,
     default_image_manifest_path,
     discover_local_docker,
@@ -27,8 +27,8 @@ from pico.sandbox.docker import (
     MOUNT_POLICY_DIGEST,
     RESOURCE_POLICY_DIGEST,
 )
-from pico.sandbox.apply import StagingObserver
-from pico.sandbox.session import (
+from pony.sandbox.apply import StagingObserver
+from pony.sandbox.session import (
     MAX_FILE_BYTES,
     SandboxSessionStore,
     stage_source,
@@ -113,7 +113,7 @@ def _bootstrap(request):
     git = request.workspace_view.physical_root / ".git"
     git.mkdir()
     (git / "HEAD").write_text(
-        "ref: refs/heads/pico-sandbox\n",
+        "ref: refs/heads/pony-sandbox\n",
         encoding="utf-8",
     )
     return "a" * 40
@@ -152,7 +152,7 @@ def _fixture(root):
     store = SandboxSessionStore(root / "sandboxes")
     session = store.create(
         source,
-        pico_session_id="benchmark-session",
+        pony_session_id="benchmark-session",
         bootstrap_git=_bootstrap,
         **_session_metadata(image),
     )
@@ -212,7 +212,7 @@ class _ObserverContext:
     def __init__(self, source, store, session):
         self.source_root = source
         self.execution_root = session.workspace_view.physical_root
-        self.project_state_root = source / ".pico"
+        self.project_state_root = source / ".pony"
         self.sandbox_state_root = session.state_root
         self.source_apply_state_root = session.state_root
         self.sandbox_session = session
@@ -230,13 +230,13 @@ def _capture_benchmark(root):
     store = SandboxSessionStore(root / "sandboxes")
     session = store.create(
         source,
-        pico_session_id="capture-benchmark",
+        pony_session_id="capture-benchmark",
         bootstrap_git=_bootstrap,
         **_session_metadata(image),
     )
     context = _ObserverContext(source, store, session)
     blobs = CheckpointStore(
-        session.state_root / "recovery" / ".pico" / "checkpoints"
+        session.state_root / "recovery" / ".pony" / "checkpoints"
     )
     observer = StagingObserver(context, blobs)
     observer.ensure_baseline()
@@ -275,7 +275,7 @@ def _real_shell_benchmarks(root):
     context = build_docker_sandbox_context(
         source,
         authorization=authorization,
-        pico_session_id="real-benchmark",
+        pony_session_id="real-benchmark",
         docker_cli=docker_cli,
         docker_endpoint=docker_endpoint,
         docker_config=ensure_runtime_docker_config(root / "docker-config"),
@@ -284,7 +284,7 @@ def _real_shell_benchmarks(root):
         image=image,
     )
     blobs = CheckpointStore(
-        context.sandbox_state_root / "recovery" / ".pico" / "checkpoints"
+        context.sandbox_state_root / "recovery" / ".pony" / "checkpoints"
     )
     observer = StagingObserver(context, blobs)
     observer.ensure_baseline()

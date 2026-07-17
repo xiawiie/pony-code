@@ -7,6 +7,6 @@ aliases: []
 supersedes: []
 ---
 
-Pico's cache anchor lives in Layer 1 (system content block). Anything
+Pony's cache anchor lives in Layer 1 (system content block). Anything
 that changes per turn (workspace state, memory index) must go through
 <system-reminder> injection on the user message, not into system.

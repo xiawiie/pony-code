@@ -3,7 +3,7 @@ requires = ["hatchling>=1.30,<2"]
 build-backend = "hatchling.build"
 
 [project]
-name = "pico"
+name = "pony-code"
 version = "1.0.0"
 description = "Local coding agent for repository-grounded engineering work"
 readme = "README.md"
@@ -25,13 +25,13 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/xiawiie/pico"
-Documentation = "https://github.com/xiawiie/pico#readme"
-Issues = "https://github.com/xiawiie/pico/issues"
-Source = "https://github.com/xiawiie/pico"
+Homepage = "https://github.com/xiawiie/pony-code"
+Documentation = "https://github.com/xiawiie/pony-code#readme"
+Issues = "https://github.com/xiawiie/pony-code/issues"
+Source = "https://github.com/xiawiie/pony-code"
 
 [project.scripts]
-pico = "pico.cli.app:main"
+pony = "pony.cli.app:main"
 
 [dependency-groups]
 dev = [
@@ -44,11 +44,11 @@ include = [
   "/LICENSE",
   "/README.md",
   "/pyproject.toml",
-  "/pico",
+  "/pony",
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["pico"]
+packages = ["pony"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

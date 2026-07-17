@@ -2,8 +2,8 @@ import json
 
 import pytest
 
-from pico.cli.migration import _build_observability
-from pico.agent.observability import (
+from pony.cli.migration import _build_observability
+from pony.agent.observability import (
     convert_observability_v2,
     RunArtifactError,
     convert_legacy_observability,

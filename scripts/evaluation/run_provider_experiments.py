@@ -18,7 +18,7 @@ from benchmarks.evaluation.metrics_common import _validate_record_header  # noqa
 
 def build_arg_parser():
     parser = argparse.ArgumentParser(
-        description="Run the Provider selected by a Pico repository's .env."
+        description="Run the Provider selected by a Pony repository's .env."
     )
     parser.add_argument(
         "--repo-root",

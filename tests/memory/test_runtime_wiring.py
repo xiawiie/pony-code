@@ -1,32 +1,32 @@
-"""验证 Pico 运行时把 BlockStore / Retrieval / RepoMap wire 到 ToolContext。"""
+"""验证 Pony 运行时把 BlockStore / Retrieval / RepoMap wire 到 ToolContext。"""
 
 import json
 from pathlib import Path
 
-from pico import Pico
-from pico.state.session_store import SessionStore
-from pico.workspace.context import WorkspaceContext
+from pony import Pony
+from pony.state.session_store import SessionStore
+from pony.workspace.context import WorkspaceContext
 from benchmarks.support.fake_provider import FakeModelClient
-import pico.memory.service as memorylib
-from pico.state.session_store import SESSION_FORMAT_VERSION, SESSION_RECORD_TYPE
-from pico.state.task_state import TaskState
-from pico.runtime.options import RuntimeOptions
+import pony.memory.service as memorylib
+from pony.state.session_store import SESSION_FORMAT_VERSION, SESSION_RECORD_TYPE
+from pony.state.task_state import TaskState
+from pony.runtime.options import RuntimeOptions
 
 
 def _isolate_home(monkeypatch, tmp_path):
-    """让 Path.home() 指向 tmp_path/home, 隔离用户本机 ~/.pico/."""
+    """让 Path.home() 指向 tmp_path/home, 隔离用户本机 ~/.pony/."""
     fake_home = tmp_path / "home"
     fake_home.mkdir(exist_ok=True)
     monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_home))
     return fake_home
 
 
-def test_pico_has_memory_store_and_repo_map(tmp_path, monkeypatch):
+def test_pony_has_memory_store_and_repo_map(tmp_path, monkeypatch):
     _isolate_home(monkeypatch, tmp_path)
     (tmp_path / "AGENTS.md").write_text("# project\n")
     workspace = WorkspaceContext.build(tmp_path)
-    store = SessionStore(tmp_path / ".pico" / "sessions")
-    agent = Pico(
+    store = SessionStore(tmp_path / ".pony" / "sessions")
+    agent = Pony(
         model_client=FakeModelClient(["done"]),
         workspace=workspace,
         session_store=store,
@@ -40,8 +40,8 @@ def test_pico_has_memory_store_and_repo_map(tmp_path, monkeypatch):
 def test_tool_context_has_wiring(tmp_path, monkeypatch):
     _isolate_home(monkeypatch, tmp_path)
     workspace = WorkspaceContext.build(tmp_path)
-    store = SessionStore(tmp_path / ".pico" / "sessions")
-    agent = Pico(
+    store = SessionStore(tmp_path / ".pony" / "sessions")
+    agent = Pony(
         model_client=FakeModelClient(["done"]),
         workspace=workspace,
         session_store=store,
@@ -56,8 +56,8 @@ def test_tool_context_has_wiring(tmp_path, monkeypatch):
 def _build_agent(tmp_path, monkeypatch, session=None):
     _isolate_home(monkeypatch, tmp_path)
     workspace = WorkspaceContext.build(tmp_path)
-    store = SessionStore(tmp_path / ".pico" / "sessions")
-    return Pico(
+    store = SessionStore(tmp_path / ".pony" / "sessions")
+    return Pony(
         model_client=FakeModelClient(["done"]),
         workspace=workspace,
         session_store=store,
@@ -171,7 +171,7 @@ def test_reset_clears_messages_working_memory_and_keeps_narrow_memory_shape(
         {
         "role": "user",
         "content": "hello",
-        "_pico_meta": {"created_at": "t"},
+        "_pony_meta": {"created_at": "t"},
         }
     )
     agent.memory.set_task_summary("Task")
@@ -189,19 +189,19 @@ def test_reset_clears_messages_working_memory_and_keeps_narrow_memory_shape(
 def test_memory_text_returns_working_memory_json(tmp_path, monkeypatch):
     agent = _build_agent(tmp_path, monkeypatch)
     agent.memory.set_task_summary("Inspect runtime")
-    agent.memory.remember_file("pico/runtime/application.py")
+    agent.memory.remember_file("pony/runtime/application.py")
     agent._sync_working_memory()
 
     assert json.loads(agent.memory_text()) == {
         "task_summary": "Inspect runtime",
-        "recent_files": ["pico/runtime/application.py"],
+        "recent_files": ["pony/runtime/application.py"],
     }
 
 
 def test_build_report_excludes_working_memory_content(tmp_path, monkeypatch):
     agent = _build_agent(tmp_path, monkeypatch)
     agent.memory.set_task_summary("Report task")
-    agent.memory.remember_file("pico/runtime/application.py")
+    agent.memory.remember_file("pony/runtime/application.py")
     agent._sync_working_memory()
     task_state = TaskState.create(
         run_id="run_test", task_id="task_test", user_request="Report task"
@@ -212,7 +212,7 @@ def test_build_report_excludes_working_memory_content(tmp_path, monkeypatch):
 
     assert "working_memory" not in report
     assert "Report task" not in json.dumps(report)
-    assert "pico/runtime/application.py" not in json.dumps(report)
+    assert "pony/runtime/application.py" not in json.dumps(report)
 
 
 def test_normal_ask_final_answer_creates_checkpoint_and_syncs_working_memory(
@@ -236,7 +236,7 @@ def test_spawn_delegate_syncs_child_working_memory_without_notes(tmp_path, monke
         captured["memory"] = dict(child.session["memory"])
         return "child done"
 
-    monkeypatch.setattr(Pico, "ask", fake_ask)
+    monkeypatch.setattr(Pony, "ask", fake_ask)
 
     assert (
         agent.spawn_delegate({"task": "Inspect child state", "max_steps": 1})
@@ -252,8 +252,8 @@ def test_spawn_delegate_syncs_child_working_memory_without_notes(tmp_path, monke
 
 def test_process_note_hook_is_removed_from_runtime_and_tool_executor():
     hook_name = "record_process" + "_note_for_tool"
-    runtime_source = Path("pico/runtime/application.py").read_text(encoding="utf-8")
-    tool_executor_source = Path("pico/tools/executor.py").read_text(encoding="utf-8")
+    runtime_source = Path("pony/runtime/application.py").read_text(encoding="utf-8")
+    tool_executor_source = Path("pony/tools/executor.py").read_text(encoding="utf-8")
 
     assert hook_name not in runtime_source
     assert hook_name not in tool_executor_source

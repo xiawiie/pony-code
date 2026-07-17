@@ -3,20 +3,20 @@ from unittest.mock import Mock
 
 import pytest
 
-from pico import Pico
-from pico.state.session_store import SessionStore
-from pico.workspace.context import WorkspaceContext
+from pony import Pony
+from pony.state.session_store import SessionStore
+from pony.workspace.context import WorkspaceContext
 from benchmarks.support.fake_provider import FakeModelClient
-from pico.state.task_state import TaskState
-from pico.runtime.options import RuntimeOptions
+from pony.state.task_state import TaskState
+from pony.runtime.options import RuntimeOptions
 
 
 def build_agent(tmp_path):
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
-    return Pico(
+    return Pony(
         model_client=FakeModelClient([]),
         workspace=WorkspaceContext.build(tmp_path),
-        session_store=SessionStore(tmp_path / ".pico" / "sessions"),
+        session_store=SessionStore(tmp_path / ".pony" / "sessions"),
         options=RuntimeOptions(approval_policy="auto"),
     )
 
@@ -252,7 +252,7 @@ def test_pre_runner_base_exception_releases_mutation_lock(
         )
     else:
         monkeypatch.setattr(
-            "pico.tools.executor._capture_before_file_states_for_paths",
+            "pony.tools.executor._capture_before_file_states_for_paths",
             lambda *args: (_ for _ in ()).throw(KeyboardInterrupt("prepared")),
         )
 

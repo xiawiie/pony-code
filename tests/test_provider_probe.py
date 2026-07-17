@@ -2,11 +2,11 @@ from unittest.mock import Mock
 
 import pytest
 
-import pico.providers.transport as provider_shared
-from pico.providers.transport import ProviderTransportError
-from pico.providers.openai_chat_completions import OpenAIChatCompletionsModelClient
-from pico.providers.probe import probe_model_client
-from pico.providers.response import Response, StopReason
+import pony.providers.transport as provider_shared
+from pony.providers.transport import ProviderTransportError
+from pony.providers.openai_chat_completions import OpenAIChatCompletionsModelClient
+from pony.providers.probe import probe_model_client
+from pony.providers.response import Response, StopReason
 
 
 def _response(stop_reason, *content):
@@ -21,7 +21,7 @@ def _tool(value="ping"):
     return {
         "type": "tool_use",
         "id": "call_1",
-        "name": "pico_probe",
+        "name": "pony_probe",
         "input": {"value": value},
     }
 

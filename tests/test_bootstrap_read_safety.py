@@ -5,12 +5,12 @@ from pathlib import Path
 
 import pytest
 
-from pico.workspace import context as workspace_module
-from pico.memory.block_store import BlockStore
-from pico.memory.repo_map import RepoMap
-from pico.tools.subprocess import build_trusted_executables
-from pico.workspace.context import WorkspaceContext
-from pico.workspace.observer import WorkspaceObserver
+from pony.workspace import context as workspace_module
+from pony.memory.block_store import BlockStore
+from pony.memory.repo_map import RepoMap
+from pony.tools.subprocess import build_trusted_executables
+from pony.workspace.context import WorkspaceContext
+from pony.workspace.observer import WorkspaceObserver
 
 
 def _trusted_binary(workspace, name):
@@ -22,7 +22,7 @@ def _trusted_binary(workspace, name):
 
 def test_workspace_context_does_not_follow_readme_symlink_to_secret(tmp_path):
     secret = "github_pat_A123456789012345678901234567890"
-    (tmp_path / ".env").write_text(f"PICO_TOKEN={secret}\n", encoding="utf-8")
+    (tmp_path / ".env").write_text(f"PONY_TOKEN={secret}\n", encoding="utf-8")
     (tmp_path / "README.md").symlink_to(tmp_path / ".env")
 
     workspace = WorkspaceContext.build(tmp_path)
@@ -44,13 +44,13 @@ def test_workspace_context_does_not_follow_project_doc_symlink(tmp_path, name):
 
 
 def test_bootstrap_reader_rejects_symlinked_parent_and_sensitive_file(tmp_path):
-    from pico.workspace.context import _safe_index_file
+    from pony.workspace.context import _safe_index_file
 
     outside = tmp_path.parent / f"{tmp_path.name}-outside-docs"
     outside.mkdir()
     (outside / "README.md").write_text("parent-link-secret", encoding="utf-8")
     (tmp_path / "docs").symlink_to(outside, target_is_directory=True)
-    (tmp_path / ".env").write_text("PICO_TOKEN=opaque", encoding="utf-8")
+    (tmp_path / ".env").write_text("PONY_TOKEN=opaque", encoding="utf-8")
 
     assert _safe_index_file(tmp_path, tmp_path / "docs" / "README.md") is None
     assert _safe_index_file(tmp_path, tmp_path / ".env") is None
@@ -58,7 +58,7 @@ def test_bootstrap_reader_rejects_symlinked_parent_and_sensitive_file(tmp_path):
 
 def test_global_agents_rejects_symlink_and_redacts_before_clip(tmp_path, monkeypatch):
     home = tmp_path / "home"
-    global_dir = home / ".pico"
+    global_dir = home / ".pony"
     repo = tmp_path / "repo"
     global_dir.mkdir(parents=True)
     repo.mkdir()
@@ -209,7 +209,7 @@ def test_repo_map_and_memory_index_skip_symlink_files_in_both_scopes(tmp_path):
         [item.__dict__ for item in repo_map.lookup("SecretSymbol")]
     )
 
-    workspace_memory = tmp_path / ".pico" / "memory"
+    workspace_memory = tmp_path / ".pony" / "memory"
     user_memory = tmp_path / "user-memory"
     (workspace_memory / "notes").mkdir(parents=True)
     (user_memory / "notes").mkdir(parents=True)
@@ -267,8 +267,8 @@ def test_workspace_observer_without_frozen_git_never_runs_subprocess(
 def test_search_ignores_inherited_ripgrep_preprocessor(
     tmp_path, monkeypatch, contract_rg
 ):
-    from pico.tools.context import ToolContext
-    from pico.tools.search import tool_search
+    from pony.tools.context import ToolContext
+    from pony.tools.search import tool_search
 
     marker = tmp_path / "rg-pre-ran"
     pre = tmp_path / "pre.sh"

@@ -1,7 +1,7 @@
 import hashlib
 from pathlib import Path
 
-from pico.tools.registry import legal_tool_names
+from pony.tools.registry import legal_tool_names
 from .metrics_common import _decode_json_object, _validate_record_header
 
 FIXED_BENCHMARK_DEFINITION_FORMAT_VERSION = 1

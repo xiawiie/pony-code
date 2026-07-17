@@ -1,6 +1,6 @@
-# Pico Memory
+# Pony Memory
 
-Pico 把 Durable Memory 与 Session Summary 严格分层：User Notes / Agent Notes 是跨 Session 的长期事实；
+Pony 把 Durable Memory 与 Session Summary 严格分层：User Notes / Agent Notes 是跨 Session 的长期事实；
 compaction、branch summary、task checkpoint 和 recent-recall 去重都属于 Session Tree，不会自动写入 Durable
 Memory。
 
@@ -8,8 +8,8 @@ Memory。
 
 | scope | User Notes | Agent Notes |
 | --- | --- | --- |
-| workspace | `.pico/memory/notes/**/*.md` | `.pico/memory/agent_notes.md` |
-| user | `~/.pico/memory/notes/**/*.md` | `~/.pico/memory/agent_notes.md` |
+| workspace | `.pony/memory/notes/**/*.md` | `.pony/memory/agent_notes.md` |
+| user | `~/.pony/memory/notes/**/*.md` | `~/.pony/memory/agent_notes.md` |
 
 User Notes 由用户维护，agent 只能 list/read/search。Agent Notes 是每个 scope 唯一的 append-only 文件；只有
 当前 top-level turn 获得明确授权时才能通过 `memory_save` 追加：
@@ -68,7 +68,7 @@ recent recall 列表是可重建 cache，不属于 canonical Session entry。Com
 - `memory_read`：按 canonical path 与行范围读取；
 - `memory_search`：返回 BM25 排序结果和 bounded snippets；
 - `memory_save`：在当前显式授权下追加 Agent Note；
-- `pico memory list|show|search|review`：不启动模型的只读检查入口。
+- `pony memory list|show|search|review`：不启动模型的只读检查入口。
 
 canonical path 示例：`workspace/notes/auth.md`、`workspace/agent_notes.md#entry-2`、
 `user/notes/preferences.md`。绝对路径、`..`、敏感内容和未授权 scope 都会被拒绝。

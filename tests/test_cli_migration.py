@@ -3,15 +3,15 @@ import subprocess
 
 import pytest
 
-import pico.cli.migration as cli_migration_module
-from pico.cli.app import main
-from pico.cli.errors import CLI_EXIT_RUNTIME
-from pico.recovery.migration import Migration
-from pico.agent.observability import load_run_summary, validate_report, validate_trace
+import pony.cli.migration as cli_migration_module
+from pony.cli.app import main
+from pony.cli.errors import CLI_EXIT_RUNTIME
+from pony.recovery.migration import Migration
+from pony.agent.observability import load_run_summary, validate_report, validate_trace
 
 
 def _write_legacy_run(root, run_id="run_1"):
-    run_dir = root / ".pico" / "runs" / run_id
+    run_dir = root / ".pony" / "runs" / run_id
     run_dir.mkdir(parents=True)
     (run_dir / "report.json").write_text(
         json.dumps({"run_id": run_id, "task_id": "task_1"}),
@@ -95,12 +95,12 @@ def test_runs_summary_names_exact_observability_migration_command(
     assert code == 0
     data = json.loads(capsys.readouterr().out)["data"]
     assert data["summary_status"] == "migration_required"
-    assert data["migration_command"] == "pico migrate observability apply"
+    assert data["migration_command"] == "pony migrate observability apply"
 
 
 def test_migrate_observability_apply_cuts_over_legacy_run(tmp_path, capsys):
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
-    run_dir = tmp_path / ".pico" / "runs" / "run_1"
+    run_dir = tmp_path / ".pony" / "runs" / "run_1"
     run_dir.mkdir(parents=True)
     legacy = {
         "run_id": "run_1",
@@ -168,7 +168,7 @@ def test_migrate_observability_apply_cuts_over_legacy_run(tmp_path, capsys):
     ]
     validate_report(report, run_id="run_1")
     validate_trace(trace, run_id="run_1", task_id="task_1")
-    assert load_run_summary(tmp_path / ".pico" / "runs", "run_1") == report
+    assert load_run_summary(tmp_path / ".pony" / "runs", "run_1") == report
     assert "final_answer" not in report
     assert "must not be copied" not in json.dumps(report)
     assert all("secret" not in json.dumps(event) for event in trace)
@@ -179,7 +179,7 @@ def test_migrate_observability_rejects_duplicate_json_keys_before_rename(
     tmp_path, monkeypatch, capsys, artifact
 ):
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
-    run_dir = tmp_path / ".pico" / "runs" / "run_1"
+    run_dir = tmp_path / ".pony" / "runs" / "run_1"
     run_dir.mkdir(parents=True)
     legacy = {
         "run_id": "run_1",
@@ -234,7 +234,7 @@ def test_migrate_observability_rejects_oversized_artifact_before_rename(
     monkeypatch,
     artifact,
 ):
-    import pico.cli.migration as cli_migration
+    import pony.cli.migration as cli_migration
 
     source = tmp_path / "source"
     run_dir = source / "run_1"

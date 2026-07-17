@@ -10,8 +10,8 @@ import time
 
 import pytest
 
-import pico.sandbox.docker as docker_module
-from pico.sandbox.docker import (
+import pony.sandbox.docker as docker_module
+from pony.sandbox.docker import (
     compile_create_argv,
     default_image_manifest_path,
     discover_local_docker,
@@ -31,7 +31,7 @@ from pico.sandbox.docker import (
     verify_container_inspect,
     verify_image_inspect,
 )
-from pico.sandbox.session import SandboxSessionStore, WorkspaceView
+from pony.sandbox.session import SandboxSessionStore, WorkspaceView
 
 
 CONTAINER_ID = "e" * 64
@@ -92,7 +92,7 @@ def _bootstrap(request):
     assert isinstance(tracked_paths, tuple)
     git = view.physical_root / ".git"
     git.mkdir()
-    (git / "HEAD").write_text("ref: refs/heads/pico-sandbox\n", encoding="utf-8")
+    (git / "HEAD").write_text("ref: refs/heads/pony-sandbox\n", encoding="utf-8")
     return "a" * 40
 
 
@@ -103,7 +103,7 @@ def _session(tmp_path):
     store = SandboxSessionStore(tmp_path / "sandboxes")
     session = store.create(
         source,
-        pico_session_id="session-1",
+        pony_session_id="session-1",
         bootstrap_git=_bootstrap,
         **_session_metadata(),
     )
@@ -131,7 +131,7 @@ def _container_payload(plan, *, started=False, exit_code=0, oom=False):
             "Env": list(plan.env),
             "ExposedPorts": None,
             "Healthcheck": None,
-            "Hostname": "pico-sandbox",
+            "Hostname": "pony-sandbox",
             "Labels": plan.label_map,
             "User": plan.user,
             "Volumes": None,
@@ -231,6 +231,14 @@ def test_image_inspect_accepts_real_containerd_shape_without_descriptor():
     image = load_image_manifest(default_image_manifest_path())
     payload = _image_payload(image)
     payload[0].pop("Descriptor")
+
+    verify_image_inspect(payload, image)
+
+
+def test_image_inspect_accepts_containerd_manifest_id():
+    image = load_image_manifest(default_image_manifest_path())
+    payload = _image_payload(image)
+    payload[0]["Id"] = image.image_digest
 
     verify_image_inspect(payload, image)
 
@@ -384,17 +392,17 @@ def test_packaged_image_manifest_binds_d1_policy_and_image():
 
     assert (
         POLICY_DIGEST
-        == "sha256:96aa648358b4e8efa83c5d1792b980518198844e7993893b65307c12a7a1c2f6"
+        == "sha256:dd72f90d3fbdd26749a19091a8e51dafab7cb9fc7c448159f9e7ee744e7a441c"
     )
     assert image.policy_digest == POLICY_DIGEST
     assert image.image_set_digest.startswith("sha256:")
     assert (
         image.image_digest
-        == "sha256:61f5e86e344d4053b8f6c7053c965b2cde7fc5e77777974e6237ad2e4ec36904"
+        == "sha256:d7a8ccd6b7482d8bb647dee7bc6549f2652ce147483af5f45ba36b6b2cf6f07f"
     )
     assert (
         image.image_id
-        == "sha256:4b8538d9c53897e45fd0aa798f78dcc29795956f208efeed0bb7d5662f933ca8"
+        == "sha256:62cf9fd22b182737ea583961f2ee77aaa4dc03c8ed2f5afb7b06ee915698ec51"
     )
     assert image.env == GUEST_ENV
 
@@ -572,7 +580,7 @@ def test_status_reports_exact_image_failure(case, expected_image):
             else:
                 payload[0]["Config"]["Labels"] = {
                     **payload[0]["Config"]["Labels"],
-                    "io.pico.sandbox.managed": "false",
+                    "io.pony.sandbox.managed": "false",
                 }
             return _result(stdout=json.dumps(payload).encode())
 
@@ -1110,7 +1118,7 @@ def test_synthetic_git_bootstrap_returns_to_creating_state(tmp_path):
         git = workspace / ".git"
         git.mkdir()
         (git / "HEAD").write_text(
-            "ref: refs/heads/pico-sandbox\n",
+            "ref: refs/heads/pony-sandbox\n",
             encoding="utf-8",
         )
         store.finish_call(session.state_root)
@@ -1136,7 +1144,7 @@ def test_synthetic_git_bootstrap_returns_to_creating_state(tmp_path):
 
     session = store.create(
         source,
-        pico_session_id="session-1",
+        pony_session_id="session-1",
         bootstrap_git=runner.bootstrap_git,
         **_session_metadata(),
     )
@@ -1757,7 +1765,7 @@ def test_cli_socket_and_empty_config_are_identity_bound(tmp_path):
     config = tmp_path / "config"
     config.mkdir(mode=0o700)
     (config / "config.json").write_bytes(b"{}\n")
-    endpoint = Path("/tmp") / f"pico-docker-{os.getpid()}-{id(tmp_path)}.sock"
+    endpoint = Path("/tmp") / f"pony-docker-{os.getpid()}-{id(tmp_path)}.sock"
     endpoint.unlink(missing_ok=True)
     listener = socket.socket(socket.AF_UNIX)
     listener.bind(str(endpoint))
@@ -1835,7 +1843,7 @@ def test_discover_local_docker_binds_trusted_cli_and_desktop_socket(tmp_path):
     executable.write_bytes(b"#!/bin/sh\n")
     executable.chmod(0o755)
     (binary_dir / "docker").symlink_to(executable)
-    short_home = Path("/tmp") / f"pico-docker-discovery-{os.getpid()}-{time.time_ns()}"
+    short_home = Path("/tmp") / f"pony-docker-discovery-{os.getpid()}-{time.time_ns()}"
     socket_dir = short_home / ".docker" / "run"
     socket_dir.mkdir(parents=True)
     endpoint = socket_dir / "docker.sock"

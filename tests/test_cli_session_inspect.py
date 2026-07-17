@@ -1,8 +1,8 @@
 import json
 import os
 
-from pico.cli.session import inspect_session
-from pico.state.session_store import SessionStore
+from pony.cli.session import inspect_session
+from pony.state.session_store import SessionStore
 
 
 def _payload(workspace, session_id, messages, *, version=1):
@@ -40,7 +40,7 @@ def _write_legacy(root, workspace, session_id, messages):
 
 def _tool_messages():
     return [
-        {"role": "user", "content": "q", "_pico_meta": {"created_at": "t"}},
+        {"role": "user", "content": "q", "_pony_meta": {"created_at": "t"}},
         {
             "role": "assistant",
             "content": [
@@ -51,7 +51,7 @@ def _tool_messages():
                     "input": {"path": "a.py"},
                 }
             ],
-            "_pico_meta": {"created_at": "t"},
+            "_pony_meta": {"created_at": "t"},
         },
         {
             "role": "user",
@@ -62,9 +62,9 @@ def _tool_messages():
                     "content": "body",
                 }
             ],
-            "_pico_meta": {"created_at": "t"},
+            "_pony_meta": {"created_at": "t"},
         },
-        {"role": "assistant", "content": "done", "_pico_meta": {"created_at": "t"}},
+        {"role": "assistant", "content": "done", "_pony_meta": {"created_at": "t"}},
     ]
 
 
@@ -151,7 +151,7 @@ def test_inspect_fails_on_orphan_without_consulting_history(tmp_path):
                         "input": {},
                     }
                 ],
-                "_pico_meta": {},
+                "_pony_meta": {},
             }
         ],
     )

@@ -7,8 +7,8 @@ import subprocess
 
 import pytest
 
-from pico.tools import subprocess as safe_subprocess_module
-from pico.tools.subprocess import (
+from pony.tools import subprocess as safe_subprocess_module
+from pony.tools.subprocess import (
     build_trusted_executables,
     discover_lexical_repo_root,
     run_hardened_git,
@@ -37,7 +37,7 @@ def _init_git_repo(path):
         check=True,
     )
     subprocess.run(
-        [git, "config", "user.name", "Pico Tests"],
+        [git, "config", "user.name", "Pony Tests"],
         cwd=path,
         check=True,
     )
@@ -114,7 +114,7 @@ def _assert_gitfile_rejected_before_git(monkeypatch, cwd, args=("status", "--sho
 
 
 def _fifo_gitfile_probe(executable, cwd, marker_to_replace, connection):
-    from pico.tools import subprocess as safe_subprocess
+    from pony.tools import subprocess as safe_subprocess
 
     swapped = False
     if marker_to_replace is not None:
@@ -394,7 +394,7 @@ def test_empty_safe_path_never_calls_which(path_kind, tmp_path, monkeypatch):
         calls.append((name, path))
         return str(fake)
 
-    monkeypatch.setattr("pico.tools.subprocess.shutil.which", cwd_fallback)
+    monkeypatch.setattr("pony.tools.subprocess.shutil.which", cwd_fallback)
 
     trusted = build_trusted_executables(
         workspace,
@@ -971,11 +971,11 @@ def test_hardened_git_rejects_absorbed_worktree_config_extension_before_git(
         encoding="utf-8",
     )
     (target / "config.worktree").write_text(
-        "[pico]\n\tprobe = read-from-config-worktree\n",
+        "[pony]\n\tprobe = read-from-config-worktree\n",
         encoding="utf-8",
     )
     observed = subprocess.run(
-        [git, "config", "--worktree", "--get", "pico.probe"],
+        [git, "config", "--worktree", "--get", "pony.probe"],
         cwd=child,
         check=True,
         capture_output=True,
@@ -1368,7 +1368,7 @@ def test_hardened_git_safe_exact_queries_work_with_dangerous_filter_config(
     [
         ["-c", "core.fsmonitor=/tmp/marker", "status"],
         ["-ccore.fsmonitor=/tmp/marker", "status"],
-        ["--config-env=core.fsmonitor=PICO_MARKER", "status"],
+        ["--config-env=core.fsmonitor=PONY_MARKER", "status"],
         ["--paginate", "status"],
         ["--exec-path=.", "status"],
         ["--git-dir=../outside", "status"],
@@ -1444,7 +1444,7 @@ def test_hardened_rg_uses_fixed_config_and_minimal_environment(tmp_path, monkeyp
     def passthrough(executable):
         yield str(executable)
 
-    monkeypatch.setattr("pico.tools.subprocess._prepared_executable", passthrough)
+    monkeypatch.setattr("pony.tools.subprocess._prepared_executable", passthrough)
     monkeypatch.setattr(subprocess, "run", fake_run)
 
     run_hardened_rg("/usr/bin/rg", ["needle", "."], cwd=tmp_path)
@@ -1460,7 +1460,7 @@ def test_hardened_rg_child_path_comes_only_from_frozen_executable(
     tmp_path,
     monkeypatch,
 ):
-    from pico.tools import subprocess as safe_subprocess
+    from pony.tools import subprocess as safe_subprocess
 
     captured = {}
 
@@ -1485,13 +1485,13 @@ def test_hardened_rg_child_path_comes_only_from_frozen_executable(
     monkeypatch.setattr(subprocess, "run", fake_run)
 
     run_hardened_rg(
-        "/opt/pico-frozen/bin/rg",
+        "/opt/pony-frozen/bin/rg",
         ["needle", "."],
         cwd=tmp_path,
     )
 
-    assert captured["argv"][0] == "/opt/pico-frozen/bin/rg"
-    assert captured["env"]["PATH"] == "/opt/pico-frozen/bin"
+    assert captured["argv"][0] == "/opt/pony-frozen/bin/rg"
+    assert captured["env"]["PATH"] == "/opt/pony-frozen/bin"
     assert captured["env"]["RIPGREP_CONFIG_PATH"] == os.devnull
 
 

@@ -1,5 +1,5 @@
-from pico.tools.registry import memory_write_intent
-from pico.tools.executor import PolicyDecision
+from pony.tools.registry import memory_write_intent
+from pony.tools.executor import PolicyDecision
 
 
 def test_unknown_tool_policy_is_workspace_write_deny():

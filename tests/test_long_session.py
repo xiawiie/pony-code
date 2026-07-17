@@ -1,17 +1,17 @@
 from types import SimpleNamespace
 
-from pico.agent.compaction import compact_session, rewind_with_branch_summary
-from pico.context.renderer import InjectionSnapshot
-from pico.agent.context_manager import ContextManager
-from pico.agent.messages import make_tool_pair
-from pico.agent.model_capabilities import (
+from pony.agent.compaction import compact_session, rewind_with_branch_summary
+from pony.context.renderer import InjectionSnapshot
+from pony.agent.context_manager import ContextManager
+from pony.agent.messages import make_tool_pair
+from pony.agent.model_capabilities import (
     ModelCapabilities,
     TokenAccounting,
     build_model_budget,
 )
 from benchmarks.support.fake_provider import FakeModelClient
-from pico.state.session_store import SessionStore, entry_message_refs
-from pico.workspace.context import now
+from pony.state.session_store import SessionStore, entry_message_refs
+from pony.workspace.context import now
 
 
 def _session(workspace):
@@ -36,7 +36,7 @@ def _plain(role, text):
     return {
         "role": role,
         "content": text,
-        "_pico_meta": {"created_at": now()},
+        "_pony_meta": {"created_at": now()},
     }
 
 
@@ -77,7 +77,7 @@ def _agent(workspace, store):
 
 
 def test_200_turn_session_compacts_twice_branches_and_resumes(tmp_path):
-    store = SessionStore(tmp_path / ".pico" / "sessions")
+    store = SessionStore(tmp_path / ".pony" / "sessions")
     store.save(_session(tmp_path))
     agent = _agent(tmp_path, store)
 
@@ -172,16 +172,16 @@ def test_200_turn_session_compacts_twice_branches_and_resumes(tmp_path):
     breakdown = metadata["context_breakdown"]
     assert breakdown["budget"]["used"] <= breakdown["budget"]["input_limit"]
     assert breakdown["history"]["dropped_turns"] == 0
-    assert "<pico:session_summary>" in request["messages"][0]["content"]
+    assert "<pony:session_summary>" in request["messages"][0]["content"]
     assert any(
-        "<pico:branch_summary>" in str(message.get("content", ""))
+        "<pony:branch_summary>" in str(message.get("content", ""))
         for message in request["messages"]
     )
 
     path = store.path("long-session")
     assert path.read_bytes().endswith(b"\n")
     assert len(path.read_bytes().splitlines()) == len(tree.entries) + 1
-    resumed_store = SessionStore(tmp_path / ".pico" / "sessions")
+    resumed_store = SessionStore(tmp_path / ".pony" / "sessions")
     resumed = resumed_store.load_tree("long-session")
     assert resumed.leaf_id == tree.leaf_id
     assert [entry["id"] for entry in resumed.active_path] == [

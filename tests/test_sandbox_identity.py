@@ -7,11 +7,11 @@ import zipfile
 
 import pytest
 
-from pico.sandbox import identity as identity
+from pony.sandbox import identity as identity
 
 
 def test_installed_tree_digest_is_stable_and_rejects_unsupported_entries(tmp_path):
-    package = tmp_path / "pico"
+    package = tmp_path / "pony"
     package.mkdir()
     (package / "module.py").write_text("value = 1\n", encoding="utf-8")
     data = package / "data.json"
@@ -34,7 +34,7 @@ def test_installed_tree_digest_is_stable_and_rejects_unsupported_entries(tmp_pat
 
 
 def test_installed_tree_only_ignores_generated_cache_bytecode(tmp_path):
-    package = tmp_path / "pico"
+    package = tmp_path / "pony"
     cache = package / "__pycache__"
     cache.mkdir(parents=True)
     (package / "module.py").write_text("value = 1\n", encoding="utf-8")
@@ -52,18 +52,18 @@ def test_installed_tree_only_ignores_generated_cache_bytecode(tmp_path):
 
 
 def _write_installed_distribution(root, version="0.1.0"):
-    package = root / "pico"
+    package = root / "pony"
     package.mkdir()
     module = package / "module.py"
     module.write_text("value = 1\n", encoding="utf-8")
-    dist_info = root / f"pico-{version}.dist-info"
+    dist_info = root / f"pony_code-{version}.dist-info"
     dist_info.mkdir()
     files = {
-        module: "pico/module.py",
-        dist_info / "METADATA": f"pico-{version}.dist-info/METADATA",
-        dist_info / "WHEEL": f"pico-{version}.dist-info/WHEEL",
-        dist_info / "entry_points.txt": f"pico-{version}.dist-info/entry_points.txt",
-        dist_info / "top_level.txt": f"pico-{version}.dist-info/top_level.txt",
+        module: "pony/module.py",
+        dist_info / "METADATA": f"pony_code-{version}.dist-info/METADATA",
+        dist_info / "WHEEL": f"pony_code-{version}.dist-info/WHEEL",
+        dist_info / "entry_points.txt": f"pony_code-{version}.dist-info/entry_points.txt",
+        dist_info / "top_level.txt": f"pony_code-{version}.dist-info/top_level.txt",
     }
     for path in files:
         if path != module:
@@ -75,7 +75,7 @@ def _write_installed_distribution(root, version="0.1.0"):
         rows.append(
             f"{relative},sha256={encoded.rstrip(b'=').decode('ascii')},{len(raw)}"
         )
-    rows.append(f"pico-{version}.dist-info/RECORD,,")
+    rows.append(f"pony_code-{version}.dist-info/RECORD,,")
     (dist_info / "RECORD").write_text("\n".join(rows) + "\n", encoding="utf-8")
     return package, dist_info
 
@@ -93,18 +93,18 @@ def test_installed_distribution_digest_binds_record_and_dist_info(tmp_path):
 
 
 def _write_test_wheel(root):
-    wheel = root / "pico-0.1.0-py3-none-any.whl"
-    dist_info = "pico-0.1.0.dist-info"
+    wheel = root / "pony_code-0.1.0-py3-none-any.whl"
+    dist_info = "pony_code-0.1.0.dist-info"
     files = {
-        "pico/__init__.py": b"def main():\n    return None\n",
+        "pony/__init__.py": b"def main():\n    return None\n",
         f"{dist_info}/METADATA": (
-            b"Metadata-Version: 2.1\nName: pico\nVersion: 0.1.0\n"
+            b"Metadata-Version: 2.1\nName: pony-code\nVersion: 0.1.0\n"
         ),
         f"{dist_info}/WHEEL": (
             b"Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n"
         ),
-        f"{dist_info}/entry_points.txt": b"[console_scripts]\npico = pico:main\n",
-        f"{dist_info}/top_level.txt": b"pico\n",
+        f"{dist_info}/entry_points.txt": b"[console_scripts]\npony = pony:main\n",
+        f"{dist_info}/top_level.txt": b"pony\n",
     }
     rows = []
     for relative, raw in files.items():
@@ -145,9 +145,9 @@ def test_installed_distribution_accepts_a_real_pip_console_script(tmp_path):
         [
             str(python),
             "-c",
-            "from pathlib import Path; import pico; "
-            "root=Path(pico.__file__).resolve().parent; "
-            "record=root.parent/'pico-0.1.0.dist-info'/'RECORD'; "
+            "from pathlib import Path; import pony; "
+            "root=Path(pony.__file__).resolve().parent; "
+            "record=root.parent/'pony_code-0.1.0.dist-info'/'RECORD'; "
             "print(root); print(record.read_text())",
         ],
         check=True,
@@ -157,15 +157,15 @@ def test_installed_distribution_accepts_a_real_pip_console_script(tmp_path):
     ).stdout.splitlines()
     package = installed[0]
 
-    assert any(line.startswith("../../../bin/pico,") for line in installed[1:])
-    assert any("pico/__pycache__/" in line for line in installed[1:])
+    assert any(line.startswith("../../../bin/pony,") for line in installed[1:])
+    assert any("pony/__pycache__/" in line for line in installed[1:])
     assert identity.installed_tree_digest(package, "0.1.0").startswith("sha256:")
 
 
 def test_installed_distribution_rejects_unhashed_non_cache_package_record(tmp_path):
     package, dist_info = _write_installed_distribution(tmp_path)
     with (dist_info / "RECORD").open("a", encoding="utf-8") as record:
-        record.write("pico/unhashed.py,,\n")
+        record.write("pony/unhashed.py,,\n")
 
     with pytest.raises(identity.SandboxIdentityError) as caught:
         identity.installed_tree_digest(package, "0.1.0")
@@ -176,14 +176,14 @@ def test_installed_distribution_rejects_unhashed_non_cache_package_record(tmp_pa
 @pytest.mark.parametrize(
     "path",
     (
-        "/bin/pico",
+        "/bin/pony",
         "..",
-        "../../../bin/../pico",
-        "../../../bin\\pico",
-        "../../../bin/pico\0suffix",
-        "../../../bin/pico\x7fsuffix",
-        "pico//module.py",
-        "pico/./module.py",
+        "../../../bin/../pony",
+        "../../../bin\\pony",
+        "../../../bin/pony\0suffix",
+        "../../../bin/pony\x7fsuffix",
+        "pony//module.py",
+        "pony/./module.py",
     ),
 )
 def test_installed_record_rejects_unsafe_paths(path):
@@ -196,15 +196,15 @@ def test_installed_record_rejects_unsafe_paths(path):
 def test_installed_record_rejects_duplicate_external_path():
     with pytest.raises(identity.SandboxIdentityError) as caught:
         identity._installed_record_rows(
-            b"../../../bin/pico,,\n../../../bin/pico,,\n"
+            b"../../../bin/pony,,\n../../../bin/pony,,\n"
         )
 
     assert caught.value.code == "installed_distribution_invalid"
 
 
 def test_installed_record_accepts_standard_external_console_script():
-    assert identity._installed_record_rows(b"../../../bin/pico,,\n") == {
-        "../../../bin/pico": ("", "")
+    assert identity._installed_record_rows(b"../../../bin/pony,,\n") == {
+        "../../../bin/pony": ("", "")
     }
 
 

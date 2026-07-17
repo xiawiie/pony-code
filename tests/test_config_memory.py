@@ -1,12 +1,12 @@
-"""pico.toml memory settings and their runtime consumers."""
+"""pony.toml memory settings and their runtime consumers."""
 
 import pytest
 
-from pico.config.project import load_pico_toml
+from pony.config.project import load_pony_toml
 
 
 def _memory(root):
-    return load_pico_toml(root)["memory"]
+    return load_pony_toml(root)["memory"]
 
 
 def test_recall_config_defaults(tmp_path):
@@ -20,7 +20,7 @@ def test_recall_config_defaults(tmp_path):
 
 
 def test_recall_config_partial_override(tmp_path):
-    (tmp_path / "pico.toml").write_text(
+    (tmp_path / "pony.toml").write_text(
         "[memory.recall]\nmin_score = 0.5\ntop_k = 4\n", encoding="utf-8"
     )
     cfg = _memory(tmp_path)["recall"]
@@ -36,9 +36,9 @@ def test_recall_for_turn_reads_min_score_from_agent(tmp_path):
     from types import SimpleNamespace
     from unittest.mock import MagicMock
 
-    from pico.memory.block_store import BlockStore
-    from pico.memory.recall import recall_for_turn
-    from pico.memory.retrieval import Retrieval
+    from pony.memory.block_store import BlockStore
+    from pony.memory.recall import recall_for_turn
+    from pony.memory.retrieval import Retrieval
 
     ws = tmp_path / "ws"
     (ws / "notes").mkdir(parents=True)
@@ -85,7 +85,7 @@ def test_field_boosts_defaults(tmp_path):
 
 
 def test_field_boosts_override(tmp_path):
-    (tmp_path / "pico.toml").write_text(
+    (tmp_path / "pony.toml").write_text(
         "[memory.retrieval.field_boost]\nname = 8.0\ndescription = 2.0\n",
         encoding="utf-8",
     )
@@ -104,7 +104,7 @@ def test_link_config_defaults(tmp_path):
 
 
 def test_link_config_override(tmp_path):
-    (tmp_path / "pico.toml").write_text(
+    (tmp_path / "pony.toml").write_text(
         "[memory.retrieval.link]\nmax_added = 5\ndecay = 0.6\n", encoding="utf-8"
     )
     assert _memory(tmp_path)["retrieval"]["link"] == {
@@ -117,8 +117,8 @@ def test_retrieval_uses_field_boosts_from_config(tmp_path):
     """A note where 'cache' appears only in body loses to a note where it appears
     only in description when field_boosts default; if we push body up above
     description, the body-hit note should win."""
-    from pico.memory.block_store import BlockStore
-    from pico.memory.retrieval import Retrieval
+    from pony.memory.block_store import BlockStore
+    from pony.memory.retrieval import Retrieval
 
     ws = tmp_path / "ws"
     (ws / "notes").mkdir(parents=True)

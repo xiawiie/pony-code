@@ -8,9 +8,9 @@ from unittest.mock import Mock
 
 import pytest
 
-import pico.cli.diagnostics as diagnostics
-from pico.cli.app import main
-from pico.cli.diagnostics import check_api_connectivity, collect_config, collect_doctor
+import pony.cli.diagnostics as diagnostics
+from pony.cli.app import main
+from pony.cli.diagnostics import check_api_connectivity, collect_config, collect_doctor
 
 
 def _run_git(cwd, *args):
@@ -33,9 +33,9 @@ def _write_env(
 ):
     path = root / ".env"
     path.write_text(
-        f"PICO_PROVIDER={provider}\n"
-        f"PICO_API_BASE={api_base}\n"
-        f"PICO_API_KEY={key}\n",
+        f"PONY_PROVIDER={provider}\n"
+        f"PONY_API_BASE={api_base}\n"
+        f"PONY_API_KEY={key}\n",
         encoding="utf-8",
     )
     path.chmod(0o600)
@@ -76,12 +76,12 @@ def test_config_show_reports_fixed_contract_and_exact_project_env_path(
     assert payload["base_url"] == {
         "value": "https://api.anthropic.com/v1",
         "source": "project_env",
-        "name": "PICO_API_BASE",
+        "name": "PONY_API_BASE",
     }
     assert payload["api_key"] == {
         "present": True,
         "source": "project_env",
-        "name": "PICO_API_KEY",
+        "name": "PONY_API_KEY",
     }
     assert "secret-value" not in json.dumps(payload)
 
@@ -130,8 +130,8 @@ def test_config_isolates_main_and_linked_worktree_env(tmp_path):
     linked_root = tmp_path / "linked"
     main_root.mkdir()
     _run_git(main_root, "init", "-q")
-    _run_git(main_root, "config", "user.name", "Pico Test")
-    _run_git(main_root, "config", "user.email", "pico@example.invalid")
+    _run_git(main_root, "config", "user.name", "Pony Test")
+    _run_git(main_root, "config", "user.email", "pony@example.invalid")
     (main_root / "README.md").write_text("fixture\n", encoding="utf-8")
     _run_git(main_root, "add", "README.md")
     _run_git(main_root, "commit", "-qm", "fixture")
@@ -158,7 +158,7 @@ def test_config_show_fails_closed_for_unsafe_project_env(tmp_path, capsys, unsaf
         env_path.mkdir()
         (env_path / "canary").write_text(canary, encoding="utf-8")
     else:
-        outside.write_text(f"PICO_API_KEY={canary}\n", encoding="utf-8")
+        outside.write_text(f"PONY_API_KEY={canary}\n", encoding="utf-8")
         if unsafe_kind == "symlink":
             env_path.symlink_to(outside)
         else:
@@ -188,9 +188,9 @@ def test_config_show_fails_closed_for_unsafe_project_env(tmp_path, capsys, unsaf
 def test_config_show_skips_malformed_env_line_without_leaking_key(tmp_path, capsys):
     path = tmp_path / ".env"
     path.write_text(
-        "PICO_API_BASE=https://gateway.example/v1\n"
+        "PONY_API_BASE=https://gateway.example/v1\n"
         "not a valid env line\n"
-        "PICO_API_KEY=secret-value\n",
+        "PONY_API_KEY=secret-value\n",
         encoding="utf-8",
     )
 
@@ -222,7 +222,7 @@ def test_config_show_text_is_grouped_and_never_prints_key(tmp_path, capsys):
     assert main(["--cwd", str(tmp_path), "config", "show"]) == 0
 
     output = capsys.readouterr().out
-    assert output.startswith("Pico config — Effective configuration\n")
+    assert output.startswith("Pony config — Effective configuration\n")
     assert "Model" in output
     assert "claude-sonnet-4-6" in output
     assert "https://api.anthropic.com/v1" in output
@@ -234,10 +234,10 @@ def test_status_reports_model_and_storage_without_building_agent(
     tmp_path, monkeypatch, capsys
 ):
     _write_env(tmp_path)
-    (tmp_path / ".pico" / "sessions").mkdir(parents=True)
-    (tmp_path / ".pico" / "runs" / "run_1").mkdir(parents=True)
+    (tmp_path / ".pony" / "sessions").mkdir(parents=True)
+    (tmp_path / ".pony" / "runs" / "run_1").mkdir(parents=True)
     monkeypatch.setattr(
-        "pico.cli.app.build_agent",
+        "pony.cli.app.build_agent",
         Mock(side_effect=AssertionError("status must not build an agent")),
     )
 
@@ -267,10 +267,10 @@ def test_doctor_defaults_to_zero_api_requests(tmp_path, monkeypatch, capsys):
 
 def test_doctor_marks_ollama_api_key_not_required(tmp_path):
     (tmp_path / ".env").write_text(
-        "PICO_PROVIDER=ollama\n"
-        "PICO_API_BASE=http://127.0.0.1:11434\n"
-        "PICO_MODEL=qwen3:8b\n"
-        "PICO_API_KEY=\n",
+        "PONY_PROVIDER=ollama\n"
+        "PONY_API_BASE=http://127.0.0.1:11434\n"
+        "PONY_MODEL=qwen3:8b\n"
+        "PONY_API_KEY=\n",
         encoding="utf-8",
     )
 
@@ -296,7 +296,7 @@ def test_doctor_check_api_is_the_only_explicit_network_switch(
     )
     monkeypatch.setattr(diagnostics, "check_api_connectivity", checker)
     monkeypatch.setattr(
-        "pico.cli.app.build_agent",
+        "pony.cli.app.build_agent",
         Mock(side_effect=AssertionError("doctor must not build an agent")),
     )
 
@@ -359,7 +359,7 @@ def test_doctor_check_api_failure_returns_error_envelope(tmp_path, monkeypatch, 
 @pytest.mark.parametrize("argument", ("--check-provider", "--offline", "extra"))
 def test_doctor_rejects_removed_or_unknown_arguments(tmp_path, argument, capsys):
     assert main(["--cwd", str(tmp_path), "doctor", argument]) == 2
-    assert capsys.readouterr().err.strip() == "usage: pico doctor [--check-api]"
+    assert capsys.readouterr().err.strip() == "usage: pony doctor [--check-api]"
 
 
 def test_doctor_rejects_credentialed_url_without_connecting_or_echoing(
@@ -406,7 +406,7 @@ def _api_config(*, key="test-key"):
 def test_api_check_without_key_performs_zero_requests(monkeypatch):
     constructor = Mock(side_effect=AssertionError("client must not be built"))
     monkeypatch.setattr(
-        "pico.providers.factory.build_transport_client",
+        "pony.providers.factory.build_transport_client",
         constructor,
     )
 
@@ -420,11 +420,11 @@ def test_api_check_builds_resolved_anthropic_client_and_reports_probe(monkeypatc
     client = object()
     constructor = Mock(return_value=client)
     monkeypatch.setattr(
-        "pico.providers.factory.build_transport_client",
+        "pony.providers.factory.build_transport_client",
         constructor,
     )
     monkeypatch.setattr(
-        "pico.providers.probe.probe_model_client",
+        "pony.providers.probe.probe_model_client",
         Mock(
             return_value={
             "status": "ok",
@@ -457,11 +457,11 @@ def test_api_check_builds_resolved_anthropic_client_and_reports_probe(monkeypatc
 
 def test_api_check_preserves_safe_http_failure_classification(monkeypatch):
     monkeypatch.setattr(
-        "pico.providers.factory.build_transport_client",
+        "pony.providers.factory.build_transport_client",
         Mock(return_value=object()),
     )
     monkeypatch.setattr(
-        "pico.providers.probe.probe_model_client",
+        "pony.providers.probe.probe_model_client",
         Mock(
             return_value={
             "status": "failed",
@@ -496,8 +496,8 @@ def test_collect_doctor_folds_unavailable_workspace_to_safe_shape(tmp_path):
 
 
 def test_doctor_security_requires_review_for_pending_tool_change(tmp_path):
-    from pico.state.checkpoint_store import CheckpointStore
-    from pico.tools.change_recorder import ToolChangeRecorder
+    from pony.state.checkpoint_store import CheckpointStore
+    from pony.tools.change_recorder import ToolChangeRecorder
 
     store = CheckpointStore(tmp_path)
     ToolChangeRecorder(store, owner_id="doctor-test").start(
@@ -573,7 +573,7 @@ def test_doctor_text_output_is_grouped(tmp_path, capsys):
     assert main(["--cwd", str(tmp_path), "doctor"]) == 0
 
     output = capsys.readouterr().out
-    assert output.startswith("Pico doctor — CLI health check\n")
+    assert output.startswith("Pony doctor — CLI health check\n")
     assert "Config" in output
     assert "Credentials" in output
     assert "API check" in output

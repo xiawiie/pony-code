@@ -5,14 +5,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
-from pico import Pico
-from pico.state.session_store import SessionStore
-from pico.workspace.context import WorkspaceContext
-from pico.providers.anthropic_messages import AnthropicMessagesModelClient
-from pico.providers.ollama_chat import OllamaChatModelClient
-from pico.providers.openai_chat_completions import OpenAIChatCompletionsModelClient
-from pico.providers.openai_responses import OpenAIResponsesModelClient
-from pico.runtime.options import RuntimeOptions
+from pony import Pony
+from pony.state.session_store import SessionStore
+from pony.workspace.context import WorkspaceContext
+from pony.providers.anthropic_messages import AnthropicMessagesModelClient
+from pony.providers.ollama_chat import OllamaChatModelClient
+from pony.providers.openai_chat_completions import OpenAIChatCompletionsModelClient
+from pony.providers.openai_responses import OpenAIResponsesModelClient
+from pony.runtime.options import RuntimeOptions
 
 
 @contextmanager
@@ -250,10 +250,10 @@ def test_native_adapter_agent_loop_closes_two_round_tool_flow(
 
     with _fake_native_http_server(responses) as (root, captured):
         client = _native_client(family, root)
-        agent = Pico(
+        agent = Pony(
             model_client=client,
             workspace=WorkspaceContext.build(tmp_path),
-            session_store=SessionStore(tmp_path / ".pico" / "sessions"),
+            session_store=SessionStore(tmp_path / ".pony" / "sessions"),
             options=RuntimeOptions(
                 approval_policy="never" if scenario == "write_denied" else "auto"
             ),

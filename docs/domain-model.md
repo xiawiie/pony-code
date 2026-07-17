@@ -1,6 +1,6 @@
-# Pico 维护上下文
+# Pony 维护上下文
 
-本文定义 Pico 1.0 的通用语言和模块所有权。实现流向见[架构](architecture.md)，操作和发布见
+本文定义 Pony 1.0 的通用语言和模块所有权。实现流向见[架构](architecture.md)，操作和发布见
 [验证](verification.md)。
 
 ## 核心领域语言
@@ -9,13 +9,13 @@
 | --- | --- | --- |
 | Source Root | 用户拥有的规范仓库；Sandbox 只能通过 Source Apply 修改 | Execution Root |
 | Execution Root | 当前模型可见工具共享的工作区；Host 为 Source Root，Sandbox 为 staging | Project State Root |
-| Project State Root | `.pico/` 下的 Session、Run、Checkpoint 与 Memory 状态 | Workspace 文件 |
+| Project State Root | `.pony/` 下的 Session、Run、Checkpoint 与 Memory 状态 | Workspace 文件 |
 | Sandbox State Root | Sandbox capture、diff、apply journal 与恢复证据 | Project State Root |
 | Project Environment | lexical repository root 下唯一读取的 `.env` | shell 全局环境注入 |
 | Provider | 用户在 `.env` 中选择的 `anthropic`、`openai` 或 `ollama` | 内部 Transport |
 | API Variant | Provider 内显式选择的 wire API，例如 `responses` | 自动探测或 fallback |
 | Transport | `anthropic_messages`、`openai_responses`、`openai_chat_completions`、`ollama_chat` | Provider 品牌 |
-| Model Request | Pico 构造的 provider-neutral 请求视图 | 原始 HTTP payload |
+| Model Request | Pony 构造的 provider-neutral 请求视图 | 原始 HTTP payload |
 | Model Attempt | Agent Loop 为得到一个 Action 发起的逻辑尝试 | Transport Attempt |
 | Transport Attempt | Provider client 的一次真实 HTTP request | Tool step |
 | Action | 一个 Tool、Final 或 Retry 决策 | 任意模型文本 |
@@ -30,14 +30,14 @@
 Model API Configuration 仅由四个通用变量组成：
 
 ```text
-PICO_PROVIDER
-PICO_API_BASE
-PICO_API_KEY
-PICO_MODEL
+PONY_PROVIDER
+PONY_API_BASE
+PONY_API_KEY
+PONY_MODEL
 ```
 
-项目 `.env` 高于进程环境。运行时不读取厂商变量，也不兼容 `PICO_DEEPSEEK_API_KEY`。Provider 与 API Base 静态
-决定协议与认证，不联网探测。协议、模型、URL 或认证变更都必须能在 `pico config show` 与 `pico doctor` 中被观察。
+项目 `.env` 高于进程环境。运行时不读取厂商变量，也不兼容 `PONY_DEEPSEEK_API_KEY`。Provider 与 API Base 静态
+决定协议与认证，不联网探测。协议、模型、URL 或认证变更都必须能在 `pony config show` 与 `pony doctor` 中被观察。
 
 Model Session Binding 固化 `protocol_family`、`model` 与 `endpoint_hash`。绑定变化时拒绝恢复，尤其不能把 OpenAI
 reasoning state 或 Anthropic thinking block 跨协议重放。
@@ -67,19 +67,19 @@ reasoning state 或 Anthropic thinking block 跨协议重放。
 
 | 包 | 唯一责任 |
 | --- | --- |
-| `pico.agent` | Action、Agent Loop、Canonical Messages、compaction、模型预算与观测 |
-| `pico.cli` | 显式命令、参数解析、人类/JSON 输出、inspection、doctor 与 REPL |
-| `pico.context` | Context sources、chunk、escaping、render 与 digest |
-| `pico.memory` | User/Agent Notes、recall、retrieval、RepoMap 与 memory service |
-| `pico.providers` | wire adapter、Provider-neutral Response、factory 与 API probe |
-| `pico.recovery` | 恢复模型、policy、migration、writer 与 manager |
-| `pico.sandbox` | Docker local runtime、identity、隔离策略、staging、diff/apply 与资源 |
-| `pico.state` | Session/Run/Checkpoint store、TaskState 与 file lock |
-| `pico.tools` | Tool schema、policy/approval 协调、effect recorder 与受限 subprocess |
-| `pico.workspace` | root discovery、workspace view、snapshot 与 observer |
-| `pico.config` | `.env`、`pico.toml`、Provider 解析和私有 secret 写入 |
-| `pico.runtime` | 跨领域对象装配和 Pico 公共运行时 |
-| `pico.security` | 共享 no-follow、private-file、redaction 与安全原语 |
+| `pony.agent` | Action、Agent Loop、Canonical Messages、compaction、模型预算与观测 |
+| `pony.cli` | 显式命令、参数解析、人类/JSON 输出、inspection、doctor 与 REPL |
+| `pony.context` | Context sources、chunk、escaping、render 与 digest |
+| `pony.memory` | User/Agent Notes、recall、retrieval、RepoMap 与 memory service |
+| `pony.providers` | wire adapter、Provider-neutral Response、factory 与 API probe |
+| `pony.recovery` | 恢复模型、policy、migration、writer 与 manager |
+| `pony.sandbox` | Docker local runtime、identity、隔离策略、staging、diff/apply 与资源 |
+| `pony.state` | Session/Run/Checkpoint store、TaskState 与 file lock |
+| `pony.tools` | Tool schema、policy/approval 协调、effect recorder 与受限 subprocess |
+| `pony.workspace` | root discovery、workspace view、snapshot 与 observer |
+| `pony.config` | `.env`、`pony.toml`、Provider 解析和私有 secret 写入 |
+| `pony.runtime` | 跨领域对象装配和 Pony 公共运行时 |
+| `pony.security` | 共享 no-follow、private-file、redaction 与安全原语 |
 
 ## 依赖方向
 
@@ -98,7 +98,7 @@ flowchart LR
     RT --> SB["sandbox"]
 ```
 
-Provider factory 位于 `pico.providers.factory`；adapter 之间不得互相选择。Package `__init__.py` 保持薄，新的内部实现
+Provider factory 位于 `pony.providers.factory`；adapter 之间不得互相选择。Package `__init__.py` 保持薄，新的内部实现
 应从所属模块导入，而不是扩大 facade。
 
 ## 变更纪律

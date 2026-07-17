@@ -8,12 +8,12 @@ This end-to-end check sniffs the provider payload.
 
 import json
 
-from pico.context.renderer import InjectionSnapshot, InjectionSource
-from pico.providers.response import Response, StopReason
-from pico.runtime.application import Pico
-from pico.state.session_store import SessionStore
-from pico.workspace.context import WorkspaceContext
-from pico.runtime.options import RuntimeOptions
+from pony.context.renderer import InjectionSnapshot, InjectionSource
+from pony.providers.response import Response, StopReason
+from pony.runtime.application import Pony
+from pony.state.session_store import SessionStore
+from pony.workspace.context import WorkspaceContext
+from pony.runtime.options import RuntimeOptions
 
 
 class _SniffProvider:
@@ -41,17 +41,17 @@ class _SniffProvider:
 
 def build_native_agent(tmp_path, provider, **kwargs):
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
-    return Pico(
+    return Pony(
         model_client=provider,
         workspace=WorkspaceContext.build(tmp_path),
-        session_store=SessionStore(tmp_path / ".pico" / "sessions"),
+        session_store=SessionStore(tmp_path / ".pony" / "sessions"),
         options=RuntimeOptions(approval_policy="auto", **kwargs),
     )
 
 
 def test_provider_receives_injection_wrapped_user_message(tmp_path):
     """The last message the provider sees must contain <system-reminder>
-    and <pico:workspace_state> — not the bare user string."""
+    and <pony:workspace_state> — not the bare user string."""
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
 
     provider = _SniffProvider(
@@ -64,15 +64,15 @@ def test_provider_receives_injection_wrapped_user_message(tmp_path):
         ]
     )
     workspace = WorkspaceContext.build(tmp_path)
-    store = SessionStore(tmp_path / ".pico" / "sessions")
-    pico = Pico(
+    store = SessionStore(tmp_path / ".pony" / "sessions")
+    pony = Pony(
         model_client=provider,
         workspace=workspace,
         session_store=store,
         options=RuntimeOptions(max_steps=3),
     )
 
-    pico.ask("what's in readme?")
+    pony.ask("what's in readme?")
 
     assert provider.calls, "provider was not called"
     call = provider.calls[0]
@@ -83,8 +83,8 @@ def test_provider_receives_injection_wrapped_user_message(tmp_path):
     assert "<system-reminder>" in last_content, (
         f"expected <system-reminder> in provider's last user message; got: {last_content[:200]!r}"
     )
-    assert "<pico:workspace_state>" in last_content, (
-        f"expected <pico:workspace_state> block; got: {last_content[:200]!r}"
+    assert "<pony:workspace_state>" in last_content, (
+        f"expected <pony:workspace_state> block; got: {last_content[:200]!r}"
     )
     assert "what's in readme?" in last_content
 
@@ -103,18 +103,18 @@ def test_message_count_invariant_after_injection(tmp_path):
         ]
     )
     workspace = WorkspaceContext.build(tmp_path)
-    store = SessionStore(tmp_path / ".pico" / "sessions")
-    pico = Pico(
+    store = SessionStore(tmp_path / ".pony" / "sessions")
+    pony = Pony(
         model_client=provider,
         workspace=workspace,
         session_store=store,
         options=RuntimeOptions(max_steps=3),
     )
 
-    pico.ask("hi")
+    pony.ask("hi")
 
     # Session should carry exactly one user turn + one assistant turn (final).
-    roles = [m["role"] for m in pico.session["messages"]]
+    roles = [m["role"] for m in pony.session["messages"]]
     assert roles == ["user", "assistant"]
     # Provider saw the user turn wrapped, plus the (empty at call time) history.
     call = provider.calls[0]
@@ -181,8 +181,8 @@ def test_one_snapshot_survives_retry_and_tool_step_while_feedback_is_one_shot(
             name="memory_index",
             required=False,
             text=(
-                "<system-reminder><pico:memory_index>"
-                "SNAPSHOT</pico:memory_index></system-reminder>"
+                "<system-reminder><pony:memory_index>"
+                "SNAPSHOT</pony:memory_index></system-reminder>"
             ),
             token_count=1,
             status="included",
@@ -204,7 +204,7 @@ def test_one_snapshot_survives_retry_and_tool_step_while_feedback_is_one_shot(
         }
 
     monkeypatch.setattr(
-        "pico.agent.loop.build_injection_snapshot",
+        "pony.agent.loop.build_injection_snapshot",
         frozen_snapshot,
     )
     provider = _SniffProvider(
@@ -246,8 +246,8 @@ def test_one_snapshot_survives_retry_and_tool_step_while_feedback_is_one_shot(
         )
         sent.append(current)
     exact_snapshot = (
-        "<system-reminder><pico:memory_index>"
-        "SNAPSHOT</pico:memory_index></system-reminder>\n\ninspect"
+        "<system-reminder><pony:memory_index>"
+        "SNAPSHOT</pony:memory_index></system-reminder>\n\ninspect"
     )
     assert sent[0] == exact_snapshot
     assert all(exact_snapshot in content for content in sent)
@@ -318,8 +318,8 @@ def test_retry_limit_feedback_is_one_shot_and_respects_attempt_cap(tmp_path):
         )
         for call in provider.calls
     ]
-    assert sent_users[0].count("<pico:runtime_feedback>") == 0
-    assert sent_users[1].count("<pico:runtime_feedback>") == 1
+    assert sent_users[0].count("<pony:runtime_feedback>") == 0
+    assert sent_users[1].count("<pony:runtime_feedback>") == 1
     report = agent.run_store.load_report(agent.current_task_state.run_id)
     assert report["model"]["attempts"] == 2
     assert report["tools"]["calls"] == 0

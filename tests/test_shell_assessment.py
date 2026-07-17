@@ -4,7 +4,7 @@ import subprocess
 
 import pytest
 
-from pico.recovery import policy as recovery_policy
+from pony.recovery import policy as recovery_policy
 
 
 def assess_command(*args, **kwargs):
@@ -930,7 +930,7 @@ def test_single_quoted_literal_backslash_is_not_removed(workspace):
         "curl -K.ssh/config",
         "curl -K.aws/credentials",
         "curl -K.kube/config",
-        "curl -K.pico/sessions/x",
+        "curl -K.pony/sessions/x",
         "npm --userconfig=.npmrc --version",
     ],
 )

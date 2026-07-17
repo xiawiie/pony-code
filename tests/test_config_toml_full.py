@@ -1,40 +1,40 @@
-"""The pico.toml loader is strict, complete, and content-free on errors."""
+"""The pony.toml loader is strict, complete, and content-free on errors."""
 
-import pico.config.project as config
-from pico.config.project import load_pico_toml
+import pony.config.project as config
+from pony.config.project import load_pony_toml
 
 
 def test_reads_flat_and_nested_budget_tables(tmp_path):
-    (tmp_path / "pico.toml").write_text(
+    (tmp_path / "pony.toml").write_text(
         "[model]\ncontext_window = 272000\n"
         "[context.compaction]\nreserve_tokens = 32000\n",
         encoding="utf-8",
     )
-    data = load_pico_toml(tmp_path)
+    data = load_pony_toml(tmp_path)
 
     assert data["model"]["context_window"] == 272_000
     assert data["context"]["compaction"]["reserve_tokens"] == 32_000
 
 
 def test_reads_memory_nested_tables(tmp_path):
-    (tmp_path / "pico.toml").write_text(
+    (tmp_path / "pony.toml").write_text(
         "[memory.retrieval.field_boost]\nname = 5.5\ndescription = 3.5\n",
         encoding="utf-8",
     )
-    data = load_pico_toml(tmp_path)
+    data = load_pony_toml(tmp_path)
     assert data["memory"]["retrieval"]["field_boost"]["name"] == 5.5
     assert data["memory"]["retrieval"]["field_boost"]["description"] == 3.5
 
 
 def test_ignores_unknown_fields(tmp_path):
-    (tmp_path / "pico.toml").write_text(
+    (tmp_path / "pony.toml").write_text(
         '[test]\nkeywords = ["a", "b", "c"]\n', encoding="utf-8"
     )
-    assert "test" not in load_pico_toml(tmp_path)
+    assert "test" not in load_pony_toml(tmp_path)
 
 
 def test_returns_complete_defaults_when_file_missing(tmp_path):
-    data = load_pico_toml(tmp_path)
+    data = load_pony_toml(tmp_path)
     assert data["policy"]["max_blob_size"] == 8 * 1024 * 1024
     assert data["model"] == {
         "context_window": 128_000,
@@ -46,30 +46,30 @@ def test_returns_complete_defaults_when_file_missing(tmp_path):
 
 def test_malformed_uses_defaults_without_echoing_content(tmp_path, capsys):
     secret = "sk-secret-shaped-canary"
-    (tmp_path / "pico.toml").write_text(
-        f'PICO_OPENAI_API_KEY = "{secret}"\n[[[[not toml\n', encoding="utf-8"
+    (tmp_path / "pony.toml").write_text(
+        f'PONY_OPENAI_API_KEY = "{secret}"\n[[[[not toml\n', encoding="utf-8"
     )
 
-    data = load_pico_toml(tmp_path)
+    data = load_pony_toml(tmp_path)
 
     assert data["model"]["context_window"] == 128_000
     error = capsys.readouterr().err
-    assert error == "warning: invalid pico.toml; using defaults\n"
+    assert error == "warning: invalid pony.toml; using defaults\n"
     assert secret not in error
 
 
 def test_non_table_uses_defaults(monkeypatch, tmp_path, capsys):
-    (tmp_path / "pico.toml").write_text("", encoding="utf-8")
+    (tmp_path / "pony.toml").write_text("", encoding="utf-8")
     monkeypatch.setattr(config.tomllib, "loads", lambda _text: [])
 
-    data = load_pico_toml(tmp_path)
+    data = load_pony_toml(tmp_path)
 
     assert data["context"]["source_pool_tokens"] == 16_384
-    assert capsys.readouterr().err == "warning: invalid pico.toml; using defaults\n"
+    assert capsys.readouterr().err == "warning: invalid pony.toml; using defaults\n"
 
 
 def test_invalid_fields_fall_back_independently(tmp_path):
-    (tmp_path / "pico.toml").write_text(
+    (tmp_path / "pony.toml").write_text(
         """
 [policy]
 max_blob_size = true
@@ -100,7 +100,7 @@ decay = 2.0
         encoding="utf-8",
     )
 
-    data = load_pico_toml(tmp_path)
+    data = load_pony_toml(tmp_path)
 
     assert data["policy"]["max_blob_size"] == 8 * 1024 * 1024
     assert data["model"] == {
@@ -125,7 +125,7 @@ decay = 2.0
 
 
 def test_out_of_range_fields_warn_and_fall_back_independently(tmp_path, capsys):
-    (tmp_path / "pico.toml").write_text(
+    (tmp_path / "pony.toml").write_text(
         """
 [policy]
 max_blob_size = 8388609
@@ -163,7 +163,7 @@ decay = 1.1
         encoding="utf-8",
     )
 
-    data = load_pico_toml(tmp_path)
+    data = load_pony_toml(tmp_path)
 
     assert data["policy"]["max_blob_size"] == 8 * 1024 * 1024
     assert data["model"] == {
@@ -214,11 +214,11 @@ decay = 1.1
         "memory.retrieval.link.max_added",
         "memory.retrieval.link.decay",
     ):
-        assert f"invalid pico.toml field {path}; using default" in warnings
+        assert f"invalid pony.toml field {path}; using default" in warnings
 
 
 def test_zero_valued_fields_are_accepted_where_documented(tmp_path, capsys):
-    (tmp_path / "pico.toml").write_text(
+    (tmp_path / "pony.toml").write_text(
         """
 [memory.recall]
 min_score = 0
@@ -234,7 +234,7 @@ decay = 0
         encoding="utf-8",
     )
 
-    data = load_pico_toml(tmp_path)
+    data = load_pony_toml(tmp_path)
 
     assert data["memory"]["recall"]["min_score"] == 0
     assert data["memory"]["recall"]["skip_recent_turns"] == 0
@@ -247,7 +247,7 @@ decay = 0
 
 
 def test_documented_upper_bounds_are_inclusive(tmp_path, capsys):
-    (tmp_path / "pico.toml").write_text(
+    (tmp_path / "pony.toml").write_text(
         """
 [policy]
 max_blob_size = 8388608
@@ -284,7 +284,7 @@ decay = 1
         encoding="utf-8",
     )
 
-    data = load_pico_toml(tmp_path)
+    data = load_pony_toml(tmp_path)
 
     assert data["policy"]["max_blob_size"] == 8 * 1024 * 1024
     assert data["model"] == {
@@ -317,7 +317,7 @@ decay = 1
 
 
 def test_deprecated_total_budget_maps_to_model_context_independently(tmp_path, capsys):
-    (tmp_path / "pico.toml").write_text(
+    (tmp_path / "pony.toml").write_text(
         """
 [context]
 system_tools_hard_cap = 50000
@@ -327,7 +327,7 @@ history_soft_cap = 12345
         encoding="utf-8",
     )
 
-    data = load_pico_toml(tmp_path)
+    data = load_pony_toml(tmp_path)
 
     assert data["model"]["context_window"] == 4096
     assert data["context"]["system_tools_hard_cap"] == 50000

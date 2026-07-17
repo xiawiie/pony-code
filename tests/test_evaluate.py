@@ -9,7 +9,7 @@ from scripts.evaluation import evaluate
 
 
 BASELINE = {
-    "record_type": "pico_evaluation_baseline",
+    "record_type": "pony_evaluation_baseline",
     "format_version": 1,
     "suite": "core",
     "machine_class": "test-machine",
@@ -171,7 +171,7 @@ def test_core_uses_injected_runners_and_writes_only_low_sensitivity_fields(
     tmp_path, monkeypatch
 ):
     _write_baseline(tmp_path)
-    monkeypatch.setenv("PICO_EVAL_MACHINE_CLASS", "test-machine")
+    monkeypatch.setenv("PONY_EVAL_MACHINE_CLASS", "test-machine")
     calls = []
     secret_output = "prompt=private tool result stdout stderr /Users/private/repo"
 
@@ -272,7 +272,7 @@ def test_perf_gate_requires_both_double_baseline_and_five_ms_increase():
 
 def test_injected_perf_regression_fails_named_scenario(tmp_path, monkeypatch):
     _write_baseline(tmp_path)
-    monkeypatch.setenv("PICO_EVAL_MACHINE_CLASS", "test-machine")
+    monkeypatch.setenv("PONY_EVAL_MACHINE_CLASS", "test-machine")
     calls = []
     regressed = {
         scenario_id: metrics["median_ns"]
@@ -348,7 +348,7 @@ def test_perf_regression_gets_one_confirmation_run_and_can_recover():
 
 def test_core_rejects_mismatched_machine_before_running(tmp_path, monkeypatch):
     _write_baseline(tmp_path)
-    monkeypatch.setenv("PICO_EVAL_MACHINE_CLASS", "other-machine")
+    monkeypatch.setenv("PONY_EVAL_MACHINE_CLASS", "other-machine")
     called = False
 
     def runner(argv, cwd):
@@ -497,7 +497,7 @@ def test_pr_suites_do_not_require_baseline_or_real_sandbox(tmp_path):
 
 
 def test_failed_child_output_is_redacted_and_not_stored(capsys, monkeypatch):
-    monkeypatch.setenv("PICO_TEST_SECRET_TOKEN", "secret-value-123")
+    monkeypatch.setenv("PONY_TEST_SECRET_TOKEN", "secret-value-123")
     rows = evaluate._run_functional(
         (("core.test", ("false",), "exit"),),
         runner=lambda _argv, _cwd: SimpleNamespace(
@@ -524,7 +524,7 @@ def test_sandbox_contract_rejects_skip_and_xfail_summaries():
 def test_sandbox_fails_on_pytest_skip_and_unready_runtime(tmp_path):
     calls = 0
     (tmp_path / "pyproject.toml").write_text(
-        '[project]\nname = "pico"\nversion = "0.2.0"\n',
+        '[project]\nname = "pony-code"\nversion = "0.2.0"\n',
         encoding="utf-8",
     )
 
@@ -557,10 +557,10 @@ def test_sandbox_fails_on_pytest_skip_and_unready_runtime(tmp_path):
 
 def _write_live_env(root):
     (root / ".env").write_text(
-        "PICO_PROVIDER=openai\n"
-        "PICO_API_BASE=https://api.openai.com/v1\n"
-        "PICO_MODEL=test-model\n"
-        "PICO_API_KEY=test-key\n",
+        "PONY_PROVIDER=openai\n"
+        "PONY_API_BASE=https://api.openai.com/v1\n"
+        "PONY_MODEL=test-model\n"
+        "PONY_API_KEY=test-key\n",
         encoding="utf-8",
     )
 
@@ -687,7 +687,7 @@ def test_artifact_scan_rejects_forbidden_fields_absolute_paths_and_secrets(
     tmp_path, monkeypatch
 ):
     payload = {
-        "record_type": "pico_evaluation_result",
+        "record_type": "pony_evaluation_result",
         "format_version": 1,
         "suite": "core",
         "status": "pass",
@@ -730,7 +730,7 @@ def test_artifact_scan_rejects_forbidden_fields_absolute_paths_and_secrets(
     with pytest.raises(ValueError, match="absolute path"):
         evaluate._validate_low_sensitivity(embedded_path, "", tmp_path)
 
-    monkeypatch.setenv("PICO_TEST_SECRET_TOKEN", "secret-value-123")
+    monkeypatch.setenv("PONY_TEST_SECRET_TOKEN", "secret-value-123")
     leaked_secret = json.loads(json.dumps(payload))
     leaked_secret["provenance"]["machine_class"] = "secret-value-123"
     with pytest.raises(ValueError, match="forbidden content"):

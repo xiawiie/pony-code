@@ -1,7 +1,7 @@
 from pathlib import Path
 
-from pico.cli.diagnostics import collect_doctor
-from pico.sandbox.docker import DockerSandboxError
+from pony.cli.diagnostics import collect_doctor
+from pony.sandbox.docker import DockerSandboxError
 
 
 EMPTY_CAPACITY = {
@@ -59,7 +59,7 @@ def test_doctor_reports_docker_unavailable_without_creating_state(
     home.mkdir()
     monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
     monkeypatch.setattr(
-        "pico.cli.sandbox.discover_local_docker",
+        "pony.cli.sandbox.discover_local_docker",
         lambda: (_ for _ in ()).throw(
             DockerSandboxError("docker_cli_unavailable")
         ),
@@ -79,12 +79,12 @@ def test_doctor_reports_docker_unavailable_without_creating_state(
         "reason_code": "local_authorization_verified",
         "remediation": "",
     }
-    assert not (home / ".pico").exists()
+    assert not (home / ".pony").exists()
 
 
 def test_doctor_uses_local_authorization_when_docker_is_ready(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        "pico.cli.sandbox.sandbox_status_payload",
+        "pony.cli.sandbox.sandbox_status_payload",
         _ready_status,
     )
 
@@ -103,7 +103,7 @@ def test_doctor_reports_unknown_sandbox_state_without_disclosing_paths(
 ):
     capacity = {**EMPTY_CAPACITY, "orphan_unknown_count": 2}
     monkeypatch.setattr(
-        "pico.cli.sandbox.sandbox_status_payload",
+        "pony.cli.sandbox.sandbox_status_payload",
         lambda: _ready_status(capacity=capacity),
     )
 
@@ -112,7 +112,7 @@ def test_doctor_reports_unknown_sandbox_state_without_disclosing_paths(
     assert sandbox["checks"]["state_integrity"] == {
         "status": "review_required",
         "reason_code": "sandbox_state_invalid",
-        "remediation": "pico sandbox list",
+        "remediation": "pony sandbox list",
     }
     assert str(tmp_path) not in str(sandbox)
 
@@ -122,7 +122,7 @@ def test_doctor_maps_unexpected_sandbox_error_to_fixed_reason(
     monkeypatch,
 ):
     monkeypatch.setattr(
-        "pico.cli.sandbox.sandbox_status_payload",
+        "pony.cli.sandbox.sandbox_status_payload",
         lambda: (_ for _ in ()).throw(RuntimeError("private detail")),
     )
 
@@ -135,11 +135,11 @@ def test_doctor_maps_unexpected_sandbox_error_to_fixed_reason(
 
 def test_default_doctor_does_not_use_http_for_sandbox_status(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        "pico.cli.sandbox.sandbox_status_payload",
+        "pony.cli.sandbox.sandbox_status_payload",
         _ready_status,
     )
     monkeypatch.setattr(
-        "pico.cli.diagnostics.check_api_connectivity",
+        "pony.cli.diagnostics.check_api_connectivity",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("doctor must not network")
         ),
@@ -153,7 +153,7 @@ def test_default_doctor_does_not_use_http_for_sandbox_status(tmp_path, monkeypat
 
 def test_doctor_sandbox_shape_is_stable(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        "pico.cli.sandbox.sandbox_status_payload",
+        "pony.cli.sandbox.sandbox_status_payload",
         _ready_status,
     )
 

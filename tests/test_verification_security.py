@@ -4,12 +4,12 @@ from unittest.mock import Mock
 
 import pytest
 
-import pico.agent.verification as verification
-from pico import Pico
-from pico.state.session_store import SessionStore
-from pico.workspace.context import WorkspaceContext
+import pony.agent.verification as verification
+from pony import Pony
+from pony.state.session_store import SessionStore
+from pony.workspace.context import WorkspaceContext
 from benchmarks.support.fake_provider import FakeModelClient
-from pico.runtime.options import RuntimeOptions
+from pony.runtime.options import RuntimeOptions
 
 
 ACCEPTED_PREFIXES = (
@@ -62,7 +62,7 @@ def test_verification_argv_accepts_only_pinned_prefixes(prefix):
         ("npm", "test", "--script-shell=/bin/true"),
         ("npm", "test", "--node-options=--require=plugin.js"),
         ("pytest", "--python-executable", "/bin/true"),
-        ("pytest", "-o", "cache_dir=.pico/checkpoints"),
+        ("pytest", "-o", "cache_dir=.pony/checkpoints"),
         ("pytest", "-o", "python_files=.env"),
         ("pytest", "-o", "plugin_runner=/bin/true"),
         ("pytest", "-o", "plugin.wrapper=/bin/true"),
@@ -184,7 +184,7 @@ def _build_agent(root, command, *, approval_policy="ask", read_only=False):
         "name": "run_shell",
         "args": {"command": command, "timeout": 5},
     }
-    agent = Pico(
+    agent = Pony(
         model_client=FakeModelClient([call, "done"]),
         workspace=WorkspaceContext.build(
             root,
@@ -194,7 +194,7 @@ def _build_agent(root, command, *, approval_policy="ask", read_only=False):
                 "sh": sys.executable,
             },
         ),
-        session_store=SessionStore(root / ".pico" / "sessions"),
+        session_store=SessionStore(root / ".pony" / "sessions"),
         options=RuntimeOptions(approval_policy=approval_policy, read_only=read_only),
     )
     return agent
@@ -262,7 +262,7 @@ def test_real_tool_executor_to_agent_loop_evidence_is_structured_redacted_and_bo
     monkeypatch,
 ):
     secret = "ghp_" + "B" * 32
-    monkeypatch.setenv("PICO_TEST_SECRET", secret)
+    monkeypatch.setenv("PONY_TEST_SECRET", secret)
     agent = _build_agent(tmp_path / "structured", "python -m pytest -q")
     agent.approve = Mock(return_value=True)
     agent.tools["run_shell"]["run"] = Mock(

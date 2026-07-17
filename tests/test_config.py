@@ -2,7 +2,7 @@ import os
 
 import pytest
 
-from pico.config.model import (
+from pony.config.model import (
     API_BASE_ENV_NAME,
     API_KEY_ENV_NAME,
     DEFAULT_API_BASE,
@@ -14,36 +14,36 @@ from pico.config.model import (
     resolve_model_config,
     validate_api_base,
 )
-from pico.config.project import load_pico_toml
-from pico.recovery.policy import DEFAULT_MAX_BLOB_SIZE, snapshot_eligibility
+from pony.config.project import load_pony_toml
+from pony.recovery.policy import DEFAULT_MAX_BLOB_SIZE, snapshot_eligibility
 
 
-def test_load_pico_toml_reads_simple_project_overrides(tmp_path):
-    (tmp_path / "pico.toml").write_text(
+def test_load_pony_toml_reads_simple_project_overrides(tmp_path):
+    (tmp_path / "pony.toml").write_text(
         "[policy]\nmax_blob_size = 2048\n",
         encoding="utf-8",
     )
 
-    assert load_pico_toml(tmp_path)["policy"]["max_blob_size"] == 2048
+    assert load_pony_toml(tmp_path)["policy"]["max_blob_size"] == 2048
 
 
 def test_project_max_blob_size_falls_back_to_default_when_missing(tmp_path):
-    assert load_pico_toml(tmp_path)["policy"]["max_blob_size"] == DEFAULT_MAX_BLOB_SIZE
+    assert load_pony_toml(tmp_path)["policy"]["max_blob_size"] == DEFAULT_MAX_BLOB_SIZE
 
 
-def test_pico_toml_max_blob_size_overrides_snapshot_eligibility(tmp_path):
+def test_pony_toml_max_blob_size_overrides_snapshot_eligibility(tmp_path):
     file_rel = "notes/large.md"
     file_abs = tmp_path / file_rel
     file_abs.parent.mkdir(parents=True, exist_ok=True)
     file_abs.write_text("x" * 300, encoding="utf-8")
 
     assert snapshot_eligibility(tmp_path, file_rel)["snapshot_eligible"] is True
-    (tmp_path / "pico.toml").write_text(
+    (tmp_path / "pony.toml").write_text(
         "[policy]\nmax_blob_size = 100\n",
         encoding="utf-8",
     )
 
-    limit = load_pico_toml(tmp_path)["policy"]["max_blob_size"]
+    limit = load_pony_toml(tmp_path)["policy"]["max_blob_size"]
     tightened = snapshot_eligibility(tmp_path, file_rel, max_blob_size=limit)
     assert limit == 100
     assert tightened["snapshot_eligible"] is False
@@ -51,14 +51,14 @@ def test_pico_toml_max_blob_size_overrides_snapshot_eligibility(tmp_path):
 
 
 @pytest.mark.parametrize("kind", ("symlink", "hardlink", "fifo", "directory"))
-def test_pico_toml_unsafe_entry_warns_and_uses_defaults(
+def test_pony_toml_unsafe_entry_warns_and_uses_defaults(
     tmp_path,
     capsys,
     kind,
 ):
     outside = tmp_path / "outside.toml"
     outside.write_text("[policy]\nmax_blob_size = 1\n", encoding="utf-8")
-    target = tmp_path / "pico.toml"
+    target = tmp_path / "pony.toml"
     if kind == "symlink":
         target.symlink_to(outside)
     elif kind == "hardlink":
@@ -70,19 +70,19 @@ def test_pico_toml_unsafe_entry_warns_and_uses_defaults(
     else:
         target.mkdir()
 
-    config = load_pico_toml(tmp_path)
+    config = load_pony_toml(tmp_path)
 
     assert config["policy"]["max_blob_size"] == DEFAULT_MAX_BLOB_SIZE
-    assert capsys.readouterr().err == "warning: invalid pico.toml; using defaults\n"
+    assert capsys.readouterr().err == "warning: invalid pony.toml; using defaults\n"
 
 
-def test_pico_toml_over_one_mib_warns_and_uses_defaults(tmp_path, capsys):
-    (tmp_path / "pico.toml").write_bytes(b"#" * (1024 * 1024 + 1))
+def test_pony_toml_over_one_mib_warns_and_uses_defaults(tmp_path, capsys):
+    (tmp_path / "pony.toml").write_bytes(b"#" * (1024 * 1024 + 1))
 
-    config = load_pico_toml(tmp_path)
+    config = load_pony_toml(tmp_path)
 
     assert config["policy"]["max_blob_size"] == DEFAULT_MAX_BLOB_SIZE
-    assert capsys.readouterr().err == "warning: invalid pico.toml; using defaults\n"
+    assert capsys.readouterr().err == "warning: invalid pony.toml; using defaults\n"
 
 
 def test_diagnostics_use_static_anthropic_defaults():
@@ -259,17 +259,17 @@ def test_blank_project_value_blocks_same_named_process_value():
 
 def test_only_legacy_or_vendor_variables_cannot_configure_runtime():
     legacy = {
-        "PICO_PROFILE": "deepseek",
-        "PICO_CONNECTION": "old",
-        "PICO_DEEPSEEK_API_BASE": "https://legacy.example/v1",
-        "PICO_DEEPSEEK_MODEL": "legacy-model",
-        "PICO_DEEPSEEK_API_KEY": "deepseek-key",
+        "PONY_PROFILE": "deepseek",
+        "PONY_CONNECTION": "old",
+        "PONY_DEEPSEEK_API_BASE": "https://legacy.example/v1",
+        "PONY_DEEPSEEK_MODEL": "legacy-model",
+        "PONY_DEEPSEEK_API_KEY": "deepseek-key",
         "OPENAI_API_KEY": "openai-key",
         "ANTHROPIC_API_KEY": "anthropic-key",
-        "PICO_PROVIDER": "anthropic",
-        "PICO_API_URL": "https://api.anthropic.com/v1",
-        "PICO_API_VARIANT": "messages",
-        "PICO_AUTH_MODE": "x-api-key",
+        "PONY_PROVIDER": "anthropic",
+        "PONY_API_URL": "https://api.anthropic.com/v1",
+        "PONY_API_VARIANT": "messages",
+        "PONY_AUTH_MODE": "x-api-key",
     }
 
     with pytest.raises(ValueError, match="^api_base_not_configured$"):
@@ -391,9 +391,9 @@ def test_validate_api_base_accepts_https_and_loopback_http(value):
 
 
 def test_legacy_provider_toml_section_is_not_a_runtime_config_source(tmp_path):
-    (tmp_path / "pico.toml").write_text(
+    (tmp_path / "pony.toml").write_text(
         "[provider]\nactive = 'legacy'\n",
         encoding="utf-8",
     )
 
-    assert "provider" not in load_pico_toml(tmp_path)
+    assert "provider" not in load_pony_toml(tmp_path)

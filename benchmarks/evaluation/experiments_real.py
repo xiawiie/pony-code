@@ -3,10 +3,10 @@ import tempfile
 from copy import deepcopy
 from pathlib import Path
 
-from pico.agent.observability import load_run_artifacts
-from pico.runtime.application import Pico
-from pico.state.session_store import SessionStore
-from pico.workspace.context import WorkspaceContext
+from pony.agent.observability import load_run_artifacts
+from pony.runtime.application import Pony
+from pony.state.session_store import SessionStore
+from pony.workspace.context import WorkspaceContext
 from .experiments_synthetic import (
     MEMORY_EXPERIMENT_TASKS,
     _bootstrap_tool_use_id,
@@ -22,7 +22,7 @@ from .provider_benchmark import (
     _normalize_text,
     _resolve_benchmark_target,
 )
-from pico.runtime.options import RuntimeOptions
+from pony.runtime.options import RuntimeOptions
 
 
 class _RecordingProvider:
@@ -98,9 +98,9 @@ def _build_real_agent(
     read_only=False,
 ):
     workspace = WorkspaceContext.build(workspace_root)
-    store = SessionStore(workspace_root / ".pico" / "sessions")
+    store = SessionStore(workspace_root / ".pony" / "sessions")
     recorder = _recording_provider(_make_provider_client(repo_root))
-    agent = Pico(
+    agent = Pony(
         model_client=recorder,
         workspace=workspace,
         session_store=store,
@@ -121,7 +121,7 @@ def run_real_memory_experiment(repo_root=None, repetitions=1):
         for _ in range(repetitions):
             for variant in variants:
                 with tempfile.TemporaryDirectory(
-                    prefix="pico-real-memory-"
+                    prefix="pony-real-memory-"
                 ) as temp_dir:
                     workspace_root = Path(temp_dir)
                     (workspace_root / "README.md").write_text(
@@ -221,7 +221,7 @@ def run_real_context_experiment(repo_root=None, repetitions=1):
                 for _ in range(repetitions):
                     for variant_name in ("compacted", "uncompacted"):
                         with tempfile.TemporaryDirectory(
-                            prefix="pico-real-context-"
+                            prefix="pony-real-context-"
                         ) as temp_dir:
                             workspace_root = Path(temp_dir)
                             (workspace_root / "README.md").write_text(
@@ -421,7 +421,7 @@ def _security_result_row(scenario_id, provider, metadata):
 
 
 def _run_real_repeated_call_scenario(repo_root, provider):
-    with tempfile.TemporaryDirectory(prefix="pico-real-security-repeat-") as temp_dir:
+    with tempfile.TemporaryDirectory(prefix="pony-real-security-repeat-") as temp_dir:
         workspace_root = Path(temp_dir)
         (workspace_root / "README.md").write_text("demo\n", encoding="utf-8")
         agent = _build_real_agent(workspace_root, repo_root)
@@ -444,7 +444,7 @@ def run_real_security_experiment_suite(repo_root=None, repetitions=1):
     for _ in range(repetitions):
         rows.append(_run_real_repeated_call_scenario(repo_root, provider))
         for scenario in REAL_SECURITY_SCENARIOS:
-            with tempfile.TemporaryDirectory(prefix="pico-real-security-") as temp_dir:
+            with tempfile.TemporaryDirectory(prefix="pony-real-security-") as temp_dir:
                 workspace_root = Path(temp_dir)
                 _setup_real_security_workspace(workspace_root, scenario["id"])
                 agent = _build_real_agent(

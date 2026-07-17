@@ -6,11 +6,11 @@ from unittest.mock import Mock
 
 import pytest
 
-from pico import Pico
-from pico.state.session_store import SessionStore
-from pico.workspace.context import WorkspaceContext
+from pony import Pony
+from pony.state.session_store import SessionStore
+from pony.workspace.context import WorkspaceContext
 from benchmarks.support.fake_provider import FakeModelClient
-from pico.runtime.options import RuntimeOptions
+from pony.runtime.options import RuntimeOptions
 
 
 def build_agent(
@@ -24,12 +24,12 @@ def build_agent(
     secret_env_names=(),
 ):
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
-    return Pico(
+    return Pony(
         model_client=FakeModelClient(list(outputs or [])),
         workspace=WorkspaceContext.build(
             tmp_path, executables={} if executables is None else executables
         ),
-        session_store=SessionStore(tmp_path / ".pico" / "sessions"),
+        session_store=SessionStore(tmp_path / ".pony" / "sessions"),
         options=RuntimeOptions(
         approval_policy=approval_policy,
         read_only=read_only,
@@ -370,7 +370,7 @@ def test_sensitive_git_object_path_is_rejected_before_prompt_or_runner(
     monkeypatch,
     command,
 ):
-    import pico.tools.executor as tool_executor_module
+    import pony.tools.executor as tool_executor_module
 
     agent = build_agent(
         tmp_path,
@@ -565,7 +565,7 @@ def test_repeated_shell_rejection_keeps_complete_assessment_metadata(tmp_path):
 
 
 def test_hard_reject_does_not_read_empty_argv(tmp_path, monkeypatch):
-    import pico.tools.executor as tool_executor_module
+    import pony.tools.executor as tool_executor_module
 
     assessment = {
         "risk_class": "destructive",
@@ -651,8 +651,8 @@ def test_execution_shape_uses_only_frozen_executables(
     def passthrough(executable):
         yield str(executable)
 
-    monkeypatch.setattr("pico.tools.subprocess._prepared_executable", passthrough)
-    monkeypatch.setattr("pico.tools.subprocess.subprocess.Popen", fake_popen)
+    monkeypatch.setattr("pony.tools.subprocess._prepared_executable", passthrough)
+    monkeypatch.setattr("pony.tools.subprocess.subprocess.Popen", fake_popen)
     agent = build_agent(
         tmp_path,
         approval_policy="ask",
@@ -694,8 +694,8 @@ def test_simple_unknown_command_is_not_rewrapped_in_shell(tmp_path, monkeypatch)
     def passthrough(executable):
         yield str(executable)
 
-    monkeypatch.setattr("pico.tools.subprocess._prepared_executable", passthrough)
-    monkeypatch.setattr("pico.tools.subprocess.subprocess.Popen", fake_popen)
+    monkeypatch.setattr("pony.tools.subprocess._prepared_executable", passthrough)
+    monkeypatch.setattr("pony.tools.subprocess.subprocess.Popen", fake_popen)
     agent = build_agent(
         tmp_path,
         approval_policy="ask",
@@ -736,8 +736,8 @@ def test_runtime_path_spoof_cannot_replace_frozen_executable(tmp_path, monkeypat
     def passthrough(executable):
         yield str(executable)
 
-    monkeypatch.setattr("pico.tools.subprocess._prepared_executable", passthrough)
-    monkeypatch.setattr("pico.tools.subprocess.subprocess.Popen", fake_popen)
+    monkeypatch.setattr("pony.tools.subprocess._prepared_executable", passthrough)
+    monkeypatch.setattr("pony.tools.subprocess.subprocess.Popen", fake_popen)
 
     result = agent.execute_tool(
         "run_shell",
@@ -780,8 +780,8 @@ def test_approval_payload_and_runner_output_are_redacted(tmp_path):
         tmp_path,
         approval_policy="ask",
         executables={"pwd": "/frozen/pwd"},
-        redaction_env={"PICO_TEST_TOKEN": secret},
-        secret_env_names=("PICO_TEST_TOKEN",),
+        redaction_env={"PONY_TEST_TOKEN": secret},
+        secret_env_names=("PONY_TEST_TOKEN",),
     )
     args = {"command": "pwd", "timeout": 5, "note": secret}
 
@@ -812,8 +812,8 @@ def test_shell_record_redacts_full_command_before_truncating_summary(tmp_path):
         tmp_path,
         approval_policy="ask",
         executables={"echo": "/frozen/echo"},
-        redaction_env={"PICO_TEST_TOKEN": secret},
-        secret_env_names=("PICO_TEST_TOKEN",),
+        redaction_env={"PONY_TEST_TOKEN": secret},
+        secret_env_names=("PONY_TEST_TOKEN",),
     )
     agent.approve = Mock(return_value=True)
     agent.tools["run_shell"]["run"] = Mock(return_value=completed())
@@ -827,7 +827,7 @@ def test_shell_record_redacts_full_command_before_truncating_summary(tmp_path):
         result.metadata["tool_change_id"]
     )
     disk = next(
-        (tmp_path / ".pico" / "checkpoints" / "tool_changes").glob("*.json")
+        (tmp_path / ".pony" / "checkpoints" / "tool_changes").glob("*.json")
     ).read_text(encoding="utf-8")
     assert "LEAKM" not in disk
     assert secret not in json.dumps(record)
@@ -909,8 +909,8 @@ def test_decoded_secret_tool_action_is_blocked_before_prompt_and_runner(tmp_path
         approval_policy="ask",
         executables={"echo": "/frozen/echo"},
         outputs=(tool_call, "done"),
-        redaction_env={"PICO_TEST_TOKEN": secret},
-        secret_env_names=("PICO_TEST_TOKEN",),
+        redaction_env={"PONY_TEST_TOKEN": secret},
+        secret_env_names=("PONY_TEST_TOKEN",),
     )
     approve = Mock(return_value=True)
     runner = Mock(return_value=completed())
@@ -1072,7 +1072,7 @@ def test_malformed_shell_result_after_side_effect_preserves_recovery_evidence(
     assert record["error"]["code"] == "tool_partial_success"
 
 
-def test_pico_has_no_raw_tool_proxies_and_executor_remains_registered(tmp_path):
+def test_pony_has_no_raw_tool_proxies_and_executor_remains_registered(tmp_path):
     agent = build_agent(tmp_path, executables={})
 
     for name in (
@@ -1100,12 +1100,12 @@ def test_pico_has_no_raw_tool_proxies_and_executor_remains_registered(tmp_path):
 def _init_git_repo(root):
     subprocess.run(["git", "init"], cwd=root, check=True, capture_output=True)
     subprocess.run(
-        ["git", "config", "user.email", "pico@example.test"],
+        ["git", "config", "user.email", "pony@example.test"],
         cwd=root,
         check=True,
     )
     subprocess.run(
-        ["git", "config", "user.name", "Pico Test"],
+        ["git", "config", "user.name", "Pony Test"],
         cwd=root,
         check=True,
     )
@@ -1122,7 +1122,7 @@ def test_production_git_path_disables_fsmonitor_and_optional_index_writes(
     tmp_path,
     monkeypatch,
 ):
-    import pico.tools.executor as tool_executor_module
+    import pony.tools.executor as tool_executor_module
 
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
     _init_git_repo(tmp_path)
@@ -1209,7 +1209,7 @@ def test_production_git_path_disables_fsmonitor_and_optional_index_writes(
     [
         "git -c core.fsmonitor=/tmp/marker status --short",
         "git -ccore.fsmonitor=/tmp/marker status --short",
-        "git --config-env=core.fsmonitor=PICO_MARKER status --short",
+        "git --config-env=core.fsmonitor=PONY_MARKER status --short",
         "git --paginate status --short",
         "git --exec-path=. status --short",
         "git --git-dir=../outside status --short",
@@ -1224,7 +1224,7 @@ def test_approved_git_cannot_override_hardening_or_run_config_helpers(
     monkeypatch,
     command,
 ):
-    import pico.tools.executor as tool_executor_module
+    import pony.tools.executor as tool_executor_module
 
     agent = build_agent(
         tmp_path,
@@ -1290,7 +1290,7 @@ def test_approved_git_fetch_blocks_repo_ssh_command_before_runner(
     tmp_path,
     monkeypatch,
 ):
-    import pico.tools.executor as tool_executor_module
+    import pony.tools.executor as tool_executor_module
 
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
     _init_git_repo(tmp_path)
@@ -1500,7 +1500,7 @@ def test_approved_git_fetch_builtin_protocol_passes_preflight(
     monkeypatch,
     remote_url,
 ):
-    import pico.tools.executor as tool_executor_module
+    import pony.tools.executor as tool_executor_module
 
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
     _init_git_repo(tmp_path)
@@ -1541,7 +1541,7 @@ def test_approved_unknown_git_command_cannot_execute_repo_alias(
     tmp_path,
     monkeypatch,
 ):
-    import pico.tools.executor as tool_executor_module
+    import pony.tools.executor as tool_executor_module
 
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
     _init_git_repo(tmp_path)
@@ -1598,7 +1598,7 @@ def test_approved_git_diff_rendering_cannot_execute_repo_textconv(
     command,
     expected_status,
 ):
-    import pico.tools.executor as tool_executor_module
+    import pony.tools.executor as tool_executor_module
 
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
     _init_git_repo(tmp_path)
@@ -1671,7 +1671,7 @@ def test_automatic_git_status_blocks_repo_clean_filter_before_execution(
     tmp_path,
     monkeypatch,
 ):
-    import pico.tools.executor as tool_executor_module
+    import pony.tools.executor as tool_executor_module
 
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
     _init_git_repo(tmp_path)
@@ -1714,10 +1714,10 @@ def test_automatic_git_status_blocks_repo_clean_filter_before_execution(
     )
     assert guarded_workspace.status == "(unavailable)"
     assert not marker.exists()
-    agent = Pico(
+    agent = Pony(
         model_client=FakeModelClient([]),
         workspace=workspace,
-        session_store=SessionStore(tmp_path / ".pico" / "sessions"),
+        session_store=SessionStore(tmp_path / ".pony" / "sessions"),
         options=RuntimeOptions(approval_policy="auto"),
     )
     assert agent.workspace_observer.capture()["mode"] == "filesystem"
@@ -1827,7 +1827,7 @@ def test_automatic_parent_git_status_blocks_uninspected_submodule_config(
     tmp_path,
     monkeypatch,
 ):
-    import pico.tools.executor as tool_executor_module
+    import pony.tools.executor as tool_executor_module
 
     (tmp_path / "README.md").write_text("parent\n", encoding="utf-8")
     _init_git_repo(tmp_path)
@@ -1898,10 +1898,10 @@ def test_automatic_parent_git_status_blocks_uninspected_submodule_config(
         tracked,
         ns=(tracked_stat.st_atime_ns, tracked_stat.st_mtime_ns + 10_000_000_000),
     )
-    agent = Pico(
+    agent = Pony(
         model_client=FakeModelClient([]),
         workspace=workspace,
-        session_store=SessionStore(tmp_path / ".pico" / "sessions"),
+        session_store=SessionStore(tmp_path / ".pony" / "sessions"),
         options=RuntimeOptions(approval_policy="auto"),
     )
     approve = Mock(return_value=True)
