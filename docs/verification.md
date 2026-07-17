@@ -85,9 +85,9 @@ uv run pytest -q \
   tests/tui
 ```
 
-必须覆盖裸 `pico` 与 `pico repl` 的同一分派、`pico run` 一次性合同、未知命令建议、TTY/`TERM=dumb`/窄终端
-fallback、`NO_COLOR`、马形 Unicode Logo、黑白 TUI chrome、`HERMES` 字标、slash completion、换行/中断、
-runtime hook 恢复、durable trace 顺序与 approval fail closed。
+必须覆盖裸 `pico` 与 `pico repl` 的同一分派、`pico run` 纯结果输出、未知命令建议、TTY/`TERM=dumb`/窄终端
+fallback、`NO_COLOR`、小马与像素 `PONY CODE` 的 5/7/11 行同步缩放、独立版本/介绍/模型行、黑白 TUI chrome、
+slash completion、换行/中断、runtime hook 恢复、durable trace 顺序与 approval fail closed。
 
 ## Distribution 验证
 
