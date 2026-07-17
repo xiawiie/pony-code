@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 from prompt_toolkit.document import Document
+from prompt_toolkit.utils import get_cwidth
 
 from pico.cli.start import run_repl
 from pico.tui.app import (
@@ -47,21 +48,24 @@ def test_tui_requires_a_capable_interactive_terminal(
     ) is expected
 
 
-def test_terminal_logo_is_the_horse_silhouette():
-    rendered = logo_text()
+@pytest.mark.parametrize(("columns", "height"), ((40, 5), (80, 7), (120, 11)))
+def test_terminal_logo_scales_horse_and_wordmark_together(columns, height):
+    rendered = logo_text(columns)
+    lines = rendered.splitlines()
 
-    assert "HERMES" in rendered
-    assert "PICO" not in rendered
+    assert "HERMES" not in rendered
     assert "⣿" in rendered
+    assert "█" in rendered
     assert "\x1b" not in rendered
-    assert len(rendered.splitlines()) == 11
+    assert len(lines) == height
+    assert max(get_cwidth(line) for line in lines) < columns
 
 
 def test_tui_chrome_is_monochrome_but_status_colors_keep_their_meaning():
     rules = dict(_COLOR_STYLE.style_rules)
     all_rules = " ".join(rules.values())
 
-    for name in ("logo.accent", "logo.name", "editor.prompt", "key"):
+    for name in ("logo", "editor.prompt", "key"):
         assert "#" not in rules[name]
     assert rules["editor.border"] == "#777777"
     assert "#002fa7" not in all_rules
@@ -218,4 +222,40 @@ def test_tui_restores_runtime_hooks(monkeypatch):
     ) == 0
     assert agent._trace_listener is previous_listener
     assert agent._approval_prompt is previous_prompt
-    assert any("HERMES" in "".join(fragment[1] for fragment in item) for item in output)
+    header = "".join(fragment[1] for fragment in output[0])
+    assert "v1.0.0" in header
+    assert "HERMES" not in header
+    assert "Local coding agent for repository-grounded work" in header
+    assert "Using gpt-test · approval ask" in header
+
+
+def test_compact_header_keeps_version_model_and_intro_within_terminal(
+    monkeypatch,
+):
+    output = []
+    agent = SimpleNamespace(
+        approval_policy="ask",
+        model_client=SimpleNamespace(
+            provider_metadata={"protocol_family": "anthropic_messages"}
+        ),
+    )
+    monkeypatch.setattr("pico.tui.render.metadata.version", lambda _name: "1.2.3")
+    monkeypatch.setattr(
+        "pico.tui.render.print_formatted_text",
+        lambda value, **_kwargs: output.append(value),
+    )
+
+    from pico.tui.render import TuiRenderer
+
+    TuiRenderer(no_color=True).header(
+        agent,
+        model="claude-sonnet-4-6",
+        columns=40,
+    )
+
+    header = "".join(fragment[1] for fragment in output[0])
+    assert "v1.2.3" in header
+    assert any(line.strip() == "v1.2.3" for line in header.splitlines())
+    assert "Repository-grounded coding agent" in header
+    assert "Using anthropic/claude-sonnet-4-6" in header
+    assert all(get_cwidth(line) < 40 for line in header.splitlines())
