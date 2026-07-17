@@ -75,23 +75,20 @@ uv run pico
 `pico run "<prompt>"`，不会把未知子命令或裸自然语言悄悄当作 prompt。
 
 ```text
-  ⣶⡄⣷⡄⣄
- ⢀⣼⣿⣿⣿⣿⣻⣦⣀
- ⣼⣿⣾⣿⣿⣿⣿⣽⣯⣄
-⣾⣿⣿⠿⠋⣿⣿⣿⣿⣷⣿⡁  ⢀⣤⣤⣤ ⢀⣤⣄
-⠘⠛⠃  ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣟⡻⣿⣷⡄
-    ⢰⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡇⣿⣿⡇  HERMES
-    ⠈⣿⣿⣿⣿⣿⣿⣿⣿⣿⡿⠿⣿⣿⣿⡏⠁⢿⣿⣷
-  ⢀⣠⣾⣿⠿⢾⣿⡟⠛⠛⠛⠁⠿⣿⣿⡻⣿⣷⡀ ⠘⠁
-  ⠘⣿⠉⠁ ⠘⣿⠇     ⣉⣿⡿⠉⢿⣿
-   ⢿⣿⣤  ⣿⡇    ⢠⣿⠟⠁ ⢸⣿
-    ⠙⠛ ⣼⣿⠃   ⢠⣿⡟  ⣴⣿⠛
+             ⣶⡄⣷⣄           ███   ██  █  █ █  █   ███  ██  ███  ████
+            ⣼⣿⣿⣿⣻⣦⣀         ███   ██  █  █ █  █   ███  ██  ███  ████
+           ⣾⠿⣿⣿⣿⣷⣿⣤⣤⣄       █  █ █  █ ██ █  ██   █    █  █ █  █ █
+          ⠛⠃ ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣦   ███  █  █ ████   █   █    █  █ █  █ ███
+             ⣿⣿⣿⠿⠛⣿⣿⣿⡇      █    █  █ █ ██   █   █    █  █ █  █ █
+            ⣼⣿⠃    ⢸⣿⣆      █     ██  █  █   █    ███  ██  ███  ████
+            ⠛⠁     ⠛⠃       █     ██  █  █   █    ███  ██  ███  ████
 ```
 
 马形轮廓参考
 [SuperHermes 的 `logo-horse.svg`](https://github.com/xiawiie/SuperHermes/blob/main/frontend/logo-horse.svg)
-重新绘制为终端 Unicode，不把 SVG 或 Web 前端资产打进 Pico。Logo、快捷键提示与输入框使用终端默认前景和中性灰，
-不强制品牌色；error、warning、success 的语义颜色保持独立。右侧 `HERMES` 只是马形 Logo 的字标，产品名和命令仍为
+重新绘制为终端 Unicode，不把 SVG 或 Web 前端资产打进 Pico。小马与像素 `PONY CODE` 始终横向排列，并随终端宽度
+同步切换为 5、7 或 11 行版本；版本、产品介绍和当前模型各占一行。Logo、快捷键提示与输入框使用终端默认前景和
+中性灰，不强制品牌色；error、warning、success 的语义颜色保持独立。`PONY CODE` 是 TUI 字标，产品名和命令仍为
 Pico / `pico`。交互沿用 Claude Code/Pi 易发现的操作习惯，但不复制 Pico 没有安全语义支撑的功能：
 
 | 操作 | 行为 |
@@ -103,8 +100,8 @@ Pico / `pico`。交互沿用 Claude Code/Pi 易发现的操作习惯，但不复
 | `Ctrl+C` | 中断/清空当前输入；短时间内再次按下则退出 |
 | `Ctrl+D` | 在空输入时退出 |
 
-当 stdin/stdout 不是 TTY、`TERM=dumb` 或终端窄于 40 列时，Pico 自动回退到纯文本 REPL。`--no-color` 与
-`NO_COLOR` 只禁用颜色，不改变命令或安全行为。
+当 stdin/stdout 不是 TTY、`TERM=dumb` 或终端窄于 40 列时，Pico 自动回退到无装饰的纯文本 REPL。一次性
+`pico run` 也只输出执行结果。`--no-color` 与 `NO_COLOR` 只禁用颜色，不改变命令或安全行为。
 
 ## `.env` 是唯一 Provider 配置入口
 
