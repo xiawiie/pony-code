@@ -44,6 +44,15 @@ jobs:
       - name: Install locked development environment
         run: uv sync --frozen --dev
 
+      - name: Prime locked runtime cache for offline install smoke
+        shell: bash
+        run: |
+          requirements="${RUNNER_TEMP}/pico-runtime-requirements.txt"
+          primer="${RUNNER_TEMP}/pico-cache-primer"
+          uv export --frozen --no-dev --no-emit-project --output-file "${requirements}"
+          uv venv --python .venv/bin/python "${primer}"
+          uv pip install --refresh --python "${primer}/bin/python" --requirement "${requirements}"
+
       - name: Run static and functional gates
         run: |
           uv run ruff check .

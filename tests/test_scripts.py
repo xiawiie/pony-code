@@ -80,6 +80,8 @@ def test_release_workflow_is_tag_bound_and_uses_trusted_publishing():
     assert "id-token: write" in workflow
     assert "environment: pypi" in workflow
     assert "uv sync --frozen --dev" in workflow
+    assert "uv export --frozen --no-dev --no-emit-project" in workflow
+    assert "uv pip install --refresh" in workflow
     assert "uv run pytest -q" in workflow
     assert "uv build --clear" in workflow
     assert (
@@ -104,7 +106,12 @@ def test_ci_has_macos_security_and_durability_gate():
 
     assert "runs-on: macos-latest" in workflow
     assert 'python-version: "3.12"' in workflow
-    assert workflow.count("run: uv sync --frozen --dev") == 3
+    assert workflow.count("uv sync --frozen --dev") == 3
+    assert "uv export --frozen --no-dev --no-emit-project" in workflow
+    assert "uv pip install --refresh" in workflow
+    linux_test, macos = workflow.split("macos-focused:", 1)
+    assert "--suite sandbox-contract" not in linux_test
+    assert "--suite sandbox-contract" in macos
     linux_capability = workflow.split("linux-capability-evidence:", 1)[1]
     assert "- name: Install package\n        run: uv sync --frozen --dev" in (
         linux_capability

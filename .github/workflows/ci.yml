@@ -42,6 +42,16 @@ jobs:
       - name: Install dependencies
         run: uv sync --frozen --dev
 
+      - name: Prime locked runtime cache for offline install smoke
+        if: matrix.python-version == '3.12'
+        shell: bash
+        run: |
+          requirements="${RUNNER_TEMP}/pico-runtime-requirements.txt"
+          primer="${RUNNER_TEMP}/pico-cache-primer"
+          uv export --frozen --no-dev --no-emit-project --output-file "${requirements}"
+          uv venv --python .venv/bin/python "${primer}"
+          uv pip install --refresh --python "${primer}/bin/python" --requirement "${requirements}"
+
       - name: Lint
         if: matrix.python-version == '3.11'
         run: uv run ruff check .
@@ -57,10 +67,6 @@ jobs:
       - name: Core functional aggregate gate
         if: matrix.python-version == '3.12' && github.event_name != 'pull_request'
         run: uv run python scripts/evaluation/evaluate.py --suite core-functional
-
-      - name: Sandbox contracts
-        if: matrix.python-version == '3.12' && github.event_name == 'pull_request'
-        run: uv run python scripts/evaluation/evaluate.py --suite sandbox-contract
 
       - name: Offline live harness
         run: uv run pytest benchmarks/live_e2e/tests/test_assertions.py -q
@@ -107,6 +113,9 @@ jobs:
 
       - name: Install dependencies
         run: uv sync --frozen --dev
+
+      - name: Sandbox contracts
+        run: uv run python scripts/evaluation/evaluate.py --suite sandbox-contract
 
       - name: Prove FIFO metadata probes use spawn
         run: >-
