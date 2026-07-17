@@ -557,6 +557,7 @@ def test_sandbox_fails_on_pytest_skip_and_unready_runtime(tmp_path):
 
 def _write_live_env(root):
     (root / ".env").write_text(
+        "PICO_PROVIDER=openai\n"
         "PICO_API_BASE=https://api.openai.com/v1\n"
         "PICO_MODEL=test-model\n"
         "PICO_API_KEY=test-key\n",

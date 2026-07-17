@@ -9,6 +9,7 @@ from pico.config.model import (
     DEFAULT_MODEL,
     DEFAULT_PROVIDER,
     MODEL_ENV_NAME,
+    PROVIDER_ENV_NAME,
     SUPPORTED_PROVIDERS,
     resolve_model_config,
     validate_api_base,
@@ -161,7 +162,7 @@ def test_diagnostics_use_official_base_when_only_key_is_configured():
 def test_api_base_resolves_the_transport(
     api_base, provider, protocol, variant, auth_mode, model
 ):
-    env = {API_BASE_ENV_NAME: api_base}
+    env = {PROVIDER_ENV_NAME: provider, API_BASE_ENV_NAME: api_base}
     if auth_mode != "none":
         env[API_KEY_ENV_NAME] = "test-key"
 
@@ -182,6 +183,7 @@ def test_api_base_resolves_the_transport(
 def test_generic_https_base_selects_openai_chat_completions():
     resolved = resolve_model_config(
         project_env={
+            PROVIDER_ENV_NAME: "openai",
             API_BASE_ENV_NAME: "https://gateway.example/v1",
             API_KEY_ENV_NAME: "test-key",
         },
@@ -197,11 +199,13 @@ def test_generic_https_base_selects_openai_chat_completions():
 def test_project_env_wins_over_process_env_for_all_three_fields():
     resolved = resolve_model_config(
         project_env={
+            PROVIDER_ENV_NAME: "openai",
             MODEL_ENV_NAME: "project-model",
             API_BASE_ENV_NAME: "https://project.example/v1",
             API_KEY_ENV_NAME: "project-key",
         },
         process_env={
+            PROVIDER_ENV_NAME: "anthropic",
             MODEL_ENV_NAME: "process-model",
             API_BASE_ENV_NAME: "https://api.anthropic.com/v1",
             API_KEY_ENV_NAME: "process-key",
@@ -228,6 +232,7 @@ def test_process_env_is_used_when_project_values_are_absent():
     resolved = resolve_model_config(
         project_env={},
         process_env={
+            PROVIDER_ENV_NAME: "openai",
             MODEL_ENV_NAME: "process-model",
             API_BASE_ENV_NAME: "https://process.example/v1/",
             API_KEY_ENV_NAME: "process-key",
@@ -284,7 +289,7 @@ def test_only_legacy_or_vendor_variables_cannot_configure_runtime():
 
 
 def test_missing_key_is_allowed_only_for_read_only_diagnostics():
-    with pytest.raises(ValueError, match="^api_base_not_configured$"):
+    with pytest.raises(ValueError, match="^provider_not_configured$"):
         resolve_model_config(project_env={}, process_env={})
 
     assert (
@@ -298,6 +303,7 @@ def test_missing_key_is_allowed_only_for_read_only_diagnostics():
 @pytest.mark.parametrize(
     ("missing_name", "reason"),
     [
+        (PROVIDER_ENV_NAME, "provider_not_configured"),
         (API_BASE_ENV_NAME, "api_base_not_configured"),
         (MODEL_ENV_NAME, "model_not_configured"),
         (API_KEY_ENV_NAME, "api_key_not_configured"),
@@ -305,6 +311,7 @@ def test_missing_key_is_allowed_only_for_read_only_diagnostics():
 )
 def test_runtime_requires_each_provider_connection_setting(missing_name, reason):
     env = {
+        PROVIDER_ENV_NAME: "anthropic",
         API_BASE_ENV_NAME: "https://api.anthropic.com/v1",
         MODEL_ENV_NAME: "claude-test",
         API_KEY_ENV_NAME: "test-key",
@@ -318,6 +325,7 @@ def test_runtime_requires_each_provider_connection_setting(missing_name, reason)
 def test_ollama_does_not_require_an_api_key():
     resolved = resolve_model_config(
         project_env={
+            PROVIDER_ENV_NAME: "ollama",
             API_BASE_ENV_NAME: "http://127.0.0.1:11434",
             MODEL_ENV_NAME: "qwen3:8b",
         },
@@ -329,12 +337,17 @@ def test_ollama_does_not_require_an_api_key():
 
 
 @pytest.mark.parametrize(
-    "api_base", ["https://api.anthropic.com/v1", "https://api.openai.com/v1"]
+    ("provider", "api_base"),
+    [
+        ("anthropic", "https://api.anthropic.com/v1"),
+        ("openai", "https://api.openai.com/v1"),
+    ],
 )
-def test_cloud_providers_require_key(api_base):
+def test_cloud_providers_require_key(provider, api_base):
     with pytest.raises(ValueError, match="^api_key_not_configured$"):
         resolve_model_config(
             project_env={
+                PROVIDER_ENV_NAME: provider,
                 API_BASE_ENV_NAME: api_base,
                 MODEL_ENV_NAME: "cloud-test-model",
             },

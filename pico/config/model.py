@@ -5,6 +5,7 @@ import os
 import urllib.parse
 
 
+PROVIDER_ENV_NAME = "PICO_PROVIDER"
 MODEL_ENV_NAME = "PICO_MODEL"
 API_BASE_ENV_NAME = "PICO_API_BASE"
 API_KEY_ENV_NAME = "PICO_API_KEY"
@@ -15,6 +16,7 @@ _PROVIDER_SPECS = {
     "anthropic": {
         "model": "claude-sonnet-4-6",
         "base_url": "https://api.anthropic.com/v1",
+        "api_variant": "messages",
         "auth_mode": "x-api-key",
         "variants": {
             "messages": {
@@ -30,6 +32,7 @@ _PROVIDER_SPECS = {
     "openai": {
         "model": "gpt-5.4",
         "base_url": "https://api.openai.com/v1",
+        "api_variant": "responses",
         "auth_mode": "bearer",
         "variants": {
             "responses": {
@@ -52,6 +55,7 @@ _PROVIDER_SPECS = {
     "ollama": {
         "model": "qwen3:8b",
         "base_url": "http://127.0.0.1:11434",
+        "api_variant": "chat",
         "auth_mode": "none",
         "variants": {
             "chat": {
@@ -138,42 +142,50 @@ def _loopback_api_url(value):
         return False
 
 
-def _route_api_base(base_url):
+def _openai_variant(base_url):
     parsed = urllib.parse.urlsplit(base_url)
     host = (parsed.hostname or "").casefold()
-    path = parsed.path.rstrip("/")
-    if host == "api.anthropic.com":
-        return "anthropic", "messages"
     if host == "api.openai.com":
-        return "openai", "responses"
-    if _loopback_api_url(base_url) and path != "/v1":
-        return "ollama", "chat"
-    return "openai", "chat_completions"
+        return "responses"
+    return "chat_completions"
 
 
 def resolve_model_config(*, project_env=None, process_env=None, required=True):
-    """Resolve Pico's Transport from its three generic environment variables."""
+    """Resolve Pico's Transport from its four generic environment variables."""
     project_env = dict(project_env or {})
     process_env = dict(os.environ if process_env is None else process_env)
+
+    provider = _resolve_required_setting(
+        PROVIDER_ENV_NAME,
+        project_env,
+        process_env,
+        required=required,
+        default=DEFAULT_PROVIDER,
+        default_name="DEFAULT_PROVIDER",
+        missing_error="provider_not_configured",
+    )
+    provider["value"] = str(provider["value"] or "").strip().casefold()
+    if provider["value"] not in _PROVIDER_SPECS:
+        raise ValueError("provider_invalid")
+    provider_name = provider["value"]
+    spec = _PROVIDER_SPECS[provider_name]
 
     api_base = _resolve_required_setting(
         API_BASE_ENV_NAME,
         project_env,
         process_env,
         required=required,
-        default=DEFAULT_API_BASE,
-        default_name="anthropic_default_api_base",
+        default=spec["base_url"],
+        default_name=f"{provider_name}_default_api_base",
         missing_error="api_base_not_configured",
     )
     api_base["value"] = validate_api_base(api_base["value"])
-    provider_name, variant_name = _route_api_base(api_base["value"])
-    spec = _PROVIDER_SPECS[provider_name]
+    variant_name = (
+        _openai_variant(api_base["value"])
+        if provider_name == "openai"
+        else spec["api_variant"]
+    )
     variant = spec["variants"][variant_name]
-    provider = {
-        "value": provider_name,
-        "source": api_base["source"],
-        "name": api_base["name"],
-    }
 
     model = _resolve_required_setting(
         MODEL_ENV_NAME,
@@ -190,13 +202,17 @@ def resolve_model_config(*, project_env=None, process_env=None, required=True):
 
     api_variant = {
         "value": variant_name,
-        "source": api_base["source"],
-        "name": api_base["name"],
+        "source": (
+            api_base["source"] if provider_name == "openai" else provider["source"]
+        ),
+        "name": (
+            api_base["name"] if provider_name == "openai" else provider["name"]
+        ),
     }
     auth_mode = {
         "value": spec["auth_mode"],
-        "source": api_base["source"],
-        "name": api_base["name"],
+        "source": provider["source"],
+        "name": provider["name"],
     }
 
     api_key = _resolve_env_value(API_KEY_ENV_NAME, project_env, process_env)

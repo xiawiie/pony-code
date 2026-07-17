@@ -39,6 +39,7 @@ def test_public_api_exports_current_names_only():
 def test_build_agent_returns_pico(tmp_path):
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
     (tmp_path / ".env").write_text(
+        "PICO_PROVIDER=anthropic\n"
         "PICO_API_BASE=https://api.anthropic.com/v1\n"
         "PICO_MODEL=claude-sonnet-4-6\n"
         "PICO_API_KEY=test-key\n",
@@ -239,6 +240,7 @@ def test_provider_defaults_and_generic_env_names_have_one_config_source():
     assert config.SUPPORTED_PROVIDERS == ("anthropic", "openai", "ollama")
     assert config.DEFAULT_MODEL == "claude-sonnet-4-6"
     assert config.DEFAULT_API_BASE == "https://api.anthropic.com/v1"
+    assert config.PROVIDER_ENV_NAME == "PICO_PROVIDER"
     assert config.MODEL_ENV_NAME == "PICO_MODEL"
     assert config.API_KEY_ENV_NAME == "PICO_API_KEY"
     assert config.API_BASE_ENV_NAME == "PICO_API_BASE"

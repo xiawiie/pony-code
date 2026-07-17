@@ -24,10 +24,18 @@ def _run_git(cwd, *args):
     )
 
 
-def _write_env(root, *, api_base="https://api.anthropic.com/v1", key="secret-value"):
+def _write_env(
+    root,
+    *,
+    provider="anthropic",
+    api_base="https://api.anthropic.com/v1",
+    key="secret-value",
+):
     path = root / ".env"
     path.write_text(
-        f"PICO_API_BASE={api_base}\nPICO_API_KEY={key}\n",
+        f"PICO_PROVIDER={provider}\n"
+        f"PICO_API_BASE={api_base}\n"
+        f"PICO_API_KEY={key}\n",
         encoding="utf-8",
     )
     path.chmod(0o600)
@@ -79,7 +87,11 @@ def test_config_show_reports_fixed_contract_and_exact_project_env_path(
 
 
 def test_config_show_reports_generic_openai_compatible_base(tmp_path):
-    _write_env(tmp_path, api_base="https://gateway.example/v1")
+    _write_env(
+        tmp_path,
+        provider="openai",
+        api_base="https://gateway.example/v1",
+    )
 
     data = collect_config(tmp_path)
 
@@ -255,6 +267,7 @@ def test_doctor_defaults_to_zero_api_requests(tmp_path, monkeypatch, capsys):
 
 def test_doctor_marks_ollama_api_key_not_required(tmp_path):
     (tmp_path / ".env").write_text(
+        "PICO_PROVIDER=ollama\n"
         "PICO_API_BASE=http://127.0.0.1:11434\n"
         "PICO_MODEL=qwen3:8b\n"
         "PICO_API_KEY=\n",

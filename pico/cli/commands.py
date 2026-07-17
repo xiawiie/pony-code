@@ -13,8 +13,9 @@ from .session import handle_session_command
 from pico.config.model import (
     API_BASE_ENV_NAME,
     API_KEY_ENV_NAME,
-    DEFAULT_API_BASE,
+    DEFAULT_PROVIDER,
     MODEL_ENV_NAME,
+    PROVIDER_ENV_NAME,
     resolve_model_config,
     validate_api_base,
 )
@@ -54,7 +55,7 @@ Available Commands:
   status       Show local workspace state
   doctor       Check config, storage, auth, and sandbox readiness
   sandbox      Inspect and manage Docker Sandbox sessions and image readiness
-  init         Configure API base, key, and model in .env
+  init         Configure provider, API base, key, and model in .env
   config       Configuration inspection and set-secret input
   runs         Run artifact inspection
   sessions     Session inspection
@@ -122,29 +123,50 @@ def handle_init(tokens, cwd, args):
             exit_code=CLI_EXIT_CONFIG,
         ) from exc
     try:
-        existing_base = existing.get(API_BASE_ENV_NAME)
-        current_base = existing_base or DEFAULT_API_BASE
-        validate_api_base(current_base)
+        existing_base = existing.get(API_BASE_ENV_NAME, "")
+        if existing_base:
+            validate_api_base(existing_base)
+        current_provider = str(
+            existing.get(PROVIDER_ENV_NAME) or DEFAULT_PROVIDER
+        ).strip().casefold()
+        try:
+            resolve_model_config(
+                project_env={PROVIDER_ENV_NAME: current_provider},
+                process_env={},
+                required=False,
+            )
+        except ValueError:
+            current_provider = DEFAULT_PROVIDER
+        print(
+            f"Provider [{current_provider}]: ",
+            end="",
+            file=sys.stderr,
+            flush=True,
+        )
+        provider = input().strip().casefold() or current_provider
+        defaults = resolve_model_config(
+            project_env={PROVIDER_ENV_NAME: provider},
+            process_env={},
+            required=False,
+        )
+        same_provider = provider == current_provider
+
+        current_base = (
+            existing_base if same_provider else ""
+        ) or defaults["base_url"]["value"]
         print(f"API Base [{current_base}]: ", end="", file=sys.stderr, flush=True)
         api_base = validate_api_base(input().strip() or current_base)
 
         defaults = resolve_model_config(
-            project_env={API_BASE_ENV_NAME: api_base},
+            project_env={
+                PROVIDER_ENV_NAME: provider,
+                API_BASE_ENV_NAME: api_base,
+            },
             process_env={},
             required=False,
         )
-        same_transport = True
-        if existing_base:
-            previous = resolve_model_config(
-                project_env={API_BASE_ENV_NAME: existing_base},
-                process_env={},
-                required=False,
-            )
-            same_transport = previous["protocol"]["value"] == defaults["protocol"][
-                "value"
-            ]
         current_model = (
-            existing.get(MODEL_ENV_NAME) if same_transport else ""
+            existing.get(MODEL_ENV_NAME) if same_provider else ""
         ) or defaults["model"]["value"]
         print(f"Model [{current_model}]: ", end="", file=sys.stderr, flush=True)
         model = input().strip() or current_model
@@ -176,6 +198,7 @@ def handle_init(tokens, cwd, args):
             exit_code=CLI_EXIT_USAGE,
         )
     assignments = {
+        PROVIDER_ENV_NAME: provider,
         API_BASE_ENV_NAME: api_base,
         MODEL_ENV_NAME: model,
         API_KEY_ENV_NAME: api_key,

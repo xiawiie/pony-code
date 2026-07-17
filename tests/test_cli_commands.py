@@ -182,11 +182,12 @@ def test_unknown_command_suggestion_uses_json_error_envelope(capsys):
 def _install_init_input(
     monkeypatch,
     *,
+    provider="",
     api_base="",
     model="",
     key="test-key",
 ):
-    answers = iter((api_base, model))
+    answers = iter((provider, api_base, model))
     monkeypatch.setattr("builtins.input", lambda: next(answers))
     monkeypatch.setattr(getpass, "getpass", lambda prompt: key)
 
@@ -210,11 +211,13 @@ def test_init_prompts_for_url_and_hidden_key_without_building_agent_or_network(
 
     values = read_project_env(tmp_path, warn=False)
     assert values == {
+        "PICO_PROVIDER": "anthropic",
         "PICO_API_BASE": "https://api.anthropic.com/v1",
         "PICO_MODEL": "claude-sonnet-4-6",
         "PICO_API_KEY": "test-key",
     }
     captured = capsys.readouterr()
+    assert "Provider [anthropic]:" in captured.err
     assert "API Base [https://api.anthropic.com/v1]:" in captured.err
     assert captured.out.startswith("Pico init")
     assert "claude-sonnet-4-6" in captured.out
@@ -225,6 +228,7 @@ def test_init_prompts_for_url_and_hidden_key_without_building_agent_or_network(
 def test_init_accepts_exact_third_party_api_base(tmp_path, monkeypatch, capsys):
     _install_init_input(
         monkeypatch,
+        provider="openai",
         api_base="https://lumina.tripo3d.com/v1/",
         key="gateway-key",
     )
@@ -256,14 +260,9 @@ def test_init_accepts_exact_third_party_api_base(tmp_path, monkeypatch, capsys):
 
 
 def test_init_can_select_openai_from_api_base(tmp_path, monkeypatch):
-    (tmp_path / ".env").write_text(
-        "PICO_API_BASE=https://api.anthropic.com/v1\n"
-        "PICO_API_KEY=old-key\n"
-        "PICO_MODEL=claude-sonnet-4-6\n",
-        encoding="utf-8",
-    )
     _install_init_input(
         monkeypatch,
+        provider="openai",
         api_base="https://api.openai.com/v1",
         key="openai-key",
     )
@@ -271,6 +270,7 @@ def test_init_can_select_openai_from_api_base(tmp_path, monkeypatch):
     assert main(["--cwd", str(tmp_path), "init"]) == 0
 
     assert read_project_env(tmp_path, warn=False) == {
+        "PICO_PROVIDER": "openai",
         "PICO_API_BASE": "https://api.openai.com/v1",
         "PICO_MODEL": "gpt-5.4",
         "PICO_API_KEY": "openai-key",
@@ -280,6 +280,7 @@ def test_init_can_select_openai_from_api_base(tmp_path, monkeypatch):
 def test_init_can_configure_local_ollama_without_api_key(tmp_path, monkeypatch):
     _install_init_input(
         monkeypatch,
+        provider="ollama",
         api_base="http://127.0.0.1:11434",
         key="",
     )
@@ -287,6 +288,7 @@ def test_init_can_configure_local_ollama_without_api_key(tmp_path, monkeypatch):
     assert main(["--cwd", str(tmp_path), "init"]) == 0
 
     assert read_project_env(tmp_path, warn=False) == {
+        "PICO_PROVIDER": "ollama",
         "PICO_API_BASE": "http://127.0.0.1:11434",
         "PICO_MODEL": "qwen3:8b",
         "PICO_API_KEY": "",
@@ -347,7 +349,7 @@ def test_init_updates_config_without_dropping_unrelated_lines(tmp_path, monkeypa
 def test_init_rejects_invalid_base_before_key_prompt(
     tmp_path, monkeypatch, capsys, api_base
 ):
-    answers = iter((api_base,))
+    answers = iter(("", api_base))
     monkeypatch.setattr("builtins.input", lambda: next(answers))
     key_prompt = pytest.fail
     monkeypatch.setattr(getpass, "getpass", key_prompt)

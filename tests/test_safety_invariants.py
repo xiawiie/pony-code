@@ -128,6 +128,7 @@ def test_cli_freezes_parent_path_before_project_env_loading(tmp_path, monkeypatc
     fake_path = str(tmp_path / "fake-bin")
     (tmp_path / ".env").write_text(
         f"PATH={fake_path}\n"
+        "PICO_PROVIDER=openai\n"
         "PICO_API_BASE=https://gateway.example/v1\n"
         "PICO_MODEL=claude-test\n"
         "PICO_API_KEY=test-key\n",
@@ -233,6 +234,7 @@ def test_runtime_rejects_credential_bearing_base_url_before_client_construction(
         cli_assembly._build_transport_client(
             args,
             project_env={
+                "PICO_PROVIDER": "anthropic",
                 "PICO_API_BASE": "https://user:opaque-password@example.test/v1",
                 "PICO_MODEL": "claude-test",
                 "PICO_API_KEY": "test-key",
@@ -327,6 +329,7 @@ def test_cli_build_agent_wires_secret_env_names_from_parser(tmp_path):
                 "HOME": str(tmp_path),
                 "GITHUB_PAT": "ghp-1",
                 "GH_PAT": "ghp-2",
+                "PICO_PROVIDER": "openai",
                 "PICO_API_BASE": "https://gateway.example/v1",
                 "PICO_MODEL": "claude-test",
                 "PICO_API_KEY": "test-runtime-key",
@@ -374,6 +377,7 @@ def test_cli_build_agent_uses_default_configured_secret_names(tmp_path):
             {
                 "HOME": str(tmp_path),
                 "GH_PAT": "ghp-default-1",
+                "PICO_PROVIDER": "openai",
                 "PICO_API_BASE": "https://gateway.example/v1",
                 "PICO_MODEL": "claude-test",
                 "PICO_API_KEY": "test-runtime-key",
@@ -411,6 +415,7 @@ def test_cli_build_agent_loads_project_env_secrets_before_redaction_setup(tmp_pa
 
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
     (tmp_path / ".env").write_text(
+        "PICO_PROVIDER=openai\n"
         "PICO_API_BASE=https://gateway.example/v1\n"
         "PICO_MODEL=claude-test\n"
         "PICO_API_KEY=sk-project-secret\n",
@@ -452,6 +457,7 @@ def test_cli_resume_uses_immutable_collision_safe_snapshot_before_load(
     monkeypatch.setattr(cli_assembly, "_build_redaction_snapshot", capture_snapshot)
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
     (tmp_path / ".env").write_text(
+        "PICO_PROVIDER=openai\n"
         "PICO_API_BASE=https://gateway.example/v1\n"
         "PICO_MODEL=claude-test\n"
         "PICO_API_KEY=test-runtime-key\n"
@@ -550,6 +556,7 @@ def test_cli_build_agent_skips_malformed_project_env_lines_with_warning(
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
     (tmp_path / ".env").write_text(
         "not a valid env line\n"
+        "PICO_PROVIDER=openai\n"
         "PICO_API_BASE=https://gateway.example/v1\n"
         "PICO_MODEL=claude-test\n"
         "PICO_API_KEY=sk-project-secret\n",
@@ -605,6 +612,7 @@ def test_cli_build_agent_reads_secret_names_from_environment_config(tmp_path):
                 "HOME": str(tmp_path),
                 "PICO_CUSTOM_SECRET": "custom-secret-value",
                 "PICO_SECRET_ENV_NAMES": "PICO_CUSTOM_SECRET",
+                "PICO_PROVIDER": "openai",
                 "PICO_API_BASE": "https://gateway.example/v1",
                 "PICO_MODEL": "claude-test",
                 "PICO_API_KEY": "test-runtime-key",
@@ -643,6 +651,7 @@ def test_cli_no_input_makes_default_approval_non_interactive(tmp_path):
             os.environ,
             {
                 "HOME": str(tmp_path),
+                "PICO_PROVIDER": "openai",
                 "PICO_API_BASE": "https://gateway.example/v1",
                 "PICO_MODEL": "claude-test",
                 "PICO_API_KEY": "test-runtime-key",

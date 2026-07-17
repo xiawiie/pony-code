@@ -738,6 +738,7 @@ def test_build_arg_parser_has_no_model_backend_selection_flags(tmp_path):
 
 def test_build_agent_uses_resolved_openai_client_and_project_env(tmp_path):
     (tmp_path / ".env").write_text(
+        "PICO_PROVIDER=openai\n"
         "PICO_MODEL=claude-sonnet-4-6\n"
         "PICO_API_BASE=https://gateway.example/v1\n"
         "PICO_API_KEY=sk-project\n",
@@ -773,6 +774,7 @@ def test_build_agent_uses_process_env_when_project_env_is_missing(tmp_path):
         os.environ,
         {
             "HOME": str(tmp_path),
+            "PICO_PROVIDER": "openai",
             "PICO_MODEL": "claude-sonnet-4-6",
             "PICO_API_BASE": "https://process.example/v1",
             "PICO_API_KEY": "sk-process",
@@ -793,6 +795,7 @@ def test_build_agent_switches_provider_from_generic_environment(tmp_path):
         os.environ,
         {
             "HOME": str(tmp_path),
+            "PICO_PROVIDER": "openai",
             "PICO_MODEL": "gpt-test",
             "PICO_API_BASE": "https://api.openai.com/v1",
             "PICO_API_KEY": "sk-openai",

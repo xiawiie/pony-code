@@ -82,15 +82,15 @@ sequenceDiagram
 
     C->>W: discover lexical repository root
     C->>E: anchored, no-follow read
-    E-->>C: three generic PICO_* values
+    E-->>C: four generic PICO_* values
     C->>P: exact protocol/model/url/auth/capabilities
     C->>S: resume or create session binding
     C->>A: construct runtime object graph
     A-->>C: ready
 ```
 
-配置解析只接受 `PICO_API_BASE`、`PICO_API_KEY` 和 `PICO_MODEL`。项目 `.env` 高于进程环境；API Base 静态选择
-Transport 与认证，旧变量和厂商变量不会回退生效。
+配置解析只接受 `PICO_PROVIDER`、`PICO_API_BASE`、`PICO_API_KEY` 和 `PICO_MODEL`。项目 `.env` 高于进程环境；
+Provider 与 API Base 静态选择 Transport 与认证，旧变量和厂商变量不会回退生效。
 
 ### TUI 是 presentation adapter
 

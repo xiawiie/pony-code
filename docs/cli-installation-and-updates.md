@@ -43,8 +43,8 @@ pico config show
 pico doctor
 ```
 
-`init` 依次询问 API Base、模型和 API Key，将三个通用变量原子写入根目录 `.env`。输入已有 Key 时，留空会
-保留原值；本地 Ollama 允许空 Key。该命令不联网。
+`init` 依次询问 Provider、API Base、模型和 API Key，将四个通用变量原子写入根目录 `.env`。输入已有 Key 时，
+留空会保留原值；本地 Ollama 允许空 Key。该命令不联网。
 
 也可以复制仓库提供的 `.env.example`：
 
@@ -56,6 +56,7 @@ chmod 600 .env
 然后编辑：
 
 ```dotenv
+PICO_PROVIDER=anthropic
 PICO_API_BASE=https://api.anthropic.com/v1
 PICO_API_KEY=
 PICO_MODEL=claude-sonnet-4-6
@@ -170,6 +171,8 @@ uv run python scripts/sandbox/verify_runtime.py --help
 | 现象 | 检查 |
 | --- | --- |
 | `api_key_not_configured` | 云 Provider 是否设置 `PICO_API_KEY` |
+| `provider_not_configured` | 是否设置 `PICO_PROVIDER` |
+| `provider_invalid` | Provider 是否为 `anthropic`、`openai` 或 `ollama` |
 | `api_base_not_configured` | 是否设置 `PICO_API_BASE` |
 | `insecure_api_base` | 非 loopback API Base 是否为 HTTPS |
 | `model_session_mismatch` | 当前 Provider/model/URL 是否与恢复 Session 一致 |

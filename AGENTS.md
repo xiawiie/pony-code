@@ -83,9 +83,10 @@ CLI/TUI 合同：
 | `openai` | `chat_completions` | `openai_chat_completions` | `bearer` |
 | `ollama` | `chat` | `ollama_chat` | `none` |
 
-唯一用户配置面是仓库根目录 `.env` 中三个变量：
+唯一用户配置面是仓库根目录 `.env` 中四个变量：
 
 ```text
+PICO_PROVIDER
 PICO_API_BASE
 PICO_API_KEY
 PICO_MODEL
@@ -93,10 +94,10 @@ PICO_MODEL
 
 必须保持：
 
-- 运行须显式配置 API Base/model；云端须有 Key，本地 Ollama 可空。`pico init` 只写这三项。
+- 运行须显式配置 Provider/API Base/model；云端须有 Key，本地 Ollama 可空。`pico init` 只写这四项。
 - lexical repository root 的 `.env` 高于同名进程变量；不搜索父目录、不修改全局 `os.environ`。
 - 不读取厂商 Key、旧 Provider/Profile/Connection/Variant/Auth 字段或旧 Pico 变量作为 fallback。
-- API Base 静态决定 Provider、Variant 与 Auth；不联网探测或失败后 fallback。
+- Provider 与 API Base 静态决定 Variant 与 Auth；不联网探测或失败后 fallback。
 - CLI、doctor、probe、live harness 与 benchmark 共用配置解析和 Transport factory；benchmark 只以
   `--cwd` / `--repo-root` 选择 `.env`。
 - API Base 禁止 userinfo、query、fragment 与内嵌凭证；除 loopback 外必须 HTTPS。Adapter 不补版本前缀、不跟随

@@ -177,6 +177,7 @@ def test_invalid_project_api_base_uses_safe_config_envelope(
     capsys,
 ):
     (tmp_path / ".env").write_text(
+        "PICO_PROVIDER=anthropic\n"
         "PICO_MODEL=claude-test\n"
         f"PICO_API_BASE=https://user:{CANARY}@example.com/v1\n"
         "PICO_API_KEY=test-key\n",
@@ -192,6 +193,7 @@ def test_invalid_project_api_base_uses_safe_config_envelope(
 
 def test_project_key_without_base_is_rejected(tmp_path, capsys):
     (tmp_path / ".env").write_text(
+        "PICO_PROVIDER=anthropic\n"
         "PICO_MODEL=claude-test\n"
         "PICO_API_KEY=stale-project-key\n",
         encoding="utf-8",
@@ -204,7 +206,7 @@ def test_project_key_without_base_is_rejected(tmp_path, capsys):
 
 
 def test_init_invalid_base_does_not_echo_input_value(tmp_path, monkeypatch, capsys):
-    answers = iter((f"https://user:{CANARY}@example.com/v1",))
+    answers = iter(("", f"https://user:{CANARY}@example.com/v1"))
     monkeypatch.setattr("builtins.input", lambda: next(answers))
     assert main(["--cwd", str(tmp_path), "init"]) == 3
 
