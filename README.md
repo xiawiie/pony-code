@@ -91,6 +91,12 @@ Working…
 pony-code (main)          host/ask · anthropic/claude
 ```
 
+### TUI 启动画面
+
+![Pony TUI 启动画面](docs/assets/terminal/pony-tui-welcome.png)
+
+上图为真实 Terminal.app 启动画面，展示 Pony 版本、当前模型、审批策略，以及仓库、分支和执行环境信息。
+
 完整 TUI 以对话为中心：用户消息使用低对比消息块，Assistant 回复通过内置 renderer 排版标题、列表、代码块和表格。
 `Working…` 只在等待响应时短暂出现；成功 Tool 每次只显示一行摘要，自动 checkpoint 不占用对话区。失败、中断和审批
 仍会明确显示，手动 `/checkpoint` 仍返回 checkpoint ID。footer 只保留仓库/分支、执行模式/approval 与

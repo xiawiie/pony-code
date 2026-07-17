@@ -65,6 +65,9 @@ readme_intro_locked/
 !/docs/adr/
 !/docs/adr/*.md
 !/docs/context-and-sessions.md
+!/docs/assets/
+!/docs/assets/terminal/
+!/docs/assets/terminal/*.png
 
 # OS files
 .DS_Store

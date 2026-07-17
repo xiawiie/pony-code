@@ -23,6 +23,9 @@ MAINTAINER_DOCS = {
     "docs/adr/0042-sealed-local-authorization.md",
     "docs/context-and-sessions.md",
 }
+MAINTAINER_ASSETS = {
+    "docs/assets/terminal/pony-tui-welcome.png",
+}
 MARKDOWN_FIXTURES = {
     "benchmarks/live_e2e/fixtures/seed_cache_note.md",
     "tests/fixtures/bench_repo_readme/README.md",
@@ -105,7 +108,7 @@ def test_tracked_document_surface_is_exact():
     assert markdown == MAINTAINER_DOCS | MARKDOWN_FIXTURES
     assert {name for name in tracked if name.startswith("docs/")} == {
         name for name in MAINTAINER_DOCS if name.startswith("docs/")
-    }
+    } | MAINTAINER_ASSETS
     for prefix in FORBIDDEN_PREFIXES:
         assert not any(name.startswith(prefix) for name in tracked)
 
