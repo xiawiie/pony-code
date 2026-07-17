@@ -75,21 +75,26 @@ uv run pony
 `pony run "<prompt>"`，不会把未知子命令或裸自然语言悄悄当作 prompt。
 
 ```text
-             ⣶⡄⣷⣄           ███   ██  █  █ █  █   ███  ██  ███  ████
-            ⣼⣿⣿⣿⣻⣦⣀         ███   ██  █  █ █  █   ███  ██  ███  ████
-           ⣾⠿⣿⣿⣿⣷⣿⣤⣤⣄       █  █ █  █ ██ █  ██   █    █  █ █  █ █
-          ⠛⠃ ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣦   ███  █  █ ████   █   █    █  █ █  █ ███
-             ⣿⣿⣿⠿⠛⣿⣿⣿⡇      █    █  █ █ ██   █   █    █  █ █  █ █
-            ⣼⣿⠃    ⢸⣿⣆      █     ██  █  █   █    ███  ██  ███  ████
-            ⠛⠁     ⠛⠃       █     ██  █  █   █    ███  ██  ███  ████
+PONY CODE · v1.0.0
+
+  帮我检查失败的测试
+
+Working…
+› read pyproject.toml
+› $ pytest -q
+
+测试失败来自一个过期断言，已完成最小修复。
+
+────────────────────────────────────────────────────
+  继续检查测试_
+────────────────────────────────────────────────────
+pony-code (main)          host/ask · anthropic/claude
 ```
 
-马形轮廓参考
-[SuperHermes 的 `logo-horse.svg`](https://github.com/xiawiie/SuperHermes/blob/main/frontend/logo-horse.svg)
-重新绘制为终端 Unicode，不把 SVG 或 Web 前端资产打进 Pony。小马与像素 `PONY CODE` 始终横向排列，并随终端宽度
-同步切换为 5、7 或 11 行版本；版本、产品介绍和当前模型各占一行。Logo、快捷键提示与输入框使用终端默认前景和
-中性灰，不强制品牌色；error、warning、success 的语义颜色保持独立。`PONY CODE` 是 TUI 字标，产品名和命令仍为
-Pony / `pony`。交互沿用 Claude Code/Pi 易发现的操作习惯，但不复制 Pony 没有安全语义支撑的功能：
+完整 TUI 以对话为中心：用户消息使用低对比消息块，Assistant 回复通过内置 renderer 排版标题、列表、代码块和表格。
+`Working…` 只在等待响应时短暂出现；成功 Tool 每次只显示一行摘要，自动 checkpoint 不占用对话区。失败、中断和审批
+仍会明确显示，手动 `/checkpoint` 仍返回 checkpoint ID。footer 只保留仓库/分支、执行模式/approval 与
+Provider/model；窄终端优先保留安全和模型信息。Pony 不展示 Provider reasoning，也不提供 streaming 输出。
 
 | 操作 | 行为 |
 | --- | --- |
@@ -101,7 +106,8 @@ Pony / `pony`。交互沿用 Claude Code/Pi 易发现的操作习惯，但不复
 | `Ctrl+D` | 在空输入时退出 |
 
 当 stdin/stdout 不是 TTY、`TERM=dumb` 或终端窄于 40 列时，Pony 自动回退到无装饰的纯文本 REPL。一次性
-`pony run` 也只输出执行结果。`--no-color` 与 `NO_COLOR` 只禁用颜色，不改变命令或安全行为。
+`pony run` 也只输出执行结果。`--no-color` 与 `NO_COLOR` 会移除颜色和背景，但保留缩进、边框及错误前缀，不改变
+命令或安全行为。TUI 继续只依赖 `prompt-toolkit`，不引入第三方 Markdown 或全屏 UI 框架。
 
 ## `.env` 是唯一 Provider 配置入口
 

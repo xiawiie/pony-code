@@ -56,7 +56,7 @@ git log -1 --oneline
 | `pony/sandbox/` | 本地 Docker、identity、filtered staging、session、diff/apply 与资源 |
 | `pony/security/` | path、private/workspace file 与 redaction 原语 |
 | `pony/state/` | Session/Run/Checkpoint store、TaskState 与 file lock |
-| `pony/tui/` | 行内 prompt、slash completion、小马与 `PONY CODE` 品牌、状态与 approval/activity 渲染 |
+| `pony/tui/` | 行内 prompt、slash completion、Markdown、状态与 approval/activity 渲染 |
 | `pony/tools/` | registry、validation、executor、approval、effect recorder 与 subprocess |
 | `pony/workspace/` | root discovery、WorkspaceContext、snapshot 与 observer |
 
@@ -69,10 +69,14 @@ CLI/TUI 合同：
 - TUI 是 presentation adapter，必须与纯文本 fallback 共用 REPL handler、Agent、Session、finalize 和错误语义。
 - `/` 菜单只展示真实命令；不得增加绕过 approval 的 `!` shell mode、动态 Provider/Model 或第二命令 registry。
 - TUI 只在 stdin/stdout 为 TTY、`TERM` 可用且宽度足够时启用；必须遵守 `NO_COLOR` / `--no-color`。
-- 小马与像素 `PONY CODE` 同高横排并同步响应式缩放；版本、介绍和模型分别换行。品牌、快捷键和输入框使用默认前景
-  或中性灰；error、warning、success 继续使用语义色。
-- 品牌只由完整 TUI 渲染；纯文本 fallback 和 `pony run` 不得输出装饰性 banner。
-- UI listener 只能在 trace durable append 后收到脱敏副本；approval UI 异常必须 fail closed，退出时恢复 hook。
+- 完整 TUI 只显示单行 `PONY CODE · v<version>` 启动头；纯文本 fallback 和 `pony run` 不输出装饰性 banner。
+- 用户消息使用低对比块且不加角色标签；Assistant 使用内置、安全的 Markdown renderer，消息块之间只留一个视觉间距。
+- `Working…` 是可清除的瞬态状态；自动 checkpoint 不进入对话区，成功 Tool 只显示一条语义摘要，失败与中断必须可见。
+- 输入框最多增长六行，completion 菜单最多显示五项。footer 只保留仓库/分支、模式/approval、Provider/model，窄终端
+  优先保留安全和模型信息；不得显示绝对路径、Session ID、API Base 或 checkpoint ID。
+- 不显示或持久化 Provider reasoning，不增加 streaming、全屏 transcript、主题系统或新的运行时依赖。
+- UI listener 只能在 trace durable append 后收到脱敏副本；Tool 摘要需要的参数/结果仅存在于该内存副本，不扩大
+  durable trace 的低敏字段；approval UI 异常必须 fail closed，退出时恢复 hook。
 
 ## 4. Provider 与 `.env` 合同
 

@@ -925,16 +925,22 @@ class Pony:
         return redaction.shell_env(allowlist=self.shell_env_allowlist, root=self.root)
 
     def emit_trace(self, task_state, event, payload=None):
+        redacted_payload = self.redact_artifact(payload or {})
         envelope = project_trace_event(
             task_state,
             event,
-            self.redact_artifact(payload or {}),
+            redacted_payload,
             created_at=now(),
         )
         self.run_store.append_trace(task_state, envelope)
         if callable(self._trace_listener):
             try:
-                self._trace_listener(deepcopy(envelope))
+                listener_event = deepcopy(envelope)
+                if event == "tool_started" and "args" in redacted_payload:
+                    listener_event["args"] = deepcopy(redacted_payload["args"])
+                elif event == "tool_executed" and "result" in redacted_payload:
+                    listener_event["result"] = deepcopy(redacted_payload["result"])
+                self._trace_listener(listener_event)
             except Exception:  # noqa: BLE001 - optional UI cannot break durable trace
                 pass
         return envelope

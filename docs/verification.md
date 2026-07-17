@@ -86,8 +86,12 @@ uv run pytest -q \
 ```
 
 必须覆盖裸 `pony` 与 `pony repl` 的同一分派、`pony run` 纯结果输出、未知命令建议、TTY/`TERM=dumb`/窄终端
-fallback、`NO_COLOR`、小马与像素 `PONY CODE` 的 5/7/11 行同步缩放、独立版本/介绍/模型行、黑白 TUI chrome、
-slash completion、换行/中断、runtime hook 恢复、durable trace 顺序与 approval fail closed。
+fallback、`NO_COLOR`、40/80/120 列的单行 `PONY CODE · version` 与精简 footer、五项 slash completion、六行输入、
+换行/中断，以及中文、英文、emoji、标题、列表、代码块、表格降级、非法 Markdown 和控制字符清理。
+
+事件投影测试必须证明 `Working…` 会在正式输出前清除、自动 checkpoint 零输出、成功 Tool 只输出一行、失败与中断
+可见，并且 footer 不泄露绝对路径、Session ID、API Base 或 checkpoint ID。runtime hook 恢复、durable trace 顺序、
+approval 参数脱敏与 approval fail closed 仍是阻断项；离线 contract 不得描述为 Provider reasoning 或 streaming 验证。
 
 ## Distribution 验证
 

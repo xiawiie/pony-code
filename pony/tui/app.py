@@ -22,6 +22,7 @@ from pony.tui.render import TuiRenderer
 _MINIMUM_COLUMNS = 40
 _DOUBLE_INTERRUPT_SECONDS = 1.5
 _MAX_EDITOR_LINES = 6
+_COMPLETION_ROWS = 5
 
 
 class _CompactPromptSession(PromptSession):
@@ -106,7 +107,7 @@ def run_tui(agent, *, model, no_color, handle_input, show_header=True):
         no_color=no_color or os.environ.get("NO_COLOR") is not None,
     )
     if show_header:
-        renderer.header(agent, model=model)
+        renderer.header()
     session = _CompactPromptSession(
         history=InMemoryHistory(),
         completer=SlashCommandCompleter(),
@@ -116,7 +117,7 @@ def run_tui(agent, *, model, no_color, handle_input, show_header=True):
         enable_history_search=True,
         key_bindings=_key_bindings(),
         multiline=True,
-        reserve_space_for_menu=10,
+        reserve_space_for_menu=_COMPLETION_ROWS,
         style=renderer.style,
     )
 
@@ -177,5 +178,9 @@ def run_tui(agent, *, model, no_color, handle_input, show_header=True):
             if result is not None:
                 return result
     finally:
+        try:
+            renderer.close()
+        except Exception:  # noqa: BLE001 - UI cleanup cannot hide the primary result
+            pass
         agent._trace_listener = previous_listener
         agent._approval_prompt = previous_approval_prompt
