@@ -341,7 +341,6 @@ def _finish_repl(agent, code):
 def run_repl(
     agent,
     *,
-    welcome="",
     model="",
     plain=False,
     no_color=False,
@@ -363,8 +362,6 @@ def run_repl(
                             show_header=show_header,
                         ),
                     )
-            if welcome:
-                print(welcome)
             while True:
                 try:
                     user_input = input("\npico> ").strip()

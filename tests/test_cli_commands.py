@@ -36,7 +36,6 @@ def _install_fake_agent(monkeypatch, tmp_path, called):
         return FakeAgent()
 
     monkeypatch.setattr("pico.cli.app.build_agent", fake_build_agent)
-    monkeypatch.setattr("pico.cli.app.build_welcome", lambda agent, model, host: "")
 
 
 def test_run_command_calls_agent_once(tmp_path, monkeypatch, capsys):

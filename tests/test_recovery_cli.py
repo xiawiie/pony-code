@@ -750,7 +750,6 @@ def test_run_accepts_prompt_starting_with_namespace(tmp_path, monkeypatch, capsy
         return FakeAgent()
 
     monkeypatch.setattr("pico.cli.app.build_agent", fake_build_agent)
-    monkeypatch.setattr("pico.cli.app.build_welcome", lambda agent, model, host: "")
 
     code = main(["--cwd", str(tmp_path), "run", "checkpoints", "look", "good"])
 
@@ -786,7 +785,6 @@ def test_no_input_blocks_repl_before_input(tmp_path, monkeypatch, capsys):
         return FakeAgent()
 
     monkeypatch.setattr("pico.cli.app.build_agent", fake_build_agent)
-    monkeypatch.setattr("pico.cli.app.build_welcome", lambda agent, model, host: "")
     monkeypatch.setattr(
         "builtins.input",
         lambda prompt: (_ for _ in ()).throw(AssertionError("input called")),
@@ -798,7 +796,7 @@ def test_no_input_blocks_repl_before_input(tmp_path, monkeypatch, capsys):
     assert "--no-input" in capsys.readouterr().err
 
 
-def test_quiet_suppresses_welcome_for_run(tmp_path, monkeypatch, capsys):
+def test_run_output_has_no_decorative_banner(tmp_path, monkeypatch, capsys):
     called = {}
 
     def fake_build_agent(args):
@@ -817,16 +815,11 @@ def test_quiet_suppresses_welcome_for_run(tmp_path, monkeypatch, capsys):
         return FakeAgent()
 
     monkeypatch.setattr("pico.cli.app.build_agent", fake_build_agent)
-    monkeypatch.setattr(
-        "pico.cli.app.build_welcome", lambda agent, model, host: "WELCOME"
-    )
 
-    code = main(["--cwd", str(tmp_path), "--quiet", "run", "fix"])
+    code = main(["--cwd", str(tmp_path), "run", "fix"])
 
     assert code == 0
-    out = capsys.readouterr().out
-    assert "answer" in out
-    assert "WELCOME" not in out
+    assert capsys.readouterr().out.strip() == "answer"
 
 
 def test_checkpoints_list_json_uses_success_envelope(tmp_path, capsys):

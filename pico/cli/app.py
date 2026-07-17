@@ -9,7 +9,7 @@ from difflib import get_close_matches
 import platform
 import sys
 
-from pico.config.model import DEFAULT_API_URL, DEFAULT_MODEL
+from pico.config.model import DEFAULT_MODEL
 from pico.security.redaction import redact_artifact, redact_text
 from pico.workspace.context import WorkspaceContext
 
@@ -33,7 +33,6 @@ from .output import error_envelope, format_json, print_result
 from .parser import KNOWN_TOP_LEVEL_COMMANDS, parse_cli_invocation
 from .recovery import handle_checkpoints, handle_runs, handle_sessions
 from .start import run_agent_once, run_repl
-from .welcome import build_welcome
 
 
 def _handle_recovery_command(cwd, tokens, args):
@@ -291,8 +290,6 @@ def main(argv=None):
     try:
         transport = getattr(agent.model_client, "_inner", agent.model_client)
         model = getattr(transport, "model", DEFAULT_MODEL)
-        host = getattr(transport, "base_url", DEFAULT_API_URL)
-        welcome = "" if args.quiet else build_welcome(agent, model=model, host=host)
 
         if invocation.command == "repl":
             if args.no_input:
@@ -302,13 +299,10 @@ def main(argv=None):
                 return 2
             return run_repl(
                 agent,
-                welcome=welcome,
                 model=model,
                 no_color=args.no_color,
                 show_header=not args.quiet,
             )
-        if welcome:
-            print(welcome)
         return run_agent_once(agent, invocation.command_args)
     except Exception:  # noqa: BLE001 - contain ordinary CLI runtime failures
         return _print_startup_error(args)

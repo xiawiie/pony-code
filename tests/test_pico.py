@@ -16,7 +16,6 @@ from pico.agent.messages import make_tool_pair, validate_messages
 from pico.runtime.application import DEFAULT_MAX_OUTPUT_TOKENS, DEFAULT_MAX_STEPS
 from pico.state.session_store import LEGACY_SESSION_FORMAT_VERSION, SessionStore
 from pico import Pico
-from pico.cli.app import build_welcome
 from pico.workspace.context import WorkspaceContext
 from benchmarks.support.fake_provider import FakeModelClient
 from pico.providers.response import Response, StopReason
@@ -715,39 +714,6 @@ def test_repeated_tool_call_rejects_short_alternating_loops(tmp_path):
     )
 
 
-def test_welcome_screen_keeps_box_shape_for_long_paths(tmp_path):
-    deep = (
-        tmp_path
-        / "very"
-        / "long"
-        / "path"
-        / "for"
-        / "the"
-        / "pico"
-        / "agent"
-        / "welcome"
-        / "screen"
-    )
-    deep.mkdir(parents=True)
-    agent = build_agent(deep, [])
-
-    welcome = build_welcome(agent, model="qwen3.5:4b", host="http://127.0.0.1:11434")
-    lines = welcome.splitlines()
-
-    assert len(lines) >= 5
-    assert len({len(line) for line in lines}) == 1
-    assert "..." in welcome
-    assert "(  o o  )" in welcome
-    assert "MINI-CODING-AGENT" not in welcome
-    assert "MINI CODING AGENT" not in welcome
-    assert "pico" in welcome
-    assert "local coding agent" in welcome
-    assert "// READY" not in welcome
-    assert "SLASH" not in welcome
-    assert "READY      " not in welcome
-    assert "commands: Commands:" not in welcome
-
-
 # =============================================================================
 # Build agent / fixed model configuration tests
 # =============================================================================
@@ -858,7 +824,6 @@ def test_build_agent_switches_provider_from_generic_environment(tmp_path):
 
 
 def test_public_api_exports_resolve_through_package_path():
-    assert callable(build_welcome)
     assert Pico is not None
     assert SessionStore is not None
     assert WorkspaceContext is not None

@@ -171,26 +171,6 @@ def test_cli_contains_startup_io_failure(monkeypatch, capsys):
     assert CANARY not in captured.out + captured.err
 
 
-def test_cli_contains_welcome_render_failure(monkeypatch, capsys):
-    agent = type(
-        "Agent",
-        (),
-        {"model_client": type("Model", (), {"model": "safe"})()},
-    )()
-    monkeypatch.setattr("pico.cli.app.build_agent", lambda _args: agent)
-
-    def fail_welcome(*_args, **_kwargs):
-        raise ValueError(f"bad workspace path {CANARY}")
-
-    monkeypatch.setattr("pico.cli.app.build_welcome", fail_welcome)
-
-    assert main(["run", "finish"]) == 5
-
-    captured = capsys.readouterr()
-    assert captured.err.strip() == "pico startup failed"
-    assert CANARY not in captured.out + captured.err
-
-
 def test_invalid_project_api_url_uses_safe_config_envelope(
     tmp_path,
     monkeypatch,

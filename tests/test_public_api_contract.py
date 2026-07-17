@@ -10,7 +10,6 @@ from pico import Pico
 from pico.cli.app import main
 from pico.cli.arguments import build_arg_parser
 from pico.cli.assembly import build_agent
-from pico.cli.welcome import build_welcome
 from pico.state.session_store import SessionStore
 from pico.workspace.context import WorkspaceContext
 
@@ -22,7 +21,6 @@ def test_public_api_exports_current_names_only():
     assert WorkspaceContext is not None
     assert callable(build_agent)
     assert callable(build_arg_parser)
-    assert callable(build_welcome)
     assert callable(main)
     for removed in (
         "SessionStore",
@@ -30,7 +28,6 @@ def test_public_api_exports_current_names_only():
         "main",
         "build_agent",
         "build_arg_parser",
-        "build_welcome",
     ):
         assert not hasattr(pico, removed)
     assert not hasattr(pico, "MiniAgent")
