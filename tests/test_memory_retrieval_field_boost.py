@@ -2,8 +2,8 @@
 (name/description/tags/aliases) weigh more than hits in body."""
 
 
-from pico.memory.block_store import BlockStore
-from pico.memory.retrieval import Retrieval
+from pony.memory.block_store import BlockStore
+from pony.memory.retrieval import Retrieval
 
 
 def _write(root, rel, body):

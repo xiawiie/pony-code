@@ -1,1 +1,1 @@
-"""Latency benchmark harness for pico subsystems."""
+"""Latency benchmark harness for pony subsystems."""

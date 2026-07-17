@@ -4,12 +4,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from pico.state.checkpoint_store import CheckpointStore
-from pico.cli.migration import _build_tool_changes, _identity, _migration
-from pico.recovery.migration import ABSENT, CANDIDATE_READY, PREPARING
-from pico.recovery.models import new_checkpoint_record, new_tool_change_record
-from pico.tools.change_converter import convert_tool_change_v1
-from pico.workspace.context import WorkspaceContext
+from pony.state.checkpoint_store import CheckpointStore
+from pony.cli.migration import _build_tool_changes, _identity, _migration
+from pony.recovery.migration import ABSENT, CANDIDATE_READY, PREPARING
+from pony.recovery.models import new_checkpoint_record, new_tool_change_record
+from pony.tools.change_converter import convert_tool_change_v1
+from pony.workspace.context import WorkspaceContext
 
 
 def _file_entry(blob_ref, *, source_id="tc_1", path="note.txt"):
@@ -173,9 +173,9 @@ def test_migration_identity_binds_repo_inode_and_head_without_path(tmp_path, com
                 "-C",
                 str(tmp_path),
                 "-c",
-                "user.name=Pico Test",
+                "user.name=Pony Test",
                 "-c",
-                "user.email=pico@example.invalid",
+                "user.email=pony@example.invalid",
                 "commit",
                 "-q",
                 "-m",

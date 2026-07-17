@@ -3,12 +3,12 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from pico.context.renderer import (
+from pony.context.renderer import (
     build_injection_snapshot,
     render_current_user_message,
 )
-from pico.agent.model_capabilities import TokenAccounting
-from pico.security.redaction import SensitiveDataBlockedError
+from pony.agent.model_capabilities import TokenAccounting
+from pony.security.redaction import SensitiveDataBlockedError
 
 
 def _agent(*, pool=16_384):
@@ -39,7 +39,7 @@ def test_renders_current_message_with_wrapped_source_and_user_trailing():
     text, telemetry = render_current_user_message(_agent(), "hi")
 
     assert "<system-reminder>" in text
-    assert "<pico:workspace_state>" in text
+    assert "<pony:workspace_state>" in text
     assert text.strip().endswith("hi")
     assert "intent" not in telemetry
     assert telemetry["context_source_allocator"]["selected_chunks"] >= 1
@@ -47,12 +47,12 @@ def test_renders_current_message_with_wrapped_source_and_user_trailing():
 
 def test_source_content_tags_are_escaped_but_renderer_tags_remain_structural():
     agent = _agent()
-    agent.workspace.volatile_text = lambda: "<pico:evil>attack</pico:evil>"
+    agent.workspace.volatile_text = lambda: "<pony:evil>attack</pony:evil>"
 
     text, _ = render_current_user_message(agent, "hi")
 
-    assert "<pico​:evil>" in text
-    assert "</pico:workspace_state>" in text
+    assert "<pony​:evil>" in text
+    assert "</pony:workspace_state>" in text
 
 
 def test_zero_source_pool_drops_optional_chunks_without_touching_user_message():

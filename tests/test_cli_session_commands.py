@@ -1,8 +1,8 @@
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from pico.cli.session import handle_session_command
-from pico.cli.start import _handle_repl_session_command
+from pony.cli.session import handle_session_command
+from pony.cli.start import _handle_repl_session_command
 
 
 def _preview():

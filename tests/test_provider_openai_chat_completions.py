@@ -5,10 +5,10 @@ from unittest.mock import Mock
 
 import pytest
 
-import pico.providers.transport as provider_shared
-from pico.providers.transport import ProviderTransportError
-from pico.providers.openai_chat_completions import OpenAIChatCompletionsModelClient
-from pico.providers.response import StopReason
+import pony.providers.transport as provider_shared
+from pony.providers.transport import ProviderTransportError
+from pony.providers.openai_chat_completions import OpenAIChatCompletionsModelClient
+from pony.providers.response import StopReason
 
 
 class _Response:

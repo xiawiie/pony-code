@@ -2,11 +2,11 @@ import os
 
 import pytest
 
-from pico.recovery import manager as recovery_manager_module
-from pico.state.checkpoint_store import CheckpointStore
-from pico.recovery.manager import RecoveryManager
-from pico.recovery.models import new_checkpoint_record, new_tool_change_record
-from pico.recovery.paths import hash_bytes
+from pony.recovery import manager as recovery_manager_module
+from pony.state.checkpoint_store import CheckpointStore
+from pony.recovery.manager import RecoveryManager
+from pony.recovery.models import new_checkpoint_record, new_tool_change_record
+from pony.recovery.paths import hash_bytes
 
 
 def test_rename_swap_uses_linux_exchange_when_macos_api_is_unavailable(
@@ -639,7 +639,7 @@ def test_restore_never_snapshots_sensitive_current_bytes(
     tmp_path, monkeypatch
 ):
     sentinel = "sk-legacy-current-secret"
-    monkeypatch.setenv("PICO_OPENAI_API_KEY", sentinel)
+    monkeypatch.setenv("PONY_OPENAI_API_KEY", sentinel)
     store = CheckpointStore(tmp_path)
     before = store.write_blob(b"safe-before\n", "text")
     current = b"safe-after\n"
@@ -899,7 +899,7 @@ def test_restore_delete_does_not_claim_concurrently_recreated_target(tmp_path, m
 
 def test_restore_never_mutates_from_sensitive_source_blob(tmp_path, monkeypatch):
     sentinel = "sk-legacy-source-secret"
-    monkeypatch.setenv("PICO_OPENAI_API_KEY", sentinel)
+    monkeypatch.setenv("PONY_OPENAI_API_KEY", sentinel)
     store = CheckpointStore(tmp_path)
     sensitive_before = store.write_blob(sentinel.encode(), "text")
     current = b"safe-after\n"

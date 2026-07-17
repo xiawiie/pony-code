@@ -3,11 +3,11 @@ import signal
 import time
 from types import SimpleNamespace
 
-from pico.tools.subprocess import (
+from pony.tools.subprocess import (
     build_trusted_executables,
     run_process_group,
 )
-from pico.tools.shell import ApprovedShellExecution, _tool_run_shell
+from pony.tools.shell import ApprovedShellExecution, _tool_run_shell
 
 
 def _pid_exists(pid):

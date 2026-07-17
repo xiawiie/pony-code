@@ -5,17 +5,17 @@ from unittest.mock import patch
 
 import pytest
 
-import pico.memory.service as memorylib
-from pico import Pico
-from pico.state.session_store import SessionStore
-from pico.workspace.context import WorkspaceContext
-from pico.context.renderer import render_current_user_message
+import pony.memory.service as memorylib
+from pony import Pony
+from pony.state.session_store import SessionStore
+from pony.workspace.context import WorkspaceContext
+from pony.context.renderer import render_current_user_message
 from benchmarks.support.fake_provider import FakeModelClient
-from pico.providers.response import Response, StopReason
-from pico.state.task_state import TaskState
-from pico.tools.executor import ToolExecutionResult
+from pony.providers.response import Response, StopReason
+from pony.state.task_state import TaskState
+from pony.tools.executor import ToolExecutionResult
 from tests.test_docker_sandbox_runtime import _build_runtime
-from pico.runtime.options import RuntimeOptions
+from pony.runtime.options import RuntimeOptions
 
 
 def build_workspace(tmp_path):
@@ -25,9 +25,9 @@ def build_workspace(tmp_path):
 
 def build_agent(tmp_path, outputs, **kwargs):
     workspace = build_workspace(tmp_path)
-    store = SessionStore(tmp_path / ".pico" / "sessions")
+    store = SessionStore(tmp_path / ".pony" / "sessions")
     approval_policy = kwargs.pop("approval_policy", "auto")
-    return Pico(
+    return Pony(
         model_client=FakeModelClient(outputs),
         workspace=workspace,
         session_store=store,
@@ -52,7 +52,7 @@ def set_raw_file_summary(agent, path, summary):
 
 def build_request_view(agent, user_message):
     agent.session["messages"].append(
-        {"role": "user", "content": user_message, "_pico_meta": {}}
+        {"role": "user", "content": user_message, "_pony_meta": {}}
     )
     snapshot, telemetry = render_current_user_message(agent, user_message)
     return agent.context_manager.build_request(
@@ -75,12 +75,12 @@ def test_report_separates_sent_request_session_transcript_and_all_completion_usa
         {
             "role": "user",
             "content": "older question",
-            "_pico_meta": {"created_at": "t1"},
+            "_pony_meta": {"created_at": "t1"},
         },
         {
             "role": "assistant",
             "content": "older answer",
-            "_pico_meta": {"created_at": "t2"},
+            "_pony_meta": {"created_at": "t2"},
         },
     ]
     agent.last_request_metadata = {
@@ -125,7 +125,7 @@ def test_successful_run_persists_run_artifacts_and_stop_reason(tmp_path):
 
     assert agent.ask("Do the thing") == "Finished."
 
-    runs_root = tmp_path / ".pico" / "runs"
+    runs_root = tmp_path / ".pony" / "runs"
     run_dirs = [path for path in runs_root.iterdir() if path.is_dir()]
     assert len(run_dirs) == 1
 
@@ -255,10 +255,10 @@ def test_report_projects_sandbox_outcome_and_host_fallback_from_tool_result(
         "implementation": "docker_container",
         "session_state": "ready",
         "engine_profile": "desktop_vm",
-        "image_digest": Pico._public_sandbox_digest(
+        "image_digest": Pony._public_sandbox_digest(
             manifest["image"]["image_digest"]
         ),
-        "policy_digest": Pico._public_sandbox_digest(manifest["policy"]["digest"]),
+        "policy_digest": Pony._public_sandbox_digest(manifest["policy"]["digest"]),
         "network_mode": "none",
         "source_mounted": False,
         "state_mounted": False,
@@ -489,7 +489,7 @@ def test_trace_and_report_redact_secret_env_values(tmp_path):
         assert agent.ask("Mask the secret") == "Masked <redacted>"
         assert secret not in agent.prefix
 
-    runs_root = tmp_path / ".pico" / "runs"
+    runs_root = tmp_path / ".pony" / "runs"
     run_dirs = [path for path in runs_root.iterdir() if path.is_dir()]
     assert len(run_dirs) == 1
 
@@ -529,7 +529,7 @@ def test_request_metadata_describes_actual_sent_view(tmp_path):
         {
             "role": "user" if index % 2 == 0 else "assistant",
             "content": f"history-{index}-" + ("A" * 240),
-            "_pico_meta": {},
+            "_pony_meta": {},
         }
         for index in range(8)
     ]
@@ -589,7 +589,7 @@ def test_agent_creates_one_task_checkpoint_without_silent_history_reduction(tmp_
             {
                 "role": "user" if index % 2 == 0 else "assistant",
                 "content": f"history-{index}-" + ("A" * 260),
-                "_pico_meta": {"created_at": f"2026-04-07T10:{index:02d}:00+00:00"},
+                "_pony_meta": {"created_at": f"2026-04-07T10:{index:02d}:00+00:00"},
             }
         )
     assert agent.ask("Resume the long task") == "Done after checkpoint."
@@ -641,7 +641,7 @@ def test_resume_prompt_carries_checkpoint_via_v2_messages(tmp_path):
     # the current turn's user message.
     current_content = request["messages"][-1]["content"]
     assert isinstance(current_content, str)
-    if "<pico:task_working_set>" in current_content:
+    if "<pony:task_working_set>" in current_content:
         # Injection is active — verify checkpoint fields flow through.
         assert (
             "Fix failing resume flow" in current_content
@@ -687,7 +687,7 @@ def test_resume_invalidates_stale_file_summaries_and_marks_partial_stale(tmp_pat
     agent.session_store.save(agent.session)
     file_path.write_text("beta\n", encoding="utf-8")
 
-    resumed = Pico.from_session(
+    resumed = Pony.from_session(
         model_client=FakeModelClient(["Resumed."]),
         workspace=build_workspace(tmp_path),
         session_store=agent.session_store,
@@ -735,7 +735,7 @@ def test_report_last_request_metadata_preserves_initial_resume_status(tmp_path):
     agent.session_store.save(agent.session)
     file_path.write_text("beta\n", encoding="utf-8")
 
-    resumed = Pico.from_session(
+    resumed = Pony.from_session(
         model_client=FakeModelClient(
             [
                 {
@@ -850,7 +850,7 @@ def test_resume_marks_workspace_mismatch_when_checkpoint_runtime_identity_is_sta
     }
     agent.session_store.save(agent.session)
 
-    resumed = Pico.from_session(
+    resumed = Pony.from_session(
         model_client=FakeModelClient(["Resumed."]),
         workspace=build_workspace(tmp_path),
         session_store=agent.session_store,
@@ -920,7 +920,7 @@ def test_resume_uses_session_version_for_embedded_checkpoint(tmp_path):
     }
     agent.session_store.save(agent.session)
 
-    resumed = Pico.from_session(
+    resumed = Pony.from_session(
         model_client=FakeModelClient(["Resumed."]),
         workspace=build_workspace(tmp_path),
         session_store=agent.session_store,
@@ -993,8 +993,8 @@ def test_freshness_mismatch_is_traced_and_final_task_checkpoint_is_single(tmp_pa
 
 def test_runtime_identity_persists_key_execution_metadata(tmp_path):
     workspace = build_workspace(tmp_path)
-    store = SessionStore(tmp_path / ".pico" / "sessions")
-    agent = Pico(
+    store = SessionStore(tmp_path / ".pony" / "sessions")
+    agent = Pony(
         model_client=FakeModelClient(["Done."]),
         workspace=workspace,
         session_store=store,
@@ -1056,7 +1056,7 @@ def test_resume_records_runtime_identity_mismatch_fields_in_metadata_and_trace(
     }
     agent.session_store.save(agent.session)
 
-    resumed = Pico.from_session(
+    resumed = Pony.from_session(
         model_client=FakeModelClient(["Resumed."]),
         workspace=build_workspace(tmp_path),
         session_store=agent.session_store,
@@ -1121,8 +1121,8 @@ def test_partial_success_records_metadata_without_process_notes(tmp_path):
 
 def test_agent_keeps_completion_usage_out_of_last_request_metadata(tmp_path):
     workspace = build_workspace(tmp_path)
-    store = SessionStore(tmp_path / ".pico" / "sessions")
-    agent = Pico(
+    store = SessionStore(tmp_path / ".pony" / "sessions")
+    agent = Pony(
         model_client=FakeModelClient(
             [
                 Response(
@@ -1155,7 +1155,7 @@ def test_agent_keeps_completion_usage_out_of_last_request_metadata(tmp_path):
 
 def test_report_records_safe_model_identity_and_request_evidence(tmp_path):
     workspace = build_workspace(tmp_path)
-    store = SessionStore(tmp_path / ".pico" / "sessions")
+    store = SessionStore(tmp_path / ".pony" / "sessions")
 
     class EffectiveModelClient(FakeModelClient):
         def complete(self, **request):
@@ -1178,7 +1178,7 @@ def test_report_records_safe_model_identity_and_request_evidence(tmp_path):
         "effective_model": "gpt-test",
         "endpoint_origin": "https://api.openai.com",
     }
-    agent = Pico(
+    agent = Pony(
         model_client=client,
         workspace=workspace,
         session_store=store,
@@ -1214,7 +1214,7 @@ def test_recent_messages_preserved_older_digested(tmp_path):
                     "input": {"path": "x.py"},
                 }
             ],
-            "_pico_meta": {"tool_use_id": "t1"},
+            "_pony_meta": {"tool_use_id": "t1"},
         },
         {
             "role": "user",
@@ -1225,7 +1225,7 @@ def test_recent_messages_preserved_older_digested(tmp_path):
                     "content": "[digest] x.py (500 lines)\n- import os",
                 }
             ],
-            "_pico_meta": {"tool_use_id": "t1", "digest_applied": True},
+            "_pony_meta": {"tool_use_id": "t1", "digest_applied": True},
         },
         {"role": "assistant", "content": "old answer 1"},
         # recent 6 messages

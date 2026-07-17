@@ -1,7 +1,7 @@
 import os
 from pathlib import Path
 
-from pico.memory.repo_map import RepoMap, tool_repo_lookup
+from pony.memory.repo_map import RepoMap, tool_repo_lookup
 
 
 def _write(root: Path, rel: str, content: str) -> None:
@@ -11,12 +11,12 @@ def _write(root: Path, rel: str, content: str) -> None:
 
 
 def test_scan_python_class_and_function(tmp_path):
-    _write(tmp_path, "pico/auth.py", "class AuthMiddleware:\n    pass\n\ndef hash_password():\n    pass\n")
+    _write(tmp_path, "pony/auth.py", "class AuthMiddleware:\n    pass\n\ndef hash_password():\n    pass\n")
     rm = RepoMap(repo_root=tmp_path)
     rm.scan()
     hits = rm.lookup("AuthMiddleware")
     assert len(hits) == 1
-    assert hits[0].file == "pico/auth.py"
+    assert hits[0].file == "pony/auth.py"
     assert hits[0].kind == "class"
     assert hits[0].line == 1
 
@@ -36,7 +36,7 @@ def test_first_actual_consumer_builds_repo_map_synchronously(tmp_path):
 
 
 def test_scan_python_method(tmp_path):
-    _write(tmp_path, "pico/x.py", "class Foo:\n    def bar(self):\n        pass\n")
+    _write(tmp_path, "pony/x.py", "class Foo:\n    def bar(self):\n        pass\n")
     rm = RepoMap(repo_root=tmp_path)
     rm.scan()
     hits = rm.lookup("bar")
@@ -72,7 +72,7 @@ def test_scan_rust_fn_and_struct(tmp_path):
 def test_skip_ignored_dirs(tmp_path):
     _write(tmp_path, ".venv/lib/foo.py", "class Ignored: pass\n")
     _write(tmp_path, "node_modules/pkg/x.js", "class Ignored {}\n")
-    _write(tmp_path, "pico/kept.py", "class Kept: pass\n")
+    _write(tmp_path, "pony/kept.py", "class Kept: pass\n")
     rm = RepoMap(repo_root=tmp_path)
     rm.scan()
     assert rm.lookup("Ignored") == []
@@ -80,8 +80,8 @@ def test_skip_ignored_dirs(tmp_path):
 
 
 def test_top_level_tree(tmp_path):
-    _write(tmp_path, "pico/a.py", "")
-    _write(tmp_path, "pico/b.py", "")
+    _write(tmp_path, "pony/a.py", "")
+    _write(tmp_path, "pony/b.py", "")
     _write(tmp_path, "tests/t.py", "")
     _write(tmp_path, "README.md", "")           # 顶层文件, 不应出现
     _write(tmp_path, "pyproject.toml", "")      # 同上
@@ -90,8 +90,8 @@ def test_top_level_tree(tmp_path):
     tree = {e["path"]: e for e in rm.top_level_tree()}
 
     # 顶层目录: 出现且 kind == "dir"
-    assert tree["pico"]["kind"] == "dir"
-    assert tree["pico"]["file_count"] == 2
+    assert tree["pony"]["kind"] == "dir"
+    assert tree["pony"]["file_count"] == 2
     assert tree["tests"]["kind"] == "dir"
     assert tree["tests"]["file_count"] == 1
 
@@ -110,7 +110,7 @@ def test_lookup_with_kind_filter(tmp_path):
 
 
 def test_refresh_incremental(tmp_path):
-    p = tmp_path / "pico" / "auth.py"
+    p = tmp_path / "pony" / "auth.py"
     p.parent.mkdir(parents=True)
     p.write_text("class Old: pass\n")
     rm = RepoMap(repo_root=tmp_path)
@@ -196,7 +196,7 @@ def test_scan_skips_symlinked_and_sensitive_sources(tmp_path):
     outside.write_text("class SymlinkSecret: pass\n", encoding="utf-8")
     (tmp_path / "linked.py").symlink_to(outside)
     _write(tmp_path, "src/secrets.json", '{"token": "opaque"}\n')
-    _write(tmp_path, ".env.example", "PICO_API_KEY=your-api-key\n")
+    _write(tmp_path, ".env.example", "PONY_API_KEY=your-api-key\n")
 
     rm = RepoMap(repo_root=tmp_path)
     rm.scan()

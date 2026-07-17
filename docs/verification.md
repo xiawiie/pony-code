@@ -1,4 +1,4 @@
-# Pico 1.0 验证与发布
+# Pony 1.0 验证与发布
 
 发布证据只对 exact Git HEAD 有效。旧 commit、dirty worktree 或另一版本 wheel 的结果不能继承。本文件区分可重复的离线
 产品门禁、依赖宿主的 Docker 实机验收，以及会产生费用的 Provider live 验收。
@@ -85,7 +85,7 @@ uv run pytest -q \
   tests/tui
 ```
 
-必须覆盖裸 `pico` 与 `pico repl` 的同一分派、`pico run` 纯结果输出、未知命令建议、TTY/`TERM=dumb`/窄终端
+必须覆盖裸 `pony` 与 `pony repl` 的同一分派、`pony run` 纯结果输出、未知命令建议、TTY/`TERM=dumb`/窄终端
 fallback、`NO_COLOR`、小马与像素 `PONY CODE` 的 5/7/11 行同步缩放、独立版本/介绍/模型行、黑白 TUI chrome、
 slash completion、换行/中断、runtime hook 恢复、durable trace 顺序与 approval fail closed。
 
@@ -98,23 +98,23 @@ uv run python scripts/release/verify_distribution.py \
   --offline-bundle-smoke
 ```
 
-Verifier 使用 `git ls-files pico` 建立产品文件真源并检查：
+Verifier 使用 `git ls-files pony` 建立产品文件真源并检查：
 
 - sdist 单一 wrapper、无 link/special file；
 - wheel/sdist 无 tests、benchmarks、scripts、docs、`.github` 或 development evaluation；
-- wheel 包含全部 `pico/**` 与两个 Sandbox JSON 资源；
+- wheel 包含全部 `pony/**` 与两个 Sandbox JSON 资源；
 - Name、Version、Summary、Python 要求、MIT、Project URLs、README 与 console entry 正确；
 - Runtime `Requires-Dist` 精确为 `prompt-toolkit>=3.0.52,<4`，wheel 为 `py3-none-any`；
-- clean venv 从锁定 uv cache 离线解析 prompt-toolkit/wcwidth，安装后 TUI 可导入，且 `pico --version`、help、doctor、
+- clean venv 从锁定 uv cache 离线解析 prompt-toolkit/wcwidth，安装后 TUI 可导入，且 `pony --version`、help、doctor、
   Sandbox status/prepare 和资源 digest 正确；
-- smoke 环境不继承 `PICO_*`、厂商 Key、`PYTHONHOME` 或 `PYTHONPATH`。
+- smoke 环境不继承 `PONY_*`、厂商 Key、`PYTHONHOME` 或 `PYTHONPATH`。
 
 ## Provider live
 
 真实 API 会产生网络请求、token 消耗和费用。只有用户明确授权后执行：
 
 ```bash
-pico doctor --check-api
+pony doctor --check-api
 ```
 
 Probe 验证最小文本响应、native tool call 与 tool result 续接。它使用当前 `.env` 的 exact Provider/model/URL/variant/auth，

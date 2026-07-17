@@ -2,21 +2,21 @@ import os
 from pathlib import Path
 from unittest.mock import patch
 
-from pico import Pico
-from pico.state.session_store import SessionStore
-from pico.workspace.context import WorkspaceContext
+from pony import Pony
+from pony.state.session_store import SessionStore
+from pony.workspace.context import WorkspaceContext
 from benchmarks.support.fake_provider import FakeModelClient
-from pico.sandbox.session import source_apply_control_lock_path
-from pico.runtime.options import RuntimeOptions
+from pony.sandbox.session import source_apply_control_lock_path
+from pony.runtime.options import RuntimeOptions
 
 
-def test_pico_control_lock_stays_in_isolated_home(tmp_path, isolated_home):
+def test_pony_control_lock_stays_in_isolated_home(tmp_path, isolated_home):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    agent = Pico(
+    agent = Pony(
         model_client=FakeModelClient([]),
         workspace=WorkspaceContext.build(workspace),
-        session_store=SessionStore(workspace / ".pico" / "sessions"),
+        session_store=SessionStore(workspace / ".pony" / "sessions"),
         options=RuntimeOptions(approval_policy="auto"),
     )
 
@@ -24,7 +24,7 @@ def test_pico_control_lock_stays_in_isolated_home(tmp_path, isolated_home):
         pass
 
     expected = source_apply_control_lock_path(
-        isolated_home / ".pico" / "sandboxes",
+        isolated_home / ".pony" / "sandboxes",
         workspace,
     )
     assert Path.home() == isolated_home

@@ -2,21 +2,21 @@ import copy
 
 import pytest
 
-from pico.agent.messages import (
+from pony.agent.messages import (
     MessageValidationError,
     append_messages,
     build_request_messages,
     make_tool_pair,
     message_metrics,
     render_transcript,
-    strip_pico_meta,
+    strip_pony_meta,
     tool_event_metrics,
     validate_messages,
 )
 
 
 def plain(role, content, created_at="2026-07-10T00:00:00Z"):
-    return {"role": role, "content": content, "_pico_meta": {"created_at": created_at}}
+    return {"role": role, "content": content, "_pony_meta": {"created_at": created_at}}
 
 
 def test_request_overlay_replaces_latest_plain_user_and_ignores_tool_result_carrier():
@@ -38,9 +38,9 @@ def test_request_overlay_replaces_latest_plain_user_and_ignores_tool_result_carr
     )
     assert source == before
     assert "snapshot" in request[0]["content"]
-    assert "<pico:runtime_feedback>" in request[0]["content"]
+    assert "<pony:runtime_feedback>" in request[0]["content"]
     assert request[-1]["content"][0]["type"] == "tool_result"
-    assert all("_pico_meta" not in message for message in request)
+    assert all("_pony_meta" not in message for message in request)
 
 
 def test_runtime_feedback_is_absent_when_empty():
@@ -72,16 +72,16 @@ def test_tool_pair_has_matching_id_error_semantics_and_metadata():
     assert assistant["content"][0]["id"] == "toolu_2"
     assert result["content"][0]["tool_use_id"] == "toolu_2"
     assert result["content"][0]["is_error"] is True
-    assert result["_pico_meta"]["tool_status"] == "error"
-    assert result["_pico_meta"]["effect_class"] == "workspace_write"
-    assert result["_pico_meta"]["tool_change_id"] == "tc_1"
+    assert result["_pony_meta"]["tool_status"] == "error"
+    assert result["_pony_meta"]["effect_class"] == "workspace_write"
+    assert result["_pony_meta"]["tool_change_id"] == "tc_1"
 
 
-def test_strip_pico_meta_returns_new_top_level_dicts():
+def test_strip_pony_meta_returns_new_top_level_dicts():
     source = [plain("user", "q")]
-    cleaned = strip_pico_meta(source)
-    assert "_pico_meta" not in cleaned[0]
-    assert "_pico_meta" in source[0]
+    cleaned = strip_pony_meta(source)
+    assert "_pony_meta" not in cleaned[0]
+    assert "_pony_meta" in source[0]
     assert cleaned[0] is not source[0]
 
 
@@ -152,7 +152,7 @@ def test_provider_state_is_validated_but_never_rendered_as_prompt_text():
 
     validate_messages(list(pair), require_meta=True)
 
-    assert pair[0]["_pico_provider_state"][0]["id"] == "reasoning_1"
+    assert pair[0]["_pony_provider_state"][0]["id"] == "reasoning_1"
     assert "opaque-provider-state" not in render_transcript(pair)
     assert "opaque-provider-state" not in str(
         message_metrics(pair, token_of=lambda value: len(value))
@@ -193,8 +193,8 @@ def test_validate_messages_rejects_misplaced_or_unknown_provider_state(target):
         messages = [{
             "role": "assistant",
             "content": "done",
-            "_pico_meta": {},
-            "_pico_provider_state": state,
+            "_pony_meta": {},
+            "_pony_provider_state": state,
         }]
     else:
         assistant, result = make_tool_pair(
@@ -208,9 +208,9 @@ def test_validate_messages_rejects_misplaced_or_unknown_provider_state(target):
             provider_state=state,
         )
         if target == "tool_result":
-            result["_pico_provider_state"] = state
+            result["_pony_provider_state"] = state
         else:
-            assistant["_pico_provider_state"][0]["unexpected"] = True
+            assistant["_pony_provider_state"][0]["unexpected"] = True
         messages = [assistant, result]
 
     with pytest.raises(MessageValidationError, match="provider state"):
@@ -227,7 +227,7 @@ def test_validate_messages_requires_meta_on_tool_result_carrier():
         tool_status="ok",
         effect_class="read_only",
     )
-    result.pop("_pico_meta")
+    result.pop("_pony_meta")
 
     with pytest.raises(MessageValidationError):
         validate_messages([assistant, result], require_meta=True)
@@ -239,7 +239,7 @@ def test_validate_messages_rejects_non_dict_paired_result():
         "content": [
             {"type": "tool_use", "id": "toolu_bad_result", "name": "x", "input": {}}
         ],
-        "_pico_meta": {},
+        "_pony_meta": {},
     }
 
     with pytest.raises(MessageValidationError):
@@ -249,10 +249,10 @@ def test_validate_messages_rejects_non_dict_paired_result():
 @pytest.mark.parametrize(
     "messages",
     [
-        [{"role": "system", "content": "bad", "_pico_meta": {}}],
-        [{"role": "assistant", "content": [{"type": "tool_result", "tool_use_id": "x", "content": "bad"}], "_pico_meta": {}}],
-        [{"role": "assistant", "content": [{"type": "tool_use", "id": "", "name": "x", "input": {}}], "_pico_meta": {}}],
-        [{"role": "assistant", "content": [{"type": "tool_use", "id": "x", "name": "x", "input": {}}], "_pico_meta": {}}],
+        [{"role": "system", "content": "bad", "_pony_meta": {}}],
+        [{"role": "assistant", "content": [{"type": "tool_result", "tool_use_id": "x", "content": "bad"}], "_pony_meta": {}}],
+        [{"role": "assistant", "content": [{"type": "tool_use", "id": "", "name": "x", "input": {}}], "_pony_meta": {}}],
+        [{"role": "assistant", "content": [{"type": "tool_use", "id": "x", "name": "x", "input": {}}], "_pony_meta": {}}],
     ],
 )
 def test_validate_messages_rejects_bad_roles_blocks_ids_and_orphans(messages):
@@ -263,6 +263,6 @@ def test_validate_messages_rejects_bad_roles_blocks_ids_and_orphans(messages):
 def test_validate_messages_rejects_unhashable_role():
     with pytest.raises(MessageValidationError, match="role"):
         validate_messages(
-            [{"role": [], "content": "bad", "_pico_meta": {}}],
+            [{"role": [], "content": "bad", "_pony_meta": {}}],
             require_meta=True,
         )

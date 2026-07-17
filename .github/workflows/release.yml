@@ -47,8 +47,8 @@ jobs:
       - name: Prime locked runtime cache for offline install smoke
         shell: bash
         run: |
-          requirements="${RUNNER_TEMP}/pico-runtime-requirements.txt"
-          primer="${RUNNER_TEMP}/pico-cache-primer"
+          requirements="${RUNNER_TEMP}/pony-runtime-requirements.txt"
+          primer="${RUNNER_TEMP}/pony-cache-primer"
           uv export --frozen --no-dev --no-emit-project --output-file "${requirements}"
           uv venv --python .venv/bin/python "${primer}"
           uv pip install --refresh --python "${primer}/bin/python" --requirement "${requirements}"
@@ -69,7 +69,7 @@ jobs:
       - name: Publish to PyPI with trusted publishing
         run: >-
           uv publish --trusted-publishing always
-          --check-url https://pypi.org/simple/pico/
+          --check-url https://pypi.org/simple/pony-code/
           dist/*.whl dist/*.tar.gz
 
       - name: Create or update GitHub Release

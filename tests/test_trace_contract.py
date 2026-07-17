@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from pico.agent.observability import RunArtifactError, project_trace_event, validate_trace
+from pony.agent.observability import RunArtifactError, project_trace_event, validate_trace
 
 
 def test_trace_contract_is_enveloped_and_low_sensitivity():

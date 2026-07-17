@@ -1,6 +1,6 @@
 """Task 8 cleanup: obsolete constructs must be gone.
 
-- `pico/working_memory.py` module is deleted (no producer/consumer since Task 5+).
+- `pony/working_memory.py` module is deleted (no producer/consumer since Task 5+).
 - `feature_flags["relevant_memory"]` is no longer a default flag (never consumed).
 - Prompt metadata carries a single cache-key field (`system_prefix_hash`);
   the three synonymous hashes (`base_prefix_hash` / `stable_prefix_hash` /
@@ -10,31 +10,31 @@
 import importlib
 
 import pytest
-from pico.runtime.options import RuntimeOptions
+from pony.runtime.options import RuntimeOptions
 
 
 def test_no_working_memory_module():
     with pytest.raises(ModuleNotFoundError):
-        importlib.import_module("pico.working_memory")
+        importlib.import_module("pony.working_memory")
 
 
 def test_default_feature_flags_no_relevant_memory():
-    from pico.runtime.application import DEFAULT_FEATURE_FLAGS
+    from pony.runtime.application import DEFAULT_FEATURE_FLAGS
 
     assert "relevant_memory" not in DEFAULT_FEATURE_FLAGS
 
 
 def test_metadata_uses_system_prefix_hash_only(tmp_path):
-    from pico import Pico
-    from pico.state.session_store import SessionStore
-    from pico.workspace.context import WorkspaceContext
+    from pony import Pony
+    from pony.state.session_store import SessionStore
+    from pony.workspace.context import WorkspaceContext
     from benchmarks.support.fake_provider import FakeModelClient
-    from pico.context.renderer import render_current_user_message
+    from pony.context.renderer import render_current_user_message
 
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
     workspace = WorkspaceContext.build(tmp_path)
-    store = SessionStore(tmp_path / ".pico" / "sessions")
-    agent = Pico(
+    store = SessionStore(tmp_path / ".pony" / "sessions")
+    agent = Pony(
         model_client=FakeModelClient([]),
         workspace=workspace,
         session_store=store,
@@ -45,7 +45,7 @@ def test_metadata_uses_system_prefix_hash_only(tmp_path):
         {
             "role": "user",
             "content": "x",
-            "_pico_meta": {"created_at": "2026-07-10T00:00:00+00:00"},
+            "_pony_meta": {"created_at": "2026-07-10T00:00:00+00:00"},
         }
     )
     snapshot, telemetry = render_current_user_message(agent, "x")

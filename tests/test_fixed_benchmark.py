@@ -14,7 +14,7 @@ from benchmarks.evaluation.fixed_benchmark import (
     run_fixed_benchmark,
     run_harness_regression_v2,
 )
-from pico.agent.observability import RunArtifactError
+from pony.agent.observability import RunArtifactError
 from benchmarks.support.fake_provider import FakeModelClient
 
 
@@ -206,7 +206,7 @@ def test_run_fixed_benchmark_reports_metadata_and_success_definition(tmp_path):
 
 
 def test_run_task_rejects_missing_run_artifact(tmp_path, monkeypatch):
-    from pico.runtime.application import Pico
+    from pony.runtime.application import Pony
 
     evaluator = BenchmarkEvaluator(
         benchmark_path=Path("benchmarks/coding_tasks.json"),
@@ -218,14 +218,14 @@ def test_run_task_rejects_missing_run_artifact(tmp_path, monkeypatch):
         for item in evaluator.load()["tasks"]
         if item["id"] == "readme_intro_locked"
     )
-    real_ask = Pico.ask
+    real_ask = Pony.ask
 
     def remove_task_state_after_ask(self, user_message):
         result = real_ask(self, user_message)
         self.run_store.task_state_path(self.current_task_state).unlink()
         return result
 
-    monkeypatch.setattr(Pico, "ask", remove_task_state_after_ask)
+    monkeypatch.setattr(Pony, "ask", remove_task_state_after_ask)
 
     with pytest.raises(RunArtifactError, match="missing"):
         evaluator.run_task(task)
@@ -418,7 +418,7 @@ def test_run_fixed_benchmark_covers_recovery_rows(tmp_path):
             tmp_path
             / "workspaces"
             / context_row["fixture_copy_relpath"]
-            / ".pico"
+            / ".pony"
             / "sessions"
         ).glob("*.jsonl")
     )

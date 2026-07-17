@@ -1,7 +1,7 @@
 import json
 
-from pico.cli.errors import CLI_EXIT_USAGE, CliError, suggest
-from pico.cli.output import (
+from pony.cli.errors import CLI_EXIT_USAGE, CliError, suggest
+from pony.cli.output import (
     error_envelope,
     format_json,
     should_use_color,
@@ -23,7 +23,7 @@ def test_error_envelope_redacts_to_error_shape():
     error = CliError(
         code="checkpoint_not_found",
         message="Unknown checkpoint: ckpt_missing",
-        hint="Run `pico checkpoints list`.",
+        hint="Run `pony checkpoints list`.",
         exit_code=CLI_EXIT_USAGE,
     )
 
@@ -32,7 +32,7 @@ def test_error_envelope_redacts_to_error_shape():
     assert payload["ok"] is False
     assert payload["error"]["code"] == "checkpoint_not_found"
     assert payload["error"]["message"] == "Unknown checkpoint: ckpt_missing"
-    assert payload["error"]["hint"] == "Run `pico checkpoints list`."
+    assert payload["error"]["hint"] == "Run `pony checkpoints list`."
 
 
 def test_format_json_outputs_parseable_json_with_newline():

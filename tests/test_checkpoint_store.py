@@ -4,9 +4,9 @@ from pathlib import Path
 
 import pytest
 
-import pico.state.checkpoint_store as checkpoint_store_module
-from pico.state.checkpoint_store import CheckpointStore
-from pico.recovery.models import new_checkpoint_record, new_tool_change_record
+import pony.state.checkpoint_store as checkpoint_store_module
+from pony.state.checkpoint_store import CheckpointStore
+from pony.recovery.models import new_checkpoint_record, new_tool_change_record
 
 
 def _entry(blob, path="note.txt", source_id="tc_1"):

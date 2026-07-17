@@ -3,11 +3,11 @@ from pathlib import Path
 
 import pytest
 
-import pico.memory.block_store as block_store_module
-from pico.memory.block_store import BlockStore
-from pico.memory.retrieval import Retrieval
-from pico.memory.repo_map import RepoMap
-import pico.memory.repo_map as repo_map_module
+import pony.memory.block_store as block_store_module
+from pony.memory.block_store import BlockStore
+from pony.memory.retrieval import Retrieval
+from pony.memory.repo_map import RepoMap
+import pony.memory.repo_map as repo_map_module
 
 
 def _memory_store(tmp_path):

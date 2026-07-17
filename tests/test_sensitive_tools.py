@@ -4,12 +4,12 @@ from unittest.mock import Mock
 
 import pytest
 
-from pico import Pico
-from pico.state.session_store import SessionStore
-from pico.workspace.context import WorkspaceContext
+from pony import Pony
+from pony.state.session_store import SessionStore
+from pony.workspace.context import WorkspaceContext
 from benchmarks.support.fake_provider import FakeModelClient
-from pico.tools.executor import ToolExecutionResult
-from pico.runtime.options import RuntimeOptions
+from pony.tools.executor import ToolExecutionResult
+from pony.runtime.options import RuntimeOptions
 
 
 SECRET = "github_pat_A123456789012345678901234567890"
@@ -21,10 +21,10 @@ def build_agent(tmp_path, *, executables=None, **kwargs):
         tmp_path,
         executables={} if executables is None else executables,
     )
-    return Pico(
+    return Pony(
         model_client=FakeModelClient([]),
         workspace=workspace,
-        session_store=SessionStore(tmp_path / ".pico" / "sessions"),
+        session_store=SessionStore(tmp_path / ".pony" / "sessions"),
         options=RuntimeOptions(approval_policy="auto", **kwargs),
     )
 
@@ -39,7 +39,7 @@ def build_agent(tmp_path, *, executables=None, **kwargs):
         (
             "patch_file",
             {
-                "path": ".pico/sessions/manual.json",
+                "path": ".pony/sessions/manual.json",
                 "old_text": "x",
                 "new_text": "y",
             },
@@ -52,9 +52,9 @@ def test_sensitive_direct_paths_are_rejected_before_runner(
     arguments,
 ):
     agent = build_agent(tmp_path)
-    (tmp_path / ".env").write_text("PICO_API_KEY=opaque\n", encoding="utf-8")
+    (tmp_path / ".env").write_text("PONY_API_KEY=opaque\n", encoding="utf-8")
     (tmp_path / ".ssh").mkdir()
-    session_target = tmp_path / ".pico" / "sessions" / "manual.json"
+    session_target = tmp_path / ".pony" / "sessions" / "manual.json"
     session_target.write_text("x", encoding="utf-8")
     runner = Mock(return_value="must not run")
     agent.tools[name]["run"] = runner
@@ -149,7 +149,7 @@ def test_explicit_env_template_directory_is_rejected_before_rg(
             stderr="",
         )
     )
-    monkeypatch.setattr("pico.tools.search.run_hardened_rg", rg)
+    monkeypatch.setattr("pony.tools.search.run_hardened_rg", rg)
     agent = build_agent(tmp_path, executables={"rg": "/frozen/rg"})
 
     result = agent.execute_tool(
@@ -224,8 +224,8 @@ def test_secret_content_write_is_rejected_but_security_prose_is_allowed(tmp_path
     secret = "opaque-project-value-123456789"
     agent = build_agent(
         tmp_path,
-        redaction_env={"PICO_CUSTOM_SECRET": secret},
-        secret_env_names=("PICO_CUSTOM_SECRET",),
+        redaction_env={"PONY_CUSTOM_SECRET": secret},
+        secret_env_names=("PONY_CUSTOM_SECRET",),
     )
 
     blocked = agent.execute_tool(
@@ -347,7 +347,7 @@ def test_list_files_names_sensitive_entry_without_child_metadata_access(
     monkeypatch,
 ):
     sensitive = tmp_path / ".env"
-    sensitive.write_text("PICO_API_KEY=opaque-value", encoding="utf-8")
+    sensitive.write_text("PONY_API_KEY=opaque-value", encoding="utf-8")
     agent = build_agent(tmp_path)
     real_stat = Path.stat
     real_lstat = Path.lstat
@@ -388,7 +388,7 @@ def test_directory_search_excludes_sensitive_paths_without_path_rescan(
     (tmp_path / "source.py").write_text(sentinel + "\n", encoding="utf-8")
     (tmp_path / ".git").mkdir()
     (tmp_path / ".git" / "config").write_text(sentinel + "\n", encoding="utf-8")
-    hidden_memory = tmp_path / ".pico" / "memory" / "cache.md"
+    hidden_memory = tmp_path / ".pony" / "memory" / "cache.md"
     hidden_memory.parent.mkdir(parents=True)
     hidden_memory.write_text(sentinel + "\n", encoding="utf-8")
     executables = {}
@@ -412,23 +412,23 @@ def test_directory_search_excludes_sensitive_paths_without_path_rescan(
     assert not any(line.startswith(".env:") for line in result.content.splitlines())
     assert "credentials.json" not in result.content
     assert ".git/" not in result.content
-    assert ".pico/" not in result.content
+    assert ".pony/" not in result.content
 
 
 @pytest.mark.parametrize(
     ("contents", "pattern", "expected", "unexpected"),
     (
         (
-            "PICO_TOKEN=one\nPICOxTOKEN=two\n",
-            r"^PICO_TOKEN=",
-            ".env.example:1:PICO_TOKEN=one",
-            ".env.example:2:PICOxTOKEN=two",
+            "PONY_TOKEN=one\nPONYxTOKEN=two\n",
+            r"^PONY_TOKEN=",
+            ".env.example:1:PONY_TOKEN=one",
+            ".env.example:2:PONYxTOKEN=two",
         ),
         (
-            "OTHER=Pico\nLOWER=pico\n",
-            "Pico",
-            ".env.example:1:OTHER=Pico",
-            ".env.example:2:LOWER=pico",
+            "OTHER=Pony\nLOWER=pony\n",
+            "Pony",
+            ".env.example:1:OTHER=Pony",
+            ".env.example:2:LOWER=pony",
         ),
     ),
     ids=("regex", "smart-case"),
@@ -482,7 +482,7 @@ def test_rg_excludes_env_template_directory_descendants_before_filtering(
     monkeypatch,
     contract_rg,
 ):
-    from pico.tools import search as tool_module
+    from pony.tools import search as tool_module
 
     sentinel = "template-directory-sentinel"
     template_dir = tmp_path / ".env.example"

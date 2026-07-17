@@ -12,12 +12,12 @@ from types import SimpleNamespace
 
 import pytest
 
-import pico.sandbox.apply as sandbox_apply
-from pico.cli import app as pico_cli
-from pico.state.checkpoint_store import CheckpointStore, CheckpointStoreError
-from pico.recovery.policy import DEFAULT_MAX_BLOB_SIZE
-from pico.tools.subprocess import build_trusted_executables
-from pico.sandbox.apply import (
+import pony.sandbox.apply as sandbox_apply
+from pony.cli import app as pony_cli
+from pony.state.checkpoint_store import CheckpointStore, CheckpointStoreError
+from pony.recovery.policy import DEFAULT_MAX_BLOB_SIZE
+from pony.tools.subprocess import build_trusted_executables
+from pony.sandbox.apply import (
     _validate_capture,
     _validate_apply_journal,
     _validate_diff,
@@ -26,7 +26,7 @@ from pico.sandbox.apply import (
     SourceApplyStore,
     StagingObserver,
 )
-from pico.sandbox.session import (
+from pony.sandbox.session import (
     clear_source_apply_authority,
     find_project_sandbox_session,
     read_source_apply_authority,
@@ -39,7 +39,7 @@ def _bootstrap(request):
     git = request.workspace_view.physical_root / ".git"
     git.mkdir()
     (git / "HEAD").write_text(
-        "ref: refs/heads/pico-sandbox\n",
+        "ref: refs/heads/pony-sandbox\n",
         encoding="utf-8",
     )
     return "a" * 40
@@ -74,7 +74,7 @@ class _Context:
     def __init__(self, source, store, session, project_state_root=None):
         self.source_root = source
         self.execution_root = session.workspace_view.physical_root
-        self.project_state_root = project_state_root or source / ".pico"
+        self.project_state_root = project_state_root or source / ".pony"
         self.sandbox_state_root = session.state_root
         self.source_apply_state_root = session.state_root
         self.sandbox_session = session
@@ -110,8 +110,8 @@ def _observer(
         (source / "profile.txt").write_text("clean\n", encoding="utf-8")
         for args in (
             ("init", "--quiet"),
-            ("config", "user.name", "Pico Test"),
-            ("config", "user.email", "pico@example.invalid"),
+            ("config", "user.name", "Pony Test"),
+            ("config", "user.email", "pony@example.invalid"),
             ("add", "--all"),
             ("commit", "--quiet", "-m", "baseline"),
         ):
@@ -132,7 +132,7 @@ def _observer(
     store = SandboxSessionStore(tmp_path / "sandboxes")
     session = store.create(
         source,
-        pico_session_id="session-1",
+        pony_session_id="session-1",
         bootstrap_git=_bootstrap,
         git_executable=(git_executable if source_profile != "non_git" else None),
         project_state_root=project_state_root,
@@ -140,7 +140,7 @@ def _observer(
     )
     context = _Context(source, store, session, project_state_root)
     checkpoint_store = CheckpointStore(
-        session.state_root / "recovery" / ".pico" / "checkpoints"
+        session.state_root / "recovery" / ".pony" / "checkpoints"
     )
     observer = StagingObserver(
         context,
@@ -177,7 +177,7 @@ def _record_rename_swaps(monkeypatch):
 def _apply_quarantine(source, journal_id):
     return (
         source
-        / ".pico"
+        / ".pony"
         / "checkpoints"
         / sandbox_apply._APPLY_QUARANTINE_NAME
         / journal_id
@@ -203,7 +203,7 @@ def _source_worktree_snapshot(root):
     ]
     for path in sorted(root.rglob("*")):
         relative = path.relative_to(root)
-        if relative.parts[0] == ".pico":
+        if relative.parts[0] == ".pony":
             continue
         info = path.lstat()
         data = path.read_bytes() if path.is_file() and not path.is_symlink() else b""
@@ -482,9 +482,9 @@ def test_final_diff_blocks_sensitive_special_and_large_entries(
     )
     root = context.execution_root
     (root / ".env").write_text("TOKEN=guest-secret\n", encoding="utf-8")
-    (root / ".pico").mkdir()
-    (root / ".pico" / "sessions").mkdir()
-    (root / ".pico" / "sessions" / "state.json").write_text(
+    (root / ".pony").mkdir()
+    (root / ".pony" / "sessions").mkdir()
+    (root / ".pony" / "sessions" / "state.json").write_text(
         "{}\n",
         encoding="utf-8",
     )
@@ -518,7 +518,7 @@ def test_final_diff_blocks_sensitive_special_and_large_entries(
 
     assert result["status"] == "diff_blocked"
     assert entries[".env"]["classification"] == "blocked_sensitive"
-    assert entries[".pico"]["classification"] == "blocked_sensitive"
+    assert entries[".pony"]["classification"] == "blocked_sensitive"
     assert entries["credentials.json"]["classification"] == "blocked_sensitive"
     assert entries["known.txt"]["classification"] == "blocked_sensitive"
     assert entries["large.bin"]["classification"] == "blocked_size"
@@ -535,7 +535,7 @@ def test_final_diff_blocks_sensitive_special_and_large_entries(
     assert swaps == []
     for path in (
         ".env",
-        ".pico/sessions",
+        ".pony/sessions",
         "credentials.json",
         "known.txt",
         "large.bin",
@@ -555,9 +555,9 @@ def test_final_diff_blocks_sensitive_special_and_large_entries(
 
 @pytest.mark.parametrize(
     ("path", "directory"),
-    ((".pico", False), (".pico/custom.json", True), (".PICO/custom.json", True)),
+    ((".pony", False), (".pony/custom.json", True), (".PONY/custom.json", True)),
 )
-def test_final_diff_blocks_entire_pico_namespace(tmp_path, path, directory):
+def test_final_diff_blocks_entire_pony_namespace(tmp_path, path, directory):
     source, context, _blobs, observer, _baseline = _observer(
         tmp_path,
         {"README.md": "source\n"},
@@ -710,13 +710,13 @@ def test_capture_validator_rejects_tampered_entries(tmp_path, mutate):
         )
 
 
-def test_apply_validators_reject_tampered_pico_namespace(tmp_path):
+def test_apply_validators_reject_tampered_pony_namespace(tmp_path):
     _source, context, _blobs, observer, baseline = _observer(
         tmp_path,
         {"a.txt": "before\n"},
     )
     capture = deepcopy(baseline)
-    capture["entries"][0]["path"] = ".pico/custom.json"
+    capture["entries"][0]["path"] = ".pony/custom.json"
     capture["tree_digest"] = sandbox_apply._sha256(
         sandbox_apply._canonical_json(capture["entries"])
     )
@@ -730,7 +730,7 @@ def test_apply_validators_reject_tampered_pico_namespace(tmp_path):
     (context.execution_root / "a.txt").write_text("after\n", encoding="utf-8")
     finalized = observer.finalize_diff(lambda text: text)
     diff = deepcopy(finalized["artifact"])
-    diff["entries"][0]["path"] = ".pico/custom.json"
+    diff["entries"][0]["path"] = ".pony/custom.json"
     with pytest.raises(SandboxApplyError, match="sandbox_diff_invalid"):
         _validate_diff(diff, sandbox_id=context.sandbox_session.sandbox_id)
 
@@ -738,10 +738,10 @@ def test_apply_validators_reject_tampered_pico_namespace(tmp_path):
     journal = SourceApplyStore(context.source_apply_state_root).load_journal(
         result["journal_id"]
     )
-    journal["entries"][0]["path"] = ".pico/custom.json"
+    journal["entries"][0]["path"] = ".pony/custom.json"
     journal["entries"][0]["temp_name"] = sandbox_apply._apply_temp_name(
         journal["journal_id"],
-        ".pico/custom.json",
+        ".pony/custom.json",
     )
     with pytest.raises(SandboxApplyError, match="sandbox_apply_journal_invalid"):
         _validate_apply_journal(journal)
@@ -800,7 +800,7 @@ def test_source_apply_rejects_custom_xattr_before_source_writes(tmp_path):
     (context.execution_root / "b.txt").write_text("after\n", encoding="utf-8")
     diff = observer.finalize_diff(lambda text: text)
     subprocess.run(
-        [xattr, "-w", "user.pico_test", "value", source / "b.txt"],
+        [xattr, "-w", "user.pony_test", "value", source / "b.txt"],
         check=True,
     )
     source_before = {
@@ -921,7 +921,7 @@ def test_source_apply_external_metadata_after_prepare_requires_review(
     def add_metadata(stage, _path):
         if stage == "after_prepare":
             subprocess.run(
-                [xattr, "-w", "user.pico_test", "value", source / "a.txt"],
+                [xattr, "-w", "user.pony_test", "value", source / "a.txt"],
                 check=True,
             )
 
@@ -934,7 +934,7 @@ def test_source_apply_external_metadata_after_prepare_requires_review(
     assert result["status"] == "apply_review_required"
     assert swaps == []
     assert (source / "a.txt").read_text(encoding="utf-8") == "before\n"
-    assert not list(source.glob(".pico-apply-*.tmp"))
+    assert not list(source.glob(".pony-apply-*.tmp"))
     manifest = json.loads(
         (context.sandbox_state_root / "manifest.json").read_text(encoding="utf-8")
     )
@@ -974,7 +974,7 @@ def test_source_apply_delete_preserves_external_edit_before_commit(
     assert result["status"] == "apply_review_required"
     assert renames == []
     assert (source / "delete.txt").read_text(encoding="utf-8") == "external\n"
-    assert not list(source.glob(".pico-apply-*.tmp"))
+    assert not list(source.glob(".pony-apply-*.tmp"))
 
 
 def test_source_apply_delete_crash_keeps_journal_bound_tombstone(tmp_path):
@@ -1002,7 +1002,7 @@ def test_source_apply_delete_crash_keeps_journal_bound_tombstone(tmp_path):
         _apply_quarantine(source, journal_id) / journal["entries"][0]["temp_name"]
     )
     assert not (source / "delete.txt").exists()
-    assert not list(source.glob(".pico-apply-*.tmp"))
+    assert not list(source.glob(".pony-apply-*.tmp"))
     assert tombstone.read_text(encoding="utf-8") == "before\n"
 
     result = SourceApplier(context, observer).reconcile()
@@ -1076,7 +1076,7 @@ def test_source_apply_rejects_same_state_inode_replacement_after_journal(tmp_pat
     assert result["status"] == "apply_review_required"
     assert (current.st_dev, current.st_ino) == replacement_identity
     assert (source / "a.txt").read_text(encoding="utf-8") == "before\n"
-    assert not list(source.glob(".pico-apply-*.tmp"))
+    assert not list(source.glob(".pony-apply-*.tmp"))
     assert CheckpointStore(source).source_apply_guard() is not None
 
 
@@ -1697,7 +1697,7 @@ def test_source_apply_external_edit_after_prepare_requires_review_without_write(
     assert result["status"] == "apply_review_required"
     assert swaps == []
     assert (source / "a.txt").read_text(encoding="utf-8") == "external\n"
-    assert not list(source.glob(".pico-apply-*.tmp"))
+    assert not list(source.glob(".pony-apply-*.tmp"))
     current = context.current_session()
     assert current.state == "review_required"
     assert current.manifest["apply"]["status"] == "apply_review_required"
@@ -1735,7 +1735,7 @@ def test_source_apply_fault_stage_rolls_back_exactly(
     assert result["status"] == "apply_failed_rolled_back"
     assert len(swaps) == expected_swaps
     assert (source / "a.txt").read_text(encoding="utf-8") == "before\n"
-    assert not list(source.glob(".pico-apply-*.tmp"))
+    assert not list(source.glob(".pony-apply-*.tmp"))
     current = context.current_session()
     assert current.state == "pending_review"
     assert current.manifest["apply"]["status"] == "apply_failed_rolled_back"
@@ -1767,7 +1767,7 @@ def test_source_apply_io_faults_roll_back_without_temp_residue(
         nonlocal injected
         is_apply_temp = (
             isinstance(path, str)
-            and path.startswith(".pico-apply-")
+            and path.startswith(".pony-apply-")
             and flags & os.O_WRONLY
             and dir_fd is not None
         )
@@ -1815,7 +1815,7 @@ def test_source_apply_io_faults_roll_back_without_temp_residue(
     assert injected is True
     assert result["status"] == "apply_failed_rolled_back"
     assert (source / "a.txt").read_text(encoding="utf-8") == "before\n"
-    assert not list(source.glob(".pico-apply-*.tmp"))
+    assert not list(source.glob(".pony-apply-*.tmp"))
     current = context.current_session()
     assert current.state == "pending_review"
     assert current.manifest["apply"]["status"] == "apply_failed_rolled_back"
@@ -1986,7 +1986,7 @@ def test_source_apply_reconciles_crash_before_terminalize(tmp_path, monkeypatch)
     assert result["status"] == "apply_applied"
 
 
-def test_unresolved_source_apply_blocks_other_pico_mutations(tmp_path):
+def test_unresolved_source_apply_blocks_other_pony_mutations(tmp_path):
     source, context, _blobs, observer, _baseline = _observer(
         tmp_path, {"a.txt": "before\n"}
     )
@@ -2155,7 +2155,7 @@ def test_source_apply_reconciles_crash_between_replace_and_temp_cleanup(
     assert result["status"] == "apply_applied"
     assert source_target.read_text(encoding="utf-8") == "after\n"
     assert source_target.stat().st_nlink == 1
-    assert not list(source.glob(".pico-apply-*.tmp"))
+    assert not list(source.glob(".pony-apply-*.tmp"))
 
 
 def test_source_apply_reconciles_crash_after_created_directory(tmp_path):
@@ -2272,9 +2272,9 @@ def test_source_apply_root_replacement_terminalizes_bound_session_for_review(
         store.inspect(context.sandbox_state_root)
     assert (
         find_project_sandbox_session(
-            source / ".pico",
+            source / ".pony",
             source,
-            manifest["pico_session_id"],
+            manifest["pony_session_id"],
         )
         is None
     )
@@ -2572,7 +2572,7 @@ def test_external_apply_authority_blocks_agent_start_before_state_creation(
     tmp_path,
     monkeypatch,
 ):
-    state_home = tmp_path / ".pico"
+    state_home = tmp_path / ".pony"
     state_home.mkdir()
     source, context, observer, diff_digest = _modified_candidate(state_home)
 
@@ -2591,12 +2591,12 @@ def test_external_apply_authority_blocks_agent_start_before_state_creation(
     source.mkdir()
     (source / "README.md").write_text("replacement\n", encoding="utf-8")
     monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
-    args = pico_cli.build_arg_parser().parse_args(["--cwd", str(source)])
+    args = pony_cli.build_arg_parser().parse_args(["--cwd", str(source)])
 
     with pytest.raises(SandboxSessionError, match="source_apply_review_required"):
-        pico_cli.build_agent(args)
+        pony_cli.build_agent(args)
 
-    assert not (source / ".pico").exists()
+    assert not (source / ".pony").exists()
 
 
 @pytest.mark.parametrize(
@@ -2749,7 +2749,7 @@ def test_empty_directory_only_is_not_an_apply_candidate(tmp_path):
         lambda value: value["entries"][0].__setitem__("status", "pending"),
         lambda value: value["entries"][0].__setitem__(
             "temp_name",
-            ".pico-apply-" + "f" * 32 + "-" + "0" * 16 + ".tmp",
+            ".pony-apply-" + "f" * 32 + "-" + "0" * 16 + ".tmp",
         ),
     ],
 )
@@ -2835,7 +2835,7 @@ def test_source_apply_blob_cleanup_preserves_refs_used_by_active_journal(tmp_pat
     for entry in terminal["entries"]:
         entry["status"] = "rolled_back"
         entry["temp_name"] = (
-            f".pico-apply-{terminal_id[6:]}-"
+            f".pony-apply-{terminal_id[6:]}-"
             + hashlib.sha256(entry["path"].encode("utf-8")).hexdigest()[:16]
             + ".tmp"
         )

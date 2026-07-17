@@ -1,4 +1,4 @@
-from pico.tools.shell import ApprovedShellExecution, sandbox_privilege_denial
+from pony.tools.shell import ApprovedShellExecution, sandbox_privilege_denial
 
 
 def test_sandbox_rejects_git_metadata_writes_before_runner(tmp_path):

@@ -1,20 +1,20 @@
-"""New pico.toml model, Context, compaction, and tool-result budgets."""
+"""New pony.toml model, Context, compaction, and tool-result budgets."""
 
 import pytest
 
-from pico import Pico
-from pico.state.session_store import SessionStore
-from pico.workspace.context import WorkspaceContext
-from pico.agent.loop import _prepare_tool_result
-from pico.config.project import load_pico_toml
-from pico.context.renderer import render_current_user_message
-from pico.agent.context_manager import SystemContextTooLarge
-from pico.agent.model_capabilities import TokenAccounting
+from pony import Pony
+from pony.state.session_store import SessionStore
+from pony.workspace.context import WorkspaceContext
+from pony.agent.loop import _prepare_tool_result
+from pony.config.project import load_pony_toml
+from pony.context.renderer import render_current_user_message
+from pony.agent.context_manager import SystemContextTooLarge
+from pony.agent.model_capabilities import TokenAccounting
 from benchmarks.support.fake_provider import FakeModelClient
 
 
 def _config(root):
-    return load_pico_toml(root)
+    return load_pony_toml(root)
 
 
 def test_model_and_context_defaults(tmp_path):
@@ -37,7 +37,7 @@ def test_model_and_context_defaults(tmp_path):
 
 
 def test_new_budget_overrides(tmp_path):
-    (tmp_path / "pico.toml").write_text(
+    (tmp_path / "pony.toml").write_text(
         """
 [model]
 context_window = 272000
@@ -79,7 +79,7 @@ digest_tokens = 384
 
 
 def test_removed_context_fields_warn_and_do_not_survive(tmp_path, capsys):
-    (tmp_path / "pico.toml").write_text(
+    (tmp_path / "pony.toml").write_text(
         """
 [context]
 history_soft_cap = 12345
@@ -100,7 +100,7 @@ injection_budget_ratio = 0.2
 
 
 def test_legacy_total_budget_maps_to_model_context_window(tmp_path, capsys):
-    (tmp_path / "pico.toml").write_text(
+    (tmp_path / "pony.toml").write_text(
         "[context]\ntotal_budget_hard_cap = 50000\n",
         encoding="utf-8",
     )
@@ -112,7 +112,7 @@ def test_legacy_total_budget_maps_to_model_context_window(tmp_path, capsys):
 
 
 def test_explicit_model_context_wins_over_legacy_total(tmp_path):
-    (tmp_path / "pico.toml").write_text(
+    (tmp_path / "pony.toml").write_text(
         "[model]\ncontext_window = 128000\n[context]\ntotal_budget_hard_cap = 50000\n",
         encoding="utf-8",
     )
@@ -121,7 +121,7 @@ def test_explicit_model_context_wins_over_legacy_total(tmp_path):
 
 
 def test_invalid_budget_types_fall_back_independently(tmp_path):
-    (tmp_path / "pico.toml").write_text(
+    (tmp_path / "pony.toml").write_text(
         """
 [model]
 context_window = "large"
@@ -152,7 +152,7 @@ def test_prepare_tool_result_uses_token_limits(tmp_path):
     from types import SimpleNamespace
 
     agent = SimpleNamespace(
-        current_run_dir=tmp_path / ".pico" / "runs" / "r1",
+        current_run_dir=tmp_path / ".pony" / "runs" / "r1",
         context_config={"tool_results": {"inline_tokens": 20, "digest_tokens": 64}},
         token_accounting=TokenAccounting(),
         redact_text=str,
@@ -172,18 +172,18 @@ def test_prepare_tool_result_uses_token_limits(tmp_path):
 
 
 def test_system_tools_hard_cap_fails_loudly_instead_of_truncating(tmp_path):
-    (tmp_path / "pico.toml").write_text(
+    (tmp_path / "pony.toml").write_text(
         "[context]\nsystem_tools_hard_cap = 100\n",
         encoding="utf-8",
     )
     workspace = WorkspaceContext.build(tmp_path)
-    agent = Pico(
+    agent = Pony(
         FakeModelClient([]),
         workspace,
-        SessionStore(tmp_path / ".pico" / "sessions"),
+        SessionStore(tmp_path / ".pony" / "sessions"),
     )
     agent.session["messages"].append(
-        {"role": "user", "content": "hi", "_pico_meta": {"created_at": "t"}}
+        {"role": "user", "content": "hi", "_pony_meta": {"created_at": "t"}}
     )
     snapshot, telemetry = render_current_user_message(agent, "hi")
 

@@ -4,20 +4,20 @@ from unittest.mock import Mock
 
 import pytest
 
-from pico import Pico
-from pico.state.session_store import SessionStore
-from pico.workspace.context import WorkspaceContext
+from pony import Pony
+from pony.state.session_store import SessionStore
+from pony.workspace.context import WorkspaceContext
 from benchmarks.support.fake_provider import FakeModelClient
-from pico.runtime.options import RuntimeOptions
+from pony.runtime.options import RuntimeOptions
 
 
 def build_agent(tmp_path, outputs, *, executables=None):
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
     workspace = WorkspaceContext.build(tmp_path, executables=executables)
-    return Pico(
+    return Pony(
         model_client=FakeModelClient(outputs),
         workspace=workspace,
-        session_store=SessionStore(tmp_path / ".pico" / "sessions"),
+        session_store=SessionStore(tmp_path / ".pony" / "sessions"),
         options=RuntimeOptions(approval_policy="auto"),
     )
 

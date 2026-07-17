@@ -4,13 +4,13 @@ import shutil
 
 import pytest
 
-from pico.state.file_lock import locked_file
-from pico.recovery.migration import ABSENT, ROLLED_BACK, Migration, _MAX_JOURNAL_BYTES
-from pico.security.private_files import PrivateAtomicWriteError
+from pony.state.file_lock import locked_file
+from pony.recovery.migration import ABSENT, ROLLED_BACK, Migration, _MAX_JOURNAL_BYTES
+from pony.security.private_files import PrivateAtomicWriteError
 
 
 def migration(tmp_path, validate=lambda path: True):
-    root = tmp_path / ".pico"
+    root = tmp_path / ".pony"
     root.mkdir(mode=0o700)
     live = root / "runs"
     live.mkdir()

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify Pico's packaged local Docker Sandbox runtime contract."""
+"""Verify Pony's packaged local Docker Sandbox runtime contract."""
 
 from __future__ import annotations
 
@@ -13,9 +13,9 @@ import sys
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def _pico(action: str) -> tuple[int, dict]:
+def _pony(action: str) -> tuple[int, dict]:
     result = subprocess.run(
-        [sys.executable, "-m", "pico", "--format", "json", "sandbox", action],
+        [sys.executable, "-m", "pony", "--format", "json", "sandbox", action],
         cwd=ROOT,
         check=False,
         capture_output=True,
@@ -31,7 +31,7 @@ def _pico(action: str) -> tuple[int, dict]:
 
 
 def verify(*, require_ready: bool) -> dict:
-    status_code, status = _pico("status")
+    status_code, status = _pony("status")
     if status_code != 0 or status.get("ok") is not True:
         raise RuntimeError("sandbox status failed")
     status_data = status.get("data")
@@ -42,7 +42,7 @@ def verify(*, require_ready: bool) -> dict:
         or status_data.get("runtime_authorization", {}).get("kind") != "local"
     ):
         raise RuntimeError("sandbox status contract mismatch")
-    prepare_code, prepared = _pico("prepare")
+    prepare_code, prepared = _pony("prepare")
     ready = prepare_code == 0 and prepared.get("ok") is True
     if prepare_code not in {0, 3}:
         raise RuntimeError("sandbox prepare returned an unexpected exit code")
@@ -50,7 +50,7 @@ def verify(*, require_ready: bool) -> dict:
         error = prepared.get("error", {})
         raise RuntimeError(f"sandbox is not ready: {error.get('code', 'unknown')}")
     return {
-        "record_type": "pico_sandbox_runtime_verification",
+        "record_type": "pony_sandbox_runtime_verification",
         "format_version": 1,
         "status": "ready" if ready else "not_ready",
         "reason_code": "ready" if ready else prepared.get("error", {}).get("code", "unknown"),

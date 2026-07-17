@@ -16,12 +16,12 @@ from benchmarks.evaluation.metrics_reports import (  # noqa: E402
 
 def build_arg_parser():
     parser = argparse.ArgumentParser(
-        description="Collect pico resume metrics from benchmark and run artifacts."
+        description="Collect pony resume metrics from benchmark and run artifacts."
     )
     parser.add_argument(
         "--benchmark-artifact", required=True, help="Path to benchmark artifact JSON."
     )
-    parser.add_argument("--runs-root", required=True, help="Path to .pico/runs root.")
+    parser.add_argument("--runs-root", required=True, help="Path to .pony/runs root.")
     parser.add_argument(
         "--provider-experiments",
         default=None,

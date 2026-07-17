@@ -13,16 +13,16 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from benchmarks.perf.harness import bench  # noqa: E402
-from pico.agent.compaction import build_compaction_plan  # noqa: E402
-from pico.context.renderer import InjectionSnapshot  # noqa: E402
-from pico.agent.context_manager import ContextManager  # noqa: E402
-from pico.agent.model_capabilities import (  # noqa: E402
+from pony.agent.compaction import build_compaction_plan  # noqa: E402
+from pony.context.renderer import InjectionSnapshot  # noqa: E402
+from pony.agent.context_manager import ContextManager  # noqa: E402
+from pony.agent.model_capabilities import (  # noqa: E402
     ModelCapabilities,
     TokenAccounting,
     build_model_budget,
 )
-from pico.state.session_store import SessionStore  # noqa: E402
-from pico.workspace.context import now  # noqa: E402
+from pony.state.session_store import SessionStore  # noqa: E402
+from pony.workspace.context import now  # noqa: E402
 
 
 SCENARIO_TARGETS = {
@@ -38,7 +38,7 @@ def _message(index):
     return {
         "role": "user" if index % 2 == 0 else "assistant",
         "content": f"message-{index} " + ("context " * 6),
-        "_pico_meta": {"created_at": now()},
+        "_pony_meta": {"created_at": now()},
     }
 
 

@@ -1,10 +1,10 @@
-"""E2E: one Pico.ask exercises injection + digest + recall together."""
+"""E2E: one Pony.ask exercises injection + digest + recall together."""
 
-from pico.providers.response import Response, StopReason
-from pico.runtime.application import Pico
-from pico.state.session_store import SessionStore
-from pico.workspace.context import WorkspaceContext
-from pico.runtime.options import RuntimeOptions
+from pony.providers.response import Response, StopReason
+from pony.runtime.application import Pony
+from pony.state.session_store import SessionStore
+from pony.workspace.context import WorkspaceContext
+from pony.runtime.options import RuntimeOptions
 
 
 class _SniffProvider:
@@ -21,13 +21,13 @@ class _SniffProvider:
 
 
 def test_full_turn_injects_recall_and_digests_large_tool_result(tmp_path):
-    (tmp_path / "pico.toml").write_text(
+    (tmp_path / "pony.toml").write_text(
         "[context.tool_results]\ninline_tokens = 100\ndigest_tokens = 128\n",
         encoding="utf-8",
     )
     # Seed a memory note that should match "cache".
-    (tmp_path / ".pico" / "memory" / "notes").mkdir(parents=True)
-    (tmp_path / ".pico" / "memory" / "notes" / "cache.md").write_text(
+    (tmp_path / ".pony" / "memory" / "notes").mkdir(parents=True)
+    (tmp_path / ".pony" / "memory" / "notes" / "cache.md").write_text(
         "---\nname: cache\ntype: reference\ndescription: cache invariant\n---\nCache stays stable across turns.\n",
         encoding="utf-8",
     )
@@ -58,15 +58,15 @@ def test_full_turn_injects_recall_and_digests_large_tool_result(tmp_path):
         ]
     )
     workspace = WorkspaceContext.build(tmp_path)
-    store = SessionStore(tmp_path / ".pico" / "sessions")
-    pico = Pico(
+    store = SessionStore(tmp_path / ".pony" / "sessions")
+    pony = Pony(
         model_client=provider,
         workspace=workspace,
         session_store=store,
         options=RuntimeOptions(max_steps=3),
     )
 
-    answer = pico.ask("上次讨论过 cache 的问题")
+    answer = pony.ask("上次讨论过 cache 的问题")
     assert "cache" in answer
 
     # 2 provider calls happened.
@@ -76,11 +76,11 @@ def test_full_turn_injects_recall_and_digests_large_tool_result(tmp_path):
     turn1_user_content = provider.calls[0]["messages"][-1]["content"]
     assert isinstance(turn1_user_content, str)
     assert (
-        "<pico:workspace_state>" in turn1_user_content
+        "<pony:workspace_state>" in turn1_user_content
         or "<system-reminder>" in turn1_user_content
     )
     # Recall block should be present (memory note matched "cache" keyword).
-    assert "<pico:recalled_memory" in turn1_user_content
+    assert "<pony:recalled_memory" in turn1_user_content
     assert "cache" in turn1_user_content.lower()
 
     # Turn 2: canonical messages contain the tool_result. Because the raw README exceeds
@@ -97,7 +97,7 @@ def test_full_turn_injects_recall_and_digests_large_tool_result(tmp_path):
     assert "[digest]" in tr_content, f"expected digest, got: {tr_content[:200]!r}"
 
     # No recall errors surfaced.
-    assert pico.session.get("_recall_errors", {}).get("count", 0) == 0
+    assert pony.session.get("_recall_errors", {}).get("count", 0) == 0
 
 
 def test_history_is_never_silently_dropped(tmp_path):
@@ -112,8 +112,8 @@ def test_history_is_never_silently_dropped(tmp_path):
         ]
     )
     workspace = WorkspaceContext.build(tmp_path)
-    store = SessionStore(tmp_path / ".pico" / "sessions")
-    pico = Pico(
+    store = SessionStore(tmp_path / ".pony" / "sessions")
+    pony = Pony(
         model_client=provider,
         workspace=workspace,
         session_store=store,
@@ -122,18 +122,18 @@ def test_history_is_never_silently_dropped(tmp_path):
 
     # Prime session with many messages BEFORE calling ask.
     for i in range(30):
-        pico.session["messages"].append(
+        pony.session["messages"].append(
             {
             "role": "user" if i % 2 == 0 else "assistant",
             "content": f"old-msg-{i} " + ("x" * 200),
-            "_pico_meta": {"created_at": "t"},
+            "_pony_meta": {"created_at": "t"},
             }
         )
 
-    pico.ask("new question")
+    pony.ask("new question")
 
     call = provider.calls[0]
-    assert pico.last_request_metadata.get("dropped_messages", 0) == 0
+    assert pony.last_request_metadata.get("dropped_messages", 0) == 0
     serialized = repr(call["messages"])
     assert "old-msg-0" in serialized
     assert "old-msg-29" in serialized

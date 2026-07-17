@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build Pico's locked Linux/arm64 development sandbox image."""
+"""Build Pony's locked Linux/arm64 development sandbox image."""
 
 from __future__ import annotations
 
@@ -20,9 +20,14 @@ import urllib.request
 ROOT = Path(__file__).resolve().parents[2]
 LOCK_PATH = ROOT / "docker" / "sandbox" / "image-inputs.lock.json"
 DOCKERFILE = ROOT / "docker" / "sandbox" / "Dockerfile"
-DEFAULT_CACHE = Path.home() / ".cache" / "pico" / "sandbox-build"
-DEFAULT_TAG = "pico-sandbox:local"
-ALLOWED_HOSTS = {"files.pythonhosted.org", "github.com", "snapshot.debian.org"}
+DEFAULT_CACHE = Path.home() / ".cache" / "pony" / "sandbox-build"
+DEFAULT_TAG = "pony-sandbox:local"
+ALLOWED_HOSTS = {
+    "files.pythonhosted.org",
+    "github.com",
+    "release-assets.githubusercontent.com",
+    "snapshot.debian.org",
+}
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -108,7 +113,7 @@ def _download(asset: dict, cache: Path, *, offline: bool) -> Path:
     temporary_path = Path(temporary)
     try:
         request = urllib.request.Request(
-            asset["url"], headers={"User-Agent": "pico-sandbox-builder/1"}
+            asset["url"], headers={"User-Agent": "pony-sandbox-builder/1"}
         )
         with urllib.request.urlopen(request, timeout=120) as response:
             final = urllib.parse.urlparse(response.geturl())
@@ -184,7 +189,7 @@ def build(*, docker: str, cache: Path, tag: str, offline: bool) -> dict:
     base = lock["base_image"]["reference"]
     if not offline:
         _run([docker, "pull", "--platform=linux/arm64", base])
-    with tempfile.TemporaryDirectory(prefix="pico-sandbox-build-") as raw:
+    with tempfile.TemporaryDirectory(prefix="pony-sandbox-build-") as raw:
         context = Path(raw)
         _context(context, lock, cache)
         _run(
@@ -195,6 +200,7 @@ def build(*, docker: str, cache: Path, tag: str, offline: bool) -> dict:
                 "--platform=linux/arm64",
                 "--pull=false",
                 "--network=none",
+                "--provenance=false",
                 f"--build-arg=BASE_REFERENCE={base}",
                 f"--tag={tag}",
                 "--load",
@@ -204,15 +210,27 @@ def build(*, docker: str, cache: Path, tag: str, offline: bool) -> dict:
     inspected = json.loads(_run([docker, "image", "inspect", tag]).stdout)
     if not isinstance(inspected, list) or len(inspected) != 1:
         raise BuildError("docker returned an invalid image inspection")
-    image_id = inspected[0].get("Id")
-    if not isinstance(image_id, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", image_id):
-        raise BuildError("built image has no stable image id")
+    descriptor = inspected[0].get("Descriptor")
+    if not isinstance(descriptor, dict):
+        raise BuildError("built image has no stable descriptor")
+    image_digest = descriptor.get("digest")
+    annotations = descriptor.get("annotations")
+    image_id = annotations.get("config.digest") if isinstance(annotations, dict) else None
+    if (
+        not isinstance(image_digest, str)
+        or re.fullmatch(r"sha256:[0-9a-f]{64}", image_digest) is None
+        or not isinstance(image_id, str)
+        or re.fullmatch(r"sha256:[0-9a-f]{64}", image_id) is None
+        or inspected[0].get("Id") not in {image_digest, image_id}
+    ):
+        raise BuildError("built image has no stable identity")
     return {
-        "record_type": "pico_sandbox_local_build",
+        "record_type": "pony_sandbox_local_build",
         "format_version": 1,
         "status": "built",
         "platform": "linux/arm64",
         "tag": tag,
+        "image_digest": image_digest,
         "image_id": image_id,
         "base_reference": base,
         "dockerfile_sha256": _digest(DOCKERFILE),

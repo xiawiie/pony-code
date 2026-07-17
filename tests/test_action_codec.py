@@ -1,7 +1,7 @@
 import pytest
 
-from pico.agent.action_codec import FinalAction, RetryAction, ToolAction, decode_action
-from pico.providers.response import Response, StopReason
+from pony.agent.action_codec import FinalAction, RetryAction, ToolAction, decode_action
+from pony.providers.response import Response, StopReason
 
 
 def response(*content, stop=StopReason.END_TURN):

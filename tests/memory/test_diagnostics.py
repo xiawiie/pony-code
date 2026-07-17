@@ -6,10 +6,10 @@ from types import SimpleNamespace
 
 import pytest
 
-import pico.memory.block_store as block_store_module
-from pico.cli.app import main
-from pico.cli.diagnostics import collect_doctor
-from pico.memory.diagnostics import collect_memory_diagnostics
+import pony.memory.block_store as block_store_module
+from pony.cli.app import main
+from pony.cli.diagnostics import collect_doctor
+from pony.memory.diagnostics import collect_memory_diagnostics
 
 
 def _write_note(root, name, content):
@@ -29,11 +29,11 @@ def _init_git(root):
 
 def test_memory_diagnostics_reports_metadata_caps_and_git_ignore(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
-    workspace_memory = repo / ".pico" / "memory"
-    user_memory = tmp_path / "home-private-canary" / ".pico" / "memory"
+    workspace_memory = repo / ".pony" / "memory"
+    user_memory = tmp_path / "home-private-canary" / ".pony" / "memory"
     repo.mkdir()
     git = _init_git(repo)
-    (repo / ".gitignore").write_text(".pico/\n", encoding="utf-8")
+    (repo / ".gitignore").write_text(".pony/\n", encoding="utf-8")
     _write_note(
         workspace_memory,
         "a.md",
@@ -89,10 +89,10 @@ def test_memory_diagnostics_reports_metadata_caps_and_git_ignore(tmp_path, monke
 def test_memory_diagnostics_do_not_leak_content_frontmatter_or_user_root(tmp_path):
     canary = "memory-diagnostic-secret-canary"
     repo = tmp_path / "repo"
-    user_memory = tmp_path / canary / ".pico" / "memory"
+    user_memory = tmp_path / canary / ".pony" / "memory"
     repo.mkdir()
     _write_note(
-        repo / ".pico" / "memory",
+        repo / ".pony" / "memory",
         "one.md",
         f"---\nname: {canary}\nsupersedes: [{canary}-missing]\n---\n{canary}-body\n",
     )
@@ -153,7 +153,7 @@ def test_memory_diagnostics_report_scan_limits(
     count,
 ):
     repo = tmp_path / "repo"
-    notes = repo / ".pico" / "memory" / "notes"
+    notes = repo / ".pony" / "memory" / "notes"
     notes.mkdir(parents=True)
     for name, content in files.items():
         (notes / name).write_bytes(content)
@@ -181,7 +181,7 @@ def test_memory_diagnostics_bound_non_candidate_traversal(
     entry_kind,
 ):
     repo = tmp_path / "repo"
-    notes = repo / ".pico" / "memory" / "notes"
+    notes = repo / ".pony" / "memory" / "notes"
     notes.mkdir(parents=True)
     for index in range(3):
         path = notes / f"entry-{index}"
@@ -223,7 +223,7 @@ def test_memory_diagnostics_report_invalid_recognized_frontmatter(
 ):
     repo = tmp_path / "repo"
     _write_note(
-        repo / ".pico" / "memory",
+        repo / ".pony" / "memory",
         "invalid.md",
         f"---\n{frontmatter}\n---\nbody\n",
     )
@@ -242,13 +242,13 @@ def test_memory_diagnostics_report_invalid_recognized_frontmatter(
 
 def test_memory_diagnostics_fail_closed_on_read_and_scan_errors(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
-    _write_note(repo / ".pico" / "memory", "one.md", "body\n")
+    _write_note(repo / ".pony" / "memory", "one.md", "body\n")
 
     def unreadable(*args, **kwargs):
         del args, kwargs
         raise PermissionError("private-read-canary")
 
-    monkeypatch.setattr("pico.memory.diagnostics._read_bounded_regular", unreadable)
+    monkeypatch.setattr("pony.memory.diagnostics._read_bounded_regular", unreadable)
     read_result = collect_memory_diagnostics(
         repo,
         user_memory_root=tmp_path / "missing-user",
@@ -266,7 +266,7 @@ def test_memory_diagnostics_fail_closed_on_read_and_scan_errors(tmp_path, monkey
         del args, kwargs
         raise PermissionError("private-scan-canary")
 
-    monkeypatch.setattr("pico.memory.diagnostics.os.scandir", scan_failed)
+    monkeypatch.setattr("pony.memory.diagnostics.os.scandir", scan_failed)
     scan_result = collect_memory_diagnostics(
         repo,
         user_memory_root=tmp_path / "missing-user",
@@ -281,7 +281,7 @@ def test_memory_diagnostics_fail_closed_on_read_and_scan_errors(tmp_path, monkey
 
 def test_memory_diagnostics_do_not_follow_notes_symlink(tmp_path):
     repo = tmp_path / "repo"
-    memory = repo / ".pico" / "memory"
+    memory = repo / ".pony" / "memory"
     outside = tmp_path / "private-symlink-canary"
     outside.mkdir()
     (outside / "secret.md").write_text("private-body-canary", encoding="utf-8")
@@ -312,7 +312,7 @@ def test_memory_diagnostics_git_failure_is_unknown_and_low_sensitivity(
     _init_git(repo)
 
     monkeypatch.setattr(
-        "pico.memory.diagnostics.run_hardened_git",
+        "pony.memory.diagnostics.run_hardened_git",
         lambda *args, **kwargs: SimpleNamespace(
             returncode=2,
             stdout=b"",
@@ -330,7 +330,7 @@ def test_memory_diagnostics_git_failure_is_unknown_and_low_sensitivity(
     assert any(
         item
         == {
-            "path": "workspace/notes/__pico_git_ignore_probe__.md",
+            "path": "workspace/notes/__pony_git_ignore_probe__.md",
             "count": 1,
             "reason_code": "memory_git_ignore_check_failed",
             "limit": 0,
@@ -343,7 +343,7 @@ def test_memory_diagnostics_git_failure_is_unknown_and_low_sensitivity(
 def test_doctor_contains_memory_git_timeout(tmp_path, monkeypatch):
     _init_git(tmp_path)
     monkeypatch.setattr(
-        "pico.memory.diagnostics.Path.home",
+        "pony.memory.diagnostics.Path.home",
         lambda: tmp_path / "missing-home",
     )
 
@@ -351,7 +351,7 @@ def test_doctor_contains_memory_git_timeout(tmp_path, monkeypatch):
         del args, kwargs
         raise subprocess.TimeoutExpired(["git", "check-ignore"], 5)
 
-    monkeypatch.setattr("pico.memory.diagnostics.run_hardened_git", timeout)
+    monkeypatch.setattr("pony.memory.diagnostics.run_hardened_git", timeout)
 
     result = collect_doctor(tmp_path)
 
@@ -367,8 +367,8 @@ def test_memory_diagnostics_check_git_ignore_with_empty_notes(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
     git = _init_git(repo)
-    (repo / ".gitignore").write_text(".pico/\n", encoding="utf-8")
-    (repo / ".pico" / "memory" / "notes").mkdir(parents=True)
+    (repo / ".gitignore").write_text(".pony/\n", encoding="utf-8")
+    (repo / ".pony" / "memory" / "notes").mkdir(parents=True)
 
     result = collect_memory_diagnostics(
         repo,
@@ -377,7 +377,7 @@ def test_memory_diagnostics_check_git_ignore_with_empty_notes(tmp_path):
     )
 
     assert {
-        "path": "workspace/notes/__pico_git_ignore_probe__.md",
+        "path": "workspace/notes/__pony_git_ignore_probe__.md",
         "count": 1,
         "reason_code": "workspace_user_note_git_ignored",
         "limit": 0,
@@ -403,7 +403,7 @@ def test_memory_diagnostics_use_doctor_check_contract(tmp_path):
     }
 
     _write_note(
-        repo / ".pico" / "memory",
+        repo / ".pony" / "memory",
         "invalid.md",
         "---\ninvalid line\n---\nbody\n",
     )
@@ -430,8 +430,8 @@ def test_doctor_memory_diagnostics_are_read_only_and_render_in_both_formats(
     monkeypatch,
     capsys,
 ):
-    user_memory = tmp_path / "user-home" / ".pico" / "memory"
-    workspace_memory = tmp_path / ".pico" / "memory"
+    user_memory = tmp_path / "user-home" / ".pony" / "memory"
+    workspace_memory = tmp_path / ".pony" / "memory"
     _write_note(
         workspace_memory,
         "invalid.md",
@@ -441,7 +441,7 @@ def test_doctor_memory_diagnostics_are_read_only_and_render_in_both_formats(
     (workspace_memory / "agent_notes.md").chmod(0o644)
     before_mode = (workspace_memory / "agent_notes.md").stat().st_mode
     monkeypatch.setattr(
-        "pico.memory.diagnostics.Path.home", lambda: tmp_path / "user-home"
+        "pony.memory.diagnostics.Path.home", lambda: tmp_path / "user-home"
     )
 
     data = collect_doctor(tmp_path)
@@ -489,7 +489,7 @@ def test_doctor_memory_diagnostics_are_read_only_and_render_in_both_formats(
 
 def test_doctor_does_not_create_missing_memory_directories(tmp_path, monkeypatch):
     user_home = tmp_path / "user-home"
-    monkeypatch.setattr("pico.memory.diagnostics.Path.home", lambda: user_home)
+    monkeypatch.setattr("pony.memory.diagnostics.Path.home", lambda: user_home)
 
     result = collect_doctor(tmp_path)
 
@@ -500,5 +500,5 @@ def test_doctor_does_not_create_missing_memory_directories(tmp_path, monkeypatch
         "remediation": "",
         "issues": [],
     }
-    assert not (tmp_path / ".pico" / "memory").exists()
-    assert not (user_home / ".pico" / "memory").exists()
+    assert not (tmp_path / ".pony" / "memory").exists()
+    assert not (user_home / ".pony" / "memory").exists()

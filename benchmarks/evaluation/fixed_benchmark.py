@@ -8,20 +8,20 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-import pico.memory.service as memorylib
-from pico.agent.messages import validate_messages
-from pico.agent.observability import load_run_artifacts
+import pony.memory.service as memorylib
+from pony.agent.messages import validate_messages
+from pony.agent.observability import load_run_artifacts
 from benchmarks.support.fake_provider import FakeModelClient
-from pico.runtime.application import Pico
-from pico.state.run_store import RunStore
-from pico.state.session_store import SessionStore
-from pico.tools.subprocess import (
+from pony.runtime.application import Pony
+from pony.state.run_store import RunStore
+from pony.state.session_store import SessionStore
+from pony.tools.subprocess import (
     build_trusted_executables,
     run_hardened_command,
     run_hardened_git,
 )
-from pico.state.task_state import STOP_REASON_FINAL_ANSWER_RETURNED
-from pico.workspace.context import WorkspaceContext
+from pony.state.task_state import STOP_REASON_FINAL_ANSWER_RETURNED
+from pony.workspace.context import WorkspaceContext
 from .benchmark_schema import (
     DEFAULT_BENCHMARK_PATH,
     _artifact_path_for_task,
@@ -32,7 +32,7 @@ from .benchmark_schema import (
     load_benchmark,
     summarize_rows,
 )
-from pico.runtime.options import RuntimeOptions
+from pony.runtime.options import RuntimeOptions
 
 FIXED_BENCHMARK_RESULT_FORMAT_VERSION = 1
 DEFAULT_ARTIFACT_PATH = Path("benchmarks/benchmark-v1.json")
@@ -160,7 +160,7 @@ def _apply_task_setup(agent, task, fixture_copy_root):
                 {
                     "role": "user" if index % 2 == 0 else "assistant",
                     "content": f"benchmark-history-{index}-" + ("A" * 220),
-                    "_pico_meta": {"created_at": f"2026-04-15T09:{index:02d}:00+00:00"},
+                    "_pony_meta": {"created_at": f"2026-04-15T09:{index:02d}:00+00:00"},
                 }
             )
         agent.session_store.save(agent.session)
@@ -239,7 +239,7 @@ def _agent_prompt_for_task(task):
             [
                 "- The run is successful only if this verification command passes and you return a final answer.",
                 "- Do not run the verification command yourself unless run_shell is listed as an available tool.",
-                "- If the verifier checks .pico runtime artifacts, return a final answer; those artifacts are produced after the run finishes.",
+                "- If the verifier checks .pony runtime artifacts, return a final answer; those artifacts are produced after the run finishes.",
                 "Verification command:",
                 verifier,
             ]
@@ -266,7 +266,7 @@ class BenchmarkEvaluator:
         self.workspace_root = (
             Path(workspace_root)
             if workspace_root is not None
-            else Path(tempfile.mkdtemp(prefix="pico-benchmark-"))
+            else Path(tempfile.mkdtemp(prefix="pony-benchmark-"))
         ).resolve()
         self.model_name = model_name
         self.model_version = model_version
@@ -333,13 +333,13 @@ class BenchmarkEvaluator:
             fixture_copy_root,
             repo_root_override=fixture_copy_root,
         )
-        session_store = SessionStore(fixture_copy_root / ".pico" / "sessions")
-        run_store = RunStore(fixture_copy_root / ".pico" / "runs")
+        session_store = SessionStore(fixture_copy_root / ".pony" / "sessions")
+        run_store = RunStore(fixture_copy_root / ".pony" / "runs")
         if self.model_client_factory is not None:
             model_client = self.model_client_factory(task=task, workspace=workspace)
         else:
             model_client = FakeModelClient(_scripted_outputs_for_task(task))
-        agent = Pico(
+        agent = Pony(
             model_client=model_client,
             workspace=workspace,
             session_store=session_store,

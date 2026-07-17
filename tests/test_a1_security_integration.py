@@ -9,15 +9,15 @@ from unittest.mock import Mock
 
 import pytest
 
-from pico import Pico
-from pico.state.session_store import SessionStore
-from pico.workspace.context import WorkspaceContext
-from pico.cli.app import main
-from pico.cli.start import run_agent_once
-from pico.config.environment import write_project_env_assignments
-from pico.providers.response import Response, StopReason
-from pico.tools.shell import ApprovedShellExecution
-from pico.runtime.options import RuntimeOptions
+from pony import Pony
+from pony.state.session_store import SessionStore
+from pony.workspace.context import WorkspaceContext
+from pony.cli.app import main
+from pony.cli.start import run_agent_once
+from pony.config.environment import write_project_env_assignments
+from pony.providers.response import Response, StopReason
+from pony.tools.shell import ApprovedShellExecution
+from pony.runtime.options import RuntimeOptions
 
 
 class ScriptedProvider:
@@ -43,7 +43,7 @@ def _response(stop_reason, *content):
 def _build_agent(root, provider, *, session=None):
     root.mkdir(parents=True, exist_ok=True)
     (root / "README.md").write_text("demo\n", encoding="utf-8")
-    return Pico(
+    return Pony(
         model_client=provider,
         workspace=WorkspaceContext.build(
             root,
@@ -53,7 +53,7 @@ def _build_agent(root, provider, *, session=None):
                 "sh": sys.executable,
             },
         ),
-        session_store=SessionStore(root / ".pico" / "sessions"),
+        session_store=SessionStore(root / ".pony" / "sessions"),
         session=session,
         options=RuntimeOptions(approval_policy="ask", max_steps=6),
     )
@@ -96,17 +96,17 @@ def test_offline_a1_canary_crosses_real_boundaries_without_normal_artifact_leak(
 ):
     secret = "ghp_" + "A" * 32
     safe_blob_bytes = b"safe recovery bytes\n"
-    monkeypatch.setenv("PICO_API_KEY", secret)
+    monkeypatch.setenv("PONY_API_KEY", secret)
     monkeypatch.setattr(
-        "pico.cli.diagnostics.check_api_connectivity",
+        "pony.cli.diagnostics.check_api_connectivity",
         Mock(side_effect=AssertionError("offline doctor attempted network")),
     )
     write_project_env_assignments(
         tmp_path,
         {
-            "PICO_PROVIDER": "openai",
-            "PICO_API_BASE": "https://api.deepseek.com",
-            "PICO_API_KEY": secret,
+            "PONY_PROVIDER": "openai",
+            "PONY_API_BASE": "https://api.deepseek.com",
+            "PONY_API_KEY": secret,
         },
     )
 
@@ -116,7 +116,7 @@ def test_offline_a1_canary_crosses_real_boundaries_without_normal_artifact_leak(
         "id": "candidate-canary",
         "created_at": "2026-01-01T00:00:00+00:00",
         "workspace_root": str(tmp_path),
-        "messages": [{"role": "user", "content": secret, "_pico_meta": {}}],
+        "messages": [{"role": "user", "content": secret, "_pony_meta": {}}],
         "working_memory": {
             "task_summary": secret,
             "recent_files": [secret],
@@ -318,7 +318,7 @@ def test_offline_a1_canary_crosses_real_boundaries_without_normal_artifact_leak(
     error_root = tmp_path / "provider-error"
     error_provider = ScriptedProvider([RuntimeError("provider failure " + secret)])
     error_agent = _build_agent(error_root, error_provider)
-    caplog.set_level(logging.DEBUG, logger="pico")
+    caplog.set_level(logging.DEBUG, logger="pony")
     assert run_agent_once(error_agent, ["provider error", secret]) == 1
     captured = capsys.readouterr()
     assert secret not in captured.out + captured.err + caplog.text
@@ -371,13 +371,13 @@ def test_offline_a1_canary_crosses_real_boundaries_without_normal_artifact_leak(
     assert secret not in json.dumps(agent.memory.to_dict())
 
     holders = []
-    for pico_root in (tmp_path / ".pico", error_root / ".pico"):
-        for path in pico_root.rglob("*"):
+    for pony_root in (tmp_path / ".pony", error_root / ".pony"):
+        for path in pony_root.rglob("*"):
             if path.is_file() and secret.encode() in path.read_bytes():
                 holders.append(path)
     assert holders == [legacy_path]
 
     if os.name == "posix":
         assert stat.S_IMODE((tmp_path / ".env").stat().st_mode) == 0o600
-    _assert_private_tree(tmp_path / ".pico")
-    _assert_private_tree(error_root / ".pico")
+    _assert_private_tree(tmp_path / ".pony")
+    _assert_private_tree(error_root / ".pony")

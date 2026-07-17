@@ -5,16 +5,16 @@ from unittest.mock import Mock
 
 import pytest
 
-import pico.agent.loop as agent_loop_module
-from pico.security import private_files as security_module
-from pico import Pico
-from pico.state.session_store import SessionStore
-from pico.workspace.context import WorkspaceContext
+import pony.agent.loop as agent_loop_module
+from pony.security import private_files as security_module
+from pony import Pony
+from pony.state.session_store import SessionStore
+from pony.workspace.context import WorkspaceContext
 from benchmarks.support.fake_provider import FakeModelClient
-from pico.agent.loop import AgentLoop
-from pico.providers.transport import ProviderTransportError
-from pico.providers.response import Response, StopReason
-from pico.runtime.options import RuntimeOptions
+from pony.agent.loop import AgentLoop
+from pony.providers.transport import ProviderTransportError
+from pony.providers.response import Response, StopReason
+from pony.runtime.options import RuntimeOptions
 
 
 class NativeScriptProvider:
@@ -94,10 +94,10 @@ class EvidenceScriptProvider:
 def build_native_agent(tmp_path, provider, **kwargs):
     tmp_path.mkdir(parents=True, exist_ok=True)
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
-    return Pico(
+    return Pony(
         model_client=provider,
         workspace=WorkspaceContext.build(tmp_path),
-        session_store=SessionStore(tmp_path / ".pico" / "sessions"),
+        session_store=SessionStore(tmp_path / ".pony" / "sessions"),
         options=RuntimeOptions(approval_policy="auto", **kwargs),
     )
 
@@ -106,8 +106,8 @@ def build_agent(tmp_path, outputs, max_steps=6):
     tmp_path.mkdir(parents=True, exist_ok=True)
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
     workspace = WorkspaceContext.build(tmp_path)
-    store = SessionStore(tmp_path / ".pico" / "sessions")
-    return Pico(
+    store = SessionStore(tmp_path / ".pony" / "sessions")
+    return Pony(
         model_client=FakeModelClient(outputs),
         workspace=workspace,
         session_store=store,
@@ -125,7 +125,7 @@ def read_trace(agent):
     ]
 
 
-def test_agent_loop_runs_same_control_flow_as_pico_ask(tmp_path):
+def test_agent_loop_runs_same_control_flow_as_pony_ask(tmp_path):
     (tmp_path / "hello.txt").write_text("alpha\n", encoding="utf-8")
     agent = build_agent(
         tmp_path,
@@ -251,7 +251,7 @@ def test_provider_context_error_forces_one_compaction_and_retry(tmp_path):
             {
                 "role": "user" if index % 2 == 0 else "assistant",
                 "content": f"old-marker-{index} " + ("x" * 1_000),
-                "_pico_meta": {},
+                "_pony_meta": {},
             }
         )
     agent.session_store.save(agent.session)
@@ -265,7 +265,7 @@ def test_provider_context_error_forces_one_compaction_and_retry(tmp_path):
     assert sum(entry["type"] == "context_recovery" for entry in tree.entries) == 1
     retried_messages = provider.calls[-1]
     assert any(
-        "<pico:session_summary>" in str(message.get("content", ""))
+        "<pony:session_summary>" in str(message.get("content", ""))
         for message in retried_messages
     )
     assert "old-marker-0" not in json.dumps(retried_messages)
@@ -314,9 +314,9 @@ def test_model_retry_preserves_retry_action_feedback(tmp_path, monkeypatch):
     agent = build_native_agent(tmp_path, provider)
 
     assert agent.ask("recover protocol") == "done"
-    assert "pico:runtime_feedback" not in json.dumps(provider.calls[0])
-    assert "pico:runtime_feedback" in json.dumps(provider.calls[1])
-    assert "pico:runtime_feedback" in json.dumps(provider.calls[2])
+    assert "pony:runtime_feedback" not in json.dumps(provider.calls[0])
+    assert "pony:runtime_feedback" in json.dumps(provider.calls[1])
+    assert "pony:runtime_feedback" in json.dumps(provider.calls[2])
     requested = [
         event for event in read_trace(agent) if event["event"] == "model_requested"
     ]
@@ -388,7 +388,7 @@ def test_missing_custom_transport_evidence_is_null_in_report(tmp_path):
     assert model_turn["transport_evidence_complete"] is False
 
 
-def test_pico_ask_delegates_to_agent_loop(tmp_path):
+def test_pony_ask_delegates_to_agent_loop(tmp_path):
     agent = build_agent(tmp_path, ["Facade works."])
 
     assert agent.ask("Use facade") == "Facade works."
@@ -574,8 +574,8 @@ def test_ordinary_workspace_tool_error_commits_pair_consumes_step_and_finishes(
     )
     assert tool_result["content"][0]["tool_use_id"] == "tu_error"
     assert tool_result["content"][0]["is_error"] is True
-    assert tool_result["_pico_meta"]["tool_status"] == "error"
-    tool_change_id = tool_result["_pico_meta"]["tool_change_id"]
+    assert tool_result["_pony_meta"]["tool_status"] == "error"
+    tool_change_id = tool_result["_pony_meta"]["tool_change_id"]
     tool_change = agent.checkpoint_store.load_tool_change_record(tool_change_id)
     assert tool_change["status"] == "error"
     assert tool_change["error"]["code"] == "tool_failed"
@@ -739,7 +739,7 @@ def test_side_effect_then_pair_save_failure_stops_before_another_provider_call(
     assert messages[0]["role"] == "user"
     assert messages[0]["content"] == "write file"
     assert messages[-1]["role"] == "assistant"
-    assert messages[-1]["_pico_meta"]["origin"] == "runtime_terminal"
+    assert messages[-1]["_pony_meta"]["origin"] == "runtime_terminal"
     assert messages[-1]["content"] == (
         "This turn stopped because session state could not be saved."
     )
@@ -893,7 +893,7 @@ def test_ambiguous_pair_save_never_overwrites_reloaded_canonical_with_terminal(
     assert persisted == agent.session
     assert "tu_ambiguous" not in json.dumps(persisted["messages"])
     assert all(
-        message.get("_pico_meta", {}).get("origin") != "runtime_terminal"
+        message.get("_pony_meta", {}).get("origin") != "runtime_terminal"
         for message in persisted["messages"]
     )
 
@@ -1026,7 +1026,7 @@ def test_pair_save_failure_restores_pre_tool_memory(tmp_path, monkeypatch):
         agent.ask("read target")
 
     persisted = agent.session_store.load(agent.session["id"])
-    assert persisted["messages"][-1]["_pico_meta"]["origin"] == "runtime_terminal"
+    assert persisted["messages"][-1]["_pony_meta"]["origin"] == "runtime_terminal"
     assert persisted["working_memory"]["recent_files"] == ["baseline.txt"]
     assert persisted["memory"]["file_summaries"] == {
         "baseline.txt": baseline_summaries["baseline.txt"]["summary"]
@@ -1275,7 +1275,7 @@ def test_terminal_path_matrix_persists_exactly_one_finalization(
             last = messages[-1] if messages else {}
             if (
                 last.get("role") == "assistant"
-                and (last.get("_pico_meta") or {}).get("origin") != "runtime_terminal"
+                and (last.get("_pony_meta") or {}).get("origin") != "runtime_terminal"
             ):
                 raise primary
             return original_append(
@@ -1317,7 +1317,7 @@ def test_terminal_path_matrix_persists_exactly_one_finalization(
     runtime_terminals = [
         message
         for message in agent.session["messages"]
-        if (message.get("_pico_meta") or {}).get("origin") == "runtime_terminal"
+        if (message.get("_pony_meta") or {}).get("origin") == "runtime_terminal"
     ]
     assert len(runtime_terminals) == runtime_terminal_count
 
@@ -1341,7 +1341,7 @@ def test_any_provider_exception_closes_model_error_and_reraises_original(
     assert agent.run_store.report_path(agent.current_task_state).exists()
     terminal = agent.session["messages"][-1]
     assert terminal["role"] == "assistant"
-    assert terminal["_pico_meta"]["origin"] == "runtime_terminal"
+    assert terminal["_pony_meta"]["origin"] == "runtime_terminal"
     assert str(error) not in terminal["content"]
 
 
@@ -1423,7 +1423,7 @@ def test_post_response_runtime_fault_preserves_primary_usage_and_terminalizes_on
         [
             message
             for message in agent.session["messages"]
-                if (message.get("_pico_meta") or {}).get("origin") == "runtime_terminal"
+                if (message.get("_pony_meta") or {}).get("origin") == "runtime_terminal"
         ]
         )
         == 1
@@ -1482,7 +1482,7 @@ def test_keyboard_interrupt_closes_run_and_reraises(tmp_path):
     assert agent.current_task_state.status == "stopped"
     assert agent.current_task_state.stop_reason == "interrupted"
     assert agent.run_store.report_path(agent.current_task_state).exists()
-    assert agent.session["messages"][-1]["_pico_meta"]["origin"] == "runtime_terminal"
+    assert agent.session["messages"][-1]["_pony_meta"]["origin"] == "runtime_terminal"
 
 
 @pytest.mark.parametrize("secondary", [OSError("trace unavailable"), SystemExit(2)])
@@ -1564,7 +1564,7 @@ def test_finalizer_failure_does_not_mask_provider_exception(
     secret = "github_pat_" + "F" * 32
     primary = ValueError("primary provider failure")
     agent = build_native_agent(tmp_path, RaisingProvider(primary))
-    caplog.set_level(logging.DEBUG, logger="pico")
+    caplog.set_level(logging.DEBUG, logger="pony")
     monkeypatch.setattr(
         agent.run_store,
         "write_report",
@@ -1674,7 +1674,7 @@ def test_initial_user_save_failure_does_not_start_a_run(tmp_path, monkeypatch):
 
     assert agent.current_task_state is None
     assert agent.session["messages"] == []
-    assert not list((tmp_path / ".pico" / "runs").glob("run_*"))
+    assert not list((tmp_path / ".pony" / "runs").glob("run_*"))
 
 
 @pytest.mark.parametrize("failure", ["start_run", "run_started"])

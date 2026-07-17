@@ -1,13 +1,13 @@
 import pytest
 
-from pico.state.checkpoint_store import CheckpointStore
-from pico.recovery.checkpoint_writer import (
+from pony.state.checkpoint_store import CheckpointStore
+from pony.recovery.checkpoint_writer import (
     RecoveryCheckpointWriter,
     coalesce_file_entries,
     validate_file_entry,
 )
-from pico.tools.change_recorder import ToolChangeRecorder
-from pico.recovery.models import new_tool_change_record
+from pony.tools.change_recorder import ToolChangeRecorder
+from pony.recovery.models import new_tool_change_record
 
 
 def test_turn_checkpoint_links_real_tool_changes_and_file_entries(tmp_path):

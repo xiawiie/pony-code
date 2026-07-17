@@ -2,21 +2,21 @@ import json
 
 import pytest
 
-from pico import Pico
-from pico.state.session_store import SessionStore
-from pico.workspace.context import WorkspaceContext
-from pico.tools import registry as toolkit
+from pony import Pony
+from pony.state.session_store import SessionStore
+from pony.workspace.context import WorkspaceContext
+from pony.tools import registry as toolkit
 from benchmarks.evaluation.benchmark_schema import validate_benchmark
 from benchmarks.evaluation.fixed_benchmark import BenchmarkEvaluator
 from benchmarks.support.fake_provider import FakeModelClient
-from pico.runtime.options import RuntimeOptions
+from pony.runtime.options import RuntimeOptions
 
 
 def build_agent(tmp_path, allowed_tools=None):
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
     workspace = WorkspaceContext.build(tmp_path)
-    store = SessionStore(tmp_path / ".pico" / "sessions")
-    return Pico(
+    store = SessionStore(tmp_path / ".pony" / "sessions")
+    return Pony(
         model_client=FakeModelClient(["Done."]),
         workspace=workspace,
         session_store=store,

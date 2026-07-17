@@ -4,15 +4,15 @@ import pytest
 from prompt_toolkit.document import Document
 from prompt_toolkit.utils import get_cwidth
 
-from pico.cli.start import run_repl
-from pico.tui.app import (
+from pony.cli.start import run_repl
+from pony.tui.app import (
     SlashCommandCompleter,
     _CompactPromptSession,
     _key_bindings,
     run_tui,
     should_use_tui,
 )
-from pico.tui.render import _COLOR_STYLE, logo_text
+from pony.tui.render import _COLOR_STYLE, logo_text
 
 
 class _Stream:
@@ -151,7 +151,7 @@ def test_tui_editor_grows_without_filling_the_terminal():
 def test_repl_routes_a_capable_tty_to_tui_and_finalizes(monkeypatch):
     calls = []
     agent = SimpleNamespace(finalize_sandbox_session=lambda: calls.append("finalize"))
-    monkeypatch.setattr("pico.tui.app.should_use_tui", lambda: True)
+    monkeypatch.setattr("pony.tui.app.should_use_tui", lambda: True)
 
     def fake_run_tui(received, **options):
         assert received is agent
@@ -161,7 +161,7 @@ def test_repl_routes_a_capable_tty_to_tui_and_finalizes(monkeypatch):
         )
         return 0
 
-    monkeypatch.setattr("pico.tui.app.run_tui", fake_run_tui)
+    monkeypatch.setattr("pony.tui.app.run_tui", fake_run_tui)
 
     assert run_repl(agent, model="model", no_color=True) == 0
     assert calls == [("model", True, True), "finalize"]
@@ -170,7 +170,7 @@ def test_repl_routes_a_capable_tty_to_tui_and_finalizes(monkeypatch):
 def test_plain_repl_never_starts_tui(monkeypatch):
     agent = SimpleNamespace()
     monkeypatch.setattr(
-        "pico.tui.app.run_tui",
+        "pony.tui.app.run_tui",
         lambda *_args, **_kwargs: pytest.fail("TUI started"),
     )
     monkeypatch.setattr(
@@ -202,9 +202,9 @@ def test_tui_restores_runtime_hooks(monkeypatch):
         def prompt(self, *_args, **_kwargs):
             return "/exit"
 
-    monkeypatch.setattr("pico.tui.app._CompactPromptSession", FakeSession)
+    monkeypatch.setattr("pony.tui.app._CompactPromptSession", FakeSession)
     monkeypatch.setattr(
-        "pico.tui.render.print_formatted_text",
+        "pony.tui.render.print_formatted_text",
         lambda value, **_kwargs: output.append(value),
     )
 
@@ -239,13 +239,13 @@ def test_compact_header_keeps_version_model_and_intro_within_terminal(
             provider_metadata={"protocol_family": "anthropic_messages"}
         ),
     )
-    monkeypatch.setattr("pico.tui.render.metadata.version", lambda _name: "1.2.3")
+    monkeypatch.setattr("pony.tui.render.metadata.version", lambda _name: "1.2.3")
     monkeypatch.setattr(
-        "pico.tui.render.print_formatted_text",
+        "pony.tui.render.print_formatted_text",
         lambda value, **_kwargs: output.append(value),
     )
 
-    from pico.tui.render import TuiRenderer
+    from pony.tui.render import TuiRenderer
 
     TuiRenderer(no_color=True).header(
         agent,

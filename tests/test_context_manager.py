@@ -2,28 +2,28 @@ import hashlib
 
 import pytest
 
-from pico import Pico
-from pico.state.session_store import SessionStore
-from pico.workspace.context import WorkspaceContext
+from pony import Pony
+from pony.state.session_store import SessionStore
+from pony.workspace.context import WorkspaceContext
 from benchmarks.support.fake_provider import FakeModelClient
-from pico.context.renderer import render_current_user_message
-from pico.agent.context_manager import ContextManager, _build_tools_list
-from pico.runtime.options import RuntimeOptions
+from pony.context.renderer import render_current_user_message
+from pony.agent.context_manager import ContextManager, _build_tools_list
+from pony.runtime.options import RuntimeOptions
 
 
 def _agent(tmp_path):
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
-    return Pico(
+    return Pony(
         model_client=FakeModelClient([]),
         workspace=WorkspaceContext.build(tmp_path),
-        session_store=SessionStore(tmp_path / ".pico" / "sessions"),
+        session_store=SessionStore(tmp_path / ".pony" / "sessions"),
         options=RuntimeOptions(approval_policy="auto"),
     )
 
 
 def _build_request(agent, user_message):
     agent.session["messages"].append(
-        {"role": "user", "content": user_message, "_pico_meta": {}}
+        {"role": "user", "content": user_message, "_pony_meta": {}}
     )
     snapshot, telemetry = render_current_user_message(agent, user_message)
     return ContextManager(agent).build_request(
@@ -79,7 +79,7 @@ def test_history_is_never_silently_dropped(tmp_path):
         {
             "role": "user" if index % 2 == 0 else "assistant",
             "content": f"old-{index}-" + ("x" * 300),
-            "_pico_meta": {},
+            "_pony_meta": {},
         }
         for index in range(10)
     ]

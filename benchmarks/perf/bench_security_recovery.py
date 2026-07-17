@@ -5,12 +5,12 @@ import tempfile
 from pathlib import Path
 
 from benchmarks.perf.harness import bench
-from pico.state.checkpoint_store import CheckpointStore
-from pico.recovery.manager import RecoveryManager
-from pico.recovery.models import new_checkpoint_record
-from pico.recovery.policy import assess_command
-from pico.security.redaction import redact_artifact
-from pico.tools.change_recorder import ToolChangeRecorder
+from pony.state.checkpoint_store import CheckpointStore
+from pony.recovery.manager import RecoveryManager
+from pony.recovery.models import new_checkpoint_record
+from pony.recovery.policy import assess_command
+from pony.security.redaction import redact_artifact
+from pony.tools.change_recorder import ToolChangeRecorder
 
 
 SCENARIO_NAMES = (
@@ -64,7 +64,7 @@ def _restore_fixture(root, count):
 
 
 def main():
-    secrets = {f"PICO_TOKEN_{index}": f"ghp_{index:032d}" for index in range(100)}
+    secrets = {f"PONY_TOKEN_{index}": f"ghp_{index:032d}" for index in range(100)}
     artifact = {
         "items": list(secrets.values()),
         "nested": [{"token": value} for value in secrets.values()],

@@ -13,15 +13,15 @@ import stat
 from pathlib import Path
 from unittest.mock import MagicMock
 
-import pico.agent.loop as agent_loop_module
-from pico.agent.loop import _prepare_tool_result
-from pico.agent.model_capabilities import TokenAccounting
-from pico.security.redaction import redact_text
+import pony.agent.loop as agent_loop_module
+from pony.agent.loop import _prepare_tool_result
+from pony.agent.model_capabilities import TokenAccounting
+from pony.security.redaction import redact_text
 
 
 def _stub_agent(tmp_path, run_id="run1"):
     a = MagicMock()
-    a.current_run_dir = tmp_path / ".pico" / "runs" / run_id
+    a.current_run_dir = tmp_path / ".pony" / "runs" / run_id
     a.current_run_dir.mkdir(parents=True, exist_ok=True)
     a.redact_text.side_effect = lambda value: value
     a.token_accounting = TokenAccounting()
@@ -180,8 +180,8 @@ def test_large_result_without_run_dir_still_digests(tmp_path):
 
 def test_digest_computed_exactly_once(tmp_path, monkeypatch):
     """Task D1: _prepare_tool_result must not run per-tool summarizer twice."""
-    import pico.context.digest as digest_mod
-    from pico.agent.loop import _prepare_tool_result
+    import pony.context.digest as digest_mod
+    from pony.agent.loop import _prepare_tool_result
 
     original = digest_mod._digest_read_file
     call_count = {"n": 0}
@@ -194,7 +194,7 @@ def test_digest_computed_exactly_once(tmp_path, monkeypatch):
     monkeypatch.setitem(digest_mod._DIGESTERS, "read_file", counting_digest_read_file)
 
     a = MagicMock()
-    a.current_run_dir = tmp_path / ".pico" / "runs" / "r1"
+    a.current_run_dir = tmp_path / ".pony" / "runs" / "r1"
     a.current_run_dir.mkdir(parents=True, exist_ok=True)
     a.token_accounting = TokenAccounting()
     a.context_config = {"tool_results": {"inline_tokens": 100, "digest_tokens": 512}}

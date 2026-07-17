@@ -1,4 +1,4 @@
-from pico.providers.response import Response, StopReason
+from pony.providers.response import Response, StopReason
 
 
 def test_stop_reason_enum_values():

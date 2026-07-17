@@ -3,9 +3,9 @@
 
 from unittest.mock import MagicMock
 
-from pico.context.renderer import render_current_user_message
-from pico.agent.context_manager import ContextManager
-from pico.agent.messages import strip_pico_meta
+from pony.context.renderer import render_current_user_message
+from pony.agent.context_manager import ContextManager
+from pony.agent.messages import strip_pony_meta
 
 
 def _make_agent_with_messages(messages):
@@ -37,7 +37,7 @@ def test_message_immutability_across_turns():
             {
                 "role": "user",
                 "content": user_message,
-                "_pico_meta": {"created_at": "2026-07-10T00:00:00+00:00"},
+                "_pony_meta": {"created_at": "2026-07-10T00:00:00+00:00"},
             }
         )
         snapshot, telemetry = render_current_user_message(agent, user_message)
@@ -47,31 +47,31 @@ def test_message_immutability_across_turns():
             preflight_metadata={},
         )
         agent.session["messages"].append(
-            {"role": "assistant", "content": "ack", "_pico_meta": {}}
+            {"role": "assistant", "content": "ack", "_pony_meta": {}}
         )
     # Session's original entries should be byte-identical after 2 builds.
     assert agent.session["messages"][0] == snapshot_before[0]
     assert agent.session["messages"][1] == snapshot_before[1]
 
 
-def test_pico_meta_never_in_provider_payload():
-    """strip_pico_meta ensures no _pico_meta reaches the provider."""
+def test_pony_meta_never_in_provider_payload():
+    """strip_pony_meta ensures no _pony_meta reaches the provider."""
     src = [
-        {"role": "user", "content": "hi", "_pico_meta": {"a": 1}},
-        {"role": "assistant", "content": "yo", "_pico_meta": {"b": 2}},
+        {"role": "user", "content": "hi", "_pony_meta": {"a": 1}},
+        {"role": "assistant", "content": "yo", "_pony_meta": {"b": 2}},
     ]
-    cleaned = strip_pico_meta(src)
+    cleaned = strip_pony_meta(src)
     for m in cleaned:
-        assert "_pico_meta" not in m
+        assert "_pony_meta" not in m
 
 
 def test_recently_recalled_deque_bounded(tmp_path):
     """After N recall_for_turn calls, session["recently_recalled"] must
     stay bounded to skip_recent_turns + 1."""
     from types import SimpleNamespace
-    from pico.memory.block_store import BlockStore
-    from pico.memory.recall import recall_for_turn
-    from pico.memory.retrieval import Retrieval
+    from pony.memory.block_store import BlockStore
+    from pony.memory.recall import recall_for_turn
+    from pony.memory.retrieval import Retrieval
 
     (tmp_path / "notes").mkdir(parents=True)
     (tmp_path / "notes" / "cache.md").write_text(

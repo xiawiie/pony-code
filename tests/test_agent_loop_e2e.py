@@ -1,7 +1,7 @@
 """端到端：AgentLoop 使用 structured request 完成一轮 tool_use → tool_result → final."""
 
-from pico.providers.response import Response, StopReason
-from pico.runtime.options import RuntimeOptions
+from pony.providers.response import Response, StopReason
+from pony.runtime.options import RuntimeOptions
 
 
 class _StubProvider:
@@ -27,9 +27,9 @@ class _StubProvider:
 
 
 def test_end_to_end_tool_call_then_final(tmp_path):
-    from pico.runtime.application import Pico
-    from pico.state.session_store import SessionStore
-    from pico.workspace.context import WorkspaceContext
+    from pony.runtime.application import Pony
+    from pony.state.session_store import SessionStore
+    from pony.workspace.context import WorkspaceContext
 
     (tmp_path / "README.md").write_text("hello\n", encoding="utf-8")
 
@@ -56,18 +56,18 @@ def test_end_to_end_tool_call_then_final(tmp_path):
     )
 
     workspace = WorkspaceContext.build(tmp_path)
-    store = SessionStore(tmp_path / ".pico" / "sessions")
-    pico = Pico(
+    store = SessionStore(tmp_path / ".pony" / "sessions")
+    pony = Pony(
         model_client=provider,
         workspace=workspace,
         session_store=store,
         options=RuntimeOptions(approval_policy="auto", max_steps=3),
     )
 
-    result = pico.ask("what's in readme?")
+    result = pony.ask("what's in readme?")
     assert result.strip() == "done"
 
-    msgs = pico.session["messages"]
+    msgs = pony.session["messages"]
     # 应该有：user + assistant(tool_use) + user(tool_result) + assistant("done")
     roles = [m["role"] for m in msgs]
     assert roles == ["user", "assistant", "user", "assistant"]
@@ -88,28 +88,28 @@ def test_end_to_end_tool_call_then_final(tmp_path):
 
 def test_end_to_end_fake_provider_uses_structured_surface(tmp_path):
     from benchmarks.support.fake_provider import FakeModelClient
-    from pico.runtime.application import Pico
-    from pico.state.session_store import SessionStore
-    from pico.workspace.context import WorkspaceContext
+    from pony.runtime.application import Pony
+    from pony.state.session_store import SessionStore
+    from pony.workspace.context import WorkspaceContext
 
     inner = FakeModelClient(["ok"])
     workspace = WorkspaceContext.build(tmp_path)
-    store = SessionStore(tmp_path / ".pico" / "sessions")
-    pico = Pico(
+    store = SessionStore(tmp_path / ".pony" / "sessions")
+    pony = Pony(
         model_client=inner,
         workspace=workspace,
         session_store=store,
         options=RuntimeOptions(approval_policy="auto"),
     )
 
-    assert pico.model_client is inner
-    assert pico.ask("hi") == "ok"
+    assert pony.model_client is inner
+    assert pony.ask("hi") == "ok"
 
 
 def test_end_to_end_structured_provider_stays_as_is(tmp_path):
-    from pico.runtime.application import Pico
-    from pico.state.session_store import SessionStore
-    from pico.workspace.context import WorkspaceContext
+    from pony.runtime.application import Pony
+    from pony.state.session_store import SessionStore
+    from pony.workspace.context import WorkspaceContext
 
     provider = _StubProvider(
         [
@@ -121,13 +121,13 @@ def test_end_to_end_structured_provider_stays_as_is(tmp_path):
         ]
     )
     workspace = WorkspaceContext.build(tmp_path)
-    store = SessionStore(tmp_path / ".pico" / "sessions")
-    pico = Pico(
+    store = SessionStore(tmp_path / ".pony" / "sessions")
+    pony = Pony(
         model_client=provider,
         workspace=workspace,
         session_store=store,
         options=RuntimeOptions(approval_policy="auto"),
     )
 
-    assert pico.model_client is provider
-    assert pico.ask("hi") == "hi"
+    assert pony.model_client is provider
+    assert pony.ask("hi") == "hi"

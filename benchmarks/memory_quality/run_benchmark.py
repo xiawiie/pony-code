@@ -1,7 +1,7 @@
 """Memory quality benchmark runner.
 
 Reads `scenario_*.jsonl`, sets up isolated fixture repos, runs fake or live
-Pico sessions, scores memory tool traces, and emits text or JSON summaries.
+Pony sessions, scores memory tool traces, and emits text or JSON summaries.
 
 Usage:
     python benchmarks/memory_quality/run_benchmark.py [--scenario <substring>]
@@ -16,7 +16,7 @@ import shutil
 import sys
 import tempfile
 from pathlib import Path
-from pico.runtime.options import RuntimeOptions
+from pony.runtime.options import RuntimeOptions
 
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
@@ -30,12 +30,12 @@ from benchmarks.evaluation.metrics_common import (  # noqa: E402
     _decode_json_object,
     _validate_record_header,
 )
-from pico.memory.block_store import BlockStore  # noqa: E402
-from pico.memory.retrieval import Retrieval  # noqa: E402
+from pony.memory.block_store import BlockStore  # noqa: E402
+from pony.memory.retrieval import Retrieval  # noqa: E402
 from benchmarks.support.fake_provider import FakeModelClient  # noqa: E402
-from pico.runtime.application import Pico  # noqa: E402
-from pico.state.session_store import SessionStore  # noqa: E402
-from pico.workspace.context import WorkspaceContext  # noqa: E402
+from pony.runtime.application import Pony  # noqa: E402
+from pony.state.session_store import SessionStore  # noqa: E402
+from pony.workspace.context import WorkspaceContext  # noqa: E402
 
 
 MEMORY_QUALITY_SCENARIO_FORMAT_VERSION = 1
@@ -90,16 +90,16 @@ def _setup_note_target(workspace: Path, rel_path: str) -> Path:
         raise ValueError(f"invalid setup note path: {rel_path}")
     if sub_path == "agent_notes.md":
         root = (
-            workspace / ".pico" / "memory"
+            workspace / ".pony" / "memory"
             if scope == "workspace"
-            else workspace / ".pico" / "benchmark-user-memory"
+            else workspace / ".pony" / "benchmark-user-memory"
         )
         return root / "agent_notes.md"
     if sub_path.startswith("notes/") and sub_path.endswith(".md"):
         root = (
-            workspace / ".pico" / "memory"
+            workspace / ".pony" / "memory"
             if scope == "workspace"
-            else workspace / ".pico" / "benchmark-user-memory"
+            else workspace / ".pony" / "benchmark-user-memory"
         )
         return root / sub_path
     raise ValueError(f"invalid setup note path: {rel_path}")
@@ -115,7 +115,7 @@ def _validated_setup_notes(scenario: dict) -> list[tuple[str, str]]:
     validated_notes = []
     for rel, content in setup_notes.items():
         rel_path = str(rel)
-        _setup_note_target(Path("__pico_workspace__"), rel_path)
+        _setup_note_target(Path("__pony_workspace__"), rel_path)
         validated_notes.append((rel_path, str(content)))
     return validated_notes
 
@@ -125,7 +125,7 @@ def setup_workspace(scenario: dict, parent_dir: Path | None = None) -> Path:
     setup_notes = _validated_setup_notes(scenario)
     ws = Path(
         tempfile.mkdtemp(
-            prefix="pico-memory-bench-", dir=str(parent_dir) if parent_dir else None
+            prefix="pony-memory-bench-", dir=str(parent_dir) if parent_dir else None
         )
     ).resolve()
     (ws / "AGENTS.md").write_text("# Test project\n", encoding="utf-8")
@@ -169,7 +169,7 @@ def _expected_note_from_turn(turn: dict) -> str:
 
 
 def _agent_notes_text(workspace: Path) -> str:
-    path = Path(workspace) / ".pico" / "memory" / "agent_notes.md"
+    path = Path(workspace) / ".pony" / "memory" / "agent_notes.md"
     if not path.exists():
         return ""
     return path.read_text(encoding="utf-8", errors="replace")
@@ -367,12 +367,12 @@ def _build_transport_client(mode: str, repo_root: Path, scenario: dict):
     return _make_provider_client(repo_root)
 
 
-def _build_agent(workspace: Path, model_client) -> Pico:
+def _build_agent(workspace: Path, model_client) -> Pony:
     workspace_context = WorkspaceContext.build(str(workspace))
-    agent = Pico(
+    agent = Pony(
         model_client=model_client,
         workspace=workspace_context,
-        session_store=SessionStore(str(workspace / ".pico" / "sessions")),
+        session_store=SessionStore(str(workspace / ".pony" / "sessions")),
         options=RuntimeOptions(
         approval_policy="never",
         max_steps=8,
@@ -382,8 +382,8 @@ def _build_agent(workspace: Path, model_client) -> Pico:
         ),
     )
     agent.memory_store = BlockStore(
-        workspace / ".pico" / "memory",
-        workspace / ".pico" / "benchmark-user-memory",
+        workspace / ".pony" / "memory",
+        workspace / ".pony" / "benchmark-user-memory",
     )
     agent.memory_retrieval = Retrieval(agent.memory_store)
     if hasattr(agent.context_manager, "_refresher"):
@@ -392,7 +392,7 @@ def _build_agent(workspace: Path, model_client) -> Pico:
     return agent
 
 
-def _read_latest_trace(agent: Pico) -> list[dict]:
+def _read_latest_trace(agent: Pony) -> list[dict]:
     if agent.current_task_state is None:
         return []
     trace_path = agent.run_store.trace_path(agent.current_task_state)

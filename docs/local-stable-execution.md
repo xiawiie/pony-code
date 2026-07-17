@@ -1,4 +1,4 @@
-# Pico 1.0 Docker Sandbox：本地执行与验收
+# Pony 1.0 Docker Sandbox：本地执行与验收
 
 本文是 1.0 本地 Sandbox 的产品边界与维护入口。设计理由见
 [ADR-0040](adr/0040-docker-filtered-staging.md)和[ADR-0042](adr/0042-sealed-local-authorization.md)。
@@ -21,12 +21,12 @@
 ```mermaid
 sequenceDiagram
     participant U as User
-    participant P as Pico host process
+    participant P as Pony host process
     participant S as Source Root
     participant E as Filtered Execution Root
     participant D as Docker container
 
-    U->>P: pico --sandbox run
+    U->>P: pony --sandbox run
     P->>P: verify platform, Docker endpoint, installed-tree identity
     P->>P: verify packaged image manifest and exact local image
     P->>S: anchored bounded scan
@@ -44,13 +44,13 @@ sequenceDiagram
 ## 用户命令
 
 ```bash
-pico sandbox status
-pico sandbox prepare
-pico sandbox list
-pico sandbox inspect <sandbox-id>
-pico sandbox diff <sandbox-id>
-pico sandbox apply <sandbox-id>
-pico sandbox prune --dry-run
+pony sandbox status
+pony sandbox prepare
+pony sandbox list
+pony sandbox inspect <sandbox-id>
+pony sandbox diff <sandbox-id>
+pony sandbox apply <sandbox-id>
+pony sandbox prune --dry-run
 ```
 
 `status` 与 `prepare` 必须保持零网络、零隐式修复。`prepare` 只检查 already-present image。Inspection 不得改变 artifact

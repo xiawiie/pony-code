@@ -8,7 +8,7 @@ INV-5: agent_notes.md 超过 64 KiB 时, 每个 store 实例仅 stderr 告警一
 """
 
 def _store(tmp_path):
-    from pico.memory.block_store import BlockStore
+    from pony.memory.block_store import BlockStore
     ws = tmp_path / "workspace"
     us = tmp_path / "user"
     ws.mkdir()
@@ -33,7 +33,7 @@ def test_inv_2_append_never_writes_notes_dir(tmp_path):
 
 
 def test_inv_3_list_covers_both_scopes(tmp_path):
-    from pico.memory.block_store import BlockStore
+    from pony.memory.block_store import BlockStore
     (tmp_path / "workspace" / "notes").mkdir(parents=True)
     (tmp_path / "user" / "notes").mkdir(parents=True)
     (tmp_path / "workspace" / "notes" / "w.md").write_text("w")

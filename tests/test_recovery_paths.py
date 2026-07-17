@@ -2,7 +2,7 @@ import os
 
 import pytest
 
-from pico.recovery.paths import (
+from pony.recovery.paths import (
     hash_file_bytes,
     normalize_workspace_relative_path,
     resolve_workspace_relative_path,

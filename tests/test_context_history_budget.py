@@ -5,9 +5,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from pico.context.renderer import render_current_user_message
-from pico.agent.context_manager import ContextBudgetExceeded, ContextManager
-from pico.agent.model_capabilities import (
+from pony.context.renderer import render_current_user_message
+from pony.agent.context_manager import ContextBudgetExceeded, ContextManager
+from pony.agent.model_capabilities import (
     build_model_budget,
     ModelCapabilities,
     TokenAccounting,
@@ -15,7 +15,7 @@ from pico.agent.model_capabilities import (
 
 
 def _message(role, content):
-    return {"role": role, "content": content, "_pico_meta": {"created_at": "t"}}
+    return {"role": role, "content": content, "_pony_meta": {"created_at": "t"}}
 
 
 def _agent(messages, *, context_window=32_768):

@@ -6,9 +6,9 @@ import stat
 
 import pytest
 
-import pico.state.session_store as session_store_module
-from pico.agent.messages import make_tool_pair, validate_messages
-from pico.state.session_store import (
+import pony.state.session_store as session_store_module
+from pony.agent.messages import make_tool_pair, validate_messages
+from pony.state.session_store import (
     LEGACY_SESSION_FORMAT_VERSION,
     MAX_SESSION_ENTRY_BYTES,
     SESSION_FORMAT_VERSION,
@@ -27,7 +27,7 @@ def _session(workspace, session_id, content="hello", *, legacy=False):
         "id": session_id,
         "created_at": "2026-01-01T00:00:00+00:00",
         "workspace_root": str(workspace),
-        "messages": [{"role": "user", "content": content, "_pico_meta": {}}],
+        "messages": [{"role": "user", "content": content, "_pony_meta": {}}],
         "working_memory": {"task_summary": "", "recent_files": []},
         "memory": {"file_summaries": {}},
         "recently_recalled": [],
@@ -53,7 +53,7 @@ def _provider_binding(**overrides):
 
 
 def test_session_store_saves_loads_and_finds_latest_session(tmp_path):
-    store = SessionStore(tmp_path / ".pico" / "sessions")
+    store = SessionStore(tmp_path / ".pony" / "sessions")
     first = _session(tmp_path, "session_001", "first")
     second = _session(tmp_path, "session_002", "second")
 
@@ -69,7 +69,7 @@ def test_session_store_saves_loads_and_finds_latest_session(tmp_path):
     assert loaded["format_version"] == SESSION_FORMAT_VERSION == 2
     assert "history" not in loaded
     assert loaded["messages"] == [
-        {"role": "user", "content": "second", "_pico_meta": {}},
+        {"role": "user", "content": "second", "_pony_meta": {}},
     ]
     validate_messages(loaded["messages"], require_meta=True)
     os.utime(first_path, ns=(1, 1))
@@ -78,13 +78,13 @@ def test_session_store_saves_loads_and_finds_latest_session(tmp_path):
 
 
 def test_new_session_is_header_plus_append_only_entries(tmp_path):
-    store = SessionStore(tmp_path / ".pico" / "sessions")
+    store = SessionStore(tmp_path / ".pony" / "sessions")
     session = _session(tmp_path, "tree")
     path = store.save(session)
     original = path.read_bytes()
 
     session["messages"].append(
-        {"role": "assistant", "content": "done", "_pico_meta": {}}
+        {"role": "assistant", "content": "done", "_pony_meta": {}}
     )
     store.save(session)
 
@@ -103,7 +103,7 @@ def test_new_session_is_header_plus_append_only_entries(tmp_path):
 
 
 def test_tool_call_and_result_are_one_atomic_entry(tmp_path):
-    store = SessionStore(tmp_path / ".pico" / "sessions")
+    store = SessionStore(tmp_path / ".pony" / "sessions")
     session = _session(tmp_path, "tools")
     store.save(session)
     assistant, result = make_tool_pair(
@@ -127,10 +127,10 @@ def test_tool_call_and_result_are_one_atomic_entry(tmp_path):
 
 
 def test_fork_selects_parent_path_without_deleting_old_branch(tmp_path):
-    store = SessionStore(tmp_path / ".pico" / "sessions")
+    store = SessionStore(tmp_path / ".pony" / "sessions")
     session = _session(tmp_path, "branch", "one")
     session["messages"].append(
-        {"role": "assistant", "content": "two", "_pico_meta": {}}
+        {"role": "assistant", "content": "two", "_pony_meta": {}}
     )
     store.save(session)
     before = store.entries("branch")
@@ -146,12 +146,12 @@ def test_fork_selects_parent_path_without_deleting_old_branch(tmp_path):
 
 
 def test_non_prefix_save_creates_new_branch_and_preserves_history(tmp_path):
-    store = SessionStore(tmp_path / ".pico" / "sessions")
+    store = SessionStore(tmp_path / ".pony" / "sessions")
     session = _session(tmp_path, "rewrite", "old")
     store.save(session)
     old_ids = {entry["id"] for entry in store.entries("rewrite")}
     session["messages"] = [
-        {"role": "user", "content": "new", "_pico_meta": {}}
+        {"role": "user", "content": "new", "_pony_meta": {}}
     ]
 
     store.save(session)
@@ -163,7 +163,7 @@ def test_non_prefix_save_creates_new_branch_and_preserves_history(tmp_path):
 
 
 def test_session_store_round_trips_current_provider_binding(tmp_path):
-    store = SessionStore(tmp_path / ".pico" / "sessions")
+    store = SessionStore(tmp_path / ".pony" / "sessions")
     session = _session(tmp_path, "provider-bound")
     session["provider_binding"] = _provider_binding()
 
@@ -173,7 +173,7 @@ def test_session_store_round_trips_current_provider_binding(tmp_path):
 
 
 def test_session_store_rejects_provider_binding_change(tmp_path):
-    store = SessionStore(tmp_path / ".pico" / "sessions")
+    store = SessionStore(tmp_path / ".pony" / "sessions")
     session = _session(tmp_path, "provider-bound")
     session["provider_binding"] = _provider_binding()
     store.save(session)
@@ -195,7 +195,7 @@ def test_session_store_rejects_provider_binding_change(tmp_path):
     ],
 )
 def test_session_store_rejects_invalid_provider_binding(tmp_path, binding):
-    store = SessionStore(tmp_path / ".pico" / "sessions")
+    store = SessionStore(tmp_path / ".pony" / "sessions")
     session = _session(tmp_path, "provider-invalid")
     session["provider_binding"] = binding
 
@@ -204,7 +204,7 @@ def test_session_store_rejects_invalid_provider_binding(tmp_path, binding):
 
 
 def test_session_store_latest_is_none_when_empty(tmp_path):
-    assert SessionStore(tmp_path / ".pico" / "sessions").latest() is None
+    assert SessionStore(tmp_path / ".pony" / "sessions").latest() is None
 
 
 def test_session_store_save_uses_file_lock(tmp_path, monkeypatch):
@@ -216,13 +216,13 @@ def test_session_store_save_uses_file_lock(tmp_path, monkeypatch):
         yield
 
     monkeypatch.setattr(session_store_module.file_lock, "locked_file", fake_lock)
-    store = SessionStore(tmp_path / ".pico" / "sessions")
+    store = SessionStore(tmp_path / ".pony" / "sessions")
     store.save(_session(tmp_path, "session_locked"))
     assert calls == [".session_store.lock"]
 
 
 def test_session_store_parent_swap_cannot_redirect_record(tmp_path):
-    store = SessionStore(tmp_path / ".pico" / "sessions")
+    store = SessionStore(tmp_path / ".pony" / "sessions")
     original_root = tmp_path / "sessions-original"
     store.root.rename(original_root)
     store.root.mkdir()
@@ -235,7 +235,7 @@ def test_session_store_parent_swap_cannot_redirect_record(tmp_path):
 
 
 def test_session_store_uses_private_owner_only_paths(tmp_path):
-    store = SessionStore(tmp_path / ".pico" / "sessions")
+    store = SessionStore(tmp_path / ".pony" / "sessions")
     path = store.save(_session(tmp_path, "private"))
     if os.name == "posix":
         assert stat.S_IMODE(store.root.stat().st_mode) == 0o700
@@ -244,7 +244,7 @@ def test_session_store_uses_private_owner_only_paths(tmp_path):
 
 
 def test_session_store_load_refuses_symlink_file(tmp_path):
-    store = SessionStore(tmp_path / ".pico" / "sessions")
+    store = SessionStore(tmp_path / ".pony" / "sessions")
     outside = tmp_path / "outside.jsonl"
     outside.write_bytes(b"{}\n")
     store.lock_path.touch(mode=0o600)
@@ -256,7 +256,7 @@ def test_session_store_load_refuses_symlink_file(tmp_path):
 
 
 def test_session_store_load_rejects_oversized_record(tmp_path, monkeypatch):
-    store = SessionStore(tmp_path / ".pico" / "sessions")
+    store = SessionStore(tmp_path / ".pony" / "sessions")
     monkeypatch.setattr(session_store_module, "MAX_SESSION_BYTES", 8)
     store.lock_path.touch(mode=0o600)
     path = store.path("oversized")
@@ -267,7 +267,7 @@ def test_session_store_load_rejects_oversized_record(tmp_path, monkeypatch):
 
 
 def test_incomplete_tail_requires_explicit_repair(tmp_path):
-    store = SessionStore(tmp_path / ".pico" / "sessions")
+    store = SessionStore(tmp_path / ".pony" / "sessions")
     session = _session(tmp_path, "tail")
     path = store.save(session)
     original = path.read_bytes()
@@ -286,13 +286,13 @@ def test_session_entry_hard_cap_is_enforced_without_partial_append(
     tmp_path,
     monkeypatch,
 ):
-    store = SessionStore(tmp_path / ".pico" / "sessions")
+    store = SessionStore(tmp_path / ".pony" / "sessions")
     session = _session(tmp_path, "bounded")
     path = store.save(session)
     original = path.read_bytes()
     monkeypatch.setattr(session_store_module, "MAX_SESSION_ENTRY_BYTES", 256)
     session["messages"].append(
-        {"role": "assistant", "content": "x" * 512, "_pico_meta": {}}
+        {"role": "assistant", "content": "x" * 512, "_pony_meta": {}}
     )
     with pytest.raises(ValueError, match="entry too large"):
         store.save(session)
@@ -300,7 +300,7 @@ def test_session_entry_hard_cap_is_enforced_without_partial_append(
 
 
 def test_legacy_json_migrates_on_first_load_with_backup(tmp_path):
-    store = SessionStore(tmp_path / ".pico" / "sessions")
+    store = SessionStore(tmp_path / ".pony" / "sessions")
     legacy = _session(tmp_path, "legacy", legacy=True)
     store.lock_path.touch(mode=0o600)
     store.legacy_path("legacy").write_text(
@@ -321,7 +321,7 @@ def test_legacy_json_migrates_on_first_load_with_backup(tmp_path):
 
 
 def test_legacy_migration_promotes_working_state_to_task_checkpoint(tmp_path):
-    store = SessionStore(tmp_path / ".pico" / "sessions")
+    store = SessionStore(tmp_path / ".pony" / "sessions")
     legacy = _session(tmp_path, "legacy-working", legacy=True)
     legacy["working_memory"] = {
         "task_summary": "finish migration",
@@ -370,7 +370,7 @@ def test_legacy_migration_promotes_working_state_to_task_checkpoint(tmp_path):
 def test_legacy_migration_promotes_checkpoint_without_overwriting_current_state(
     tmp_path,
 ):
-    store = SessionStore(tmp_path / ".pico" / "sessions")
+    store = SessionStore(tmp_path / ".pony" / "sessions")
     legacy = _session(tmp_path, "legacy-checkpoint", legacy=True)
     legacy["runtime_identity"] = {
         "model": "current-model",
@@ -412,7 +412,7 @@ def test_failed_legacy_publish_keeps_old_session_and_is_retryable(
     tmp_path,
     monkeypatch,
 ):
-    store = SessionStore(tmp_path / ".pico" / "sessions")
+    store = SessionStore(tmp_path / ".pony" / "sessions")
     legacy = _session(tmp_path, "retry", legacy=True)
     store.lock_path.touch(mode=0o600)
     store.legacy_path("retry").write_text(json.dumps(legacy), encoding="utf-8")
@@ -432,7 +432,7 @@ def test_failed_legacy_publish_keeps_old_session_and_is_retryable(
 
 
 def test_invalid_legacy_session_is_never_rewritten(tmp_path):
-    store = SessionStore(tmp_path / ".pico" / "sessions")
+    store = SessionStore(tmp_path / ".pony" / "sessions")
     store.lock_path.touch(mode=0o600)
     path = store.legacy_path("invalid")
     path.write_text('{"record_type":"session","format_version":1}', encoding="utf-8")
@@ -445,7 +445,7 @@ def test_invalid_legacy_session_is_never_rewritten(tmp_path):
 
 
 def test_legacy_nested_duplicate_keys_are_rejected(tmp_path):
-    store = SessionStore(tmp_path / ".pico" / "sessions")
+    store = SessionStore(tmp_path / ".pony" / "sessions")
     payload = json.dumps(_session(tmp_path, "duplicate", legacy=True)).replace(
         '"runtime_identity": {}',
         '"runtime_identity": {"feature_flags": {}, "feature_flags": {}}',
@@ -461,7 +461,7 @@ def test_session_store_rejects_unknown_feature_flag_identity(
     tmp_path,
     embedded,
 ):
-    store = SessionStore(tmp_path / ".pico" / "sessions")
+    store = SessionStore(tmp_path / ".pony" / "sessions")
     payload = _session(tmp_path, "dead-flag")
     identity = {"feature_flags": {"prompt_cache": True}}
     if embedded:
@@ -479,7 +479,7 @@ def test_session_store_rejects_unknown_feature_flag_identity(
 
 
 def test_worktree_identity_tamper_is_rejected(tmp_path):
-    store = SessionStore(tmp_path / ".pico" / "sessions")
+    store = SessionStore(tmp_path / ".pony" / "sessions")
     path = store.save(_session(tmp_path, "identity"))
     rows = _jsonl(path)
     rows[0]["worktree_identity"]["root_inode"] += 1
@@ -494,10 +494,10 @@ def test_clone_to_worktree_copies_active_branch_and_clears_workspace_state(tmp_p
     target = tmp_path / "target"
     source.mkdir()
     target.mkdir()
-    store = SessionStore(source / ".pico" / "sessions")
+    store = SessionStore(source / ".pony" / "sessions")
     session = _session(source, "source-session")
     session["messages"].append(
-        {"role": "assistant", "content": "done", "_pico_meta": {}}
+        {"role": "assistant", "content": "done", "_pony_meta": {}}
     )
     session["working_memory"] = {
         "task_summary": "continue",
@@ -538,7 +538,7 @@ def test_clone_to_worktree_copies_active_branch_and_clears_workspace_state(tmp_p
         target,
         new_session_id="target-session",
     )
-    target_store = SessionStore(target / ".pico" / "sessions")
+    target_store = SessionStore(target / ".pony" / "sessions")
     loaded = target_store.load("target-session")
     view = target_store.context_view("target-session")
 
@@ -577,7 +577,7 @@ def test_session_tree_source_has_expected_line_limit_constant():
 
 
 def test_save_checkpoint_preserves_current_runtime_state(tmp_path):
-    store = SessionStore(tmp_path / ".pico" / "sessions")
+    store = SessionStore(tmp_path / ".pony" / "sessions")
     session = _session(tmp_path, "checkpoint-state")
     session["runtime_identity"] = {
         "model": "current-model",

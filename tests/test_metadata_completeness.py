@@ -5,8 +5,8 @@ with a fully-mocked agent so no external state matters."""
 
 from unittest.mock import MagicMock
 
-from pico.context.renderer import render_current_user_message
-from pico.agent.context_manager import ContextManager
+from pony.context.renderer import render_current_user_message
+from pony.agent.context_manager import ContextManager
 
 
 REQUIRED_METADATA_FIELDS = {

@@ -2,8 +2,8 @@ import pytest
 import os
 import signal
 
-from pico.cli.app import main
-from pico.cli.start import run_agent_once, run_repl
+from pony.cli.app import main
+from pony.cli.start import run_agent_once, run_repl
 
 
 CANARY = "hostile-config-canary-9f3d7a"
@@ -84,7 +84,7 @@ def test_one_shot_renders_sandbox_review_counts(capsys):
     assert (
         "Changes: 3 candidate, 1 high-risk, 2 blocked, 4 generated (ignored)" in output
     )
-    assert "Review: pico sandbox diff sandbox_" in output
+    assert "Review: pony sandbox diff sandbox_" in output
 
 
 def test_one_shot_keyboard_interrupt_finalizes_sandbox_and_returns_130():
@@ -162,12 +162,12 @@ def test_cli_contains_startup_io_failure(monkeypatch, capsys):
     def fail_build(_args):
         raise OSError(f"failed to open /private/{CANARY}")
 
-    monkeypatch.setattr("pico.cli.app.build_agent", fail_build)
+    monkeypatch.setattr("pony.cli.app.build_agent", fail_build)
 
     assert main(["--quiet", "run", "finish"]) == 5
 
     captured = capsys.readouterr()
-    assert captured.err.strip() == "pico startup failed"
+    assert captured.err.strip() == "pony startup failed"
     assert CANARY not in captured.out + captured.err
 
 
@@ -177,10 +177,10 @@ def test_invalid_project_api_base_uses_safe_config_envelope(
     capsys,
 ):
     (tmp_path / ".env").write_text(
-        "PICO_PROVIDER=anthropic\n"
-        "PICO_MODEL=claude-test\n"
-        f"PICO_API_BASE=https://user:{CANARY}@example.com/v1\n"
-        "PICO_API_KEY=test-key\n",
+        "PONY_PROVIDER=anthropic\n"
+        "PONY_MODEL=claude-test\n"
+        f"PONY_API_BASE=https://user:{CANARY}@example.com/v1\n"
+        "PONY_API_KEY=test-key\n",
         encoding="utf-8",
     )
 
@@ -193,9 +193,9 @@ def test_invalid_project_api_base_uses_safe_config_envelope(
 
 def test_project_key_without_base_is_rejected(tmp_path, capsys):
     (tmp_path / ".env").write_text(
-        "PICO_PROVIDER=anthropic\n"
-        "PICO_MODEL=claude-test\n"
-        "PICO_API_KEY=stale-project-key\n",
+        "PONY_PROVIDER=anthropic\n"
+        "PONY_MODEL=claude-test\n"
+        "PONY_API_KEY=stale-project-key\n",
         encoding="utf-8",
     )
 

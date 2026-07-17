@@ -7,9 +7,9 @@ from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
-import pico.providers.transport as provider_shared
-from pico.providers.anthropic_messages import AnthropicMessagesModelClient
-from pico.providers.response import Response, StopReason
+import pony.providers.transport as provider_shared
+from pony.providers.anthropic_messages import AnthropicMessagesModelClient
+from pony.providers.response import Response, StopReason
 
 
 def _mock_urlopen(response_body):
@@ -49,7 +49,7 @@ def test_complete_payload_shape_and_cache_control():
             "input_schema": {"type": "object", "properties": {}},
         }
     ]
-    messages = [{"role": "user", "content": "hi", "_pico_meta": {"secret": "x"}}]
+    messages = [{"role": "user", "content": "hi", "_pony_meta": {"secret": "x"}}]
 
     captured_payload = {}
 
@@ -70,7 +70,7 @@ def test_complete_payload_shape_and_cache_control():
             }
         )
 
-    with patch("pico.providers.transport._provider_urlopen", fake_urlopen):
+    with patch("pony.providers.transport._provider_urlopen", fake_urlopen):
         resp = client.complete(
             system=system, tools=tools, messages=messages, max_tokens=100
         )
@@ -111,7 +111,7 @@ def test_complete_cache_breakpoint_on_message():
             }
         )
 
-    with patch("pico.providers.transport._provider_urlopen", fake_urlopen):
+    with patch("pony.providers.transport._provider_urlopen", fake_urlopen):
         client.complete(
             system=system,
             tools=[],
@@ -142,7 +142,7 @@ def test_complete_tool_use_response():
             }
         )
 
-    with patch("pico.providers.transport._provider_urlopen", fake_urlopen):
+    with patch("pony.providers.transport._provider_urlopen", fake_urlopen):
         resp = client.complete(
             system=[{"type": "text", "text": "s"}],
             tools=[],
@@ -206,7 +206,7 @@ def test_thinking_tool_state_is_preserved_and_replayed(monkeypatch):
             {
                 "role": "assistant",
                 "content": [first.content[-1]],
-                "_pico_provider_state": first.provider_state,
+                "_pony_provider_state": first.provider_state,
             },
             {
                 "role": "user",
@@ -254,7 +254,7 @@ def test_complete_unknown_stop_reason_is_unknown():
             }
         )
 
-    with patch("pico.providers.transport._provider_urlopen", fake_urlopen):
+    with patch("pony.providers.transport._provider_urlopen", fake_urlopen):
         response = client.complete(
             system=[{"type": "text", "text": "s"}],
             tools=[],
@@ -279,7 +279,7 @@ def test_complete_records_cached_token_usage():
     }
 
     with patch(
-        "pico.providers.transport._provider_urlopen",
+        "pony.providers.transport._provider_urlopen",
         return_value=_mock_urlopen(response_body),
     ):
         response = client.complete(

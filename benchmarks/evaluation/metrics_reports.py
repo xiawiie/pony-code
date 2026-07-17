@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from pico.agent.observability import RunArtifactError, load_run_artifacts
+from pony.agent.observability import RunArtifactError, load_run_artifacts
 from .metrics_common import (
     CONTEXT_ABLATION_FORMAT_VERSION,
     DEFAULT_CORE_REPORT_PATH,
@@ -274,7 +274,7 @@ def render_resume_metrics_markdown(metrics):
     security = metrics["security_experiment"]
     provider_payload = metrics.get("provider_experiments", {})
     lines = [
-        "# Pico Resume Metrics",
+        "# Pony Resume Metrics",
         "",
         "## Key Numbers",
         f"- Experiment mode: {metrics.get('experiment_mode', 'synthetic')}",
@@ -331,7 +331,7 @@ def render_large_scale_experiment_report(metrics):
         or "unknown"
     )
     lines = [
-        "# Pico Large-Scale Experiment Report",
+        "# Pony Large-Scale Experiment Report",
         "",
         "## Executive Summary",
         (
@@ -426,7 +426,7 @@ def write_benchmark_core_report(
         recovery.get("variants", {}).get("resume_enabled", {}).get("summary", {})
     )
     lines = [
-        "# Pico Benchmark Core Report",
+        "# Pony Benchmark Core Report",
         "",
         "这轮 benchmark 只收缩到 Harness regression、context ablation、working memory ablation 和 recovery ablation 四层，不把 provider、run aggregation 或 durable memory 的别的结论揉进来。",
         "",

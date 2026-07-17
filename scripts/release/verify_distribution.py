@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify Pico distribution contents and optionally smoke-test an installed wheel."""
+"""Verify Pony distribution contents and optionally smoke-test an installed wheel."""
 
 from __future__ import annotations
 
@@ -22,12 +22,13 @@ _PROJECT = tomllib.loads((_REPO / "pyproject.toml").read_text(encoding="utf-8"))
     "project"
 ]
 PROJECT_NAME = _PROJECT["name"]
+DIST_INFO_NAME = PROJECT_NAME.replace("-", "_")
 PROJECT_VERSION = _PROJECT["version"]
 PROJECT_SUMMARY = _PROJECT["description"]
 EXPECTED_RUNTIME_REQUIREMENTS = ["prompt-toolkit<4,>=3.0.52"]
 PACKAGE_DATA_FILES = {
-    "pico/sandbox/resources/image-manifest.json",
-    "pico/sandbox/resources/docker-config/config.json",
+    "pony/sandbox/resources/image-manifest.json",
+    "pony/sandbox/resources/docker-config/config.json",
 }
 DIST_INFO_FILES = {
     "METADATA",
@@ -56,7 +57,7 @@ def _run(*args: str, cwd: Path | None = None, env: dict[str, str] | None = None)
 
 
 def _tracked_package_files(repo: Path) -> set[str]:
-    output = _run("git", "ls-files", "--", "pico", cwd=repo)
+    output = _run("git", "ls-files", "--", "pony", cwd=repo)
     files = {
         line for line in output.splitlines() if line and os.path.lexists(repo / line)
     }
@@ -71,7 +72,7 @@ def _tracked_package_files(repo: Path) -> set[str]:
         )
     source_python = {
         path.relative_to(repo).as_posix()
-        for path in (repo / "pico").rglob("*.py")
+        for path in (repo / "pony").rglob("*.py")
         if path.is_file()
     }
     untracked_python = source_python - files
@@ -131,7 +132,7 @@ def _metadata(headers: bytes):
 
 
 def verify_wheel(wheel: Path, tracked_package_files: set[str], readme: str) -> None:
-    dist_info = f"{PROJECT_NAME}-{PROJECT_VERSION}.dist-info"
+    dist_info = f"{DIST_INFO_NAME}-{PROJECT_VERSION}.dist-info"
     expected = tracked_package_files | {
         f"{dist_info}/{name}" for name in DIST_INFO_FILES
     }
@@ -159,14 +160,14 @@ def verify_wheel(wheel: Path, tracked_package_files: set[str], readme: str) -> N
     assert metadata["License-Expression"] == "MIT"
     assert metadata.get_all("License-File") == ["LICENSE"]
     assert metadata.get_all("Project-URL") == [
-        "Homepage, https://github.com/xiawiie/pico",
-        "Documentation, https://github.com/xiawiie/pico#readme",
-        "Issues, https://github.com/xiawiie/pico/issues",
-        "Source, https://github.com/xiawiie/pico",
+        "Homepage, https://github.com/xiawiie/pony-code",
+        "Documentation, https://github.com/xiawiie/pony-code#readme",
+        "Issues, https://github.com/xiawiie/pony-code/issues",
+        "Source, https://github.com/xiawiie/pony-code",
     ]
     assert metadata.get_all("Requires-Dist") == EXPECTED_RUNTIME_REQUIREMENTS
     assert metadata_body.decode("utf-8").strip() == readme.strip()
-    assert entry_points == "[console_scripts]\npico = pico.cli.app:main\n"
+    assert entry_points == "[console_scripts]\npony = pony.cli.app:main\n"
     assert wheel_metadata["Root-Is-Purelib"] == "true"
     assert wheel_metadata.get_all("Tag") == ["py3-none-any"]
 
@@ -174,7 +175,7 @@ def verify_wheel(wheel: Path, tracked_package_files: set[str], readme: str) -> N
 def _smoke_env(home: Path, bin_dir: Path) -> dict[str, str]:
     env = os.environ.copy()
     for name in tuple(env):
-        if name.startswith("PICO_") or name in {
+        if name.startswith("PONY_") or name in {
             "PYTHONHOME",
             "PYTHONPATH",
             "OPENAI_API_KEY",
@@ -213,7 +214,7 @@ def _install_with_uv(python: Path, *requirements: str) -> None:
 
 
 def install_smoke(wheel: Path, *, offline: bool = False) -> None:
-    with tempfile.TemporaryDirectory(prefix="pico-wheel-smoke-") as raw_tmp:
+    with tempfile.TemporaryDirectory(prefix="pony-wheel-smoke-") as raw_tmp:
         root = Path(raw_tmp)
         environment = root / "venv"
         home = root / "home"
@@ -224,7 +225,7 @@ def install_smoke(wheel: Path, *, offline: bool = False) -> None:
 
         bin_dir = environment / ("Scripts" if os.name == "nt" else "bin")
         python = bin_dir / ("python.exe" if os.name == "nt" else "python")
-        pico = bin_dir / ("pico.exe" if os.name == "nt" else "pico")
+        pony = bin_dir / ("pony.exe" if os.name == "nt" else "pony")
         env = _smoke_env(home, bin_dir)
 
         if offline:
@@ -242,20 +243,20 @@ def install_smoke(wheel: Path, *, offline: bool = False) -> None:
                 env=env,
             )
         _run(str(python), "-m", "pip", "check", env=env)
-        resolved = _run("/bin/sh", "-c", "command -v pico", cwd=cwd, env=env).strip()
-        assert Path(resolved).resolve() == pico.resolve()
+        resolved = _run("/bin/sh", "-c", "command -v pony", cwd=cwd, env=env).strip()
+        assert Path(resolved).resolve() == pony.resolve()
         _run(
             str(python),
             "-c",
             "import importlib.metadata as m; "
-            "assert m.requires('pico') == ['prompt-toolkit<4,>=3.0.52']",
+            "assert m.requires('pony-code') == ['prompt-toolkit<4,>=3.0.52']",
             cwd=cwd,
             env=env,
         )
         _run(
             str(python),
             "-c",
-            "import prompt_toolkit; import pico.tui.app",
+            "import prompt_toolkit; import pony.tui.app",
             cwd=cwd,
             env=env,
         )
@@ -263,12 +264,12 @@ def install_smoke(wheel: Path, *, offline: bool = False) -> None:
             str(python),
             "-c",
             "import importlib.util; "
-            "forbidden=('pico.sandbox_macos','pico.sandbox_linux',"
-            "'pico.sandbox_toolchain','pico.sandbox_lifecycle',"
-            "'pico._sandbox_toolchain','pico.sandbox.network_control',"
-            "'pico.providers.fake','pico.providers.anthropic_compatible',"
-            "'pico.providers.openai_compatible','pico.providers.openai_chat',"
-            "'pico.providers.ollama'); "
+            "forbidden=('pony.sandbox_macos','pony.sandbox_linux',"
+            "'pony.sandbox_toolchain','pony.sandbox_lifecycle',"
+            "'pony._sandbox_toolchain','pony.sandbox.network_control',"
+            "'pony.providers.fake','pony.providers.anthropic_compatible',"
+            "'pony.providers.openai_compatible','pony.providers.openai_chat',"
+            "'pony.providers.ollama'); "
             "assert all(importlib.util.find_spec(name) is None for name in forbidden); "
             "assert importlib.util.find_spec('benchmarks') is None",
             cwd=cwd,
@@ -278,7 +279,7 @@ def install_smoke(wheel: Path, *, offline: bool = False) -> None:
             str(python),
             "-c",
             "from importlib.resources import files; "
-            "root=files('pico.sandbox.resources'); "
+            "root=files('pony.sandbox.resources'); "
             "root.joinpath('image-manifest.json').read_bytes(); "
             "root.joinpath('docker-config','config.json').read_bytes()",
             cwd=cwd,
@@ -286,7 +287,7 @@ def install_smoke(wheel: Path, *, offline: bool = False) -> None:
         )
         resource_digest_code = (
             "import hashlib,json; from importlib.resources import files; "
-            "root=files('pico.sandbox.resources'); "
+            "root=files('pony.sandbox.resources'); "
             "names=('image-manifest.json','docker-config/config.json'); "
             "print(json.dumps({name:hashlib.sha256(root.joinpath(*name.split('/')).read_bytes()).hexdigest() "
             "for name in names},sort_keys=True))"
@@ -300,7 +301,7 @@ def install_smoke(wheel: Path, *, offline: bool = False) -> None:
         ).strip()
         status = json.loads(
             _run(
-                str(pico),
+                str(pony),
                 "--format",
                 "json",
                 "sandbox",
@@ -315,9 +316,9 @@ def install_smoke(wheel: Path, *, offline: bool = False) -> None:
         assert status["data"]["mutation_performed"] is False
         assert status["data"]["runtime_authorization"]["kind"] == "local"
         assert status["data"]["capacity"]["staging_bytes"] == 0
-        assert not (home / ".pico").exists()
+        assert not (home / ".pony").exists()
         prepare = subprocess.run(
-            (str(pico), "--format", "json", "sandbox", "prepare"),
+            (str(pony), "--format", "json", "sandbox", "prepare"),
             cwd=cwd,
             env=env,
             check=False,
@@ -343,7 +344,7 @@ def install_smoke(wheel: Path, *, offline: bool = False) -> None:
                 "docker_seccomp_unavailable",
                 "docker_rootless_required",
             }
-        assert not (home / ".pico").exists()
+        assert not (home / ".pony").exists()
         resources_after = _run(
             str(python),
             "-c",
@@ -352,10 +353,10 @@ def install_smoke(wheel: Path, *, offline: bool = False) -> None:
             env=env,
         ).strip()
         assert resources_after == resources_before
-        _run(str(pico), "--help", cwd=cwd, env=env)
-        installed_version = _run(str(pico), "--version", cwd=cwd, env=env).strip()
-        assert installed_version == f"pico {PROJECT_VERSION}"
-        _run(str(pico), "doctor", cwd=cwd, env=env)
+        _run(str(pony), "--help", cwd=cwd, env=env)
+        installed_version = _run(str(pony), "--version", cwd=cwd, env=env).strip()
+        assert installed_version == f"pony {PROJECT_VERSION}"
+        _run(str(pony), "doctor", cwd=cwd, env=env)
 
 
 def main() -> int:

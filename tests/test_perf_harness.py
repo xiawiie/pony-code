@@ -92,7 +92,7 @@ def test_sandbox_perf_artifact_has_release_provenance(monkeypatch):
 
     values = {
         ("rev-parse", "HEAD"): "abc123",
-        ("status", "--porcelain"): " M pico/example.py",
+        ("status", "--porcelain"): " M pony/example.py",
     }
     monkeypatch.setattr(
         bench_sandbox,
@@ -112,8 +112,8 @@ def test_sandbox_perf_artifact_has_release_provenance(monkeypatch):
     assert artifact["runtime"]["docker"] == {"status": "not_measured"}
     assert artifact["sandbox"] == {
         "implementation": "docker_container",
-        "image_digest": "sha256:61f5e86e344d4053b8f6c7053c965b2cde7fc5e77777974e6237ad2e4ec36904",
-        "policy_digest": "sha256:96aa648358b4e8efa83c5d1792b980518198844e7993893b65307c12a7a1c2f6",
+        "image_digest": "sha256:d7a8ccd6b7482d8bb647dee7bc6549f2652ce147483af5f45ba36b6b2cf6f07f",
+        "policy_digest": "sha256:dd72f90d3fbdd26749a19091a8e51dafab7cb9fc7c448159f9e7ee744e7a441c",
         "network_mode": "none",
     }
     assert artifact["baseline"]["comparison"] == "report_only"

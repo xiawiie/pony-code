@@ -6,9 +6,9 @@ import stat
 
 import pytest
 
-from pico.cli.app import main
-from pico.config.environment import read_project_env
-from pico.runtime.options import RuntimeOptions
+from pony.cli.app import main
+from pony.config.environment import read_project_env
+from pony.runtime.options import RuntimeOptions
 
 
 def _install_fake_agent(monkeypatch, tmp_path, called):
@@ -21,7 +21,7 @@ def _install_fake_agent(monkeypatch, tmp_path, called):
             workspace = type("W", (), {"cwd": str(tmp_path), "branch": "main"})()
             approval_policy = "auto"
             session = {"id": "s"}
-            session_path = str(tmp_path / ".pico" / "sessions" / "s.json")
+            session_path = str(tmp_path / ".pony" / "sessions" / "s.json")
 
             def ask(self, message):
                 called["asked"] = message
@@ -35,7 +35,7 @@ def _install_fake_agent(monkeypatch, tmp_path, called):
 
         return FakeAgent()
 
-    monkeypatch.setattr("pico.cli.app.build_agent", fake_build_agent)
+    monkeypatch.setattr("pony.cli.app.build_agent", fake_build_agent)
 
 
 def test_run_command_calls_agent_once(tmp_path, monkeypatch, capsys):
@@ -65,13 +65,13 @@ def test_bare_and_explicit_repl_exit_on_eof(tmp_path, monkeypatch, command):
 
 @pytest.mark.parametrize(
     ("tokens", "usage"),
-    [(["run"], "usage: pico run <prompt...>"), (["repl", "extra"], "usage: pico repl")],
+    [(["run"], "usage: pony run <prompt...>"), (["repl", "extra"], "usage: pony repl")],
 )
 def test_invalid_agent_command_arity_does_not_build_agent(
     tmp_path, monkeypatch, capsys, tokens, usage
 ):
     monkeypatch.setattr(
-        "pico.cli.app.build_agent",
+        "pony.cli.app.build_agent",
         lambda args: (_ for _ in ()).throw(AssertionError("must not build agent")),
     )
 
@@ -83,7 +83,7 @@ def test_invalid_agent_command_arity_does_not_build_agent(
 
 def test_bare_prompt_is_rejected_without_building_agent(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(
-        "pico.cli.app.build_agent",
+        "pony.cli.app.build_agent",
         lambda args: (_ for _ in ()).throw(AssertionError("must not build agent")),
     )
 
@@ -98,20 +98,20 @@ def test_help_command_shows_examples(capsys):
 
     assert code == 0
     out = capsys.readouterr().out
-    assert "pico — Local coding agent" in out
+    assert "pony — Local coding agent" in out
     assert "USAGE:" in out
     assert "Available Commands:" in out
-    assert "pico [global options]" in out
-    assert "pico\n" in out
-    assert "also the default for bare `pico`" in out
+    assert "pony [global options]" in out
+    assert "pony\n" in out
+    assert "also the default for bare `pony`" in out
     assert "--no-color" in out
     assert "--sandbox    run/repl in local Docker Sandbox (macOS arm64 only)" in out
-    assert 'pico run "inspect the failing tests"' in out
-    assert "pico config set-secret PICO_API_KEY" in out
-    assert "pico --approval ask run" in out
-    assert "pico checkpoints show <checkpoint-id>" in out
-    assert "pico checkpoints pending" in out
-    assert "pico runs summary latest" in out
+    assert 'pony run "inspect the failing tests"' in out
+    assert "pony config set-secret PONY_API_KEY" in out
+    assert "pony --approval ask run" in out
+    assert "pony checkpoints show <checkpoint-id>" in out
+    assert "pony checkpoints pending" in out
+    assert "pony runs summary latest" in out
     assert "migrate      Inspect and apply explicit artifact migrations" in out
     assert "Compatibility:" not in out
     assert "no OS sandbox" in out
@@ -121,7 +121,7 @@ def test_help_command_shows_examples(capsys):
 
 def test_sandbox_flag_is_rejected_for_non_agent_commands(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(
-        "pico.cli.app._dispatch_status",
+        "pony.cli.app._dispatch_status",
         lambda *_args: (_ for _ in ()).throw(AssertionError("must not dispatch")),
     )
 
@@ -136,7 +136,7 @@ def test_help_flag_uses_root_help_without_argparse_dump(capsys):
 
     assert code == 0
     out = capsys.readouterr().out
-    assert out.startswith("pico — Local coding agent")
+    assert out.startswith("pony — Local coding agent")
     assert "Available Commands:" in out
     assert "positional arguments:" not in out
 
@@ -158,7 +158,7 @@ def test_natural_language_requires_explicit_run(
     capsys,
 ):
     monkeypatch.setattr(
-        "pico.cli.app.build_agent",
+        "pony.cli.app.build_agent",
         lambda args: (_ for _ in ()).throw(AssertionError("must not build agent")),
     )
 
@@ -197,11 +197,11 @@ def test_init_prompts_for_url_and_hidden_key_without_building_agent_or_network(
 ):
     _install_init_input(monkeypatch)
     monkeypatch.setattr(
-        "pico.cli.app.build_agent",
+        "pony.cli.app.build_agent",
         lambda args: (_ for _ in ()).throw(AssertionError("init built an agent")),
     )
     monkeypatch.setattr(
-        "pico.providers.transport._provider_urlopen",
+        "pony.providers.transport._provider_urlopen",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("init attempted a request")
         ),
@@ -211,15 +211,15 @@ def test_init_prompts_for_url_and_hidden_key_without_building_agent_or_network(
 
     values = read_project_env(tmp_path, warn=False)
     assert values == {
-        "PICO_PROVIDER": "anthropic",
-        "PICO_API_BASE": "https://api.anthropic.com/v1",
-        "PICO_MODEL": "claude-sonnet-4-6",
-        "PICO_API_KEY": "test-key",
+        "PONY_PROVIDER": "anthropic",
+        "PONY_API_BASE": "https://api.anthropic.com/v1",
+        "PONY_MODEL": "claude-sonnet-4-6",
+        "PONY_API_KEY": "test-key",
     }
     captured = capsys.readouterr()
     assert "Provider [anthropic]:" in captured.err
     assert "API Base [https://api.anthropic.com/v1]:" in captured.err
-    assert captured.out.startswith("Pico init")
+    assert captured.out.startswith("Pony init")
     assert "claude-sonnet-4-6" in captured.out
     assert "anthropic_messages" in captured.out
     assert "test-key" not in captured.out + captured.err
@@ -254,7 +254,7 @@ def test_init_accepts_exact_third_party_api_base(tmp_path, monkeypatch, capsys):
     assert payload["protocol"] == "openai_chat_completions"
     assert payload["api_key"] == {
         "present": True,
-        "name": "PICO_API_KEY",
+        "name": "PONY_API_KEY",
     }
     assert "gateway-key" not in output
 
@@ -270,10 +270,10 @@ def test_init_can_select_openai_from_api_base(tmp_path, monkeypatch):
     assert main(["--cwd", str(tmp_path), "init"]) == 0
 
     assert read_project_env(tmp_path, warn=False) == {
-        "PICO_PROVIDER": "openai",
-        "PICO_API_BASE": "https://api.openai.com/v1",
-        "PICO_MODEL": "gpt-5.4",
-        "PICO_API_KEY": "openai-key",
+        "PONY_PROVIDER": "openai",
+        "PONY_API_BASE": "https://api.openai.com/v1",
+        "PONY_MODEL": "gpt-5.4",
+        "PONY_API_KEY": "openai-key",
     }
 
 
@@ -288,16 +288,16 @@ def test_init_can_configure_local_ollama_without_api_key(tmp_path, monkeypatch):
     assert main(["--cwd", str(tmp_path), "init"]) == 0
 
     assert read_project_env(tmp_path, warn=False) == {
-        "PICO_PROVIDER": "ollama",
-        "PICO_API_BASE": "http://127.0.0.1:11434",
-        "PICO_MODEL": "qwen3:8b",
-        "PICO_API_KEY": "",
+        "PONY_PROVIDER": "ollama",
+        "PONY_API_BASE": "http://127.0.0.1:11434",
+        "PONY_MODEL": "qwen3:8b",
+        "PONY_API_KEY": "",
     }
 
 
 def test_init_empty_key_keeps_existing_project_key(tmp_path, monkeypatch, capsys):
     (tmp_path / ".env").write_text(
-        "PICO_API_BASE=https://old.example/v1\nPICO_API_KEY=existing-key\n",
+        "PONY_API_BASE=https://old.example/v1\nPONY_API_KEY=existing-key\n",
         encoding="utf-8",
     )
     _install_init_input(monkeypatch, api_base="", key="")
@@ -305,8 +305,8 @@ def test_init_empty_key_keeps_existing_project_key(tmp_path, monkeypatch, capsys
     assert main(["--cwd", str(tmp_path), "init"]) == 0
 
     values = read_project_env(tmp_path, warn=False)
-    assert values["PICO_API_BASE"] == "https://old.example/v1"
-    assert values["PICO_API_KEY"] == "existing-key"
+    assert values["PONY_API_BASE"] == "https://old.example/v1"
+    assert values["PONY_API_KEY"] == "existing-key"
     captured = capsys.readouterr()
     assert "press Enter to keep existing" not in captured.out
     assert "existing-key" not in captured.out + captured.err
@@ -316,8 +316,8 @@ def test_init_updates_config_without_dropping_unrelated_lines(tmp_path, monkeypa
     (tmp_path / ".env").write_text(
         "# keep this comment\n"
         "OTHER_SETTING=kept\n"
-        "PICO_API_BASE=https://old.example/v1\n"
-        "PICO_API_KEY=old-key\n",
+        "PONY_API_BASE=https://old.example/v1\n"
+        "PONY_API_KEY=old-key\n",
         encoding="utf-8",
     )
     _install_init_input(
@@ -332,8 +332,8 @@ def test_init_updates_config_without_dropping_unrelated_lines(tmp_path, monkeypa
     values = read_project_env(tmp_path, warn=False)
     assert "# keep this comment\n" in text
     assert "OTHER_SETTING=kept\n" in text
-    assert values["PICO_API_BASE"] == "https://new.example/v1"
-    assert values["PICO_API_KEY"] == "new-key"
+    assert values["PONY_API_BASE"] == "https://new.example/v1"
+    assert values["PONY_API_KEY"] == "new-key"
 
 
 @pytest.mark.parametrize(
@@ -368,8 +368,8 @@ def test_init_rejects_unsafe_existing_url_without_echo_or_prompt(
 ):
     secret = "existing-url-secret-canary"
     (tmp_path / ".env").write_text(
-        f"PICO_API_BASE=https://user:{secret}@example.com/v1\n"
-        "PICO_API_KEY=existing-key\n",
+        f"PONY_API_BASE=https://user:{secret}@example.com/v1\n"
+        "PONY_API_KEY=existing-key\n",
         encoding="utf-8",
     )
     monkeypatch.setattr(
@@ -434,7 +434,7 @@ def test_init_rejects_removed_arguments_without_writing_or_leaking(
     assert main(["--cwd", str(tmp_path), "init", *tokens]) == 2
 
     captured = capsys.readouterr()
-    assert captured.err.strip() == "usage: pico init"
+    assert captured.err.strip() == "usage: pony init"
     assert secret not in captured.out + captured.err
     assert not (tmp_path / ".env").exists()
 
@@ -451,14 +451,14 @@ def test_config_set_secret_reads_stdin_and_writes_private_env(
         str(tmp_path),
         "config",
         "set-secret",
-        "PICO_API_KEY",
+        "PONY_API_KEY",
         "--stdin",
             ]
         )
         == 0
     )
 
-    assert read_project_env(tmp_path, warn=False)["PICO_API_KEY"] == (
+    assert read_project_env(tmp_path, warn=False)["PONY_API_KEY"] == (
         "sk-stdin-secret-123456789"
     )
     captured = capsys.readouterr()
@@ -480,13 +480,13 @@ def test_config_set_secret_uses_getpass_without_rendering_value(
         str(tmp_path),
         "config",
         "set-secret",
-        "PICO_API_KEY",
+        "PONY_API_KEY",
             ]
         )
         == 0
     )
 
-    assert read_project_env(tmp_path, warn=False)["PICO_API_KEY"] == secret
+    assert read_project_env(tmp_path, warn=False)["PONY_API_KEY"] == secret
     captured = capsys.readouterr()
     assert secret not in captured.out + captured.err
 
@@ -495,8 +495,8 @@ def test_config_set_secret_uses_getpass_without_rendering_value(
     "name",
     [
         "OPENAI_API_KEY",
-        "PICO_OPENAI_API_KEY",
-        "PICO_DEEPSEEK_TOKEN",
+        "PONY_OPENAI_API_KEY",
+        "PONY_DEEPSEEK_TOKEN",
     ],
 )
 def test_config_set_secret_rejects_every_other_name(
@@ -510,7 +510,7 @@ def test_config_set_secret_rejects_every_other_name(
 
     assert main(["--cwd", str(tmp_path), "config", "set-secret", name]) == 2
 
-    assert "expected PICO_API_KEY" in capsys.readouterr().err
+    assert "expected PONY_API_KEY" in capsys.readouterr().err
     assert not (tmp_path / ".env").exists()
 
 
@@ -518,7 +518,7 @@ def test_config_set_secret_storage_failure_is_stable(tmp_path, monkeypatch, caps
     marker = "sk-sensitive-lock-path-123456789"
     outside = tmp_path.parent / marker
     outside.mkdir()
-    (tmp_path / ".pico").symlink_to(outside, target_is_directory=True)
+    (tmp_path / ".pony").symlink_to(outside, target_is_directory=True)
     monkeypatch.setattr("sys.stdin", io.StringIO("sk-input-secret-123456789\n"))
 
     assert (
@@ -528,7 +528,7 @@ def test_config_set_secret_storage_failure_is_stable(tmp_path, monkeypatch, caps
         str(tmp_path),
         "config",
         "set-secret",
-        "PICO_API_KEY",
+        "PONY_API_KEY",
         "--stdin",
             ]
         )
@@ -605,7 +605,7 @@ def test_config_writes_keep_review_required_for_preserved_invalid_line(
     marker = "sk-" + "preserved-invalid-line-123456789"
     env_path = tmp_path / ".env"
     env_path.write_text(
-        f"PICO_API_BASE=https://api.deepseek.com\nPICO_API_KEY=old-key\n{marker}\n",
+        f"PONY_API_BASE=https://api.deepseek.com\nPONY_API_KEY=old-key\n{marker}\n",
         encoding="utf-8",
     )
     env_path.chmod(0o600)
@@ -632,18 +632,18 @@ def test_config_writes_keep_review_required_for_preserved_invalid_line(
 
 
 def test_repl_help_renders_help_details(tmp_path, monkeypatch, capsys):
-    from pico.cli.help import HELP_DETAILS
-    from pico.cli.start import run_repl
+    from pony.cli.help import HELP_DETAILS
+    from pony.cli.start import run_repl
     from benchmarks.support.fake_provider import FakeModelClient
-    from pico.runtime.application import Pico
-    from pico.state.session_store import SessionStore
-    from pico.workspace.context import WorkspaceContext
+    from pony.runtime.application import Pony
+    from pony.state.session_store import SessionStore
+    from pony.workspace.context import WorkspaceContext
 
     workspace = WorkspaceContext.build(tmp_path)
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
-    session_store = SessionStore(tmp_path / ".pico" / "sessions")
+    session_store = SessionStore(tmp_path / ".pony" / "sessions")
 
-    agent = Pico(
+    agent = Pony(
         model_client=FakeModelClient([]),
         workspace=workspace,
         session_store=session_store,

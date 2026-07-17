@@ -1,12 +1,12 @@
 """Task 25: digest.py — per-tool tool_result summarizers with fallback."""
 
-from pico.context.digest import (
+from pony.context.digest import (
     ToolResultDigest,
     digest_tool_result,
     render_digest_content,
     should_digest,
 )
-from pico.agent.model_capabilities import TokenAccounting
+from pony.agent.model_capabilities import TokenAccounting
 
 
 def test_should_digest_threshold():
@@ -65,7 +65,7 @@ def test_render_content_shape():
     assert "import os" in text
     assert f"content_sha256: sha256:{'a' * 64}" in text
     assert "raw_result_id: tool_result:abc123" in text
-    assert ".pico/" not in text
+    assert ".pony/" not in text
 
 
 def test_render_content_respects_model_token_cap():

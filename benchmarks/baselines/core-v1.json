@@ -15,6 +15,6 @@
       "median_ns": 1313750
     }
   },
-  "record_type": "pico_evaluation_baseline",
+  "record_type": "pony_evaluation_baseline",
   "suite": "core"
 }

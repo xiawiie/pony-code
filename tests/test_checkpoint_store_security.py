@@ -5,10 +5,10 @@ import stat
 
 import pytest
 
-from pico.state import checkpoint_store as checkpoint_store_module
-from pico.state.checkpoint_store import CheckpointStore
-from pico.recovery.models import new_checkpoint_record, new_tool_change_record
-from pico.agent.verification import new_verification_record
+from pony.state import checkpoint_store as checkpoint_store_module
+from pony.state.checkpoint_store import CheckpointStore
+from pony.recovery.models import new_checkpoint_record, new_tool_change_record
+from pony.agent.verification import new_verification_record
 
 
 def _checkpoint(tmp_path, checkpoint_id="ckpt_safe"):
@@ -147,7 +147,7 @@ def test_list_checkpoint_records_is_bounded_and_schema_validating(tmp_path):
 def test_store_rejects_symlinked_records_directory(tmp_path):
     outside = tmp_path / "outside"
     outside.mkdir()
-    root = tmp_path / ".pico" / "checkpoints"
+    root = tmp_path / ".pony" / "checkpoints"
     root.mkdir(parents=True)
     os.symlink(outside, root / "records")
     with pytest.raises(ValueError, match="symlink"):

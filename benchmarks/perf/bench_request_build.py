@@ -12,8 +12,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from benchmarks.perf.harness import bench  # noqa: E402
-from pico.context.renderer import render_current_user_message  # noqa: E402
-from pico.agent.context_manager import ContextManager  # noqa: E402
+from pony.context.renderer import render_current_user_message  # noqa: E402
+from pony.agent.context_manager import ContextManager  # noqa: E402
 
 
 def _make_agent(session_len):
@@ -28,7 +28,7 @@ def _make_agent(session_len):
             {
                 "role": "user" if i % 2 == 0 else "assistant",
                 "content": f"msg-{i} " * 20,
-                "_pico_meta": {"created_at": "2026-07-10T00:00:00+00:00"},
+                "_pony_meta": {"created_at": "2026-07-10T00:00:00+00:00"},
             }
             for i in range(max(2, session_len + session_len % 2))
         ]
@@ -53,7 +53,7 @@ def main():
             {
                 "role": "user",
                 "content": user_message,
-                "_pico_meta": {"created_at": "2026-07-10T00:00:00+00:00"},
+                "_pony_meta": {"created_at": "2026-07-10T00:00:00+00:00"},
             }
         )
         snapshot, telemetry = render_current_user_message(agent, user_message)

@@ -5,18 +5,18 @@
 """
 
 import re
-from pico.runtime.options import RuntimeOptions
+from pony.runtime.options import RuntimeOptions
 
 
 def _build_agent(tmp_path):
-    from pico.runtime.application import Pico
-    from pico.state.session_store import SessionStore
-    from pico.workspace.context import WorkspaceContext
+    from pony.runtime.application import Pony
+    from pony.state.session_store import SessionStore
+    from pony.workspace.context import WorkspaceContext
     from benchmarks.support.fake_provider import FakeModelClient
 
     workspace = WorkspaceContext.build(tmp_path)
-    store = SessionStore(tmp_path / ".pico" / "sessions")
-    return Pico(
+    store = SessionStore(tmp_path / ".pony" / "sessions")
+    return Pony(
         model_client=FakeModelClient(["done"]),
         workspace=workspace,
         session_store=store,
@@ -25,7 +25,7 @@ def _build_agent(tmp_path):
 
 
 def test_repl_save_is_an_unknown_command(tmp_path, monkeypatch, capsys):
-    from pico.cli.start import run_repl
+    from pony.cli.start import run_repl
 
     agent = _build_agent(tmp_path)
     inputs = iter(["/save bcrypt rounds > 12 timeout", "/exit"])
@@ -33,14 +33,14 @@ def test_repl_save_is_an_unknown_command(tmp_path, monkeypatch, capsys):
     run_repl(agent)
 
     assert "unknown command: /save" in capsys.readouterr().out
-    assert not (tmp_path / ".pico" / "memory" / "agent_notes.md").exists()
+    assert not (tmp_path / ".pony" / "memory" / "agent_notes.md").exists()
 
 
 def test_repl_remember_is_the_explicit_primary_memory_command(
     tmp_path,
     monkeypatch,
 ):
-    from pico.cli.start import run_repl
+    from pony.cli.start import run_repl
 
     agent = _build_agent(tmp_path)
     inputs = iter(["/remember keep the recovery invariant", "/exit"])
@@ -48,7 +48,7 @@ def test_repl_remember_is_the_explicit_primary_memory_command(
 
     run_repl(agent)
 
-    notes = tmp_path / ".pico" / "memory" / "agent_notes.md"
+    notes = tmp_path / ".pony" / "memory" / "agent_notes.md"
     assert "keep the recovery invariant" in notes.read_text(encoding="utf-8")
 
 
@@ -57,7 +57,7 @@ def test_repl_remember_enforces_1024_model_token_limit(
     monkeypatch,
     capsys,
 ):
-    from pico.cli.start import run_repl
+    from pony.cli.start import run_repl
 
     agent = _build_agent(tmp_path)
     inputs = iter(["/remember " + ("记忆" * 600), "/exit"])
@@ -66,12 +66,12 @@ def test_repl_remember_enforces_1024_model_token_limit(
     run_repl(agent)
 
     assert "1024 model tokens" in capsys.readouterr().out
-    notes = tmp_path / ".pico" / "memory" / "agent_notes.md"
+    notes = tmp_path / ".pony" / "memory" / "agent_notes.md"
     assert not notes.exists()
 
 
 def test_repl_remember_without_body_shows_usage(tmp_path, monkeypatch, capsys):
-    from pico.cli.start import run_repl
+    from pony.cli.start import run_repl
 
     agent = _build_agent(tmp_path)
     inputs = iter(["/remember    ", "/exit"])
@@ -80,7 +80,7 @@ def test_repl_remember_without_body_shows_usage(tmp_path, monkeypatch, capsys):
 
     out = capsys.readouterr().out
     assert "usage:" in out.lower()
-    agent_notes = tmp_path / ".pico" / "memory" / "agent_notes.md"
+    agent_notes = tmp_path / ".pony" / "memory" / "agent_notes.md"
     assert not agent_notes.exists() or "usage:" not in agent_notes.read_text(
         encoding="utf-8"
     )
@@ -89,7 +89,7 @@ def test_repl_remember_without_body_shows_usage(tmp_path, monkeypatch, capsys):
 def test_repl_remember_rejects_secret_and_keeps_security_prose(
     tmp_path, monkeypatch, capsys
 ):
-    from pico.cli.start import run_repl
+    from pony.cli.start import run_repl
 
     secret = "github_pat_A123456789012345678901234567890"
     agent = _build_agent(tmp_path)
@@ -99,7 +99,7 @@ def test_repl_remember_rejects_secret_and_keeps_security_prose(
     run_repl(agent)
 
     output = capsys.readouterr().out
-    contents = (tmp_path / ".pico" / "memory" / "agent_notes.md").read_text(
+    contents = (tmp_path / ".pony" / "memory" / "agent_notes.md").read_text(
         encoding="utf-8"
     )
     assert "sensitive_content" in output
@@ -109,9 +109,9 @@ def test_repl_remember_rejects_secret_and_keeps_security_prose(
 
 
 def test_repl_memory_review_shows_agent_notes(tmp_path, monkeypatch, capsys):
-    from pico.cli.start import run_repl
+    from pony.cli.start import run_repl
 
-    memory = tmp_path / ".pico" / "memory"
+    memory = tmp_path / ".pony" / "memory"
     memory.mkdir(parents=True)
     (memory / "agent_notes.md").write_text("- old note\n")
 
@@ -131,9 +131,9 @@ def test_repl_memory_review_uses_block_store_not_direct_path_read(
 ):
     from pathlib import Path
 
-    from pico.cli.start import run_repl
+    from pony.cli.start import run_repl
 
-    memory = tmp_path / ".pico" / "memory"
+    memory = tmp_path / ".pony" / "memory"
     memory.mkdir(parents=True)
     notes = memory / "agent_notes.md"
     notes.write_text("- anchored note\n", encoding="utf-8")
@@ -155,7 +155,7 @@ def test_repl_memory_review_uses_block_store_not_direct_path_read(
 
 
 def test_repl_memory_review_when_empty(tmp_path, monkeypatch, capsys):
-    from pico.cli.start import run_repl
+    from pony.cli.start import run_repl
 
     agent = _build_agent(tmp_path)
     inputs = iter(["/memory-review", "/exit"])
@@ -171,7 +171,7 @@ def test_repl_memory_after_remember_shows_memory_file(tmp_path, monkeypatch, cap
 
     Locks the DX contract: the three memory surfaces refer to the same store.
     """
-    from pico.cli.start import run_repl
+    from pony.cli.start import run_repl
 
     agent = _build_agent(tmp_path)
     inputs = iter(["/remember something worth remembering", "/memory", "/exit"])
@@ -190,7 +190,7 @@ def test_repl_memory_after_remember_shows_memory_file(tmp_path, monkeypatch, cap
 
 
 def test_repl_memory_shows_working_memory_summary(tmp_path, monkeypatch, capsys):
-    from pico.cli.start import run_repl
+    from pony.cli.start import run_repl
 
     sample = tmp_path / "sample.txt"
     sample.write_text("sample\n", encoding="utf-8")
@@ -210,7 +210,7 @@ def test_repl_memory_shows_working_memory_summary(tmp_path, monkeypatch, capsys)
 
 
 def test_repl_memory_does_not_call_memory_text(tmp_path, monkeypatch, capsys):
-    from pico.cli.start import run_repl
+    from pony.cli.start import run_repl
 
     agent = _build_agent(tmp_path)
 

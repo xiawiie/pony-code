@@ -46,8 +46,8 @@ jobs:
         if: matrix.python-version == '3.12'
         shell: bash
         run: |
-          requirements="${RUNNER_TEMP}/pico-runtime-requirements.txt"
-          primer="${RUNNER_TEMP}/pico-cache-primer"
+          requirements="${RUNNER_TEMP}/pony-runtime-requirements.txt"
+          primer="${RUNNER_TEMP}/pony-cache-primer"
           uv export --frozen --no-dev --no-emit-project --output-file "${requirements}"
           uv venv --python .venv/bin/python "${primer}"
           uv pip install --refresh --python "${primer}/bin/python" --requirement "${requirements}"
@@ -146,14 +146,14 @@ jobs:
 
       - name: Docker Sandbox local identity gate (zero mutation)
         run: |
-          export HOME="$RUNNER_TEMP/pico-docker-sandbox-home"
+          export HOME="$RUNNER_TEMP/pony-docker-sandbox-home"
           mkdir -p "$HOME"
           chmod 700 "$HOME"
-          status=$(uv run --no-sync pico --format json sandbox status)
-          PICO_RESULT="$status" uv run --no-sync python -c 'import json, os; data=json.loads(os.environ["PICO_RESULT"]); status=data["data"]; assert data["ok"] is True; assert status["network_performed"] is False; assert status["mutation_performed"] is False; assert status["runtime_authorization"]["kind"] == "local"'
-          if prepare=$(uv run --no-sync pico --format json sandbox prepare); then code=0; else code=$?; fi
-          PICO_RESULT="$prepare" PICO_CODE="$code" uv run --no-sync python -c 'import json, os; data=json.loads(os.environ["PICO_RESULT"]); code=int(os.environ["PICO_CODE"]); assert code in {0, 3}; assert (data["data"]["network_performed"] is False and data["data"]["mutation_performed"] is False and data["data"]["runtime_authorization"]["kind"] == "local") if code == 0 else data["error"]["code"] in {"sandbox_image_not_released", "sandbox_image_missing", "sandbox_image_identity_mismatch", "docker_cli_unavailable", "docker_endpoint_untrusted", "docker_daemon_unavailable", "docker_server_unsupported", "docker_seccomp_unavailable", "docker_rootless_required"}'
-          test ! -e "$HOME/.pico"
+          status=$(uv run --no-sync pony --format json sandbox status)
+          PONY_RESULT="$status" uv run --no-sync python -c 'import json, os; data=json.loads(os.environ["PONY_RESULT"]); status=data["data"]; assert data["ok"] is True; assert status["network_performed"] is False; assert status["mutation_performed"] is False; assert status["runtime_authorization"]["kind"] == "local"'
+          if prepare=$(uv run --no-sync pony --format json sandbox prepare); then code=0; else code=$?; fi
+          PONY_RESULT="$prepare" PONY_CODE="$code" uv run --no-sync python -c 'import json, os; data=json.loads(os.environ["PONY_RESULT"]); code=int(os.environ["PONY_CODE"]); assert code in {0, 3}; assert (data["data"]["network_performed"] is False and data["data"]["mutation_performed"] is False and data["data"]["runtime_authorization"]["kind"] == "local") if code == 0 else data["error"]["code"] in {"sandbox_image_not_released", "sandbox_image_missing", "sandbox_image_identity_mismatch", "docker_cli_unavailable", "docker_endpoint_untrusted", "docker_daemon_unavailable", "docker_server_unsupported", "docker_seccomp_unavailable", "docker_rootless_required"}'
+          test ! -e "$HOME/.pony"
 
   linux-capability-evidence:
     name: Linux Docker Sandbox status report (Python 3.12)
@@ -179,18 +179,18 @@ jobs:
       - name: Probe Docker Sandbox readiness (report only)
         run: |
           set -o pipefail
-          uv run --frozen pico --format json sandbox status | tee docker-sandbox-status.json
+          uv run --frozen pony --format json sandbox status | tee docker-sandbox-status.json
 
       - name: Docker Sandbox local identity gate (zero mutation)
         run: |
-          export HOME="$RUNNER_TEMP/pico-docker-sandbox-home"
+          export HOME="$RUNNER_TEMP/pony-docker-sandbox-home"
           mkdir -p "$HOME"
           chmod 700 "$HOME"
-          status=$(uv run --no-sync pico --format json sandbox status)
-          PICO_RESULT="$status" uv run --no-sync python -c 'import json, os; data=json.loads(os.environ["PICO_RESULT"]); status=data["data"]; assert data["ok"] is True; assert status["network_performed"] is False; assert status["mutation_performed"] is False; assert status["runtime_authorization"]["kind"] == "local"'
-          if prepare=$(uv run --no-sync pico --format json sandbox prepare); then code=0; else code=$?; fi
-          PICO_RESULT="$prepare" PICO_CODE="$code" uv run --no-sync python -c 'import json, os; data=json.loads(os.environ["PICO_RESULT"]); code=int(os.environ["PICO_CODE"]); assert code in {0, 3}; assert (data["data"]["network_performed"] is False and data["data"]["mutation_performed"] is False and data["data"]["runtime_authorization"]["kind"] == "local") if code == 0 else data["error"]["code"] in {"sandbox_image_not_released", "sandbox_image_missing", "sandbox_image_identity_mismatch", "docker_cli_unavailable", "docker_endpoint_untrusted", "docker_daemon_unavailable", "docker_server_unsupported", "docker_seccomp_unavailable", "docker_rootless_required"}'
-          test ! -e "$HOME/.pico"
+          status=$(uv run --no-sync pony --format json sandbox status)
+          PONY_RESULT="$status" uv run --no-sync python -c 'import json, os; data=json.loads(os.environ["PONY_RESULT"]); status=data["data"]; assert data["ok"] is True; assert status["network_performed"] is False; assert status["mutation_performed"] is False; assert status["runtime_authorization"]["kind"] == "local"'
+          if prepare=$(uv run --no-sync pony --format json sandbox prepare); then code=0; else code=$?; fi
+          PONY_RESULT="$prepare" PONY_CODE="$code" uv run --no-sync python -c 'import json, os; data=json.loads(os.environ["PONY_RESULT"]); code=int(os.environ["PONY_CODE"]); assert code in {0, 3}; assert (data["data"]["network_performed"] is False and data["data"]["mutation_performed"] is False and data["data"]["runtime_authorization"]["kind"] == "local") if code == 0 else data["error"]["code"] in {"sandbox_image_not_released", "sandbox_image_missing", "sandbox_image_identity_mismatch", "docker_cli_unavailable", "docker_endpoint_untrusted", "docker_daemon_unavailable", "docker_server_unsupported", "docker_seccomp_unavailable", "docker_rootless_required"}'
+          test ! -e "$HOME/.pony"
 
       - name: Upload capability evidence
         if: always()

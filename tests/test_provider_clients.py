@@ -7,13 +7,13 @@ from unittest.mock import Mock
 
 import pytest
 
-import pico.providers.transport as provider_shared
-from pico.providers.transport import ProviderTransportError
-from pico.providers.factory import build_transport_client
-from pico.providers.anthropic_messages import AnthropicMessagesModelClient
-from pico.providers.ollama_chat import OllamaChatModelClient
-from pico.providers.openai_responses import OpenAIResponsesModelClient
-from pico.providers.response import StopReason
+import pony.providers.transport as provider_shared
+from pony.providers.transport import ProviderTransportError
+from pony.providers.factory import build_transport_client
+from pony.providers.anthropic_messages import AnthropicMessagesModelClient
+from pony.providers.ollama_chat import OllamaChatModelClient
+from pony.providers.openai_responses import OpenAIResponsesModelClient
+from pony.providers.response import StopReason
 
 
 OFFICIAL_OPENAI_CAPABILITIES = {
@@ -189,7 +189,7 @@ def test_builder_constructs_explicit_protocol_clients(
 
 
 def test_factory_constructs_openai_chat_and_rejects_unknown_transport():
-    from pico.providers.openai_chat_completions import OpenAIChatCompletionsModelClient
+    from pony.providers.openai_chat_completions import OpenAIChatCompletionsModelClient
 
     client = build_transport_client(
         "openai_chat_completions",
@@ -306,7 +306,7 @@ def test_openai_official_wire_uses_responses_native_history_and_strict_tools(
                     "input": {"pattern": "x"},
                 }
             ],
-            "_pico_provider_state": state,
+            "_pony_provider_state": state,
         },
         {
             "role": "user",
@@ -525,7 +525,7 @@ def test_ollama_chat_wire_uses_native_messages_and_tools(monkeypatch):
                     "input": {"pattern": "x"},
                 }
             ],
-            "_pico_provider_state": [
+            "_pony_provider_state": [
                 {"type": "reasoning", "encrypted_content": "ignored"}
             ],
         },

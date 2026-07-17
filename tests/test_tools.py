@@ -4,16 +4,16 @@ from types import SimpleNamespace
 
 import pytest
 
-from pico.tools.context import ToolContext
-from pico.memory.repo_map import tool_repo_lookup
-from pico.tools.files import tool_read_file
-from pico.tools.registry import build_tool_registry, tool_delegate
-from pico.tools.search import tool_search
-from pico.tools.shell import DEFAULT_RUN_SHELL_TIMEOUT
-from pico.tools.validation import validate_tool
+from pony.tools.context import ToolContext
+from pony.memory.repo_map import tool_repo_lookup
+from pony.tools.files import tool_read_file
+from pony.tools.registry import build_tool_registry, tool_delegate
+from pony.tools.search import tool_search
+from pony.tools.shell import DEFAULT_RUN_SHELL_TIMEOUT
+from pony.tools.validation import validate_tool
 
 
-def test_tool_context_supports_file_tools_without_full_pico(tmp_path):
+def test_tool_context_supports_file_tools_without_full_pony(tmp_path):
     (tmp_path / "sample.txt").write_text("alpha\n", encoding="utf-8")
     context = ToolContext(
         root=tmp_path,
@@ -94,7 +94,7 @@ def test_search_rg_return_codes_are_truthful(tmp_path, monkeypatch):
         calls.append((executable, list(args), kwargs))
         return next(results)
 
-    monkeypatch.setattr("pico.tools.search.run_hardened_rg", fake_rg)
+    monkeypatch.setattr("pony.tools.search.run_hardened_rg", fake_rg)
     context = ToolContext(
         root=tmp_path,
         path_resolver=lambda raw_path: (tmp_path / raw_path).resolve(),
@@ -148,7 +148,7 @@ def test_search_passes_option_shaped_pattern_as_literal(tmp_path, monkeypatch):
         captured["args"] = list(args)
         return subprocess.CompletedProcess(args, 1, stdout="", stderr="")
 
-    monkeypatch.setattr("pico.tools.search.run_hardened_rg", fake_rg)
+    monkeypatch.setattr("pony.tools.search.run_hardened_rg", fake_rg)
     context = ToolContext(
         root=tmp_path,
         path_resolver=lambda raw_path: (tmp_path / raw_path).resolve(),
@@ -178,7 +178,7 @@ def test_search_filters_every_rg_result_path_defensively(tmp_path, monkeypatch):
             stderr="",
         )
 
-    monkeypatch.setattr("pico.tools.search.run_hardened_rg", fake_rg)
+    monkeypatch.setattr("pony.tools.search.run_hardened_rg", fake_rg)
     context = ToolContext(
         root=tmp_path,
         path_resolver=lambda raw_path: (tmp_path / raw_path).resolve(),
@@ -217,7 +217,7 @@ def test_rg_search_runs_allowed_env_template_through_frozen_rg(
             stderr="",
         )
 
-    monkeypatch.setattr("pico.tools.search.run_hardened_rg", fake_rg)
+    monkeypatch.setattr("pony.tools.search.run_hardened_rg", fake_rg)
     context = ToolContext(
         root=tmp_path,
         path_resolver=lambda raw_path: (tmp_path / raw_path).resolve(),
@@ -285,17 +285,17 @@ def test_python_search_never_stats_or_reads_sensitive_or_symlink_files(
 @pytest.mark.parametrize(
     ("name", "arguments"),
     [
-        ("write_file", {"path": ".pico/memory/notes/secret.md", "content": "no"}),
+        ("write_file", {"path": ".pony/memory/notes/secret.md", "content": "no"}),
         (
             "patch_file",
-            {"path": ".pico/memory/notes/secret.md", "old_text": "a", "new_text": "b"},
+            {"path": ".pony/memory/notes/secret.md", "old_text": "a", "new_text": "b"},
         ),
     ],
 )
 def test_validate_tool_rejects_protected_user_notes_before_runner(
     tmp_path, name, arguments
 ):
-    protected = tmp_path / ".pico" / "memory" / "notes" / "secret.md"
+    protected = tmp_path / ".pony" / "memory" / "notes" / "secret.md"
     protected.parent.mkdir(parents=True)
     protected.write_text("a", encoding="utf-8")
     context = ToolContext(

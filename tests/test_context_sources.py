@@ -5,11 +5,11 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from pico import Pico
-from pico.state.session_store import SessionStore
-from pico.workspace.context import WorkspaceContext
-from pico.context.renderer import render_current_user_message
-from pico.context.sources import (
+from pony import Pony
+from pony.state.session_store import SessionStore
+from pony.workspace.context import WorkspaceContext
+from pony.context.renderer import render_current_user_message
+from pony.context.sources import (
     memory_index_chunks,
     project_structure_chunks,
     recalled_memory_chunks,
@@ -19,10 +19,10 @@ from pico.context.sources import (
     task_working_set_chunks,
     workspace_state_chunks,
 )
-from pico.agent.model_capabilities import TokenAccounting
+from pony.agent.model_capabilities import TokenAccounting
 from benchmarks.support.fake_provider import FakeModelClient
-from pico.security.redaction import SensitiveDataBlockedError
-from pico.runtime.options import RuntimeOptions
+from pony.security.redaction import SensitiveDataBlockedError
+from pony.runtime.options import RuntimeOptions
 
 
 def _agent():
@@ -49,10 +49,10 @@ def _agent():
 
 def _real_agent(tmp_path):
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
-    return Pico(
+    return Pony(
         model_client=FakeModelClient([]),
         workspace=WorkspaceContext.build(tmp_path),
-        session_store=SessionStore(tmp_path / ".pico" / "sessions"),
+        session_store=SessionStore(tmp_path / ".pony" / "sessions"),
         options=RuntimeOptions(approval_policy="auto"),
     )
 
@@ -81,7 +81,7 @@ def test_recall_source_security_failure_is_not_treated_as_retrieval_miss(
 ):
     agent = _agent()
     monkeypatch.setattr(
-        "pico.context.sources.recall_candidates",
+        "pony.context.sources.recall_candidates",
         MagicMock(side_effect=SensitiveDataBlockedError("blocked recall")),
     )
 
@@ -133,10 +133,10 @@ def test_project_structure_empty_without_repo_map():
 def test_readme_is_dynamic_project_context_not_a_pinned_instruction(tmp_path):
     (tmp_path / "README.md").write_text("dynamic project overview\n", encoding="utf-8")
     (tmp_path / "AGENTS.md").write_text("Pinned project rule.\n", encoding="utf-8")
-    agent = Pico(
+    agent = Pony(
         model_client=FakeModelClient([]),
         workspace=WorkspaceContext.build(tmp_path),
-        session_store=SessionStore(tmp_path / ".pico" / "sessions"),
+        session_store=SessionStore(tmp_path / ".pony" / "sessions"),
         options=RuntimeOptions(approval_policy="auto"),
     )
 
@@ -152,9 +152,9 @@ def test_readme_is_dynamic_project_context_not_a_pinned_instruction(tmp_path):
 def test_task_working_set_contains_goal_files_and_required_checkpoint():
     agent = _agent()
     agent.memory.task_summary = "finish context allocation"
-    agent.memory.recent_files = ["pico/context/renderer.py"]
+    agent.memory.recent_files = ["pony/context/renderer.py"]
     agent.session["memory"]["file_summaries"] = {
-        "pico/context/renderer.py": "allocator entry point"
+        "pony/context/renderer.py": "allocator entry point"
     }
     agent.session["checkpoints"] = {
         "current_id": "ckpt-context",
@@ -166,7 +166,7 @@ def test_task_working_set_contains_goal_files_and_required_checkpoint():
                 "next_steps": ["test"],
                 "key_files": [
                     {
-                        "path": "pico/context/renderer.py",
+                        "path": "pony/context/renderer.py",
                         "summary": "allocator entry point",
                     }
                 ],
@@ -201,7 +201,7 @@ def test_recovery_context_only_exists_for_actionable_state():
 
 def test_memory_index_uses_snapshot_documents_without_rescanning(tmp_path):
     agent = _real_agent(tmp_path)
-    note = tmp_path / ".pico" / "memory" / "notes" / "cache.md"
+    note = tmp_path / ".pony" / "memory" / "notes" / "cache.md"
     note.parent.mkdir(parents=True, exist_ok=True)
     note.write_text(
         "---\nname: cache\ntype: reference\ndescription: cache invariant\n---\n"
@@ -221,7 +221,7 @@ def test_one_top_level_render_scans_memory_once_for_index_recall_and_links(
     monkeypatch,
 ):
     agent = _real_agent(tmp_path)
-    notes = tmp_path / ".pico" / "memory" / "notes"
+    notes = tmp_path / ".pony" / "memory" / "notes"
     notes.mkdir(parents=True, exist_ok=True)
     (notes / "cache.md").write_text(
         "---\nname: cache\ntype: reference\ndescription: cache invariant\n---\n"

@@ -5,31 +5,31 @@ import stat
 
 import pytest
 
-from pico.security import private_files as security_module
-from pico import Pico
-from pico.state.session_store import SessionStore
-from pico.workspace.context import WorkspaceContext
+from pony.security import private_files as security_module
+from pony import Pony
+from pony.state.session_store import SessionStore
+from pony.workspace.context import WorkspaceContext
 from benchmarks.support.fake_provider import FakeModelClient
-from pico.state.checkpoint_store import CheckpointStore
-from pico.cli.app import main
-from pico.cli.session import inspect_session
-from pico.memory.block_store import BlockStore
-from pico.recovery.models import new_checkpoint_record, new_tool_change_record
-from pico.state.run_store import RunStore
-from pico.state.session_store import (
+from pony.state.checkpoint_store import CheckpointStore
+from pony.cli.app import main
+from pony.cli.session import inspect_session
+from pony.memory.block_store import BlockStore
+from pony.recovery.models import new_checkpoint_record, new_tool_change_record
+from pony.state.run_store import RunStore
+from pony.state.session_store import (
     LEGACY_SESSION_FORMAT_VERSION,
     SESSION_FORMAT_VERSION,
 )
-from pico.state.task_state import TaskState
-from pico.runtime.options import RuntimeOptions
+from pony.state.task_state import TaskState
+from pony.runtime.options import RuntimeOptions
 
 
 def _build_agent(root, *, secret_env_names=()):
     (root / "README.md").write_text("demo\n", encoding="utf-8")
-    return Pico(
+    return Pony(
         model_client=FakeModelClient([]),
         workspace=WorkspaceContext.build(root),
-        session_store=SessionStore(root / ".pico" / "sessions"),
+        session_store=SessionStore(root / ".pony" / "sessions"),
         options=RuntimeOptions(
             approval_policy="auto", secret_env_names=secret_env_names
         ),
@@ -83,8 +83,8 @@ def test_secret_canary_is_absent_from_normal_artifacts_and_inspection(
     capsys,
 ):
     secret = "github_pat_A123456789012345678901234567890"
-    monkeypatch.setenv("PICO_TEST_TOKEN", secret)
-    agent = _build_agent(tmp_path, secret_env_names=("PICO_TEST_TOKEN",))
+    monkeypatch.setenv("PONY_TEST_TOKEN", secret)
+    agent = _build_agent(tmp_path, secret_env_names=("PONY_TEST_TOKEN",))
     state = TaskState.create(
         run_id="run_canary",
         task_id="task_canary",
@@ -117,7 +117,7 @@ def test_secret_canary_is_absent_from_normal_artifacts_and_inspection(
     record["verification_evidence"] = [_verification(secret)]
     agent.checkpoint_store.write_checkpoint_record(record)
 
-    for path in (tmp_path / ".pico").rglob("*"):
+    for path in (tmp_path / ".pony").rglob("*"):
         if (
             path.is_file()
             and "/sessions/backup/" not in path.as_posix()
@@ -229,7 +229,7 @@ def test_checkpoint_rejects_fifo_leaf_and_symlinked_blob_bucket(tmp_path):
         )
 
     data = b"exact blob bytes"
-    from pico.recovery.paths import hash_bytes
+    from pony.recovery.paths import hash_bytes
 
     blob_ref = hash_bytes(data)["content_hash"]
     outside = tmp_path / "outside-blobs"
@@ -251,7 +251,7 @@ def test_checkpoint_temp_swap_preserves_unknown_installed_symlink(
     store = CheckpointStore(tmp_path)
     outside = tmp_path / "outside-temp.json"
     outside.write_text("outside\n", encoding="utf-8")
-    from pico.security import private_files as security_module
+    from pony.security import private_files as security_module
 
     original_replace = security_module.os.replace
 
@@ -292,27 +292,27 @@ def test_legacy_inspection_redacts_process_and_project_collision(
     process_secret = "opaque-process-secret-123456789"
     project_secret = "opaque-project-secret-987654321"
     collision_secret = "opaque-existing-collision-246813579"
-    monkeypatch.setenv("PICO_TEST_TOKEN", process_secret)
-    monkeypatch.setenv("PICO_REDACTION_COLLISION_0_SECRET", collision_secret)
+    monkeypatch.setenv("PONY_TEST_TOKEN", process_secret)
+    monkeypatch.setenv("PONY_REDACTION_COLLISION_0_SECRET", collision_secret)
     (tmp_path / ".env").write_text(
-        f"PICO_TEST_TOKEN={project_secret}\n",
+        f"PONY_TEST_TOKEN={project_secret}\n",
         encoding="utf-8",
     )
     legacy_text = f"{process_secret} {project_secret} {collision_secret}"
 
-    sessions = tmp_path / ".pico" / "sessions"
+    sessions = tmp_path / ".pony" / "sessions"
     sessions.mkdir(parents=True)
     (sessions / "legacy.json").write_text(
         json.dumps({"id": "legacy", "message": legacy_text}),
         encoding="utf-8",
     )
-    runs = tmp_path / ".pico" / "runs" / "legacy"
+    runs = tmp_path / ".pony" / "runs" / "legacy"
     runs.mkdir(parents=True)
     (runs / "report.json").write_text(
         json.dumps({"message": legacy_text}),
         encoding="utf-8",
     )
-    checkpoints = tmp_path / ".pico" / "checkpoints" / "records"
+    checkpoints = tmp_path / ".pony" / "checkpoints" / "records"
     checkpoints.mkdir(parents=True)
     checkpoints.parent.chmod(0o700)
     checkpoints.chmod(0o700)
@@ -368,7 +368,7 @@ def test_read_only_checkpoint_inspection_rejects_unsafe_existing_sibling(
     monkeypatch,
     unsafe_kind,
 ):
-    root = tmp_path / ".pico" / "checkpoints"
+    root = tmp_path / ".pony" / "checkpoints"
     root.mkdir(parents=True, mode=0o700)
     root.chmod(0o700)
     sibling = root / "tool_changes"
@@ -403,7 +403,7 @@ def test_runs_show_redacts_structured_json_before_rendering(
 ):
     secret = 'opaque"quote\\value-123456789'
     monkeypatch.setenv("CUSTOM_OPAQUE", secret)
-    run_dir = tmp_path / ".pico" / "runs" / "escaped"
+    run_dir = tmp_path / ".pony" / "runs" / "escaped"
     run_dir.mkdir(parents=True)
     (run_dir / "report.json").write_text(
         json.dumps({"message": secret}) + "\n",
@@ -443,7 +443,7 @@ def test_runs_show_rejects_path_escape_and_symlink(tmp_path, capsys):
     outside_run.mkdir()
     secret = "outside-run-secret"
     (outside_run / "report.json").write_text(secret, encoding="utf-8")
-    runs_root = tmp_path / ".pico" / "runs"
+    runs_root = tmp_path / ".pony" / "runs"
     runs_root.mkdir(parents=True)
     (runs_root / "linked").symlink_to(outside_run, target_is_directory=True)
 
@@ -465,7 +465,7 @@ def test_runs_show_rejects_path_escape_and_symlink(tmp_path, capsys):
 
 
 def test_checkpoint_prefix_never_resolves_traversing_record_id(tmp_path, capsys):
-    records = tmp_path / ".pico" / "checkpoints" / "records"
+    records = tmp_path / ".pony" / "checkpoints" / "records"
     records.mkdir(parents=True)
     malicious_id = "abcdef/../../../outside"
     (records / "entry.json").write_text(
@@ -478,7 +478,7 @@ def test_checkpoint_prefix_never_resolves_traversing_record_id(tmp_path, capsys)
         ),
         encoding="utf-8",
     )
-    outside = tmp_path / ".pico" / "outside.json"
+    outside = tmp_path / ".pony" / "outside.json"
     secret = "outside-checkpoint-secret"
     outside.write_text(json.dumps({"message": secret}), encoding="utf-8")
 
@@ -500,7 +500,7 @@ def test_checkpoint_prefix_never_resolves_traversing_record_id(tmp_path, capsys)
 
 
 def test_checkpoint_cli_rejects_symlink_record_as_stable_error(tmp_path, capsys):
-    records = tmp_path / ".pico" / "checkpoints" / "records"
+    records = tmp_path / ".pony" / "checkpoints" / "records"
     records.mkdir(parents=True)
     outside = tmp_path / "outside-checkpoint.json"
     secret = "outside-symlink-checkpoint-secret"
@@ -526,7 +526,7 @@ def test_checkpoint_cli_rejects_symlink_record_as_stable_error(tmp_path, capsys)
 
 @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFO unavailable")
 def test_runs_show_rejects_fifo_without_opening_it(tmp_path, monkeypatch, capsys):
-    run_dir = tmp_path / ".pico" / "runs" / "fifo"
+    run_dir = tmp_path / ".pony" / "runs" / "fifo"
     run_dir.mkdir(parents=True)
     fifo = run_dir / "report.json"
     os.mkfifo(fifo)
@@ -556,7 +556,7 @@ def test_runs_show_rejects_fifo_without_opening_it(tmp_path, monkeypatch, capsys
 
 
 def test_run_store_rejects_ids_that_escape_its_root(tmp_path):
-    root = tmp_path / ".pico" / "runs"
+    root = tmp_path / ".pony" / "runs"
     store = RunStore(root)
     outside = tmp_path / "outside-run-store"
     outside.mkdir()
@@ -578,10 +578,10 @@ def test_run_store_rejects_ids_that_escape_its_root(tmp_path):
 
 def test_nested_runtime_redacts_custom_run_and_session_stores(tmp_path):
     secret = "opaque-nested-secret-123456789"
-    run_store = RunStore(tmp_path / ".pico" / "runs")
-    session_store = SessionStore(tmp_path / ".pico" / "sessions")
+    run_store = RunStore(tmp_path / ".pony" / "runs")
+    session_store = SessionStore(tmp_path / ".pony" / "sessions")
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
-    agent = Pico(
+    agent = Pony(
         model_client=FakeModelClient([]),
         workspace=WorkspaceContext.build(tmp_path),
         session_store=session_store,
@@ -612,12 +612,12 @@ def test_nested_runtime_redacts_custom_run_and_session_stores(tmp_path):
 
 
 def test_store_constructors_harden_only_their_owned_legacy_tree(tmp_path):
-    runs_root = tmp_path / ".pico" / "runs"
+    runs_root = tmp_path / ".pony" / "runs"
     run_dir = runs_root / "legacy"
     run_dir.mkdir(parents=True)
     run_file = run_dir / "report.json"
     run_file.write_text("{}\n", encoding="utf-8")
-    sessions_root = tmp_path / ".pico" / "sessions"
+    sessions_root = tmp_path / ".pony" / "sessions"
     backup_dir = sessions_root / "backup"
     backup_dir.mkdir(parents=True)
     session_file = sessions_root / "legacy.json"
@@ -643,7 +643,7 @@ def test_singular_session_inspection_never_reads_unsafe_paths(
     tmp_path,
     monkeypatch,
 ):
-    sessions_root = tmp_path / ".pico" / "sessions"
+    sessions_root = tmp_path / ".pony" / "sessions"
     backup = sessions_root / "backup"
     backup.mkdir(parents=True)
     outside_base = tmp_path / "absolute-session"
@@ -704,7 +704,7 @@ def test_singular_session_inspection_never_reads_unsafe_paths(
 
 
 def test_singular_session_inspection_does_not_echo_invalid_role(tmp_path):
-    sessions_root = tmp_path / ".pico" / "sessions"
+    sessions_root = tmp_path / ".pony" / "sessions"
     sessions_root.mkdir(parents=True)
     secret = "opaque-invalid-role-secret-123456789"
     (sessions_root / "legacy.json").write_text(
@@ -728,7 +728,7 @@ def test_singular_session_cli_redacts_untrusted_summary_fields(
     monkeypatch,
     capsys,
 ):
-    sessions_root = tmp_path / ".pico" / "sessions"
+    sessions_root = tmp_path / ".pony" / "sessions"
     sessions_root.mkdir(parents=True)
     secret = "opaque-session-summary-secret-123456789"
     monkeypatch.setenv("CUSTOM_SESSION_TOKEN", secret)
@@ -799,10 +799,10 @@ def test_status_redacts_latest_artifact_ids(tmp_path, monkeypatch, capsys):
     secret = "opaque-status-secret-123456789"
     monkeypatch.setenv("CUSTOM_STATUS_TOKEN", secret)
     (tmp_path / ".env").write_text(
-        "PICO_API_BASE=https://api.deepseek.com\n",
+        "PONY_API_BASE=https://api.deepseek.com\n",
         encoding="utf-8",
     )
-    (tmp_path / ".pico" / "runs" / secret).mkdir(parents=True)
+    (tmp_path / ".pony" / "runs" / secret).mkdir(parents=True)
 
     for output_format in ("text", "json"):
         code = main(
@@ -822,12 +822,12 @@ def test_status_redacts_latest_artifact_ids(tmp_path, monkeypatch, capsys):
         assert "<redacted>" in output
 
 
-def test_status_does_not_follow_symlinked_pico_ancestor(tmp_path, capsys):
+def test_status_does_not_follow_symlinked_pony_ancestor(tmp_path, capsys):
     workspace = tmp_path / "workspace"
     outside = tmp_path / "outside"
     workspace.mkdir()
     (outside / "runs" / "external-run").mkdir(parents=True)
-    (workspace / ".pico").symlink_to(outside, target_is_directory=True)
+    (workspace / ".pony").symlink_to(outside, target_is_directory=True)
 
     code = main(
         [
@@ -853,7 +853,7 @@ def test_config_and_doctor_redact_configured_api_values(
     secret = "opaque-diagnostics-model-secret-123456789"
     monkeypatch.setenv("CUSTOM_DIAGNOSTIC_TOKEN", secret)
     (tmp_path / ".env").write_text(
-        f"PICO_API_BASE=https://example.com/{secret}\n",
+        f"PONY_API_BASE=https://example.com/{secret}\n",
         encoding="utf-8",
     )
 
@@ -878,17 +878,17 @@ def test_config_and_doctor_redact_configured_api_values(
 def test_owned_store_constructors_reject_hardlinks_without_chmod(tmp_path):
     cases = []
 
-    run_root = tmp_path / "run-case" / ".pico" / "runs"
+    run_root = tmp_path / "run-case" / ".pony" / "runs"
     run_file = run_root / "legacy" / "report.json"
     cases.append((run_file, lambda: RunStore(run_root)))
 
-    session_root = tmp_path / "session-case" / ".pico" / "sessions"
+    session_root = tmp_path / "session-case" / ".pony" / "sessions"
     session_file = session_root / "legacy.json"
     cases.append((session_file, lambda: SessionStore(session_root)))
 
     checkpoint_root = tmp_path / "checkpoint-case"
     checkpoint_file = (
-        checkpoint_root / ".pico" / "checkpoints" / "records" / "legacy.json"
+        checkpoint_root / ".pony" / "checkpoints" / "records" / "legacy.json"
     )
     cases.append((checkpoint_file, lambda: CheckpointStore(checkpoint_root)))
 
@@ -917,7 +917,7 @@ def test_owned_store_constructors_reject_hardlinks_without_chmod(tmp_path):
 
 
 def test_run_trace_rejects_hardlink_without_touching_external_inode(tmp_path):
-    store = RunStore(tmp_path / ".pico" / "runs")
+    store = RunStore(tmp_path / ".pony" / "runs")
     state = TaskState.create(run_id="hardlinked", task_id="task", user_request="safe")
     store.start_run(state)
     outside = tmp_path / "outside-trace.jsonl"
@@ -936,7 +936,7 @@ def test_session_temp_swap_preserves_unknown_installed_symlink(
     tmp_path,
     monkeypatch,
 ):
-    store = SessionStore(tmp_path / ".pico" / "sessions")
+    store = SessionStore(tmp_path / ".pony" / "sessions")
     outside = tmp_path / "outside-session.json"
     outside.write_text("outside\n", encoding="utf-8")
     original_replace = security_module.os.replace
@@ -965,7 +965,7 @@ def test_store_redactors_cannot_mutate_callers_or_leave_failed_trace(tmp_path):
             value["mutated"] = True
         return value
 
-    run_store = RunStore(tmp_path / ".pico" / "runs", redactor=mutating_redactor)
+    run_store = RunStore(tmp_path / ".pony" / "runs", redactor=mutating_redactor)
     state = TaskState.create(run_id="isolated", task_id="task", user_request="safe")
     run_store.start_run(state)
     event = {"event": "safe"}
@@ -976,7 +976,7 @@ def test_store_redactors_cannot_mutate_callers_or_leave_failed_trace(tmp_path):
     assert report == {"status": "safe"}
 
     session_store = SessionStore(
-        tmp_path / ".pico" / "sessions",
+        tmp_path / ".pony" / "sessions",
         redactor=mutating_redactor,
     )
     session = _session("isolated", tmp_path)
@@ -987,7 +987,7 @@ def test_store_redactors_cannot_mutate_callers_or_leave_failed_trace(tmp_path):
         raise RuntimeError("redactor failed")
 
     failing_store = RunStore(
-        tmp_path / ".pico" / "failed-runs",
+        tmp_path / ".pony" / "failed-runs",
         redactor=failing_redactor,
     )
     failing_state = TaskState.create(
@@ -1039,8 +1039,8 @@ def test_atomic_writers_remove_installed_temp_with_extra_hardlink(
     tmp_path,
     monkeypatch,
 ):
-    session_store = SessionStore(tmp_path / "session" / ".pico" / "sessions")
-    run_store = RunStore(tmp_path / "run" / ".pico" / "runs")
+    session_store = SessionStore(tmp_path / "session" / ".pony" / "sessions")
+    run_store = RunStore(tmp_path / "run" / ".pony" / "runs")
     run_state = TaskState.create(run_id="run", task_id="task", user_request="safe")
     run_store.start_run(run_state)
     checkpoint_store = CheckpointStore(tmp_path / "checkpoint")

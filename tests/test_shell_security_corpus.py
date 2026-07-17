@@ -3,12 +3,12 @@ from unittest.mock import Mock
 
 import pytest
 
-from pico import Pico
-from pico.state.session_store import SessionStore
-from pico.workspace.context import WorkspaceContext
+from pony import Pony
+from pony.state.session_store import SessionStore
+from pony.workspace.context import WorkspaceContext
 from benchmarks.support.fake_provider import FakeModelClient
-from pico.recovery.policy import assess_command
-from pico.runtime.options import RuntimeOptions
+from pony.recovery.policy import assess_command
+from pony.runtime.options import RuntimeOptions
 
 
 def build_agent(tmp_path, outputs, **kwargs):
@@ -18,9 +18,9 @@ def build_agent(tmp_path, outputs, **kwargs):
         tmp_path,
         executables=executables,
     )
-    store = SessionStore(tmp_path / ".pico" / "sessions")
+    store = SessionStore(tmp_path / ".pony" / "sessions")
     approval_policy = kwargs.pop("approval_policy", "auto")
-    return Pico(
+    return Pony(
         model_client=FakeModelClient(outputs),
         workspace=workspace,
         session_store=store,
@@ -77,7 +77,7 @@ REJECT = (
     "cat .env",
     "printf x > .env",
     "ls .ssh",
-    "cat .pico/sessions/session.json",
+    "cat .pony/sessions/session.json",
 )
 
 
@@ -183,7 +183,7 @@ def test_workspace_binary_and_relative_path_never_win_trust(tmp_path):
     fake_git.chmod(0o755)
     unsafe_path = ".:" + str(fake_bin) + ":/usr/bin:/bin"
 
-    from pico.tools.subprocess import build_trusted_executables
+    from pony.tools.subprocess import build_trusted_executables
 
     trusted = build_trusted_executables(
         tmp_path,
@@ -195,7 +195,7 @@ def test_workspace_binary_and_relative_path_never_win_trust(tmp_path):
 
 
 def test_hardened_git_and_rg_ignore_executable_repo_config(tmp_path, monkeypatch):
-    from pico.tools.subprocess import (
+    from pony.tools.subprocess import (
         build_trusted_executables,
         run_hardened_git,
         run_hardened_rg,
@@ -211,7 +211,7 @@ def test_hardened_git_and_rg_ignore_executable_repo_config(tmp_path, monkeypatch
             {"returncode": 0, "stdout": b"", "stderr": b""},
         )()
 
-    monkeypatch.setattr("pico.tools.subprocess.subprocess.run", fake_run)
+    monkeypatch.setattr("pony.tools.subprocess.subprocess.run", fake_run)
     executables = build_trusted_executables(
         tmp_path,
         env={

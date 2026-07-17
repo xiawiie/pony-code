@@ -29,15 +29,15 @@ htmlcov/
 # Local scratch space
 tmp/
 .worktrees/
-!.pico/
-.pico/*
-!.pico/memory/
-.pico/memory/*
-!.pico/memory/notes/
-.pico/memory/notes/**
-!.pico/memory/notes/**/
-!.pico/memory/notes/**/*.md
-.mini-pico/
+!.pony/
+.pony/*
+!.pony/memory/
+.pony/memory/*
+!.pony/memory/notes/
+.pony/memory/notes/**
+!.pony/memory/notes/**/
+!.pony/memory/notes/**/*.md
+.mini-pony/
 .planning/
 artifacts/
 release/
@@ -70,8 +70,8 @@ readme_intro_locked/
 .DS_Store
 
 # Packaging metadata
-pico.egg-info/
+pony.egg-info/
 
 # Live-e2e benchmark artifacts
 benchmarks/live_e2e/results/*.json
-benchmarks/live_e2e/results/pre-run-pico.toml.bak
+benchmarks/live_e2e/results/pre-run-pony.toml.bak

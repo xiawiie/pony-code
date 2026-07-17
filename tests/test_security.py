@@ -3,14 +3,14 @@ import stat
 
 import pytest
 
-from pico.security import workspace_files as security_module
-from pico.security.private_files import ensure_private_file
-from pico.security.paths import (
+from pony.security import workspace_files as security_module
+from pony.security.private_files import ensure_private_file
+from pony.security.paths import (
     has_sensitive_path_suffix,
     is_sensitive_path,
     sensitive_path_reason,
 )
-from pico.security.redaction import (
+from pony.security.redaction import (
     REDACTED_VALUE,
     contains_secret_material,
     detected_secret_env_items,
@@ -54,10 +54,10 @@ SECRET_SENTINEL = "github_pat_A123456789012345678901234567890"
         "keys/client.pfx",
         "keys/client.jks",
         "keys/client.keystore",
-        ".pico/sessions",
-        ".pico/sessions/s.json",
-        ".pico/runs/r/trace.jsonl",
-        ".pico/checkpoints/blobs/aa/value",
+        ".pony/sessions",
+        ".pony/sessions/s.json",
+        ".pony/runs/r/trace.jsonl",
+        ".pony/checkpoints/blobs/aa/value",
     ),
 )
 def test_sensitive_path_matrix(path):
@@ -76,7 +76,7 @@ def test_sensitive_path_matrix(path):
         "config/service-account.txt",
         "config/secret.json",
         ".aws/config",
-        ".pico/memory/agent_notes.md",
+        ".pony/memory/agent_notes.md",
     ),
 )
 def test_sensitive_path_templates_and_public_material_are_allowed(path):
@@ -105,7 +105,7 @@ def test_sensitive_path_rules_apply_to_every_component(path):
     (
         "./.ENV.LOCAL",
         "PROJECT/.SSH/ID_ED25519",
-        "PROJECT/.PICO/CHECKPOINTS/record.json",
+        "PROJECT/.PONY/CHECKPOINTS/record.json",
         "CERTS/CLIENT.PEM",
         "PROJECT\\.SSH\\ID_ED25519",
     ),
@@ -120,7 +120,7 @@ def test_sensitive_path_uses_casefolded_posix_lexical_normalization(path):
         ".aws/tmp/../credentials",
         ".docker/tmp/../config.json",
         ".kube/tmp/../config",
-        ".pico/tmp/../sessions/s.json",
+        ".pony/tmp/../sessions/s.json",
     ),
 )
 def test_sensitive_path_collapses_lexical_parent_components(path):
@@ -231,7 +231,7 @@ def test_long_secret_values_redact_token_instances_including_embedded_text():
 
 
 def test_redact_text_removes_known_secret_even_inside_identifier():
-    env = {"PICO_API_KEY": "alpha123456789"}
+    env = {"PONY_API_KEY": "alpha123456789"}
     assert (
         redact_text("prefix_alpha123456789_suffix", env=env)
         == "prefix_<redacted>_suffix"

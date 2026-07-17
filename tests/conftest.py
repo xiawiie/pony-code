@@ -6,8 +6,8 @@ import stat
 
 import pytest
 
-from pico.sandbox import docker as docker_sandbox_module
-from pico.tools import subprocess as safe_subprocess_module
+from pony.sandbox import docker as docker_sandbox_module
+from pony.tools import subprocess as safe_subprocess_module
 
 
 _REAL_HOME = Path.home()
@@ -31,7 +31,7 @@ def real_home():
 
 @pytest.fixture(autouse=True)
 def isolated_home(tmp_path_factory, monkeypatch, request):
-    """Keep test-created Pico state out of the user's HOME."""
+    """Keep test-created Pony state out of the user's HOME."""
     if "real_home" in request.fixturenames:
         return _REAL_HOME
     home = tmp_path_factory.mktemp("home")
@@ -48,7 +48,7 @@ def isolated_home(tmp_path_factory, monkeypatch, request):
 def released_sandbox_test_platform(monkeypatch):
     """Exercise the packaged arm64 fixture independently of the CI host CPU."""
     monkeypatch.setattr(
-        "pico.sandbox.docker._host_image_platform",
+        "pony.sandbox.docker._host_image_platform",
         lambda: "linux/arm64",
     )
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run Pico's existing evaluation runners and write a low-sensitivity summary."""
+"""Run Pony's existing evaluation runners and write a low-sensitivity summary."""
 
 from __future__ import annotations
 
@@ -19,14 +19,14 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from pico.sandbox.docker import (  # noqa: E402
+from pony.sandbox.docker import (  # noqa: E402
     DockerSandboxError,
     default_image_manifest_path,
     load_image_manifest,
 )
-from pico.config.environment import read_project_env  # noqa: E402
-from pico.config.model import resolve_model_config  # noqa: E402
-from pico.security.redaction import redact_text  # noqa: E402
+from pony.config.environment import read_project_env  # noqa: E402
+from pony.config.model import resolve_model_config  # noqa: E402
+from pony.security.redaction import redact_text  # noqa: E402
 
 
 BASELINE_PATH = Path("benchmarks/baselines/core-v1.json")
@@ -134,7 +134,7 @@ def _architecture():
 
 
 def _machine_class(system_name):
-    configured = os.environ.get("PICO_EVAL_MACHINE_CLASS", "").strip().casefold()
+    configured = os.environ.get("PONY_EVAL_MACHINE_CLASS", "").strip().casefold()
     value = configured or f"{system_name}-{_architecture()}"
     if MACHINE_CLASS.fullmatch(value) is None:
         raise ValueError("invalid evaluation machine class")
@@ -146,7 +146,7 @@ def _load_baseline(root, machine_class):
     if (
         set(payload)
         != {"record_type", "format_version", "suite", "machine_class", "performance"}
-        or payload.get("record_type") != "pico_evaluation_baseline"
+        or payload.get("record_type") != "pony_evaluation_baseline"
         or type(payload.get("format_version")) is not int
         or payload["format_version"] != 1
         or payload.get("suite") != "core"
@@ -753,7 +753,7 @@ def _provenance(root, suite, provider, system_name, machine_class):
 
 def _render_markdown(payload):
     lines = [
-        "# Pico evaluation",
+        "# Pony evaluation",
         "",
         f"- Suite: `{payload['suite']}`",
         f"- Status: `{payload['status']}`",
@@ -795,7 +795,7 @@ def _validate_low_sensitivity(payload, markdown, root):
     }:
         raise ValueError("invalid evaluation artifact fields")
     if (
-        payload.get("record_type") != "pico_evaluation_result"
+        payload.get("record_type") != "pony_evaluation_result"
         or type(payload.get("format_version")) is not int
         or payload["format_version"] != 1
         or payload.get("suite") not in set(SUITES)
@@ -1051,7 +1051,7 @@ def run_evaluation(
         raise ValueError("unknown evaluation suite")
 
     payload = {
-        "record_type": "pico_evaluation_result",
+        "record_type": "pony_evaluation_result",
         "format_version": 1,
         "suite": suite,
         "status": "pass"

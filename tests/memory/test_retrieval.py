@@ -3,9 +3,9 @@ from pathlib import Path
 
 import pytest
 
-import pico.memory.block_store as block_store_module
-from pico.memory.block_store import BlockStore
-from pico.memory.retrieval import Retrieval, tokenize
+import pony.memory.block_store as block_store_module
+from pony.memory.block_store import BlockStore
+from pony.memory.retrieval import Retrieval, tokenize
 
 
 def test_tokenize_english():
