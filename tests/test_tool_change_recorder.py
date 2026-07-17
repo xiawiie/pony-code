@@ -2,16 +2,21 @@ import hashlib
 
 import pytest
 
-from pico import Pico, SessionStore, WorkspaceContext
-from pico.providers.fake import FakeModelClient
-from pico.checkpoint_store import CheckpointStore
-from pico.tool_change_recorder import ToolChangeRecorder
+from pico import Pico
+from pico.state.session_store import SessionStore
+from pico.workspace.context import WorkspaceContext
+from benchmarks.support.fake_provider import FakeModelClient
+from pico.state.checkpoint_store import CheckpointStore
+from pico.tools.change_recorder import ToolChangeRecorder
+from pico.runtime.options import RuntimeOptions
 
 
 def test_finalize_records_success_and_error_states(tmp_path):
     store = CheckpointStore(tmp_path)
     recorder = ToolChangeRecorder(store)
-    pending = recorder.start("", "task_1", "write_file", "workspace_write", {"path": "a.txt"})
+    pending = recorder.start(
+        "", "task_1", "write_file", "workspace_write", {"path": "a.txt"}
+    )
 
     finalized = recorder.finalize(
         pending["tool_change_id"],
@@ -35,23 +40,31 @@ def test_mark_interrupted_only_changes_pending_records(tmp_path):
 
     interrupted = recorder.mark_interrupted_pending()
 
-    assert [item["tool_change_id"] for item in interrupted] == [pending["tool_change_id"]]
-    assert store.load_tool_change_record(done["tool_change_id"])["status"] == "finalized"
+    assert [item["tool_change_id"] for item in interrupted] == [
+        pending["tool_change_id"]
+    ]
+    assert (
+        store.load_tool_change_record(done["tool_change_id"])["status"] == "finalized"
+    )
 
 
 def test_runtime_marks_existing_pending_tool_changes_interrupted_on_startup(tmp_path):
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
     store = CheckpointStore(tmp_path)
-    pending = ToolChangeRecorder(store).start("", "task_1", "run_shell", "workspace_write", {})
+    pending = ToolChangeRecorder(store).start(
+        "", "task_1", "run_shell", "workspace_write", {}
+    )
 
     Pico(
         model_client=FakeModelClient([]),
         workspace=WorkspaceContext.build(tmp_path),
         session_store=SessionStore(tmp_path / ".pico" / "sessions"),
-        approval_policy="auto",
+        options=RuntimeOptions(approval_policy="auto"),
     )
 
-    assert store.load_tool_change_record(pending["tool_change_id"])["status"] == "pending"
+    assert (
+        store.load_tool_change_record(pending["tool_change_id"])["status"] == "pending"
+    )
 
 
 def test_runtime_startup_does_not_interrupt_owned_pending_tool_changes(tmp_path):
@@ -64,17 +77,23 @@ def test_runtime_startup_does_not_interrupt_owned_pending_tool_changes(tmp_path)
         "workspace_write",
         {},
     )
-    legacy = ToolChangeRecorder(store).start("", "task_legacy", "run_shell", "workspace_write", {})
+    legacy = ToolChangeRecorder(store).start(
+        "", "task_legacy", "run_shell", "workspace_write", {}
+    )
 
     Pico(
         model_client=FakeModelClient([]),
         workspace=WorkspaceContext.build(tmp_path),
         session_store=SessionStore(tmp_path / ".pico" / "sessions"),
-        approval_policy="auto",
+        options=RuntimeOptions(approval_policy="auto"),
     )
 
-    assert store.load_tool_change_record(active["tool_change_id"])["status"] == "pending"
-    assert store.load_tool_change_record(legacy["tool_change_id"])["status"] == "pending"
+    assert (
+        store.load_tool_change_record(active["tool_change_id"])["status"] == "pending"
+    )
+    assert (
+        store.load_tool_change_record(legacy["tool_change_id"])["status"] == "pending"
+    )
 
 
 def test_finalize_requires_matching_owner_and_pending_status(tmp_path):
@@ -104,24 +123,19 @@ def test_pending_review_includes_same_and_foreign_owner(tmp_path):
         expected_status="pending",
     )
 
-    ids = {
-        item["tool_change_id"]
-        for item in recorder.pending_recovery_reviews()
-    }
+    ids = {item["tool_change_id"] for item in recorder.pending_recovery_reviews()}
     assert ids == {current["tool_change_id"], foreign["tool_change_id"]}
 
 
 def test_partial_success_requires_explicit_review(tmp_path):
     store = CheckpointStore(tmp_path)
     recorder = ToolChangeRecorder(store, owner_id="owner-a")
-    record = recorder.start(
-        "", "turn-1", "write_file", "workspace_write", {}
-    )
+    record = recorder.start("", "turn-1", "write_file", "workspace_write", {})
     recorder.finalize(record["tool_change_id"], "partial_success")
 
-    assert [
-        item["tool_change_id"] for item in recorder.pending_recovery_reviews()
-    ] == [record["tool_change_id"]]
+    assert [item["tool_change_id"] for item in recorder.pending_recovery_reviews()] == [
+        record["tool_change_id"]
+    ]
 
     reviewed = recorder.resolve_pending(
         record["tool_change_id"],
@@ -136,13 +150,15 @@ def test_partial_success_requires_explicit_review(tmp_path):
 def test_start_persists_prepared_state_and_recovery_context(tmp_path):
     store = CheckpointStore(tmp_path)
     recorder = ToolChangeRecorder(store, owner_id="owner-a")
-    prepared = [{
+    prepared = [
+        {
         "path": "note.txt",
         "before_exists": False,
         "before_blob_ref": "",
         "before_hash": "",
         "before_mode": None,
-    }]
+        }
+    ]
     context = {"observer_mode": "filesystem", "git_head": "abc123"}
 
     record = recorder.start(
@@ -191,7 +207,9 @@ def test_resolve_pending_rejects_changed_preview_hash(tmp_path):
             review_reason="explicit_cli_resolution",
             expected_record_hash=hashlib.sha256(raw).hexdigest(),
         )
-    assert store.load_tool_change_record(pending["tool_change_id"])["status"] == "pending"
+    assert (
+        store.load_tool_change_record(pending["tool_change_id"])["status"] == "pending"
+    )
 
 
 def test_start_returns_canonical_redacted_persisted_copy(tmp_path):

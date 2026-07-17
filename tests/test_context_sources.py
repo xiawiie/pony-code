@@ -5,7 +5,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from pico import Pico, SessionStore, WorkspaceContext
+from pico import Pico
+from pico.state.session_store import SessionStore
+from pico.workspace.context import WorkspaceContext
 from pico.context.renderer import render_current_user_message
 from pico.context.sources import (
     memory_index_chunks,
@@ -17,9 +19,10 @@ from pico.context.sources import (
     task_working_set_chunks,
     workspace_state_chunks,
 )
-from pico.model_capabilities import TokenAccounting
-from pico.providers.fake import FakeModelClient
-from pico.security import SensitiveDataBlockedError
+from pico.agent.model_capabilities import TokenAccounting
+from benchmarks.support.fake_provider import FakeModelClient
+from pico.security.redaction import SensitiveDataBlockedError
+from pico.runtime.options import RuntimeOptions
 
 
 def _agent():
@@ -50,7 +53,7 @@ def _real_agent(tmp_path):
         model_client=FakeModelClient([]),
         workspace=WorkspaceContext.build(tmp_path),
         session_store=SessionStore(tmp_path / ".pico" / "sessions"),
-        approval_policy="auto",
+        options=RuntimeOptions(approval_policy="auto"),
     )
 
 
@@ -134,7 +137,7 @@ def test_readme_is_dynamic_project_context_not_a_pinned_instruction(tmp_path):
         model_client=FakeModelClient([]),
         workspace=WorkspaceContext.build(tmp_path),
         session_store=SessionStore(tmp_path / ".pico" / "sessions"),
-        approval_policy="auto",
+        options=RuntimeOptions(approval_policy="auto"),
     )
 
     chunks = project_structure_chunks(agent, agent.token_accounting)

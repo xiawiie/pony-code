@@ -5,9 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from scripts import docker_sandbox_release as sandbox_release
-from scripts import evaluate
-from tests.release_authority_fixture import runtime_case_rows
+from scripts.evaluation import evaluate
 
 
 BASELINE = {
@@ -54,7 +52,11 @@ def _live_report(*, git_head="unknown"):
     assertions = {
         "transport": {"name": "transport_ok", "gate": "transport_cost", "passed": True},
         "security": {"name": "security_ok", "gate": "security", "passed": True},
-        "persistence": {"name": "persistence_ok", "gate": "persistence", "passed": True},
+        "persistence": {
+            "name": "persistence_ok",
+            "gate": "persistence",
+            "passed": True,
+        },
         "fixture": {
             "name": "fixture_restored_after_context_exit",
             "gate": "persistence",
@@ -76,7 +78,7 @@ def _live_report(*, git_head="unknown"):
         "record_type": "live_e2e_report",
         "format_version": 2,
         "run_id": "live-e2e-1",
-        "provider": "deepseek",
+        "provider": "openai",
         "model": "test-model",
         "git_head": git_head,
         "aborted_reason": "",
@@ -176,7 +178,11 @@ def test_core_uses_injected_runners_and_writes_only_low_sensitivity_fields(
     def runner(argv, cwd):
         calls.append((argv, cwd))
         module = argv[-1] if argv[:2] == [evaluate.sys.executable, "-m"] else ""
-        stdout = _perf_output(module) if module in dict(evaluate.PERF_RUNNERS) else secret_output
+        stdout = (
+            _perf_output(module)
+            if module in dict(evaluate.PERF_RUNNERS)
+            else secret_output
+        )
         return SimpleNamespace(returncode=0, stdout=stdout, stderr=secret_output)
 
     payload, json_rel, markdown_rel = evaluate.run_evaluation(
@@ -200,16 +206,26 @@ def test_core_uses_injected_runners_and_writes_only_low_sensitivity_fields(
         "core.distribution",
         *BASELINE["performance"],
     }
-    assert any("benchmarks/memory_quality/run_benchmark.py" in argv for argv, _ in calls)
+    assert any(
+        "benchmarks/memory_quality/run_benchmark.py" in argv for argv, _ in calls
+    )
     assert any(argv[:2] == ["uv", "build"] for argv, _ in calls)
     assert {module for module, _ids in evaluate.PERF_RUNNERS} <= {
         argv[-1] for argv, _ in calls
     }
-    assert sum(argv[:3] == [evaluate.sys.executable, "-m", "pytest"] for argv, _ in calls) == 1
+    assert (
+        sum(argv[:3] == [evaluate.sys.executable, "-m", "pytest"] for argv, _ in calls)
+        == 1
+    )
 
     serialized = (tmp_path / json_rel).read_text(encoding="utf-8")
     markdown = (tmp_path / markdown_rel).read_text(encoding="utf-8")
-    for forbidden in (secret_output, "/Users/private/repo", "prompt=private", "tool result"):
+    for forbidden in (
+        secret_output,
+        "/Users/private/repo",
+        "prompt=private",
+        "tool result",
+    ):
         assert forbidden not in serialized
         assert forbidden not in markdown
     assert not Path(payload["artifact_path"]).is_absolute()
@@ -268,7 +284,11 @@ def test_injected_perf_regression_fails_named_scenario(tmp_path, monkeypatch):
         del cwd
         calls.append(argv)
         module = argv[-1] if argv[:2] == [evaluate.sys.executable, "-m"] else ""
-        stdout = _perf_output(module, regressed) if module in dict(evaluate.PERF_RUNNERS) else ""
+        stdout = (
+            _perf_output(module, regressed)
+            if module in dict(evaluate.PERF_RUNNERS)
+            else ""
+        )
         return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
 
     payload, _json_path, _markdown_path = evaluate.run_evaluation(
@@ -278,7 +298,9 @@ def test_injected_perf_regression_fails_named_scenario(tmp_path, monkeypatch):
         now=datetime(2026, 7, 12, 1, tzinfo=timezone.utc),
     )
 
-    row = next(item for item in payload["scenarios"] if item["id"] == "build_request/medium")
+    row = next(
+        item for item in payload["scenarios"] if item["id"] == "build_request/medium"
+    )
     assert payload["status"] == "fail"
     assert row["status"] == "fail"
     assert row["exit_code"] == 0
@@ -437,46 +459,15 @@ def test_logical_suites_split_fast_full_contract_and_real_work():
     ]
 
 
-def test_sandbox_real_forwards_required_external_fixtures(monkeypatch, tmp_path):
-    mount_fixture = tmp_path / "mount-fixture"
-    device_fixture = tmp_path / "device-fixture"
-    monkeypatch.setenv("PICO_SANDBOX_MOUNT_FIXTURE", str(mount_fixture))
-    monkeypatch.setenv("PICO_SANDBOX_DEVICE_FIXTURE", str(device_fixture))
+def test_sandbox_real_uses_the_local_runtime_verifier():
+    command = evaluate._sandbox_real_command("linux")
 
-    command = evaluate._sandbox_real_command(
-        "linux",
-        "dist/pico-0.2.0-py3-none-any.whl",
+    assert command[0] == "sandbox.real.linux"
+    assert command[1][-2:] == (
+        "scripts/sandbox/verify_runtime.py",
+        "--require-ready",
     )
-    vertical = command[1]
-
-    assert vertical[vertical.index("--mount-fixture-source") + 1] == str(
-        mount_fixture
-    )
-    assert vertical[vertical.index("--device-fixture-source") + 1] == str(
-        device_fixture
-    )
-
-
-def test_sandbox_real_requires_the_single_exact_project_wheel(tmp_path):
-    (tmp_path / "pyproject.toml").write_text(
-        '[project]\nname = "pico"\nversion = "0.2.0"\n',
-        encoding="utf-8",
-    )
-    dist = tmp_path / "dist"
-    dist.mkdir()
-    expected = dist / "pico-0.2.0-py3-none-any.whl"
-
-    with pytest.raises(ValueError, match="exactly one project wheel"):
-        evaluate._matching_project_wheel(tmp_path)
-
-    expected.write_bytes(b"wheel")
-    assert evaluate._matching_project_wheel(tmp_path) == expected.relative_to(
-        tmp_path
-    ).as_posix()
-
-    (dist / "pico-0.1.0-py3-none-any.whl").write_bytes(b"stale")
-    with pytest.raises(ValueError, match="exactly one project wheel"):
-        evaluate._matching_project_wheel(tmp_path)
+    assert command[2] == "exit"
 
 
 def test_pr_suites_do_not_require_baseline_or_real_sandbox(tmp_path):
@@ -530,7 +521,7 @@ def test_sandbox_contract_rejects_skip_and_xfail_summaries():
         assert evaluate._functional_passed("no_skip", 0, output) is False
 
 
-def test_sandbox_fails_on_pytest_skip_and_invalid_vertical(tmp_path):
+def test_sandbox_fails_on_pytest_skip_and_unready_runtime(tmp_path):
     calls = 0
     (tmp_path / "pyproject.toml").write_text(
         '[project]\nname = "pico"\nversion = "0.2.0"\n',
@@ -541,14 +532,11 @@ def test_sandbox_fails_on_pytest_skip_and_invalid_vertical(tmp_path):
         nonlocal calls
         calls += 1
         if "pytest" in argv:
-            return SimpleNamespace(returncode=0, stdout="1 passed, 1 skipped", stderr="")
-        if argv[:2] == ["uv", "build"]:
-            dist = cwd / "dist"
-            dist.mkdir()
-            (dist / "pico-0.2.0-py3-none-any.whl").write_bytes(b"wheel")
-            return SimpleNamespace(returncode=0, stdout="", stderr="")
-        if "docker_sandbox_release.py" in argv:
-            return SimpleNamespace(returncode=0, stdout="{}", stderr="")
+            return SimpleNamespace(
+                returncode=0, stdout="1 passed, 1 skipped", stderr=""
+            )
+        if any(item.endswith("verify_runtime.py") for item in argv):
+            return SimpleNamespace(returncode=1, stdout="{}", stderr="not ready")
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     payload, _json_path, _markdown_path = evaluate.run_evaluation(
@@ -559,97 +547,25 @@ def test_sandbox_fails_on_pytest_skip_and_invalid_vertical(tmp_path):
         system_name="darwin",
     )
 
-    assert calls == 3
+    assert calls == 2
     assert payload["status"] == "fail"
     assert [row["status"] for row in payload["scenarios"]] == [
         "fail",
-        "pass",
         "fail",
     ]
 
 
-def test_mandatory_sandbox_artifacts_require_exact_complete_schema():
-    assert evaluate._docker_vertical_passed("{}", "darwin") is False
-
-    expected = sandbox_release.validate_expected_manifest(
-        {
-            "record_type": "docker_sandbox_release_expected",
-            "format_version": 1,
-            "release_nonce": "a" * 64,
-            "commit": "b" * 40,
-            "distribution_sha256": "sha256:" + "1" * 64,
-            "sdist_sha256": "sha256:" + "6" * 64,
-            "image_set_digest": "sha256:" + "5" * 64,
-            "images": [
-                {
-                    "platform": "linux/arm64",
-                    "architecture": "arm64",
-                    "image_digest": "sha256:" + "3" * 64,
-                    "image_id": "sha256:" + "7" * 64,
-                    "registry_reference": (
-                        "registry.example/pico@sha256:" + "3" * 64
-                    ),
-                },
-                {
-                    "platform": "linux/amd64",
-                    "architecture": "amd64",
-                    "image_digest": "sha256:" + "8" * 64,
-                    "image_id": "sha256:" + "9" * 64,
-                    "registry_reference": (
-                        "registry.example/pico@sha256:" + "8" * 64
-                    ),
-                },
-            ],
-            "policy_digest": "sha256:" + "4" * 64,
-            "corpus_digest": sandbox_release.CORPUS_DIGEST,
-            "jobs": [dict(job) for job in sandbox_release.expected_release_jobs()],
-        }
-    )
-    job = expected["jobs"][0]
-    artifact = sandbox_release._base_artifact(
-        expected["distribution_sha256"],
-        "sha256:" + "2" * 64,
-        SimpleNamespace(
-            image_set_digest=expected["image_set_digest"],
-            reference=expected["images"][0]["image_digest"],
-            policy_digest=expected["policy_digest"],
-        ),
-    )
-    artifact.update(
-        {
-            "status": "passed",
-            "reason_code": "mandatory_checks_passed",
-            "platform": job["platform"],
-            "architecture": job["architecture"],
-            "engine_profile": job["engine_profile"],
-            "mandatory_passed": len(sandbox_release.MANDATORY_CHECK_IDS),
-            "mandatory_failed": 0,
-            "container_calls": 1,
-            "target_started_count": 1,
-            "release_binding": sandbox_release.release_binding(
-                expected,
-                job["job_id"],
-            ),
-        }
-    )
-    for check in artifact["checks"]:
-        check.update(status="pass", reason_code="verified")
-    sandbox_release._set_case_evidence(
-        artifact,
-        "complete",
-        "verified",
-        runtime_case_rows(),
+def _write_live_env(root):
+    (root / ".env").write_text(
+        "PICO_PROVIDER=openai\n"
+        "PICO_API_BASE=https://api.openai.com/v1\n"
+        "PICO_MODEL=test-model\n"
+        "PICO_API_KEY=test-key\n",
+        encoding="utf-8",
     )
 
-    serialized = json.dumps(artifact)
-    assert evaluate._docker_vertical_passed(serialized, "darwin") is True
-    assert evaluate._docker_vertical_passed(serialized, "linux") is False
 
-    artifact["unexpected"] = True
-    assert evaluate._docker_vertical_passed(json.dumps(artifact), "darwin") is False
-
-
-def test_live_requires_provider_before_calling_runner(tmp_path):
+def test_live_requires_repo_env_before_calling_runner(tmp_path):
     called = False
 
     def runner(argv, cwd):
@@ -658,15 +574,13 @@ def test_live_requires_provider_before_calling_runner(tmp_path):
         called = True
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
-    with pytest.raises(SystemExit) as raised:
-        evaluate.main(["--suite", "live"], runner=runner, root=tmp_path)
-
-    assert raised.value.code == 2
+    assert evaluate.main(["--suite", "live"], runner=runner, root=tmp_path) == 2
     assert called is False
 
 
 def test_live_provider_is_forwarded_to_existing_runner_without_output_leak(tmp_path):
     calls = []
+    _write_live_env(tmp_path)
 
     def runner(argv, cwd):
         calls.append((argv, cwd))
@@ -684,13 +598,12 @@ def test_live_provider_is_forwarded_to_existing_runner_without_output_leak(tmp_p
 
     payload, json_rel, _markdown_rel = evaluate.run_evaluation(
         "live",
-        "deepseek",
         runner=runner,
         root=tmp_path,
         now=datetime(2026, 7, 12, 3, tzinfo=timezone.utc),
     )
 
-    assert calls[0][0][-2:] == ["--provider", "deepseek"]
+    assert calls[0][0][-2:] == ["--repo-root", str(tmp_path.resolve())]
     serialized = (tmp_path / json_rel).read_text(encoding="utf-8")
     assert payload["status"] == "pass"
     assert "provider prompt" not in serialized
@@ -700,11 +613,11 @@ def test_live_provider_is_forwarded_to_existing_runner_without_output_leak(tmp_p
 
 def test_live_report_requires_exact_head_and_required_gate_evidence():
     report = _live_report(git_head="wrong")
-    assert evaluate._live_report_passed(report, "deepseek", "expected") is False
+    assert evaluate._live_report_passed(report, "openai", "expected") is False
 
     report = _live_report(git_head="expected")
     del report["artifact_security"]
-    assert evaluate._live_report_passed(report, "deepseek", "expected") is False
+    assert evaluate._live_report_passed(report, "openai", "expected") is False
 
     report = _live_report(git_head="expected")
     report["global_assertions"] = [
@@ -713,13 +626,13 @@ def test_live_report_requires_exact_head_and_required_gate_evidence():
         if item["name"] != "fixture_restored_after_context_exit"
     ]
     report["assertion_summary"] = {"total": 8, "passed": 8, "failed": 0}
-    assert evaluate._live_report_passed(report, "deepseek", "expected") is False
+    assert evaluate._live_report_passed(report, "openai", "expected") is False
 
 
 def test_live_report_requires_scanned_artifacts_and_exact_five_turn_envelopes():
     report = _live_report(git_head="expected")
     report["artifact_security"]["files_scanned"] = 0
-    assert evaluate._live_report_passed(report, "deepseek", "expected") is False
+    assert evaluate._live_report_passed(report, "openai", "expected") is False
 
     missing = _live_report(git_head="expected")
     missing["turns"].pop(2)
@@ -728,7 +641,7 @@ def test_live_report_requires_scanned_artifacts_and_exact_five_turn_envelopes():
     unexpected = _live_report(git_head="expected")
     unexpected["turns"][2]["turn"] = 6
     for poisoned in (missing, duplicate, unexpected):
-        assert evaluate._live_report_passed(poisoned, "deepseek", "expected") is False
+        assert evaluate._live_report_passed(poisoned, "openai", "expected") is False
 
     missing_field = _live_report(git_head="expected")
     del missing_field["turns"][0]["duration_ms"]
@@ -739,7 +652,7 @@ def test_live_report_requires_scanned_artifacts_and_exact_five_turn_envelopes():
     invalid_value = _live_report(git_head="expected")
     invalid_value["turns"][0]["usage_complete"] = False
     for poisoned in (missing_field, extra_field, empty_assertions, invalid_value):
-        assert evaluate._live_report_passed(poisoned, "deepseek", "expected") is False
+        assert evaluate._live_report_passed(poisoned, "openai", "expected") is False
 
 
 def test_live_report_keeps_assertion_names_dynamic():
@@ -750,13 +663,13 @@ def test_live_report_keeps_assertion_names_dynamic():
     report["global_assertions"][1]["name"] = "renamed_security"
     report["global_assertions"][2]["name"] = "renamed_persistence"
 
-    assert evaluate._live_report_passed(report, "deepseek", "expected") is True
+    assert evaluate._live_report_passed(report, "openai", "expected") is True
 
 
 def test_live_exit_zero_without_current_v2_report_fails(tmp_path):
+    _write_live_env(tmp_path)
     payload, _json_rel, _markdown_rel = evaluate.run_evaluation(
         "live",
-        "deepseek",
         runner=lambda _argv, _cwd: SimpleNamespace(
             returncode=0,
             stdout="",

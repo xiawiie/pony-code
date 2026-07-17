@@ -1,6 +1,6 @@
 """Pico live-provider end-to-end harness.
 
-One invocation selects DeepSeek, Anthropic, or OpenAI from the project ``.env``
+One invocation uses the Provider selected by the target repository's ``.env``
 and records trace-backed evidence for five designed turns. This standalone
 command consumes API credits; incomplete or malformed trace usage fails the
 gate instead of falling back to mutable provider state. Reports omit provider
@@ -22,24 +22,27 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from pico.config import read_project_env
-from pico.evaluation.metrics_common import _load_json_artifact
-from pico.evaluation.provider_benchmark import _provider_target
-from pico.messages import MessageValidationError, validate_messages
-from pico.security import (
-    SensitiveDataBlockedError,
-    contains_secret_material,
+from pico.config.environment import read_project_env
+from pico.config.model import API_KEY_ENV_NAME, resolve_model_config
+from benchmarks.evaluation.metrics_common import _load_json_artifact
+from pico.agent.messages import MessageValidationError, validate_messages
+from pico.security.private_files import (
     ensure_private_dir,
     ensure_private_file,
     private_directory_identity,
-    redact_artifact,
     write_private_bytes_atomic,
 )
-from pico.session_store import (
+from pico.security.redaction import (
+    SensitiveDataBlockedError,
+    contains_secret_material,
+    redact_artifact,
+)
+from pico.state.session_store import (
     SESSION_FORMAT_VERSION,
     SESSION_HEADER_RECORD_TYPE,
     SESSION_RECORD_TYPE,
 )
+from pico.runtime.options import RuntimeOptions
 
 
 LIVE_E2E_REPORT_FORMAT_VERSION = 2
@@ -98,9 +101,7 @@ def snapshot_private_artifacts(pico_root):
 
 def scan_active_private_artifacts(pico_root, before, *, forbidden_values):
     pico_root = Path(pico_root)
-    forbidden = tuple(
-        str(value).encode() for value in forbidden_values if str(value)
-    )
+    forbidden = tuple(str(value).encode() for value in forbidden_values if str(value))
     secret_hits = []
     mode_failures = []
     files_scanned = 0
@@ -143,7 +144,8 @@ def scan_active_private_artifacts(pico_root, before, *, forbidden_values):
 class RunConfig:
     """CLI + env-derived configuration for one live-e2e run."""
 
-    provider: Literal["anthropic", "deepseek", "ollama", "openai"]
+    repo_root: Path
+    provider: Literal["anthropic", "ollama", "openai"]
     model: str
     max_model_attempts: int
     max_total_tokens: int
@@ -153,61 +155,60 @@ class RunConfig:
     verbose: bool
 
 
-def provider_settings(provider, *, project_env=None, process_env=None):
-    if provider not in {"anthropic", "deepseek", "ollama", "openai"}:
-        raise ValueError(f"unsupported live provider: {provider}")
-    if provider == "ollama":
-        project_env = dict(project_env or {})
-        process_env = dict(os.environ if process_env is None else process_env)
-        def value(name, default=""):
-            return project_env.get(name) or process_env.get(name) or default
-        return {
-            "api_key": value("PICO_OLLAMA_API_KEY"),
-            "api_key_env": "PICO_OLLAMA_API_KEY",
-            "model": value("PICO_OLLAMA_MODEL", "qwen3.5:4b"),
-            "base_url": value("PICO_OLLAMA_HOST", "http://127.0.0.1:11434"),
-            "client_kind": "ollama_chat",
-            "auth_mode": "none",
-            "capabilities": {},
-        }
-    target_name = {"anthropic": "claude", "openai": "gpt"}.get(
-        provider, provider
+def provider_settings(
+    repo_root=None,
+    *,
+    project_env=None,
+    process_env=None,
+    required=True,
+):
+    root = Path.cwd() if repo_root is None else Path(repo_root)
+    project_values = (
+        read_project_env(root) if project_env is None else dict(project_env)
     )
-    return _provider_target(
-        target_name,
-        project_env=project_env,
-        process_env=process_env,
+    resolved = resolve_model_config(
+        project_env=project_values,
+        process_env=dict(os.environ if process_env is None else process_env),
+        required=required,
     )
+    return {
+        "provider": resolved["provider"]["value"],
+        "model": resolved["model"]["value"],
+        "base_url": resolved["base_url"]["value"],
+        "api_key": resolved["api_key"]["value"],
+        "api_key_env": API_KEY_ENV_NAME,
+        "transport": resolved["protocol"]["value"],
+        "auth_mode": resolved["auth_mode"]["value"],
+        "capabilities": dict(resolved["capabilities"]),
+    }
 
 
-def parse_args(*, project_env=None, process_env=None) -> RunConfig:
-    """Parse CLI arguments and return a frozen RunConfig.
-
-    The selected provider's canonical environment names supply defaults. A
-    ``--model`` argument overrides that provider's configured model.
-    """
+def parse_args(argv=None, *, project_env=None, process_env=None) -> RunConfig:
+    """Parse arguments and resolve the target repository's ``.env``."""
     parser = argparse.ArgumentParser(prog="run_live_session")
     parser.add_argument(
-        "--provider",
-        choices=("anthropic", "deepseek", "ollama", "openai"),
-        required=True,
+        "--repo-root",
+        default=".",
+        help="Repository whose .env selects the Provider and Transport.",
     )
-    parser.add_argument("--model", default=None)
     parser.add_argument("--max-model-attempts", type=_positive_int, default=15)
     parser.add_argument("--max-total-tokens", type=_positive_int, default=200_000)
     parser.add_argument("--request-timeout-seconds", type=_positive_int, default=300)
     parser.add_argument("--max-wall-seconds", type=_positive_int, default=900)
     parser.add_argument("--reset", action="store_true")
     parser.add_argument("--verbose", action="store_true")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
+    repo_root = Path(args.repo_root).resolve()
     settings = provider_settings(
-        args.provider,
-        project_env=project_env,
-        process_env=process_env,
+        repo_root,
+        project_env={} if args.reset else project_env,
+        process_env={} if args.reset else process_env,
+        required=not args.reset,
     )
     return RunConfig(
-        provider=args.provider,
-        model=args.model or settings["model"],
+        repo_root=repo_root,
+        provider=settings["provider"],
+        model=settings["model"],
         max_model_attempts=args.max_model_attempts,
         max_total_tokens=args.max_total_tokens,
         request_timeout_seconds=args.request_timeout_seconds,
@@ -221,9 +222,9 @@ def check_env(config: RunConfig, *, settings=None) -> None:
     """Abort with exit 2 if the selected provider API key is missing."""
     if config.reset or config.provider == "ollama":
         return  # reset and local Ollama paths don't need an API key
-    key = (settings or provider_settings(config.provider))["api_key"].strip()
+    key = (settings or provider_settings(config.repo_root))["api_key"].strip()
     if not key:
-        required_name = (settings or provider_settings(config.provider))["api_key_env"]
+        required_name = (settings or provider_settings(config.repo_root))["api_key_env"]
         print(f"[live-e2e] missing {required_name}, aborted", file=sys.stderr)
         raise SystemExit(2)
 
@@ -233,16 +234,18 @@ def check_live_readiness(config: RunConfig, *, settings=None) -> bool:
         return True
     from pico.providers.probe import probe_model_client
 
-    settings = settings or provider_settings(config.provider)
+    settings = settings or provider_settings(config.repo_root)
     result = probe_model_client(make_live_client(config, settings=settings))
     return result.get("status") == "ok"
 
 
 def verify_pico_repo(root: Path) -> None:
     """Abort with exit 2 if ``root`` is not a pico repository."""
-    if not (root / "pico" / "runtime.py").is_file():
+    runtime_entry = root / "pico" / "runtime" / "application.py"
+    if not runtime_entry.is_file():
         print(
-            f"[live-e2e] {root} does not look like a pico repo (missing pico/runtime.py), aborted",
+            f"[live-e2e] {root} does not look like a pico repo "
+            "(missing pico/runtime/application.py), aborted",
             file=sys.stderr,
         )
         raise SystemExit(2)
@@ -291,9 +294,7 @@ def seed_compaction_fixture(pico) -> int:
     """Append enough inert history for turn four to exercise auto-compaction."""
     messages = []
     for index in range(COMPACTION_FIXTURE_MESSAGES):
-        payload = " ".join(
-            f"fixture{index:02d}token{part:03d}" for part in range(48)
-        )
+        payload = " ".join(f"fixture{index:02d}token{part:03d}" for part in range(48))
         messages.append(
             {
                 "role": "user" if index % 2 == 0 else "assistant",
@@ -641,8 +642,7 @@ def _merge_auxiliary_call_evidence(captured, calls):
         for call in auxiliary
     )
     transport_complete = bool(
-        captured["transport_evidence_complete"]
-        and auxiliary_transport_complete
+        captured["transport_evidence_complete"] and auxiliary_transport_complete
     )
     merged["transport_evidence_complete"] = transport_complete
     if transport_complete:
@@ -714,9 +714,9 @@ def read_run_terminal_status(run_store, task_state):
     try:
         trace_events = [
             json.loads(line)
-            for line in run_store.trace_path(task_state).read_text(
-                encoding="utf-8"
-            ).splitlines()
+            for line in run_store.trace_path(task_state)
+            .read_text(encoding="utf-8")
+            .splitlines()
             if line.strip()
         ]
     except (
@@ -728,9 +728,9 @@ def read_run_terminal_status(run_store, task_state):
     ):
         trace_terminal = False
     else:
-        trace_terminal = all(
-            isinstance(event, dict) for event in trace_events
-        ) and any(event.get("event") == "run_finished" for event in trace_events)
+        trace_terminal = all(isinstance(event, dict) for event in trace_events) and any(
+            event.get("event") == "run_finished" for event in trace_events
+        )
 
     return (
         run_id,
@@ -763,9 +763,7 @@ class TurnRunner:
         calls = getattr(self.pico.model_client, "calls", [])
         sniffer_before = len(calls) if isinstance(calls, list) else 0
         previous_task_state = getattr(self.pico, "current_task_state", None)
-        previous_run_id = str(
-            getattr(previous_task_state, "run_id", "") or ""
-        )
+        previous_run_id = str(getattr(previous_task_state, "run_id", "") or "")
 
         try:
             final_answer = self.pico.ask(user_prompt)
@@ -781,9 +779,7 @@ class TurnRunner:
             stopped_at_step_limit = True
 
         current_task_state = getattr(self.pico, "current_task_state", None)
-        current_run_id = str(
-            getattr(current_task_state, "run_id", "") or ""
-        )
+        current_run_id = str(getattr(current_task_state, "run_id", "") or "")
         task_state = (
             current_task_state
             if current_run_id and current_run_id != previous_run_id
@@ -805,15 +801,10 @@ class TurnRunner:
             and call.get("completed", True) is not False
         ]
         actual_user_contents = tuple(
-            str(call.get("last_user_content", ""))
-            for call in agent_calls
+            str(call.get("last_user_content", "")) for call in agent_calls
         )
         request_metadata_by_call = tuple(captured["request_metadata"])
-        metadata = (
-            dict(request_metadata_by_call[0])
-            if request_metadata_by_call
-            else {}
-        )
+        metadata = dict(request_metadata_by_call[0]) if request_metadata_by_call else {}
         messages_count = metadata.get("messages_count", 0)
         provider_input_messages_len = (
             messages_count
@@ -844,7 +835,9 @@ class TurnRunner:
             stopped_at_step_limit=stopped_at_step_limit,
             error=error,
             provider_input_messages_len=provider_input_messages_len,
-            current_user_content=actual_user_contents[0] if actual_user_contents else "",
+            current_user_content=actual_user_contents[0]
+            if actual_user_contents
+            else "",
             usage_complete=captured["usage_complete"],
             request_metadata_by_call=request_metadata_by_call,
             system_prefix_hashes=tuple(captured["system_prefix_hashes"]),
@@ -873,13 +866,20 @@ class Assertion:
 
 
 def _assertion_gate(name):
-    if any(part in name for part in ("usage", "tokens_under_cap", "attempts_under_cap")):
+    if any(
+        part in name for part in ("usage", "tokens_under_cap", "attempts_under_cap")
+    ):
         return "transport_cost"
     if any(part in name for part in ("api_key", "artifact_modes")):
         return "security"
     if any(
         part in name
-        for part in ("session_is_current", "tool_pairs", "artifacts_terminal", "fixture")
+        for part in (
+            "session_is_current",
+            "tool_pairs",
+            "artifacts_terminal",
+            "fixture",
+        )
     ):
         return "persistence"
     return "behavior"
@@ -929,38 +929,48 @@ class AssertionEngine:
 
         out = []
         allocator_name = allocator.get("name", "")
-        out.append(Assertion(
-            name="priority_allocator_active",
-            passed=allocator_name == "priority_allocator",
-            expected="priority_allocator",
-            actual=str(allocator_name),
-        ))
-        out.append(Assertion(
-            name="recalled_memory_block_present",
-            passed="<pico:recalled_memory" in content,
-            expected='"<pico:recalled_memory" in current_user_content',
-            actual=("<pico:recalled_memory" in content) and "found" or "not found",
-        ))
-        out.append(Assertion(
-            name="seed_note_name_visible",
-            passed="cache-invariant" in content,
-            expected='"cache-invariant" in current_user_content',
-            actual=("cache-invariant" in content) and "found" or "not found",
-        ))
+        out.append(
+            Assertion(
+                name="priority_allocator_active",
+                passed=allocator_name == "priority_allocator",
+                expected="priority_allocator",
+                actual=str(allocator_name),
+            )
+        )
+        out.append(
+            Assertion(
+                name="recalled_memory_block_present",
+                passed="<pico:recalled_memory" in content,
+                expected='"<pico:recalled_memory" in current_user_content',
+                actual=("<pico:recalled_memory" in content) and "found" or "not found",
+            )
+        )
+        out.append(
+            Assertion(
+                name="seed_note_name_visible",
+                passed="cache-invariant" in content,
+                expected='"cache-invariant" in current_user_content',
+                actual=("cache-invariant" in content) and "found" or "not found",
+            )
+        )
         recall_tokens = int(injection_tokens.get("recalled_memory", 0) or 0)
-        out.append(Assertion(
-            name="recalled_memory_tokens_gt_zero",
-            passed=recall_tokens > 0,
-            expected="injection_tokens[recalled_memory] > 0",
-            actual=str(recall_tokens),
-        ))
+        out.append(
+            Assertion(
+                name="recalled_memory_tokens_gt_zero",
+                passed=recall_tokens > 0,
+                expected="injection_tokens[recalled_memory] > 0",
+                actual=str(recall_tokens),
+            )
+        )
         err_count = int(m.get("recall.error_count", 0) or 0)
-        out.append(Assertion(
-            name="recall_error_count_zero",
-            passed=err_count == 0,
-            expected="recall.error_count == 0",
-            actual=str(err_count),
-        ))
+        out.append(
+            Assertion(
+                name="recall_error_count_zero",
+                passed=err_count == 0,
+                expected="recall.error_count == 0",
+                actual=str(err_count),
+            )
+        )
         # stop_reason lives inside usage / model client — we accept absence
         # when the provider stub didn't surface it; the intent here is to
         # verify no crash and a valid final answer or tool_use path
@@ -968,12 +978,15 @@ class AssertionEngine:
         no_error_and_answered = result.error is None and (
             final != "" or result.stopped_at_step_limit
         )
-        out.append(Assertion(
-            name="turn_1_completed_without_error",
-            passed=no_error_and_answered,
-            expected="pico.ask returned without exception",
-            actual=result.error or ("stopped_at_step_limit" if result.stopped_at_step_limit else "ok"),
-        ))
+        out.append(
+            Assertion(
+                name="turn_1_completed_without_error",
+                passed=no_error_and_answered,
+                expected="pico.ask returned without exception",
+                actual=result.error
+                or ("stopped_at_step_limit" if result.stopped_at_step_limit else "ok"),
+            )
+        )
         return out
 
     # -- Turn 2: digest --------------------------------------------------
@@ -991,7 +1004,9 @@ class AssertionEngine:
         """
         out = []
         messages = getattr(pico, "session", {}).get("messages", []) or []
-        turn_slice = messages[result.session_message_count_before: result.session_message_count_after]
+        turn_slice = messages[
+            result.session_message_count_before : result.session_message_count_after
+        ]
         tool_result_msg = None
         for msg in turn_slice:
             content = msg.get("content")
@@ -1006,19 +1021,22 @@ class AssertionEngine:
             for msg in reversed(turn_slice):
                 content = msg.get("content")
                 if isinstance(content, list) and any(
-                    isinstance(b, dict) and b.get("type") == "tool_result" for b in content
+                    isinstance(b, dict) and b.get("type") == "tool_result"
+                    for b in content
                 ):
                     tool_result_msg = msg
                     break
 
         meta = (tool_result_msg or {}).get("_pico_meta") or {}
         digest_applied = bool(meta.get("digest_applied"))
-        out.append(Assertion(
-            name="digest_applied_flag_true",
-            passed=digest_applied,
-            expected="last tool_result message has _pico_meta.digest_applied=True",
-            actual=str(digest_applied),
-        ))
+        out.append(
+            Assertion(
+                name="digest_applied_flag_true",
+                passed=digest_applied,
+                expected="last tool_result message has _pico_meta.digest_applied=True",
+                actual=str(digest_applied),
+            )
+        )
 
         # tool_result content should start with [digest]
         tr_content = ""
@@ -1028,41 +1046,44 @@ class AssertionEngine:
                 if isinstance(block, dict) and block.get("type") == "tool_result":
                     tr_content = str(block.get("content") or "")
                     break
-        out.append(Assertion(
-            name="tool_result_content_starts_with_digest",
-            passed=tr_content.strip().startswith("[digest]"),
-            expected="tool_result content starts with '[digest]'",
-            actual=tr_content[:80] if tr_content else "(empty)",
-        ))
+        out.append(
+            Assertion(
+                name="tool_result_content_starts_with_digest",
+                passed=tr_content.strip().startswith("[digest]"),
+                expected="tool_result content starts with '[digest]'",
+                actual=tr_content[:80] if tr_content else "(empty)",
+            )
+        )
 
         source_hash = str(meta.get("source_hash", "") or "")
-        valid_source_hash = (
-            len(source_hash) == 16
-            and all(char in "0123456789abcdef" for char in source_hash)
+        valid_source_hash = len(source_hash) == 16 and all(
+            char in "0123456789abcdef" for char in source_hash
         )
         expected_raw_result_id = f"raw_result_id: tool_result:{source_hash}"
-        out.append(Assertion(
-            name="tool_result_content_contains_logical_raw_result_id",
-            passed=valid_source_hash and expected_raw_result_id in tr_content,
-            expected="tool_result content contains its logical raw-result id",
-            actual="found" if expected_raw_result_id in tr_content else "not found",
-        ))
+        out.append(
+            Assertion(
+                name="tool_result_content_contains_logical_raw_result_id",
+                passed=valid_source_hash and expected_raw_result_id in tr_content,
+                expected="tool_result content contains its logical raw-result id",
+                actual="found" if expected_raw_result_id in tr_content else "not found",
+            )
+        )
 
         try:
             run_dir = Path(pico.run_store.run_dir(result.run_id))
         except (AttributeError, TypeError, ValueError):
             run_dir = None
         host_path_hidden = bool(
-            run_dir
-            and str(run_dir) not in tr_content
-            and "raw at " not in tr_content
+            run_dir and str(run_dir) not in tr_content and "raw at " not in tr_content
         )
-        out.append(Assertion(
-            name="tool_result_content_hides_host_artifact_path",
-            passed=host_path_hidden,
-            expected="tool_result content excludes the Host artifact path",
-            actual="hidden" if host_path_hidden else "exposed",
-        ))
+        out.append(
+            Assertion(
+                name="tool_result_content_hides_host_artifact_path",
+                passed=host_path_hidden,
+                expected="tool_result content excludes the Host artifact path",
+                actual="hidden" if host_path_hidden else "exposed",
+            )
+        )
 
         raw_path = (
             run_dir / "tool_results" / f"{source_hash}.txt"
@@ -1070,12 +1091,14 @@ class AssertionEngine:
             else None
         )
         raw_exists = bool(raw_path and raw_path.is_file())
-        out.append(Assertion(
-            name="raw_file_exists_on_disk",
-            passed=raw_exists,
-            expected="trusted raw-result artifact exists",
-            actual="exists" if raw_exists else "missing",
-        ))
+        out.append(
+            Assertion(
+                name="raw_file_exists_on_disk",
+                passed=raw_exists,
+                expected="trusted raw-result artifact exists",
+                actual="exists" if raw_exists else "missing",
+            )
+        )
 
         raw_sha256 = ""
         if raw_exists:
@@ -1085,62 +1108,72 @@ class AssertionEngine:
             except OSError:
                 raw_sha256 = ""
         visible_sha256 = f"content_sha256: sha256:{raw_sha256}"
-        out.append(Assertion(
-            name="raw_file_digest_matches_visible_sha256",
-            passed=bool(
-                raw_sha256
-                and source_hash == raw_sha256[:16]
-                and visible_sha256 in tr_content
-            ),
-            expected="raw artifact digest matches the model-visible SHA-256",
-            actual="matches" if raw_sha256 and visible_sha256 in tr_content else "mismatch",
-        ))
+        out.append(
+            Assertion(
+                name="raw_file_digest_matches_visible_sha256",
+                passed=bool(
+                    raw_sha256
+                    and source_hash == raw_sha256[:16]
+                    and visible_sha256 in tr_content
+                ),
+                expected="raw artifact digest matches the model-visible SHA-256",
+                actual="matches"
+                if raw_sha256 and visible_sha256 in tr_content
+                else "mismatch",
+            )
+        )
 
-        out.append(Assertion(
-            name="raw_file_source_hash_recorded",
-            passed=valid_source_hash,
-            expected="_pico_meta.source_hash is a 16-character lowercase hex digest",
-            actual=source_hash or "(empty)",
-        ))
+        out.append(
+            Assertion(
+                name="raw_file_source_hash_recorded",
+                passed=valid_source_hash,
+                expected="_pico_meta.source_hash is a 16-character lowercase hex digest",
+                actual=source_hash or "(empty)",
+            )
+        )
 
         model_turns = result.model_turns_this_turn
         expected_origin = self.expected_action_origin
-        out.append(Assertion(
-            name="provider_tool_action_observed",
-            passed=expected_origin in result.action_origins,
-            expected=f"{expected_origin} in action_origins",
-            actual=str(result.action_origins),
-        ))
-        out.append(Assertion(
-            name="native_tool_roundtrip_uses_multiple_model_turns",
-            passed=model_turns >= 2,
-            expected="model_turns_this_turn >= 2",
-            actual=str(model_turns),
-        ))
-        out.append(Assertion(
-            name="turn_usage_complete",
-            passed=result.usage_complete,
-            expected="usage_complete is True",
-            actual=str(result.usage_complete),
-        ))
+        out.append(
+            Assertion(
+                name="provider_tool_action_observed",
+                passed=expected_origin in result.action_origins,
+                expected=f"{expected_origin} in action_origins",
+                actual=str(result.action_origins),
+            )
+        )
+        out.append(
+            Assertion(
+                name="native_tool_roundtrip_uses_multiple_model_turns",
+                passed=model_turns >= 2,
+                expected="model_turns_this_turn >= 2",
+                actual=str(model_turns),
+            )
+        )
+        out.append(
+            Assertion(
+                name="turn_usage_complete",
+                passed=result.usage_complete,
+                expected="usage_complete is True",
+                actual=str(result.usage_complete),
+            )
+        )
 
         actual_user_contents = result.actual_user_contents
         contents_cover_calls = (
-            model_turns > 0
-            and len(actual_user_contents) == model_turns
+            model_turns > 0 and len(actual_user_contents) == model_turns
         )
-        out.append(Assertion(
-            name="actual_user_contents_cover_every_model_turn",
-            passed=contents_cover_calls,
-            expected="one actual_user_content for each provider call",
-            actual=(
-                f"contents={len(actual_user_contents)}, calls={model_turns}"
-            ),
-        ))
+        out.append(
+            Assertion(
+                name="actual_user_contents_cover_every_model_turn",
+                passed=contents_cover_calls,
+                expected="one actual_user_content for each provider call",
+                actual=(f"contents={len(actual_user_contents)}, calls={model_turns}"),
+            )
+        )
         call_metadata = result.request_metadata_by_call
-        metadata_cover_calls = (
-            len(call_metadata) == model_turns
-            and all(isinstance(metadata, dict) for metadata in call_metadata)
+        metadata_cover_calls = len(call_metadata) == model_turns and all(
+            isinstance(metadata, dict) for metadata in call_metadata
         )
         user_prompt_reached = contents_cover_calls and metadata_cover_calls
         if user_prompt_reached:
@@ -1155,35 +1188,39 @@ class AssertionEngine:
                 ):
                     user_prompt_reached = False
                     break
-        out.append(Assertion(
-            name="injected_user_prompt_reaches_every_model_turn",
-            passed=user_prompt_reached,
-            expected=(
-                "each call includes the prompt and includes <system-reminder> "
-                "when that call injected context"
-            ),
-            actual=str(user_prompt_reached),
-        ))
+        out.append(
+            Assertion(
+                name="injected_user_prompt_reaches_every_model_turn",
+                passed=user_prompt_reached,
+                expected=(
+                    "each call includes the prompt and includes <system-reminder> "
+                    "when that call injected context"
+                ),
+                actual=str(user_prompt_reached),
+            )
+        )
 
         cache_keys = result.system_prefix_hashes
         keys_cover_calls = (
-            model_turns > 0
-            and len(cache_keys) == model_turns
-            and all(cache_keys)
+            model_turns > 0 and len(cache_keys) == model_turns and all(cache_keys)
         )
-        out.append(Assertion(
-            name="system_prefix_hashes_cover_every_model_turn",
-            passed=keys_cover_calls,
-            expected="one non-empty system_prefix_hash for each provider call",
-            actual=f"keys={len(cache_keys)}, calls={model_turns}",
-        ))
+        out.append(
+            Assertion(
+                name="system_prefix_hashes_cover_every_model_turn",
+                passed=keys_cover_calls,
+                expected="one non-empty system_prefix_hash for each provider call",
+                actual=f"keys={len(cache_keys)}, calls={model_turns}",
+            )
+        )
         keys_stable = keys_cover_calls and len(set(cache_keys)) == 1
-        out.append(Assertion(
-            name="system_prefix_hash_stable_within_turn",
-            passed=keys_stable,
-            expected="all system_prefix_hash values within the turn are identical",
-            actual=str(sorted(set(cache_keys))),
-        ))
+        out.append(
+            Assertion(
+                name="system_prefix_hash_stable_within_turn",
+                passed=keys_stable,
+                expected="all system_prefix_hash values within the turn are identical",
+                actual=str(sorted(set(cache_keys))),
+            )
+        )
         return out
 
     # -- Turn 3: injection drop -----------------------------------------
@@ -1203,30 +1240,38 @@ class AssertionEngine:
         }
 
         out = []
-        out.append(Assertion(
-            name="priority_allocator_active",
-            passed=allocator.get("name") == "priority_allocator",
-            expected="context_source_allocator.name == priority_allocator",
-            actual=str(allocator.get("name", "")),
-        ))
-        out.append(Assertion(
-            name="source_pool_positive",
-            passed=pool > 0,
-            expected="source pool > 0",
-            actual=str(pool),
-        ))
-        out.append(Assertion(
-            name="source_pool_not_exceeded",
-            passed=0 <= used <= pool,
-            expected="0 <= used_tokens <= pool_tokens",
-            actual=f"used={used}, pool={pool}",
-        ))
-        out.append(Assertion(
-            name="source_totals_match_allocator",
-            passed=sum(int(value) for value in source_tokens.values()) == used,
-            expected="sum(source_tokens) == used_tokens",
-            actual=f"source_tokens={source_tokens}, used={used}",
-        ))
+        out.append(
+            Assertion(
+                name="priority_allocator_active",
+                passed=allocator.get("name") == "priority_allocator",
+                expected="context_source_allocator.name == priority_allocator",
+                actual=str(allocator.get("name", "")),
+            )
+        )
+        out.append(
+            Assertion(
+                name="source_pool_positive",
+                passed=pool > 0,
+                expected="source pool > 0",
+                actual=str(pool),
+            )
+        )
+        out.append(
+            Assertion(
+                name="source_pool_not_exceeded",
+                passed=0 <= used <= pool,
+                expected="0 <= used_tokens <= pool_tokens",
+                actual=f"used={used}, pool={pool}",
+            )
+        )
+        out.append(
+            Assertion(
+                name="source_totals_match_allocator",
+                passed=sum(int(value) for value in source_tokens.values()) == used,
+                expected="sum(source_tokens) == used_tokens",
+                actual=f"source_tokens={source_tokens}, used={used}",
+            )
+        )
         caps_respected = all(
             type(value) is int
             and value >= 0
@@ -1234,15 +1279,17 @@ class AssertionEngine:
             and value <= hard_caps[source]
             for source, value in source_tokens.items()
         )
-        out.append(Assertion(
-            name="whole_chunks_respect_source_caps",
-            passed=caps_respected and not (m.get("injection_truncated") or {}),
-            expected="source token totals <= hard caps and no text truncation",
-            actual=(
-                f"source_tokens={source_tokens}, hard_caps={hard_caps}, "
-                f"truncated={m.get('injection_truncated') or {}}"
-            ),
-        ))
+        out.append(
+            Assertion(
+                name="whole_chunks_respect_source_caps",
+                passed=caps_respected and not (m.get("injection_truncated") or {}),
+                expected="source token totals <= hard caps and no text truncation",
+                actual=(
+                    f"source_tokens={source_tokens}, hard_caps={hard_caps}, "
+                    f"truncated={m.get('injection_truncated') or {}}"
+                ),
+            )
+        )
         return out
 
     def check_turn_4_compaction(self, result: TurnResult, pico) -> list[Assertion]:
@@ -1251,36 +1298,44 @@ class AssertionEngine:
         out = []
 
         dropped = int(m.get("dropped_messages", 0) or 0)
-        out.append(Assertion(
-            name="no_silent_history_drop",
-            passed=dropped == 0,
-            expected="dropped_messages == 0",
-            actual=str(dropped),
-        ))
+        out.append(
+            Assertion(
+                name="no_silent_history_drop",
+                passed=dropped == 0,
+                expected="dropped_messages == 0",
+                actual=str(dropped),
+            )
+        )
 
         compaction = (m.get("context_breakdown") or {}).get("compaction") or {}
         entry_id = str(compaction.get("entry_id", "") or "")
         summary_tokens = int(compaction.get("summary_tokens", 0) or 0)
-        out.append(Assertion(
-            name="compaction_summary_active",
-            passed=bool(entry_id) and summary_tokens > 0,
-            expected="compaction entry and non-empty summary are active",
-            actual=f"entry={entry_id!r}, summary_tokens={summary_tokens}",
-        ))
+        out.append(
+            Assertion(
+                name="compaction_summary_active",
+                passed=bool(entry_id) and summary_tokens > 0,
+                expected="compaction entry and non-empty summary are active",
+                actual=f"entry={entry_id!r}, summary_tokens={summary_tokens}",
+            )
+        )
         reason = str(compaction.get("reason", "") or "")
-        out.append(Assertion(
-            name="compaction_reason_budget_exceeded",
-            passed=reason == "budget_exceeded",
-            expected="budget_exceeded",
-            actual=reason,
-        ))
+        out.append(
+            Assertion(
+                name="compaction_reason_budget_exceeded",
+                passed=reason == "budget_exceeded",
+                expected="budget_exceeded",
+                actual=reason,
+            )
+        )
         ratio = compaction.get("compression_ratio", 1.0)
-        out.append(Assertion(
-            name="compaction_reduces_active_context",
-            passed=type(ratio) in {int, float} and 0 < ratio < 1,
-            expected="0 < compression_ratio < 1",
-            actual=str(ratio),
-        ))
+        out.append(
+            Assertion(
+                name="compaction_reduces_active_context",
+                passed=type(ratio) in {int, float} and 0 < ratio < 1,
+                expected="0 < compression_ratio < 1",
+                actual=str(ratio),
+            )
+        )
 
         session_msgs = getattr(pico, "session", {}).get("messages", []) or []
         try:
@@ -1290,96 +1345,117 @@ class AssertionEngine:
         except MessageValidationError as exc:
             pairing_actual = str(exc)
             no_orphan = False
-        out.append(Assertion(
-            name="no_orphan_tool_use",
-            passed=no_orphan,
-            expected="canonical tool_use/tool_result pairs are immediately adjacent",
-            actual=pairing_actual,
-        ))
+        out.append(
+            Assertion(
+                name="no_orphan_tool_use",
+                passed=no_orphan,
+                expected="canonical tool_use/tool_result pairs are immediately adjacent",
+                actual=pairing_actual,
+            )
+        )
 
         # Compaction reached the wire while canonical messages remain on disk.
         wire_len = int(result.provider_input_messages_len or 0)
         session_len = len(session_msgs)
-        out.append(Assertion(
-            name="summary_tail_reached_provider_wire",
-            passed=wire_len < session_len,
-            expected="provider_input_messages_len < len(session.messages)",
-            actual=f"wire={wire_len}, session={session_len}",
-        ))
+        out.append(
+            Assertion(
+                name="summary_tail_reached_provider_wire",
+                passed=wire_len < session_len,
+                expected="provider_input_messages_len < len(session.messages)",
+                actual=f"wire={wire_len}, session={session_len}",
+            )
+        )
         return out
 
-    def check_turn_5_cache_anchor(self, result: TurnResult, all_results) -> list[Assertion]:
+    def check_turn_5_cache_anchor(
+        self, result: TurnResult, all_results
+    ) -> list[Assertion]:
         """Five assertions verifying cache anchor stability + closure."""
         m = result.metadata or {}
         out = []
 
         # 1. cache_control_breakpoints non-empty
         breakpoints = m.get("cache_control_breakpoints") or []
-        out.append(Assertion(
-            name="cache_control_breakpoints_nonempty",
-            passed=len(breakpoints) >= 1,
-            expected="cache_control_breakpoints has at least 1 entry",
-            actual=str(breakpoints),
-        ))
+        out.append(
+            Assertion(
+                name="cache_control_breakpoints_nonempty",
+                passed=len(breakpoints) >= 1,
+                expected="cache_control_breakpoints has at least 1 entry",
+                actual=str(breakpoints),
+            )
+        )
 
         # Cache-token counters are provider-dependent; per-call keys are the
         # portable trace evidence required by this harness.
-        cache_keys = [
-            key
-            for item in all_results
-            for key in item.system_prefix_hashes
-        ]
-        expected_calls = sum(
-            item.model_turns_this_turn for item in all_results
-        )
+        cache_keys = [key for item in all_results for key in item.system_prefix_hashes]
+        expected_calls = sum(item.model_turns_this_turn for item in all_results)
         keys_present = (
-            expected_calls > 0
-            and len(cache_keys) == expected_calls
-            and all(cache_keys)
+            expected_calls > 0 and len(cache_keys) == expected_calls and all(cache_keys)
         )
-        out.append(Assertion(
-            name="system_prefix_hashes_present_per_call",
-            passed=keys_present,
-            expected="one non-empty system_prefix_hash per traced provider call",
-            actual=f"keys={len(cache_keys)}, calls={expected_calls}",
-        ))
+        out.append(
+            Assertion(
+                name="system_prefix_hashes_present_per_call",
+                passed=keys_present,
+                expected="one non-empty system_prefix_hash per traced provider call",
+                actual=f"keys={len(cache_keys)}, calls={expected_calls}",
+            )
+        )
 
         # 3. system_prefix_hash identical across every traced call
         stable = keys_present and len(set(cache_keys)) == 1
-        out.append(Assertion(
-            name="system_prefix_hash_stable_across_turns",
-            passed=stable,
-            expected="all traced system_prefix_hash values are identical and non-empty",
-            actual=str(sorted(set(cache_keys))),
-        ))
+        out.append(
+            Assertion(
+                name="system_prefix_hash_stable_across_turns",
+                passed=stable,
+                expected="all traced system_prefix_hash values are identical and non-empty",
+                actual=str(sorted(set(cache_keys))),
+            )
+        )
 
         # 4. metadata completeness for the retained v3 cache contract.
         required = {
-            "system_prefix_hash", "system_tokens", "tools_tokens",
-            "messages_count", "messages_tokens", "cache_control_breakpoints",
-            "injection_tokens", "injection_truncated", "injection_dropped",
-            "injection_budget", "context_source_allocator", "recall.error_count",
-            "recall.last_error", "dropped_messages",
+            "system_prefix_hash",
+            "system_tokens",
+            "tools_tokens",
+            "messages_count",
+            "messages_tokens",
+            "cache_control_breakpoints",
+            "injection_tokens",
+            "injection_truncated",
+            "injection_dropped",
+            "injection_budget",
+            "context_source_allocator",
+            "recall.error_count",
+            "recall.last_error",
+            "dropped_messages",
         }
         missing = required - set(m.keys())
-        out.append(Assertion(
-            name="metadata_schema_complete",
-            passed=not missing,
-            expected="all required request metadata fields present",
-            actual=("missing: " + str(sorted(missing))) if missing else "all present",
-        ))
+        out.append(
+            Assertion(
+                name="metadata_schema_complete",
+                passed=not missing,
+                expected="all required request metadata fields present",
+                actual=("missing: " + str(sorted(missing)))
+                if missing
+                else "all present",
+            )
+        )
 
         # 5. session-level recall error count remains zero
         # (we walk all_results — each turn should report zero)
         max_err = 0
         for r in all_results:
-            max_err = max(max_err, int((r.metadata or {}).get("recall.error_count", 0) or 0))
-        out.append(Assertion(
-            name="no_recall_errors_across_session",
-            passed=max_err == 0,
-            expected="max(recall.error_count) across all turns == 0",
-            actual=str(max_err),
-        ))
+            max_err = max(
+                max_err, int((r.metadata or {}).get("recall.error_count", 0) or 0)
+            )
+        out.append(
+            Assertion(
+                name="no_recall_errors_across_session",
+                passed=max_err == 0,
+                expected="max(recall.error_count) across all turns == 0",
+                actual=str(max_err),
+            )
+        )
         return out
 
     def check_global(
@@ -1398,25 +1474,27 @@ class AssertionEngine:
         usage_complete = bool(all_results) and all(
             result.usage_complete for result in all_results
         )
-        out.append(Assertion(
-            name="all_turn_usage_complete",
-            passed=usage_complete,
-            expected="every recorded turn has complete trace usage",
-            actual=str(usage_complete),
-        ))
+        out.append(
+            Assertion(
+                name="all_turn_usage_complete",
+                passed=usage_complete,
+                expected="every recorded turn has complete trace usage",
+                actual=str(usage_complete),
+            )
+        )
 
         action_origins = [
-            origin
-            for result in all_results
-            for origin in result.action_origins
+            origin for result in all_results for origin in result.action_origins
         ]
         expected_origin = self.expected_action_origin
-        out.append(Assertion(
-            name="provider_tool_action_observed",
-            passed=expected_origin in action_origins,
-            expected=f"at least one action_decoded.origin == {expected_origin}",
-            actual=str(action_origins),
-        ))
+        out.append(
+            Assertion(
+                name="provider_tool_action_observed",
+                passed=expected_origin in action_origins,
+                expected=f"at least one action_decoded.origin == {expected_origin}",
+                actual=str(action_origins),
+            )
+        )
 
         session = getattr(pico, "session", {})
         if not isinstance(session, dict):
@@ -1430,12 +1508,14 @@ class AssertionEngine:
             and "history" not in session
             and "schema_version" not in session
         )
-        out.append(Assertion(
-            name="in_memory_session_is_current_without_history",
-            passed=session_is_current,
-            expected="session has current type/version and no obsolete transcript fields",
-            actual=f"record_type={record_type!r}, version={version!r}",
-        ))
+        out.append(
+            Assertion(
+                name="in_memory_session_is_current_without_history",
+                passed=session_is_current,
+                expected="session has current type/version and no obsolete transcript fields",
+                actual=f"record_type={record_type!r}, version={version!r}",
+            )
+        )
 
         messages = session.get("messages", [])
         try:
@@ -1445,12 +1525,14 @@ class AssertionEngine:
         except MessageValidationError as exc:
             messages_valid = False
             message_actual = str(exc)
-        out.append(Assertion(
-            name="canonical_tool_pairs_immediately_match",
-            passed=messages_valid,
-            expected="validate_messages(messages, require_meta=True) succeeds",
-            actual=message_actual,
-        ))
+        out.append(
+            Assertion(
+                name="canonical_tool_pairs_immediately_match",
+                passed=messages_valid,
+                expected="validate_messages(messages, require_meta=True) succeeds",
+                actual=message_actual,
+            )
+        )
 
         terminal = bool(all_results) and all(
             result.task_state_terminal
@@ -1458,12 +1540,14 @@ class AssertionEngine:
             and result.trace_terminal
             for result in all_results
         )
-        out.append(Assertion(
-            name="all_turn_artifacts_terminal",
-            passed=terminal,
-            expected="every turn has terminal task_state, report, and trace artifacts",
-            actual=str(terminal),
-        ))
+        out.append(
+            Assertion(
+                name="all_turn_artifacts_terminal",
+                passed=terminal,
+                expected="every turn has terminal task_state, report, and trace artifacts",
+                actual=str(terminal),
+            )
+        )
 
         try:
             tree = pico.session_store.load_tree(session["id"])
@@ -1484,37 +1568,41 @@ class AssertionEngine:
         except (AttributeError, KeyError, OSError, TypeError, ValueError):
             persisted_valid = False
             persisted_actual = "persisted JSONL Session Tree unreadable"
-        out.append(Assertion(
-            name="persisted_jsonl_session_tree_is_current",
-            passed=persisted_valid,
-            expected="JSONL header/projection use the current format and preserve messages",
-            actual=persisted_actual,
-        ))
+        out.append(
+            Assertion(
+                name="persisted_jsonl_session_tree_is_current",
+                passed=persisted_valid,
+                expected="JSONL header/projection use the current format and preserve messages",
+                actual=persisted_actual,
+            )
+        )
 
         total_calls = sum(r.model_attempts_this_turn for r in all_results)
-        out.append(Assertion(
-            name="total_model_attempts_under_cap",
-            passed=total_calls <= self.config.max_model_attempts,
-            expected=(
-                "sum(model_attempts_this_turn) <= "
-                f"{self.config.max_model_attempts}"
-            ),
-            actual=str(total_calls),
-        ))
+        out.append(
+            Assertion(
+                name="total_model_attempts_under_cap",
+                passed=total_calls <= self.config.max_model_attempts,
+                expected=(
+                    f"sum(model_attempts_this_turn) <= {self.config.max_model_attempts}"
+                ),
+                actual=str(total_calls),
+            )
+        )
         total_tokens = 0
         for r in all_results:
             u = r.usage or {}
             total_tokens += int(u.get("input_tokens", 0) or 0)
             total_tokens += int(u.get("output_tokens", 0) or 0)
-        out.append(Assertion(
-            name="total_tokens_under_cap",
-            passed=total_tokens <= self.config.max_total_tokens,
-            expected=(
-                "total input+output tokens <= "
-                f"{self.config.max_total_tokens:,}"
-            ),
-            actual=str(total_tokens),
-        ))
+        out.append(
+            Assertion(
+                name="total_tokens_under_cap",
+                passed=total_tokens <= self.config.max_total_tokens,
+                expected=(
+                    f"total input+output tokens <= {self.config.max_total_tokens:,}"
+                ),
+                actual=str(total_tokens),
+            )
+        )
         calls = getattr(getattr(pico, "model_client", None), "calls", ())
         provider_clean = bool(calls) and all(
             call.get("payload_secret_clean") is True for call in calls
@@ -1534,9 +1622,7 @@ class AssertionEngine:
             Assertion(
                 name="active_artifacts_exclude_api_key",
                 passed=artifact_clean,
-                expected=(
-                    "new or changed .pico artifacts contain no selected API key"
-                ),
+                expected=("new or changed .pico artifacts contain no selected API key"),
                 actual=str(artifact_security["secret_hits"]),
             )
         )
@@ -1545,13 +1631,12 @@ class AssertionEngine:
             Assertion(
                 name="active_private_artifact_modes",
                 passed=private_modes,
-                expected=(
-                    "active private files are 0600 and directories are 0700"
-                ),
+                expected=("active private files are 0600 and directories are 0700"),
                 actual=str(artifact_security["mode_failures"]),
             )
         )
         return out
+
 
 class Reporter:
     """Terminal + JSON reporter for a live-e2e run."""
@@ -1625,8 +1710,13 @@ class Reporter:
                 "request_timeout_seconds": config.request_timeout_seconds,
                 "max_wall_seconds": config.max_wall_seconds,
             },
-            "turns": [self._turn_to_json(r, all_assertions.get(r.turn, [])) for r in all_results],
-            "global_assertions": [self._assertion_to_json(a) for a in all_assertions.get("global", [])],
+            "turns": [
+                self._turn_to_json(r, all_assertions.get(r.turn, []))
+                for r in all_results
+            ],
+            "global_assertions": [
+                self._assertion_to_json(a) for a in all_assertions.get("global", [])
+            ],
             "totals": totals,
         }
 
@@ -1670,9 +1760,7 @@ class Reporter:
         }
         safe_payload = redactor(payload)
         serialized = json.dumps(safe_payload, indent=2, ensure_ascii=False)
-        if any(
-            str(value) and str(value) in serialized for value in forbidden_values
-        ):
+        if any(str(value) and str(value) in serialized for value in forbidden_values):
             raise SensitiveDataBlockedError(
                 "live report contains blocked sensitive material"
             )
@@ -1748,14 +1836,18 @@ class Reporter:
         evidence_complete = bool(all_results) and all(
             item.transport_evidence_complete for item in all_results
         )
-        usage_complete = bool(all_results) and all(item.usage_complete for item in all_results)
+        usage_complete = bool(all_results) and all(
+            item.usage_complete for item in all_results
+        )
         transport_attempts = (
             sum(item.transport_attempts_this_turn or 0 for item in all_results)
-            if evidence_complete else None
+            if evidence_complete
+            else None
         )
         transport_retries = (
             sum(item.transport_retries_this_turn or 0 for item in all_results)
-            if evidence_complete else None
+            if evidence_complete
+            else None
         )
         transport_failed = (
             not assertions_pass("transport_cost")
@@ -1764,18 +1856,24 @@ class Reporter:
             or model_attempts > self.config.max_model_attempts
             or wall_time_ms > self.config.max_wall_seconds * 1000
         )
-        transport_degraded = (
-            not transport_failed
-            and (bool(transport_retries) or any(item.billing_ambiguous for item in all_results))
+        transport_degraded = not transport_failed and (
+            bool(transport_retries)
+            or any(item.billing_ambiguous for item in all_results)
         )
         return {
             "behavior": {
-                "status": "pass" if assertions_pass("behavior") and not model_failures else "fail",
+                "status": "pass"
+                if assertions_pass("behavior") and not model_failures
+                else "fail",
                 "model_turns": model_turns,
                 "model_failures": model_failures,
             },
             "transport_cost": {
-                "status": "fail" if transport_failed else "degraded" if transport_degraded else "pass",
+                "status": "fail"
+                if transport_failed
+                else "degraded"
+                if transport_degraded
+                else "pass",
                 "model_attempts": model_attempts,
                 "model_attempt_cap": self.config.max_model_attempts,
                 "transport_attempts": transport_attempts,
@@ -1789,7 +1887,9 @@ class Reporter:
                 ),
                 "transport_evidence_complete": evidence_complete,
                 "usage_complete": usage_complete,
-                "billing_ambiguous": any(item.billing_ambiguous for item in all_results),
+                "billing_ambiguous": any(
+                    item.billing_ambiguous for item in all_results
+                ),
                 "input_tokens": totals.get("input_tokens", 0),
                 "output_tokens": totals.get("output_tokens", 0),
             },
@@ -1830,9 +1930,11 @@ class Reporter:
             f"HTTP attempts {transport.get('transport_attempts')} · "
             f"retries {transport.get('transport_retries')}"
         )
-        print(f"[live-e2e] OVERALL: {self._color(label, color)} · {passed}/{total} assertions")
         print(
-            f"[live-e2e] wall_time={wall_time_ms/1000:.1f}s · "
+            f"[live-e2e] OVERALL: {self._color(label, color)} · {passed}/{total} assertions"
+        )
+        print(
+            f"[live-e2e] wall_time={wall_time_ms / 1000:.1f}s · "
             f"input_tokens={totals.get('input_tokens', 0):,} · "
             f"output_tokens={totals.get('output_tokens', 0):,} · "
             f"cache_reads={totals.get('cache_read_input_tokens', 0):,}"
@@ -1845,7 +1947,9 @@ def warn_if_dirty_working_tree(root: Path) -> None:
     try:
         result = subprocess.run(
             ["git", "-C", str(root), "status", "--porcelain"],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
     except (OSError, subprocess.SubprocessError):
         return
@@ -1858,9 +1962,7 @@ def warn_if_dirty_working_tree(root: Path) -> None:
 
 def _provider_call_kind(system):
     text = "\n".join(
-        str(block.get("text", ""))
-        for block in system
-        if isinstance(block, dict)
+        str(block.get("text", "")) for block in system if isinstance(block, dict)
     )
     if any(
         marker in text
@@ -1909,8 +2011,7 @@ class _SniffingProviderWrapper:
             ensure_ascii=False,
         )
         payload_secret_clean = all(
-            not value or value not in serialized
-            for value in self._forbidden_values
+            not value or value not in serialized for value in self._forbidden_values
         )
         call = {
             "last_user_content": last_user,
@@ -1929,8 +2030,11 @@ class _SniffingProviderWrapper:
             )
         try:
             response = self._inner.complete(
-                system=system, tools=tools, messages=messages,
-                max_tokens=max_tokens, cache_breakpoints=cache_breakpoints,
+                system=system,
+                tools=tools,
+                messages=messages,
+                max_tokens=max_tokens,
+                cache_breakpoints=cache_breakpoints,
             )
             call["completed"] = True
             call["usage"] = dict(getattr(response, "usage", None) or {})
@@ -1948,25 +2052,23 @@ class _SniffingProviderWrapper:
                 if type(self.last_transport_attempts) is int
                 else None
             )
-            self.last_stop_reason = getattr(
-                self._inner, "last_stop_reason", None
-            )
+            self.last_stop_reason = getattr(self._inner, "last_stop_reason", None)
+
 
 def make_live_client(config: RunConfig, *, settings=None):
     """Instantiate the selected live client using its production transport."""
 
-    settings = settings or provider_settings(config.provider)
-    from pico.providers._shared import build_model_client
+    settings = settings or provider_settings(config.repo_root)
+    from pico.providers.factory import build_transport_client
 
-    inner = build_model_client(
-        settings["client_kind"],
+    inner = build_transport_client(
+        settings["transport"],
         model=config.model,
         base_url=settings["base_url"],
         api_key=settings["api_key"],
         timeout=config.request_timeout_seconds,
         auth_mode=settings["auth_mode"],
         capabilities=settings["capabilities"],
-        compatibility=settings.get("compatibility", "standard"),
     )
     return _SniffingProviderWrapper(
         inner,
@@ -1974,7 +2076,9 @@ def make_live_client(config: RunConfig, *, settings=None):
     )
 
 
-def _budget_exceeded(all_results: list, config: RunConfig, wall_start_ns: int) -> str | None:
+def _budget_exceeded(
+    all_results: list, config: RunConfig, wall_start_ns: int
+) -> str | None:
     """Return a short reason string if any cost guard has fired; else None."""
     if any(not result.usage_complete for result in all_results):
         return "usage_unknown"
@@ -2044,16 +2148,19 @@ def do_reset(repo_root: Path) -> int:
 
 
 def main() -> int:
-    repo_root = Path.cwd()
-    project_env = read_project_env(repo_root)
-    process_env = dict(os.environ)
-    config = parse_args(project_env=project_env, process_env=process_env)
-
+    try:
+        config = parse_args()
+    except ValueError as exc:
+        print(f"[live-e2e] {exc}, aborted", file=sys.stderr)
+        return 2
+    repo_root = config.repo_root
     if config.reset:
         return do_reset(repo_root)
 
+    project_env = read_project_env(repo_root)
+    process_env = dict(os.environ)
     settings = provider_settings(
-        config.provider,
+        repo_root,
         project_env=project_env,
         process_env=process_env,
     )
@@ -2091,7 +2198,11 @@ def main() -> int:
         f"{digest_fixture}, then summarize it. Do not emit XML tool text."
     )
     TURNS = [
-        (1, "上次讨论过 cache invariant 的问题，帮我看看这个仓库的 cache 相关代码", "recall_triggered"),
+        (
+            1,
+            "上次讨论过 cache invariant 的问题，帮我看看这个仓库的 cache 相关代码",
+            "recall_triggered",
+        ),
         (
             2,
             tool_prompt,
@@ -2105,9 +2216,9 @@ def main() -> int:
     fixture = FixtureManager(repo_root, forbidden_values=(selected_api_key,))
     with fixture:
         # Lazy import of pico so a broken pico module produces exit 4 (not 2).
-        from pico.runtime import Pico
-        from pico.session_store import SessionStore
-        from pico.workspace import WorkspaceContext
+        from pico.runtime.application import Pico
+        from pico.state.session_store import SessionStore
+        from pico.workspace.context import WorkspaceContext
 
         model_client = make_live_client(config, settings=settings)
         workspace = WorkspaceContext.build(repo_root)
@@ -2117,9 +2228,9 @@ def main() -> int:
                 model_client=model_client,
                 workspace=workspace,
                 session_store=session_store,
-                read_only=True,
-                max_steps=2,
-                allowed_tools=("read_file",),
+                options=RuntimeOptions(
+                    read_only=True, max_steps=2, allowed_tools=("read_file",)
+                ),
             )
         except Exception:
             print("[live-e2e] pico construction failed", file=sys.stderr)
@@ -2184,13 +2295,19 @@ def main() -> int:
                 if all(r.transport_evidence_complete for r in all_results)
                 else None
             ),
-            "input_tokens": sum(int((r.usage or {}).get("input_tokens", 0) or 0) for r in all_results),
-            "output_tokens": sum(int((r.usage or {}).get("output_tokens", 0) or 0) for r in all_results),
+            "input_tokens": sum(
+                int((r.usage or {}).get("input_tokens", 0) or 0) for r in all_results
+            ),
+            "output_tokens": sum(
+                int((r.usage or {}).get("output_tokens", 0) or 0) for r in all_results
+            ),
             "cache_creation_input_tokens": sum(
-                int((r.usage or {}).get("cache_creation_input_tokens", 0) or 0) for r in all_results
+                int((r.usage or {}).get("cache_creation_input_tokens", 0) or 0)
+                for r in all_results
             ),
             "cache_read_input_tokens": sum(
-                int((r.usage or {}).get("cache_read_input_tokens", 0) or 0) for r in all_results
+                int((r.usage or {}).get("cache_read_input_tokens", 0) or 0)
+                for r in all_results
             ),
         }
 

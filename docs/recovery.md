@@ -23,8 +23,8 @@ ADR-0040 接受的 Sandbox 目标架构固定三个互不兼容的 Recovery doma
 
 每个 record/blob 都绑定 domain、store identity、target identity 和相关 baseline/final digest。三类 store 不得互读
 record 或 blob，Staging Recovery 不能冒充 Source Apply rollback，Host Recovery 也不能解释 Sandbox manifest。
-v0.2.1 只在 macOS arm64 的 sealed local authorization 和 exact image 验证后使用后两类；distributed Product
-Enablement 尚未签发。
+1.0 只在 macOS arm64 的 sealed local authorization 和 exact image 验证后使用后两类；产品中不存在远程
+release authority 或 distributed enablement 路径。
 
 ## 当前格式
 

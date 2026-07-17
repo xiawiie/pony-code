@@ -2,10 +2,13 @@ import hashlib
 
 import pytest
 
-from pico import Pico, SessionStore, WorkspaceContext
-from pico.providers.fake import FakeModelClient
+from pico import Pico
+from pico.state.session_store import SessionStore
+from pico.workspace.context import WorkspaceContext
+from benchmarks.support.fake_provider import FakeModelClient
 from pico.context.renderer import render_current_user_message
-from pico.context_manager import ContextManager, _build_tools_list
+from pico.agent.context_manager import ContextManager, _build_tools_list
+from pico.runtime.options import RuntimeOptions
 
 
 def _agent(tmp_path):
@@ -14,7 +17,7 @@ def _agent(tmp_path):
         model_client=FakeModelClient([]),
         workspace=WorkspaceContext.build(tmp_path),
         session_store=SessionStore(tmp_path / ".pico" / "sessions"),
-        approval_policy="auto",
+        options=RuntimeOptions(approval_policy="auto"),
     )
 
 
@@ -64,9 +67,10 @@ def test_system_prefix_hash_depends_on_stable_prefix_only(tmp_path):
 
     assert first_request["system"][0]["text"] == second_request["system"][0]["text"]
     assert first_metadata["system_prefix_hash"] == second_metadata["system_prefix_hash"]
-    assert first_metadata["system_prefix_hash"] == hashlib.sha256(
-        agent.prefix.encode("utf-8")
-    ).hexdigest()
+    assert (
+        first_metadata["system_prefix_hash"]
+        == hashlib.sha256(agent.prefix.encode("utf-8")).hexdigest()
+    )
 
 
 def test_history_is_never_silently_dropped(tmp_path):
@@ -109,6 +113,7 @@ def test_request_metrics_and_cache_key_use_sanitized_payload(tmp_path):
     assert secret not in sent_system
     assert secret not in str(request["messages"])
     assert secret not in "\n".join(counted)
-    assert metadata["system_prefix_hash"] == hashlib.sha256(
-        sent_system.encode("utf-8")
-    ).hexdigest()
+    assert (
+        metadata["system_prefix_hash"]
+        == hashlib.sha256(sent_system.encode("utf-8")).hexdigest()
+    )

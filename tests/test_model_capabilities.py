@@ -1,6 +1,6 @@
 import pytest
 
-from pico.model_capabilities import (
+from pico.agent.model_capabilities import (
     build_model_budget,
     ModelCapabilities,
     resolve_model_capabilities,

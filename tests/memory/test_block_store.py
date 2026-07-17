@@ -142,14 +142,14 @@ def test_append_agent_note_passes_reader_limit_to_atomic_writer(
     user.mkdir()
     store = BlockStore(workspace_root=workspace, user_root=user, redaction_env={})
     options = {}
-    real_write = block_store_module.securitylib.write_private_bytes_atomic
+    real_write = block_store_module.private_files.write_private_bytes_atomic
 
     def track_limit(*args, **kwargs):
         options.update(kwargs)
         return real_write(*args, **kwargs)
 
     monkeypatch.setattr(
-        block_store_module.securitylib,
+        block_store_module.private_files,
         "write_private_bytes_atomic",
         track_limit,
     )
@@ -170,7 +170,7 @@ def test_append_agent_note_does_not_retry_after_unlinked_backup_wipe_failure(
     store = BlockStore(workspace_root=workspace, user_root=user, redaction_env={})
     store.append_agent_note(scope="workspace", note="first")
     monkeypatch.setattr(
-        block_store_module.securitylib.os,
+        block_store_module.private_files.os,
         "ftruncate",
         lambda _descriptor, _length: (_ for _ in ()).throw(
             OSError("open-unlinked wipe failed")
@@ -247,7 +247,7 @@ def test_append_agent_note_never_writes_past_reader_limit(
 
 
 def test_append_agent_note_waits_for_cross_process_scope_lock(tmp_path):
-    from pico import file_lock
+    from pico.state import file_lock
 
     if file_lock.fcntl is None:
         pytest.skip("cross-process file locks unavailable")

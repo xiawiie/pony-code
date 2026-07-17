@@ -10,8 +10,8 @@ import time
 
 import pytest
 
-import pico.docker_sandbox as docker_module
-from pico.docker_sandbox import (
+import pico.sandbox.docker as docker_module
+from pico.sandbox.docker import (
     compile_create_argv,
     default_image_manifest_path,
     discover_local_docker,
@@ -31,7 +31,7 @@ from pico.docker_sandbox import (
     verify_container_inspect,
     verify_image_inspect,
 )
-from pico.sandbox_session import SandboxSessionStore, WorkspaceView
+from pico.sandbox.session import SandboxSessionStore, WorkspaceView
 
 
 CONTAINER_ID = "e" * 64
@@ -50,8 +50,7 @@ def _session_metadata():
             "security_digest": "sha256:" + "1" * 64,
         },
         "image": {
-            "reference": image.registry_reference or image.reference,
-            "manifest_digest": image.reference,
+            "image_digest": image.image_digest,
             "image_id": image.image_id,
             "platform": image.platform,
         },
@@ -116,17 +115,13 @@ def _container_payload(plan, *, started=False, exit_code=0, oom=False):
         "Dead": False,
         "Error": "",
         "ExitCode": exit_code,
-        "FinishedAt": (
-            "2026-07-13T00:00:01Z" if started else "0001-01-01T00:00:00Z"
-        ),
+        "FinishedAt": ("2026-07-13T00:00:01Z" if started else "0001-01-01T00:00:00Z"),
         "OOMKilled": oom,
         "Paused": False,
         "Pid": 0,
         "Restarting": False,
         "Running": False,
-        "StartedAt": (
-            "2026-07-13T00:00:00Z" if started else "0001-01-01T00:00:00Z"
-        ),
+        "StartedAt": ("2026-07-13T00:00:00Z" if started else "0001-01-01T00:00:00Z"),
         "Status": "exited" if started else "created",
     }
     return {
@@ -185,10 +180,10 @@ def _container_payload(plan, *, started=False, exit_code=0, oom=False):
             "UsernsMode": "",
         },
         "Id": CONTAINER_ID,
-        "Image": plan.image_manifest_digest,
+        "Image": plan.image_id,
         "ImageManifestDescriptor": {
             "annotations": {"config.digest": plan.image_id},
-            "digest": plan.image_manifest_digest,
+            "digest": plan.image_digest,
         },
         "Mounts": [
             {
@@ -207,7 +202,8 @@ def _container_payload(plan, *, started=False, exit_code=0, oom=False):
 
 
 def _image_payload(image):
-    return [{
+    return [
+        {
         "Architecture": image.architecture,
         "Config": {
             "Cmd": None,
@@ -223,11 +219,12 @@ def _image_payload(image):
         },
         "Descriptor": {
             "annotations": {"config.digest": image.image_id},
-            "digest": image.reference,
+            "digest": image.image_digest,
         },
-        "Id": image.reference,
+        "Id": image.image_id,
         "Os": image.operating_system,
-    }]
+        }
+    ]
 
 
 def test_image_inspect_accepts_real_containerd_shape_without_descriptor():
@@ -238,11 +235,11 @@ def test_image_inspect_accepts_real_containerd_shape_without_descriptor():
     verify_image_inspect(payload, image)
 
 
-def test_image_inspect_without_descriptor_requires_manifest_id():
+def test_image_inspect_without_descriptor_requires_image_id():
     image = load_image_manifest(default_image_manifest_path())
     payload = _image_payload(image)
     payload[0].pop("Descriptor")
-    payload[0]["Id"] = image.image_id
+    payload[0]["Id"] = image.image_digest
 
     with pytest.raises(DockerSandboxError, match="sandbox_image_identity_mismatch"):
         verify_image_inspect(payload, image)
@@ -385,11 +382,20 @@ def _persist_crashed_call(store, session, runner, plan, *, container_id=""):
 def test_packaged_image_manifest_binds_d1_policy_and_image():
     image = load_image_manifest(default_image_manifest_path())
 
-    assert POLICY_DIGEST == "sha256:96aa648358b4e8efa83c5d1792b980518198844e7993893b65307c12a7a1c2f6"
+    assert (
+        POLICY_DIGEST
+        == "sha256:96aa648358b4e8efa83c5d1792b980518198844e7993893b65307c12a7a1c2f6"
+    )
     assert image.policy_digest == POLICY_DIGEST
     assert image.image_set_digest.startswith("sha256:")
-    assert image.reference == "sha256:61f5e86e344d4053b8f6c7053c965b2cde7fc5e77777974e6237ad2e4ec36904"
-    assert image.image_id == "sha256:4b8538d9c53897e45fd0aa798f78dcc29795956f208efeed0bb7d5662f933ca8"
+    assert (
+        image.image_digest
+        == "sha256:61f5e86e344d4053b8f6c7053c965b2cde7fc5e77777974e6237ad2e4ec36904"
+    )
+    assert (
+        image.image_id
+        == "sha256:4b8538d9c53897e45fd0aa798f78dcc29795956f208efeed0bb7d5662f933ca8"
+    )
     assert image.env == GUEST_ENV
 
 
@@ -428,7 +434,7 @@ def test_execution_plan_and_create_argv_are_frozen(tmp_path):
     assert "bind-recursive=disabled" in argv[argv.index("--mount") + 1]
     assert str(source) not in "\0".join(argv)
     assert argv[-3:] == ["/bin/sh", "-c", "printf ok"]
-    assert argv.index(plan.image_reference) < len(argv) - 3
+    assert argv.index(plan.image_digest) < len(argv) - 3
     assert sum(item.startswith("--mount") for item in argv) == 1
 
     with pytest.raises(DockerSandboxError, match="approved_execution_changed"):
@@ -441,33 +447,28 @@ def test_execution_plan_and_create_argv_are_frozen(tmp_path):
         )
 
 
-def test_create_uses_registry_manifest_and_keeps_oci_identities_distinct(tmp_path):
+def test_create_uses_local_image_digest_and_keeps_oci_identities_distinct(tmp_path):
     _source, _store, session, _runner_value, _plan, _client = _runner(tmp_path)
     image = load_image_manifest(default_image_manifest_path())
-    released = replace(
-        image,
-        registry_reference="registry.example/pico@" + image.reference,
-    )
 
     plan = docker_module.compile_execution_plan(
         session,
-        released,
+        image,
         CLIENT_DIGEST,
         ["/bin/sh", "-c", "printf ok"],
     )
     argv = compile_create_argv(plan)
 
-    assert plan.image_reference == released.registry_reference
-    assert plan.image_manifest_digest == released.reference
-    assert plan.image_id == released.image_id
-    assert argv[-4] == released.registry_reference
+    assert plan.image_digest == image.image_digest
+    assert plan.image_id == image.image_id
+    assert argv[-4] == image.image_digest
 
 
 def test_runner_rejects_rehashed_plan_for_a_different_image(tmp_path):
     _source, _store, session, runner, plan, client = _runner(tmp_path)
     changed = replace(
         plan,
-        image_reference="sha256:" + "0" * 64,
+        image_digest="sha256:" + "0" * 64,
         execution_plan_digest="",
     )
     changed = replace(
@@ -743,10 +744,13 @@ def test_status_reports_image_inspect_daemon_failure(failure):
             }
 
         def command(self, _args):
-            return _result(
+            return (
+                _result(
                 exit_code=1 if failure == "nonzero" else 0,
                 timed_out=failure == "timeout",
-            ) if failure != "truncated" else DockerCommandResult(
+                )
+                if failure != "truncated"
+                else DockerCommandResult(
                 exit_code=0,
                 timed_out=False,
                 stdout=b"{}",
@@ -755,6 +759,7 @@ def test_status_reports_image_inspect_daemon_failure(failure):
                 stderr_bytes=0,
                 stdout_truncated=True,
                 stderr_truncated=False,
+            )
             )
 
     with pytest.raises(DockerSandboxError, match="docker_daemon_unavailable"):
@@ -798,7 +803,7 @@ def test_readiness_failures_prevent_call_state_and_target(
         lambda value: value["HostConfig"].update(NetworkMode="bridge"),
         lambda value: value["Config"].update(User="0:0"),
         lambda value: value["Mounts"].append(dict(value["Mounts"][0])),
-        lambda value: value.update(Image=value["ImageManifestDescriptor"]["annotations"]["config.digest"]),
+        lambda value: value.update(Image=value["ImageManifestDescriptor"]["digest"]),
         lambda value: value["ImageManifestDescriptor"]["annotations"].update(
             {"config.digest": "sha256:" + "0" * 64}
         ),
@@ -827,7 +832,10 @@ def test_runner_success_uses_one_create_and_start_and_cleans(tmp_path):
     assert outcome.cleanup_status == "completed"
     assert outcome.residue_detected is False
     assert sum(args[0] == "create" for args in client.commands) == 1
-    assert sum(args[:3] == ["container", "start", "--attach"] for args in client.commands) == 1
+    assert (
+        sum(args[:3] == ["container", "start", "--attach"] for args in client.commands)
+        == 1
+    )
     assert store.inspect(session.state_root).state == "ready"
     assert (source / "README.md").read_text() == "source\n"
 
@@ -866,9 +874,7 @@ def test_runner_reconstructs_crashed_call_and_cleans_exact_container(tmp_path):
         "error_code": "target_started_before_reconciliation",
     }
     assert client.exists is False
-    assert any(
-        args[:3] == ["container", "rm", "--force"] for args in client.commands
-    )
+    assert any(args[:3] == ["container", "rm", "--force"] for args in client.commands)
 
 
 def test_crash_cleanup_uses_current_control_plane_without_image_readiness(tmp_path):
@@ -1178,8 +1184,7 @@ def test_contract_mismatch_never_starts_target_and_is_cleaned(tmp_path):
     assert outcome.sandbox_outcome == "target_not_started"
     assert outcome.error_code == "container_contract_mismatch"
     assert not any(
-        args[:3] == ["container", "start", "--attach"]
-        for args in client.commands
+        args[:3] == ["container", "start", "--attach"] for args in client.commands
     )
     assert client.exists is False
     assert store.inspect(session.state_root).state == "ready"
@@ -1199,8 +1204,7 @@ def test_malformed_create_response_reconciles_and_cleans_without_start(tmp_path)
     assert outcome.container_created is True
     assert client.exists is False
     assert not any(
-        args[:3] == ["container", "start", "--attach"]
-        for args in client.commands
+        args[:3] == ["container", "start", "--attach"] for args in client.commands
     )
     assert store.inspect(session.state_root).state == "ready"
 
@@ -1893,19 +1897,14 @@ def test_prepare_returns_exact_ready_status_without_pull():
 
 
 @pytest.mark.parametrize(
-    ("present", "registry_reference", "reason"),
+    ("present", "reason"),
     (
-        (True, "registry.example/pico@", "sandbox_image_identity_mismatch"),
-        (False, "", "sandbox_image_missing"),
+        (True, "sandbox_image_identity_mismatch"),
+        (False, "sandbox_image_missing"),
     ),
 )
-def test_prepare_fails_closed_without_pull(present, registry_reference, reason):
+def test_prepare_fails_closed_without_pull(present, reason):
     image = load_image_manifest(default_image_manifest_path())
-    if registry_reference:
-        image = replace(
-            image,
-            registry_reference=registry_reference + image.reference,
-        )
 
     class NotReadyClient:
         commands = []

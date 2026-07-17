@@ -13,7 +13,7 @@ if str(ROOT) not in sys.path:
 
 from benchmarks.perf.harness import bench  # noqa: E402
 from pico.context.renderer import render_current_user_message  # noqa: E402
-from pico.context_manager import ContextManager  # noqa: E402
+from pico.agent.context_manager import ContextManager  # noqa: E402
 
 
 def _make_agent(session_len):

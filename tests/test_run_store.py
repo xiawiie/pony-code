@@ -6,15 +6,17 @@ import time
 
 import pytest
 
-from pico import security as security_module
-import pico.run_store as run_store_module
-from pico.run_store import RunStore
-from pico.task_state import STOP_REASON_FINAL_ANSWER_RETURNED, TaskState
+import pico.state.run_store as run_store_module
+from pico.security import private_files as security_module
+from pico.state.run_store import RunStore
+from pico.state.task_state import STOP_REASON_FINAL_ANSWER_RETURNED, TaskState
 
 
 def test_run_store_creates_run_directory_and_state_file(tmp_path):
     store = RunStore(tmp_path / ".pico" / "runs")
-    state = TaskState.create(run_id="run_001", task_id="task_001", user_request="Inspect the repo.")
+    state = TaskState.create(
+        run_id="run_001", task_id="task_001", user_request="Inspect the repo."
+    )
 
     run_dir = store.start_run(state)
 
@@ -28,10 +30,14 @@ def test_run_store_creates_run_directory_and_state_file(tmp_path):
 
 def test_run_store_appends_trace_jsonl(tmp_path):
     store = RunStore(tmp_path / ".pico" / "runs")
-    state = TaskState.create(run_id="run_002", task_id="task_002", user_request="Trace the run.")
+    state = TaskState.create(
+        run_id="run_002", task_id="task_002", user_request="Trace the run."
+    )
     store.start_run(state)
 
-    store.append_trace(state, {"event": "run_started", "created_at": "2026-04-07T00:00:00+00:00"})
+    store.append_trace(
+        state, {"event": "run_started", "created_at": "2026-04-07T00:00:00+00:00"}
+    )
     store.append_trace(
         state.run_id,
         {
@@ -40,7 +46,10 @@ def test_run_store_appends_trace_jsonl(tmp_path):
             "request_metadata": {"request_chars": 128, "secret_env_count": 1},
         },
     )
-    store.append_trace(state.run_id, {"event": "run_finished", "created_at": "2026-04-07T00:00:02+00:00"})
+    store.append_trace(
+        state.run_id,
+        {"event": "run_finished", "created_at": "2026-04-07T00:00:02+00:00"},
+    )
 
     lines = (store.trace_path(state.run_id)).read_text(encoding="utf-8").splitlines()
     assert len(lines) == 3
@@ -51,7 +60,9 @@ def test_run_store_appends_trace_jsonl(tmp_path):
 
 def test_run_store_rejects_trace_append_past_artifact_limit(tmp_path, monkeypatch):
     store = RunStore(tmp_path / ".pico" / "runs")
-    state = TaskState.create(run_id="bounded_trace", task_id="task", user_request="safe")
+    state = TaskState.create(
+        run_id="bounded_trace", task_id="task", user_request="safe"
+    )
     store.start_run(state)
     first = {"event": "run_started"}
     store.append_trace(state, first)
@@ -74,7 +85,9 @@ def test_run_store_serializes_concurrent_bounded_trace_appends(
     monkeypatch,
 ):
     store = RunStore(tmp_path / ".pico" / "runs")
-    state = TaskState.create(run_id="concurrent_trace", task_id="task", user_request="safe")
+    state = TaskState.create(
+        run_id="concurrent_trace", task_id="task", user_request="safe"
+    )
     store.start_run(state)
     event = {"event": "tool_executed", "name": "read_file"}
     rendered = (json.dumps(event, sort_keys=True, ensure_ascii=True) + "\n").encode()
@@ -133,12 +146,16 @@ def test_run_store_trace_append_requires_cross_process_lock(tmp_path, monkeypatc
 
 def test_run_store_writes_report_json(tmp_path):
     store = RunStore(tmp_path / ".pico" / "runs")
-    state = TaskState.create(run_id="run_003", task_id="task_003", user_request="Report the run.")
+    state = TaskState.create(
+        run_id="run_003", task_id="task_003", user_request="Report the run."
+    )
     store.start_run(state)
     state.finish_success("Done.")
 
     store.write_task_state(state)
-    store.write_report(state, {"task_state": state.to_dict(), "stop_reason": state.stop_reason})
+    store.write_report(
+        state, {"task_state": state.to_dict(), "stop_reason": state.stop_reason}
+    )
 
     report = json.loads(store.report_path(state.run_id).read_text(encoding="utf-8"))
     assert report["stop_reason"] == STOP_REASON_FINAL_ANSWER_RETURNED
@@ -147,7 +164,9 @@ def test_run_store_writes_report_json(tmp_path):
 
 def test_run_store_tolerates_missing_final_report(tmp_path):
     store = RunStore(tmp_path / ".pico" / "runs")
-    state = TaskState.create(run_id="run_004", task_id="task_004", user_request="Crash before finalize.")
+    state = TaskState.create(
+        run_id="run_004", task_id="task_004", user_request="Crash before finalize."
+    )
 
     store.start_run(state)
     store.append_trace(state, {"event": "run_started"})
@@ -198,10 +217,12 @@ def test_run_store_write_bounds_existing_artifact_before_backup(
     monkeypatch,
 ):
     store = RunStore(tmp_path / ".pico" / "runs")
-    state = TaskState.create(run_id="oversized_existing", task_id="task", user_request="ok")
-    rendered = (
-        json.dumps(state.to_dict(), indent=2, sort_keys=True) + "\n"
-    ).encode("utf-8")
+    state = TaskState.create(
+        run_id="oversized_existing", task_id="task", user_request="ok"
+    )
+    rendered = (json.dumps(state.to_dict(), indent=2, sort_keys=True) + "\n").encode(
+        "utf-8"
+    )
     monkeypatch.setattr(run_store_module, "MAX_RUN_ARTIFACT_BYTES", len(rendered))
     path = store.task_state_path(state)
     path.parent.mkdir(mode=0o700)

@@ -4,10 +4,10 @@ from contextlib import contextmanager
 
 import pytest
 
-from pico import security as security_module
-import pico.config as config_module
-from pico.cli import main
-from pico.config import (
+import pico.config.environment as config_module
+from pico.security import private_files as security_module
+from pico.cli.app import main
+from pico.config.environment import (
     project_env_path,
     read_project_env,
     read_project_env_with_status,
@@ -121,7 +121,9 @@ def test_project_env_quoted_codec_round_trips_special_values(tmp_path, value):
     assert read_project_env(tmp_path, warn=False)["PICO_TEST_SECRET"] == value
 
 
-def test_project_env_rejects_control_characters_after_decoding(tmp_path, monkeypatch, capsys):
+def test_project_env_rejects_control_characters_after_decoding(
+    tmp_path, monkeypatch, capsys
+):
     sentinel = "opaque-control-value-123456789"
     invalid_names = (
         "PICO_JSON_NUL",
@@ -177,11 +179,13 @@ def test_init_project_env_error_is_stable_and_omits_sensitive_path(tmp_path, cap
     outside.write_text("PICO_TEST_SETTING=deepseek\n", encoding="utf-8")
     (tmp_path / ".env").symlink_to(outside)
 
-    code = main([
+    code = main(
+        [
         "--cwd",
         str(tmp_path),
         "init",
-    ])
+        ]
+    )
 
     captured = capsys.readouterr()
     assert code == 3
@@ -367,11 +371,13 @@ def test_credential_bearing_base_url_is_rejected_at_config_boundary(
     capsys,
 ):
     monkeypatch.setattr("builtins.input", lambda: url)
-    code = main([
+    code = main(
+        [
         "--cwd",
         str(tmp_path),
         "init",
-    ])
+        ]
+    )
 
     captured = capsys.readouterr()
     assert code == 3

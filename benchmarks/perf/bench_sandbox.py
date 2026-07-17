@@ -16,8 +16,8 @@ import tempfile
 import time
 
 from benchmarks.perf.harness import bench
-from pico.checkpoint_store import CheckpointStore
-from pico.docker_sandbox import (
+from pico.state.checkpoint_store import CheckpointStore
+from pico.sandbox.docker import (
     build_docker_sandbox_context,
     default_image_manifest_path,
     discover_local_docker,
@@ -27,8 +27,8 @@ from pico.docker_sandbox import (
     MOUNT_POLICY_DIGEST,
     RESOURCE_POLICY_DIGEST,
 )
-from pico.sandbox_apply import StagingObserver
-from pico.sandbox_session import (
+from pico.sandbox.apply import StagingObserver
+from pico.sandbox.session import (
     MAX_FILE_BYTES,
     SandboxSessionStore,
     stage_source,
@@ -97,7 +97,7 @@ def build_artifact(scenarios, *, docker=None):
         },
         "sandbox": {
             "implementation": "docker_container",
-            "image_digest": image.reference,
+            "image_digest": image.image_digest,
             "policy_digest": image.policy_digest,
             "network_mode": "none",
         },
@@ -130,8 +130,7 @@ def _session_metadata(image):
             "security_digest": "sha256:" + "2" * 64,
         },
         "image": {
-            "reference": image.registry_reference or image.reference,
-            "manifest_digest": image.reference,
+            "image_digest": image.image_digest,
             "image_id": image.image_id,
             "platform": image.platform,
         },

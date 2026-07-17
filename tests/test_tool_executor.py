@@ -5,20 +5,23 @@ from unittest.mock import Mock
 
 import pytest
 
-from pico import Pico, SessionStore, WorkspaceContext
-from pico.agent_loop import _prepare_tool_result
-from pico.providers.fake import FakeModelClient
-import pico.tool_executor as tool_executor_module
+from pico import Pico
+from pico.state.session_store import SessionStore
+from pico.workspace.context import WorkspaceContext
+from pico.agent.loop import _prepare_tool_result
+from benchmarks.support.fake_provider import FakeModelClient
+import pico.tools.executor as tool_executor_module
 from pico.memory.tools import tool_memory_list, tool_memory_search
-from pico.task_state import TaskState
-from pico.tool_executor import (
+from pico.state.task_state import TaskState
+from pico.tools.executor import (
     ToolExecutor,
     ToolExecutionResult,
     _capture_path_snapshot,
     _effect_class,
     _fill_git_head_before_file_states,
 )
-from pico.tools import BASE_TOOL_SPECS, DELEGATE_TOOL_SPEC
+from pico.tools.registry import BASE_TOOL_SPECS, DELEGATE_TOOL_SPEC
+from pico.runtime.options import RuntimeOptions
 
 
 def build_agent(tmp_path, outputs=None, **kwargs):
@@ -30,8 +33,7 @@ def build_agent(tmp_path, outputs=None, **kwargs):
         model_client=FakeModelClient([] if outputs is None else outputs),
         workspace=workspace,
         session_store=store,
-        approval_policy=approval_policy,
-        **kwargs,
+        options=RuntimeOptions(approval_policy=approval_policy, **kwargs),
     )
 
 
@@ -42,16 +44,27 @@ def authorize_memory(agent, user_request="remember this"):
 
 def init_git_repo(tmp_path):
     subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
-    subprocess.run(["git", "config", "user.email", "pico@example.test"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "config", "user.name", "Pico Test"], cwd=tmp_path, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "pico@example.test"], cwd=tmp_path, check=True
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Pico Test"], cwd=tmp_path, check=True
+    )
     subprocess.run(["git", "add", "README.md"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "commit", "-m", "initial"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "commit", "-m", "initial"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
 
 
 def read_trace(agent):
     return [
         json.loads(line)
-        for line in agent.run_store.trace_path(agent.current_task_state).read_text(encoding="utf-8").splitlines()
+        for line in agent.run_store.trace_path(agent.current_task_state)
+        .read_text(encoding="utf-8")
+        .splitlines()
         if line.strip()
     ]
 
@@ -59,7 +72,9 @@ def read_trace(agent):
 def test_tool_executor_returns_content_and_metadata_without_side_channel(tmp_path):
     agent = build_agent(tmp_path)
 
-    result = ToolExecutor(agent).execute("read_file", {"path": "README.md", "start": 1, "end": 1})
+    result = ToolExecutor(agent).execute(
+        "read_file", {"path": "README.md", "start": 1, "end": 1}
+    )
 
     assert isinstance(result, ToolExecutionResult)
     assert "# README.md" in result.content
@@ -254,7 +269,9 @@ def test_read_only_agent_allows_read_effects(tmp_path, name, arguments):
     assert result.metadata["read_only"] is True
 
 
-def test_memory_write_is_audited_without_workspace_snapshot_or_recovery_checkpoint(tmp_path):
+def test_memory_write_is_audited_without_workspace_snapshot_or_recovery_checkpoint(
+    tmp_path,
+):
     agent = build_agent(
         tmp_path,
         outputs=[
@@ -340,7 +357,9 @@ def test_memory_save_enforces_1024_model_token_cap(tmp_path):
 
 def test_runner_keyboard_interrupt_finalizes_pending_change_then_reraises(tmp_path):
     agent = build_agent(tmp_path)
-    agent.tools["write_file"]["run"] = lambda args: (_ for _ in ()).throw(KeyboardInterrupt())
+    agent.tools["write_file"]["run"] = lambda args: (_ for _ in ()).throw(
+        KeyboardInterrupt()
+    )
 
     with pytest.raises(KeyboardInterrupt):
         agent.execute_tool("write_file", {"path": "x.txt", "content": "x"})
@@ -369,7 +388,9 @@ def test_shell_runner_interrupt_persists_attempted_approval_metadata(tmp_path):
     assert "exit_code" not in record["approval"]
 
 
-def test_post_runner_interrupt_closes_workspace_change_then_reraises(tmp_path, monkeypatch):
+def test_post_runner_interrupt_closes_workspace_change_then_reraises(
+    tmp_path, monkeypatch
+):
     agent = build_agent(tmp_path)
     original_capture = agent.workspace_observer.capture
     capture_calls = 0
@@ -429,10 +450,14 @@ def test_post_pending_system_exit_closes_change_and_preserves_primary(tmp_path):
         agent.execute_tool("write_file", {"path": "x.txt", "content": "x"})
 
     assert caught.value is primary
-    assert agent.checkpoint_store.list_tool_change_records()[-1]["status"] == "interrupted"
+    assert (
+        agent.checkpoint_store.list_tool_change_records()[-1]["status"] == "interrupted"
+    )
 
 
-def test_post_pending_custom_base_exception_closes_change_and_preserves_primary(tmp_path):
+def test_post_pending_custom_base_exception_closes_change_and_preserves_primary(
+    tmp_path,
+):
     agent = build_agent(tmp_path)
     primary = FatalToolSignal("runner stopped")
     agent.tools["write_file"]["run"] = Mock(side_effect=primary)
@@ -441,7 +466,9 @@ def test_post_pending_custom_base_exception_closes_change_and_preserves_primary(
         agent.execute_tool("write_file", {"path": "x.txt", "content": "x"})
 
     assert caught.value is primary
-    assert agent.checkpoint_store.list_tool_change_records()[-1]["status"] == "interrupted"
+    assert (
+        agent.checkpoint_store.list_tool_change_records()[-1]["status"] == "interrupted"
+    )
 
 
 def test_fatal_interrupt_observes_workspace_effect_before_terminalizing(tmp_path):
@@ -494,7 +521,9 @@ def test_post_pending_observer_base_exception_closes_change_and_preserves_primar
         agent.execute_tool("run_shell", {"command": "pwd", "timeout": 5})
 
     assert caught.value is primary
-    assert agent.checkpoint_store.list_tool_change_records()[-1]["status"] == "interrupted"
+    assert (
+        agent.checkpoint_store.list_tool_change_records()[-1]["status"] == "interrupted"
+    )
 
 
 def test_post_pending_verification_base_exception_closes_change_and_preserves_primary(
@@ -507,7 +536,7 @@ def test_post_pending_verification_base_exception_closes_change_and_preserves_pr
         return_value={"stdout": "ok\n", "stderr": "", "exit_code": 0}
     )
     monkeypatch.setattr(
-        "pico.tool_executor.verification_evidence_for_execution",
+        "pico.tools.executor.verification_evidence_for_execution",
         Mock(side_effect=primary),
     )
 
@@ -515,7 +544,9 @@ def test_post_pending_verification_base_exception_closes_change_and_preserves_pr
         agent.execute_tool("run_shell", {"command": "pwd", "timeout": 5})
 
     assert caught.value is primary
-    assert agent.checkpoint_store.list_tool_change_records()[-1]["status"] == "interrupted"
+    assert (
+        agent.checkpoint_store.list_tool_change_records()[-1]["status"] == "interrupted"
+    )
 
 
 def test_post_pending_memory_update_base_exception_closes_change_and_preserves_primary(
@@ -599,9 +630,7 @@ def test_unknown_effect_after_runner_failure_requires_review(
         Mock(side_effect=OSError("observer failed")),
     )
 
-    first = agent.execute_tool(
-        "write_file", {"path": "first.txt", "content": "unused"}
-    )
+    first = agent.execute_tool("write_file", {"path": "first.txt", "content": "unused"})
 
     assert first.metadata["tool_status"] == "error"
     assert first.metadata["tool_error_code"] == "recovery_review_required"
@@ -633,9 +662,7 @@ def test_post_runner_finalization_failure_keeps_effect_evidence(tmp_path, monkey
         Mock(side_effect=OSError("memory update failed")),
     )
 
-    result = agent.execute_tool(
-        "run_shell", {"command": "pwd", "timeout": 5}
-    )
+    result = agent.execute_tool("run_shell", {"command": "pwd", "timeout": 5})
 
     assert result.metadata["tool_error_code"] == "tool_finalize_failed"
     assert result.metadata["affected_paths"] == ["after-run.txt"]
@@ -648,7 +675,9 @@ def test_post_runner_finalization_failure_keeps_effect_evidence(tmp_path, monkey
     assert record["shell_side_effects"]
 
 
-def test_recorder_start_persisted_then_raised_leaves_review_evidence(tmp_path, monkeypatch):
+def test_recorder_start_persisted_then_raised_leaves_review_evidence(
+    tmp_path, monkeypatch
+):
     agent = build_agent(tmp_path)
     real_start = agent.tool_change_recorder.start
     runner = Mock(return_value="must not run")
@@ -693,11 +722,15 @@ def test_missing_memory_dependencies_and_files_never_report_ok(tmp_path, monkeyp
     missing_retrieval = agent.execute_tool("memory_search", {"query": "cache"})
     assert missing_retrieval.metadata["tool_status"] == "error"
 
-    missing_file = agent.execute_tool("memory_read", {"path": "workspace/notes/missing.md"})
+    missing_file = agent.execute_tool(
+        "memory_read", {"path": "workspace/notes/missing.md"}
+    )
     assert missing_file.metadata["tool_status"] == "error"
 
     context = agent.tools["memory_read"]["run"].args[0]
-    monkeypatch.setattr(context.memory_store, "read", Mock(side_effect=OSError("memory disk failed")))
+    monkeypatch.setattr(
+        context.memory_store, "read", Mock(side_effect=OSError("memory disk failed"))
+    )
     io_error = agent.execute_tool("memory_read", {"path": "workspace/notes/other.md"})
     assert io_error.metadata["tool_status"] == "error"
 
@@ -733,9 +766,13 @@ def test_pico_run_tool_keeps_compatibility_metadata(tmp_path):
 def test_write_file_creates_finalized_tool_change(tmp_path):
     agent = build_agent(tmp_path)
 
-    result = agent.execute_tool("write_file", {"path": "note.txt", "content": "hello\n"})
+    result = agent.execute_tool(
+        "write_file", {"path": "note.txt", "content": "hello\n"}
+    )
 
-    tool_change = agent.checkpoint_store.load_tool_change_record(result.metadata["tool_change_id"])
+    tool_change = agent.checkpoint_store.load_tool_change_record(
+        result.metadata["tool_change_id"]
+    )
     assert tool_change["status"] == "finalized"
     assert tool_change["affected_paths"] == ["note.txt"]
     assert tool_change["file_entries"][0]["change_kind"] == "created"
@@ -744,10 +781,15 @@ def test_write_file_creates_finalized_tool_change(tmp_path):
 def test_invalid_tool_args_do_not_create_pending_tool_change(tmp_path):
     agent = build_agent(tmp_path)
 
-    result = agent.execute_tool("patch_file", {"path": "README.md", "old_text": "missing", "new_text": "x"})
+    result = agent.execute_tool(
+        "patch_file", {"path": "README.md", "old_text": "missing", "new_text": "x"}
+    )
 
     assert result.metadata["tool_status"] == "rejected"
-    assert "tool_change_id" not in result.metadata or result.metadata["tool_change_id"] == ""
+    assert (
+        "tool_change_id" not in result.metadata
+        or result.metadata["tool_change_id"] == ""
+    )
 
 
 def test_tool_runtime_exception_finalizes_pending_record_as_error(tmp_path):
@@ -757,10 +799,14 @@ def test_tool_runtime_exception_finalizes_pending_record_as_error(tmp_path):
         raise RuntimeError("boom")
 
     agent.tools["write_file"]["run"] = boom
-    result = agent.execute_tool("write_file", {"path": "note.txt", "content": "hello\n"})
+    result = agent.execute_tool(
+        "write_file", {"path": "note.txt", "content": "hello\n"}
+    )
 
     assert result.metadata["tool_status"] == "error"
-    tool_change = agent.checkpoint_store.load_tool_change_record(result.metadata["tool_change_id"])
+    tool_change = agent.checkpoint_store.load_tool_change_record(
+        result.metadata["tool_change_id"]
+    )
     assert tool_change["status"] == "error"
     assert tool_change["error"]["code"] == "tool_failed"
 
@@ -774,7 +820,9 @@ def test_success_and_exception_paths_persist_terminal_effect_evidence(tmp_path):
         raise RuntimeError("boom")
 
     agent.tools["write_file"]["run"] = boom
-    failure = agent.execute_tool("write_file", {"path": "partial.txt", "content": "unused\n"})
+    failure = agent.execute_tool(
+        "write_file", {"path": "partial.txt", "content": "unused\n"}
+    )
 
     assert success.metadata["tool_status"] == "ok"
     assert failure.metadata["tool_status"] == "partial_success"
@@ -795,7 +843,9 @@ def test_run_shell_uses_command_policy_metadata(tmp_path):
     agent = build_agent(tmp_path, approval_policy="ask")
     agent.approve = Mock(return_value=True)
 
-    result = agent.execute_tool("run_shell", {"command": "printf hello > generated.txt", "timeout": 5})
+    result = agent.execute_tool(
+        "run_shell", {"command": "printf hello > generated.txt", "timeout": 5}
+    )
 
     assert result.metadata["command_risk_class"] == "workspace_write"
     assert result.metadata["command_approval"]["decision"] == "ask"
@@ -808,7 +858,7 @@ def test_run_shell_rechecks_command_policy_after_approval_mutation(
     tmp_path,
     monkeypatch,
 ):
-    import pico.tool_executor as tool_executor
+    import pico.tools.executor as tool_executor
 
     agent = build_agent(tmp_path, approval_policy="ask")
     victim = tmp_path / "victim.txt"
@@ -874,7 +924,9 @@ def test_destructive_run_shell_is_not_auto_approved(tmp_path):
     victim = tmp_path / "victim.txt"
     victim.write_text("keep\n", encoding="utf-8")
 
-    result = agent.execute_tool("run_shell", {"command": "rm -f victim.txt", "timeout": 5})
+    result = agent.execute_tool(
+        "run_shell", {"command": "rm -f victim.txt", "timeout": 5}
+    )
 
     assert result.metadata["tool_status"] == "rejected"
     assert result.metadata["tool_error_code"] == "command_approval_required"
@@ -942,7 +994,9 @@ def test_write_file_recovery_does_not_use_full_workspace_snapshot(tmp_path):
 
     agent.capture_workspace_snapshot = fail_full_snapshot
 
-    result = agent.execute_tool("write_file", {"path": "note.txt", "content": "hello\n"})
+    result = agent.execute_tool(
+        "write_file", {"path": "note.txt", "content": "hello\n"}
+    )
 
     assert result.metadata["tool_status"] == "ok"
     assert result.metadata["affected_paths"] == ["note.txt"]
@@ -957,7 +1011,9 @@ def test_run_shell_recovery_does_not_use_full_workspace_snapshot(tmp_path):
 
     agent.capture_workspace_snapshot = fail_full_snapshot
 
-    result = agent.execute_tool("run_shell", {"command": "printf hello > generated.txt", "timeout": 5})
+    result = agent.execute_tool(
+        "run_shell", {"command": "printf hello > generated.txt", "timeout": 5}
+    )
 
     assert result.metadata["tool_status"] == "ok"
     assert "generated.txt" in result.metadata["affected_paths"]
@@ -977,7 +1033,9 @@ def test_run_shell_recovery_does_not_blob_unrelated_dirty_paths(tmp_path):
 
     agent.checkpoint_store.write_blob = spy_write_blob
 
-    result = agent.execute_tool("run_shell", {"command": "printf hello > generated.txt", "timeout": 5})
+    result = agent.execute_tool(
+        "run_shell", {"command": "printf hello > generated.txt", "timeout": 5}
+    )
 
     assert result.metadata["tool_status"] == "ok"
     assert "generated.txt" in result.metadata["affected_paths"]
@@ -990,7 +1048,9 @@ def test_run_shell_recovery_marks_dirty_before_tracked_file_unrestorable(tmp_pat
     init_git_repo(tmp_path)
     (tmp_path / "README.md").write_text("user dirty\n", encoding="utf-8")
 
-    result = agent.execute_tool("run_shell", {"command": "printf 'tool changed\\n' > README.md", "timeout": 5})
+    result = agent.execute_tool(
+        "run_shell", {"command": "printf 'tool changed\\n' > README.md", "timeout": 5}
+    )
 
     assert result.metadata["tool_status"] == "ok"
     entry = result.metadata["file_entries"][0]
@@ -1009,7 +1069,9 @@ def test_run_shell_recovery_populates_before_blob_from_git_head(tmp_path):
     agent.approve = Mock(return_value=True)
     init_git_repo(tmp_path)
 
-    result = agent.execute_tool("run_shell", {"command": "printf 'tool changed\\n' > README.md", "timeout": 5})
+    result = agent.execute_tool(
+        "run_shell", {"command": "printf 'tool changed\\n' > README.md", "timeout": 5}
+    )
 
     assert result.metadata["tool_status"] == "ok"
     entry = result.metadata["file_entries"][0]
@@ -1022,7 +1084,7 @@ def test_run_shell_recovery_populates_before_blob_from_git_head(tmp_path):
 
 
 def test_git_head_fallback_uses_frozen_hardened_git(tmp_path, monkeypatch):
-    import pico.tool_executor as tool_executor
+    import pico.tools.executor as tool_executor
 
     calls = []
 
@@ -1032,11 +1094,7 @@ def test_git_head_fallback_uses_frozen_hardened_git(tmp_path, monkeypatch):
             return subprocess.CompletedProcess(
                 [],
                 0,
-                stdout=(
-                    b"100644 blob "
-                    + b"c" * 40
-                    + b" 9\tREADME.md\0"
-                ),
+                stdout=(b"100644 blob " + b"c" * 40 + b" 9\tREADME.md\0"),
                 stderr=b"",
             )
         return subprocess.CompletedProcess([], 0, stdout=b"original\n", stderr=b"")
@@ -1105,7 +1163,7 @@ def test_git_head_fallback_rejects_sensitive_path_before_git_or_blob(
     tmp_path,
     monkeypatch,
 ):
-    import pico.tool_executor as tool_executor
+    import pico.tools.executor as tool_executor
 
     git = Mock(side_effect=AssertionError("git must not run"))
     monkeypatch.setattr(tool_executor, "run_hardened_git", git)
@@ -1128,7 +1186,7 @@ def test_git_head_fallback_rejects_sensitive_descendant_before_git_or_blob(
     tmp_path,
     monkeypatch,
 ):
-    import pico.tool_executor as tool_executor
+    import pico.tools.executor as tool_executor
 
     git = Mock(side_effect=AssertionError("git must not run"))
     monkeypatch.setattr(tool_executor, "run_hardened_git", git)
@@ -1155,7 +1213,7 @@ def test_git_head_fallback_rejects_secret_stdout_before_blob(
     tmp_path,
     monkeypatch,
 ):
-    import pico.tool_executor as tool_executor
+    import pico.tools.executor as tool_executor
 
     secret = "opaque-head-value-123456789"
     git = Mock(
@@ -1185,15 +1243,13 @@ def test_git_head_fallback_rejects_secret_stdout_before_blob(
 def test_git_head_fallback_rejects_symlink_and_oversized_tree_entries(
     tmp_path, monkeypatch
 ):
-    import pico.tool_executor as tool_executor
+    import pico.tools.executor as tool_executor
 
     git = Mock(
         return_value=subprocess.CompletedProcess(
             [],
             0,
-            stdout=(
-                b"120000 blob " + b"c" * 40 + b" 12\tREADME.md\0"
-            ),
+            stdout=(b"120000 blob " + b"c" * 40 + b" 12\tREADME.md\0"),
             stderr=b"",
         )
     )
@@ -1216,7 +1272,7 @@ def test_path_snapshot_never_hashes_safe_named_secret_content(
     tmp_path,
     monkeypatch,
 ):
-    import pico.tool_executor as tool_executor
+    import pico.tools.executor as tool_executor
 
     secret = "opaque-snapshot-value-123456789"
     (tmp_path / "source.py").write_text(secret, encoding="utf-8")
@@ -1277,7 +1333,9 @@ def test_generic_path_arg_registry_covers_destination_and_paths_list(tmp_path):
         "run": custom_move,
     }
 
-    result = agent.execute_tool("custom_move", {"source": "existing.txt", "destination": "moved.txt"})
+    result = agent.execute_tool(
+        "custom_move", {"source": "existing.txt", "destination": "moved.txt"}
+    )
 
     assert result.metadata["tool_status"] == "ok"
     affected = set(result.metadata["affected_paths"])
@@ -1328,9 +1386,7 @@ def test_write_file_entry_records_complete_exists_hash_mode_and_source(tmp_path)
     target.chmod(0o640)
     agent = build_agent(tmp_path)
 
-    result = agent.execute_tool(
-        "write_file", {"path": "note.txt", "content": "after"}
-    )
+    result = agent.execute_tool("write_file", {"path": "note.txt", "content": "after"})
     entry = result.metadata["file_entries"][0]
 
     assert entry["before_exists"] is True
@@ -1350,9 +1406,7 @@ def test_sensitive_after_bytes_never_reach_blob_store(tmp_path, monkeypatch):
     target.write_text("before", encoding="utf-8")
     agent = build_agent(tmp_path)
 
-    result = agent.execute_tool(
-        "write_file", {"path": "safe.py", "content": sentinel}
-    )
+    result = agent.execute_tool("write_file", {"path": "safe.py", "content": sentinel})
 
     assert result.metadata["tool_status"] == "rejected"
     assert all(

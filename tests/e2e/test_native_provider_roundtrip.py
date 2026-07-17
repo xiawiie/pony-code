@@ -5,11 +5,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
-from pico import Pico, SessionStore, WorkspaceContext
-from pico.providers.anthropic_compatible import AnthropicCompatibleModelClient
-from pico.providers.ollama import OllamaModelClient
-from pico.providers.openai_chat import OpenAIChatCompletionsModelClient
-from pico.providers.openai_compatible import OpenAICompatibleModelClient
+from pico import Pico
+from pico.state.session_store import SessionStore
+from pico.workspace.context import WorkspaceContext
+from pico.providers.anthropic_messages import AnthropicMessagesModelClient
+from pico.providers.ollama_chat import OllamaChatModelClient
+from pico.providers.openai_chat_completions import OpenAIChatCompletionsModelClient
+from pico.providers.openai_responses import OpenAIResponsesModelClient
+from pico.runtime.options import RuntimeOptions
 
 
 @contextmanager
@@ -20,10 +23,12 @@ def _fake_native_http_server(responses):
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self):  # noqa: N802 - stdlib handler contract
             length = int(self.headers.get("Content-Length", "0"))
-            captured.append({
+            captured.append(
+                {
                 "path": self.path,
                 "body": json.loads(self.rfile.read(length)),
-            })
+                }
+            )
             body = json.dumps(queued.pop(0)).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -86,54 +91,66 @@ def _provider_responses(family, scenario):
         return [
             {
                 "id": "response-1",
-                "output": [{
+                "output": [
+                    {
                     "type": "function_call",
                     "call_id": "call-1",
                     "name": name,
                     "arguments": json.dumps(arguments),
-                }],
+                    }
+                ],
                 "usage": {},
             },
             {
                 "id": "response-2",
-                "output": [{
+                "output": [
+                    {
                     "type": "message",
-                    "content": [{
+                        "content": [
+                            {
                         "type": "output_text",
                         "text": "closed-loop-finished",
-                    }],
-                }],
+                            }
+                        ],
+                    }
+                ],
                 "usage": {},
             },
         ]
     if family == "chat":
         return [
             {
-                "choices": [{
+                "choices": [
+                    {
                     "message": {
                         "role": "assistant",
                         "content": None,
-                        "tool_calls": [{
+                            "tool_calls": [
+                                {
                             "id": "call-1",
                             "type": "function",
                             "function": {
                                 "name": name,
                                 "arguments": json.dumps(arguments),
                             },
-                        }],
+                                }
+                            ],
                     },
                     "finish_reason": "tool_calls",
-                }],
+                    }
+                ],
                 "usage": {},
             },
             {
-                "choices": [{
+                "choices": [
+                    {
                     "message": {
                         "role": "assistant",
                         "content": "closed-loop-finished",
                     },
                     "finish_reason": "stop",
-                }],
+                    }
+                ],
                 "usage": {},
             },
         ]
@@ -142,10 +159,12 @@ def _provider_responses(family, scenario):
             "message": {
                 "role": "assistant",
                 "content": "",
-                "tool_calls": [{
+                "tool_calls": [
+                    {
                     "id": "call-1",
                     "function": {"name": name, "arguments": arguments},
-                }],
+                    }
+                ],
             },
             "done": True,
             "done_reason": "stop",
@@ -160,7 +179,7 @@ def _provider_responses(family, scenario):
 
 def _native_client(family, root):
     if family == "anthropic":
-        return AnthropicCompatibleModelClient(
+        return AnthropicMessagesModelClient(
             model="anthropic-custom",
             base_url=root + "/anthropic/v9",
             api_key="",
@@ -170,7 +189,7 @@ def _native_client(family, root):
             capabilities={},
         )
     if family == "responses":
-        return OpenAICompatibleModelClient(
+        return OpenAIResponsesModelClient(
             model="openai-custom",
             base_url=root + "/openai/v9",
             api_key="",
@@ -189,7 +208,7 @@ def _native_client(family, root):
             auth_mode="none",
             capabilities={},
         )
-    return OllamaModelClient(
+    return OllamaChatModelClient(
         model="ollama-custom",
         host=root + "/ollama/v9",
         api_key="",
@@ -235,7 +254,9 @@ def test_native_adapter_agent_loop_closes_two_round_tool_flow(
             model_client=client,
             workspace=WorkspaceContext.build(tmp_path),
             session_store=SessionStore(tmp_path / ".pico" / "sessions"),
-            approval_policy="never" if scenario == "write_denied" else "auto",
+            options=RuntimeOptions(
+                approval_policy="never" if scenario == "write_denied" else "auto"
+            ),
         )
 
         answer = agent.ask(f"Run the {scenario} protocol fixture")
@@ -263,7 +284,5 @@ def test_native_adapter_agent_loop_closes_two_round_tool_flow(
     else:
         assert "error:" in result
     if family == "anthropic":
-        assert captured[1]["body"]["messages"][-2]["content"][0]["type"] == (
-            "thinking"
-        )
+        assert captured[1]["body"]["messages"][-2]["content"][0]["type"] == ("thinking")
     assert not (tmp_path / "blocked.txt").exists()

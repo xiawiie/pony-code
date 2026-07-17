@@ -6,8 +6,8 @@ import pytest
 import pico.memory.block_store as block_store_module
 from pico.memory.block_store import BlockStore
 from pico.memory.retrieval import Retrieval
-from pico.repo_map import RepoMap
-from pico import repo_map as repo_map_module
+from pico.memory.repo_map import RepoMap
+import pico.memory.repo_map as repo_map_module
 
 
 def _memory_store(tmp_path):

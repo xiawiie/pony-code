@@ -4,9 +4,9 @@ import shutil
 
 import pytest
 
-from pico.file_lock import locked_file
-from pico.migration import ABSENT, ROLLED_BACK, Migration, _MAX_JOURNAL_BYTES
-from pico.security import PrivateAtomicWriteError
+from pico.state.file_lock import locked_file
+from pico.recovery.migration import ABSENT, ROLLED_BACK, Migration, _MAX_JOURNAL_BYTES
+from pico.security.private_files import PrivateAtomicWriteError
 
 
 def migration(tmp_path, validate=lambda path: True):
@@ -15,8 +15,15 @@ def migration(tmp_path, validate=lambda path: True):
     live = root / "runs"
     live.mkdir()
     (live / "value").write_text("old")
-    return Migration(root, contract="run_artifacts", source_version=1, target_version=2,
-                     live="runs", workspace_identity={"repo_commit": "abc", "repo_dirty": False}, validate=validate)
+    return Migration(
+        root,
+        contract="run_artifacts",
+        source_version=1,
+        target_version=2,
+        live="runs",
+        workspace_identity={"repo_commit": "abc", "repo_dirty": False},
+        validate=validate,
+    )
 
 
 def builder(source, candidate):
@@ -65,8 +72,10 @@ def test_recover_after_cleanup_fsync_failure(tmp_path, monkeypatch, failure):
         rollback_removed = path == item.rollback.parent and not item.rollback.exists()
         journal_removed = path == item.journal.parent and not item.journal.exists()
         should_fail = (
-            failure == "rollback_parent" and rollback_removed
-            or failure == "journal_parent" and journal_removed
+            failure == "rollback_parent"
+            and rollback_removed
+            or failure == "journal_parent"
+            and journal_removed
         )
         if should_fail and not failed:
             failed = True
@@ -113,11 +122,13 @@ def test_committed_rolled_back_journal_is_not_rewritten_as_failed(
 def test_recovers_crash_after_each_rename(tmp_path, monkeypatch):
     item = migration(tmp_path)
     original = item._write
+
     def crash(value, state, error=""):
         result = original(value, state, error)
         if state == "old_moved":
             raise KeyboardInterrupt
         return result
+
     monkeypatch.setattr(item, "_write", crash)
     with pytest.raises(KeyboardInterrupt):
         item.apply(builder)
@@ -196,9 +207,11 @@ def test_lock_reentry_is_rejected(tmp_path):
 
 def test_symlink_in_candidate_is_rejected(tmp_path):
     item = migration(tmp_path)
+
     def unsafe(source, candidate):
         candidate.mkdir()
         (candidate / "link").symlink_to(source / "value")
+
     with pytest.raises(ValueError, match="unsafe"):
         item.apply(unsafe)
 
@@ -206,10 +219,12 @@ def test_symlink_in_candidate_is_rejected(tmp_path):
 def test_identity_change_is_rejected(tmp_path):
     item = migration(tmp_path)
     original = item._advance
+
     def stop(value):
         value["workspace_identity"] = {"repo_commit": "other", "repo_dirty": False}
         item._write(value, "candidate_ready")
         raise KeyboardInterrupt
+
     item._advance = stop
     with pytest.raises(KeyboardInterrupt):
         item.apply(builder)
@@ -309,7 +324,9 @@ def test_replaced_migration_area_is_rejected_before_rename(tmp_path, monkeypatch
     item.area.rename(original_area)
     shutil.copytree(original_area, item.area)
 
-    monkeypatch.setattr(item, "_rename", lambda *_: pytest.fail("replaced area reached rename"))
+    monkeypatch.setattr(
+        item, "_rename", lambda *_: pytest.fail("replaced area reached rename")
+    )
     with pytest.raises(ValueError, match="area changed"):
         item.apply()
 
@@ -323,7 +340,9 @@ def test_replaced_migration_area_is_rejected_before_rename(tmp_path, monkeypatch
         ("oversize", "too large"),
     ],
 )
-def test_untrusted_journal_is_rejected_before_rename(tmp_path, monkeypatch, kind, message):
+def test_untrusted_journal_is_rejected_before_rename(
+    tmp_path, monkeypatch, kind, message
+):
     item = migration(tmp_path)
     _leave_candidate_ready(item, monkeypatch)
     outside = tmp_path / "outside-journal.json"
@@ -344,7 +363,9 @@ def test_untrusted_journal_is_rejected_before_rename(tmp_path, monkeypatch, kind
     else:
         item.journal.write_bytes(b"x" * (_MAX_JOURNAL_BYTES + 1))
 
-    monkeypatch.setattr(item, "_rename", lambda *_: pytest.fail("untrusted journal reached rename"))
+    monkeypatch.setattr(
+        item, "_rename", lambda *_: pytest.fail("untrusted journal reached rename")
+    )
     with pytest.raises(ValueError, match=message):
         item.apply()
 

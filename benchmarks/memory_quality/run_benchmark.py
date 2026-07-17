@@ -16,22 +16,26 @@ import shutil
 import sys
 import tempfile
 from pathlib import Path
+from pico.runtime.options import RuntimeOptions
 
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from pico.evaluation.provider_benchmark import _make_provider_client  # noqa: E402
-from pico.evaluation.metrics_common import (  # noqa: E402
+from benchmarks.evaluation.provider_benchmark import (  # noqa: E402
+    _make_provider_client,
+    _resolve_benchmark_target,
+)
+from benchmarks.evaluation.metrics_common import (  # noqa: E402
     _decode_json_object,
     _validate_record_header,
 )
 from pico.memory.block_store import BlockStore  # noqa: E402
 from pico.memory.retrieval import Retrieval  # noqa: E402
-from pico.providers.fake import FakeModelClient  # noqa: E402
-from pico.runtime import Pico  # noqa: E402
-from pico.session_store import SessionStore  # noqa: E402
-from pico.workspace import WorkspaceContext  # noqa: E402
+from benchmarks.support.fake_provider import FakeModelClient  # noqa: E402
+from pico.runtime.application import Pico  # noqa: E402
+from pico.state.session_store import SessionStore  # noqa: E402
+from pico.workspace.context import WorkspaceContext  # noqa: E402
 
 
 MEMORY_QUALITY_SCENARIO_FORMAT_VERSION = 1
@@ -39,7 +43,6 @@ MEMORY_QUALITY_RESULT_FORMAT_VERSION = 1
 SCENARIO_DIR = Path(__file__).parent
 VALID_MODES = ("fake", "live")
 VALID_FORMATS = ("text", "json")
-VALID_LIVE_PROVIDERS = ("gpt", "claude", "deepseek")
 
 
 class ScenarioLoadError(ValueError):
@@ -49,7 +52,9 @@ class ScenarioLoadError(ValueError):
 def load_scenarios(filter_id: str | None = None, scenario_dir: Path = SCENARIO_DIR):
     scenario_dir = Path(scenario_dir)
     for jsonl in sorted(scenario_dir.glob("scenario_*.jsonl")):
-        for line_number, line in enumerate(jsonl.read_text(encoding="utf-8").splitlines(), start=1):
+        for line_number, line in enumerate(
+            jsonl.read_text(encoding="utf-8").splitlines(), start=1
+        ):
             if not line.strip():
                 continue
             try:
@@ -65,9 +70,13 @@ def load_scenarios(filter_id: str | None = None, scenario_dir: Path = SCENARIO_D
                 continue
             scenario_id = str(data.get("id", "")).strip()
             if not scenario_id:
-                raise ScenarioLoadError(f"{jsonl}:{line_number}: scenario id must not be empty")
+                raise ScenarioLoadError(
+                    f"{jsonl}:{line_number}: scenario id must not be empty"
+                )
             if not isinstance(data.get("session_turns"), list):
-                raise ScenarioLoadError(f"{jsonl}:{line_number}: session_turns must be a list")
+                raise ScenarioLoadError(
+                    f"{jsonl}:{line_number}: session_turns must be a list"
+                )
             yield jsonl.stem, data
 
 
@@ -99,7 +108,9 @@ def _setup_note_target(workspace: Path, rel_path: str) -> Path:
 def _validated_setup_notes(scenario: dict) -> list[tuple[str, str]]:
     setup_notes = scenario.get("setup_notes", {})
     if not isinstance(setup_notes, dict):
-        raise ValueError(f"{scenario.get('id', '<unknown>')}: setup_notes must be an object")
+        raise ValueError(
+            f"{scenario.get('id', '<unknown>')}: setup_notes must be an object"
+        )
 
     validated_notes = []
     for rel, content in setup_notes.items():
@@ -112,7 +123,11 @@ def _validated_setup_notes(scenario: dict) -> list[tuple[str, str]]:
 def setup_workspace(scenario: dict, parent_dir: Path | None = None) -> Path:
     parent_dir = Path(parent_dir) if parent_dir is not None else None
     setup_notes = _validated_setup_notes(scenario)
-    ws = Path(tempfile.mkdtemp(prefix="pico-memory-bench-", dir=str(parent_dir) if parent_dir else None)).resolve()
+    ws = Path(
+        tempfile.mkdtemp(
+            prefix="pico-memory-bench-", dir=str(parent_dir) if parent_dir else None
+        )
+    ).resolve()
     (ws / "AGENTS.md").write_text("# Test project\n", encoding="utf-8")
     for rel, content in setup_notes:
         target = _setup_note_target(ws, rel)
@@ -142,11 +157,7 @@ def parse_memory_search_hits(result: str) -> list[dict]:
 
 
 def _tool_events(trace_events: list[dict]) -> list[dict]:
-    return [
-        event
-        for event in trace_events
-        if event.get("event") == "tool_executed"
-    ]
+    return [event for event in trace_events if event.get("event") == "tool_executed"]
 
 
 def _expected_note_from_turn(turn: dict) -> str:
@@ -187,7 +198,9 @@ def _memory_save_note_arg(event: dict) -> str:
     return str(args.get("note", ""))
 
 
-def _score_expected_hits(row: dict, expected_hits: list[str], search_events: list[dict]) -> None:
+def _score_expected_hits(
+    row: dict, expected_hits: list[str], search_events: list[dict]
+) -> None:
     observed = []
     top_paths_by_event = []
     for event in search_events:
@@ -196,7 +209,10 @@ def _score_expected_hits(row: dict, expected_hits: list[str], search_events: lis
         top_paths_by_event.append([hit["path"] for hit in hits[:3]])
     _append_expected_hits(row, expected_hits)
     row["observed_hits"] = observed
-    if not any(all(path in top_paths for path in expected_hits) for top_paths in top_paths_by_event):
+    if not any(
+        all(path in top_paths for path in expected_hits)
+        for top_paths in top_paths_by_event
+    ):
         _mark_fail(row, "missing expected memory hit: " + ", ".join(expected_hits))
 
 
@@ -209,7 +225,9 @@ def _score_no_noise(row: dict, search_events: list[dict]) -> None:
         _mark_fail(row, "unexpected high-scoring memory hit")
 
 
-def _score_absent_hits(row: dict, absent_paths: list[str], search_events: list[dict]) -> None:
+def _score_absent_hits(
+    row: dict, absent_paths: list[str], search_events: list[dict]
+) -> None:
     observed = [
         hit["path"]
         for event in search_events
@@ -240,7 +258,9 @@ def _score_memory_save(
     if not save_events:
         _mark_fail(row, "successful memory_save was not called")
         return
-    if expected_note and not any(expected_note in _memory_save_note_arg(event) for event in save_events):
+    if expected_note and not any(
+        expected_note in _memory_save_note_arg(event) for event in save_events
+    ):
         _mark_fail(row, "memory_save note args did not include expected note")
         return
     if expected_note and expected_note not in notes_text:
@@ -252,7 +272,9 @@ def _score_memory_save(
 
 def score_scenario(scenario: dict, trace_events: list[dict], workspace: Path) -> dict:
     tool_events = _tool_events(trace_events)
-    tool_calls = [str(event.get("name", "")) for event in tool_events if event.get("name")]
+    tool_calls = [
+        str(event.get("name", "")) for event in tool_events if event.get("name")
+    ]
     row = {
         "id": str(scenario.get("id", "")),
         "category": str(scenario.get("category", "legacy") or "legacy"),
@@ -263,7 +285,9 @@ def score_scenario(scenario: dict, trace_events: list[dict], workspace: Path) ->
         "agent_notes_changed": False,
         "failure_reason": "",
     }
-    search_events = [event for event in tool_events if event.get("name") == "memory_search"]
+    search_events = [
+        event for event in tool_events if event.get("name") == "memory_search"
+    ]
 
     for turn in scenario.get("session_turns", []):
         if turn.get("expected_no_search_hit"):
@@ -273,7 +297,9 @@ def score_scenario(scenario: dict, trace_events: list[dict], workspace: Path) ->
             _score_expected_hits(row, [str(expected_hit)], search_events)
         expected_hits_top = turn.get("expected_search_hits_top")
         if expected_hits_top:
-            _score_expected_hits(row, [str(path) for path in expected_hits_top], search_events)
+            _score_expected_hits(
+                row, [str(path) for path in expected_hits_top], search_events
+            )
         absent = turn.get("expected_absent_hit")
         absent_paths = (
             [str(absent)]
@@ -321,7 +347,9 @@ def _fake_outputs_for_turn(turn: dict) -> list[object]:
             "Saved the memory note.",
         ]
     return [
-        _tool_call("memory_search", {"query": _fake_search_query_for_turn(turn), "limit": 5}),
+        _tool_call(
+            "memory_search", {"query": _fake_search_query_for_turn(turn), "limit": 5}
+        ),
         "Checked memory.",
     ]
 
@@ -333,10 +361,10 @@ def _fake_outputs_for_scenario(scenario: dict) -> list[object]:
     return outputs
 
 
-def _build_model_client(mode: str, provider: str, scenario: dict):
+def _build_transport_client(mode: str, repo_root: Path, scenario: dict):
     if mode == "fake":
         return FakeModelClient(_fake_outputs_for_scenario(scenario))
-    return _make_provider_client(provider)
+    return _make_provider_client(repo_root)
 
 
 def _build_agent(workspace: Path, model_client) -> Pico:
@@ -345,11 +373,13 @@ def _build_agent(workspace: Path, model_client) -> Pico:
         model_client=model_client,
         workspace=workspace_context,
         session_store=SessionStore(str(workspace / ".pico" / "sessions")),
+        options=RuntimeOptions(
         approval_policy="never",
         max_steps=8,
         max_output_tokens=512,
         depth=0,
         max_depth=0,
+        ),
     )
     agent.memory_store = BlockStore(
         workspace / ".pico" / "memory",
@@ -397,12 +427,18 @@ def _read_latest_trace(agent: Pico) -> list[dict]:
     return events
 
 
-def run_scenario(scenario_name: str, scenario: dict, keep: bool, mode: str, provider: str) -> dict:
+def run_scenario(
+    scenario_name: str,
+    scenario: dict,
+    keep: bool,
+    mode: str,
+    repo_root: Path,
+) -> dict:
     del scenario_name
     ws = None
     try:
         ws = setup_workspace(scenario)
-        model_client = _build_model_client(mode, provider, scenario)
+        model_client = _build_transport_client(mode, repo_root, scenario)
         agent = _build_agent(ws, model_client)
         trace_events = []
         for turn in scenario.get("session_turns", []):
@@ -437,7 +473,9 @@ def summarize_rows(rows: list[dict]) -> dict:
     failed = total - passed
     categories = {}
     for category in sorted({str(row.get("category", "legacy")) for row in rows}):
-        category_rows = [row for row in rows if row.get("category", "legacy") == category]
+        category_rows = [
+            row for row in rows if row.get("category", "legacy") == category
+        ]
         category_passed = sum(row.get("status") == "pass" for row in category_rows)
         categories[category] = {
             "total": len(category_rows),
@@ -454,7 +492,7 @@ def summarize_rows(rows: list[dict]) -> dict:
     }
 
 
-def build_payload(rows: list[dict], mode: str, provider: str) -> dict:
+def build_payload(rows: list[dict], mode: str, provider: str = "") -> dict:
     payload = {
         "record_type": "memory_quality_result",
         "format_version": MEMORY_QUALITY_RESULT_FORMAT_VERSION,
@@ -481,9 +519,7 @@ def validate_result(payload: dict) -> dict:
 
 
 def load_result(path: Path) -> dict:
-    return validate_result(
-        _decode_json_object(Path(path).read_text(encoding="utf-8"))
-    )
+    return validate_result(_decode_json_object(Path(path).read_text(encoding="utf-8")))
 
 
 def render_text(payload: dict) -> str:
@@ -507,7 +543,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--scenario", default=None, help="Filter by id substring.")
     parser.add_argument("--keep", action="store_true", help="Keep temp workspaces.")
     parser.add_argument("--mode", choices=VALID_MODES, default="fake")
-    parser.add_argument("--provider", choices=VALID_LIVE_PROVIDERS, default="deepseek")
+    parser.add_argument(
+        "--repo-root",
+        default=".",
+        help="Repository whose .env selects the live Provider.",
+    )
     parser.add_argument("--format", choices=VALID_FORMATS, default="text")
     parser.add_argument("--fail-fast", action="store_true")
     return parser
@@ -525,13 +565,28 @@ def main(argv=None):
         print("no memory quality scenarios matched", file=sys.stderr)
         return 1
 
+    repo_root = Path(args.repo_root)
+    provider = ""
+    if args.mode == "live":
+        try:
+            provider = _resolve_benchmark_target(repo_root)["provider"]
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+
     for stem, scenario in scenarios:
-        row = run_scenario(stem, scenario, keep=args.keep, mode=args.mode, provider=args.provider)
+        row = run_scenario(
+            stem,
+            scenario,
+            keep=args.keep,
+            mode=args.mode,
+            repo_root=repo_root,
+        )
         rows.append(row)
         if args.fail_fast and row.get("status") != "pass":
             break
 
-    payload = build_payload(rows, mode=args.mode, provider=args.provider)
+    payload = build_payload(rows, mode=args.mode, provider=provider)
     if args.format == "json":
         print(json.dumps(payload, indent=2, sort_keys=True))
     else:

@@ -5,8 +5,8 @@ import tracemalloc
 
 import pytest
 
-import pico.sandbox_session as session_module
-from pico.sandbox_session import SandboxSessionError, stage_source
+import pico.sandbox.session as session_module
+from pico.sandbox.session import SandboxSessionError, stage_source
 
 
 def _hash_file(path):

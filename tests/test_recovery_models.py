@@ -1,4 +1,4 @@
-from pico.recovery_models import (
+from pico.recovery.models import (
     CHECKPOINT_FORMAT_VERSION,
     CHECKPOINT_RECORD_TYPE,
     TOOL_CHANGE_FORMAT_VERSION,

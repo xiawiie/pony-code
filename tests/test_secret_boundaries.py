@@ -5,14 +5,17 @@ from unittest.mock import Mock
 
 import pytest
 
-from pico import Pico, SessionStore, WorkspaceContext
-from pico import security as securitylib
-from pico.cli_start import run_agent_once
+from pico import Pico
+from pico.state.session_store import SessionStore
+from pico.workspace.context import WorkspaceContext
+from pico.security import redaction as securitylib
+from pico.cli.start import run_agent_once
 from pico.context.renderer import render_current_user_message
-from pico.messages import validate_messages
-from pico.model_capabilities import TokenAccounting
+from pico.agent.messages import validate_messages
+from pico.agent.model_capabilities import TokenAccounting
 from pico.providers.response import Response, StopReason
-from pico.security import SensitiveDataBlockedError
+from pico.security.redaction import SensitiveDataBlockedError
+from pico.runtime.options import RuntimeOptions
 
 
 class CapturingClient:
@@ -48,8 +51,7 @@ def build_agent_with_client(tmp_path, client):
         model_client=client,
         workspace=WorkspaceContext.build(tmp_path),
         session_store=SessionStore(tmp_path / ".pico" / "sessions"),
-        approval_policy="auto",
-        max_steps=2,
+        options=RuntimeOptions(approval_policy="auto", max_steps=2),
     )
 
 
@@ -110,11 +112,13 @@ def test_injection_source_is_sanitized_before_tokenizer_and_request(tmp_path):
     )
 
     rendered, telemetry = render_current_user_message(agent, "inspect")
-    agent.session["messages"].append({
+    agent.session["messages"].append(
+        {
         "role": "user",
         "content": "inspect",
         "_pico_meta": {},
-    })
+        }
+    )
     request, _ = agent.context_manager.build_request(
         injection_snapshot=rendered,
         injection_telemetry=telemetry,
@@ -146,12 +150,14 @@ def test_secret_tool_action_is_rejected_before_runner(tmp_path):
     secret = "sk-tool-action-secret-123456789"
     response = Response(
         stop_reason=StopReason.TOOL_USE,
-        content=[{
+        content=[
+            {
             "type": "tool_use",
             "id": "toolu_1",
             "name": "write_file",
             "input": {"path": "x.txt", "content": secret},
-        }],
+            }
+        ],
     )
     agent = build_agent_with_client(
         tmp_path,
@@ -169,7 +175,8 @@ def test_secret_tool_action_is_rejected_before_runner(tmp_path):
 def test_opaque_secret_mapping_value_in_action_is_rejected_as_native_pair(tmp_path):
     response = Response(
         stop_reason=StopReason.TOOL_USE,
-        content=[{
+        content=[
+            {
             "type": "tool_use",
             "id": "toolu_opaque",
             "name": "write_file",
@@ -178,7 +185,8 @@ def test_opaque_secret_mapping_value_in_action_is_rejected_as_native_pair(tmp_pa
                 "content": "safe",
                 "credential": "opaque-value",
             },
-        }],
+            }
+        ],
     )
     agent = build_agent_with_client(
         tmp_path,
@@ -197,9 +205,7 @@ def test_opaque_secret_mapping_value_in_action_is_rejected_as_native_pair(tmp_pa
     assert tool_result["content"][0]["tool_use_id"] == "toolu_opaque"
     assert tool_result["_pico_meta"]["tool_status"] == "rejected"
     assert tool_result["_pico_meta"]["effect_class"] == "workspace_write"
-    assert tool_result["_pico_meta"]["tool_error_code"] == (
-        "sensitive_content_block"
-    )
+    assert tool_result["_pico_meta"]["tool_error_code"] == ("sensitive_content_block")
     assert tool_result["_pico_meta"]["security_event_type"] == (
         "sensitive_access_block"
     )
@@ -224,13 +230,15 @@ def test_provider_final_and_cli_output_never_print_secret(tmp_path, capsys):
 
 def test_retry_excerpt_is_redacted_before_trace_and_next_request(tmp_path):
     secret = "github_pat_" + "R" * 32
-    client = CapturingClient([
+    client = CapturingClient(
+        [
         Response(
             stop_reason=StopReason.STOP_SEQUENCE,
             content=[{"type": "text", "text": secret}],
         ),
         final_response("done"),
-    ])
+        ]
+    )
     agent = build_agent_with_client(tmp_path, client)
 
     assert agent.ask("retry safely") == "done"

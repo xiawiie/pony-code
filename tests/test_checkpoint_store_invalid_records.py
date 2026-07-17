@@ -5,7 +5,7 @@ import stat
 
 import pytest
 
-from pico.checkpoint_store import CheckpointStore
+from pico.state.checkpoint_store import CheckpointStore
 
 
 def test_strict_enumeration_rejects_malformed_record(tmp_path):
@@ -125,7 +125,7 @@ def test_fifo_record_listing_and_quarantine_never_blocks(tmp_path):
 def test_regular_to_fifo_swap_at_open_is_nonblocking(tmp_path, monkeypatch):
     if not hasattr(os, "mkfifo"):
         pytest.skip("FIFO unavailable")
-    from pico import checkpoint_store as checkpoint_store_module
+    from pico.state import checkpoint_store as checkpoint_store_module
 
     store = CheckpointStore(tmp_path)
     source = store.records_dir / "raced.json"
@@ -156,7 +156,7 @@ def test_regular_to_fifo_swap_at_open_is_nonblocking(tmp_path, monkeypatch):
 def test_quarantine_regular_evidence_reopen_is_nonblocking_and_inode_checked(
     tmp_path, monkeypatch
 ):
-    from pico import checkpoint_store as checkpoint_store_module
+    from pico.state import checkpoint_store as checkpoint_store_module
 
     store = CheckpointStore(tmp_path)
     source = store.records_dir / "broken.json"
@@ -186,7 +186,7 @@ def test_quarantine_regular_evidence_reopen_is_nonblocking_and_inode_checked(
 def test_quarantine_rechecks_exact_regular_bytes_at_move_boundary(
     tmp_path, monkeypatch
 ):
-    from pico import checkpoint_store as checkpoint_store_module
+    from pico.state import checkpoint_store as checkpoint_store_module
 
     store = CheckpointStore(tmp_path)
     source = store.records_dir / "broken.json"

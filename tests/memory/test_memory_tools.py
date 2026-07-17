@@ -40,7 +40,9 @@ def test_list_shows_files(tmp_path):
 def test_read_returns_content_with_line_numbers(tmp_path):
     ctx = _context(tmp_path)
     (ctx.memory_store.workspace_root / "notes").mkdir(parents=True, exist_ok=True)
-    (ctx.memory_store.workspace_root / "notes" / "auth.md").write_text("first\nsecond\nthird\n")
+    (ctx.memory_store.workspace_root / "notes" / "auth.md").write_text(
+        "first\nsecond\nthird\n"
+    )
     out = tool_memory_read(ctx, {"path": "workspace/notes/auth.md"})
     assert "1: first" in out or "L1" in out
     assert "second" in out
@@ -51,7 +53,9 @@ def test_read_supports_paging(tmp_path):
     (ctx.memory_store.workspace_root / "notes").mkdir(parents=True, exist_ok=True)
     lines = "\n".join(f"line{i}" for i in range(1, 301))
     (ctx.memory_store.workspace_root / "notes" / "big.md").write_text(lines)
-    out = tool_memory_read(ctx, {"path": "workspace/notes/big.md", "start": 250, "end": 260})
+    out = tool_memory_read(
+        ctx, {"path": "workspace/notes/big.md", "start": 250, "end": 260}
+    )
     assert "line250" in out
     assert "line260" in out
     assert "line200" not in out
@@ -66,7 +70,9 @@ def test_read_missing_raises(tmp_path):
 def test_search_returns_matches(tmp_path):
     ctx = _context(tmp_path)
     (ctx.memory_store.workspace_root / "notes").mkdir(parents=True, exist_ok=True)
-    (ctx.memory_store.workspace_root / "notes" / "auth.md").write_text("bcrypt rounds 12\n")
+    (ctx.memory_store.workspace_root / "notes" / "auth.md").write_text(
+        "bcrypt rounds 12\n"
+    )
     out = tool_memory_search(ctx, {"query": "bcrypt"})
     assert "auth.md" in out
     assert "bcrypt" in out
@@ -130,7 +136,7 @@ def test_save_runner_rejects_removed_fields_even_when_empty(tmp_path, extra):
 
 @pytest.mark.parametrize("extra", ({"topic": ""}, {"type": ""}))
 def test_save_validator_rejects_removed_fields_even_when_empty(tmp_path, extra):
-    from pico.tools import validate_tool
+    from pico.tools.validation import validate_tool
 
     ctx = _context(tmp_path)
 
@@ -142,7 +148,7 @@ def test_save_validator_rejects_removed_fields_even_when_empty(tmp_path, extra):
 
 def test_save_rejects_unknown_scope(tmp_path):
     """validate_tool must reject scope values outside {workspace, user}."""
-    from pico.tools import validate_tool
+    from pico.tools.validation import validate_tool
 
     ctx = _context(tmp_path)
     with pytest.raises(ValueError, match="scope"):
@@ -161,20 +167,35 @@ def test_list_with_prefix(tmp_path):
 
 
 def test_tool_registry_includes_new_tools():
-    from pico.tools import legal_tool_names
+    from pico.tools.registry import legal_tool_names
+
     names = legal_tool_names()
-    for expected in ("memory_list", "memory_read", "memory_search", "memory_save", "repo_lookup"):
+    for expected in (
+        "memory_list",
+        "memory_read",
+        "memory_search",
+        "memory_save",
+        "repo_lookup",
+    ):
         assert expected in names, f"missing tool {expected}"
 
 
 def test_tool_examples_present():
-    from pico.tools import tool_example
-    for name in ("memory_list", "memory_read", "memory_search", "memory_save", "repo_lookup"):
+    from pico.tools.registry import tool_example
+
+    for name in (
+        "memory_list",
+        "memory_read",
+        "memory_search",
+        "memory_save",
+        "repo_lookup",
+    ):
         assert tool_example(name), f"missing example for {name}"
 
 
 def test_effect_class_for_new_tools_is_read_only():
-    from pico.tools import BASE_TOOL_SPECS
+    from pico.tools.registry import BASE_TOOL_SPECS
+
     for name in ("memory_list", "memory_read", "memory_search", "repo_lookup"):
         assert BASE_TOOL_SPECS[name]["effect_class"] == "read_only"
     assert BASE_TOOL_SPECS["memory_save"]["effect_class"] == "memory_write"
@@ -184,7 +205,11 @@ def test_effect_class_for_new_tools_is_read_only():
     ("runner", "args", "message"),
     [
         (tool_memory_list, {}, "memory_store unavailable"),
-        (tool_memory_read, {"path": "workspace/notes/auth.md"}, "memory_store unavailable"),
+        (
+            tool_memory_read,
+            {"path": "workspace/notes/auth.md"},
+            "memory_store unavailable",
+        ),
         (tool_memory_save, {"note": "remember this"}, "memory_store unavailable"),
         (tool_memory_search, {"query": "cache"}, "memory_retrieval unavailable"),
     ],

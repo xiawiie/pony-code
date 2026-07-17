@@ -1,7 +1,7 @@
 import os
 from pathlib import Path
 
-from pico.repo_map import RepoMap, tool_repo_lookup
+from pico.memory.repo_map import RepoMap, tool_repo_lookup
 
 
 def _write(root: Path, rel: str, content: str) -> None:

@@ -1,17 +1,17 @@
 from types import SimpleNamespace
 
-from pico.compaction import compact_session, rewind_with_branch_summary
+from pico.agent.compaction import compact_session, rewind_with_branch_summary
 from pico.context.renderer import InjectionSnapshot
-from pico.context_manager import ContextManager
-from pico.messages import make_tool_pair
-from pico.model_capabilities import (
+from pico.agent.context_manager import ContextManager
+from pico.agent.messages import make_tool_pair
+from pico.agent.model_capabilities import (
     ModelCapabilities,
     TokenAccounting,
     build_model_budget,
 )
-from pico.providers.fake import FakeModelClient
-from pico.session_store import SessionStore, entry_message_refs
-from pico.workspace import now
+from benchmarks.support.fake_provider import FakeModelClient
+from pico.state.session_store import SessionStore, entry_message_refs
+from pico.workspace.context import now
 
 
 def _session(workspace):
@@ -95,9 +95,7 @@ def test_200_turn_session_compacts_twice_branches_and_resumes(tmp_path):
                     effect_class="workspace_read",
                 )
             )
-        batch.append(
-            _plain("assistant", f"turn-{turn} answer " + ("decision " * 10))
-        )
+        batch.append(_plain("assistant", f"turn-{turn} answer " + ("decision " * 10)))
         store.append_messages("long-session", batch)
         if turn == 119:
             first = compact_session(agent, reason="long_session_first")
@@ -150,9 +148,7 @@ def test_200_turn_session_compacts_twice_branches_and_resumes(tmp_path):
     tree = store.load_tree("long-session")
     agent.session = store.load("long-session")
 
-    raw_messages = sum(
-        len(entry_message_refs(entry)) for entry in tree.entries
-    )
+    raw_messages = sum(len(entry_message_refs(entry)) for entry in tree.entries)
     assert raw_messages == 506
     assert sum(entry["type"] == "tool_exchange" for entry in tree.entries) == 50
     assert sum(entry["type"] == "compaction" for entry in tree.entries) == 2

@@ -4,16 +4,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from pico.tool_context import ToolContext
-from pico.repo_map import tool_repo_lookup
-from pico.tools import (
-    DEFAULT_RUN_SHELL_TIMEOUT,
-    build_tool_registry,
-    tool_delegate,
-    tool_read_file,
-    tool_search,
-    validate_tool,
-)
+from pico.tools.context import ToolContext
+from pico.memory.repo_map import tool_repo_lookup
+from pico.tools.files import tool_read_file
+from pico.tools.registry import build_tool_registry, tool_delegate
+from pico.tools.search import tool_search
+from pico.tools.shell import DEFAULT_RUN_SHELL_TIMEOUT
+from pico.tools.validation import validate_tool
 
 
 def test_tool_context_supports_file_tools_without_full_pico(tmp_path):
@@ -82,18 +79,22 @@ def test_run_shell_registry_runner_is_not_a_raw_command_bypass(tmp_path):
 
 
 def test_search_rg_return_codes_are_truthful(tmp_path, monkeypatch):
-    results = iter([
-        subprocess.CompletedProcess([], 0, stdout="sample.txt\0" "1:hit\n", stderr=""),
+    results = iter(
+        [
+            subprocess.CompletedProcess(
+                [], 0, stdout="sample.txt\x001:hit\n", stderr=""
+            ),
         subprocess.CompletedProcess([], 1, stdout="", stderr=""),
         subprocess.CompletedProcess([], 2, stdout="", stderr="regex parse error\n"),
-    ])
+        ]
+    )
     calls = []
 
     def fake_rg(executable, args, **kwargs):
         calls.append((executable, list(args), kwargs))
         return next(results)
 
-    monkeypatch.setattr("pico.tools.run_hardened_rg", fake_rg, raising=False)
+    monkeypatch.setattr("pico.tools.search.run_hardened_rg", fake_rg)
     context = ToolContext(
         root=tmp_path,
         path_resolver=lambda raw_path: (tmp_path / raw_path).resolve(),
@@ -147,7 +148,7 @@ def test_search_passes_option_shaped_pattern_as_literal(tmp_path, monkeypatch):
         captured["args"] = list(args)
         return subprocess.CompletedProcess(args, 1, stdout="", stderr="")
 
-    monkeypatch.setattr("pico.tools.run_hardened_rg", fake_rg, raising=False)
+    monkeypatch.setattr("pico.tools.search.run_hardened_rg", fake_rg)
     context = ToolContext(
         root=tmp_path,
         path_resolver=lambda raw_path: (tmp_path / raw_path).resolve(),
@@ -158,7 +159,10 @@ def test_search_passes_option_shaped_pattern_as_literal(tmp_path, monkeypatch):
         trusted_executables={"rg": "/frozen/rg"},
     )
 
-    assert tool_search(context, {"pattern": "--config=attack", "path": "."}) == "(no matches)"
+    assert (
+        tool_search(context, {"pattern": "--config=attack", "path": "."})
+        == "(no matches)"
+    )
     assert captured["executable"] == "/frozen/rg"
     assert captured["args"][-4:] == ["-e", "--config=attack", "--", str(tmp_path)]
 
@@ -169,14 +173,12 @@ def test_search_filters_every_rg_result_path_defensively(tmp_path, monkeypatch):
             args,
             0,
             stdout=(
-                "safe.py\0" "1:needle\n"
-                ".env.local\0" "1:needle\n"
-                "malformed-without-null\n"
+                "safe.py\x001:needle\n.env.local\x001:needle\nmalformed-without-null\n"
             ),
             stderr="",
         )
 
-    monkeypatch.setattr("pico.tools.run_hardened_rg", fake_rg)
+    monkeypatch.setattr("pico.tools.search.run_hardened_rg", fake_rg)
     context = ToolContext(
         root=tmp_path,
         path_resolver=lambda raw_path: (tmp_path / raw_path).resolve(),
@@ -211,11 +213,11 @@ def test_rg_search_runs_allowed_env_template_through_frozen_rg(
         return subprocess.CompletedProcess(
             args,
             0,
-            stdout=".env.example\0" "1:needle\n",
+            stdout=".env.example\x001:needle\n",
             stderr="",
         )
 
-    monkeypatch.setattr("pico.tools.run_hardened_rg", fake_rg)
+    monkeypatch.setattr("pico.tools.search.run_hardened_rg", fake_rg)
     context = ToolContext(
         root=tmp_path,
         path_resolver=lambda raw_path: (tmp_path / raw_path).resolve(),
@@ -290,7 +292,9 @@ def test_python_search_never_stats_or_reads_sensitive_or_symlink_files(
         ),
     ],
 )
-def test_validate_tool_rejects_protected_user_notes_before_runner(tmp_path, name, arguments):
+def test_validate_tool_rejects_protected_user_notes_before_runner(
+    tmp_path, name, arguments
+):
     protected = tmp_path / ".pico" / "memory" / "notes" / "secret.md"
     protected.parent.mkdir(parents=True)
     protected.write_text("a", encoding="utf-8")

@@ -7,8 +7,8 @@ from pico.context.renderer import (
     build_injection_snapshot,
     render_current_user_message,
 )
-from pico.model_capabilities import TokenAccounting
-from pico.security import SensitiveDataBlockedError
+from pico.agent.model_capabilities import TokenAccounting
+from pico.security.redaction import SensitiveDataBlockedError
 
 
 def _agent(*, pool=16_384):
@@ -23,9 +23,7 @@ def _agent(*, pool=16_384):
         repo_map=None,
         render_checkpoint_text=lambda: "",
         model_client=MagicMock(count_tokens=lambda text: max(1, len(str(text)) // 4)),
-        token_accounting=TokenAccounting(
-            lambda text: max(1, len(str(text)) // 4)
-        ),
+        token_accounting=TokenAccounting(lambda text: max(1, len(str(text)) // 4)),
         model_budget=SimpleNamespace(source_pool_tokens=pool),
         memory=SimpleNamespace(task_summary="", recent_files=[]),
         session={"recently_recalled": [], "messages": [], "memory": {}},
@@ -67,7 +65,9 @@ def test_zero_source_pool_drops_optional_chunks_without_touching_user_message():
 
 def test_snapshot_preserves_multiline_source_without_reverse_parsing():
     agent = _agent()
-    agent.workspace.volatile_text = lambda: "first paragraph\n\nsecond paragraph\nclosing"
+    agent.workspace.volatile_text = lambda: (
+        "first paragraph\n\nsecond paragraph\nclosing"
+    )
 
     snapshot, telemetry = build_injection_snapshot(agent, "question")
     source = next(item for item in snapshot.sources if item.name == "workspace_state")

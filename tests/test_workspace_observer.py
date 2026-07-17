@@ -2,7 +2,7 @@ import subprocess
 
 import pytest
 
-from pico.workspace_observer import WorkspaceObserver
+from pico.workspace.observer import WorkspaceObserver
 
 
 def test_workspace_observer_detects_delta_without_git(tmp_path):
@@ -42,7 +42,7 @@ def test_workspace_observer_uses_frozen_hardened_git(tmp_path, monkeypatch):
         return subprocess.CompletedProcess([executable, *args], 0, stdout=stdout, stderr="")
 
     monkeypatch.setattr(
-        "pico.workspace_observer.run_hardened_git",
+        "pico.workspace.observer.run_hardened_git",
         fake_git,
         raising=False,
     )
@@ -92,7 +92,7 @@ def test_git_observer_preserves_tracked_deletion_marker(tmp_path, monkeypatch):
         ]
     )
     monkeypatch.setattr(
-        "pico.workspace_observer.run_hardened_git",
+        "pico.workspace.observer.run_hardened_git",
         lambda *args, **kwargs: next(calls),
         raising=False,
     )
@@ -110,7 +110,7 @@ def test_legacy_bare_git_value_is_accepted_but_never_executed(
     monkeypatch,
 ):
     monkeypatch.setattr(
-        "pico.workspace_observer.run_hardened_git",
+        "pico.workspace.observer.run_hardened_git",
         lambda *args, **kwargs: (_ for _ in ()).throw(
             AssertionError("bare git executed")
         ),
@@ -141,7 +141,7 @@ def test_validated_legacy_absolute_git_uses_hardened_runner(
         stdout = "true\n" if args == ["rev-parse", "--is-inside-work-tree"] else b""
         return subprocess.CompletedProcess([], 0, stdout=stdout, stderr="")
 
-    monkeypatch.setattr("pico.workspace_observer.run_hardened_git", fake_git)
+    monkeypatch.setattr("pico.workspace.observer.run_hardened_git", fake_git)
     if style == "keyword":
         observer = WorkspaceObserver(tmp_path, git_binary=str(executable))
     else:
@@ -171,7 +171,7 @@ def test_unsafe_legacy_absolute_git_is_ignored(
         executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
         executable.chmod(mode)
     monkeypatch.setattr(
-        "pico.workspace_observer.run_hardened_git",
+        "pico.workspace.observer.run_hardened_git",
         lambda *args, **kwargs: (_ for _ in ()).throw(
             AssertionError("unsafe git executed")
         ),
@@ -191,7 +191,7 @@ def test_second_positional_executable_mapping_remains_supported(tmp_path, monkey
         stdout = "true\n" if args == ["rev-parse", "--is-inside-work-tree"] else b""
         return subprocess.CompletedProcess([], 0, stdout=stdout, stderr="")
 
-    monkeypatch.setattr("pico.workspace_observer.run_hardened_git", fake_git)
+    monkeypatch.setattr("pico.workspace.observer.run_hardened_git", fake_git)
 
     snapshot = WorkspaceObserver(tmp_path, {"git": "/frozen/git"}).capture()
 

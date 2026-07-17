@@ -1,8 +1,10 @@
-from pico import Pico, SessionStore, WorkspaceContext
-from pico import runtime as runtime_module
-from pico import workspace_snapshot as snapshot_module
-from pico.providers.fake import FakeModelClient
-from pico.workspace_snapshot import capture_workspace_snapshot, diff_workspace_snapshots
+from pico import Pico
+from pico.state.session_store import SessionStore
+from pico.workspace.context import WorkspaceContext
+from pico.runtime import application as runtime_module
+from pico.workspace import snapshot as snapshot_module
+from benchmarks.support.fake_provider import FakeModelClient
+from pico.workspace.snapshot import capture_workspace_snapshot, diff_workspace_snapshots
 
 
 def test_workspace_snapshot_scan_has_file_limit(tmp_path):
@@ -94,7 +96,9 @@ def test_pico_workspace_snapshot_methods_delegate(tmp_path, monkeypatch):
         calls.append(root)
         return {"README.md": "digest"}
 
-    monkeypatch.setattr(runtime_module.workspace_snapshot, "capture_workspace_snapshot", fake_capture)
+    monkeypatch.setattr(
+        runtime_module.workspace_snapshot, "capture_workspace_snapshot", fake_capture
+    )
 
     assert agent.capture_workspace_snapshot() == {"README.md": "digest"}
     assert calls == [tmp_path.resolve()]

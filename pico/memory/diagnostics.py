@@ -9,8 +9,8 @@ from pathlib import Path
 import stat
 import subprocess
 
-from pico import security as securitylib
-from pico.safe_subprocess import run_hardened_git
+from pico.security import private_files as securitylib
+from pico.tools.subprocess import run_hardened_git
 
 from . import block_store
 from .block_store import _read_bounded_regular
@@ -106,8 +106,10 @@ def _scan_notes(scope, root, notes_descriptor, issues, state):
             try:
                 with os.scandir(descriptor) as entries:
                     remaining_entries = (
-                        block_store.MAX_MEMORY_INDEX_FILES - state["file_count"]
-                        + block_store.MAX_MEMORY_INDEX_FILES - state["scan_entries"]
+                        block_store.MAX_MEMORY_INDEX_FILES
+                        - state["file_count"]
+                        + block_store.MAX_MEMORY_INDEX_FILES
+                        - state["scan_entries"]
                         + 1
                     )
                     bounded_entries = []
@@ -171,9 +173,7 @@ def _scope_files(scope, root, issues, state):
             notes_descriptor = -1
             _scan_failure(f"{scope}/notes", issues, state)
         if notes_descriptor >= 0:
-            files.extend(
-                _scan_notes(scope, root, notes_descriptor, issues, state)
-            )
+            files.extend(_scan_notes(scope, root, notes_descriptor, issues, state))
         if state["stopped"]:
             return files
 
@@ -265,7 +265,9 @@ def _ignored_workspace_notes(repo_root, git_executable, candidates):
         )
     except (OSError, RuntimeError, ValueError, subprocess.SubprocessError):
         return [], "memory_git_ignore_check_failed"
-    if result.returncode not in {0, 1} or not isinstance(result.stdout, (bytes, bytearray)):
+    if result.returncode not in {0, 1} or not isinstance(
+        result.stdout, (bytes, bytearray)
+    ):
         return [], "memory_git_ignore_check_failed"
 
     def decode_path(raw):
@@ -315,9 +317,7 @@ def collect_memory_diagnostics(
     }
     roots = [("workspace", workspace_memory)]
     if user_memory_root is not None:
-        roots.append(
-            ("user", Path(os.path.abspath(os.fspath(user_memory_root))))
-        )
+        roots.append(("user", Path(os.path.abspath(os.fspath(user_memory_root)))))
 
     for scope, root in roots:
         try:
@@ -382,9 +382,7 @@ def collect_memory_diagnostics(
                             )
                         )
                 else:
-                    issues.append(
-                        _issue(canonical, "memory_file_read_failed", 1, 0)
-                    )
+                    issues.append(_issue(canonical, "memory_file_read_failed", 1, 0))
                     state["incomplete"] = True
                 continue
 
@@ -422,21 +420,17 @@ def collect_memory_diagnostics(
     known_names = set(paths_by_name)
     for path, metadata in documents:
         missing_count = sum(
-            name not in known_names
-            for name in metadata.get("supersedes", ())
+            name not in known_names for name in metadata.get("supersedes", ())
         )
         if missing_count:
-            issues.append(
-                _issue(path, "missing_supersedes_target", missing_count, 0)
-            )
+            issues.append(_issue(path, "missing_supersedes_target", missing_count, 0))
     ignored_notes, git_error = _ignored_workspace_notes(
         workspace_root,
         git_executable,
         git_candidates,
     )
     issues.extend(
-        _issue(path, "workspace_user_note_git_ignored", 1, 0)
-        for path in ignored_notes
+        _issue(path, "workspace_user_note_git_ignored", 1, 0) for path in ignored_notes
     )
     if git_error:
         issues.append(_issue(_GIT_IGNORE_SENTINEL, git_error, 1, 0))

@@ -6,8 +6,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 import logging
 
-from pico import security as securitylib
-from pico.model_capabilities import TokenAccounting
+from pico.security import redaction as securitylib
+from pico.agent.model_capabilities import TokenAccounting
 
 from .chunks import SOURCE_HARD_CAPS, allocate_context_chunks
 from .escaping import escape_pico_tags
@@ -54,7 +54,9 @@ class InjectionSnapshot:
             for source in self.sources
             if source.text and (allowed is None or source.name in allowed)
         ]
-        return "\n\n".join([*blocks, self.current_user]) if blocks else self.current_user
+        return (
+            "\n\n".join([*blocks, self.current_user]) if blocks else self.current_user
+        )
 
 
 def _memory_snapshot(agent):
@@ -148,7 +150,11 @@ def build_injection_snapshot(
     for name in SOURCE_ORDER:
         selected = selected_by_source.get(name, [])
         dropped = dropped_by_source.get(name, [])
-        block = _source_block(name, [chunk.text for chunk in selected], agent) if selected else ""
+        block = (
+            _source_block(name, [chunk.text for chunk in selected], agent)
+            if selected
+            else ""
+        )
         actual_tokens = accounting.count_text(block) if block else 0
         injection_tokens[name] = actual_tokens
         paths = tuple(

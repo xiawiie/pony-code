@@ -1,0 +1,79 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  publish:
+    name: Verify and publish tagged release
+    runs-on: ubuntu-latest
+    environment: pypi
+
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          version: "0.11.26"
+          enable-cache: true
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes ripgrep
+
+      - name: Verify tag matches project version
+        shell: bash
+        run: |
+          project_version=$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')
+          test "${GITHUB_REF_NAME}" = "v${project_version}"
+
+      - name: Install locked development environment
+        run: uv sync --frozen --dev
+
+      - name: Run static and functional gates
+        run: |
+          uv run ruff check .
+          uv run pytest -q
+          uv run python scripts/evaluation/evaluate.py --suite core-functional
+          uv run pytest benchmarks/live_e2e/tests/test_assertions.py -q
+
+      - name: Build and verify distributions
+        run: |
+          uv build --clear
+          uv run python scripts/release/verify_distribution.py --install-smoke --offline-bundle-smoke
+          sha256sum dist/*.whl dist/*.tar.gz > dist/SHA256SUMS
+
+      - name: Publish to PyPI with trusted publishing
+        run: >-
+          uv publish --trusted-publishing always
+          --check-url https://pypi.org/simple/pico/
+          dist/*.whl dist/*.tar.gz
+
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          release_flags=()
+          case "${GITHUB_REF_NAME}" in
+            *a*|*b*|*rc*) release_flags+=(--prerelease) ;;
+          esac
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            gh release upload "${GITHUB_REF_NAME}" dist/*.whl dist/*.tar.gz dist/SHA256SUMS --clobber
+          else
+            gh release create "${GITHUB_REF_NAME}" dist/*.whl dist/*.tar.gz dist/SHA256SUMS --verify-tag --generate-notes "${release_flags[@]}"
+          fi

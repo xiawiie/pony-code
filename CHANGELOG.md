@@ -1,5 +1,63 @@
 # Changelog
 
+## 1.0.0 — 2026-07-16
+
+Pico 1.0 将预发布仓库收束为一个可安装、可验证、可发布的本地 coding-agent 产品。
+
+### Added
+
+- 三个用户可见 Provider：Anthropic、OpenAI、Ollama；OpenAI 支持 Responses 与 Chat Completions 两个 Variant。
+- 统一的四变量 `.env` 合同，以及能写全配置的交互式 `pico init`。
+- 参考 Claude Code/Pi 交互习惯的行内 TUI：slash command menu、可增长多行输入、历史搜索、状态栏、审批卡片与
+  Tool/Checkpoint activity。
+- 参考 SuperHermes 马形轮廓重绘的黑白 Unicode TUI Logo，以及与其同步缩放的像素 `PONY CODE` 字标；状态语义色
+  保持独立。
+- `pico --version`、MIT License、完整 package metadata、Project URLs 与 tag-bound release workflow。
+- PyPI Trusted Publishing、GitHub Release、SHA-256 release assets 和 clean-install distribution smoke。
+- 本地 Sandbox 镜像构建/验证维护入口。
+
+### Changed
+
+- 裸 `pico` 现在直接进入交互 TUI；`pico repl` 保留为显式同义入口，`pico run <prompt...>` 与管理子命令继续使用
+  生产分支的显式 CLI 合同。
+- 删除旧式猫形欢迎卡；纯文本 fallback 不显示装饰性 banner，`pico run` 只输出执行结果。
+- TUI 与纯文本 fallback 共用一个 REPL 输入处理器；`prompt-toolkit` 成为唯一直接 runtime dependency，distribution
+  smoke 在隔离环境中离线验证锁定依赖和 TUI import。
+- 产品代码按 `agent`、`cli`、`config`、`context`、`memory`、`providers`、`recovery`、`runtime`、`sandbox`、
+  `security`、`state`、`tui`、`tools`、`workspace` 十四个领域包归位；`pico/` 顶层只保留 `__init__.py` 与
+  `__main__.py`。
+- Provider 连接统一使用 `PICO_PROVIDER`、`PICO_API_BASE`、`PICO_API_KEY`、`PICO_MODEL`；项目 `.env` 高于
+  进程环境，Provider 与 API Base 静态决定内部 Transport 和认证方式。
+- Provider factory 从 transport shared helpers 中独立，用户 Provider 与内部四种 wire transport 解耦。
+- Evaluation 移至 `benchmarks/evaluation`，维护脚本按 evaluation/release/sandbox 分类。
+- 全量检查入口同时覆盖 lock、Ruff、pytest、evaluation、build、archive 与隔离安装。
+- Pico 装配、Context request、Shell approval、私有/Workspace 原子写、Source Apply 和 Sandbox Session 创建按职责拆分，
+  保持原有 CAS、回滚和 fail-closed 语义。
+
+### Removed
+
+- 固定 DeepSeek-first 公开路径，以及旧 `PICO_DEEPSEEK_API_KEY` runtime 兼容读取。
+- 未发布的 distributed Sandbox authority、candidate、product enablement、aggregate/release controller 与远程 cache/download 路径。
+- 重复的 `examples/mini-pico` 实现和过期的分布式 Sandbox 规格文档。
+- Evaluation 从 runtime wheel/sdist 中完全移除。
+- 无运行时调用的 NetworkControl、sandbox governance evaluator、Provider compatibility 分支、Fake Provider 产品模块、
+  `/save`、`--max-new-tokens`、未引用截图与 `MANIFEST.in`。
+
+### Security
+
+- TUI renderer 只在 durable trace 写入后收到副本；审批 UI 异常 fail closed，离开 TUI 后恢复原 runtime hook。
+- Sandbox 只保留每次重算的 sealed local authorization；公开 runtime 仅接受 `local`，失败不回退 Host。
+- Provider URL 继续拒绝 userinfo、query、fragment、凭证和非 loopback HTTP；Ollama `auth=none` 是显式例外。
+- 通用 `PICO_API_KEY` 纳入项目环境优先级、diagnostics 脱敏、runtime redaction 与安全测试。
+
+### Migration
+
+1.0 是模型配置硬切换。旧 `.env` 中的 `PICO_DEEPSEEK_API_KEY`、厂商 Key、Provider/Profile/Connection 字段不会
+配置 runtime。运行 `pico init` 写入四个通用变量，或按 `.env.example` 手工迁移。切换 Provider、model、protocol
+或 endpoint 后，旧 Session 可能因 Model Session Binding 不一致而返回 `model_session_mismatch`；应新建 Session。
+
+升级不会自动删除 `.pico/` 或 `~/.pico/` 中的旧 Session、Run、Checkpoint、Memory 与 Sandbox artifact。
+
 ## 0.2.1 — 2026-07-16
 
 完整合并 Sandbox local stable、Memory/Context/Session 与 DeepSeek-first Anthropic CLI，并修复 clean-wheel

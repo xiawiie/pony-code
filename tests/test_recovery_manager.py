@@ -2,11 +2,11 @@ import os
 
 import pytest
 
-from pico import recovery_manager as recovery_manager_module
-from pico.checkpoint_store import CheckpointStore
-from pico.recovery_manager import RecoveryManager
-from pico.recovery_models import new_checkpoint_record, new_tool_change_record
-from pico.recovery_paths import hash_bytes
+from pico.recovery import manager as recovery_manager_module
+from pico.state.checkpoint_store import CheckpointStore
+from pico.recovery.manager import RecoveryManager
+from pico.recovery.models import new_checkpoint_record, new_tool_change_record
+from pico.recovery.paths import hash_bytes
 
 
 def test_rename_swap_uses_linux_exchange_when_macos_api_is_unavailable(

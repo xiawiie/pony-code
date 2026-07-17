@@ -7,12 +7,16 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from pico import Pico, SessionStore, WorkspaceContext
-from pico import cli as pico_cli
-from pico.providers.fake import FakeModelClient
-from pico.config import read_project_env
-from pico.session_store import LEGACY_SESSION_FORMAT_VERSION
-from pico.task_state import TaskState
+from pico import Pico
+from pico.cli import assembly as cli_assembly
+from pico.state.session_store import SessionStore
+from pico.workspace.context import WorkspaceContext
+from pico.cli import app as pico_cli
+from benchmarks.support.fake_provider import FakeModelClient
+from pico.config.environment import read_project_env
+from pico.state.session_store import LEGACY_SESSION_FORMAT_VERSION
+from pico.state.task_state import TaskState
+from pico.runtime.options import RuntimeOptions
 
 
 def build_workspace(tmp_path):
@@ -36,8 +40,7 @@ def build_agent(tmp_path, outputs, **kwargs):
         model_client=FakeModelClient(outputs),
         workspace=workspace,
         session_store=store,
-        approval_policy=approval_policy,
-        **kwargs,
+        options=RuntimeOptions(approval_policy=approval_policy, **kwargs),
     )
 
 
@@ -47,7 +50,7 @@ def test_workspace_bootstrap_ignores_workspace_git_from_path(tmp_path, monkeypat
     fake_git.chmod(0o755)
     runner = Mock(side_effect=AssertionError("workspace git executed"))
     monkeypatch.setenv("PATH", str(tmp_path))
-    monkeypatch.setattr("pico.safe_subprocess.subprocess.run", runner)
+    monkeypatch.setattr("pico.tools.subprocess.subprocess.run", runner)
 
     workspace = WorkspaceContext.build(tmp_path)
 
@@ -56,7 +59,9 @@ def test_workspace_bootstrap_ignores_workspace_git_from_path(tmp_path, monkeypat
     runner.assert_not_called()
 
 
-def test_workspace_bootstrap_uses_hardened_git_and_drops_startup_log(tmp_path, monkeypatch):
+def test_workspace_bootstrap_uses_hardened_git_and_drops_startup_log(
+    tmp_path, monkeypatch
+):
     repo = tmp_path / "repo"
     child = repo / "src"
     child.mkdir(parents=True)
@@ -71,9 +76,11 @@ def test_workspace_bootstrap_uses_hardened_git_and_drops_startup_log(tmp_path, m
             ("symbolic-ref", "--short", "refs/remotes/origin/HEAD"): "origin/main\n",
             ("status", "--short"): " M README.md\n",
         }[tuple(args)]
-        return subprocess.CompletedProcess([executable, *args], 0, stdout=stdout, stderr="")
+        return subprocess.CompletedProcess(
+            [executable, *args], 0, stdout=stdout, stderr=""
+        )
 
-    monkeypatch.setattr("pico.workspace.run_hardened_git", fake_git)
+    monkeypatch.setattr("pico.workspace.context.run_hardened_git", fake_git)
     executables = {"git": "/trusted/git", "rg": "/trusted/rg"}
 
     workspace = WorkspaceContext.build(child, executables=executables)
@@ -105,9 +112,11 @@ def test_workspace_bootstrap_never_accepts_reported_root_outside_lexical_repo(
             ("symbolic-ref", "--short", "refs/remotes/origin/HEAD"): "origin/main\n",
             ("status", "--short"): "",
         }[tuple(args)]
-        return subprocess.CompletedProcess([executable, *args], 0, stdout=stdout, stderr="")
+        return subprocess.CompletedProcess(
+            [executable, *args], 0, stdout=stdout, stderr=""
+        )
 
-    monkeypatch.setattr("pico.workspace.run_hardened_git", fake_git)
+    monkeypatch.setattr("pico.workspace.context.run_hardened_git", fake_git)
 
     workspace = WorkspaceContext.build(repo, executables={"git": "/trusted/git"})
 
@@ -119,8 +128,10 @@ def test_cli_freezes_parent_path_before_project_env_loading(tmp_path, monkeypatc
     fake_path = str(tmp_path / "fake-bin")
     (tmp_path / ".env").write_text(
         f"PATH={fake_path}\n"
-        "PICO_API_URL=https://gateway.example/v1\n"
-        "PICO_DEEPSEEK_API_KEY=test-key\n",
+        "PICO_PROVIDER=openai\n"
+        "PICO_API_BASE=https://gateway.example/v1\n"
+        "PICO_MODEL=claude-test\n"
+        "PICO_API_KEY=test-key\n",
         encoding="utf-8",
     )
     observed = {}
@@ -134,15 +145,19 @@ def test_cli_freezes_parent_path_before_project_env_loading(tmp_path, monkeypatc
             self.args = args
             self.kwargs = kwargs
 
-    monkeypatch.setattr("pico.workspace.build_trusted_executables", capture_parent_path)
     monkeypatch.setattr(
-        "pico.cli.build_model_client",
+        "pico.workspace.context.build_trusted_executables", capture_parent_path
+    )
+    monkeypatch.setattr(
+        "pico.cli.assembly.build_transport_client",
         DummyModelClient,
     )
-    args = pico_cli.build_arg_parser().parse_args([
-        "--cwd",
-        str(tmp_path),
-    ])
+    args = pico_cli.build_arg_parser().parse_args(
+        [
+            "--cwd",
+            str(tmp_path),
+        ]
+    )
 
     pico_cli.build_agent(args)
 
@@ -158,11 +173,11 @@ def test_runtime_preserves_frozen_executables_across_refresh(tmp_path, monkeypat
         model_client=FakeModelClient([]),
         workspace=workspace,
         session_store=SessionStore(tmp_path / ".pico" / "sessions"),
-        approval_policy="auto",
+        options=RuntimeOptions(approval_policy="auto"),
     )
     monkeypatch.setenv("PATH", str(tmp_path))
     monkeypatch.setattr(
-        "pico.workspace.build_trusted_executables",
+        "pico.workspace.context.build_trusted_executables",
         lambda *args, **kwargs: (_ for _ in ()).throw(
             AssertionError("runtime PATH rescan")
         ),
@@ -186,7 +201,7 @@ def test_delegate_inherits_parent_frozen_executables(tmp_path, monkeypatch):
         model_client=FakeModelClient([]),
         workspace=workspace,
         session_store=SessionStore(tmp_path / ".pico" / "sessions"),
-        approval_policy="auto",
+        options=RuntimeOptions(approval_policy="auto"),
     )
     children = []
 
@@ -206,19 +221,23 @@ def test_delegate_inherits_parent_frozen_executables(tmp_path, monkeypatch):
     assert dict(child.tool_context().trusted_executables) == frozen
 
 
-def test_runtime_rejects_credential_bearing_base_url_before_client_construction(monkeypatch):
+def test_runtime_rejects_credential_bearing_base_url_before_client_construction(
+    monkeypatch,
+):
     def fail_client(*args, **kwargs):
         raise AssertionError("client constructed")
 
-    monkeypatch.setattr(pico_cli, "build_model_client", fail_client)
+    monkeypatch.setattr(cli_assembly, "build_transport_client", fail_client)
     args = pico_cli.build_arg_parser().parse_args([])
 
-    with pytest.raises(ValueError, match="api_url_credentials"):
-        pico_cli._build_model_client(
+    with pytest.raises(ValueError, match="api_base_credentials"):
+        cli_assembly._build_transport_client(
             args,
             project_env={
-                "PICO_API_URL": "https://user:opaque-password@example.test/v1",
-                "PICO_DEEPSEEK_API_KEY": "test-key",
+                "PICO_PROVIDER": "anthropic",
+                "PICO_API_BASE": "https://user:opaque-password@example.test/v1",
+                "PICO_MODEL": "claude-test",
+                "PICO_API_KEY": "test-key",
             },
             process_env={},
         )
@@ -303,19 +322,24 @@ def test_cli_build_agent_wires_secret_env_names_from_parser(tmp_path):
             raise AssertionError("model should not be invoked")
 
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
-    with patch.dict(
-        os.environ,
-        {
-            "HOME": str(tmp_path),
-            "GITHUB_PAT": "ghp-1",
-            "GH_PAT": "ghp-2",
-            "PICO_API_URL": "https://gateway.example/v1",
-            "PICO_DEEPSEEK_API_KEY": "test-runtime-key",
-        },
-        clear=True,
-    ), patch(
-        "pico.cli.build_model_client",
-        DummyModelClient,
+    with (
+        patch.dict(
+            os.environ,
+            {
+                "HOME": str(tmp_path),
+                "GITHUB_PAT": "ghp-1",
+                "GH_PAT": "ghp-2",
+                "PICO_PROVIDER": "openai",
+                "PICO_API_BASE": "https://gateway.example/v1",
+                "PICO_MODEL": "claude-test",
+                "PICO_API_KEY": "test-runtime-key",
+            },
+            clear=True,
+        ),
+        patch(
+            "pico.cli.assembly.build_transport_client",
+            DummyModelClient,
+        ),
     ):
         args = pico_cli.build_arg_parser().parse_args(
             [
@@ -333,7 +357,7 @@ def test_cli_build_agent_wires_secret_env_names_from_parser(tmp_path):
         assert set(agent.secret_env_summary()["secret_env_names"]) == {
             "GITHUB_PAT",
             "GH_PAT",
-            "PICO_DEEPSEEK_API_KEY",
+            "PICO_API_KEY",
         }
 
 
@@ -347,29 +371,36 @@ def test_cli_build_agent_uses_default_configured_secret_names(tmp_path):
             raise AssertionError("model should not be invoked")
 
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
-    with patch.dict(
-        os.environ,
-        {
-            "HOME": str(tmp_path),
-            "GH_PAT": "ghp-default-1",
-            "PICO_API_URL": "https://gateway.example/v1",
-            "PICO_DEEPSEEK_API_KEY": "test-runtime-key",
-        },
-        clear=True,
-    ), patch(
-        "pico.cli.build_model_client",
-        DummyModelClient,
+    with (
+        patch.dict(
+            os.environ,
+            {
+                "HOME": str(tmp_path),
+                "GH_PAT": "ghp-default-1",
+                "PICO_PROVIDER": "openai",
+                "PICO_API_BASE": "https://gateway.example/v1",
+                "PICO_MODEL": "claude-test",
+                "PICO_API_KEY": "test-runtime-key",
+            },
+            clear=True,
+        ),
+        patch(
+            "pico.cli.assembly.build_transport_client",
+            DummyModelClient,
+        ),
     ):
-        args = pico_cli.build_arg_parser().parse_args([
-            "--cwd",
-            str(tmp_path),
-            "--approval",
-            "auto",
-        ])
+        args = pico_cli.build_arg_parser().parse_args(
+            [
+                "--cwd",
+                str(tmp_path),
+                "--approval",
+                "auto",
+            ]
+        )
         agent = pico_cli.build_agent(args)
         assert set(agent.secret_env_summary()["secret_env_names"]) == {
             "GH_PAT",
-            "PICO_DEEPSEEK_API_KEY",
+            "PICO_API_KEY",
         }
 
 
@@ -384,19 +415,22 @@ def test_cli_build_agent_loads_project_env_secrets_before_redaction_setup(tmp_pa
 
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
     (tmp_path / ".env").write_text(
-        "PICO_API_URL=https://gateway.example/v1\n"
-        "PICO_DEEPSEEK_API_KEY=sk-project-secret\n",
+        "PICO_PROVIDER=openai\n"
+        "PICO_API_BASE=https://gateway.example/v1\n"
+        "PICO_MODEL=claude-test\n"
+        "PICO_API_KEY=sk-project-secret\n",
         encoding="utf-8",
     )
-    with patch.dict(os.environ, {"HOME": str(tmp_path)}, clear=True), patch(
-        "pico.cli.build_model_client",
-        DummyModelClient,
+    with (
+        patch.dict(os.environ, {"HOME": str(tmp_path)}, clear=True),
+        patch(
+            "pico.cli.assembly.build_transport_client",
+            DummyModelClient,
+        ),
     ):
         args = pico_cli.build_arg_parser().parse_args(["--cwd", str(tmp_path)])
         agent = pico_cli.build_agent(args)
-        assert agent.secret_env_summary()["secret_env_names"] == [
-            "PICO_DEEPSEEK_API_KEY"
-        ]
+        assert agent.secret_env_summary()["secret_env_names"] == ["PICO_API_KEY"]
 
 
 def test_cli_resume_uses_immutable_collision_safe_snapshot_before_load(
@@ -413,18 +447,20 @@ def test_cli_resume_uses_immutable_collision_safe_snapshot_before_load(
     project_secret = "opaque-project-only-value-123456789"
     session_id = "resume-safe"
     built_snapshot = {}
-    original_build_snapshot = pico_cli._build_redaction_snapshot
+    original_build_snapshot = cli_assembly._build_redaction_snapshot
 
     def capture_snapshot(*args, **kwargs):
         result = original_build_snapshot(*args, **kwargs)
         built_snapshot["value"] = result[0]
         return result
 
-    monkeypatch.setattr(pico_cli, "_build_redaction_snapshot", capture_snapshot)
+    monkeypatch.setattr(cli_assembly, "_build_redaction_snapshot", capture_snapshot)
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
     (tmp_path / ".env").write_text(
-        "PICO_API_URL=https://gateway.example/v1\n"
-        "PICO_DEEPSEEK_API_KEY=test-runtime-key\n"
+        "PICO_PROVIDER=openai\n"
+        "PICO_API_BASE=https://gateway.example/v1\n"
+        "PICO_MODEL=claude-test\n"
+        "PICO_API_KEY=test-runtime-key\n"
         "PICO_TEST_API_KEY=opaque-project-new-value-123456789\n"
         "PICO_SECRET_ENV_NAMES=PROJECT_ONLY_CREDENTIAL\n"
         f"PROJECT_ONLY_CREDENTIAL={project_secret}\n"
@@ -435,52 +471,61 @@ def test_cli_resume_uses_immutable_collision_safe_snapshot_before_load(
     session_dir.mkdir(parents=True)
     (session_dir / ".session_store.lock").touch(mode=0o600)
     (session_dir / f"{session_id}.json").write_text(
-        json.dumps({
-            "record_type": "session",
+        json.dumps(
+            {
+                "record_type": "session",
                 "format_version": LEGACY_SESSION_FORMAT_VERSION,
-            "id": session_id,
-            "created_at": "2026-01-01T00:00:00+00:00",
-            "workspace_root": str(tmp_path),
-            "messages": [{
-                "role": "user",
-                "content": (
-                    old_secret
-                    + " "
-                    + project_secret
-                    + " "
-                    + preexisting_collision_secret
-                ),
-                "_pico_meta": {},
-            }],
-            "working_memory": {},
-            "memory": {},
-            "recently_recalled": [],
-            "checkpoints": {},
-            "resume_state": {},
-            "recovery": {},
-            "runtime_identity": {},
-        }),
+                "id": session_id,
+                "created_at": "2026-01-01T00:00:00+00:00",
+                "workspace_root": str(tmp_path),
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": (
+                            old_secret
+                            + " "
+                            + project_secret
+                            + " "
+                            + preexisting_collision_secret
+                        ),
+                        "_pico_meta": {},
+                    }
+                ],
+                "working_memory": {},
+                "memory": {},
+                "recently_recalled": [],
+                "checkpoints": {},
+                "resume_state": {},
+                "recovery": {},
+                "runtime_identity": {},
+            }
+        ),
         encoding="utf-8",
     )
 
-    with patch.dict(
-        os.environ,
-        {
-            "HOME": str(tmp_path),
-            "PICO_TEST_API_KEY": old_secret,
-            "PICO_REDACTION_COLLISION_1_SECRET": preexisting_collision_secret,
-        },
-        clear=True,
-    ), patch(
-        "pico.cli.build_model_client",
-        DummyModelClient,
+    with (
+        patch.dict(
+            os.environ,
+            {
+                "HOME": str(tmp_path),
+                "PICO_TEST_API_KEY": old_secret,
+                "PICO_REDACTION_COLLISION_1_SECRET": preexisting_collision_secret,
+            },
+            clear=True,
+        ),
+        patch(
+            "pico.cli.assembly.build_transport_client",
+            DummyModelClient,
+        ),
     ):
-        args = pico_cli.build_arg_parser().parse_args([
-            "--cwd",
-            str(tmp_path),
-            "--resume",
-            session_id,
-        ])
+        args = pico_cli.build_arg_parser().parse_args(
+            [
+                "--cwd",
+                str(tmp_path),
+                "--resume",
+                session_id,
+            ]
+        )
         agent = pico_cli.build_agent(args)
 
         assert "PROJECT_ONLY_CREDENTIAL" not in os.environ
@@ -497,7 +542,9 @@ def test_cli_resume_uses_immutable_collision_safe_snapshot_before_load(
     assert preexisting_collision_secret not in json.dumps(agent.session)
 
 
-def test_cli_build_agent_skips_malformed_project_env_lines_with_warning(tmp_path, capsys):
+def test_cli_build_agent_skips_malformed_project_env_lines_with_warning(
+    tmp_path, capsys
+):
     class DummyModelClient:
         def __init__(self, *args, **kwargs):
             self.args = args
@@ -509,13 +556,18 @@ def test_cli_build_agent_skips_malformed_project_env_lines_with_warning(tmp_path
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
     (tmp_path / ".env").write_text(
         "not a valid env line\n"
-        "PICO_API_URL=https://gateway.example/v1\n"
-        "PICO_DEEPSEEK_API_KEY=sk-project-secret\n",
+        "PICO_PROVIDER=openai\n"
+        "PICO_API_BASE=https://gateway.example/v1\n"
+        "PICO_MODEL=claude-test\n"
+        "PICO_API_KEY=sk-project-secret\n",
         encoding="utf-8",
     )
-    with patch.dict(os.environ, {"HOME": str(tmp_path)}, clear=True), patch(
-        "pico.cli.build_model_client",
-        DummyModelClient,
+    with (
+        patch.dict(os.environ, {"HOME": str(tmp_path)}, clear=True),
+        patch(
+            "pico.cli.assembly.build_transport_client",
+            DummyModelClient,
+        ),
     ):
         args = pico_cli.build_arg_parser().parse_args(["--cwd", str(tmp_path)])
         agent = pico_cli.build_agent(args)
@@ -523,14 +575,14 @@ def test_cli_build_agent_skips_malformed_project_env_lines_with_warning(tmp_path
 
     captured = capsys.readouterr()
     assert "warning: skipped invalid .env line 1" in captured.err
-    assert secret_names == ["PICO_DEEPSEEK_API_KEY"]
+    assert secret_names == ["PICO_API_KEY"]
 
 
 def test_project_env_strips_unquoted_inline_comments(tmp_path):
     (tmp_path / ".env").write_text(
         "PICO_OPENAI_API_KEY=sk-project-secret # local key note\n"
         "PICO_OPENAI_MODEL=qwen3.7-max # default model\n"
-        "PICO_OPENAI_API_BASE=\"https://example.test/v1 # literal\"\n"
+        'PICO_OPENAI_API_BASE="https://example.test/v1 # literal"\n'
         "PICO_LITERAL_HASH=abc#def\n",
         encoding="utf-8",
     )
@@ -553,27 +605,34 @@ def test_cli_build_agent_reads_secret_names_from_environment_config(tmp_path):
             raise AssertionError("model should not be invoked")
 
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
-    with patch.dict(
-        os.environ,
-        {
-            "HOME": str(tmp_path),
-            "PICO_CUSTOM_SECRET": "custom-secret-value",
-            "PICO_SECRET_ENV_NAMES": "PICO_CUSTOM_SECRET",
-            "PICO_API_URL": "https://gateway.example/v1",
-            "PICO_DEEPSEEK_API_KEY": "test-runtime-key",
-        },
-        clear=True,
-    ), patch("pico.cli.build_model_client", DummyModelClient):
-        args = pico_cli.build_arg_parser().parse_args([
-            "--cwd",
-            str(tmp_path),
-            "--approval",
-            "auto",
-        ])
+    with (
+        patch.dict(
+            os.environ,
+            {
+                "HOME": str(tmp_path),
+                "PICO_CUSTOM_SECRET": "custom-secret-value",
+                "PICO_SECRET_ENV_NAMES": "PICO_CUSTOM_SECRET",
+                "PICO_PROVIDER": "openai",
+                "PICO_API_BASE": "https://gateway.example/v1",
+                "PICO_MODEL": "claude-test",
+                "PICO_API_KEY": "test-runtime-key",
+            },
+            clear=True,
+        ),
+        patch("pico.cli.assembly.build_transport_client", DummyModelClient),
+    ):
+        args = pico_cli.build_arg_parser().parse_args(
+            [
+                "--cwd",
+                str(tmp_path),
+                "--approval",
+                "auto",
+            ]
+        )
         agent = pico_cli.build_agent(args)
         assert set(agent.secret_env_summary()["secret_env_names"]) == {
             "PICO_CUSTOM_SECRET",
-            "PICO_DEEPSEEK_API_KEY",
+            "PICO_API_KEY",
         }
 
 
@@ -587,20 +646,27 @@ def test_cli_no_input_makes_default_approval_non_interactive(tmp_path):
             raise AssertionError("model should not be invoked")
 
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
-    with patch.dict(
-        os.environ,
-        {
-            "HOME": str(tmp_path),
-            "PICO_API_URL": "https://gateway.example/v1",
-            "PICO_DEEPSEEK_API_KEY": "test-runtime-key",
-        },
-        clear=True,
-    ), patch("pico.cli.build_model_client", DummyModelClient):
-        args = pico_cli.build_arg_parser().parse_args([
-            "--cwd",
-            str(tmp_path),
-            "--no-input",
-        ])
+    with (
+        patch.dict(
+            os.environ,
+            {
+                "HOME": str(tmp_path),
+                "PICO_PROVIDER": "openai",
+                "PICO_API_BASE": "https://gateway.example/v1",
+                "PICO_MODEL": "claude-test",
+                "PICO_API_KEY": "test-runtime-key",
+            },
+            clear=True,
+        ),
+        patch("pico.cli.assembly.build_transport_client", DummyModelClient),
+    ):
+        args = pico_cli.build_arg_parser().parse_args(
+            [
+                "--cwd",
+                str(tmp_path),
+                "--no-input",
+            ]
+        )
         agent = pico_cli.build_agent(args)
 
     assert agent.approval_policy == "never"
@@ -639,10 +705,13 @@ def test_pico_exposes_no_raw_tool_runner_proxies(tmp_path):
     ):
         assert not callable(getattr(agent, name, None)), name
     assert agent.tool_executor.agent is agent
-    assert "# README.md" in agent.execute_tool(
-        "read_file",
-        {"path": "README.md", "start": 1, "end": 1},
-    ).content
+    assert (
+        "# README.md"
+        in agent.execute_tool(
+            "read_file",
+            {"path": "README.md", "start": 1, "end": 1},
+        ).content
+    )
 
 
 def test_delegate_depth_limit_is_enforced(tmp_path):
@@ -661,8 +730,11 @@ def test_delegate_child_is_read_only(tmp_path):
     agent = build_agent(
         tmp_path,
         [
-            {"name": "delegate", "args": {"task":"write a file","max_steps":2}},
-            {"name": "write_file", "args": {"path":"child-was-not-allowed.txt","content":"nope"}},
+            {"name": "delegate", "args": {"task": "write a file", "max_steps": 2}},
+            {
+                "name": "write_file",
+                "args": {"path": "child-was-not-allowed.txt", "content": "nope"},
+            },
             "child done",
             "parent done",
         ],
@@ -693,16 +765,25 @@ def test_delegate_child_is_read_only(tmp_path):
 def test_configured_secret_env_names_are_redacted_in_trace_and_report(tmp_path):
     github_pat = "ghp_configured_secret_123"
     gh_pat = "ghp_configured_secret_456"
-    with patch.dict(os.environ, {"HOME": str(tmp_path), "GITHUB_PAT": github_pat, "GH_PAT": gh_pat}, clear=True):
+    with patch.dict(
+        os.environ,
+        {"HOME": str(tmp_path), "GITHUB_PAT": github_pat, "GH_PAT": gh_pat},
+        clear=True,
+    ):
         agent = build_agent(
             tmp_path,
             [],
             secret_env_names=("GITHUB_PAT", "GH_PAT"),
         )
-        state = TaskState.create(run_id="run_001", task_id="task_001", user_request="Mask configured secrets")
+        state = TaskState.create(
+            run_id="run_001", task_id="task_001", user_request="Mask configured secrets"
+        )
         agent.run_store.start_run(state)
 
-        assert set(agent.secret_env_summary()["secret_env_names"]) == {"GITHUB_PAT", "GH_PAT"}
+        assert set(agent.secret_env_summary()["secret_env_names"]) == {
+            "GITHUB_PAT",
+            "GH_PAT",
+        }
 
         payload = {
             "GITHUB_PAT": github_pat,

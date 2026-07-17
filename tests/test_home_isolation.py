@@ -2,9 +2,12 @@ import os
 from pathlib import Path
 from unittest.mock import patch
 
-from pico import Pico, SessionStore, WorkspaceContext
-from pico.providers.fake import FakeModelClient
-from pico.sandbox_session import source_apply_control_lock_path
+from pico import Pico
+from pico.state.session_store import SessionStore
+from pico.workspace.context import WorkspaceContext
+from benchmarks.support.fake_provider import FakeModelClient
+from pico.sandbox.session import source_apply_control_lock_path
+from pico.runtime.options import RuntimeOptions
 
 
 def test_pico_control_lock_stays_in_isolated_home(tmp_path, isolated_home):
@@ -14,7 +17,7 @@ def test_pico_control_lock_stays_in_isolated_home(tmp_path, isolated_home):
         model_client=FakeModelClient([]),
         workspace=WorkspaceContext.build(workspace),
         session_store=SessionStore(workspace / ".pico" / "sessions"),
-        approval_policy="auto",
+        options=RuntimeOptions(approval_policy="auto"),
     )
 
     with agent.checkpoint_store.mutation_lock():

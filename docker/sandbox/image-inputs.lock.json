@@ -8,8 +8,8 @@
     "version": "3.12.13"
   },
   "build_inputs": {
-    "pyproject_sha256": "02f9bb75a52119aa2d0f46b09427f8a9d54a46de399e6371f0564069a4358284",
-    "uv_lock_sha256": "494dd3993d300276a63d908476d1ccdb41367e947f33850e04cd1ea1983dbe6e"
+    "pyproject_sha256": "69755c250f7397f84826047711af72fbd22f72eb933ffaee709b62a8bfe7f163",
+    "uv_lock_sha256": "fd07b15735cc7c5ee5c152f75c604d6307226a41a4bde2f3d79631056ef3218c"
   },
   "debian_snapshot": {
     "packages_index_sha256": "e0099e6c5ece5f5e33fa9e511b7acc8b49978f3d2f371d5e9633e8d21f003984",

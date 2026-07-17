@@ -1,9 +1,9 @@
 """Explicit, bounded model/tool-loop probe primitives."""
 
-from pico.action_codec import FinalAction, ToolAction, decode_action
-from pico.messages import make_tool_pair
+from pico.agent.action_codec import FinalAction, ToolAction, decode_action
+from pico.agent.messages import make_tool_pair
 
-from ._shared import _ProviderFailure
+from .transport import ProviderTransportError
 
 
 _PROBE_TOOL = {
@@ -36,7 +36,7 @@ def _probe_identity(client):
 
 
 def _failure_category(exc):
-    if not isinstance(exc, _ProviderFailure):
+    if not isinstance(exc, ProviderTransportError):
         return "probe_internal_error"
     if exc.code == "missing_credentials" or exc.http_status == 401:
         return "authentication_failed"
@@ -73,7 +73,7 @@ def _failed(client, stage, exc, model_calls):
         "model_calls": model_calls,
         "binding": _probe_identity(client),
     }
-    if isinstance(exc, _ProviderFailure):
+    if isinstance(exc, ProviderTransportError):
         report["error_code"] = exc.code
         if exc.http_status is not None:
             report["http_status"] = exc.http_status

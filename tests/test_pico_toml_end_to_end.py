@@ -1,9 +1,11 @@
 """A Pico instance consumes one immutable project-config snapshot."""
 
-import pico.config as config
-from pico import Pico, SessionStore, WorkspaceContext
-from pico.config import load_pico_toml
-from pico.providers.fake import FakeModelClient
+import pico.config.project as config
+from pico import Pico
+from pico.state.session_store import SessionStore
+from pico.workspace.context import WorkspaceContext
+from pico.config.project import load_pico_toml
+from benchmarks.support.fake_provider import FakeModelClient
 
 
 PICO_TOML = """

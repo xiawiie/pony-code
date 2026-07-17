@@ -5,11 +5,11 @@ import subprocess
 
 import pytest
 
-import pico.recovery_manager as recovery_manager_module
-import pico.sandbox_session as session_module
-from pico.checkpoint_store import CheckpointStore
-from pico.safe_subprocess import build_trusted_executables
-from pico.sandbox_session import (
+import pico.recovery.manager as recovery_manager_module
+import pico.sandbox.session as session_module
+from pico.state.checkpoint_store import CheckpointStore
+from pico.tools.subprocess import build_trusted_executables
+from pico.sandbox.session import (
     find_project_sandbox_session,
     SandboxSessionError,
     SandboxSessionStore,
@@ -18,7 +18,7 @@ from pico.sandbox_session import (
     snapshot_source_tree,
     stage_source,
 )
-from pico.security import ensure_private_dir
+from pico.security.private_files import ensure_private_dir
 
 
 def _bootstrap(request):
@@ -43,8 +43,7 @@ def _session_metadata():
             "security_digest": "sha256:" + "2" * 64,
         },
         "image": {
-            "reference": "example.invalid/pico@sha256:" + "3" * 64,
-            "manifest_digest": "sha256:" + "3" * 64,
+            "image_digest": "sha256:" + "3" * 64,
             "image_id": "sha256:" + "4" * 64,
             "platform": "linux/arm64",
         },
@@ -119,7 +118,9 @@ def test_stage_source_filters_state_secrets_and_generated_files(tmp_path):
     (source / "main.py").write_text("print('ok')\n", encoding="utf-8")
     (source / "secret.txt").write_text("known-secret\n", encoding="utf-8")
     (source / ".env").write_text("TOKEN=value\n", encoding="utf-8")
-    (source / ".env.example").write_text("URL=https://example.invalid\n", encoding="utf-8")
+    (source / ".env.example").write_text(
+        "URL=https://example.invalid\n", encoding="utf-8"
+    )
     (source / ".pico").mkdir()
     (source / ".pico" / "run.json").write_text("{}", encoding="utf-8")
     (source / "node_modules").mkdir()
@@ -447,7 +448,10 @@ def test_sidecar_is_immutable_across_manifest_state_updates(tmp_path):
     )
     store.finish_call(session.state_root)
 
-    assert (sidecar.read_bytes(), (sidecar.stat().st_dev, sidecar.stat().st_ino)) == before
+    assert (
+        sidecar.read_bytes(),
+        (sidecar.stat().st_dev, sidecar.stat().st_ino),
+    ) == before
 
 
 def test_manifest_update_does_not_attempt_old_second_sidecar_write(
@@ -768,7 +772,7 @@ def test_inspect_rejects_duplicate_keys_and_symlink_manifest(tmp_path):
         ("engine", "unexpected", 1),
         ("engine", "profile", []),
         ("engine", "api_version", 1.54),
-        ("image", "manifest_digest", "invalid"),
+        ("image", "image_digest", "invalid"),
         ("image", "platform", []),
         ("policy", "network", "bridge"),
     ),
@@ -891,6 +895,7 @@ def test_list_and_inspect_are_zero_mutation(tmp_path):
     assert [item["sandbox_id"] for item in store.list()] == [session.sandbox_id]
 
     assert _tree_snapshot(tmp_path) == before
+
 
 def test_lease_acquire_release_and_busy_detection(tmp_path, monkeypatch):
     _, store, session = _create(tmp_path)

@@ -3,19 +3,21 @@ import stat
 
 import pytest
 
-from pico import security as security_module
-from pico.security import (
+from pico.security import workspace_files as security_module
+from pico.security.private_files import ensure_private_file
+from pico.security.paths import (
+    has_sensitive_path_suffix,
+    is_sensitive_path,
+    sensitive_path_reason,
+)
+from pico.security.redaction import (
     REDACTED_VALUE,
     contains_secret_material,
     detected_secret_env_items,
-    ensure_private_file,
-    has_sensitive_path_suffix,
-    is_sensitive_path,
     looks_secret_shaped_text,
     looks_sensitive_env_name,
     redact_artifact,
     redact_text,
-    sensitive_path_reason,
     shell_env,
 )
 
@@ -172,7 +174,10 @@ def test_detected_secret_env_items_include_configured_and_sensitive_names():
 
     items = detected_secret_env_items(env=env, secret_env_names={"CUSTOM_SECRET_NAME"})
 
-    assert items == [("CUSTOM_SECRET_NAME", "custom-value"), ("OPENAI_API_KEY", "api-value")]
+    assert items == [
+        ("CUSTOM_SECRET_NAME", "custom-value"),
+        ("OPENAI_API_KEY", "api-value"),
+    ]
 
 
 def test_redact_artifact_recurses_through_values_and_secret_keys():
@@ -192,7 +197,9 @@ def test_redact_artifact_recurses_through_values_and_secret_keys():
 
 
 def test_common_token_families_are_secret_shaped():
-    assert looks_secret_shaped_text("Deploy credential ghp_1234567890abcdefghijklmnopqrstuv")
+    assert looks_secret_shaped_text(
+        "Deploy credential ghp_1234567890abcdefghijklmnopqrstuv"
+    )
     assert looks_secret_shaped_text("AWS access id AKIA1234567890ABCDEF")
     assert looks_secret_shaped_text("Slack value xoxb-123456789012-abcdefghijklmnop")
 
@@ -204,7 +211,10 @@ def test_short_secret_values_do_not_redact_broad_substrings():
     assert redact_text("The abc suffix appears in non-secret prose.", env=env) == (
         "The abc suffix appears in non-secret prose."
     )
-    assert redact_artifact({"OPENAI_API_KEY": "abc"}, env=env)["OPENAI_API_KEY"] == REDACTED_VALUE
+    assert (
+        redact_artifact({"OPENAI_API_KEY": "abc"}, env=env)["OPENAI_API_KEY"]
+        == REDACTED_VALUE
+    )
 
 
 def test_long_secret_values_redact_token_instances_including_embedded_text():
@@ -214,12 +224,18 @@ def test_long_secret_values_redact_token_instances_including_embedded_text():
     assert redact_text("Use alpha123456789 for the request.", env=env) == (
         f"Use {REDACTED_VALUE} for the request."
     )
-    assert redact_text("identifier_alpha123456789_suffix", env=env) == f"identifier_{REDACTED_VALUE}_suffix"
+    assert (
+        redact_text("identifier_alpha123456789_suffix", env=env)
+        == f"identifier_{REDACTED_VALUE}_suffix"
+    )
 
 
 def test_redact_text_removes_known_secret_even_inside_identifier():
     env = {"PICO_API_KEY": "alpha123456789"}
-    assert redact_text("prefix_alpha123456789_suffix", env=env) == "prefix_<redacted>_suffix"
+    assert (
+        redact_text("prefix_alpha123456789_suffix", env=env)
+        == "prefix_<redacted>_suffix"
+    )
 
 
 def test_redact_text_covers_high_confidence_material_without_env():
@@ -256,11 +272,19 @@ def test_secret_detector_ignores_security_prose_and_sample_values():
     (
         ('password="correct horse battery staple"', f'password="{REDACTED_VALUE}"'),
         ("password='correct;horse,battery staple'", f"password='{REDACTED_VALUE}'"),
-        ('tool --password "correct horse battery staple"', f'tool --password "{REDACTED_VALUE}"'),
-        ("tool --password='correct;horse,battery staple'", f"tool --password='{REDACTED_VALUE}'"),
+        (
+            'tool --password "correct horse battery staple"',
+            f'tool --password "{REDACTED_VALUE}"',
+        ),
+        (
+            "tool --password='correct;horse,battery staple'",
+            f"tool --password='{REDACTED_VALUE}'",
+        ),
     ),
 )
-def test_redact_text_consumes_complete_quoted_assignment_and_flag_values(text, expected):
+def test_redact_text_consumes_complete_quoted_assignment_and_flag_values(
+    text, expected
+):
     assert redact_text(text, env={}) == expected
     assert contains_secret_material(expected, env={}) is False
 
@@ -331,7 +355,11 @@ def test_redact_artifact_replaces_opaque_values_for_secret_mapping_keys(key):
 
 
 def test_redact_artifact_preserves_non_secret_metric_keys():
-    value = {"input_tokens": 12, "token_budget": 2048, "credential_policy": "rotate quarterly"}
+    value = {
+        "input_tokens": 12,
+        "token_budget": 2048,
+        "credential_policy": "rotate quarterly",
+    }
     assert redact_artifact(value, env={}) == value
 
 

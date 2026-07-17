@@ -54,6 +54,7 @@ readme_intro_locked/
 
 # Local docs not intended for publication
 /docs/*
+!/docs/domain-model.md
 !/docs/cli-installation-and-updates.md
 !/docs/architecture.md
 !/docs/security.md

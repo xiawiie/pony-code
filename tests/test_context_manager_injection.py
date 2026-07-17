@@ -9,8 +9,8 @@ from unittest.mock import MagicMock
 import pytest
 
 from pico.context.renderer import render_current_user_message
-from pico.context_manager import ContextManager
-from pico.messages import make_tool_pair
+from pico.agent.context_manager import ContextManager
+from pico.agent.messages import make_tool_pair
 
 
 def _agent():

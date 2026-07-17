@@ -23,7 +23,7 @@ from benchmarks.live_e2e.run_live_session import (
     RunConfig,
     TurnResult,
 )
-from pico.model_capabilities import (
+from pico.agent.model_capabilities import (
     TokenAccounting,
     build_model_budget,
     resolve_model_capabilities,
@@ -32,7 +32,8 @@ from pico.model_capabilities import (
 
 def _config(**overrides):
     defaults = dict(
-        provider="deepseek",
+        repo_root=Path.cwd(),
+        provider="anthropic",
         model="test-model",
         max_model_attempts=15,
         max_total_tokens=200_000,
@@ -47,6 +48,35 @@ def _config(**overrides):
 
 def _engine(**overrides):
     return AssertionEngine(_config(**overrides))
+
+
+def _settings(**overrides):
+    defaults = {
+        "provider": "anthropic",
+        "model": "test-model",
+        "base_url": "https://api.anthropic.com/v1",
+        "api_key": "test-key",
+        "api_key_env": "PICO_API_KEY",
+        "transport": "anthropic_messages",
+        "auth_mode": "x-api-key",
+        "capabilities": {},
+    }
+    defaults.update(overrides)
+    return defaults
+
+
+def test_verify_pico_repo_uses_the_runtime_package_entry(tmp_path, capsys):
+    runtime = tmp_path / "pico" / "runtime"
+    runtime.mkdir(parents=True)
+    (runtime / "application.py").write_text("", encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
+
+    run_live_session.verify_pico_repo(tmp_path)
+    (runtime / "application.py").unlink()
+
+    with pytest.raises(SystemExit, match="2"):
+        run_live_session.verify_pico_repo(tmp_path)
+    assert "missing pico/runtime/application.py" in capsys.readouterr().err
 
 
 def test_live_fixture_uses_model_budget_and_compaction_contract():
@@ -101,8 +131,7 @@ def test_compaction_fixture_appends_valid_inert_canonical_history():
     )
     accounting = TokenAccounting()
     fixture_tokens = sum(
-        accounting.count_message(message)
-        for message in pico.session["messages"]
+        accounting.count_message(message) for message in pico.session["messages"]
     )
     fixture_config = tomllib.loads(run_live_session.FIXTURE_PICO_TOML)
     assert fixture_tokens > (
@@ -133,9 +162,7 @@ def test_active_artifact_scan_detects_secret_and_mode_failures(tmp_path):
     assert result["files_scanned"] == 1
     assert result["secret_hits"] == [".pico/runs/run-test/trace.jsonl"]
     if os.name == "posix":
-        assert result["mode_failures"] == [
-            ".pico/runs/run-test/trace.jsonl:0644"
-        ]
+        assert result["mode_failures"] == [".pico/runs/run-test/trace.jsonl:0644"]
 
 
 def test_active_artifact_scan_ignores_unchanged_baseline_file(tmp_path):
@@ -257,31 +284,36 @@ def test_fixture_enter_failure_restores_original_config(tmp_path):
     assert not (tmp_path / run_live_session.BACKUP_REL).exists()
 
 
-def test_parse_args_selects_exactly_one_supported_provider(monkeypatch):
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        ["run_live_session", "--provider", "deepseek"],
+def test_parse_args_uses_repo_env_and_rejects_provider_override(tmp_path):
+    (tmp_path / ".env").write_text(
+        "PICO_PROVIDER=openai\n"
+        "PICO_API_BASE=https://api.openai.com/v1\n"
+        "PICO_MODEL=gpt-test\n"
+        "PICO_API_KEY=test-key\n",
+        encoding="utf-8",
     )
 
-    config = run_live_session.parse_args()
+    config = run_live_session.parse_args(
+        ["--repo-root", str(tmp_path)],
+        process_env={},
+    )
 
-    assert config.provider == "deepseek"
+    assert config.provider == "openai"
+    assert config.model == "gpt-test"
+    with pytest.raises(SystemExit) as caught:
+        run_live_session.parse_args(["--provider", "openai"])
+    assert caught.value.code == 2
 
 
-@pytest.mark.parametrize("provider", ["deepseek", "anthropic", "openai"])
+@pytest.mark.parametrize("provider", ["anthropic", "openai"])
 def test_project_env_uses_canonical_selected_provider_settings(tmp_path, provider):
-    if provider == "deepseek":
-        lines = [
-            "PICO_API_URL=https://deepseek-gateway.example/v1",
-            "PICO_DEEPSEEK_API_KEY=sentinel-deepseek",
-        ]
-    else:
-        prefix = provider.upper()
-        lines = [
-            f"PICO_{prefix}_API_KEY=sentinel-{provider}",
-            f"PICO_{prefix}_MODEL={provider}-test-model",
-        ]
+    base_url = f"https://api.{provider}.com/v1"
+    lines = [
+        f"PICO_PROVIDER={provider}",
+        f"PICO_API_BASE={base_url}",
+        f"PICO_MODEL={provider}-test-model",
+        f"PICO_API_KEY=sentinel-{provider}",
+    ]
     (tmp_path / ".env").write_text(
         "\n".join(lines),
         encoding="utf-8",
@@ -289,24 +321,15 @@ def test_project_env_uses_canonical_selected_provider_settings(tmp_path, provide
 
     with patch.dict(os.environ, {}, clear=True):
         settings = run_live_session.provider_settings(
-            provider,
+            tmp_path,
             project_env=run_live_session.read_project_env(tmp_path),
             process_env={},
         )
 
-    expected_base_url = {
-        "deepseek": "https://deepseek-gateway.example/v1",
-        "anthropic": "https://api.anthropic.com/v1",
-        "openai": "https://api.openai.com/v1",
-    }[provider]
-    expected_auth_mode = (
-        "x-api-key" if provider in {"anthropic", "deepseek"} else "bearer"
-    )
+    expected_auth_mode = "x-api-key" if provider == "anthropic" else "bearer"
     assert settings["api_key"] == f"sentinel-{provider}"
-    assert settings["model"] == (
-        "deepseek-v4-flash" if provider == "deepseek" else f"{provider}-test-model"
-    )
-    assert settings["base_url"] == expected_base_url
+    assert settings["model"] == (f"{provider}-test-model")
+    assert settings["base_url"] == base_url
     assert settings["auth_mode"] == expected_auth_mode
     assert settings["capabilities"].get("prompt_cache", False) is (
         provider == "anthropic"
@@ -315,30 +338,33 @@ def test_project_env_uses_canonical_selected_provider_settings(tmp_path, provide
 
 def test_project_env_uses_canonical_ollama_settings(tmp_path):
     (tmp_path / ".env").write_text(
-        "PICO_OLLAMA_MODEL=ollama-test-model\n"
-        "PICO_OLLAMA_HOST=http://127.0.0.1:11435\n",
+        "PICO_PROVIDER=ollama\n"
+        "PICO_API_BASE=http://127.0.0.1:11435\n"
+        "PICO_MODEL=ollama-test-model\n"
+        "PICO_API_KEY=\n",
         encoding="utf-8",
     )
 
     settings = run_live_session.provider_settings(
-        "ollama",
+        tmp_path,
         project_env=run_live_session.read_project_env(tmp_path),
         process_env={},
     )
 
     assert settings == {
+        "provider": "ollama",
         "api_key": "",
-        "api_key_env": "PICO_OLLAMA_API_KEY",
+        "api_key_env": "PICO_API_KEY",
         "model": "ollama-test-model",
         "base_url": "http://127.0.0.1:11435",
-        "client_kind": "ollama_chat",
+        "transport": "ollama_chat",
         "auth_mode": "none",
         "capabilities": {},
     }
 
 
 def test_openai_live_client_uses_native_responses_adapter():
-    from pico.providers.openai_compatible import OpenAICompatibleModelClient
+    from pico.providers.openai_responses import OpenAIResponsesModelClient
 
     client = run_live_session.make_live_client(
         _config(provider="openai", request_timeout_seconds=321),
@@ -346,18 +372,18 @@ def test_openai_live_client_uses_native_responses_adapter():
             "api_key": "sentinel-openai",
             "model": "test-model",
             "base_url": "https://openai.example.invalid/v1",
-            "client_kind": "openai_responses",
+            "transport": "openai_responses",
             "auth_mode": "bearer",
             "capabilities": {},
         },
     )
 
-    assert isinstance(client._inner, OpenAICompatibleModelClient)
+    assert isinstance(client._inner, OpenAIResponsesModelClient)
     assert client._inner.timeout == 321
 
 
 def test_ollama_live_client_uses_native_chat_adapter():
-    from pico.providers.ollama import OllamaModelClient
+    from pico.providers.ollama_chat import OllamaChatModelClient
 
     client = run_live_session.make_live_client(
         _config(provider="ollama", request_timeout_seconds=321),
@@ -365,13 +391,13 @@ def test_ollama_live_client_uses_native_chat_adapter():
             "api_key": "",
             "model": "test-model",
             "base_url": "http://127.0.0.1:11434",
-            "client_kind": "ollama_chat",
+            "transport": "ollama_chat",
             "auth_mode": "none",
             "capabilities": {},
         },
     )
 
-    assert isinstance(client._inner, OllamaModelClient)
+    assert isinstance(client._inner, OllamaChatModelClient)
     assert client._inner.timeout == 321
 
 
@@ -382,14 +408,9 @@ def test_ollama_live_preflight_does_not_require_api_key():
     )
 
 
-def test_main_reads_project_env_before_parse_args_on_reset_only_path(tmp_path, monkeypatch):
+def test_main_reset_uses_repo_root_without_reading_provider_env(tmp_path, monkeypatch):
     events = []
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(
-        run_live_session,
-        "read_project_env",
-        lambda root: events.append(("read", root)) or {},
-    )
     monkeypatch.setattr(
         run_live_session,
         "parse_args",
@@ -402,13 +423,13 @@ def test_main_reads_project_env_before_parse_args_on_reset_only_path(tmp_path, m
     )
 
     assert run_live_session.main() == 0
-    assert events == [("read", tmp_path), ("parse", None), ("reset", tmp_path)]
+    assert events == [("parse", None), ("reset", tmp_path)]
 
 
 def test_main_constructs_live_pico_with_only_read_file(tmp_path, monkeypatch):
-    import pico.runtime
-    import pico.session_store
-    import pico.workspace
+    import pico.runtime.application
+    import pico.state.session_store
+    import pico.workspace.context
 
     captured = {}
 
@@ -418,6 +439,9 @@ def test_main_constructs_live_pico_with_only_read_file(tmp_path, monkeypatch):
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(run_live_session, "parse_args", lambda **_kwargs: _config())
+    monkeypatch.setattr(
+        run_live_session, "provider_settings", lambda *_args, **_kwargs: _settings()
+    )
     monkeypatch.setattr(run_live_session, "check_env", lambda _config, **_kwargs: None)
     monkeypatch.setattr(run_live_session, "verify_pico_repo", lambda _root: None)
     monkeypatch.setattr(
@@ -430,14 +454,22 @@ def test_main_constructs_live_pico_with_only_read_file(tmp_path, monkeypatch):
         "FixtureManager",
         lambda _root, **_kwargs: nullcontext(),
     )
-    monkeypatch.setattr(run_live_session, "make_live_client", lambda _config, **_kwargs: object())
-    monkeypatch.setattr(pico.workspace.WorkspaceContext, "build", lambda _root: object())
-    monkeypatch.setattr(pico.session_store, "SessionStore", lambda _root: object())
-    monkeypatch.setattr(pico.runtime, "Pico", capture_pico)
+    monkeypatch.setattr(
+        run_live_session, "make_live_client", lambda _config, **_kwargs: object()
+    )
+    monkeypatch.setattr(
+        pico.workspace.context.WorkspaceContext,
+        "build",
+        lambda _root: object(),
+    )
+    monkeypatch.setattr(
+        pico.state.session_store, "SessionStore", lambda _root: object()
+    )
+    monkeypatch.setattr(pico.runtime.application, "Pico", capture_pico)
 
     assert run_live_session.main() == 4
-    assert captured["allowed_tools"] == ("read_file",)
-    assert captured["max_steps"] == 2
+    assert captured["options"].allowed_tools == ("read_file",)
+    assert captured["options"].max_steps == 2
 
 
 def test_read_turn_trace_aggregates_every_model_turn(tmp_path):
@@ -449,7 +481,10 @@ def test_read_turn_trace_aggregates_every_model_turn(tmp_path):
                 {"event": "model_requested", "attempt_origin": "initial"},
                 {
                     "event": "model_turn",
-                    "request_metadata": {"system_prefix_hash": "k", "messages_count": 1},
+                    "request_metadata": {
+                        "system_prefix_hash": "k",
+                        "messages_count": 1,
+                    },
                     "completion_usage": {"input_tokens": 10, "output_tokens": 2},
                     "transport_attempts": 1,
                     "transport_retries": 0,
@@ -463,7 +498,10 @@ def test_read_turn_trace_aggregates_every_model_turn(tmp_path):
                 },
                 {
                     "event": "model_turn",
-                    "request_metadata": {"system_prefix_hash": "k", "messages_count": 3},
+                    "request_metadata": {
+                        "system_prefix_hash": "k",
+                        "messages_count": 3,
+                    },
                     "completion_usage": {
                         "input_tokens": 20,
                         "output_tokens": 4,
@@ -589,7 +627,7 @@ def test_read_turn_trace_marks_non_utf8_artifact_usage_unknown(tmp_path):
 
 
 def test_read_run_terminal_status_uses_each_persisted_artifact(tmp_path):
-    from pico.run_store import RunStore
+    from pico.state.run_store import RunStore
 
     run_store = RunStore(tmp_path)
     task_state = SimpleNamespace(run_id="run-1")
@@ -630,7 +668,7 @@ def test_read_run_terminal_status_rejects_nonstring_or_blank_stop_reason(
     tmp_path,
     stop_reason,
 ):
-    from pico.run_store import RunStore
+    from pico.state.run_store import RunStore
 
     run_store = RunStore(tmp_path)
     task_state = SimpleNamespace(run_id="run-invalid-reason")
@@ -669,7 +707,7 @@ def test_read_run_terminal_status_keeps_other_artifact_evidence(
     artifact,
     expected_terminal_flags,
 ):
-    from pico.run_store import RunStore
+    from pico.state.run_store import RunStore
 
     run_store = RunStore(tmp_path)
     task_state = SimpleNamespace(run_id="run-one-bad-artifact")
@@ -702,7 +740,7 @@ def test_read_run_terminal_status_keeps_other_artifact_evidence(
 def test_turn_runner_does_not_reuse_previous_run_evidence_after_pre_run_failure(
     tmp_path,
 ):
-    from pico.run_store import RunStore
+    from pico.state.run_store import RunStore
 
     run_store = RunStore(tmp_path)
     previous_task_state = SimpleNamespace(run_id="previous-run")
@@ -760,7 +798,7 @@ def test_turn_runner_does_not_reuse_previous_run_evidence_after_pre_run_failure(
 
 
 def test_turn_runner_uses_first_trace_call_as_current_turn_evidence(tmp_path):
-    from pico.run_store import RunStore
+    from pico.state.run_store import RunStore
 
     run_store = RunStore(tmp_path)
     previous_task_state = SimpleNamespace(run_id="previous-run")
@@ -870,9 +908,7 @@ def _pico_stub_with_persisted_tree(tmp_path):
     }
     pico = SimpleNamespace(
         session=session,
-        model_client=SimpleNamespace(
-            calls=[{"payload_secret_clean": True}]
-        ),
+        model_client=SimpleNamespace(calls=[{"payload_secret_clean": True}]),
     )
     pico.session_store = SimpleNamespace(
         load_tree=lambda _session_id: SimpleNamespace(
@@ -912,7 +948,7 @@ def _turn_result_stub(**overrides):
         error=None,
         provider_input_messages_len=1,
         current_user_content=(
-            "<system-reminder><pico:recalled_memory path=\"workspace/notes/cache-invariant.md\">"
+            '<system-reminder><pico:recalled_memory path="workspace/notes/cache-invariant.md">'
             "content</pico:recalled_memory></system-reminder>\n上次讨论过 cache invariant 的问题"
         ),
         usage_complete=True,
@@ -940,11 +976,13 @@ def test_check_turn_1_recall_passes_on_valid_metadata():
 
 def test_check_turn_1_recall_fails_when_priority_allocator_is_missing():
     engine = _engine()
-    result = _turn_result_stub(metadata={
-        "context_source_allocator": {"name": "unknown"},
-        "injection_tokens": {"recalled_memory": 42},
-        "recall.error_count": 0,
-    })
+    result = _turn_result_stub(
+        metadata={
+            "context_source_allocator": {"name": "unknown"},
+            "injection_tokens": {"recalled_memory": 42},
+            "recall.error_count": 0,
+        }
+    )
     asserts = engine.check_turn_1_recall(result)
     failed = [a for a in asserts if not a.passed]
     assert any(a.name == "priority_allocator_active" for a in failed)
@@ -952,11 +990,14 @@ def test_check_turn_1_recall_fails_when_priority_allocator_is_missing():
 
 def test_check_turn_1_recall_fails_when_no_recall_block_rendered():
     engine = _engine()
-    result = _turn_result_stub(current_user_content="上次讨论过什么", metadata={
-        "context_source_allocator": {"name": "priority_allocator"},
-        "injection_tokens": {"recalled_memory": 0},
-        "recall.error_count": 0,
-    })
+    result = _turn_result_stub(
+        current_user_content="上次讨论过什么",
+        metadata={
+            "context_source_allocator": {"name": "priority_allocator"},
+            "injection_tokens": {"recalled_memory": 0},
+            "recall.error_count": 0,
+        },
+    )
     asserts = engine.check_turn_1_recall(result)
     failed = [a for a in asserts if not a.passed]
     assert any(a.name == "recalled_memory_block_present" for a in failed)
@@ -964,11 +1005,13 @@ def test_check_turn_1_recall_fails_when_no_recall_block_rendered():
 
 def test_check_turn_1_recall_fails_when_recall_error_nonzero():
     engine = _engine()
-    result = _turn_result_stub(metadata={
-        "context_source_allocator": {"name": "priority_allocator"},
-        "injection_tokens": {"recalled_memory": 42},
-        "recall.error_count": 3,
-    })
+    result = _turn_result_stub(
+        metadata={
+            "context_source_allocator": {"name": "priority_allocator"},
+            "injection_tokens": {"recalled_memory": 42},
+            "recall.error_count": 3,
+        }
+    )
     asserts = engine.check_turn_1_recall(result)
     failed = [a for a in asserts if not a.passed]
     assert any(a.name == "recall_error_count_zero" for a in failed)
@@ -977,6 +1020,7 @@ def test_check_turn_1_recall_fails_when_recall_error_nonzero():
 def test_assertion_is_frozen():
     a = Assertion(name="x", passed=True, expected="e", actual="a")
     import pytest
+
     with pytest.raises(Exception):
         a.name = "y"
 
@@ -987,11 +1031,12 @@ def test_dispatch_routes_turn_1_to_recall_check():
     asserts = engine.dispatch(1, result, pico=MagicMock(), all_results=[result])
     assert len(asserts) == 6
 
+
 def _turn_2_result_stub(**overrides):
     """Session state includes a tool_result message with digest applied."""
     defaults = dict(
         turn=2,
-        user_prompt="读一下 pico/runtime.py",
+        user_prompt="读一下 pico/runtime/application.py",
         expected_behavior="digest_applied",
         final_answer="ok",
         metadata={"injection_tokens": {"recalled_memory": 1}},
@@ -1018,8 +1063,8 @@ def _turn_2_result_stub(**overrides):
         system_prefix_hashes=("cache-key", "cache-key"),
         action_origins=("native_tool_use",),
         actual_user_contents=(
-            "<system-reminder>context</system-reminder>\n读一下 pico/runtime.py",
-            "<system-reminder>context</system-reminder>\n读一下 pico/runtime.py",
+            "<system-reminder>context</system-reminder>\n读一下 pico/runtime/application.py",
+            "<system-reminder>context</system-reminder>\n读一下 pico/runtime/application.py",
         ),
         run_id="run-2",
         task_state_terminal=True,
@@ -1048,16 +1093,35 @@ def _pico_stub_with_digested_message(
     pico.session = {
         "messages": [
             {"role": "user", "content": "read"},
-            {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "read_file", "input": {"path": "x"}}]},
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "t1",
+                        "name": "read_file",
+                        "input": {"path": "x"},
+                    }
+                ],
+            },
             {
                 "role": "user",
-                "content": [{"type": "tool_result", "tool_use_id": "t1",
-                             "content": (
-                                 "[digest] runtime.py (900 lines)\n- import\n"
-                                 f"[reference] content_sha256: sha256:{content_sha256} "
-                                 f"raw_result_id: tool_result:{source_hash}"
-                             )}],
-                "_pico_meta": {"digest_applied": True, "source_hash": source_hash, "tool_use_id": "t1"},
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "t1",
+                        "content": (
+                            "[digest] runtime.py (900 lines)\n- import\n"
+                            f"[reference] content_sha256: sha256:{content_sha256} "
+                            f"raw_result_id: tool_result:{source_hash}"
+                        ),
+                    }
+                ],
+                "_pico_meta": {
+                    "digest_applied": True,
+                    "source_hash": source_hash,
+                    "tool_use_id": "t1",
+                },
             },
         ]
     }
@@ -1071,7 +1135,9 @@ def test_check_turn_2_digest_passes_on_valid_state(tmp_path):
     result = _turn_2_result_stub()
     asserts = engine.check_turn_2_digest(result, pico)
     assert len(asserts) == 14
-    assert all(a.passed for a in asserts), [(a.name, a.actual) for a in asserts if not a.passed]
+    assert all(a.passed for a in asserts), [
+        (a.name, a.actual) for a in asserts if not a.passed
+    ]
 
 
 @pytest.mark.parametrize("provider", ["openai", "ollama"])
@@ -1099,7 +1165,7 @@ def test_check_turn_2_allows_plain_prompt_when_nothing_was_injected(tmp_path):
         "x" * 5000,
         tmp_path / "runs",
     )
-    prompt = "读一下 pico/runtime.py"
+    prompt = "读一下 pico/runtime/application.py"
     result = _turn_2_result_stub(
         metadata={"injection_tokens": {"recalled_memory": 0}},
         request_metadata_by_call=(
@@ -1123,7 +1189,7 @@ def test_check_turn_2_fails_when_later_injected_call_lacks_reminder(tmp_path):
         "x" * 5000,
         tmp_path / "runs",
     )
-    prompt = "读一下 pico/runtime.py"
+    prompt = "读一下 pico/runtime/application.py"
     result = _turn_2_result_stub(
         metadata={"injection_tokens": {"recalled_memory": 0}},
         request_metadata_by_call=(
@@ -1167,8 +1233,17 @@ def test_check_turn_2_digest_fails_when_no_digest_applied(tmp_path):
     pico = MagicMock()
     pico.session = {
         "messages": [
-            {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "raw output"}],
-             "_pico_meta": {"digest_applied": False, "tool_use_id": "t1"}},
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "t1",
+                        "content": "raw output",
+                    }
+                ],
+                "_pico_meta": {"digest_applied": False, "tool_use_id": "t1"},
+            },
         ]
     }
     asserts = engine.check_turn_2_digest(_turn_2_result_stub(), pico)
@@ -1267,18 +1342,20 @@ def test_check_turn_3_source_allocator_passes_when_contract_holds():
 
 def test_check_turn_3_source_allocator_rejects_global_pool_overflow():
     engine = _engine()
-    result = _turn_3_result_stub(metadata={
-        "context_source_allocator": {
-            "name": "priority_allocator",
-            "pool_tokens": 500,
-            "used_tokens": 501,
-            "source_tokens": {"workspace_state": 501},
-        },
-        "context_breakdown": {
-            "sources": [{"name": "workspace_state", "hard_cap": 3072}]
-        },
-        "injection_truncated": {},
-    })
+    result = _turn_3_result_stub(
+        metadata={
+            "context_source_allocator": {
+                "name": "priority_allocator",
+                "pool_tokens": 500,
+                "used_tokens": 501,
+                "source_tokens": {"workspace_state": 501},
+            },
+            "context_breakdown": {
+                "sources": [{"name": "workspace_state", "hard_cap": 3072}]
+            },
+            "injection_truncated": {},
+        }
+    )
     asserts = engine.check_turn_3_source_allocator(result)
     failed = [a for a in asserts if not a.passed]
     assert any(a.name == "source_pool_not_exceeded" for a in failed)
@@ -1286,18 +1363,20 @@ def test_check_turn_3_source_allocator_rejects_global_pool_overflow():
 
 def test_check_turn_3_source_allocator_rejects_partial_or_over_cap_source():
     engine = _engine()
-    result = _turn_3_result_stub(metadata={
-        "context_source_allocator": {
-            "name": "priority_allocator",
-            "pool_tokens": 1000,
-            "used_tokens": 600,
-            "source_tokens": {"memory_index": 600},
-        },
-        "context_breakdown": {
-            "sources": [{"name": "memory_index", "hard_cap": 512}]
-        },
-        "injection_truncated": {"memory_index": True},
-    })
+    result = _turn_3_result_stub(
+        metadata={
+            "context_source_allocator": {
+                "name": "priority_allocator",
+                "pool_tokens": 1000,
+                "used_tokens": 600,
+                "source_tokens": {"memory_index": 600},
+            },
+            "context_breakdown": {
+                "sources": [{"name": "memory_index", "hard_cap": 512}]
+            },
+            "injection_truncated": {"memory_index": True},
+        }
+    )
     asserts = engine.check_turn_3_source_allocator(result)
     failed = [a for a in asserts if not a.passed]
     assert any(a.name == "whole_chunks_respect_source_caps" for a in failed)
@@ -1357,10 +1436,30 @@ def _pico_stub_with_history():
             {"role": "user", "content": "q1", "_pico_meta": {}},
             {"role": "assistant", "content": "a1", "_pico_meta": {}},
             {"role": "user", "content": "q2", "_pico_meta": {}},
-            {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "read", "input": {}}], "_pico_meta": {}},
-            {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "r"}], "_pico_meta": {}},
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "tool_use", "id": "t1", "name": "read", "input": {}}
+                ],
+                "_pico_meta": {},
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "t1", "content": "r"}
+                ],
+                "_pico_meta": {},
+            },
             {"role": "assistant", "content": "a2", "_pico_meta": {}},
-        ] + [{"role": "user" if i % 2 == 0 else "assistant", "content": f"m{i}", "_pico_meta": {}} for i in range(10)]
+        ]
+        + [
+            {
+                "role": "user" if i % 2 == 0 else "assistant",
+                "content": f"m{i}",
+                "_pico_meta": {},
+            }
+            for i in range(10)
+        ]
     }
     return pico
 
@@ -1370,16 +1469,26 @@ def test_check_turn_4_compaction_passes_when_all_invariants_hold():
     pico = _pico_stub_with_history()
     asserts = engine.check_turn_4_compaction(_turn_4_result_stub(), pico)
     assert len(asserts) == 6
-    assert all(a.passed for a in asserts), [(a.name, a.actual) for a in asserts if not a.passed]
+    assert all(a.passed for a in asserts), [
+        (a.name, a.actual) for a in asserts if not a.passed
+    ]
 
 
 def test_check_turn_4_pairing_invariant_catches_orphan_tool_use():
     engine = _engine()
     pico = MagicMock()
     # orphan tool_use — no matching tool_result
-    pico.session = {"messages": [
-        {"role": "assistant", "content": [{"type": "tool_use", "id": "orphan_x", "name": "read", "input": {}}], "_pico_meta": {}},
-    ]}
+    pico.session = {
+        "messages": [
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "tool_use", "id": "orphan_x", "name": "read", "input": {}}
+                ],
+                "_pico_meta": {},
+            },
+        ]
+    }
     asserts = engine.check_turn_4_compaction(_turn_4_result_stub(), pico)
     failed = [a for a in asserts if not a.passed]
     assert any(a.name == "no_orphan_tool_use" for a in failed)
@@ -1391,13 +1500,21 @@ def test_check_turn_4_pairing_invariant_requires_immediate_tool_result():
         "messages": [
             {
                 "role": "assistant",
-                "content": [{"type": "tool_use", "id": "tool-1", "name": "read", "input": {}}],
+                "content": [
+                    {"type": "tool_use", "id": "tool-1", "name": "read", "input": {}}
+                ],
                 "_pico_meta": {},
             },
             {"role": "assistant", "content": "intervening", "_pico_meta": {}},
             {
                 "role": "user",
-                "content": [{"type": "tool_result", "tool_use_id": "tool-1", "content": "result"}],
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "tool-1",
+                        "content": "result",
+                    }
+                ],
                 "_pico_meta": {},
             },
         ]
@@ -1416,13 +1533,17 @@ def test_global_pairing_assertion_rejects_a_separated_tool_result(tmp_path):
     pico.session["messages"] = [
         {
             "role": "assistant",
-            "content": [{"type": "tool_use", "id": "tool-1", "name": "read", "input": {}}],
+            "content": [
+                {"type": "tool_use", "id": "tool-1", "name": "read", "input": {}}
+            ],
             "_pico_meta": {},
         },
         {"role": "assistant", "content": "intervening", "_pico_meta": {}},
         {
             "role": "user",
-            "content": [{"type": "tool_result", "tool_use_id": "tool-1", "content": "result"}],
+            "content": [
+                {"type": "tool_result", "tool_use_id": "tool-1", "content": "result"}
+            ],
             "_pico_meta": {},
         },
     ]
@@ -1457,9 +1578,13 @@ def _turn_1_result_stub_for_cache(cache_key="k"):
             "recall.error_count": 0,
             "system_prefix_hash": cache_key,
             "injection_budget": 500,
-            "system_tokens": 100, "tools_tokens": 50,
-            "messages_count": 2, "messages_tokens": 40, "injection_truncated": {},
-            "injection_dropped": [], "recall.last_error": "",
+            "system_tokens": 100,
+            "tools_tokens": 50,
+            "messages_count": 2,
+            "messages_tokens": 40,
+            "injection_truncated": {},
+            "injection_dropped": [],
+            "recall.last_error": "",
             "dropped_messages": 0,
             "cache_control_breakpoints": [],
         },
@@ -1471,11 +1596,17 @@ def _turn_5_result_stub(system_prefix_hash="abc", **overrides):
     metadata = {
         "cache_control_breakpoints": [10],
         "system_prefix_hash": system_prefix_hash,
-        "system_tokens": 100, "tools_tokens": 50, "messages_count": 12,
-        "messages_tokens": 500, "injection_tokens": {}, "injection_truncated": {},
-        "injection_dropped": [], "injection_budget": 500,
+        "system_tokens": 100,
+        "tools_tokens": 50,
+        "messages_count": 12,
+        "messages_tokens": 500,
+        "injection_tokens": {},
+        "injection_truncated": {},
+        "injection_dropped": [],
+        "injection_budget": 500,
         "context_source_allocator": {"name": "priority_allocator"},
-        "recall.error_count": 0, "recall.last_error": "",
+        "recall.error_count": 0,
+        "recall.last_error": "",
         "dropped_messages": 0,
     }
     defaults = dict(
@@ -1484,7 +1615,8 @@ def _turn_5_result_stub(system_prefix_hash="abc", **overrides):
         expected_behavior="cache_anchor_verified",
         final_answer="ok",
         metadata=metadata,
-        session_message_count_before=16, session_message_count_after=18,
+        session_message_count_before=16,
+        session_message_count_after=18,
         model_turns_this_turn=1,
         model_attempts_this_turn=1,
         model_failures_this_turn=0,
@@ -1494,8 +1626,10 @@ def _turn_5_result_stub(system_prefix_hash="abc", **overrides):
         billing_ambiguous=False,
         duration_ms=100,
         usage={"cache_read_input_tokens": 100, "cache_creation_input_tokens": 0},
-        stopped_at_step_limit=False, error=None,
-        provider_input_messages_len=12, current_user_content="",
+        stopped_at_step_limit=False,
+        error=None,
+        provider_input_messages_len=12,
+        current_user_content="",
         usage_complete=True,
         request_metadata_by_call=({},),
         system_prefix_hashes=(system_prefix_hash,),
@@ -1521,7 +1655,9 @@ def test_check_turn_5_cache_anchor_passes_when_cache_key_stable():
     ]
     asserts = engine.check_turn_5_cache_anchor(all_results[-1], all_results)
     assert len(asserts) == 5
-    assert all(a.passed for a in asserts), [(a.name, a.actual) for a in asserts if not a.passed]
+    assert all(a.passed for a in asserts), [
+        (a.name, a.actual) for a in asserts if not a.passed
+    ]
 
 
 def test_check_turn_5_fails_when_cache_key_drifts():
@@ -1536,8 +1672,8 @@ def test_check_turn_5_fails_when_cache_key_drifts():
     assert any(a.name == "system_prefix_hash_stable_across_turns" for a in failed)
 
 
-def test_deepseek_cache_assertions_do_not_require_cache_tokens():
-    engine = _engine(provider="deepseek")
+def test_cache_assertions_do_not_require_provider_cache_counters():
+    engine = _engine(provider="anthropic")
     all_results = [
         _turn_1_result_stub_for_cache(cache_key="stable"),
         _turn_1_result_stub_for_cache(cache_key="stable"),
@@ -1555,7 +1691,9 @@ def test_deepseek_cache_assertions_do_not_require_cache_tokens():
 def test_check_global_passes_under_budget(tmp_path):
     engine = _engine()
     all_results = [
-        _turn_result_stub(usage={"input_tokens": 1000, "output_tokens": 200}, model_turns_this_turn=1),
+        _turn_result_stub(
+            usage={"input_tokens": 1000, "output_tokens": 200}, model_turns_this_turn=1
+        ),
         _turn_result_stub(
             turn=2,
             usage={"input_tokens": 1500, "output_tokens": 300},
@@ -1563,7 +1701,11 @@ def test_check_global_passes_under_budget(tmp_path):
             system_prefix_hashes=("cache-key", "cache-key"),
             action_origins=("native_tool_use",),
         ),
-        _turn_result_stub(turn=3, usage={"input_tokens": 1200, "output_tokens": 250}, model_turns_this_turn=1),
+        _turn_result_stub(
+            turn=3,
+            usage={"input_tokens": 1200, "output_tokens": 250},
+            model_turns_this_turn=1,
+        ),
     ]
     asserts = engine.check_global(all_results, _pico_stub_with_persisted_tree(tmp_path))
     assert all(a.passed for a in asserts)
@@ -1715,7 +1857,7 @@ def test_report_cannot_pass_with_only_global_assertions(tmp_path):
 
 
 def test_report_does_not_serialize_provider_api_key(tmp_path, monkeypatch):
-    monkeypatch.setenv("PICO_ANTHROPIC_API_KEY", "sentinel-secret")
+    monkeypatch.setenv("PICO_API_KEY", "sentinel-secret")
     reporter = Reporter(_config(), tmp_path)
 
     report_path = reporter.write_json(
@@ -1788,7 +1930,7 @@ def test_global_security_assertions_fail_independently():
 
 
 def test_report_redacts_full_payload_and_writes_safe_artifact_summary(tmp_path):
-    from pico.security import redact_artifact
+    from pico.security.redaction import redact_artifact
 
     secret = "ghp_" + "R" * 32
     reporter = Reporter(_config(), tmp_path)
@@ -1893,6 +2035,9 @@ def test_main_preflight_failure_never_constructs_provider(tmp_path, monkeypatch)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(run_live_session, "parse_args", lambda **_kwargs: _config())
     monkeypatch.setattr(
+        run_live_session, "provider_settings", lambda *_args, **_kwargs: _settings()
+    )
+    monkeypatch.setattr(
         run_live_session,
         "check_env",
         MagicMock(side_effect=SystemExit(2)),
@@ -1914,7 +2059,12 @@ def test_v2_cli_rejects_removed_provider_call_and_mixed_timeout_flags(monkeypatc
 
 @pytest.mark.parametrize(
     "flag",
-    ("--max-model-attempts", "--max-total-tokens", "--request-timeout-seconds", "--max-wall-seconds"),
+    (
+        "--max-model-attempts",
+        "--max-total-tokens",
+        "--request-timeout-seconds",
+        "--max-wall-seconds",
+    ),
 )
 def test_v2_cli_rejects_nonpositive_caps(monkeypatch, flag):
     monkeypatch.setattr(sys, "argv", ["run_live_session", flag, "0"])
@@ -1928,17 +2078,20 @@ def test_ollama_readiness_uses_bounded_model_probe(monkeypatch):
         lambda _client: {"status": "failed"},
     )
 
-    assert run_live_session.check_live_readiness(
-        _config(provider="ollama"),
-        settings={
-            "api_key": "",
-            "model": "test-model",
-            "base_url": "http://127.0.0.1:11434",
-            "client_kind": "ollama_chat",
-            "auth_mode": "none",
-            "capabilities": {},
-        },
-    ) is False
+    assert (
+        run_live_session.check_live_readiness(
+            _config(provider="ollama"),
+            settings={
+                "api_key": "",
+                "model": "test-model",
+                "base_url": "http://127.0.0.1:11434",
+                "transport": "ollama_chat",
+                "auth_mode": "none",
+                "capabilities": {},
+            },
+        )
+        is False
+    )
 
 
 def _gate_assertions():
@@ -1957,9 +2110,15 @@ def test_v2_gates_pass_only_with_complete_zero_retry_evidence(tmp_path):
     result = _turn_result_stub()
 
     path = reporter.write_json(
-        [result], _gate_assertions(), reporter.config,
-        {"input_tokens": 10, "output_tokens": 5}, 10,
-        aborted_reason=None, expected_turn_count=1, session_schema=1, git_head="abc",
+        [result],
+        _gate_assertions(),
+        reporter.config,
+        {"input_tokens": 10, "output_tokens": 5},
+        10,
+        aborted_reason=None,
+        expected_turn_count=1,
+        session_schema=1,
+        git_head="abc",
     )
     payload = run_live_session.load_live_report(path)
 
@@ -1979,18 +2138,14 @@ def test_v2_transport_retry_is_degraded_and_evidence_gap_is_fail(tmp_path):
         transport_retries_this_turn=1,
         billing_ambiguous=True,
     )
-    retry_gates = reporter._build_gates(
-        [retry], _gate_assertions(), {}, 1
-    )
+    retry_gates = reporter._build_gates([retry], _gate_assertions(), {}, 1)
     missing = _turn_result_stub(
         transport_attempts_this_turn=None,
         transport_retries_this_turn=None,
         transport_evidence_complete=False,
         billing_ambiguous=True,
     )
-    missing_gates = reporter._build_gates(
-        [missing], _gate_assertions(), {}, 1
-    )
+    missing_gates = reporter._build_gates([missing], _gate_assertions(), {}, 1)
 
     assert retry_gates["transport_cost"]["status"] == "degraded"
     assert missing_gates["transport_cost"]["status"] == "fail"
@@ -2010,9 +2165,15 @@ def test_v2_report_omits_prompt_answer_raw_assertion_and_exception(tmp_path):
     )
 
     path = reporter.write_json(
-        [result], assertions, reporter.config, {}, 1,
-        aborted_reason="provider_error_turn_1", expected_turn_count=1,
-        session_schema=1, git_head="abc",
+        [result],
+        assertions,
+        reporter.config,
+        {},
+        1,
+        aborted_reason="provider_error_turn_1",
+        expected_turn_count=1,
+        session_schema=1,
+        git_head="abc",
     )
     text = path.read_text(encoding="utf-8")
     turn = json.loads(text)["turns"][0]

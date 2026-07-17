@@ -2,7 +2,7 @@
 
 import pytest
 
-from pico.config import load_pico_toml
+from pico.config.project import load_pico_toml
 
 
 def _memory(root):
@@ -60,7 +60,14 @@ def test_recall_for_turn_reads_min_score_from_agent(tmp_path):
         session={"recently_recalled": []},
         model_client=MagicMock(count_tokens=lambda t: max(1, len(t) // 4)),
         memory=SimpleNamespace(task_summary=""),
-        context_config={"recall": {"min_score": 1.5, "top_k": 2, "max_tokens_per_note": 400, "skip_recent_turns": 2}},
+        context_config={
+            "recall": {
+                "min_score": 1.5,
+                "top_k": 2,
+                "max_tokens_per_note": 400,
+                "skip_recent_turns": 2,
+            }
+        },
     )
     out = recall_for_turn(a, "cache", budget_tokens=1000)
     assert out is None  # gate closed by config-provided min_score
@@ -125,9 +132,18 @@ def test_retrieval_uses_field_boosts_from_config(tmp_path):
     )
     store = BlockStore(workspace_root=ws, user_root=tmp_path / "user")
     # Push body way up above description → in_body wins.
-    ret = Retrieval(store, config={
-        "field_boosts": {"name": 5.0, "description": 1.0, "tags": 4.0, "aliases": 4.0, "body": 10.0},
+    ret = Retrieval(
+        store,
+        config={
+            "field_boosts": {
+                "name": 5.0,
+                "description": 1.0,
+                "tags": 4.0,
+                "aliases": 4.0,
+                "body": 10.0,
+            },
         "link_config": (3, 0.4),
-    })
+        },
+    )
     hits = ret.search("cache")
     assert hits[0].path == "workspace/notes/in_body.md"

@@ -4,8 +4,8 @@ from unittest.mock import patch
 
 import pytest
 
-from pico.safe_subprocess import run_process_group
-from pico.tools import ApprovedShellExecution, sandbox_privilege_denial
+from pico.tools.subprocess import run_process_group
+from pico.tools.shell import ApprovedShellExecution, sandbox_privilege_denial
 
 
 def test_approved_shell_execution_is_immutable_and_complete(tmp_path):
@@ -14,8 +14,6 @@ def test_approved_shell_execution_is_immutable_and_complete(tmp_path):
         exact_command="printf %s ok",
         execution_mode="argv",
         executable="/usr/bin/printf",
-        cwd=tmp_path,
-        env={"PATH": "/usr/bin"},
         timeout=5,
     )
     assert execution.argv == ("printf", "%s", "ok")
@@ -25,15 +23,24 @@ def test_approved_shell_execution_is_immutable_and_complete(tmp_path):
 
 def test_sandbox_privilege_deny_uses_executable_identity_not_prefix():
     execution = ApprovedShellExecution(
-        argv=("sudo", "true"), exact_command="sudo true", execution_mode="argv",
-        executable="/usr/bin/sudo", cwd="/tmp", env={}, timeout=5,
+        argv=("sudo", "true"),
+        exact_command="sudo true",
+        execution_mode="argv",
+        executable="/usr/bin/sudo",
+        timeout=5,
     )
     assert sandbox_privilege_denial(execution, sandbox_mode=False) is None
-    assert sandbox_privilege_denial(execution, sandbox_mode=True) == "sandbox_privilege_denied"
+    assert (
+        sandbox_privilege_denial(execution, sandbox_mode=True)
+        == "sandbox_privilege_denied"
+    )
 
     harmless = ApprovedShellExecution(
-        argv=("sudo-helper",), exact_command="sudo-helper", execution_mode="argv",
-        executable="/tmp/sudo-helper", cwd="/tmp", env={}, timeout=5,
+        argv=("sudo-helper",),
+        exact_command="sudo-helper",
+        execution_mode="argv",
+        executable="/tmp/sudo-helper",
+        timeout=5,
     )
     assert sandbox_privilege_denial(harmless, sandbox_mode=True) is None
 
@@ -52,11 +59,12 @@ def test_sandbox_privilege_deny_recurses_through_shell_and_wrappers(argv, comman
         exact_command=command,
         execution_mode="complex_shell",
         executable="/bin/sh",
-        cwd="/tmp",
-        env={},
         timeout=5,
     )
-    assert sandbox_privilege_denial(execution, sandbox_mode=True) == "sandbox_privilege_denied"
+    assert (
+        sandbox_privilege_denial(execution, sandbox_mode=True)
+        == "sandbox_privilege_denied"
+    )
 
 
 def test_process_group_timeout_terms_then_kills_and_waits():
@@ -73,12 +81,11 @@ def test_process_group_timeout_terms_then_kills_and_waits():
 
     process.communicate = communicate
     process.pid = 4321
-    with patch("pico.safe_subprocess.subprocess.Popen", return_value=process) as popen, patch(
-        "pico.safe_subprocess.os.killpg"
-    ) as killpg:
-        result = run_process_group(
-            ["x"], cwd="/tmp", env={}, timeout=1, term_grace=2
-        )
+    with (
+        patch("pico.tools.subprocess.subprocess.Popen", return_value=process) as popen,
+        patch("pico.tools.subprocess.os.killpg") as killpg,
+    ):
+        result = run_process_group(["x"], cwd="/tmp", env={}, timeout=1, term_grace=2)
     assert popen.call_args.kwargs["start_new_session"] is True
     assert [call.args[1] for call in killpg.call_args_list] == [15, 9]
     assert result.timed_out is True

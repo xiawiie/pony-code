@@ -10,9 +10,10 @@ import json
 
 from pico.context.renderer import InjectionSnapshot, InjectionSource
 from pico.providers.response import Response, StopReason
-from pico.runtime import Pico
-from pico.session_store import SessionStore
-from pico.workspace import WorkspaceContext
+from pico.runtime.application import Pico
+from pico.state.session_store import SessionStore
+from pico.workspace.context import WorkspaceContext
+from pico.runtime.options import RuntimeOptions
 
 
 class _SniffProvider:
@@ -44,8 +45,7 @@ def build_native_agent(tmp_path, provider, **kwargs):
         model_client=provider,
         workspace=WorkspaceContext.build(tmp_path),
         session_store=SessionStore(tmp_path / ".pico" / "sessions"),
-        approval_policy="auto",
-        **kwargs,
+        options=RuntimeOptions(approval_policy="auto", **kwargs),
     )
 
 
@@ -55,11 +55,22 @@ def test_provider_receives_injection_wrapped_user_message(tmp_path):
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
 
     provider = _SniffProvider(
-        [Response(stop_reason=StopReason.END_TURN, content=[{"type": "text", "text": "done"}], usage={})]
+        [
+            Response(
+                stop_reason=StopReason.END_TURN,
+                content=[{"type": "text", "text": "done"}],
+                usage={},
+            )
+        ]
     )
     workspace = WorkspaceContext.build(tmp_path)
     store = SessionStore(tmp_path / ".pico" / "sessions")
-    pico = Pico(model_client=provider, workspace=workspace, session_store=store, max_steps=3)
+    pico = Pico(
+        model_client=provider,
+        workspace=workspace,
+        session_store=store,
+        options=RuntimeOptions(max_steps=3),
+    )
 
     pico.ask("what's in readme?")
 
@@ -83,11 +94,22 @@ def test_message_count_invariant_after_injection(tmp_path):
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
 
     provider = _SniffProvider(
-        [Response(stop_reason=StopReason.END_TURN, content=[{"type": "text", "text": "done"}], usage={})]
+        [
+            Response(
+                stop_reason=StopReason.END_TURN,
+                content=[{"type": "text", "text": "done"}],
+                usage={},
+            )
+        ]
     )
     workspace = WorkspaceContext.build(tmp_path)
     store = SessionStore(tmp_path / ".pico" / "sessions")
-    pico = Pico(model_client=provider, workspace=workspace, session_store=store, max_steps=3)
+    pico = Pico(
+        model_client=provider,
+        workspace=workspace,
+        session_store=store,
+        options=RuntimeOptions(max_steps=3),
+    )
 
     pico.ask("hi")
 
@@ -182,10 +204,11 @@ def test_one_snapshot_survives_retry_and_tool_step_while_feedback_is_one_shot(
         }
 
     monkeypatch.setattr(
-        "pico.agent_loop.build_injection_snapshot",
+        "pico.agent.loop.build_injection_snapshot",
         frozen_snapshot,
     )
-    provider = _SniffProvider([
+    provider = _SniffProvider(
+        [
         Response(
             stop_reason=StopReason.UNKNOWN,
             content=[{"type": "text", "text": "bad native response"}],
@@ -193,7 +216,14 @@ def test_one_snapshot_survives_retry_and_tool_step_while_feedback_is_one_shot(
         ),
         Response(
             stop_reason=StopReason.TOOL_USE,
-            content=[{"type": "tool_use", "id": "tu_1", "name": "read_file", "input": {"path": "README.md"}}],
+                content=[
+                    {
+                        "type": "tool_use",
+                        "id": "tu_1",
+                        "name": "read_file",
+                        "input": {"path": "README.md"},
+                    }
+                ],
             usage={"input_tokens": 2, "output_tokens": 1},
         ),
         Response(
@@ -201,7 +231,8 @@ def test_one_snapshot_survives_retry_and_tool_step_while_feedback_is_one_shot(
             content=[{"type": "text", "text": "done"}],
             usage={"input_tokens": 3, "output_tokens": 1},
         ),
-    ])
+        ]
+    )
     agent = build_native_agent(tmp_path, provider)
     assert agent.ask("inspect") == "done"
     assert render_calls == ["inspect"]
@@ -256,12 +287,11 @@ def test_one_snapshot_survives_retry_and_tool_step_while_feedback_is_one_shot(
 
 
 def test_retry_limit_feedback_is_one_shot_and_respects_attempt_cap(tmp_path):
-    provider = _SniffProvider([
+    provider = _SniffProvider(
+        [
         Response(
             stop_reason=StopReason.UNKNOWN,
-            content=[
-                {"type": "text", "text": f"bad-{index}"}
-            ],
+                content=[{"type": "text", "text": f"bad-{index}"}],
             usage={
                 "input_tokens": index + 1,
                 "output_tokens": 1,
@@ -269,7 +299,8 @@ def test_retry_limit_feedback_is_one_shot_and_respects_attempt_cap(tmp_path):
             },
         )
         for index in range(5)
-    ])
+        ]
+    )
     agent = build_native_agent(tmp_path, provider, max_steps=1)
 
     answer = agent.ask("keep retrying")
@@ -303,6 +334,6 @@ def test_retry_limit_feedback_is_one_shot_and_respects_attempt_cap(tmp_path):
         .read_text(encoding="utf-8")
         .splitlines()
     ]
-    assert len(
-        [event for event in trace_events if event["event"] == "run_finished"]
-    ) == 1
+    assert (
+        len([event for event in trace_events if event["event"] == "run_finished"]) == 1
+    )

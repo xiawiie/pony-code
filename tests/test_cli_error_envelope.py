@@ -2,10 +2,8 @@ import pytest
 import os
 import signal
 
-from pico.cli import main
-from pico.cli_start import run_agent_once, run_repl
-from pico.config import DEFAULT_API_URL
-from pico.providers.fake import FakeModelClient
+from pico.cli.app import main
+from pico.cli.start import run_agent_once, run_repl
 
 
 CANARY = "hostile-config-canary-9f3d7a"
@@ -84,8 +82,7 @@ def test_one_shot_renders_sandbox_review_counts(capsys):
     output = capsys.readouterr().out
     assert "State: pending_review" in output
     assert (
-        "Changes: 3 candidate, 1 high-risk, 2 blocked, 4 generated (ignored)"
-        in output
+        "Changes: 3 candidate, 1 high-risk, 2 blocked, 4 generated (ignored)" in output
     )
     assert "Review: pico sandbox diff sandbox_" in output
 
@@ -165,7 +162,7 @@ def test_cli_contains_startup_io_failure(monkeypatch, capsys):
     def fail_build(_args):
         raise OSError(f"failed to open /private/{CANARY}")
 
-    monkeypatch.setattr("pico.cli.build_agent", fail_build)
+    monkeypatch.setattr("pico.cli.app.build_agent", fail_build)
 
     assert main(["--quiet", "run", "finish"]) == 5
 
@@ -174,79 +171,45 @@ def test_cli_contains_startup_io_failure(monkeypatch, capsys):
     assert CANARY not in captured.out + captured.err
 
 
-def test_cli_contains_welcome_render_failure(monkeypatch, capsys):
-    agent = type(
-        "Agent",
-        (),
-        {"model_client": type("Model", (), {"model": "safe"})()},
-    )()
-    monkeypatch.setattr("pico.cli.build_agent", lambda _args: agent)
-
-    def fail_welcome(*_args, **_kwargs):
-        raise ValueError(f"bad workspace path {CANARY}")
-
-    monkeypatch.setattr("pico.cli.build_welcome", fail_welcome)
-
-    assert main(["run", "finish"]) == 5
-
-    captured = capsys.readouterr()
-    assert captured.err.strip() == "pico startup failed"
-    assert CANARY not in captured.out + captured.err
-
-
-def test_invalid_project_api_url_uses_safe_config_envelope(
+def test_invalid_project_api_base_uses_safe_config_envelope(
     tmp_path,
     monkeypatch,
     capsys,
 ):
     (tmp_path / ".env").write_text(
-        f"PICO_API_URL=https://user:{CANARY}@example.com/v1\n"
-        "PICO_DEEPSEEK_API_KEY=test-key\n",
+        "PICO_PROVIDER=anthropic\n"
+        "PICO_MODEL=claude-test\n"
+        f"PICO_API_BASE=https://user:{CANARY}@example.com/v1\n"
+        "PICO_API_KEY=test-key\n",
         encoding="utf-8",
     )
 
     assert main(["--cwd", str(tmp_path), "--quiet", "run", "hello"]) == 3
 
     captured = capsys.readouterr()
-    assert captured.err.strip() == "api_url_credentials"
+    assert captured.err.strip() == "api_base_credentials"
     assert CANARY not in captured.out + captured.err
 
 
-def test_project_key_without_url_uses_official_default(
-    tmp_path,
-    monkeypatch,
-    capsys,
-):
+def test_project_key_without_base_is_rejected(tmp_path, capsys):
     (tmp_path / ".env").write_text(
-        "PICO_DEEPSEEK_API_KEY=stale-project-key\n",
+        "PICO_PROVIDER=anthropic\n"
+        "PICO_MODEL=claude-test\n"
+        "PICO_API_KEY=stale-project-key\n",
         encoding="utf-8",
     )
-    captured = {}
 
-    def constructor(*args, **kwargs):
-        captured["args"] = args
-        captured["kwargs"] = kwargs
-        return FakeModelClient(["done"])
-
-    monkeypatch.setattr("pico.cli.build_model_client", constructor)
-
-    assert main(["--cwd", str(tmp_path), "--quiet", "run", "hello"]) == 0
+    assert main(["--cwd", str(tmp_path), "--quiet", "run", "hello"]) == 3
 
     output = capsys.readouterr()
-    assert output.err == ""
-    assert captured["args"] == ("anthropic_messages",)
-    assert captured["kwargs"]["base_url"] == DEFAULT_API_URL
+    assert output.err.splitlines()[0] == "api_base_not_configured"
 
 
-def test_init_invalid_url_does_not_echo_input_value(
-    tmp_path, monkeypatch, capsys
-):
-    monkeypatch.setattr(
-        "builtins.input",
-        lambda: f"https://user:{CANARY}@example.com/v1",
-    )
+def test_init_invalid_base_does_not_echo_input_value(tmp_path, monkeypatch, capsys):
+    answers = iter(("", f"https://user:{CANARY}@example.com/v1"))
+    monkeypatch.setattr("builtins.input", lambda: next(answers))
     assert main(["--cwd", str(tmp_path), "init"]) == 3
 
     captured = capsys.readouterr()
-    assert "api_url_credentials" in captured.err
+    assert "api_base_credentials" in captured.err
     assert CANARY not in captured.out + captured.err

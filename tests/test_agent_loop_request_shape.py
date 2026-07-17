@@ -1,10 +1,10 @@
 """Canonical agent-loop message constructors preserve the request wire shape."""
 
-from pico.messages import make_tool_pair, message_content_text
+from pico.agent.messages import make_tool_pair, message_content_text
 
 
 def test_plain_message_builds_user_message():
-    from pico.agent_loop import _plain_message
+    from pico.agent.loop import _plain_message
 
     message = _plain_message("user", "hello world")
     assert message == {

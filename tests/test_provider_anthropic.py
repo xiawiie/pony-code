@@ -1,4 +1,5 @@
 """Anthropic structured completion payload and response contracts."""
+
 import json
 from http.client import RemoteDisconnected
 import urllib.error
@@ -6,20 +7,22 @@ from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
-import pico.providers._shared as provider_shared
-from pico.providers.anthropic_compatible import AnthropicCompatibleModelClient
+import pico.providers.transport as provider_shared
+from pico.providers.anthropic_messages import AnthropicMessagesModelClient
 from pico.providers.response import Response, StopReason
 
 
 def _mock_urlopen(response_body):
     m = MagicMock()
-    m.__enter__.return_value = MagicMock(read=lambda *_args: json.dumps(response_body).encode("utf-8"))
+    m.__enter__.return_value = MagicMock(
+        read=lambda *_args: json.dumps(response_body).encode("utf-8")
+    )
     m.__exit__.return_value = False
     return m
 
 
 def _make_client():
-    return AnthropicCompatibleModelClient(
+    return AnthropicMessagesModelClient(
         model="claude-3-5-sonnet-latest",
         base_url="https://api.anthropic.com/v1",
         api_key="test-key",
@@ -36,8 +39,16 @@ def _make_client():
 
 def test_complete_payload_shape_and_cache_control():
     client = _make_client()
-    system = [{"type": "text", "text": "SYSTEM_CORE", "cache_control": {"type": "ephemeral"}}]
-    tools = [{"name": "read_file", "description": "d", "input_schema": {"type": "object", "properties": {}}}]
+    system = [
+        {"type": "text", "text": "SYSTEM_CORE", "cache_control": {"type": "ephemeral"}}
+    ]
+    tools = [
+        {
+            "name": "read_file",
+            "description": "d",
+            "input_schema": {"type": "object", "properties": {}},
+        }
+    ]
     messages = [{"role": "user", "content": "hi", "_pico_meta": {"secret": "x"}}]
 
     captured_payload = {}
@@ -46,14 +57,23 @@ def test_complete_payload_shape_and_cache_control():
         captured_payload["url"] = req.full_url
         captured_payload["headers"] = dict(req.header_items())
         captured_payload["data"] = json.loads(req.data.decode("utf-8"))
-        return _mock_urlopen({
+        return _mock_urlopen(
+            {
             "content": [{"type": "text", "text": "ok"}],
             "stop_reason": "end_turn",
-            "usage": {"input_tokens": 5, "output_tokens": 1, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 5},
-        })
+                "usage": {
+                    "input_tokens": 5,
+                    "output_tokens": 1,
+                    "cache_read_input_tokens": 0,
+                    "cache_creation_input_tokens": 5,
+                },
+            }
+        )
 
-    with patch("pico.providers._shared._provider_urlopen", fake_urlopen):
-        resp = client.complete(system=system, tools=tools, messages=messages, max_tokens=100)
+    with patch("pico.providers.transport._provider_urlopen", fake_urlopen):
+        resp = client.complete(
+            system=system, tools=tools, messages=messages, max_tokens=100
+        )
 
     assert captured_payload["url"] == "https://api.anthropic.com/v1/messages"
     assert captured_payload["headers"]["X-api-key"] == "test-key"
@@ -80,25 +100,55 @@ def test_complete_cache_breakpoint_on_message():
         {"role": "user", "content": "c"},
     ]
     captured = {}
+
     def fake_urlopen(req, timeout=None):
         captured["data"] = json.loads(req.data.decode("utf-8"))
-        return _mock_urlopen({"content": [{"type": "text", "text": "ok"}], "stop_reason": "end_turn", "usage": {}})
-    with patch("pico.providers._shared._provider_urlopen", fake_urlopen):
-        client.complete(system=system, tools=[], messages=messages, max_tokens=10, cache_breakpoints=[1])
+        return _mock_urlopen(
+            {
+                "content": [{"type": "text", "text": "ok"}],
+                "stop_reason": "end_turn",
+                "usage": {},
+            }
+        )
+
+    with patch("pico.providers.transport._provider_urlopen", fake_urlopen):
+        client.complete(
+            system=system,
+            tools=[],
+            messages=messages,
+            max_tokens=10,
+            cache_breakpoints=[1],
+        )
     msg1 = captured["data"]["messages"][1]
     assert msg1["content"][-1]["cache_control"] == {"type": "ephemeral"}
 
 
 def test_complete_tool_use_response():
     client = _make_client()
+
     def fake_urlopen(req, timeout=None):
-        return _mock_urlopen({
-            "content": [{"type": "tool_use", "id": "toolu_1", "name": "read_file", "input": {"path": "a.py"}}],
+        return _mock_urlopen(
+            {
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_1",
+                        "name": "read_file",
+                        "input": {"path": "a.py"},
+                    }
+                ],
             "stop_reason": "tool_use",
             "usage": {},
-        })
-    with patch("pico.providers._shared._provider_urlopen", fake_urlopen):
-        resp = client.complete(system=[{"type": "text", "text": "s"}], tools=[], messages=[{"role": "user", "content": "x"}], max_tokens=10)
+            }
+        )
+
+    with patch("pico.providers.transport._provider_urlopen", fake_urlopen):
+        resp = client.complete(
+            system=[{"type": "text", "text": "s"}],
+            tools=[],
+            messages=[{"role": "user", "content": "x"}],
+            max_tokens=10,
+        )
     assert resp.stop_reason == StopReason.TOOL_USE
     assert resp.content[0]["name"] == "read_file"
     assert resp.content[0]["input"]["path"] == "a.py"
@@ -160,11 +210,13 @@ def test_thinking_tool_state_is_preserved_and_replayed(monkeypatch):
             },
             {
                 "role": "user",
-                "content": [{
+                "content": [
+                    {
                     "type": "tool_result",
                     "tool_use_id": "toolu_thinking",
                     "content": "body",
-                }],
+                    }
+                ],
             },
         ],
         max_tokens=10,
@@ -184,7 +236,7 @@ def test_empty_anthropic_object_is_protocol_mismatch(monkeypatch):
         lambda *_args, **_kwargs: _mock_urlopen({}),
     )
 
-    with pytest.raises(provider_shared._ProviderFailure) as caught:
+    with pytest.raises(provider_shared.ProviderTransportError) as caught:
         _make_client().complete(system=[], tools=[], messages=[], max_tokens=10)
 
     assert caught.value.code == "provider_protocol_mismatch"
@@ -202,7 +254,7 @@ def test_complete_unknown_stop_reason_is_unknown():
             }
         )
 
-    with patch("pico.providers._shared._provider_urlopen", fake_urlopen):
+    with patch("pico.providers.transport._provider_urlopen", fake_urlopen):
         response = client.complete(
             system=[{"type": "text", "text": "s"}],
             tools=[],
@@ -226,7 +278,10 @@ def test_complete_records_cached_token_usage():
         },
     }
 
-    with patch("pico.providers._shared._provider_urlopen", return_value=_mock_urlopen(response_body)):
+    with patch(
+        "pico.providers.transport._provider_urlopen",
+        return_value=_mock_urlopen(response_body),
+    ):
         response = client.complete(
             system=[],
             tools=[],
@@ -249,7 +304,9 @@ def test_complete_records_cached_token_usage():
         (TimeoutError("secret"), "timeout"),
     ],
 )
-def test_complete_network_error_is_classified_after_one_transport(monkeypatch, error, reason):
+def test_complete_network_error_is_classified_after_one_transport(
+    monkeypatch, error, reason
+):
     urlopen = Mock(side_effect=error)
     monkeypatch.setattr(provider_shared, "_provider_urlopen", urlopen)
 
@@ -257,9 +314,7 @@ def test_complete_network_error_is_classified_after_one_transport(monkeypatch, e
         RuntimeError,
         match=rf"^Anthropic request failed: {reason}$",
     ):
-        _make_client().complete(
-            system=[], tools=[], messages=[], max_tokens=10
-        )
+        _make_client().complete(system=[], tools=[], messages=[], max_tokens=10)
 
     assert urlopen.call_count == 1
 
@@ -280,8 +335,8 @@ def test_complete_rejects_non_header_api_key_before_request(monkeypatch):
     ("base_url", "messages_url"),
     [
         (
-            "https://api.deepseek.com/anthropic/v1",
-            "https://api.deepseek.com/anthropic/v1/messages",
+            "https://gateway.example/anthropic/v1",
+            "https://gateway.example/anthropic/v1/messages",
         ),
         (
             "https://lumina.tripo3d.com/v1",
@@ -289,14 +344,14 @@ def test_complete_rejects_non_header_api_key_before_request(monkeypatch):
         ),
     ],
 )
-def test_deepseek_anthropic_surface_omits_unsupported_extension_fields(
+def test_custom_anthropic_surface_omits_unsupported_extension_fields(
     monkeypatch,
     base_url,
     messages_url,
 ):
     captured = {}
-    client = AnthropicCompatibleModelClient(
-        model="deepseek-test",
+    client = AnthropicMessagesModelClient(
+        model="custom-test",
         base_url=base_url,
         api_key="test-key",
         temperature=0.0,
@@ -306,36 +361,43 @@ def test_deepseek_anthropic_surface_omits_unsupported_extension_fields(
             "prompt_cache": False,
             "strict_tools": False,
             "parallel_tool_control": False,
-            "thinking_disabled": True,
         },
     )
     monkeypatch.setattr(
         provider_shared,
         "_provider_urlopen",
         lambda request, timeout: (
-            captured.update({
+            captured.update(
+                {
                 "url": request.full_url,
                 "body": json.loads(request.data),
-            })
-            or _mock_urlopen({
+                }
+            )
+            or _mock_urlopen(
+                {
                 "content": [{"type": "text", "text": "ok"}],
                 "stop_reason": "end_turn",
                 "usage": {},
-            })
+                }
+            )
         ),
     )
 
     client.complete(
-        system=[{
+        system=[
+            {
             "type": "text",
             "text": "system",
             "cache_control": {"type": "ephemeral"},
-        }],
-        tools=[{
+            }
+        ],
+        tools=[
+            {
             "name": "read_file",
             "description": "read",
             "input_schema": {"type": "object", "properties": {}},
-        }],
+            }
+        ],
         messages=[{"role": "user", "content": "hello"}],
         max_tokens=10,
         cache_breakpoints=[0],
@@ -344,12 +406,10 @@ def test_deepseek_anthropic_surface_omits_unsupported_extension_fields(
     assert client.supports_prompt_cache is False
     assert captured["url"] == messages_url
     assert "cache_control" not in captured["body"]["system"][0]
-    assert captured["body"]["messages"] == [
-        {"role": "user", "content": "hello"}
-    ]
+    assert captured["body"]["messages"] == [{"role": "user", "content": "hello"}]
     assert "strict" not in captured["body"]["tools"][0]
     assert "tool_choice" not in captured["body"]
-    assert captured["body"]["thinking"] == {"type": "disabled"}
+    assert "thinking" not in captured["body"]
 
 
 @pytest.mark.parametrize(
@@ -361,7 +421,7 @@ def test_deepseek_anthropic_surface_omits_unsupported_extension_fields(
     ],
 )
 def test_custom_endpoint_never_claims_prompt_cache(base_url):
-    client = AnthropicCompatibleModelClient(
+    client = AnthropicMessagesModelClient(
         model="test",
         base_url=base_url,
         api_key="test-key",

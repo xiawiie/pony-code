@@ -1,22 +1,21 @@
 import json
-import os
 from copy import deepcopy
-from unittest.mock import patch
 
 import pytest
 
-from pico.evaluation.experiments_recovery import (
+from benchmarks.evaluation.experiments_recovery import (
     run_context_ablation_v2,
     run_memory_ablation_v2,
     run_recovery_ablation_v2,
 )
-from pico.evaluation.metrics_reports import (
+from benchmarks.evaluation.metrics_reports import (
     aggregate_benchmark_artifact,
     write_benchmark_core_report,
 )
-from pico.evaluation.provider_benchmark import _provider_target
-from pico.observability import RunArtifactError, project_trace_event
-from pico.task_state import TaskState
+from benchmarks.evaluation.provider_benchmark import _resolve_benchmark_target
+from pico.agent.observability import RunArtifactError, project_trace_event
+from pico.state.task_state import TaskState
+from pico.runtime.options import RuntimeOptions
 
 
 def _current_run_report(run_id):
@@ -165,7 +164,7 @@ def _write_current_run(runs_root, run_id):
 
 
 def test_aggregate_run_artifacts_uses_canonical_report_truth_sources(tmp_path):
-    from pico.evaluation.metrics_reports import aggregate_run_artifacts
+    from benchmarks.evaluation.metrics_reports import aggregate_run_artifacts
 
     _write_current_run(tmp_path, "run_1")
 
@@ -183,7 +182,7 @@ def test_aggregate_run_artifacts_uses_canonical_report_truth_sources(tmp_path):
 def test_aggregate_run_artifacts_ignores_damaged_duplicate_and_legacy_runs(
     tmp_path,
 ):
-    from pico.evaluation.metrics_reports import aggregate_run_artifacts
+    from benchmarks.evaluation.metrics_reports import aggregate_run_artifacts
 
     _write_current_run(tmp_path, "run_current")
     damaged = _write_current_run(tmp_path, "run_damaged")
@@ -210,22 +209,20 @@ def test_aggregate_run_artifacts_ignores_damaged_duplicate_and_legacy_runs(
 
 
 def test_aggregate_run_artifacts_counts_real_rejection_security_event(tmp_path):
-    from pico import Pico, SessionStore, WorkspaceContext
-    from pico.evaluation.metrics_reports import aggregate_run_artifacts
-    from pico.providers.fake import FakeModelClient
+    from pico import Pico
+    from pico.state.session_store import SessionStore
+    from pico.workspace.context import WorkspaceContext
+    from benchmarks.evaluation.metrics_reports import aggregate_run_artifacts
+    from benchmarks.support.fake_provider import FakeModelClient
 
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
     agent = Pico(
         model_client=FakeModelClient(
-            [
-                {"name": "memory_save", "args": {"note":"remember this"}},
-                "done",
-            ]
+            [{"name": "memory_save", "args": {"note": "remember this"}}, "done"]
         ),
         workspace=WorkspaceContext.build(tmp_path),
         session_store=SessionStore(tmp_path / ".pico" / "sessions"),
-        approval_policy="auto",
-        read_only=True,
+        options=RuntimeOptions(approval_policy="auto", read_only=True),
     )
 
     assert agent.ask("remember this") == "done"
@@ -281,7 +278,7 @@ def test_fixed_result_reader_rejects_wrong_type_and_nested_duplicates(tmp_path):
 
 
 def test_provider_summary_reads_cache_from_completion_usage_totals():
-    from pico.evaluation.provider_benchmark import _provider_summary_from_artifact
+    from benchmarks.evaluation.provider_benchmark import _provider_summary_from_artifact
 
     summary = _provider_summary_from_artifact(
         {
@@ -290,10 +287,12 @@ def test_provider_summary_reads_cache_from_completion_usage_totals():
             "rows": [
                 {
                     "report": {
-                        "model": {"usage": {
+                        "model": {
+                            "usage": {
                             "cached_tokens": 12,
                             "cache_hit": True,
-                        }}
+                            }
+                        }
                     },
                     "tool_steps": 1,
                     "attempts": 1,
@@ -308,7 +307,7 @@ def test_provider_summary_reads_cache_from_completion_usage_totals():
 
 
 def test_provider_summary_validates_fixed_result_header_before_rows():
-    from pico.evaluation.provider_benchmark import _provider_summary_from_artifact
+    from benchmarks.evaluation.provider_benchmark import _provider_summary_from_artifact
 
     with pytest.raises(ValueError, match="format_version"):
         _provider_summary_from_artifact(
@@ -324,7 +323,7 @@ def test_provider_summary_validates_fixed_result_header_before_rows():
 def test_collect_resume_metrics_rejects_invalid_provider_artifact(
     tmp_path, monkeypatch, corruption
 ):
-    import pico.evaluation.metrics_reports as metrics_reports
+    import benchmarks.evaluation.metrics_reports as metrics_reports
 
     benchmark = tmp_path / "fixed.json"
     benchmark.write_text(
@@ -399,29 +398,33 @@ def test_context_ablation_compares_compacted_and_uncompacted_sent_messages(tmp_p
         repetitions=1,
     )
     summary = artifact["summary"]
-    assert summary["avg_compacted_request_chars"] < summary["avg_uncompacted_request_chars"]
+    assert (
+        summary["avg_compacted_request_chars"]
+        < summary["avg_uncompacted_request_chars"]
+    )
     assert summary["current_request_preserved_rate"] == 1.0
     assert summary["canonical_history_preserved_rate"] == 1.0
     assert all(
-        config["canonical_messages_dropped"] == 0
-        for config in artifact["configs"]
+        config["canonical_messages_dropped"] == 0 for config in artifact["configs"]
     )
 
 
 def test_request_preview_restores_the_canonical_session(tmp_path):
-    from pico import Pico, SessionStore, WorkspaceContext
-    from pico.evaluation.experiments_synthetic import (
+    from pico import Pico
+    from pico.state.session_store import SessionStore
+    from pico.workspace.context import WorkspaceContext
+    from benchmarks.evaluation.experiments_synthetic import (
         _seed_plain_messages,
         measure_request_ablation_metrics,
     )
-    from pico.providers.fake import FakeModelClient
+    from benchmarks.support.fake_provider import FakeModelClient
 
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
     agent = Pico(
         model_client=FakeModelClient([]),
         workspace=WorkspaceContext.build(tmp_path),
         session_store=SessionStore(tmp_path / ".pico" / "sessions"),
-        approval_policy="auto",
+        options=RuntimeOptions(approval_policy="auto"),
     )
     _seed_plain_messages(agent, 4, "history", 80)
     before_session = agent.session
@@ -433,52 +436,40 @@ def test_request_preview_restores_the_canonical_session(tmp_path):
     assert agent.session["messages"] == before_messages
 
 
-def test_provider_target_uses_deepseek_first_project_env(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
+def test_provider_benchmark_uses_canonical_project_env(tmp_path):
     (tmp_path / ".env").write_text(
         "\n".join(
             [
-                "PICO_API_URL=https://gateway.example/v1",
-                "PICO_DEEPSEEK_API_KEY=sk-project-deepseek",
+                "PICO_PROVIDER=openai",
+                "PICO_API_BASE=https://gateway.example/v1",
+                "PICO_MODEL=gpt-test",
+                "PICO_API_KEY=sk-project",
             ]
         )
         + "\n",
         encoding="utf-8",
     )
 
-    with patch.dict(
-        os.environ,
-        {
-            "DEEPSEEK_API_KEY": "sk-legacy-deepseek",
-            "DEEPSEEK_MODEL": "legacy-deepseek-model",
-            "DEEPSEEK_API_BASE": "https://legacy.deepseek.example/anthropic",
-        },
-        clear=True,
-    ):
-        target = _provider_target("deepseek")
+    target = _resolve_benchmark_target(tmp_path, process_env={})
 
-    assert target["status"] == "ready"
-    assert target["api_key"] == "sk-project-deepseek"
-    assert target["model"] == "deepseek-v4-flash"
+    assert target["provider"] == "openai"
+    assert target["api_key"] == "sk-project"
+    assert target["model"] == "gpt-test"
     assert target["base_url"] == "https://gateway.example/v1"
-    assert target["client_kind"] == "anthropic_messages"
-    assert target["auth_mode"] == "x-api-key"
-    assert target["capabilities"] == {"thinking_disabled": True}
+    assert target["transport"] == "openai_chat_completions"
+    assert target["auth_mode"] == "bearer"
 
 
-def test_provider_target_uses_explicit_pico_key_for_gpt(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-
-    with patch.dict(os.environ, {"PICO_OPENAI_API_KEY": "sk-official"}, clear=True):
-        target = _provider_target("gpt")
-
-    assert target["status"] == "ready"
-    assert target["api_key"] == "sk-official"
-    assert target["model"] == "gpt-5.4"
+def test_provider_benchmark_rejects_vendor_only_environment(tmp_path):
+    with pytest.raises(ValueError, match="^provider_not_configured$"):
+        _resolve_benchmark_target(
+            tmp_path,
+            process_env={"PICO_OPENAI_API_KEY": "sk-old"},
+        )
 
 
 def test_real_memory_request_recorder_captures_native_messages():
-    from pico.evaluation.experiments_real import (
+    from benchmarks.evaluation.experiments_real import (
         _first_followup_drops_bootstrap_tool,
         _recording_provider,
     )
@@ -489,12 +480,15 @@ def test_real_memory_request_recorder_captures_native_messages():
 
     native = _recording_provider(NativeProvider())
     messages = [{"role": "assistant", "content": [{"id": "tu_1"}]}]
-    assert native.complete(
+    assert (
+        native.complete(
         system=[],
         tools=[],
         messages=messages,
         max_tokens=10,
-    )["messages"] == messages
+        )["messages"]
+        == messages
+    )
     assert native.calls == [("messages", messages)]
     assert _first_followup_drops_bootstrap_tool(native, 0, "tu_1") is False
     assert _first_followup_drops_bootstrap_tool(native, 1, "tu_1") is False
@@ -503,16 +497,18 @@ def test_real_memory_request_recorder_captures_native_messages():
 
 
 def test_real_followup_metrics_rejects_missing_run_artifact(tmp_path):
-    from pico import Pico, SessionStore, WorkspaceContext
-    from pico.evaluation.experiments_real import _followup_trace_metrics
-    from pico.providers.fake import FakeModelClient
+    from pico import Pico
+    from pico.state.session_store import SessionStore
+    from pico.workspace.context import WorkspaceContext
+    from benchmarks.evaluation.experiments_real import _followup_trace_metrics
+    from benchmarks.support.fake_provider import FakeModelClient
 
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
     agent = Pico(
         model_client=FakeModelClient(["done"]),
         workspace=WorkspaceContext.build(tmp_path),
         session_store=SessionStore(tmp_path / ".pico" / "sessions"),
-        approval_policy="auto",
+        options=RuntimeOptions(approval_policy="auto"),
     )
     agent.ask("finish")
     agent.run_store.report_path(agent.current_task_state).unlink()
@@ -522,7 +518,9 @@ def test_real_followup_metrics_rejects_missing_run_artifact(tmp_path):
 
 
 def test_memory_summary_detector_requires_nonempty_working_set_line():
-    from pico.evaluation.experiments_synthetic import _prompt_has_reusable_file_summary
+    from benchmarks.evaluation.experiments_synthetic import (
+        _prompt_has_reusable_file_summary,
+    )
 
     expected_line = "- facts.txt: deploy key is red"
     indexed_prompt = "\n".join(
@@ -538,7 +536,9 @@ def test_memory_summary_detector_requires_nonempty_working_set_line():
 
 
 def test_memory_summary_detector_rejects_line_after_closed_working_set():
-    from pico.evaluation.experiments_synthetic import _prompt_has_reusable_file_summary
+    from benchmarks.evaluation.experiments_synthetic import (
+        _prompt_has_reusable_file_summary,
+    )
 
     expected_line = "- facts.txt: deploy key is red"
     assert not _prompt_has_reusable_file_summary(
@@ -553,22 +553,28 @@ def test_memory_summary_detector_rejects_line_after_closed_working_set():
     )
 
 
-def test_memory_ablation_reports_no_bootstrap_drop_without_samples():
-    from pico.evaluation.experiments_real import run_real_memory_experiment
-    from pico.evaluation.experiments_synthetic import (
+def test_memory_ablation_reports_no_bootstrap_drop_without_samples(tmp_path):
+    from benchmarks.evaluation.experiments_real import run_real_memory_experiment
+    from benchmarks.evaluation.experiments_synthetic import (
         run_large_scale_memory_experiment,
         run_memory_dependency_experiment,
     )
 
+    (tmp_path / ".env").write_text(
+        "PICO_PROVIDER=ollama\n"
+        "PICO_API_BASE=http://127.0.0.1:11434\n"
+        "PICO_MODEL=qwen-test\n"
+        "PICO_API_KEY=\n",
+        encoding="utf-8",
+    )
     variant_sets = (
         run_memory_dependency_experiment(repetitions=0),
         run_large_scale_memory_experiment(repetitions=0)["variants"],
-        run_real_memory_experiment(repetitions=0)["variants"],
+        run_real_memory_experiment(repo_root=tmp_path, repetitions=0)["variants"],
     )
     for variants in variant_sets:
         assert all(
-            not variant["bootstrap_tool_turn_dropped"]
-            for variant in variants.values()
+            not variant["bootstrap_tool_turn_dropped"] for variant in variants.values()
         )
 
 
@@ -596,7 +602,9 @@ def test_run_memory_ablation_v2_writes_expected_artifact(tmp_path):
     assert on["repeated_reads"] < irrelevant["repeated_reads"]
     assert on["memory_hit_rate"] > off["memory_hit_rate"]
     assert on["memory_hit_rate"] > irrelevant["memory_hit_rate"]
-    assert on["correct_rate"] == off["correct_rate"] == irrelevant["correct_rate"] == 1.0
+    assert (
+        on["correct_rate"] == off["correct_rate"] == irrelevant["correct_rate"] == 1.0
+    )
 
 
 def test_run_recovery_ablation_v2_writes_expected_artifact(tmp_path):
@@ -621,7 +629,7 @@ def test_run_recovery_ablation_v2_writes_expected_artifact(tmp_path):
 
 
 def test_recovery_ablation_rejects_damaged_run_artifact(monkeypatch):
-    import pico.evaluation.experiments_recovery as recovery
+    import benchmarks.evaluation.experiments_recovery as recovery
 
     real_ask = recovery.Pico.ask
 
@@ -643,9 +651,15 @@ def test_recovery_ablation_rejects_damaged_run_artifact(monkeypatch):
 
 
 def test_write_benchmark_core_report_marks_resume_safe_metrics(tmp_path):
-    run_context_ablation_v2(tmp_path / "artifacts" / "context-ablation-v2.json", repetitions=1)
-    run_memory_ablation_v2(tmp_path / "artifacts" / "memory-ablation-v2.json", repetitions=1)
-    run_recovery_ablation_v2(tmp_path / "artifacts" / "recovery-ablation-v2.json", repetitions=1)
+    run_context_ablation_v2(
+        tmp_path / "artifacts" / "context-ablation-v2.json", repetitions=1
+    )
+    run_memory_ablation_v2(
+        tmp_path / "artifacts" / "memory-ablation-v2.json", repetitions=1
+    )
+    run_recovery_ablation_v2(
+        tmp_path / "artifacts" / "recovery-ablation-v2.json", repetitions=1
+    )
     harness_artifact_path = tmp_path / "artifacts" / "harness-regression-v2.json"
     harness_artifact_path.write_text(
         '{"record_type":"fixed_benchmark_result","format_version":1,"summary":{"total_tasks":12,"pass_rate":1.0,"within_budget_rate":1.0,"verifier_pass_rate":1.0},"failure_category_counts":{}}',
@@ -724,99 +738,55 @@ def test_core_report_rejects_each_noncurrent_input_before_business(
         )
 
 
-def test_provider_selection_normalizes_default_all_and_single_provider():
-    from pico.evaluation.provider_benchmark import _normalize_provider_selection
-
-    assert _normalize_provider_selection(None) == ("gpt", "claude", "deepseek")
-    assert _normalize_provider_selection("all") == ("gpt", "claude", "deepseek")
-    assert _normalize_provider_selection("deepseek") == ("deepseek",)
-    assert _normalize_provider_selection(["gpt", "deepseek"]) == ("gpt", "deepseek")
-
-
-def test_provider_selection_rejects_unknown_provider():
-    from pico.evaluation.provider_benchmark import _normalize_provider_selection
-
-    with pytest.raises(ValueError, match="unknown provider"):
-        _normalize_provider_selection("openai")
-    with pytest.raises(ValueError, match="unknown provider"):
-        _normalize_provider_selection(["all", "openai"])
-
-
-def test_run_provider_experiments_targets_selected_provider(tmp_path, monkeypatch):
-    from pico.evaluation.provider_benchmark import run_provider_experiments
+def test_run_provider_experiments_runs_only_repo_env_target(tmp_path, monkeypatch):
+    from benchmarks.evaluation.provider_benchmark import run_provider_experiments
 
     seen = []
 
-    def fake_provider_target(provider):
-        seen.append(provider)
+    def fake_resolve_target(repo_root):
+        seen.append(repo_root)
         return {
-            "provider": provider,
-            "status": "blocked",
-            "reason": f"{provider} key missing",
+            "provider": "openai",
+            "transport": "openai_responses",
+            "variant": "responses",
+            "model": "gpt-test",
+            "base_url": "https://api.openai.com/v1",
+            "api_key": "test-key",
+            "auth_mode": "bearer",
+            "capabilities": {},
         }
 
     monkeypatch.setattr(
-        "pico.evaluation.provider_benchmark._provider_target",
-        fake_provider_target,
+        "benchmarks.evaluation.provider_benchmark._resolve_benchmark_target",
+        fake_resolve_target,
+    )
+    monkeypatch.setattr(
+        "benchmarks.evaluation.provider_benchmark.run_fixed_benchmark",
+        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("offline stop")),
     )
 
     payload = run_provider_experiments(
         benchmark_path=tmp_path / "benchmarks.json",
         workspace_root=tmp_path / "workspaces",
         artifact_root=tmp_path / "artifacts",
-        providers="deepseek",
+        repo_root=tmp_path,
     )
 
-    assert seen == ["deepseek"]
-    assert payload == {
-        "record_type": "provider_experiment_result",
-        "format_version": 1,
-        "providers": [
-            {
-                "provider": "deepseek",
-                "status": "blocked",
-                "reason": "deepseek key missing",
-            }
-        ]
+    assert seen == [tmp_path]
+    assert payload["record_type"] == "provider_experiment_result"
+    assert payload["format_version"] == 1
+    assert len(payload["providers"]) == 1
+    assert payload["providers"][0] == {
+        "provider": "openai",
+        "variant": "responses",
+        "status": "error",
+        "model": "gpt-test",
+        "reason": "offline stop",
     }
 
 
-def test_run_provider_experiments_default_keeps_three_provider_order(tmp_path, monkeypatch):
-    from pico.evaluation.provider_benchmark import run_provider_experiments
-
-    seen = []
-
-    def fake_provider_target(provider):
-        seen.append(provider)
-        return {
-            "provider": provider,
-            "status": "blocked",
-            "reason": f"{provider} key missing",
-        }
-
-    monkeypatch.setattr(
-        "pico.evaluation.provider_benchmark._provider_target",
-        fake_provider_target,
-    )
-
-    payload = run_provider_experiments(
-        benchmark_path=tmp_path / "benchmarks.json",
-        workspace_root=tmp_path / "workspaces",
-        artifact_root=tmp_path / "artifacts",
-    )
-
-    assert seen == ["gpt", "claude", "deepseek"]
-    assert payload["record_type"] == "provider_experiment_result"
-    assert payload["format_version"] == 1
-    assert [row["provider"] for row in payload["providers"]] == [
-        "gpt",
-        "claude",
-        "deepseek",
-    ]
-
-
 def test_provider_script_writes_current_provider_family(tmp_path, monkeypatch):
-    from scripts import run_provider_experiments as script
+    from scripts.evaluation import run_provider_experiments as script
 
     payload = {
         "record_type": "provider_experiment_result",
@@ -830,10 +800,8 @@ def test_provider_script_writes_current_provider_family(tmp_path, monkeypatch):
     assert json.loads(output.read_text(encoding="utf-8")) == payload
 
 
-def test_large_scale_script_versions_independent_family_outputs(
-    tmp_path, monkeypatch
-):
-    from scripts import run_large_scale_experiments as script
+def test_large_scale_script_versions_independent_family_outputs(tmp_path, monkeypatch):
+    from scripts.evaluation import run_large_scale_experiments as script
 
     provider_payload = {
         "record_type": "provider_experiment_result",
@@ -848,33 +816,53 @@ def test_large_scale_script_versions_independent_family_outputs(
     monkeypatch.setattr(
         script, "run_provider_experiments", lambda **kwargs: provider_payload
     )
-    monkeypatch.setattr(script, "collect_resume_metrics", lambda *args, **kwargs: metrics)
-    monkeypatch.setattr(script, "render_resume_metrics_markdown", lambda payload: "resume")
-    monkeypatch.setattr(script, "render_large_scale_experiment_report", lambda payload: "report")
+    monkeypatch.setattr(
+        script, "collect_resume_metrics", lambda *args, **kwargs: metrics
+    )
+    monkeypatch.setattr(
+        script, "render_resume_metrics_markdown", lambda payload: "resume"
+    )
+    monkeypatch.setattr(
+        script, "render_large_scale_experiment_report", lambda payload: "report"
+    )
     paths = {
         name: tmp_path / f"{name}.json"
         for name in ("provider", "resume", "memory", "context", "security")
     }
 
-    assert script.main(
+    assert (
+        script.main(
         [
-            "--benchmark-artifact", str(tmp_path / "fixed.json"),
-            "--runs-root", str(tmp_path / "runs"),
-            "--provider-output-json", str(paths["provider"]),
-            "--resume-output-json", str(paths["resume"]),
-            "--resume-output-markdown", str(tmp_path / "resume.md"),
-            "--memory-output-json", str(paths["memory"]),
-            "--context-output-json", str(paths["context"]),
-            "--security-output-json", str(paths["security"]),
-            "--final-report-markdown", str(tmp_path / "report.md"),
+                "--benchmark-artifact",
+                str(tmp_path / "fixed.json"),
+                "--runs-root",
+                str(tmp_path / "runs"),
+                "--provider-output-json",
+                str(paths["provider"]),
+                "--resume-output-json",
+                str(paths["resume"]),
+                "--resume-output-markdown",
+                str(tmp_path / "resume.md"),
+                "--memory-output-json",
+                str(paths["memory"]),
+                "--context-output-json",
+                str(paths["context"]),
+                "--security-output-json",
+                str(paths["security"]),
+                "--final-report-markdown",
+                str(tmp_path / "report.md"),
         ]
-    ) == 0
+        )
+        == 0
+    )
     assert json.loads(paths["provider"].read_text(encoding="utf-8")) == provider_payload
     memory = json.loads(paths["memory"].read_text(encoding="utf-8"))
     context = json.loads(paths["context"].read_text(encoding="utf-8"))
     assert (memory["record_type"], memory["format_version"]) == (
-        "memory_ablation_result", 1
+        "memory_ablation_result",
+        1,
     )
     assert (context["record_type"], context["format_version"]) == (
-        "context_ablation_result", 1
+        "context_ablation_result",
+        1,
     )

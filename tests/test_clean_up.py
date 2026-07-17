@@ -10,6 +10,7 @@
 import importlib
 
 import pytest
+from pico.runtime.options import RuntimeOptions
 
 
 def test_no_working_memory_module():
@@ -18,14 +19,16 @@ def test_no_working_memory_module():
 
 
 def test_default_feature_flags_no_relevant_memory():
-    from pico.runtime import DEFAULT_FEATURE_FLAGS
+    from pico.runtime.application import DEFAULT_FEATURE_FLAGS
 
     assert "relevant_memory" not in DEFAULT_FEATURE_FLAGS
 
 
 def test_metadata_uses_system_prefix_hash_only(tmp_path):
-    from pico import Pico, SessionStore, WorkspaceContext
-    from pico.providers.fake import FakeModelClient
+    from pico import Pico
+    from pico.state.session_store import SessionStore
+    from pico.workspace.context import WorkspaceContext
+    from benchmarks.support.fake_provider import FakeModelClient
     from pico.context.renderer import render_current_user_message
 
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
@@ -35,7 +38,7 @@ def test_metadata_uses_system_prefix_hash_only(tmp_path):
         model_client=FakeModelClient([]),
         workspace=workspace,
         session_store=store,
-        approval_policy="auto",
+        options=RuntimeOptions(approval_policy="auto"),
     )
 
     agent.session["messages"].append(

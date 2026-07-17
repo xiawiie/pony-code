@@ -1,13 +1,16 @@
-from pico import Pico, SessionStore, WorkspaceContext
-from pico.providers.fake import FakeModelClient
-from pico.checkpoint import (
+from pico import Pico
+from pico.state.session_store import SessionStore
+from pico.workspace.context import WorkspaceContext
+from benchmarks.support.fake_provider import FakeModelClient
+from pico.state.checkpoint import (
     CHECKPOINT_FULL_VALID_STATUS,
     CHECKPOINT_NONE_STATUS,
     create_checkpoint,
     current_runtime_identity,
     evaluate_resume_state,
 )
-from pico.task_state import TaskState
+from pico.state.task_state import TaskState
+from pico.runtime.options import RuntimeOptions
 
 
 def build_agent(tmp_path, outputs=None, **kwargs):
@@ -18,8 +21,9 @@ def build_agent(tmp_path, outputs=None, **kwargs):
         model_client=FakeModelClient(outputs or []),
         workspace=workspace,
         session_store=store,
-        approval_policy=kwargs.pop("approval_policy", "auto"),
-        **kwargs,
+        options=RuntimeOptions(
+            approval_policy=kwargs.pop("approval_policy", "auto"), **kwargs
+        ),
     )
 
 
@@ -60,16 +64,21 @@ def test_evaluate_resume_state_distinguishes_no_checkpoint_and_full_valid(tmp_pa
     }
     assert evaluate_resume_state(agent)["status"] == CHECKPOINT_FULL_VALID_STATUS
 
+
 def test_create_checkpoint_records_recent_files_without_memory_state(tmp_path):
     agent = build_agent(tmp_path)
     (tmp_path / "sample.txt").write_text("hello\n", encoding="utf-8")
     agent.memory.remember_file("sample.txt")
     agent._sync_working_memory()
-    task_state = TaskState.create(task_id="task_test", user_request="read sample", run_id="run_test")
+    task_state = TaskState.create(
+        task_id="task_test", user_request="read sample", run_id="run_test"
+    )
     task_state.finish_success("read sample")
 
     checkpoint = create_checkpoint(agent, task_state, "read sample", "unit")
 
-    sample_item = next(item for item in checkpoint["key_files"] if item["path"] == "sample.txt")
+    sample_item = next(
+        item for item in checkpoint["key_files"] if item["path"] == "sample.txt"
+    )
     assert checkpoint["freshness"]["sample.txt"] == sample_item["freshness"]
     assert "memory_state" not in checkpoint

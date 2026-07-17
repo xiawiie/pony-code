@@ -1,17 +1,37 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling>=1.30,<2"]
+build-backend = "hatchling.build"
 
 [project]
 name = "pico"
-version = "0.2.1"
-description = "Small local coding agent using DeepSeek via Anthropic Messages"
+version = "1.0.0"
+description = "Local coding agent for repository-grounded engineering work"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = []
+license = "MIT"
+license-files = ["LICENSE"]
+keywords = ["coding-agent", "developer-tools", "cli"]
+classifiers = [
+  "Development Status :: 5 - Production/Stable",
+  "Environment :: Console",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Software Development :: Libraries :: Application Frameworks",
+]
+dependencies = [
+  "prompt-toolkit>=3.0.52,<4",
+]
+
+[project.urls]
+Homepage = "https://github.com/xiawiie/pico"
+Documentation = "https://github.com/xiawiie/pico#readme"
+Issues = "https://github.com/xiawiie/pico/issues"
+Source = "https://github.com/xiawiie/pico"
 
 [project.scripts]
-pico = "pico.cli:main"
+pico = "pico.cli.app:main"
 
 [dependency-groups]
 dev = [
@@ -19,19 +39,16 @@ dev = [
   "ruff>=0.4.4",
 ]
 
-[tool.setuptools]
-packages = [
-  "pico",
-  "pico._docker_sandbox",
-  "pico.context",
-  "pico.features",
-  "pico.memory",
-  "pico.providers",
+[tool.hatch.build.targets.sdist]
+include = [
+  "/LICENSE",
+  "/README.md",
+  "/pyproject.toml",
+  "/pico",
 ]
-include-package-data = false
 
-[tool.setuptools.package-data]
-"pico._docker_sandbox" = ["image-manifest.json", "docker-config/config.json"]
+[tool.hatch.build.targets.wheel]
+packages = ["pico"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

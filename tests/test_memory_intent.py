@@ -1,4 +1,4 @@
-from pico.tools import memory_write_intent
+from pico.tools.registry import memory_write_intent
 
 
 def test_memory_write_requires_current_explicit_intent():

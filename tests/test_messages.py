@@ -2,7 +2,7 @@ import copy
 
 import pytest
 
-from pico.messages import (
+from pico.agent.messages import (
     MessageValidationError,
     append_messages,
     build_request_messages,

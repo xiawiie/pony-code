@@ -9,12 +9,15 @@ from unittest.mock import Mock
 
 import pytest
 
-from pico import Pico, SessionStore, WorkspaceContext
-from pico.cli import main
-from pico.cli_start import run_agent_once
-from pico.config import write_project_env_assignments
+from pico import Pico
+from pico.state.session_store import SessionStore
+from pico.workspace.context import WorkspaceContext
+from pico.cli.app import main
+from pico.cli.start import run_agent_once
+from pico.config.environment import write_project_env_assignments
 from pico.providers.response import Response, StopReason
-from pico.tools import _ApprovedShellExecution
+from pico.tools.shell import ApprovedShellExecution
+from pico.runtime.options import RuntimeOptions
 
 
 class ScriptedProvider:
@@ -51,9 +54,8 @@ def _build_agent(root, provider, *, session=None):
             },
         ),
         session_store=SessionStore(root / ".pico" / "sessions"),
-        approval_policy="ask",
-        max_steps=6,
         session=session,
+        options=RuntimeOptions(approval_policy="ask", max_steps=6),
     )
 
 
@@ -94,16 +96,17 @@ def test_offline_a1_canary_crosses_real_boundaries_without_normal_artifact_leak(
 ):
     secret = "ghp_" + "A" * 32
     safe_blob_bytes = b"safe recovery bytes\n"
-    monkeypatch.setenv("PICO_DEEPSEEK_API_KEY", secret)
+    monkeypatch.setenv("PICO_API_KEY", secret)
     monkeypatch.setattr(
-        "pico.cli_diagnostics.check_api_connectivity",
+        "pico.cli.diagnostics.check_api_connectivity",
         Mock(side_effect=AssertionError("offline doctor attempted network")),
     )
     write_project_env_assignments(
         tmp_path,
         {
-            "PICO_API_URL": "https://api.deepseek.com",
-            "PICO_DEEPSEEK_API_KEY": secret,
+            "PICO_PROVIDER": "openai",
+            "PICO_API_BASE": "https://api.deepseek.com",
+            "PICO_API_KEY": secret,
         },
     )
 
@@ -113,9 +116,7 @@ def test_offline_a1_canary_crosses_real_boundaries_without_normal_artifact_leak(
         "id": "candidate-canary",
         "created_at": "2026-01-01T00:00:00+00:00",
         "workspace_root": str(tmp_path),
-        "messages": [
-            {"role": "user", "content": secret, "_pico_meta": {}}
-        ],
+        "messages": [{"role": "user", "content": secret, "_pico_meta": {}}],
         "working_memory": {
             "task_summary": secret,
             "recent_files": [secret],
@@ -217,10 +218,7 @@ def test_offline_a1_canary_crosses_real_boundaries_without_normal_artifact_leak(
     assert verification_runner.call_count == 1
     assert [name for name, _ in approval_payloads] == ["run_shell"]
     assert secret not in json.dumps(approval_payloads)
-    assert any(
-        record.get("verification_evidence")
-        for record in checkpoint_writes
-    )
+    assert any(record.get("verification_evidence") for record in checkpoint_writes)
     assert secret not in json.dumps(checkpoint_writes)
 
     checkpoint_id = agent.current_task_state.recovery_checkpoint_id
@@ -246,7 +244,7 @@ def test_offline_a1_canary_crosses_real_boundaries_without_normal_artifact_leak(
         },
     )
     assert failing_runner.call_count == 1
-    assert isinstance(failing_runner.call_args.args[0], _ApprovedShellExecution)
+    assert isinstance(failing_runner.call_args.args[0], ApprovedShellExecution)
     assert secret not in json.dumps(approval_payloads)
     assert failed.metadata["tool_change_id"]
     failed_change = agent.checkpoint_store.load_tool_change_record(
@@ -318,9 +316,7 @@ def test_offline_a1_canary_crosses_real_boundaries_without_normal_artifact_leak(
     # A provider error crosses the real one-shot CLI boundary and is absent
     # from visible output and persisted run artifacts.
     error_root = tmp_path / "provider-error"
-    error_provider = ScriptedProvider(
-        [RuntimeError("provider failure " + secret)]
-    )
+    error_provider = ScriptedProvider([RuntimeError("provider failure " + secret)])
     error_agent = _build_agent(error_root, error_provider)
     caplog.set_level(logging.DEBUG, logger="pico")
     assert run_agent_once(error_agent, ["provider error", secret]) == 1
@@ -352,7 +348,8 @@ def test_offline_a1_canary_crosses_real_boundaries_without_normal_artifact_leak(
     )
     for output_format in ("json", "text"):
         for command in commands:
-            assert main(
+            assert (
+                main(
                 [
                     "--cwd",
                     str(tmp_path),
@@ -360,7 +357,9 @@ def test_offline_a1_canary_crosses_real_boundaries_without_normal_artifact_leak(
                     output_format,
                     *command,
                 ]
-            ) == 0
+                )
+                == 0
+            )
             cli_output = capsys.readouterr()
             assert secret not in cli_output.out + cli_output.err
 

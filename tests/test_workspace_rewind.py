@@ -3,12 +3,15 @@ from types import SimpleNamespace
 
 import pytest
 
-from pico import Pico, SessionStore, WorkspaceContext
-from pico.providers.fake import FakeModelClient
-from pico.runtime import (
+from pico import Pico
+from pico.state.session_store import SessionStore
+from pico.workspace.context import WorkspaceContext
+from benchmarks.support.fake_provider import FakeModelClient
+from pico.runtime.rewind import (
     WorkspaceRewindConfirmationRequired,
     WorkspaceRewindError,
 )
+from pico.runtime.options import RuntimeOptions
 
 
 def _agent(tmp_path, outputs=None, *, store=None):
@@ -17,7 +20,7 @@ def _agent(tmp_path, outputs=None, *, store=None):
         model_client=FakeModelClient(outputs or []),
         workspace=WorkspaceContext.build(tmp_path),
         session_store=store or SessionStore(tmp_path / ".pico" / "sessions"),
-        approval_policy="auto",
+        options=RuntimeOptions(approval_policy="auto"),
     )
 
 
@@ -138,7 +141,7 @@ def test_resume_reconciles_restore_success_after_session_append_crash(
         workspace=WorkspaceContext.build(tmp_path),
         session_store=resumed_store,
         session_id=session_id,
-        approval_policy="auto",
+        options=RuntimeOptions(approval_policy="auto"),
     )
 
     tree = resumed.session_store.load_tree(session_id)
@@ -190,7 +193,7 @@ def test_prepared_rewind_intent_matches_exact_restore_operation_after_crash(
         workspace=WorkspaceContext.build(tmp_path),
         session_store=resumed_store,
         session_id=session_id,
-        approval_policy="auto",
+        options=RuntimeOptions(approval_policy="auto"),
     )
 
     rewind = next(

@@ -1,4 +1,4 @@
-from pico.tool_executor import PolicyDecision
+from pico.tools.executor import PolicyDecision
 
 
 def test_policy_decision_is_explicit_and_fail_closed():

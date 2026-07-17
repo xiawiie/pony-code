@@ -1,190 +1,182 @@
-# Pico CLI 安装与更新
+# CLI 安装、配置与更新
 
-本文只说明本地安装、环境解析、更新和 CLI 自救。命令语义与模块关系见[架构](architecture.md)。
+## 支持范围
 
-## 在源码仓库中使用
+- Python：3.11、3.12。
+- Runtime dependencies：一个直接依赖 `prompt-toolkit`；锁定环境中同时安装其传递依赖 `wcwidth`。
+- Host CLI：纯 Python，支持常规本地环境；Host 不是 OS sandbox。
+- Docker Sandbox：1.0 仅支持 macOS arm64 + Docker Desktop + already-present exact image。
 
-Pico 需要 Python 3.11+。开发环境使用仓库已跟踪的 `uv.lock`：
+## 从 PyPI 安装
+
+推荐在独立虚拟环境中安装：
 
 ```bash
-cd /path/to/pico
-uv sync --frozen --dev
+python -m venv .venv
 source .venv/bin/activate
-command -v pico
+python -m pip install pico==1.0.0
+pico --version
 pico --help
 ```
 
-`command -v pico` 应输出当前 `.venv/bin/pico`。macOS 可能已有系统同名程序，所以环境是否激活必须
-以这条命令的结果为准。不能激活环境时使用：
+如果 shell 找不到 `pico`，先检查 `python -m pip --version` 和 `command -v python` 是否来自同一个环境，再检查
+`command -v pico`。不要通过修改 Pico 源码解决 PATH 问题。
+
+## 从源码安装
 
 ```bash
-uv run pico doctor
-uv run pico run "inspect the repository"
+git clone https://github.com/xiawiie/pico.git
+cd pico
+uv sync --frozen --dev
+uv run pico --version
 ```
 
-从构建产物做隔离安装时：
+`uv.lock` 是开发和 CI 的锁定真源。日常验证使用 `uv run ...`，不要向 runtime dependency 添加仅供测试或构建使用的包。
 
-```bash
-uv build --clear
-python3 -m venv /tmp/pico-venv
-source /tmp/pico-venv/bin/activate
-python -m pip install --no-deps dist/pico-0.2.1-py3-none-any.whl
-command -v pico
-pico doctor
-```
+## 项目初始化
 
-## 项目配置与凭证
-
-Pico 只读取当前 lexical repository root 的 `.env`。推荐通过交互式初始化同时配置精确 API 根和凭证：
+进入需要 Pico 操作的仓库根目录：
 
 ```bash
 pico init
-chmod 600 .env
+pico config show
 pico doctor
 ```
 
-`init` 依次询问 API URL 和 API Key。URL 留空时使用 `https://api.deepseek.com/anthropic/v1`；Key 使用隐藏输入，已有 Key
-时直接回车即可保留。`init` 只做本地校验和原子写入，不发送 API 请求。若只需轮换凭证，可运行：
+`init` 依次询问 Provider、API Base、模型和 API Key，将四个通用变量原子写入根目录 `.env`。输入已有 Key 时，
+留空会保留原值；本地 Ollama 允许空 Key。该命令不联网。
+
+也可以复制仓库提供的 `.env.example`：
 
 ```bash
-pico config set-secret PICO_DEEPSEEK_API_KEY
+cp .env.example .env
+chmod 600 .env
 ```
 
-最终模型配置只有：
+然后编辑：
 
 ```dotenv
-PICO_API_URL=https://api.deepseek.com/anthropic/v1
-PICO_DEEPSEEK_API_KEY=
+PICO_PROVIDER=anthropic
+PICO_API_BASE=https://api.anthropic.com/v1
+PICO_API_KEY=
+PICO_MODEL=claude-sonnet-4-6
 ```
 
-模型固定为 `deepseek-v4-flash`，协议固定为 Anthropic Messages，认证固定为 `x-api-key`。`PICO_API_URL`
-必须是精确、已版本化 API 根，Pico 只追加 `/messages`，不自动补 `/v1`。第三方服务必须兼容相同协议和认证；
-例如 Lumina 的 Anthropic 根应写为 `https://lumina.tripo3d.com/v1`。
-URL 禁止 query、fragment、userinfo 或嵌入凭据；除 loopback 外只允许 HTTPS。
-
-项目 `.env` 优先于当前进程环境；只读取上述两个运行时变量，不回退标准厂商 Key 或旧 Pico 配置。
-不要把真实 Key 写入 shell history、命令参数、文档或测试 fixture。普通 `pico doctor` 不联网；仅
-`pico doctor --check-api` 执行可能产生费用的文本、工具调用与 tool result 续接验证。
-
-模型预算和 Context 可以通过 `pico.toml` 调整，不改变固定 API 协议：
-
-```toml
-[model]
-context_window = 128000
-output_limit = 16384
-
-[context]
-system_tools_hard_cap = 24576
-source_pool_tokens = 16384
-
-[context.compaction]
-enabled = true
-reserve_tokens = 16384
-keep_recent_tokens = 20000
-```
-
-CLI 的当前名称是 `--context-window` 和 `--max-output-tokens`；Context history 只通过 compaction 退出 active
-request，不按旧 soft cap 静默丢弃。
-
-## Session 与长任务
+如只需安全更新 Key，可使用隐藏输入或标准输入：
 
 ```bash
-pico session inspect <session-id>
-pico session tree <session-id>
-pico session compact <session-id> [focus]
-pico session checkpoint <session-id> [label]
-pico session fork <session-id> <entry-id>
-pico session rewind <session-id> <entry-or-checkpoint-id> [--summary] [--workspace --yes]
-pico session clone <session-id> --to-worktree <path>
-pico session tail-repair <session-id> --yes
+pico config set-secret PICO_API_KEY
 ```
 
-`pico sessions list/show` 是只读摘要入口；`pico session` 提供 Session Tree 操作。旧 JSON Session 只有显式 resume
-才自动迁移，inspection 不写磁盘。普通 rewind 不改工作区；`--workspace` 总是先 preview，并且只接受合法 task
-checkpoint。详细合同见 [Context、Session 与长会话](context-and-sessions.md)。
+`.env` 规则：
+
+- 只读取当前 lexical repository root，不搜索父目录或兄弟 worktree。
+- 项目 `.env` 高于进程环境。
+- 文件必须是普通 single-link private file；不安全文件会拒绝或进入 review-required 状态。
+- 只解析键值，不执行 shell expansion，不把内容注入全局 `os.environ`。
+- `PICO_DEEPSEEK_API_KEY`、`OPENAI_API_KEY`、`ANTHROPIC_API_KEY` 等不配置 1.0 runtime。
+
+## 交互与一次性入口
+
+配置完成后，裸命令直接进入行内 TUI：
+
+```bash
+pico
+```
+
+以下三个入口有稳定且互不含糊的含义：
+
+| 调用 | 含义 |
+| --- | --- |
+| `pico` | 默认交互 TUI |
+| `pico repl` | 显式进入同一个交互会话，便于文档和排障 |
+| `pico run "<prompt>"` | 执行一次请求并退出，适合脚本或 CI |
+
+`pico "prompt"` 不会被当作隐式请求；首个未知 token 会返回 usage error 和接近命令建议。这保留了子命令扩展空间，
+避免未来新增命令时改变旧脚本含义。
+
+TUI 需要 stdin/stdout 同时为 TTY、`TERM` 不是 `dumb` 且终端至少 40 列，否则自动使用纯文本 REPL。颜色还会遵守
+`--no-color` 和 `NO_COLOR`。输入 `/` 查看交互命令；`Ctrl+D` 退出，`Ctrl+C` 中断/清空，短时间内再次按下则退出。
+
+## Provider 切换
+
+切换 Provider 时修改同一组变量，不创建 profile 或 connection 文件。
+
+| Provider | Variant | 默认 URL | 默认认证 | Key |
+| --- | --- | --- | --- | --- |
+| Anthropic | `messages` | `https://api.anthropic.com/v1` | `x-api-key` | 必需 |
+| OpenAI | `responses` | `https://api.openai.com/v1` | `bearer` | 必需 |
+| OpenAI-compatible | `chat_completions` | 用户显式填写 | 通常 `bearer` | 必需 |
+| Ollama | `chat` | `http://127.0.0.1:11434` | `none` | 可空 |
+
+切换后运行：
+
+```bash
+pico config show
+pico doctor
+pico doctor --check-api
+```
+
+最后一条会发送真实请求，可能收费。Pico 不自动探测模型、端点或协议，不在请求失败后切换 Provider。
 
 ## 更新
 
-源码更新后重新同步锁定环境：
+PyPI 安装：
 
 ```bash
-git pull --ff-only
-uv lock --check
-uv sync --frozen --dev
+python -m pip install --upgrade pico
+pico --version
 pico doctor
 ```
 
-修改 `pyproject.toml`、切换分支或 console entry 变化后必须重新同步。不要手工修改 `.venv/bin/pico`。
-当前项目没有运行时第三方依赖，但 dev tools 仍由 lock 冻结。
-
-## Docker Sandbox
-
-普通 `run/repl` 不下载 Sandbox。v0.2.1 的公开 `--sandbox run/repl` 只在 macOS arm64 可用；其他宿主返回
-`sandbox_local_platform_not_released`。受支持宿主每次生成 sealed local authorization，并验证当前安装树、
-packaged image 合同、already-present exact `linux/arm64` image 和 Docker Desktop；任一失败都发生在 Provider、
-Session staging 和 target 之前，且不会回退 Host。状态命令可用：
+源码安装：
 
 ```bash
-pico --format json sandbox status
-pico --format json sandbox list
-pico --format json sandbox inspect <sandbox-id>
-pico --format json sandbox diff <sandbox-id>
-pico --format json sandbox prune --dry-run
+git pull --ff-only
+uv sync --frozen --dev
+uv run pico --version
+uv run pico doctor
 ```
 
-`status/list/inspect/diff/prune --dry-run`不联网、不创建state root或lock、不reconcile，也不启动container。
-`status/list`同时报告active/pending/cleanup-pending数量、当前已验证staging bytes、oldest age和orphan/
-reconciliation计数。unknown state只计数且不公开path；它会阻止`prune --apply`。
+更新不会自动删除或迁移 `.pico/` 中的 Session、Run、Checkpoint、Memory 或 Sandbox 状态。执行前先阅读
+[CHANGELOG](../CHANGELOG.md) 的 Migration 部分。
 
-本机MVP的`pico sandbox prepare`只检查already-present exact image：不下载Product Enablement、不pull或build、
-不写release cache，返回`network_performed=false`与`mutation_performed=false`。当前image-set只有`linux/arm64`
-本地记录；`linux/amd64`、Linux GA与registry-backed distributed release仍延期。运行时不会隐式pull、build、
-repair或读取用户Docker config。
-
-`PICO_SANDBOX_CANDIDATE_ATTESTATION`与`PICO_SANDBOX_CANDIDATE_NONCE`仅由release controller用于四平台最终
-public smoke；candidate不可下载、不可缓存、不可正式启用产品，用户不应配置这两个变量。
-
-Session结束后，有变更的staging进入`pending_review`；无变更自动discard。写回Source Root和丢弃staging都需
-单独显式操作，`--yes`只跳过CLI确认，不跳过CAS、identity或policy校验：
+## 卸载
 
 ```bash
-pico sandbox apply <sandbox-id>
-pico sandbox discard <sandbox-id>
-pico sandbox prune --apply
+python -m pip uninstall pico
 ```
 
-Apply崩溃后若external authority仍在，或原Source Root整体被替换导致普通Session inventory无法定位状态，使用：
+卸载 package 不会删除项目 `.env`、项目 `.pico/` 或用户目录 `~/.pico/`。这些目录可能包含凭证引用、Memory、
+会话和恢复证据，应由用户在确认不再需要后单独处理。
+
+## Sandbox 准备
 
 ```bash
-pico --cwd <原 lexical Source Root> sandbox reconcile --yes
+pico sandbox status
+pico sandbox prepare
 ```
 
-该命令只从external authority O(1)定位exact Sandbox state与journal并收敛到
-`review_required/apply_review_required`；它不扫描猜测、不自动apply/rollback，也不放宽identity校验。没有`--yes`
-时必须交互确认；`--no-input`不会代替确认。只读`status/list/inspect/diff/prune --dry-run`永远不会隐式执行它。
-
-legacy SRT 模块、package data、platform adapters 和 offline-bundle verifier 已从 v0.2.0 wheel 删除，不保留兼容
-alias。开发面的 `pico.evaluation` 也不进入 runtime wheel；benchmark、scripts 和源码测试仍保留在仓库。升级不会
-自动删除用户 `~/.pico` 下的旧数据。
-
-Sandbox 始终 explicit-on。production public key/KMS、registry 双架构 image、真实多平台 artifacts 和 detached
-Product Enablement 均未完成，因此 distributed 发布保持 `NO-GO`。macOS arm64 本地稳定版不代表 Linux、amd64、
-四平台 GA 或 hostile multi-tenant 安全边界。
-
-## 本地自救
-
-如果命令解析错误：
+两条命令都不会 pull、build、repair 或下载镜像。维护者需要构建本地开发镜像时使用：
 
 ```bash
-deactivate 2>/dev/null || true
-source /path/to/pico/.venv/bin/activate
-command -v pico
-python -m pico --help
+uv run python scripts/sandbox/build_image.py --help
+uv run python scripts/sandbox/verify_runtime.py --help
 ```
 
-如果环境损坏，可删除并重建生成的 `.venv`，然后重新执行 `uv sync --frozen --dev`。这不会删除
-仓库 `.pico/`、`~/.pico/` 或 recovery backup。
+构建脚本是维护入口，不会扩大公开 runtime 的平台支持范围。
 
-如果 `doctor` 报告 `review_required`，先检查 `.env` 权限、trusted executable、private store
-和 pending recovery evidence。不要通过降低权限检查或删除记录来让诊断变绿；处理方法见
-[安全](security.md)与[恢复](recovery.md)。
+## 常见失败
+
+| 现象 | 检查 |
+| --- | --- |
+| `api_key_not_configured` | 云 Provider 是否设置 `PICO_API_KEY` |
+| `provider_not_configured` | 是否设置 `PICO_PROVIDER` |
+| `provider_invalid` | Provider 是否为 `anthropic`、`openai` 或 `ollama` |
+| `api_base_not_configured` | 是否设置 `PICO_API_BASE` |
+| `insecure_api_base` | 非 loopback API Base 是否为 HTTPS |
+| `model_session_mismatch` | 当前 Provider/model/URL 是否与恢复 Session 一致 |
+| Sandbox platform error | 是否为 macOS arm64 与受支持 Docker endpoint |
+| `pico` 找不到 | 虚拟环境与 PATH 是否一致 |
+| 裸 `pico` 仍显示旧 help | `command -v pico` / `pico --version` 是否指向旧安装；从当前版本重新安装或使用 `uv run pico` |
+| 没有 TUI 颜色或菜单 | stdin/stdout、`TERM`、终端宽度、`NO_COLOR` / `--no-color` 是否触发纯文本或无色模式 |

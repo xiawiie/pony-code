@@ -5,24 +5,25 @@ from types import MappingProxyType
 
 import pytest
 
-import pico.docker_sandbox as docker_module
-import pico.sandbox_release_authority as release_authority
-import pico.tool_executor as tool_executor_module
-import pico.workspace as workspace_module
-from pico.checkpoint_store import CheckpointStore
-from pico.config import load_pico_toml
+import pico.sandbox.docker as docker_module
+import pico.sandbox.identity as sandbox_identity
+import pico.tools.executor as tool_executor_module
+import pico.workspace.context as workspace_module
+from pico.state.checkpoint_store import CheckpointStore
+from pico.config.project import load_pico_toml
 from pico.context.renderer import render_current_user_message
-from pico.docker_sandbox import (
+from pico.sandbox.docker import (
     build_docker_sandbox_context,
     compile_execution_plan,
     DockerExecutionOutcome,
     DockerSandboxError,
 )
-from pico.providers.fake import FakeModelClient
-from pico.runtime import Pico
-from pico.sandbox_session import snapshot_source_tree, write_source_apply_authority
-from pico.session_store import SessionStore
-from pico.workspace import WorkspaceContext
+from benchmarks.support.fake_provider import FakeModelClient
+from pico.runtime.application import Pico
+from pico.sandbox.session import snapshot_source_tree, write_source_apply_authority
+from pico.state.session_store import SessionStore
+from pico.workspace.context import WorkspaceContext
+from pico.runtime.options import RuntimeOptions
 
 
 CLIENT_DIGEST = "sha256:" + "d" * 64
@@ -148,7 +149,7 @@ def _install_fake_docker(monkeypatch):
 
 def _development_authorization(monkeypatch, image):
     monkeypatch.setattr(
-        release_authority,
+        sandbox_identity,
         "installed_tree_digest",
         lambda _root, _version=None: "sha256:" + "9" * 64,
     )
@@ -218,12 +219,14 @@ def _build_runtime(
         model_client=FakeModelClient([]),
         workspace=workspace,
         session_store=store,
+        options=RuntimeOptions(
         approval_policy="ask",
         redaction_env=redaction_env,
-        _trusted_redaction_env=True,
+            trusted_redaction_env=True,
         sandbox_context=context,
         project_config=project_config,
         session_id="session-1",
+        ),
     )
     agent.approve = lambda _name, _args: True
     return source, context, agent
@@ -240,7 +243,7 @@ def test_context_requires_exact_sealed_runtime_authorization_before_readiness(
         docker_module.default_image_manifest_path()
     )
     authorization = _development_authorization(monkeypatch, image)
-    wrong = replace(authorization, corpus_digest="sha256:" + "0" * 64)
+    wrong = replace(authorization, image_set_digest="sha256:" + "0" * 64)
 
     with pytest.raises(TypeError, match="authorization"):
         build_docker_sandbox_context(
@@ -250,7 +253,9 @@ def test_context_requires_exact_sealed_runtime_authorization_before_readiness(
             docker_endpoint="/unused/docker.sock",
             image=image,
         )
-    with pytest.raises(DockerSandboxError, match="sandbox_runtime_authorization_mismatch"):
+    with pytest.raises(
+        DockerSandboxError, match="sandbox_runtime_authorization_mismatch"
+    ):
         build_docker_sandbox_context(
             source,
             authorization=wrong,
@@ -266,23 +271,25 @@ def test_context_requires_exact_sealed_runtime_authorization_before_readiness(
 def test_public_pico_rejects_development_authorization(tmp_path, monkeypatch):
     source, context, agent = _build_runtime(tmp_path, monkeypatch)
 
-    with pytest.raises(ValueError, match="product or candidate authorization"):
+    with pytest.raises(ValueError, match="local authorization"):
         Pico(
             model_client=FakeModelClient([]),
             workspace=agent.workspace,
             session_store=SessionStore(source / ".pico" / "other-sessions"),
+            options=RuntimeOptions(
             redaction_env=agent.redaction_env,
-            _trusted_redaction_env=True,
+                trusted_redaction_env=True,
             sandbox_context=context,
             project_config=agent.project_config,
             session_id="session-1",
+            ),
         )
 
 
 def test_local_runtime_authorization_is_packaged_and_rechecks_tree(monkeypatch):
     current = {"digest": "sha256:" + "9" * 64}
     monkeypatch.setattr(
-        release_authority,
+        sandbox_identity,
         "installed_tree_digest",
         lambda _root, _version=None: current["digest"],
     )
@@ -315,11 +322,10 @@ def test_local_runtime_authorization_is_packaged_and_rechecks_tree(monkeypatch):
     ("field", "value"),
     (
         ("image_set_digest", "sha256:" + "0" * 64),
-        ("reference", "sha256:" + "0" * 64),
+        ("image_digest", "sha256:" + "0" * 64),
         ("image_id", "sha256:" + "0" * 64),
         ("platform", "linux/amd64"),
         ("policy_digest", "sha256:" + "0" * 64),
-        ("corpus_digest", "sha256:" + "0" * 64),
     ),
 )
 def test_local_runtime_authorization_binds_exact_packaged_image(
@@ -328,7 +334,7 @@ def test_local_runtime_authorization_binds_exact_packaged_image(
     value,
 ):
     monkeypatch.setattr(
-        release_authority,
+        sandbox_identity,
         "installed_tree_digest",
         lambda _root, _version=None: "sha256:" + "9" * 64,
     )
@@ -350,12 +356,14 @@ def test_public_pico_accepts_local_authorization(tmp_path, monkeypatch):
         model_client=FakeModelClient([]),
         workspace=agent.workspace,
         session_store=SessionStore(source / ".pico" / "local-sessions"),
+        options=RuntimeOptions(
         redaction_env=agent.redaction_env,
-        _trusted_redaction_env=True,
+            trusted_redaction_env=True,
         sandbox_context=local_context,
         project_config=agent.project_config,
         session_id="session-1",
         depth=1,
+        ),
     )
 
     assert local_agent.sandbox_context.authorization.attestation_kind == "local"
@@ -379,12 +387,11 @@ def test_runtime_context_persists_full_engine_image_and_policy_identity(
     assert manifest["engine"]["endpoint_hash"] == CLIENT_DIGEST
     assert manifest["engine"]["profile"] == "desktop_vm"
     assert set(manifest["image"]) == {
-        "reference",
-        "manifest_digest",
+        "image_digest",
         "image_id",
         "platform",
     }
-    assert manifest["image"]["manifest_digest"].startswith("sha256:")
+    assert manifest["image"]["image_digest"].startswith("sha256:")
     assert manifest["image"]["platform"] == "linux/arm64"
     assert set(manifest["policy"]) == {
         "version",
@@ -618,9 +625,7 @@ def test_builtin_and_docker_shell_share_staging_without_touching_source(
     )
 
     assert write.metadata["tool_status"] == "ok"
-    assert [entry["path"] for entry in write.metadata["file_entries"]] == [
-        "shared.txt"
-    ]
+    assert [entry["path"] for entry in write.metadata["file_entries"]] == ["shared.txt"]
     assert write.metadata["file_entries"][0]["snapshot_eligible"] is True
     assert "from-builtin" in shell_read.content
     assert shell_write.metadata["sandbox"]["execution_plane"] == "sandbox"
@@ -703,11 +708,10 @@ def test_refresh_and_delegate_keep_the_same_execution_root(
     assert {
         path.name for path in agent.session_store.root.glob("*.jsonl")
     } == project_sessions_before
-    assert len(
-        list(
-            (context.sandbox_state_root / "delegate-sessions").glob("*.jsonl")
+    assert (
+        len(list((context.sandbox_state_root / "delegate-sessions").glob("*.jsonl")))
+        == 1
         )
-    ) == 1
 
 
 def test_resume_reuses_bound_staging_and_current_host_session(
@@ -745,13 +749,13 @@ def test_resume_reuses_bound_staging_and_current_host_session(
         workspace=workspace,
         session_store=SessionStore(source / ".pico" / "sessions"),
         session_id="session-1",
+        options=RuntimeOptions(
         approval_policy="ask",
-        redaction_env=MappingProxyType(
-            {"OPENAI_API_KEY": "source-secret"}
-        ),
-        _trusted_redaction_env=True,
+            redaction_env=MappingProxyType({"OPENAI_API_KEY": "source-secret"}),
+            trusted_redaction_env=True,
         sandbox_context=resumed_context,
         project_config=load_pico_toml(source),
+        ),
     )
 
     assert resumed.root == context.execution_root
@@ -979,9 +983,11 @@ def test_docker_runtime_requires_prefrozen_config_and_redaction(
             model_client=FakeModelClient([]),
             workspace=workspace,
             session_store=store,
+            options=RuntimeOptions(
             sandbox_context=context,
             project_config=load_pico_toml(source),
             session_id="session-1",
+            ),
         )
 
 
