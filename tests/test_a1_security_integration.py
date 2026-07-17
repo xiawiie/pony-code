@@ -104,7 +104,7 @@ def test_offline_a1_canary_crosses_real_boundaries_without_normal_artifact_leak(
     write_project_env_assignments(
         tmp_path,
         {
-            "PICO_API_URL": "https://api.deepseek.com",
+            "PICO_API_BASE": "https://api.deepseek.com",
             "PICO_API_KEY": secret,
         },
     )

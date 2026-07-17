@@ -27,19 +27,16 @@
 
 ## Provider 配置合同
 
-Model API Configuration 仅由六个通用变量组成：
+Model API Configuration 仅由三个通用变量组成：
 
 ```text
-PICO_PROVIDER
-PICO_MODEL
-PICO_API_URL
+PICO_API_BASE
 PICO_API_KEY
-PICO_API_VARIANT
-PICO_AUTH_MODE
+PICO_MODEL
 ```
 
-项目 `.env` 高于进程环境。运行时不读取厂商变量，也不兼容 `PICO_DEEPSEEK_API_KEY`。`auto` 是 Provider 静态默认值，
-不是探测器。协议、模型、URL 或认证变更都必须能在 `pico config show` 与 `pico doctor` 中被观察。
+项目 `.env` 高于进程环境。运行时不读取厂商变量，也不兼容 `PICO_DEEPSEEK_API_KEY`。API Base 静态决定协议与
+认证，不联网探测。协议、模型、URL 或认证变更都必须能在 `pico config show` 与 `pico doctor` 中被观察。
 
 Model Session Binding 固化 `protocol_family`、`model` 与 `endpoint_hash`。绑定变化时拒绝恢复，尤其不能把 OpenAI
 reasoning state 或 Anthropic thinking block 跨协议重放。

@@ -799,7 +799,7 @@ def test_status_redacts_latest_artifact_ids(tmp_path, monkeypatch, capsys):
     secret = "opaque-status-secret-123456789"
     monkeypatch.setenv("CUSTOM_STATUS_TOKEN", secret)
     (tmp_path / ".env").write_text(
-        "PICO_API_URL=https://api.deepseek.com\n",
+        "PICO_API_BASE=https://api.deepseek.com\n",
         encoding="utf-8",
     )
     (tmp_path / ".pico" / "runs" / secret).mkdir(parents=True)
@@ -853,7 +853,7 @@ def test_config_and_doctor_redact_configured_api_values(
     secret = "opaque-diagnostics-model-secret-123456789"
     monkeypatch.setenv("CUSTOM_DIAGNOSTIC_TOKEN", secret)
     (tmp_path / ".env").write_text(
-        f"PICO_API_URL=https://example.com/{secret}\n",
+        f"PICO_API_BASE=https://example.com/{secret}\n",
         encoding="utf-8",
     )
 

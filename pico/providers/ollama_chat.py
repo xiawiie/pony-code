@@ -149,10 +149,10 @@ class OllamaChatModelClient:
         api_key="",
         capabilities=None,
     ):
-        from pico.config.model import validate_api_url
+        from pico.config.model import validate_api_base
 
         self.model = str(model)
-        self.host = validate_api_url(host)
+        self.host = validate_api_base(host)
         self.api_key = str(api_key or "")
         self.auth_mode = auth_mode or "none"
         self.capabilities = dict(capabilities or {})

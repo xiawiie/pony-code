@@ -24,10 +24,10 @@ def _run_git(cwd, *args):
     )
 
 
-def _write_env(root, *, url="https://gateway.example/v1", key="secret-value"):
+def _write_env(root, *, api_base="https://api.anthropic.com/v1", key="secret-value"):
     path = root / ".env"
     path.write_text(
-        f"PICO_API_URL={url}\nPICO_API_KEY={key}\n",
+        f"PICO_API_BASE={api_base}\nPICO_API_KEY={key}\n",
         encoding="utf-8",
     )
     path.chmod(0o600)
@@ -66,9 +66,9 @@ def test_config_show_reports_fixed_contract_and_exact_project_env_path(
     assert payload["model"]["value"] == "claude-sonnet-4-6"
     assert payload["auth_mode"]["value"] == "x-api-key"
     assert payload["base_url"] == {
-        "value": "https://gateway.example/v1",
+        "value": "https://api.anthropic.com/v1",
         "source": "project_env",
-        "name": "PICO_API_URL",
+        "name": "PICO_API_BASE",
     }
     assert payload["api_key"] == {
         "present": True,
@@ -78,13 +78,13 @@ def test_config_show_reports_fixed_contract_and_exact_project_env_path(
     assert "secret-value" not in json.dumps(payload)
 
 
-def test_config_show_reports_explicit_custom_anthropic_url(tmp_path):
-    _write_env(tmp_path, url="https://gateway.anthropic.example/v1")
+def test_config_show_reports_generic_openai_compatible_base(tmp_path):
+    _write_env(tmp_path, api_base="https://gateway.example/v1")
 
     data = collect_config(tmp_path)
 
-    assert data["base_url"]["value"] == "https://gateway.anthropic.example/v1"
-    assert data["model"]["value"] == "claude-sonnet-4-6"
+    assert data["base_url"]["value"] == "https://gateway.example/v1"
+    assert data["model"]["value"] == "gpt-5.4"
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX mode assertion")
@@ -124,8 +124,8 @@ def test_config_isolates_main_and_linked_worktree_env(tmp_path):
     _run_git(main_root, "add", "README.md")
     _run_git(main_root, "commit", "-qm", "fixture")
     _run_git(main_root, "worktree", "add", "-q", "-b", "linked", str(linked_root))
-    _write_env(main_root, url="https://main.example/v1", key="main-key")
-    _write_env(linked_root, url="https://linked.example/v1", key="linked-key")
+    _write_env(main_root, api_base="https://main.example/v1", key="main-key")
+    _write_env(linked_root, api_base="https://linked.example/v1", key="linked-key")
     child = linked_root / "src"
     child.mkdir()
 
@@ -176,7 +176,7 @@ def test_config_show_fails_closed_for_unsafe_project_env(tmp_path, capsys, unsaf
 def test_config_show_skips_malformed_env_line_without_leaking_key(tmp_path, capsys):
     path = tmp_path / ".env"
     path.write_text(
-        "PICO_API_URL=https://gateway.example/v1\n"
+        "PICO_API_BASE=https://gateway.example/v1\n"
         "not a valid env line\n"
         "PICO_API_KEY=secret-value\n",
         encoding="utf-8",
@@ -213,7 +213,7 @@ def test_config_show_text_is_grouped_and_never_prints_key(tmp_path, capsys):
     assert output.startswith("Pico config — Effective configuration\n")
     assert "Model" in output
     assert "claude-sonnet-4-6" in output
-    assert "https://gateway.example/v1" in output
+    assert "https://api.anthropic.com/v1" in output
     assert "Credentials" in output
     assert "secret-value" not in output
 
@@ -255,12 +255,9 @@ def test_doctor_defaults_to_zero_api_requests(tmp_path, monkeypatch, capsys):
 
 def test_doctor_marks_ollama_api_key_not_required(tmp_path):
     (tmp_path / ".env").write_text(
-        "PICO_PROVIDER=ollama\n"
+        "PICO_API_BASE=http://127.0.0.1:11434\n"
         "PICO_MODEL=qwen3:8b\n"
-        "PICO_API_URL=http://127.0.0.1:11434\n"
-        "PICO_API_KEY=\n"
-        "PICO_API_VARIANT=auto\n"
-        "PICO_AUTH_MODE=auto\n",
+        "PICO_API_KEY=\n",
         encoding="utf-8",
     )
 
@@ -356,7 +353,7 @@ def test_doctor_rejects_credentialed_url_without_connecting_or_echoing(
     tmp_path, monkeypatch, capsys
 ):
     secret = "url-secret-canary"
-    _write_env(tmp_path, url=f"https://user:{secret}@example.com/v1")
+    _write_env(tmp_path, api_base=f"https://user:{secret}@example.com/v1")
     checker = Mock(side_effect=AssertionError("unsafe URL attempted connection"))
     monkeypatch.setattr(diagnostics, "check_api_connectivity", checker)
 
@@ -373,7 +370,7 @@ def test_doctor_rejects_credentialed_url_without_connecting_or_echoing(
     )
 
     captured = capsys.readouterr()
-    assert captured.err.strip() == "api_url_credentials"
+    assert captured.err.strip() == "api_base_credentials"
     assert secret not in captured.out + captured.err
     checker.assert_not_called()
 

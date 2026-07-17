@@ -153,10 +153,10 @@ class AnthropicMessagesModelClient:
         auth_mode=None,
         capabilities=None,
     ):
-        from pico.config.model import validate_api_url
+        from pico.config.model import validate_api_base
 
         self.model = model
-        self.base_url = validate_api_url(base_url)
+        self.base_url = validate_api_base(base_url)
         self.api_key = api_key
         self.auth_mode = auth_mode or "x-api-key"
         self.capabilities = dict(capabilities or {})

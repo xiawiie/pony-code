@@ -127,12 +127,9 @@ def test_agents_instructions_match_the_production_contract():
     text = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
 
     for name in (
-        "PICO_PROVIDER",
+        "PICO_API_BASE",
         "PICO_MODEL",
-        "PICO_API_URL",
         "PICO_API_KEY",
-        "PICO_API_VARIANT",
-        "PICO_AUTH_MODE",
     ):
         assert name in text
     for provider in ("anthropic", "openai", "ollama"):

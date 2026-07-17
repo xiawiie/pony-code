@@ -286,12 +286,9 @@ def test_fixture_enter_failure_restores_original_config(tmp_path):
 
 def test_parse_args_uses_repo_env_and_rejects_provider_override(tmp_path):
     (tmp_path / ".env").write_text(
-        "PICO_PROVIDER=openai\n"
+        "PICO_API_BASE=https://api.openai.com/v1\n"
         "PICO_MODEL=gpt-test\n"
-        "PICO_API_URL=https://api.openai.com/v1\n"
-        "PICO_API_KEY=test-key\n"
-        "PICO_API_VARIANT=responses\n"
-        "PICO_AUTH_MODE=auto\n",
+        "PICO_API_KEY=test-key\n",
         encoding="utf-8",
     )
 
@@ -309,14 +306,11 @@ def test_parse_args_uses_repo_env_and_rejects_provider_override(tmp_path):
 
 @pytest.mark.parametrize("provider", ["anthropic", "openai"])
 def test_project_env_uses_canonical_selected_provider_settings(tmp_path, provider):
-    base_url = f"https://{provider}.example/v1"
+    base_url = f"https://api.{provider}.com/v1"
     lines = [
-        f"PICO_PROVIDER={provider}",
+        f"PICO_API_BASE={base_url}",
         f"PICO_MODEL={provider}-test-model",
-        f"PICO_API_URL={base_url}",
         f"PICO_API_KEY=sentinel-{provider}",
-        "PICO_API_VARIANT=auto",
-        "PICO_AUTH_MODE=auto",
     ]
     (tmp_path / ".env").write_text(
         "\n".join(lines),
@@ -342,12 +336,9 @@ def test_project_env_uses_canonical_selected_provider_settings(tmp_path, provide
 
 def test_project_env_uses_canonical_ollama_settings(tmp_path):
     (tmp_path / ".env").write_text(
-        "PICO_PROVIDER=ollama\n"
+        "PICO_API_BASE=http://127.0.0.1:11435\n"
         "PICO_MODEL=ollama-test-model\n"
-        "PICO_API_URL=http://127.0.0.1:11435\n"
-        "PICO_API_KEY=\n"
-        "PICO_API_VARIANT=auto\n"
-        "PICO_AUTH_MODE=auto\n",
+        "PICO_API_KEY=\n",
         encoding="utf-8",
     )
 

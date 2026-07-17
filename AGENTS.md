@@ -83,26 +83,23 @@ CLI/TUI 合同：
 | `openai` | `chat_completions` | `openai_chat_completions` | `bearer` |
 | `ollama` | `chat` | `ollama_chat` | `none` |
 
-唯一用户配置面是仓库根目录 `.env` 中六个变量：
+唯一用户配置面是仓库根目录 `.env` 中三个变量：
 
 ```text
-PICO_PROVIDER
-PICO_MODEL
-PICO_API_URL
+PICO_API_BASE
 PICO_API_KEY
-PICO_API_VARIANT
-PICO_AUTH_MODE
+PICO_MODEL
 ```
 
 必须保持：
 
-- 运行须显式配置 Provider/model/API URL；云端须有 Key，只有 Ollama `auth=none` 可空。`pico init` 写全六项。
+- 运行须显式配置 API Base/model；云端须有 Key，本地 Ollama 可空。`pico init` 只写这三项。
 - lexical repository root 的 `.env` 高于同名进程变量；不搜索父目录、不修改全局 `os.environ`。
-- 不读取厂商 Key、旧 Provider/Profile/Connection 字段或旧 Pico 变量作为 fallback。
-- Variant/Auth 的 `auto` 仅选静态默认值，不联网探测。
+- 不读取厂商 Key、旧 Provider/Profile/Connection/Variant/Auth 字段或旧 Pico 变量作为 fallback。
+- API Base 静态决定 Provider、Variant 与 Auth；不联网探测或失败后 fallback。
 - CLI、doctor、probe、live harness 与 benchmark 共用配置解析和 Transport factory；benchmark 只以
   `--cwd` / `--repo-root` 选择 `.env`。
-- URL 禁止 userinfo、query、fragment 与内嵌凭证；除 loopback 外必须 HTTPS。Adapter 不补版本前缀、不跟随
+- API Base 禁止 userinfo、query、fragment 与内嵌凭证；除 loopback 外必须 HTTPS。Adapter 不补版本前缀、不跟随
   redirect、不在失败后切换 Transport。
 - Session binding 的 protocol、model 或 endpoint 变化返回稳定的 `model_session_mismatch`，不跨协议重放状态。
 

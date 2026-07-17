@@ -243,16 +243,12 @@ def main(argv=None):
         reason = str(exc)
         stable_codes = {
             "api_key_not_configured",
-            "api_url_not_configured",
-            "api_url_invalid",
-            "api_url_credentials",
-            "api_url_query_or_fragment",
-            "insecure_api_url",
+            "api_base_not_configured",
+            "api_base_invalid",
+            "api_base_credentials",
+            "api_base_query_or_fragment",
+            "insecure_api_base",
             "model_not_configured",
-            "provider_invalid",
-            "provider_not_configured",
-            "api_variant_invalid",
-            "auth_mode_invalid",
             "model_invalid",
             "model_session_mismatch",
         }
@@ -267,9 +263,8 @@ def main(argv=None):
                         if reason
                         in {
                             "api_key_not_configured",
-                            "api_url_not_configured",
+                            "api_base_not_configured",
                             "model_not_configured",
-                            "provider_not_configured",
                         }
                         else ""
                     ),

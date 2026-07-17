@@ -39,9 +39,8 @@ def test_public_api_exports_current_names_only():
 def test_build_agent_returns_pico(tmp_path):
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
     (tmp_path / ".env").write_text(
-        "PICO_PROVIDER=anthropic\n"
+        "PICO_API_BASE=https://api.anthropic.com/v1\n"
         "PICO_MODEL=claude-sonnet-4-6\n"
-        "PICO_API_URL=https://api.anthropic.com/v1\n"
         "PICO_API_KEY=test-key\n",
         encoding="utf-8",
     )
@@ -239,13 +238,10 @@ def test_provider_defaults_and_generic_env_names_have_one_config_source():
     assert config.DEFAULT_PROVIDER == "anthropic"
     assert config.SUPPORTED_PROVIDERS == ("anthropic", "openai", "ollama")
     assert config.DEFAULT_MODEL == "claude-sonnet-4-6"
-    assert config.DEFAULT_API_URL == "https://api.anthropic.com/v1"
-    assert config.PROVIDER_ENV_NAME == "PICO_PROVIDER"
+    assert config.DEFAULT_API_BASE == "https://api.anthropic.com/v1"
     assert config.MODEL_ENV_NAME == "PICO_MODEL"
     assert config.API_KEY_ENV_NAME == "PICO_API_KEY"
-    assert config.API_URL_ENV_NAME == "PICO_API_URL"
-    assert config.API_VARIANT_ENV_NAME == "PICO_API_VARIANT"
-    assert config.AUTH_MODE_ENV_NAME == "PICO_AUTH_MODE"
+    assert config.API_BASE_ENV_NAME == "PICO_API_BASE"
     destinations = {action.dest for action in build_arg_parser()._actions}
     assert {"provider", "profile", "connection", "model", "base_url"}.isdisjoint(
         destinations

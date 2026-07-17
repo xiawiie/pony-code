@@ -43,8 +43,8 @@ pico config show
 pico doctor
 ```
 
-`init` 依次询问 Provider、模型、API root、API Variant、认证方式和 API Key，将六个通用变量原子写入根目录
-`.env`。输入已有 Key 时，留空会保留原值；只有 Ollama / `auth_mode=none` 允许空 Key。该命令不联网。
+`init` 依次询问 API Base、模型和 API Key，将三个通用变量原子写入根目录 `.env`。输入已有 Key 时，留空会
+保留原值；本地 Ollama 允许空 Key。该命令不联网。
 
 也可以复制仓库提供的 `.env.example`：
 
@@ -56,12 +56,9 @@ chmod 600 .env
 然后编辑：
 
 ```dotenv
-PICO_PROVIDER=anthropic
-PICO_MODEL=claude-sonnet-4-6
-PICO_API_URL=https://api.anthropic.com/v1
+PICO_API_BASE=https://api.anthropic.com/v1
 PICO_API_KEY=
-PICO_API_VARIANT=auto
-PICO_AUTH_MODE=auto
+PICO_MODEL=claude-sonnet-4-6
 ```
 
 如只需安全更新 Key，可使用隐藏输入或标准输入：
@@ -173,9 +170,8 @@ uv run python scripts/sandbox/verify_runtime.py --help
 | 现象 | 检查 |
 | --- | --- |
 | `api_key_not_configured` | 云 Provider 是否设置 `PICO_API_KEY` |
-| `provider_invalid` | `PICO_PROVIDER` 是否为三个公开值之一 |
-| `api_variant_invalid` | Variant 是否属于当前 Provider |
-| `insecure_api_url` | 非 loopback URL 是否为 HTTPS |
+| `api_base_not_configured` | 是否设置 `PICO_API_BASE` |
+| `insecure_api_base` | 非 loopback API Base 是否为 HTTPS |
 | `model_session_mismatch` | 当前 Provider/model/URL 是否与恢复 Session 一致 |
 | Sandbox platform error | 是否为 macOS arm64 与受支持 Docker endpoint |
 | `pico` 找不到 | 虚拟环境与 PATH 是否一致 |

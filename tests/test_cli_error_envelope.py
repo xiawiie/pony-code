@@ -171,15 +171,14 @@ def test_cli_contains_startup_io_failure(monkeypatch, capsys):
     assert CANARY not in captured.out + captured.err
 
 
-def test_invalid_project_api_url_uses_safe_config_envelope(
+def test_invalid_project_api_base_uses_safe_config_envelope(
     tmp_path,
     monkeypatch,
     capsys,
 ):
     (tmp_path / ".env").write_text(
-        "PICO_PROVIDER=anthropic\n"
         "PICO_MODEL=claude-test\n"
-        f"PICO_API_URL=https://user:{CANARY}@example.com/v1\n"
+        f"PICO_API_BASE=https://user:{CANARY}@example.com/v1\n"
         "PICO_API_KEY=test-key\n",
         encoding="utf-8",
     )
@@ -187,13 +186,12 @@ def test_invalid_project_api_url_uses_safe_config_envelope(
     assert main(["--cwd", str(tmp_path), "--quiet", "run", "hello"]) == 3
 
     captured = capsys.readouterr()
-    assert captured.err.strip() == "api_url_credentials"
+    assert captured.err.strip() == "api_base_credentials"
     assert CANARY not in captured.out + captured.err
 
 
-def test_project_key_without_url_is_rejected(tmp_path, capsys):
+def test_project_key_without_base_is_rejected(tmp_path, capsys):
     (tmp_path / ".env").write_text(
-        "PICO_PROVIDER=anthropic\n"
         "PICO_MODEL=claude-test\n"
         "PICO_API_KEY=stale-project-key\n",
         encoding="utf-8",
@@ -202,14 +200,14 @@ def test_project_key_without_url_is_rejected(tmp_path, capsys):
     assert main(["--cwd", str(tmp_path), "--quiet", "run", "hello"]) == 3
 
     output = capsys.readouterr()
-    assert output.err.splitlines()[0] == "api_url_not_configured"
+    assert output.err.splitlines()[0] == "api_base_not_configured"
 
 
-def test_init_invalid_url_does_not_echo_input_value(tmp_path, monkeypatch, capsys):
-    answers = iter(("", "", f"https://user:{CANARY}@example.com/v1"))
+def test_init_invalid_base_does_not_echo_input_value(tmp_path, monkeypatch, capsys):
+    answers = iter((f"https://user:{CANARY}@example.com/v1",))
     monkeypatch.setattr("builtins.input", lambda: next(answers))
     assert main(["--cwd", str(tmp_path), "init"]) == 3
 
     captured = capsys.readouterr()
-    assert "api_url_credentials" in captured.err
+    assert "api_base_credentials" in captured.err
     assert CANARY not in captured.out + captured.err

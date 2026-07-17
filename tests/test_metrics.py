@@ -440,12 +440,9 @@ def test_provider_benchmark_uses_canonical_project_env(tmp_path):
     (tmp_path / ".env").write_text(
         "\n".join(
             [
-                "PICO_PROVIDER=openai",
+                "PICO_API_BASE=https://gateway.example/v1",
                 "PICO_MODEL=gpt-test",
-                "PICO_API_URL=https://gateway.example/v1",
                 "PICO_API_KEY=sk-project",
-                "PICO_API_VARIANT=chat_completions",
-                "PICO_AUTH_MODE=bearer",
             ]
         )
         + "\n",
@@ -463,7 +460,7 @@ def test_provider_benchmark_uses_canonical_project_env(tmp_path):
 
 
 def test_provider_benchmark_rejects_vendor_only_environment(tmp_path):
-    with pytest.raises(ValueError, match="^provider_not_configured$"):
+    with pytest.raises(ValueError, match="^api_base_not_configured$"):
         _resolve_benchmark_target(
             tmp_path,
             process_env={"PICO_OPENAI_API_KEY": "sk-old"},
@@ -563,12 +560,9 @@ def test_memory_ablation_reports_no_bootstrap_drop_without_samples(tmp_path):
     )
 
     (tmp_path / ".env").write_text(
-        "PICO_PROVIDER=ollama\n"
+        "PICO_API_BASE=http://127.0.0.1:11434\n"
         "PICO_MODEL=qwen-test\n"
-        "PICO_API_URL=http://127.0.0.1:11434\n"
-        "PICO_API_KEY=\n"
-        "PICO_API_VARIANT=auto\n"
-        "PICO_AUTH_MODE=auto\n",
+        "PICO_API_KEY=\n",
         encoding="utf-8",
     )
     variant_sets = (

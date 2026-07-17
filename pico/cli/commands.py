@@ -11,16 +11,12 @@ from .diagnostics import _line
 from .output import build_inspection_redactor, print_result
 from .session import handle_session_command
 from pico.config.model import (
-    API_VARIANT_ENV_NAME,
+    API_BASE_ENV_NAME,
     API_KEY_ENV_NAME,
-    API_URL_ENV_NAME,
-    AUTH_MODE_ENV_NAME,
-    DEFAULT_PROVIDER,
+    DEFAULT_API_BASE,
     MODEL_ENV_NAME,
-    PROVIDER_ENV_NAME,
-    provider_defaults,
     resolve_model_config,
-    validate_api_url,
+    validate_api_base,
 )
 from pico.config.environment import (
     project_env_metadata,
@@ -58,7 +54,7 @@ Available Commands:
   status       Show local workspace state
   doctor       Check config, storage, auth, and sandbox readiness
   sandbox      Inspect and manage Docker Sandbox sessions and image readiness
-  init         Configure provider, model, endpoint, and credentials in .env
+  init         Configure API base, key, and model in .env
   config       Configuration inspection and set-secret input
   runs         Run artifact inspection
   sessions     Session inspection
@@ -126,58 +122,32 @@ def handle_init(tokens, cwd, args):
             exit_code=CLI_EXIT_CONFIG,
         ) from exc
     try:
-        if existing.get(API_URL_ENV_NAME):
-            validate_api_url(existing[API_URL_ENV_NAME])
-        current_provider = (
-            str(existing.get(PROVIDER_ENV_NAME) or DEFAULT_PROVIDER).strip().casefold()
-        )
-        try:
-            provider_defaults(current_provider)
-        except ValueError:
-            current_provider = DEFAULT_PROVIDER
-        print(
-            f"Provider [{current_provider}]: ",
-            end="",
-            file=sys.stderr,
-            flush=True,
-        )
-        provider = input().strip().casefold() or current_provider
-        defaults = provider_defaults(provider)
-        same_provider = provider == current_provider
+        existing_base = existing.get(API_BASE_ENV_NAME)
+        current_base = existing_base or DEFAULT_API_BASE
+        validate_api_base(current_base)
+        print(f"API Base [{current_base}]: ", end="", file=sys.stderr, flush=True)
+        api_base = validate_api_base(input().strip() or current_base)
 
+        defaults = resolve_model_config(
+            project_env={API_BASE_ENV_NAME: api_base},
+            process_env={},
+            required=False,
+        )
+        same_transport = True
+        if existing_base:
+            previous = resolve_model_config(
+                project_env={API_BASE_ENV_NAME: existing_base},
+                process_env={},
+                required=False,
+            )
+            same_transport = previous["protocol"]["value"] == defaults["protocol"][
+                "value"
+            ]
         current_model = (
-            existing.get(MODEL_ENV_NAME) if same_provider else ""
-        ) or defaults["model"]
+            existing.get(MODEL_ENV_NAME) if same_transport else ""
+        ) or defaults["model"]["value"]
         print(f"Model [{current_model}]: ", end="", file=sys.stderr, flush=True)
         model = input().strip() or current_model
-
-        current_url = (
-            existing.get(API_URL_ENV_NAME) if same_provider else ""
-        ) or defaults["base_url"]
-        print(f"API URL [{current_url}]: ", end="", file=sys.stderr, flush=True)
-        api_url = validate_api_url(input().strip() or current_url)
-
-        current_variant = (
-            existing.get(API_VARIANT_ENV_NAME) if same_provider else ""
-        ) or "auto"
-        print(
-            f"API variant [{current_variant}]: ",
-            end="",
-            file=sys.stderr,
-            flush=True,
-        )
-        api_variant = input().strip() or current_variant
-
-        current_auth = (
-            existing.get(AUTH_MODE_ENV_NAME) if same_provider else ""
-        ) or "auto"
-        print(
-            f"Auth mode [{current_auth}]: ",
-            end="",
-            file=sys.stderr,
-            flush=True,
-        )
-        auth_mode = input().strip() or current_auth
 
         existing_key = existing.get(API_KEY_ENV_NAME, "")
         key_prompt = (
@@ -206,12 +176,9 @@ def handle_init(tokens, cwd, args):
             exit_code=CLI_EXIT_USAGE,
         )
     assignments = {
-        PROVIDER_ENV_NAME: provider,
+        API_BASE_ENV_NAME: api_base,
         MODEL_ENV_NAME: model,
-        API_URL_ENV_NAME: api_url,
         API_KEY_ENV_NAME: api_key,
-        API_VARIANT_ENV_NAME: api_variant,
-        AUTH_MODE_ENV_NAME: auth_mode,
     }
     try:
         resolved = resolve_model_config(
@@ -257,7 +224,7 @@ def handle_init(tokens, cwd, args):
         "workspace": workspace_info,
         "project_env": project_env,
         "provider": resolved["provider"]["value"],
-        "api_url": resolved["base_url"]["value"],
+        "api_base": resolved["base_url"]["value"],
         "model": resolved["model"]["value"],
         "api_variant": resolved["api_variant"]["value"],
         "protocol": resolved["protocol"]["value"],
@@ -294,7 +261,7 @@ def _render_init(data):
         "",
         _line("provider", data["provider"]),
         _line("model", data["model"]),
-        _line("api url", data["api_url"]),
+        _line("api base", data["api_base"]),
         _line("api variant", data["api_variant"]),
         _line("protocol", data["protocol"]),
         _line("auth mode", data["auth_mode"]),
