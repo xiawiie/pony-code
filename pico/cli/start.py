@@ -67,7 +67,15 @@ def _print_workspace_rewind_preview(preview):
         )
 
 
-def _handle_repl_session_command(agent, user_input):
+def _default_confirm(message):
+    try:
+        answer = input(message)
+    except EOFError:
+        return False
+    return answer.strip().casefold() in {"y", "yes"}
+
+
+def _handle_repl_session_command(agent, user_input, *, confirm=_default_confirm):
     try:
         tokens = shlex.split(user_input)
     except ValueError as exc:
@@ -102,8 +110,7 @@ def _handle_repl_session_command(agent, user_input):
             if workspace and not confirmed:
                 preview = agent.preview_workspace_rewind(tokens[1])
                 _print_workspace_rewind_preview(preview)
-                answer = input("restore workspace and rewind session? [y/N] ")
-                if answer.strip().lower() not in {"y", "yes"}:
+                if not confirm("restore workspace and rewind session? [y/N] "):
                     print("workspace rewind cancelled")
                     return True
                 confirmed = True
@@ -228,103 +235,146 @@ def run_agent_once(agent, prompt_tokens):
     return 0
 
 
-def run_repl(agent):
-    def finish(code):
-        try:
-            finalize = getattr(agent, "finalize_sandbox_session", None)
-            if callable(finalize):
-                finalize()
-        except Exception:  # noqa: BLE001 - the CLI is the ordinary-exception boundary
-            print(_RUNTIME_ERROR_MESSAGE, file=sys.stderr)
-            return 1
-        return code
+def _process_repl_input(
+    agent,
+    user_input,
+    *,
+    confirm=_default_confirm,
+    render_answer=print,
+    render_error=None,
+):
+    if not user_input:
+        return None
+    if user_input in {"/exit", "/quit"}:
+        return 0
+    if user_input == "/help":
+        from .help import HELP_DETAILS
 
+        print(HELP_DETAILS)
+        return None
+    if user_input == "/memory":
+        task_summary = agent.memory.task_summary
+        recent_files = agent.memory.recent_files
+        print(f"task: {task_summary or '(empty)'}")
+        print(f"recent: {', '.join(recent_files) if recent_files else '(empty)'}")
+        try:
+            entries = agent.memory_store.list()
+        except Exception:  # noqa: BLE001 - listing failure must not end the REPL
+            entries = []
+        if entries:
+            print("\nMemory files:")
+            for entry in entries:
+                print(f"- {entry.path} ({entry.size_chars} chars)")
+        else:
+            print(
+                "\nMemory files: (none — use /remember <text> or edit "
+                ".pico/memory/notes/*.md)"
+            )
+        return None
+    if user_input == "/session":
+        print(agent.session_path)
+        return None
+    if _handle_repl_session_command(agent, user_input, confirm=confirm):
+        return None
+    if user_input == "/reset":
+        agent.reset()
+        print("session reset")
+        return None
+    if user_input == "/remember" or user_input.startswith("/remember "):
+        note = user_input[len("/remember") :].strip()
+        if not note:
+            print("usage: /remember <text>")
+            return None
+        if agent.token_accounting.count_text(note) > 1_024:
+            print("error: note exceeds 1024 model tokens")
+            return None
+        try:
+            total = agent.memory_store.append_agent_note(scope="workspace", note=note)
+        except ValueError as exc:
+            print(f"error: {_safe_text(agent, exc)}")
+            return None
+        print(f"saved (chars_total={total})")
+        return None
+    if user_input == "/memory-review":
+        try:
+            content = agent.memory_store.read("workspace/agent_notes.md")
+        except FileNotFoundError:
+            print("(no agent_notes.md yet)")
+        except (OSError, RuntimeError, ValueError):
+            print("error: agent notes could not be read safely")
+        else:
+            print(f"agent_notes.md ({len(content)} chars):\n\n{content}")
+            print("To edit: vim .pico/memory/agent_notes.md")
+        return None
+    if user_input.startswith("/"):
+        command = user_input.split(maxsplit=1)[0]
+        message = f"unknown command: {command}; type /help for available commands"
+        if render_error is None:
+            print(message)
+        else:
+            render_error(message)
+        return None
+
+    print()
+    try:
+        render_answer(_safe_text(agent, agent.ask(user_input)))
+    except Exception:  # noqa: BLE001 - preserve BaseException interrupt semantics
+        if render_error is None:
+            print(_RUNTIME_ERROR_MESSAGE, file=sys.stderr)
+        else:
+            render_error(_RUNTIME_ERROR_MESSAGE)
+        return 1
+    return None
+
+
+def _finish_repl(agent, code):
+    try:
+        finalize = getattr(agent, "finalize_sandbox_session", None)
+        if callable(finalize):
+            finalize()
+    except Exception:  # noqa: BLE001 - the CLI is the ordinary-exception boundary
+        print(_RUNTIME_ERROR_MESSAGE, file=sys.stderr)
+        return 1
+    return code
+
+
+def run_repl(
+    agent,
+    *,
+    welcome="",
+    model="",
+    plain=False,
+    no_color=False,
+    show_header=True,
+):
     with _cli_interrupt_boundary():
         try:
+            if not plain:
+                from pico.tui.app import run_tui, should_use_tui
+
+                if should_use_tui():
+                    return _finish_repl(
+                        agent,
+                        run_tui(
+                            agent,
+                            model=model,
+                            no_color=no_color,
+                            handle_input=_process_repl_input,
+                            show_header=show_header,
+                        ),
+                    )
+            if welcome:
+                print(welcome)
             while True:
                 try:
                     user_input = input("\npico> ").strip()
                 except EOFError:
                     print("")
-                    return finish(0)
+                    return _finish_repl(agent, 0)
 
-                if not user_input:
-                    continue
-                if user_input in {"/exit", "/quit"}:
-                    return finish(0)
-                if user_input == "/help":
-                    from .help import HELP_DETAILS
-
-                    print(HELP_DETAILS)
-                    continue
-                if user_input == "/memory":
-                    task_summary = agent.memory.task_summary
-                    recent_files = agent.memory.recent_files
-                    print(f"task: {task_summary or '(empty)'}")
-                    print(
-                        f"recent: {', '.join(recent_files) if recent_files else '(empty)'}"
-                    )
-                    try:
-                        entries = agent.memory_store.list()
-                    except Exception:  # noqa: BLE001 — REPL loop must never crash on a listing failure
-                        entries = []
-                    if entries:
-                        print("\nMemory files:")
-                        for entry in entries:
-                            print(f"- {entry.path} ({entry.size_chars} chars)")
-                    else:
-                        print(
-                            "\nMemory files: (none — use /remember <text> or edit .pico/memory/notes/*.md)"
-                        )
-                    continue
-                if user_input == "/session":
-                    print(agent.session_path)
-                    continue
-                if _handle_repl_session_command(agent, user_input):
-                    continue
-                if user_input == "/reset":
-                    agent.reset()
-                    print("session reset")
-                    continue
-                if user_input == "/remember" or user_input.startswith("/remember "):
-                    note = user_input[len("/remember") :].strip()
-                    if not note:
-                        print("usage: /remember <text>")
-                        continue
-                    if agent.token_accounting.count_text(note) > 1_024:
-                        print("error: note exceeds 1024 model tokens")
-                        continue
-                    try:
-                        total = agent.memory_store.append_agent_note(
-                            scope="workspace", note=note
-                        )
-                    except ValueError as exc:
-                        print(f"error: {exc}")
-                        continue
-                    print(f"saved (chars_total={total})")
-                    continue
-                if user_input == "/memory-review":
-                    try:
-                        content = agent.memory_store.read("workspace/agent_notes.md")
-                    except FileNotFoundError:
-                        print("(no agent_notes.md yet)")
-                    except (OSError, RuntimeError, ValueError):
-                        print("error: agent notes could not be read safely")
-                    else:
-                        print(f"agent_notes.md ({len(content)} chars):\n\n{content}")
-                        print("To edit: vim .pico/memory/agent_notes.md")
-                    continue
-                if user_input.startswith("/"):
-                    command = user_input.split(maxsplit=1)[0]
-                    print(f"unknown command: {command}")
-                    continue
-
-                print()
-                try:
-                    print(_safe_text(agent, agent.ask(user_input)))
-                except Exception:  # noqa: BLE001 - preserve BaseException semantics
-                    print(_RUNTIME_ERROR_MESSAGE, file=sys.stderr)
-                    return finish(1)
+                result = _process_repl_input(agent, user_input)
+                if result is not None:
+                    return _finish_repl(agent, result)
         except KeyboardInterrupt as exc:
             print("")
-            return finish(_interrupt_exit_code(exc))
+            return _finish_repl(agent, _interrupt_exit_code(exc))

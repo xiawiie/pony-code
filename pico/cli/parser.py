@@ -38,7 +38,7 @@ def parse_cli_invocation(argv, parser):
     if getattr(args, "help", False):
         return CliInvocation("help", [], args)
     if not tokens:
-        return CliInvocation("help", [], args)
+        return CliInvocation("repl", [], args)
     head = tokens[0]
     if head in {"run", "repl"}:
         raw_argv = list(sys.argv[1:]) if parse_argv is None else parse_argv

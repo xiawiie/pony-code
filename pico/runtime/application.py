@@ -317,6 +317,8 @@ class Pico:
     def _configure_runtime_options(self, session_store, options):
         self.session_store = session_store
         self.approval_policy = options.approval_policy
+        self._trace_listener = None
+        self._approval_prompt = None
         self.max_steps = options.max_steps
         self.depth = options.depth
         self.max_depth = options.max_depth
@@ -930,6 +932,11 @@ class Pico:
             created_at=now(),
         )
         self.run_store.append_trace(task_state, envelope)
+        if callable(self._trace_listener):
+            try:
+                self._trace_listener(deepcopy(envelope))
+            except Exception:  # noqa: BLE001 - optional UI cannot break durable trace
+                pass
         return envelope
 
     def capture_workspace_snapshot(self):
@@ -1841,8 +1848,13 @@ class Pico:
             return True
         if self.approval_policy == "never":
             return False
+        safe_args = self.redact_artifact(args)
+        if callable(self._approval_prompt):
+            try:
+                return self._approval_prompt(name, safe_args) is True
+            except Exception:  # noqa: BLE001 - approval UI fails closed
+                return False
         try:
-            safe_args = self.redact_artifact(args)
             answer = input(
                 f"approve {name} {json.dumps(safe_args, ensure_ascii=True)}? [y/N] "
             )

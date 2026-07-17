@@ -1,22 +1,41 @@
-import textwrap
+"""Discoverable slash commands shared by the REPL and TUI."""
+
+from dataclasses import dataclass
 
 
-HELP_DETAILS = textwrap.dedent(
-    """\
-    Commands:
-    /help            Show this help message.
-    /memory          Show working memory + a listing of memory files.
-    /memory-review   Print agent_notes.md with an editing hint.
-    /remember <text> Explicitly append a note to workspace agent_notes.md.
-    /session         Show the path to the saved session file.
-    /tree            Show the append-only Session Tree and active branch.
-    /compact [focus] Compact old history into a bounded Session summary.
-    /checkpoint [label]  Add a task checkpoint to the Session Tree.
-    /fork <entry>    Start a new conversation branch at an entry.
-    /rewind <entry> [--summary[=focus]]  Switch branch without changing files.
-    /rewind <checkpoint> --workspace [--summary[=focus]]  Preview, confirm, restore, then branch.
-    /clone --to-worktree <path>  Clone the active branch for another worktree.
-    /reset           Clear canonical messages and working memory.
-    /exit            Exit the agent.
-    """
-).strip()
+@dataclass(frozen=True)
+class SlashCommand:
+    name: str
+    usage: str
+    summary: str
+
+
+SLASH_COMMANDS = (
+    SlashCommand("/help", "/help", "Show interactive commands"),
+    SlashCommand("/memory", "/memory", "Show working memory and memory files"),
+    SlashCommand("/memory-review", "/memory-review", "Review agent notes"),
+    SlashCommand("/remember", "/remember <text>", "Append an explicit workspace note"),
+    SlashCommand("/session", "/session", "Show the active session file"),
+    SlashCommand("/tree", "/tree", "Show the append-only Session Tree"),
+    SlashCommand("/compact", "/compact [focus]", "Compact older conversation history"),
+    SlashCommand("/checkpoint", "/checkpoint [label]", "Create a task checkpoint"),
+    SlashCommand("/fork", "/fork <entry>", "Branch the conversation at an entry"),
+    SlashCommand(
+        "/rewind",
+        "/rewind <entry> [--workspace] [--summary[=focus]]",
+        "Rewind the session, optionally restoring workspace files",
+    ),
+    SlashCommand(
+        "/clone",
+        "/clone --to-worktree <path>",
+        "Clone the active branch to another worktree",
+    ),
+    SlashCommand("/reset", "/reset", "Clear messages and working memory"),
+    SlashCommand("/exit", "/exit", "Exit Pico"),
+    SlashCommand("/quit", "/quit", "Exit Pico (alias of /exit)"),
+)
+
+
+HELP_DETAILS = "Commands:\n" + "\n".join(
+    f"{command.usage:<54} {command.summary}." for command in SLASH_COMMANDS
+)

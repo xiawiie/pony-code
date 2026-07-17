@@ -35,10 +35,12 @@ from pico.workspace.context import WorkspaceContext
 ROOT_HELP = """pico — Local coding agent for repository-grounded engineering work.
 
 USAGE:
+    pico [global options]
     pico <command> [subcommand] [options]
     pico run <prompt...>
 
 EXAMPLES:
+    pico
     pico init
     pico run "inspect the failing tests"
     pico config set-secret PICO_API_KEY
@@ -52,7 +54,7 @@ EXAMPLES:
 
 Available Commands:
   run          Run one prompt and exit
-  repl         Start interactive REPL
+  repl         Start the interactive TUI (also the default for bare `pico`)
   status       Show local workspace state
   doctor       Check config, storage, auth, and sandbox readiness
   sandbox      Inspect and manage Docker Sandbox sessions and image readiness
@@ -71,6 +73,7 @@ Flags:
       --version    show installed Pico version
       --format     output format for inspection commands: text or json
       --quiet      suppress non-essential human output
+      --no-color   disable terminal colors
       --sandbox    run/repl in local Docker Sandbox (macOS arm64 only)
 
 Security:

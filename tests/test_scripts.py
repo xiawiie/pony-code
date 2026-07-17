@@ -190,7 +190,11 @@ def test_distribution_verifier_freezes_archive_and_install_contract():
     assert '"git", "ls-files", "--", "pico"' in verifier
     assert "sdist file mismatch" in verifier
     assert "wheel file mismatch" in verifier
-    assert 'metadata.get_all("Requires-Dist") is None' in verifier
+    assert (
+        'metadata.get_all("Requires-Dist") == EXPECTED_RUNTIME_REQUIREMENTS'
+        in verifier
+    )
+    assert 'EXPECTED_RUNTIME_REQUIREMENTS = ["prompt-toolkit<4,>=3.0.52"]' in verifier
     assert 'metadata["License-Expression"] == "MIT"' in verifier
     assert 'installed_version == f"pico {PROJECT_VERSION}"' in verifier
     assert '"command -v pico"' in verifier
@@ -209,7 +213,10 @@ def test_distribution_verifier_freezes_archive_and_install_contract():
     assert "pico.providers.fake" in verifier
     assert "pico = pico.cli.app:main" in verifier
     assert "offline_bundle_smoke" in verifier
-    assert 'install_args.append("--no-index")' in verifier
+    assert '"--no-index"' in verifier
+    assert '"--offline"' in verifier
+    assert "_locked_runtime_requirements" in verifier
+    assert "import prompt_toolkit; import pico.tui.app" in verifier
     assert "cwd=cwd, env=env" in verifier
     assert 'PROJECT_VERSION = _PROJECT["version"]' in verifier
     assert 'PROJECT_VERSION = "' not in verifier

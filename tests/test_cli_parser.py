@@ -33,6 +33,13 @@ def test_parse_repl_command():
     assert invocation.command_args == []
 
 
+def test_parse_bare_pico_as_interactive_repl():
+    invocation = parse_cli_invocation([], build_arg_parser())
+
+    assert invocation.command == "repl"
+    assert invocation.command_args == []
+
+
 @pytest.mark.parametrize(
     "argv",
     (
@@ -84,7 +91,7 @@ def test_parse_none_preserves_argparse_default_argv_semantics():
     invocation = parse_cli_invocation(None, parser)
 
     assert parser.received_argv is None
-    assert invocation.command == "help"
+    assert invocation.command == "repl"
 
 
 def test_parse_unknown_head_as_unknown_command():

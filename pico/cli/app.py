@@ -292,8 +292,7 @@ def main(argv=None):
         transport = getattr(agent.model_client, "_inner", agent.model_client)
         model = getattr(transport, "model", DEFAULT_MODEL)
         host = getattr(transport, "base_url", DEFAULT_API_URL)
-        if not args.quiet:
-            print(build_welcome(agent, model=model, host=host))
+        welcome = "" if args.quiet else build_welcome(agent, model=model, host=host)
 
         if invocation.command == "repl":
             if args.no_input:
@@ -301,7 +300,15 @@ def main(argv=None):
                     "--no-input cannot be used with interactive repl", file=sys.stderr
                 )
                 return 2
-            return run_repl(agent)
+            return run_repl(
+                agent,
+                welcome=welcome,
+                model=model,
+                no_color=args.no_color,
+                show_header=not args.quiet,
+            )
+        if welcome:
+            print(welcome)
         return run_agent_once(agent, invocation.command_args)
     except Exception:  # noqa: BLE001 - contain ordinary CLI runtime failures
         return _print_startup_error(args)

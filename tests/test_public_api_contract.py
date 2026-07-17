@@ -143,9 +143,9 @@ def test_session_store_has_no_runtime_alias():
 
 def test_subpackages_are_markers_without_reexports():
     from benchmarks import evaluation
-    from pico import memory, providers
+    from pico import memory, providers, tui
 
-    for package in (evaluation, memory, providers):
+    for package in (evaluation, memory, providers, tui):
         assert not hasattr(package, "__all__")
     assert not hasattr(memory, "VERSION")
     assert not hasattr(memory, "BlockStore")

@@ -20,7 +20,9 @@ classifiers = [
   "Programming Language :: Python :: 3.12",
   "Topic :: Software Development :: Libraries :: Application Frameworks",
 ]
-dependencies = []
+dependencies = [
+  "prompt-toolkit>=3.0.52,<4",
+]
 
 [project.urls]
 Homepage = "https://github.com/xiawiie/pico"

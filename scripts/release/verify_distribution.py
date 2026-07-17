@@ -8,6 +8,7 @@ from email.parser import BytesParser
 import json
 import os
 from pathlib import Path, PurePosixPath
+import shutil
 import subprocess
 import tarfile
 import tempfile
@@ -23,6 +24,7 @@ _PROJECT = tomllib.loads((_REPO / "pyproject.toml").read_text(encoding="utf-8"))
 PROJECT_NAME = _PROJECT["name"]
 PROJECT_VERSION = _PROJECT["version"]
 PROJECT_SUMMARY = _PROJECT["description"]
+EXPECTED_RUNTIME_REQUIREMENTS = ["prompt-toolkit<4,>=3.0.52"]
 PACKAGE_DATA_FILES = {
     "pico/sandbox/resources/image-manifest.json",
     "pico/sandbox/resources/docker-config/config.json",
@@ -162,7 +164,7 @@ def verify_wheel(wheel: Path, tracked_package_files: set[str], readme: str) -> N
         "Issues, https://github.com/xiawiie/pico/issues",
         "Source, https://github.com/xiawiie/pico",
     ]
-    assert metadata.get_all("Requires-Dist") is None
+    assert metadata.get_all("Requires-Dist") == EXPECTED_RUNTIME_REQUIREMENTS
     assert metadata_body.decode("utf-8").strip() == readme.strip()
     assert entry_points == "[console_scripts]\npico = pico.cli.app:main\n"
     assert wheel_metadata["Root-Is-Purelib"] == "true"
@@ -185,6 +187,31 @@ def _smoke_env(home: Path, bin_dir: Path) -> dict[str, str]:
     return env
 
 
+def _locked_runtime_requirements() -> tuple[str, ...]:
+    lock = tomllib.loads((_REPO / "uv.lock").read_text(encoding="utf-8"))
+    packages = {package["name"]: package for package in lock["package"]}
+    direct = packages[PROJECT_NAME].get("dependencies", [])
+    return tuple(
+        f"{dependency['name']}=={packages[dependency['name']]['version']}"
+        for dependency in direct
+    )
+
+
+def _install_with_uv(python: Path, *requirements: str) -> None:
+    uv = shutil.which("uv")
+    if uv is None:
+        raise AssertionError("uv is required for locked offline install smoke")
+    _run(
+        uv,
+        "pip",
+        "install",
+        "--offline",
+        "--python",
+        str(python),
+        *requirements,
+    )
+
+
 def install_smoke(wheel: Path, *, offline: bool = False) -> None:
     with tempfile.TemporaryDirectory(prefix="pico-wheel-smoke-") as raw_tmp:
         root = Path(raw_tmp)
@@ -200,18 +227,35 @@ def install_smoke(wheel: Path, *, offline: bool = False) -> None:
         pico = bin_dir / ("pico.exe" if os.name == "nt" else "pico")
         env = _smoke_env(home, bin_dir)
 
-        install_args = [str(python), "-m", "pip", "install", "--no-deps"]
         if offline:
-            install_args.append("--no-index")
-        install_args.append(str(wheel.resolve()))
-        _run(*install_args, env=env)
+            _install_with_uv(python, str(wheel.resolve()))
+        else:
+            _install_with_uv(python, *_locked_runtime_requirements())
+            _run(
+                str(python),
+                "-m",
+                "pip",
+                "install",
+                "--no-deps",
+                "--no-index",
+                str(wheel.resolve()),
+                env=env,
+            )
         _run(str(python), "-m", "pip", "check", env=env)
         resolved = _run("/bin/sh", "-c", "command -v pico", cwd=cwd, env=env).strip()
         assert Path(resolved).resolve() == pico.resolve()
         _run(
             str(python),
             "-c",
-            "import importlib.metadata as m; assert m.requires('pico') in (None, [])",
+            "import importlib.metadata as m; "
+            "assert m.requires('pico') == ['prompt-toolkit<4,>=3.0.52']",
+            cwd=cwd,
+            env=env,
+        )
+        _run(
+            str(python),
+            "-c",
+            "import prompt_toolkit; import pico.tui.app",
             cwd=cwd,
             env=env,
         )

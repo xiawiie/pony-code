@@ -146,6 +146,7 @@ def test_agents_instructions_match_the_production_contract():
         "recovery",
         "sandbox",
         "state",
+        "tui",
         "tools",
         "workspace",
     ):
@@ -196,6 +197,7 @@ def test_current_python_and_console_surfaces_are_exact():
         "sandbox",
         "security",
         "state",
+        "tui",
         "tools",
         "workspace",
     ):

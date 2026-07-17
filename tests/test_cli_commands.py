@@ -50,14 +50,15 @@ def test_run_command_calls_agent_once(tmp_path, monkeypatch, capsys):
     assert "answer" in capsys.readouterr().out
 
 
-def test_repl_command_exits_on_eof(tmp_path, monkeypatch):
+@pytest.mark.parametrize("command", ([], ["repl"]))
+def test_bare_and_explicit_repl_exit_on_eof(tmp_path, monkeypatch, command):
     called = {}
     _install_fake_agent(monkeypatch, tmp_path, called)
     monkeypatch.setattr(
         "builtins.input", lambda prompt: (_ for _ in ()).throw(EOFError())
     )
 
-    code = main(["--cwd", str(tmp_path), "repl"])
+    code = main(["--cwd", str(tmp_path), *command])
 
     assert code == 0
     assert called["built"] is True
@@ -101,6 +102,10 @@ def test_help_command_shows_examples(capsys):
     assert "pico — Local coding agent" in out
     assert "USAGE:" in out
     assert "Available Commands:" in out
+    assert "pico [global options]" in out
+    assert "pico\n" in out
+    assert "also the default for bare `pico`" in out
+    assert "--no-color" in out
     assert "--sandbox    run/repl in local Docker Sandbox (macOS arm64 only)" in out
     assert 'pico run "inspect the failing tests"' in out
     assert "pico config set-secret PICO_API_KEY" in out

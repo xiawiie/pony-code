@@ -7,9 +7,12 @@
 
 ```mermaid
 flowchart TB
-    U["User / CLI"] --> CLI["pico.cli"]
+    U["User"] --> CLI["pico.cli"]
+    CLI -->|"bare pico / repl + TTY"| TUI["pico.tui"]
+    TUI --> REPL["shared REPL handler"]
+    CLI -->|"run"| RT["pico.runtime.Pico"]
+    REPL --> RT
     CLI --> CFG["pico.config"]
-    CLI --> RT["pico.runtime.Pico"]
     CFG --> ENV["Repository-root .env"]
     RT --> CTX["context + memory + repo map"]
     CTX --> LOOP["agent.loop"]
@@ -45,6 +48,7 @@ pico/
 ├── sandbox/           # Docker、identity、session、diff/apply、resources
 ├── security/          # private/workspace file、path、redaction
 ├── state/             # session/run/checkpoint store、task state、file lock
+├── tui/               # 行内 prompt、命令菜单、马形品牌与状态渲染
 ├── tools/             # tool registry、executor、effect recorder、subprocess
 └── workspace/         # root discovery、snapshot、observer
 ```
@@ -63,8 +67,9 @@ pico/
 
 ## 3. 启动与配置
 
-`pico.cli.app:main` 是唯一 console entry。只读命令如 `status`、`config show` 和普通 `doctor` 不构造 Agent，也不发送
-网络请求。`run` / `repl` 的装配顺序为：
+`pico.cli.app:main` 是唯一 console entry。裸 `pico` 分派到 `repl`；`pico repl` 是显式同义入口；`pico run` 保持
+一次性执行。未知首个 token 始终按未知命令处理，不会静默变成 prompt。只读命令如 `status`、`config show` 和普通
+`doctor` 不构造 Agent，也不发送网络请求。`run` / `repl` 的装配顺序为：
 
 ```mermaid
 sequenceDiagram
@@ -86,6 +91,20 @@ sequenceDiagram
 
 配置解析只接受 `PICO_PROVIDER`、`PICO_MODEL`、`PICO_API_URL`、`PICO_API_KEY`、`PICO_API_VARIANT` 和
 `PICO_AUTH_MODE`。项目 `.env` 高于进程环境；旧变量和厂商变量不会回退生效。
+
+### TUI 是 presentation adapter
+
+`pico.tui` 不拥有第二套 Agent Loop、Session 或斜杠命令状态机。TTY 可用时，`run_repl` 把同一个输入处理器交给
+prompt-toolkit；非 TTY、`TERM=dumb` 或窄终端使用原来的纯文本循环。两种模式共用 ask、Session 命令、finalize 与错误
+语义。
+
+TUI 只通过两个私有、可恢复的 runtime seam 观察执行：durable trace 写入成功后通知 renderer；`ask` approval 使用
+一次性 UI prompt。renderer 异常不能破坏 durable trace，approval renderer 异常必须拒绝授权。离开 TUI 时两个 hook
+恢复原值。
+
+TUI 使用原生 terminal scrollback，不维护全屏 transcript 副本。头部以 SuperHermes 的马形轮廓为参考重绘成确定性的
+Unicode 图形，不打包原始 SVG；马形、`HERMES` 字标、快捷键提示和输入框使用终端默认前景或中性灰，错误、警告与
+成功颜色继续表达各自语义。`NO_COLOR`、`--no-color` 和终端能力检测由交互边界统一处理。
 
 ### Provider 路由
 
@@ -178,6 +197,7 @@ multi-tenant 或 microVM 安全边界。
 wheel 只包含 `pico/**`、Sandbox JSON 与安装 metadata；sdist 另含 `pyproject.toml`、README、LICENSE、`.gitignore` 和
 源码 metadata。两者都不包含 tests、benchmarks、scripts、docs、截图、缓存、`.env`、`.planning` 或 Fake Provider。
 
-运行时依赖为零。distribution verifier 将 Git tracked 产品文件与 archive 精确比对，并在新建虚拟环境中安装 wheel、
-检查入口、版本、资源、离线 Sandbox 状态和 doctor。Tag 发布工作流要求 `v<pyproject version>` 精确匹配，通过全部
-离线门禁后才调用 PyPI Trusted Publishing 与 GitHub Release。
+唯一直接运行时依赖是 `prompt-toolkit`，用于行内 TUI；`wcwidth` 是其锁定的传递依赖。distribution verifier 将 Git
+tracked 产品文件与 archive 精确比对，并在新建虚拟环境中离线解析锁定依赖、安装 wheel、检查入口、版本、TUI import、
+资源、离线 Sandbox 状态和 doctor。Tag 发布工作流要求 `v<pyproject version>` 精确匹配，通过全部离线门禁后才调用
+PyPI Trusted Publishing 与 GitHub Release。

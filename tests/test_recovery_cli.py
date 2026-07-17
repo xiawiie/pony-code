@@ -759,13 +759,13 @@ def test_run_accepts_prompt_starting_with_namespace(tmp_path, monkeypatch, capsy
     assert "answer" in capsys.readouterr().out
 
 
-def test_no_argument_cli_shows_root_help_without_agent(tmp_path, monkeypatch, capsys):
+def test_explicit_help_shows_root_help_without_agent(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(
         "pico.cli.app.build_agent",
         lambda args: (_ for _ in ()).throw(AssertionError("must not build agent")),
     )
 
-    code = main(["--cwd", str(tmp_path)])
+    code = main(["--cwd", str(tmp_path), "--help"])
 
     assert code == 0
     assert capsys.readouterr().out.startswith("pico — Local coding agent")
