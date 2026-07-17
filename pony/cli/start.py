@@ -315,7 +315,6 @@ def _process_repl_input(
             render_error(message)
         return None
 
-    print()
     try:
         render_answer(_safe_text(agent, agent.ask(user_input)))
     except Exception:  # noqa: BLE001 - preserve BaseException interrupt semantics

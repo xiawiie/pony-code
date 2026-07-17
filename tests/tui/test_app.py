@@ -1,3 +1,4 @@
+import io
 from types import SimpleNamespace
 
 import pytest
@@ -12,7 +13,7 @@ from pony.tui.app import (
     run_tui,
     should_use_tui,
 )
-from pony.tui.render import _COLOR_STYLE, logo_text
+from pony.tui.render import _COLOR_STYLE, _PLAIN_STYLE, TuiRenderer
 
 
 class _Stream:
@@ -48,24 +49,27 @@ def test_tui_requires_a_capable_interactive_terminal(
     ) is expected
 
 
-@pytest.mark.parametrize(("columns", "height"), ((40, 5), (80, 7), (120, 11)))
-def test_terminal_logo_scales_horse_and_wordmark_together(columns, height):
-    rendered = logo_text(columns)
-    lines = rendered.splitlines()
+@pytest.mark.parametrize("columns", (40, 80, 120))
+def test_terminal_header_is_one_quiet_brand_line(monkeypatch, columns):
+    output = []
+    monkeypatch.setattr("pony.tui.render.metadata.version", lambda _name: "1.2.3")
+    monkeypatch.setattr(
+        "pony.tui.render.print_formatted_text",
+        lambda value, **_kwargs: output.append(value),
+    )
 
-    assert "HERMES" not in rendered
-    assert "⣿" in rendered
-    assert "█" in rendered
-    assert "\x1b" not in rendered
-    assert len(lines) == height
-    assert max(get_cwidth(line) for line in lines) < columns
+    TuiRenderer(no_color=True).header(columns=columns)
+
+    rendered = "".join(fragment[1] for fragment in output[0])
+    assert rendered == "PONY CODE · v1.2.3\n\n"
+    assert all(get_cwidth(line) < columns for line in rendered.splitlines())
 
 
 def test_tui_chrome_is_monochrome_but_status_colors_keep_their_meaning():
     rules = dict(_COLOR_STYLE.style_rules)
     all_rules = " ".join(rules.values())
 
-    for name in ("logo", "editor.prompt", "key"):
+    for name in ("brand", "editor.prompt"):
         assert "#" not in rules[name]
     assert rules["editor.border"] == "#777777"
     assert "#002fa7" not in all_rules
@@ -73,7 +77,12 @@ def test_tui_chrome_is_monochrome_but_status_colors_keep_their_meaning():
     assert "#d75f5f" not in all_rules
     assert rules["error"] == "bold #ff4d4f"
     assert rules["warning"] == "bold #d29922"
-    assert rules["success"] == "#3fb950"
+    plain_rules = dict(_PLAIN_STYLE.style_rules)
+    assert plain_rules["user"] == ""
+    assert not any(
+        any(token.startswith("bg:") or token == "reverse" for token in rule.split())
+        for rule in plain_rules.values()
+    )
 
 
 def test_slash_completion_is_generated_from_documented_commands():
@@ -140,7 +149,7 @@ def test_tui_editor_grows_without_filling_the_terminal():
             complete_state=None,
             document=SimpleNamespace(line_count=1),
         ),
-        reserve_space_for_menu=10,
+        reserve_space_for_menu=5,
     )
 
     assert _CompactPromptSession._get_default_buffer_control_height(session).max == 1
@@ -223,39 +232,98 @@ def test_tui_restores_runtime_hooks(monkeypatch):
     assert agent._trace_listener is previous_listener
     assert agent._approval_prompt is previous_prompt
     header = "".join(fragment[1] for fragment in output[0])
-    assert "v1.0.0" in header
-    assert "HERMES" not in header
-    assert "Local coding agent for repository-grounded work" in header
-    assert "Using gpt-test · approval ask" in header
+    assert header == "PONY CODE · v1.0.0\n\n"
 
 
-def test_compact_header_keeps_version_model_and_intro_within_terminal(
-    monkeypatch,
-):
-    output = []
+def test_toolbar_is_width_bounded_and_keeps_only_essential_status():
     agent = SimpleNamespace(
         approval_policy="ask",
+        docker_sandbox=False,
+        workspace=SimpleNamespace(
+            cwd="/very/long/workspace/path/project",
+            branch="feature/very-long-branch",
+        ),
+        session={"id": "session-must-not-appear"},
         model_client=SimpleNamespace(
             provider_metadata={"protocol_family": "anthropic_messages"}
         ),
     )
-    monkeypatch.setattr("pony.tui.render.metadata.version", lambda _name: "1.2.3")
+
+    for columns in (40, 80, 120):
+        rendered = "".join(
+            fragment[1]
+            for fragment in TuiRenderer(no_color=True).toolbar(
+                agent,
+                model="claude-sonnet-4-6",
+                columns=columns,
+            )
+        )
+        lines = rendered.splitlines()
+        assert all(get_cwidth(line) < columns for line in lines)
+        assert "host/ask" in rendered
+        assert "anthropic/" in rendered
+        assert "/very/long" not in rendered
+        assert "session-must-not-appear" not in rendered
+
+
+def test_trace_projects_one_tool_line_and_hides_internal_lifecycle(monkeypatch):
+    output = []
+    terminal = io.StringIO()
+    monkeypatch.setattr("pony.tui.render.sys.stdout", terminal)
+    monkeypatch.setattr(
+        "pony.tui.render.print_formatted_text",
+        lambda value, **kwargs: output.append((value, kwargs)),
+    )
+    renderer = TuiRenderer(no_color=True)
+
+    renderer.trace({"event": "model_requested"})
+    renderer.trace({"event": "model_requested"})
+    assert len(output) == 1
+    assert "Working…" in "".join(fragment[1] for fragment in output[0][0])
+    assert output[0][1]["end"] == ""
+
+    renderer.trace(
+        {
+            "event": "tool_started",
+            "name": "search",
+            "args": {"pattern": "checkpoint", "path": "pony/"},
+        }
+    )
+    after_start = len(output)
+    assert terminal.getvalue() == "\r        \r"
+    renderer.trace({"event": "tool_finished", "tool_status": "ok"})
+    renderer.trace({"event": "checkpoint_created", "checkpoint_id": "ckpt_hidden"})
+    assert len(output) == after_start
+    assert "› search \"checkpoint\" in pony/" in "".join(
+        fragment[1] for fragment in output[-1][0]
+    )
+
+    renderer.trace(
+        {
+            "event": "tool_executed",
+            "name": "search",
+            "tool_status": "error",
+            "result": "permission denied",
+        }
+    )
+    rendered = "".join(
+        fragment[1] for value, _kwargs in output for fragment in value
+    )
+    assert "ckpt_hidden" not in rendered
+    assert "permission denied" in rendered
+
+
+def test_user_block_has_padding_without_exposing_terminal_controls(monkeypatch):
+    output = []
     monkeypatch.setattr(
         "pony.tui.render.print_formatted_text",
         lambda value, **_kwargs: output.append(value),
     )
 
-    from pony.tui.render import TuiRenderer
+    TuiRenderer(no_color=False).user("你好 **Pony**\x1b[31m", columns=20)
 
-    TuiRenderer(no_color=True).header(
-        agent,
-        model="claude-sonnet-4-6",
-        columns=40,
-    )
-
-    header = "".join(fragment[1] for fragment in output[0])
-    assert "v1.2.3" in header
-    assert any(line.strip() == "v1.2.3" for line in header.splitlines())
-    assert "Repository-grounded coding agent" in header
-    assert "Using anthropic/claude-sonnet-4-6" in header
-    assert all(get_cwidth(line) < 40 for line in header.splitlines())
+    rendered = "".join(fragment[1] for fragment in output[0])
+    lines = rendered.splitlines()
+    assert "\x1b" not in rendered
+    assert len(lines) == 4  # outside spacing + top padding + content + bottom padding
+    assert all(get_cwidth(line) == 19 for line in lines[1:])
