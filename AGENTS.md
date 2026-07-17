@@ -56,7 +56,7 @@ git log -1 --oneline
 | `pico/sandbox/` | 本地 Docker、identity、filtered staging、session、diff/apply 与资源 |
 | `pico/security/` | path、private/workspace file 与 redaction 原语 |
 | `pico/state/` | Session/Run/Checkpoint store、TaskState 与 file lock |
-| `pico/tui/` | 行内 prompt、slash completion、马形品牌、状态与 approval/activity 渲染 |
+| `pico/tui/` | 行内 prompt、slash completion、小马与 `PONY CODE` 品牌、状态与 approval/activity 渲染 |
 | `pico/tools/` | registry、validation、executor、approval、effect recorder 与 subprocess |
 | `pico/workspace/` | root discovery、WorkspaceContext、snapshot 与 observer |
 
@@ -69,7 +69,9 @@ CLI/TUI 合同：
 - TUI 是 presentation adapter，必须与纯文本 fallback 共用 REPL handler、Agent、Session、finalize 和错误语义。
 - `/` 菜单只展示真实命令；不得增加绕过 approval 的 `!` shell mode、动态 Provider/Model 或第二命令 registry。
 - TUI 只在 stdin/stdout 为 TTY、`TERM` 可用且宽度足够时启用；必须遵守 `NO_COLOR` / `--no-color`。
-- 马形、字标、快捷键和输入框使用默认前景或中性灰；error、warning、success 继续使用语义色。
+- 小马与像素 `PONY CODE` 同高横排并同步响应式缩放；版本、介绍和模型分别换行。品牌、快捷键和输入框使用默认前景
+  或中性灰；error、warning、success 继续使用语义色。
+- 品牌只由完整 TUI 渲染；纯文本 fallback 和 `pico run` 不得输出装饰性 banner。
 - UI listener 只能在 trace durable append 后收到脱敏副本；approval UI 异常必须 fail closed，退出时恢复 hook。
 
 ## 4. Provider 与 `.env` 合同
