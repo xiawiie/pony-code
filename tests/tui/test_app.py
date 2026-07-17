@@ -13,7 +13,7 @@ from pony.tui.app import (
     run_tui,
     should_use_tui,
 )
-from pony.tui.render import _COLOR_STYLE, _PLAIN_STYLE, TuiRenderer
+from pony.tui.render import _COLOR_STYLE, _PLAIN_STYLE, TuiRenderer, logo_text
 
 
 class _Stream:
@@ -49,27 +49,23 @@ def test_tui_requires_a_capable_interactive_terminal(
     ) is expected
 
 
-@pytest.mark.parametrize("columns", (40, 80, 120))
-def test_terminal_header_is_one_quiet_brand_line(monkeypatch, columns):
-    output = []
-    monkeypatch.setattr("pony.tui.render.metadata.version", lambda _name: "1.2.3")
-    monkeypatch.setattr(
-        "pony.tui.render.print_formatted_text",
-        lambda value, **_kwargs: output.append(value),
-    )
+@pytest.mark.parametrize(("columns", "height"), ((40, 5), (80, 7), (120, 11)))
+def test_terminal_logo_scales_horse_and_wordmark_together(columns, height):
+    rendered = logo_text(columns)
+    lines = rendered.splitlines()
 
-    TuiRenderer(no_color=True).header(columns=columns)
-
-    rendered = "".join(fragment[1] for fragment in output[0])
-    assert rendered == "PONY CODE · v1.2.3\n\n"
-    assert all(get_cwidth(line) < columns for line in rendered.splitlines())
+    assert "⣿" in rendered
+    assert "█" in rendered
+    assert "PONY" not in rendered
+    assert len(lines) == height
+    assert max(get_cwidth(line) for line in lines) < columns
 
 
 def test_tui_chrome_is_monochrome_but_status_colors_keep_their_meaning():
     rules = dict(_COLOR_STYLE.style_rules)
     all_rules = " ".join(rules.values())
 
-    for name in ("brand", "editor.prompt"):
+    for name in ("logo", "editor.prompt", "key"):
         assert "#" not in rules[name]
     assert rules["editor.border"] == "#777777"
     assert "#002fa7" not in all_rules
@@ -232,7 +228,9 @@ def test_tui_restores_runtime_hooks(monkeypatch):
     assert agent._trace_listener is previous_listener
     assert agent._approval_prompt is previous_prompt
     header = "".join(fragment[1] for fragment in output[0])
-    assert header == "PONY CODE · v1.0.0\n\n"
+    assert "v1.0.0" in header
+    assert "Local coding agent for repository-grounded work" in header
+    assert "Using gpt-test · approval ask" in header
 
 
 def test_toolbar_is_width_bounded_and_keeps_only_essential_status():
@@ -260,8 +258,10 @@ def test_toolbar_is_width_bounded_and_keeps_only_essential_status():
         )
         lines = rendered.splitlines()
         assert all(get_cwidth(line) < columns for line in lines)
-        assert "host/ask" in rendered
-        assert "anthropic/" in rendered
+        if columns >= 80:
+            assert "host" in rendered
+            assert "approval ask" in rendered
+            assert "anthropic/" in rendered
         assert "/very/long" not in rendered
         assert "session-must-not-appear" not in rendered
 

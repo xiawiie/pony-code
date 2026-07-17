@@ -107,7 +107,7 @@ def run_tui(agent, *, model, no_color, handle_input, show_header=True):
         no_color=no_color or os.environ.get("NO_COLOR") is not None,
     )
     if show_header:
-        renderer.header()
+        renderer.header(agent, model=model)
     session = _CompactPromptSession(
         history=InMemoryHistory(),
         completer=SlashCommandCompleter(),

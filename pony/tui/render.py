@@ -25,9 +25,58 @@ _PROTOCOL_PROVIDERS = {
 
 _FAILURE_STATUSES = frozenset({"error", "partial_success", "rejected"})
 
+# Terminal-scale adaptations of the horse silhouette selected for Pony's TUI.
+_HORSE_LINES = (
+    "  ⣶⡄⣷⡄⣄",
+    " ⢀⣼⣿⣿⣿⣿⣻⣦⣀",
+    " ⣼⣿⣾⣿⣿⣿⣿⣽⣯⣄",
+    "⣾⣿⣿⠿⠋⣿⣿⣿⣿⣷⣿⡁  ⢀⣤⣤⣤ ⢀⣤⣄",
+    "⠘⠛⠃  ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣟⡻⣿⣷⡄",
+    "    ⢰⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡇⣿⣿⡇",
+    "    ⠈⣿⣿⣿⣿⣿⣿⣿⣿⣿⡿⠿⣿⣿⣿⡏⠁⢿⣿⣷",
+    "  ⢀⣠⣾⣿⠿⢾⣿⡟⠛⠛⠛⠁⠿⣿⣿⡻⣿⣷⡀ ⠘⠁",
+    "  ⠘⣿⠉⠁ ⠘⣿⠇     ⣉⣿⡿⠉⢿⣿",
+    "   ⢿⣿⣤  ⣿⡇    ⢠⣿⠟⠁ ⢸⣿",
+    "    ⠙⠛ ⣼⣿⠃   ⢠⣿⡟  ⣴⣿⠛",
+)
+
+_MEDIUM_HORSE_LINES = (
+    "   ⣶⡄⣷⣄",
+    "  ⣼⣿⣿⣿⣻⣦⣀",
+    " ⣾⠿⣿⣿⣿⣷⣿⣤⣤⣄",
+    "⠛⠃ ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣦",
+    "   ⣿⣿⣿⠿⠛⣿⣿⣿⡇",
+    "  ⣼⣿⠃    ⢸⣿⣆",
+    "  ⠛⠁     ⠛⠃",
+)
+
+_MICRO_HORSE_LINES = (
+    "  ⣶⡄⣷⣄",
+    " ⣼⣿⣿⣿⣻⣦⣀",
+    "⠛⠃⣿⣿⣿⣿⣿⣿⣿⣿⣦",
+    "  ⣿⠛⣿⣿⡇ ⣿",
+    " ⠛  ⠛  ⠛",
+)
+
+_PIXEL_GLYPHS = {
+    "P": ("### ", "#  #", "### ", "#   ", "#   "),
+    "O": (" ## ", "#  #", "#  #", "#  #", " ## "),
+    "N": ("#  #", "## #", "####", "# ##", "#  #"),
+    "Y": ("#  #", " ## ", "  # ", "  # ", "  # "),
+    "C": (" ###", "#   ", "#   ", "#   ", " ###"),
+    "D": ("### ", "#  #", "#  #", "#  #", "### "),
+    "E": ("####", "#   ", "### ", "#   ", "####"),
+}
+
+_HALF_BLOCKS = {"  ": " ", "# ": "▌", " #": "▐", "##": "█"}
+_LARGE_BANNER_COLUMNS = 112
+_MEDIUM_BANNER_COLUMNS = 64
+_PRODUCT_DESCRIPTION = "Local coding agent for repository-grounded work"
+
 _COLOR_STYLE = Style.from_dict(
     {
-        "brand": "bold",
+        "logo": "bold",
+        "meta": "#858585",
         "editor.prompt": "",
         "editor.border": "#777777",
         "user": "bg:#30303d #f4f4f5",
@@ -36,6 +85,7 @@ _COLOR_STYLE = Style.from_dict(
         "tool.error": "#ff4d4f",
         "warning": "bold #d29922",
         "error": "bold #ff4d4f",
+        "key": "bold",
         "footer": "#777777",
         "markdown.code": "bg:#2b2b2b #f0f0f0",
         "markdown.quote": "#858585",
@@ -53,7 +103,8 @@ _COLOR_STYLE = Style.from_dict(
 
 _PLAIN_STYLE = Style.from_dict(
     {
-        "brand": "bold",
+        "logo": "bold",
+        "meta": "",
         "editor.prompt": "bold",
         "editor.border": "",
         "user": "",
@@ -62,6 +113,7 @@ _PLAIN_STYLE = Style.from_dict(
         "tool.error": "bold",
         "warning": "bold",
         "error": "bold",
+        "key": "bold",
         "footer": "",
         "markdown.code": "underline",
         "markdown.quote": "",
@@ -74,6 +126,67 @@ _PLAIN_STYLE = Style.from_dict(
 )
 
 
+def _pixel_row(pattern, scale):
+    if scale == 2:
+        return "".join("██" if pixel == "#" else "  " for pixel in pattern)
+    if scale == 1:
+        return pattern.replace("#", "█")
+    return "".join(_HALF_BLOCKS[pattern[index : index + 2]] for index in (0, 2))
+
+
+def _wordmark_lines(scale, repeats, letter_gap, word_gap):
+    lines = []
+    for row, repeat in enumerate(repeats):
+        words = []
+        for word in ("PONY", "CODE"):
+            words.append(
+                (" " * letter_gap).join(
+                    _pixel_row(_PIXEL_GLYPHS[letter][row], scale)
+                    for letter in word
+                )
+            )
+        lines.extend([(words[0] + " " * word_gap + words[1]).rstrip()] * repeat)
+    return tuple(lines)
+
+
+def _banner_variant(columns):
+    if columns >= _LARGE_BANNER_COLUMNS:
+        return _HORSE_LINES, _wordmark_lines(2, (2, 2, 3, 2, 2), 2, 4)
+    if columns >= _MEDIUM_BANNER_COLUMNS:
+        return _MEDIUM_HORSE_LINES, _wordmark_lines(1, (2, 1, 1, 1, 2), 1, 2)
+    return _MICRO_HORSE_LINES, _wordmark_lines(0, (1, 1, 1, 1, 1), 1, 2)
+
+
+def _banner_lines(columns):
+    width = max(1, int(columns) - 1)
+    horse_lines, wordmark_lines = _banner_variant(columns)
+    horse_width = max(get_cwidth(line) for line in horse_lines)
+    wordmark_width = max(get_cwidth(line) for line in wordmark_lines)
+    gap = min(3, max(1, width - horse_width - wordmark_width))
+    banner_width = horse_width + gap + wordmark_width
+    indent = " " * max(0, (width - banner_width) // 2)
+    return tuple(
+        (
+            indent
+            + horse
+            + " " * (horse_width - get_cwidth(horse) + gap)
+            + wordmark
+        ).rstrip()
+        for horse, wordmark in zip(horse_lines, wordmark_lines, strict=True)
+    )
+
+
+def logo_text(columns=80):
+    """Return the responsive, color-independent terminal logo."""
+    return "\n".join(_banner_lines(columns))
+
+
+def _logo_fragments(columns):
+    return FormattedText(
+        [("class:logo", f"{line}\n") for line in _banner_lines(columns)]
+    )
+
+
 def _terminal_width(columns=None):
     columns = columns or shutil.get_terminal_size((80, 24)).columns
     return max(1, int(columns) - 1)
@@ -84,9 +197,7 @@ def _truncate(text, width):
     width = max(0, int(width))
     if get_cwidth(text) <= width:
         return text
-    if width == 0:
-        return ""
-    remaining = width - 1
+    remaining = max(0, width - 3)
     clipped = []
     for character in text:
         character_width = get_cwidth(character)
@@ -94,7 +205,12 @@ def _truncate(text, width):
             break
         clipped.append(character)
         remaining -= character_width
-    return "".join(clipped) + "…"
+    return "".join(clipped) + "..."
+
+
+def _centered(text, width):
+    text = _truncate(text, width)
+    return " " * max(0, (width - get_cwidth(text)) // 2) + text
 
 
 def _product_version():
@@ -120,6 +236,12 @@ def _provider_name(model_client):
         else ""
     )
     return _PROTOCOL_PROVIDERS.get(str(protocol), "")
+
+
+def _model_label(agent, model):
+    provider = _provider_name(getattr(agent, "model_client", None))
+    safe_model = _one_line(model)
+    return f"{provider}/{safe_model}" if provider else safe_model
 
 
 def _formatted_lines(value):
@@ -195,24 +317,6 @@ def _tool_summary(name, args, width):
     return _truncate(summary, max(1, width - 2))
 
 
-def _status_line(agent, model, width):
-    mode = "sandbox" if getattr(agent, "docker_sandbox", False) else "host"
-    approval = _one_line(getattr(agent, "approval_policy", "")) or "-"
-    provider = _provider_name(agent.model_client)
-    safe_model = _one_line(model)
-    model_label = f"{provider}/{safe_model}" if provider else safe_model
-    right = f"{mode}/{approval} · {model_label}"
-
-    workspace = str(getattr(agent.workspace, "cwd", "-"))
-    repository = _one_line(Path(workspace).name) or "."
-    branch = _one_line(getattr(agent.workspace, "branch", "-")) or "-"
-    for left in (f"{repository} ({branch})", repository, ""):
-        gap = width - get_cwidth(left) - get_cwidth(right)
-        if gap >= (1 if left else 0):
-            return f"{left}{' ' * gap}{right}"
-    return _truncate(right, width)
-
-
 class TuiRenderer:
     """Project durable runtime facts into a quiet terminal conversation."""
 
@@ -224,20 +328,63 @@ class TuiRenderer:
     def _write(self, value, **kwargs):
         print_formatted_text(value, style=self.style, **kwargs)
 
-    def header(self, *, columns=None):
-        width = _terminal_width(columns)
-        brand = _truncate(f"PONY CODE · v{_product_version()}", width)
+    def header(self, agent, *, model, columns=None):
+        columns = columns or shutil.get_terminal_size((80, 24)).columns
+        width = max(1, columns - 1)
+        model_label = _model_label(agent, model)
+        compact = columns < _MEDIUM_BANNER_COLUMNS
+        description = (
+            "Repository-grounded coding agent" if compact else _PRODUCT_DESCRIPTION
+        )
+        model_summary = (
+            f"Using {model_label}"
+            if compact
+            else f"Using {model_label} · approval {agent.approval_policy}"
+        )
+        shortcuts = (
+            "/ commands · ctrl+c twice exit"
+            if compact
+            else "/ commands · esc+enter newline · ctrl+c twice exit"
+        )
         self._write(
-            FormattedText([("class:brand", f"{brand}\n"), ("", "\n")])
+            FormattedText(
+                [
+                    *_logo_fragments(columns),
+                    (
+                        "class:meta",
+                        f"\n{_centered(f'v{_product_version()}', width)}\n",
+                    ),
+                    ("class:meta", f"{_centered(description, width)}\n"),
+                    ("class:meta", f"{_centered(model_summary, width)}\n"),
+                    ("class:meta", f"{_centered(shortcuts, width)}\n"),
+                ]
+            )
         )
 
     def toolbar(self, agent, *, model, columns=None):
         width = _terminal_width(columns)
-        status = _status_line(agent, model, width)
+        mode = "sandbox" if getattr(agent, "docker_sandbox", False) else "host"
+        session_id = _one_line(getattr(agent, "session", {}).get("id", "-"))[:8]
+        branch = _one_line(getattr(agent.workspace, "branch", "-") or "-")
+        workspace = _one_line(getattr(agent.workspace, "cwd", "-"))
+        left = f" {workspace} ({branch}) · {session_id} · {mode}"
+        approval = _one_line(getattr(agent, "approval_policy", "")) or "-"
+        right = f"{_model_label(agent, model)} · approval {approval} "
+        gap = width - get_cwidth(left) - get_cwidth(right)
+        if gap < 1:
+            left = f" {Path(workspace).name} ({branch}) · {mode}"
+            gap = width - get_cwidth(left) - get_cwidth(right)
+        if gap < 1:
+            left = f" {Path(workspace).name} · {mode}"
+            gap = width - get_cwidth(left) - get_cwidth(right)
+        if gap < 1:
+            right = _truncate(right, max(1, width // 2))
+            left = _truncate(left, max(1, width - get_cwidth(right) - 1))
+            gap = max(1, width - get_cwidth(left) - get_cwidth(right))
         return FormattedText(
             [
                 ("class:editor.border", f"{'─' * width}\n"),
-                ("class:footer", status),
+                ("class:footer", f"{left}{' ' * gap}{right}"),
             ]
         )
 

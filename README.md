@@ -40,14 +40,20 @@ exec zsh
 pony --version
 ```
 
-全局安装只提供命令，不会替目标仓库创建配置。运行交互会话前仍需进入目标仓库根目录，让 Pony 读取该仓库的
-`.env`：
+全局安装只提供命令，不会替目标仓库创建配置。运行交互会话时，当前目录就是目标仓库时可以直接执行；如果不想
+先 `cd`，使用 `--cwd` 显式指定目标仓库，Pony 会从该目录读取 `.env` 并将其作为 workspace：
 
 ```bash
 cd /path/to/your/repository
 pony init
 pony
+
+# 不进入目标仓库也可以运行
+pony --cwd /path/to/your/repository
 ```
+
+裸 `pony` 不会猜测全局默认仓库：从家目录或其他目录启动时，它使用当前目录作为 workspace。这样可以避免把
+请求发送到错误仓库或读取错误的 `.env`；需要切换仓库时，请使用 `--cwd` 或进入对应目录。
 
 从源码开发时使用锁定环境：
 
@@ -115,6 +121,7 @@ pony-code (main)          host/ask · anthropic/claude
 ![Pony TUI 启动画面](docs/assets/terminal/pony-tui-welcome.png)
 
 上图为真实 Terminal.app 启动画面，展示 Pony 版本、当前模型、审批策略，以及仓库、分支和执行环境信息。
+运行时会先渲染同一套 Unicode 小马与像素 `PONY CODE` 标识，并根据终端宽度切换 5、7、11 行版本。
 
 完整 TUI 以对话为中心：用户消息使用低对比消息块，Assistant 回复通过内置 renderer 排版标题、列表、代码块和表格。
 `Working…` 只在等待响应时短暂出现；成功 Tool 每次只显示一行摘要，自动 checkpoint 不占用对话区。失败、中断和审批
