@@ -30,6 +30,25 @@ pony --version
 pony --help
 ```
 
+如果希望在任意终端直接使用 `pony`，将当前源码工作区安装为用户级 CLI：
+
+```bash
+cd /path/to/pony-code
+uv tool install --editable .
+uv tool update-shell
+exec zsh
+pony --version
+```
+
+全局安装只提供命令，不会替目标仓库创建配置。运行交互会话前仍需进入目标仓库根目录，让 Pony 读取该仓库的
+`.env`：
+
+```bash
+cd /path/to/your/repository
+pony init
+pony
+```
+
 从源码开发时使用锁定环境：
 
 ```bash
