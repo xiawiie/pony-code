@@ -103,8 +103,10 @@ TUI 只通过两个私有、可恢复的 runtime seam 观察执行：durable tra
 恢复原值。
 
 TUI 使用原生 terminal scrollback，不维护全屏 transcript 副本。头部以 SuperHermes 的马形轮廓为参考重绘成确定性的
-Unicode 图形，不打包原始 SVG；马形、`HERMES` 字标、快捷键提示和输入框使用终端默认前景或中性灰，错误、警告与
-成功颜色继续表达各自语义。`NO_COLOR`、`--no-color` 和终端能力检测由交互边界统一处理。
+Unicode 图形，不打包原始 SVG；小马和像素 `PONY CODE` 作为同一个横向视觉块，按终端宽度同步切换 5、7、11 行
+版本。版本、介绍、模型和快捷键分别换行；马形、字标、快捷键和输入框使用终端默认前景或中性灰，错误、警告与成功
+颜色继续表达各自语义。纯文本 fallback 和 `pico run` 不渲染装饰性 banner。`NO_COLOR`、`--no-color` 和终端能力
+检测由交互边界统一处理。
 
 ### Provider 路由
 
