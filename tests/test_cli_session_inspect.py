@@ -20,6 +20,14 @@ def _payload(workspace, session_id, messages, *, version=1):
         "resume_state": {},
         "recovery": {},
         "runtime_identity": {},
+        **(
+            {
+                "workflow_mode": "act",
+                "active_plan": {"goal": "", "items": []},
+            }
+            if version == 3
+            else {}
+        ),
     }
 
 
@@ -71,7 +79,7 @@ def _tool_messages():
 def test_inspect_reports_current_tree_without_mutating_it(tmp_path):
     root = tmp_path / "sessions"
     store = SessionStore(root)
-    session = _payload(tmp_path, "s1", _tool_messages(), version=2)
+    session = _payload(tmp_path, "s1", _tool_messages(), version=3)
     path = store.save(session)
     original = path.read_bytes()
 
@@ -80,7 +88,7 @@ def test_inspect_reports_current_tree_without_mutating_it(tmp_path):
     assert ok is True
     assert path.read_bytes() == original
     assert "storage: current" in report
-    assert "format_version: 2" in report
+    assert "format_version: 3" in report
     assert "messages: 4" in report
     assert "role_sequence: user -> assistant -> user -> assistant" in report
     assert "entries: 4" in report
@@ -108,7 +116,7 @@ def test_inspect_legacy_reports_pending_migration_without_migrating(tmp_path):
 def test_inspect_reports_branch_facts(tmp_path):
     root = tmp_path / "sessions"
     store = SessionStore(root)
-    store.save(_payload(tmp_path, "branch", _tool_messages(), version=2))
+    store.save(_payload(tmp_path, "branch", _tool_messages(), version=3))
     first_message = next(
         entry for entry in store.entries("branch") if entry["type"] == "message"
     )

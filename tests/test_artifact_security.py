@@ -700,6 +700,7 @@ def test_singular_session_inspection_never_reads_unsafe_paths(
         + "\n",
         encoding="utf-8",
     )
+    safe.chmod(0o600)
     assert inspect_session("safe", sessions_root)[0] is True
 
 

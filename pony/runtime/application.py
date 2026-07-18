@@ -52,6 +52,7 @@ from pony.sandbox.session import (
     source_apply_control_lock_path,
 )
 from pony.state.session_store import SESSION_FORMAT_VERSION, SESSION_RECORD_TYPE
+from pony.state.workflow import DEFAULT_WORKFLOW_MODE, EMPTY_PLAN
 from pony.tools.change_recorder import ToolChangeRecorder
 from pony.tools.context import ToolContext
 from pony.tools.executor import ToolExecutionResult, ToolExecutor
@@ -503,6 +504,8 @@ class Pony:
             "runtime_identity": {},
             "resume_state": {},
             "recovery": {"current_checkpoint_id": ""},
+            "workflow_mode": DEFAULT_WORKFLOW_MODE,
+            "active_plan": deepcopy(EMPTY_PLAN),
         }
         if model_binding:
             session["provider_binding"] = model_binding
@@ -665,7 +668,7 @@ class Pony:
             model_client=model_client,
             workspace=workspace,
             session_store=session_store,
-            session=session_store.load(session_id),
+            session=session_store.load_for_resume(session_id),
             options=options,
         )
 
@@ -722,6 +725,10 @@ class Pony:
             raise ValueError("Pony requires a current session")
         if not isinstance(self.session.get("messages"), list):
             raise ValueError("session messages must be a list")
+        if self.session.get("workflow_mode") not in {"plan", "act", "review"}:
+            raise ValueError("invalid workflow mode")
+        if not isinstance(self.session.get("active_plan"), dict):
+            raise ValueError("invalid active plan")
         if not isinstance(self.session.get("recently_recalled"), list):
             self.session["recently_recalled"] = []
         existing_memory = self.session.get("memory")
@@ -1878,6 +1885,7 @@ class Pony:
             "recent_files": [],
         }
         candidate["memory"] = {"file_summaries": {}}
+        candidate["active_plan"] = deepcopy(EMPTY_PLAN)
         checkpoints = candidate.setdefault(
             "checkpoints", {"current_id": "", "items": {}}
         )
@@ -1886,7 +1894,7 @@ class Pony:
         candidate["resume_state"] = {}
         recovery = candidate.setdefault("recovery", {})
         recovery["current_checkpoint_id"] = ""
-        saved_path = self.session_store.save(candidate)
+        saved_path = self.session_store.save(candidate, force_branch=True)
         self.session = candidate
         self.session_path = saved_path
         self.memory = WorkingMemory(workspace_root=self.root)
