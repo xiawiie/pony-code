@@ -32,11 +32,19 @@ from pony.security.private_files import (
     write_private_bytes_atomic,
 )
 from pony.security.paths import require_regular_no_symlink
+from pony.state.workflow import (
+    DEFAULT_WORKFLOW_MODE,
+    EMPTY_PLAN,
+    parse_plan_json,
+    validate_plan,
+    validate_workflow_mode,
+)
 from pony.workspace.context import now
 
 
 SESSION_RECORD_TYPE = "session"
-SESSION_FORMAT_VERSION = 2
+SESSION_FORMAT_VERSION = 3
+PREVIOUS_SESSION_FORMAT_VERSION = 2
 LEGACY_SESSION_FORMAT_VERSION = 1
 SESSION_HEADER_RECORD_TYPE = "session_header"
 SESSION_ENTRY_RECORD_TYPE = "session_entry"
@@ -51,7 +59,8 @@ ENTRY_TYPES = frozenset(
     {
         "message",
         "tool_exchange",
-        "model_change",
+        "workflow_mode_change",
+        "plan_update",
         "compaction",
         "branch_summary",
         "task_checkpoint",
@@ -62,10 +71,27 @@ ENTRY_TYPES = frozenset(
         "migration",
     }
 )
+_V2_ENTRY_TYPES = (ENTRY_TYPES - {"workflow_mode_change", "plan_update"}) | {
+    "model_change"
+}
 
 
 class SessionFormatError(ValueError):
     """A Session artifact does not match the current on-disk contract."""
+
+
+class SessionMigrationRequired(SessionFormatError):
+    code = "session_migration_required"
+
+    def __init__(self, session_id):
+        super().__init__(f"session_migration_required: resume session {session_id} first")
+
+
+class UnsupportedLegacyEntry(SessionFormatError):
+    code = "unsupported_legacy_entry"
+
+    def __init__(self, kind):
+        super().__init__(f"unsupported_legacy_entry: {kind}")
 
 
 class SessionTailRepairRequired(SessionFormatError):
@@ -139,8 +165,11 @@ _REQUIRED_FIELDS = frozenset(
         "resume_state",
         "recovery",
         "runtime_identity",
+        "workflow_mode",
+        "active_plan",
     }
 )
+_LEGACY_REQUIRED_FIELDS = _REQUIRED_FIELDS - {"workflow_mode", "active_plan"}
 _OPTIONAL_FIELDS = frozenset({"provider_binding"})
 _PROTOCOL_FAMILIES = {
     "anthropic_messages",
@@ -155,10 +184,16 @@ _DICT_FIELDS = (
     "resume_state",
     "recovery",
     "runtime_identity",
+    "active_plan",
 )
 _DERIVED_CACHE_FIELDS = frozenset({"working_memory", "memory", "recently_recalled"})
+_HEADER_PROJECTION_FIELDS = frozenset(
+    {"record_type", "format_version", "id", "created_at", "workspace_root"}
+)
 _SESSION_INFO_FIELDS = (
-    (_REQUIRED_FIELDS | _OPTIONAL_FIELDS) - {"messages"} - _DERIVED_CACHE_FIELDS
+    (_REQUIRED_FIELDS | _OPTIONAL_FIELDS)
+    - {"messages", "workflow_mode", "active_plan"}
+    - _DERIVED_CACHE_FIELDS
 )
 _MUTABLE_SESSION_INFO_FIELDS = frozenset(
     {"resume_state", "recovery", "runtime_identity"}
@@ -307,8 +342,9 @@ def _validate_rewind_intent(value, session_id):
 def _validate_projection(payload, session_id, *, version=SESSION_FORMAT_VERSION):
     if not isinstance(payload, dict):
         raise SessionFormatError("session payload must be an object")
-    if not _REQUIRED_FIELDS <= payload.keys() or not payload.keys() <= (
-        _REQUIRED_FIELDS | _OPTIONAL_FIELDS
+    required = _REQUIRED_FIELDS if version == SESSION_FORMAT_VERSION else _LEGACY_REQUIRED_FIELDS
+    if not required <= payload.keys() or not payload.keys() <= (
+        required | _OPTIONAL_FIELDS
     ):
         raise SessionFormatError("session payload fields do not match current format")
     if payload.get("record_type") != SESSION_RECORD_TYPE:
@@ -325,10 +361,21 @@ def _validate_projection(payload, session_id, *, version=SESSION_FORMAT_VERSION)
         for key in ("id", "created_at", "workspace_root")
     ):
         raise SessionFormatError("invalid session string field")
-    if any(not isinstance(payload.get(key), dict) for key in _DICT_FIELDS):
+    dict_fields = (
+        _DICT_FIELDS
+        if version == SESSION_FORMAT_VERSION
+        else tuple(key for key in _DICT_FIELDS if key != "active_plan")
+    )
+    if any(not isinstance(payload.get(key), dict) for key in dict_fields):
         raise SessionFormatError("invalid session object field")
     if not isinstance(payload.get("recently_recalled"), list):
         raise SessionFormatError("invalid session list field")
+    if version == SESSION_FORMAT_VERSION:
+        try:
+            validate_workflow_mode(payload.get("workflow_mode"))
+            validate_plan(payload.get("active_plan"))
+        except ValueError as exc:
+            raise SessionFormatError(str(exc)) from None
     binding = payload.get("provider_binding")
     if binding is not None and (
         not isinstance(binding, dict)
@@ -476,12 +523,12 @@ def _validate_worktree_identity(value):
         raise SessionFormatError("worktree identity digest mismatch")
 
 
-def _validate_header(header, session_id):
+def _validate_header(header, session_id, *, version=SESSION_FORMAT_VERSION):
     if not isinstance(header, dict) or header.keys() != _HEADER_FIELDS:
         raise SessionFormatError("invalid session header fields")
     if header.get("record_type") != SESSION_HEADER_RECORD_TYPE:
         raise SessionFormatError("invalid session header type")
-    if header.get("format_version") != SESSION_FORMAT_VERSION:
+    if header.get("format_version") != version:
         raise SessionFormatError("invalid session header version")
     if header.get("id") != session_id:
         raise SessionFormatError("session header id mismatch")
@@ -494,12 +541,12 @@ def _validate_header(header, session_id):
     return header
 
 
-def _validate_entry(entry, known_ids):
+def _validate_entry(entry, known_ids, *, version=SESSION_FORMAT_VERSION):
     if not isinstance(entry, dict) or entry.keys() != _ENTRY_FIELDS:
         raise SessionFormatError("invalid session entry fields")
     if entry.get("record_type") != SESSION_ENTRY_RECORD_TYPE:
         raise SessionFormatError("invalid session entry type")
-    if entry.get("format_version") != SESSION_FORMAT_VERSION:
+    if entry.get("format_version") != version:
         raise SessionFormatError("invalid session entry version")
     if not isinstance(entry.get("id"), str) or not _ENTRY_ID_RE.fullmatch(entry["id"]):
         raise SessionFormatError("invalid session entry id")
@@ -510,7 +557,8 @@ def _validate_entry(entry, known_ids):
         raise SessionFormatError("invalid session parent id")
     if not isinstance(entry.get("timestamp"), str):
         raise SessionFormatError("invalid session entry timestamp")
-    if entry.get("type") not in ENTRY_TYPES:
+    allowed_types = _V2_ENTRY_TYPES if version == PREVIOUS_SESSION_FORMAT_VERSION else ENTRY_TYPES
+    if entry.get("type") not in allowed_types:
         raise SessionFormatError("invalid session entry kind")
     if not isinstance(entry.get("data"), dict):
         raise SessionFormatError("invalid session entry data")
@@ -546,11 +594,29 @@ def _validate_entry(entry, known_ids):
             or not checkpoint.keys() <= _TASK_CHECKPOINT_FIELDS
         ):
             raise SessionFormatError("invalid task checkpoint entry data")
+    if entry["type"] == "tool_exchange" and version == SESSION_FORMAT_VERSION:
+        if entry["data"].keys() != {"assistant", "result"}:
+            raise SessionFormatError("invalid tool exchange entry data")
+        _tool_exchange_plan(entry["data"])
+    if entry["type"] == "workflow_mode_change":
+        if entry["data"].keys() != {"mode"}:
+            raise SessionFormatError("invalid workflow mode entry data")
+        try:
+            validate_workflow_mode(entry["data"].get("mode"))
+        except ValueError as exc:
+            raise SessionFormatError(str(exc)) from None
+    if entry["type"] == "plan_update":
+        if entry["data"].keys() != {"plan"}:
+            raise SessionFormatError("invalid plan update entry data")
+        try:
+            validate_plan(entry["data"].get("plan"))
+        except ValueError as exc:
+            raise SessionFormatError(str(exc)) from None
     return entry
 
 
 def _base_projection(header):
-    return {
+    projection = {
         "record_type": SESSION_RECORD_TYPE,
         "format_version": SESSION_FORMAT_VERSION,
         "id": header["id"],
@@ -565,6 +631,14 @@ def _base_projection(header):
         "recovery": {"current_checkpoint_id": ""},
         "runtime_identity": {},
     }
+    if header["format_version"] == SESSION_FORMAT_VERSION:
+        projection.update(
+            workflow_mode=DEFAULT_WORKFLOW_MODE,
+            active_plan=deepcopy(EMPTY_PLAN),
+        )
+    else:
+        projection["format_version"] = header["format_version"]
+    return projection
 
 
 def _active_path(entries):
@@ -585,6 +659,51 @@ def _active_path(entries):
     return path
 
 
+def _tool_exchange_plan(data):
+    assistant = data.get("assistant")
+    result = data.get("result")
+    if not isinstance(assistant, dict) or not isinstance(result, dict):
+        raise SessionFormatError("invalid tool exchange entry")
+    blocks = assistant.get("content")
+    result_blocks = result.get("content")
+    metadata = result.get("_pony_meta")
+    assistant_metadata = assistant.get("_pony_meta")
+    if (
+        not isinstance(blocks, list)
+        or len(blocks) != 1
+        or not isinstance(blocks[0], dict)
+        or not isinstance(result_blocks, list)
+        or len(result_blocks) != 1
+        or not isinstance(result_blocks[0], dict)
+        or not isinstance(metadata, dict)
+        or not isinstance(assistant_metadata, dict)
+    ):
+        return None
+    call = blocks[0]
+    tool_result = result_blocks[0]
+    tool_use_id = call.get("id")
+    if (
+        call.get("type") != "tool_use"
+        or call.get("name") != "update_plan"
+        or metadata.get("tool_status") != "ok"
+        or metadata.get("effect_class") != "session_state"
+        or not isinstance(tool_use_id, str)
+        or assistant_metadata.get("tool_use_id") != tool_use_id
+        or metadata.get("tool_use_id") != tool_use_id
+        or tool_result.get("type") != "tool_result"
+        or tool_result.get("tool_use_id") != tool_use_id
+        or tool_result.get("is_error") is True
+    ):
+        return None
+    arguments = call.get("input")
+    if not isinstance(arguments, dict) or arguments.keys() != {"plan_json"}:
+        raise SessionFormatError("invalid update_plan arguments")
+    try:
+        return parse_plan_json(arguments["plan_json"])
+    except ValueError as exc:
+        raise SessionFormatError(str(exc)) from None
+
+
 def _apply_entry(projection, entry):
     kind = entry["type"]
     data = entry["data"]
@@ -599,13 +718,28 @@ def _apply_entry(projection, entry):
         if not isinstance(assistant, dict) or not isinstance(result, dict):
             raise SessionFormatError("invalid tool exchange entry")
         projection["messages"].extend((deepcopy(assistant), deepcopy(result)))
+        plan = _tool_exchange_plan(data)
+        if plan is not None:
+            projection["active_plan"] = plan
+    elif kind == "workflow_mode_change":
+        projection["workflow_mode"] = validate_workflow_mode(data.get("mode"))
+    elif kind == "plan_update":
+        projection["active_plan"] = validate_plan(data.get("plan"))
     elif kind == "session_info":
         values = data.get("set")
         if not isinstance(values, dict) or "messages" in values:
             raise SessionFormatError("invalid session info entry")
         if not values.keys() <= _SESSION_INFO_FIELDS:
             raise SessionFormatError("invalid session info field")
-        projection.update(deepcopy(values))
+        projection.update(
+            deepcopy(
+                {
+                    key: value
+                    for key, value in values.items()
+                    if key not in _HEADER_PROJECTION_FIELDS
+                }
+            )
+        )
     elif kind == "task_checkpoint":
         checkpoint_id = data.get("checkpoint_id")
         checkpoint = data.get("checkpoint")
@@ -855,7 +989,11 @@ def _project_tree(header, entries):
     path = _active_path(entries)
     for entry in path:
         _apply_entry(projection, entry)
-    _validate_projection(projection, header["id"])
+    _validate_projection(
+        projection,
+        header["id"],
+        version=header["format_version"],
+    )
     return path, projection
 
 
@@ -904,6 +1042,20 @@ def _state_values(projection):
         for key, value in projection.items()
         if key in _SESSION_INFO_FIELDS
     }
+
+
+def _workflow_entries(projection, parent_id, *, include_empty_plan=False):
+    entries = []
+    mode = projection.get("workflow_mode", DEFAULT_WORKFLOW_MODE)
+    plan = projection.get("active_plan", EMPTY_PLAN)
+    if mode != DEFAULT_WORKFLOW_MODE:
+        entry = _new_entry("workflow_mode_change", {"mode": mode}, parent_id)
+        entries.append(entry)
+        parent_id = entry["id"]
+    if plan != EMPTY_PLAN or include_empty_plan:
+        entry = _new_entry("plan_update", {"plan": plan}, parent_id)
+        entries.append(entry)
+    return entries
 
 
 def _persistent_projection(value):
@@ -1051,7 +1203,16 @@ def _render_tree(header, entries):
     )
 
 
-def _parse_jsonl(raw, session_id):
+def _jsonl_format_version(raw):
+    first = raw.split(b"\n", 1)[0]
+    header = _decode_json_object(first)
+    version = header.get("format_version")
+    if type(version) is not int:
+        raise SessionFormatError("invalid session header version")
+    return version
+
+
+def _parse_jsonl(raw, session_id, *, version=SESSION_FORMAT_VERSION):
     if not raw:
         raise SessionFormatError("empty session tree")
     if not raw.endswith(b"\n"):
@@ -1063,13 +1224,21 @@ def _parse_jsonl(raw, session_id):
     for line in raw_lines:
         if len(line) + 1 > MAX_SESSION_ENTRY_BYTES:
             raise SessionFormatError("session entry too large")
-    header = _validate_header(_decode_json_object(raw_lines[0]), session_id)
+    header = _validate_header(
+        _decode_json_object(raw_lines[0]),
+        session_id,
+        version=version,
+    )
     if worktree_identity(header["workspace_root"]) != header["worktree_identity"]:
         raise SessionFormatError("session worktree identity mismatch")
     entries = []
     known_ids = set()
     for line in raw_lines[1:]:
-        entry = _validate_entry(_decode_json_object(line), known_ids)
+        entry = _validate_entry(
+            _decode_json_object(line),
+            known_ids,
+            version=version,
+        )
         known_ids.add(entry["id"])
         entries.append(entry)
     path, projection = _project_tree(header, entries)
@@ -1202,6 +1371,11 @@ class SessionStore:
             trusted_root_identity=self._root_identity,
             max_bytes=MAX_SESSION_BYTES,
         )
+        version = _jsonl_format_version(raw)
+        if version != SESSION_FORMAT_VERSION:
+            if version == PREVIOUS_SESSION_FORMAT_VERSION:
+                raise SessionMigrationRequired(session_id)
+            raise SessionFormatError("invalid session header version")
         tree = _parse_jsonl(raw, session_id)
         final_signature = private_file_signature(
             path,
@@ -1213,20 +1387,43 @@ class SessionStore:
         self._tree_cache[session_id] = (final_signature, tree)
         return tree
 
-    def load_tree(self, session_id, *, migrate=True):
+    def load_tree(self, session_id, *, migrate=False):
         session_id = _session_id(session_id)
         with file_lock.locked_file(self.lock_path, require_existing=True):
-            if not self.path(session_id).exists() and migrate:
-                self._migrate_legacy_unlocked(session_id)
+            if not self.path(session_id).exists():
+                if self.legacy_path(session_id).exists():
+                    raise SessionMigrationRequired(session_id)
+                raise FileNotFoundError(self.path(session_id))
             return self._read_tree_unlocked(session_id)
 
     def load(self, session_id):
         return deepcopy(self.load_tree(session_id).projection)
 
+    def load_for_resume(self, session_id):
+        session_id = _session_id(session_id)
+        with file_lock.locked_file(self.lock_path, require_existing=True):
+            if self.path(session_id).exists():
+                raw = read_private_bytes(
+                    self.path(session_id),
+                    trusted_root=self.root,
+                    trusted_root_identity=self._root_identity,
+                    max_bytes=MAX_SESSION_BYTES,
+                )
+                version = _jsonl_format_version(raw)
+                if version == PREVIOUS_SESSION_FORMAT_VERSION:
+                    self._migrate_v2_unlocked(session_id, raw)
+                elif version != SESSION_FORMAT_VERSION:
+                    raise SessionFormatError("invalid session header version")
+            else:
+                self._migrate_legacy_unlocked(session_id)
+            return deepcopy(self._read_tree_unlocked(session_id).projection)
+
     def _load_unlocked(self, session_id):
         session_id = _session_id(session_id)
         if not self.path(session_id).exists():
-            self._migrate_legacy_unlocked(session_id)
+            if self.legacy_path(session_id).exists():
+                raise SessionMigrationRequired(session_id)
+            raise FileNotFoundError(self.path(session_id))
         return deepcopy(self._read_tree_unlocked(session_id).projection)
 
     def _write_new_tree_unlocked(self, session, *, migration=False):
@@ -1257,6 +1454,10 @@ class SessionStore:
             )
             entries.append(marker)
             parent_id = marker["id"]
+        workflow_entries = _workflow_entries(session, parent_id)
+        entries.extend(workflow_entries)
+        if workflow_entries:
+            parent_id = workflow_entries[-1]["id"]
         checkpoint_entries = _task_checkpoint_entries(
             session.get("checkpoints", {}),
             parent_id,
@@ -1326,21 +1527,22 @@ class SessionStore:
             self._soft_limit_warned.add(session_id)
         return path
 
-    def save(self, session):
+    def save(self, session, *, force_branch=False):
         if not isinstance(session, dict):
             raise SessionFormatError("session payload must be an object")
         candidate = self._redactor(deepcopy(session))
         candidate.pop("_recall_errors", None)
         session_id = _session_id(candidate.get("id"))
         candidate["format_version"] = SESSION_FORMAT_VERSION
+        candidate.setdefault("workflow_mode", DEFAULT_WORKFLOW_MODE)
+        candidate.setdefault("active_plan", deepcopy(EMPTY_PLAN))
         _validate_projection(candidate, session_id)
         with file_lock.locked_file(self.lock_path):
             canonical = self.path(session_id)
             if not canonical.exists():
                 if self.legacy_path(session_id).exists():
-                    self._migrate_legacy_unlocked(session_id)
-                else:
-                    return self._write_new_tree_unlocked(candidate)
+                    raise SessionMigrationRequired(session_id)
+                return self._write_new_tree_unlocked(candidate)
             tree = self._read_tree_unlocked(session_id)
             if tree.header["workspace_root"] != candidate["workspace_root"]:
                 raise SessionFormatError("session workspace root changed")
@@ -1351,7 +1553,17 @@ class SessionStore:
             entries = []
             current_messages = current["messages"]
             candidate_messages = candidate["messages"]
-            if candidate_messages[: len(current_messages)] == current_messages:
+            if (
+                not force_branch
+                and candidate_messages[: len(current_messages)] == current_messages
+            ):
+                if any(
+                    candidate.get(key) != current.get(key)
+                    for key in ("workflow_mode", "active_plan")
+                ):
+                    raise SessionFormatError(
+                        "workflow state requires an explicit control entry"
+                    )
                 message_entries = _message_entries(
                     candidate_messages[len(current_messages) :],
                     parent_id,
@@ -1438,6 +1650,14 @@ class SessionStore:
                 )
                 entries.append(state)
                 parent_id = state["id"]
+                workflow_entries = _workflow_entries(
+                    candidate,
+                    parent_id,
+                    include_empty_plan=True,
+                )
+                entries.extend(workflow_entries)
+                if workflow_entries:
+                    parent_id = workflow_entries[-1]["id"]
                 message_entries = _message_entries(candidate_messages, parent_id)
                 entries.extend(message_entries)
                 changed = {}
@@ -1473,6 +1693,10 @@ class SessionStore:
             tree = self._read_tree_unlocked(session_id)
             parent_id = tree.leaf_id
             entries = _message_entries(safe_messages, parent_id)
+            known = {entry["id"] for entry in tree.entries}
+            for entry in entries:
+                _validate_entry(entry, known)
+                known.add(entry["id"])
             if entries:
                 parent_id = entries[-1]["id"]
             changed = {
@@ -1488,6 +1712,17 @@ class SessionStore:
         if kind not in ENTRY_TYPES - {"message", "tool_exchange", "session_info"}:
             raise ValueError("invalid control entry type")
         session_id = _session_id(session_id)
+        if kind == "workflow_mode_change":
+            if not isinstance(data, dict) or data.keys() != {"mode"}:
+                raise SessionFormatError("invalid workflow mode entry data")
+            validate_workflow_mode(data["mode"])
+        elif kind == "plan_update":
+            if not isinstance(data, dict) or data.keys() != {"plan"}:
+                raise SessionFormatError("invalid plan update entry data")
+            try:
+                validate_plan(data["plan"], redactor=self._redactor)
+            except ValueError as exc:
+                raise SessionFormatError(str(exc)) from None
         with file_lock.locked_file(self.lock_path, require_existing=True):
             tree = self._read_tree_unlocked(session_id)
             target = tree.leaf_id if parent_id is None else str(parent_id)
@@ -1501,6 +1736,23 @@ class SessionStore:
             _validate_entry(entry, known)
             self._append_entries_unlocked(session_id, [entry])
             return deepcopy(entry)
+
+    def set_workflow_mode(self, session_id, mode):
+        mode = validate_workflow_mode(mode)
+        tree = self.load_tree(session_id)
+        if tree.projection["workflow_mode"] == mode:
+            return None
+        return self.append_control(session_id, "workflow_mode_change", {"mode": mode})
+
+    def set_active_plan(self, session_id, plan):
+        try:
+            plan = validate_plan(plan, redactor=self._redactor)
+        except ValueError as exc:
+            raise SessionFormatError(str(exc)) from None
+        tree = self.load_tree(session_id)
+        if tree.projection["active_plan"] == plan:
+            return None
+        return self.append_control(session_id, "plan_update", {"plan": plan})
 
     def append_task_checkpoint(self, session_id, checkpoint, *, parent_id=None):
         checkpoint = deepcopy(checkpoint)
@@ -1776,13 +2028,28 @@ class SessionStore:
         session_id = _session_id(session_id)
         with file_lock.locked_file(self.lock_path, require_existing=True):
             if self.path(session_id).exists():
-                tree = self._read_tree_unlocked(session_id)
-                return "current", deepcopy(tree.projection), tree
+                raw = read_private_bytes(
+                    self.path(session_id),
+                    trusted_root=self.root,
+                    trusted_root_identity=self._root_identity,
+                    max_bytes=MAX_SESSION_BYTES,
+                    harden=False,
+                )
+                version = _jsonl_format_version(raw)
+                if version not in {
+                    PREVIOUS_SESSION_FORMAT_VERSION,
+                    SESSION_FORMAT_VERSION,
+                }:
+                    raise SessionFormatError("invalid session header version")
+                tree = _parse_jsonl(raw, session_id, version=version)
+                storage = "current" if version == SESSION_FORMAT_VERSION else "legacy_jsonl"
+                return storage, deepcopy(tree.projection), tree
             raw = read_private_bytes(
                 self.legacy_path(session_id),
                 trusted_root=self.root,
                 trusted_root_identity=self._root_identity,
                 max_bytes=MAX_SESSION_ENTRY_BYTES,
+                harden=False,
             )
             payload = _decode_json_object(raw)
             _validate_legacy_payload(payload, session_id)
@@ -1803,7 +2070,13 @@ class SessionStore:
             if valid_bytes <= 0:
                 raise SessionFormatError("session has no valid JSONL prefix")
             repaired = raw[:valid_bytes]
-            _parse_jsonl(repaired, session_id)
+            version = _jsonl_format_version(repaired)
+            if version not in {
+                PREVIOUS_SESSION_FORMAT_VERSION,
+                SESSION_FORMAT_VERSION,
+            }:
+                raise SessionFormatError("invalid session header version")
+            _parse_jsonl(repaired, session_id, version=version)
             write_private_bytes_atomic(
                 self.path(session_id),
                 repaired,
@@ -1814,6 +2087,98 @@ class SessionStore:
             )
             self._tree_cache.pop(session_id, None)
             return True
+
+    def _migrate_v2_unlocked(self, session_id, source_raw=None):
+        source = self.path(session_id)
+        raw = read_private_bytes(
+            source,
+            trusted_root=self.root,
+            trusted_root_identity=self._root_identity,
+            max_bytes=MAX_SESSION_BYTES,
+        )
+        if source_raw is not None and raw != source_raw:
+            raise SessionFormatError("session changed during migration")
+        source_signature = private_file_signature(
+            source,
+            trusted_root=self.root,
+            trusted_root_identity=self._root_identity,
+        )
+        old_tree = _parse_jsonl(
+            raw,
+            session_id,
+            version=PREVIOUS_SESSION_FORMAT_VERSION,
+        )
+        if any(entry["type"] == "model_change" for entry in old_tree.entries):
+            raise UnsupportedLegacyEntry("model_change")
+
+        rows = [_decode_json_object(line) for line in raw.splitlines()]
+        migrated_rows = []
+        for row in rows:
+            migrated = deepcopy(row)
+            migrated["format_version"] = SESSION_FORMAT_VERSION
+            migrated_rows.append(migrated)
+        candidate_bytes = b"".join(_serialize_line(row) for row in migrated_rows)
+        candidate_tree = _parse_jsonl(candidate_bytes, session_id)
+        expected = deepcopy(old_tree.projection)
+        expected.update(
+            format_version=SESSION_FORMAT_VERSION,
+            workflow_mode=DEFAULT_WORKFLOW_MODE,
+            active_plan=deepcopy(EMPTY_PLAN),
+        )
+        if not session_projections_equal(candidate_tree.projection, expected):
+            raise SessionFormatError("session migration projection mismatch")
+
+        backup_root = ensure_private_dir(self.root / "legacy-backups")
+        backup_identity = private_directory_identity(backup_root)
+        digest = hashlib.sha256(raw).hexdigest()
+        backup_path = backup_root / f"{session_id}.{digest[:16]}.jsonl"
+        if not backup_path.exists():
+            write_private_bytes_atomic(
+                backup_path,
+                raw,
+                trusted_root=backup_root,
+                trusted_root_identity=backup_identity,
+                error="legacy session backup changed",
+                max_existing_bytes=MAX_SESSION_BYTES,
+            )
+
+        candidate_path = self.candidate_path(session_id)
+        write_private_bytes_atomic(
+            candidate_path,
+            candidate_bytes,
+            trusted_root=self.root,
+            trusted_root_identity=self._root_identity,
+            error="session migration candidate changed",
+            max_existing_bytes=MAX_SESSION_BYTES,
+        )
+        candidate_raw = read_private_bytes(
+            candidate_path,
+            trusted_root=self.root,
+            trusted_root_identity=self._root_identity,
+            max_bytes=MAX_SESSION_BYTES,
+        )
+        _parse_jsonl(candidate_raw, session_id)
+        if candidate_raw != candidate_bytes:
+            raise SessionFormatError("session migration candidate changed")
+        if private_file_signature(
+            source,
+            trusted_root=self.root,
+            trusted_root_identity=self._root_identity,
+        ) != source_signature:
+            raise SessionFormatError("session changed during migration")
+        parent_fd = os.open(self.root, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.replace(
+                candidate_path.name,
+                source.name,
+                src_dir_fd=parent_fd,
+                dst_dir_fd=parent_fd,
+            )
+            os.fsync(parent_fd)
+        finally:
+            os.close(parent_fd)
+        self._tree_cache.pop(session_id, None)
+        return source
 
     def _migrate_legacy_unlocked(self, session_id):
         canonical = self.path(session_id)
@@ -1826,10 +2191,17 @@ class SessionStore:
             trusted_root_identity=self._root_identity,
             max_bytes=MAX_SESSION_ENTRY_BYTES,
         )
+        source_signature = private_file_signature(
+            legacy,
+            trusted_root=self.root,
+            trusted_root_identity=self._root_identity,
+        )
         payload = _decode_json_object(raw)
         _validate_legacy_payload(payload, session_id)
         migrated = deepcopy(payload)
         migrated["format_version"] = SESSION_FORMAT_VERSION
+        migrated["workflow_mode"] = DEFAULT_WORKFLOW_MODE
+        migrated["active_plan"] = deepcopy(EMPTY_PLAN)
 
         backup_root = ensure_private_dir(self.root / "legacy-backups")
         backup_identity = private_directory_identity(backup_root)
@@ -1904,6 +2276,12 @@ class SessionStore:
             raise SessionFormatError("session migration projection mismatch")
         parent_fd = os.open(self.root, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
         try:
+            if private_file_signature(
+                legacy,
+                trusted_root=self.root,
+                trusted_root_identity=self._root_identity,
+            ) != source_signature:
+                raise SessionFormatError("session changed during migration")
             before = os.stat(
                 candidate_path.name, dir_fd=parent_fd, follow_symlinks=False
             )

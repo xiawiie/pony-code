@@ -13,13 +13,14 @@ from pony.state.session_store import (
     MAX_SESSION_ENTRY_BYTES,
     SESSION_FORMAT_VERSION,
     SessionFormatError,
+    SessionMigrationRequired,
     SessionStore,
     SessionTailRepairRequired,
 )
 
 
 def _session(workspace, session_id, content="hello", *, legacy=False):
-    return {
+    session = {
         "record_type": "session",
         "format_version": (
             LEGACY_SESSION_FORMAT_VERSION if legacy else SESSION_FORMAT_VERSION
@@ -36,6 +37,12 @@ def _session(workspace, session_id, content="hello", *, legacy=False):
         "recovery": {},
         "runtime_identity": {},
     }
+    if not legacy:
+        session.update(
+            workflow_mode="act",
+            active_plan={"goal": "", "items": []},
+        )
+    return session
 
 
 def _jsonl(path):
@@ -66,7 +73,7 @@ def test_session_store_saves_loads_and_finds_latest_session(tmp_path):
     loaded = store.load("session_002")
     assert loaded["format_version"] == SESSION_FORMAT_VERSION
     assert loaded["record_type"] == "session"
-    assert loaded["format_version"] == SESSION_FORMAT_VERSION == 2
+    assert loaded["format_version"] == SESSION_FORMAT_VERSION == 3
     assert "history" not in loaded
     assert loaded["messages"] == [
         {"role": "user", "content": "second", "_pony_meta": {}},
@@ -299,7 +306,7 @@ def test_session_entry_hard_cap_is_enforced_without_partial_append(
     assert path.read_bytes() == original
 
 
-def test_legacy_json_migrates_on_first_load_with_backup(tmp_path):
+def test_legacy_json_migrates_only_on_explicit_resume_with_backup(tmp_path):
     store = SessionStore(tmp_path / ".pony" / "sessions")
     legacy = _session(tmp_path, "legacy", legacy=True)
     store.lock_path.touch(mode=0o600)
@@ -308,9 +315,16 @@ def test_legacy_json_migrates_on_first_load_with_backup(tmp_path):
         encoding="utf-8",
     )
 
-    loaded = store.load("legacy")
+    with pytest.raises(SessionMigrationRequired):
+        store.load("legacy")
+    loaded = store.load_for_resume("legacy")
 
-    assert loaded == {**legacy, "format_version": SESSION_FORMAT_VERSION}
+    assert loaded == {
+        **legacy,
+        "format_version": SESSION_FORMAT_VERSION,
+        "workflow_mode": "act",
+        "active_plan": {"goal": "", "items": []},
+    }
     assert store.path("legacy").exists()
     assert not store.legacy_path("legacy").exists()
     backups = list((store.root / "legacy-backups").glob("legacy.*.json"))
@@ -339,7 +353,7 @@ def test_legacy_migration_promotes_working_state_to_task_checkpoint(tmp_path):
         encoding="utf-8",
     )
 
-    loaded = store.load("legacy-working")
+    loaded = store.load_for_resume("legacy-working")
 
     checkpoint_id = loaded["checkpoints"]["current_id"]
     assert checkpoint_id.startswith("ckpt_migrated_")
@@ -397,9 +411,14 @@ def test_legacy_migration_promotes_checkpoint_without_overwriting_current_state(
         encoding="utf-8",
     )
 
-    loaded = store.load("legacy-checkpoint")
+    loaded = store.load_for_resume("legacy-checkpoint")
 
-    assert loaded == {**legacy, "format_version": SESSION_FORMAT_VERSION}
+    assert loaded == {
+        **legacy,
+        "format_version": SESSION_FORMAT_VERSION,
+        "workflow_mode": "act",
+        "active_plan": {"goal": "", "items": []},
+    }
     assert any(
         entry["type"] == "task_checkpoint"
         for entry in store.entries("legacy-checkpoint")
@@ -423,12 +442,12 @@ def test_failed_legacy_publish_keeps_old_session_and_is_retryable(
 
     monkeypatch.setattr(session_store_module.os, "replace", fail_replace)
     with pytest.raises(OSError, match="publish crash"):
-        store.load("retry")
+        store.load_for_resume("retry")
     assert store.legacy_path("retry").exists()
     assert not store.path("retry").exists()
 
     monkeypatch.setattr(session_store_module.os, "replace", real_replace)
-    assert store.load("retry")["messages"] == legacy["messages"]
+    assert store.load_for_resume("retry")["messages"] == legacy["messages"]
 
 
 def test_invalid_legacy_session_is_never_rewritten(tmp_path):
@@ -439,7 +458,7 @@ def test_invalid_legacy_session_is_never_rewritten(tmp_path):
     original = path.read_bytes()
 
     with pytest.raises(SessionFormatError):
-        store.load("invalid")
+        store.load_for_resume("invalid")
     assert path.read_bytes() == original
     assert not store.path("invalid").exists()
 
@@ -453,7 +472,7 @@ def test_legacy_nested_duplicate_keys_are_rejected(tmp_path):
     store.lock_path.touch(mode=0o600)
     store.legacy_path("duplicate").write_text(payload, encoding="utf-8")
     with pytest.raises(SessionFormatError, match="duplicate"):
-        store.load("duplicate")
+        store.load_for_resume("duplicate")
 
 
 @pytest.mark.parametrize("embedded", [False, True])
@@ -517,6 +536,14 @@ def test_clone_to_worktree_copies_active_branch_and_clears_workspace_state(tmp_p
         },
     }
     store.save(session)
+    store.set_workflow_mode("source-session", "review")
+    store.set_active_plan(
+        "source-session",
+        {
+            "goal": "Finish clone",
+            "items": [{"id": "clone", "text": "Clone state", "status": "pending"}],
+        },
+    )
     first_message = next(
         entry for entry in store.entries("source-session") if entry["type"] == "message"
     )
@@ -566,6 +593,8 @@ def test_clone_to_worktree_copies_active_branch_and_clears_workspace_state(tmp_p
     )
     assert loaded["recovery"] == {"current_checkpoint_id": ""}
     assert loaded["runtime_identity"] == {}
+    assert loaded["workflow_mode"] == "review"
+    assert loaded["active_plan"]["goal"] == "Finish clone"
     assert view.summary == "source summary"
     assert target_store.load_tree("target-session").header["worktree_identity"][
         "lexical_root"

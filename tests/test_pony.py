@@ -86,7 +86,7 @@ def test_new_runtime_persists_current_messages_only(tmp_path):
         for line in Path(agent.session_path).read_text(encoding="utf-8").splitlines()
     ]
     assert rows[0]["record_type"] == "session_header"
-    assert rows[0]["format_version"] == 2
+    assert rows[0]["format_version"] == 3
     assert all("history" not in row for row in rows)
     persisted = agent.session_store.load(agent.session["id"])
     validate_messages(persisted["messages"], require_meta=True)
@@ -221,6 +221,8 @@ def test_programmatic_resume_sanitizes_process_secret_before_first_request(
         {"role": "user", "content": secret, "_pony_meta": {"created_at": "test"}}
     ]
     raw["format_version"] = 1
+    raw.pop("workflow_mode")
+    raw.pop("active_plan")
     original.session_store.path(raw["id"]).unlink()
     legacy = original.session_store.legacy_path(raw["id"])
     legacy.write_text(json.dumps(raw), encoding="utf-8")
@@ -356,6 +358,15 @@ def test_reset_clears_transient_v3_state_and_preserves_audit_items(tmp_path):
     agent = build_agent(tmp_path, ["done"])
     agent.ask("q")
     session_id = agent.session["id"]
+    agent.session_store.set_workflow_mode(session_id, "review")
+    agent.session_store.set_active_plan(
+        session_id,
+        {
+            "goal": "Reset this plan",
+            "items": [{"id": "reset", "text": "Reset state", "status": "pending"}],
+        },
+    )
+    agent._reload_session_projection()
     agent.session["recently_recalled"] = ["note"]
     agent.session["_recall_errors"] = {"count": 2, "last": "x"}
     agent.session["working_memory"] = {
@@ -369,7 +380,6 @@ def test_reset_clears_transient_v3_state_and_preserves_audit_items(tmp_path):
     }
     agent.session["resume_state"] = {"status": "full-valid"}
     agent.session["recovery"] = {"current_checkpoint_id": "r1"}
-
     agent.reset()
 
     assert agent.session["id"] == session_id
@@ -382,6 +392,8 @@ def test_reset_clears_transient_v3_state_and_preserves_audit_items(tmp_path):
     assert agent.session["checkpoints"]["items"] == {"c1": {"checkpoint_id": "c1"}}
     assert agent.session["resume_state"] == {}
     assert agent.session["recovery"]["current_checkpoint_id"] == ""
+    assert agent.session["workflow_mode"] == "review"
+    assert agent.session["active_plan"] == {"goal": "", "items": []}
 
 
 def test_agent_runs_tool_then_final(tmp_path):
