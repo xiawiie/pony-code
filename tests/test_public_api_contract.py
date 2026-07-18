@@ -237,10 +237,17 @@ def test_packaging_declares_stable_version_license_and_project_urls():
 def test_provider_defaults_and_generic_env_names_have_one_config_source():
     from pony.config import model as config
 
-    assert config.DEFAULT_PROVIDER == "anthropic"
-    assert config.SUPPORTED_PROVIDERS == ("anthropic", "openai", "ollama")
-    assert config.DEFAULT_MODEL == "claude-sonnet-4-6"
-    assert config.DEFAULT_API_BASE == "https://api.anthropic.com/v1"
+    assert config.DEFAULT_PROVIDER == "auto"
+    assert config.SUPPORTED_PROVIDERS == (
+        "auto",
+        "openai",
+        "openai-chat",
+        "openai-responses",
+        "anthropic",
+        "ollama",
+    )
+    assert config.DEFAULT_MODEL == ""
+    assert config.DEFAULT_API_BASE == ""
     assert config.PROVIDER_ENV_NAME == "PONY_PROVIDER"
     assert config.MODEL_ENV_NAME == "PONY_MODEL"
     assert config.API_KEY_ENV_NAME == "PONY_API_KEY"
