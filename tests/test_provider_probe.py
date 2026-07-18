@@ -9,8 +9,8 @@ from pony.providers.probe import probe_model_client
 from pony.providers.response import Response, StopReason
 
 
-def _response(stop_reason, *content):
-    return Response(stop_reason=stop_reason, content=list(content), usage={})
+def _response(stop_reason, *content, usage=None):
+    return Response(stop_reason=stop_reason, content=list(content), usage=usage or {})
 
 
 def _text(value="ready"):
@@ -45,16 +45,16 @@ class _ScriptedClient:
 
 
 def _successful_client():
+    usage = {"input_tokens": 2, "output_tokens": 1, "total_tokens": 3}
     return _ScriptedClient(
         [
-            _response(StopReason.END_TURN, _text()),
-            _response(StopReason.TOOL_USE, _tool()),
-            _response(StopReason.END_TURN, _text("done")),
+            _response(StopReason.TOOL_USE, _tool(), usage=usage),
+            _response(StopReason.END_TURN, _text("done"), usage=usage),
         ],
     )
 
 
-def test_probe_verifies_text_tool_and_continuation():
+def test_probe_verifies_tool_and_continuation_in_two_calls():
     client = _successful_client()
 
     report = probe_model_client(client)
@@ -63,26 +63,25 @@ def test_probe_verifies_text_tool_and_continuation():
         "status": "ok",
         "stage": "complete",
         "category": "ok",
-        "model_calls": 3,
+        "model_calls": 2,
         "binding": {
             "protocol_family": "test",
             "model": "test-model",
             "endpoint_hash": "sha256:test",
         },
+        "usage_status": "complete",
     }
-    assert [call["max_tokens"] for call in client.calls] == [16, 128, 128]
+    assert [call["max_tokens"] for call in client.calls] == [128, 32]
 
 
 def test_probe_distinguishes_tool_and_continuation_failures():
     no_tool = _ScriptedClient(
         [
-            _response(StopReason.END_TURN, _text()),
             _response(StopReason.END_TURN, _text("no tool")),
         ]
     )
     bad_continuation = _ScriptedClient(
         [
-            _response(StopReason.END_TURN, _text()),
             _response(StopReason.TOOL_USE, _tool()),
             _response(StopReason.TOOL_USE, _tool()),
         ]
@@ -93,6 +92,20 @@ def test_probe_distinguishes_tool_and_continuation_failures():
         probe_model_client(bad_continuation)["category"]
         == "tool_result_continuation_failed"
     )
+
+
+def test_probe_allows_success_with_degraded_usage():
+    client = _ScriptedClient(
+        [
+            _response(StopReason.TOOL_USE, _tool()),
+            _response(StopReason.END_TURN, _text("done")),
+        ]
+    )
+
+    report = probe_model_client(client)
+
+    assert report["status"] == "ok"
+    assert report["usage_status"] == "degraded"
 
 
 def test_probe_reports_safe_provider_failure_category():
@@ -110,10 +123,42 @@ def test_probe_reports_safe_provider_failure_category():
     report = probe_model_client(client)
 
     assert report["category"] == "authentication_failed"
-    assert report["stage"] == "text"
+    assert report["stage"] == "tool_call"
     assert report["error_code"] == "http_4xx"
     assert report["http_status"] == 401
     assert secret not in str(report)
+
+
+def test_probe_reports_degraded_usage_and_safe_protocol_reason():
+    client = _ScriptedClient(
+        [
+            _response(StopReason.TOOL_USE, _tool()),
+            ProviderTransportError(
+                "safe provider failure",
+                code="provider_protocol_mismatch",
+                stage="tool_result",
+                protocol_reason="tool_result_rejected",
+            ),
+        ]
+    )
+
+    report = probe_model_client(client)
+
+    assert report["usage_status"] == "degraded"
+    assert report["stage"] == "tool_result"
+    assert report["protocol_reason"] == "tool_result_rejected"
+
+
+def test_provider_transport_error_drops_unbounded_diagnostic_values():
+    failure = ProviderTransportError(
+        "safe",
+        code="provider_protocol_mismatch",
+        stage="secret stage",
+        protocol_reason="secret response detail",
+    )
+
+    assert failure.stage is None
+    assert failure.protocol_reason is None
 
 
 @pytest.mark.parametrize(
@@ -153,5 +198,5 @@ def test_probe_missing_key_performs_zero_network_requests(monkeypatch):
     report = probe_model_client(client)
 
     assert report["category"] == "authentication_failed"
-    assert report["stage"] == "text"
+    assert report["stage"] == "tool_call"
     assert urlopen.call_count == 0

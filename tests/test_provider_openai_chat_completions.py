@@ -128,6 +128,8 @@ def test_chat_uses_exact_gateway_root_and_native_tool_history(monkeypatch):
     assert captured["headers"]["Authorization"] == "Bearer test-key"
     assert "enable_thinking" not in captured["body"]
     assert "thinking" not in captured["body"]
+    assert "parallel_tool_calls" not in captured["body"]
+    assert "strict" not in captured["body"]["tools"][0]["function"]
     assert captured["body"]["messages"] == [
         {"role": "system", "content": "SYSTEM"},
         {"role": "user", "content": "find x"},
@@ -234,7 +236,7 @@ def test_chat_finish_reason_mapping(monkeypatch, finish_reason, expected):
     assert _complete(_client()).stop_reason == expected
 
 
-def test_chat_tool_reasoning_without_replay_fails_closed(monkeypatch):
+def test_chat_discards_reasoning_and_normalizes_gateway_tool_shape(monkeypatch):
     monkeypatch.setattr(
         provider_shared,
         "_provider_urlopen",
@@ -242,7 +244,7 @@ def test_chat_tool_reasoning_without_replay_fails_closed(monkeypatch):
             {
                 "choices": [
                     {
-                        "finish_reason": "tool_calls",
+                        "finish_reason": "stop",
                         "message": {
                             "role": "assistant",
                             "content": None,
@@ -250,10 +252,9 @@ def test_chat_tool_reasoning_without_replay_fails_closed(monkeypatch):
                             "tool_calls": [
                                 {
                                     "id": "call_1",
-                                    "type": "function",
                                     "function": {
                                         "name": "search",
-                                        "arguments": '{"pattern":"x"}',
+                                        "arguments": {"pattern": "x"},
                                     },
                                 }
                             ],
@@ -265,10 +266,94 @@ def test_chat_tool_reasoning_without_replay_fails_closed(monkeypatch):
         ),
     )
 
+    response = _complete(_client(), tools=[_tool_schema()])
+
+    assert response.stop_reason == StopReason.TOOL_USE
+    assert response.content == [
+        {
+            "type": "tool_use",
+            "id": "call_1",
+            "name": "search",
+            "input": {"pattern": "x"},
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    ("tool_call", "reason"),
+    [
+        (
+            {
+                "type": "function",
+                "function": {"name": "search", "arguments": {"pattern": "x"}},
+            },
+            "tool_call_shape_invalid",
+        ),
+        (
+            {
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "search", "arguments": []},
+            },
+            "tool_arguments_invalid",
+        ),
+    ],
+)
+def test_chat_reports_safe_tool_failure_reason(monkeypatch, tool_call, reason):
+    monkeypatch.setattr(
+        provider_shared,
+        "_provider_urlopen",
+        lambda *_args, **_kwargs: _Response(
+            {
+                "choices": [
+                    {
+                        "finish_reason": "tool_calls",
+                        "message": {"content": None, "tool_calls": [tool_call]},
+                    }
+                ]
+            }
+        ),
+    )
+
     with pytest.raises(ProviderTransportError) as caught:
         _complete(_client(), tools=[_tool_schema()])
 
     assert caught.value.code == "provider_protocol_mismatch"
+    assert caught.value.stage == "tool_call"
+    assert caught.value.protocol_reason == reason
+
+
+def test_chat_reports_missing_tool_call_and_malformed_response(monkeypatch):
+    responses = iter(
+        [
+            _Response(
+                {
+                    "choices": [
+                        {
+                            "finish_reason": "tool_calls",
+                            "message": {"content": None},
+                        }
+                    ]
+                }
+            ),
+            _Response({"choices": []}),
+        ]
+    )
+    monkeypatch.setattr(
+        provider_shared,
+        "_provider_urlopen",
+        lambda *_args, **_kwargs: next(responses),
+    )
+
+    with pytest.raises(ProviderTransportError) as missing:
+        _complete(_client(), tools=[_tool_schema()])
+    with pytest.raises(ProviderTransportError) as malformed:
+        _complete(_client())
+
+    assert missing.value.stage == "tool_call"
+    assert missing.value.protocol_reason == "tool_call_missing"
+    assert malformed.value.stage == "response_decode"
+    assert malformed.value.protocol_reason == "response_shape_invalid"
 
 
 def test_chat_preserves_http_400_classification(monkeypatch):

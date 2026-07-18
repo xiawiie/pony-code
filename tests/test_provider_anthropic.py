@@ -240,6 +240,8 @@ def test_empty_anthropic_object_is_protocol_mismatch(monkeypatch):
         _make_client().complete(system=[], tools=[], messages=[], max_tokens=10)
 
     assert caught.value.code == "provider_protocol_mismatch"
+    assert caught.value.stage == "response_decode"
+    assert caught.value.protocol_reason == "response_shape_invalid"
 
 
 def test_complete_unknown_stop_reason_is_unknown():

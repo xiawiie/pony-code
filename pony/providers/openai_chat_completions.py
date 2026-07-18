@@ -10,6 +10,7 @@ from .transport import (
     _model_binding,
     _model_runtime_metadata,
     _open_provider_request,
+    _provider_protocol_error,
     _provider_auth_headers,
     _record_effective_model,
     _resource_url,
@@ -119,19 +120,24 @@ def _chat_content(data, optional_by_name):
     if not isinstance(tool_calls, list) or not all(
         isinstance(item, dict) for item in tool_calls
     ):
-        raise ValueError("tool_calls must be a list of objects")
-    reasoning = message.get("reasoning_content")
-    if reasoning is not None and not isinstance(reasoning, str):
-        raise ValueError("reasoning_content must be text")
-    if reasoning and tool_calls:
-        raise ValueError("tool reasoning replay is unsupported")
+        raise _provider_protocol_error(
+            "OpenAI Chat",
+            stage="tool_call",
+            reason="tool_call_shape_invalid",
+        )
     result = []
     if content:
         result.append({"type": "text", "text": content})
     for item in tool_calls:
         function = item.get("function")
-        if item.get("type") != "function" or not isinstance(function, dict):
-            raise ValueError("invalid tool call")
+        if item.get("type") not in {None, "function"} or not isinstance(
+            function, dict
+        ):
+            raise _provider_protocol_error(
+                "OpenAI Chat",
+                stage="tool_call",
+                reason="tool_call_shape_invalid",
+            )
         call_id = item.get("id")
         name = function.get("name")
         arguments = function.get("arguments")
@@ -140,12 +146,35 @@ def _chat_content(data, optional_by_name):
             or not call_id
             or not isinstance(name, str)
             or not name
-            or not isinstance(arguments, str)
         ):
-            raise ValueError("invalid tool call")
-        parsed = json.loads(arguments)
+            raise _provider_protocol_error(
+                "OpenAI Chat",
+                stage="tool_call",
+                reason="tool_call_shape_invalid",
+            )
+        if isinstance(arguments, str):
+            try:
+                parsed = json.loads(arguments)
+            except (TypeError, ValueError):
+                raise _provider_protocol_error(
+                    "OpenAI Chat",
+                    stage="tool_call",
+                    reason="tool_arguments_invalid",
+                ) from None
+        elif isinstance(arguments, dict):
+            parsed = dict(arguments)
+        else:
+            raise _provider_protocol_error(
+                "OpenAI Chat",
+                stage="tool_call",
+                reason="tool_arguments_invalid",
+            )
         if not isinstance(parsed, dict):
-            raise ValueError("tool arguments must be an object")
+            raise _provider_protocol_error(
+                "OpenAI Chat",
+                stage="tool_call",
+                reason="tool_arguments_invalid",
+            )
         for argument in optional_by_name.get(name, set()):
             if parsed.get(argument) is None:
                 parsed.pop(argument, None)
@@ -173,8 +202,14 @@ def _chat_content(data, optional_by_name):
         if refusal and not content:
             result.append({"type": "text", "text": refusal})
         stop_reason = StopReason.REFUSAL
-    if stop_reason == StopReason.TOOL_USE and not tool_calls:
-        raise ValueError("tool_calls finish reason requires tool calls")
+    if tool_calls:
+        stop_reason = StopReason.TOOL_USE
+    elif stop_reason == StopReason.TOOL_USE:
+        raise _provider_protocol_error(
+            "OpenAI Chat",
+            stage="tool_call",
+            reason="tool_call_missing",
+        )
     return result, stop_reason
 
 
@@ -284,10 +319,13 @@ class OpenAIChatCompletionsModelClient:
                 content=content,
                 usage=usage,
             )
+        except ProviderTransportError:
+            raise
         except Exception:
-            raise ProviderTransportError(
-                "OpenAI Chat error: provider_protocol_mismatch",
-                code="provider_protocol_mismatch",
+            raise _provider_protocol_error(
+                "OpenAI Chat",
+                stage="response_decode",
+                reason="response_shape_invalid",
             ) from None
         self.last_completion_metadata = usage
         return response

@@ -10,6 +10,7 @@ from .transport import (
     _extract_usage_cache_details,
     _open_provider_request,
     _provider_auth_headers,
+    _provider_protocol_error,
     _model_binding,
     _model_runtime_metadata,
     _record_effective_model,
@@ -102,22 +103,25 @@ def _validated_provider_state(value):
     if value in (None, (), []):
         return []
     if not isinstance(value, (list, tuple)) or len(value) > MAX_PROVIDER_STATE_ITEMS:
-        raise ProviderTransportError(
-            "OpenAI error: provider_protocol_mismatch",
-            code="provider_protocol_mismatch",
+        raise _provider_protocol_error(
+            "OpenAI",
+            stage="response_decode",
+            reason="response_shape_invalid",
         )
     prepared = []
     for item in value:
         if not isinstance(item, dict) or item.get("type") != "reasoning":
-            raise ProviderTransportError(
-                "OpenAI error: provider_protocol_mismatch",
-                code="provider_protocol_mismatch",
+            raise _provider_protocol_error(
+                "OpenAI",
+                stage="response_decode",
+                reason="response_shape_invalid",
             )
         encrypted = item.get("encrypted_content")
         if not isinstance(encrypted, str) or not encrypted:
-            raise ProviderTransportError(
-                "OpenAI error: provider_protocol_mismatch",
-                code="provider_protocol_mismatch",
+            raise _provider_protocol_error(
+                "OpenAI",
+                stage="response_decode",
+                reason="response_shape_invalid",
             )
         if any(
             key
@@ -131,28 +135,32 @@ def _validated_provider_state(value):
             }
             for key in item
         ):
-            raise ProviderTransportError(
-                "OpenAI error: provider_protocol_mismatch",
-                code="provider_protocol_mismatch",
+            raise _provider_protocol_error(
+                "OpenAI",
+                stage="response_decode",
+                reason="response_shape_invalid",
             )
         if "content" in item and not isinstance(item["content"], list):
-            raise ProviderTransportError(
-                "OpenAI error: provider_protocol_mismatch",
-                code="provider_protocol_mismatch",
+            raise _provider_protocol_error(
+                "OpenAI",
+                stage="response_decode",
+                reason="response_shape_invalid",
             )
         copied = deepcopy(item)
         try:
             encoded = json.dumps(copied, ensure_ascii=False).encode("utf-8")
         except (TypeError, ValueError):
-            raise ProviderTransportError(
-                "OpenAI error: provider_protocol_mismatch",
-                code="provider_protocol_mismatch",
+            raise _provider_protocol_error(
+                "OpenAI",
+                stage="response_decode",
+                reason="response_shape_invalid",
             ) from None
         prepared.append((copied, len(encoded)))
     if sum(size for _item, size in prepared) > MAX_PROVIDER_STATE_BYTES:
-        raise ProviderTransportError(
-            "OpenAI error: provider_protocol_mismatch",
-            code="provider_protocol_mismatch",
+        raise _provider_protocol_error(
+            "OpenAI",
+            stage="response_decode",
+            reason="response_shape_invalid",
         )
     return [item for item, _size in prepared]
 
@@ -231,12 +239,32 @@ def _response_content(data, *, optional_by_name, preserve_reasoning):
                 or not name
                 or not isinstance(call_id, str)
                 or not call_id
-                or not isinstance(arguments, str)
             ):
-                raise ValueError("invalid function call")
-            parsed = json.loads(arguments)
+                raise _provider_protocol_error(
+                    "OpenAI",
+                    stage="tool_call",
+                    reason="tool_call_shape_invalid",
+                )
+            if not isinstance(arguments, str):
+                raise _provider_protocol_error(
+                    "OpenAI",
+                    stage="tool_call",
+                    reason="tool_arguments_invalid",
+                )
+            try:
+                parsed = json.loads(arguments)
+            except (TypeError, ValueError):
+                raise _provider_protocol_error(
+                    "OpenAI",
+                    stage="tool_call",
+                    reason="tool_arguments_invalid",
+                ) from None
             if not isinstance(parsed, dict):
-                raise ValueError("function arguments must be an object")
+                raise _provider_protocol_error(
+                    "OpenAI",
+                    stage="tool_call",
+                    reason="tool_arguments_invalid",
+                )
             for argument in optional_by_name.get(name, set()):
                 if parsed.get(argument) is None:
                     parsed.pop(argument, None)
@@ -415,9 +443,10 @@ class OpenAIResponsesModelClient:
         except ProviderTransportError:
             raise
         except Exception:
-            raise ProviderTransportError(
-                "OpenAI error: provider_protocol_mismatch",
-                code="provider_protocol_mismatch",
+            raise _provider_protocol_error(
+                "OpenAI",
+                stage="response_decode",
+                reason="response_shape_invalid",
             ) from None
         self.last_completion_metadata = usage
         return response

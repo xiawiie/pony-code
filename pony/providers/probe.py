@@ -17,8 +17,8 @@ _PROBE_TOOL = {
     },
 }
 _PROBE_SYSTEM = [{"type": "text", "text": "Follow the probe request exactly."}]
-_PROBE_TEXT_MAX_TOKENS = 16
 _PROBE_TOOL_MAX_TOKENS = 128
+_PROBE_CONTINUATION_MAX_TOKENS = 32
 
 
 def _probe_identity(client):
@@ -72,30 +72,28 @@ def _failed(client, stage, exc, model_calls):
         "category": _failure_category(exc),
         "model_calls": model_calls,
         "binding": _probe_identity(client),
+        "usage_status": "degraded",
     }
     if isinstance(exc, ProviderTransportError):
         report["error_code"] = exc.code
+        if exc.protocol_reason is not None:
+            report["protocol_reason"] = exc.protocol_reason
         if exc.http_status is not None:
             report["http_status"] = exc.http_status
     return report
 
 
-def probe_model_client(client):
-    """Verify text, one native tool call, and tool-result continuation."""
-    model_calls = 0
-    try:
-        model_calls += 1
-        text_response = client.complete(
-            system=_PROBE_SYSTEM,
-            tools=[],
-            messages=[{"role": "user", "content": "Reply with the word ready."}],
-            max_tokens=_PROBE_TEXT_MAX_TOKENS,
-        )
-    except Exception as exc:
-        return _failed(client, "text", exc, model_calls)
-    if not isinstance(decode_action(text_response), FinalAction):
-        return _failed(client, "text", None, model_calls)
+def _usage_complete(response):
+    usage = getattr(response, "usage", None)
+    return isinstance(usage, dict) and all(
+        type(usage.get(name)) is int and usage[name] >= 0
+        for name in ("input_tokens", "output_tokens", "total_tokens")
+    )
 
+
+def probe_model_client(client):
+    """Verify one native tool call and a final tool-result continuation."""
+    model_calls = 0
     try:
         model_calls += 1
         tool_response = client.complete(
@@ -126,6 +124,7 @@ def probe_model_client(client):
             **_failed(client, "tool_call", None, model_calls),
             "category": "tool_call_invalid",
         }
+    usage_complete = _usage_complete(tool_response)
     assistant, result = make_tool_pair(
         name=tool_action.name,
         arguments=tool_action.arguments,
@@ -149,7 +148,7 @@ def probe_model_client(client):
                 assistant,
                 result,
             ],
-            max_tokens=_PROBE_TOOL_MAX_TOKENS,
+            max_tokens=_PROBE_CONTINUATION_MAX_TOKENS,
         )
     except Exception as exc:
         return _failed(client, "tool_result", exc, model_calls)
@@ -164,4 +163,9 @@ def probe_model_client(client):
         "category": "ok",
         "model_calls": model_calls,
         "binding": _probe_identity(client),
+        "usage_status": (
+            "complete"
+            if usage_complete and _usage_complete(continuation)
+            else "degraded"
+        ),
     }

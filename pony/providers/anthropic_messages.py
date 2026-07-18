@@ -17,6 +17,7 @@ from .transport import (
     _record_effective_model,
     _validate_number,
     _provider_auth_headers,
+    _provider_protocol_error,
     _resource_url,
 )
 
@@ -80,9 +81,18 @@ def _anthropic_content(data):
                 or not item["id"]
                 or not isinstance(item.get("name"), str)
                 or not item["name"]
-                or not isinstance(item.get("input"), dict)
             ):
-                raise ValueError("invalid tool_use block")
+                raise _provider_protocol_error(
+                    "Anthropic",
+                    stage="tool_call",
+                    reason="tool_call_shape_invalid",
+                )
+            if not isinstance(item.get("input"), dict):
+                raise _provider_protocol_error(
+                    "Anthropic",
+                    stage="tool_call",
+                    reason="tool_arguments_invalid",
+                )
             seen_action_content = True
             action_content.append(deepcopy(item))
         elif item_type in {"thinking", "redacted_thinking"}:
@@ -285,9 +295,10 @@ class AnthropicMessagesModelClient:
         try:
             data = _decode_json_object(response_body)
         except Exception:
-            raise ProviderTransportError(
-                "Anthropic error: provider_protocol_mismatch",
-                code="provider_protocol_mismatch",
+            raise _provider_protocol_error(
+                "Anthropic",
+                stage="response_decode",
+                reason="response_shape_invalid",
             ) from None
         if data.get("error"):
             raise ProviderTransportError(
@@ -330,9 +341,10 @@ class AnthropicMessagesModelClient:
         except ProviderTransportError:
             raise
         except Exception:
-            raise ProviderTransportError(
-                "Anthropic error: provider_protocol_mismatch",
-                code="provider_protocol_mismatch",
+            raise _provider_protocol_error(
+                "Anthropic",
+                stage="response_decode",
+                reason="response_shape_invalid",
             ) from None
         self.last_completion_metadata = usage_details
         return response

@@ -14,6 +14,19 @@ import urllib.request
 
 
 MAX_PROVIDER_RESPONSE_BYTES = 16 * 1024 * 1024
+_PROVIDER_ERROR_STAGES = frozenset(
+    {"tool_call", "tool_result", "response_decode", "runtime"}
+)
+_PROVIDER_PROTOCOL_REASONS = frozenset(
+    {
+        "reasoning_replay_required",
+        "response_shape_invalid",
+        "tool_arguments_invalid",
+        "tool_call_missing",
+        "tool_call_shape_invalid",
+        "tool_result_rejected",
+    }
+)
 
 
 class ProviderTransportError(RuntimeError):
@@ -27,6 +40,8 @@ class ProviderTransportError(RuntimeError):
         http_status=None,
         retryable=False,
         retry_after=None,
+        stage=None,
+        protocol_reason=None,
     ):
         super().__init__(message)
         self.code = str(code)
@@ -37,6 +52,26 @@ class ProviderTransportError(RuntimeError):
             if type(retry_after) in {int, float}
             else None
         )
+        self.stage = (
+            stage
+            if isinstance(stage, str) and stage in _PROVIDER_ERROR_STAGES
+            else None
+        )
+        self.protocol_reason = (
+            protocol_reason
+            if isinstance(protocol_reason, str)
+            and protocol_reason in _PROVIDER_PROTOCOL_REASONS
+            else None
+        )
+
+
+def _provider_protocol_error(family, *, stage, reason):
+    return ProviderTransportError(
+        f"{family} error: provider_protocol_mismatch",
+        code="provider_protocol_mismatch",
+        stage=stage,
+        protocol_reason=reason,
+    )
 
 
 class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
