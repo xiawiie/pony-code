@@ -26,6 +26,7 @@ def _make_agent():
             "description": "Write a file.",
         },
     }
+    a.visible_tools = lambda: dict(a.tools)
     a.session = {"messages": [
         {"role": "user", "content": "hello"},
         {"role": "assistant", "content": "hi there"},
