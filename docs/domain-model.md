@@ -21,6 +21,8 @@
 | Action | 一个 Tool、Final 或 Retry 决策 | 任意模型文本 |
 | Canonical Messages | Session Tree 中唯一的对话 transcript | Provider 私有 history |
 | Session Tree | append-only JSONL 分支树；rewind/fork 追加而非覆写 | Git history |
+| WorkflowMode | Session active path 上的 `plan|act|review` 能力上限 | approval policy 或 execution plane |
+| Active Plan | Session v3 中 bounded、完整替换的 goal/items 投影 | Task checkpoint 或 Todo Store |
 | Compaction | 用 summary + recent tail 重建 active request | 删除 Session 历史 |
 | Recovery Record | Checkpoint Record 或 Tool Change Record | Session task checkpoint |
 | Source Apply | 将已审查 exact diff 写回 Source Root 的独立事务 | Sandbox tool approval |
@@ -48,6 +50,8 @@ reasoning state 或 Anthropic thinking block 跨协议重放。
 - Provider client 每个 Model Attempt 至多一个 Transport Attempt。
 - retry 与 tool follow-up 复用同一 top-level turn 的 immutable InjectionSnapshot。
 - Canonical Messages 是唯一 transcript；Provider adapter 不拥有第二套可变历史。
+- Mode、Plan 与模型可见 tool schemas 在 top-level turn 开始时冻结；Mode ceiling 在 approval 前执行且只能收窄能力。
+- Active Plan 只从显式 control entry 或成功的原子 `update_plan` tool exchange 投影；Run、trace、checkpoint 与 UI 不成为 writer。
 - Session、Run、Checkpoint 和 Tool Change 分别有独立格式与 reader，不以 release version 代替 format version。
 - Compaction 不删除 append-only 历史，不授予 Memory 写权限，也不恢复 workspace。
 - `memory_save` 只看当前 top-level user request 的明确授权；delegate 永远不能写 Durable Memory。

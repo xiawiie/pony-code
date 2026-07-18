@@ -82,6 +82,15 @@ flowchart LR
 未知工具或 effect metadata 不合法时按高风险写操作拒绝。Approval 后仍重新校验原参数。Shell runner 只调用一次；
 effect observer 比较真实 workspace 状态，不只相信工具声明。Primary failure 不被 cleanup/finalizer 的次生错误覆盖。
 
+WorkflowMode 是 approval 之前的能力 ceiling。`plan` 只允许只读 shell，`review` 的 external-effect shell 仅能在
+`approval=ask` 下逐次确认；workspace-write、destructive 与 Durable Memory 写在两者中直接拒绝。模型只看到当前
+turn 允许的 tool schemas，但 Executor 仍对隐藏或伪造调用二次拒绝。`RuntimeOptions.read_only` 更强：隐藏并拒绝 shell、
+Plan、Memory 与 workspace 写入。
+
+Active Plan 在任何脱敏前执行 strict/bounded validation；如果已知 secret 会被 redactor 改写，整次操作以
+`sensitive_content_block` 拒绝，不能把 `<redacted>` 当作成功 Plan。Session v1/v2 inspection 不硬化或改写 artifact；
+迁移只在显式 resume 下进行，并在原子发布前复验 source、backup 与 candidate 的 identity、single-link 和 exact bytes。
+
 ## Docker Sandbox
 
 1.0 公开 Sandbox 只接受：

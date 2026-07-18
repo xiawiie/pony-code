@@ -82,6 +82,7 @@ uv run pytest -q \
   tests/test_cli_parser.py \
   tests/test_cli_commands.py \
   tests/test_cli_error_envelope.py \
+  tests/test_cli_workflow.py \
   tests/tui
 ```
 
@@ -92,6 +93,20 @@ fallback、`NO_COLOR`、40/80/120 列的单行 `PONY CODE · version` 与精简 
 事件投影测试必须证明 `Working…` 会在正式输出前清除、自动 checkpoint 零输出、成功 Tool 只输出一行、失败与中断
 可见，并且 footer 不泄露绝对路径、Session ID、API Base 或 checkpoint ID。runtime hook 恢复、durable trace 顺序、
 approval 参数脱敏与 approval fail closed 仍是阻断项；离线 contract 不得描述为 Provider reasoning 或 streaming 验证。
+
+Workflow P0 还必须覆盖：Session v3 默认值；v1/v2 inspection 零写与 crash-safe explicit migration；Plan 全部
+schema/byte/secret 边界；Mode x approval x read-only x shell；模型可见 schemas 与 Executor 双重约束；
+fork/rewind/reset/clone；`--mode` one-shot；plain/TUI Resume；active prompt history；以及
+Session pair commit -> Plan digest reload -> durable trace -> listener 顺序。聚焦入口包括：
+
+```bash
+uv run pytest -q \
+  tests/test_workflow_state.py \
+  tests/test_workflow_policy.py \
+  tests/test_runtime_resume.py \
+  tests/test_cli_session_inspect.py \
+  tests/test_cli_workflow.py
+```
 
 ## Distribution 验证
 

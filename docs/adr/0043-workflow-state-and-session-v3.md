@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted for implementation. The feature is not released until the complete integration branch passes the full offline gate.
+Implemented on the integration branch. The feature is not released until the complete branch passes the full offline gate.
 
 ## Context
 

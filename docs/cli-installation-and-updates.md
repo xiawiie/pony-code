@@ -98,6 +98,11 @@ pony
 TUI 需要 stdin/stdout 同时为 TTY、`TERM` 不是 `dumb` 且终端至少 40 列，否则自动使用纯文本 REPL。颜色还会遵守
 `--no-color` 和 `NO_COLOR`。输入 `/` 查看交互命令；`Ctrl+D` 退出，`Ctrl+C` 中断/清空，短时间内再次按下则退出。
 
+`pony run` 与 `pony repl` 可显式传入 `--mode plan|act|review`；该值只追加到当前 Session，不进入 `.env` 或 TOML。
+交互中使用 `/mode [plan|act|review]` 和 `/plan [clear]`。显式交互 `--resume` 显示一次 Resume 摘要；one-shot、JSON
+inspection 与管理命令保持无装饰输出。Session v1/v2 只有在显式 resume 时迁移到 v3；其他 writer 返回
+`session_migration_required`。
+
 ## Provider 切换
 
 切换 Provider 时修改同一组变量，不创建 profile 或 connection 文件。

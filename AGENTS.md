@@ -68,6 +68,8 @@ CLI/TUI 合同：
 - `runs`、`sessions`、`session`、`checkpoints` 等显式管理命令保持独立；未知首 token 不得静默变成 prompt。
 - TUI 是 presentation adapter，必须与纯文本 fallback 共用 REPL handler、Agent、Session、finalize 和错误语义。
 - `/` 菜单只展示真实命令；不得增加绕过 approval 的 `!` shell mode、动态 Provider/Model 或第二命令 registry。
+- WorkflowMode 只允许 `plan|act|review`，是 Session active state 而非配置默认值；`--mode` 只适用于 `run/repl`，
+  `/mode` 与 `/plan` 共用 REPL handler，不增加 `/todo`。
 - TUI 只在 stdin/stdout 为 TTY、`TERM` 可用且宽度足够时启用；必须遵守 `NO_COLOR` / `--no-color`。
 - 完整 TUI 只显示单行 `PONY CODE · v<version>` 启动头；纯文本 fallback 和 `pony run` 不输出装饰性 banner。
 - 用户消息使用低对比块且不加角色标签；Assistant 使用内置、安全的 Markdown renderer，消息块之间只留一个视觉间距。
@@ -114,10 +116,14 @@ PONY_MODEL
 
 - 一个 Model Attempt 最多一次请求；成功响应只产生一个 Tool、Final 或 Retry Action。
 - 多 tool calls 整体拒绝；同一 turn 的 retry/follow-up 复用 immutable snapshot。
+- top-level turn 同时冻结 Mode、Active Plan context 与模型可见 Tool Schema；Mode ceiling 在 approval 前执行且只能收窄，
+  Executor 仍对隐藏工具二次拒绝。
 - Canonical Messages 是唯一 transcript；Provider adapter 不维护第二套可变 history。
 - Tool 先做 schema、policy、当前授权与必要 approval，再进入 mutation lock；执行一次并观察真实 effect。
 - `memory_save` 只接受当前请求的明确授权；历史授权不继承，delegate 不能写 Durable Memory。
 - Session、Run、Checkpoint 与 Tool Change 使用独立 record format 和 reader；release version 不能代替 format version。
+- Session v3 的 Mode/Plan 只从显式 control entry 或成功的原子 `update_plan` tool pair 投影；v1/v2 inspection 零写，
+  只有显式 resume 可迁移，其他 writer 返回 `session_migration_required`。
 - Compaction 不删除 append-only Session 历史，不授予 Memory 写权限，也不恢复 workspace。
 - 持久化失败后不继续请求 Provider；cleanup、observer 或 finalizer 的次生错误不能覆盖 primary failure。
 

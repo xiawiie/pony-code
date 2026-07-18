@@ -32,13 +32,14 @@ release authority 或 distributed enablement 路径。
 
 | family | record type | format version |
 | --- | --- | ---: |
-| Session Tree header/entry | `session_header` / `session_entry` | 2 |
+| Session Tree header/entry | `session_header` / `session_entry` | 3 |
 | Checkpoint Record | `checkpoint` | 1 |
 | Tool Change Record | `tool_change` | 2 |
 
 type/version 必须精确、version 必须是整数，required fields 必须完整。reader 拒绝错误类型、未知版本、
-duplicate keys、缺失字段和不安全文件。Session inspection 不做转换；显式首次 resume 旧 `.json` 时，
-`SessionStore` 在锁下备份、写 candidate、完整复验并原子发布 JSONL。迁移失败保留旧文件并可幂等重试。
+duplicate keys、缺失字段和不安全文件。Session inspection 不做转换或权限硬化；显式首次 resume v1 `.json` 或
+v2 `.jsonl` 时，`SessionStore` 在锁下验证 source/backup/candidate identity 与 exact bytes，再原子发布 v3 JSONL。
+迁移失败保留旧文件并可幂等重试；其他 Session writer 返回 `session_migration_required`。
 Checkpoint/Tool Change runtime 仍不做读时转换或磁盘改写。run/report/trace 是当前审计 artifact，embedded
 task checkpoint、verification evidence 与 restore preview 不单独版本化。
 
