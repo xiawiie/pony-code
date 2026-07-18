@@ -27,6 +27,9 @@ def _install_fake_agent(monkeypatch, tmp_path, called):
                 called["asked"] = message
                 return "answer"
 
+            def set_workflow_mode(self, mode):
+                called["mode"] = mode
+
             def memory_text(self):
                 return "memory"
 
@@ -47,6 +50,45 @@ def test_run_command_calls_agent_once(tmp_path, monkeypatch, capsys):
     assert code == 0
     assert called["asked"] == "fix tests"
     assert "answer" in capsys.readouterr().out
+
+
+def test_run_mode_is_applied_after_runtime_build(tmp_path, monkeypatch):
+    called = {}
+    _install_fake_agent(monkeypatch, tmp_path, called)
+
+    assert main(["--cwd", str(tmp_path), "--mode", "plan", "run", "inspect"]) == 0
+    assert called["mode"] == "plan"
+
+
+def test_mode_is_rejected_for_management_commands(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(
+        "pony.cli.app.build_agent",
+        lambda _args: pytest.fail("agent must not be built"),
+    )
+
+    assert main(["--cwd", str(tmp_path), "--mode", "review", "status"]) == 2
+    assert "--mode is only valid" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("extra", "expected"),
+    (([], True), (["--format", "json"], False)),
+)
+def test_explicit_resume_card_is_enabled_only_for_text_repl(
+    tmp_path,
+    monkeypatch,
+    extra,
+    expected,
+):
+    called = {}
+    _install_fake_agent(monkeypatch, tmp_path, called)
+    monkeypatch.setattr(
+        "pony.cli.app.run_repl",
+        lambda _agent, **options: called.update(options) or 0,
+    )
+
+    assert main(["--cwd", str(tmp_path), "--resume", "session", *extra, "repl"]) == 0
+    assert called["show_resume"] is expected
 
 
 @pytest.mark.parametrize("command", ([], ["repl"]))

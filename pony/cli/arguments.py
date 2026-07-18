@@ -142,6 +142,12 @@ def build_arg_parser():
         help="Approval policy for risky tools.",
     )
     parser.add_argument(
+        "--mode",
+        choices=("plan", "act", "review"),
+        default=None,
+        help="Workflow mode for run/repl only.",
+    )
+    parser.add_argument(
         "--secret-env-name",
         dest="secret_env_names",
         action="append",

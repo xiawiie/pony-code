@@ -228,7 +228,13 @@ class TuiRenderer:
         repository = Path(workspace).name or "-"
         left = f" {mode} · {repository} ({branch})"
         approval = _one_line(getattr(agent, "approval_policy", "")) or "-"
-        right = f"approval {approval} · {_model_label(agent, model)} "
+        current_mode = getattr(agent, "current_workflow_mode", None)
+        workflow_mode = _one_line(
+            current_mode()
+            if callable(current_mode)
+            else getattr(agent, "session", {}).get("workflow_mode", "act")
+        ) or "act"
+        right = f"{workflow_mode}/{approval} · {_model_label(agent, model)} "
         gap = width - get_cwidth(left) - get_cwidth(right)
         if gap < 1:
             right = _truncate(right, max(1, min(get_cwidth(right), width * 2 // 3)))
@@ -249,6 +255,34 @@ class TuiRenderer:
                 ("class:editor.prompt", " "),
             ]
         )
+
+    def resume(self, projection):
+        goal = projection["goal"]
+        plan = projection["plan"]
+        lines = [
+            "Resume",
+            f"mode [session]: {projection['mode']}",
+        ]
+        if goal["text"]:
+            lines.append(f"goal [{goal['source']}]: {goal['text']}")
+        lines.append(
+            "plan [plan]: "
+            f"{plan['completed_count']}/{plan['item_count']} completed; "
+            f"current={plan['current_count']}"
+        )
+        checkpoint = projection["checkpoint"]
+        if checkpoint["status"] or checkpoint["blocker"]:
+            lines.append(
+                "checkpoint [checkpoint]: "
+                f"status={checkpoint['status'] or '-'}; "
+                f"blocker={checkpoint['blocker'] or '-'}"
+            )
+        lines.extend(
+            f"next [checkpoint]: {next_step}"
+            for next_step in checkpoint["next_steps"]
+        )
+        lines.append(f"resume [resume_state]: {projection['resume']['status'] or '-'}")
+        self.notice("\n".join(lines))
 
     def user(self, text, *, columns=None):
         self._clear_working()

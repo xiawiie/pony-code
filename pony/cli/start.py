@@ -1,12 +1,15 @@
 """One-shot and interactive CLI startup flows."""
 
 from contextlib import contextmanager
+import json
 import signal
 import shlex
 import sys
 import threading
 
 from pony.security.redaction import redact_text
+from pony.runtime.resume import active_prompt_history, build_resume_projection
+from pony.state.workflow import EMPTY_PLAN
 
 
 _RUNTIME_ERROR_MESSAGE = "agent runtime failed"
@@ -75,7 +78,13 @@ def _default_confirm(message):
     return answer.strip().casefold() in {"y", "yes"}
 
 
-def _handle_repl_session_command(agent, user_input, *, confirm=_default_confirm):
+def _handle_repl_session_command(
+    agent,
+    user_input,
+    *,
+    confirm=_default_confirm,
+    refresh_history=lambda: None,
+):
     try:
         tokens = shlex.split(user_input)
     except ValueError as exc:
@@ -99,6 +108,7 @@ def _handle_repl_session_command(agent, user_input, *, confirm=_default_confirm)
             return True
         if command == "/fork" and len(tokens) == 2:
             entry = agent.fork_session(tokens[1])
+            refresh_history()
             print(f"forked at {entry['parent_id']}; leaf={entry['id']}")
             return True
         if command == "/checkpoint":
@@ -121,6 +131,7 @@ def _handle_repl_session_command(agent, user_input, *, confirm=_default_confirm)
                 workspace=workspace,
                 confirmed=confirmed,
             )
+            refresh_history()
             entry = result.rewind_entry if summary or workspace else result
             print(f"rewound to {entry['parent_id']}; leaf={entry['id']}")
             return True
@@ -242,6 +253,7 @@ def _process_repl_input(
     confirm=_default_confirm,
     render_answer=print,
     render_error=None,
+    refresh_history=lambda: None,
 ):
     if not user_input:
         return None
@@ -251,6 +263,39 @@ def _process_repl_input(
         from .help import HELP_DETAILS
 
         print(HELP_DETAILS)
+        return None
+    if user_input == "/mode":
+        print(f"mode: {agent.current_workflow_mode()}")
+        return None
+    if user_input.startswith("/mode "):
+        mode = user_input[len("/mode ") :].strip()
+        if mode not in {"plan", "act", "review"}:
+            print("usage: /mode [plan|act|review]")
+            return None
+        try:
+            changed = agent.set_workflow_mode(mode)
+        except (OSError, RuntimeError, ValueError) as exc:
+            print(f"error: {_safe_text(agent, exc)}")
+            return None
+        print(f"mode: {mode}" + ("" if changed is not None else " (unchanged)"))
+        return None
+    if user_input == "/plan":
+        plan = agent.redact_artifact(agent.current_workflow_plan())
+        print(json.dumps(plan, ensure_ascii=False, indent=2))
+        return None
+    if user_input == "/plan clear":
+        try:
+            if getattr(agent, "_workflow_turn", None) is not None:
+                raise RuntimeError("workflow_turn_active")
+            agent.session_store.set_active_plan(agent.session["id"], EMPTY_PLAN)
+            agent._reload_session_projection()
+        except (OSError, RuntimeError, ValueError) as exc:
+            print(f"error: {_safe_text(agent, exc)}")
+            return None
+        print("plan cleared")
+        return None
+    if user_input.startswith("/plan "):
+        print("usage: /plan [clear]")
         return None
     if user_input == "/memory":
         task_summary = agent.memory.task_summary
@@ -274,10 +319,16 @@ def _process_repl_input(
     if user_input == "/session":
         print(agent.session_path)
         return None
-    if _handle_repl_session_command(agent, user_input, confirm=confirm):
+    if _handle_repl_session_command(
+        agent,
+        user_input,
+        confirm=confirm,
+        refresh_history=refresh_history,
+    ):
         return None
     if user_input == "/reset":
         agent.reset()
+        refresh_history()
         print("session reset")
         return None
     if user_input == "/remember" or user_input.startswith("/remember "):
@@ -344,7 +395,16 @@ def run_repl(
     plain=False,
     no_color=False,
     show_header=True,
+    show_resume=False,
 ):
+    session = getattr(agent, "session", {})
+    session = session if isinstance(session, dict) else {}
+    resume_projection = (
+        build_resume_projection(session, redactor=agent.redact_artifact)
+        if show_resume
+        else None
+    )
+    prompt_history = active_prompt_history(session.get("messages", []))
     with _cli_interrupt_boundary():
         try:
             if not plain:
@@ -359,8 +419,20 @@ def run_repl(
                             no_color=no_color,
                             handle_input=_process_repl_input,
                             show_header=show_header,
+                            resume_projection=resume_projection,
+                            prompt_history=prompt_history,
                         ),
                     )
+            def refresh_plain_history():
+                current = getattr(agent, "session", {})
+                current = current if isinstance(current, dict) else {}
+                _replace_readline_history(
+                    active_prompt_history(current.get("messages", []))
+                )
+
+            _replace_readline_history(prompt_history)
+            if resume_projection is not None:
+                _print_resume_card(resume_projection)
             while True:
                 try:
                     user_input = input("\npony> ").strip()
@@ -368,9 +440,49 @@ def run_repl(
                     print("")
                     return _finish_repl(agent, 0)
 
-                result = _process_repl_input(agent, user_input)
+                result = _process_repl_input(
+                    agent,
+                    user_input,
+                    refresh_history=refresh_plain_history,
+                )
+                refresh_plain_history()
                 if result is not None:
                     return _finish_repl(agent, result)
         except KeyboardInterrupt as exc:
             print("")
             return _finish_repl(agent, _interrupt_exit_code(exc))
+
+
+def _print_resume_card(projection):
+    goal = projection["goal"]
+    plan = projection["plan"]
+    checkpoint = projection["checkpoint"]
+    resume = projection["resume"]
+    print("Resume")
+    print(f"mode [session]: {projection['mode']}")
+    if goal["text"]:
+        print(f"goal [{goal['source']}]: {goal['text']}")
+    print(
+        "plan [plan]: "
+        f"{plan['completed_count']}/{plan['item_count']} completed; "
+        f"current={plan['current_count']}"
+    )
+    if checkpoint["status"] or checkpoint["blocker"]:
+        print(
+            "checkpoint [checkpoint]: "
+            f"status={checkpoint['status'] or '-'}; "
+            f"blocker={checkpoint['blocker'] or '-'}"
+        )
+    for next_step in checkpoint["next_steps"]:
+        print(f"next [checkpoint]: {next_step}")
+    print(f"resume [resume_state]: {resume['status'] or '-'}")
+
+
+def _replace_readline_history(items):
+    try:
+        import readline
+    except ImportError:
+        return
+    readline.clear_history()
+    for item in items:
+        readline.add_history(item)

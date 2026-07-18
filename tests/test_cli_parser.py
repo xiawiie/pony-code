@@ -26,6 +26,16 @@ def test_parse_run_command_with_prompt():
     assert invocation.runtime_args.cwd == "/repo"
 
 
+def test_parse_workflow_mode_for_run_and_repl():
+    run = parse_cli_invocation(
+        ["--mode", "plan", "run", "inspect"], build_arg_parser()
+    )
+    repl = parse_cli_invocation(["repl", "--mode", "review"], build_arg_parser())
+
+    assert run.runtime_args.mode == "plan"
+    assert repl.runtime_args.mode == "review"
+
+
 def test_parse_repl_command():
     invocation = parse_cli_invocation(["repl"], build_arg_parser())
 
