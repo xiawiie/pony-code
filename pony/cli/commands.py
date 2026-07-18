@@ -6,10 +6,14 @@ from pathlib import Path
 import sys
 
 from pony.security import redaction as securitylib
-from .errors import CLI_EXIT_CONFIG, CLI_EXIT_USAGE, CliError
+from .errors import CLI_EXIT_CONFIG, CLI_EXIT_RUNTIME, CLI_EXIT_USAGE, CliError
 from .diagnostics import _line
-from .output import build_inspection_redactor, print_result
-from .session import handle_session_command
+from .output import build_inspection_redactor, print_inspection_result, print_result
+from .session import (
+    handle_session_command,
+    render_session_inspection,
+    session_inspection_data,
+)
 from pony.config.model import (
     API_BASE_ENV_NAME,
     API_KEY_ENV_NAME,
@@ -26,6 +30,7 @@ from pony.config.environment import (
     write_project_env_assignments,
 )
 from pony.sandbox.session import source_mutation_authority
+from pony.state.session_store import SessionFormatError
 from pony.workspace.context import WorkspaceContext
 
 
@@ -87,6 +92,37 @@ def handle_help(tokens):
 def handle_session(tokens, root, args):
     """``pony session ...`` tree inspection and explicit session operations."""
     sessions_root = Path(root) / ".pony" / "sessions"
+    if tokens and tokens[0] == "inspect":
+        if len(tokens) != 2:
+            raise CliError(
+                code="usage",
+                message="usage: pony session inspect <session-id|latest>",
+                exit_code=CLI_EXIT_USAGE,
+            )
+        try:
+            data = session_inspection_data(tokens[1], sessions_root)
+        except FileNotFoundError as exc:
+            raise CliError(
+                code="session_not_found",
+                message="unknown session",
+                hint="Run `pony sessions list`.",
+                exit_code=CLI_EXIT_USAGE,
+            ) from exc
+        except (OSError, ValueError, SessionFormatError) as exc:
+            code = getattr(exc, "code", "")
+            raise CliError(
+                code=code or "unsafe_artifact",
+                message=str(exc) if code else "unsafe local artifact",
+                exit_code=CLI_EXIT_RUNTIME,
+            ) from exc
+        return print_inspection_result(
+            root,
+            "session_inspect",
+            data,
+            args,
+            render_session_inspection,
+            redactor=build_inspection_redactor(root, args),
+        )
 
     def build_resumed_agent(session_id):
         from . import build_agent
@@ -95,12 +131,21 @@ def handle_session(tokens, root, args):
         runtime_args.resume = session_id
         return build_agent(runtime_args)
 
-    return handle_session_command(
-        list(tokens),
-        sessions_root=sessions_root,
-        redactor=build_inspection_redactor(root, args),
-        agent_factory=build_resumed_agent,
-    )
+    try:
+        return handle_session_command(
+            list(tokens),
+            sessions_root=sessions_root,
+            redactor=build_inspection_redactor(root, args),
+            agent_factory=build_resumed_agent,
+            raise_typed_errors=True,
+        )
+    except SessionFormatError as exc:
+        code = getattr(exc, "code", "")
+        raise CliError(
+            code=code or "unsafe_artifact",
+            message=str(exc) if code else "unsafe local artifact",
+            exit_code=CLI_EXIT_RUNTIME,
+        ) from exc
 
 
 def handle_init(tokens, cwd, args):
