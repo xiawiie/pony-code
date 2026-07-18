@@ -11,6 +11,7 @@ from pony.security import redaction as redaction
 from pony.memory.recall import recall_candidates
 from pony.memory.retrieval import Retrieval
 from pony.agent.model_capabilities import TokenAccounting
+from pony.state.workflow import DEFAULT_WORKFLOW_MODE
 
 from .chunks import make_chunk
 
@@ -73,6 +74,22 @@ def _line_groups(text, accounting, target_tokens):
     if current:
         groups.append("\n".join(current).strip())
     return [group for group in groups if group]
+
+
+def _workflow_context(agent, session):
+    """Read the current-turn snapshot when policy freezes it, else Session state."""
+    plan = getattr(agent, "current_workflow_plan", None)
+    plan = plan() if callable(plan) else plan
+    mode = getattr(agent, "current_workflow_mode", None)
+    mode = mode() if callable(mode) else mode
+    if isinstance(plan, dict) and "active_plan" in plan:
+        mode = plan.get("workflow_mode", mode)
+        plan = plan.get("active_plan")
+    if not isinstance(plan, dict):
+        plan = session.get("active_plan") if isinstance(session, dict) else None
+    if not isinstance(mode, str):
+        mode = session.get("workflow_mode") if isinstance(session, dict) else None
+    return plan, mode
 
 
 def workspace_state_chunks(agent, accounting):
@@ -219,7 +236,7 @@ def task_working_set_chunks(agent, accounting):
     checkpoint_items = checkpoint_items if isinstance(checkpoint_items, dict) else {}
     checkpoint = checkpoint_items.get(checkpoint_id)
     checkpoint = checkpoint if isinstance(checkpoint, dict) else {}
-    goal = str(
+    checkpoint_goal = str(
         checkpoint.get(
             "goal",
             checkpoint.get(
@@ -236,11 +253,72 @@ def task_working_set_chunks(agent, accounting):
     ]
     live_files = list(getattr(memory, "recent_files", []) or [])
     recent_files = list(dict.fromkeys([*live_files, *checkpoint_files]))
-    lines = ["Task working set:"]
+    chunks = []
+    active_plan, mode = _workflow_context(agent, session)
+    if isinstance(active_plan, dict) or isinstance(mode, str):
+        active_plan = active_plan if isinstance(active_plan, dict) else {}
+        items = active_plan.get("items", [])
+        items = items if isinstance(items, list) else []
+        completed = [
+            item for item in items
+            if isinstance(item, dict) and item.get("status") == "completed"
+        ]
+        current = [
+            item for item in items
+            if isinstance(item, dict) and item.get("status") == "in_progress"
+        ]
+        workflow_lines = [
+            "Workflow state:",
+            f"- Mode: {mode if isinstance(mode, str) else DEFAULT_WORKFLOW_MODE}",
+        ]
+        plan_goal = str(active_plan.get("goal", "") or "").strip()
+        if plan_goal:
+            workflow_lines.append(f"- Plan goal: {plan_goal}")
+        if current:
+            workflow_lines.append(
+                f"- Current: {str(current[0].get('text', '')).strip()}"
+            )
+        workflow_lines.append(
+            f"- Progress: {len(completed)}/{len(items)} completed; "
+            f"{len(current)} current"
+        )
+        chunks.append(
+            make_chunk(
+                accounting,
+                source="task_working_set",
+                key="workflow-state",
+                text=_sanitize_source_text(agent, "\n".join(workflow_lines)),
+                priority=0,
+                required=True,
+                provenance={
+                    "rank": 0,
+                    "mode_source": "workflow_mode",
+                    "plan_source": "active_plan",
+                },
+            )
+        )
+        for index, item in enumerate(items):
+            if not isinstance(item, dict) or item.get("status") != "pending":
+                continue
+            chunks.append(
+                make_chunk(
+                    accounting,
+                    source="task_working_set",
+                    key=f"plan-pending-{index}",
+                    text=_sanitize_source_text(
+                        agent,
+                        f"Pending plan item: {str(item.get('text', '')).strip()}",
+                    ),
+                    priority=1,
+                    provenance={"rank": 10 + index},
+                )
+            )
+
+    lines = ["Checkpoint state:"]
     if checkpoint_id:
         lines.append(f"- Checkpoint: {checkpoint_id}")
-    if goal:
-        lines.append(f"- Goal: {goal}")
+    if checkpoint_goal:
+        lines.append(f"- Goal: {checkpoint_goal}")
     if checkpoint.get("status"):
         lines.append(f"- Status: {checkpoint['status']}")
     blocker = checkpoint.get("blocker", checkpoint.get("current_blocker", ""))
@@ -252,8 +330,23 @@ def task_working_set_chunks(agent, accounting):
     next_steps = [str(item).strip() for item in next_steps if str(item).strip()]
     if next_steps:
         lines.append("- Next steps: " + " | ".join(next_steps))
+    if len(lines) > 1:
+        safe_checkpoint = _sanitize_source_text(agent, "\n".join(lines))
+        chunks.append(
+            make_chunk(
+                accounting,
+                source="task_working_set",
+                key="checkpoint-state",
+                text=_clip_tokens(safe_checkpoint, accounting, 768),
+                priority=0,
+                required=bool(checkpoint_id),
+                provenance={"rank": 1},
+            )
+        )
+
+    detail_lines = []
     if recent_files:
-        lines.append("- Recent files: " + ", ".join(recent_files))
+        detail_lines.append("Recent files: " + ", ".join(recent_files))
     memory_state = session.get("memory", {}) if isinstance(session, dict) else {}
     summaries = (
         memory_state.get("file_summaries", {}) if isinstance(memory_state, dict) else {}
@@ -272,23 +365,20 @@ def task_working_set_chunks(agent, accounting):
         value = checkpoint_item.get("summary") or summaries.get(path)
         summary = value.get("summary", "") if isinstance(value, dict) else value
         if str(summary or "").strip():
-            lines.append(f"- {path}: {str(summary).strip()}")
-    if len(lines) == 1:
-        return []
-    safe_working_set = _sanitize_source_text(agent, "\n".join(lines))
-    required = bool(checkpoint_id)
-    return [
+            detail_lines.append(f"- {path}: {str(summary).strip()}")
+    safe_details = _sanitize_source_text(agent, "\n".join(detail_lines))
+    chunks.extend(
         make_chunk(
             accounting,
             source="task_working_set",
-            key=f"working-{index}",
+            key=f"working-details-{index}",
             text=part,
-            priority=0,
-            required=required and index == 0,
-            provenance={"rank": index},
+            priority=1,
+            provenance={"rank": 30 + index},
         )
-        for index, part in enumerate(_line_groups(safe_working_set, accounting, 1_024))
-    ]
+        for index, part in enumerate(_line_groups(safe_details, accounting, 1_024))
+    )
+    return [chunk for chunk in chunks if chunk is not None]
 
 
 def memory_index_chunks(agent, accounting, memory_snapshot):
