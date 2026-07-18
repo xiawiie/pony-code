@@ -11,6 +11,7 @@ import pytest
 
 from pony import Pony
 from pony.state.session_store import SessionStore
+from pony.state.session_store import SESSION_FORMAT_VERSION
 from pony.workspace.context import WorkspaceContext
 from pony.cli.app import main
 from pony.cli.start import run_agent_once
@@ -112,7 +113,7 @@ def test_offline_a1_canary_crosses_real_boundaries_without_normal_artifact_leak(
 
     candidate = {
         "record_type": "session",
-        "format_version": 2,
+        "format_version": SESSION_FORMAT_VERSION,
         "id": "candidate-canary",
         "created_at": "2026-01-01T00:00:00+00:00",
         "workspace_root": str(tmp_path),
@@ -127,6 +128,8 @@ def test_offline_a1_canary_crosses_real_boundaries_without_normal_artifact_leak(
         "resume_state": {},
         "recovery": {},
         "runtime_identity": {},
+        "workflow_mode": "act",
+        "active_plan": {"goal": "", "items": []},
     }
     provider = ScriptedProvider(
         [
@@ -335,6 +338,7 @@ def test_offline_a1_canary_crosses_real_boundaries_without_normal_artifact_leak(
     legacy_raw = json.dumps(legacy).encode("utf-8")
     legacy_path = agent.session_store.legacy_path(legacy_id)
     legacy_path.write_bytes(legacy_raw)
+    legacy_path.chmod(0o600)
     with pytest.raises(ValueError, match="session payload|format version|required"):
         agent.session_store.load(legacy_id)
     assert legacy_path.read_bytes() == legacy_raw

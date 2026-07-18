@@ -36,6 +36,7 @@ def _agent(messages, *, context_window=32_768):
     return SimpleNamespace(
         prefix="system",
         tools={},
+        visible_tools=lambda: {},
         session={"id": "", "messages": list(messages), "recently_recalled": []},
         session_store=None,
         workspace=MagicMock(volatile_text=lambda: ""),

@@ -94,6 +94,8 @@ def test_runtime_uses_current_working_memory(tmp_path, monkeypatch):
         "resume_state": {},
         "recovery": {"current_checkpoint_id": ""},
         "runtime_identity": {},
+        "workflow_mode": "act",
+        "active_plan": {"goal": "", "items": []},
     }
 
     agent = _build_agent(tmp_path, monkeypatch, session=current_session)

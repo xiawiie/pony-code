@@ -11,13 +11,14 @@ from pony.agent.model_capabilities import (
 )
 from benchmarks.support.fake_provider import FakeModelClient
 from pony.state.session_store import SessionStore, entry_message_refs
+from pony.state.session_store import SESSION_FORMAT_VERSION
 from pony.workspace.context import now
 
 
 def _session(workspace):
     return {
         "record_type": "session",
-        "format_version": 2,
+        "format_version": SESSION_FORMAT_VERSION,
         "id": "long-session",
         "created_at": now(),
         "workspace_root": str(workspace),
@@ -29,6 +30,8 @@ def _session(workspace):
         "resume_state": {},
         "recovery": {},
         "runtime_identity": {},
+        "workflow_mode": "act",
+        "active_plan": {"goal": "", "items": []},
     }
 
 
@@ -71,6 +74,7 @@ def _agent(workspace, store):
         secret_env_names=(),
         prefix="system",
         tools={},
+        visible_tools=lambda: {},
         context_config={"compaction": {"enabled": True}},
         _pending_token_anchor=None,
     )

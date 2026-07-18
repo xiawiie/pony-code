@@ -485,8 +485,8 @@ def build_source_chunks(agent, user_message, *, memory_snapshot=None):
     accounting = _accounting(agent)
     builders = (
         lambda: recovery_state_chunks(agent, accounting),
-        lambda: task_working_set_chunks(agent, accounting),
         lambda: workspace_state_chunks(agent, accounting),
+        lambda: task_working_set_chunks(agent, accounting),
         lambda: recalled_memory_chunks(
             agent,
             accounting,
