@@ -68,7 +68,7 @@ RECOVERY_ABLATION_TASKS = [
         "category": "checkpoint_resume",
         "setup": "checkpoint_resume",
         "required_fragments": [
-            "task working set:",
+            "checkpoint state:",
             "goal: resume the benchmark task",
             "next steps: apply the locked change",
         ],
@@ -78,7 +78,7 @@ RECOVERY_ABLATION_TASKS = [
         "category": "checkpoint_resume",
         "setup": "checkpoint_resume",
         "required_fragments": [
-            "task working set:",
+            "checkpoint state:",
             "goal: continue from the latest benchmark checkpoint",
             "recent files: sample.txt",
         ],
