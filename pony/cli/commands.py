@@ -6,6 +6,7 @@ from pathlib import Path
 import sys
 
 from pony.security import redaction as securitylib
+from pony.providers.probe import resolve_provider_client
 from .errors import CLI_EXIT_CONFIG, CLI_EXIT_RUNTIME, CLI_EXIT_USAGE, CliError
 from .diagnostics import _line
 from .output import build_inspection_redactor, print_inspection_result, print_result
@@ -201,7 +202,8 @@ def handle_init(tokens, cwd, args):
         current_base = (
             existing_base if same_provider else ""
         ) or defaults["base_url"]["value"]
-        print(f"API Base [{current_base}]: ", end="", file=sys.stderr, flush=True)
+        base_prompt = f"API Base [{current_base}]: " if current_base else "API Base: "
+        print(base_prompt, end="", file=sys.stderr, flush=True)
         api_base = validate_api_base(input().strip() or current_base)
 
         defaults = resolve_model_config(
@@ -215,7 +217,8 @@ def handle_init(tokens, cwd, args):
         current_model = (
             existing.get(MODEL_ENV_NAME) if same_provider else ""
         ) or defaults["model"]["value"]
-        print(f"Model [{current_model}]: ", end="", file=sys.stderr, flush=True)
+        model_prompt = f"Model [{current_model}]: " if current_model else "Model: "
+        print(model_prompt, end="", file=sys.stderr, flush=True)
         model = input().strip() or current_model
 
         existing_key = existing.get(API_KEY_ENV_NAME, "")
@@ -232,11 +235,7 @@ def handle_init(tokens, cwd, args):
             exit_code=CLI_EXIT_USAGE,
         ) from exc
     except ValueError as exc:
-        raise CliError(
-            code=str(exc),
-            message=str(exc),
-            exit_code=CLI_EXIT_CONFIG,
-        ) from exc
+        raise _init_config_error(exc) from exc
     api_key = entered_key or existing_key
     if any(character in api_key for character in ("\0", "\r", "\n")):
         raise CliError(
@@ -254,20 +253,23 @@ def handle_init(tokens, cwd, args):
         resolved = resolve_model_config(
             project_env=assignments,
             process_env={},
-            required=False,
+            required=True,
         )
     except ValueError as exc:
-        raise CliError(
-            code=str(exc),
-            message=str(exc),
-            exit_code=CLI_EXIT_CONFIG,
-        ) from exc
-    if resolved["auth_mode"]["value"] != "none" and not api_key.strip():
-        raise CliError(
-            code="usage",
-            message="API Key is required unless auth mode is none",
-            exit_code=CLI_EXIT_USAGE,
+        raise _init_config_error(exc) from exc
+    probe_report = {
+        "status": "not_run",
+        "model_calls": 0,
+        "usage_status": "not_checked",
+    }
+    if provider in {"auto", "openai"}:
+        print("\nDetecting provider...", file=sys.stderr, flush=True)
+        _client, resolved, probe_report = resolve_provider_client(
+            resolved,
+            timeout=args.request_timeout_seconds,
+            verify_resolved=True,
         )
+        assignments[PROVIDER_ENV_NAME] = resolved["resolved_provider"]["value"]
     try:
         with source_mutation_authority(
             Path.home() / ".pony" / "sandboxes",
@@ -293,12 +295,23 @@ def handle_init(tokens, cwd, args):
     data = {
         "workspace": workspace_info,
         "project_env": project_env,
-        "provider": resolved["provider"]["value"],
+        "provider": assignments[PROVIDER_ENV_NAME],
         "api_base": resolved["base_url"]["value"],
         "model": resolved["model"]["value"],
         "api_variant": resolved["api_variant"]["value"],
         "protocol": resolved["protocol"]["value"],
         "auth_mode": resolved["auth_mode"]["value"],
+        "detection": {
+            "status": probe_report["status"],
+            "native_tools": (
+                "passed" if probe_report["status"] == "ok" else "not_checked"
+            ),
+            "tool_continuation": (
+                "passed" if probe_report["status"] == "ok" else "not_checked"
+            ),
+            "usage": probe_report["usage_status"],
+            "model_calls": probe_report["model_calls"],
+        },
         "updated": written["updated"],
         "added": written["added"],
         "unchanged": written["unchanged"],
@@ -338,7 +351,42 @@ def _render_init(data):
         _line("api key", api_key_text),
         _line("updated", ", ".join(changed) if changed else "-"),
     ]
+    detection = data["detection"]
+    if detection["status"] == "ok":
+        lines.extend(
+            [
+                "",
+                "Provider verification",
+                _line("detected", data["provider"]),
+                _line("native tools", detection["native_tools"]),
+                _line("tool continuation", detection["tool_continuation"]),
+                _line(
+                    "usage",
+                    "unavailable"
+                    if detection["usage"] == "degraded"
+                    else detection["usage"],
+                ),
+            ]
+        )
     return "\n".join(lines)
+
+
+def _init_config_error(error):
+    code = str(error)
+    message = {
+        "provider_endpoint_conflict": "Provider conflicts with API Base",
+        "provider_invalid": "Invalid Provider value",
+    }.get(code, code)
+    return CliError(
+        code=code,
+        message=message,
+        hint=(
+            "Choose auto or a Provider matching the API Base."
+            if code.startswith("provider_")
+            else ""
+        ),
+        exit_code=CLI_EXIT_CONFIG,
+    )
 
 
 def _init_usage_error():

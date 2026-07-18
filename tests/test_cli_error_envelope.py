@@ -1,9 +1,11 @@
 import pytest
+import json
 import os
 import signal
 
 from pony.cli.app import main
 from pony.cli.start import run_agent_once, run_repl
+from pony.providers.transport import ProviderTransportError
 from pony.state.session_store import UnsupportedLegacyEntry
 
 
@@ -141,6 +143,87 @@ def test_one_shot_runtime_failure_still_finalizes_sandbox():
 
     assert run_agent_once(agent, ["finish"]) == 1
     assert agent.finalized == 1
+
+
+def _provider_failure():
+    return ProviderTransportError(
+        f"unsafe raw response {CANARY}",
+        code="provider_protocol_mismatch",
+        stage="tool_call",
+        protocol_reason="tool_call_shape_invalid",
+    )
+
+
+def test_one_shot_provider_failure_is_rethrown_after_finalization():
+    agent = _FinalizingFailureAgent(_provider_failure())
+
+    with pytest.raises(ProviderTransportError):
+        run_agent_once(agent, ["finish"])
+
+    assert agent.finalized == 1
+
+
+@pytest.mark.parametrize("output_format", ("text", "json"))
+def test_cli_projects_provider_failure_without_raw_response(
+    monkeypatch,
+    capsys,
+    output_format,
+):
+    agent = _FailingAgent(_provider_failure())
+    agent.model_client = type(
+        "BoundClient",
+        (),
+        {"provider_binding": {"protocol_family": "openai_chat_completions"}},
+    )()
+    monkeypatch.setattr("pony.cli.app.build_agent", lambda _args: agent)
+    argv = ["--format", output_format, "run", "finish"]
+
+    assert main(argv) == 1
+
+    captured = capsys.readouterr()
+    combined = captured.out + captured.err
+    assert CANARY not in combined
+    if output_format == "json":
+        error = json.loads(captured.out)["error"]
+        assert error["code"] == "provider_protocol_mismatch"
+        assert error["details"] == {
+            "code": "provider_protocol_mismatch",
+            "protocol": "openai_chat_completions",
+            "reason": "tool_call_shape_invalid",
+            "stage": "tool_call",
+        }
+    else:
+        assert "Provider request failed" in captured.err
+        assert "agent runtime failed" not in captured.err
+        assert "openai_chat_completions" in captured.err
+
+
+def test_plain_repl_provider_failure_propagates_after_finalization(monkeypatch):
+    agent = _FinalizingFailureAgent(_provider_failure())
+    agent.session = {}
+    monkeypatch.setattr("builtins.input", lambda _prompt="": "finish")
+
+    with pytest.raises(ProviderTransportError):
+        run_repl(agent, plain=True)
+
+    assert agent.finalized == 1
+
+
+def test_cli_drops_unrecognized_provider_error_code(monkeypatch, capsys):
+    failure = ProviderTransportError(
+        "unsafe failure",
+        code=f"unsafe_{CANARY}",
+        stage="tool_call",
+    )
+    agent = _FailingAgent(failure)
+    agent.model_client = type("BoundClient", (), {"provider_binding": {}})()
+    monkeypatch.setattr("pony.cli.app.build_agent", lambda _args: agent)
+
+    assert main(["--format", "json", "run", "finish"]) == 1
+
+    output = capsys.readouterr().out
+    assert CANARY not in output
+    assert json.loads(output)["error"]["code"] == "provider_protocol_mismatch"
 
 
 @pytest.mark.parametrize("error_type", (OSError, ValueError))

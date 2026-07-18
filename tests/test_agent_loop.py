@@ -125,6 +125,34 @@ def read_trace(agent):
     ]
 
 
+def test_provider_resolution_trace_uses_bounded_safe_projection(tmp_path):
+    agent = build_agent(tmp_path, ["done"])
+    agent.model_client.provider_resolution_metadata = {
+        "resolution_source": "probe",
+        "protocol": "openai_chat_completions",
+        "candidate_count": 2,
+        "probe_model_calls": 3,
+        "usage_status": "degraded",
+        "endpoint_origin": "https://must-not-appear.example",
+        "requested_model": "must-not-appear",
+    }
+
+    assert agent.ask("finish") == "done"
+
+    events = [
+        event for event in read_trace(agent) if event["event"] == "provider_resolved"
+    ]
+    assert len(events) == 1
+    assert events[0]["request_metadata"] == {
+        "resolution_source": "probe",
+        "protocol": "openai_chat_completions",
+        "candidate_count": 2,
+        "probe_model_calls": 3,
+        "usage_status": "degraded",
+    }
+    assert "must-not-appear" not in json.dumps(events[0])
+
+
 def test_agent_loop_runs_same_control_flow_as_pony_ask(tmp_path):
     (tmp_path / "hello.txt").write_text("alpha\n", encoding="utf-8")
     agent = build_agent(

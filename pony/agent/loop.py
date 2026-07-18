@@ -599,6 +599,20 @@ def _start_agent_run(agent, task_state, user_message):
             "user_request": clip(user_message, 300),
         },
     )
+    resolution = getattr(agent.model_client, "provider_resolution_metadata", None)
+    if isinstance(resolution, dict):
+        allowed = (
+            "resolution_source",
+            "protocol",
+            "candidate_count",
+            "probe_model_calls",
+            "usage_status",
+        )
+        agent.emit_trace(
+            task_state,
+            "provider_resolved",
+            {"request_metadata": {key: resolution.get(key) for key in allowed}},
+        )
     preflight_metadata = _run_turn_preflight(agent, user_message)
     injection_snapshot, injection_telemetry = build_injection_snapshot(
         agent,

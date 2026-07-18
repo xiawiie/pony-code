@@ -6,6 +6,7 @@ from prompt_toolkit.document import Document
 from prompt_toolkit.utils import get_cwidth
 
 from pony.cli.start import run_repl
+from pony.providers.transport import ProviderTransportError
 from pony.tui.app import (
     SlashCommandCompleter,
     _CompactPromptSession,
@@ -255,6 +256,47 @@ def test_tui_restores_runtime_hooks(monkeypatch):
     assert agent._approval_prompt is previous_prompt
     header = "".join(fragment[1] for fragment in output[0])
     assert header == "PONY CODE · v1.0.0\n"
+
+
+def test_tui_restores_runtime_hooks_when_provider_fails(monkeypatch):
+    previous_listener = object()
+    previous_prompt = object()
+    agent = SimpleNamespace(
+        _trace_listener=previous_listener,
+        _approval_prompt=previous_prompt,
+        approval_policy="ask",
+        docker_sandbox=False,
+        model_client=SimpleNamespace(provider="openai"),
+        workspace=SimpleNamespace(cwd="/repo", branch="main"),
+        session={"id": "session-id"},
+    )
+
+    class FakeSession:
+        def __init__(self, **_kwargs):
+            pass
+
+        def prompt(self, *_args, **_kwargs):
+            return "run"
+
+    monkeypatch.setattr("pony.tui.app._CompactPromptSession", FakeSession)
+    monkeypatch.setattr(
+        "pony.tui.render.print_formatted_text",
+        lambda *_args, **_kwargs: None,
+    )
+
+    def fail(*_args, **_kwargs):
+        raise ProviderTransportError(
+            "unsafe response",
+            code="provider_protocol_mismatch",
+            stage="tool_call",
+            protocol_reason="tool_call_shape_invalid",
+        )
+
+    with pytest.raises(ProviderTransportError):
+        run_tui(agent, model="gpt-test", no_color=True, handle_input=fail)
+
+    assert agent._trace_listener is previous_listener
+    assert agent._approval_prompt is previous_prompt
 
 
 def test_toolbar_is_width_bounded_and_keeps_only_essential_status():

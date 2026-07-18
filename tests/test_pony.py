@@ -1,10 +1,12 @@
 import json
+import hashlib
 import os
 import subprocess
 import sys
 from pathlib import Path
 from types import MappingProxyType
 from unittest.mock import patch
+from unittest.mock import Mock
 
 import pytest
 
@@ -750,7 +752,7 @@ def test_build_arg_parser_has_no_model_backend_selection_flags(tmp_path):
 
 def test_build_agent_uses_resolved_openai_client_and_project_env(tmp_path):
     (tmp_path / ".env").write_text(
-        "PONY_PROVIDER=openai\n"
+        "PONY_PROVIDER=openai-chat\n"
         "PONY_MODEL=claude-sonnet-4-6\n"
         "PONY_API_BASE=https://gateway.example/v1\n"
         "PONY_API_KEY=sk-project\n",
@@ -771,10 +773,7 @@ def test_build_agent_uses_resolved_openai_client_and_project_env(tmp_path):
         "api_key": "sk-project",
         "timeout": 300,
         "auth_mode": "bearer",
-        "capabilities": {
-            "strict_tools": True,
-            "parallel_tool_control": True,
-        },
+        "capabilities": {},
     }
     assert agent.model_client is fake_client
 
@@ -786,7 +785,7 @@ def test_build_agent_uses_process_env_when_project_env_is_missing(tmp_path):
         os.environ,
         {
             "HOME": str(tmp_path),
-            "PONY_PROVIDER": "openai",
+            "PONY_PROVIDER": "openai-chat",
             "PONY_MODEL": "claude-sonnet-4-6",
             "PONY_API_BASE": "https://process.example/v1",
             "PONY_API_KEY": "sk-process",
@@ -821,6 +820,244 @@ def test_build_agent_switches_provider_from_generic_environment(tmp_path):
     assert model_client.call_args.kwargs["model"] == "gpt-test"
     assert model_client.call_args.kwargs["api_key"] == "sk-openai"
     assert model_client.call_args.kwargs["auth_mode"] == "bearer"
+
+
+def _fake_transport(protocol, **kwargs):
+    client = FakeModelClient([])
+    endpoint_hash = hashlib.sha256(kwargs["base_url"].encode("utf-8")).hexdigest()
+    client.model = kwargs["model"]
+    client.provider_binding = {
+        "protocol_family": protocol,
+        "model": kwargs["model"],
+        "endpoint_hash": f"sha256:{endpoint_hash}",
+    }
+    return client
+
+
+def test_build_agent_detects_missing_provider_without_writing_project_env(tmp_path):
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "PONY_API_BASE=https://gateway.example/v1\n"
+        "PONY_API_KEY=test-key\n"
+        "PONY_MODEL=gateway-model\n",
+        encoding="utf-8",
+    )
+    env_path.chmod(0o600)
+    before = env_path.stat()
+    before_bytes = env_path.read_bytes()
+    reports = iter(
+        [
+            {
+                "status": "failed",
+                "stage": "tool_call",
+                "category": "response_invalid",
+                "model_calls": 1,
+                "usage_status": "degraded",
+                "error_code": "provider_protocol_mismatch",
+            },
+            {
+                "status": "ok",
+                "stage": "complete",
+                "category": "ok",
+                "model_calls": 2,
+                "usage_status": "complete",
+            },
+        ]
+    )
+    builder = Mock(side_effect=_fake_transport)
+    args = pony_cli.build_arg_parser().parse_args(["--cwd", str(tmp_path)])
+
+    with (
+        patch.dict(os.environ, {"HOME": str(tmp_path)}, clear=True),
+        patch("pony.cli.assembly.build_transport_client", builder),
+        patch(
+            "pony.providers.probe.probe_model_client",
+            side_effect=lambda _client: next(reports),
+        ),
+    ):
+        agent = pony_cli.build_agent(args)
+
+    after = env_path.stat()
+    assert agent.model_client.provider_binding["protocol_family"] == "openai_responses"
+    assert [call.args[0] for call in builder.call_args_list] == [
+        "openai_chat_completions",
+        "openai_responses",
+    ]
+    assert env_path.read_bytes() == before_bytes
+    assert (after.st_ino, after.st_mtime_ns) == (before.st_ino, before.st_mtime_ns)
+
+
+def test_resume_reuses_current_provider_binding_without_probe(tmp_path):
+    workspace = build_workspace(tmp_path)
+    store = SessionStore(tmp_path / ".pony" / "sessions")
+    base_url = "https://gateway.example/v1"
+    model = "gateway-model"
+    original = Pony(
+        model_client=_fake_transport(
+            "openai_chat_completions",
+            model=model,
+            base_url=base_url,
+        ),
+        workspace=workspace,
+        session_store=store,
+        options=RuntimeOptions(approval_policy="auto"),
+    )
+    (tmp_path / ".env").write_text(
+        "PONY_PROVIDER=auto\n"
+        f"PONY_API_BASE={base_url}\n"
+        "PONY_API_KEY=test-key\n"
+        f"PONY_MODEL={model}\n",
+        encoding="utf-8",
+    )
+    builder = Mock(side_effect=_fake_transport)
+    args = pony_cli.build_arg_parser().parse_args(
+        ["--cwd", str(tmp_path), "--resume", original.session["id"]]
+    )
+
+    with (
+        patch.dict(os.environ, {"HOME": str(tmp_path)}, clear=True),
+        patch("pony.cli.assembly.build_transport_client", builder),
+        patch(
+            "pony.providers.probe.probe_model_client",
+            side_effect=AssertionError("matching Session binding was probed"),
+        ),
+    ):
+        resumed = pony_cli.build_agent(args)
+
+    assert resumed.session["id"] == original.session["id"]
+    assert builder.call_args.args == ("openai_chat_completions",)
+
+
+def test_resume_auto_reuses_no_auth_binding_before_key_validation(tmp_path):
+    workspace = build_workspace(tmp_path)
+    store = SessionStore(tmp_path / ".pony" / "sessions")
+    base_url = "https://local-model.example/v1"
+    model = "local-model"
+    original = Pony(
+        model_client=_fake_transport(
+            "ollama_chat",
+            model=model,
+            base_url=base_url,
+        ),
+        workspace=workspace,
+        session_store=store,
+        options=RuntimeOptions(approval_policy="auto"),
+    )
+    (tmp_path / ".env").write_text(
+        "PONY_PROVIDER=auto\n"
+        f"PONY_API_BASE={base_url}\n"
+        "PONY_API_KEY=\n"
+        f"PONY_MODEL={model}\n",
+        encoding="utf-8",
+    )
+    builder = Mock(side_effect=_fake_transport)
+    args = pony_cli.build_arg_parser().parse_args(
+        ["--cwd", str(tmp_path), "--resume", original.session["id"]]
+    )
+
+    with (
+        patch.dict(os.environ, {"HOME": str(tmp_path)}, clear=True),
+        patch("pony.cli.assembly.build_transport_client", builder),
+        patch(
+            "pony.providers.probe.probe_model_client",
+            side_effect=AssertionError("matching no-auth binding was probed"),
+        ),
+    ):
+        resumed = pony_cli.build_agent(args)
+
+    assert resumed.session["id"] == original.session["id"]
+    assert builder.call_args.args == ("ollama_chat",)
+    assert builder.call_args.kwargs["auth_mode"] == "none"
+
+
+def test_resume_auth_binding_without_key_fails_before_client_build(tmp_path):
+    workspace = build_workspace(tmp_path)
+    store = SessionStore(tmp_path / ".pony" / "sessions")
+    base_url = "https://gateway.example/v1"
+    model = "gateway-model"
+    original = Pony(
+        model_client=_fake_transport(
+            "openai_chat_completions",
+            model=model,
+            base_url=base_url,
+        ),
+        workspace=workspace,
+        session_store=store,
+        options=RuntimeOptions(approval_policy="auto"),
+    )
+    (tmp_path / ".env").write_text(
+        "PONY_PROVIDER=auto\n"
+        f"PONY_API_BASE={base_url}\n"
+        "PONY_API_KEY=\n"
+        f"PONY_MODEL={model}\n",
+        encoding="utf-8",
+    )
+    args = pony_cli.build_arg_parser().parse_args(
+        ["--cwd", str(tmp_path), "--resume", original.session["id"]]
+    )
+
+    with (
+        patch.dict(os.environ, {"HOME": str(tmp_path)}, clear=True),
+        patch(
+            "pony.cli.assembly.build_transport_client",
+            side_effect=AssertionError("missing key built a client"),
+        ),
+        pytest.raises(ValueError, match="api_key_not_configured"),
+    ):
+        pony_cli.build_agent(args)
+
+
+@pytest.mark.parametrize(
+    "override",
+    (
+        {"PONY_MODEL": "different-model"},
+        {"PONY_API_BASE": "https://other.example/v1"},
+        {"PONY_PROVIDER": "openai-responses"},
+    ),
+)
+def test_resume_binding_mismatch_fails_before_network(tmp_path, override):
+    workspace = build_workspace(tmp_path)
+    store = SessionStore(tmp_path / ".pony" / "sessions")
+    base_url = "https://gateway.example/v1"
+    model = "gateway-model"
+    original = Pony(
+        model_client=_fake_transport(
+            "openai_chat_completions",
+            model=model,
+            base_url=base_url,
+        ),
+        workspace=workspace,
+        session_store=store,
+        options=RuntimeOptions(approval_policy="auto"),
+    )
+    values = {
+        "PONY_PROVIDER": "auto",
+        "PONY_API_BASE": base_url,
+        "PONY_API_KEY": "test-key",
+        "PONY_MODEL": model,
+        **override,
+    }
+    (tmp_path / ".env").write_text(
+        "".join(f"{name}={value}\n" for name, value in values.items()),
+        encoding="utf-8",
+    )
+    args = pony_cli.build_arg_parser().parse_args(
+        ["--cwd", str(tmp_path), "--resume", original.session["id"]]
+    )
+
+    with (
+        patch.dict(os.environ, {"HOME": str(tmp_path)}, clear=True),
+        patch(
+            "pony.cli.assembly.build_transport_client",
+            side_effect=AssertionError("mismatch built a client"),
+        ),
+        patch(
+            "pony.providers.probe.probe_model_client",
+            side_effect=AssertionError("mismatch was probed"),
+        ),
+        pytest.raises(ValueError, match="model_session_mismatch"),
+    ):
+        pony_cli.build_agent(args)
 
 
 # =============================================================================

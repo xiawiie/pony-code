@@ -9,7 +9,12 @@ from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
 from pony.security import redaction as securitylib
-from .errors import CLI_EXIT_CONFIG, CLI_EXIT_RUNTIME, CLI_EXIT_USAGE, CliError
+from .errors import (
+    CLI_EXIT_CONFIG,
+    CLI_EXIT_USAGE,
+    CliError,
+    provider_report_cli_error,
+)
 from .output import build_inspection_redactor, print_result
 from pony.config.environment import (
     project_env_metadata,
@@ -164,6 +169,9 @@ def collect_status(cwd, args=None):
         },
         "model": {
             "provider": config["provider"],
+            "resolved_provider": config["resolved_provider"],
+            "resolution_status": config["resolution_status"],
+            "resolution_source": config["resolution_source"],
             "protocol": config["protocol"],
             "api_variant": config["api_variant"],
             "model": config["model"],
@@ -195,6 +203,9 @@ def collect_config(cwd, args=None):
         "workspace": {"repo_root": workspace.repo_root},
         "project_env": project_env_info,
         "provider": config["provider"],
+        "resolved_provider": config["resolved_provider"],
+        "resolution_status": config["resolution_status"],
+        "resolution_source": config["resolution_source"],
         "protocol": config["protocol"],
         "api_variant": config["api_variant"],
         "model": config["model"],
@@ -232,6 +243,9 @@ def collect_doctor(cwd, args=None, check_api=False):
     api_key = resolved["api_key"]
     config = {
         "provider": resolved["provider"],
+        "resolved_provider": resolved["resolved_provider"],
+        "resolution_status": resolved["resolution_status"],
+        "resolution_source": resolved["resolution_source"],
         "protocol": resolved["protocol"],
         "api_variant": resolved["api_variant"],
         "model": resolved["model"],
@@ -256,7 +270,7 @@ def collect_doctor(cwd, args=None, check_api=False):
         }
     else:
         api_check = check_api_connectivity(
-            {**config, "api_key": resolved["api_key"]},
+            resolved,
             args=args,
         )
     checkpoints_root = pony_root / "checkpoints"
@@ -298,6 +312,9 @@ def collect_doctor(cwd, args=None, check_api=False):
         "config": {
             "status": "ok",
             "provider": config["provider"],
+            "resolved_provider": config["resolved_provider"],
+            "resolution_status": config["resolution_status"],
+            "resolution_source": config["resolution_source"],
             "protocol": config["protocol"],
             "api_variant": config["api_variant"],
             "model": config["model"],
@@ -307,7 +324,14 @@ def collect_doctor(cwd, args=None, check_api=False):
         "credentials": {
             "status": (
                 "not_required"
-                if resolved["auth_mode"]["value"] == "none"
+                if not config["api_key"]["present"]
+                and (
+                    resolved["auth_mode"]["value"] == "none"
+                    or any(
+                        item.get("auth_mode") == "none"
+                        for item in resolved.get("candidates", [])
+                    )
+                )
                 else "ok"
                 if config["api_key"]["present"]
                 else "missing"
@@ -340,6 +364,13 @@ def _unavailable_workspace_doctor():
         "config": {
             "status": "review_required",
             "provider": {"value": "", "source": "unavailable", "name": ""},
+            "resolved_provider": {
+                "value": "",
+                "source": "unavailable",
+                "name": "",
+            },
+            "resolution_status": "invalid",
+            "resolution_source": "",
             "protocol": {"value": "", "source": "unavailable", "name": ""},
             "api_variant": {"value": "", "source": "unavailable", "name": ""},
             "model": {"value": "", "source": "unavailable", "name": ""},
@@ -460,12 +491,7 @@ def handle_doctor(tokens, cwd, args):
     data["security"] = redactor(data["security"])
     data["project_docs"] = redactor(data["project_docs"])
     if tokens and data["api_check"].get("status") != "ok":
-        raise CliError(
-            code="api_check_failed",
-            message="API verification failed",
-            exit_code=CLI_EXIT_RUNTIME,
-            details=data["api_check"],
-        )
+        raise provider_report_cli_error(data["api_check"])
     return print_result("doctor", data, args, _render_doctor)
 
 
@@ -576,53 +602,47 @@ def _handle_set_secret(tokens, cwd, args):
 
 
 def check_api_connectivity(config, timeout=2, args=None):
-    """Run the explicit text/tool/tool-result API probe."""
-    base_url = config.get("base_url", {}).get("value", "")
+    """Run the explicit read-only Provider verification probe."""
     result = {
-        "status": "error",
+        "status": "failed",
         "category": "api_protocol",
-        "endpoint": _redact_url_for_diagnostics(base_url),
         "model_calls": 0,
     }
-    if config.get("auth_mode", {}).get("value") != "none" and not config.get(
-        "api_key", {}
-    ).get("value"):
-        return {**result, "reason_code": "api_key_not_configured"}
     try:
-        from pony.providers.factory import build_transport_client
-        from pony.providers.probe import probe_model_client
+        from pony.providers.probe import resolve_provider_client
 
-        client = build_transport_client(
-            config["protocol"]["value"],
-            model=config["model"]["value"],
-            base_url=base_url,
-            api_key=config["api_key"]["value"],
+        _client, resolved, report = resolve_provider_client(
+            config,
             timeout=getattr(args, "request_timeout_seconds", timeout),
-            auth_mode=config["auth_mode"]["value"],
-            capabilities=config["capabilities"],
+            verify_resolved=True,
         )
-        report = probe_model_client(client)
     except Exception as exc:
-        return {
+        failure = {
             **result,
             "reason_code": str(getattr(exc, "code", "api_check_failed")),
-            "http_status": getattr(exc, "http_status", None),
+            "stage": getattr(exc, "stage", "") or "runtime",
+            "protocol": getattr(exc, "protocol_family", "") or "",
         }
-    output = {
+        if getattr(exc, "protocol_reason", None):
+            failure["protocol_reason"] = exc.protocol_reason
+        if getattr(exc, "http_status", None) is not None:
+            failure["http_status"] = exc.http_status
+        return failure
+    return {
         **result,
-        "status": report["status"],
+        "status": "ok",
         "category": report["category"],
-        "reason_code": "api_verified"
-        if report["status"] == "ok"
-        else report["category"],
+        "reason_code": "api_verified",
         "stage": report["stage"],
         "model_calls": report["model_calls"],
+        "candidate_count": report["candidate_count"],
+        "detected_provider": resolved["resolved_provider"]["value"],
+        "protocol": resolved["protocol"]["value"],
+        "native_tools": "passed",
+        "tool_continuation": "passed",
+        "usage_status": report["usage_status"],
+        "persist_with": "pony init",
     }
-    if report.get("http_status") is not None:
-        output["http_status"] = report["http_status"]
-    if report.get("error_code"):
-        output["error_code"] = report["error_code"]
-    return output
 
 
 def _redact_url_for_diagnostics(value):
@@ -844,6 +864,12 @@ def _value_with_source(item):
     return f"{item.get('value', '-') or '-'} ({_source_label(item)})"
 
 
+def _protocol_with_resolution(data):
+    if data.get("resolution_status") == "probe_required":
+        return "unresolved"
+    return _value_with_source(data["protocol"])
+
+
 def _ok_missing(value):
     if isinstance(value, bool):
         return "ok" if value else "missing"
@@ -864,7 +890,10 @@ def _render_config(data):
         "",
         "Model",
         _line("provider", _value_with_source(data["provider"])),
-        _line("protocol", _value_with_source(data["protocol"])),
+        _line("resolution", data["resolution_status"]),
+        _line("resolution source", data["resolution_source"] or "-"),
+        _line("resolved provider", _value_with_source(data["resolved_provider"])),
+        _line("protocol", _protocol_with_resolution(data)),
         _line("api variant", _value_with_source(data["api_variant"])),
         _line("model", _value_with_source(data["model"])),
         _line("api url", _value_with_source(data["base_url"])),
@@ -920,7 +949,10 @@ def _render_doctor(data):
         "",
         "Config",
         _line("provider", _value_with_source(config["provider"])),
-        _line("protocol", _value_with_source(config["protocol"])),
+        _line("resolution", config["resolution_status"]),
+        _line("resolution source", config["resolution_source"] or "-"),
+        _line("resolved provider", _value_with_source(config["resolved_provider"])),
+        _line("protocol", _protocol_with_resolution(config)),
         _line("api variant", _value_with_source(config["api_variant"])),
         _line("model", _value_with_source(config["model"])),
         _line("api url", _value_with_source(config["base_url"])),
@@ -994,10 +1026,24 @@ def _render_doctor(data):
         _line("stage", connectivity.get("stage", "-") or "-"),
         _line("model calls", connectivity.get("model_calls", 0)),
     ]
+    if connectivity.get("status") == "ok":
+        lines.extend(
+            [
+                _line("detected provider", connectivity["detected_provider"]),
+                _line("protocol", connectivity["protocol"]),
+                _line("native tool", connectivity["native_tools"]),
+                _line("tool continuation", connectivity["tool_continuation"]),
+                _line(
+                    "usage",
+                    "unavailable"
+                    if connectivity["usage_status"] == "degraded"
+                    else connectivity["usage_status"],
+                ),
+                _line("persist with", connectivity["persist_with"]),
+            ]
+        )
     if connectivity.get("http_status") is not None:
         lines.append(_line("http", connectivity["http_status"]))
-    if connectivity.get("endpoint"):
-        lines.append(_line("endpoint", connectivity["endpoint"]))
     if connectivity.get("message"):
         lines.append(_line("message", connectivity["message"]))
     hints = ((data.get("project_docs") or {}).get("hints")) or []
@@ -1023,7 +1069,13 @@ def _render_status(data):
         "",
         "Model",
         _line("provider", _value_with_source(data["model"]["provider"])),
-        _line("protocol", _value_with_source(data["model"]["protocol"])),
+        _line("resolution", data["model"]["resolution_status"]),
+        _line("resolution source", data["model"]["resolution_source"] or "-"),
+        _line(
+            "resolved provider",
+            _value_with_source(data["model"]["resolved_provider"]),
+        ),
+        _line("protocol", _protocol_with_resolution(data["model"])),
         _line("api variant", _value_with_source(data["model"]["api_variant"])),
         _line("model", _value_with_source(data["model"]["model"])),
         _line("api url", _value_with_source(data["model"]["base_url"])),

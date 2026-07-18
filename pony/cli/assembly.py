@@ -4,9 +4,10 @@ import os
 from pathlib import Path
 
 from pony.config.environment import read_project_env
-from pony.config.model import resolve_model_config
+from pony.config.model import resolve_model_config, resolve_session_provider_binding
 from pony.config.project import load_pony_toml
 from pony.providers.factory import build_transport_client
+from pony.providers.probe import resolve_provider_client
 from pony.runtime.application import Pony, _build_redaction_snapshot
 from pony.runtime.options import RuntimeOptions
 from pony.sandbox.docker import (
@@ -29,20 +30,50 @@ from .errors import CLI_EXIT_CONFIG, CliError
 from .migration import migration_preflight
 
 
-def _build_transport_client(args, *, project_env=None, process_env=None):
-    config = resolve_model_config(
-        project_env=project_env,
-        process_env=process_env,
-    )
-    return build_transport_client(
-        config["protocol"]["value"],
-        model=config["model"]["value"],
-        base_url=config["base_url"]["value"],
-        api_key=config["api_key"]["value"],
+def _build_transport_client(
+    args,
+    *,
+    project_env=None,
+    process_env=None,
+    session_store=None,
+    session_id=None,
+):
+    try:
+        config = resolve_model_config(
+            project_env=project_env,
+            process_env=process_env,
+        )
+    except ValueError as exc:
+        if (
+            str(exc) != "api_key_not_configured"
+            or session_store is None
+            or not session_id
+        ):
+            raise
+        config = resolve_model_config(
+            project_env=project_env,
+            process_env=process_env,
+            required=False,
+        )
+    if session_store is not None and session_id:
+        storage, projection, _tree = session_store.inspect_readonly(session_id)
+        if storage == "current":
+            config = resolve_session_provider_binding(
+                config,
+                projection.get("provider_binding", {}),
+            )
+    if (
+        config.get("resolution_status") == "resolved"
+        and config.get("auth_mode", {}).get("value") != "none"
+        and not config.get("api_key", {}).get("value")
+    ):
+        raise ValueError("api_key_not_configured")
+    client, _resolved, _report = resolve_provider_client(
+        config,
         timeout=args.request_timeout_seconds,
-        auth_mode=config["auth_mode"]["value"],
-        capabilities=config["capabilities"],
+        client_builder=build_transport_client,
     )
+    return client
 
 
 def build_agent(args):
@@ -154,6 +185,8 @@ def _build_agent_with_source_authority(args, source_workspace):
         args,
         project_env=project_env,
         process_env=process_env,
+        session_store=store if args.resume and session_id else None,
+        session_id=session_id if args.resume else None,
     )
     if args.resume and session_id:
         return Pony.from_session(

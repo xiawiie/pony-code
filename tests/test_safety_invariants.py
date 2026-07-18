@@ -128,7 +128,7 @@ def test_cli_freezes_parent_path_before_project_env_loading(tmp_path, monkeypatc
     fake_path = str(tmp_path / "fake-bin")
     (tmp_path / ".env").write_text(
         f"PATH={fake_path}\n"
-        "PONY_PROVIDER=openai\n"
+        "PONY_PROVIDER=openai-chat\n"
         "PONY_API_BASE=https://gateway.example/v1\n"
         "PONY_MODEL=claude-test\n"
         "PONY_API_KEY=test-key\n",
@@ -329,7 +329,7 @@ def test_cli_build_agent_wires_secret_env_names_from_parser(tmp_path):
                 "HOME": str(tmp_path),
                 "GITHUB_PAT": "ghp-1",
                 "GH_PAT": "ghp-2",
-                "PONY_PROVIDER": "openai",
+                "PONY_PROVIDER": "openai-chat",
                 "PONY_API_BASE": "https://gateway.example/v1",
                 "PONY_MODEL": "claude-test",
                 "PONY_API_KEY": "test-runtime-key",
@@ -377,7 +377,7 @@ def test_cli_build_agent_uses_default_configured_secret_names(tmp_path):
             {
                 "HOME": str(tmp_path),
                 "GH_PAT": "ghp-default-1",
-                "PONY_PROVIDER": "openai",
+                "PONY_PROVIDER": "openai-chat",
                 "PONY_API_BASE": "https://gateway.example/v1",
                 "PONY_MODEL": "claude-test",
                 "PONY_API_KEY": "test-runtime-key",
@@ -415,7 +415,7 @@ def test_cli_build_agent_loads_project_env_secrets_before_redaction_setup(tmp_pa
 
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
     (tmp_path / ".env").write_text(
-        "PONY_PROVIDER=openai\n"
+        "PONY_PROVIDER=openai-chat\n"
         "PONY_API_BASE=https://gateway.example/v1\n"
         "PONY_MODEL=claude-test\n"
         "PONY_API_KEY=sk-project-secret\n",
@@ -457,7 +457,7 @@ def test_cli_resume_uses_immutable_collision_safe_snapshot_before_load(
     monkeypatch.setattr(cli_assembly, "_build_redaction_snapshot", capture_snapshot)
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
     (tmp_path / ".env").write_text(
-        "PONY_PROVIDER=openai\n"
+        "PONY_PROVIDER=openai-chat\n"
         "PONY_API_BASE=https://gateway.example/v1\n"
         "PONY_MODEL=claude-test\n"
         "PONY_API_KEY=test-runtime-key\n"
@@ -556,7 +556,7 @@ def test_cli_build_agent_skips_malformed_project_env_lines_with_warning(
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
     (tmp_path / ".env").write_text(
         "not a valid env line\n"
-        "PONY_PROVIDER=openai\n"
+        "PONY_PROVIDER=openai-chat\n"
         "PONY_API_BASE=https://gateway.example/v1\n"
         "PONY_MODEL=claude-test\n"
         "PONY_API_KEY=sk-project-secret\n",
@@ -612,7 +612,7 @@ def test_cli_build_agent_reads_secret_names_from_environment_config(tmp_path):
                 "HOME": str(tmp_path),
                 "PONY_CUSTOM_SECRET": "custom-secret-value",
                 "PONY_SECRET_ENV_NAMES": "PONY_CUSTOM_SECRET",
-                "PONY_PROVIDER": "openai",
+                "PONY_PROVIDER": "openai-chat",
                 "PONY_API_BASE": "https://gateway.example/v1",
                 "PONY_MODEL": "claude-test",
                 "PONY_API_KEY": "test-runtime-key",
@@ -651,7 +651,7 @@ def test_cli_no_input_makes_default_approval_non_interactive(tmp_path):
             os.environ,
             {
                 "HOME": str(tmp_path),
-                "PONY_PROVIDER": "openai",
+                "PONY_PROVIDER": "openai-chat",
                 "PONY_API_BASE": "https://gateway.example/v1",
                 "PONY_MODEL": "claude-test",
                 "PONY_API_KEY": "test-runtime-key",

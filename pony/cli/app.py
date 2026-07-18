@@ -10,6 +10,7 @@ import platform
 import sys
 
 from pony.config.model import DEFAULT_MODEL
+from pony.providers.transport import ProviderTransportError
 from pony.security.redaction import redact_artifact, redact_text
 from pony.workspace.context import WorkspaceContext
 
@@ -26,7 +27,13 @@ from .diagnostics import (
     handle_doctor,
     handle_status,
 )
-from .errors import CLI_EXIT_CONFIG, CLI_EXIT_INTERNAL, CLI_EXIT_USAGE, CliError
+from .errors import (
+    CLI_EXIT_CONFIG,
+    CLI_EXIT_INTERNAL,
+    CLI_EXIT_USAGE,
+    CliError,
+    provider_cli_error,
+)
 from .memory import handle_memory
 from .migration import handle_migrate
 from .output import error_envelope, format_json, print_result
@@ -193,12 +200,25 @@ def _print_cli_error(args, exc):
         hint=redact_text(exc.hint)[:300],
         exit_code=exc.exit_code,
         details=safe_details,
+        category=exc.category,
     )
     if getattr(args, "format", "text") == "json":
         print(format_json(error_envelope(safe_exc)), end="")
     else:
         print(safe_exc.message, file=sys.stderr)
-        if safe_exc.hint:
+        if safe_exc.category == "provider":
+            for label, key in (
+                ("code", "code"),
+                ("stage", "stage"),
+                ("protocol", "protocol"),
+                ("reason", "reason"),
+                ("http", "http_status"),
+            ):
+                if key in safe_exc.details:
+                    print(f"  {label:<10} {safe_exc.details[key]}", file=sys.stderr)
+            if safe_exc.hint:
+                print(f"  {'fix':<10} {safe_exc.hint}", file=sys.stderr)
+        elif safe_exc.hint:
             print(safe_exc.hint, file=sys.stderr)
     return safe_exc.exit_code
 
@@ -249,6 +269,11 @@ def main(argv=None):
             agent.set_workflow_mode(args.mode)
     except CliError as exc:
         return _print_cli_error(args, exc)
+    except ProviderTransportError as exc:
+        return _print_cli_error(
+            args,
+            provider_cli_error(exc, message="Provider verification failed"),
+        )
     except ValueError as exc:
         reason = str(exc)
         session_error_code = getattr(exc, "code", "")
@@ -274,13 +299,20 @@ def main(argv=None):
             "model_not_configured",
             "model_invalid",
             "model_session_mismatch",
+            "provider_endpoint_conflict",
+            "provider_invalid",
         }
         if reason in stable_codes:
+            message = {
+                "model_session_mismatch": "Provider target does not match this Session",
+                "provider_endpoint_conflict": "Provider conflicts with API Base",
+                "provider_invalid": "Invalid Provider value",
+            }.get(reason, reason)
             return _print_cli_error(
                 args,
                 CliError(
                     code=reason.replace(" ", "_"),
-                    message=reason,
+                    message=message,
                     hint=(
                         "Run `pony init`."
                         if reason
@@ -288,6 +320,8 @@ def main(argv=None):
                             "api_key_not_configured",
                             "api_base_not_configured",
                             "model_not_configured",
+                            "provider_endpoint_conflict",
+                            "provider_invalid",
                         }
                         else ""
                     ),
@@ -323,5 +357,15 @@ def main(argv=None):
                 show_resume=bool(args.resume) and args.format == "text",
             )
         return run_agent_once(agent, invocation.command_args)
+    except ProviderTransportError as exc:
+        protocol = getattr(
+            getattr(agent, "model_client", None),
+            "provider_binding",
+            {},
+        ).get("protocol_family", "")
+        return _print_cli_error(
+            args,
+            provider_cli_error(exc, protocol=protocol),
+        )
     except Exception:  # noqa: BLE001 - contain ordinary CLI runtime failures
         return _print_startup_error(args)

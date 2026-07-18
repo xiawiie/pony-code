@@ -1,5 +1,7 @@
 """Explicit, bounded model/tool-loop probe primitives."""
 
+import time
+
 from pony.agent.action_codec import FinalAction, ToolAction, decode_action
 from pony.agent.messages import make_tool_pair
 
@@ -19,6 +21,25 @@ _PROBE_TOOL = {
 _PROBE_SYSTEM = [{"type": "text", "text": "Follow the probe request exactly."}]
 _PROBE_TOOL_MAX_TOKENS = 128
 _PROBE_CONTINUATION_MAX_TOKENS = 32
+_DETECTION_MAX_CANDIDATES = 3
+_DETECTION_REQUEST_TIMEOUT_SECONDS = 30.0
+_DETECTION_WALL_SECONDS = 90.0
+_TRANSIENT_FAILURE_CODES = frozenset(
+    {
+        "connection_reset",
+        "http_5xx",
+        "network_error",
+        "rate_limited",
+        "redirect_blocked",
+        "remote_disconnect",
+        "request_timeout",
+        "timeout",
+        "tls_error",
+    }
+)
+_PROTOCOL_FAILURE_CODES = frozenset(
+    {"provider_protocol_mismatch", "unsupported_stop_reason"}
+)
 
 
 def _probe_identity(client):
@@ -169,3 +190,195 @@ def probe_model_client(client):
             else "degraded"
         ),
     }
+
+
+def _client_from_config(config, timeout, *, client_builder=None):
+    if client_builder is None:
+        from .factory import build_transport_client
+
+        client_builder = build_transport_client
+
+    return client_builder(
+        config["protocol"]["value"],
+        model=config["model"]["value"],
+        base_url=config["base_url"]["value"],
+        api_key=config["api_key"]["value"],
+        timeout=timeout,
+        auth_mode=config["auth_mode"]["value"],
+        capabilities=config["capabilities"],
+    )
+
+
+def _candidate_configs(config, verify_resolved):
+    status = config.get("resolution_status")
+    if status == "resolved":
+        return [config] if verify_resolved else []
+    if status != "probe_required":
+        raise ValueError(config.get("resolution_error") or "provider_detection_failed")
+
+    from pony.config.model import resolve_provider_candidate
+
+    return [
+        resolve_provider_candidate(config, item["protocol"])
+        for item in list(config.get("candidates", []))[:_DETECTION_MAX_CANDIDATES]
+    ]
+
+
+def _protocol_family(protocol):
+    return "openai" if str(protocol).startswith("openai_") else str(protocol)
+
+
+def _can_try_next(report, selector):
+    code = report.get("error_code", "")
+    status = report.get("http_status")
+    if code in _TRANSIENT_FAILURE_CODES or status == 429 or (
+        type(status) is int and 500 <= status < 600
+    ):
+        return False
+    if status in {401, 403} or code == "missing_credentials":
+        return selector == "auto"
+    if code in _PROTOCOL_FAILURE_CODES:
+        return True
+    if type(status) is int and 400 <= status < 500:
+        return True
+    return report.get("category") in {
+        "response_invalid",
+        "tool_call_invalid",
+        "tool_call_not_supported",
+        "tool_result_continuation_failed",
+    }
+
+
+def _probe_error(report, *, protocol, exhausted):
+    code = (
+        "provider_detection_failed"
+        if exhausted
+        else report.get("error_code") or "provider_detection_failed"
+    )
+    return ProviderTransportError(
+        "Provider verification failed",
+        code=code,
+        http_status=report.get("http_status"),
+        stage=report.get("stage"),
+        protocol_reason=report.get("protocol_reason"),
+        protocol_family=protocol,
+    )
+
+
+def _record_resolution_metadata(client, config, report):
+    metadata = {
+        "resolution_source": config.get("resolution_source", ""),
+        "protocol": config.get("protocol", {}).get("value", ""),
+        "candidate_count": int(report.get("candidate_count", 0) or 0),
+        "probe_model_calls": int(report.get("model_calls", 0) or 0),
+        "usage_status": str(
+            report.get("usage_status", "not_checked") or "not_checked"
+        ),
+    }
+    try:
+        client.provider_resolution_metadata = metadata
+    except (AttributeError, TypeError):
+        pass
+
+
+def resolve_provider_client(
+    config,
+    *,
+    timeout,
+    verify_resolved=False,
+    clock=time.monotonic,
+    client_builder=None,
+):
+    """Build or detect one client without replaying a real user request."""
+    candidates = _candidate_configs(config, verify_resolved)
+    builder_args = (
+        {} if client_builder is None else {"client_builder": client_builder}
+    )
+    if not candidates:
+        client = _client_from_config(
+            config,
+            timeout,
+            **builder_args,
+        )
+        report = {
+            "status": "not_run",
+            "candidate_count": 0,
+            "model_calls": 0,
+            "usage_status": "not_checked",
+        }
+        _record_resolution_metadata(client, config, report)
+        return client, config, report
+    if not config.get("api_key", {}).get("value") and all(
+        item["auth_mode"]["value"] != "none" for item in candidates
+    ):
+        protocol = candidates[0]["protocol"]["value"] if len(candidates) == 1 else None
+        raise ProviderTransportError(
+            "Provider verification failed",
+            code="api_key_not_configured",
+            stage="runtime",
+            protocol_family=protocol,
+        )
+
+    request_timeout = min(float(timeout), _DETECTION_REQUEST_TIMEOUT_SECONDS)
+    deadline = clock() + _DETECTION_WALL_SECONDS
+    selector = config.get("provider", {}).get("value", "")
+    attempted = 0
+    model_calls = 0
+    last_report = None
+    last_protocol = None
+    skipped_family = ""
+    for candidate in candidates:
+        protocol = candidate["protocol"]["value"]
+        family = _protocol_family(protocol)
+        if skipped_family and family == skipped_family:
+            continue
+        remaining = deadline - clock()
+        if remaining <= 0:
+            raise ProviderTransportError(
+                "Provider verification failed",
+                code="timeout",
+                stage="runtime",
+                protocol_family=protocol,
+            )
+        client = _client_from_config(
+            candidate,
+            min(request_timeout, max(0.001, remaining / 2)),
+            **builder_args,
+        )
+        report = probe_model_client(client)
+        attempted += 1
+        model_calls += int(report.get("model_calls", 0) or 0)
+        last_report = report
+        last_protocol = protocol
+        if report.get("status") == "ok":
+            completed = {
+                **report,
+                "candidate_count": attempted,
+                "model_calls": model_calls,
+                "protocol": protocol,
+                "resolution_source": candidate.get("resolution_source", ""),
+            }
+            _record_resolution_metadata(client, candidate, completed)
+            return client, candidate, completed
+        if not _can_try_next(report, selector):
+            raise _probe_error(report, protocol=protocol, exhausted=False)
+        if (
+            selector == "auto"
+            and (
+                report.get("http_status") in {401, 403}
+                or report.get("error_code") == "missing_credentials"
+            )
+        ):
+            skipped_family = family
+
+    if last_report is None:
+        raise ProviderTransportError(
+            "Provider verification failed",
+            code="provider_detection_failed",
+            stage="runtime",
+        )
+    raise _probe_error(
+        last_report,
+        protocol=last_protocol,
+        exhausted=config.get("resolution_status") == "probe_required",
+    )

@@ -101,6 +101,19 @@ def _chat_messages(system, messages):
     return output
 
 
+def _contains_tool_result(messages):
+    return any(
+        isinstance(message, dict)
+        and message.get("role") == "user"
+        and isinstance(message.get("content"), list)
+        and any(
+            isinstance(block, dict) and block.get("type") == "tool_result"
+            for block in message["content"]
+        )
+        for message in list(messages or [])
+    )
+
+
 def _chat_content(data, optional_by_name):
     choices = data.get("choices")
     if not isinstance(choices, list) or len(choices) != 1:
@@ -298,12 +311,29 @@ class OpenAIChatCompletionsModelClient:
             },
             method="POST",
         )
-        response_body, response_headers = _open_provider_request(
-            self,
-            request,
-            family="OpenAI Chat",
-            retryable=True,
-        )
+        contains_tool_result = _contains_tool_result(messages)
+        try:
+            response_body, response_headers = _open_provider_request(
+                self,
+                request,
+                family="OpenAI Chat",
+                retryable=True,
+                detect_reasoning_replay=contains_tool_result,
+            )
+        except ProviderTransportError as exc:
+            if contains_tool_result and exc.code == "http_4xx":
+                raise ProviderTransportError(
+                    "OpenAI Chat request failed during tool continuation",
+                    code=exc.code,
+                    http_status=exc.http_status,
+                    retryable=False,
+                    stage="tool_result",
+                    protocol_reason=(
+                        exc.protocol_reason or "tool_result_rejected"
+                    ),
+                    protocol_family="openai_chat_completions",
+                ) from None
+            raise
         try:
             data = _decode_json_object(response_body)
             if data.get("error") or "output" in data:

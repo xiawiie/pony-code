@@ -8,6 +8,8 @@ import pytest
 
 from pony.cli.app import main
 from pony.config.environment import read_project_env
+from pony.config.model import resolve_model_config
+from pony.providers.transport import ProviderTransportError
 from pony.runtime.options import RuntimeOptions
 
 
@@ -224,7 +226,7 @@ def test_unknown_command_suggestion_uses_json_error_envelope(capsys):
 def _install_init_input(
     monkeypatch,
     *,
-    provider="",
+    provider="anthropic",
     api_base="",
     model="",
     key="test-key",
@@ -234,10 +236,39 @@ def _install_init_input(
     monkeypatch.setattr(getpass, "getpass", lambda prompt: key)
 
 
-def test_init_prompts_for_url_and_hidden_key_without_building_agent_or_network(
+def _install_successful_detection(monkeypatch, provider):
+    def detect(config, **_kwargs):
+        resolved = resolve_model_config(
+            project_env={
+                "PONY_PROVIDER": provider,
+                "PONY_API_BASE": config["base_url"]["value"],
+                "PONY_API_KEY": config["api_key"]["value"],
+                "PONY_MODEL": config["model"]["value"],
+            },
+            process_env={},
+        )
+        return object(), resolved, {
+            "status": "ok",
+            "stage": "complete",
+            "category": "ok",
+            "model_calls": 2,
+            "candidate_count": 1,
+            "usage_status": "degraded",
+        }
+
+    monkeypatch.setattr("pony.cli.commands.resolve_provider_client", detect)
+
+
+def test_init_auto_detects_before_writing_without_building_agent(
     tmp_path, monkeypatch, capsys
 ):
-    _install_init_input(monkeypatch)
+    _install_init_input(
+        monkeypatch,
+        provider="",
+        api_base="https://gateway.example/v1",
+        model="gateway-model",
+    )
+    _install_successful_detection(monkeypatch, "openai-chat")
     monkeypatch.setattr(
         "pony.cli.app.build_agent",
         lambda args: (_ for _ in ()).throw(AssertionError("init built an agent")),
@@ -253,18 +284,68 @@ def test_init_prompts_for_url_and_hidden_key_without_building_agent_or_network(
 
     values = read_project_env(tmp_path, warn=False)
     assert values == {
-        "PONY_PROVIDER": "anthropic",
-        "PONY_API_BASE": "https://api.anthropic.com/v1",
-        "PONY_MODEL": "claude-sonnet-4-6",
+        "PONY_PROVIDER": "openai-chat",
+        "PONY_API_BASE": "https://gateway.example/v1",
+        "PONY_MODEL": "gateway-model",
         "PONY_API_KEY": "test-key",
     }
     captured = capsys.readouterr()
-    assert "Provider [anthropic]:" in captured.err
-    assert "API Base [https://api.anthropic.com/v1]:" in captured.err
+    assert "Provider [auto]:" in captured.err
+    assert "Detecting provider..." in captured.err
     assert captured.out.startswith("Pony init")
-    assert "claude-sonnet-4-6" in captured.out
-    assert "anthropic_messages" in captured.out
+    assert "gateway-model" in captured.out
+    assert "openai_chat_completions" in captured.out
+    assert "usage" in captured.out and "unavailable" in captured.out
     assert "test-key" not in captured.out + captured.err
+
+
+def test_init_forced_provider_performs_no_detection(tmp_path, monkeypatch):
+    _install_init_input(monkeypatch, provider="anthropic")
+    monkeypatch.setattr(
+        "pony.cli.commands.resolve_provider_client",
+        lambda *_args, **_kwargs: pytest.fail("forced Provider was probed"),
+    )
+
+    assert main(["--cwd", str(tmp_path), "init"]) == 0
+    assert read_project_env(tmp_path, warn=False)["PONY_PROVIDER"] == "anthropic"
+
+
+def test_init_detection_failure_leaves_existing_env_identity_unchanged(
+    tmp_path,
+    monkeypatch,
+):
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "PONY_PROVIDER=auto\n"
+        "PONY_API_BASE=https://gateway.example/v1\n"
+        "PONY_API_KEY=existing-key\n"
+        "PONY_MODEL=gateway-model\n",
+        encoding="utf-8",
+    )
+    env_path.chmod(0o600)
+    before = env_path.stat()
+    before_bytes = env_path.read_bytes()
+    _install_init_input(monkeypatch, provider="", key="")
+
+    def fail(*_args, **_kwargs):
+        raise ProviderTransportError(
+            "unsafe raw failure",
+            code="provider_detection_failed",
+            stage="tool_call",
+            protocol_reason="tool_call_shape_invalid",
+        )
+
+    monkeypatch.setattr("pony.cli.commands.resolve_provider_client", fail)
+
+    assert main(["--cwd", str(tmp_path), "init"]) == 1
+
+    after = env_path.stat()
+    assert env_path.read_bytes() == before_bytes
+    assert (after.st_ino, after.st_mtime_ns, stat.S_IMODE(after.st_mode)) == (
+        before.st_ino,
+        before.st_mtime_ns,
+        stat.S_IMODE(before.st_mode),
+    )
 
 
 def test_init_accepts_exact_third_party_api_base(tmp_path, monkeypatch, capsys):
@@ -274,6 +355,7 @@ def test_init_accepts_exact_third_party_api_base(tmp_path, monkeypatch, capsys):
         api_base="https://lumina.tripo3d.com/v1/",
         key="gateway-key",
     )
+    _install_successful_detection(monkeypatch, "openai-chat")
 
     assert (
         main(
@@ -291,7 +373,7 @@ def test_init_accepts_exact_third_party_api_base(tmp_path, monkeypatch, capsys):
     output = capsys.readouterr().out
     payload = json.loads(output)["data"]
     assert payload["api_base"] == "https://lumina.tripo3d.com/v1"
-    assert payload["provider"] == "openai"
+    assert payload["provider"] == "openai-chat"
     assert payload["model"] == "gpt-5.4"
     assert payload["protocol"] == "openai_chat_completions"
     assert payload["api_key"] == {
@@ -308,11 +390,12 @@ def test_init_can_select_openai_from_api_base(tmp_path, monkeypatch):
         api_base="https://api.openai.com/v1",
         key="openai-key",
     )
+    _install_successful_detection(monkeypatch, "openai-responses")
 
     assert main(["--cwd", str(tmp_path), "init"]) == 0
 
     assert read_project_env(tmp_path, warn=False) == {
-        "PONY_PROVIDER": "openai",
+        "PONY_PROVIDER": "openai-responses",
         "PONY_API_BASE": "https://api.openai.com/v1",
         "PONY_MODEL": "gpt-5.4",
         "PONY_API_KEY": "openai-key",
@@ -339,7 +422,10 @@ def test_init_can_configure_local_ollama_without_api_key(tmp_path, monkeypatch):
 
 def test_init_empty_key_keeps_existing_project_key(tmp_path, monkeypatch, capsys):
     (tmp_path / ".env").write_text(
-        "PONY_API_BASE=https://old.example/v1\nPONY_API_KEY=existing-key\n",
+        "PONY_PROVIDER=anthropic\n"
+        "PONY_API_BASE=https://old.example/v1\n"
+        "PONY_MODEL=claude-sonnet-4-6\n"
+        "PONY_API_KEY=existing-key\n",
         encoding="utf-8",
     )
     _install_init_input(monkeypatch, api_base="", key="")
@@ -358,7 +444,9 @@ def test_init_updates_config_without_dropping_unrelated_lines(tmp_path, monkeypa
     (tmp_path / ".env").write_text(
         "# keep this comment\n"
         "OTHER_SETTING=kept\n"
+        "PONY_PROVIDER=anthropic\n"
         "PONY_API_BASE=https://old.example/v1\n"
+        "PONY_MODEL=claude-sonnet-4-6\n"
         "PONY_API_KEY=old-key\n",
         encoding="utf-8",
     )
@@ -434,9 +522,24 @@ def test_init_rejects_unsafe_existing_url_without_echo_or_prompt(
 def test_init_rejects_empty_new_key_without_writing(tmp_path, monkeypatch, capsys):
     _install_init_input(monkeypatch, key="")
 
-    assert main(["--cwd", str(tmp_path), "init"]) == 2
+    assert main(["--cwd", str(tmp_path), "init"]) == 3
 
-    assert "API Key is required unless auth mode is none" in capsys.readouterr().err
+    assert "api_key_not_configured" in capsys.readouterr().err
+    assert not (tmp_path / ".env").exists()
+
+
+def test_init_invalid_provider_explains_configuration_error(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    _install_init_input(monkeypatch, provider="unknown-provider")
+
+    assert main(["--cwd", str(tmp_path), "init"]) == 3
+
+    captured = capsys.readouterr()
+    assert "Invalid Provider value" in captured.err
+    assert "Choose auto or a Provider matching the API Base." in captured.err
     assert not (tmp_path / ".env").exists()
 
 

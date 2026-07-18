@@ -376,3 +376,60 @@ def test_chat_preserves_http_400_classification(monkeypatch):
 
     assert caught.value.code == "http_4xx"
     assert caught.value.http_status == 400
+
+
+@pytest.mark.parametrize(
+    ("body", "reason"),
+    (
+        (b'{"error":"tool result rejected"}', "tool_result_rejected"),
+        (
+            b'{"error":"reasoning state is required for continuation"}',
+            "reasoning_replay_required",
+        ),
+    ),
+)
+def test_chat_classifies_tool_continuation_rejection(monkeypatch, body, reason):
+    monkeypatch.setattr(
+        provider_shared,
+        "_provider_urlopen",
+        Mock(
+            side_effect=urllib.error.HTTPError(
+                "https://gateway.example/v7/chat/completions",
+                400,
+                "bad request",
+                hdrs={},
+                fp=io.BytesIO(body),
+            )
+        ),
+    )
+    messages = [
+        {"role": "user", "content": "find x"},
+        {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": "call_1",
+                    "name": "search",
+                    "input": {"pattern": "x"},
+                }
+            ],
+        },
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "call_1",
+                    "content": "result",
+                }
+            ],
+        },
+    ]
+
+    with pytest.raises(ProviderTransportError) as caught:
+        _complete(_client(), tools=[_tool_schema()], messages=messages)
+
+    assert caught.value.code == "http_4xx"
+    assert caught.value.stage == "tool_result"
+    assert caught.value.protocol_reason == reason

@@ -27,6 +27,14 @@ _PROVIDER_PROTOCOL_REASONS = frozenset(
         "tool_result_rejected",
     }
 )
+_PROVIDER_PROTOCOL_FAMILIES = frozenset(
+    {
+        "anthropic_messages",
+        "ollama_chat",
+        "openai_chat_completions",
+        "openai_responses",
+    }
+)
 
 
 class ProviderTransportError(RuntimeError):
@@ -42,6 +50,7 @@ class ProviderTransportError(RuntimeError):
         retry_after=None,
         stage=None,
         protocol_reason=None,
+        protocol_family=None,
     ):
         super().__init__(message)
         self.code = str(code)
@@ -61,6 +70,12 @@ class ProviderTransportError(RuntimeError):
             protocol_reason
             if isinstance(protocol_reason, str)
             and protocol_reason in _PROVIDER_PROTOCOL_REASONS
+            else None
+        )
+        self.protocol_family = (
+            protocol_family
+            if isinstance(protocol_family, str)
+            and protocol_family in _PROVIDER_PROTOCOL_FAMILIES
             else None
         )
 
@@ -231,7 +246,14 @@ def _network_failure(family, exc, *, retryable):
     )
 
 
-def _open_provider_request(client, request, *, family, retryable):
+def _open_provider_request(
+    client,
+    request,
+    *,
+    family,
+    retryable,
+    detect_reasoning_replay=False,
+):
     client.last_transport_attempts += 1
     try:
         with _provider_urlopen(request, timeout=client.timeout) as response:
@@ -278,6 +300,19 @@ def _open_provider_request(client, request, *, family, retryable):
             code = "redirect_blocked"
         else:
             code = "http_4xx"
+        reasoning_required = (
+            detect_reasoning_replay
+            and status in {400, 422}
+            and any(
+                marker in error_text
+                for marker in (
+                    "reasoning state is required",
+                    "reasoning content is required",
+                    "missing reasoning content",
+                    "must include reasoning",
+                )
+            )
+        )
         raise ProviderTransportError(
             f"{family} request failed with HTTP {status}",
             code=code,
@@ -285,6 +320,9 @@ def _open_provider_request(client, request, *, family, retryable):
             retryable=retryable
             and code in {"request_timeout", "rate_limited", "http_5xx"},
             retry_after=retry_after if code == "rate_limited" else None,
+            protocol_reason=(
+                "reasoning_replay_required" if reasoning_required else None
+            ),
         ) from None
     except (urllib.error.URLError, HTTPException, OSError) as exc:
         raise _network_failure(family, exc, retryable=retryable) from None

@@ -8,6 +8,7 @@ import sys
 import threading
 
 from pony.security.redaction import redact_text
+from pony.providers.transport import ProviderTransportError
 from pony.runtime.resume import active_prompt_history, build_resume_projection
 from pony.state.workflow import EMPTY_PLAN
 
@@ -233,6 +234,15 @@ def run_agent_once(agent, prompt_tokens):
                 except Exception:  # noqa: BLE001 - preserve interrupt as primary
                     print(_RUNTIME_ERROR_MESSAGE, file=sys.stderr)
             return _interrupt_exit_code(exc)
+        except ProviderTransportError:
+            if not finalize_started:
+                try:
+                    finalize = getattr(agent, "finalize_sandbox_session", None)
+                    if callable(finalize):
+                        finalize()
+                except Exception:
+                    pass
+            raise
         except Exception:  # noqa: BLE001 - the CLI is the ordinary-exception boundary
             if not finalize_started:
                 try:
@@ -368,6 +378,8 @@ def _process_repl_input(
 
     try:
         render_answer(_safe_text(agent, agent.ask(user_input)))
+    except ProviderTransportError:
+        raise
     except Exception:  # noqa: BLE001 - preserve BaseException interrupt semantics
         if render_error is None:
             print(_RUNTIME_ERROR_MESSAGE, file=sys.stderr)
@@ -451,6 +463,9 @@ def run_repl(
         except KeyboardInterrupt as exc:
             print("")
             return _finish_repl(agent, _interrupt_exit_code(exc))
+        except ProviderTransportError:
+            _finish_repl(agent, 1)
+            raise
 
 
 def _print_resume_card(projection):
