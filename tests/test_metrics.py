@@ -440,7 +440,7 @@ def test_provider_benchmark_uses_canonical_project_env(tmp_path):
     (tmp_path / ".env").write_text(
         "\n".join(
             [
-                "PONY_PROVIDER=openai",
+                "PONY_PROVIDER=openai-chat",
                 "PONY_API_BASE=https://gateway.example/v1",
                 "PONY_MODEL=gpt-test",
                 "PONY_API_KEY=sk-project",
@@ -452,7 +452,7 @@ def test_provider_benchmark_uses_canonical_project_env(tmp_path):
 
     target = _resolve_benchmark_target(tmp_path, process_env={})
 
-    assert target["provider"] == "openai"
+    assert target["provider"] == "openai-chat"
     assert target["api_key"] == "sk-project"
     assert target["model"] == "gpt-test"
     assert target["base_url"] == "https://gateway.example/v1"
@@ -461,10 +461,23 @@ def test_provider_benchmark_uses_canonical_project_env(tmp_path):
 
 
 def test_provider_benchmark_rejects_vendor_only_environment(tmp_path):
-    with pytest.raises(ValueError, match="^provider_not_configured$"):
+    with pytest.raises(ValueError, match="^api_base_not_configured$"):
         _resolve_benchmark_target(
             tmp_path,
             process_env={"PONY_OPENAI_API_KEY": "sk-old"},
+        )
+
+
+def test_provider_benchmark_rejects_unresolved_target_before_workload(tmp_path):
+    with pytest.raises(ValueError, match="^provider_detection_failed$"):
+        _resolve_benchmark_target(
+            tmp_path,
+            project_env={
+                "PONY_API_BASE": "https://gateway.example/v1",
+                "PONY_API_KEY": "test-key",
+                "PONY_MODEL": "gateway-model",
+            },
+            process_env={},
         )
 
 

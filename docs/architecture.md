@@ -82,15 +82,18 @@ sequenceDiagram
 
     C->>W: discover lexical repository root
     C->>E: anchored, no-follow read
-    E-->>C: four generic PONY_* values
-    C->>P: exact protocol/model/url/auth/capabilities
-    C->>S: resume or create session binding
+    E-->>C: at most four generic PONY_* values
+    C->>S: inspect matching resume binding
+    C->>P: resolve target before user request
+    P-->>C: exact protocol/model/url/auth/capabilities
+    C->>S: resume or create bound session
     C->>A: construct runtime object graph
     A-->>C: ready
 ```
 
 配置解析只接受 `PONY_PROVIDER`、`PONY_API_BASE`、`PONY_API_KEY` 和 `PONY_MODEL`。项目 `.env` 高于进程环境；
-Provider 与 API Base 静态选择 Transport 与认证，旧变量和厂商变量不会回退生效。
+强制 Provider 静态选择 Transport 与认证，missing/auto/OpenAI family 通过 known origin、匹配的 Session
+binding 或 bounded synthetic probe 解析。旧变量和厂商变量不会回退生效。
 
 ### TUI 是 presentation adapter
 
@@ -122,15 +125,19 @@ TUI 不展示或持久化 Provider reasoning，也不引入 streaming、定时 s
 
 ### Provider 路由
 
-| 用户 Provider | 用户 Variant | 内部协议 | 适配器 |
+| 用户 Provider | Resolution | 内部协议 | 适配器 |
 | --- | --- | --- | --- |
-| `anthropic` | `messages` | `anthropic_messages` | `AnthropicMessagesModelClient` |
-| `openai` | `responses` | `openai_responses` | `OpenAIResponsesModelClient` |
-| `openai` | `chat_completions` | `openai_chat_completions` | `OpenAIChatCompletionsModelClient` |
-| `ollama` | `chat` | `ollama_chat` | `OllamaChatModelClient` |
+| `anthropic` | forced | `anthropic_messages` | `AnthropicMessagesModelClient` |
+| `openai-responses` | forced | `openai_responses` | `OpenAIResponsesModelClient` |
+| `openai-chat` | forced | `openai_chat_completions` | `OpenAIChatCompletionsModelClient` |
+| `ollama` | forced | `ollama_chat` | `OllamaChatModelClient` |
+| missing/`auto`/`openai` | known origin, Session binding or synthetic probe | one protocol above | corresponding adapter |
 
-`auto` 只表示选择当前 Provider 的静态默认值，不表示运行时探测。Factory 接收已经解析完成的内部协议，不根据域名、
-模型名或响应失败更换路径。每种 adapter 返回统一的 `Response`。
+Provider resolution 在 Agent 创建和用户请求之前完成。它只使用 fixed `pony_probe` tool/continuation，最多三个候选、
+六个 Transport Attempt，并保持 configured origin。Factory 仍只接收已解析的内部协议；adapter 不互相选择，真实用户请求
+失败后不更换路径。每种 adapter 返回统一的 `Response`。`pony init` 可持久化 resolved Provider；doctor 只读，run/repl
+只使用当前进程结果。Generic gateway 使用 conservative Capability Profile。成功 detection 只追加一条
+bounded `provider_resolved` trace；benchmark/live harness 对 `probe_required` fail closed，不建立另一调度器。
 
 ## 4. 一个 Turn 的控制流
 

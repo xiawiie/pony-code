@@ -363,6 +363,19 @@ def test_project_env_uses_canonical_ollama_settings(tmp_path):
     }
 
 
+def test_live_harness_rejects_unresolved_target_before_workload(tmp_path):
+    with pytest.raises(ValueError, match="^provider_detection_failed$"):
+        run_live_session.provider_settings(
+            tmp_path,
+            project_env={
+                "PONY_API_BASE": "https://gateway.example/v1",
+                "PONY_API_KEY": "test-key",
+                "PONY_MODEL": "gateway-model",
+            },
+            process_env={},
+        )
+
+
 def test_openai_live_client_uses_native_responses_adapter():
     from pony.providers.openai_responses import OpenAIResponsesModelClient
 

@@ -15,7 +15,8 @@ Memory 与恢复证据保存在 `.pony/`。
 3. 文件、secret、approval、recovery 与 Sandbox 边界 fail closed；
 4. 代码按领域集中，公共 API 和分发包最小；结论由当前 exact HEAD 的证据支撑。
 
-非目标：动态 Provider registry、旧兼容层、自动探测、distributed/remote/multi-tenant Sandbox 和无需求的抽象。
+非目标：动态 Provider registry、旧兼容层、真实任务失败后的 Provider/协议 fallback、distributed/remote/multi-tenant
+Sandbox 和无需求的抽象。发送真实任务前的 bounded synthetic Provider resolution 是显式产品能力，不属于 fallback。
 Host 不是 OS sandbox；本地 Docker Sandbox 也不是 microVM。
 
 ## 2. 开始工作与 Git 纪律
@@ -85,11 +86,13 @@ CLI/TUI 合同：
 | Provider | Variant | Transport | 默认认证 |
 | --- | --- | --- | --- |
 | `anthropic` | `messages` | `anthropic_messages` | `x-api-key` |
-| `openai` | `responses` | `openai_responses` | `bearer` |
-| `openai` | `chat_completions` | `openai_chat_completions` | `bearer` |
+| `openai-responses` | `responses` | `openai_responses` | `bearer` |
+| `openai-chat` | `chat_completions` | `openai_chat_completions` | `bearer` |
 | `ollama` | `chat` | `ollama_chat` | `none` |
 
-唯一用户配置面是仓库根目录 `.env` 中四个变量：
+`openai` 是 Chat/Responses family selector，不是最终 Session binding 或 init 持久化值。
+
+唯一用户配置面是仓库根目录 `.env` 中最多四个变量：
 
 ```text
 PONY_PROVIDER
@@ -100,12 +103,16 @@ PONY_MODEL
 
 必须保持：
 
-- 运行须显式配置 Provider/API Base/model；云端须有 Key，本地 Ollama 可空。`pony init` 只写这四项。
+- 运行须配置 API Base/model；Provider 可缺失、为空或为 `auto`。云端须有 Key，本地 Ollama 可空。`pony init`
+  只写这四项，并在 auto/OpenAI-family resolution 完整通过后写 resolved Provider。
 - lexical repository root 的 `.env` 高于同名进程变量；不搜索父目录、不修改全局 `os.environ`。
 - 不读取厂商 Key、旧 Provider/Profile/Connection/Variant/Auth 字段或旧 Pony 变量作为 fallback。
-- Provider 与 API Base 静态决定 Variant 与 Auth；不联网探测或失败后 fallback。
+- 强制 Provider 静态决定 Variant 与 Auth；auto/OpenAI-family 可在发送用户任务前执行 bounded synthetic resolution。
+  普通 config/status/doctor 零网络，`doctor --check-api` 零写，真实用户任务失败后绝不切换协议重放。
 - CLI、doctor、probe、live harness 与 benchmark 共用配置解析和 Transport factory；benchmark 只以
-  `--cwd` / `--repo-root` 选择 `.env`。
+  `--cwd` / `--repo-root` 选择 `.env`，且对 unresolved target fail closed，不拥有第二套 detection。
+- Provider resolution trace 只投影 source、protocol、candidate count、probe call count 和 usage status；不保存
+  probe payload、response、完整 endpoint 或 reasoning。
 - API Base 禁止 userinfo、query、fragment 与内嵌凭证；除 loopback 外必须 HTTPS。Adapter 不补版本前缀、不跟随
   redirect、不在失败后切换 Transport。
 - Session binding 的 protocol、model 或 endpoint 变化返回稳定的 `model_session_mismatch`，不跨协议重放状态。

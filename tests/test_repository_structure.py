@@ -22,6 +22,7 @@ MAINTAINER_DOCS = {
     "docs/adr/0040-docker-filtered-staging.md",
     "docs/adr/0042-sealed-local-authorization.md",
     "docs/adr/0043-workflow-state-and-session-v3.md",
+    "docs/adr/0044-provider-auto-resolution.md",
     "docs/coding-agent-workflow-plan.md",
     "docs/context-and-sessions.md",
 }

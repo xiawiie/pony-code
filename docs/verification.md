@@ -136,11 +136,17 @@ Verifier 使用 `git ls-files pony` 建立产品文件真源并检查：
 pony doctor --check-api
 ```
 
-Probe 验证最小文本响应、native tool call 与 tool result 续接。它使用当前 `.env` 的 exact Provider/model/URL/variant/auth，
-不做 fallback。维护者 live harness 还必须设置 model-attempt、request-timeout、token 与 wall-time cap。
+Probe 以两次调用验证 native tool call 与 tool-result continuation；continuation 同时证明最终文本能力。forced Provider 使用
+exact target，missing/auto/OpenAI family 可在同一 configured origin 上按固定候选顺序解析，最多三个候选、六次请求，
+单请求最多 30 秒、总计最多 90 秒且 detection 零 retry。真实用户请求不做 fallback。维护者 live harness 还必须设置
+model-attempt、request-timeout、token 与 wall-time cap。
 
 Live report 不应保存 prompt、answer、raw response、Key、header 或完整 URL；只记录 Provider、模型、exact SHA、固定 caps、
 行为标签、计数、usage、wall time 和稳定错误码。账号错误、配额、模型不可用与协议失败应明确区分。
+Usage 缺失可标记为 `usage_unavailable` 并允许基本 tool contract 使用，但不能宣称 transport-cost gate 通过。
+Provider auto 的 G8 证据至少覆盖：省略 Provider、`openai` family、init 写 resolved 值、doctor 零写、
+run/repl 进程内解析、native `update_plan` continuation 和 usage complete/degraded。比较 `.env` 时必须记录
+bytes、inode、mtime 与 mode；报告仍不得保存真实 prompt/answer/response。
 
 ## 版本晋级
 

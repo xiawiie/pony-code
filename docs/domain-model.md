@@ -12,9 +12,12 @@
 | Project State Root | `.pony/` 下的 Session、Run、Checkpoint 与 Memory 状态 | Workspace 文件 |
 | Sandbox State Root | Sandbox capture、diff、apply journal 与恢复证据 | Project State Root |
 | Project Environment | lexical repository root 下唯一读取的 `.env` | shell 全局环境注入 |
-| Provider | 用户在 `.env` 中选择的 `anthropic`、`openai` 或 `ollama` | 内部 Transport |
-| API Variant | Provider 内显式选择的 wire API，例如 `responses` | 自动探测或 fallback |
+| Provider | 用户选择或 Pony 在发送真实任务前解析出的服务家族 | 内部 Transport |
+| API Variant | Provider 家族内的 wire API，例如 `responses` 或 `chat_completions` | Provider 品牌 |
 | Transport | `anthropic_messages`、`openai_responses`、`openai_chat_completions`、`ollama_chat` | Provider 品牌 |
+| Capability Profile | strict tools、parallel control、prompt cache、reasoning replay 等可选 wire 能力 | 必需 tool contract |
+| Resolved Provider Target | 当前 endpoint/model 最终绑定的 Provider、Transport、认证和保守能力集合 | 自动 fallback |
+| Provider Resolution | 发送用户任务前，以显式值、known origin、Session binding 或 bounded synthetic probe 产生 Target | 重放用户任务 |
 | Model Request | Pony 构造的 provider-neutral 请求视图 | 原始 HTTP payload |
 | Model Attempt | Agent Loop 为得到一个 Action 发起的逻辑尝试 | Transport Attempt |
 | Transport Attempt | Provider client 的一次真实 HTTP request | Tool step |
@@ -29,7 +32,7 @@
 
 ## Provider 配置合同
 
-Model API Configuration 仅由四个通用变量组成：
+Model API Configuration 最多由四个通用变量组成；`PONY_PROVIDER` 可缺失、为空或为 `auto`：
 
 ```text
 PONY_PROVIDER
@@ -38,8 +41,9 @@ PONY_API_KEY
 PONY_MODEL
 ```
 
-项目 `.env` 高于进程环境。运行时不读取厂商变量，也不兼容 `PONY_DEEPSEEK_API_KEY`。Provider 与 API Base 静态
-决定协议与认证，不联网探测。协议、模型、URL 或认证变更都必须能在 `pony config show` 与 `pony doctor` 中被观察。
+项目 `.env` 高于进程环境。运行时不读取厂商变量，也不兼容 `PONY_DEEPSEEK_API_KEY`。强制 Provider 静态决定协议；
+missing/auto 与 OpenAI family 可在发送用户任务前执行 fixed synthetic resolution。普通 config/status/doctor 零网络，
+`doctor --check-api` 只读，真实用户任务失败后不切换 Transport。协议、模型、URL、认证和 resolution source 必须可观察。
 
 Model Session Binding 固化 `protocol_family`、`model` 与 `endpoint_hash`。绑定变化时拒绝恢复，尤其不能把 OpenAI
 reasoning state 或 Anthropic thinking block 跨协议重放。

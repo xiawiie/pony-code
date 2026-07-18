@@ -43,8 +43,10 @@ pony config show
 pony doctor
 ```
 
-`init` 依次询问 Provider、API Base、模型和 API Key，将四个通用变量原子写入根目录 `.env`。输入已有 Key 时，
-留空会保留原值；本地 Ollama 允许空 Key。该命令不联网。
+`init` 依次询问 Provider（默认 `auto`）、API Base、模型和 API Key。输入已有 Key 时留空会保留
+原值；本地 Ollama 允许空 Key。强制 Provider 只做本地校验；`auto` 或 `openai` 先执行 fixed synthetic
+tool/continuation probe，只有完整通过后才把 resolved Provider 与另外三项一次性原子写入根目录 `.env`。
+Probe 或写入失败不得留下部分更新。
 
 也可以复制仓库提供的 `.env.example`：
 
@@ -110,9 +112,11 @@ inspection 与管理命令保持无装饰输出。Session v1/v2 只有在显式 
 | Provider | Variant | 默认 URL | 默认认证 | Key |
 | --- | --- | --- | --- | --- |
 | Anthropic | `messages` | `https://api.anthropic.com/v1` | `x-api-key` | 必需 |
-| OpenAI | `responses` | `https://api.openai.com/v1` | `bearer` | 必需 |
-| OpenAI-compatible | `chat_completions` | 用户显式填写 | 通常 `bearer` | 必需 |
+| `openai-responses` | `responses` | `https://api.openai.com/v1` | `bearer` | 必需 |
+| `openai-chat` | `chat_completions` | 用户显式填写 | `bearer` | 必需 |
 | Ollama | `chat` | `http://127.0.0.1:11434` | `none` | 可空 |
+
+`openai` 仅是 init/run/repl/doctor 可使用的 family selector；init 不会把它写作最终值。
 
 切换后运行：
 
@@ -122,7 +126,9 @@ pony doctor
 pony doctor --check-api
 ```
 
-最后一条会发送真实请求，可能收费。Pony 不自动探测模型、端点或协议，不在请求失败后切换 Provider。
+最后一条会发送真实请求，可能收费。missing/auto/OpenAI family 可在发送用户任务前使用 fixed synthetic probe 解析协议；
+Pony 不在真实用户请求失败后切换 Provider 或协议。
+独立 benchmark/live harness 不另行探测；如 `config show` 仍显示 `probe_required`，先运行 `pony init`。
 
 ## 更新
 
@@ -176,8 +182,10 @@ uv run python scripts/sandbox/verify_runtime.py --help
 | 现象 | 检查 |
 | --- | --- |
 | `api_key_not_configured` | 云 Provider 是否设置 `PONY_API_KEY` |
-| `provider_not_configured` | 是否设置 `PONY_PROVIDER` |
-| `provider_invalid` | Provider 是否为 `anthropic`、`openai` 或 `ollama` |
+| `provider_invalid` | Provider 是否为 `auto`、`openai`、`openai-chat`、`openai-responses`、`anthropic` 或 `ollama` |
+| `provider_endpoint_conflict` | 强制 Provider 是否与 known API origin 冲突 |
+| `provider_detection_failed` | endpoint/model 是否完成 native tool 与 continuation 合同；重跑 `pony doctor --check-api` |
+| `provider_protocol_mismatch` | Provider 是否返回适配当前 protocol 的 tool call 结构 |
 | `api_base_not_configured` | 是否设置 `PONY_API_BASE` |
 | `insecure_api_base` | 非 loopback API Base 是否为 HTTPS |
 | `model_session_mismatch` | 当前 Provider/model/URL 是否与恢复 Session 一致 |

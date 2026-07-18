@@ -171,6 +171,8 @@ def provider_settings(
         process_env=dict(os.environ if process_env is None else process_env),
         required=required,
     )
+    if required and resolved["resolution_status"] != "resolved":
+        raise ValueError("provider_detection_failed")
     return {
         "provider": resolved["provider"]["value"],
         "model": resolved["model"]["value"],

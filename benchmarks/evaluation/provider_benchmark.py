@@ -31,6 +31,8 @@ def _resolve_benchmark_target(
         process_env=dict(os.environ if process_env is None else process_env),
         required=True,
     )
+    if resolved["resolution_status"] != "resolved":
+        raise ValueError("provider_detection_failed")
     return {
         "provider": resolved["provider"]["value"],
         "transport": resolved["protocol"]["value"],
