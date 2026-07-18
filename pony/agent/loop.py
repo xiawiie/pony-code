@@ -35,6 +35,7 @@ from pony.state.task_state import (
     STATUS_RUNNING,
     TaskState,
 )
+from pony.state.workflow import parse_plan_json, plan_digest
 from pony.workspace.context import clip, now
 from pony.tools.executor import (
     ToolExecutionResult,
@@ -320,6 +321,13 @@ class SessionCommitError(RuntimeError):
         self.committed = bool(getattr(cause, "committed", False))
 
 
+class SessionProjectionVerificationError(RuntimeError):
+    committed = True
+
+    def __init__(self):
+        super().__init__("committed session projection could not be verified")
+
+
 def _block_session_writes(agent, cause):
     if getattr(cause, "committed", False):
         agent._session_write_blocked_cause = cause
@@ -542,12 +550,26 @@ def _prepare_tool_result(
 def _run_turn_preflight(agent, user_message):
     refresh = agent.refresh_prefix()
     agent.resume_state = agent.evaluate_resume_state()
+    plan = agent.current_workflow_plan()
+    items = plan.get("items", []) if isinstance(plan, dict) else []
     metadata = {
         "prefix_chars": len(agent.prefix),
         "workspace_chars": len(agent.workspace.text()),
         "memory_chars": len(agent.memory_text()),
         "request_chars": len(str(user_message)),
-        "tool_count": len(agent.tools),
+        "tool_count": len(agent.visible_tools()),
+        "workflow_mode": agent.current_workflow_mode(),
+        "workflow_plan_item_count": len(items),
+        "workflow_plan_completed_count": sum(
+            item.get("status") == "completed"
+            for item in items
+            if isinstance(item, dict)
+        ),
+        "workflow_plan_current_count": sum(
+            item.get("status") == "in_progress"
+            for item in items
+            if isinstance(item, dict)
+        ),
         "workspace_docs": len(agent.workspace.project_docs),
         "recent_commits": len(agent.workspace.recent_commits),
         "workspace_fingerprint": agent.prefix_state.workspace_fingerprint,
@@ -938,11 +960,12 @@ def _apply_tool_action(
     args = action.arguments
     tool_use_id = action.tool_use_id or f"toolu_{uuid.uuid4().hex[:12]}"
     tool_started_at = time.monotonic()
-    agent.emit_trace(
-        task_state,
-        "tool_started",
-        {"name": name, "args": args, "tool_use_id": tool_use_id},
-    )
+    if name != "update_plan":
+        agent.emit_trace(
+            task_state,
+            "tool_started",
+            {"name": name, "args": args, "tool_use_id": tool_use_id},
+        )
     working_memory_before = deepcopy(agent.memory)
     file_summaries_before = deepcopy(agent.session["memory"]["file_summaries"])
     if blocked_tool_result is None:
@@ -1019,6 +1042,23 @@ def _apply_tool_action(
             agent._sync_working_memory()
             agent.session["memory"]["file_summaries"] = file_summaries_before
         raise
+    if name == "update_plan" and metadata["tool_status"] == "ok":
+        expected_plan = parse_plan_json(args["plan_json"], redactor=agent.redact_artifact)
+        try:
+            persisted = agent._reload_session_projection()
+            verified = plan_digest(persisted["active_plan"]) == plan_digest(expected_plan)
+        except Exception:
+            verified = False
+        if not verified:
+            cause = SessionProjectionVerificationError()
+            _block_session_writes(agent, cause)
+            raise SessionCommitError(cause)
+    if name == "update_plan":
+        agent.emit_trace(
+            task_state,
+            "tool_started",
+            {"name": name, "args": args, "tool_use_id": tool_use_id},
+        )
 
     consumed_step = metadata.get("tool_status") != "rejected"
     if consumed_step:
@@ -1228,6 +1268,13 @@ class AgentLoop:
         self.agent = agent
 
     def run(self, user_message):
+        self.agent.begin_workflow_turn()
+        try:
+            return self._run(user_message)
+        finally:
+            self.agent.end_workflow_turn()
+
+    def _run(self, user_message):
         agent = self.agent
         user_message = agent.redact_text(user_message)
         run_started_at = time.monotonic()

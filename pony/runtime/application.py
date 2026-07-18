@@ -52,7 +52,12 @@ from pony.sandbox.session import (
     source_apply_control_lock_path,
 )
 from pony.state.session_store import SESSION_FORMAT_VERSION, SESSION_RECORD_TYPE
-from pony.state.workflow import DEFAULT_WORKFLOW_MODE, EMPTY_PLAN
+from pony.state.workflow import (
+    DEFAULT_WORKFLOW_MODE,
+    EMPTY_PLAN,
+    parse_plan_json,
+    validate_workflow_mode,
+)
 from pony.tools.change_recorder import ToolChangeRecorder
 from pony.tools.context import ToolContext
 from pony.tools.executor import ToolExecutionResult, ToolExecutor
@@ -619,6 +624,7 @@ class Pony:
             "workspace_changed": False,
             "prefix_changed": False,
         }
+        self._workflow_turn = None
 
     @classmethod
     def from_session(
@@ -795,6 +801,59 @@ class Pony:
 
     def build_tools(self):
         return toolkit.build_tool_registry(self.tool_context())
+
+    def current_workflow_mode(self):
+        if self._workflow_turn is not None:
+            return self._workflow_turn["mode"]
+        return self.session["workflow_mode"]
+
+    def current_workflow_plan(self):
+        if self._workflow_turn is not None:
+            return deepcopy(self._workflow_turn["plan"])
+        return deepcopy(self.session["active_plan"])
+
+    def visible_tools(self):
+        if self._workflow_turn is not None:
+            return self._workflow_turn["tools"]
+        return self._visible_tools_for(self.session["workflow_mode"])
+
+    def _visible_tools_for(self, mode):
+        if self.read_only:
+            return {
+                name: tool
+                for name, tool in self.tools.items()
+                if tool.get("effect_class") == "read_only" and name != "run_shell"
+            }
+        if mode == "act":
+            return dict(self.tools)
+        return {
+            name: tool
+            for name, tool in self.tools.items()
+            if tool.get("effect_class") in {"read_only", "session_state"}
+            or name == "run_shell"
+        }
+
+    def begin_workflow_turn(self):
+        if self._workflow_turn is not None:
+            raise RuntimeError("workflow_turn_active")
+        mode = self.session["workflow_mode"]
+        self._workflow_turn = {
+            "mode": mode,
+            "plan": deepcopy(self.session["active_plan"]),
+            "tools": self._visible_tools_for(mode),
+        }
+
+    def end_workflow_turn(self):
+        self._workflow_turn = None
+
+    def set_workflow_mode(self, mode):
+        if self._workflow_turn is not None:
+            raise RuntimeError("workflow_turn_active")
+        mode = validate_workflow_mode(mode)
+        entry = self.session_store.set_workflow_mode(self.session["id"], mode)
+        if entry is not None:
+            self._reload_session_projection()
+        return entry
 
     @staticmethod
     def _normalize_allowed_tools(allowed_tools):
@@ -1787,6 +1846,8 @@ class Pony:
     def validate_tool(self, name, args):
         """把通用工具校验和 runtime 级额外约束串起来。"""
         validate_tool_arguments(self.tool_context(), name, args)
+        if name == "update_plan":
+            parse_plan_json(args["plan_json"], redactor=self.redact_artifact)
         if name == "memory_save":
             note_tokens = self.token_accounting.count_text(args.get("note", ""))
             if note_tokens > 1_024:

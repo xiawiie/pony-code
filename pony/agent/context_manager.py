@@ -167,7 +167,7 @@ class ContextManager:
                 "cache_control": {"type": "ephemeral"},
             }
         ]
-        tools = _build_tools_list(getattr(self.agent, "tools", {}) or {})
+        tools = _build_tools_list(self.agent.visible_tools())
         system, _ = securitylib.sanitize_provider_payload(
             system,
             [],
