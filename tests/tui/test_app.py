@@ -13,7 +13,7 @@ from pony.tui.app import (
     run_tui,
     should_use_tui,
 )
-from pony.tui.render import _COLOR_STYLE, _PLAIN_STYLE, TuiRenderer, logo_text
+from pony.tui.render import _COLOR_STYLE, _PLAIN_STYLE, TuiRenderer
 
 
 class _Stream:
@@ -47,18 +47,6 @@ def test_tui_requires_a_capable_interactive_terminal(
         environ={"TERM": term},
         columns=columns,
     ) is expected
-
-
-@pytest.mark.parametrize(("columns", "height"), ((40, 5), (80, 7), (120, 11)))
-def test_terminal_logo_scales_horse_and_wordmark_together(columns, height):
-    rendered = logo_text(columns)
-    lines = rendered.splitlines()
-
-    assert "⣿" in rendered
-    assert "█" in rendered
-    assert "PONY" not in rendered
-    assert len(lines) == height
-    assert max(get_cwidth(line) for line in lines) < columns
 
 
 def test_tui_chrome_is_monochrome_but_status_colors_keep_their_meaning():
@@ -228,9 +216,7 @@ def test_tui_restores_runtime_hooks(monkeypatch):
     assert agent._trace_listener is previous_listener
     assert agent._approval_prompt is previous_prompt
     header = "".join(fragment[1] for fragment in output[0])
-    assert "v1.0.0" in header
-    assert "Local coding agent for repository-grounded work" in header
-    assert "Using gpt-test · approval ask" in header
+    assert header == "PONY CODE · v1.0.0\n"
 
 
 def test_toolbar_is_width_bounded_and_keeps_only_essential_status():
@@ -242,8 +228,12 @@ def test_toolbar_is_width_bounded_and_keeps_only_essential_status():
             branch="feature/very-long-branch",
         ),
         session={"id": "session-must-not-appear"},
+        checkpoint={"id": "checkpoint-must-not-appear"},
         model_client=SimpleNamespace(
-            provider_metadata={"protocol_family": "anthropic_messages"}
+            provider_metadata={
+                "protocol_family": "anthropic_messages",
+                "api_base": "https://api-must-not-appear.example",
+            }
         ),
     )
 
@@ -258,12 +248,18 @@ def test_toolbar_is_width_bounded_and_keeps_only_essential_status():
         )
         lines = rendered.splitlines()
         assert all(get_cwidth(line) < columns for line in lines)
+        footer = lines[-1]
+        assert "host" in footer
+        assert "approval ask" in footer
         if columns >= 80:
-            assert "host" in rendered
-            assert "approval ask" in rendered
-            assert "anthropic/" in rendered
+            assert "project" in footer
+            assert "anthropic/claude-sonnet-4-6" in footer
+        if columns == 120:
+            assert "feature/very-long-branch" in footer
         assert "/very/long" not in rendered
         assert "session-must-not-appear" not in rendered
+        assert "checkpoint-must-not-appear" not in rendered
+        assert "api-must-not-appear" not in rendered
 
 
 def test_trace_projects_one_tool_line_and_hides_internal_lifecycle(monkeypatch):
