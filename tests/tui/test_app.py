@@ -10,6 +10,7 @@ from pony.tui.app import (
     SlashCommandCompleter,
     _CompactPromptSession,
     _key_bindings,
+    _history,
     run_tui,
     should_use_tui,
 )
@@ -80,6 +81,43 @@ def test_slash_completion_is_generated_from_documented_commands():
         item.text
         for item in SlashCommandCompleter().get_completions(Document("/"), None)
     }
+    assert "/todo" not in {
+        item.text
+        for item in SlashCommandCompleter().get_completions(Document("/"), None)
+    }
+    assert {"/mode", "/plan"} <= {
+        item.text
+        for item in SlashCommandCompleter().get_completions(Document("/"), None)
+    }
+
+
+def test_tui_history_uses_only_supplied_canonical_prompts():
+    assert _history(["first", "active branch"]).get_strings() == [
+        "first",
+        "active branch",
+    ]
+
+
+def test_tui_resume_card_labels_fact_sources(monkeypatch):
+    output = []
+    monkeypatch.setattr(
+        "pony.tui.render.print_formatted_text",
+        lambda value, **_kwargs: output.append(value),
+    )
+    projection = {
+        "mode": "plan",
+        "goal": {"text": "Ship", "source": "plan"},
+        "plan": {"completed_count": 1, "item_count": 2, "current_count": 1},
+        "checkpoint": {"status": "ready", "blocker": "", "next_steps": []},
+        "resume": {"status": "ready"},
+    }
+
+    TuiRenderer(no_color=True).resume(projection)
+
+    rendered = "".join(fragment[1] for fragment in output[0])
+    assert "mode [session]: plan" in rendered
+    assert "goal [plan]: Ship" in rendered
+    assert "checkpoint [checkpoint]: status=ready" in rendered
 
 
 @pytest.mark.parametrize(
@@ -250,7 +288,7 @@ def test_toolbar_is_width_bounded_and_keeps_only_essential_status():
         assert all(get_cwidth(line) < columns for line in lines)
         footer = lines[-1]
         assert "host" in footer
-        assert "approval ask" in footer
+        assert "act/ask" in footer
         if columns >= 80:
             assert "project" in footer
             assert "anthropic/claude-sonnet-4-6" in footer

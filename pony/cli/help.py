@@ -13,6 +13,8 @@ class SlashCommand:
 SLASH_COMMANDS = (
     SlashCommand("/help", "/help", "Show interactive commands"),
     SlashCommand("/memory", "/memory", "Show working memory and memory files"),
+    SlashCommand("/mode", "/mode [plan|act|review]", "Show or change workflow mode"),
+    SlashCommand("/plan", "/plan [clear]", "Show or clear the active plan"),
     SlashCommand("/memory-review", "/memory-review", "Review agent notes"),
     SlashCommand("/remember", "/remember <text>", "Append an explicit workspace note"),
     SlashCommand("/session", "/session", "Show the active session file"),

@@ -141,6 +141,14 @@ def _dispatch_pre_agent_command(invocation, args):
 
 
 def _validate_agent_command(invocation):
+    if getattr(invocation.runtime_args, "mode", None) is not None and (
+        invocation.command not in {"run", "repl"}
+    ):
+        raise CliError(
+            code="usage",
+            message="--mode is only valid with `pony run` or `pony repl`",
+            exit_code=CLI_EXIT_USAGE,
+        )
     if getattr(
         invocation.runtime_args, "sandbox", False
     ) and invocation.command not in {
@@ -237,6 +245,8 @@ def main(argv=None):
         if invocation.command in _PRE_AGENT_COMMAND_HANDLERS:
             return _dispatch_pre_agent_command(invocation, args)
         agent = build_agent(args)
+        if args.mode is not None:
+            agent.set_workflow_mode(args.mode)
     except CliError as exc:
         return _print_cli_error(args, exc)
     except ValueError as exc:
@@ -310,6 +320,7 @@ def main(argv=None):
                 model=model,
                 no_color=args.no_color,
                 show_header=not args.quiet,
+                show_resume=bool(args.resume) and args.format == "text",
             )
         return run_agent_once(agent, invocation.command_args)
     except Exception:  # noqa: BLE001 - contain ordinary CLI runtime failures

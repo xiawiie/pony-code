@@ -16,6 +16,7 @@ from prompt_toolkit.layout import Dimension
 from prompt_toolkit.shortcuts import CompleteStyle
 
 from pony.cli.help import SLASH_COMMANDS
+from pony.runtime.resume import active_prompt_history
 from pony.tui.render import TuiRenderer
 
 
@@ -101,15 +102,33 @@ def _continuation(width, _line_number, _is_soft_wrap):
     return FormattedText([("class:editor.prompt", " " * width)])
 
 
-def run_tui(agent, *, model, no_color, handle_input, show_header=True):
+def _history(items):
+    history = InMemoryHistory()
+    for item in items:
+        history.append_string(item)
+    return history
+
+
+def run_tui(
+    agent,
+    *,
+    model,
+    no_color,
+    handle_input,
+    show_header=True,
+    resume_projection=None,
+    prompt_history=(),
+):
     """Run one synchronous Pony turn at a time in an inline terminal UI."""
     renderer = TuiRenderer(
         no_color=no_color or os.environ.get("NO_COLOR") is not None,
     )
     if show_header:
         renderer.header(agent, model=model)
+    if resume_projection is not None:
+        renderer.resume(resume_projection)
     session = _CompactPromptSession(
-        history=InMemoryHistory(),
+        history=_history(prompt_history),
         completer=SlashCommandCompleter(),
         complete_while_typing=True,
         complete_style=CompleteStyle.COLUMN,
@@ -140,19 +159,33 @@ def run_tui(agent, *, model, no_color, handle_input, show_header=True):
     last_interrupt = 0.0
 
     def process(user_input):
-        try:
-            return handle_input(
-                agent,
-                user_input,
-                confirm=confirm,
-                render_answer=renderer.answer,
-                render_error=lambda text: renderer.notice(text, error=True),
+        def refresh_history():
+            current = getattr(agent, "session", {})
+            current = current if isinstance(current, dict) else {}
+            history = _history(
+                active_prompt_history(current.get("messages", []))
             )
-        except KeyboardInterrupt as exc:
-            if hasattr(exc, "signal_number"):
-                raise
-            renderer.notice("request interrupted")
-            return None
+            session.history = history
+            if hasattr(session, "default_buffer"):
+                session.default_buffer.history = history
+
+        try:
+            try:
+                return handle_input(
+                    agent,
+                    user_input,
+                    confirm=confirm,
+                    render_answer=renderer.answer,
+                    render_error=lambda text: renderer.notice(text, error=True),
+                    refresh_history=refresh_history,
+                )
+            except KeyboardInterrupt as exc:
+                if hasattr(exc, "signal_number"):
+                    raise
+                renderer.notice("request interrupted")
+                return None
+        finally:
+            refresh_history()
 
     try:
         while True:
