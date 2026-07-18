@@ -241,6 +241,19 @@ def main(argv=None):
         return _print_cli_error(args, exc)
     except ValueError as exc:
         reason = str(exc)
+        session_error_code = getattr(exc, "code", "")
+        if session_error_code in {
+            "session_migration_required",
+            "unsupported_legacy_entry",
+        }:
+            return _print_cli_error(
+                args,
+                CliError(
+                    code=session_error_code,
+                    message=reason,
+                    exit_code=CLI_EXIT_CONFIG,
+                ),
+            )
         stable_codes = {
             "api_key_not_configured",
             "api_base_not_configured",
