@@ -546,7 +546,7 @@ def test_api_check_detects_unresolved_provider_and_allows_missing_usage(monkeypa
         },
         process_env={},
     )
-    clients = [object(), object()]
+    clients = [object(), object(), object()]
     constructor = Mock(side_effect=clients)
     reports = iter(
         [
@@ -582,6 +582,7 @@ def test_api_check_detects_unresolved_provider_and_allows_missing_usage(monkeypa
     assert result["model_calls"] == 3
     assert [call.args[0] for call in constructor.call_args_list] == [
         "openai_chat_completions",
+        "openai_responses",
         "openai_responses",
     ]
 

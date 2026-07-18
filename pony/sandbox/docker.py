@@ -916,6 +916,17 @@ def verify_image_inspect(payload, image):
         config = data["Config"]
         descriptor_matches = "Descriptor" not in data
         id_matches = data["Id"] == image.image_id
+        repo_digests = data.get("RepoDigests")
+        manifest_reference_matches = (
+            isinstance(repo_digests, list)
+            and any(
+                isinstance(item, str)
+                and item.rpartition("@")[2] == image.image_digest
+                for item in repo_digests
+            )
+        )
+        if descriptor_matches and data["Id"] == image.image_digest:
+            id_matches = manifest_reference_matches
         if not descriptor_matches:
             descriptor = data["Descriptor"]
             descriptor_matches = (
@@ -1059,7 +1070,9 @@ class DockerClient:
             supported = server_supported and seccomp_supported and profile_supported
         except (KeyError, TypeError) as exc:
             raise DockerSandboxError("docker_server_unsupported") from exc
-        image_result = self.command(["image", "inspect", image.image_digest])
+        image_result = self.command(
+            ["image", "inspect", f"--platform={image.platform}", image.image_digest]
+        )
         if image_result.timed_out or image_result.stdout_truncated:
             raise DockerSandboxError("docker_daemon_unavailable")
         image_present = image_result.exit_code == 0
@@ -1417,7 +1430,7 @@ def verify_container_inspect(payload, plan, *, expected_id=None):
             and _HEX64_RE.fullmatch(payload["Id"]) is not None
             and (expected_id is None or payload["Id"] == expected_id)
             and payload["Name"] == "/" + plan.container_name
-            and payload["Image"] == plan.image_id
+            and payload["Image"] in {plan.image_digest, plan.image_id}
             and descriptor.get("digest") == plan.image_digest
             and descriptor.get("annotations", {}).get("config.digest") == plan.image_id
             and payload["Path"] == plan.target_argv[0]
@@ -1482,7 +1495,7 @@ def verify_cleanup_identity(payload, plan, container_id):
     try:
         valid = (
             payload["Id"] == container_id
-            and payload["Image"] == plan.image_id
+            and payload["Image"] in {plan.image_digest, plan.image_id}
             and payload["Name"] == "/" + plan.container_name
             and payload["Config"]["Labels"] == plan.label_map
             and payload["ImageManifestDescriptor"]["digest"]
@@ -2605,12 +2618,28 @@ def _resume_sandbox_session(
         if manifest["pony_session_id"] == pony_session_id
         and manifest["source"]["root"] == str(source_root)
     ]
-    if len(matches) != 1:
-        raise DockerSandboxError(
-            "sandbox_session_not_found" if not matches else "sandbox_state_invalid"
+    if not matches:
+        raise DockerSandboxError("sandbox_session_not_found")
+    sessions = [
+        store.inspect(Path(manifest["execution"]["root"]).parent)
+        for manifest in matches
+    ]
+    unfinished = [
+        session
+        for session in sessions
+        if not (
+            session.state in {"applied", "discarded"}
+            and session.manifest["cleanup"]["status"] == "complete"
+            and session.manifest["lease"] is None
+            and session.manifest["active_call"] is None
         )
-    manifest = matches[0]
-    session = store.inspect(Path(manifest["execution"]["root"]).parent)
+    ]
+    if len(unfinished) > 1:
+        raise DockerSandboxError("sandbox_state_invalid")
+    if not unfinished:
+        return None
+    session = unfinished[0]
+    manifest = session.manifest
     source_info = source_root.lstat()
     if (
         session.state != "ready"
@@ -2685,6 +2714,8 @@ def build_docker_sandbox_context(
                 raise CheckpointStoreError(
                     "source_apply_review_required", "source apply is unresolved"
                 )
+            session = None
+            reused_staging = False
             if resume:
                 session = _resume_sandbox_session(
                     store,
@@ -2694,7 +2725,8 @@ def build_docker_sandbox_context(
                     image=image_metadata,
                     policy=policy,
                 )
-            else:
+                reused_staging = session is not None
+            if session is None:
                 session = store.create(
                     source_root,
                     pony_session_id=str(pony_session_id),
@@ -2721,7 +2753,7 @@ def build_docker_sandbox_context(
         runner=runner,
         readiness=MappingProxyType(dict(readiness)),
         authorization=authorization,
-        resumed=bool(resume),
+        resumed=reused_staging,
         source_branch=str(source_branch),
         source_status=str(source_status or "(unavailable)"),
         source_default_branch=str(source_default_branch or "main"),

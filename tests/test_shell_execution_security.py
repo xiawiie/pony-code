@@ -773,6 +773,24 @@ def test_executable_path_never_falls_back_to_frozen_basename(tmp_path):
     assert result.metadata["command_approval"]["outcome"] == "blocked"
 
 
+def test_missing_trusted_executable_reports_safe_available_names(tmp_path):
+    agent = build_agent(
+        tmp_path,
+        approval_policy="ask",
+        executables={"python3": "/frozen/python3"},
+    )
+    agent.approve = Mock(return_value=True)
+
+    result = agent.execute_tool(
+        "run_shell",
+        {"command": "uv run pytest -q", "timeout": 5},
+    )
+
+    assert result.metadata["tool_error_code"] == "trusted_executable_missing"
+    assert "available trusted executable names: python3" in result.content
+    assert "/frozen/python3" not in result.content
+
+
 def test_approval_payload_and_runner_output_are_redacted(tmp_path):
     secret = "opaque-shell-token-123456789"
     seen_payloads = []

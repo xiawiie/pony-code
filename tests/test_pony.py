@@ -882,6 +882,7 @@ def test_build_agent_detects_missing_provider_without_writing_project_env(tmp_pa
     assert [call.args[0] for call in builder.call_args_list] == [
         "openai_chat_completions",
         "openai_responses",
+        "openai_responses",
     ]
     assert env_path.read_bytes() == before_bytes
     assert (after.st_ino, after.st_mtime_ns) == (before.st_ino, before.st_mtime_ns)

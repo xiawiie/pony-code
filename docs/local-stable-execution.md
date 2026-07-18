@@ -56,6 +56,18 @@ pony sandbox prune --dry-run
 `status` 与 `prepare` 必须保持零网络、零隐式修复。`prepare` 只检查 already-present image。Inspection 不得改变 artifact
 mtime/ctime 或创建 session state。
 
+## Session 生命周期与 resume
+
+- `ready`：显式 resume 原样复用唯一 staging；
+- `pending_review` / `review_required` / `cleanup_pending`：必须先 review、apply、discard 或 reconcile，resume 阻断；
+- cleanup 完整的 `applied` / `discarded`：作为不可变历史保留，resume 从当前 Source Root 创建新 staging；
+- 同一 Pony Session 最多一个非终态 sidecar；多个非终态、残缺终态或 identity 不一致都返回
+  `sandbox_state_invalid` / `sandbox_resume_invalid`。
+
+终态后的新 staging 只继承对话、goal、Workflow Mode、Active Plan 与 Provider binding。旧 staging 的 recovery ID、
+freshness、key/read/modified files 和 runtime identity 不跨 Execution Root 复用；runtime 会追加一个 sanitized task
+checkpoint 后再建立新 baseline。
+
 ## 本地镜像维护
 
 构建与验证脚本是仓库维护入口，不是公开 runtime 的自动安装器：
@@ -63,6 +75,7 @@ mtime/ctime 或创建 session state。
 ```bash
 uv run python scripts/sandbox/build_image.py --help
 uv run python scripts/sandbox/verify_runtime.py --help
+uv run python scripts/sandbox/verify_vertical.py
 ```
 
 Builder 只接受锁定输入和 `linux/arm64` 本地开发目标。最终 package manifest 的 image identity、Docker config 和安装树
@@ -107,7 +120,14 @@ uv run python -m benchmarks.perf.bench_sandbox
 
 ```bash
 uv run python scripts/sandbox/verify_runtime.py --require-ready
+uv run python scripts/sandbox/verify_vertical.py
+uv run python scripts/evaluation/evaluate.py --suite sandbox-real
 ```
+
+`verify_runtime.py` 只证明 CLI readiness。`verify_vertical.py` 使用 production Sandbox context、runner、capture 与 apply
+实现启动 9 个短生命周期容器，验证 filtered staging、七项 mount/env/secret/no-network 边界、输出上限、timeout 与子进程
+cleanup、完整 final capture、generated ignore、exact Source Apply、CAS conflict、敏感 diff 阻断，以及终态/未审查 resume
+语义。`sandbox-real` 必须同时记录 readiness 与 vertical 两个通过 scenario。
 
 验收至少确认：
 

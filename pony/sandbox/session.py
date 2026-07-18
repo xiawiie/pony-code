@@ -3696,7 +3696,7 @@ def find_project_sandbox_session(
     source_root,
     pony_session_id,
 ):
-    """Return the unique Session bound by an immutable project sidecar."""
+    """Return the current Session bound by immutable project sidecars."""
     if not isinstance(pony_session_id, str):
         raise SandboxSessionError("sandbox_state_invalid")
     try:
@@ -3758,14 +3758,36 @@ def find_project_sandbox_session(
                 == (source_info.st_dev, source_info.st_ino)
             ):
                 matches.append(session)
+        unfinished = [
+            session
+            for session in matches
+            if not (
+                session.state in {"applied", "discarded"}
+                and session.manifest["cleanup"]["status"] == "complete"
+                and session.manifest["lease"] is None
+                and session.manifest["active_call"] is None
+            )
+        ]
         after = sidecar_parent.lstat()
         if (
             _identity(after) != _identity(before)
             or private_directory_identity(sidecar_parent) != parent_identity
-            or len(matches) > 1
+            or len(unfinished) > 1
         ):
             raise SandboxSessionError("sandbox_state_invalid")
-        return matches[0] if matches else None
+        if unfinished:
+            return unfinished[0]
+        return (
+            max(
+                matches,
+                key=lambda session: (
+                    session.manifest["created_at"],
+                    session.sandbox_id,
+                ),
+            )
+            if matches
+            else None
+        )
     except SandboxSessionError as exc:
         raise SandboxSessionError("sandbox_state_invalid") from exc
     except (OSError, RuntimeError, ValueError) as exc:

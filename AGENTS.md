@@ -109,8 +109,8 @@ PONY_MODEL
 - 不读取厂商 Key、旧 Provider/Profile/Connection/Variant/Auth 字段或旧 Pony 变量作为 fallback。
 - 强制 Provider 静态决定 Variant 与 Auth；auto/OpenAI-family 可在发送用户任务前执行 bounded synthetic resolution。
   普通 config/status/doctor 零网络，`doctor --check-api` 零写，真实用户任务失败后绝不切换协议重放。
-- CLI、doctor、probe、live harness 与 benchmark 共用配置解析和 Transport factory；benchmark 只以
-  `--cwd` / `--repo-root` 选择 `.env`，且对 unresolved target fail closed，不拥有第二套 detection。
+- CLI、doctor、probe、live harness 与 benchmark 共用配置解析和 Transport factory。live harness 使用共享 resolver；
+  普通 benchmark 只以 `--cwd` / `--repo-root` 选择 `.env`，对 unresolved target fail closed，不拥有第二套 detection。
 - Provider resolution trace 只投影 source、protocol、candidate count、probe call count 和 usage status；不保存
   probe payload、response、完整 endpoint 或 reasoning。
 - API Base 禁止 userinfo、query、fragment 与内嵌凭证；除 loopback 外必须 HTTPS。Adapter 不补版本前缀、不跟随

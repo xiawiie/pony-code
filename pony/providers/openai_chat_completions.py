@@ -262,7 +262,6 @@ class OpenAIChatCompletionsModelClient:
         self.provider_metadata = _model_runtime_metadata(
             "openai_chat_completions",
             self.model,
-            self.base_url,
         )
 
     def complete(

@@ -582,10 +582,14 @@ def _compile_host_shell(preparation):
         else None
     )
     if not executable:
+        available = ", ".join(sorted(preparation.agent.trusted_executables)) or "none"
         return None, _preparation_rejection(
             preparation,
             code="trusted_executable_missing",
-            content="error: trusted executable missing for run_shell",
+            content=(
+                "error: trusted executable missing for run_shell; "
+                f"available trusted executable names: {available}"
+            ),
         )
     if preparation.executable_name == "git":
         rejection = _validate_host_git(preparation, executable)

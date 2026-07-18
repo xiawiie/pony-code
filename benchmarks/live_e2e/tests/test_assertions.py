@@ -28,6 +28,7 @@ from pony.agent.model_capabilities import (
     build_model_budget,
     resolve_model_capabilities,
 )
+from scripts.evaluation import evaluate
 
 
 def _config(**overrides):
@@ -63,6 +64,19 @@ def _settings(**overrides):
     }
     defaults.update(overrides)
     return defaults
+
+
+def _resolution_report(**overrides):
+    report = {
+        "status": "not_run",
+        "resolution_source": "explicit",
+        "protocol": "anthropic_messages",
+        "candidate_count": 0,
+        "model_calls": 0,
+        "usage_status": "not_checked",
+    }
+    report.update(overrides)
+    return report
 
 
 def test_verify_pony_repo_uses_the_runtime_package_entry(tmp_path, capsys):
@@ -305,6 +319,26 @@ def test_parse_args_uses_repo_env_and_rejects_provider_override(tmp_path):
     assert caught.value.code == 2
 
 
+def test_parse_args_accepts_auto_target_without_network(tmp_path, monkeypatch):
+    (tmp_path / ".env").write_text(
+        "PONY_API_BASE=https://gateway.example/v1\n"
+        "PONY_MODEL=gateway-model\n"
+        "PONY_API_KEY=test-key\n",
+        encoding="utf-8",
+    )
+    resolver = MagicMock(side_effect=AssertionError("parse_args must stay offline"))
+    monkeypatch.setattr(run_live_session, "resolve_provider_client", resolver)
+
+    config = run_live_session.parse_args(
+        ["--repo-root", str(tmp_path)],
+        process_env={},
+    )
+
+    assert config.provider == "auto"
+    assert config.model == "gateway-model"
+    resolver.assert_not_called()
+
+
 @pytest.mark.parametrize("provider", ["anthropic", "openai"])
 def test_project_env_uses_canonical_selected_provider_settings(tmp_path, provider):
     base_url = f"https://api.{provider}.com/v1"
@@ -363,17 +397,43 @@ def test_project_env_uses_canonical_ollama_settings(tmp_path):
     }
 
 
-def test_live_harness_rejects_unresolved_target_before_workload(tmp_path):
-    with pytest.raises(ValueError, match="^provider_detection_failed$"):
-        run_live_session.provider_settings(
-            tmp_path,
-            project_env={
-                "PONY_API_BASE": "https://gateway.example/v1",
-                "PONY_API_KEY": "test-key",
-                "PONY_MODEL": "gateway-model",
-            },
-            process_env={},
+def test_live_harness_uses_shared_detection_for_unresolved_target(tmp_path, monkeypatch):
+    from pony.config.model import resolve_provider_candidate
+
+    detected_client = object()
+    captured = {}
+
+    def detect(config, *, timeout):
+        captured["config"] = config
+        captured["timeout"] = timeout
+        resolved = resolve_provider_candidate(
+            config,
+            "openai_chat_completions",
         )
+        return detected_client, resolved, {
+            "status": "ok",
+            "candidate_count": 1,
+            "model_calls": 2,
+        }
+
+    monkeypatch.setattr(run_live_session, "resolve_provider_client", detect)
+
+    client, settings, report = run_live_session.resolve_live_provider(
+        _config(provider="auto", request_timeout_seconds=27),
+        project_env={
+            "PONY_API_BASE": "https://gateway.example/v1",
+            "PONY_API_KEY": "test-key",
+            "PONY_MODEL": "gateway-model",
+        },
+        process_env={},
+    )
+
+    assert client is detected_client
+    assert captured["config"]["resolution_status"] == "probe_required"
+    assert captured["timeout"] == 27
+    assert settings["provider"] == "openai"
+    assert settings["transport"] == "openai_chat_completions"
+    assert report["model_calls"] == 2
 
 
 def test_openai_live_client_uses_native_responses_adapter():
@@ -439,7 +499,10 @@ def test_main_reset_uses_repo_root_without_reading_provider_env(tmp_path, monkey
     assert events == [("parse", None), ("reset", tmp_path)]
 
 
-def test_main_constructs_live_pony_with_only_read_file(tmp_path, monkeypatch):
+def test_main_constructs_live_pony_with_read_only_workspace_and_memory_tools(
+    tmp_path,
+    monkeypatch,
+):
     import pony.runtime.application
     import pony.state.session_store
     import pony.workspace.context
@@ -454,6 +517,11 @@ def test_main_constructs_live_pony_with_only_read_file(tmp_path, monkeypatch):
     monkeypatch.setattr(run_live_session, "parse_args", lambda **_kwargs: _config())
     monkeypatch.setattr(
         run_live_session, "provider_settings", lambda *_args, **_kwargs: _settings()
+    )
+    monkeypatch.setattr(
+        run_live_session,
+        "resolve_live_provider",
+        lambda *_args, **_kwargs: (object(), _settings(), {"status": "not_run"}),
     )
     monkeypatch.setattr(run_live_session, "check_env", lambda _config, **_kwargs: None)
     monkeypatch.setattr(run_live_session, "verify_pony_repo", lambda _root: None)
@@ -481,8 +549,8 @@ def test_main_constructs_live_pony_with_only_read_file(tmp_path, monkeypatch):
     monkeypatch.setattr(pony.runtime.application, "Pony", capture_pony)
 
     assert run_live_session.main() == 4
-    assert captured["options"].allowed_tools == ("read_file",)
-    assert captured["options"].max_steps == 2
+    assert captured["options"].allowed_tools == ("read_file", "memory_read")
+    assert captured["options"].max_steps == 3
 
 
 def test_read_turn_trace_aggregates_every_model_turn(tmp_path):
@@ -510,6 +578,11 @@ def test_read_turn_trace_aggregates_every_model_turn(tmp_path):
                     "origin": "native_tool_use",
                 },
                 {
+                    "event": "tool_executed",
+                    "name": "read_file",
+                    "tool_status": "ok",
+                },
+                {
                     "event": "model_turn",
                     "request_metadata": {
                         "system_prefix_hash": "k",
@@ -527,7 +600,7 @@ def test_read_turn_trace_aggregates_every_model_turn(tmp_path):
                 {
                     "event": "action_decoded",
                     "action_type": "final",
-                    "origin": "text_protocol",
+                    "origin": "provider_text",
                 },
             ]
         ),
@@ -558,6 +631,68 @@ def test_read_turn_trace_aggregates_every_model_turn(tmp_path):
     ]
     assert captured["action_origins"] == ["native_tool_use"]
     assert captured["system_prefix_hashes"] == ["k", "k"]
+    assert captured["tool_name_counts"] == {"read_file": 1}
+    assert captured["tool_status_counts"] == {"ok": 1}
+    assert captured["error_code_counts"] == {}
+
+
+def test_read_turn_trace_counts_only_safe_stable_error_codes(tmp_path):
+    trace = tmp_path / "trace.jsonl"
+    trace.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "event": "model_failed",
+                        "reason_code": "provider_protocol_mismatch",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "event": "tool_executed",
+                        "name": "read_file",
+                        "tool_status": "rejected",
+                        "tool_error_code": "workflow_mode_block",
+                        "sandbox_error_code": "not stable / private",
+                        "result": "must not be captured",
+                    }
+                ),
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    captured = run_live_session.read_turn_trace(trace)
+
+    assert captured["tool_name_counts"] == {"read_file": 1}
+    assert captured["tool_status_counts"] == {"rejected": 1}
+    assert captured["error_code_counts"] == {
+        "provider_protocol_mismatch": 1,
+        "workflow_mode_block": 1,
+    }
+    assert "must not be captured" not in json.dumps(captured)
+
+
+def test_exception_error_codes_reads_only_stable_codes_from_cause_chain():
+    class OuterError(RuntimeError):
+        code = "context_budget_exceeded"
+
+    class InnerError(RuntimeError):
+        code = "compaction_failed"
+
+    try:
+        try:
+            raise InnerError("private provider response")
+        except InnerError as cause:
+            raise OuterError("private prompt") from cause
+    except OuterError as error:
+        counts = run_live_session._exception_error_code_counts(error)
+
+    assert counts == {
+        "context_budget_exceeded": 1,
+        "compaction_failed": 1,
+    }
+    assert "private" not in json.dumps(counts)
 
 
 def test_auxiliary_compaction_call_is_counted_without_inflating_agent_turns():
@@ -618,7 +753,7 @@ def test_read_turn_trace_does_not_accept_a_nonstring_cache_key(tmp_path):
 
 
 @pytest.mark.parametrize("contents", [None, '{"event":'])
-def test_read_turn_trace_marks_missing_or_malformed_usage_unknown(tmp_path, contents):
+def test_read_turn_trace_marks_missing_or_malformed_trace_incomplete(tmp_path, contents):
     trace = tmp_path / "trace.jsonl"
     if contents is not None:
         trace.write_text(contents, encoding="utf-8")
@@ -629,13 +764,26 @@ def test_read_turn_trace_marks_missing_or_malformed_usage_unknown(tmp_path, cont
     assert captured["usage_complete"] is False
 
 
-def test_read_turn_trace_marks_non_utf8_artifact_usage_unknown(tmp_path):
+def test_read_turn_trace_marks_non_utf8_trace_incomplete(tmp_path):
     trace = tmp_path / "trace.jsonl"
     trace.write_bytes(b"\xff")
 
     captured = run_live_session.read_turn_trace(trace)
 
     assert captured["model_turns"] == 0
+    assert captured["usage_complete"] is False
+
+
+def test_read_turn_trace_rejects_duplicate_json_keys(tmp_path):
+    trace = tmp_path / "trace.jsonl"
+    trace.write_text(
+        '{"event":"model_turn","event":"model_requested"}\n',
+        encoding="utf-8",
+    )
+
+    captured = run_live_session.read_turn_trace(trace)
+
+    assert captured["model_attempts"] == 0
     assert captured["usage_complete"] is False
 
 
@@ -654,7 +802,14 @@ def test_read_run_terminal_status_uses_each_persisted_artifact(tmp_path):
         encoding="utf-8",
     )
     run_store.trace_path(task_state).write_text(
-        json.dumps({"event": "run_finished"}) + "\n",
+        json.dumps(
+            {
+                "event": "run_finished",
+                "status": "completed",
+                "stop_reason": "final_answer_returned",
+            }
+        )
+        + "\n",
         encoding="utf-8",
     )
 
@@ -663,17 +818,46 @@ def test_read_run_terminal_status_uses_each_persisted_artifact(tmp_path):
         True,
         True,
         True,
+        "",
+        "",
     )
 
     run_store.report_path(task_state).write_text(
         json.dumps({"run": {"status": "failed", "stop_reason": ""}}),
         encoding="utf-8",
     )
-    _, _, report_terminal, _ = run_live_session.read_run_terminal_status(
+    _, _, report_terminal, _, _, _ = run_live_session.read_run_terminal_status(
         run_store,
         task_state,
     )
     assert report_terminal is False
+
+
+def test_read_run_terminal_status_returns_only_consistent_terminal_pair(tmp_path):
+    from pony.state.run_store import RunStore
+
+    run_store = RunStore(tmp_path)
+    task_state = SimpleNamespace(run_id="run-consistent")
+    run_store.task_state_path(task_state).parent.mkdir(parents=True)
+    terminal = {"status": "completed", "stop_reason": "final_answer_returned"}
+    run_store.task_state_path(task_state).write_text(json.dumps(terminal), encoding="utf-8")
+    run_store.report_path(task_state).write_text(
+        json.dumps({"run": terminal}),
+        encoding="utf-8",
+    )
+    run_store.trace_path(task_state).write_text(
+        json.dumps({"event": "run_finished", **terminal}) + "\n",
+        encoding="utf-8",
+    )
+
+    assert run_live_session.read_run_terminal_status(run_store, task_state) == (
+        "run-consistent",
+        True,
+        True,
+        True,
+        "completed",
+        "final_answer_returned",
+    )
 
 
 @pytest.mark.parametrize("stop_reason", [None, 0, True, " "])
@@ -687,7 +871,7 @@ def test_read_run_terminal_status_rejects_nonstring_or_blank_stop_reason(
     task_state = SimpleNamespace(run_id="run-invalid-reason")
     run_store.task_state_path(task_state).parent.mkdir(parents=True)
     run_store.task_state_path(task_state).write_text(
-        json.dumps({"status": "completed", "stop_reason": "done"}),
+        json.dumps({"status": "completed", "stop_reason": "final_answer_returned"}),
         encoding="utf-8",
     )
     run_store.report_path(task_state).write_text(
@@ -695,11 +879,18 @@ def test_read_run_terminal_status_rejects_nonstring_or_blank_stop_reason(
         encoding="utf-8",
     )
     run_store.trace_path(task_state).write_text(
-        json.dumps({"event": "run_finished"}) + "\n",
+        json.dumps(
+            {
+                "event": "run_finished",
+                "status": "completed",
+                "stop_reason": "final_answer_returned",
+            }
+        )
+        + "\n",
         encoding="utf-8",
     )
 
-    _, _, report_terminal, _ = run_live_session.read_run_terminal_status(
+    _, _, report_terminal, _, _, _ = run_live_session.read_run_terminal_status(
         run_store,
         task_state,
     )
@@ -726,15 +917,24 @@ def test_read_run_terminal_status_keeps_other_artifact_evidence(
     task_state = SimpleNamespace(run_id="run-one-bad-artifact")
     run_store.task_state_path(task_state).parent.mkdir(parents=True)
     run_store.task_state_path(task_state).write_text(
-        json.dumps({"status": "completed", "stop_reason": "done"}),
+        json.dumps({"status": "completed", "stop_reason": "final_answer_returned"}),
         encoding="utf-8",
     )
     run_store.report_path(task_state).write_text(
-        json.dumps({"run": {"status": "completed", "stop_reason": "done"}}),
+        json.dumps(
+            {"run": {"status": "completed", "stop_reason": "final_answer_returned"}}
+        ),
         encoding="utf-8",
     )
     run_store.trace_path(task_state).write_text(
-        json.dumps({"event": "run_finished"}) + "\n",
+        json.dumps(
+            {
+                "event": "run_finished",
+                "status": "completed",
+                "stop_reason": "final_answer_returned",
+            }
+        )
+        + "\n",
         encoding="utf-8",
     )
     {
@@ -743,7 +943,7 @@ def test_read_run_terminal_status_keeps_other_artifact_evidence(
         "trace": run_store.trace_path(task_state),
     }[artifact].write_text("{", encoding="utf-8")
 
-    _, task_terminal, report_terminal, trace_terminal = (
+    _, task_terminal, report_terminal, trace_terminal, _, _ = (
         run_live_session.read_run_terminal_status(run_store, task_state)
     )
 
@@ -759,11 +959,13 @@ def test_turn_runner_does_not_reuse_previous_run_evidence_after_pre_run_failure(
     previous_task_state = SimpleNamespace(run_id="previous-run")
     run_store.task_state_path(previous_task_state).parent.mkdir(parents=True)
     run_store.task_state_path(previous_task_state).write_text(
-        json.dumps({"status": "completed", "stop_reason": "done"}),
+        json.dumps({"status": "completed", "stop_reason": "final_answer_returned"}),
         encoding="utf-8",
     )
     run_store.report_path(previous_task_state).write_text(
-        json.dumps({"run": {"status": "completed", "stop_reason": "done"}}),
+        json.dumps(
+            {"run": {"status": "completed", "stop_reason": "final_answer_returned"}}
+        ),
         encoding="utf-8",
     )
     run_store.trace_path(previous_task_state).write_text(
@@ -776,7 +978,13 @@ def test_turn_runner_does_not_reuse_previous_run_evidence_after_pre_run_failure(
                         "completion_usage": {"input_tokens": 1, "output_tokens": 1},
                     }
                 ),
-                json.dumps({"event": "run_finished"}),
+                json.dumps(
+                    {
+                        "event": "run_finished",
+                        "status": "completed",
+                        "stop_reason": "final_answer_returned",
+                    }
+                ),
             ]
         ),
         encoding="utf-8",
@@ -799,7 +1007,7 @@ def test_turn_runner_does_not_reuse_previous_run_evidence_after_pre_run_failure(
         "must not reuse old evidence",
     )
 
-    assert result.error == "OSError: initial user save failed"
+    assert result.error_code == "turn_error"
     assert result.model_turns_this_turn == 0
     assert result.usage_complete is False
     assert result.metadata == {}
@@ -808,6 +1016,36 @@ def test_turn_runner_does_not_reuse_previous_run_evidence_after_pre_run_failure(
     assert not result.task_state_terminal
     assert not result.report_terminal
     assert not result.trace_terminal
+
+
+def test_turn_failure_renders_only_a_stable_error_code(tmp_path, capsys):
+    private_error = "private provider response"
+
+    def fail(_prompt):
+        raise RuntimeError(private_error)
+
+    pony = SimpleNamespace(
+        session={"messages": []},
+        model_client=SimpleNamespace(calls=[]),
+        run_store=object(),
+        current_task_state=None,
+        ask=fail,
+    )
+    config = _config()
+    result = run_live_session.TurnRunner(pony, config).run_turn(
+        1,
+        "fixed live prompt",
+        "recall_triggered",
+    )
+    assertions = run_live_session.AssertionEngine(config).check_turn_1_recall(result)
+    reporter = Reporter(config, tmp_path, resolution_report=_resolution_report())
+
+    reporter.render_turn_summary(1, "recall_triggered", assertions)
+
+    output = capsys.readouterr().out
+    assert result.error_code == "turn_error"
+    assert "turn_error" in output
+    assert private_error not in output
 
 
 def test_turn_runner_uses_first_trace_call_as_current_turn_evidence(tmp_path):
@@ -820,11 +1058,13 @@ def test_turn_runner_uses_first_trace_call_as_current_turn_evidence(tmp_path):
     second_metadata = {"messages_count": 4, "system_prefix_hash": "stable-key"}
     run_store.task_state_path(current_task_state).parent.mkdir(parents=True)
     run_store.task_state_path(current_task_state).write_text(
-        json.dumps({"status": "completed", "stop_reason": "done"}),
+        json.dumps({"status": "completed", "stop_reason": "final_answer_returned"}),
         encoding="utf-8",
     )
     run_store.report_path(current_task_state).write_text(
-        json.dumps({"run": {"status": "completed", "stop_reason": "done"}}),
+        json.dumps(
+            {"run": {"status": "completed", "stop_reason": "final_answer_returned"}}
+        ),
         encoding="utf-8",
     )
     run_store.trace_path(current_task_state).write_text(
@@ -851,7 +1091,13 @@ def test_turn_runner_uses_first_trace_call_as_current_turn_evidence(tmp_path):
                         "completion_usage": {"input_tokens": 3, "output_tokens": 2},
                     }
                 ),
-                json.dumps({"event": "run_finished"}),
+                json.dumps(
+                    {
+                        "event": "run_finished",
+                        "status": "completed",
+                        "stop_reason": "final_answer_returned",
+                    }
+                ),
             ]
         ),
         encoding="utf-8",
@@ -958,7 +1204,7 @@ def _turn_result_stub(**overrides):
         duration_ms=100,
         usage={"input_tokens": 10, "output_tokens": 5},
         stopped_at_step_limit=False,
-        error=None,
+        error_code=None,
         provider_input_messages_len=1,
         current_user_content=(
             '<system-reminder><pony:recalled_memory path="workspace/notes/cache-invariant.md">'
@@ -973,6 +1219,11 @@ def _turn_result_stub(**overrides):
         task_state_terminal=True,
         report_terminal=True,
         trace_terminal=True,
+        terminal_status="completed",
+        stop_reason="final_answer_returned",
+        tool_name_counts={},
+        tool_status_counts={},
+        error_code_counts={},
     )
     defaults.update(overrides)
     return TurnResult(**defaults)
@@ -1042,7 +1293,43 @@ def test_dispatch_routes_turn_1_to_recall_check():
     engine = _engine()
     result = _turn_result_stub()
     asserts = engine.dispatch(1, result, pony=MagicMock(), all_results=[result])
-    assert len(asserts) == 6
+    assert len(asserts) == 9
+
+
+def test_dispatch_global_does_not_require_a_turn_result(tmp_path):
+    engine = _engine()
+
+    assertions = engine.dispatch(
+        "global",
+        None,
+        pony=_pony_stub_with_persisted_tree(tmp_path),
+        all_results=[_turn_result_stub()],
+    )
+
+    assert assertions
+
+
+@pytest.mark.parametrize(
+    ("overrides", "failed_name"),
+    [
+        (
+            {"terminal_status": "stopped", "stop_reason": "step_limit_reached"},
+            "turn_completed_with_final_answer",
+        ),
+        (
+            {"terminal_status": "stopped", "stop_reason": "retry_limit_reached"},
+            "turn_completed_with_final_answer",
+        ),
+        ({"final_answer": " \n"}, "turn_final_answer_nonempty"),
+        ({"trace_terminal": False}, "turn_terminal_evidence_complete"),
+    ],
+)
+def test_dispatch_fails_incomplete_turns(overrides, failed_name):
+    result = _turn_result_stub(**overrides)
+
+    assertions = _engine().dispatch(1, result, pony=MagicMock(), all_results=[result])
+
+    assert any(item.name == failed_name and not item.passed for item in assertions)
 
 
 def _turn_2_result_stub(**overrides):
@@ -1065,7 +1352,7 @@ def _turn_2_result_stub(**overrides):
         duration_ms=100,
         usage={},
         stopped_at_step_limit=False,
-        error=None,
+        error_code=None,
         provider_input_messages_len=6,
         current_user_content="",
         usage_complete=True,
@@ -1083,6 +1370,11 @@ def _turn_2_result_stub(**overrides):
         task_state_terminal=True,
         report_terminal=True,
         trace_terminal=True,
+        terminal_status="completed",
+        stop_reason="final_answer_returned",
+        tool_name_counts={},
+        tool_status_counts={},
+        error_code_counts={},
     )
     defaults.update(overrides)
     return TurnResult(**defaults)
@@ -1153,14 +1445,14 @@ def test_check_turn_2_digest_passes_on_valid_state(tmp_path):
     ]
 
 
-@pytest.mark.parametrize("provider", ["openai", "ollama"])
-def test_text_provider_turn_2_accepts_text_protocol_action(tmp_path, provider):
+@pytest.mark.parametrize("provider", ["anthropic", "openai", "ollama"])
+def test_turn_2_requires_native_tool_action_for_every_provider(tmp_path, provider):
     pony, _ = _pony_stub_with_digested_message(
         "x" * 5000,
         tmp_path / "runs",
     )
     assertions = _engine(provider=provider).check_turn_2_digest(
-        _turn_2_result_stub(action_origins=("text_protocol",)),
+        _turn_2_result_stub(action_origins=("native_tool_use",)),
         pony,
     )
 
@@ -1170,7 +1462,7 @@ def test_text_provider_turn_2_accepts_text_protocol_action(tmp_path, provider):
         if assertion.name == "provider_tool_action_observed"
     )
     assert action_assertion.passed
-    assert action_assertion.expected == "text_protocol in action_origins"
+    assert action_assertion.expected == "native_tool_use in action_origins"
 
 
 def test_check_turn_2_allows_plain_prompt_when_nothing_was_injected(tmp_path):
@@ -1329,7 +1621,7 @@ def _turn_3_result_stub(**overrides):
         duration_ms=100,
         usage={},
         stopped_at_step_limit=False,
-        error=None,
+        error_code=None,
         provider_input_messages_len=8,
         current_user_content="",
         usage_complete=True,
@@ -1341,6 +1633,11 @@ def _turn_3_result_stub(**overrides):
         task_state_terminal=True,
         report_terminal=True,
         trace_terminal=True,
+        terminal_status="completed",
+        stop_reason="final_answer_returned",
+        tool_name_counts={},
+        tool_status_counts={},
+        error_code_counts={},
     )
     defaults.update(overrides)
     return TurnResult(**defaults)
@@ -1424,7 +1721,7 @@ def _turn_4_result_stub(**overrides):
         duration_ms=100,
         usage={},
         stopped_at_step_limit=False,
-        error=None,
+        error_code=None,
         provider_input_messages_len=10,  # smaller than session (drop reached wire)
         current_user_content="",
         usage_complete=True,
@@ -1436,6 +1733,11 @@ def _turn_4_result_stub(**overrides):
         task_state_terminal=True,
         report_terminal=True,
         trace_terminal=True,
+        terminal_status="completed",
+        stop_reason="final_answer_returned",
+        tool_name_counts={},
+        tool_status_counts={},
+        error_code_counts={},
     )
     defaults.update(overrides)
     return TurnResult(**defaults)
@@ -1640,7 +1942,7 @@ def _turn_5_result_stub(system_prefix_hash="abc", **overrides):
         duration_ms=100,
         usage={"cache_read_input_tokens": 100, "cache_creation_input_tokens": 0},
         stopped_at_step_limit=False,
-        error=None,
+        error_code=None,
         provider_input_messages_len=12,
         current_user_content="",
         usage_complete=True,
@@ -1652,6 +1954,11 @@ def _turn_5_result_stub(system_prefix_hash="abc", **overrides):
         task_state_terminal=True,
         report_terminal=True,
         trace_terminal=True,
+        terminal_status="completed",
+        stop_reason="final_answer_returned",
+        tool_name_counts={},
+        tool_status_counts={},
+        error_code_counts={},
     )
     defaults.update(overrides)
     return TurnResult(**defaults)
@@ -1724,10 +2031,10 @@ def test_check_global_passes_under_budget(tmp_path):
     assert all(a.passed for a in asserts)
 
 
-@pytest.mark.parametrize("provider", ["openai", "ollama"])
-def test_text_provider_global_accepts_text_protocol_action(tmp_path, provider):
+@pytest.mark.parametrize("provider", ["anthropic", "openai", "ollama"])
+def test_global_requires_native_tool_action_for_every_provider(tmp_path, provider):
     assertions = _engine(provider=provider).check_global(
-        [_turn_result_stub(action_origins=("text_protocol",))],
+        [_turn_result_stub(action_origins=("native_tool_use",))],
         _pony_stub_with_persisted_tree(tmp_path),
     )
 
@@ -1737,7 +2044,7 @@ def test_text_provider_global_accepts_text_protocol_action(tmp_path, provider):
         if assertion.name == "provider_tool_action_observed"
     )
     assert action_assertion.passed
-    assert action_assertion.expected.endswith("text_protocol")
+    assert action_assertion.expected.endswith("native_tool_use")
 
 
 def test_check_global_fails_when_model_attempts_exceeded():
@@ -1781,28 +2088,26 @@ def _passing_assertion(name="pass"):
 
 
 def test_report_cannot_pass_when_aborted_or_short(tmp_path):
-    reporter = Reporter(_config(), tmp_path)
+    reporter = Reporter(_config(), tmp_path, resolution_report=_resolution_report())
 
     report_path = reporter.write_json(
         all_results=[],
         all_assertions={},
-        config=reporter.config,
         totals={},
         wall_time_ms=1,
         aborted_reason="provider_error_turn_1",
         expected_turn_count=5,
-        session_schema=3,
         git_head="abc",
     )
 
     payload = json.loads(report_path.read_text(encoding="utf-8"))
     assert payload["record_type"] == "live_e2e_report"
-    assert payload["format_version"] == 2
+    assert payload["format_version"] == 3
     assert payload["overall_pass"] is False
     assert payload["aborted_reason"] == "provider_error_turn_1"
 
 
-@pytest.mark.parametrize("version", [None, True, 1.0, "2", 1])
+@pytest.mark.parametrize("version", [None, True, 1.0, "2", 1, 2])
 def test_live_report_reader_rejects_noncurrent_header_before_business(
     tmp_path, version
 ):
@@ -1823,7 +2128,7 @@ def test_live_report_reader_rejects_noncurrent_header_before_business(
 def test_live_report_reader_rejects_nested_duplicate_keys(tmp_path):
     path = tmp_path / "report.json"
     path.write_text(
-        '{"record_type":"live_e2e_report","format_version":1,'
+        '{"record_type":"live_e2e_report","format_version":3,'
         '"overall_pass":false,"totals":{"turns":1,"turns":2}}',
         encoding="utf-8",
     )
@@ -1833,18 +2138,16 @@ def test_live_report_reader_rejects_nested_duplicate_keys(tmp_path):
 
 
 def test_report_cannot_pass_with_an_empty_turn_assertion_list(tmp_path):
-    reporter = Reporter(_config(), tmp_path)
+    reporter = Reporter(_config(), tmp_path, resolution_report=_resolution_report())
     results = [_turn_result_stub(), _turn_result_stub(turn=2)]
 
     report_path = reporter.write_json(
         results,
         {1: [_passing_assertion()], 2: [], "global": [_passing_assertion()]},
-        reporter.config,
         {},
         1,
         aborted_reason=None,
         expected_turn_count=2,
-        session_schema=3,
         git_head="abc",
     )
 
@@ -1852,17 +2155,15 @@ def test_report_cannot_pass_with_an_empty_turn_assertion_list(tmp_path):
 
 
 def test_report_cannot_pass_with_only_global_assertions(tmp_path):
-    reporter = Reporter(_config(), tmp_path)
+    reporter = Reporter(_config(), tmp_path, resolution_report=_resolution_report())
 
     report_path = reporter.write_json(
         [_turn_result_stub()],
         {"global": [_passing_assertion()]},
-        reporter.config,
         {},
         1,
         aborted_reason=None,
         expected_turn_count=1,
-        session_schema=3,
         git_head="abc",
     )
 
@@ -1871,17 +2172,15 @@ def test_report_cannot_pass_with_only_global_assertions(tmp_path):
 
 def test_report_does_not_serialize_provider_api_key(tmp_path, monkeypatch):
     monkeypatch.setenv("PONY_API_KEY", "sentinel-secret")
-    reporter = Reporter(_config(), tmp_path)
+    reporter = Reporter(_config(), tmp_path, resolution_report=_resolution_report())
 
     report_path = reporter.write_json(
         [_turn_result_stub()],
         {1: [_passing_assertion()], "global": [_passing_assertion()]},
-        reporter.config,
         {},
         1,
         aborted_reason=None,
         expected_turn_count=1,
-        session_schema=3,
         git_head="abc",
     )
 
@@ -1946,7 +2245,7 @@ def test_report_redacts_full_payload_and_writes_safe_artifact_summary(tmp_path):
     from pony.security.redaction import redact_artifact
 
     secret = "ghp_" + "R" * 32
-    reporter = Reporter(_config(), tmp_path)
+    reporter = Reporter(_config(), tmp_path, resolution_report=_resolution_report())
     result = _turn_result_stub(user_prompt=secret, final_answer=secret)
     assertion = Assertion(
         name="safe",
@@ -1963,12 +2262,10 @@ def test_report_redacts_full_payload_and_writes_safe_artifact_summary(tmp_path):
     report_path = reporter.write_json(
         [result],
         {1: [assertion], "global": [_passing_assertion()]},
-        reporter.config,
         {},
         1,
         aborted_reason=secret,
         expected_turn_count=1,
-        session_schema=3,
         git_head="abc",
         artifact_security=artifact_security,
         redactor=lambda value: redact_artifact(
@@ -2043,7 +2340,7 @@ def test_provider_wrapper_marks_and_accounts_for_compaction_call():
     assert wrapper.calls[0]["transport_retries"] == 0
 
 
-def test_main_preflight_failure_never_constructs_provider(tmp_path, monkeypatch):
+def test_missing_key_stops_before_workload_client_construction(tmp_path, monkeypatch):
     make_client = MagicMock()
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(run_live_session, "parse_args", lambda **_kwargs: _config())
@@ -2052,8 +2349,19 @@ def test_main_preflight_failure_never_constructs_provider(tmp_path, monkeypatch)
     )
     monkeypatch.setattr(
         run_live_session,
+        "resolve_live_provider",
+        lambda *_args, **_kwargs: (object(), _settings(), {"status": "not_run"}),
+    )
+    monkeypatch.setattr(
+        run_live_session,
         "check_env",
         MagicMock(side_effect=SystemExit(2)),
+    )
+    monkeypatch.setattr(run_live_session, "verify_pony_repo", lambda _root: None)
+    monkeypatch.setattr(
+        run_live_session,
+        "warn_if_dirty_working_tree",
+        lambda _root: None,
     )
     monkeypatch.setattr(run_live_session, "make_live_client", make_client)
 
@@ -2063,7 +2371,47 @@ def test_main_preflight_failure_never_constructs_provider(tmp_path, monkeypatch)
     make_client.assert_not_called()
 
 
-def test_v2_cli_rejects_removed_provider_call_and_mixed_timeout_flags(monkeypatch):
+def test_runtime_import_failure_stops_before_paid_resolution(tmp_path, monkeypatch):
+    resolver = MagicMock(side_effect=AssertionError("paid resolution must not run"))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(run_live_session, "parse_args", lambda **_kwargs: _config())
+    monkeypatch.setattr(run_live_session, "verify_pony_repo", lambda _root: None)
+    monkeypatch.setattr(
+        run_live_session,
+        "warn_if_dirty_working_tree",
+        lambda _root: None,
+    )
+    monkeypatch.setattr(
+        run_live_session,
+        "_runtime_types",
+        MagicMock(side_effect=ImportError("broken local runtime")),
+    )
+    monkeypatch.setattr(run_live_session, "resolve_live_provider", resolver)
+
+    assert run_live_session.main() == 4
+    resolver.assert_not_called()
+
+
+def test_main_rejects_stale_fixture_before_paid_resolution(tmp_path, monkeypatch):
+    fixture = tmp_path / run_live_session.SEED_NOTE_REL
+    fixture.parent.mkdir(parents=True)
+    fixture.write_text("stale fixture\n", encoding="utf-8")
+    resolver = MagicMock(side_effect=AssertionError("paid resolution must not run"))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(run_live_session, "parse_args", lambda **_kwargs: _config())
+    monkeypatch.setattr(run_live_session, "verify_pony_repo", lambda _root: None)
+    monkeypatch.setattr(
+        run_live_session,
+        "warn_if_dirty_working_tree",
+        lambda _root: None,
+    )
+    monkeypatch.setattr(run_live_session, "resolve_live_provider", resolver)
+
+    assert run_live_session.main() == 2
+    resolver.assert_not_called()
+
+
+def test_cli_rejects_removed_provider_call_and_mixed_timeout_flags(monkeypatch):
     for flag in ("--max-provider-calls", "--timeout-seconds"):
         monkeypatch.setattr(sys, "argv", ["run_live_session", flag, "1"])
         with pytest.raises(SystemExit, match="2"):
@@ -2079,32 +2427,10 @@ def test_v2_cli_rejects_removed_provider_call_and_mixed_timeout_flags(monkeypatc
         "--max-wall-seconds",
     ),
 )
-def test_v2_cli_rejects_nonpositive_caps(monkeypatch, flag):
+def test_cli_rejects_nonpositive_caps(monkeypatch, flag):
     monkeypatch.setattr(sys, "argv", ["run_live_session", flag, "0"])
     with pytest.raises(SystemExit, match="2"):
         run_live_session.parse_args()
-
-
-def test_ollama_readiness_uses_bounded_model_probe(monkeypatch):
-    monkeypatch.setattr(
-        "pony.providers.probe.probe_model_client",
-        lambda _client: {"status": "failed"},
-    )
-
-    assert (
-        run_live_session.check_live_readiness(
-            _config(provider="ollama"),
-            settings={
-                "api_key": "",
-                "model": "test-model",
-                "base_url": "http://127.0.0.1:11434",
-                "transport": "ollama_chat",
-                "auth_mode": "none",
-                "capabilities": {},
-            },
-        )
-        is False
-    )
 
 
 def _gate_assertions():
@@ -2118,19 +2444,17 @@ def _gate_assertions():
     }
 
 
-def test_v2_gates_pass_only_with_complete_zero_retry_evidence(tmp_path):
-    reporter = Reporter(_config(), tmp_path)
+def test_v3_gates_pass_only_with_complete_zero_retry_evidence(tmp_path):
+    reporter = Reporter(_config(), tmp_path, resolution_report=_resolution_report())
     result = _turn_result_stub()
 
     path = reporter.write_json(
         [result],
         _gate_assertions(),
-        reporter.config,
         {"input_tokens": 10, "output_tokens": 5},
         10,
         aborted_reason=None,
         expected_turn_count=1,
-        session_schema=1,
         git_head="abc",
     )
     payload = run_live_session.load_live_report(path)
@@ -2144,8 +2468,124 @@ def test_v2_gates_pass_only_with_complete_zero_retry_evidence(tmp_path):
     }
 
 
-def test_v2_transport_retry_is_degraded_and_evidence_gap_is_fail(tmp_path):
-    reporter = Reporter(_config(), tmp_path)
+def test_v3_writer_output_is_accepted_by_evaluator(tmp_path):
+    reporter = Reporter(_config(provider="openai"), tmp_path, resolution_report={
+        "status": "ok",
+        "resolution_source": "probe",
+        "protocol": "openai_chat_completions",
+        "candidate_count": 1,
+        "model_calls": 2,
+        "usage_status": "complete",
+    })
+    expected_behaviors = (
+        "recall_triggered",
+        "provider_tool_roundtrip",
+        "source_pool_bounded",
+        "history_compacted",
+        "cache_anchor_verified",
+    )
+    results = [
+        _turn_result_stub(
+            turn=turn,
+            expected_behavior=behavior,
+            usage={
+                "input_tokens": 2,
+                "output_tokens": 1,
+                "total_tokens": 3,
+                "cached_tokens": 0,
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+            },
+        )
+        for turn, behavior in enumerate(expected_behaviors, start=1)
+    ]
+    assertions = {
+        result.turn: [
+            Assertion(
+                f"behavior_ok_{result.turn}",
+                True,
+                "",
+                "",
+                gate="behavior",
+            )
+        ]
+        for result in results
+    }
+    assertions["global"] = [
+        Assertion("transport_ok", True, "", "", gate="transport_cost"),
+        Assertion("security_ok", True, "", "", gate="security"),
+        Assertion("persistence_ok", True, "", "", gate="persistence"),
+        Assertion(
+            "fixture_restored_after_context_exit",
+            True,
+            "",
+            "",
+            gate="persistence",
+        ),
+    ]
+    totals = {
+        "model_attempts": 5,
+        "model_turns": 5,
+        "model_failures": 0,
+        "transport_attempts": 5,
+        "transport_retries": 0,
+        "input_tokens": 10,
+        "output_tokens": 5,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+    }
+
+    path = reporter.write_json(
+        results,
+        assertions,
+        totals,
+        10,
+        aborted_reason=None,
+        expected_turn_count=5,
+        git_head="expected",
+        artifact_security={
+            "files_scanned": 1,
+            "secret_hits": [],
+            "mode_failures": [],
+        },
+    )
+
+    assert evaluate._live_report_passed(
+        run_live_session.load_live_report(path),
+        "openai",
+        "expected",
+    )
+
+
+@pytest.mark.parametrize(
+    "report",
+    [
+        _resolution_report(resolution_source=1),
+        _resolution_report(usage_status="complete"),
+        _resolution_report(resolution_source="probe"),
+        _resolution_report(protocol="openai_responses"),
+        _resolution_report(
+            status="ok",
+            candidate_count=1,
+            model_calls=2,
+            usage_status="not_checked",
+        ),
+        _resolution_report(
+            status="ok",
+            resolution_source="explicit",
+            candidate_count=1,
+            model_calls=2,
+            usage_status="complete",
+        ),
+    ],
+)
+def test_reporter_rejects_invalid_provider_resolution_evidence(tmp_path, report):
+    with pytest.raises(ValueError, match="provider resolution evidence"):
+        Reporter(_config(), tmp_path, resolution_report=report)
+
+
+def test_v3_transport_retry_is_degraded_and_evidence_gap_is_fail(tmp_path):
+    reporter = Reporter(_config(), tmp_path, resolution_report=_resolution_report())
     retry = _turn_result_stub(
         transport_attempts_this_turn=2,
         transport_retries_this_turn=1,
@@ -2164,13 +2604,246 @@ def test_v2_transport_retry_is_degraded_and_evidence_gap_is_fail(tmp_path):
     assert missing_gates["transport_cost"]["status"] == "fail"
 
 
-def test_v2_report_omits_prompt_answer_raw_assertion_and_exception(tmp_path):
+def test_usage_unavailable_is_degraded_without_aborting_future_turns(tmp_path):
+    reporter = Reporter(_config(), tmp_path, resolution_report=_resolution_report())
+    result = _turn_result_stub(
+        usage={},
+        usage_complete=False,
+        billing_ambiguous=True,
+    )
+    assertions = _gate_assertions()
+    assertions["global"].append(
+        Assertion(
+            "all_turn_usage_complete",
+            False,
+            "complete usage",
+            "False",
+        )
+    )
+
+    wall_start = run_live_session.time.monotonic_ns()
+    assert run_live_session._budget_exceeded([result], reporter.config, wall_start) is None
+    path = reporter.write_json(
+        [result],
+        assertions,
+        {"input_tokens": 0, "output_tokens": 0},
+        1,
+        aborted_reason=None,
+        expected_turn_count=1,
+        git_head="abc",
+    )
+    payload = run_live_session.load_live_report(path)
+
+    assert payload["overall_pass"] is True
+    assert payload["gates"]["transport_cost"] == {
+        "status": "degraded",
+        "model_attempts": 1,
+        "model_attempt_cap": 15,
+        "transport_attempts": 1,
+        "transport_retries": 0,
+        "transport_retry_reason_counts": {},
+        "transport_evidence_complete": True,
+        "usage_complete": False,
+        "billing_ambiguous": True,
+        "input_tokens": 0,
+        "output_tokens": 0,
+    }
+
+
+def test_transport_gate_requires_non_usage_assertion(tmp_path):
+    reporter = Reporter(_config(), tmp_path, resolution_report=_resolution_report())
+    assertions = _gate_assertions()
+    assertions["global"] = [
+        item for item in assertions["global"] if item.gate != "transport_cost"
+    ]
+    assertions["global"].append(
+        Assertion(
+            "all_turn_usage_complete",
+            False,
+            "complete usage",
+            "False",
+            gate="transport_cost",
+        )
+    )
+    result = _turn_result_stub(
+        usage_complete=False,
+        billing_ambiguous=True,
+    )
+
+    gates = reporter._build_gates([result], assertions, {}, 1)
+
+    assert gates["transport_cost"]["status"] == "fail"
+
+
+def test_usage_unavailable_still_enforces_model_attempt_cap():
+    result = _turn_result_stub(
+        model_attempts_this_turn=2,
+        usage={},
+        usage_complete=False,
+        billing_ambiguous=True,
+    )
+
+    reason = run_live_session._budget_exceeded(
+        [result],
+        _config(max_model_attempts=1),
+        run_live_session.time.monotonic_ns(),
+    )
+
+    assert reason == "max_model_attempts exceeded (2>1)"
+
+
+def test_usage_unavailable_still_enforces_wall_cap(monkeypatch):
+    result = _turn_result_stub(
+        usage={},
+        usage_complete=False,
+        billing_ambiguous=True,
+    )
+    monkeypatch.setattr(run_live_session.time, "monotonic_ns", lambda: 2_000_000_000)
+
+    reason = run_live_session._budget_exceeded(
+        [result],
+        _config(max_wall_seconds=1),
+        0,
+    )
+
+    assert reason == "max_wall_seconds exceeded (2>1)"
+
+
+def test_report_does_not_accept_retry_degradation_as_overall_pass(tmp_path):
+    reporter = Reporter(_config(), tmp_path, resolution_report=_resolution_report())
+    result = _turn_result_stub(
+        transport_attempts_this_turn=2,
+        transport_retries_this_turn=1,
+        billing_ambiguous=True,
+    )
+
+    path = reporter.write_json(
+        [result],
+        _gate_assertions(),
+        {"input_tokens": 10, "output_tokens": 5},
+        1,
+        aborted_reason=None,
+        expected_turn_count=1,
+        git_head="abc",
+    )
+    payload = run_live_session.load_live_report(path)
+
+    assert payload["gates"]["transport_cost"]["status"] == "degraded"
+    assert payload["overall_pass"] is False
+
+
+def test_report_does_not_ignore_failure_from_unknown_gate(tmp_path):
+    reporter = Reporter(_config(), tmp_path, resolution_report=_resolution_report())
+    assertions = _gate_assertions()
+    assertions["global"].append(
+        Assertion("unknown_failure", False, "", "", gate="unknown")
+    )
+
+    path = reporter.write_json(
+        [_turn_result_stub()],
+        assertions,
+        {"input_tokens": 10, "output_tokens": 5},
+        1,
+        aborted_reason=None,
+        expected_turn_count=1,
+        git_head="abc",
+    )
+
+    assert run_live_session.load_live_report(path)["overall_pass"] is False
+
+
+def test_render_final_names_usage_degraded_success(tmp_path, capsys):
+    reporter = Reporter(_config(), tmp_path, resolution_report=_resolution_report())
+    reporter.render_final(
+        overall_pass=True,
+        totals={},
+        wall_time_ms=1,
+        report_path=tmp_path / "report.json",
+        assertion_summary=(9, 10),
+        gates={
+            "behavior": {"status": "pass"},
+            "transport_cost": {
+                "status": "degraded",
+                "usage_complete": False,
+                "model_attempts": 1,
+                "model_attempt_cap": 15,
+                "transport_attempts": 1,
+                "transport_retries": 0,
+            },
+            "security": {"status": "pass"},
+            "persistence": {"status": "pass"},
+        },
+    )
+
+    output = capsys.readouterr().out
+    assert "Transport: DEGRADED" in output
+    assert "OVERALL: PASS WITH DEGRADED USAGE" in output
+    assert "ALL PASS" not in output
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        _turn_result_stub(
+            terminal_status="stopped",
+            stop_reason="step_limit_reached",
+        ),
+        _turn_result_stub(
+            terminal_status="stopped",
+            stop_reason="retry_limit_reached",
+        ),
+        _turn_result_stub(final_answer=""),
+        _turn_result_stub(report_terminal=False),
+    ],
+)
+def test_v3_behavior_gate_fails_incomplete_turn_even_with_passing_assertions(
+    tmp_path,
+    result,
+):
+    reporter = Reporter(_config(), tmp_path, resolution_report=_resolution_report())
+
+    gates = reporter._build_gates([result], _gate_assertions(), {}, 1)
+
+    assert gates["behavior"]["status"] == "fail"
+
+
+def test_v3_report_contains_only_low_sensitivity_turn_diagnostics(tmp_path):
+    reporter = Reporter(_config(), tmp_path, resolution_report=_resolution_report())
+    result = _turn_result_stub(
+        terminal_status="stopped",
+        stop_reason="step_limit_reached",
+        tool_name_counts={"read_file": 2},
+        tool_status_counts={"ok": 1, "rejected": 1},
+        error_code_counts={"workflow_mode_block": 1},
+    )
+
+    path = reporter.write_json(
+        [result],
+        _gate_assertions(),
+        {},
+        1,
+        aborted_reason="turn_not_completed_1",
+        expected_turn_count=1,
+        git_head="abc",
+    )
+    turn = run_live_session.load_live_report(path)["turns"][0]
+
+    assert turn["terminal_status"] == "stopped"
+    assert turn["stop_reason"] == "step_limit_reached"
+    assert turn["tool_name_counts"] == {"read_file": 2}
+    assert turn["tool_status_counts"] == {"ok": 1, "rejected": 1}
+    assert turn["error_code_counts"] == {"workflow_mode_block": 1}
+    assert "user_prompt" not in turn
+    assert "final_answer" not in turn
+
+
+def test_v3_report_omits_prompt_answer_raw_assertion_and_exception(tmp_path):
     secret_text = "sensitive-prompt-and-answer"
-    reporter = Reporter(_config(), tmp_path)
+    reporter = Reporter(_config(), tmp_path, resolution_report=_resolution_report())
     result = _turn_result_stub(
         user_prompt=secret_text,
         final_answer=secret_text,
-        error=f"RuntimeError: {secret_text}",
+        error_code=f"RuntimeError: {secret_text}",
     )
     assertions = _gate_assertions()
     assertions[1][0] = Assertion(
@@ -2180,12 +2853,10 @@ def test_v2_report_omits_prompt_answer_raw_assertion_and_exception(tmp_path):
     path = reporter.write_json(
         [result],
         assertions,
-        reporter.config,
         {},
         1,
         aborted_reason="provider_error_turn_1",
         expected_turn_count=1,
-        session_schema=1,
         git_head="abc",
     )
     text = path.read_text(encoding="utf-8")

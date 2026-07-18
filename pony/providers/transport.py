@@ -115,19 +115,11 @@ def _model_binding(protocol_family, model, base_url):
     }
 
 
-def _model_runtime_metadata(protocol_family, model, base_url):
-    parsed = urllib.parse.urlsplit(str(base_url))
-    host = parsed.hostname or ""
-    if ":" in host and not host.startswith("["):
-        host = f"[{host}]"
-    netloc = host
-    if parsed.port is not None:
-        netloc = f"{netloc}:{parsed.port}"
+def _model_runtime_metadata(protocol_family, model):
     return {
         "protocol_family": str(protocol_family),
         "requested_model": str(model),
         "effective_model": str(model),
-        "endpoint_origin": urllib.parse.urlunsplit((parsed.scheme, netloc, "", "", "")),
     }
 
 

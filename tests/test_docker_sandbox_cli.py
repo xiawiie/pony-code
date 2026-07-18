@@ -940,6 +940,47 @@ def test_build_agent_wires_verified_runtime_to_one_docker_context(
     assert captured["options"].session_id == "session-1"
 
 
+def test_build_agent_discards_fresh_staging_when_later_startup_fails(
+    tmp_path,
+    monkeypatch,
+):
+    events = []
+
+    class Store:
+        def discard(self, state_root):
+            events.append(("discard", state_root))
+
+    state_root = tmp_path / "sandbox-state"
+    context = SimpleNamespace(
+        resumed=False,
+        sandbox_state_root=state_root,
+        runner=SimpleNamespace(session_store=Store()),
+    )
+    monkeypatch.setattr(
+        cli_assembly,
+        "_load_sandbox_runtime",
+        lambda: (object(), object()),
+    )
+    monkeypatch.setattr(
+        cli_assembly,
+        "_build_sandbox_context",
+        lambda source_workspace, _image, **_kwargs: (context, source_workspace),
+    )
+    monkeypatch.setattr(
+        cli_assembly,
+        "_build_transport_client",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("injected")),
+    )
+    args = pony_cli.build_arg_parser().parse_args(
+        ["--cwd", str(tmp_path), "--sandbox", "run", "hello"]
+    )
+
+    with pytest.raises(RuntimeError, match="injected"):
+        cli_assembly.build_agent(args)
+
+    assert events == [("discard", state_root)]
+
+
 def test_host_resume_rejects_bound_sandbox_before_model_construction(
     tmp_path,
     monkeypatch,

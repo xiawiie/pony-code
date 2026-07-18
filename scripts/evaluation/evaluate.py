@@ -63,6 +63,19 @@ NON_PASSING_PYTEST = re.compile(
 )
 LIVE_GATES = {"behavior", "transport_cost", "security", "persistence"}
 LIVE_TURN_COUNT = 5
+LIVE_E2E_REPORT_FORMAT_VERSION = 3
+LIVE_USAGE_DEGRADED_ASSERTIONS = {
+    "turn_usage_complete",
+    "all_turn_usage_complete",
+}
+LIVE_PROTOCOLS_BY_PROVIDER = {
+    "anthropic": frozenset({"anthropic_messages"}),
+    "ollama": frozenset({"ollama_chat"}),
+    "openai": frozenset({"openai_chat_completions", "openai_responses"}),
+}
+LIVE_RESOLUTION_SOURCES = frozenset(
+    {"explicit", "known_origin", "session_binding", "probe"}
+)
 LIVE_TURN_FIELDS = {
     "turn",
     "expected_behavior",
@@ -76,10 +89,64 @@ LIVE_TURN_FIELDS = {
     "transport_evidence_complete",
     "billing_ambiguous",
     "stopped_at_step_limit",
+    "terminal_status",
+    "stop_reason",
+    "tool_name_counts",
+    "tool_status_counts",
+    "error_code_counts",
     "error_code",
     "usage",
     "usage_complete",
     "assertions",
+}
+LIVE_REPORT_FIELDS = {
+    "record_type",
+    "format_version",
+    "run_id",
+    "provider",
+    "model",
+    "provider_resolution",
+    "git_head",
+    "aborted_reason",
+    "wall_time_ms",
+    "config",
+    "turns",
+    "global_assertions",
+    "totals",
+    "assertion_summary",
+    "gates",
+    "overall_pass",
+    "artifact_security",
+}
+LIVE_CONFIG_FIELDS = {
+    "max_model_attempts",
+    "max_total_tokens",
+    "request_timeout_seconds",
+    "max_wall_seconds",
+}
+LIVE_TOTAL_FIELDS = {
+    "model_attempts",
+    "model_turns",
+    "model_failures",
+    "transport_attempts",
+    "transport_retries",
+    "input_tokens",
+    "output_tokens",
+    "cache_creation_input_tokens",
+    "cache_read_input_tokens",
+}
+LIVE_TRANSPORT_GATE_FIELDS = {
+    "status",
+    "model_attempts",
+    "model_attempt_cap",
+    "transport_attempts",
+    "transport_retries",
+    "transport_retry_reason_counts",
+    "transport_evidence_complete",
+    "usage_complete",
+    "billing_ambiguous",
+    "input_tokens",
+    "output_tokens",
 }
 LIVE_USAGE_FIELDS = {
     "input_tokens",
@@ -272,18 +339,25 @@ def _sandbox_contract_commands():
     return [("sandbox.contract", contract, "no_skip")]
 
 
-def _sandbox_real_command(system_name):
+def _sandbox_real_commands(system_name):
     python = sys.executable
     if system_name not in {"darwin", "linux"}:
-        return None
+        return ()
     return (
-        f"sandbox.real.{system_name}",
         (
-            python,
-            "scripts/sandbox/verify_runtime.py",
-            "--require-ready",
+            f"sandbox.real.{system_name}.readiness",
+            (
+                python,
+                "scripts/sandbox/verify_runtime.py",
+                "--require-ready",
+            ),
+            "exit",
         ),
-        "exit",
+        (
+            f"sandbox.real.{system_name}.vertical",
+            (python, "scripts/sandbox/verify_vertical.py"),
+            "exit",
+        ),
     )
 
 
@@ -360,18 +434,83 @@ def _nonnegative_int(value):
     return type(value) is int and value >= 0
 
 
-def _passing_live_assertion(value):
+def _safe_live_count_map(value):
+    return (
+        isinstance(value, dict)
+        and len(value) <= 100
+        and all(
+            isinstance(key, str)
+            and re.fullmatch(r"[A-Za-z0-9_-]{1,100}", key)
+            and _nonnegative_int(item)
+            for key, item in value.items()
+        )
+    )
+
+
+def _passing_provider_resolution(value, provider):
+    if not isinstance(value, dict) or set(value) != {
+        "status",
+        "resolution_source",
+        "protocol",
+        "candidate_count",
+        "model_calls",
+        "usage_status",
+    }:
+        return False
+    status = value["status"]
+    resolution_source = value["resolution_source"]
+    protocol = value["protocol"]
+    candidate_count = value["candidate_count"]
+    model_calls = value["model_calls"]
+    usage_status = value["usage_status"]
+    return (
+        status in {"not_run", "ok"}
+        and resolution_source in LIVE_RESOLUTION_SOURCES
+        and protocol in LIVE_PROTOCOLS_BY_PROVIDER.get(provider, ())
+        and type(candidate_count) is int
+        and 0 <= candidate_count <= 3
+        and type(model_calls) is int
+        and 0 <= model_calls <= 6
+        and usage_status in {"complete", "degraded", "not_checked"}
+        and (
+            (
+                status == "not_run"
+                and resolution_source != "probe"
+                and candidate_count == 0
+                and model_calls == 0
+                and usage_status == "not_checked"
+            )
+            or (
+                status == "ok"
+                and resolution_source == "probe"
+                and candidate_count >= 1
+                and model_calls >= 2
+                and usage_status in {"complete", "degraded"}
+            )
+        )
+    )
+
+
+def _passing_live_assertion(value, *, usage_degraded):
     return (
         isinstance(value, dict)
         and set(value) == {"name", "gate", "passed"}
         and isinstance(value["name"], str)
         and bool(value["name"])
         and value["gate"] in LIVE_GATES
-        and value["passed"] is True
+        and (
+            value["passed"] is True
+            or (
+                usage_degraded
+                and value["passed"] is False
+                and value["gate"] == "transport_cost"
+                and value["name"] in LIVE_USAGE_DEGRADED_ASSERTIONS
+            )
+        )
     )
 
 
-def _passing_live_turn(value, expected_turn):
+def _passing_live_turn(value, expected_turn, *, usage_degraded):
     usage = value.get("usage") if isinstance(value, dict) else None
     return (
         isinstance(value, dict)
@@ -391,50 +530,38 @@ def _passing_live_turn(value, expected_turn):
         and value["transport_retries"] == 0
         and value["transport_retry_reason_counts"] == {}
         and value["transport_evidence_complete"] is True
-        and value["billing_ambiguous"] is False
+        and type(value["usage_complete"]) is bool
+        and value["billing_ambiguous"] is (not value["usage_complete"])
         and type(value["stopped_at_step_limit"]) is bool
+        and value["stopped_at_step_limit"] is False
+        and value["terminal_status"] == "completed"
+        and value["stop_reason"] == "final_answer_returned"
+        and _safe_live_count_map(value["tool_name_counts"])
+        and _safe_live_count_map(value["tool_status_counts"])
+        and _safe_live_count_map(value["error_code_counts"])
         and value["error_code"] == ""
         and isinstance(usage, dict)
         and set(usage) == LIVE_USAGE_FIELDS
         and all(_nonnegative_int(item) for item in usage.values())
-        and value["usage_complete"] is True
+        and (usage_degraded or value["usage_complete"] is True)
         and isinstance(value["assertions"], list)
         and bool(value["assertions"])
     )
 
 
-def _live_report_passed(report, provider, expected_commit):
-    top_fields = {
-        "record_type",
-        "format_version",
-        "run_id",
-        "provider",
-        "model",
-        "git_head",
-        "aborted_reason",
-        "wall_time_ms",
-        "config",
-        "turns",
-        "global_assertions",
-        "totals",
-        "assertion_summary",
-        "gates",
-        "overall_pass",
-        "artifact_security",
-    }
-    if not isinstance(report, dict) or set(report) != top_fields:
+def _passing_live_envelope(report, provider, expected_commit):
+    if not isinstance(report, dict) or set(report) != LIVE_REPORT_FIELDS:
         return False
     config = report.get("config")
     totals = report.get("totals")
     summary = report.get("assertion_summary")
-    gates = report.get("gates")
     artifact_security = report.get("artifact_security")
     turns = report.get("turns")
     global_assertions = report.get("global_assertions")
-    if not (
+    return (
         report.get("record_type") == "live_e2e_report"
         and type(report.get("format_version")) is int
-        and report["format_version"] == 2
+        and report["format_version"] == LIVE_E2E_REPORT_FORMAT_VERSION
         and isinstance(report.get("run_id"), str)
         and re.fullmatch(r"live-e2e-[0-9]+", report["run_id"])
         and report.get("provider") == provider
@@ -444,29 +571,13 @@ def _live_report_passed(report, provider, expected_commit):
         and report.get("aborted_reason") == ""
         and _nonnegative_int(report.get("wall_time_ms"))
         and report.get("overall_pass") is True
+        and _passing_provider_resolution(report.get("provider_resolution"), provider)
         and isinstance(config, dict)
-        and set(config)
-        == {
-            "max_model_attempts",
-            "max_total_tokens",
-            "request_timeout_seconds",
-            "max_wall_seconds",
-        }
+        and set(config) == LIVE_CONFIG_FIELDS
         and all(type(value) is int and value > 0 for value in config.values())
         and report["wall_time_ms"] <= config["max_wall_seconds"] * 1000
         and isinstance(totals, dict)
-        and set(totals)
-        == {
-            "model_attempts",
-            "model_turns",
-            "model_failures",
-            "transport_attempts",
-            "transport_retries",
-            "input_tokens",
-            "output_tokens",
-            "cache_creation_input_tokens",
-            "cache_read_input_tokens",
-        }
+        and set(totals) == LIVE_TOTAL_FIELDS
         and all(_nonnegative_int(value) for value in totals.values())
         and totals["model_attempts"] > 0
         and totals["model_attempts"] <= config["max_model_attempts"]
@@ -477,8 +588,7 @@ def _live_report_passed(report, provider, expected_commit):
         and set(summary) == {"total", "passed", "failed"}
         and all(_nonnegative_int(value) for value in summary.values())
         and summary["total"] > 0
-        and summary["passed"] == summary["total"]
-        and summary["failed"] == 0
+        and summary["passed"] + summary["failed"] == summary["total"]
         and isinstance(artifact_security, dict)
         and set(artifact_security) == {"files_scanned", "secret_hits", "mode_failures"}
         and type(artifact_security["files_scanned"]) is int
@@ -489,25 +599,65 @@ def _live_report_passed(report, provider, expected_commit):
         and len(turns) == LIVE_TURN_COUNT
         and isinstance(global_assertions, list)
         and bool(global_assertions)
-    ):
-        return False
-    assertions = list(global_assertions)
-    for expected_turn, turn in enumerate(turns, start=1):
-        if not _passing_live_turn(turn, expected_turn):
+    )
+
+
+def _live_usage_degraded(gates):
+    transport = gates.get("transport_cost") if isinstance(gates, dict) else None
+    return bool(
+        isinstance(transport, dict)
+        and transport.get("status") == "degraded"
+        and transport.get("usage_complete") is False
+        and transport.get("billing_ambiguous") is True
+        and transport.get("transport_evidence_complete") is True
+        and transport.get("transport_retries") == 0
+    )
+
+
+def _passing_live_assertions(report, usage_degraded):
+    assertions = list(report["global_assertions"])
+    for expected_turn, turn in enumerate(report["turns"], start=1):
+        if not _passing_live_turn(
+            turn,
+            expected_turn,
+            usage_degraded=usage_degraded,
+        ):
             return False
         assertions.extend(turn["assertions"])
-    if not assertions or not all(_passing_live_assertion(item) for item in assertions):
+    assertions_valid = bool(assertions) and all(
+        _passing_live_assertion(item, usage_degraded=usage_degraded)
+        for item in assertions
+    )
+    if not assertions_valid:
         return False
-    if summary["total"] != len(assertions):
-        return False
-    if not any(
-        item["name"] == "fixture_restored_after_context_exit" for item in assertions
-    ):
-        return False
+    gate_coverage = {item["gate"] for item in assertions} == LIVE_GATES
+    transport_proved = any(
+        item["gate"] == "transport_cost" and item["passed"] is True
+        for item in assertions
+    )
+    failed_assertions = sum(item["passed"] is False for item in assertions)
+    summary = report["assertion_summary"]
+    return (
+        gate_coverage
+        and transport_proved
+        and usage_degraded is (failed_assertions > 0)
+        and summary["passed"] == len(assertions) - failed_assertions
+        and summary["failed"] == failed_assertions
+        and summary["total"] == len(assertions)
+        and any(
+            item["name"] == "fixture_restored_after_context_exit"
+            for item in assertions
+        )
+    )
+
+
+def _passing_live_gates(report, usage_degraded):
+    gates = report["gates"]
     if not isinstance(gates, dict) or set(gates) != LIVE_GATES:
         return False
-    behavior = gates["behavior"]
-    transport = gates["transport_cost"]
+    totals = report["totals"]
+    turns = report["turns"]
+    config = report["config"]
     turn_totals = {
         key: sum(turn[key] for turn in turns)
         for key in (
@@ -527,38 +677,30 @@ def _live_report_passed(report, provider, expected_commit):
             "cache_read_input_tokens",
         )
     }
+    behavior = gates["behavior"]
+    transport = gates["transport_cost"]
     return (
         all(totals[key] == value for key, value in turn_totals.items())
         and all(totals[key] == value for key, value in usage_totals.items())
         and isinstance(behavior, dict)
-        and set(behavior) == {"status", "model_turns", "model_failures"}
+        and set(behavior)
+        == {"status", "model_turns", "model_failures", "turns_completed"}
         and behavior["status"] == "pass"
         and behavior["model_turns"] == totals["model_turns"]
         and behavior["model_failures"] == 0
+        and behavior["turns_completed"] is True
         and isinstance(transport, dict)
-        and set(transport)
-        == {
-            "status",
-            "model_attempts",
-            "model_attempt_cap",
-            "transport_attempts",
-            "transport_retries",
-            "transport_retry_reason_counts",
-            "transport_evidence_complete",
-            "usage_complete",
-            "billing_ambiguous",
-            "input_tokens",
-            "output_tokens",
-        }
-        and transport["status"] == "pass"
+        and set(transport) == LIVE_TRANSPORT_GATE_FIELDS
+        and transport["status"] in {"pass", "degraded"}
+        and (transport["status"] == "degraded") is usage_degraded
         and transport["model_attempts"] == totals["model_attempts"]
         and transport["model_attempt_cap"] == config["max_model_attempts"]
         and transport["transport_attempts"] == totals["transport_attempts"]
         and transport["transport_retries"] == 0
         and transport["transport_retry_reason_counts"] == {}
         and transport["transport_evidence_complete"] is True
-        and transport["usage_complete"] is True
-        and transport["billing_ambiguous"] is False
+        and transport["usage_complete"] is (not usage_degraded)
+        and transport["billing_ambiguous"] is usage_degraded
         and transport["input_tokens"] == totals["input_tokens"]
         and transport["output_tokens"] == totals["output_tokens"]
         and gates["security"] == {"status": "pass"}
@@ -566,7 +708,31 @@ def _live_report_passed(report, provider, expected_commit):
     )
 
 
-def _run_live(provider, *, runner, root, artifact_path):
+def _live_report_passed(report, provider, expected_commit):
+    if not _passing_live_envelope(report, provider, expected_commit):
+        return False
+    usage_degraded = _live_usage_degraded(report["gates"])
+    return _passing_live_assertions(
+        report,
+        usage_degraded,
+    ) and _passing_live_gates(report, usage_degraded)
+
+
+def _live_provider_matches(selector, provider, protocol):
+    if provider not in LIVE_PROTOCOLS_BY_PROVIDER:
+        return False
+    if selector == "auto":
+        return True
+    if selector == "openai":
+        return provider == "openai"
+    if selector == "openai-chat":
+        return provider == "openai" and protocol == "openai_chat_completions"
+    if selector == "openai-responses":
+        return provider == "openai" and protocol == "openai_responses"
+    return selector == provider
+
+
+def _run_live(provider_selector, *, runner, root, artifact_path):
     from benchmarks.live_e2e.run_live_session import load_live_report
 
     results = root / "benchmarks" / "live_e2e" / "results"
@@ -584,16 +750,33 @@ def _run_live(provider, *, runner, root, artifact_path):
     after = set(results.glob("*.json")) if results.is_dir() else set()
     created = after - before
     passed = False
+    resolved_provider = provider_selector
     expected_commit = _git_value(root, "rev-parse", "HEAD") or "unknown"
     if exit_code == 0 and len(created) == 1:
         try:
             report = load_live_report(created.pop())
-            passed = _live_report_passed(report, provider, expected_commit)
+            observed_provider = report.get("provider")
+            resolution = report.get("provider_resolution")
+            protocol = resolution.get("protocol") if isinstance(resolution, dict) else ""
+            if _live_provider_matches(
+                provider_selector,
+                observed_provider,
+                protocol,
+            ):
+                resolved_provider = observed_provider
+                passed = _live_report_passed(
+                    report,
+                    resolved_provider,
+                    expected_commit,
+                )
         except (OSError, TypeError, ValueError, json.JSONDecodeError):
             passed = False
     if not passed:
-        _emit_failure_output(f"live.{provider}", stdout, stderr)
-    return [_row(f"live.{provider}", passed, exit_code, duration_ms, artifact_path)]
+        _emit_failure_output(f"live.{resolved_provider}", stdout, stderr)
+    return (
+        [_row(f"live.{resolved_provider}", passed, exit_code, duration_ms, artifact_path)],
+        resolved_provider,
+    )
 
 
 def _perf_regressed(actual_ns, baseline_ns):
@@ -1028,7 +1211,7 @@ def run_evaluation(
         else:
             rows.extend(
                 _run_functional(
-                    (_sandbox_real_command(system_name),),
+                    _sandbox_real_commands(system_name),
                     runner=runner,
                     root=root,
                     artifact_path=artifact_ref,
@@ -1041,7 +1224,7 @@ def run_evaluation(
             required=True,
         )
         provider = resolved["provider"]["value"]
-        rows = _run_live(
+        rows, provider = _run_live(
             provider,
             runner=runner,
             root=root,

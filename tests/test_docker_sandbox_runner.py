@@ -253,6 +253,16 @@ def test_image_inspect_without_descriptor_requires_image_id():
         verify_image_inspect(payload, image)
 
 
+def test_image_inspect_without_descriptor_accepts_exact_repo_digest():
+    image = load_image_manifest(default_image_manifest_path())
+    payload = _image_payload(image)
+    payload[0].pop("Descriptor")
+    payload[0]["Id"] = image.image_digest
+    payload[0]["RepoDigests"] = ["pony-sandbox@" + image.image_digest]
+
+    verify_image_inspect(payload, image)
+
+
 def test_image_inspect_rejects_present_but_incomplete_descriptor():
     image = load_image_manifest(default_image_manifest_path())
     payload = _image_payload(image)
@@ -513,7 +523,12 @@ def test_status_uses_one_capability_payload_and_exact_image():
             }
 
         def command(self, args):
-            assert args[0:2] == ["image", "inspect"]
+            assert args == [
+                "image",
+                "inspect",
+                "--platform=linux/arm64",
+                image.image_digest,
+            ]
             return _result(stdout=json.dumps(_image_payload(image)).encode())
 
     status = DockerClient.status(StatusClient(), image, host_system="Darwin")
@@ -811,7 +826,7 @@ def test_readiness_failures_prevent_call_state_and_target(
         lambda value: value["HostConfig"].update(NetworkMode="bridge"),
         lambda value: value["Config"].update(User="0:0"),
         lambda value: value["Mounts"].append(dict(value["Mounts"][0])),
-        lambda value: value.update(Image=value["ImageManifestDescriptor"]["digest"]),
+        lambda value: value.update(Image="sha256:" + "0" * 64),
         lambda value: value["ImageManifestDescriptor"]["annotations"].update(
             {"config.digest": "sha256:" + "0" * 64}
         ),
@@ -826,6 +841,15 @@ def test_container_inspect_rejects_any_contract_mismatch(tmp_path, mutation):
 
     with pytest.raises(DockerSandboxError, match="container_contract_mismatch"):
         verify_container_inspect(mutated, plan, expected_id=CONTAINER_ID)
+
+
+def test_container_identity_accepts_docker_manifest_image_reference(tmp_path):
+    _source, _store, _session, _runner_value, plan, _client = _runner(tmp_path)
+    payload = _container_payload(plan)
+    payload["Image"] = plan.image_digest
+
+    verify_container_inspect(payload, plan, expected_id=CONTAINER_ID)
+    docker_module.verify_cleanup_identity(payload, plan, CONTAINER_ID)
 
 
 def test_runner_success_uses_one_create_and_start_and_cleans(tmp_path):

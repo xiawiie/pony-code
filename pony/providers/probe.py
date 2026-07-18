@@ -305,6 +305,8 @@ def resolve_provider_client(
             "candidate_count": 0,
             "model_calls": 0,
             "usage_status": "not_checked",
+            "protocol": config.get("protocol", {}).get("value", ""),
+            "resolution_source": config.get("resolution_source", ""),
         }
         _record_resolution_metadata(client, config, report)
         return client, config, report
@@ -358,8 +360,13 @@ def resolve_provider_client(
                 "protocol": protocol,
                 "resolution_source": candidate.get("resolution_source", ""),
             }
-            _record_resolution_metadata(client, candidate, completed)
-            return client, candidate, completed
+            runtime_client = _client_from_config(
+                candidate,
+                timeout,
+                **builder_args,
+            )
+            _record_resolution_metadata(runtime_client, candidate, completed)
+            return runtime_client, candidate, completed
         if not _can_try_next(report, selector):
             raise _probe_error(report, protocol=protocol, exhausted=False)
         if (

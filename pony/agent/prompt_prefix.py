@@ -61,6 +61,7 @@ def build_prompt_prefix(workspace, tools, built_at=None):
 
         Rules:
         - Use the provided native tools instead of guessing about the workspace.
+        - Return at most one native tool call per response. Do not batch or parallelize tool calls.
         - Never invent tool results.
         - Keep answers concise and concrete.
         - Before writing tests for existing code, read the implementation first.

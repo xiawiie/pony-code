@@ -20,7 +20,11 @@ from pony.sandbox.docker import (
 )
 from benchmarks.support.fake_provider import FakeModelClient
 from pony.runtime.application import Pony
-from pony.sandbox.session import snapshot_source_tree, write_source_apply_authority
+from pony.sandbox.session import (
+    find_project_sandbox_session,
+    snapshot_source_tree,
+    write_source_apply_authority,
+)
 from pony.state.session_store import SessionStore
 from pony.workspace.context import WorkspaceContext
 from pony.runtime.options import RuntimeOptions
@@ -761,6 +765,101 @@ def test_resume_reuses_bound_staging_and_current_host_session(
     assert resumed.root == context.execution_root
     assert (resumed.root / "staged-only.txt").read_text() == "candidate\n"
     assert not (source / "staged-only.txt").exists()
+    assert len(list((tmp_path / "sandboxes").glob("*/sandbox_*"))) == 1
+
+
+def test_resume_after_discard_creates_fresh_bound_staging(
+    tmp_path,
+    monkeypatch,
+):
+    source, context, agent = _build_runtime(tmp_path, monkeypatch)
+    agent.model_client = FakeModelClient(["done"])
+    assert agent.ask("finish the current sandbox turn") == "done"
+    old_checkpoint_id = agent.session["checkpoints"]["current_id"]
+    first_sandbox_id = context.sandbox_session.sandbox_id
+    finalized = agent.finalize_sandbox_session()
+    (source / "README.md").write_text("current source\n", encoding="utf-8")
+
+    resumed = build_docker_sandbox_context(
+        source,
+        authorization=context.authorization,
+        pony_session_id="session-1",
+        docker_cli="/unused/docker",
+        docker_endpoint="/unused/docker.sock",
+        project_state_root=source / ".pony",
+        sandbox_parent=tmp_path / "sandboxes",
+        resume=True,
+    )
+
+    assert finalized["status"] == "no_changes_discarded"
+    assert resumed.sandbox_session.sandbox_id != first_sandbox_id
+    assert resumed.resumed is False
+    assert (resumed.execution_root / "README.md").read_text() == "current source\n"
+    assert len(list((tmp_path / "sandboxes").glob("*/sandbox_*"))) == 2
+    bound = find_project_sandbox_session(source / ".pony", source, "session-1")
+    assert bound is not None
+    assert bound.state_root == resumed.sandbox_state_root
+
+    workspace = WorkspaceContext.build(
+        resumed.execution_root,
+        repo_root_override=resumed.execution_root,
+        executables=agent.trusted_executables,
+        inspect_git=False,
+        logical_root=resumed.logical_root,
+        branch_override="pony-sandbox",
+        default_branch_override="pony-sandbox",
+        status_override="sandbox_execution_state_unknown",
+    )
+    resumed_agent = Pony._from_session_for_docker_sandbox_development(
+        model_client=FakeModelClient([]),
+        workspace=workspace,
+        session_store=agent.session_store,
+        session_id="session-1",
+        options=RuntimeOptions(
+            approval_policy="never",
+            redaction_env=MappingProxyType({"OPENAI_API_KEY": "source-secret"}),
+            trusted_redaction_env=True,
+            sandbox_context=resumed,
+            project_config=load_pony_toml(source),
+        ),
+    )
+    new_checkpoint_id = resumed_agent.session["checkpoints"]["current_id"]
+    new_checkpoint = resumed_agent.session["checkpoints"]["items"][new_checkpoint_id]
+
+    assert new_checkpoint_id != old_checkpoint_id
+    assert new_checkpoint["parent_checkpoint_id"] == old_checkpoint_id
+    assert new_checkpoint["goal"] == "finish the current sandbox turn"
+    assert new_checkpoint["workspace_checkpoint_id"] == ""
+    assert new_checkpoint["key_files"] == []
+    assert new_checkpoint["read_files"] == []
+    assert new_checkpoint["modified_files"] == []
+    assert "freshness" not in new_checkpoint
+    assert resumed_agent.session["recovery"] == {"current_checkpoint_id": ""}
+    assert resumed_agent.resume_state["status"] == "full-valid"
+    assert (resumed.sandbox_state_root / "recovery/baseline-capture.json").is_file()
+
+
+def test_resume_keeps_unreviewed_diff_blocked(tmp_path, monkeypatch):
+    source, context, agent = _build_runtime(tmp_path, monkeypatch)
+    (context.execution_root / "candidate.txt").write_text(
+        "candidate\n",
+        encoding="utf-8",
+    )
+    finalized = agent.finalize_sandbox_session()
+
+    with pytest.raises(DockerSandboxError, match="sandbox_resume_invalid"):
+        build_docker_sandbox_context(
+            source,
+            authorization=context.authorization,
+            pony_session_id="session-1",
+            docker_cli="/unused/docker",
+            docker_endpoint="/unused/docker.sock",
+            project_state_root=source / ".pony",
+            sandbox_parent=tmp_path / "sandboxes",
+            resume=True,
+        )
+
+    assert finalized["session_state"] == "pending_review"
     assert len(list((tmp_path / "sandboxes").glob("*/sandbox_*"))) == 1
 
 

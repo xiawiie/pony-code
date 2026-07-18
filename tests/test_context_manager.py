@@ -57,6 +57,15 @@ def test_tool_schema_keeps_integer_and_risk_contract():
     assert "approval" in converted["description"].lower()
 
 
+def test_update_plan_native_schema_describes_json_string_contract(tmp_path):
+    tools = _build_tools_list(_agent(tmp_path).visible_tools())
+    update_plan = next(tool for tool in tools if tool["name"] == "update_plan")
+
+    assert "JSON-encoded string" in update_plan["description"]
+    assert "exactly goal and items" in update_plan["description"]
+    assert "exactly id, text, and status" in update_plan["description"]
+
+
 def test_system_prefix_hash_depends_on_stable_prefix_only(tmp_path):
     agent = _agent(tmp_path)
     first_request, first_metadata = _build_request(agent, "first")

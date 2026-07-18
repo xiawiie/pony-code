@@ -115,7 +115,12 @@ BASE_TOOL_SPECS = {
         "schema": {"plan_json": "str"},
         "risky": False,
         "effect_class": "session_state",
-        "description": "Replace the active workflow plan with strict canonical JSON.",
+        "description": (
+            "Replace the active workflow plan. plan_json must be a JSON-encoded "
+            "string containing exactly goal and items; each item must contain "
+            "exactly id, text, and status. Allowed statuses: pending, in_progress, "
+            "completed. Use 1-12 items and at most one in_progress item."
+        ),
     },
 }
 
@@ -182,6 +187,17 @@ _TOOL_RUNNERS = {
 }
 
 
+def _available_shell_executable_names(context):
+    if getattr(context, "docker_sandbox", False):
+        sandbox_context = getattr(context, "sandbox_context", None)
+        runner = getattr(sandbox_context, "runner", None)
+        image = getattr(runner, "image", None)
+        tool_paths = getattr(image, "tool_paths", ())
+        if tool_paths:
+            return sorted(name for name, _path in tool_paths)
+    return sorted(getattr(context, "trusted_executables", {}))
+
+
 def build_tool_registry(context):
     # 工具不是动态发现的，而是显式注册的。
     # 这样模型看到的是一个有边界、可审计的动作集合。
@@ -189,6 +205,12 @@ def build_tool_registry(context):
         name: {**spec, "run": partial(_TOOL_RUNNERS[name], context)}
         for name, spec in BASE_TOOL_SPECS.items()
     }
+    trusted_names = _available_shell_executable_names(context)
+    availability = ", ".join(trusted_names) if trusted_names else "none"
+    tools["run_shell"]["description"] = (
+        f"{tools['run_shell']['description']} "
+        f"Available trusted executable names: {availability}."
+    )
     # 子 agent 是刻意做成受限能力的：一旦深度耗尽，
     # 就连 delegate 这个工具都不再暴露给模型。
     if context.depth < context.max_depth:

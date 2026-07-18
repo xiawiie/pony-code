@@ -137,7 +137,9 @@ Provider resolution 在 Agent 创建和用户请求之前完成。它只使用 f
 六个 Transport Attempt，并保持 configured origin。Factory 仍只接收已解析的内部协议；adapter 不互相选择，真实用户请求
 失败后不更换路径。每种 adapter 返回统一的 `Response`。`pony init` 可持久化 resolved Provider；doctor 只读，run/repl
 只使用当前进程结果。Generic gateway 使用 conservative Capability Profile。成功 detection 只追加一条
-bounded `provider_resolved` trace；benchmark/live harness 对 `probe_required` fail closed，不建立另一调度器。
+bounded `provider_resolved` trace。Probe client 只使用 detection timeout；识别成功后按 exact target 和用户请求 timeout
+新建 production client，真实任务不复用 probe client。收费 live harness 复用同一 resolver；普通 benchmark 仍要求
+resolved target，二者都不建立另一套 detection 调度器。
 
 ## 4. 一个 Turn 的控制流
 
@@ -166,6 +168,8 @@ flowchart LR
 - 工具调用先校验 policy 与当前授权，再进入 mutation lock；实际 effect 由 observer 复核。
 - Session 持久化失败时不继续向 Provider 发送后续请求。
 - Mode ceiling 在 approval 前执行，只能收窄能力；Executor 对隐藏工具仍做最终拒绝。
+- 参数 schema 或 unsafe workspace entry 被拒绝后，下一次请求最多收到一条非持久化修正提示；同一
+  `(tool, rejection code)` 再次出现即停止，避免形成模型付费循环。
 
 ## 5. Workspace 与 Sandbox
 
@@ -185,6 +189,11 @@ flowchart LR
 Source Root、Project State Root、Sandbox State Root、host HOME 与 Docker socket 都不挂载进容器。Sandbox 的 local
 authorization 每次从当前安装树与 packaged image manifest 重算；状态不一致即 fail closed。1.0 不包含远程签名、
 candidate、product enablement、registry pull 或运行时下载链路。
+
+Project State 中的 sidecar 允许同一 Pony Session 保留多个终态 Sandbox 历史，但最多只能有一个非终态 staging。
+显式 resume 原样复用唯一 `ready` staging；完整 `applied/discarded` 历史不改写，而是以当前 Source Root 创建新 staging。
+新 staging 沿用 Canonical Messages、Mode、Plan 与 Provider binding，但追加清除旧 workspace recovery/freshness/runtime
+identity 的 task checkpoint。`pending_review`、`review_required`、`cleanup_pending` 或多个非终态 sidecar 都 fail closed。
 
 ## 6. Context、Memory 与状态
 

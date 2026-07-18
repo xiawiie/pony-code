@@ -352,7 +352,7 @@ integration exact SHA 创建；feature worktree 不各自追赶 `origin/main`，
 | W4 `codex/workflow-context-resume` | required workflow context、Resume/metadata/history pure helpers | 已完成 |
 | W5 `codex/workflow-inspection` | v1/v2/v3 inspection、`latest`、稳定错误 envelope | 已完成 |
 | W6 `codex/workflow-cli-tui` | `--mode`、`/mode`、`/plan`、Resume 卡、history、footer | 已完成 |
-| W7 integration | 文档同步、接口接缝、exact-HEAD 完整离线门禁 | 进行中 |
+| W7 integration | 文档同步、接口接缝、exact-HEAD 完整离线门禁 | 已完成 |
 
 实施中保持了唯一 owner：`session_store.py` 只在 W1 与 integration 安全接缝修改；`application.py` 按 W1 -> W3；
 `render.py` 按 W2 -> W6；`start.py` 只在 W6。每个切片提交前运行 changed-file Ruff 与聚焦 pytest，随后才合入 integration。

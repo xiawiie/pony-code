@@ -18,7 +18,7 @@ Accepted for Pony 1.0 before its first release tag.
 - Timeout, TLS, redirect, rate-limit, and 5xx failures stop detection. Deterministic 4xx and protocol mismatch may advance; global auto may cross authentication families after 401/403, while the OpenAI family may not.
 - Exact official endpoints may enable verified optional capabilities. Generic gateways use a conservative profile and must pass native tool-call and tool-result continuation checks.
 - Session format does not change. A matching current Session binding can resolve the protocol without network access.
-- Benchmark and live harness workloads require a resolved target and fail closed when probing would be required; `pony init` is their persistence boundary.
+- Ordinary benchmark workloads require a resolved target and fail closed when probing would be required. The paid live harness invokes the shared resolver before its workload, creates a fresh production client after probing, and reports bounded resolution calls separately. Neither path owns a second detector or persists resolution results.
 
 ## Consequences
 

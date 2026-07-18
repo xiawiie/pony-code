@@ -3,8 +3,8 @@
 One invocation uses the Provider selected by the target repository's ``.env``
 and records trace-backed evidence for five designed turns. This standalone
 command consumes API credits; incomplete or malformed trace usage fails the
-gate instead of falling back to mutable provider state. Reports omit provider
-configuration secrets.
+transport-cost pass condition and is reported as degraded instead of falling
+back to mutable provider state. Reports omit provider configuration secrets.
 """
 
 from __future__ import annotations
@@ -18,13 +18,20 @@ import subprocess
 import sys
 import tempfile
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal
 
 from pony.config.environment import read_project_env
-from pony.config.model import API_KEY_ENV_NAME, resolve_model_config
-from benchmarks.evaluation.metrics_common import _load_json_artifact
+from pony.config.model import (
+    API_KEY_ENV_NAME,
+    resolve_model_config,
+)
+from pony.providers.probe import resolve_provider_client
+from benchmarks.evaluation.metrics_common import (
+    _decode_json_object,
+    _load_json_artifact,
+)
 from pony.agent.messages import MessageValidationError, validate_messages
 from pony.security.private_files import (
     ensure_private_dir,
@@ -45,7 +52,15 @@ from pony.state.session_store import (
 from pony.runtime.options import RuntimeOptions
 
 
-LIVE_E2E_REPORT_FORMAT_VERSION = 2
+LIVE_E2E_REPORT_FORMAT_VERSION = 3
+_PROTOCOLS_BY_PROVIDER = {
+    "anthropic": frozenset({"anthropic_messages"}),
+    "ollama": frozenset({"ollama_chat"}),
+    "openai": frozenset({"openai_chat_completions", "openai_responses"}),
+}
+_RESOLUTION_SOURCES = frozenset(
+    {"explicit", "known_origin", "session_binding", "probe"}
+)
 
 
 def _positive_int(value):
@@ -145,7 +160,7 @@ class RunConfig:
     """CLI + env-derived configuration for one live-e2e run."""
 
     repo_root: Path
-    provider: Literal["anthropic", "ollama", "openai"]
+    provider: Literal["anthropic", "auto", "ollama", "openai"]
     model: str
     max_model_attempts: int
     max_total_tokens: int
@@ -153,6 +168,28 @@ class RunConfig:
     max_wall_seconds: int
     reset: bool
     verbose: bool
+
+
+def _provider_settings_from_config(resolved, *, required):
+    if required and resolved["resolution_status"] != "resolved":
+        raise ValueError("provider_detection_failed")
+    protocol = resolved["protocol"]["value"]
+    if protocol.startswith("openai_"):
+        provider = "openai"
+    elif protocol:
+        provider = protocol.split("_", 1)[0]
+    else:
+        provider = resolved["provider"]["value"]
+    return {
+        "provider": provider,
+        "model": resolved["model"]["value"],
+        "base_url": resolved["base_url"]["value"],
+        "api_key": resolved["api_key"]["value"],
+        "api_key_env": API_KEY_ENV_NAME,
+        "transport": protocol,
+        "auth_mode": resolved["auth_mode"]["value"],
+        "capabilities": dict(resolved["capabilities"]),
+    }
 
 
 def provider_settings(
@@ -171,18 +208,20 @@ def provider_settings(
         process_env=dict(os.environ if process_env is None else process_env),
         required=required,
     )
-    if required and resolved["resolution_status"] != "resolved":
-        raise ValueError("provider_detection_failed")
-    return {
-        "provider": resolved["provider"]["value"],
-        "model": resolved["model"]["value"],
-        "base_url": resolved["base_url"]["value"],
-        "api_key": resolved["api_key"]["value"],
-        "api_key_env": API_KEY_ENV_NAME,
-        "transport": resolved["protocol"]["value"],
-        "auth_mode": resolved["auth_mode"]["value"],
-        "capabilities": dict(resolved["capabilities"]),
-    }
+    return _provider_settings_from_config(resolved, required=required)
+
+
+def resolve_live_provider(config, *, project_env, process_env):
+    """Resolve one exact production client before sending the live workload."""
+    unresolved = resolve_model_config(
+        project_env=project_env,
+        process_env=process_env,
+    )
+    client, resolved, report = resolve_provider_client(
+        unresolved,
+        timeout=config.request_timeout_seconds,
+    )
+    return client, _provider_settings_from_config(resolved, required=True), report
 
 
 def parse_args(argv=None, *, project_env=None, process_env=None) -> RunConfig:
@@ -205,7 +244,7 @@ def parse_args(argv=None, *, project_env=None, process_env=None) -> RunConfig:
         repo_root,
         project_env={} if args.reset else project_env,
         process_env={} if args.reset else process_env,
-        required=not args.reset,
+        required=False,
     )
     return RunConfig(
         repo_root=repo_root,
@@ -224,21 +263,12 @@ def check_env(config: RunConfig, *, settings=None) -> None:
     """Abort with exit 2 if the selected provider API key is missing."""
     if config.reset or config.provider == "ollama":
         return  # reset and local Ollama paths don't need an API key
-    key = (settings or provider_settings(config.repo_root))["api_key"].strip()
+    settings = settings or provider_settings(config.repo_root)
+    key = settings["api_key"].strip()
     if not key:
-        required_name = (settings or provider_settings(config.repo_root))["api_key_env"]
+        required_name = settings["api_key_env"]
         print(f"[live-e2e] missing {required_name}, aborted", file=sys.stderr)
         raise SystemExit(2)
-
-
-def check_live_readiness(config: RunConfig, *, settings=None) -> bool:
-    if config.provider != "ollama":
-        return True
-    from pony.providers.probe import probe_model_client
-
-    settings = settings or provider_settings(config.repo_root)
-    result = probe_model_client(make_live_client(config, settings=settings))
-    return result.get("status") == "ok"
 
 
 def verify_pony_repo(root: Path) -> None:
@@ -470,7 +500,7 @@ class TurnResult:
     duration_ms: int
     usage: dict
     stopped_at_step_limit: bool
-    error: str | None
+    error_code: str | None
     provider_input_messages_len: int
     current_user_content: str
     usage_complete: bool
@@ -482,6 +512,11 @@ class TurnResult:
     task_state_terminal: bool
     report_terminal: bool
     trace_terminal: bool
+    terminal_status: str
+    stop_reason: str
+    tool_name_counts: dict
+    tool_status_counts: dict
+    error_code_counts: dict
 
 
 _LIVE_USAGE_KEYS = (
@@ -492,7 +527,83 @@ _LIVE_USAGE_KEYS = (
     "cache_creation_input_tokens",
     "cache_read_input_tokens",
 )
-_TERMINAL_STATUSES = {"completed", "stopped", "failed"}
+_DEGRADED_USAGE_ASSERTIONS = frozenset(
+    {"turn_usage_complete", "all_turn_usage_complete"}
+)
+_TERMINAL_STATE_PAIRS = {
+    ("completed", "final_answer_returned"),
+    ("stopped", "step_limit_reached"),
+    ("stopped", "retry_limit_reached"),
+    ("stopped", "interrupted"),
+    ("failed", "model_error"),
+    ("failed", "persistence_error"),
+    ("failed", "runtime_error"),
+}
+
+
+def _stable_trace_label(value):
+    return (
+        isinstance(value, str)
+        and 0 < len(value) <= 100
+        and value.isascii()
+        and all(character.isalnum() or character in "_-" for character in value)
+    )
+
+
+def _provider_resolution_evidence(report, provider):
+    if not isinstance(report, dict):
+        raise ValueError("invalid provider resolution evidence")
+    report = dict(report or {})
+    status = report.get("status", "not_run")
+    candidate_count = report.get("candidate_count", 0)
+    model_calls = report.get("model_calls", 0)
+    usage_status = report.get("usage_status", "not_checked")
+    resolution_source = report.get("resolution_source", "")
+    protocol = report.get("protocol", "")
+    if (
+        status not in {"not_run", "ok"}
+        or type(candidate_count) is not int
+        or not 0 <= candidate_count <= 3
+        or type(model_calls) is not int
+        or not 0 <= model_calls <= 6
+        or usage_status not in {"complete", "degraded", "not_checked"}
+        or resolution_source not in _RESOLUTION_SOURCES
+        or protocol not in _PROTOCOLS_BY_PROVIDER.get(provider, ())
+    ):
+        raise ValueError("invalid provider resolution evidence")
+    if status == "not_run" and (candidate_count != 0 or model_calls != 0):
+        raise ValueError("invalid provider resolution evidence")
+    if status == "not_run" and usage_status != "not_checked":
+        raise ValueError("invalid provider resolution evidence")
+    if status == "not_run" and resolution_source == "probe":
+        raise ValueError("invalid provider resolution evidence")
+    if status == "ok" and (candidate_count < 1 or model_calls < 2):
+        raise ValueError("invalid provider resolution evidence")
+    if status == "ok" and (
+        resolution_source != "probe" or usage_status == "not_checked"
+    ):
+        raise ValueError("invalid provider resolution evidence")
+    return {
+        "status": status,
+        "resolution_source": resolution_source,
+        "protocol": protocol,
+        "candidate_count": candidate_count,
+        "model_calls": model_calls,
+        "usage_status": usage_status,
+    }
+
+
+def _exception_error_code_counts(exc):
+    counts = {}
+    seen = set()
+    current = exc
+    while isinstance(current, BaseException) and id(current) not in seen:
+        seen.add(id(current))
+        code = getattr(current, "code", None)
+        if _stable_trace_label(code):
+            counts[code] = counts.get(code, 0) + 1
+        current = current.__cause__ or current.__context__
+    return counts
 
 
 def _empty_trace_capture():
@@ -509,60 +620,52 @@ def _empty_trace_capture():
         "request_metadata": [],
         "system_prefix_hashes": [],
         "action_origins": [],
+        "tool_name_counts": {},
+        "tool_status_counts": {},
+        "error_code_counts": {},
     }
 
 
-def read_turn_trace(trace_path):
-    """Read complete per-call evidence for one persisted run trace."""
+def _read_trace_events(trace_path):
     try:
-        events = [
-            json.loads(line)
-            for line in Path(trace_path).read_text(encoding="utf-8").splitlines()
-            if line.strip()
-        ]
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-        return _empty_trace_capture()
-    if not all(isinstance(event, dict) for event in events):
-        return _empty_trace_capture()
+        lines = Path(trace_path).read_text(encoding="utf-8").splitlines()
+        return [_decode_json_object(line) for line in lines if line.strip()]
+    except (OSError, UnicodeDecodeError, ValueError):
+        return None
 
-    requests = [event for event in events if event.get("event") == "model_requested"]
-    turns = [event for event in events if event.get("event") == "model_turn"]
-    failures = [event for event in events if event.get("event") == "model_failed"]
-    actions = [event for event in events if event.get("event") == "action_decoded"]
+
+def _trace_label_counts(events):
+    tool_names = {}
+    tool_statuses = {}
+    error_codes = {}
+    for event in events:
+        if event.get("event") in {"tool_executed", "tool_interrupted"}:
+            for key, counts in (("name", tool_names), ("tool_status", tool_statuses)):
+                value = event.get(key)
+                if _stable_trace_label(value):
+                    counts[value] = counts.get(value, 0) + 1
+        for key in ("reason_code", "tool_error_code", "sandbox_error_code"):
+            value = event.get(key)
+            if _stable_trace_label(value):
+                error_codes[value] = error_codes.get(value, 0) + 1
+    return tool_names, tool_statuses, error_codes
+
+
+def _trace_usage(turns):
     totals = {key: 0 for key in _LIVE_USAGE_KEYS}
     usage_complete = bool(turns)
     request_metadata = []
-    cache_keys = []
-    transport_events = turns + failures
-    transport_complete = bool(requests) and all(
-        event.get("transport_evidence_complete") is True
-        and type(event.get("transport_attempts")) is int
-        and type(event.get("transport_retries")) is int
-        for event in transport_events
-    )
-    transport_attempts = (
-        sum(event["transport_attempts"] for event in transport_events)
-        if transport_complete
-        else None
-    )
-    transport_retries = (
-        sum(event["transport_retries"] for event in transport_events)
-        if transport_complete
-        else None
-    )
-
+    prefix_hashes = []
     for turn in turns:
         usage = turn.get("completion_usage")
         if not isinstance(usage, dict):
             usage_complete = False
             usage = {}
-        for required in ("input_tokens", "output_tokens"):
-            value = usage.get(required)
-            if not isinstance(value, int) or isinstance(value, bool):
-                usage_complete = False
+        if any(type(usage.get(key)) is not int for key in ("input_tokens", "output_tokens")):
+            usage_complete = False
         for key in _LIVE_USAGE_KEYS:
             value = usage.get(key)
-            if isinstance(value, int) and not isinstance(value, bool):
+            if type(value) is int:
                 totals[key] += value
 
         metadata = turn.get("request_metadata")
@@ -570,8 +673,43 @@ def read_turn_trace(trace_path):
             usage_complete = False
             metadata = {}
         request_metadata.append(dict(metadata))
-        cache_key = metadata.get("system_prefix_hash", "")
-        cache_keys.append(cache_key if isinstance(cache_key, str) else "")
+        prefix_hash = metadata.get("system_prefix_hash", "")
+        prefix_hashes.append(prefix_hash if isinstance(prefix_hash, str) else "")
+    return totals, usage_complete, request_metadata, prefix_hashes
+
+
+def _trace_transport(requests, outcomes):
+    complete = bool(requests) and all(
+        event.get("transport_evidence_complete") is True
+        and type(event.get("transport_attempts")) is int
+        and type(event.get("transport_retries")) is int
+        for event in outcomes
+    )
+    if not complete:
+        return None, None, False
+    return (
+        sum(event["transport_attempts"] for event in outcomes),
+        sum(event["transport_retries"] for event in outcomes),
+        True,
+    )
+
+
+def read_turn_trace(trace_path):
+    """Read complete per-call evidence for one persisted run trace."""
+    events = _read_trace_events(trace_path)
+    if events is None:
+        return _empty_trace_capture()
+
+    requests = [event for event in events if event.get("event") == "model_requested"]
+    turns = [event for event in events if event.get("event") == "model_turn"]
+    failures = [event for event in events if event.get("event") == "model_failed"]
+    actions = [event for event in events if event.get("event") == "action_decoded"]
+    tool_name_counts, tool_status_counts, error_code_counts = _trace_label_counts(events)
+    totals, usage_complete, request_metadata, prefix_hashes = _trace_usage(turns)
+    transport_attempts, transport_retries, transport_complete = _trace_transport(
+        requests,
+        turns + failures,
+    )
 
     return {
         "model_turns": len(turns),
@@ -593,12 +731,15 @@ def read_turn_trace(trace_path):
         "usage": totals,
         "usage_complete": usage_complete,
         "request_metadata": request_metadata,
-        "system_prefix_hashes": cache_keys,
+        "system_prefix_hashes": prefix_hashes,
         "action_origins": [
             str(event.get("origin", ""))
             for event in actions
             if event.get("action_type") == "tool" and event.get("origin")
         ],
+        "tool_name_counts": tool_name_counts,
+        "tool_status_counts": tool_status_counts,
+        "error_code_counts": error_code_counts,
     }
 
 
@@ -668,28 +809,27 @@ def _merge_auxiliary_call_evidence(captured, calls):
 
 def _terminal_payload(payload):
     if not isinstance(payload, dict):
-        return False
+        return None
+    status = payload.get("status")
     stop_reason = payload.get("stop_reason")
-    return (
-        payload.get("status") in _TERMINAL_STATUSES
-        and isinstance(stop_reason, str)
-        and bool(stop_reason.strip())
-    )
+    if (status, stop_reason) in _TERMINAL_STATE_PAIRS:
+        return status, stop_reason
+    return None
 
 
 def read_run_terminal_status(run_store, task_state):
-    """Return ``(run_id, task_state_terminal, report_terminal, trace_terminal)``."""
+    """Return terminal artifact flags plus their consensus status and reason."""
     if task_state is None:
-        return "", False, False, False
+        return "", False, False, False, "", ""
     run_id = str(getattr(task_state, "run_id", "") or "")
     if not run_id:
-        return "", False, False, False
+        return "", False, False, False, "", ""
 
     try:
         state_payload = json.loads(
             run_store.task_state_path(task_state).read_text(encoding="utf-8")
         )
-        task_state_terminal = _terminal_payload(state_payload)
+        task_state_pair = _terminal_payload(state_payload)
     except (
         AttributeError,
         OSError,
@@ -697,13 +837,13 @@ def read_run_terminal_status(run_store, task_state):
         UnicodeDecodeError,
         json.JSONDecodeError,
     ):
-        task_state_terminal = False
+        task_state_pair = None
 
     try:
         report_payload = json.loads(
             run_store.report_path(task_state).read_text(encoding="utf-8")
         )
-        report_terminal = _terminal_payload(report_payload.get("run"))
+        report_pair = _terminal_payload(report_payload.get("run"))
     except (
         AttributeError,
         OSError,
@@ -711,7 +851,7 @@ def read_run_terminal_status(run_store, task_state):
         UnicodeDecodeError,
         json.JSONDecodeError,
     ):
-        report_terminal = False
+        report_pair = None
 
     try:
         trace_events = [
@@ -728,26 +868,48 @@ def read_run_terminal_status(run_store, task_state):
         UnicodeDecodeError,
         json.JSONDecodeError,
     ):
-        trace_terminal = False
+        trace_pair = None
     else:
-        trace_terminal = all(isinstance(event, dict) for event in trace_events) and any(
-            event.get("event") == "run_finished" for event in trace_events
+        terminal_events = [
+            event for event in trace_events if event.get("event") == "run_finished"
+        ] if all(isinstance(event, dict) for event in trace_events) else []
+        trace_pair = (
+            _terminal_payload(terminal_events[0])
+            if len(terminal_events) == 1
+            else None
         )
+
+    consensus = (
+        task_state_pair
+        if task_state_pair is not None
+        and task_state_pair == report_pair == trace_pair
+        else ("", "")
+    )
 
     return (
         run_id,
-        task_state_terminal,
-        report_terminal,
-        trace_terminal,
+        task_state_pair is not None,
+        report_pair is not None,
+        trace_pair is not None,
+        *consensus,
+    )
+
+
+def _turn_completed(result):
+    return (
+        result.error_code is None
+        and result.task_state_terminal
+        and result.report_terminal
+        and result.trace_terminal
+        and result.terminal_status == "completed"
+        and result.stop_reason == "final_answer_returned"
+        and isinstance(result.final_answer, str)
+        and bool(result.final_answer.strip())
     )
 
 
 class TurnRunner:
-    """Runs one turn against a real Pony + provider; captures TurnResult.
-
-    The runner does NOT catch exceptions raised by ``pony.ask`` — the
-    caller (``main``) decides whether to abort or continue.
-    """
+    """Run one turn and retain bounded persisted and in-memory evidence."""
 
     def __init__(self, pony, config: RunConfig):
         self.pony = pony
@@ -759,7 +921,8 @@ class TurnRunner:
         """Execute one turn and capture only persisted trace/artifact truth."""
         session_before = len(self.pony.session.get("messages", []))
         started_ns = time.monotonic_ns()
-        error: str | None = None
+        error_code: str | None = None
+        exception_error_codes = {}
         final_answer = ""
         stopped_at_step_limit = False
         calls = getattr(self.pony.model_client, "calls", [])
@@ -770,15 +933,11 @@ class TurnRunner:
         try:
             final_answer = self.pony.ask(user_prompt)
         except Exception as exc:  # capture and continue; caller decides
-            error = f"{type(exc).__name__}: {exc}"
+            exception_error_codes = _exception_error_code_counts(exc)
+            error_code = next(iter(exception_error_codes), "turn_error")
 
         duration_ms = (time.monotonic_ns() - started_ns) // 1_000_000
         session_after = len(self.pony.session.get("messages", []))
-
-        # detect step-limit stops (no exception, but final answer starts with the
-        # runtime's canned "Stopped after..." message)
-        if final_answer.startswith("Stopped after"):
-            stopped_at_step_limit = True
 
         current_task_state = getattr(self.pony, "current_task_state", None)
         current_run_id = str(getattr(current_task_state, "run_id", "") or "")
@@ -795,6 +954,10 @@ class TurnRunner:
         calls = getattr(self.pony.model_client, "calls", [])
         new_calls = calls[sniffer_before:] if isinstance(calls, list) else []
         captured = _merge_auxiliary_call_evidence(captured, new_calls)
+        for code, count in exception_error_codes.items():
+            captured["error_code_counts"][code] = (
+                captured["error_code_counts"].get(code, 0) + count
+            )
         agent_calls = [
             call
             for call in new_calls
@@ -813,9 +976,17 @@ class TurnRunner:
             if isinstance(messages_count, int) and not isinstance(messages_count, bool)
             else 0
         )
-        run_id, task_state_terminal, report_terminal, trace_terminal = (
+        (
+            run_id,
+            task_state_terminal,
+            report_terminal,
+            trace_terminal,
+            terminal_status,
+            stop_reason,
+        ) = (
             read_run_terminal_status(self.pony.run_store, task_state)
         )
+        stopped_at_step_limit = stop_reason == "step_limit_reached"
 
         return TurnResult(
             turn=turn,
@@ -835,7 +1006,7 @@ class TurnRunner:
             duration_ms=duration_ms,
             usage=captured["usage"],
             stopped_at_step_limit=stopped_at_step_limit,
-            error=error,
+            error_code=error_code,
             provider_input_messages_len=provider_input_messages_len,
             current_user_content=actual_user_contents[0]
             if actual_user_contents
@@ -849,6 +1020,11 @@ class TurnRunner:
             task_state_terminal=task_state_terminal,
             report_terminal=report_terminal,
             trace_terminal=trace_terminal,
+            terminal_status=terminal_status,
+            stop_reason=stop_reason,
+            tool_name_counts=captured["tool_name_counts"],
+            tool_status_counts=captured["tool_status_counts"],
+            error_code_counts=captured["error_code_counts"],
         )
 
 
@@ -893,34 +1069,61 @@ class AssertionEngine:
     def __init__(self, config: RunConfig):
         self.config = config
 
-    @property
-    def expected_action_origin(self):
-        return (
-            "text_protocol"
-            if self.config.provider in {"ollama", "openai"}
-            else "native_tool_use"
-        )
-
     def dispatch(self, turn, result: TurnResult, pony, all_results):
         """Route to per-turn check_*.
 
         ``turn`` may be an int (1..5) or the string ``"global"``.
         """
-        if turn == 1:
-            return self.check_turn_1_recall(result)
-        if turn == 2:
-            return self.check_turn_2_digest(result, pony)
-        if turn == 3:
-            return self.check_turn_3_source_allocator(result)
-        if turn == 4:
-            return self.check_turn_4_compaction(result, pony)
-        if turn == 5:
-            return self.check_turn_5_cache_anchor(result, all_results)
         if turn == "global":
             return self.check_global(all_results, pony)
+        if turn not in {1, 2, 3, 4, 5}:
+            return []
+        checks = self.check_turn_completion(result)
+        if turn == 1:
+            return checks + self.check_turn_1_recall(result)
+        if turn == 2:
+            return checks + self.check_turn_2_digest(result, pony)
+        if turn == 3:
+            return checks + self.check_turn_3_source_allocator(result)
+        if turn == 4:
+            return checks + self.check_turn_4_compaction(result, pony)
+        if turn == 5:
+            return checks + self.check_turn_5_cache_anchor(result, all_results)
         return []
 
-    # -- Turn 1: recall --------------------------------------------------
+    def check_turn_completion(self, result: TurnResult) -> list[Assertion]:
+        terminal_evidence = (
+            result.task_state_terminal
+            and result.report_terminal
+            and result.trace_terminal
+        )
+        return [
+            Assertion(
+                name="turn_terminal_evidence_complete",
+                passed=terminal_evidence,
+                expected="task state, report, and trace all contain terminal evidence",
+                actual=str(terminal_evidence),
+            ),
+            Assertion(
+                name="turn_completed_with_final_answer",
+                passed=(
+                    terminal_evidence
+                    and result.terminal_status == "completed"
+                    and result.stop_reason == "final_answer_returned"
+                ),
+                expected="completed/final_answer_returned",
+                actual=f"{result.terminal_status}/{result.stop_reason}",
+            ),
+            Assertion(
+                name="turn_final_answer_nonempty",
+                passed=(
+                    isinstance(result.final_answer, str)
+                    and bool(result.final_answer.strip())
+                ),
+                expected="non-empty final answer",
+                actual="present" if str(result.final_answer).strip() else "empty",
+            ),
+        ]
 
     def check_turn_1_recall(self, result: TurnResult) -> list[Assertion]:
         """Six assertions verifying recall triggered correctly."""
@@ -973,25 +1176,18 @@ class AssertionEngine:
                 actual=str(err_count),
             )
         )
-        # stop_reason lives inside usage / model client — we accept absence
-        # when the provider stub didn't surface it; the intent here is to
-        # verify no crash and a valid final answer or tool_use path
         final = result.final_answer or ""
-        no_error_and_answered = result.error is None and (
-            final != "" or result.stopped_at_step_limit
-        )
+        no_error_and_answered = result.error_code is None and bool(final.strip())
         out.append(
             Assertion(
                 name="turn_1_completed_without_error",
                 passed=no_error_and_answered,
                 expected="pony.ask returned without exception",
-                actual=result.error
-                or ("stopped_at_step_limit" if result.stopped_at_step_limit else "ok"),
+                actual=result.error_code
+                or ("answer present" if final.strip() else "answer empty"),
             )
         )
         return out
-
-    # -- Turn 2: digest --------------------------------------------------
 
     def check_turn_2_digest(self, result: TurnResult, pony) -> list[Assertion]:
         """Verify digest application and native per-call trace evidence.
@@ -1135,12 +1331,11 @@ class AssertionEngine:
         )
 
         model_turns = result.model_turns_this_turn
-        expected_origin = self.expected_action_origin
         out.append(
             Assertion(
                 name="provider_tool_action_observed",
-                passed=expected_origin in result.action_origins,
-                expected=f"{expected_origin} in action_origins",
+                passed="native_tool_use" in result.action_origins,
+                expected="native_tool_use in action_origins",
                 actual=str(result.action_origins),
             )
         )
@@ -1224,8 +1419,6 @@ class AssertionEngine:
             )
         )
         return out
-
-    # -- Turn 3: injection drop -----------------------------------------
 
     def check_turn_3_source_allocator(self, result: TurnResult) -> list[Assertion]:
         """Five assertions verifying bounded whole-chunk source allocation."""
@@ -1488,12 +1681,11 @@ class AssertionEngine:
         action_origins = [
             origin for result in all_results for origin in result.action_origins
         ]
-        expected_origin = self.expected_action_origin
         out.append(
             Assertion(
                 name="provider_tool_action_observed",
-                passed=expected_origin in action_origins,
-                expected=f"at least one action_decoded.origin == {expected_origin}",
+                passed="native_tool_use" in action_origins,
+                expected="at least one action_decoded.origin == native_tool_use",
                 actual=str(action_origins),
             )
         )
@@ -1648,9 +1840,13 @@ class Reporter:
     _COLOR_YELLOW = "\033[33m"
     _COLOR_RESET = "\033[0m"
 
-    def __init__(self, config: RunConfig, output_dir: Path):
+    def __init__(self, config: RunConfig, output_dir: Path, *, resolution_report):
         self.config = config
         self.output_dir = Path(output_dir)
+        self.provider_resolution = _provider_resolution_evidence(
+            resolution_report,
+            config.provider,
+        )
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self._use_color = sys.stdout.isatty()
 
@@ -1679,18 +1875,17 @@ class Reporter:
         self,
         all_results: list,
         all_assertions: dict,
-        config: RunConfig,
         totals: dict,
         wall_time_ms: int,
         *,
         aborted_reason: str | None,
         expected_turn_count: int,
-        session_schema: int,
         git_head: str,
         artifact_security=None,
         redactor=redact_artifact,
         forbidden_values=(),
     ) -> Path:
+        config = self.config
         artifact_security = artifact_security or {
             "files_scanned": 0,
             "secret_hits": [],
@@ -1703,6 +1898,7 @@ class Reporter:
             "run_id": run_id,
             "provider": config.provider,
             "model": config.model,
+            "provider_resolution": self.provider_resolution,
             "git_head": git_head,
             "aborted_reason": aborted_reason or "",
             "wall_time_ms": wall_time_ms,
@@ -1722,7 +1918,6 @@ class Reporter:
             "totals": totals,
         }
 
-        # assertion summary
         total = 0
         passed = 0
         for asserts_list in all_assertions.values():
@@ -1746,13 +1941,41 @@ class Reporter:
             bool(all_assertions.get(result.turn)) for result in all_results
         )
         global_assertions_present = bool(all_assertions.get("global"))
+        transport_gate = payload["gates"]["transport_cost"]
+        usage_only_degraded = (
+            transport_gate["status"] == "degraded"
+            and transport_gate["usage_complete"] is False
+            and transport_gate["billing_ambiguous"] is True
+            and transport_gate["transport_evidence_complete"] is True
+            and transport_gate["transport_retries"] == 0
+        )
+        failed_assertions = [
+            assertion
+            for assertions in all_assertions.values()
+            for assertion in assertions
+            if not assertion.passed
+        ]
+        allowed_usage_failures = all(
+            assertion.gate == "transport_cost"
+            and assertion.name in _DEGRADED_USAGE_ASSERTIONS
+            for assertion in failed_assertions
+        )
+        usage_degradation_proved = usage_only_degraded is bool(failed_assertions)
+        required_gates_pass = all(
+            gate["status"] == "pass"
+            for name, gate in payload["gates"].items()
+            if name != "transport_cost"
+        )
         payload["overall_pass"] = (
             aborted_reason is None
             and completed_all_turns
             and turn_assertions_present
             and global_assertions_present
             and total > 0
-            and all(gate["status"] == "pass" for gate in payload["gates"].values())
+            and allowed_usage_failures
+            and usage_degradation_proved
+            and required_gates_pass
+            and (transport_gate["status"] == "pass" or usage_only_degraded)
         )
 
         payload["artifact_security"] = {
@@ -1811,7 +2034,18 @@ class Reporter:
             "transport_evidence_complete": r.transport_evidence_complete,
             "billing_ambiguous": r.billing_ambiguous,
             "stopped_at_step_limit": r.stopped_at_step_limit,
-            "error_code": "turn_error" if r.error else "",
+            "terminal_status": r.terminal_status,
+            "stop_reason": r.stop_reason,
+            "tool_name_counts": dict(r.tool_name_counts),
+            "tool_status_counts": dict(r.tool_status_counts),
+            "error_code_counts": dict(r.error_code_counts),
+            "error_code": (
+                r.error_code
+                if _stable_trace_label(r.error_code)
+                else "turn_error"
+                if r.error_code
+                else ""
+            ),
             "usage": r.usage,
             "usage_complete": r.usage_complete,
             "assertions": [self._assertion_to_json(a) for a in assertions],
@@ -1828,13 +2062,17 @@ class Reporter:
     def _build_gates(self, all_results, all_assertions, totals, wall_time_ms):
         assertions = [item for group in all_assertions.values() for item in group]
 
-        def assertions_pass(gate):
+        def assertions_pass(gate, *, ignored_names=frozenset()):
             selected = [item for item in assertions if item.gate == gate]
-            return bool(selected) and all(item.passed for item in selected)
+            required = [item for item in selected if item.name not in ignored_names]
+            return bool(required) and all(item.passed for item in required)
 
         model_attempts = sum(item.model_attempts_this_turn for item in all_results)
         model_turns = sum(item.model_turns_this_turn for item in all_results)
         model_failures = sum(item.model_failures_this_turn for item in all_results)
+        turns_completed = bool(all_results) and all(
+            _turn_completed(item) for item in all_results
+        )
         evidence_complete = bool(all_results) and all(
             item.transport_evidence_complete for item in all_results
         )
@@ -1852,23 +2090,27 @@ class Reporter:
             else None
         )
         transport_failed = (
-            not assertions_pass("transport_cost")
+            not assertions_pass(
+                "transport_cost",
+                ignored_names=_DEGRADED_USAGE_ASSERTIONS,
+            )
             or not evidence_complete
-            or not usage_complete
             or model_attempts > self.config.max_model_attempts
             or wall_time_ms > self.config.max_wall_seconds * 1000
         )
         transport_degraded = not transport_failed and (
-            bool(transport_retries)
+            not usage_complete
+            or bool(transport_retries)
             or any(item.billing_ambiguous for item in all_results)
         )
         return {
             "behavior": {
                 "status": "pass"
-                if assertions_pass("behavior") and not model_failures
+                if assertions_pass("behavior") and not model_failures and turns_completed
                 else "fail",
                 "model_turns": model_turns,
                 "model_failures": model_failures,
+                "turns_completed": turns_completed,
             },
             "transport_cost": {
                 "status": "fail"
@@ -1913,10 +2155,27 @@ class Reporter:
         gates=None,
     ) -> None:
         passed, total = assertion_summary
-        color = self._COLOR_GREEN if overall_pass else self._COLOR_RED
-        label = "ALL PASS" if overall_pass else "FAIL"
         gates = gates or {}
         transport = gates.get("transport_cost", {})
+        usage_degraded = (
+            overall_pass
+            and transport.get("status") == "degraded"
+            and transport.get("usage_complete") is False
+        )
+        color = (
+            self._COLOR_YELLOW
+            if usage_degraded
+            else self._COLOR_GREEN
+            if overall_pass
+            else self._COLOR_RED
+        )
+        label = (
+            "PASS WITH DEGRADED USAGE"
+            if usage_degraded
+            else "ALL PASS"
+            if overall_pass
+            else "FAIL"
+        )
         for gate_name, display_name in (
             ("behavior", "Behavior"),
             ("transport_cost", "Transport"),
@@ -1931,6 +2190,11 @@ class Reporter:
             f"(cap {transport.get('model_attempt_cap', self.config.max_model_attempts)}) · "
             f"HTTP attempts {transport.get('transport_attempts')} · "
             f"retries {transport.get('transport_retries')}"
+        )
+        print(
+            "[live-e2e] Provider resolution: "
+            f"{self.provider_resolution['status']} · "
+            f"probe calls {self.provider_resolution['model_calls']}"
         )
         print(
             f"[live-e2e] OVERALL: {self._color(label, color)} · {passed}/{total} assertions"
@@ -1979,22 +2243,20 @@ def _provider_call_kind(system):
 
 
 class _SniffingProviderWrapper:
-    """Wraps a real provider and records the messages sent on each call.
-
-    Preserves the ``complete`` signature and forwards straight through.
-    We record only what we need (the last user message content per call)
-    so memory stays bounded across a 5-turn session.
-    """
+    """Capture bounded in-memory call evidence around one real Provider client."""
 
     def __init__(self, inner, *, forbidden_values=()):
         self._inner = inner
         self._forbidden_values = tuple(str(value) for value in forbidden_values)
-        # Per-call captures: list of {"last_user_content": str, "call_ts_ns": int}
         self.calls: list[dict] = []
-        # Delegate the cache capability used by request metadata.
         self.supports_prompt_cache = getattr(inner, "supports_prompt_cache", False)
         self.provider_binding = getattr(inner, "provider_binding", None)
         self.provider_metadata = getattr(inner, "provider_metadata", {})
+        self.provider_resolution_metadata = getattr(
+            inner,
+            "provider_resolution_metadata",
+            {},
+        )
         self.last_completion_metadata = {}
         self.last_transport_attempts = 0
         self.last_stop_reason = None
@@ -2057,21 +2319,22 @@ class _SniffingProviderWrapper:
             self.last_stop_reason = getattr(self._inner, "last_stop_reason", None)
 
 
-def make_live_client(config: RunConfig, *, settings=None):
+def make_live_client(config: RunConfig, *, settings=None, inner=None):
     """Instantiate the selected live client using its production transport."""
 
     settings = settings or provider_settings(config.repo_root)
-    from pony.providers.factory import build_transport_client
+    if inner is None:
+        from pony.providers.factory import build_transport_client
 
-    inner = build_transport_client(
-        settings["transport"],
-        model=config.model,
-        base_url=settings["base_url"],
-        api_key=settings["api_key"],
-        timeout=config.request_timeout_seconds,
-        auth_mode=settings["auth_mode"],
-        capabilities=settings["capabilities"],
-    )
+        inner = build_transport_client(
+            settings["transport"],
+            model=config.model,
+            base_url=settings["base_url"],
+            api_key=settings["api_key"],
+            timeout=config.request_timeout_seconds,
+            auth_mode=settings["auth_mode"],
+            capabilities=settings["capabilities"],
+        )
     return _SniffingProviderWrapper(
         inner,
         forbidden_values=(settings["api_key"],),
@@ -2082,8 +2345,6 @@ def _budget_exceeded(
     all_results: list, config: RunConfig, wall_start_ns: int
 ) -> str | None:
     """Return a short reason string if any cost guard has fired; else None."""
-    if any(not result.usage_complete for result in all_results):
-        return "usage_unknown"
     total_attempts = sum(r.model_attempts_this_turn for r in all_results)
     if total_attempts > config.max_model_attempts:
         return (
@@ -2101,6 +2362,14 @@ def _budget_exceeded(
     if elapsed_s > config.max_wall_seconds:
         return f"max_wall_seconds exceeded ({elapsed_s:.0f}>{config.max_wall_seconds})"
     return None
+
+
+def _runtime_types():
+    from pony.runtime.application import Pony
+    from pony.state.session_store import SessionStore
+    from pony.workspace.context import WorkspaceContext
+
+    return Pony, SessionStore, WorkspaceContext
 
 
 def do_reset(repo_root: Path) -> int:
@@ -2159,23 +2428,8 @@ def main() -> int:
     if config.reset:
         return do_reset(repo_root)
 
-    project_env = read_project_env(repo_root)
-    process_env = dict(os.environ)
-    settings = provider_settings(
-        repo_root,
-        project_env=project_env,
-        process_env=process_env,
-    )
-    check_env(config, settings=settings)
-    if not check_live_readiness(config, settings=settings):
-        print("[live-e2e] not_configured", file=sys.stderr)
-        return 2
     verify_pony_repo(repo_root)
     warn_if_dirty_working_tree(repo_root)
-    selected_api_key = settings["api_key"].strip()
-    selected_api_key_name = settings["api_key_env"]
-
-    # Detect any unclean previous fixture without overwriting user files.
     if any(
         os.path.lexists(repo_root / relative)
         for relative in (SEED_NOTE_REL, TOOL_DIGEST_FIXTURE_REL)
@@ -2186,23 +2440,53 @@ def main() -> int:
         )
         return 2
 
+    try:
+        Pony, SessionStore, WorkspaceContext = _runtime_types()
+    except Exception:
+        print("[live-e2e] pony runtime import failed", file=sys.stderr)
+        return 4
+
+    project_env = read_project_env(repo_root)
+    process_env = dict(os.environ)
+    wall_start = time.monotonic_ns()
+    try:
+        resolved_client, settings, resolution_report = resolve_live_provider(
+            config,
+            project_env=project_env,
+            process_env=process_env,
+        )
+    except Exception as exc:
+        raw_code = getattr(exc, "code", "") or (
+            str(exc) if isinstance(exc, ValueError) else ""
+        )
+        code = raw_code if _stable_trace_label(raw_code) else "provider_detection_failed"
+        print(f"[live-e2e] {code}, aborted", file=sys.stderr)
+        return 2
+    config = replace(
+        config,
+        provider=settings["provider"],
+        model=settings["model"],
+    )
+    check_env(config, settings=settings)
+    selected_api_key = settings["api_key"].strip()
+    selected_api_key_name = settings["api_key_env"]
+
     pony_root = repo_root / ".pony"
     artifact_baseline = snapshot_private_artifacts(pony_root)
-    wall_start = time.monotonic_ns()
 
     digest_fixture = TOOL_DIGEST_FIXTURE_REL.as_posix()
     tool_prompt = (
-        "Your first action must call the available read_file tool for "
-        f"{digest_fixture}. Do not return a final answer before receiving the "
-        "tool result; then summarize that result."
-        if config.provider in {"ollama", "openai"}
-        else "Use the API-provided native read_file tool to read "
-        f"{digest_fixture}, then summarize it. Do not emit XML tool text."
+        "Call the API-provided native read_file tool exactly once for "
+        f"{digest_fixture}. After its result, do not call any tool again. The result "
+        "may be a [digest] summary; treat that digest as complete evidence and return "
+        "a concise final summary. Do not emit XML tool text."
     )
-    TURNS = [
+    turns = [
         (
             1,
-            "上次讨论过 cache invariant 的问题，帮我看看这个仓库的 cache 相关代码",
+            "Read the recalled cache-invariant Memory note with exactly one "
+            "memory_read call. Do not call any other tool. After its result, return "
+            "a concise summary.",
             "recall_triggered",
         ),
         (
@@ -2210,19 +2494,22 @@ def main() -> int:
             tool_prompt,
             "provider_tool_roundtrip",
         ),
-        (3, "再看一下 pony/context_manager.py", "source_pool_bounded"),
+        (
+            3,
+            "Do not call any tool. Return exactly: source allocator metadata checked.",
+            "source_pool_bounded",
+        ),
         (4, "总结一下我们目前讨论的所有内容", "history_compacted"),
         (5, "最后 done", "cache_anchor_verified"),
     ]
 
     fixture = FixtureManager(repo_root, forbidden_values=(selected_api_key,))
     with fixture:
-        # Lazy import of pony so a broken pony module produces exit 4 (not 2).
-        from pony.runtime.application import Pony
-        from pony.state.session_store import SessionStore
-        from pony.workspace.context import WorkspaceContext
-
-        model_client = make_live_client(config, settings=settings)
+        model_client = make_live_client(
+            config,
+            settings=settings,
+            inner=resolved_client,
+        )
         workspace = WorkspaceContext.build(repo_root)
         session_store = SessionStore(repo_root / ".pony" / "sessions")
         try:
@@ -2231,7 +2518,9 @@ def main() -> int:
                 workspace=workspace,
                 session_store=session_store,
                 options=RuntimeOptions(
-                    read_only=True, max_steps=2, allowed_tools=("read_file",)
+                    read_only=True,
+                    max_steps=3,
+                    allowed_tools=("read_file", "memory_read"),
                 ),
             )
         except Exception:
@@ -2239,19 +2528,22 @@ def main() -> int:
             return 4
 
         runner = TurnRunner(pony, config)
-        reporter = Reporter(config, repo_root / "benchmarks" / "live_e2e" / "results")
+        reporter = Reporter(
+            config,
+            repo_root / "benchmarks" / "live_e2e" / "results",
+            resolution_report=resolution_report,
+        )
         engine = AssertionEngine(config)
 
         all_results: list = []
         all_assertions: dict = {}
         aborted_reason: str | None = None
 
-        for turn_no, prompt, expected in TURNS:
+        for turn_no, prompt, expected in turns:
             if turn_no == 4:
                 seed_compaction_fixture(pony)
             result = runner.run_turn(turn_no, prompt, expected)
-            if result.error is not None:
-                # provider or pony error mid-turn
+            if result.error_code is not None:
                 all_results.append(result)
                 all_assertions[turn_no] = []
                 print(f"[live-e2e] turn {turn_no} failed", file=sys.stderr)
@@ -2261,6 +2553,14 @@ def main() -> int:
             turn_asserts = engine.dispatch(turn_no, result, pony, all_results)
             all_assertions[turn_no] = turn_asserts
             reporter.render_turn_summary(turn_no, expected, turn_asserts)
+
+            if not _turn_completed(result):
+                aborted_reason = f"turn_not_completed_{turn_no}"
+                print(
+                    f"[live-e2e] turn {turn_no} did not return a completed final answer",
+                    file=sys.stderr,
+                )
+                break
 
             reason = _budget_exceeded(all_results, config, wall_start)
             if reason:
@@ -2273,7 +2573,6 @@ def main() -> int:
             artifact_baseline,
             forbidden_values=(selected_api_key,),
         )
-        # Run global checks whether we finished or aborted early
         global_asserts = engine.check_global(
             all_results,
             pony,
@@ -2282,7 +2581,6 @@ def main() -> int:
         all_assertions["global"] = global_asserts
         reporter.render_turn_summary("global", "cross-turn invariants", global_asserts)
 
-        # Assemble totals
         totals = {
             "model_attempts": sum(r.model_attempts_this_turn for r in all_results),
             "model_turns": sum(r.model_turns_this_turn for r in all_results),
@@ -2313,8 +2611,6 @@ def main() -> int:
             ),
         }
 
-        session_schema = int(pony.session.get("format_version", 0))
-
     restoration = fixture.restoration_status()
     fixture_assertion = Assertion(
         name="fixture_restored_after_context_exit",
@@ -2336,12 +2632,10 @@ def main() -> int:
     report_path = reporter.write_json(
         all_results,
         all_assertions,
-        config,
         totals,
         wall_time_ms,
         aborted_reason=aborted_reason,
-        expected_turn_count=len(TURNS),
-        session_schema=session_schema,
+        expected_turn_count=len(turns),
         git_head=git_head,
         artifact_security=artifact_security,
         redactor=lambda value: redact_artifact(

@@ -359,7 +359,6 @@ class OpenAIResponsesModelClient:
         self.provider_metadata = _model_runtime_metadata(
             "openai_responses",
             self.model,
-            self.base_url,
         )
 
     def complete(

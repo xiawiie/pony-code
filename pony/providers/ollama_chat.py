@@ -188,7 +188,6 @@ class OllamaChatModelClient:
         self.provider_metadata = _model_runtime_metadata(
             "ollama_chat",
             self.model,
-            self.host,
         )
 
     def complete(

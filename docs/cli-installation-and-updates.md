@@ -9,7 +9,7 @@
 
 ## 从 PyPI 安装
 
-推荐在独立虚拟环境中安装：
+`v1.0.0` tag 与对应 package 发布后，推荐在独立虚拟环境中安装；发布前请使用下方源码流程：
 
 ```bash
 python -m venv .venv
@@ -113,7 +113,7 @@ inspection 与管理命令保持无装饰输出。Session v1/v2 只有在显式 
 | --- | --- | --- | --- | --- |
 | Anthropic | `messages` | `https://api.anthropic.com/v1` | `x-api-key` | 必需 |
 | `openai-responses` | `responses` | `https://api.openai.com/v1` | `bearer` | 必需 |
-| `openai-chat` | `chat_completions` | 用户显式填写 | `bearer` | 必需 |
+| `openai-chat` | `chat_completions` | `https://api.openai.com/v1` | `bearer` | 必需 |
 | Ollama | `chat` | `http://127.0.0.1:11434` | `none` | 可空 |
 
 `openai` 仅是 init/run/repl/doctor 可使用的 family selector；init 不会把它写作最终值。
@@ -128,14 +128,15 @@ pony doctor --check-api
 
 最后一条会发送真实请求，可能收费。missing/auto/OpenAI family 可在发送用户任务前使用 fixed synthetic probe 解析协议；
 Pony 不在真实用户请求失败后切换 Provider 或协议。
-独立 benchmark/live harness 不另行探测；如 `config show` 仍显示 `probe_required`，先运行 `pony init`。
+普通 benchmark 不探测；如 `config show` 仍显示 `probe_required`，先运行 `pony init`。收费 live harness 在 workload 前
+调用与 CLI 相同的 resolver，并把 probe 调用与 workload 调用分开报告，不维护第二套识别逻辑。
 
 ## 更新
 
 PyPI 安装：
 
 ```bash
-python -m pip install --upgrade pony
+python -m pip install --upgrade pony-code
 pony --version
 pony doctor
 ```
@@ -155,7 +156,7 @@ uv run pony doctor
 ## 卸载
 
 ```bash
-python -m pip uninstall pony
+python -m pip uninstall pony-code
 ```
 
 卸载 package 不会删除项目 `.env`、项目 `.pony/` 或用户目录 `~/.pony/`。这些目录可能包含凭证引用、Memory、

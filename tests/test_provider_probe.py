@@ -250,6 +250,7 @@ def _failed_report(*, code="provider_protocol_mismatch", status=None):
 
 def test_auto_detection_uses_candidate_order_and_returns_first_success(monkeypatch):
     built = []
+    clients = []
     reports = iter(
         [
             _failed_report(),
@@ -265,7 +266,9 @@ def test_auto_detection_uses_candidate_order_and_returns_first_success(monkeypat
 
     def build(config, timeout):
         built.append((config["protocol"]["value"], timeout))
-        return SimpleNamespace(provider_metadata={})
+        client = SimpleNamespace(provider_metadata={})
+        clients.append(client)
+        return client
 
     monkeypatch.setattr(probe_module, "_client_from_config", build)
     monkeypatch.setattr(probe_module, "probe_model_client", lambda _client: next(reports))
@@ -280,8 +283,12 @@ def test_auto_detection_uses_candidate_order_and_returns_first_success(monkeypat
     assert [protocol for protocol, _timeout in built] == [
         "openai_chat_completions",
         "openai_responses",
+        "openai_responses",
     ]
-    assert all(timeout <= 30 for _protocol, timeout in built)
+    assert all(timeout <= 30 for _protocol, timeout in built[:2])
+    assert built[2][1] == 60
+    assert client is clients[2]
+    assert client is not clients[1]
     assert resolved["resolved_provider"]["value"] == "openai-responses"
     assert report["candidate_count"] == 2
     assert report["model_calls"] == 3
@@ -323,7 +330,11 @@ def test_auto_auth_failure_skips_sibling_protocol_family(monkeypatch):
         verify_resolved=True,
     )
 
-    assert built == ["openai_chat_completions", "anthropic_messages"]
+    assert built == [
+        "openai_chat_completions",
+        "anthropic_messages",
+        "anthropic_messages",
+    ]
     assert resolved["resolved_provider"]["value"] == "anthropic"
 
 

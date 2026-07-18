@@ -1,6 +1,7 @@
 import copy
 import json
 import logging
+import os
 from unittest.mock import Mock
 
 import pytest
@@ -454,12 +455,18 @@ def test_agent_loop_decodes_native_action_and_aggregates_response_usage_only(tmp
                     "cache_creation_input_tokens": 4,
                     "cache_read_input_tokens": 3,
                     "cache_hit": True,
+                    "request_id": "request-1",
                 },
             ),
             Response(
                 stop_reason=StopReason.END_TURN,
                 content=[{"type": "text", "text": "done"}],
-                usage={"input_tokens": 20, "output_tokens": 5, "total_tokens": None},
+                usage={
+                    "input_tokens": 20,
+                    "output_tokens": 5,
+                    "total_tokens": None,
+                    "request_id": "request-2",
+                },
             ),
         ]
     )
@@ -481,11 +488,34 @@ def test_agent_loop_decodes_native_action_and_aggregates_response_usage_only(tmp
     assert decoded[0]["origin"] == "native_tool_use"
     assert decoded[1]["action_type"] == "final"
     assert [turn["completion_usage"]["input_tokens"] for turn in turns] == [10, 20]
+    assert all("request_id" not in turn["completion_usage"] for turn in turns)
+    assert [
+        turn["request_metadata"]["provider_request_id"] for turn in turns
+    ] == ["request-1", "request-2"]
     assert report["model"]["usage"]["input_tokens"] == 30
     assert report["model"]["usage"]["output_tokens"] == 7
     assert report["model"]["usage"]["total_tokens"] == 37
     assert report["model"]["usage"]["cache_hit"] is True
     assert report["model"]["usage"]["input_tokens"] != 999999
+
+
+def test_unsafe_provider_request_id_is_dropped_without_losing_usage(tmp_path):
+    provider = NativeScriptProvider(
+        [
+            Response(
+                stop_reason=StopReason.END_TURN,
+                content=[{"type": "text", "text": "done"}],
+                usage={"input_tokens": 10, "output_tokens": 2, "request_id": "/tmp/id"},
+            )
+        ]
+    )
+    agent = build_native_agent(tmp_path, provider)
+
+    assert agent.ask("finish") == "done"
+
+    report = agent.run_store.load_report(agent.current_task_state.run_id)
+    assert report["model"]["usage"]["input_tokens"] == 10
+    assert "provider_request_id" not in report["context"]
 
 
 def test_native_multiple_tool_response_executes_none_and_requests_correction(
@@ -1847,3 +1877,101 @@ def test_rejected_tool_calls_do_not_consume_step_budget(tmp_path):
         and event.get("tool_status") == "rejected"
     ]
     assert rejected
+
+
+def test_repeated_rejected_tool_call_stops_after_one_transient_correction(tmp_path):
+    provider = NativeScriptProvider(
+        [
+            Response(
+                stop_reason=StopReason.TOOL_USE,
+                content=[
+                    {
+                        "type": "tool_use",
+                        "id": "tu_invalid_one",
+                        "name": "read_file",
+                        "input": {"path": "README.md", "start": 0},
+                    }
+                ],
+                usage={},
+            ),
+            Response(
+                stop_reason=StopReason.TOOL_USE,
+                content=[
+                    {
+                        "type": "tool_use",
+                        "id": "tu_invalid_two",
+                        "name": "read_file",
+                        "input": {"path": "README.md", "start": 0},
+                    }
+                ],
+                usage={},
+            ),
+        ]
+    )
+    agent = build_native_agent(tmp_path, provider, max_steps=3)
+
+    answer = agent.ask("inspect README")
+
+    assert answer.startswith("Stopped after the same tool/rejection category")
+    assert len(provider.calls) == 2
+    assert agent.current_task_state.stop_reason == "retry_limit_reached"
+    assert agent.current_task_state.tool_steps == 0
+    first_request, corrected_request = provider.calls
+    assert "pony:runtime_feedback" not in json.dumps(first_request)
+    corrected_payload = json.dumps(corrected_request)
+    assert "pony:runtime_feedback" in corrected_payload
+    assert "arguments did not satisfy the visible tool schema" in corrected_payload
+
+    canonical_text = json.dumps(agent.session["messages"])
+    trace_text = agent.run_store.trace_path(agent.current_task_state).read_text(
+        encoding="utf-8"
+    )
+    assert "pony:runtime_feedback" not in canonical_text
+    assert "arguments did not satisfy the visible tool schema" not in canonical_text
+    assert "pony:runtime_feedback" not in trace_text
+    assert "arguments did not satisfy the visible tool schema" not in trace_text
+
+
+def test_repeated_unsafe_workspace_tool_call_stops_after_one_correction(tmp_path):
+    outside = tmp_path.parent / f"{tmp_path.name}-outside.txt"
+    outside.write_text("outside-canary\n", encoding="utf-8")
+    os.link(outside, tmp_path / "unsafe.txt")
+    provider = NativeScriptProvider(
+        [
+            Response(
+                stop_reason=StopReason.TOOL_USE,
+                content=[
+                    {
+                        "type": "tool_use",
+                        "id": "tu_unsafe_one",
+                        "name": "read_file",
+                        "input": {"path": "unsafe.txt"},
+                    }
+                ],
+                usage={},
+            ),
+            Response(
+                stop_reason=StopReason.TOOL_USE,
+                content=[
+                    {
+                        "type": "tool_use",
+                        "id": "tu_unsafe_two",
+                        "name": "read_file",
+                        "input": {"path": "unsafe.txt"},
+                    }
+                ],
+                usage={},
+            ),
+        ]
+    )
+    agent = build_native_agent(tmp_path, provider, max_steps=3)
+
+    answer = agent.ask("inspect the unsafe file")
+
+    assert answer.startswith("Stopped after the same tool/rejection category")
+    assert len(provider.calls) == 2
+    corrected_payload = json.dumps(provider.calls[1])
+    assert "workspace entry is unsafe" in corrected_payload
+    assert "Do not retry that path" in corrected_payload
+    assert "Use list_files to choose" not in corrected_payload
+    assert outside.read_text(encoding="utf-8") == "outside-canary\n"

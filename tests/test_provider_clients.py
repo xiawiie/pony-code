@@ -118,7 +118,6 @@ def _complete(client, *, tools=None, messages=None):
                 "protocol_family": "openai_responses",
                 "requested_model": "gpt-test",
                 "effective_model": "gpt-test",
-                "endpoint_origin": "https://api.openai.com",
             },
         ),
         (
@@ -127,7 +126,6 @@ def _complete(client, *, tools=None, messages=None):
                 "protocol_family": "anthropic_messages",
                 "requested_model": "claude-test",
                 "effective_model": "claude-test",
-                "endpoint_origin": "https://api.anthropic.com",
             },
         ),
         (
@@ -136,7 +134,6 @@ def _complete(client, *, tools=None, messages=None):
                 "protocol_family": "ollama_chat",
                 "requested_model": "qwen-test",
                 "effective_model": "qwen-test",
-                "endpoint_origin": "http://127.0.0.1:11434",
             },
         ),
     ],

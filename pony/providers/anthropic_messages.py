@@ -185,7 +185,6 @@ class AnthropicMessagesModelClient:
         self.provider_metadata = _model_runtime_metadata(
             "anthropic_messages",
             self.model,
-            self.base_url,
         )
         self.last_completion_metadata = {}
         self.last_transport_attempts = 0

@@ -2,7 +2,7 @@
 
 ## Status
 
-Implemented on the integration branch. The feature is not released until the complete branch passes the full offline gate.
+Implemented for the unreleased 1.0 line. Every release candidate still requires the full offline gate on its exact HEAD.
 
 ## Context
 

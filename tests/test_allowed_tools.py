@@ -1,4 +1,5 @@
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -12,9 +13,9 @@ from benchmarks.support.fake_provider import FakeModelClient
 from pony.runtime.options import RuntimeOptions
 
 
-def build_agent(tmp_path, allowed_tools=None):
+def build_agent(tmp_path, allowed_tools=None, *, executables=None):
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
-    workspace = WorkspaceContext.build(tmp_path)
+    workspace = WorkspaceContext.build(tmp_path, executables=executables)
     store = SessionStore(tmp_path / ".pony" / "sessions")
     return Pony(
         model_client=FakeModelClient(["Done."]),
@@ -128,6 +129,40 @@ def test_allowed_tools_filter_file_edit_rules_to_available_tools(tmp_path):
     agent = build_agent(tmp_path, allowed_tools=["patch_file"])
 
     assert set(agent.visible_tools()) == {"patch_file"}
+
+
+def test_run_shell_schema_lists_safe_executable_names_without_paths(tmp_path):
+    agent = build_agent(
+        tmp_path,
+        executables={"git": "/usr/bin/git", "python3": "/usr/bin/python3"},
+    )
+
+    description = agent.visible_tools()["run_shell"]["description"]
+
+    assert "Available trusted executable names: git, python3." in description
+    assert "/usr/bin" not in description
+
+
+def test_run_shell_schema_uses_verified_sandbox_image_tools():
+    context = SimpleNamespace(
+        depth=0,
+        max_depth=1,
+        docker_sandbox=True,
+        trusted_executables={"python3": "/usr/bin/python3"},
+        sandbox_context=SimpleNamespace(
+            runner=SimpleNamespace(
+                image=SimpleNamespace(
+                    tool_paths=(("pytest", "/usr/bin/pytest"), ("python", "/usr/bin/python"))
+                )
+            )
+        ),
+    )
+
+    description = toolkit.build_tool_registry(context)["run_shell"]["description"]
+
+    assert "Available trusted executable names: pytest, python." in description
+    assert "python3" not in description
+    assert "/usr/bin" not in description
 
 
 def test_allowed_tools_prompt_includes_search_example_and_required_args(tmp_path):

@@ -862,6 +862,28 @@ def test_find_project_sandbox_session_rejects_duplicate_binding(tmp_path):
         find_project_sandbox_session(project_state, source, "session-1")
 
 
+def test_find_project_sandbox_session_accepts_terminal_history(tmp_path):
+    project_state = tmp_path / "project-state"
+    source, store, first = _create(
+        tmp_path,
+        project_state_root=project_state,
+    )
+    discarded = store.discard(first.state_root)
+    current = store.create(
+        source,
+        pony_session_id="session-1",
+        bootstrap_git=_bootstrap,
+        project_state_root=project_state,
+        **_session_metadata(),
+    )
+
+    found = find_project_sandbox_session(project_state, source, "session-1")
+
+    assert discarded.state == "discarded"
+    assert found is not None
+    assert found.state_root == current.state_root
+
+
 @pytest.mark.parametrize("tamper", ("unknown", "identity"))
 def test_find_project_sandbox_session_rejects_unknown_or_tampered_sidecar(
     tmp_path,

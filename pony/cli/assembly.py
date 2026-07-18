@@ -181,19 +181,36 @@ def _build_agent_with_source_authority(args, source_workspace):
         workspace = source_workspace
     if store is None:
         store = SessionStore(session_store_root, redactor=redactor)
-    model = _build_transport_client(
-        args,
-        project_env=project_env,
-        process_env=process_env,
-        session_store=store if args.resume and session_id else None,
-        session_id=session_id if args.resume else None,
-    )
-    if args.resume and session_id:
-        return Pony.from_session(
+    try:
+        model = _build_transport_client(
+            args,
+            project_env=project_env,
+            process_env=process_env,
+            session_store=store if args.resume and session_id else None,
+            session_id=session_id if args.resume else None,
+        )
+        if args.resume and session_id:
+            return Pony.from_session(
+                model_client=model,
+                workspace=workspace,
+                session_store=store,
+                session_id=session_id,
+                options=RuntimeOptions(
+                    approval_policy=approval_policy,
+                    max_steps=args.max_steps,
+                    max_output_tokens=max_output_tokens,
+                    context_window=getattr(args, "context_window", None),
+                    secret_env_names=configured_secret_names,
+                    redaction_env=redaction_env,
+                    trusted_redaction_env=True,
+                    sandbox_context=sandbox_context,
+                    project_config=project_config,
+                ),
+            )
+        return Pony(
             model_client=model,
             workspace=workspace,
             session_store=store,
-            session_id=session_id,
             options=RuntimeOptions(
                 approval_policy=approval_policy,
                 max_steps=args.max_steps,
@@ -204,25 +221,30 @@ def _build_agent_with_source_authority(args, source_workspace):
                 trusted_redaction_env=True,
                 sandbox_context=sandbox_context,
                 project_config=project_config,
+                session_id=session_id,
             ),
         )
-    return Pony(
-        model_client=model,
-        workspace=workspace,
-        session_store=store,
-        options=RuntimeOptions(
-            approval_policy=approval_policy,
-            max_steps=args.max_steps,
-            max_output_tokens=max_output_tokens,
-            context_window=getattr(args, "context_window", None),
-            secret_env_names=configured_secret_names,
-            redaction_env=redaction_env,
-            trusted_redaction_env=True,
-            sandbox_context=sandbox_context,
-            project_config=project_config,
-            session_id=session_id,
-        ),
-    )
+    except BaseException:
+        if sandbox_context is not None:
+            _cleanup_failed_sandbox_startup(sandbox_context)
+        raise
+
+
+def _cleanup_failed_sandbox_startup(context):
+    store = context.runner.session_store
+    try:
+        if not context.resumed:
+            store.discard(context.sandbox_state_root)
+            return
+    except (OSError, SandboxSessionError):
+        pass
+    try:
+        session = store.inspect(context.sandbox_state_root)
+        lease = session.manifest["lease"]
+        if lease is not None:
+            store.release(context.sandbox_state_root, lease["owner_nonce"])
+    except (OSError, SandboxSessionError):
+        pass
 
 
 def _load_sandbox_runtime():

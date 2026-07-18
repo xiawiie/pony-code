@@ -67,6 +67,24 @@ _USAGE_SUM_KEYS = (
 
 _ATTEMPT_ORIGINS = ("initial", "tool_followup", "retry_action", "model_retry")
 _MODEL_RETRY_DELAYS = (0.5, 1.0)
+_REJECTION_CORRECTIONS = {
+    "invalid_arguments": (
+        "Runtime notice: the preceding tool call was rejected before it ran because "
+        "its arguments did not satisfy the visible tool schema. Do not repeat that "
+        "call. Return exactly one valid tool call using the supplied schema, or a "
+        "non-empty final answer."
+    ),
+    "workspace_entry_unsafe": (
+        "Runtime notice: the preceding tool call was rejected because its workspace "
+        "entry is unsafe. Do not retry that path. Choose a safe workspace entry from "
+        "the current context or visible tools, make exactly one valid tool call, or "
+        "return a non-empty final answer."
+    ),
+}
+_REJECTION_CORRECTION_LIMIT_TEXT = (
+    "Stopped after the same tool/rejection category remained after one correction. "
+    "Use a valid different tool call or return a final answer in a new turn."
+)
 
 
 def _is_context_length_error(error):
@@ -135,11 +153,36 @@ def _safe_provider_request_id(value):
         or value != value.strip()
         or not value
         or len(value) > 200
-        or any(character in value for character in ("\0", "\r", "\n"))
+        or not value.isascii()
+        or not value.isprintable()
+        or not all(character.isalnum() or character in "._:-" for character in value)
         or securitylib.looks_secret_shaped_text(value)
     ):
         return ""
     return value
+
+
+def _rejection_correction(name, metadata):
+    if not isinstance(metadata, dict) or metadata.get("tool_status") != "rejected":
+        return None
+    code = str(metadata.get("tool_error_code", "") or "")
+    notice = _REJECTION_CORRECTIONS.get(code)
+    if notice is None:
+        return None
+    return str(name), code, notice
+
+
+def _advance_rejection_correction(name, metadata, seen):
+    correction = _rejection_correction(name, metadata)
+    if correction is None:
+        return "", None
+    name, code, notice = correction
+    key = (name, code)
+    if key not in seen:
+        seen.add(key)
+        return notice, None
+
+    return "", _REJECTION_CORRECTION_LIMIT_TEXT
 
 
 def _record_transport(model_execution, model_client):
@@ -788,6 +831,7 @@ def _complete_model_attempt(
         return None, None, exc
 
     completion_usage = dict(response.usage or {})
+    request_id = _safe_provider_request_id(completion_usage.pop("request_id", None))
     _add_usage(completion_usage_totals, completion_usage)
     anchor = getattr(agent, "_pending_token_anchor", None)
     if anchor is not None:
@@ -811,7 +855,6 @@ def _complete_model_attempt(
     transport_attempts, transport_retries, evidence_complete = _transport_evidence(
         agent.model_client,
     )
-    request_id = _safe_provider_request_id(completion_usage.get("request_id"))
     if request_id:
         request_metadata["provider_request_id"] = request_id
     if type(transport_attempts) is int and transport_attempts >= 0:
@@ -1127,6 +1170,7 @@ def _run_agent_attempts(
     model_retry_count = 0
     retry_action_count = 0
     context_recovery_count = 0
+    rejection_corrections = set()
     max_attempts = max(agent.max_steps * 3, agent.max_steps + 4)
 
     while tool_steps < agent.max_steps and attempts < max_attempts:
@@ -1233,6 +1277,18 @@ def _run_agent_attempts(
                 run_verification_evidence,
                 model_execution,
             )
+            runtime_feedback, correction_stop = _advance_rejection_correction(
+                action.name,
+                agent._last_tool_result_metadata,
+                rejection_corrections,
+            )
+            if correction_stop is not None:
+                task_state.stop_retry_limit(correction_stop)
+                _commit_session(
+                    agent,
+                    messages=(_plain_message("assistant", correction_stop),),
+                )
+                return correction_stop, task_state.stop_reason, None, None
             attempt_origin = "tool_followup"
             continue
         if isinstance(action, RetryAction):

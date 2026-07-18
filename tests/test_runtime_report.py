@@ -1176,7 +1176,6 @@ def test_report_records_safe_model_identity_and_request_evidence(tmp_path):
         "protocol_family": "openai_responses",
         "requested_model": "gpt-test",
         "effective_model": "gpt-test",
-        "endpoint_origin": "https://api.openai.com",
     }
     agent = Pony(
         model_client=client,

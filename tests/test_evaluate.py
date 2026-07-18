@@ -76,10 +76,18 @@ def _live_report(*, git_head="unknown"):
     }
     return {
         "record_type": "live_e2e_report",
-        "format_version": 2,
+        "format_version": 3,
         "run_id": "live-e2e-1",
         "provider": "openai",
         "model": "test-model",
+        "provider_resolution": {
+            "status": "not_run",
+            "resolution_source": "explicit",
+            "protocol": "openai_responses",
+            "candidate_count": 0,
+            "model_calls": 0,
+            "usage_status": "not_checked",
+        },
         "git_head": git_head,
         "aborted_reason": "",
         "wall_time_ms": 10,
@@ -103,6 +111,11 @@ def _live_report(*, git_head="unknown"):
                 "transport_evidence_complete": True,
                 "billing_ambiguous": False,
                 "stopped_at_step_limit": False,
+                "terminal_status": "completed",
+                "stop_reason": "final_answer_returned",
+                "tool_name_counts": {},
+                "tool_status_counts": {},
+                "error_code_counts": {},
                 "error_code": "",
                 "usage": {
                     "input_tokens": 2,
@@ -141,7 +154,12 @@ def _live_report(*, git_head="unknown"):
         "totals": totals,
         "assertion_summary": {"total": 9, "passed": 9, "failed": 0},
         "gates": {
-            "behavior": {"status": "pass", "model_turns": 5, "model_failures": 0},
+            "behavior": {
+                "status": "pass",
+                "model_turns": 5,
+                "model_failures": 0,
+                "turns_completed": True,
+            },
             "transport_cost": {
                 "status": "pass",
                 "model_attempts": 5,
@@ -459,15 +477,18 @@ def test_logical_suites_split_fast_full_contract_and_real_work():
     ]
 
 
-def test_sandbox_real_uses_the_local_runtime_verifier():
-    command = evaluate._sandbox_real_command("linux")
+def test_sandbox_real_uses_readiness_and_vertical_verifiers():
+    commands = evaluate._sandbox_real_commands("linux")
 
-    assert command[0] == "sandbox.real.linux"
-    assert command[1][-2:] == (
+    assert commands[0][0] == "sandbox.real.linux.readiness"
+    assert commands[0][1][-2:] == (
         "scripts/sandbox/verify_runtime.py",
         "--require-ready",
     )
-    assert command[2] == "exit"
+    assert commands[0][2] == "exit"
+    assert commands[1][0] == "sandbox.real.linux.vertical"
+    assert commands[1][1][-1] == "scripts/sandbox/verify_vertical.py"
+    assert commands[1][2] == "exit"
 
 
 def test_pr_suites_do_not_require_baseline_or_real_sandbox(tmp_path):
@@ -535,7 +556,10 @@ def test_sandbox_fails_on_pytest_skip_and_unready_runtime(tmp_path):
             return SimpleNamespace(
                 returncode=0, stdout="1 passed, 1 skipped", stderr=""
             )
-        if any(item.endswith("verify_runtime.py") for item in argv):
+        if any(
+            item.endswith(("verify_runtime.py", "verify_vertical.py"))
+            for item in argv
+        ):
             return SimpleNamespace(returncode=1, stdout="{}", stderr="not ready")
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
@@ -547,9 +571,10 @@ def test_sandbox_fails_on_pytest_skip_and_unready_runtime(tmp_path):
         system_name="darwin",
     )
 
-    assert calls == 2
+    assert calls == 3
     assert payload["status"] == "fail"
     assert [row["status"] for row in payload["scenarios"]] == [
+        "fail",
         "fail",
         "fail",
     ]
@@ -611,6 +636,81 @@ def test_live_provider_is_forwarded_to_existing_runner_without_output_leak(tmp_p
     assert "transport output" not in serialized
 
 
+@pytest.mark.parametrize(
+    "selector",
+    (None, "auto", "openai", "openai-chat", "openai-responses"),
+)
+def test_live_evaluator_uses_the_resolved_openai_provider(selector, tmp_path):
+    env_lines = [
+        "PONY_API_BASE=https://gateway.example/v1",
+        "PONY_MODEL=test-model",
+        "PONY_API_KEY=test-key",
+    ]
+    if selector is not None:
+        env_lines.insert(0, f"PONY_PROVIDER={selector}")
+    (tmp_path / ".env").write_text("\n".join(env_lines) + "\n", encoding="utf-8")
+
+    def runner(_argv, cwd):
+        report = _live_report()
+        if selector in {"openai-chat", "openai-responses"}:
+            report["provider_resolution"]["protocol"] = (
+                "openai_chat_completions"
+                if selector == "openai-chat"
+                else "openai_responses"
+            )
+        else:
+            report["provider_resolution"] = {
+                "status": "ok",
+                "resolution_source": "probe",
+                "protocol": "openai_chat_completions",
+                "candidate_count": 1,
+                "model_calls": 2,
+                "usage_status": "complete",
+            }
+        results = cwd / "benchmarks" / "live_e2e" / "results"
+        results.mkdir(parents=True)
+        (results / "live.json").write_text(json.dumps(report), encoding="utf-8")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    payload, _json_rel, _markdown_rel = evaluate.run_evaluation(
+        "live",
+        runner=runner,
+        root=tmp_path,
+        now=datetime(2026, 7, 12, 4, tzinfo=timezone.utc),
+    )
+
+    assert payload["status"] == "pass"
+    assert payload["provenance"]["provider"] == "openai"
+    assert payload["scenarios"][0]["id"] == "live.openai"
+
+
+def test_live_evaluator_rejects_a_forced_protocol_mismatch(tmp_path):
+    (tmp_path / ".env").write_text(
+        "PONY_PROVIDER=openai-responses\n"
+        "PONY_API_BASE=https://gateway.example/v1\n"
+        "PONY_MODEL=test-model\n"
+        "PONY_API_KEY=test-key\n",
+        encoding="utf-8",
+    )
+
+    def runner(_argv, cwd):
+        report = _live_report()
+        report["provider_resolution"]["protocol"] = "openai_chat_completions"
+        results = cwd / "benchmarks" / "live_e2e" / "results"
+        results.mkdir(parents=True)
+        (results / "live.json").write_text(json.dumps(report), encoding="utf-8")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    payload, _json_rel, _markdown_rel = evaluate.run_evaluation(
+        "live",
+        runner=runner,
+        root=tmp_path,
+        now=datetime(2026, 7, 12, 4, tzinfo=timezone.utc),
+    )
+
+    assert payload["status"] == "fail"
+
+
 def test_live_report_requires_exact_head_and_required_gate_evidence():
     report = _live_report(git_head="wrong")
     assert evaluate._live_report_passed(report, "openai", "expected") is False
@@ -666,7 +766,89 @@ def test_live_report_keeps_assertion_names_dynamic():
     assert evaluate._live_report_passed(report, "openai", "expected") is True
 
 
-def test_live_exit_zero_without_current_v2_report_fails(tmp_path):
+def test_live_report_accepts_usage_only_degradation():
+    report = _live_report(git_head="expected")
+    report["turns"][0]["usage_complete"] = False
+    report["turns"][0]["billing_ambiguous"] = True
+    report["turns"][0]["assertions"].append(
+        {
+            "name": "turn_usage_complete",
+            "gate": "transport_cost",
+            "passed": False,
+        }
+    )
+    report["global_assertions"].append(
+        {
+            "name": "all_turn_usage_complete",
+            "gate": "transport_cost",
+            "passed": False,
+        }
+    )
+    report["assertion_summary"] = {"total": 11, "passed": 9, "failed": 2}
+    report["gates"]["transport_cost"].update(
+        status="degraded",
+        usage_complete=False,
+        billing_ambiguous=True,
+    )
+
+    assert evaluate._live_report_passed(report, "openai", "expected") is True
+
+
+def test_live_report_rejects_unproved_usage_degradation():
+    report = _live_report(git_head="expected")
+    report["turns"][0]["usage_complete"] = False
+    report["turns"][0]["billing_ambiguous"] = True
+    report["gates"]["transport_cost"].update(
+        status="degraded",
+        usage_complete=False,
+        billing_ambiguous=True,
+    )
+
+    assert evaluate._live_report_passed(report, "openai", "expected") is False
+
+
+@pytest.mark.parametrize("value", [None, 1, {}, {"unexpected": True}])
+def test_live_report_rejects_malformed_provider_resolution(value):
+    report = _live_report(git_head="expected")
+    report["provider_resolution"] = value
+
+    assert evaluate._live_report_passed(report, "openai", "expected") is False
+
+
+@pytest.mark.parametrize(
+    "updates",
+    [
+        {"protocol": "anthropic_messages"},
+        {"resolution_source": "probe"},
+        {
+            "status": "ok",
+            "resolution_source": "explicit",
+            "candidate_count": 1,
+            "model_calls": 2,
+            "usage_status": "complete",
+        },
+    ],
+)
+def test_live_report_rejects_inconsistent_provider_resolution(updates):
+    report = _live_report(git_head="expected")
+    report["provider_resolution"].update(updates)
+
+    assert evaluate._live_report_passed(report, "openai", "expected") is False
+
+
+def test_live_report_requires_positive_assertion_for_every_gate():
+    report = _live_report(git_head="expected")
+    report["global_assertions"] = [
+        item
+        for item in report["global_assertions"]
+        if item["gate"] != "transport_cost"
+    ]
+    report["assertion_summary"] = {"total": 8, "passed": 8, "failed": 0}
+
+    assert evaluate._live_report_passed(report, "openai", "expected") is False
+
+
+def test_live_exit_zero_without_current_v3_report_fails(tmp_path):
     _write_live_env(tmp_path)
     payload, _json_rel, _markdown_rel = evaluate.run_evaluation(
         "live",

@@ -233,6 +233,7 @@ class Pony:
         if not isinstance(options, RuntimeOptions):
             raise TypeError("options must be a RuntimeOptions instance")
         self.model_client = model_client
+        self._pending_sandbox_resume_checkpoint = None
         model_binding = getattr(model_client, "provider_binding", None)
         model_binding = (
             deepcopy(model_binding) if isinstance(model_binding, dict) else None
@@ -569,10 +570,41 @@ class Pony:
             self._validate_restored_session_binding(self.session, model_binding)
             self._validate_session_feature_flags(self.session)
         self._ensure_session_shape()
+        if session is not None and self.docker_sandbox and not self.sandbox_context.resumed:
+            self._prepare_restaged_session()
         self.memory = WorkingMemory.from_dict(
             self.session.get("working_memory"), workspace_root=self.root
         )
         self._sync_working_memory()
+
+    def _prepare_restaged_session(self):
+        checkpoints = self.session["checkpoints"]
+        checkpoint_id = checkpoints["current_id"]
+        checkpoint = checkpoints["items"].get(checkpoint_id)
+        if checkpoint is not None:
+            checkpoint = deepcopy(checkpoint)
+            checkpoint["checkpoint_id"] = (
+                f"{checkpoint_id}-sandbox-{uuid.uuid4().hex[:8]}"
+            )
+            checkpoint["parent_checkpoint_id"] = checkpoint_id
+            checkpoint["created_at"] = now()
+            checkpoint["workspace_checkpoint_id"] = ""
+            checkpoint["context_usage"] = {}
+            checkpoint["key_files"] = []
+            checkpoint["read_files"] = []
+            checkpoint["modified_files"] = []
+            checkpoint.pop("runtime_identity", None)
+            checkpoint.pop("freshness", None)
+            checkpoints["items"][checkpoint["checkpoint_id"]] = checkpoint
+            checkpoints["current_id"] = checkpoint["checkpoint_id"]
+            self._pending_sandbox_resume_checkpoint = checkpoint
+        working_memory = self.session["working_memory"]
+        working_memory["recent_files"] = []
+        self.session["memory"] = {"file_summaries": {}}
+        self.session["recently_recalled"] = []
+        self.session["resume_state"] = {}
+        self.session["runtime_identity"] = {}
+        self.session["recovery"] = {"current_checkpoint_id": ""}
 
     def _configure_memory_and_tools(self):
         workspace_memory_root = self.project_state_root / "memory"
@@ -601,6 +633,12 @@ class Pony:
         session_exists = self.session_store.path_for(self.session["id"]).exists()
         if session_exists:
             self._reconcile_rewind_intent()
+        if self._pending_sandbox_resume_checkpoint is not None:
+            self.session_store.append_task_checkpoint(
+                self.session["id"],
+                self._pending_sandbox_resume_checkpoint,
+            )
+            self._pending_sandbox_resume_checkpoint = None
         self.resume_state = self.evaluate_resume_state()
         if session_exists:
             self.session_path = self.session_store.append_messages(
