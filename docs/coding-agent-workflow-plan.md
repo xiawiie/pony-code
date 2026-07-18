@@ -60,7 +60,7 @@
 - 当前 delegate 在 Host 下共享父 `SessionStore`/`RunStore`，并直接共享同一个 `model_client`；不得并行使用。
 - 当前 TUI 同步执行 `session.prompt() -> agent.ask()`；Provider 使用阻塞式 `urllib` 且没有 cancel API，输入队列不是小改动。
 - `.agents/` 不在 Sandbox 的 agent-control 排除集合中，会进入 filtered staging 与 diff capture。
-- TUI 基线合同已先独立修复：启动头是单行 `PONY CODE · v<version>`，footer 不含绝对 cwd、Session ID、API Base
+- TUI 基线合同已先独立修复：完整 TUI 使用响应式马形 `PONY CODE` 欢迎页，footer 不含绝对 cwd、Session ID、API Base
   或 checkpoint ID；Workflow UI 只在该安全投影上增加 Mode/approval。
 
 ### 2.3 责任模块纠偏
@@ -347,7 +347,7 @@ integration exact SHA 创建；feature worktree 不各自追赶 `origin/main`，
 | --- | --- | --- |
 | W0 `codex/workflow-integration` | 方案、ADR-0043、文档 surface | 已完成 |
 | W1 `codex/workflow-session-v3` | Session v3、Plan validator/projection、v1/v2 migration、reset/clone | 已完成 |
-| W2 `codex/tui-contract-repair` | 单行 header 与安全 footer 基线 | 已完成并先于 Wave 2 合入 |
+| W2 `codex/tui-contract-repair` | 响应式欢迎页与安全 footer 基线 | 已完成并先于 Wave 2 合入 |
 | W3 `codex/workflow-policy` | `update_plan`、Mode ceiling、visible schemas、turn snapshot、commit verification | 已完成 |
 | W4 `codex/workflow-context-resume` | required workflow context、Resume/metadata/history pure helpers | 已完成 |
 | W5 `codex/workflow-inspection` | v1/v2/v3 inspection、`latest`、稳定错误 envelope | 已完成 |

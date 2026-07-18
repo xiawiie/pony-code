@@ -15,7 +15,7 @@ from pony.tui.app import (
     run_tui,
     should_use_tui,
 )
-from pony.tui.render import _COLOR_STYLE, _PLAIN_STYLE, TuiRenderer
+from pony.tui.render import _COLOR_STYLE, _PLAIN_STYLE, TuiRenderer, logo_text
 
 
 class _Stream:
@@ -49,6 +49,18 @@ def test_tui_requires_a_capable_interactive_terminal(
         environ={"TERM": term},
         columns=columns,
     ) is expected
+
+
+@pytest.mark.parametrize(("columns", "height"), ((40, 5), (80, 7), (120, 11)))
+def test_terminal_logo_scales_horse_and_wordmark_together(columns, height):
+    rendered = logo_text(columns)
+    lines = rendered.splitlines()
+
+    assert "⣿" in rendered
+    assert "█" in rendered
+    assert "PONY" not in rendered
+    assert len(lines) == height
+    assert max(get_cwidth(line) for line in lines) < columns
 
 
 def test_tui_chrome_is_monochrome_but_status_colors_keep_their_meaning():
@@ -255,7 +267,11 @@ def test_tui_restores_runtime_hooks(monkeypatch):
     assert agent._trace_listener is previous_listener
     assert agent._approval_prompt is previous_prompt
     header = "".join(fragment[1] for fragment in output[0])
-    assert header == "PONY CODE · v1.0.0\n"
+    assert "⣿" in header
+    assert "█" in header
+    assert "v1.0.0" in header
+    assert "Local coding agent for repository-grounded work" in header
+    assert "Using gpt-test · approval ask" in header
 
 
 def test_tui_restores_runtime_hooks_when_provider_fails(monkeypatch):

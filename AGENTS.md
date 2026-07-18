@@ -72,7 +72,8 @@ CLI/TUI 合同：
 - WorkflowMode 只允许 `plan|act|review`，是 Session active state 而非配置默认值；`--mode` 只适用于 `run/repl`，
   `/mode` 与 `/plan` 共用 REPL handler，不增加 `/todo`。
 - TUI 只在 stdin/stdout 为 TTY、`TERM` 可用且宽度足够时启用；必须遵守 `NO_COLOR` / `--no-color`。
-- 完整 TUI 只显示单行 `PONY CODE · v<version>` 启动头；纯文本 fallback 和 `pony run` 不输出装饰性 banner。
+- 除显式 `--quiet` 外，完整 TUI 每次启动必须显示随终端宽度适配的马形 `PONY CODE` 欢迎页，不得删除、隐藏或
+  退化为单行启动头；纯文本 fallback 和 `pony run` 不输出装饰性 banner。
 - 用户消息使用低对比块且不加角色标签；Assistant 使用内置、安全的 Markdown renderer，消息块之间只留一个视觉间距。
 - `Working…` 是可清除的瞬态状态；自动 checkpoint 不进入对话区，成功 Tool 只显示一条语义摘要，失败与中断必须可见。
 - 输入框最多增长六行，completion 菜单最多显示五项。footer 只保留仓库/分支、模式/approval、Provider/model，窄终端
