@@ -4,6 +4,7 @@ import signal
 
 from pony.cli.app import main
 from pony.cli.start import run_agent_once, run_repl
+from pony.state.session_store import UnsupportedLegacyEntry
 
 
 CANARY = "hostile-config-canary-9f3d7a"
@@ -203,6 +204,34 @@ def test_project_key_without_base_is_rejected(tmp_path, capsys):
 
     output = capsys.readouterr()
     assert output.err.splitlines()[0] == "api_base_not_configured"
+
+
+def test_unsupported_legacy_session_uses_stable_json_error(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    def reject_legacy(_args):
+        raise UnsupportedLegacyEntry("model_change")
+
+    monkeypatch.setattr("pony.cli.app.build_agent", reject_legacy)
+
+    code = main(
+        [
+            "--cwd",
+            str(tmp_path),
+            "--format",
+            "json",
+            "--resume",
+            "legacy",
+            "repl",
+        ]
+    )
+
+    assert code == 3
+    output = capsys.readouterr().out
+    assert '"code": "unsupported_legacy_entry"' in output
+    assert "model_change" in output
 
 
 def test_init_invalid_base_does_not_echo_input_value(tmp_path, monkeypatch, capsys):
