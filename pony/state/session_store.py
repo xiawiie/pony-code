@@ -2456,10 +2456,20 @@ class SessionStore:
         for pattern in ("*.jsonl", "*.json"):
             for path in self.root.glob(pattern):
                 try:
-                    safe = ensure_private_file(require_regular_no_symlink(path))
-                    session_id = safe.name.removesuffix(".jsonl").removesuffix(".json")
+                    require_regular_no_symlink(path)
+                    signature = private_file_signature(
+                        path,
+                        trusted_root=self.root,
+                        trusted_root_identity=self._root_identity,
+                    )
+                    expected_uid = (
+                        os.geteuid() if hasattr(os, "geteuid") else signature[7]
+                    )
+                    if signature[6] != 0o600 or signature[7] != expected_uid:
+                        continue
+                    session_id = path.name.removesuffix(".jsonl").removesuffix(".json")
                     _session_id(session_id)
-                    files.append((safe.stat().st_mtime_ns, session_id))
+                    files.append((signature[3], session_id))
                 except (OSError, ValueError):
                     continue
         files.sort()
