@@ -47,14 +47,11 @@ def _object_from_pairs(pairs):
 
 def canonical_plan_bytes(plan):
     validated = validate_plan(plan)
-    rendered = json.dumps(
+    return json.dumps(
         validated,
         ensure_ascii=False,
         separators=(",", ":"),
     ).encode("utf-8")
-    if len(rendered) > MAX_PLAN_BYTES:
-        raise PlanValidationError("invalid_plan: plan exceeds 12 KiB")
-    return rendered
 
 
 def plan_digest(plan):
@@ -109,6 +106,12 @@ def validate_plan(plan, *, redactor=None):
     validated = {"goal": goal, "items": normalized}
     if redactor is not None and redactor(deepcopy(validated)) != validated:
         raise SensitivePlanError("sensitive_content_block")
+    if len(
+        json.dumps(validated, ensure_ascii=False, separators=(",", ":")).encode(
+            "utf-8"
+        )
+    ) > MAX_PLAN_BYTES:
+        raise PlanValidationError("invalid_plan: plan exceeds 12 KiB")
     return validated
 
 

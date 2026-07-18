@@ -35,6 +35,7 @@ from pony.security.paths import require_regular_no_symlink
 from pony.state.workflow import (
     DEFAULT_WORKFLOW_MODE,
     EMPTY_PLAN,
+    PlanValidationError,
     parse_plan_json,
     validate_plan,
     validate_workflow_mode,
@@ -460,6 +461,74 @@ def _read_small_regular(path, max_bytes=4096):
     return raw.decode("utf-8").strip()
 
 
+def _stable_private_read(
+    path,
+    *,
+    root,
+    root_identity,
+    max_bytes,
+    error,
+    expected_signature=None,
+    expected_bytes=None,
+):
+    before = private_file_signature(
+        path,
+        trusted_root=root,
+        trusted_root_identity=root_identity,
+    )
+    if expected_signature is not None and before != expected_signature:
+        raise SessionFormatError(error)
+    raw = read_private_bytes(
+        path,
+        trusted_root=root,
+        trusted_root_identity=root_identity,
+        max_bytes=max_bytes,
+        harden=False,
+    )
+    after = private_file_signature(
+        path,
+        trusted_root=root,
+        trusted_root_identity=root_identity,
+    )
+    if before != after or (expected_bytes is not None and raw != expected_bytes):
+        raise SessionFormatError(error)
+    return raw, after
+
+
+def _harden_migration_source(path, *, root, root_identity):
+    signature = private_file_signature(
+        path,
+        trusted_root=root,
+        trusted_root_identity=root_identity,
+    )
+    if signature[6] != 0o600:
+        ensure_private_file(
+            path,
+            trusted_root=root,
+            trusted_root_identity=root_identity,
+        )
+
+
+def _write_or_verify_backup(path, raw, *, root, root_identity, max_bytes):
+    if not path.exists():
+        write_private_bytes_atomic(
+            path,
+            raw,
+            trusted_root=root,
+            trusted_root_identity=root_identity,
+            error="legacy session backup changed",
+            max_existing_bytes=max_bytes,
+        )
+    _stable_private_read(
+        path,
+        root=root,
+        root_identity=root_identity,
+        max_bytes=max_bytes,
+        error="legacy session backup changed",
+        expected_bytes=raw,
+    )
+
+
 def worktree_identity(workspace_root):
     lexical_root = _lexical_absolute(workspace_root)
     root_stat = os.lstat(lexical_root)
@@ -541,7 +610,13 @@ def _validate_header(header, session_id, *, version=SESSION_FORMAT_VERSION):
     return header
 
 
-def _validate_entry(entry, known_ids, *, version=SESSION_FORMAT_VERSION):
+def _validate_entry(
+    entry,
+    known_ids,
+    *,
+    version=SESSION_FORMAT_VERSION,
+    plan_redactor=None,
+):
     if not isinstance(entry, dict) or entry.keys() != _ENTRY_FIELDS:
         raise SessionFormatError("invalid session entry fields")
     if entry.get("record_type") != SESSION_ENTRY_RECORD_TYPE:
@@ -597,7 +672,7 @@ def _validate_entry(entry, known_ids, *, version=SESSION_FORMAT_VERSION):
     if entry["type"] == "tool_exchange" and version == SESSION_FORMAT_VERSION:
         if entry["data"].keys() != {"assistant", "result"}:
             raise SessionFormatError("invalid tool exchange entry data")
-        _tool_exchange_plan(entry["data"])
+        _tool_exchange_plan(entry["data"], redactor=plan_redactor)
     if entry["type"] == "workflow_mode_change":
         if entry["data"].keys() != {"mode"}:
             raise SessionFormatError("invalid workflow mode entry data")
@@ -659,7 +734,7 @@ def _active_path(entries):
     return path
 
 
-def _tool_exchange_plan(data):
+def _tool_exchange_plan(data, *, redactor=None):
     assistant = data.get("assistant")
     result = data.get("result")
     if not isinstance(assistant, dict) or not isinstance(result, dict):
@@ -699,7 +774,9 @@ def _tool_exchange_plan(data):
     if not isinstance(arguments, dict) or arguments.keys() != {"plan_json"}:
         raise SessionFormatError("invalid update_plan arguments")
     try:
-        return parse_plan_json(arguments["plan_json"])
+        return parse_plan_json(arguments["plan_json"], redactor=redactor)
+    except PlanValidationError:
+        raise
     except ValueError as exc:
         raise SessionFormatError(str(exc)) from None
 
@@ -1530,6 +1607,20 @@ class SessionStore:
     def save(self, session, *, force_branch=False):
         if not isinstance(session, dict):
             raise SessionFormatError("session payload must be an object")
+        raw_session = deepcopy(session)
+        raw_plan = raw_session.get("active_plan")
+        if raw_plan is not None:
+            validate_plan(raw_plan, redactor=self._redactor)
+        raw_messages = raw_session.get("messages")
+        if isinstance(raw_messages, list):
+            try:
+                validate_messages(raw_messages, require_meta=True)
+            except MessageValidationError as exc:
+                raise SessionFormatError(str(exc)) from None
+            known = set()
+            for entry in _message_entries(raw_messages, ""):
+                _validate_entry(entry, known, plan_redactor=self._redactor)
+                known.add(entry["id"])
         candidate = self._redactor(deepcopy(session))
         candidate.pop("_recall_errors", None)
         session_id = _session_id(candidate.get("id"))
@@ -1680,11 +1771,16 @@ class SessionStore:
         the already validated cached Session Tree remains immutable.
         """
         session_id = _session_id(session_id)
-        safe_messages = self._redactor(deepcopy(list(messages or ())))
+        raw_messages = deepcopy(list(messages or ()))
         try:
-            validate_messages(safe_messages, require_meta=True)
+            validate_messages(raw_messages, require_meta=True)
         except MessageValidationError as exc:
             raise SessionFormatError(str(exc)) from None
+        raw_known = set()
+        for entry in _message_entries(raw_messages, ""):
+            _validate_entry(entry, raw_known, plan_redactor=self._redactor)
+            raw_known.add(entry["id"])
+        safe_messages = self._redactor(raw_messages)
         if not safe_messages and not state_updates:
             return self.path(session_id)
         safe_state = self._redactor(deepcopy(state_updates or {}))
@@ -1721,6 +1817,8 @@ class SessionStore:
                 raise SessionFormatError("invalid plan update entry data")
             try:
                 validate_plan(data["plan"], redactor=self._redactor)
+            except PlanValidationError:
+                raise
             except ValueError as exc:
                 raise SessionFormatError(str(exc)) from None
         with file_lock.locked_file(self.lock_path, require_existing=True):
@@ -1747,6 +1845,8 @@ class SessionStore:
     def set_active_plan(self, session_id, plan):
         try:
             plan = validate_plan(plan, redactor=self._redactor)
+        except PlanValidationError:
+            raise
         except ValueError as exc:
             raise SessionFormatError(str(exc)) from None
         tree = self.load_tree(session_id)
@@ -2064,6 +2164,9 @@ class SessionStore:
                 trusted_root_identity=self._root_identity,
                 max_bytes=MAX_SESSION_BYTES,
             )
+            source_version = _jsonl_format_version(raw)
+            if source_version == PREVIOUS_SESSION_FORMAT_VERSION:
+                raise SessionMigrationRequired(session_id)
             if raw.endswith(b"\n"):
                 return False
             valid_bytes = raw.rfind(b"\n") + 1
@@ -2090,19 +2193,21 @@ class SessionStore:
 
     def _migrate_v2_unlocked(self, session_id, source_raw=None):
         source = self.path(session_id)
-        raw = read_private_bytes(
+        _harden_migration_source(
             source,
-            trusted_root=self.root,
-            trusted_root_identity=self._root_identity,
+            root=self.root,
+            root_identity=self._root_identity,
+        )
+        raw, source_signature = _stable_private_read(
+            source,
+            root=self.root,
+            root_identity=self._root_identity,
             max_bytes=MAX_SESSION_BYTES,
+            error="session changed during migration",
         )
         if source_raw is not None and raw != source_raw:
             raise SessionFormatError("session changed during migration")
-        source_signature = private_file_signature(
-            source,
-            trusted_root=self.root,
-            trusted_root_identity=self._root_identity,
-        )
+        source_digest = hashlib.sha256(raw).digest()
         old_tree = _parse_jsonl(
             raw,
             session_id,
@@ -2132,15 +2237,13 @@ class SessionStore:
         backup_identity = private_directory_identity(backup_root)
         digest = hashlib.sha256(raw).hexdigest()
         backup_path = backup_root / f"{session_id}.{digest[:16]}.jsonl"
-        if not backup_path.exists():
-            write_private_bytes_atomic(
-                backup_path,
-                raw,
-                trusted_root=backup_root,
-                trusted_root_identity=backup_identity,
-                error="legacy session backup changed",
-                max_existing_bytes=MAX_SESSION_BYTES,
-            )
+        _write_or_verify_backup(
+            backup_path,
+            raw,
+            root=backup_root,
+            root_identity=backup_identity,
+            max_bytes=MAX_SESSION_BYTES,
+        )
 
         candidate_path = self.candidate_path(session_id)
         write_private_bytes_atomic(
@@ -2151,23 +2254,44 @@ class SessionStore:
             error="session migration candidate changed",
             max_existing_bytes=MAX_SESSION_BYTES,
         )
-        candidate_raw = read_private_bytes(
+        candidate_raw, candidate_signature = _stable_private_read(
             candidate_path,
-            trusted_root=self.root,
-            trusted_root_identity=self._root_identity,
+            root=self.root,
+            root_identity=self._root_identity,
             max_bytes=MAX_SESSION_BYTES,
+            error="session migration candidate changed",
+            expected_bytes=candidate_bytes,
         )
         _parse_jsonl(candidate_raw, session_id)
-        if candidate_raw != candidate_bytes:
-            raise SessionFormatError("session migration candidate changed")
-        if private_file_signature(
+        final_source, _ = _stable_private_read(
             source,
-            trusted_root=self.root,
-            trusted_root_identity=self._root_identity,
-        ) != source_signature:
+            root=self.root,
+            root_identity=self._root_identity,
+            max_bytes=MAX_SESSION_BYTES,
+            error="session changed during migration",
+            expected_signature=source_signature,
+        )
+        if hashlib.sha256(final_source).digest() != source_digest:
             raise SessionFormatError("session changed during migration")
         parent_fd = os.open(self.root, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
         try:
+            if private_file_signature(
+                candidate_path,
+                trusted_root=self.root,
+                trusted_root_identity=self._root_identity,
+            ) != candidate_signature:
+                raise SessionFormatError("session migration candidate changed")
+            current = os.stat(
+                candidate_path.name,
+                dir_fd=parent_fd,
+                follow_symlinks=False,
+            )
+            if (
+                not stat.S_ISREG(current.st_mode)
+                or current.st_nlink != 1
+                or (current.st_dev, current.st_ino) != candidate_signature[:2]
+            ):
+                raise SessionFormatError("session migration candidate changed")
             os.replace(
                 candidate_path.name,
                 source.name,
@@ -2185,17 +2309,19 @@ class SessionStore:
         if canonical.exists():
             return canonical
         legacy = self.legacy_path(session_id)
-        raw = read_private_bytes(
+        _harden_migration_source(
             legacy,
-            trusted_root=self.root,
-            trusted_root_identity=self._root_identity,
+            root=self.root,
+            root_identity=self._root_identity,
+        )
+        raw, source_signature = _stable_private_read(
+            legacy,
+            root=self.root,
+            root_identity=self._root_identity,
             max_bytes=MAX_SESSION_ENTRY_BYTES,
+            error="session changed during migration",
         )
-        source_signature = private_file_signature(
-            legacy,
-            trusted_root=self.root,
-            trusted_root_identity=self._root_identity,
-        )
+        source_digest = hashlib.sha256(raw).digest()
         payload = _decode_json_object(raw)
         _validate_legacy_payload(payload, session_id)
         migrated = deepcopy(payload)
@@ -2207,15 +2333,13 @@ class SessionStore:
         backup_identity = private_directory_identity(backup_root)
         digest = hashlib.sha256(raw).hexdigest()[:16]
         backup_path = backup_root / f"{session_id}.{digest}.json"
-        if not backup_path.exists():
-            write_private_bytes_atomic(
-                backup_path,
-                raw,
-                trusted_root=backup_root,
-                trusted_root_identity=backup_identity,
-                error="legacy session backup changed",
-                max_existing_bytes=MAX_SESSION_ENTRY_BYTES,
-            )
+        _write_or_verify_backup(
+            backup_path,
+            raw,
+            root=backup_root,
+            root_identity=backup_identity,
+            max_bytes=MAX_SESSION_ENTRY_BYTES,
+        )
 
         header = {
             "record_type": SESSION_HEADER_RECORD_TYPE,
@@ -2265,28 +2389,46 @@ class SessionStore:
             error="session migration candidate changed",
             max_existing_bytes=MAX_SESSION_BYTES,
         )
-        candidate_raw = read_private_bytes(
+        candidate_raw, candidate_signature = _stable_private_read(
             candidate_path,
-            trusted_root=self.root,
-            trusted_root_identity=self._root_identity,
+            root=self.root,
+            root_identity=self._root_identity,
             max_bytes=MAX_SESSION_BYTES,
+            error="session migration candidate changed",
+            expected_bytes=candidate_bytes,
         )
         candidate_tree = _parse_jsonl(candidate_raw, session_id)
         if not session_projections_equal(candidate_tree.projection, migrated):
             raise SessionFormatError("session migration projection mismatch")
         parent_fd = os.open(self.root, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
         try:
-            if private_file_signature(
+            final_source, _ = _stable_private_read(
                 legacy,
+                root=self.root,
+                root_identity=self._root_identity,
+                max_bytes=MAX_SESSION_ENTRY_BYTES,
+                error="session changed during migration",
+                expected_signature=source_signature,
+            )
+            if hashlib.sha256(final_source).digest() != source_digest:
+                raise SessionFormatError("session changed during migration")
+            if private_file_signature(
+                candidate_path,
                 trusted_root=self.root,
                 trusted_root_identity=self._root_identity,
-            ) != source_signature:
-                raise SessionFormatError("session changed during migration")
-            before = os.stat(
-                candidate_path.name, dir_fd=parent_fd, follow_symlinks=False
+            ) != candidate_signature:
+                raise SessionFormatError("session migration candidate changed")
+            current = os.stat(
+                candidate_path.name,
+                dir_fd=parent_fd,
+                follow_symlinks=False,
             )
-            if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
-                raise SessionFormatError("unsafe session migration candidate")
+            if (
+                not stat.S_ISREG(current.st_mode)
+                or current.st_nlink != 1
+                or (current.st_dev, current.st_ino) != candidate_signature[:2]
+            ):
+                raise SessionFormatError("session migration candidate changed")
             os.replace(
                 candidate_path.name,
                 canonical.name,

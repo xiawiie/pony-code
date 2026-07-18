@@ -4,6 +4,7 @@ import os
 
 import pytest
 
+import pony.state.session_store as session_store_module
 from pony.agent.messages import make_tool_pair
 from pony.state.session_store import (
     PREVIOUS_SESSION_FORMAT_VERSION,
@@ -19,6 +20,7 @@ from pony.state.workflow import (
     SensitivePlanError,
     parse_plan_json,
     plan_digest,
+    validate_plan,
 )
 
 
@@ -75,6 +77,22 @@ def _rewrite_as_v2(path, *, model_change=False):
         encoding="utf-8",
     )
     return rows
+
+
+def _legacy_source(store, workspace, session_id, version):
+    if version == 2:
+        path = store.save(_session(workspace, session_id))
+        _rewrite_as_v2(path)
+        return path
+    payload = _session(workspace, session_id)
+    payload["format_version"] = 1
+    payload.pop("workflow_mode")
+    payload.pop("active_plan")
+    path = store.legacy_path(session_id)
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    path.chmod(0o600)
+    store.lock_path.touch(mode=0o600)
+    return path
 
 
 def test_plan_json_is_strict_canonical_and_bounded():
@@ -164,6 +182,19 @@ def test_plan_json_rejects_redactor_changes_as_sensitive_content():
     assert raised.value.code == "sensitive_content_block"
 
 
+def test_direct_plan_validation_enforces_canonical_byte_limit():
+    oversized = {
+        "goal": "x",
+        "items": [
+            {"id": str(index), "text": "\U0001f600" * 300, "status": "pending"}
+            for index in range(12)
+        ],
+    }
+
+    with pytest.raises(PlanValidationError, match="12 KiB"):
+        validate_plan(oversized)
+
+
 def test_active_path_projects_controls_and_successful_atomic_plan_tool(tmp_path):
     store = SessionStore(tmp_path / ".pony" / "sessions")
     store.save(_session(tmp_path))
@@ -220,9 +251,48 @@ def test_rejected_or_invalid_plan_tool_never_changes_durable_plan(tmp_path):
         tool_status="ok",
         effect_class="session_state",
     )
-    with pytest.raises(SessionFormatError, match="invalid_plan"):
+    with pytest.raises(PlanValidationError, match="invalid_plan"):
         store.append_messages("workflow", invalid)
     assert path.read_bytes() == before
+
+
+def test_secret_plan_is_blocked_before_redaction_for_all_store_writers(tmp_path):
+    secret = "opaque-plan-secret-123456789"
+
+    def redact(value):
+        return json.loads(json.dumps(value).replace(secret, "<redacted>"))
+
+    store = SessionStore(tmp_path / ".pony" / "sessions", redactor=redact)
+    path = store.save(_session(tmp_path))
+    original = path.read_bytes()
+    secret_plan = {
+        "goal": secret,
+        "items": [{"id": "1", "text": "safe", "status": "pending"}],
+    }
+
+    with pytest.raises(SensitivePlanError) as set_error:
+        store.set_active_plan("workflow", secret_plan)
+    assert set_error.value.code == "sensitive_content_block"
+    assert path.read_bytes() == original
+
+    pair = make_tool_pair(
+        name="update_plan",
+        arguments={"plan_json": json.dumps(secret_plan)},
+        tool_use_id="secret-plan",
+        result_content="updated",
+        created_at="2026-01-01T00:00:01+00:00",
+        tool_status="ok",
+        effect_class="session_state",
+    )
+    with pytest.raises(SensitivePlanError):
+        store.append_messages("workflow", pair)
+    assert path.read_bytes() == original
+
+    candidate = _session(tmp_path)
+    candidate["active_plan"] = secret_plan
+    with pytest.raises(SensitivePlanError):
+        store.save(candidate)
+    assert path.read_bytes() == original
 
 
 def test_v2_inspection_is_read_only_and_resume_preserves_tree_structure(tmp_path):
@@ -291,6 +361,19 @@ def test_v2_model_change_fails_before_writing_migration_artifacts(tmp_path):
     assert not (store.root / "legacy-backups").exists()
 
 
+def test_v2_tail_repair_requires_resume_without_writing(tmp_path):
+    store = SessionStore(tmp_path / ".pony" / "sessions")
+    path = store.save(_session(tmp_path, "tail-v2"))
+    _rewrite_as_v2(path)
+    path.write_bytes(path.read_bytes() + b'{"incomplete":')
+    original = path.read_bytes()
+
+    with pytest.raises(SessionMigrationRequired):
+        store.repair_tail("tail-v2")
+
+    assert path.read_bytes() == original
+
+
 def test_v2_publish_failure_keeps_source_and_resume_is_retryable(tmp_path, monkeypatch):
     store = SessionStore(tmp_path / ".pony" / "sessions")
     path = store.save(_session(tmp_path, "retry-v2"))
@@ -309,3 +392,82 @@ def test_v2_publish_failure_keeps_source_and_resume_is_retryable(tmp_path, monke
 
     monkeypatch.setattr("pony.state.session_store.os.replace", replace)
     assert store.load_for_resume("retry-v2")["format_version"] == SESSION_FORMAT_VERSION
+
+
+@pytest.mark.parametrize("version", [1, 2])
+def test_migration_rejects_source_changed_during_read(tmp_path, monkeypatch, version):
+    store = SessionStore(tmp_path / ".pony" / "sessions")
+    session_id = f"source-race-v{version}"
+    source = _legacy_source(store, tmp_path, session_id, version)
+    read = session_store_module.read_private_bytes
+    source_reads = 0
+
+    def change_after_read(path, **kwargs):
+        nonlocal source_reads
+        raw = read(path, **kwargs)
+        if path == source:
+            source_reads += 1
+            if source_reads == (2 if version == 2 else 1):
+                source.write_bytes(raw + b" ")
+        return raw
+
+    monkeypatch.setattr(session_store_module, "read_private_bytes", change_after_read)
+    with pytest.raises(SessionFormatError, match="changed during migration"):
+        store.load_for_resume(session_id)
+    assert not store.candidate_path(session_id).exists()
+    assert not (store.root / "legacy-backups").exists()
+
+
+@pytest.mark.parametrize("version", [1, 2])
+def test_migration_rechecks_candidate_identity_before_replace(
+    tmp_path,
+    monkeypatch,
+    version,
+):
+    store = SessionStore(tmp_path / ".pony" / "sessions")
+    session_id = f"candidate-race-v{version}"
+    source = _legacy_source(store, tmp_path, session_id, version)
+    original = source.read_bytes()
+    candidate = store.candidate_path(session_id)
+    signature = session_store_module.private_file_signature
+    candidate_checks = 0
+
+    def changed_signature(path, **kwargs):
+        nonlocal candidate_checks
+        value = signature(path, **kwargs)
+        if path == candidate:
+            candidate_checks += 1
+            if candidate_checks == 3:
+                return (*value[:3], value[3] + 1, *value[4:])
+        return value
+
+    monkeypatch.setattr(session_store_module, "private_file_signature", changed_signature)
+    with pytest.raises(SessionFormatError, match="candidate changed"):
+        store.load_for_resume(session_id)
+    assert source.read_bytes() == original
+
+
+@pytest.mark.parametrize("version", [1, 2])
+def test_migration_rejects_mismatched_existing_backup(tmp_path, monkeypatch, version):
+    store = SessionStore(tmp_path / ".pony" / "sessions")
+    session_id = f"backup-race-v{version}"
+    source = _legacy_source(store, tmp_path, session_id, version)
+    original = source.read_bytes()
+    replace = os.replace
+
+    def fail_candidate_publish(source_name, destination, **kwargs):
+        if str(source_name).endswith(".jsonl.candidate"):
+            raise OSError("candidate publish failed")
+        return replace(source_name, destination, **kwargs)
+
+    monkeypatch.setattr("pony.state.session_store.os.replace", fail_candidate_publish)
+    with pytest.raises(OSError, match="candidate publish failed"):
+        store.load_for_resume(session_id)
+    backup = next((store.root / "legacy-backups").iterdir())
+    backup.write_bytes(b"wrong backup")
+    backup.chmod(0o600)
+
+    monkeypatch.setattr("pony.state.session_store.os.replace", replace)
+    with pytest.raises(SessionFormatError, match="backup changed"):
+        store.load_for_resume(session_id)
+    assert source.read_bytes() == original
