@@ -9,14 +9,17 @@ from pony.agent.messages import MessageValidationError, validate_messages
 from pony.security.private_files import private_directory_identity
 from pony.state.session_store import (
     LEGACY_SESSION_FORMAT_VERSION,
+    PREVIOUS_SESSION_FORMAT_VERSION,
     SESSION_FORMAT_VERSION,
     SESSION_RECORD_TYPE,
     SessionFormatError,
     SessionStore,
 )
+from pony.state.workflow import DEFAULT_WORKFLOW_MODE, EMPTY_PLAN
 
 
 _SESSION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+_ABSOLUTE_PATH_RE = re.compile(r"(?<!:)/[^\s]+")
 
 
 def _pair_count(messages):
@@ -28,6 +31,11 @@ def _pair_count(messages):
         and message["content"]
         and message["content"][0].get("type") == "tool_use"
     )
+
+
+def _inspection_goal(value):
+    value = str(value or "")
+    return "<redacted>" if _ABSOLUTE_PATH_RE.search(value) else value
 
 
 def _readonly_store(sessions_root):
@@ -43,6 +51,16 @@ def _readonly_store(sessions_root):
 def load_session_readonly(session_id, sessions_root):
     """Load a legacy projection or JSONL tree without migration or writes."""
     return _readonly_store(Path(sessions_root)).inspect_readonly(session_id)
+
+
+def resolve_session_id_readonly(session_id, sessions_root):
+    """Resolve ``latest`` from artifact metadata without opening Session content."""
+    if session_id != "latest":
+        return session_id
+    latest = _readonly_store(Path(sessions_root)).latest()
+    if latest is None:
+        raise FileNotFoundError("no sessions")
+    return latest
 
 
 def _tree_facts(tree):
@@ -71,11 +89,12 @@ def _tree_facts(tree):
     }
 
 
-def inspect_session(session_id, sessions_root):
-    """Return ``(ok, report_str)`` without triggering legacy migration."""
+def session_inspection_data(session_id, sessions_root):
+    """Return bounded Session facts without triggering legacy migration."""
+    session_id = resolve_session_id_readonly(str(session_id or ""), sessions_root)
     session_id = str(session_id or "")
     if not _SESSION_ID_RE.fullmatch(session_id):
-        return False, f"session not found: {session_id}"
+        raise FileNotFoundError("session not found")
     sessions_root = Path(sessions_root)
     current_path = sessions_root / f"{session_id}.jsonl"
     legacy_path = sessions_root / f"{session_id}.json"
@@ -84,35 +103,31 @@ def inspect_session(session_id, sessions_root):
     except FileNotFoundError:
         current_exists = False
     except OSError:
-        return False, f"failed to read session {session_id}: unsafe session artifact"
+        raise SessionFormatError("unsafe session artifact") from None
     try:
         legacy_exists = legacy_path.lstat() is not None
     except FileNotFoundError:
         legacy_exists = False
     except OSError:
-        return False, f"failed to read session {session_id}: unsafe session artifact"
+        raise SessionFormatError("unsafe session artifact") from None
     if not current_exists and not legacy_exists:
-        return False, f"session not found: {session_id}"
+        raise FileNotFoundError("session not found")
 
     try:
         storage, session, tree = load_session_readonly(session_id, sessions_root)
-    except FileNotFoundError:
-        return False, f"failed to read session {session_id}: unsafe session artifact"
-    except (OSError, ValueError, SessionFormatError):
-        return False, f"failed to read session {session_id}: unsafe session artifact"
+    except FileNotFoundError as exc:
+        # An artifact found above but unavailable to the trusted reader is unsafe.
+        raise SessionFormatError("unsafe session artifact") from exc
 
     if not isinstance(session, dict):
-        return (
-            False,
-            f"session: {session_id}\ninvariants: failed (session must be an object)",
-        )
+        raise SessionFormatError("session must be an object")
     record_type = session.get("record_type")
     version = session.get("format_version")
-    expected_version = (
-        SESSION_FORMAT_VERSION
-        if storage == "current"
-        else LEGACY_SESSION_FORMAT_VERSION
-    )
+    expected_version = {
+        "current": SESSION_FORMAT_VERSION,
+        "legacy_jsonl": PREVIOUS_SESSION_FORMAT_VERSION,
+        "legacy": LEGACY_SESSION_FORMAT_VERSION,
+    }.get(storage)
     valid_version = (
         record_type == SESSION_RECORD_TYPE
         and type(version) is int
@@ -120,55 +135,102 @@ def inspect_session(session_id, sessions_root):
     )
     messages = session.get("messages")
     facts = _tree_facts(tree)
-    lines = [
-        f"session: {session_id}",
-        f"storage: {storage}",
-        f"record_type: {record_type if record_type == SESSION_RECORD_TYPE else 'invalid'}",
-        f"format_version: {version if valid_version else 'invalid'}",
-        f"messages: {len(messages) if isinstance(messages, list) else 0}",
-        "role_sequence: "
-        + (
-            " -> ".join(
-                role if (role := message.get("role")) in {"user", "assistant"} else "?"
-                for message in messages
-                if isinstance(message, dict)
-            )
-            if isinstance(messages, list)
-            else "invalid"
-        ),
-        f"entries: {facts['entries']}",
-        f"active_path_entries: {facts['active_path']}",
-        f"active_leaf: {facts['leaf']}",
-        f"branch_points: {facts['branch_points']}",
-        f"compactions: {facts['compactions']}",
-        f"task_checkpoints: {facts['task_checkpoints']}",
-    ]
-    if storage == "legacy":
-        lines.append("migration: required on explicit resume")
-    else:
-        lines.append("migration: not required")
     if not valid_version:
-        lines.extend(
-            [
-                "tool_pairs: 0",
-                "orphans: unknown",
-                "invariants: failed (invalid schema version)",
-            ]
-        )
-        return False, "\n".join(lines)
-    try:
-        validate_messages(messages, require_meta=True)
-    except (MessageValidationError, SessionFormatError) as exc:
-        lines.extend(["tool_pairs: 0", "orphans: 1", f"invariants: failed ({exc})"])
-        return False, "\n".join(lines)
-    lines.extend(
+        raise SessionFormatError("invalid schema version")
+    validate_messages(messages, require_meta=True)
+
+    plan = session.get("active_plan", EMPTY_PLAN)
+    mode = session.get("workflow_mode", DEFAULT_WORKFLOW_MODE)
+    items = plan.get("items", []) if isinstance(plan, dict) else []
+    statuses = {status: 0 for status in ("pending", "in_progress", "completed")}
+    for item in items:
+        if isinstance(item, dict) and item.get("status") in statuses:
+            statuses[item["status"]] += 1
+    recovery = session.get("recovery")
+    checkpoints = session.get("checkpoints")
+    migration = "not_required" if storage == "current" else "required_on_resume"
+    if storage == "legacy_jsonl" and any(
+        entry["type"] == "model_change" for entry in tree.entries
+    ):
+        migration = "unsupported_legacy_entry"
+    return {
+        "session_id": session_id,
+        "storage": storage,
+        "record_type": record_type,
+        "format_version": version,
+        "migration": migration,
+        "workflow_mode": mode,
+        "plan": {
+            "goal": _inspection_goal(plan.get("goal", ""))
+            if isinstance(plan, dict)
+            else "",
+            "items": len(items),
+            **statuses,
+        },
+        "checkpoint": {
+            "task": "present"
+            if isinstance(checkpoints, dict) and checkpoints.get("current_id")
+            else "none",
+            "workspace_recovery": "linked"
+            if isinstance(recovery, dict) and recovery.get("current_checkpoint_id")
+            else "none",
+        },
+        "messages": len(messages),
+        "role_sequence": [
+            role if (role := message.get("role")) in {"user", "assistant"} else "?"
+            for message in messages
+            if isinstance(message, dict)
+        ],
+        **facts,
+        "tool_pairs": _pair_count(messages),
+        "orphans": 0,
+        "invariants": "ok",
+    }
+
+
+def render_session_inspection(data):
+    plan = data["plan"]
+    checkpoint = data["checkpoint"]
+    migration = data["migration"].replace("_", " ")
+    if data["migration"] == "required_on_resume":
+        migration = "required on explicit resume"
+    return "\n".join(
         [
-            f"tool_pairs: {_pair_count(messages)}",
-            "orphans: 0",
-            "invariants: ok",
+            f"session: {data['session_id']}",
+            f"storage: {data['storage']}",
+            f"record_type: {data['record_type']}",
+            f"format_version: {data['format_version']}",
+            f"migration: {migration}",
+            f"workflow_mode: {data['workflow_mode']}",
+            f"plan_goal: {plan['goal'] or '-'}",
+            f"plan_progress: {plan['completed']}/{plan['items']} completed",
+            f"plan_current: {plan['in_progress']}",
+            f"checkpoint: {checkpoint['task']}",
+            f"workspace_recovery: {checkpoint['workspace_recovery']}",
+            f"messages: {data['messages']}",
+            f"role_sequence: {' -> '.join(data['role_sequence'])}",
+            f"entries: {data['entries']}",
+            f"active_path_entries: {data['active_path']}",
+            f"active_leaf: {data['leaf']}",
+            f"branch_points: {data['branch_points']}",
+            f"compactions: {data['compactions']}",
+            f"task_checkpoints: {data['task_checkpoints']}",
+            f"tool_pairs: {data['tool_pairs']}",
+            f"orphans: {data['orphans']}",
+            f"invariants: {data['invariants']}",
         ]
     )
-    return True, "\n".join(lines)
+
+
+def inspect_session(session_id, sessions_root):
+    """Return ``(ok, report_str)`` without triggering legacy migration."""
+    try:
+        data = session_inspection_data(session_id, sessions_root)
+    except FileNotFoundError:
+        return False, f"session not found: {session_id}"
+    except (MessageValidationError, OSError, ValueError, SessionFormatError):
+        return False, f"failed to read session {session_id}: unsafe session artifact"
+    return True, render_session_inspection(data)
 
 
 def _tree_report(session_id, sessions_root):
@@ -178,7 +240,7 @@ def _tree_report(session_id, sessions_root):
         )
     except (FileNotFoundError, OSError, ValueError, SessionFormatError):
         return False, f"failed to read session {session_id}: unsafe session artifact"
-    if storage != "current" or tree is None:
+    if storage == "legacy" or tree is None:
         return False, f"session {session_id} is legacy; resume it once to migrate"
     active = {entry["id"] for entry in tree.active_path}
     children = {}
@@ -186,6 +248,7 @@ def _tree_report(session_id, sessions_root):
         children.setdefault(entry["parent_id"], []).append(entry)
     lines = [
         f"session: {session_id}",
+        f"format_version: {tree.header['format_version']}",
         f"active_leaf: {tree.leaf_id or '-'}",
         f"entries: {len(tree.entries)}",
     ]
@@ -278,6 +341,7 @@ def handle_session_command(
     sessions_root=None,
     redactor=None,
     agent_factory=None,
+    raise_typed_errors=False,
 ):
     """CLI entry point for Session Tree inspection and explicit mutations."""
     if sessions_root is None:
@@ -415,6 +479,8 @@ def handle_session_command(
             )
             return 2
     except (OSError, RuntimeError, ValueError, SessionFormatError) as exc:
+        if raise_typed_errors and getattr(exc, "code", ""):
+            raise
         report = f"session command failed: {type(exc).__name__}: {exc}"
         ok = False
     if redactor is not None:

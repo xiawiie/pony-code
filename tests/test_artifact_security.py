@@ -750,10 +750,11 @@ def test_singular_session_cli_redacts_untrusted_summary_fields(
         ]
     )
 
-    output = capsys.readouterr().out
+    captured = capsys.readouterr()
+    output = captured.out + captured.err
     assert code == 1
     assert secret not in output
-    assert "unsafe session artifact" in output
+    assert "unsafe local artifact" in output
 
 
 def test_checkpoint_ambiguity_errors_are_redacted(
