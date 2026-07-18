@@ -38,6 +38,7 @@ from pony.tools.shell import (
     sandbox_privilege_denial,
 )
 from pony.tools.validation import SensitiveToolError, _lexical_tool_target
+from pony.state.workflow import PlanValidationError, SensitivePlanError
 from pony.agent.verification import verification_evidence_for_execution
 
 
@@ -150,7 +151,7 @@ def _summarize_input(args):
 def _validation_rejection(agent, tool, name, args, effect_class):
     try:
         agent.validate_tool(name, args)
-    except SensitiveToolError as exc:
+    except (SensitiveToolError, SensitivePlanError) as exc:
         return ToolExecutionResult(
             content=f"error: {exc.code}",
             metadata=_metadata(
@@ -159,6 +160,16 @@ def _validation_rejection(agent, tool, name, args, effect_class):
                 tool_error_code=exc.code,
                 security_event_type="sensitive_access_block",
                 risk_level="high",
+            ),
+        )
+    except PlanValidationError as exc:
+        return ToolExecutionResult(
+            content=f"error: {exc.code}",
+            metadata=_metadata(
+                "rejected",
+                effect_class=effect_class,
+                tool_error_code=exc.code,
+                risk_level="low",
             ),
         )
     except workspace_files.WorkspaceIOError as exc:
@@ -688,6 +699,38 @@ def _availability_rejection(
     )
 
 
+def _workflow_mode_rejection(agent, name, effect_class, command_assessment):
+    mode = agent.current_workflow_mode()
+    blocked = False
+    if mode in {"plan", "review"} and not agent.read_only:
+        if name == "run_shell":
+            risk_class = command_assessment["risk_class"]
+            blocked = risk_class != "read_only" and not (
+                mode == "review"
+                and risk_class == "external_effect"
+                and agent.approval_policy == "ask"
+            )
+        else:
+            blocked = effect_class not in {"read_only", "session_state"}
+    if not blocked:
+        return None
+    rejection = ToolExecutionResult(
+        content=f"error: workflow mode '{mode}' blocks {name}",
+        metadata=_metadata(
+            "rejected",
+            effect_class=effect_class,
+            tool_error_code="workflow_mode_block",
+            security_event_type="workflow_mode_block",
+            risk_level="high",
+        ),
+    )
+    if command_assessment is None:
+        return rejection
+    return _add_initial_shell_policy(
+        rejection, command_assessment, agent.approval_policy
+    )
+
+
 def _prepare_non_shell_tool(agent, tool, name, args, effect_class):
     if agent.read_only and effect_class != "read_only":
         return ToolExecutionResult(
@@ -785,6 +828,14 @@ def _prepare_tool_request(agent, name, args):
         agent,
         name,
         tool,
+        effect_class,
+        command_assessment,
+    )
+    if rejection is not None:
+        return None, rejection
+    rejection = _workflow_mode_rejection(
+        agent,
+        name,
         effect_class,
         command_assessment,
     )

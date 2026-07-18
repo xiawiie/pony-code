@@ -9,7 +9,7 @@ from pony.workspace.context import now
 
 
 MEMORY_USAGE_GUIDANCE = """<memory_usage_guidance>
-- Use memory_save ONLY when the user explicitly asks to remember/save something.
+- Save durable memory ONLY when the user explicitly asks to remember/save something.
 - Do NOT save routine tool results, file paths, or turn-scoped state.
 - Good candidates: cross-session lessons, design decisions, environment gotchas.
 - Bad candidates: "I read auth.py", "current turn diff", "pytest passed".
@@ -17,9 +17,9 @@ MEMORY_USAGE_GUIDANCE = """<memory_usage_guidance>
 
 MEMORY_READING_GUIDANCE = """<memory_reading_guidance>
 Before answering about the codebase or a past decision:
-- If <memory_index> shows a relevant file, consider memory_read.
-- For symbol location, prefer repo_lookup over manual search.
-- For keyword lookup across notes, use memory_search.
+- If <memory_index> shows a relevant file, consider reading it.
+- Prefer indexed symbol lookup over manual inspection when available.
+- Prefer keyword lookup across notes when available.
 </memory_reading_guidance>"""
 
 
@@ -52,40 +52,9 @@ def tool_signature(tools):
     ).hexdigest()
 
 
-def _tool_specific_rules(tools):
-    available = set(tools)
-    lines = []
-    file_edit_tools = [
-        name for name in ("write_file", "patch_file") if name in available
-    ]
-    if file_edit_tools:
-        lines.append(
-            f"- If the user asks you to create or update a specific file and the path is clear, use {' or '.join(file_edit_tools)} instead of repeatedly listing files."
-        )
-    required_arg_tools = [
-        name
-        for name in (
-            "read_file",
-            "search",
-            "write_file",
-            "patch_file",
-            "run_shell",
-            "delegate",
-        )
-        if name in available
-    ]
-    if required_arg_tools:
-        lines.append(
-            f"- Required tool arguments must not be empty. Do not call {', '.join(required_arg_tools)} with args={{}}."
-        )
-    return "\n".join(lines)
-
-
 def build_prompt_prefix(workspace, tools, built_at=None):
-    available_tools = ", ".join(sorted(tools)) or "none"
-    tool_specific_rules = _tool_specific_rules(tools)
-    # Provider tool schemas are sent separately.  The pinned prefix keeps only
-    # core behavior, a compact availability hint, and applicable AGENTS files.
+    # Provider tool schemas are the only capability list. The pinned prefix
+    # keeps stable behavior and applicable AGENTS files.
     text = textwrap.dedent(
         f"""\
         You are pony, a small local coding agent working inside a local repository.
@@ -98,10 +67,6 @@ def build_prompt_prefix(workspace, tools, built_at=None):
         - When writing tests, match the current implementation unless the user explicitly asked you to change the code.
         - New files should be complete and runnable, including obvious imports.
         - Do not repeat the same tool call with the same arguments if it did not help. Choose a different tool or return a final answer.
-        {tool_specific_rules}
-
-        Available native tools: {available_tools}
-
         {MEMORY_USAGE_GUIDANCE}
 
         {MEMORY_READING_GUIDANCE}
