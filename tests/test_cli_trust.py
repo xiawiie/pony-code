@@ -1,6 +1,7 @@
 from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import Mock
+from pathlib import Path
 
 import pytest
 
@@ -45,6 +46,26 @@ def test_untrusted_no_input_stops_before_workspace_and_provider(tmp_path, monkey
     confirm.assert_not_called()
     workspace.assert_not_called()
     downstream.assert_not_called()
+
+
+def test_default_store_no_input_rejection_does_not_create_home_state(
+    tmp_path,
+    monkeypatch,
+):
+    home = tmp_path / "home"
+    home.mkdir()
+    project = tmp_path / "project"
+    project.mkdir()
+    workspace = Mock()
+    monkeypatch.setattr(Path, "home", lambda: home)
+    monkeypatch.setattr(assembly.WorkspaceContext, "build", workspace)
+
+    with pytest.raises(CliError) as raised:
+        assembly.build_agent(_args(project, no_input=True))
+
+    assert raised.value.code == "project_untrusted"
+    assert not (home / ".pony").exists()
+    workspace.assert_not_called()
 
 
 def test_rejected_trust_stops_before_workspace_and_provider(tmp_path, monkeypatch):

@@ -8,6 +8,18 @@ import pytest
 from pony.security.trust import ProjectTrustStore
 
 
+def test_reading_missing_trust_store_has_no_side_effects(tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    state = tmp_path / "state"
+
+    store = ProjectTrustStore(state)
+
+    assert not state.exists()
+    assert store.is_trusted(project) is False
+    assert not state.exists()
+
+
 def test_project_trust_is_private_persistent_and_revocable(tmp_path):
     project = tmp_path / "project"
     project.mkdir()
