@@ -11,6 +11,14 @@ from pony.security.workspace_files import WorkspaceIOError
 from pony.state.edit_checkpoint_store import EditCheckpointError, EditCheckpointStore
 
 
+def _manifest_path(root):
+    return next(root.glob("turn-*.json"))
+
+
+def _blob_path(root, digest):
+    return root / f"blob-{digest}"
+
+
 def test_capture_keeps_first_before_image_and_latest_post(tmp_path):
     root = tmp_path / "repo"
     root.mkdir()
@@ -18,6 +26,10 @@ def test_capture_keeps_first_before_image_and_latest_post(tmp_path):
     target.write_bytes(b"before")
     state_root = root / ".pony" / "edit-checkpoints"
     store = EditCheckpointStore(state_root, root, max_file_bytes=1024)
+    for legacy_name in ("turns", "blobs"):
+        legacy = state_root / legacy_name
+        legacy.mkdir()
+        (legacy / "sentinel").write_bytes(b"external")
 
     before = store.capture_before("turn-1", "note.txt")
     target.write_bytes(b"intermediate")
@@ -26,16 +38,17 @@ def test_capture_keeps_first_before_image_and_latest_post(tmp_path):
     target.write_bytes(b"latest")
     post = store.record_post("turn-1", "note.txt")
 
-    manifest_path = next((state_root / "turns").iterdir())
+    manifest_path = _manifest_path(state_root)
     manifest = json.loads(manifest_path.read_text(encoding="ascii"))
     assert manifest_path.suffix == ".json"
     assert manifest["paths"]["note.txt"]["post"] == post
     assert post["sha256"] == hashlib.sha256(b"latest").hexdigest()
     if os.name == "posix":
         assert stat.S_IMODE(manifest_path.stat().st_mode) == 0o600
-        blob = state_root / "blobs" / before["blob_ref"]
+        blob = _blob_path(state_root, before["blob_ref"])
         assert stat.S_IMODE(blob.stat().st_mode) == 0o600
-        assert tuple((state_root / "blobs").iterdir()) == (blob,)
+    assert (state_root / "turns" / "sentinel").read_bytes() == b"external"
+    assert (state_root / "blobs" / "sentinel").read_bytes() == b"external"
 
 
 def test_classify_turn_compares_created_modified_deleted_and_before(tmp_path):
@@ -216,7 +229,7 @@ def test_missing_precreated_lock_is_not_recreated(tmp_path):
     store.record_post("turn-lock", "note.txt")
     lock = state / ".store.lock"
     lock.unlink()
-    manifest = next((state / "turns").iterdir())
+    manifest = _manifest_path(state)
     before = manifest.read_bytes()
 
     with pytest.raises(FileNotFoundError, match="lock file missing"):
@@ -236,7 +249,7 @@ def test_missing_before_blob_has_stable_error(tmp_path):
     before = store.capture_before("turn-blob", "note.txt")
     target.write_bytes(b"after")
     store.record_post("turn-blob", "note.txt")
-    (state / "blobs" / before["blob_ref"]).unlink()
+    _blob_path(state, before["blob_ref"]).unlink()
 
     with pytest.raises(EditCheckpointError) as exc_info:
         store.classify_turn("turn-blob")
@@ -276,7 +289,7 @@ def test_manifest_rejects_integer_exists_values(tmp_path, exists, create_file):
     state = root / ".pony" / "edit-checkpoints"
     store = EditCheckpointStore(state, root, max_file_bytes=1024)
     store.capture_before("turn-bool", "note.txt")
-    manifest_path = next((state / "turns").iterdir())
+    manifest_path = _manifest_path(state)
     manifest = json.loads(manifest_path.read_text(encoding="ascii"))
     manifest["paths"]["note.txt"]["before"]["exists"] = exists
     manifest_path.write_text(json.dumps(manifest), encoding="ascii")

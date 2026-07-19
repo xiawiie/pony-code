@@ -1,5 +1,9 @@
+from concurrent.futures import ThreadPoolExecutor
+import multiprocessing
 import os
+from pathlib import Path
 import stat
+import threading
 
 import pytest
 
@@ -7,6 +11,14 @@ from pony.security.private_files import ensure_private_dir, ensure_private_file
 from pony.security.paths import require_regular_no_symlink
 
 SECRET_PATH_COMPONENT = "github_pat_A123456789012345678901234567890"
+
+
+def _ensure_private_dir_worker(path, start, queue):
+    start.wait()
+    try:
+        queue.put(str(ensure_private_dir(path)))
+    except BaseException as exc:
+        queue.put(f"{type(exc).__name__}: {exc}")
 
 
 def test_regular_guard_symlink_error_omits_sensitive_component(tmp_path):
@@ -156,6 +168,50 @@ def test_private_directory_creation_hardens_new_descendants_only(tmp_path):
         assert stat.S_IMODE(tmp_path.stat().st_mode) == before
         assert stat.S_IMODE((tmp_path / "owned").stat().st_mode) == 0o700
         assert stat.S_IMODE(target.stat().st_mode) == 0o700
+
+
+def test_private_directory_concurrent_thread_creation_handles_file_exists(
+    tmp_path, monkeypatch
+):
+    target = tmp_path / "shared"
+    barrier = threading.Barrier(2)
+    mkdir = Path.mkdir
+
+    def synchronized_mkdir(path, *args, **kwargs):
+        if path == target:
+            barrier.wait(timeout=5)
+        return mkdir(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", synchronized_mkdir)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = tuple(pool.map(ensure_private_dir, (target, target)))
+
+    assert results == (target, target)
+    assert stat.S_IMODE(target.stat().st_mode) == 0o700
+
+
+def test_private_directory_concurrent_process_creation(tmp_path):
+    context = multiprocessing.get_context("spawn")
+    start = context.Event()
+    queue = context.Queue()
+    target = tmp_path / "shared" / "nested"
+    processes = [
+        context.Process(
+            target=_ensure_private_dir_worker,
+            args=(target, start, queue),
+        )
+        for _ in range(4)
+    ]
+    for process in processes:
+        process.start()
+    start.set()
+    for process in processes:
+        process.join(timeout=10)
+
+    assert all(process.exitcode == 0 for process in processes)
+    assert [queue.get(timeout=1) for _ in processes] == [str(target)] * len(processes)
+    assert stat.S_IMODE((tmp_path / "shared").stat().st_mode) == 0o700
+    assert stat.S_IMODE(target.stat().st_mode) == 0o700
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX modes required")

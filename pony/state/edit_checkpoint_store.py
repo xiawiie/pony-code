@@ -20,9 +20,8 @@ _STATE_FIELDS = {"exists", "sha256", "blob_ref", "mode"}
 
 
 class EditCheckpointError(ValueError):
-    def __init__(self, code, *, paths=()):
+    def __init__(self, code):
         self.code = str(code)
-        self.paths = tuple(paths)
         super().__init__(self.code)
 
 
@@ -31,15 +30,12 @@ class EditCheckpointStore:
 
     def __init__(self, state_root, workspace_root, *, max_file_bytes=MAX_FILE_BYTES):
         self.root = private_files.ensure_private_dir(state_root)
-        self.turns = private_files.ensure_private_dir(self.root / "turns")
-        self.blobs = private_files.ensure_private_dir(self.root / "blobs")
         self.lock = self.root / ".store.lock"
         self.workspace = Path(os.path.abspath(os.fspath(workspace_root)))
         self.max_file_bytes = int(max_file_bytes)
         if self.max_file_bytes < 0:
             raise ValueError("invalid edit checkpoint file limit")
         self._root_identity = private_files.private_directory_identity(self.root)
-        self._blobs_identity = private_files.private_directory_identity(self.blobs)
         self._workspace_identity = private_files.private_directory_identity(self.workspace)
         try:
             private_files.append_private_bytes(
@@ -184,8 +180,8 @@ class EditCheckpointStore:
             private_files.write_private_bytes_atomic(
                 path,
                 data,
-                trusted_root=self.blobs,
-                trusted_root_identity=self._blobs_identity,
+                trusted_root=self.root,
+                trusted_root_identity=self._root_identity,
                 max_existing_bytes=self.max_file_bytes,
             )
         elif current != data:
@@ -197,9 +193,9 @@ class EditCheckpointStore:
             raise EditCheckpointError("edit_checkpoint_blob_invalid")
         try:
             data = private_files.read_private_bytes(
-                self.blobs / digest,
-                trusted_root=self.blobs,
-                trusted_root_identity=self._blobs_identity,
+                self._blob_path(digest),
+                trusted_root=self.root,
+                trusted_root_identity=self._root_identity,
                 max_bytes=self.max_file_bytes,
                 harden=False,
             )
@@ -214,12 +210,12 @@ class EditCheckpointStore:
         return data
 
     def _manifest_path(self, key):
-        return self.turns / f"{hashlib.sha256(key.encode()).hexdigest()}.json"
+        return self.root / f"turn-{hashlib.sha256(key.encode()).hexdigest()}.json"
 
     def _blob_path(self, digest):
         if not _digest(digest):
             raise EditCheckpointError("edit_checkpoint_blob_invalid")
-        return self.blobs / digest
+        return self.root / f"blob-{digest}"
 
 
 def _manifest(key):

@@ -29,9 +29,13 @@ def ensure_private_dir(path):
         try:
             mode = current.lstat().st_mode
         except FileNotFoundError:
-            current.mkdir(mode=0o700)
+            try:
+                current.mkdir(mode=0o700)
+            except FileExistsError:
+                pass
+            else:
+                created = True
             mode = current.lstat().st_mode
-            created = True
         if stat.S_ISLNK(mode):
             raise ValueError("private directory has symlink component")
         if not stat.S_ISDIR(mode):
