@@ -12,6 +12,7 @@ from pony.state.session_store import (
     LEGACY_SESSION_FORMAT_VERSION,
     PREVIOUS_SESSION_FORMAT_VERSION,
     SESSION_FORMAT_VERSION,
+    WORKFLOW_SESSION_FORMAT_VERSION,
     SESSION_RECORD_TYPE,
     SessionFormatError,
     SessionStore,
@@ -123,6 +124,7 @@ def session_inspection_data(session_id, sessions_root):
         "legacy_jsonl": {
             LEGACY_JSONL_SESSION_FORMAT_VERSION,
             PREVIOUS_SESSION_FORMAT_VERSION,
+            WORKFLOW_SESSION_FORMAT_VERSION,
         },
         "legacy": {LEGACY_SESSION_FORMAT_VERSION},
     }.get(storage)
@@ -142,12 +144,12 @@ def session_inspection_data(session_id, sessions_root):
         permission_mode = (
             PermissionMode.DEFAULT.value
             if version == LEGACY_JSONL_SESSION_FORMAT_VERSION
+            or version == PREVIOUS_SESSION_FORMAT_VERSION
             or session.get("workflow_mode") == "act"
             else PermissionMode.PLAN.value
         )
     elif storage == "legacy":
         permission_mode = PermissionMode.DEFAULT.value
-    recovery = session.get("recovery")
     checkpoints = session.get("checkpoints")
     migration = "not_required" if storage == "current" else "required_on_resume"
     if (
@@ -165,9 +167,6 @@ def session_inspection_data(session_id, sessions_root):
         "checkpoint": {
             "task": "present"
             if isinstance(checkpoints, dict) and checkpoints.get("current_id")
-            else "none",
-            "workspace_recovery": "linked"
-            if isinstance(recovery, dict) and recovery.get("current_checkpoint_id")
             else "none",
         },
         "messages": len(messages),
@@ -197,7 +196,6 @@ def render_session_inspection(data):
             f"migration: {migration}",
             f"permission_mode: {data['permission_mode']}",
             f"checkpoint: {checkpoint['task']}",
-            f"workspace_recovery: {checkpoint['workspace_recovery']}",
             f"messages: {data['messages']}",
             f"role_sequence: {' -> '.join(data['role_sequence'])}",
             f"entries: {data['entries']}",

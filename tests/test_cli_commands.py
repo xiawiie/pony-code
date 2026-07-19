@@ -360,67 +360,6 @@ def test_real_resume_bypass_preflight_runs_before_provider_resolution(
         _build_agent(args, workspace)
 
 
-def test_legacy_sandbox_resume_is_rejected_before_provider_resolution(
-    tmp_path, monkeypatch
-):
-    from pony.cli.arguments import build_arg_parser
-    from pony.cli.assembly import _build_agent
-    from pony.cli.errors import CliError
-    from pony.workspace.context import WorkspaceContext
-
-    (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
-    workspace = WorkspaceContext.build(tmp_path)
-    args = build_arg_parser().parse_args(
-        ["--cwd", str(tmp_path), "--resume", "legacy-session", "run", "inspect"]
-    )
-    monkeypatch.setattr(
-        "pony.runtime.legacy.find_project_sandbox_session",
-        lambda *_args, **_kwargs: object(),
-    )
-    monkeypatch.setattr(
-        "pony.cli.assembly._build_transport_client",
-        lambda *_args, **_kwargs: pytest.fail("provider resolution must not run"),
-    )
-
-    with pytest.raises(CliError) as caught:
-        _build_agent(args, workspace)
-
-    assert caught.value.code == "legacy_sandbox_session_unsupported"
-    assert "Host mode" in caught.value.message
-
-
-def test_invalid_legacy_sandbox_binding_is_rejected_before_provider_resolution(
-    tmp_path, monkeypatch
-):
-    from pony.cli.arguments import build_arg_parser
-    from pony.cli.assembly import _build_agent
-    from pony.cli.errors import CliError
-    from pony.sandbox.session import SandboxSessionError
-    from pony.workspace.context import WorkspaceContext
-
-    (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
-    workspace = WorkspaceContext.build(tmp_path)
-    args = build_arg_parser().parse_args(
-        ["--cwd", str(tmp_path), "--resume", "legacy-session", "run", "inspect"]
-    )
-    monkeypatch.setattr(
-        "pony.runtime.legacy.find_project_sandbox_session",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            SandboxSessionError("sandbox_manifest_invalid")
-        ),
-    )
-    monkeypatch.setattr(
-        "pony.cli.assembly._build_transport_client",
-        lambda *_args, **_kwargs: pytest.fail("provider resolution must not run"),
-    )
-
-    with pytest.raises(CliError) as caught:
-        _build_agent(args, workspace)
-
-    assert caught.value.code == "sandbox_state_invalid"
-    assert caught.value.details == {"reason_code": "sandbox_manifest_invalid"}
-
-
 def test_invalid_no_input_repl_is_rejected_before_agent_build(
     tmp_path, monkeypatch, capsys
 ):

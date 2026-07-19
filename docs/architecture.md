@@ -21,9 +21,9 @@ flowchart TB
     LOOP --> ACT["action codec"]
     ACT --> TOOLS["tools.executor"]
     TOOLS --> WRK["workspace view"]
-    LOOP --> STATE["session / run / checkpoint"]
+    LOOP --> STATE["session / run"]
     STATE --> LOCAL[".pony private state"]
-    TOOLS --> REC["recovery evidence"]
+    TOOLS --> OBS["effect observation"]
 ```
 
 Pony 是一个分层的本地控制循环，不是 Provider SDK 的薄包装。Provider 只负责 wire protocol；Agent Loop 决定一次
@@ -43,14 +43,12 @@ pony/
 ├── context/           # source、chunk、render、digest、escaping
 ├── memory/            # notes、recall、retrieval、repo map
 ├── providers/         # 三 Provider、四 Transport、probe、factory
-├── recovery/          # command policy、legacy reader/migration、待删除旧 writer
 ├── runtime/            # Pony 装配、options、reporting、rewind、working memory
-├── sandbox/           # legacy binding inspection；只供 resume preflight，不提供执行
-├── security/          # private/workspace file、path、redaction
-├── state/             # session/run/checkpoint store、task state、file lock
+├── security/          # private/workspace file、path、redaction、shell command policy
+├── state/             # session/run、legacy artifact reader、task state、file lock
 ├── tui/               # 行内 prompt、命令菜单、Markdown 与状态渲染
 ├── tools/             # tool registry、executor、effect recorder、subprocess
-└── workspace/         # root discovery、snapshot、observer
+└── workspace/         # root discovery、observer
 ```
 
 仓库级开发资产不进入产品 package：
@@ -61,7 +59,6 @@ pony/
 | `benchmarks/evaluation/` | 离线评估与 Provider benchmark |
 | `benchmarks/live_e2e/` | 显式授权的真实 Provider harness 与离线 assertions |
 | `scripts/evaluation/` | 评估入口 |
-| `scripts/sandbox/` | 已退役 Sandbox 的历史维护脚本；不属于公开产品入口 |
 | `scripts/release/` | distribution 内容和 clean-install 验证 |
 | `.github/workflows/` | CI 与 tag-bound release |
 
@@ -235,9 +232,9 @@ flowchart LR
 ```
 
 Host 不是 OS sandbox。Pony 不隔离恶意命令、依赖、编译器插件或测试进程；用户应只在受信仓库中运行。mutation 工具在
-approval 与参数复核后获取 `.pony/.workspace-mutation.lock`，持锁覆盖 before snapshot、runner 和 after snapshot。
+approval 与参数复核后获取 `.pony/.workspace-mutation.lock`，持锁覆盖 before observation、runner 和 after observation。
 已删除 `--sandbox`、`pony sandbox`、Source Apply 和 workspace restore。旧 Sandbox-bound Session 只做 bounded binding
-检查并稳定拒绝 Host resume；内部 legacy reader 暂保留，等待独立删除波次。
+检查并稳定拒绝 Host resume；`pony.state.legacy_artifacts` 只保留受限的只读检查。
 
 ## 6. Context、Memory 与状态
 
@@ -264,14 +261,14 @@ flowchart TB
 Session 的 Model Binding 固化 `protocol_family`、`model` 和 `endpoint_hash`。恢复时任一字段变化都会返回
 `model_session_mismatch`，避免跨 Provider 或跨 endpoint 重放 opaque provider state。
 
-Session v4 active path 投影 `permission_mode`、`permission_rules`、`plan_text`、`plan_revision` 与 `pre_plan_mode`。
+Session v5 active path 投影 `permission_mode`、`permission_rules`、`plan_text`、`plan_revision` 与 `pre_plan_mode`。
 `permission_mode_change` 和 `plan_artifact` 是专用 control entry；exact-tool rules 通过 bounded `session_info` state update
 写入。普通 `save` 不得偷偷修改这些字段。完整决策见
 [ADR-0045](adr/0045-permission-modes-session-v4-and-plan-artifacts.md)。
 
-v1 JSON、v2 JSONL 与 v3 JSONL inspection 都保持零写；普通 writer 返回 `session_migration_required`。只有显式 resume
+v1 JSON、v2-v4 JSONL inspection 都保持零写；普通 writer 返回 `session_migration_required`。只有显式 resume
 在 Session lock 下执行迁移：稳定读取源、创建或复验 digest backup、完整解析 candidate/projection、复验源 identity 与
-digest，再 atomic replace 为 v4。v1/v2 进入内部 `default` 和空 rule/Plan；v3 `act` 映射 `default`，其他旧 WorkflowMode
+digest，再 atomic replace 为 v5。v1/v2 进入内部 `default` 和空 rule/Plan；v3 `act` 映射 `default`，其他旧 WorkflowMode
 映射 `plan`。旧结构化 Active Plan 不冒充新的 Markdown artifact：旧 `plan_update` control data 转成 migration audit，
 旧 `update_plan` tool exchange 只作为历史消息保留。
 

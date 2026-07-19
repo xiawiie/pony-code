@@ -204,9 +204,7 @@ def test_report_projects_current_run_tool_change_effects(tmp_path):
     assert report["effects"] == {
         "changed_files": 1,
         "partial_successes": 1,
-        "recovery_review_required": False,
     }
-    assert report["recovery"]["review_required"] is False
 
 
 def test_interrupted_tool_attempt_is_included_in_current_run_report(tmp_path):
@@ -229,8 +227,6 @@ def test_interrupted_tool_attempt_is_included_in_current_run_report(tmp_path):
         "name_counts": {"run_shell": 1},
         "status_counts": {"interrupted": 1},
     }
-    assert report["effects"]["recovery_review_required"] is False
-    assert report["recovery"]["review_required"] is False
 
 
 def test_step_limit_run_artifacts_reference_final_checkpoint(tmp_path):
@@ -257,7 +253,6 @@ def test_step_limit_run_artifacts_reference_final_checkpoint(tmp_path):
 
     assert task_state["stop_reason"] == "step_limit_reached"
     assert task_state["checkpoint_id"] == checkpoint_id
-    assert report["recovery"]["checkpoint_id"] == checkpoint_id
     assert "task_state" not in report
 
 
@@ -548,7 +543,7 @@ def test_report_last_request_metadata_preserves_initial_resume_status(tmp_path):
     assert resumed.ask("Continue the task") == "Resumed."
     report = resumed.run_store.load_report(resumed.current_task_state.run_id)
 
-    assert report["recovery"]["status"] == "partial-stale"
+    assert resumed.resume_state["status"] == "partial-stale"
     assert report["context"]["resume_status"] == "partial-stale"
     assert report["context"]["last_prompt_resume_status"] == "partial-stale"
 
@@ -594,7 +589,7 @@ def test_first_prompt_resume_status_updates_task_state_after_late_checkpoint_set
     assert agent.ask("Continue the task") == "Resumed."
     report = agent.run_store.load_report(agent.current_task_state.run_id)
 
-    assert report["recovery"]["status"] == "partial-stale"
+    assert agent.resume_state["status"] == "partial-stale"
     assert report["context"]["resume_status"] == "partial-stale"
     assert report["context"]["last_prompt_resume_status"] == "partial-stale"
 

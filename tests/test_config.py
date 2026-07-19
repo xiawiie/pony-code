@@ -18,39 +18,6 @@ from pony.config.model import (
     validate_api_base,
 )
 from pony.config.project import load_pony_toml
-from pony.recovery.policy import DEFAULT_MAX_BLOB_SIZE, snapshot_eligibility
-
-
-def test_load_pony_toml_reads_simple_project_overrides(tmp_path):
-    (tmp_path / "pony.toml").write_text(
-        "[policy]\nmax_blob_size = 2048\n",
-        encoding="utf-8",
-    )
-
-    assert load_pony_toml(tmp_path)["policy"]["max_blob_size"] == 2048
-
-
-def test_project_max_blob_size_falls_back_to_default_when_missing(tmp_path):
-    assert load_pony_toml(tmp_path)["policy"]["max_blob_size"] == DEFAULT_MAX_BLOB_SIZE
-
-
-def test_pony_toml_max_blob_size_overrides_snapshot_eligibility(tmp_path):
-    file_rel = "notes/large.md"
-    file_abs = tmp_path / file_rel
-    file_abs.parent.mkdir(parents=True, exist_ok=True)
-    file_abs.write_text("x" * 300, encoding="utf-8")
-
-    assert snapshot_eligibility(tmp_path, file_rel)["snapshot_eligible"] is True
-    (tmp_path / "pony.toml").write_text(
-        "[policy]\nmax_blob_size = 100\n",
-        encoding="utf-8",
-    )
-
-    limit = load_pony_toml(tmp_path)["policy"]["max_blob_size"]
-    tightened = snapshot_eligibility(tmp_path, file_rel, max_blob_size=limit)
-    assert limit == 100
-    assert tightened["snapshot_eligible"] is False
-    assert tightened["ineligible_reason"] == "file_too_large"
 
 
 @pytest.mark.parametrize("kind", ("symlink", "hardlink", "fifo", "directory"))
@@ -60,13 +27,13 @@ def test_pony_toml_unsafe_entry_warns_and_uses_defaults(
     kind,
 ):
     outside = tmp_path / "outside.toml"
-    outside.write_text("[policy]\nmax_blob_size = 1\n", encoding="utf-8")
+    outside.write_text("[model]\noutput_limit = 1\n", encoding="utf-8")
     target = tmp_path / "pony.toml"
     if kind == "symlink":
         target.symlink_to(outside)
     elif kind == "hardlink":
         sibling = tmp_path.parent / f"{tmp_path.name}-outside.toml"
-        sibling.write_text("[policy]\nmax_blob_size = 1\n", encoding="utf-8")
+        sibling.write_text("[model]\noutput_limit = 1\n", encoding="utf-8")
         os.link(sibling, target)
     elif kind == "fifo":
         os.mkfifo(target, 0o600)
@@ -75,7 +42,7 @@ def test_pony_toml_unsafe_entry_warns_and_uses_defaults(
 
     config = load_pony_toml(tmp_path)
 
-    assert config["policy"]["max_blob_size"] == DEFAULT_MAX_BLOB_SIZE
+    assert config["model"]["output_limit"] == 16_384
     assert capsys.readouterr().err == "warning: invalid pony.toml; using defaults\n"
 
 
@@ -84,7 +51,7 @@ def test_pony_toml_over_one_mib_warns_and_uses_defaults(tmp_path, capsys):
 
     config = load_pony_toml(tmp_path)
 
-    assert config["policy"]["max_blob_size"] == DEFAULT_MAX_BLOB_SIZE
+    assert config["model"]["output_limit"] == 16_384
     assert capsys.readouterr().err == "warning: invalid pony.toml; using defaults\n"
 
 

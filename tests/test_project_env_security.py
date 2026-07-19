@@ -204,6 +204,17 @@ def test_project_env_existing_file_is_private_before_read(tmp_path):
     assert stat.S_IMODE(env_path.stat().st_mode) == 0o600
 
 
+def test_project_env_non_hardening_read_still_rejects_non_private_file(tmp_path):
+    env_path = tmp_path / ".env"
+    env_path.write_text("PONY_TEST_SETTING=deepseek\n", encoding="utf-8")
+    env_path.chmod(0o644)
+
+    with pytest.raises(ValueError, match="private file permissions are unsafe"):
+        read_project_env(tmp_path, warn=False, harden=False)
+
+    assert stat.S_IMODE(env_path.stat().st_mode) == 0o644
+
+
 def test_project_env_chmod_failure_fails_before_returning_values(tmp_path, monkeypatch):
     env_path = tmp_path / ".env"
     env_path.write_text("PONY_API_KEY=opaque-value\n", encoding="utf-8")

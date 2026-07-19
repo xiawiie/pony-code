@@ -1,6 +1,6 @@
 # Pony Coding Agent 工作流实施方案
 
-> 状态：Historical / Superseded。本文记录已被 Session v4 permission mode/rules 与 Plan artifact 合同取代的旧实施方案，
+> 状态：Historical / Superseded。本文记录已被 Session v5 permission mode/rules 与 Plan artifact 合同取代的旧实施方案，
 > 不再描述当前产品行为；当前合同以领域模型、架构、Session、安全与验证文档为准。
 >
 > 文档性质：历史 P0 实施记录，不声明当前或后续 Gate 能力
@@ -79,7 +79,7 @@
 | TUI prompt、completion、history、runtime hooks | `pony/tui/app.py` |
 | TUI 状态与事件渲染 | `pony/tui/render.py` |
 | Tool schema/registry | `pony/tools/registry.py`、`pony/tools/validation.py` |
-| Mode、approval、shell policy 的最终执行边界 | `pony/tools/executor.py`、`pony/recovery/policy.py` |
+| Mode、approval、shell policy 的最终执行边界 | `pony/tools/executor.py`、`pony/security/command_policy.py` |
 | Context source 与 token allocation | `pony/context/sources.py`、`pony/agent/context_manager.py` |
 | Trace schema、durable writer/listener 顺序 | `pony/agent/observability.py`、`pony/runtime/application.py` |
 | Provider 配置与装配 | `pony/config/model.py`、`pony/config/environment.py`、`pony/cli/assembly.py` |

@@ -92,7 +92,6 @@ def test_runtime_uses_current_working_memory(tmp_path, monkeypatch):
         "recently_recalled": [],
         "checkpoints": {"current_id": "", "items": {}},
         "resume_state": {},
-        "recovery": {"current_checkpoint_id": ""},
         "runtime_identity": {},
         "permission_mode": "auto",
     }

@@ -90,11 +90,18 @@ def _warn_invalid_env_line(env_path, line_number, error):
     print(f"warning: skipped invalid .env line {line_number}: {error}", file=sys.stderr)
 
 
-def read_project_env_with_status(start, warn=True):
+def read_project_env_with_status(
+    start, warn=True, *, harden=True, allow_insecure_mode=False
+):
     env_path = project_env_path(start)
     try:
         initial_mode = env_path.lstat().st_mode
-        text = read_private_text(env_path, max_bytes=MAX_PROJECT_ENV_BYTES)
+        text = read_private_text(
+            env_path,
+            max_bytes=MAX_PROJECT_ENV_BYTES,
+            harden=harden,
+            allow_insecure_mode=allow_insecure_mode,
+        )
     except FileNotFoundError:
         return {}, project_env_metadata(start, "missing")
     loaded = {}
@@ -118,8 +125,13 @@ def read_project_env_with_status(start, warn=True):
     return loaded, project_env_metadata(start, status)
 
 
-def read_project_env(start, warn=True):
-    loaded, _ = read_project_env_with_status(start, warn=warn)
+def read_project_env(start, warn=True, *, harden=True, allow_insecure_mode=False):
+    loaded, _ = read_project_env_with_status(
+        start,
+        warn=warn,
+        harden=harden,
+        allow_insecure_mode=allow_insecure_mode,
+    )
     return loaded
 
 

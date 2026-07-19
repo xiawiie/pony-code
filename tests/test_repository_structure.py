@@ -18,7 +18,6 @@ MAINTAINER_DOCS = {
     "docs/recovery.md",
     "docs/verification.md",
     "docs/memory.md",
-    "docs/local-stable-execution.md",
     "docs/adr/0040-docker-filtered-staging.md",
     "docs/adr/0042-sealed-local-authorization.md",
     "docs/adr/0043-workflow-state-and-session-v3.md",
@@ -147,8 +146,7 @@ def test_agents_instructions_match_the_production_contract():
         "context",
         "memory",
         "providers",
-        "recovery",
-        "sandbox",
+        "security",
         "state",
         "tui",
         "tools",
@@ -197,9 +195,7 @@ def test_current_python_and_console_surfaces_are_exact():
         "context",
         "memory",
         "providers",
-        "recovery",
         "runtime",
-        "sandbox",
         "security",
         "state",
         "tui",
@@ -240,14 +236,14 @@ def test_obsolete_provider_and_sandbox_names_are_absent():
 
 def test_current_sources_do_not_read_obsolete_runtime_shapes():
     session_source = (ROOT / "pony/state/session_store.py").read_text(encoding="utf-8")
-    checkpoint_source = (ROOT / "pony/state/checkpoint_store.py").read_text(
+    legacy_source = (ROOT / "pony/state/legacy_artifacts.py").read_text(
         encoding="utf-8"
     )
     runtime_source = (ROOT / "pony/runtime/application.py").read_text(encoding="utf-8")
     config_source = (ROOT / "pony/config/model.py").read_text(encoding="utf-8")
 
     assert '"schema_' + 'version"' not in session_source
-    assert '"schema_' + 'version"' not in checkpoint_source
+    assert '"schema_' + 'version"' not in legacy_source
     assert '"hist' + 'ory"' not in session_source
     assert '"prompt_' + 'cache"' not in session_source
     assert '"prompt_' + 'cache"' not in runtime_source

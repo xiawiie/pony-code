@@ -593,7 +593,6 @@ def test_supplied_legacy_session_is_rejected_outside_store_migration(
         "recently_recalled": [],
         "checkpoints": {},
         "resume_state": {},
-        "recovery": {},
         "runtime_identity": {},
     }
 
@@ -647,7 +646,6 @@ def test_reset_clears_transient_state_and_preserves_permission_and_audit(tmp_pat
     }
     agent.session["memory"] = {"file_summaries": {"a.py": {"summary": "fact"}}}
     agent.session["resume_state"] = {"status": "full-valid"}
-    agent.session["recovery"] = {"current_checkpoint_id": "r1"}
     agent.reset()
 
     assert agent.session["id"] == session_id
@@ -659,7 +657,7 @@ def test_reset_clears_transient_state_and_preserves_permission_and_audit(tmp_pat
     assert agent.session["checkpoints"]["current_id"] == ""
     assert agent.session["checkpoints"]["items"] == durable_checkpoint_items
     assert agent.session["resume_state"] == {}
-    assert agent.session["recovery"]["current_checkpoint_id"] == ""
+    assert "recovery" not in agent.session
     assert agent.session["permission_mode"] == "plan"
 
 

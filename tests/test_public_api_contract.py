@@ -65,7 +65,7 @@ def test_build_agent_returns_pony(tmp_path):
 
 
 def test_lightweight_package_split_uses_package_paths_without_legacy_shims():
-    from benchmarks.evaluation.experiments_recovery import run_context_ablation_v2
+    from benchmarks.evaluation.experiments_synthetic import run_context_ablation_v2
     from benchmarks.evaluation.fixed_benchmark import BenchmarkEvaluator
     from benchmarks.support.fake_provider import (
         FakeModelClient as ProviderFakeModelClient,
@@ -184,13 +184,9 @@ def test_packaging_builds_only_the_pony_runtime():
         "build-backend": "hatchling.build",
     }
     targets = pyproject["tool"]["hatch"]["build"]["targets"]
-    assert targets["wheel"] == {
-        "packages": ["pony"],
-        "exclude": ["/pony/sandbox/resources"],
-    }
+    assert targets["wheel"] == {"packages": ["pony"]}
     assert targets["sdist"] == {
         "include": ["/LICENSE", "/README.md", "/pyproject.toml", "/pony"],
-        "exclude": ["/pony/sandbox/resources"],
     }
 
 

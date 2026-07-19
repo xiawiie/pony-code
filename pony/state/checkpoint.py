@@ -270,9 +270,6 @@ def create_checkpoint(
         "key_files": key_files,
         "read_files": read_files,
         "modified_files": modified_files,
-        "workspace_checkpoint_id": str(
-            getattr(task_state, "recovery_checkpoint_id", "") or ""
-        ),
         "worktree_identity_digest": _worktree_identity_digest(agent),
         "context_usage": _context_usage(agent),
         "label": str(agent.redact_text(label) or "").strip(),
@@ -320,9 +317,6 @@ def create_manual_checkpoint(agent, label=""):
         final_answer = ""
         last_tool = ""
         checkpoint_id = ""
-        recovery_checkpoint_id = str(
-            agent.session.get("recovery", {}).get("current_checkpoint_id", "") or ""
-        )
 
     return create_checkpoint(
         agent,

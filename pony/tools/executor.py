@@ -10,7 +10,7 @@ import textwrap
 
 from pony.security import workspace_files as workspace_files
 from pony.security import private_files as private_files
-from pony.recovery.policy import assess_command
+from pony.security.command_policy import assess_command
 from pony.tools.permissions import PermissionDecision, PermissionMode, decide_permission
 from pony.tools.subprocess import (
     _validate_hardened_git_args,
@@ -215,10 +215,7 @@ def _structured_shell_result(agent, value):
     if not {"stdout", "stderr", "exit_code"} <= set(value):
         raise ValueError("shell runner returned invalid result")
     exit_code = value["exit_code"]
-    target_started = bool(value.get("target_started", True))
-    if (not isinstance(exit_code, int) or isinstance(exit_code, bool)) and not (
-        exit_code is None and not target_started
-    ):
+    if not isinstance(exit_code, int) or isinstance(exit_code, bool):
         raise ValueError("shell runner returned invalid exit code")
     if not isinstance(value["stdout"], str) or not isinstance(
         value["stderr"],
@@ -230,11 +227,6 @@ def _structured_shell_result(agent, value):
         "stderr": agent.redact_text(value["stderr"]),
         "exit_code": exit_code,
         "timed_out": bool(value.get("timed_out", False)),
-        "target_started": target_started,
-        "wrapper_status": str(value.get("wrapper_status", "not_applicable")),
-        "sandbox_outcome": str(value.get("sandbox_outcome", "not_applicable")),
-        "cleanup_status": str(value.get("cleanup_status", "not_applicable")),
-        "residue_detected": bool(value.get("residue_detected", False)),
     }
 
 
@@ -855,9 +847,6 @@ def _prepare_tool_request(agent, name, args):
             "outcome": command_approval.get("outcome", "not_required"),
         },
     ).to_dict()
-    sandbox = {"status": "not_applicable"}
-    if name == "run_shell":
-        sandbox["execution_plane"] = "host"
     return {
         "agent": agent,
         "name": name,
@@ -869,7 +858,6 @@ def _prepare_tool_request(agent, name, args):
         "command_risk": command_risk,
         "command_approval": command_approval,
         "policy_decision": policy_decision,
-        "sandbox": sandbox,
     }, None
 
 
@@ -905,16 +893,6 @@ def _invoke_prepared_tool(prepared, execution):
         raw_result = prepared["tool"]["run"](shell_execution)
     shell_result = _structured_shell_result(agent, raw_result)
     execution["shell_result"] = shell_result
-    execution["sandbox"] = {
-        "status": shell_result["sandbox_outcome"],
-        "execution_plane": "host",
-        "wrapper_status": shell_result["wrapper_status"],
-        "cleanup_status": shell_result["cleanup_status"],
-        "target_started": shell_result["target_started"],
-        "timed_out": shell_result["timed_out"],
-        "residue_detected": shell_result["residue_detected"],
-        "exit_code": shell_result["exit_code"],
-    }
     execution["runner_completed"] = True
     approval["exit_code"] = shell_result["exit_code"]
     if shell_result["exit_code"] is not None:
@@ -963,7 +941,7 @@ def _workspace_root_identity_rejection(prepared):
         content="error: workspace root changed before run_shell",
         metadata=_base_result_metadata(
             prepared,
-            {"sandbox": dict(prepared["sandbox"]), "verification_evidence": None},
+            {"verification_evidence": None},
             "rejected",
             "workspace_root_changed",
             _empty_effects(),
@@ -1001,7 +979,6 @@ def _base_result_metadata(prepared, execution, status, code, effects):
         diff_summary=effects["diff_summary"],
     )
     metadata["policy_decision"] = dict(prepared["policy_decision"])
-    metadata["sandbox"] = dict(execution["sandbox"])
     _add_command_policy(
         metadata,
         prepared["command_risk"],
@@ -1045,7 +1022,6 @@ def _run_tool_lifecycle(prepared):
         "shell_result": None,
         "verification_evidence": None,
         "content": "",
-        "sandbox": dict(prepared["sandbox"]),
     }
     before = None
     effects = _empty_effects()
@@ -1159,7 +1135,6 @@ class ToolExecutor:
                     "outcome": "denied",
                 },
             ).to_dict()
-            rejection.metadata.setdefault("sandbox", {"status": "not_started"})
             return rejection
         return _run_tool_lifecycle(prepared)
 
@@ -1170,25 +1145,3 @@ def _add_command_policy(metadata, command_risk, command_approval):
     if command_approval:
         metadata["command_approval"] = dict(command_approval)
     return metadata
-
-
-def _tool_change_terminal_status(tool_status):
-    if tool_status in {"partial_success", "error"}:
-        return tool_status
-    return "finalized"
-
-
-def _tool_change_error_payload(
-    terminal_status, tool_error_code, content, error_message=""
-):
-    if error_message and terminal_status in {"partial_success", "error"}:
-        return {
-            "code": tool_error_code or "tool_failed",
-            "message": str(error_message)[:400],
-        }
-    if terminal_status == "error":
-        return {
-            "code": tool_error_code or "tool_failed",
-            "message": str(content or "")[:400],
-        }
-    return None

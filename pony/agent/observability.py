@@ -13,7 +13,7 @@ from pony.security.private_files import private_directory_identity, read_private
 from pony.security.redaction import looks_secret_shaped_text
 
 TRACE_SCHEMA_VERSION = 1
-REPORT_SCHEMA_VERSION = 3
+REPORT_SCHEMA_VERSION = 4
 MAX_RUN_ARTIFACT_BYTES = 8 * 1024 * 1024
 _TERMINAL_EVENTS = {"run_finished"}
 _RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
@@ -36,7 +36,6 @@ _TRACE_STRING_FIELDS = {
     "action_type",
     "name",
     "tool_use_id",
-    "tool_change_id",
     "checkpoint_id",
     "trigger",
     "verification_id",
@@ -50,15 +49,6 @@ _TRACE_STRING_FIELDS = {
     "tool_error_code",
     "security_event_type",
     "change_kind",
-    "sandbox_outcome",
-    "execution_plane",
-    "cleanup_status",
-    "sandbox_wrapper_status",
-    "sandbox_error_code",
-    "sandbox_call_id",
-    "execution_plan_digest",
-    "logical_intent_digest",
-    "policy_digest",
 }
 _TRACE_COUNT_FIELDS = {
     "duration_ms",
@@ -83,13 +73,7 @@ _TRACE_BOOL_FIELDS = {
     "approved",
     "denied",
     "workspace_changed",
-    "recovery_review_required",
-    "target_started",
     "timed_out",
-    "residue_detected",
-    "container_created",
-    "stdout_truncated",
-    "stderr_truncated",
     "transport_evidence_complete",
 }
 _TRACE_STRING_LIST_FIELDS = {"fields", "finalization_errors", "affected_paths"}
@@ -324,27 +308,6 @@ def validate_trace(events, *, run_id=None, task_id=None):
             raise RunArtifactError(
                 "incomplete", "trace tool event fields are incomplete"
             )
-        if "sandbox_outcome" in event:
-            if (
-                not {
-                    "execution_plane",
-                    "cleanup_status",
-                    "target_started",
-                }.issubset(event)
-                or event["execution_plane"] not in {"sandbox", "host", "unknown"}
-                or not event["cleanup_status"]
-                or event["execution_plane"] == "sandbox"
-                and not {
-                    "runner_executed",
-                    "execution_plan_digest",
-                    "logical_intent_digest",
-                    "policy_digest",
-                }.issubset(event)
-            ):
-                raise RunArtifactError(
-                    "incomplete",
-                    "trace sandbox fields are incomplete",
-                )
         if event_name == "tool_started":
             if (
                 "tool_status" in event
@@ -406,9 +369,7 @@ def validate_report(report, *, run_id=None):
         "context",
         "tools",
         "memory",
-        "sandbox",
         "effects",
-        "recovery",
         "integrity",
         "finalization",
     }
@@ -445,26 +406,7 @@ def validate_report(report, *, run_id=None):
         },
         "tools": {"calls", "allowed", "denied", "name_counts", "status_counts"},
         "memory": {"recall_candidates", "recall_selected", "filter_counts"},
-        "sandbox": {
-            "active",
-            "implementation",
-            "session_state",
-            "engine_profile",
-            "image_digest",
-            "policy_digest",
-            "network_mode",
-            "source_mounted",
-            "state_mounted",
-            "container_calls",
-            "target_started_count",
-            "outcome_counts",
-            "cleanup_failure_count",
-            "host_fallback_count",
-            "diff",
-            "apply_status",
-        },
-        "effects": {"changed_files", "partial_successes", "recovery_review_required"},
-        "recovery": {"checkpoint_id", "status", "review_required"},
+        "effects": {"changed_files", "partial_successes"},
         "integrity": {"writer", "terminal_event_expected"},
         "finalization": {"status", "error_count"},
     }
@@ -485,12 +427,6 @@ def validate_report(report, *, run_id=None):
         "model": ("attempts", "turns", "failures", "retries"),
         "tools": ("calls", "allowed", "denied"),
         "memory": ("recall_candidates", "recall_selected"),
-        "sandbox": (
-            "container_calls",
-            "target_started_count",
-            "cleanup_failure_count",
-            "host_fallback_count",
-        ),
         "effects": ("changed_files", "partial_successes"),
         "finalization": ("error_count",),
     }
@@ -530,78 +466,8 @@ def validate_report(report, *, run_id=None):
         raise RunArtifactError("incomplete", "report tool fields invalid")
     if not _count_map(report["memory"]["filter_counts"]):
         raise RunArtifactError("incomplete", "report memory fields invalid")
-    sandbox = report["sandbox"]
-    sandbox_diff = sandbox["diff"]
-    public_digest = re.compile(r"^sha256:[0-9a-f]{16}$")
-    if (
-        type(sandbox["active"]) is not bool
-        or any(
-            type(sandbox[field]) is not str
-            for field in (
-                "implementation",
-                "session_state",
-                "engine_profile",
-                "image_digest",
-                "policy_digest",
-                "network_mode",
-                "apply_status",
-            )
-        )
-        or type(sandbox["source_mounted"]) is not bool
-        or type(sandbox["state_mounted"]) is not bool
-        or sandbox["source_mounted"]
-        or sandbox["state_mounted"]
-        or not _count_map(sandbox["outcome_counts"])
-        or not isinstance(sandbox_diff, dict)
-        or set(sandbox_diff) != {"candidates", "blocked", "generated"}
-        or any(not _nonnegative_int(value) for value in sandbox_diff.values())
-        or sandbox["target_started_count"] > sandbox["container_calls"]
-        or sandbox["cleanup_failure_count"] > sandbox["container_calls"]
-        or sandbox["host_fallback_count"] > sandbox["container_calls"]
-        or sum(sandbox["outcome_counts"].values()) != sandbox["container_calls"]
-    ):
-        raise RunArtifactError("incomplete", "report sandbox fields invalid")
-    if sandbox["active"]:
-        if (
-            sandbox["implementation"] != "docker_container"
-            or sandbox["session_state"] == "not_applicable"
-            or sandbox["engine_profile"] == "not_applicable"
-            or public_digest.fullmatch(sandbox["image_digest"]) is None
-            or public_digest.fullmatch(sandbox["policy_digest"]) is None
-            or sandbox["network_mode"] != "none"
-            or sandbox["apply_status"] == "not_applicable"
-        ):
-            raise RunArtifactError("incomplete", "report sandbox fields invalid")
-    elif sandbox != {
-        "active": False,
-        "implementation": "none",
-        "session_state": "not_applicable",
-        "engine_profile": "not_applicable",
-        "image_digest": "",
-        "policy_digest": "",
-        "network_mode": "not_applicable",
-        "source_mounted": False,
-        "state_mounted": False,
-        "container_calls": 0,
-        "target_started_count": 0,
-        "outcome_counts": {},
-        "cleanup_failure_count": 0,
-        "host_fallback_count": 0,
-        "diff": {"candidates": 0, "blocked": 0, "generated": 0},
-        "apply_status": "not_applicable",
-    }:
-        raise RunArtifactError("incomplete", "report sandbox fields invalid")
-    effects = report["effects"]
-    recovery = report["recovery"]
     integrity = report["integrity"]
     finalization = report["finalization"]
-    if type(effects["recovery_review_required"]) is not bool:
-        raise RunArtifactError("incomplete", "report effects fields invalid")
-    if (
-        any(type(recovery[field]) is not str for field in ("checkpoint_id", "status"))
-        or type(recovery["review_required"]) is not bool
-    ):
-        raise RunArtifactError("incomplete", "report recovery fields invalid")
     if (
         type(integrity["writer"]) is not str
         or not integrity["writer"]
@@ -863,7 +729,37 @@ def convert_legacy_observability(report, events, task_state):
             "status_counts": status_counts,
         },
         "memory": {"recall_candidates": 0, "recall_selected": 0, "filter_counts": {}},
-        "sandbox": {
+        "effects": {"changed_files": 0, "partial_successes": 0},
+        "integrity": {"writer": "migration", "terminal_event_expected": True},
+        "finalization": {"status": "migrated", "error_count": 0},
+    }
+    validate_report(converted)
+    return converted, safe_events
+
+
+def convert_observability_v2(report):
+    """Upgrade a known-inactive v2/v3 report to the current contract."""
+    if (
+        not isinstance(report, dict)
+        or report.get("record_type") != "run_report"
+        or report.get("format_version") not in {2, 3}
+    ):
+        raise RunArtifactError(
+            "migration_required",
+            "legacy Sandbox evidence is ambiguous",
+        )
+    sandbox = report.get("sandbox")
+    if not isinstance(sandbox, dict) or sandbox.get("active") is not False:
+        raise RunArtifactError("migration_required", "legacy Sandbox evidence is ambiguous")
+    if report["format_version"] == 2:
+        inactive = {
+            "active": False,
+            "calls": 0,
+            "host_fallback_count": 0,
+            "outcome_counts": {},
+        }
+    else:
+        inactive = {
             "active": False,
             "implementation": "none",
             "session_state": "not_applicable",
@@ -880,64 +776,16 @@ def convert_legacy_observability(report, events, task_state):
             "host_fallback_count": 0,
             "diff": {"candidates": 0, "blocked": 0, "generated": 0},
             "apply_status": "not_applicable",
-        },
-        "effects": {
-            "changed_files": 0,
-            "partial_successes": 0,
-            "recovery_review_required": False,
-        },
-        "recovery": {
-            "checkpoint_id": str(report.get("checkpoint_id", "")),
-            "status": str(report.get("resume_status", "")),
-            "review_required": False,
-        },
-        "integrity": {"writer": "migration", "terminal_event_expected": True},
-        "finalization": {"status": "migrated", "error_count": 0},
-    }
-    validate_report(converted)
-    return converted, safe_events
-
-
-def convert_observability_v2(report):
-    """Upgrade an inactive Report v2 to the exact current Report contract."""
-    if (
-        not isinstance(report, dict)
-        or report.get("record_type") != "run_report"
-        or report.get("format_version") != 2
-        or set(report.get("sandbox", {}))
-        != {"active", "calls", "host_fallback_count", "outcome_counts"}
-        or report["sandbox"]
-        != {
-            "active": False,
-            "calls": 0,
-            "host_fallback_count": 0,
-            "outcome_counts": {},
         }
-    ):
-        raise RunArtifactError(
-            "migration_required",
-            "Report v2 sandbox evidence is ambiguous",
-        )
+    if sandbox != inactive:
+        raise RunArtifactError("migration_required", "legacy Sandbox evidence is ambiguous")
     converted = dict(report)
     converted["format_version"] = REPORT_SCHEMA_VERSION
-    converted["sandbox"] = {
-        "active": False,
-        "implementation": "none",
-        "session_state": "not_applicable",
-        "engine_profile": "not_applicable",
-        "image_digest": "",
-        "policy_digest": "",
-        "network_mode": "not_applicable",
-        "source_mounted": False,
-        "state_mounted": False,
-        "container_calls": 0,
-        "target_started_count": 0,
-        "outcome_counts": {},
-        "cleanup_failure_count": 0,
-        "host_fallback_count": 0,
-        "diff": {"candidates": 0, "blocked": 0, "generated": 0},
-        "apply_status": "not_applicable",
-    }
+    converted.pop("sandbox", None)
+    converted.pop("recovery", None)
+    effects = dict(converted.get("effects") or {})
+    effects.pop("recovery_review_required", None)
+    converted["effects"] = effects
     validate_report(converted)
     return converted
 
@@ -955,6 +803,6 @@ def render_summary_text(summary):
         f"duration_ms: {run.get('duration_ms', 0)}",
         f"model: {model.get('attempts', 0)} attempts, {usage.get('input_tokens', 0)} input / {usage.get('output_tokens', 0)} output tokens",
         f"tools: {tools.get('calls', 0)} calls, {tools.get('denied', 0)} denied",
-        f"effects: {effects.get('changed_files', 0)} changed files, recovery_review_required={str(bool(effects.get('recovery_review_required'))).lower()}",
+        f"effects: {effects.get('changed_files', 0)} changed files",
         )
     )

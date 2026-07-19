@@ -36,7 +36,6 @@ def _session(workspace, session_id, content="hello", *, legacy=False):
         "recently_recalled": [],
         "checkpoints": {},
         "resume_state": {},
-        "recovery": {},
         "runtime_identity": {},
     }
     if not legacy:
@@ -98,7 +97,7 @@ def test_session_store_saves_loads_and_finds_latest_session(tmp_path):
     loaded = store.load("session_002")
     assert loaded["format_version"] == SESSION_FORMAT_VERSION
     assert loaded["record_type"] == "session"
-    assert loaded["format_version"] == SESSION_FORMAT_VERSION == 4
+    assert loaded["format_version"] == SESSION_FORMAT_VERSION == 5
     assert "history" not in loaded
     assert loaded["messages"] == [
         {"role": "user", "content": "second", "_pony_meta": {}},
@@ -395,7 +394,7 @@ def test_legacy_migration_promotes_working_state_to_task_checkpoint(tmp_path):
             "summary": "current module",
         }
     ]
-    assert checkpoint["workspace_checkpoint_id"] == ""
+    assert "workspace_checkpoint_id" not in checkpoint
     assert loaded["working_memory"] == {
         "task_summary": "finish migration",
         "recent_files": ["src/current.py"],
@@ -419,7 +418,6 @@ def test_legacy_migration_promotes_checkpoint_without_overwriting_current_state(
         "model": "current-model",
         "feature_flags": {},
     }
-    legacy["recovery"] = {"current_checkpoint_id": "current-recovery"}
     legacy["checkpoints"] = {
         "current_id": "checkpoint-old",
         "items": {
@@ -430,7 +428,6 @@ def test_legacy_migration_promotes_checkpoint_without_overwriting_current_state(
                     "model": "old-model",
                     "feature_flags": {},
                 },
-                "workspace_checkpoint_id": "old-recovery",
             }
         },
     }
@@ -442,7 +439,7 @@ def test_legacy_migration_promotes_checkpoint_without_overwriting_current_state(
 
     loaded = store.load_for_resume("legacy-checkpoint")
 
-    assert loaded == {
+    expected = {
         **legacy,
         "format_version": SESSION_FORMAT_VERSION,
         "permission_mode": "default",
@@ -451,12 +448,13 @@ def test_legacy_migration_promotes_checkpoint_without_overwriting_current_state(
         "plan_revision": 0,
         "pre_plan_mode": "",
     }
+    assert loaded == expected
     assert any(
         entry["type"] == "task_checkpoint"
         for entry in store.entries("legacy-checkpoint")
     )
     assert loaded["runtime_identity"] == legacy["runtime_identity"]
-    assert loaded["recovery"] == legacy["recovery"]
+    assert "recovery" not in loaded
 
 
 def test_failed_legacy_publish_keeps_old_session_and_is_retryable(
@@ -558,7 +556,6 @@ def test_clone_to_worktree_copies_active_branch_and_clears_workspace_state(
         "recent_files": ["old.py"],
     }
     session["memory"] = {"file_summaries": {"old.py": "stale"}}
-    session["recovery"] = {"current_checkpoint_id": "recovery-old"}
     session["checkpoints"] = {
         "current_id": "checkpoint-old",
         "items": {
@@ -624,7 +621,7 @@ def test_clone_to_worktree_copies_active_branch_and_clears_workspace_state(
     assert cloned_checkpoint_id.startswith("checkpoint-old-clone-")
     cloned_checkpoint = loaded["checkpoints"]["items"][cloned_checkpoint_id]
     assert cloned_checkpoint["goal"] == "continue"
-    assert cloned_checkpoint["workspace_checkpoint_id"] == ""
+    assert "workspace_checkpoint_id" not in cloned_checkpoint
     assert cloned_checkpoint["context_usage"] == {}
     assert cloned_checkpoint["key_files"] == []
     assert cloned_checkpoint["read_files"] == []
@@ -634,7 +631,7 @@ def test_clone_to_worktree_copies_active_branch_and_clears_workspace_state(
             "digest"
         ]
     )
-    assert loaded["recovery"] == {"current_checkpoint_id": ""}
+    assert "recovery" not in loaded
     assert loaded["runtime_identity"] == {}
     assert loaded["permission_mode"] == "plan"
     assert view.summary == "source summary"
@@ -930,7 +927,6 @@ def test_save_checkpoint_preserves_current_runtime_state(tmp_path):
         "model": "current-model",
         "feature_flags": {},
     }
-    session["recovery"] = {"current_checkpoint_id": "current-recovery"}
     store.save(session)
 
     session["checkpoints"] = {
@@ -943,7 +939,6 @@ def test_save_checkpoint_preserves_current_runtime_state(tmp_path):
                     "model": "old-model",
                     "feature_flags": {},
                 },
-                "workspace_checkpoint_id": "old-recovery",
             }
         },
     }
@@ -952,7 +947,7 @@ def test_save_checkpoint_preserves_current_runtime_state(tmp_path):
     loaded = store.load("checkpoint-state")
     assert loaded["checkpoints"] == session["checkpoints"]
     assert loaded["runtime_identity"] == session["runtime_identity"]
-    assert loaded["recovery"] == session["recovery"]
+    assert "recovery" not in loaded
     assert [entry["type"] for entry in store.entries("checkpoint-state")][-2:] == [
         "task_checkpoint",
         "session_info",

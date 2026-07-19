@@ -139,7 +139,7 @@ bypass 的 Session。第二种直接为当前 Session 选择 bypass。普通 byp
 通过精确内容与 revision 的一次性确认后，才恢复进入 Plan 前的 permission mode，并可在同一请求中继续实现。
 
 显式交互 `--resume` 在首个 prompt 前显示一次 permission、checkpoint、resume state 与 Provider/model 摘要；
-one-shot、JSON inspection 与管理命令保持无装饰输出。Session v1/v2/v3 只有在显式 resume 时迁移到 v4；其他
+one-shot、JSON inspection 与管理命令保持无装饰输出。Session v1-v4 只有在显式 resume 时迁移到 v5；其他
 writer 返回 `session_migration_required`。
 
 ## Provider 切换

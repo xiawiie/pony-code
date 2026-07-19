@@ -28,7 +28,6 @@ def _payload(workspace, session_id, messages, *, version=1):
         "recently_recalled": [],
         "checkpoints": {},
         "resume_state": {},
-        "recovery": {},
         "runtime_identity": {},
         **(
             {
@@ -55,7 +54,7 @@ def _write_legacy(root, workspace, session_id, messages):
     return path
 
 
-def _rewrite_as_v3(path):
+def _rewrite_as_v4(path):
     rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
     for row in rows:
         row["format_version"] = PREVIOUS_SESSION_FORMAT_VERSION
@@ -138,7 +137,7 @@ def test_inspect_reports_current_tree_without_mutating_it(tmp_path):
     assert ok is True
     assert path.read_bytes() == original
     assert "storage: current" in report
-    assert "format_version: 4" in report
+    assert "format_version: 5" in report
     assert "permission_mode: default" in report
     assert "messages: 4" in report
     assert "role_sequence: user -> assistant -> user -> assistant" in report
@@ -183,13 +182,13 @@ def test_inspect_legacy_preserves_file_identity_and_permissions(tmp_path):
     )
 
 
-def test_inspect_v3_and_tree_are_read_only(tmp_path, capsys):
+def test_inspect_v4_and_tree_are_read_only(tmp_path, capsys):
     root = tmp_path / "sessions"
     store = SessionStore(root)
     path = store.save(
         _payload(tmp_path, "v3", _tool_messages(), version=SESSION_FORMAT_VERSION)
     )
-    _rewrite_as_v3(path)
+    _rewrite_as_v4(path)
     before = path.stat()
     original = path.read_bytes()
 
@@ -199,10 +198,10 @@ def test_inspect_v3_and_tree_are_read_only(tmp_path, capsys):
     after = path.stat()
     assert ok is True
     assert tree_code == 0
-    assert "format_version: 3" in report
+    assert "format_version: 4" in report
     assert "migration: required on explicit resume" in report
     assert "permission_mode: default" in report
-    assert "format_version: 3" in capsys.readouterr().out
+    assert "format_version: 4" in capsys.readouterr().out
     assert path.read_bytes() == original
     assert (after.st_ino, after.st_mtime_ns) == (before.st_ino, before.st_mtime_ns)
     assert not store.candidate_path("v3").exists()
@@ -309,13 +308,13 @@ def test_latest_skips_unsafe_session_without_changing_its_permissions(tmp_path):
     )
 
 
-def test_v3_writer_uses_stable_migration_error_envelope(tmp_path, capsys):
+def test_v4_writer_uses_stable_migration_error_envelope(tmp_path, capsys):
     sessions = tmp_path / ".pony" / "sessions"
     store = SessionStore(sessions)
     path = store.save(
         _payload(tmp_path, "v3-writer", [], version=SESSION_FORMAT_VERSION)
     )
-    _rewrite_as_v3(path)
+    _rewrite_as_v4(path)
     original = path.read_bytes()
 
     code = main(

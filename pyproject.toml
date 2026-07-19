@@ -40,21 +40,10 @@ dev = [
 ]
 
 [tool.hatch.build.targets.sdist]
-include = [
-  "/LICENSE",
-  "/README.md",
-  "/pyproject.toml",
-  "/pony",
-]
-exclude = [
-  "/pony/sandbox/resources",
-]
+include = ["/LICENSE", "/README.md", "/pyproject.toml", "/pony"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["pony"]
-exclude = [
-  "/pony/sandbox/resources",
-]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

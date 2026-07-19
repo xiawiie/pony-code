@@ -2,12 +2,10 @@
 
 import shlex
 import unicodedata
+import uuid
+from datetime import datetime, timezone
 
 from pony.security import paths as securitylib
-from pony.recovery.models import (
-    new_id,
-    utc_now,
-)
 
 
 _MAX_TAIL_CHARS = 1000
@@ -48,6 +46,14 @@ _EXECUTION_CONTROL_KEY_MARKERS = (
 )
 _CONFIG_VALUE_OPTIONS = frozenset(("o", "overrideini", "config"))
 _REJECTED_CONFIG_KEYS = frozenset(("addopts",))
+
+
+def _verification_id():
+    return f"verify_{uuid.uuid4().hex[:12]}"
+
+
+def _now():
+    return datetime.now(timezone.utc).isoformat()
 
 
 def _tail(text):
@@ -268,8 +274,8 @@ def new_verification_record(
     if evidence is None:
         return None
     return {
-        "verification_id": new_id("verify"),
-        "created_at": utc_now(),
+        "verification_id": _verification_id(),
+        "created_at": _now(),
         "argv": list(evidence["argv"]),
         "runner_executed": True,
         "execution_mode": "argv",

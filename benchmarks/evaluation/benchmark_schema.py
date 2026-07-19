@@ -146,12 +146,6 @@ SCRIPTED_MODEL_OUTPUTS = {
         "# Files & Errors\nREADME.md; no errors.",
         "Done.",
     ],
-    "freshness_reanchor_resume": [
-        "Done.",
-    ],
-    "workspace_mismatch_resume": [
-        "Done.",
-    ],
 }
 
 

@@ -116,5 +116,4 @@ def _tool_run_shell(context, execution):
         "stderr": result.stderr,
         "exit_code": result.returncode,
         "timed_out": result.timed_out,
-        "sandbox_outcome": "timeout" if result.timed_out else "not_applicable",
     }

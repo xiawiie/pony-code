@@ -16,7 +16,6 @@ from types import MappingProxyType
 
 from pony.state import checkpoint as checkpointlib
 from pony.state import session_store as sessionstorelib
-from pony.workspace import snapshot as workspace_snapshot
 import pony.memory.service as memorylib
 from pony.security import private_files as private_files
 from pony.security import redaction as redaction
@@ -49,10 +48,6 @@ from pony.config.project import load_pony_toml
 from pony.runtime.options import RuntimeOptions
 from pony.runtime.legacy import preflight_legacy_sandbox_resume
 from pony.runtime.reporting import build_report_request_metadata
-from pony.runtime.rewind import (
-    lexical_workspace_root,
-    WorkspaceRewindError,
-)
 from pony.runtime.working_memory import WorkingMemory
 from pony.workspace.context import WorkspaceContext, now
 from pony.workspace.observer import WorkspaceObserver
@@ -355,7 +350,6 @@ class Pony:
         context_config = project_config["context"]
         memory_config = project_config["memory"]
         retrieval_config = memory_config["retrieval"]
-        self.project_max_blob_size = project_config["policy"]["max_blob_size"]
         compaction_config = context_config["compaction"]
         self.model_budget = build_model_budget(
             self.model_capabilities,
@@ -404,7 +398,6 @@ class Pony:
             "checkpoints": {"current_id": "", "items": {}},
             "runtime_identity": {},
             "resume_state": {},
-            "recovery": {"current_checkpoint_id": ""},
             "permission_mode": PermissionMode.AUTO.value,
             "permission_rules": {"allow": [], "ask": [], "deny": []},
             "plan_text": "",
@@ -416,9 +409,11 @@ class Pony:
         return session
 
     def _validate_restored_session_binding(self, session, model_binding):
-        if lexical_workspace_root(
-            session.get("workspace_root", "")
-        ) != lexical_workspace_root(self.source_root):
+        session_root = os.path.abspath(
+            os.path.expanduser(str(session.get("workspace_root", "")))
+        )
+        source_root = os.path.abspath(os.path.expanduser(str(self.source_root)))
+        if session_root != source_root:
             raise ValueError("session worktree root mismatch")
         saved_binding = session.get("provider_binding")
         if saved_binding != model_binding:
@@ -507,7 +502,6 @@ class Pony:
                 (),
                 state_updates={
                     "resume_state": self.session.get("resume_state", {}),
-                    "recovery": self.session.get("recovery", {}),
                     "runtime_identity": self.session.get("runtime_identity", {}),
                 },
             )
@@ -999,13 +993,6 @@ class Pony:
                 pass
         return envelope
 
-    def capture_workspace_snapshot(self):
-        return workspace_snapshot.capture_workspace_snapshot(self.root)
-
-    @staticmethod
-    def diff_workspace_snapshots(before, after):
-        return workspace_snapshot.diff_workspace_snapshots(before, after)
-
     def create_checkpoint(
         self,
         task_state,
@@ -1100,20 +1087,13 @@ class Pony:
         self.session_path = self.session_store.path_for(self.session["id"])
         return self.session
 
-    def preview_workspace_rewind(self, entry_or_checkpoint_id):
-        raise WorkspaceRewindError("workspace_restore_unavailable")
-
     def rewind_session(
         self,
         entry_id,
         *,
         summary=False,
         focus="",
-        workspace=False,
-        confirmed=False,
     ):
-        if workspace:
-            raise WorkspaceRewindError("workspace_restore_unavailable")
         if summary:
             result = rewind_with_branch_summary(self, entry_id, focus=focus)
         else:
@@ -1229,7 +1209,6 @@ class Pony:
         # 和 trace 的区别在于，trace 关注过程，report 关注结果与关键指标。
         duration_ms = int(execution.get("run_duration_ms", 0) or 0)
         changed_paths = tool_report.get("changed_paths", [])
-        recovery_review_required = False
         workspace_status = str(self.workspace.status or "").strip()
         commit = ""
         if self.workspace.recent_commits:
@@ -1283,33 +1262,9 @@ class Pony:
                 "recall_selected": request_metadata.get("memory_selected_count", 0),
                 "filter_counts": request_metadata.get("memory_filter_counts", {}),
             },
-            "sandbox": {
-                "active": False,
-                "implementation": "none",
-                "session_state": "not_applicable",
-                "engine_profile": "not_applicable",
-                "image_digest": "",
-                "policy_digest": "",
-                "network_mode": "not_applicable",
-                "source_mounted": False,
-                "state_mounted": False,
-                "container_calls": 0,
-                "target_started_count": 0,
-                "outcome_counts": {},
-                "cleanup_failure_count": 0,
-                "host_fallback_count": 0,
-                "diff": {"candidates": 0, "blocked": 0, "generated": 0},
-                "apply_status": "not_applicable",
-            },
             "effects": {
                 "changed_files": len(changed_paths),
                 "partial_successes": int(tool_report.get("partial_successes", 0) or 0),
-                "recovery_review_required": recovery_review_required,
-            },
-            "recovery": {
-                "checkpoint_id": task_state.checkpoint_id,
-                "status": task_state.resume_status,
-                "review_required": recovery_review_required,
             },
             "integrity": {
                 "writer": "current",
@@ -1416,8 +1371,6 @@ class Pony:
         checkpoints["current_id"] = ""
         checkpoints.setdefault("items", {})
         candidate["resume_state"] = {}
-        recovery = candidate.setdefault("recovery", {})
-        recovery["current_checkpoint_id"] = ""
         saved_path = self.session_store.save(
             candidate,
             force_branch=True,

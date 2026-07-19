@@ -76,7 +76,7 @@ def test_legacy_observability_converter_outputs_current_contract():
     assert "final_answer" not in report
 
 
-def test_observability_v2_converter_adds_exact_inactive_sandbox_contract():
+def test_observability_v2_converter_removes_inactive_sandbox_contract():
     report = _current_report()
     report["format_version"] = 2
     report["sandbox"] = {
@@ -89,8 +89,8 @@ def test_observability_v2_converter_adds_exact_inactive_sandbox_contract():
     converted = convert_observability_v2(report)
 
     validate_report(converted, run_id="run_1")
-    assert converted["format_version"] == 3
-    assert converted["sandbox"]["implementation"] == "none"
+    assert converted["format_version"] == 4
+    assert "sandbox" not in converted
 
 
 def test_observability_v2_converter_rejects_active_legacy_sandbox():
@@ -102,6 +102,36 @@ def test_observability_v2_converter_rejects_active_legacy_sandbox():
         "host_fallback_count": 0,
         "outcome_counts": {"completed": 1},
     }
+
+    with pytest.raises(RunArtifactError, match="ambiguous"):
+        convert_observability_v2(report)
+
+
+def test_observability_v3_converter_rejects_inactive_sandbox_with_effect_evidence():
+    report = _current_report()
+    report.update(
+        format_version=3,
+        sandbox={
+            "active": False,
+            "implementation": "none",
+            "session_state": "not_applicable",
+            "engine_profile": "not_applicable",
+            "image_digest": "",
+            "policy_digest": "",
+            "network_mode": "not_applicable",
+            "source_mounted": False,
+            "state_mounted": False,
+            "container_calls": 1,
+            "target_started_count": 1,
+            "outcome_counts": {"completed": 1},
+            "cleanup_failure_count": 0,
+            "host_fallback_count": 0,
+            "diff": {"candidates": 0, "blocked": 0, "generated": 0},
+            "apply_status": "not_applicable",
+        },
+        recovery={"checkpoint_id": "", "status": "", "review_required": False},
+    )
+    report["effects"]["recovery_review_required"] = False
 
     with pytest.raises(RunArtifactError, match="ambiguous"):
         convert_observability_v2(report)
@@ -159,8 +189,8 @@ def test_observability_migration_upgrades_inactive_v2_tree(tmp_path):
             encoding="utf-8"
         )
     )
-    assert converted["format_version"] == 3
-    assert converted["sandbox"]["implementation"] == "none"
+    assert converted["format_version"] == 4
+    assert "sandbox" not in converted
 
 
 @pytest.mark.parametrize(

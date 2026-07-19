@@ -35,7 +35,6 @@ def test_ignores_unknown_fields(tmp_path):
 
 def test_returns_complete_defaults_when_file_missing(tmp_path):
     data = load_pony_toml(tmp_path)
-    assert data["policy"]["max_blob_size"] == 8 * 1024 * 1024
     assert data["model"] == {
         "context_window": 128_000,
         "output_limit": 16_384,
@@ -71,9 +70,6 @@ def test_non_table_uses_defaults(monkeypatch, tmp_path, capsys):
 def test_invalid_fields_fall_back_independently(tmp_path):
     (tmp_path / "pony.toml").write_text(
         """
-[policy]
-max_blob_size = true
-
 [model]
 context_window = -1
 output_limit = 8192
@@ -102,7 +98,6 @@ decay = 2.0
 
     data = load_pony_toml(tmp_path)
 
-    assert data["policy"]["max_blob_size"] == 8 * 1024 * 1024
     assert data["model"] == {
         "context_window": 128_000,
         "output_limit": 8_192,
@@ -127,9 +122,6 @@ decay = 2.0
 def test_out_of_range_fields_warn_and_fall_back_independently(tmp_path, capsys):
     (tmp_path / "pony.toml").write_text(
         """
-[policy]
-max_blob_size = 8388609
-
 [model]
 context_window = 2000001
 output_limit = 384001
@@ -165,7 +157,6 @@ decay = 1.1
 
     data = load_pony_toml(tmp_path)
 
-    assert data["policy"]["max_blob_size"] == 8 * 1024 * 1024
     assert data["model"] == {
         "context_window": 128000,
         "output_limit": 16384,
@@ -196,7 +187,6 @@ decay = 1.1
     }
     warnings = capsys.readouterr().err
     for path in (
-        "policy.max_blob_size",
         "model.context_window",
         "model.output_limit",
         "context.system_tools_hard_cap",
@@ -249,9 +239,6 @@ decay = 0
 def test_documented_upper_bounds_are_inclusive(tmp_path, capsys):
     (tmp_path / "pony.toml").write_text(
         """
-[policy]
-max_blob_size = 8388608
-
 [model]
 context_window = 2000000
 output_limit = 384000
@@ -286,7 +273,6 @@ decay = 1
 
     data = load_pony_toml(tmp_path)
 
-    assert data["policy"]["max_blob_size"] == 8 * 1024 * 1024
     assert data["model"] == {
         "context_window": 2_000_000,
         "output_limit": 384_000,

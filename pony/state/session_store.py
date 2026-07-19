@@ -45,8 +45,9 @@ from pony.workspace.context import now
 
 
 SESSION_RECORD_TYPE = "session"
-SESSION_FORMAT_VERSION = 4
-PREVIOUS_SESSION_FORMAT_VERSION = 3
+SESSION_FORMAT_VERSION = 5
+PREVIOUS_SESSION_FORMAT_VERSION = 4
+WORKFLOW_SESSION_FORMAT_VERSION = 3
 LEGACY_JSONL_SESSION_FORMAT_VERSION = 2
 LEGACY_SESSION_FORMAT_VERSION = 1
 SESSION_HEADER_RECORD_TYPE = "session_header"
@@ -55,9 +56,6 @@ MAX_SESSION_ENTRY_BYTES = 8 * 1024 * 1024
 SESSION_SOFT_LIMIT_BYTES = 128 * 1024 * 1024
 MAX_SESSION_BYTES = 512 * 1024 * 1024
 MAX_PLAN_TEXT_BYTES = 12 * 1024
-MAX_REWIND_INTENT_BYTES = 64 * 1024
-REWIND_INTENT_RECORD_TYPE = "rewind_intent"
-REWIND_INTENT_FORMAT_VERSION = 2
 
 ENTRY_TYPES = frozenset(
     {
@@ -175,12 +173,12 @@ _REQUIRED_FIELDS = frozenset(
         "recently_recalled",
         "checkpoints",
         "resume_state",
-        "recovery",
         "runtime_identity",
         "permission_mode",
     }
 )
-_PREVIOUS_REQUIRED_FIELDS = (_REQUIRED_FIELDS - {"permission_mode"}) | {
+_V4_REQUIRED_FIELDS = _REQUIRED_FIELDS | {"recovery"}
+_PREVIOUS_REQUIRED_FIELDS = (_V4_REQUIRED_FIELDS - {"permission_mode"}) | {
     "workflow_mode",
     "active_plan",
 }
@@ -194,6 +192,7 @@ _OPTIONAL_FIELDS = frozenset(
         "pre_plan_mode",
     }
 )
+_LEGACY_OPTIONAL_FIELDS = _OPTIONAL_FIELDS | {"recovery"}
 _PROTOCOL_FAMILIES = {
     "anthropic_messages",
     "openai_chat_completions",
@@ -205,7 +204,6 @@ _DICT_FIELDS = (
     "memory",
     "checkpoints",
     "resume_state",
-    "recovery",
     "runtime_identity",
 )
 _DERIVED_CACHE_FIELDS = frozenset({"working_memory", "memory", "recently_recalled"})
@@ -223,8 +221,9 @@ _SESSION_INFO_FIELDS = (
     }
     - _DERIVED_CACHE_FIELDS
 )
+_V4_SESSION_INFO_FIELDS = _SESSION_INFO_FIELDS | {"recovery"}
 _MUTABLE_SESSION_INFO_FIELDS = frozenset(
-    {"resume_state", "recovery", "runtime_identity", "permission_rules"}
+    {"resume_state", "runtime_identity", "permission_rules"}
 )
 _TASK_CHECKPOINT_FIELDS = frozenset(
     {
@@ -244,7 +243,6 @@ _TASK_CHECKPOINT_FIELDS = frozenset(
         "key_files",
         "read_files",
         "modified_files",
-        "workspace_checkpoint_id",
         "worktree_identity_digest",
         "context_usage",
         "label",
@@ -254,6 +252,7 @@ _TASK_CHECKPOINT_FIELDS = frozenset(
         "runtime_identity",
     }
 )
+_V4_TASK_CHECKPOINT_FIELDS = _TASK_CHECKPOINT_FIELDS | {"workspace_checkpoint_id"}
 _FEATURE_FLAG_FIELDS = frozenset({"memory"})
 _HEADER_FIELDS = frozenset(
     {
@@ -286,29 +285,6 @@ _ENTRY_FIELDS = frozenset(
         "data",
     }
 )
-_REWIND_INTENT_FIELDS = frozenset(
-    {
-        "record_type",
-        "format_version",
-        "session_id",
-        "created_at",
-        "old_leaf_id",
-        "target_entry_id",
-        "target_checkpoint_id",
-        "workspace_checkpoint_id",
-        "operation_id",
-        "plan_digest",
-        "worktree_identity_digest",
-        "state",
-        "restore_checkpoint_id",
-        "restore_status",
-        "branch_summary",
-        "branch_summary_tokens",
-        "branch_summary_focus",
-        "branch_summary_provider_usage",
-        "recovery_owner_id",
-    }
-)
 
 
 def _session_id(value):
@@ -336,49 +312,24 @@ def _decode_json_object(raw):
         raise SessionFormatError("failed to decode session") from None
 
 
-def _validate_rewind_intent(value, session_id):
-    if not isinstance(value, dict) or value.keys() != _REWIND_INTENT_FIELDS:
-        raise SessionFormatError("invalid rewind intent fields")
-    if (
-        value.get("record_type") != REWIND_INTENT_RECORD_TYPE
-        or value.get("format_version") != REWIND_INTENT_FORMAT_VERSION
-        or value.get("session_id") != session_id
-    ):
-        raise SessionFormatError("invalid rewind intent identity")
-    string_fields = _REWIND_INTENT_FIELDS - {
-        "format_version",
-        "branch_summary_tokens",
-        "branch_summary_provider_usage",
-    }
-    if any(not isinstance(value.get(key), str) for key in string_fields):
-        raise SessionFormatError("invalid rewind intent string")
-    if value["state"] not in {"prepared", "restored"}:
-        raise SessionFormatError("invalid rewind intent state")
-    if not re.fullmatch(r"rewind_[0-9a-f]{32}", value["operation_id"]):
-        raise SessionFormatError("invalid rewind operation id")
-    if not re.fullmatch(r"[0-9a-f]{64}", value["plan_digest"]):
-        raise SessionFormatError("invalid rewind plan digest")
-    if (
-        type(value["branch_summary_tokens"]) is not int
-        or value["branch_summary_tokens"] < 0
-        or not isinstance(value["branch_summary_provider_usage"], dict)
-    ):
-        raise SessionFormatError("invalid rewind branch summary")
-    return value
-
-
 def _validate_projection(payload, session_id, *, version=SESSION_FORMAT_VERSION):
     if not isinstance(payload, dict):
         raise SessionFormatError("session payload must be an object")
     if version == SESSION_FORMAT_VERSION:
         required = _REQUIRED_FIELDS
     elif version == PREVIOUS_SESSION_FORMAT_VERSION:
+        required = _V4_REQUIRED_FIELDS
+    elif version == WORKFLOW_SESSION_FORMAT_VERSION:
         required = _PREVIOUS_REQUIRED_FIELDS
     else:
         required = _LEGACY_REQUIRED_FIELDS
-    if not required <= payload.keys() or not payload.keys() <= (
-        required | _OPTIONAL_FIELDS
-    ):
+    optional = (
+        _LEGACY_OPTIONAL_FIELDS
+        if version == LEGACY_SESSION_FORMAT_VERSION
+        or version == LEGACY_JSONL_SESSION_FORMAT_VERSION
+        else _OPTIONAL_FIELDS
+    )
+    if not required <= payload.keys() or not payload.keys() <= (required | optional):
         raise SessionFormatError("session payload fields do not match current format")
     if payload.get("record_type") != SESSION_RECORD_TYPE:
         raise SessionFormatError("invalid session record type")
@@ -394,7 +345,14 @@ def _validate_projection(payload, session_id, *, version=SESSION_FORMAT_VERSION)
         for key in ("id", "created_at", "workspace_root")
     ):
         raise SessionFormatError("invalid session string field")
-    dict_fields = _DICT_FIELDS + (("active_plan",) if version == PREVIOUS_SESSION_FORMAT_VERSION else ())
+    dict_fields = _DICT_FIELDS
+    if version == PREVIOUS_SESSION_FORMAT_VERSION or (
+        version in {LEGACY_SESSION_FORMAT_VERSION, LEGACY_JSONL_SESSION_FORMAT_VERSION}
+        and "recovery" in payload
+    ):
+        dict_fields += ("recovery",)
+    elif version == WORKFLOW_SESSION_FORMAT_VERSION:
+        dict_fields += ("recovery", "active_plan")
     if any(not isinstance(payload.get(key), dict) for key in dict_fields):
         raise SessionFormatError("invalid session object field")
     if not isinstance(payload.get("recently_recalled"), list):
@@ -438,7 +396,7 @@ def _validate_projection(payload, session_id, *, version=SESSION_FORMAT_VERSION)
             != sum(len(values) for values in rules.values())
         ):
             raise SessionFormatError("invalid permission rules")
-    elif version == PREVIOUS_SESSION_FORMAT_VERSION:
+    elif version == WORKFLOW_SESSION_FORMAT_VERSION:
         try:
             validate_workflow_mode(payload.get("workflow_mode"))
             validate_plan(payload.get("active_plan"))
@@ -459,7 +417,12 @@ def _validate_projection(payload, session_id, *, version=SESSION_FORMAT_VERSION)
         for checkpoint in items.values():
             if not isinstance(checkpoint, dict):
                 raise SessionFormatError("invalid embedded checkpoint")
-            if not checkpoint.keys() <= _TASK_CHECKPOINT_FIELDS:
+            fields = (
+                _V4_TASK_CHECKPOINT_FIELDS
+                if version in {PREVIOUS_SESSION_FORMAT_VERSION, WORKFLOW_SESSION_FORMAT_VERSION}
+                else _TASK_CHECKPOINT_FIELDS
+            )
+            if not checkpoint.keys() <= fields:
                 raise SessionFormatError("invalid embedded checkpoint fields")
             identity = checkpoint.get("runtime_identity")
             if isinstance(identity, dict):
@@ -699,7 +662,7 @@ def _validate_entry(
         raise SessionFormatError("invalid session parent id")
     if not isinstance(entry.get("timestamp"), str):
         raise SessionFormatError("invalid session entry timestamp")
-    if version == PREVIOUS_SESSION_FORMAT_VERSION:
+    if version == WORKFLOW_SESSION_FORMAT_VERSION:
         allowed_types = _V3_ENTRY_TYPES
     elif version == LEGACY_JSONL_SESSION_FORMAT_VERSION:
         allowed_types = _V2_ENTRY_TYPES
@@ -738,17 +701,22 @@ def _validate_entry(
             or not checkpoint_id
             or not isinstance(checkpoint, dict)
             or checkpoint.get("checkpoint_id") != checkpoint_id
-            or not checkpoint.keys() <= _TASK_CHECKPOINT_FIELDS
+            or not checkpoint.keys()
+            <= (
+                _V4_TASK_CHECKPOINT_FIELDS
+                if version in {PREVIOUS_SESSION_FORMAT_VERSION, WORKFLOW_SESSION_FORMAT_VERSION}
+                else _TASK_CHECKPOINT_FIELDS
+            )
         ):
             raise SessionFormatError("invalid task checkpoint entry data")
     if entry["type"] == "tool_exchange":
         if entry["data"].keys() != {"assistant", "result"}:
             raise SessionFormatError("invalid tool exchange entry data")
-    if entry["type"] == "tool_exchange" and version == PREVIOUS_SESSION_FORMAT_VERSION:
+    if entry["type"] == "tool_exchange" and version == WORKFLOW_SESSION_FORMAT_VERSION:
         _tool_exchange_plan(entry["data"], redactor=plan_redactor)
     if entry["type"] == "permission_mode_change":
         keys = entry["data"].keys()
-        if version != SESSION_FORMAT_VERSION or keys not in (
+        if version not in {SESSION_FORMAT_VERSION, PREVIOUS_SESSION_FORMAT_VERSION} or keys not in (
             {"mode"},
             {"mode", "pre_mode"},
         ):
@@ -766,7 +734,7 @@ def _validate_entry(
         text = entry["data"].get("text")
         revision = entry["data"].get("revision")
         if (
-            version != SESSION_FORMAT_VERSION
+            version not in {SESSION_FORMAT_VERSION, PREVIOUS_SESSION_FORMAT_VERSION}
             or entry["data"].keys() != {"text", "revision"}
             or not isinstance(text, str)
             or len(text.encode("utf-8")) > MAX_PLAN_TEXT_BYTES
@@ -775,7 +743,7 @@ def _validate_entry(
         ):
             raise SessionFormatError("invalid plan artifact entry data")
     if entry["type"] == "workflow_mode_change":
-        if version != PREVIOUS_SESSION_FORMAT_VERSION:
+        if version != WORKFLOW_SESSION_FORMAT_VERSION:
             raise SessionFormatError("invalid workflow mode entry data")
         if entry["data"].keys() != {"mode"}:
             raise SessionFormatError("invalid workflow mode entry data")
@@ -784,7 +752,7 @@ def _validate_entry(
         except ValueError as exc:
             raise SessionFormatError(str(exc)) from None
     if entry["type"] == "plan_update":
-        if version != PREVIOUS_SESSION_FORMAT_VERSION:
+        if version != WORKFLOW_SESSION_FORMAT_VERSION:
             raise SessionFormatError("invalid plan update entry data")
         if entry["data"].keys() != {"plan"}:
             raise SessionFormatError("invalid plan update entry data")
@@ -808,18 +776,20 @@ def _base_projection(header):
         "recently_recalled": [],
         "checkpoints": {},
         "resume_state": {},
-        "recovery": {"current_checkpoint_id": ""},
         "runtime_identity": {},
     }
-    if header["format_version"] == SESSION_FORMAT_VERSION:
+    if header["format_version"] in {SESSION_FORMAT_VERSION, PREVIOUS_SESSION_FORMAT_VERSION}:
         projection.update(
+            format_version=header["format_version"],
             permission_mode=PermissionMode.DEFAULT.value,
             permission_rules={"allow": [], "ask": [], "deny": []},
             plan_text="",
             plan_revision=0,
             pre_plan_mode="",
         )
-    elif header["format_version"] == PREVIOUS_SESSION_FORMAT_VERSION:
+        if header["format_version"] == PREVIOUS_SESSION_FORMAT_VERSION:
+            projection["recovery"] = {"current_checkpoint_id": ""}
+    elif header["format_version"] == WORKFLOW_SESSION_FORMAT_VERSION:
         projection.update(
             format_version=header["format_version"],
             workflow_mode=DEFAULT_WORKFLOW_MODE,
@@ -909,7 +879,7 @@ def _apply_entry(projection, entry, *, version):
         if not isinstance(assistant, dict) or not isinstance(result, dict):
             raise SessionFormatError("invalid tool exchange entry")
         projection["messages"].extend((deepcopy(assistant), deepcopy(result)))
-        if version == PREVIOUS_SESSION_FORMAT_VERSION:
+        if version == WORKFLOW_SESSION_FORMAT_VERSION:
             plan = _tool_exchange_plan(data)
             if plan is not None:
                 projection["active_plan"] = plan
@@ -934,7 +904,13 @@ def _apply_entry(projection, entry, *, version):
         values = data.get("set")
         if not isinstance(values, dict) or "messages" in values:
             raise SessionFormatError("invalid session info entry")
-        if not values.keys() <= _SESSION_INFO_FIELDS:
+        allowed_fields = (
+            _V4_SESSION_INFO_FIELDS
+            if version
+            in {PREVIOUS_SESSION_FORMAT_VERSION, WORKFLOW_SESSION_FORMAT_VERSION}
+            else _SESSION_INFO_FIELDS
+        )
+        if not values.keys() <= allowed_fields:
             raise SessionFormatError("invalid session info field")
         projection.update(
             deepcopy(
@@ -980,11 +956,6 @@ def _apply_entry(projection, entry, *, version):
         runtime_identity = checkpoint.get("runtime_identity")
         if isinstance(runtime_identity, dict):
             projection["runtime_identity"] = deepcopy(runtime_identity)
-        workspace_checkpoint_id = str(
-            checkpoint.get("workspace_checkpoint_id", "") or ""
-        )
-        if workspace_checkpoint_id:
-            projection["recovery"] = {"current_checkpoint_id": workspace_checkpoint_id}
     return projection
 
 
@@ -1388,7 +1359,6 @@ def _promote_legacy_working_state(session, worktree_digest):
         "key_files": key_files,
         "read_files": recent_files,
         "modified_files": [],
-        "workspace_checkpoint_id": "",
         "worktree_identity_digest": str(worktree_digest),
         "context_usage": {},
         "label": "legacy working state",
@@ -1470,10 +1440,10 @@ def _parse_jsonl(raw, session_id, *, version=SESSION_FORMAT_VERSION):
 def _restore_expected_projection(header, entries, expected):
     """Append one state delta when control entries intentionally project history.
 
-    A checkpoint carries the runtime/recovery state that was true when it was
-    created.  When importing a full projection, that historical state must not
-    replace the caller's current state.  Keep the checkpoint as a first-class
-    entry, then restore only the fields whose projected values differ.
+    A checkpoint carries the runtime state that was true when it was created.
+    When importing a full projection, that historical state must not replace
+    the caller's current state. Keep the checkpoint as a first-class entry,
+    then restore only the fields whose projected values differ.
     """
     tree = _parse_jsonl(_render_tree(header, entries), header["id"])
     if tree.projection["messages"] != expected["messages"]:
@@ -1584,9 +1554,6 @@ class SessionStore:
     def candidate_path(self, session_id):
         return self.root / f"{_session_id(session_id)}.jsonl.candidate"
 
-    def rewind_intent_path(self, session_id):
-        return self.root / f"{_session_id(session_id)}.rewind-intent.json"
-
     def path_for(self, session_id):
         return self.path(session_id)
 
@@ -1611,6 +1578,7 @@ class SessionStore:
             if version in {
                 LEGACY_JSONL_SESSION_FORMAT_VERSION,
                 PREVIOUS_SESSION_FORMAT_VERSION,
+                WORKFLOW_SESSION_FORMAT_VERSION,
             }:
                 raise SessionMigrationRequired(session_id)
             raise SessionFormatError("invalid session header version")
@@ -1651,6 +1619,7 @@ class SessionStore:
                 if version in {
                     LEGACY_JSONL_SESSION_FORMAT_VERSION,
                     PREVIOUS_SESSION_FORMAT_VERSION,
+                    WORKFLOW_SESSION_FORMAT_VERSION,
                 }:
                     self._migrate_jsonl_unlocked(session_id, version, raw)
                 elif version != SESSION_FORMAT_VERSION:
@@ -1900,11 +1869,9 @@ class SessionStore:
                     entries.extend(checkpoint_entries)
                     if checkpoint_entries:
                         parent_id = checkpoint_entries[-1]["id"]
-                # A task checkpoint deliberately projects its historical runtime
-                # identity and recovery link onto the active branch.  ``save`` is
-                # the compatibility boundary for callers that still edit a full
-                # projection, so restore the caller's canonical session state
-                # after encoding those checkpoint entries.
+                # A task checkpoint projects its historical runtime identity onto
+                # the active branch. Restore the caller's current state after
+                # encoding the checkpoint entries.
                 projected = _extend_tree(tree, entries).projection
                 changed = {
                     key: deepcopy(candidate[key])
@@ -2175,94 +2142,18 @@ class SessionStore:
             parent_id=parent_id,
         )
 
-    def write_rewind_intent(self, session_id, intent):
-        session_id = _session_id(session_id)
-        safe = self._redactor(deepcopy(intent))
-        _validate_rewind_intent(safe, session_id)
-        rendered = json.dumps(
-            safe,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode("utf-8")
-        if len(rendered) > MAX_REWIND_INTENT_BYTES:
-            raise ValueError("rewind intent too large")
-        with file_lock.locked_file(self.lock_path, require_existing=True):
-            tree = self._read_tree_unlocked(session_id)
-            if (
-                safe["worktree_identity_digest"]
-                != tree.header["worktree_identity"]["digest"]
-            ):
-                raise SessionFormatError("rewind intent worktree mismatch")
-            write_private_bytes_atomic(
-                self.rewind_intent_path(session_id),
-                rendered,
-                trusted_root=self.root,
-                trusted_root_identity=self._root_identity,
-                error="rewind intent changed",
-                max_existing_bytes=MAX_REWIND_INTENT_BYTES,
-            )
-        return deepcopy(safe)
-
-    def load_rewind_intent(self, session_id):
-        session_id = _session_id(session_id)
-        with file_lock.locked_file(self.lock_path, require_existing=True):
-            try:
-                raw = read_private_bytes(
-                    self.rewind_intent_path(session_id),
-                    trusted_root=self.root,
-                    trusted_root_identity=self._root_identity,
-                    max_bytes=MAX_REWIND_INTENT_BYTES,
-                )
-            except FileNotFoundError:
-                return None
-            return deepcopy(
-                _validate_rewind_intent(_decode_json_object(raw), session_id)
-            )
-
-    def clear_rewind_intent(self, session_id):
-        session_id = _session_id(session_id)
-        path = self.rewind_intent_path(session_id)
-        with file_lock.locked_file(self.lock_path, require_existing=True):
-            descriptor = os.open(
-                self.root,
-                os.O_RDONLY
-                | getattr(os, "O_DIRECTORY", 0)
-                | getattr(os, "O_CLOEXEC", 0),
-            )
-            try:
-                try:
-                    current = os.stat(
-                        path.name,
-                        dir_fd=descriptor,
-                        follow_symlinks=False,
-                    )
-                except FileNotFoundError:
-                    return False
-                if not stat.S_ISREG(current.st_mode) or current.st_nlink != 1:
-                    raise SessionFormatError("unsafe rewind intent")
-                os.unlink(path.name, dir_fd=descriptor)
-                os.fsync(descriptor)
-            finally:
-                os.close(descriptor)
-        return True
-
     def rewind(
         self,
         session_id,
         entry_id,
         *,
         summary="",
-        workspace_checkpoint_id="",
-        restore_checkpoint_id="",
         target_checkpoint_id="",
         expected_leaf_id=None,
     ):
         data = {
             "target_entry_id": str(entry_id or ""),
             "summary": str(summary or ""),
-            "workspace_checkpoint_id": str(workspace_checkpoint_id or ""),
-            "restore_checkpoint_id": str(restore_checkpoint_id or ""),
             "target_checkpoint_id": str(target_checkpoint_id or ""),
         }
         return self.append_control(
@@ -2279,8 +2170,6 @@ class SessionStore:
         entry_id,
         summary_data,
         *,
-        workspace_checkpoint_id="",
-        restore_checkpoint_id="",
         target_checkpoint_id="",
         expected_leaf_id,
     ):
@@ -2290,8 +2179,6 @@ class SessionStore:
         rewind_data = {
             "target_entry_id": str(entry_id or ""),
             "summary": str(summary_data.get("summary", "") or ""),
-            "workspace_checkpoint_id": str(workspace_checkpoint_id or ""),
-            "restore_checkpoint_id": str(restore_checkpoint_id or ""),
             "target_checkpoint_id": str(target_checkpoint_id or ""),
         }
         rewind_data = self._redactor(rewind_data)
@@ -2343,7 +2230,7 @@ class SessionStore:
         *,
         new_session_id=None,
     ):
-        """Clone the active branch while clearing workspace-bound recovery state."""
+        """Clone the active branch without carrying workspace-specific state."""
         tree = self.load_tree(session_id)
         target_root = Path(_lexical_absolute(target_workspace_root))
         if not target_root.is_dir():
@@ -2362,7 +2249,6 @@ class SessionStore:
                 "recently_recalled": [],
                 "checkpoints": {"current_id": "", "items": {}},
                 "resume_state": {},
-                "recovery": {"current_checkpoint_id": ""},
                 "runtime_identity": {},
                 "memory": {"file_summaries": {}},
                 "working_memory": {"task_summary": "", "recent_files": []},
@@ -2464,7 +2350,6 @@ class SessionStore:
                     "checkpoint_id": cloned_checkpoint_id,
                     "parent_checkpoint_id": "",
                     "created_at": now(),
-                    "workspace_checkpoint_id": "",
                     "worktree_identity_digest": target_tree.header["worktree_identity"][
                         "digest"
                     ],
@@ -2535,6 +2420,7 @@ class SessionStore:
                 if version not in {
                     LEGACY_JSONL_SESSION_FORMAT_VERSION,
                     PREVIOUS_SESSION_FORMAT_VERSION,
+                    WORKFLOW_SESSION_FORMAT_VERSION,
                     SESSION_FORMAT_VERSION,
                 }:
                     raise SessionFormatError("invalid session header version")
@@ -2565,6 +2451,7 @@ class SessionStore:
             if source_version in {
                 LEGACY_JSONL_SESSION_FORMAT_VERSION,
                 PREVIOUS_SESSION_FORMAT_VERSION,
+                WORKFLOW_SESSION_FORMAT_VERSION,
             }:
                 raise SessionMigrationRequired(session_id)
             if raw.endswith(b"\n"):
@@ -2577,6 +2464,7 @@ class SessionStore:
             if version not in {
                 LEGACY_JSONL_SESSION_FORMAT_VERSION,
                 PREVIOUS_SESSION_FORMAT_VERSION,
+                WORKFLOW_SESSION_FORMAT_VERSION,
                 SESSION_FORMAT_VERSION,
             }:
                 raise SessionFormatError("invalid session header version")
@@ -2596,6 +2484,7 @@ class SessionStore:
         if source_version not in {
             LEGACY_JSONL_SESSION_FORMAT_VERSION,
             PREVIOUS_SESSION_FORMAT_VERSION,
+            WORKFLOW_SESSION_FORMAT_VERSION,
         }:
             raise SessionFormatError("invalid session migration source version")
         source = self.path(session_id)
@@ -2629,11 +2518,15 @@ class SessionStore:
             migrated = deepcopy(row)
             migrated["format_version"] = SESSION_FORMAT_VERSION
             if migrated.get("type") == "session_info":
-                migrated.get("data", {}).get("set", {})["format_version"] = (
-                    SESSION_FORMAT_VERSION
-                )
+                state = migrated.get("data", {}).get("set", {})
+                state["format_version"] = SESSION_FORMAT_VERSION
+                state.pop("recovery", None)
+            elif migrated.get("type") == "task_checkpoint":
+                checkpoint = migrated.get("data", {}).get("checkpoint")
+                if isinstance(checkpoint, dict):
+                    checkpoint.pop("workspace_checkpoint_id", None)
             elif (
-                source_version == PREVIOUS_SESSION_FORMAT_VERSION
+                source_version == WORKFLOW_SESSION_FORMAT_VERSION
                 and migrated.get("type") == "workflow_mode_change"
             ):
                 migrated["type"] = "permission_mode_change"
@@ -2651,19 +2544,19 @@ class SessionStore:
                     ),
                 }
             elif (
-                source_version == PREVIOUS_SESSION_FORMAT_VERSION
+                source_version == WORKFLOW_SESSION_FORMAT_VERSION
                 and migrated.get("type") == "plan_update"
             ):
                 migrated["type"] = "migration"
                 migrated["data"] = {
-                    "from_format": PREVIOUS_SESSION_FORMAT_VERSION,
+                    "from_format": WORKFLOW_SESSION_FORMAT_VERSION,
                     "legacy_control": deepcopy(row["data"]),
                 }
             migrated_rows.append(migrated)
         candidate_bytes = b"".join(_serialize_line(row) for row in migrated_rows)
         candidate_tree = _parse_jsonl(candidate_bytes, session_id)
         expected = deepcopy(old_tree.projection)
-        if source_version == PREVIOUS_SESSION_FORMAT_VERSION:
+        if source_version == WORKFLOW_SESSION_FORMAT_VERSION:
             legacy_mode = expected.pop("workflow_mode", DEFAULT_WORKFLOW_MODE)
             expected.pop("active_plan", None)
             permission_mode = (
@@ -2671,20 +2564,25 @@ class SessionStore:
                 if legacy_mode == "act"
                 else PermissionMode.PLAN.value
             )
-        else:
+        elif source_version == LEGACY_JSONL_SESSION_FORMAT_VERSION:
             permission_mode = PermissionMode.DEFAULT.value
-        expected.update(
-            format_version=SESSION_FORMAT_VERSION,
-            permission_mode=permission_mode,
-            permission_rules={"allow": [], "ask": [], "deny": []},
-            plan_text="",
-            plan_revision=0,
-            pre_plan_mode=(
-                PermissionMode.DEFAULT.value
-                if permission_mode == PermissionMode.PLAN.value
-                else ""
-            ),
-        )
+        if source_version != PREVIOUS_SESSION_FORMAT_VERSION:
+            expected.update(
+                permission_mode=permission_mode,
+                permission_rules={"allow": [], "ask": [], "deny": []},
+                plan_text="",
+                plan_revision=0,
+                pre_plan_mode=(
+                    PermissionMode.DEFAULT.value
+                    if permission_mode == PermissionMode.PLAN.value
+                    else ""
+                ),
+            )
+        expected["format_version"] = SESSION_FORMAT_VERSION
+        expected.pop("recovery", None)
+        for checkpoint in expected.get("checkpoints", {}).get("items", {}).values():
+            if isinstance(checkpoint, dict):
+                checkpoint.pop("workspace_checkpoint_id", None)
         if not session_projections_equal(candidate_tree.projection, expected):
             raise SessionFormatError("session migration projection mismatch")
 
@@ -2786,6 +2684,10 @@ class SessionStore:
         migrated["plan_text"] = ""
         migrated["plan_revision"] = 0
         migrated["pre_plan_mode"] = ""
+        migrated.pop("recovery", None)
+        for checkpoint in migrated.get("checkpoints", {}).get("items", {}).values():
+            if isinstance(checkpoint, dict):
+                checkpoint.pop("workspace_checkpoint_id", None)
 
         backup_root = ensure_private_dir(self.root / "legacy-backups")
         backup_identity = private_directory_identity(backup_root)

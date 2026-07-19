@@ -52,14 +52,12 @@ git log -1 --oneline
 | `pony/context/` | Context source、chunk、escaping、render 与 digest |
 | `pony/memory/` | User/Agent Notes、recall、retrieval、RepoMap 与 memory service |
 | `pony/providers/` | 四个 wire adapter、Response、transport helper、factory 与 probe |
-| `pony/recovery/` | command policy、legacy artifact reader/migration 与待删除旧 writer |
 | `pony/runtime/` | `Pony` 装配、options、reporting、rewind 与 working memory |
-| `pony/sandbox/` | 仅保留 legacy Sandbox binding/inspection；不得接回 active runtime |
-| `pony/security/` | path、private/workspace file 与 redaction 原语 |
-| `pony/state/` | Session/Run/Checkpoint store、TaskState 与 file lock |
+| `pony/security/` | path、private/workspace file、redaction 与 shell command policy 原语 |
+| `pony/state/` | Session/Run、legacy artifact reader、TaskState 与 file lock |
 | `pony/tui/` | 行内 prompt、slash completion、Markdown、状态与 permission/activity 渲染 |
 | `pony/tools/` | registry、validation、executor、permission prompt、effect recorder 与 subprocess |
-| `pony/workspace/` | root discovery、WorkspaceContext、snapshot 与 observer |
+| `pony/workspace/` | root discovery、WorkspaceContext 与 observer |
 
 开发资产不进入 runtime package；Fake Provider 只在 `benchmarks/support/`，evaluation 不回迁 `pony/`。
 
@@ -134,9 +132,9 @@ PONY_MODEL
 - Canonical Messages 是唯一 transcript；Provider adapter 不维护第二套可变 history。
 - Tool 先做 schema、policy、当前授权与必要 permission prompt，再进入 mutation lock；执行一次并观察真实 effect。
 - `memory_save` 只接受当前请求的明确授权；历史授权不继承，delegate 不能写 Durable Memory。
-- Session、Run、Checkpoint 与 Tool Change 使用独立 record format 和 reader；release version 不能代替 format version。
-- Session v4 的 Permission/Plan 状态只能由 `permission_mode_change`、`plan_artifact` 与受限 permission-rule state
-  投影；Plan text/revision 和进入 Plan 前的 mode 都来自 active path。v1/v2/v3 inspection 零写，只有显式 resume
+- Session、Run 与 legacy artifact 使用独立 record format 和 reader；release version 不能代替 format version。
+- Session v5 的 Permission/Plan 状态只能由 `permission_mode_change`、`plan_artifact` 与受限 permission-rule state
+  投影；Plan text/revision 和进入 Plan 前的 mode 都来自 active path。v1-v4 inspection 零写，只有显式 resume
   可迁移，其他 writer 返回 `session_migration_required`。
 - Compaction 不删除 append-only Session 历史，不授予 Memory 写权限，也不恢复 workspace。
 - 持久化失败后不继续请求 Provider；cleanup、observer 或 finalizer 的次生错误不能覆盖 primary failure。

@@ -80,41 +80,12 @@
       "allowed_tools": ["read_file"],
       "step_budget": 2,
       "expected_artifact": "README.md remains available while Session Tree compaction preserves canonical history",
-      "verifier": "python3 -c \"import json; from pathlib import Path; report = json.loads(next(Path('.pony/runs').glob('*/report.json')).read_text(encoding='utf-8')); trace = [json.loads(line) for line in next(Path('.pony/runs').glob('*/trace.jsonl')).read_text(encoding='utf-8').splitlines()]; entries = [json.loads(line) for line in next(Path('.pony/sessions').glob('*.jsonl')).read_text(encoding='utf-8').splitlines()[1:]]; assert report['recovery']['checkpoint_id']; assert any(event.get('event') == 'checkpoint_created' and event.get('trigger') == 'run_finished' for event in trace); assert any(entry.get('type') == 'compaction' and entry.get('data', {}).get('reason') == 'benchmark_setup' for entry in entries)\"",
-      "category": "recovery",
+      "verifier": "python3 -c \"import json; from pathlib import Path; report = json.loads(next(Path('.pony/runs').glob('*/report.json')).read_text(encoding='utf-8')); entries = [json.loads(line) for line in next(Path('.pony/sessions').glob('*.jsonl')).read_text(encoding='utf-8').splitlines()[1:]]; assert report['context']['context_breakdown']['compaction']['entry_id']; assert any(entry.get('type') == 'compaction' and entry.get('data', {}).get('reason') == 'benchmark_setup' for entry in entries)\"",
+      "category": "session",
       "setup": {
         "kind": "compaction",
         "history_turns": 30,
         "keep_recent_tokens": 600
-      }
-    },
-    {
-      "id": "freshness_reanchor_resume",
-      "prompt": "Resume the stale benchmark task and finish without trusting the old summary.",
-      "fixture_repo": "tests/fixtures/bench_repo_patch",
-      "allowed_tools": ["read_file"],
-      "step_budget": 3,
-      "expected_artifact": "sample.txt exists after stale freshness recovery",
-      "verifier": "python3 -c \"import json; from pathlib import Path; report = json.loads(next(Path('.pony/runs').glob('*/report.json')).read_text(encoding='utf-8')); trace = [json.loads(line) for line in next(Path('.pony/runs').glob('*/trace.jsonl')).read_text(encoding='utf-8').splitlines()]; assert report['recovery']['status'] == 'partial-stale'; assert 'sample.txt' in report['context']['stale_paths']; assert any(event.get('event') == 'checkpoint_created' and event.get('trigger') == 'run_finished' for event in trace)\"",
-      "category": "recovery",
-      "setup": {
-        "kind": "freshness_mismatch",
-        "path": "sample.txt",
-        "summary": "sample.txt: benchmark stale summary",
-        "mutated_text": "alpha\nbeta\ngamma\nstale-updated\n"
-      }
-    },
-    {
-      "id": "workspace_mismatch_resume",
-      "prompt": "Resume after benchmark workspace drift and rebuild runtime state.",
-      "fixture_repo": "tests/fixtures/bench_repo_readme",
-      "allowed_tools": ["read_file"],
-      "step_budget": 3,
-      "expected_artifact": "README.md exists after workspace mismatch recovery",
-      "verifier": "python3 -c \"import json; from pathlib import Path; report = json.loads(next(Path('.pony/runs').glob('*/report.json')).read_text(encoding='utf-8')); trace = [json.loads(line) for line in next(Path('.pony/runs').glob('*/trace.jsonl')).read_text(encoding='utf-8').splitlines()]; assert report['recovery']['status'] == 'workspace-mismatch'; assert any(event.get('event') == 'runtime_identity_mismatch' for event in trace)\"",
-      "category": "recovery",
-      "setup": {
-        "kind": "workspace_mismatch"
       }
     }
   ]

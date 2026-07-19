@@ -179,7 +179,7 @@ capability；显式用 `--permission-mode` 改回其他 mode 不需要危险 fla
 Session；公共 runtime 构造、resume、mode setter 和 Executor 都会重复检查。
 
 显式交互 `--resume` 会在首个 prompt 前显示一次 permission、checkpoint、resume state 与 Provider/model 摘要；
-`pony run` 和 JSON/管理命令不显示该卡片。Session v4 历史只从当前 active Canonical Messages 重建，不保留 slash 命令
+`pony run` 和 JSON/管理命令不显示该卡片。Session v5 历史只从当前 active Canonical Messages 重建，不保留 slash 命令
 或已放弃分支的输入。
 
 | 操作 | 行为 |

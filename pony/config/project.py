@@ -263,21 +263,10 @@ def _validated_retrieval(retrieval):
 
 def _validated_pony_toml(raw):
     model = _table(raw, "model", "model")
-    policy = _table(raw, "policy", "policy")
     context = _table(raw, "context", "context")
     memory = _table(raw, "memory", "memory")
     validated = _validated_model(model, context)
     validated.update(
-        policy={
-            "max_blob_size": _bounded_int(
-                policy,
-                "max_blob_size",
-                8 * 1024 * 1024,
-                1,
-                8 * 1024 * 1024,
-                "policy.max_blob_size",
-            ),
-        },
         context=_validated_context(context),
         memory={
             "recall": _validated_recall(_table(memory, "recall", "memory.recall")),

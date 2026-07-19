@@ -10,11 +10,9 @@ from pony import Pony
 from pony.state.session_store import SessionStore
 from pony.workspace.context import WorkspaceContext
 from benchmarks.support.fake_provider import FakeModelClient
-from pony.state.checkpoint_store import CheckpointStore
 from pony.cli.app import main
 from pony.cli.session import inspect_session
 from pony.memory.block_store import BlockStore
-from pony.recovery.models import new_checkpoint_record, new_tool_change_record
 from pony.state.run_store import RunStore
 from pony.state.session_store import (
     LEGACY_SESSION_FORMAT_VERSION,
@@ -42,24 +40,6 @@ def _assert_mode(path, expected):
         assert stat.S_IMODE(path.stat().st_mode) == expected
 
 
-def _verification(stdout):
-    return {
-        "verification_id": "verify_test",
-        "created_at": "2026-01-01T00:00:00+00:00",
-        "argv": ["pytest"],
-        "runner_executed": True,
-        "execution_mode": "argv",
-        "command": "pytest",
-        "risk_class": "read_only",
-        "exit_code": 0,
-        "status": "passed",
-        "stdout_tail": stdout,
-        "stderr_tail": "",
-        "affected_checkpoint_id": "",
-        "trace_event_id": "",
-    }
-
-
 def _session(session_id, workspace_root="/repo"):
     return {
         "record_type": "session",
@@ -73,7 +53,6 @@ def _session(session_id, workspace_root="/repo"):
         "recently_recalled": [],
         "checkpoints": {},
         "resume_state": {},
-        "recovery": {},
         "runtime_identity": {},
     }
 
@@ -94,21 +73,6 @@ def test_secret_canary_is_absent_from_normal_artifacts_and_inspection(
     agent.run_store.start_run(state)
     agent.emit_trace(state, "canary", {"token": secret})
     agent.run_store.write_report(state, {"token": secret})
-    record = new_checkpoint_record(
-        "ckpt_canary",
-        "turn",
-        "s",
-        state.run_id,
-        state.task_id,
-        "",
-        str(tmp_path),
-    )
-    record["verification_evidence"] = [_verification(secret)]
-    CheckpointStore(
-        tmp_path,
-        redactor=agent.redact_artifact,
-    ).write_checkpoint_record(record)
-
     for path in (tmp_path / ".pony").rglob("*"):
         if (
             path.is_file()
@@ -117,163 +81,7 @@ def test_secret_canary_is_absent_from_normal_artifacts_and_inspection(
         ):
             assert secret.encode() not in path.read_bytes(), path
 
-    assert (
-        main(
-            [
-        "--cwd",
-        str(tmp_path),
-        "--format",
-        "json",
-        "checkpoints",
-        "show",
-        "ckpt_canary",
-            ]
-        )
-        == 0
-    )
     assert secret not in capsys.readouterr().out
-
-
-def test_checkpoint_json_is_redacted_but_blob_bytes_remain_exact_and_private(
-    tmp_path,
-):
-    secret = "opaque-checkpoint-secret-123456789"
-
-    def redact(value):
-        if isinstance(value, dict):
-            return {key: redact(item) for key, item in value.items()}
-        if isinstance(value, list):
-            return [redact(item) for item in value]
-        if isinstance(value, str):
-            return value.replace(secret, "<redacted>")
-        return value
-
-    store = CheckpointStore(tmp_path, redactor=redact)
-    blob = store.write_blob(secret.encode(), "text")
-    record = new_checkpoint_record(
-        "ckpt_private",
-        "turn",
-        "s",
-        "r",
-        "t",
-        "",
-        str(tmp_path),
-    )
-    record["verification_evidence"] = [_verification(secret)]
-    record_path = store.write_checkpoint_record(record)
-
-    assert secret not in record_path.read_text(encoding="utf-8")
-    assert store.read_blob(blob["blob_ref"]) == secret.encode()
-    for directory in (
-        store.root,
-        store.records_dir,
-        store.tool_changes_dir,
-        store.blobs_dir,
-        store._blob_path(blob["blob_ref"]).parent,
-    ):
-        _assert_mode(directory, 0o700)
-    for path in (
-        record_path,
-        store._blob_path(blob["blob_ref"]),
-        store.lock_path,
-    ):
-        _assert_mode(path, 0o600)
-
-
-def test_checkpoint_mutation_rejects_unsafe_record_and_store_directory(tmp_path):
-    store = CheckpointStore(tmp_path)
-    outside_file = tmp_path / "outside.json"
-    outside_file.write_text("outside\n", encoding="utf-8")
-    record_path = store._record_path("ckpt_link")
-    record_path.symlink_to(outside_file)
-    record = new_checkpoint_record(
-        "ckpt_link",
-        "turn",
-        "s",
-        "r",
-        "t",
-        "",
-        str(tmp_path),
-    )
-
-    with pytest.raises(ValueError, match="symlink|regular|unsafe"):
-        store.write_checkpoint_record(record)
-    assert outside_file.read_text(encoding="utf-8") == "outside\n"
-
-    record_path.unlink()
-    store.records_dir.rmdir()
-    outside_dir = tmp_path / "outside-records"
-    outside_dir.mkdir()
-    store.records_dir.symlink_to(outside_dir, target_is_directory=True)
-
-    with pytest.raises(ValueError, match="symlink|regular|unsafe"):
-        store.write_checkpoint_record(record)
-    assert list(outside_dir.iterdir()) == []
-
-
-def test_checkpoint_rejects_fifo_leaf_and_symlinked_blob_bucket(tmp_path):
-    store = CheckpointStore(tmp_path)
-    fifo = store._tool_change_path("tc_fifo")
-    os.mkfifo(fifo)
-    with pytest.raises(ValueError, match="regular|unsafe"):
-        store.write_tool_change_record(
-            new_tool_change_record("tc_fifo", "", "t", "write_file", "workspace_write")
-        )
-
-    data = b"exact blob bytes"
-    from pony.recovery.paths import hash_bytes
-
-    blob_ref = hash_bytes(data)["content_hash"]
-    outside = tmp_path / "outside-blobs"
-    outside.mkdir()
-    (store.blobs_dir / blob_ref[:2]).symlink_to(
-        outside,
-        target_is_directory=True,
-    )
-
-    with pytest.raises(ValueError, match="symlink|unsafe"):
-        store.write_blob(data)
-    assert list(outside.iterdir()) == []
-
-
-def test_checkpoint_temp_swap_preserves_unknown_installed_symlink(
-    tmp_path,
-    monkeypatch,
-):
-    store = CheckpointStore(tmp_path)
-    outside = tmp_path / "outside-temp.json"
-    outside.write_text("outside\n", encoding="utf-8")
-    from pony.security import private_files as security_module
-
-    original_replace = security_module.os.replace
-
-    def swap_before_replace(source, target, *, src_dir_fd=None, dst_dir_fd=None):
-        if str(source).endswith(".tmp"):
-            os.unlink(source, dir_fd=src_dir_fd)
-            os.symlink(outside, source, dir_fd=src_dir_fd)
-        return original_replace(
-            source,
-            target,
-            src_dir_fd=src_dir_fd,
-            dst_dir_fd=dst_dir_fd,
-        )
-
-    monkeypatch.setattr(security_module.os, "replace", swap_before_replace)
-    record = new_checkpoint_record(
-        "ckpt_swap",
-        "turn",
-        "s",
-        "r",
-        "t",
-        "",
-        str(tmp_path),
-    )
-
-    with pytest.raises(ValueError, match="temp|changed|regular|symlink"):
-        store.write_checkpoint_record(record)
-
-    assert outside.read_text(encoding="utf-8") == "outside\n"
-    assert store._record_path("ckpt_swap").is_symlink()
 
 
 def test_legacy_inspection_redacts_process_and_project_collision(
@@ -304,31 +112,9 @@ def test_legacy_inspection_redacts_process_and_project_collision(
         json.dumps({"message": legacy_text}),
         encoding="utf-8",
     )
-    checkpoints = tmp_path / ".pony" / "checkpoints" / "records"
-    checkpoints.mkdir(parents=True)
-    checkpoints.parent.chmod(0o700)
-    checkpoints.chmod(0o700)
-    checkpoint = new_checkpoint_record(
-        "ckpt_legacy",
-        "turn",
-        "s",
-        "r",
-        "t",
-        "",
-        str(tmp_path),
-    )
-    checkpoint["verification_evidence"] = [_verification(legacy_text)]
-    checkpoint_path = checkpoints / "ckpt_legacy.json"
-    checkpoint_path.write_text(
-        json.dumps(checkpoint),
-        encoding="utf-8",
-    )
-    checkpoint_path.chmod(0o600)
-
     commands = (
         ["sessions", "show", "legacy"],
         ["runs", "show", "legacy"],
-        ["checkpoints", "show", "ckpt_legacy"],
     )
     for command in commands:
         for output_format in ("text", "json"):
@@ -349,44 +135,6 @@ def test_legacy_inspection_redacts_process_and_project_collision(
             assert project_secret not in output
             assert collision_secret not in output
             assert "<redacted>" in output
-
-    for missing in ("tool_changes", "blobs", "quarantine"):
-        assert not (checkpoints.parent / missing).exists()
-
-
-@pytest.mark.parametrize("unsafe_kind", ("mode", "symlink", "owner"))
-def test_read_only_checkpoint_inspection_rejects_unsafe_existing_sibling(
-    tmp_path,
-    monkeypatch,
-    unsafe_kind,
-):
-    root = tmp_path / ".pony" / "checkpoints"
-    root.mkdir(parents=True, mode=0o700)
-    root.chmod(0o700)
-    sibling = root / "tool_changes"
-    if unsafe_kind == "symlink":
-        outside = tmp_path / "outside-tool-changes"
-        outside.mkdir(mode=0o700)
-        sibling.symlink_to(outside, target_is_directory=True)
-    else:
-        sibling.mkdir(mode=0o700)
-        sibling.chmod(0o700)
-        if unsafe_kind == "mode":
-            sibling.chmod(0o755)
-        else:
-            real_geteuid = os.geteuid
-            calls = 0
-
-            def changed_euid_after_root():
-                nonlocal calls
-                calls += 1
-                return real_geteuid() if calls == 1 else sibling.stat().st_uid + 1
-
-            monkeypatch.setattr(os, "geteuid", changed_euid_after_root)
-
-    with pytest.raises(ValueError, match="permissions|unsafe"):
-        CheckpointStore(tmp_path, read_only=True)
-
 
 def test_runs_show_redacts_structured_json_before_rendering(
     tmp_path,
@@ -454,66 +202,6 @@ def test_runs_show_rejects_path_escape_and_symlink(tmp_path, capsys):
         captured = capsys.readouterr()
         assert code == 2
         assert secret not in captured.out + captured.err
-
-
-def test_checkpoint_prefix_never_resolves_traversing_record_id(tmp_path, capsys):
-    records = tmp_path / ".pony" / "checkpoints" / "records"
-    records.mkdir(parents=True)
-    malicious_id = "abcdef/../../../outside"
-    (records / "entry.json").write_text(
-        json.dumps(
-            {
-            "checkpoint_id": malicious_id,
-            "checkpoint_type": "turn",
-            "created_at": "2026-07-11T00:00:00Z",
-            }
-        ),
-        encoding="utf-8",
-    )
-    outside = tmp_path / ".pony" / "outside.json"
-    secret = "outside-checkpoint-secret"
-    outside.write_text(json.dumps({"message": secret}), encoding="utf-8")
-
-    code = main(
-        [
-        "--cwd",
-        str(tmp_path),
-        "--format",
-        "json",
-        "checkpoints",
-        "show",
-        "abcdef",
-        ]
-    )
-
-    captured = capsys.readouterr()
-    assert code == 2
-    assert secret not in captured.out + captured.err
-
-
-def test_checkpoint_cli_rejects_symlink_record_as_stable_error(tmp_path, capsys):
-    records = tmp_path / ".pony" / "checkpoints" / "records"
-    records.mkdir(parents=True)
-    outside = tmp_path / "outside-checkpoint.json"
-    secret = "outside-symlink-checkpoint-secret"
-    outside.write_text(json.dumps({"message": secret}), encoding="utf-8")
-    (records / "linked.json").symlink_to(outside)
-
-    code = main(
-        [
-        "--cwd",
-        str(tmp_path),
-        "--format",
-        "json",
-        "checkpoints",
-        "list",
-        ]
-    )
-
-    captured = capsys.readouterr()
-    assert code == 2
-    assert "unsafe_artifact" in captured.out
-    assert secret not in captured.out + captured.err
 
 
 @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFO unavailable")
@@ -685,7 +373,6 @@ def test_singular_session_inspection_never_reads_unsafe_paths(
             "recently_recalled": [],
             "checkpoints": {},
             "resume_state": {},
-            "recovery": {},
             "runtime_identity": {},
             }
         )
@@ -747,46 +434,6 @@ def test_singular_session_cli_redacts_untrusted_summary_fields(
     assert code == 1
     assert secret not in output
     assert "unsafe local artifact" in output
-
-
-def test_checkpoint_ambiguity_errors_are_redacted(
-    tmp_path,
-    monkeypatch,
-    capsys,
-):
-    secret = "opaquecheckpointsecret123456789"
-    monkeypatch.setenv("CUSTOM_CHECKPOINT_TOKEN", secret)
-    store = CheckpointStore(tmp_path)
-    for suffix in ("a", "b"):
-        store.write_checkpoint_record(
-            new_checkpoint_record(
-            f"{secret}{suffix}",
-            "turn",
-            "s",
-            "r",
-            "t",
-            "",
-            str(tmp_path),
-            )
-        )
-
-    for output_format in ("text", "json"):
-        code = main(
-            [
-            "--cwd",
-            str(tmp_path),
-            "--secret-env-name",
-            "CUSTOM_CHECKPOINT_TOKEN",
-            "--format",
-            output_format,
-            "checkpoints",
-            "show",
-            secret,
-            ]
-        )
-        captured = capsys.readouterr()
-        assert code == 2
-        assert secret not in captured.out + captured.err
 
 
 def test_status_redacts_latest_artifact_ids(tmp_path, monkeypatch, capsys):
@@ -880,12 +527,6 @@ def test_owned_store_constructors_reject_hardlinks_without_chmod(tmp_path):
     session_file = session_root / "legacy.json"
     cases.append((session_file, lambda: SessionStore(session_root)))
 
-    checkpoint_root = tmp_path / "checkpoint-case"
-    checkpoint_file = (
-        checkpoint_root / ".pony" / "checkpoints" / "records" / "legacy.json"
-    )
-    cases.append((checkpoint_file, lambda: CheckpointStore(checkpoint_root)))
-
     memory_workspace = tmp_path / "memory-case" / "workspace"
     memory_user = tmp_path / "memory-case" / "user"
     memory_file = memory_workspace / "agent_notes.md"
@@ -954,7 +595,7 @@ def test_session_temp_swap_preserves_unknown_installed_symlink(
 def test_store_redactors_cannot_mutate_callers_or_leave_failed_trace(tmp_path):
     def mutating_redactor(value):
         if value.get("record_type") == "session":
-            value["recovery"]["mutated"] = True
+            value["runtime_identity"]["mutated"] = True
         else:
             value["mutated"] = True
         return value
@@ -1037,7 +678,6 @@ def test_atomic_writers_remove_installed_temp_with_extra_hardlink(
     run_store = RunStore(tmp_path / "run" / ".pony" / "runs")
     run_state = TaskState.create(run_id="run", task_id="task", user_request="safe")
     run_store.start_run(run_state)
-    checkpoint_store = CheckpointStore(tmp_path / "checkpoint")
     memory_workspace = tmp_path / "memory" / "workspace"
     memory_user = tmp_path / "memory" / "user"
     memory_workspace.mkdir(parents=True)
@@ -1066,15 +706,6 @@ def test_atomic_writers_remove_installed_temp_with_extra_hardlink(
         hardlink_before_os_replace,
     )
 
-    record = new_checkpoint_record(
-        "hardlinked_temp",
-        "turn",
-        "s",
-        "r",
-        "t",
-        "",
-        str(tmp_path),
-    )
     cases = (
         (
             lambda: session_store.save(_session("hardlinked_temp", tmp_path)),
@@ -1083,10 +714,6 @@ def test_atomic_writers_remove_installed_temp_with_extra_hardlink(
         (
             lambda: run_store.write_report(run_state, {"status": "safe"}),
             run_store.report_path(run_state),
-        ),
-        (
-            lambda: checkpoint_store.write_checkpoint_record(record),
-            checkpoint_store._record_path("hardlinked_temp"),
         ),
         (
             lambda: memory_store.append_agent_note("workspace", "safe note"),

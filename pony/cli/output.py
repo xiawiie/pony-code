@@ -44,11 +44,18 @@ def print_result(kind, data, args, text_renderer):
 
 
 def build_inspection_redactor(root, args=None):
+    from pony.config.environment import read_project_env
     from pony.runtime.application import _build_redaction_snapshot
 
     _, _, redactor = _build_redaction_snapshot(
         root,
         secret_env_names=getattr(args, "secret_env_names", ()),
+        project_env=read_project_env(
+            root,
+            warn=False,
+            harden=False,
+            allow_insecure_mode=True,
+        ),
         warn=False,
     )
     return redactor

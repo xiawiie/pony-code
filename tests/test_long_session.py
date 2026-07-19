@@ -28,7 +28,6 @@ def _session(workspace):
         "recently_recalled": [],
         "checkpoints": {},
         "resume_state": {},
-        "recovery": {},
         "runtime_identity": {},
         "permission_mode": "auto",
         "permission_rules": {"allow": [], "ask": [], "deny": []},
@@ -147,7 +146,6 @@ def test_200_turn_session_compacts_twice_branches_and_resumes(tmp_path):
         "key_files": [],
         "read_files": [],
         "modified_files": [],
-        "workspace_checkpoint_id": "",
         "worktree_identity_digest": tree.header["worktree_identity"]["digest"],
         "context_usage": {},
     }

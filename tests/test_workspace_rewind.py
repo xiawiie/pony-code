@@ -1,11 +1,8 @@
 from pathlib import Path
 
-import pytest
-
 from benchmarks.support.fake_provider import FakeModelClient
 from pony import Pony
 from pony.runtime.options import RuntimeOptions
-from pony.runtime.rewind import WorkspaceRewindError
 from pony.state.session_store import SessionStore
 from pony.workspace.context import WorkspaceContext
 
@@ -44,7 +41,7 @@ def test_task_checkpoint_keeps_session_resume_facts_without_recovery_artifact(tm
     assert checkpoint["goal"] == "write note"
     assert checkpoint["status"] == "completed"
     assert checkpoint["modified_files"] == ["note.txt"]
-    assert checkpoint["workspace_checkpoint_id"] == ""
+    assert "workspace_checkpoint_id" not in checkpoint
     assert checkpoint["worktree_identity_digest"]
 
 
@@ -56,15 +53,3 @@ def test_session_only_rewind_never_changes_workspace(tmp_path):
 
     assert rewind["parent_id"] == entry["id"]
     assert (Path(tmp_path) / "note.txt").read_text(encoding="utf-8") == "after\n"
-
-
-def test_workspace_restore_is_explicitly_unavailable(tmp_path):
-    agent = _agent(tmp_path)
-    entry = _write_turn(agent)
-
-    with pytest.raises(WorkspaceRewindError, match="workspace_restore_unavailable"):
-        agent.preview_workspace_rewind(entry["id"])
-    with pytest.raises(WorkspaceRewindError, match="workspace_restore_unavailable"):
-        agent.rewind_session(entry["id"], workspace=True, confirmed=True)
-
-    assert (Path(tmp_path) / "note.txt").exists()

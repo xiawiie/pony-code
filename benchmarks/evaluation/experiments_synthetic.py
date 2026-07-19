@@ -1,4 +1,5 @@
 from copy import deepcopy
+import json
 import tempfile
 from pathlib import Path
 import uuid
@@ -11,7 +12,15 @@ from benchmarks.support.fake_provider import FakeModelClient
 from pony.runtime.application import Pony
 from pony.state.session_store import SessionStore
 from pony.workspace.context import WorkspaceContext
-from .metrics_common import _safe_mean, _safe_ratio
+from .metrics_common import (
+    CONTEXT_ABLATION_FORMAT_VERSION,
+    DEFAULT_CONTEXT_ABLATION_V2_PATH,
+    DEFAULT_MEMORY_ABLATION_V2_PATH,
+    MEMORY_ABLATION_FORMAT_VERSION,
+    _safe_mean,
+    _safe_ratio,
+    _utc_timestamp,
+)
 from pony.runtime.options import RuntimeOptions
 
 
@@ -843,3 +852,48 @@ def run_security_experiment_suite(repetitions=3):
         "tool_error_code_counts": tool_error_code_counts,
         "rows": rows,
     }
+
+
+def _write_json_artifact(path, payload):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    return payload
+
+
+def run_context_ablation_v2(
+    artifact_path=DEFAULT_CONTEXT_ABLATION_V2_PATH, repetitions=5
+):
+    payload = run_context_stress_matrix(repetitions=repetitions)
+    return _write_json_artifact(
+        artifact_path,
+        {
+            "record_type": "context_ablation_result",
+            "format_version": CONTEXT_ABLATION_FORMAT_VERSION,
+            "captured_at": _utc_timestamp(),
+            "config_count": payload["config_count"],
+            "configs": payload["configs"],
+            "summary": payload["summary"],
+        },
+    )
+
+
+def run_memory_ablation_v2(
+    artifact_path=DEFAULT_MEMORY_ABLATION_V2_PATH, repetitions=5
+):
+    payload = run_large_scale_memory_experiment(repetitions=repetitions)
+    return _write_json_artifact(
+        artifact_path,
+        {
+            "record_type": "memory_ablation_result",
+            "format_version": MEMORY_ABLATION_FORMAT_VERSION,
+            "captured_at": _utc_timestamp(),
+            "task_count": payload["task_count"],
+            "runs_per_variant": payload["runs_per_variant"],
+            "category_counts": payload["category_counts"],
+            "variants": payload["variants"],
+            "rows": payload["rows"],
+        },
+    )
