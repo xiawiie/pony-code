@@ -2,7 +2,13 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from pony.cli.session import handle_session_command
-from pony.cli.start import _handle_repl_session_command
+from pony.cli.start import (
+    _MAX_SESSION_PICKER_CANDIDATES,
+    _handle_repl_session_command,
+    _plain_session_picker,
+    _session_branch_candidates,
+)
+from pony.state.session_store import SessionTree
 
 
 def test_noninteractive_manual_checkpoint_uses_runtime(tmp_path, capsys):
@@ -70,3 +76,206 @@ def test_repl_summary_rewind_keeps_session_only_behavior(capsys):
         summary=True,
         focus="carry-tests",
     )
+
+
+def test_repl_bare_fork_uses_picker_and_reloads_history():
+    agent = MagicMock()
+    agent.redact_text.side_effect = str
+    agent.session = {"id": "session-1"}
+    agent.session_store.load_tree.return_value = SimpleNamespace(
+        leaf_id="leaf",
+        entries=(
+            {"id": "entry-1", "type": "message", "parent_id": "", "data": {}},
+            {"id": "leaf", "type": "message", "parent_id": "entry-1", "data": {}},
+        ),
+        active_path=(),
+    )
+    agent.fork_session.return_value = {"id": "fork-1", "parent_id": "entry-1"}
+    refreshed = []
+
+    handled = _handle_repl_session_command(
+        agent,
+        "/fork",
+        pick_session_entry=lambda command, candidates: (
+            candidates == [("entry-1", "entry-1 | message | branch")]
+            and command == "/fork"
+            and "entry-1"
+        ),
+        refresh_history=lambda: refreshed.append(True),
+    )
+
+    assert handled is True
+    agent.fork_session.assert_called_once_with("entry-1")
+    assert refreshed == [True]
+
+
+def test_repl_bare_rewind_cancel_does_not_write():
+    agent = MagicMock()
+    agent.redact_text.side_effect = str
+    agent.session = {"id": "session-1"}
+    agent.session_store.load_tree.return_value = SimpleNamespace(
+        leaf_id="leaf",
+        entries=(
+            {"id": "entry-1", "type": "message", "parent_id": "", "data": {}},
+            {"id": "leaf", "type": "message", "parent_id": "entry-1", "data": {}},
+        ),
+        active_path=(),
+    )
+
+    handled = _handle_repl_session_command(
+        agent,
+        "/rewind",
+        pick_session_entry=lambda _command, _candidates: None,
+    )
+
+    assert handled is True
+    agent.rewind_session.assert_not_called()
+
+
+def test_repl_bare_rewind_accepts_summary_option_after_picker():
+    agent = MagicMock()
+    agent.redact_text.side_effect = str
+    agent.session = {"id": "session-1"}
+    agent.session_store.load_tree.return_value = SimpleNamespace(
+        leaf_id="leaf",
+        entries=(
+            {"id": "entry-1", "type": "message", "parent_id": "", "data": {}},
+            {"id": "leaf", "type": "message", "parent_id": "entry-1", "data": {}},
+        ),
+        active_path=(),
+    )
+    agent.rewind_session.return_value = SimpleNamespace(
+        rewind_entry={"id": "rewind-1", "parent_id": "entry-1"}
+    )
+
+    handled = _handle_repl_session_command(
+        agent,
+        "/rewind --summary=carry-tests",
+        pick_session_entry=lambda _command, _candidates: "entry-1",
+    )
+
+    assert handled is True
+    agent.rewind_session.assert_called_once_with(
+        "entry-1",
+        summary=True,
+        focus="carry-tests",
+    )
+
+
+def test_repl_bare_picker_rejects_entry_not_in_current_tree(capsys):
+    agent = MagicMock()
+    agent.redact_text.side_effect = str
+    agent.session = {"id": "session-1"}
+    agent.session_store.load_tree.return_value = SimpleNamespace(
+        leaf_id="leaf",
+        entries=(
+            {"id": "entry-1", "type": "message", "parent_id": "", "data": {}},
+            {"id": "leaf", "type": "message", "parent_id": "entry-1", "data": {}},
+        ),
+        active_path=(),
+    )
+
+    handled = _handle_repl_session_command(
+        agent,
+        "/rewind",
+        pick_session_entry=lambda _command, _candidates: "not-an-entry",
+    )
+
+    assert handled is True
+    assert "selected session entry is unavailable" in capsys.readouterr().out
+    agent.rewind_session.assert_not_called()
+
+
+def test_plain_session_picker_selects_number_and_cancels(monkeypatch, capsys):
+    candidates = [("entry-1", "entry-1 | message | active")]
+    monkeypatch.setattr("builtins.input", lambda _prompt: "1")
+
+    assert _plain_session_picker("/fork", candidates) == "entry-1"
+    assert "1. entry-1 | message | active" in capsys.readouterr().out
+
+    monkeypatch.setattr("builtins.input", lambda _prompt: "")
+    assert _plain_session_picker("/rewind", candidates) is None
+
+
+def test_session_picker_candidates_redact_and_strip_control_text():
+    tree = SessionTree(
+        header={},
+        entries=(
+            {
+                "id": "entry-1",
+                "type": "message",
+                "parent_id": "",
+                "data": {
+                    "message": {"role": "user", "content": "api_key=secret\x1b[2J"}
+                },
+            },
+            {"id": "leaf", "type": "message", "parent_id": "entry-1", "data": {}},
+        ),
+        active_path=(
+            {"id": "entry-1"},
+            {"id": "leaf"},
+        ),
+        projection={},
+        entry_token_estimates={},
+    )
+    agent = SimpleNamespace(
+        session={"id": "session-1"},
+        session_store=SimpleNamespace(load_tree=lambda _session_id: tree),
+        redact_text=lambda _text: "<redacted>",
+    )
+
+    assert _session_branch_candidates(agent) == [
+        ("entry-1", "entry-1 | user: <redacted> | active"),
+    ]
+
+
+def test_session_picker_sanitizes_redactor_output():
+    tree = SimpleNamespace(
+        leaf_id="leaf",
+        entries=(
+            {
+                "id": "entry-1",
+                "type": "message",
+                "parent_id": "",
+                "data": {"message": {"role": "user", "content": "hello"}},
+            },
+            {"id": "leaf", "type": "message", "parent_id": "entry-1", "data": {}},
+        ),
+        active_path=(),
+    )
+    agent = SimpleNamespace(
+        session={"id": "session-1"},
+        session_store=SimpleNamespace(load_tree=lambda _session_id: tree),
+        redact_text=lambda _text: "<redacted>\x1b[2J",
+    )
+
+    assert _session_branch_candidates(agent) == [
+        ("entry-1", "entry-1 | user: <redacted> [2J | branch"),
+    ]
+
+
+def test_session_picker_candidates_are_bounded_to_recent_entries():
+    entries = tuple(
+        {
+            "id": f"entry-{index}",
+            "type": "message",
+            "parent_id": "",
+            "data": {},
+        }
+        for index in range(_MAX_SESSION_PICKER_CANDIDATES + 2)
+    )
+    tree = SimpleNamespace(
+        leaf_id=entries[-1]["id"],
+        entries=entries,
+        active_path=(),
+    )
+    agent = SimpleNamespace(
+        session={"id": "session-1"},
+        session_store=SimpleNamespace(load_tree=lambda _session_id: tree),
+    )
+
+    candidates = _session_branch_candidates(agent)
+
+    assert len(candidates) == _MAX_SESSION_PICKER_CANDIDATES
+    assert candidates[0][0] == entries[-2]["id"]
+    assert candidates[-1][0] == entries[-_MAX_SESSION_PICKER_CANDIDATES - 1]["id"]

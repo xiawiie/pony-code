@@ -174,6 +174,17 @@ def _permission_picker(agent, rules, tools, *, choose=choice, style=None):
         selections.append((behavior, name))
 
 
+def _session_picker(command, candidates, *, choose=choice, style=None):
+    selected = choose(
+        f"{command[1:].capitalize()} session from",
+        options=[("", "Cancel"), *candidates],
+        default="",
+        style=style,
+        symbol=">",
+    )
+    return selected or None
+
+
 def run_tui(
     agent,
     *,
@@ -220,6 +231,9 @@ def run_tui(
     def manage_permissions(rules, tools):
         return _permission_picker(agent, rules, tools, style=renderer.style)
 
+    def pick_session_entry(command, candidates):
+        return _session_picker(command, candidates, style=renderer.style)
+
     previous_listener = getattr(agent, "_trace_listener", None)
     previous_approval_prompt = getattr(agent, "_approval_prompt", None)
     agent._trace_listener = renderer.trace
@@ -247,6 +261,7 @@ def run_tui(
                     render_error=lambda text: renderer.notice(text, error=True),
                     refresh_history=refresh_history,
                     manage_permissions=manage_permissions,
+                    pick_session_entry=pick_session_entry,
                 )
             except KeyboardInterrupt as exc:
                 if hasattr(exc, "signal_number"):

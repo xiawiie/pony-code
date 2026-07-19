@@ -13,6 +13,7 @@ from pony.tui.app import (
     _key_bindings,
     _history,
     _permission_picker,
+    _session_picker,
     run_tui,
     should_use_tui,
 )
@@ -142,6 +143,28 @@ def test_tui_permission_picker_navigates_tools_rules_and_modes():
     assert "write_file · default" in prompts[0][1].values()
     assert "write_file · deny" in prompts[2][1].values()
     assert "bypassPermissions" not in prompts[3][1]
+
+
+def test_tui_session_picker_offers_cancel_and_selected_entry():
+    prompts = []
+
+    def choose(message, *, options, **_kwargs):
+        prompts.append((message, options))
+        return "entry-1"
+
+    selected = _session_picker(
+        "/rewind",
+        [("entry-1", "entry-1 | user: investigate | active")],
+        choose=choose,
+    )
+
+    assert selected == "entry-1"
+    assert prompts == [
+        (
+            "Rewind session from",
+            [("", "Cancel"), ("entry-1", "entry-1 | user: investigate | active")],
+        )
+    ]
 
 
 def test_tui_resume_card_labels_fact_sources(monkeypatch):

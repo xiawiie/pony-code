@@ -14,7 +14,7 @@ flowchart LR
 
 ## Active state
 
-Session v5 is the active writer. Bounded task checkpoints live in its append-only JSONL tree and preserve task goal, freshness and next-step context; they do not retain file blobs or provide workspace rollback. `/rewind <entry-id>` and `pony session rewind <session-id> <entry-id>` create a new Session branch only. `--workspace` and `--yes` are removed.
+Session v5 is the active writer. Bounded task checkpoints live in its append-only JSONL tree and preserve task goal, freshness and next-step context; they do not retain file blobs or provide workspace rollback. `/rewind [entry-id]` and `pony session rewind <session-id> <entry-id>` create a new Session branch only. The interactive command opens an entry picker when the id is omitted; the non-interactive CLI still requires it. `--workspace` and `--yes` are removed.
 
 Host mutations run under `.pony/.workspace-mutation.lock`. The observer records real before/after effects; changed files after a command failure become `partial_success`. This evidence appears only in the current Tool metadata, low-sensitivity trace summaries, and Report v4 counts. It does not create a Tool Change or Recovery writer.
 
