@@ -229,6 +229,9 @@ class Pony:
             raise ValueError(
                 "resuming bypassPermissions requires dangerous capability"
             )
+        if isinstance(session, dict):
+            session_store.path_for(session.get("id"))
+            preflight_legacy_sandbox_resume(workspace.repo_root, session["id"])
         self.model_client = model_client
         model_binding = getattr(model_client, "provider_binding", None)
         model_binding = (

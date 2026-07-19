@@ -367,6 +367,65 @@ def test_programmatic_resume_validates_session_id_before_legacy_preflight(
         )
 
 
+def test_direct_session_constructor_rejects_legacy_binding_before_side_effects(
+    tmp_path, monkeypatch
+):
+    agent = build_agent(tmp_path, [])
+    monkeypatch.setattr(
+        "pony.runtime.application.preflight_legacy_sandbox_resume",
+        lambda *_args: (_ for _ in ()).throw(
+            LegacySandboxResumeError("legacy_sandbox_session_unsupported")
+        ),
+    )
+    monkeypatch.setattr(
+        Pony,
+        "_configure_workspace",
+        lambda *_args: pytest.fail("workspace configuration must not run"),
+    )
+    monkeypatch.setattr(
+        agent.session_store,
+        "save",
+        lambda *_args: pytest.fail("session writer must not run"),
+    )
+    monkeypatch.setattr(
+        agent.session_store,
+        "append_messages",
+        lambda *_args: pytest.fail("session writer must not run"),
+    )
+
+    with pytest.raises(LegacySandboxResumeError) as caught:
+        Pony(
+            model_client=FakeModelClient([]),
+            workspace=agent.workspace,
+            session_store=agent.session_store,
+            session=agent.session,
+            options=RuntimeOptions(project_trusted=True),
+        )
+
+    assert caught.value.code == "legacy_sandbox_session_unsupported"
+
+
+def test_direct_session_constructor_validates_session_id_before_legacy_preflight(
+    tmp_path, monkeypatch
+):
+    agent = build_agent(tmp_path, [])
+    invalid_session = deepcopy(agent.session)
+    invalid_session["id"] = "../invalid"
+    monkeypatch.setattr(
+        "pony.runtime.application.preflight_legacy_sandbox_resume",
+        lambda *_args: pytest.fail("legacy preflight must not run"),
+    )
+
+    with pytest.raises(ValueError, match="invalid session id"):
+        Pony(
+            model_client=FakeModelClient([]),
+            workspace=agent.workspace,
+            session_store=agent.session_store,
+            session=invalid_session,
+            options=RuntimeOptions(project_trusted=True),
+        )
+
+
 def test_direct_session_constructor_rejects_bypass_without_capability(tmp_path):
     agent = build_agent(
         tmp_path,
