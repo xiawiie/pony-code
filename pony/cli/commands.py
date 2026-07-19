@@ -53,6 +53,8 @@ EXAMPLES:
     pony runs summary latest
     pony checkpoints show <checkpoint-id>
     pony checkpoints pending
+    pony agents list
+    pony agents merge <agent-id>
     pony migrate status
 
 Available Commands:
@@ -68,6 +70,7 @@ Available Commands:
   checkpoints  Read-only legacy checkpoint inspection
   migrate      Inspect and apply explicit artifact migrations
   memory       Inspect and search memory files
+  agents       Inspect, merge, or clean up isolated worktree agents
   help         Help about any command
 
 Flags:

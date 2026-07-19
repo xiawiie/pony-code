@@ -139,6 +139,14 @@ uv run pytest -q \
   tests/tui/test_app.py
 ```
 
+Worktree Agent 合同使用真实本地 Git 覆盖：clean exact-HEAD setup、独立 branch/worktree/client/Session/Run、readonly
+拒写、write 只改 child、`max_parallel`、factory client reuse cleanup、private manifest、model-free list/show、显式
+commit/merge 与 merged-only cleanup：
+
+```bash
+uv run pytest -q tests/test_worktree_agents.py
+```
+
 ## Distribution 验证
 
 ```bash

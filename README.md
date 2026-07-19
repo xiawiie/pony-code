@@ -18,6 +18,7 @@ permission、path/secret 校验、可信 executable、mutation lock 和真实 ef
 | Host 执行 | 支持 | Python 3.11+；不是 OS sandbox |
 | Session / Legacy inspection / Memory | 支持 | Session 可分支/rewind；旧 Checkpoint 只读检查 |
 | Permission / Plan | 支持 | 六种权限模式、Session 规则、append-only Plan、Resume/Rewind |
+| Subagent | 支持 | 串行只读 delegate；并行任务使用独立 Git worktree/branch/client/Session/Run，显式 merge |
 | Provider 自动解析 | 支持 | init 可持久化；doctor 只读；run/repl 仅当前进程；真实任务失败不 fallback |
 
 ## 安装
@@ -325,10 +326,20 @@ pony sessions list
 pony runs summary latest
 pony checkpoints pending
 pony memory search "release decision"
+pony agents list
+pony agents show <agent-id>
+pony agents merge <agent-id>
+pony agents cleanup <agent-id>
 ```
 
 裸 `pony` 和 `repl` 是交互会话，`run` 是一次性任务。Session Tree 使用 append-only JSONL 保存 Canonical Messages、
 工具交换、compaction 和 task checkpoint。`/rewind` 只创建新的 Session branch，不恢复或改写 workspace 文件。
+
+模型可用 `delegate_worktrees` 在一次 Tool action 中声明最多 8 个命名任务，并用 `max_parallel` 将并发限制在 1-4。
+Pony 要求 parent worktree clean，然后从同一个 exact HEAD 在 `.pony/worktree-agents/` 下为每项创建独立 worktree 和
+`codex/pony-agent-*` branch。readonly child 固定 `dontAsk`；write child 固定 `acceptEdits`，可用内建 file edit，后台
+动态 shell approval 会 fail closed。结果只报告 branch、worktree、diff 与测试证据状态，不自动 merge。审查后使用
+`pony agents merge <agent-id>`；确认已合入且无未提交改动后再 `cleanup`。
 
 ## 执行与旧恢复数据
 

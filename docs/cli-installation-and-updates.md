@@ -211,6 +211,20 @@ python -m pip uninstall pony-code
 已经删除。升级不会自动清理旧 artifact；`pony checkpoints list/show/pending` 只读检查旧数据。旧 Sandbox-bound Session
 resume 返回 `legacy_sandbox_session_unsupported`，不会静默切换到 Host。需要恢复文件时使用 Git 或外部备份。
 
+## Worktree Agent
+
+并行 child 的结果不会自动合入当前 branch：
+
+```bash
+pony agents list
+pony agents show <agent-id>
+pony agents merge <agent-id>
+pony agents cleanup <agent-id>
+```
+
+`merge` 要求当前 worktree clean，并先复验 child branch/base 与文件安全边界；冲突在修改 parent 前由 preflight 拒绝。
+`cleanup` 只接受已合入且没有未提交改动的 child。Provider 任务执行结束后这些本地命令不发模型请求。
+
 ## 常见失败
 
 | 现象 | 检查 |

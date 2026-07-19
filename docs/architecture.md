@@ -43,13 +43,34 @@ pony/
 ├── context/           # source、chunk、render、digest、escaping
 ├── memory/            # notes、recall、retrieval、repo map
 ├── providers/         # 三 Provider、四 Transport、probe、factory
-├── runtime/            # Pony 装配、options、reporting、rewind、working memory
+├── runtime/            # Pony 装配、options、reporting、rewind、working memory、worktree agents
 ├── security/          # private/workspace file、path、redaction、shell command policy
 ├── state/             # session/run、legacy artifact reader、task state、file lock
 ├── tui/               # 行内 prompt、命令菜单、Markdown 与状态渲染
 ├── tools/             # tool registry、executor、effect recorder、subprocess
 └── workspace/         # root discovery、observer
 ```
+
+并行 Worktree Agent 不在 parent Agent Loop 中制造多 tool action；模型仍只返回一个 `delegate_worktrees` action，runtime
+在该 action 内执行 bounded batch：
+
+```mermaid
+flowchart LR
+    P["Parent exact clean HEAD"] --> B["delegate_worktrees batch"]
+    B --> W1["branch/worktree A"]
+    B --> W2["branch/worktree B"]
+    W1 --> C1["independent client/session/run"]
+    W2 --> C2["independent client/session/run"]
+    C1 --> M1["private terminal manifest"]
+    C2 --> M2["private terminal manifest"]
+    M1 --> R["user review"]
+    M2 --> R
+    R --> X["explicit pony agents merge"]
+```
+
+创建、client 构造或 branch 绑定失败时只清理由本次 setup 新建的 worktree/branch；已经运行过的 terminal child 保留供
+审查。merge 在 parent mutation lock 内提交 child diff、做 ancestry 和 conflict preflight，再执行一次 Git merge；从不
+触碰其他用户 worktree。
 
 仓库级开发资产不进入产品 package：
 

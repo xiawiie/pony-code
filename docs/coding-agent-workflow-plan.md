@@ -32,7 +32,7 @@
 | P0 | `/todo` | 不做别名 | `/plan` 已覆盖；第二名称增加命令和文档面，没有独立价值 |
 | Gate M | Session-scoped `/model` | 已由 ADR-0047 收窄并完成 | 保留四变量配置，只允许相同 protocol/endpoint 切换 model |
 | Gate Q | 忙碌时持久化输入队列 | 先 spike | 当前 TUI/Agent 是同步调用，approval 与退出语义尚未解决 |
-| Gate D | 命名 delegate | 串行隔离已完成；再评估并行 | child 各有 client、Session 与 Run，尚无并发调度 |
+| Gate D | 命名 delegate | 串行隔离与 worktree batch 已完成 | child 各有 worktree、branch、client、Session 与 Run |
 | Gate S | 仓库 Skills | 已完成只读威胁模型与实现 | 仅 `.claude/skills` 受信读取；不执行脚本 |
 | P2+ | JSONL/IDE/MCP adapter | 有真实 consumer 再做 | 无 consumer 时协议只会形成第二维护面 |
 
@@ -300,15 +300,16 @@ Model: <current provider>/<model>
 
 #### Gate D：命名 delegate
 
-串行隔离已落地，仍不直接并行：
+串行隔离已落地；Phase 5 追加了不改变单 Action 合同的 worktree batch：
 
 1. `delegate` 接受受限的 `name`；name 进入 child Session ID、隔离 artifact root 与 parent 的 bounded result label。
 2. child 使用独立 Session root、Run root 与装配 factory 新建的 model client；不得复制或共享含可变 transport 计数/state 的对象。
 3. child 固定 `read_only=True`、`dontAsk`（approval=never）、无 Durable Memory/Plan/workspace 写权限，也不能再次 delegate。
 4. parent 只接收最多 4,000 字符的 final result；child 的 Session/Run 不进入 parent store。
-5. 只有串行 contract 与安全测试持续通过后，再评估最多 3 个 stdlib worker。
-
-只有 Provider clients 证明并发无共享状态、partial failure/interrupt 语义明确后才并行。自动 worktree 和可写 child 仍不做。
+5. `delegate_worktrees` 单个 action 接受最多 8 个 named task，并用最多 4 个 stdlib worker；每项通过 factory 新建 client，
+   从 clean exact HEAD 创建独立 branch/worktree/Session/Run。
+6. write child 只使用 `acceptEdits` 内建编辑权限，thread approval fail closed；terminal manifest 返回 diff/test status，
+   merge 与 cleanup 均为显式 CLI 操作。
 
 #### Gate S：Skills
 
@@ -330,7 +331,7 @@ loaded-state 持久化继续不做。
 - 不创建第二 transcript、Todo Store、command registry、Agent Loop、recovery engine 或配置文件。
 - 不让 Mode、Skill、delegate、MCP、IDE 绕过 schema/path/secret/policy/approval/sandbox/recovery。
 - 不展示或持久化 Provider reasoning/chain-of-thought。
-- 不做并行可写 agent、自动 worktree、后台 daemon、distributed authority、remote/multi-tenant sandbox。
+- 不做共享 parent workspace 的并行写 agent、自动 merge、后台 daemon、distributed authority、remote/multi-tenant sandbox。
 - 不因路线图需要而增加 plugin container、service locator、policy DSL 或通用 event bus。
 
 ## 5. Worktree 实施记录

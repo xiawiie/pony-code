@@ -23,7 +23,8 @@
 | Model Attempt | Agent Loop 为得到一个 Action 发起的逻辑尝试 | Transport Attempt |
 | Transport Attempt | Provider client 的一次真实 HTTP request | Tool step |
 | Action | 一个 Tool、Final 或 Retry 决策 | 任意模型文本 |
-| Named Delegate | 由 `delegate{name, task}` 串行启动的只读 child runtime | worker pool、worktree agent 或 parent Session 分支 |
+| Named Delegate | 由 `delegate{name, task}` 串行启动的只读 child runtime | Worktree Agent 或 parent Session 分支 |
+| Worktree Agent | `delegate_worktrees` batch 中绑定独立 Git worktree/branch/client/Session/Run 的 named child | parent workspace、自动 merge 或 daemon worker |
 | Canonical Messages | Session Tree 中唯一的对话 transcript | Provider 私有 history |
 | Session Tree | append-only JSONL 分支树；rewind/fork 追加而非覆写 | Git history |
 | Permission Mode | Session v5 active path 上的交互授权模式；公开值为六个 Claude 风格名称 | approval 结果或 execution plane |
@@ -93,7 +94,11 @@ protocol 与 endpoint；只有专用 Session writer 可在两者不变时替换 
 - `memory_save` 只看当前 top-level user request 的明确授权；delegate 永远不能写 Durable Memory。
 - Named Delegate 每次通过 factory 新建 model client，并使用独立的 child Session/Run root；child 固定 read-only 与
   `dontAsk`，不能写 Plan、Durable Memory 或 workspace，也不能再 delegate。parent 只保存原 tool exchange 和 bounded
-  final result；本产品不调度并行 delegate 或自动创建 worktree。
+  final result。
+- Worktree Agent batch 最多 8 项、并发最多 4；所有 child 从 clean parent 的同一 exact HEAD 创建，client、Session、Run
+  与 Execution Root 均不共享。readonly 固定 `dontAsk`；write 固定 `acceptEdits` 且 thread approval fail closed。完成后
+  branch/worktree/diff/test status 写入 private manifest；不会自动 merge，显式 merge 仍须复验 branch/base、普通文件、
+  parent cleanliness 与 conflict preflight。
 - primary failure 不能被 cleanup、observer 或 finalizer 的次生异常覆盖。
 
 ## Workspace 与 Host 执行不变量

@@ -42,6 +42,7 @@ DEFAULT_TRUSTED_EXECUTABLES = (
     *APPROVAL_TRUSTED_EXECUTABLES,
 )
 _GIT_CONFIG_OVERRIDES = (
+    "commit.gpgSign=false",
     "core.fsmonitor=false",
     "core.hooksPath=/dev/null",
     "core.askPass=",
@@ -989,8 +990,32 @@ def _validate_hardened_git_repository(executable, *, cwd, args, timeout=5):
         )
 
 
-def run_hardened_git(executable, args, *, cwd, timeout=5, check=False, text=False):
+def run_hardened_git(
+    executable,
+    args,
+    *,
+    cwd,
+    timeout=5,
+    check=False,
+    text=False,
+    commit_identity=None,
+):
     args, _ = _validate_hardened_git_args(args)
+    if commit_identity is not None:
+        if not args or args[0] not in {"commit", "merge"}:
+            raise ValueError("git commit identity is only valid for commit or merge")
+        if (
+            not isinstance(commit_identity, tuple)
+            or len(commit_identity) != 2
+            or any(
+                not isinstance(value, str)
+                or not value
+                or len(value) > 200
+                or any(character in value for character in "\r\n\x00")
+                for value in commit_identity
+            )
+        ):
+            raise ValueError("invalid git commit identity")
     with _prepared_executable(executable) as prepared:
         _validate_hardened_git_repository_prepared(
             prepared,
@@ -999,6 +1024,15 @@ def run_hardened_git(executable, args, *, cwd, timeout=5, check=False, text=Fals
             timeout=timeout,
         )
         argv = build_hardened_git_argv(prepared, args)
+        env = _hardened_git_env(cwd, prepared)
+        if commit_identity is not None:
+            name, email = commit_identity
+            env.update(
+                GIT_AUTHOR_NAME=name,
+                GIT_AUTHOR_EMAIL=email,
+                GIT_COMMITTER_NAME=name,
+                GIT_COMMITTER_EMAIL=email,
+            )
         return subprocess.run(
             argv,
             executable=_execution_path(prepared),
@@ -1007,7 +1041,7 @@ def run_hardened_git(executable, args, *, cwd, timeout=5, check=False, text=Fals
             text=text,
             check=check,
             timeout=timeout,
-            env=_hardened_git_env(cwd, prepared),
+            env=env,
             shell=False,
         )
 
