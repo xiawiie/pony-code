@@ -60,6 +60,7 @@ def bound_fake_client(
     endpoint_hash_character="a",
 ):
     client = FakeModelClient(outputs)
+    client.model = model
     client.provider_binding = {
         "protocol_family": protocol_family,
         "model": model,
@@ -147,6 +148,137 @@ def test_resume_rejects_a_different_model_session_binding(tmp_path):
             session_id=original.session["id"],
             options=RuntimeOptions(project_trusted=True),
         )
+
+
+def test_model_switch_persists_and_resumes_with_the_new_binding(tmp_path):
+    workspace = build_workspace(tmp_path)
+    store = SessionStore(tmp_path / ".pony" / "sessions")
+
+    def factory(model):
+        return bound_fake_client([], model=model)
+
+    agent = Pony(
+        model_client=factory("gpt-test"),
+        workspace=workspace,
+        session_store=store,
+        options=RuntimeOptions(
+            project_trusted=True,
+            model_client_factory=factory,
+        ),
+    )
+
+    changed = agent.set_model("gpt-next")
+
+    assert changed["model"] == "gpt-next"
+    assert agent.model_client.model == "gpt-next"
+    assert store.load(agent.session["id"])["provider_binding"]["model"] == "gpt-next"
+    resumed = Pony.from_session(
+        model_client=factory("gpt-next"),
+        workspace=workspace,
+        session_store=store,
+        session_id=agent.session["id"],
+        options=RuntimeOptions(
+            project_trusted=True,
+            model_client_factory=factory,
+        ),
+    )
+    assert resumed.current_model_binding()["model"] == "gpt-next"
+
+
+@pytest.mark.parametrize("branch_operation", ["rewind", "fork"])
+def test_model_switch_survives_branch_to_an_earlier_entry(
+    tmp_path,
+    branch_operation,
+):
+    workspace = build_workspace(tmp_path)
+    store = SessionStore(tmp_path / ".pony" / "sessions")
+
+    def factory(model):
+        return bound_fake_client([], model=model)
+
+    agent = Pony(
+        model_client=factory("gpt-test"),
+        workspace=workspace,
+        session_store=store,
+        options=RuntimeOptions(
+            project_trusted=True,
+            model_client_factory=factory,
+        ),
+    )
+    earlier_entry = store.load_tree(agent.session["id"]).leaf_id
+    agent.set_model("gpt-next")
+
+    if branch_operation == "rewind":
+        agent.rewind_session(earlier_entry)
+    else:
+        agent.fork_session(earlier_entry)
+
+    assert agent.model_client.model == "gpt-next"
+    assert agent.current_model_binding()["model"] == "gpt-next"
+    assert store.load(agent.session["id"])["provider_binding"]["model"] == "gpt-next"
+
+
+def test_model_switch_rejects_target_drift_without_writing(tmp_path):
+    workspace = build_workspace(tmp_path)
+    store = SessionStore(tmp_path / ".pony" / "sessions")
+    agent = Pony(
+        model_client=bound_fake_client([]),
+        workspace=workspace,
+        session_store=store,
+        options=RuntimeOptions(
+            project_trusted=True,
+            model_client_factory=lambda model: bound_fake_client(
+                [],
+                model=model,
+                endpoint_hash_character="b",
+            ),
+        ),
+    )
+    before = store.path(agent.session["id"]).read_bytes()
+
+    with pytest.raises(ValueError, match="^model_session_mismatch$"):
+        agent.set_model("gpt-next")
+
+    assert store.path(agent.session["id"]).read_bytes() == before
+    assert agent.current_model_binding()["model"] == "gpt-test"
+
+
+def test_model_switch_rejects_opaque_provider_state_without_writing(tmp_path):
+    workspace = build_workspace(tmp_path)
+    store = SessionStore(tmp_path / ".pony" / "sessions")
+    agent = Pony(
+        model_client=bound_fake_client([]),
+        workspace=workspace,
+        session_store=store,
+        options=RuntimeOptions(
+            project_trusted=True,
+            model_client_factory=lambda model: bound_fake_client([], model=model),
+        ),
+    )
+    pair = make_tool_pair(
+        name="read_file",
+        arguments={"path": "README.md"},
+        tool_use_id="state-call",
+        result_content="body",
+        created_at="now",
+        tool_status="ok",
+        effect_class="read_only",
+        provider_state=[
+            {
+                "type": "reasoning",
+                "encrypted_content": "opaque-state",
+                "summary": [],
+            }
+        ],
+    )
+    store.append_messages(agent.session["id"], pair)
+    agent._reload_session_projection()
+    before = store.path(agent.session["id"]).read_bytes()
+
+    with pytest.raises(ValueError, match="^model_session_mismatch$"):
+        agent.set_model("gpt-next")
+
+    assert store.path(agent.session["id"]).read_bytes() == before
 
 
 def test_unbound_legacy_session_cannot_replay_provider_state(tmp_path):
@@ -999,7 +1131,7 @@ def test_repeated_tool_call_rejects_short_alternating_loops(tmp_path):
 # =============================================================================
 
 
-def test_build_arg_parser_has_no_model_backend_selection_flags(tmp_path):
+def test_build_arg_parser_has_no_provider_backend_selection_flags(tmp_path):
     parser = pony_cli.build_arg_parser()
     destinations = {action.dest for action in parser._actions}
 
@@ -1007,7 +1139,6 @@ def test_build_arg_parser_has_no_model_backend_selection_flags(tmp_path):
         "provider",
         "profile",
         "auth_mode",
-        "model",
         "base_url",
         "host",
         "connection",
@@ -1086,6 +1217,30 @@ def test_build_agent_switches_provider_from_generic_environment(tmp_path):
     assert model_client.call_args.kwargs["model"] == "gpt-test"
     assert model_client.call_args.kwargs["api_key"] == "sk-openai"
     assert model_client.call_args.kwargs["auth_mode"] == "bearer"
+
+
+def test_build_agent_model_flag_overrides_model_without_writing_env(tmp_path):
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "PONY_PROVIDER=openai-responses\n"
+        "PONY_API_BASE=https://api.openai.com/v1\n"
+        "PONY_API_KEY=test-key\n"
+        "PONY_MODEL=configured-model\n",
+        encoding="utf-8",
+    )
+    before = env_path.read_bytes()
+    args = pony_cli.build_arg_parser().parse_args(
+        ["--cwd", str(tmp_path), "--model", "gpt-next"]
+    )
+
+    with (
+        patch.dict(os.environ, {"HOME": str(tmp_path)}, clear=True),
+        patch("pony.cli.assembly.build_transport_client", side_effect=_fake_transport),
+    ):
+        agent = build_cli_agent(args)
+
+    assert agent.current_model_binding()["model"] == "gpt-next"
+    assert env_path.read_bytes() == before
 
 
 def _fake_transport(protocol, **kwargs):
@@ -1173,7 +1328,7 @@ def test_resume_reuses_current_provider_binding_without_probe(tmp_path):
         "PONY_PROVIDER=auto\n"
         f"PONY_API_BASE={base_url}\n"
         "PONY_API_KEY=test-key\n"
-        f"PONY_MODEL={model}\n",
+        "PONY_MODEL=configured-model\n",
         encoding="utf-8",
     )
     builder = Mock(side_effect=_fake_transport)
@@ -1193,6 +1348,60 @@ def test_resume_reuses_current_provider_binding_without_probe(tmp_path):
 
     assert resumed.session["id"] == original.session["id"]
     assert builder.call_args.args == ("openai_chat_completions",)
+    assert builder.call_args.kwargs["model"] == model
+
+
+def test_resume_model_flag_switches_binding_without_changing_env(tmp_path):
+    workspace = build_workspace(tmp_path)
+    store = SessionStore(tmp_path / ".pony" / "sessions")
+    base_url = "https://gateway.example/v1"
+    original = Pony(
+        model_client=_fake_transport(
+            "openai_chat_completions",
+            model="gateway-model",
+            base_url=base_url,
+        ),
+        workspace=workspace,
+        session_store=store,
+        options=RuntimeOptions(project_trusted=True),
+    )
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "PONY_PROVIDER=auto\n"
+        f"PONY_API_BASE={base_url}\n"
+        "PONY_API_KEY=test-key\n"
+        "PONY_MODEL=gateway-model\n",
+        encoding="utf-8",
+    )
+    before = env_path.read_bytes()
+    builder = Mock(side_effect=_fake_transport)
+    args = pony_cli.build_arg_parser().parse_args(
+        [
+            "--cwd",
+            str(tmp_path),
+            "--resume",
+            original.session["id"],
+            "--model",
+            "gateway-next",
+        ]
+    )
+
+    with (
+        patch.dict(os.environ, {"HOME": str(tmp_path)}, clear=True),
+        patch("pony.cli.assembly.build_transport_client", builder),
+    ):
+        resumed = build_cli_agent(args)
+
+    assert resumed.current_model_binding()["model"] == "gateway-next"
+    assert resumed.model_client.model == "gateway-next"
+    assert store.load(original.session["id"])["provider_binding"]["model"] == (
+        "gateway-next"
+    )
+    assert env_path.read_bytes() == before
+    assert [call.kwargs["model"] for call in builder.call_args_list] == [
+        "gateway-model",
+        "gateway-next",
+    ]
 
 
 def test_resume_auto_rejects_non_loopback_ollama_binding(tmp_path):
@@ -1272,7 +1481,6 @@ def test_resume_auth_binding_without_key_fails_before_client_build(tmp_path):
 @pytest.mark.parametrize(
     "override",
     (
-        {"PONY_MODEL": "different-model"},
         {"PONY_API_BASE": "https://other.example/v1"},
         {"PONY_PROVIDER": "openai-responses"},
     ),

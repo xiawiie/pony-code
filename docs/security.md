@@ -138,8 +138,9 @@ Session 与 Run 是 active writer。旧 Checkpoint、Tool Change 和 Sandbox art
 record type/version、损坏、linked、oversized 或不安全记录。Checkpoint CLI 只提供 `list/show/pending`，正常启动不回滚
 workspace，也不通过 `resolve-pending`、restore、prune 或 Source Apply 修改旧 store。需要恢复 Source Root 时使用 Git 或外部备份。
 
-Session Model Binding 固化协议、模型与 endpoint hash；配置变化时返回 `model_session_mismatch`。Provider opaque state 只在
-同一绑定内重放，不渲染到普通日志。
+Session Model Binding 固化协议、模型与 endpoint hash。resume 仍拒绝 protocol/endpoint 漂移；model 只允许通过专用
+writer 在相同 protocol/endpoint 下替换，并在 Session lock 内比较 expected binding。含 opaque Provider state 的 Session
+拒绝模型切换并返回 `model_session_mismatch`；opaque state 不跨模型重放，也不渲染到普通日志。
 
 ## 明确不保证
 

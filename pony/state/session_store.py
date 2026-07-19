@@ -403,14 +403,8 @@ def _validate_projection(payload, session_id, *, version=SESSION_FORMAT_VERSION)
         except ValueError as exc:
             raise SessionFormatError(str(exc)) from None
     binding = payload.get("provider_binding")
-    if binding is not None and (
-        not isinstance(binding, dict)
-        or binding.keys() != {"protocol_family", "model", "endpoint_hash"}
-        or any(not isinstance(value, str) or not value for value in binding.values())
-        or binding["protocol_family"] not in _PROTOCOL_FAMILIES
-        or re.fullmatch(r"sha256:[0-9a-f]{64}", binding["endpoint_hash"]) is None
-    ):
-        raise SessionFormatError("invalid provider binding")
+    if binding is not None:
+        _validate_provider_binding(binding)
     identities = [payload["runtime_identity"]]
     items = payload["checkpoints"].get("items", {})
     if isinstance(items, dict):
@@ -460,6 +454,18 @@ def _validate_session_info_updates(values):
         ):
             raise SessionFormatError("unsupported runtime identity feature flag")
     return values
+
+
+def _validate_provider_binding(binding):
+    if (
+        not isinstance(binding, dict)
+        or binding.keys() != {"protocol_family", "model", "endpoint_hash"}
+        or any(not isinstance(value, str) or not value for value in binding.values())
+        or binding["protocol_family"] not in _PROTOCOL_FAMILIES
+        or re.fullmatch(r"sha256:[0-9a-f]{64}", binding["endpoint_hash"]) is None
+    ):
+        raise SessionFormatError("invalid provider binding")
+    return binding
 
 
 def _validate_legacy_payload(payload, session_id):
@@ -1527,6 +1533,23 @@ def _extend_tree(tree, entries):
     )
 
 
+def _carry_provider_binding_across_branch(tree, entries):
+    current = tree.projection.get("provider_binding")
+    if not isinstance(current, dict):
+        return list(entries)
+    branched = _extend_tree(tree, entries)
+    if branched.projection.get("provider_binding") == current:
+        return list(entries)
+    return [
+        *entries,
+        _new_entry(
+            "session_info",
+            {"set": {"provider_binding": deepcopy(current)}},
+            entries[-1]["id"],
+        ),
+    ]
+
+
 class SessionStore:
     def __init__(self, root, redactor=None):
         self.root = harden_private_tree(root)
@@ -1957,6 +1980,33 @@ class SessionStore:
                 entries.append(_new_entry("session_info", {"set": changed}, parent_id))
             return self._append_entries_unlocked(session_id, entries)
 
+    def set_provider_model(self, session_id, binding, *, expected_binding):
+        """Atomically replace only the model in the active Provider binding."""
+        session_id = _session_id(session_id)
+        candidate = self._redactor(deepcopy(binding))
+        expected = deepcopy(expected_binding)
+        _validate_provider_binding(candidate)
+        _validate_provider_binding(expected)
+        with file_lock.locked_file(self.lock_path, require_existing=True):
+            tree = self._read_tree_unlocked(session_id)
+            current = tree.projection.get("provider_binding")
+            if current != expected:
+                raise SessionFormatError("model_session_mismatch")
+            if (
+                candidate["protocol_family"] != current["protocol_family"]
+                or candidate["endpoint_hash"] != current["endpoint_hash"]
+            ):
+                raise SessionFormatError("model_session_mismatch")
+            if candidate == current:
+                return None
+            entry = _new_entry(
+                "session_info",
+                {"set": {"provider_binding": candidate}},
+                tree.leaf_id,
+            )
+            self._append_entries_unlocked(session_id, [entry])
+            return deepcopy(entry)
+
     def append_control(
         self,
         session_id,
@@ -1991,7 +2041,10 @@ class SessionStore:
                 raise SessionFormatError("control entry data must be an object")
             entry = _new_entry(kind, safe_data, target)
             _validate_entry(entry, known)
-            self._append_entries_unlocked(session_id, [entry])
+            entries = [entry]
+            if kind == "rewind":
+                entries = _carry_provider_binding_across_branch(tree, entries)
+            self._append_entries_unlocked(session_id, entries)
             return deepcopy(entry)
 
     def set_permission_mode(self, session_id, mode, *, pre_mode=None):
@@ -2201,9 +2254,13 @@ class SessionStore:
                 rewind_entry["id"],
             )
             _validate_entry(summary_entry, known | {rewind_entry["id"]})
+            entries = _carry_provider_binding_across_branch(
+                tree,
+                [rewind_entry, summary_entry],
+            )
             self._append_entries_unlocked(
                 session_id,
-                [rewind_entry, summary_entry],
+                entries,
             )
             return deepcopy(rewind_entry), deepcopy(summary_entry)
 

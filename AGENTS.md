@@ -66,7 +66,8 @@ CLI/TUI 合同：
 - 裸 `pony` 与 `pony repl` 进入同一个交互会话；`pony run <prompt...>` 一次执行后退出。
 - `runs`、`sessions`、`session`、`checkpoints` 等显式管理命令保持独立；未知首 token 不得静默变成 prompt。
 - TUI 是 presentation adapter，必须与纯文本 fallback 共用 REPL handler、Agent、Session、finalize 和错误语义。
-- `/` 菜单只展示真实命令；不得增加绕过 permission check 的 `!` shell mode、动态 Provider/Model 或第二命令 registry。
+- `/` 菜单只展示真实命令；不得增加绕过 permission check 的 `!` shell mode、动态 Provider registry、模型 catalog 或
+  第二命令 registry。`/model` 只允许当前 Session 在相同 protocol/endpoint 内切换模型。
 - `--permission-mode` 只适用于 `run/repl`，公开值与 Claude Code 一致：`manual|auto|acceptEdits|bypassPermissions|dontAsk|plan`；
   `manual` 只在 CLI 边界映射为内部 `default`。`bypassPermissions` 必须通过两个 dangerous bypass flag 之一显式启用。
 - `/permissions` 与 `/allowed-tools` 共用 REPL handler 管理 allow/ask/deny 规则和 mode；CLI allowed/disallowed flags
@@ -122,7 +123,8 @@ PONY_MODEL
   probe payload、response、完整 endpoint 或 reasoning。
 - API Base 禁止 userinfo、query、fragment 与内嵌凭证；除 loopback 外必须 HTTPS。Adapter 不补版本前缀、不跟随
   redirect、不在失败后切换 Transport。
-- Session binding 的 protocol、model 或 endpoint 变化返回稳定的 `model_session_mismatch`，不跨协议重放状态。
+- Session binding 的 protocol 或 endpoint 变化返回稳定的 `model_session_mismatch`。model 只能通过专用 Session writer
+  显式切换；含 opaque Provider state 的 Session 拒绝切换，不跨协议或 endpoint 重放状态。
 
 修改该合同须同步检查 config/providers/CLI、benchmarks、`.env.example`、用户文档和 Provider/CLI 测试。
 

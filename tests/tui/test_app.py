@@ -100,7 +100,7 @@ def test_slash_completion_is_generated_from_documented_commands():
         item.text
         for item in SlashCommandCompleter().get_completions(Document("/"), None)
     }
-    assert {"/permissions", "/allowed-tools", "/plan"} <= {
+    assert {"/permissions", "/allowed-tools", "/model", "/plan"} <= {
         item.text
         for item in SlashCommandCompleter().get_completions(Document("/"), None)
     }
@@ -434,6 +434,30 @@ def test_toolbar_is_width_bounded_and_keeps_only_essential_status():
         assert "session-must-not-appear" not in rendered
         assert "checkpoint-must-not-appear" not in rendered
         assert "api-must-not-appear" not in rendered
+
+
+def test_toolbar_reads_the_model_from_the_current_client():
+    client = SimpleNamespace(
+        model="gpt-next",
+        provider_metadata={"protocol_family": "openai_responses"},
+    )
+    agent = SimpleNamespace(
+        current_permission_mode=lambda: "auto",
+        workspace=SimpleNamespace(cwd="/repo", branch="main"),
+        model_client=client,
+    )
+
+    rendered = "".join(
+        fragment[1]
+        for fragment in TuiRenderer(no_color=True).toolbar(
+            agent,
+            model="gpt-old",
+            columns=80,
+        )
+    )
+
+    assert "openai/gpt-next" in rendered
+    assert "gpt-old" not in rendered
 
 
 def test_trace_projects_one_tool_line_and_hides_internal_lifecycle(monkeypatch):

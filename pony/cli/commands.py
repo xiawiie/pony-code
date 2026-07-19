@@ -45,6 +45,7 @@ EXAMPLES:
     pony
     pony init
     pony run "inspect the failing tests"
+    pony --model claude-sonnet-4-6 run "inspect the failing tests"
     pony --permission-mode plan run "inspect and plan the change"
     pony config set-secret PONY_API_KEY
     pony --permission-mode manual run "run the requested shell command"
@@ -77,6 +78,7 @@ Flags:
       --no-color   disable terminal colors
       --permission-mode  permission mode: acceptEdits, auto, bypassPermissions,
                          manual, dontAsk, or plan
+      --model            select this Session's model without changing .env
       --allowed-tools    exact tool names to allow for this Session
       --disallowed-tools exact tool names to deny for this Session
       --allow-dangerously-skip-permissions

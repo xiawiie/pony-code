@@ -84,10 +84,12 @@ def test_delegate_client_factory_rebuilds_the_resolved_transport():
 
     first = _delegate_model_client_factory(config, 30)()
     second = _delegate_model_client_factory(config, 30)()
+    replacement = _delegate_model_client_factory(config, 30)("gpt-next")
 
     assert second is not first
     assert second.provider_binding == first.provider_binding
     assert second.capabilities == first.capabilities
+    assert replacement.model == "gpt-next"
 
 
 def test_run_command_calls_agent_once(tmp_path, monkeypatch, capsys):
@@ -142,6 +144,16 @@ def test_permission_mode_is_rejected_for_management_commands(
         == 2
     )
     assert "permission flags are only valid" in capsys.readouterr().err
+
+
+def test_model_flag_is_rejected_for_management_commands(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(
+        "pony.cli.app.build_agent",
+        lambda _args: pytest.fail("agent must not be built"),
+    )
+
+    assert main(["--cwd", str(tmp_path), "--model", "gpt-next", "status"]) == 2
+    assert "--model is only valid" in capsys.readouterr().err
 
 
 def test_bypass_permission_mode_requires_explicit_dangerous_opt_in(
@@ -891,7 +903,6 @@ def test_init_no_input_never_prompts_or_writes(tmp_path, monkeypatch, capsys):
     [
         ["--provider", "openai"],
         ["--profile", "official"],
-        ["--model", "other-model"],
         ["--base-url", "https://example.com/v1"],
         ["--api-key", "sk-cli-secret-123456789"],
         ["--connection", "legacy"],

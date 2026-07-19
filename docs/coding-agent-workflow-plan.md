@@ -30,7 +30,7 @@
 | P0 | `/mode` 与显式 `--mode` | 做 | 同时覆盖交互和 one-shot，不形成配置默认值 |
 | P0 | Resume 卡、prompt history、状态投影 | 做 | 可从已有 Session/checkpoint 派生，不需新 Store |
 | P0 | `/todo` | 不做别名 | `/plan` 已覆盖；第二名称增加命令和文档面，没有独立价值 |
-| Gate M | 命名 Model Target 与 `/model` | 先 ADR，默认不做 | 与四变量配置和 immutable Session Binding 合同冲突 |
+| Gate M | Session-scoped `/model` | 已由 ADR-0047 收窄并完成 | 保留四变量配置，只允许相同 protocol/endpoint 切换 model |
 | Gate Q | 忙碌时持久化输入队列 | 先 spike | 当前 TUI/Agent 是同步调用，approval 与退出语义尚未解决 |
 | Gate D | 命名 delegate | 串行隔离已完成；再评估并行 | child 各有 client、Session 与 Run，尚无并发调度 |
 | Gate S | 仓库 Skills | 已完成只读威胁模型与实现 | 仅 `.claude/skills` 受信读取；不执行脚本 |
@@ -279,19 +279,12 @@ Model: <current provider>/<model>
 
 ### 4.2 条件满足后能做
 
-#### Gate M：多 Model Target
+#### Gate M：已收窄为 Session-scoped model switching
 
-开始前必须批准一份 ADR，明确回答：
-
-- 是否真的需要同一 Session 跨 Provider/endpoint 切换，还是“新 Session 选择另一个四变量配置”已足够；
-- 是否接受用 Target ID 扩大 Session Binding，及跨协议时 Canonical Messages/opaque state 的精确 replay 规则；
-- `.env` catalog 的 secret bundle 如何防止 project endpoint 与 process key 混配；
-- 既有 Session binding 如何唯一映射、无法映射时如何 fail closed；
-- `pony init/config show/doctor/probe/benchmark/live harness` 的完整迁移和错误码；
-- 是否值得在已标记 1.0 stable 的产品上硬切唯一配置合同。
-
-在 ADR 通过前保持现有四变量和 `model_session_mismatch`。不得先修改 `AGENTS.md` 来为方案自我授权，不得保留两套长期
-parser，不得自动迁移 secret。若最终批准，再用独立 release train 实施，不能与 WorkflowMode/Plan 混在同一分支。
+[ADR-0047](adr/0047-session-scoped-model-switching.md) 没有批准命名 Target、Provider/endpoint 切换或第二配置面，而是只允许
+当前 Session 在相同 `protocol_family` 与 `endpoint_hash` 下替换 model。`/model` 与 `run/repl --model` 共用该合同，
+`.env` 保持唯一 Provider 默认配置；resume 以 Session model 为准。专用 Session writer 在锁内比较 expected binding，
+含 opaque Provider state 的历史和任何 protocol/endpoint 漂移都以 `model_session_mismatch` 零写拒绝。
 
 #### Gate Q：持续输入队列
 
@@ -365,7 +358,7 @@ integration exact SHA 创建；feature worktree 不各自追赶 `origin/main`，
 
 | Gate | 建议分支 | 第一切片 | 禁止顺手做 |
 | --- | --- | --- | --- |
-| M | `codex/model-target-adr` | ADR + config/session threat model，无 runtime code | `/model` UI、legacy fallback |
+| M | `codex/pony-cap-model` | ADR-0047 + Session-scoped `/model`、`--model` 与完整合同测试 | target registry、跨 endpoint、fallback |
 | Q | `codex/input-queue-spike` | 假 Provider + fake prompt 的线程/approval/exit spike | durable format、daemon、steer |
 | D | `codex/delegate-isolation` | 独立 child client/session/run，仍串行 | batch、线程池、可写 child |
 | S | `codex/pony-cap-skills` | ADR-0046 + read-only project catalog、`/name` 和 context 注入 | scripts、在线安装、HOME/plugin catalog |
@@ -485,8 +478,10 @@ P0 只有同时满足以下条件才算完成：
 - Resume 卡和 prompt history 均从 active Canonical state 派生，不建立新持久化文件。
 - Canonical Messages、Session Tree、Tool policy、Run/Trace、Recovery 各自仍只有一个 owner。
 - UI/trace/artifact 不泄漏 Key、reasoning、绝对路径、Session/checkpoint ID 或 endpoint。
-- 未引入多 Target、输入队列、并行 delegate、Skills、MCP/IDE 或新 runtime dependency。
+- P0 当时未引入多 Target、输入队列、并行 delegate、Skills、MCP/IDE 或新 runtime dependency；后续 Gate 能力以各自
+  已批准 ADR 和当前产品文档为准。
 - 聚焦测试和最终 exact HEAD 的 `./scripts/check.sh` 通过；目标 integration worktree clean。
 - G7/G8 根据当轮授权明确记录为通过、失败或未执行；不夸大离线证据。
 
-Gate M/Q/D/S 不属于 P0 发布阻断项。没有 ADR、真实 consumer 或 spike 证据时，最正确的实现是暂不实现。
+Gate M 后续已由 ADR-0047 收窄为 Session-scoped model switching；Gate S 也已由 ADR-0046 收窄为只读 Project Skills。
+其余 Gate 没有 ADR、真实 consumer 或 spike 证据时仍不实现。

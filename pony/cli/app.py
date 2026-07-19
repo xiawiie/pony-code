@@ -155,6 +155,12 @@ def _validate_agent_command(invocation):
         or bool(getattr(args, "allowed_tool_rules", ()))
         or bool(getattr(args, "disallowed_tool_rules", ()))
     )
+    if getattr(args, "model", None) is not None and not agent_command:
+        raise CliError(
+            code="usage",
+            message="--model is only valid with `pony run` or `pony repl`",
+            exit_code=CLI_EXIT_USAGE,
+        )
     if permission_flags and not agent_command:
         raise CliError(
             code="usage",

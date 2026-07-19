@@ -13,6 +13,7 @@ class SlashCommand:
 SLASH_COMMANDS = (
     SlashCommand("/help", "/help", "Show interactive commands"),
     SlashCommand("/memory", "/memory", "Show working memory and memory files"),
+    SlashCommand("/model", "/model [model]", "Show or change the Session model"),
     SlashCommand("/plan", "/plan [open|share|description]", "Enter or view Plan"),
     SlashCommand("/permissions", "/permissions", "Manage permission rules"),
     SlashCommand("/allowed-tools", "/allowed-tools", "Alias of /permissions"),

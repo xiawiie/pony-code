@@ -581,7 +581,7 @@ def test_session_binding_accepts_current_provider_candidates(
     assert resolved["resolution_source"] == "session_binding"
 
 
-@pytest.mark.parametrize("field", ("protocol_family", "model", "endpoint_hash"))
+@pytest.mark.parametrize("field", ("protocol_family", "endpoint_hash"))
 def test_incompatible_session_binding_fails_closed(field):
     config = resolve_model_config(
         project_env={
@@ -606,6 +606,32 @@ def test_incompatible_session_binding_fails_closed(field):
 
     with pytest.raises(ValueError, match="^model_session_mismatch$"):
         resolve_session_provider_binding(config, binding)
+
+
+def test_session_binding_model_overrides_environment_without_probe():
+    config = resolve_model_config(
+        project_env={
+            PROVIDER_ENV_NAME: "openai",
+            API_BASE_ENV_NAME: "https://gateway.example/v1",
+            MODEL_ENV_NAME: "configured-model",
+            API_KEY_ENV_NAME: "test-key",
+        },
+        process_env={},
+    )
+    binding = {
+        "protocol_family": "openai_chat_completions",
+        "model": "session-model",
+        "endpoint_hash": "sha256:"
+        + hashlib.sha256(b"https://gateway.example/v1").hexdigest(),
+    }
+
+    resolved = resolve_session_provider_binding(config, binding)
+
+    assert resolved["model"] == {
+        "value": "session-model",
+        "source": "session_binding",
+        "name": "",
+    }
 
 
 @pytest.mark.parametrize(

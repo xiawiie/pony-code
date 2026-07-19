@@ -209,6 +209,7 @@ Sandbox-bound Session 在 CLI resume 装配阶段稳定拒绝，不能通过 rew
 ```text
 /permissions
 /allowed-tools
+/model [model]
 /plan [open|share|description]
 /<project-skill> [prompt]
 /compact [focus]
@@ -221,6 +222,11 @@ Sandbox-bound Session 在 CLI resume 装配阶段稳定拒绝，不能通过 rew
 ```
 
 非交互等价入口使用 `pony session inspect|tree|compact|checkpoint|fork|rewind|label|clone|tail-repair`。
+`/model` 零写显示当前 Provider、protocol 与 model；`/model <model>` 通过专用 Session writer 在相同
+protocol/endpoint 下替换 model。`pony run` 与 `pony repl` 可用 `--model <model>` 为 fresh 或 resumed Session 请求同样的
+覆盖，不修改 `.env`。resume 以已保存的 Session model 为准；显式 `--model` 在 protocol/endpoint 兼容检查后应用。含
+opaque Provider state 的历史拒绝模型切换。
+
 `pony run` 与 `pony repl` 可使用一次性
 `--permission-mode manual|auto|acceptEdits|bypassPermissions|dontAsk|plan`；它追加 Session control entry，不进入 `.env`、
 `pony.toml` 或 `RuntimeOptions`。`--allowed-tools` 与 `--disallowed-tools` 和 slash picker 共用
