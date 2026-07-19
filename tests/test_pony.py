@@ -36,7 +36,6 @@ def build_workspace(tmp_path):
 def build_agent(tmp_path, outputs, **kwargs):
     workspace = build_workspace(tmp_path)
     store = SessionStore(tmp_path / ".pony" / "sessions")
-    kwargs.pop("approval_policy", None)
     agent = Pony(
         model_client=FakeModelClient(outputs),
         workspace=workspace,
@@ -45,6 +44,10 @@ def build_agent(tmp_path, outputs, **kwargs):
     )
     agent._approval_prompt = lambda _name, _args: True
     return agent
+
+
+def build_cli_agent(args):
+    return pony_cli.build_agent(args, confirm=lambda _root: True)
 
 
 def bound_fake_client(
@@ -109,7 +112,7 @@ def test_new_session_persists_provider_binding(tmp_path):
         model_client=client,
         workspace=workspace,
         session_store=store,
-        options=RuntimeOptions(approval_policy="auto"),
+        options=RuntimeOptions(project_trusted=True),
     )
 
     assert agent.session["provider_binding"] == client.provider_binding
@@ -125,7 +128,7 @@ def test_resume_rejects_a_different_model_session_binding(tmp_path):
         model_client=bound_fake_client([]),
         workspace=workspace,
         session_store=store,
-        options=RuntimeOptions(approval_policy="auto"),
+        options=RuntimeOptions(project_trusted=True),
     )
     different = bound_fake_client(
         [],
@@ -140,7 +143,7 @@ def test_resume_rejects_a_different_model_session_binding(tmp_path):
             workspace=workspace,
             session_store=store,
             session_id=original.session["id"],
-            options=RuntimeOptions(approval_policy="auto"),
+            options=RuntimeOptions(project_trusted=True),
         )
 
 
@@ -172,7 +175,7 @@ def test_unbound_legacy_session_cannot_replay_provider_state(tmp_path):
             workspace=original.workspace,
             session_store=original.session_store,
             session_id=original.session["id"],
-            options=RuntimeOptions(approval_policy="auto"),
+            options=RuntimeOptions(project_trusted=True),
         )
 
 
@@ -185,7 +188,7 @@ def test_unbound_session_cannot_resume_with_a_bound_model(tmp_path):
             workspace=original.workspace,
             session_store=original.session_store,
             session_id=original.session["id"],
-            options=RuntimeOptions(approval_policy="auto"),
+            options=RuntimeOptions(project_trusted=True),
         )
 
 
@@ -229,8 +232,7 @@ def test_programmatic_resume_sanitizes_process_secret_before_first_request(
         {"role": "user", "content": secret, "_pony_meta": {"created_at": "test"}}
     ]
     raw["format_version"] = 1
-    raw.pop("workflow_mode")
-    raw.pop("active_plan")
+    raw.pop("permission_mode")
     original.session_store.path(raw["id"]).unlink()
     legacy = original.session_store.legacy_path(raw["id"])
     legacy.write_text(json.dumps(raw), encoding="utf-8")
@@ -243,7 +245,7 @@ def test_programmatic_resume_sanitizes_process_secret_before_first_request(
         workspace=original.workspace,
         session_store=resume_store,
         session_id=raw["id"],
-        options=RuntimeOptions(approval_policy="auto"),
+        options=RuntimeOptions(project_trusted=True),
     )
     resumed.ask("continue")
 
@@ -332,7 +334,7 @@ def test_supplied_legacy_session_is_rejected_outside_store_migration(
             workspace=workspace,
             session_store=store,
             session=raw_session,
-            options=RuntimeOptions(approval_policy="auto"),
+            options=RuntimeOptions(project_trusted=True),
         )
 
 
@@ -362,19 +364,11 @@ def test_repeated_tool_detection_reads_canonical_tool_use_blocks(tmp_path):
     assert agent.repeated_tool_call("read_file", {"path": "c.py"}) is False
 
 
-def test_reset_clears_transient_v3_state_and_preserves_audit_items(tmp_path):
+def test_reset_clears_transient_state_and_preserves_permission_and_audit(tmp_path):
     agent = build_agent(tmp_path, ["done"])
     agent.ask("q")
     session_id = agent.session["id"]
-    agent.session_store.set_workflow_mode(session_id, "review")
-    agent.session_store.set_active_plan(
-        session_id,
-        {
-            "goal": "Reset this plan",
-            "items": [{"id": "reset", "text": "Reset state", "status": "pending"}],
-        },
-    )
-    agent._reload_session_projection()
+    agent.set_permission_mode("plan")
     agent.session["recently_recalled"] = ["note"]
     agent.session["_recall_errors"] = {"count": 2, "last": "x"}
     agent.session["working_memory"] = {
@@ -400,8 +394,7 @@ def test_reset_clears_transient_v3_state_and_preserves_audit_items(tmp_path):
     assert agent.session["checkpoints"]["items"] == {"c1": {"checkpoint_id": "c1"}}
     assert agent.session["resume_state"] == {}
     assert agent.session["recovery"]["current_checkpoint_id"] == ""
-    assert agent.session["workflow_mode"] == "review"
-    assert agent.session["active_plan"] == {"goal": "", "items": []}
+    assert agent.session["permission_mode"] == "plan"
 
 
 def test_agent_runs_tool_then_final(tmp_path):
@@ -472,7 +465,7 @@ def test_agent_stores_file_summaries_without_episodic_notes(tmp_path):
         workspace=agent.workspace,
         session_store=agent.session_store,
         session_id=agent.session["id"],
-        options=RuntimeOptions(approval_policy="auto"),
+        options=RuntimeOptions(project_trusted=True),
     )
 
     assert resumed.ask("What color is the deploy key?") == "It is red."
@@ -500,7 +493,7 @@ def test_file_summary_cache_is_invalidated_on_out_of_band_edit_and_path_spelling
         workspace=agent.workspace,
         session_store=agent.session_store,
         session_id=agent.session["id"],
-        options=RuntimeOptions(approval_policy="auto"),
+        options=RuntimeOptions(project_trusted=True),
     )
 
     assert "sample.txt" not in resumed.session["memory"]["file_summaries"]
@@ -610,7 +603,7 @@ def test_agent_saves_and_resumes_session(tmp_path):
         workspace=agent.workspace,
         session_store=agent.session_store,
         session_id=agent.session["id"],
-        options=RuntimeOptions(approval_policy="auto"),
+        options=RuntimeOptions(project_trusted=True),
     )
 
     assert resumed.session["messages"][0]["content"] == "Start a session"
@@ -659,7 +652,7 @@ def test_patch_file_replaces_exact_match(tmp_path):
 
 
 def test_invalid_risky_tool_does_not_prompt_for_approval(tmp_path):
-    agent = build_agent(tmp_path, [], approval_policy="ask")
+    agent = build_agent(tmp_path, [])
 
     with patch("builtins.input") as mock_input:
         result = agent.run_tool("write_file", {})
@@ -769,7 +762,7 @@ def test_build_agent_uses_resolved_openai_client_and_project_env(tmp_path):
     with patch.dict(os.environ, {"HOME": str(tmp_path)}, clear=True):
         with patch("pony.cli.assembly.build_transport_client") as model_client:
             fake_client = model_client.return_value
-            agent = pony_cli.build_agent(args)
+            agent = build_cli_agent(args)
 
     model_client.assert_called_once()
     assert model_client.call_args.args == ("openai_chat_completions",)
@@ -799,7 +792,7 @@ def test_build_agent_uses_process_env_when_project_env_is_missing(tmp_path):
         clear=True,
     ):
         with patch("pony.cli.assembly.build_transport_client") as model_client:
-            pony_cli.build_agent(args)
+            build_cli_agent(args)
 
     assert model_client.call_args.kwargs["base_url"] == "https://process.example/v1"
     assert model_client.call_args.kwargs["api_key"] == "sk-process"
@@ -820,7 +813,7 @@ def test_build_agent_switches_provider_from_generic_environment(tmp_path):
         clear=True,
     ):
         with patch("pony.cli.assembly.build_transport_client") as model_client:
-            pony_cli.build_agent(args)
+            build_cli_agent(args)
 
     assert model_client.call_args.args == ("openai_responses",)
     assert model_client.call_args.kwargs["model"] == "gpt-test"
@@ -881,7 +874,7 @@ def test_build_agent_detects_missing_provider_without_writing_project_env(tmp_pa
             side_effect=lambda _client: next(reports),
         ),
     ):
-        agent = pony_cli.build_agent(args)
+        agent = build_cli_agent(args)
 
     after = env_path.stat()
     assert agent.model_client.provider_binding["protocol_family"] == "openai_responses"
@@ -907,7 +900,7 @@ def test_resume_reuses_current_provider_binding_without_probe(tmp_path):
         ),
         workspace=workspace,
         session_store=store,
-        options=RuntimeOptions(approval_policy="auto"),
+        options=RuntimeOptions(project_trusted=True),
     )
     (tmp_path / ".env").write_text(
         "PONY_PROVIDER=auto\n"
@@ -929,7 +922,7 @@ def test_resume_reuses_current_provider_binding_without_probe(tmp_path):
             side_effect=AssertionError("matching Session binding was probed"),
         ),
     ):
-        resumed = pony_cli.build_agent(args)
+        resumed = build_cli_agent(args)
 
     assert resumed.session["id"] == original.session["id"]
     assert builder.call_args.args == ("openai_chat_completions",)
@@ -948,7 +941,7 @@ def test_resume_auto_reuses_no_auth_binding_before_key_validation(tmp_path):
         ),
         workspace=workspace,
         session_store=store,
-        options=RuntimeOptions(approval_policy="auto"),
+        options=RuntimeOptions(project_trusted=True),
     )
     (tmp_path / ".env").write_text(
         "PONY_PROVIDER=auto\n"
@@ -970,7 +963,7 @@ def test_resume_auto_reuses_no_auth_binding_before_key_validation(tmp_path):
             side_effect=AssertionError("matching no-auth binding was probed"),
         ),
     ):
-        resumed = pony_cli.build_agent(args)
+        resumed = build_cli_agent(args)
 
     assert resumed.session["id"] == original.session["id"]
     assert builder.call_args.args == ("ollama_chat",)
@@ -990,7 +983,7 @@ def test_resume_auth_binding_without_key_fails_before_client_build(tmp_path):
         ),
         workspace=workspace,
         session_store=store,
-        options=RuntimeOptions(approval_policy="auto"),
+        options=RuntimeOptions(project_trusted=True),
     )
     (tmp_path / ".env").write_text(
         "PONY_PROVIDER=auto\n"
@@ -1011,7 +1004,7 @@ def test_resume_auth_binding_without_key_fails_before_client_build(tmp_path):
         ),
         pytest.raises(ValueError, match="api_key_not_configured"),
     ):
-        pony_cli.build_agent(args)
+        build_cli_agent(args)
 
 
 @pytest.mark.parametrize(
@@ -1035,7 +1028,7 @@ def test_resume_binding_mismatch_fails_before_network(tmp_path, override):
         ),
         workspace=workspace,
         session_store=store,
-        options=RuntimeOptions(approval_policy="auto"),
+        options=RuntimeOptions(project_trusted=True),
     )
     values = {
         "PONY_PROVIDER": "auto",
@@ -1064,7 +1057,7 @@ def test_resume_binding_mismatch_fails_before_network(tmp_path, override):
         ),
         pytest.raises(ValueError, match="model_session_mismatch"),
     ):
-        pony_cli.build_agent(args)
+        build_cli_agent(args)
 
 
 # =============================================================================
