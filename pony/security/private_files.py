@@ -549,6 +549,7 @@ class _PrivateAtomicWriteState:
     sync_file: object
     sync_parent: object
     max_existing_bytes: object
+    require_absent: bool
     temp_name: str
     descriptor: int = -1
     backup_descriptor: int = -1
@@ -575,6 +576,7 @@ def _begin_private_atomic_write(
     fsync_file,
     fsync_parent,
     max_existing_bytes,
+    require_absent,
 ):
     path, parent_descriptor = _open_private_parent(
         path,
@@ -591,6 +593,7 @@ def _begin_private_atomic_write(
         sync_file=fsync_file or os.fsync,
         sync_parent=fsync_parent or os.fsync,
         max_existing_bytes=max_existing_bytes,
+        require_absent=bool(require_absent),
         temp_name=f".{path.name}.{secrets.token_hex(12)}.tmp",
     )
 
@@ -603,6 +606,8 @@ def _inspect_existing_private_entry(state):
     if existing is not None and (
         not stat.S_ISREG(existing.st_mode) or existing.st_nlink != 1
     ):
+        raise ValueError(state.error)
+    if state.require_absent and existing is not None:
         raise ValueError(state.error)
     if (
         existing is not None
@@ -769,12 +774,37 @@ def _require_unchanged_private_target(state):
 
 def _install_private_temp(state):
     state.replace_started = True
-    os.replace(
-        state.temp_name,
-        state.path.name,
-        src_dir_fd=state.parent_descriptor,
-        dst_dir_fd=state.parent_descriptor,
-    )
+    if state.require_absent:
+        try:
+            os.link(
+                state.temp_name,
+                state.path.name,
+                src_dir_fd=state.parent_descriptor,
+                dst_dir_fd=state.parent_descriptor,
+                follow_symlinks=False,
+            )
+        except FileExistsError as exc:
+            raise ValueError(state.error) from exc
+        linked = _private_entry_stat(state.parent_descriptor, state.path.name)
+        temp = _private_entry_stat(state.parent_descriptor, state.temp_name)
+        opened = os.fstat(state.descriptor)
+        if (
+            (linked.st_dev, linked.st_ino) != state.identity
+            or (temp.st_dev, temp.st_ino) != state.identity
+            or (opened.st_dev, opened.st_ino) != state.identity
+            or linked.st_nlink != 2
+            or temp.st_nlink != 2
+            or opened.st_nlink != 2
+        ):
+            raise ValueError(state.error)
+        os.unlink(state.temp_name, dir_fd=state.parent_descriptor)
+    else:
+        os.replace(
+            state.temp_name,
+            state.path.name,
+            src_dir_fd=state.parent_descriptor,
+            dst_dir_fd=state.parent_descriptor,
+        )
     current = _private_entry_stat(state.parent_descriptor, state.path.name)
     opened = os.fstat(state.descriptor)
     if (
@@ -992,6 +1022,8 @@ def write_private_bytes_atomic(
     fsync_file=None,
     fsync_parent=None,
     max_existing_bytes=None,
+    require_absent=False,
+    validate_commit=None,
 ):
     if not isinstance(data, (bytes, bytearray)):
         raise TypeError("private atomic write requires bytes")
@@ -1004,6 +1036,7 @@ def write_private_bytes_atomic(
         fsync_file=fsync_file,
         fsync_parent=fsync_parent,
         max_existing_bytes=max_existing_bytes,
+        require_absent=require_absent,
     )
     try:
         _inspect_existing_private_entry(state)
@@ -1011,7 +1044,11 @@ def write_private_bytes_atomic(
         _require_current_private_write_parent(state)
         _backup_existing_private_entry(state)
         _require_unchanged_private_target(state)
+        if validate_commit is not None:
+            validate_commit()
         _install_private_temp(state)
+        if validate_commit is not None:
+            validate_commit()
     except BaseException as primary:
         _rollback_private_write(state, primary)
         raise

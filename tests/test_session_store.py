@@ -7,6 +7,7 @@ import threading
 
 import pytest
 
+import pony.security.private_files as private_files_module
 import pony.state.session_store as session_store_module
 from pony.agent.messages import make_tool_pair, validate_messages
 from pony.state.session_store import (
@@ -539,7 +540,10 @@ def test_worktree_identity_tamper_is_rejected(tmp_path):
         store.load("identity")
 
 
-def test_clone_to_worktree_copies_active_branch_and_clears_workspace_state(tmp_path):
+def test_clone_to_worktree_copies_active_branch_and_clears_workspace_state(
+    tmp_path,
+    monkeypatch,
+):
     source = tmp_path / "source"
     target = tmp_path / "target"
     source.mkdir()
@@ -583,6 +587,21 @@ def test_clone_to_worktree_copies_active_branch_and_clears_workspace_state(tmp_p
             "reason": "test",
         },
     )
+    published = target / ".pony" / "sessions" / "target-session.jsonl"
+    original_atomic_write = session_store_module.write_private_bytes_atomic
+
+    def assert_complete_before_publish(path, data, **kwargs):
+        if path == published:
+            assert not published.exists()
+            session_store_module._parse_jsonl(data, "target-session")
+            assert kwargs["require_absent"] is True
+        return original_atomic_write(path, data, **kwargs)
+
+    monkeypatch.setattr(
+        session_store_module,
+        "write_private_bytes_atomic",
+        assert_complete_before_publish,
+    )
 
     cloned = store.clone_to_worktree(
         "source-session",
@@ -622,6 +641,133 @@ def test_clone_to_worktree_copies_active_branch_and_clears_workspace_state(tmp_p
     assert target_store.load_tree("target-session").header["worktree_identity"][
         "lexical_root"
     ] == str(target)
+    assert not any(
+        path.name.startswith(".clone-")
+        for path in (target / ".pony" / "sessions").iterdir()
+    )
+
+
+def test_rewind_expected_leaf_rejects_concurrent_session_change(tmp_path):
+    store = SessionStore(tmp_path / ".pony" / "sessions")
+    store.save(_session(tmp_path, "rewind-cas"))
+    tree = store.load_tree("rewind-cas")
+    target = next(entry for entry in tree.active_path if entry["type"] == "message")
+    store.label("rewind-cas", "concurrent")
+    before = store.path("rewind-cas").read_bytes()
+
+    with pytest.raises(SessionFormatError, match="session changed before control append"):
+        store.rewind(
+            "rewind-cas",
+            target["id"],
+            expected_leaf_id=tree.leaf_id,
+        )
+
+    assert store.path("rewind-cas").read_bytes() == before
+
+
+def test_clone_publish_does_not_overwrite_concurrently_created_session(
+    tmp_path,
+    monkeypatch,
+):
+    source = tmp_path / "source"
+    target = tmp_path / "target"
+    source.mkdir()
+    target.mkdir()
+    store = SessionStore(source / ".pony" / "sessions")
+    store.save(_session(source, "source-session"))
+    published = target / ".pony" / "sessions" / "target-session.jsonl"
+    original_install = private_files_module._install_private_temp
+
+    def create_target_after_final_check(state):
+        if state.path == published:
+            published.write_bytes(b"concurrent session\n")
+        return original_install(state)
+
+    monkeypatch.setattr(
+        private_files_module,
+        "_install_private_temp",
+        create_target_after_final_check,
+    )
+
+    with pytest.raises(ValueError, match="clone session id already exists"):
+        store.clone_to_worktree(
+            "source-session",
+            target,
+            new_session_id="target-session",
+        )
+
+    assert published.read_bytes() == b"concurrent session\n"
+
+
+def test_clone_publish_rolls_back_when_worktree_identity_drifts(
+    tmp_path,
+    monkeypatch,
+):
+    source = tmp_path / "source"
+    target = tmp_path / "target"
+    source.mkdir()
+    target.mkdir()
+    store = SessionStore(source / ".pony" / "sessions")
+    store.save(_session(source, "source-session"))
+    published = target / ".pony" / "sessions" / "target-session.jsonl"
+    original_install = private_files_module._install_private_temp
+
+    def drift_after_install(state):
+        original_install(state)
+        if state.path == published:
+            (target / ".git").mkdir()
+
+    monkeypatch.setattr(
+        private_files_module,
+        "_install_private_temp",
+        drift_after_install,
+    )
+
+    with pytest.raises(SessionFormatError, match="clone target worktree changed"):
+        store.clone_to_worktree(
+            "source-session",
+            target,
+            new_session_id="target-session",
+        )
+
+    assert not published.exists()
+
+
+def test_clone_publish_rolls_back_when_legacy_session_appears(
+    tmp_path,
+    monkeypatch,
+):
+    source = tmp_path / "source"
+    target = tmp_path / "target"
+    source.mkdir()
+    target.mkdir()
+    store = SessionStore(source / ".pony" / "sessions")
+    store.save(_session(source, "source-session"))
+    target_store = SessionStore(target / ".pony" / "sessions")
+    published = target_store.path("target-session")
+    legacy = target_store.legacy_path("target-session")
+    original_install = private_files_module._install_private_temp
+
+    def install_with_legacy_race(state):
+        original_install(state)
+        if state.path == published:
+            legacy.write_bytes(b"legacy session\n")
+
+    monkeypatch.setattr(
+        private_files_module,
+        "_install_private_temp",
+        install_with_legacy_race,
+    )
+
+    with pytest.raises(ValueError, match="clone session id already exists"):
+        store.clone_to_worktree(
+            "source-session",
+            target,
+            new_session_id="target-session",
+        )
+
+    assert not published.exists()
+    assert legacy.read_bytes() == b"legacy session\n"
 
 
 def test_session_tree_source_has_expected_line_limit_constant():

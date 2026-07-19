@@ -1667,7 +1667,7 @@ class SessionStore:
             raise FileNotFoundError(self.path(session_id))
         return deepcopy(self._read_tree_unlocked(session_id).projection)
 
-    def _write_new_tree_unlocked(self, session, *, migration=False):
+    def _render_new_tree(self, session, *, migration=False):
         session_id = session["id"]
         header = {
             "record_type": SESSION_HEADER_RECORD_TYPE,
@@ -1719,6 +1719,11 @@ class SessionStore:
         tree = _parse_jsonl(rendered, session_id)
         if not session_projections_equal(tree.projection, session):
             raise SessionFormatError("session tree projection mismatch")
+        return rendered, tree
+
+    def _write_new_tree_unlocked(self, session, *, migration=False):
+        session_id = session["id"]
+        rendered, tree = self._render_new_tree(session, migration=migration)
         write_private_bytes_atomic(
             self.path(session_id),
             rendered,
@@ -1985,7 +1990,15 @@ class SessionStore:
                 entries.append(_new_entry("session_info", {"set": changed}, parent_id))
             return self._append_entries_unlocked(session_id, entries)
 
-    def append_control(self, session_id, kind, data, *, parent_id=None):
+    def append_control(
+        self,
+        session_id,
+        kind,
+        data,
+        *,
+        parent_id=None,
+        expected_leaf_id=None,
+    ):
         if kind not in ENTRY_TYPES - {
             "message",
             "tool_exchange",
@@ -2000,6 +2013,8 @@ class SessionStore:
             validate_permission_mode(data["mode"])
         with file_lock.locked_file(self.lock_path, require_existing=True):
             tree = self._read_tree_unlocked(session_id)
+            if expected_leaf_id is not None and tree.leaf_id != expected_leaf_id:
+                raise SessionFormatError("session changed before control append")
             target = tree.leaf_id if parent_id is None else str(parent_id)
             known = {entry["id"] for entry in tree.entries}
             if target and target not in known:
@@ -2120,13 +2135,21 @@ class SessionStore:
             self._append_entries_unlocked(session_id, [entry])
             return deepcopy(entry)
 
-    def exit_plan_mode(self, session_id, *, plan_text, plan_revision):
+    def exit_plan_mode(
+        self,
+        session_id,
+        *,
+        plan_text,
+        plan_revision,
+        expected_leaf_id,
+    ):
         session_id = _session_id(session_id)
         with file_lock.locked_file(self.lock_path, require_existing=True):
             tree = self._read_tree_unlocked(session_id)
             projection = tree.projection
             if (
-                projection.get("permission_mode") != PermissionMode.PLAN.value
+                tree.leaf_id != expected_leaf_id
+                or projection.get("permission_mode") != PermissionMode.PLAN.value
                 or projection.get("plan_text", "") != plan_text
                 or projection.get("plan_revision", 0) != plan_revision
             ):
@@ -2233,6 +2256,7 @@ class SessionStore:
         workspace_checkpoint_id="",
         restore_checkpoint_id="",
         target_checkpoint_id="",
+        expected_leaf_id=None,
     ):
         data = {
             "target_entry_id": str(entry_id or ""),
@@ -2246,7 +2270,55 @@ class SessionStore:
             "rewind",
             data,
             parent_id=str(entry_id or ""),
+            expected_leaf_id=expected_leaf_id,
         )
+
+    def rewind_with_summary(
+        self,
+        session_id,
+        entry_id,
+        summary_data,
+        *,
+        workspace_checkpoint_id="",
+        restore_checkpoint_id="",
+        target_checkpoint_id="",
+        expected_leaf_id,
+    ):
+        session_id = _session_id(session_id)
+        if not isinstance(summary_data, dict):
+            raise SessionFormatError("branch summary data must be an object")
+        rewind_data = {
+            "target_entry_id": str(entry_id or ""),
+            "summary": str(summary_data.get("summary", "") or ""),
+            "workspace_checkpoint_id": str(workspace_checkpoint_id or ""),
+            "restore_checkpoint_id": str(restore_checkpoint_id or ""),
+            "target_checkpoint_id": str(target_checkpoint_id or ""),
+        }
+        rewind_data = self._redactor(rewind_data)
+        safe_summary = self._redactor(deepcopy(summary_data))
+        if not isinstance(safe_summary, dict):
+            raise SessionFormatError("branch summary data must be an object")
+        with file_lock.locked_file(self.lock_path, require_existing=True):
+            tree = self._read_tree_unlocked(session_id)
+            if tree.leaf_id != expected_leaf_id:
+                raise SessionFormatError("session changed before rewind")
+            target = str(entry_id or "")
+            known = {entry["id"] for entry in tree.entries}
+            if target not in known:
+                raise SessionFormatError("unknown parent entry")
+            rewind_entry = _new_entry("rewind", rewind_data, target)
+            _validate_entry(rewind_entry, known)
+            summary_entry = _new_entry(
+                "branch_summary",
+                safe_summary,
+                rewind_entry["id"],
+            )
+            _validate_entry(summary_entry, known | {rewind_entry["id"]})
+            self._append_entries_unlocked(
+                session_id,
+                [rewind_entry, summary_entry],
+            )
+            return deepcopy(rewind_entry), deepcopy(summary_entry)
 
     def fork(self, session_id, entry_id):
         return self.append_control(
@@ -2318,14 +2390,8 @@ class SessionStore:
             target_root / ".pony" / "sessions",
             redactor=self._redactor,
         )
-        if (
-            target_store.path(clone_id).exists()
-            or target_store.legacy_path(clone_id).exists()
-        ):
-            raise ValueError("clone session id already exists")
-        target_store.save(projection)
-        target_tree = target_store.load_tree(clone_id)
-
+        projection = target_store._redactor(projection)
+        _rendered, target_tree = target_store._render_new_tree(projection)
         source_message_entries = [
             entry for entry in tree.active_path if entry_messages(entry)
         ]
@@ -2340,6 +2406,22 @@ class SessionStore:
                 strict=True,
             )
         }
+        entries = list(target_tree.entries)
+        known = {entry["id"] for entry in entries}
+        parent_id = target_tree.leaf_id
+
+        def append_clone_entry(kind, data):
+            nonlocal parent_id
+            entry = _new_entry(
+                kind,
+                target_store._redactor(deepcopy(data)),
+                parent_id,
+            )
+            _validate_entry(entry, known)
+            entries.append(entry)
+            known.add(entry["id"])
+            parent_id = entry["id"]
+
         latest_compaction = next(
             (
                 entry
@@ -2355,7 +2437,7 @@ class SessionStore:
             data["reason"] = "worktree_clone"
             data["provider_usage"] = {}
             data["split_provider_usage"] = {}
-            target_store.append_control(clone_id, "compaction", data)
+            append_clone_entry("compaction", data)
         latest_branch = next(
             (
                 entry
@@ -2374,20 +2456,18 @@ class SessionStore:
             data["abandoned_leaf_id"] = ""
             data["target_entry_id"] = ""
             data["provider_usage"] = {}
-            target_store.append_control(clone_id, "branch_summary", data)
+            append_clone_entry("branch_summary", data)
         if source_checkpoint is not None:
-            cloned_checkpoint_id = (
-                f"{source_checkpoint_id}-clone-{uuid.uuid4().hex[:8]}"
-            )
+            cloned_checkpoint_id = f"{source_checkpoint_id}-clone-{uuid.uuid4().hex[:8]}"
             source_checkpoint.update(
                 {
                     "checkpoint_id": cloned_checkpoint_id,
                     "parent_checkpoint_id": "",
                     "created_at": now(),
                     "workspace_checkpoint_id": "",
-                    "worktree_identity_digest": target_store.load_tree(clone_id).header[
-                        "worktree_identity"
-                    ]["digest"],
+                    "worktree_identity_digest": target_tree.header["worktree_identity"][
+                        "digest"
+                    ],
                     "context_usage": {},
                     "key_files": [],
                     "read_files": [],
@@ -2396,7 +2476,37 @@ class SessionStore:
             )
             source_checkpoint.pop("runtime_identity", None)
             source_checkpoint.pop("freshness", None)
-            target_store.append_task_checkpoint(clone_id, source_checkpoint)
+            append_clone_entry(
+                "task_checkpoint",
+                {
+                    "checkpoint_id": cloned_checkpoint_id,
+                    "checkpoint": source_checkpoint,
+                },
+            )
+        rendered = _render_tree(target_tree.header, entries)
+        if len(rendered) > MAX_SESSION_BYTES:
+            raise ValueError("private file too large")
+        final_tree = _parse_jsonl(rendered, clone_id)
+
+        def validate_clone_identity():
+            if os.path.lexists(target_store.legacy_path(clone_id)):
+                raise ValueError("clone session id already exists")
+            if worktree_identity(str(target_root)) != final_tree.header[
+                "worktree_identity"
+            ]:
+                raise SessionFormatError("clone target worktree changed")
+
+        with file_lock.locked_file(target_store.lock_path):
+            write_private_bytes_atomic(
+                target_store.path(clone_id),
+                rendered,
+                trusted_root=target_store.root,
+                trusted_root_identity=target_store._root_identity,
+                error="clone session id already exists",
+                max_existing_bytes=MAX_SESSION_BYTES,
+                require_absent=True,
+                validate_commit=validate_clone_identity,
+            )
         return {
             "session_id": clone_id,
             "workspace_root": str(target_root),

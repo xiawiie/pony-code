@@ -221,7 +221,7 @@ def test_oversized_turn_gets_separate_split_prefix_summary(tmp_path):
     assert result.tokens_after < result.tokens_before
 
 
-def test_rewind_branch_summary_is_bounded_and_carried_forward(tmp_path):
+def test_rewind_branch_summary_is_bounded_and_carried_forward(tmp_path, monkeypatch):
     agent = _agent(
         tmp_path,
         [
@@ -238,6 +238,18 @@ def test_rewind_branch_summary_is_bounded_and_carried_forward(tmp_path):
     agent.session_store.save(agent.session)
     before = agent.session_store.load_tree("compact")
     target = next(entry for entry in before.active_path if entry["type"] == "message")
+    append_batches = []
+    original_append = agent.session_store._append_entries_unlocked
+
+    def record_append(session_id, entries):
+        append_batches.append(tuple(entry["type"] for entry in entries))
+        return original_append(session_id, entries)
+
+    monkeypatch.setattr(
+        agent.session_store,
+        "_append_entries_unlocked",
+        record_append,
+    )
 
     result = rewind_with_branch_summary(agent, target["id"], focus="keep parser facts")
     after = agent.session_store.load_tree("compact")
@@ -251,3 +263,4 @@ def test_rewind_branch_summary_is_bounded_and_carried_forward(tmp_path):
     assert view.branch_summary.startswith("# Abandoned Approach")
     assert view.messages[-1]["_pony_meta"]["origin"] == "branch_summary"
     assert agent.model_client.requests[0]["max_tokens"] == 2_048
+    assert append_batches == [("rewind", "branch_summary")]
