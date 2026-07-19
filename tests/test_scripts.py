@@ -1,6 +1,7 @@
 import hashlib
 import importlib.util
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -84,23 +85,26 @@ def test_release_workflow_is_tag_bound_and_uses_trusted_publishing():
     assert "uv sync --frozen --dev" in workflow
     assert "uv export --frozen --no-dev --no-emit-project" in workflow
     assert "uv pip install --refresh" in workflow
-    assert "uv run pytest -q" in workflow
-    assert "uv build --clear" in workflow
-    assert (
-        "scripts/release/verify_distribution.py --install-smoke --offline-bundle-smoke"
-        in workflow
-    )
+    assert "./scripts/check.sh --dist-dir dist" in workflow
+    assert "uv run pytest" not in workflow
+    assert "uv build" not in workflow
+    assert "scripts/release/verify_distribution.py" not in workflow
+    assert "sha256sum dist/*.whl dist/*.tar.gz" in workflow
     assert "uv publish --trusted-publishing always" in workflow
     assert "gh release create" in workflow
     assert 'test "${GITHUB_REF_NAME}" = "v${project_version}"' in workflow
     assert "secrets." not in workflow
 
 
-def test_linux_ci_does_not_claim_the_darwin_performance_baseline():
+def test_linux_ci_uses_the_single_exact_head_gate():
     workflow = Path(".github/workflows/ci.yml").read_text(encoding="utf-8")
+    linux, _macos = workflow.split("macos-focused:", 1)
 
-    assert "--suite core-functional" in workflow
-    assert "--suite core-full" not in workflow
+    assert linux.count("./scripts/check.sh") == 1
+    assert linux.count("uv run --frozen pytest -q tests") == 1
+    assert "scripts/evaluation/evaluate.py" not in linux
+    assert "scripts/release/verify_distribution.py" not in linux
+    assert "uv build" not in linux
 
 
 def test_ci_has_macos_security_and_durability_gate():
@@ -153,9 +157,7 @@ def test_ci_keeps_docker_sandbox_local_gate_read_only():
     assert "candidate_rejected" not in workflow
     assert "--real --managed" not in workflow
     assert "PONY_RUN_REAL_SRT" not in workflow
-    assert "uv build --clear" in workflow
-    assert "scripts/release/verify_distribution.py" in workflow
-    assert "--install-smoke --offline-bundle-smoke" in workflow
+    assert "./scripts/check.sh" in workflow
 
 
 def test_maintenance_scripts_start_and_show_help():
@@ -328,20 +330,85 @@ def test_local_check_script_runs_each_full_gate_once_on_a_clean_exact_head():
 
     text = script.read_text()
     assert "uv lock --check" in text
+    assert "UV_OFFLINE=1" in text
     assert text.count("uv run --frozen ruff check .") == 1
     assert text.count("uv run --frozen pytest") == 1
     assert "tests benchmarks/live_e2e/tests/test_assertions.py" in text
-    assert "scripts/evaluation/evaluate.py --suite core-functional" in text
+    assert "scripts/evaluation/evaluate.py" in text
+    assert "--suite core-functional" in text
+    assert '--output-dir "$tmp_dir/eval"' in text
     assert text.count("uv build") == 1
-    assert "uv build --offline --out-dir" in text
+    assert "uv build --offline --clear --out-dir" in text
     assert text.count("scripts/release/verify_distribution.py") == 1
-    assert '--dist-dir "$tmp_dir/dist"' in text
+    assert '--dist-dir "$dist_dir"' in text
     assert "--install-smoke" in text
     assert "git status --porcelain --untracked-files=all" in text
     assert "git rev-parse HEAD" in text
     assert "checking clean exact HEAD $start_head" in text
     assert "verified clean exact HEAD $start_head" in text
-    assert "trap 'rm -rf" in text
+    assert "trap cleanup 0" in text
+    assert "trap 'exit 129' 1" in text
+    assert "trap 'exit 130' 2" in text
+    assert "trap 'exit 143' 15" in text
+
+
+@pytest.mark.parametrize(("mode", "expected_status"), (("fail", 7), ("term", 143)))
+def test_local_check_cleanup_preserves_failure_status(tmp_path, mode, expected_status):
+    repo = tmp_path / "repo"
+    scripts = repo / "scripts"
+    fake_bin = repo / "bin"
+    runtime_tmp = tmp_path / "runtime"
+    scripts.mkdir(parents=True)
+    fake_bin.mkdir()
+    runtime_tmp.mkdir()
+    check = scripts / "check.sh"
+    check.write_text(Path("scripts/check.sh").read_text(encoding="utf-8"))
+    check.chmod(0o755)
+    uv = fake_bin / "uv"
+    uv.write_text(
+        "#!/bin/sh\n"
+        'case "$PONY_FAKE_UV_MODE" in\n'
+        "  fail) exit 7 ;;\n"
+        '  term) kill -TERM "$PPID"; sleep 0.1 ;;\n'
+        "esac\n",
+        encoding="utf-8",
+    )
+    uv.chmod(0o755)
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Pony Test",
+            "-c",
+            "user.email=pony@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-qm",
+            "fixture",
+        ],
+        cwd=repo,
+        check=True,
+    )
+    env = os.environ.copy()
+    env["PATH"] = os.pathsep.join((str(fake_bin), env["PATH"]))
+    env["TMPDIR"] = str(runtime_tmp)
+    env["PONY_FAKE_UV_MODE"] = mode
+
+    result = subprocess.run(
+        [str(check)],
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+
+    assert result.returncode == expected_status, result.stderr
+    assert list(runtime_tmp.iterdir()) == []
 
 
 def test_provider_experiment_defaults_allow_reasoning_budget():

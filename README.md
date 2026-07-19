@@ -298,9 +298,8 @@ resume 绕过 diff 审查或 cleanup。
 
 ```bash
 ./scripts/check.sh
-uv run python scripts/evaluation/evaluate.py --suite core-functional
-uv build --clear
-uv run python scripts/release/verify_distribution.py --install-smoke --offline-bundle-smoke
+# 仅发布流程需要保留已验证的分发包
+./scripts/check.sh --dist-dir dist
 ```
 
 wheel 只包含 `pony/**`、Sandbox JSON 与安装 metadata，并声明 `prompt-toolkit` 运行时依赖；sdist 另含构建所需的

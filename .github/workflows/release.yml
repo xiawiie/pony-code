@@ -53,17 +53,9 @@ jobs:
           uv venv --python .venv/bin/python "${primer}"
           uv pip install --refresh --python "${primer}/bin/python" --requirement "${requirements}"
 
-      - name: Run static and functional gates
+      - name: Run exact-head offline gate and build distributions
         run: |
-          uv run ruff check .
-          uv run pytest -q
-          uv run python scripts/evaluation/evaluate.py --suite core-functional
-          uv run pytest benchmarks/live_e2e/tests/test_assertions.py -q
-
-      - name: Build and verify distributions
-        run: |
-          uv build --clear
-          uv run python scripts/release/verify_distribution.py --install-smoke --offline-bundle-smoke
+          ./scripts/check.sh --dist-dir dist
           sha256sum dist/*.whl dist/*.tar.gz > dist/SHA256SUMS
 
       - name: Publish to PyPI with trusted publishing

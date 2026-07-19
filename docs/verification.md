@@ -11,7 +11,7 @@
 
 该脚本要求起始 worktree clean，并依次验证 lock、单次 Ruff、单次全量 pytest（包含 offline live-harness assertions）、
 独立 deterministic core-functional evaluation、单次离线 sdist/wheel build、单次 archive/clean-install verifier，最后复验
-Git HEAD 未变化且 worktree 仍 clean。构建产物写入临时目录并在退出时清理；任何一步失败都停止。
+Git HEAD 未变化且 worktree 仍 clean。Evaluation 与构建产物都写入本轮临时目录并在退出时清理；任何一步失败都停止。
 
 ## 门禁矩阵
 
@@ -118,14 +118,10 @@ uv run pytest -q \
 ## Distribution 验证
 
 ```bash
-dist_dir=$(mktemp -d)
-uv build --offline --out-dir "$dist_dir"
-uv run python scripts/release/verify_distribution.py \
-  --dist-dir "$dist_dir" \
-  --install-smoke \
-  --offline-bundle-smoke
-rm -rf "$dist_dir"
+./scripts/check.sh --dist-dir dist
 ```
+
+无参数执行时分发包随临时目录清理；仅发布流程使用 `--dist-dir dist` 保留同一次门禁验证过的 wheel 和 sdist。
 
 Verifier 使用 `git ls-files pony` 建立产品文件真源并检查：
 

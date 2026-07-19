@@ -162,6 +162,7 @@ MAX_FAILURE_OUTPUT = 20_000
 def build_arg_parser():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--suite", required=True, choices=SUITES)
+    parser.add_argument("--output-dir", type=Path, default=None)
     parser.add_argument(
         "--repo-root",
         default=None,
@@ -1143,6 +1144,7 @@ def run_evaluation(
     *,
     runner=_run_command,
     root=ROOT,
+    output_dir=None,
     now=None,
     system_name=None,
 ):
@@ -1152,16 +1154,25 @@ def run_evaluation(
     started = time.monotonic_ns()
     captured_at = now or datetime.now(timezone.utc)
     timestamp = captured_at.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-    artifact_rel = Path("artifacts/eval") / f"{timestamp}-{suite}.json"
+    artifact_name = f"{timestamp}-{suite}.json"
+    artifact_rel = (
+        Path("artifacts/eval") / artifact_name
+        if output_dir is None
+        else Path(artifact_name)
+    )
     markdown_rel = artifact_rel.with_suffix(".md")
     artifact_ref = artifact_rel.as_posix()
-    artifact_dir = root / artifact_rel.parent
+    artifact_dir = (
+        root / artifact_rel.parent
+        if output_dir is None
+        else Path(output_dir).resolve()
+    )
     artifact_dir.mkdir(parents=True, exist_ok=True)
-    if not artifact_dir.resolve().is_relative_to(root):
+    if output_dir is None and not artifact_dir.resolve().is_relative_to(root):
         raise ValueError("evaluation artifact directory escapes repository")
     provider = ""
-    json_path = root / artifact_rel
-    markdown_path = root / markdown_rel
+    json_path = artifact_dir / artifact_rel.name
+    markdown_path = artifact_dir / markdown_rel.name
     if os.path.lexists(json_path) or os.path.lexists(markdown_path):
         raise ValueError("evaluation artifact already exists")
 
@@ -1278,6 +1289,7 @@ def main(argv=None, *, runner=_run_command, root=ROOT, now=None, system_name=Non
             args.suite,
             runner=runner,
             root=selected_root,
+            output_dir=args.output_dir,
             now=now,
             system_name=system_name,
         )
