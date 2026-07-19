@@ -981,6 +981,41 @@ def test_before_capture_interrupt_does_not_create_nonexecuted_shell_record(
     assert not hasattr(agent, "checkpoint_store")
 
 
+def test_shell_rechecks_workspace_identity_inside_mutation_lock(tmp_path, monkeypatch):
+    agent = build_agent(tmp_path, executables={"pwd": "/frozen/pwd"})
+    runner = Mock(return_value=completed())
+    agent.tools["run_shell"]["run"] = runner
+    lock_active = False
+
+    @contextmanager
+    def mutation_lock(path, *, require_lock):
+        nonlocal lock_active
+        assert path == agent.mutation_lock_path
+        assert require_lock is True
+        lock_active = True
+        try:
+            yield
+        finally:
+            lock_active = False
+
+    def changed_identity(_root):
+        assert lock_active is True
+        return 0, 0
+
+    monkeypatch.setattr("pony.tools.executor.locked_file", mutation_lock)
+    monkeypatch.setattr(
+        "pony.tools.executor.private_files.private_directory_identity",
+        changed_identity,
+    )
+
+    result = agent.execute_tool("run_shell", {"command": "pwd", "timeout": 5})
+
+    assert result.metadata["tool_error_code"] == "workspace_root_changed"
+    assert result.metadata["command_approval"]["runner_executed"] is False
+    runner.assert_not_called()
+    assert lock_active is False
+
+
 @pytest.mark.parametrize(
     "runner_result",
     [

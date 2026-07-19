@@ -1494,6 +1494,58 @@ def test_keyboard_interrupt_closes_run_and_reraises(tmp_path):
     assert agent.session["messages"][-1]["_pony_meta"]["origin"] == "runtime_terminal"
 
 
+def test_effect_observation_failure_stops_before_next_model_turn(tmp_path, monkeypatch):
+    provider = NativeScriptProvider(
+        [
+            Response(
+                stop_reason=StopReason.TOOL_USE,
+                content=[
+                    {
+                        "type": "tool_use",
+                        "id": "tu_write",
+                        "name": "write_file",
+                        "input": {"path": "changed.txt", "content": "changed\n"},
+                    }
+                ],
+                usage={},
+            ),
+            Response(
+                stop_reason=StopReason.TOOL_USE,
+                content=[
+                    {
+                        "type": "tool_use",
+                        "id": "tu_must_not_run",
+                        "name": "write_file",
+                        "input": {
+                            "path": "must-not-run.txt",
+                            "content": "must not run\n",
+                        },
+                    }
+                ],
+                usage={},
+            ),
+        ]
+    )
+    agent = build_native_agent(tmp_path, provider)
+    original_diff = agent.workspace_observer.diff
+    monkeypatch.setattr(
+        agent.workspace_observer,
+        "diff",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("observer failed")),
+    )
+
+    answer = agent.ask("change one file")
+
+    assert answer == "Stopped because workspace effects could not be verified."
+    assert agent.current_task_state.stop_reason == "runtime_error"
+    assert len(provider.calls) == 1
+    assert len(provider.responses) == 1
+    assert (tmp_path / "changed.txt").read_text(encoding="utf-8") == "changed\n"
+    assert not (tmp_path / "must-not-run.txt").exists()
+    assert agent._last_tool_result_metadata["effect_observation_unknown"] is True
+    agent.workspace_observer.diff = original_diff
+
+
 @pytest.mark.parametrize("secondary", [OSError("trace unavailable"), SystemExit(2)])
 def test_interrupted_tool_trace_failure_does_not_mask_interrupt(
     tmp_path,

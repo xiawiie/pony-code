@@ -9,6 +9,7 @@ import subprocess
 import textwrap
 
 from pony.security import workspace_files as workspace_files
+from pony.security import private_files as private_files
 from pony.recovery.policy import assess_command
 from pony.tools.permissions import PermissionDecision, PermissionMode, decide_permission
 from pony.tools.subprocess import (
@@ -951,6 +952,44 @@ def _observe_tool_effects(prepared, before):
     }
 
 
+def _workspace_root_identity_rejection(prepared):
+    try:
+        current = private_files.private_directory_identity(prepared["agent"].root)
+    except (OSError, RuntimeError, ValueError):
+        current = None
+    if current == prepared["agent"].workspace_root_identity:
+        return None
+    return ToolExecutionResult(
+        content="error: workspace root changed before run_shell",
+        metadata=_base_result_metadata(
+            prepared,
+            {"sandbox": dict(prepared["sandbox"]), "verification_evidence": None},
+            "rejected",
+            "workspace_root_changed",
+            _empty_effects(),
+        ),
+    )
+
+
+def _effect_observation_unknown_result(prepared, execution, primary_error=None):
+    content = "workspace effects could not be verified; stopping this run"
+    if primary_error is not None:
+        content = (
+            f"error: tool {prepared['name']} failed: "
+            f"{prepared['agent'].redact_text(primary_error)}\n{content}"
+        )
+    metadata = _base_result_metadata(
+        prepared,
+        execution,
+        "error",
+        getattr(primary_error, "code", "") or "workspace_effect_unknown",
+        _empty_effects(),
+    )
+    metadata["effect_observation_unknown"] = True
+    metadata["security_event_type"] = "workspace_effect_unknown"
+    return ToolExecutionResult(content=content, metadata=metadata)
+
+
 def _base_result_metadata(prepared, execution, status, code, effects):
     metadata = _metadata(
         status,
@@ -1019,6 +1058,10 @@ def _run_tool_lifecycle(prepared):
         with mutation_context:
             if prepared["effect_class"] == "workspace_write":
                 before = prepared["agent"].workspace_observer.capture_call_start()
+            if prepared["name"] == "run_shell":
+                rejection = _workspace_root_identity_rejection(prepared)
+                if rejection is not None:
+                    return rejection
             try:
                 _invoke_prepared_tool(prepared, execution)
             except KeyboardInterrupt:
@@ -1039,6 +1082,10 @@ def _run_tool_lifecycle(prepared):
                 try:
                     effects = _observe_tool_effects(prepared, before)
                 except Exception:
+                    if execution["runner_started"] and before is not None:
+                        return _effect_observation_unknown_result(
+                            prepared, execution, exc
+                        )
                     effects = _empty_effects()
                 changed = effects["workspace_changed"]
                 metadata = _base_result_metadata(
@@ -1056,7 +1103,12 @@ def _run_tool_lifecycle(prepared):
                     ),
                     metadata=metadata,
                 )
-            effects = _observe_tool_effects(prepared, before)
+            try:
+                effects = _observe_tool_effects(prepared, before)
+            except Exception:
+                if execution["runner_started"] and before is not None:
+                    return _effect_observation_unknown_result(prepared, execution)
+                raise
             return _finish_tool_success(prepared, execution, effects)
     except KeyboardInterrupt:
         metadata = _base_result_metadata(

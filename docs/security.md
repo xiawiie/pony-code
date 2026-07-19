@@ -126,6 +126,8 @@ binding 检查：匹配旧 Sandbox 的 Session 返回 `legacy_sandbox_session_un
 Session 与 Run 是 active writer。旧 Checkpoint、Tool Change 和 Sandbox artifact 使用独立 legacy reader；reader 拒绝未知
 record type/version、损坏 entry、unsafe blob 和越界引用。Checkpoint CLI 只提供 `list/show/pending`，正常启动不回滚
 workspace，也不通过 `resolve-pending`、restore、prune 或 Source Apply 修改旧 store。
+旧 `source-apply-guard.json` 只作为 legacy inspection artifact；它不阻塞新的 Host mutation，也不再提供 workspace
+恢复路径。需要恢复 Source Root 时使用 Git 或外部备份。
 
 Session Model Binding 固化协议、模型与 endpoint hash；配置变化时返回 `model_session_mismatch`。Provider opaque state 只在
 同一绑定内重放，不渲染到普通日志。

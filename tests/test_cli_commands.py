@@ -374,7 +374,7 @@ def test_legacy_sandbox_resume_is_rejected_before_provider_resolution(
         ["--cwd", str(tmp_path), "--resume", "legacy-session", "run", "inspect"]
     )
     monkeypatch.setattr(
-        "pony.cli.assembly.find_project_sandbox_session",
+        "pony.runtime.legacy.find_project_sandbox_session",
         lambda *_args, **_kwargs: object(),
     )
     monkeypatch.setattr(
@@ -404,7 +404,7 @@ def test_invalid_legacy_sandbox_binding_is_rejected_before_provider_resolution(
         ["--cwd", str(tmp_path), "--resume", "legacy-session", "run", "inspect"]
     )
     monkeypatch.setattr(
-        "pony.cli.assembly.find_project_sandbox_session",
+        "pony.runtime.legacy.find_project_sandbox_session",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             SandboxSessionError("sandbox_manifest_invalid")
         ),

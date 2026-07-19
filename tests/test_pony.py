@@ -27,6 +27,7 @@ from pony.workspace.context import WorkspaceContext
 from benchmarks.support.fake_provider import FakeModelClient
 from pony.providers.response import Response, StopReason
 from pony.runtime.options import RuntimeOptions
+from pony.runtime.legacy import LegacySandboxResumeError
 
 
 def build_workspace(tmp_path):
@@ -286,6 +287,84 @@ def test_programmatic_resume_requires_transient_bypass_capability(tmp_path):
         ),
     )
     assert resumed.current_permission_mode() == "bypassPermissions"
+
+
+def test_programmatic_resume_rejects_legacy_sandbox_binding_before_session_load(
+    tmp_path, monkeypatch
+):
+    agent = build_agent(tmp_path, [])
+    monkeypatch.setattr(
+        "pony.runtime.application.preflight_legacy_sandbox_resume",
+        lambda *_args: (_ for _ in ()).throw(
+            LegacySandboxResumeError("legacy_sandbox_session_unsupported")
+        ),
+    )
+    monkeypatch.setattr(
+        agent.session_store,
+        "load_for_resume",
+        lambda *_args: pytest.fail("session load must not run"),
+    )
+
+    with pytest.raises(LegacySandboxResumeError) as caught:
+        Pony.from_session(
+            model_client=FakeModelClient([]),
+            workspace=agent.workspace,
+            session_store=agent.session_store,
+            session_id=agent.session["id"],
+            options=RuntimeOptions(project_trusted=True),
+        )
+
+    assert caught.value.code == "legacy_sandbox_session_unsupported"
+
+
+def test_programmatic_resume_rejects_invalid_legacy_binding_before_session_load(
+    tmp_path, monkeypatch
+):
+    agent = build_agent(tmp_path, [])
+    monkeypatch.setattr(
+        "pony.runtime.application.preflight_legacy_sandbox_resume",
+        lambda *_args: (_ for _ in ()).throw(
+            LegacySandboxResumeError(
+                "sandbox_state_invalid", reason_code="sandbox_manifest_invalid"
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        agent.session_store,
+        "load_for_resume",
+        lambda *_args: pytest.fail("session load must not run"),
+    )
+
+    with pytest.raises(LegacySandboxResumeError) as caught:
+        Pony.from_session(
+            model_client=FakeModelClient([]),
+            workspace=agent.workspace,
+            session_store=agent.session_store,
+            session_id=agent.session["id"],
+            options=RuntimeOptions(project_trusted=True),
+        )
+
+    assert caught.value.code == "sandbox_state_invalid"
+    assert caught.value.reason_code == "sandbox_manifest_invalid"
+
+
+def test_programmatic_resume_validates_session_id_before_legacy_preflight(
+    tmp_path, monkeypatch
+):
+    agent = build_agent(tmp_path, [])
+    monkeypatch.setattr(
+        "pony.runtime.application.preflight_legacy_sandbox_resume",
+        lambda *_args: pytest.fail("legacy preflight must not run"),
+    )
+
+    with pytest.raises(ValueError, match="invalid session id"):
+        Pony.from_session(
+            model_client=FakeModelClient([]),
+            workspace=agent.workspace,
+            session_store=agent.session_store,
+            session_id="../invalid",
+            options=RuntimeOptions(project_trusted=True),
+        )
 
 
 def test_direct_session_constructor_rejects_bypass_without_capability(tmp_path):

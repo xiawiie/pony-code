@@ -14,7 +14,10 @@ from pony.runtime.application import (
     _session_requires_bypass_permission_capability,
 )
 from pony.runtime.options import RuntimeOptions
-from pony.sandbox.session import find_project_sandbox_session, SandboxSessionError
+from pony.runtime.legacy import (
+    LegacySandboxResumeError,
+    preflight_legacy_sandbox_resume,
+)
 from pony.security.private_files import private_directory_identity
 from pony.security.trust import ProjectTrustStore
 from pony.state.session_store import SessionStore
@@ -192,25 +195,21 @@ def _build_agent(args, source_workspace):
         session_id = store.latest()
     if args.resume and session_id:
         try:
-            legacy_sandbox = find_project_sandbox_session(
-                Path(source_workspace.repo_root) / ".pony",
-                Path(source_workspace.repo_root),
-                session_id,
-            )
-        except SandboxSessionError as exc:
+            preflight_legacy_sandbox_resume(source_workspace.repo_root, session_id)
+        except LegacySandboxResumeError as exc:
+            if exc.code == "legacy_sandbox_session_unsupported":
+                raise CliError(
+                    code=exc.code,
+                    message="Legacy Sandbox sessions cannot resume in Host mode",
+                    hint="Inspect the session or start a new Host session.",
+                    exit_code=CLI_EXIT_CONFIG,
+                ) from exc
             raise CliError(
                 code="sandbox_state_invalid",
                 message="Legacy Sandbox session binding is invalid",
-                details={"reason_code": exc.code},
+                details={"reason_code": exc.reason_code},
                 exit_code=CLI_EXIT_CONFIG,
             ) from exc
-        if legacy_sandbox is not None:
-            raise CliError(
-                code="legacy_sandbox_session_unsupported",
-                message="Legacy Sandbox sessions cannot resume in Host mode",
-                hint="Inspect the session or start a new Host session.",
-                exit_code=CLI_EXIT_CONFIG,
-            )
     if store is None and args.resume and session_id and Path(session_store_root).exists():
         store = SessionStore(session_store_root, redactor=redactor)
     if store is not None and args.resume and session_id:

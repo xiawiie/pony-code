@@ -862,6 +862,28 @@ def test_find_project_sandbox_session_rejects_duplicate_binding(tmp_path):
         find_project_sandbox_session(project_state, source, "session-1")
 
 
+def test_find_project_sandbox_session_bounds_sidecar_scan(tmp_path, monkeypatch):
+    project_state = tmp_path / "project-state"
+    source, _store, session = _create(tmp_path, project_state_root=project_state)
+    parent = Path(session.manifest["sidecar"]["path"]).parent
+    monkeypatch.setattr("pony.sandbox.session.MAX_LEGACY_SIDECAR_ENTRIES", 1)
+    extra = parent / ("sandbox_" + "f" * 32 + ".json")
+    extra.write_text("{}", encoding="utf-8")
+    extra.chmod(0o600)
+
+    with pytest.raises(SandboxSessionError, match="sandbox_state_invalid"):
+        find_project_sandbox_session(project_state, source, "session-1")
+
+
+def test_find_project_sandbox_session_bounds_sidecar_total_bytes(tmp_path, monkeypatch):
+    project_state = tmp_path / "project-state"
+    source, _store, _session = _create(tmp_path, project_state_root=project_state)
+    monkeypatch.setattr("pony.sandbox.session.MAX_LEGACY_SIDECAR_BYTES", 1)
+
+    with pytest.raises(SandboxSessionError, match="sandbox_state_invalid"):
+        find_project_sandbox_session(project_state, source, "session-1")
+
+
 def test_find_project_sandbox_session_accepts_terminal_history(tmp_path):
     project_state = tmp_path / "project-state"
     source, store, first = _create(

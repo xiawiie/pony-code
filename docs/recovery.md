@@ -84,7 +84,9 @@ pony migrate recover
 - sidecar/manifest identity 不可信时返回 `sandbox_state_invalid`；
 - 两种情况都在 Provider resolution 和 Host tool 构造前终止，不 fallback 到 Host。
 
-内部 `pony/sandbox` 与 Recovery writer 暂作为 legacy reader/Phase 4B 删除对象保留，不属于当前产品功能。
+遗留 `source-apply-guard.json` 不会阻塞新的 Host mutation，也不能用于恢复 workspace；文件恢复只使用 Git 或外部备份。
+
+内部 `pony/sandbox` 仅为 resume preflight/inspection 保留，Recovery writer 暂作为 legacy reader/Phase 4B 删除对象保留；两者都不提供 Sandbox 执行或 workspace 恢复。
 
 ## 故障处理
 

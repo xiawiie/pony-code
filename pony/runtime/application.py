@@ -47,6 +47,7 @@ from pony.tools.validation import validate_tool as validate_tool_arguments
 from pony.config.environment import read_project_env
 from pony.config.project import load_pony_toml
 from pony.runtime.options import RuntimeOptions
+from pony.runtime.legacy import preflight_legacy_sandbox_resume
 from pony.runtime.reporting import build_report_request_metadata
 from pony.runtime.rewind import (
     lexical_workspace_root,
@@ -536,6 +537,8 @@ class Pony:
         options = RuntimeOptions() if options is None else options
         if not isinstance(options, RuntimeOptions):
             raise TypeError("options must be a RuntimeOptions instance")
+        session_store.path_for(session_id)
+        preflight_legacy_sandbox_resume(workspace.repo_root, session_id)
         redaction_env = options.redaction_env
         trusted_redaction_env = options.trusted_redaction_env
         secret_env_names = options.secret_env_names or ()

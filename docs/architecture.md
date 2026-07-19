@@ -45,7 +45,7 @@ pony/
 ├── providers/         # 三 Provider、四 Transport、probe、factory
 ├── recovery/          # command policy、legacy reader/migration、待删除旧 writer
 ├── runtime/            # Pony 装配、options、reporting、rewind、working memory
-├── sandbox/           # legacy Sandbox binding/inspection；不在 active runtime
+├── sandbox/           # legacy binding inspection；只供 resume preflight，不提供执行
 ├── security/          # private/workspace file、path、redaction
 ├── state/             # session/run/checkpoint store、task state、file lock
 ├── tui/               # 行内 prompt、命令菜单、Markdown 与状态渲染

@@ -104,7 +104,7 @@ reasoning state 或 Anthropic thinking block 跨协议重放。
 | `pony.memory` | User/Agent Notes、recall、retrieval、RepoMap 与 memory service |
 | `pony.providers` | wire adapter、Provider-neutral Response、factory 与 API probe |
 | `pony.recovery` | command policy、legacy reader/migration 与待删除旧 writer |
-| `pony.sandbox` | legacy Sandbox binding/inspection；不在 active runtime |
+| `pony.sandbox` | legacy Sandbox binding inspection；只供 resume preflight，不提供执行 |
 | `pony.state` | Session/Run/Checkpoint store、TaskState 与 file lock |
 | `pony.tools` | Tool schema、policy/approval、Host mutation/effect observation 与受限 subprocess |
 | `pony.workspace` | root discovery、workspace view、snapshot 与 observer |

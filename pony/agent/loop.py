@@ -1196,6 +1196,14 @@ def _run_agent_attempts(
                 blocked_result,
                 model_execution,
             )
+            if agent._last_tool_result_metadata.get("effect_observation_unknown"):
+                final = "Stopped because workspace effects could not be verified."
+                task_state.stop_runtime_error(final)
+                _commit_session(
+                    agent,
+                    messages=(_plain_message("assistant", final),),
+                )
+                return final, task_state.stop_reason, None, None
             if (
                 action.name == "exit_plan_mode"
                 and agent._last_tool_result_metadata.get("tool_status") == "ok"
