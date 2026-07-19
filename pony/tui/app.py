@@ -59,11 +59,24 @@ def should_use_tui(*, stdin=None, stdout=None, environ=None, columns=None):
 class SlashCommandCompleter(Completer):
     """Complete documented local commands only at the start of a prompt."""
 
+    def __init__(self, agent=None):
+        self.agent = agent
+
     def get_completions(self, document, _complete_event):
         text = document.text_before_cursor
         if not text.startswith("/") or any(character.isspace() for character in text):
             return
-        for command in SLASH_COMMANDS:
+        commands = list(SLASH_COMMANDS)
+        catalog = getattr(self.agent, "project_skills", None)
+        for skill in getattr(catalog, "skills", ()):
+            commands.append(
+                type(SLASH_COMMANDS[0])(
+                    f"/{skill.name}",
+                    f"/{skill.name} [prompt]",
+                    skill.description,
+                )
+            )
+        for command in commands:
             if command.name.startswith(text):
                 yield Completion(
                     command.name,
@@ -194,7 +207,7 @@ def run_tui(
         renderer.resume(resume_projection)
     session = _CompactPromptSession(
         history=_history(prompt_history),
-        completer=SlashCommandCompleter(),
+        completer=SlashCommandCompleter(agent),
         complete_while_typing=True,
         complete_style=CompleteStyle.COLUMN,
         erase_when_done=True,

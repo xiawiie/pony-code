@@ -23,6 +23,7 @@ MAINTAINER_DOCS = {
     "docs/adr/0043-workflow-state-and-session-v3.md",
     "docs/adr/0044-provider-auto-resolution.md",
     "docs/adr/0045-permission-modes-session-v4-and-plan-artifacts.md",
+    "docs/adr/0046-read-only-project-skills.md",
     "docs/coding-agent-workflow-plan.md",
     "docs/context-and-sessions.md",
 }

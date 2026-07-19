@@ -37,6 +37,7 @@ from pony.memory.repo_map import RepoMap
 from pony.state.run_store import RunStore
 from pony.agent.observability import REPORT_SCHEMA_VERSION, project_trace_event
 from pony.state.session_store import SESSION_FORMAT_VERSION, SESSION_RECORD_TYPE
+from pony.context.skills import discover_project_skills
 from pony.tools.context import ToolContext
 from pony.tools.executor import ToolExecutionResult, ToolExecutor
 from pony.tools import registry as toolkit
@@ -234,6 +235,7 @@ class Pony:
         )
         self._configure_workspace(workspace, options)
         redactor = self._configure_runtime_options(session_store, options)
+        self._refresh_project_skills()
         self._configure_recovery_services(redactor)
         self._configure_project_model(options)
         self._configure_session(session, model_binding, options.session_id)
@@ -313,6 +315,20 @@ class Pony:
         ):
             self.session_store.set_redactor(redactor)
         return redactor
+
+    def _refresh_project_skills(self):
+        from pony.cli.help import SLASH_COMMANDS
+
+        self.project_skills = discover_project_skills(
+            self.source_root,
+            expected_root_identity=self.source_root_identity,
+            env=self.redaction_env,
+            secret_env_names=self.secret_env_names,
+            reserved_names=(command.name for command in SLASH_COMMANDS),
+        )
+
+    def project_skill(self, name):
+        return self.project_skills.get(str(name))
 
     def _configure_recovery_services(self, redactor):
         self.workspace_observer = WorkspaceObserver(
@@ -1065,10 +1081,10 @@ class Pony:
             )
         self.session["memory"] = {"file_summaries": summaries}
 
-    def ask(self, user_message):
+    def ask(self, user_message, *, skill=None):
         from pony.agent.loop import AgentLoop
 
-        return AgentLoop(self).run(user_message)
+        return AgentLoop(self).run(user_message, skill=skill)
 
     def compact_session(self, *, focus="", reason="manual", keep_recent_tokens=None):
         return compact_session_tree(

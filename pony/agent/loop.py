@@ -1204,12 +1204,20 @@ class AgentLoop:
     def __init__(self, agent):
         self.agent = agent
 
-    def run(self, user_message):
-        self.agent.begin_permission_turn()
+    def run(self, user_message, *, skill=None):
+        if skill is not None and not hasattr(skill, "instructions"):
+            raise TypeError("skill must be a ProjectSkill")
+        if getattr(self.agent, "active_skill", None) is not None:
+            raise RuntimeError("skill_turn_active")
+        self.agent.active_skill = skill
         try:
-            return self._run(user_message)
+            self.agent.begin_permission_turn()
+            try:
+                return self._run(user_message)
+            finally:
+                self.agent.end_permission_turn()
         finally:
-            self.agent.end_permission_turn()
+            self.agent.active_skill = None
 
     def _run(self, user_message):
         agent = self.agent

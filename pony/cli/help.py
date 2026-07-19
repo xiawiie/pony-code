@@ -42,3 +42,18 @@ SLASH_COMMANDS = (
 HELP_DETAILS = "Commands:\n" + "\n".join(
     f"{command.usage:<54} {command.summary}." for command in SLASH_COMMANDS
 )
+
+
+def render_help_details(agent=None):
+    """Add dynamically discovered project Skills to the one slash command list."""
+    if agent is None:
+        return HELP_DETAILS
+    catalog = getattr(agent, "project_skills", None)
+    skills = getattr(catalog, "skills", ())
+    if not skills:
+        return HELP_DETAILS
+    rows = ["", "Project Skills:"]
+    rows.extend(
+        f"/{skill.name + ' [prompt]':<54} {skill.description}." for skill in skills
+    )
+    return HELP_DETAILS + "\n" + "\n".join(rows)

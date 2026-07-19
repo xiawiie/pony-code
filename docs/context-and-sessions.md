@@ -207,6 +207,7 @@ Sandbox-bound Session 在 CLI resume 装配阶段稳定拒绝，不能通过 rew
 /permissions
 /allowed-tools
 /plan [open|share|description]
+/<project-skill> [prompt]
 /compact [focus]
 /tree
 /checkpoint [label]
@@ -230,6 +231,12 @@ Sandbox-bound Session 在 CLI resume 装配阶段稳定拒绝，不能通过 rew
 （64 KiB 总量、16 KiB 单条），不会保留 slash 命令或 abandoned branch 输入。
 
 `/plan open|share` 会先进入 Plan；空 artifact 只启用 mode，已有 artifact 才打开 editor 或尝试 share。
+
+项目只读 Skill 固定为 `.claude/skills/<name>/SKILL.md`。`SKILL.md` 是受限 UTF-8 文档：严格 frontmatter
+只含 `name` 和 `description`，名称必须等于小写目录名；安全扫描拒绝 link、special file、root drift、超量、超大、
+含已知 secret 或任何错误条目。`/name [prompt]` 在 shared REPL handler 中把一个已发现 Skill 作为该 top-level turn 的
+required context 注入；它不创建 Session command、Memory、工具、脚本执行或另一份配置。HOME、plugin 和 `.agents/skills`
+不是兼容路径。
 
 推荐配置：
 

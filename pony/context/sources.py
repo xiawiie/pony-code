@@ -11,7 +11,7 @@ from pony.security import redaction as redaction
 from pony.memory.recall import recall_candidates
 from pony.memory.retrieval import Retrieval
 from pony.agent.model_capabilities import TokenAccounting
-from .chunks import make_chunk
+from .chunks import RequiredContextTooLarge, make_chunk
 
 
 logger = logging.getLogger("pony")
@@ -130,6 +130,34 @@ def workspace_state_chunks(agent, accounting):
         for index, part in enumerate(_line_groups(volatile, accounting, 768))
     )
     return chunks
+
+
+def active_skill_chunks(agent, accounting):
+    """Render the one Skill explicitly chosen for this top-level turn."""
+    skill = getattr(agent, "active_skill", None)
+    if skill is None:
+        return []
+    text = "\n".join(
+        (
+            "Repository Skill (read-only context):",
+            f"- name: {skill.name}",
+            f"- description: {skill.description}",
+            "",
+            "Instructions:",
+            skill.instructions,
+        )
+    )
+    return [
+        make_chunk(
+            accounting,
+            source="active_skill",
+            key=skill.name,
+            text=_sanitize_source_text(agent, text),
+            priority=0,
+            required=True,
+            provenance={"rank": 0, "name": skill.name},
+        )
+    ]
 
 
 def project_structure_chunks(agent, accounting):
@@ -406,6 +434,7 @@ def recovery_state_chunks(agent, accounting):
 def build_source_chunks(agent, user_message, *, memory_snapshot=None):
     accounting = _accounting(agent)
     builders = (
+        lambda: active_skill_chunks(agent, accounting),
         lambda: recovery_state_chunks(agent, accounting),
         lambda: workspace_state_chunks(agent, accounting),
         lambda: task_working_set_chunks(agent, accounting),
@@ -422,7 +451,7 @@ def build_source_chunks(agent, user_message, *, memory_snapshot=None):
     for builder in builders:
         try:
             chunks.extend(chunk for chunk in builder() if chunk is not None)
-        except redaction.SensitiveDataBlockedError:
+        except (redaction.SensitiveDataBlockedError, RequiredContextTooLarge):
             raise
         except Exception as exc:
             logger.debug("context source failed: %s", type(exc).__name__)
