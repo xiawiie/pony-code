@@ -177,6 +177,83 @@ def test_memory_health_fails_closed_when_root_is_replaced_during_scan(
     } in result["issues"]
 
 
+def test_memory_health_fails_closed_when_nested_directory_is_replaced(
+    tmp_path, monkeypatch
+):
+    repo = tmp_path / "repo"
+    memory = _memory_root(repo)
+    nested = memory / "notes" / "nested"
+    nested.mkdir()
+    (nested / "old.md").write_text("old note", encoding="utf-8")
+    replacement = tmp_path / "replacement-nested"
+    replacement.mkdir()
+    (replacement / "new.md").write_text("new note", encoding="utf-8")
+    displaced = tmp_path / "displaced-nested"
+    original_read = diagnostics_module._read_bounded_at
+    replaced = False
+
+    def replace_nested(parent_descriptor, name, expected, limit):
+        nonlocal replaced
+        if not replaced:
+            nested.rename(displaced)
+            replacement.rename(nested)
+            replaced = True
+        return original_read(parent_descriptor, name, expected, limit)
+
+    monkeypatch.setattr(diagnostics_module, "_read_bounded_at", replace_nested)
+
+    result = collect_memory_diagnostics(
+        repo,
+        user_memory_root=tmp_path / "missing-user" / ".pony" / "memory",
+    )
+
+    assert replaced is True
+    assert result["status"] == "unknown"
+    assert {
+        "path": "workspace/notes/nested",
+        "count": 1,
+        "reason_code": "memory_directory_unavailable",
+        "limit": 0,
+    } in result["issues"]
+
+
+@pytest.mark.skipif(not hasattr(os, "link"), reason="hardlink unavailable")
+def test_memory_health_fails_closed_when_hardlink_is_added_during_read(
+    tmp_path, monkeypatch
+):
+    repo = tmp_path / "repo"
+    memory = _memory_root(repo)
+    note = memory / "notes" / "note.md"
+    note.write_text("note", encoding="utf-8")
+    hardlink = tmp_path / "note-hardlink.md"
+    original_stat = diagnostics_module.os.stat
+    note_stat_calls = 0
+
+    def add_hardlink_before_final_stat(path, *args, **kwargs):
+        nonlocal note_stat_calls
+        if path == "note.md" and kwargs.get("dir_fd") is not None:
+            note_stat_calls += 1
+            if note_stat_calls == 2:
+                os.link(note, hardlink)
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(diagnostics_module.os, "stat", add_hardlink_before_final_stat)
+
+    result = collect_memory_diagnostics(
+        repo,
+        user_memory_root=tmp_path / "missing-user" / ".pony" / "memory",
+    )
+
+    assert note_stat_calls == 2
+    assert result["status"] == "unknown"
+    assert {
+        "path": "workspace/notes/note.md",
+        "count": 1,
+        "reason_code": "memory_file_unavailable",
+        "limit": 0,
+    } in result["issues"]
+
+
 def test_doctor_keeps_memory_health_payload(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path / "home"))
     result = collect_doctor(tmp_path, args=None)

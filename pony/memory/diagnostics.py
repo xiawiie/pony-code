@@ -30,6 +30,14 @@ def _identity(metadata):
     return metadata.st_dev, metadata.st_ino
 
 
+def _directory_matches(parent_descriptor, name, expected):
+    try:
+        current = os.stat(name, dir_fd=parent_descriptor, follow_symlinks=False)
+    except OSError:
+        return False
+    return stat.S_ISDIR(current.st_mode) and _identity(current) == _identity(expected)
+
+
 def _open_child_directory(parent_descriptor, name, expected):
     descriptor = os.open(
         name,
@@ -84,7 +92,11 @@ def _read_bounded_at(parent_descriptor, name, expected, limit):
             error.bytes_read = len(data)
             raise error
         final = os.stat(name, dir_fd=parent_descriptor, follow_symlinks=False)
-        if _identity(opened) != _identity(final):
+        if (
+            not stat.S_ISREG(final.st_mode)
+            or final.st_nlink != 1
+            or _identity(opened) != _identity(final)
+        ):
             raise ValueError("memory file changed")
         return data
     finally:
@@ -169,10 +181,17 @@ def _scan_directory(scope, relative_dir, descriptor, issues, state):
                 )
                 continue
             try:
-                if not _scan_directory(scope, relative, child, issues, state):
-                    return False
+                continue_scan = _scan_directory(
+                    scope, relative, child, issues, state
+                )
             finally:
                 os.close(child)
+            if not _directory_matches(descriptor, entry.name, metadata):
+                issues.append(
+                    _issue(f"{scope}/{relative}", "memory_directory_unavailable")
+                )
+            if not continue_scan:
+                return False
         elif entry.name.endswith(".md") and not _read_candidate(
             scope,
             relative,
@@ -204,6 +223,8 @@ def _scan_notes(scope, root_descriptor, notes_metadata, issues, state):
         )
     finally:
         os.close(notes_descriptor)
+        if not _directory_matches(root_descriptor, "notes", notes_metadata):
+            issues.append(_issue(f"{scope}/notes", "memory_directory_unavailable"))
 
 
 def _root_matches(root, expected_identity):
