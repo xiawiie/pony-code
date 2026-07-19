@@ -22,11 +22,13 @@ SLASH_COMMANDS = (
     SlashCommand("/tree", "/tree", "Show the append-only Session Tree"),
     SlashCommand("/compact", "/compact [focus]", "Compact older conversation history"),
     SlashCommand("/checkpoint", "/checkpoint [label]", "Create a task checkpoint"),
-    SlashCommand("/fork", "/fork <entry>", "Branch the conversation at an entry"),
+    SlashCommand(
+        "/fork", "/fork [entry]", "Pick or branch the conversation at an entry"
+    ),
     SlashCommand(
         "/rewind",
-        "/rewind <entry> [--summary[=focus]]",
-        "Rewind the session to an earlier entry",
+        "/rewind [entry] [--summary[=focus]]",
+        "Pick or rewind the session to an earlier entry",
     ),
     SlashCommand(
         "/clone",

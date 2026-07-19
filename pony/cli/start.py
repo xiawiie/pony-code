@@ -13,6 +13,7 @@ import threading
 
 from pony.tools.permissions import display_permission_mode, validate_permission_mode
 from pony.tools import registry as toolkit
+from pony.agent.messages import message_content_text
 from pony.security.redaction import redact_text
 from pony.providers.transport import ProviderTransportError
 from pony.runtime.resume import active_prompt_history, build_resume_projection
@@ -20,6 +21,7 @@ from pony.state.session_store import MAX_PLAN_TEXT_BYTES
 
 
 _RUNTIME_ERROR_MESSAGE = "agent runtime failed"
+_MAX_SESSION_PICKER_CANDIDATES = 50
 
 
 def _safe_text(agent, value):
@@ -122,6 +124,52 @@ def _rewind_options(tokens):
     return summary, focus
 
 
+def _session_branch_candidates(agent):
+    tree = agent.session_store.load_tree(agent.session["id"])
+    active_ids = {entry["id"] for entry in tree.active_path}
+    candidates = []
+    for entry in reversed(tree.entries):
+        if entry["id"] == tree.leaf_id:
+            continue
+        label = entry["type"]
+        message = entry.get("data", {}).get("message")
+        if isinstance(message, dict) and message.get("role") == "user":
+            text = message_content_text(message)[:256]
+            text = " ".join(
+                character if character.isprintable() else " " for character in text
+            ).strip()
+            if text:
+                redacted = _safe_text(agent, text[:72])
+                label = "user: " + "".join(
+                    character if character.isprintable() else " "
+                    for character in redacted
+                ).strip()
+        branch = "active" if entry["id"] in active_ids else "branch"
+        candidates.append((entry["id"], f"{entry['id'][:8]} | {label} | {branch}"))
+        if len(candidates) == _MAX_SESSION_PICKER_CANDIDATES:
+            break
+    return candidates
+
+
+def _plain_session_picker(command, candidates):
+    if not candidates:
+        print(f"no earlier session entries to {command[1:]}")
+        return None
+    print(f"{command[1:].capitalize()} session from:")
+    for index, (_entry_id, label) in enumerate(candidates, start=1):
+        print(f"{index}. {label}")
+    try:
+        selected = input("Select entry (blank to cancel): ").strip()
+    except EOFError:
+        return None
+    if not selected:
+        return None
+    try:
+        return candidates[int(selected) - 1][0]
+    except (IndexError, ValueError):
+        raise ValueError("choose a listed session entry") from None
+
+
 def _default_confirm(message):
     try:
         answer = input(message)
@@ -136,6 +184,7 @@ def _handle_repl_session_command(
     *,
     confirm=_default_confirm,
     refresh_history=lambda: None,
+    pick_session_entry=None,
 ):
     try:
         tokens = shlex.split(user_input)
@@ -158,8 +207,19 @@ def _handle_repl_session_command(
                 f"({result.compression_ratio:.2%})"
             )
             return True
-        if command == "/fork" and len(tokens) == 2:
-            entry = agent.fork_session(tokens[1])
+        if command == "/fork" and len(tokens) in {1, 2}:
+            entry_id = (
+                tokens[1]
+                if len(tokens) == 2
+                else _pick_session_entry(
+                    agent,
+                    command,
+                    pick_session_entry,
+                )
+            )
+            if entry_id is None:
+                return True
+            entry = agent.fork_session(entry_id)
             refresh_history()
             print(f"forked at {entry['parent_id']}; leaf={entry['id']}")
             return True
@@ -167,10 +227,26 @@ def _handle_repl_session_command(
             checkpoint = agent.create_manual_checkpoint(" ".join(tokens[1:]))
             print(f"checkpoint: {checkpoint['checkpoint_id']}")
             return True
-        if command == "/rewind" and len(tokens) >= 2:
-            summary, focus = _rewind_options(tokens[2:])
+        if command == "/rewind" and len(tokens) >= 1:
+            entry_id = (
+                tokens[1]
+                if len(tokens) >= 2 and not tokens[1].startswith("--")
+                else _pick_session_entry(
+                    agent,
+                    command,
+                    pick_session_entry,
+                )
+            )
+            if entry_id is None:
+                return True
+            option_tokens = (
+                tokens[2:]
+                if len(tokens) >= 2 and not tokens[1].startswith("--")
+                else tokens[1:]
+            )
+            summary, focus = _rewind_options(option_tokens)
             result = agent.rewind_session(
-                tokens[1],
+                entry_id,
                 summary=summary,
                 focus=focus,
             )
@@ -198,6 +274,22 @@ def _handle_repl_session_command(
         "/rewind",
         "/clone",
     }
+
+
+def _pick_session_entry(agent, command, picker):
+    if picker is None:
+        print(f"usage: {command} <entry-id>")
+        return None
+    candidates = _session_branch_candidates(agent)
+    if not candidates:
+        print(f"no earlier session entries to {command[1:]}")
+        return None
+    entry_id = picker(command, candidates)
+    if entry_id is None:
+        return None
+    if entry_id not in {candidate[0] for candidate in candidates}:
+        raise ValueError("selected session entry is unavailable")
+    return entry_id
 
 
 @contextmanager
@@ -250,6 +342,7 @@ def _process_repl_input(
     render_error=None,
     refresh_history=lambda: None,
     manage_permissions=None,
+    pick_session_entry=None,
 ):
     if not user_input:
         return None
@@ -384,6 +477,7 @@ def _process_repl_input(
         user_input,
         confirm=confirm,
         refresh_history=refresh_history,
+        pick_session_entry=pick_session_entry,
     ):
         return None
     if user_input == "/reset":
@@ -478,6 +572,7 @@ def run_repl(
                             prompt_history=prompt_history,
                         ),
                     )
+
             def refresh_plain_history():
                 current = getattr(agent, "session", {})
                 current = current if isinstance(current, dict) else {}
@@ -500,6 +595,9 @@ def run_repl(
                         raise ValueError("unknown permission rule tool")
                     selections.append((behavior, name))
 
+            def pick_plain_session_entry(command, candidates):
+                return _plain_session_picker(command, candidates)
+
             _replace_readline_history(prompt_history)
             if resume_projection is not None:
                 _print_resume_card(resume_projection)
@@ -515,6 +613,7 @@ def run_repl(
                     user_input,
                     refresh_history=refresh_plain_history,
                     manage_permissions=manage_plain_permissions,
+                    pick_session_entry=pick_plain_session_entry,
                 )
                 refresh_plain_history()
                 if result is not None:
