@@ -6,11 +6,13 @@ import pytest
 import pony.state.session_store as session_store_module
 from pony.agent.messages import make_tool_pair
 from pony.state.session_store import (
+    LEGACY_JSONL_SESSION_FORMAT_VERSION,
     PREVIOUS_SESSION_FORMAT_VERSION,
     SESSION_FORMAT_VERSION,
     SessionFormatError,
     SessionMigrationRequired,
     SessionStore,
+    UnsupportedLegacyEntry,
 )
 
 
@@ -80,7 +82,37 @@ def _rewrite_as_v3(path, *, mode="act", plan=None):
     return rows, raw
 
 
+def _rewrite_as_v2(path, *, model_change=False):
+    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    for row in rows:
+        row["format_version"] = LEGACY_JSONL_SESSION_FORMAT_VERSION
+        if row.get("type") == "session_info":
+            row["data"]["set"]["format_version"] = LEGACY_JSONL_SESSION_FORMAT_VERSION
+    if model_change:
+        rows.append(
+            {
+                "record_type": "session_entry",
+                "format_version": LEGACY_JSONL_SESSION_FORMAT_VERSION,
+                "id": "c" * 24,
+                "parent_id": rows[-1]["id"],
+                "timestamp": "2026-01-01T00:00:03+00:00",
+                "type": "model_change",
+                "data": {},
+            }
+        )
+    raw = b"".join(
+        (json.dumps(row, separators=(",", ":")) + "\n").encode("utf-8")
+        for row in rows
+    )
+    path.write_bytes(raw)
+    return rows, raw
+
+
 def _legacy_source(store, workspace, session_id, version):
+    if version == LEGACY_JSONL_SESSION_FORMAT_VERSION:
+        path = store.save(_session(workspace, session_id))
+        _rewrite_as_v2(path)
+        return path
     if version == PREVIOUS_SESSION_FORMAT_VERSION:
         path = store.save(_session(workspace, session_id))
         _rewrite_as_v3(path, mode="review", plan=_legacy_plan())
@@ -192,6 +224,45 @@ def test_v3_update_plan_history_does_not_project_into_v4(tmp_path):
     assert "active_plan" not in migrated
 
 
+def test_v2_inspection_is_read_only_and_resume_defaults_permission(tmp_path):
+    store = SessionStore(tmp_path / ".pony" / "sessions")
+    path = store.save(_session(tmp_path, "legacy-v2"))
+    old_rows, old_raw = _rewrite_as_v2(path)
+    before = path.stat()
+
+    storage, projection, tree = store.inspect_readonly("legacy-v2")
+
+    after = path.stat()
+    assert storage == "legacy_jsonl"
+    assert projection["format_version"] == LEGACY_JSONL_SESSION_FORMAT_VERSION
+    assert tree.leaf_id == old_rows[-1]["id"]
+    assert (after.st_ino, after.st_mtime_ns) == (before.st_ino, before.st_mtime_ns)
+    assert not (store.root / "legacy-backups").exists()
+
+    migrated = store.load_for_resume("legacy-v2")
+    new_rows = [json.loads(line) for line in path.read_text().splitlines()]
+    backup = next((store.root / "legacy-backups").glob("*.jsonl"))
+    assert migrated["permission_mode"] == "default"
+    assert [row["id"] for row in new_rows] == [row["id"] for row in old_rows]
+    assert [row.get("parent_id") for row in new_rows] == [
+        row.get("parent_id") for row in old_rows
+    ]
+    assert backup.read_bytes() == old_raw
+
+
+def test_v2_model_change_fails_before_writing_migration_artifacts(tmp_path):
+    store = SessionStore(tmp_path / ".pony" / "sessions")
+    path = store.save(_session(tmp_path, "unsupported-v2"))
+    _, original = _rewrite_as_v2(path, model_change=True)
+
+    with pytest.raises(UnsupportedLegacyEntry, match="model_change"):
+        store.load_for_resume("unsupported-v2")
+
+    assert path.read_bytes() == original
+    assert not store.candidate_path("unsupported-v2").exists()
+    assert not (store.root / "legacy-backups").exists()
+
+
 def test_v1_inspection_is_read_only_and_creates_no_migration_artifacts(tmp_path):
     store = SessionStore(tmp_path / ".pony" / "sessions")
     source = _legacy_source(store, tmp_path, "legacy-readonly", 1)
@@ -224,6 +295,23 @@ def test_v3_tail_repair_requires_resume_without_writing(tmp_path):
     assert path.read_bytes() == original
 
 
+def test_v2_tail_repair_requires_resume_without_writing(tmp_path):
+    store = SessionStore(tmp_path / ".pony" / "sessions")
+    path = _legacy_source(
+        store,
+        tmp_path,
+        "tail-v2",
+        LEGACY_JSONL_SESSION_FORMAT_VERSION,
+    )
+    path.write_bytes(path.read_bytes() + b'{"incomplete":')
+    original = path.read_bytes()
+
+    with pytest.raises(SessionMigrationRequired):
+        store.repair_tail("tail-v2")
+
+    assert path.read_bytes() == original
+
+
 def test_v3_publish_failure_keeps_source_and_resume_is_retryable(
     tmp_path,
     monkeypatch,
@@ -247,7 +335,38 @@ def test_v3_publish_failure_keeps_source_and_resume_is_retryable(
     assert store.load_for_resume("retry-v3")["format_version"] == SESSION_FORMAT_VERSION
 
 
-@pytest.mark.parametrize("version", (1, PREVIOUS_SESSION_FORMAT_VERSION))
+def test_v2_publish_failure_keeps_source_and_resume_is_retryable(
+    tmp_path,
+    monkeypatch,
+):
+    store = SessionStore(tmp_path / ".pony" / "sessions")
+    path = _legacy_source(
+        store,
+        tmp_path,
+        "retry-v2",
+        LEGACY_JSONL_SESSION_FORMAT_VERSION,
+    )
+    original = path.read_bytes()
+    replace = os.replace
+
+    def fail_candidate_publish(source, destination, **kwargs):
+        if str(source).endswith(".jsonl.candidate"):
+            raise OSError("candidate publish failed")
+        return replace(source, destination, **kwargs)
+
+    monkeypatch.setattr(session_store_module.os, "replace", fail_candidate_publish)
+    with pytest.raises(OSError, match="candidate publish failed"):
+        store.load_for_resume("retry-v2")
+    assert path.read_bytes() == original
+
+    monkeypatch.setattr(session_store_module.os, "replace", replace)
+    assert store.load_for_resume("retry-v2")["format_version"] == SESSION_FORMAT_VERSION
+
+
+@pytest.mark.parametrize(
+    "version",
+    (1, LEGACY_JSONL_SESSION_FORMAT_VERSION, PREVIOUS_SESSION_FORMAT_VERSION),
+)
 def test_migration_rejects_source_changed_during_read(tmp_path, monkeypatch, version):
     store = SessionStore(tmp_path / ".pony" / "sessions")
     session_id = f"source-race-v{version}"
@@ -260,7 +379,7 @@ def test_migration_rejects_source_changed_during_read(tmp_path, monkeypatch, ver
         raw = read(path, **kwargs)
         if path == source:
             source_reads += 1
-            if source_reads == (2 if version == PREVIOUS_SESSION_FORMAT_VERSION else 1):
+            if source_reads == (1 if version == 1 else 2):
                 source.write_bytes(raw + b" ")
         return raw
 
@@ -271,7 +390,10 @@ def test_migration_rejects_source_changed_during_read(tmp_path, monkeypatch, ver
     assert not (store.root / "legacy-backups").exists()
 
 
-@pytest.mark.parametrize("version", (1, PREVIOUS_SESSION_FORMAT_VERSION))
+@pytest.mark.parametrize(
+    "version",
+    (1, LEGACY_JSONL_SESSION_FORMAT_VERSION, PREVIOUS_SESSION_FORMAT_VERSION),
+)
 def test_migration_rechecks_candidate_identity_before_replace(
     tmp_path,
     monkeypatch,
@@ -300,7 +422,10 @@ def test_migration_rechecks_candidate_identity_before_replace(
     assert source.read_bytes() == original
 
 
-@pytest.mark.parametrize("version", (1, PREVIOUS_SESSION_FORMAT_VERSION))
+@pytest.mark.parametrize(
+    "version",
+    (1, LEGACY_JSONL_SESSION_FORMAT_VERSION, PREVIOUS_SESSION_FORMAT_VERSION),
+)
 def test_migration_rejects_mismatched_existing_backup(tmp_path, monkeypatch, version):
     store = SessionStore(tmp_path / ".pony" / "sessions")
     session_id = f"backup-race-v{version}"

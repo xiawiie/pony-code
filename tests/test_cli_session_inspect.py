@@ -8,6 +8,7 @@ from pony.cli.session import (
     resolve_session_id_readonly,
 )
 from pony.state.session_store import (
+    LEGACY_JSONL_SESSION_FORMAT_VERSION,
     PREVIOUS_SESSION_FORMAT_VERSION,
     SESSION_FORMAT_VERSION,
     SessionStore,
@@ -60,6 +61,30 @@ def _rewrite_as_v3(path):
         row["format_version"] = PREVIOUS_SESSION_FORMAT_VERSION
         if row.get("type") == "session_info":
             row["data"]["set"]["format_version"] = PREVIOUS_SESSION_FORMAT_VERSION
+    path.write_text(
+        "".join(json.dumps(row, separators=(",", ":")) + "\n" for row in rows),
+        encoding="utf-8",
+    )
+
+
+def _rewrite_as_v2(path, *, model_change=False):
+    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    for row in rows:
+        row["format_version"] = LEGACY_JSONL_SESSION_FORMAT_VERSION
+        if row.get("type") == "session_info":
+            row["data"]["set"]["format_version"] = LEGACY_JSONL_SESSION_FORMAT_VERSION
+    if model_change:
+        rows.append(
+            {
+                "record_type": "session_entry",
+                "format_version": LEGACY_JSONL_SESSION_FORMAT_VERSION,
+                "id": "c" * 24,
+                "parent_id": rows[-1]["id"],
+                "timestamp": "2026-01-01T00:00:01+00:00",
+                "type": "model_change",
+                "data": {},
+            }
+        )
     path.write_text(
         "".join(json.dumps(row, separators=(",", ":")) + "\n" for row in rows),
         encoding="utf-8",
@@ -181,6 +206,49 @@ def test_inspect_v3_and_tree_are_read_only(tmp_path, capsys):
     assert path.read_bytes() == original
     assert (after.st_ino, after.st_mtime_ns) == (before.st_ino, before.st_mtime_ns)
     assert not store.candidate_path("v3").exists()
+    assert not (root / "legacy-backups").exists()
+
+
+def test_inspect_v2_and_tree_are_read_only(tmp_path, capsys):
+    root = tmp_path / "sessions"
+    store = SessionStore(root)
+    path = store.save(
+        _payload(tmp_path, "v2", _tool_messages(), version=SESSION_FORMAT_VERSION)
+    )
+    _rewrite_as_v2(path)
+    before = path.stat()
+    original = path.read_bytes()
+
+    ok, report = inspect_session("v2", root)
+    tree_code = handle_session_command(["tree", "v2"], sessions_root=root)
+
+    after = path.stat()
+    assert ok is True
+    assert tree_code == 0
+    assert "format_version: 2" in report
+    assert "migration: required on explicit resume" in report
+    assert "permission_mode: default" in report
+    assert "format_version: 2" in capsys.readouterr().out
+    assert path.read_bytes() == original
+    assert (after.st_ino, after.st_mtime_ns) == (before.st_ino, before.st_mtime_ns)
+    assert not store.candidate_path("v2").exists()
+    assert not (root / "legacy-backups").exists()
+
+
+def test_inspect_v2_model_change_reports_unsupported_without_writing(tmp_path):
+    root = tmp_path / "sessions"
+    store = SessionStore(root)
+    path = store.save(
+        _payload(tmp_path, "v2-model", [], version=SESSION_FORMAT_VERSION)
+    )
+    _rewrite_as_v2(path, model_change=True)
+    original = path.read_bytes()
+
+    ok, report = inspect_session("v2-model", root)
+
+    assert ok is True
+    assert "migration: unsupported legacy entry" in report
+    assert path.read_bytes() == original
     assert not (root / "legacy-backups").exists()
 
 

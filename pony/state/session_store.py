@@ -47,6 +47,7 @@ from pony.workspace.context import now
 SESSION_RECORD_TYPE = "session"
 SESSION_FORMAT_VERSION = 4
 PREVIOUS_SESSION_FORMAT_VERSION = 3
+LEGACY_JSONL_SESSION_FORMAT_VERSION = 2
 LEGACY_SESSION_FORMAT_VERSION = 1
 SESSION_HEADER_RECORD_TYPE = "session_header"
 SESSION_ENTRY_RECORD_TYPE = "session_entry"
@@ -76,6 +77,7 @@ _V3_ENTRY_TYPES = (ENTRY_TYPES - {"permission_mode_change"}) | {
     "workflow_mode_change",
     "plan_update",
 }
+_V2_ENTRY_TYPES = (ENTRY_TYPES - {"permission_mode_change"}) | {"model_change"}
 
 
 class SessionFormatError(ValueError):
@@ -641,7 +643,12 @@ def _validate_entry(
         raise SessionFormatError("invalid session parent id")
     if not isinstance(entry.get("timestamp"), str):
         raise SessionFormatError("invalid session entry timestamp")
-    allowed_types = _V3_ENTRY_TYPES if version == PREVIOUS_SESSION_FORMAT_VERSION else ENTRY_TYPES
+    if version == PREVIOUS_SESSION_FORMAT_VERSION:
+        allowed_types = _V3_ENTRY_TYPES
+    elif version == LEGACY_JSONL_SESSION_FORMAT_VERSION:
+        allowed_types = _V2_ENTRY_TYPES
+    else:
+        allowed_types = ENTRY_TYPES
     if entry.get("type") not in allowed_types:
         raise SessionFormatError("invalid session entry kind")
     if not isinstance(entry.get("data"), dict):
@@ -729,12 +736,14 @@ def _base_projection(header):
     }
     if header["format_version"] == SESSION_FORMAT_VERSION:
         projection["permission_mode"] = PermissionMode.DEFAULT.value
-    else:
+    elif header["format_version"] == PREVIOUS_SESSION_FORMAT_VERSION:
         projection.update(
             format_version=header["format_version"],
             workflow_mode=DEFAULT_WORKFLOW_MODE,
             active_plan=deepcopy(EMPTY_PLAN),
         )
+    else:
+        projection["format_version"] = header["format_version"]
     return projection
 
 
@@ -1468,7 +1477,10 @@ class SessionStore:
         )
         version = _jsonl_format_version(raw)
         if version != SESSION_FORMAT_VERSION:
-            if version == PREVIOUS_SESSION_FORMAT_VERSION:
+            if version in {
+                LEGACY_JSONL_SESSION_FORMAT_VERSION,
+                PREVIOUS_SESSION_FORMAT_VERSION,
+            }:
                 raise SessionMigrationRequired(session_id)
             raise SessionFormatError("invalid session header version")
         tree = _parse_jsonl(raw, session_id)
@@ -1505,8 +1517,11 @@ class SessionStore:
                     max_bytes=MAX_SESSION_BYTES,
                 )
                 version = _jsonl_format_version(raw)
-                if version == PREVIOUS_SESSION_FORMAT_VERSION:
-                    self._migrate_v3_unlocked(session_id, raw)
+                if version in {
+                    LEGACY_JSONL_SESSION_FORMAT_VERSION,
+                    PREVIOUS_SESSION_FORMAT_VERSION,
+                }:
+                    self._migrate_jsonl_unlocked(session_id, version, raw)
                 elif version != SESSION_FORMAT_VERSION:
                     raise SessionFormatError("invalid session header version")
             else:
@@ -2126,6 +2141,7 @@ class SessionStore:
                 )
                 version = _jsonl_format_version(raw)
                 if version not in {
+                    LEGACY_JSONL_SESSION_FORMAT_VERSION,
                     PREVIOUS_SESSION_FORMAT_VERSION,
                     SESSION_FORMAT_VERSION,
                 }:
@@ -2154,7 +2170,10 @@ class SessionStore:
                 max_bytes=MAX_SESSION_BYTES,
             )
             source_version = _jsonl_format_version(raw)
-            if source_version == PREVIOUS_SESSION_FORMAT_VERSION:
+            if source_version in {
+                LEGACY_JSONL_SESSION_FORMAT_VERSION,
+                PREVIOUS_SESSION_FORMAT_VERSION,
+            }:
                 raise SessionMigrationRequired(session_id)
             if raw.endswith(b"\n"):
                 return False
@@ -2164,6 +2183,7 @@ class SessionStore:
             repaired = raw[:valid_bytes]
             version = _jsonl_format_version(repaired)
             if version not in {
+                LEGACY_JSONL_SESSION_FORMAT_VERSION,
                 PREVIOUS_SESSION_FORMAT_VERSION,
                 SESSION_FORMAT_VERSION,
             }:
@@ -2180,7 +2200,12 @@ class SessionStore:
             self._tree_cache.pop(session_id, None)
             return True
 
-    def _migrate_v3_unlocked(self, session_id, source_raw=None):
+    def _migrate_jsonl_unlocked(self, session_id, source_version, source_raw=None):
+        if source_version not in {
+            LEGACY_JSONL_SESSION_FORMAT_VERSION,
+            PREVIOUS_SESSION_FORMAT_VERSION,
+        }:
+            raise SessionFormatError("invalid session migration source version")
         source = self.path(session_id)
         _harden_migration_source(
             source,
@@ -2200,8 +2225,12 @@ class SessionStore:
         old_tree = _parse_jsonl(
             raw,
             session_id,
-            version=PREVIOUS_SESSION_FORMAT_VERSION,
+            version=source_version,
         )
+        if source_version == LEGACY_JSONL_SESSION_FORMAT_VERSION and any(
+            entry["type"] == "model_change" for entry in old_tree.entries
+        ):
+            raise UnsupportedLegacyEntry("model_change")
         rows = [_decode_json_object(line) for line in raw.splitlines()]
         migrated_rows = []
         for row in rows:
@@ -2211,7 +2240,10 @@ class SessionStore:
                 migrated.get("data", {}).get("set", {})["format_version"] = (
                     SESSION_FORMAT_VERSION
                 )
-            elif migrated.get("type") == "workflow_mode_change":
+            elif (
+                source_version == PREVIOUS_SESSION_FORMAT_VERSION
+                and migrated.get("type") == "workflow_mode_change"
+            ):
                 migrated["type"] = "permission_mode_change"
                 legacy_mode = migrated["data"]["mode"]
                 migrated["data"] = {
@@ -2221,7 +2253,10 @@ class SessionStore:
                         else PermissionMode.PLAN.value
                     )
                 }
-            elif migrated.get("type") == "plan_update":
+            elif (
+                source_version == PREVIOUS_SESSION_FORMAT_VERSION
+                and migrated.get("type") == "plan_update"
+            ):
                 migrated["type"] = "migration"
                 migrated["data"] = {
                     "from_format": PREVIOUS_SESSION_FORMAT_VERSION,
@@ -2231,15 +2266,19 @@ class SessionStore:
         candidate_bytes = b"".join(_serialize_line(row) for row in migrated_rows)
         candidate_tree = _parse_jsonl(candidate_bytes, session_id)
         expected = deepcopy(old_tree.projection)
-        legacy_mode = expected.pop("workflow_mode", DEFAULT_WORKFLOW_MODE)
-        expected.pop("active_plan", None)
-        expected.update(
-            format_version=SESSION_FORMAT_VERSION,
-            permission_mode=(
+        if source_version == PREVIOUS_SESSION_FORMAT_VERSION:
+            legacy_mode = expected.pop("workflow_mode", DEFAULT_WORKFLOW_MODE)
+            expected.pop("active_plan", None)
+            permission_mode = (
                 PermissionMode.DEFAULT.value
                 if legacy_mode == "act"
                 else PermissionMode.PLAN.value
-            ),
+            )
+        else:
+            permission_mode = PermissionMode.DEFAULT.value
+        expected.update(
+            format_version=SESSION_FORMAT_VERSION,
+            permission_mode=permission_mode,
         )
         if not session_projections_equal(candidate_tree.projection, expected):
             raise SessionFormatError("session migration projection mismatch")

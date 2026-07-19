@@ -8,6 +8,7 @@ import re
 from pony.agent.messages import MessageValidationError, validate_messages
 from pony.security.private_files import private_directory_identity
 from pony.state.session_store import (
+    LEGACY_JSONL_SESSION_FORMAT_VERSION,
     LEGACY_SESSION_FORMAT_VERSION,
     PREVIOUS_SESSION_FORMAT_VERSION,
     SESSION_FORMAT_VERSION,
@@ -117,15 +118,18 @@ def session_inspection_data(session_id, sessions_root):
         raise SessionFormatError("session must be an object")
     record_type = session.get("record_type")
     version = session.get("format_version")
-    expected_version = {
-        "current": SESSION_FORMAT_VERSION,
-        "legacy_jsonl": PREVIOUS_SESSION_FORMAT_VERSION,
-        "legacy": LEGACY_SESSION_FORMAT_VERSION,
+    expected_versions = {
+        "current": {SESSION_FORMAT_VERSION},
+        "legacy_jsonl": {
+            LEGACY_JSONL_SESSION_FORMAT_VERSION,
+            PREVIOUS_SESSION_FORMAT_VERSION,
+        },
+        "legacy": {LEGACY_SESSION_FORMAT_VERSION},
     }.get(storage)
     valid_version = (
         record_type == SESSION_RECORD_TYPE
         and type(version) is int
-        and version == expected_version
+        and version in expected_versions
     )
     messages = session.get("messages")
     facts = _tree_facts(tree)
@@ -137,7 +141,8 @@ def session_inspection_data(session_id, sessions_root):
     if storage == "legacy_jsonl":
         permission_mode = (
             PermissionMode.DEFAULT.value
-            if session.get("workflow_mode") == "act"
+            if version == LEGACY_JSONL_SESSION_FORMAT_VERSION
+            or session.get("workflow_mode") == "act"
             else PermissionMode.PLAN.value
         )
     elif storage == "legacy":
@@ -145,6 +150,11 @@ def session_inspection_data(session_id, sessions_root):
     recovery = session.get("recovery")
     checkpoints = session.get("checkpoints")
     migration = "not_required" if storage == "current" else "required_on_resume"
+    if (
+        version == LEGACY_JSONL_SESSION_FORMAT_VERSION
+        and any(entry["type"] == "model_change" for entry in tree.entries)
+    ):
+        migration = "unsupported_legacy_entry"
     return {
         "session_id": session_id,
         "storage": storage,
