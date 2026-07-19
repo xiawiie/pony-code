@@ -22,6 +22,7 @@
 | Model Attempt | Agent Loop 为得到一个 Action 发起的逻辑尝试 | Transport Attempt |
 | Transport Attempt | Provider client 的一次真实 HTTP request | Tool step |
 | Action | 一个 Tool、Final 或 Retry 决策 | 任意模型文本 |
+| Named Delegate | 由 `delegate{name, task}` 串行启动的只读 child runtime | worker pool、worktree agent 或 parent Session 分支 |
 | Canonical Messages | Session Tree 中唯一的对话 transcript | Provider 私有 history |
 | Session Tree | append-only JSONL 分支树；rewind/fork 追加而非覆写 | Git history |
 | Permission Mode | Session v5 active path 上的交互授权模式；公开值为六个 Claude 风格名称 | approval 结果或 execution plane |
@@ -83,6 +84,9 @@ reasoning state 或 Anthropic thinking block 跨协议重放。
 - v1-v4 Session inspection 零写；只有显式 resume 可在 lock、backup、candidate、identity 与 digest 复验后迁移到 v5。
 - Compaction 不删除 append-only 历史，不授予 Memory 写权限，也不恢复 workspace。
 - `memory_save` 只看当前 top-level user request 的明确授权；delegate 永远不能写 Durable Memory。
+- Named Delegate 每次通过 factory 新建 model client，并使用独立的 child Session/Run root；child 固定 read-only 与
+  `dontAsk`，不能写 Plan、Durable Memory 或 workspace，也不能再 delegate。parent 只保存原 tool exchange 和 bounded
+  final result；本产品不调度并行 delegate 或自动创建 worktree。
 - primary failure 不能被 cleanup、observer 或 finalizer 的次生异常覆盖。
 
 ## Workspace 与 Host 执行不变量

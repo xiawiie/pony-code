@@ -431,6 +431,7 @@ def test_direct_session_constructor_rejects_bypass_without_capability(tmp_path):
         tmp_path,
         [],
         allow_dangerously_skip_permissions=True,
+        delegate_model_client_factory=lambda: FakeModelClient([]),
     )
     agent.set_permission_mode("bypassPermissions")
 
@@ -470,6 +471,7 @@ def test_bypass_capability_is_read_only_and_not_inherited_by_delegate(
         tmp_path,
         [],
         allow_dangerously_skip_permissions=True,
+        delegate_model_client_factory=lambda: FakeModelClient([]),
     )
     children = []
 
@@ -551,6 +553,7 @@ def test_delegate_reuses_snapshot_without_replacing_shared_store_redactors(
         tmp_path,
         [],
         redaction_env=MappingProxyType({"PONY_TEST_API_KEY": secret}),
+        delegate_model_client_factory=lambda: FakeModelClient([]),
     )
     session_redactor = agent.session_store._redactor
     run_redactor = agent.run_store._redactor
@@ -879,9 +882,9 @@ def test_delegate_uses_child_agent(tmp_path):
         tmp_path,
         [
             {"name": "delegate", "args": {"task":"inspect README","max_steps":2}},
-            "Child result.",
             "Parent incorporated the child result.",
         ],
+        delegate_model_client_factory=lambda: FakeModelClient(["Child result."]),
     )
 
     answer = agent.ask("Use delegation")

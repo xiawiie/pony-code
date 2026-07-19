@@ -57,6 +57,7 @@ SECRET_SENTINEL = "github_pat_A123456789012345678901234567890"
         ".pony/sessions",
         ".pony/sessions/s.json",
         ".pony/runs/r/trace.jsonl",
+        ".pony/delegates/reviewer/session.jsonl",
         ".pony/checkpoints/blobs/aa/value",
     ),
 )

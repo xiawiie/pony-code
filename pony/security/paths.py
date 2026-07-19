@@ -50,7 +50,7 @@ def sensitive_path_reason(raw_path):
             (".kube", "config"),
         }:
             return "sensitive_path"
-        if parent == ".pony" and child in {"sessions", "runs", "checkpoints"}:
+        if parent == ".pony" and child in {"sessions", "runs", "delegates", "checkpoints"}:
             return "sensitive_path"
 
     for index, component in enumerate(parts):

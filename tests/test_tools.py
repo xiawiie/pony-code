@@ -47,6 +47,27 @@ def test_delegate_uses_context_spawn_without_runtime_import(tmp_path):
     assert calls == [{"task": "inspect README.md", "max_steps": 2}]
 
 
+@pytest.mark.parametrize(
+    "args",
+    (
+        {"task": "inspect", "name": "bad name"},
+        {"task": "inspect", "name": "reviewer", "max_steps": 4},
+    ),
+)
+def test_delegate_rejects_invalid_named_task_arguments(tmp_path, args):
+    context = ToolContext(
+        root=tmp_path,
+        path_resolver=lambda raw_path: Path(tmp_path / raw_path),
+        shell_env_provider=lambda: {"PWD": str(tmp_path)},
+        depth=0,
+        max_depth=1,
+        spawn_delegate=lambda _args: "unused",
+    )
+
+    with pytest.raises(ValueError):
+        validate_tool(context, "delegate", args)
+
+
 def test_build_tool_registry_binds_runners_to_tool_context(tmp_path):
     context = ToolContext(
         root=tmp_path,
@@ -115,6 +136,28 @@ def test_search_rg_return_codes_are_truthful(tmp_path, monkeypatch):
     assert all("--with-filename" in call[1] for call in calls)
     assert all("--null" in call[1] for call in calls)
     assert all("--glob-case-insensitive" in call[1] for call in calls)
+
+
+def test_search_excludes_delegate_artifacts(tmp_path, monkeypatch):
+    captured = []
+
+    def fake_rg(executable, args, **kwargs):
+        captured.append(list(args))
+        return subprocess.CompletedProcess([], 1, stdout="", stderr="")
+
+    monkeypatch.setattr("pony.tools.search.run_hardened_rg", fake_rg)
+    context = ToolContext(
+        root=tmp_path,
+        path_resolver=lambda raw_path: (tmp_path / raw_path).resolve(),
+        shell_env_provider=lambda: {"PWD": str(tmp_path)},
+        depth=0,
+        max_depth=1,
+        spawn_delegate=lambda args: "unused",
+        trusted_executables={"rg": "/frozen/rg"},
+    )
+
+    assert tool_search(context, {"pattern": "needle"}) == "(no matches)"
+    assert "!**/.pony/delegates/**" in captured[0]
 
 
 def test_search_without_frozen_rg_never_rescans_path(tmp_path, monkeypatch):

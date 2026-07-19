@@ -112,10 +112,10 @@ BASE_TOOL_SPECS = {
 }
 
 DELEGATE_TOOL_SPEC = {
-    "schema": {"task": "str", "max_steps": "int=3"},
+    "schema": {"task": "str", "name": "str='delegate'", "max_steps": "int=3"},
     "risky": False,
     "effect_class": "read_only",
-    "description": "Ask a bounded read-only child agent to investigate.",
+    "description": "Ask one named, bounded read-only child agent to investigate.",
 }
 
 PLAN_TOOL_SPECS = {
@@ -151,7 +151,7 @@ TOOL_EXAMPLES = {
     "run_shell": f'{{"name":"run_shell","arguments":{{"command":"uv run --with pytest python -m pytest -q","timeout":{DEFAULT_RUN_SHELL_TIMEOUT}}}}}',
     "write_file": '{"name":"write_file","arguments":{"path":"binary_search.py","content":"def binary_search(nums, target):\\n    return -1\\n"}}',
     "patch_file": '{"name":"patch_file","arguments":{"path":"binary_search.py","old_text":"return -1","new_text":"return mid"}}',
-    "delegate": '{"name":"delegate","arguments":{"task":"inspect README.md","max_steps":3}}',
+    "delegate": '{"name":"delegate","arguments":{"task":"inspect README.md","name":"repo-inspector","max_steps":3}}',
     "memory_list": '{"name":"memory_list","arguments":{"prefix":"workspace/"}}',
     "memory_read": '{"name":"memory_read","arguments":{"path":"workspace/notes/auth.md","start":1,"end":200}}',
     "memory_search": '{"name":"memory_search","arguments":{"query":"bcrypt","limit":5}}',

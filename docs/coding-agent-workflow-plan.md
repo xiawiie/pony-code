@@ -32,7 +32,7 @@
 | P0 | `/todo` | 不做别名 | `/plan` 已覆盖；第二名称增加命令和文档面，没有独立价值 |
 | Gate M | 命名 Model Target 与 `/model` | 先 ADR，默认不做 | 与四变量配置和 immutable Session Binding 合同冲突 |
 | Gate Q | 忙碌时持久化输入队列 | 先 spike | 当前 TUI/Agent 是同步调用，approval 与退出语义尚未解决 |
-| Gate D | 批量并行 delegate | 先隔离再评估并行 | child 当前共享 model client，Host 下还共享 Store |
+| Gate D | 命名 delegate | 串行隔离已完成；再评估并行 | child 各有 client、Session 与 Run，尚无并发调度 |
 | Gate S | 仓库 Skills | 先威胁模型 | `.agents/` 当前会进入 Sandbox staging，信任边界未定义 |
 | P2+ | JSONL/IDE/MCP adapter | 有真实 consumer 再做 | 无 consumer 时协议只会形成第二维护面 |
 
@@ -60,7 +60,7 @@
 - `read_only=True` 会拒绝所有 `run_shell`；它不能直接表示允许“已证明只读 shell”的 `plan/review`。
 - 当前工具 schema 简写只可靠表达 string/integer，不能直接声明 object/array。P0 可用严格、bounded 的 JSON string
   承载 Plan；batch delegate 若继续推进，仍必须先补 provider-neutral schema 能力。
-- 当前 delegate 在 Host 下共享父 `SessionStore`/`RunStore`，并直接共享同一个 `model_client`；不得并行使用。
+- 命名 delegate 以独立的 child client、Session root 与 Run root 串行执行；它不是 worker pool，不能并行或写入 worktree。
 - 当前 TUI 同步执行 `session.prompt() -> agent.ask()`；Provider 使用阻塞式 `urllib` 且没有 cancel API，输入队列不是小改动。
 - `.agents/` 不在 Sandbox 的 agent-control 排除集合中，会进入 filtered staging 与 diff capture。
 - TUI 基线合同已先独立修复：完整 TUI 使用响应式马形 `PONY CODE` 欢迎页，footer 不含绝对 cwd、Session ID、API Base
@@ -305,14 +305,15 @@ parser，不得自动迁移 secret。若最终批准，再用独立 release trai
 
 若 spike 需要 event bus、daemon、第二 Session writer 或 Provider cancel abstraction，则停止；保持同步 TUI，等真实 steer 需求。
 
-#### Gate D：批量 delegate
+#### Gate D：命名 delegate
 
-先做串行隔离，不直接并行：
+串行隔离已落地，仍不直接并行：
 
-1. child 使用独立 Session root 与 Run identity；父只接收 bounded final summary。
-2. 通过装配 factory 创建独立 model client；不得复制或共享含可变 transport 计数/state 的对象。
-3. child 固定 `read_only=True`、`approval=never`、depth 1、无 Durable Memory/Plan/父 Session 写权限。
-4. 串行 contract 与安全测试通过后，再评估最多 3 个 stdlib worker。
+1. `delegate` 接受受限的 `name`；name 进入 child Session ID、隔离 artifact root 与 parent 的 bounded result label。
+2. child 使用独立 Session root、Run root 与装配 factory 新建的 model client；不得复制或共享含可变 transport 计数/state 的对象。
+3. child 固定 `read_only=True`、`dontAsk`（approval=never）、无 Durable Memory/Plan/workspace 写权限，也不能再次 delegate。
+4. parent 只接收最多 4,000 字符的 final result；child 的 Session/Run 不进入 parent store。
+5. 只有串行 contract 与安全测试持续通过后，再评估最多 3 个 stdlib worker。
 
 只有 Provider clients 证明并发无共享状态、partial failure/interrupt 语义明确后才并行。自动 worktree 和可写 child 仍不做。
 
