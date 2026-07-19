@@ -27,7 +27,7 @@ class EditCheckpointError(ValueError):
 
 
 class EditCheckpointStore:
-    """Capture each path once and assess whether rewind is still safe."""
+    """Capture each path once and classify its current workspace state."""
 
     def __init__(self, state_root, workspace_root, *, max_file_bytes=MAX_FILE_BYTES):
         self.root = private_files.ensure_private_dir(state_root)
@@ -40,11 +40,16 @@ class EditCheckpointStore:
             raise ValueError("invalid edit checkpoint file limit")
         self._root_identity = private_files.private_directory_identity(self.root)
         self._workspace_identity = private_files.private_directory_identity(self.workspace)
+        with file_lock.locked_file(self.lock, require_lock=True):
+            pass
 
     def capture_before(self, turn_key, raw_path):
         self._require_roots()
         key, path = _turn_key(turn_key), _relative_path(raw_path)
-        with file_lock.locked_file(self.lock, require_lock=True):
+        with file_lock.locked_file(
+            self.lock, require_lock=True, require_existing=True
+        ):
+            self._require_roots()
             manifest = self._load(key) or _manifest(key)
             if path in manifest["paths"]:
                 return dict(manifest["paths"][path]["before"])
@@ -60,7 +65,10 @@ class EditCheckpointStore:
     def record_post(self, turn_key, raw_path):
         self._require_roots()
         key, path = _turn_key(turn_key), _relative_path(raw_path)
-        with file_lock.locked_file(self.lock, require_lock=True):
+        with file_lock.locked_file(
+            self.lock, require_lock=True, require_existing=True
+        ):
+            self._require_roots()
             manifest = self._load(key)
             if manifest is None or path not in manifest["paths"]:
                 raise EditCheckpointError("edit_checkpoint_before_missing")
@@ -69,49 +77,38 @@ class EditCheckpointStore:
             self._save(manifest)
             return dict(post)
 
-    def assess_restore(self, turn_key):
-        """Read-only eligibility check; this store never mutates the workspace."""
+    def classify_turn(self, turn_key):
+        """Classify paths by comparison with captured before and post states."""
         self._require_roots()
         key = _turn_key(turn_key)
-        with file_lock.locked_file(self.lock, require_lock=True):
+        with file_lock.locked_file(
+            self.lock, require_lock=True, require_existing=True
+        ):
+            self._require_roots()
             manifest = self._load(key)
             if manifest is None:
                 raise EditCheckpointError("edit_checkpoint_not_found")
-            eligible, restored, conflicts, incomplete = [], [], [], []
+            matches_post, matches_before, conflicts, incomplete = [], [], [], []
             for path, entry in manifest["paths"].items():
                 if entry["before"]["exists"]:
-                    try:
-                        self._read_blob(entry["before"]["blob_ref"])
-                    except FileNotFoundError:
-                        raise EditCheckpointError("edit_checkpoint_blob_invalid") from None
+                    self._read_blob(entry["before"]["blob_ref"])
                 if entry["post"] is None:
                     incomplete.append(path)
                     continue
                 current = self._workspace_state(path)
                 if _same(current, entry["before"]):
-                    restored.append(path)
+                    matches_before.append(path)
                 elif _same(current, entry["post"]):
-                    eligible.append(path)
+                    matches_post.append(path)
                 else:
                     conflicts.append(path)
             return {
                 "turn_key": key,
-                "eligible": tuple(eligible),
-                "already_restored": tuple(restored),
+                "matches_post": tuple(matches_post),
+                "matches_before": tuple(matches_before),
                 "conflicts": tuple(conflicts),
                 "incomplete": tuple(incomplete),
             }
-
-    def read_before(self, turn_key, raw_path):
-        """Return a verified before-image for a later platform-specific restorer."""
-        self._require_roots()
-        key, path = _turn_key(turn_key), _relative_path(raw_path)
-        with file_lock.locked_file(self.lock, require_lock=True):
-            manifest = self._load(key)
-            if manifest is None or path not in manifest["paths"]:
-                raise EditCheckpointError("edit_checkpoint_not_found")
-            before = manifest["paths"][path]["before"]
-            return self._read_blob(before["blob_ref"]) if before["exists"] else None
 
     def _workspace_state(self, path):
         return workspace_files.read_regular_bytes_anchored(
@@ -171,9 +168,8 @@ class EditCheckpointStore:
         digest = hashlib.sha256(data).hexdigest()
         path = self._blob_path(digest)
         private_files.ensure_private_dir(path.parent)
-        try:
-            current = self._read_blob(digest)
-        except FileNotFoundError:
+        current = self._read_blob(digest, missing_ok=True)
+        if current is None:
             private_files.write_private_bytes_atomic(
                 path,
                 data,
@@ -181,12 +177,11 @@ class EditCheckpointStore:
                 trusted_root_identity=self._root_identity,
                 max_existing_bytes=self.max_file_bytes,
             )
-        else:
-            if current != data:
-                raise EditCheckpointError("edit_checkpoint_blob_invalid")
+        elif current != data:
+            raise EditCheckpointError("edit_checkpoint_blob_invalid")
         return digest
 
-    def _read_blob(self, digest):
+    def _read_blob(self, digest, *, missing_ok=False):
         if not _digest(digest):
             raise EditCheckpointError("edit_checkpoint_blob_invalid")
         try:
@@ -197,6 +192,10 @@ class EditCheckpointStore:
                 max_bytes=self.max_file_bytes,
                 harden=False,
             )
+        except FileNotFoundError:
+            if missing_ok:
+                return None
+            raise EditCheckpointError("edit_checkpoint_blob_invalid") from None
         except ValueError:
             raise EditCheckpointError("edit_checkpoint_blob_invalid") from None
         if hashlib.sha256(data).hexdigest() != digest:

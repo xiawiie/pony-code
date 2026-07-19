@@ -127,6 +127,20 @@ def lock_is_active(path):
     return key in _active_lock_keys()
 
 
+def _require_existing_lock_entry(value, *, directory=False):
+    uid = os.geteuid() if hasattr(os, "geteuid") else value.st_uid
+    expected_mode = 0o700 if directory else 0o600
+    expected_kind = stat.S_ISDIR(value.st_mode) if directory else stat.S_ISREG(value.st_mode)
+    if (
+        not expected_kind
+        or not directory
+        and value.st_nlink != 1
+        or value.st_uid != uid
+        or stat.S_IMODE(value.st_mode) != expected_mode
+    ):
+        raise ValueError("existing lock path is unsafe")
+
+
 @contextmanager
 def locked_file(path, *, require_lock=False, require_existing=False, lock_timeout=None):
     owner_pid = os.getpid()
@@ -142,13 +156,13 @@ def locked_file(path, *, require_lock=False, require_existing=False, lock_timeou
         if lock_timeout is None
         else time.monotonic() + max(0.0, float(lock_timeout))
     )
-    ensure_private_dir(path.parent)
+    if not require_existing:
+        ensure_private_dir(path.parent)
     path, parent_descriptor = _open_private_parent(path)
     authority = None
     descriptor = -1
     registered = False
     try:
-        authority = _acquire_authority(deadline) if fcntl is not None else None
         try:
             before = os.stat(
                 path.name,
@@ -159,6 +173,9 @@ def locked_file(path, *, require_lock=False, require_existing=False, lock_timeou
             before = None
         if require_existing and before is None:
             raise FileNotFoundError("lock file missing")
+        if require_existing:
+            _require_existing_lock_entry(os.fstat(parent_descriptor), directory=True)
+            _require_existing_lock_entry(before)
         if before is not None and not stat.S_ISREG(before.st_mode):
             kind = (
                 "symlink" if stat.S_ISLNK(before.st_mode) else "regular file required"
@@ -166,6 +183,7 @@ def locked_file(path, *, require_lock=False, require_existing=False, lock_timeou
             raise ValueError(kind)
         if before is not None and before.st_nlink != 1:
             raise ValueError("private file has multiple links")
+        authority = _acquire_authority(deadline) if fcntl is not None else None
         flags = os.O_RDWR | os.O_APPEND
         if not require_existing:
             flags |= os.O_CREAT
@@ -196,7 +214,11 @@ def locked_file(path, *, require_lock=False, require_existing=False, lock_timeou
             opened.st_ino,
         ):
             raise ValueError("inode_changed")
-        os.fchmod(descriptor, 0o600)
+        if require_existing:
+            _require_existing_lock_entry(opened)
+            _require_existing_lock_entry(current)
+        else:
+            os.fchmod(descriptor, 0o600)
         with os.fdopen(descriptor, "a+", encoding="utf-8") as handle:
             descriptor = -1
             if fcntl is not None:
@@ -212,6 +234,10 @@ def locked_file(path, *, require_lock=False, require_existing=False, lock_timeou
                         dir_fd=current_parent_descriptor,
                         follow_symlinks=False,
                     )
+                    if require_existing:
+                        _require_existing_lock_entry(current_parent, directory=True)
+                        _require_existing_lock_entry(locked)
+                        _require_existing_lock_entry(current)
                     if (
                         (current_parent.st_dev, current_parent.st_ino)
                         != (original_parent.st_dev, original_parent.st_ino)
