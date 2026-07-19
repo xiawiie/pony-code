@@ -97,7 +97,8 @@ pony
 避免未来新增命令时改变旧脚本含义。
 
 TUI 需要 stdin/stdout 同时为 TTY、`TERM` 不是 `dumb` 且终端至少 40 列，否则自动使用纯文本 REPL。颜色还会遵守
-`--no-color` 和 `NO_COLOR`。输入 `/` 查看交互命令；`Ctrl+D` 退出，`Ctrl+C` 中断/清空，短时间内再次按下则退出。
+`--no-color` 和 `NO_COLOR`。输入 `/` 查看交互命令；busy 时可排队最多五条 follow-up，`/queue [clear]` 查看或清空。
+idle 时 `Ctrl+D` 退出，`Ctrl+C` 清空输入并可再次按下退出；busy 时两者不取消已开始的 Provider 或 Tool。
 
 ### Permission mode 与 Plan
 

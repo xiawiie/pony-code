@@ -1,4 +1,6 @@
 import io
+import queue
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -100,7 +102,7 @@ def test_slash_completion_is_generated_from_documented_commands():
         item.text
         for item in SlashCommandCompleter().get_completions(Document("/"), None)
     }
-    assert {"/permissions", "/allowed-tools", "/plan"} <= {
+    assert {"/permissions", "/allowed-tools", "/plan", "/queue"} <= {
         item.text
         for item in SlashCommandCompleter().get_completions(Document("/"), None)
     }
@@ -392,6 +394,132 @@ def test_tui_restores_runtime_hooks_when_provider_fails(monkeypatch):
 
     assert agent._trace_listener is previous_listener
     assert agent._approval_prompt is previous_prompt
+
+
+def test_tui_accepts_a_queued_turn_while_the_worker_is_busy(monkeypatch):
+    inputs = queue.Queue()
+    first_entered = threading.Event()
+    release_first = threading.Event()
+    second_finished = threading.Event()
+    queued = threading.Event()
+    calls = []
+
+    class FakeSession:
+        def __init__(self, **_kwargs):
+            pass
+
+        def prompt(self, *_args, **_kwargs):
+            return inputs.get(timeout=3)
+
+    agent = SimpleNamespace(
+        _trace_listener=None,
+        _approval_prompt=None,
+        current_permission_mode=lambda: "auto",
+        project_skill=lambda _name: None,
+        model_client=SimpleNamespace(provider="openai"),
+        workspace=SimpleNamespace(cwd="/repo", branch="main"),
+        session={"messages": []},
+    )
+
+    def write(value, **_kwargs):
+        text = "".join(fragment[1] for fragment in value)
+        if "queued input: 1/5 pending" in text:
+            queued.set()
+
+    def handle_input(_agent, text, **_kwargs):
+        if text == "/exit":
+            return 0
+        calls.append(text)
+        if text == "first":
+            first_entered.set()
+            assert release_first.wait(timeout=3)
+        if text == "second":
+            second_finished.set()
+
+    monkeypatch.setattr("pony.tui.app._CompactPromptSession", FakeSession)
+    monkeypatch.setattr("pony.tui.render.print_formatted_text", write)
+    outcome = []
+    thread = threading.Thread(
+        target=lambda: outcome.append(
+            run_tui(agent, model="gpt-test", no_color=True, handle_input=handle_input)
+        )
+    )
+    thread.start()
+
+    inputs.put("first")
+    assert first_entered.wait(timeout=3)
+    inputs.put("second")
+    assert queued.wait(timeout=3)
+    release_first.set()
+    assert second_finished.wait(timeout=3)
+    inputs.put("/exit")
+    thread.join(timeout=3)
+
+    assert not thread.is_alive()
+    assert outcome == [0]
+    assert calls == ["first", "second"]
+
+
+def test_tui_routes_approval_answer_through_the_ui_prompt(monkeypatch):
+    inputs = queue.Queue()
+    approval_visible = threading.Event()
+    approval_finished = threading.Event()
+    decisions = []
+    prompt_threads = []
+    worker_threads = []
+
+    class FakeSession:
+        def __init__(self, **_kwargs):
+            pass
+
+        def prompt(self, *_args, **_kwargs):
+            prompt_threads.append(threading.current_thread())
+            return inputs.get(timeout=3)
+
+    agent = SimpleNamespace(
+        _trace_listener=None,
+        _approval_prompt=None,
+        current_permission_mode=lambda: "auto",
+        project_skill=lambda _name: None,
+        model_client=SimpleNamespace(provider="openai"),
+        workspace=SimpleNamespace(cwd="/repo", branch="main"),
+        session={"messages": []},
+    )
+
+    def write(value, **_kwargs):
+        text = "".join(fragment[1] for fragment in value)
+        if "APPROVAL REQUIRED" in text:
+            approval_visible.set()
+
+    def handle_input(received, text, **_kwargs):
+        if text == "/exit":
+            return 0
+        worker_threads.append(threading.current_thread())
+        assert text == "change file"
+        decisions.append(received._approval_prompt("write_file", {"path": "a.txt"}))
+        approval_finished.set()
+
+    monkeypatch.setattr("pony.tui.app._CompactPromptSession", FakeSession)
+    monkeypatch.setattr("pony.tui.render.print_formatted_text", write)
+    outcome = []
+    thread = threading.Thread(
+        target=lambda: outcome.append(
+            run_tui(agent, model="gpt-test", no_color=True, handle_input=handle_input)
+        )
+    )
+    thread.start()
+
+    inputs.put("change file")
+    assert approval_visible.wait(timeout=3)
+    inputs.put("yes")
+    assert approval_finished.wait(timeout=3)
+    inputs.put("/exit")
+    thread.join(timeout=3)
+
+    assert outcome == [0]
+    assert decisions == [True]
+    assert worker_threads[0] is not prompt_threads[0]
+    assert all(current is prompt_threads[0] for current in prompt_threads)
 
 
 def test_toolbar_is_width_bounded_and_keeps_only_essential_status():
