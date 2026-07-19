@@ -355,7 +355,7 @@ def _process_repl_input(
         if manage_permissions is None:
             return None
         try:
-            selections = manage_permissions(rules, sorted(agent.tools))
+            selections = manage_permissions(rules, agent.permission_rule_tools())
             if selections is None:
                 return None
             if isinstance(selections, tuple):
@@ -389,15 +389,6 @@ def _process_repl_input(
         return None
     if user_input == "/plan" or user_input.startswith("/plan "):
         description = user_input[len("/plan") :].strip()
-        if description == "share":
-            print("plan sharing is unavailable in this local runtime")
-            return None
-        if description == "open":
-            try:
-                _open_plan_in_editor(agent)
-            except (OSError, RuntimeError, ValueError) as exc:
-                print(f"error: {_safe_text(agent, exc)}")
-            return None
         was_plan = agent.current_permission_mode() == "plan"
         try:
             changed = None if was_plan else agent.set_permission_mode("plan")
@@ -407,6 +398,18 @@ def _process_repl_input(
         if changed is not None:
             print("permission mode: plan")
         plan = agent.current_plan()
+        if description == "share":
+            print("plan sharing is unavailable in this local runtime")
+            return None
+        if description == "open":
+            if not plan.strip():
+                print("(no plan saved)")
+                return None
+            try:
+                _open_plan_in_editor(agent)
+            except (OSError, RuntimeError, ValueError) as exc:
+                print(f"error: {_safe_text(agent, exc)}")
+            return None
         if was_plan or not description:
             print(plan or "(no plan saved)")
         if description and not was_plan:

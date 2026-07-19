@@ -116,7 +116,8 @@ fresh Session 默认使用 `auto`。`pony run` 与 `pony repl` 可通过 `--perm
 | `plan` | 只公开只读工具和 Plan 工具；离开 Plan 前展示精确内容与 revision 请求确认 |
 
 `auto` 的用户操作方式与 Claude Code 同名模式对齐；Pony 当前使用本地确定性安全分类器，并不复刻 Claude 的内部
-模型分类器。`/permissions` 可连续管理当前 Session 的 exact tool-name `allow`、`ask`、`deny` 规则并切换 mode；
+模型分类器。完整 TUI 中的 `/permissions` 使用可导航 picker 管理当前 Session 的 exact tool-name
+`allow`、`ask`、`deny` 规则并切换 mode；
 `/allowed-tools` 是别名。CLI 的 `--allowed-tools` / `--allowedTools` 与
 `--disallowed-tools` / `--disallowedTools` 写入同一种 exact-tool Session 规则。
 交互 picker 还支持 `remove` 删除已有规则。一次性 `Approve once?` 只授权当前 Tool 调用，不会持久化为规则。
@@ -133,9 +134,9 @@ pony --dangerously-skip-permissions run "apply the requested change"
 bypass 的 Session。第二种直接为当前 Session 选择 bypass。普通 bypass resume 必须重新提供 capability；显式使用
 `--permission-mode` 改回其他 mode 不需要 dangerous flag。permission 参数只适用于 `run/repl`，管理命令返回 usage error。
 
-`/plan [description|open|share]` 进入或查看 Plan。首次 description 会提交规划请求；`open` 通过
-`$VISUAL`/`$EDITOR` 编辑 Plan，并只在原 revision 未变化时保存；本地 runtime 的 `share` 明确返回不可用。
-两者都不改变当前 mode。模型使用 `read_plan`、`write_plan` 和 `exit_plan_mode`；只有非空 Plan
+`/plan [description|open|share]` 先进入 Plan mode。首次 description 会提交规划请求；已有 Plan 时，`open` 通过
+`$VISUAL`/`$EDITOR` 编辑 Plan，并只在原 revision 未变化时保存；没有 Plan 时不启动 editor。本地 runtime 的 `share`
+在进入 Plan 后明确返回不可用。模型使用 `read_plan`、`write_plan` 和 `exit_plan_mode`；只有非空 Plan
 通过精确内容与 revision 的一次性确认后，才恢复进入 Plan 前的 permission mode，并可在同一请求中继续实现。
 
 显式交互 `--resume` 在首个 prompt 前显示一次 permission、checkpoint、resume state 与 Provider/model 摘要；

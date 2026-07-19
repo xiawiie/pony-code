@@ -13,7 +13,7 @@ from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.history import InMemoryHistory
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.layout import Dimension
-from prompt_toolkit.shortcuts import CompleteStyle
+from prompt_toolkit.shortcuts import CompleteStyle, choice
 
 from pony.cli.help import SLASH_COMMANDS
 from pony.runtime.resume import active_prompt_history
@@ -109,6 +109,83 @@ def _history(items):
     return history
 
 
+def _rule_behavior(rules, name):
+    for behavior in ("deny", "ask", "allow"):
+        if name in rules.get(behavior, ()):
+            return behavior
+    return "default"
+
+
+def _updated_rules(rules, name, behavior):
+    updated = {
+        key: list(rules.get(key, ())) for key in ("allow", "ask", "deny")
+    }
+    for values in updated.values():
+        if name in values:
+            values.remove(name)
+    if behavior != "remove":
+        updated[behavior].append(name)
+        updated[behavior].sort()
+    return updated
+
+
+def _permission_picker(
+    rules,
+    tools,
+    *,
+    current_mode,
+    bypass_available,
+    style,
+    choose=choice,
+):
+    selections = []
+    current_rules = _updated_rules(rules, "", "remove")
+    mode = current_mode
+    while True:
+        target = choose(
+            "Permissions",
+            options=[
+                ("done", "Done"),
+                ("mode", f"Mode: {mode}"),
+                *[
+                    (name, f"{name}: {_rule_behavior(current_rules, name)}")
+                    for name in tools
+                ],
+            ],
+            style=style,
+        )
+        if target == "done":
+            return selections or None
+        if target == "mode":
+            modes = ["manual", "auto", "acceptEdits", "dontAsk", "plan"]
+            if bypass_available:
+                modes.insert(3, "bypassPermissions")
+            mode = choose(
+                "Permission mode",
+                options=[(value, value) for value in modes],
+                default=mode if mode in modes else "manual",
+                style=style,
+            )
+            selections.append(("mode", mode))
+            continue
+        behavior = choose(
+            f"Rule for {target}",
+            options=[
+                ("allow", "Allow"),
+                ("ask", "Ask"),
+                ("deny", "Deny"),
+                ("remove", "Use mode default"),
+            ],
+            default=(
+                current if (current := _rule_behavior(current_rules, target)) != "default"
+                else "remove"
+            ),
+            style=style,
+        )
+        selections.append((behavior, target))
+        current_rules = _updated_rules(current_rules, target, behavior)
+
+
 def run_tui(
     agent,
     *,
@@ -152,26 +229,18 @@ def run_tui(
         renderer.approval(name, args)
         return confirm("  Approve once? [y/N] ")
 
-    def manage_permissions(_rules, tools):
-        selections = []
-        while True:
-            behavior = session.prompt(
-                "  Permission [allow/ask/deny/remove/mode, Enter closes]: ",
-                multiline=False,
-                bottom_toolbar=None,
-            ).strip()
-            if not behavior:
-                return selections or None
-            if behavior not in {"allow", "ask", "deny", "remove", "mode"}:
-                raise ValueError("invalid permission rule behavior")
-            name = session.prompt(
-                "  Mode or tool: ",
-                multiline=False,
-                bottom_toolbar=None,
-            ).strip()
-            if behavior != "mode" and name not in tools:
-                raise ValueError("unknown permission rule tool")
-            selections.append((behavior, name))
+    def manage_permissions(rules, tools):
+        return _permission_picker(
+            rules,
+            tools,
+            current_mode=(
+                "manual"
+                if agent.current_permission_mode() == "default"
+                else agent.current_permission_mode()
+            ),
+            bypass_available=agent.bypass_permissions_available,
+            style=renderer.style,
+        )
 
     previous_listener = getattr(agent, "_trace_listener", None)
     previous_approval_prompt = getattr(agent, "_approval_prompt", None)

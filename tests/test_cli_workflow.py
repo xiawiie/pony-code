@@ -64,6 +64,21 @@ def test_repl_permissions_applies_multiple_rules_and_changes_mode(tmp_path, caps
     assert "permission mode: manual" in capsys.readouterr().out
 
 
+def test_repl_permissions_lists_legal_tools_hidden_by_runtime_allowlist(tmp_path):
+    agent = _agent(tmp_path)
+    agent.tools = {"read_file": agent.tools["read_file"]}
+    seen = []
+
+    _process_repl_input(
+        agent,
+        "/permissions",
+        manage_permissions=lambda _rules, tools: seen.extend(tools),
+    )
+
+    assert "read_file" in seen
+    assert "write_file" in seen
+
+
 def test_repl_plan_enters_plan_permission_mode(tmp_path, capsys):
     agent = _agent(tmp_path)
     before = len(agent.session_store.load_tree(agent.session["id"]).entries)
@@ -78,10 +93,34 @@ def test_repl_plan_enters_plan_permission_mode(tmp_path, capsys):
     assert tree.entries[-1]["type"] == "permission_mode_change"
 
 
-def test_repl_plan_open_edits_artifact_without_changing_mode(
+def test_repl_plan_open_enters_plan_and_skips_editor_without_artifact(
     tmp_path, monkeypatch, capsys
 ):
     agent = _agent(tmp_path)
+    monkeypatch.setenv("EDITOR", "pony-test-editor")
+    monkeypatch.setattr(
+        "pony.cli.start.subprocess.run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("editor must not open without a saved plan")
+        ),
+    )
+
+    _process_repl_input(agent, "/plan open")
+
+    assert agent.current_permission_mode() == "plan"
+    assert agent.current_plan() == ""
+    output = capsys.readouterr().out
+    assert "permission mode: plan" in output
+    assert "(no plan saved)" in output
+
+
+def test_repl_plan_open_edits_existing_artifact_in_plan_mode(
+    tmp_path, monkeypatch, capsys
+):
+    agent = _agent(tmp_path)
+    agent.set_permission_mode("plan")
+    agent.save_plan_text("# Original Plan")
+    agent.set_permission_mode("auto")
     before = len(agent.session_store.load_tree(agent.session["id"]).entries)
     monkeypatch.setenv("EDITOR", "pony-test-editor")
     monkeypatch.setattr("pony.cli.start.shutil.which", lambda _name: "/usr/bin/editor")
@@ -95,22 +134,26 @@ def test_repl_plan_open_edits_artifact_without_changing_mode(
     _process_repl_input(agent, "/plan open")
 
     tree = agent.session_store.load_tree(agent.session["id"])
-    assert agent.current_permission_mode() == "auto"
+    assert agent.current_permission_mode() == "plan"
     assert agent.current_plan() == "# Edited Plan\n1. Test"
-    assert len(tree.entries) == before + 1
+    assert len(tree.entries) == before + 2
     assert tree.entries[-1]["type"] == "plan_artifact"
-    assert "Opened plan in editor" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "permission mode: plan" in output
+    assert "Opened plan in editor" in output
 
 
-def test_repl_plan_share_is_zero_write_when_unavailable(tmp_path, capsys):
+def test_repl_plan_share_enters_plan_before_reporting_unavailable(tmp_path, capsys):
     agent = _agent(tmp_path)
     before = len(agent.session_store.load_tree(agent.session["id"]).entries)
 
     _process_repl_input(agent, "/plan share")
 
-    assert agent.current_permission_mode() == "auto"
-    assert len(agent.session_store.load_tree(agent.session["id"]).entries) == before
-    assert "plan sharing is unavailable" in capsys.readouterr().out
+    assert agent.current_permission_mode() == "plan"
+    assert len(agent.session_store.load_tree(agent.session["id"]).entries) == before + 1
+    output = capsys.readouterr().out
+    assert "permission mode: plan" in output
+    assert "plan sharing is unavailable" in output
 
 
 def test_removed_mode_is_unknown_and_plan_description_is_submitted(tmp_path, capsys):

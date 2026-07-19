@@ -939,6 +939,10 @@ class Pony:
             for behavior in ("allow", "ask", "deny")
         }
 
+    @staticmethod
+    def permission_rule_tools():
+        return sorted(toolkit.legal_tool_names())
+
     def permission_for_tool(self, name):
         name = str(name)
         rules = self.permission_rules()

@@ -82,9 +82,10 @@ to use these tools and not request approval in ordinary text.
   mismatch leaves the Session in `plan`.
 - A successful exit restores `pre_plan_mode`, falling back to `auto` only when it is absent. The Agent Loop then refreshes the frozen
   mode and visible schemas so the same top-level request can continue implementation.
-- `/plan open` uses `$VISUAL` or `$EDITOR` and saves only if the original revision still matches. `/plan share` is explicitly
-  unavailable in the local runtime. Neither command changes the current permission mode. Explicit editor saves share the canonical
-  Plan validation/persistence path with `write_plan` and add an expected-revision check.
+- `/plan open` and `/plan share` enter Plan mode before dispatch, matching Claude Code's command order. `open` uses `$VISUAL` or
+  `$EDITOR` only when an artifact already exists and saves only if the original revision still matches; `share` is explicitly
+  unavailable in the local runtime. Explicit editor saves share the canonical Plan validation/persistence path with `write_plan` and
+  add an expected-revision check.
 
 The Plan artifact is not copied into a checkpoint, Run trace, resume card, system prefix, or request metadata. `task_working_set`
 continues to project checkpoint and file facts; the model reads Plan text explicitly through `read_plan`.

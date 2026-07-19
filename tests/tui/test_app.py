@@ -12,6 +12,7 @@ from pony.tui.app import (
     _CompactPromptSession,
     _key_bindings,
     _history,
+    _permission_picker,
     run_tui,
     should_use_tui,
 )
@@ -113,6 +114,55 @@ def test_tui_history_uses_only_supplied_canonical_prompts():
         "first",
         "active branch",
     ]
+
+
+def test_permission_picker_navigates_current_rules_and_modes():
+    calls = []
+    answers = iter(("write_file", "deny", "mode", "plan", "done"))
+
+    def choose(message, **options):
+        calls.append((message, options))
+        return next(answers)
+
+    selected = _permission_picker(
+        {"allow": ["read_file"], "ask": [], "deny": []},
+        ["read_file", "write_file"],
+        current_mode="manual",
+        bypass_available=False,
+        style=object(),
+        choose=choose,
+    )
+
+    assert selected == [("deny", "write_file"), ("mode", "plan")]
+    assert calls[0][1]["options"] == [
+        ("done", "Done"),
+        ("mode", "Mode: manual"),
+        ("read_file", "read_file: allow"),
+        ("write_file", "write_file: default"),
+    ]
+    assert calls[2][1]["options"][-1] == ("write_file", "write_file: deny")
+    assert "bypassPermissions" not in dict(calls[3][1]["options"])
+
+
+def test_permission_picker_offers_bypass_only_with_runtime_capability():
+    calls = []
+    answers = iter(("mode", "bypassPermissions", "done"))
+
+    def choose(message, **options):
+        calls.append((message, options))
+        return next(answers)
+
+    selected = _permission_picker(
+        {"allow": [], "ask": [], "deny": []},
+        ["read_file"],
+        current_mode="auto",
+        bypass_available=True,
+        style=object(),
+        choose=choose,
+    )
+
+    assert selected == [("mode", "bypassPermissions")]
+    assert "bypassPermissions" in dict(calls[1][1]["options"])
 
 
 def test_tui_resume_card_labels_fact_sources(monkeypatch):
