@@ -382,6 +382,9 @@ def test_core_rejects_mismatched_machine_before_running(tmp_path, monkeypatch):
 
 def test_core_functional_runs_without_a_performance_baseline(tmp_path):
     calls = []
+    repo = tmp_path / "repo"
+    output = tmp_path / "gate-output"
+    repo.mkdir()
 
     def runner(argv, cwd):
         calls.append((argv, cwd))
@@ -390,7 +393,8 @@ def test_core_functional_runs_without_a_performance_baseline(tmp_path):
     payload, _json_path, _markdown_path = evaluate.run_evaluation(
         "core-functional",
         runner=runner,
-        root=tmp_path,
+        root=repo,
+        output_dir=output,
         now=datetime(2026, 7, 12, 4, tzinfo=timezone.utc),
         system_name="linux",
     )
@@ -398,9 +402,12 @@ def test_core_functional_runs_without_a_performance_baseline(tmp_path):
     assert payload["status"] == "pass"
     assert "baseline" not in payload["provenance"]
     assert [row["id"] for row in payload["scenarios"]] == [
-        item[0] for item in evaluate._core_full_commands()
+        item[0] for item in evaluate._core_functional_commands()
     ]
     assert not any(argv[-1] in dict(evaluate.PERF_RUNNERS) for argv, _cwd in calls)
+    assert payload["artifact_path"] == "20260712T040000000000Z-core-functional.json"
+    assert (output / payload["artifact_path"]).is_file()
+    assert not (repo / "artifacts").exists()
 
 
 def test_provenance_records_unreleased_sandbox_platform(tmp_path, monkeypatch):
@@ -469,6 +476,11 @@ def test_logical_suites_split_fast_full_contract_and_real_work():
         "core.recovery-ablation",
         "core.build",
         "core.distribution",
+    ]
+    assert [item[0] for item in evaluate._core_functional_commands()] == [
+        "core.memory-quality-fake",
+        "core.fixed-benchmark",
+        "core.recovery-ablation",
     ]
     assert [item[0] for item in evaluate._core_fast_commands()] == [
         "core.ruff",

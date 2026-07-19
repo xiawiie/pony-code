@@ -52,24 +52,13 @@ jobs:
           uv venv --python .venv/bin/python "${primer}"
           uv pip install --refresh --python "${primer}/bin/python" --requirement "${requirements}"
 
-      - name: Lint
+      - name: Python 3.11 compatibility tests
         if: matrix.python-version == '3.11'
-        run: uv run ruff check .
+        run: uv run --frozen pytest -q tests
 
-      - name: Test
-        if: matrix.python-version == '3.11' || (matrix.python-version == '3.12' && github.event_name == 'pull_request')
-        run: uv run pytest -q
-
-      - name: Core fast gate
-        if: matrix.python-version == '3.12' && github.event_name == 'pull_request'
-        run: uv run python scripts/evaluation/evaluate.py --suite core-fast
-
-      - name: Core functional aggregate gate
-        if: matrix.python-version == '3.12' && github.event_name != 'pull_request'
-        run: uv run python scripts/evaluation/evaluate.py --suite core-functional
-
-      - name: Offline live harness
-        run: uv run pytest benchmarks/live_e2e/tests/test_assertions.py -q
+      - name: Exact-head offline gate
+        if: matrix.python-version == '3.12'
+        run: ./scripts/check.sh
 
       - name: Measure sandbox report-only performance
         if: matrix.python-version == '3.12'
@@ -81,16 +70,6 @@ jobs:
         with:
           name: sandbox-performance-${{ matrix.python-version }}
           path: sandbox-perf.json
-
-      - name: Build wheel and source distribution
-        if: matrix.python-version == '3.12'
-        run: uv build --clear
-
-      - name: Inspect distributions and smoke-test wheel install
-        if: matrix.python-version == '3.12'
-        run: >-
-          uv run python scripts/release/verify_distribution.py
-          --install-smoke --offline-bundle-smoke
 
   macos-focused:
     name: macOS focused (Python 3.12)
