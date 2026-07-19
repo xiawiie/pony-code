@@ -1,3 +1,4 @@
+import errno
 import hashlib
 import importlib.util
 import json
@@ -503,85 +504,68 @@ def _publish_fixture(tmp_path):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     root = tmp_path / "repo"
-    source = tmp_path / "staging"
     root.mkdir()
-    source.mkdir()
+    source = root / ".pony-check.TEST" / "dist"
+    source.mkdir(parents=True)
     (source / "pony_code-1.0.0.tar.gz").write_bytes(b"sdist")
     (source / "pony_code-1.0.0-py3-none-any.whl").write_bytes(b"wheel")
     return module, root, source
 
 
-def test_release_publish_refuses_concurrent_empty_dist(tmp_path, monkeypatch):
+def test_release_publish_refuses_concurrent_empty_dist_without_replacement(tmp_path):
     module, root, source = _publish_fixture(tmp_path)
-    real_mkdir = module.os.mkdir
+    destination = root / "dist"
+    destination.mkdir()
+    identity = (destination.stat().st_dev, destination.stat().st_ino)
 
-    def create_dist_first(path, mode=0o777, *, dir_fd=None):
-        if path == module.DIST_NAME:
-            real_mkdir(path, mode, dir_fd=dir_fd)
-        return real_mkdir(path, mode, dir_fd=dir_fd)
-
-    monkeypatch.setattr(module.os, "mkdir", create_dist_first)
-
-    with pytest.raises(module.PublishError, match="already exists"):
+    with pytest.raises(OSError) as caught:
         module.publish_distribution(source, root=root)
 
-    assert list((root / "dist").iterdir()) == []
+    assert caught.value.errno == errno.EEXIST
+    current = destination.stat()
+    assert (current.st_dev, current.st_ino) == identity
+    assert list(destination.iterdir()) == []
+    assert source.is_dir()
 
 
-def test_release_publish_detects_path_swap_without_touching_replacement(
-    tmp_path, monkeypatch
-):
+def test_release_publish_preserves_source_directory_identity(tmp_path):
     module, root, source = _publish_fixture(tmp_path)
-    real_link = module.os.link
-    detached = root / "detached-dist"
-    swapped = False
+    identity = (source.stat().st_dev, source.stat().st_ino)
 
-    def link_then_swap(*args, **kwargs):
-        nonlocal swapped
-        result = real_link(*args, **kwargs)
-        if not swapped:
-            swapped = True
-            (root / "dist").rename(detached)
-            (root / "dist").mkdir()
-            (root / "dist" / "external.txt").write_text("keep", encoding="utf-8")
-        return result
+    module.publish_distribution(source, root=root)
 
-    monkeypatch.setattr(module.os, "link", link_then_swap)
+    assert not source.exists()
+    published = (root / "dist").stat()
+    assert (published.st_dev, published.st_ino) == identity
 
-    with pytest.raises(module.PublishError, match="path changed"):
+
+def test_release_publish_fails_closed_on_unsupported_platform(tmp_path, monkeypatch):
+    module, root, source = _publish_fixture(tmp_path)
+    monkeypatch.setattr(module.sys, "platform", "unsupported")
+
+    with pytest.raises(module.PublishError, match="unsupported"):
         module.publish_distribution(source, root=root)
 
-    assert (root / "dist" / "external.txt").read_text(encoding="utf-8") == "keep"
-    assert sorted(path.name for path in detached.iterdir()) == [
-        "pony_code-1.0.0-py3-none-any.whl",
-        "pony_code-1.0.0.tar.gz",
-    ]
+    assert source.is_dir()
+    assert not (root / "dist").exists()
 
 
-def test_release_publish_cleans_only_its_partial_output_and_retains_dist(
-    tmp_path, monkeypatch
-):
+@pytest.mark.parametrize("invalid", ("outside", "extra", "symlink"))
+def test_release_publish_validates_source_and_archives(tmp_path, invalid):
     module, root, source = _publish_fixture(tmp_path)
-    real_link = module.os.link
-    calls = 0
+    if invalid == "outside":
+        source = tmp_path / "outside" / "dist"
+        source.mkdir(parents=True)
+    elif invalid == "extra":
+        (source / "extra.txt").write_text("extra", encoding="utf-8")
+    else:
+        (source / "pony_code-1.0.0.tar.gz").unlink()
+        (source / "pony_code-1.0.0.tar.gz").symlink_to("missing")
 
-    def fail_second_link(*args, **kwargs):
-        nonlocal calls
-        calls += 1
-        if calls == 2:
-            raise OSError("injected publish failure")
-        return real_link(*args, **kwargs)
-
-    monkeypatch.setattr(module.os, "link", fail_second_link)
-
-    with pytest.raises(module.PublishError, match="retained for safe manual cleanup"):
+    with pytest.raises((OSError, module.PublishError)):
         module.publish_distribution(source, root=root)
 
-    assert list((root / "dist").iterdir()) == []
-    assert sorted(path.name for path in source.iterdir()) == [
-        "pony_code-1.0.0-py3-none-any.whl",
-        "pony_code-1.0.0.tar.gz",
-    ]
+    assert not (root / "dist").exists()
 
 
 def test_provider_experiment_defaults_allow_reasoning_budget():

@@ -121,9 +121,9 @@ uv run pytest -q \
 ./scripts/check.sh --release-dist
 ```
 
-无参数执行时分发包随临时目录清理；仅发布流程使用固定的 `--release-dist`，在全部门禁通过后原子占用此前不存在的
-仓库 `dist/`，再 hardlink 同一次验证过的 wheel 和 sdist。该入口不接受任意输出路径，也不删除或覆盖已有 `dist`。
-若 hardlink 发布中途失败，只清理本轮且 inode 未变化的归档；为避免 path-swap 竞态，会保留空 `dist/` 并要求人工检查后重试。
+无参数执行时分发包随临时目录清理；仅发布流程使用固定的 `--release-dist`，在全部门禁通过后通过平台原生
+no-replace rename 把同一次验证过的 wheel 和 sdist 原子发布到此前不存在的仓库 `dist/`。该入口不接受任意输出路径，
+也不删除或覆盖已有 `dist`；不支持原生 no-replace rename 的平台 fail closed。
 
 Verifier 使用 `git ls-files pony` 建立产品文件真源并检查：
 
