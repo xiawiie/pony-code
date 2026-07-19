@@ -398,7 +398,7 @@ def test_core_functional_runs_without_a_performance_baseline(tmp_path):
     assert payload["status"] == "pass"
     assert "baseline" not in payload["provenance"]
     assert [row["id"] for row in payload["scenarios"]] == [
-        item[0] for item in evaluate._core_full_commands()
+        item[0] for item in evaluate._core_functional_commands()
     ]
     assert not any(argv[-1] in dict(evaluate.PERF_RUNNERS) for argv, _cwd in calls)
 
@@ -469,6 +469,11 @@ def test_logical_suites_split_fast_full_contract_and_real_work():
         "core.recovery-ablation",
         "core.build",
         "core.distribution",
+    ]
+    assert [item[0] for item in evaluate._core_functional_commands()] == [
+        "core.memory-quality-fake",
+        "core.fixed-benchmark",
+        "core.recovery-ablation",
     ]
     assert [item[0] for item in evaluate._core_fast_commands()] == [
         "core.ruff",

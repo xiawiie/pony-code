@@ -268,11 +268,9 @@ def _core_fast_commands():
     )
 
 
-def _core_full_commands():
+def _core_functional_commands():
     python = sys.executable
     return (
-        ("core.ruff", (python, "-m", "ruff", "check", "."), "exit"),
-        ("core.pytest", (python, "-m", "pytest", "-q"), "exit"),
         (
             "core.memory-quality-fake",
             (
@@ -309,6 +307,15 @@ def _core_full_commands():
             ),
             "exit",
         ),
+    )
+
+
+def _core_full_commands():
+    python = sys.executable
+    return (
+        ("core.ruff", (python, "-m", "ruff", "check", "."), "exit"),
+        ("core.pytest", (python, "-m", "pytest", "-q"), "exit"),
+        *_core_functional_commands(),
         ("core.build", ("uv", "build", "--clear"), "exit"),
         (
             "core.distribution",
@@ -1167,7 +1174,7 @@ def run_evaluation(
         )
     elif suite == "core-functional":
         rows = _run_functional(
-            _core_full_commands(),
+            _core_functional_commands(),
             runner=runner,
             root=root,
             artifact_path=artifact_ref,

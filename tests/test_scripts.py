@@ -320,7 +320,7 @@ def test_distribution_verifier_includes_all_product_packages(tmp_path):
     assert runtime == tracked
 
 
-def test_local_check_script_matches_ci_commands():
+def test_local_check_script_runs_each_full_gate_once_on_a_clean_exact_head():
     script = Path("scripts/check.sh")
 
     assert script.exists()
@@ -328,11 +328,20 @@ def test_local_check_script_matches_ci_commands():
 
     text = script.read_text()
     assert "uv lock --check" in text
-    assert "uv run --frozen ruff check ." in text
-    assert "uv run --frozen pytest -q" in text
+    assert text.count("uv run --frozen ruff check .") == 1
+    assert text.count("uv run --frozen pytest") == 1
+    assert "tests benchmarks/live_e2e/tests/test_assertions.py" in text
     assert "scripts/evaluation/evaluate.py --suite core-functional" in text
-    assert "scripts/release/verify_distribution.py" in text
+    assert text.count("uv build") == 1
+    assert "uv build --offline --out-dir" in text
+    assert text.count("scripts/release/verify_distribution.py") == 1
+    assert '--dist-dir "$tmp_dir/dist"' in text
     assert "--install-smoke" in text
+    assert "git status --porcelain --untracked-files=all" in text
+    assert "git rev-parse HEAD" in text
+    assert "checking clean exact HEAD $start_head" in text
+    assert "verified clean exact HEAD $start_head" in text
+    assert "trap 'rm -rf" in text
 
 
 def test_provider_experiment_defaults_allow_reasoning_budget():
