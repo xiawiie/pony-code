@@ -209,11 +209,8 @@ def _client_from_config(config, timeout, *, client_builder=None):
     )
 
 
-def _candidate_configs(config, verify_resolved):
-    status = config.get("resolution_status")
-    if status == "resolved":
-        return [config] if verify_resolved else []
-    if status != "probe_required":
+def _probe_candidates(config):
+    if config.get("resolution_status") != "probe_required":
         raise ValueError(config.get("resolution_error") or "provider_detection_failed")
 
     from pony.config.model import resolve_provider_candidate
@@ -224,11 +221,7 @@ def _candidate_configs(config, verify_resolved):
     ]
 
 
-def _protocol_family(protocol):
-    return "openai" if str(protocol).startswith("openai_") else str(protocol)
-
-
-def _can_try_next(report, selector):
+def _can_try_next(report):
     code = report.get("error_code", "")
     status = report.get("http_status")
     if code in _TRANSIENT_FAILURE_CODES or status == 429 or (
@@ -236,7 +229,7 @@ def _can_try_next(report, selector):
     ):
         return False
     if status in {401, 403} or code == "missing_credentials":
-        return selector == "auto"
+        return False
     if code in _PROTOCOL_FAILURE_CODES:
         return True
     if type(status) is int and 400 <= status < 500:
@@ -290,11 +283,13 @@ def resolve_provider_client(
     client_builder=None,
 ):
     """Build or detect one client without replaying a real user request."""
-    candidates = _candidate_configs(config, verify_resolved)
     builder_args = (
         {} if client_builder is None else {"client_builder": client_builder}
     )
-    if not candidates:
+    status = config.get("resolution_status")
+    if status == "invalid":
+        raise ValueError(config.get("resolution_error") or "provider_detection_failed")
+    if status == "resolved" and not verify_resolved:
         client = _client_from_config(
             config,
             timeout,
@@ -310,6 +305,7 @@ def resolve_provider_client(
         }
         _record_resolution_metadata(client, config, report)
         return client, config, report
+    candidates = [config] if status == "resolved" else _probe_candidates(config)
     if not config.get("api_key", {}).get("value") and all(
         item["auth_mode"]["value"] != "none" for item in candidates
     ):
@@ -323,17 +319,12 @@ def resolve_provider_client(
 
     request_timeout = min(float(timeout), _DETECTION_REQUEST_TIMEOUT_SECONDS)
     deadline = clock() + _DETECTION_WALL_SECONDS
-    selector = config.get("provider", {}).get("value", "")
     attempted = 0
     model_calls = 0
     last_report = None
     last_protocol = None
-    skipped_family = ""
     for candidate in candidates:
         protocol = candidate["protocol"]["value"]
-        family = _protocol_family(protocol)
-        if skipped_family and family == skipped_family:
-            continue
         remaining = deadline - clock()
         if remaining <= 0:
             raise ProviderTransportError(
@@ -367,16 +358,8 @@ def resolve_provider_client(
             )
             _record_resolution_metadata(runtime_client, candidate, completed)
             return runtime_client, candidate, completed
-        if not _can_try_next(report, selector):
+        if not _can_try_next(report):
             raise _probe_error(report, protocol=protocol, exhausted=False)
-        if (
-            selector == "auto"
-            and (
-                report.get("http_status") in {401, 403}
-                or report.get("error_code") == "missing_credentials"
-            )
-        ):
-            skipped_family = family
 
     if last_report is None:
         raise ProviderTransportError(

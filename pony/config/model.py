@@ -204,7 +204,6 @@ def _candidate_protocols(provider, base_url):
         return (
             "openai_chat_completions",
             "openai_responses",
-            "anthropic_messages",
         ), ""
     allowed = _PROVIDER_PROTOCOLS[provider]
     if (

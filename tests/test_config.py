@@ -226,7 +226,6 @@ def test_auto_provider_uses_bounded_generic_https_candidates(provider):
     assert [candidate["protocol"] for candidate in resolved["candidates"]] == [
         "openai_chat_completions",
         "openai_responses",
-        "anthropic_messages",
     ]
 
 
