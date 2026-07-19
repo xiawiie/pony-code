@@ -14,6 +14,7 @@ class RuntimeOptions:
     depth: int = 0
     max_depth: int = 1
     read_only: bool = False
+    bypass_permissions_available: bool = False
     shell_env_allowlist: tuple[str, ...] | None = None
     secret_env_names: tuple[str, ...] | None = None
     redaction_env: dict[str, str] | None = None

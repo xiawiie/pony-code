@@ -70,7 +70,8 @@ CLI/TUI 合同：
 - TUI 是 presentation adapter，必须与纯文本 fallback 共用 REPL handler、Agent、Session、finalize 和错误语义。
 - `/` 菜单只展示真实命令；不得增加绕过 permission check 的 `!` shell mode、动态 Provider/Model 或第二命令 registry。
 - `--permission-mode` 只适用于 `run/repl`，公开值与 Claude Code 一致：`manual|auto|acceptEdits|bypassPermissions|dontAsk|plan`；
-  `manual` 只在 CLI 边界映射为内部 `default`。`bypassPermissions` 必须通过两个 dangerous bypass flag 之一显式启用。
+  `manual` 只在 CLI 边界映射为内部 `default`。`bypassPermissions` 必须通过两个 dangerous bypass flag 之一显式启用；
+  capability 只进入冻结的 `RuntimeOptions`，不持久化且 delegate 不继承。
 - `/permissions` 与 `/allowed-tools` 共用 REPL handler 管理 allow/ask/deny 规则和 mode；CLI allowed/disallowed flags
   复用同一 rule parser 与 Session writer。`/plan` 进入或查看 Plan，旧 `/mode` 与 `/todo` 不再存在，`/plan clear`
   不再具有清空语义。
@@ -129,6 +130,7 @@ PONY_MODEL
 - 多 tool calls 整体拒绝；同一 turn 的 retry/follow-up 复用 immutable snapshot。
 - top-level turn 同时冻结 Permission Mode、permission rules 与模型可见 Tool Schema；Executor 对隐藏或伪造工具仍按当前
   trust、rule、mode、path 与 secret 边界重新决策。
+- bypass capability 在构造、resume、mode setter 与 Executor 四层 fail closed；不得只在 CLI adapter 校验。
 - Canonical Messages 是唯一 transcript；Provider adapter 不维护第二套可变 history。
 - Tool 先做 schema、policy、当前授权与必要 permission prompt，再进入 mutation lock；执行一次并观察真实 effect。
 - `memory_save` 只接受当前请求的明确授权；历史授权不继承，delegate 不能写 Durable Memory。

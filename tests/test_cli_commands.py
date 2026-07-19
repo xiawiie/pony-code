@@ -10,6 +10,7 @@ from pony.cli.app import main
 from pony.config.environment import read_project_env
 from pony.config.model import resolve_model_config
 from pony.providers.transport import ProviderTransportError
+from pony.cli.arguments import dangerous_bypass_enabled
 from pony.runtime.options import RuntimeOptions
 
 
@@ -24,12 +25,11 @@ def _install_fake_agent(monkeypatch, tmp_path, called, *, permission_mode="defau
             session = {"id": "s", "permission_mode": permission_mode}
             session_path = str(tmp_path / ".pony" / "sessions" / "s.json")
             tools = {"read_file": {}, "write_file": {}, "run_shell": {}}
+            bypass_permissions_available = dangerous_bypass_enabled(args)
 
             def ask(self, message):
                 called["asked"] = message
-                called["bypass_available"] = getattr(
-                    self, "bypass_permissions_available", False
-                )
+                called["bypass_available"] = self.bypass_permissions_available
                 return "answer"
 
             def set_permission_mode(self, mode):
@@ -254,7 +254,10 @@ def test_real_resume_bypass_preflight_runs_before_provider_resolution(
         model_client=FakeModelClient([]),
         workspace=workspace,
         session_store=store,
-        options=RuntimeOptions(project_trusted=True),
+        options=RuntimeOptions(
+            project_trusted=True,
+            bypass_permissions_available=True,
+        ),
     )
     agent.set_permission_mode("bypassPermissions")
     args = build_arg_parser().parse_args(
@@ -267,6 +270,51 @@ def test_real_resume_bypass_preflight_runs_before_provider_resolution(
 
     with pytest.raises(CliError, match="resuming bypassPermissions"):
         _build_agent_with_source_authority(args, workspace)
+
+
+def test_real_resume_bypass_capability_is_passed_into_runtime(
+    tmp_path, monkeypatch
+):
+    from benchmarks.support.fake_provider import FakeModelClient
+    from pony import Pony
+    from pony.cli.arguments import build_arg_parser
+    from pony.cli.assembly import _build_agent_with_source_authority
+    from pony.state.session_store import SessionStore
+    from pony.workspace.context import WorkspaceContext
+
+    (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
+    workspace = WorkspaceContext.build(tmp_path)
+    store = SessionStore(tmp_path / ".pony" / "sessions")
+    original = Pony(
+        model_client=FakeModelClient([]),
+        workspace=workspace,
+        session_store=store,
+        options=RuntimeOptions(
+            project_trusted=True,
+            bypass_permissions_available=True,
+        ),
+    )
+    original.set_permission_mode("bypassPermissions")
+    args = build_arg_parser().parse_args(
+        [
+            "--cwd",
+            str(tmp_path),
+            "--resume",
+            original.session["id"],
+            "--allow-dangerously-skip-permissions",
+            "run",
+            "inspect",
+        ]
+    )
+    monkeypatch.setattr(
+        "pony.cli.assembly._build_transport_client",
+        lambda *_args, **_kwargs: FakeModelClient([]),
+    )
+
+    resumed = _build_agent_with_source_authority(args, workspace)
+
+    assert resumed.current_permission_mode() == "bypassPermissions"
+    assert resumed.bypass_permissions_available is True
 
 
 def test_invalid_no_input_repl_is_rejected_before_agent_build(

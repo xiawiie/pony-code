@@ -326,6 +326,9 @@ class Pony:
         self.depth = options.depth
         self.max_depth = options.max_depth
         self.read_only = options.read_only
+        self._bypass_permissions_available = (
+            options.bypass_permissions_available is True
+        )
         self.shell_env_allowlist = tuple(
             options.shell_env_allowlist or DEFAULT_SHELL_ENV_ALLOWLIST
         )
@@ -568,6 +571,9 @@ class Pony:
             self.session = self.redact_artifact(deepcopy(session))
             self._validate_restored_session_binding(self.session, model_binding)
             self._validate_session_feature_flags(self.session)
+            self._require_bypass_permission_capability(
+                self.session.get("permission_mode")
+            )
         self._ensure_session_shape()
         if session is not None and self.docker_sandbox and not self.sandbox_context.resumed:
             self._prepare_restaged_session()
@@ -901,10 +907,24 @@ class Pony:
         if self._permission_turn is not None:
             raise RuntimeError("permission_turn_active")
         mode = validate_permission_mode(mode)
+        self._require_bypass_permission_capability(mode)
         entry = self.session_store.set_permission_mode(self.session["id"], mode)
         if entry is not None:
             self._reload_session_projection()
         return entry
+
+    @property
+    def bypass_permissions_available(self):
+        return self._bypass_permissions_available
+
+    def _require_bypass_permission_capability(self, mode):
+        if (
+            mode == PermissionMode.BYPASS_PERMISSIONS.value
+            and not self.bypass_permissions_available
+        ):
+            raise ValueError(
+                "bypassPermissions requires dangerous permission capability"
+            )
 
     def permission_rules(self):
         rules = self.session.get("permission_rules", {})

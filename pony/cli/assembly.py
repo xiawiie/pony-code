@@ -203,6 +203,7 @@ def _build_agent_with_source_authority(args, source_workspace):
     session_store_root = source_workspace.repo_root + "/.pony/sessions"
     store = None
     session_id = args.resume
+    resumed_permission_mode = ""
     max_output_tokens = getattr(args, "max_output_tokens", None)
     if session_id == "latest":
         store = SessionStore(session_store_root, redactor=redactor)
@@ -240,6 +241,7 @@ def _build_agent_with_source_authority(args, source_workspace):
         store = SessionStore(session_store_root, redactor=redactor)
     if store is not None and args.resume and session_id:
         storage, projection, _tree = store.inspect_readonly(session_id)
+        resumed_permission_mode = str(projection.get("permission_mode", "") or "")
         if (
             storage == "current"
             and projection.get("permission_mode") == "bypassPermissions"
@@ -283,6 +285,12 @@ def _build_agent_with_source_authority(args, source_workspace):
             session_id=session_id if args.resume else None,
         )
         if args.resume and session_id:
+            requested_mode = getattr(args, "permission_mode", None)
+            if (
+                resumed_permission_mode == "bypassPermissions"
+                and requested_mode not in {None, "bypassPermissions"}
+            ):
+                store.set_permission_mode(session_id, requested_mode)
             return Pony.from_session(
                 model_client=model,
                 workspace=workspace,
@@ -296,6 +304,7 @@ def _build_agent_with_source_authority(args, source_workspace):
                     secret_env_names=configured_secret_names,
                     redaction_env=redaction_env,
                     trusted_redaction_env=True,
+                    bypass_permissions_available=dangerous_bypass_enabled(args),
                     sandbox_context=sandbox_context,
                     project_config=project_config,
                 ),
@@ -312,6 +321,7 @@ def _build_agent_with_source_authority(args, source_workspace):
                 secret_env_names=configured_secret_names,
                 redaction_env=redaction_env,
                 trusted_redaction_env=True,
+                bypass_permissions_available=dangerous_bypass_enabled(args),
                 sandbox_context=sandbox_context,
                 project_config=project_config,
                 session_id=session_id,

@@ -323,7 +323,6 @@ def main(argv=None):
         if invocation.command in _PRE_AGENT_COMMAND_HANDLERS:
             return _dispatch_pre_agent_command(invocation, args)
         agent = build_agent(args)
-        agent.bypass_permissions_available = dangerous_bypass_enabled(args)
         current_mode = getattr(agent, "current_permission_mode", None)
         current_mode = (
             current_mode()

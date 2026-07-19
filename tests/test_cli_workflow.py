@@ -10,13 +10,16 @@ from pony.state.session_store import SessionStore
 from pony.workspace.context import WorkspaceContext
 
 
-def _agent(tmp_path, outputs=()):
+def _agent(tmp_path, outputs=(), *, bypass_permissions_available=False):
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
     return Pony(
         model_client=FakeModelClient(outputs),
         workspace=WorkspaceContext.build(tmp_path),
         session_store=SessionStore(tmp_path / ".pony" / "sessions"),
-        options=RuntimeOptions(project_trusted=True),
+        options=RuntimeOptions(
+            project_trusted=True,
+            bypass_permissions_available=bypass_permissions_available,
+        ),
     )
 
 
@@ -41,8 +44,7 @@ def test_repl_permissions_manages_rules_and_same_value_is_noop(tmp_path, capsys)
 
 
 def test_repl_permissions_applies_multiple_rules_and_changes_mode(tmp_path, capsys):
-    agent = _agent(tmp_path)
-    agent.bypass_permissions_available = True
+    agent = _agent(tmp_path, bypass_permissions_available=True)
 
     def manager(_rules, _tools):
         return [

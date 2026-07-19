@@ -86,6 +86,51 @@ def test_pony_constructor_uses_coding_agent_defaults(tmp_path):
 
     assert agent.max_steps == DEFAULT_MAX_STEPS == 12
     assert agent.max_output_tokens == DEFAULT_MAX_OUTPUT_TOKENS == 16_384
+    assert agent.bypass_permissions_available is False
+    with pytest.raises(AttributeError):
+        agent.bypass_permissions_available = True
+
+
+def test_direct_session_constructor_rejects_bypass_without_capability(tmp_path):
+    original = build_agent(tmp_path, [], bypass_permissions_available=True)
+    original.set_permission_mode("bypassPermissions")
+    session = original.session_store.load(original.session["id"])
+
+    with pytest.raises(ValueError, match="dangerous permission capability"):
+        Pony(
+            model_client=original.model_client,
+            workspace=original.workspace,
+            session_store=original.session_store,
+            session=session,
+            options=RuntimeOptions(project_trusted=True),
+        )
+
+
+def test_programmatic_resume_requires_bypass_capability(tmp_path):
+    original = build_agent(tmp_path, [], bypass_permissions_available=True)
+    original.set_permission_mode("bypassPermissions")
+
+    with pytest.raises(ValueError, match="dangerous permission capability"):
+        Pony.from_session(
+            model_client=original.model_client,
+            workspace=original.workspace,
+            session_store=original.session_store,
+            session_id=original.session["id"],
+            options=RuntimeOptions(project_trusted=True),
+        )
+
+    resumed = Pony.from_session(
+        model_client=original.model_client,
+        workspace=original.workspace,
+        session_store=original.session_store,
+        session_id=original.session["id"],
+        options=RuntimeOptions(
+            project_trusted=True,
+            bypass_permissions_available=True,
+        ),
+    )
+
+    assert resumed.current_permission_mode() == "bypassPermissions"
 
 
 def test_new_runtime_persists_current_messages_only(tmp_path):
@@ -283,6 +328,7 @@ def test_delegate_reuses_snapshot_without_replacing_shared_store_redactors(
         tmp_path,
         [],
         redaction_env=MappingProxyType({"PONY_TEST_API_KEY": secret}),
+        bypass_permissions_available=True,
     )
     session_redactor = agent.session_store._redactor
     run_redactor = agent.run_store._redactor
@@ -301,6 +347,7 @@ def test_delegate_reuses_snapshot_without_replacing_shared_store_redactors(
     )
 
     assert children[0].redaction_env is agent.redaction_env
+    assert children[0].bypass_permissions_available is False
     assert agent.session_store._redactor is session_redactor
     assert agent.run_store._redactor is run_redactor
     safe = session_redactor({"payload": secret})

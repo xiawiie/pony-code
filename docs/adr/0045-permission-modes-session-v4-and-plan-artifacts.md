@@ -44,11 +44,12 @@ The process must receive explicit dangerous capability before it can select or r
   permits an explicit `--permission-mode bypassPermissions`, and reauthorizes a persisted bypass Session on resume.
 - `--dangerously-skip-permissions` directly selects the mode and conflicts with any other `--permission-mode`.
 
-Direct selection and persisted resume are checked before Provider construction; interactive selection checks the transient capability
-at the picker boundary. Explicitly resuming into another permission mode does not require dangerous capability. Bypass changes the
-mode default for an unruled mutation to ALLOW; an exact `ask` still prompts. Project trust, explicit deny, `read_only`, tool
-availability, schema, path and secret validation, shell hard rejects, current-request Memory authorization, Sandbox, and Recovery
-remain enforced.
+CLI direct selection and persisted resume are checked before Provider construction; interactive selection checks the transient
+capability at the picker boundary. The frozen `RuntimeOptions` carries the capability into the runtime without persisting it.
+`Pony.from_session()`, direct Session construction, mode changes, and the Executor all fail closed when it is absent; delegates do not
+inherit it. Explicitly resuming into another permission mode does not require dangerous capability. Bypass changes the mode default
+for an unruled mutation to ALLOW; an exact `ask` still prompts. Project trust, explicit deny, `read_only`, tool availability, schema,
+path and secret validation, shell hard rejects, current-request Memory authorization, Sandbox, and Recovery remain enforced.
 
 ### Exact-tool rules and precedence
 

@@ -19,6 +19,7 @@ def _agent(
     read_only=False,
     executables=None,
     redaction_env=None,
+    bypass_permissions_available=False,
 ):
     tmp_path.mkdir(parents=True, exist_ok=True)
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
@@ -32,6 +33,7 @@ def _agent(
             trusted_executables=executables,
             redaction_env=redaction_env,
             trusted_redaction_env=redaction_env is not None,
+            bypass_permissions_available=bypass_permissions_available,
         ),
     )
 
@@ -78,6 +80,42 @@ def test_permission_rules_persist_and_deny_precedes_auto(tmp_path):
         "ask": [],
         "deny": ["read_file"],
     }
+
+
+def test_bypass_mode_requires_runtime_capability_and_executor_rechecks_it(tmp_path):
+    agent = _agent(tmp_path)
+    before = len(agent.session_store.load_tree(agent.session["id"]).entries)
+
+    with pytest.raises(ValueError, match="dangerous permission capability"):
+        agent.set_permission_mode("bypassPermissions")
+
+    assert len(agent.session_store.load_tree(agent.session["id"]).entries) == before
+    agent.session["permission_mode"] = "bypassPermissions"
+    result = agent.execute_tool(
+        "write_file",
+        {"path": "blocked.txt", "content": "blocked\n"},
+    )
+
+    assert result.metadata["tool_error_code"] == (
+        "bypass_permission_capability_missing"
+    )
+    assert not (tmp_path / "blocked.txt").exists()
+
+
+def test_bypass_mode_with_runtime_capability_skips_prompt(tmp_path):
+    agent = _agent(tmp_path, bypass_permissions_available=True)
+    agent.set_permission_mode("bypassPermissions")
+    prompt = Mock(return_value=False)
+    agent._approval_prompt = prompt
+
+    result = agent.execute_tool(
+        "write_file",
+        {"path": "allowed.txt", "content": "allowed\n"},
+    )
+
+    assert result.metadata["tool_status"] == "ok"
+    prompt.assert_not_called()
+    assert (tmp_path / "allowed.txt").read_text(encoding="utf-8") == "allowed\n"
 
 
 def test_dont_ask_honors_explicit_allow_rule(tmp_path):
