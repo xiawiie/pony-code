@@ -1,27 +1,19 @@
 #!/usr/bin/env sh
 set -eu
 
-if [ "$#" -eq 0 ]; then
-  release_dist=0
-elif [ "$#" -eq 1 ] && [ "$1" = "--release-dist" ]; then
-  release_dist=1
-else
-  echo "usage: $0 [--release-dist]" >&2
+if [ "$#" -ne 0 ]; then
+  echo "usage: $0" >&2
   exit 2
 fi
 
 start_head=$(git rev-parse HEAD)
-if [ "$release_dist" -eq 1 ] && { [ -e dist ] || [ -L dist ]; }; then
-  echo "release dist already exists" >&2
-  exit 1
-fi
 if [ -n "$(git status --porcelain --untracked-files=all)" ]; then
   echo "check requires a clean worktree" >&2
   exit 1
 fi
 echo "checking clean exact HEAD $start_head"
 
-tmp_dir=$(mktemp -d ".pony-check.XXXXXX")
+tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/pony-check.XXXXXX")
 cleanup() {
   status=$?
   trap - 0
@@ -53,12 +45,5 @@ if [ "$(git rev-parse HEAD)" != "$start_head" ] || \
   [ -n "$(git status --porcelain --untracked-files=all)" ]; then
   echo "check did not finish on its clean starting HEAD" >&2
   exit 1
-fi
-if [ "$release_dist" -eq 1 ]; then
-  if [ -e dist ] || [ -L dist ]; then
-    echo "release dist appeared while checks were running" >&2
-    exit 1
-  fi
-  uv run --frozen python scripts/release/publish_distribution.py "$dist_dir"
 fi
 echo "verified clean exact HEAD $start_head"

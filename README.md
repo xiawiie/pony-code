@@ -298,14 +298,12 @@ resume 绕过 diff 审查或 cleanup。
 
 ```bash
 ./scripts/check.sh
-# 仅发布流程需要保留已验证的分发包
-./scripts/check.sh --release-dist
 ```
 
 wheel 只包含 `pony/**`、Sandbox JSON 与安装 metadata，并声明 `prompt-toolkit` 运行时依赖；sdist 另含构建所需的
 标准根文件。`tests/`、`benchmarks/`、`scripts/`、`docs/` 和 `.github/` 均不进入分发包。发布由
-`v<project-version>` tag 触发，先重复完整离线门禁，再通过 PyPI Trusted Publishing 和 GitHub Release 发布相同构建
-产物。真实 Provider 测试须单独授权费用。
+`v<project-version>` tag 触发，先重复完整离线门禁，再有意重建固定 `dist/` 并重新验证实际待发布归档，最后通过
+PyPI Trusted Publishing 和 GitHub Release 发布。真实 Provider 测试须单独授权费用。
 
 ## 维护文档
 

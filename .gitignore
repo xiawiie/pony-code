@@ -12,7 +12,6 @@ venv/
 *.egg-info/
 build/
 dist/
-.pony-check.*
 
 # Test and lint caches
 .pytest_cache/

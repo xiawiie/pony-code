@@ -118,12 +118,14 @@ uv run pytest -q \
 ## Distribution 验证
 
 ```bash
-./scripts/check.sh --release-dist
+./scripts/check.sh
+UV_OFFLINE=1 uv build --offline --clear --no-create-gitignore --out-dir dist
+UV_OFFLINE=1 uv run --frozen python scripts/release/verify_distribution.py \
+  --dist-dir dist --install-smoke --offline-bundle-smoke
 ```
 
-无参数执行时分发包随临时目录清理；仅发布流程使用固定的 `--release-dist`，在全部门禁通过后通过平台原生
-no-replace rename 把同一次验证过的 wheel 和 sdist 原子发布到此前不存在的仓库 `dist/`。该入口不接受任意输出路径，
-也不删除或覆盖已有 `dist`；不支持原生 no-replace rename 的平台 fail closed。
+普通门禁的分发包随系统临时目录清理。Tag 发布流程在门禁通过后有意重新构建固定 `dist/`，并再次运行 verifier；
+随后生成 hash 并发布的正是这次重新验证过的 wheel 和 sdist。发布不复用或搬运普通门禁的临时归档。
 
 Verifier 使用 `git ls-files pony` 建立产品文件真源并检查：
 
@@ -183,8 +185,8 @@ bytes、inode、mtime 与 mode；报告仍不得保存真实 prompt/answer/respo
 ## Tag 发布
 
 `.github/workflows/release.yml` 只响应 `v*` tag，并要求 tag 精确等于 `v<project.version>`。工作流在全新 runner 中重复
-静态、功能、评估、构建和 clean-install 门禁；随后使用 GitHub OIDC / PyPI Trusted Publishing 上传 wheel 与 sdist，
-生成 SHA-256 文件并创建 GitHub Release。
+静态、功能、评估、临时构建和 clean-install 门禁；随后有意重建固定 `dist/`、再次验证实际待发布归档，再使用
+GitHub OIDC / PyPI Trusted Publishing 上传 wheel 与 sdist，生成 SHA-256 文件并创建 GitHub Release。
 
 发布前外部一次性配置：
 

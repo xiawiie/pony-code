@@ -1,4 +1,3 @@
-import errno
 import hashlib
 import importlib.util
 import json
@@ -86,12 +85,27 @@ def test_release_workflow_is_tag_bound_and_uses_trusted_publishing():
     assert "uv sync --frozen --dev" in workflow
     assert "uv export --frozen --no-dev --no-emit-project" in workflow
     assert "uv pip install --refresh" in workflow
-    assert "./scripts/check.sh --release-dist" in workflow
+    assert "./scripts/check.sh" in workflow
+    assert "./scripts/check.sh --release-dist" not in workflow
     assert "uv run pytest" not in workflow
-    assert "uv build" not in workflow
-    assert "scripts/release/verify_distribution.py" not in workflow
+    assert "uv build --offline --clear --no-create-gitignore --out-dir dist" in workflow
+    assert 'UV_OFFLINE: "1"' in workflow
+    assert "uv run --frozen python scripts/release/verify_distribution.py" in workflow
+    assert "scripts/release/verify_distribution.py" in workflow
+    assert "--dist-dir dist" in workflow
+    assert "--install-smoke" in workflow
+    assert "--offline-bundle-smoke" in workflow
     assert "sha256sum dist/*.whl dist/*.tar.gz" in workflow
     assert "uv publish --trusted-publishing always" in workflow
+    assert workflow.index("./scripts/check.sh") < workflow.index("uv build")
+    assert workflow.index("uv build") < workflow.index(
+        "scripts/release/verify_distribution.py"
+    )
+    assert workflow.index("scripts/release/verify_distribution.py") < workflow.index(
+        "sha256sum"
+    )
+    assert workflow.count("uv build") == 1
+    assert workflow.count("scripts/release/verify_distribution.py") == 1
     assert "gh release create" in workflow
     assert 'test "${GITHUB_REF_NAME}" = "v${project_version}"' in workflow
     assert "secrets." not in workflow
@@ -342,9 +356,8 @@ def test_local_check_script_runs_each_full_gate_once_on_a_clean_exact_head():
     assert "uv build --offline --clear --no-create-gitignore --out-dir" in text
     assert text.count("scripts/release/verify_distribution.py") == 1
     assert '--dist-dir "$dist_dir"' in text
-    assert 'tmp_dir=$(mktemp -d ".pony-check.XXXXXX")' in text
-    assert 'scripts/release/publish_distribution.py "$dist_dir"' in text
-    assert "os.rename" not in text
+    assert 'tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/pony-check.XXXXXX")' in text
+    assert "--release-dist" not in text
     assert "--dist-dir PATH" not in text
     assert "--install-smoke" in text
     assert "git status --porcelain --untracked-files=all" in text
@@ -360,18 +373,15 @@ def test_local_check_script_runs_each_full_gate_once_on_a_clean_exact_head():
 def _check_fixture(tmp_path):
     repo = tmp_path / "repo"
     scripts = repo / "scripts"
-    release_scripts = scripts / "release"
     fake_bin = repo / "bin"
-    release_scripts.mkdir(parents=True)
+    check_tmp = tmp_path / "check-tmp"
+    scripts.mkdir(parents=True)
     fake_bin.mkdir()
+    check_tmp.mkdir()
     check = scripts / "check.sh"
     check.write_text(Path("scripts/check.sh").read_text(encoding="utf-8"))
     check.chmod(0o755)
-    publish = release_scripts / "publish_distribution.py"
-    publish.write_text(
-        Path("scripts/release/publish_distribution.py").read_text(encoding="utf-8")
-    )
-    (repo / ".gitignore").write_text("dist/\n.pony-check.*\n", encoding="utf-8")
+    (repo / ".gitignore").write_text("dist/\n", encoding="utf-8")
     uv = fake_bin / "uv"
     uv.write_text(
         "#!/bin/sh\n"
@@ -387,10 +397,6 @@ def _check_fixture(tmp_path):
         '  mkdir -p "$out_dir"\n'
         '  : > "$out_dir/pony_code-1.0.0.tar.gz"\n'
         '  : > "$out_dir/pony_code-1.0.0-py3-none-any.whl"\n'
-        "fi\n"
-        'if [ "$1" = "run" ] && [ "$3" = "python" ]; then\n'
-        '  case "$4" in *publish_distribution.py) '
-        '"$PONY_TEST_PYTHON" "$4" "$5" ;; esac\n'
         "fi\n",
         encoding="utf-8",
     )
@@ -415,7 +421,7 @@ def _check_fixture(tmp_path):
     )
     env = os.environ.copy()
     env["PATH"] = os.pathsep.join((str(fake_bin), env["PATH"]))
-    env["PONY_TEST_PYTHON"] = sys.executable
+    env["TMPDIR"] = str(check_tmp)
     return repo, check, env
 
 
@@ -437,135 +443,31 @@ def _run_check(repo, check, env, *args, mode="success"):
 def test_local_check_cleanup_preserves_failure_status(tmp_path, mode, expected_status):
     repo, check, env = _check_fixture(tmp_path)
 
-    result = _run_check(repo, check, env, "--release-dist", mode=mode)
+    result = _run_check(repo, check, env, mode=mode)
 
     assert result.returncode == expected_status, result.stderr
     assert not (repo / "dist").exists()
-    assert list(repo.glob(".pony-check.*")) == []
+    assert list(Path(env["TMPDIR"]).glob("pony-check.*")) == []
 
 
-def test_release_dist_refuses_existing_marker_without_data_loss(tmp_path):
+def test_local_check_rejects_release_dist_argument(tmp_path):
     repo, check, env = _check_fixture(tmp_path)
-    marker = repo / "dist" / "marker.txt"
-    marker.parent.mkdir()
-    marker.write_text("keep", encoding="utf-8")
 
     result = _run_check(repo, check, env, "--release-dist")
-
-    assert result.returncode == 1
-    assert marker.read_text(encoding="utf-8") == "keep"
-    assert list(repo.glob(".pony-check.*")) == []
-
-
-def test_release_dist_refuses_symlink_without_touching_external_data(tmp_path):
-    repo, check, env = _check_fixture(tmp_path)
-    external = tmp_path / "external"
-    external.mkdir()
-    marker = external / "marker.txt"
-    marker.write_text("keep", encoding="utf-8")
-    (repo / "dist").symlink_to(external, target_is_directory=True)
-
-    result = _run_check(repo, check, env, "--release-dist")
-
-    assert result.returncode == 1
-    assert (repo / "dist").is_symlink()
-    assert marker.read_text(encoding="utf-8") == "keep"
-
-
-def test_release_dist_does_not_accept_an_external_path(tmp_path):
-    repo, check, env = _check_fixture(tmp_path)
-    external = tmp_path / "external-dist"
-
-    result = _run_check(repo, check, env, "--dist-dir", str(external))
 
     assert result.returncode == 2
-    assert not external.exists()
-    assert not (repo / "dist").exists()
+    assert "usage:" in result.stderr
+    assert list(Path(env["TMPDIR"]).glob("pony-check.*")) == []
 
 
-def test_release_dist_publishes_only_the_verified_archives(tmp_path):
+def test_local_check_keeps_distributions_in_temporary_directory(tmp_path):
     repo, check, env = _check_fixture(tmp_path)
 
-    result = _run_check(repo, check, env, "--release-dist")
+    result = _run_check(repo, check, env)
 
     assert result.returncode == 0, result.stderr
-    assert sorted(path.name for path in (repo / "dist").iterdir()) == [
-        "pony_code-1.0.0-py3-none-any.whl",
-        "pony_code-1.0.0.tar.gz",
-    ]
-    assert list(repo.glob(".pony-check.*")) == []
-
-
-def _publish_fixture(tmp_path):
-    spec = importlib.util.spec_from_file_location(
-        "publish_distribution_script",
-        Path("scripts/release/publish_distribution.py"),
-    )
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    root = tmp_path / "repo"
-    root.mkdir()
-    source = root / ".pony-check.TEST" / "dist"
-    source.mkdir(parents=True)
-    (source / "pony_code-1.0.0.tar.gz").write_bytes(b"sdist")
-    (source / "pony_code-1.0.0-py3-none-any.whl").write_bytes(b"wheel")
-    return module, root, source
-
-
-def test_release_publish_refuses_concurrent_empty_dist_without_replacement(tmp_path):
-    module, root, source = _publish_fixture(tmp_path)
-    destination = root / "dist"
-    destination.mkdir()
-    identity = (destination.stat().st_dev, destination.stat().st_ino)
-
-    with pytest.raises(OSError) as caught:
-        module.publish_distribution(source, root=root)
-
-    assert caught.value.errno == errno.EEXIST
-    current = destination.stat()
-    assert (current.st_dev, current.st_ino) == identity
-    assert list(destination.iterdir()) == []
-    assert source.is_dir()
-
-
-def test_release_publish_preserves_source_directory_identity(tmp_path):
-    module, root, source = _publish_fixture(tmp_path)
-    identity = (source.stat().st_dev, source.stat().st_ino)
-
-    module.publish_distribution(source, root=root)
-
-    assert not source.exists()
-    published = (root / "dist").stat()
-    assert (published.st_dev, published.st_ino) == identity
-
-
-def test_release_publish_fails_closed_on_unsupported_platform(tmp_path, monkeypatch):
-    module, root, source = _publish_fixture(tmp_path)
-    monkeypatch.setattr(module.sys, "platform", "unsupported")
-
-    with pytest.raises(module.PublishError, match="unsupported"):
-        module.publish_distribution(source, root=root)
-
-    assert source.is_dir()
-    assert not (root / "dist").exists()
-
-
-@pytest.mark.parametrize("invalid", ("outside", "extra", "symlink"))
-def test_release_publish_validates_source_and_archives(tmp_path, invalid):
-    module, root, source = _publish_fixture(tmp_path)
-    if invalid == "outside":
-        source = tmp_path / "outside" / "dist"
-        source.mkdir(parents=True)
-    elif invalid == "extra":
-        (source / "extra.txt").write_text("extra", encoding="utf-8")
-    else:
-        (source / "pony_code-1.0.0.tar.gz").unlink()
-        (source / "pony_code-1.0.0.tar.gz").symlink_to("missing")
-
-    with pytest.raises((OSError, module.PublishError)):
-        module.publish_distribution(source, root=root)
-
-    assert not (root / "dist").exists()
+    assert not (repo / "dist").exists()
+    assert list(Path(env["TMPDIR"]).glob("pony-check.*")) == []
 
 
 def test_provider_experiment_defaults_allow_reasoning_budget():
