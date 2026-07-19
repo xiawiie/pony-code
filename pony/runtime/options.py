@@ -6,6 +6,7 @@ from typing import Any
 
 @dataclass(frozen=True)
 class RuntimeOptions:
+    model_client_factory: Any = None
     delegate_model_client_factory: Any = None
     run_store: Any = None
     project_trusted: bool = False

@@ -216,6 +216,60 @@ def test_session_store_rejects_provider_binding_change(tmp_path):
         store.save(session)
 
 
+def test_session_store_set_provider_model_uses_expected_binding_cas(tmp_path):
+    store = SessionStore(tmp_path / ".pony" / "sessions")
+    session = _session(tmp_path, "provider-model-cas")
+    original = _provider_binding()
+    changed = _provider_binding(model="gpt-next")
+    session["provider_binding"] = original
+    store.save(session)
+
+    entry = store.set_provider_model(
+        session["id"],
+        changed,
+        expected_binding=original,
+    )
+
+    assert entry["data"]["set"]["provider_binding"] == changed
+    assert store.load(session["id"])["provider_binding"] == changed
+    before = store.path(session["id"]).read_bytes()
+    with pytest.raises(SessionFormatError, match="^model_session_mismatch$"):
+        store.set_provider_model(
+            session["id"],
+            _provider_binding(model="gpt-later"),
+            expected_binding=original,
+        )
+    assert store.path(session["id"]).read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    "candidate",
+    [
+        _provider_binding(model="gpt-next", protocol_family="openai_chat_completions"),
+        _provider_binding(model="gpt-next", endpoint_hash="sha256:" + "b" * 64),
+    ],
+)
+def test_session_store_set_provider_model_rejects_target_drift_without_writing(
+    tmp_path,
+    candidate,
+):
+    store = SessionStore(tmp_path / ".pony" / "sessions")
+    session = _session(tmp_path, "provider-model-drift")
+    original = _provider_binding()
+    session["provider_binding"] = original
+    store.save(session)
+    before = store.path(session["id"]).read_bytes()
+
+    with pytest.raises(SessionFormatError, match="^model_session_mismatch$"):
+        store.set_provider_model(
+            session["id"],
+            candidate,
+            expected_binding=original,
+        )
+
+    assert store.path(session["id"]).read_bytes() == before
+
+
 @pytest.mark.parametrize(
     "binding",
     [

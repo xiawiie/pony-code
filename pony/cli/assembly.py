@@ -4,7 +4,11 @@ import os
 from pathlib import Path
 
 from pony.config.environment import read_project_env
-from pony.config.model import resolve_model_config, resolve_session_provider_binding
+from pony.config.model import (
+    MODEL_ENV_NAME,
+    resolve_model_config,
+    resolve_session_provider_binding,
+)
 from pony.config.project import load_pony_toml
 from pony.providers.factory import build_transport_client
 from pony.providers.probe import resolve_provider_client
@@ -37,9 +41,13 @@ def _build_transport_client(
     session_store=None,
     session_id=None,
 ):
+    model_override = getattr(args, "model", None)
+    resolved_project_env = dict(project_env or {})
+    if model_override is not None and not session_id:
+        resolved_project_env[MODEL_ENV_NAME] = model_override
     try:
         config = resolve_model_config(
-            project_env=project_env,
+            project_env=resolved_project_env,
             process_env=process_env,
         )
     except ValueError as exc:
@@ -50,7 +58,7 @@ def _build_transport_client(
         ):
             raise
         config = resolve_model_config(
-            project_env=project_env,
+            project_env=resolved_project_env,
             process_env=process_env,
             required=False,
         )
@@ -61,6 +69,8 @@ def _build_transport_client(
                 config,
                 projection.get("provider_binding", {}),
             )
+    elif model_override is not None:
+        config["model"].update(source="cli", name="--model")
     if (
         config.get("resolution_status") == "resolved"
         and config.get("auth_mode", {}).get("value") != "none"
@@ -75,8 +85,8 @@ def _build_transport_client(
     return client, resolved_config
 
 
-def _delegate_model_client_factory(config, timeout):
-    """Rebuild the resolved transport without sharing its mutable request state."""
+def _model_client_factory(config, timeout):
+    """Rebuild the resolved transport for its model or one replacement model."""
     protocol = config.get("protocol", {}).get("value", "")
     model = config.get("model", {}).get("value", "")
     base_url = config.get("base_url", {}).get("value", "")
@@ -97,7 +107,6 @@ def _delegate_model_client_factory(config, timeout):
     ):
         raise ValueError("delegate model client factory is not configured")
     kwargs = {
-        "model": model,
         "base_url": base_url,
         "api_key": api_key,
         "timeout": timeout,
@@ -105,10 +114,15 @@ def _delegate_model_client_factory(config, timeout):
         "capabilities": dict(capabilities),
     }
 
-    def build_child_client():
-        return build_transport_client(protocol, **kwargs)
+    def build_client(selected_model=model):
+        return build_transport_client(protocol, model=selected_model, **kwargs)
 
-    return build_child_client
+    return build_client
+
+
+def _delegate_model_client_factory(config, timeout):
+    """Rebuild the resolved transport without sharing its mutable request state."""
+    return _model_client_factory(config, timeout)
 
 
 def _confirm_project_trust(project_root):
@@ -274,6 +288,10 @@ def _build_agent(args, source_workspace):
         session_store=store if args.resume and session_id else None,
         session_id=session_id if args.resume else None,
     )
+    model_client_factory = _model_client_factory(
+        resolved_model_config,
+        args.request_timeout_seconds,
+    )
     delegate_model_client_factory = _delegate_model_client_factory(
         resolved_model_config,
         args.request_timeout_seconds,
@@ -284,7 +302,7 @@ def _build_agent(args, source_workspace):
             if getattr(args, "dangerously_skip_permissions", False)
             else getattr(args, "permission_mode", None)
         )
-        return Pony.from_session(
+        agent = Pony.from_session(
             model_client=model,
             workspace=workspace,
             session_store=store,
@@ -294,6 +312,7 @@ def _build_agent(args, source_workspace):
                 args, "_permission_rule_updates", ()
             ),
             options=RuntimeOptions(
+                model_client_factory=model_client_factory,
                 delegate_model_client_factory=delegate_model_client_factory,
                 project_trusted=True,
                 max_steps=args.max_steps,
@@ -306,11 +325,15 @@ def _build_agent(args, source_workspace):
                 allow_dangerously_skip_permissions=dangerous_bypass_enabled(args),
             ),
         )
+        if getattr(args, "model", None) is not None:
+            agent.set_model(args.model)
+        return agent
     return Pony(
         model_client=model,
         workspace=workspace,
         session_store=store,
         options=RuntimeOptions(
+            model_client_factory=model_client_factory,
             delegate_model_client_factory=delegate_model_client_factory,
             project_trusted=True,
             max_steps=args.max_steps,

@@ -229,6 +229,6 @@ def test_provider_defaults_and_generic_env_names_have_one_config_source():
     assert config.API_KEY_ENV_NAME == "PONY_API_KEY"
     assert config.API_BASE_ENV_NAME == "PONY_API_BASE"
     destinations = {action.dest for action in build_arg_parser()._actions}
-    assert {"provider", "profile", "connection", "model", "base_url"}.isdisjoint(
+    assert {"provider", "profile", "connection", "base_url"}.isdisjoint(
         destinations
     )

@@ -268,8 +268,11 @@ flowchart TB
     MR --> CP["Session task checkpoint"]
 ```
 
-Session 的 Model Binding 固化 `protocol_family`、`model` 和 `endpoint_hash`。恢复时任一字段变化都会返回
-`model_session_mismatch`，避免跨 Provider 或跨 endpoint 重放 opaque provider state。
+Session 的 Model Binding 保存 `protocol_family`、`model` 和 `endpoint_hash`。恢复时 Session model 优先于 `.env`，
+protocol 或 endpoint 漂移仍返回 `model_session_mismatch`。`/model` 与 `run/repl --model` 只能在同一 protocol/endpoint
+下通过受锁的专用 writer 替换 model；含 opaque Provider state 的 Session 拒绝切换。成功后 runtime 一并替换 client、
+模型预算、token accounting 与 delegate factory。完整决策见
+[ADR-0047](adr/0047-session-scoped-model-switching.md)。
 
 Session v5 active path 投影 `permission_mode`、`permission_rules`、`plan_text`、`plan_revision` 与 `pre_plan_mode`。
 `permission_mode_change` 和 `plan_artifact` 是专用 control entry；exact-tool rules 通过 bounded `session_info` state update

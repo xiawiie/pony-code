@@ -14,6 +14,7 @@ import threading
 from pony.tools.permissions import display_permission_mode, validate_permission_mode
 from pony.tools import registry as toolkit
 from pony.agent.messages import message_content_text
+from pony.config.model import provider_family_for_protocol
 from pony.security.redaction import redact_text
 from pony.providers.transport import ProviderTransportError
 from pony.runtime.resume import active_prompt_history, build_resume_projection
@@ -27,6 +28,15 @@ _MAX_SESSION_PICKER_CANDIDATES = 50
 def _safe_text(agent, value):
     redactor = getattr(agent, "redact_text", None)
     return (redactor if callable(redactor) else redact_text)(value)
+
+
+def _print_model_target(agent):
+    binding = agent.current_model_binding()
+    protocol = binding.get("protocol_family", "")
+    print("Model")
+    print(f"provider: {provider_family_for_protocol(protocol) or '(unknown)'}")
+    print(f"protocol: {protocol}")
+    print(f"model: {binding.get('model', '')}")
 
 
 def _open_plan_in_editor(agent):
@@ -352,6 +362,19 @@ def _process_repl_input(
         from .help import render_help_details
 
         print(render_help_details(agent))
+        return None
+    if user_input == "/model" or user_input.startswith("/model "):
+        try:
+            tokens = shlex.split(user_input)
+            if len(tokens) > 2:
+                print("usage: /model [model]")
+                return None
+            changed = agent.set_model(tokens[1]) if len(tokens) == 2 else None
+            _print_model_target(agent)
+            if len(tokens) == 2 and changed is None:
+                print("(unchanged)")
+        except (OSError, RuntimeError, ValueError) as exc:
+            print(f"error: {_safe_text(agent, exc)}")
         return None
     if user_input in {"/permissions", "/allowed-tools"}:
         rules = agent.permission_rules()

@@ -241,7 +241,9 @@ def _provider_name(model_client):
 
 def _model_label(agent, model):
     provider = _provider_name(getattr(agent, "model_client", None))
-    safe_model = _one_line(model)
+    transport = getattr(getattr(agent, "model_client", None), "_inner", None)
+    transport = transport or getattr(agent, "model_client", None)
+    safe_model = _one_line(getattr(transport, "model", model))
     return f"{provider}/{safe_model}" if provider else safe_model
 
 

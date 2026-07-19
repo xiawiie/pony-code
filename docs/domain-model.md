@@ -18,6 +18,7 @@
 | Capability Profile | strict tools、parallel control、prompt cache、reasoning replay 等可选 wire 能力 | 必需 tool contract |
 | Resolved Provider Target | 当前 endpoint/model 最终绑定的 Provider、Transport、认证和保守能力集合 | 自动 fallback |
 | Provider Resolution | 发送用户任务前，以显式值、known origin、Session binding 或 bounded synthetic probe 产生 Target | 重放用户任务 |
+| Session Model Selection | 在相同 protocol 与 endpoint 下，以专用 writer 替换当前 Session binding 的 model | Provider registry 或 model catalog |
 | Model Request | Pony 构造的 provider-neutral 请求视图 | 原始 HTTP payload |
 | Model Attempt | Agent Loop 为得到一个 Action 发起的逻辑尝试 | Transport Attempt |
 | Transport Attempt | Provider client 的一次真实 HTTP request | Tool step |
@@ -49,8 +50,9 @@ PONY_MODEL
 missing/auto 与 OpenAI family 可在发送用户任务前执行 fixed synthetic resolution。普通 config/status/doctor 零网络，
 `doctor --check-api` 只读，真实用户任务失败后不切换 Transport。协议、模型、URL、认证和 resolution source 必须可观察。
 
-Model Session Binding 固化 `protocol_family`、`model` 与 `endpoint_hash`。绑定变化时拒绝恢复，尤其不能把 OpenAI
-reasoning state 或 Anthropic thinking block 跨协议重放。
+Model Session Binding 固化 `protocol_family`、`model` 与 `endpoint_hash`。resume 以 Session model 为准，并继续校验
+protocol 与 endpoint；只有专用 Session writer 可在两者不变时替换 model。含 opaque Provider state 的 Session 拒绝
+模型切换；任何跨协议或跨 endpoint 重放都返回 `model_session_mismatch`。
 
 ## Permission 与 Plan 合同
 
@@ -84,6 +86,8 @@ reasoning state 或 Anthropic thinking block 跨协议重放。
 - Session v5 permission/Plan 状态只能由 `permission_mode_change`、`plan_artifact` 或 bounded `session_info` rule update
   投影；Run、trace、checkpoint 与 UI 不成为 writer。
 - Session、Run 与 legacy Checkpoint/Tool Change 分别有独立格式与 reader，不以 release version 代替 format version。
+- Model 只能在 top-level turn 之间通过专用 writer 切换；writer 在 Session lock 下对 expected binding 做 CAS，只允许
+  model 字段变化。成功后 runtime 同步更新 client、预算、token accounting 与 delegate factory。
 - v1-v4 Session inspection 零写；只有显式 resume 可在 lock、backup、candidate、identity 与 digest 复验后迁移到 v5。
 - Compaction 不删除 append-only 历史，不授予 Memory 写权限，也不恢复 workspace。
 - `memory_save` 只看当前 top-level user request 的明确授权；delegate 永远不能写 Durable Memory。

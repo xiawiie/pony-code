@@ -25,6 +25,48 @@ def _agent(tmp_path, outputs=(), *, allow_bypass=False):
     )
 
 
+def _model_agent(tmp_path):
+    (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
+
+    def factory(model):
+        client = FakeModelClient([])
+        client.model = model
+        client.provider_binding = {
+            "protocol_family": "anthropic_messages",
+            "model": model,
+            "endpoint_hash": "sha256:" + "a" * 64,
+        }
+        return client
+
+    return Pony(
+        model_client=factory("claude-current"),
+        workspace=WorkspaceContext.build(tmp_path),
+        session_store=SessionStore(tmp_path / ".pony" / "sessions"),
+        options=RuntimeOptions(
+            project_trusted=True,
+            model_client_factory=factory,
+        ),
+    )
+
+
+def test_repl_model_shows_and_changes_the_session_binding(tmp_path, capsys):
+    agent = _model_agent(tmp_path)
+    before = len(agent.session_store.load_tree(agent.session["id"]).entries)
+
+    _process_repl_input(agent, "/model")
+    _process_repl_input(agent, "/model claude-next")
+    changed = len(agent.session_store.load_tree(agent.session["id"]).entries)
+    _process_repl_input(agent, "/model claude-next extra")
+
+    output = capsys.readouterr().out
+    assert "provider: anthropic" in output
+    assert "model: claude-current" in output
+    assert "model: claude-next" in output
+    assert "usage: /model [model]" in output
+    assert changed == before + 1
+    assert len(agent.session_store.load_tree(agent.session["id"]).entries) == changed
+
+
 def test_repl_permissions_manages_rules_and_same_value_is_noop(tmp_path, capsys):
     agent = _agent(tmp_path)
 

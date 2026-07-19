@@ -4,6 +4,7 @@ import argparse
 from importlib.metadata import PackageNotFoundError, version
 import math
 
+from pony.config.model import validate_model_name
 from pony.runtime.application import DEFAULT_MAX_OUTPUT_TOKENS, DEFAULT_MAX_STEPS
 
 from .commands import ROOT_HELP
@@ -109,6 +110,15 @@ def _top_p_argument(value):
     )
 
 
+def _model_argument(value):
+    try:
+        return validate_model_name(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            "model must be a non-empty one-line name"
+        ) from exc
+
+
 def dangerous_bypass_enabled(args):
     return bool(
         getattr(args, "allow_dangerously_skip_permissions", False)
@@ -141,6 +151,12 @@ def build_arg_parser():
     )
     parser.add_argument(
         "--resume", default=None, help="Session id to resume or 'latest'."
+    )
+    parser.add_argument(
+        "--model",
+        type=_model_argument,
+        default=None,
+        help="Model for this run/repl Session without changing .env.",
     )
     parser.add_argument(
         "--permission-mode",

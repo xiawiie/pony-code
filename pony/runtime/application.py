@@ -45,6 +45,7 @@ from pony.tools.permissions import PermissionMode, validate_permission_mode
 from pony.tools.validation import SensitiveToolError
 from pony.tools.validation import validate_tool as validate_tool_arguments
 from pony.config.environment import read_project_env
+from pony.config.model import validate_model_name
 from pony.config.project import load_pony_toml
 from pony.runtime.options import RuntimeOptions
 from pony.runtime.legacy import preflight_legacy_sandbox_resume
@@ -301,6 +302,7 @@ class Pony:
                 {str(key): bool(value) for key, value in options.feature_flags.items()}
             )
         self.allowed_tools = self._normalize_allowed_tools(options.allowed_tools)
+        self.model_client_factory = options.model_client_factory
         self.delegate_model_client_factory = options.delegate_model_client_factory
         self.run_store = options.run_store or RunStore(self.project_state_root / "runs")
         redactor = _artifact_redactor(
@@ -350,6 +352,18 @@ class Pony:
             else deepcopy(options.project_config)
         )
         self.project_config = deepcopy(project_config)
+        self._model_runtime_options = replace(
+            options,
+            project_config=deepcopy(project_config),
+        )
+        self._apply_model_runtime(
+            self.model_client,
+            self._resolve_model_runtime(self.model_client),
+        )
+
+    def _resolve_model_runtime(self, model_client):
+        project_config = self.project_config
+        options = self._model_runtime_options
         model_config = project_config["model"]
         config_meta = project_config.get("_meta", {})
         config_meta = config_meta if isinstance(config_meta, dict) else {}
@@ -358,8 +372,8 @@ class Pony:
             explicit_model_config["context_window"] = model_config["context_window"]
         if config_meta.get("model_output_explicit") is True:
             explicit_model_config["output_limit"] = model_config["output_limit"]
-        model_name = str(getattr(self.model_client, "model", "") or "")
-        self.model_capabilities = resolve_model_capabilities(
+        model_name = str(getattr(model_client, "model", "") or "")
+        model_capabilities = resolve_model_capabilities(
             model_name,
             model_config=explicit_model_config,
             context_window=options.context_window,
@@ -370,15 +384,15 @@ class Pony:
         memory_config = project_config["memory"]
         retrieval_config = memory_config["retrieval"]
         compaction_config = context_config["compaction"]
-        self.model_budget = build_model_budget(
-            self.model_capabilities,
+        model_budget = build_model_budget(
+            model_capabilities,
             output_limit=(
                 options.max_output_tokens
                 if options.max_output_tokens is not None
                 else (
                     model_config["output_limit"]
                     if config_meta.get("model_output_explicit") is True
-                    else self.model_capabilities.max_output_tokens
+                    else model_capabilities.max_output_tokens
                 )
             ),
             reserve_tokens=compaction_config["reserve_tokens"],
@@ -386,22 +400,33 @@ class Pony:
             system_tools_hard_cap=context_config["system_tools_hard_cap"],
             source_pool_tokens=context_config["source_pool_tokens"],
         )
-        self.max_output_tokens = self.model_budget.output_tokens
-        self.token_accounting = TokenAccounting(
-            getattr(self.model_client, "count_tokens", None)
-        )
-        self.context_config = {
-            "system_tools_hard_cap": context_config["system_tools_hard_cap"],
-            "source_pool_tokens": context_config["source_pool_tokens"],
-            "compaction": deepcopy(compaction_config),
-            "tool_results": deepcopy(context_config["tool_results"]),
-            "recall": memory_config["recall"],
-            "field_boosts": retrieval_config["field_boost"],
-            "link_config": (
-                retrieval_config["link"]["max_added"],
-                retrieval_config["link"]["decay"],
+        return {
+            "capabilities": model_capabilities,
+            "budget": model_budget,
+            "token_accounting": TokenAccounting(
+                getattr(model_client, "count_tokens", None)
             ),
+            "context_config": {
+                "system_tools_hard_cap": context_config["system_tools_hard_cap"],
+                "source_pool_tokens": context_config["source_pool_tokens"],
+                "compaction": deepcopy(compaction_config),
+                "tool_results": deepcopy(context_config["tool_results"]),
+                "recall": memory_config["recall"],
+                "field_boosts": retrieval_config["field_boost"],
+                "link_config": (
+                    retrieval_config["link"]["max_added"],
+                    retrieval_config["link"]["decay"],
+                ),
+            },
         }
+
+    def _apply_model_runtime(self, model_client, runtime):
+        self.model_client = model_client
+        self.model_capabilities = runtime["capabilities"]
+        self.model_budget = runtime["budget"]
+        self.max_output_tokens = self.model_budget.output_tokens
+        self.token_accounting = runtime["token_accounting"]
+        self.context_config = runtime["context_config"]
 
     def _new_runtime_session(self, session_id, model_binding):
         session = {
@@ -706,6 +731,52 @@ class Pony:
         tools["write_plan"]["run"] = self._write_plan
         tools["exit_plan_mode"]["run"] = self._exit_plan_mode
         return tools
+
+    def current_model_binding(self):
+        binding = self.session.get("provider_binding")
+        if not isinstance(binding, dict):
+            raise ValueError("model_session_mismatch")
+        return deepcopy(binding)
+
+    def set_model(self, model):
+        if self._permission_turn is not None:
+            raise RuntimeError("permission_turn_active")
+        model = validate_model_name(model)
+        if self.redact_artifact(model) != model:
+            raise ValueError("model_invalid")
+        current = self.current_model_binding()
+        if current.get("model") == model:
+            return None
+        if _session_has_provider_state(self.session):
+            raise ValueError("model_session_mismatch")
+        if not callable(self.model_client_factory):
+            raise ValueError("model switching is unavailable")
+        try:
+            candidate_client = self.model_client_factory(model)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("model_session_mismatch") from exc
+        candidate = getattr(candidate_client, "provider_binding", None)
+        if (
+            not isinstance(candidate, dict)
+            or candidate.keys() != {"protocol_family", "model", "endpoint_hash"}
+            or candidate.get("model") != model
+            or candidate.get("protocol_family") != current.get("protocol_family")
+            or candidate.get("endpoint_hash") != current.get("endpoint_hash")
+        ):
+            raise ValueError("model_session_mismatch")
+        runtime = self._resolve_model_runtime(candidate_client)
+        entry = self.session_store.set_provider_model(
+            self.session["id"],
+            candidate,
+            expected_binding=current,
+        )
+        if entry is None:
+            return None
+        self._apply_model_runtime(candidate_client, runtime)
+        self.delegate_model_client_factory = lambda: self.model_client_factory(model)
+        self.session["provider_binding"] = deepcopy(candidate)
+        self._reload_session_projection()
+        return deepcopy(candidate)
 
     def current_permission_mode(self):
         turn = getattr(self, "_permission_turn", None)

@@ -120,6 +120,21 @@ uv run pytest -q \
   tests/tui/test_app.py
 ```
 
+Session model 合同必须覆盖：`/model` 零写显示与共享 REPL handler；`/model <model>` 和 `run/repl --model`；`.env` 零修改；
+Session model 持久化与 resume 优先级；相同 protocol/endpoint 的 binding CAS；跨 endpoint、异常 factory binding、secret
+model name 与 opaque Provider state 的 fail-closed 零写；切换后的模型预算、token accounting、delegate factory 与 TUI
+footer。聚焦入口包括：
+
+```bash
+uv run pytest -q \
+  tests/test_config.py \
+  tests/test_pony.py \
+  tests/test_cli_parser.py \
+  tests/test_cli_commands.py \
+  tests/test_cli_workflow.py \
+  tests/tui/test_app.py
+```
+
 ## Distribution 验证
 
 ```bash

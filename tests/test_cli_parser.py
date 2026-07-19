@@ -38,6 +38,23 @@ def test_parse_claude_permission_modes(mode):
     assert invocation.runtime_args.permission_mode == mode
 
 
+def test_parse_model_override_for_agent_commands():
+    invocation = parse_cli_invocation(
+        ["--model", "claude-sonnet-4-6", "repl"],
+        build_arg_parser(),
+    )
+
+    assert invocation.runtime_args.model == "claude-sonnet-4-6"
+
+
+@pytest.mark.parametrize("model", ("", " bad", "bad\nmodel"))
+def test_parser_rejects_invalid_model_override(model):
+    with pytest.raises(SystemExit) as caught:
+        build_arg_parser().parse_args(["--model", model, "repl"])
+
+    assert caught.value.code == 2
+
+
 def test_parse_claude_permission_rule_flag_aliases():
     invocation = parse_cli_invocation(
         [

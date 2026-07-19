@@ -223,6 +223,23 @@ def _setting(value="", source="", name=""):
     return {"value": value, "source": source, "name": name}
 
 
+def validate_model_name(value):
+    model = str(value or "")
+    if (
+        not model
+        or model != model.strip()
+        or len(model) > 200
+        or any(character in model for character in ("\0", "\r", "\n"))
+    ):
+        raise ValueError("model_invalid")
+    return model
+
+
+def provider_family_for_protocol(protocol):
+    spec = _PROTOCOL_SPECS.get(str(protocol))
+    return str(spec.get("family", "")) if isinstance(spec, dict) else ""
+
+
 def _default_protocol(provider):
     return _PROVIDER_DEFAULT_PROTOCOL.get(provider, "")
 
@@ -370,17 +387,19 @@ def resolve_provider_candidate(config, protocol_family):
 
 
 def resolve_session_provider_binding(config, binding):
-    """Reuse a compatible current-v3 binding without probing the network."""
+    """Reuse a compatible Session target without probing the network."""
     base_url = config.get("base_url", {}).get("value", "")
-    model = config.get("model", {}).get("value", "")
     protocol = binding.get("protocol_family") if isinstance(binding, dict) else None
     expected_hash = "sha256:" + hashlib.sha256(str(base_url).encode("utf-8")).hexdigest()
+    try:
+        session_model = validate_model_name(binding.get("model"))
+    except (AttributeError, ValueError) as exc:
+        raise ValueError("model_session_mismatch") from exc
     if (
         config.get("resolution_status") == "invalid"
         or not isinstance(protocol, str)
         or protocol not in _PROTOCOL_SPECS
         or binding.keys() != {"protocol_family", "model", "endpoint_hash"}
-        or binding.get("model") != model
         or binding.get("endpoint_hash") != expected_hash
     ):
         raise ValueError("model_session_mismatch")
@@ -404,6 +423,7 @@ def resolve_session_provider_binding(config, binding):
     resolved["resolution_source"] = "session_binding"
     resolved["resolution_error"] = ""
     resolved["candidates"] = []
+    resolved["model"] = _setting(session_model, "session_binding", "")
     for key in ("protocol", "api_variant", "auth_mode"):
         resolved[key] = _setting(selected[key], "session_binding", "")
     resolved["capabilities"] = dict(selected["capabilities"])
