@@ -23,10 +23,13 @@ from pony.sandbox.session import (
     source_mutation_authority,
 )
 from pony.security import redaction as securitylib
+from pony.security.private_files import private_directory_identity
+from pony.security.trust import ProjectTrustStore
 from pony.state.session_store import SessionStore
+from pony.tools.subprocess import discover_lexical_repo_root
 from pony.workspace.context import WorkspaceContext
 
-from .errors import CLI_EXIT_CONFIG, CliError
+from .errors import CLI_EXIT_APPROVAL, CLI_EXIT_CONFIG, CliError
 from .migration import migration_preflight
 
 
@@ -76,7 +79,72 @@ def _build_transport_client(
     return client
 
 
-def build_agent(args):
+def _confirm_project_trust(project_root):
+    try:
+        answer = input(f"Trust project {project_root}? [y/N] ")
+    except EOFError:
+        return False
+    return answer.strip().lower() in {"y", "yes"}
+
+
+def _trusted_project_root(args, trust_store, confirm):
+    try:
+        project_root = discover_lexical_repo_root(Path(args.cwd))
+        store = trust_store or ProjectTrustStore(Path.home() / ".pony")
+    except (OSError, ValueError) as exc:
+        raise CliError(
+            code="project_trust_invalid",
+            message="Project trust state is invalid",
+            exit_code=CLI_EXIT_CONFIG,
+        ) from exc
+    if store.is_trusted(project_root):
+        identity = private_directory_identity(project_root)
+        if store.is_trusted(project_root):
+            return project_root, identity, store
+    if getattr(args, "no_input", False):
+        raise CliError(
+            code="project_untrusted",
+            message="Project is not trusted",
+            exit_code=CLI_EXIT_APPROVAL,
+        )
+    confirmer = confirm or _confirm_project_trust
+    identity = private_directory_identity(project_root)
+    if confirmer(project_root) is not True:
+        raise CliError(
+            code="project_untrusted",
+            message="Project is not trusted",
+            exit_code=CLI_EXIT_APPROVAL,
+        )
+    if private_directory_identity(project_root) != identity:
+        raise CliError(
+            code="project_trust_changed",
+            message="Project identity changed during trust confirmation",
+            exit_code=CLI_EXIT_CONFIG,
+        )
+    try:
+        store.trust(project_root)
+    except (OSError, ValueError) as exc:
+        raise CliError(
+            code="project_trust_invalid",
+            message="Project trust state is invalid",
+            exit_code=CLI_EXIT_CONFIG,
+        ) from exc
+    if not store.is_trusted(project_root):
+        raise CliError(
+            code="project_trust_changed",
+            message="Project identity changed while granting trust",
+            exit_code=CLI_EXIT_CONFIG,
+        )
+    if private_directory_identity(project_root) != identity:
+        raise CliError(
+            code="project_trust_changed",
+            message="Project identity changed while granting trust",
+            exit_code=CLI_EXIT_CONFIG,
+        )
+    return project_root, identity, store
+
+
+def build_agent(args, *, trust_store=None, confirm=None):
     """根据 CLI 参数装配出一个可运行的 Pony 实例。
 
     为什么存在：
@@ -92,9 +160,22 @@ def build_agent(args):
     它是整个程序启动链路里最靠近 runtime 的装配点。`main()` 先调它，
     得到 agent 后，后面无论是 one-shot 还是 REPL 模式，都会落到 `ask()`。
     """
-    # 这里是 CLI 到 runtime 的装配点：
-    # 先采集工作区快照和加载项目级环境，再整理 secret 名单、模型后端和 session。
+    trusted_root, trusted_identity, trust_store = _trusted_project_root(
+        args,
+        trust_store,
+        confirm,
+    )
     source_workspace = WorkspaceContext.build(args.cwd)
+    if (
+        Path(source_workspace.repo_root) != trusted_root
+        or private_directory_identity(trusted_root) != trusted_identity
+        or not trust_store.is_trusted(trusted_root)
+    ):
+        raise CliError(
+            code="project_trust_changed",
+            message="Project identity changed after trust confirmation",
+            exit_code=CLI_EXIT_CONFIG,
+        )
     with source_mutation_authority(
         Path.home() / ".pony" / "sandboxes",
         Path(source_workspace.repo_root),
@@ -117,17 +198,10 @@ def _build_agent_with_source_authority(args, source_workspace):
         process_env=process_env,
         project_env=project_env,
     )
-    project_config = (
-        load_pony_toml(source_workspace.repo_root) if sandbox_enabled else None
-    )
+    project_config = load_pony_toml(source_workspace.repo_root)
     session_store_root = source_workspace.repo_root + "/.pony/sessions"
     store = None
     session_id = args.resume
-    approval_policy = (
-        "never"
-        if getattr(args, "no_input", False) and args.approval == "ask"
-        else args.approval
-    )
     max_output_tokens = getattr(args, "max_output_tokens", None)
     if session_id == "latest":
         store = SessionStore(session_store_root, redactor=redactor)
@@ -196,7 +270,7 @@ def _build_agent_with_source_authority(args, source_workspace):
                 session_store=store,
                 session_id=session_id,
                 options=RuntimeOptions(
-                    approval_policy=approval_policy,
+                    project_trusted=True,
                     max_steps=args.max_steps,
                     max_output_tokens=max_output_tokens,
                     context_window=getattr(args, "context_window", None),
@@ -212,7 +286,7 @@ def _build_agent_with_source_authority(args, source_workspace):
             workspace=workspace,
             session_store=store,
             options=RuntimeOptions(
-                approval_policy=approval_policy,
+                project_trusted=True,
                 max_steps=args.max_steps,
                 max_output_tokens=max_output_tokens,
                 context_window=getattr(args, "context_window", None),

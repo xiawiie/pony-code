@@ -11,8 +11,6 @@ from pony.memory.tools import (
     tool_memory_save,
     tool_memory_search,
 )
-from pony.state.workflow import parse_plan_json, plan_digest
-
 from .files import tool_list_files, tool_patch_file, tool_read_file, tool_write_file
 from .search import tool_search
 from .shell import DEFAULT_RUN_SHELL_TIMEOUT, _tool_run_shell
@@ -111,17 +109,6 @@ BASE_TOOL_SPECS = {
         "effect_class": "read_only",
         "description": "Look up where a symbol is defined. Precise for Python (AST), best-effort for TS/Go/Rust (regex).",
     },
-    "update_plan": {
-        "schema": {"plan_json": "str"},
-        "risky": False,
-        "effect_class": "session_state",
-        "description": (
-            "Replace the active workflow plan. plan_json must be a JSON-encoded "
-            "string containing exactly goal and items; each item must contain "
-            "exactly id, text, and status. Allowed statuses: pending, in_progress, "
-            "completed. Use 1-12 items and at most one in_progress item."
-        ),
-    },
 }
 
 DELEGATE_TOOL_SPEC = {
@@ -149,7 +136,6 @@ TOOL_EXAMPLES = {
     "memory_search": '{"name":"memory_search","arguments":{"query":"bcrypt","limit":5}}',
     "memory_save": '{"name":"memory_save","arguments":{"note":"bcrypt rounds > 12 causes CI timeout"}}',
     "repo_lookup": '{"name":"repo_lookup","arguments":{"symbol":"AuthMiddleware"}}',
-    "update_plan": '{"name":"update_plan","arguments":{"plan_json":"{\\"goal\\":\\"Implement the task\\",\\"items\\":[{\\"id\\":\\"inspect\\",\\"text\\":\\"Inspect the code\\",\\"status\\":\\"in_progress\\"}]}"}}',
 }
 
 
@@ -160,15 +146,6 @@ def tool_delegate(context, args):
     if not task:
         raise ValueError("task must not be empty")
     return context.spawn_delegate(args)
-
-
-def tool_update_plan(_context, args):
-    plan = parse_plan_json(args["plan_json"])
-    completed = sum(item["status"] == "completed" for item in plan["items"])
-    return (
-        "plan accepted: "
-        f"{completed}/{len(plan['items'])} completed; digest={plan_digest(plan)}"
-    )
 
 
 _TOOL_RUNNERS = {
@@ -183,7 +160,6 @@ _TOOL_RUNNERS = {
     "memory_search": tool_memory_search,
     "memory_save": tool_memory_save,
     "repo_lookup": tool_repo_lookup,
-    "update_plan": tool_update_plan,
 }
 
 

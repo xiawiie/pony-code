@@ -52,16 +52,11 @@ from pony.sandbox.session import (
     source_apply_control_lock_path,
 )
 from pony.state.session_store import SESSION_FORMAT_VERSION, SESSION_RECORD_TYPE
-from pony.state.workflow import (
-    DEFAULT_WORKFLOW_MODE,
-    EMPTY_PLAN,
-    parse_plan_json,
-    validate_workflow_mode,
-)
 from pony.tools.change_recorder import ToolChangeRecorder
 from pony.tools.context import ToolContext
 from pony.tools.executor import ToolExecutionResult, ToolExecutor
 from pony.tools import registry as toolkit
+from pony.tools.permissions import PermissionMode, validate_permission_mode
 from pony.tools.validation import validate_tool as validate_tool_arguments
 from pony.config.environment import read_project_env
 from pony.config.project import load_pony_toml
@@ -323,7 +318,7 @@ class Pony:
 
     def _configure_runtime_options(self, session_store, options):
         self.session_store = session_store
-        self.approval_policy = options.approval_policy
+        self.project_trusted = options.project_trusted is True
         self._trace_listener = None
         self._approval_prompt = None
         self.max_steps = options.max_steps
@@ -510,8 +505,7 @@ class Pony:
             "runtime_identity": {},
             "resume_state": {},
             "recovery": {"current_checkpoint_id": ""},
-            "workflow_mode": DEFAULT_WORKFLOW_MODE,
-            "active_plan": deepcopy(EMPTY_PLAN),
+            "permission_mode": PermissionMode.DEFAULT.value,
         }
         if model_binding:
             session["provider_binding"] = model_binding
@@ -662,7 +656,7 @@ class Pony:
             "workspace_changed": False,
             "prefix_changed": False,
         }
-        self._workflow_turn = None
+        self._permission_turn = None
 
     @classmethod
     def from_session(
@@ -769,10 +763,10 @@ class Pony:
             raise ValueError("Pony requires a current session")
         if not isinstance(self.session.get("messages"), list):
             raise ValueError("session messages must be a list")
-        if self.session.get("workflow_mode") not in {"plan", "act", "review"}:
-            raise ValueError("invalid workflow mode")
-        if not isinstance(self.session.get("active_plan"), dict):
-            raise ValueError("invalid active plan")
+        try:
+            validate_permission_mode(self.session.get("permission_mode"))
+        except ValueError as exc:
+            raise ValueError("invalid permission mode") from exc
         if not isinstance(self.session.get("recently_recalled"), list):
             self.session["recently_recalled"] = []
         existing_memory = self.session.get("memory")
@@ -840,20 +834,16 @@ class Pony:
     def build_tools(self):
         return toolkit.build_tool_registry(self.tool_context())
 
-    def current_workflow_mode(self):
-        if self._workflow_turn is not None:
-            return self._workflow_turn["mode"]
-        return self.session["workflow_mode"]
-
-    def current_workflow_plan(self):
-        if self._workflow_turn is not None:
-            return deepcopy(self._workflow_turn["plan"])
-        return deepcopy(self.session["active_plan"])
+    def current_permission_mode(self):
+        turn = getattr(self, "_permission_turn", None)
+        if turn is not None:
+            return turn["mode"]
+        return self.session["permission_mode"]
 
     def visible_tools(self):
-        if self._workflow_turn is not None:
-            return self._workflow_turn["tools"]
-        return self._visible_tools_for(self.session["workflow_mode"])
+        if self._permission_turn is not None:
+            return self._permission_turn["tools"]
+        return self._visible_tools_for(self.session["permission_mode"])
 
     def _visible_tools_for(self, mode):
         if self.read_only:
@@ -862,33 +852,31 @@ class Pony:
                 for name, tool in self.tools.items()
                 if tool.get("effect_class") == "read_only" and name != "run_shell"
             }
-        if mode == "act":
+        if mode != PermissionMode.PLAN.value:
             return dict(self.tools)
         return {
             name: tool
             for name, tool in self.tools.items()
-            if tool.get("effect_class") in {"read_only", "session_state"}
-            or name == "run_shell"
+            if tool.get("effect_class") == "read_only" and name != "run_shell"
         }
 
-    def begin_workflow_turn(self):
-        if self._workflow_turn is not None:
-            raise RuntimeError("workflow_turn_active")
-        mode = self.session["workflow_mode"]
-        self._workflow_turn = {
+    def begin_permission_turn(self):
+        if self._permission_turn is not None:
+            raise RuntimeError("permission_turn_active")
+        mode = self.session["permission_mode"]
+        self._permission_turn = {
             "mode": mode,
-            "plan": deepcopy(self.session["active_plan"]),
             "tools": self._visible_tools_for(mode),
         }
 
-    def end_workflow_turn(self):
-        self._workflow_turn = None
+    def end_permission_turn(self):
+        self._permission_turn = None
 
-    def set_workflow_mode(self, mode):
-        if self._workflow_turn is not None:
-            raise RuntimeError("workflow_turn_active")
-        mode = validate_workflow_mode(mode)
-        entry = self.session_store.set_workflow_mode(self.session["id"], mode)
+    def set_permission_mode(self, mode):
+        if self._permission_turn is not None:
+            raise RuntimeError("permission_turn_active")
+        mode = validate_permission_mode(mode)
+        entry = self.session_store.set_permission_mode(self.session["id"], mode)
         if entry is not None:
             self._reload_session_projection()
         return entry
@@ -1884,8 +1872,6 @@ class Pony:
     def validate_tool(self, name, args):
         """把通用工具校验和 runtime 级额外约束串起来。"""
         validate_tool_arguments(self.tool_context(), name, args)
-        if name == "update_plan":
-            parse_plan_json(args["plan_json"], redactor=self.redact_artifact)
         if name == "memory_save":
             note_tokens = self.token_accounting.count_text(args.get("note", ""))
             if note_tokens > 1_024:
@@ -1931,7 +1917,7 @@ class Pony:
             session_store=child_session_store,
             options=RuntimeOptions(
                 run_store=self.run_store,
-                approval_policy="never",
+                project_trusted=self.project_trusted,
                 max_steps=int(args.get("max_steps", 3)),
                 max_output_tokens=self.max_output_tokens,
                 context_window=self.model_capabilities.context_window,
@@ -1955,10 +1941,6 @@ class Pony:
 
     def approve(self, name, args):
         if self.read_only:
-            return False
-        if self.approval_policy == "auto":
-            return True
-        if self.approval_policy == "never":
             return False
         safe_args = self.redact_artifact(args)
         if callable(self._approval_prompt):
@@ -1984,7 +1966,6 @@ class Pony:
             "recent_files": [],
         }
         candidate["memory"] = {"file_summaries": {}}
-        candidate["active_plan"] = deepcopy(EMPTY_PLAN)
         checkpoints = candidate.setdefault(
             "checkpoints", {"current_id": "", "items": {}}
         )

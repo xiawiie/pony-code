@@ -16,7 +16,11 @@ from pony.agent.loop import _commit_session, _plain_message
 import pony.memory.service as memorylib
 from pony.agent.messages import make_tool_pair, validate_messages
 from pony.runtime.application import DEFAULT_MAX_OUTPUT_TOKENS, DEFAULT_MAX_STEPS
-from pony.state.session_store import LEGACY_SESSION_FORMAT_VERSION, SessionStore
+from pony.state.session_store import (
+    LEGACY_SESSION_FORMAT_VERSION,
+    SESSION_FORMAT_VERSION,
+    SessionStore,
+)
 from pony import Pony
 from pony.workspace.context import WorkspaceContext
 from benchmarks.support.fake_provider import FakeModelClient
@@ -32,13 +36,15 @@ def build_workspace(tmp_path):
 def build_agent(tmp_path, outputs, **kwargs):
     workspace = build_workspace(tmp_path)
     store = SessionStore(tmp_path / ".pony" / "sessions")
-    approval_policy = kwargs.pop("approval_policy", "auto")
-    return Pony(
+    kwargs.pop("approval_policy", None)
+    agent = Pony(
         model_client=FakeModelClient(outputs),
         workspace=workspace,
         session_store=store,
-        options=RuntimeOptions(approval_policy=approval_policy, **kwargs),
+        options=RuntimeOptions(project_trusted=True, **kwargs),
     )
+    agent._approval_prompt = lambda _name, _args: True
+    return agent
 
 
 def bound_fake_client(
@@ -88,7 +94,7 @@ def test_new_runtime_persists_current_messages_only(tmp_path):
         for line in Path(agent.session_path).read_text(encoding="utf-8").splitlines()
     ]
     assert rows[0]["record_type"] == "session_header"
-    assert rows[0]["format_version"] == 3
+    assert rows[0]["format_version"] == SESSION_FORMAT_VERSION
     assert all("history" not in row for row in rows)
     persisted = agent.session_store.load(agent.session["id"])
     validate_messages(persisted["messages"], require_meta=True)

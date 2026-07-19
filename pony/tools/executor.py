@@ -25,6 +25,7 @@ from pony.recovery.policy import (
     assess_command,
     snapshot_bytes_eligibility,
 )
+from pony.tools.permissions import PermissionDecision, decide_permission
 from pony.tools.subprocess import (
     _validate_hardened_git_args,
     _validate_hardened_git_repository,
@@ -344,26 +345,6 @@ def _shell_preflight_rejection(agent, tool, args, effect_class, assessment, mode
                 "choose a different tool or return a final answer"
             ),
         )
-    if mode == "never":
-        return _shell_rejection(
-            assessment=assessment,
-            mode=mode,
-            outcome="denied",
-            effect_class=effect_class,
-            tool_error_code="approval_denied",
-            content="error: approval denied for run_shell",
-            security_event_type="approval_denied",
-        )
-    if mode == "auto" and assessment["decision"] != "allow":
-        return _shell_rejection(
-            assessment=assessment,
-            mode=mode,
-            outcome="blocked",
-            effect_class=effect_class,
-            tool_error_code="command_approval_required",
-            content="error: command approval required for run_shell",
-            security_event_type="command_approval_required",
-        )
     return None
 
 
@@ -527,16 +508,9 @@ def _revalidate_approved_shell(preparation, approval_payload, payload_snapshot):
     return None
 
 
-def _approve_shell(preparation, sandbox_plan):
-    if preparation.mode == "auto":
+def _approve_shell(preparation, sandbox_plan, *, requires_approval):
+    if not requires_approval:
         return "allowed", None
-    if preparation.mode != "ask":
-        return None, _preparation_rejection(
-            preparation,
-            code="approval_denied",
-            content="error: approval denied for run_shell",
-            outcome="denied",
-        )
     payload = _approval_payload(preparation, sandbox_plan)
     payload_snapshot = deepcopy(payload)
     if not preparation.agent.approve("run_shell", payload):
@@ -607,8 +581,16 @@ def _compile_host_shell(preparation):
     )
 
 
-def _prepare_shell_execution(agent, tool, args, effect_class, assessment):
-    mode = agent.approval_policy
+def _prepare_shell_execution(
+    agent,
+    tool,
+    args,
+    effect_class,
+    assessment,
+    *,
+    requires_approval,
+):
+    mode = agent.current_permission_mode()
     rejection = _shell_preflight_rejection(
         agent, tool, args, effect_class, assessment, mode
     )
@@ -623,7 +605,11 @@ def _prepare_shell_execution(agent, tool, args, effect_class, assessment):
         return None, None, rejection
     sandbox_plan = execution.sandbox_plan if execution is not None else None
 
-    outcome, rejection = _approve_shell(preparation, sandbox_plan)
+    outcome, rejection = _approve_shell(
+        preparation,
+        sandbox_plan,
+        requires_approval=requires_approval,
+    )
     if rejection is not None:
         return None, None, rejection
     if sandbox_plan is not None:
@@ -652,7 +638,7 @@ def _assess_shell_request(agent, name, args, effect_class):
     sensitive = assessment["reason"] == "sensitive_path"
     return assessment, _shell_rejection(
         assessment=assessment,
-        mode=agent.approval_policy,
+        mode=agent.current_permission_mode(),
         outcome="blocked",
         effect_class=effect_class,
         tool_error_code=("sensitive_path_block" if sensitive else "command_rejected"),
@@ -699,54 +685,57 @@ def _availability_rejection(
     if command_assessment is None:
         return rejection
     return _add_initial_shell_policy(
-        rejection, command_assessment, agent.approval_policy
+        rejection, command_assessment, agent.current_permission_mode()
     )
 
 
-def _workflow_mode_rejection(agent, name, effect_class, command_assessment):
-    mode = agent.current_workflow_mode()
-    blocked = False
-    if mode in {"plan", "review"} and not agent.read_only:
-        if name == "run_shell":
-            risk_class = command_assessment["risk_class"]
-            blocked = risk_class != "read_only" and not (
-                mode == "review"
-                and risk_class == "external_effect"
-                and agent.approval_policy == "ask"
-            )
-        else:
-            blocked = effect_class not in {"read_only", "session_state"}
-    if not blocked:
-        return None
+def _permission_decision(agent, name, effect_class, command_assessment):
+    mode = agent.current_permission_mode()
+    if agent.read_only and effect_class != "read_only":
+        decision = PermissionDecision.DENY
+        code = "read_only_block"
+    else:
+        decision = decide_permission(
+            project_trusted=agent.project_trusted,
+            mode=mode,
+            effect_class=effect_class,
+            builtin_edit=name in {"write_file", "patch_file"},
+        )
+        code = (
+            "permission_mode_block"
+            if agent.project_trusted
+            else "permission_denied"
+        )
+    if decision is not PermissionDecision.DENY:
+        return decision, None
     rejection = ToolExecutionResult(
-        content=f"error: workflow mode '{mode}' blocks {name}",
+        content=f"error: permission mode '{mode}' blocks {name}",
         metadata=_metadata(
             "rejected",
             effect_class=effect_class,
-            tool_error_code="workflow_mode_block",
-            security_event_type="workflow_mode_block",
+            tool_error_code=code,
+            security_event_type=code,
             risk_level="high",
         ),
     )
     if command_assessment is None:
-        return rejection
-    return _add_initial_shell_policy(
-        rejection, command_assessment, agent.approval_policy
+        return decision, rejection
+    return decision, _add_initial_shell_policy(
+        rejection,
+        command_assessment,
+        mode,
     )
 
 
-def _prepare_non_shell_tool(agent, tool, name, args, effect_class):
-    if agent.read_only and effect_class != "read_only":
-        return ToolExecutionResult(
-            content=f"error: read-only mode blocks {name}",
-            metadata=_metadata(
-                "rejected",
-                effect_class=effect_class,
-                tool_error_code="read_only_block",
-                security_event_type="read_only_block",
-                risk_level="high",
-            ),
-        )
+def _prepare_non_shell_tool(
+    agent,
+    tool,
+    name,
+    args,
+    effect_class,
+    *,
+    requires_approval,
+):
     rejection = _validation_rejection(agent, tool, name, args, effect_class)
     if rejection is not None:
         return rejection
@@ -783,7 +772,7 @@ def _prepare_non_shell_tool(agent, tool, name, args, effect_class):
                 risk_level="high" if tool["risky"] else "low",
             ),
         )
-    if not tool["risky"]:
+    if not requires_approval:
         return None
     original_args = deepcopy(args)
     approval_args = deepcopy(original_args)
@@ -837,7 +826,7 @@ def _prepare_tool_request(agent, name, args):
     )
     if rejection is not None:
         return None, rejection
-    rejection = _workflow_mode_rejection(
+    permission, rejection = _permission_decision(
         agent,
         name,
         effect_class,
@@ -845,6 +834,7 @@ def _prepare_tool_request(agent, name, args):
     )
     if rejection is not None:
         return None, rejection
+    requires_approval = permission is PermissionDecision.ASK
 
     shell_execution = None
     command_risk = ""
@@ -857,6 +847,7 @@ def _prepare_tool_request(agent, name, args):
             args,
             effect_class,
             command_assessment,
+            requires_approval=requires_approval,
         )
     else:
         rejection = _prepare_non_shell_tool(
@@ -865,6 +856,7 @@ def _prepare_tool_request(agent, name, args):
             name,
             args,
             effect_class,
+            requires_approval=requires_approval,
         )
     if rejection is not None:
         return None, rejection
@@ -908,8 +900,8 @@ def _prepare_tool_request(agent, name, args):
         command_risk or ("complex" if tool["risky"] else "simple"),
         True,
         {
-            "mode": agent.approval_policy,
-            "required": bool(tool["risky"]),
+            "mode": agent.current_permission_mode(),
+            "required": requires_approval,
             "outcome": command_approval.get("outcome", "not_required"),
         },
     ).to_dict()
@@ -1553,7 +1545,7 @@ class ToolExecutor:
                 rejection.metadata.get("command_risk_class", "complex"),
                 True,
                 {
-                    "mode": self.agent.approval_policy,
+                    "mode": self.agent.current_permission_mode(),
                     "required": False,
                     "outcome": "denied",
                 },

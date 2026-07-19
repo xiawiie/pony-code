@@ -1,21 +1,13 @@
 from pony.runtime.resume import (
     active_prompt_history,
+    build_permission_request_metadata,
     build_resume_projection,
-    build_workflow_request_metadata,
 )
 
 
 def _session():
     return {
-        "workflow_mode": "review",
-        "active_plan": {
-            "goal": "Review workflow behavior",
-            "items": [
-                {"id": "done", "text": "Completed text", "status": "completed"},
-                {"id": "now", "text": "Current text", "status": "in_progress"},
-                {"id": "next", "text": "Pending text", "status": "pending"},
-            ],
-        },
+        "permission_mode": "plan",
         "checkpoints": {
             "current_id": "internal-checkpoint-id",
             "items": {
@@ -41,33 +33,23 @@ def _session():
     }
 
 
-def test_workflow_request_metadata_contains_counts_but_no_plan_text():
-    metadata = build_workflow_request_metadata(_session(), visible_tool_count=7)
+def test_permission_request_metadata_contains_only_bounded_permission_facts():
+    metadata = build_permission_request_metadata(_session(), visible_tool_count=7)
 
     assert metadata == {
-        "workflow_mode": "review",
-        "plan_item_count": 3,
-        "plan_completed_count": 1,
-        "plan_current_count": 1,
+        "permission_mode": "plan",
         "visible_tool_count": 7,
     }
-    assert "Review workflow behavior" not in repr(metadata)
-    assert "Current text" not in repr(metadata)
 
 
 def test_resume_projection_labels_sources_and_omits_internal_identifiers_and_paths():
     projection = build_resume_projection(_session())
 
     assert projection["goal"] == {
-        "text": "Review workflow behavior",
-        "source": "plan",
+        "text": "Checkpoint goal",
+        "source": "checkpoint",
     }
-    assert projection["plan"] == {
-        "source": "plan",
-        "item_count": 3,
-        "completed_count": 1,
-        "current_count": 1,
-    }
+    assert projection["permission_mode"] == "plan"
     assert projection["checkpoint"]["source"] == "checkpoint"
     assert projection["checkpoint"]["blocker"] == "waiting in <path> for review"
     assert projection["checkpoint"]["next_steps"] == ["run <path> focused tests"]
@@ -77,14 +59,10 @@ def test_resume_projection_labels_sources_and_omits_internal_identifiers_and_pat
     assert "internal-checkpoint-id" not in rendered
     assert "/private/repo" not in rendered
     assert "endpoint_hash" not in rendered
-    assert "Completed text" not in rendered
-    assert "Current text" not in rendered
-    assert "Pending text" not in rendered
 
 
 def test_resume_projection_falls_back_to_checkpoint_goal_and_applies_redactor():
     session = _session()
-    session["active_plan"] = {"goal": "", "items": []}
     session["checkpoints"]["items"]["internal-checkpoint-id"]["goal"] = (
         "token=concrete-value"
     )

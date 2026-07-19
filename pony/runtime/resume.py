@@ -5,7 +5,7 @@ from __future__ import annotations
 from copy import deepcopy
 import re
 
-from pony.state.workflow import DEFAULT_WORKFLOW_MODE
+from pony.tools.permissions import PermissionMode, validate_permission_mode
 
 
 MAX_PROMPT_HISTORY_ITEMS = 100
@@ -14,55 +14,29 @@ MAX_PROMPT_HISTORY_ITEM_BYTES = 16 * 1024
 _DISPLAY_PATH_RE = re.compile(r"(?<!\w)(?:/[\w./-]+|[A-Za-z]:[\\/][\w.\\/-]+)")
 
 
-def _active_plan(session):
-    plan = session.get("active_plan", {}) if isinstance(session, dict) else {}
-    plan = plan if isinstance(plan, dict) else {}
-    items = plan.get("items", [])
-    return plan, items if isinstance(items, list) else []
+def _permission_mode(session):
+    value = session.get("permission_mode") if isinstance(session, dict) else None
+    try:
+        return validate_permission_mode(value)
+    except ValueError:
+        return PermissionMode.DEFAULT.value
 
 
 def _display_text(value):
     return _DISPLAY_PATH_RE.sub("<path>", str(value or "").strip())[:300]
 
 
-def build_workflow_request_metadata(session, *, visible_tool_count):
-    """Return bounded workflow counts without copying model-visible Plan text."""
-    _plan, items = _active_plan(session)
-    completed = sum(
-        isinstance(item, dict) and item.get("status") == "completed"
-        for item in items
-    )
-    current = sum(
-        isinstance(item, dict) and item.get("status") == "in_progress"
-        for item in items
-    )
-    mode = session.get("workflow_mode") if isinstance(session, dict) else None
+def build_permission_request_metadata(session, *, visible_tool_count):
+    """Return the bounded authorization state frozen for one request."""
     return {
-        "workflow_mode": mode if isinstance(mode, str) else DEFAULT_WORKFLOW_MODE,
-        "plan_item_count": len(items),
-        "plan_completed_count": completed,
-        "plan_current_count": current,
+        "permission_mode": _permission_mode(session),
         "visible_tool_count": max(0, int(visible_tool_count)),
     }
 
 
 def build_resume_projection(session, *, redactor=None):
-    """Combine current workflow/checkpoint facts without I/O or internal IDs."""
+    """Combine current permission/checkpoint facts without I/O or internal IDs."""
     session = session if isinstance(session, dict) else {}
-    plan, items = _active_plan(session)
-    current = next(
-        (
-            item
-            for item in items
-            if isinstance(item, dict) and item.get("status") == "in_progress"
-        ),
-        None,
-    )
-    completed_count = sum(
-        isinstance(item, dict) and item.get("status") == "completed"
-        for item in items
-    )
-
     checkpoint_state = session.get("checkpoints", {})
     checkpoint_state = checkpoint_state if isinstance(checkpoint_state, dict) else {}
     checkpoint_items = checkpoint_state.get("items", {})
@@ -70,7 +44,6 @@ def build_resume_projection(session, *, redactor=None):
     checkpoint = checkpoint_items.get(checkpoint_state.get("current_id"), {})
     checkpoint = checkpoint if isinstance(checkpoint, dict) else {}
 
-    plan_goal = _display_text(plan.get("goal", ""))
     checkpoint_goal = _display_text(
         checkpoint.get("goal", checkpoint.get("current_goal", ""))
     )
@@ -84,16 +57,10 @@ def build_resume_projection(session, *, redactor=None):
     binding = binding if isinstance(binding, dict) else {}
 
     projection = {
-        "mode": str(session.get("workflow_mode", DEFAULT_WORKFLOW_MODE)),
+        "permission_mode": _permission_mode(session),
         "goal": {
-            "text": plan_goal or checkpoint_goal,
-            "source": "plan" if plan_goal else "checkpoint" if checkpoint_goal else "",
-        },
-        "plan": {
-            "source": "plan",
-            "item_count": len(items),
-            "completed_count": completed_count,
-            "current_count": 1 if current is not None else 0,
+            "text": checkpoint_goal,
+            "source": "checkpoint" if checkpoint_goal else "",
         },
         "checkpoint": {
             "source": "checkpoint",

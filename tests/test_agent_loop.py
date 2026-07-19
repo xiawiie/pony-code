@@ -95,12 +95,14 @@ class EvidenceScriptProvider:
 def build_native_agent(tmp_path, provider, **kwargs):
     tmp_path.mkdir(parents=True, exist_ok=True)
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
-    return Pony(
+    agent = Pony(
         model_client=provider,
         workspace=WorkspaceContext.build(tmp_path),
         session_store=SessionStore(tmp_path / ".pony" / "sessions"),
-        options=RuntimeOptions(approval_policy="auto", **kwargs),
+        options=RuntimeOptions(project_trusted=True, **kwargs),
     )
+    agent._approval_prompt = lambda _name, _args: True
+    return agent
 
 
 def build_agent(tmp_path, outputs, max_steps=6):
@@ -108,12 +110,14 @@ def build_agent(tmp_path, outputs, max_steps=6):
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
     workspace = WorkspaceContext.build(tmp_path)
     store = SessionStore(tmp_path / ".pony" / "sessions")
-    return Pony(
+    agent = Pony(
         model_client=FakeModelClient(outputs),
         workspace=workspace,
         session_store=store,
-        options=RuntimeOptions(approval_policy="auto", max_steps=max_steps),
+        options=RuntimeOptions(project_trusted=True, max_steps=max_steps),
     )
+    agent._approval_prompt = lambda _name, _args: True
+    return agent
 
 
 def read_trace(agent):

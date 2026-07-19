@@ -31,7 +31,8 @@ def _build_agent(root, *, secret_env_names=()):
         workspace=WorkspaceContext.build(root),
         session_store=SessionStore(root / ".pony" / "sessions"),
         options=RuntimeOptions(
-            approval_policy="auto", secret_env_names=secret_env_names
+            project_trusted=True,
+            secret_env_names=secret_env_names,
         ),
     )
 
@@ -586,11 +587,11 @@ def test_nested_runtime_redacts_custom_run_and_session_stores(tmp_path):
         workspace=WorkspaceContext.build(tmp_path),
         session_store=session_store,
         options=RuntimeOptions(
-        run_store=run_store,
-        approval_policy="never",
-        depth=1,
-        redaction_env={"CUSTOM_OPAQUE": secret},
-        secret_env_names=("CUSTOM_OPAQUE",),
+            run_store=run_store,
+            project_trusted=True,
+            depth=1,
+            redaction_env={"CUSTOM_OPAQUE": secret},
+            secret_env_names=("CUSTOM_OPAQUE",),
         ),
     )
     state = TaskState.create(

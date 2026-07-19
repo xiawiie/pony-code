@@ -10,8 +10,6 @@ from pony.security import private_files as private_files
 from pony.security import paths as security_paths
 from pony.security import workspace_files as workspace_files
 from pony.security import redaction as redaction
-from pony.state.workflow import parse_plan_json
-
 from .shell import DEFAULT_RUN_SHELL_TIMEOUT, MAX_RUN_SHELL_TIMEOUT
 
 
@@ -264,12 +262,6 @@ def validate_tool(context, name, args):
         timeout = int(args.get("timeout", DEFAULT_RUN_SHELL_TIMEOUT))
         if timeout < 1 or timeout > MAX_RUN_SHELL_TIMEOUT:
             raise ValueError(f"timeout must be in [1, {MAX_RUN_SHELL_TIMEOUT}]")
-        return
-
-    if name == "update_plan":
-        if not isinstance(args, dict) or args.keys() != {"plan_json"}:
-            raise ValueError("update_plan accepts only plan_json")
-        parse_plan_json(args["plan_json"])
         return
 
     if name == "write_file":

@@ -1,4 +1,3 @@
-import json
 import sys
 from unittest.mock import Mock
 
@@ -8,179 +7,192 @@ from benchmarks.support.fake_provider import FakeModelClient
 from pony import Pony
 from pony.runtime.options import RuntimeOptions
 from pony.state.session_store import SessionStore
+from pony.state.task_state import TaskState
 from pony.workspace.context import WorkspaceContext
 
 
-def _agent(tmp_path, outputs=(), **options):
+def _agent(
+    tmp_path,
+    outputs=(),
+    *,
+    trusted=True,
+    read_only=False,
+    executables=None,
+):
     tmp_path.mkdir(parents=True, exist_ok=True)
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
-    approval_policy = options.pop("approval_policy", "auto")
     return Pony(
         model_client=FakeModelClient(outputs),
         workspace=WorkspaceContext.build(tmp_path),
         session_store=SessionStore(tmp_path / ".pony" / "sessions"),
-        options=RuntimeOptions(approval_policy=approval_policy, **options),
+        options=RuntimeOptions(
+            project_trusted=trusted,
+            read_only=read_only,
+            trusted_executables=executables,
+        ),
     )
 
 
-def _plan_json():
-    return json.dumps(
-        {
-            "goal": "Inspect the workflow",
-            "items": [
-                {"id": "inspect", "text": "Inspect state", "status": "in_progress"}
-            ],
-        }
-    )
-
-
-def test_mode_filters_model_schemas_and_executor_still_blocks_hidden_tools(tmp_path):
+def test_plan_filters_schemas_and_executor_blocks_hidden_mutation(tmp_path):
     agent = _agent(tmp_path)
-    agent.set_workflow_mode("plan")
-
-    visible = agent.visible_tools()
-    assert {"read_file", "delegate", "update_plan", "run_shell"} <= set(visible)
-    assert "write_file" not in visible
-    assert "memory_save" not in visible
-
+    agent.set_permission_mode("plan")
+    prompt = Mock(return_value=True)
     runner = Mock(return_value="must not run")
+    agent._approval_prompt = prompt
     agent.tools["write_file"]["run"] = runner
+
+    assert "read_file" in agent.visible_tools()
+    assert "delegate" in agent.visible_tools()
+    assert "run_shell" not in agent.visible_tools()
+    assert "write_file" not in agent.visible_tools()
+    assert "memory_save" not in agent.visible_tools()
+
     blocked = agent.execute_tool(
         "write_file", {"path": "blocked.txt", "content": "blocked"}
     )
 
-    assert blocked.metadata["tool_error_code"] == "workflow_mode_block"
+    assert blocked.metadata["tool_error_code"] == "permission_mode_block"
+    prompt.assert_not_called()
     runner.assert_not_called()
 
 
-def test_mode_allows_only_read_only_shell_in_plan_and_never_does_not_escalate(tmp_path):
+def test_permission_turn_freezes_mode_and_visible_tools(tmp_path):
     agent = _agent(tmp_path)
-    agent.set_workflow_mode("plan")
-    runner = Mock(return_value={"stdout": "ok\n", "stderr": "", "exit_code": 0})
-    agent.tools["run_shell"]["run"] = runner
+    agent.set_permission_mode("plan")
+    frozen_tools = set(agent.visible_tools())
 
-    allowed = agent.execute_tool("run_shell", {"command": "pwd", "timeout": 5})
-    denied = agent.execute_tool(
-        "run_shell", {"command": "printf changed > blocked.txt", "timeout": 5}
-    )
-
-    assert allowed.metadata["tool_status"] == "ok"
-    assert denied.metadata["tool_error_code"] == "workflow_mode_block"
-    assert runner.call_count == 1
-
-    never = _agent(tmp_path / "never", approval_policy="never")
-    never.set_workflow_mode("plan")
-    result = never.execute_tool("run_shell", {"command": "pwd", "timeout": 5})
-    assert result.metadata["tool_error_code"] == "approval_denied"
-
-
-def test_runtime_read_only_hides_shell_and_rejects_plan_updates(tmp_path):
-    agent = _agent(tmp_path, read_only=True)
-
-    assert "run_shell" not in agent.visible_tools()
-    assert "update_plan" not in agent.visible_tools()
-    result = agent.execute_tool("update_plan", {"plan_json": _plan_json()})
-
-    assert result.metadata["tool_error_code"] == "read_only_block"
-
-
-def test_workflow_turn_freezes_mode_plan_and_blocks_mode_changes(tmp_path):
-    agent = _agent(tmp_path)
-    frozen_plan = agent.current_workflow_plan()
-    agent.begin_workflow_turn()
+    agent.begin_permission_turn()
     try:
-        agent.session["workflow_mode"] = "review"
-        agent.session["active_plan"] = json.loads(_plan_json())
-        assert agent.current_workflow_mode() == "act"
-        assert agent.current_workflow_plan() == frozen_plan
-        with pytest.raises(RuntimeError, match="workflow_turn_active"):
-            agent.set_workflow_mode("plan")
+        agent.session["permission_mode"] = "default"
+        assert agent.current_permission_mode() == "plan"
+        assert set(agent.visible_tools()) == frozen_tools
+        with pytest.raises(RuntimeError, match="permission_turn_active"):
+            agent.set_permission_mode("default")
     finally:
-        agent.end_workflow_turn()
+        agent.end_permission_turn()
 
 
-def test_invalid_update_plan_has_stable_error_and_no_session_effect(tmp_path):
-    agent = _agent(tmp_path)
-    result = agent.execute_tool("update_plan", {"plan_json": "not-json"})
+def test_agent_loop_sends_frozen_plan_tools_and_permission_metadata(tmp_path):
+    agent = _agent(tmp_path, ["done"])
+    agent.set_permission_mode("plan")
 
-    assert result.metadata["tool_error_code"] == "invalid_plan"
-    assert agent.session_store.load(agent.session["id"])["active_plan"]["goal"] == ""
+    assert agent.ask("inspect only") == "done"
+
+    visible = {tool["name"] for tool in agent.model_client.requests[0]["tools"]}
+    assert "read_file" in visible
+    assert "write_file" not in visible
+    assert "run_shell" not in visible
+    assert agent.last_request_metadata["permission_mode"] == "plan"
 
 
-def test_review_requires_ask_for_external_effect_shell(tmp_path):
-    trusted = {"python": sys.executable}
+def test_accept_edits_only_skips_prompt_for_builtin_file_edits(tmp_path):
     agent = _agent(
         tmp_path,
-        approval_policy="ask",
-        trusted_executables=trusted,
+        executables={"python": sys.executable},
     )
-    agent.set_workflow_mode("review")
-    agent.approve = Mock(return_value=True)
-    runner = Mock(return_value={"stdout": "ok\n", "stderr": "", "exit_code": 0})
-    agent.tools["run_shell"]["run"] = runner
+    agent.set_permission_mode("acceptEdits")
+    prompt = Mock(return_value=True)
+    shell_runner = Mock(
+        return_value={"stdout": "ok\n", "stderr": "", "exit_code": 0}
+    )
+    agent._approval_prompt = prompt
+    agent.tools["run_shell"]["run"] = shell_runner
+
+    written = agent.execute_tool(
+        "write_file", {"path": "allowed.txt", "content": "before\n"}
+    )
+    patched = agent.execute_tool(
+        "patch_file",
+        {"path": "allowed.txt", "old_text": "before", "new_text": "after"},
+    )
+    shell = agent.execute_tool(
+        "run_shell", {"command": 'python -c "print(1)"', "timeout": 5}
+    )
+
+    assert written.metadata["tool_status"] == "ok"
+    assert patched.metadata["tool_status"] == "ok"
+    assert shell.metadata["tool_status"] == "ok"
+    prompt.assert_called_once()
+    shell_runner.assert_called_once()
+
+
+def test_default_prompts_and_revalidates_approved_arguments(tmp_path):
+    agent = _agent(tmp_path)
+    runner = Mock(return_value="must not run")
+    agent.tools["write_file"]["run"] = runner
+
+    def mutate(_name, args):
+        args["path"] = "changed.txt"
+        return True
+
+    agent.approve = mutate
+    result = agent.execute_tool(
+        "write_file", {"path": "approved.txt", "content": "content"}
+    )
+
+    assert result.metadata["tool_error_code"] == "approval_arguments_changed"
+    assert not (tmp_path / "approved.txt").exists()
+    assert not (tmp_path / "changed.txt").exists()
+    runner.assert_not_called()
+
+
+def test_dont_ask_denies_prompted_mutation_without_calling_prompt(tmp_path):
+    agent = _agent(tmp_path)
+    agent.set_permission_mode("dontAsk")
+    prompt = Mock(return_value=True)
+    runner = Mock(return_value="must not run")
+    agent._approval_prompt = prompt
+    agent.tools["write_file"]["run"] = runner
 
     result = agent.execute_tool(
-        "run_shell", {"command": 'python -c "print(1)"', "timeout": 5}
+        "write_file", {"path": "blocked.txt", "content": "blocked"}
     )
 
-    assert result.metadata["tool_status"] == "ok"
-    runner.assert_called_once()
+    assert result.metadata["tool_error_code"] == "permission_mode_block"
+    prompt.assert_not_called()
+    runner.assert_not_called()
 
-    automatic = _agent(tmp_path / "automatic", trusted_executables=trusted)
-    automatic.set_workflow_mode("review")
-    blocked = automatic.execute_tool(
-        "run_shell", {"command": 'python -c "print(1)"', "timeout": 5}
+
+def test_accept_edits_still_prompts_for_memory_write(tmp_path):
+    agent = _agent(tmp_path)
+    agent.set_permission_mode("acceptEdits")
+    agent.current_task_state = TaskState.create(
+        task_id="remember",
+        user_request="remember this rule",
     )
-    assert blocked.metadata["tool_error_code"] == "workflow_mode_block"
+    prompt = Mock(return_value=False)
+    agent._approval_prompt = prompt
+
+    result = agent.execute_tool("memory_save", {"note": "remembered rule"})
+
+    assert result.metadata["tool_error_code"] == "approval_denied"
+    prompt.assert_called_once()
 
 
-def test_update_plan_is_committed_verified_before_trace_and_frozen_for_followup(tmp_path):
-    plan_json = _plan_json()
-    agent = _agent(
-        tmp_path,
-        [{"name": "update_plan", "args": {"plan_json": plan_json}}, "done"],
+def test_untrusted_and_read_only_boundaries_fail_closed(tmp_path):
+    untrusted = _agent(tmp_path / "untrusted", trusted=False)
+    read_only = _agent(tmp_path / "readonly", read_only=True)
+    prompt = Mock(return_value=True)
+    untrusted._approval_prompt = prompt
+    read_only._approval_prompt = prompt
+
+    denied_read = untrusted.execute_tool(
+        "read_file", {"path": "README.md", "start": 1, "end": 1}
     )
-    agent.set_workflow_mode("plan")
-    listener_plans = []
-
-    def listener(event):
-        if event["event"] == "tool_started":
-            listener_plans.append(agent.session_store.load(agent.session["id"])["active_plan"])
-
-    agent._trace_listener = listener
-    assert agent.ask("make a plan") == "done"
-
-    assert agent.session["active_plan"]["goal"] == "Inspect the workflow"
-    assert listener_plans == [agent.session["active_plan"]]
-    assert agent.current_workflow_plan() == agent.session["active_plan"]
-    assert "write_file" not in {
-        tool["name"] for tool in agent.model_client.requests[0]["tools"]
-    }
-    assert "update_plan" in {
-        tool["name"] for tool in agent.model_client.requests[1]["tools"]
-    }
-    metadata = agent.last_request_metadata
-    assert metadata["workflow_mode"] == "plan"
-    assert metadata["workflow_plan_item_count"] == 0
-    assert "Inspect the workflow" not in json.dumps(metadata)
-
-
-def test_unverified_update_plan_blocks_later_session_writes(tmp_path, monkeypatch):
-    agent = _agent(
-        tmp_path,
-        [{"name": "update_plan", "args": {"plan_json": _plan_json()}}, "done"],
+    denied_write = read_only.execute_tool(
+        "write_file", {"path": "blocked.txt", "content": "blocked"}
     )
-    agent.set_workflow_mode("plan")
-    original_reload = agent._reload_session_projection
-    listener = Mock()
-    agent._trace_listener = listener
-    monkeypatch.setattr(agent, "_reload_session_projection", lambda: {"active_plan": {}})
 
-    with pytest.raises(RuntimeError, match="committed session projection"):
-        agent.ask("make a plan")
+    assert denied_read.metadata["tool_error_code"] == "permission_denied"
+    assert denied_write.metadata["tool_error_code"] == "read_only_block"
+    assert "run_shell" not in read_only.visible_tools()
+    prompt.assert_not_called()
 
-    assert agent._session_write_blocked_cause is not None
-    assert not any(
-        call.args[0]["event"] == "tool_started" for call in listener.call_args_list
-    )
-    monkeypatch.setattr(agent, "_reload_session_projection", original_reload)
+
+def test_update_plan_is_not_an_active_tool(tmp_path):
+    agent = _agent(tmp_path)
+
+    assert "update_plan" not in agent.tools
+    result = agent.execute_tool("update_plan", {"plan_json": "{}"})
+
+    assert result.metadata["tool_error_code"] == "unknown_tool"

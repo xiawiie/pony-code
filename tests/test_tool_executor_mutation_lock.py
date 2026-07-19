@@ -13,12 +13,14 @@ from pony.runtime.options import RuntimeOptions
 
 def build_agent(tmp_path):
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
-    return Pony(
+    agent = Pony(
         model_client=FakeModelClient([]),
         workspace=WorkspaceContext.build(tmp_path),
         session_store=SessionStore(tmp_path / ".pony" / "sessions"),
-        options=RuntimeOptions(approval_policy="auto"),
+        options=RuntimeOptions(project_trusted=True),
     )
+    agent._approval_prompt = lambda _name, _args: True
+    return agent
 
 
 def test_approval_finishes_before_mutation_lock(tmp_path, monkeypatch):
@@ -41,6 +43,29 @@ def test_approval_finishes_before_mutation_lock(tmp_path, monkeypatch):
 
     assert events.index("approval") < events.index("lock-enter")
     assert events[-1] == "lock-exit"
+
+
+def test_permission_denial_happens_before_approval_and_mutation_lock(
+    tmp_path,
+    monkeypatch,
+):
+    agent = build_agent(tmp_path)
+    agent.set_permission_mode("plan")
+    prompt = Mock(return_value=True)
+    runner = Mock(return_value="must not run")
+    lock = Mock(side_effect=AssertionError("mutation lock entered"))
+    agent._approval_prompt = prompt
+    agent.tools["write_file"]["run"] = runner
+    monkeypatch.setattr(agent.checkpoint_store, "mutation_lock", lock)
+
+    result = agent.execute_tool(
+        "write_file", {"path": "blocked.txt", "content": "blocked"}
+    )
+
+    assert result.metadata["tool_error_code"] == "permission_mode_block"
+    prompt.assert_not_called()
+    lock.assert_not_called()
+    runner.assert_not_called()
 
 
 def test_existing_same_owner_pending_blocks_runner(tmp_path, monkeypatch):

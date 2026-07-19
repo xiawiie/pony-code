@@ -54,7 +54,7 @@ def _real_agent(tmp_path):
         model_client=FakeModelClient([]),
         workspace=WorkspaceContext.build(tmp_path),
         session_store=SessionStore(tmp_path / ".pony" / "sessions"),
-        options=RuntimeOptions(approval_policy="auto"),
+        options=RuntimeOptions(project_trusted=True),
     )
 
 
@@ -138,7 +138,7 @@ def test_readme_is_dynamic_project_context_not_a_pinned_instruction(tmp_path):
         model_client=FakeModelClient([]),
         workspace=WorkspaceContext.build(tmp_path),
         session_store=SessionStore(tmp_path / ".pony" / "sessions"),
-        options=RuntimeOptions(approval_policy="auto"),
+        options=RuntimeOptions(project_trusted=True),
     )
 
     chunks = project_structure_chunks(agent, agent.token_accounting)
@@ -185,18 +185,9 @@ def test_task_working_set_contains_goal_files_and_required_checkpoint():
     assert "Next steps: test" in text
 
 
-def test_task_working_set_separates_required_workflow_and_checkpoint_facts():
+def test_task_working_set_contains_only_checkpoint_facts():
     agent = _agent()
     agent.session.update(
-        workflow_mode="review",
-        active_plan={
-            "goal": "Review workflow state",
-            "items": [
-                {"id": "done", "text": "Read code", "status": "completed"},
-                {"id": "now", "text": "Check context", "status": "in_progress"},
-                {"id": "next", "text": "Run tests", "status": "pending"},
-            ],
-        },
         checkpoints={
             "current_id": "ckpt-context",
             "items": {
@@ -212,63 +203,21 @@ def test_task_working_set_separates_required_workflow_and_checkpoint_facts():
 
     chunks = task_working_set_chunks(agent, agent.token_accounting)
 
-    workflow = next(chunk for chunk in chunks if chunk.key == "workflow-state")
     checkpoint = next(chunk for chunk in chunks if chunk.key == "checkpoint-state")
-    pending = next(chunk for chunk in chunks if chunk.key == "plan-pending-2")
-    assert workflow.key == "workflow-state"
-    assert workflow.required is True
-    assert workflow.provenance["mode_source"] == "workflow_mode"
-    assert workflow.provenance["plan_source"] == "active_plan"
-    assert "Mode: review" in workflow.text
-    assert "Plan goal: Review workflow state" in workflow.text
-    assert "Current: Check context" in workflow.text
-    assert "Progress: 1/3 completed; 1 current" in workflow.text
-    assert "Checkpoint" not in workflow.text
     assert checkpoint.key == "checkpoint-state"
     assert checkpoint.required is True
     assert "Old checkpoint goal" in checkpoint.text
-    assert "Review workflow state" not in checkpoint.text
-    assert pending.key == "plan-pending-2"
-    assert pending.required is False
+    assert all(chunk.key != "workflow-state" for chunk in chunks)
+    assert all(not chunk.key.startswith("plan-pending-") for chunk in chunks)
 
 
-def test_task_working_set_prefers_frozen_workflow_context_over_updated_session():
-    agent = _agent()
-    agent.session.update(
-        workflow_mode="act",
-        active_plan={"goal": "New plan", "items": []},
-    )
-    agent.current_workflow_plan = {
-        "workflow_mode": "plan",
-        "active_plan": {"goal": "Frozen plan", "items": []},
-    }
-
-    workflow = task_working_set_chunks(agent, agent.token_accounting)[0]
-
-    assert "Mode: plan" in workflow.text
-    assert "Frozen plan" in workflow.text
-    assert "New plan" not in workflow.text
-
-
-def test_required_recovery_workflow_and_checkpoint_survive_plan_budget_pressure():
+def test_required_recovery_and_checkpoint_survive_budget_pressure():
     agent = _agent()
     agent.resume_state = {
         "status": "workspace-mismatch",
         "runtime_identity_mismatch_fields": ["cwd"],
     }
     agent.session.update(
-        workflow_mode="plan",
-        active_plan={
-            "goal": "Plan bounded work",
-            "items": [
-                {
-                    "id": str(index),
-                    "text": "pending detail " + "x" * 280,
-                    "status": "pending",
-                }
-                for index in range(12)
-            ],
-        },
         checkpoints={
             "current_id": "ckpt-budget",
             "items": {"ckpt-budget": {"goal": "Checkpoint fact"}},
@@ -282,21 +231,23 @@ def test_required_recovery_workflow_and_checkpoint_survive_plan_budget_pressure(
     allocation = allocate_context_chunks(chunks, pool_tokens=required_tokens)
     selected_keys = {chunk.key for chunk in allocation.selected}
 
-    assert {"active-recovery", "workflow-state", "checkpoint-state"} <= selected_keys
-    assert any(item.chunk.key.startswith("plan-pending-") for item in allocation.dropped)
+    assert {"active-recovery", "checkpoint-state"} <= selected_keys
 
 
-def test_workflow_context_redacts_known_secret_and_bounds_checkpoint_view():
+def test_checkpoint_context_redacts_known_secret_and_bounds_view():
     agent = _agent()
     secret = "sk-ABCDEF1234567890"
     agent.redaction_env = {"PONY_API_KEY": secret}
     agent.secret_env_names = ("PONY_API_KEY",)
     agent.session.update(
-        workflow_mode="act",
-        active_plan={"goal": f"Use {secret}", "items": []},
         checkpoints={
             "current_id": "ckpt-bounded",
-            "items": {"ckpt-bounded": {"blocker": "x" * 10_000}},
+            "items": {
+                "ckpt-bounded": {
+                    "goal": f"Use {secret}",
+                    "blocker": "x" * 10_000,
+                }
+            },
         },
     )
 

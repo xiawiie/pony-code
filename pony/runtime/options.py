@@ -7,7 +7,7 @@ from typing import Any
 @dataclass(frozen=True)
 class RuntimeOptions:
     run_store: Any = None
-    approval_policy: str = "ask"
+    project_trusted: bool = False
     max_steps: int = 12
     max_output_tokens: int | None = None
     context_window: int | None = None

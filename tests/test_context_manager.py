@@ -17,7 +17,7 @@ def _agent(tmp_path):
         model_client=FakeModelClient([]),
         workspace=WorkspaceContext.build(tmp_path),
         session_store=SessionStore(tmp_path / ".pony" / "sessions"),
-        options=RuntimeOptions(approval_policy="auto"),
+        options=RuntimeOptions(project_trusted=True),
     )
 
 
@@ -57,13 +57,10 @@ def test_tool_schema_keeps_integer_and_risk_contract():
     assert "approval" in converted["description"].lower()
 
 
-def test_update_plan_native_schema_describes_json_string_contract(tmp_path):
+def test_update_plan_is_absent_from_native_tool_schema(tmp_path):
     tools = _build_tools_list(_agent(tmp_path).visible_tools())
-    update_plan = next(tool for tool in tools if tool["name"] == "update_plan")
 
-    assert "JSON-encoded string" in update_plan["description"]
-    assert "exactly goal and items" in update_plan["description"]
-    assert "exactly id, text, and status" in update_plan["description"]
+    assert "update_plan" not in {tool["name"] for tool in tools}
 
 
 def test_system_prefix_hash_depends_on_stable_prefix_only(tmp_path):
