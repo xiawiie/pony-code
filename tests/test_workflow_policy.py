@@ -118,6 +118,24 @@ def test_bypass_mode_with_runtime_capability_skips_prompt(tmp_path):
     assert (tmp_path / "allowed.txt").read_text(encoding="utf-8") == "allowed\n"
 
 
+def test_plan_exit_cannot_restore_bypass_after_capability_drift(tmp_path):
+    agent = _agent(tmp_path, bypass_permissions_available=True)
+    agent.set_permission_mode("bypassPermissions")
+    agent.set_permission_mode("plan")
+    agent.execute_tool("write_plan", {"plan": "# Plan\n1. Inspect"})
+    agent._bypass_permissions_available = False
+    prompt = Mock(return_value=True)
+    agent._approval_prompt = prompt
+
+    result = agent.execute_tool("exit_plan_mode", {})
+
+    assert result.metadata["tool_error_code"] == (
+        "bypass_permission_capability_missing"
+    )
+    assert agent.session_store.load(agent.session["id"])["permission_mode"] == "plan"
+    prompt.assert_not_called()
+
+
 def test_dont_ask_honors_explicit_allow_rule(tmp_path):
     agent = _agent(tmp_path)
     agent.set_permission_mode("dontAsk")

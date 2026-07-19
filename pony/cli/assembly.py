@@ -8,7 +8,11 @@ from pony.config.model import resolve_model_config, resolve_session_provider_bin
 from pony.config.project import load_pony_toml
 from pony.providers.factory import build_transport_client
 from pony.providers.probe import resolve_provider_client
-from pony.runtime.application import Pony, _build_redaction_snapshot
+from pony.runtime.application import (
+    Pony,
+    _build_redaction_snapshot,
+    _session_requires_bypass_permission_capability,
+)
 from pony.runtime.options import RuntimeOptions
 from pony.sandbox.docker import (
     build_docker_sandbox_context,
@@ -203,7 +207,7 @@ def _build_agent_with_source_authority(args, source_workspace):
     session_store_root = source_workspace.repo_root + "/.pony/sessions"
     store = None
     session_id = args.resume
-    resumed_permission_mode = ""
+    resume_requires_bypass_capability = False
     max_output_tokens = getattr(args, "max_output_tokens", None)
     if session_id == "latest":
         store = SessionStore(session_store_root, redactor=redactor)
@@ -241,10 +245,12 @@ def _build_agent_with_source_authority(args, source_workspace):
         store = SessionStore(session_store_root, redactor=redactor)
     if store is not None and args.resume and session_id:
         storage, projection, _tree = store.inspect_readonly(session_id)
-        resumed_permission_mode = str(projection.get("permission_mode", "") or "")
-        if (
+        resume_requires_bypass_capability = (
             storage == "current"
-            and projection.get("permission_mode") == "bypassPermissions"
+            and _session_requires_bypass_permission_capability(projection)
+        )
+        if (
+            resume_requires_bypass_capability
             and getattr(args, "permission_mode", None) is None
             and not dangerous_bypass_enabled(args)
         ):
@@ -287,9 +293,12 @@ def _build_agent_with_source_authority(args, source_workspace):
         if args.resume and session_id:
             requested_mode = getattr(args, "permission_mode", None)
             if (
-                resumed_permission_mode == "bypassPermissions"
+                resume_requires_bypass_capability
+                and not dangerous_bypass_enabled(args)
                 and requested_mode not in {None, "bypassPermissions"}
             ):
+                if requested_mode == "plan":
+                    store.set_permission_mode(session_id, "auto")
                 store.set_permission_mode(session_id, requested_mode)
             return Pony.from_session(
                 model_client=model,

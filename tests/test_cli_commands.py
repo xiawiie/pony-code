@@ -317,6 +317,62 @@ def test_real_resume_bypass_capability_is_passed_into_runtime(
     assert resumed.bypass_permissions_available is True
 
 
+@pytest.mark.parametrize(
+    ("requested_mode", "expected_pre_plan_mode"),
+    (("manual", ""), ("plan", "auto")),
+)
+def test_real_resume_can_replace_bypass_without_capability(
+    tmp_path,
+    monkeypatch,
+    requested_mode,
+    expected_pre_plan_mode,
+):
+    from benchmarks.support.fake_provider import FakeModelClient
+    from pony import Pony
+    from pony.cli.arguments import build_arg_parser
+    from pony.cli.assembly import _build_agent_with_source_authority
+    from pony.state.session_store import SessionStore
+    from pony.workspace.context import WorkspaceContext
+
+    (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
+    workspace = WorkspaceContext.build(tmp_path)
+    store = SessionStore(tmp_path / ".pony" / "sessions")
+    original = Pony(
+        model_client=FakeModelClient([]),
+        workspace=workspace,
+        session_store=store,
+        options=RuntimeOptions(
+            project_trusted=True,
+            bypass_permissions_available=True,
+        ),
+    )
+    original.set_permission_mode("bypassPermissions")
+    args = build_arg_parser().parse_args(
+        [
+            "--cwd",
+            str(tmp_path),
+            "--resume",
+            original.session["id"],
+            "--permission-mode",
+            requested_mode,
+            "run",
+            "inspect",
+        ]
+    )
+    monkeypatch.setattr(
+        "pony.cli.assembly._build_transport_client",
+        lambda *_args, **_kwargs: FakeModelClient([]),
+    )
+
+    resumed = _build_agent_with_source_authority(args, workspace)
+
+    assert resumed.current_permission_mode() == (
+        "default" if requested_mode == "manual" else requested_mode
+    )
+    assert resumed.session["pre_plan_mode"] == expected_pre_plan_mode
+    assert resumed.bypass_permissions_available is False
+
+
 def test_invalid_no_input_repl_is_rejected_before_agent_build(
     tmp_path, monkeypatch, capsys
 ):

@@ -133,6 +133,21 @@ def test_programmatic_resume_requires_bypass_capability(tmp_path):
     assert resumed.current_permission_mode() == "bypassPermissions"
 
 
+def test_programmatic_resume_rejects_plan_that_would_restore_bypass(tmp_path):
+    original = build_agent(tmp_path, [], bypass_permissions_available=True)
+    original.set_permission_mode("bypassPermissions")
+    original.set_permission_mode("plan")
+
+    with pytest.raises(ValueError, match="dangerous permission capability"):
+        Pony.from_session(
+            model_client=original.model_client,
+            workspace=original.workspace,
+            session_store=original.session_store,
+            session_id=original.session["id"],
+            options=RuntimeOptions(project_trusted=True),
+        )
+
+
 def test_new_runtime_persists_current_messages_only(tmp_path):
     agent = build_agent(tmp_path, ["done"])
 

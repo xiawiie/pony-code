@@ -831,6 +831,21 @@ def _prepare_exit_plan_tool(agent, tool, args, effect_class):
     )
     if rejection is not None:
         return rejection, None
+    if (
+        agent.session.get("pre_plan_mode")
+        == PermissionMode.BYPASS_PERMISSIONS.value
+        and not getattr(agent, "bypass_permissions_available", False)
+    ):
+        return ToolExecutionResult(
+            content="error: bypass permission capability is unavailable",
+            metadata=_metadata(
+                "rejected",
+                effect_class=effect_class,
+                tool_error_code="bypass_permission_capability_missing",
+                security_event_type="bypass_permission_capability_missing",
+                risk_level="high",
+            ),
+        ), None
     plan = agent.current_plan()
     revision = agent.current_plan_revision()
     if not plan.strip() or revision < 1:

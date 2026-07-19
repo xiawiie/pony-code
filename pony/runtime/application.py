@@ -197,6 +197,13 @@ def _session_has_provider_state(session):
     )
 
 
+def _session_requires_bypass_permission_capability(session):
+    return isinstance(session, dict) and any(
+        session.get(field) == PermissionMode.BYPASS_PERMISSIONS.value
+        for field in ("permission_mode", "pre_plan_mode")
+    )
+
+
 class Pony:
     def __init__(
         self,
@@ -571,9 +578,8 @@ class Pony:
             self.session = self.redact_artifact(deepcopy(session))
             self._validate_restored_session_binding(self.session, model_binding)
             self._validate_session_feature_flags(self.session)
-            self._require_bypass_permission_capability(
-                self.session.get("permission_mode")
-            )
+            if _session_requires_bypass_permission_capability(self.session):
+                self._require_bypass_permission_capability("bypassPermissions")
         self._ensure_session_shape()
         if session is not None and self.docker_sandbox and not self.sandbox_context.resumed:
             self._prepare_restaged_session()
@@ -990,6 +996,9 @@ class Pony:
     def _exit_plan_mode(self, args):
         if self.current_permission_mode() != PermissionMode.PLAN.value:
             raise ValueError("exit_plan_mode requires plan mode")
+        self._require_bypass_permission_capability(
+            self.session.get("pre_plan_mode")
+        )
         try:
             self.session_store.exit_plan_mode(
                 self.session["id"],
