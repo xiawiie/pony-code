@@ -20,7 +20,6 @@ class ApprovedShellExecution:
     execution_mode: str
     executable: str
     timeout: int
-    sandbox_plan: object = None
 
 
 _SANDBOX_PRIVILEGED_EXECUTABLES = frozenset(

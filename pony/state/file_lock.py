@@ -2,6 +2,7 @@
 
 from contextlib import contextmanager
 import errno
+import hashlib
 import os
 from pathlib import Path
 import stat
@@ -23,8 +24,12 @@ except ImportError:  # pragma: no cover
 _LOCK_STATE = threading.local()
 
 
-def _authority_root():
-    return Path("/tmp").resolve(strict=True) / f".pony-lock-authority-{os.geteuid()}"
+def _authority_root(path=None):
+    root = Path("/tmp").resolve(strict=True) / f".pony-lock-authority-{os.geteuid()}"
+    if path is None:
+        return root
+    digest = hashlib.sha256(os.fsencode(os.path.abspath(os.fspath(path)))).hexdigest()
+    return root / digest
 
 
 def _active_lock_keys():
@@ -78,8 +83,8 @@ def _require_current_authority(root, descriptor):
         raise ValueError("unsafe lock authority")
 
 
-def _open_authority():
-    root = ensure_private_dir(_authority_root())
+def _open_authority(path):
+    root = ensure_private_dir(_authority_root(path))
     descriptor = _open_private_directory(root)
     try:
         _require_current_authority(root, descriptor)
@@ -90,9 +95,9 @@ def _open_authority():
     return root, descriptor, (opened.st_dev, opened.st_ino)
 
 
-def _acquire_authority(deadline):
+def _acquire_authority(path, deadline):
     authorities = _authority_locks()
-    root, descriptor, key = _open_authority()
+    root, descriptor, key = _open_authority(path)
     current = authorities.get(key)
     if current is not None:
         _require_current_authority(root, descriptor)
@@ -184,7 +189,7 @@ def locked_file(path, *, require_lock=False, require_existing=False, lock_timeou
             raise ValueError(kind)
         if before is not None and before.st_nlink != 1:
             raise ValueError("private file has multiple links")
-        authority = _acquire_authority(deadline) if fcntl is not None else None
+        authority = _acquire_authority(path, deadline) if fcntl is not None else None
         flags = os.O_RDWR | os.O_APPEND
         if not require_existing:
             flags |= os.O_CREAT

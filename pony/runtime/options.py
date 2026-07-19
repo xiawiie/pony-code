@@ -22,7 +22,5 @@ class RuntimeOptions:
     allow_dangerously_skip_permissions: bool = False
     trusted_redaction_env: bool = False
     trusted_executables: dict[str, str] | None = None
-    sandbox_context: Any = None
     project_config: dict[str, Any] | None = None
     session_id: str | None = None
-    development_runtime_seal: Any = None

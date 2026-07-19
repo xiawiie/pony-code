@@ -427,16 +427,6 @@ def test_pony_ask_delegates_to_agent_loop(tmp_path):
     assert agent.ask("Use facade") == "Facade works."
 
 
-def test_rejected_tool_action_never_creates_verification_evidence():
-    assert (
-        agent_loop_module._verification_evidence_for_tool(
-        "run_shell",
-        {"tool_status": "rejected"},
-        )
-        is None
-    )
-
-
 def test_agent_loop_decodes_native_action_and_aggregates_response_usage_only(tmp_path):
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
     provider = NativeScriptProvider(
@@ -563,7 +553,6 @@ def test_native_multiple_tool_response_executes_none_and_requests_correction(
     first_runner.assert_not_called()
     ignored_runner.assert_not_called()
     assert not (tmp_path / "ignored.txt").exists()
-    assert agent.checkpoint_store.list_tool_change_records() == []
     events = read_trace(agent)
     decoded = [event for event in events if event["event"] == "action_decoded"]
     assert decoded[0]["action_type"] == "retry"
@@ -637,13 +626,6 @@ def test_ordinary_workspace_tool_error_commits_pair_consumes_step_and_finishes(
     assert tool_result["content"][0]["tool_use_id"] == "tu_error"
     assert tool_result["content"][0]["is_error"] is True
     assert tool_result["_pony_meta"]["tool_status"] == "error"
-    tool_change_id = tool_result["_pony_meta"]["tool_change_id"]
-    tool_change = agent.checkpoint_store.load_tool_change_record(tool_change_id)
-    assert tool_change["status"] == "error"
-    assert tool_change["error"]["code"] == "tool_failed"
-    checkpoint_id = agent.current_task_state.recovery_checkpoint_id
-    checkpoint = agent.checkpoint_store.load_checkpoint_record(checkpoint_id)
-    assert checkpoint["tool_change_ids"] == [tool_change_id]
     report = agent.run_store.load_report(agent.current_task_state.run_id)
     assert report["run"]["status"] == "completed"
     assert report["tools"]["calls"] == 1
@@ -813,7 +795,7 @@ def test_side_effect_then_pair_save_failure_stops_before_another_provider_call(
         )
         for message in messages
     )
-    assert agent.current_task_state.recovery_checkpoint_id
+    assert agent.current_task_state.checkpoint_id
 
 
 def test_committed_pair_save_reloads_canonical_without_duplicate_or_loss(
@@ -1174,41 +1156,6 @@ def test_agent_loop_emits_focused_recovery_trace_events(tmp_path):
     assert '"event": "run_started"' in trace_text
     assert '"event": "model_turn"' in trace_text
     assert '"event": "checkpoint_created"' in trace_text
-
-
-def test_recovery_checkpoint_uses_distinct_trace_event(tmp_path):
-    agent = build_agent(
-        tmp_path,
-        [
-            {"name": "write_file", "args": {"path":"note.txt","content":"after\\n"}},
-            "done",
-        ],
-    )
-
-    agent.ask("write note")
-
-    trace_events = [
-        json.loads(line)
-        for line in agent.run_store.trace_path(agent.current_task_state)
-        .read_text(encoding="utf-8")
-        .splitlines()
-    ]
-    recovery_events = [
-        event
-        for event in trace_events
-        if event["event"] == "recovery_checkpoint_created"
-    ]
-
-    assert recovery_events
-    assert (
-        recovery_events[0]["checkpoint_id"]
-        == agent.current_task_state.recovery_checkpoint_id
-    )
-    assert not any(
-        event["event"] == "checkpoint_created"
-        and event.get("checkpoint_kind") == "recovery"
-        for event in trace_events
-    )
 
 
 def test_model_error_marks_run_failed_and_writes_report(tmp_path):

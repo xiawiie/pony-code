@@ -6,7 +6,6 @@
 """
 
 from difflib import get_close_matches
-import platform
 import sys
 
 from pony.config.model import DEFAULT_MODEL
@@ -26,7 +25,6 @@ from .commands import (
     handle_init,
     handle_session,
 )
-from .sandbox import handle_sandbox as handle_docker_sandbox
 from .diagnostics import (
     handle_config,
     handle_doctor,
@@ -114,10 +112,6 @@ def _dispatch_runs(args, tokens):
     return _handle_recovery_command(args.cwd, ["runs", *tokens], args)
 
 
-def _dispatch_sandbox(args, tokens):
-    return handle_docker_sandbox(args, tokens)
-
-
 def _dispatch_migrate(args, tokens):
     workspace = WorkspaceContext.build(args.cwd)
     payload = handle_migrate(workspace, tokens, args)
@@ -140,7 +134,6 @@ _PRE_AGENT_COMMAND_HANDLERS = {
     "memory": _dispatch_memory,
     "checkpoints": _dispatch_checkpoints,
     "runs": _dispatch_runs,
-    "sandbox": _dispatch_sandbox,
     "migrate": _dispatch_migrate,
 }
 
@@ -197,26 +190,6 @@ def _validate_agent_command(invocation):
                 exit_code=CLI_EXIT_USAGE,
             ) from None
     permission_rule_updates = _parse_cli_permission_rules(args)
-    if getattr(
-        invocation.runtime_args, "sandbox", False
-    ) and invocation.command not in {
-        "run",
-        "repl",
-    }:
-        raise CliError(
-            code="usage",
-            message="--sandbox is only valid with `pony run` or `pony repl`",
-            exit_code=CLI_EXIT_USAGE,
-        )
-    if getattr(invocation.runtime_args, "sandbox", False) and (
-        platform.system() != "Darwin"
-        or platform.machine().casefold() not in {"arm64", "aarch64"}
-    ):
-        raise CliError(
-            code="sandbox_local_platform_not_released",
-            message="Docker Sandbox local stable is only released for macOS arm64",
-            exit_code=CLI_EXIT_CONFIG,
-        )
     if invocation.command == "run" and not invocation.command_args:
         raise CliError(
             code="usage",

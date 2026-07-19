@@ -52,25 +52,9 @@ def _lexical_tool_target(context, raw_path):
             "workspace root changed",
         )
     source = Path(raw)
-    if (
-        source.is_absolute()
-        and getattr(
-            getattr(context, "sandbox_context", None),
-            "workspace_view",
-            None,
-        )
-        is not None
-    ):
-        try:
-            candidate = Path(context.path(raw))
-        except (OSError, RuntimeError, ValueError):
-            raise ValueError("path escapes workspace") from None
-    else:
-        candidate = Path(
-            os.path.abspath(
-                os.fspath(source if source.is_absolute() else root / source)
-            )
-        )
+    candidate = Path(
+        os.path.abspath(os.fspath(source if source.is_absolute() else root / source))
+    )
     try:
         relative = candidate.relative_to(root)
     except ValueError:

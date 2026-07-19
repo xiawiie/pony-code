@@ -367,11 +367,10 @@ class TuiRenderer:
 
     def toolbar(self, agent, *, model, columns=None):
         width = _terminal_width(columns)
-        mode = "sandbox" if getattr(agent, "docker_sandbox", False) else "host"
         branch = _one_line(getattr(agent.workspace, "branch", "-") or "-")
         workspace = _one_line(getattr(agent.workspace, "cwd", "-"))
         repository = Path(workspace).name or "-"
-        left = f" {mode} · {repository} ({branch})"
+        left = f" {repository} ({branch})"
         current_mode = getattr(agent, "current_permission_mode", None)
         permission_mode = _one_line(
             current_mode()

@@ -615,50 +615,6 @@ def test_doctor_security_requires_review_for_pending_tool_change(tmp_path):
     assert security["recovery_review"]["pending_count"] == 1
 
 
-def test_doctor_runtime_authorization_projection_drops_unknown_fields(
-    tmp_path, monkeypatch, capsys
-):
-    secret = "ghp_" + "Z" * 32
-    authorization = {
-        "status": "enabled",
-        "kind": "local",
-        "reason_code": "local_authorization_verified",
-        "token": secret,
-    }
-    monkeypatch.setattr(
-        diagnostics,
-        "_collect_docker_sandbox_diagnostic",
-        lambda **_kwargs: {
-            "status": "ready",
-            "reason_code": "ready",
-            "readiness": {
-                "status": "ready",
-                "runtime_authorization": dict(authorization),
-            },
-            "runtime_authorization": dict(authorization),
-            "checks": {
-                "runtime_authorization": {
-                    "status": "pass",
-                    "reason_code": "local_authorization_verified",
-                    "remediation": "",
-                    "token": secret,
-                }
-            },
-        },
-    )
-
-    assert main(["--cwd", str(tmp_path), "--format", "json", "doctor"]) == 0
-
-    output = capsys.readouterr().out
-    sandbox = json.loads(output)["data"]["sandbox"]
-    assert set(sandbox["runtime_authorization"]) == {
-        "status",
-        "kind",
-        "reason_code",
-    }
-    assert secret not in output
-
-
 @pytest.mark.parametrize(
     ("has_claude", "has_agents", "expected"),
     [(True, False, True), (True, True, False), (False, False, False)],

@@ -410,64 +410,15 @@ def test_core_functional_runs_without_a_performance_baseline(tmp_path):
     assert not (repo / "artifacts").exists()
 
 
-def test_provenance_records_unreleased_sandbox_platform(tmp_path, monkeypatch):
-    def unreleased(_path):
-        raise evaluate.DockerSandboxError("sandbox_image_not_released")
 
-    monkeypatch.setattr(
-        evaluate,
-        "load_image_manifest",
-        unreleased,
-    )
-
-    provenance = evaluate._provenance(
-        tmp_path,
-        "core-functional",
-        None,
-        "linux",
-        "linux-x86_64",
-    )
-
-    assert provenance["sandbox_image_digest"] == "not_released"
-    assert provenance["sandbox_policy_digest"] == "not_released"
-
-
-def test_provenance_rejects_invalid_sandbox_manifest(tmp_path, monkeypatch):
-    def invalid(_path):
-        raise evaluate.DockerSandboxError("sandbox_image_manifest_invalid")
-
-    monkeypatch.setattr(evaluate, "load_image_manifest", invalid)
-
-    with pytest.raises(
-        evaluate.DockerSandboxError,
-        match="sandbox_image_manifest_invalid",
-    ):
-        evaluate._provenance(
-            tmp_path,
-            "core-functional",
-            None,
-            "linux",
-            "linux-x86_64",
-        )
-
-
-def test_logical_suites_split_fast_full_contract_and_real_work():
+def test_logical_suites_split_fast_full_and_live_work():
     assert set(evaluate.SUITES) >= {
         "core-fast",
         "core-functional",
         "core-full",
-        "sandbox-contract",
-        "sandbox-real",
         "live",
     }
-    contract = evaluate._sandbox_contract_commands()[0][1]
-    assert "tests/test_docker_sandbox_session.py" in contract
-    assert "tests/test_docker_sandbox_runner.py" in contract
-    assert "tests/test_docker_sandbox_runtime.py" in contract
-    assert "tests/test_docker_sandbox_cli.py" in contract
-    assert "tests/test_sandbox_apply.py" in contract
-    assert not any("test_sandbox_toolchain.py" in item for item in contract)
-    assert "-k" not in contract
+    assert not {"sandbox", "sandbox-contract", "sandbox-real"} & set(evaluate.SUITES)
     assert [item[0] for item in evaluate._core_full_commands()] == [
         "core.ruff",
         "core.pytest",
@@ -489,21 +440,8 @@ def test_logical_suites_split_fast_full_contract_and_real_work():
     ]
 
 
-def test_sandbox_real_uses_readiness_and_vertical_verifiers():
-    commands = evaluate._sandbox_real_commands("linux")
 
-    assert commands[0][0] == "sandbox.real.linux.readiness"
-    assert commands[0][1][-2:] == (
-        "scripts/sandbox/verify_runtime.py",
-        "--require-ready",
-    )
-    assert commands[0][2] == "exit"
-    assert commands[1][0] == "sandbox.real.linux.vertical"
-    assert commands[1][1][-1] == "scripts/sandbox/verify_vertical.py"
-    assert commands[1][2] == "exit"
-
-
-def test_pr_suites_do_not_require_baseline_or_real_sandbox(tmp_path):
+def test_pr_fast_suite_does_not_require_baseline(tmp_path):
     calls = []
 
     def runner(argv, cwd):
@@ -516,16 +454,9 @@ def test_pr_suites_do_not_require_baseline_or_real_sandbox(tmp_path):
         root=tmp_path,
         now=datetime(2026, 7, 12, 5, tzinfo=timezone.utc),
     )
-    contract, _, _ = evaluate.run_evaluation(
-        "sandbox-contract",
-        runner=runner,
-        root=tmp_path,
-        now=datetime(2026, 7, 12, 6, tzinfo=timezone.utc),
-    )
-
-    assert fast["status"] == contract["status"] == "pass"
+    assert fast["status"] == "pass"
     assert "baseline" not in fast["provenance"]
-    assert len(calls) == len(evaluate._core_fast_commands()) + 1
+    assert len(calls) == len(evaluate._core_fast_commands())
     assert not any("srt_feasibility.py" in argv for argv, _ in calls)
 
 
@@ -547,49 +478,6 @@ def test_failed_child_output_is_redacted_and_not_stored(capsys, monkeypatch):
     assert "test_named_scenario" in output
     assert "secret-value-123" not in output
     assert "stdout" not in rows[0] and "stderr" not in rows[0]
-
-
-def test_sandbox_contract_rejects_skip_and_xfail_summaries():
-    for output in ("1 passed, 1 skipped", "1 passed, 1 xfailed", "1 xpassed"):
-        assert evaluate._functional_passed("no_skip", 0, output) is False
-
-
-def test_sandbox_fails_on_pytest_skip_and_unready_runtime(tmp_path):
-    calls = 0
-    (tmp_path / "pyproject.toml").write_text(
-        '[project]\nname = "pony-code"\nversion = "0.2.0"\n',
-        encoding="utf-8",
-    )
-
-    def runner(argv, cwd):
-        nonlocal calls
-        calls += 1
-        if "pytest" in argv:
-            return SimpleNamespace(
-                returncode=0, stdout="1 passed, 1 skipped", stderr=""
-            )
-        if any(
-            item.endswith(("verify_runtime.py", "verify_vertical.py"))
-            for item in argv
-        ):
-            return SimpleNamespace(returncode=1, stdout="{}", stderr="not ready")
-        return SimpleNamespace(returncode=0, stdout="", stderr="")
-
-    payload, _json_path, _markdown_path = evaluate.run_evaluation(
-        "sandbox",
-        runner=runner,
-        root=tmp_path,
-        now=datetime(2026, 7, 12, 2, tzinfo=timezone.utc),
-        system_name="darwin",
-    )
-
-    assert calls == 3
-    assert payload["status"] == "fail"
-    assert [row["status"] for row in payload["scenarios"]] == [
-        "fail",
-        "fail",
-        "fail",
-    ]
 
 
 def _write_live_env(root):

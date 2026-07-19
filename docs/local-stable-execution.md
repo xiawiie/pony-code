@@ -1,6 +1,9 @@
 # Pony 1.0 Docker Sandbox：本地执行与验收
 
-本文是 1.0 本地 Sandbox 的产品边界与维护入口。设计理由见
+> 状态：已退役的历史设计。当前产品只提供 Host 执行，以下命令、支持矩阵和 G7 验收不再是公开能力；保留本文仅用于
+> 解释旧 `.pony` Sandbox artifact 和 Phase 4B 待删除实现。不要按本文启用 runtime。
+
+本文曾是 1.0 本地 Sandbox 的产品边界与维护入口。设计理由见
 [ADR-0040](adr/0040-docker-filtered-staging.md)和[ADR-0042](adr/0042-sealed-local-authorization.md)。
 
 ## 支持矩阵

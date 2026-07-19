@@ -30,7 +30,6 @@ from pony.config.environment import (
     read_project_env_with_status,
     write_project_env_assignments,
 )
-from pony.sandbox.session import source_mutation_authority
 from pony.state.session_store import SessionFormatError
 from pony.workspace.context import WorkspaceContext
 
@@ -53,21 +52,19 @@ EXAMPLES:
     pony runs summary latest
     pony checkpoints show <checkpoint-id>
     pony checkpoints pending
-    pony checkpoints resolve-pending <id> [--apply]
     pony migrate status
 
 Available Commands:
   run          Run one prompt and exit
   repl         Start the interactive TUI (also the default for bare `pony`)
   status       Show local workspace state
-  doctor       Check config, storage, auth, and sandbox readiness
-  sandbox      Inspect and manage Docker Sandbox sessions and image readiness
+  doctor       Check config, storage, and auth readiness
   init         Configure provider, API base, key, and model in .env
   config       Configuration inspection and set-secret input
   runs         Run artifact inspection
   sessions     Session inspection
   session      Inspect, compact, branch, rewind, label, or clone a Session Tree
-  checkpoints  Checkpoint recovery, pending review, and resolution
+  checkpoints  Read-only legacy checkpoint inspection
   migrate      Inspect and apply explicit artifact migrations
   memory       Inspect and search memory files
   help         Help about any command
@@ -78,7 +75,6 @@ Flags:
       --format     output format for inspection commands: text or json
       --quiet      suppress non-essential human output
       --no-color   disable terminal colors
-      --sandbox    run/repl in local Docker Sandbox (macOS arm64 only)
       --permission-mode  permission mode: acceptEdits, auto, bypassPermissions,
                          manual, dontAsk, or plan
       --allowed-tools    exact tool names to allow for this Session
@@ -87,8 +83,7 @@ Flags:
                          make bypassPermissions selectable for this process
 
 Security:
-    Host mode provides no OS sandbox. In Sandbox mode all model-visible file tools use filtered
-    staging; Source Apply requires separate review and authorization.
+    Pony runs tools in the trusted workspace and enforces permission, path, and secret checks.
 """
 
 
@@ -276,11 +271,7 @@ def handle_init(tokens, cwd, args):
         )
         assignments[PROVIDER_ENV_NAME] = resolved["resolved_provider"]["value"]
     try:
-        with source_mutation_authority(
-            Path.home() / ".pony" / "sandboxes",
-            root,
-        ):
-            written = write_project_env_assignments(root, assignments)
+        written = write_project_env_assignments(root, assignments)
     except (OSError, RuntimeError, ValueError) as exc:
         raise CliError(
             code="config",

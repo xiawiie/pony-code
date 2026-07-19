@@ -13,7 +13,7 @@ tracking with the plan a user reviews before implementation.
 
 Pony still needs append-only Session state, deterministic enforcement, explicit approval, and migration that fails closed. User
 familiarity with Claude Code does not justify claiming that Pony has Claude's internal model classifier or allowing a mode flag to
-bypass trust, schema, path, secret, Memory, Sandbox, or Recovery boundaries.
+bypass trust, schema, path, secret, Memory, or Host workspace boundaries.
 
 ## Decision
 
@@ -47,8 +47,8 @@ The process must receive explicit dangerous capability before it can select or r
 Direct selection and persisted resume are checked before Provider construction; interactive selection checks the transient capability
 at the picker boundary. Explicitly resuming into another permission mode does not require dangerous capability. Bypass changes the
 mode default for an unruled mutation to ALLOW; an exact `ask` still prompts. Project trust, explicit deny, `read_only`, tool
-availability, schema, path and secret validation, shell hard rejects, current-request Memory authorization, Sandbox, and Recovery
-remain enforced.
+availability, schema, path and secret validation, shell hard rejects, current-request Memory authorization, and the Host workspace
+mutation lock remain enforced.
 The capability is a frozen `RuntimeOptions` input and is never persisted. Direct construction, `from_session()`, mode selection, and
 the executor all enforce it independently of the CLI adapter.
 
@@ -122,7 +122,8 @@ entry remains unsupported and fails closed.
 - Permission prompts are one layer in a larger fail-closed pipeline; bypass cannot widen hard authority.
 - Plan review binds approval to one exact artifact revision and can continue into implementation in the same request.
 - Session v4 has one active projection and explicit append-only writers. Older binaries fail closed; no downgrade writer is provided.
-- The Session format changes, while Run, Checkpoint, Recovery, and Sandbox record formats remain independent.
+- The Session format changes, while Run and Checkpoint record formats remain independent. Retired Recovery and Sandbox artifacts are
+  outside the active runtime and remain only for bounded legacy inspection.
 
 ## Rejected alternatives
 

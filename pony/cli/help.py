@@ -25,8 +25,8 @@ SLASH_COMMANDS = (
     SlashCommand("/fork", "/fork <entry>", "Branch the conversation at an entry"),
     SlashCommand(
         "/rewind",
-        "/rewind <entry> [--workspace] [--summary[=focus]]",
-        "Rewind the session, optionally restoring workspace files",
+        "/rewind <entry> [--summary[=focus]]",
+        "Rewind the session to an earlier entry",
     ),
     SlashCommand(
         "/clone",

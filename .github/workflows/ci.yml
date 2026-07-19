@@ -60,17 +60,6 @@ jobs:
         if: matrix.python-version == '3.12'
         run: ./scripts/check.sh
 
-      - name: Measure sandbox report-only performance
-        if: matrix.python-version == '3.12'
-        run: uv run python -m benchmarks.perf.bench_sandbox > sandbox-perf.json
-
-      - name: Upload sandbox performance evidence
-        if: matrix.python-version == '3.12'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: sandbox-performance-${{ matrix.python-version }}
-          path: sandbox-perf.json
-
   macos-focused:
     name: macOS focused (Python 3.12)
     runs-on: macos-latest
@@ -93,9 +82,6 @@ jobs:
       - name: Install dependencies
         run: uv sync --frozen --dev
 
-      - name: Sandbox contracts
-        run: uv run python scripts/evaluation/evaluate.py --suite sandbox-contract
-
       - name: Prove FIFO metadata probes use spawn
         run: >-
           uv run pytest -vv -W error::DeprecationWarning
@@ -114,66 +100,6 @@ jobs:
           tests/test_checkpoint_store_durability.py
           tests/test_recovery_durability_e2e.py
           tests/test_recovery_journal.py
-          tests/test_docker_sandbox_session.py
-          tests/test_docker_sandbox_runner.py
-          tests/test_docker_sandbox_runtime.py
-          tests/test_docker_sandbox_cli.py
-          tests/test_sandbox_apply.py
           tests/memory/test_block_store.py
           tests/memory/test_reader_bounds.py
           tests/memory/test_retrieval.py
-
-      - name: Docker Sandbox local identity gate (zero mutation)
-        run: |
-          export HOME="$RUNNER_TEMP/pony-docker-sandbox-home"
-          mkdir -p "$HOME"
-          chmod 700 "$HOME"
-          status=$(uv run --no-sync pony --format json sandbox status)
-          PONY_RESULT="$status" uv run --no-sync python -c 'import json, os; data=json.loads(os.environ["PONY_RESULT"]); status=data["data"]; assert data["ok"] is True; assert status["network_performed"] is False; assert status["mutation_performed"] is False; assert status["runtime_authorization"]["kind"] == "local"'
-          if prepare=$(uv run --no-sync pony --format json sandbox prepare); then code=0; else code=$?; fi
-          PONY_RESULT="$prepare" PONY_CODE="$code" uv run --no-sync python -c 'import json, os; data=json.loads(os.environ["PONY_RESULT"]); code=int(os.environ["PONY_CODE"]); assert code in {0, 3}; assert (data["data"]["network_performed"] is False and data["data"]["mutation_performed"] is False and data["data"]["runtime_authorization"]["kind"] == "local") if code == 0 else data["error"]["code"] in {"sandbox_image_not_released", "sandbox_image_missing", "sandbox_image_identity_mismatch", "docker_cli_unavailable", "docker_endpoint_untrusted", "docker_daemon_unavailable", "docker_server_unsupported", "docker_seccomp_unavailable", "docker_rootless_required"}'
-          test ! -e "$HOME/.pony"
-
-  linux-capability-evidence:
-    name: Linux Docker Sandbox status report (Python 3.12)
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
-
-      - name: Set up Python
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
-        with:
-          python-version: "3.12"
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
-        with:
-          version: "0.11.26"
-
-      - name: Install package
-        run: uv sync --frozen --dev
-
-      - name: Probe Docker Sandbox readiness (report only)
-        run: |
-          set -o pipefail
-          uv run --frozen pony --format json sandbox status | tee docker-sandbox-status.json
-
-      - name: Docker Sandbox local identity gate (zero mutation)
-        run: |
-          export HOME="$RUNNER_TEMP/pony-docker-sandbox-home"
-          mkdir -p "$HOME"
-          chmod 700 "$HOME"
-          status=$(uv run --no-sync pony --format json sandbox status)
-          PONY_RESULT="$status" uv run --no-sync python -c 'import json, os; data=json.loads(os.environ["PONY_RESULT"]); status=data["data"]; assert data["ok"] is True; assert status["network_performed"] is False; assert status["mutation_performed"] is False; assert status["runtime_authorization"]["kind"] == "local"'
-          if prepare=$(uv run --no-sync pony --format json sandbox prepare); then code=0; else code=$?; fi
-          PONY_RESULT="$prepare" PONY_CODE="$code" uv run --no-sync python -c 'import json, os; data=json.loads(os.environ["PONY_RESULT"]); code=int(os.environ["PONY_CODE"]); assert code in {0, 3}; assert (data["data"]["network_performed"] is False and data["data"]["mutation_performed"] is False and data["data"]["runtime_authorization"]["kind"] == "local") if code == 0 else data["error"]["code"] in {"sandbox_image_not_released", "sandbox_image_missing", "sandbox_image_identity_mismatch", "docker_cli_unavailable", "docker_endpoint_untrusted", "docker_daemon_unavailable", "docker_server_unsupported", "docker_seccomp_unavailable", "docker_rootless_required"}'
-          test ! -e "$HOME/.pony"
-
-      - name: Upload capability evidence
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: linux-docker-sandbox-status
-          path: docker-sandbox-status.json

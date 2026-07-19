@@ -61,10 +61,6 @@ def test_ci_actions_are_pinned_to_immutable_commits_with_version_comments():
             "fac544c07dec837d0ccb6301d7b5580bf5edae39",
             "v8.2.0",
         ),
-        "actions/upload-artifact": (
-            "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
-            "v7",
-        ),
     }
     uses = [line.strip() for line in workflow.splitlines() if "uses:" in line]
     assert uses
@@ -127,16 +123,11 @@ def test_ci_has_macos_security_and_durability_gate():
 
     assert "runs-on: macos-latest" in workflow
     assert 'python-version: "3.12"' in workflow
-    assert workflow.count("uv sync --frozen --dev") == 3
+    assert workflow.count("uv sync --frozen --dev") == 2
     assert "uv export --frozen --no-dev --no-emit-project" in workflow
     assert "uv pip install --refresh" in workflow
-    linux_test, macos = workflow.split("macos-focused:", 1)
-    assert "--suite sandbox-contract" not in linux_test
-    assert "--suite sandbox-contract" in macos
-    linux_capability = workflow.split("linux-capability-evidence:", 1)[1]
-    assert "- name: Install package\n        run: uv sync --frozen --dev" in (
-        linux_capability
-    )
+    assert "sandbox-contract" not in workflow
+    assert "linux-capability-evidence" not in workflow
     assert "-W error::DeprecationWarning" in workflow
     for path in (
         "tests/test_project_env_security.py",
@@ -158,31 +149,12 @@ def test_ci_has_macos_security_and_durability_gate():
     assert "-W ignore" not in workflow
 
 
-def test_ci_keeps_docker_sandbox_local_gate_read_only():
-    workflow = Path(".github/workflows/ci.yml").read_text(encoding="utf-8")
-
-    assert workflow.count("Docker Sandbox local identity gate (zero mutation)") == 2
-    assert workflow.count("sandbox status") >= 2
-    assert workflow.count('status["runtime_authorization"]["kind"] == "local"') == 2
-    assert "product_enablement" not in workflow
-    assert workflow.count('data["data"]["network_performed"] is False') == 2
-    assert workflow.count('data["data"]["mutation_performed"] is False') == 2
-    assert "--sandbox run smoke" not in workflow
-    assert "for command in status install repair" not in workflow
-    assert "candidate_rejected" not in workflow
-    assert "--real --managed" not in workflow
-    assert "PONY_RUN_REAL_SRT" not in workflow
-    assert "./scripts/check.sh" in workflow
-
-
 def test_maintenance_scripts_start_and_show_help():
     for script in (
         "scripts/evaluation/collect_resume_metrics.py",
         "scripts/evaluation/evaluate.py",
         "scripts/evaluation/run_large_scale_experiments.py",
         "scripts/evaluation/run_provider_experiments.py",
-        "scripts/sandbox/build_image.py",
-        "scripts/sandbox/verify_runtime.py",
         "scripts/release/verify_distribution.py",
     ):
         result = subprocess.run(
@@ -194,13 +166,6 @@ def test_maintenance_scripts_start_and_show_help():
 
         assert result.returncode == 0, result.stderr
         assert "usage:" in result.stdout
-
-
-def test_sandbox_evaluator_uses_the_local_runtime_verifier():
-    evaluator = Path("scripts/evaluation/evaluate.py").read_text(encoding="utf-8")
-
-    assert "scripts/sandbox/verify_runtime.py" in evaluator
-    assert "docker_sandbox_release.py" not in evaluator
 
 
 def test_distribution_verifier_freezes_archive_and_install_contract():
@@ -225,12 +190,6 @@ def test_distribution_verifier_freezes_archive_and_install_contract():
     assert 'installed_version == f"pony {PROJECT_VERSION}"' in verifier
     assert '"command -v pony"' in verifier
     assert '_run(str(pony), "doctor", cwd=cwd, env=env)' in verifier
-    assert '"sandbox",\n                "status"' in verifier
-    assert 'prepared["runtime_authorization"]["kind"] == "local"' in verifier
-    assert "prepare.returncode in {0, 3}" in verifier
-    assert 'status["data"]["network_performed"] is False' in verifier
-    assert 'status["data"]["mutation_performed"] is False' in verifier
-    assert "resources_after == resources_before" in verifier
     assert '"PYTHONHOME"' in verifier
     assert '"PYTHONPATH"' in verifier
     assert "pony.sandbox_lifecycle" in verifier
@@ -257,7 +216,6 @@ def test_distribution_verifier_ignores_tracked_files_deleted_from_worktree(
     )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    monkeypatch.setattr(module, "PACKAGE_DATA_FILES", set())
     package = tmp_path / "pony"
     package.mkdir()
     (package / "present.py").write_text("", encoding="utf-8")
@@ -280,7 +238,6 @@ def test_distribution_verifier_rejects_untracked_package_python(tmp_path, monkey
     )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    monkeypatch.setattr(module, "PACKAGE_DATA_FILES", set())
     package = tmp_path / "pony"
     package.mkdir()
     (package / "tracked.py").write_text("", encoding="utf-8")
@@ -295,14 +252,13 @@ def test_distribution_verifier_rejects_untracked_package_python(tmp_path, monkey
         module._tracked_package_files(tmp_path)
 
 
-def test_distribution_verifier_rejects_untracked_package_data(tmp_path, monkeypatch):
+def test_distribution_verifier_rejects_tracked_package_data(tmp_path, monkeypatch):
     spec = importlib.util.spec_from_file_location(
         "verify_distribution_script",
         Path("scripts/release/verify_distribution.py"),
     )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    monkeypatch.setattr(module, "PACKAGE_DATA_FILES", {"pony/data.json"})
     package = tmp_path / "pony"
     package.mkdir()
     (package / "tracked.py").write_text("", encoding="utf-8")
@@ -310,11 +266,39 @@ def test_distribution_verifier_rejects_untracked_package_data(tmp_path, monkeypa
     monkeypatch.setattr(
         module,
         "_run",
-        lambda *args, **kwargs: "pony/tracked.py\n",
+        lambda *args, **kwargs: "pony/tracked.py\npony/data.json\n",
     )
 
-    with pytest.raises(AssertionError, match="untracked package data files"):
+    with pytest.raises(AssertionError, match="unexpected tracked package files"):
         module._tracked_package_files(tmp_path)
+
+
+def test_distribution_verifier_excludes_retired_sandbox_resources(
+    tmp_path, monkeypatch
+):
+    spec = importlib.util.spec_from_file_location(
+        "verify_distribution_script",
+        Path("scripts/release/verify_distribution.py"),
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    package = tmp_path / "pony"
+    resources = package / "sandbox" / "resources"
+    resources.mkdir(parents=True)
+    (package / "tracked.py").write_text("", encoding="utf-8")
+    (resources / "__init__.py").write_text("", encoding="utf-8")
+    (resources / "image-manifest.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(
+        module,
+        "_run",
+        lambda *args, **kwargs: (
+            "pony/tracked.py\n"
+            "pony/sandbox/resources/__init__.py\n"
+            "pony/sandbox/resources/image-manifest.json\n"
+        ),
+    )
+
+    assert module._tracked_package_files(tmp_path) == {"pony/tracked.py"}
 
 
 def test_distribution_verifier_includes_all_product_packages(tmp_path):
@@ -324,7 +308,6 @@ def test_distribution_verifier_includes_all_product_packages(tmp_path):
     )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    module.PACKAGE_DATA_FILES = set()
     tracked = {
         "pony/__init__.py",
         "pony/runtime/application.py",

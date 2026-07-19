@@ -96,20 +96,18 @@ def test_run_rejects_unknown_or_abbreviated_options(argv):
 
 def test_run_accepts_option_like_prompt_after_separator():
     invocation = parse_cli_invocation(
-        ["--sandbox", "run", "--", "--sandox"],
+        ["run", "--", "--sandox"],
         build_arg_parser(),
     )
 
     assert invocation.command == "run"
     assert invocation.command_args == ["--sandox"]
-    assert invocation.runtime_args.sandbox is True
 
 
 @pytest.mark.parametrize(
     ("argv", "command_args"),
     (
         (["doctor", "--check-api"], ["--check-api"]),
-        (["sandbox", "prune", "--apply"], ["prune", "--apply"]),
         (
             ["config", "set-secret", "NAME", "--stdin"],
             ["set-secret", "NAME", "--stdin"],

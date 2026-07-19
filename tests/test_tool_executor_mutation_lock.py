@@ -1,17 +1,15 @@
 from contextlib import contextmanager
+import threading
 from unittest.mock import Mock
 
-import pytest
-
+from benchmarks.support.fake_provider import FakeModelClient
 from pony import Pony
+from pony.runtime.options import RuntimeOptions
 from pony.state.session_store import SessionStore
 from pony.workspace.context import WorkspaceContext
-from benchmarks.support.fake_provider import FakeModelClient
-from pony.state.task_state import TaskState
-from pony.runtime.options import RuntimeOptions
 
 
-def build_agent(tmp_path):
+def _agent(tmp_path):
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
     agent = Pony(
         model_client=FakeModelClient([]),
@@ -19,269 +17,131 @@ def build_agent(tmp_path):
         session_store=SessionStore(tmp_path / ".pony" / "sessions"),
         options=RuntimeOptions(project_trusted=True),
     )
-    agent._approval_prompt = lambda _name, _args: True
+    agent.set_permission_mode("default")
     return agent
 
 
-def test_approval_finishes_before_mutation_lock(tmp_path, monkeypatch):
-    agent = build_agent(tmp_path)
-    agent.set_permission_mode("default")
-    events = []
-    monkeypatch.setattr(
-        agent, "approve", lambda name, args: events.append("approval") or True
-    )
-
-    @contextmanager
-    def lock():
-        events.append("lock-enter")
-        try:
-            yield
-        finally:
-            events.append("lock-exit")
-
-    monkeypatch.setattr(agent.checkpoint_store, "mutation_lock", lock)
-    agent.execute_tool("write_file", {"path": "note.txt", "content": "value"})
-
-    assert events.index("approval") < events.index("lock-enter")
-    assert events[-1] == "lock-exit"
-
-
-def test_plan_approval_denial_happens_before_mutation_lock(
-    tmp_path,
-    monkeypatch,
-):
-    agent = build_agent(tmp_path)
-    agent.set_permission_mode("plan")
-    prompt = Mock(return_value=False)
-    runner = Mock(return_value="must not run")
-    lock = Mock(side_effect=AssertionError("mutation lock entered"))
-    agent._approval_prompt = prompt
-    agent.tools["write_file"]["run"] = runner
-    monkeypatch.setattr(agent.checkpoint_store, "mutation_lock", lock)
-
-    result = agent.execute_tool(
-        "write_file", {"path": "blocked.txt", "content": "blocked"}
-    )
-
-    assert result.metadata["tool_error_code"] == "approval_denied"
-    prompt.assert_called_once()
-    lock.assert_not_called()
-    runner.assert_not_called()
-
-
-def test_existing_same_owner_pending_blocks_runner(tmp_path, monkeypatch):
-    agent = build_agent(tmp_path)
-    agent.tool_change_recorder.start(
-        "", "old-turn", "write_file", "workspace_write", {"path": "old.txt"}
-    )
-    calls = []
-    monkeypatch.setitem(
-        agent.tools["write_file"],
-        "run",
-        lambda args: calls.append(args) or "ok",
-    )
-
-    result = agent.execute_tool("write_file", {"path": "new.txt", "content": "value"})
-
-    assert result.metadata["tool_status"] == "rejected"
-    assert result.metadata["tool_error_code"] == "recovery_review_required"
-    assert calls == []
-
-
-def test_malformed_mutation_record_blocks_runner(tmp_path, monkeypatch):
-    agent = build_agent(tmp_path)
-    (agent.checkpoint_store.tool_changes_dir / "secret-filename.json").write_bytes(
-        b"{invalid"
-    )
-    calls = []
-    monkeypatch.setitem(
-        agent.tools["write_file"],
-        "run",
-        lambda args: calls.append(args) or "ok",
-    )
-
-    result = agent.execute_tool("write_file", {"path": "new.txt", "content": "value"})
-
-    assert result.metadata["tool_error_code"] == "recovery_review_required"
-    assert calls == []
-
-
-def test_memory_write_uses_same_mutation_lock(tmp_path, monkeypatch):
-    agent = build_agent(tmp_path)
-    agent.current_task_state = TaskState.create("task-memory", "remember this")
+def test_approval_finishes_before_host_mutation_lock(tmp_path, monkeypatch):
+    agent = _agent(tmp_path)
     events = []
 
     @contextmanager
-    def lock():
-        events.append("enter")
-        try:
-            yield
-        finally:
-            events.append("exit")
-
-    monkeypatch.setattr(agent.checkpoint_store, "mutation_lock", lock)
-    agent.current_task_state = TaskState.create(
-        task_id="remember",
-        user_request="remember this safe local note",
-    )
-    agent.execute_tool("memory_save", {"note": "safe local note"})
-    assert events == ["enter", "exit"]
-
-
-def test_finalize_failure_partial_success_blocks_next_mutation(tmp_path, monkeypatch):
-    agent = build_agent(tmp_path)
-    real_finalize = agent.tool_change_recorder.finalize
-    calls = {"count": 0}
-
-    def fail_once(tool_change_id, status, **fields):
-        calls["count"] += 1
-        if calls["count"] == 1:
-            raise OSError("simulated finalize failure")
-        return real_finalize(tool_change_id, status, **fields)
-
-    monkeypatch.setattr(agent.tool_change_recorder, "finalize", fail_once)
-    first = agent.execute_tool("write_file", {"path": "first.txt", "content": "first"})
-    second = agent.execute_tool(
-        "write_file", {"path": "second.txt", "content": "second"}
-    )
-
-    assert first.metadata["tool_status"] == "error"
-    assert first.metadata["tool_error_code"] == "tool_finalize_failed"
-    records = agent.checkpoint_store.list_tool_change_records()
-    assert len(records) == 1
-    assert records[0]["status"] == "partial_success"
-    assert second.metadata["tool_error_code"] == "recovery_review_required"
-    assert not (tmp_path / "second.txt").exists()
-
-
-def test_interrupted_finalize_failure_preserves_primary_and_review_evidence(
-    tmp_path,
-    monkeypatch,
-):
-    agent = build_agent(tmp_path)
-    primary = KeyboardInterrupt("runner interrupted")
-    agent.tools["write_file"]["run"] = lambda _args: (_ for _ in ()).throw(primary)
-    monkeypatch.setattr(
-        agent.tool_change_recorder,
-        "finalize",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("finalize failed")),
-    )
-
-    with pytest.raises(KeyboardInterrupt) as caught:
-        agent.execute_tool("write_file", {"path": "first.txt", "content": "first"})
-
-    assert caught.value is primary
-    records = agent.checkpoint_store.list_tool_change_records()
-    assert len(records) == 1
-    assert records[0]["status"] == "pending"
-    second = agent.execute_tool(
-        "write_file", {"path": "second.txt", "content": "second"}
-    )
-    assert second.metadata["tool_error_code"] == "recovery_review_required"
-    assert not (tmp_path / "second.txt").exists()
-
-
-class FatalLockSignal(BaseException):
-    pass
-
-
-def test_mutation_lock_exit_preserves_active_primary_but_raises_without_one(
-    tmp_path,
-    monkeypatch,
-):
-    class FailingExit:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_exc_info):
-            raise OSError("lock exit failed")
-
-    primary_root = tmp_path / "primary"
-    primary_root.mkdir()
-    primary_agent = build_agent(primary_root)
-    primary = FatalLockSignal("runner failed")
-    primary_agent.tools["write_file"]["run"] = Mock(side_effect=primary)
-    monkeypatch.setattr(
-        primary_agent.checkpoint_store,
-        "mutation_lock",
-        lambda: FailingExit(),
-    )
-
-    with pytest.raises(FatalLockSignal) as caught:
-        primary_agent.execute_tool(
-            "write_file", {"path": "note.txt", "content": "value"}
-        )
-
-    assert caught.value is primary
-    assert (
-        primary_agent.checkpoint_store.list_tool_change_records()[-1]["status"]
-        == "interrupted"
-    )
-
-    success_root = tmp_path / "success"
-    success_root.mkdir()
-    success_agent = build_agent(success_root)
-    monkeypatch.setattr(
-        success_agent.checkpoint_store,
-        "mutation_lock",
-        lambda: FailingExit(),
-    )
-
-    with pytest.raises(OSError, match="lock exit failed"):
-        success_agent.execute_tool(
-            "write_file", {"path": "note.txt", "content": "value"}
-        )
-
-
-def test_mutation_lock_enter_failure_preserves_primary_identity(tmp_path, monkeypatch):
-    agent = build_agent(tmp_path)
-    primary = FatalLockSignal("enter")
-    runner = Mock(return_value="must not run")
-    agent.tools["write_file"]["run"] = runner
-
-    @contextmanager
-    def lock():
-        raise primary
+    def mutation_lock(path, *, require_lock):
+        assert path == agent.mutation_lock_path
+        assert require_lock is True
+        events.append("lock")
         yield
 
-    monkeypatch.setattr(agent.checkpoint_store, "mutation_lock", lock)
+    monkeypatch.setattr("pony.tools.executor.locked_file", mutation_lock)
+    agent.approve = Mock(side_effect=lambda *_args: events.append("approval") or True)
+    agent.tools["write_file"]["run"] = Mock(
+        side_effect=lambda _args: events.append("runner") or "written"
+    )
 
-    with pytest.raises(BaseException) as caught:
-        agent.execute_tool("write_file", {"path": "note.txt", "content": "value"})
+    result = agent.execute_tool(
+        "write_file",
+        {"path": "note.txt", "content": "hello\n"},
+    )
 
-    assert caught.value is primary
-    runner.assert_not_called()
-    assert agent.checkpoint_store.list_tool_change_records() == []
+    assert result.metadata["tool_status"] == "ok"
+    assert events == ["approval", "lock", "runner"]
 
 
-@pytest.mark.parametrize("failure_point", ["guard", "prepared"])
-def test_pre_runner_base_exception_releases_mutation_lock(
-    tmp_path, monkeypatch, failure_point
+def test_host_mutation_lock_covers_runner_and_effect_observation(
+    tmp_path, monkeypatch
 ):
-    agent = build_agent(tmp_path)
-    events = []
+    agent = _agent(tmp_path)
+    lock_active = False
 
     @contextmanager
-    def lock():
-        events.append("enter")
+    def mutation_lock(_path, *, require_lock):
+        nonlocal lock_active
+        assert require_lock is True
+        lock_active = True
         try:
             yield
         finally:
-            events.append("exit")
+            lock_active = False
 
-    monkeypatch.setattr(agent.checkpoint_store, "mutation_lock", lock)
-    if failure_point == "guard":
-        monkeypatch.setattr(
-            agent.tool_change_recorder,
-            "pending_recovery_reviews",
-            lambda: (_ for _ in ()).throw(KeyboardInterrupt("guard")),
+    monkeypatch.setattr("pony.tools.executor.locked_file", mutation_lock)
+    original_end = agent.workspace_observer.capture_call_end
+    agent.workspace_observer.capture_call_end = Mock(
+        side_effect=lambda: (
+            (_ for _ in ()).throw(AssertionError("observer ran without lock"))
+            if not lock_active
+            else original_end()
         )
-    else:
-        monkeypatch.setattr(
-            "pony.tools.executor._capture_before_file_states_for_paths",
-            lambda *args: (_ for _ in ()).throw(KeyboardInterrupt("prepared")),
-        )
+    )
 
-    with pytest.raises(KeyboardInterrupt, match=failure_point):
-        agent.execute_tool("write_file", {"path": "note.txt", "content": "value"})
-    assert events == ["enter", "exit"]
+    def write(_args):
+        assert lock_active is True
+        (tmp_path / "note.txt").write_text("hello\n", encoding="utf-8")
+        return "written"
+
+    agent.approve = Mock(return_value=True)
+    agent.tools["write_file"]["run"] = Mock(side_effect=write)
+
+    result = agent.execute_tool(
+        "write_file",
+        {"path": "note.txt", "content": "hello\n"},
+    )
+
+    assert result.metadata["affected_paths"] == ["note.txt"]
+    assert result.metadata["diff_summary"] == ["created:note.txt"]
+    assert lock_active is False
+
+
+def test_host_mutation_locks_do_not_serialize_separate_worktrees(tmp_path):
+    first_root = tmp_path / "first"
+    second_root = tmp_path / "second"
+    first_root.mkdir()
+    second_root.mkdir()
+    first = _agent(first_root)
+    second = _agent(second_root)
+    first.approve = Mock(return_value=True)
+    second.approve = Mock(return_value=True)
+    first_entered = threading.Event()
+    release_first = threading.Event()
+    second_finished = threading.Event()
+    errors = []
+
+    def write_first(args):
+        (first_root / args["path"]).write_text(args["content"], encoding="utf-8")
+        first_entered.set()
+        assert release_first.wait(timeout=5)
+        return "written"
+
+    def write_second(args):
+        (second_root / args["path"]).write_text(args["content"], encoding="utf-8")
+        return "written"
+
+    first.tools["write_file"]["run"] = write_first
+    second.tools["write_file"]["run"] = write_second
+
+    def run(agent, path, *, finished=None):
+        try:
+            result = agent.execute_tool("write_file", {"path": path, "content": "ok\n"})
+            assert result.metadata["tool_status"] == "ok"
+        except Exception as exc:  # pragma: no cover - asserted after both threads join.
+            errors.append(exc)
+        finally:
+            if finished is not None:
+                finished.set()
+
+    first_thread = threading.Thread(target=run, args=(first, "first.txt"))
+    second_thread = threading.Thread(
+        target=run,
+        args=(second, "second.txt"),
+        kwargs={"finished": second_finished},
+    )
+    first_thread.start()
+    assert first_entered.wait(timeout=5)
+    second_thread.start()
+    assert second_finished.wait(timeout=2)
+    release_first.set()
+    first_thread.join(timeout=5)
+    second_thread.join(timeout=5)
+
+    assert not errors
+    assert not first_thread.is_alive()
+    assert not second_thread.is_alive()

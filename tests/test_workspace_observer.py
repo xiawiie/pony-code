@@ -17,6 +17,21 @@ def test_workspace_observer_detects_delta_without_git(tmp_path):
     assert delta["summaries"] == ["created:generated.txt"]
 
 
+def test_workspace_observer_detects_same_size_large_file_replacement(tmp_path):
+    path = tmp_path / "large.bin"
+    path.write_bytes(b"a" * (8 * 1024 * 1024 + 1))
+    observer = WorkspaceObserver(tmp_path, executables={})
+    before = observer.capture()
+    replacement = tmp_path / "replacement.bin"
+    replacement.write_bytes(b"b" * path.stat().st_size)
+    replacement.replace(path)
+
+    delta = observer.diff(before, observer.capture())
+
+    assert delta["changed_paths"] == ["large.bin"]
+    assert delta["summaries"] == ["modified:large.bin"]
+
+
 def test_workspace_observer_detects_git_dirty_delta(tmp_path):
     subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True, text=True)
     (tmp_path / "tracked.txt").write_text("one\n", encoding="utf-8")

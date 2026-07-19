@@ -223,10 +223,8 @@ def test_composite_or_wrapped_commands_create_no_verification_records(
 
     assert agent.ask("run it") == "done"
 
-    assert all(
-        not record["verification_evidence"]
-        for record in agent.checkpoint_store.list_checkpoint_records()
-    )
+    assert "verification_evidence" not in agent._last_tool_result_metadata
+    assert not (agent.root / ".pony" / "checkpoints").exists()
 
 
 @pytest.mark.parametrize(
@@ -256,7 +254,8 @@ def test_blocked_shell_paths_create_no_verification_records(
     assert agent.ask("run it") == "done"
 
     runner.assert_not_called()
-    assert agent.checkpoint_store.list_checkpoint_records() == []
+    assert "verification_evidence" not in agent._last_tool_result_metadata
+    assert not (agent.root / ".pony" / "checkpoints").exists()
 
 
 def test_real_tool_executor_to_agent_loop_evidence_is_structured_redacted_and_bounded(
@@ -277,14 +276,9 @@ def test_real_tool_executor_to_agent_loop_evidence_is_structured_redacted_and_bo
 
     assert agent.ask("run verification") == "done"
 
-    checkpoint = agent.checkpoint_store.load_checkpoint_record(
-        agent.current_task_state.recovery_checkpoint_id
-    )
-    assert len(checkpoint["verification_evidence"]) == 1
-    evidence = checkpoint["verification_evidence"][0]
-    assert evidence["status"] == "failed"
+    evidence = agent._last_tool_result_metadata["verification_evidence"]
     assert evidence["exit_code"] == 7
     assert secret not in json.dumps(evidence)
-    assert len(evidence["command"]) <= 1000
-    assert len(evidence["stdout_tail"]) <= 1000
-    assert len(evidence["stderr_tail"]) <= 1000
+    assert evidence["argv"] == ["python", "-m", "pytest", "-q"]
+    assert len(evidence["stdout"]) <= 1000
+    assert len(evidence["stderr"]) <= 1000

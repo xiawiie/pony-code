@@ -1212,13 +1212,13 @@ def test_package_import_surface_excludes_cli_entrypoints():
     assert not hasattr(pony_pkg, "build_arg_parser")
 
 
-def test_pony_initializes_recovery_components(tmp_path):
+def test_pony_does_not_initialize_legacy_recovery_components(tmp_path):
     agent = build_agent(tmp_path, outputs=["ok"])
 
-    assert agent.checkpoint_store.root == tmp_path / ".pony" / "checkpoints"
-    assert agent.tool_change_recorder.store is agent.checkpoint_store
-    assert agent.recovery_checkpoint_writer.store is agent.checkpoint_store
-    assert agent.recovery_manager.store is agent.checkpoint_store
+    assert not hasattr(agent, "checkpoint_store")
+    assert not hasattr(agent, "tool_change_recorder")
+    assert not hasattr(agent, "recovery_checkpoint_writer")
+    assert not hasattr(agent, "recovery_manager")
 
 
 def test_module_execution_help_works():

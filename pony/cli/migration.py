@@ -19,7 +19,6 @@ from pony.agent.observability import (
 )
 from pony.recovery.models import TOOL_CHANGE_FORMAT_VERSION
 from pony.tools.subprocess import run_hardened_git
-from pony.sandbox.session import source_mutation_authority
 from pony.security.private_files import (
     private_directory_identity,
     read_private_text,
@@ -346,31 +345,27 @@ def handle_migrate(workspace, tokens, args):
         if operation == "status":
             result = _status_with_live_schema(migration, contract)
         else:
-            with source_mutation_authority(
-                Path.home() / ".pony" / "sandboxes",
-                Path(workspace.repo_root),
-            ):
-                if operation == "abort":
-                    result = {"state": migration.abort()}
-                    return result
-                if operation == "recover":
-                    result = {"state": migration.recover()}
-                    return result
-                counter = {"value": 0}
+            if operation == "abort":
+                result = {"state": migration.abort()}
+                return result
+            if operation == "recover":
+                result = {"state": migration.recover()}
+                return result
+            counter = {"value": 0}
 
-                def builder(source, candidate):
-                    counter["value"] = (
-                        _build_observability(source, candidate)
-                        if contract == "observability"
-                        else _build_tool_changes(source, candidate)
-                    )
+            def builder(source, candidate):
+                counter["value"] = (
+                    _build_observability(source, candidate)
+                    if contract == "observability"
+                    else _build_tool_changes(source, candidate)
+                )
 
-                state = migration.apply(builder)
-                result = {
-                    "state": state,
-                    "migrated": counter["value"],
-                    "validated": validate(migration.live) if state == ABSENT else 0,
-                }
+            state = migration.apply(builder)
+            result = {
+                "state": state,
+                "migrated": counter["value"],
+                "validated": validate(migration.live) if state == ABSENT else 0,
+            }
     except (OSError, ValueError, RunArtifactError) as exc:
         raise CliError(
             code="migration_failed",

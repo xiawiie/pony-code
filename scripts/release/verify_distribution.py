@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 from email.parser import BytesParser
-import json
 import os
 from pathlib import Path, PurePosixPath
 import shutil
@@ -26,10 +25,7 @@ DIST_INFO_NAME = PROJECT_NAME.replace("-", "_")
 PROJECT_VERSION = _PROJECT["version"]
 PROJECT_SUMMARY = _PROJECT["description"]
 EXPECTED_RUNTIME_REQUIREMENTS = ["prompt-toolkit<4,>=3.0.52"]
-PACKAGE_DATA_FILES = {
-    "pony/sandbox/resources/image-manifest.json",
-    "pony/sandbox/resources/docker-config/config.json",
-}
+EXCLUDED_SOURCE_PREFIXES = ("pony/sandbox/resources/",)
 DIST_INFO_FILES = {
     "METADATA",
     "RECORD",
@@ -58,29 +54,28 @@ def _run(*args: str, cwd: Path | None = None, env: dict[str, str] | None = None)
 
 def _tracked_package_files(repo: Path) -> set[str]:
     output = _run("git", "ls-files", "--", "pony", cwd=repo)
-    files = {
+    source_files = {
         line for line in output.splitlines() if line and os.path.lexists(repo / line)
     }
-    if not files or any(
-        not name.endswith(".py") and name not in PACKAGE_DATA_FILES for name in files
-    ):
+    files = {
+        name
+        for name in source_files
+        if not name.startswith(EXCLUDED_SOURCE_PREFIXES)
+    }
+    if not files or any(not name.endswith(".py") for name in files):
         raise AssertionError(f"unexpected tracked package files: {sorted(files)}")
-    untracked_package_data = PACKAGE_DATA_FILES - files
-    if untracked_package_data:
-        raise AssertionError(
-            f"untracked package data files: {sorted(untracked_package_data)}"
-        )
     source_python = {
         path.relative_to(repo).as_posix()
         for path in (repo / "pony").rglob("*.py")
         if path.is_file()
+        and not path.relative_to(repo).as_posix().startswith(EXCLUDED_SOURCE_PREFIXES)
     }
     untracked_python = source_python - files
     if untracked_python:
         raise AssertionError(
             f"untracked package Python files: {sorted(untracked_python)}"
         )
-    return files | PACKAGE_DATA_FILES
+    return files
 
 
 def _runtime_package_files(repo: Path, tracked_package_files: set[str]) -> set[str]:
@@ -275,84 +270,6 @@ def install_smoke(wheel: Path, *, offline: bool = False) -> None:
             cwd=cwd,
             env=env,
         )
-        _run(
-            str(python),
-            "-c",
-            "from importlib.resources import files; "
-            "root=files('pony.sandbox.resources'); "
-            "root.joinpath('image-manifest.json').read_bytes(); "
-            "root.joinpath('docker-config','config.json').read_bytes()",
-            cwd=cwd,
-            env=env,
-        )
-        resource_digest_code = (
-            "import hashlib,json; from importlib.resources import files; "
-            "root=files('pony.sandbox.resources'); "
-            "names=('image-manifest.json','docker-config/config.json'); "
-            "print(json.dumps({name:hashlib.sha256(root.joinpath(*name.split('/')).read_bytes()).hexdigest() "
-            "for name in names},sort_keys=True))"
-        )
-        resources_before = _run(
-            str(python),
-            "-c",
-            resource_digest_code,
-            cwd=cwd,
-            env=env,
-        ).strip()
-        status = json.loads(
-            _run(
-                str(pony),
-                "--format",
-                "json",
-                "sandbox",
-                "status",
-                cwd=cwd,
-                env=env,
-            )
-        )
-        assert status["ok"] is True
-        assert status["kind"] == "docker_sandbox_status"
-        assert status["data"]["network_performed"] is False
-        assert status["data"]["mutation_performed"] is False
-        assert status["data"]["runtime_authorization"]["kind"] == "local"
-        assert status["data"]["capacity"]["staging_bytes"] == 0
-        assert not (home / ".pony").exists()
-        prepare = subprocess.run(
-            (str(pony), "--format", "json", "sandbox", "prepare"),
-            cwd=cwd,
-            env=env,
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-        prepare_payload = json.loads(prepare.stdout)
-        assert prepare.returncode in {0, 3}, prepare.stderr
-        if prepare.returncode == 0:
-            prepared = prepare_payload["data"]
-            assert prepared["network_performed"] is False
-            assert prepared["mutation_performed"] is False
-            assert prepared["runtime_authorization"]["kind"] == "local"
-        else:
-            assert prepare_payload["error"]["code"] in {
-                "sandbox_image_not_released",
-                "sandbox_image_missing",
-                "sandbox_image_identity_mismatch",
-                "docker_cli_unavailable",
-                "docker_endpoint_untrusted",
-                "docker_daemon_unavailable",
-                "docker_server_unsupported",
-                "docker_seccomp_unavailable",
-                "docker_rootless_required",
-            }
-        assert not (home / ".pony").exists()
-        resources_after = _run(
-            str(python),
-            "-c",
-            resource_digest_code,
-            cwd=cwd,
-            env=env,
-        ).strip()
-        assert resources_after == resources_before
         _run(str(pony), "--help", cwd=cwd, env=env)
         installed_version = _run(str(pony), "--version", cwd=cwd, env=env).strip()
         assert installed_version == f"pony {PROJECT_VERSION}"

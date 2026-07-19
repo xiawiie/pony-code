@@ -1,6 +1,4 @@
 import json
-from types import SimpleNamespace
-
 import pytest
 
 from pony import Pony
@@ -140,28 +138,6 @@ def test_run_shell_schema_lists_safe_executable_names_without_paths(tmp_path):
     description = agent.visible_tools()["run_shell"]["description"]
 
     assert "Available trusted executable names: git, python3." in description
-    assert "/usr/bin" not in description
-
-
-def test_run_shell_schema_uses_verified_sandbox_image_tools():
-    context = SimpleNamespace(
-        depth=0,
-        max_depth=1,
-        docker_sandbox=True,
-        trusted_executables={"python3": "/usr/bin/python3"},
-        sandbox_context=SimpleNamespace(
-            runner=SimpleNamespace(
-                image=SimpleNamespace(
-                    tool_paths=(("pytest", "/usr/bin/pytest"), ("python", "/usr/bin/python"))
-                )
-            )
-        ),
-    )
-
-    description = toolkit.build_tool_registry(context)["run_shell"]["description"]
-
-    assert "Available trusted executable names: pytest, python." in description
-    assert "python3" not in description
     assert "/usr/bin" not in description
 
 

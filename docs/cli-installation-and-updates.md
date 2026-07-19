@@ -5,7 +5,6 @@
 - Python：3.11、3.12。
 - Runtime dependencies：一个直接依赖 `prompt-toolkit`；锁定环境中同时安装其传递依赖 `wcwidth`。
 - Host CLI：纯 Python，支持常规本地环境；Host 不是 OS sandbox。
-- Docker Sandbox：1.0 仅支持 macOS arm64 + Docker Desktop + already-present exact image。
 
 ## 从 PyPI 安装
 
@@ -111,7 +110,7 @@ fresh Session 默认使用 `auto`。`pony run` 与 `pony repl` 可通过 `--perm
 | `manual` | 读操作直接执行；没有规则覆盖的变更显示一次性 permission prompt |
 | `auto` | 本地确定性分类器自动执行内置编辑、明确授权的 Memory 保存和可证明安全的 shell；不确定时拒绝 |
 | `acceptEdits` | 自动接受内置文件编辑；其他变更仍按规则决定或询问 |
-| `bypassPermissions` | 绕过普通提示，但不绕过 trust、显式 deny、schema、路径、secret 或 Sandbox 边界 |
+| `bypassPermissions` | 绕过普通提示，但不绕过 trust、显式 deny、schema、路径、secret、可信 executable 或 mutation lock |
 | `dontAsk` | 不询问；原本需要询问的变更直接拒绝，显式 allow 规则仍可执行 |
 | `plan` | 只公开只读工具和 Plan 工具；离开 Plan 前展示精确内容与 revision 请求确认 |
 
@@ -188,7 +187,7 @@ uv run pony --version
 uv run pony doctor
 ```
 
-更新不会自动删除或迁移 `.pony/` 中的 Session、Run、Checkpoint、Memory 或 Sandbox 状态。执行前先阅读
+更新不会自动删除或迁移 `.pony/` 中的 Session、Run、Checkpoint、Memory 或旧 Sandbox 状态。执行前先阅读
 [CHANGELOG](../CHANGELOG.md) 的 Migration 部分。
 
 ## 卸载
@@ -200,21 +199,11 @@ python -m pip uninstall pony-code
 卸载 package 不会删除项目 `.env`、项目 `.pony/` 或用户目录 `~/.pony/`。这些目录可能包含凭证引用、Memory、
 会话和恢复证据，应由用户在确认不再需要后单独处理。
 
-## Sandbox 准备
+## 旧 Sandbox 与 Checkpoint 数据
 
-```bash
-pony sandbox status
-pony sandbox prepare
-```
-
-两条命令都不会 pull、build、repair 或下载镜像。维护者需要构建本地开发镜像时使用：
-
-```bash
-uv run python scripts/sandbox/build_image.py --help
-uv run python scripts/sandbox/verify_runtime.py --help
-```
-
-构建脚本是维护入口，不会扩大公开 runtime 的平台支持范围。
+当前安装只提供 Host 执行。`--sandbox`、`pony sandbox`、Checkpoint restore/prune/resolve 和 `/rewind --workspace`
+已经删除。升级不会自动清理旧 artifact；`pony checkpoints list/show/pending` 只读检查旧数据。旧 Sandbox-bound Session
+resume 返回 `legacy_sandbox_session_unsupported`，不会静默切换到 Host。需要恢复文件时使用 Git 或外部备份。
 
 ## 常见失败
 
@@ -228,7 +217,7 @@ uv run python scripts/sandbox/verify_runtime.py --help
 | `api_base_not_configured` | 是否设置 `PONY_API_BASE` |
 | `insecure_api_base` | 非 loopback API Base 是否为 HTTPS |
 | `model_session_mismatch` | 当前 Provider/model/URL 是否与恢复 Session 一致 |
-| Sandbox platform error | 是否为 macOS arm64 与受支持 Docker endpoint |
+| `legacy_sandbox_session_unsupported` | 该 Session 绑定旧 Sandbox；检查历史后创建新的 Host Session |
 | `pony` 找不到 | 虚拟环境与 PATH 是否一致 |
 | 裸 `pony` 仍显示旧 help | `command -v pony` / `pony --version` 是否指向旧安装；从当前版本重新安装或使用 `uv run pony` |
 | 没有 TUI 颜色或菜单 | stdin/stdout、`TERM`、终端宽度、`NO_COLOR` / `--no-color` 是否触发纯文本或无色模式 |

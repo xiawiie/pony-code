@@ -184,39 +184,14 @@ def test_packaging_builds_only_the_pony_runtime():
         "build-backend": "hatchling.build",
     }
     targets = pyproject["tool"]["hatch"]["build"]["targets"]
-    assert targets["wheel"] == {"packages": ["pony"]}
+    assert targets["wheel"] == {
+        "packages": ["pony"],
+        "exclude": ["/pony/sandbox/resources"],
+    }
     assert targets["sdist"] == {
-        "include": ["/LICENSE", "/README.md", "/pyproject.toml", "/pony"]
+        "include": ["/LICENSE", "/README.md", "/pyproject.toml", "/pony"],
+        "exclude": ["/pony/sandbox/resources"],
     }
-
-
-def test_docker_sandbox_resources_are_readable():
-    import json
-    from importlib.resources import files
-
-    root = files("pony.sandbox.resources")
-    manifest = json.loads(
-        root.joinpath("image-manifest.json").read_text(encoding="utf-8")
-    )
-
-    assert manifest["record_type"] == "docker_sandbox_image_set_manifest"
-    assert manifest["format_version"] == 3
-    assert set(manifest) == {
-        "record_type",
-        "format_version",
-        "policy_digest",
-        "user",
-        "working_dir",
-        "env",
-        "tool_paths",
-        "platforms",
-    }
-    assert set(manifest["platforms"]) == {"linux/arm64"}
-    assert set(manifest["platforms"]["linux/arm64"]) == {
-        "image_digest",
-        "image_id",
-    }
-    assert root.joinpath("docker-config", "config.json").read_bytes() == b"{}\n"
 
 
 def test_packaging_exposes_only_pony_cli_script():

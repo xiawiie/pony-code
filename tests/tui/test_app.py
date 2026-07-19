@@ -248,9 +248,9 @@ def test_tui_editor_grows_without_filling_the_terminal():
     assert _CompactPromptSession._get_default_buffer_control_height(session).max == 6
 
 
-def test_repl_routes_a_capable_tty_to_tui_and_finalizes(monkeypatch):
+def test_repl_routes_a_capable_tty_to_tui(monkeypatch):
     calls = []
-    agent = SimpleNamespace(finalize_sandbox_session=lambda: calls.append("finalize"))
+    agent = SimpleNamespace()
     monkeypatch.setattr("pony.tui.app.should_use_tui", lambda: True)
 
     def fake_run_tui(received, **options):
@@ -264,7 +264,7 @@ def test_repl_routes_a_capable_tty_to_tui_and_finalizes(monkeypatch):
     monkeypatch.setattr("pony.tui.app.run_tui", fake_run_tui)
 
     assert run_repl(agent, model="model", no_color=True) == 0
-    assert calls == [("model", True, True), "finalize"]
+    assert calls == [("model", True, True)]
 
 
 def test_plain_repl_never_starts_tui(monkeypatch):
@@ -401,7 +401,6 @@ def test_toolbar_is_width_bounded_and_keeps_only_essential_status():
         lines = rendered.splitlines()
         assert all(get_cwidth(line) < columns for line in lines)
         footer = lines[-1]
-        assert "host" in footer
         assert "acceptEdits" in footer
         if columns >= 80:
             assert "project" in footer
