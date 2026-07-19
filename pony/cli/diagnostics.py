@@ -283,7 +283,6 @@ def collect_doctor(cwd, args=None, check_api=False):
     try:
         memory = collect_memory_diagnostics(
             root,
-            git_executable=workspace.trusted_executables.get("git"),
         )
     except (
         OSError,
