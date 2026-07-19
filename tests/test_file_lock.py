@@ -499,6 +499,54 @@ def test_locked_file_hardens_existing_regular_file(tmp_path):
         assert stat.S_IMODE(lock_path.stat().st_mode) == 0o600
 
 
+def test_require_existing_missing_parent_is_zero_write(tmp_path):
+    parent = tmp_path / "missing"
+
+    with pytest.raises(FileNotFoundError):
+        with file_lock.locked_file(parent / "store.lock", require_existing=True):
+            raise AssertionError("missing lock yielded")
+
+    assert not parent.exists()
+    assert not file_lock._authority_root().exists()
+
+
+def test_require_existing_rejects_insecure_lock_without_hardening(tmp_path):
+    parent = tmp_path / "private"
+    parent.mkdir(mode=0o700)
+    lock_path = parent / "store.lock"
+    lock_path.write_bytes(b"sentinel")
+    lock_path.chmod(0o644)
+
+    with pytest.raises(ValueError, match="unsafe"):
+        with file_lock.locked_file(lock_path, require_existing=True):
+            raise AssertionError("insecure lock yielded")
+
+    assert lock_path.read_bytes() == b"sentinel"
+    assert stat.S_IMODE(lock_path.stat().st_mode) == 0o644
+    assert not file_lock._authority_root().exists()
+
+
+@pytest.mark.parametrize("parent_mode", (0o770, 0o777))
+def test_require_existing_rejects_writable_parent_without_writing(
+    tmp_path, parent_mode
+):
+    parent = tmp_path / "shared"
+    parent.mkdir()
+    parent.chmod(parent_mode)
+    lock_path = parent / "store.lock"
+    lock_path.write_bytes(b"sentinel")
+    lock_path.chmod(0o600)
+    before = (lock_path.read_bytes(), lock_path.stat().st_mtime_ns)
+
+    with pytest.raises(ValueError, match="unsafe"):
+        with file_lock.locked_file(lock_path, require_existing=True):
+            raise AssertionError("writable parent lock yielded")
+
+    assert (lock_path.read_bytes(), lock_path.stat().st_mtime_ns) == before
+    assert stat.S_IMODE(parent.stat().st_mode) == parent_mode
+    assert not file_lock._authority_root().exists()
+
+
 def test_locked_file_parent_swap_cannot_redirect_lock(tmp_path, monkeypatch):
     parent = tmp_path / "parent"
     parent.mkdir()

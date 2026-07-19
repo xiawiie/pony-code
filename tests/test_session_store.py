@@ -59,6 +59,26 @@ def _provider_binding(**overrides):
     return binding
 
 
+def test_legacy_readonly_inspection_allows_owner_parent_mode_0755(tmp_path):
+    root = tmp_path / "sessions"
+    store = SessionStore(root)
+    store.save(_session(tmp_path, "seed"))
+    legacy = store.legacy_path("legacy-readonly")
+    legacy.write_text(
+        json.dumps(_session(tmp_path, "legacy-readonly", legacy=True)),
+        encoding="utf-8",
+    )
+    legacy.chmod(0o600)
+    root.chmod(0o755)
+
+    storage, payload, tree = store.inspect_readonly("legacy-readonly")
+
+    assert storage == "legacy"
+    assert payload["id"] == "legacy-readonly"
+    assert tree is None
+    assert stat.S_IMODE(root.stat().st_mode) == 0o755
+
+
 def test_session_store_saves_loads_and_finds_latest_session(tmp_path):
     store = SessionStore(tmp_path / ".pony" / "sessions")
     first = _session(tmp_path, "session_001", "first")
