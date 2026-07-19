@@ -59,8 +59,6 @@ if [ "$release_dist" -eq 1 ]; then
     echo "release dist appeared while checks were running" >&2
     exit 1
   fi
-  uv run --frozen python -c \
-    'import os, sys; os.rename(sys.argv[1], sys.argv[2])' \
-    "$dist_dir" dist
+  uv run --frozen python scripts/release/publish_distribution.py "$dist_dir"
 fi
 echo "verified clean exact HEAD $start_head"

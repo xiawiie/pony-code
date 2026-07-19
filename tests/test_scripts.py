@@ -342,7 +342,8 @@ def test_local_check_script_runs_each_full_gate_once_on_a_clean_exact_head():
     assert text.count("scripts/release/verify_distribution.py") == 1
     assert '--dist-dir "$dist_dir"' in text
     assert 'tmp_dir=$(mktemp -d ".pony-check.XXXXXX")' in text
-    assert "os.rename(sys.argv[1], sys.argv[2])" in text
+    assert 'scripts/release/publish_distribution.py "$dist_dir"' in text
+    assert "os.rename" not in text
     assert "--dist-dir PATH" not in text
     assert "--install-smoke" in text
     assert "git status --porcelain --untracked-files=all" in text
@@ -358,12 +359,17 @@ def test_local_check_script_runs_each_full_gate_once_on_a_clean_exact_head():
 def _check_fixture(tmp_path):
     repo = tmp_path / "repo"
     scripts = repo / "scripts"
+    release_scripts = scripts / "release"
     fake_bin = repo / "bin"
-    scripts.mkdir(parents=True)
+    release_scripts.mkdir(parents=True)
     fake_bin.mkdir()
     check = scripts / "check.sh"
     check.write_text(Path("scripts/check.sh").read_text(encoding="utf-8"))
     check.chmod(0o755)
+    publish = release_scripts / "publish_distribution.py"
+    publish.write_text(
+        Path("scripts/release/publish_distribution.py").read_text(encoding="utf-8")
+    )
     (repo / ".gitignore").write_text("dist/\n.pony-check.*\n", encoding="utf-8")
     uv = fake_bin / "uv"
     uv.write_text(
@@ -381,8 +387,9 @@ def _check_fixture(tmp_path):
         '  : > "$out_dir/pony_code-1.0.0.tar.gz"\n'
         '  : > "$out_dir/pony_code-1.0.0-py3-none-any.whl"\n'
         "fi\n"
-        'if [ "$1" = "run" ] && [ "$3" = "python" ] && [ "$4" = "-c" ]; then\n'
-        '  case "$5" in *os.rename*) mv "$6" "$7" ;; esac\n'
+        'if [ "$1" = "run" ] && [ "$3" = "python" ]; then\n'
+        '  case "$4" in *publish_distribution.py) '
+        '"$PONY_TEST_PYTHON" "$4" "$5" ;; esac\n'
         "fi\n",
         encoding="utf-8",
     )
@@ -407,6 +414,7 @@ def _check_fixture(tmp_path):
     )
     env = os.environ.copy()
     env["PATH"] = os.pathsep.join((str(fake_bin), env["PATH"]))
+    env["PONY_TEST_PYTHON"] = sys.executable
     return repo, check, env
 
 
@@ -485,6 +493,95 @@ def test_release_dist_publishes_only_the_verified_archives(tmp_path):
         "pony_code-1.0.0.tar.gz",
     ]
     assert list(repo.glob(".pony-check.*")) == []
+
+
+def _publish_fixture(tmp_path):
+    spec = importlib.util.spec_from_file_location(
+        "publish_distribution_script",
+        Path("scripts/release/publish_distribution.py"),
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    root = tmp_path / "repo"
+    source = tmp_path / "staging"
+    root.mkdir()
+    source.mkdir()
+    (source / "pony_code-1.0.0.tar.gz").write_bytes(b"sdist")
+    (source / "pony_code-1.0.0-py3-none-any.whl").write_bytes(b"wheel")
+    return module, root, source
+
+
+def test_release_publish_refuses_concurrent_empty_dist(tmp_path, monkeypatch):
+    module, root, source = _publish_fixture(tmp_path)
+    real_mkdir = module.os.mkdir
+
+    def create_dist_first(path, mode=0o777, *, dir_fd=None):
+        if path == module.DIST_NAME:
+            real_mkdir(path, mode, dir_fd=dir_fd)
+        return real_mkdir(path, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(module.os, "mkdir", create_dist_first)
+
+    with pytest.raises(module.PublishError, match="already exists"):
+        module.publish_distribution(source, root=root)
+
+    assert list((root / "dist").iterdir()) == []
+
+
+def test_release_publish_detects_path_swap_without_touching_replacement(
+    tmp_path, monkeypatch
+):
+    module, root, source = _publish_fixture(tmp_path)
+    real_link = module.os.link
+    detached = root / "detached-dist"
+    swapped = False
+
+    def link_then_swap(*args, **kwargs):
+        nonlocal swapped
+        result = real_link(*args, **kwargs)
+        if not swapped:
+            swapped = True
+            (root / "dist").rename(detached)
+            (root / "dist").mkdir()
+            (root / "dist" / "external.txt").write_text("keep", encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(module.os, "link", link_then_swap)
+
+    with pytest.raises(module.PublishError, match="path changed"):
+        module.publish_distribution(source, root=root)
+
+    assert (root / "dist" / "external.txt").read_text(encoding="utf-8") == "keep"
+    assert sorted(path.name for path in detached.iterdir()) == [
+        "pony_code-1.0.0-py3-none-any.whl",
+        "pony_code-1.0.0.tar.gz",
+    ]
+
+
+def test_release_publish_cleans_only_its_partial_output_and_retains_dist(
+    tmp_path, monkeypatch
+):
+    module, root, source = _publish_fixture(tmp_path)
+    real_link = module.os.link
+    calls = 0
+
+    def fail_second_link(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("injected publish failure")
+        return real_link(*args, **kwargs)
+
+    monkeypatch.setattr(module.os, "link", fail_second_link)
+
+    with pytest.raises(module.PublishError, match="retained for safe manual cleanup"):
+        module.publish_distribution(source, root=root)
+
+    assert list((root / "dist").iterdir()) == []
+    assert sorted(path.name for path in source.iterdir()) == [
+        "pony_code-1.0.0-py3-none-any.whl",
+        "pony_code-1.0.0.tar.gz",
+    ]
 
 
 def test_provider_experiment_defaults_allow_reasoning_budget():
