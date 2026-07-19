@@ -554,6 +554,66 @@ def test_compatible_session_binding_resolves_without_probe():
     assert resolved["capabilities"] == {}
 
 
+def test_generic_auto_session_rejects_legacy_anthropic_binding():
+    config = resolve_model_config(
+        project_env={
+            PROVIDER_ENV_NAME: "auto",
+            API_BASE_ENV_NAME: "https://gateway.example/v1",
+            MODEL_ENV_NAME: "gateway-model",
+            API_KEY_ENV_NAME: "test-key",
+        },
+        process_env={},
+    )
+
+    with pytest.raises(ValueError, match="^model_session_mismatch$"):
+        resolve_session_provider_binding(
+            config,
+            {
+                "protocol_family": "anthropic_messages",
+                "model": "gateway-model",
+                "endpoint_hash": "sha256:"
+                + hashlib.sha256(b"https://gateway.example/v1").hexdigest(),
+            },
+        )
+
+
+@pytest.mark.parametrize(
+    ("provider", "api_base", "protocol"),
+    [
+        ("auto", "https://gateway.example/v1", "openai_responses"),
+        ("auto", "http://127.0.0.1:8080/v1", "ollama_chat"),
+        ("anthropic", "https://gateway.example/v1", "anthropic_messages"),
+        ("auto", "https://api.anthropic.com/v1", "anthropic_messages"),
+    ],
+)
+def test_session_binding_accepts_current_provider_candidates(
+    provider,
+    api_base,
+    protocol,
+):
+    config = resolve_model_config(
+        project_env={
+            PROVIDER_ENV_NAME: provider,
+            API_BASE_ENV_NAME: api_base,
+            MODEL_ENV_NAME: "gateway-model",
+            API_KEY_ENV_NAME: "test-key",
+        },
+        process_env={},
+    )
+
+    resolved = resolve_session_provider_binding(
+        config,
+        {
+            "protocol_family": protocol,
+            "model": "gateway-model",
+            "endpoint_hash": "sha256:" + hashlib.sha256(api_base.encode()).hexdigest(),
+        },
+    )
+
+    assert resolved["protocol"]["value"] == protocol
+    assert resolved["resolution_source"] == "session_binding"
+
+
 @pytest.mark.parametrize("field", ("protocol_family", "model", "endpoint_hash"))
 def test_incompatible_session_binding_fails_closed(field):
     config = resolve_model_config(

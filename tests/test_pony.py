@@ -1056,7 +1056,7 @@ def test_resume_reuses_current_provider_binding_without_probe(tmp_path):
     assert builder.call_args.args == ("openai_chat_completions",)
 
 
-def test_resume_auto_reuses_no_auth_binding_before_key_validation(tmp_path):
+def test_resume_auto_rejects_non_loopback_ollama_binding(tmp_path):
     workspace = build_workspace(tmp_path)
     store = SessionStore(tmp_path / ".pony" / "sessions")
     base_url = "https://local-model.example/v1"
@@ -1078,24 +1078,19 @@ def test_resume_auto_reuses_no_auth_binding_before_key_validation(tmp_path):
         f"PONY_MODEL={model}\n",
         encoding="utf-8",
     )
-    builder = Mock(side_effect=_fake_transport)
     args = pony_cli.build_arg_parser().parse_args(
         ["--cwd", str(tmp_path), "--resume", original.session["id"]]
     )
 
     with (
         patch.dict(os.environ, {"HOME": str(tmp_path)}, clear=True),
-        patch("pony.cli.assembly.build_transport_client", builder),
         patch(
             "pony.providers.probe.probe_model_client",
-            side_effect=AssertionError("matching no-auth binding was probed"),
+            side_effect=AssertionError("mismatched binding was probed"),
         ),
+        pytest.raises(ValueError, match="^model_session_mismatch$"),
     ):
-        resumed = build_cli_agent(args)
-
-    assert resumed.session["id"] == original.session["id"]
-    assert builder.call_args.args == ("ollama_chat",)
-    assert builder.call_args.kwargs["auth_mode"] == "none"
+        build_cli_agent(args)
 
 
 def test_resume_auth_binding_without_key_fails_before_client_build(tmp_path):

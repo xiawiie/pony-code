@@ -386,11 +386,10 @@ def resolve_session_provider_binding(config, binding):
         raise ValueError("model_session_mismatch")
 
     provider = config.get("provider", {}).get("value")
-    allowed = (
-        tuple(_PROTOCOL_SPECS)
-        if provider == "auto"
-        else _PROVIDER_PROTOCOLS.get(provider, ())
-    )
+    try:
+        allowed, _source = _candidate_protocols(provider, base_url)
+    except (KeyError, ValueError) as exc:
+        raise ValueError("model_session_mismatch") from exc
     resolved_protocol = config.get("protocol", {}).get("value", "")
     if protocol not in allowed or (
         config.get("resolution_status") == "resolved"
