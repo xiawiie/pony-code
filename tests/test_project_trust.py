@@ -1,6 +1,7 @@
 import json
 import os
 import stat
+import threading
 
 import pytest
 
@@ -34,6 +35,60 @@ def test_project_root_identity_drift_fails_closed(tmp_path):
     project.rename(tmp_path / "old-project")
     project.mkdir()
 
+    assert store.is_trusted(project) is False
+
+
+def test_revoke_waits_for_stale_writer_and_remains_final(tmp_path, monkeypatch):
+    project = tmp_path / "project"
+    project.mkdir()
+    store = ProjectTrustStore(tmp_path / "state")
+    store.trust(project)
+    stale_loaded = threading.Event()
+    release_stale = threading.Event()
+    revoke_started = threading.Event()
+    revoke_finished = threading.Event()
+    errors = []
+    original_load = store._load_projects
+    stale_thread = None
+
+    def delayed_load():
+        projects = original_load()
+        if threading.current_thread() is stale_thread:
+            stale_loaded.set()
+            if not release_stale.wait(5):
+                raise TimeoutError("stale writer was not released")
+        return projects
+
+    def stale_trust():
+        try:
+            store.trust(project)
+        except Exception as exc:  # noqa: BLE001 - asserted below
+            errors.append(exc)
+
+    def revoke():
+        revoke_started.set()
+        try:
+            store.revoke(project)
+        except Exception as exc:  # noqa: BLE001 - asserted below
+            errors.append(exc)
+        finally:
+            revoke_finished.set()
+
+    monkeypatch.setattr(store, "_load_projects", delayed_load)
+    stale_thread = threading.Thread(target=stale_trust)
+    revoke_thread = threading.Thread(target=revoke)
+    stale_thread.start()
+    assert stale_loaded.wait(5)
+    revoke_thread.start()
+    assert revoke_started.wait(5)
+    assert not revoke_finished.wait(0.1)
+    release_stale.set()
+    stale_thread.join(5)
+    revoke_thread.join(5)
+
+    assert not stale_thread.is_alive()
+    assert not revoke_thread.is_alive()
+    assert errors == []
     assert store.is_trusted(project) is False
 
 

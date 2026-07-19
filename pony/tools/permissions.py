@@ -5,9 +5,9 @@ from enum import Enum
 
 class PermissionMode(str, Enum):
     DEFAULT = "default"
-    ACCEPT_EDITS = "accept_edits"
+    ACCEPT_EDITS = "acceptEdits"
     PLAN = "plan"
-    DONT_ASK = "dont_ask"
+    DONT_ASK = "dontAsk"
 
 
 class PermissionDecision(str, Enum):
