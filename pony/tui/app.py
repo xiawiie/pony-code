@@ -135,7 +135,6 @@ def _permission_picker(agent, rules, tools, *, choose=choice, style=None):
             default="done",
             style=style,
             symbol=">",
-            bottom_toolbar="Up/Down select · Enter edit",
         )
         if action == "done":
             return selections or None
@@ -149,7 +148,6 @@ def _permission_picker(agent, rules, tools, *, choose=choice, style=None):
                 default=display_permission_mode(current_mode),
                 style=style,
                 symbol=">",
-                bottom_toolbar="Up/Down select · Enter apply",
             )
             selections = [item for item in selections if item[0] != "mode"]
             selections.append(("mode", current_mode))
@@ -166,7 +164,6 @@ def _permission_picker(agent, rules, tools, *, choose=choice, style=None):
             default=tool_behavior[name] if tool_behavior[name] != "default" else "remove",
             style=style,
             symbol=">",
-            bottom_toolbar="Up/Down select · Enter apply",
         )
         for names in current_rules.values():
             if name in names:
