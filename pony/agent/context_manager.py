@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass
 import hashlib
+from collections.abc import Mapping
 
 from pony.security import redaction as securitylib
 from pony.agent.messages import build_request_messages, message_metrics
@@ -38,6 +40,11 @@ def _convert_pony_tool_to_anthropic(name, spec):
     props = {}
     required = []
     for arg_name, sig in (spec.get("schema") or {}).items():
+        if isinstance(sig, Mapping):
+            props[arg_name] = deepcopy(dict(sig))
+            if "default" not in sig:
+                required.append(arg_name)
+            continue
         sig_str = str(sig)
         props[arg_name] = {"type": "integer" if "int" in sig_str else "string"}
         if "=" not in sig_str:

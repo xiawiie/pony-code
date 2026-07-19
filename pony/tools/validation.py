@@ -316,6 +316,44 @@ def validate_tool(context, name, args):
             raise ValueError("delegate depth exceeded")
         return
 
+    if name == "delegate_worktrees":
+        if set(args) - {"tasks", "max_parallel"}:
+            raise ValueError("unknown delegate_worktrees argument")
+        tasks = args.get("tasks")
+        if not isinstance(tasks, list) or not 1 <= len(tasks) <= 8:
+            raise ValueError("delegate_worktrees tasks must contain 1-8 items")
+        max_parallel = args.get("max_parallel", 2)
+        if type(max_parallel) is not int or not 1 <= max_parallel <= 4:
+            raise ValueError("delegate_worktrees max_parallel must be in [1, 4]")
+        names = set()
+        for item in tasks:
+            if not isinstance(item, dict) or set(item) - {
+                "name",
+                "task",
+                "mode",
+                "max_steps",
+            }:
+                raise ValueError("invalid worktree task")
+            delegate_name = str(item.get("name", "")).strip()
+            if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]{0,63}", delegate_name):
+                raise ValueError(
+                    "worktree task name must be 1-64 letters, digits, '_' or '-'"
+                )
+            if delegate_name.casefold() in names:
+                raise ValueError("worktree task names must be unique")
+            names.add(delegate_name.casefold())
+            task = str(item.get("task", "")).strip()
+            if not task or len(task) > 16_384:
+                raise ValueError("worktree task must contain 1-16384 characters")
+            if item.get("mode", "readonly") not in {"readonly", "write"}:
+                raise ValueError("worktree task mode must be readonly or write")
+            max_steps = item.get("max_steps", 6)
+            if type(max_steps) is not int or not 1 <= max_steps <= 12:
+                raise ValueError("worktree task max_steps must be in [1, 12]")
+        if context.depth >= context.max_depth:
+            raise ValueError("delegate depth exceeded")
+        return
+
     if name == "memory_list":
         prefix = str(args.get("prefix", "")).strip()
         if len(prefix) > 128:

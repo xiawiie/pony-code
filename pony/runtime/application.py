@@ -1308,6 +1308,8 @@ class Pony:
             note_tokens = self.token_accounting.count_text(args.get("note", ""))
             if note_tokens > 1_024:
                 raise ValueError("memory_save note exceeds 1024 model tokens")
+        if name == "delegate_worktrees" and self.redact_artifact(args) != args:
+            raise SensitiveToolError("sensitive_content_block")
 
     def tool_context(self):
         return ToolContext(
@@ -1317,6 +1319,7 @@ class Pony:
             depth=self.depth,
             max_depth=self.max_depth,
             spawn_delegate=self.spawn_delegate,
+            spawn_worktree_agents=self.spawn_worktree_agents,
             memory_store=self.memory_store,
             memory_retrieval=self.memory_retrieval,
             repo_map=self.repo_map,
@@ -1370,6 +1373,11 @@ class Pony:
             result = result[:MAX_DELEGATE_RESULT_CHARS] + "\n[delegate result truncated]"
         prefix = "delegate_result" if name == "delegate" else f"delegate_result[{name}]"
         return prefix + ":\n" + result
+
+    def spawn_worktree_agents(self, args):
+        from pony.runtime.worktree_agents import run_worktree_agents
+
+        return run_worktree_agents(self, args)
 
     def approve(self, name, args):
         if self.read_only:

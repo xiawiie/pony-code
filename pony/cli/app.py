@@ -19,6 +19,7 @@ from pony.tools.permissions import (
 from pony.workspace.context import WorkspaceContext
 
 from .arguments import build_arg_parser, dangerous_bypass_enabled
+from .agents import handle_agents
 from .assembly import build_agent
 from .commands import (
     handle_help,
@@ -99,6 +100,11 @@ def _dispatch_memory(args, tokens):
     return handle_memory(tokens, workspace.repo_root, args)
 
 
+def _dispatch_agents(args, tokens):
+    workspace = WorkspaceContext.build(args.cwd)
+    return handle_agents(tokens, workspace.repo_root, args)
+
+
 def _dispatch_session(args, tokens):
     workspace = WorkspaceContext.build(args.cwd)
     return handle_session(tokens, workspace.repo_root, args)
@@ -132,6 +138,7 @@ _PRE_AGENT_COMMAND_HANDLERS = {
     "sessions": _dispatch_sessions,
     "session": _dispatch_session,
     "memory": _dispatch_memory,
+    "agents": _dispatch_agents,
     "checkpoints": _dispatch_checkpoints,
     "runs": _dispatch_runs,
     "migrate": _dispatch_migrate,

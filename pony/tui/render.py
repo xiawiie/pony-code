@@ -313,6 +313,8 @@ def _tool_summary(name, args, width):
         summary = f"look up {_one_line(args.get('symbol', 'symbol'))}"
     elif name == "delegate":
         summary = "delegate investigation"
+    elif name == "delegate_worktrees":
+        summary = "run isolated worktree agents"
     else:
         summary = name
     return _truncate(summary, max(1, width - 2))

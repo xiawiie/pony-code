@@ -52,7 +52,7 @@ git log -1 --oneline
 | `pony/context/` | Context source、chunk、escaping、render 与 digest |
 | `pony/memory/` | User/Agent Notes、recall、retrieval、RepoMap 与 memory service |
 | `pony/providers/` | 四个 wire adapter、Response、transport helper、factory 与 probe |
-| `pony/runtime/` | `Pony` 装配、options、reporting、rewind 与 working memory |
+| `pony/runtime/` | `Pony` 装配、options、reporting、rewind、working memory 与 worktree child 调度 |
 | `pony/security/` | path、private/workspace file、redaction 与 shell command policy 原语 |
 | `pony/state/` | Session/Run、legacy artifact reader、TaskState 与 file lock |
 | `pony/tui/` | 行内 prompt、slash completion、Markdown、状态与 permission/activity 渲染 |
@@ -135,6 +135,9 @@ PONY_MODEL
 - Canonical Messages 是唯一 transcript；Provider adapter 不维护第二套可变 history。
 - Tool 先做 schema、policy、当前授权与必要 permission prompt，再进入 mutation lock；执行一次并观察真实 effect。
 - `memory_save` 只接受当前请求的明确授权；历史授权不继承，delegate 不能写 Durable Memory。
+- `delegate_worktrees` 一次只接受 bounded named batch；每项从 clean parent 的 exact HEAD 创建独立
+  `codex/pony-agent-*` branch、worktree、client、Session 与 Run。它不自动 merge；只有显式
+  `pony agents merge <id>` 可把已复验的普通文件改动合入当前 clean branch。
 - Session、Run 与 legacy artifact 使用独立 record format 和 reader；release version 不能代替 format version。
 - Session v5 的 Permission/Plan 状态只能由 `permission_mode_change`、`plan_artifact` 与受限 permission-rule state
   投影；Plan text/revision 和进入 Plan 前的 mode 都来自 active path。v1-v4 inspection 零写，只有显式 resume
@@ -180,6 +183,7 @@ uv run --frozen pytest -q <relevant-test-files>
 
 纯移动先运行 `pytest --collect-only`。各领域变更运行所属专项；安全回归优先补可复现的聚焦测试。
 CLI/TUI 变更至少运行 parser、commands、error envelope 与 `tests/tui/`。
+Worktree agent 变更还须运行 `tests/test_worktree_agents.py`。
 
 结构、Provider、安全边界、版本、分发或发布变更必须在干净 exact HEAD 运行：
 

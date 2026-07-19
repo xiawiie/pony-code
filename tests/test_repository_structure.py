@@ -337,6 +337,7 @@ def test_maintainer_doc_links_and_cli_examples_resolve():
         "--permission-mode",
         "--sandbox",
         "--version",
+        "agents",
         "checkpoints",
         "config",
         "doctor",

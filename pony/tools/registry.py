@@ -118,6 +118,46 @@ DELEGATE_TOOL_SPEC = {
     "description": "Ask one named, bounded read-only child agent to investigate.",
 }
 
+WORKTREE_DELEGATE_TOOL_SPEC = {
+    "schema": {
+        "tasks": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 8,
+            "items": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$",
+                    },
+                    "task": {"type": "string", "minLength": 1, "maxLength": 16_384},
+                    "mode": {
+                        "type": "string",
+                        "enum": ["readonly", "write"],
+                        "default": "readonly",
+                    },
+                    "max_steps": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 12,
+                        "default": 6,
+                    },
+                },
+                "required": ["name", "task"],
+                "additionalProperties": False,
+            },
+        },
+        "max_parallel": "int=2",
+    },
+    "risky": True,
+    "effect_class": "workspace_write",
+    "description": (
+        "Run named tasks concurrently in isolated Git worktrees. "
+        "Results remain on review branches until an explicit CLI merge."
+    ),
+}
+
 PLAN_TOOL_SPECS = {
     "read_plan": {
         "schema": {},
@@ -141,7 +181,10 @@ PLAN_TOOL_SPECS = {
 
 
 def legal_tool_names():
-    return set(BASE_TOOL_SPECS) | set(PLAN_TOOL_SPECS) | {"delegate"}
+    return set(BASE_TOOL_SPECS) | set(PLAN_TOOL_SPECS) | {
+        "delegate",
+        "delegate_worktrees",
+    }
 
 
 TOOL_EXAMPLES = {
@@ -152,6 +195,11 @@ TOOL_EXAMPLES = {
     "write_file": '{"name":"write_file","arguments":{"path":"binary_search.py","content":"def binary_search(nums, target):\\n    return -1\\n"}}',
     "patch_file": '{"name":"patch_file","arguments":{"path":"binary_search.py","old_text":"return -1","new_text":"return mid"}}',
     "delegate": '{"name":"delegate","arguments":{"task":"inspect README.md","name":"repo-inspector","max_steps":3}}',
+    "delegate_worktrees": (
+        '{"name":"delegate_worktrees","arguments":{"tasks":'
+        '[{"name":"tests","task":"fix tests","mode":"write",'
+        '"max_steps":6}],"max_parallel":2}}'
+    ),
     "memory_list": '{"name":"memory_list","arguments":{"prefix":"workspace/"}}',
     "memory_read": '{"name":"memory_read","arguments":{"path":"workspace/notes/auth.md","start":1,"end":200}}',
     "memory_search": '{"name":"memory_search","arguments":{"query":"bcrypt","limit":5}}',
@@ -170,6 +218,14 @@ def tool_delegate(context, args):
     if not task:
         raise ValueError("task must not be empty")
     return context.spawn_delegate(args)
+
+
+def tool_delegate_worktrees(context, args):
+    if context.depth >= context.max_depth:
+        raise ValueError("delegate depth exceeded")
+    if not callable(context.spawn_worktree_agents):
+        raise ValueError("worktree delegate runtime is not configured")
+    return context.spawn_worktree_agents(args)
 
 
 _TOOL_RUNNERS = {
@@ -210,6 +266,10 @@ def build_tool_registry(context):
         tools["delegate"] = {
             **DELEGATE_TOOL_SPEC,
             "run": partial(tool_delegate, context),
+        }
+        tools["delegate_worktrees"] = {
+            **WORKTREE_DELEGATE_TOOL_SPEC,
+            "run": partial(tool_delegate_worktrees, context),
         }
     for name, spec in PLAN_TOOL_SPECS.items():
         tools[name] = dict(spec)

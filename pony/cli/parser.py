@@ -17,6 +17,7 @@ KNOWN_TOP_LEVEL_COMMANDS = {
     "checkpoints",
     "migrate",
     "memory",
+    "agents",
     "help",
 }
 
