@@ -215,6 +215,7 @@ Sandbox-bound Session 在 CLI resume 装配阶段稳定拒绝，不能通过 rew
 /compact [focus]
 /tree
 /checkpoint [label]
+/queue [clear]
 /fork [entry-id]
 /rewind [entry-id] [--summary[=focus]]
 /clone --to-worktree PATH
@@ -238,6 +239,12 @@ opaque Provider state 的历史拒绝模型切换。
 显式交互 resume 在首个 prompt 前显示一次 permission/checkpoint/resume/model 来源投影；one-shot、JSON inspection
 与管理命令不显示。交互 history 每次从 active Canonical Messages 重建，只保留最多 100 条 top-level user 文本
 （64 KiB 总量、16 KiB 单条），不会保留 slash 命令或 abandoned branch 输入。
+
+交互层使用一个进程内、最多五条 pending input 的 FIFO。只有单一 worker 调用 shared REPL handler；active turn 的
+Provider、approval 与 Tool 全部结束后才取下一条，因此 Canonical Messages 的顺序与实际收费请求顺序一致。enqueue、
+`/queue` 和 `/queue clear` 都不写 Session；queued input 只有 dequeue 后进入既有 `agent.ask()` 才持久化，进程重启不会
+恢复。approval input 优先解释为当前授权答案；其他 local slash command 在 busy 时拒绝。`/exit` 与 EOF 清空 pending，
+等待 active turn 结束，不声称取消阻塞 Transport 或已经开始的 Tool。
 
 `/plan open|share` 会先进入 Plan；空 artifact 只启用 mode，已有 artifact 才打开 editor 或尝试 share。
 

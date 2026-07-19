@@ -140,6 +140,11 @@ host · pony-code (main)             auto · anthropic/claude
 permission mode 与 Provider/model；窄终端优先保留安全和模型信息。Pony 不展示 Provider reasoning，也不提供
 streaming 输出。
 
+Provider 或 Tool 忙碌时仍可提交 follow-up prompt；Pony 在内存中最多排队五条，并在当前完整 turn（含 approval 与 Tool）
+结束后按 FIFO 串行执行。`/queue` 显示 active/pending 状态，`/queue clear` 只丢弃尚未开始的输入。queued prompt 直到真正
+执行才写入 Canonical Messages；进程退出或崩溃不会恢复队列或自动产生新的 Provider 请求。local slash command 不在忙碌期
+抢占；`/exit` 清空 pending 后等待当前 turn 完成。不提供 mid-request steer、Provider/tool cancel 或 streaming。
+
 fresh Session 默认使用 `auto`。`pony run` 与 `pony repl` 可通过 `--permission-mode` 选择六种公开模式；`manual`
 在 Session 内部存为 `default`，但 CLI、TUI 和文档只使用公开名称：
 
@@ -195,11 +200,12 @@ Session；公共 runtime 构造、resume、mode setter 和 Executor 都会重复
 | 操作 | 行为 |
 | --- | --- |
 | `/` | 打开并过滤当前 Pony 斜杠命令菜单 |
+| `/queue [clear]` | 查看或清空最多五条尚未执行的 follow-up input |
 | `Enter` | 提交当前 prompt |
 | `\` + `Enter` / `Esc` + `Enter` | 插入换行 |
 | `Up` / `Down`、`Ctrl+R` | 浏览或搜索当前交互历史 |
-| `Ctrl+C` | 中断/清空当前输入；短时间内再次按下则退出 |
-| `Ctrl+D` | 在空输入时退出 |
+| `Ctrl+C` | idle 时清空输入、短时间内再次按下退出；busy 时拒绝当前 approval/清空 pending，但不取消当前 turn |
+| `Ctrl+D` | idle 时退出；busy 时清空 pending 并等待当前 turn 完成 |
 
 当 stdin/stdout 不是 TTY、`TERM=dumb` 或终端窄于 40 列时，Pony 自动回退到无装饰的纯文本 REPL。一次性
 `pony run` 也只输出执行结果。`--no-color` 与 `NO_COLOR` 会移除颜色和背景，但保留缩进、边框及错误前缀，不改变

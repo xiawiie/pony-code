@@ -1,6 +1,7 @@
 """One-shot and interactive CLI startup flows."""
 
 from contextlib import contextmanager
+import json
 import os
 import signal
 import shlex
@@ -14,6 +15,7 @@ import threading
 from pony.tools.permissions import display_permission_mode, validate_permission_mode
 from pony.tools import registry as toolkit
 from pony.agent.messages import message_content_text
+from pony.cli.input_queue import InputQueue, MAX_PENDING_INPUTS
 from pony.config.model import provider_family_for_protocol
 from pony.security.redaction import redact_text
 from pony.providers.transport import ProviderTransportError
@@ -575,6 +577,80 @@ def _finish_repl(agent, code):
     return code
 
 
+def _is_turn_input(agent, user_input):
+    if not user_input.startswith("/"):
+        return True
+    command = user_input.split(maxsplit=1)[0]
+    project_skill = getattr(agent, "project_skill", None)
+    if callable(project_skill) and project_skill(command.removeprefix("/")) is not None:
+        return True
+    if command != "/plan":
+        return False
+    description = user_input[len(command) :].strip()
+    return bool(description) and description not in {"open", "share"}
+
+
+def _route_repl_input(
+    agent,
+    input_queue,
+    user_input,
+    *,
+    process_local,
+    render_user=lambda _text: None,
+    render_status=print,
+    render_error=print,
+):
+    if input_queue.answer_confirmation(user_input):
+        return None
+    if not user_input:
+        return None
+    if user_input == "/queue" or user_input.startswith("/queue "):
+        render_user(user_input)
+        if user_input == "/queue":
+            state = "turn active" if input_queue.busy else "idle"
+            render_status(f"queue: {input_queue.pending_count} pending; {state}")
+        elif user_input == "/queue clear":
+            removed = input_queue.clear()
+            render_status(f"queue cleared: {removed} pending input(s)")
+        else:
+            render_error("usage: /queue [clear]")
+        return None
+    if input_queue.busy and user_input in {"/exit", "/quit"}:
+        render_user(user_input)
+        removed = input_queue.clear()
+        render_status(
+            f"current turn continues before exit; cleared {removed} pending"
+        )
+        input_queue.close()
+        terminal_result = _raise_or_return_terminal(input_queue)
+        return 0 if terminal_result is None else terminal_result
+    turn_input = _is_turn_input(agent, user_input)
+    if input_queue.busy and not turn_input:
+        render_user(user_input)
+        render_error("local commands are unavailable while a turn is active")
+        return None
+    if not turn_input:
+        render_user(user_input)
+        return process_local(user_input)
+    submitted = input_queue.submit(user_input)
+    if submitted.status == "queued":
+        render_status(
+            f"queued input: {submitted.pending}/{MAX_PENDING_INPUTS} pending"
+        )
+    elif submitted.status == "full":
+        render_error(f"input queue is full ({MAX_PENDING_INPUTS} pending)")
+    return None
+
+
+def _raise_or_return_terminal(input_queue):
+    terminal, result, failure = input_queue.terminal_outcome()
+    if not terminal:
+        return None
+    if failure is not None:
+        raise failure
+    return result
+
+
 def run_repl(
     agent,
     *,
@@ -636,26 +712,75 @@ def run_repl(
             def pick_plain_session_entry(command, candidates):
                 return _plain_session_picker(command, candidates)
 
+            input_queue = None
+
+            def process_turn(user_input):
+                return _process_repl_input(
+                    agent,
+                    user_input,
+                    confirm=input_queue.confirm,
+                )
+
+            input_queue = InputQueue(process_turn)
+            previous_approval_prompt = getattr(agent, "_approval_prompt", None)
+
+            def approve(name, args):
+                payload = json.dumps(args, ensure_ascii=True, sort_keys=True)
+                print(
+                    "\napproval required: "
+                    f"{_safe_text(agent, name)} {_safe_text(agent, payload)}"
+                )
+                return input_queue.confirm("Approve once? [y/N] ")
+
+            agent._approval_prompt = approve
             _replace_readline_history(prompt_history)
             if resume_projection is not None:
                 _print_resume_card(resume_projection)
-            while True:
-                try:
-                    user_input = input("\npony> ").strip()
-                except EOFError:
-                    print("")
-                    return _finish_repl(agent, 0)
+            try:
+                while True:
+                    terminal_result = _raise_or_return_terminal(input_queue)
+                    if terminal_result is not None:
+                        return _finish_repl(agent, terminal_result)
+                    refresh_plain_history()
+                    confirmation = input_queue.confirmation()
+                    try:
+                        user_input = input(
+                            confirmation or "\npony> "
+                        ).strip()
+                    except EOFError:
+                        print("")
+                        input_queue.close()
+                        terminal_result = _raise_or_return_terminal(input_queue)
+                        return _finish_repl(
+                            agent,
+                            0 if terminal_result is None else terminal_result,
+                        )
+                    except KeyboardInterrupt as exc:
+                        if input_queue.busy and not hasattr(exc, "signal_number"):
+                            input_queue.answer_confirmation("")
+                            removed = input_queue.clear()
+                            print(f"\ncurrent turn continues; cleared {removed} pending")
+                            continue
+                        raise
 
-                result = _process_repl_input(
-                    agent,
-                    user_input,
-                    refresh_history=refresh_plain_history,
-                    manage_permissions=manage_plain_permissions,
-                    pick_session_entry=pick_plain_session_entry,
-                )
-                refresh_plain_history()
-                if result is not None:
-                    return _finish_repl(agent, result)
+                    result = _route_repl_input(
+                        agent,
+                        input_queue,
+                        user_input,
+                        process_local=lambda text: _process_repl_input(
+                            agent,
+                            text,
+                            refresh_history=refresh_plain_history,
+                            manage_permissions=manage_plain_permissions,
+                            pick_session_entry=pick_plain_session_entry,
+                        ),
+                    )
+                    refresh_plain_history()
+                    if result is not None:
+                        return _finish_repl(agent, result)
+            finally:
+                input_queue.close()
+                agent._approval_prompt = previous_approval_prompt
         except KeyboardInterrupt as exc:
             print("")
             return _finish_repl(agent, _interrupt_exit_code(exc))

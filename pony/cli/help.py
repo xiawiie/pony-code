@@ -23,6 +23,7 @@ SLASH_COMMANDS = (
     SlashCommand("/tree", "/tree", "Show the append-only Session Tree"),
     SlashCommand("/compact", "/compact [focus]", "Compact older conversation history"),
     SlashCommand("/checkpoint", "/checkpoint [label]", "Create a task checkpoint"),
+    SlashCommand("/queue", "/queue [clear]", "Inspect or clear pending inputs"),
     SlashCommand(
         "/fork", "/fork [entry]", "Pick or branch the conversation at an entry"
     ),

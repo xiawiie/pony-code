@@ -73,6 +73,9 @@ CLI/TUI 合同：
 - `/permissions` 与 `/allowed-tools` 共用 REPL handler 管理 allow/ask/deny 规则和 mode；CLI allowed/disallowed flags
   复用同一 rule parser 与 Session writer。`/plan` 进入或查看 Plan，旧 `/mode` 与 `/todo` 不再存在，`/plan clear`
   不再具有清空语义。
+- 忙碌时最多保留五条内存 follow-up input；单一 worker 只在完整 turn 结束后按 FIFO 调用同一 REPL handler。
+  `/queue [clear]` 只查询或清空未执行输入，零 Session 写；approval 始终先回到前台，local slash command 不抢占当前 turn。
+  不持久化队列，不修改 immutable request，不实现 Provider/tool cancel、streaming、daemon 或第二 Session writer。
 - 仓库 Skill 只从受信 root 的 `.claude/skills/<name>/SKILL.md` 发现，且仅由显式 `/name` 作为本 turn 的只读 context
   调用；严格 frontmatter、bounded/no-follow/single-link/root identity 与 secret gate 任一失败即 catalog fail closed。不得
   读取 HOME/plugin/`.agents` 兼容路径，不得执行 Skill 脚本、安装、注册工具或持久化 loaded state。
