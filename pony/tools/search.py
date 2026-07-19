@@ -50,6 +50,7 @@ _RG_SENSITIVE_GLOBS = (
     "!**/.kube/config",
     "!**/.pony/sessions/**",
     "!**/.pony/runs/**",
+    "!**/.pony/delegates/**",
     "!**/.pony/checkpoints/**",
 )
 

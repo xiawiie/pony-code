@@ -67,12 +67,48 @@ def _build_transport_client(
         and not config.get("api_key", {}).get("value")
     ):
         raise ValueError("api_key_not_configured")
-    client, _resolved, _report = resolve_provider_client(
+    client, resolved_config, _report = resolve_provider_client(
         config,
         timeout=args.request_timeout_seconds,
         client_builder=build_transport_client,
     )
-    return client
+    return client, resolved_config
+
+
+def _delegate_model_client_factory(config, timeout):
+    """Rebuild the resolved transport without sharing its mutable request state."""
+    protocol = config.get("protocol", {}).get("value", "")
+    model = config.get("model", {}).get("value", "")
+    base_url = config.get("base_url", {}).get("value", "")
+    api_key = config.get("api_key", {}).get("value", "")
+    auth_mode = config.get("auth_mode", {}).get("value", "")
+    capabilities = config.get("capabilities", {})
+    if (
+        not isinstance(protocol, str)
+        or not protocol
+        or not isinstance(model, str)
+        or not model
+        or not isinstance(base_url, str)
+        or not base_url
+        or not isinstance(api_key, str)
+        or type(timeout) not in {int, float}
+        or not isinstance(auth_mode, str)
+        or not isinstance(capabilities, dict)
+    ):
+        raise ValueError("delegate model client factory is not configured")
+    kwargs = {
+        "model": model,
+        "base_url": base_url,
+        "api_key": api_key,
+        "timeout": timeout,
+        "auth_mode": auth_mode,
+        "capabilities": dict(capabilities),
+    }
+
+    def build_child_client():
+        return build_transport_client(protocol, **kwargs)
+
+    return build_child_client
 
 
 def _confirm_project_trust(project_root):
@@ -231,12 +267,16 @@ def _build_agent(args, source_workspace):
     workspace = source_workspace
     if store is None:
         store = SessionStore(session_store_root, redactor=redactor)
-    model = _build_transport_client(
+    model, resolved_model_config = _build_transport_client(
         args,
         project_env=project_env,
         process_env=process_env,
         session_store=store if args.resume and session_id else None,
         session_id=session_id if args.resume else None,
+    )
+    delegate_model_client_factory = _delegate_model_client_factory(
+        resolved_model_config,
+        args.request_timeout_seconds,
     )
     if args.resume and session_id:
         resume_permission_mode = (
@@ -254,6 +294,7 @@ def _build_agent(args, source_workspace):
                 args, "_permission_rule_updates", ()
             ),
             options=RuntimeOptions(
+                delegate_model_client_factory=delegate_model_client_factory,
                 project_trusted=True,
                 max_steps=args.max_steps,
                 max_output_tokens=max_output_tokens,
@@ -270,6 +311,7 @@ def _build_agent(args, source_workspace):
         workspace=workspace,
         session_store=store,
         options=RuntimeOptions(
+            delegate_model_client_factory=delegate_model_client_factory,
             project_trusted=True,
             max_steps=args.max_steps,
             max_output_tokens=max_output_tokens,

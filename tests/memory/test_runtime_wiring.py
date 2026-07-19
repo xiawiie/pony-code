@@ -62,7 +62,10 @@ def _build_agent(tmp_path, monkeypatch, session=None):
         workspace=workspace,
         session_store=store,
         session=session,
-        options=RuntimeOptions(project_trusted=True),
+        options=RuntimeOptions(
+            project_trusted=True,
+            delegate_model_client_factory=lambda: FakeModelClient(["child done"]),
+        ),
     )
 
 

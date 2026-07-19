@@ -83,6 +83,8 @@ DEFAULT_SECRET_ENV_NAMES = (
 )
 DEFAULT_MAX_STEPS = 12
 DEFAULT_MAX_OUTPUT_TOKENS = MODEL_DEFAULT_MAX_OUTPUT_TOKENS
+MAX_DELEGATE_RESULT_CHARS = 4_000
+MAX_DELEGATE_STEPS = 3
 DEFAULT_FEATURE_FLAGS = {
     "memory": True,
 }
@@ -299,6 +301,7 @@ class Pony:
                 {str(key): bool(value) for key, value in options.feature_flags.items()}
             )
         self.allowed_tools = self._normalize_allowed_tools(options.allowed_tools)
+        self.delegate_model_client_factory = options.delegate_model_client_factory
         self.run_store = options.run_store or RunStore(self.project_state_root / "runs")
         redactor = _artifact_redactor(
             self.redaction_env,
@@ -1324,20 +1327,28 @@ class Pony:
         )
 
     def spawn_delegate(self, args):
+        self.validate_tool("delegate", args)
         task = str(args.get("task", "")).strip()
-        child_session_store = self.session_store
+        name = str(args.get("name", "delegate")).strip()
+        if not callable(self.delegate_model_client_factory):
+            raise ValueError("delegate model client factory is not configured")
+        child_model_client = self.delegate_model_client_factory()
+        if child_model_client is self.model_client:
+            raise ValueError("delegate model client factory reused the parent client")
+        child_session_id = f"delegate-{name}-{self.new_session_id()}"
+        child_root = self.project_state_root / "delegates" / f"{name}-{child_session_id}"
         child = Pony(
-            model_client=self.model_client,
+            model_client=child_model_client,
             workspace=self.workspace,
-            session_store=child_session_store,
+            session_store=sessionstorelib.SessionStore(child_root / "sessions"),
             options=RuntimeOptions(
-                run_store=self.run_store,
+                run_store=RunStore(child_root / "runs"),
                 project_trusted=self.project_trusted,
-                max_steps=int(args.get("max_steps", 3)),
+                max_steps=int(args.get("max_steps", MAX_DELEGATE_STEPS)),
                 max_output_tokens=self.max_output_tokens,
                 context_window=self.model_capabilities.context_window,
                 depth=self.depth + 1,
-                max_depth=self.max_depth,
+                max_depth=self.depth + 1,
                 read_only=True,
                 secret_env_names=self.secret_env_names,
                 redaction_env=self.redaction_env,
@@ -1345,13 +1356,20 @@ class Pony:
                 trusted_executables=self.trusted_executables,
                 shell_env_allowlist=self.shell_env_allowlist,
                 project_config=self.project_config,
+                allowed_tools=self.allowed_tools,
+                session_id=child_session_id,
             ),
         )
+        child.set_permission_mode(PermissionMode.DONT_ASK.value)
         # 委派的目标是“调查”，不是“放权执行”。
         # 子 agent 以只读方式运行、步数更少，最后只把结论文本返回给父 agent。
         child.memory.set_task_summary(task)
         child._sync_working_memory()
-        return "delegate_result:\n" + child.ask(task)
+        result = child.ask(task)
+        if len(result) > MAX_DELEGATE_RESULT_CHARS:
+            result = result[:MAX_DELEGATE_RESULT_CHARS] + "\n[delegate result truncated]"
+        prefix = "delegate_result" if name == "delegate" else f"delegate_result[{name}]"
+        return prefix + ":\n" + result
 
     def approve(self, name, args):
         if self.read_only:

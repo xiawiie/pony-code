@@ -306,6 +306,12 @@ def validate_tool(context, name, args):
         task = str(args.get("task", "")).strip()
         if not task:
             raise ValueError("task must not be empty")
+        delegate_name = str(args.get("name", "delegate")).strip()
+        if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]{0,63}", delegate_name):
+            raise ValueError("delegate name must be 1-64 letters, digits, '_' or '-'")
+        max_steps = args.get("max_steps", 3)
+        if type(max_steps) is not int or not 1 <= max_steps <= 3:
+            raise ValueError("delegate max_steps must be in [1, 3]")
         if context.depth >= context.max_depth:
             raise ValueError("delegate depth exceeded")
         return

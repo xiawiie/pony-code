@@ -214,7 +214,10 @@ def test_delegate_inherits_parent_frozen_executables(tmp_path, monkeypatch):
         model_client=FakeModelClient([]),
         workspace=workspace,
         session_store=SessionStore(tmp_path / ".pony" / "sessions"),
-        options=RuntimeOptions(project_trusted=True),
+        options=RuntimeOptions(
+            project_trusted=True,
+            delegate_model_client_factory=lambda: FakeModelClient([]),
+        ),
     )
     children = []
 
@@ -229,9 +232,60 @@ def test_delegate_inherits_parent_frozen_executables(tmp_path, monkeypatch):
         "delegate_result:\nsafe"
     )
     child = children[0]
+    assert child.model_client is not agent.model_client
+    assert child.session_store is not agent.session_store
+    assert child.run_store is not agent.run_store
+    assert child.workspace is agent.workspace
     assert dict(child.trusted_executables) == frozen
     assert dict(child.workspace_observer.trusted_executables) == frozen
     assert dict(child.tool_context().trusted_executables) == frozen
+
+
+def test_delegate_rejects_a_factory_that_returns_the_parent_client(tmp_path):
+    agent = build_agent(tmp_path, [])
+    agent.delegate_model_client_factory = lambda: agent.model_client
+
+    with pytest.raises(ValueError, match="reused the parent client"):
+        agent.spawn_delegate({"task": "inspect", "name": "reviewer", "max_steps": 1})
+
+
+def test_named_delegate_keeps_its_artifacts_outside_the_parent_stores(
+    tmp_path, monkeypatch
+):
+    children = []
+    agent = build_agent(
+        tmp_path,
+        [],
+        delegate_model_client_factory=lambda: FakeModelClient([]),
+    )
+
+    def fake_ask(child, task):
+        children.append((child, task))
+        return "review complete"
+
+    monkeypatch.setattr(Pony, "ask", fake_ask)
+    result = agent.spawn_delegate(
+        {"task": "inspect", "name": "reviewer", "max_steps": 1}
+    )
+
+    child, task = children[0]
+    assert task == "inspect"
+    assert result == "delegate_result[reviewer]:\nreview complete"
+    assert child.current_permission_mode() == "dontAsk"
+    assert child.session["id"].startswith("delegate-reviewer-")
+    assert child.session_store.root.parent != agent.session_store.root
+    assert child.run_store.root.parent != agent.run_store.root
+    assert "delegate" not in child.visible_tools()
+    assert not {"run_shell", "write_file", "patch_file", "memory_save", "write_plan"} & set(
+        child.visible_tools()
+    )
+    for tool_name, tool_args in (
+        ("memory_save", {"note": "do not persist"}),
+        ("write_plan", {"plan": "# Plan"}),
+        ("write_file", {"path": "blocked.txt", "content": "blocked"}),
+    ):
+        result = child.execute_tool(tool_name, tool_args)
+        assert result.metadata["tool_error_code"] == "read_only_block"
 
 
 def test_runtime_rejects_credential_bearing_base_url_before_client_construction(
@@ -739,13 +793,17 @@ def test_delegate_child_is_read_only(tmp_path):
         tmp_path,
         [
             {"name": "delegate", "args": {"task": "write a file", "max_steps": 2}},
-            {
-                "name": "write_file",
-                "args": {"path": "child-was-not-allowed.txt", "content": "nope"},
-            },
-            "child done",
             "parent done",
         ],
+        delegate_model_client_factory=lambda: FakeModelClient(
+            [
+                {
+                    "name": "write_file",
+                    "args": {"path": "child-was-not-allowed.txt", "content": "nope"},
+                },
+                "child done",
+            ]
+        ),
     )
 
     result = agent.ask("Delegate the work")
