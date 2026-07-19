@@ -133,6 +133,7 @@ def _require_existing_lock_entry(value, *, directory=False):
     if (
         not expected_kind
         or value.st_uid != uid
+        or (directory and stat.S_IMODE(value.st_mode) & 0o022)
         or (
             not directory
             and (value.st_nlink != 1 or stat.S_IMODE(value.st_mode) != 0o600)
