@@ -15,11 +15,10 @@ from pony.state.session_store import (
     SessionFormatError,
     SessionStore,
 )
-from pony.state.workflow import DEFAULT_WORKFLOW_MODE, EMPTY_PLAN
+from pony.tools.permissions import PermissionMode
 
 
 _SESSION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
-_ABSOLUTE_PATH_RE = re.compile(r"(?<!:)/[^\s]+")
 
 
 def _pair_count(messages):
@@ -31,11 +30,6 @@ def _pair_count(messages):
         and message["content"]
         and message["content"][0].get("type") == "tool_use"
     )
-
-
-def _inspection_goal(value):
-    value = str(value or "")
-    return "<redacted>" if _ABSOLUTE_PATH_RE.search(value) else value
 
 
 def _readonly_store(sessions_root):
@@ -139,34 +133,25 @@ def session_inspection_data(session_id, sessions_root):
         raise SessionFormatError("invalid schema version")
     validate_messages(messages, require_meta=True)
 
-    plan = session.get("active_plan", EMPTY_PLAN)
-    mode = session.get("workflow_mode", DEFAULT_WORKFLOW_MODE)
-    items = plan.get("items", []) if isinstance(plan, dict) else []
-    statuses = {status: 0 for status in ("pending", "in_progress", "completed")}
-    for item in items:
-        if isinstance(item, dict) and item.get("status") in statuses:
-            statuses[item["status"]] += 1
+    permission_mode = session.get("permission_mode")
+    if storage == "legacy_jsonl":
+        permission_mode = (
+            PermissionMode.DEFAULT.value
+            if session.get("workflow_mode") == "act"
+            else PermissionMode.PLAN.value
+        )
+    elif storage == "legacy":
+        permission_mode = PermissionMode.DEFAULT.value
     recovery = session.get("recovery")
     checkpoints = session.get("checkpoints")
     migration = "not_required" if storage == "current" else "required_on_resume"
-    if storage == "legacy_jsonl" and any(
-        entry["type"] == "model_change" for entry in tree.entries
-    ):
-        migration = "unsupported_legacy_entry"
     return {
         "session_id": session_id,
         "storage": storage,
         "record_type": record_type,
         "format_version": version,
         "migration": migration,
-        "workflow_mode": mode,
-        "plan": {
-            "goal": _inspection_goal(plan.get("goal", ""))
-            if isinstance(plan, dict)
-            else "",
-            "items": len(items),
-            **statuses,
-        },
+        "permission_mode": permission_mode,
         "checkpoint": {
             "task": "present"
             if isinstance(checkpoints, dict) and checkpoints.get("current_id")
@@ -189,7 +174,6 @@ def session_inspection_data(session_id, sessions_root):
 
 
 def render_session_inspection(data):
-    plan = data["plan"]
     checkpoint = data["checkpoint"]
     migration = data["migration"].replace("_", " ")
     if data["migration"] == "required_on_resume":
@@ -201,10 +185,7 @@ def render_session_inspection(data):
             f"record_type: {data['record_type']}",
             f"format_version: {data['format_version']}",
             f"migration: {migration}",
-            f"workflow_mode: {data['workflow_mode']}",
-            f"plan_goal: {plan['goal'] or '-'}",
-            f"plan_progress: {plan['completed']}/{plan['items']} completed",
-            f"plan_current: {plan['in_progress']}",
+            f"permission_mode: {data['permission_mode']}",
             f"checkpoint: {checkpoint['task']}",
             f"workspace_recovery: {checkpoint['workspace_recovery']}",
             f"messages: {data['messages']}",

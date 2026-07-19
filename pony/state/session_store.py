@@ -40,12 +40,13 @@ from pony.state.workflow import (
     validate_plan,
     validate_workflow_mode,
 )
+from pony.tools.permissions import PermissionMode, validate_permission_mode
 from pony.workspace.context import now
 
 
 SESSION_RECORD_TYPE = "session"
-SESSION_FORMAT_VERSION = 3
-PREVIOUS_SESSION_FORMAT_VERSION = 2
+SESSION_FORMAT_VERSION = 4
+PREVIOUS_SESSION_FORMAT_VERSION = 3
 LEGACY_SESSION_FORMAT_VERSION = 1
 SESSION_HEADER_RECORD_TYPE = "session_header"
 SESSION_ENTRY_RECORD_TYPE = "session_entry"
@@ -60,8 +61,7 @@ ENTRY_TYPES = frozenset(
     {
         "message",
         "tool_exchange",
-        "workflow_mode_change",
-        "plan_update",
+        "permission_mode_change",
         "compaction",
         "branch_summary",
         "task_checkpoint",
@@ -72,8 +72,9 @@ ENTRY_TYPES = frozenset(
         "migration",
     }
 )
-_V2_ENTRY_TYPES = (ENTRY_TYPES - {"workflow_mode_change", "plan_update"}) | {
-    "model_change"
+_V3_ENTRY_TYPES = (ENTRY_TYPES - {"permission_mode_change"}) | {
+    "workflow_mode_change",
+    "plan_update",
 }
 
 
@@ -166,11 +167,14 @@ _REQUIRED_FIELDS = frozenset(
         "resume_state",
         "recovery",
         "runtime_identity",
-        "workflow_mode",
-        "active_plan",
+        "permission_mode",
     }
 )
-_LEGACY_REQUIRED_FIELDS = _REQUIRED_FIELDS - {"workflow_mode", "active_plan"}
+_PREVIOUS_REQUIRED_FIELDS = (_REQUIRED_FIELDS - {"permission_mode"}) | {
+    "workflow_mode",
+    "active_plan",
+}
+_LEGACY_REQUIRED_FIELDS = _REQUIRED_FIELDS - {"permission_mode"}
 _OPTIONAL_FIELDS = frozenset({"provider_binding"})
 _PROTOCOL_FAMILIES = {
     "anthropic_messages",
@@ -185,7 +189,6 @@ _DICT_FIELDS = (
     "resume_state",
     "recovery",
     "runtime_identity",
-    "active_plan",
 )
 _DERIVED_CACHE_FIELDS = frozenset({"working_memory", "memory", "recently_recalled"})
 _HEADER_PROJECTION_FIELDS = frozenset(
@@ -193,7 +196,7 @@ _HEADER_PROJECTION_FIELDS = frozenset(
 )
 _SESSION_INFO_FIELDS = (
     (_REQUIRED_FIELDS | _OPTIONAL_FIELDS)
-    - {"messages", "workflow_mode", "active_plan"}
+    - {"messages", "permission_mode"}
     - _DERIVED_CACHE_FIELDS
 )
 _MUTABLE_SESSION_INFO_FIELDS = frozenset(
@@ -343,7 +346,12 @@ def _validate_rewind_intent(value, session_id):
 def _validate_projection(payload, session_id, *, version=SESSION_FORMAT_VERSION):
     if not isinstance(payload, dict):
         raise SessionFormatError("session payload must be an object")
-    required = _REQUIRED_FIELDS if version == SESSION_FORMAT_VERSION else _LEGACY_REQUIRED_FIELDS
+    if version == SESSION_FORMAT_VERSION:
+        required = _REQUIRED_FIELDS
+    elif version == PREVIOUS_SESSION_FORMAT_VERSION:
+        required = _PREVIOUS_REQUIRED_FIELDS
+    else:
+        required = _LEGACY_REQUIRED_FIELDS
     if not required <= payload.keys() or not payload.keys() <= (
         required | _OPTIONAL_FIELDS
     ):
@@ -362,16 +370,17 @@ def _validate_projection(payload, session_id, *, version=SESSION_FORMAT_VERSION)
         for key in ("id", "created_at", "workspace_root")
     ):
         raise SessionFormatError("invalid session string field")
-    dict_fields = (
-        _DICT_FIELDS
-        if version == SESSION_FORMAT_VERSION
-        else tuple(key for key in _DICT_FIELDS if key != "active_plan")
-    )
+    dict_fields = _DICT_FIELDS + (("active_plan",) if version == PREVIOUS_SESSION_FORMAT_VERSION else ())
     if any(not isinstance(payload.get(key), dict) for key in dict_fields):
         raise SessionFormatError("invalid session object field")
     if not isinstance(payload.get("recently_recalled"), list):
         raise SessionFormatError("invalid session list field")
     if version == SESSION_FORMAT_VERSION:
+        try:
+            validate_permission_mode(payload.get("permission_mode"))
+        except ValueError as exc:
+            raise SessionFormatError(str(exc)) from None
+    elif version == PREVIOUS_SESSION_FORMAT_VERSION:
         try:
             validate_workflow_mode(payload.get("workflow_mode"))
             validate_plan(payload.get("active_plan"))
@@ -632,7 +641,7 @@ def _validate_entry(
         raise SessionFormatError("invalid session parent id")
     if not isinstance(entry.get("timestamp"), str):
         raise SessionFormatError("invalid session entry timestamp")
-    allowed_types = _V2_ENTRY_TYPES if version == PREVIOUS_SESSION_FORMAT_VERSION else ENTRY_TYPES
+    allowed_types = _V3_ENTRY_TYPES if version == PREVIOUS_SESSION_FORMAT_VERSION else ENTRY_TYPES
     if entry.get("type") not in allowed_types:
         raise SessionFormatError("invalid session entry kind")
     if not isinstance(entry.get("data"), dict):
@@ -669,11 +678,21 @@ def _validate_entry(
             or not checkpoint.keys() <= _TASK_CHECKPOINT_FIELDS
         ):
             raise SessionFormatError("invalid task checkpoint entry data")
-    if entry["type"] == "tool_exchange" and version == SESSION_FORMAT_VERSION:
+    if entry["type"] == "tool_exchange":
         if entry["data"].keys() != {"assistant", "result"}:
             raise SessionFormatError("invalid tool exchange entry data")
+    if entry["type"] == "tool_exchange" and version == PREVIOUS_SESSION_FORMAT_VERSION:
         _tool_exchange_plan(entry["data"], redactor=plan_redactor)
+    if entry["type"] == "permission_mode_change":
+        if version != SESSION_FORMAT_VERSION or entry["data"].keys() != {"mode"}:
+            raise SessionFormatError("invalid permission mode entry data")
+        try:
+            validate_permission_mode(entry["data"].get("mode"))
+        except ValueError as exc:
+            raise SessionFormatError(str(exc)) from None
     if entry["type"] == "workflow_mode_change":
+        if version != PREVIOUS_SESSION_FORMAT_VERSION:
+            raise SessionFormatError("invalid workflow mode entry data")
         if entry["data"].keys() != {"mode"}:
             raise SessionFormatError("invalid workflow mode entry data")
         try:
@@ -681,6 +700,8 @@ def _validate_entry(
         except ValueError as exc:
             raise SessionFormatError(str(exc)) from None
     if entry["type"] == "plan_update":
+        if version != PREVIOUS_SESSION_FORMAT_VERSION:
+            raise SessionFormatError("invalid plan update entry data")
         if entry["data"].keys() != {"plan"}:
             raise SessionFormatError("invalid plan update entry data")
         try:
@@ -707,12 +728,13 @@ def _base_projection(header):
         "runtime_identity": {},
     }
     if header["format_version"] == SESSION_FORMAT_VERSION:
+        projection["permission_mode"] = PermissionMode.DEFAULT.value
+    else:
         projection.update(
+            format_version=header["format_version"],
             workflow_mode=DEFAULT_WORKFLOW_MODE,
             active_plan=deepcopy(EMPTY_PLAN),
         )
-    else:
-        projection["format_version"] = header["format_version"]
     return projection
 
 
@@ -781,7 +803,7 @@ def _tool_exchange_plan(data, *, redactor=None):
         raise SessionFormatError(str(exc)) from None
 
 
-def _apply_entry(projection, entry):
+def _apply_entry(projection, entry, *, version):
     kind = entry["type"]
     data = entry["data"]
     if kind == "message":
@@ -795,9 +817,12 @@ def _apply_entry(projection, entry):
         if not isinstance(assistant, dict) or not isinstance(result, dict):
             raise SessionFormatError("invalid tool exchange entry")
         projection["messages"].extend((deepcopy(assistant), deepcopy(result)))
-        plan = _tool_exchange_plan(data)
-        if plan is not None:
-            projection["active_plan"] = plan
+        if version == PREVIOUS_SESSION_FORMAT_VERSION:
+            plan = _tool_exchange_plan(data)
+            if plan is not None:
+                projection["active_plan"] = plan
+    elif kind == "permission_mode_change":
+        projection["permission_mode"] = validate_permission_mode(data.get("mode"))
     elif kind == "workflow_mode_change":
         projection["workflow_mode"] = validate_workflow_mode(data.get("mode"))
     elif kind == "plan_update":
@@ -1065,7 +1090,7 @@ def _project_tree(header, entries):
     projection = _base_projection(header)
     path = _active_path(entries)
     for entry in path:
-        _apply_entry(projection, entry)
+        _apply_entry(projection, entry, version=header["format_version"])
     _validate_projection(
         projection,
         header["id"],
@@ -1121,18 +1146,11 @@ def _state_values(projection):
     }
 
 
-def _workflow_entries(projection, parent_id, *, include_empty_plan=False):
-    entries = []
-    mode = projection.get("workflow_mode", DEFAULT_WORKFLOW_MODE)
-    plan = projection.get("active_plan", EMPTY_PLAN)
-    if mode != DEFAULT_WORKFLOW_MODE:
-        entry = _new_entry("workflow_mode_change", {"mode": mode}, parent_id)
-        entries.append(entry)
-        parent_id = entry["id"]
-    if plan != EMPTY_PLAN or include_empty_plan:
-        entry = _new_entry("plan_update", {"plan": plan}, parent_id)
-        entries.append(entry)
-    return entries
+def _permission_entries(projection, parent_id):
+    mode = projection.get("permission_mode", PermissionMode.DEFAULT.value)
+    if mode == PermissionMode.DEFAULT.value:
+        return []
+    return [_new_entry("permission_mode_change", {"mode": mode}, parent_id)]
 
 
 def _persistent_projection(value):
@@ -1386,7 +1404,7 @@ def _extend_tree(tree, entries):
             checkpoints["items"] = dict(items) if isinstance(items, dict) else {}
             projection["checkpoints"] = checkpoints
             checkpoints_copied = True
-        _apply_entry(projection, entry)
+        _apply_entry(projection, entry, version=tree.header["format_version"])
     return SessionTree(
         tree.header,
         combined,
@@ -1488,7 +1506,7 @@ class SessionStore:
                 )
                 version = _jsonl_format_version(raw)
                 if version == PREVIOUS_SESSION_FORMAT_VERSION:
-                    self._migrate_v2_unlocked(session_id, raw)
+                    self._migrate_v3_unlocked(session_id, raw)
                 elif version != SESSION_FORMAT_VERSION:
                     raise SessionFormatError("invalid session header version")
             else:
@@ -1531,10 +1549,10 @@ class SessionStore:
             )
             entries.append(marker)
             parent_id = marker["id"]
-        workflow_entries = _workflow_entries(session, parent_id)
-        entries.extend(workflow_entries)
-        if workflow_entries:
-            parent_id = workflow_entries[-1]["id"]
+        permission_entries = _permission_entries(session, parent_id)
+        entries.extend(permission_entries)
+        if permission_entries:
+            parent_id = permission_entries[-1]["id"]
         checkpoint_entries = _task_checkpoint_entries(
             session.get("checkpoints", {}),
             parent_id,
@@ -1608,9 +1626,6 @@ class SessionStore:
         if not isinstance(session, dict):
             raise SessionFormatError("session payload must be an object")
         raw_session = deepcopy(session)
-        raw_plan = raw_session.get("active_plan")
-        if raw_plan is not None:
-            validate_plan(raw_plan, redactor=self._redactor)
         raw_messages = raw_session.get("messages")
         if isinstance(raw_messages, list):
             try:
@@ -1625,8 +1640,7 @@ class SessionStore:
         candidate.pop("_recall_errors", None)
         session_id = _session_id(candidate.get("id"))
         candidate["format_version"] = SESSION_FORMAT_VERSION
-        candidate.setdefault("workflow_mode", DEFAULT_WORKFLOW_MODE)
-        candidate.setdefault("active_plan", deepcopy(EMPTY_PLAN))
+        candidate.setdefault("permission_mode", PermissionMode.DEFAULT.value)
         _validate_projection(candidate, session_id)
         with file_lock.locked_file(self.lock_path):
             canonical = self.path(session_id)
@@ -1650,10 +1664,10 @@ class SessionStore:
             ):
                 if any(
                     candidate.get(key) != current.get(key)
-                    for key in ("workflow_mode", "active_plan")
+                    for key in ("permission_mode",)
                 ):
                     raise SessionFormatError(
-                        "workflow state requires an explicit control entry"
+                        "permission state requires an explicit control entry"
                     )
                 message_entries = _message_entries(
                     candidate_messages[len(current_messages) :],
@@ -1741,14 +1755,10 @@ class SessionStore:
                 )
                 entries.append(state)
                 parent_id = state["id"]
-                workflow_entries = _workflow_entries(
-                    candidate,
-                    parent_id,
-                    include_empty_plan=True,
-                )
-                entries.extend(workflow_entries)
-                if workflow_entries:
-                    parent_id = workflow_entries[-1]["id"]
+                permission_entries = _permission_entries(candidate, parent_id)
+                entries.extend(permission_entries)
+                if permission_entries:
+                    parent_id = permission_entries[-1]["id"]
                 message_entries = _message_entries(candidate_messages, parent_id)
                 entries.extend(message_entries)
                 changed = {}
@@ -1808,19 +1818,10 @@ class SessionStore:
         if kind not in ENTRY_TYPES - {"message", "tool_exchange", "session_info"}:
             raise ValueError("invalid control entry type")
         session_id = _session_id(session_id)
-        if kind == "workflow_mode_change":
+        if kind == "permission_mode_change":
             if not isinstance(data, dict) or data.keys() != {"mode"}:
-                raise SessionFormatError("invalid workflow mode entry data")
-            validate_workflow_mode(data["mode"])
-        elif kind == "plan_update":
-            if not isinstance(data, dict) or data.keys() != {"plan"}:
-                raise SessionFormatError("invalid plan update entry data")
-            try:
-                validate_plan(data["plan"], redactor=self._redactor)
-            except PlanValidationError:
-                raise
-            except ValueError as exc:
-                raise SessionFormatError(str(exc)) from None
+                raise SessionFormatError("invalid permission mode entry data")
+            validate_permission_mode(data["mode"])
         with file_lock.locked_file(self.lock_path, require_existing=True):
             tree = self._read_tree_unlocked(session_id)
             target = tree.leaf_id if parent_id is None else str(parent_id)
@@ -1835,24 +1836,12 @@ class SessionStore:
             self._append_entries_unlocked(session_id, [entry])
             return deepcopy(entry)
 
-    def set_workflow_mode(self, session_id, mode):
-        mode = validate_workflow_mode(mode)
+    def set_permission_mode(self, session_id, mode):
+        mode = validate_permission_mode(mode)
         tree = self.load_tree(session_id)
-        if tree.projection["workflow_mode"] == mode:
+        if tree.projection["permission_mode"] == mode:
             return None
-        return self.append_control(session_id, "workflow_mode_change", {"mode": mode})
-
-    def set_active_plan(self, session_id, plan):
-        try:
-            plan = validate_plan(plan, redactor=self._redactor)
-        except PlanValidationError:
-            raise
-        except ValueError as exc:
-            raise SessionFormatError(str(exc)) from None
-        tree = self.load_tree(session_id)
-        if tree.projection["active_plan"] == plan:
-            return None
-        return self.append_control(session_id, "plan_update", {"plan": plan})
+        return self.append_control(session_id, "permission_mode_change", {"mode": mode})
 
     def append_task_checkpoint(self, session_id, checkpoint, *, parent_id=None):
         checkpoint = deepcopy(checkpoint)
@@ -2191,7 +2180,7 @@ class SessionStore:
             self._tree_cache.pop(session_id, None)
             return True
 
-    def _migrate_v2_unlocked(self, session_id, source_raw=None):
+    def _migrate_v3_unlocked(self, session_id, source_raw=None):
         source = self.path(session_id)
         _harden_migration_source(
             source,
@@ -2213,22 +2202,44 @@ class SessionStore:
             session_id,
             version=PREVIOUS_SESSION_FORMAT_VERSION,
         )
-        if any(entry["type"] == "model_change" for entry in old_tree.entries):
-            raise UnsupportedLegacyEntry("model_change")
-
         rows = [_decode_json_object(line) for line in raw.splitlines()]
         migrated_rows = []
         for row in rows:
             migrated = deepcopy(row)
             migrated["format_version"] = SESSION_FORMAT_VERSION
+            if migrated.get("type") == "session_info":
+                migrated.get("data", {}).get("set", {})["format_version"] = (
+                    SESSION_FORMAT_VERSION
+                )
+            elif migrated.get("type") == "workflow_mode_change":
+                migrated["type"] = "permission_mode_change"
+                legacy_mode = migrated["data"]["mode"]
+                migrated["data"] = {
+                    "mode": (
+                        PermissionMode.DEFAULT.value
+                        if legacy_mode == "act"
+                        else PermissionMode.PLAN.value
+                    )
+                }
+            elif migrated.get("type") == "plan_update":
+                migrated["type"] = "migration"
+                migrated["data"] = {
+                    "from_format": PREVIOUS_SESSION_FORMAT_VERSION,
+                    "legacy_control": deepcopy(row["data"]),
+                }
             migrated_rows.append(migrated)
         candidate_bytes = b"".join(_serialize_line(row) for row in migrated_rows)
         candidate_tree = _parse_jsonl(candidate_bytes, session_id)
         expected = deepcopy(old_tree.projection)
+        legacy_mode = expected.pop("workflow_mode", DEFAULT_WORKFLOW_MODE)
+        expected.pop("active_plan", None)
         expected.update(
             format_version=SESSION_FORMAT_VERSION,
-            workflow_mode=DEFAULT_WORKFLOW_MODE,
-            active_plan=deepcopy(EMPTY_PLAN),
+            permission_mode=(
+                PermissionMode.DEFAULT.value
+                if legacy_mode == "act"
+                else PermissionMode.PLAN.value
+            ),
         )
         if not session_projections_equal(candidate_tree.projection, expected):
             raise SessionFormatError("session migration projection mismatch")
@@ -2326,8 +2337,7 @@ class SessionStore:
         _validate_legacy_payload(payload, session_id)
         migrated = deepcopy(payload)
         migrated["format_version"] = SESSION_FORMAT_VERSION
-        migrated["workflow_mode"] = DEFAULT_WORKFLOW_MODE
-        migrated["active_plan"] = deepcopy(EMPTY_PLAN)
+        migrated["permission_mode"] = PermissionMode.DEFAULT.value
 
         backup_root = ensure_private_dir(self.root / "legacy-backups")
         backup_identity = private_directory_identity(backup_root)

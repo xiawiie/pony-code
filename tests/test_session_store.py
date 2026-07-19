@@ -38,10 +38,7 @@ def _session(workspace, session_id, content="hello", *, legacy=False):
         "runtime_identity": {},
     }
     if not legacy:
-        session.update(
-            workflow_mode="act",
-            active_plan={"goal": "", "items": []},
-        )
+        session["permission_mode"] = "default"
     return session
 
 
@@ -93,7 +90,7 @@ def test_session_store_saves_loads_and_finds_latest_session(tmp_path):
     loaded = store.load("session_002")
     assert loaded["format_version"] == SESSION_FORMAT_VERSION
     assert loaded["record_type"] == "session"
-    assert loaded["format_version"] == SESSION_FORMAT_VERSION == 3
+    assert loaded["format_version"] == SESSION_FORMAT_VERSION == 4
     assert "history" not in loaded
     assert loaded["messages"] == [
         {"role": "user", "content": "second", "_pony_meta": {}},
@@ -342,8 +339,7 @@ def test_legacy_json_migrates_only_on_explicit_resume_with_backup(tmp_path):
     assert loaded == {
         **legacy,
         "format_version": SESSION_FORMAT_VERSION,
-        "workflow_mode": "act",
-        "active_plan": {"goal": "", "items": []},
+        "permission_mode": "default",
     }
     assert store.path("legacy").exists()
     assert not store.legacy_path("legacy").exists()
@@ -436,8 +432,7 @@ def test_legacy_migration_promotes_checkpoint_without_overwriting_current_state(
     assert loaded == {
         **legacy,
         "format_version": SESSION_FORMAT_VERSION,
-        "workflow_mode": "act",
-        "active_plan": {"goal": "", "items": []},
+        "permission_mode": "default",
     }
     assert any(
         entry["type"] == "task_checkpoint"
@@ -556,14 +551,7 @@ def test_clone_to_worktree_copies_active_branch_and_clears_workspace_state(tmp_p
         },
     }
     store.save(session)
-    store.set_workflow_mode("source-session", "review")
-    store.set_active_plan(
-        "source-session",
-        {
-            "goal": "Finish clone",
-            "items": [{"id": "clone", "text": "Clone state", "status": "pending"}],
-        },
-    )
+    store.set_permission_mode("source-session", "plan")
     first_message = next(
         entry for entry in store.entries("source-session") if entry["type"] == "message"
     )
@@ -613,8 +601,7 @@ def test_clone_to_worktree_copies_active_branch_and_clears_workspace_state(tmp_p
     )
     assert loaded["recovery"] == {"current_checkpoint_id": ""}
     assert loaded["runtime_identity"] == {}
-    assert loaded["workflow_mode"] == "review"
-    assert loaded["active_plan"]["goal"] == "Finish clone"
+    assert loaded["permission_mode"] == "plan"
     assert view.summary == "source summary"
     assert target_store.load_tree("target-session").header["worktree_identity"][
         "lexical_root"

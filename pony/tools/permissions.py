@@ -19,6 +19,13 @@ class PermissionDecision(str, Enum):
 _MUTATING_EFFECTS = frozenset({"workspace_write", "memory_write", "session_state"})
 
 
+def validate_permission_mode(value):
+    try:
+        return PermissionMode(value).value
+    except (TypeError, ValueError):
+        raise ValueError("invalid permission mode") from None
+
+
 def decide_permission(
     *,
     project_trusted,
