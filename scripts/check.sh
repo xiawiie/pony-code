@@ -43,7 +43,7 @@ uv run --frozen pytest -q tests benchmarks/live_e2e/tests/test_assertions.py
 uv run --frozen python scripts/evaluation/evaluate.py \
   --suite core-functional \
   --output-dir "$tmp_dir/eval"
-uv build --offline --clear --out-dir "$dist_dir"
+uv build --offline --clear --no-create-gitignore --out-dir "$dist_dir"
 uv run --frozen python scripts/release/verify_distribution.py \
   --dist-dir "$dist_dir" \
   --install-smoke \

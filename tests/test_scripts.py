@@ -338,7 +338,7 @@ def test_local_check_script_runs_each_full_gate_once_on_a_clean_exact_head():
     assert "--suite core-functional" in text
     assert '--output-dir "$tmp_dir/eval"' in text
     assert text.count("uv build") == 1
-    assert "uv build --offline --clear --out-dir" in text
+    assert "uv build --offline --clear --no-create-gitignore --out-dir" in text
     assert text.count("scripts/release/verify_distribution.py") == 1
     assert '--dist-dir "$dist_dir"' in text
     assert 'tmp_dir=$(mktemp -d ".pony-check.XXXXXX")' in text
