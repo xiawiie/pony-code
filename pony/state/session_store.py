@@ -88,6 +88,10 @@ class SessionFormatError(ValueError):
     """A Session artifact does not match the current on-disk contract."""
 
 
+class PlanApprovalChanged(SessionFormatError):
+    code = "plan_approval_changed"
+
+
 class SessionMigrationRequired(SessionFormatError):
     code = "session_migration_required"
 
@@ -408,6 +412,7 @@ def _validate_projection(payload, session_id, *, version=SESSION_FORMAT_VERSION)
             or len(plan_text.encode("utf-8")) > MAX_PLAN_TEXT_BYTES
             or type(plan_revision) is not int
             or plan_revision < 0
+            or (plan_revision == 0) != (plan_text == "")
             or not isinstance(pre_plan_mode, str)
         ):
             raise SessionFormatError("invalid plan state")
@@ -1733,6 +1738,13 @@ class SessionStore:
     def _append_entries_unlocked(self, session_id, entries):
         if not entries:
             return self.path(session_id)
+        tree = self._read_tree_unlocked(session_id)
+        known = {entry["id"] for entry in tree.entries}
+        for entry in entries:
+            _validate_entry(entry, known, plan_redactor=self._redactor)
+            known.add(entry["id"])
+        extended = _extend_tree(tree, entries)
+        _validate_projection(extended.projection, session_id)
         rendered = b"".join(_serialize_line(entry) for entry in entries)
         cached = self._tree_cache.get(session_id)
         expected_identity = cached[0][:2] if cached is not None else None
@@ -1744,16 +1756,12 @@ class SessionStore:
             max_total_bytes=MAX_SESSION_BYTES,
             expected_identity=expected_identity,
         )
-        if cached is not None:
-            tree = _extend_tree(cached[1], entries)
-            signature = private_file_signature(
-                path,
-                trusted_root=self.root,
-                trusted_root_identity=self._root_identity,
-            )
-            self._tree_cache[session_id] = (signature, tree)
-        else:
-            self._tree_cache.pop(session_id, None)
+        signature = private_file_signature(
+            path,
+            trusted_root=self.root,
+            trusted_root_identity=self._root_identity,
+        )
+        self._tree_cache[session_id] = (signature, extended)
         size = path.stat().st_size
         if (
             size >= SESSION_SOFT_LIMIT_BYTES
@@ -1767,7 +1775,7 @@ class SessionStore:
             self._soft_limit_warned.add(session_id)
         return path
 
-    def save(self, session, *, force_branch=False):
+    def save(self, session, *, force_branch=False, expected_leaf_id=None):
         if not isinstance(session, dict):
             raise SessionFormatError("session payload must be an object")
         raw_session = deepcopy(session)
@@ -1801,6 +1809,8 @@ class SessionStore:
                     raise SessionMigrationRequired(session_id)
                 return self._write_new_tree_unlocked(candidate)
             tree = self._read_tree_unlocked(session_id)
+            if expected_leaf_id is not None and tree.leaf_id != expected_leaf_id:
+                raise SessionFormatError("session changed before branch write")
             if tree.header["workspace_root"] != candidate["workspace_root"]:
                 raise SessionFormatError("session workspace root changed")
             current = tree.projection
@@ -2006,47 +2016,78 @@ class SessionStore:
         return self.append_control(session_id, "permission_mode_change", {"mode": mode})
 
     def set_permission_rule(self, session_id, tool_name, behavior):
+        session_id = _session_id(session_id)
         tool_name = str(tool_name).strip()
         if not tool_name:
             raise ValueError("permission rule tool is required")
         if behavior not in {"allow", "ask", "deny", "remove"}:
             raise ValueError("invalid permission rule behavior")
-        tree = self.load_tree(session_id)
-        rules = deepcopy(
-            tree.projection.get(
-                "permission_rules",
-                {"allow": [], "ask": [], "deny": []},
+        with file_lock.locked_file(self.lock_path, require_existing=True):
+            tree = self._read_tree_unlocked(session_id)
+            rules = deepcopy(
+                tree.projection.get(
+                    "permission_rules",
+                    {"allow": [], "ask": [], "deny": []},
+                )
             )
-        )
-        for values in rules.values():
-            if tool_name in values:
-                values.remove(tool_name)
-        if behavior != "remove":
-            rules[behavior].append(tool_name)
-            rules[behavior].sort()
-        if rules == tree.projection.get("permission_rules"):
-            return None
-        self.append_messages(
-            session_id,
-            (),
-            state_updates={"permission_rules": rules},
-        )
-        return rules
+            for values in rules.values():
+                if tool_name in values:
+                    values.remove(tool_name)
+            if behavior != "remove":
+                rules[behavior].append(tool_name)
+                rules[behavior].sort()
+            if rules == tree.projection.get("permission_rules"):
+                return None
+            safe_rules = self._redactor(rules)
+            _validate_session_info_updates({"permission_rules": safe_rules})
+            entry = _new_entry(
+                "session_info",
+                {"set": {"permission_rules": safe_rules}},
+                tree.leaf_id,
+            )
+            self._append_entries_unlocked(session_id, [entry])
+            return deepcopy(safe_rules)
 
-    def set_plan_text(self, session_id, text):
+    def set_plan_text(self, session_id, text, *, expected_revision=None):
+        session_id = _session_id(session_id)
         if not isinstance(text, str):
             raise ValueError("plan text must be a string")
         if len(text.encode("utf-8")) > MAX_PLAN_TEXT_BYTES:
             raise ValueError("plan text exceeds limit")
-        tree = self.load_tree(session_id)
-        if tree.projection.get("plan_text", "") == text:
-            return None
-        revision = int(tree.projection.get("plan_revision", 0)) + 1
-        return self.append_control(
-            session_id,
-            "plan_artifact",
-            {"text": text, "revision": revision},
-        )
+        with file_lock.locked_file(self.lock_path, require_existing=True):
+            tree = self._read_tree_unlocked(session_id)
+            if (
+                expected_revision is not None
+                and tree.projection.get("plan_revision", 0) != expected_revision
+            ):
+                raise PlanApprovalChanged("plan changed while editing")
+            if tree.projection.get("plan_text", "") == text:
+                return None
+            revision = int(tree.projection.get("plan_revision", 0)) + 1
+            safe_data = self._redactor({"text": text, "revision": revision})
+            entry = _new_entry("plan_artifact", safe_data, tree.leaf_id)
+            self._append_entries_unlocked(session_id, [entry])
+            return deepcopy(entry)
+
+    def exit_plan_mode(self, session_id, *, plan_text, plan_revision):
+        session_id = _session_id(session_id)
+        with file_lock.locked_file(self.lock_path, require_existing=True):
+            tree = self._read_tree_unlocked(session_id)
+            projection = tree.projection
+            if (
+                projection.get("permission_mode") != PermissionMode.PLAN.value
+                or projection.get("plan_text", "") != plan_text
+                or projection.get("plan_revision", 0) != plan_revision
+            ):
+                raise PlanApprovalChanged("plan changed during approval")
+            target = projection.get("pre_plan_mode") or PermissionMode.AUTO.value
+            entry = _new_entry(
+                "permission_mode_change",
+                {"mode": validate_permission_mode(target)},
+                tree.leaf_id,
+            )
+            self._append_entries_unlocked(session_id, [entry])
+            return deepcopy(entry)
 
     def append_task_checkpoint(self, session_id, checkpoint, *, parent_id=None):
         checkpoint = deepcopy(checkpoint)

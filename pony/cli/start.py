@@ -1,15 +1,21 @@
 """One-shot and interactive CLI startup flows."""
 
 from contextlib import contextmanager
+import os
 import signal
 import shlex
+import shutil
+import stat
+import subprocess
 import sys
+import tempfile
 import threading
 
-from pony.tools.permissions import display_permission_mode
+from pony.tools.permissions import display_permission_mode, validate_permission_mode
 from pony.security.redaction import redact_text
 from pony.providers.transport import ProviderTransportError
 from pony.runtime.resume import active_prompt_history, build_resume_projection
+from pony.state.session_store import MAX_PLAN_TEXT_BYTES
 
 
 _RUNTIME_ERROR_MESSAGE = "agent runtime failed"
@@ -18,6 +24,71 @@ _RUNTIME_ERROR_MESSAGE = "agent runtime failed"
 def _safe_text(agent, value):
     redactor = getattr(agent, "redact_text", None)
     return (redactor if callable(redactor) else redact_text)(value)
+
+
+def _open_plan_in_editor(agent):
+    raw_editor = os.environ.get("VISUAL") or os.environ.get("EDITOR")
+    if not raw_editor:
+        raise ValueError("plan editor unavailable; set VISUAL or EDITOR")
+    editor = shlex.split(raw_editor)
+    if not editor:
+        raise ValueError("plan editor is invalid")
+    executable = shutil.which(editor[0])
+    if not executable:
+        raise ValueError("plan editor executable was not found")
+    original_plan = agent.current_plan()
+    original_revision = agent.current_plan_revision()
+    descriptor, raw_path = tempfile.mkstemp(
+        prefix="plan-",
+        suffix=".md",
+        dir=agent.session_store.root.parent,
+    )
+    path = os.fspath(raw_path)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(original_plan)
+            handle.flush()
+            os.fsync(handle.fileno())
+        completed = subprocess.run(
+            [executable, *editor[1:], path],
+            check=False,
+            shell=False,
+        )
+        if completed.returncode != 0:
+            raise ValueError("plan editor exited with an error")
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(
+            os, "O_NOFOLLOW", 0
+        )
+        reader = os.open(path, flags)
+        try:
+            info = os.fstat(reader)
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                raise ValueError("plan editor output is unsafe")
+            chunks = []
+            remaining = MAX_PLAN_TEXT_BYTES + 1
+            while remaining:
+                chunk = os.read(reader, remaining)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            data = b"".join(chunks)
+        finally:
+            os.close(reader)
+        if len(data) > MAX_PLAN_TEXT_BYTES:
+            raise ValueError("plan text exceeds 12 KiB")
+        try:
+            text = data.decode("utf-8")
+        except UnicodeDecodeError:
+            raise ValueError("plan editor output must be UTF-8") from None
+        if text.strip() and text.strip() != original_plan:
+            agent.save_plan_text(text, expected_revision=original_revision)
+        print("Opened plan in editor")
+    finally:
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            pass
 
 
 def _interrupt_exit_code(exc):
@@ -284,17 +355,32 @@ def _process_repl_input(
         if manage_permissions is None:
             return None
         try:
-            selection = manage_permissions(rules, sorted(agent.tools))
-            if selection is None:
+            selections = manage_permissions(rules, sorted(agent.tools))
+            if selections is None:
                 return None
-            behavior, name = selection
-            changed = agent.set_permission_rule(name, behavior)
+            if isinstance(selections, tuple):
+                selections = [selections]
+            for behavior, name in selections:
+                if behavior == "mode":
+                    mode = validate_permission_mode(name)
+                    if (
+                        mode == "bypassPermissions"
+                        and not getattr(agent, "bypass_permissions_available", False)
+                    ):
+                        raise ValueError(
+                            "bypassPermissions requires "
+                            "--allow-dangerously-skip-permissions"
+                        )
+                    changed = agent.set_permission_mode(mode)
+                    print(f"permission mode: {display_permission_mode(mode)}")
+                else:
+                    changed = agent.set_permission_rule(name, behavior)
+                    print(f"permission rule: {behavior} {name}")
+                if changed is None:
+                    print("(unchanged)")
         except (OSError, RuntimeError, ValueError) as exc:
             print(f"error: {_safe_text(agent, exc)}")
             return None
-        print(f"permission rule: {behavior} {name}")
-        if changed is None:
-            print("(unchanged)")
         return None
     if user_input.startswith("/permissions ") or user_input.startswith(
         "/allowed-tools "
@@ -303,6 +389,15 @@ def _process_repl_input(
         return None
     if user_input == "/plan" or user_input.startswith("/plan "):
         description = user_input[len("/plan") :].strip()
+        if description == "share":
+            print("plan sharing is unavailable in this local runtime")
+            return None
+        if description == "open":
+            try:
+                _open_plan_in_editor(agent)
+            except (OSError, RuntimeError, ValueError) as exc:
+                print(f"error: {_safe_text(agent, exc)}")
+            return None
         was_plan = agent.current_permission_mode() == "plan"
         try:
             changed = None if was_plan else agent.set_permission_mode("plan")
@@ -312,11 +407,9 @@ def _process_repl_input(
         if changed is not None:
             print("permission mode: plan")
         plan = agent.current_plan()
-        if was_plan or description in {"open", "share"} or not description:
+        if was_plan or not description:
             print(plan or "(no plan saved)")
-        if description == "share":
-            print("plan sharing is unavailable in this local runtime")
-        if description and description not in {"open", "share"} and not was_plan:
+        if description and not was_plan:
             try:
                 render_answer(_safe_text(agent, agent.ask(description)))
             except ProviderTransportError:
@@ -463,17 +556,19 @@ def run_repl(
                 )
 
             def manage_plain_permissions(_rules, tools):
-                behavior = input(
-                    "permission [allow/ask/deny/remove, blank to close]: "
-                ).strip()
-                if not behavior:
-                    return None
-                if behavior not in {"allow", "ask", "deny", "remove"}:
-                    raise ValueError("invalid permission rule behavior")
-                name = input("tool: ").strip()
-                if name not in tools:
-                    raise ValueError("unknown permission rule tool")
-                return behavior, name
+                selections = []
+                while True:
+                    behavior = input(
+                        "permission [allow/ask/deny/remove/mode, blank to close]: "
+                    ).strip()
+                    if not behavior:
+                        return selections or None
+                    if behavior not in {"allow", "ask", "deny", "remove", "mode"}:
+                        raise ValueError("invalid permission rule behavior")
+                    name = input("mode or tool: ").strip()
+                    if behavior != "mode" and name not in tools:
+                        raise ValueError("unknown permission rule tool")
+                    selections.append((behavior, name))
 
             _replace_readline_history(prompt_history)
             if resume_projection is not None:
@@ -508,7 +603,10 @@ def _print_resume_card(projection):
     resume = projection["resume"]
     model = projection["model"]
     print("Resume")
-    print(f"permission [session]: {projection['permission_mode']}")
+    print(
+        "permission [session]: "
+        f"{display_permission_mode(projection['permission_mode'])}"
+    )
     if goal["text"]:
         print(f"goal [{goal['source']}]: {goal['text']}")
     if checkpoint["status"] or checkpoint["blocker"]:

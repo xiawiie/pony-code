@@ -12,9 +12,10 @@ import sys
 from pony.config.model import DEFAULT_MODEL
 from pony.providers.transport import ProviderTransportError
 from pony.security.redaction import redact_artifact, redact_text
+from pony.tools.permissions import parse_permission_tool_names
 from pony.workspace.context import WorkspaceContext
 
-from .arguments import build_arg_parser
+from .arguments import build_arg_parser, dangerous_bypass_enabled
 from .assembly import build_agent
 from .commands import (
     handle_help,
@@ -154,6 +155,8 @@ def _validate_agent_command(invocation):
         getattr(args, "permission_mode", None) is not None
         or getattr(args, "allow_dangerously_skip_permissions", False)
         or getattr(args, "dangerously_skip_permissions", False)
+        or bool(getattr(args, "allowed_tool_rules", ()))
+        or bool(getattr(args, "disallowed_tool_rules", ()))
     )
     if permission_flags and not agent_command:
         raise CliError(
@@ -163,7 +166,7 @@ def _validate_agent_command(invocation):
         )
     requested_mode = getattr(args, "permission_mode", None)
     direct_bypass = getattr(args, "dangerously_skip_permissions", False)
-    bypass_enabled = getattr(args, "allow_dangerously_skip_permissions", False)
+    bypass_enabled = dangerous_bypass_enabled(args)
     if direct_bypass and requested_mode not in {None, "bypassPermissions"}:
         raise CliError(
             code="usage",
@@ -223,6 +226,26 @@ def _requested_permission_mode(args):
     if getattr(args, "dangerously_skip_permissions", False):
         return "bypassPermissions"
     return getattr(args, "permission_mode", None)
+
+
+def _apply_cli_permission_rules(agent, args):
+    allowed = getattr(args, "allowed_tool_rules", ())
+    denied = getattr(args, "disallowed_tool_rules", ())
+    if not allowed and not denied:
+        return
+    available = set(agent.tools)
+    for behavior, raw_values in (
+        ("allow", allowed),
+        ("deny", denied),
+    ):
+        for name in parse_permission_tool_names(raw_values):
+            if name not in available:
+                raise CliError(
+                    code="usage",
+                    message=f"unknown permission rule tool: {name}",
+                    exit_code=CLI_EXIT_USAGE,
+                )
+            agent.set_permission_rule(name, behavior)
 
 
 def _print_cli_error(args, exc):
@@ -300,9 +323,30 @@ def main(argv=None):
         if invocation.command in _PRE_AGENT_COMMAND_HANDLERS:
             return _dispatch_pre_agent_command(invocation, args)
         agent = build_agent(args)
+        agent.bypass_permissions_available = dangerous_bypass_enabled(args)
+        current_mode = getattr(agent, "current_permission_mode", None)
+        current_mode = (
+            current_mode()
+            if callable(current_mode)
+            else getattr(agent, "session", {}).get("permission_mode", "auto")
+        )
+        if (
+            current_mode == "bypassPermissions"
+            and _requested_permission_mode(args) is None
+            and not dangerous_bypass_enabled(args)
+        ):
+            raise CliError(
+                code="usage",
+                message=(
+                    "resuming bypassPermissions requires "
+                    "--allow-dangerously-skip-permissions"
+                ),
+                exit_code=CLI_EXIT_USAGE,
+            )
         permission_mode = _requested_permission_mode(args)
         if permission_mode is not None:
             agent.set_permission_mode(permission_mode)
+        _apply_cli_permission_rules(agent, args)
     except CliError as exc:
         return _print_cli_error(args, exc)
     except ProviderTransportError as exc:

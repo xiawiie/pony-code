@@ -1,6 +1,7 @@
 """Minimal permission modes and fail-closed tool policy."""
 
 from enum import Enum
+import re
 
 
 class PermissionMode(str, Enum):
@@ -33,6 +34,15 @@ def validate_permission_mode(value):
 def display_permission_mode(value):
     mode = validate_permission_mode(value)
     return "manual" if mode == PermissionMode.DEFAULT.value else mode
+
+
+def parse_permission_tool_names(values):
+    names = []
+    for value in values or ():
+        for name in re.split(r"[\s,]+", str(value).strip()):
+            if name and name not in names:
+                names.append(name)
+    return tuple(names)
 
 
 def decide_permission(

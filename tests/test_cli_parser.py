@@ -38,6 +38,25 @@ def test_parse_claude_permission_modes(mode):
     assert invocation.runtime_args.permission_mode == mode
 
 
+def test_parse_claude_permission_rule_flag_aliases():
+    invocation = parse_cli_invocation(
+        [
+            "--allowedTools",
+            "read_file write_file",
+            "--disallowed-tools",
+            "run_shell,patch_file",
+            "run",
+            "inspect",
+        ],
+        build_arg_parser(),
+    )
+
+    assert invocation.runtime_args.allowed_tool_rules == ["read_file write_file"]
+    assert invocation.runtime_args.disallowed_tool_rules == [
+        "run_shell,patch_file"
+    ]
+
+
 def test_parser_rejects_internal_default_permission_name():
     with pytest.raises(SystemExit) as caught:
         build_arg_parser().parse_args(["--permission-mode", "default"])

@@ -405,7 +405,8 @@ class TuiRenderer:
         goal = projection["goal"]
         lines = [
             "Resume",
-            f"permission [session]: {projection['permission_mode']}",
+            "permission [session]: "
+            f"{display_permission_mode(projection['permission_mode'])}",
         ]
         if goal["text"]:
             lines.append(f"goal [{goal['source']}]: {goal['text']}")
@@ -444,6 +445,22 @@ class TuiRenderer:
     def approval(self, name, args):
         self._clear_working()
         safe_name = _one_line(name)
+        if safe_name == "exit_plan_mode" and isinstance(args, dict):
+            plan = str(args.get("plan", ""))
+            revision = int(args.get("revision", 0) or 0)
+            self._write(
+                FormattedText(
+                    [
+                        ("class:warning", "\n  ╷ PLAN APPROVAL REQUIRED\n"),
+                        ("", f"  │ revision {revision}\n"),
+                    ]
+                )
+            )
+            self._write(render_markdown(plan, width=_terminal_width()))
+            self._write(
+                FormattedText([("class:warning", "\n  ╵ default: deny\n")])
+            )
+            return
         self._write(
             FormattedText(
                 [

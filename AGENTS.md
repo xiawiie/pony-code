@@ -71,8 +71,9 @@ CLI/TUI 合同：
 - `/` 菜单只展示真实命令；不得增加绕过 permission check 的 `!` shell mode、动态 Provider/Model 或第二命令 registry。
 - `--permission-mode` 只适用于 `run/repl`，公开值与 Claude Code 一致：`manual|auto|acceptEdits|bypassPermissions|dontAsk|plan`；
   `manual` 只在 CLI 边界映射为内部 `default`。`bypassPermissions` 必须通过两个 dangerous bypass flag 之一显式启用。
-- `/permissions` 与 `/allowed-tools` 共用 REPL handler 管理 allow/ask/deny 规则；`/plan` 进入或查看 Plan，旧 `/mode` 与
-  `/todo` 不再存在，`/plan clear` 不再具有清空语义。
+- `/permissions` 与 `/allowed-tools` 共用 REPL handler 管理 allow/ask/deny 规则和 mode；CLI allowed/disallowed flags
+  复用同一 rule parser 与 Session writer。`/plan` 进入或查看 Plan，旧 `/mode` 与 `/todo` 不再存在，`/plan clear`
+  不再具有清空语义。
 - TUI 只在 stdin/stdout 为 TTY、`TERM` 可用且宽度足够时启用；必须遵守 `NO_COLOR` / `--no-color`。
 - 除显式 `--quiet` 外，完整 TUI 每次启动必须显示随终端宽度适配的马形 `PONY CODE` 欢迎页，不得删除、隐藏或
   退化为单行启动头；纯文本 fallback 和 `pony run` 不输出装饰性 banner。
@@ -132,9 +133,9 @@ PONY_MODEL
 - Tool 先做 schema、policy、当前授权与必要 permission prompt，再进入 mutation lock；执行一次并观察真实 effect。
 - `memory_save` 只接受当前请求的明确授权；历史授权不继承，delegate 不能写 Durable Memory。
 - Session、Run、Checkpoint 与 Tool Change 使用独立 record format 和 reader；release version 不能代替 format version。
-- Session v4 只写 `permission_mode_change`、`plan_artifact` 与受限 permission-rule state；Plan text/revision 和进入 Plan 前的 mode
-  都从 active path 投影。v1/v2/v3 inspection 零写，只有显式 resume 可迁移，其他 writer 返回
-  `session_migration_required`。
+- Session v4 的 Permission/Plan 状态只能由 `permission_mode_change`、`plan_artifact` 与受限 permission-rule state
+  投影；Plan text/revision 和进入 Plan 前的 mode 都来自 active path。v1/v2/v3 inspection 零写，只有显式 resume
+  可迁移，其他 writer 返回 `session_migration_required`。
 - Compaction 不删除 append-only Session 历史，不授予 Memory 写权限，也不恢复 workspace。
 - 持久化失败后不继续请求 Provider；cleanup、observer 或 finalizer 的次生错误不能覆盖 primary failure。
 

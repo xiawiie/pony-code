@@ -141,6 +141,25 @@ def test_tui_resume_card_labels_fact_sources(monkeypatch):
     assert "model [provider_binding]: anthropic_messages/claude-test" in rendered
 
 
+def test_tui_plan_approval_renders_the_complete_artifact(monkeypatch):
+    output = []
+    monkeypatch.setattr(
+        "pony.tui.render.print_formatted_text",
+        lambda value, **_kwargs: output.append(value),
+    )
+    plan = "# Plan\n\n" + ("inspect and verify\n" * 80) + "FINAL APPROVED STEP"
+
+    TuiRenderer(no_color=True).approval(
+        "exit_plan_mode",
+        {"plan": plan, "revision": 7},
+    )
+
+    rendered = "".join(fragment[1] for value in output for fragment in value)
+    assert "PLAN APPROVAL REQUIRED" in rendered
+    assert "revision 7" in rendered
+    assert "FINAL APPROVED STEP" in rendered
+
+
 @pytest.mark.parametrize(
     ("text", "expected"),
     (("submit", [("submit", None)]), ("continue\\", [("delete", 1), ("insert", "\n")])),

@@ -824,7 +824,7 @@ def _prepare_exit_plan_tool(agent, tool, args, effect_class):
         effect_class,
     )
     if rejection is not None:
-        return rejection
+        return rejection, None
     plan = agent.current_plan()
     revision = agent.current_plan_revision()
     if not plan.strip() or revision < 1:
@@ -836,7 +836,7 @@ def _prepare_exit_plan_tool(agent, tool, args, effect_class):
                 tool_error_code="plan_missing",
                 risk_level="high",
             ),
-        )
+        ), None
     original_args = deepcopy(args)
     approval_payload = {"plan": plan, "revision": revision}
     payload_snapshot = deepcopy(approval_payload)
@@ -850,7 +850,7 @@ def _prepare_exit_plan_tool(agent, tool, args, effect_class):
                 security_event_type="approval_denied",
                 risk_level="high",
             ),
-        )
+        ), None
     rejection = _validation_rejection(
         agent,
         tool,
@@ -859,7 +859,7 @@ def _prepare_exit_plan_tool(agent, tool, args, effect_class):
         effect_class,
     )
     if rejection is not None:
-        return rejection
+        return rejection, None
     if (
         args != original_args
         or approval_payload != payload_snapshot
@@ -875,8 +875,8 @@ def _prepare_exit_plan_tool(agent, tool, args, effect_class):
                 security_event_type="approval_arguments_changed",
                 risk_level="high",
             ),
-        )
-    return None
+        ), None
+    return None, payload_snapshot
 
 
 def _prepare_tool_request(agent, name, args):
@@ -921,6 +921,7 @@ def _prepare_tool_request(agent, name, args):
     shell_execution = None
     command_risk = ""
     command_approval = {}
+    runner_args = args
     if command_assessment is not None:
         command_risk = command_assessment["risk_class"]
         shell_execution, command_approval, rejection = _prepare_shell_execution(
@@ -933,7 +934,9 @@ def _prepare_tool_request(agent, name, args):
         )
     else:
         if name == "exit_plan_mode":
-            rejection = _prepare_exit_plan_tool(agent, tool, args, effect_class)
+            rejection, runner_args = _prepare_exit_plan_tool(
+                agent, tool, args, effect_class
+            )
         else:
             rejection = _prepare_non_shell_tool(
                 agent,
@@ -1000,6 +1003,7 @@ def _prepare_tool_request(agent, name, args):
         "agent": agent,
         "name": name,
         "args": args,
+        "runner_args": runner_args,
         "tool": tool,
         "effect_class": effect_class,
         "shell_execution": shell_execution,
@@ -1104,7 +1108,7 @@ def _invoke_prepared_tool(prepared, execution):
     if prepared["name"] != "run_shell":
         if prepared["effect_class"] == "workspace_write":
             agent.workspace_observer.invalidate_call_cache()
-        raw_content = prepared["tool"]["run"](prepared["args"])
+        raw_content = prepared["tool"]["run"](prepared["runner_args"])
         execution["runner_completed"] = True
         execution["content"] = str(agent.redact_text(raw_content))
         return

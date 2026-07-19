@@ -226,11 +226,13 @@ Apply，也不会撤销已经完成的 Source Apply。finalized/pending-review S
 非交互等价入口使用 `pony session inspect|tree|compact|checkpoint|fork|rewind|label|clone|tail-repair`。
 `pony run` 与 `pony repl` 可使用一次性
 `--permission-mode manual|auto|acceptEdits|bypassPermissions|dontAsk|plan`；它追加 Session control entry，不进入 `.env`、
-`pony.toml` 或 `RuntimeOptions`。`bypassPermissions` 还要求 `--allow-dangerously-skip-permissions`，或直接使用
-`--dangerously-skip-permissions`。显式交互 resume 在首个 prompt 前显示一次 permission/checkpoint/resume/model
-来源投影；one-shot、JSON inspection 与管理命令不显示。交互 history 每次从 active Canonical Messages 重建，只保留
-最多 100 条 top-level user
-文本（64 KiB 总量、16 KiB 单条），不会保留 slash 命令或 abandoned branch 输入。
+`pony.toml` 或 `RuntimeOptions`。`--allowed-tools` 与 `--disallowed-tools` 和 slash picker 共用
+`SessionStore.set_permission_rule()`；picker 的 mode 操作写 `permission_mode_change`。
+`--allow-dangerously-skip-permissions` 仅授予本进程选择或 resume bypass 的 capability，自己不切 mode；
+`--dangerously-skip-permissions` 直接选择 bypass。普通 bypass resume 必须重新授权，显式切换到其他 mode 不需要。
+显式交互 resume 在首个 prompt 前显示一次 permission/checkpoint/resume/model 来源投影；one-shot、JSON inspection
+与管理命令不显示。交互 history 每次从 active Canonical Messages 重建，只保留最多 100 条 top-level user 文本
+（64 KiB 总量、16 KiB 单条），不会保留 slash 命令或 abandoned branch 输入。
 
 推荐配置：
 

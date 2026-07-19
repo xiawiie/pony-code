@@ -154,21 +154,28 @@ fresh Session 默认使用 `auto`。`pony run` 与 `pony repl` 可通过 `--perm
 | `plan` | 只向模型公开只读工具与 `read_plan`、`write_plan`、`exit_plan_mode`，离开前展示精确 Plan 请求一次确认 |
 
 `auto` 与 Claude Code 使用相同的用户模式名称，但 Pony 当前使用本地确定性分类器，不声称复刻 Claude 的内部模型分类器。
-`/permissions` 管理当前 Session 的 exact tool-name `allow`、`ask`、`deny` 规则；`/allowed-tools` 是同一入口的别名。
+`/permissions` 可连续管理当前 Session 的 exact tool-name `allow`、`ask`、`deny` 规则并切换 mode；
+`/allowed-tools` 是同一入口的别名。one-shot/REPL 启动时也可用 Claude 风格的 `--allowed-tools` 与
+`--disallowed-tools` 写入同一种 Session 规则。
 一次性 `Approve once?` 只授权当前调用，不会自动写成规则。
 
-`/plan [description|open|share]` 进入或查看 Plan。首次使用 description 会把任务提交给模型；`open` 在终端显示当前
-Plan；本地 runtime 的 `share` 会明确返回不可用。模型通过 append-only `plan_artifact` 保存 Plan；
+`/plan [description|open|share]` 进入或查看 Plan。首次使用 description 会把任务提交给模型；`open` 通过
+`$VISUAL`/`$EDITOR` 打开当前 Plan，编辑完成后按原 revision CAS 保存；本地 runtime 的 `share` 会明确返回不可用。
+`open`/`share` 本身不切换 mode。模型通过 append-only `plan_artifact` 保存 Plan；
 `exit_plan_mode` 只有在 Plan 非空且用户确认精确 revision 后才恢复进入 Plan 前的 permission mode，同一请求随后可以
 继续实现。
 
-`bypassPermissions` 必须显式选择下列一种危险入口；这些参数只适用于 `run/repl`：
+`bypassPermissions` 必须显式获得本次进程的危险 capability；这些参数只适用于 `run/repl`：
 
 ```bash
 pony --permission-mode bypassPermissions \
   --allow-dangerously-skip-permissions run "apply the requested change"
 pony --dangerously-skip-permissions run "apply the requested change"
 ```
+
+`--allow-dangerously-skip-permissions` 本身不切换 mode；它允许本进程通过 `/permissions` 选择 bypass，也允许恢复已经
+持久化为 bypass 的 Session。`--dangerously-skip-permissions` 直接为当前 Session 选择 bypass。普通 resume 必须重新提供
+capability；显式用 `--permission-mode` 改回其他 mode 不需要危险 flag。
 
 显式交互 `--resume` 会在首个 prompt 前显示一次 permission、checkpoint、resume state 与 Provider/model 摘要；
 `pony run` 和 JSON/管理命令不显示该卡片。Session v4 历史只从当前 active Canonical Messages 重建，不保留 slash 命令

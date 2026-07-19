@@ -1,3 +1,4 @@
+from copy import deepcopy
 import json
 import hashlib
 import os
@@ -369,6 +370,7 @@ def test_reset_clears_transient_state_and_preserves_permission_and_audit(tmp_pat
     agent.ask("q")
     session_id = agent.session["id"]
     agent.set_permission_mode("plan")
+    durable_checkpoint_items = deepcopy(agent.session["checkpoints"]["items"])
     agent.session["recently_recalled"] = ["note"]
     agent.session["_recall_errors"] = {"count": 2, "last": "x"}
     agent.session["working_memory"] = {
@@ -376,10 +378,6 @@ def test_reset_clears_transient_state_and_preserves_permission_and_audit(tmp_pat
         "recent_files": ["a.py"],
     }
     agent.session["memory"] = {"file_summaries": {"a.py": {"summary": "fact"}}}
-    agent.session["checkpoints"] = {
-        "current_id": "c1",
-        "items": {"c1": {"checkpoint_id": "c1"}},
-    }
     agent.session["resume_state"] = {"status": "full-valid"}
     agent.session["recovery"] = {"current_checkpoint_id": "r1"}
     agent.reset()
@@ -391,7 +389,7 @@ def test_reset_clears_transient_state_and_preserves_permission_and_audit(tmp_pat
     assert agent.session["working_memory"] == {"task_summary": "", "recent_files": []}
     assert agent.session["memory"] == {"file_summaries": {}}
     assert agent.session["checkpoints"]["current_id"] == ""
-    assert agent.session["checkpoints"]["items"] == {"c1": {"checkpoint_id": "c1"}}
+    assert agent.session["checkpoints"]["items"] == durable_checkpoint_items
     assert agent.session["resume_state"] == {}
     assert agent.session["recovery"]["current_checkpoint_id"] == ""
     assert agent.session["permission_mode"] == "plan"

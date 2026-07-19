@@ -947,21 +947,38 @@ class Pony:
     def _write_plan(self, args):
         if self.current_permission_mode() != PermissionMode.PLAN.value:
             raise ValueError("write_plan requires plan mode")
-        plan = str(args.get("plan", "")).strip()
+        return self.save_plan_text(args.get("plan", ""))
+
+    def save_plan_text(self, value, *, expected_revision=None):
+        plan = str(value).strip()
         if not plan:
             raise ValueError("plan must not be empty")
-        entry = self.session_store.set_plan_text(self.session["id"], plan)
+        self.validate_tool("write_plan", {"plan": plan})
+        try:
+            entry = self.session_store.set_plan_text(
+                self.session["id"],
+                plan,
+                expected_revision=expected_revision,
+            )
+        except sessionstorelib.PlanApprovalChanged:
+            self._reload_session_projection()
+            raise
         if entry is not None:
             self._reload_session_projection()
         return "plan saved"
 
-    def _exit_plan_mode(self, _args):
+    def _exit_plan_mode(self, args):
         if self.current_permission_mode() != PermissionMode.PLAN.value:
             raise ValueError("exit_plan_mode requires plan mode")
-        if not self.current_plan().strip():
-            raise ValueError("plan is empty")
-        target = self.session.get("pre_plan_mode") or PermissionMode.AUTO.value
-        self.session_store.set_permission_mode(self.session["id"], target)
+        try:
+            self.session_store.exit_plan_mode(
+                self.session["id"],
+                plan_text=args["plan"],
+                plan_revision=args["revision"],
+            )
+        except sessionstorelib.PlanApprovalChanged:
+            self._reload_session_projection()
+            raise
         self._reload_session_projection()
         return "plan approved; permission mode restored"
 
@@ -2047,7 +2064,8 @@ class Pony:
         return answer.strip().lower() in {"y", "yes"}
 
     def reset(self):
-        candidate = deepcopy(self.session)
+        tree = self.session_store.load_tree(self.session["id"])
+        candidate = deepcopy(tree.projection)
         candidate["messages"] = []
         candidate["recently_recalled"] = []
         candidate.pop("_recall_errors", None)
@@ -2064,7 +2082,11 @@ class Pony:
         candidate["resume_state"] = {}
         recovery = candidate.setdefault("recovery", {})
         recovery["current_checkpoint_id"] = ""
-        saved_path = self.session_store.save(candidate, force_branch=True)
+        saved_path = self.session_store.save(
+            candidate,
+            force_branch=True,
+            expected_leaf_id=tree.leaf_id,
+        )
         self.session = candidate
         self.session_path = saved_path
         self.memory = WorkingMemory(workspace_root=self.root)

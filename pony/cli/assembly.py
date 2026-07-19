@@ -29,7 +29,8 @@ from pony.state.session_store import SessionStore
 from pony.tools.subprocess import discover_lexical_repo_root
 from pony.workspace.context import WorkspaceContext
 
-from .errors import CLI_EXIT_APPROVAL, CLI_EXIT_CONFIG, CliError
+from .arguments import dangerous_bypass_enabled
+from .errors import CLI_EXIT_APPROVAL, CLI_EXIT_CONFIG, CLI_EXIT_USAGE, CliError
 from .migration import migration_preflight
 
 
@@ -234,6 +235,24 @@ def _build_agent_with_source_authority(args, source_workspace):
                 message="Sandbox session cannot resume in host mode",
                 hint="Resume this session with --sandbox.",
                 exit_code=CLI_EXIT_CONFIG,
+            )
+    if store is None and args.resume and session_id and Path(session_store_root).exists():
+        store = SessionStore(session_store_root, redactor=redactor)
+    if store is not None and args.resume and session_id:
+        storage, projection, _tree = store.inspect_readonly(session_id)
+        if (
+            storage == "current"
+            and projection.get("permission_mode") == "bypassPermissions"
+            and getattr(args, "permission_mode", None) is None
+            and not dangerous_bypass_enabled(args)
+        ):
+            raise CliError(
+                code="usage",
+                message=(
+                    "resuming bypassPermissions requires "
+                    "--allow-dangerously-skip-permissions"
+                ),
+                exit_code=CLI_EXIT_USAGE,
             )
     if sandbox_enabled:
         sandbox_context, workspace = _build_sandbox_context(

@@ -109,6 +109,13 @@ def _top_p_argument(value):
     )
 
 
+def dangerous_bypass_enabled(args):
+    return bool(
+        getattr(args, "allow_dangerously_skip_permissions", False)
+        or getattr(args, "dangerously_skip_permissions", False)
+    )
+
+
 def build_arg_parser():
     parser = argparse.ArgumentParser(
         prog="pony",
@@ -157,6 +164,24 @@ def build_arg_parser():
         "--dangerously-skip-permissions",
         action="store_true",
         help="Bypass permission prompts for this session.",
+    )
+    parser.add_argument(
+        "--allowedTools",
+        "--allowed-tools",
+        dest="allowed_tool_rules",
+        action="append",
+        default=[],
+        metavar="TOOLS",
+        help="Comma or quoted space-separated exact tool names to allow.",
+    )
+    parser.add_argument(
+        "--disallowedTools",
+        "--disallowed-tools",
+        dest="disallowed_tool_rules",
+        action="append",
+        default=[],
+        metavar="TOOLS",
+        help="Comma or quoted space-separated exact tool names to deny.",
     )
     parser.add_argument(
         "--secret-env-name",

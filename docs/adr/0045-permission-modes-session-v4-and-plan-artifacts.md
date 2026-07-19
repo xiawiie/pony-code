@@ -38,19 +38,23 @@ Pony's `auto` mode uses a local deterministic classifier. It allows built-in `wr
 passes the independent current-request authorization gate, and shell commands that the local grammar proves read-only. It is not
 Claude Code's model classifier and is not claimed to be internally equivalent.
 
-Selecting `bypassPermissions` requires either:
+The process must receive explicit dangerous capability before it can select or resume `bypassPermissions`:
 
-- `--permission-mode bypassPermissions --allow-dangerously-skip-permissions`; or
-- `--dangerously-skip-permissions`, which directly selects the mode and conflicts with any other `--permission-mode`.
+- `--allow-dangerously-skip-permissions` does not change mode. It allows the interactive permission picker to select bypass,
+  permits an explicit `--permission-mode bypassPermissions`, and reauthorizes a persisted bypass Session on resume.
+- `--dangerously-skip-permissions` directly selects the mode and conflicts with any other `--permission-mode`.
 
-These checks occur before Agent construction. Bypass changes the mode default for an unruled mutation to ALLOW; an exact `ask` still
-prompts. Project trust, explicit deny, `read_only`, tool availability, schema, path and secret validation, shell hard rejects,
-current-request Memory authorization, Sandbox, and Recovery remain enforced.
+Direct selection and persisted resume are checked before Provider construction; interactive selection checks the transient capability
+at the picker boundary. Explicitly resuming into another permission mode does not require dangerous capability. Bypass changes the
+mode default for an unruled mutation to ALLOW; an exact `ask` still prompts. Project trust, explicit deny, `read_only`, tool
+availability, schema, path and secret validation, shell hard rejects, current-request Memory authorization, Sandbox, and Recovery
+remain enforced.
 
 ### Exact-tool rules and precedence
 
 `permission_rules` contains three disjoint lists named `allow`, `ask`, and `deny`. Entries are exact legal tool names, not globs,
-command patterns, or source-scoped rules. `/permissions` and `/allowed-tools` edit the same Session state.
+command patterns, or source-scoped rules. `/permissions`, `/allowed-tools`, `--allowed-tools`, and `--disallowed-tools` edit the same
+Session state. The interactive editor accepts repeated changes before it closes.
 
 The executor applies this order:
 
@@ -77,6 +81,9 @@ to use these tools and not request approval in ordinary text.
   mismatch leaves the Session in `plan`.
 - A successful exit restores `pre_plan_mode`, falling back to `auto` only when it is absent. The Agent Loop then refreshes the frozen
   mode and visible schemas so the same top-level request can continue implementation.
+- `/plan open` uses `$VISUAL` or `$EDITOR` and saves only if the original revision still matches. `/plan share` is explicitly
+  unavailable in the local runtime. Neither command changes the current permission mode. Explicit editor saves share the canonical
+  Plan validation/persistence path with `write_plan` and add an expected-revision check.
 
 The Plan artifact is not copied into a checkpoint, Run trace, resume card, system prefix, or request metadata. `task_working_set`
 continues to project checkpoint and file facts; the model reads Plan text explicitly through `read_plan`.

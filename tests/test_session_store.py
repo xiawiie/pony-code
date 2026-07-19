@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import stat
+import threading
 
 import pytest
 
@@ -625,6 +626,86 @@ def test_clone_to_worktree_copies_active_branch_and_clears_workspace_state(tmp_p
 
 def test_session_tree_source_has_expected_line_limit_constant():
     assert MAX_SESSION_ENTRY_BYTES == 8 * 1024 * 1024
+
+
+def test_plan_state_requires_text_and_positive_revision_together(tmp_path):
+    store = SessionStore(tmp_path / ".pony" / "sessions")
+    session = _session(tmp_path, "invalid-plan-state")
+    session["plan_text"] = "# Plan"
+
+    with pytest.raises(SessionFormatError, match="invalid plan state"):
+        store.save(session)
+
+
+def test_concurrent_permission_rule_writers_preserve_all_updates(tmp_path):
+    root = tmp_path / ".pony" / "sessions"
+    seed = SessionStore(root)
+    seed.save(_session(tmp_path, "permission-race"))
+    updates = (
+        ("read_file", "deny"),
+        ("write_file", "allow"),
+        ("patch_file", "ask"),
+        ("run_shell", "deny"),
+        ("search", "allow"),
+        ("memory_save", "ask"),
+    )
+    barrier = threading.Barrier(len(updates))
+    errors = []
+
+    def write_rule(name, behavior):
+        try:
+            store = SessionStore(root)
+            barrier.wait(timeout=5)
+            store.set_permission_rule("permission-race", name, behavior)
+        except Exception as exc:  # noqa: BLE001 - collect thread failures
+            errors.append(exc)
+
+    threads = [threading.Thread(target=write_rule, args=update) for update in updates]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    assert errors == []
+    assert not any(thread.is_alive() for thread in threads)
+    rules = seed.load("permission-race")["permission_rules"]
+    assert rules == {
+        "allow": ["search", "write_file"],
+        "ask": ["memory_save", "patch_file"],
+        "deny": ["read_file", "run_shell"],
+    }
+
+
+def test_concurrent_plan_writers_allocate_distinct_revisions(tmp_path):
+    root = tmp_path / ".pony" / "sessions"
+    seed = SessionStore(root)
+    seed.save(_session(tmp_path, "plan-race"))
+    count = 8
+    barrier = threading.Barrier(count)
+    errors = []
+
+    def write_plan(index):
+        try:
+            store = SessionStore(root)
+            barrier.wait(timeout=5)
+            store.set_plan_text("plan-race", f"# Plan {index}")
+        except Exception as exc:  # noqa: BLE001 - collect thread failures
+            errors.append(exc)
+
+    threads = [threading.Thread(target=write_plan, args=(index,)) for index in range(count)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    assert errors == []
+    assert not any(thread.is_alive() for thread in threads)
+    revisions = [
+        entry["data"]["revision"]
+        for entry in seed.load_tree("plan-race").entries
+        if entry["type"] == "plan_artifact"
+    ]
+    assert sorted(revisions) == list(range(1, count + 1))
 
 
 def test_save_checkpoint_preserves_current_runtime_state(tmp_path):

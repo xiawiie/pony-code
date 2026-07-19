@@ -81,6 +81,10 @@ Flags:
       --sandbox    run/repl in local Docker Sandbox (macOS arm64 only)
       --permission-mode  permission mode: acceptEdits, auto, bypassPermissions,
                          manual, dontAsk, or plan
+      --allowed-tools    exact tool names to allow for this Session
+      --disallowed-tools exact tool names to deny for this Session
+      --allow-dangerously-skip-permissions
+                         make bypassPermissions selectable for this process
 
 Security:
     Host mode provides no OS sandbox. In Sandbox mode all model-visible file tools use filtered

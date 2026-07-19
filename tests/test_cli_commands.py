@@ -13,7 +13,7 @@ from pony.providers.transport import ProviderTransportError
 from pony.runtime.options import RuntimeOptions
 
 
-def _install_fake_agent(monkeypatch, tmp_path, called):
+def _install_fake_agent(monkeypatch, tmp_path, called, *, permission_mode="default"):
     def fake_build_agent(args):
         called["built"] = True
         called["prompt"] = list(getattr(args, "prompt", []))
@@ -21,15 +21,26 @@ def _install_fake_agent(monkeypatch, tmp_path, called):
         class FakeAgent:
             model_client = type("MC", (), {"model": "x"})()
             workspace = type("W", (), {"cwd": str(tmp_path), "branch": "main"})()
-            session = {"id": "s", "permission_mode": "default"}
+            session = {"id": "s", "permission_mode": permission_mode}
             session_path = str(tmp_path / ".pony" / "sessions" / "s.json")
+            tools = {"read_file": {}, "write_file": {}, "run_shell": {}}
 
             def ask(self, message):
                 called["asked"] = message
+                called["bypass_available"] = getattr(
+                    self, "bypass_permissions_available", False
+                )
                 return "answer"
 
             def set_permission_mode(self, mode):
                 called["permission_mode"] = mode
+                self.session["permission_mode"] = mode
+
+            def current_permission_mode(self):
+                return self.session["permission_mode"]
+
+            def set_permission_rule(self, name, behavior):
+                called.setdefault("permission_rules", []).append((behavior, name))
 
             def memory_text(self):
                 return "memory"
@@ -137,6 +148,125 @@ def test_direct_bypass_flag_applies_session_mode(tmp_path, monkeypatch):
         == 0
     )
     assert called["permission_mode"] == "bypassPermissions"
+
+
+def test_permission_rule_flags_share_one_parser_and_deny_wins(
+    tmp_path, monkeypatch
+):
+    called = {}
+    _install_fake_agent(monkeypatch, tmp_path, called)
+
+    code = main(
+        [
+            "--cwd",
+            str(tmp_path),
+            "--allowed-tools",
+            "read_file,write_file",
+            "--disallowedTools",
+            "write_file run_shell",
+            "run",
+            "inspect",
+        ]
+    )
+
+    assert code == 0
+    assert called["permission_rules"] == [
+        ("allow", "read_file"),
+        ("allow", "write_file"),
+        ("deny", "write_file"),
+        ("deny", "run_shell"),
+    ]
+
+
+def test_plain_resume_of_bypass_requires_dangerous_capability(
+    tmp_path, monkeypatch, capsys
+):
+    called = {}
+    _install_fake_agent(
+        monkeypatch,
+        tmp_path,
+        called,
+        permission_mode="bypassPermissions",
+    )
+
+    denied = main(["--cwd", str(tmp_path), "--resume", "s", "run", "inspect"])
+    allowed = main(
+        [
+            "--cwd",
+            str(tmp_path),
+            "--resume",
+            "s",
+            "--allow-dangerously-skip-permissions",
+            "run",
+            "inspect",
+        ]
+    )
+
+    assert denied == 2
+    assert allowed == 0
+    assert "resuming bypassPermissions requires" in capsys.readouterr().err
+    assert called["bypass_available"] is True
+
+
+def test_resume_of_bypass_can_explicitly_restore_manual_without_opt_in(
+    tmp_path, monkeypatch
+):
+    called = {}
+    _install_fake_agent(
+        monkeypatch,
+        tmp_path,
+        called,
+        permission_mode="bypassPermissions",
+    )
+
+    code = main(
+        [
+            "--cwd",
+            str(tmp_path),
+            "--resume",
+            "s",
+            "--permission-mode",
+            "manual",
+            "run",
+            "inspect",
+        ]
+    )
+
+    assert code == 0
+    assert called["permission_mode"] == "manual"
+
+
+def test_real_resume_bypass_preflight_runs_before_provider_resolution(
+    tmp_path, monkeypatch
+):
+    from benchmarks.support.fake_provider import FakeModelClient
+    from pony import Pony
+    from pony.cli.arguments import build_arg_parser
+    from pony.cli.assembly import _build_agent_with_source_authority
+    from pony.cli.errors import CliError
+    from pony.state.session_store import SessionStore
+    from pony.workspace.context import WorkspaceContext
+
+    (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
+    workspace = WorkspaceContext.build(tmp_path)
+    store = SessionStore(tmp_path / ".pony" / "sessions")
+    agent = Pony(
+        model_client=FakeModelClient([]),
+        workspace=workspace,
+        session_store=store,
+        options=RuntimeOptions(project_trusted=True),
+    )
+    agent.set_permission_mode("bypassPermissions")
+    args = build_arg_parser().parse_args(
+        ["--cwd", str(tmp_path), "--resume", agent.session["id"], "run", "inspect"]
+    )
+    monkeypatch.setattr(
+        "pony.cli.assembly._build_transport_client",
+        lambda *_args, **_kwargs: pytest.fail("provider resolution must not run"),
+    )
+
+    with pytest.raises(CliError, match="resuming bypassPermissions"):
+        _build_agent_with_source_authority(args, workspace)
 
 
 def test_invalid_no_input_repl_is_rejected_before_agent_build(

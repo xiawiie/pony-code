@@ -330,8 +330,10 @@ def test_maintainer_doc_links_and_cli_examples_resolve():
     link_pattern = re.compile(r"!?\[[^]]*\]\(([^)]+)\)")
     allowed_commands = {
         "--allow-dangerously-skip-permissions",
+        "--allowed-tools",
         "--cwd",
         "--dangerously-skip-permissions",
+        "--disallowed-tools",
         "--format",
         "--help",
         "--permission-mode",

@@ -172,6 +172,27 @@ def test_rejected_plan_stays_in_plan_mode(tmp_path):
     assert agent.current_plan() == "# Plan\n1. Inspect"
 
 
+def test_plan_approval_cas_uses_latest_durable_session(tmp_path):
+    agent = _agent(tmp_path)
+    agent.set_permission_mode("plan")
+    agent.execute_tool("write_plan", {"plan": "# Approved\n1. Inspect"})
+    competing = SessionStore(agent.session_store.root)
+
+    def replace_plan(_name, _payload):
+        competing.set_plan_text(agent.session["id"], "# Replacement\n1. Mutate")
+        return True
+
+    agent._approval_prompt = replace_plan
+
+    result = agent.execute_tool("exit_plan_mode", {})
+    durable = competing.load(agent.session["id"])
+
+    assert result.metadata["tool_error_code"] == "plan_approval_changed"
+    assert durable["permission_mode"] == "plan"
+    assert durable["plan_text"] == "# Replacement\n1. Mutate"
+    assert durable["plan_revision"] == 2
+
+
 def test_write_plan_rejects_oversized_and_sensitive_content(tmp_path):
     agent = _agent(tmp_path)
     agent.set_permission_mode("plan")
@@ -192,6 +213,16 @@ def test_write_plan_rejects_oversized_and_sensitive_content(tmp_path):
     assert agent.current_plan() == ""
     assert agent.current_plan_revision() == 0
     assert sensitive_agent.current_plan() == ""
+
+
+def test_reset_preserves_newer_permission_rules_or_fails_closed(tmp_path):
+    agent = _agent(tmp_path)
+    competing = SessionStore(agent.session_store.root)
+    competing.set_permission_rule(agent.session["id"], "read_file", "deny")
+
+    agent.reset()
+
+    assert agent.permission_rules()["deny"] == ["read_file"]
 
 
 def test_accept_edits_only_skips_prompt_for_builtin_file_edits(tmp_path):

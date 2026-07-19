@@ -153,23 +153,25 @@ def run_tui(
         return confirm("  Approve once? [y/N] ")
 
     def manage_permissions(_rules, tools):
-        behavior = session.prompt(
-            "  Permission [allow/ask/deny/remove, Enter closes]: ",
-            multiline=False,
-            bottom_toolbar=None,
-        ).strip()
-        if not behavior:
-            return None
-        if behavior not in {"allow", "ask", "deny", "remove"}:
-            raise ValueError("invalid permission rule behavior")
-        name = session.prompt(
-            "  Tool: ",
-            multiline=False,
-            bottom_toolbar=None,
-        ).strip()
-        if name not in tools:
-            raise ValueError("unknown permission rule tool")
-        return behavior, name
+        selections = []
+        while True:
+            behavior = session.prompt(
+                "  Permission [allow/ask/deny/remove/mode, Enter closes]: ",
+                multiline=False,
+                bottom_toolbar=None,
+            ).strip()
+            if not behavior:
+                return selections or None
+            if behavior not in {"allow", "ask", "deny", "remove", "mode"}:
+                raise ValueError("invalid permission rule behavior")
+            name = session.prompt(
+                "  Mode or tool: ",
+                multiline=False,
+                bottom_toolbar=None,
+            ).strip()
+            if behavior != "mode" and name not in tools:
+                raise ValueError("unknown permission rule tool")
+            selections.append((behavior, name))
 
     previous_listener = getattr(agent, "_trace_listener", None)
     previous_approval_prompt = getattr(agent, "_approval_prompt", None)

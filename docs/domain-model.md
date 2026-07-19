@@ -55,13 +55,15 @@ reasoning state 或 Anthropic thinking block 跨协议重放。
 - 六个公开 Permission Mode 是 `manual`、`acceptEdits`、`auto`、`bypassPermissions`、`dontAsk` 与 `plan`；
   `manual` 规范化为唯一内部值 `default`，新 Runtime Session 默认 `auto`。
 - Pony `auto` 使用本地 deterministic classifier；它不复刻或声称等同 Claude Code 的模型分类器。
-- `bypassPermissions` 必须由 `--allow-dangerously-skip-permissions` 配合 mode 选择，或由
-  `--dangerously-skip-permissions` 直接选择；它取消无 rule 时的默认 prompt，但 exact `ask` 仍询问，也不跳过 trust、
-  deny、schema、path/secret、memory、Sandbox 或 Recovery 硬边界。
+- `--allow-dangerously-skip-permissions` 是本进程的 transient capability：它本身不切换 mode，但允许 picker 选择或
+  resume 已持久化的 `bypassPermissions`。`--dangerously-skip-permissions` 直接选择 bypass。普通 resume 必须重新授权；
+  显式改为其他 mode 不需要 dangerous flag。Bypass 不跳过 trust、ask/deny、schema、path/secret、memory、Sandbox
+  或 Recovery 硬边界。
 - Permission Rule 只接受 legal tool 的完整名称。`deny` 优先；Plan mutation floor 不能被 `allow` 降低；其余
   `allow|ask` 先于 mode 默认值，`dontAsk` 把 ASK 转为 DENY。
-- Plan Artifact 的唯一内容 writer 是通过 12 KiB UTF-8 上限与已知 secret gate 的 `write_plan`，对应 append-only
-  `plan_artifact {text, revision}`。`read_plan` 只读当前 projection。
+- Plan Artifact 只有一条受锁的 canonical persistence 路径，并统一执行 12 KiB UTF-8 上限与已知 secret gate。
+  模型的 `write_plan` 与用户显式 `/plan open` 共用该路径；后者还绑定 expected revision。成功写入 append-only
+  `plan_artifact {text, revision}`；`read_plan` 只读当前 projection。
 - `exit_plan_mode` 对 exact text/revision 请求批准并在执行前做 CAS-style 重校验；拒绝或变化均保留 `plan`，成功则恢复
   `pre_plan_mode` 并在同一 top-level request 刷新模型可见 schemas。
 
