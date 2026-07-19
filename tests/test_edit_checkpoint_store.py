@@ -6,6 +6,7 @@ import stat
 
 import pytest
 
+from pony.security import private_files
 from pony.security.workspace_files import WorkspaceIOError
 from pony.state.edit_checkpoint_store import EditCheckpointError, EditCheckpointStore
 
@@ -32,8 +33,9 @@ def test_capture_keeps_first_before_image_and_latest_post(tmp_path):
     assert post["sha256"] == hashlib.sha256(b"latest").hexdigest()
     if os.name == "posix":
         assert stat.S_IMODE(manifest_path.stat().st_mode) == 0o600
-        blob = state_root / "blobs" / before["blob_ref"][:2] / before["blob_ref"]
+        blob = state_root / "blobs" / before["blob_ref"]
         assert stat.S_IMODE(blob.stat().st_mode) == 0o600
+        assert tuple((state_root / "blobs").iterdir()) == (blob,)
 
 
 def test_classify_turn_compares_created_modified_deleted_and_before(tmp_path):
@@ -234,9 +236,52 @@ def test_missing_before_blob_has_stable_error(tmp_path):
     before = store.capture_before("turn-blob", "note.txt")
     target.write_bytes(b"after")
     store.record_post("turn-blob", "note.txt")
-    (state / "blobs" / before["blob_ref"][:2] / before["blob_ref"]).unlink()
+    (state / "blobs" / before["blob_ref"]).unlink()
 
     with pytest.raises(EditCheckpointError) as exc_info:
         store.classify_turn("turn-blob")
 
     assert exc_info.value.code == "edit_checkpoint_blob_invalid"
+
+
+def test_init_root_swap_before_lock_creation_is_zero_write(tmp_path, monkeypatch):
+    root = tmp_path / "repo"
+    detached = tmp_path / "detached"
+    root.mkdir()
+    append = private_files.append_private_bytes
+
+    def swap_before_append(*args, **kwargs):
+        root.rename(detached)
+        replacement = root / ".pony" / "edit-checkpoints"
+        replacement.mkdir(parents=True)
+        (replacement / "sentinel").write_bytes(b"external")
+        return append(*args, **kwargs)
+
+    monkeypatch.setattr(private_files, "append_private_bytes", swap_before_append)
+    with pytest.raises(ValueError, match="private root changed"):
+        EditCheckpointStore(root / ".pony" / "edit-checkpoints", root, max_file_bytes=1024)
+
+    replacement = root / ".pony" / "edit-checkpoints"
+    assert not (replacement / ".store.lock").exists()
+    assert (replacement / "sentinel").read_bytes() == b"external"
+
+
+@pytest.mark.parametrize(("exists", "create_file"), ((0, False), (1, True)))
+def test_manifest_rejects_integer_exists_values(tmp_path, exists, create_file):
+    root = tmp_path / "repo"
+    root.mkdir()
+    target = root / "note.txt"
+    if create_file:
+        target.write_bytes(b"before")
+    state = root / ".pony" / "edit-checkpoints"
+    store = EditCheckpointStore(state, root, max_file_bytes=1024)
+    store.capture_before("turn-bool", "note.txt")
+    manifest_path = next((state / "turns").iterdir())
+    manifest = json.loads(manifest_path.read_text(encoding="ascii"))
+    manifest["paths"]["note.txt"]["before"]["exists"] = exists
+    manifest_path.write_text(json.dumps(manifest), encoding="ascii")
+
+    with pytest.raises(EditCheckpointError) as exc_info:
+        store.classify_turn("turn-bool")
+
+    assert exc_info.value.code == "edit_checkpoint_invalid"

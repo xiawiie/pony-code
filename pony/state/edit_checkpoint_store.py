@@ -39,9 +39,21 @@ class EditCheckpointStore:
         if self.max_file_bytes < 0:
             raise ValueError("invalid edit checkpoint file limit")
         self._root_identity = private_files.private_directory_identity(self.root)
+        self._blobs_identity = private_files.private_directory_identity(self.blobs)
         self._workspace_identity = private_files.private_directory_identity(self.workspace)
-        with file_lock.locked_file(self.lock, require_lock=True):
-            pass
+        try:
+            private_files.append_private_bytes(
+                self.lock,
+                b"",
+                trusted_root=self.root,
+                trusted_root_identity=self._root_identity,
+            )
+        except FileExistsError:
+            private_files.ensure_private_file(
+                self.lock,
+                trusted_root=self.root,
+                trusted_root_identity=self._root_identity,
+            )
 
     def capture_before(self, turn_key, raw_path):
         self._require_roots()
@@ -167,14 +179,13 @@ class EditCheckpointStore:
     def _write_blob(self, data):
         digest = hashlib.sha256(data).hexdigest()
         path = self._blob_path(digest)
-        private_files.ensure_private_dir(path.parent)
         current = self._read_blob(digest, missing_ok=True)
         if current is None:
             private_files.write_private_bytes_atomic(
                 path,
                 data,
-                trusted_root=self.root,
-                trusted_root_identity=self._root_identity,
+                trusted_root=self.blobs,
+                trusted_root_identity=self._blobs_identity,
                 max_existing_bytes=self.max_file_bytes,
             )
         elif current != data:
@@ -186,9 +197,9 @@ class EditCheckpointStore:
             raise EditCheckpointError("edit_checkpoint_blob_invalid")
         try:
             data = private_files.read_private_bytes(
-                self.blobs / digest[:2] / digest,
-                trusted_root=self.root,
-                trusted_root_identity=self._root_identity,
+                self.blobs / digest,
+                trusted_root=self.blobs,
+                trusted_root_identity=self._blobs_identity,
                 max_bytes=self.max_file_bytes,
                 harden=False,
             )
@@ -208,7 +219,7 @@ class EditCheckpointStore:
     def _blob_path(self, digest):
         if not _digest(digest):
             raise EditCheckpointError("edit_checkpoint_blob_invalid")
-        return self.blobs / digest[:2] / digest
+        return self.blobs / digest
 
 
 def _manifest(key):
@@ -248,11 +259,12 @@ def _digest(value):
 def _valid_state(value, before):
     if not isinstance(value, dict) or value.keys() != _STATE_FIELDS:
         return False
+    if type(value["exists"]) is not bool:
+        return False
     if not value["exists"]:
         return value == {"exists": False, "sha256": "", "blob_ref": "", "mode": None}
     return (
-        type(value["exists"]) is bool
-        and _digest(value["sha256"])
+        _digest(value["sha256"])
         and type(value["mode"]) is int
         and value["mode"] == (value["mode"] & 0o7777)
         and (value["blob_ref"] == value["sha256"] if before else value["blob_ref"] == "")
