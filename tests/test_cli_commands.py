@@ -178,6 +178,73 @@ def test_permission_rule_flags_share_one_parser_and_deny_wins(
     ]
 
 
+@pytest.mark.parametrize(
+    "permission_args",
+    (
+        [
+            "--allowed-tools",
+            "read_file",
+            "--allowed-tools",
+            "unknown_permission_tool",
+        ],
+        [
+            "--permission-mode",
+            "plan",
+            "--allowed-tools",
+            "unknown_permission_tool",
+        ],
+    ),
+)
+def test_invalid_permission_flags_leave_real_resumed_session_unchanged(
+    tmp_path,
+    monkeypatch,
+    capsys,
+    permission_args,
+):
+    from benchmarks.support.fake_provider import FakeModelClient
+    from pony import Pony
+    from pony.state.session_store import SessionStore
+    from pony.workspace.context import WorkspaceContext
+
+    (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
+    store = SessionStore(tmp_path / ".pony" / "sessions")
+    agent = Pony(
+        model_client=FakeModelClient([]),
+        workspace=WorkspaceContext.build(tmp_path),
+        session_store=store,
+        options=RuntimeOptions(project_trusted=True),
+    )
+    session_id = agent.session["id"]
+    session_path = store.path(session_id)
+    original = session_path.read_bytes()
+    monkeypatch.setattr(
+        "pony.cli.app.build_agent",
+        lambda _args: pytest.fail("invalid permission flags must fail before build"),
+    )
+
+    code = main(
+        [
+            "--cwd",
+            str(tmp_path),
+            "--resume",
+            session_id,
+            *permission_args,
+            "run",
+            "inspect",
+        ]
+    )
+
+    assert code == 2
+    assert "unknown permission rule tool" in capsys.readouterr().err
+    assert session_path.read_bytes() == original
+    assert store.load(session_id)["permission_mode"] == "auto"
+    assert store.load(session_id)["permission_rules"] == {
+        "allow": [],
+        "ask": [],
+        "deny": [],
+    }
+
+
 def test_plain_resume_of_bypass_requires_dangerous_capability(
     tmp_path, monkeypatch, capsys
 ):

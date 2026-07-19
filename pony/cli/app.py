@@ -12,7 +12,11 @@ import sys
 from pony.config.model import DEFAULT_MODEL
 from pony.providers.transport import ProviderTransportError
 from pony.security.redaction import redact_artifact, redact_text
-from pony.tools.permissions import parse_permission_tool_names
+from pony.tools import registry as toolkit
+from pony.tools.permissions import (
+    parse_permission_tool_names,
+    validate_permission_mode,
+)
 from pony.workspace.context import WorkspaceContext
 
 from .arguments import build_arg_parser, dangerous_bypass_enabled
@@ -182,6 +186,17 @@ def _validate_agent_command(invocation):
             ),
             exit_code=CLI_EXIT_USAGE,
         )
+    selected_mode = _requested_permission_mode(args)
+    if selected_mode is not None:
+        try:
+            validate_permission_mode(selected_mode)
+        except ValueError as exc:
+            raise CliError(
+                code="usage",
+                message=str(exc),
+                exit_code=CLI_EXIT_USAGE,
+            ) from None
+    permission_rule_updates = _parse_cli_permission_rules(args)
     if getattr(
         invocation.runtime_args, "sandbox", False
     ) and invocation.command not in {
@@ -220,6 +235,7 @@ def _validate_agent_command(invocation):
             message="--no-input cannot be used with interactive repl",
             exit_code=CLI_EXIT_USAGE,
         )
+    return permission_rule_updates
 
 
 def _requested_permission_mode(args):
@@ -228,24 +244,31 @@ def _requested_permission_mode(args):
     return getattr(args, "permission_mode", None)
 
 
-def _apply_cli_permission_rules(agent, args):
+def _parse_cli_permission_rules(args):
     allowed = getattr(args, "allowed_tool_rules", ())
     denied = getattr(args, "disallowed_tool_rules", ())
     if not allowed and not denied:
-        return
-    available = set(agent.tools)
+        return ()
+    legal_names = toolkit.legal_tool_names()
+    updates = []
     for behavior, raw_values in (
         ("allow", allowed),
         ("deny", denied),
     ):
         for name in parse_permission_tool_names(raw_values):
-            if name not in available:
+            if name not in legal_names:
                 raise CliError(
                     code="usage",
                     message=f"unknown permission rule tool: {name}",
                     exit_code=CLI_EXIT_USAGE,
                 )
-            agent.set_permission_rule(name, behavior)
+            updates.append((name, behavior))
+    return tuple(updates)
+
+
+def _apply_cli_permission_rules(agent, updates):
+    for name, behavior in updates:
+        agent.set_permission_rule(name, behavior)
 
 
 def _print_cli_error(args, exc):
@@ -318,7 +341,7 @@ def main(argv=None):
     args = invocation.runtime_args
     try:
         _raise_on_unknown_command(invocation)
-        _validate_agent_command(invocation)
+        permission_rule_updates = _validate_agent_command(invocation)
         # 先分派只读检查命令，避免为它们启动模型 client 或 REPL。
         if invocation.command in _PRE_AGENT_COMMAND_HANDLERS:
             return _dispatch_pre_agent_command(invocation, args)
@@ -346,7 +369,7 @@ def main(argv=None):
         permission_mode = _requested_permission_mode(args)
         if permission_mode is not None:
             agent.set_permission_mode(permission_mode)
-        _apply_cli_permission_rules(agent, args)
+        _apply_cli_permission_rules(agent, permission_rule_updates)
     except CliError as exc:
         return _print_cli_error(args, exc)
     except ProviderTransportError as exc:

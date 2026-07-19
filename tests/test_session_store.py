@@ -637,6 +637,34 @@ def test_plan_state_requires_text_and_positive_revision_together(tmp_path):
         store.save(session)
 
 
+def test_generic_control_writer_cannot_append_plan_artifact(tmp_path):
+    store = SessionStore(tmp_path / ".pony" / "sessions")
+    store.save(_session(tmp_path, "plan-writer"))
+
+    with pytest.raises(ValueError, match="invalid control entry type"):
+        store.append_control(
+            "plan-writer",
+            "plan_artifact",
+            {"text": "# Plan", "revision": 1},
+        )
+
+    assert store.load("plan-writer")["plan_revision"] == 0
+
+
+def test_force_branch_projection_mismatch_is_zero_write(tmp_path):
+    store = SessionStore(tmp_path / ".pony" / "sessions")
+    path = store.save(_session(tmp_path, "branch-projection"))
+    candidate = store.load("branch-projection")
+    candidate["permission_mode"] = "plan"
+    original = path.read_bytes()
+
+    with pytest.raises(SessionFormatError, match="session tree projection mismatch"):
+        store.save(candidate, force_branch=True)
+
+    assert path.read_bytes() == original
+    assert store.load("branch-projection")["permission_mode"] == "auto"
+
+
 def test_concurrent_permission_rule_writers_preserve_all_updates(tmp_path):
     root = tmp_path / ".pony" / "sessions"
     seed = SessionStore(root)

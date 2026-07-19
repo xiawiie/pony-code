@@ -1939,11 +1939,10 @@ class SessionStore:
             if changed:
                 info = _new_entry("session_info", {"set": changed}, parent_id)
                 entries.append(info)
-            path = self._append_entries_unlocked(session_id, entries)
-            persisted = self._read_tree_unlocked(session_id).projection
-            if _persistent_projection(persisted) != _persistent_projection(candidate):
+            projected = _extend_tree(tree, entries).projection
+            if _persistent_projection(projected) != _persistent_projection(candidate):
                 raise SessionFormatError("session tree projection mismatch")
-            return path
+            return self._append_entries_unlocked(session_id, entries)
 
     def append_messages(self, session_id, messages, *, state_updates=None):
         """Atomically append one message batch without rescanning full history.
@@ -1987,7 +1986,12 @@ class SessionStore:
             return self._append_entries_unlocked(session_id, entries)
 
     def append_control(self, session_id, kind, data, *, parent_id=None):
-        if kind not in ENTRY_TYPES - {"message", "tool_exchange", "session_info"}:
+        if kind not in ENTRY_TYPES - {
+            "message",
+            "tool_exchange",
+            "session_info",
+            "plan_artifact",
+        }:
             raise ValueError("invalid control entry type")
         session_id = _session_id(session_id)
         if kind == "permission_mode_change":
