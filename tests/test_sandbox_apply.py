@@ -13,10 +13,8 @@ from types import SimpleNamespace
 import pytest
 
 import pony.sandbox.apply as sandbox_apply
-from pony.cli import app as pony_cli
 from pony.state.checkpoint_store import CheckpointStore, CheckpointStoreError
 from pony.recovery.policy import DEFAULT_MAX_BLOB_SIZE
-from pony.security.trust import ProjectTrustStore
 from pony.tools.subprocess import build_trusted_executables
 from pony.sandbox.apply import (
     _validate_capture,
@@ -2567,41 +2565,6 @@ def test_external_apply_authority_cleanup_rejects_control_directory_replacement(
     assert (detached / "active.json").is_file()
     with pytest.raises(SandboxSessionError, match="sandbox_state_invalid"):
         read_source_apply_authority(parent, source)
-
-
-def test_external_apply_authority_blocks_agent_start_before_state_creation(
-    tmp_path,
-    monkeypatch,
-):
-    state_home = tmp_path / ".pony"
-    state_home.mkdir()
-    source, context, observer, diff_digest = _modified_candidate(state_home)
-
-    def crash_after_guard(stage, _path):
-        if stage == "after_guard":
-            raise KeyboardInterrupt("crash")
-
-    with pytest.raises(KeyboardInterrupt):
-        SourceApplier(
-            context,
-            observer,
-            fault_injector=crash_after_guard,
-        ).apply(diff_digest)
-    detached = tmp_path / "detached-source"
-    source.rename(detached)
-    source.mkdir()
-    (source / "README.md").write_text("replacement\n", encoding="utf-8")
-    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
-    args = pony_cli.build_arg_parser().parse_args(["--cwd", str(source)])
-
-    with pytest.raises(SandboxSessionError, match="source_apply_review_required"):
-        pony_cli.build_agent(
-            args,
-            trust_store=ProjectTrustStore(tmp_path / ".pony-home"),
-            confirm=lambda _root: True,
-        )
-
-    assert not (source / ".pony").exists()
 
 
 @pytest.mark.parametrize(

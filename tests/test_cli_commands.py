@@ -330,7 +330,7 @@ def test_real_resume_bypass_preflight_runs_before_provider_resolution(
     from benchmarks.support.fake_provider import FakeModelClient
     from pony import Pony
     from pony.cli.arguments import build_arg_parser
-    from pony.cli.assembly import _build_agent_with_source_authority
+    from pony.cli.assembly import _build_agent
     from pony.cli.errors import CliError
     from pony.state.session_store import SessionStore
     from pony.workspace.context import WorkspaceContext
@@ -357,7 +357,68 @@ def test_real_resume_bypass_preflight_runs_before_provider_resolution(
     )
 
     with pytest.raises(CliError, match="resuming bypassPermissions"):
-        _build_agent_with_source_authority(args, workspace)
+        _build_agent(args, workspace)
+
+
+def test_legacy_sandbox_resume_is_rejected_before_provider_resolution(
+    tmp_path, monkeypatch
+):
+    from pony.cli.arguments import build_arg_parser
+    from pony.cli.assembly import _build_agent
+    from pony.cli.errors import CliError
+    from pony.workspace.context import WorkspaceContext
+
+    (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
+    workspace = WorkspaceContext.build(tmp_path)
+    args = build_arg_parser().parse_args(
+        ["--cwd", str(tmp_path), "--resume", "legacy-session", "run", "inspect"]
+    )
+    monkeypatch.setattr(
+        "pony.runtime.legacy.find_project_sandbox_session",
+        lambda *_args, **_kwargs: object(),
+    )
+    monkeypatch.setattr(
+        "pony.cli.assembly._build_transport_client",
+        lambda *_args, **_kwargs: pytest.fail("provider resolution must not run"),
+    )
+
+    with pytest.raises(CliError) as caught:
+        _build_agent(args, workspace)
+
+    assert caught.value.code == "legacy_sandbox_session_unsupported"
+    assert "Host mode" in caught.value.message
+
+
+def test_invalid_legacy_sandbox_binding_is_rejected_before_provider_resolution(
+    tmp_path, monkeypatch
+):
+    from pony.cli.arguments import build_arg_parser
+    from pony.cli.assembly import _build_agent
+    from pony.cli.errors import CliError
+    from pony.sandbox.session import SandboxSessionError
+    from pony.workspace.context import WorkspaceContext
+
+    (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
+    workspace = WorkspaceContext.build(tmp_path)
+    args = build_arg_parser().parse_args(
+        ["--cwd", str(tmp_path), "--resume", "legacy-session", "run", "inspect"]
+    )
+    monkeypatch.setattr(
+        "pony.runtime.legacy.find_project_sandbox_session",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            SandboxSessionError("sandbox_manifest_invalid")
+        ),
+    )
+    monkeypatch.setattr(
+        "pony.cli.assembly._build_transport_client",
+        lambda *_args, **_kwargs: pytest.fail("provider resolution must not run"),
+    )
+
+    with pytest.raises(CliError) as caught:
+        _build_agent(args, workspace)
+
+    assert caught.value.code == "sandbox_state_invalid"
+    assert caught.value.details == {"reason_code": "sandbox_manifest_invalid"}
 
 
 def test_invalid_no_input_repl_is_rejected_before_agent_build(
@@ -461,7 +522,8 @@ def test_help_command_shows_examples(capsys):
     assert "pony\n" in out
     assert "also the default for bare `pony`" in out
     assert "--no-color" in out
-    assert "--sandbox    run/repl in local Docker Sandbox (macOS arm64 only)" in out
+    assert "--sandbox" not in out
+    assert "sandbox      " not in out
     assert 'pony run "inspect the failing tests"' in out
     assert "pony config set-secret PONY_API_KEY" in out
     assert "pony --permission-mode manual run" in out
@@ -470,21 +532,15 @@ def test_help_command_shows_examples(capsys):
     assert "pony runs summary latest" in out
     assert "migrate      Inspect and apply explicit artifact migrations" in out
     assert "Compatibility:" not in out
-    assert "no OS sandbox" in out
-    assert "all model-visible file tools use filtered" in out
+    assert "permission, path, and secret checks" in out
     assert "providers list" not in out
 
 
-def test_sandbox_flag_is_rejected_for_non_agent_commands(tmp_path, monkeypatch, capsys):
-    monkeypatch.setattr(
-        "pony.cli.app._dispatch_status",
-        lambda *_args: (_ for _ in ()).throw(AssertionError("must not dispatch")),
-    )
-
-    code = main(["--cwd", str(tmp_path), "--sandbox", "status"])
+def test_removed_sandbox_command_is_rejected(capsys):
+    code = main(["sandbox", "status"])
 
     assert code == 2
-    assert "--sandbox is only valid" in capsys.readouterr().err
+    assert "Unknown command: sandbox" in capsys.readouterr().err
 
 
 def test_help_flag_uses_root_help_without_argparse_dump(capsys):

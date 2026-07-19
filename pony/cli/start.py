@@ -109,37 +109,17 @@ def _print_session_tree(agent):
 
 
 def _rewind_options(tokens):
-    workspace = False
-    confirmed = False
     summary = False
     focus = ""
     for token in tokens:
-        if token == "--workspace":
-            workspace = True
-        elif token == "--yes":
-            confirmed = True
-        elif token == "--summary":
+        if token == "--summary":
             summary = True
         elif token.startswith("--summary="):
             summary = True
             focus = token.partition("=")[2]
         else:
             raise ValueError(f"unknown rewind option: {token}")
-    return workspace, confirmed, summary, focus
-
-
-def _print_workspace_rewind_preview(preview):
-    counts = preview.get("decision_counts", {})
-    rendered = ", ".join(f"{name}={count}" for name, count in sorted(counts.items()))
-    print(f"workspace restore plan: {preview.get('status', 'invalid')}")
-    print(f"checkpoint: {preview.get('workspace_checkpoint_id', '-')}")
-    print(f"entries: {rendered or 'none'}")
-    for entry in preview.get("entries", []):
-        print(
-            f"- {entry.get('decision', 'unknown')}: "
-            f"{entry.get('path', '-') or '-'} "
-            f"({entry.get('reason', '-') or '-'})"
-        )
+    return summary, focus
 
 
 def _default_confirm(message):
@@ -188,23 +168,14 @@ def _handle_repl_session_command(
             print(f"checkpoint: {checkpoint['checkpoint_id']}")
             return True
         if command == "/rewind" and len(tokens) >= 2:
-            workspace, confirmed, summary, focus = _rewind_options(tokens[2:])
-            if workspace and not confirmed:
-                preview = agent.preview_workspace_rewind(tokens[1])
-                _print_workspace_rewind_preview(preview)
-                if not confirm("restore workspace and rewind session? [y/N] "):
-                    print("workspace rewind cancelled")
-                    return True
-                confirmed = True
+            summary, focus = _rewind_options(tokens[2:])
             result = agent.rewind_session(
                 tokens[1],
                 summary=summary,
                 focus=focus,
-                workspace=workspace,
-                confirmed=confirmed,
             )
             refresh_history()
-            entry = result.rewind_entry if summary or workspace else result
+            entry = result.rewind_entry if summary else result
             print(f"rewound to {entry['parent_id']}; leaf={entry['id']}")
             return True
         if command == "/clone" and len(tokens) >= 3 and tokens[1] == "--to-worktree":
@@ -257,71 +228,14 @@ def run_agent_once(agent, prompt_tokens):
         return 0
     print()
     with _cli_interrupt_boundary():
-        finalize_started = False
         try:
             answer = agent.ask(prompt)
-            finalize = getattr(agent, "finalize_sandbox_session", None)
-            finalize_started = callable(finalize)
-            sandbox = finalize() if finalize_started else None
             print(_safe_text(agent, answer))
-            if sandbox is not None and sandbox["status"] != "no_changes_discarded":
-                counts = sandbox["artifact"]["counts"]
-                candidates = counts.get("candidate", 0) + counts.get(
-                    "high_risk_candidate", 0
-                )
-                high_risk = counts.get("high_risk_candidate", 0)
-                blocked = sum(
-                    counts.get(name, 0)
-                    for name in (
-                        "blocked_sensitive",
-                        "blocked_size",
-                        "blocked_type",
-                    )
-                )
-                print(
-                    _safe_text(
-                        agent,
-                        "\n".join(
-                            (
-                                f"Sandbox session: {sandbox['sandbox_id']}",
-                                f"State: {sandbox['session_state']}",
-                                "Changes: "
-                                f"{candidates} candidate, {high_risk} high-risk, "
-                                f"{blocked} blocked, "
-                                f"{sandbox.get('generated_count', 0)} generated (ignored)",
-                                f"Review: pony sandbox diff {sandbox['sandbox_id']}",
-                                f"Apply: pony sandbox apply {sandbox['sandbox_id']}",
-                                f"Discard: pony sandbox discard {sandbox['sandbox_id']}",
-                            )
-                        ),
-                    )
-                )
         except KeyboardInterrupt as exc:
-            if not finalize_started:
-                try:
-                    finalize = getattr(agent, "finalize_sandbox_session", None)
-                    if callable(finalize):
-                        finalize()
-                except Exception:  # noqa: BLE001 - preserve interrupt as primary
-                    print(_RUNTIME_ERROR_MESSAGE, file=sys.stderr)
             return _interrupt_exit_code(exc)
         except ProviderTransportError:
-            if not finalize_started:
-                try:
-                    finalize = getattr(agent, "finalize_sandbox_session", None)
-                    if callable(finalize):
-                        finalize()
-                except Exception:
-                    pass
             raise
         except Exception:  # noqa: BLE001 - the CLI is the ordinary-exception boundary
-            if not finalize_started:
-                try:
-                    finalize = getattr(agent, "finalize_sandbox_session", None)
-                    if callable(finalize):
-                        finalize()
-                except Exception:
-                    pass
             print(_RUNTIME_ERROR_MESSAGE, file=sys.stderr)
             return 1
     return 0
@@ -526,13 +440,6 @@ def _process_repl_input(
 
 
 def _finish_repl(agent, code):
-    try:
-        finalize = getattr(agent, "finalize_sandbox_session", None)
-        if callable(finalize):
-            finalize()
-    except Exception:  # noqa: BLE001 - the CLI is the ordinary-exception boundary
-        print(_RUNTIME_ERROR_MESSAGE, file=sys.stderr)
-        return 1
     return code
 
 

@@ -14,7 +14,11 @@ from pony.state import file_lock
 
 @pytest.fixture(autouse=True)
 def _isolated_lock_authority(tmp_path, monkeypatch):
-    monkeypatch.setattr(file_lock, "_authority_root", lambda: tmp_path / ".authority")
+    monkeypatch.setattr(
+        file_lock,
+        "_authority_root",
+        lambda path=None: tmp_path / ".authority" / ("root" if path is None else "lock"),
+    )
 
 
 def test_locked_file_serializes_overlapping_threads(tmp_path):
@@ -143,7 +147,7 @@ def test_locked_file_authority_is_private_and_not_filesystem_root(
     with file_lock.locked_file(lock_path, require_lock=True):
         pass
 
-    authority = file_lock._authority_root().stat()
+    authority = file_lock._authority_root(lock_path).stat()
     filesystem_root = Path("/").stat()
     assert observed[0] == (
         (authority.st_dev, authority.st_ino),
@@ -160,8 +164,8 @@ def test_locked_file_rejects_authority_replaced_after_flock(
     if file_lock.fcntl is None:
         pytest.skip("platform does not expose fcntl locks")
 
-    authority = file_lock._authority_root()
     lock_path = tmp_path / "store.lock"
+    authority = file_lock._authority_root(lock_path)
     displaced = tmp_path / "authority-original"
     real_acquire = file_lock._acquire_flock
     swapped = False

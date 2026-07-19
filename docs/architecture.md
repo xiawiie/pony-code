@@ -43,9 +43,9 @@ pony/
 ├── context/           # source、chunk、render、digest、escaping
 ├── memory/            # notes、recall、retrieval、repo map
 ├── providers/         # 三 Provider、四 Transport、probe、factory
-├── recovery/          # checkpoint writer、manager、migration、policy
+├── recovery/          # command policy、legacy reader/migration、待删除旧 writer
 ├── runtime/            # Pony 装配、options、reporting、rewind、working memory
-├── sandbox/           # Docker、identity、session、diff/apply、resources
+├── sandbox/           # legacy binding inspection；只供 resume preflight，不提供执行
 ├── security/          # private/workspace file、path、redaction
 ├── state/             # session/run/checkpoint store、task state、file lock
 ├── tui/               # 行内 prompt、命令菜单、Markdown 与状态渲染
@@ -61,7 +61,7 @@ pony/
 | `benchmarks/evaluation/` | 离线评估与 Provider benchmark |
 | `benchmarks/live_e2e/` | 显式授权的真实 Provider harness 与离线 assertions |
 | `scripts/evaluation/` | 评估入口 |
-| `scripts/sandbox/` | 本地镜像构建和 runtime 验证 |
+| `scripts/sandbox/` | 已退役 Sandbox 的历史维护脚本；不属于公开产品入口 |
 | `scripts/release/` | distribution 内容和 clean-install 验证 |
 | `.github/workflows/` | CI 与 tag-bound release |
 
@@ -210,7 +210,8 @@ Picker 的 mode 操作仍写 `permission_mode_change`。
 5. ASK 才进入 approval，批准后重校验参数，随后只执行一次。
 
 `bypassPermissions` 只把无 exact rule 的 mode 默认判定变为 ALLOW；exact `ask` 仍进入第 5 步。它不会跳过 trust、
-exact deny、`read_only`、schema、path/secret、shell hard reject、`memory_save` 当轮明确授权、Sandbox 或 Recovery 边界。
+exact deny、`read_only`、schema、path/secret、shell hard reject、`memory_save` 当轮明确授权、mutation lock 或真实 effect
+observation。
 
 Plan 是 Session 内的 bounded Markdown artifact，不是 task checkpoint。模型在 `plan` mode 中用 `read_plan` 读取、用
 `write_plan` 完整替换；写入前拒绝超过 12 KiB UTF-8 或包含已知 secret 的文本。成功写入追加
@@ -219,30 +220,24 @@ Plan 是 Session 内的 bounded Markdown artifact，不是 task checkpoint。模
 `pre_plan_mode`（缺失时为 `auto`），刷新当前 turn 的 schemas，并允许同一请求继续实现。
 `/plan open|share` 从非 Plan mode 调用时先追加 mode entry；artifact 为空时只启用 Plan，不打开 editor 或 share。
 
-## 5. Workspace 与 Sandbox
+## 5. Workspace 与 Host 执行
 
-Host 模式中 Execution Root 等于 Source Root。Sandbox 模式把二者严格分开：
+当前产品只有 Host 执行，Execution Root 与 Source Root 相同：
 
 ```mermaid
 flowchart LR
-    SRC["Source Root"] -->|filtered staging| EXE["Execution Root"]
-    EXE --> CTX["Context / RepoMap / Tools / Shell"]
-    CTX --> DIFF["Immutable redacted diff"]
-    DIFF --> REVIEW["User review + exact digest"]
-    REVIEW -->|explicit apply| SRC
-    PST["Project State Root"] -. sessions / runs .-> CTX
-    SST["Sandbox State Root"] -. capture / journal .-> DIFF
+    SRC["Trusted Source Root"] --> CTX["Context / RepoMap"]
+    SRC --> V["Schema / path / secret / permission"]
+    V --> L["Host mutation lock"]
+    L --> TOOL["Execute tool once"]
+    TOOL --> OBS["Observe actual workspace effects"]
+    PST["Project State Root"] -. sessions / runs / memory .-> CTX
 ```
 
-Source Root、Project State Root、Sandbox State Root、host HOME 与 Docker socket 都不挂载进容器。Sandbox 的 local
-authorization 每次从当前安装树与 packaged image manifest 重算；状态不一致即 fail closed。1.0 不包含远程签名、
-candidate、product enablement、registry pull 或运行时下载链路。
-
-Project State 中的 sidecar 允许同一 Pony Session 保留多个终态 Sandbox 历史，但最多只能有一个非终态 staging。
-显式 resume 原样复用唯一 `ready` staging；完整 `applied/discarded` 历史不改写，而是以当前 Source Root 创建新 staging。
-新 staging 沿用 Canonical Messages、Permission Mode、permission rules、Plan artifact 与 Provider binding，但追加清除旧
-workspace recovery/freshness/runtime identity 的 task checkpoint。`pending_review`、`review_required`、
-`cleanup_pending` 或多个非终态 sidecar 都 fail closed。
+Host 不是 OS sandbox。Pony 不隔离恶意命令、依赖、编译器插件或测试进程；用户应只在受信仓库中运行。mutation 工具在
+approval 与参数复核后获取 `.pony/.workspace-mutation.lock`，持锁覆盖 before snapshot、runner 和 after snapshot。
+已删除 `--sandbox`、`pony sandbox`、Source Apply 和 workspace restore。旧 Sandbox-bound Session 只做 bounded binding
+检查并稳定拒绝 Host resume；内部 legacy reader 暂保留，等待独立删除波次。
 
 ## 6. Context、Memory 与状态
 
@@ -263,7 +258,7 @@ flowchart TB
     B --> MR["Model Request"]
     MR --> SS["Session Tree"]
     MR --> RS["Run / trace"]
-    MR --> CP["Checkpoint / recovery"]
+    MR --> CP["Session task checkpoint"]
 ```
 
 Session 的 Model Binding 固化 `protocol_family`、`model` 和 `endpoint_hash`。恢复时任一字段变化都会返回
@@ -288,15 +283,15 @@ Memory 分为用户维护的 User Notes 和 agent 追加的 Agent Notes。`memor
 Pony 的安全设计采用可组合的不变量：anchored/no-follow 文件访问、bounded I/O、原子写入、CAS、可信 executable、
 secret snapshot、结构化脱敏、稳定错误码和显式批准。外部输入无法确认时默认拒绝，不通过猜测继续运行。
 
-Host 模式依然可以执行本地命令和修改仓库，不能被描述为隔离执行。Sandbox 是本机 Docker 边界，不是 hostile
-multi-tenant 或 microVM 安全边界。
+Host 可以执行本地命令和修改仓库，不能被描述为隔离执行。旧 Docker Sandbox 代码不在 active runtime，也不能作为
+当前安全保证或 fallback。
 
 ## 8. 打包与发布边界
 
-wheel 只包含 `pony/**`、Sandbox JSON 与安装 metadata；sdist 另含 `pyproject.toml`、README、LICENSE、`.gitignore` 和
+wheel 只包含 `pony/**` 与安装 metadata；sdist 另含 `pyproject.toml`、README、LICENSE、`.gitignore` 和
 源码 metadata。两者都不包含 tests、benchmarks、scripts、docs、截图、缓存、`.env`、`.planning` 或 Fake Provider。
 
 唯一直接运行时依赖是 `prompt-toolkit`，用于行内 TUI；`wcwidth` 是其锁定的传递依赖。distribution verifier 将 Git
 tracked 产品文件与 archive 精确比对，并在新建虚拟环境中离线解析锁定依赖、安装 wheel、检查入口、版本、TUI import、
-资源、离线 Sandbox 状态和 doctor。Tag 发布工作流要求 `v<pyproject version>` 精确匹配，通过全部离线门禁后才调用
+资源和 doctor。Tag 发布工作流要求 `v<pyproject version>` 精确匹配，通过全部离线门禁后才调用
 PyPI Trusted Publishing 与 GitHub Release。

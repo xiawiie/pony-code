@@ -147,30 +147,14 @@ def test_second_file_failure_records_partial_and_proven_undo(tmp_path, monkeypat
     )
     blocked = manager.apply_restore(journal["checkpoint_id"])
     assert blocked["status"] == "blocked"
-    assert (
-        main(
-            [
-                "--cwd",
-                str(tmp_path),
-                "checkpoints",
-                "resolve-pending",
-                journal["checkpoint_id"],
-            ]
-        )
-        == 0
+    resolution = manager.preview_restore_journal_resolution(
+        journal["checkpoint_id"]
     )
-    assert (
-        main(
-            [
-                "--cwd",
-                str(tmp_path),
-                "checkpoints",
-                "resolve-pending",
-                journal["checkpoint_id"],
-                "--apply",
-            ]
-        )
-        == 0
+    manager.resolve_restore_journal(
+        journal["checkpoint_id"],
+        expected_record_hash=resolution["record_hash"],
+        reviewed_by="test",
+        review_reason="durability_e2e",
     )
     undo = manager.apply_restore(journal["checkpoint_id"])
     assert undo["status"] == "applied"
@@ -220,18 +204,9 @@ def test_invalid_mutation_record_is_previewed_then_privately_quarantined(
     assert invalid_id.startswith("invalid_")
     assert "tc_invalid" not in json.dumps(invalid_records)
 
-    assert (
-        main(
-            [
-                "--cwd",
-                str(tmp_path),
-                "checkpoints",
-                "resolve-pending",
-                invalid_id,
-                "--apply",
-            ]
-        )
-        == 0
+    store.quarantine_invalid_record(
+        invalid_id,
+        expected_raw_hash=invalid_records[0]["raw_hash"],
     )
     quarantined = store.list_quarantined_records()
     assert len(quarantined) == 1

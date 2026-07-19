@@ -21,7 +21,17 @@ from pony.workspace.context import (
 )
 
 
-_MAX_FILE_SIZE_FOR_MTIME = 8 * 1024 * 1024
+def _file_marker(value):
+    return ":".join(
+        str(item)
+        for item in (
+            value.st_dev,
+            value.st_ino,
+            value.st_size,
+            value.st_mtime_ns,
+            value.st_ctime_ns,
+        )
+    )
 
 
 def _validated_legacy_git(root, value):
@@ -135,7 +145,7 @@ class WorkspaceObserver:
                     stat = abs_path.stat()
                 except OSError:
                     continue
-                detail[path] = f"{stat.st_size}:{int(stat.st_mtime * 1_000_000)}"
+                detail[path] = _file_marker(stat)
         return {"mode": "git", "paths": paths, "detail": detail, "summaries": []}
 
     def _capture_filesystem(self):
@@ -168,11 +178,7 @@ class WorkspaceObserver:
                     stat = abs_path.stat()
                 except OSError:
                     continue
-                if stat.st_size > _MAX_FILE_SIZE_FOR_MTIME:
-                    marker = f"large:{stat.st_size}"
-                else:
-                    marker = f"{stat.st_size}:{int(stat.st_mtime * 1_000_000)}"
-                paths[rel] = marker
+                paths[rel] = _file_marker(stat)
         return {"mode": "filesystem", "paths": paths, "detail": paths, "summaries": []}
 
     def capture(self):

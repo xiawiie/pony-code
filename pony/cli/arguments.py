@@ -235,9 +235,4 @@ def build_arg_parser():
     parser.add_argument(
         "--no-input", action="store_true", help="Disable interactive prompts."
     )
-    parser.add_argument(
-        "--sandbox",
-        action="store_true",
-        help="Run/repl in local Docker Sandbox (macOS arm64 only).",
-    )
     return parser

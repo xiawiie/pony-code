@@ -7,10 +7,10 @@
 
 | 术语 | 精确定义 | 不应混用 |
 | --- | --- | --- |
-| Source Root | 用户拥有的规范仓库；Sandbox 只能通过 Source Apply 修改 | Execution Root |
-| Execution Root | 当前模型可见工具共享的工作区；Host 为 Source Root，Sandbox 为 staging | Project State Root |
-| Project State Root | `.pony/` 下的 Session、Run、Checkpoint 与 Memory 状态 | Workspace 文件 |
-| Sandbox State Root | Sandbox capture、diff、apply journal 与恢复证据 | Project State Root |
+| Source Root | 用户拥有、Host 工具直接操作的受信仓库 | Project State Root |
+| Execution Root | 当前模型可见工具共享的工作区；当前等于 Source Root | Project State Root |
+| Project State Root | `.pony/` 下的 Session、Run、Memory 与 legacy artifact | Workspace 文件 |
+| Legacy Sandbox Binding | 仅用于拒绝旧 Sandbox-bound Session 的只读 sidecar 事实 | Active execution mode |
 | Project Environment | lexical repository root 下唯一读取的 `.env` | shell 全局环境注入 |
 | Provider | 用户选择或 Pony 在发送真实任务前解析出的服务家族 | 内部 Transport |
 | API Variant | Provider 家族内的 wire API，例如 `responses` 或 `chat_completions` | Provider 品牌 |
@@ -29,8 +29,8 @@
 | Plan Artifact | Session v4 中 bounded、带 revision 的完整 Markdown 计划 | Task checkpoint、Todo Store 或普通消息 |
 | Pre-Plan Mode | 进入 `plan` 前的 canonical Permission Mode，用于批准 Plan 后恢复 | Provider 或配置默认值 |
 | Compaction | 用 summary + recent tail 重建 active request | 删除 Session 历史 |
-| Recovery Record | Checkpoint Record 或 Tool Change Record | Session task checkpoint |
-| Source Apply | 将已审查 exact diff 写回 Source Root 的独立事务 | Sandbox tool approval |
+| Legacy Recovery Record | 旧 Checkpoint Record 或 Tool Change Record；只读检查 | Session task checkpoint |
+| Host Mutation Lock | approval 后覆盖 runner 与 effect observation 的 workspace lock | Recovery writer |
 
 ## Provider 配置合同
 
@@ -58,7 +58,8 @@ reasoning state 或 Anthropic thinking block 跨协议重放。
 - `--allow-dangerously-skip-permissions` 是本进程的 transient capability：它本身不切换 mode，但允许 picker 选择或
   resume 已持久化的 `bypassPermissions`。`--dangerously-skip-permissions` 直接选择 bypass。普通 resume 必须重新授权；
   显式改为其他 mode 不需要 dangerous flag。Capability 只进入 RuntimeOptions、不持久化；构造、resume、mode setter
-  与 Executor 都会检查。Bypass 不跳过 trust、ask/deny、schema、path/secret、memory、Sandbox 或 Recovery 硬边界。
+  与 Executor 都会检查。Bypass 不跳过 trust、ask/deny、schema、path/secret、memory、可信 executable、mutation lock 或
+  effect observation。
 - Permission Rule 只接受 legal tool 的完整名称。`deny` 优先；Plan mutation floor 不能被 `allow` 降低；其余
   `allow|ask` 先于 mode 默认值，`dontAsk` 把 ASK 转为 DENY。
 - Plan Artifact 只有一条受锁的 canonical persistence 路径，并统一执行 12 KiB UTF-8 上限与已知 secret gate。
@@ -78,21 +79,20 @@ reasoning state 或 Anthropic thinking block 跨协议重放。
 - schema 与硬安全边界先于 permission prompt；Executor 不信任 schema hiding，仍对不可见 mutation 做二次 gate。
 - Session v4 permission/Plan 状态只能由 `permission_mode_change`、`plan_artifact` 或 bounded `session_info` rule update
   投影；Run、trace、checkpoint 与 UI 不成为 writer。
-- Session、Run、Checkpoint 和 Tool Change 分别有独立格式与 reader，不以 release version 代替 format version。
+- Session、Run 与 legacy Checkpoint/Tool Change 分别有独立格式与 reader，不以 release version 代替 format version。
 - v1-v3 Session inspection 零写；只有显式 resume 可在 lock、backup、candidate、identity 与 digest 复验后迁移到 v4。
 - Compaction 不删除 append-only 历史，不授予 Memory 写权限，也不恢复 workspace。
 - `memory_save` 只看当前 top-level user request 的明确授权；delegate 永远不能写 Durable Memory。
 - primary failure 不能被 cleanup、observer 或 finalizer 的次生异常覆盖。
 
-## Workspace 与 Sandbox 不变量
+## Workspace 与 Host 执行不变量
 
 - 所有文件 I/O 锚定可信 root，拒绝 symlink、hardlink、special file、越界路径和身份漂移。
-- Host 模式不是 OS sandbox，文档和输出不得暗示隔离保证。
-- Sandbox 中所有模型可见文件能力只面向 Execution Root；Source Root 不挂载到容器。
-- `sandbox status`、`prepare` 和只读 inspection 不联网、不 pull/build/repair，也不创建隐式 product state。
-- 公开 Sandbox runtime 只接受 sealed local authorization；1.0 不存在 candidate 或 distributed product enablement。
-- Source Apply 必须绑定刚审查的 immutable diff digest，并在独立 lock、journal、CAS 与 recovery 边界内执行。
-- 任一 identity、readiness、capture 或 apply 事实不明时 fail closed，不回退 Host。
+- Host 不是 OS sandbox，文档和输出不得暗示隔离保证。
+- mutation 工具在 approval/参数复核后获取 `.workspace-mutation.lock`，持锁覆盖 runner 与 before/after observation。
+- `--sandbox`、`pony sandbox`、Source Apply、Checkpoint mutation 与 workspace rewind 不属于公开产品。
+- legacy Sandbox-bound Session 只允许 inspection；resume 精确拒绝且不 fallback Host。
+- 任一 root identity、trusted executable、lock 或 observer 事实不明时 fail closed。
 
 ## 模块所有权
 
@@ -103,10 +103,10 @@ reasoning state 或 Anthropic thinking block 跨协议重放。
 | `pony.context` | Context sources、chunk、escaping、render 与 digest |
 | `pony.memory` | User/Agent Notes、recall、retrieval、RepoMap 与 memory service |
 | `pony.providers` | wire adapter、Provider-neutral Response、factory 与 API probe |
-| `pony.recovery` | 恢复模型、policy、migration、writer 与 manager |
-| `pony.sandbox` | Docker local runtime、identity、隔离策略、staging、diff/apply 与资源 |
+| `pony.recovery` | command policy、legacy reader/migration 与待删除旧 writer |
+| `pony.sandbox` | legacy Sandbox binding inspection；只供 resume preflight，不提供执行 |
 | `pony.state` | Session/Run/Checkpoint store、TaskState 与 file lock |
-| `pony.tools` | Tool schema、policy/approval 协调、effect recorder 与受限 subprocess |
+| `pony.tools` | Tool schema、policy/approval、Host mutation/effect observation 与受限 subprocess |
 | `pony.workspace` | root discovery、workspace view、snapshot 与 observer |
 | `pony.config` | `.env`、`pony.toml`、Provider 解析和私有 secret 写入 |
 | `pony.runtime` | 跨领域对象装配和 Pony 公共运行时 |
@@ -139,4 +139,4 @@ Provider factory 位于 `pony.providers.factory`；adapter 之间不得互相选
 - 不移动不相关代码，不在同一变更中做无关格式化。
 - 外部输入和安全边界的错误码应稳定、可测试、无敏感值。
 - 文档中的路径、命令、Provider 表和支持矩阵必须与当前代码一致。
-- 发布证据只对 exact HEAD 有效；真实 API 或 Docker 测试不能用旧 SHA 的结果替代。
+- 发布证据只对 exact HEAD 有效；真实 API 测试不能用旧 SHA 的结果替代。

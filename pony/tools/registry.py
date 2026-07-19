@@ -188,13 +188,6 @@ _TOOL_RUNNERS = {
 
 
 def _available_shell_executable_names(context):
-    if getattr(context, "docker_sandbox", False):
-        sandbox_context = getattr(context, "sandbox_context", None)
-        runner = getattr(sandbox_context, "runner", None)
-        image = getattr(runner, "image", None)
-        tool_paths = getattr(image, "tool_paths", ())
-        if tool_paths:
-            return sorted(name for name, _path in tool_paths)
     return sorted(getattr(context, "trusted_executables", {}))
 
 

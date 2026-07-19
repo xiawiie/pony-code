@@ -94,18 +94,6 @@ def test_secret_canary_is_absent_from_normal_artifacts_and_inspection(
     agent.run_store.start_run(state)
     agent.emit_trace(state, "canary", {"token": secret})
     agent.run_store.write_report(state, {"token": secret})
-    change = agent.tool_change_recorder.start(
-        "",
-        state.task_id,
-        "run_shell",
-        "workspace_write",
-        {"command": secret},
-    )
-    agent.tool_change_recorder.finalize(
-        change["tool_change_id"],
-        "error",
-        error={"message": secret},
-    )
     record = new_checkpoint_record(
         "ckpt_canary",
         "turn",
@@ -116,7 +104,10 @@ def test_secret_canary_is_absent_from_normal_artifacts_and_inspection(
         str(tmp_path),
     )
     record["verification_evidence"] = [_verification(secret)]
-    agent.checkpoint_store.write_checkpoint_record(record)
+    CheckpointStore(
+        tmp_path,
+        redactor=agent.redact_artifact,
+    ).write_checkpoint_record(record)
 
     for path in (tmp_path / ".pony").rglob("*"):
         if (

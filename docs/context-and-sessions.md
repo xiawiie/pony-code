@@ -188,23 +188,18 @@ files/errors；branch summary 的 2,048 tokens 分配给 abandoned approach、di
 Provider 返回明确 context-length error 时，AgentLoop 允许一次 forced compaction + retry，并追加
 `context_recovery` 审计 entry。若压缩后仍超限，最多再压缩一次并返回明确错误，不循环猜测。
 
-## 6. Task Checkpoint、Rewind 与 Recovery
+## 6. Task Checkpoint 与 Session Rewind
 
 每个 top-level turn 结束时追加一个 `task_checkpoint` entry，包含：goal/status、completed/in-progress/blocker、
-next steps、key/read/modified files、`workspace_checkpoint_id`、worktree digest 和本次 context usage。Working Set、
-Working Memory 与 file summaries 从 active branch 最新 checkpoint 派生；它们不是另一份可变 canonical history。
+next steps、key/read/modified files、worktree digest 和本次 context usage。旧格式中的 `workspace_checkpoint_id` 只作为
+legacy inspection 字段读取，active runtime 不写 Workspace Recovery 绑定。Working Set、Working Memory 与 file summaries
+从 active branch 最新 checkpoint 派生；它们不是另一份可变 canonical history。
 
-`/rewind <entry-id>` 只切换 Session branch，不改文件。`/rewind <checkpoint-id> --workspace` 只接受关联了
-Recovery checkpoint 的合法 turn/task checkpoint，并执行：preview → 展示 restore/skip/conflict → 一次确认 →
-restore → 成功/noop 后追加 rewind。restore 失败时 Session leaf 不变。
+`/rewind <entry-id>` 只从目标 entry 创建新的 Session branch，不改文件。`--summary[=focus]` 可在分支点生成 bounded
+summary；summary 调用失败不追加 rewind。`--workspace` 与 `--yes` 已删除，Git/外部备份负责 workspace 恢复。
 
-paired rewind 使用小型 intent journal 绑定 old leaf、target、唯一 operation ID、restore plan digest 和 worktree
-identity；Recovery restore audit 同时持久化 operation ID 与 plan digest。若 workspace restore 已成功但 Session
-append 时崩溃，resume 只有在 owner、parent、operation ID 与 digest 全部精确匹配时才完成 reconciliation，不能
-误认同一 checkpoint 的较新 restore。mid-turn/tool entry 不能做 workspace rewind。
-
-Host 的 `--workspace` 目标是 Source Root；Sandbox 的目标是当前 active Execution staging。它不会触发 Source
-Apply，也不会撤销已经完成的 Source Apply。finalized/pending-review Sandbox Session 禁止 rewind。
+rewind、fork、label、compact 和 checkpoint 都写入同一 append-only Session Tree，并由 Session lock/CAS 保护。旧
+Sandbox-bound Session 在 CLI resume 装配阶段稳定拒绝，不能通过 rewind 或 fork 绕过到 Host。
 
 ## 7. CLI 与配置
 
@@ -218,7 +213,7 @@ Apply，也不会撤销已经完成的 Source Apply。finalized/pending-review S
 /tree
 /checkpoint [label]
 /fork <entry-id>
-/rewind <entry-or-checkpoint-id> [--workspace] [--summary[=focus]] [--yes]
+/rewind <entry-id> [--summary[=focus]]
 /clone --to-worktree PATH
 /remember <text>
 ```

@@ -8,6 +8,7 @@ from pony.cli.app import main
 from pony.providers.response import Response, StopReason
 from pony.recovery.models import new_checkpoint_record
 from pony.runtime.application import Pony
+from pony.state.checkpoint_store import CheckpointStore
 from pony.state.session_store import SessionStore
 from pony.state.task_state import TaskState
 from pony.agent.verification import new_verification_record
@@ -137,7 +138,10 @@ def test_cli_approval_and_verification_observations_hide_canary(
         stderr=secret,
         )
     ]
-    agent.checkpoint_store.write_checkpoint_record(checkpoint)
+    CheckpointStore(
+        tmp_path,
+        redactor=agent.redact_artifact,
+    ).write_checkpoint_record(checkpoint)
 
     prompts = []
     monkeypatch.setattr(

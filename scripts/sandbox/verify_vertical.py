@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the real local Docker Sandbox security and apply vertical."""
+"""Retired pre-1.0 Docker Sandbox vertical, preserved as historical evidence."""
 
 from __future__ import annotations
 

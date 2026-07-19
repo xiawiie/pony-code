@@ -157,7 +157,8 @@ def test_agents_instructions_match_the_production_contract():
         assert f"`pony/{package}/`" in text
     assert "./scripts/check.sh" in text
     assert "live 未执行" in text
-    assert "不回退 Host" in text
+    assert "Host 不是 OS sandbox" in text
+    assert "绝不静默切到 Host" in text
     assert "Definition of Done" in text
 
 

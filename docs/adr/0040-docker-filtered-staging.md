@@ -1,9 +1,11 @@
 # ADR-0040：Docker + filtered staging Sandbox
 
-- 状态：Accepted
+- 状态：Superseded（2026-07-19；公开 Sandbox/Source Apply 已删除）
 - 日期：2026-07-15
 
 ## 背景
+
+> 历史记录：本 ADR 不再描述当前 runtime。旧实现暂留给 legacy binding/inspection，后续由独立删除波次清理。
 
 Host 模式中的工具和获批 shell 继承当前用户权限，无法提供操作系统级隔离。Pony 需要一个本机执行边界，同时保留
 可审查、可恢复、显式写回的工作流，并且不能让模型或容器直接接触 Source Root、凭证和 Pony 私有状态。

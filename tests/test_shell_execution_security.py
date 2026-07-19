@@ -346,17 +346,7 @@ def test_single_shell_gate_mode_matrix(
         execution_mode=execution_mode,
         exit_code=0 if runner_count else None,
     )
-    records = agent.checkpoint_store.list_tool_change_records()
-    assert bool(records) is bool(runner_count)
-    if records:
-        assert records[-1]["input_summary"]["assessment"] == {
-            "risk_class": risk_class,
-            "decision": decision,
-            "reason": reason,
-            "argv": ([] if execution_mode == "shell" else command.split()),
-            "execution_mode": execution_mode,
-        }
-        assert records[-1]["approval"] == result.metadata["command_approval"]
+    assert not hasattr(agent, "checkpoint_store")
 
 
 @pytest.mark.parametrize(
@@ -407,7 +397,7 @@ def test_sensitive_git_object_path_is_rejected_before_prompt_or_runner(
     approve.assert_not_called()
     registry_runner.assert_not_called()
     git_runner.assert_not_called()
-    assert agent.checkpoint_store.list_tool_change_records() == []
+    assert not hasattr(agent, "checkpoint_store")
 
 
 def test_ask_eof_denies_without_runner_or_exit_code(tmp_path, monkeypatch):
@@ -479,7 +469,7 @@ def test_shell_early_rejections_keep_complete_assessment_metadata(
         execution_mode="argv",
     )
     approve.assert_not_called()
-    assert agent.checkpoint_store.list_tool_change_records() == []
+    assert not hasattr(agent, "checkpoint_store")
 
 
 @pytest.mark.parametrize("arguments", [["not-a-mapping"], "not-a-mapping"])
@@ -512,7 +502,7 @@ def test_nonmapping_shell_arguments_return_structured_invalid_metadata(
     )
     approve.assert_not_called()
     runner.assert_not_called()
-    assert agent.checkpoint_store.list_tool_change_records() == []
+    assert not hasattr(agent, "checkpoint_store")
 
 
 def test_repeated_shell_rejection_keeps_complete_assessment_metadata(tmp_path):
@@ -826,38 +816,6 @@ def test_approval_payload_and_runner_output_are_redacted(tmp_path):
     assert "<redacted>" in result.content
 
 
-def test_shell_record_redacts_full_command_before_truncating_summary(tmp_path):
-    secret = "LEAKME_opaque_shell_token_123456789"
-    command = "echo " + ("x" * 230) + secret
-    agent = build_agent(
-        tmp_path,
-        permission_mode="default",
-        executables={"echo": "/frozen/echo"},
-        redaction_env={"PONY_TEST_TOKEN": secret},
-        secret_env_names=("PONY_TEST_TOKEN",),
-    )
-    agent.approve = Mock(return_value=True)
-    agent.tools["run_shell"]["run"] = Mock(return_value=completed())
-
-    result = agent.execute_tool(
-        "run_shell",
-        {"command": command, "timeout": 5},
-    )
-
-    record = agent.checkpoint_store.load_tool_change_record(
-        result.metadata["tool_change_id"]
-    )
-    disk = next(
-        (tmp_path / ".pony" / "checkpoints" / "tool_changes").glob("*.json")
-    ).read_text(encoding="utf-8")
-    assert "LEAKM" not in disk
-    assert secret not in json.dumps(record)
-    assert "<redacted>" in record["input_summary"]["command"]
-    assert record["input_summary"]["assessment"]["reason"] == (
-        "unknown_command_requires_approval"
-    )
-
-
 @pytest.mark.parametrize("mutation_target", ["original", "approval_payload"])
 def test_approval_mutation_blocks_execution(tmp_path, mutation_target):
     agent = build_agent(
@@ -884,7 +842,7 @@ def test_approval_mutation_blocks_execution(tmp_path, mutation_target):
     assert result.metadata["command_approval"]["runner_executed"] is False
     assert agent.approve.call_count == 1
     runner.assert_not_called()
-    assert agent.checkpoint_store.list_tool_change_records() == []
+    assert not hasattr(agent, "checkpoint_store")
 
 
 def test_post_prompt_reassessment_blocks_filesystem_swap_without_second_prompt(
@@ -974,11 +932,8 @@ def test_runner_exception_records_attempt_without_invented_exit_code(tmp_path):
     assert approval["runner_executed"] is True
     assert approval["outcome"] == "allowed"
     assert "exit_code" not in approval
-    record = agent.checkpoint_store.load_tool_change_record(
-        result.metadata["tool_change_id"]
-    )
-    assert record["status"] == "error"
-    assert record["approval"] == approval
+    assert "tool_change_id" not in result.metadata
+    assert not hasattr(agent, "checkpoint_store")
 
 
 def test_before_capture_failure_does_not_create_nonexecuted_shell_record(
@@ -1002,7 +957,7 @@ def test_before_capture_failure_does_not_create_nonexecuted_shell_record(
     assert result.metadata["command_approval"]["runner_executed"] is False
     assert "exit_code" not in result.metadata["command_approval"]
     runner.assert_not_called()
-    assert agent.checkpoint_store.list_tool_change_records() == []
+    assert not hasattr(agent, "checkpoint_store")
 
 
 def test_before_capture_interrupt_does_not_create_nonexecuted_shell_record(
@@ -1023,7 +978,42 @@ def test_before_capture_interrupt_does_not_create_nonexecuted_shell_record(
         )
 
     runner.assert_not_called()
-    assert agent.checkpoint_store.list_tool_change_records() == []
+    assert not hasattr(agent, "checkpoint_store")
+
+
+def test_shell_rechecks_workspace_identity_inside_mutation_lock(tmp_path, monkeypatch):
+    agent = build_agent(tmp_path, executables={"pwd": "/frozen/pwd"})
+    runner = Mock(return_value=completed())
+    agent.tools["run_shell"]["run"] = runner
+    lock_active = False
+
+    @contextmanager
+    def mutation_lock(path, *, require_lock):
+        nonlocal lock_active
+        assert path == agent.mutation_lock_path
+        assert require_lock is True
+        lock_active = True
+        try:
+            yield
+        finally:
+            lock_active = False
+
+    def changed_identity(_root):
+        assert lock_active is True
+        return 0, 0
+
+    monkeypatch.setattr("pony.tools.executor.locked_file", mutation_lock)
+    monkeypatch.setattr(
+        "pony.tools.executor.private_files.private_directory_identity",
+        changed_identity,
+    )
+
+    result = agent.execute_tool("run_shell", {"command": "pwd", "timeout": 5})
+
+    assert result.metadata["tool_error_code"] == "workspace_root_changed"
+    assert result.metadata["command_approval"]["runner_executed"] is False
+    runner.assert_not_called()
+    assert lock_active is False
 
 
 @pytest.mark.parametrize(
@@ -1054,10 +1044,8 @@ def test_malformed_structured_runner_result_fails_closed(
     assert result.metadata["tool_error_code"] == "tool_failed"
     assert result.metadata["command_approval"]["runner_executed"] is True
     assert "exit_code" not in result.metadata["command_approval"]
-    record = agent.checkpoint_store.load_tool_change_record(
-        result.metadata["tool_change_id"]
-    )
-    assert record["status"] == "error"
+    assert "tool_change_id" not in result.metadata
+    assert not hasattr(agent, "checkpoint_store")
 
 
 def test_malformed_shell_result_after_side_effect_preserves_recovery_evidence(
@@ -1084,13 +1072,8 @@ def test_malformed_shell_result_after_side_effect_preserves_recovery_evidence(
     assert result.metadata["tool_error_code"] == "tool_partial_success"
     assert result.metadata["affected_paths"] == ["malformed-side-effect.txt"]
     assert result.metadata["workspace_changed"] is True
-    record = agent.checkpoint_store.load_tool_change_record(
-        result.metadata["tool_change_id"]
-    )
-    assert record["status"] == "partial_success"
-    assert record["affected_paths"] == ["malformed-side-effect.txt"]
-    assert record["file_entries"][0]["path"] == "malformed-side-effect.txt"
-    assert record["error"]["code"] == "tool_partial_success"
+    assert result.metadata["diff_summary"] == ["created:malformed-side-effect.txt"]
+    assert "tool_change_id" not in result.metadata
 
 
 def test_pony_has_no_raw_tool_proxies_and_executor_remains_registered(tmp_path):
@@ -1268,7 +1251,7 @@ def test_approved_git_cannot_override_hardening_or_run_config_helpers(
     assert result.metadata["command_approval"]["outcome"] == "blocked"
     assert result.metadata["command_approval"]["runner_executed"] is False
     assert "exit_code" not in result.metadata["command_approval"]
-    assert agent.checkpoint_store.list_tool_change_records() == []
+    assert not hasattr(agent, "checkpoint_store")
 
 
 def test_approved_git_config_override_cannot_execute_fsmonitor_marker(
@@ -1357,7 +1340,7 @@ def test_approved_git_fetch_blocks_repo_ssh_command_before_runner(
     assert approve.call_count == 1
     git_runner.assert_not_called()
     assert not marker.exists()
-    assert agent.checkpoint_store.list_tool_change_records() == []
+    assert not hasattr(agent, "checkpoint_store")
 
 
 def test_approved_git_fetch_blocks_repo_uploadpack_before_execution(tmp_path):
@@ -1404,7 +1387,7 @@ def test_approved_git_fetch_blocks_repo_uploadpack_before_execution(tmp_path):
     assert "exit_code" not in result.metadata["command_approval"]
     assert approve.call_count == 1
     assert not marker.exists()
-    assert agent.checkpoint_store.list_tool_change_records() == []
+    assert not hasattr(agent, "checkpoint_store")
 
 
 def test_approved_git_fetch_without_dangerous_config_reaches_runner(tmp_path):
@@ -1437,9 +1420,8 @@ def test_approved_git_fetch_without_dangerous_config_reaches_runner(tmp_path):
     assert approval["runner_executed"] is True
     assert approval["exit_code"] != 0
     assert approve.call_count == 1
-    records = agent.checkpoint_store.list_tool_change_records()
-    assert len(records) == 1
-    assert records[0]["approval"] == approval
+    assert result.metadata["command_approval"] == approval
+    assert not hasattr(agent, "checkpoint_store")
 
 
 def test_approved_git_fetch_blocks_unknown_remote_helper_protocol(
@@ -1506,7 +1488,7 @@ def test_approved_git_fetch_blocks_unknown_remote_helper_protocol(
     assert approval["runner_executed"] is True
     assert approval["exit_code"] != 0
     assert not marker.exists()
-    assert len(agent.checkpoint_store.list_tool_change_records()) == 1
+    assert not hasattr(agent, "checkpoint_store")
 
 
 @pytest.mark.parametrize(
@@ -1765,7 +1747,7 @@ def test_automatic_git_status_blocks_repo_clean_filter_before_execution(
     approve.assert_not_called()
     user_git_runner.assert_not_called()
     assert not marker.exists()
-    assert agent.checkpoint_store.list_tool_change_records() == []
+    assert not hasattr(agent, "checkpoint_store")
 
 
 def test_non_repo_git_status_reaches_runner_and_returns_nonzero(tmp_path):
@@ -1793,9 +1775,8 @@ def test_non_repo_git_status_reaches_runner_and_returns_nonzero(tmp_path):
     assert approval["execution_mode"] == "argv"
     assert approval["exit_code"] != 0
     approve.assert_not_called()
-    records = agent.checkpoint_store.list_tool_change_records()
-    assert len(records) == 1
-    assert records[0]["approval"] == approval
+    assert result.metadata["command_approval"] == approval
+    assert not hasattr(agent, "checkpoint_store")
 
 
 def test_automatic_git_status_blocks_repo_worktree_escape(tmp_path):
@@ -1841,7 +1822,7 @@ def test_automatic_git_status_blocks_repo_worktree_escape(tmp_path):
     assert result.metadata["command_approval"]["outcome"] == "blocked"
     assert result.metadata["command_approval"]["runner_executed"] is False
     assert "exit_code" not in result.metadata["command_approval"]
-    assert agent.checkpoint_store.list_tool_change_records() == []
+    assert not hasattr(agent, "checkpoint_store")
 
 
 def test_automatic_parent_git_status_blocks_uninspected_submodule_config(
@@ -1945,4 +1926,4 @@ def test_automatic_parent_git_status_blocks_uninspected_submodule_config(
     approve.assert_not_called()
     user_git_runner.assert_not_called()
     assert not marker.exists()
-    assert agent.checkpoint_store.list_tool_change_records() == []
+    assert not hasattr(agent, "checkpoint_store")

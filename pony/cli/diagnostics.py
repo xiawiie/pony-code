@@ -25,7 +25,6 @@ from pony.config.environment import (
 from pony.config.model import API_KEY_ENV_NAME, resolve_model_config
 from pony.security.paths import require_directory_no_symlink
 from pony.tools.subprocess import build_trusted_executables
-from pony.sandbox.session import source_mutation_authority
 from pony.memory.diagnostics import collect_memory_diagnostics
 from pony.workspace.context import WorkspaceContext
 
@@ -45,85 +44,6 @@ def _unavailable_memory_diagnostic():
         "reason_code": "memory_diagnostics_incomplete",
         "remediation": "resolve Memory filesystem or Git access and rerun pony doctor",
         "issues": [],
-    }
-
-
-def _collect_docker_sandbox_diagnostic(*, offline=False):
-    try:
-        from .sandbox import sandbox_status_payload
-
-        readiness = sandbox_status_payload()
-    except (OSError, RuntimeError, ValueError, KeyError, TypeError):
-        readiness = {
-            "status": "not_ready",
-            "reason_code": "sandbox_diagnostic_failed",
-            "network_performed": False,
-            "mutation_performed": False,
-            "capacity": {
-                "active_count": 0,
-                "pending_count": 0,
-                "cleanup_pending_count": 0,
-                "staging_bytes": 0,
-                "oldest_age_seconds": 0,
-                "orphan_verified_count": 0,
-                "orphan_unknown_count": 1,
-                "reconciliation_required_count": 0,
-            },
-        }
-    ready = readiness.get("status") == "ready"
-    capacity = readiness.get("capacity") or {}
-    state_ready = capacity.get("orphan_unknown_count", 1) == 0
-    runtime_authorization = readiness.get("runtime_authorization") or {
-        "status": "blocked",
-        "kind": "local",
-        "reason_code": "sandbox_runtime_authorization_invalid",
-    }
-    runtime_ready = (
-        runtime_authorization.get("status") == "enabled"
-        and runtime_authorization.get("kind") == "local"
-    )
-    if not ready:
-        reason_code = str(readiness.get("reason_code") or "sandbox_diagnostic_failed")
-    elif not state_ready:
-        reason_code = "sandbox_state_invalid"
-    elif not runtime_ready:
-        reason_code = str(
-            runtime_authorization.get("reason_code")
-            or "sandbox_runtime_authorization_invalid"
-        )
-    else:
-        reason_code = "ready"
-    return {
-        "status": "ready" if ready and state_ready and runtime_ready else "not_ready",
-        "reason_code": reason_code,
-        "implementation": "docker_container",
-        "offline": bool(offline),
-        "readiness": readiness,
-        "runtime_authorization": runtime_authorization,
-        "checks": {
-            "readiness": _doctor_check(
-                "pass" if ready else "fail",
-                "ready" if ready else reason_code,
-                "" if ready else "pony sandbox status",
-            ),
-            "state_integrity": _doctor_check(
-                "pass" if state_ready else "review_required",
-                "state_verified" if state_ready else "sandbox_state_invalid",
-                "" if state_ready else "pony sandbox list",
-            ),
-            "runtime_authorization": _doctor_check(
-                "pass" if runtime_ready else "blocked",
-                (
-                    str(runtime_authorization.get("reason_code"))
-                    if runtime_ready
-                    else str(
-                        runtime_authorization.get("reason_code")
-                        or "sandbox_runtime_authorization_invalid"
-                    )
-                ),
-                "" if runtime_ready else "pony sandbox status",
-            ),
-        },
     }
 
 
@@ -279,7 +199,6 @@ def collect_doctor(cwd, args=None, check_api=False):
         project_env_info,
         pony_root,
     )
-    sandbox = _collect_docker_sandbox_diagnostic(offline=True)
     try:
         memory = collect_memory_diagnostics(
             root,
@@ -344,7 +263,6 @@ def collect_doctor(cwd, args=None, check_api=False):
             "checkpoints": _storage_status(checkpoints_root / "records"),
         },
         "recovery_store": _storage_status(checkpoints_root),
-        "sandbox": sandbox,
         "memory": memory,
         "security": security,
         "project_docs": {"hints": doc_hints},
@@ -352,7 +270,6 @@ def collect_doctor(cwd, args=None, check_api=False):
 
 
 def _unavailable_workspace_doctor():
-    sandbox = _collect_docker_sandbox_diagnostic(offline=True)
     return {
         "workspace": {"status": "review_required", "repo_root": ""},
         "project_env": {
@@ -391,7 +308,6 @@ def _unavailable_workspace_doctor():
             "checkpoints": "review_required",
         },
         "recovery_store": "review_required",
-        "sandbox": sandbox,
         "memory": _unavailable_memory_diagnostic(),
         "security": {
             "status": "review_required",
@@ -446,37 +362,6 @@ def handle_doctor(tokens, cwd, args):
     data["config"] = _redact_mapping_values(data["config"], redactor)
     data["credentials"] = _redact_mapping_values(data["credentials"], redactor)
     data["api_check"] = redactor(data["api_check"])
-    sandbox = data.get("sandbox", {})
-    runtime_authorization = sandbox.get("runtime_authorization", {})
-    readiness_authorization = (sandbox.get("readiness") or {}).get(
-        "runtime_authorization",
-        {},
-    )
-    authorization_check = (sandbox.get("checks") or {}).get(
-        "runtime_authorization",
-        {},
-    )
-    data["sandbox"] = redactor(sandbox)
-    if isinstance(runtime_authorization, dict):
-        # This is status metadata, but the generic redactor treats every
-        # ``*_authorization`` mapping as a credential-bearing value.
-        data["sandbox"]["runtime_authorization"] = {
-            key: redactor(runtime_authorization[key])
-            for key in ("status", "kind", "reason_code")
-            if key in runtime_authorization
-        }
-    if isinstance(readiness_authorization, dict):
-        data["sandbox"]["readiness"]["runtime_authorization"] = {
-            key: redactor(readiness_authorization[key])
-            for key in ("status", "kind", "reason_code")
-            if key in readiness_authorization
-        }
-    if isinstance(authorization_check, dict):
-        data["sandbox"]["checks"]["runtime_authorization"] = {
-            key: redactor(authorization_check[key])
-            for key in ("status", "reason_code", "remediation")
-            if key in authorization_check
-        }
     memory = data.get("memory") or _unavailable_memory_diagnostic()
     data["memory"] = redactor(
         {
@@ -563,11 +448,7 @@ def _handle_set_secret(tokens, cwd, args):
     workspace = WorkspaceContext.build(cwd)
     root = Path(workspace.repo_root)
     try:
-        with source_mutation_authority(
-            Path.home() / ".pony" / "sandboxes",
-            root,
-        ):
-            written = write_project_env_assignments(root, {name: value})
+        written = write_project_env_assignments(root, {name: value})
     except (OSError, RuntimeError, ValueError) as exc:
         raise CliError(
             code="config",
@@ -932,7 +813,6 @@ def _render_doctor(data):
     security = data["security"]
     security_executables = security["trusted_executables"]
     recovery_review = security["recovery_review"]
-    sandbox = data.get("sandbox", {})
     memory = data.get("memory", {"status": "unknown", "issues": []})
     lines = [
         "Pony doctor — CLI health check",
@@ -966,22 +846,6 @@ def _render_doctor(data):
         _line("runs", storage["runs"]),
         _line("checkpoints", storage["checkpoints"]),
         _line("recovery", data["recovery_store"]),
-        "",
-        "Sandbox",
-        _line("status", sandbox.get("status", "unknown")),
-        _line("reason", sandbox.get("reason_code", "unknown")),
-        _line("readiness", (sandbox.get("readiness") or {}).get("status", "unknown")),
-        _line(
-            "runtime authorization",
-            (sandbox.get("runtime_authorization") or {}).get("kind", "unknown"),
-        ),
-        *(
-            _line(
-                check_id,
-                f"{item.get('status', 'unknown')} ({item.get('reason_code', 'unknown')})",
-            )
-            for check_id, item in (sandbox.get("checks") or {}).items()
-        ),
         "",
         "Memory",
         _line("check", memory.get("check_id", "memory")),

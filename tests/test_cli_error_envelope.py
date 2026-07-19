@@ -23,31 +23,6 @@ class _FailingAgent:
         return str(text).replace(CANARY, "<redacted>")
 
 
-class _ReviewAgent:
-    def ask(self, _prompt):
-        return "done"
-
-    def redact_text(self, text):
-        return str(text)
-
-    def finalize_sandbox_session(self):
-        return {
-            "status": "diff_blocked",
-            "sandbox_id": "sandbox_" + "1" * 32,
-            "session_state": "pending_review",
-            "generated_count": 4,
-            "artifact": {
-                "counts": {
-                    "candidate": 2,
-                    "high_risk_candidate": 1,
-                    "blocked_sensitive": 1,
-                    "blocked_size": 1,
-                    "blocked_type": 0,
-                }
-            },
-        }
-
-
 class _InterruptAgent:
     def __init__(self, *, signum=None):
         self.signum = signum
@@ -77,24 +52,11 @@ class _FinalizingFailureAgent(_FailingAgent):
         return None
 
 
-def test_one_shot_renders_sandbox_review_counts(capsys):
-    agent = _ReviewAgent()
-
-    assert run_agent_once(agent, ["finish"]) == 0
-
-    output = capsys.readouterr().out
-    assert "State: pending_review" in output
-    assert (
-        "Changes: 3 candidate, 1 high-risk, 2 blocked, 4 generated (ignored)" in output
-    )
-    assert "Review: pony sandbox diff sandbox_" in output
-
-
 def test_one_shot_keyboard_interrupt_finalizes_sandbox_and_returns_130():
     agent = _InterruptAgent()
 
     assert run_agent_once(agent, ["finish"]) == 130
-    assert agent.finalized == 1
+    assert agent.finalized == 0
 
 
 @pytest.mark.skipif(not hasattr(signal, "SIGTERM"), reason="SIGTERM unavailable")
@@ -103,7 +65,7 @@ def test_one_shot_sigterm_becomes_interrupt_and_restores_handler():
     previous = signal.getsignal(signal.SIGTERM)
 
     assert run_agent_once(agent, ["finish"]) == 128 + signal.SIGTERM
-    assert agent.finalized == 1
+    assert agent.finalized == 0
     assert signal.getsignal(signal.SIGTERM) is previous
 
 
@@ -124,7 +86,7 @@ def test_repl_sigterm_during_non_model_branch_still_finalizes(monkeypatch):
     monkeypatch.setattr("builtins.input", lambda _prompt="": next(inputs))
 
     assert run_repl(agent) == 128 + signal.SIGTERM
-    assert agent.finalized == 1
+    assert agent.finalized == 0
 
 
 @pytest.mark.parametrize("error_type", (OSError, ValueError))
@@ -142,7 +104,7 @@ def test_one_shot_runtime_failure_still_finalizes_sandbox():
     agent = _FinalizingFailureAgent(ValueError("failed"))
 
     assert run_agent_once(agent, ["finish"]) == 1
-    assert agent.finalized == 1
+    assert agent.finalized == 0
 
 
 def _provider_failure():
@@ -160,7 +122,7 @@ def test_one_shot_provider_failure_is_rethrown_after_finalization():
     with pytest.raises(ProviderTransportError):
         run_agent_once(agent, ["finish"])
 
-    assert agent.finalized == 1
+    assert agent.finalized == 0
 
 
 @pytest.mark.parametrize("output_format", ("text", "json"))
@@ -206,7 +168,7 @@ def test_plain_repl_provider_failure_propagates_after_finalization(monkeypatch):
     with pytest.raises(ProviderTransportError):
         run_repl(agent, plain=True)
 
-    assert agent.finalized == 1
+    assert agent.finalized == 0
 
 
 def test_cli_drops_unrecognized_provider_error_code(monkeypatch, capsys):

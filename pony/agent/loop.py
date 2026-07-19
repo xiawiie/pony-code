@@ -23,11 +23,6 @@ from pony.agent.context_manager import ContextBudgetExceeded
 from pony.context.renderer import build_injection_snapshot
 from pony.agent.messages import make_tool_pair
 from pony.recovery.policy import assess_command
-from pony.recovery.models import TRACE_RECOVERY_CHECKPOINT_CREATED
-from pony.recovery.checkpoint_writer import (
-    current_recovery_checkpoint_id,
-    set_current_recovery_checkpoint_id,
-)
 from pony.security.private_files import ensure_private_dir
 from pony.security.paths import require_regular_no_symlink
 from pony.state.task_state import (
@@ -901,12 +896,6 @@ def _record_tool_report(agent, name, metadata, model_execution):
             tool_report["changed_paths"].append(path)
     if tool_status == "partial_success":
         tool_report["partial_successes"] += 1
-    if (
-        metadata.get("recovery_review_required") is True
-        or metadata.get("tool_error_code") == "recovery_review_required"
-        or tool_status in {"interrupted", "partial_success"}
-    ):
-        tool_report["recovery_review_required"] = True
 
     sandbox = metadata.get("sandbox")
     sandbox = sandbox if isinstance(sandbox, dict) else {}
@@ -931,23 +920,6 @@ def _record_tool_report(agent, name, metadata, model_execution):
             "pending",
         }:
             tool_report["sandbox_cleanup_failure_count"] += 1
-    command_approval = metadata.get("command_approval")
-    runner_executed = (
-        isinstance(command_approval, dict)
-        and command_approval.get("runner_executed") is True
-    )
-    execution_plane = str(sandbox.get("execution_plane", "") or "")
-    if (
-        name == "run_shell"
-        and agent.sandbox_context is not None
-        and (
-            execution_plane == "host"
-            or (runner_executed and execution_plane != "sandbox")
-        )
-    ):
-        tool_report["host_fallback_count"] += 1
-
-
 def _sandbox_trace_payload(metadata):
     sandbox = metadata.get("sandbox")
     if not isinstance(sandbox, dict) or sandbox.get("status") in {
@@ -988,8 +960,6 @@ def _apply_tool_action(
     user_message,
     action,
     blocked_tool_result,
-    run_tool_change_ids,
-    run_verification_evidence,
     model_execution,
 ):
     name = action.name
@@ -1012,8 +982,6 @@ def _apply_tool_action(
             if metadata.get("tool_status"):
                 _record_tool_report(agent, name, metadata, model_execution)
                 tool_change_id = str(metadata.get("tool_change_id", "") or "")
-                if tool_change_id and metadata.get("effect_class") == "workspace_write":
-                    run_tool_change_ids.append(tool_change_id)
                 try:
                     agent.emit_trace(
                         task_state,
@@ -1036,13 +1004,8 @@ def _apply_tool_action(
     result = tool_result.content
     metadata = dict(tool_result.metadata or {})
     _record_tool_report(agent, name, metadata, model_execution)
-    verification_evidence = _verification_evidence_for_tool(name, metadata)
-    if verification_evidence is not None:
-        run_verification_evidence.append(verification_evidence)
     tool_change_id = str(metadata.get("tool_change_id", "") or "")
     effect_class = str(metadata["effect_class"])
-    if tool_change_id and effect_class == "workspace_write":
-        run_tool_change_ids.append(tool_change_id)
 
     display_result, digest_meta = _prepare_tool_result(
         agent,
@@ -1113,8 +1076,6 @@ def _run_agent_attempts(
     agent,
     task_state,
     user_message,
-    run_tool_change_ids,
-    run_verification_evidence,
     completion_usage_totals,
     model_execution,
 ):
@@ -1233,10 +1194,16 @@ def _run_agent_attempts(
                 user_message,
                 action,
                 blocked_result,
-                run_tool_change_ids,
-                run_verification_evidence,
                 model_execution,
             )
+            if agent._last_tool_result_metadata.get("effect_observation_unknown"):
+                final = "Stopped because workspace effects could not be verified."
+                task_state.stop_runtime_error(final)
+                _commit_session(
+                    agent,
+                    messages=(_plain_message("assistant", final),),
+                )
+                return final, task_state.stop_reason, None, None
             if (
                 action.name == "exit_plan_mode"
                 and agent._last_tool_result_metadata.get("tool_status") == "ok"
@@ -1339,8 +1306,6 @@ class AgentLoop:
         )
         agent.current_task_state = task_state
         agent.last_request_metadata = {}
-        run_tool_change_ids = []
-        run_verification_evidence = []
         completion_usage_totals = _empty_usage_totals()
         model_execution = _empty_model_execution()
         try:
@@ -1348,8 +1313,6 @@ class AgentLoop:
                 agent,
                 task_state,
                 user_message,
-                run_tool_change_ids,
-                run_verification_evidence,
                 completion_usage_totals,
                 model_execution,
             )
@@ -1391,8 +1354,6 @@ class AgentLoop:
             user_message=user_message,
             final=final,
             run_started_at=run_started_at,
-            run_tool_change_ids=run_tool_change_ids,
-            run_verification_evidence=run_verification_evidence,
             completion_usage_totals=completion_usage_totals,
             model_execution=model_execution,
             trigger=trigger,
@@ -1411,8 +1372,6 @@ def _finalize_run(
     user_message,
     final,
     run_started_at,
-    run_tool_change_ids,
-    run_verification_evidence,
     completion_usage_totals,
     model_execution,
     trigger,
@@ -1452,36 +1411,6 @@ def _finalize_run(
             ),
         )
     attempt("task_state_write", lambda: agent.run_store.write_task_state(task_state))
-    recovery_checkpoint = None
-    if not _session_writes_blocked(agent):
-        recovery_checkpoint = attempt(
-            "recovery_checkpoint",
-            lambda: _finalize_recovery_checkpoint(
-                agent,
-                task_state,
-                run_tool_change_ids,
-                run_verification_evidence,
-                trigger=trigger,
-            ),
-        )
-    if recovery_checkpoint is not None:
-        attempt(
-            "recovery_checkpoint_trace",
-            lambda: _emit_recovery_checkpoint_created(
-                agent,
-                task_state,
-                recovery_checkpoint,
-                trigger=trigger,
-            ),
-        )
-        attempt(
-            "verification_evidence",
-            lambda: _record_pending_verification_evidence(
-                agent,
-                recovery_checkpoint,
-                run_verification_evidence,
-            ),
-        )
     if not _session_writes_blocked(agent):
         changed_paths = list(
             (model_execution.get("tool_report") or {}).get("changed_paths", [])
@@ -1595,85 +1524,3 @@ def _create_resume_checkpoint(
         },
     )
     return checkpoint
-
-
-def _emit_recovery_checkpoint_created(agent, task_state, recovery_checkpoint, trigger):
-    if recovery_checkpoint is None:
-        return
-    agent.emit_trace(
-        task_state,
-        TRACE_RECOVERY_CHECKPOINT_CREATED,
-        {
-            "checkpoint_id": recovery_checkpoint["checkpoint_id"],
-            "recovery_checkpoint_id": recovery_checkpoint["checkpoint_id"],
-            "checkpoint_kind": "recovery",
-            "checkpoint_type": "turn",
-            "trigger": trigger,
-        },
-    )
-
-
-def _finalize_recovery_checkpoint(
-    agent, task_state, run_tool_change_ids, run_verification_evidence, trigger
-):
-    """把当前累计到的 Tool Change 打包成一份 Turn Checkpoint。
-
-    只有真的有 Tool Change 时才写，避免为纯回答型 turn 产生空 checkpoint。
-    写完后：
-      - 把 checkpoint_id 记到 task_state.recovery_checkpoint_id
-      - 更新 session.recovery.current_checkpoint_id
-      - 清空累计列表，防止下一个 turn 重复写
-    """
-    if not run_tool_change_ids:
-        return None
-    ids_to_link = list(run_tool_change_ids)
-    parent_checkpoint = current_recovery_checkpoint_id(agent.session)
-    record = agent.recovery_checkpoint_writer.create_turn_checkpoint(
-        session_id=agent.session["id"],
-        run_id=task_state.run_id,
-        turn_id=task_state.task_id,
-        parent_checkpoint_id=parent_checkpoint,
-        tool_change_ids=ids_to_link,
-        verification_evidence=[],
-    )
-    task_state.recovery_checkpoint_id = record["checkpoint_id"]
-    set_current_recovery_checkpoint_id(agent.session, record["checkpoint_id"])
-    try:
-        agent.session_path = agent.session_store.append_messages(
-            agent.session["id"],
-            (),
-            state_updates={
-                "resume_state": agent.session.get("resume_state", {}),
-                "recovery": agent.session.get("recovery", {}),
-                "runtime_identity": agent.session.get("runtime_identity", {}),
-            },
-        )
-    except Exception as exc:
-        _block_session_writes(agent, exc)
-        raise
-    agent.run_store.write_task_state(task_state)
-    run_tool_change_ids.clear()
-    return record
-
-
-def _record_pending_verification_evidence(
-    agent, recovery_checkpoint, run_verification_evidence
-):
-    if recovery_checkpoint is None:
-        return
-    for evidence in list(run_verification_evidence or []):
-        agent.record_verification_evidence(
-            checkpoint_id=recovery_checkpoint["checkpoint_id"],
-            **evidence,
-        )
-    if run_verification_evidence is not None:
-        run_verification_evidence.clear()
-
-
-def _verification_evidence_for_tool(name, metadata):
-    if name != "run_shell" or not isinstance(metadata, dict):
-        return None
-    evidence = metadata.get("verification_evidence")
-    if not isinstance(evidence, dict):
-        return None
-    return deepcopy(evidence)

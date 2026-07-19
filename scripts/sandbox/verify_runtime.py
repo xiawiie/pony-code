@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify Pony's packaged local Docker Sandbox runtime contract."""
+"""Retired pre-1.0 Docker Sandbox verifier; not a current product gate."""
 
 from __future__ import annotations
 

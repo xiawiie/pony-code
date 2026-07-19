@@ -19,11 +19,6 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from pony.sandbox.docker import (  # noqa: E402
-    DockerSandboxError,
-    default_image_manifest_path,
-    load_image_manifest,
-)
 from pony.config.environment import read_project_env  # noqa: E402
 from pony.config.model import resolve_model_config  # noqa: E402
 from pony.security.redaction import redact_text  # noqa: E402
@@ -35,9 +30,6 @@ SUITES = (
     "core-fast",
     "core-functional",
     "core-full",
-    "sandbox",
-    "sandbox-contract",
-    "sandbox-real",
     "live",
 )
 BASELINE_SUITES = {"core", "core-full"}
@@ -325,45 +317,6 @@ def _core_full_commands():
                 "scripts/release/verify_distribution.py",
                 "--install-smoke",
             ),
-            "exit",
-        ),
-    )
-
-
-def _sandbox_contract_commands():
-    python = sys.executable
-    contract = (
-        python,
-        "-m",
-        "pytest",
-        "-q",
-        "tests/test_docker_sandbox_session.py",
-        "tests/test_docker_sandbox_runner.py",
-        "tests/test_docker_sandbox_runtime.py",
-        "tests/test_docker_sandbox_cli.py",
-        "tests/test_sandbox_apply.py",
-        "tests/test_public_api_contract.py",
-    )
-    return [("sandbox.contract", contract, "no_skip")]
-
-
-def _sandbox_real_commands(system_name):
-    python = sys.executable
-    if system_name not in {"darwin", "linux"}:
-        return ()
-    return (
-        (
-            f"sandbox.real.{system_name}.readiness",
-            (
-                python,
-                "scripts/sandbox/verify_runtime.py",
-                "--require-ready",
-            ),
-            "exit",
-        ),
-        (
-            f"sandbox.real.{system_name}.vertical",
-            (python, "scripts/sandbox/verify_vertical.py"),
             "exit",
         ),
     )
@@ -912,19 +865,6 @@ def _provenance(root, suite, provider, system_name, machine_class):
     if commit is None or re.fullmatch(r"[0-9a-fA-F]{7,64}", commit) is None:
         commit = "unknown"
     dirty_output = _git_value(root, "status", "--porcelain")
-    sandbox = {"image": "unknown", "policy": "unknown"}
-    try:
-        image = load_image_manifest(default_image_manifest_path())
-        sandbox = {
-            "image": image.image_digest,
-            "policy": image.policy_digest,
-        }
-    except DockerSandboxError as exc:
-        if exc.code != "sandbox_image_not_released":
-            raise
-        sandbox = {"image": "not_released", "policy": "not_released"}
-    except (OSError, TypeError, ValueError):
-        pass
     provenance = {
         "commit": commit.lower(),
         "dirty": "unknown" if dirty_output is None else bool(dirty_output),
@@ -932,8 +872,8 @@ def _provenance(root, suite, provider, system_name, machine_class):
         "platform": system_name,
         "architecture": _architecture(),
         "machine_class": machine_class,
-        "sandbox_image_digest": sandbox["image"],
-        "sandbox_policy_digest": sandbox["policy"],
+        "sandbox_image_digest": "not_applicable",
+        "sandbox_policy_digest": "not_applicable",
     }
     if suite in BASELINE_SUITES:
         provenance["baseline"] = BASELINE_PATH.as_posix()
@@ -1206,35 +1146,6 @@ def run_evaluation(
                 artifact_path=artifact_ref,
             )
         )
-    elif suite == "sandbox-contract":
-        rows = _run_functional(
-            _sandbox_contract_commands(),
-            runner=runner,
-            root=root,
-            artifact_path=artifact_ref,
-        )
-    elif suite in {"sandbox", "sandbox-real"}:
-        rows = []
-        if suite == "sandbox":
-            rows.extend(
-                _run_functional(
-                    _sandbox_contract_commands(),
-                    runner=runner,
-                    root=root,
-                    artifact_path=artifact_ref,
-                )
-            )
-        if system_name not in {"darwin", "linux"}:
-            rows.append(_row("sandbox.real.unsupported", False, 2, 0, artifact_ref))
-        else:
-            rows.extend(
-                _run_functional(
-                    _sandbox_real_commands(system_name),
-                    runner=runner,
-                    root=root,
-                    artifact_path=artifact_ref,
-                )
-            )
     elif suite == "live":
         resolved = resolve_model_config(
             project_env=read_project_env(root),

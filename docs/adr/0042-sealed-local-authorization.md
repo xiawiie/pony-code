@@ -1,9 +1,11 @@
 # ADR-0042：sealed local authorization 与 macOS arm64 Sandbox
 
-- 状态：Accepted；由 Pony 1.0 重新确认
+- 状态：Superseded（2026-07-19；公开 Sandbox runtime 已删除）
 - 日期：2026-07-15；2026-07-16 更新
 
 ## 背景
+
+> 历史记录：sealed local authorization 不再是当前产品能力；旧资源与实现仅为待删除 legacy 代码。
 
 Pony 需要在不引入 registry、远程签名服务、运行时下载或缓存授权的情况下，严格绑定当前安装代码与本机 already-present
 Docker image。授权不能由项目 `.env`、workspace 内容或普通 CLI flag 伪造，也不能被描述为跨平台或多租户能力。

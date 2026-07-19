@@ -258,26 +258,6 @@ def _store_for_write(sessions_root, redactor):
     return SessionStore(sessions_root, redactor=redactor)
 
 
-def _assert_offline_rewind_allowed(sessions_root, session_id):
-    """Apply the Sandbox terminal-state guard without constructing a model."""
-    from pony.sandbox.session import find_project_sandbox_session
-
-    sessions_root = Path(sessions_root)
-    project_root = sessions_root.parent.parent
-    bound = find_project_sandbox_session(
-        project_root / ".pony",
-        project_root,
-        session_id,
-    )
-    if bound is None:
-        return
-    state = str(bound.manifest.get("state", "") or "")
-    if state not in {"ready", "running"}:
-        raise ValueError(
-            f"sandbox session rewind is forbidden in state {state or 'unknown'}"
-        )
-
-
 def _option_value(argv, name):
     prefix = name + "="
     for index, token in enumerate(argv):
@@ -289,42 +269,17 @@ def _option_value(argv, name):
 
 
 def _rewind_flags(tokens):
-    workspace = False
-    confirmed = False
     summary = False
     focus = ""
     for token in tokens:
-        if token == "--workspace":
-            workspace = True
-        elif token == "--yes":
-            confirmed = True
-        elif token == "--summary":
+        if token == "--summary":
             summary = True
         elif token.startswith("--summary="):
             summary = True
             focus = token.partition("=")[2]
         else:
             raise ValueError(f"unknown rewind option: {token}")
-    if confirmed and not workspace:
-        raise ValueError("--yes is only valid with --workspace")
-    return workspace, confirmed, summary, focus
-
-
-def _workspace_preview_report(preview):
-    counts = preview.get("decision_counts", {})
-    decisions = ", ".join(f"{key}={value}" for key, value in sorted(counts.items()))
-    lines = [
-        f"restore_plan_status: {preview.get('status', 'invalid')}",
-        f"workspace_checkpoint: {preview.get('workspace_checkpoint_id', '-')}",
-        f"decisions: {decisions or 'none'}",
-    ]
-    for entry in preview.get("entries", []):
-        lines.append(
-            f"- {entry.get('decision', 'unknown')} "
-            f"{entry.get('path', '-') or '-'} "
-            f"({entry.get('reason', '-') or '-'})"
-        )
-    return "\n".join(lines)
+    return summary, focus
 
 
 def handle_session_command(
@@ -368,39 +323,8 @@ def handle_session_command(
                 f"label: {checkpoint.get('label', '') or '-'}"
             )
         elif command == "rewind" and len(argv) >= 3:
-            workspace, confirmed, summary, focus = _rewind_flags(argv[3:])
-            if workspace:
-                if agent_factory is None:
-                    raise ValueError("workspace rewind requires a runtime")
-                agent = agent_factory(session_id)
-                preview = agent.preview_workspace_rewind(argv[2])
-                if not confirmed:
-                    report = (
-                        _workspace_preview_report(preview)
-                        + "\nconfirmation_required: rerun with --yes"
-                    )
-                    ok = False
-                else:
-                    result = agent.rewind_session(
-                        argv[2],
-                        workspace=True,
-                        confirmed=True,
-                        summary=summary,
-                        focus=focus,
-                    )
-                    entry = result.rewind_entry
-                    report = (
-                        f"rewound: {entry['id']}\nparent: {entry['parent_id']}\n"
-                        f"restore_status: {result.restore_result['status']}\n"
-                        f"restored_paths: {', '.join(result.restore_result.get('restored_paths', [])) or '-'}"
-                    )
-                    if result.summary_entry is not None:
-                        report += (
-                            "\nbranch_summary_tokens: "
-                            f"{result.summary_entry['data']['summary_tokens']}"
-                        )
-                    ok = True
-            elif summary:
+            summary, focus = _rewind_flags(argv[3:])
+            if summary:
                 if agent_factory is None:
                     raise ValueError("summary rewind requires a model runtime")
                 result = agent_factory(session_id).rewind_session(
@@ -415,7 +339,6 @@ def handle_session_command(
                 )
                 ok = True
             else:
-                _assert_offline_rewind_allowed(sessions_root, session_id)
                 entry = _store_for_write(sessions_root, redactor).rewind(
                     session_id,
                     argv[2],

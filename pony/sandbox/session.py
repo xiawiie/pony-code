@@ -39,6 +39,8 @@ MAX_ENTRIES = 100_000
 MAX_DEPTH = 32
 MAX_CLEANUP_DELETE_ENTRIES = 10_000
 MAX_CLEANUP_ARTIFACTS_BYTES = 64 * 1024
+MAX_LEGACY_SIDECAR_ENTRIES = 128
+MAX_LEGACY_SIDECAR_BYTES = 8 * 1024 * 1024
 LOGICAL_ROOT = PurePosixPath("/workspace")
 _WORKSPACE_TRASH_NAME = "trash-workspace"
 _CONTENT_BLOBS_TRASH_NAME = "trash-content-blobs"
@@ -3724,12 +3726,16 @@ def find_project_sandbox_session(
         ):
             raise SandboxSessionError("sandbox_state_invalid")
         matches = []
-        for sidecar_path in sorted(
-            sidecar_parent.iterdir(),
-            key=lambda item: item.name,
-        ):
+        total_sidecar_bytes = 0
+        for entry_count, sidecar_path in enumerate(sidecar_parent.iterdir(), start=1):
+            if entry_count > MAX_LEGACY_SIDECAR_ENTRIES:
+                raise SandboxSessionError("sandbox_state_invalid")
             name = re.fullmatch(r"(sandbox_[0-9a-f]{32})\.json", sidecar_path.name)
             if name is None:
+                raise SandboxSessionError("sandbox_state_invalid")
+            sidecar_info = sidecar_path.lstat()
+            total_sidecar_bytes += sidecar_info.st_size
+            if total_sidecar_bytes > MAX_LEGACY_SIDECAR_BYTES:
                 raise SandboxSessionError("sandbox_state_invalid")
             raw = _read_strict_file(
                 sidecar_path,

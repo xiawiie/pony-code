@@ -46,9 +46,15 @@ include = [
   "/pyproject.toml",
   "/pony",
 ]
+exclude = [
+  "/pony/sandbox/resources",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["pony"]
+exclude = [
+  "/pony/sandbox/resources",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

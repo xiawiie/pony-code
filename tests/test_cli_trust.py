@@ -1,4 +1,3 @@
-from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import Mock
 from pathlib import Path
@@ -33,7 +32,7 @@ def test_untrusted_no_input_stops_before_workspace_and_provider(tmp_path, monkey
     downstream = Mock()
     confirm = Mock(return_value=True)
     monkeypatch.setattr(assembly.WorkspaceContext, "build", workspace)
-    monkeypatch.setattr(assembly, "_build_agent_with_source_authority", downstream)
+    monkeypatch.setattr(assembly, "_build_agent", downstream)
 
     with pytest.raises(CliError) as raised:
         assembly.build_agent(
@@ -72,7 +71,7 @@ def test_rejected_trust_stops_before_workspace_and_provider(tmp_path, monkeypatc
     workspace = Mock()
     downstream = Mock()
     monkeypatch.setattr(assembly.WorkspaceContext, "build", workspace)
-    monkeypatch.setattr(assembly, "_build_agent_with_source_authority", downstream)
+    monkeypatch.setattr(assembly, "_build_agent", downstream)
 
     with pytest.raises(CliError) as raised:
         assembly.build_agent(
@@ -96,19 +95,13 @@ def test_trust_is_persisted_before_workspace_and_reused(tmp_path, monkeypatch):
         events.append(("workspace", tmp_path))
         return workspace
 
-    @contextmanager
-    def authority(_state_root, _project_root):
-        events.append(("authority", tmp_path))
-        yield
-
     def downstream(_args, value):
         events.append(("downstream", tmp_path))
         assert value is workspace
         return "agent"
 
     monkeypatch.setattr(assembly.WorkspaceContext, "build", build_workspace)
-    monkeypatch.setattr(assembly, "source_mutation_authority", authority)
-    monkeypatch.setattr(assembly, "_build_agent_with_source_authority", downstream)
+    monkeypatch.setattr(assembly, "_build_agent", downstream)
 
     assert assembly.build_agent(
         _args(tmp_path), trust_store=store, confirm=confirm
@@ -120,7 +113,6 @@ def test_trust_is_persisted_before_workspace_and_reused(tmp_path, monkeypatch):
         "is_trusted",
         "workspace",
         "is_trusted",
-        "authority",
         "downstream",
     ]
 
@@ -134,7 +126,6 @@ def test_trust_is_persisted_before_workspace_and_reused(tmp_path, monkeypatch):
         "is_trusted",
         "workspace",
         "is_trusted",
-        "authority",
         "downstream",
     ]
 

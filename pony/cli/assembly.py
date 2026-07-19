@@ -14,19 +14,10 @@ from pony.runtime.application import (
     _session_requires_bypass_permission_capability,
 )
 from pony.runtime.options import RuntimeOptions
-from pony.sandbox.docker import (
-    build_docker_sandbox_context,
-    discover_local_docker,
-    DockerSandboxError,
-    ensure_runtime_docker_config,
-    local_docker_sandbox_runtime,
+from pony.runtime.legacy import (
+    LegacySandboxResumeError,
+    preflight_legacy_sandbox_resume,
 )
-from pony.sandbox.session import (
-    find_project_sandbox_session,
-    SandboxSessionError,
-    source_mutation_authority,
-)
-from pony.security import redaction as securitylib
 from pony.security.private_files import private_directory_identity
 from pony.security.trust import ProjectTrustStore
 from pony.state.session_store import SessionStore
@@ -181,20 +172,11 @@ def build_agent(args, *, trust_store=None, confirm=None):
             message="Project identity changed after trust confirmation",
             exit_code=CLI_EXIT_CONFIG,
         )
-    with source_mutation_authority(
-        Path.home() / ".pony" / "sandboxes",
-        Path(source_workspace.repo_root),
-    ):
-        return _build_agent_with_source_authority(args, source_workspace)
+    return _build_agent(args, source_workspace)
 
 
-def _build_agent_with_source_authority(args, source_workspace):
+def _build_agent(args, source_workspace):
     migration_preflight(source_workspace)
-    sandbox_enabled = getattr(args, "sandbox", False)
-    sandbox_product = _load_sandbox_runtime() if sandbox_enabled else None
-    sandbox_image, sandbox_authorization = (
-        sandbox_product if sandbox_product is not None else (None, None)
-    )
     process_env = dict(os.environ)
     project_env = read_project_env(source_workspace.repo_root, warn=True)
     redaction_env, configured_secret_names, redactor = _build_redaction_snapshot(
@@ -211,35 +193,23 @@ def _build_agent_with_source_authority(args, source_workspace):
     if session_id == "latest":
         store = SessionStore(session_store_root, redactor=redactor)
         session_id = store.latest()
-    if sandbox_enabled and args.resume and not session_id:
-        raise CliError(
-            code="sandbox_session_not_found",
-            message="sandbox session not found",
-            exit_code=CLI_EXIT_CONFIG,
-        )
-    if sandbox_enabled and not args.resume:
-        session_id = Pony.new_session_id()
-    if not sandbox_enabled and args.resume and session_id:
+    if args.resume and session_id:
         try:
-            bound = find_project_sandbox_session(
-                Path(source_workspace.repo_root) / ".pony",
-                Path(source_workspace.repo_root),
-                session_id,
-            )
-        except SandboxSessionError as exc:
+            preflight_legacy_sandbox_resume(source_workspace.repo_root, session_id)
+        except LegacySandboxResumeError as exc:
+            if exc.code == "legacy_sandbox_session_unsupported":
+                raise CliError(
+                    code=exc.code,
+                    message="Legacy Sandbox sessions cannot resume in Host mode",
+                    hint="Inspect the session or start a new Host session.",
+                    exit_code=CLI_EXIT_CONFIG,
+                ) from exc
             raise CliError(
                 code="sandbox_state_invalid",
-                message="Sandbox session binding is invalid",
-                details={"reason_code": exc.code},
+                message="Legacy Sandbox session binding is invalid",
+                details={"reason_code": exc.reason_code},
                 exit_code=CLI_EXIT_CONFIG,
             ) from exc
-        if bound is not None:
-            raise CliError(
-                code="sandbox_session_mode_mismatch",
-                message="Sandbox session cannot resume in host mode",
-                hint="Resume this session with --sandbox.",
-                exit_code=CLI_EXIT_CONFIG,
-            )
     if store is None and args.resume and session_id and Path(session_store_root).exists():
         store = SessionStore(session_store_root, redactor=redactor)
     if store is not None and args.resume and session_id:
@@ -258,66 +228,31 @@ def _build_agent_with_source_authority(args, source_workspace):
                 ),
                 exit_code=CLI_EXIT_USAGE,
             )
-    if sandbox_enabled:
-        sandbox_context, workspace = _build_sandbox_context(
-            source_workspace,
-            sandbox_image,
-            authorization=sandbox_authorization,
-            pony_session_id=session_id,
-            resume=bool(args.resume),
-            known_secrets=tuple(
-                value.encode("utf-8")
-                for _name, value in securitylib.detected_secret_env_items(
-                    redaction_env,
-                    configured_secret_names,
-                )
-            ),
-        )
-    else:
-        sandbox_context = None
-        workspace = source_workspace
+    workspace = source_workspace
     if store is None:
         store = SessionStore(session_store_root, redactor=redactor)
-    try:
-        model = _build_transport_client(
-            args,
-            project_env=project_env,
-            process_env=process_env,
-            session_store=store if args.resume and session_id else None,
-            session_id=session_id if args.resume else None,
+    model = _build_transport_client(
+        args,
+        project_env=project_env,
+        process_env=process_env,
+        session_store=store if args.resume and session_id else None,
+        session_id=session_id if args.resume else None,
+    )
+    if args.resume and session_id:
+        resume_permission_mode = (
+            "bypassPermissions"
+            if getattr(args, "dangerously_skip_permissions", False)
+            else getattr(args, "permission_mode", None)
         )
-        if args.resume and session_id:
-            resume_permission_mode = (
-                "bypassPermissions"
-                if getattr(args, "dangerously_skip_permissions", False)
-                else getattr(args, "permission_mode", None)
-            )
-            return Pony.from_session(
-                model_client=model,
-                workspace=workspace,
-                session_store=store,
-                session_id=session_id,
-                resume_permission_mode=resume_permission_mode,
-                resume_permission_rule_updates=getattr(
-                    args, "_permission_rule_updates", ()
-                ),
-                options=RuntimeOptions(
-                    project_trusted=True,
-                    max_steps=args.max_steps,
-                    max_output_tokens=max_output_tokens,
-                    context_window=getattr(args, "context_window", None),
-                    secret_env_names=configured_secret_names,
-                    redaction_env=redaction_env,
-                    trusted_redaction_env=True,
-                    sandbox_context=sandbox_context,
-                    project_config=project_config,
-                    allow_dangerously_skip_permissions=dangerous_bypass_enabled(args),
-                ),
-            )
-        return Pony(
+        return Pony.from_session(
             model_client=model,
             workspace=workspace,
             session_store=store,
+            session_id=session_id,
+            resume_permission_mode=resume_permission_mode,
+            resume_permission_rule_updates=getattr(
+                args, "_permission_rule_updates", ()
+            ),
             options=RuntimeOptions(
                 project_trusted=True,
                 max_steps=args.max_steps,
@@ -326,94 +261,24 @@ def _build_agent_with_source_authority(args, source_workspace):
                 secret_env_names=configured_secret_names,
                 redaction_env=redaction_env,
                 trusted_redaction_env=True,
-                sandbox_context=sandbox_context,
                 project_config=project_config,
-                session_id=session_id,
                 allow_dangerously_skip_permissions=dangerous_bypass_enabled(args),
             ),
         )
-    except BaseException:
-        if sandbox_context is not None:
-            _cleanup_failed_sandbox_startup(sandbox_context)
-        raise
-
-
-def _cleanup_failed_sandbox_startup(context):
-    store = context.runner.session_store
-    try:
-        if not context.resumed:
-            store.discard(context.sandbox_state_root)
-            return
-    except (OSError, SandboxSessionError):
-        pass
-    try:
-        session = store.inspect(context.sandbox_state_root)
-        lease = session.manifest["lease"]
-        if lease is not None:
-            store.release(context.sandbox_state_root, lease["owner_nonce"])
-    except (OSError, SandboxSessionError):
-        pass
-
-
-def _load_sandbox_runtime():
-    try:
-        return local_docker_sandbox_runtime()
-    except DockerSandboxError as exc:
-        raise CliError(
-            code=exc.code,
-            message="Docker Sandbox local authorization failed",
-            details={"reason_code": exc.code},
-            exit_code=CLI_EXIT_CONFIG,
-        ) from exc
-
-
-def _build_sandbox_context(
-    source_workspace,
-    image,
-    *,
-    authorization,
-    pony_session_id,
-    resume,
-    known_secrets,
-):
-    try:
-        docker_cli, docker_endpoint = discover_local_docker()
-        context = build_docker_sandbox_context(
-            source_workspace.repo_root,
-            authorization=authorization,
-            pony_session_id=pony_session_id,
-            docker_cli=docker_cli,
-            docker_endpoint=docker_endpoint,
-            docker_config=ensure_runtime_docker_config(),
-            image=image,
-            git_executable=source_workspace.trusted_executables.get("git"),
-            known_secrets=known_secrets,
-            resume=resume,
-            source_branch=source_workspace.branch,
-            source_status=source_workspace.status,
-            source_default_branch=source_workspace.default_branch,
-        )
-    except (DockerSandboxError, SandboxSessionError, OSError, ValueError) as exc:
-        code = getattr(exc, "code", "sandbox_startup_failed")
-        raise CliError(
-            code=code,
-            message="Docker Sandbox startup failed",
-            details={"reason_code": code},
-            exit_code=CLI_EXIT_CONFIG,
-        ) from exc
-    executables = {
-        name: path
-        for name, path in source_workspace.trusted_executables.items()
-        if name != "git"
-    }
-    workspace = WorkspaceContext.build(
-        context.execution_root,
-        executables=executables,
-        repo_root_override=context.execution_root,
-        inspect_git=False,
-        logical_root=context.logical_root,
-        branch_override="pony-sandbox",
-        default_branch_override="pony-sandbox",
-        status_override="sandbox_execution_state_unknown",
+    return Pony(
+        model_client=model,
+        workspace=workspace,
+        session_store=store,
+        options=RuntimeOptions(
+            project_trusted=True,
+            max_steps=args.max_steps,
+            max_output_tokens=max_output_tokens,
+            context_window=getattr(args, "context_window", None),
+            secret_env_names=configured_secret_names,
+            redaction_env=redaction_env,
+            trusted_redaction_env=True,
+            project_config=project_config,
+            session_id=session_id,
+            allow_dangerously_skip_permissions=dangerous_bypass_enabled(args),
+        ),
     )
-    return context, workspace

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build Pony's locked Linux/arm64 development sandbox image."""
+"""Retired pre-1.0 Sandbox image builder, preserved for historical maintenance."""
 
 from __future__ import annotations
 
