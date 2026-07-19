@@ -39,11 +39,10 @@ PERF_RUNNERS = (
         ("build_request/medium",),
     ),
     (
-        "benchmarks.perf.bench_security_recovery",
+        "benchmarks.perf.bench_security",
         (
             "security/redact_artifact/100",
             "shell/assess_corpus/50",
-            "recovery/pending_reviews/200",
         ),
     ),
 )
@@ -285,18 +284,6 @@ def _core_functional_commands():
                 "from benchmarks.evaluation.fixed_benchmark import run_harness_regression_v2; "
                 "d=TemporaryDirectory(); a=run_harness_regression_v2(artifact_path=Path(d.name)/'fixed.json', workspace_root=Path(d.name)/'workspaces'); "
                 "s=a['summary']; raise SystemExit(0 if s['failed']==0 and s['passed']==s['total_tasks'] and s['within_budget']==s['total_tasks'] and s['verifier_passes']==s['total_tasks'] else 1)",
-            ),
-            "exit",
-        ),
-        (
-            "core.recovery-ablation",
-            (
-                python,
-                "-c",
-                "from pathlib import Path; from tempfile import TemporaryDirectory; "
-                "from benchmarks.evaluation.experiments_recovery import run_recovery_ablation_v2; "
-                "d=TemporaryDirectory(); a=run_recovery_ablation_v2(Path(d.name)/'recovery.json', repetitions=1); "
-                "s=a['variants']['resume_enabled']['summary']; raise SystemExit(0 if s=={'resume_success_rate':1.0,'stale_reanchor_rate':1.0,'workspace_drift_detection_rate':1.0,'resume_false_accept_rate':0.0} else 1)",
             ),
             "exit",
         ),
@@ -872,8 +859,6 @@ def _provenance(root, suite, provider, system_name, machine_class):
         "platform": system_name,
         "architecture": _architecture(),
         "machine_class": machine_class,
-        "sandbox_image_digest": "not_applicable",
-        "sandbox_policy_digest": "not_applicable",
     }
     if suite in BASELINE_SUITES:
         provenance["baseline"] = BASELINE_PATH.as_posix()
@@ -942,8 +927,6 @@ def _validate_low_sensitivity(payload, markdown, root):
         "platform",
         "architecture",
         "machine_class",
-        "sandbox_image_digest",
-        "sandbox_policy_digest",
     }
     expected_provenance = set(base_provenance)
     if payload["suite"] in BASELINE_SUITES:

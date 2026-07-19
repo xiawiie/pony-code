@@ -5,7 +5,7 @@ import shutil
 import pytest
 
 from pony.state.file_lock import locked_file
-from pony.recovery.migration import ABSENT, ROLLED_BACK, Migration, _MAX_JOURNAL_BYTES
+from pony.state.migration import ABSENT, ROLLED_BACK, Migration, _MAX_JOURNAL_BYTES
 from pony.security.private_files import PrivateAtomicWriteError
 
 

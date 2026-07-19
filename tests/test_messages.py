@@ -67,14 +67,12 @@ def test_tool_pair_has_matching_id_error_semantics_and_metadata():
         created_at="2026-07-10T00:00:00Z",
         tool_status="error",
         effect_class="workspace_write",
-        tool_change_id="tc_1",
     )
     assert assistant["content"][0]["id"] == "toolu_2"
     assert result["content"][0]["tool_use_id"] == "toolu_2"
     assert result["content"][0]["is_error"] is True
     assert result["_pony_meta"]["tool_status"] == "error"
     assert result["_pony_meta"]["effect_class"] == "workspace_write"
-    assert result["_pony_meta"]["tool_change_id"] == "tc_1"
 
 
 def test_strip_pony_meta_returns_new_top_level_dicts():

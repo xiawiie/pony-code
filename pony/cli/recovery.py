@@ -6,11 +6,10 @@ from pathlib import Path
 import re
 import stat
 
-from pony.state.checkpoint_store import CheckpointStore
+from pony.state.legacy_artifacts import LegacyArtifactError, LegacyCheckpointReader
 from .errors import CLI_EXIT_USAGE, CliError
 from .output import build_inspection_redactor, print_inspection_result
 from .session import load_session_readonly
-from pony.recovery.manager import collect_recovery_review_items
 from pony.agent.observability import (
     RunArtifactError,
     load_run_summary,
@@ -28,15 +27,11 @@ def handle_checkpoints(root, tokens, args):
     sub = tokens[0] if tokens else "list"
     rest = tokens[1:]
     try:
-        store = CheckpointStore(
-            root,
-            redactor=redactor,
-            read_only=True,
-        )
-    except (OSError, ValueError) as exc:
+        store = LegacyCheckpointReader(root)
+    except (OSError, ValueError, LegacyArtifactError) as exc:
         raise _unsafe_artifact_error() from exc
     if sub == "pending" and not rest:
-        data = collect_recovery_review_items(store, root)
+        data = store.review_items()
         return print_inspection_result(
             root,
             "checkpoints_pending",
@@ -48,7 +43,7 @@ def handle_checkpoints(root, tokens, args):
     if sub == "list" and not rest:
         try:
             records = store.list_checkpoint_records(strict=True)
-        except (OSError, ValueError) as exc:
+        except (OSError, ValueError, LegacyArtifactError) as exc:
             raise _unsafe_artifact_error() from exc
         return print_inspection_result(
             root,
@@ -197,7 +192,6 @@ def _render_pending_reviews(data):
         "tool_changes",
         "restore_journals",
         "invalid_records",
-        "quarantined_records",
     ):
         for item in data.get(key, []):
             item_id = (
@@ -255,7 +249,7 @@ def _resolve_checkpoint_id(store, value, *, redactor=None):
 
     try:
         records = store.list_checkpoint_records(strict=True)
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, LegacyArtifactError) as exc:
         raise _unsafe_artifact_error() from exc
     ids = []
     for record in records:

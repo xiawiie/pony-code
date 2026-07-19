@@ -584,8 +584,6 @@ def append_branch_rewind(
     agent,
     prepared,
     *,
-    workspace_checkpoint_id="",
-    restore_checkpoint_id="",
     target_checkpoint_id="",
 ):
     """Append the prepared rewind and summary atomically at entry granularity."""
@@ -601,8 +599,6 @@ def append_branch_rewind(
             "focus": prepared.focus,
             "provider_usage": dict(prepared.provider_usage),
         },
-        workspace_checkpoint_id=workspace_checkpoint_id,
-        restore_checkpoint_id=restore_checkpoint_id,
         target_checkpoint_id=target_checkpoint_id,
         expected_leaf_id=prepared.abandoned_leaf_id,
     )

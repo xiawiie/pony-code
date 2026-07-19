@@ -4,14 +4,10 @@ from unittest.mock import Mock
 
 import pytest
 
-from pony.cli.app import main
 from pony.providers.response import Response, StopReason
-from pony.recovery.models import new_checkpoint_record
 from pony.runtime.application import Pony
-from pony.state.checkpoint_store import CheckpointStore
 from pony.state.session_store import SessionStore
 from pony.state.task_state import TaskState
-from pony.agent.verification import new_verification_record
 from pony.workspace.context import WorkspaceContext
 from pony.runtime.options import RuntimeOptions
 
@@ -118,31 +114,6 @@ def test_cli_approval_and_verification_observations_hide_canary(
     agent.run_store.start_run(state)
     agent.emit_trace(state, "canary", {"token": secret})
     agent.run_store.write_report(state, {"token": secret})
-    checkpoint = new_checkpoint_record(
-        "ckpt_canary",
-        "turn",
-        agent.session["id"],
-        state.run_id,
-        state.task_id,
-        "",
-        str(tmp_path.resolve()),
-    )
-    checkpoint["verification_evidence"] = [
-        new_verification_record(
-        argv=["python", "-m", "pytest"],
-        risk_class="read_only",
-        runner_executed=True,
-        execution_mode="argv",
-        exit_code=0,
-        stdout=secret,
-        stderr=secret,
-        )
-    ]
-    CheckpointStore(
-        tmp_path,
-        redactor=agent.redact_artifact,
-    ).write_checkpoint_record(checkpoint)
-
     prompts = []
     monkeypatch.setattr(
         "builtins.input",
@@ -157,20 +128,6 @@ def test_cli_approval_and_verification_observations_hide_canary(
     )
     assert secret not in "".join(prompts)
 
-    assert (
-        main(
-            [
-                "--cwd",
-                str(tmp_path),
-                "--format",
-                "json",
-                "checkpoints",
-                "show",
-                "ckpt_canary",
-            ]
-        )
-        == 0
-    )
     assert secret not in capsys.readouterr().out
 
 

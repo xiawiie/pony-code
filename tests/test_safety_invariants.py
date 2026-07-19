@@ -505,7 +505,6 @@ def test_cli_resume_uses_immutable_collision_safe_snapshot_before_load(
                 "recently_recalled": [],
                 "checkpoints": {},
                 "resume_state": {},
-                "recovery": {},
                 "runtime_identity": {},
             }
         ),

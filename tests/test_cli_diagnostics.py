@@ -600,21 +600,6 @@ def test_collect_doctor_folds_unavailable_workspace_to_safe_shape(tmp_path):
     assert "RuntimeError" not in rendered
 
 
-def test_doctor_security_requires_review_for_pending_tool_change(tmp_path):
-    from pony.state.checkpoint_store import CheckpointStore
-    from pony.tools.change_recorder import ToolChangeRecorder
-
-    store = CheckpointStore(tmp_path)
-    ToolChangeRecorder(store, owner_id="doctor-test").start(
-        "", "turn", "write_file", "workspace_write", {"path": "x.txt"}
-    )
-
-    security = collect_doctor(tmp_path)["security"]
-
-    assert security["status"] == "review_required"
-    assert security["recovery_review"]["pending_count"] == 1
-
-
 @pytest.mark.parametrize(
     ("has_claude", "has_agents", "expected"),
     [(True, False, True), (True, True, False), (False, False, False)],

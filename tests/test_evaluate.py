@@ -17,7 +17,6 @@ BASELINE = {
         "build_request/medium": {"median_ns": 2_000_000},
         "security/redact_artifact/100": {"median_ns": 40_000_000},
         "shell/assess_corpus/50": {"median_ns": 1_500_000},
-        "recovery/pending_reviews/200": {"median_ns": 4_500_000},
     },
 }
 
@@ -219,7 +218,6 @@ def test_core_uses_injected_runners_and_writes_only_low_sensitivity_fields(
         "core.pytest",
         "core.memory-quality-fake",
         "core.fixed-benchmark",
-        "core.recovery-ablation",
         "core.build",
         "core.distribution",
         *BASELINE["performance"],
@@ -359,7 +357,7 @@ def test_perf_regression_gets_one_confirmation_run_and_can_recover():
 
     assert all(row["status"] == "pass" for row in rows)
     assert calls["benchmarks.perf.bench_request_build"] == 2
-    assert calls["benchmarks.perf.bench_security_recovery"] == 1
+    assert calls["benchmarks.perf.bench_security"] == 1
     recovered = next(row for row in rows if row["id"] == "build_request/medium")
     assert recovered["metrics"]["confirmation_run"] is True
 
@@ -424,14 +422,12 @@ def test_logical_suites_split_fast_full_and_live_work():
         "core.pytest",
         "core.memory-quality-fake",
         "core.fixed-benchmark",
-        "core.recovery-ablation",
         "core.build",
         "core.distribution",
     ]
     assert [item[0] for item in evaluate._core_functional_commands()] == [
         "core.memory-quality-fake",
         "core.fixed-benchmark",
-        "core.recovery-ablation",
     ]
     assert [item[0] for item in evaluate._core_fast_commands()] == [
         "core.ruff",
@@ -781,8 +777,6 @@ def test_artifact_scan_rejects_forbidden_fields_absolute_paths_and_secrets(
             "platform": "linux",
             "architecture": "x86_64",
             "machine_class": "linux-x86_64",
-            "sandbox_image_digest": "sha256:" + "1" * 64,
-            "sandbox_policy_digest": "sha256:" + "2" * 64,
             "baseline": "benchmarks/baselines/core-v1.json",
         },
         "artifact_path": "artifacts/eval/result.json",

@@ -20,7 +20,7 @@ def _state():
 def _report(run_id="run_1"):
     return {
         "record_type": "run_report",
-        "format_version": 3,
+        "format_version": 4,
         "run": {"run_id": run_id, "task_id": "task_1", "status": "completed", "stop_reason": "final_answer_returned", "duration_ms": 12, "commit": "", "dirty": False},
         "model": {
             "attempts": 2, "turns": 2, "failures": 0, "retries": 0,
@@ -36,26 +36,7 @@ def _report(run_id="run_1"):
         "context": {},
         "tools": {"calls": 0, "allowed": 0, "denied": 0, "name_counts": {}, "status_counts": {}},
         "memory": {"recall_candidates": 0, "recall_selected": 0, "filter_counts": {}},
-        "sandbox": {
-            "active": False,
-            "implementation": "none",
-            "session_state": "not_applicable",
-            "engine_profile": "not_applicable",
-            "image_digest": "",
-            "policy_digest": "",
-            "network_mode": "not_applicable",
-            "source_mounted": False,
-            "state_mounted": False,
-            "container_calls": 0,
-            "target_started_count": 0,
-            "outcome_counts": {},
-            "cleanup_failure_count": 0,
-            "host_fallback_count": 0,
-            "diff": {"candidates": 0, "blocked": 0, "generated": 0},
-            "apply_status": "not_applicable",
-        },
-        "effects": {"changed_files": 0, "partial_successes": 0, "recovery_review_required": False},
-        "recovery": {"checkpoint_id": "", "status": "", "review_required": False},
+        "effects": {"changed_files": 0, "partial_successes": 0},
         "integrity": {"writer": "current", "terminal_event_expected": True},
         "finalization": {"status": "complete", "error_count": 0},
     }
@@ -124,7 +105,7 @@ def test_trace_projector_preserves_transport_evidence():
     assert event["transport_evidence_complete"] is True
 
 
-def test_trace_reader_requires_complete_sandbox_evidence():
+def test_trace_reader_drops_retired_sandbox_evidence():
     started = project_trace_event(
         _state(),
         "tool_started",
@@ -159,20 +140,6 @@ def test_trace_reader_requires_complete_sandbox_evidence():
         created_at="2026-07-12T00:00:03Z",
     )
 
-    with pytest.raises(RunArtifactError, match="sandbox fields"):
-        validate_trace([started, executed, finished, terminal])
-
-    executed.update(
-        {
-            "execution_plane": "sandbox",
-            "cleanup_status": "completed",
-            "target_started": True,
-            "runner_executed": True,
-            "execution_plan_digest": "sha256:" + "1" * 64,
-            "logical_intent_digest": "sha256:" + "2" * 64,
-            "policy_digest": "sha256:" + "3" * 64,
-        }
-    )
     assert validate_trace([started, executed, finished, terminal]) is not None
 
 
@@ -195,7 +162,7 @@ def test_report_contract_has_no_transitional_or_content_fields():
     validate_report(report)
     assert set(report) == {
         "record_type", "format_version", "run", "model", "context", "tools",
-        "memory", "sandbox", "effects", "recovery", "integrity", "finalization",
+        "memory", "effects", "integrity", "finalization",
     }
     assert not {
         "final_answer", "task_state", "working_memory", "run_id",
@@ -210,29 +177,6 @@ def test_report_reader_rejects_content_metadata_and_invalid_counters():
         validate_report(report)
 
 
-@pytest.mark.parametrize(
-    ("field", "value"),
-    [
-        ("source_mounted", True),
-        ("state_mounted", True),
-        ("target_started_count", 1),
-        ("cleanup_failure_count", -1),
-    ],
-)
-def test_report_reader_rejects_invalid_sandbox_evidence(field, value):
-    report = _report()
-    report["sandbox"][field] = value
-
-    with pytest.raises(RunArtifactError, match="sandbox"):
-        validate_report(report)
-
-
-def test_report_reader_rejects_invalid_sandbox_diff_counts():
-    report = _report()
-    report["sandbox"]["diff"]["generated"] = -1
-
-    with pytest.raises(RunArtifactError, match="sandbox"):
-        validate_report(report)
     report = _report()
     report["tools"]["calls"] = "1"
     with pytest.raises(RunArtifactError):
@@ -304,7 +248,6 @@ def test_report_reader_rejects_secret_or_absolute_metadata(
         ("model", "evidence_complete", 1),
         ("model", "attempt_origin_counts", []),
         ("tools", "allowed", -1),
-        ("sandbox", "active", "yes"),
     ],
 )
 def test_report_reader_rejects_wrong_fixed_field_types(section, field, value):

@@ -1,49 +1,71 @@
 import json
+import os
+import stat
 
 import pytest
 
-from pony.state.checkpoint_store import CheckpointStore
 from pony.cli.app import main
-from pony.recovery.manager import collect_recovery_review_items
-from pony.recovery.models import new_checkpoint_record
-from pony.tools.change_recorder import ToolChangeRecorder
 
 
-def write_restorable_checkpoint(store, tmp_path, checkpoint_id):
-    before = store.write_blob(b"before\n", "text")
-    after = store.write_blob(b"after\n", "text")
-    (tmp_path / "note.txt").write_text("after\n", encoding="utf-8")
-    record = new_checkpoint_record(
-        checkpoint_id, "turn", "s", "r", "t", "", str(tmp_path)
+def _private_directory(path):
+    path.mkdir(parents=True, exist_ok=True)
+    path.chmod(0o700)
+    return path
+
+
+def _legacy_checkpoint_root(root):
+    _private_directory(root / ".pony")
+    return _private_directory(root / ".pony" / "checkpoints")
+
+
+def _write_legacy_checkpoint(root, checkpoint_id):
+    records = _private_directory(_legacy_checkpoint_root(root) / "records")
+    path = records / f"{checkpoint_id}.json"
+    path.write_text(
+        json.dumps(
+            {
+                "record_type": "checkpoint",
+                "format_version": 1,
+                "checkpoint_id": checkpoint_id,
+                "checkpoint_type": "turn",
+                "created_at": "now",
+                "status": "",
+                "owner_id": "",
+                "reviewed_at": "",
+                "private_payload": "not exposed",
+            }
+        ),
+        encoding="utf-8",
     )
-    record["file_entries"].append(
-        {
-            "path": "note.txt",
-            "change_kind": "modified",
-            "snapshot_eligible": True,
-            "before_blob_ref": before["blob_ref"],
-            "before_hash": before["content_hash"],
-            "before_exists": True,
-            "before_mode": 0o644,
-            "after_blob_ref": after["blob_ref"],
-            "after_hash": after["content_hash"],
-            "after_exists": True,
-            "after_mode": 0o644,
-            "expected_current_hash": after["content_hash"],
-            "source_tool_change_ids": [],
-            "content_kind": "text",
-            "ineligible_reason": "",
-        }
+    path.chmod(0o600)
+    return path
+
+
+def _write_legacy_tool_change(root, tool_change_id, *, status="pending"):
+    changes = _private_directory(_legacy_checkpoint_root(root) / "tool_changes")
+    path = changes / f"{tool_change_id}.json"
+    path.write_text(
+        json.dumps(
+            {
+                "record_type": "tool_change",
+                "format_version": 2,
+                "tool_change_id": tool_change_id,
+                "status": status,
+                "owner_id": "owner-a",
+                "tool_name": "write_file",
+                "effect_class": "workspace_write",
+                "started_at": "now",
+                "reviewed_at": "",
+            }
+        ),
+        encoding="utf-8",
     )
-    store.write_checkpoint_record(record)
-    return record
+    path.chmod(0o600)
+    return path
 
 
 def test_checkpoints_list_does_not_start_repl(tmp_path, capsys):
-    store = CheckpointStore(tmp_path)
-    store.write_checkpoint_record(
-        new_checkpoint_record("ckpt_1", "turn", "s", "r", "t", "", str(tmp_path))
-    )
+    _write_legacy_checkpoint(tmp_path, "ckpt_1")
 
     code = main(["--cwd", str(tmp_path), "checkpoints", "list"])
 
@@ -59,6 +81,22 @@ def test_checkpoints_list_is_zero_mutation_when_store_is_absent(tmp_path, capsys
     assert capsys.readouterr().out == ""
     assert not (tmp_path / ".pony").exists()
     assert tmp_path.stat() == before
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX mode assertion")
+@pytest.mark.parametrize("subcommand", (("list",), ("pending",), ("show", "ckpt_1")))
+def test_checkpoint_inspection_does_not_harden_project_env(tmp_path, capsys, subcommand):
+    _write_legacy_checkpoint(tmp_path, "ckpt_1")
+    env_path = tmp_path / ".env"
+    env_path.write_text("PONY_API_KEY=inspection-secret\n", encoding="utf-8")
+    env_path.chmod(0o644)
+    before = env_path.read_bytes()
+
+    assert main(["--cwd", str(tmp_path), "checkpoints", *subcommand]) == 0
+
+    capsys.readouterr()
+    assert env_path.read_bytes() == before
+    assert stat.S_IMODE(env_path.stat().st_mode) == 0o644
 
 
 @pytest.mark.parametrize(
@@ -92,12 +130,7 @@ def test_runs_show_prints_run_artifact(tmp_path, capsys):
 
 
 def test_checkpoint_show_accepts_unique_id_prefix(tmp_path, capsys):
-    store = CheckpointStore(tmp_path)
-    store.write_checkpoint_record(
-        new_checkpoint_record(
-            "ckpt_alpha1234", "turn", "s", "r", "t", "", str(tmp_path)
-        )
-    )
+    _write_legacy_checkpoint(tmp_path, "ckpt_alpha1234")
     show_code = main(["--cwd", str(tmp_path), "checkpoints", "show", "ckpt_alpha"])
     show_out = capsys.readouterr().out
 
@@ -106,13 +139,8 @@ def test_checkpoint_show_accepts_unique_id_prefix(tmp_path, capsys):
 
 
 def test_checkpoint_prefix_errors_include_candidates(tmp_path, capsys):
-    store = CheckpointStore(tmp_path)
-    store.write_checkpoint_record(
-        new_checkpoint_record("ckpt_abcdef01", "turn", "s", "r", "t", "", str(tmp_path))
-    )
-    store.write_checkpoint_record(
-        new_checkpoint_record("ckpt_abcdef99", "turn", "s", "r", "t", "", str(tmp_path))
-    )
+    _write_legacy_checkpoint(tmp_path, "ckpt_abcdef01")
+    _write_legacy_checkpoint(tmp_path, "ckpt_abcdef99")
 
     code = main(
         [
@@ -136,13 +164,13 @@ def test_checkpoint_prefix_errors_include_candidates(tmp_path, capsys):
 
 
 def test_checkpoints_pending_lists_tool_change_and_invalid_record(tmp_path, capsys):
-    store = CheckpointStore(tmp_path)
-    ToolChangeRecorder(store, owner_id="owner-a").start(
-        "", "turn-1", "write_file", "workspace_write", {"path": "note.txt"}
-    )
-    (store.tool_changes_dir / "github_pat_secret_filename.json").write_bytes(
+    changes = _private_directory(_legacy_checkpoint_root(tmp_path) / "tool_changes")
+    _write_legacy_tool_change(tmp_path, "change_1")
+    invalid = changes / "github_pat_secret_filename.json"
+    invalid.write_bytes(
         b"{private-invalid-evidence"
     )
+    invalid.chmod(0o600)
     code = main(["--cwd", str(tmp_path), "--format", "json", "checkpoints", "pending"])
     payload = json.loads(capsys.readouterr().out)
     assert code == 0
@@ -154,55 +182,6 @@ def test_checkpoints_pending_lists_tool_change_and_invalid_record(tmp_path, caps
     serialized = json.dumps(payload)
     assert "private-invalid-evidence" not in serialized
     assert "github_pat_secret_filename" not in serialized
-
-
-def test_collect_recovery_review_items_has_fixed_read_only_shape(tmp_path):
-    store = CheckpointStore(tmp_path)
-    ToolChangeRecorder(store, owner_id="owner-a").start(
-        "", "turn-1", "write_file", "workspace_write", {}
-    )
-    (store.records_dir / "secret-filename.json").write_bytes(b"{invalid-private-bytes")
-    before = {
-        path: path.read_bytes() for path in store.root.rglob("*") if path.is_file()
-    }
-    items = collect_recovery_review_items(store, tmp_path)
-    after = {
-        path: path.read_bytes() for path in store.root.rglob("*") if path.is_file()
-    }
-    assert set(items) == {
-        "tool_changes",
-        "restore_journals",
-        "invalid_records",
-        "quarantined_records",
-    }
-    assert items["tool_changes"][0]["status"] == "pending"
-    assert items["restore_journals"] == []
-    assert items["invalid_records"][0]["opaque_id"].startswith("invalid_")
-    assert items["quarantined_records"] == []
-    assert "secret-filename" not in json.dumps(items)
-    assert "invalid-private-bytes" not in json.dumps(items)
-    assert before == after
-
-
-def test_quarantined_record_remains_visible_as_inactive_inspection(tmp_path, capsys):
-    store = CheckpointStore(tmp_path)
-    (store.records_dir / "secret-filename.json").write_bytes(b"{invalid")
-    [invalid] = store.list_checkpoint_records(strict=False)
-    store.quarantine_invalid_record(
-        invalid["opaque_id"], expected_raw_hash=invalid["raw_hash"]
-    )
-    code = main(["--cwd", str(tmp_path), "--format", "json", "checkpoints", "pending"])
-    payload = json.loads(capsys.readouterr().out)
-    assert code == 0
-    assert any(
-        item.get("opaque_id") == invalid["opaque_id"]
-        and item.get("status") == "quarantined"
-        for item in payload["data"]["quarantined_records"]
-    )
-    assert all(
-        item.get("opaque_id") != invalid["opaque_id"]
-        for item in payload["data"]["invalid_records"]
-    )
 
 
 def test_runs_show_rejects_extra_args(tmp_path):
@@ -317,10 +296,7 @@ def test_run_output_has_no_decorative_banner(tmp_path, monkeypatch, capsys):
 
 
 def test_checkpoints_list_json_uses_success_envelope(tmp_path, capsys):
-    store = CheckpointStore(tmp_path)
-    store.write_checkpoint_record(
-        new_checkpoint_record("ckpt_1", "turn", "s", "r", "t", "", str(tmp_path))
-    )
+    _write_legacy_checkpoint(tmp_path, "ckpt_1")
 
     code = main(["--cwd", str(tmp_path), "--format", "json", "checkpoints", "list"])
 
@@ -360,17 +336,3 @@ def test_quiet_suppresses_text_inspection_output(tmp_path, capsys):
 
     assert code == 0
     assert capsys.readouterr().out == ""
-
-
-def test_collect_recovery_review_items_has_stable_shape(tmp_path):
-    from pony.state.checkpoint_store import CheckpointStore
-    from pony.cli.recovery import collect_recovery_review_items
-
-    payload = collect_recovery_review_items(CheckpointStore(tmp_path), tmp_path)
-
-    assert payload == {
-        "tool_changes": [],
-        "restore_journals": [],
-        "invalid_records": [],
-        "quarantined_records": [],
-    }

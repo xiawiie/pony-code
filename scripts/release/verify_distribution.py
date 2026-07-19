@@ -25,7 +25,6 @@ DIST_INFO_NAME = PROJECT_NAME.replace("-", "_")
 PROJECT_VERSION = _PROJECT["version"]
 PROJECT_SUMMARY = _PROJECT["description"]
 EXPECTED_RUNTIME_REQUIREMENTS = ["prompt-toolkit<4,>=3.0.52"]
-EXCLUDED_SOURCE_PREFIXES = ("pony/sandbox/resources/",)
 DIST_INFO_FILES = {
     "METADATA",
     "RECORD",
@@ -57,18 +56,13 @@ def _tracked_package_files(repo: Path) -> set[str]:
     source_files = {
         line for line in output.splitlines() if line and os.path.lexists(repo / line)
     }
-    files = {
-        name
-        for name in source_files
-        if not name.startswith(EXCLUDED_SOURCE_PREFIXES)
-    }
+    files = source_files
     if not files or any(not name.endswith(".py") for name in files):
         raise AssertionError(f"unexpected tracked package files: {sorted(files)}")
     source_python = {
         path.relative_to(repo).as_posix()
         for path in (repo / "pony").rglob("*.py")
         if path.is_file()
-        and not path.relative_to(repo).as_posix().startswith(EXCLUDED_SOURCE_PREFIXES)
     }
     untracked_python = source_python - files
     if untracked_python:
@@ -259,10 +253,7 @@ def install_smoke(wheel: Path, *, offline: bool = False) -> None:
             str(python),
             "-c",
             "import importlib.util; "
-            "forbidden=('pony.sandbox_macos','pony.sandbox_linux',"
-            "'pony.sandbox_toolchain','pony.sandbox_lifecycle',"
-            "'pony._sandbox_toolchain','pony.sandbox.network_control',"
-            "'pony.providers.fake','pony.providers.anthropic_compatible',"
+            "forbidden=('pony.providers.fake','pony.providers.anthropic_compatible',"
             "'pony.providers.openai_compatible','pony.providers.openai_chat',"
             "'pony.providers.ollama'); "
             "assert all(importlib.util.find_spec(name) is None for name in forbidden); "

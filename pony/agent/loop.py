@@ -22,7 +22,7 @@ from pony.agent.compaction import CompactionError, CompactionNoProgress
 from pony.agent.context_manager import ContextBudgetExceeded
 from pony.context.renderer import build_injection_snapshot
 from pony.agent.messages import make_tool_pair
-from pony.recovery.policy import assess_command
+from pony.security.command_policy import assess_command
 from pony.security.private_files import ensure_private_dir
 from pony.security.paths import require_regular_no_symlink
 from pony.state.task_state import (
@@ -124,12 +124,6 @@ def _empty_model_execution():
             "status_counts": {},
             "changed_paths": [],
             "partial_successes": 0,
-            "recovery_review_required": False,
-            "sandbox_calls": 0,
-            "sandbox_target_started_count": 0,
-            "sandbox_outcome_counts": {},
-            "sandbox_cleanup_failure_count": 0,
-            "host_fallback_count": 0,
         },
     }
 
@@ -390,7 +384,7 @@ def _commit_session(agent, *, messages=()):
     )
     state_updates = {
         key: agent.redact_artifact(agent.session.get(key, {}))
-        for key in ("resume_state", "recovery", "runtime_identity")
+        for key in ("resume_state", "runtime_identity")
     }
     try:
         saved_path = agent.session_store.append_messages(
@@ -897,63 +891,6 @@ def _record_tool_report(agent, name, metadata, model_execution):
     if tool_status == "partial_success":
         tool_report["partial_successes"] += 1
 
-    sandbox = metadata.get("sandbox")
-    sandbox = sandbox if isinstance(sandbox, dict) else {}
-    sandbox_status = str(sandbox.get("status", "") or "")
-    sandbox_outcome_observed = sandbox_status not in {
-        "",
-        "not_applicable",
-        "not_started",
-        "pending",
-    }
-    if sandbox_outcome_observed:
-        tool_report["sandbox_calls"] += 1
-        outcome_counts = tool_report["sandbox_outcome_counts"]
-        outcome_counts[sandbox_status] = outcome_counts.get(sandbox_status, 0) + 1
-        if sandbox.get("target_started") is True:
-            tool_report["sandbox_target_started_count"] += 1
-        if sandbox.get("cleanup_status") not in {
-            None,
-            "",
-            "completed",
-            "not_applicable",
-            "pending",
-        }:
-            tool_report["sandbox_cleanup_failure_count"] += 1
-def _sandbox_trace_payload(metadata):
-    sandbox = metadata.get("sandbox")
-    if not isinstance(sandbox, dict) or sandbox.get("status") in {
-        None,
-        "",
-        "not_applicable",
-        "not_started",
-        "pending",
-    }:
-        return {}
-    payload = {
-        "sandbox_outcome": sandbox.get("status"),
-        "execution_plane": sandbox.get("execution_plane") or "unknown",
-        "cleanup_status": sandbox.get("cleanup_status") or "unknown",
-        "sandbox_wrapper_status": sandbox.get("wrapper_status"),
-        "sandbox_error_code": sandbox.get("error_code"),
-        "sandbox_call_id": sandbox.get("call_id"),
-        "execution_plan_digest": sandbox.get("execution_plan_digest"),
-        "logical_intent_digest": sandbox.get("logical_intent_digest"),
-        "policy_digest": sandbox.get("policy_digest"),
-        "target_started": sandbox.get("target_started") is True,
-        "timed_out": sandbox.get("timed_out"),
-        "residue_detected": sandbox.get("residue_detected"),
-        "container_created": sandbox.get("container_created"),
-        "runner_executed": sandbox.get("runner_executed"),
-        "stdout_bytes": sandbox.get("stdout_bytes"),
-        "stderr_bytes": sandbox.get("stderr_bytes"),
-        "stdout_truncated": sandbox.get("stdout_truncated"),
-        "stderr_truncated": sandbox.get("stderr_truncated"),
-        "exit_code": sandbox.get("exit_code"),
-    }
-    return {key: value for key, value in payload.items() if value is not None}
-
-
 def _apply_tool_action(
     agent,
     task_state,
@@ -981,7 +918,6 @@ def _apply_tool_action(
             metadata = dict(agent._last_tool_result_metadata or {})
             if metadata.get("tool_status"):
                 _record_tool_report(agent, name, metadata, model_execution)
-                tool_change_id = str(metadata.get("tool_change_id", "") or "")
                 try:
                     agent.emit_trace(
                         task_state,
@@ -989,10 +925,8 @@ def _apply_tool_action(
                         {
                             "name": name,
                             "tool_use_id": tool_use_id,
-                            "tool_change_id": tool_change_id,
                             "tool_status": metadata["tool_status"],
                             "affected_paths": list(metadata.get("affected_paths", [])),
-                            **_sandbox_trace_payload(metadata),
                         },
                     )
                 except BaseException:
@@ -1004,7 +938,6 @@ def _apply_tool_action(
     result = tool_result.content
     metadata = dict(tool_result.metadata or {})
     _record_tool_report(agent, name, metadata, model_execution)
-    tool_change_id = str(metadata.get("tool_change_id", "") or "")
     effect_class = str(metadata["effect_class"])
 
     display_result, digest_meta = _prepare_tool_result(
@@ -1028,7 +961,6 @@ def _apply_tool_action(
         created_at=now(),
         tool_status=metadata["tool_status"],
         effect_class=effect_class,
-        tool_change_id=tool_change_id,
         result_meta=digest_meta,
         provider_state=action.provider_state,
     )
@@ -1054,7 +986,6 @@ def _apply_tool_action(
             "tool_use_id": tool_use_id,
             "duration_ms": int((time.monotonic() - tool_started_at) * 1000),
             **metadata,
-            **_sandbox_trace_payload(metadata),
         },
     )
     agent.emit_trace(
@@ -1062,7 +993,6 @@ def _apply_tool_action(
         "tool_finished",
         {
             "name": name,
-            "tool_change_id": tool_change_id,
             "tool_use_id": tool_use_id,
             "tool_status": metadata.get("tool_status", ""),
             "affected_paths": list(metadata.get("affected_paths", [])),
@@ -1517,10 +1447,6 @@ def _create_resume_checkpoint(
             "checkpoint_id": checkpoint["checkpoint_id"],
             "checkpoint_kind": "task",
             "trigger": trigger,
-            "workspace_checkpoint_id": checkpoint.get(
-                "workspace_checkpoint_id",
-                "",
-            ),
         },
     )
     return checkpoint

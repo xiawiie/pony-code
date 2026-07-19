@@ -1,6 +1,4 @@
-import hashlib
 import importlib.util
-import json
 import os
 from pathlib import Path
 import subprocess
@@ -24,7 +22,7 @@ def test_ci_tracks_and_uses_frozen_uv_lock():
     assert "run: uv sync --frozen --dev" in workflow
 
 
-def test_project_version_and_sandbox_build_inputs_are_locked():
+def test_project_version_is_locked():
     project = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))[
         "project"
     ]
@@ -32,17 +30,8 @@ def test_project_version_and_sandbox_build_inputs_are_locked():
     pony_code_lock = next(
         item for item in uv_lock["package"] if item["name"] == "pony-code"
     )
-    image_lock = json.loads(
-        Path("docker/sandbox/image-inputs.lock.json").read_text(encoding="utf-8")
-    )
 
     assert project["version"] == pony_code_lock["version"] == "1.0.0"
-    for filename, key in (
-        ("pyproject.toml", "pyproject_sha256"),
-        ("uv.lock", "uv_lock_sha256"),
-    ):
-        digest = hashlib.sha256(Path(filename).read_bytes()).hexdigest()
-        assert image_lock["build_inputs"][key] == digest
 
 
 def test_ci_actions_are_pinned_to_immutable_commits_with_version_comments():
@@ -137,9 +126,6 @@ def test_ci_has_macos_security_and_durability_gate():
         "tests/test_safe_subprocess.py",
         "tests/test_shell_execution_security.py",
         "tests/test_shell_security_corpus.py",
-        "tests/test_checkpoint_store_durability.py",
-        "tests/test_recovery_durability_e2e.py",
-        "tests/test_recovery_journal.py",
         "tests/memory/test_block_store.py",
         "tests/memory/test_reader_bounds.py",
         "tests/memory/test_retrieval.py",
@@ -192,9 +178,6 @@ def test_distribution_verifier_freezes_archive_and_install_contract():
     assert '_run(str(pony), "doctor", cwd=cwd, env=env)' in verifier
     assert '"PYTHONHOME"' in verifier
     assert '"PYTHONPATH"' in verifier
-    assert "pony.sandbox_lifecycle" in verifier
-    assert "pony._sandbox_toolchain" in verifier
-    assert "pony.sandbox.network_control" in verifier
     assert "pony.providers.fake" in verifier
     assert "pony = pony.cli.app:main" in verifier
     assert "offline_bundle_smoke" in verifier
@@ -271,34 +254,6 @@ def test_distribution_verifier_rejects_tracked_package_data(tmp_path, monkeypatc
 
     with pytest.raises(AssertionError, match="unexpected tracked package files"):
         module._tracked_package_files(tmp_path)
-
-
-def test_distribution_verifier_excludes_retired_sandbox_resources(
-    tmp_path, monkeypatch
-):
-    spec = importlib.util.spec_from_file_location(
-        "verify_distribution_script",
-        Path("scripts/release/verify_distribution.py"),
-    )
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    package = tmp_path / "pony"
-    resources = package / "sandbox" / "resources"
-    resources.mkdir(parents=True)
-    (package / "tracked.py").write_text("", encoding="utf-8")
-    (resources / "__init__.py").write_text("", encoding="utf-8")
-    (resources / "image-manifest.json").write_text("{}", encoding="utf-8")
-    monkeypatch.setattr(
-        module,
-        "_run",
-        lambda *args, **kwargs: (
-            "pony/tracked.py\n"
-            "pony/sandbox/resources/__init__.py\n"
-            "pony/sandbox/resources/image-manifest.json\n"
-        ),
-    )
-
-    assert module._tracked_package_files(tmp_path) == {"pony/tracked.py"}
 
 
 def test_distribution_verifier_includes_all_product_packages(tmp_path):

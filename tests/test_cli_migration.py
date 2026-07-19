@@ -6,7 +6,7 @@ import pytest
 import pony.cli.migration as cli_migration_module
 from pony.cli.app import main
 from pony.cli.errors import CLI_EXIT_RUNTIME
-from pony.recovery.migration import Migration
+from pony.state.migration import Migration
 from pony.agent.observability import load_run_summary, validate_report, validate_trace
 
 

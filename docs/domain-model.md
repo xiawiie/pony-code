@@ -24,9 +24,9 @@
 | Action | 一个 Tool、Final 或 Retry 决策 | 任意模型文本 |
 | Canonical Messages | Session Tree 中唯一的对话 transcript | Provider 私有 history |
 | Session Tree | append-only JSONL 分支树；rewind/fork 追加而非覆写 | Git history |
-| Permission Mode | Session v4 active path 上的交互授权模式；公开值为六个 Claude 风格名称 | approval 结果或 execution plane |
+| Permission Mode | Session v5 active path 上的交互授权模式；公开值为六个 Claude 风格名称 | approval 结果或 execution plane |
 | Permission Rule | Session 内按完整 tool name 匹配的 `allow|ask|deny` 覆盖项 | glob、shell pattern 或硬安全边界 |
-| Plan Artifact | Session v4 中 bounded、带 revision 的完整 Markdown 计划 | Task checkpoint、Todo Store 或普通消息 |
+| Plan Artifact | Session v5 中 bounded、带 revision 的完整 Markdown 计划 | Task checkpoint、Todo Store 或普通消息 |
 | Pre-Plan Mode | 进入 `plan` 前的 canonical Permission Mode，用于批准 Plan 后恢复 | Provider 或配置默认值 |
 | Compaction | 用 summary + recent tail 重建 active request | 删除 Session 历史 |
 | Legacy Recovery Record | 旧 Checkpoint Record 或 Tool Change Record；只读检查 | Session task checkpoint |
@@ -77,10 +77,10 @@ reasoning state 或 Anthropic thinking block 跨协议重放。
 - Permission Mode 与模型可见 tool schemas 在 top-level turn 开始时冻结；批准 `exit_plan_mode` 是唯一可在同一 turn
   刷新 mode/schema 的路径。
 - schema 与硬安全边界先于 permission prompt；Executor 不信任 schema hiding，仍对不可见 mutation 做二次 gate。
-- Session v4 permission/Plan 状态只能由 `permission_mode_change`、`plan_artifact` 或 bounded `session_info` rule update
+- Session v5 permission/Plan 状态只能由 `permission_mode_change`、`plan_artifact` 或 bounded `session_info` rule update
   投影；Run、trace、checkpoint 与 UI 不成为 writer。
 - Session、Run 与 legacy Checkpoint/Tool Change 分别有独立格式与 reader，不以 release version 代替 format version。
-- v1-v3 Session inspection 零写；只有显式 resume 可在 lock、backup、candidate、identity 与 digest 复验后迁移到 v4。
+- v1-v4 Session inspection 零写；只有显式 resume 可在 lock、backup、candidate、identity 与 digest 复验后迁移到 v5。
 - Compaction 不删除 append-only 历史，不授予 Memory 写权限，也不恢复 workspace。
 - `memory_save` 只看当前 top-level user request 的明确授权；delegate 永远不能写 Durable Memory。
 - primary failure 不能被 cleanup、observer 或 finalizer 的次生异常覆盖。
@@ -103,11 +103,10 @@ reasoning state 或 Anthropic thinking block 跨协议重放。
 | `pony.context` | Context sources、chunk、escaping、render 与 digest |
 | `pony.memory` | User/Agent Notes、recall、retrieval、RepoMap 与 memory service |
 | `pony.providers` | wire adapter、Provider-neutral Response、factory 与 API probe |
-| `pony.recovery` | command policy、legacy reader/migration 与待删除旧 writer |
-| `pony.sandbox` | legacy Sandbox binding inspection；只供 resume preflight，不提供执行 |
-| `pony.state` | Session/Run/Checkpoint store、TaskState 与 file lock |
+| `pony.security` | no-follow、private file、redaction 与 shell command policy 原语 |
+| `pony.state` | Session/Run、legacy artifact reader、TaskState 与 file lock |
 | `pony.tools` | Tool schema、policy/approval、Host mutation/effect observation 与受限 subprocess |
-| `pony.workspace` | root discovery、workspace view、snapshot 与 observer |
+| `pony.workspace` | root discovery、workspace view 与 observer |
 | `pony.config` | `.env`、`pony.toml`、Provider 解析和私有 secret 写入 |
 | `pony.runtime` | 跨领域对象装配和 Pony 公共运行时 |
 | `pony.security` | 共享 no-follow、private-file、redaction 与安全原语 |
@@ -124,9 +123,8 @@ flowchart LR
     AG --> CT["context"]
     AG --> ST["state"]
     TL --> WS["workspace"]
-    TL --> RC["recovery"]
+    TL --> SEC["security"]
     RT --> MM["memory"]
-    RT --> SB["sandbox"]
 ```
 
 Provider factory 位于 `pony.providers.factory`；adapter 之间不得互相选择。Package `__init__.py` 保持薄，新的内部实现

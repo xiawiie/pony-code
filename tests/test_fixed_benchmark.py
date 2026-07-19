@@ -23,12 +23,12 @@ def test_load_benchmark_validates_fixed_schema():
 
     assert benchmark["record_type"] == "fixed_benchmark_definition"
     assert benchmark["format_version"] == 1
-    assert len(benchmark["tasks"]) == 10
+    assert len(benchmark["tasks"]) == 8
     assert Counter(task["category"] for task in benchmark["tasks"]) == {
         "documentation": 2,
         "text-edit": 2,
         "tool-boundary": 3,
-        "recovery": 3,
+        "session": 1,
     }
     for task in benchmark["tasks"]:
         assert {
@@ -167,12 +167,12 @@ def test_run_fixed_benchmark_reports_metadata_and_success_definition(tmp_path):
     assert artifact["record_type"] == "fixed_benchmark_result"
     assert artifact["format_version"] == 1
     assert artifact["summary"] == {
-        "total_tasks": 10,
-        "passed": 10,
+        "total_tasks": 8,
+        "passed": 8,
         "failed": 0,
         "pass_rate": 1.0,
-        "within_budget": 10,
-        "verifier_passes": 10,
+        "within_budget": 8,
+        "verifier_passes": 8,
         "within_budget_rate": 1.0,
         "verifier_pass_rate": 1.0,
         "failure_category_counts": {},
@@ -388,7 +388,7 @@ def test_real_provider_benchmark_prompt_includes_success_criteria(tmp_path):
     assert "Do not run the verification command yourself" in prompt
 
 
-def test_run_fixed_benchmark_covers_recovery_rows(tmp_path):
+def test_run_fixed_benchmark_covers_session_compaction_row(tmp_path):
     artifact = run_fixed_benchmark(
         benchmark_path=Path("benchmarks/coding_tasks.json"),
         artifact_path=tmp_path / "benchmark-v1.json",
@@ -401,18 +401,11 @@ def test_run_fixed_benchmark_covers_recovery_rows(tmp_path):
         if item["id"] == "session_compaction_checkpoint"
     )
 
-    trace_path = (
-        tmp_path / "workspaces" / context_row["run_dir_relpath"] / "trace.jsonl"
+    report_path = (
+        tmp_path / "workspaces" / context_row["run_dir_relpath"] / "report.json"
     ).resolve()
-    trace_events = [
-        json.loads(line) for line in trace_path.read_text(encoding="utf-8").splitlines()
-    ]
-
-    assert any(
-        event.get("event") == "checkpoint_created"
-        and event.get("trigger") == "run_finished"
-        for event in trace_events
-    )
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["context"]["context_breakdown"]["compaction"]["entry_id"]
     session_path = next(
         (
             tmp_path
@@ -443,7 +436,7 @@ def test_run_harness_regression_v2_writes_named_artifact(tmp_path):
     )
 
     assert artifact_path.exists()
-    assert artifact["summary"]["total_tasks"] == 10
+    assert artifact["summary"]["total_tasks"] == 8
     assert artifact["summary"]["pass_rate"] == 1.0
     assert artifact["summary"]["within_budget_rate"] == 1.0
     assert artifact["summary"]["verifier_pass_rate"] == 1.0

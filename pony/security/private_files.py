@@ -67,12 +67,16 @@ def read_private_text(
     trusted_root=None,
     trusted_root_identity=None,
     max_bytes=None,
+    harden=True,
+    allow_insecure_mode=False,
 ):
     return read_private_bytes(
         path,
         trusted_root=trusted_root,
         trusted_root_identity=trusted_root_identity,
         max_bytes=max_bytes,
+        harden=harden,
+        allow_insecure_mode=allow_insecure_mode,
     ).decode(encoding, errors=errors)
 
 
@@ -83,6 +87,7 @@ def read_private_bytes(
     trusted_root_identity=None,
     max_bytes=None,
     harden=True,
+    allow_insecure_mode=False,
 ):
     path, descriptor = _open_private_file(
         path,
@@ -94,7 +99,9 @@ def read_private_bytes(
         uid = os.geteuid() if hasattr(os, "geteuid") else opened.st_uid
         if harden and stat.S_IMODE(opened.st_mode) != 0o600:
             os.fchmod(descriptor, 0o600)
-        elif opened.st_uid != uid or stat.S_IMODE(opened.st_mode) != 0o600:
+        elif opened.st_uid != uid or (
+            not allow_insecure_mode and stat.S_IMODE(opened.st_mode) != 0o600
+        ):
             raise ValueError("private file permissions are unsafe")
         chunks = []
         remaining = None if max_bytes is None else int(max_bytes) + 1

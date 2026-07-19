@@ -92,7 +92,6 @@ def make_tool_pair(
     created_at,
     tool_status,
     effect_class,
-    tool_change_id="",
     result_meta=None,
     provider_state=(),
 ):
@@ -128,8 +127,6 @@ def make_tool_pair(
         "effect_class": str(effect_class),
         **result_meta,
     }
-    if tool_change_id:
-        metadata["tool_change_id"] = str(tool_change_id)
     return assistant, {
         "role": "user",
         "content": [result_block],

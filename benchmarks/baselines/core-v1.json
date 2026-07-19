@@ -5,9 +5,6 @@
     "build_request/medium": {
       "median_ns": 1951938
     },
-    "recovery/pending_reviews/200": {
-      "median_ns": 4289542
-    },
     "security/redact_artifact/100": {
       "median_ns": 38583937
     },

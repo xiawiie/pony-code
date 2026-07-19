@@ -29,7 +29,6 @@ def _session(workspace, session_id="compact"):
         "recently_recalled": [],
         "checkpoints": {},
         "resume_state": {},
-        "recovery": {},
         "runtime_identity": {},
     }
 

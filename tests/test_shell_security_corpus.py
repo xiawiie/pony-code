@@ -7,7 +7,7 @@ from pony import Pony
 from pony.state.session_store import SessionStore
 from pony.workspace.context import WorkspaceContext
 from benchmarks.support.fake_provider import FakeModelClient
-from pony.recovery.policy import assess_command
+from pony.security.command_policy import assess_command
 from pony.runtime.options import RuntimeOptions
 
 

@@ -53,28 +53,7 @@ def collect_status(cwd, args=None):
     pony_root = root / ".pony"
     sessions_root = pony_root / "sessions"
     runs_root = pony_root / "runs"
-    checkpoint_records_root = pony_root / "checkpoints" / "records"
     config = collect_config(cwd, args)
-    try:
-        from pony.state.checkpoint_store import CheckpointStore
-        from pony.recovery.manager import collect_recovery_review_items
-
-        review_items = collect_recovery_review_items(
-            CheckpointStore(root, read_only=True), root
-        )
-        active_reviews = (
-            review_items["tool_changes"]
-            + review_items["restore_journals"]
-            + review_items["invalid_records"]
-        )
-        recovery_review = {
-            "active_count": len(active_reviews),
-            "opaque_ids": [
-                item["opaque_id"] for item in review_items["invalid_records"]
-            ],
-        }
-    except (OSError, RuntimeError, ValueError):
-        recovery_review = {"active_count": 0, "opaque_ids": []}
     return {
         "workspace": {
             "cwd": workspace.cwd,
@@ -85,7 +64,6 @@ def collect_status(cwd, args=None):
         "storage": {
             "sessions": _storage_exists(sessions_root),
             "runs": _storage_exists(runs_root),
-            "checkpoints": _storage_exists(checkpoint_records_root),
         },
         "model": {
             "provider": config["provider"],
@@ -102,9 +80,7 @@ def collect_status(cwd, args=None):
         "latest": {
             "session_id": _latest_json_stem(sessions_root),
             "run_id": _latest_dir_name(runs_root),
-            "checkpoint_id": _latest_json_stem(checkpoint_records_root),
         },
-        "recovery_review": recovery_review,
     }
 
 
@@ -193,7 +169,6 @@ def collect_doctor(cwd, args=None, check_api=False):
             resolved,
             args=args,
         )
-    checkpoints_root = pony_root / "checkpoints"
     security = _collect_security_status(
         root,
         project_env_info,
@@ -260,9 +235,7 @@ def collect_doctor(cwd, args=None, check_api=False):
         "storage": {
             "sessions": _storage_status(pony_root / "sessions"),
             "runs": _storage_status(pony_root / "runs"),
-            "checkpoints": _storage_status(checkpoints_root / "records"),
         },
-        "recovery_store": _storage_status(checkpoints_root),
         "memory": memory,
         "security": security,
         "project_docs": {"hints": doc_hints},
@@ -305,9 +278,7 @@ def _unavailable_workspace_doctor():
         "storage": {
             "sessions": "review_required",
             "runs": "review_required",
-            "checkpoints": "review_required",
         },
-        "recovery_store": "review_required",
         "memory": _unavailable_memory_diagnostic(),
         "security": {
             "status": "review_required",
@@ -316,12 +287,6 @@ def _unavailable_workspace_doctor():
             "trusted_executables": {
                 "status": "degraded",
                 "missing": ["git", "rg"],
-            },
-            "recovery_review": {
-                "pending_count": 0,
-                "applying_count": 0,
-                "unreviewed_partial_count": 0,
-                "invalid_mutation_count": 0,
             },
         },
         "project_docs": {"hints": []},
@@ -571,46 +536,16 @@ def _collect_security_status(root, project_env_info, pony_root):
         "status": "degraded" if missing else "ok",
         "missing": missing,
     }
-    review_inspection_failed = False
-    try:
-        from pony.state.checkpoint_store import CheckpointStore
-        from pony.recovery.manager import collect_recovery_review_items
-
-        reviews = collect_recovery_review_items(
-            CheckpointStore(root, read_only=True), root
-        )
-    except (OSError, RuntimeError, TypeError, ValueError):
-        review_inspection_failed = True
-        reviews = {
-            "tool_changes": [],
-            "restore_journals": [],
-            "invalid_records": [],
-        }
-    recovery_review = {
-        "pending_count": len(reviews["tool_changes"]),
-        "applying_count": sum(
-            item.get("status") == "applying" for item in reviews["restore_journals"]
-        ),
-        "unreviewed_partial_count": sum(
-            item.get("status") == "partial" and not item.get("reviewed_at")
-            for item in reviews["restore_journals"]
-        ),
-        "invalid_mutation_count": (
-            len(reviews["invalid_records"]) + int(review_inspection_failed)
-        ),
-    }
     needs_review = (
         project_env["status"] == "review_required"
         or private_storage["status"] == "review_required"
         or executables["status"] == "degraded"
-        or any(recovery_review.values())
     )
     return {
         "status": "review_required" if needs_review else "ok",
         "project_env": project_env,
         "private_storage": private_storage,
         "trusted_executables": executables,
-        "recovery_review": recovery_review,
     }
 
 
@@ -812,7 +747,6 @@ def _render_doctor(data):
     storage = data["storage"]
     security = data["security"]
     security_executables = security["trusted_executables"]
-    recovery_review = security["recovery_review"]
     memory = data.get("memory", {"status": "unknown", "issues": []})
     lines = [
         "Pony doctor — CLI health check",
@@ -844,8 +778,6 @@ def _render_doctor(data):
         "Storage",
         _line("sessions", storage["sessions"]),
         _line("runs", storage["runs"]),
-        _line("checkpoints", storage["checkpoints"]),
-        _line("recovery", data["recovery_store"]),
         "",
         "Memory",
         _line("check", memory.get("check_id", "memory")),
@@ -878,10 +810,6 @@ def _render_doctor(data):
         _line("private store", security["private_storage"]["status"]),
         _line("executables", security_executables["status"]),
         _line("missing", ", ".join(security_executables["missing"]) or "-"),
-        _line("pending", recovery_review["pending_count"]),
-        _line("applying", recovery_review["applying_count"]),
-        _line("partial", recovery_review["unreviewed_partial_count"]),
-        _line("invalid", recovery_review["invalid_mutation_count"]),
         "",
         "API check",
         _line("status", connectivity.get("status", "-")),
@@ -948,11 +876,9 @@ def _render_status(data):
         "Storage",
         _line("sessions", _ok_missing(data["storage"]["sessions"])),
         _line("runs", _ok_missing(data["storage"]["runs"])),
-        _line("checkpoints", _ok_missing(data["storage"]["checkpoints"])),
         "",
         "Latest",
         _line("session id", data["latest"]["session_id"] or "-"),
         _line("run id", data["latest"]["run_id"] or "-"),
-        _line("checkpoint id", data["latest"]["checkpoint_id"] or "-"),
     ]
     return "\n".join(lines)

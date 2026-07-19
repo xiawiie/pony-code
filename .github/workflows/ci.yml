@@ -97,9 +97,7 @@ jobs:
           tests/test_safe_subprocess.py
           tests/test_shell_execution_security.py
           tests/test_shell_security_corpus.py
-          tests/test_checkpoint_store_durability.py
-          tests/test_recovery_durability_e2e.py
-          tests/test_recovery_journal.py
+          tests/test_legacy_artifacts.py
           tests/memory/test_block_store.py
           tests/memory/test_reader_bounds.py
           tests/memory/test_retrieval.py

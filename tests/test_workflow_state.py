@@ -9,6 +9,7 @@ from pony.state.session_store import (
     LEGACY_JSONL_SESSION_FORMAT_VERSION,
     PREVIOUS_SESSION_FORMAT_VERSION,
     SESSION_FORMAT_VERSION,
+    WORKFLOW_SESSION_FORMAT_VERSION,
     SessionFormatError,
     SessionMigrationRequired,
     SessionStore,
@@ -29,7 +30,6 @@ def _session(workspace, session_id="permission"):
         "recently_recalled": [],
         "checkpoints": {"current_id": "", "items": {}},
         "resume_state": {},
-        "recovery": {"current_checkpoint_id": ""},
         "runtime_identity": {},
         "permission_mode": "default",
         "permission_rules": {"allow": [], "ask": [], "deny": []},
@@ -49,15 +49,16 @@ def _legacy_plan():
 def _rewrite_as_v3(path, *, mode="act", plan=None):
     rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
     for row in rows:
-        row["format_version"] = PREVIOUS_SESSION_FORMAT_VERSION
+        row["format_version"] = WORKFLOW_SESSION_FORMAT_VERSION
         if row.get("type") == "session_info":
-            row["data"]["set"]["format_version"] = PREVIOUS_SESSION_FORMAT_VERSION
+            row["data"]["set"]["format_version"] = WORKFLOW_SESSION_FORMAT_VERSION
+            row["data"]["set"]["recovery"] = {"current_checkpoint_id": ""}
     parent_id = rows[-1]["id"]
     if mode != "act":
         rows.append(
             {
                 "record_type": "session_entry",
-                "format_version": PREVIOUS_SESSION_FORMAT_VERSION,
+                "format_version": WORKFLOW_SESSION_FORMAT_VERSION,
                 "id": "a" * 24,
                 "parent_id": parent_id,
                 "timestamp": "2026-01-01T00:00:01+00:00",
@@ -70,7 +71,7 @@ def _rewrite_as_v3(path, *, mode="act", plan=None):
         rows.append(
             {
                 "record_type": "session_entry",
-                "format_version": PREVIOUS_SESSION_FORMAT_VERSION,
+                "format_version": WORKFLOW_SESSION_FORMAT_VERSION,
                 "id": "b" * 24,
                 "parent_id": parent_id,
                 "timestamp": "2026-01-01T00:00:02+00:00",
@@ -112,12 +113,27 @@ def _rewrite_as_v2(path, *, model_change=False):
     return rows, raw
 
 
+def _rewrite_as_v4(path):
+    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    for row in rows:
+        row["format_version"] = PREVIOUS_SESSION_FORMAT_VERSION
+        if row.get("type") == "session_info":
+            row["data"]["set"]["format_version"] = PREVIOUS_SESSION_FORMAT_VERSION
+            row["data"]["set"]["recovery"] = {"current_checkpoint_id": "legacy"}
+    raw = b"".join(
+        (json.dumps(row, separators=(",", ":")) + "\n").encode("utf-8")
+        for row in rows
+    )
+    path.write_bytes(raw)
+    return raw
+
+
 def _legacy_source(store, workspace, session_id, version):
     if version == LEGACY_JSONL_SESSION_FORMAT_VERSION:
         path = store.save(_session(workspace, session_id))
         _rewrite_as_v2(path)
         return path
-    if version == PREVIOUS_SESSION_FORMAT_VERSION:
+    if version == WORKFLOW_SESSION_FORMAT_VERSION:
         path = store.save(_session(workspace, session_id))
         _rewrite_as_v3(path, mode="review", plan=_legacy_plan())
         return path
@@ -267,6 +283,45 @@ def test_v2_model_change_fails_before_writing_migration_artifacts(tmp_path):
     assert not (store.root / "legacy-backups").exists()
 
 
+def test_v4_resume_preserves_permission_and_plan_while_removing_recovery(tmp_path):
+    store = SessionStore(tmp_path / ".pony" / "sessions")
+    session = _session(tmp_path, "legacy-v4")
+    session.update(
+        permission_mode="plan",
+        permission_rules={"allow": ["read_file"], "ask": [], "deny": ["run_shell"]},
+        plan_text="# Keep this plan",
+        plan_revision=1,
+        pre_plan_mode="auto",
+    )
+    path = store.save(session)
+    old_raw = _rewrite_as_v4(path)
+
+    migrated = store.load_for_resume("legacy-v4")
+
+    assert migrated["permission_mode"] == "plan"
+    assert migrated["permission_rules"] == session["permission_rules"]
+    assert migrated["plan_text"] == session["plan_text"]
+    assert migrated["plan_revision"] == 1
+    assert migrated["pre_plan_mode"] == "auto"
+    assert "recovery" not in migrated
+    backup = next((store.root / "legacy-backups").glob("*.jsonl"))
+    assert backup.read_bytes() == old_raw
+
+
+def test_v1_resume_accepts_historical_recovery_field(tmp_path):
+    store = SessionStore(tmp_path / ".pony" / "sessions")
+    source = _legacy_source(store, tmp_path, "legacy-v1-recovery", 1)
+    payload = json.loads(source.read_text(encoding="utf-8"))
+    payload["recovery"] = {"current_checkpoint_id": "legacy"}
+    source.write_text(json.dumps(payload), encoding="utf-8")
+    source.chmod(0o600)
+
+    migrated = store.load_for_resume("legacy-v1-recovery")
+
+    assert migrated["format_version"] == SESSION_FORMAT_VERSION
+    assert "recovery" not in migrated
+
+
 def test_v1_inspection_is_read_only_and_creates_no_migration_artifacts(tmp_path):
     store = SessionStore(tmp_path / ".pony" / "sessions")
     source = _legacy_source(store, tmp_path, "legacy-readonly", 1)
@@ -289,7 +344,12 @@ def test_v1_inspection_is_read_only_and_creates_no_migration_artifacts(tmp_path)
 
 def test_v3_tail_repair_requires_resume_without_writing(tmp_path):
     store = SessionStore(tmp_path / ".pony" / "sessions")
-    path = _legacy_source(store, tmp_path, "tail-v3", PREVIOUS_SESSION_FORMAT_VERSION)
+    path = _legacy_source(
+        store,
+        tmp_path,
+        "tail-v3",
+        WORKFLOW_SESSION_FORMAT_VERSION,
+    )
     path.write_bytes(path.read_bytes() + b'{"incomplete":')
     original = path.read_bytes()
 
@@ -321,7 +381,12 @@ def test_v3_publish_failure_keeps_source_and_resume_is_retryable(
     monkeypatch,
 ):
     store = SessionStore(tmp_path / ".pony" / "sessions")
-    path = _legacy_source(store, tmp_path, "retry-v3", PREVIOUS_SESSION_FORMAT_VERSION)
+    path = _legacy_source(
+        store,
+        tmp_path,
+        "retry-v3",
+        WORKFLOW_SESSION_FORMAT_VERSION,
+    )
     original = path.read_bytes()
     replace = os.replace
 
@@ -369,7 +434,11 @@ def test_v2_publish_failure_keeps_source_and_resume_is_retryable(
 
 @pytest.mark.parametrize(
     "version",
-    (1, LEGACY_JSONL_SESSION_FORMAT_VERSION, PREVIOUS_SESSION_FORMAT_VERSION),
+    (
+        1,
+        LEGACY_JSONL_SESSION_FORMAT_VERSION,
+        WORKFLOW_SESSION_FORMAT_VERSION,
+    ),
 )
 def test_migration_rejects_source_changed_during_read(tmp_path, monkeypatch, version):
     store = SessionStore(tmp_path / ".pony" / "sessions")
@@ -396,7 +465,11 @@ def test_migration_rejects_source_changed_during_read(tmp_path, monkeypatch, ver
 
 @pytest.mark.parametrize(
     "version",
-    (1, LEGACY_JSONL_SESSION_FORMAT_VERSION, PREVIOUS_SESSION_FORMAT_VERSION),
+    (
+        1,
+        LEGACY_JSONL_SESSION_FORMAT_VERSION,
+        WORKFLOW_SESSION_FORMAT_VERSION,
+    ),
 )
 def test_migration_rechecks_candidate_identity_before_replace(
     tmp_path,
@@ -428,7 +501,11 @@ def test_migration_rechecks_candidate_identity_before_replace(
 
 @pytest.mark.parametrize(
     "version",
-    (1, LEGACY_JSONL_SESSION_FORMAT_VERSION, PREVIOUS_SESSION_FORMAT_VERSION),
+    (
+        1,
+        LEGACY_JSONL_SESSION_FORMAT_VERSION,
+        WORKFLOW_SESSION_FORMAT_VERSION,
+    ),
 )
 def test_migration_rejects_mismatched_existing_backup(tmp_path, monkeypatch, version):
     store = SessionStore(tmp_path / ".pony" / "sessions")
