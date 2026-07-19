@@ -12,6 +12,7 @@ import tempfile
 import threading
 
 from pony.tools.permissions import display_permission_mode, validate_permission_mode
+from pony.tools import registry as toolkit
 from pony.security.redaction import redact_text
 from pony.providers.transport import ProviderTransportError
 from pony.runtime.resume import active_prompt_history, build_resume_projection
@@ -355,11 +356,12 @@ def _process_repl_input(
         if manage_permissions is None:
             return None
         try:
-            selections = manage_permissions(rules, sorted(agent.tools))
+            selections = manage_permissions(rules, sorted(toolkit.legal_tool_names()))
             if selections is None:
                 return None
             if isinstance(selections, tuple):
                 selections = [selections]
+            normalized = []
             for behavior, name in selections:
                 if behavior == "mode":
                     mode = validate_permission_mode(name)
@@ -371,10 +373,29 @@ def _process_repl_input(
                             "bypassPermissions requires "
                             "--allow-dangerously-skip-permissions"
                         )
-                    changed = agent.set_permission_mode(mode)
-                    print(f"permission mode: {display_permission_mode(mode)}")
+                    normalized.append((behavior, mode))
                 else:
-                    changed = agent.set_permission_rule(name, behavior)
+                    if behavior not in {"allow", "ask", "deny", "remove"}:
+                        raise ValueError("invalid permission rule behavior")
+                    if name not in toolkit.legal_tool_names():
+                        raise ValueError("unknown permission rule tool")
+                    normalized.append((behavior, name))
+            rule_updates = tuple(
+                (name, behavior)
+                for behavior, name in normalized
+                if behavior != "mode"
+            )
+            modes = [name for behavior, name in normalized if behavior == "mode"]
+            result = agent.update_permissions(
+                mode=modes[-1] if modes else None,
+                rule_updates=rule_updates,
+            )
+            for behavior, name in normalized:
+                if behavior == "mode":
+                    changed = result["mode_entry"]
+                    print(f"permission mode: {display_permission_mode(name)}")
+                else:
+                    changed = result["rules"]
                     print(f"permission rule: {behavior} {name}")
                 if changed is None:
                     print("(unchanged)")
@@ -389,15 +410,6 @@ def _process_repl_input(
         return None
     if user_input == "/plan" or user_input.startswith("/plan "):
         description = user_input[len("/plan") :].strip()
-        if description == "share":
-            print("plan sharing is unavailable in this local runtime")
-            return None
-        if description == "open":
-            try:
-                _open_plan_in_editor(agent)
-            except (OSError, RuntimeError, ValueError) as exc:
-                print(f"error: {_safe_text(agent, exc)}")
-            return None
         was_plan = agent.current_permission_mode() == "plan"
         try:
             changed = None if was_plan else agent.set_permission_mode("plan")
@@ -407,6 +419,17 @@ def _process_repl_input(
         if changed is not None:
             print("permission mode: plan")
         plan = agent.current_plan()
+        if description in {"open", "share"} and not plan:
+            return None
+        if description == "share":
+            print("plan sharing is unavailable in this local runtime")
+            return None
+        if description == "open":
+            try:
+                _open_plan_in_editor(agent)
+            except (OSError, RuntimeError, ValueError) as exc:
+                print(f"error: {_safe_text(agent, exc)}")
+            return None
         if was_plan or not description:
             print(plan or "(no plan saved)")
         if description and not was_plan:

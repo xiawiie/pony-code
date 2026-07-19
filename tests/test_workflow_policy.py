@@ -17,6 +17,7 @@ def _agent(
     *,
     trusted=True,
     read_only=False,
+    allow_bypass=False,
     executables=None,
     redaction_env=None,
 ):
@@ -29,6 +30,7 @@ def _agent(
         options=RuntimeOptions(
             project_trusted=trusted,
             read_only=read_only,
+            allow_dangerously_skip_permissions=allow_bypass,
             trusted_executables=executables,
             redaction_env=redaction_env,
             trusted_redaction_env=redaction_env is not None,
@@ -223,6 +225,47 @@ def test_reset_preserves_newer_permission_rules_or_fails_closed(tmp_path):
     agent.reset()
 
     assert agent.permission_rules()["deny"] == ["read_file"]
+
+
+def test_executor_rejects_bypass_without_runtime_capability(tmp_path):
+    unprivileged = _agent(tmp_path / "unprivileged")
+    before = unprivileged.session_store.path(
+        unprivileged.session["id"]
+    ).read_bytes()
+
+    with pytest.raises(ValueError, match="requires dangerous capability"):
+        unprivileged.set_permission_mode("bypassPermissions")
+
+    assert unprivileged.session_store.path(
+        unprivileged.session["id"]
+    ).read_bytes() == before
+
+    agent = _agent(tmp_path / "defense", allow_bypass=True)
+    agent.set_permission_mode("bypassPermissions")
+    agent._bypass_permissions_available = False
+
+    result = agent.execute_tool(
+        "write_file",
+        {"path": "blocked.txt", "content": "blocked\n"},
+    )
+
+    assert result.metadata["tool_error_code"] == "bypass_permissions_not_authorized"
+    assert not (tmp_path / "blocked.txt").exists()
+
+
+def test_plan_exit_cannot_restore_bypass_after_capability_drift(tmp_path):
+    agent = _agent(tmp_path, allow_bypass=True)
+    agent.set_permission_mode("bypassPermissions")
+    agent.set_permission_mode("plan")
+    agent.execute_tool("write_plan", {"plan": "# Plan\n1. Inspect"})
+    agent._bypass_permissions_available = False
+    agent._approval_prompt = Mock(return_value=True)
+
+    result = agent.execute_tool("exit_plan_mode", {})
+
+    assert result.metadata["tool_error_code"] == "bypass_permissions_not_authorized"
+    assert agent.current_permission_mode() == "plan"
+    agent._approval_prompt.assert_not_called()
 
 
 def test_accept_edits_only_skips_prompt_for_builtin_file_edits(tmp_path):

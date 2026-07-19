@@ -25,7 +25,7 @@ from pony.recovery.policy import (
     assess_command,
     snapshot_bytes_eligibility,
 )
-from pony.tools.permissions import PermissionDecision, decide_permission
+from pony.tools.permissions import PermissionDecision, PermissionMode, decide_permission
 from pony.tools.subprocess import (
     _validate_hardened_git_args,
     _validate_hardened_git_repository,
@@ -691,7 +691,13 @@ def _availability_rejection(
 
 def _permission_decision(agent, name, effect_class, command_assessment):
     mode = agent.current_permission_mode()
-    if agent.read_only and effect_class != "read_only":
+    if (
+        mode == PermissionMode.BYPASS_PERMISSIONS.value
+        and not getattr(agent, "bypass_permissions_available", False)
+    ):
+        decision = PermissionDecision.DENY
+        code = "bypass_permissions_not_authorized"
+    elif agent.read_only and effect_class != "read_only":
         decision = PermissionDecision.DENY
         code = "read_only_block"
     else:
@@ -825,6 +831,21 @@ def _prepare_exit_plan_tool(agent, tool, args, effect_class):
     )
     if rejection is not None:
         return rejection, None
+    if (
+        agent.session.get("pre_plan_mode")
+        == PermissionMode.BYPASS_PERMISSIONS.value
+        and not getattr(agent, "bypass_permissions_available", False)
+    ):
+        return ToolExecutionResult(
+            content="error: bypass permission capability is unavailable",
+            metadata=_metadata(
+                "rejected",
+                effect_class=effect_class,
+                tool_error_code="bypass_permissions_not_authorized",
+                security_event_type="bypass_permissions_not_authorized",
+                risk_level="high",
+            ),
+        ), None
     plan = agent.current_plan()
     revision = agent.current_plan_revision()
     if not plan.strip() or revision < 1:

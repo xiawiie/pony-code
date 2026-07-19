@@ -257,6 +257,136 @@ def test_programmatic_resume_sanitizes_process_secret_before_first_request(
         resumed.redaction_env["MUTATE"] = "blocked"
 
 
+def test_programmatic_resume_requires_transient_bypass_capability(tmp_path):
+    agent = build_agent(
+        tmp_path,
+        [],
+        allow_dangerously_skip_permissions=True,
+    )
+    agent.set_permission_mode("bypassPermissions")
+    resume_store = SessionStore(agent.session_store.root)
+
+    with pytest.raises(ValueError, match="requires dangerous capability"):
+        Pony.from_session(
+            model_client=FakeModelClient([]),
+            workspace=agent.workspace,
+            session_store=resume_store,
+            session_id=agent.session["id"],
+            options=RuntimeOptions(project_trusted=True),
+        )
+
+    resumed = Pony.from_session(
+        model_client=FakeModelClient([]),
+        workspace=agent.workspace,
+        session_store=resume_store,
+        session_id=agent.session["id"],
+        options=RuntimeOptions(
+            project_trusted=True,
+            allow_dangerously_skip_permissions=True,
+        ),
+    )
+    assert resumed.current_permission_mode() == "bypassPermissions"
+
+
+def test_direct_session_constructor_rejects_bypass_without_capability(tmp_path):
+    agent = build_agent(
+        tmp_path,
+        [],
+        allow_dangerously_skip_permissions=True,
+    )
+    agent.set_permission_mode("bypassPermissions")
+
+    with pytest.raises(ValueError, match="requires dangerous capability"):
+        Pony(
+            model_client=FakeModelClient([]),
+            workspace=agent.workspace,
+            session_store=agent.session_store,
+            session=agent.session,
+            options=RuntimeOptions(project_trusted=True),
+        )
+
+
+def test_programmatic_resume_rejects_plan_that_would_restore_bypass(tmp_path):
+    agent = build_agent(
+        tmp_path,
+        [],
+        allow_dangerously_skip_permissions=True,
+    )
+    agent.set_permission_mode("bypassPermissions")
+    agent.set_permission_mode("plan")
+
+    with pytest.raises(ValueError, match="requires dangerous capability"):
+        Pony.from_session(
+            model_client=FakeModelClient([]),
+            workspace=agent.workspace,
+            session_store=agent.session_store,
+            session_id=agent.session["id"],
+            options=RuntimeOptions(project_trusted=True),
+        )
+
+
+def test_bypass_capability_is_read_only_and_not_inherited_by_delegate(
+    tmp_path, monkeypatch
+):
+    agent = build_agent(
+        tmp_path,
+        [],
+        allow_dangerously_skip_permissions=True,
+    )
+    children = []
+
+    with pytest.raises(AttributeError):
+        agent.bypass_permissions_available = False
+
+    monkeypatch.setattr(
+        Pony,
+        "ask",
+        lambda child, _task: children.append(child) or "done",
+    )
+    agent.spawn_delegate({"task": "inspect", "max_steps": 1})
+
+    assert children[0].bypass_permissions_available is False
+
+
+@pytest.mark.parametrize(
+    ("original_mode", "capability", "expected_pre_mode"),
+    (
+        ("auto", False, "auto"),
+        ("bypassPermissions", True, "bypassPermissions"),
+        ("bypassPermissions", False, "default"),
+    ),
+)
+def test_programmatic_resume_into_plan_preserves_only_authorized_pre_mode(
+    tmp_path,
+    original_mode,
+    capability,
+    expected_pre_mode,
+):
+    agent = build_agent(
+        tmp_path,
+        [],
+        allow_dangerously_skip_permissions=(
+            original_mode == "bypassPermissions"
+        ),
+    )
+    agent.set_permission_mode(original_mode)
+
+    resumed = Pony.from_session(
+        model_client=FakeModelClient([]),
+        workspace=agent.workspace,
+        session_store=agent.session_store,
+        session_id=agent.session["id"],
+        resume_permission_mode="plan",
+        options=RuntimeOptions(
+            project_trusted=True,
+            allow_dangerously_skip_permissions=capability,
+        ),
+    )
+
+    assert resumed.current_permission_mode() == "plan"
+    assert resumed.session["pre_plan_mode"] == expected_pre_mode
+
+
 def test_supplied_redaction_proxy_is_copied_before_backing_mutation(tmp_path):
     secret = "opaque-proxy-value-123456789"
     backing = {"PONY_TEST_API_KEY": secret}

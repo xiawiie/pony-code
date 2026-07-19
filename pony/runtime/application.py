@@ -197,6 +197,15 @@ def _session_has_provider_state(session):
     )
 
 
+def _session_requires_bypass_permission_capability(session):
+    if not isinstance(session, dict):
+        return False
+    return session.get("permission_mode") == PermissionMode.BYPASS_PERMISSIONS.value or (
+        session.get("permission_mode") == PermissionMode.PLAN.value
+        and session.get("pre_plan_mode") == PermissionMode.BYPASS_PERMISSIONS.value
+    )
+
+
 class Pony:
     def __init__(
         self,
@@ -215,6 +224,10 @@ class Pony:
             options=options,
         )
 
+    @property
+    def bypass_permissions_available(self):
+        return self._bypass_permissions_available
+
     def _initialize(
         self,
         model_client,
@@ -228,6 +241,14 @@ class Pony:
             options = RuntimeOptions()
         if not isinstance(options, RuntimeOptions):
             raise TypeError("options must be a RuntimeOptions instance")
+        if (
+            isinstance(session, dict)
+            and _session_requires_bypass_permission_capability(session)
+            and not options.allow_dangerously_skip_permissions
+        ):
+            raise ValueError(
+                "resuming bypassPermissions requires dangerous capability"
+            )
         self.model_client = model_client
         self._pending_sandbox_resume_checkpoint = None
         model_binding = getattr(model_client, "provider_binding", None)
@@ -326,6 +347,9 @@ class Pony:
         self.depth = options.depth
         self.max_depth = options.max_depth
         self.read_only = options.read_only
+        self._bypass_permissions_available = (
+            options.allow_dangerously_skip_permissions is True
+        )
         self.shell_env_allowlist = tuple(
             options.shell_env_allowlist or DEFAULT_SHELL_ENV_ALLOWLIST
         )
@@ -569,6 +593,14 @@ class Pony:
             self._validate_restored_session_binding(self.session, model_binding)
             self._validate_session_feature_flags(self.session)
         self._ensure_session_shape()
+        if (
+            session is not None
+            and _session_requires_bypass_permission_capability(self.session)
+            and not self.bypass_permissions_available
+        ):
+            raise ValueError(
+                "resuming bypassPermissions requires dangerous capability"
+            )
         if session is not None and self.docker_sandbox and not self.sandbox_context.resumed:
             self._prepare_restaged_session()
         self.memory = WorkingMemory.from_dict(
@@ -672,6 +704,8 @@ class Pony:
         session_id,
         *,
         options=None,
+        resume_permission_mode=None,
+        resume_permission_rule_updates=(),
     ):
         options = RuntimeOptions() if options is None else options
         if not isinstance(options, RuntimeOptions):
@@ -707,13 +741,49 @@ class Pony:
             trusted_redaction_env=trusted_redaction_env,
             secret_env_names=tuple(configured_names),
         )
-        return cls(
+        session = session_store.load_for_resume(session_id)
+        permission_mode_update = None
+        permission_pre_mode = None
+        if resume_permission_mode is not None:
+            resume_permission_mode = validate_permission_mode(resume_permission_mode)
+            if (
+                resume_permission_mode == PermissionMode.BYPASS_PERMISSIONS.value
+                and not options.allow_dangerously_skip_permissions
+            ):
+                raise ValueError(
+                    "bypassPermissions requires dangerous capability"
+                )
+            if session.get("permission_mode") != resume_permission_mode:
+                permission_mode_update = resume_permission_mode
+                previous_mode = session.get("permission_mode")
+                session = deepcopy(session)
+                session["permission_mode"] = resume_permission_mode
+                session["pre_plan_mode"] = ""
+                if resume_permission_mode == PermissionMode.PLAN.value:
+                    permission_pre_mode = previous_mode
+                    if (
+                        previous_mode == PermissionMode.BYPASS_PERMISSIONS.value
+                        and not options.allow_dangerously_skip_permissions
+                    ):
+                        permission_pre_mode = PermissionMode.DEFAULT.value
+                    session["pre_plan_mode"] = permission_pre_mode
+        agent = cls(
             model_client=model_client,
             workspace=workspace,
             session_store=session_store,
-            session=session_store.load_for_resume(session_id),
+            session=session,
             options=options,
         )
+        resume_permission_rule_updates = tuple(resume_permission_rule_updates)
+        if permission_mode_update is not None or resume_permission_rule_updates:
+            session_store.update_permissions(
+                session_id,
+                mode=permission_mode_update,
+                pre_mode=permission_pre_mode,
+                rule_updates=resume_permission_rule_updates,
+            )
+            agent._reload_session_projection()
+        return agent
 
     @classmethod
     def _for_docker_sandbox_development(
@@ -898,13 +968,34 @@ class Pony:
         self._permission_turn = {"mode": mode, "tools": self._visible_tools_for(mode)}
 
     def set_permission_mode(self, mode):
+        result = self.update_permissions(mode=mode)
+        return result["mode_entry"]
+
+    def update_permissions(self, *, mode=None, rule_updates=()):
         if self._permission_turn is not None:
             raise RuntimeError("permission_turn_active")
-        mode = validate_permission_mode(mode)
-        entry = self.session_store.set_permission_mode(self.session["id"], mode)
-        if entry is not None:
+        if mode is not None:
+            mode = validate_permission_mode(mode)
+        if (
+            mode == PermissionMode.BYPASS_PERMISSIONS.value
+            and not self.bypass_permissions_available
+        ):
+            raise ValueError(
+                "bypassPermissions requires dangerous capability"
+            )
+        rule_updates = tuple(
+            (str(name), str(behavior)) for name, behavior in rule_updates
+        )
+        if any(name not in toolkit.legal_tool_names() for name, _ in rule_updates):
+            raise ValueError("unknown permission rule tool")
+        result = self.session_store.update_permissions(
+            self.session["id"],
+            mode=mode,
+            rule_updates=rule_updates,
+        )
+        if result["mode_entry"] is not None or result["rules"] is not None:
             self._reload_session_projection()
-        return entry
+        return result
 
     def permission_rules(self):
         rules = self.session.get("permission_rules", {})
@@ -922,16 +1013,10 @@ class Pony:
         return None
 
     def set_permission_rule(self, name, behavior):
-        if name not in toolkit.legal_tool_names():
-            raise ValueError("unknown permission rule tool")
-        result = self.session_store.set_permission_rule(
-            self.session["id"],
-            name,
-            behavior,
-        )
-        if result is not None:
-            self._reload_session_projection()
-        return result
+        return self.set_permission_rules(((name, behavior),))
+
+    def set_permission_rules(self, updates):
+        return self.update_permissions(rule_updates=updates)["rules"]
 
     def current_plan(self):
         return str(self.session.get("plan_text", "") or "")
@@ -950,6 +1035,8 @@ class Pony:
         return self.save_plan_text(args.get("plan", ""))
 
     def save_plan_text(self, value, *, expected_revision=None):
+        if self.current_permission_mode() != PermissionMode.PLAN.value:
+            raise ValueError("write_plan requires plan mode")
         plan = str(value).strip()
         if not plan:
             raise ValueError("plan must not be empty")
@@ -970,6 +1057,12 @@ class Pony:
     def _exit_plan_mode(self, args):
         if self.current_permission_mode() != PermissionMode.PLAN.value:
             raise ValueError("exit_plan_mode requires plan mode")
+        if (
+            self.session.get("pre_plan_mode")
+            == PermissionMode.BYPASS_PERMISSIONS.value
+            and not self.bypass_permissions_available
+        ):
+            raise ValueError("bypassPermissions requires dangerous capability")
         try:
             self.session_store.exit_plan_mode(
                 self.session["id"],

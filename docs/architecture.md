@@ -193,9 +193,12 @@ Code 的模型分类器，也不宣称两者内部等价。`--allow-dangerously-
 它本身不切 mode，但允许 `/permissions` 选择或 resume 已持久化的 `bypassPermissions`。初始 mode 也可同时显式指定
 `--permission-mode bypassPermissions`；`--dangerously-skip-permissions` 则直接选择 bypass，并与其他 mode 冲突。
 普通 bypass resume 必须重新提供 capability；显式改为其他 mode 不需要 dangerous flag。
+Capability 是冻结的 RuntimeOptions 输入，不写入 Session；直接构造、`from_session()`、mode setter 和 Executor 均重复
+验证，不能只依赖 CLI adapter。
 
 `permission_rules` 只匹配完整 tool name；`/permissions`、`/allowed-tools`、`--allowed-tools` 与
-`--disallowed-tools` 共用 `SessionStore.set_permission_rule()`。Picker 的 mode 操作仍写 `permission_mode_change`。
+`--disallowed-tools` 共用锁内原子的 `SessionStore.set_permission_rules()`；一次 flags/picker 提交只追加一个 rule state entry。
+Picker 的 mode 操作仍写 `permission_mode_change`。
 判决顺序为：
 
 1. tool availability、allowlist、schema 和 shell hard reject 先行；
@@ -212,6 +215,7 @@ Plan 是 Session 内的 bounded Markdown artifact，不是 task checkpoint。模
 `plan_artifact {text, revision}`，revision 单调递增。`exit_plan_mode` 要求已有非空 artifact，并把 exact text/revision
 交给用户批准；批准后、执行前再次比较参数、artifact text 和 revision，CAS-style 校验不一致即保持 Plan。成功后恢复
 `pre_plan_mode`（缺失时为 `auto`），刷新当前 turn 的 schemas，并允许同一请求继续实现。
+`/plan open|share` 从非 Plan mode 调用时先追加 mode entry；artifact 为空时只启用 Plan，不打开 editor 或 share。
 
 ## 5. Workspace 与 Sandbox
 

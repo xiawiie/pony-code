@@ -266,11 +266,6 @@ def _parse_cli_permission_rules(args):
     return tuple(updates)
 
 
-def _apply_cli_permission_rules(agent, updates):
-    for name, behavior in updates:
-        agent.set_permission_rule(name, behavior)
-
-
 def _print_cli_error(args, exc):
     safe_details = redact_artifact(exc.details)
     if len(str(safe_details)) > 2000:
@@ -342,11 +337,11 @@ def main(argv=None):
     try:
         _raise_on_unknown_command(invocation)
         permission_rule_updates = _validate_agent_command(invocation)
+        args._permission_rule_updates = permission_rule_updates
         # 先分派只读检查命令，避免为它们启动模型 client 或 REPL。
         if invocation.command in _PRE_AGENT_COMMAND_HANDLERS:
             return _dispatch_pre_agent_command(invocation, args)
         agent = build_agent(args)
-        agent.bypass_permissions_available = dangerous_bypass_enabled(args)
         current_mode = getattr(agent, "current_permission_mode", None)
         current_mode = (
             current_mode()
@@ -366,10 +361,13 @@ def main(argv=None):
                 ),
                 exit_code=CLI_EXIT_USAGE,
             )
-        permission_mode = _requested_permission_mode(args)
-        if permission_mode is not None:
-            agent.set_permission_mode(permission_mode)
-        _apply_cli_permission_rules(agent, permission_rule_updates)
+        if not getattr(args, "resume", None):
+            permission_mode = _requested_permission_mode(args)
+            if permission_mode is not None or permission_rule_updates:
+                agent.update_permissions(
+                    mode=permission_mode,
+                    rule_updates=permission_rule_updates,
+                )
     except CliError as exc:
         return _print_cli_error(args, exc)
     except ProviderTransportError as exc:

@@ -736,6 +736,47 @@ def test_concurrent_plan_writers_allocate_distinct_revisions(tmp_path):
     assert sorted(revisions) == list(range(1, count + 1))
 
 
+def test_permission_rule_batch_uses_one_atomic_session_entry(tmp_path):
+    store = SessionStore(tmp_path / ".pony" / "sessions")
+    store.save(_session(tmp_path, "permission-batch"))
+    before = len(store.load_tree("permission-batch").entries)
+
+    store.set_permission_rules(
+        "permission-batch",
+        (
+            ("write_file", "allow"),
+            ("run_shell", "deny"),
+            ("write_file", "deny"),
+        ),
+    )
+
+    tree = store.load_tree("permission-batch")
+    assert len(tree.entries) == before + 1
+    assert tree.projection["permission_rules"] == {
+        "allow": [],
+        "ask": [],
+        "deny": ["run_shell", "write_file"],
+    }
+
+
+def test_permission_mode_and_rule_batch_share_one_atomic_append(tmp_path):
+    store = SessionStore(tmp_path / ".pony" / "sessions")
+    store.save(_session(tmp_path, "permission-transaction"))
+    before = len(store.load_tree("permission-transaction").entries)
+
+    result = store.update_permissions(
+        "permission-transaction",
+        mode="manual",
+        rule_updates=(("write_file", "deny"),),
+    )
+
+    tree = store.load_tree("permission-transaction")
+    assert len(tree.entries) == before + 2
+    assert tree.entries[-1]["parent_id"] == result["mode_entry"]["id"]
+    assert tree.projection["permission_mode"] == "default"
+    assert tree.projection["permission_rules"]["deny"] == ["write_file"]
+
+
 def test_save_checkpoint_preserves_current_runtime_state(tmp_path):
     store = SessionStore(tmp_path / ".pony" / "sessions")
     session = _session(tmp_path, "checkpoint-state")

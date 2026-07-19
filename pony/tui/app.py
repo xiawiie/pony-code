@@ -13,10 +13,11 @@ from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.history import InMemoryHistory
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.layout import Dimension
-from prompt_toolkit.shortcuts import CompleteStyle
+from prompt_toolkit.shortcuts import choice, CompleteStyle
 
 from pony.cli.help import SLASH_COMMANDS
 from pony.runtime.resume import active_prompt_history
+from pony.tools.permissions import display_permission_mode
 from pony.tui.render import TuiRenderer
 
 
@@ -109,6 +110,73 @@ def _history(items):
     return history
 
 
+def _permission_picker(agent, rules, tools, *, choose=choice, style=None):
+    current_rules = {key: list(rules.get(key, ())) for key in ("allow", "ask", "deny")}
+    current_mode = agent.current_permission_mode()
+    selections = []
+    while True:
+        tool_behavior = {
+            name: next(
+                (behavior for behavior, names in current_rules.items() if name in names),
+                "default",
+            )
+            for name in tools
+        }
+        action = choose(
+            "Permissions",
+            options=[
+                ("done", "Done"),
+                ("mode", f"Mode · {display_permission_mode(current_mode)}"),
+                *[
+                    (f"tool:{name}", f"{name} · {tool_behavior[name]}")
+                    for name in tools
+                ],
+            ],
+            default="done",
+            style=style,
+            symbol=">",
+            bottom_toolbar="Up/Down select · Enter edit",
+        )
+        if action == "done":
+            return selections or None
+        if action == "mode":
+            modes = ["manual", "auto", "acceptEdits", "dontAsk", "plan"]
+            if agent.bypass_permissions_available:
+                modes.insert(3, "bypassPermissions")
+            current_mode = choose(
+                "Permission mode",
+                options=[(mode, mode) for mode in modes],
+                default=display_permission_mode(current_mode),
+                style=style,
+                symbol=">",
+                bottom_toolbar="Up/Down select · Enter apply",
+            )
+            selections = [item for item in selections if item[0] != "mode"]
+            selections.append(("mode", current_mode))
+            continue
+        name = action.removeprefix("tool:")
+        behavior = choose(
+            f"Rule for {name}",
+            options=[
+                ("allow", "Allow"),
+                ("ask", "Ask"),
+                ("deny", "Deny"),
+                ("remove", "Use mode default"),
+            ],
+            default=tool_behavior[name] if tool_behavior[name] != "default" else "remove",
+            style=style,
+            symbol=">",
+            bottom_toolbar="Up/Down select · Enter apply",
+        )
+        for names in current_rules.values():
+            if name in names:
+                names.remove(name)
+        if behavior != "remove":
+            current_rules[behavior].append(name)
+        selections = [item for item in selections if item[0] == "mode" or item[1] != name]
+        selections.append((behavior, name))
+
+
 def run_tui(
     agent,
     *,
@@ -152,26 +220,8 @@ def run_tui(
         renderer.approval(name, args)
         return confirm("  Approve once? [y/N] ")
 
-    def manage_permissions(_rules, tools):
-        selections = []
-        while True:
-            behavior = session.prompt(
-                "  Permission [allow/ask/deny/remove/mode, Enter closes]: ",
-                multiline=False,
-                bottom_toolbar=None,
-            ).strip()
-            if not behavior:
-                return selections or None
-            if behavior not in {"allow", "ask", "deny", "remove", "mode"}:
-                raise ValueError("invalid permission rule behavior")
-            name = session.prompt(
-                "  Mode or tool: ",
-                multiline=False,
-                bottom_toolbar=None,
-            ).strip()
-            if behavior != "mode" and name not in tools:
-                raise ValueError("unknown permission rule tool")
-            selections.append((behavior, name))
+    def manage_permissions(rules, tools):
+        return _permission_picker(agent, rules, tools, style=renderer.style)
 
     previous_listener = getattr(agent, "_trace_listener", None)
     previous_approval_prompt = getattr(agent, "_approval_prompt", None)

@@ -42,13 +42,31 @@ def _install_fake_agent(monkeypatch, tmp_path, called, *, permission_mode="defau
             def set_permission_rule(self, name, behavior):
                 called.setdefault("permission_rules", []).append((behavior, name))
 
+            def set_permission_rules(self, updates):
+                called.setdefault("permission_rules", []).extend(
+                    (behavior, name) for name, behavior in updates
+                )
+
+            def update_permissions(self, *, mode=None, rule_updates=()):
+                if mode is not None:
+                    self.set_permission_mode(mode)
+                self.set_permission_rules(rule_updates)
+                return {"mode_entry": mode, "rules": tuple(rule_updates) or None}
+
             def memory_text(self):
                 return "memory"
 
             def reset(self):
                 called["reset"] = True
 
-        return FakeAgent()
+        agent = FakeAgent()
+        agent.bypass_permissions_available = bool(
+            getattr(args, "allow_dangerously_skip_permissions", False)
+            or getattr(args, "dangerously_skip_permissions", False)
+        )
+        if getattr(args, "resume", None) and getattr(args, "permission_mode", None):
+            agent.set_permission_mode(args.permission_mode)
+        return agent
 
     monkeypatch.setattr("pony.cli.app.build_agent", fake_build_agent)
 
@@ -212,7 +230,10 @@ def test_invalid_permission_flags_leave_real_resumed_session_unchanged(
         model_client=FakeModelClient([]),
         workspace=WorkspaceContext.build(tmp_path),
         session_store=store,
-        options=RuntimeOptions(project_trusted=True),
+        options=RuntimeOptions(
+            project_trusted=True,
+            allow_dangerously_skip_permissions=True,
+        ),
     )
     session_id = agent.session["id"]
     session_path = store.path(session_id)
@@ -321,7 +342,10 @@ def test_real_resume_bypass_preflight_runs_before_provider_resolution(
         model_client=FakeModelClient([]),
         workspace=workspace,
         session_store=store,
-        options=RuntimeOptions(project_trusted=True),
+        options=RuntimeOptions(
+            project_trusted=True,
+            allow_dangerously_skip_permissions=True,
+        ),
     )
     agent.set_permission_mode("bypassPermissions")
     args = build_arg_parser().parse_args(

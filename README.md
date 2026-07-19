@@ -159,9 +159,10 @@ fresh Session 默认使用 `auto`。`pony run` 与 `pony repl` 可通过 `--perm
 `--disallowed-tools` 写入同一种 Session 规则。
 一次性 `Approve once?` 只授权当前调用，不会自动写成规则。
 
-`/plan [description|open|share]` 进入或查看 Plan。首次使用 description 会把任务提交给模型；`open` 通过
-`$VISUAL`/`$EDITOR` 打开当前 Plan，编辑完成后按原 revision CAS 保存；本地 runtime 的 `share` 会明确返回不可用。
-`open`/`share` 本身不切换 mode。模型通过 append-only `plan_artifact` 保存 Plan；
+`/plan [description|open|share]` 进入或查看 Plan。首次使用 description 会把任务提交给模型。`open`/`share` 从其他
+mode 调用时先进入 Plan；artifact 为空时只启用 Plan，不打开 editor 或 share。已有 artifact 时，`open` 通过
+`$VISUAL`/`$EDITOR` 编辑并按原 revision CAS 保存；本地 runtime 的 `share` 会明确返回不可用。模型通过 append-only
+`plan_artifact` 保存 Plan；
 `exit_plan_mode` 只有在 Plan 非空且用户确认精确 revision 后才恢复进入 Plan 前的 permission mode，同一请求随后可以
 继续实现。
 
@@ -175,7 +176,8 @@ pony --dangerously-skip-permissions run "apply the requested change"
 
 `--allow-dangerously-skip-permissions` 本身不切换 mode；它允许本进程通过 `/permissions` 选择 bypass，也允许恢复已经
 持久化为 bypass 的 Session。`--dangerously-skip-permissions` 直接为当前 Session 选择 bypass。普通 resume 必须重新提供
-capability；显式用 `--permission-mode` 改回其他 mode 不需要危险 flag。
+capability；显式用 `--permission-mode` 改回其他 mode 不需要危险 flag。capability 只存在于当前 RuntimeOptions，不写入
+Session；公共 runtime 构造、resume、mode setter 和 Executor 都会重复检查。
 
 显式交互 `--resume` 会在首个 prompt 前显示一次 permission、checkpoint、resume state 与 Provider/model 摘要；
 `pony run` 和 JSON/管理命令不显示该卡片。Session v4 历史只从当前 active Canonical Messages 重建，不保留 slash 命令

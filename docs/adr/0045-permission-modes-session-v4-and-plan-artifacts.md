@@ -49,6 +49,8 @@ at the picker boundary. Explicitly resuming into another permission mode does no
 mode default for an unruled mutation to ALLOW; an exact `ask` still prompts. Project trust, explicit deny, `read_only`, tool
 availability, schema, path and secret validation, shell hard rejects, current-request Memory authorization, Sandbox, and Recovery
 remain enforced.
+The capability is a frozen `RuntimeOptions` input and is never persisted. Direct construction, `from_session()`, mode selection, and
+the executor all enforce it independently of the CLI adapter.
 
 ### Exact-tool rules and precedence
 
@@ -81,9 +83,10 @@ to use these tools and not request approval in ordinary text.
   mismatch leaves the Session in `plan`.
 - A successful exit restores `pre_plan_mode`, falling back to `auto` only when it is absent. The Agent Loop then refreshes the frozen
   mode and visible schemas so the same top-level request can continue implementation.
-- `/plan open` uses `$VISUAL` or `$EDITOR` and saves only if the original revision still matches. `/plan share` is explicitly
-  unavailable in the local runtime. Neither command changes the current permission mode. Explicit editor saves share the canonical
-  Plan validation/persistence path with `write_plan` and add an expected-revision check.
+- `/plan open` and `/plan share` first enter Plan mode. With no artifact they only enable Plan. With an existing artifact, `open`
+  uses `$VISUAL` or `$EDITOR` and saves only if the original revision still matches; `share` is explicitly unavailable in the local
+  runtime. Explicit editor saves share the canonical Plan validation/persistence path with `write_plan` and add an expected-revision
+  check.
 
 The Plan artifact is not copied into a checkpoint, Run trace, resume card, system prefix, or request metadata. `task_working_set`
 continues to project checkpoint and file facts; the model reads Plan text explicitly through `read_plan`.

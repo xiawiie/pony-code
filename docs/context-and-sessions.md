@@ -227,12 +227,16 @@ Apply，也不会撤销已经完成的 Source Apply。finalized/pending-review S
 `pony run` 与 `pony repl` 可使用一次性
 `--permission-mode manual|auto|acceptEdits|bypassPermissions|dontAsk|plan`；它追加 Session control entry，不进入 `.env`、
 `pony.toml` 或 `RuntimeOptions`。`--allowed-tools` 与 `--disallowed-tools` 和 slash picker 共用
-`SessionStore.set_permission_rule()`；picker 的 mode 操作写 `permission_mode_change`。
+锁内原子的 `SessionStore.set_permission_rules()`；一次提交只追加一个 rule state entry。picker 的 mode 操作写
+`permission_mode_change`。
 `--allow-dangerously-skip-permissions` 仅授予本进程选择或 resume bypass 的 capability，自己不切 mode；
 `--dangerously-skip-permissions` 直接选择 bypass。普通 bypass resume 必须重新授权，显式切换到其他 mode 不需要。
+只有这个非持久化 capability 进入当前 RuntimeOptions；permission mode 仍只属于 Session。
 显式交互 resume 在首个 prompt 前显示一次 permission/checkpoint/resume/model 来源投影；one-shot、JSON inspection
 与管理命令不显示。交互 history 每次从 active Canonical Messages 重建，只保留最多 100 条 top-level user 文本
 （64 KiB 总量、16 KiB 单条），不会保留 slash 命令或 abandoned branch 输入。
+
+`/plan open|share` 会先进入 Plan；空 artifact 只启用 mode，已有 artifact 才打开 editor 或尝试 share。
 
 推荐配置：
 

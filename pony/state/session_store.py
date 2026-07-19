@@ -2012,45 +2012,92 @@ class SessionStore:
             self._append_entries_unlocked(session_id, [entry])
             return deepcopy(entry)
 
-    def set_permission_mode(self, session_id, mode):
-        mode = validate_permission_mode(mode)
-        tree = self.load_tree(session_id)
-        if tree.projection["permission_mode"] == mode:
-            return None
-        return self.append_control(session_id, "permission_mode_change", {"mode": mode})
+    def set_permission_mode(self, session_id, mode, *, pre_mode=None):
+        return self.update_permissions(
+            session_id,
+            mode=mode,
+            pre_mode=pre_mode,
+        )["mode_entry"]
 
     def set_permission_rule(self, session_id, tool_name, behavior):
+        result = self.update_permissions(
+            session_id,
+            rule_updates=((tool_name, behavior),),
+        )
+        return result["rules"]
+
+    def set_permission_rules(self, session_id, updates):
+        return self.update_permissions(session_id, rule_updates=updates)["rules"]
+
+    def update_permissions(
+        self,
+        session_id,
+        *,
+        mode=None,
+        pre_mode=None,
+        rule_updates=(),
+    ):
         session_id = _session_id(session_id)
-        tool_name = str(tool_name).strip()
-        if not tool_name:
+        if mode is not None:
+            mode = validate_permission_mode(mode)
+        if pre_mode is not None:
+            pre_mode = validate_permission_mode(pre_mode)
+            if mode != PermissionMode.PLAN.value or pre_mode == mode:
+                raise ValueError("invalid pre-plan permission mode")
+        rule_updates = tuple(
+            (str(tool_name).strip(), str(behavior))
+            for tool_name, behavior in rule_updates
+        )
+        if any(not tool_name for tool_name, _behavior in rule_updates):
             raise ValueError("permission rule tool is required")
-        if behavior not in {"allow", "ask", "deny", "remove"}:
+        if any(
+            behavior not in {"allow", "ask", "deny", "remove"}
+            for _tool_name, behavior in rule_updates
+        ):
             raise ValueError("invalid permission rule behavior")
         with file_lock.locked_file(self.lock_path, require_existing=True):
             tree = self._read_tree_unlocked(session_id)
+            entries = []
+            parent_id = tree.leaf_id
+            mode_entry = None
+            if mode is not None and tree.projection["permission_mode"] != mode:
+                data = {"mode": mode}
+                if pre_mode is not None:
+                    data["pre_mode"] = pre_mode
+                mode_entry = _new_entry("permission_mode_change", data, parent_id)
+                entries.append(mode_entry)
+                parent_id = mode_entry["id"]
             rules = deepcopy(
                 tree.projection.get(
                     "permission_rules",
                     {"allow": [], "ask": [], "deny": []},
                 )
             )
+            for tool_name, behavior in rule_updates:
+                for values in rules.values():
+                    if tool_name in values:
+                        values.remove(tool_name)
+                if behavior != "remove":
+                    rules[behavior].append(tool_name)
             for values in rules.values():
-                if tool_name in values:
-                    values.remove(tool_name)
-            if behavior != "remove":
-                rules[behavior].append(tool_name)
-                rules[behavior].sort()
-            if rules == tree.projection.get("permission_rules"):
-                return None
-            safe_rules = self._redactor(rules)
-            _validate_session_info_updates({"permission_rules": safe_rules})
-            entry = _new_entry(
-                "session_info",
-                {"set": {"permission_rules": safe_rules}},
-                tree.leaf_id,
-            )
-            self._append_entries_unlocked(session_id, [entry])
-            return deepcopy(safe_rules)
+                values.sort()
+            safe_rules = None
+            if rules != tree.projection.get("permission_rules"):
+                safe_rules = self._redactor(rules)
+                _validate_session_info_updates({"permission_rules": safe_rules})
+                entries.append(
+                    _new_entry(
+                        "session_info",
+                        {"set": {"permission_rules": safe_rules}},
+                        parent_id,
+                    )
+                )
+            if entries:
+                self._append_entries_unlocked(session_id, entries)
+            return {
+                "mode_entry": deepcopy(mode_entry),
+                "rules": deepcopy(safe_rules),
+            }
 
     def set_plan_text(self, session_id, text, *, expected_revision=None):
         session_id = _session_id(session_id)

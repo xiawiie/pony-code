@@ -74,6 +74,8 @@ CLI/TUI 合同：
 - `/permissions` 与 `/allowed-tools` 共用 REPL handler 管理 allow/ask/deny 规则和 mode；CLI allowed/disallowed flags
   复用同一 rule parser 与 Session writer。`/plan` 进入或查看 Plan，旧 `/mode` 与 `/todo` 不再存在，`/plan clear`
   不再具有清空语义。
+- transient bypass capability 只进入冻结的 `RuntimeOptions`，不持久化；构造、resume、mode setter 与 Executor 都必须
+  fail closed。`/plan open|share` 从非 Plan mode 调用时先进入 Plan；空 artifact 不打开 editor 或 share。
 - TUI 只在 stdin/stdout 为 TTY、`TERM` 可用且宽度足够时启用；必须遵守 `NO_COLOR` / `--no-color`。
 - 除显式 `--quiet` 外，完整 TUI 每次启动必须显示随终端宽度适配的马形 `PONY CODE` 欢迎页，不得删除、隐藏或
   退化为单行启动头；纯文本 fallback 和 `pony run` 不输出装饰性 banner。

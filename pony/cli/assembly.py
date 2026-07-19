@@ -8,7 +8,11 @@ from pony.config.model import resolve_model_config, resolve_session_provider_bin
 from pony.config.project import load_pony_toml
 from pony.providers.factory import build_transport_client
 from pony.providers.probe import resolve_provider_client
-from pony.runtime.application import Pony, _build_redaction_snapshot
+from pony.runtime.application import (
+    Pony,
+    _build_redaction_snapshot,
+    _session_requires_bypass_permission_capability,
+)
 from pony.runtime.options import RuntimeOptions
 from pony.sandbox.docker import (
     build_docker_sandbox_context,
@@ -242,7 +246,7 @@ def _build_agent_with_source_authority(args, source_workspace):
         storage, projection, _tree = store.inspect_readonly(session_id)
         if (
             storage == "current"
-            and projection.get("permission_mode") == "bypassPermissions"
+            and _session_requires_bypass_permission_capability(projection)
             and getattr(args, "permission_mode", None) is None
             and not dangerous_bypass_enabled(args)
         ):
@@ -283,11 +287,20 @@ def _build_agent_with_source_authority(args, source_workspace):
             session_id=session_id if args.resume else None,
         )
         if args.resume and session_id:
+            resume_permission_mode = (
+                "bypassPermissions"
+                if getattr(args, "dangerously_skip_permissions", False)
+                else getattr(args, "permission_mode", None)
+            )
             return Pony.from_session(
                 model_client=model,
                 workspace=workspace,
                 session_store=store,
                 session_id=session_id,
+                resume_permission_mode=resume_permission_mode,
+                resume_permission_rule_updates=getattr(
+                    args, "_permission_rule_updates", ()
+                ),
                 options=RuntimeOptions(
                     project_trusted=True,
                     max_steps=args.max_steps,
@@ -298,6 +311,7 @@ def _build_agent_with_source_authority(args, source_workspace):
                     trusted_redaction_env=True,
                     sandbox_context=sandbox_context,
                     project_config=project_config,
+                    allow_dangerously_skip_permissions=dangerous_bypass_enabled(args),
                 ),
             )
         return Pony(
@@ -315,6 +329,7 @@ def _build_agent_with_source_authority(args, source_workspace):
                 sandbox_context=sandbox_context,
                 project_config=project_config,
                 session_id=session_id,
+                allow_dangerously_skip_permissions=dangerous_bypass_enabled(args),
             ),
         )
     except BaseException:

@@ -93,7 +93,8 @@ effect observer 比较真实 workspace 状态，不只相信工具声明。Prima
 Permission rule 按 deny、ask、allow 的优先级投影到当前 Tool。`manual` 对 mutation 逐次询问；`acceptEdits` 只自动允许
 内置 `write_file`/`patch_file`；`auto` 只允许内置 edit、显式授权的 Memory 写和静态证明为 allow 的 shell；`dontAsk`
 把需要询问的动作直接拒绝。`bypassPermissions` 只有本进程显式获得 dangerous capability 才可选择或恢复；普通 resume
-必须重新授权，显式改为其他 mode 可不带 dangerous flag。Bypass 仍不能绕过 project trust、ask/deny rule、
+必须重新授权，显式改为其他 mode 可不带 dangerous flag。Capability 只在冻结 RuntimeOptions 中存在，不持久化；
+Runtime 构造、resume、mode setter 和 Executor 都会 fail closed。Bypass 仍不能绕过 project trust、ask/deny rule、
 schema/path/secret 校验或真实 effect observation。
 
 `plan` 只向模型展示 read-only 工具和 `read_plan`/`write_plan`/`exit_plan_mode`，不展示 shell。`write_plan` 只能更新

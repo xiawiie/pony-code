@@ -12,6 +12,7 @@ from pony.tui.app import (
     _CompactPromptSession,
     _key_bindings,
     _history,
+    _permission_picker,
     run_tui,
     should_use_tui,
 )
@@ -113,6 +114,34 @@ def test_tui_history_uses_only_supplied_canonical_prompts():
         "first",
         "active branch",
     ]
+
+
+def test_tui_permission_picker_navigates_tools_rules_and_modes():
+    answers = iter(
+        ["tool:write_file", "deny", "mode", "manual", "done"]
+    )
+    prompts = []
+
+    def choose(message, *, options, **_kwargs):
+        prompts.append((message, dict(options)))
+        return next(answers)
+
+    agent = SimpleNamespace(
+        current_permission_mode=lambda: "auto",
+        bypass_permissions_available=False,
+    )
+
+    selections = _permission_picker(
+        agent,
+        {"allow": [], "ask": [], "deny": []},
+        ["read_file", "write_file"],
+        choose=choose,
+    )
+
+    assert selections == [("deny", "write_file"), ("mode", "manual")]
+    assert "write_file · default" in prompts[0][1].values()
+    assert "write_file · deny" in prompts[2][1].values()
+    assert "bypassPermissions" not in prompts[3][1]
 
 
 def test_tui_resume_card_labels_fact_sources(monkeypatch):

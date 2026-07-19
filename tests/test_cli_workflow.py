@@ -1,6 +1,8 @@
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from benchmarks.support.fake_provider import FakeModelClient
 from pony import Pony
 from pony.cli.start import _process_repl_input, run_repl
@@ -10,13 +12,16 @@ from pony.state.session_store import SessionStore
 from pony.workspace.context import WorkspaceContext
 
 
-def _agent(tmp_path, outputs=()):
+def _agent(tmp_path, outputs=(), *, allow_bypass=False):
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
     return Pony(
         model_client=FakeModelClient(outputs),
         workspace=WorkspaceContext.build(tmp_path),
         session_store=SessionStore(tmp_path / ".pony" / "sessions"),
-        options=RuntimeOptions(project_trusted=True),
+        options=RuntimeOptions(
+            project_trusted=True,
+            allow_dangerously_skip_permissions=allow_bypass,
+        ),
     )
 
 
@@ -41,8 +46,7 @@ def test_repl_permissions_manages_rules_and_same_value_is_noop(tmp_path, capsys)
 
 
 def test_repl_permissions_applies_multiple_rules_and_changes_mode(tmp_path, capsys):
-    agent = _agent(tmp_path)
-    agent.bypass_permissions_available = True
+    agent = _agent(tmp_path, allow_bypass=True)
 
     def manager(_rules, _tools):
         return [
@@ -76,10 +80,13 @@ def test_repl_plan_enters_plan_permission_mode(tmp_path, capsys):
     assert tree.entries[-1]["type"] == "permission_mode_change"
 
 
-def test_repl_plan_open_edits_artifact_without_changing_mode(
+def test_repl_plan_open_enters_plan_and_edits_existing_artifact(
     tmp_path, monkeypatch, capsys
 ):
     agent = _agent(tmp_path)
+    agent.set_permission_mode("plan")
+    agent.save_plan_text("# Existing Plan")
+    agent.set_permission_mode("auto")
     before = len(agent.session_store.load_tree(agent.session["id"]).entries)
     monkeypatch.setenv("EDITOR", "pony-test-editor")
     monkeypatch.setattr("pony.cli.start.shutil.which", lambda _name: "/usr/bin/editor")
@@ -93,22 +100,38 @@ def test_repl_plan_open_edits_artifact_without_changing_mode(
     _process_repl_input(agent, "/plan open")
 
     tree = agent.session_store.load_tree(agent.session["id"])
-    assert agent.current_permission_mode() == "auto"
+    assert agent.current_permission_mode() == "plan"
     assert agent.current_plan() == "# Edited Plan\n1. Test"
-    assert len(tree.entries) == before + 1
+    assert len(tree.entries) == before + 2
     assert tree.entries[-1]["type"] == "plan_artifact"
     assert "Opened plan in editor" in capsys.readouterr().out
 
 
-def test_repl_plan_share_is_zero_write_when_unavailable(tmp_path, capsys):
+def test_repl_plan_share_enters_plan_before_reporting_unavailable(tmp_path, capsys):
     agent = _agent(tmp_path)
+    agent.set_permission_mode("plan")
+    agent.save_plan_text("# Existing Plan")
+    agent.set_permission_mode("auto")
     before = len(agent.session_store.load_tree(agent.session["id"]).entries)
 
     _process_repl_input(agent, "/plan share")
 
-    assert agent.current_permission_mode() == "auto"
-    assert len(agent.session_store.load_tree(agent.session["id"]).entries) == before
+    assert agent.current_permission_mode() == "plan"
+    assert len(agent.session_store.load_tree(agent.session["id"]).entries) == before + 1
     assert "plan sharing is unavailable" in capsys.readouterr().out
+
+
+def test_repl_plan_open_with_no_artifact_only_enters_plan(tmp_path, monkeypatch):
+    agent = _agent(tmp_path)
+    monkeypatch.setattr(
+        "pony.cli.start._open_plan_in_editor",
+        lambda _agent: pytest.fail("empty Plan must not open an editor"),
+    )
+
+    _process_repl_input(agent, "/plan open")
+
+    assert agent.current_permission_mode() == "plan"
+    assert agent.current_plan_revision() == 0
 
 
 def test_removed_mode_is_unknown_and_plan_description_is_submitted(tmp_path, capsys):

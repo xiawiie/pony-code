@@ -57,8 +57,8 @@ reasoning state 或 Anthropic thinking block 跨协议重放。
 - Pony `auto` 使用本地 deterministic classifier；它不复刻或声称等同 Claude Code 的模型分类器。
 - `--allow-dangerously-skip-permissions` 是本进程的 transient capability：它本身不切换 mode，但允许 picker 选择或
   resume 已持久化的 `bypassPermissions`。`--dangerously-skip-permissions` 直接选择 bypass。普通 resume 必须重新授权；
-  显式改为其他 mode 不需要 dangerous flag。Bypass 不跳过 trust、ask/deny、schema、path/secret、memory、Sandbox
-  或 Recovery 硬边界。
+  显式改为其他 mode 不需要 dangerous flag。Capability 只进入 RuntimeOptions、不持久化；构造、resume、mode setter
+  与 Executor 都会检查。Bypass 不跳过 trust、ask/deny、schema、path/secret、memory、Sandbox 或 Recovery 硬边界。
 - Permission Rule 只接受 legal tool 的完整名称。`deny` 优先；Plan mutation floor 不能被 `allow` 降低；其余
   `allow|ask` 先于 mode 默认值，`dontAsk` 把 ASK 转为 DENY。
 - Plan Artifact 只有一条受锁的 canonical persistence 路径，并统一执行 12 KiB UTF-8 上限与已知 secret gate。

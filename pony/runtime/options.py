@@ -19,6 +19,7 @@ class RuntimeOptions:
     redaction_env: dict[str, str] | None = None
     feature_flags: dict[str, bool] | None = None
     allowed_tools: tuple[str, ...] | None = None
+    allow_dangerously_skip_permissions: bool = False
     trusted_redaction_env: bool = False
     trusted_executables: dict[str, str] | None = None
     sandbox_context: Any = None
