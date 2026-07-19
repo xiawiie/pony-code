@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 import pony.memory.block_store as block_store_module
+import pony.memory.diagnostics as diagnostics_module
 from pony.cli.app import main
 from pony.cli.diagnostics import collect_doctor
 from pony.memory.diagnostics import collect_memory_diagnostics
@@ -126,6 +127,54 @@ def test_memory_health_does_not_change_file_mode(tmp_path):
 
     assert result["status"] == "pass"
     assert note.stat().st_mode == before
+
+
+def test_memory_health_fails_closed_when_root_is_replaced_during_scan(
+    tmp_path, monkeypatch
+):
+    repo = tmp_path / "repo"
+    memory = _memory_root(repo)
+    (memory / "notes" / "old.md").write_text("old note", encoding="utf-8")
+    (memory / "agent_notes.md").write_text("old agent", encoding="utf-8")
+    old_root_identity = diagnostics_module.private_files.private_directory_identity(
+        memory
+    )
+    old_notes_identity = diagnostics_module.private_files.private_directory_identity(
+        memory / "notes"
+    )
+
+    replacement = tmp_path / "replacement"
+    (replacement / "notes").mkdir(parents=True)
+    (replacement / "notes" / "new.md").write_text("new note", encoding="utf-8")
+    (replacement / "agent_notes.md").write_text("new agent", encoding="utf-8")
+    displaced = tmp_path / "displaced"
+    original_read = diagnostics_module._read_bounded_at
+    parent_identities = []
+
+    def replace_root(parent_descriptor, name, expected, limit):
+        if not parent_identities:
+            memory.rename(displaced)
+            replacement.rename(memory)
+        parent_identities.append(
+            diagnostics_module._identity(os.fstat(parent_descriptor))
+        )
+        return original_read(parent_descriptor, name, expected, limit)
+
+    monkeypatch.setattr(diagnostics_module, "_read_bounded_at", replace_root)
+
+    result = collect_memory_diagnostics(
+        repo,
+        user_memory_root=tmp_path / "missing-user" / ".pony" / "memory",
+    )
+
+    assert parent_identities == [old_notes_identity, old_root_identity]
+    assert result["status"] == "unknown"
+    assert {
+        "path": "workspace",
+        "count": 1,
+        "reason_code": "memory_root_changed",
+        "limit": 0,
+    } in result["issues"]
 
 
 def test_doctor_keeps_memory_health_payload(tmp_path, monkeypatch):
