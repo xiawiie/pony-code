@@ -118,6 +118,12 @@ Shell 只使用启动时冻结的 trusted executable。每个工具调用使用 
 remote helper、upload-pack/ssh command 和 repository hook 路径。上述约束降低意外和输入注入风险，但不能隔离已获准运行
 的恶意二进制、测试插件或依赖。
 
+Repository Skills are not executable extensions. The only accepted layout is Source Root
+`.claude/skills/<name>/SKILL.md`; HOME, plugin, marketplace, and `.agents/skills` are never searched. Catalog discovery uses
+anchored no-follow bounded reads and rejects symlink, hardlink, special-file, root-identity, size/count, UTF-8, strict
+frontmatter, and known-secret failures as an all-or-nothing catalog. `/name` supplies one validated document as ephemeral model
+context only. It cannot register tools, alter permission, run a script, or escape the existing Host path/secret/trust checks.
+
 公开产品已删除 `--sandbox`、`pony sandbox`、Source Apply 与 workspace restore。旧 Sandbox sidecar 仅用于 resume
 binding 检查：匹配旧 Sandbox 的 Session 返回 `legacy_sandbox_session_unsupported`，损坏 binding 返回
 `sandbox_state_invalid`；两者都不会静默进入 Host。

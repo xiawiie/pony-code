@@ -165,6 +165,11 @@ mode 调用时先进入 Plan；artifact 为空时只启用 Plan，不打开 edit
 `exit_plan_mode` 只有在 Plan 非空且用户确认精确 revision 后才恢复进入 Plan 前的 permission mode，同一请求随后可以
 继续实现。
 
+仓库可在 `.claude/skills/<name>/SKILL.md` 提供一个 Claude 风格的只读 Skill。文档必须带严格的 `name` 和
+`description` frontmatter，名称与目录一致；输入 `/name [prompt]` 只为当前 turn 注入该 Skill。Pony 不读取 HOME、
+插件或 `.agents/skills`，也不执行脚本、安装或持久化 Skill；任何不安全、超限、含已知 secret 或格式错误的条目都会让
+本次目录不加载。
+
 `bypassPermissions` 必须显式获得本次进程的危险 capability；这些参数只适用于 `run/repl`：
 
 ```bash

@@ -349,9 +349,9 @@ def _process_repl_input(
     if user_input in {"/exit", "/quit"}:
         return 0
     if user_input == "/help":
-        from .help import HELP_DETAILS
+        from .help import render_help_details
 
-        print(HELP_DETAILS)
+        print(render_help_details(agent))
         return None
     if user_input in {"/permissions", "/allowed-tools"}:
         rules = agent.permission_rules()
@@ -513,6 +513,21 @@ def _process_repl_input(
         return None
     if user_input.startswith("/"):
         command = user_input.split(maxsplit=1)[0]
+        skill = agent.project_skill(command.removeprefix("/"))
+        if skill is not None:
+            prompt = user_input[len(command) :].strip()
+            if not prompt:
+                prompt = f"Use the {skill.name} Skill for this task."
+            try:
+                render_answer(_safe_text(agent, agent.ask(prompt, skill=skill)))
+            except ProviderTransportError:
+                raise
+            except Exception:  # noqa: BLE001 - match ordinary REPL turn failures
+                if render_error is None:
+                    print(_RUNTIME_ERROR_MESSAGE, file=sys.stderr)
+                else:
+                    render_error(_RUNTIME_ERROR_MESSAGE)
+            return None
         message = f"unknown command: {command}; type /help for available commands"
         if render_error is None:
             print(message)

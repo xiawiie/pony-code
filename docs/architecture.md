@@ -117,6 +117,16 @@ Provider/model，窄终端先保留安全和模型信息，不输出绝对路径
 model binding 的有限事实；one-shot、JSON 和管理命令不显示。prompt history 每次输入后从 active Canonical Messages
 重建，只包含 bounded top-level user text，因此 slash 命令、原始 secret 输入和 abandoned branch 不成为第二套 history。
 
+### Repository Skills
+
+Project Skills are deliberately inert read-only input, not a plugin runtime. Pony discovers only
+`.claude/skills/<name>/SKILL.md` from the trusted Source Root. Descriptor-anchored bounded reads require a single-link UTF-8
+regular file, strict `name`/`description` frontmatter, a matching lowercase directory name, and no known secret material.
+Unsafe, malformed, oversized, or excessive catalog entries make the catalog empty. `/name [prompt]` adds exactly one validated
+Skill as the immutable current-turn `active_skill` context source; it neither executes scripts nor changes tools, permissions,
+Session, Memory, or trace state. Home catalogs, plugins, `.agents/skills`, installation, marketplace, and compatibility search
+are intentionally absent.
+
 TUI 不展示或持久化 Provider reasoning，也不引入 streaming、定时 spinner、后台线程、alternate screen、主题系统或
 第二套 UI 状态机。纯文本 fallback 和 `pony run` 不渲染装饰性 banner；`NO_COLOR`、`--no-color` 和终端能力检测由
 交互边界统一处理。唯一直接运行时依赖仍是 `prompt-toolkit`。

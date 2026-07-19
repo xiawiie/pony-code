@@ -33,7 +33,7 @@
 | Gate M | 命名 Model Target 与 `/model` | 先 ADR，默认不做 | 与四变量配置和 immutable Session Binding 合同冲突 |
 | Gate Q | 忙碌时持久化输入队列 | 先 spike | 当前 TUI/Agent 是同步调用，approval 与退出语义尚未解决 |
 | Gate D | 批量并行 delegate | 先隔离再评估并行 | child 当前共享 model client，Host 下还共享 Store |
-| Gate S | 仓库 Skills | 先威胁模型 | `.agents/` 当前会进入 Sandbox staging，信任边界未定义 |
+| Gate S | 仓库 Skills | 已完成只读威胁模型与实现 | 仅 `.claude/skills` 受信读取；不执行脚本 |
 | P2+ | JSONL/IDE/MCP adapter | 有真实 consumer 再做 | 无 consumer 时协议只会形成第二维护面 |
 
 近期成功标准不是“拥有完整 AI IDE”，而是：用户能在同一 Provider、同一 Session 中可靠执行
@@ -318,16 +318,14 @@ parser，不得自动迁移 secret。若最终批准，再用独立 release trai
 
 #### Gate S：Skills
 
-先写安全/架构 ADR，选择以下之一：
+已选择并落实为 `.claude/skills/<name>/SKILL.md` 的受信仓库 control-plane 输入，见
+[ADR-0046](adr/0046-read-only-project-skills.md)。loader 使用 anchored/no-follow/single-link/root-identity 读取，并对
+strict frontmatter、大小、数量、UTF-8 和 known secret 全部 fail closed；任一条目有问题时整个 catalog 不加载。现有 Memory
+frontmatter 解析是宽松容错语义，不能复用到这个 trust boundary。
 
-1. `.agents/skills` 是普通仓库输入，显式进入 Host 与 Sandbox；或
-2. 它是 agent control plane，必须从 staging/diff 排除并由可信 host 读取后以受限 context 注入。
-
-ADR 还需定义优先级、strict frontmatter、大小/文件数/深度、symlink/hardlink/special-file、secret scanning、loaded state、
-compaction 与 script 权限。现有 memory frontmatter parser 是宽松容错语义，不能直接用于这个 trust boundary。
-
-第一版即使批准，也只做 metadata catalog + 显式只读加载；不注册 tool/command/hook/provider，不实现 script executor，脚本只能
-走现有 `run_shell` policy。在线安装、HOME catalog、市场和自动更新继续不做。
+第一版只提供 catalog、TUI completion、`/name [prompt]` 与一个 immutable read-only context source；不注册
+tool/command/hook/provider，不执行脚本。HOME catalog、plugin、`.agents/skills` compatibility、在线安装、市场、自动更新和
+loaded-state 持久化继续不做。
 
 ### 4.3 明确不能做或不应做
 
@@ -369,7 +367,7 @@ integration exact SHA 创建；feature worktree 不各自追赶 `origin/main`，
 | M | `codex/model-target-adr` | ADR + config/session threat model，无 runtime code | `/model` UI、legacy fallback |
 | Q | `codex/input-queue-spike` | 假 Provider + fake prompt 的线程/approval/exit spike | durable format、daemon、steer |
 | D | `codex/delegate-isolation` | 独立 child client/session/run，仍串行 | batch、线程池、可写 child |
-| S | `codex/skills-threat-model` | ADR + Sandbox staging 选择 | loader、scripts、在线安装 |
+| S | `codex/pony-cap-skills` | ADR-0046 + read-only project catalog、`/name` 和 context 注入 | scripts、在线安装、HOME/plugin catalog |
 
 ## 6. 集成、回滚与兼容策略
 
