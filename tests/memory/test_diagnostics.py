@@ -1,400 +1,36 @@
 import json
+import os
 from pathlib import Path
-import shutil
-import subprocess
-from types import SimpleNamespace
 
 import pytest
 
 import pony.memory.block_store as block_store_module
+import pony.memory.diagnostics as diagnostics_module
 from pony.cli.app import main
 from pony.cli.diagnostics import collect_doctor
 from pony.memory.diagnostics import collect_memory_diagnostics
 
 
-def _write_note(root, name, content):
-    path = root / "notes" / name
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content, encoding="utf-8")
-    return path
+def _memory_root(repo):
+    root = repo / ".pony" / "memory"
+    (root / "notes").mkdir(parents=True)
+    return root
 
 
-def _init_git(root):
-    git = "/usr/bin/git" if Path("/usr/bin/git").is_file() else shutil.which("git")
-    if git is None:
-        pytest.skip("git unavailable")
-    subprocess.run([git, "init", "-q"], cwd=root, check=True)
-    return git
-
-
-def test_memory_diagnostics_reports_metadata_caps_and_git_ignore(tmp_path, monkeypatch):
+def test_memory_health_is_bounded_and_does_not_validate_note_content(tmp_path):
     repo = tmp_path / "repo"
-    workspace_memory = repo / ".pony" / "memory"
-    user_memory = tmp_path / "home-private-canary" / ".pony" / "memory"
-    repo.mkdir()
-    git = _init_git(repo)
+    memory = _memory_root(repo)
+    (memory / "notes" / "note.md").write_text(
+        "---\nname without a colon\n---\nbody\n", encoding="utf-8"
+    )
     (repo / ".gitignore").write_text(".pony/\n", encoding="utf-8")
-    _write_note(
-        workspace_memory,
-        "a.md",
-        "---\nname: shared\nsupersedes: [gone]\n---\nworkspace body\n",
-    )
-    _write_note(
-        user_memory,
-        "b.md",
-        "---\nname: shared\n---\nuser body\n",
-    )
-    _write_note(
-        workspace_memory,
-        "invalid.md",
-        "---\nname without a colon\n---\nprivate body\n",
-    )
-    (workspace_memory / "agent_notes.md").write_text("workspace note", encoding="utf-8")
-    (user_memory / "agent_notes.md").write_text("user note", encoding="utf-8")
-    monkeypatch.setattr(block_store_module, "AGENT_NOTES_SOFT_LIMIT_BYTES", 4)
 
     result = collect_memory_diagnostics(
         repo,
-        user_memory_root=user_memory,
-        git_executable=git,
+        user_memory_root=tmp_path / "missing-user" / ".pony" / "memory",
     )
 
-    assert result["status"] == "warn"
-    assert all(
-        set(issue) == {"path", "count", "reason_code", "limit"}
-        for issue in result["issues"]
-    )
-    issues = {
-        (item["path"], item["reason_code"]): (item["count"], item["limit"])
-        for item in result["issues"]
-    }
-    assert issues[("workspace/notes/a.md", "duplicate_frontmatter_name")] == (2, 1)
-    assert issues[("user/notes/b.md", "duplicate_frontmatter_name")] == (2, 1)
-    assert issues[("workspace/notes/a.md", "missing_supersedes_target")] == (1, 0)
-    assert issues[("workspace/notes/invalid.md", "invalid_frontmatter")] == (1, 0)
-    assert issues[("workspace/agent_notes.md", "agent_notes_soft_limit_exceeded")] == (
-        len("workspace note"),
-        4,
-    )
-    assert issues[("user/agent_notes.md", "agent_notes_soft_limit_exceeded")] == (
-        len("user note"),
-        4,
-    )
-    assert issues[("workspace/notes/a.md", "workspace_user_note_git_ignored")] == (1, 0)
-    assert issues[
-        ("workspace/notes/invalid.md", "workspace_user_note_git_ignored")
-    ] == (1, 0)
-
-
-def test_memory_diagnostics_do_not_leak_content_frontmatter_or_user_root(tmp_path):
-    canary = "memory-diagnostic-secret-canary"
-    repo = tmp_path / "repo"
-    user_memory = tmp_path / canary / ".pony" / "memory"
-    repo.mkdir()
-    _write_note(
-        repo / ".pony" / "memory",
-        "one.md",
-        f"---\nname: {canary}\nsupersedes: [{canary}-missing]\n---\n{canary}-body\n",
-    )
-    _write_note(
-        user_memory,
-        "two.md",
-        f"---\nname: {canary}\n---\n{canary}-user-body\n",
-    )
-
-    result = collect_memory_diagnostics(repo, user_memory_root=user_memory)
-    serialized = json.dumps(result)
-
-    assert canary not in serialized
-    assert str(user_memory) not in serialized
-    assert {issue["path"] for issue in result["issues"]} == {
-        "user/notes/two.md",
-        "workspace/notes/one.md",
-    }
-
-
-@pytest.mark.parametrize(
-    ("limit_name", "limit", "files", "reason_code", "expected_path", "count"),
-    (
-        (
-            "MAX_MEMORY_INDEX_FILES",
-            1,
-            {"a.md": b"a", "b.md": b"b"},
-            "memory_file_count_limit_reached",
-            "workspace/notes/b.md",
-            2,
-        ),
-        (
-            "MAX_MEMORY_FILE_BYTES",
-            8,
-            {"a.md": b"x" * 9},
-            "memory_file_size_limit_reached",
-            "workspace/notes/a.md",
-            9,
-        ),
-        (
-            "MAX_MEMORY_INDEX_BYTES",
-            8,
-            {"a.md": b"a" * 5, "b.md": b"b" * 5},
-            "memory_total_bytes_limit_reached",
-            "workspace/notes/b.md",
-            9,
-        ),
-    ),
-)
-def test_memory_diagnostics_report_scan_limits(
-    tmp_path,
-    monkeypatch,
-    limit_name,
-    limit,
-    files,
-    reason_code,
-    expected_path,
-    count,
-):
-    repo = tmp_path / "repo"
-    notes = repo / ".pony" / "memory" / "notes"
-    notes.mkdir(parents=True)
-    for name, content in files.items():
-        (notes / name).write_bytes(content)
-    monkeypatch.setattr(block_store_module, limit_name, limit)
-
-    result = collect_memory_diagnostics(
-        repo, user_memory_root=tmp_path / "missing-user"
-    )
-
-    issue = next(
-        item for item in result["issues"] if item["reason_code"] == reason_code
-    )
-    assert issue == {
-        "path": expected_path,
-        "count": count,
-        "reason_code": reason_code,
-        "limit": limit,
-    }
-
-
-@pytest.mark.parametrize("entry_kind", ("directory", "non_markdown"))
-def test_memory_diagnostics_bound_non_candidate_traversal(
-    tmp_path,
-    monkeypatch,
-    entry_kind,
-):
-    repo = tmp_path / "repo"
-    notes = repo / ".pony" / "memory" / "notes"
-    notes.mkdir(parents=True)
-    for index in range(3):
-        path = notes / f"entry-{index}"
-        if entry_kind == "directory":
-            path.mkdir()
-        else:
-            path.with_suffix(".txt").write_text("ignored", encoding="utf-8")
-    monkeypatch.setattr(block_store_module, "MAX_MEMORY_INDEX_FILES", 2)
-
-    result = collect_memory_diagnostics(
-        repo,
-        user_memory_root=tmp_path / "missing-user",
-    )
-
-    assert next(
-        item
-        for item in result["issues"]
-        if item["reason_code"] == "memory_scan_entry_limit_reached"
-    ) == {
-        "path": "workspace/notes",
-        "count": 3,
-        "reason_code": "memory_scan_entry_limit_reached",
-        "limit": 2,
-    }
-
-
-@pytest.mark.parametrize(
-    "frontmatter",
-    (
-        "tags: not-a-list",
-        "name:",
-        "unknown: value",
-        "",
-    ),
-)
-def test_memory_diagnostics_report_invalid_recognized_frontmatter(
-    tmp_path,
-    frontmatter,
-):
-    repo = tmp_path / "repo"
-    _write_note(
-        repo / ".pony" / "memory",
-        "invalid.md",
-        f"---\n{frontmatter}\n---\nbody\n",
-    )
-
-    result = collect_memory_diagnostics(
-        repo,
-        user_memory_root=tmp_path / "missing-user",
-    )
-
-    assert any(
-        item["path"] == "workspace/notes/invalid.md"
-        and item["reason_code"] == "invalid_frontmatter"
-        for item in result["issues"]
-    )
-
-
-def test_memory_diagnostics_fail_closed_on_read_and_scan_errors(tmp_path, monkeypatch):
-    repo = tmp_path / "repo"
-    _write_note(repo / ".pony" / "memory", "one.md", "body\n")
-
-    def unreadable(*args, **kwargs):
-        del args, kwargs
-        raise PermissionError("private-read-canary")
-
-    monkeypatch.setattr("pony.memory.diagnostics._read_bounded_regular", unreadable)
-    read_result = collect_memory_diagnostics(
-        repo,
-        user_memory_root=tmp_path / "missing-user",
-    )
-
-    assert read_result["status"] == "unknown"
-    assert read_result["reason_code"] == "memory_diagnostics_incomplete"
-    assert any(
-        item["reason_code"] == "memory_file_read_failed"
-        for item in read_result["issues"]
-    )
-    assert "private-read-canary" not in json.dumps(read_result)
-
-    def scan_failed(*args, **kwargs):
-        del args, kwargs
-        raise PermissionError("private-scan-canary")
-
-    monkeypatch.setattr("pony.memory.diagnostics.os.scandir", scan_failed)
-    scan_result = collect_memory_diagnostics(
-        repo,
-        user_memory_root=tmp_path / "missing-user",
-    )
-
-    assert scan_result["status"] == "unknown"
-    assert any(
-        item["reason_code"] == "memory_scan_failed" for item in scan_result["issues"]
-    )
-    assert "private-scan-canary" not in json.dumps(scan_result)
-
-
-def test_memory_diagnostics_do_not_follow_notes_symlink(tmp_path):
-    repo = tmp_path / "repo"
-    memory = repo / ".pony" / "memory"
-    outside = tmp_path / "private-symlink-canary"
-    outside.mkdir()
-    (outside / "secret.md").write_text("private-body-canary", encoding="utf-8")
-    memory.mkdir(parents=True)
-    (memory / "notes").symlink_to(outside, target_is_directory=True)
-
-    result = collect_memory_diagnostics(
-        repo,
-        user_memory_root=tmp_path / "missing-user",
-    )
-
-    assert result["status"] == "unknown"
-    assert any(
-        item["path"] == "workspace/notes"
-        and item["reason_code"] == "memory_scan_failed"
-        for item in result["issues"]
-    )
-    assert "private-symlink-canary" not in json.dumps(result)
-    assert "private-body-canary" not in json.dumps(result)
-
-
-def test_memory_diagnostics_git_failure_is_unknown_and_low_sensitivity(
-    tmp_path,
-    monkeypatch,
-):
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    _init_git(repo)
-
-    monkeypatch.setattr(
-        "pony.memory.diagnostics.run_hardened_git",
-        lambda *args, **kwargs: SimpleNamespace(
-            returncode=2,
-            stdout=b"",
-            stderr=b"private-git-canary",
-        ),
-    )
-
-    result = collect_memory_diagnostics(
-        repo,
-        user_memory_root=tmp_path / "missing-user",
-        git_executable="/trusted/git",
-    )
-
-    assert result["status"] == "unknown"
-    assert any(
-        item
-        == {
-            "path": "workspace/notes/__pony_git_ignore_probe__.md",
-            "count": 1,
-            "reason_code": "memory_git_ignore_check_failed",
-            "limit": 0,
-        }
-        for item in result["issues"]
-    )
-    assert "private-git-canary" not in json.dumps(result)
-
-
-def test_doctor_contains_memory_git_timeout(tmp_path, monkeypatch):
-    _init_git(tmp_path)
-    monkeypatch.setattr(
-        "pony.memory.diagnostics.Path.home",
-        lambda: tmp_path / "missing-home",
-    )
-
-    def timeout(*args, **kwargs):
-        del args, kwargs
-        raise subprocess.TimeoutExpired(["git", "check-ignore"], 5)
-
-    monkeypatch.setattr("pony.memory.diagnostics.run_hardened_git", timeout)
-
-    result = collect_doctor(tmp_path)
-
-    assert result["memory"]["status"] == "unknown"
-    assert result["memory"]["reason_code"] == "memory_diagnostics_incomplete"
-    assert any(
-        item["reason_code"] == "memory_git_ignore_check_failed"
-        for item in result["memory"]["issues"]
-    )
-
-
-def test_memory_diagnostics_check_git_ignore_with_empty_notes(tmp_path):
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    git = _init_git(repo)
-    (repo / ".gitignore").write_text(".pony/\n", encoding="utf-8")
-    (repo / ".pony" / "memory" / "notes").mkdir(parents=True)
-
-    result = collect_memory_diagnostics(
-        repo,
-        user_memory_root=tmp_path / "missing-user",
-        git_executable=git,
-    )
-
-    assert {
-        "path": "workspace/notes/__pony_git_ignore_probe__.md",
-        "count": 1,
-        "reason_code": "workspace_user_note_git_ignored",
-        "limit": 0,
-    } in result["issues"]
-
-
-def test_memory_diagnostics_use_doctor_check_contract(tmp_path):
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    git = _init_git(repo)
-
-    healthy = collect_memory_diagnostics(
-        repo,
-        user_memory_root=tmp_path / "missing-user",
-        git_executable=git,
-    )
-    assert healthy == {
+    assert result == {
         "check_id": "memory",
         "status": "pass",
         "reason_code": "memory_diagnostics_passed",
@@ -402,96 +38,225 @@ def test_memory_diagnostics_use_doctor_check_contract(tmp_path):
         "issues": [],
     }
 
-    _write_note(
-        repo / ".pony" / "memory",
-        "invalid.md",
-        "---\ninvalid line\n---\nbody\n",
-    )
-    warning = collect_memory_diagnostics(
+
+@pytest.mark.parametrize("unsafe_target", ("file", "notes_directory"))
+def test_memory_health_reports_unsafe_entries_without_leaking_content(
+    tmp_path, unsafe_target
+):
+    canary = "memory-health-secret-canary"
+    repo = tmp_path / "repo"
+    memory = _memory_root(repo)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.md").write_text(canary, encoding="utf-8")
+    if unsafe_target == "file":
+        (memory / "notes" / "linked.md").symlink_to(outside / "secret.md")
+    else:
+        (memory / "notes").rmdir()
+        (memory / "notes").symlink_to(outside, target_is_directory=True)
+    (memory / "agent_notes.md").write_text(canary, encoding="utf-8")
+    if hasattr(os, "link"):
+        hardlink = memory / "notes" / "hardlink.md"
+        if unsafe_target == "file":
+            os.link(outside / "secret.md", hardlink)
+
+    result = collect_memory_diagnostics(
         repo,
-        user_memory_root=tmp_path / "missing-user",
-        git_executable=git,
+        user_memory_root=tmp_path / "missing-user" / ".pony" / "memory",
     )
-    assert warning["check_id"] == "memory"
-    assert warning["status"] == "warn"
-    assert warning["reason_code"] == "memory_review_required"
-    assert warning["remediation"] == "review Memory note metadata and Git ignore rules"
-    assert warning["status"] in {
-        "pass",
-        "warn",
-        "fail",
-        "not_applicable",
-        "unknown",
+    serialized = json.dumps(result)
+
+    assert result["status"] == "unknown"
+    assert result["reason_code"] == "memory_diagnostics_incomplete"
+    assert canary not in serialized
+    assert str(outside) not in serialized
+    assert {issue["reason_code"] for issue in result["issues"]} >= {
+        "memory_directory_unavailable"
+        if unsafe_target == "notes_directory"
+        else "memory_file_unavailable"
     }
 
 
-def test_doctor_memory_diagnostics_are_read_only_and_render_in_both_formats(
-    tmp_path,
-    monkeypatch,
-    capsys,
-):
-    user_memory = tmp_path / "user-home" / ".pony" / "memory"
-    workspace_memory = tmp_path / ".pony" / "memory"
-    _write_note(
-        workspace_memory,
-        "invalid.md",
-        "---\ninvalid line\n---\nbody-canary\n",
-    )
-    (workspace_memory / "agent_notes.md").write_text("agent", encoding="utf-8")
-    (workspace_memory / "agent_notes.md").chmod(0o644)
-    before_mode = (workspace_memory / "agent_notes.md").stat().st_mode
-    monkeypatch.setattr(
-        "pony.memory.diagnostics.Path.home", lambda: tmp_path / "user-home"
+def test_memory_health_reports_bounded_file_count(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    memory = _memory_root(repo)
+    (memory / "notes" / "a.md").write_text("a", encoding="utf-8")
+    (memory / "notes" / "b.md").write_text("b", encoding="utf-8")
+    monkeypatch.setattr(block_store_module, "MAX_MEMORY_INDEX_FILES", 1)
+
+    result = collect_memory_diagnostics(
+        repo,
+        user_memory_root=tmp_path / "missing-user" / ".pony" / "memory",
     )
 
-    data = collect_doctor(tmp_path)
-
-    assert data["memory"]["issues"] == [
+    assert result["status"] == "unknown"
+    assert result["issues"] == [
         {
-            "path": "workspace/notes/invalid.md",
-            "count": 1,
-            "reason_code": "invalid_frontmatter",
-            "limit": 0,
+            "path": "workspace/notes/b.md",
+            "count": 2,
+            "reason_code": "memory_index_limit_reached",
+            "limit": 1,
         }
     ]
-    assert (workspace_memory / "agent_notes.md").stat().st_mode == before_mode
-    assert not user_memory.exists()
 
-    for output_format in ("json", "text"):
-        assert (
-            main(
-                [
-            "--cwd",
-            str(tmp_path),
-            "--format",
-            output_format,
-            "doctor",
-                ]
-            )
-            == 0
+
+def test_memory_health_does_not_create_missing_roots(tmp_path):
+    repo = tmp_path / "repo"
+    user = tmp_path / "home" / ".pony" / "memory"
+
+    result = collect_memory_diagnostics(repo, user_memory_root=user)
+
+    assert result["status"] == "pass"
+    assert not (repo / ".pony" / "memory").exists()
+    assert not user.exists()
+
+
+@pytest.mark.skipif(not hasattr(os, "chmod"), reason="POSIX mode assertion")
+def test_memory_health_does_not_change_file_mode(tmp_path):
+    repo = tmp_path / "repo"
+    memory = _memory_root(repo)
+    note = memory / "agent_notes.md"
+    note.write_text("agent note", encoding="utf-8")
+    note.chmod(0o644)
+    before = note.stat().st_mode
+
+    result = collect_memory_diagnostics(
+        repo,
+        user_memory_root=tmp_path / "missing-user" / ".pony" / "memory",
+    )
+
+    assert result["status"] == "pass"
+    assert note.stat().st_mode == before
+
+
+def test_memory_health_fails_closed_when_root_is_replaced_during_scan(
+    tmp_path, monkeypatch
+):
+    repo = tmp_path / "repo"
+    memory = _memory_root(repo)
+    (memory / "notes" / "old.md").write_text("old note", encoding="utf-8")
+    (memory / "agent_notes.md").write_text("old agent", encoding="utf-8")
+    old_root_identity = diagnostics_module.private_files.private_directory_identity(
+        memory
+    )
+    old_notes_identity = diagnostics_module.private_files.private_directory_identity(
+        memory / "notes"
+    )
+
+    replacement = tmp_path / "replacement"
+    (replacement / "notes").mkdir(parents=True)
+    (replacement / "notes" / "new.md").write_text("new note", encoding="utf-8")
+    (replacement / "agent_notes.md").write_text("new agent", encoding="utf-8")
+    displaced = tmp_path / "displaced"
+    original_read = diagnostics_module._read_bounded_at
+    parent_identities = []
+
+    def replace_root(parent_descriptor, name, expected, limit):
+        if not parent_identities:
+            memory.rename(displaced)
+            replacement.rename(memory)
+        parent_identities.append(
+            diagnostics_module._identity(os.fstat(parent_descriptor))
         )
-        output = capsys.readouterr().out
-        assert "Memory" in output or '"memory"' in output
-        assert "invalid_frontmatter" in output
-        assert "body-canary" not in output
-        if output_format == "json":
-            rendered_memory = json.loads(output)["data"]["memory"]
-            assert set(rendered_memory) == {
-                "check_id",
-                "status",
-                "reason_code",
-                "remediation",
-                "issues",
-            }
-            assert rendered_memory["status"] == "warn"
-    assert not user_memory.exists()
+        return original_read(parent_descriptor, name, expected, limit)
+
+    monkeypatch.setattr(diagnostics_module, "_read_bounded_at", replace_root)
+
+    result = collect_memory_diagnostics(
+        repo,
+        user_memory_root=tmp_path / "missing-user" / ".pony" / "memory",
+    )
+
+    assert parent_identities == [old_notes_identity, old_root_identity]
+    assert result["status"] == "unknown"
+    assert {
+        "path": "workspace",
+        "count": 1,
+        "reason_code": "memory_root_changed",
+        "limit": 0,
+    } in result["issues"]
 
 
-def test_doctor_does_not_create_missing_memory_directories(tmp_path, monkeypatch):
-    user_home = tmp_path / "user-home"
-    monkeypatch.setattr("pony.memory.diagnostics.Path.home", lambda: user_home)
+def test_memory_health_fails_closed_when_nested_directory_is_replaced(
+    tmp_path, monkeypatch
+):
+    repo = tmp_path / "repo"
+    memory = _memory_root(repo)
+    nested = memory / "notes" / "nested"
+    nested.mkdir()
+    (nested / "old.md").write_text("old note", encoding="utf-8")
+    replacement = tmp_path / "replacement-nested"
+    replacement.mkdir()
+    (replacement / "new.md").write_text("new note", encoding="utf-8")
+    displaced = tmp_path / "displaced-nested"
+    original_read = diagnostics_module._read_bounded_at
+    replaced = False
 
-    result = collect_doctor(tmp_path)
+    def replace_nested(parent_descriptor, name, expected, limit):
+        nonlocal replaced
+        if not replaced:
+            nested.rename(displaced)
+            replacement.rename(nested)
+            replaced = True
+        return original_read(parent_descriptor, name, expected, limit)
+
+    monkeypatch.setattr(diagnostics_module, "_read_bounded_at", replace_nested)
+
+    result = collect_memory_diagnostics(
+        repo,
+        user_memory_root=tmp_path / "missing-user" / ".pony" / "memory",
+    )
+
+    assert replaced is True
+    assert result["status"] == "unknown"
+    assert {
+        "path": "workspace/notes/nested",
+        "count": 1,
+        "reason_code": "memory_directory_unavailable",
+        "limit": 0,
+    } in result["issues"]
+
+
+@pytest.mark.skipif(not hasattr(os, "link"), reason="hardlink unavailable")
+def test_memory_health_fails_closed_when_hardlink_is_added_during_read(
+    tmp_path, monkeypatch
+):
+    repo = tmp_path / "repo"
+    memory = _memory_root(repo)
+    note = memory / "notes" / "note.md"
+    note.write_text("note", encoding="utf-8")
+    hardlink = tmp_path / "note-hardlink.md"
+    original_stat = diagnostics_module.os.stat
+    note_stat_calls = 0
+
+    def add_hardlink_before_final_stat(path, *args, **kwargs):
+        nonlocal note_stat_calls
+        if path == "note.md" and kwargs.get("dir_fd") is not None:
+            note_stat_calls += 1
+            if note_stat_calls == 2:
+                os.link(note, hardlink)
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(diagnostics_module.os, "stat", add_hardlink_before_final_stat)
+
+    result = collect_memory_diagnostics(
+        repo,
+        user_memory_root=tmp_path / "missing-user" / ".pony" / "memory",
+    )
+
+    assert note_stat_calls == 2
+    assert result["status"] == "unknown"
+    assert {
+        "path": "workspace/notes/note.md",
+        "count": 1,
+        "reason_code": "memory_file_unavailable",
+        "limit": 0,
+    } in result["issues"]
+
+
+def test_doctor_keeps_memory_health_payload(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path / "home"))
+    result = collect_doctor(tmp_path, args=None)
 
     assert result["memory"] == {
         "check_id": "memory",
@@ -500,5 +265,21 @@ def test_doctor_does_not_create_missing_memory_directories(tmp_path, monkeypatch
         "remediation": "",
         "issues": [],
     }
-    assert not (tmp_path / ".pony" / "memory").exists()
-    assert not (user_home / ".pony" / "memory").exists()
+
+
+def test_doctor_renders_the_compact_memory_health_check(tmp_path, monkeypatch, capsys):
+    memory = _memory_root(tmp_path)
+    canary = "memory-doctor-content-canary"
+    (memory / "notes" / "note.md").write_text(
+        f"---\ninvalid frontmatter\n---\n{canary}\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path / "home"))
+
+    for output_format in ("json", "text"):
+        assert main(["--cwd", str(tmp_path), "--format", output_format, "doctor"]) == 0
+        output = capsys.readouterr().out
+        assert canary not in output
+        if output_format == "json":
+            assert json.loads(output)["data"]["memory"]["status"] == "pass"
+        else:
+            assert "Memory" in output
