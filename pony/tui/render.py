@@ -13,6 +13,7 @@ from prompt_toolkit.shortcuts import print_formatted_text
 from prompt_toolkit.styles import Style
 from prompt_toolkit.utils import get_cwidth
 
+from pony.tools.permissions import display_permission_mode
 from pony.tui.markdown import render_markdown, sanitize_terminal_text
 
 
@@ -339,7 +340,10 @@ class TuiRenderer:
         model_summary = (
             f"Using {model_label}"
             if compact
-            else f"Using {model_label} · approval {agent.approval_policy}"
+            else (
+                f"Using {model_label} · "
+                f"{display_permission_mode(agent.current_permission_mode())}"
+            )
         )
         shortcuts = (
             "/ commands · ctrl+c twice exit"
@@ -368,14 +372,14 @@ class TuiRenderer:
         workspace = _one_line(getattr(agent.workspace, "cwd", "-"))
         repository = Path(workspace).name or "-"
         left = f" {mode} · {repository} ({branch})"
-        approval = _one_line(getattr(agent, "approval_policy", "")) or "-"
-        current_mode = getattr(agent, "current_workflow_mode", None)
-        workflow_mode = _one_line(
+        current_mode = getattr(agent, "current_permission_mode", None)
+        permission_mode = _one_line(
             current_mode()
             if callable(current_mode)
-            else getattr(agent, "session", {}).get("workflow_mode", "act")
-        ) or "act"
-        right = f"{workflow_mode}/{approval} · {_model_label(agent, model)} "
+            else getattr(agent, "session", {}).get("permission_mode", "auto")
+        ) or "auto"
+        permission_mode = display_permission_mode(permission_mode)
+        right = f"{permission_mode} · {_model_label(agent, model)} "
         gap = width - get_cwidth(left) - get_cwidth(right)
         if gap < 1:
             right = _truncate(right, max(1, min(get_cwidth(right), width * 2 // 3)))
@@ -399,18 +403,12 @@ class TuiRenderer:
 
     def resume(self, projection):
         goal = projection["goal"]
-        plan = projection["plan"]
         lines = [
             "Resume",
-            f"mode [session]: {projection['mode']}",
+            f"permission [session]: {projection['permission_mode']}",
         ]
         if goal["text"]:
             lines.append(f"goal [{goal['source']}]: {goal['text']}")
-        lines.append(
-            "plan [plan]: "
-            f"{plan['completed_count']}/{plan['item_count']} completed; "
-            f"current={plan['current_count']}"
-        )
         checkpoint = projection["checkpoint"]
         if checkpoint["status"] or checkpoint["blocker"]:
             lines.append(
@@ -423,6 +421,14 @@ class TuiRenderer:
             for next_step in checkpoint["next_steps"]
         )
         lines.append(f"resume [resume_state]: {projection['resume']['status'] or '-'}")
+        model = projection["model"]
+        if model["protocol_family"] or model["model"]:
+            label = "/".join(
+                value
+                for value in (model["protocol_family"], model["model"])
+                if value
+            )
+            lines.append(f"model [provider_binding]: {label}")
         self.notice("\n".join(lines))
 
     def user(self, text, *, columns=None):

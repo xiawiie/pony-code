@@ -1,6 +1,9 @@
 # Pony Coding Agent 工作流实施方案
 
-> 文档性质：P0 已实施合同与后续 Gate 路线，不声明 Gate 能力已实现
+> 状态：Historical / Superseded。本文记录已被 Session v4 permission mode/rules 与 Plan artifact 合同取代的旧实施方案，
+> 不再描述当前产品行为；当前合同以领域模型、架构、Session、安全与验证文档为准。
+>
+> 文档性质：历史 P0 实施记录，不声明当前或后续 Gate 能力
 > 基线：2026-07-18，`main@88c23a0ff961ff540ad3dbb4d5412b24c7f9daea`
 > 实施状态：W0-W6 已在 integration 分支完成；以 W7 exact-HEAD 离线门禁为最终证据
 

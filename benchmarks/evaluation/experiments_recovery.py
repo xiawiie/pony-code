@@ -149,7 +149,7 @@ def _build_recovery_agent(workspace_root, required_fragments):
         ),
         workspace=workspace,
         session_store=store,
-        options=RuntimeOptions(approval_policy="auto", max_steps=4),
+        options=RuntimeOptions(project_trusted=True, max_steps=4),
     )
 
 

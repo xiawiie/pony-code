@@ -21,16 +21,15 @@ def _install_fake_agent(monkeypatch, tmp_path, called):
         class FakeAgent:
             model_client = type("MC", (), {"model": "x"})()
             workspace = type("W", (), {"cwd": str(tmp_path), "branch": "main"})()
-            approval_policy = "auto"
-            session = {"id": "s"}
+            session = {"id": "s", "permission_mode": "default"}
             session_path = str(tmp_path / ".pony" / "sessions" / "s.json")
 
             def ask(self, message):
                 called["asked"] = message
                 return "answer"
 
-            def set_workflow_mode(self, mode):
-                called["mode"] = mode
+            def set_permission_mode(self, mode):
+                called["permission_mode"] = mode
 
             def memory_text(self):
                 return "memory"
@@ -54,22 +53,114 @@ def test_run_command_calls_agent_once(tmp_path, monkeypatch, capsys):
     assert "answer" in capsys.readouterr().out
 
 
-def test_run_mode_is_applied_after_runtime_build(tmp_path, monkeypatch):
+def test_run_permission_mode_is_applied_after_runtime_build(tmp_path, monkeypatch):
     called = {}
     _install_fake_agent(monkeypatch, tmp_path, called)
 
-    assert main(["--cwd", str(tmp_path), "--mode", "plan", "run", "inspect"]) == 0
-    assert called["mode"] == "plan"
+    assert (
+        main(
+            [
+                "--cwd",
+                str(tmp_path),
+                "--permission-mode",
+                "plan",
+                "run",
+                "inspect",
+            ]
+        )
+        == 0
+    )
+    assert called["permission_mode"] == "plan"
 
 
-def test_mode_is_rejected_for_management_commands(tmp_path, monkeypatch, capsys):
+def test_permission_mode_is_rejected_for_management_commands(
+    tmp_path, monkeypatch, capsys
+):
     monkeypatch.setattr(
         "pony.cli.app.build_agent",
         lambda _args: pytest.fail("agent must not be built"),
     )
 
-    assert main(["--cwd", str(tmp_path), "--mode", "review", "status"]) == 2
-    assert "--mode is only valid" in capsys.readouterr().err
+    assert (
+        main(
+            [
+                "--cwd",
+                str(tmp_path),
+                "--permission-mode",
+                "dontAsk",
+                "status",
+            ]
+        )
+        == 2
+    )
+    assert "permission flags are only valid" in capsys.readouterr().err
+
+
+def test_bypass_permission_mode_requires_explicit_dangerous_opt_in(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setattr(
+        "pony.cli.app.build_agent",
+        lambda _args: pytest.fail("agent must not be built"),
+    )
+
+    assert (
+        main(
+            [
+                "--cwd",
+                str(tmp_path),
+                "--permission-mode",
+                "bypassPermissions",
+                "run",
+                "inspect",
+            ]
+        )
+        == 2
+    )
+    assert "requires --allow-dangerously-skip-permissions" in capsys.readouterr().err
+
+
+def test_direct_bypass_flag_applies_session_mode(tmp_path, monkeypatch):
+    called = {}
+    _install_fake_agent(monkeypatch, tmp_path, called)
+
+    assert (
+        main(
+            [
+                "--cwd",
+                str(tmp_path),
+                "--dangerously-skip-permissions",
+                "run",
+                "inspect",
+            ]
+        )
+        == 0
+    )
+    assert called["permission_mode"] == "bypassPermissions"
+
+
+def test_invalid_no_input_repl_is_rejected_before_agent_build(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setattr(
+        "pony.cli.app.build_agent",
+        lambda _args: pytest.fail("agent must not be built"),
+    )
+
+    assert (
+        main(
+            [
+                "--cwd",
+                str(tmp_path),
+                "--no-input",
+                "--permission-mode",
+                "acceptEdits",
+                "repl",
+            ]
+        )
+        == 2
+    )
+    assert "--no-input cannot be used" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize(
@@ -152,7 +243,7 @@ def test_help_command_shows_examples(capsys):
     assert "--sandbox    run/repl in local Docker Sandbox (macOS arm64 only)" in out
     assert 'pony run "inspect the failing tests"' in out
     assert "pony config set-secret PONY_API_KEY" in out
-    assert "pony --approval ask run" in out
+    assert "pony --permission-mode manual run" in out
     assert "pony checkpoints show <checkpoint-id>" in out
     assert "pony checkpoints pending" in out
     assert "pony runs summary latest" in out
@@ -792,7 +883,7 @@ def test_repl_help_renders_help_details(tmp_path, monkeypatch, capsys):
         model_client=FakeModelClient([]),
         workspace=workspace,
         session_store=session_store,
-        options=RuntimeOptions(approval_policy="auto"),
+        options=RuntimeOptions(project_trusted=True),
     )
 
     inputs = iter(["/help", "/exit"])

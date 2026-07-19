@@ -136,16 +136,27 @@ def build_arg_parser():
         "--resume", default=None, help="Session id to resume or 'latest'."
     )
     parser.add_argument(
-        "--approval",
-        choices=("ask", "auto", "never"),
-        default="ask",
-        help="Approval policy for risky tools.",
+        "--permission-mode",
+        choices=(
+            "acceptEdits",
+            "auto",
+            "bypassPermissions",
+            "manual",
+            "dontAsk",
+            "plan",
+        ),
+        default=None,
+        help="Permission mode for run/repl only.",
     )
     parser.add_argument(
-        "--mode",
-        choices=("plan", "act", "review"),
-        default=None,
-        help="Workflow mode for run/repl only.",
+        "--allow-dangerously-skip-permissions",
+        action="store_true",
+        help="Allow bypassPermissions to be selected for this session.",
+    )
+    parser.add_argument(
+        "--dangerously-skip-permissions",
+        action="store_true",
+        help="Bypass permission prompts for this session.",
     )
     parser.add_argument(
         "--secret-env-name",

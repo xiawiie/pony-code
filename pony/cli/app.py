@@ -148,12 +148,35 @@ def _dispatch_pre_agent_command(invocation, args):
 
 
 def _validate_agent_command(invocation):
-    if getattr(invocation.runtime_args, "mode", None) is not None and (
-        invocation.command not in {"run", "repl"}
-    ):
+    args = invocation.runtime_args
+    agent_command = invocation.command in {"run", "repl"}
+    permission_flags = (
+        getattr(args, "permission_mode", None) is not None
+        or getattr(args, "allow_dangerously_skip_permissions", False)
+        or getattr(args, "dangerously_skip_permissions", False)
+    )
+    if permission_flags and not agent_command:
         raise CliError(
             code="usage",
-            message="--mode is only valid with `pony run` or `pony repl`",
+            message="permission flags are only valid with `pony run` or `pony repl`",
+            exit_code=CLI_EXIT_USAGE,
+        )
+    requested_mode = getattr(args, "permission_mode", None)
+    direct_bypass = getattr(args, "dangerously_skip_permissions", False)
+    bypass_enabled = getattr(args, "allow_dangerously_skip_permissions", False)
+    if direct_bypass and requested_mode not in {None, "bypassPermissions"}:
+        raise CliError(
+            code="usage",
+            message="--dangerously-skip-permissions conflicts with --permission-mode",
+            exit_code=CLI_EXIT_USAGE,
+        )
+    if requested_mode == "bypassPermissions" and not (direct_bypass or bypass_enabled):
+        raise CliError(
+            code="usage",
+            message=(
+                "bypassPermissions requires "
+                "--allow-dangerously-skip-permissions"
+            ),
             exit_code=CLI_EXIT_USAGE,
         )
     if getattr(
@@ -188,6 +211,18 @@ def _validate_agent_command(invocation):
             message="usage: pony repl",
             exit_code=CLI_EXIT_USAGE,
         )
+    if invocation.command == "repl" and getattr(args, "no_input", False):
+        raise CliError(
+            code="usage",
+            message="--no-input cannot be used with interactive repl",
+            exit_code=CLI_EXIT_USAGE,
+        )
+
+
+def _requested_permission_mode(args):
+    if getattr(args, "dangerously_skip_permissions", False):
+        return "bypassPermissions"
+    return getattr(args, "permission_mode", None)
 
 
 def _print_cli_error(args, exc):
@@ -265,8 +300,9 @@ def main(argv=None):
         if invocation.command in _PRE_AGENT_COMMAND_HANDLERS:
             return _dispatch_pre_agent_command(invocation, args)
         agent = build_agent(args)
-        if args.mode is not None:
-            agent.set_workflow_mode(args.mode)
+        permission_mode = _requested_permission_mode(args)
+        if permission_mode is not None:
+            agent.set_permission_mode(permission_mode)
     except CliError as exc:
         return _print_cli_error(args, exc)
     except ProviderTransportError as exc:
@@ -344,11 +380,6 @@ def main(argv=None):
         model = getattr(transport, "model", DEFAULT_MODEL)
 
         if invocation.command == "repl":
-            if args.no_input:
-                print(
-                    "--no-input cannot be used with interactive repl", file=sys.stderr
-                )
-                return 2
             return run_repl(
                 agent,
                 model=model,

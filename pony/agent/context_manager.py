@@ -16,6 +16,16 @@ from pony.agent.model_capabilities import (
 from pony.state.session_store import SessionContextView
 
 
+_PLAN_MODE_REMINDER = """
+<system-reminder>
+Plan mode is active. Explore the repository and design an implementation approach.
+Do not edit workspace files or run non-read-only tools. Use read_plan to inspect the
+current plan, write_plan to save the complete plan, and exit_plan_mode only when the
+plan is ready for user approval. Do not ask for plan approval in ordinary text.
+</system-reminder>
+""".strip()
+
+
 class ContextBudgetExceeded(RuntimeError):
     code = "context_budget_exceeded"
 
@@ -160,6 +170,16 @@ class ContextManager:
         budget = self.budget
         accounting = self.accounting
         system_text = str(getattr(self.agent, "prefix", "") or "")
+        current_mode = getattr(self.agent, "current_permission_mode", None)
+        permission_mode = (
+            current_mode()
+            if callable(current_mode)
+            else (getattr(self.agent, "session", {}) or {}).get(
+                "permission_mode", "auto"
+            )
+        )
+        if permission_mode == "plan":
+            system_text = f"{system_text}\n\n{_PLAN_MODE_REMINDER}"
         system = [
             {
                 "type": "text",

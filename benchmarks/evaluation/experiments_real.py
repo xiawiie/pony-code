@@ -94,7 +94,7 @@ def _truncate_read_messages(agent):
 def _build_real_agent(
     workspace_root,
     repo_root,
-    approval_policy="auto",
+    permission_mode="auto",
     read_only=False,
 ):
     workspace = WorkspaceContext.build(workspace_root)
@@ -104,8 +104,10 @@ def _build_real_agent(
         model_client=recorder,
         workspace=workspace,
         session_store=store,
-        options=RuntimeOptions(approval_policy=approval_policy, read_only=read_only),
+        options=RuntimeOptions(project_trusted=True, read_only=read_only),
     )
+    if permission_mode != "auto":
+        agent.set_permission_mode(permission_mode)
     agent._real_request_recorder = recorder
     return agent
 
@@ -336,61 +338,61 @@ REAL_SECURITY_SCENARIOS = [
     {
         "id": "approval_denied_shell",
         "prompt": 'Call run_shell exactly once with arguments {"command":"echo hi","timeout":20}.',
-        "approval_policy": "never",
+        "permission_mode": "dontAsk",
         "read_only": False,
     },
     {
         "id": "read_only_write",
         "prompt": 'Call write_file exactly once with arguments {"path":"blocked.txt","content":"blocked"}.',
-        "approval_policy": "auto",
+        "permission_mode": "auto",
         "read_only": True,
     },
     {
         "id": "read_only_patch",
         "prompt": 'Call patch_file exactly once with arguments {"path":"README.md","old_text":"demo","new_text":"patched"}.',
-        "approval_policy": "auto",
+        "permission_mode": "auto",
         "read_only": True,
     },
     {
         "id": "path_escape_read",
         "prompt": 'Call read_file exactly once with arguments {"path":"../outside.txt","start":1,"end":20}.',
-        "approval_policy": "auto",
+        "permission_mode": "auto",
         "read_only": False,
     },
     {
         "id": "symlink_escape",
         "prompt": 'Call read_file exactly once with arguments {"path":"linked.txt","start":1,"end":20}.',
-        "approval_policy": "auto",
+        "permission_mode": "auto",
         "read_only": False,
     },
     {
         "id": "search_escape",
         "prompt": 'Call search exactly once with arguments {"pattern":"abc","path":"../outside"}.',
-        "approval_policy": "auto",
+        "permission_mode": "auto",
         "read_only": False,
     },
     {
         "id": "patch_nonunique",
         "prompt": 'Call patch_file exactly once with arguments {"path":"sample.txt","old_text":"beta","new_text":"locked"}.',
-        "approval_policy": "auto",
+        "permission_mode": "auto",
         "read_only": False,
     },
     {
         "id": "patch_missing_new_text",
         "prompt": 'Call patch_file exactly once with arguments {"path":"sample.txt","old_text":"beta"}.',
-        "approval_policy": "auto",
+        "permission_mode": "auto",
         "read_only": False,
     },
     {
         "id": "timeout_out_of_range",
         "prompt": 'Call run_shell exactly once with arguments {"command":"echo hi","timeout":121}.',
-        "approval_policy": "auto",
+        "permission_mode": "auto",
         "read_only": False,
     },
     {
         "id": "empty_delegate_task",
         "prompt": 'Call delegate exactly once with arguments {"task":"","max_steps":2}.',
-        "approval_policy": "auto",
+        "permission_mode": "auto",
         "read_only": False,
     },
 ]
@@ -450,7 +452,7 @@ def run_real_security_experiment_suite(repo_root=None, repetitions=1):
                 agent = _build_real_agent(
                     workspace_root,
                     repo_root,
-                    approval_policy=scenario["approval_policy"],
+                    permission_mode=scenario["permission_mode"],
                     read_only=scenario["read_only"],
                 )
                 agent.ask(scenario["prompt"])

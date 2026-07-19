@@ -64,7 +64,7 @@ mtime/ctime 或创建 session state。
 - 同一 Pony Session 最多一个非终态 sidecar；多个非终态、残缺终态或 identity 不一致都返回
   `sandbox_state_invalid` / `sandbox_resume_invalid`。
 
-终态后的新 staging 只继承对话、goal、Workflow Mode、Active Plan 与 Provider binding。旧 staging 的 recovery ID、
+终态后的新 staging 只继承对话、goal、permission mode/rules、Plan artifact 与 Provider binding。旧 staging 的 recovery ID、
 freshness、key/read/modified files 和 runtime identity 不跨 Execution Root 复用；runtime 会追加一个 sanitized task
 checkpoint 后再建立新 baseline。
 

@@ -10,6 +10,7 @@ from pony import Pony
 from pony.cli.app import main
 from pony.cli.arguments import build_arg_parser
 from pony.cli.assembly import build_agent
+from pony.security.trust import ProjectTrustStore
 from pony.state.session_store import SessionStore
 from pony.workspace.context import WorkspaceContext
 
@@ -49,12 +50,16 @@ def test_build_agent_returns_pony(tmp_path):
         [
             "--cwd",
             str(tmp_path),
-            "--approval",
-            "auto",
+            "--permission-mode",
+            "acceptEdits",
         ]
     )
 
-    agent = build_agent(args)
+    agent = build_agent(
+        args,
+        trust_store=ProjectTrustStore(tmp_path / ".pony-home"),
+        confirm=lambda _root: True,
+    )
 
     assert isinstance(agent, Pony)
 

@@ -344,11 +344,11 @@ class BenchmarkEvaluator:
             workspace=workspace,
             session_store=session_store,
             options=RuntimeOptions(
-            run_store=run_store,
-            approval_policy="auto",
-            max_steps=int(task["step_budget"]),
-            max_output_tokens=self.max_output_tokens,
-            allowed_tools=task["allowed_tools"],
+                run_store=run_store,
+                project_trusted=True,
+                max_steps=int(task["step_budget"]),
+                max_output_tokens=self.max_output_tokens,
+                allowed_tools=task["allowed_tools"],
             ),
         )
         _apply_task_setup(agent, task, fixture_copy_root)

@@ -19,7 +19,7 @@ def _permission_mode(session):
     try:
         return validate_permission_mode(value)
     except ValueError:
-        return PermissionMode.DEFAULT.value
+        return PermissionMode.AUTO.value
 
 
 def _display_text(value):

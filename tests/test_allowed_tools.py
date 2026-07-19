@@ -21,7 +21,7 @@ def build_agent(tmp_path, allowed_tools=None, *, executables=None):
         model_client=FakeModelClient(["Done."]),
         workspace=workspace,
         session_store=store,
-        options=RuntimeOptions(approval_policy="auto", allowed_tools=allowed_tools),
+        options=RuntimeOptions(project_trusted=True, allowed_tools=allowed_tools),
     )
 
 

@@ -172,7 +172,7 @@ def build_stress_agent_metrics():
             model_client=FakeModelClient([]),
             workspace=workspace,
             session_store=store,
-            options=RuntimeOptions(approval_policy="auto"),
+            options=RuntimeOptions(project_trusted=True),
         )
         _seed_plain_messages(agent, 12, "stress-history", 1_400)
         metrics = measure_request_ablation_metrics(agent, "recall")
@@ -244,7 +244,7 @@ def _build_memory_experiment_agent(workspace_root, expected_fact, filename):
         model_client=_MemoryExperimentModelClient(expected_fact, filename),
         workspace=workspace,
         session_store=store,
-        options=RuntimeOptions(approval_policy="auto"),
+        options=RuntimeOptions(project_trusted=True),
     )
 
 
@@ -600,7 +600,7 @@ def run_context_stress_matrix(repetitions=5):
                             model_client=FakeModelClient([]),
                             workspace=workspace,
                             session_store=store,
-                            options=RuntimeOptions(approval_policy="auto"),
+                            options=RuntimeOptions(project_trusted=True),
                         )
                         _seed_plain_messages(agent, note_count, "matrix-note", 180)
                         _seed_plain_messages(
@@ -695,15 +695,18 @@ def run_context_stress_matrix(repetitions=5):
     }
 
 
-def _security_agent(workspace_root, approval_policy="auto", read_only=False):
+def _security_agent(workspace_root, permission_mode="auto", read_only=False):
     workspace = WorkspaceContext.build(workspace_root)
     store = SessionStore(workspace_root / ".pony" / "sessions")
-    return Pony(
+    agent = Pony(
         model_client=FakeModelClient([]),
         workspace=workspace,
         session_store=store,
-        options=RuntimeOptions(approval_policy=approval_policy, read_only=read_only),
+        options=RuntimeOptions(project_trusted=True, read_only=read_only),
     )
+    if permission_mode != "auto":
+        agent.set_permission_mode(permission_mode)
+    return agent
 
 
 def _scenario_invalid_patch_nonunique(workspace_root):
@@ -764,7 +767,7 @@ def _scenario_search_escape(workspace_root):
 
 
 def _scenario_approval_denied(workspace_root):
-    agent = _security_agent(workspace_root, approval_policy="never")
+    agent = _security_agent(workspace_root, permission_mode="dontAsk")
     agent.run_tool("run_shell", {"command": "echo hi", "timeout": 20})
     return dict(agent._last_tool_result_metadata)
 

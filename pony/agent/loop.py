@@ -1237,6 +1237,16 @@ def _run_agent_attempts(
                 run_verification_evidence,
                 model_execution,
             )
+            if (
+                action.name == "exit_plan_mode"
+                and agent._last_tool_result_metadata.get("tool_status") == "ok"
+                and agent.session.get("permission_mode") != "plan"
+            ):
+                agent.refresh_permission_turn_after_plan_exit()
+                preflight_metadata["permission_mode"] = (
+                    agent.current_permission_mode()
+                )
+                preflight_metadata["tool_count"] = len(agent.visible_tools())
             runtime_feedback, correction_stop = _advance_rejection_correction(
                 action.name,
                 agent._last_tool_result_metadata,

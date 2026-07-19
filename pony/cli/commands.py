@@ -46,9 +46,9 @@ EXAMPLES:
     pony
     pony init
     pony run "inspect the failing tests"
-    pony --mode plan run "inspect and plan the change"
+    pony --permission-mode plan run "inspect and plan the change"
     pony config set-secret PONY_API_KEY
-    pony --approval ask run "run the requested shell command"
+    pony --permission-mode manual run "run the requested shell command"
     pony doctor
     pony runs summary latest
     pony checkpoints show <checkpoint-id>
@@ -79,7 +79,8 @@ Flags:
       --quiet      suppress non-essential human output
       --no-color   disable terminal colors
       --sandbox    run/repl in local Docker Sandbox (macOS arm64 only)
-      --mode       workflow mode for run/repl: plan, act, or review
+      --permission-mode  permission mode: acceptEdits, auto, bypassPermissions,
+                         manual, dontAsk, or plan
 
 Security:
     Host mode provides no OS sandbox. In Sandbox mode all model-visible file tools use filtered

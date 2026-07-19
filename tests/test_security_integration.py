@@ -31,17 +31,21 @@ class CapturingClient:
         return self.responses.pop(0)
 
 
-def _agent(tmp_path, client, *, approval_policy="auto"):
+def _agent(tmp_path, client, *, permission_mode="auto"):
     (tmp_path / "README.md").write_text("safe fixture\n", encoding="utf-8")
     workspace = WorkspaceContext.build(tmp_path)
-    return Pony(
+    agent = Pony(
         model_client=client,
         workspace=workspace,
         session_store=SessionStore(tmp_path / ".pony" / "sessions"),
         options=RuntimeOptions(
-            approval_policy=approval_policy, secret_env_names=("PONY_TEST_TOKEN",)
+            project_trusted=True,
+            secret_env_names=("PONY_TEST_TOKEN",),
         ),
     )
+    if permission_mode != "auto":
+        agent.set_permission_mode(permission_mode)
+    return agent
 
 
 def _normal_artifact_files(root):
@@ -104,7 +108,7 @@ def test_cli_approval_and_verification_observations_hide_canary(
             )
         ]
     )
-    agent = _agent(tmp_path, client, approval_policy="ask")
+    agent = _agent(tmp_path, client, permission_mode="default")
     state = TaskState.create(
         run_id="run_canary",
         task_id="task_canary",

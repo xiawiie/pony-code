@@ -44,7 +44,7 @@ def _response(stop_reason, *content):
 def _build_agent(root, provider, *, session=None):
     root.mkdir(parents=True, exist_ok=True)
     (root / "README.md").write_text("demo\n", encoding="utf-8")
-    return Pony(
+    agent = Pony(
         model_client=provider,
         workspace=WorkspaceContext.build(
             root,
@@ -56,8 +56,10 @@ def _build_agent(root, provider, *, session=None):
         ),
         session_store=SessionStore(root / ".pony" / "sessions"),
         session=session,
-        options=RuntimeOptions(approval_policy="ask", max_steps=6),
+        options=RuntimeOptions(project_trusted=True, max_steps=6),
     )
+    agent.set_permission_mode("default")
+    return agent
 
 
 def _assert_private_tree(root):
@@ -128,8 +130,7 @@ def test_offline_a1_canary_crosses_real_boundaries_without_normal_artifact_leak(
         "resume_state": {},
         "recovery": {},
         "runtime_identity": {},
-        "workflow_mode": "act",
-        "active_plan": {"goal": "", "items": []},
+        "permission_mode": "auto",
     }
     provider = ScriptedProvider(
         [

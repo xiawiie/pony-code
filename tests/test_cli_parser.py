@@ -26,14 +26,23 @@ def test_parse_run_command_with_prompt():
     assert invocation.runtime_args.cwd == "/repo"
 
 
-def test_parse_workflow_mode_for_run_and_repl():
-    run = parse_cli_invocation(
-        ["--mode", "plan", "run", "inspect"], build_arg_parser()
+@pytest.mark.parametrize(
+    "mode",
+    ("acceptEdits", "auto", "bypassPermissions", "manual", "dontAsk", "plan"),
+)
+def test_parse_claude_permission_modes(mode):
+    invocation = parse_cli_invocation(
+        ["--permission-mode", mode, "run", "inspect"], build_arg_parser()
     )
-    repl = parse_cli_invocation(["repl", "--mode", "review"], build_arg_parser())
 
-    assert run.runtime_args.mode == "plan"
-    assert repl.runtime_args.mode == "review"
+    assert invocation.runtime_args.permission_mode == mode
+
+
+def test_parser_rejects_internal_default_permission_name():
+    with pytest.raises(SystemExit) as caught:
+        build_arg_parser().parse_args(["--permission-mode", "default"])
+
+    assert caught.value.code == 2
 
 
 def test_parse_repl_command():

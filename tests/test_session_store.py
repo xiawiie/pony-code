@@ -38,7 +38,13 @@ def _session(workspace, session_id, content="hello", *, legacy=False):
         "runtime_identity": {},
     }
     if not legacy:
-        session["permission_mode"] = "default"
+        session.update(
+            permission_mode="auto",
+            permission_rules={"allow": [], "ask": [], "deny": []},
+            plan_text="",
+            plan_revision=0,
+            pre_plan_mode="",
+        )
     return session
 
 
@@ -117,6 +123,7 @@ def test_new_session_is_header_plus_append_only_entries(tmp_path):
     rows = _jsonl(path)
     assert [row["type"] for row in rows[1:]] == [
         "session_info",
+        "permission_mode_change",
         "message",
         "message",
     ]
@@ -340,6 +347,10 @@ def test_legacy_json_migrates_only_on_explicit_resume_with_backup(tmp_path):
         **legacy,
         "format_version": SESSION_FORMAT_VERSION,
         "permission_mode": "default",
+        "permission_rules": {"allow": [], "ask": [], "deny": []},
+        "plan_text": "",
+        "plan_revision": 0,
+        "pre_plan_mode": "",
     }
     assert store.path("legacy").exists()
     assert not store.legacy_path("legacy").exists()
@@ -433,6 +444,10 @@ def test_legacy_migration_promotes_checkpoint_without_overwriting_current_state(
         **legacy,
         "format_version": SESSION_FORMAT_VERSION,
         "permission_mode": "default",
+        "permission_rules": {"allow": [], "ask": [], "deny": []},
+        "plan_text": "",
+        "plan_revision": 0,
+        "pre_plan_mode": "",
     }
     assert any(
         entry["type"] == "task_checkpoint"

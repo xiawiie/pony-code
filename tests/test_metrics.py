@@ -222,7 +222,7 @@ def test_aggregate_run_artifacts_counts_real_rejection_security_event(tmp_path):
         ),
         workspace=WorkspaceContext.build(tmp_path),
         session_store=SessionStore(tmp_path / ".pony" / "sessions"),
-        options=RuntimeOptions(approval_policy="auto", read_only=True),
+        options=RuntimeOptions(project_trusted=True, read_only=True),
     )
 
     assert agent.ask("remember this") == "done"
@@ -424,7 +424,7 @@ def test_request_preview_restores_the_canonical_session(tmp_path):
         model_client=FakeModelClient([]),
         workspace=WorkspaceContext.build(tmp_path),
         session_store=SessionStore(tmp_path / ".pony" / "sessions"),
-        options=RuntimeOptions(approval_policy="auto"),
+        options=RuntimeOptions(project_trusted=True),
     )
     _seed_plain_messages(agent, 4, "history", 80)
     before_session = agent.session
@@ -521,7 +521,7 @@ def test_real_followup_metrics_rejects_missing_run_artifact(tmp_path):
         model_client=FakeModelClient(["done"]),
         workspace=WorkspaceContext.build(tmp_path),
         session_store=SessionStore(tmp_path / ".pony" / "sessions"),
-        options=RuntimeOptions(approval_policy="auto"),
+        options=RuntimeOptions(project_trusted=True),
     )
     agent.ask("finish")
     agent.run_store.report_path(agent.current_task_state).unlink()

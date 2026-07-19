@@ -21,9 +21,7 @@ def build_agent(tmp_path, outputs=None, **kwargs):
         model_client=FakeModelClient(outputs or []),
         workspace=workspace,
         session_store=store,
-        options=RuntimeOptions(
-            approval_policy=kwargs.pop("approval_policy", "auto"), **kwargs
-        ),
+        options=RuntimeOptions(project_trusted=True, **kwargs),
     )
 
 

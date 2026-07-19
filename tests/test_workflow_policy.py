@@ -18,6 +18,7 @@ def _agent(
     trusted=True,
     read_only=False,
     executables=None,
+    redaction_env=None,
 ):
     tmp_path.mkdir(parents=True, exist_ok=True)
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
@@ -29,31 +30,67 @@ def _agent(
             project_trusted=trusted,
             read_only=read_only,
             trusted_executables=executables,
+            redaction_env=redaction_env,
+            trusted_redaction_env=redaction_env is not None,
         ),
     )
 
 
-def test_plan_filters_schemas_and_executor_blocks_hidden_mutation(tmp_path):
+def test_plan_filters_schemas_and_asks_before_hidden_mutation(tmp_path):
     agent = _agent(tmp_path)
     agent.set_permission_mode("plan")
-    prompt = Mock(return_value=True)
+    prompt = Mock(return_value=False)
     runner = Mock(return_value="must not run")
     agent._approval_prompt = prompt
     agent.tools["write_file"]["run"] = runner
+    agent.set_permission_rule("write_file", "allow")
 
     assert "read_file" in agent.visible_tools()
     assert "delegate" in agent.visible_tools()
     assert "run_shell" not in agent.visible_tools()
     assert "write_file" not in agent.visible_tools()
     assert "memory_save" not in agent.visible_tools()
+    assert {"read_plan", "write_plan", "exit_plan_mode"} <= set(
+        agent.visible_tools()
+    )
 
     blocked = agent.execute_tool(
         "write_file", {"path": "blocked.txt", "content": "blocked"}
     )
 
-    assert blocked.metadata["tool_error_code"] == "permission_mode_block"
-    prompt.assert_not_called()
+    assert blocked.metadata["tool_error_code"] == "approval_denied"
+    prompt.assert_called_once()
     runner.assert_not_called()
+
+
+def test_permission_rules_persist_and_deny_precedes_auto(tmp_path):
+    agent = _agent(tmp_path)
+
+    agent.set_permission_rule("read_file", "deny")
+    result = agent.execute_tool(
+        "read_file", {"path": "README.md", "start": 1, "end": 1}
+    )
+
+    assert result.metadata["tool_error_code"] == "permission_mode_block"
+    resumed = agent.session_store.load(agent.session["id"])
+    assert resumed["permission_rules"] == {
+        "allow": [],
+        "ask": [],
+        "deny": ["read_file"],
+    }
+
+
+def test_dont_ask_honors_explicit_allow_rule(tmp_path):
+    agent = _agent(tmp_path)
+    agent.set_permission_mode("dontAsk")
+    agent.set_permission_rule("write_file", "allow")
+
+    result = agent.execute_tool(
+        "write_file", {"path": "allowed.txt", "content": "allowed\n"}
+    )
+
+    assert result.metadata["tool_status"] == "ok"
+    assert (tmp_path / "allowed.txt").read_text(encoding="utf-8") == "allowed\n"
 
 
 def test_permission_turn_freezes_mode_and_visible_tools(tmp_path):
@@ -82,7 +119,79 @@ def test_agent_loop_sends_frozen_plan_tools_and_permission_metadata(tmp_path):
     assert "read_file" in visible
     assert "write_file" not in visible
     assert "run_shell" not in visible
+    assert {"read_plan", "write_plan", "exit_plan_mode"} <= visible
+    assert "Plan mode is active" in agent.model_client.requests[0]["system"][0]["text"]
     assert agent.last_request_metadata["permission_mode"] == "plan"
+
+
+def test_plan_approval_restores_mode_and_continues_same_request(tmp_path):
+    outputs = [
+        {"name": "write_plan", "arguments": {"plan": "# Plan\n1. Implement"}},
+        {"name": "exit_plan_mode", "arguments": {}},
+        {
+            "name": "write_file",
+            "arguments": {"path": "implemented.txt", "content": "done\n"},
+        },
+        "implemented",
+    ]
+    agent = _agent(tmp_path, outputs)
+    agent.set_permission_mode("plan")
+    approval = Mock(return_value=True)
+    agent._approval_prompt = approval
+
+    assert agent.ask("plan and implement") == "implemented"
+
+    approval.assert_called_once_with(
+        "exit_plan_mode",
+        {"plan": "# Plan\n1. Implement", "revision": 1},
+    )
+    assert agent.session["permission_mode"] == "auto"
+    assert agent.session["plan_text"] == "# Plan\n1. Implement"
+    assert agent.session["plan_revision"] == 1
+    assert (tmp_path / "implemented.txt").read_text(encoding="utf-8") == "done\n"
+    plan_tools = {tool["name"] for tool in agent.model_client.requests[1]["tools"]}
+    act_tools = {tool["name"] for tool in agent.model_client.requests[2]["tools"]}
+    assert "exit_plan_mode" in plan_tools
+    assert "write_file" not in plan_tools
+    assert "write_file" in act_tools
+    assert "exit_plan_mode" not in act_tools
+    assert "Plan mode is active" not in agent.model_client.requests[2]["system"][0]["text"]
+
+
+def test_rejected_plan_stays_in_plan_mode(tmp_path):
+    agent = _agent(tmp_path)
+    agent.set_permission_mode("plan")
+    agent.execute_tool("write_plan", {"plan": "# Plan\n1. Inspect"})
+    approval = Mock(return_value=False)
+    agent._approval_prompt = approval
+
+    result = agent.execute_tool("exit_plan_mode", {})
+
+    assert result.metadata["tool_error_code"] == "plan_rejected"
+    assert agent.session["permission_mode"] == "plan"
+    assert agent.current_plan() == "# Plan\n1. Inspect"
+
+
+def test_write_plan_rejects_oversized_and_sensitive_content(tmp_path):
+    agent = _agent(tmp_path)
+    agent.set_permission_mode("plan")
+    sensitive_agent = _agent(
+        tmp_path / "sensitive",
+        redaction_env={"PONY_API_KEY": "live-plan-secret"},
+    )
+    sensitive_agent.set_permission_mode("plan")
+
+    oversized = agent.execute_tool("write_plan", {"plan": "x" * (12 * 1024 + 1)})
+    sensitive = sensitive_agent.execute_tool(
+        "write_plan",
+        {"plan": "Use live-plan-secret while testing"},
+    )
+
+    assert oversized.metadata["tool_error_code"] == "invalid_arguments"
+    assert sensitive.metadata["tool_error_code"] == "sensitive_content_block"
+    assert agent.current_plan() == ""
+    assert agent.current_plan_revision() == 0
+    assert sensitive_agent.current_plan() == ""
 
 
 def test_accept_edits_only_skips_prompt_for_builtin_file_edits(tmp_path):
@@ -118,6 +227,7 @@ def test_accept_edits_only_skips_prompt_for_builtin_file_edits(tmp_path):
 
 def test_default_prompts_and_revalidates_approved_arguments(tmp_path):
     agent = _agent(tmp_path)
+    agent.set_permission_mode("default")
     runner = Mock(return_value="must not run")
     agent.tools["write_file"]["run"] = runner
 

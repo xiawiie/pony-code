@@ -2,7 +2,8 @@
 
 ## Status
 
-Implemented for the unreleased 1.0 line. Every release candidate still requires the full offline gate on its exact HEAD.
+Superseded by [ADR-0045](0045-permission-modes-session-v4-and-plan-artifacts.md). This document is retained as the historical
+record of the Session v3 design; it is no longer the current runtime contract.
 
 ## Context
 

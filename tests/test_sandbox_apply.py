@@ -16,6 +16,7 @@ import pony.sandbox.apply as sandbox_apply
 from pony.cli import app as pony_cli
 from pony.state.checkpoint_store import CheckpointStore, CheckpointStoreError
 from pony.recovery.policy import DEFAULT_MAX_BLOB_SIZE
+from pony.security.trust import ProjectTrustStore
 from pony.tools.subprocess import build_trusted_executables
 from pony.sandbox.apply import (
     _validate_capture,
@@ -2594,7 +2595,11 @@ def test_external_apply_authority_blocks_agent_start_before_state_creation(
     args = pony_cli.build_arg_parser().parse_args(["--cwd", str(source)])
 
     with pytest.raises(SandboxSessionError, match="source_apply_review_required"):
-        pony_cli.build_agent(args)
+        pony_cli.build_agent(
+            args,
+            trust_store=ProjectTrustStore(tmp_path / ".pony-home"),
+            confirm=lambda _root: True,
+        )
 
     assert not (source / ".pony").exists()
 

@@ -20,7 +20,7 @@ def _agent(tmp_path, outputs=None, *, store=None):
         model_client=FakeModelClient(outputs or []),
         workspace=WorkspaceContext.build(tmp_path),
         session_store=store or SessionStore(tmp_path / ".pony" / "sessions"),
-        options=RuntimeOptions(approval_policy="auto"),
+        options=RuntimeOptions(project_trusted=True),
     )
 
 
@@ -141,7 +141,7 @@ def test_resume_reconciles_restore_success_after_session_append_crash(
         workspace=WorkspaceContext.build(tmp_path),
         session_store=resumed_store,
         session_id=session_id,
-        options=RuntimeOptions(approval_policy="auto"),
+        options=RuntimeOptions(project_trusted=True),
     )
 
     tree = resumed.session_store.load_tree(session_id)
@@ -193,7 +193,7 @@ def test_prepared_rewind_intent_matches_exact_restore_operation_after_crash(
         workspace=WorkspaceContext.build(tmp_path),
         session_store=resumed_store,
         session_id=session_id,
-        options=RuntimeOptions(approval_policy="auto"),
+        options=RuntimeOptions(project_trusted=True),
     )
 
     rewind = next(

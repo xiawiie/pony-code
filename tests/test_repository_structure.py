@@ -23,6 +23,7 @@ MAINTAINER_DOCS = {
     "docs/adr/0042-sealed-local-authorization.md",
     "docs/adr/0043-workflow-state-and-session-v3.md",
     "docs/adr/0044-provider-auto-resolution.md",
+    "docs/adr/0045-permission-modes-session-v4-and-plan-artifacts.md",
     "docs/coding-agent-workflow-plan.md",
     "docs/context-and-sessions.md",
 }
@@ -328,12 +329,13 @@ def test_maintainer_doc_links_and_cli_examples_resolve():
     tracked = _tracked_files()
     link_pattern = re.compile(r"!?\[[^]]*\]\(([^)]+)\)")
     allowed_commands = {
-        "--approval",
+        "--allow-dangerously-skip-permissions",
         "--cwd",
+        "--dangerously-skip-permissions",
         "--format",
-            "--help",
-            "--mode",
-            "--sandbox",
+        "--help",
+        "--permission-mode",
+        "--sandbox",
         "--version",
         "checkpoints",
         "config",

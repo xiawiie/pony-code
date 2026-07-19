@@ -28,13 +28,16 @@ def build_agent(tmp_path, outputs=None, **kwargs):
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
     workspace = WorkspaceContext.build(tmp_path)
     store = SessionStore(tmp_path / ".pony" / "sessions")
-    approval_policy = kwargs.pop("approval_policy", "auto")
-    return Pony(
+    permission_mode = kwargs.pop("permission_mode", "auto")
+    agent = Pony(
         model_client=FakeModelClient([] if outputs is None else outputs),
         workspace=workspace,
         session_store=store,
-        options=RuntimeOptions(approval_policy=approval_policy, **kwargs),
+        options=RuntimeOptions(project_trusted=True, **kwargs),
     )
+    if permission_mode != "auto":
+        agent.set_permission_mode(permission_mode)
+    return agent
 
 
 def authorize_memory(agent, user_request="remember this"):
@@ -179,7 +182,7 @@ def test_large_tool_result_reaches_token_digest_without_character_clip(tmp_path)
             "approval_denied",
             "write_file",
             {"path": "denied.txt", "content": "no"},
-            {},
+            {"permission_mode": "default"},
             "approval_denied",
             "approval_denied",
             "workspace_write",
@@ -226,7 +229,7 @@ def test_early_rejection_matrix_has_exact_metadata_and_no_execution_evidence(
             "risk_class": "complex",
             "evidence_complete": True,
             "approval": {
-                "mode": "auto",
+                    "mode": options.get("permission_mode", "auto"),
                 "required": False,
                 "outcome": "denied",
             },
@@ -840,7 +843,7 @@ def test_success_and_exception_paths_persist_terminal_effect_evidence(tmp_path):
 
 
 def test_run_shell_uses_command_policy_metadata(tmp_path):
-    agent = build_agent(tmp_path, approval_policy="ask")
+    agent = build_agent(tmp_path, permission_mode="default")
     agent.approve = Mock(return_value=True)
 
     result = agent.execute_tool(
@@ -860,7 +863,7 @@ def test_run_shell_rechecks_command_policy_after_approval_mutation(
 ):
     import pony.tools.executor as tool_executor
 
-    agent = build_agent(tmp_path, approval_policy="ask")
+    agent = build_agent(tmp_path, permission_mode="default")
     victim = tmp_path / "victim.txt"
     victim.write_text("keep\n", encoding="utf-8")
     runner = Mock(return_value={"stdout": "", "stderr": "", "exit_code": 0})
@@ -896,7 +899,7 @@ def test_run_shell_rechecks_command_policy_after_approval_mutation(
 
 
 def test_run_shell_rejects_safe_arguments_changed_after_approval(tmp_path):
-    agent = build_agent(tmp_path, approval_policy="ask")
+    agent = build_agent(tmp_path, permission_mode="default")
     runner = Mock(return_value={"stdout": "", "stderr": "", "exit_code": 0})
     agent.tools["run_shell"]["run"] = runner
 
@@ -929,7 +932,7 @@ def test_destructive_run_shell_is_not_auto_approved(tmp_path):
     )
 
     assert result.metadata["tool_status"] == "rejected"
-    assert result.metadata["tool_error_code"] == "command_approval_required"
+    assert result.metadata["tool_error_code"] == "permission_mode_block"
     assert result.metadata["command_approval"]["decision"] == "ask"
     assert victim.exists()
     assert "tool_change_id" not in result.metadata
@@ -952,7 +955,7 @@ def test_destructive_run_shell_wrapped_forms_are_not_auto_approved(tmp_path):
         result = agent.execute_tool("run_shell", {"command": command, "timeout": 5})
 
         assert result.metadata["tool_status"] == "rejected"
-        assert result.metadata["tool_error_code"] == "command_approval_required"
+        assert result.metadata["tool_error_code"] == "permission_mode_block"
         assert result.metadata["command_approval"]["decision"] == "ask"
         assert victim.read_text(encoding="utf-8") == "keep\n"
         assert "tool_change_id" not in result.metadata
@@ -961,9 +964,9 @@ def test_destructive_run_shell_wrapped_forms_are_not_auto_approved(tmp_path):
 @pytest.mark.parametrize(
     ("command", "expected_error"),
     [
-        ("ls README.md\nrm victim.txt", "command_approval_required"),
+        ("ls README.md\nrm victim.txt", "permission_mode_block"),
         ("cat README.md > .e\\\nnv", "sensitive_path_block"),
-        ("wc {,.}env", "command_approval_required"),
+        ("wc {,.}env", "permission_mode_block"),
     ],
 )
 def test_shell_expansion_bypasses_never_reach_runner(
@@ -1003,7 +1006,7 @@ def test_write_file_recovery_does_not_use_full_workspace_snapshot(tmp_path):
 
 
 def test_run_shell_recovery_does_not_use_full_workspace_snapshot(tmp_path):
-    agent = build_agent(tmp_path, approval_policy="ask")
+    agent = build_agent(tmp_path, permission_mode="default")
     agent.approve = Mock(return_value=True)
 
     def fail_full_snapshot():
@@ -1020,7 +1023,7 @@ def test_run_shell_recovery_does_not_use_full_workspace_snapshot(tmp_path):
 
 
 def test_run_shell_recovery_does_not_blob_unrelated_dirty_paths(tmp_path):
-    agent = build_agent(tmp_path, approval_policy="ask")
+    agent = build_agent(tmp_path, permission_mode="default")
     agent.approve = Mock(return_value=True)
     init_git_repo(tmp_path)
     (tmp_path / "README.md").write_text("user dirty\n", encoding="utf-8")
@@ -1043,7 +1046,7 @@ def test_run_shell_recovery_does_not_blob_unrelated_dirty_paths(tmp_path):
 
 
 def test_run_shell_recovery_marks_dirty_before_tracked_file_unrestorable(tmp_path):
-    agent = build_agent(tmp_path, approval_policy="ask")
+    agent = build_agent(tmp_path, permission_mode="default")
     agent.approve = Mock(return_value=True)
     init_git_repo(tmp_path)
     (tmp_path / "README.md").write_text("user dirty\n", encoding="utf-8")
@@ -1065,7 +1068,7 @@ def test_run_shell_recovery_marks_dirty_before_tracked_file_unrestorable(tmp_pat
 
 def test_run_shell_recovery_populates_before_blob_from_git_head(tmp_path):
     # clean tracked file: observer 看不到，HEAD fallback 应该把 before-blob 抓下来。
-    agent = build_agent(tmp_path, approval_policy="ask")
+    agent = build_agent(tmp_path, permission_mode="default")
     agent.approve = Mock(return_value=True)
     init_git_repo(tmp_path)
 
@@ -1292,7 +1295,8 @@ def test_path_snapshot_never_hashes_safe_named_secret_content(
 
 
 def test_workspace_write_tool_uses_generic_path_argument_for_recovery(tmp_path):
-    agent = build_agent(tmp_path)
+    agent = build_agent(tmp_path, permission_mode="default")
+    agent._approval_prompt = lambda *_args: True
 
     def custom_write(args):
         (tmp_path / args["path"]).write_text("custom\n", encoding="utf-8")
@@ -1315,7 +1319,8 @@ def test_workspace_write_tool_uses_generic_path_argument_for_recovery(tmp_path):
 
 def test_generic_path_arg_registry_covers_destination_and_paths_list(tmp_path):
     # 目的：future tool（move_file / delete_files 等）用非 "path" 参数时也要能记录 recovery。
-    agent = build_agent(tmp_path)
+    agent = build_agent(tmp_path, permission_mode="default")
+    agent._approval_prompt = lambda *_args: True
     (tmp_path / "existing.txt").write_text("original\n", encoding="utf-8")
 
     def custom_move(args):
@@ -1344,7 +1349,8 @@ def test_generic_path_arg_registry_covers_destination_and_paths_list(tmp_path):
 
 
 def test_generic_path_arg_registry_covers_list_arg(tmp_path):
-    agent = build_agent(tmp_path)
+    agent = build_agent(tmp_path, permission_mode="default")
+    agent._approval_prompt = lambda *_args: True
     (tmp_path / "a.txt").write_text("a\n", encoding="utf-8")
     (tmp_path / "b.txt").write_text("b\n", encoding="utf-8")
 

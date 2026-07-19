@@ -96,7 +96,7 @@ def test_memory_guidance_lives_once_in_prefix_not_current_user_request(tmp_path)
         model_client=FakeModelClient([]),
         workspace=WorkspaceContext.build(tmp_path),
         session_store=SessionStore(tmp_path / ".pony" / "sessions"),
-        options=RuntimeOptions(approval_policy="auto"),
+        options=RuntimeOptions(project_trusted=True),
     )
     agent.session["messages"].append(
         {"role": "user", "content": "inspect the project", "_pony_meta": {}}

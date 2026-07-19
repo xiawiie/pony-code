@@ -13,6 +13,7 @@ from pony.cli.errors import CliError
 from pony.sandbox.docker import DockerSandboxError
 from pony.sandbox.apply import StagingObserver
 from pony.sandbox.apply import SandboxApplyError, SourceApplier, SourceApplyStore
+from pony.security.trust import ProjectTrustStore
 from pony.sandbox.session import (
     read_source_apply_authority,
     SandboxSessionError,
@@ -779,6 +780,8 @@ def test_public_sandbox_runtime_fails_closed_on_local_authorization_before_agent
     monkeypatch,
     capsys,
 ):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr("builtins.input", lambda _prompt="": "y")
     monkeypatch.setattr("pony.cli.app.platform.system", lambda: "Darwin")
     monkeypatch.setattr("pony.cli.app.platform.machine", lambda: "arm64")
     monkeypatch.setattr(
@@ -859,7 +862,11 @@ def test_sandbox_preflight_failure_precedes_source_session_store(
     )
 
     with pytest.raises(CliError, match="Docker Sandbox startup failed"):
-        cli_assembly.build_agent(args)
+        cli_assembly.build_agent(
+            args,
+            trust_store=ProjectTrustStore(tmp_path / ".pony-home"),
+            confirm=lambda _root: True,
+        )
 
     assert not (tmp_path / ".pony").exists()
 
@@ -931,7 +938,11 @@ def test_build_agent_wires_verified_runtime_to_one_docker_context(
         ["--cwd", str(tmp_path), "--sandbox", "run", "hello"]
     )
 
-    agent = cli_assembly.build_agent(args)
+    agent = cli_assembly.build_agent(
+        args,
+        trust_store=ProjectTrustStore(tmp_path / ".pony-home"),
+        confirm=lambda _root: True,
+    )
 
     assert isinstance(agent, FakePony)
     assert events == ["runtime", "context", "model"]
@@ -976,7 +987,11 @@ def test_build_agent_discards_fresh_staging_when_later_startup_fails(
     )
 
     with pytest.raises(RuntimeError, match="injected"):
-        cli_assembly.build_agent(args)
+        cli_assembly.build_agent(
+            args,
+            trust_store=ProjectTrustStore(tmp_path / ".pony-home"),
+            confirm=lambda _root: True,
+        )
 
     assert events == [("discard", state_root)]
 
@@ -1019,7 +1034,11 @@ def test_host_resume_rejects_bound_sandbox_before_model_construction(
     )
 
     with pytest.raises(CliError) as caught:
-        cli_assembly.build_agent(args)
+        cli_assembly.build_agent(
+            args,
+            trust_store=ProjectTrustStore(tmp_path / ".pony-home"),
+            confirm=lambda _root: True,
+        )
 
     assert caught.value.code == "sandbox_session_mode_mismatch"
     assert events == [
@@ -1063,7 +1082,11 @@ def test_host_resume_fails_closed_on_invalid_sandbox_binding(
     )
 
     with pytest.raises(CliError) as caught:
-        cli_assembly.build_agent(args)
+        cli_assembly.build_agent(
+            args,
+            trust_store=ProjectTrustStore(tmp_path / ".pony-home"),
+            confirm=lambda _root: True,
+        )
 
     assert caught.value.code == "sandbox_state_invalid"
 

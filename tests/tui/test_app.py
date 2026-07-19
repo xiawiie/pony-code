@@ -98,7 +98,11 @@ def test_slash_completion_is_generated_from_documented_commands():
         item.text
         for item in SlashCommandCompleter().get_completions(Document("/"), None)
     }
-    assert {"/mode", "/plan"} <= {
+    assert {"/permissions", "/allowed-tools", "/plan"} <= {
+        item.text
+        for item in SlashCommandCompleter().get_completions(Document("/"), None)
+    }
+    assert "/mode" not in {
         item.text
         for item in SlashCommandCompleter().get_completions(Document("/"), None)
     }
@@ -118,19 +122,23 @@ def test_tui_resume_card_labels_fact_sources(monkeypatch):
         lambda value, **_kwargs: output.append(value),
     )
     projection = {
-        "mode": "plan",
-        "goal": {"text": "Ship", "source": "plan"},
-        "plan": {"completed_count": 1, "item_count": 2, "current_count": 1},
+        "permission_mode": "plan",
+        "goal": {"text": "Ship", "source": "checkpoint"},
         "checkpoint": {"status": "ready", "blocker": "", "next_steps": []},
         "resume": {"status": "ready"},
+        "model": {
+            "protocol_family": "anthropic_messages",
+            "model": "claude-test",
+        },
     }
 
     TuiRenderer(no_color=True).resume(projection)
 
     rendered = "".join(fragment[1] for fragment in output[0])
-    assert "mode [session]: plan" in rendered
-    assert "goal [plan]: Ship" in rendered
+    assert "permission [session]: plan" in rendered
+    assert "goal [checkpoint]: Ship" in rendered
     assert "checkpoint [checkpoint]: status=ready" in rendered
+    assert "model [provider_binding]: anthropic_messages/claude-test" in rendered
 
 
 @pytest.mark.parametrize(
@@ -232,7 +240,7 @@ def test_tui_restores_runtime_hooks(monkeypatch):
     agent = SimpleNamespace(
         _trace_listener=previous_listener,
         _approval_prompt=previous_prompt,
-        approval_policy="ask",
+        current_permission_mode=lambda: "default",
         docker_sandbox=False,
         model_client=SimpleNamespace(provider="openai"),
         workspace=SimpleNamespace(cwd="/repo", branch="main"),
@@ -271,7 +279,7 @@ def test_tui_restores_runtime_hooks(monkeypatch):
     assert "█" in header
     assert "v1.0.0" in header
     assert "Local coding agent for repository-grounded work" in header
-    assert "Using gpt-test · approval ask" in header
+    assert "Using gpt-test · manual" in header
 
 
 def test_tui_restores_runtime_hooks_when_provider_fails(monkeypatch):
@@ -280,7 +288,7 @@ def test_tui_restores_runtime_hooks_when_provider_fails(monkeypatch):
     agent = SimpleNamespace(
         _trace_listener=previous_listener,
         _approval_prompt=previous_prompt,
-        approval_policy="ask",
+        current_permission_mode=lambda: "default",
         docker_sandbox=False,
         model_client=SimpleNamespace(provider="openai"),
         workspace=SimpleNamespace(cwd="/repo", branch="main"),
@@ -317,7 +325,7 @@ def test_tui_restores_runtime_hooks_when_provider_fails(monkeypatch):
 
 def test_toolbar_is_width_bounded_and_keeps_only_essential_status():
     agent = SimpleNamespace(
-        approval_policy="ask",
+        current_permission_mode=lambda: "acceptEdits",
         docker_sandbox=False,
         workspace=SimpleNamespace(
             cwd="/very/long/workspace/path/project",
@@ -346,7 +354,7 @@ def test_toolbar_is_width_bounded_and_keeps_only_essential_status():
         assert all(get_cwidth(line) < columns for line in lines)
         footer = lines[-1]
         assert "host" in footer
-        assert "act/ask" in footer
+        assert "acceptEdits" in footer
         if columns >= 80:
             assert "project" in footer
             assert "anthropic/claude-sonnet-4-6" in footer

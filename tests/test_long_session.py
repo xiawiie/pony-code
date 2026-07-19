@@ -30,8 +30,11 @@ def _session(workspace):
         "resume_state": {},
         "recovery": {},
         "runtime_identity": {},
-        "workflow_mode": "act",
-        "active_plan": {"goal": "", "items": []},
+        "permission_mode": "auto",
+        "permission_rules": {"allow": [], "ask": [], "deny": []},
+        "plan_text": "",
+        "plan_revision": 0,
+        "pre_plan_mode": "",
     }
 
 

@@ -57,6 +57,7 @@ from pony.tools.context import ToolContext
 from pony.tools.executor import ToolExecutionResult, ToolExecutor
 from pony.tools import registry as toolkit
 from pony.tools.permissions import PermissionMode, validate_permission_mode
+from pony.tools.validation import SensitiveToolError
 from pony.tools.validation import validate_tool as validate_tool_arguments
 from pony.config.environment import read_project_env
 from pony.config.project import load_pony_toml
@@ -505,7 +506,11 @@ class Pony:
             "runtime_identity": {},
             "resume_state": {},
             "recovery": {"current_checkpoint_id": ""},
-            "permission_mode": PermissionMode.DEFAULT.value,
+            "permission_mode": PermissionMode.AUTO.value,
+            "permission_rules": {"allow": [], "ask": [], "deny": []},
+            "plan_text": "",
+            "plan_revision": 0,
+            "pre_plan_mode": "",
         }
         if model_binding:
             session["provider_binding"] = model_binding
@@ -832,7 +837,11 @@ class Pony:
         del bucket[:-limit]
 
     def build_tools(self):
-        return toolkit.build_tool_registry(self.tool_context())
+        tools = toolkit.build_tool_registry(self.tool_context())
+        tools["read_plan"]["run"] = self._read_plan
+        tools["write_plan"]["run"] = self._write_plan
+        tools["exit_plan_mode"]["run"] = self._exit_plan_mode
+        return tools
 
     def current_permission_mode(self):
         turn = getattr(self, "_permission_turn", None)
@@ -846,18 +855,26 @@ class Pony:
         return self._visible_tools_for(self.session["permission_mode"])
 
     def _visible_tools_for(self, mode):
+        plan_tools = {"read_plan", "write_plan", "exit_plan_mode"}
         if self.read_only:
             return {
                 name: tool
                 for name, tool in self.tools.items()
-                if tool.get("effect_class") == "read_only" and name != "run_shell"
+                if tool.get("effect_class") == "read_only"
+                and name != "run_shell"
+                and name not in plan_tools
             }
         if mode != PermissionMode.PLAN.value:
-            return dict(self.tools)
+            return {
+                name: tool for name, tool in self.tools.items() if name not in plan_tools
+            }
         return {
             name: tool
             for name, tool in self.tools.items()
-            if tool.get("effect_class") == "read_only" and name != "run_shell"
+            if (
+                tool.get("effect_class") == "read_only" and name != "run_shell"
+            )
+            or name in plan_tools
         }
 
     def begin_permission_turn(self):
@@ -872,6 +889,14 @@ class Pony:
     def end_permission_turn(self):
         self._permission_turn = None
 
+    def refresh_permission_turn_after_plan_exit(self):
+        if self._permission_turn is None or self._permission_turn["mode"] != "plan":
+            raise RuntimeError("permission_turn_not_in_plan")
+        mode = self.session["permission_mode"]
+        if mode == PermissionMode.PLAN.value:
+            raise RuntimeError("plan_mode_still_active")
+        self._permission_turn = {"mode": mode, "tools": self._visible_tools_for(mode)}
+
     def set_permission_mode(self, mode):
         if self._permission_turn is not None:
             raise RuntimeError("permission_turn_active")
@@ -880,6 +905,65 @@ class Pony:
         if entry is not None:
             self._reload_session_projection()
         return entry
+
+    def permission_rules(self):
+        rules = self.session.get("permission_rules", {})
+        return {
+            behavior: list(rules.get(behavior, []))
+            for behavior in ("allow", "ask", "deny")
+        }
+
+    def permission_for_tool(self, name):
+        name = str(name)
+        rules = self.permission_rules()
+        for behavior in ("deny", "ask", "allow"):
+            if name in rules[behavior]:
+                return behavior
+        return None
+
+    def set_permission_rule(self, name, behavior):
+        if name not in toolkit.legal_tool_names():
+            raise ValueError("unknown permission rule tool")
+        result = self.session_store.set_permission_rule(
+            self.session["id"],
+            name,
+            behavior,
+        )
+        if result is not None:
+            self._reload_session_projection()
+        return result
+
+    def current_plan(self):
+        return str(self.session.get("plan_text", "") or "")
+
+    def current_plan_revision(self):
+        return int(self.session.get("plan_revision", 0) or 0)
+
+    def _read_plan(self, _args):
+        if self.current_permission_mode() != PermissionMode.PLAN.value:
+            raise ValueError("read_plan requires plan mode")
+        return self.current_plan() or "(no plan saved)"
+
+    def _write_plan(self, args):
+        if self.current_permission_mode() != PermissionMode.PLAN.value:
+            raise ValueError("write_plan requires plan mode")
+        plan = str(args.get("plan", "")).strip()
+        if not plan:
+            raise ValueError("plan must not be empty")
+        entry = self.session_store.set_plan_text(self.session["id"], plan)
+        if entry is not None:
+            self._reload_session_projection()
+        return "plan saved"
+
+    def _exit_plan_mode(self, _args):
+        if self.current_permission_mode() != PermissionMode.PLAN.value:
+            raise ValueError("exit_plan_mode requires plan mode")
+        if not self.current_plan().strip():
+            raise ValueError("plan is empty")
+        target = self.session.get("pre_plan_mode") or PermissionMode.AUTO.value
+        self.session_store.set_permission_mode(self.session["id"], target)
+        self._reload_session_projection()
+        return "plan approved; permission mode restored"
 
     @staticmethod
     def _normalize_allowed_tools(allowed_tools):
@@ -1872,6 +1956,12 @@ class Pony:
     def validate_tool(self, name, args):
         """把通用工具校验和 runtime 级额外约束串起来。"""
         validate_tool_arguments(self.tool_context(), name, args)
+        if name == "write_plan":
+            plan = args.get("plan", "")
+            if len(plan.encode("utf-8")) > sessionstorelib.MAX_PLAN_TEXT_BYTES:
+                raise ValueError("plan text exceeds 12 KiB")
+            if self.redact_artifact(plan) != plan:
+                raise SensitiveToolError("sensitive_content_block")
         if name == "memory_save":
             note_tokens = self.token_accounting.count_text(args.get("note", ""))
             if note_tokens > 1_024:

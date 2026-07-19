@@ -374,11 +374,11 @@ def _build_agent(workspace: Path, model_client) -> Pony:
         workspace=workspace_context,
         session_store=SessionStore(str(workspace / ".pony" / "sessions")),
         options=RuntimeOptions(
-        approval_policy="never",
-        max_steps=8,
-        max_output_tokens=512,
-        depth=0,
-        max_depth=0,
+            project_trusted=True,
+            max_steps=8,
+            max_output_tokens=512,
+            depth=0,
+            max_depth=0,
         ),
     )
     agent.memory_store = BlockStore(

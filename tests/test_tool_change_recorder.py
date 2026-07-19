@@ -59,7 +59,7 @@ def test_runtime_marks_existing_pending_tool_changes_interrupted_on_startup(tmp_
         model_client=FakeModelClient([]),
         workspace=WorkspaceContext.build(tmp_path),
         session_store=SessionStore(tmp_path / ".pony" / "sessions"),
-        options=RuntimeOptions(approval_policy="auto"),
+        options=RuntimeOptions(project_trusted=True),
     )
 
     assert (
@@ -85,7 +85,7 @@ def test_runtime_startup_does_not_interrupt_owned_pending_tool_changes(tmp_path)
         model_client=FakeModelClient([]),
         workspace=WorkspaceContext.build(tmp_path),
         session_store=SessionStore(tmp_path / ".pony" / "sessions"),
-        options=RuntimeOptions(approval_policy="auto"),
+        options=RuntimeOptions(project_trusted=True),
     )
 
     assert (

@@ -17,7 +17,7 @@ def test_pony_control_lock_stays_in_isolated_home(tmp_path, isolated_home):
         model_client=FakeModelClient([]),
         workspace=WorkspaceContext.build(workspace),
         session_store=SessionStore(workspace / ".pony" / "sessions"),
-        options=RuntimeOptions(approval_policy="auto"),
+        options=RuntimeOptions(project_trusted=True),
     )
 
     with agent.checkpoint_store.mutation_lock():

@@ -224,14 +224,15 @@ def _build_runtime(
         workspace=workspace,
         session_store=store,
         options=RuntimeOptions(
-        approval_policy="ask",
-        redaction_env=redaction_env,
+            project_trusted=True,
+            redaction_env=redaction_env,
             trusted_redaction_env=True,
-        sandbox_context=context,
-        project_config=project_config,
-        session_id="session-1",
+            sandbox_context=context,
+            project_config=project_config,
+            session_id="session-1",
         ),
     )
+    agent.set_permission_mode("default")
     agent.approve = lambda _name, _args: True
     return source, context, agent
 
@@ -281,11 +282,12 @@ def test_public_pony_rejects_development_authorization(tmp_path, monkeypatch):
             workspace=agent.workspace,
             session_store=SessionStore(source / ".pony" / "other-sessions"),
             options=RuntimeOptions(
-            redaction_env=agent.redaction_env,
+                project_trusted=True,
+                redaction_env=agent.redaction_env,
                 trusted_redaction_env=True,
-            sandbox_context=context,
-            project_config=agent.project_config,
-            session_id="session-1",
+                sandbox_context=context,
+                project_config=agent.project_config,
+                session_id="session-1",
             ),
         )
 
@@ -361,12 +363,13 @@ def test_public_pony_accepts_local_authorization(tmp_path, monkeypatch):
         workspace=agent.workspace,
         session_store=SessionStore(source / ".pony" / "local-sessions"),
         options=RuntimeOptions(
-        redaction_env=agent.redaction_env,
+            project_trusted=True,
+            redaction_env=agent.redaction_env,
             trusted_redaction_env=True,
-        sandbox_context=local_context,
-        project_config=agent.project_config,
-        session_id="session-1",
-        depth=1,
+            sandbox_context=local_context,
+            project_config=agent.project_config,
+            session_id="session-1",
+            depth=1,
         ),
     )
 
@@ -754,13 +757,14 @@ def test_resume_reuses_bound_staging_and_current_host_session(
         session_store=SessionStore(source / ".pony" / "sessions"),
         session_id="session-1",
         options=RuntimeOptions(
-        approval_policy="ask",
+            project_trusted=True,
             redaction_env=MappingProxyType({"OPENAI_API_KEY": "source-secret"}),
             trusted_redaction_env=True,
-        sandbox_context=resumed_context,
-        project_config=load_pony_toml(source),
+            sandbox_context=resumed_context,
+            project_config=load_pony_toml(source),
         ),
     )
+    resumed.set_permission_mode("default")
 
     assert resumed.root == context.execution_root
     assert (resumed.root / "staged-only.txt").read_text() == "candidate\n"
@@ -816,13 +820,14 @@ def test_resume_after_discard_creates_fresh_bound_staging(
         session_store=agent.session_store,
         session_id="session-1",
         options=RuntimeOptions(
-            approval_policy="never",
+            project_trusted=True,
             redaction_env=MappingProxyType({"OPENAI_API_KEY": "source-secret"}),
             trusted_redaction_env=True,
             sandbox_context=resumed,
             project_config=load_pony_toml(source),
         ),
     )
+    resumed_agent.set_permission_mode("dontAsk")
     new_checkpoint_id = resumed_agent.session["checkpoints"]["current_id"]
     new_checkpoint = resumed_agent.session["checkpoints"]["items"][new_checkpoint_id]
 
@@ -1083,9 +1088,10 @@ def test_docker_runtime_requires_prefrozen_config_and_redaction(
             workspace=workspace,
             session_store=store,
             options=RuntimeOptions(
-            sandbox_context=context,
-            project_config=load_pony_toml(source),
-            session_id="session-1",
+                project_trusted=True,
+                sandbox_context=context,
+                project_config=load_pony_toml(source),
+                session_id="session-1",
             ),
         )
 

@@ -4,6 +4,7 @@ from pony.tools.permissions import (
     PermissionDecision,
     PermissionMode,
     decide_permission,
+    validate_permission_mode,
 )
 
 
@@ -11,6 +12,8 @@ def test_permission_modes_have_stable_values():
     assert {mode.value for mode in PermissionMode} == {
         "default",
         "acceptEdits",
+        "auto",
+        "bypassPermissions",
         "plan",
         "dontAsk",
     }
@@ -38,7 +41,7 @@ def test_untrusted_project_and_explicit_deny_fail_closed(mode):
     )
 
 
-def test_plan_denies_mutation_even_when_explicitly_allowed():
+def test_plan_forces_mutation_to_ask_even_when_explicitly_allowed():
     assert (
         decide_permission(
             project_trusted=True,
@@ -47,7 +50,7 @@ def test_plan_denies_mutation_even_when_explicitly_allowed():
             explicit="allow",
             builtin_edit=True,
         )
-        is PermissionDecision.DENY
+        is PermissionDecision.ASK
     )
 
 
@@ -63,6 +66,42 @@ def test_accept_edits_only_auto_allows_builtin_file_edits():
     assert decide("workspace_write", True) is PermissionDecision.ALLOW
     assert decide("workspace_write") is PermissionDecision.ASK
     assert decide("memory_write", True) is PermissionDecision.ASK
+
+
+def test_auto_only_allows_explicitly_classified_low_risk_mutation():
+    def decide(auto_allow):
+        return decide_permission(
+            project_trusted=True,
+            mode="auto",
+            effect_class="workspace_write",
+            auto_allow=auto_allow,
+        )
+
+    assert decide(True) is PermissionDecision.ALLOW
+    assert decide(False) is PermissionDecision.DENY
+
+
+def test_bypass_skips_prompts_but_not_trust_or_explicit_deny():
+    assert (
+        decide_permission(
+            project_trusted=True,
+            mode="bypassPermissions",
+            effect_class="workspace_write",
+        )
+        is PermissionDecision.ALLOW
+    )
+    assert (
+        decide_permission(
+            project_trusted=False,
+            mode="bypassPermissions",
+            effect_class="workspace_write",
+        )
+        is PermissionDecision.DENY
+    )
+
+
+def test_manual_is_public_alias_for_internal_default():
+    assert validate_permission_mode("manual") == "default"
 
 
 def test_dont_ask_denies_unapproved_mutation_and_honors_explicit_allow():
@@ -108,12 +147,12 @@ def test_read_only_defaults_to_allow_and_unknown_input_denies():
     )
 
 
-@pytest.mark.parametrize("legacy_mode", ("accept_edits", "dont_ask"))
-def test_legacy_permission_mode_aliases_are_denied(legacy_mode):
+@pytest.mark.parametrize("noncanonical", ("accept_edits", "dont_ask", "manual"))
+def test_internal_decision_rejects_noncanonical_modes(noncanonical):
     assert (
         decide_permission(
             project_trusted=True,
-            mode=legacy_mode,
+            mode=noncanonical,
             effect_class="read_only",
         )
         is PermissionDecision.DENY

@@ -260,6 +260,8 @@ def test_invalid_project_api_base_uses_safe_config_envelope(
     monkeypatch,
     capsys,
 ):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr("builtins.input", lambda _prompt="": "y")
     (tmp_path / ".env").write_text(
         "PONY_PROVIDER=anthropic\n"
         "PONY_MODEL=claude-test\n"
@@ -275,7 +277,9 @@ def test_invalid_project_api_base_uses_safe_config_envelope(
     assert CANARY not in captured.out + captured.err
 
 
-def test_project_key_without_base_is_rejected(tmp_path, capsys):
+def test_project_key_without_base_is_rejected(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr("builtins.input", lambda _prompt="": "y")
     (tmp_path / ".env").write_text(
         "PONY_PROVIDER=anthropic\n"
         "PONY_MODEL=claude-test\n"

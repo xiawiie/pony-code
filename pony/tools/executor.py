@@ -699,7 +699,16 @@ def _permission_decision(agent, name, effect_class, command_assessment):
             project_trusted=agent.project_trusted,
             mode=mode,
             effect_class=effect_class,
+            explicit=agent.permission_for_tool(name),
             builtin_edit=name in {"write_file", "patch_file"},
+            auto_allow=(
+                name in {"write_file", "patch_file", "memory_save"}
+                or (
+                    command_assessment is not None
+                    and command_assessment.get("decision") == "allow"
+                )
+            ),
+            plan_write=name == "write_plan",
         )
         code = (
             "permission_mode_block"
@@ -806,6 +815,70 @@ def _prepare_non_shell_tool(
     )
 
 
+def _prepare_exit_plan_tool(agent, tool, args, effect_class):
+    rejection = _validation_rejection(
+        agent,
+        tool,
+        "exit_plan_mode",
+        args,
+        effect_class,
+    )
+    if rejection is not None:
+        return rejection
+    plan = agent.current_plan()
+    revision = agent.current_plan_revision()
+    if not plan.strip() or revision < 1:
+        return ToolExecutionResult(
+            content="error: no plan has been saved",
+            metadata=_metadata(
+                "rejected",
+                effect_class=effect_class,
+                tool_error_code="plan_missing",
+                risk_level="high",
+            ),
+        )
+    original_args = deepcopy(args)
+    approval_payload = {"plan": plan, "revision": revision}
+    payload_snapshot = deepcopy(approval_payload)
+    if not agent.approve("exit_plan_mode", approval_payload):
+        return ToolExecutionResult(
+            content="error: plan rejected; remain in plan mode",
+            metadata=_metadata(
+                "rejected",
+                effect_class=effect_class,
+                tool_error_code="plan_rejected",
+                security_event_type="approval_denied",
+                risk_level="high",
+            ),
+        )
+    rejection = _validation_rejection(
+        agent,
+        tool,
+        "exit_plan_mode",
+        args,
+        effect_class,
+    )
+    if rejection is not None:
+        return rejection
+    if (
+        args != original_args
+        or approval_payload != payload_snapshot
+        or agent.current_plan_revision() != revision
+        or agent.current_plan() != plan
+    ):
+        return ToolExecutionResult(
+            content="error: plan changed during approval",
+            metadata=_metadata(
+                "rejected",
+                effect_class=effect_class,
+                tool_error_code="plan_approval_changed",
+                security_event_type="approval_arguments_changed",
+                risk_level="high",
+            ),
+        )
+    return None
+
+
 def _prepare_tool_request(agent, name, args):
     tool = agent.tools.get(name)
     effect_class = _effect_class(tool)
@@ -826,6 +899,15 @@ def _prepare_tool_request(agent, name, args):
     )
     if rejection is not None:
         return None, rejection
+    rejection = _validation_rejection(agent, tool, name, args, effect_class)
+    if rejection is not None:
+        if command_assessment is None:
+            return None, rejection
+        return None, _add_initial_shell_policy(
+            rejection,
+            command_assessment,
+            agent.current_permission_mode(),
+        )
     permission, rejection = _permission_decision(
         agent,
         name,
@@ -850,14 +932,17 @@ def _prepare_tool_request(agent, name, args):
             requires_approval=requires_approval,
         )
     else:
-        rejection = _prepare_non_shell_tool(
-            agent,
-            tool,
-            name,
-            args,
-            effect_class,
-            requires_approval=requires_approval,
-        )
+        if name == "exit_plan_mode":
+            rejection = _prepare_exit_plan_tool(agent, tool, args, effect_class)
+        else:
+            rejection = _prepare_non_shell_tool(
+                agent,
+                tool,
+                name,
+                args,
+                effect_class,
+                requires_approval=requires_approval,
+            )
     if rejection is not None:
         return None, rejection
 

@@ -1,16 +1,15 @@
 """One-shot and interactive CLI startup flows."""
 
 from contextlib import contextmanager
-import json
 import signal
 import shlex
 import sys
 import threading
 
+from pony.tools.permissions import display_permission_mode
 from pony.security.redaction import redact_text
 from pony.providers.transport import ProviderTransportError
 from pony.runtime.resume import active_prompt_history, build_resume_projection
-from pony.state.workflow import EMPTY_PLAN
 
 
 _RUNTIME_ERROR_MESSAGE = "agent runtime failed"
@@ -264,6 +263,7 @@ def _process_repl_input(
     render_answer=print,
     render_error=None,
     refresh_history=lambda: None,
+    manage_permissions=None,
 ):
     if not user_input:
         return None
@@ -274,38 +274,58 @@ def _process_repl_input(
 
         print(HELP_DETAILS)
         return None
-    if user_input == "/mode":
-        print(f"mode: {agent.current_workflow_mode()}")
-        return None
-    if user_input.startswith("/mode "):
-        mode = user_input[len("/mode ") :].strip()
-        if mode not in {"plan", "act", "review"}:
-            print("usage: /mode [plan|act|review]")
+    if user_input in {"/permissions", "/allowed-tools"}:
+        rules = agent.permission_rules()
+        print("Permissions")
+        print(f"mode: {display_permission_mode(agent.current_permission_mode())}")
+        for behavior in ("allow", "ask", "deny"):
+            values = ", ".join(rules[behavior]) or "(none)"
+            print(f"{behavior}: {values}")
+        if manage_permissions is None:
             return None
         try:
-            changed = agent.set_workflow_mode(mode)
+            selection = manage_permissions(rules, sorted(agent.tools))
+            if selection is None:
+                return None
+            behavior, name = selection
+            changed = agent.set_permission_rule(name, behavior)
         except (OSError, RuntimeError, ValueError) as exc:
             print(f"error: {_safe_text(agent, exc)}")
             return None
-        print(f"mode: {mode}" + ("" if changed is not None else " (unchanged)"))
+        print(f"permission rule: {behavior} {name}")
+        if changed is None:
+            print("(unchanged)")
         return None
-    if user_input == "/plan":
-        plan = agent.redact_artifact(agent.current_workflow_plan())
-        print(json.dumps(plan, ensure_ascii=False, indent=2))
+    if user_input.startswith("/permissions ") or user_input.startswith(
+        "/allowed-tools "
+    ):
+        print("usage: /permissions")
         return None
-    if user_input == "/plan clear":
+    if user_input == "/plan" or user_input.startswith("/plan "):
+        description = user_input[len("/plan") :].strip()
+        was_plan = agent.current_permission_mode() == "plan"
         try:
-            if getattr(agent, "_workflow_turn", None) is not None:
-                raise RuntimeError("workflow_turn_active")
-            agent.session_store.set_active_plan(agent.session["id"], EMPTY_PLAN)
-            agent._reload_session_projection()
+            changed = None if was_plan else agent.set_permission_mode("plan")
         except (OSError, RuntimeError, ValueError) as exc:
             print(f"error: {_safe_text(agent, exc)}")
             return None
-        print("plan cleared")
-        return None
-    if user_input.startswith("/plan "):
-        print("usage: /plan [clear]")
+        if changed is not None:
+            print("permission mode: plan")
+        plan = agent.current_plan()
+        if was_plan or description in {"open", "share"} or not description:
+            print(plan or "(no plan saved)")
+        if description == "share":
+            print("plan sharing is unavailable in this local runtime")
+        if description and description not in {"open", "share"} and not was_plan:
+            try:
+                render_answer(_safe_text(agent, agent.ask(description)))
+            except ProviderTransportError:
+                raise
+            except Exception:  # noqa: BLE001 - match ordinary REPL turn failures
+                if render_error is None:
+                    print(_RUNTIME_ERROR_MESSAGE, file=sys.stderr)
+                else:
+                    render_error(_RUNTIME_ERROR_MESSAGE)
         return None
     if user_input == "/memory":
         task_summary = agent.memory.task_summary
@@ -442,6 +462,19 @@ def run_repl(
                     active_prompt_history(current.get("messages", []))
                 )
 
+            def manage_plain_permissions(_rules, tools):
+                behavior = input(
+                    "permission [allow/ask/deny/remove, blank to close]: "
+                ).strip()
+                if not behavior:
+                    return None
+                if behavior not in {"allow", "ask", "deny", "remove"}:
+                    raise ValueError("invalid permission rule behavior")
+                name = input("tool: ").strip()
+                if name not in tools:
+                    raise ValueError("unknown permission rule tool")
+                return behavior, name
+
             _replace_readline_history(prompt_history)
             if resume_projection is not None:
                 _print_resume_card(resume_projection)
@@ -456,6 +489,7 @@ def run_repl(
                     agent,
                     user_input,
                     refresh_history=refresh_plain_history,
+                    manage_permissions=manage_plain_permissions,
                 )
                 refresh_plain_history()
                 if result is not None:
@@ -470,18 +504,13 @@ def run_repl(
 
 def _print_resume_card(projection):
     goal = projection["goal"]
-    plan = projection["plan"]
     checkpoint = projection["checkpoint"]
     resume = projection["resume"]
+    model = projection["model"]
     print("Resume")
-    print(f"mode [session]: {projection['mode']}")
+    print(f"permission [session]: {projection['permission_mode']}")
     if goal["text"]:
         print(f"goal [{goal['source']}]: {goal['text']}")
-    print(
-        "plan [plan]: "
-        f"{plan['completed_count']}/{plan['item_count']} completed; "
-        f"current={plan['current_count']}"
-    )
     if checkpoint["status"] or checkpoint["blocker"]:
         print(
             "checkpoint [checkpoint]: "
@@ -491,6 +520,11 @@ def _print_resume_card(projection):
     for next_step in checkpoint["next_steps"]:
         print(f"next [checkpoint]: {next_step}")
     print(f"resume [resume_state]: {resume['status'] or '-'}")
+    if model["protocol_family"] or model["model"]:
+        label = "/".join(
+            value for value in (model["protocol_family"], model["model"]) if value
+        )
+        print(f"model [provider_binding]: {label}")
 
 
 def _replace_readline_history(items):

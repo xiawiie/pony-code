@@ -51,7 +51,7 @@ def build_agent_with_client(tmp_path, client):
         model_client=client,
         workspace=WorkspaceContext.build(tmp_path),
         session_store=SessionStore(tmp_path / ".pony" / "sessions"),
-        options=RuntimeOptions(approval_policy="auto", max_steps=2),
+        options=RuntimeOptions(project_trusted=True, max_steps=2),
     )
 
 

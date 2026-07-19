@@ -12,11 +12,13 @@ from pony.cli import assembly as cli_assembly
 from pony.state.session_store import SessionStore
 from pony.workspace.context import WorkspaceContext
 from pony.cli import app as pony_cli
+from pony.cli.errors import CliError
 from benchmarks.support.fake_provider import FakeModelClient
 from pony.config.environment import read_project_env
 from pony.state.session_store import LEGACY_SESSION_FORMAT_VERSION
 from pony.state.task_state import TaskState
 from pony.runtime.options import RuntimeOptions
+from pony.security.trust import ProjectTrustStore
 
 
 def build_workspace(tmp_path):
@@ -35,12 +37,23 @@ def build_agent(tmp_path, outputs, **kwargs):
             executables=workspace_executables,
         )
     store = SessionStore(tmp_path / ".pony" / "sessions")
-    approval_policy = kwargs.pop("approval_policy", "auto")
-    return Pony(
+    permission_mode = kwargs.pop("permission_mode", "auto")
+    agent = Pony(
         model_client=FakeModelClient(outputs),
         workspace=workspace,
         session_store=store,
-        options=RuntimeOptions(approval_policy=approval_policy, **kwargs),
+        options=RuntimeOptions(project_trusted=True, **kwargs),
+    )
+    if permission_mode != "auto":
+        agent.set_permission_mode(permission_mode)
+    return agent
+
+
+def build_cli_agent(args, tmp_path):
+    return pony_cli.build_agent(
+        args,
+        trust_store=ProjectTrustStore(tmp_path / ".pony-home"),
+        confirm=lambda _root: True,
     )
 
 
@@ -159,7 +172,7 @@ def test_cli_freezes_parent_path_before_project_env_loading(tmp_path, monkeypatc
         ]
     )
 
-    pony_cli.build_agent(args)
+    build_cli_agent(args, tmp_path)
 
     assert observed["path"] == parent_path
     assert os.environ.get("PATH", "") == parent_path
@@ -173,7 +186,7 @@ def test_runtime_preserves_frozen_executables_across_refresh(tmp_path, monkeypat
         model_client=FakeModelClient([]),
         workspace=workspace,
         session_store=SessionStore(tmp_path / ".pony" / "sessions"),
-        options=RuntimeOptions(approval_policy="auto"),
+        options=RuntimeOptions(project_trusted=True),
     )
     monkeypatch.setenv("PATH", str(tmp_path))
     monkeypatch.setattr(
@@ -201,7 +214,7 @@ def test_delegate_inherits_parent_frozen_executables(tmp_path, monkeypatch):
         model_client=FakeModelClient([]),
         workspace=workspace,
         session_store=SessionStore(tmp_path / ".pony" / "sessions"),
-        options=RuntimeOptions(approval_policy="auto"),
+        options=RuntimeOptions(project_trusted=True),
     )
     children = []
 
@@ -264,16 +277,16 @@ def test_symlink_path_traversal_is_rejected(tmp_path):
 
 
 def test_risky_tool_deny_behavior(tmp_path):
-    agent = build_agent(tmp_path, [], approval_policy="never")
+    agent = build_agent(tmp_path, [], permission_mode="dontAsk")
 
     result = agent.run_tool("run_shell", {"command": "pwd", "timeout": 20})
 
-    assert result == "error: approval denied for run_shell"
+    assert result == "error: permission mode 'dontAsk' blocks run_shell"
 
 
 def test_write_file_refuses_user_notes_path_before_runner(tmp_path):
     # 路径级硬拦截：approval=auto 也不能通过；不是靠审批模式挡的。
-    agent = build_agent(tmp_path, [], approval_policy="auto")
+    agent = build_agent(tmp_path, [], permission_mode="auto")
     target_rel = ".pony/memory/notes/malicious.md"
     target_abs = tmp_path / target_rel
 
@@ -297,7 +310,7 @@ def test_patch_file_refuses_user_notes_path_before_runner(tmp_path):
     note_abs.parent.mkdir(parents=True, exist_ok=True)
     original = "original body\n"
     note_abs.write_text(original, encoding="utf-8")
-    agent = build_agent(tmp_path, [], approval_policy="auto")
+    agent = build_agent(tmp_path, [], permission_mode="auto")
 
     runner = Mock(return_value="must not run")
     agent.tools["patch_file"]["run"] = runner
@@ -345,15 +358,13 @@ def test_cli_build_agent_wires_secret_env_names_from_parser(tmp_path):
             [
                 "--cwd",
                 str(tmp_path),
-                "--approval",
-                "auto",
                 "--secret-env-name",
                 "GITHUB_PAT",
                 "--secret-env-name",
                 "GH_PAT",
             ]
         )
-        agent = pony_cli.build_agent(args)
+        agent = build_cli_agent(args, tmp_path)
         assert set(agent.secret_env_summary()["secret_env_names"]) == {
             "GITHUB_PAT",
             "GH_PAT",
@@ -393,11 +404,9 @@ def test_cli_build_agent_uses_default_configured_secret_names(tmp_path):
             [
                 "--cwd",
                 str(tmp_path),
-                "--approval",
-                "auto",
             ]
         )
-        agent = pony_cli.build_agent(args)
+        agent = build_cli_agent(args, tmp_path)
         assert set(agent.secret_env_summary()["secret_env_names"]) == {
             "GH_PAT",
             "PONY_API_KEY",
@@ -429,7 +438,7 @@ def test_cli_build_agent_loads_project_env_secrets_before_redaction_setup(tmp_pa
         ),
     ):
         args = pony_cli.build_arg_parser().parse_args(["--cwd", str(tmp_path)])
-        agent = pony_cli.build_agent(args)
+        agent = build_cli_agent(args, tmp_path)
         assert agent.secret_env_summary()["secret_env_names"] == ["PONY_API_KEY"]
 
 
@@ -526,7 +535,7 @@ def test_cli_resume_uses_immutable_collision_safe_snapshot_before_load(
                 session_id,
             ]
         )
-        agent = pony_cli.build_agent(args)
+        agent = build_cli_agent(args, tmp_path)
 
         assert "PROJECT_ONLY_CREDENTIAL" not in os.environ
         assert isinstance(agent.redaction_env, MappingProxyType)
@@ -570,7 +579,7 @@ def test_cli_build_agent_skips_malformed_project_env_lines_with_warning(
         ),
     ):
         args = pony_cli.build_arg_parser().parse_args(["--cwd", str(tmp_path)])
-        agent = pony_cli.build_agent(args)
+        agent = build_cli_agent(args, tmp_path)
         secret_names = agent.secret_env_summary()["secret_env_names"]
 
     captured = capsys.readouterr()
@@ -625,18 +634,16 @@ def test_cli_build_agent_reads_secret_names_from_environment_config(tmp_path):
             [
                 "--cwd",
                 str(tmp_path),
-                "--approval",
-                "auto",
             ]
         )
-        agent = pony_cli.build_agent(args)
+        agent = build_cli_agent(args, tmp_path)
         assert set(agent.secret_env_summary()["secret_env_names"]) == {
             "PONY_CUSTOM_SECRET",
             "PONY_API_KEY",
         }
 
 
-def test_cli_no_input_makes_default_approval_non_interactive(tmp_path):
+def test_cli_no_input_fails_closed_for_untrusted_project(tmp_path):
     class DummyModelClient:
         def __init__(self, *args, **kwargs):
             self.args = args
@@ -667,9 +674,11 @@ def test_cli_no_input_makes_default_approval_non_interactive(tmp_path):
                 "--no-input",
             ]
         )
-        agent = pony_cli.build_agent(args)
+        with pytest.raises(CliError) as caught:
+            pony_cli.build_agent(args)
 
-    assert agent.approval_policy == "never"
+    assert caught.value.code == "project_untrusted"
+    assert not (tmp_path / ".pony" / "trusted-projects.json").exists()
 
 
 def test_run_shell_uses_allowlisted_environment_only(tmp_path):
@@ -677,7 +686,7 @@ def test_run_shell_uses_allowlisted_environment_only(tmp_path):
     agent = build_agent(
         tmp_path,
         [],
-        approval_policy="ask",
+        permission_mode="default",
         workspace_executables={"python": "/usr/bin/python3"},
     )
     agent.approve = lambda name, args: True
@@ -692,7 +701,7 @@ def test_run_shell_uses_allowlisted_environment_only(tmp_path):
 
 
 def test_pony_exposes_no_raw_tool_runner_proxies(tmp_path):
-    agent = build_agent(tmp_path, [], approval_policy="auto")
+    agent = build_agent(tmp_path, [], permission_mode="auto")
 
     for name in (
         "tool_list_files",

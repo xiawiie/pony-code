@@ -15,60 +15,58 @@ def _agent(tmp_path, outputs=()):
         model_client=FakeModelClient(outputs),
         workspace=WorkspaceContext.build(tmp_path),
         session_store=SessionStore(tmp_path / ".pony" / "sessions"),
-        options=RuntimeOptions(approval_policy="auto"),
+        options=RuntimeOptions(project_trusted=True),
     )
 
 
-def _plan():
-    return {
-        "goal": "Ship workflow controls",
-        "items": [
-            {"id": "cli", "text": "Wire the CLI", "status": "in_progress"}
-        ],
-    }
-
-
-def test_repl_mode_show_change_and_same_value_noop(tmp_path, capsys):
+def test_repl_permissions_manages_rules_and_same_value_is_noop(tmp_path, capsys):
     agent = _agent(tmp_path)
 
-    _process_repl_input(agent, "/mode")
-    _process_repl_input(agent, "/mode plan")
+    def manager(_rules, _tools):
+        return "allow", "write_file"
+
+    _process_repl_input(agent, "/permissions", manage_permissions=manager)
     entries = len(agent.session_store.load_tree(agent.session["id"]).entries)
-    _process_repl_input(agent, "/mode plan")
+    _process_repl_input(agent, "/allowed-tools", manage_permissions=manager)
+    _process_repl_input(agent, "/permissions manual")
 
     output = capsys.readouterr().out
-    assert "mode: act" in output
-    assert "mode: plan" in output
-    assert "mode: plan (unchanged)" in output
+    assert "mode: auto" in output
+    assert "permission rule: allow write_file" in output
+    assert "(unchanged)" in output
+    assert "usage: /permissions" in output
+    assert agent.permission_rules()["allow"] == ["write_file"]
     assert len(agent.session_store.load_tree(agent.session["id"]).entries) == entries
 
 
-def test_repl_plan_shows_full_state_and_clear_is_append_only(tmp_path, capsys):
+def test_repl_plan_enters_plan_permission_mode(tmp_path, capsys):
     agent = _agent(tmp_path)
-    agent.session_store.set_active_plan(agent.session["id"], _plan())
-    agent._reload_session_projection()
     before = len(agent.session_store.load_tree(agent.session["id"]).entries)
 
     _process_repl_input(agent, "/plan")
+
+    output = capsys.readouterr().out
+    assert "permission mode: plan" in output
+    tree = agent.session_store.load_tree(agent.session["id"])
+    assert agent.session["permission_mode"] == "plan"
+    assert len(tree.entries) == before + 1
+    assert tree.entries[-1]["type"] == "permission_mode_change"
+
+
+def test_removed_mode_is_unknown_and_plan_description_is_submitted(tmp_path, capsys):
+    agent = _agent(tmp_path, outputs=("planned",))
+
+    _process_repl_input(agent, "/mode")
     _process_repl_input(agent, "/plan clear")
 
     output = capsys.readouterr().out
-    assert "Ship workflow controls" in output
-    assert '"status": "in_progress"' in output
-    tree = agent.session_store.load_tree(agent.session["id"])
-    assert agent.session["active_plan"] == {"goal": "", "items": []}
-    assert len(tree.entries) == before + 1
-    assert tree.entries[-1]["type"] == "plan_update"
-
-
-def test_plan_clear_fails_with_stable_active_turn_error(tmp_path, capsys):
-    agent = _agent(tmp_path)
-    agent._workflow_turn = {"mode": "act", "plan": _plan(), "tools": {}}
-
-    _process_repl_input(agent, "/plan clear")
-
-    assert "error: workflow_turn_active" in capsys.readouterr().out
-    assert agent.session["active_plan"] == {"goal": "", "items": []}
+    assert "unknown command: /mode" in output
+    assert "planned" in output
+    assert agent.session["permission_mode"] == "plan"
+    assert any(
+        message.get("role") == "user" and message.get("content") == "clear"
+        for message in agent.session["messages"]
+    )
 
 
 def test_reset_rebuilds_history_from_active_messages_immediately():
@@ -94,11 +92,23 @@ def test_reset_rebuilds_history_from_active_messages_immediately():
 
 def test_plain_explicit_resume_card_is_shown_once_with_sources(monkeypatch, capsys):
     session = {
-        "workflow_mode": "review",
-        "active_plan": _plan(),
+        "permission_mode": "plan",
         "messages": [],
-        "checkpoints": {"current_id": "", "items": {}},
+        "checkpoints": {
+            "current_id": "checkpoint",
+            "items": {
+                "checkpoint": {
+                    "goal": "Ship permission controls",
+                    "status": "ready",
+                }
+            },
+        },
         "resume_state": {"status": "ready"},
+        "provider_binding": {
+            "protocol_family": "openai_responses",
+            "model": "gpt-test",
+            "endpoint_hash": "sha256:" + "a" * 64,
+        },
     }
     agent = SimpleNamespace(
         session=session,
@@ -111,9 +121,11 @@ def test_plain_explicit_resume_card_is_shown_once_with_sources(monkeypatch, caps
     assert run_repl(agent, plain=True, show_resume=True) == 0
     output = capsys.readouterr().out
     assert output.count("Resume\n") == 1
-    assert "mode [session]: review" in output
-    assert "goal [plan]: Ship workflow controls" in output
+    assert "permission [session]: plan" in output
+    assert "goal [checkpoint]: Ship permission controls" in output
     assert "resume [resume_state]: ready" in output
+    assert "model [provider_binding]: openai_responses/gpt-test" in output
+    assert "endpoint_hash" not in output
 
 
 def test_plain_history_is_rebuilt_from_canonical_prompts_after_every_input(

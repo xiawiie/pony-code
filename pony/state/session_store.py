@@ -54,6 +54,7 @@ SESSION_ENTRY_RECORD_TYPE = "session_entry"
 MAX_SESSION_ENTRY_BYTES = 8 * 1024 * 1024
 SESSION_SOFT_LIMIT_BYTES = 128 * 1024 * 1024
 MAX_SESSION_BYTES = 512 * 1024 * 1024
+MAX_PLAN_TEXT_BYTES = 12 * 1024
 MAX_REWIND_INTENT_BYTES = 64 * 1024
 REWIND_INTENT_RECORD_TYPE = "rewind_intent"
 REWIND_INTENT_FORMAT_VERSION = 2
@@ -63,6 +64,7 @@ ENTRY_TYPES = frozenset(
         "message",
         "tool_exchange",
         "permission_mode_change",
+        "plan_artifact",
         "compaction",
         "branch_summary",
         "task_checkpoint",
@@ -73,11 +75,13 @@ ENTRY_TYPES = frozenset(
         "migration",
     }
 )
-_V3_ENTRY_TYPES = (ENTRY_TYPES - {"permission_mode_change"}) | {
+_V3_ENTRY_TYPES = (ENTRY_TYPES - {"permission_mode_change", "plan_artifact"}) | {
     "workflow_mode_change",
     "plan_update",
 }
-_V2_ENTRY_TYPES = (ENTRY_TYPES - {"permission_mode_change"}) | {"model_change"}
+_V2_ENTRY_TYPES = (ENTRY_TYPES - {"permission_mode_change", "plan_artifact"}) | {
+    "model_change"
+}
 
 
 class SessionFormatError(ValueError):
@@ -177,7 +181,15 @@ _PREVIOUS_REQUIRED_FIELDS = (_REQUIRED_FIELDS - {"permission_mode"}) | {
     "active_plan",
 }
 _LEGACY_REQUIRED_FIELDS = _REQUIRED_FIELDS - {"permission_mode"}
-_OPTIONAL_FIELDS = frozenset({"provider_binding"})
+_OPTIONAL_FIELDS = frozenset(
+    {
+        "provider_binding",
+        "permission_rules",
+        "plan_text",
+        "plan_revision",
+        "pre_plan_mode",
+    }
+)
 _PROTOCOL_FAMILIES = {
     "anthropic_messages",
     "openai_chat_completions",
@@ -198,11 +210,17 @@ _HEADER_PROJECTION_FIELDS = frozenset(
 )
 _SESSION_INFO_FIELDS = (
     (_REQUIRED_FIELDS | _OPTIONAL_FIELDS)
-    - {"messages", "permission_mode"}
+    - {
+        "messages",
+        "permission_mode",
+        "plan_text",
+        "plan_revision",
+        "pre_plan_mode",
+    }
     - _DERIVED_CACHE_FIELDS
 )
 _MUTABLE_SESSION_INFO_FIELDS = frozenset(
-    {"resume_state", "recovery", "runtime_identity"}
+    {"resume_state", "recovery", "runtime_identity", "permission_rules"}
 )
 _TASK_CHECKPOINT_FIELDS = frozenset(
     {
@@ -382,6 +400,39 @@ def _validate_projection(payload, session_id, *, version=SESSION_FORMAT_VERSION)
             validate_permission_mode(payload.get("permission_mode"))
         except ValueError as exc:
             raise SessionFormatError(str(exc)) from None
+        plan_text = payload.get("plan_text", "")
+        plan_revision = payload.get("plan_revision", 0)
+        pre_plan_mode = payload.get("pre_plan_mode", "")
+        if (
+            not isinstance(plan_text, str)
+            or len(plan_text.encode("utf-8")) > MAX_PLAN_TEXT_BYTES
+            or type(plan_revision) is not int
+            or plan_revision < 0
+            or not isinstance(pre_plan_mode, str)
+        ):
+            raise SessionFormatError("invalid plan state")
+        if pre_plan_mode:
+            try:
+                validate_permission_mode(pre_plan_mode)
+            except ValueError as exc:
+                raise SessionFormatError(str(exc)) from None
+        rules = payload.get(
+            "permission_rules",
+            {"allow": [], "ask": [], "deny": []},
+        )
+        if (
+            not isinstance(rules, dict)
+            or rules.keys() != {"allow", "ask", "deny"}
+            or any(not isinstance(rules[key], list) for key in rules)
+            or any(
+                not isinstance(tool, str) or not tool
+                for values in rules.values()
+                for tool in values
+            )
+            or len({tool for values in rules.values() for tool in values})
+            != sum(len(values) for values in rules.values())
+        ):
+            raise SessionFormatError("invalid permission rules")
     elif version == PREVIOUS_SESSION_FORMAT_VERSION:
         try:
             validate_workflow_mode(payload.get("workflow_mode"))
@@ -691,12 +742,33 @@ def _validate_entry(
     if entry["type"] == "tool_exchange" and version == PREVIOUS_SESSION_FORMAT_VERSION:
         _tool_exchange_plan(entry["data"], redactor=plan_redactor)
     if entry["type"] == "permission_mode_change":
-        if version != SESSION_FORMAT_VERSION or entry["data"].keys() != {"mode"}:
+        keys = entry["data"].keys()
+        if version != SESSION_FORMAT_VERSION or keys not in (
+            {"mode"},
+            {"mode", "pre_mode"},
+        ):
             raise SessionFormatError("invalid permission mode entry data")
         try:
-            validate_permission_mode(entry["data"].get("mode"))
+            mode = validate_permission_mode(entry["data"].get("mode"))
+            pre_mode = entry["data"].get("pre_mode")
+            if pre_mode is not None:
+                pre_mode = validate_permission_mode(pre_mode)
+                if mode != PermissionMode.PLAN.value or pre_mode == mode:
+                    raise ValueError("invalid pre-plan permission mode")
         except ValueError as exc:
             raise SessionFormatError(str(exc)) from None
+    if entry["type"] == "plan_artifact":
+        text = entry["data"].get("text")
+        revision = entry["data"].get("revision")
+        if (
+            version != SESSION_FORMAT_VERSION
+            or entry["data"].keys() != {"text", "revision"}
+            or not isinstance(text, str)
+            or len(text.encode("utf-8")) > MAX_PLAN_TEXT_BYTES
+            or type(revision) is not int
+            or revision < 1
+        ):
+            raise SessionFormatError("invalid plan artifact entry data")
     if entry["type"] == "workflow_mode_change":
         if version != PREVIOUS_SESSION_FORMAT_VERSION:
             raise SessionFormatError("invalid workflow mode entry data")
@@ -735,7 +807,13 @@ def _base_projection(header):
         "runtime_identity": {},
     }
     if header["format_version"] == SESSION_FORMAT_VERSION:
-        projection["permission_mode"] = PermissionMode.DEFAULT.value
+        projection.update(
+            permission_mode=PermissionMode.DEFAULT.value,
+            permission_rules={"allow": [], "ask": [], "deny": []},
+            plan_text="",
+            plan_revision=0,
+            pre_plan_mode="",
+        )
     elif header["format_version"] == PREVIOUS_SESSION_FORMAT_VERSION:
         projection.update(
             format_version=header["format_version"],
@@ -831,7 +909,18 @@ def _apply_entry(projection, entry, *, version):
             if plan is not None:
                 projection["active_plan"] = plan
     elif kind == "permission_mode_change":
-        projection["permission_mode"] = validate_permission_mode(data.get("mode"))
+        previous = projection["permission_mode"]
+        mode = validate_permission_mode(data.get("mode"))
+        if mode == PermissionMode.PLAN.value and previous != mode:
+            projection["pre_plan_mode"] = validate_permission_mode(
+                data.get("pre_mode", previous)
+            )
+        elif previous == PermissionMode.PLAN.value and mode != previous:
+            projection["pre_plan_mode"] = ""
+        projection["permission_mode"] = mode
+    elif kind == "plan_artifact":
+        projection["plan_text"] = data["text"]
+        projection["plan_revision"] = data["revision"]
     elif kind == "workflow_mode_change":
         projection["workflow_mode"] = validate_workflow_mode(data.get("mode"))
     elif kind == "plan_update":
@@ -1159,7 +1248,25 @@ def _permission_entries(projection, parent_id):
     mode = projection.get("permission_mode", PermissionMode.DEFAULT.value)
     if mode == PermissionMode.DEFAULT.value:
         return []
-    return [_new_entry("permission_mode_change", {"mode": mode}, parent_id)]
+    data = {"mode": mode}
+    pre_mode = str(projection.get("pre_plan_mode", "") or "")
+    if mode == PermissionMode.PLAN.value and pre_mode:
+        data["pre_mode"] = pre_mode
+    return [_new_entry("permission_mode_change", data, parent_id)]
+
+
+def _plan_entries(projection, parent_id):
+    text = str(projection.get("plan_text", "") or "")
+    revision = int(projection.get("plan_revision", 0) or 0)
+    if not text and revision == 0:
+        return []
+    return [
+        _new_entry(
+            "plan_artifact",
+            {"text": text, "revision": revision},
+            parent_id,
+        )
+    ]
 
 
 def _persistent_projection(value):
@@ -1374,6 +1481,25 @@ def _restore_expected_projection(header, entries, expected):
     if changed:
         parent_id = entries[-1]["id"] if entries else ""
         entries.append(_new_entry("session_info", {"set": changed}, parent_id))
+    projected = _parse_jsonl(_render_tree(header, entries), header["id"]).projection
+    parent_id = entries[-1]["id"] if entries else ""
+    if projected["permission_mode"] != expected["permission_mode"]:
+        data = {"mode": expected["permission_mode"]}
+        pre_mode = str(expected.get("pre_plan_mode", "") or "")
+        if expected["permission_mode"] == PermissionMode.PLAN.value and pre_mode:
+            data["pre_mode"] = pre_mode
+        entry = _new_entry(
+            "permission_mode_change",
+            data,
+            parent_id,
+        )
+        entries.append(entry)
+        parent_id = entry["id"]
+    if (
+        projected.get("plan_text", "") != expected.get("plan_text", "")
+        or projected.get("plan_revision", 0) != expected.get("plan_revision", 0)
+    ):
+        entries.extend(_plan_entries(expected, parent_id))
     return entries
 
 
@@ -1568,6 +1694,10 @@ class SessionStore:
         entries.extend(permission_entries)
         if permission_entries:
             parent_id = permission_entries[-1]["id"]
+        plan_entries = _plan_entries(session, parent_id)
+        entries.extend(plan_entries)
+        if plan_entries:
+            parent_id = plan_entries[-1]["id"]
         checkpoint_entries = _task_checkpoint_entries(
             session.get("checkpoints", {}),
             parent_id,
@@ -1655,7 +1785,14 @@ class SessionStore:
         candidate.pop("_recall_errors", None)
         session_id = _session_id(candidate.get("id"))
         candidate["format_version"] = SESSION_FORMAT_VERSION
-        candidate.setdefault("permission_mode", PermissionMode.DEFAULT.value)
+        candidate.setdefault("permission_mode", PermissionMode.AUTO.value)
+        candidate.setdefault(
+            "permission_rules",
+            {"allow": [], "ask": [], "deny": []},
+        )
+        candidate.setdefault("plan_text", "")
+        candidate.setdefault("plan_revision", 0)
+        candidate.setdefault("pre_plan_mode", "")
         _validate_projection(candidate, session_id)
         with file_lock.locked_file(self.lock_path):
             canonical = self.path(session_id)
@@ -1679,7 +1816,13 @@ class SessionStore:
             ):
                 if any(
                     candidate.get(key) != current.get(key)
-                    for key in ("permission_mode",)
+                    for key in (
+                        "permission_mode",
+                        "permission_rules",
+                        "plan_text",
+                        "plan_revision",
+                        "pre_plan_mode",
+                    )
                 ):
                     raise SessionFormatError(
                         "permission state requires an explicit control entry"
@@ -1774,6 +1917,10 @@ class SessionStore:
                 entries.extend(permission_entries)
                 if permission_entries:
                     parent_id = permission_entries[-1]["id"]
+                plan_entries = _plan_entries(candidate, parent_id)
+                entries.extend(plan_entries)
+                if plan_entries:
+                    parent_id = plan_entries[-1]["id"]
                 message_entries = _message_entries(candidate_messages, parent_id)
                 entries.extend(message_entries)
                 changed = {}
@@ -1857,6 +2004,49 @@ class SessionStore:
         if tree.projection["permission_mode"] == mode:
             return None
         return self.append_control(session_id, "permission_mode_change", {"mode": mode})
+
+    def set_permission_rule(self, session_id, tool_name, behavior):
+        tool_name = str(tool_name).strip()
+        if not tool_name:
+            raise ValueError("permission rule tool is required")
+        if behavior not in {"allow", "ask", "deny", "remove"}:
+            raise ValueError("invalid permission rule behavior")
+        tree = self.load_tree(session_id)
+        rules = deepcopy(
+            tree.projection.get(
+                "permission_rules",
+                {"allow": [], "ask": [], "deny": []},
+            )
+        )
+        for values in rules.values():
+            if tool_name in values:
+                values.remove(tool_name)
+        if behavior != "remove":
+            rules[behavior].append(tool_name)
+            rules[behavior].sort()
+        if rules == tree.projection.get("permission_rules"):
+            return None
+        self.append_messages(
+            session_id,
+            (),
+            state_updates={"permission_rules": rules},
+        )
+        return rules
+
+    def set_plan_text(self, session_id, text):
+        if not isinstance(text, str):
+            raise ValueError("plan text must be a string")
+        if len(text.encode("utf-8")) > MAX_PLAN_TEXT_BYTES:
+            raise ValueError("plan text exceeds limit")
+        tree = self.load_tree(session_id)
+        if tree.projection.get("plan_text", "") == text:
+            return None
+        revision = int(tree.projection.get("plan_revision", 0)) + 1
+        return self.append_control(
+            session_id,
+            "plan_artifact",
+            {"text": text, "revision": revision},
+        )
 
     def append_task_checkpoint(self, session_id, checkpoint, *, parent_id=None):
         checkpoint = deepcopy(checkpoint)
@@ -2251,7 +2441,12 @@ class SessionStore:
                         PermissionMode.DEFAULT.value
                         if legacy_mode == "act"
                         else PermissionMode.PLAN.value
-                    )
+                    ),
+                    **(
+                        {"pre_mode": PermissionMode.DEFAULT.value}
+                        if legacy_mode != "act"
+                        else {}
+                    ),
                 }
             elif (
                 source_version == PREVIOUS_SESSION_FORMAT_VERSION
@@ -2279,6 +2474,14 @@ class SessionStore:
         expected.update(
             format_version=SESSION_FORMAT_VERSION,
             permission_mode=permission_mode,
+            permission_rules={"allow": [], "ask": [], "deny": []},
+            plan_text="",
+            plan_revision=0,
+            pre_plan_mode=(
+                PermissionMode.DEFAULT.value
+                if permission_mode == PermissionMode.PLAN.value
+                else ""
+            ),
         )
         if not session_projections_equal(candidate_tree.projection, expected):
             raise SessionFormatError("session migration projection mismatch")
@@ -2377,6 +2580,10 @@ class SessionStore:
         migrated = deepcopy(payload)
         migrated["format_version"] = SESSION_FORMAT_VERSION
         migrated["permission_mode"] = PermissionMode.DEFAULT.value
+        migrated["permission_rules"] = {"allow": [], "ask": [], "deny": []}
+        migrated["plan_text"] = ""
+        migrated["plan_revision"] = 0
+        migrated["pre_plan_mode"] = ""
 
         backup_root = ensure_private_dir(self.root / "legacy-backups")
         backup_identity = private_directory_identity(backup_root)

@@ -195,7 +195,7 @@ def _contains_sensitive_content(context, value):
 def _refuse_user_notes_write(context, path):
     # User Notes 是用户手写的上下文；`memory_save` 只允许追加到 agent_notes.md。
     # 通用 write_file / patch_file 必须在路径层就拒绝写入 `.pony/memory/notes/**`，
-    # 而不是依赖 --approval 拦（`--approval auto` 时不拦）。
+    # 而不是依赖 permission prompt 拦；Accept Edits 会跳过文件编辑确认。
     try:
         relative = path.relative_to(context.root)
     except ValueError:

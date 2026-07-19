@@ -32,6 +32,10 @@ def _session(workspace, session_id="permission"):
         "recovery": {"current_checkpoint_id": ""},
         "runtime_identity": {},
         "permission_mode": "default",
+        "permission_rules": {"allow": [], "ask": [], "deny": []},
+        "plan_text": "",
+        "plan_revision": 0,
+        "pre_plan_mode": "",
     }
 
 
@@ -146,7 +150,7 @@ def test_current_permission_requires_valid_explicit_control(tmp_path):
     store.save(session)
 
     with pytest.raises(ValueError, match="invalid permission mode"):
-        store.set_permission_mode("permission", "auto")
+        store.set_permission_mode("permission", "invalid")
     session["permission_mode"] = "plan"
     with pytest.raises(SessionFormatError, match="explicit control"):
         store.save(session)

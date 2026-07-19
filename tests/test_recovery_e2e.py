@@ -18,7 +18,7 @@ def build_agent(tmp_path, outputs, *, executables=None):
         model_client=FakeModelClient(outputs),
         workspace=workspace,
         session_store=SessionStore(tmp_path / ".pony" / "sessions"),
-        options=RuntimeOptions(approval_policy="auto"),
+        options=RuntimeOptions(project_trusted=True),
     )
 
 
@@ -83,6 +83,8 @@ def test_memory_save_creates_audit_without_recoverable_turn_checkpoint(tmp_path)
             "done",
         ],
     )
+    agent.set_permission_mode("default")
+    agent._approval_prompt = lambda _name, _args: True
 
     assert agent.ask("remember this") == "done"
 
@@ -375,7 +377,7 @@ def test_run_shell_verification_command_attaches_evidence_to_checkpoint(tmp_path
         [tool_call, "done"],
         executables={"python": "/usr/bin/python3"},
     )
-    agent.approval_policy = "ask"
+    agent.set_permission_mode("default")
     agent.approve = lambda name, args: True
 
     agent.ask("Run the verification command")

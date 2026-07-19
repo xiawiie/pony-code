@@ -118,9 +118,30 @@ DELEGATE_TOOL_SPEC = {
     "description": "Ask a bounded read-only child agent to investigate.",
 }
 
+PLAN_TOOL_SPECS = {
+    "read_plan": {
+        "schema": {},
+        "risky": False,
+        "effect_class": "read_only",
+        "description": "Read the current saved implementation plan.",
+    },
+    "write_plan": {
+        "schema": {"plan": "str"},
+        "risky": False,
+        "effect_class": "session_state",
+        "description": "Save the implementation plan for user review.",
+    },
+    "exit_plan_mode": {
+        "schema": {},
+        "risky": True,
+        "effect_class": "session_state",
+        "description": "Present the saved plan for approval and start coding.",
+    },
+}
+
 
 def legal_tool_names():
-    return set(BASE_TOOL_SPECS) | {"delegate"}
+    return set(BASE_TOOL_SPECS) | set(PLAN_TOOL_SPECS) | {"delegate"}
 
 
 TOOL_EXAMPLES = {
@@ -136,6 +157,9 @@ TOOL_EXAMPLES = {
     "memory_search": '{"name":"memory_search","arguments":{"query":"bcrypt","limit":5}}',
     "memory_save": '{"name":"memory_save","arguments":{"note":"bcrypt rounds > 12 causes CI timeout"}}',
     "repo_lookup": '{"name":"repo_lookup","arguments":{"symbol":"AuthMiddleware"}}',
+    "read_plan": '{"name":"read_plan","arguments":{}}',
+    "write_plan": '{"name":"write_plan","arguments":{"plan":"# Plan\\n1. Inspect\\n2. Implement\\n3. Test"}}',
+    "exit_plan_mode": '{"name":"exit_plan_mode","arguments":{}}',
 }
 
 
@@ -194,6 +218,8 @@ def build_tool_registry(context):
             **DELEGATE_TOOL_SPEC,
             "run": partial(tool_delegate, context),
         }
+    for name, spec in PLAN_TOOL_SPECS.items():
+        tools[name] = dict(spec)
     return tools
 
 

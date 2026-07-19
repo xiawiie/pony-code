@@ -25,7 +25,7 @@ def build_agent(tmp_path, *, executables=None, **kwargs):
         model_client=FakeModelClient([]),
         workspace=workspace,
         session_store=SessionStore(tmp_path / ".pony" / "sessions"),
-        options=RuntimeOptions(approval_policy="auto", **kwargs),
+        options=RuntimeOptions(project_trusted=True, **kwargs),
     )
 
 
@@ -266,6 +266,7 @@ def test_risky_write_revalidates_after_approval_swaps_target_to_symlink(
     tmp_path,
 ):
     agent = build_agent(tmp_path)
+    agent.set_permission_mode("default")
     sensitive = tmp_path / ".env"
     sensitive.write_text("untouched\n", encoding="utf-8")
     target = tmp_path / "safe.txt"
@@ -299,6 +300,7 @@ def test_risky_patch_revalidates_content_changed_during_approval(tmp_path):
     target = tmp_path / "safe.txt"
     target.write_text("old safe\n", encoding="utf-8")
     agent = build_agent(tmp_path)
+    agent.set_permission_mode("default")
     approvals = []
 
     def approve(name, args):

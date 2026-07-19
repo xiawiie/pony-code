@@ -26,13 +26,17 @@ def build_workspace(tmp_path):
 def build_agent(tmp_path, outputs, **kwargs):
     workspace = build_workspace(tmp_path)
     store = SessionStore(tmp_path / ".pony" / "sessions")
-    approval_policy = kwargs.pop("approval_policy", "auto")
-    return Pony(
+    permission_mode = kwargs.pop("permission_mode", "auto")
+    agent = Pony(
         model_client=FakeModelClient(outputs),
         workspace=workspace,
         session_store=store,
-        options=RuntimeOptions(approval_policy=approval_policy, **kwargs),
+        options=RuntimeOptions(project_trusted=True, **kwargs),
     )
+    if permission_mode != "auto":
+        agent.set_permission_mode(permission_mode)
+    agent._approval_prompt = lambda _name, _args: True
+    return agent
 
 
 def build_sandbox_agent(tmp_path, monkeypatch, outputs):
@@ -199,9 +203,8 @@ def test_report_projects_current_run_tool_change_effects(tmp_path):
             },
             "Done.",
         ],
-        approval_policy="ask",
+        permission_mode="default",
     )
-    agent.approve = lambda name, args: True
 
     assert agent.ask("Change README and fail") == "Done."
     report = agent.run_store.load_report(agent.current_task_state.run_id)
@@ -692,7 +695,7 @@ def test_resume_invalidates_stale_file_summaries_and_marks_partial_stale(tmp_pat
         workspace=build_workspace(tmp_path),
         session_store=agent.session_store,
         session_id=agent.session["id"],
-        options=RuntimeOptions(approval_policy="auto"),
+        options=RuntimeOptions(project_trusted=True),
     )
 
     assert resumed.ask("Continue the task") == "Resumed."
@@ -748,7 +751,7 @@ def test_report_last_request_metadata_preserves_initial_resume_status(tmp_path):
         workspace=build_workspace(tmp_path),
         session_store=agent.session_store,
         session_id=agent.session["id"],
-        options=RuntimeOptions(approval_policy="auto"),
+        options=RuntimeOptions(project_trusted=True),
     )
 
     assert resumed.ask("Continue the task") == "Resumed."
@@ -808,8 +811,7 @@ def test_first_prompt_resume_status_updates_task_state_after_late_checkpoint_set
 def test_run_shell_nonzero_with_workspace_change_is_recorded_as_partial_success(
     tmp_path,
 ):
-    agent = build_agent(tmp_path, [], approval_policy="ask")
-    agent.approve = lambda name, args: True
+    agent = build_agent(tmp_path, [], permission_mode="default")
 
     result = agent.run_tool(
         "run_shell",
@@ -855,7 +857,7 @@ def test_resume_marks_workspace_mismatch_when_checkpoint_runtime_identity_is_sta
         workspace=build_workspace(tmp_path),
         session_store=agent.session_store,
         session_id=agent.session["id"],
-        options=RuntimeOptions(approval_policy="auto"),
+        options=RuntimeOptions(project_trusted=True),
     )
 
     assert resumed.ask("Continue the task") == "Resumed."
@@ -925,7 +927,7 @@ def test_resume_uses_session_version_for_embedded_checkpoint(tmp_path):
         workspace=build_workspace(tmp_path),
         session_store=agent.session_store,
         session_id=agent.session["id"],
-        options=RuntimeOptions(approval_policy="auto"),
+        options=RuntimeOptions(project_trusted=True),
     )
 
     assert resumed.ask("Continue the task") == "Resumed."
@@ -999,18 +1001,20 @@ def test_runtime_identity_persists_key_execution_metadata(tmp_path):
         workspace=workspace,
         session_store=store,
         options=RuntimeOptions(
-        approval_policy="never",
-        max_steps=9,
-        max_output_tokens=1024,
-        feature_flags={"memory": True},
+            project_trusted=True,
+            max_steps=9,
+            max_output_tokens=1024,
+            feature_flags={"memory": True},
         ),
     )
+    agent.set_permission_mode("dontAsk")
+    agent.evaluate_resume_state()
 
     runtime_identity = agent.session["runtime_identity"]
 
     assert runtime_identity["session_id"] == agent.session["id"]
     assert runtime_identity["cwd"] == str(tmp_path)
-    assert runtime_identity["approval_policy"] == "never"
+    assert runtime_identity["permission_mode"] == "dontAsk"
     assert runtime_identity["read_only"] is False
     assert runtime_identity["max_steps"] == 9
     assert runtime_identity["max_output_tokens"] == 1024
@@ -1040,7 +1044,7 @@ def test_resume_records_runtime_identity_mismatch_fields_in_metadata_and_trace(
                 "summary": "identity changed",
                 "runtime_identity": {
                     "workspace_fingerprint": agent.workspace.fingerprint(),
-                    "approval_policy": "auto",
+                    "permission_mode": "dontAsk",
                     "read_only": False,
                     "max_steps": 6,
                     "max_output_tokens": 512,
@@ -1062,10 +1066,10 @@ def test_resume_records_runtime_identity_mismatch_fields_in_metadata_and_trace(
         session_store=agent.session_store,
         session_id=agent.session["id"],
         options=RuntimeOptions(
-        approval_policy="never",
-        max_steps=9,
-        max_output_tokens=1024,
-        feature_flags={"memory": True},
+            project_trusted=True,
+            max_steps=9,
+            max_output_tokens=1024,
+            feature_flags={"memory": True},
         ),
     )
 
@@ -1073,11 +1077,11 @@ def test_resume_records_runtime_identity_mismatch_fields_in_metadata_and_trace(
 
     assert resumed.last_request_metadata["resume_status"] == "workspace-mismatch"
     assert resumed.last_request_metadata["runtime_identity_mismatch_fields"] == [
-        "approval_policy",
         "feature_flags",
         "max_output_tokens",
         "max_steps",
         "model",
+        "permission_mode",
         "shell_env_allowlist",
     ]
 
@@ -1092,18 +1096,17 @@ def test_resume_records_runtime_identity_mismatch_fields_in_metadata_and_trace(
     ]
     assert mismatch_events
     assert mismatch_events[0]["fields"] == [
-        "approval_policy",
         "feature_flags",
         "max_output_tokens",
         "max_steps",
         "model",
+        "permission_mode",
         "shell_env_allowlist",
     ]
 
 
 def test_partial_success_records_metadata_without_process_notes(tmp_path):
-    agent = build_agent(tmp_path, [], approval_policy="ask")
-    agent.approve = lambda name, args: True
+    agent = build_agent(tmp_path, [], permission_mode="default")
 
     agent.run_tool(
         "run_shell",
@@ -1138,7 +1141,7 @@ def test_agent_keeps_completion_usage_out_of_last_request_metadata(tmp_path):
         ),
         workspace=workspace,
         session_store=store,
-        options=RuntimeOptions(approval_policy="auto"),
+        options=RuntimeOptions(project_trusted=True),
     )
 
     assert agent.ask("Cache aware run") == "Done."
@@ -1181,7 +1184,7 @@ def test_report_records_safe_model_identity_and_request_evidence(tmp_path):
         model_client=client,
         workspace=workspace,
         session_store=store,
-        options=RuntimeOptions(approval_policy="auto"),
+        options=RuntimeOptions(project_trusted=True),
     )
 
     assert agent.ask("record provider evidence") == "Done."

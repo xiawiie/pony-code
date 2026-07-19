@@ -6,6 +6,8 @@ from enum import Enum
 class PermissionMode(str, Enum):
     DEFAULT = "default"
     ACCEPT_EDITS = "acceptEdits"
+    AUTO = "auto"
+    BYPASS_PERMISSIONS = "bypassPermissions"
     PLAN = "plan"
     DONT_ASK = "dontAsk"
 
@@ -20,10 +22,17 @@ _MUTATING_EFFECTS = frozenset({"workspace_write", "memory_write", "session_state
 
 
 def validate_permission_mode(value):
+    if value == "manual":
+        value = PermissionMode.DEFAULT.value
     try:
         return PermissionMode(value).value
     except (TypeError, ValueError):
         raise ValueError("invalid permission mode") from None
+
+
+def display_permission_mode(value):
+    mode = validate_permission_mode(value)
+    return "manual" if mode == PermissionMode.DEFAULT.value else mode
 
 
 def decide_permission(
@@ -33,6 +42,8 @@ def decide_permission(
     effect_class,
     explicit=None,
     builtin_edit=False,
+    auto_allow=False,
+    plan_write=False,
 ):
     """Return allow, ask, or deny without inferring command safety."""
     try:
@@ -48,7 +59,7 @@ def decide_permission(
 
     mutating = effect_class in _MUTATING_EFFECTS
     if mode is PermissionMode.PLAN and mutating:
-        return PermissionDecision.DENY
+        return PermissionDecision.ALLOW if plan_write is True else PermissionDecision.ASK
     if explicit is PermissionDecision.ALLOW:
         return PermissionDecision.ALLOW
     if explicit is PermissionDecision.ASK:
@@ -59,6 +70,14 @@ def decide_permission(
         )
     if not mutating:
         return PermissionDecision.ALLOW
+    if mode is PermissionMode.BYPASS_PERMISSIONS:
+        return PermissionDecision.ALLOW
+    if mode is PermissionMode.AUTO:
+        return (
+            PermissionDecision.ALLOW
+            if auto_allow is True
+            else PermissionDecision.DENY
+        )
     if (
         mode is PermissionMode.ACCEPT_EDITS
         and effect_class == "workspace_write"

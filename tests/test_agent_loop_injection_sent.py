@@ -45,7 +45,7 @@ def build_native_agent(tmp_path, provider, **kwargs):
         model_client=provider,
         workspace=WorkspaceContext.build(tmp_path),
         session_store=SessionStore(tmp_path / ".pony" / "sessions"),
-        options=RuntimeOptions(approval_policy="auto", **kwargs),
+        options=RuntimeOptions(project_trusted=True, **kwargs),
     )
 
 
@@ -69,7 +69,7 @@ def test_provider_receives_injection_wrapped_user_message(tmp_path):
         model_client=provider,
         workspace=workspace,
         session_store=store,
-        options=RuntimeOptions(max_steps=3),
+        options=RuntimeOptions(project_trusted=True, max_steps=3),
     )
 
     pony.ask("what's in readme?")
@@ -108,7 +108,7 @@ def test_message_count_invariant_after_injection(tmp_path):
         model_client=provider,
         workspace=workspace,
         session_store=store,
-        options=RuntimeOptions(max_steps=3),
+        options=RuntimeOptions(project_trusted=True, max_steps=3),
     )
 
     pony.ask("hi")

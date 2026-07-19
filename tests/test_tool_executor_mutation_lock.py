@@ -25,6 +25,7 @@ def build_agent(tmp_path):
 
 def test_approval_finishes_before_mutation_lock(tmp_path, monkeypatch):
     agent = build_agent(tmp_path)
+    agent.set_permission_mode("default")
     events = []
     monkeypatch.setattr(
         agent, "approve", lambda name, args: events.append("approval") or True
@@ -45,13 +46,13 @@ def test_approval_finishes_before_mutation_lock(tmp_path, monkeypatch):
     assert events[-1] == "lock-exit"
 
 
-def test_permission_denial_happens_before_approval_and_mutation_lock(
+def test_plan_approval_denial_happens_before_mutation_lock(
     tmp_path,
     monkeypatch,
 ):
     agent = build_agent(tmp_path)
     agent.set_permission_mode("plan")
-    prompt = Mock(return_value=True)
+    prompt = Mock(return_value=False)
     runner = Mock(return_value="must not run")
     lock = Mock(side_effect=AssertionError("mutation lock entered"))
     agent._approval_prompt = prompt
@@ -62,8 +63,8 @@ def test_permission_denial_happens_before_approval_and_mutation_lock(
         "write_file", {"path": "blocked.txt", "content": "blocked"}
     )
 
-    assert result.metadata["tool_error_code"] == "permission_mode_block"
-    prompt.assert_not_called()
+    assert result.metadata["tool_error_code"] == "approval_denied"
+    prompt.assert_called_once()
     lock.assert_not_called()
     runner.assert_not_called()
 

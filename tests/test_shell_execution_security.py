@@ -16,7 +16,7 @@ from pony.runtime.options import RuntimeOptions
 def build_agent(
     tmp_path,
     *,
-    approval_policy="auto",
+    permission_mode="auto",
     executables=None,
     read_only=False,
     outputs=None,
@@ -24,19 +24,22 @@ def build_agent(
     secret_env_names=(),
 ):
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
-    return Pony(
+    agent = Pony(
         model_client=FakeModelClient(list(outputs or [])),
         workspace=WorkspaceContext.build(
             tmp_path, executables={} if executables is None else executables
         ),
         session_store=SessionStore(tmp_path / ".pony" / "sessions"),
         options=RuntimeOptions(
-        approval_policy=approval_policy,
-        read_only=read_only,
-        redaction_env=redaction_env,
-        secret_env_names=secret_env_names,
+            project_trusted=True,
+            read_only=read_only,
+            redaction_env=redaction_env,
+            secret_env_names=secret_env_names,
         ),
     )
+    if permission_mode != "auto":
+        agent.set_permission_mode(permission_mode)
+    return agent
 
 
 def completed(stdout="ok\n", stderr="", exit_code=0):
@@ -71,7 +74,7 @@ def assert_shell_metadata(
     (
         "case",
         "command",
-        "approval_policy",
+        "permission_mode",
         "read_only",
         "executables",
         "approve_result",
@@ -88,7 +91,7 @@ def assert_shell_metadata(
         (
             "read-only",
             "pwd",
-            "ask",
+            "default",
             True,
             {"pwd": "/frozen/pwd"},
             True,
@@ -104,15 +107,15 @@ def assert_shell_metadata(
         (
             "never",
             "pwd",
-            "never",
+            "dontAsk",
             False,
             {"pwd": "/frozen/pwd"},
             True,
-            "approval_denied",
+            "permission_mode_block",
             "read_only",
             "allow",
             "proved_read_only",
-            "denied",
+            "blocked",
             "argv",
             0,
             0,
@@ -156,7 +159,7 @@ def assert_shell_metadata(
             False,
             {"python": "/frozen/python"},
             True,
-            "command_approval_required",
+            "permission_mode_block",
             "external_effect",
             "ask",
             "interpreter_requires_approval",
@@ -172,7 +175,7 @@ def assert_shell_metadata(
             False,
             {"sh": "/frozen/sh"},
             True,
-            "command_approval_required",
+            "permission_mode_block",
             "external_effect",
             "ask",
             "shell_grammar_requires_approval",
@@ -184,7 +187,7 @@ def assert_shell_metadata(
         (
             "ask-allow",
             "pwd",
-            "ask",
+            "default",
             False,
             {"pwd": "/frozen/pwd"},
             True,
@@ -200,7 +203,7 @@ def assert_shell_metadata(
         (
             "ask-argv",
             "python -m pytest",
-            "ask",
+            "default",
             False,
             {"python": "/frozen/python"},
             True,
@@ -216,7 +219,7 @@ def assert_shell_metadata(
         (
             "ask-missing",
             "python -m pytest",
-            "ask",
+            "default",
             False,
             {},
             True,
@@ -232,7 +235,7 @@ def assert_shell_metadata(
         (
             "ask-denied",
             "pwd",
-            "ask",
+            "default",
             False,
             {"pwd": "/frozen/pwd"},
             False,
@@ -248,7 +251,7 @@ def assert_shell_metadata(
         (
             "ask-shell",
             "pwd && ls",
-            "ask",
+            "default",
             False,
             {"sh": "/frozen/sh"},
             True,
@@ -264,7 +267,7 @@ def assert_shell_metadata(
         (
             "ask-shell-missing",
             "pwd && ls",
-            "ask",
+            "default",
             False,
             {},
             True,
@@ -280,7 +283,7 @@ def assert_shell_metadata(
         (
             "sensitive",
             "cat .env",
-            "ask",
+            "default",
             False,
             {"cat": "/frozen/cat"},
             True,
@@ -299,7 +302,7 @@ def test_single_shell_gate_mode_matrix(
     tmp_path,
     case,
     command,
-    approval_policy,
+    permission_mode,
     read_only,
     executables,
     approve_result,
@@ -314,7 +317,7 @@ def test_single_shell_gate_mode_matrix(
 ):
     agent = build_agent(
         tmp_path,
-        approval_policy=approval_policy,
+        permission_mode=permission_mode,
         executables=executables,
         read_only=read_only,
     )
@@ -337,7 +340,7 @@ def test_single_shell_gate_mode_matrix(
         risk_class=risk_class,
         decision=decision,
         reason=reason,
-        mode=approval_policy,
+        mode=permission_mode,
         outcome=outcome,
         runner_executed=bool(runner_count),
         execution_mode=execution_mode,
@@ -374,7 +377,7 @@ def test_sensitive_git_object_path_is_rejected_before_prompt_or_runner(
 
     agent = build_agent(
         tmp_path,
-        approval_policy="ask",
+        permission_mode="default",
         executables={"git": "/frozen/git"},
     )
     approve = Mock(return_value=True)
@@ -396,7 +399,7 @@ def test_sensitive_git_object_path_is_rejected_before_prompt_or_runner(
         risk_class="destructive",
         decision="reject",
         reason="sensitive_path",
-        mode="ask",
+        mode="default",
         outcome="blocked",
         runner_executed=False,
         execution_mode="argv",
@@ -410,7 +413,7 @@ def test_sensitive_git_object_path_is_rejected_before_prompt_or_runner(
 def test_ask_eof_denies_without_runner_or_exit_code(tmp_path, monkeypatch):
     agent = build_agent(
         tmp_path,
-        approval_policy="ask",
+        permission_mode="default",
         executables={"pwd": "/frozen/pwd"},
     )
     runner = Mock(return_value=completed())
@@ -580,7 +583,7 @@ def test_hard_reject_does_not_read_empty_argv(tmp_path, monkeypatch):
         Mock(return_value=assessment),
         raising=False,
     )
-    agent = build_agent(tmp_path, approval_policy="ask", executables={})
+    agent = build_agent(tmp_path, permission_mode="default", executables={})
     approve = Mock(return_value=True)
     runner = Mock(return_value=completed())
     agent.approve = approve
@@ -655,7 +658,7 @@ def test_execution_shape_uses_only_frozen_executables(
     monkeypatch.setattr("pony.tools.subprocess.subprocess.Popen", fake_popen)
     agent = build_agent(
         tmp_path,
-        approval_policy="ask",
+        permission_mode="default",
         executables=executables,
     )
     agent.approve = Mock(return_value=True)
@@ -698,7 +701,7 @@ def test_simple_unknown_command_is_not_rewrapped_in_shell(tmp_path, monkeypatch)
     monkeypatch.setattr("pony.tools.subprocess.subprocess.Popen", fake_popen)
     agent = build_agent(
         tmp_path,
-        approval_policy="ask",
+        permission_mode="default",
         executables={"echo": "/frozen/echo"},
     )
     agent.approve = Mock(return_value=True)
@@ -751,7 +754,7 @@ def test_runtime_path_spoof_cannot_replace_frozen_executable(tmp_path, monkeypat
 def test_executable_path_never_falls_back_to_frozen_basename(tmp_path):
     agent = build_agent(
         tmp_path,
-        approval_policy="ask",
+        permission_mode="default",
         executables={
             "python": "/frozen/python",
             "/usr/bin/python": "/usr/bin/python",
@@ -776,7 +779,7 @@ def test_executable_path_never_falls_back_to_frozen_basename(tmp_path):
 def test_missing_trusted_executable_reports_safe_available_names(tmp_path):
     agent = build_agent(
         tmp_path,
-        approval_policy="ask",
+        permission_mode="default",
         executables={"python3": "/frozen/python3"},
     )
     agent.approve = Mock(return_value=True)
@@ -796,7 +799,7 @@ def test_approval_payload_and_runner_output_are_redacted(tmp_path):
     seen_payloads = []
     agent = build_agent(
         tmp_path,
-        approval_policy="ask",
+        permission_mode="default",
         executables={"pwd": "/frozen/pwd"},
         redaction_env={"PONY_TEST_TOKEN": secret},
         secret_env_names=("PONY_TEST_TOKEN",),
@@ -828,7 +831,7 @@ def test_shell_record_redacts_full_command_before_truncating_summary(tmp_path):
     command = "echo " + ("x" * 230) + secret
     agent = build_agent(
         tmp_path,
-        approval_policy="ask",
+        permission_mode="default",
         executables={"echo": "/frozen/echo"},
         redaction_env={"PONY_TEST_TOKEN": secret},
         secret_env_names=("PONY_TEST_TOKEN",),
@@ -859,7 +862,7 @@ def test_shell_record_redacts_full_command_before_truncating_summary(tmp_path):
 def test_approval_mutation_blocks_execution(tmp_path, mutation_target):
     agent = build_agent(
         tmp_path,
-        approval_policy="ask",
+        permission_mode="default",
         executables={"pwd": "/frozen/pwd"},
     )
     args = {"command": "pwd", "timeout": 5}
@@ -891,7 +894,7 @@ def test_post_prompt_reassessment_blocks_filesystem_swap_without_second_prompt(
     outside.write_text("outside\n", encoding="utf-8")
     agent = build_agent(
         tmp_path,
-        approval_policy="ask",
+        permission_mode="default",
         executables={"wc": "/frozen/wc"},
     )
     runner = Mock(return_value=completed())
@@ -924,7 +927,7 @@ def test_decoded_secret_tool_action_is_blocked_before_prompt_and_runner(tmp_path
     }
     agent = build_agent(
         tmp_path,
-        approval_policy="ask",
+        permission_mode="default",
         executables={"echo": "/frozen/echo"},
         outputs=(tool_call, "done"),
         redaction_env={"PONY_TEST_TOKEN": secret},
@@ -1246,7 +1249,7 @@ def test_approved_git_cannot_override_hardening_or_run_config_helpers(
 
     agent = build_agent(
         tmp_path,
-        approval_policy="ask",
+        permission_mode="default",
         executables={"git": "/frozen/git"},
     )
     agent.approve = Mock(return_value=True)
@@ -1284,7 +1287,7 @@ def test_approved_git_config_override_cannot_execute_fsmonitor_marker(
     assert git
     agent = build_agent(
         tmp_path,
-        approval_policy="ask",
+        permission_mode="default",
         executables={"git": git},
     )
     agent.approve = Mock(return_value=True)
@@ -1316,7 +1319,7 @@ def test_approved_git_fetch_blocks_repo_ssh_command_before_runner(
     assert git
     agent = build_agent(
         tmp_path,
-        approval_policy="ask",
+        permission_mode="default",
         executables={"git": git},
     )
     marker = tmp_path / "ssh-command-ran"
@@ -1364,7 +1367,7 @@ def test_approved_git_fetch_blocks_repo_uploadpack_before_execution(tmp_path):
     assert git
     agent = build_agent(
         tmp_path,
-        approval_policy="ask",
+        permission_mode="default",
         executables={"git": git},
     )
     remote = tmp_path / "remote.git"
@@ -1416,7 +1419,7 @@ def test_approved_git_fetch_without_dangerous_config_reaches_runner(tmp_path):
     )
     agent = build_agent(
         tmp_path,
-        approval_policy="ask",
+        permission_mode="default",
         executables={"git": git},
     )
     approve = Mock(return_value=True)
@@ -1449,7 +1452,7 @@ def test_approved_git_fetch_blocks_unknown_remote_helper_protocol(
     assert git
     agent = build_agent(
         tmp_path,
-        approval_policy="ask",
+        permission_mode="default",
         executables={"git": git},
     )
     helper_dir = tmp_path.parent / f"{tmp_path.name}-helper-bin"
@@ -1526,7 +1529,7 @@ def test_approved_git_fetch_builtin_protocol_passes_preflight(
     assert git
     agent = build_agent(
         tmp_path,
-        approval_policy="ask",
+        permission_mode="default",
         executables={"git": git},
     )
     subprocess.run(
@@ -1573,7 +1576,7 @@ def test_approved_unknown_git_command_cannot_execute_repo_alias(
     assert git
     agent = build_agent(
         tmp_path,
-        approval_policy="ask",
+        permission_mode="default",
         executables={"git": git},
     )
     agent.approve = Mock(return_value=True)
@@ -1652,7 +1655,7 @@ def test_approved_git_diff_rendering_cannot_execute_repo_textconv(
     assert git
     agent = build_agent(
         tmp_path,
-        approval_policy="ask",
+        permission_mode="default",
         executables={"git": git},
     )
     agent.approve = Mock(return_value=True)
@@ -1736,7 +1739,7 @@ def test_automatic_git_status_blocks_repo_clean_filter_before_execution(
         model_client=FakeModelClient([]),
         workspace=workspace,
         session_store=SessionStore(tmp_path / ".pony" / "sessions"),
-        options=RuntimeOptions(approval_policy="auto"),
+        options=RuntimeOptions(project_trusted=True),
     )
     assert agent.workspace_observer.capture()["mode"] == "filesystem"
     assert not marker.exists()
@@ -1770,7 +1773,7 @@ def test_non_repo_git_status_reaches_runner_and_returns_nonzero(tmp_path):
     assert git
     agent = build_agent(
         tmp_path,
-        approval_policy="auto",
+        permission_mode="auto",
         executables={"git": git},
     )
     approve = Mock(return_value=True)
@@ -1810,7 +1813,7 @@ def test_automatic_git_status_blocks_repo_worktree_escape(tmp_path):
     assert git
     agent = build_agent(
         tmp_path,
-        approval_policy="auto",
+        permission_mode="auto",
         executables={"git": git},
     )
     outside = tmp_path.parent / f"{tmp_path.name}-outside-worktree"
@@ -1920,7 +1923,7 @@ def test_automatic_parent_git_status_blocks_uninspected_submodule_config(
         model_client=FakeModelClient([]),
         workspace=workspace,
         session_store=SessionStore(tmp_path / ".pony" / "sessions"),
-        options=RuntimeOptions(approval_policy="auto"),
+        options=RuntimeOptions(project_trusted=True),
     )
     approve = Mock(return_value=True)
     user_git_runner = Mock(side_effect=AssertionError("user git reached runner"))

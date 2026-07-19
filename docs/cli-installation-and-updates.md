@@ -100,10 +100,43 @@ pony
 TUI 需要 stdin/stdout 同时为 TTY、`TERM` 不是 `dumb` 且终端至少 40 列，否则自动使用纯文本 REPL。颜色还会遵守
 `--no-color` 和 `NO_COLOR`。输入 `/` 查看交互命令；`Ctrl+D` 退出，`Ctrl+C` 中断/清空，短时间内再次按下则退出。
 
-`pony run` 与 `pony repl` 可显式传入 `--mode plan|act|review`；该值只追加到当前 Session，不进入 `.env` 或 TOML。
-交互中使用 `/mode [plan|act|review]` 和 `/plan [clear]`。显式交互 `--resume` 显示一次 Resume 摘要；one-shot、JSON
-inspection 与管理命令保持无装饰输出。Session v1/v2 只有在显式 resume 时迁移到 v3；其他 writer 返回
-`session_migration_required`。
+### Permission mode 与 Plan
+
+fresh Session 默认使用 `auto`。`pony run` 与 `pony repl` 可通过 `--permission-mode` 选择
+`manual|auto|acceptEdits|bypassPermissions|dontAsk|plan`；该值只追加到当前 Session，不进入 `.env` 或 TOML。
+`manual` 是公开名称，Session 内部将其存为 `default`。
+
+| 模式 | 用户可见行为 |
+| --- | --- |
+| `manual` | 读操作直接执行；没有规则覆盖的变更显示一次性 permission prompt |
+| `auto` | 本地确定性分类器自动执行内置编辑、明确授权的 Memory 保存和可证明安全的 shell；不确定时拒绝 |
+| `acceptEdits` | 自动接受内置文件编辑；其他变更仍按规则决定或询问 |
+| `bypassPermissions` | 绕过普通提示，但不绕过 trust、显式 deny、schema、路径、secret 或 Sandbox 边界 |
+| `dontAsk` | 不询问；原本需要询问的变更直接拒绝，显式 allow 规则仍可执行 |
+| `plan` | 只公开只读工具和 Plan 工具；离开 Plan 前展示精确内容与 revision 请求确认 |
+
+`auto` 的用户操作方式与 Claude Code 同名模式对齐；Pony 当前使用本地确定性安全分类器，并不复刻 Claude 的内部
+模型分类器。`/permissions` 管理当前 Session 的 exact tool-name `allow`、`ask`、`deny` 规则；`/allowed-tools` 是别名。
+交互 picker 还支持 `remove` 删除已有规则。一次性 `Approve once?` 只授权当前 Tool 调用，不会持久化为规则。
+
+`bypassPermissions` 必须通过下列一种显式危险入口启用：
+
+```bash
+pony --permission-mode bypassPermissions \
+  --allow-dangerously-skip-permissions run "apply the requested change"
+pony --dangerously-skip-permissions run "apply the requested change"
+```
+
+第一种只在同时显式指定 `--permission-mode bypassPermissions` 时放行启动；第二种直接为本 Session 选择该模式。
+permission 参数只适用于 `run/repl`，管理命令会返回 usage error。
+
+`/plan [description|open|share]` 进入或查看 Plan。首次 description 会提交规划请求；`open` 在终端显示当前 Plan；
+本地 runtime 的 `share` 明确返回不可用。模型使用 `read_plan`、`write_plan` 和 `exit_plan_mode`；只有非空 Plan
+通过精确内容与 revision 的一次性确认后，才恢复进入 Plan 前的 permission mode，并可在同一请求中继续实现。
+
+显式交互 `--resume` 在首个 prompt 前显示一次 permission、checkpoint、resume state 与 Provider/model 摘要；
+one-shot、JSON inspection 与管理命令保持无装饰输出。Session v1/v2/v3 只有在显式 resume 时迁移到 v4；其他
+writer 返回 `session_migration_required`。
 
 ## Provider 切换
 

@@ -254,10 +254,10 @@ def test_native_adapter_agent_loop_closes_two_round_tool_flow(
             model_client=client,
             workspace=WorkspaceContext.build(tmp_path),
             session_store=SessionStore(tmp_path / ".pony" / "sessions"),
-            options=RuntimeOptions(
-                approval_policy="never" if scenario == "write_denied" else "auto"
-            ),
+            options=RuntimeOptions(project_trusted=True),
         )
+        if scenario == "write_denied":
+            agent.set_permission_mode("dontAsk")
 
         answer = agent.ask(f"Run the {scenario} protocol fixture")
 

@@ -740,7 +740,6 @@ def test_run_accepts_prompt_starting_with_namespace(tmp_path, monkeypatch, capsy
         class FakeAgent:
             model_client = type("MC", (), {"model": "x"})()
             workspace = type("W", (), {"cwd": str(tmp_path), "branch": "main"})()
-            approval_policy = "auto"
             session = {"id": "s"}
 
             def ask(self, message):
@@ -779,7 +778,6 @@ def test_no_input_blocks_repl_before_input(tmp_path, monkeypatch, capsys):
         class FakeAgent:
             model_client = type("MC", (), {"model": "x"})()
             workspace = type("W", (), {"cwd": str(tmp_path), "branch": "main"})()
-            approval_policy = "auto"
             session = {"id": "s"}
 
         return FakeAgent()
@@ -805,7 +803,6 @@ def test_run_output_has_no_decorative_banner(tmp_path, monkeypatch, capsys):
         class FakeAgent:
             model_client = type("MC", (), {"model": "x"})()
             workspace = type("W", (), {"cwd": str(tmp_path), "branch": "main"})()
-            approval_policy = "auto"
             session = {"id": "s"}
 
             def ask(self, message):

@@ -27,7 +27,7 @@ flowchart TB
 ```
 
 Pony 是一个分层的本地控制循环，不是 Provider SDK 的薄包装。Provider 只负责 wire protocol；Agent Loop 决定一次
-响应能否成为 Tool、Final 或 Retry Action；工具层负责 policy、approval、effect 与恢复证据。
+响应能否成为 Tool、Final 或 Retry Action；工具层负责 schema、permission、approval、effect 与恢复证据。
 
 ## 2. 产品目录
 
@@ -113,12 +113,12 @@ renderer 处理标题、强调、列表、引用、链接、代码块和 pipe ta
 
 运行事件只投影为必要信息：`model_requested` 显示可清除的 `Working…`；Tool 开始时替换为一条脱敏的语义摘要，成功
 结束不重复输出，失败或中断补充限长原因；自动 `checkpoint_created` 静默，手动 `/checkpoint` 仍显示 ID。正式答案、
-错误、approval 和退出都会先清理瞬态状态。footer 只保留仓库/分支、execution plane、WorkflowMode/approval 与 Provider/model，窄终端先
-保留安全和模型信息，不输出绝对路径、Session ID、API Base 或 checkpoint ID。
+错误、approval 和退出都会先清理瞬态状态。footer 只保留仓库/分支、execution plane、Permission Mode 与
+Provider/model，窄终端先保留安全和模型信息，不输出绝对路径、Session ID、API Base 或 checkpoint ID。
 
-显式交互 resume 的一次性卡片由 `pony.runtime.resume` 的纯投影生成，Plan 与 checkpoint 事实分别标注来源；one-shot、
-JSON 和管理命令不显示。prompt history 每次输入后从 active Canonical Messages 重建，只包含 bounded top-level user text，
-因此 slash 命令、原始 secret 输入和 abandoned branch 不成为第二套 history。
+显式交互 resume 的一次性卡片由 `pony.runtime.resume` 的纯投影生成，只显示 Permission Mode、checkpoint、resume 与
+model binding 的有限事实；one-shot、JSON 和管理命令不显示。prompt history 每次输入后从 active Canonical Messages
+重建，只包含 bounded top-level user text，因此 slash 命令、原始 secret 输入和 abandoned branch 不成为第二套 history。
 
 TUI 不展示或持久化 Provider reasoning，也不引入 streaming、定时 spinner、后台线程、alternate screen、主题系统或
 第二套 UI 状态机。纯文本 fallback 和 `pony run` 不渲染装饰性 banner；`NO_COLOR`、`--no-color` 和终端能力检测由
@@ -146,13 +146,13 @@ resolved target，二者都不建立另一套 detection 调度器。
 
 ```mermaid
 flowchart LR
-    Q["User request"] --> WF["Freeze Mode / Plan / visible schemas"]
-    WF --> SNAP["Immutable InjectionSnapshot"]
+    Q["User request"] --> PM["Freeze Permission Mode / visible schemas"]
+    PM --> SNAP["Immutable InjectionSnapshot"]
     SNAP --> REQ["Model Request"]
     REQ --> RES["Provider Response"]
     RES --> DEC{"decode_action"}
     DEC -->|Final| DONE["Finalize Run"]
-    DEC -->|Tool| POL["Mode ceiling + policy + approval"]
+    DEC -->|Tool| POL["Schema + hard policy + permission + approval"]
     DEC -->|Retry| REQ
     POL --> EXE["Execute once"]
     EXE --> OBS["Observe effect + persist evidence"]
@@ -164,13 +164,51 @@ flowchart LR
 - 一个 Model Attempt 最多一次 Provider HTTP request；明确可重试失败由 Agent Loop 产生新的 Model Attempt。
 - 一个成功响应只允许一个 Tool、Final 或 Retry Action；多工具调用不部分执行。
 - 同一 top-level turn 的 retry 与 tool follow-up 复用同一不可变注入快照。
-- 同一 turn 的 WorkflowMode、Active Plan context 与模型可见 tool schemas 冻结；`update_plan` 的新 Plan 从下一个
-  top-level turn 才进入 working set。
-- 工具调用先校验 policy 与当前授权，再进入 mutation lock；实际 effect 由 observer 复核。
+- 同一 turn 的 Permission Mode 与模型可见 tool schemas 冻结；唯一例外是批准 `exit_plan_mode` 后，当前 turn 受控刷新到
+  恢复后的 mode/schema 并继续执行。
+- 工具调用先校验 availability、schema、硬安全边界、exact-tool rule 与 Permission Mode，再进行必要 approval 并进入
+  mutation lock；实际 effect 由 observer 复核。
 - Session 持久化失败时不继续向 Provider 发送后续请求。
-- Mode ceiling 在 approval 前执行，只能收窄能力；Executor 对隐藏工具仍做最终拒绝。
+- Plan 的 schema 隐藏不是唯一防线；Executor 对模型不可见的 mutation 仍执行至少 ASK 的二次 gate，显式 allow rule
+  也不能绕过该 floor。
 - 参数 schema 或 unsafe workspace entry 被拒绝后，下一次请求最多收到一条非持久化修正提示；同一
   `(tool, rejection code)` 再次出现即停止，避免形成模型付费循环。
+
+### Permission Mode 与 Plan
+
+Pony 对用户公开六个 Permission Mode；新 Runtime Session 默认 `auto`。`manual` 在输入和 UI 中公开，但持久化前规范化为
+内部值 `default`：
+
+| 公开模式 | Session 值 | 无 exact-tool rule 时的行为 |
+| --- | --- | --- |
+| `manual` | `default` | 只读工具直接执行，mutation 请求 approval |
+| `acceptEdits` | `acceptEdits` | 内置 `write_file` / `patch_file` 直接执行，其他 mutation 请求 approval |
+| `auto` | `auto` | 本地 deterministic classifier 只放行内置编辑、满足独立授权的 `memory_save` 和可证明只读的 shell；其余 mutation 拒绝 |
+| `bypassPermissions` | `bypassPermissions` | 无 rule 的 mutation 不弹 prompt；exact `ask` 仍询问，且不绕过硬安全边界 |
+| `dontAsk` | `dontAsk` | 不弹 prompt；未显式 allow 的 mutation 拒绝，显式 ask 也转为拒绝 |
+| `plan` | `plan` | 模型只看到非 shell 只读工具和三个 Plan 工具；`write_plan` 可写 Plan，其余 mutation 至少请求 approval |
+
+Pony 的 `auto` 提供与 Claude Code 相同的用户模式名称和本地自动决策目标，但实现是确定性的本地分类器，不是 Claude
+Code 的模型分类器，也不宣称两者内部等价。选择 `bypassPermissions` 必须使用
+`--permission-mode bypassPermissions --allow-dangerously-skip-permissions`，或直接使用
+`--dangerously-skip-permissions`。后者与其他 `--permission-mode` 冲突。
+
+`permission_rules` 只匹配完整 tool name，`/permissions` 与 `/allowed-tools` 共用同一 Session writer。判决顺序为：
+
+1. tool availability、allowlist、schema 和 shell hard reject 先行；
+2. project trust、`read_only`、未知 effect 与 exact `deny` 均 fail closed；
+3. Plan mutation floor 先于 exact `allow`，只有 `write_plan` 是 Plan 内的自动写入；
+4. 其余 exact `allow` / `ask` 先于 mode 默认值，`dontAsk` 把 ASK 变为 DENY；
+5. ASK 才进入 approval，批准后重校验参数，随后只执行一次。
+
+`bypassPermissions` 只把无 exact rule 的 mode 默认判定变为 ALLOW；exact `ask` 仍进入第 5 步。它不会跳过 trust、
+exact deny、`read_only`、schema、path/secret、shell hard reject、`memory_save` 当轮明确授权、Sandbox 或 Recovery 边界。
+
+Plan 是 Session 内的 bounded Markdown artifact，不是 task checkpoint。模型在 `plan` mode 中用 `read_plan` 读取、用
+`write_plan` 完整替换；写入前拒绝超过 12 KiB UTF-8 或包含已知 secret 的文本。成功写入追加
+`plan_artifact {text, revision}`，revision 单调递增。`exit_plan_mode` 要求已有非空 artifact，并把 exact text/revision
+交给用户批准；批准后、执行前再次比较参数、artifact text 和 revision，CAS-style 校验不一致即保持 Plan。成功后恢复
+`pre_plan_mode`（缺失时为 `auto`），刷新当前 turn 的 schemas，并允许同一请求继续实现。
 
 ## 5. Workspace 与 Sandbox
 
@@ -193,8 +231,9 @@ candidate、product enablement、registry pull 或运行时下载链路。
 
 Project State 中的 sidecar 允许同一 Pony Session 保留多个终态 Sandbox 历史，但最多只能有一个非终态 staging。
 显式 resume 原样复用唯一 `ready` staging；完整 `applied/discarded` 历史不改写，而是以当前 Source Root 创建新 staging。
-新 staging 沿用 Canonical Messages、Mode、Plan 与 Provider binding，但追加清除旧 workspace recovery/freshness/runtime
-identity 的 task checkpoint。`pending_review`、`review_required`、`cleanup_pending` 或多个非终态 sidecar 都 fail closed。
+新 staging 沿用 Canonical Messages、Permission Mode、permission rules、Plan artifact 与 Provider binding，但追加清除旧
+workspace recovery/freshness/runtime identity 的 task checkpoint。`pending_review`、`review_required`、
+`cleanup_pending` 或多个非终态 sidecar 都 fail closed。
 
 ## 6. Context、Memory 与状态
 
@@ -202,8 +241,9 @@ identity 的 task checkpoint。`pending_review`、`review_required`、`cleanup_p
 历史只通过 compaction 从 active request 退出，append-only Session Tree 中的旧 entry 不删除。
 
 固定 system prefix 不维护工具清单；当前请求的 native schemas 是模型唯一可见能力表。`task_working_set` 的首个 required
-chunk 包含 WorkflowMode、Plan goal/current/progress，checkpoint 是独立 required chunk，pending Plan items 与文件详情
-是 optional。request metadata 只记录 Mode、Plan counts 与 visible-tool count，不记录 Plan 文本。
+chunk 只投影当前 task checkpoint，文件详情是 optional。Plan mode 通过固定 system reminder 告知模型使用 Plan 工具；
+artifact 文本留在 Session，由 `read_plan` 按需读取，不复制进 system prefix 或 request metadata。metadata 只记录
+Permission Mode 与 visible-tool count。
 
 ```mermaid
 flowchart TB
@@ -220,9 +260,16 @@ flowchart TB
 Session 的 Model Binding 固化 `protocol_family`、`model` 和 `endpoint_hash`。恢复时任一字段变化都会返回
 `model_session_mismatch`，避免跨 Provider 或跨 endpoint 重放 opaque provider state。
 
-Session v3 active path 同时投影 `workflow_mode` 与 `active_plan`。Mode/Plan control entries 和成功的原子
-`update_plan` tool exchange 是唯一 writer；Run、trace、checkpoint 和 Resume 卡都只是消费者。v1/v2 inspection 零写，
-只有显式 resume 可在锁下通过 backup/candidate/identity/digest 复验迁移到 v3。
+Session v4 active path 投影 `permission_mode`、`permission_rules`、`plan_text`、`plan_revision` 与 `pre_plan_mode`。
+`permission_mode_change` 和 `plan_artifact` 是专用 control entry；exact-tool rules 通过 bounded `session_info` state update
+写入。普通 `save` 不得偷偷修改这些字段。完整决策见
+[ADR-0045](adr/0045-permission-modes-session-v4-and-plan-artifacts.md)。
+
+v1 JSON、v2 JSONL 与 v3 JSONL inspection 都保持零写；普通 writer 返回 `session_migration_required`。只有显式 resume
+在 Session lock 下执行迁移：稳定读取源、创建或复验 digest backup、完整解析 candidate/projection、复验源 identity 与
+digest，再 atomic replace 为 v4。v1/v2 进入内部 `default` 和空 rule/Plan；v3 `act` 映射 `default`，其他旧 WorkflowMode
+映射 `plan`。旧结构化 Active Plan 不冒充新的 Markdown artifact：旧 `plan_update` control data 转成 migration audit，
+旧 `update_plan` tool exchange 只作为历史消息保留。
 
 Memory 分为用户维护的 User Notes 和 agent 追加的 Agent Notes。`memory_save` 只接受当前用户请求中的明确授权；
 历史授权不继承，delegate 不能写。被召回的 Memory 会进入模型请求，因此远程 Provider 能看到相关文本。
