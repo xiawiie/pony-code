@@ -12,9 +12,10 @@ from pathlib import Path
 import stat
 from itertools import islice
 
-from pony.memory import block_store
 from pony.security import private_files
 from pony.security.paths import _lexical_absolute
+
+from . import block_store
 
 
 def _issue(path, reason_code, count=1, limit=0):
