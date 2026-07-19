@@ -299,7 +299,7 @@ resume 绕过 diff 审查或 cleanup。
 ```bash
 ./scripts/check.sh
 # 仅发布流程需要保留已验证的分发包
-./scripts/check.sh --dist-dir dist
+./scripts/check.sh --release-dist
 ```
 
 wheel 只包含 `pony/**`、Sandbox JSON 与安装 metadata，并声明 `prompt-toolkit` 运行时依赖；sdist 另含构建所需的

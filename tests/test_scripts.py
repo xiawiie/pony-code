@@ -85,7 +85,7 @@ def test_release_workflow_is_tag_bound_and_uses_trusted_publishing():
     assert "uv sync --frozen --dev" in workflow
     assert "uv export --frozen --no-dev --no-emit-project" in workflow
     assert "uv pip install --refresh" in workflow
-    assert "./scripts/check.sh --dist-dir dist" in workflow
+    assert "./scripts/check.sh --release-dist" in workflow
     assert "uv run pytest" not in workflow
     assert "uv build" not in workflow
     assert "scripts/release/verify_distribution.py" not in workflow
@@ -341,6 +341,9 @@ def test_local_check_script_runs_each_full_gate_once_on_a_clean_exact_head():
     assert "uv build --offline --clear --out-dir" in text
     assert text.count("scripts/release/verify_distribution.py") == 1
     assert '--dist-dir "$dist_dir"' in text
+    assert 'tmp_dir=$(mktemp -d ".pony-check.XXXXXX")' in text
+    assert "os.rename(sys.argv[1], sys.argv[2])" in text
+    assert "--dist-dir PATH" not in text
     assert "--install-smoke" in text
     assert "git status --porcelain --untracked-files=all" in text
     assert "git rev-parse HEAD" in text
@@ -352,25 +355,35 @@ def test_local_check_script_runs_each_full_gate_once_on_a_clean_exact_head():
     assert "trap 'exit 143' 15" in text
 
 
-@pytest.mark.parametrize(("mode", "expected_status"), (("fail", 7), ("term", 143)))
-def test_local_check_cleanup_preserves_failure_status(tmp_path, mode, expected_status):
+def _check_fixture(tmp_path):
     repo = tmp_path / "repo"
     scripts = repo / "scripts"
     fake_bin = repo / "bin"
-    runtime_tmp = tmp_path / "runtime"
     scripts.mkdir(parents=True)
     fake_bin.mkdir()
-    runtime_tmp.mkdir()
     check = scripts / "check.sh"
     check.write_text(Path("scripts/check.sh").read_text(encoding="utf-8"))
     check.chmod(0o755)
+    (repo / ".gitignore").write_text("dist/\n.pony-check.*\n", encoding="utf-8")
     uv = fake_bin / "uv"
     uv.write_text(
         "#!/bin/sh\n"
         'case "$PONY_FAKE_UV_MODE" in\n'
         "  fail) exit 7 ;;\n"
         '  term) kill -TERM "$PPID"; sleep 0.1 ;;\n'
-        "esac\n",
+        "esac\n"
+        'if [ "$1" = "build" ]; then\n'
+        "  while [ \"$#\" -gt 0 ]; do\n"
+        '    if [ "$1" = "--out-dir" ]; then shift; out_dir=$1; fi\n'
+        "    shift\n"
+        "  done\n"
+        '  mkdir -p "$out_dir"\n'
+        '  : > "$out_dir/pony_code-1.0.0.tar.gz"\n'
+        '  : > "$out_dir/pony_code-1.0.0-py3-none-any.whl"\n'
+        "fi\n"
+        'if [ "$1" = "run" ] && [ "$3" = "python" ] && [ "$4" = "-c" ]; then\n'
+        '  case "$5" in *os.rename*) mv "$6" "$7" ;; esac\n'
+        "fi\n",
         encoding="utf-8",
     )
     uv.chmod(0o755)
@@ -394,21 +407,84 @@ def test_local_check_cleanup_preserves_failure_status(tmp_path, mode, expected_s
     )
     env = os.environ.copy()
     env["PATH"] = os.pathsep.join((str(fake_bin), env["PATH"]))
-    env["TMPDIR"] = str(runtime_tmp)
-    env["PONY_FAKE_UV_MODE"] = mode
+    return repo, check, env
 
-    result = subprocess.run(
-        [str(check)],
+
+def _run_check(repo, check, env, *args, mode="success"):
+    run_env = env.copy()
+    run_env["PONY_FAKE_UV_MODE"] = mode
+    return subprocess.run(
+        [str(check), *args],
         cwd=repo,
-        env=env,
+        env=run_env,
         capture_output=True,
         text=True,
         check=False,
         timeout=10,
     )
 
+
+@pytest.mark.parametrize(("mode", "expected_status"), (("fail", 7), ("term", 143)))
+def test_local_check_cleanup_preserves_failure_status(tmp_path, mode, expected_status):
+    repo, check, env = _check_fixture(tmp_path)
+
+    result = _run_check(repo, check, env, "--release-dist", mode=mode)
+
     assert result.returncode == expected_status, result.stderr
-    assert list(runtime_tmp.iterdir()) == []
+    assert not (repo / "dist").exists()
+    assert list(repo.glob(".pony-check.*")) == []
+
+
+def test_release_dist_refuses_existing_marker_without_data_loss(tmp_path):
+    repo, check, env = _check_fixture(tmp_path)
+    marker = repo / "dist" / "marker.txt"
+    marker.parent.mkdir()
+    marker.write_text("keep", encoding="utf-8")
+
+    result = _run_check(repo, check, env, "--release-dist")
+
+    assert result.returncode == 1
+    assert marker.read_text(encoding="utf-8") == "keep"
+    assert list(repo.glob(".pony-check.*")) == []
+
+
+def test_release_dist_refuses_symlink_without_touching_external_data(tmp_path):
+    repo, check, env = _check_fixture(tmp_path)
+    external = tmp_path / "external"
+    external.mkdir()
+    marker = external / "marker.txt"
+    marker.write_text("keep", encoding="utf-8")
+    (repo / "dist").symlink_to(external, target_is_directory=True)
+
+    result = _run_check(repo, check, env, "--release-dist")
+
+    assert result.returncode == 1
+    assert (repo / "dist").is_symlink()
+    assert marker.read_text(encoding="utf-8") == "keep"
+
+
+def test_release_dist_does_not_accept_an_external_path(tmp_path):
+    repo, check, env = _check_fixture(tmp_path)
+    external = tmp_path / "external-dist"
+
+    result = _run_check(repo, check, env, "--dist-dir", str(external))
+
+    assert result.returncode == 2
+    assert not external.exists()
+    assert not (repo / "dist").exists()
+
+
+def test_release_dist_publishes_only_the_verified_archives(tmp_path):
+    repo, check, env = _check_fixture(tmp_path)
+
+    result = _run_check(repo, check, env, "--release-dist")
+
+    assert result.returncode == 0, result.stderr
+    assert sorted(path.name for path in (repo / "dist").iterdir()) == [
+        "pony_code-1.0.0-py3-none-any.whl",
+        "pony_code-1.0.0.tar.gz",
+    ]
+    assert list(repo.glob(".pony-check.*")) == []
 
 
 def test_provider_experiment_defaults_allow_reasoning_budget():

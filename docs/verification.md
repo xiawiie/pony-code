@@ -118,10 +118,11 @@ uv run pytest -q \
 ## Distribution 验证
 
 ```bash
-./scripts/check.sh --dist-dir dist
+./scripts/check.sh --release-dist
 ```
 
-无参数执行时分发包随临时目录清理；仅发布流程使用 `--dist-dir dist` 保留同一次门禁验证过的 wheel 和 sdist。
+无参数执行时分发包随临时目录清理；仅发布流程使用固定的 `--release-dist`，在全部门禁通过后把同一次验证过的
+wheel 和 sdist 原子发布到此前不存在的仓库 `dist/`。该入口不接受任意输出路径，也不删除或覆盖已有 `dist`。
 
 Verifier 使用 `git ls-files pony` 建立产品文件真源并检查：
 

@@ -55,7 +55,7 @@ jobs:
 
       - name: Run exact-head offline gate and build distributions
         run: |
-          ./scripts/check.sh --dist-dir dist
+          ./scripts/check.sh --release-dist
           sha256sum dist/*.whl dist/*.tar.gz > dist/SHA256SUMS
 
       - name: Publish to PyPI with trusted publishing
