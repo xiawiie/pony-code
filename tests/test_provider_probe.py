@@ -302,40 +302,29 @@ def test_auto_detection_uses_candidate_order_and_returns_first_success(monkeypat
     }
 
 
-def test_auto_auth_failure_skips_sibling_protocol_family(monkeypatch):
+def test_auto_auth_failure_does_not_probe_another_provider_family(monkeypatch):
     built = []
-    reports = iter(
-        [
-            _failed_report(code="http_4xx", status=401),
-            {
-                "status": "ok",
-                "stage": "complete",
-                "category": "ok",
-                "model_calls": 2,
-                "usage_status": "complete",
-            },
-        ]
-    )
 
     def build(config, _timeout):
         built.append(config["protocol"]["value"])
         return object()
 
     monkeypatch.setattr(probe_module, "_client_from_config", build)
-    monkeypatch.setattr(probe_module, "probe_model_client", lambda _client: next(reports))
-
-    _client, resolved, _report = resolve_provider_client(
-        _auto_config(),
-        timeout=2,
-        verify_resolved=True,
+    monkeypatch.setattr(
+        probe_module,
+        "probe_model_client",
+        lambda _client: _failed_report(code="http_4xx", status=401),
     )
 
-    assert built == [
-        "openai_chat_completions",
-        "anthropic_messages",
-        "anthropic_messages",
-    ]
-    assert resolved["resolved_provider"]["value"] == "anthropic"
+    with pytest.raises(ProviderTransportError) as caught:
+        resolve_provider_client(
+            _auto_config(),
+            timeout=2,
+            verify_resolved=True,
+        )
+
+    assert built == ["openai_chat_completions"]
+    assert caught.value.code == "http_4xx"
 
 
 def test_openai_auth_and_transient_failures_stop_without_fallback(monkeypatch):
@@ -367,7 +356,7 @@ def test_openai_auth_and_transient_failures_stop_without_fallback(monkeypatch):
         assert caught.value.code == failure["error_code"]
 
 
-def test_detection_caps_candidates_and_model_calls(monkeypatch):
+def test_external_auto_detection_is_bounded_to_two_candidates(monkeypatch):
     builder = Mock(return_value=object())
     probe = Mock(
         return_value={
@@ -386,8 +375,8 @@ def test_detection_caps_candidates_and_model_calls(monkeypatch):
         )
 
     assert caught.value.code == "provider_detection_failed"
-    assert builder.call_count == 3
-    assert probe.call_count == 3
+    assert builder.call_count == 2
+    assert probe.call_count == 2
 
 
 def test_detection_wall_cap_stops_before_starting_late_candidate(monkeypatch):

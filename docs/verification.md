@@ -154,8 +154,9 @@ pony doctor --check-api
 ```
 
 Probe 以两次调用验证 native tool call 与 tool-result continuation；continuation 同时证明最终文本能力。forced Provider 使用
-exact target，missing/auto/OpenAI family 可在同一 configured origin 上按固定候选顺序解析，最多三个候选、六次请求，
-单请求最多 30 秒、总计最多 90 秒且 detection 零 retry。真实用户请求不做 fallback。维护者 live harness 还必须设置
+exact target；外部 missing/auto/OpenAI family 只在同一 configured origin 上按固定 Chat/Responses 顺序解析，最多
+两个候选、四次请求（loopback auto 最多三个、六次），单请求最多 30 秒、总计最多 90 秒且 detection 零 retry。
+Anthropic-compatible gateway 必须显式选择 `anthropic`。真实用户请求不做 fallback。维护者 live harness 还必须设置
 model-attempt、request-timeout、token 与 wall-time cap。
 
 Live harness 的每个 designed turn 必须由 task state、report 与 trace 一致证明为

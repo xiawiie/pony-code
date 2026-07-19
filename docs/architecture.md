@@ -134,8 +134,10 @@ TUI 不展示或持久化 Provider reasoning，也不引入 streaming、定时 s
 | `ollama` | forced | `ollama_chat` | `OllamaChatModelClient` |
 | missing/`auto`/`openai` | known origin, Session binding or synthetic probe | one protocol above | corresponding adapter |
 
-Provider resolution 在 Agent 创建和用户请求之前完成。它只使用 fixed `pony_probe` tool/continuation，最多三个候选、
-六个 Transport Attempt，并保持 configured origin。Factory 仍只接收已解析的内部协议；adapter 不互相选择，真实用户请求
+Provider resolution 在 Agent 创建和用户请求之前完成。外部 auto/OpenAI endpoint 只使用 fixed `pony_probe`
+tool/continuation 探测 Chat/Responses 两个候选；loopback auto 可额外先探 Ollama，最多三个候选、六个 Transport
+Attempt，并保持 configured origin。Anthropic-compatible gateway 必须显式选择 `anthropic`。Factory 仍只接收
+已解析的内部协议；adapter 不互相选择，真实用户请求
 失败后不更换路径。每种 adapter 返回统一的 `Response`。`pony init` 可持久化 resolved Provider；doctor 只读，run/repl
 只使用当前进程结果。Generic gateway 使用 conservative Capability Profile。成功 detection 只追加一条
 bounded `provider_resolved` trace。Probe client 只使用 detection timeout；识别成功后按 exact target 和用户请求 timeout

@@ -219,7 +219,8 @@ PONY_MODEL=your-model-name
 ```
 
 该形式与 `PONY_PROVIDER=auto` 等价。如果 endpoint 不是 known origin 且没有可复用的 Session binding，
-run/repl 会在用户任务前做有界 probe；要避免之后的新 Session 重复 probe，运行 `pony init`。
+run/repl 会在用户任务前对 OpenAI Chat/Responses 做有界 probe；Anthropic-compatible 自定义网关需要显式设置
+`PONY_PROVIDER=anthropic`。要避免之后的新 Session 重复 probe，运行 `pony init`。
 
 ### Anthropic
 
