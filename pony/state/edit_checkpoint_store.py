@@ -1,4 +1,4 @@
-"""Small append-only checkpoints for Pony-owned workspace edits."""
+"""Durable before-images for Pony-owned workspace edits."""
 
 import hashlib
 import json
@@ -12,24 +12,14 @@ from . import file_lock
 
 FORMAT_VERSION = 1
 MAX_FILE_BYTES = 8 * 1024 * 1024
-MAX_LEDGER_BYTES = 8 * 1024 * 1024
+MAX_MANIFEST_BYTES = 8 * 1024 * 1024
 MAX_TURN_KEY_BYTES = 256
-_EVENT_FIELDS = {
-    "record_type",
-    "format_version",
-    "turn_key",
-    "phase",
-    "path",
-    "exists",
-    "sha256",
-    "blob_ref",
-    "mode",
-}
+_MANIFEST_FIELDS = {"format_version", "turn_key", "paths"}
+_ENTRY_FIELDS = {"before", "post"}
+_STATE_FIELDS = {"exists", "sha256", "blob_ref", "mode"}
 
 
 class EditCheckpointError(ValueError):
-    """Stable fail-closed edit checkpoint error."""
-
     def __init__(self, code, *, paths=()):
         self.code = str(code)
         self.paths = tuple(paths)
@@ -37,161 +27,144 @@ class EditCheckpointError(ValueError):
 
 
 class EditCheckpointStore:
-    """Capture first before-images and CAS-restore one top-level turn."""
+    """Capture each path once and assess whether rewind is still safe."""
 
     def __init__(self, state_root, workspace_root, *, max_file_bytes=MAX_FILE_BYTES):
         self.root = private_files.ensure_private_dir(state_root)
-        self.turns_dir = private_files.ensure_private_dir(self.root / "turns")
-        self.blobs_dir = private_files.ensure_private_dir(self.root / "blobs")
-        self.lock_path = self.root / ".store.lock"
-        self.workspace_root = Path(os.path.abspath(os.fspath(workspace_root)))
+        self.turns = private_files.ensure_private_dir(self.root / "turns")
+        self.blobs = private_files.ensure_private_dir(self.root / "blobs")
+        self.lock = self.root / ".store.lock"
+        self.workspace = Path(os.path.abspath(os.fspath(workspace_root)))
         self.max_file_bytes = int(max_file_bytes)
         if self.max_file_bytes < 0:
             raise ValueError("invalid edit checkpoint file limit")
         self._root_identity = private_files.private_directory_identity(self.root)
-        self._workspace_identity = private_files.private_directory_identity(
-            self.workspace_root
-        )
+        self._workspace_identity = private_files.private_directory_identity(self.workspace)
 
     def capture_before(self, turn_key, raw_path):
-        """Capture a path once for a turn, before an Edit or Write runs."""
-        key = _turn_key(turn_key)
-        path = _relative_path(raw_path)
-        with file_lock.locked_file(self.lock_path, require_lock=True):
-            checkpoint = self._checkpoint(key)
-            if path in checkpoint:
-                return dict(checkpoint[path]["before"])
-            state = self._read_workspace(path)
-            blob_ref = self._write_blob(state["data"]) if state["exists"] else ""
-            event = _event(key, "before", path, state, blob_ref=blob_ref)
-            self._append(key, event)
-            return dict(event)
+        self._require_roots()
+        key, path = _turn_key(turn_key), _relative_path(raw_path)
+        with file_lock.locked_file(self.lock, require_lock=True):
+            manifest = self._load(key) or _manifest(key)
+            if path in manifest["paths"]:
+                return dict(manifest["paths"][path]["before"])
+            current = self._workspace_state(path)
+            before = _state(
+                current,
+                self._write_blob(current["data"]) if current["exists"] else "",
+            )
+            manifest["paths"][path] = {"before": before, "post": None}
+            self._save(manifest)
+            return dict(before)
 
     def record_post(self, turn_key, raw_path):
-        """Record the current digest after a successful Pony-owned edit."""
-        key = _turn_key(turn_key)
-        path = _relative_path(raw_path)
-        with file_lock.locked_file(self.lock_path, require_lock=True):
-            if path not in self._checkpoint(key):
+        self._require_roots()
+        key, path = _turn_key(turn_key), _relative_path(raw_path)
+        with file_lock.locked_file(self.lock, require_lock=True):
+            manifest = self._load(key)
+            if manifest is None or path not in manifest["paths"]:
                 raise EditCheckpointError("edit_checkpoint_before_missing")
-            event = _event(key, "post", path, self._read_workspace(path))
-            self._append(key, event)
-            return dict(event)
+            post = _state(self._workspace_state(path))
+            manifest["paths"][path]["post"] = post
+            self._save(manifest)
+            return dict(post)
 
-    def restore(self, turn_key):
-        """Restore all captured paths after a full conflict preflight."""
+    def assess_restore(self, turn_key):
+        """Read-only eligibility check; this store never mutates the workspace."""
+        self._require_roots()
         key = _turn_key(turn_key)
-        with file_lock.locked_file(self.lock_path, require_lock=True):
-            checkpoint = self._checkpoint(key)
-            if not checkpoint:
+        with file_lock.locked_file(self.lock, require_lock=True):
+            manifest = self._load(key)
+            if manifest is None:
                 raise EditCheckpointError("edit_checkpoint_not_found")
-            operations = self._preflight(checkpoint)
-            for operation in reversed(operations):
-                self._restore_path(operation)
-            return {"turn_key": key, "paths": tuple(checkpoint)}
+            eligible, restored, conflicts, incomplete = [], [], [], []
+            for path, entry in manifest["paths"].items():
+                if entry["before"]["exists"]:
+                    try:
+                        self._read_blob(entry["before"]["blob_ref"])
+                    except FileNotFoundError:
+                        raise EditCheckpointError("edit_checkpoint_blob_invalid") from None
+                if entry["post"] is None:
+                    incomplete.append(path)
+                    continue
+                current = self._workspace_state(path)
+                if _same(current, entry["before"]):
+                    restored.append(path)
+                elif _same(current, entry["post"]):
+                    eligible.append(path)
+                else:
+                    conflicts.append(path)
+            return {
+                "turn_key": key,
+                "eligible": tuple(eligible),
+                "already_restored": tuple(restored),
+                "conflicts": tuple(conflicts),
+                "incomplete": tuple(incomplete),
+            }
 
-    def _preflight(self, checkpoint):
-        conflicts = []
-        incomplete = []
-        operations = []
-        for path, states in checkpoint.items():
-            post = states["post"]
-            if post is None:
-                incomplete.append(path)
-                continue
-            current = self._read_workspace(path)
-            if not _same_state(current, post):
-                conflicts.append(path)
-                continue
-            before = states["before"]
-            try:
-                data = self._read_blob(before["blob_ref"]) if before["exists"] else None
-            except FileNotFoundError:
-                raise EditCheckpointError("edit_checkpoint_blob_invalid") from None
-            operations.append((path, before, post, data))
-        if incomplete:
-            raise EditCheckpointError("edit_checkpoint_incomplete", paths=incomplete)
-        if conflicts:
-            raise EditCheckpointError("edit_checkpoint_conflict", paths=conflicts)
-        return operations
+    def read_before(self, turn_key, raw_path):
+        """Return a verified before-image for a later platform-specific restorer."""
+        self._require_roots()
+        key, path = _turn_key(turn_key), _relative_path(raw_path)
+        with file_lock.locked_file(self.lock, require_lock=True):
+            manifest = self._load(key)
+            if manifest is None or path not in manifest["paths"]:
+                raise EditCheckpointError("edit_checkpoint_not_found")
+            before = manifest["paths"][path]["before"]
+            return self._read_blob(before["blob_ref"]) if before["exists"] else None
 
-    def _restore_path(self, operation):
-        path, before, post, data = operation
-        if before["exists"]:
-            workspace_files.write_regular_bytes_anchored_atomic(
-                self.workspace_root,
-                path,
-                data,
-                max_bytes=self.max_file_bytes,
-                expected_sha256=post["sha256"] if post["exists"] else None,
-                expected_missing=not post["exists"],
-                mode=before["mode"],
-                expected_root_identity=self._workspace_identity,
-            )
-        elif post["exists"]:
-            workspace_files.remove_regular_file_anchored(
-                self.workspace_root,
-                path,
-                max_bytes=self.max_file_bytes,
-                expected_sha256=post["sha256"],
-                expected_root_identity=self._workspace_identity,
-            )
-
-    def _read_workspace(self, path):
+    def _workspace_state(self, path):
         return workspace_files.read_regular_bytes_anchored(
-            self.workspace_root,
+            self.workspace,
             path,
             max_bytes=self.max_file_bytes,
             expected_root_identity=self._workspace_identity,
         )
 
-    def _checkpoint(self, key):
-        checkpoint = {}
-        for event in self._events(key):
-            path = event["path"]
-            states = checkpoint.setdefault(path, {"before": None, "post": None})
-            if event["phase"] == "before":
-                if states["before"] is not None:
-                    raise EditCheckpointError("edit_checkpoint_invalid")
-                states["before"] = event
-            elif states["before"] is None:
-                raise EditCheckpointError("edit_checkpoint_invalid")
-            else:
-                states["post"] = event
-        return checkpoint
+    def _require_roots(self):
+        try:
+            current = (
+                private_files.private_directory_identity(self.root),
+                private_files.private_directory_identity(self.workspace),
+            )
+        except (FileNotFoundError, OSError, ValueError):
+            current = (None, None)
+        if current != (self._root_identity, self._workspace_identity):
+            raise workspace_files.WorkspaceIOError(
+                "workspace_entry_unsafe", "workspace or checkpoint root changed"
+            )
 
-    def _events(self, key):
+    def _load(self, key):
         try:
             raw = private_files.read_private_bytes(
-                self._ledger_path(key),
+                self._manifest_path(key),
                 trusted_root=self.root,
                 trusted_root_identity=self._root_identity,
-                max_bytes=MAX_LEDGER_BYTES,
+                max_bytes=MAX_MANIFEST_BYTES,
                 harden=False,
             )
         except FileNotFoundError:
-            return ()
+            return None
         try:
-            events = tuple(json.loads(line) for line in raw.splitlines())
+            value = json.loads(raw)
         except (UnicodeDecodeError, json.JSONDecodeError):
             raise EditCheckpointError("edit_checkpoint_invalid") from None
-        if not events or any(not _valid_event(event, key) for event in events):
+        if not _valid_manifest(value, key):
             raise EditCheckpointError("edit_checkpoint_invalid")
-        return events
+        return value
 
-    def _append(self, key, event):
+    def _save(self, manifest):
         raw = json.dumps(
-            event,
-            ensure_ascii=True,
-            separators=(",", ":"),
-            sort_keys=True,
-        ).encode("ascii") + b"\n"
-        private_files.append_private_bytes(
-            self._ledger_path(key),
+            manifest, ensure_ascii=True, separators=(",", ":"), sort_keys=True
+        ).encode("ascii")
+        if len(raw) > MAX_MANIFEST_BYTES:
+            raise EditCheckpointError("edit_checkpoint_too_large")
+        private_files.write_private_bytes_atomic(
+            self._manifest_path(manifest["turn_key"]),
             raw,
             trusted_root=self.root,
             trusted_root_identity=self._root_identity,
-            max_total_bytes=MAX_LEDGER_BYTES,
+            max_existing_bytes=MAX_MANIFEST_BYTES,
         )
 
     def _write_blob(self, data):
@@ -213,10 +186,12 @@ class EditCheckpointStore:
                 raise EditCheckpointError("edit_checkpoint_blob_invalid")
         return digest
 
-    def _read_blob(self, blob_ref):
+    def _read_blob(self, digest):
+        if not _digest(digest):
+            raise EditCheckpointError("edit_checkpoint_blob_invalid")
         try:
             data = private_files.read_private_bytes(
-                self._blob_path(blob_ref),
+                self.blobs / digest[:2] / digest,
                 trusted_root=self.root,
                 trusted_root_identity=self._root_identity,
                 max_bytes=self.max_file_bytes,
@@ -224,23 +199,26 @@ class EditCheckpointStore:
             )
         except ValueError:
             raise EditCheckpointError("edit_checkpoint_blob_invalid") from None
-        if hashlib.sha256(data).hexdigest() != blob_ref:
+        if hashlib.sha256(data).hexdigest() != digest:
             raise EditCheckpointError("edit_checkpoint_blob_invalid")
         return data
 
-    def _ledger_path(self, key):
-        return self.turns_dir / f"{hashlib.sha256(key.encode()).hexdigest()}.jsonl"
+    def _manifest_path(self, key):
+        return self.turns / f"{hashlib.sha256(key.encode()).hexdigest()}.json"
 
     def _blob_path(self, digest):
-        if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
+        if not _digest(digest):
             raise EditCheckpointError("edit_checkpoint_blob_invalid")
-        return self.blobs_dir / digest[:2] / digest
+        return self.blobs / digest[:2] / digest
+
+
+def _manifest(key):
+    return {"format_version": FORMAT_VERSION, "turn_key": key, "paths": {}}
 
 
 def _turn_key(value):
     key = str(value)
-    size = len(key.encode("utf-8"))
-    if not key or "\x00" in key or size > MAX_TURN_KEY_BYTES:
+    if not key or "\x00" in key or len(key.encode()) > MAX_TURN_KEY_BYTES:
         raise ValueError("invalid edit checkpoint turn key")
     return key
 
@@ -249,56 +227,60 @@ def _relative_path(value):
     return "/".join(workspace_files._workspace_relative_parts(value))
 
 
-def _event(key, phase, path, state, *, blob_ref=""):
+def _state(value, blob_ref=""):
     return {
-        "record_type": "edit_checkpoint",
-        "format_version": FORMAT_VERSION,
-        "turn_key": key,
-        "phase": phase,
-        "path": path,
-        "exists": state["exists"],
-        "sha256": state["sha256"],
+        "exists": value["exists"],
+        "sha256": value["sha256"],
         "blob_ref": blob_ref,
-        "mode": state["mode"],
+        "mode": value["mode"],
     }
 
 
-def _same_state(current, recorded):
-    return (
-        current["exists"] == recorded["exists"]
-        and current["sha256"] == recorded["sha256"]
-        and current["mode"] == recorded["mode"]
+def _same(current, recorded):
+    return all(current[field] == recorded[field] for field in ("exists", "sha256", "mode"))
+
+
+def _digest(value):
+    return isinstance(value, str) and len(value) == 64 and all(
+        char in "0123456789abcdef" for char in value
     )
 
 
-def _valid_event(event, key):
-    if not isinstance(event, dict) or event.keys() != _EVENT_FIELDS:
+def _valid_state(value, before):
+    if not isinstance(value, dict) or value.keys() != _STATE_FIELDS:
         return False
+    if not value["exists"]:
+        return value == {"exists": False, "sha256": "", "blob_ref": "", "mode": None}
+    return (
+        type(value["exists"]) is bool
+        and _digest(value["sha256"])
+        and type(value["mode"]) is int
+        and value["mode"] == (value["mode"] & 0o7777)
+        and (value["blob_ref"] == value["sha256"] if before else value["blob_ref"] == "")
+    )
+
+
+def _valid_manifest(value, key):
     if (
-        event["record_type"] != "edit_checkpoint"
-        or event["format_version"] != FORMAT_VERSION
-        or event["turn_key"] != key
-        or event["phase"] not in {"before", "post"}
-        or type(event["exists"]) is not bool
+        not isinstance(value, dict)
+        or value.keys() != _MANIFEST_FIELDS
+        or value["format_version"] != FORMAT_VERSION
+        or value["turn_key"] != key
+        or not isinstance(value["paths"], dict)
     ):
         return False
-    try:
-        if _relative_path(event["path"]) != event["path"]:
+    for path, entry in value["paths"].items():
+        try:
+            path_valid = _relative_path(path) == path
+        except (TypeError, ValueError):
+            path_valid = False
+        if (
+            not path_valid
+            or not isinstance(entry, dict)
+            or entry.keys() != _ENTRY_FIELDS
+            or not _valid_state(entry["before"], True)
+            or entry["post"] is not None
+            and not _valid_state(entry["post"], False)
+        ):
             return False
-    except (TypeError, ValueError):
-        return False
-    if not event["exists"]:
-        return event["sha256"] == event["blob_ref"] == "" and event["mode"] is None
-    digest = event["sha256"]
-    return (
-        len(digest) == 64
-        and all(char in "0123456789abcdef" for char in digest)
-        and type(event["mode"]) is int
-        and event["mode"] >= 0
-        and event["mode"] == (event["mode"] & 0o7777)
-        and (
-            event["blob_ref"] == digest
-            if event["phase"] == "before"
-            else event["blob_ref"] == ""
-        )
-    )
+    return True

@@ -213,8 +213,6 @@ class _WorkspaceWriteRequest:
     data: bytes
     limit: int
     expected_sha256: str | None
-    expected_missing: bool
-    mode: int | None
     expected_root_identity: object
     sync_file: object
     sync_parent: object
@@ -242,8 +240,6 @@ def _workspace_write_request(
     *,
     max_bytes,
     expected_sha256,
-    expected_missing,
-    mode,
     expected_root_identity,
     fsync_file,
     fsync_parent,
@@ -263,22 +259,12 @@ def _workspace_write_request(
         r"[0-9a-f]{64}", str(expected_sha256)
     ):
         raise ValueError("invalid expected workspace digest")
-    if expected_sha256 is not None and expected_missing:
-        raise ValueError("workspace write cannot expect both content and absence")
-    if type(expected_missing) is not bool:
-        raise ValueError("invalid expected workspace absence")
-    if mode is not None and (
-        type(mode) is not int or mode < 0 or stat.S_IMODE(mode) != mode
-    ):
-        raise ValueError("invalid workspace file mode")
     return _WorkspaceWriteRequest(
         workspace_root=workspace_root,
         parts=_workspace_relative_parts(raw_path),
         data=rendered,
         limit=limit,
         expected_sha256=expected_sha256,
-        expected_missing=expected_missing,
-        mode=mode,
         expected_root_identity=expected_root_identity,
         sync_file=fsync_file or os.fsync,
         sync_parent=fsync_parent or os.fsync,
@@ -306,19 +292,9 @@ def _inspect_workspace_target(parent, request):
                 "workspace_changed_during_write",
                 "workspace file disappeared before write",
             )
-        return _WorkspaceTarget(
-            -1,
-            None,
-            None,
-            request.mode if request.mode is not None else 0o644,
-        )
+        return _WorkspaceTarget(-1, None, None, 0o644)
 
     _require_safe_workspace_file(existing)
-    if request.expected_missing:
-        raise WorkspaceIOError(
-            "workspace_changed_during_write",
-            "workspace file appeared before write",
-        )
     if request.expected_sha256 is not None and existing.st_size > request.limit:
         raise _workspace_file_limit_error(existing)
     descriptor = _open_workspace_regular_at(parent, request.parts[-1])
@@ -345,7 +321,7 @@ def _inspect_workspace_target(parent, request):
             descriptor,
             signature,
             digest,
-            request.mode if request.mode is not None else stat.S_IMODE(opened.st_mode),
+            stat.S_IMODE(opened.st_mode),
         )
     except BaseException:
         os.close(descriptor)
@@ -461,8 +437,6 @@ def write_regular_bytes_anchored_atomic(
     *,
     max_bytes,
     expected_sha256=None,
-    expected_missing=False,
-    mode=None,
     expected_root_identity=None,
     fsync_file=None,
     fsync_parent=None,
@@ -474,8 +448,6 @@ def write_regular_bytes_anchored_atomic(
         data,
         max_bytes=max_bytes,
         expected_sha256=expected_sha256,
-        expected_missing=expected_missing,
-        mode=mode,
         expected_root_identity=expected_root_identity,
         fsync_file=fsync_file,
         fsync_parent=fsync_parent,
@@ -506,88 +478,6 @@ def write_regular_bytes_anchored_atomic(
                     pass
         if target is not None and target.descriptor >= 0:
             os.close(target.descriptor)
-        os.close(parent)
-
-
-def remove_regular_file_anchored(
-    workspace_root,
-    raw_path,
-    *,
-    max_bytes,
-    expected_sha256,
-    expected_root_identity=None,
-    fsync_parent=None,
-):
-    """CAS-check and remove one anchored workspace regular file."""
-    if re.fullmatch(r"[0-9a-f]{64}", str(expected_sha256)) is None:
-        raise ValueError("invalid expected workspace digest")
-    limit = int(max_bytes)
-    if limit < 0:
-        raise ValueError("invalid workspace file limit")
-    parts = _workspace_relative_parts(raw_path)
-    parent = _open_workspace_directory_anchored(
-        workspace_root,
-        parts[:-1],
-        expected_root_identity=expected_root_identity,
-    )
-    descriptor = -1
-    try:
-        try:
-            before = os.stat(parts[-1], dir_fd=parent, follow_symlinks=False)
-        except FileNotFoundError:
-            raise WorkspaceIOError(
-                "workspace_changed_during_write",
-                "workspace file disappeared before remove",
-            ) from None
-        _require_safe_workspace_file(before)
-        if before.st_size > limit:
-            raise _workspace_file_limit_error(before)
-        descriptor = _open_workspace_regular_at(parent, parts[-1])
-        signature = _workspace_entry_signature(os.fstat(descriptor))
-        if signature != _workspace_entry_signature(before):
-            raise WorkspaceIOError(
-                "workspace_changed_during_write",
-                "workspace file identity changed before remove",
-            )
-        _require_current_workspace_directory(
-            workspace_root,
-            parts[:-1],
-            _workspace_inode_identity(os.fstat(parent)),
-            expected_root_identity=expected_root_identity,
-            error_code="workspace_changed_during_write",
-        )
-        digest = _workspace_descriptor_sha256(
-            descriptor,
-            before.st_size,
-            "workspace_changed_during_write",
-        )
-        if digest != expected_sha256:
-            raise WorkspaceIOError(
-                "workspace_changed_during_write",
-                "workspace file content changed before remove",
-            )
-        current = os.stat(parts[-1], dir_fd=parent, follow_symlinks=False)
-        if (
-            _workspace_entry_signature(current) != signature
-            or _workspace_entry_signature(os.fstat(descriptor)) != signature
-        ):
-            raise WorkspaceIOError(
-                "workspace_changed_during_write",
-                "workspace file changed before remove",
-            )
-        os.unlink(parts[-1], dir_fd=parent)
-        (fsync_parent or os.fsync)(parent)
-        _require_current_workspace_directory(
-            workspace_root,
-            parts[:-1],
-            _workspace_inode_identity(os.fstat(parent)),
-            expected_root_identity=expected_root_identity,
-            error_code="workspace_changed_during_write",
-        )
-        return {"sha256": digest, "mode": stat.S_IMODE(before.st_mode)}
-    finally:
-        if descriptor >= 0:
-            os.close(descriptor)
         os.close(parent)
 
 
