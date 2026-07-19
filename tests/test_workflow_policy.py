@@ -195,6 +195,55 @@ def test_plan_approval_cas_uses_latest_durable_session(tmp_path):
     assert durable["plan_revision"] == 2
 
 
+def test_plan_approval_cas_rejects_concurrent_permission_state_change(tmp_path):
+    agent = _agent(tmp_path)
+    agent.set_permission_mode("plan")
+    agent.execute_tool("write_plan", {"plan": "# Approved\n1. Inspect"})
+    competing = SessionStore(agent.session_store.root)
+
+    def replace_exit_target(_name, _payload):
+        competing.update_permissions(agent.session["id"], mode="auto")
+        competing.update_permissions(agent.session["id"], mode="bypassPermissions")
+        competing.update_permissions(
+            agent.session["id"],
+            mode="plan",
+            pre_mode="bypassPermissions",
+        )
+        return True
+
+    agent._approval_prompt = replace_exit_target
+
+    result = agent.execute_tool("exit_plan_mode", {})
+    durable = competing.load(agent.session["id"])
+
+    assert result.metadata["tool_error_code"] == "plan_approval_changed"
+    assert durable["permission_mode"] == "plan"
+    assert durable["pre_plan_mode"] == "bypassPermissions"
+
+
+def test_plan_exit_rejects_durable_pre_mode_drift_before_approval(tmp_path):
+    agent = _agent(tmp_path)
+    agent.set_permission_mode("plan")
+    agent.execute_tool("write_plan", {"plan": "# Approved\n1. Inspect"})
+    competing = SessionStore(agent.session_store.root)
+    competing.update_permissions(agent.session["id"], mode="auto")
+    competing.update_permissions(agent.session["id"], mode="bypassPermissions")
+    competing.update_permissions(
+        agent.session["id"],
+        mode="plan",
+        pre_mode="bypassPermissions",
+    )
+    approval = Mock(return_value=True)
+    agent._approval_prompt = approval
+
+    result = agent.execute_tool("exit_plan_mode", {})
+
+    assert result.metadata["tool_error_code"] == "plan_approval_changed"
+    assert competing.load(agent.session["id"])["permission_mode"] == "plan"
+    assert agent.session["pre_plan_mode"] == "bypassPermissions"
+    approval.assert_not_called()
+
+
 def test_write_plan_rejects_oversized_and_sensitive_content(tmp_path):
     agent = _agent(tmp_path)
     agent.set_permission_mode("plan")

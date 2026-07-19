@@ -1068,6 +1068,7 @@ class Pony:
                 self.session["id"],
                 plan_text=args["plan"],
                 plan_revision=args["revision"],
+                expected_leaf_id=args["expected_leaf_id"],
             )
         except sessionstorelib.PlanApprovalChanged:
             self._reload_session_projection()
@@ -1484,6 +1485,7 @@ class Pony:
             workspace_checkpoint_id=intent["workspace_checkpoint_id"],
             restore_checkpoint_id=intent["restore_checkpoint_id"],
             target_checkpoint_id=intent["target_checkpoint_id"],
+            expected_leaf_id=intent["old_leaf_id"],
         )
         return rewind_entry, None
 
@@ -1558,6 +1560,7 @@ class Pony:
                         "provider_usage": dict(intent["branch_summary_provider_usage"]),
                     },
                     parent_id=rewind_entry["id"],
+                    expected_leaf_id=rewind_entry["id"],
                 )
             self.session_store.clear_rewind_intent(session["id"])
             self._reload_session_projection()
@@ -1599,7 +1602,12 @@ class Pony:
             if summary:
                 result = rewind_with_branch_summary(self, entry_id, focus=focus)
             else:
-                result = self.session_store.rewind(self.session["id"], entry_id)
+                current_leaf = self.session_store.load_tree(self.session["id"]).leaf_id
+                result = self.session_store.rewind(
+                    self.session["id"],
+                    entry_id,
+                    expected_leaf_id=current_leaf,
+                )
             self._reload_session_projection()
             return result
 

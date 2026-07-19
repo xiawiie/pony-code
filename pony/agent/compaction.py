@@ -590,17 +590,9 @@ def append_branch_rewind(
 ):
     """Append the prepared rewind and summary atomically at entry granularity."""
     session_id = agent.session["id"]
-    rewind_entry = agent.session_store.rewind(
+    rewind_entry, summary_entry = agent.session_store.rewind_with_summary(
         session_id,
         prepared.target_entry_id,
-        summary=prepared.summary,
-        workspace_checkpoint_id=workspace_checkpoint_id,
-        restore_checkpoint_id=restore_checkpoint_id,
-        target_checkpoint_id=target_checkpoint_id,
-    )
-    summary_entry = agent.session_store.append_control(
-        session_id,
-        "branch_summary",
         {
             "summary": prepared.summary,
             "summary_tokens": prepared.summary_tokens,
@@ -609,7 +601,10 @@ def append_branch_rewind(
             "focus": prepared.focus,
             "provider_usage": dict(prepared.provider_usage),
         },
-        parent_id=rewind_entry["id"],
+        workspace_checkpoint_id=workspace_checkpoint_id,
+        restore_checkpoint_id=restore_checkpoint_id,
+        target_checkpoint_id=target_checkpoint_id,
+        expected_leaf_id=prepared.abandoned_leaf_id,
     )
     return BranchSummaryResult(
         rewind_entry=rewind_entry,

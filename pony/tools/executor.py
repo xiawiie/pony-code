@@ -831,9 +831,30 @@ def _prepare_exit_plan_tool(agent, tool, args, effect_class):
     )
     if rejection is not None:
         return rejection, None
+    durable_tree = agent.session_store.load_tree(agent.session["id"])
+    durable = durable_tree.projection
+    if any(
+        durable.get(key) != agent.session.get(key)
+        for key in (
+            "permission_mode",
+            "plan_text",
+            "plan_revision",
+            "pre_plan_mode",
+        )
+    ):
+        agent._reload_session_projection()
+        return ToolExecutionResult(
+            content="error: plan changed during approval",
+            metadata=_metadata(
+                "rejected",
+                effect_class=effect_class,
+                tool_error_code="plan_approval_changed",
+                security_event_type="approval_arguments_changed",
+                risk_level="high",
+            ),
+        ), None
     if (
-        agent.session.get("pre_plan_mode")
-        == PermissionMode.BYPASS_PERMISSIONS.value
+        durable.get("pre_plan_mode") == PermissionMode.BYPASS_PERMISSIONS.value
         and not getattr(agent, "bypass_permissions_available", False)
     ):
         return ToolExecutionResult(
@@ -858,6 +879,7 @@ def _prepare_exit_plan_tool(agent, tool, args, effect_class):
                 risk_level="high",
             ),
         ), None
+    expected_leaf_id = durable_tree.leaf_id
     original_args = deepcopy(args)
     approval_payload = {"plan": plan, "revision": revision}
     payload_snapshot = deepcopy(approval_payload)
@@ -897,7 +919,10 @@ def _prepare_exit_plan_tool(agent, tool, args, effect_class):
                 risk_level="high",
             ),
         ), None
-    return None, payload_snapshot
+    return None, {
+        **payload_snapshot,
+        "expected_leaf_id": expected_leaf_id,
+    }
 
 
 def _prepare_tool_request(agent, name, args):
