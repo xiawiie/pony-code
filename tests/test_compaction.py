@@ -12,7 +12,7 @@ from pony.agent.messages import make_tool_pair
 from pony.agent.model_capabilities import TokenAccounting
 from benchmarks.support.fake_provider import FakeModelClient
 from pony.providers.response import Response, StopReason
-from pony.state.session_store import SessionStore
+from pony.state.session_store import SessionFormatError, SessionStore
 from pony.workspace.context import now
 
 
@@ -263,3 +263,24 @@ def test_rewind_branch_summary_is_bounded_and_carried_forward(tmp_path, monkeypa
     assert view.messages[-1]["_pony_meta"]["origin"] == "branch_summary"
     assert agent.model_client.requests[0]["max_tokens"] == 2_048
     assert append_batches == [("rewind", "branch_summary")]
+
+
+def test_branch_summary_rewind_rejects_a_stale_picker_leaf_before_model_call(tmp_path):
+    agent = _agent(tmp_path, ["must not be used"])
+    for index in range(4):
+        agent.session["messages"].append(
+            _plain("user" if index % 2 == 0 else "assistant", f"branch-{index}")
+        )
+    agent.session_store.save(agent.session)
+    selected = agent.session_store.load_tree("compact")
+    target = next(entry for entry in selected.active_path if entry["type"] == "message")
+    agent.session_store.label("compact", "concurrent")
+
+    with pytest.raises(SessionFormatError, match="session changed before rewind"):
+        rewind_with_branch_summary(
+            agent,
+            target["id"],
+            expected_leaf_id=selected.leaf_id,
+        )
+
+    assert agent.model_client.requests == []

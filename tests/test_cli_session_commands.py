@@ -1,6 +1,8 @@
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
+
 from pony.cli.session import handle_session_command
 from pony.cli.start import (
     _MAX_SESSION_PICKER_CANDIDATES,
@@ -105,7 +107,10 @@ def test_repl_bare_fork_uses_picker_and_reloads_history():
     )
 
     assert handled is True
-    agent.fork_session.assert_called_once_with("entry-1")
+    agent.fork_session.assert_called_once_with(
+        "entry-1",
+        expected_leaf_id="leaf",
+    )
     assert refreshed == [True]
 
 
@@ -159,6 +164,7 @@ def test_repl_bare_rewind_accepts_summary_option_after_picker():
         "entry-1",
         summary=True,
         focus="carry-tests",
+        expected_leaf_id="leaf",
     )
 
 
@@ -195,6 +201,18 @@ def test_plain_session_picker_selects_number_and_cancels(monkeypatch, capsys):
 
     monkeypatch.setattr("builtins.input", lambda _prompt: "")
     assert _plain_session_picker("/rewind", candidates) is None
+
+
+@pytest.mark.parametrize("selected", ("0", "-1", "2"))
+def test_plain_session_picker_rejects_numbers_outside_the_list(
+    monkeypatch,
+    selected,
+):
+    candidates = [("entry-1", "entry-1 | message | active")]
+    monkeypatch.setattr("builtins.input", lambda _prompt: selected)
+
+    with pytest.raises(ValueError, match="choose a listed session entry"):
+        _plain_session_picker("/fork", candidates)
 
 
 def test_session_picker_candidates_redact_and_strip_control_text():

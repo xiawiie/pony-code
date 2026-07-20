@@ -5,10 +5,10 @@ import pytest
 
 from benchmarks.support.fake_provider import FakeModelClient
 from pony import Pony
-from pony.cli.start import _process_repl_input, run_repl
+from pony.cli.start import _open_plan_in_editor, _process_repl_input, run_repl
 from pony.runtime.options import RuntimeOptions
 from pony.runtime.resume import active_prompt_history
-from pony.state.session_store import SessionStore
+from pony.state.session_store import PlanApprovalChanged, SessionStore
 from pony.workspace.context import WorkspaceContext
 
 
@@ -147,6 +147,48 @@ def test_repl_plan_open_enters_plan_and_edits_existing_artifact(
     assert len(tree.entries) == before + 2
     assert tree.entries[-1]["type"] == "plan_artifact"
     assert "Opened plan in editor" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("concurrent_change", ("exit", "rewind", "fork"))
+def test_plan_editor_rejects_session_branch_changes_while_open(
+    tmp_path,
+    monkeypatch,
+    concurrent_change,
+):
+    agent = _agent(tmp_path)
+    agent.set_permission_mode("plan")
+    agent.save_plan_text("# Existing Plan")
+    competing = SessionStore(agent.session_store.root)
+    monkeypatch.setenv("EDITOR", "pony-test-editor")
+    monkeypatch.setattr("pony.cli.start.shutil.which", lambda _name: "/usr/bin/editor")
+
+    def edit(argv, **_kwargs):
+        tree = competing.load_tree(agent.session["id"])
+        if concurrent_change == "exit":
+            competing.update_permissions(agent.session["id"], mode="auto")
+        else:
+            target = tree.active_path[0]["id"]
+            if concurrent_change == "rewind":
+                competing.rewind(
+                    agent.session["id"],
+                    target,
+                    expected_leaf_id=tree.leaf_id,
+                )
+            else:
+                competing.fork(
+                    agent.session["id"],
+                    target,
+                    expected_leaf_id=tree.leaf_id,
+                )
+        Path(argv[-1]).write_text("# Edited Plan\n", encoding="utf-8")
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr("pony.cli.start.subprocess.run", edit)
+
+    with pytest.raises(PlanApprovalChanged, match="plan changed while editing"):
+        _open_plan_in_editor(agent)
+
+    assert competing.load(agent.session["id"])["plan_text"] != "# Edited Plan"
 
 
 def test_repl_plan_share_enters_plan_before_reporting_unavailable(tmp_path, capsys):

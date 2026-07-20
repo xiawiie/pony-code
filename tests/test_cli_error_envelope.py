@@ -283,6 +283,33 @@ def test_unsupported_legacy_session_uses_stable_json_error(
     assert "model_change" in output
 
 
+def test_resume_latest_on_empty_store_returns_session_not_found_without_creating(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr("builtins.input", lambda _prompt="": "y")
+
+    code = main(
+        [
+            "--cwd",
+            str(tmp_path),
+            "--format",
+            "json",
+            "--resume",
+            "latest",
+            "--permission-mode",
+            "plan",
+            "repl",
+        ]
+    )
+
+    assert code == 2
+    assert '"code": "session_not_found"' in capsys.readouterr().out
+    assert not list((tmp_path / ".pony" / "sessions").glob("*.jsonl"))
+
+
 def test_init_invalid_base_does_not_echo_input_value(tmp_path, monkeypatch, capsys):
     answers = iter(("", f"https://user:{CANARY}@example.com/v1"))
     monkeypatch.setattr("builtins.input", lambda: next(answers))
