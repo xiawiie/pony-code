@@ -7,12 +7,14 @@ from unittest.mock import Mock
 import pytest
 
 import pony.agent.loop as agent_loop_module
+import pony.agent.compaction as compaction_module
 from pony.security import private_files as security_module
 from pony import Pony
-from pony.state.session_store import SessionStore
+from pony.state.session_store import SessionFormatError, SessionStore
 from pony.workspace.context import WorkspaceContext
 from benchmarks.support.fake_provider import FakeModelClient
 from pony.agent.loop import AgentLoop
+from pony.agent.observability import load_run_summary
 from pony.providers.transport import ProviderTransportError
 from pony.providers.response import Response, StopReason
 from pony.runtime.options import RuntimeOptions
@@ -302,6 +304,182 @@ def test_provider_context_error_forces_one_compaction_and_retry(tmp_path):
         for message in retried_messages
     )
     assert "old-marker-0" not in json.dumps(retried_messages)
+    events = read_trace(agent)
+    assert [
+        event["attempt_origin"]
+        for event in events
+        if event["event"] == "model_requested"
+    ] == ["initial", "compaction", "model_retry"]
+    auxiliary = [
+        event for event in events if event["event"] == "model_auxiliary_completed"
+    ]
+    assert len(auxiliary) == 1
+    assert auxiliary[0]["completion_usage"]["input_tokens"] == 14_000
+    report = agent.run_store.load_report(agent.current_task_state.run_id)
+    assert report["model"]["attempts"] == 3
+    assert report["model"]["turns"] == 1
+    assert report["model"]["transport_attempts"] == 3
+    assert report["model"]["usage"]["input_tokens"] == 22_000
+    assert report["model"]["usage"]["output_tokens"] == 41
+    assert load_run_summary(agent.run_store.root, agent.current_task_state.run_id) == report
+
+
+def test_failed_compaction_call_is_durable_run_evidence(tmp_path, monkeypatch):
+    context_error = ProviderTransportError(
+        "context_length_exceeded",
+        code="context_length_exceeded",
+        http_status=400,
+    )
+    compaction_error = ProviderTransportError(
+        "summary timeout",
+        code="timeout",
+        retryable=True,
+    )
+    provider = EvidenceScriptProvider(
+        [context_error, compaction_error, compaction_error, compaction_error]
+    )
+    delays = []
+    monkeypatch.setattr(compaction_module, "_sleep", delays.append)
+    agent = build_native_agent(tmp_path, provider)
+    for index in range(60):
+        agent.session["messages"].append(
+            {
+                "role": "user" if index % 2 == 0 else "assistant",
+                "content": f"old-marker-{index} " + ("x" * 1_000),
+                "_pony_meta": {},
+            }
+        )
+    agent.session_store.save(agent.session)
+
+    with pytest.raises(ProviderTransportError) as caught:
+        agent.ask("current request")
+
+    assert caught.value is context_error
+    assert delays == [0.5, 1.0]
+    events = read_trace(agent)
+    assert [
+        event["attempt_origin"]
+        for event in events
+        if event["event"] == "model_requested"
+    ] == ["initial", "compaction", "compaction", "compaction"]
+    assert [
+        event["reason_code"]
+        for event in events
+        if event["event"] == "model_failed"
+    ] == ["context_length_exceeded", "timeout", "timeout", "timeout"]
+    report = agent.run_store.load_report(agent.current_task_state.run_id)
+    assert report["model"]["attempts"] == 4
+    assert report["model"]["turns"] == 0
+    assert report["model"]["failures"] == 4
+    assert report["model"]["retries"] == 2
+    assert report["model"]["transport_attempts"] == 4
+    assert report["model"]["failure_reason_counts"] == {
+        "context_length_exceeded": 1,
+        "timeout": 3,
+    }
+    assert load_run_summary(agent.run_store.root, agent.current_task_state.run_id) == report
+
+
+def test_compaction_retry_reuses_summary_request_and_records_usage(
+    tmp_path,
+    monkeypatch,
+):
+    context_error = ProviderTransportError(
+        "context_length_exceeded",
+        code="context_length_exceeded",
+        http_status=400,
+    )
+    timeout = ProviderTransportError("summary timeout", code="timeout", retryable=True)
+    provider = EvidenceScriptProvider(
+        [
+            context_error,
+            timeout,
+            Response(
+                stop_reason=StopReason.END_TURN,
+                content=[
+                    {
+                        "type": "text",
+                        "text": "# Goal\nContinue\n# Next Steps\nAnswer current request",
+                    }
+                ],
+                usage={"input_tokens": 14_000, "output_tokens": 40},
+            ),
+            Response(
+                stop_reason=StopReason.END_TURN,
+                content=[{"type": "text", "text": "recovered"}],
+                usage={"input_tokens": 8_000, "output_tokens": 1},
+            ),
+        ]
+    )
+    delays = []
+    monkeypatch.setattr(compaction_module, "_sleep", delays.append)
+    agent = build_native_agent(tmp_path, provider)
+    for index in range(60):
+        agent.session["messages"].append(
+            {
+                "role": "user" if index % 2 == 0 else "assistant",
+                "content": f"old-marker-{index} " + ("x" * 1_000),
+                "_pony_meta": {},
+            }
+        )
+    agent.session_store.save(agent.session)
+
+    assert agent.ask("current request") == "recovered"
+
+    assert delays == [0.5]
+    assert provider.calls[1] == provider.calls[2]
+    report = agent.run_store.load_report(agent.current_task_state.run_id)
+    assert report["model"]["attempts"] == 4
+    assert report["model"]["turns"] == 1
+    assert report["model"]["failures"] == 2
+    assert report["model"]["retries"] == 2
+    assert report["model"]["transport_attempts"] == 4
+    assert report["model"]["usage"]["input_tokens"] == 22_000
+
+
+def test_compaction_retry_rejects_concurrent_session_change(tmp_path, monkeypatch):
+    context_error = ProviderTransportError(
+        "context_length_exceeded",
+        code="context_length_exceeded",
+        http_status=400,
+    )
+    timeout = ProviderTransportError("summary timeout", code="timeout", retryable=True)
+    provider = EvidenceScriptProvider([context_error, timeout])
+    agent = build_native_agent(tmp_path, provider)
+    for index in range(60):
+        agent.session["messages"].append(
+            {
+                "role": "user" if index % 2 == 0 else "assistant",
+                "content": f"old-marker-{index} " + ("x" * 1_000),
+                "_pony_meta": {},
+            }
+        )
+    agent.session_store.save(agent.session)
+
+    def append_concurrently(_delay):
+        agent.session_store.append_messages(
+            agent.session["id"],
+            [
+                {
+                    "role": "user",
+                    "content": "concurrent message",
+                    "_pony_meta": {"created_at": "2026-07-20T00:00:00Z"},
+                }
+            ],
+        )
+
+    monkeypatch.setattr(compaction_module, "_sleep", append_concurrently)
+
+    with pytest.raises(SessionFormatError, match="compaction request"):
+        agent.ask("current request")
+
+    assert len(provider.calls) == 2
+    tree = agent.session_store.load_tree(agent.session["id"])
+    assert sum(entry["type"] == "compaction" for entry in tree.entries) == 0
+    assert any(
+        message.get("content") == "concurrent message"
+        for message in tree.projection["messages"]
+    )
 
 
 def test_nonretryable_provider_failure_is_not_replayed(tmp_path, monkeypatch):

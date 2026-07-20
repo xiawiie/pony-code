@@ -183,6 +183,11 @@ files/errors；branch summary 的 2,048 tokens 分配给 abandoned approach、di
 原因和 Provider usage。Summary 调用失败不会追加 entry，也不会删除历史。Context reconstruction 找到 active path
 上最新 compaction 后，只发送 summary、可选 split summary、recent tail 和其后的新 entries。
 
+Agent turn 内的 summary Provider 调用属于辅助模型请求：明确可重试的 timeout、rate limit 或 5xx 最多按固定延迟重试
+两次，同一 summary payload 不变且不切换协议。每次请求、失败、transport evidence 与成功 usage 都进入当前 Run；成功
+summary 不增加正常 Agent model turn 计数，失败也不伪造 usage。Run 的 model attempts/retries 包含这些辅助调用，
+model turns 只统计正常 Agent response。
+
 Provider 返回明确 context-length error 时，AgentLoop 允许一次 forced compaction + retry，并追加
 `context_recovery` 审计 entry。若压缩后仍超限，最多再压缩一次并返回明确错误，不循环猜测。
 

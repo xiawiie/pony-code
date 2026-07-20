@@ -611,6 +611,7 @@ def _empty_trace_capture():
         "model_turns": 0,
         "model_attempts": 0,
         "model_failures": 0,
+        "auxiliary_model_outcomes": 0,
         "transport_attempts": None,
         "transport_retries": None,
         "transport_evidence_complete": False,
@@ -678,8 +679,28 @@ def _trace_usage(turns):
     return totals, usage_complete, request_metadata, prefix_hashes
 
 
+def _trace_auxiliary_usage(turns):
+    totals = {key: 0 for key in _LIVE_USAGE_KEYS}
+    usage_complete = True
+    for turn in turns:
+        usage = turn.get("completion_usage")
+        if not isinstance(usage, dict):
+            usage_complete = False
+            usage = {}
+        if any(
+            type(usage.get(key)) is not int
+            for key in ("input_tokens", "output_tokens")
+        ):
+            usage_complete = False
+        for key in _LIVE_USAGE_KEYS:
+            value = usage.get(key)
+            if type(value) is int:
+                totals[key] += value
+    return totals, usage_complete
+
+
 def _trace_transport(requests, outcomes):
-    complete = bool(requests) and all(
+    complete = bool(requests) and len(requests) == len(outcomes) and all(
         event.get("transport_evidence_complete") is True
         and type(event.get("transport_attempts")) is int
         and type(event.get("transport_retries")) is int
@@ -703,18 +724,38 @@ def read_turn_trace(trace_path):
     requests = [event for event in events if event.get("event") == "model_requested"]
     turns = [event for event in events if event.get("event") == "model_turn"]
     failures = [event for event in events if event.get("event") == "model_failed"]
+    auxiliary_failures = [
+        event
+        for event in failures
+        if event.get("attempt_origin") in {"compaction", "split_compaction"}
+    ]
+    auxiliary_turns = [
+        event
+        for event in events
+        if event.get("event") == "model_auxiliary_completed"
+    ]
     actions = [event for event in events if event.get("event") == "action_decoded"]
     tool_name_counts, tool_status_counts, error_code_counts = _trace_label_counts(events)
     totals, usage_complete, request_metadata, prefix_hashes = _trace_usage(turns)
+    auxiliary_usage, auxiliary_usage_complete = _trace_auxiliary_usage(
+        auxiliary_turns + auxiliary_failures
+    )
+    for key, value in auxiliary_usage.items():
+        totals[key] += value
+    if turns:
+        usage_complete = usage_complete and auxiliary_usage_complete
+    elif auxiliary_turns:
+        usage_complete = auxiliary_usage_complete
     transport_attempts, transport_retries, transport_complete = _trace_transport(
         requests,
-        turns + failures,
+        turns + auxiliary_turns + failures,
     )
 
     return {
         "model_turns": len(turns),
         "model_attempts": len(requests),
         "model_failures": len(failures),
+        "auxiliary_model_outcomes": len(auxiliary_turns) + len(auxiliary_failures),
         "transport_attempts": transport_attempts,
         "transport_retries": transport_retries,
         "transport_evidence_complete": transport_complete,
@@ -752,6 +793,11 @@ def _merge_auxiliary_call_evidence(captured, calls):
     ]
     if not auxiliary:
         return captured
+
+    recorded = int(captured.get("auxiliary_model_outcomes", 0) or 0)
+    if recorded >= len(auxiliary):
+        return captured
+    auxiliary = auxiliary[recorded:]
 
     merged = dict(captured)
     merged["usage"] = dict(captured["usage"])

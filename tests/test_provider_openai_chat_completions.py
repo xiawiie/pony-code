@@ -162,6 +162,43 @@ def test_chat_uses_exact_gateway_root_and_native_tool_history(monkeypatch):
     }
 
 
+@pytest.mark.parametrize(
+    "usage",
+    [
+        {
+            "input_tokens": None,
+            "output_tokens": None,
+            "prompt_tokens": 8,
+            "completion_tokens": 2,
+            "total_tokens": 10,
+        },
+        {"prompt_tokens": 8, "completion_tokens": 2},
+    ],
+)
+def test_chat_normalizes_compatible_usage_aliases(monkeypatch, usage):
+    monkeypatch.setattr(
+        provider_shared,
+        "_provider_urlopen",
+        lambda *_args, **_kwargs: _Response(
+            {
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {"role": "assistant", "content": "done"},
+                    }
+                ],
+                "usage": usage,
+            }
+        ),
+    )
+
+    response = _complete(_client())
+
+    assert response.usage["input_tokens"] == 8
+    assert response.usage["output_tokens"] == 2
+    assert response.usage["total_tokens"] == 10
+
+
 def test_chat_parses_multiple_native_tool_calls(monkeypatch):
     monkeypatch.setattr(
         provider_shared,

@@ -1183,6 +1183,7 @@ class Pony:
         reason="manual",
         keep_recent_tokens=None,
         expected_leaf_id=None,
+        model_observer=None,
     ):
         return compact_session_tree(
             self,
@@ -1190,6 +1191,7 @@ class Pony:
             reason=reason,
             keep_recent_tokens=keep_recent_tokens,
             expected_leaf_id=expected_leaf_id,
+            model_observer=model_observer,
         )
 
     def _reload_session_projection(self):

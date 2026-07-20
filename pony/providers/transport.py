@@ -372,11 +372,19 @@ def _extract_usage_cache_details(data):
     if not isinstance(data, dict):
         raise ValueError("response must be an object")
     usage = _mapping_or_empty(data.get("usage"))
-    input_tokens = _optional_int(usage.get("input_tokens", usage.get("prompt_tokens")))
+    input_value = usage.get("input_tokens")
+    if input_value is None:
+        input_value = usage.get("prompt_tokens")
+    input_tokens = _optional_int(input_value)
+    output_value = usage.get("output_tokens")
+    if output_value is None:
+        output_value = usage.get("completion_tokens")
     output_tokens = _optional_int(
-        usage.get("output_tokens", usage.get("completion_tokens"))
+        output_value
     )
     total_tokens = _optional_int(usage.get("total_tokens"))
+    if total_tokens is None and input_tokens is not None and output_tokens is not None:
+        total_tokens = input_tokens + output_tokens
     input_details = _mapping_or_empty(usage.get("input_tokens_details"))
     if not input_details:
         input_details = _mapping_or_empty(usage.get("prompt_tokens_details"))

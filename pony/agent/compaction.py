@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+from time import sleep as _sleep
 
+from pony.providers.transport import ProviderTransportError
 from pony.security import redaction as securitylib
 from pony.agent.messages import render_transcript
 from pony.state.session_store import (
@@ -21,6 +23,9 @@ class CompactionError(RuntimeError):
 
 class CompactionNoProgress(CompactionError):
     code = "compaction_no_progress"
+
+
+_SUMMARY_RETRY_DELAYS = (0.5, 1.0)
 
 
 @dataclass(frozen=True)
@@ -351,7 +356,16 @@ def _file_facts(entries):
     return read_files, modified_files
 
 
-def _summary_request(agent, plan, *, focus, hard_cap, split_turn=False):
+def _summary_request(
+    agent,
+    plan,
+    *,
+    focus,
+    hard_cap,
+    split_turn=False,
+    model_observer=None,
+    request_guard=None,
+):
     system = [
         {
             "type": "text",
@@ -375,25 +389,57 @@ def _summary_request(agent, plan, *, focus, hard_cap, split_turn=False):
         env=agent.redaction_env,
         secret_env_names=agent.secret_env_names,
     )
-    try:
-        response = agent.model_client.complete(
-            system=system,
-            tools=[],
-            messages=messages,
-            max_tokens=min(hard_cap, agent.model_capabilities.max_output_tokens),
-            cache_breakpoints=[],
-        )
-    except Exception as exc:
-        raise CompactionError(
-            f"compaction_failed: summary model call failed ({type(exc).__name__})"
-        ) from exc
+    call_kind = "split_compaction" if split_turn else "compaction"
+    for attempt in range(len(_SUMMARY_RETRY_DELAYS) + 1):
+        if request_guard is not None:
+            request_guard()
+        if model_observer is not None:
+            model_observer(call_kind, "requested", retry=attempt > 0)
+        try:
+            response = agent.model_client.complete(
+                system=system,
+                tools=[],
+                messages=messages,
+                max_tokens=min(hard_cap, agent.model_capabilities.max_output_tokens),
+                cache_breakpoints=[],
+            )
+            break
+        except Exception as exc:
+            if model_observer is not None:
+                model_observer(call_kind, "failed", error=exc)
+            if (
+                isinstance(exc, ProviderTransportError)
+                and exc.retryable
+                and attempt < len(_SUMMARY_RETRY_DELAYS)
+            ):
+                delay = getattr(exc, "retry_after", None)
+                _sleep(
+                    delay
+                    if type(delay) in {int, float}
+                    else _SUMMARY_RETRY_DELAYS[attempt]
+                )
+                continue
+            raise CompactionError(
+                f"compaction_failed: summary model call failed ({type(exc).__name__})"
+            ) from exc
+    usage = dict(getattr(response, "usage", None) or {})
     summary = _response_text(response)
     if not summary:
-        raise CompactionError("compaction_failed: summary model returned no text")
+        error = CompactionError("compaction_failed: summary model returned no text")
+        if model_observer is not None:
+            model_observer(call_kind, "failed", usage=usage, error=error)
+        raise error
     summary = _clip_tokens(summary, agent.token_accounting, hard_cap)
     if not summary:
-        raise CompactionError("compaction_failed: summary exceeded usable token cap")
-    return summary, dict(getattr(response, "usage", None) or {})
+        error = CompactionError(
+            "compaction_failed: summary exceeded usable token cap"
+        )
+        if model_observer is not None:
+            model_observer(call_kind, "failed", usage=usage, error=error)
+        raise error
+    if model_observer is not None:
+        model_observer(call_kind, "completed", usage=usage)
+    return summary, usage
 
 
 def compact_session(
@@ -403,12 +449,17 @@ def compact_session(
     reason="manual",
     keep_recent_tokens=None,
     expected_leaf_id=None,
+    model_observer=None,
 ):
     """Append one compaction entry only after a useful summary is complete."""
     session_id = agent.session["id"]
     tree = agent.session_store.load_tree(session_id)
     if expected_leaf_id is not None and tree.leaf_id != expected_leaf_id:
         raise SessionFormatError("session changed before compaction")
+
+    def guard_request():
+        if agent.session_store.load_tree(session_id).leaf_id != tree.leaf_id:
+            raise SessionFormatError("session changed before compaction request")
     target = (
         agent.model_budget.keep_recent_tokens
         if keep_recent_tokens is None
@@ -428,6 +479,8 @@ def compact_session(
             plan,
             focus=focus,
             hard_cap=hard_cap,
+            model_observer=model_observer,
+            request_guard=guard_request,
         )
     split_summary = ""
     split_usage = {}
@@ -438,6 +491,8 @@ def compact_session(
             focus=focus,
             hard_cap=agent.model_budget.split_turn_summary_tokens,
             split_turn=True,
+            model_observer=model_observer,
+            request_guard=guard_request,
         )
     if not summary and not split_summary:
         raise CompactionNoProgress("compaction_no_progress: nothing to summarize")

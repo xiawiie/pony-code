@@ -735,6 +735,161 @@ def test_auxiliary_compaction_call_is_counted_without_inflating_agent_turns():
     assert merged["billing_ambiguous"] is False
 
 
+def test_durable_auxiliary_evidence_is_not_counted_twice():
+    captured = {
+        "model_turns": 1,
+        "model_attempts": 2,
+        "model_failures": 0,
+        "auxiliary_model_outcomes": 1,
+        "transport_attempts": 2,
+        "transport_retries": 0,
+        "transport_evidence_complete": True,
+        "billing_ambiguous": False,
+        "usage": {key: 1 for key in run_live_session._LIVE_USAGE_KEYS},
+        "usage_complete": True,
+        "request_metadata": [{}],
+        "system_prefix_hashes": ["key"],
+        "action_origins": [],
+    }
+    call = {
+        "call_kind": "session_summary",
+        "completed": True,
+        "usage": {"input_tokens": 50, "output_tokens": 5},
+        "transport_attempts": 1,
+        "transport_retries": 0,
+    }
+
+    assert run_live_session._merge_auxiliary_call_evidence(captured, [call]) == captured
+
+
+def test_read_turn_trace_requires_one_transport_outcome_per_request(tmp_path):
+    trace = tmp_path / "trace.jsonl"
+    trace.write_text(
+        "\n".join(
+            json.dumps(event)
+            for event in [
+                {"event": "model_requested", "attempt_origin": "compaction"},
+                {"event": "model_requested", "attempt_origin": "compaction"},
+                {
+                    "event": "model_failed",
+                    "attempt_origin": "compaction",
+                    "transport_attempts": 1,
+                    "transport_retries": 0,
+                    "transport_evidence_complete": True,
+                },
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    captured = run_live_session.read_turn_trace(trace)
+
+    assert captured["transport_evidence_complete"] is False
+    assert captured["transport_attempts"] is None
+    assert captured["auxiliary_model_outcomes"] == 1
+
+
+def test_auxiliary_failure_preserves_returned_usage(tmp_path):
+    trace = tmp_path / "trace.jsonl"
+    trace.write_text(
+        "\n".join(
+            json.dumps(event)
+            for event in [
+                {"event": "model_requested", "attempt_origin": "compaction"},
+                {
+                    "event": "model_failed",
+                    "attempt_origin": "compaction",
+                    "completion_usage": {"input_tokens": 50, "output_tokens": 5},
+                    "transport_attempts": 1,
+                    "transport_retries": 0,
+                    "transport_evidence_complete": True,
+                },
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    captured = run_live_session.read_turn_trace(trace)
+
+    assert captured["usage"]["input_tokens"] == 50
+    assert captured["usage"]["output_tokens"] == 5
+    assert captured["usage_complete"] is False
+    assert captured["billing_ambiguous"] is True
+
+
+def test_auxiliary_only_success_has_complete_usage(tmp_path):
+    trace = tmp_path / "trace.jsonl"
+    trace.write_text(
+        "\n".join(
+            json.dumps(event)
+            for event in [
+                {"event": "model_requested", "attempt_origin": "compaction"},
+                {
+                    "event": "model_auxiliary_completed",
+                    "attempt_origin": "compaction",
+                    "completion_usage": {"input_tokens": 50, "output_tokens": 5},
+                    "transport_attempts": 1,
+                    "transport_retries": 0,
+                    "transport_evidence_complete": True,
+                },
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    captured = run_live_session.read_turn_trace(trace)
+
+    assert captured["model_turns"] == 0
+    assert captured["usage_complete"] is True
+    assert captured["transport_evidence_complete"] is True
+    assert captured["billing_ambiguous"] is False
+
+
+def test_auxiliary_retry_without_usage_keeps_usage_incomplete(tmp_path):
+    trace = tmp_path / "trace.jsonl"
+    trace.write_text(
+        "\n".join(
+            json.dumps(event)
+            for event in [
+                {"event": "model_requested", "attempt_origin": "compaction"},
+                {
+                    "event": "model_failed",
+                    "attempt_origin": "compaction",
+                    "transport_attempts": 1,
+                    "transport_retries": 0,
+                    "transport_evidence_complete": True,
+                },
+                {"event": "model_requested", "attempt_origin": "compaction"},
+                {
+                    "event": "model_auxiliary_completed",
+                    "attempt_origin": "compaction",
+                    "completion_usage": {"input_tokens": 50, "output_tokens": 5},
+                    "transport_attempts": 1,
+                    "transport_retries": 0,
+                    "transport_evidence_complete": True,
+                },
+                {"event": "model_requested", "attempt_origin": "initial"},
+                {
+                    "event": "model_turn",
+                    "request_metadata": {"system_prefix_hash": "key"},
+                    "completion_usage": {"input_tokens": 100, "output_tokens": 10},
+                    "transport_attempts": 1,
+                    "transport_retries": 0,
+                    "transport_evidence_complete": True,
+                },
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    captured = run_live_session.read_turn_trace(trace)
+
+    assert captured["usage"]["input_tokens"] == 150
+    assert captured["usage"]["output_tokens"] == 15
+    assert captured["usage_complete"] is False
+    assert captured["billing_ambiguous"] is True
+
+
 def test_read_turn_trace_does_not_accept_a_nonstring_cache_key(tmp_path):
     trace = tmp_path / "trace.jsonl"
     trace.write_text(

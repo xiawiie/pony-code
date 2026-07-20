@@ -60,7 +60,12 @@ _USAGE_SUM_KEYS = (
     "cache_read_input_tokens",
 )
 
-_ATTEMPT_ORIGINS = ("initial", "tool_followup", "retry_action", "model_retry")
+_ATTEMPT_ORIGINS = (
+    "initial",
+    "tool_followup",
+    "retry_action",
+    "model_retry",
+)
 _MODEL_RETRY_DELAYS = (0.5, 1.0)
 _REJECTION_CORRECTIONS = {
     "invalid_arguments": (
@@ -193,6 +198,7 @@ def _record_model_failure(
     outcome,
     failure_phase,
     error,
+    completion_usage=None,
 ):
     attempts, retries, complete = _record_transport(
         model_execution,
@@ -209,20 +215,23 @@ def _record_model_failure(
     reasons = model_execution["failure_reason_counts"]
     reasons[reason] = reasons.get(reason, 0) + 1
     try:
+        payload = {
+            "attempts": task_state.attempts,
+            "tool_steps": task_state.tool_steps,
+            "attempt_origin": attempt_origin,
+            "outcome": outcome,
+            "failure_phase": failure_phase,
+            "reason_code": reason,
+            "transport_attempts": attempts,
+            "transport_retries": retries,
+            "transport_evidence_complete": complete,
+        }
+        if completion_usage is not None:
+            payload["completion_usage"] = completion_usage
         agent.emit_trace(
             task_state,
             "model_failed",
-            {
-                "attempts": task_state.attempts,
-                "tool_steps": task_state.tool_steps,
-                "attempt_origin": attempt_origin,
-                "outcome": outcome,
-                "failure_phase": failure_phase,
-                "reason_code": reason,
-                "transport_attempts": attempts,
-                "transport_retries": retries,
-                "transport_evidence_complete": complete,
-            },
+            payload,
         )
     except BaseException as trace_error:
         logger.debug(
@@ -250,6 +259,75 @@ def _add_usage(totals, usage):
             totals["total_tokens"] += input_tokens + output_tokens
     totals["cache_hit"] = totals["cache_hit"] or bool(usage.get("cache_hit"))
     return totals
+
+
+def _run_compaction_observer(
+    agent,
+    task_state,
+    completion_usage_totals,
+    model_execution,
+):
+    def observe(call_kind, outcome, *, usage=None, error=None, retry=False):
+        if outcome == "requested":
+            task_state.record_attempt()
+            model_execution["model_attempts"] += 1
+            if retry:
+                model_execution["model_retries"] += 1
+            origins = model_execution["attempt_origin_counts"]
+            origins[call_kind] = origins.get(call_kind, 0) + 1
+            agent.run_store.write_task_state(task_state)
+            agent.emit_trace(
+                task_state,
+                "model_requested",
+                {
+                    "attempts": task_state.attempts,
+                    "tool_steps": task_state.tool_steps,
+                    "attempt_origin": call_kind,
+                },
+            )
+            return
+        if outcome == "failed":
+            completion_usage = None
+            if usage is not None:
+                completion_usage = dict(usage)
+                completion_usage.pop("request_id", None)
+                _add_usage(completion_usage_totals, completion_usage)
+            _record_model_failure(
+                agent,
+                task_state,
+                model_execution,
+                attempt_origin=call_kind,
+                outcome="error",
+                failure_phase="provider_complete",
+                error=error,
+                completion_usage=completion_usage,
+            )
+            return
+        if outcome != "completed":
+            raise ValueError("unknown compaction model outcome")
+
+        completion_usage = dict(usage or {})
+        completion_usage.pop("request_id", None)
+        _add_usage(completion_usage_totals, completion_usage)
+        attempts, retries, complete = _record_transport(
+            model_execution,
+            agent.model_client,
+        )
+        agent.emit_trace(
+            task_state,
+            "model_auxiliary_completed",
+            {
+                "attempts": task_state.attempts,
+                "tool_steps": task_state.tool_steps,
+                "attempt_origin": call_kind,
+                "completion_usage": completion_usage,
+                "transport_attempts": attempts,
+                "transport_retries": retries,
+                "transport_evidence_complete": complete,
+            },
+        )
+
+    return observe
 
 
 def _action_trace_payload(action):
@@ -693,13 +771,8 @@ def _build_attempt_request(
     attempt_origin,
     model_execution,
     session_guard,
+    compaction_observer,
 ):
-    task_state.record_attempt()
-    model_execution["model_attempts"] += 1
-    model_execution["attempt_origin_counts"][attempt_origin] += 1
-    if attempt_origin == "model_retry":
-        model_execution["model_retries"] += 1
-    agent.run_store.write_task_state(task_state)
     prompt_started_at = time.monotonic()
     compaction_result = None
     for compaction_attempt in range(3):
@@ -726,6 +799,7 @@ def _build_attempt_request(
                     reason="budget_exceeded",
                     keep_recent_tokens=keep_recent,
                     expected_leaf_id=session_guard["leaf_id"],
+                    model_observer=compaction_observer,
                 )
                 session_guard["leaf_id"] = compaction_result.entry["id"]
             except (CompactionError, CompactionNoProgress) as compaction_error:
@@ -762,6 +836,12 @@ def _build_attempt_request(
             "resume_status",
             task_state.resume_status,
         )
+    task_state.record_attempt()
+    model_execution["model_attempts"] += 1
+    model_execution["attempt_origin_counts"][attempt_origin] += 1
+    if attempt_origin == "model_retry":
+        model_execution["model_retries"] += 1
+    agent.run_store.write_task_state(task_state)
     agent.emit_trace(
         task_state,
         "prompt_built",
@@ -1079,6 +1159,12 @@ def _run_agent_attempts(
     rejection_corrections = set()
     max_attempts = max(agent.max_steps * 3, agent.max_steps + 4)
     session_guard = None
+    compaction_observer = _run_compaction_observer(
+        agent,
+        task_state,
+        completion_usage_totals,
+        model_execution,
+    )
 
     while tool_steps < agent.max_steps and attempts < max_attempts:
         attempts += 1
@@ -1095,6 +1181,7 @@ def _run_agent_attempts(
             attempt_origin,
             model_execution,
             session_guard,
+            compaction_observer,
         )
         _validate_model_session_guard(agent, session_guard)
         action, blocked_result, model_error = _complete_model_attempt(
@@ -1126,6 +1213,7 @@ def _run_agent_attempts(
                             ),
                         ),
                         expected_leaf_id=session_guard["leaf_id"],
+                        model_observer=compaction_observer,
                     )
                 except CompactionError:
                     recovery = None
