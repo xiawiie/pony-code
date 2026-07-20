@@ -1381,12 +1381,14 @@ class AgentLoop:
         agent = self.agent
         user_message = agent.redact_text(user_message)
         run_started_at = time.monotonic()
+        session_guard = _capture_model_session_guard(agent)
         agent.memory.set_task_summary(user_message)
         agent._sync_working_memory()
         try:
             _commit_session(
                 agent,
                 messages=(_plain_message("user", user_message),),
+                session_guard=session_guard,
             )
         except SessionCommitError as exc:
             raise exc.cause

@@ -1729,6 +1729,45 @@ def test_concurrent_append_while_building_request_rejects_stale_response(
     ]
 
 
+def test_concurrent_append_before_user_turn_rejects_stale_request(
+    tmp_path,
+    monkeypatch,
+):
+    provider = NativeScriptProvider(
+        [
+            Response(
+                stop_reason=StopReason.END_TURN,
+                content=[{"type": "text", "text": "stale answer"}],
+                usage={},
+            )
+        ]
+    )
+    agent = build_native_agent(tmp_path, provider)
+    competing = SessionStore(agent.session_store.root)
+    original_append = agent.session_store.append_messages
+
+    def append_after_concurrent_writer(session_id, messages, **options):
+        competing.append_messages(
+            session_id,
+            [{"role": "user", "content": "concurrent prompt", "_pony_meta": {}}],
+        )
+        return original_append(session_id, messages, **options)
+
+    monkeypatch.setattr(
+        agent.session_store,
+        "append_messages",
+        append_after_concurrent_writer,
+    )
+
+    with pytest.raises(SessionFormatError, match="session changed before message append"):
+        agent.ask("original prompt")
+
+    assert provider.calls == []
+    assert [
+        message["content"] for message in competing.load(agent.session["id"])["messages"]
+    ] == ["concurrent prompt"]
+
+
 def test_concurrent_append_during_model_request_blocks_tool_execution(tmp_path):
     provider = NativeScriptProvider([])
     agent = build_native_agent(tmp_path, provider)
