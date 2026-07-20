@@ -97,6 +97,8 @@ Permission rule 按 deny、ask、allow 的优先级投影到当前 Tool。`manua
 必须重新授权，显式改为其他 mode 可不带 dangerous flag。Capability 只在冻结 RuntimeOptions 中存在，不持久化；
 Runtime 构造、resume、mode setter 和 Executor 都会 fail closed。Bypass 仍不能绕过 project trust、ask/deny rule、
 schema/path/secret 校验、可信 executable、mutation lock 或真实 effect observation。
+通用 `write_file`/`patch_file` 在 permission 前拒绝任何 `.git/**` 与 `.pony/**` 控制面路径；Durable Memory 只能通过
+带当前请求授权检查的 `memory_save` 写入。
 
 `plan` 只向模型展示 read-only 工具和 `read_plan`/`write_plan`/`exit_plan_mode`，不展示 shell。`write_plan` 只能更新
 bounded Plan artifact；`exit_plan_mode` 必须展示同一 plan text/revision 并获得一次性批准，批准期间任一参数、revision 或
@@ -130,6 +132,8 @@ Pony 在 Source Root 中直接运行 Host 工具。写操作经过 schema、path
 Shell 只使用启动时冻结的 trusted executable。每个工具调用使用 immutable approval snapshot；Git 通过 hardened runner 拒绝危险 config override、worktree escape、
 remote helper、upload-pack/ssh command 和 repository hook 路径。上述约束降低意外和输入注入风险，但不能隔离已获准运行
 的恶意二进制、测试插件或依赖。
+Host、Git 与 RG 共用 4 MiB stdout/stderr 聚合捕获上限；超限返回 `process_output_limit_exceeded`，并以 TERM/KILL
+终止和回收整个子进程组，不能通过 pipe 输出无限占用内存。
 
 Repository Skills are not executable extensions. The only accepted layout is Source Root
 `.claude/skills/<name>/SKILL.md`; HOME, plugin, marketplace, and `.agents/skills` are never searched. Catalog discovery uses

@@ -634,18 +634,16 @@ def test_execution_shape_uses_only_frozen_executables(
 ):
     calls = []
 
-    def fake_popen(argv, **kwargs):
+    def fake_capture(argv, **kwargs):
         calls.append((argv, kwargs))
-        process = Mock(returncode=0)
-        process.communicate.return_value = ("ok\n", "")
-        return process
+        return Mock(stdout=b"ok\n", stderr=b"", returncode=0, timed_out=False)
 
     @contextmanager
     def passthrough(executable):
         yield str(executable)
 
     monkeypatch.setattr("pony.tools.subprocess._prepared_executable", passthrough)
-    monkeypatch.setattr("pony.tools.subprocess.subprocess.Popen", fake_popen)
+    monkeypatch.setattr("pony.tools.subprocess._capture_process", fake_capture)
     agent = build_agent(
         tmp_path,
         permission_mode="default",
@@ -664,31 +662,25 @@ def test_execution_shape_uses_only_frozen_executables(
     assert argv == (
         ["/frozen/sh", "-c", expected_argv] if expected_shell else expected_argv
     )
-    assert kwargs["shell"] is False
     assert kwargs.get("executable") == expected_executable
     assert kwargs["cwd"] == tmp_path.resolve()
-    assert kwargs["stdout"] is subprocess.PIPE
-    assert kwargs["stderr"] is subprocess.PIPE
-    assert kwargs["text"] is True
-    assert kwargs["start_new_session"] is True
     assert kwargs["env"] == agent.shell_env()
+    assert kwargs["timeout"] == 7
 
 
 def test_simple_unknown_command_is_not_rewrapped_in_shell(tmp_path, monkeypatch):
     calls = []
 
-    def fake_popen(argv, **kwargs):
+    def fake_capture(argv, **kwargs):
         calls.append((argv, kwargs))
-        process = Mock(returncode=0)
-        process.communicate.return_value = ("ok", "")
-        return process
+        return Mock(stdout=b"ok", stderr=b"", returncode=0, timed_out=False)
 
     @contextmanager
     def passthrough(executable):
         yield str(executable)
 
     monkeypatch.setattr("pony.tools.subprocess._prepared_executable", passthrough)
-    monkeypatch.setattr("pony.tools.subprocess.subprocess.Popen", fake_popen)
+    monkeypatch.setattr("pony.tools.subprocess._capture_process", fake_capture)
     agent = build_agent(
         tmp_path,
         permission_mode="default",
@@ -703,7 +695,6 @@ def test_simple_unknown_command_is_not_rewrapped_in_shell(tmp_path, monkeypatch)
 
     assert result.metadata["tool_status"] == "ok"
     assert calls[0][0] == ["/frozen/echo", "hello"]
-    assert calls[0][1]["shell"] is False
     assert calls[0][1].get("executable") is None
 
 
@@ -713,11 +704,9 @@ def test_runtime_path_spoof_cannot_replace_frozen_executable(tmp_path, monkeypat
     fake_pwd.chmod(0o755)
     calls = []
 
-    def fake_popen(argv, **kwargs):
+    def fake_capture(argv, **kwargs):
         calls.append((argv, kwargs))
-        process = Mock(returncode=0)
-        process.communicate.return_value = ("safe\n", "")
-        return process
+        return Mock(stdout=b"safe\n", stderr=b"", returncode=0, timed_out=False)
 
     agent = build_agent(
         tmp_path,
@@ -730,7 +719,7 @@ def test_runtime_path_spoof_cannot_replace_frozen_executable(tmp_path, monkeypat
         yield str(executable)
 
     monkeypatch.setattr("pony.tools.subprocess._prepared_executable", passthrough)
-    monkeypatch.setattr("pony.tools.subprocess.subprocess.Popen", fake_popen)
+    monkeypatch.setattr("pony.tools.subprocess._capture_process", fake_capture)
 
     result = agent.execute_tool(
         "run_shell",

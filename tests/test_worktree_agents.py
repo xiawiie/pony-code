@@ -651,6 +651,28 @@ def test_agents_list_is_a_model_free_cli_command(tmp_path, capsys):
     assert "no worktree agents" in capsys.readouterr().out
 
 
+def test_agents_show_reports_live_worktree_changes(tmp_path, capsys):
+    repo = _repo(tmp_path)
+    agent = _agent(repo, [FakeModelClient(["done"])])
+    agent.spawn_worktree_agents(
+        {
+            "tasks": [{"name": "reader", "task": "inspect"}],
+            "max_parallel": 1,
+        }
+    )
+    manifest = list_worktree_agents(repo)[0]
+    worktree = repo / manifest["worktree_rel"]
+    (worktree / "late.txt").write_text("late\n", encoding="utf-8")
+
+    assert main(["--cwd", str(repo), "agents", "show", manifest["id"]]) == 0
+
+    output = capsys.readouterr().out
+    assert "diff: clean" in output
+    assert "changed_files: 0" in output
+    assert "worktree_diff_status: dirty" in output
+    assert "worktree_changed_files: 1" in output
+
+
 def test_agents_merge_requires_project_trust_before_mutating(tmp_path, capsys, monkeypatch):
     repo = _repo(tmp_path)
     agent = _agent(repo, [FakeModelClient(["done"])])

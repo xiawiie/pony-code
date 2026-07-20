@@ -60,7 +60,8 @@ def _safe_index_file(root, candidate):
     if candidate is None:
         return None
     try:
-        return security_paths.require_regular_no_symlink(candidate)
+        safe = security_paths.require_regular_no_symlink(candidate)
+        return safe if safe.lstat().st_nlink == 1 else None
     except (FileNotFoundError, OSError, ValueError):
         return None
 
@@ -103,9 +104,12 @@ def _read_bounded_regular(path, limit):
         path_current = os.stat(path, follow_symlinks=False)
         if (
             not stat.S_ISREG(opened.st_mode)
+            or opened.st_nlink != 1
             or (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino)
             or (opened.st_dev, opened.st_ino)
             != (path_current.st_dev, path_current.st_ino)
+            or current.st_nlink != 1
+            or path_current.st_nlink != 1
             or opened.st_size > limit
         ):
             raise ValueError("unsafe automatic workspace file")
