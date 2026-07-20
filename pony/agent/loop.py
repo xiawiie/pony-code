@@ -30,6 +30,7 @@ from pony.state.task_state import (
     STATUS_RUNNING,
     TaskState,
 )
+from pony.state.session_store import SessionFormatError
 from pony.workspace.context import clip, now
 from pony.tools.executor import (
     ToolExecutionResult,
@@ -370,7 +371,33 @@ def _adopt_session(agent, session, path):
     )
 
 
-def _commit_session(agent, *, messages=()):
+def _capture_model_session_guard(agent):
+    tree = agent.session_store.load_tree(agent.session["id"])
+    durable_binding = deepcopy(tree.projection.get("provider_binding"))
+    client_binding = getattr(agent.model_client, "provider_binding", None)
+    client_binding = (
+        deepcopy(client_binding) if isinstance(client_binding, dict) else None
+    )
+    if durable_binding != client_binding:
+        error = SessionFormatError("model_session_mismatch")
+        agent._session_write_blocked_cause = error
+        raise error
+    return {
+        "leaf_id": tree.leaf_id,
+        "provider_binding": durable_binding,
+    }
+
+
+def _advance_session_guard_after_session_tool(agent, session_guard):
+    tree = agent.session_store.load_tree(agent.session["id"])
+    if tree.projection.get("provider_binding") != session_guard["provider_binding"]:
+        error = SessionFormatError("model_session_mismatch")
+        agent._session_write_blocked_cause = error
+        raise SessionCommitError(error)
+    session_guard["leaf_id"] = tree.leaf_id
+
+
+def _commit_session(agent, *, messages=(), session_guard=None):
     blocked_cause = getattr(agent, "_session_write_blocked_cause", None)
     if blocked_cause is not None:
         raise SessionCommitError(blocked_cause)
@@ -386,13 +413,23 @@ def _commit_session(agent, *, messages=()):
         key: agent.redact_artifact(agent.session.get(key, {}))
         for key in ("resume_state", "runtime_identity")
     }
+    append_options = {}
+    if session_guard is not None:
+        append_options = {
+            "expected_leaf_id": session_guard["leaf_id"],
+            "expected_provider_binding": session_guard["provider_binding"],
+            "return_leaf_id": True,
+        }
     try:
-        saved_path = agent.session_store.append_messages(
+        saved = agent.session_store.append_messages(
             session_id,
             safe_messages,
             state_updates=state_updates,
+            **append_options,
         )
     except Exception as exc:
+        if session_guard is not None and isinstance(exc, SessionFormatError):
+            agent._session_write_blocked_cause = exc
         if getattr(exc, "committed", False):
             try:
                 persisted = agent.session_store.load(session_id)
@@ -414,6 +451,10 @@ def _commit_session(agent, *, messages=()):
             ):
                 return
         raise SessionCommitError(exc) from exc
+    if session_guard is None:
+        saved_path = saved
+    else:
+        saved_path, session_guard["leaf_id"] = saved
     agent.session["messages"].extend(deepcopy(safe_messages))
     agent.session.update(deepcopy(state_updates))
     agent.session_path = saved_path
@@ -898,6 +939,7 @@ def _apply_tool_action(
     action,
     blocked_tool_result,
     model_execution,
+    session_guard,
 ):
     name = action.name
     args = action.arguments
@@ -939,6 +981,8 @@ def _apply_tool_action(
     metadata = dict(tool_result.metadata or {})
     _record_tool_report(agent, name, metadata, model_execution)
     effect_class = str(metadata["effect_class"])
+    if effect_class == "session_state":
+        _advance_session_guard_after_session_tool(agent, session_guard)
 
     display_result, digest_meta = _prepare_tool_result(
         agent,
@@ -965,7 +1009,7 @@ def _apply_tool_action(
         provider_state=action.provider_state,
     )
     try:
-        _commit_session(agent, messages=pair)
+        _commit_session(agent, messages=pair, session_guard=session_guard)
     except SessionCommitError as exc:
         if not exc.committed:
             agent.memory = working_memory_before
@@ -1023,6 +1067,7 @@ def _run_agent_attempts(
     context_recovery_count = 0
     rejection_corrections = set()
     max_attempts = max(agent.max_steps * 3, agent.max_steps + 4)
+    session_guard = None
 
     while tool_steps < agent.max_steps and attempts < max_attempts:
         attempts += 1
@@ -1038,6 +1083,7 @@ def _run_agent_attempts(
             attempt_origin,
             model_execution,
         )
+        session_guard = _capture_model_session_guard(agent)
         action, blocked_result, model_error = _complete_model_attempt(
             agent,
             task_state,
@@ -1125,6 +1171,7 @@ def _run_agent_attempts(
                 action,
                 blocked_result,
                 model_execution,
+                session_guard,
             )
             if agent._last_tool_result_metadata.get("effect_observation_unknown"):
                 final = "Stopped because workspace effects could not be verified."
@@ -1132,6 +1179,7 @@ def _run_agent_attempts(
                 _commit_session(
                     agent,
                     messages=(_plain_message("assistant", final),),
+                    session_guard=session_guard,
                 )
                 return final, task_state.stop_reason, None, None
             if (
@@ -1154,6 +1202,7 @@ def _run_agent_attempts(
                 _commit_session(
                     agent,
                     messages=(_plain_message("assistant", correction_stop),),
+                    session_guard=session_guard,
                 )
                 return correction_stop, task_state.stop_reason, None, None
             attempt_origin = "tool_followup"
@@ -1168,6 +1217,7 @@ def _run_agent_attempts(
                 _commit_session(
                     agent,
                     messages=(_plain_message("assistant", final),),
+                    session_guard=session_guard,
                 )
                 return final, task_state.stop_reason, None, None
             retry_action_count += 1
@@ -1180,6 +1230,7 @@ def _run_agent_attempts(
         _commit_session(
             agent,
             messages=(_plain_message("assistant", final),),
+            session_guard=session_guard,
         )
         task_state.finish_success(final)
         return final, "run_finished", None, None
@@ -1196,6 +1247,7 @@ def _run_agent_attempts(
     _commit_session(
         agent,
         messages=(_plain_message("assistant", final),),
+        session_guard=session_guard,
     )
     return final, task_state.stop_reason or "run_stopped", None, None
 

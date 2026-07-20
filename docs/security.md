@@ -148,8 +148,10 @@ record type/version、损坏、linked、oversized 或不安全记录。Checkpoin
 workspace，也不通过 `resolve-pending`、restore、prune 或 Source Apply 修改旧 store。需要恢复 Source Root 时使用 Git 或外部备份。
 
 Session Model Binding 固化协议、模型与 endpoint hash。resume 仍拒绝 protocol/endpoint 漂移；model 只允许通过专用
-writer 在相同 protocol/endpoint 下替换，并在 Session lock 内比较 expected binding。含 opaque Provider state 的 Session
-拒绝模型切换并返回 `model_session_mismatch`；opaque state 不跨模型重放，也不渲染到普通日志。
+writer 在相同 protocol/endpoint 下替换，并在 Session lock 内比较 client 构造前捕获的 expected binding 与 exact leaf。
+Provider 请求同样绑定请求开始时的 exact leaf/binding；并发 `/model` 或其他 Session 写入后，旧响应不能追加。含 opaque
+Provider state 的 Session 拒绝模型切换并返回 `model_session_mismatch`；相同 binding 的 OpenAI Responses 与 Anthropic
+state 可恢复，opaque state 不跨模型、协议或 endpoint 重放，也不渲染到普通日志。
 
 ## 明确不保证
 

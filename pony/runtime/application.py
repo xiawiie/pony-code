@@ -89,6 +89,9 @@ MAX_DELEGATE_STEPS = 3
 DEFAULT_FEATURE_FLAGS = {
     "memory": True,
 }
+_OPAQUE_PROVIDER_STATE_PROTOCOLS = frozenset(
+    {"anthropic_messages", "openai_responses"}
+)
 _SECRET_ENV_NAMES_VAR = "PONY_SECRET_ENV_NAMES"
 
 
@@ -461,8 +464,8 @@ class Pony:
             raise ValueError("model_session_mismatch")
         if _session_has_provider_state(session) and (
             not isinstance(saved_binding, dict)
-            or saved_binding.get("protocol_family") != "openai_responses"
-            or saved_binding != model_binding
+            or saved_binding.get("protocol_family")
+            not in _OPAQUE_PROVIDER_STATE_PROTOCOLS
         ):
             raise ValueError("model_session_mismatch")
 
@@ -742,9 +745,13 @@ class Pony:
         if self.redact_artifact(model) != model:
             raise ValueError("model_invalid")
         current = self.current_model_binding()
+        tree = self.session_store.load_tree(self.session["id"])
+        durable_session = tree.projection
+        if durable_session.get("provider_binding") != current:
+            raise ValueError("model_session_mismatch")
         if current.get("model") == model:
             return None
-        if _session_has_provider_state(self.session):
+        if _session_has_provider_state(durable_session):
             raise ValueError("model_session_mismatch")
         if not callable(self.model_client_factory):
             raise ValueError("model switching is unavailable")
@@ -766,6 +773,7 @@ class Pony:
             self.session["id"],
             candidate,
             expected_binding=current,
+            expected_leaf_id=tree.leaf_id,
         )
         if entry is None:
             return None

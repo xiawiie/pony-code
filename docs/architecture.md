@@ -289,15 +289,18 @@ flowchart TB
     CS["Context sources"] --> B
     MM["Memory snapshot"] --> B
     B --> MR["Model Request"]
-    MR --> SS["Session Tree"]
+    MR --> CAS["Exact leaf + Provider binding CAS"]
+    CAS --> SS["Session Tree"]
     MR --> RS["Run / trace"]
     MR --> CP["Session task checkpoint"]
 ```
 
 Session 的 Model Binding 保存 `protocol_family`、`model` 和 `endpoint_hash`。恢复时 Session model 优先于 `.env`，
 protocol 或 endpoint 漂移仍返回 `model_session_mismatch`。`/model` 与 `run/repl --model` 只能在同一 protocol/endpoint
-下通过受锁的专用 writer 替换 model；含 opaque Provider state 的 Session 拒绝切换。成功后 runtime 一并替换 client、
-模型预算、token accounting 与 delegate factory。完整决策见
+下通过受锁的专用 writer 替换 model；writer 同时比较 client 构造前捕获的 exact leaf。每次 Provider 请求也捕获 exact
+leaf 与完整 binding，响应只允许追加到该快照；并发 Session/model 变化会阻止旧响应和 opaque state 落盘。含 opaque
+Provider state 的 Session 拒绝切换；相同 binding 的 OpenAI Responses 与 Anthropic state 可正常恢复。成功切换后 runtime
+一并替换 client、模型预算、token accounting 与 delegate factory。完整决策见
 [ADR-0047](adr/0047-session-scoped-model-switching.md)。
 
 Session v5 active path 投影 `permission_mode`、`permission_rules`、`plan_text`、`plan_revision` 与 `pre_plan_mode`。
