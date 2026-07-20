@@ -306,7 +306,8 @@ def resolve_model_config(*, project_env=None, process_env=None, required=True):
         ),
         missing_error="model_not_configured",
     )
-    model["value"] = str(model["value"] or "").strip()
+    model_value = str(model["value"] or "")
+    model["value"] = validate_model_name(model_value) if model_value else ""
 
     configuration_error = ""
     if not api_base["value"]:

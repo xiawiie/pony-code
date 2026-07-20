@@ -444,6 +444,23 @@ def test_runtime_requires_each_provider_connection_setting(missing_name, reason)
         resolve_model_config(project_env=env, process_env={})
 
 
+@pytest.mark.parametrize(
+    "model",
+    (" claude-test", "claude-test ", "claude\0test", "claude\ntest", "x" * 201),
+)
+def test_runtime_rejects_invalid_environment_model_names(model):
+    with pytest.raises(ValueError, match="^model_invalid$"):
+        resolve_model_config(
+            project_env={
+                PROVIDER_ENV_NAME: "anthropic",
+                API_BASE_ENV_NAME: "https://api.anthropic.com/v1",
+                MODEL_ENV_NAME: model,
+                API_KEY_ENV_NAME: "test-key",
+            },
+            process_env={},
+        )
+
+
 def test_runtime_allows_provider_to_be_omitted():
     resolved = resolve_model_config(
         project_env={

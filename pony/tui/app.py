@@ -52,7 +52,8 @@ def should_use_tui(*, stdin=None, stdout=None, environ=None, columns=None):
         return False
     if not getattr(stdout, "isatty", lambda: False)():
         return False
-    if environ.get("TERM", "").casefold() == "dumb":
+    term = environ.get("TERM", "").strip()
+    if not term or term.casefold() == "dumb":
         return False
     width = columns
     if width is None:

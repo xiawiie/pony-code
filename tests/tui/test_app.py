@@ -36,6 +36,8 @@ class _Stream:
         (True, True, "xterm-256color", 80, True),
         (False, True, "xterm-256color", 80, False),
         (True, False, "xterm-256color", 80, False),
+        (True, True, None, 80, False),
+        (True, True, " ", 80, False),
         (True, True, "dumb", 80, False),
         (True, True, "xterm-256color", 39, False),
     ),
@@ -50,7 +52,7 @@ def test_tui_requires_a_capable_interactive_terminal(
     assert should_use_tui(
         stdin=_Stream(stdin_tty),
         stdout=_Stream(stdout_tty),
-        environ={"TERM": term},
+        environ={} if term is None else {"TERM": term},
         columns=columns,
     ) is expected
 
