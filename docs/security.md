@@ -132,6 +132,8 @@ Pony 在 Source Root 中直接运行 Host 工具。写操作经过 schema、path
 Shell 只使用启动时冻结的 trusted executable。每个工具调用使用 immutable approval snapshot；Git 通过 hardened runner 拒绝危险 config override、worktree escape、
 remote helper、upload-pack/ssh command 和 repository hook 路径。上述约束降低意外和输入注入风险，但不能隔离已获准运行
 的恶意二进制、测试插件或依赖。
+Host、Git 与 RG 共用 4 MiB stdout/stderr 聚合捕获上限；超限返回 `process_output_limit_exceeded`，并以 TERM/KILL
+终止和回收整个子进程组，不能通过 pipe 输出无限占用内存。
 
 Repository Skills are not executable extensions. The only accepted layout is Source Root
 `.claude/skills/<name>/SKILL.md`; HOME, plugin, marketplace, and `.agents/skills` are never searched. Catalog discovery uses
