@@ -101,7 +101,7 @@ def _dispatch_memory(args, tokens):
 
 
 def _dispatch_agents(args, tokens):
-    if tokens and tokens[0] in {"merge", "cleanup"}:
+    if tokens and tokens[0] in {"merge", "merge-all", "cleanup"}:
         root, root_identity, trust_store = trusted_project_root(args)
         return handle_agents(
             tokens,

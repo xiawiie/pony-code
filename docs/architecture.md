@@ -66,12 +66,13 @@ flowchart LR
     C2 --> M2["private terminal manifest"]
     M1 --> R["user review"]
     M2 --> R
-    R --> X["explicit pony agents merge"]
+    R --> X["explicit pony agents merge / merge-all"]
 ```
 
 创建、client 构造或 branch 绑定失败时只清理由本次 setup 新建的 worktree/branch；已经运行过的 terminal child 保留供
-审查。任务结束时会先封存 exact child commit，merge 在 parent mutation lock 内复验该 commit、做 ancestry 和 conflict
-preflight，再执行一次 Git merge；从不触碰其他用户 worktree。未合入 terminal child 只能通过显式 discard cleanup 删除。
+审查。任务结束时会先封存 exact child commit 与有序 batch evidence；merge/merge-all 在 parent mutation lock 内复验该
+commit，单个 merge 做 conflict preflight，merge-all 在任何 parent 写入前预检完整顺序；从不触碰其他用户 worktree。
+未合入 terminal child 只能通过显式 discard cleanup 删除。
 
 仓库级开发资产不进入产品 package：
 

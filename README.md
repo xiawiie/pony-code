@@ -329,6 +329,9 @@ pony checkpoints pending
 pony memory search "release decision"
 pony agents list
 pony agents show <agent-id>
+pony agents batches
+pony agents show-batch <batch-id>
+pony agents merge-all <batch-id>
 pony agents merge <agent-id>
 pony agents cleanup <agent-id>
 pony agents cleanup <agent-id> --discard
@@ -343,6 +346,12 @@ Pony 要求 parent worktree clean，然后从同一个 exact HEAD 在 `.pony/wor
 动态 shell approval 会 fail closed。结果会封存为 exact branch revision，测试状态只覆盖最终改动后的验证；之后新增的
 文件、未提交改动或 branch 前移都会使 merge 拒绝。审查后使用 `pony agents merge <agent-id>`；它要求 project trust 和
 parent clean。已合入的 child 用 `cleanup` 回收；放弃未合入 terminal child 必须显式使用 `cleanup <agent-id> --discard`。
+每次 delegate 还会保存绑定同一 base 与有序 sealed evidence 的 batch manifest。`show-batch` 汇总状态、测试与重叠路径；
+`merge-all` 在 mutation lock 内先预检完整顺序，任一冲突时零 merge，再按原顺序显式合入。`stopped`/`failed` child 或
+failed/blocked tests 会阻断；有改动但 `not_run` 会标记 `review_required/untested`，合并后必须运行 Phase 专项门禁，
+然后仍用现有逐个 `cleanup` 回收。merge 阶段中断可安全重试；执行阶段进程中断后，`running` child 不会被推断为完成，
+只能在确认放弃后用逐个 `cleanup <agent-id> --discard` 显式回收；最后一个 child 回收后 batch 会标记为 cleaned。
+batch 列表固定显示最近 100 项，历史累计不会使检查命令整体失败。
 
 ## 执行与旧恢复数据
 

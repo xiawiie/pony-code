@@ -1006,8 +1006,10 @@ def run_hardened_git(
 ):
     args, _ = _validate_hardened_git_args(args)
     if commit_identity is not None:
-        if not args or args[0] not in {"commit", "merge"}:
-            raise ValueError("git commit identity is only valid for commit or merge")
+        if not args or args[0] not in {"commit", "commit-tree", "merge"}:
+            raise ValueError(
+                "git commit identity is only valid for commit, commit-tree, or merge"
+            )
         if (
             not isinstance(commit_identity, tuple)
             or len(commit_identity) != 2
