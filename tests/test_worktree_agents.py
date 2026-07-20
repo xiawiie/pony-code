@@ -1176,7 +1176,17 @@ def test_merge_all_rejects_branch_drift_before_parent_changes(tmp_path):
     batch = _batch(repo)
     child = batch["children"][0]
     worktree = repo / ".pony" / "worktree-agents" / child["id"] / "worktree"
-    _git(worktree, "commit", "--allow-empty", "-m", "drift")
+    _git(
+        worktree,
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.invalid",
+        "commit",
+        "--allow-empty",
+        "-m",
+        "drift",
+    )
     before = _git(repo, "rev-parse", "HEAD").stdout.strip()
 
     with pytest.raises(ValueError, match="branch changed after completion"):
@@ -1213,7 +1223,18 @@ def test_merge_all_resumes_after_a_declared_child_was_already_merged(tmp_path):
     )
     batch = _batch(repo)
     first = batch["children"][0]
-    _git(repo, "merge", "--no-edit", "--no-ff", "--no-verify", first["branch_head"])
+    _git(
+        repo,
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.invalid",
+        "merge",
+        "--no-edit",
+        "--no-ff",
+        "--no-verify",
+        first["branch_head"],
+    )
 
     merged = merge_worktree_agent_batch(repo, batch["id"], _git_executable(agent))
 
