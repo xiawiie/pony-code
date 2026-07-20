@@ -183,6 +183,24 @@ def test_search_without_frozen_rg_never_rescans_path(tmp_path, monkeypatch):
     assert "sample.txt:1:needle" in result
 
 
+def test_search_without_frozen_rg_skips_non_utf8_files(tmp_path):
+    (tmp_path / "binary.bin").write_bytes(b"\xffneedle\x00")
+    (tmp_path / "sample.txt").write_text("needle\n", encoding="utf-8")
+    context = ToolContext(
+        root=tmp_path,
+        path_resolver=lambda raw_path: (tmp_path / raw_path).resolve(),
+        shell_env_provider=lambda: {"PWD": str(tmp_path)},
+        depth=0,
+        max_depth=1,
+        spawn_delegate=lambda args: "unused",
+        trusted_executables={},
+    )
+
+    result = tool_search(context, {"pattern": "needle", "path": "."})
+
+    assert result == "sample.txt:1:needle"
+
+
 def test_search_passes_option_shaped_pattern_as_literal(tmp_path, monkeypatch):
     captured = {}
 
