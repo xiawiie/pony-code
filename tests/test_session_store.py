@@ -228,6 +228,7 @@ def test_session_store_set_provider_model_uses_expected_binding_cas(tmp_path):
         session["id"],
         changed,
         expected_binding=original,
+        expected_leaf_id=store.load_tree(session["id"]).leaf_id,
     )
 
     assert entry["data"]["set"]["provider_binding"] == changed
@@ -238,6 +239,7 @@ def test_session_store_set_provider_model_uses_expected_binding_cas(tmp_path):
             session["id"],
             _provider_binding(model="gpt-later"),
             expected_binding=original,
+            expected_leaf_id=store.load_tree(session["id"]).leaf_id,
         )
     assert store.path(session["id"]).read_bytes() == before
 
@@ -265,6 +267,56 @@ def test_session_store_set_provider_model_rejects_target_drift_without_writing(
             session["id"],
             candidate,
             expected_binding=original,
+            expected_leaf_id=store.load_tree(session["id"]).leaf_id,
+        )
+
+    assert store.path(session["id"]).read_bytes() == before
+
+
+def test_append_messages_rejects_changed_expected_leaf(tmp_path):
+    store = SessionStore(tmp_path / ".pony" / "sessions")
+    session = _session(tmp_path, "message-leaf-cas")
+    session["provider_binding"] = _provider_binding()
+    store.save(session)
+    original = store.load_tree(session["id"])
+    store.label(session["id"], "concurrent")
+    before = store.path(session["id"]).read_bytes()
+
+    with pytest.raises(
+        SessionFormatError,
+        match="^session changed before message append$",
+    ):
+        store.append_messages(
+            session["id"],
+            [{"role": "assistant", "content": "stale", "_pony_meta": {}}],
+            expected_leaf_id=original.leaf_id,
+            expected_provider_binding=original.projection["provider_binding"],
+        )
+
+    assert store.path(session["id"]).read_bytes() == before
+
+
+def test_append_messages_rejects_changed_expected_provider_binding(tmp_path):
+    store = SessionStore(tmp_path / ".pony" / "sessions")
+    session = _session(tmp_path, "message-binding-cas")
+    original = _provider_binding()
+    session["provider_binding"] = original
+    store.save(session)
+    tree = store.load_tree(session["id"])
+    store.set_provider_model(
+        session["id"],
+        _provider_binding(model="gpt-next"),
+        expected_binding=original,
+        expected_leaf_id=tree.leaf_id,
+    )
+    before = store.path(session["id"]).read_bytes()
+
+    with pytest.raises(SessionFormatError, match="^model_session_mismatch$"):
+        store.append_messages(
+            session["id"],
+            [{"role": "assistant", "content": "stale", "_pony_meta": {}}],
+            expected_leaf_id=tree.leaf_id,
+            expected_provider_binding=original,
         )
 
     assert store.path(session["id"]).read_bytes() == before

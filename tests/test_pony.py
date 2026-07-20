@@ -20,6 +20,7 @@ from pony.runtime.application import DEFAULT_MAX_OUTPUT_TOKENS, DEFAULT_MAX_STEP
 from pony.state.session_store import (
     LEGACY_SESSION_FORMAT_VERSION,
     SESSION_FORMAT_VERSION,
+    SessionFormatError,
     SessionStore,
 )
 from pony import Pony
@@ -183,6 +184,208 @@ def test_model_switch_persists_and_resumes_with_the_new_binding(tmp_path):
         ),
     )
     assert resumed.current_model_binding()["model"] == "gpt-next"
+
+
+def test_model_switch_rejects_session_change_during_client_factory(tmp_path):
+    workspace = build_workspace(tmp_path)
+    store = SessionStore(tmp_path / ".pony" / "sessions")
+    agent = None
+
+    def factory(model):
+        store.label(agent.session["id"], "concurrent factory change")
+        return bound_fake_client([], model=model)
+
+    agent = Pony(
+        model_client=bound_fake_client([]),
+        workspace=workspace,
+        session_store=store,
+        options=RuntimeOptions(
+            project_trusted=True,
+            model_client_factory=factory,
+        ),
+    )
+
+    with pytest.raises(SessionFormatError, match="^model_session_mismatch$"):
+        agent.set_model("gpt-next")
+
+    assert agent.model_client.model == "gpt-test"
+    assert store.load(agent.session["id"])["provider_binding"]["model"] == "gpt-test"
+
+
+@pytest.mark.parametrize(
+    "provider_state",
+    [
+        [{
+            "type": "thinking",
+            "thinking": "summary",
+            "signature": "opaque-signature",
+        }],
+        [{"type": "redacted_thinking", "data": "opaque-data"}],
+    ],
+)
+def test_anthropic_provider_state_resumes_with_same_binding(
+    tmp_path,
+    provider_state,
+):
+    workspace = build_workspace(tmp_path)
+    store = SessionStore(tmp_path / ".pony" / "sessions")
+    client = bound_fake_client(
+        [],
+        protocol_family="anthropic_messages",
+        model="claude-test",
+    )
+    agent = Pony(
+        model_client=client,
+        workspace=workspace,
+        session_store=store,
+        options=RuntimeOptions(project_trusted=True),
+    )
+    pair = make_tool_pair(
+        name="read_file",
+        arguments={"path": "README.md"},
+        tool_use_id="anthropic-state",
+        result_content="body",
+        created_at="now",
+        tool_status="ok",
+        effect_class="read_only",
+        provider_state=provider_state,
+    )
+    store.append_messages(agent.session["id"], pair)
+
+    resumed = Pony.from_session(
+        model_client=bound_fake_client(
+            [],
+            protocol_family="anthropic_messages",
+            model="claude-test",
+        ),
+        workspace=workspace,
+        session_store=store,
+        session_id=agent.session["id"],
+        options=RuntimeOptions(project_trusted=True),
+    )
+
+    assert resumed.current_model_binding() == client.provider_binding
+
+
+@pytest.mark.parametrize(
+    "candidate",
+    [
+        {
+            "protocol_family": "openai_responses",
+            "model": "claude-test",
+            "endpoint_hash_character": "a",
+        },
+        {
+            "protocol_family": "anthropic_messages",
+            "model": "claude-next",
+            "endpoint_hash_character": "a",
+        },
+        {
+            "protocol_family": "anthropic_messages",
+            "model": "claude-test",
+            "endpoint_hash_character": "b",
+        },
+    ],
+)
+def test_anthropic_provider_state_rejects_different_binding(tmp_path, candidate):
+    workspace = build_workspace(tmp_path)
+    store = SessionStore(tmp_path / ".pony" / "sessions")
+    agent = Pony(
+        model_client=bound_fake_client(
+            [],
+            protocol_family="anthropic_messages",
+            model="claude-test",
+        ),
+        workspace=workspace,
+        session_store=store,
+        options=RuntimeOptions(project_trusted=True),
+    )
+    store.append_messages(
+        agent.session["id"],
+        make_tool_pair(
+            name="read_file",
+            arguments={"path": "README.md"},
+            tool_use_id="anthropic-state",
+            result_content="body",
+            created_at="now",
+            tool_status="ok",
+            effect_class="read_only",
+            provider_state=[{
+                "type": "thinking",
+                "thinking": "summary",
+                "signature": "opaque-signature",
+            }],
+        ),
+    )
+
+    with pytest.raises(ValueError, match="^model_session_mismatch$"):
+        Pony.from_session(
+            model_client=bound_fake_client([], **candidate),
+            workspace=workspace,
+            session_store=store,
+            session_id=agent.session["id"],
+            options=RuntimeOptions(project_trusted=True),
+        )
+
+
+def test_turn_rejects_response_after_concurrent_model_switch(tmp_path):
+    workspace = build_workspace(tmp_path)
+    store = SessionStore(tmp_path / ".pony" / "sessions")
+
+    def factory(model):
+        return bound_fake_client([], model=model)
+
+    primary_client = factory("gpt-test")
+    agents = {}
+
+    def complete(**_kwargs):
+        agents["concurrent"].set_model("gpt-next")
+        return Response(
+            stop_reason=StopReason.TOOL_USE,
+            content=[{
+                "type": "tool_use",
+                "id": "stale-tool",
+                "name": "read_file",
+                "input": {"path": "README.md"},
+            }],
+            provider_state=[{
+                "type": "reasoning",
+                "encrypted_content": "opaque-state",
+                "summary": [],
+            }],
+        )
+
+    primary_client.complete = complete
+    primary = Pony(
+        model_client=primary_client,
+        workspace=workspace,
+        session_store=store,
+        options=RuntimeOptions(
+            project_trusted=True,
+            model_client_factory=factory,
+        ),
+    )
+    agents["concurrent"] = Pony.from_session(
+        model_client=factory("gpt-test"),
+        workspace=workspace,
+        session_store=store,
+        session_id=primary.session["id"],
+        options=RuntimeOptions(
+            project_trusted=True,
+            model_client_factory=factory,
+        ),
+    )
+
+    with pytest.raises(SessionFormatError, match="^model_session_mismatch$"):
+        primary.ask("read the file")
+
+    persisted = store.load(primary.session["id"])
+    assert persisted["provider_binding"]["model"] == "gpt-next"
+    assert all("_pony_provider_state" not in message for message in persisted["messages"])
+    assert not any(
+        message.get("_pony_meta", {}).get("tool_use_id") == "stale-tool"
+        for message in persisted["messages"]
+    )
 
 
 @pytest.mark.parametrize("branch_operation", ["rewind", "fork"])

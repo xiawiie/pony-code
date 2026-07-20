@@ -11,10 +11,10 @@ cross-protocol replay, but also forced a new Session when a user only wanted to 
 same endpoint and wire protocol. A named target registry, Provider picker, or second configuration file would solve a much larger
 problem than this interaction requires and would duplicate the four-variable `.env` contract.
 
-Some Provider responses contain opaque continuation state tied to the model that created it. In particular, OpenAI Responses
-history may carry `_pony_provider_state`; Pony cannot prove that this state is valid for another model. Model selection also affects
-context budgets, token accounting, and the client factory used by named delegates, so replacing only the displayed model string
-would leave the runtime inconsistent.
+Some Provider responses contain opaque continuation state tied to the model that created it. OpenAI Responses reasoning and
+Anthropic thinking/redacted-thinking blocks may be carried in `_pony_provider_state`; Pony cannot prove that this state is valid for
+another model. Model selection also affects context budgets, token accounting, and the client factory used by named delegates, so
+replacing only the displayed model string would leave the runtime inconsistent.
 
 ## Decision
 
@@ -28,9 +28,9 @@ would leave the runtime inconsistent.
 - The Session model is authoritative on resume. The repository `.env` must still resolve to a compatible Provider protocol and
   endpoint, but its model value does not overwrite the saved Session model. An explicit resume-time `--model` is applied only after
   that compatibility check succeeds.
-- `SessionStore.set_provider_model()` validates both bindings under the Session lock, compares the expected active binding, permits
-  only the model field to differ, and appends one `session_info` entry. Protocol or endpoint drift returns
-  `model_session_mismatch` without writing.
+- `SessionStore.set_provider_model()` validates both bindings under the Session lock, compares the expected active binding and
+  exact leaf captured before client construction, permits only the model field to differ, and appends one `session_info` entry.
+  Concurrent Session change, protocol drift, or endpoint drift returns `model_session_mismatch` without writing.
 - Runtime replacement is prepared before the Session write. After the atomic write succeeds, Pony installs the new client, model
   capabilities, context/output budget, token counter, and delegate client factory, then reloads the active Session projection.
 - A Session containing `_pony_provider_state` cannot change models. It returns `model_session_mismatch` without writing rather than

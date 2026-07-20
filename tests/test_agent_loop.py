@@ -600,12 +600,13 @@ def test_ordinary_workspace_tool_error_commits_pair_consumes_step_and_finishes(
     saved_transcripts = []
     original_append = agent.session_store.append_messages
 
-    def capture_append(session_id, messages, *, state_updates=None):
+    def capture_append(session_id, messages, *, state_updates=None, **append_options):
         saved_transcripts.append(copy.deepcopy(list(messages)))
         return original_append(
             session_id,
             messages,
             state_updates=state_updates,
+            **append_options,
         )
 
     monkeypatch.setattr(agent.session_store, "append_messages", capture_append)
@@ -688,12 +689,13 @@ def test_tool_pair_is_written_by_one_session_save_without_orphan(tmp_path, monke
     saved_transcripts = []
     original_append = agent.session_store.append_messages
 
-    def spy_append(session_id, messages, *, state_updates=None):
+    def spy_append(session_id, messages, *, state_updates=None, **append_options):
         saved_transcripts.append(copy.deepcopy(list(messages)))
         return original_append(
             session_id,
             messages,
             state_updates=state_updates,
+            **append_options,
         )
 
     monkeypatch.setattr(agent.session_store, "append_messages", spy_append)
@@ -756,7 +758,7 @@ def test_side_effect_then_pair_save_failure_stops_before_another_provider_call(
     agent = build_native_agent(tmp_path, provider)
     original_append = agent.session_store.append_messages
 
-    def fail_pair(session_id, messages, *, state_updates=None):
+    def fail_pair(session_id, messages, *, state_updates=None, **append_options):
         if any(
             isinstance(message.get("content"), list)
             and message["content"]
@@ -768,6 +770,7 @@ def test_side_effect_then_pair_save_failure_stops_before_another_provider_call(
             session_id,
             messages,
             state_updates=state_updates,
+            **append_options,
         )
 
     monkeypatch.setattr(agent.session_store, "append_messages", fail_pair)
@@ -828,7 +831,7 @@ def test_committed_pair_save_reloads_canonical_without_duplicate_or_loss(
     original_append = agent.session_store.append_messages
     injected = False
 
-    def commit_then_raise(session_id, messages, *, state_updates=None):
+    def commit_then_raise(session_id, messages, *, state_updates=None, **append_options):
         nonlocal injected
         has_tool_use = any(
             isinstance(message.get("content"), list)
@@ -839,15 +842,17 @@ def test_committed_pair_save_reloads_canonical_without_duplicate_or_loss(
         if has_tool_use and not injected:
             injected = True
             original_append(
-                session_id,
-                messages,
-                state_updates=state_updates,
-            )
+                    session_id,
+                    messages,
+                    state_updates=state_updates,
+                    **append_options,
+                )
             raise security_module.PrivateAtomicWriteError("committed")
         return original_append(
             session_id,
             messages,
             state_updates=state_updates,
+            **append_options,
         )
 
     monkeypatch.setattr(agent.session_store, "append_messages", commit_then_raise)
@@ -900,7 +905,13 @@ def test_ambiguous_pair_save_never_overwrites_reloaded_canonical_with_terminal(
     original_append = agent.session_store.append_messages
     injected = False
 
-    def replace_canonical_then_raise(session_id, messages, *, state_updates=None):
+    def replace_canonical_then_raise(
+        session_id,
+        messages,
+        *,
+        state_updates=None,
+        **append_options,
+    ):
         nonlocal injected
         has_tool_use = any(
             isinstance(message.get("content"), list)
@@ -912,16 +923,18 @@ def test_ambiguous_pair_save_never_overwrites_reloaded_canonical_with_terminal(
             injected = True
             old_leaf = agent.session_store.load_tree(session_id).leaf_id
             original_append(
-                session_id,
-                messages,
-                state_updates=state_updates,
-            )
+                    session_id,
+                    messages,
+                    state_updates=state_updates,
+                    **append_options,
+                )
             agent.session_store.rewind(session_id, old_leaf)
             raise security_module.PrivateAtomicWriteError("ambiguous")
         return original_append(
             session_id,
             messages,
             state_updates=state_updates,
+            **append_options,
         )
 
     monkeypatch.setattr(
@@ -968,7 +981,7 @@ def test_committed_pair_save_with_failed_reload_blocks_all_later_session_writes(
     injected = False
     later_saves = 0
 
-    def commit_then_raise(session_id, messages, *, state_updates=None):
+    def commit_then_raise(session_id, messages, *, state_updates=None, **append_options):
         nonlocal injected, later_saves
         if injected:
             later_saves += 1
@@ -980,16 +993,18 @@ def test_committed_pair_save_with_failed_reload_blocks_all_later_session_writes(
         )
         if has_tool_use and not injected:
             original_append(
-                session_id,
-                messages,
-                state_updates=state_updates,
-            )
+                    session_id,
+                    messages,
+                    state_updates=state_updates,
+                    **append_options,
+                )
             injected = True
             raise security_module.PrivateAtomicWriteError("unreadable commit")
         return original_append(
             session_id,
             messages,
             state_updates=state_updates,
+            **append_options,
         )
 
     def fail_reconciliation(session_id):
@@ -1050,7 +1065,7 @@ def test_pair_save_failure_restores_pre_tool_memory(tmp_path, monkeypatch):
     baseline_summaries = copy.deepcopy(agent.session["memory"]["file_summaries"])
     original_append = agent.session_store.append_messages
 
-    def fail_pair(session_id, messages, *, state_updates=None):
+    def fail_pair(session_id, messages, *, state_updates=None, **append_options):
         if any(
             isinstance(message.get("content"), list)
             and message["content"]
@@ -1062,6 +1077,7 @@ def test_pair_save_failure_restores_pre_tool_memory(tmp_path, monkeypatch):
             session_id,
             messages,
             state_updates=state_updates,
+            **append_options,
         )
 
     monkeypatch.setattr(agent.session_store, "append_messages", fail_pair)
@@ -1106,7 +1122,13 @@ def test_pair_save_primary_error_survives_terminal_persistence_failure(
     original_append = agent.session_store.append_messages
     user_turn_saved = False
 
-    def fail_pair_then_terminal(session_id, messages, *, state_updates=None):
+    def fail_pair_then_terminal(
+        session_id,
+        messages,
+        *,
+        state_updates=None,
+        **append_options,
+    ):
         nonlocal user_turn_saved
         has_tool_use = any(
             isinstance(message.get("content"), list)
@@ -1123,6 +1145,7 @@ def test_pair_save_primary_error_survives_terminal_persistence_failure(
             session_id,
             messages,
             state_updates=state_updates,
+            **append_options,
         )
 
     monkeypatch.setattr(
@@ -1280,7 +1303,13 @@ def test_terminal_path_matrix_persists_exactly_one_finalization(
     elif case == "persistence_error":
         original_append = agent.session_store.append_messages
 
-        def fail_final_answer(session_id, messages, *, state_updates=None):
+        def fail_final_answer(
+            session_id,
+            messages,
+            *,
+            state_updates=None,
+            **append_options,
+        ):
             last = messages[-1] if messages else {}
             if (
                 last.get("role") == "assistant"
@@ -1288,10 +1317,11 @@ def test_terminal_path_matrix_persists_exactly_one_finalization(
             ):
                 raise primary
             return original_append(
-                session_id,
-                messages,
-                state_updates=state_updates,
-            )
+                    session_id,
+                    messages,
+                    state_updates=state_updates,
+                    **append_options,
+                )
 
         monkeypatch.setattr(
             agent.session_store,
@@ -1704,13 +1734,14 @@ def test_final_message_save_failure_is_persistence_error(tmp_path, monkeypatch):
     )
     original_append = agent.session_store.append_messages
 
-    def fail_assistant(session_id, messages, *, state_updates=None):
+    def fail_assistant(session_id, messages, *, state_updates=None, **append_options):
         if messages and messages[-1].get("role") == "assistant":
             raise OSError("assistant save failed")
         return original_append(
             session_id,
             messages,
             state_updates=state_updates,
+            **append_options,
         )
 
     monkeypatch.setattr(agent.session_store, "append_messages", fail_assistant)

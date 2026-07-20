@@ -56,6 +56,7 @@ MAX_SESSION_ENTRY_BYTES = 8 * 1024 * 1024
 SESSION_SOFT_LIMIT_BYTES = 128 * 1024 * 1024
 MAX_SESSION_BYTES = 512 * 1024 * 1024
 MAX_PLAN_TEXT_BYTES = 12 * 1024
+_NO_EXPECTED_PROVIDER_BINDING = object()
 
 ENTRY_TYPES = frozenset(
     {
@@ -1939,7 +1940,16 @@ class SessionStore:
                 raise SessionFormatError("session tree projection mismatch")
             return self._append_entries_unlocked(session_id, entries)
 
-    def append_messages(self, session_id, messages, *, state_updates=None):
+    def append_messages(
+        self,
+        session_id,
+        messages,
+        *,
+        state_updates=None,
+        expected_leaf_id=None,
+        expected_provider_binding=_NO_EXPECTED_PROVIDER_BINDING,
+        return_leaf_id=False,
+    ):
         """Atomically append one message batch without rescanning full history.
 
         A tool call/result pair is encoded as one ``tool_exchange`` entry.  Only
@@ -1957,12 +1967,28 @@ class SessionStore:
             _validate_entry(entry, raw_known, plan_redactor=self._redactor)
             raw_known.add(entry["id"])
         safe_messages = self._redactor(raw_messages)
-        if not safe_messages and not state_updates:
+        has_expectations = (
+            expected_leaf_id is not None
+            or expected_provider_binding is not _NO_EXPECTED_PROVIDER_BINDING
+        )
+        if not safe_messages and not state_updates and not has_expectations:
             return self.path(session_id)
         safe_state = self._redactor(deepcopy(state_updates or {}))
         _validate_session_info_updates(safe_state)
+        expected_binding = expected_provider_binding
+        if expected_binding is not _NO_EXPECTED_PROVIDER_BINDING:
+            expected_binding = deepcopy(expected_binding)
+            if expected_binding is not None:
+                _validate_provider_binding(expected_binding)
         with file_lock.locked_file(self.lock_path, require_existing=True):
             tree = self._read_tree_unlocked(session_id)
+            if (
+                expected_binding is not _NO_EXPECTED_PROVIDER_BINDING
+                and tree.projection.get("provider_binding") != expected_binding
+            ):
+                raise SessionFormatError("model_session_mismatch")
+            if expected_leaf_id is not None and tree.leaf_id != expected_leaf_id:
+                raise SessionFormatError("session changed before message append")
             parent_id = tree.leaf_id
             entries = _message_entries(safe_messages, parent_id)
             known = {entry["id"] for entry in tree.entries}
@@ -1978,9 +2004,18 @@ class SessionStore:
             }
             if changed:
                 entries.append(_new_entry("session_info", {"set": changed}, parent_id))
-            return self._append_entries_unlocked(session_id, entries)
+            path = self._append_entries_unlocked(session_id, entries)
+            leaf_id = entries[-1]["id"] if entries else tree.leaf_id
+            return (path, leaf_id) if return_leaf_id else path
 
-    def set_provider_model(self, session_id, binding, *, expected_binding):
+    def set_provider_model(
+        self,
+        session_id,
+        binding,
+        *,
+        expected_binding,
+        expected_leaf_id,
+    ):
         """Atomically replace only the model in the active Provider binding."""
         session_id = _session_id(session_id)
         candidate = self._redactor(deepcopy(binding))
@@ -1990,7 +2025,7 @@ class SessionStore:
         with file_lock.locked_file(self.lock_path, require_existing=True):
             tree = self._read_tree_unlocked(session_id)
             current = tree.projection.get("provider_binding")
-            if current != expected:
+            if current != expected or tree.leaf_id != expected_leaf_id:
                 raise SessionFormatError("model_session_mismatch")
             if (
                 candidate["protocol_family"] != current["protocol_family"]
