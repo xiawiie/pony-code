@@ -551,6 +551,7 @@ def test_main_constructs_live_pony_with_read_only_workspace_and_memory_tools(
     assert run_live_session.main() == 4
     assert captured["options"].allowed_tools == ("read_file", "memory_read")
     assert captured["options"].max_steps == 3
+    assert captured["options"].project_trusted is True
 
 
 def test_read_turn_trace_aggregates_every_model_turn(tmp_path):

@@ -2519,6 +2519,7 @@ def main() -> int:
                 session_store=session_store,
                 options=RuntimeOptions(
                     read_only=True,
+                    project_trusted=True,
                     max_steps=3,
                     allowed_tools=("read_file", "memory_read"),
                 ),
