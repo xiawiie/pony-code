@@ -615,6 +615,44 @@ def test_doctor_project_document_hint(tmp_path, has_claude, has_agents, expected
     assert bool(hints) is expected
 
 
+def test_doctor_reports_actionable_project_skill_failure_without_content(tmp_path):
+    secret = "github_pat_" + "A" * 40
+    skill = tmp_path / ".claude" / "skills" / "review" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text(
+        f"---\nname: review\ndescription: Review safely.\n---\n{secret}\n",
+        encoding="utf-8",
+    )
+
+    result = collect_doctor(tmp_path)["project_skills"]
+
+    assert result == {
+        "status": "invalid",
+        "reason_code": "project_skill_secret_rejected",
+        "remediation": "remove secret material from Project Skills and restart Pony",
+        "skill_count": 0,
+    }
+    assert secret not in json.dumps(result)
+
+
+def test_doctor_uses_custom_project_secret_names_for_skill_scan(tmp_path):
+    skill = tmp_path / ".claude" / "skills" / "review" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text(
+        "---\nname: review\ndescription: Review safely.\n---\ncustom-secret-value\n",
+        encoding="utf-8",
+    )
+    (tmp_path / ".env").write_text(
+        "PONY_SECRET_ENV_NAMES=PROJECT_CREDENTIAL\n"
+        "PROJECT_CREDENTIAL=custom-secret-value\n",
+        encoding="utf-8",
+    )
+
+    result = collect_doctor(tmp_path)["project_skills"]
+
+    assert result["reason_code"] == "project_skill_secret_rejected"
+
+
 def test_doctor_text_output_is_grouped(tmp_path, capsys):
     assert main(["--cwd", str(tmp_path), "doctor"]) == 0
 

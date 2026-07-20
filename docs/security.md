@@ -139,8 +139,11 @@ Host、Git 与 RG 共用 4 MiB stdout/stderr 聚合捕获上限；超限返回 `
 Repository Skills are not executable extensions. The only accepted layout is Source Root
 `.claude/skills/<name>/SKILL.md`; HOME, plugin, marketplace, and `.agents/skills` are never searched. Catalog discovery uses
 anchored no-follow bounded reads and rejects symlink, hardlink, special-file, root-identity, size/count, UTF-8, strict
-frontmatter, and known-secret failures as an all-or-nothing catalog. `/name` supplies one validated document as ephemeral model
-context only. It cannot register tools, alter permission, run a script, or escape the existing Host path/secret/trust checks.
+frontmatter, and known-secret failures as an all-or-nothing catalog. The optional `resources` field names at most eight
+comma-separated relative UTF-8 files inside that same Skill directory; each uses the same anchored reader, a 16 KiB cap, and no
+glob or recursive discovery. `/name` supplies one validated document and its explicit resources as ephemeral model context only,
+below user and applicable project rules. It cannot register tools, alter permission, run a script, or escape existing Host
+path/secret/trust checks. Rejection diagnostics expose stable reason/remediation only, never rejected content or paths.
 
 公开产品已删除 `--sandbox`、`pony sandbox`、Source Apply 与 workspace restore。旧 Sandbox sidecar 仅用于 resume
 binding 检查：匹配旧 Sandbox 的 Session 返回 `legacy_sandbox_session_unsupported`，损坏 binding 返回

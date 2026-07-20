@@ -8,6 +8,8 @@ from pony.context.renderer import render_current_user_message
 from pony.context.skills import (
     MAX_PROJECT_SKILLS,
     MAX_SKILL_FILE_BYTES,
+    MAX_SKILL_RESOURCES,
+    MAX_SKILL_RESOURCE_BYTES,
     discover_project_skills,
 )
 from pony.runtime.options import RuntimeOptions
@@ -15,11 +17,19 @@ from pony.state.session_store import SessionStore
 from pony.workspace.context import WorkspaceContext
 
 
-def _skill(root, name="review", *, body="Inspect first.", description="Review safely."):
+def _skill(
+    root,
+    name="review",
+    *,
+    body="Inspect first.",
+    description="Review safely.",
+    resources=(),
+):
     path = root / ".claude" / "skills" / name / "SKILL.md"
     path.parent.mkdir(parents=True, exist_ok=True)
+    resource_field = f"resources: {','.join(resources)}\n" if resources else ""
     path.write_text(
-        f"---\nname: {name}\ndescription: {description}\n---\n{body}\n",
+        f"---\nname: {name}\ndescription: {description}\n{resource_field}---\n{body}\n",
         encoding="utf-8",
     )
     return path
@@ -55,6 +65,67 @@ def test_discovers_only_strict_claude_project_skill_layout(tmp_path):
 
     assert tuple(skill.name for skill in catalog.skills) == ("design", "review")
     assert catalog.get("review").instructions == "Inspect first."
+    assert catalog.diagnostic()["reason_code"] == "project_skills_ready"
+
+
+def test_loads_only_explicit_bounded_resources_from_the_skill_directory(tmp_path):
+    _skill(tmp_path, resources=("references/checklist.md", "template.txt"))
+    skill_root = tmp_path / ".claude" / "skills" / "review"
+    (skill_root / "references").mkdir()
+    (skill_root / "references" / "checklist.md").write_text(
+        "Check the diff.\n", encoding="utf-8"
+    )
+    (skill_root / "template.txt").write_text("Report briefly.\n", encoding="utf-8")
+    (skill_root / "ignored.txt").write_text("Never load me.\n", encoding="utf-8")
+
+    skill = _catalog(tmp_path).get("review")
+
+    assert tuple(resource.path for resource in skill.resources) == (
+        "references/checklist.md",
+        "template.txt",
+    )
+    assert "Never load me" not in repr(skill.resources)
+
+
+@pytest.mark.parametrize(
+    "resource_path",
+    ("../outside.md", "/tmp/outside.md", "references/../outside.md", "SKILL.md"),
+)
+def test_resource_paths_cannot_escape_or_reopen_the_skill_document(
+    tmp_path, resource_path
+):
+    _skill(tmp_path, resources=(resource_path,))
+
+    catalog = _catalog(tmp_path)
+
+    assert catalog.skills == ()
+    assert catalog.reason_code == "project_skill_resource_rejected"
+
+
+def test_resource_links_limits_and_secrets_fail_the_whole_catalog(tmp_path):
+    _skill(tmp_path, resources=("reference.md",))
+    resource = tmp_path / ".claude" / "skills" / "review" / "reference.md"
+    outside = tmp_path / "outside.md"
+    outside.write_text("outside\n", encoding="utf-8")
+    resource.symlink_to(outside)
+    assert _catalog(tmp_path).reason_code == "project_skill_resource_rejected"
+
+    resource.unlink()
+    os.link(outside, resource)
+    assert _catalog(tmp_path).reason_code == "project_skill_resource_rejected"
+
+    resource.unlink()
+    resource.write_text("x" * (MAX_SKILL_RESOURCE_BYTES + 1), encoding="utf-8")
+    assert _catalog(tmp_path).reason_code == "project_skill_resource_rejected"
+
+    resource.write_text("github_pat_" + "A" * 40, encoding="utf-8")
+    assert _catalog(tmp_path).reason_code == "project_skill_secret_rejected"
+
+    _skill(
+        tmp_path,
+        resources=tuple(f"resource-{index}.md" for index in range(MAX_SKILL_RESOURCES + 1)),
+    )
+    assert _catalog(tmp_path).reason_code == "project_skill_resource_rejected"
 
 
 @pytest.mark.parametrize(
@@ -160,6 +231,22 @@ def test_skill_is_injected_only_for_explicit_skill_turn(tmp_path):
     assert telemetry["context_source_allocator"]["selected_chunks"] >= 1
 
 
+def test_skill_resources_are_ephemeral_context_with_explicit_authority(tmp_path):
+    _skill(tmp_path, resources=("checklist.md",))
+    resource = tmp_path / ".claude" / "skills" / "review" / "checklist.md"
+    resource.write_text("RESOURCE-CANARY\n", encoding="utf-8")
+    agent = _agent(tmp_path)
+    agent.active_skill = agent.project_skill("review")
+    try:
+        rendered, _ = render_current_user_message(agent, "inspect")
+    finally:
+        agent.active_skill = None
+
+    assert "user request, then applicable project rules, then this Skill" in rendered
+    assert "Resource checklist.md:" in rendered
+    assert "RESOURCE-CANARY" in rendered
+
+
 def test_oversized_active_skill_fails_before_provider_request(tmp_path):
     _skill(tmp_path, body="x" * (MAX_SKILL_FILE_BYTES - 128))
     agent = _agent(tmp_path, outputs=("must not run",))
@@ -204,3 +291,17 @@ def test_skill_appears_in_shared_help_and_tui_completion(tmp_path):
         SlashCommandCompleter(agent).get_completions(Document("/rev"), None)
     )
     assert [item.text for item in completions] == ["/review"]
+
+
+def test_invalid_catalog_help_is_actionable_without_leaking_content(tmp_path):
+    from pony.cli.help import render_help_details
+
+    secret = "github_pat_" + "A" * 40
+    _skill(tmp_path, body=secret)
+    agent = _agent(tmp_path)
+
+    rendered = render_help_details(agent)
+
+    assert "Project Skills: unavailable" in rendered
+    assert "project_skill_secret_rejected" in rendered
+    assert secret not in rendered

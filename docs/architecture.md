@@ -150,8 +150,10 @@ model binding 的有限事实；one-shot、JSON 和管理命令不显示。promp
 Project Skills are deliberately inert read-only input, not a plugin runtime. Pony discovers only
 `.claude/skills/<name>/SKILL.md` from the trusted Source Root. Descriptor-anchored bounded reads require a single-link UTF-8
 regular file, strict `name`/`description` frontmatter, a matching lowercase directory name, and no known secret material.
-Unsafe, malformed, oversized, or excessive catalog entries make the catalog empty. `/name [prompt]` adds exactly one validated
-Skill as the immutable current-turn `active_skill` context source; it neither executes scripts nor changes tools, permissions,
+The optional comma-separated `resources` field names at most eight bounded UTF-8 files inside the same Skill directory; no glob,
+recursive discovery, or implicit directory load exists. Unsafe, malformed, oversized, or excessive catalog entries make the
+catalog empty. `/name [prompt]` adds exactly one validated Skill and its explicit resources as the immutable current-turn
+`active_skill` context source, after user instructions and applicable project rules; it neither executes scripts nor changes tools, permissions,
 Session, Memory, or trace state. Home catalogs, plugins, `.agents/skills`, installation, marketplace, and compatibility search
 are intentionally absent.
 

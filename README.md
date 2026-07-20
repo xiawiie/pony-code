@@ -173,9 +173,11 @@ protocol 与 API endpoint，结果写入 Session，因此 resume 继续使用该
 覆盖且不修改 `.env`；它不提供模型目录、在线探测或失败 fallback。
 
 仓库可在 `.claude/skills/<name>/SKILL.md` 提供一个 Claude 风格的只读 Skill。文档必须带严格的 `name` 和
-`description` frontmatter，名称与目录一致；输入 `/name [prompt]` 只为当前 turn 注入该 Skill。Pony 不读取 HOME、
+`description` frontmatter，名称与目录一致；可选 `resources` 是最多八个、逗号分隔的 Skill 目录内相对 UTF-8 文件，
+例如 `resources: references/checklist.md,templates/report.txt`。不支持 glob、递归依赖或隐式目录读取。输入
+`/name [prompt]` 只为当前 turn 注入该 Skill；优先级固定为用户请求、适用项目规则、Skill。Pony 不读取 HOME、
 插件或 `.agents/skills`，也不执行脚本、安装或持久化 Skill；任何不安全、超限、含已知 secret 或格式错误的条目都会让
-本次目录不加载。
+本次目录不加载；`/help` 和 `pony doctor` 只显示稳定原因与修复建议，不回显被拒内容。
 
 `bypassPermissions` 必须显式获得本次进程的危险 capability；这些参数只适用于 `run/repl`：
 
