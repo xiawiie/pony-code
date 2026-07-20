@@ -65,7 +65,6 @@ readme_intro_locked/
 !/docs/adr/
 !/docs/adr/*.md
 !/docs/context-and-sessions.md
-!/docs/coding-agent-workflow-plan.md
 !/docs/assets/
 !/docs/assets/terminal/
 !/docs/assets/terminal/*.png
