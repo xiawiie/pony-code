@@ -127,7 +127,6 @@ protocol 与 endpoint；只有专用 Session writer 可在两者不变时替换 
 | `pony.workspace` | root discovery、workspace view 与 observer |
 | `pony.config` | `.env`、`pony.toml`、Provider 解析和私有 secret 写入 |
 | `pony.runtime` | 跨领域对象装配和 Pony 公共运行时 |
-| `pony.security` | 共享 no-follow、private-file、redaction 与安全原语 |
 
 ## 依赖方向
 

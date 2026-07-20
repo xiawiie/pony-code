@@ -3,8 +3,9 @@
 ## 支持范围
 
 - Python：3.11、3.12。
+- OS：macOS 与 Linux；两者进入 CI。Windows 不受支持，所需 POSIX 文件身份和锁原语不可用时 Pony fail closed。
 - Runtime dependencies：一个直接依赖 `prompt-toolkit`；锁定环境中同时安装其传递依赖 `wcwidth`。
-- Host CLI：纯 Python，支持常规本地环境；Host 不是 OS sandbox。
+- Host CLI：只在受信 Source Root 直接执行；Host 不是 OS sandbox。
 
 ## 从 PyPI 安装
 

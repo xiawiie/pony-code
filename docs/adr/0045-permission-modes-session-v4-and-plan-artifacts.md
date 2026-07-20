@@ -5,6 +5,9 @@
 Accepted and implemented for the unreleased Pony 1.0 line. This ADR supersedes
 [ADR-0043](0043-workflow-state-and-session-v3.md).
 
+Session v4 introduced this decision. The current writer is Session v5; its format increment removed retired Recovery fields and
+did not change the permission or Plan contract recorded here.
+
 ## Context
 
 Session v3 exposed Pony-specific `plan|act|review` workflow modes and a structured Active Plan. Their command surface and
