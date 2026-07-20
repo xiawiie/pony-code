@@ -335,7 +335,7 @@ def test_python_search_never_stats_or_reads_sensitive_or_symlink_files(
         ),
     ],
 )
-def test_validate_tool_rejects_protected_user_notes_before_runner(
+def test_validate_tool_rejects_control_plane_paths_before_runner(
     tmp_path, name, arguments
 ):
     protected = tmp_path / ".pony" / "memory" / "notes" / "secret.md"
@@ -350,7 +350,7 @@ def test_validate_tool_rejects_protected_user_notes_before_runner(
         spawn_delegate=lambda args: "unused",
     )
 
-    with pytest.raises(ValueError, match="refusing to write user note path"):
+    with pytest.raises(ValueError, match="^control_plane_write_block$"):
         validate_tool(context, name, arguments)
 
 

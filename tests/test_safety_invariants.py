@@ -338,10 +338,12 @@ def test_risky_tool_deny_behavior(tmp_path):
     assert result == "error: permission mode 'dontAsk' blocks run_shell"
 
 
-def test_write_file_refuses_user_notes_path_before_runner(tmp_path):
-    # 路径级硬拦截：approval=auto 也不能通过；不是靠审批模式挡的。
+@pytest.mark.parametrize(
+    "target_rel",
+    (".git/hooks/pre-commit", ".pony/memory/agent_notes.md"),
+)
+def test_write_file_refuses_control_plane_path_before_runner(tmp_path, target_rel):
     agent = build_agent(tmp_path, [], permission_mode="auto")
-    target_rel = ".pony/memory/notes/malicious.md"
     target_abs = tmp_path / target_rel
 
     runner = Mock(return_value="must not run")
@@ -352,30 +354,32 @@ def test_write_file_refuses_user_notes_path_before_runner(tmp_path):
     )
 
     assert result.metadata["tool_status"] == "rejected"
-    assert "refusing to write user note path" in result.content
+    assert result.content == "error: control_plane_write_block"
     assert not target_abs.exists()
     runner.assert_not_called()
 
 
-def test_patch_file_refuses_user_notes_path_before_runner(tmp_path):
-    # 预先手工放一份 user note；patch_file 也必须挡住。
-    note_rel = ".pony/memory/notes/design.md"
-    note_abs = tmp_path / note_rel
-    note_abs.parent.mkdir(parents=True, exist_ok=True)
+@pytest.mark.parametrize(
+    "target_rel",
+    (".git/hooks/pre-commit", ".pony/memory/agent_notes.md"),
+)
+def test_patch_file_refuses_control_plane_path_before_runner(tmp_path, target_rel):
+    target_abs = tmp_path / target_rel
+    target_abs.parent.mkdir(parents=True, exist_ok=True)
     original = "original body\n"
-    note_abs.write_text(original, encoding="utf-8")
+    target_abs.write_text(original, encoding="utf-8")
     agent = build_agent(tmp_path, [], permission_mode="auto")
 
     runner = Mock(return_value="must not run")
     agent.tools["patch_file"]["run"] = runner
     result = agent.execute_tool(
         "patch_file",
-        {"path": note_rel, "old_text": "original", "new_text": "tampered"},
+        {"path": target_rel, "old_text": "original", "new_text": "tampered"},
     )
 
     assert result.metadata["tool_status"] == "rejected"
-    assert "refusing to write user note path" in result.content
-    assert note_abs.read_text(encoding="utf-8") == original
+    assert result.content == "error: control_plane_write_block"
+    assert target_abs.read_text(encoding="utf-8") == original
     runner.assert_not_called()
 
 

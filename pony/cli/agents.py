@@ -36,20 +36,26 @@ def _render_list(items):
 
 
 def _render_show(item):
-    return "\n".join(
-        (
-            f"agent: {item['id']}",
-            f"name: {item['name']}",
-            f"status: {item['status']}",
-            f"mode: {item['mode']}",
-            f"branch: {item['branch']}",
-            f"worktree: {item['worktree']}",
-            f"base: {item['base_commit']}",
-            f"diff: {item.get('diff_status', 'unknown')}",
-            f"changed_files: {item['changed_files']}",
-            f"tests: {item['test_status']}",
+    lines = [
+        f"agent: {item['id']}",
+        f"name: {item['name']}",
+        f"status: {item['status']}",
+        f"mode: {item['mode']}",
+        f"branch: {item['branch']}",
+        f"worktree: {item['worktree']}",
+        f"base: {item['base_commit']}",
+        f"diff: {item.get('diff_status', 'unknown')}",
+        f"changed_files: {item['changed_files']}",
+    ]
+    if "worktree_diff_status" in item:
+        lines.extend(
+            (
+                f"worktree_diff_status: {item['worktree_diff_status']}",
+                f"worktree_changed_files: {item['worktree_changed_files']}",
+            )
         )
-    )
+    lines.append(f"tests: {item['test_status']}")
+    return "\n".join(lines)
 
 
 def _usage():

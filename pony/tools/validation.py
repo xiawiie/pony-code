@@ -27,7 +27,7 @@ MAX_WORKSPACE_SEARCH_BYTES = 64 * 1024 * 1024
 
 MAX_WORKSPACE_SEARCH_MATCHES = 200
 
-USER_NOTES_PROTECTED_PREFIX = (".pony", "memory", "notes")
+CONTROL_PLANE_PATH_NAMES = frozenset({".git", ".pony"})
 
 
 class SensitiveToolError(ValueError):
@@ -176,22 +176,13 @@ def _contains_sensitive_content(context, value):
     )
 
 
-def _refuse_user_notes_write(context, path):
-    # User Notes 是用户手写的上下文；`memory_save` 只允许追加到 agent_notes.md。
-    # 通用 write_file / patch_file 必须在路径层就拒绝写入 `.pony/memory/notes/**`，
-    # 而不是依赖 permission prompt 拦；Accept Edits 会跳过文件编辑确认。
+def _refuse_control_plane_write(context, path):
     try:
         relative = path.relative_to(context.root)
     except ValueError:
-        return ""
-    parts = relative.parts
-    if len(parts) < len(USER_NOTES_PROTECTED_PREFIX):
-        return ""
-    if parts[: len(USER_NOTES_PROTECTED_PREFIX)] == USER_NOTES_PROTECTED_PREFIX:
-        return (
-            f"error: refusing to write user note path (read-only for agent): {relative}"
-        )
-    return ""
+        return
+    if any(part.casefold() in CONTROL_PLANE_PATH_NAMES for part in relative.parts):
+        raise SensitiveToolError("control_plane_write_block")
 
 
 def validate_tool(context, name, args):
@@ -250,9 +241,7 @@ def validate_tool(context, name, args):
 
     if name == "write_file":
         path, _ = _lexical_tool_target(context, args["path"])
-        refusal = _refuse_user_notes_write(context, path)
-        if refusal:
-            raise ValueError(refusal)
+        _refuse_control_plane_write(context, path)
         info = _target_stat(path)
         if info is not None and (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1):
             raise workspace_files.WorkspaceIOError(
@@ -270,9 +259,7 @@ def validate_tool(context, name, args):
         # patch_file 故意做得很严格：old_text 必须精确命中且只能出现一次，
         # 这样修改行为才是确定的，失败原因也更容易解释。
         path, _ = _lexical_tool_target(context, args["path"])
-        refusal = _refuse_user_notes_write(context, path)
-        if refusal:
-            raise ValueError(refusal)
+        _refuse_control_plane_write(context, path)
         info = _target_stat(path)
         if info is None:
             raise ValueError("path is not a file")
