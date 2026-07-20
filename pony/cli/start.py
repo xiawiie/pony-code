@@ -599,8 +599,13 @@ def _route_repl_input(
     render_user=lambda _text: None,
     render_status=print,
     render_error=print,
+    confirmation_shown=False,
 ):
-    if input_queue.answer_confirmation(user_input):
+    if input_queue.confirmation() is not None:
+        if confirmation_shown:
+            input_queue.answer_confirmation(user_input)
+        else:
+            render_status("approval required; re-enter the response")
         return None
     if not user_input:
         return None
@@ -774,6 +779,7 @@ def run_repl(
                             manage_permissions=manage_plain_permissions,
                             pick_session_entry=pick_plain_session_entry,
                         ),
+                        confirmation_shown=confirmation is not None,
                     )
                     refresh_plain_history()
                     if result is not None:

@@ -142,7 +142,8 @@ PONY_MODEL
 - `memory_save` 只接受当前请求的明确授权；历史授权不继承，delegate 不能写 Durable Memory。
 - `delegate_worktrees` 一次只接受 bounded named batch；每项从 clean parent 的 exact HEAD 创建独立
   `codex/pony-agent-*` branch、worktree、client、Session 与 Run。它不自动 merge；只有显式
-  `pony agents merge <id>` 可把已复验的普通文件改动合入当前 clean branch。
+  `pony agents merge <id>` 可把已封存 revision 的普通文件改动合入当前 trusted、clean branch；未合入 terminal child
+  只能以显式 `pony agents cleanup <id> --discard` 回收。
 - Session、Run 与 legacy artifact 使用独立 record format 和 reader；release version 不能代替 format version。
 - Session v5 的 Permission/Plan 状态只能由 `permission_mode_change`、`plan_artifact` 与受限 permission-rule state
   投影；Plan text/revision 和进入 Plan 前的 mode 都来自 active path。v1-v4 inspection 零写，只有显式 resume

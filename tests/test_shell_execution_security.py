@@ -1016,6 +1016,28 @@ def test_shell_rechecks_workspace_identity_inside_mutation_lock(tmp_path, monkey
     assert lock_active is False
 
 
+def test_worktree_delegate_rechecks_workspace_identity_inside_mutation_lock(
+    tmp_path,
+    monkeypatch,
+):
+    agent = build_agent(tmp_path, executables={"git": "/frozen/git"})
+    agent.set_permission_rule("delegate_worktrees", "allow")
+    runner = Mock()
+    agent.tools["delegate_worktrees"]["run"] = runner
+    monkeypatch.setattr(
+        "pony.tools.executor.private_files.private_directory_identity",
+        lambda _root: (0, 0),
+    )
+
+    result = agent.execute_tool(
+        "delegate_worktrees",
+        {"tasks": [{"name": "reader", "task": "inspect"}]},
+    )
+
+    assert result.metadata["tool_error_code"] == "workspace_root_changed"
+    runner.assert_not_called()
+
+
 @pytest.mark.parametrize(
     "runner_result",
     [

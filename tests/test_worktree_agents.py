@@ -3,6 +3,7 @@ import shutil
 import subprocess
 import threading
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -10,6 +11,7 @@ from benchmarks.support.fake_provider import FakeModelClient
 from pony import Pony
 from pony.agent.context_manager import _convert_pony_tool_to_anthropic
 from pony.cli.app import main
+from pony.cli.errors import CliError
 from pony.runtime.options import RuntimeOptions
 from pony.runtime.worktree_agents import (
     cleanup_worktree_agent,
@@ -291,7 +293,7 @@ def test_snapshot_failure_leaves_a_terminal_recoverable_manifest(
     manifest = list_worktree_agents(repo)[0]
     assert manifest["status"] == "failed"
     assert manifest["diff_status"] == "unknown"
-    assert manifest["error"] == "worktree snapshot failed: snapshot unavailable"
+    assert manifest["error"] == "worktree finalization failed: snapshot unavailable"
     assert "reader" in result and "failed" in result
 
 
@@ -350,6 +352,88 @@ def test_cleanup_recovers_after_branch_and_worktree_were_already_removed(tmp_pat
     cleaned = cleanup_worktree_agent(repo, manifest["id"], _git_executable(agent))
 
     assert cleaned["status"] == "cleaned"
+
+
+def test_cleanup_discard_removes_a_terminal_branch_that_was_not_merged(tmp_path):
+    repo = _repo(tmp_path)
+    agent = _agent(
+        repo,
+        [
+            FakeModelClient(
+                [
+                    {
+                        "name": "write_file",
+                        "args": {"path": "discard.txt", "content": "discard\n"},
+                    },
+                    "done",
+                ]
+            )
+        ],
+    )
+    agent.spawn_worktree_agents(
+        {
+            "tasks": [{"name": "writer", "task": "write", "mode": "write"}],
+            "max_parallel": 1,
+        }
+    )
+    manifest = list_worktree_agents(repo)[0]
+
+    with pytest.raises(ValueError, match="has not been merged"):
+        cleanup_worktree_agent(repo, manifest["id"], _git_executable(agent))
+
+    cleaned = cleanup_worktree_agent(
+        repo,
+        manifest["id"],
+        _git_executable(agent),
+        discard=True,
+    )
+
+    assert cleaned["status"] == "cleaned"
+    assert not (repo / manifest["worktree_rel"]).exists()
+
+
+def test_merge_rejects_any_post_completion_edit_without_staging_it(tmp_path):
+    repo = _repo(tmp_path)
+    agent = _agent(repo, [FakeModelClient(["done"])])
+    agent.spawn_worktree_agents(
+        {
+            "tasks": [{"name": "reader", "task": "inspect"}],
+            "max_parallel": 1,
+        }
+    )
+    manifest = list_worktree_agents(repo)[0]
+    worktree = repo / manifest["worktree_rel"]
+    (worktree / "late.txt").write_text("late\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="changes after completion"):
+        merge_worktree_agent(repo, manifest["id"], _git_executable(agent))
+
+    assert not (repo / "late.txt").exists()
+
+
+def test_test_status_does_not_claim_prior_verification_for_later_edit():
+    messages = [
+        {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "name": "run_shell",
+                    "input": {"command": "pytest -q"},
+                }
+            ],
+        },
+        {"role": "user", "content": "ok", "_pony_meta": {"tool_status": "ok"}},
+        {
+            "role": "user",
+            "content": "edited",
+            "_pony_meta": {"workspace_changed": True},
+        },
+    ]
+
+    from pony.runtime.worktree_agents import _test_status
+
+    assert _test_status(messages) == "not_run"
 
 
 def test_merge_conflict_is_rejected_before_parent_changes(tmp_path):
@@ -421,7 +505,7 @@ def test_merge_rejects_sensitive_path_already_committed_by_child(tmp_path):
         "unsafe",
     )
 
-    with pytest.raises(ValueError, match="sensitive path"):
+    with pytest.raises(ValueError, match="branch changed after completion"):
         merge_worktree_agent(repo, manifest["id"], _git_executable(agent))
 
     assert not (repo / ".env").exists()
@@ -451,7 +535,7 @@ def test_merge_rejects_symlink_already_committed_by_child(tmp_path):
         "unsafe",
     )
 
-    with pytest.raises(ValueError, match="contains a symlink"):
+    with pytest.raises(ValueError, match="branch changed after completion"):
         merge_worktree_agent(repo, manifest["id"], _git_executable(agent))
 
     assert not (repo / "linked-readme").exists()
@@ -472,7 +556,7 @@ def test_merge_rejects_uncommitted_hardlinks(tmp_path):
     target.write_text("linked\n", encoding="utf-8")
     (worktree / "hardlink").hardlink_to(target)
 
-    with pytest.raises(ValueError, match="not a regular file"):
+    with pytest.raises(ValueError, match="changes after completion"):
         merge_worktree_agent(repo, manifest["id"], _git_executable(agent))
 
     assert not (repo / "hardlink").exists()
@@ -522,7 +606,7 @@ def test_merge_rejects_product_state_already_committed_by_child(tmp_path):
         "unsafe",
     )
 
-    with pytest.raises(ValueError, match="targets product state"):
+    with pytest.raises(ValueError, match="branch changed after completion"):
         merge_worktree_agent(repo, manifest["id"], _git_executable(agent))
 
     assert not (repo / ".pony" / "unexpected.txt").exists()
@@ -567,6 +651,31 @@ def test_agents_list_is_a_model_free_cli_command(tmp_path, capsys):
     assert "no worktree agents" in capsys.readouterr().out
 
 
+def test_agents_merge_requires_project_trust_before_mutating(tmp_path, capsys, monkeypatch):
+    repo = _repo(tmp_path)
+    agent = _agent(repo, [FakeModelClient(["done"])])
+    agent.spawn_worktree_agents(
+        {
+            "tasks": [{"name": "reader", "task": "inspect"}],
+            "max_parallel": 1,
+        }
+    )
+    manifest = list_worktree_agents(repo)[0]
+    monkeypatch.setattr(
+        "pony.cli.app.trusted_project_root",
+        lambda _args: (_ for _ in ()).throw(
+            CliError(
+                code="project_untrusted",
+                message="Project is not trusted",
+                exit_code=4,
+            )
+        ),
+    )
+
+    assert main(["--cwd", str(repo), "agents", "merge", manifest["id"]]) == 4
+    assert "Project is not trusted" in capsys.readouterr().err
+
+
 def test_agents_list_maps_invalid_manifest_to_stable_cli_error(tmp_path, capsys):
     repo = _repo(tmp_path)
     agent = _agent(repo, [FakeModelClient(["done"])])
@@ -586,7 +695,7 @@ def test_agents_list_maps_invalid_manifest_to_stable_cli_error(tmp_path, capsys)
     assert capsys.readouterr().err.strip() == "invalid worktree agent manifest"
 
 
-def test_agents_cli_performs_explicit_merge_and_cleanup(tmp_path, capsys):
+def test_agents_cli_performs_explicit_merge_and_cleanup(tmp_path, capsys, monkeypatch):
     repo = _repo(tmp_path)
     agent = _agent(
         repo,
@@ -609,6 +718,11 @@ def test_agents_cli_performs_explicit_merge_and_cleanup(tmp_path, capsys):
         }
     )
     manifest = list_worktree_agents(repo)[0]
+    trust_store = SimpleNamespace(is_trusted=lambda _root: True)
+    monkeypatch.setattr(
+        "pony.cli.app.trusted_project_root",
+        lambda _args: (repo, (repo.stat().st_dev, repo.stat().st_ino), trust_store),
+    )
 
     assert main(["--cwd", str(repo), "agents", "merge", manifest["id"]]) == 0
     assert "status: merged" in capsys.readouterr().out

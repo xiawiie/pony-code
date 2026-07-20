@@ -938,7 +938,7 @@ def _workspace_root_identity_rejection(prepared):
     if current == prepared["agent"].workspace_root_identity:
         return None
     return ToolExecutionResult(
-        content="error: workspace root changed before run_shell",
+        content="error: workspace root changed before workspace write",
         metadata=_base_result_metadata(
             prepared,
             {"verification_evidence": None},
@@ -1033,11 +1033,10 @@ def _run_tool_lifecycle(prepared):
     try:
         with mutation_context:
             if prepared["effect_class"] == "workspace_write":
-                before = prepared["agent"].workspace_observer.capture_call_start()
-            if prepared["name"] == "run_shell":
                 rejection = _workspace_root_identity_rejection(prepared)
                 if rejection is not None:
                     return rejection
+                before = prepared["agent"].workspace_observer.capture_call_start()
             try:
                 _invoke_prepared_tool(prepared, execution)
             except KeyboardInterrupt:

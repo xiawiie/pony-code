@@ -352,10 +352,7 @@ class Pony:
             else deepcopy(options.project_config)
         )
         self.project_config = deepcopy(project_config)
-        self._model_runtime_options = replace(
-            options,
-            project_config=deepcopy(project_config),
-        )
+        self._model_runtime_options = options
         self._apply_model_runtime(
             self.model_client,
             self._resolve_model_runtime(self.model_client),

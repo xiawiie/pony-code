@@ -69,8 +69,8 @@ flowchart LR
 ```
 
 创建、client 构造或 branch 绑定失败时只清理由本次 setup 新建的 worktree/branch；已经运行过的 terminal child 保留供
-审查。merge 在 parent mutation lock 内提交 child diff、做 ancestry 和 conflict preflight，再执行一次 Git merge；从不
-触碰其他用户 worktree。
+审查。任务结束时会先封存 exact child commit，merge 在 parent mutation lock 内复验该 commit、做 ancestry 和 conflict
+preflight，再执行一次 Git merge；从不触碰其他用户 worktree。未合入 terminal child 只能通过显式 discard cleanup 删除。
 
 仓库级开发资产不进入产品 package：
 

@@ -97,8 +97,8 @@ protocol 与 endpoint；只有专用 Session writer 可在两者不变时替换 
   final result。
 - Worktree Agent batch 最多 8 项、并发最多 4；所有 child 从 clean parent 的同一 exact HEAD 创建，client、Session、Run
   与 Execution Root 均不共享。readonly 固定 `dontAsk`；write 固定 `acceptEdits` 且 thread approval fail closed。完成后
-  branch/worktree/diff/test status 写入 private manifest；不会自动 merge，显式 merge 仍须复验 branch/base、普通文件、
-  parent cleanliness 与 conflict preflight。
+  branch/worktree/diff/test status 写入 private manifest，并封存 exact child commit；不会自动 merge，显式 merge 仍须复验
+  sealed revision、普通文件、parent trust/cleanliness 与 conflict preflight。
 - primary failure 不能被 cleanup、observer 或 finalizer 的次生异常覆盖。
 
 ## Workspace 与 Host 执行不变量

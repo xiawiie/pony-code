@@ -120,11 +120,6 @@ def _model_client_factory(config, timeout):
     return build_client
 
 
-def _delegate_model_client_factory(config, timeout):
-    """Rebuild the resolved transport without sharing its mutable request state."""
-    return _model_client_factory(config, timeout)
-
-
 def _confirm_project_trust(project_root):
     try:
         answer = input(f"Trust project {project_root}? [y/N] ")
@@ -188,6 +183,11 @@ def _trusted_project_root(args, trust_store, confirm):
             exit_code=CLI_EXIT_CONFIG,
         )
     return project_root, identity, store
+
+
+def trusted_project_root(args):
+    """Verify the project trust grant for model-free mutating commands."""
+    return _trusted_project_root(args, None, None)
 
 
 def build_agent(args, *, trust_store=None, confirm=None):
@@ -292,10 +292,7 @@ def _build_agent(args, source_workspace):
         resolved_model_config,
         args.request_timeout_seconds,
     )
-    delegate_model_client_factory = _delegate_model_client_factory(
-        resolved_model_config,
-        args.request_timeout_seconds,
-    )
+    delegate_model_client_factory = model_client_factory
     if args.resume and session_id:
         resume_permission_mode = (
             "bypassPermissions"

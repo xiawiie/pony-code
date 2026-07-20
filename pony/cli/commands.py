@@ -55,6 +55,7 @@ EXAMPLES:
     pony checkpoints pending
     pony agents list
     pony agents merge <agent-id>
+    pony agents cleanup <agent-id> --discard
     pony migrate status
 
 Available Commands:

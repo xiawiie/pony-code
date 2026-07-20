@@ -220,10 +220,12 @@ pony agents list
 pony agents show <agent-id>
 pony agents merge <agent-id>
 pony agents cleanup <agent-id>
+pony agents cleanup <agent-id> --discard
 ```
 
-`merge` 要求当前 worktree clean，并先复验 child branch/base 与文件安全边界；冲突在修改 parent 前由 preflight 拒绝。
-`cleanup` 只接受已合入且没有未提交改动的 child。Provider 任务执行结束后这些本地命令不发模型请求。
+`merge` 要求 project trust、当前 worktree clean，以及任务结束时封存的 exact child revision；完成后新增的文件、未提交改动
+或 branch 前移均会拒绝。冲突在修改 parent 前由 preflight 拒绝。`cleanup` 只接受已合入且没有未提交改动的 child；放弃未合入
+terminal child 要显式加 `--discard`。Provider 任务执行结束后这些本地命令不发模型请求。
 
 ## 常见失败
 

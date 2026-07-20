@@ -7,7 +7,7 @@ import stat
 import pytest
 
 from pony.cli.app import main
-from pony.cli.assembly import _delegate_model_client_factory
+from pony.cli.assembly import _model_client_factory
 from pony.config.environment import read_project_env
 from pony.config.model import resolve_model_config
 from pony.providers.transport import ProviderTransportError
@@ -72,7 +72,7 @@ def _install_fake_agent(monkeypatch, tmp_path, called, *, permission_mode="defau
     monkeypatch.setattr("pony.cli.app.build_agent", fake_build_agent)
 
 
-def test_delegate_client_factory_rebuilds_the_resolved_transport():
+def test_model_client_factory_rebuilds_the_resolved_transport():
     config = {
         "protocol": {"value": "openai_chat_completions"},
         "model": {"value": "gpt-test"},
@@ -82,9 +82,10 @@ def test_delegate_client_factory_rebuilds_the_resolved_transport():
         "capabilities": {"strict_tools": True},
     }
 
-    first = _delegate_model_client_factory(config, 30)()
-    second = _delegate_model_client_factory(config, 30)()
-    replacement = _delegate_model_client_factory(config, 30)("gpt-next")
+    factory = _model_client_factory(config, 30)
+    first = factory()
+    second = factory()
+    replacement = factory("gpt-next")
 
     assert second is not first
     assert second.provider_binding == first.provider_binding

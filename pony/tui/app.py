@@ -405,6 +405,7 @@ def run_tui(
                     text,
                     error=True,
                 ),
+                confirmation_shown=confirmation is not None,
             )
             refresh_history()
             if result is not None:

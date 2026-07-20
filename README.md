@@ -330,6 +330,7 @@ pony agents list
 pony agents show <agent-id>
 pony agents merge <agent-id>
 pony agents cleanup <agent-id>
+pony agents cleanup <agent-id> --discard
 ```
 
 裸 `pony` 和 `repl` 是交互会话，`run` 是一次性任务。Session Tree 使用 append-only JSONL 保存 Canonical Messages、
@@ -338,8 +339,9 @@ pony agents cleanup <agent-id>
 模型可用 `delegate_worktrees` 在一次 Tool action 中声明最多 8 个命名任务，并用 `max_parallel` 将并发限制在 1-4。
 Pony 要求 parent worktree clean，然后从同一个 exact HEAD 在 `.pony/worktree-agents/` 下为每项创建独立 worktree 和
 `codex/pony-agent-*` branch。readonly child 固定 `dontAsk`；write child 固定 `acceptEdits`，可用内建 file edit，后台
-动态 shell approval 会 fail closed。结果只报告 branch、worktree、diff 与测试证据状态，不自动 merge。审查后使用
-`pony agents merge <agent-id>`；确认已合入且无未提交改动后再 `cleanup`。
+动态 shell approval 会 fail closed。结果会封存为 exact branch revision，测试状态只覆盖最终改动后的验证；之后新增的
+文件、未提交改动或 branch 前移都会使 merge 拒绝。审查后使用 `pony agents merge <agent-id>`；它要求 project trust 和
+parent clean。已合入的 child 用 `cleanup` 回收；放弃未合入 terminal child 必须显式使用 `cleanup <agent-id> --discard`。
 
 ## 执行与旧恢复数据
 

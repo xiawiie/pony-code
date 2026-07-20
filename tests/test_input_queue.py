@@ -4,7 +4,7 @@ import threading
 from benchmarks.support.fake_provider import FakeModelClient
 from pony import Pony
 from pony.cli.input_queue import InputQueue, MAX_PENDING_INPUTS
-from pony.cli.start import run_repl
+from pony.cli.start import _route_repl_input, run_repl
 from pony.runtime.options import RuntimeOptions
 from pony.runtime.resume import active_prompt_history
 from pony.state.session_store import SessionStore
@@ -184,3 +184,30 @@ def test_confirmation_input_is_not_added_to_the_pending_queue():
 
     assert decisions == [True]
     assert input_queue.pending_count == 0
+
+
+def test_input_from_a_stale_plain_prompt_cannot_answer_a_new_confirmation():
+    input_queue = InputQueue(lambda _text: None)
+    request = threading.Thread(
+        target=lambda: input_queue.confirm("Approve once? [y/N] "),
+    )
+    request.start()
+    for _ in range(30):
+        if input_queue.confirmation() is not None:
+            break
+        threading.Event().wait(0.01)
+    messages = []
+
+    _route_repl_input(
+        object(),
+        input_queue,
+        "yes",
+        process_local=lambda _text: None,
+        render_status=messages.append,
+        confirmation_shown=False,
+    )
+
+    assert input_queue.confirmation() is not None
+    assert messages == ["approval required; re-enter the response"]
+    assert input_queue.answer_confirmation("") is True
+    request.join(timeout=3)

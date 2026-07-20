@@ -37,7 +37,6 @@ class InputQueue:
         self._failure = None
         self._terminal = False
         self._confirmation = None
-        self._worker = None
 
     @property
     def busy(self):
@@ -65,13 +64,11 @@ class InputQueue:
                 name="pony-input-worker",
                 daemon=False,
             )
-            self._worker = worker
         try:
             worker.start()
         except BaseException:
             with self._lock:
                 self._busy = False
-                self._worker = None
                 self._idle.notify_all()
             raise
         return SubmitResult("started", 0)
@@ -140,7 +137,6 @@ class InputQueue:
                     current = self._pending.popleft()
                     continue
                 self._busy = False
-                self._worker = None
                 self._idle.notify_all()
                 return
 
@@ -151,6 +147,5 @@ class InputQueue:
             self._terminal = True
             self._pending.clear()
             self._busy = False
-            self._worker = None
             self._idle.notify_all()
         self._on_wake()

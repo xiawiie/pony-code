@@ -2,7 +2,6 @@
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from copy import deepcopy
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -27,8 +26,6 @@ from pony.tools.subprocess import run_hardened_git
 from pony.workspace.context import WorkspaceContext
 
 
-MAX_WORKTREE_AGENTS = 8
-MAX_PARALLEL_WORKTREE_AGENTS = 4
 MAX_MANIFEST_BYTES = 64 * 1024
 MAX_GIT_STATUS_BYTES = 4 * 1024 * 1024
 MAX_RESULT_CHARS = 2_000
@@ -102,8 +99,8 @@ def _validated_manifest(agent_root, value):
         "status",
         "changed_files",
         "diff_status",
-        "diff_digest",
         "test_status",
+        "branch_head",
     }
     if not required <= set(value):
         raise ValueError("invalid worktree agent manifest")
@@ -119,16 +116,15 @@ def _validated_manifest(agent_root, value):
         or _COMMIT_RE.fullmatch(str(value["base_commit"] or "")) is None
         or value["mode"] not in {"readonly", "write"}
         or value["status"]
-        not in {"created", "running", "setup_failed", *_TERMINAL_STATUSES}
+        not in {"created", "running", *_TERMINAL_STATUSES}
         or type(value["changed_files"]) is not int
         or not 0 <= value["changed_files"] <= 100_000
         or value["diff_status"] not in _DIFF_STATUSES
-        or (
-            value["diff_digest"] != ""
-            and re.fullmatch(r"[0-9a-f]{64}", str(value["diff_digest"] or ""))
-            is None
-        )
         or value["test_status"] not in _TEST_STATUSES
+        or (
+            value["branch_head"] != ""
+            and _COMMIT_RE.fullmatch(str(value["branch_head"] or "")) is None
+        )
     ):
         raise ValueError("invalid worktree agent manifest")
     return dict(value)
@@ -210,17 +206,20 @@ def _worktree_snapshot(git, worktree):
         text=False,
     ).stdout
     paths = _status_records(status)
-    digest = hashlib.sha256(bytes(status)).hexdigest()
     return {
         "changed_files": len(set(paths)),
         "diff_status": "dirty" if paths else "clean",
-        "diff_digest": digest,
     }
 
 
 def _test_status(messages):
-    statuses = []
     messages = list(messages or [])
+    last_change = -1
+    for index, message in enumerate(messages):
+        metadata = message.get("_pony_meta", {}) if isinstance(message, dict) else {}
+        if metadata.get("workspace_changed") is True:
+            last_change = index
+    statuses = []
     for index, message in enumerate(messages[:-1]):
         content = message.get("content") if isinstance(message, dict) else None
         if (
@@ -240,6 +239,8 @@ def _test_status(messages):
             continue
         result = messages[index + 1]
         metadata = result.get("_pony_meta", {}) if isinstance(result, dict) else {}
+        if index + 1 <= last_change:
+            continue
         statuses.append(str(metadata.get("tool_status", "")))
     if any(status in {"error", "partial_success"} for status in statuses):
         return "failed"
@@ -267,8 +268,8 @@ def _new_manifest(parent, item, base_commit):
         "status": "created",
         "changed_files": 0,
         "diff_status": "unknown",
-        "diff_digest": "",
         "test_status": "not_run",
+        "branch_head": "",
         "session_id": "",
         "run_id": "",
         "summary": "",
@@ -403,17 +404,16 @@ def _run_child(parent, git, prepared, child):
         manifest["error"] = parent.redact_text(str(exc))[:300]
         task_state = getattr(child, "current_task_state", None)
         manifest["run_id"] = str(getattr(task_state, "run_id", "") or "")
-    manifest["test_status"] = _test_status(child.session.get("messages", []))
-    _write_manifest(prepared["root"], parent.redact_artifact(manifest))
     try:
-        manifest.update(_worktree_snapshot(git, prepared["root"] / "worktree"))
+        manifest.update(_seal_worktree(git, prepared))
     except Exception as exc:
         manifest["status"] = "failed"
         if not manifest["error"]:
             detail = parent.redact_text(str(exc))[:240]
-            manifest["error"] = f"worktree snapshot failed: {detail}"
+            manifest["error"] = f"worktree finalization failed: {detail}"
         _write_manifest(prepared["root"], parent.redact_artifact(manifest))
         return dict(manifest)
+    manifest["test_status"] = _test_status(child.session.get("messages", []))
     _write_manifest(prepared["root"], parent.redact_artifact(manifest))
     return dict(manifest)
 
@@ -516,7 +516,9 @@ def inspect_worktree_agent(source_root, agent_id, git=None):
     result = dict(manifest)
     result["worktree"] = str(worktree)
     if git and manifest["status"] != "cleaned" and worktree.exists():
-        result.update(_worktree_snapshot(git, worktree))
+        snapshot = _worktree_snapshot(git, worktree)
+        result["worktree_changed_files"] = snapshot["changed_files"]
+        result["worktree_diff_status"] = snapshot["diff_status"]
     return result
 
 
@@ -595,6 +597,58 @@ def _ensure_safe_changes(git, worktree):
     return changed_paths
 
 
+def _seal_worktree(git, prepared):
+    """Commit the terminal child diff so later edits cannot enter its merge."""
+    manifest = prepared["manifest"]
+    worktree = prepared["root"] / "worktree"
+    changed_paths = _ensure_safe_changes(git, worktree)
+    for index in range(0, len(changed_paths), 100):
+        _git(
+            git,
+            worktree,
+            ["add", "-A", "--", *changed_paths[index : index + 100]],
+        )
+    staged = _git(git, worktree, ["diff", "--cached", "--quiet"], check=False)
+    if staged.returncode not in {0, 1}:
+        raise ValueError("failed to inspect staged worktree agent changes")
+    if staged.returncode == 1:
+        _git(
+            git,
+            worktree,
+            [
+                "commit",
+                "--no-verify",
+                "-m",
+                f"agent({manifest['name']}): isolated worktree task",
+            ],
+            commit=True,
+        )
+    branch_head = _git(git, worktree, ["rev-parse", "HEAD"]).stdout.strip()
+    if _COMMIT_RE.fullmatch(branch_head) is None or not _is_ancestor(
+        git,
+        worktree,
+        manifest["base_commit"],
+        branch_head,
+    ):
+        raise ValueError("worktree agent branch head is invalid")
+    committed_paths = _committed_change_paths(
+        git,
+        worktree,
+        manifest["base_commit"],
+        branch_head,
+    )
+    for relative_text in committed_paths:
+        _validate_change_path(worktree, relative_text)
+    snapshot = _worktree_snapshot(git, worktree)
+    if snapshot["changed_files"]:
+        raise ValueError("worktree agent changed during finalization")
+    return {
+        "branch_head": branch_head,
+        "changed_files": len(committed_paths),
+        "diff_status": "dirty" if committed_paths else "clean",
+    }
+
+
 def _is_ancestor(git, cwd, ancestor, descendant):
     result = _git(
         git,
@@ -624,50 +678,11 @@ def merge_worktree_agent(source_root, agent_id, git):
         manifest["branch"],
     ):
         raise ValueError("worktree agent branch no longer contains its base")
-    changed_paths = _ensure_safe_changes(git, worktree)
-    for index in range(0, len(changed_paths), 100):
-        _git(
-            git,
-            worktree,
-            ["add", "-A", "--", *changed_paths[index : index + 100]],
-        )
-    staged = _git(
-        git,
-        worktree,
-        ["diff", "--cached", "--quiet"],
-        check=False,
-    )
-    if staged.returncode not in {0, 1}:
-        raise ValueError("failed to inspect staged worktree agent changes")
-    if staged.returncode == 1:
-        _git(
-            git,
-            worktree,
-            [
-                "commit",
-                "--no-verify",
-                "-m",
-                f"agent({manifest['name']}): isolated worktree task",
-            ],
-            commit=True,
-        )
     branch_head = _git(git, worktree, ["rev-parse", "HEAD"]).stdout.strip()
-    if _COMMIT_RE.fullmatch(branch_head) is None or not _is_ancestor(
-        git,
-        worktree,
-        manifest["base_commit"],
-        branch_head,
-    ):
-        raise ValueError("worktree agent branch head is invalid")
-    for relative_text in _committed_change_paths(
-        git,
-        worktree,
-        manifest["base_commit"],
-        branch_head,
-    ):
-        _validate_change_path(worktree, relative_text)
-    manifest.update(status="ready", branch_head=branch_head)
-    _write_manifest(_agent_root(source_root, agent_id), manifest)
+    if branch_head != manifest["branch_head"]:
+        raise ValueError("worktree agent branch changed after completion")
+    if _worktree_snapshot(git, worktree)["changed_files"]:
+        raise ValueError("worktree agent has changes after completion")
 
     _clean_parent_head(git, source_root)
     merge_head = _git(
@@ -710,7 +725,7 @@ def merge_worktree_agent(source_root, agent_id, git):
     return dict(manifest)
 
 
-def cleanup_worktree_agent(source_root, agent_id, git):
+def cleanup_worktree_agent(source_root, agent_id, git, *, discard=False):
     source_root = Path(source_root).resolve(strict=True)
     manifest = load_worktree_agent(source_root, agent_id)
     if manifest["status"] == "cleaned":
@@ -732,11 +747,11 @@ def cleanup_worktree_agent(source_root, agent_id, git):
         manifest["status"] = "cleaned"
         _write_manifest(_agent_root(source_root, agent_id), manifest)
         return dict(manifest)
-    if worktree.exists():
+    if worktree.exists() and not discard:
         snapshot = _worktree_snapshot(git, worktree)
         if snapshot["changed_files"]:
             raise ValueError("worktree agent has uncommitted changes")
-    if not _is_ancestor(git, source_root, manifest["branch"], "HEAD"):
+    if not discard and not _is_ancestor(git, source_root, manifest["branch"], "HEAD"):
         raise ValueError("worktree agent branch has not been merged")
     if worktree.exists():
         _git(git, source_root, ["worktree", "remove", "--force", str(worktree)])

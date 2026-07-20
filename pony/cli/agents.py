@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+from pony.security.private_files import private_directory_identity
 from pony.runtime.worktree_agents import (
     cleanup_worktree_agent,
     inspect_worktree_agent,
@@ -54,12 +55,32 @@ def _render_show(item):
 def _usage():
     raise CliError(
         code="usage",
-        message="usage: pony agents {list|show|merge|cleanup} [agent-id]",
+        message=(
+            "usage: pony agents {list|show|merge|cleanup} [agent-id] "
+            "[--discard]"
+        ),
         exit_code=CLI_EXIT_USAGE,
     )
 
 
-def handle_agents(tokens, root, args):
+def _require_mutation_trust(root, expected_root_identity, trust_store):
+    if (
+        expected_root_identity is None
+        or trust_store is None
+        or private_directory_identity(root) != expected_root_identity
+        or not trust_store.is_trusted(root)
+    ):
+        raise ValueError("project trust changed")
+
+
+def handle_agents(
+    tokens,
+    root,
+    args,
+    *,
+    expected_root_identity=None,
+    trust_store=None,
+):
     root = Path(root).resolve(strict=True)
     tokens = list(tokens)
     try:
@@ -72,18 +93,26 @@ def handle_agents(tokens, root, args):
                 args,
                 _render_list,
             )
-        if len(tokens) != 2 or tokens[0] not in {"show", "merge", "cleanup"}:
+        if tokens[0:1] == ["cleanup"] and len(tokens) == 3:
+            command, agent_id, discard_flag = tokens
+            if discard_flag != "--discard":
+                return _usage()
+            discard = True
+        elif len(tokens) == 2 and tokens[0] in {"show", "merge", "cleanup"}:
+            command, agent_id = tokens
+            discard = False
+        else:
             return _usage()
-        command, agent_id = tokens
         git = _git(root)
         if command == "show":
             item = inspect_worktree_agent(root, agent_id, git)
         else:
             with locked_file(root / ".pony" / ".workspace-mutation.lock", require_lock=True):
+                _require_mutation_trust(root, expected_root_identity, trust_store)
                 item = (
                     merge_worktree_agent(root, agent_id, git)
                     if command == "merge"
-                    else cleanup_worktree_agent(root, agent_id, git)
+                    else cleanup_worktree_agent(root, agent_id, git, discard=discard)
                 )
             item["worktree"] = str(root / item["worktree_rel"])
     except (FileNotFoundError, OSError, RuntimeError, ValueError) as exc:

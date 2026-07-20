@@ -20,7 +20,7 @@ from pony.workspace.context import WorkspaceContext
 
 from .arguments import build_arg_parser, dangerous_bypass_enabled
 from .agents import handle_agents
-from .assembly import build_agent
+from .assembly import build_agent, trusted_project_root
 from .commands import (
     handle_help,
     handle_init,
@@ -101,6 +101,15 @@ def _dispatch_memory(args, tokens):
 
 
 def _dispatch_agents(args, tokens):
+    if tokens and tokens[0] in {"merge", "cleanup"}:
+        root, root_identity, trust_store = trusted_project_root(args)
+        return handle_agents(
+            tokens,
+            root,
+            args,
+            expected_root_identity=root_identity,
+            trust_store=trust_store,
+        )
     workspace = WorkspaceContext.build(args.cwd)
     return handle_agents(tokens, workspace.repo_root, args)
 
