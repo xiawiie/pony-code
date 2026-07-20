@@ -12,11 +12,13 @@ from pony.cli import assembly as cli_assembly
 from pony.state.session_store import SessionStore
 from pony.workspace.context import WorkspaceContext
 from pony.cli import app as pony_cli
+from pony.cli.errors import CliError
 from benchmarks.support.fake_provider import FakeModelClient
 from pony.config.environment import read_project_env
 from pony.state.session_store import LEGACY_SESSION_FORMAT_VERSION
 from pony.state.task_state import TaskState
 from pony.runtime.options import RuntimeOptions
+from pony.security.trust import ProjectTrustStore
 
 
 def build_workspace(tmp_path):
@@ -35,12 +37,23 @@ def build_agent(tmp_path, outputs, **kwargs):
             executables=workspace_executables,
         )
     store = SessionStore(tmp_path / ".pony" / "sessions")
-    approval_policy = kwargs.pop("approval_policy", "auto")
-    return Pony(
+    permission_mode = kwargs.pop("permission_mode", "auto")
+    agent = Pony(
         model_client=FakeModelClient(outputs),
         workspace=workspace,
         session_store=store,
-        options=RuntimeOptions(approval_policy=approval_policy, **kwargs),
+        options=RuntimeOptions(project_trusted=True, **kwargs),
+    )
+    if permission_mode != "auto":
+        agent.set_permission_mode(permission_mode)
+    return agent
+
+
+def build_cli_agent(args, tmp_path):
+    return pony_cli.build_agent(
+        args,
+        trust_store=ProjectTrustStore(tmp_path / ".pony-home"),
+        confirm=lambda _root: True,
     )
 
 
@@ -128,7 +141,7 @@ def test_cli_freezes_parent_path_before_project_env_loading(tmp_path, monkeypatc
     fake_path = str(tmp_path / "fake-bin")
     (tmp_path / ".env").write_text(
         f"PATH={fake_path}\n"
-        "PONY_PROVIDER=openai\n"
+        "PONY_PROVIDER=openai-chat\n"
         "PONY_API_BASE=https://gateway.example/v1\n"
         "PONY_MODEL=claude-test\n"
         "PONY_API_KEY=test-key\n",
@@ -159,7 +172,7 @@ def test_cli_freezes_parent_path_before_project_env_loading(tmp_path, monkeypatc
         ]
     )
 
-    pony_cli.build_agent(args)
+    build_cli_agent(args, tmp_path)
 
     assert observed["path"] == parent_path
     assert os.environ.get("PATH", "") == parent_path
@@ -173,7 +186,7 @@ def test_runtime_preserves_frozen_executables_across_refresh(tmp_path, monkeypat
         model_client=FakeModelClient([]),
         workspace=workspace,
         session_store=SessionStore(tmp_path / ".pony" / "sessions"),
-        options=RuntimeOptions(approval_policy="auto"),
+        options=RuntimeOptions(project_trusted=True),
     )
     monkeypatch.setenv("PATH", str(tmp_path))
     monkeypatch.setattr(
@@ -201,7 +214,10 @@ def test_delegate_inherits_parent_frozen_executables(tmp_path, monkeypatch):
         model_client=FakeModelClient([]),
         workspace=workspace,
         session_store=SessionStore(tmp_path / ".pony" / "sessions"),
-        options=RuntimeOptions(approval_policy="auto"),
+        options=RuntimeOptions(
+            project_trusted=True,
+            delegate_model_client_factory=lambda: FakeModelClient([]),
+        ),
     )
     children = []
 
@@ -216,9 +232,60 @@ def test_delegate_inherits_parent_frozen_executables(tmp_path, monkeypatch):
         "delegate_result:\nsafe"
     )
     child = children[0]
+    assert child.model_client is not agent.model_client
+    assert child.session_store is not agent.session_store
+    assert child.run_store is not agent.run_store
+    assert child.workspace is agent.workspace
     assert dict(child.trusted_executables) == frozen
     assert dict(child.workspace_observer.trusted_executables) == frozen
     assert dict(child.tool_context().trusted_executables) == frozen
+
+
+def test_delegate_rejects_a_factory_that_returns_the_parent_client(tmp_path):
+    agent = build_agent(tmp_path, [])
+    agent.delegate_model_client_factory = lambda: agent.model_client
+
+    with pytest.raises(ValueError, match="reused the parent client"):
+        agent.spawn_delegate({"task": "inspect", "name": "reviewer", "max_steps": 1})
+
+
+def test_named_delegate_keeps_its_artifacts_outside_the_parent_stores(
+    tmp_path, monkeypatch
+):
+    children = []
+    agent = build_agent(
+        tmp_path,
+        [],
+        delegate_model_client_factory=lambda: FakeModelClient([]),
+    )
+
+    def fake_ask(child, task):
+        children.append((child, task))
+        return "review complete"
+
+    monkeypatch.setattr(Pony, "ask", fake_ask)
+    result = agent.spawn_delegate(
+        {"task": "inspect", "name": "reviewer", "max_steps": 1}
+    )
+
+    child, task = children[0]
+    assert task == "inspect"
+    assert result == "delegate_result[reviewer]:\nreview complete"
+    assert child.current_permission_mode() == "dontAsk"
+    assert child.session["id"].startswith("delegate-reviewer-")
+    assert child.session_store.root.parent != agent.session_store.root
+    assert child.run_store.root.parent != agent.run_store.root
+    assert "delegate" not in child.visible_tools()
+    assert not {"run_shell", "write_file", "patch_file", "memory_save", "write_plan"} & set(
+        child.visible_tools()
+    )
+    for tool_name, tool_args in (
+        ("memory_save", {"note": "do not persist"}),
+        ("write_plan", {"plan": "# Plan"}),
+        ("write_file", {"path": "blocked.txt", "content": "blocked"}),
+    ):
+        result = child.execute_tool(tool_name, tool_args)
+        assert result.metadata["tool_error_code"] == "read_only_block"
 
 
 def test_runtime_rejects_credential_bearing_base_url_before_client_construction(
@@ -264,17 +331,19 @@ def test_symlink_path_traversal_is_rejected(tmp_path):
 
 
 def test_risky_tool_deny_behavior(tmp_path):
-    agent = build_agent(tmp_path, [], approval_policy="never")
+    agent = build_agent(tmp_path, [], permission_mode="dontAsk")
 
     result = agent.run_tool("run_shell", {"command": "pwd", "timeout": 20})
 
-    assert result == "error: approval denied for run_shell"
+    assert result == "error: permission mode 'dontAsk' blocks run_shell"
 
 
-def test_write_file_refuses_user_notes_path_before_runner(tmp_path):
-    # 路径级硬拦截：approval=auto 也不能通过；不是靠审批模式挡的。
-    agent = build_agent(tmp_path, [], approval_policy="auto")
-    target_rel = ".pony/memory/notes/malicious.md"
+@pytest.mark.parametrize(
+    "target_rel",
+    (".git/hooks/pre-commit", ".pony/memory/agent_notes.md"),
+)
+def test_write_file_refuses_control_plane_path_before_runner(tmp_path, target_rel):
+    agent = build_agent(tmp_path, [], permission_mode="auto")
     target_abs = tmp_path / target_rel
 
     runner = Mock(return_value="must not run")
@@ -285,30 +354,32 @@ def test_write_file_refuses_user_notes_path_before_runner(tmp_path):
     )
 
     assert result.metadata["tool_status"] == "rejected"
-    assert "refusing to write user note path" in result.content
+    assert result.content == "error: control_plane_write_block"
     assert not target_abs.exists()
     runner.assert_not_called()
 
 
-def test_patch_file_refuses_user_notes_path_before_runner(tmp_path):
-    # 预先手工放一份 user note；patch_file 也必须挡住。
-    note_rel = ".pony/memory/notes/design.md"
-    note_abs = tmp_path / note_rel
-    note_abs.parent.mkdir(parents=True, exist_ok=True)
+@pytest.mark.parametrize(
+    "target_rel",
+    (".git/hooks/pre-commit", ".pony/memory/agent_notes.md"),
+)
+def test_patch_file_refuses_control_plane_path_before_runner(tmp_path, target_rel):
+    target_abs = tmp_path / target_rel
+    target_abs.parent.mkdir(parents=True, exist_ok=True)
     original = "original body\n"
-    note_abs.write_text(original, encoding="utf-8")
-    agent = build_agent(tmp_path, [], approval_policy="auto")
+    target_abs.write_text(original, encoding="utf-8")
+    agent = build_agent(tmp_path, [], permission_mode="auto")
 
     runner = Mock(return_value="must not run")
     agent.tools["patch_file"]["run"] = runner
     result = agent.execute_tool(
         "patch_file",
-        {"path": note_rel, "old_text": "original", "new_text": "tampered"},
+        {"path": target_rel, "old_text": "original", "new_text": "tampered"},
     )
 
     assert result.metadata["tool_status"] == "rejected"
-    assert "refusing to write user note path" in result.content
-    assert note_abs.read_text(encoding="utf-8") == original
+    assert result.content == "error: control_plane_write_block"
+    assert target_abs.read_text(encoding="utf-8") == original
     runner.assert_not_called()
 
 
@@ -329,7 +400,7 @@ def test_cli_build_agent_wires_secret_env_names_from_parser(tmp_path):
                 "HOME": str(tmp_path),
                 "GITHUB_PAT": "ghp-1",
                 "GH_PAT": "ghp-2",
-                "PONY_PROVIDER": "openai",
+                "PONY_PROVIDER": "openai-chat",
                 "PONY_API_BASE": "https://gateway.example/v1",
                 "PONY_MODEL": "claude-test",
                 "PONY_API_KEY": "test-runtime-key",
@@ -345,15 +416,13 @@ def test_cli_build_agent_wires_secret_env_names_from_parser(tmp_path):
             [
                 "--cwd",
                 str(tmp_path),
-                "--approval",
-                "auto",
                 "--secret-env-name",
                 "GITHUB_PAT",
                 "--secret-env-name",
                 "GH_PAT",
             ]
         )
-        agent = pony_cli.build_agent(args)
+        agent = build_cli_agent(args, tmp_path)
         assert set(agent.secret_env_summary()["secret_env_names"]) == {
             "GITHUB_PAT",
             "GH_PAT",
@@ -377,7 +446,7 @@ def test_cli_build_agent_uses_default_configured_secret_names(tmp_path):
             {
                 "HOME": str(tmp_path),
                 "GH_PAT": "ghp-default-1",
-                "PONY_PROVIDER": "openai",
+                "PONY_PROVIDER": "openai-chat",
                 "PONY_API_BASE": "https://gateway.example/v1",
                 "PONY_MODEL": "claude-test",
                 "PONY_API_KEY": "test-runtime-key",
@@ -393,11 +462,9 @@ def test_cli_build_agent_uses_default_configured_secret_names(tmp_path):
             [
                 "--cwd",
                 str(tmp_path),
-                "--approval",
-                "auto",
             ]
         )
-        agent = pony_cli.build_agent(args)
+        agent = build_cli_agent(args, tmp_path)
         assert set(agent.secret_env_summary()["secret_env_names"]) == {
             "GH_PAT",
             "PONY_API_KEY",
@@ -415,7 +482,7 @@ def test_cli_build_agent_loads_project_env_secrets_before_redaction_setup(tmp_pa
 
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
     (tmp_path / ".env").write_text(
-        "PONY_PROVIDER=openai\n"
+        "PONY_PROVIDER=openai-chat\n"
         "PONY_API_BASE=https://gateway.example/v1\n"
         "PONY_MODEL=claude-test\n"
         "PONY_API_KEY=sk-project-secret\n",
@@ -429,7 +496,7 @@ def test_cli_build_agent_loads_project_env_secrets_before_redaction_setup(tmp_pa
         ),
     ):
         args = pony_cli.build_arg_parser().parse_args(["--cwd", str(tmp_path)])
-        agent = pony_cli.build_agent(args)
+        agent = build_cli_agent(args, tmp_path)
         assert agent.secret_env_summary()["secret_env_names"] == ["PONY_API_KEY"]
 
 
@@ -457,7 +524,7 @@ def test_cli_resume_uses_immutable_collision_safe_snapshot_before_load(
     monkeypatch.setattr(cli_assembly, "_build_redaction_snapshot", capture_snapshot)
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
     (tmp_path / ".env").write_text(
-        "PONY_PROVIDER=openai\n"
+        "PONY_PROVIDER=openai-chat\n"
         "PONY_API_BASE=https://gateway.example/v1\n"
         "PONY_MODEL=claude-test\n"
         "PONY_API_KEY=test-runtime-key\n"
@@ -496,7 +563,6 @@ def test_cli_resume_uses_immutable_collision_safe_snapshot_before_load(
                 "recently_recalled": [],
                 "checkpoints": {},
                 "resume_state": {},
-                "recovery": {},
                 "runtime_identity": {},
             }
         ),
@@ -526,7 +592,7 @@ def test_cli_resume_uses_immutable_collision_safe_snapshot_before_load(
                 session_id,
             ]
         )
-        agent = pony_cli.build_agent(args)
+        agent = build_cli_agent(args, tmp_path)
 
         assert "PROJECT_ONLY_CREDENTIAL" not in os.environ
         assert isinstance(agent.redaction_env, MappingProxyType)
@@ -556,7 +622,7 @@ def test_cli_build_agent_skips_malformed_project_env_lines_with_warning(
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
     (tmp_path / ".env").write_text(
         "not a valid env line\n"
-        "PONY_PROVIDER=openai\n"
+        "PONY_PROVIDER=openai-chat\n"
         "PONY_API_BASE=https://gateway.example/v1\n"
         "PONY_MODEL=claude-test\n"
         "PONY_API_KEY=sk-project-secret\n",
@@ -570,7 +636,7 @@ def test_cli_build_agent_skips_malformed_project_env_lines_with_warning(
         ),
     ):
         args = pony_cli.build_arg_parser().parse_args(["--cwd", str(tmp_path)])
-        agent = pony_cli.build_agent(args)
+        agent = build_cli_agent(args, tmp_path)
         secret_names = agent.secret_env_summary()["secret_env_names"]
 
     captured = capsys.readouterr()
@@ -612,7 +678,7 @@ def test_cli_build_agent_reads_secret_names_from_environment_config(tmp_path):
                 "HOME": str(tmp_path),
                 "PONY_CUSTOM_SECRET": "custom-secret-value",
                 "PONY_SECRET_ENV_NAMES": "PONY_CUSTOM_SECRET",
-                "PONY_PROVIDER": "openai",
+                "PONY_PROVIDER": "openai-chat",
                 "PONY_API_BASE": "https://gateway.example/v1",
                 "PONY_MODEL": "claude-test",
                 "PONY_API_KEY": "test-runtime-key",
@@ -625,18 +691,16 @@ def test_cli_build_agent_reads_secret_names_from_environment_config(tmp_path):
             [
                 "--cwd",
                 str(tmp_path),
-                "--approval",
-                "auto",
             ]
         )
-        agent = pony_cli.build_agent(args)
+        agent = build_cli_agent(args, tmp_path)
         assert set(agent.secret_env_summary()["secret_env_names"]) == {
             "PONY_CUSTOM_SECRET",
             "PONY_API_KEY",
         }
 
 
-def test_cli_no_input_makes_default_approval_non_interactive(tmp_path):
+def test_cli_no_input_fails_closed_for_untrusted_project(tmp_path):
     class DummyModelClient:
         def __init__(self, *args, **kwargs):
             self.args = args
@@ -651,7 +715,7 @@ def test_cli_no_input_makes_default_approval_non_interactive(tmp_path):
             os.environ,
             {
                 "HOME": str(tmp_path),
-                "PONY_PROVIDER": "openai",
+                "PONY_PROVIDER": "openai-chat",
                 "PONY_API_BASE": "https://gateway.example/v1",
                 "PONY_MODEL": "claude-test",
                 "PONY_API_KEY": "test-runtime-key",
@@ -667,9 +731,11 @@ def test_cli_no_input_makes_default_approval_non_interactive(tmp_path):
                 "--no-input",
             ]
         )
-        agent = pony_cli.build_agent(args)
+        with pytest.raises(CliError) as caught:
+            pony_cli.build_agent(args)
 
-    assert agent.approval_policy == "never"
+    assert caught.value.code == "project_untrusted"
+    assert not (tmp_path / ".pony" / "trusted-projects.json").exists()
 
 
 def test_run_shell_uses_allowlisted_environment_only(tmp_path):
@@ -677,7 +743,7 @@ def test_run_shell_uses_allowlisted_environment_only(tmp_path):
     agent = build_agent(
         tmp_path,
         [],
-        approval_policy="ask",
+        permission_mode="default",
         workspace_executables={"python": "/usr/bin/python3"},
     )
     agent.approve = lambda name, args: True
@@ -692,7 +758,7 @@ def test_run_shell_uses_allowlisted_environment_only(tmp_path):
 
 
 def test_pony_exposes_no_raw_tool_runner_proxies(tmp_path):
-    agent = build_agent(tmp_path, [], approval_policy="auto")
+    agent = build_agent(tmp_path, [], permission_mode="auto")
 
     for name in (
         "tool_list_files",
@@ -731,13 +797,17 @@ def test_delegate_child_is_read_only(tmp_path):
         tmp_path,
         [
             {"name": "delegate", "args": {"task": "write a file", "max_steps": 2}},
-            {
-                "name": "write_file",
-                "args": {"path": "child-was-not-allowed.txt", "content": "nope"},
-            },
-            "child done",
             "parent done",
         ],
+        delegate_model_client_factory=lambda: FakeModelClient(
+            [
+                {
+                    "name": "write_file",
+                    "args": {"path": "child-was-not-allowed.txt", "content": "nope"},
+                },
+                "child done",
+            ]
+        ),
     )
 
     result = agent.ask("Delegate the work")

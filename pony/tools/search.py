@@ -17,7 +17,6 @@ from .validation import (
     MAX_WORKSPACE_SEARCH_FILES,
     MAX_WORKSPACE_SEARCH_MATCHES,
     _anchored_tool_relative,
-    _decode_workspace_utf8,
     _workspace_root_identity,
 )
 
@@ -50,6 +49,7 @@ _RG_SENSITIVE_GLOBS = (
     "!**/.kube/config",
     "!**/.pony/sessions/**",
     "!**/.pony/runs/**",
+    "!**/.pony/delegates/**",
     "!**/.pony/checkpoints/**",
 )
 
@@ -294,7 +294,10 @@ def _python_search_matches(
                 "workspace_search_limit_exceeded",
                 "workspace search byte limit exceeded",
             )
-        text = _decode_workspace_utf8(state["data"])
+        try:
+            text = state["data"].decode("utf-8")
+        except UnicodeDecodeError:
+            continue
         for number, line in enumerate(text.splitlines(), start=1):
             if folded_pattern in line.casefold():
                 matches.append(f"{relative}:{number}:{line}")

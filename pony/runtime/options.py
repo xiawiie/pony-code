@@ -6,8 +6,10 @@ from typing import Any
 
 @dataclass(frozen=True)
 class RuntimeOptions:
+    model_client_factory: Any = None
+    delegate_model_client_factory: Any = None
     run_store: Any = None
-    approval_policy: str = "ask"
+    project_trusted: bool = False
     max_steps: int = 12
     max_output_tokens: int | None = None
     context_window: int | None = None
@@ -19,9 +21,8 @@ class RuntimeOptions:
     redaction_env: dict[str, str] | None = None
     feature_flags: dict[str, bool] | None = None
     allowed_tools: tuple[str, ...] | None = None
+    allow_dangerously_skip_permissions: bool = False
     trusted_redaction_env: bool = False
     trusted_executables: dict[str, str] | None = None
-    sandbox_context: Any = None
     project_config: dict[str, Any] | None = None
     session_id: str | None = None
-    development_runtime_seal: Any = None

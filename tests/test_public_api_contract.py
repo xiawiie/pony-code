@@ -10,6 +10,7 @@ from pony import Pony
 from pony.cli.app import main
 from pony.cli.arguments import build_arg_parser
 from pony.cli.assembly import build_agent
+from pony.security.trust import ProjectTrustStore
 from pony.state.session_store import SessionStore
 from pony.workspace.context import WorkspaceContext
 
@@ -49,18 +50,22 @@ def test_build_agent_returns_pony(tmp_path):
         [
             "--cwd",
             str(tmp_path),
-            "--approval",
-            "auto",
+            "--permission-mode",
+            "acceptEdits",
         ]
     )
 
-    agent = build_agent(args)
+    agent = build_agent(
+        args,
+        trust_store=ProjectTrustStore(tmp_path / ".pony-home"),
+        confirm=lambda _root: True,
+    )
 
     assert isinstance(agent, Pony)
 
 
 def test_lightweight_package_split_uses_package_paths_without_legacy_shims():
-    from benchmarks.evaluation.experiments_recovery import run_context_ablation_v2
+    from benchmarks.evaluation.experiments_synthetic import run_context_ablation_v2
     from benchmarks.evaluation.fixed_benchmark import BenchmarkEvaluator
     from benchmarks.support.fake_provider import (
         FakeModelClient as ProviderFakeModelClient,
@@ -181,37 +186,8 @@ def test_packaging_builds_only_the_pony_runtime():
     targets = pyproject["tool"]["hatch"]["build"]["targets"]
     assert targets["wheel"] == {"packages": ["pony"]}
     assert targets["sdist"] == {
-        "include": ["/LICENSE", "/README.md", "/pyproject.toml", "/pony"]
+        "include": ["/LICENSE", "/README.md", "/pyproject.toml", "/pony"],
     }
-
-
-def test_docker_sandbox_resources_are_readable():
-    import json
-    from importlib.resources import files
-
-    root = files("pony.sandbox.resources")
-    manifest = json.loads(
-        root.joinpath("image-manifest.json").read_text(encoding="utf-8")
-    )
-
-    assert manifest["record_type"] == "docker_sandbox_image_set_manifest"
-    assert manifest["format_version"] == 3
-    assert set(manifest) == {
-        "record_type",
-        "format_version",
-        "policy_digest",
-        "user",
-        "working_dir",
-        "env",
-        "tool_paths",
-        "platforms",
-    }
-    assert set(manifest["platforms"]) == {"linux/arm64"}
-    assert set(manifest["platforms"]["linux/arm64"]) == {
-        "image_digest",
-        "image_id",
-    }
-    assert root.joinpath("docker-config", "config.json").read_bytes() == b"{}\n"
 
 
 def test_packaging_exposes_only_pony_cli_script():
@@ -221,31 +197,45 @@ def test_packaging_exposes_only_pony_cli_script():
     assert scripts.strip() == 'pony = "pony.cli.app:main"'
 
 
-def test_packaging_declares_stable_version_license_and_project_urls():
+def test_packaging_declares_unreleased_platforms_license_and_urls():
     project = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))[
         "project"
     ]
 
     assert project["version"] in {"1.0.0rc1", "1.0.0"}
+    assert project["requires-python"] == ">=3.11,<3.13"
     assert project["license"] == "MIT"
     assert project["license-files"] == ["LICENSE"]
     assert project["name"] == "pony-code"
     assert project["urls"]["Source"] == "https://github.com/xiawiie/pony-code"
+    classifiers = set(project["classifiers"])
+    assert "Development Status :: 4 - Beta" in classifiers
+    assert "Operating System :: MacOS" in classifiers
+    assert "Operating System :: POSIX :: Linux" in classifiers
+    assert "Development Status :: 5 - Production/Stable" not in classifiers
+    assert "Operating System :: OS Independent" not in classifiers
     assert Path("LICENSE").read_text(encoding="utf-8").startswith("MIT License\n")
 
 
 def test_provider_defaults_and_generic_env_names_have_one_config_source():
     from pony.config import model as config
 
-    assert config.DEFAULT_PROVIDER == "anthropic"
-    assert config.SUPPORTED_PROVIDERS == ("anthropic", "openai", "ollama")
-    assert config.DEFAULT_MODEL == "claude-sonnet-4-6"
-    assert config.DEFAULT_API_BASE == "https://api.anthropic.com/v1"
+    assert config.DEFAULT_PROVIDER == "auto"
+    assert config.SUPPORTED_PROVIDERS == (
+        "auto",
+        "openai",
+        "openai-chat",
+        "openai-responses",
+        "anthropic",
+        "ollama",
+    )
+    assert config.DEFAULT_MODEL == ""
+    assert config.DEFAULT_API_BASE == ""
     assert config.PROVIDER_ENV_NAME == "PONY_PROVIDER"
     assert config.MODEL_ENV_NAME == "PONY_MODEL"
     assert config.API_KEY_ENV_NAME == "PONY_API_KEY"
     assert config.API_BASE_ENV_NAME == "PONY_API_BASE"
     destinations = {action.dest for action in build_arg_parser()._actions}
-    assert {"provider", "profile", "connection", "model", "base_url"}.isdisjoint(
+    assert {"provider", "profile", "connection", "base_url"}.isdisjoint(
         destinations
     )

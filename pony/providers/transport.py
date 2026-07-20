@@ -14,6 +14,27 @@ import urllib.request
 
 
 MAX_PROVIDER_RESPONSE_BYTES = 16 * 1024 * 1024
+_PROVIDER_ERROR_STAGES = frozenset(
+    {"tool_call", "tool_result", "response_decode", "runtime"}
+)
+_PROVIDER_PROTOCOL_REASONS = frozenset(
+    {
+        "reasoning_replay_required",
+        "response_shape_invalid",
+        "tool_arguments_invalid",
+        "tool_call_missing",
+        "tool_call_shape_invalid",
+        "tool_result_rejected",
+    }
+)
+_PROVIDER_PROTOCOL_FAMILIES = frozenset(
+    {
+        "anthropic_messages",
+        "ollama_chat",
+        "openai_chat_completions",
+        "openai_responses",
+    }
+)
 
 
 class ProviderTransportError(RuntimeError):
@@ -27,6 +48,9 @@ class ProviderTransportError(RuntimeError):
         http_status=None,
         retryable=False,
         retry_after=None,
+        stage=None,
+        protocol_reason=None,
+        protocol_family=None,
     ):
         super().__init__(message)
         self.code = str(code)
@@ -37,6 +61,32 @@ class ProviderTransportError(RuntimeError):
             if type(retry_after) in {int, float}
             else None
         )
+        self.stage = (
+            stage
+            if isinstance(stage, str) and stage in _PROVIDER_ERROR_STAGES
+            else None
+        )
+        self.protocol_reason = (
+            protocol_reason
+            if isinstance(protocol_reason, str)
+            and protocol_reason in _PROVIDER_PROTOCOL_REASONS
+            else None
+        )
+        self.protocol_family = (
+            protocol_family
+            if isinstance(protocol_family, str)
+            and protocol_family in _PROVIDER_PROTOCOL_FAMILIES
+            else None
+        )
+
+
+def _provider_protocol_error(family, *, stage, reason):
+    return ProviderTransportError(
+        f"{family} error: provider_protocol_mismatch",
+        code="provider_protocol_mismatch",
+        stage=stage,
+        protocol_reason=reason,
+    )
 
 
 class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -65,19 +115,11 @@ def _model_binding(protocol_family, model, base_url):
     }
 
 
-def _model_runtime_metadata(protocol_family, model, base_url):
-    parsed = urllib.parse.urlsplit(str(base_url))
-    host = parsed.hostname or ""
-    if ":" in host and not host.startswith("["):
-        host = f"[{host}]"
-    netloc = host
-    if parsed.port is not None:
-        netloc = f"{netloc}:{parsed.port}"
+def _model_runtime_metadata(protocol_family, model):
     return {
         "protocol_family": str(protocol_family),
         "requested_model": str(model),
         "effective_model": str(model),
-        "endpoint_origin": urllib.parse.urlunsplit((parsed.scheme, netloc, "", "", "")),
     }
 
 
@@ -196,7 +238,14 @@ def _network_failure(family, exc, *, retryable):
     )
 
 
-def _open_provider_request(client, request, *, family, retryable):
+def _open_provider_request(
+    client,
+    request,
+    *,
+    family,
+    retryable,
+    detect_reasoning_replay=False,
+):
     client.last_transport_attempts += 1
     try:
         with _provider_urlopen(request, timeout=client.timeout) as response:
@@ -243,6 +292,19 @@ def _open_provider_request(client, request, *, family, retryable):
             code = "redirect_blocked"
         else:
             code = "http_4xx"
+        reasoning_required = (
+            detect_reasoning_replay
+            and status in {400, 422}
+            and any(
+                marker in error_text
+                for marker in (
+                    "reasoning state is required",
+                    "reasoning content is required",
+                    "missing reasoning content",
+                    "must include reasoning",
+                )
+            )
+        )
         raise ProviderTransportError(
             f"{family} request failed with HTTP {status}",
             code=code,
@@ -250,6 +312,9 @@ def _open_provider_request(client, request, *, family, retryable):
             retryable=retryable
             and code in {"request_timeout", "rate_limited", "http_5xx"},
             retry_after=retry_after if code == "rate_limited" else None,
+            protocol_reason=(
+                "reasoning_replay_required" if reasoning_required else None
+            ),
         ) from None
     except (urllib.error.URLError, HTTPException, OSError) as exc:
         raise _network_failure(family, exc, retryable=retryable) from None
@@ -307,11 +372,19 @@ def _extract_usage_cache_details(data):
     if not isinstance(data, dict):
         raise ValueError("response must be an object")
     usage = _mapping_or_empty(data.get("usage"))
-    input_tokens = _optional_int(usage.get("input_tokens", usage.get("prompt_tokens")))
+    input_value = usage.get("input_tokens")
+    if input_value is None:
+        input_value = usage.get("prompt_tokens")
+    input_tokens = _optional_int(input_value)
+    output_value = usage.get("output_tokens")
+    if output_value is None:
+        output_value = usage.get("completion_tokens")
     output_tokens = _optional_int(
-        usage.get("output_tokens", usage.get("completion_tokens"))
+        output_value
     )
     total_tokens = _optional_int(usage.get("total_tokens"))
+    if total_tokens is None and input_tokens is not None and output_tokens is not None:
+        total_tokens = input_tokens + output_tokens
     input_details = _mapping_or_empty(usage.get("input_tokens_details"))
     if not input_details:
         input_details = _mapping_or_empty(usage.get("prompt_tokens_details"))

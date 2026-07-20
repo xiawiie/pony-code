@@ -1,0 +1,311 @@
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from benchmarks.support.fake_provider import FakeModelClient
+from pony import Pony
+from pony.cli.start import _open_plan_in_editor, _process_repl_input, run_repl
+from pony.runtime.options import RuntimeOptions
+from pony.runtime.resume import active_prompt_history
+from pony.state.session_store import PlanApprovalChanged, SessionStore
+from pony.workspace.context import WorkspaceContext
+
+
+def _agent(tmp_path, outputs=(), *, allow_bypass=False):
+    (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
+    return Pony(
+        model_client=FakeModelClient(outputs),
+        workspace=WorkspaceContext.build(tmp_path),
+        session_store=SessionStore(tmp_path / ".pony" / "sessions"),
+        options=RuntimeOptions(
+            project_trusted=True,
+            allow_dangerously_skip_permissions=allow_bypass,
+        ),
+    )
+
+
+def _model_agent(tmp_path):
+    (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
+
+    def factory(model):
+        client = FakeModelClient([])
+        client.model = model
+        client.provider_binding = {
+            "protocol_family": "anthropic_messages",
+            "model": model,
+            "endpoint_hash": "sha256:" + "a" * 64,
+        }
+        return client
+
+    return Pony(
+        model_client=factory("claude-current"),
+        workspace=WorkspaceContext.build(tmp_path),
+        session_store=SessionStore(tmp_path / ".pony" / "sessions"),
+        options=RuntimeOptions(
+            project_trusted=True,
+            model_client_factory=factory,
+        ),
+    )
+
+
+def test_repl_model_shows_and_changes_the_session_binding(tmp_path, capsys):
+    agent = _model_agent(tmp_path)
+    before = len(agent.session_store.load_tree(agent.session["id"]).entries)
+
+    _process_repl_input(agent, "/model")
+    _process_repl_input(agent, "/model claude-next")
+    changed = len(agent.session_store.load_tree(agent.session["id"]).entries)
+    _process_repl_input(agent, "/model claude-next extra")
+
+    output = capsys.readouterr().out
+    assert "provider: anthropic" in output
+    assert "model: claude-current" in output
+    assert "model: claude-next" in output
+    assert "usage: /model [model]" in output
+    assert changed == before + 1
+    assert len(agent.session_store.load_tree(agent.session["id"]).entries) == changed
+
+
+def test_repl_permissions_manages_rules_and_same_value_is_noop(tmp_path, capsys):
+    agent = _agent(tmp_path)
+
+    def manager(_rules, _tools):
+        return "allow", "write_file"
+
+    _process_repl_input(agent, "/permissions", manage_permissions=manager)
+    entries = len(agent.session_store.load_tree(agent.session["id"]).entries)
+    _process_repl_input(agent, "/allowed-tools", manage_permissions=manager)
+    _process_repl_input(agent, "/permissions manual")
+
+    output = capsys.readouterr().out
+    assert "mode: auto" in output
+    assert "permission rule: allow write_file" in output
+    assert "(unchanged)" in output
+    assert "usage: /permissions" in output
+    assert agent.permission_rules()["allow"] == ["write_file"]
+    assert len(agent.session_store.load_tree(agent.session["id"]).entries) == entries
+
+
+def test_repl_permissions_applies_multiple_rules_and_changes_mode(tmp_path, capsys):
+    agent = _agent(tmp_path, allow_bypass=True)
+
+    def manager(_rules, _tools):
+        return [
+            ("allow", "write_file"),
+            ("deny", "run_shell"),
+            ("mode", "manual"),
+        ]
+
+    _process_repl_input(agent, "/permissions", manage_permissions=manager)
+
+    assert agent.permission_rules() == {
+        "allow": ["write_file"],
+        "ask": [],
+        "deny": ["run_shell"],
+    }
+    assert agent.current_permission_mode() == "default"
+    assert "permission mode: manual" in capsys.readouterr().out
+
+
+def test_repl_plan_enters_plan_permission_mode(tmp_path, capsys):
+    agent = _agent(tmp_path)
+    before = len(agent.session_store.load_tree(agent.session["id"]).entries)
+
+    _process_repl_input(agent, "/plan")
+
+    output = capsys.readouterr().out
+    assert "permission mode: plan" in output
+    tree = agent.session_store.load_tree(agent.session["id"])
+    assert agent.session["permission_mode"] == "plan"
+    assert len(tree.entries) == before + 1
+    assert tree.entries[-1]["type"] == "permission_mode_change"
+
+
+def test_repl_plan_open_enters_plan_and_edits_existing_artifact(
+    tmp_path, monkeypatch, capsys
+):
+    agent = _agent(tmp_path)
+    agent.set_permission_mode("plan")
+    agent.save_plan_text("# Existing Plan")
+    agent.set_permission_mode("auto")
+    before = len(agent.session_store.load_tree(agent.session["id"]).entries)
+    monkeypatch.setenv("EDITOR", "pony-test-editor")
+    monkeypatch.setattr("pony.cli.start.shutil.which", lambda _name: "/usr/bin/editor")
+
+    def edit(argv, **_kwargs):
+        Path(argv[-1]).write_text("# Edited Plan\n1. Test\n", encoding="utf-8")
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr("pony.cli.start.subprocess.run", edit)
+
+    _process_repl_input(agent, "/plan open")
+
+    tree = agent.session_store.load_tree(agent.session["id"])
+    assert agent.current_permission_mode() == "plan"
+    assert agent.current_plan() == "# Edited Plan\n1. Test"
+    assert len(tree.entries) == before + 2
+    assert tree.entries[-1]["type"] == "plan_artifact"
+    assert "Opened plan in editor" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("concurrent_change", ("exit", "rewind", "fork"))
+def test_plan_editor_rejects_session_branch_changes_while_open(
+    tmp_path,
+    monkeypatch,
+    concurrent_change,
+):
+    agent = _agent(tmp_path)
+    agent.set_permission_mode("plan")
+    agent.save_plan_text("# Existing Plan")
+    competing = SessionStore(agent.session_store.root)
+    monkeypatch.setenv("EDITOR", "pony-test-editor")
+    monkeypatch.setattr("pony.cli.start.shutil.which", lambda _name: "/usr/bin/editor")
+
+    def edit(argv, **_kwargs):
+        tree = competing.load_tree(agent.session["id"])
+        if concurrent_change == "exit":
+            competing.update_permissions(agent.session["id"], mode="auto")
+        else:
+            target = tree.active_path[0]["id"]
+            if concurrent_change == "rewind":
+                competing.rewind(
+                    agent.session["id"],
+                    target,
+                    expected_leaf_id=tree.leaf_id,
+                )
+            else:
+                competing.fork(
+                    agent.session["id"],
+                    target,
+                    expected_leaf_id=tree.leaf_id,
+                )
+        Path(argv[-1]).write_text("# Edited Plan\n", encoding="utf-8")
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr("pony.cli.start.subprocess.run", edit)
+
+    with pytest.raises(PlanApprovalChanged, match="plan changed while editing"):
+        _open_plan_in_editor(agent)
+
+    assert competing.load(agent.session["id"])["plan_text"] != "# Edited Plan"
+
+
+def test_repl_plan_share_enters_plan_before_reporting_unavailable(tmp_path, capsys):
+    agent = _agent(tmp_path)
+    agent.set_permission_mode("plan")
+    agent.save_plan_text("# Existing Plan")
+    agent.set_permission_mode("auto")
+    before = len(agent.session_store.load_tree(agent.session["id"]).entries)
+
+    _process_repl_input(agent, "/plan share")
+
+    assert agent.current_permission_mode() == "plan"
+    assert len(agent.session_store.load_tree(agent.session["id"]).entries) == before + 1
+    assert "plan sharing is unavailable" in capsys.readouterr().out
+
+
+def test_repl_plan_open_with_no_artifact_only_enters_plan(tmp_path, monkeypatch):
+    agent = _agent(tmp_path)
+    monkeypatch.setattr(
+        "pony.cli.start._open_plan_in_editor",
+        lambda _agent: pytest.fail("empty Plan must not open an editor"),
+    )
+
+    _process_repl_input(agent, "/plan open")
+
+    assert agent.current_permission_mode() == "plan"
+    assert agent.current_plan_revision() == 0
+
+
+def test_removed_mode_is_unknown_and_plan_description_is_submitted(tmp_path, capsys):
+    agent = _agent(tmp_path, outputs=("planned",))
+
+    _process_repl_input(agent, "/mode")
+    _process_repl_input(agent, "/plan clear")
+
+    output = capsys.readouterr().out
+    assert "unknown command: /mode" in output
+    assert "planned" in output
+    assert agent.session["permission_mode"] == "plan"
+    assert any(
+        message.get("role") == "user" and message.get("content") == "clear"
+        for message in agent.session["messages"]
+    )
+
+
+def test_reset_rebuilds_history_from_active_messages_immediately():
+    agent = SimpleNamespace(
+        session={"messages": [{"role": "user", "content": "old"}]},
+    )
+
+    def reset():
+        agent.session = {"messages": [{"role": "user", "content": "new branch"}]}
+
+    agent.reset = reset
+    refreshed = []
+    _process_repl_input(
+        agent,
+        "/reset",
+        refresh_history=lambda: refreshed.extend(
+            active_prompt_history(agent.session["messages"])
+        ),
+    )
+
+    assert refreshed == ["new branch"]
+
+
+def test_plain_explicit_resume_card_is_shown_once_with_sources(monkeypatch, capsys):
+    session = {
+        "permission_mode": "default",
+        "messages": [],
+        "checkpoints": {
+            "current_id": "checkpoint",
+            "items": {
+                "checkpoint": {
+                    "goal": "Ship permission controls",
+                    "status": "ready",
+                }
+            },
+        },
+        "resume_state": {"status": "ready"},
+        "provider_binding": {
+            "protocol_family": "openai_responses",
+            "model": "gpt-test",
+            "endpoint_hash": "sha256:" + "a" * 64,
+        },
+    }
+    agent = SimpleNamespace(
+        session=session,
+        redact_artifact=lambda value: value,
+        finalize_sandbox_session=lambda: None,
+    )
+    inputs = iter(("/exit",))
+    monkeypatch.setattr("builtins.input", lambda _prompt="": next(inputs))
+
+    assert run_repl(agent, plain=True, show_resume=True) == 0
+    output = capsys.readouterr().out
+    assert output.count("Resume\n") == 1
+    assert "permission [session]: manual" in output
+    assert "goal [checkpoint]: Ship permission controls" in output
+    assert "resume [resume_state]: ready" in output
+    assert "model [provider_binding]: openai_responses/gpt-test" in output
+    assert "endpoint_hash" not in output
+
+
+def test_plain_history_is_rebuilt_from_canonical_prompts_after_every_input(
+    tmp_path,
+    monkeypatch,
+):
+    import readline
+
+    agent = _agent(tmp_path, outputs=("done",))
+    inputs = iter(("/help", "inspect canonical state", "/exit"))
+    monkeypatch.setattr("builtins.input", lambda _prompt="": next(inputs))
+
+    assert run_repl(agent, plain=True) == 0
+    history = [
+        readline.get_history_item(index)
+        for index in range(1, readline.get_current_history_length() + 1)
+    ]
+    assert history == ["inspect canonical state"]

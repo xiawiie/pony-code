@@ -6,21 +6,10 @@ import stat
 
 import pytest
 
-from pony.sandbox import docker as docker_sandbox_module
 from pony.tools import subprocess as safe_subprocess_module
 
 
 _REAL_HOME = Path.home()
-
-
-@pytest.fixture(autouse=True)
-def packaged_sandbox_image_platform(monkeypatch):
-    """Run contracts against the platform shipped in the test manifest."""
-    monkeypatch.setattr(
-        docker_sandbox_module,
-        "_host_image_platform",
-        lambda: "linux/arm64",
-    )
 
 
 @pytest.fixture
@@ -42,15 +31,6 @@ def isolated_home(tmp_path_factory, monkeypatch, request):
         staticmethod(lambda: Path(os.environ.get("HOME", home))),
     )
     return home
-
-
-@pytest.fixture(autouse=True)
-def released_sandbox_test_platform(monkeypatch):
-    """Exercise the packaged arm64 fixture independently of the CI host CPU."""
-    monkeypatch.setattr(
-        "pony.sandbox.docker._host_image_platform",
-        lambda: "linux/arm64",
-    )
 
 
 @pytest.fixture

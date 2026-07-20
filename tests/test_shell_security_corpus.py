@@ -7,7 +7,7 @@ from pony import Pony
 from pony.state.session_store import SessionStore
 from pony.workspace.context import WorkspaceContext
 from benchmarks.support.fake_provider import FakeModelClient
-from pony.recovery.policy import assess_command
+from pony.security.command_policy import assess_command
 from pony.runtime.options import RuntimeOptions
 
 
@@ -19,13 +19,16 @@ def build_agent(tmp_path, outputs, **kwargs):
         executables=executables,
     )
     store = SessionStore(tmp_path / ".pony" / "sessions")
-    approval_policy = kwargs.pop("approval_policy", "auto")
-    return Pony(
+    permission_mode = kwargs.pop("permission_mode", "auto")
+    agent = Pony(
         model_client=FakeModelClient(outputs),
         workspace=workspace,
         session_store=store,
-        options=RuntimeOptions(approval_policy=approval_policy, **kwargs),
+        options=RuntimeOptions(project_trusted=True, **kwargs),
     )
+    if permission_mode != "auto":
+        agent.set_permission_mode(permission_mode)
+    return agent
 
 
 ALLOW_ARGV = (
@@ -113,7 +116,7 @@ def test_literal_sensitive_targets_are_hard_reject(tmp_path, command):
 
 @pytest.mark.parametrize("command", ASK_ARGV + ASK_SHELL + REJECT)
 def test_auto_mode_never_calls_runner_for_non_allow_command(tmp_path, command):
-    agent = build_agent(tmp_path, [], approval_policy="auto")
+    agent = build_agent(tmp_path, [])
     runner = Mock(return_value="must not run")
     agent.tools["run_shell"]["run"] = runner
 
@@ -134,7 +137,7 @@ def test_ask_mode_approved_simple_command_stays_argv(tmp_path, monkeypatch):
     agent = build_agent(
         tmp_path,
         [],
-        approval_policy="ask",
+        permission_mode="default",
         executables={"python": "/frozen/python"},
     )
     monkeypatch.setattr(agent, "approve", lambda name, args: True)
@@ -155,8 +158,8 @@ def test_ask_mode_approved_simple_command_stays_argv(tmp_path, monkeypatch):
 
 def test_read_only_and_never_modes_do_not_prompt_or_run(tmp_path, monkeypatch):
     configurations = (
-        {"approval_policy": "never"},
-        {"approval_policy": "ask", "read_only": True},
+        {"permission_mode": "dontAsk"},
+        {"permission_mode": "default", "read_only": True},
     )
     for kwargs in configurations:
         agent = build_agent(tmp_path, [], **kwargs)

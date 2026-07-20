@@ -11,6 +11,7 @@ import pytest
 import pony.cli.diagnostics as diagnostics
 from pony.cli.app import main
 from pony.cli.diagnostics import check_api_connectivity, collect_config, collect_doctor
+from pony.config.model import resolve_model_config
 
 
 def _run_git(cwd, *args):
@@ -97,6 +98,30 @@ def test_config_show_reports_generic_openai_compatible_base(tmp_path):
 
     assert data["base_url"]["value"] == "https://gateway.example/v1"
     assert data["model"]["value"] == "gpt-5.4"
+
+
+def test_offline_commands_report_unresolved_auto_without_probing(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    (tmp_path / ".env").write_text(
+        "PONY_API_BASE=https://gateway.example/v1\n"
+        "PONY_API_KEY=test-key\n"
+        "PONY_MODEL=gateway-model\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "pony.providers.probe.resolve_provider_client",
+        lambda *_args, **_kwargs: pytest.fail("offline command probed Provider"),
+    )
+
+    for command in (("config", "show"), ("status",), ("doctor",)):
+        assert main(["--cwd", str(tmp_path), *command]) == 0
+
+    output = capsys.readouterr().out
+    assert output.count("probe_required") == 3
+    assert output.count("unresolved") == 3
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX mode assertion")
@@ -319,6 +344,42 @@ def test_doctor_check_api_is_the_only_explicit_network_switch(
     checker.assert_called_once()
 
 
+def test_doctor_check_api_never_changes_project_env(tmp_path, monkeypatch):
+    env_path = _write_env(tmp_path)
+    before = env_path.stat()
+    before_bytes = env_path.read_bytes()
+    monkeypatch.setattr(
+        diagnostics,
+        "check_api_connectivity",
+        Mock(
+            return_value={
+                "status": "ok",
+                "category": "ok",
+                "reason_code": "api_verified",
+                "stage": "complete",
+                "model_calls": 2,
+                "candidate_count": 1,
+                "detected_provider": "anthropic",
+                "protocol": "anthropic_messages",
+                "native_tools": "passed",
+                "tool_continuation": "passed",
+                "usage_status": "degraded",
+                "persist_with": "pony init",
+            }
+        ),
+    )
+
+    assert main(["--cwd", str(tmp_path), "doctor", "--check-api"]) == 0
+
+    after = env_path.stat()
+    assert env_path.read_bytes() == before_bytes
+    assert (after.st_ino, after.st_mtime_ns, stat.S_IMODE(after.st_mode)) == (
+        before.st_ino,
+        before.st_mtime_ns,
+        stat.S_IMODE(before.st_mode),
+    )
+
+
 def test_doctor_check_api_failure_returns_error_envelope(tmp_path, monkeypatch, capsys):
     _write_env(tmp_path)
     monkeypatch.setattr(
@@ -328,8 +389,8 @@ def test_doctor_check_api_failure_returns_error_envelope(tmp_path, monkeypatch, 
             return_value={
             "status": "failed",
             "category": "authentication_failed",
-            "reason_code": "authentication_failed",
-            "stage": "text",
+                "reason_code": "http_4xx",
+                "stage": "tool_call",
             "model_calls": 1,
             "http_status": 401,
             }
@@ -352,8 +413,8 @@ def test_doctor_check_api_failure_returns_error_envelope(tmp_path, monkeypatch, 
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["ok"] is False
-    assert payload["error"]["code"] == "api_check_failed"
-    assert payload["error"]["details"]["reason_code"] == "authentication_failed"
+    assert payload["error"]["code"] == "http_4xx"
+    assert payload["error"]["details"]["code"] == "http_4xx"
 
 
 @pytest.mark.parametrize("argument", ("--check-provider", "--offline", "extra"))
@@ -389,18 +450,16 @@ def test_doctor_rejects_credentialed_url_without_connecting_or_echoing(
 
 
 def _api_config(*, key="test-key"):
-    return {
-        "protocol": {"value": "anthropic_messages"},
-        "model": {"value": "claude-sonnet-4-6"},
-        "base_url": {"value": "https://gateway.example/v1"},
-        "auth_mode": {"value": "x-api-key"},
-        "api_key": {"value": key},
-        "capabilities": {
-            "prompt_cache": True,
-            "strict_tools": True,
-            "parallel_tool_control": True,
+    return resolve_model_config(
+        project_env={
+            "PONY_PROVIDER": "anthropic",
+            "PONY_MODEL": "claude-sonnet-4-6",
+            "PONY_API_BASE": "https://gateway.example/v1",
+            "PONY_API_KEY": key,
         },
-    }
+        process_env={},
+        required=False,
+    )
 
 
 def test_api_check_without_key_performs_zero_requests(monkeypatch):
@@ -427,11 +486,12 @@ def test_api_check_builds_resolved_anthropic_client_and_reports_probe(monkeypatc
         "pony.providers.probe.probe_model_client",
         Mock(
             return_value={
-            "status": "ok",
-            "stage": "complete",
-            "category": "ok",
-            "model_calls": 3,
-            "binding": {},
+                "status": "ok",
+                "stage": "complete",
+                "category": "ok",
+                "model_calls": 2,
+                "binding": {},
+                "usage_status": "complete",
             }
         ),
     )
@@ -439,7 +499,7 @@ def test_api_check_builds_resolved_anthropic_client_and_reports_probe(monkeypatc
     result = check_api_connectivity(_api_config())
 
     assert result["reason_code"] == "api_verified"
-    assert result["model_calls"] == 3
+    assert result["model_calls"] == 2
     assert constructor.call_args.args == ("anthropic_messages",)
     assert constructor.call_args.kwargs == {
         "model": "claude-sonnet-4-6",
@@ -447,11 +507,7 @@ def test_api_check_builds_resolved_anthropic_client_and_reports_probe(monkeypatc
         "api_key": "test-key",
         "timeout": 2,
         "auth_mode": "x-api-key",
-        "capabilities": {
-            "prompt_cache": True,
-            "strict_tools": True,
-            "parallel_tool_control": True,
-        },
+        "capabilities": {},
     }
 
 
@@ -465,7 +521,7 @@ def test_api_check_preserves_safe_http_failure_classification(monkeypatch):
         Mock(
             return_value={
             "status": "failed",
-            "stage": "text",
+            "stage": "tool_call",
             "category": "authentication_failed",
             "model_calls": 1,
             "binding": {},
@@ -477,9 +533,58 @@ def test_api_check_preserves_safe_http_failure_classification(monkeypatch):
 
     result = check_api_connectivity(_api_config())
 
-    assert result["reason_code"] == "authentication_failed"
-    assert result["error_code"] == "http_4xx"
+    assert result["reason_code"] == "http_4xx"
     assert result["http_status"] == 401
+
+
+def test_api_check_detects_unresolved_provider_and_allows_missing_usage(monkeypatch):
+    config = resolve_model_config(
+        project_env={
+            "PONY_API_BASE": "https://gateway.example/v1",
+            "PONY_API_KEY": "test-key",
+            "PONY_MODEL": "gateway-model",
+        },
+        process_env={},
+    )
+    clients = [object(), object(), object()]
+    constructor = Mock(side_effect=clients)
+    reports = iter(
+        [
+            {
+                "status": "failed",
+                "stage": "tool_call",
+                "category": "response_invalid",
+                "model_calls": 1,
+                "usage_status": "degraded",
+                "error_code": "provider_protocol_mismatch",
+            },
+            {
+                "status": "ok",
+                "stage": "complete",
+                "category": "ok",
+                "model_calls": 2,
+                "usage_status": "degraded",
+            },
+        ]
+    )
+    monkeypatch.setattr("pony.providers.factory.build_transport_client", constructor)
+    monkeypatch.setattr(
+        "pony.providers.probe.probe_model_client",
+        lambda _client: next(reports),
+    )
+
+    result = check_api_connectivity(config)
+
+    assert result["status"] == "ok"
+    assert result["detected_provider"] == "openai-responses"
+    assert result["protocol"] == "openai_responses"
+    assert result["usage_status"] == "degraded"
+    assert result["model_calls"] == 3
+    assert [call.args[0] for call in constructor.call_args_list] == [
+        "openai_chat_completions",
+        "openai_responses",
+        "openai_responses",
+    ]
 
 
 def test_collect_doctor_folds_unavailable_workspace_to_safe_shape(tmp_path):
@@ -495,65 +600,6 @@ def test_collect_doctor_folds_unavailable_workspace_to_safe_shape(tmp_path):
     assert "RuntimeError" not in rendered
 
 
-def test_doctor_security_requires_review_for_pending_tool_change(tmp_path):
-    from pony.state.checkpoint_store import CheckpointStore
-    from pony.tools.change_recorder import ToolChangeRecorder
-
-    store = CheckpointStore(tmp_path)
-    ToolChangeRecorder(store, owner_id="doctor-test").start(
-        "", "turn", "write_file", "workspace_write", {"path": "x.txt"}
-    )
-
-    security = collect_doctor(tmp_path)["security"]
-
-    assert security["status"] == "review_required"
-    assert security["recovery_review"]["pending_count"] == 1
-
-
-def test_doctor_runtime_authorization_projection_drops_unknown_fields(
-    tmp_path, monkeypatch, capsys
-):
-    secret = "ghp_" + "Z" * 32
-    authorization = {
-        "status": "enabled",
-        "kind": "local",
-        "reason_code": "local_authorization_verified",
-        "token": secret,
-    }
-    monkeypatch.setattr(
-        diagnostics,
-        "_collect_docker_sandbox_diagnostic",
-        lambda **_kwargs: {
-            "status": "ready",
-            "reason_code": "ready",
-            "readiness": {
-                "status": "ready",
-                "runtime_authorization": dict(authorization),
-            },
-            "runtime_authorization": dict(authorization),
-            "checks": {
-                "runtime_authorization": {
-                    "status": "pass",
-                    "reason_code": "local_authorization_verified",
-                    "remediation": "",
-                    "token": secret,
-                }
-            },
-        },
-    )
-
-    assert main(["--cwd", str(tmp_path), "--format", "json", "doctor"]) == 0
-
-    output = capsys.readouterr().out
-    sandbox = json.loads(output)["data"]["sandbox"]
-    assert set(sandbox["runtime_authorization"]) == {
-        "status",
-        "kind",
-        "reason_code",
-    }
-    assert secret not in output
-
-
 @pytest.mark.parametrize(
     ("has_claude", "has_agents", "expected"),
     [(True, False, True), (True, True, False), (False, False, False)],
@@ -567,6 +613,44 @@ def test_doctor_project_document_hint(tmp_path, has_claude, has_agents, expected
     hints = collect_doctor(tmp_path)["project_docs"]["hints"]
 
     assert bool(hints) is expected
+
+
+def test_doctor_reports_actionable_project_skill_failure_without_content(tmp_path):
+    secret = "github_pat_" + "A" * 40
+    skill = tmp_path / ".claude" / "skills" / "review" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text(
+        f"---\nname: review\ndescription: Review safely.\n---\n{secret}\n",
+        encoding="utf-8",
+    )
+
+    result = collect_doctor(tmp_path)["project_skills"]
+
+    assert result == {
+        "status": "invalid",
+        "reason_code": "project_skill_secret_rejected",
+        "remediation": "remove secret material from Project Skills and restart Pony",
+        "skill_count": 0,
+    }
+    assert secret not in json.dumps(result)
+
+
+def test_doctor_uses_custom_project_secret_names_for_skill_scan(tmp_path):
+    skill = tmp_path / ".claude" / "skills" / "review" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text(
+        "---\nname: review\ndescription: Review safely.\n---\ncustom-secret-value\n",
+        encoding="utf-8",
+    )
+    (tmp_path / ".env").write_text(
+        "PONY_SECRET_ENV_NAMES=PROJECT_CREDENTIAL\n"
+        "PROJECT_CREDENTIAL=custom-secret-value\n",
+        encoding="utf-8",
+    )
+
+    result = collect_doctor(tmp_path)["project_skills"]
+
+    assert result["reason_code"] == "project_skill_secret_rejected"
 
 
 def test_doctor_text_output_is_grouped(tmp_path, capsys):

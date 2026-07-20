@@ -8,9 +8,7 @@ from .metrics_common import (
     DEFAULT_CONTEXT_ABLATION_V2_PATH,
     DEFAULT_HARNESS_REGRESSION_V2_PATH,
     DEFAULT_MEMORY_ABLATION_V2_PATH,
-    DEFAULT_RECOVERY_ABLATION_V2_PATH,
     MEMORY_ABLATION_FORMAT_VERSION,
-    RECOVERY_ABLATION_FORMAT_VERSION,
     _load_json_artifact,
     _parse_iso8601,
     _safe_mean,
@@ -394,7 +392,6 @@ def write_benchmark_core_report(
     harness_artifact_path=DEFAULT_HARNESS_REGRESSION_V2_PATH,
     context_artifact_path=DEFAULT_CONTEXT_ABLATION_V2_PATH,
     memory_artifact_path=DEFAULT_MEMORY_ABLATION_V2_PATH,
-    recovery_artifact_path=DEFAULT_RECOVERY_ABLATION_V2_PATH,
 ):
     harness = _load_json_artifact(
         harness_artifact_path,
@@ -411,24 +408,16 @@ def write_benchmark_core_report(
         "memory_ablation_result",
         MEMORY_ABLATION_FORMAT_VERSION,
     )
-    recovery = _load_json_artifact(
-        recovery_artifact_path,
-        "recovery_ablation_result",
-        RECOVERY_ABLATION_FORMAT_VERSION,
-    )
 
     harness_summary = harness.get("summary", {})
     context_summary = context.get("summary", {})
     memory_variants = memory.get("variants", {})
     memory_on = memory_variants.get("memory_on", {})
     memory_off = memory_variants.get("memory_off", {})
-    enabled_recovery = (
-        recovery.get("variants", {}).get("resume_enabled", {}).get("summary", {})
-    )
     lines = [
         "# Pony Benchmark Core Report",
         "",
-        "这轮 benchmark 只收缩到 Harness regression、context ablation、working memory ablation 和 recovery ablation 四层，不把 provider、run aggregation 或 durable memory 的别的结论揉进来。",
+        "这轮 benchmark 只收缩到 Harness regression、context ablation 和 working memory ablation 三层，不把 provider 或 durable memory 的别的结论揉进来。",
         "",
         "## Harness Regression",
         f"- 固定 regression 任务数：{harness_summary.get('total_tasks', 0)}",
@@ -452,12 +441,6 @@ def write_benchmark_core_report(
         f"- memory_on correct_rate：{memory_on.get('correct_rate', 0.0):.2%}",
         f"- memory_hit_rate：{memory_on.get('memory_hit_rate', 0.0):.2%}",
         "",
-        "## Recovery / Resume Ablation",
-        f"- resume_success_rate：{enabled_recovery.get('resume_success_rate', 0.0):.2%}",
-        f"- stale_reanchor_rate：{enabled_recovery.get('stale_reanchor_rate', 0.0):.2%}",
-        f"- workspace_drift_detection_rate：{enabled_recovery.get('workspace_drift_detection_rate', 0.0):.2%}",
-        f"- resume_false_accept_rate：{enabled_recovery.get('resume_false_accept_rate', 0.0):.2%}",
-        "",
         "## 可以安全写进简历的指标",
         "- avg_compacted_request_chars",
         "- avg_uncompacted_request_chars",
@@ -466,19 +449,15 @@ def write_benchmark_core_report(
         "- repeated_reads",
         "- avg_tool_steps",
         "- correct_rate",
-        "- resume_success_rate",
-        "- workspace_drift_detection_rate",
-        "- resume_false_accept_rate",
         "",
         "## 只适合放文档/面试展开的指标",
         "- current_request_preserved_rate",
         "- memory_hit_rate",
-        "- stale_reanchor_rate",
         "- failure_category_counts",
         "",
         "## 口径边界",
         "- Harness regression 只证明 runtime 合同稳定，不证明 provider 上限。",
-        "- Context、memory、recovery 这三层只证明模块收益，不和 provider benchmark 混写。",
+        "- Context 与 memory 只证明模块收益，不和 provider benchmark 混写。",
     ]
     report_text = "\n".join(lines) + "\n"
     report_path = Path(report_path)

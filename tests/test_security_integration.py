@@ -4,13 +4,10 @@ from unittest.mock import Mock
 
 import pytest
 
-from pony.cli.app import main
 from pony.providers.response import Response, StopReason
-from pony.recovery.models import new_checkpoint_record
 from pony.runtime.application import Pony
 from pony.state.session_store import SessionStore
 from pony.state.task_state import TaskState
-from pony.agent.verification import new_verification_record
 from pony.workspace.context import WorkspaceContext
 from pony.runtime.options import RuntimeOptions
 
@@ -31,17 +28,21 @@ class CapturingClient:
         return self.responses.pop(0)
 
 
-def _agent(tmp_path, client, *, approval_policy="auto"):
+def _agent(tmp_path, client, *, permission_mode="auto"):
     (tmp_path / "README.md").write_text("safe fixture\n", encoding="utf-8")
     workspace = WorkspaceContext.build(tmp_path)
-    return Pony(
+    agent = Pony(
         model_client=client,
         workspace=workspace,
         session_store=SessionStore(tmp_path / ".pony" / "sessions"),
         options=RuntimeOptions(
-            approval_policy=approval_policy, secret_env_names=("PONY_TEST_TOKEN",)
+            project_trusted=True,
+            secret_env_names=("PONY_TEST_TOKEN",),
         ),
     )
+    if permission_mode != "auto":
+        agent.set_permission_mode(permission_mode)
+    return agent
 
 
 def _normal_artifact_files(root):
@@ -104,7 +105,7 @@ def test_cli_approval_and_verification_observations_hide_canary(
             )
         ]
     )
-    agent = _agent(tmp_path, client, approval_policy="ask")
+    agent = _agent(tmp_path, client, permission_mode="default")
     state = TaskState.create(
         run_id="run_canary",
         task_id="task_canary",
@@ -113,28 +114,6 @@ def test_cli_approval_and_verification_observations_hide_canary(
     agent.run_store.start_run(state)
     agent.emit_trace(state, "canary", {"token": secret})
     agent.run_store.write_report(state, {"token": secret})
-    checkpoint = new_checkpoint_record(
-        "ckpt_canary",
-        "turn",
-        agent.session["id"],
-        state.run_id,
-        state.task_id,
-        "",
-        str(tmp_path.resolve()),
-    )
-    checkpoint["verification_evidence"] = [
-        new_verification_record(
-        argv=["python", "-m", "pytest"],
-        risk_class="read_only",
-        runner_executed=True,
-        execution_mode="argv",
-        exit_code=0,
-        stdout=secret,
-        stderr=secret,
-        )
-    ]
-    agent.checkpoint_store.write_checkpoint_record(checkpoint)
-
     prompts = []
     monkeypatch.setattr(
         "builtins.input",
@@ -149,20 +128,6 @@ def test_cli_approval_and_verification_observations_hide_canary(
     )
     assert secret not in "".join(prompts)
 
-    assert (
-        main(
-            [
-                "--cwd",
-                str(tmp_path),
-                "--format",
-                "json",
-                "checkpoints",
-                "show",
-                "ckpt_canary",
-            ]
-        )
-        == 0
-    )
     assert secret not in capsys.readouterr().out
 
 

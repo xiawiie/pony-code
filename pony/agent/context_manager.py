@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass
 import hashlib
+from collections.abc import Mapping
 
 from pony.security import redaction as securitylib
 from pony.agent.messages import build_request_messages, message_metrics
@@ -14,6 +16,16 @@ from pony.agent.model_capabilities import (
     build_model_budget,
 )
 from pony.state.session_store import SessionContextView
+
+
+_PLAN_MODE_REMINDER = """
+<system-reminder>
+Plan mode is active. Explore the repository and design an implementation approach.
+Do not edit workspace files or run non-read-only tools. Use read_plan to inspect the
+current plan, write_plan to save the complete plan, and exit_plan_mode only when the
+plan is ready for user approval. Do not ask for plan approval in ordinary text.
+</system-reminder>
+""".strip()
 
 
 class ContextBudgetExceeded(RuntimeError):
@@ -28,6 +40,11 @@ def _convert_pony_tool_to_anthropic(name, spec):
     props = {}
     required = []
     for arg_name, sig in (spec.get("schema") or {}).items():
+        if isinstance(sig, Mapping):
+            props[arg_name] = deepcopy(dict(sig))
+            if "default" not in sig:
+                required.append(arg_name)
+            continue
         sig_str = str(sig)
         props[arg_name] = {"type": "integer" if "int" in sig_str else "string"}
         if "=" not in sig_str:
@@ -160,6 +177,16 @@ class ContextManager:
         budget = self.budget
         accounting = self.accounting
         system_text = str(getattr(self.agent, "prefix", "") or "")
+        current_mode = getattr(self.agent, "current_permission_mode", None)
+        permission_mode = (
+            current_mode()
+            if callable(current_mode)
+            else (getattr(self.agent, "session", {}) or {}).get(
+                "permission_mode", "auto"
+            )
+        )
+        if permission_mode == "plan":
+            system_text = f"{system_text}\n\n{_PLAN_MODE_REMINDER}"
         system = [
             {
                 "type": "text",
@@ -167,7 +194,7 @@ class ContextManager:
                 "cache_control": {"type": "ephemeral"},
             }
         ]
-        tools = _build_tools_list(getattr(self.agent, "tools", {}) or {})
+        tools = _build_tools_list(self.agent.visible_tools())
         system, _ = securitylib.sanitize_provider_payload(
             system,
             [],

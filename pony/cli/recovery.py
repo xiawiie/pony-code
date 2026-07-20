@@ -1,29 +1,21 @@
 """Recovery command handlers for Pony's explicit CLI surface."""
 
 import json
-import hashlib
 import os
 from pathlib import Path
 import re
 import stat
 
-from pony.state.checkpoint_store import CheckpointStore
-from .errors import CLI_EXIT_RUNTIME, CLI_EXIT_USAGE, CliError
+from pony.state.legacy_artifacts import LegacyArtifactError, LegacyCheckpointReader
+from .errors import CLI_EXIT_USAGE, CliError
 from .output import build_inspection_redactor, print_inspection_result
 from .session import load_session_readonly
-from pony.recovery.checkpoint_writer import RecoveryCheckpointWriter
-from pony.recovery.manager import RecoveryManager, collect_recovery_review_items
-from pony.sandbox.session import (
-    read_source_apply_authority,
-    source_apply_control_lock_path,
-)
 from pony.agent.observability import (
     RunArtifactError,
     load_run_summary,
     render_summary_text,
 )
 from pony.security.paths import require_regular_no_symlink
-from pony.tools.change_recorder import ToolChangeRecorder
 from pony.workspace.context import WorkspaceContext  # noqa: F401
 
 
@@ -34,36 +26,12 @@ def handle_checkpoints(root, tokens, args):
     redactor = build_inspection_redactor(root, args)
     sub = tokens[0] if tokens else "list"
     rest = tokens[1:]
-    read_only = (
-        sub in {"pending", "list", "show", "preview-restore"}
-        or sub == "restore"
-        and _is_restore_args(rest)
-        and "--apply" not in rest[1:]
-        or sub == "resolve-pending"
-        and _is_resolve_pending_args(rest)
-        and "--apply" not in rest[1:]
-        or sub == "prune"
-        and "--apply" not in rest
-    )
     try:
-        sandbox_parent = Path.home() / ".pony" / "sandboxes"
-        store = CheckpointStore(
-            root,
-            redactor=redactor,
-            source_apply_authority=lambda: read_source_apply_authority(
-                sandbox_parent,
-                root,
-            ),
-            source_apply_control_lock=source_apply_control_lock_path(
-                sandbox_parent,
-                root,
-            ),
-            read_only=read_only,
-        )
-    except (OSError, ValueError) as exc:
+        store = LegacyCheckpointReader(root)
+    except (OSError, ValueError, LegacyArtifactError) as exc:
         raise _unsafe_artifact_error() from exc
     if sub == "pending" and not rest:
-        data = collect_recovery_review_items(store, root)
+        data = store.review_items()
         return print_inspection_result(
             root,
             "checkpoints_pending",
@@ -72,25 +40,10 @@ def handle_checkpoints(root, tokens, args):
             _render_pending_reviews,
             redactor=redactor,
         )
-    if sub == "resolve-pending" and _is_resolve_pending_args(rest):
-        result = _resolve_pending_record(
-            store,
-            root,
-            rest[0],
-            apply_flag="--apply" in rest[1:],
-        )
-        return print_inspection_result(
-            root,
-            "checkpoints_resolve_pending",
-            result,
-            args,
-            _render_json_body,
-            redactor=redactor,
-        )
     if sub == "list" and not rest:
         try:
             records = store.list_checkpoint_records(strict=True)
-        except (OSError, ValueError) as exc:
+        except (OSError, ValueError, LegacyArtifactError) as exc:
             raise _unsafe_artifact_error() from exc
         return print_inspection_result(
             root,
@@ -111,74 +64,9 @@ def handle_checkpoints(root, tokens, args):
             _render_json_body,
             redactor=redactor,
         )
-    if sub == "preview-restore" and len(rest) == 1:
-        manager = RecoveryManager(
-            store, root, checkpoint_writer=RecoveryCheckpointWriter(store, root)
-        )
-        checkpoint_id = _resolve_checkpoint_id(store, rest[0], redactor=redactor)
-        plan = _preview_restore(manager, checkpoint_id, redactor=redactor)
-        return print_inspection_result(
-            root,
-            "checkpoints_preview_restore",
-            plan,
-            args,
-            _render_restore_plan,
-            redactor=redactor,
-        )
-    if sub == "restore" and _is_restore_args(rest):
-        checkpoint_id = _resolve_checkpoint_id(store, rest[0], redactor=redactor)
-        apply_flag = "--apply" in rest[1:]
-        manager = RecoveryManager(
-            store, root, checkpoint_writer=RecoveryCheckpointWriter(store, root)
-        )
-        if not apply_flag:
-            plan = _preview_restore(manager, checkpoint_id, redactor=redactor)
-            return print_inspection_result(
-                root,
-                "checkpoints_preview_restore",
-                plan,
-                args,
-                _render_restore_plan,
-                redactor=redactor,
-            )
-        result = _apply_restore(manager, checkpoint_id, redactor=redactor)
-        exit_code = print_inspection_result(
-            root,
-            "checkpoints_restore",
-            result,
-            args,
-            _render_json_body,
-            redactor=redactor,
-        )
-        return (
-            CLI_EXIT_RUNTIME
-            if result.get("status") in {"blocked", "failed", "partial"}
-            else exit_code
-        )
-    if sub == "prune":
-        prune_options = _parse_prune_args(rest)
-        try:
-            result = store.prune(
-                dry_run=not prune_options["apply"],
-                older_than=prune_options["older_than"],
-            )
-        except ValueError as exc:
-            raise CliError(
-                code="usage",
-                message=str(exc),
-                exit_code=CLI_EXIT_USAGE,
-            ) from exc
-        return print_inspection_result(
-            root,
-            "checkpoints_prune",
-            result,
-            args,
-            _render_json_body,
-            redactor=redactor,
-        )
     raise CliError(
         code="usage",
-        message="usage: pony checkpoints {list | show <id> | pending | resolve-pending <id> [--apply] | preview-restore <id> | restore <id> [--apply] | prune [--older-than <duration>] [--apply]}",
+        message="usage: pony checkpoints {list | show <id> | pending}",
         exit_code=CLI_EXIT_USAGE,
     )
 
@@ -298,106 +186,12 @@ def handle_sessions(root, tokens, args):
     )
 
 
-def _is_resolve_pending_args(rest):
-    return len(rest) == 1 or (len(rest) == 2 and rest[1] == "--apply")
-
-
-def _resolve_pending_record(store, root, record_id, *, apply_flag):
-    record_id = str(record_id or "")
-    items = collect_recovery_review_items(store, root)
-    invalid = next(
-        (
-            item
-            for item in items["invalid_records"]
-            if item.get("opaque_id") == record_id
-        ),
-        None,
-    )
-    tool_item = next(
-        (
-            item
-            for item in items["tool_changes"]
-            if item.get("tool_change_id") == record_id
-        ),
-        None,
-    )
-    restore_item = next(
-        (
-            item
-            for item in items["restore_journals"]
-            if item.get("checkpoint_id") == record_id
-        ),
-        None,
-    )
-    matches = [
-        (kind, item)
-        for kind, item in (
-            ("invalid", invalid),
-            ("tool_change", tool_item),
-            ("restore", restore_item),
-        )
-        if item is not None
-    ]
-    if len(matches) > 1:
-        raise CliError(
-            code="recovery_review_ambiguous",
-            message="ambiguous recovery review item",
-            hint="Resolve the conflicting local records before retrying.",
-            exit_code=CLI_EXIT_USAGE,
-        )
-    if not matches:
-        raise CliError(
-            code="recovery_review_not_found",
-            message="unknown recovery review item",
-            hint="Run `pony checkpoints pending`.",
-            exit_code=CLI_EXIT_USAGE,
-        )
-    kind, _ = matches[0]
-    if kind == "invalid":
-        if not apply_flag:
-            return dict(invalid)
-        return store.quarantine_invalid_record(
-            record_id, expected_raw_hash=invalid["raw_hash"]
-        )
-    if kind == "tool_change":
-        record, raw = store.load_tool_change_record_snapshot(record_id)
-        record_hash = hashlib.sha256(raw).hexdigest()
-        if not apply_flag:
-            return {
-                **tool_item,
-                "record_hash": record_hash,
-            }
-        return ToolChangeRecorder(store, owner_id="cli").resolve_pending(
-            record_id,
-            reviewed_by="cli",
-            review_reason="explicit_cli_resolution",
-            expected_record_hash=record_hash,
-        )
-    if kind == "restore":
-        manager = RecoveryManager(
-            store,
-            root,
-            checkpoint_writer=RecoveryCheckpointWriter(store, root),
-        )
-        preview = manager.preview_restore_journal_resolution(record_id)
-        if not apply_flag:
-            return preview
-        return manager.resolve_restore_journal(
-            record_id,
-            expected_record_hash=preview["record_hash"],
-            reviewed_by="cli",
-            review_reason="explicit_cli_resolution",
-        )
-    raise AssertionError("unreachable recovery review kind")
-
-
 def _render_pending_reviews(data):
     lines = []
     for key in (
         "tool_changes",
         "restore_journals",
         "invalid_records",
-        "quarantined_records",
     ):
         for item in data.get(key, []):
             item_id = (
@@ -415,35 +209,6 @@ def _render_checkpoints_list(records):
         lines.append(
             f"{record['checkpoint_id']}\t{record['checkpoint_type']}\t{record.get('created_at', '')}"
         )
-    return "\n".join(lines)
-
-
-def _render_restore_plan(plan):
-    entries = list(plan.get("entries", []) or [])
-    count = len(entries)
-    noun = "entry" if count == 1 else "entries"
-    lines = [
-        f"Restore plan {plan.get('checkpoint_id', '-')} ({count} {noun})",
-        "",
-        "decision  path                              reason",
-    ]
-    for entry in entries:
-        decision = str(entry.get("decision", "-") or "-")
-        path = str(entry.get("path", "-") or "-")
-        reason = str(
-            entry.get("recovery_note", "")
-            or entry.get("reason", "")
-            or entry.get("change_kind", "")
-            or "-"
-        )
-        observed = str(entry.get("observed_current_hash", "") or "")
-        expected = str(entry.get("expected_current_hash", "") or "")
-        details = reason
-        if observed:
-            details += f" observed={observed[:12]}"
-        if expected and decision == "conflict":
-            details += f" expected={expected[:12]}"
-        lines.append(f"{decision:<8}  {path:<32}  {details}")
     return "\n".join(lines)
 
 
@@ -484,7 +249,7 @@ def _resolve_checkpoint_id(store, value, *, redactor=None):
 
     try:
         records = store.list_checkpoint_records(strict=True)
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, LegacyArtifactError) as exc:
         raise _unsafe_artifact_error() from exc
     ids = []
     for record in records:
@@ -517,32 +282,6 @@ def _resolve_checkpoint_id(store, value, *, redactor=None):
 def _load_checkpoint_record(store, checkpoint_id, *, redactor=None):
     try:
         return store.load_checkpoint_record(checkpoint_id)
-    except FileNotFoundError as exc:
-        display_id = redactor(checkpoint_id) if redactor is not None else checkpoint_id
-        raise CliError(
-            code="checkpoint_not_found",
-            message=f"unknown checkpoint: {display_id}",
-            hint="Run `pony checkpoints list`.",
-            exit_code=CLI_EXIT_USAGE,
-        ) from exc
-
-
-def _preview_restore(manager, checkpoint_id, *, redactor=None):
-    try:
-        return manager.preview_restore(checkpoint_id)
-    except FileNotFoundError as exc:
-        display_id = redactor(checkpoint_id) if redactor is not None else checkpoint_id
-        raise CliError(
-            code="checkpoint_not_found",
-            message=f"unknown checkpoint: {display_id}",
-            hint="Run `pony checkpoints list`.",
-            exit_code=CLI_EXIT_USAGE,
-        ) from exc
-
-
-def _apply_restore(manager, checkpoint_id, *, redactor=None):
-    try:
-        return manager.apply_restore(checkpoint_id)
     except FileNotFoundError as exc:
         display_id = redactor(checkpoint_id) if redactor is not None else checkpoint_id
         raise CliError(
@@ -654,41 +393,6 @@ def _unsafe_artifact_error():
     return CliError(
         code="unsafe_artifact",
         message="unsafe local artifact",
-        exit_code=CLI_EXIT_USAGE,
-    )
-
-
-def _is_restore_args(args):
-    return len(args) == 1 or (len(args) == 2 and args[1] == "--apply")
-
-
-def _parse_prune_args(args):
-    options = {"apply": False, "older_than": None}
-    index = 0
-    while index < len(args):
-        token = args[index]
-        if token == "--apply":
-            options["apply"] = True
-            index += 1
-            continue
-        if token == "--older-than":
-            if index + 1 >= len(args):
-                raise _prune_usage_error()
-            options["older_than"] = args[index + 1]
-            index += 2
-            continue
-        if token.startswith("--older-than="):
-            options["older_than"] = token.split("=", 1)[1]
-            index += 1
-            continue
-        raise _prune_usage_error()
-    return options
-
-
-def _prune_usage_error():
-    return CliError(
-        code="usage",
-        message="usage: pony checkpoints prune [--older-than <duration>] [--apply]",
         exit_code=CLI_EXIT_USAGE,
     )
 

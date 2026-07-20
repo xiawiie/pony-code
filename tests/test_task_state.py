@@ -79,16 +79,6 @@ def test_task_state_snapshot_keeps_checkpoint_reference_without_body():
     assert "next_step" not in snapshot
 
 
-def test_task_state_tracks_recovery_checkpoint_id_separately():
-    state = TaskState.create(task_id="task_1", user_request="do work", run_id="run_1")
-    state.recovery_checkpoint_id = "ckpt_recovery"
-
-    restored = TaskState.from_dict(state.to_dict())
-
-    assert restored.checkpoint_id == ""
-    assert restored.recovery_checkpoint_id == "ckpt_recovery"
-
-
 @pytest.mark.parametrize(
     ("stop", "expected_status", "expected_reason"),
     [
@@ -122,6 +112,5 @@ def test_task_state_serializes_new_terminal_transitions(
         "final_answer": "terminal text",
         "checkpoint_id": "",
         "resume_status": "",
-        "recovery_checkpoint_id": "",
     }
     assert TaskState.from_dict(snapshot).to_dict() == snapshot

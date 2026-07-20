@@ -5,11 +5,9 @@ from pathlib import Path
 
 CONTEXT_ABLATION_FORMAT_VERSION = 1
 MEMORY_ABLATION_FORMAT_VERSION = 1
-RECOVERY_ABLATION_FORMAT_VERSION = 1
 DEFAULT_HARNESS_REGRESSION_V2_PATH = Path("artifacts/harness-regression-v2.json")
 DEFAULT_CONTEXT_ABLATION_V2_PATH = Path("artifacts/context-ablation-v2.json")
 DEFAULT_MEMORY_ABLATION_V2_PATH = Path("artifacts/memory-ablation-v2.json")
-DEFAULT_RECOVERY_ABLATION_V2_PATH = Path("artifacts/recovery-ablation-v2.json")
 DEFAULT_CORE_REPORT_PATH = Path("docs/metrics/pony-benchmark-core-report.md")
 
 

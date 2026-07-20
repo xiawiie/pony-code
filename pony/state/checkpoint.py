@@ -14,7 +14,7 @@ RUNTIME_IDENTITY_KEYS = (
     "cwd",
     "model",
     "model_client",
-    "approval_policy",
+    "permission_mode",
     "read_only",
     "max_steps",
     "max_output_tokens",
@@ -34,7 +34,7 @@ def current_runtime_identity(agent):
         "cwd": str(agent.root),
         "model": str(getattr(underlying_client, "model", "")),
         "model_client": underlying_client.__class__.__name__,
-        "approval_policy": agent.approval_policy,
+        "permission_mode": agent.current_permission_mode(),
         "read_only": bool(agent.read_only),
         "max_steps": int(agent.max_steps),
         "max_output_tokens": int(agent.max_output_tokens),
@@ -270,9 +270,6 @@ def create_checkpoint(
         "key_files": key_files,
         "read_files": read_files,
         "modified_files": modified_files,
-        "workspace_checkpoint_id": str(
-            getattr(task_state, "recovery_checkpoint_id", "") or ""
-        ),
         "worktree_identity_digest": _worktree_identity_digest(agent),
         "context_usage": _context_usage(agent),
         "label": str(agent.redact_text(label) or "").strip(),
@@ -281,14 +278,14 @@ def create_checkpoint(
         "summary": f"{trigger}: {clip(goal, 120)}",
         "runtime_identity": current_runtime_identity(agent),
     }
-    state["items"][checkpoint_id] = checkpoint
-    state["current_id"] = checkpoint_id
-    task_state.checkpoint_id = checkpoint_id
-    agent.session["runtime_identity"] = checkpoint["runtime_identity"]
     agent.session_store.append_task_checkpoint(
         agent.session["id"],
         checkpoint,
     )
+    state["items"][checkpoint_id] = checkpoint
+    state["current_id"] = checkpoint_id
+    task_state.checkpoint_id = checkpoint_id
+    agent.session["runtime_identity"] = checkpoint["runtime_identity"]
     agent.session_path = agent.session_store.path_for(agent.session["id"])
     derived_files = [item["path"] for item in key_files if item.get("path")][:8]
     agent.memory.set_task_summary(goal)
@@ -320,9 +317,6 @@ def create_manual_checkpoint(agent, label=""):
         final_answer = ""
         last_tool = ""
         checkpoint_id = ""
-        recovery_checkpoint_id = str(
-            agent.session.get("recovery", {}).get("current_checkpoint_id", "") or ""
-        )
 
     return create_checkpoint(
         agent,

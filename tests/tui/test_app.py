@@ -1,4 +1,6 @@
 import io
+import queue
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -6,10 +8,14 @@ from prompt_toolkit.document import Document
 from prompt_toolkit.utils import get_cwidth
 
 from pony.cli.start import run_repl
+from pony.providers.transport import ProviderTransportError
 from pony.tui.app import (
     SlashCommandCompleter,
     _CompactPromptSession,
     _key_bindings,
+    _history,
+    _permission_picker,
+    _session_picker,
     run_tui,
     should_use_tui,
 )
@@ -30,6 +36,8 @@ class _Stream:
         (True, True, "xterm-256color", 80, True),
         (False, True, "xterm-256color", 80, False),
         (True, False, "xterm-256color", 80, False),
+        (True, True, None, 80, False),
+        (True, True, " ", 80, False),
         (True, True, "dumb", 80, False),
         (True, True, "xterm-256color", 39, False),
     ),
@@ -44,7 +52,7 @@ def test_tui_requires_a_capable_interactive_terminal(
     assert should_use_tui(
         stdin=_Stream(stdin_tty),
         stdout=_Stream(stdout_tty),
-        environ={"TERM": term},
+        environ={} if term is None else {"TERM": term},
         columns=columns,
     ) is expected
 
@@ -59,6 +67,34 @@ def test_terminal_logo_scales_horse_and_wordmark_together(columns, height):
     assert "PONY" not in rendered
     assert len(lines) == height
     assert max(get_cwidth(line) for line in lines) < columns
+
+
+@pytest.mark.parametrize("columns", (40, 80, 120))
+def test_terminal_welcome_preserves_logo_and_status(columns, monkeypatch):
+    output = []
+    renderer = TuiRenderer(no_color=True)
+    agent = SimpleNamespace(
+        current_permission_mode=lambda: "default",
+        model_client=SimpleNamespace(
+            provider_metadata={"protocol_family": "openai_chat_completions"}
+        ),
+        session={},
+    )
+    monkeypatch.setattr("pony.tui.render._product_version", lambda: "1.2.3")
+    renderer._write = lambda value, **_kwargs: output.append(value)
+
+    renderer.header(agent, model="gpt-test", columns=columns)
+
+    rendered = "".join(fragment[1] for fragment in output[0])
+    assert "⣿" in rendered
+    assert "█" in rendered
+    assert "v1.2.3" in rendered
+    assert "openai/gpt-test" in rendered
+    if columns >= 64:
+        assert "Local coding agent for repository-grounded work" in rendered
+        assert "permission manual" in rendered
+        assert "esc+enter newline" in rendered
+    assert all(get_cwidth(line) < columns for line in rendered.splitlines())
 
 
 def test_tui_chrome_is_monochrome_but_status_colors_keep_their_meaning():
@@ -92,6 +128,120 @@ def test_slash_completion_is_generated_from_documented_commands():
         item.text
         for item in SlashCommandCompleter().get_completions(Document("/"), None)
     }
+    assert "/todo" not in {
+        item.text
+        for item in SlashCommandCompleter().get_completions(Document("/"), None)
+    }
+    assert {"/permissions", "/allowed-tools", "/model", "/plan", "/queue"} <= {
+        item.text
+        for item in SlashCommandCompleter().get_completions(Document("/"), None)
+    }
+    assert "/mode" not in {
+        item.text
+        for item in SlashCommandCompleter().get_completions(Document("/"), None)
+    }
+
+
+def test_tui_history_uses_only_supplied_canonical_prompts():
+    assert _history(["first", "active branch"]).get_strings() == [
+        "first",
+        "active branch",
+    ]
+
+
+def test_tui_permission_picker_navigates_tools_rules_and_modes():
+    answers = iter(
+        ["tool:write_file", "deny", "mode", "manual", "done"]
+    )
+    prompts = []
+
+    def choose(message, *, options, **_kwargs):
+        prompts.append((message, dict(options)))
+        return next(answers)
+
+    agent = SimpleNamespace(
+        current_permission_mode=lambda: "auto",
+        bypass_permissions_available=False,
+    )
+
+    selections = _permission_picker(
+        agent,
+        {"allow": [], "ask": [], "deny": []},
+        ["read_file", "write_file"],
+        choose=choose,
+    )
+
+    assert selections == [("deny", "write_file"), ("mode", "manual")]
+    assert "write_file · default" in prompts[0][1].values()
+    assert "write_file · deny" in prompts[2][1].values()
+    assert "bypassPermissions" not in prompts[3][1]
+
+
+def test_tui_session_picker_offers_cancel_and_selected_entry():
+    prompts = []
+
+    def choose(message, *, options, **_kwargs):
+        prompts.append((message, options))
+        return "entry-1"
+
+    selected = _session_picker(
+        "/rewind",
+        [("entry-1", "entry-1 | user: investigate | active")],
+        choose=choose,
+    )
+
+    assert selected == "entry-1"
+    assert prompts == [
+        (
+            "Rewind session from",
+            [("", "Cancel"), ("entry-1", "entry-1 | user: investigate | active")],
+        )
+    ]
+
+
+def test_tui_resume_card_labels_fact_sources(monkeypatch):
+    output = []
+    monkeypatch.setattr(
+        "pony.tui.render.print_formatted_text",
+        lambda value, **_kwargs: output.append(value),
+    )
+    projection = {
+        "permission_mode": "plan",
+        "goal": {"text": "Ship", "source": "checkpoint"},
+        "checkpoint": {"status": "ready", "blocker": "", "next_steps": []},
+        "resume": {"status": "ready"},
+        "model": {
+            "protocol_family": "anthropic_messages",
+            "model": "claude-test",
+        },
+    }
+
+    TuiRenderer(no_color=True).resume(projection)
+
+    rendered = "".join(fragment[1] for fragment in output[0])
+    assert "permission [session]: plan" in rendered
+    assert "goal [checkpoint]: Ship" in rendered
+    assert "checkpoint [checkpoint]: status=ready" in rendered
+    assert "model [provider_binding]: anthropic_messages/claude-test" in rendered
+
+
+def test_tui_plan_approval_renders_the_complete_artifact(monkeypatch):
+    output = []
+    monkeypatch.setattr(
+        "pony.tui.render.print_formatted_text",
+        lambda value, **_kwargs: output.append(value),
+    )
+    plan = "# Plan\n\n" + ("inspect and verify\n" * 80) + "FINAL APPROVED STEP"
+
+    TuiRenderer(no_color=True).approval(
+        "exit_plan_mode",
+        {"plan": plan, "revision": 7},
+    )
+
+    rendered = "".join(fragment[1] for value in output for fragment in value)
+    assert "PLAN APPROVAL REQUIRED" in rendered
+    assert "revision 7" in rendered
+    assert "FINAL APPROVED STEP" in rendered
 
 
 @pytest.mark.parametrize(
@@ -153,9 +303,9 @@ def test_tui_editor_grows_without_filling_the_terminal():
     assert _CompactPromptSession._get_default_buffer_control_height(session).max == 6
 
 
-def test_repl_routes_a_capable_tty_to_tui_and_finalizes(monkeypatch):
+def test_repl_routes_a_capable_tty_to_tui(monkeypatch):
     calls = []
-    agent = SimpleNamespace(finalize_sandbox_session=lambda: calls.append("finalize"))
+    agent = SimpleNamespace()
     monkeypatch.setattr("pony.tui.app.should_use_tui", lambda: True)
 
     def fake_run_tui(received, **options):
@@ -169,7 +319,7 @@ def test_repl_routes_a_capable_tty_to_tui_and_finalizes(monkeypatch):
     monkeypatch.setattr("pony.tui.app.run_tui", fake_run_tui)
 
     assert run_repl(agent, model="model", no_color=True) == 0
-    assert calls == [("model", True, True), "finalize"]
+    assert calls == [("model", True, True)]
 
 
 def test_plain_repl_never_starts_tui(monkeypatch):
@@ -193,7 +343,7 @@ def test_tui_restores_runtime_hooks(monkeypatch):
     agent = SimpleNamespace(
         _trace_listener=previous_listener,
         _approval_prompt=previous_prompt,
-        approval_policy="ask",
+        current_permission_mode=lambda: "default",
         docker_sandbox=False,
         model_client=SimpleNamespace(provider="openai"),
         workspace=SimpleNamespace(cwd="/repo", branch="main"),
@@ -228,22 +378,195 @@ def test_tui_restores_runtime_hooks(monkeypatch):
     assert agent._trace_listener is previous_listener
     assert agent._approval_prompt is previous_prompt
     header = "".join(fragment[1] for fragment in output[0])
+    assert "⣿" in header
+    assert "█" in header
     assert "v1.0.0" in header
     assert "Local coding agent for repository-grounded work" in header
-    assert "Using gpt-test · approval ask" in header
+    assert "Using gpt-test · permission manual" in header
+
+
+def test_tui_restores_runtime_hooks_when_provider_fails(monkeypatch):
+    previous_listener = object()
+    previous_prompt = object()
+    agent = SimpleNamespace(
+        _trace_listener=previous_listener,
+        _approval_prompt=previous_prompt,
+        current_permission_mode=lambda: "default",
+        docker_sandbox=False,
+        model_client=SimpleNamespace(provider="openai"),
+        workspace=SimpleNamespace(cwd="/repo", branch="main"),
+        session={"id": "session-id"},
+    )
+
+    class FakeSession:
+        def __init__(self, **_kwargs):
+            pass
+
+        def prompt(self, *_args, **_kwargs):
+            return "run"
+
+    monkeypatch.setattr("pony.tui.app._CompactPromptSession", FakeSession)
+    monkeypatch.setattr(
+        "pony.tui.render.print_formatted_text",
+        lambda *_args, **_kwargs: None,
+    )
+
+    def fail(*_args, **_kwargs):
+        raise ProviderTransportError(
+            "unsafe response",
+            code="provider_protocol_mismatch",
+            stage="tool_call",
+            protocol_reason="tool_call_shape_invalid",
+        )
+
+    with pytest.raises(ProviderTransportError):
+        run_tui(agent, model="gpt-test", no_color=True, handle_input=fail)
+
+    assert agent._trace_listener is previous_listener
+    assert agent._approval_prompt is previous_prompt
+
+
+def test_tui_accepts_a_queued_turn_while_the_worker_is_busy(monkeypatch):
+    inputs = queue.Queue()
+    first_entered = threading.Event()
+    release_first = threading.Event()
+    second_finished = threading.Event()
+    queued = threading.Event()
+    calls = []
+
+    class FakeSession:
+        def __init__(self, **_kwargs):
+            pass
+
+        def prompt(self, *_args, **_kwargs):
+            return inputs.get(timeout=3)
+
+    agent = SimpleNamespace(
+        _trace_listener=None,
+        _approval_prompt=None,
+        current_permission_mode=lambda: "auto",
+        project_skill=lambda _name: None,
+        model_client=SimpleNamespace(provider="openai"),
+        workspace=SimpleNamespace(cwd="/repo", branch="main"),
+        session={"messages": []},
+    )
+
+    def write(value, **_kwargs):
+        text = "".join(fragment[1] for fragment in value)
+        if "queued input: 1/5 pending" in text:
+            queued.set()
+
+    def handle_input(_agent, text, **_kwargs):
+        if text == "/exit":
+            return 0
+        calls.append(text)
+        if text == "first":
+            first_entered.set()
+            assert release_first.wait(timeout=3)
+        if text == "second":
+            second_finished.set()
+
+    monkeypatch.setattr("pony.tui.app._CompactPromptSession", FakeSession)
+    monkeypatch.setattr("pony.tui.render.print_formatted_text", write)
+    outcome = []
+    thread = threading.Thread(
+        target=lambda: outcome.append(
+            run_tui(agent, model="gpt-test", no_color=True, handle_input=handle_input)
+        )
+    )
+    thread.start()
+
+    inputs.put("first")
+    assert first_entered.wait(timeout=3)
+    inputs.put("second")
+    assert queued.wait(timeout=3)
+    release_first.set()
+    assert second_finished.wait(timeout=3)
+    inputs.put("/exit")
+    thread.join(timeout=3)
+
+    assert not thread.is_alive()
+    assert outcome == [0]
+    assert calls == ["first", "second"]
+
+
+def test_tui_routes_approval_answer_through_the_ui_prompt(monkeypatch):
+    inputs = queue.Queue()
+    approval_visible = threading.Event()
+    approval_finished = threading.Event()
+    decisions = []
+    prompt_threads = []
+    worker_threads = []
+
+    class FakeSession:
+        def __init__(self, **_kwargs):
+            pass
+
+        def prompt(self, *_args, **_kwargs):
+            prompt_threads.append(threading.current_thread())
+            return inputs.get(timeout=3)
+
+    agent = SimpleNamespace(
+        _trace_listener=None,
+        _approval_prompt=None,
+        current_permission_mode=lambda: "auto",
+        project_skill=lambda _name: None,
+        model_client=SimpleNamespace(provider="openai"),
+        workspace=SimpleNamespace(cwd="/repo", branch="main"),
+        session={"messages": []},
+    )
+
+    def write(value, **_kwargs):
+        text = "".join(fragment[1] for fragment in value)
+        if "APPROVAL REQUIRED" in text:
+            approval_visible.set()
+
+    def handle_input(received, text, **_kwargs):
+        if text == "/exit":
+            return 0
+        worker_threads.append(threading.current_thread())
+        assert text == "change file"
+        decisions.append(received._approval_prompt("write_file", {"path": "a.txt"}))
+        approval_finished.set()
+
+    monkeypatch.setattr("pony.tui.app._CompactPromptSession", FakeSession)
+    monkeypatch.setattr("pony.tui.render.print_formatted_text", write)
+    outcome = []
+    thread = threading.Thread(
+        target=lambda: outcome.append(
+            run_tui(agent, model="gpt-test", no_color=True, handle_input=handle_input)
+        )
+    )
+    thread.start()
+
+    inputs.put("change file")
+    assert approval_visible.wait(timeout=3)
+    inputs.put("yes")
+    assert approval_finished.wait(timeout=3)
+    inputs.put("/exit")
+    thread.join(timeout=3)
+
+    assert outcome == [0]
+    assert decisions == [True]
+    assert worker_threads[0] is not prompt_threads[0]
+    assert all(current is prompt_threads[0] for current in prompt_threads)
 
 
 def test_toolbar_is_width_bounded_and_keeps_only_essential_status():
     agent = SimpleNamespace(
-        approval_policy="ask",
+        current_permission_mode=lambda: "acceptEdits",
         docker_sandbox=False,
         workspace=SimpleNamespace(
             cwd="/very/long/workspace/path/project",
             branch="feature/very-long-branch",
         ),
         session={"id": "session-must-not-appear"},
+        checkpoint={"id": "checkpoint-must-not-appear"},
         model_client=SimpleNamespace(
-            provider_metadata={"protocol_family": "anthropic_messages"}
+            provider_metadata={
+                "protocol_family": "anthropic_messages",
+                "api_base": "https://api-must-not-appear.example",
+            }
         ),
     )
 
@@ -258,12 +581,41 @@ def test_toolbar_is_width_bounded_and_keeps_only_essential_status():
         )
         lines = rendered.splitlines()
         assert all(get_cwidth(line) < columns for line in lines)
+        footer = lines[-1]
+        assert "acceptEdits" in footer
         if columns >= 80:
-            assert "host" in rendered
-            assert "approval ask" in rendered
-            assert "anthropic/" in rendered
+            assert "project" in footer
+            assert "anthropic/claude-sonnet-4-6" in footer
+        if columns == 120:
+            assert "feature/very-long-branch" in footer
         assert "/very/long" not in rendered
         assert "session-must-not-appear" not in rendered
+        assert "checkpoint-must-not-appear" not in rendered
+        assert "api-must-not-appear" not in rendered
+
+
+def test_toolbar_reads_the_model_from_the_current_client():
+    client = SimpleNamespace(
+        model="gpt-next",
+        provider_metadata={"protocol_family": "openai_responses"},
+    )
+    agent = SimpleNamespace(
+        current_permission_mode=lambda: "auto",
+        workspace=SimpleNamespace(cwd="/repo", branch="main"),
+        model_client=client,
+    )
+
+    rendered = "".join(
+        fragment[1]
+        for fragment in TuiRenderer(no_color=True).toolbar(
+            agent,
+            model="gpt-old",
+            columns=80,
+        )
+    )
+
+    assert "openai/gpt-next" in rendered
+    assert "gpt-old" not in rendered
 
 
 def test_trace_projects_one_tool_line_and_hides_internal_lifecycle(monkeypatch):

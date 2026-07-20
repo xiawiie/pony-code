@@ -2,12 +2,15 @@
 
 from dataclasses import dataclass
 from contextlib import contextmanager
+import locale
 import os
 import re
+import selectors
 import signal
 import shutil
 import stat
 import subprocess
+import time
 from pathlib import Path
 
 AUTO_TRUSTED_EXECUTABLES = ("git", "pwd", "ls", "stat", "file", "wc")
@@ -42,6 +45,7 @@ DEFAULT_TRUSTED_EXECUTABLES = (
     *APPROVAL_TRUSTED_EXECUTABLES,
 )
 _GIT_CONFIG_OVERRIDES = (
+    "commit.gpgSign=false",
     "core.fsmonitor=false",
     "core.hooksPath=/dev/null",
     "core.askPass=",
@@ -75,6 +79,7 @@ _GIT_CONFIG_KEY_RE = re.compile(
     r"^(?P<name>[A-Za-z][A-Za-z0-9-]*)\s*(?:=\s*(?P<value>.*))?$"
 )
 _MAX_GIT_METADATA_BYTES = 64 * 1024
+MAX_CAPTURED_PROCESS_BYTES = 4 * 1024 * 1024
 # Regular gitfiles fail closed without race-safe component traversal.
 _HAS_GIT_DIR_FD_TRAVERSAL = (
     os.name == "posix"
@@ -844,7 +849,7 @@ def _validate_gitfile_worktree_root(executable, *, cwd, timeout):
     argv = _hardened_git_prefix(executable)
     argv.extend(("-c", "alias.rev-parse="))
     argv.extend(("rev-parse", "--show-toplevel"))
-    result = subprocess.run(
+    result = _run_bounded(
         argv,
         executable=_execution_path(executable),
         cwd=Path(cwd).resolve(),
@@ -900,7 +905,7 @@ def _validate_hardened_git_repository_prepared(
             "--list",
         )
     )
-    result = subprocess.run(
+    result = _run_bounded(
         argv,
         executable=_execution_path(executable),
         cwd=Path(cwd).resolve(),
@@ -954,7 +959,7 @@ def _validate_hardened_git_repository_prepared(
     argv = _hardened_git_prefix(executable)
     argv.extend(("-c", "alias.ls-files="))
     argv.extend(("ls-files", "--stage", "-z"))
-    result = subprocess.run(
+    result = _run_bounded(
         argv,
         executable=_execution_path(executable),
         cwd=Path(cwd).resolve(),
@@ -989,8 +994,34 @@ def _validate_hardened_git_repository(executable, *, cwd, args, timeout=5):
         )
 
 
-def run_hardened_git(executable, args, *, cwd, timeout=5, check=False, text=False):
+def run_hardened_git(
+    executable,
+    args,
+    *,
+    cwd,
+    timeout=5,
+    check=False,
+    text=False,
+    commit_identity=None,
+):
     args, _ = _validate_hardened_git_args(args)
+    if commit_identity is not None:
+        if not args or args[0] not in {"commit", "commit-tree", "merge"}:
+            raise ValueError(
+                "git commit identity is only valid for commit, commit-tree, or merge"
+            )
+        if (
+            not isinstance(commit_identity, tuple)
+            or len(commit_identity) != 2
+            or any(
+                not isinstance(value, str)
+                or not value
+                or len(value) > 200
+                or any(character in value for character in "\r\n\x00")
+                for value in commit_identity
+            )
+        ):
+            raise ValueError("invalid git commit identity")
     with _prepared_executable(executable) as prepared:
         _validate_hardened_git_repository_prepared(
             prepared,
@@ -999,7 +1030,16 @@ def run_hardened_git(executable, args, *, cwd, timeout=5, check=False, text=Fals
             timeout=timeout,
         )
         argv = build_hardened_git_argv(prepared, args)
-        return subprocess.run(
+        env = _hardened_git_env(cwd, prepared)
+        if commit_identity is not None:
+            name, email = commit_identity
+            env.update(
+                GIT_AUTHOR_NAME=name,
+                GIT_AUTHOR_EMAIL=email,
+                GIT_COMMITTER_NAME=name,
+                GIT_COMMITTER_EMAIL=email,
+            )
+        return _run_bounded(
             argv,
             executable=_execution_path(prepared),
             cwd=Path(cwd).resolve(),
@@ -1007,7 +1047,7 @@ def run_hardened_git(executable, args, *, cwd, timeout=5, check=False, text=Fals
             text=text,
             check=check,
             timeout=timeout,
-            env=_hardened_git_env(cwd, prepared),
+            env=env,
             shell=False,
         )
 
@@ -1025,7 +1065,7 @@ def run_hardened_rg(executable, args, *, cwd, timeout=20):
     with _prepared_executable(executable) as prepared:
         env = _frozen_executable_env(prepared)
         env["RIPGREP_CONFIG_PATH"] = os.devnull
-        return subprocess.run(
+        return _run_bounded(
             [prepared, *argv_args],
             executable=_execution_path(prepared),
             cwd=Path(cwd).resolve(),
@@ -1050,6 +1090,196 @@ class ProcessGroupResult:
         return self.exit_code
 
 
+@dataclass(frozen=True)
+class _CapturedProcess:
+    stdout: bytes
+    stderr: bytes
+    returncode: int
+    timed_out: bool
+
+
+class ProcessOutputLimitExceeded(subprocess.SubprocessError):
+    """A child process exceeded the bounded capture budget."""
+
+    def __init__(self, cmd, limit):
+        self.cmd = cmd
+        self.limit = int(limit)
+        super().__init__("process_output_limit_exceeded")
+
+
+def _signal_process_group(process, sig):
+    try:
+        os.killpg(process.pid, sig)
+        return
+    except (PermissionError, ProcessLookupError):
+        if process.poll() is not None:
+            return
+    try:
+        process.kill() if sig == signal.SIGKILL else process.send_signal(sig)
+    except ProcessLookupError:
+        pass
+
+
+def _terminate_process_group(process, term_grace):
+    _signal_process_group(process, signal.SIGTERM)
+    if process.poll() is not None:
+        return
+    try:
+        process.wait(timeout=max(0.0, float(term_grace)))
+    except subprocess.TimeoutExpired:
+        _signal_process_group(process, signal.SIGKILL)
+        process.wait()
+
+
+def _close_capture_streams(selector, streams):
+    for stream in streams.values():
+        try:
+            selector.unregister(stream)
+        except (KeyError, ValueError):
+            pass
+        stream.close()
+    streams.clear()
+
+
+def _capture_process(
+    argv,
+    *,
+    cwd,
+    env,
+    timeout,
+    executable=None,
+    term_grace=2,
+    max_output_bytes=None,
+):
+    limit = (
+        MAX_CAPTURED_PROCESS_BYTES
+        if max_output_bytes is None
+        else int(max_output_bytes)
+    )
+    if limit < 1:
+        raise ValueError("invalid process output limit")
+    command = [str(arg) for arg in argv]
+    process = subprocess.Popen(
+        command,
+        executable=executable,
+        cwd=Path(cwd).resolve(),
+        env=env,
+        shell=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=False,
+        start_new_session=True,
+    )
+    selector = selectors.DefaultSelector()
+    streams = {
+        "stdout": process.stdout,
+        "stderr": process.stderr,
+    }
+    buffers = {"stdout": bytearray(), "stderr": bytearray()}
+    total = 0
+    deadline = time.monotonic() + max(0.0, float(timeout))
+    termination_deadline = None
+    timed_out = False
+    try:
+        for name, stream in streams.items():
+            os.set_blocking(stream.fileno(), False)
+            selector.register(stream, selectors.EVENT_READ, name)
+        while streams or process.poll() is None:
+            now = time.monotonic()
+            if not timed_out and now >= deadline:
+                timed_out = True
+                _signal_process_group(process, signal.SIGTERM)
+                termination_deadline = now + max(0.0, float(term_grace))
+            elif (
+                timed_out
+                and termination_deadline is not None
+                and now >= termination_deadline
+            ):
+                if process.poll() is None:
+                    _signal_process_group(process, signal.SIGKILL)
+                    process.wait()
+                # A descendant may escape the process group but retain these pipes.
+                # Stop draining at the hard deadline so timeout remains bounded.
+                _close_capture_streams(selector, streams)
+                termination_deadline = None
+
+            next_deadline = termination_deadline if timed_out else deadline
+            wait = max(0.0, min(0.05, next_deadline - now)) if next_deadline else 0.05
+            events = selector.select(wait) if streams else ()
+            for key, _mask in events:
+                stream = key.fileobj
+                try:
+                    chunk = os.read(stream.fileno(), min(65536, limit - total + 1))
+                except BlockingIOError:
+                    continue
+                if not chunk:
+                    selector.unregister(stream)
+                    stream.close()
+                    streams.pop(key.data, None)
+                    continue
+                buffers[key.data].extend(chunk)
+                total += len(chunk)
+                if total > limit:
+                    raise ProcessOutputLimitExceeded(command, limit)
+            if not streams and process.poll() is None:
+                time.sleep(wait)
+        return _CapturedProcess(
+            stdout=bytes(buffers["stdout"]),
+            stderr=bytes(buffers["stderr"]),
+            returncode=process.wait(),
+            timed_out=timed_out,
+        )
+    except BaseException:
+        _close_capture_streams(selector, streams)
+        _terminate_process_group(process, term_grace)
+        raise
+    finally:
+        _close_capture_streams(selector, streams)
+        selector.close()
+
+
+def _text_capture(data):
+    return data.decode(locale.getpreferredencoding(False)).replace("\r\n", "\n").replace(
+        "\r", "\n"
+    )
+
+
+def _run_bounded(
+    argv,
+    *,
+    executable=None,
+    cwd,
+    capture_output,
+    text,
+    check,
+    timeout,
+    env,
+    shell,
+):
+    if capture_output is not True or shell is not False:
+        raise ValueError("bounded runner requires captured non-shell execution")
+    captured = _capture_process(
+        argv,
+        executable=executable,
+        cwd=cwd,
+        env=env,
+        timeout=timeout,
+    )
+    stdout = _text_capture(captured.stdout) if text else captured.stdout
+    stderr = _text_capture(captured.stderr) if text else captured.stderr
+    if captured.timed_out:
+        raise subprocess.TimeoutExpired(
+            argv,
+            timeout,
+            output=stdout,
+            stderr=stderr,
+        )
+    completed = subprocess.CompletedProcess(argv, captured.returncode, stdout, stderr)
+    if check:
+        completed.check_returncode()
+    return completed
+
+
 def run_process_group(
     argv,
     *,
@@ -1058,41 +1288,24 @@ def run_process_group(
     timeout,
     executable=None,
     term_grace=2,
+    max_output_bytes=None,
 ):
-    """Run a process group and reap its pipes after TERM/KILL on timeout."""
-    process = subprocess.Popen(
-        [str(arg) for arg in argv],
+    """Run a process group with bounded capture and TERM/KILL timeout cleanup."""
+    captured = _capture_process(
+        argv,
         executable=executable,
-        cwd=Path(cwd).resolve(),
+        cwd=cwd,
         env=env,
-        shell=False,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        start_new_session=True,
+        timeout=timeout,
+        term_grace=term_grace,
+        max_output_bytes=max_output_bytes,
     )
-    try:
-        stdout, stderr = process.communicate(timeout=timeout)
-        return ProcessGroupResult(stdout, stderr, process.returncode, False)
-    except subprocess.TimeoutExpired:
-        try:
-            os.killpg(process.pid, signal.SIGTERM)
-        except ProcessLookupError:
-            pass
-        try:
-            stdout, stderr = process.communicate(timeout=term_grace)
-        except subprocess.TimeoutExpired:
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            stdout, stderr = process.communicate()
-        return ProcessGroupResult(
-            stdout,
-            stderr,
-            process.returncode if process.returncode is not None else -signal.SIGKILL,
-            True,
-        )
+    return ProcessGroupResult(
+        _text_capture(captured.stdout),
+        _text_capture(captured.stderr),
+        captured.returncode,
+        captured.timed_out,
+    )
 
 
 def run_hardened_command(

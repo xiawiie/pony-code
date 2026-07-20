@@ -4,15 +4,19 @@ from contextlib import contextmanager
 from pathlib import Path
 import stat
 import subprocess
+import sys
+import time
 
 import pytest
 
 from pony.tools import subprocess as safe_subprocess_module
 from pony.tools.subprocess import (
+    ProcessOutputLimitExceeded,
     build_trusted_executables,
     discover_lexical_repo_root,
     run_hardened_git,
     run_hardened_rg,
+    run_process_group,
 )
 
 
@@ -26,6 +30,29 @@ def _real_git():
     trusted = build_trusted_executables(Path.cwd(), names=("git",))
     assert "git" in trusted
     return str(trusted["git"])
+
+
+def test_timeout_does_not_wait_for_detached_descendant_capture_pipe(tmp_path):
+    script = (
+        "import os,time\n"
+        "if os.fork() == 0:\n"
+        "    os.setsid()\n"
+        "    time.sleep(2)\n"
+        "    os._exit(0)\n"
+        "os._exit(0)\n"
+    )
+    started = time.monotonic()
+
+    result = run_process_group(
+        [sys.executable, "-c", script],
+        cwd=tmp_path,
+        env=dict(os.environ),
+        timeout=0.1,
+        term_grace=0.1,
+    )
+
+    assert result.timed_out is True
+    assert time.monotonic() - started < 1
 
 
 def _init_git_repo(path):
@@ -419,7 +446,7 @@ def test_hardened_git_disables_repo_config_execution(tmp_path, monkeypatch):
     monkeypatch.setenv("GIT_CONFIG_KEY_0", "core.fsmonitor")
     monkeypatch.setenv("GIT_CONFIG_VALUE_0", str(tmp_path / "run-me"))
     monkeypatch.setenv("UNRELATED_SECRET", "must-not-be-inherited")
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(safe_subprocess_module, "_run_bounded", fake_run)
 
     run_hardened_git("/usr/bin/git", ["status", "--short"], cwd=tmp_path)
 
@@ -1225,7 +1252,7 @@ def test_hardened_git_config_probe_nonzero_fails_closed(tmp_path, monkeypatch):
         calls.append(argv)
         return subprocess.CompletedProcess(argv, 3, stdout=b"", stderr=b"bad")
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(safe_subprocess_module, "_run_bounded", fake_run)
 
     with pytest.raises(ValueError, match="unsafe git repository config"):
         run_hardened_git("/usr/bin/git", ["status"], cwd=tmp_path)
@@ -1242,7 +1269,7 @@ def test_hardened_git_config_probe_timeout_fails_closed(tmp_path, monkeypatch):
         calls.append(argv)
         raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(safe_subprocess_module, "_run_bounded", fake_run)
 
     with pytest.raises(subprocess.TimeoutExpired):
         run_hardened_git("/usr/bin/git", ["status"], cwd=tmp_path)
@@ -1296,7 +1323,7 @@ def test_hardened_git_rejects_malformed_ls_files_probe_output(
             )
         return subprocess.CompletedProcess(argv, 0, stdout=b"", stderr=b"")
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(safe_subprocess_module, "_run_bounded", fake_run)
 
     with pytest.raises(ValueError, match="unsafe git repository config"):
         run_hardened_git("/usr/bin/git", ["status"], cwd=tmp_path)
@@ -1314,6 +1341,28 @@ def test_hardened_git_non_repo_status_reaches_git(tmp_path):
 
     assert result.returncode != 0
     assert "not a git repository" in result.stderr.casefold()
+
+
+def test_hardened_git_output_limit_terminates_and_fails_closed(
+    tmp_path,
+    monkeypatch,
+):
+    git = _commit_readme(tmp_path)
+    (tmp_path / "large.txt").write_bytes(b"x" * 4096)
+    subprocess.run([git, "add", "large.txt"], cwd=tmp_path, check=True)
+    subprocess.run([git, "commit", "-qm", "large"], cwd=tmp_path, check=True)
+    monkeypatch.setattr(safe_subprocess_module, "MAX_CAPTURED_PROCESS_BYTES", 1024)
+
+    with pytest.raises(
+        ProcessOutputLimitExceeded,
+        match="^process_output_limit_exceeded$",
+    ):
+        run_hardened_git(
+            git,
+            ["show", "HEAD:large.txt"],
+            cwd=tmp_path,
+            text=False,
+        )
 
 
 @pytest.mark.parametrize(
@@ -1406,7 +1455,7 @@ def test_hardened_git_disables_textconv_for_diff_rendering_commands(
         captured.append(argv)
         return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(safe_subprocess_module, "_run_bounded", fake_run)
 
     run_hardened_git(
         "/usr/bin/git",
@@ -1445,7 +1494,7 @@ def test_hardened_rg_uses_fixed_config_and_minimal_environment(tmp_path, monkeyp
         yield str(executable)
 
     monkeypatch.setattr("pony.tools.subprocess._prepared_executable", passthrough)
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(safe_subprocess_module, "_run_bounded", fake_run)
 
     run_hardened_rg("/usr/bin/rg", ["needle", "."], cwd=tmp_path)
 
@@ -1482,7 +1531,7 @@ def test_hardened_rg_child_path_comes_only_from_frozen_executable(
         yield str(executable)
 
     monkeypatch.setattr(safe_subprocess, "_prepared_executable", passthrough)
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(safe_subprocess, "_run_bounded", fake_run)
 
     run_hardened_rg(
         "/opt/pony-frozen/bin/rg",
@@ -1500,7 +1549,7 @@ def test_hardened_rg_rejects_preprocessors(option, tmp_path, monkeypatch):
     def runner(*args, **kwargs):
         raise AssertionError("rg executed")
 
-    monkeypatch.setattr(subprocess, "run", runner)
+    monkeypatch.setattr(safe_subprocess_module, "_run_bounded", runner)
 
     with pytest.raises(ValueError):
         run_hardened_rg("/usr/bin/rg", [option, "needle", "."], cwd=tmp_path)

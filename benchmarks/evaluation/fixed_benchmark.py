@@ -8,7 +8,6 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-import pony.memory.service as memorylib
 from pony.agent.messages import validate_messages
 from pony.agent.observability import load_run_artifacts
 from benchmarks.support.fake_provider import FakeModelClient
@@ -112,41 +111,6 @@ def _now_in_timezone(timezone_name):
     return datetime.now(ZoneInfo(timezone_name)).strftime("%Y-%m-%dT%H:%M:%S%z")
 
 
-def _checkpoint_payload(
-    checkpoint_id,
-    current_goal,
-    next_step,
-    runtime_identity,
-    *,
-    current_blocker="",
-    key_files=None,
-    freshness=None,
-    summary="",
-):
-    return {
-        "checkpoint_id": checkpoint_id,
-        "parent_checkpoint_id": "",
-        "created_at": "2026-04-15T08:00:00+00:00",
-        "goal": current_goal,
-        "status": "in_progress",
-        "completed": [],
-        "in_progress": [current_goal],
-        "blocker": current_blocker,
-        "next_steps": [next_step] if next_step else [],
-        "key_files": list(key_files or []),
-        "read_files": [],
-        "modified_files": [],
-        "workspace_checkpoint_id": "",
-        "worktree_identity_digest": "",
-        "context_usage": {},
-        "label": "benchmark-setup",
-        "trigger": "benchmark_setup",
-        "freshness": dict(freshness or {}),
-        "summary": summary or current_goal,
-        "runtime_identity": dict(runtime_identity),
-    }
-
-
 def _apply_task_setup(agent, task, fixture_copy_root):
     setup = dict(task.get("setup", {}) or {})
     if not setup:
@@ -170,60 +134,6 @@ def _apply_task_setup(agent, task, fixture_copy_root):
             keep_recent_tokens=int(setup.get("keep_recent_tokens", 600)),
         )
         return
-
-    if kind == "freshness_mismatch":
-        path = str(setup.get("path", "sample.txt"))
-        summary_text = str(setup.get("summary", f"{path}: stale benchmark summary"))
-        summaries = agent.session.setdefault("memory", {}).setdefault(
-            "file_summaries", {}
-        )
-        memorylib.set_file_summary_dict(
-            summaries, path, summary_text, workspace_root=agent.root
-        )
-        agent.memory.remember_file(path)
-        agent._sync_working_memory()
-        freshness = summaries[agent.memory.canonical_path(path)]["freshness"]
-        agent.session["checkpoints"] = {
-            "current_id": "ckpt_freshness",
-            "items": {
-                "ckpt_freshness": _checkpoint_payload(
-                    "ckpt_freshness",
-                    current_goal="Re-anchor stale benchmark file state",
-                    next_step=f"Re-read {path}",
-                    runtime_identity={
-                        "workspace_fingerprint": agent.workspace.fingerprint()
-                    },
-                    key_files=[{"path": path, "freshness": freshness}],
-                    freshness={path: freshness},
-                    summary="stale benchmark checkpoint",
-                )
-            },
-        }
-        agent.session_store.save(agent.session)
-        (fixture_copy_root / path).write_text(
-            str(setup.get("mutated_text", "alpha\nbeta\nstale-updated\nplaceholder\n")),
-            encoding="utf-8",
-        )
-        return
-
-    if kind == "workspace_mismatch":
-        agent.session["checkpoints"] = {
-            "current_id": "ckpt_workspace",
-            "items": {
-                "ckpt_workspace": _checkpoint_payload(
-                    "ckpt_workspace",
-                    current_goal="Recover after benchmark workspace drift",
-                    next_step="Rebuild runtime state from a fresh checkpoint",
-                    runtime_identity={
-                        "workspace_fingerprint": "outdated-benchmark-fingerprint"
-                    },
-                    summary="workspace drift benchmark checkpoint",
-                )
-            },
-        }
-        agent.session_store.save(agent.session)
-        return
-
 
 def _agent_prompt_for_task(task):
     prompt = str(task["prompt"]).strip()
@@ -344,11 +254,11 @@ class BenchmarkEvaluator:
             workspace=workspace,
             session_store=session_store,
             options=RuntimeOptions(
-            run_store=run_store,
-            approval_policy="auto",
-            max_steps=int(task["step_budget"]),
-            max_output_tokens=self.max_output_tokens,
-            allowed_tools=task["allowed_tools"],
+                run_store=run_store,
+                project_trusted=True,
+                max_steps=int(task["step_budget"]),
+                max_output_tokens=self.max_output_tokens,
+                allowed_tools=task["allowed_tools"],
             ),
         )
         _apply_task_setup(agent, task, fixture_copy_root)

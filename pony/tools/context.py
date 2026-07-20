@@ -20,8 +20,8 @@ class ToolContext:
     trusted_executables: Mapping[str, str] = field(default_factory=dict)
     redaction_env: Optional[Mapping[str, str]] = None
     secret_env_names: tuple[str, ...] = ()
-    sandbox_context: Optional[Any] = None
     workspace_root_identity: Optional[tuple[int, int]] = None
+    spawn_worktree_agents: Optional[Callable[[dict], str]] = None
 
     def __post_init__(self):
         self.trusted_executables = MappingProxyType(dict(self.trusted_executables))

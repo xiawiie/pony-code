@@ -12,7 +12,7 @@ from pony.agent.messages import make_tool_pair
 from pony.agent.model_capabilities import TokenAccounting
 from benchmarks.support.fake_provider import FakeModelClient
 from pony.providers.response import Response, StopReason
-from pony.state.session_store import SessionStore
+from pony.state.session_store import SessionFormatError, SessionStore
 from pony.workspace.context import now
 
 
@@ -29,7 +29,6 @@ def _session(workspace, session_id="compact"):
         "recently_recalled": [],
         "checkpoints": {},
         "resume_state": {},
-        "recovery": {},
         "runtime_identity": {},
     }
 
@@ -221,7 +220,7 @@ def test_oversized_turn_gets_separate_split_prefix_summary(tmp_path):
     assert result.tokens_after < result.tokens_before
 
 
-def test_rewind_branch_summary_is_bounded_and_carried_forward(tmp_path):
+def test_rewind_branch_summary_is_bounded_and_carried_forward(tmp_path, monkeypatch):
     agent = _agent(
         tmp_path,
         [
@@ -238,6 +237,18 @@ def test_rewind_branch_summary_is_bounded_and_carried_forward(tmp_path):
     agent.session_store.save(agent.session)
     before = agent.session_store.load_tree("compact")
     target = next(entry for entry in before.active_path if entry["type"] == "message")
+    append_batches = []
+    original_append = agent.session_store._append_entries_unlocked
+
+    def record_append(session_id, entries):
+        append_batches.append(tuple(entry["type"] for entry in entries))
+        return original_append(session_id, entries)
+
+    monkeypatch.setattr(
+        agent.session_store,
+        "_append_entries_unlocked",
+        record_append,
+    )
 
     result = rewind_with_branch_summary(agent, target["id"], focus="keep parser facts")
     after = agent.session_store.load_tree("compact")
@@ -251,3 +262,25 @@ def test_rewind_branch_summary_is_bounded_and_carried_forward(tmp_path):
     assert view.branch_summary.startswith("# Abandoned Approach")
     assert view.messages[-1]["_pony_meta"]["origin"] == "branch_summary"
     assert agent.model_client.requests[0]["max_tokens"] == 2_048
+    assert append_batches == [("rewind", "branch_summary")]
+
+
+def test_branch_summary_rewind_rejects_a_stale_picker_leaf_before_model_call(tmp_path):
+    agent = _agent(tmp_path, ["must not be used"])
+    for index in range(4):
+        agent.session["messages"].append(
+            _plain("user" if index % 2 == 0 else "assistant", f"branch-{index}")
+        )
+    agent.session_store.save(agent.session)
+    selected = agent.session_store.load_tree("compact")
+    target = next(entry for entry in selected.active_path if entry["type"] == "message")
+    agent.session_store.label("compact", "concurrent")
+
+    with pytest.raises(SessionFormatError, match="session changed before rewind"):
+        rewind_with_branch_summary(
+            agent,
+            target["id"],
+            expected_leaf_id=selected.leaf_id,
+        )
+
+    assert agent.model_client.requests == []

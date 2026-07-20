@@ -70,6 +70,9 @@ recent recall 列表是可重建 cache，不属于 canonical Session entry。Com
 - `memory_save`：在当前显式授权下追加 Agent Note；
 - `pony memory list|show|search|review`：不启动模型的只读检查入口。
 
+`pony doctor` 只验证 Memory root 与候选 Markdown 文件能否通过同一套 bounded、no-follow 文件边界安全读取。
+它不检查 frontmatter 质量、note 之间的引用关系或 Git ignore 策略；这些用户内容由编辑器和 Git 直接管理。
+
 canonical path 示例：`workspace/notes/auth.md`、`workspace/agent_notes.md#entry-2`、
 `user/notes/preferences.md`。绝对路径、`..`、敏感内容和未授权 scope 都会被拒绝。
 

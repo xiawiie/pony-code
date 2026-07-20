@@ -37,7 +37,7 @@ def _agent(root):
         model_client=FakeModelClient([]),
         workspace=WorkspaceContext.build(root),
         session_store=SessionStore(root / ".pony" / "sessions"),
-        options=RuntimeOptions(approval_policy="auto"),
+        options=RuntimeOptions(project_trusted=True),
     )
 
 

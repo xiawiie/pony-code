@@ -15,9 +15,9 @@ KNOWN_TOP_LEVEL_COMMANDS = {
     "sessions",
     "session",
     "checkpoints",
-    "sandbox",
     "migrate",
     "memory",
+    "agents",
     "help",
 }
 

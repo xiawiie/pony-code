@@ -3,10 +3,9 @@ from copy import deepcopy
 
 import pytest
 
-from benchmarks.evaluation.experiments_recovery import (
+from benchmarks.evaluation.experiments_synthetic import (
     run_context_ablation_v2,
     run_memory_ablation_v2,
-    run_recovery_ablation_v2,
 )
 from benchmarks.evaluation.metrics_reports import (
     aggregate_benchmark_artifact,
@@ -21,7 +20,7 @@ from pony.runtime.options import RuntimeOptions
 def _current_run_report(run_id):
     return {
         "record_type": "run_report",
-        "format_version": 3,
+        "format_version": 4,
         "run": {
             "run_id": run_id,
             "task_id": "task_1",
@@ -64,30 +63,7 @@ def _current_run_report(run_id):
             "recall_selected": 0,
             "filter_counts": {},
         },
-        "sandbox": {
-            "active": False,
-            "implementation": "none",
-            "session_state": "not_applicable",
-            "engine_profile": "not_applicable",
-            "image_digest": "",
-            "policy_digest": "",
-            "network_mode": "not_applicable",
-            "source_mounted": False,
-            "state_mounted": False,
-            "container_calls": 0,
-            "target_started_count": 0,
-            "outcome_counts": {},
-            "cleanup_failure_count": 0,
-            "host_fallback_count": 0,
-            "diff": {"candidates": 0, "blocked": 0, "generated": 0},
-            "apply_status": "not_applicable",
-        },
-        "effects": {
-            "changed_files": 0,
-            "partial_successes": 0,
-            "recovery_review_required": False,
-        },
-        "recovery": {"checkpoint_id": "", "status": "", "review_required": False},
+        "effects": {"changed_files": 0, "partial_successes": 0},
         "integrity": {"writer": "current", "terminal_event_expected": True},
         "finalization": {"status": "complete", "error_count": 0},
     }
@@ -222,7 +198,7 @@ def test_aggregate_run_artifacts_counts_real_rejection_security_event(tmp_path):
         ),
         workspace=WorkspaceContext.build(tmp_path),
         session_store=SessionStore(tmp_path / ".pony" / "sessions"),
-        options=RuntimeOptions(approval_policy="auto", read_only=True),
+        options=RuntimeOptions(project_trusted=True, read_only=True),
     )
 
     assert agent.ask("remember this") == "done"
@@ -424,7 +400,7 @@ def test_request_preview_restores_the_canonical_session(tmp_path):
         model_client=FakeModelClient([]),
         workspace=WorkspaceContext.build(tmp_path),
         session_store=SessionStore(tmp_path / ".pony" / "sessions"),
-        options=RuntimeOptions(approval_policy="auto"),
+        options=RuntimeOptions(project_trusted=True),
     )
     _seed_plain_messages(agent, 4, "history", 80)
     before_session = agent.session
@@ -440,7 +416,7 @@ def test_provider_benchmark_uses_canonical_project_env(tmp_path):
     (tmp_path / ".env").write_text(
         "\n".join(
             [
-                "PONY_PROVIDER=openai",
+                "PONY_PROVIDER=openai-chat",
                 "PONY_API_BASE=https://gateway.example/v1",
                 "PONY_MODEL=gpt-test",
                 "PONY_API_KEY=sk-project",
@@ -452,7 +428,7 @@ def test_provider_benchmark_uses_canonical_project_env(tmp_path):
 
     target = _resolve_benchmark_target(tmp_path, process_env={})
 
-    assert target["provider"] == "openai"
+    assert target["provider"] == "openai-chat"
     assert target["api_key"] == "sk-project"
     assert target["model"] == "gpt-test"
     assert target["base_url"] == "https://gateway.example/v1"
@@ -461,10 +437,23 @@ def test_provider_benchmark_uses_canonical_project_env(tmp_path):
 
 
 def test_provider_benchmark_rejects_vendor_only_environment(tmp_path):
-    with pytest.raises(ValueError, match="^provider_not_configured$"):
+    with pytest.raises(ValueError, match="^api_base_not_configured$"):
         _resolve_benchmark_target(
             tmp_path,
             process_env={"PONY_OPENAI_API_KEY": "sk-old"},
+        )
+
+
+def test_provider_benchmark_rejects_unresolved_target_before_workload(tmp_path):
+    with pytest.raises(ValueError, match="^provider_detection_failed$"):
+        _resolve_benchmark_target(
+            tmp_path,
+            project_env={
+                "PONY_API_BASE": "https://gateway.example/v1",
+                "PONY_API_KEY": "test-key",
+                "PONY_MODEL": "gateway-model",
+            },
+            process_env={},
         )
 
 
@@ -508,7 +497,7 @@ def test_real_followup_metrics_rejects_missing_run_artifact(tmp_path):
         model_client=FakeModelClient(["done"]),
         workspace=WorkspaceContext.build(tmp_path),
         session_store=SessionStore(tmp_path / ".pony" / "sessions"),
-        options=RuntimeOptions(approval_policy="auto"),
+        options=RuntimeOptions(project_trusted=True),
     )
     agent.ask("finish")
     agent.run_store.report_path(agent.current_task_state).unlink()
@@ -607,58 +596,12 @@ def test_run_memory_ablation_v2_writes_expected_artifact(tmp_path):
     )
 
 
-def test_run_recovery_ablation_v2_writes_expected_artifact(tmp_path):
-    artifact_path = tmp_path / "artifacts" / "recovery-ablation-v2.json"
-
-    artifact = run_recovery_ablation_v2(
-        artifact_path=artifact_path,
-        repetitions=1,
-    )
-
-    assert artifact_path.exists()
-    assert artifact["record_type"] == "recovery_ablation_result"
-    assert artifact["format_version"] == 1
-    assert artifact["task_count"] == 8
-    assert set(artifact["variants"]) == {"resume_enabled", "resume_disabled"}
-    assert set(artifact["variants"]["resume_enabled"]["summary"]) >= {
-        "resume_success_rate",
-        "stale_reanchor_rate",
-        "workspace_drift_detection_rate",
-        "resume_false_accept_rate",
-    }
-
-
-def test_recovery_ablation_rejects_damaged_run_artifact(monkeypatch):
-    import benchmarks.evaluation.experiments_recovery as recovery
-
-    real_ask = recovery.Pony.ask
-
-    def damage_task_state_after_ask(self, user_message):
-        result = real_ask(self, user_message)
-        self.run_store.task_state_path(self.current_task_state).write_text(
-            "not-json\n",
-            encoding="utf-8",
-        )
-        return result
-
-    monkeypatch.setattr(recovery.Pony, "ask", damage_task_state_after_ask)
-
-    with pytest.raises(RunArtifactError, match="damaged"):
-        recovery._run_recovery_task_variant(
-            recovery.RECOVERY_ABLATION_TASKS[0],
-            "resume_enabled",
-        )
-
-
-def test_write_benchmark_core_report_marks_resume_safe_metrics(tmp_path):
+def test_write_benchmark_core_report_marks_current_metrics(tmp_path):
     run_context_ablation_v2(
         tmp_path / "artifacts" / "context-ablation-v2.json", repetitions=1
     )
     run_memory_ablation_v2(
         tmp_path / "artifacts" / "memory-ablation-v2.json", repetitions=1
-    )
-    run_recovery_ablation_v2(
-        tmp_path / "artifacts" / "recovery-ablation-v2.json", repetitions=1
     )
     harness_artifact_path = tmp_path / "artifacts" / "harness-regression-v2.json"
     harness_artifact_path.write_text(
@@ -672,13 +615,11 @@ def test_write_benchmark_core_report_marks_resume_safe_metrics(tmp_path):
         harness_artifact_path=harness_artifact_path,
         context_artifact_path=tmp_path / "artifacts" / "context-ablation-v2.json",
         memory_artifact_path=tmp_path / "artifacts" / "memory-ablation-v2.json",
-        recovery_artifact_path=tmp_path / "artifacts" / "recovery-ablation-v2.json",
     )
 
     assert report_path.exists()
     assert "可以安全写进简历的指标" in report_text
     assert "只适合放文档/面试展开的指标" in report_text
-    assert "resume_success_rate" in report_text
     assert "memory_hit_rate" in report_text
 
 
@@ -688,7 +629,6 @@ def test_write_benchmark_core_report_marks_resume_safe_metrics(tmp_path):
         ("harness", "fixed_benchmark_result"),
         ("context", "context_ablation_result"),
         ("memory", "memory_ablation_result"),
-        ("recovery", "recovery_ablation_result"),
     ],
 )
 def test_core_report_rejects_each_noncurrent_input_before_business(
@@ -707,11 +647,6 @@ def test_core_report_rejects_each_noncurrent_input_before_business(
         },
         "memory": {
             "record_type": "memory_ablation_result",
-            "format_version": 1,
-            "variants": {},
-        },
-        "recovery": {
-            "record_type": "recovery_ablation_result",
             "format_version": 1,
             "variants": {},
         },
@@ -734,7 +669,6 @@ def test_core_report_rejects_each_noncurrent_input_before_business(
             harness_artifact_path=paths["harness"],
             context_artifact_path=paths["context"],
             memory_artifact_path=paths["memory"],
-            recovery_artifact_path=paths["recovery"],
         )
 
 

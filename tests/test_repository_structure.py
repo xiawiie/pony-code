@@ -18,9 +18,14 @@ MAINTAINER_DOCS = {
     "docs/recovery.md",
     "docs/verification.md",
     "docs/memory.md",
-    "docs/local-stable-execution.md",
     "docs/adr/0040-docker-filtered-staging.md",
     "docs/adr/0042-sealed-local-authorization.md",
+    "docs/adr/0043-workflow-state-and-session-v3.md",
+    "docs/adr/0044-provider-auto-resolution.md",
+    "docs/adr/0045-permission-modes-session-v4-and-plan-artifacts.md",
+    "docs/adr/0046-read-only-project-skills.md",
+    "docs/adr/0047-session-scoped-model-switching.md",
+    "docs/adr/0048-product-and-support-boundary.md",
     "docs/context-and-sessions.md",
 }
 MAINTAINER_ASSETS = {
@@ -143,8 +148,7 @@ def test_agents_instructions_match_the_production_contract():
         "context",
         "memory",
         "providers",
-        "recovery",
-        "sandbox",
+        "security",
         "state",
         "tui",
         "tools",
@@ -153,8 +157,27 @@ def test_agents_instructions_match_the_production_contract():
         assert f"`pony/{package}/`" in text
     assert "./scripts/check.sh" in text
     assert "live 未执行" in text
-    assert "不回退 Host" in text
+    assert "Host 不是 OS sandbox" in text
+    assert "绝不静默切到 Host" in text
     assert "Definition of Done" in text
+
+
+def test_product_docs_lock_current_execution_and_support_contract():
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    architecture = (ROOT / "docs/architecture.md").read_text(encoding="utf-8")
+    verification = (ROOT / "docs/verification.md").read_text(encoding="utf-8")
+
+    for text in (readme, architecture):
+        normalized = " ".join(text.split())
+        assert "不是 OS sandbox" in normalized
+        assert "Windows 不在 1.0 支持范围" in normalized
+    assert "bounded synthetic" in readme
+    assert "真实任务失败不 fallback" in readme
+    assert "冻结的产品资产" in readme
+    assert "Provider/模型组合的 live 结果不能证明其他组合可用" in " ".join(
+        readme.split()
+    )
+    assert "| OS | macOS、Linux |" in verification
 
 
 def test_current_python_and_console_surfaces_are_exact():
@@ -192,9 +215,7 @@ def test_current_python_and_console_surfaces_are_exact():
         "context",
         "memory",
         "providers",
-        "recovery",
         "runtime",
-        "sandbox",
         "security",
         "state",
         "tui",
@@ -235,14 +256,14 @@ def test_obsolete_provider_and_sandbox_names_are_absent():
 
 def test_current_sources_do_not_read_obsolete_runtime_shapes():
     session_source = (ROOT / "pony/state/session_store.py").read_text(encoding="utf-8")
-    checkpoint_source = (ROOT / "pony/state/checkpoint_store.py").read_text(
+    legacy_source = (ROOT / "pony/state/legacy_artifacts.py").read_text(
         encoding="utf-8"
     )
     runtime_source = (ROOT / "pony/runtime/application.py").read_text(encoding="utf-8")
     config_source = (ROOT / "pony/config/model.py").read_text(encoding="utf-8")
 
     assert '"schema_' + 'version"' not in session_source
-    assert '"schema_' + 'version"' not in checkpoint_source
+    assert '"schema_' + 'version"' not in legacy_source
     assert '"hist' + 'ory"' not in session_source
     assert '"prompt_' + 'cache"' not in session_source
     assert '"prompt_' + 'cache"' not in runtime_source
@@ -325,12 +346,18 @@ def test_maintainer_doc_links_and_cli_examples_resolve():
     tracked = _tracked_files()
     link_pattern = re.compile(r"!?\[[^]]*\]\(([^)]+)\)")
     allowed_commands = {
-        "--approval",
+        "--allow-dangerously-skip-permissions",
+        "--allowed-tools",
         "--cwd",
+        "--dangerously-skip-permissions",
+        "--disallowed-tools",
         "--format",
-        "--help",
+            "--help",
+            "--model",
+            "--permission-mode",
         "--sandbox",
         "--version",
+        "agents",
         "checkpoints",
         "config",
         "doctor",

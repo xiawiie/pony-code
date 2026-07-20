@@ -43,6 +43,17 @@ def test_workspace_context_does_not_follow_project_doc_symlink(tmp_path, name):
     assert name not in workspace.project_docs
 
 
+def test_workspace_context_does_not_read_hardlinked_project_doc(tmp_path):
+    outside = tmp_path.parent / f"{tmp_path.name}-outside-readme"
+    outside.write_text("outside-hardlink-canary", encoding="utf-8")
+    os.link(outside, tmp_path / "README.md")
+
+    workspace = WorkspaceContext.build(tmp_path, executables={})
+
+    assert "outside-hardlink-canary" not in workspace.stable_text()
+    assert "README.md" not in workspace.project_docs
+
+
 def test_bootstrap_reader_rejects_symlinked_parent_and_sensitive_file(tmp_path):
     from pony.workspace.context import _safe_index_file
 
@@ -80,6 +91,23 @@ def test_global_agents_rejects_symlink_and_redacts_before_clip(tmp_path, monkeyp
     rendered = workspace.project_docs["<global>/AGENTS.md"]
     assert secret not in rendered
     assert "<redacted>" in rendered
+
+
+def test_global_agents_rejects_hardlink(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    global_dir = home / ".pony"
+    repo = tmp_path / "repo"
+    global_dir.mkdir(parents=True)
+    repo.mkdir()
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
+    outside = tmp_path / "outside-global-agents.md"
+    outside.write_text("outside-global-hardlink-canary", encoding="utf-8")
+    os.link(outside, global_dir / "AGENTS.md")
+
+    workspace = WorkspaceContext.build(repo, executables={})
+
+    assert "outside-global-hardlink-canary" not in workspace.stable_text()
+    assert "<global>/AGENTS.md" not in workspace.project_docs
 
 
 def test_global_agents_home_lookup_failure_is_optional(tmp_path, monkeypatch):

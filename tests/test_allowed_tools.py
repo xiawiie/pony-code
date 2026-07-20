@@ -1,5 +1,4 @@
 import json
-
 import pytest
 
 from pony import Pony
@@ -12,25 +11,24 @@ from benchmarks.support.fake_provider import FakeModelClient
 from pony.runtime.options import RuntimeOptions
 
 
-def build_agent(tmp_path, allowed_tools=None):
+def build_agent(tmp_path, allowed_tools=None, *, executables=None):
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
-    workspace = WorkspaceContext.build(tmp_path)
+    workspace = WorkspaceContext.build(tmp_path, executables=executables)
     store = SessionStore(tmp_path / ".pony" / "sessions")
     return Pony(
         model_client=FakeModelClient(["Done."]),
         workspace=workspace,
         session_store=store,
-        options=RuntimeOptions(approval_policy="auto", allowed_tools=allowed_tools),
+        options=RuntimeOptions(project_trusted=True, allowed_tools=allowed_tools),
     )
 
 
 def test_allowed_tools_filter_prompt_and_reject_direct_execution(tmp_path):
     agent = build_agent(tmp_path, allowed_tools=["read_file"])
 
-    prompt = agent.prefix
+    schemas = agent.visible_tools()
 
-    assert "Available native tools: read_file" in prompt
-    assert "run_shell" not in prompt
+    assert set(schemas) == {"read_file"}
     assert (
         agent.run_tool("run_shell", {"command": "echo hi", "timeout": 20})
         == "error: tool 'run_shell' is not allowed in this run"
@@ -122,32 +120,32 @@ def test_benchmark_evaluator_applies_allowed_tools_to_runtime_prompt(tmp_path):
 def test_allowed_tools_filter_prompt_examples_and_rules(tmp_path):
     agent = build_agent(tmp_path, allowed_tools=["read_file"])
 
-    prompt = agent.prefix
-
-    assert "Available native tools: read_file" in prompt
-    assert "write_file" not in prompt
-    assert "run_shell" not in prompt
+    assert set(agent.visible_tools()) == {"read_file"}
 
 
 def test_allowed_tools_filter_file_edit_rules_to_available_tools(tmp_path):
     agent = build_agent(tmp_path, allowed_tools=["patch_file"])
 
-    prompt = agent.prefix
+    assert set(agent.visible_tools()) == {"patch_file"}
 
-    assert "Available native tools: patch_file" in prompt
-    assert "write_file" not in prompt
-    assert "use patch_file" in prompt
-    assert "use write_file" not in prompt
+
+def test_run_shell_schema_lists_safe_executable_names_without_paths(tmp_path):
+    agent = build_agent(
+        tmp_path,
+        executables={"git": "/usr/bin/git", "python3": "/usr/bin/python3"},
+    )
+
+    description = agent.visible_tools()["run_shell"]["description"]
+
+    assert "Available trusted executable names: git, python3." in description
+    assert "/usr/bin" not in description
 
 
 def test_allowed_tools_prompt_includes_search_example_and_required_args(tmp_path):
     agent = build_agent(tmp_path, allowed_tools=["search"])
 
-    prompt = agent.prefix
-
-    assert "Available native tools: search" in prompt
+    assert set(agent.visible_tools()) == {"search"}
     assert '"name":"search"' in agent.tool_example("search")
-    assert "Do not call search with args={}" in prompt
 
 
 def test_prompt_examples_use_tools_module_as_single_source(tmp_path, monkeypatch):

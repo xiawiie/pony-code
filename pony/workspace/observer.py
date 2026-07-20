@@ -6,14 +6,11 @@ mtime+size+存在性扫描兜底。两种模式返回同一个结构，`diff()` 
 """
 
 import os
-import stat
 import subprocess
-from collections.abc import Mapping
 from pathlib import Path
 from types import MappingProxyType
 
 from pony.tools.subprocess import run_hardened_git
-from pony.security.paths import require_regular_no_symlink
 from pony.workspace.context import (
     _safe_index_directory,
     _safe_index_file,
@@ -21,43 +18,23 @@ from pony.workspace.context import (
 )
 
 
-_MAX_FILE_SIZE_FOR_MTIME = 8 * 1024 * 1024
-
-
-def _validated_legacy_git(root, value):
-    try:
-        candidate = Path(os.fspath(value))
-    except TypeError:
-        return ""
-    if not candidate.is_absolute():
-        return ""
-    try:
-        executable = candidate.resolve(strict=True)
-        require_regular_no_symlink(executable)
-        mode = executable.stat().st_mode
-        workspace = Path(root).resolve(strict=True)
-    except (OSError, RuntimeError, ValueError):
-        return ""
-    if executable == workspace or workspace in executable.parents:
-        return ""
-    if mode & (stat.S_IWGRP | stat.S_IWOTH) or not os.access(executable, os.X_OK):
-        return ""
-    return str(executable)
+def _file_marker(value):
+    return ":".join(
+        str(item)
+        for item in (
+            value.st_dev,
+            value.st_ino,
+            value.st_size,
+            value.st_mtime_ns,
+            value.st_ctime_ns,
+        )
+    )
 
 
 class WorkspaceObserver:
-    def __init__(self, root, git_binary=None, *, executables=None):
+    def __init__(self, root, *, executables=None):
         self.root = Path(os.path.abspath(os.fspath(root)))
-        if executables is None and isinstance(git_binary, Mapping):
-            trusted = dict(git_binary)
-            git_binary = None
-        else:
-            trusted = dict(executables or {})
-        if "git" not in trusted:
-            legacy_git = _validated_legacy_git(self.root, git_binary)
-            if legacy_git:
-                trusted["git"] = legacy_git
-        self.trusted_executables = MappingProxyType(trusted)
+        self.trusted_executables = MappingProxyType(dict(executables or {}))
 
     def _is_git_repo(self):
         git_executable = self.trusted_executables.get("git")
@@ -135,7 +112,7 @@ class WorkspaceObserver:
                     stat = abs_path.stat()
                 except OSError:
                     continue
-                detail[path] = f"{stat.st_size}:{int(stat.st_mtime * 1_000_000)}"
+                detail[path] = _file_marker(stat)
         return {"mode": "git", "paths": paths, "detail": detail, "summaries": []}
 
     def _capture_filesystem(self):
@@ -168,11 +145,7 @@ class WorkspaceObserver:
                     stat = abs_path.stat()
                 except OSError:
                     continue
-                if stat.st_size > _MAX_FILE_SIZE_FOR_MTIME:
-                    marker = f"large:{stat.st_size}"
-                else:
-                    marker = f"{stat.st_size}:{int(stat.st_mtime * 1_000_000)}"
-                paths[rel] = marker
+                paths[rel] = _file_marker(stat)
         return {"mode": "filesystem", "paths": paths, "detail": paths, "summaries": []}
 
     def capture(self):

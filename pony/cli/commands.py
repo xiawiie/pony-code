@@ -5,11 +5,17 @@ import getpass
 from pathlib import Path
 import sys
 
+from pony.agent.compaction import CompactionError
 from pony.security import redaction as securitylib
-from .errors import CLI_EXIT_CONFIG, CLI_EXIT_USAGE, CliError
+from pony.providers.probe import resolve_provider_client
+from .errors import CLI_EXIT_CONFIG, CLI_EXIT_RUNTIME, CLI_EXIT_USAGE, CliError
 from .diagnostics import _line
-from .output import build_inspection_redactor, print_result
-from .session import handle_session_command
+from .output import build_inspection_redactor, print_inspection_result, print_result
+from .session import (
+    handle_session_command,
+    render_session_inspection,
+    session_inspection_data,
+)
 from pony.config.model import (
     API_BASE_ENV_NAME,
     API_KEY_ENV_NAME,
@@ -25,7 +31,7 @@ from pony.config.environment import (
     read_project_env_with_status,
     write_project_env_assignments,
 )
-from pony.sandbox.session import source_mutation_authority
+from pony.state.session_store import SessionFormatError
 from pony.workspace.context import WorkspaceContext
 
 
@@ -40,29 +46,35 @@ EXAMPLES:
     pony
     pony init
     pony run "inspect the failing tests"
+    pony --model claude-sonnet-4-6 run "inspect the failing tests"
+    pony --permission-mode plan run "inspect and plan the change"
     pony config set-secret PONY_API_KEY
-    pony --approval ask run "run the requested shell command"
+    pony --permission-mode manual run "run the requested shell command"
     pony doctor
     pony runs summary latest
     pony checkpoints show <checkpoint-id>
     pony checkpoints pending
-    pony checkpoints resolve-pending <id> [--apply]
+    pony agents list
+    pony agents show-batch <batch-id>
+    pony agents merge-all <batch-id>
+    pony agents merge <agent-id>
+    pony agents cleanup <agent-id> --discard
     pony migrate status
 
 Available Commands:
   run          Run one prompt and exit
   repl         Start the interactive TUI (also the default for bare `pony`)
   status       Show local workspace state
-  doctor       Check config, storage, auth, and sandbox readiness
-  sandbox      Inspect and manage Docker Sandbox sessions and image readiness
+  doctor       Check config, storage, and auth readiness
   init         Configure provider, API base, key, and model in .env
   config       Configuration inspection and set-secret input
   runs         Run artifact inspection
   sessions     Session inspection
   session      Inspect, compact, branch, rewind, label, or clone a Session Tree
-  checkpoints  Checkpoint recovery, pending review, and resolution
+  checkpoints  Read-only legacy checkpoint inspection
   migrate      Inspect and apply explicit artifact migrations
   memory       Inspect and search memory files
+  agents       Inspect, batch-merge, or clean up isolated worktree agents
   help         Help about any command
 
 Flags:
@@ -71,11 +83,16 @@ Flags:
       --format     output format for inspection commands: text or json
       --quiet      suppress non-essential human output
       --no-color   disable terminal colors
-      --sandbox    run/repl in local Docker Sandbox (macOS arm64 only)
+      --permission-mode  permission mode: acceptEdits, auto, bypassPermissions,
+                         manual, dontAsk, or plan
+      --model            select this Session's model without changing .env
+      --allowed-tools    exact tool names to allow for this Session
+      --disallowed-tools exact tool names to deny for this Session
+      --allow-dangerously-skip-permissions
+                         make bypassPermissions selectable for this process
 
 Security:
-    Host mode provides no OS sandbox. In Sandbox mode all model-visible file tools use filtered
-    staging; Source Apply requires separate review and authorization.
+    Pony runs tools in the trusted workspace and enforces permission, path, and secret checks.
 """
 
 
@@ -87,20 +104,60 @@ def handle_help(tokens):
 def handle_session(tokens, root, args):
     """``pony session ...`` tree inspection and explicit session operations."""
     sessions_root = Path(root) / ".pony" / "sessions"
+    if tokens and tokens[0] == "inspect":
+        if len(tokens) != 2:
+            raise CliError(
+                code="usage",
+                message="usage: pony session inspect <session-id|latest>",
+                exit_code=CLI_EXIT_USAGE,
+            )
+        try:
+            data = session_inspection_data(tokens[1], sessions_root)
+        except FileNotFoundError as exc:
+            raise CliError(
+                code="session_not_found",
+                message="unknown session",
+                hint="Run `pony sessions list`.",
+                exit_code=CLI_EXIT_USAGE,
+            ) from exc
+        except (OSError, ValueError, SessionFormatError) as exc:
+            code = getattr(exc, "code", "")
+            raise CliError(
+                code=code or "unsafe_artifact",
+                message=str(exc) if code else "unsafe local artifact",
+                exit_code=CLI_EXIT_RUNTIME,
+            ) from exc
+        return print_inspection_result(
+            root,
+            "session_inspect",
+            data,
+            args,
+            render_session_inspection,
+            redactor=build_inspection_redactor(root, args),
+        )
 
     def build_resumed_agent(session_id):
-        from . import build_agent
+        from .assembly import build_agent
 
         runtime_args = copy(args)
         runtime_args.resume = session_id
         return build_agent(runtime_args)
 
-    return handle_session_command(
-        list(tokens),
-        sessions_root=sessions_root,
-        redactor=build_inspection_redactor(root, args),
-        agent_factory=build_resumed_agent,
-    )
+    try:
+        return handle_session_command(
+            list(tokens),
+            sessions_root=sessions_root,
+            redactor=build_inspection_redactor(root, args),
+            agent_factory=build_resumed_agent,
+            raise_typed_errors=True,
+        )
+    except (CompactionError, SessionFormatError) as exc:
+        code = getattr(exc, "code", "")
+        raise CliError(
+            code=code or "unsafe_artifact",
+            message=str(exc) if code else "unsafe local artifact",
+            exit_code=CLI_EXIT_RUNTIME,
+        ) from exc
 
 
 def handle_init(tokens, cwd, args):
@@ -154,7 +211,8 @@ def handle_init(tokens, cwd, args):
         current_base = (
             existing_base if same_provider else ""
         ) or defaults["base_url"]["value"]
-        print(f"API Base [{current_base}]: ", end="", file=sys.stderr, flush=True)
+        base_prompt = f"API Base [{current_base}]: " if current_base else "API Base: "
+        print(base_prompt, end="", file=sys.stderr, flush=True)
         api_base = validate_api_base(input().strip() or current_base)
 
         defaults = resolve_model_config(
@@ -168,7 +226,8 @@ def handle_init(tokens, cwd, args):
         current_model = (
             existing.get(MODEL_ENV_NAME) if same_provider else ""
         ) or defaults["model"]["value"]
-        print(f"Model [{current_model}]: ", end="", file=sys.stderr, flush=True)
+        model_prompt = f"Model [{current_model}]: " if current_model else "Model: "
+        print(model_prompt, end="", file=sys.stderr, flush=True)
         model = input().strip() or current_model
 
         existing_key = existing.get(API_KEY_ENV_NAME, "")
@@ -185,11 +244,7 @@ def handle_init(tokens, cwd, args):
             exit_code=CLI_EXIT_USAGE,
         ) from exc
     except ValueError as exc:
-        raise CliError(
-            code=str(exc),
-            message=str(exc),
-            exit_code=CLI_EXIT_CONFIG,
-        ) from exc
+        raise _init_config_error(exc) from exc
     api_key = entered_key or existing_key
     if any(character in api_key for character in ("\0", "\r", "\n")):
         raise CliError(
@@ -207,26 +262,25 @@ def handle_init(tokens, cwd, args):
         resolved = resolve_model_config(
             project_env=assignments,
             process_env={},
-            required=False,
+            required=True,
         )
     except ValueError as exc:
-        raise CliError(
-            code=str(exc),
-            message=str(exc),
-            exit_code=CLI_EXIT_CONFIG,
-        ) from exc
-    if resolved["auth_mode"]["value"] != "none" and not api_key.strip():
-        raise CliError(
-            code="usage",
-            message="API Key is required unless auth mode is none",
-            exit_code=CLI_EXIT_USAGE,
+        raise _init_config_error(exc) from exc
+    probe_report = {
+        "status": "not_run",
+        "model_calls": 0,
+        "usage_status": "not_checked",
+    }
+    if provider in {"auto", "openai"}:
+        print("\nDetecting provider...", file=sys.stderr, flush=True)
+        _client, resolved, probe_report = resolve_provider_client(
+            resolved,
+            timeout=args.request_timeout_seconds,
+            verify_resolved=True,
         )
+        assignments[PROVIDER_ENV_NAME] = resolved["resolved_provider"]["value"]
     try:
-        with source_mutation_authority(
-            Path.home() / ".pony" / "sandboxes",
-            root,
-        ):
-            written = write_project_env_assignments(root, assignments)
+        written = write_project_env_assignments(root, assignments)
     except (OSError, RuntimeError, ValueError) as exc:
         raise CliError(
             code="config",
@@ -246,12 +300,23 @@ def handle_init(tokens, cwd, args):
     data = {
         "workspace": workspace_info,
         "project_env": project_env,
-        "provider": resolved["provider"]["value"],
+        "provider": assignments[PROVIDER_ENV_NAME],
         "api_base": resolved["base_url"]["value"],
         "model": resolved["model"]["value"],
         "api_variant": resolved["api_variant"]["value"],
         "protocol": resolved["protocol"]["value"],
         "auth_mode": resolved["auth_mode"]["value"],
+        "detection": {
+            "status": probe_report["status"],
+            "native_tools": (
+                "passed" if probe_report["status"] == "ok" else "not_checked"
+            ),
+            "tool_continuation": (
+                "passed" if probe_report["status"] == "ok" else "not_checked"
+            ),
+            "usage": probe_report["usage_status"],
+            "model_calls": probe_report["model_calls"],
+        },
         "updated": written["updated"],
         "added": written["added"],
         "unchanged": written["unchanged"],
@@ -291,7 +356,42 @@ def _render_init(data):
         _line("api key", api_key_text),
         _line("updated", ", ".join(changed) if changed else "-"),
     ]
+    detection = data["detection"]
+    if detection["status"] == "ok":
+        lines.extend(
+            [
+                "",
+                "Provider verification",
+                _line("detected", data["provider"]),
+                _line("native tools", detection["native_tools"]),
+                _line("tool continuation", detection["tool_continuation"]),
+                _line(
+                    "usage",
+                    "unavailable"
+                    if detection["usage"] == "degraded"
+                    else detection["usage"],
+                ),
+            ]
+        )
     return "\n".join(lines)
+
+
+def _init_config_error(error):
+    code = str(error)
+    message = {
+        "provider_endpoint_conflict": "Provider conflicts with API Base",
+        "provider_invalid": "Invalid Provider value",
+    }.get(code, code)
+    return CliError(
+        code=code,
+        message=message,
+        hint=(
+            "Choose auto or a Provider matching the API Base."
+            if code.startswith("provider_")
+            else ""
+        ),
+        exit_code=CLI_EXIT_CONFIG,
+    )
 
 
 def _init_usage_error():

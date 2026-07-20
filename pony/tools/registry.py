@@ -11,13 +11,14 @@ from pony.memory.tools import (
     tool_memory_save,
     tool_memory_search,
 )
-
 from .files import tool_list_files, tool_patch_file, tool_read_file, tool_write_file
 from .search import tool_search
 from .shell import DEFAULT_RUN_SHELL_TIMEOUT, _tool_run_shell
 
 
-_ALLOWED_EFFECT_CLASSES = frozenset({"read_only", "workspace_write", "memory_write"})
+_ALLOWED_EFFECT_CLASSES = frozenset(
+    {"read_only", "workspace_write", "memory_write", "session_state"}
+)
 
 
 def memory_write_intent(current_user, *, history=(), delegated=False):
@@ -111,15 +112,79 @@ BASE_TOOL_SPECS = {
 }
 
 DELEGATE_TOOL_SPEC = {
-    "schema": {"task": "str", "max_steps": "int=3"},
+    "schema": {"task": "str", "name": "str='delegate'", "max_steps": "int=3"},
     "risky": False,
     "effect_class": "read_only",
-    "description": "Ask a bounded read-only child agent to investigate.",
+    "description": "Ask one named, bounded read-only child agent to investigate.",
+}
+
+WORKTREE_DELEGATE_TOOL_SPEC = {
+    "schema": {
+        "tasks": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 8,
+            "items": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$",
+                    },
+                    "task": {"type": "string", "minLength": 1, "maxLength": 16_384},
+                    "mode": {
+                        "type": "string",
+                        "enum": ["readonly", "write"],
+                        "default": "readonly",
+                    },
+                    "max_steps": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 12,
+                        "default": 6,
+                    },
+                },
+                "required": ["name", "task"],
+                "additionalProperties": False,
+            },
+        },
+        "max_parallel": "int=2",
+    },
+    "risky": True,
+    "effect_class": "workspace_write",
+    "description": (
+        "Run named tasks concurrently in isolated Git worktrees. "
+        "Results remain on review branches until an explicit CLI merge."
+    ),
+}
+
+PLAN_TOOL_SPECS = {
+    "read_plan": {
+        "schema": {},
+        "risky": False,
+        "effect_class": "read_only",
+        "description": "Read the current saved implementation plan.",
+    },
+    "write_plan": {
+        "schema": {"plan": "str"},
+        "risky": False,
+        "effect_class": "session_state",
+        "description": "Save the implementation plan for user review.",
+    },
+    "exit_plan_mode": {
+        "schema": {},
+        "risky": True,
+        "effect_class": "session_state",
+        "description": "Present the saved plan for approval and start coding.",
+    },
 }
 
 
 def legal_tool_names():
-    return set(BASE_TOOL_SPECS) | {"delegate"}
+    return set(BASE_TOOL_SPECS) | set(PLAN_TOOL_SPECS) | {
+        "delegate",
+        "delegate_worktrees",
+    }
 
 
 TOOL_EXAMPLES = {
@@ -129,12 +194,20 @@ TOOL_EXAMPLES = {
     "run_shell": f'{{"name":"run_shell","arguments":{{"command":"uv run --with pytest python -m pytest -q","timeout":{DEFAULT_RUN_SHELL_TIMEOUT}}}}}',
     "write_file": '{"name":"write_file","arguments":{"path":"binary_search.py","content":"def binary_search(nums, target):\\n    return -1\\n"}}',
     "patch_file": '{"name":"patch_file","arguments":{"path":"binary_search.py","old_text":"return -1","new_text":"return mid"}}',
-    "delegate": '{"name":"delegate","arguments":{"task":"inspect README.md","max_steps":3}}',
+    "delegate": '{"name":"delegate","arguments":{"task":"inspect README.md","name":"repo-inspector","max_steps":3}}',
+    "delegate_worktrees": (
+        '{"name":"delegate_worktrees","arguments":{"tasks":'
+        '[{"name":"tests","task":"fix tests","mode":"write",'
+        '"max_steps":6}],"max_parallel":2}}'
+    ),
     "memory_list": '{"name":"memory_list","arguments":{"prefix":"workspace/"}}',
     "memory_read": '{"name":"memory_read","arguments":{"path":"workspace/notes/auth.md","start":1,"end":200}}',
     "memory_search": '{"name":"memory_search","arguments":{"query":"bcrypt","limit":5}}',
     "memory_save": '{"name":"memory_save","arguments":{"note":"bcrypt rounds > 12 causes CI timeout"}}',
     "repo_lookup": '{"name":"repo_lookup","arguments":{"symbol":"AuthMiddleware"}}',
+    "read_plan": '{"name":"read_plan","arguments":{}}',
+    "write_plan": '{"name":"write_plan","arguments":{"plan":"# Plan\\n1. Inspect\\n2. Implement\\n3. Test"}}',
+    "exit_plan_mode": '{"name":"exit_plan_mode","arguments":{}}',
 }
 
 
@@ -145,6 +218,14 @@ def tool_delegate(context, args):
     if not task:
         raise ValueError("task must not be empty")
     return context.spawn_delegate(args)
+
+
+def tool_delegate_worktrees(context, args):
+    if context.depth >= context.max_depth:
+        raise ValueError("delegate depth exceeded")
+    if not callable(context.spawn_worktree_agents):
+        raise ValueError("worktree delegate runtime is not configured")
+    return context.spawn_worktree_agents(args)
 
 
 _TOOL_RUNNERS = {
@@ -162,6 +243,10 @@ _TOOL_RUNNERS = {
 }
 
 
+def _available_shell_executable_names(context):
+    return sorted(getattr(context, "trusted_executables", {}))
+
+
 def build_tool_registry(context):
     # 工具不是动态发现的，而是显式注册的。
     # 这样模型看到的是一个有边界、可审计的动作集合。
@@ -169,6 +254,12 @@ def build_tool_registry(context):
         name: {**spec, "run": partial(_TOOL_RUNNERS[name], context)}
         for name, spec in BASE_TOOL_SPECS.items()
     }
+    trusted_names = _available_shell_executable_names(context)
+    availability = ", ".join(trusted_names) if trusted_names else "none"
+    tools["run_shell"]["description"] = (
+        f"{tools['run_shell']['description']} "
+        f"Available trusted executable names: {availability}."
+    )
     # 子 agent 是刻意做成受限能力的：一旦深度耗尽，
     # 就连 delegate 这个工具都不再暴露给模型。
     if context.depth < context.max_depth:
@@ -176,6 +267,12 @@ def build_tool_registry(context):
             **DELEGATE_TOOL_SPEC,
             "run": partial(tool_delegate, context),
         }
+        tools["delegate_worktrees"] = {
+            **WORKTREE_DELEGATE_TOOL_SPEC,
+            "run": partial(tool_delegate_worktrees, context),
+        }
+    for name, spec in PLAN_TOOL_SPECS.items():
+        tools[name] = dict(spec)
     return tools
 
 

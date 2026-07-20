@@ -66,8 +66,9 @@ def test_build_prompt_prefix_keeps_schemas_and_ordinary_docs_out_of_system(tmp_p
     )
 
     assert "You are pony" in prefix.text
-    assert "Available native tools:" in prefix.text
-    assert "read_file" in prefix.text
+    assert "Return at most one native tool call per response" in prefix.text
+    assert "Available native tools:" not in prefix.text
+    assert "read_file" not in prefix.text
     assert "Always run focused tests." in prefix.text
     assert "demo" not in prefix.text
     assert "path: str" not in prefix.text
@@ -95,7 +96,7 @@ def test_memory_guidance_lives_once_in_prefix_not_current_user_request(tmp_path)
         model_client=FakeModelClient([]),
         workspace=WorkspaceContext.build(tmp_path),
         session_store=SessionStore(tmp_path / ".pony" / "sessions"),
-        options=RuntimeOptions(approval_policy="auto"),
+        options=RuntimeOptions(project_trusted=True),
     )
     agent.session["messages"].append(
         {"role": "user", "content": "inspect the project", "_pony_meta": {}}

@@ -1,4 +1,4 @@
-"""Explicit MIG-OBS and MIG-TOOL workspace migration commands."""
+"""Explicit migration for retained run observability artifacts."""
 
 from __future__ import annotations
 
@@ -6,9 +6,8 @@ import json
 from pathlib import Path
 import shutil
 
-from pony.state.checkpoint_store import CheckpointStore, _validate_tool_change_record
 from .errors import CLI_EXIT_RUNTIME, CLI_EXIT_USAGE, CliError
-from pony.recovery.migration import ABSENT, Migration
+from pony.state.migration import ABSENT, Migration
 from pony.agent.observability import (
     MAX_RUN_ARTIFACT_BYTES,
     RunArtifactError,
@@ -17,15 +16,12 @@ from pony.agent.observability import (
     load_run_summary,
     REPORT_SCHEMA_VERSION,
 )
-from pony.recovery.models import TOOL_CHANGE_FORMAT_VERSION
 from pony.tools.subprocess import run_hardened_git
-from pony.sandbox.session import source_mutation_authority
 from pony.security.private_files import (
     private_directory_identity,
     read_private_text,
     write_private_bytes_atomic,
 )
-from pony.tools.change_converter import convert_tool_change_v1
 
 
 def _object_from_pairs(pairs):
@@ -122,7 +118,7 @@ def _build_observability(source, candidate):
             continue
         if (
             report.get("record_type") == "run_report"
-            and report.get("format_version") == 2
+            and report.get("format_version") in {2, 3}
         ):
             converted_report = convert_observability_v2(report)
             converted_events = events
@@ -163,34 +159,6 @@ def _validate_observability(path):
     return count
 
 
-def _build_tool_changes(source, candidate):
-    _copy_tree(source, candidate)
-    migrated = 0
-    candidate_identity = private_directory_identity(candidate)
-    for path in sorted(candidate.glob("*.json")):
-        record = _read_json(
-            path,
-            trusted_root=candidate,
-            trusted_root_identity=candidate_identity,
-        )
-        if record.get("format_version") == TOOL_CHANGE_FORMAT_VERSION:
-            _validate_tool_change_record(record, expected_id=path.stem)
-            continue
-        converted = convert_tool_change_v1(record)
-        _write_json(
-            path,
-            converted,
-            trusted_root=candidate,
-            trusted_root_identity=candidate_identity,
-        )
-        migrated += 1
-    return migrated
-
-
-def _validate_tool_changes(path, checkpoints_root):
-    return CheckpointStore(checkpoints_root).validate_tool_change_reference_graph(path)
-
-
 def _identity(workspace):
     root = Path(workspace.repo_root)
     info = root.stat()
@@ -220,34 +188,21 @@ def _identity(workspace):
     }
 
 
-def _migration(workspace, contract):
+def _migration(workspace):
     pony_root = Path(workspace.repo_root) / ".pony"
-    if contract == "observability":
-        live = "runs"
-        namespace = "observability"
-        validate = _validate_observability
-    else:
-        live = "checkpoints/tool_changes"
-        namespace = "tool_changes"
-        checkpoints_root = pony_root / "checkpoints"
-
-        def validate(path):
-            return _validate_tool_changes(path, checkpoints_root)
-
     return Migration(
         pony_root,
-        contract="run_artifacts" if contract == "observability" else "tool_changes",
+        contract="run_artifacts",
         source_version=1,
-        target_version=(REPORT_SCHEMA_VERSION if contract == "observability" else 2),
-        live=live,
-        namespace=namespace,
+        target_version=REPORT_SCHEMA_VERSION,
+        live="runs",
+        namespace="observability",
         workspace_identity=_identity(workspace),
-        validate=validate,
-        validate_candidate=validate if contract == "tool_changes" else None,
-    ), validate
+        validate=_validate_observability,
+    ), _validate_observability
 
 
-def _live_schema_state(contract, live):
+def _live_schema_state(live):
     """Classify the live artifact schema independently of its transaction."""
     live = Path(live)
     try:
@@ -259,118 +214,93 @@ def _live_schema_state(contract, live):
 
     migration_required = False
     try:
-        if contract == "observability":
-            for entry in sorted(live.iterdir()):
-                if entry.is_symlink():
-                    return "invalid"
-                if not entry.is_dir():
-                    continue
-                try:
-                    load_run_summary(live, entry.name)
-                except RunArtifactError as exc:
-                    if exc.status == "migration_required":
-                        migration_required = True
-                        continue
-                    return "invalid"
-        else:
-            live_identity = private_directory_identity(live)
-            for path in sorted(live.glob("*.json")):
-                record = _read_json(
-                    path,
-                    trusted_root=live,
-                    trusted_root_identity=live_identity,
-                )
-                if isinstance(record, dict) and record.get("format_version") == 1:
-                    convert_tool_change_v1(record)
+        for entry in sorted(live.iterdir()):
+            if entry.is_symlink():
+                return "invalid"
+            if not entry.is_dir():
+                continue
+            try:
+                load_run_summary(live, entry.name)
+            except RunArtifactError as exc:
+                if exc.status == "migration_required":
                     migration_required = True
-                else:
-                    _validate_tool_change_record(record, expected_id=path.stem)
+                    continue
+                return "invalid"
     except (OSError, RuntimeError, ValueError, RunArtifactError):
         return "invalid"
     return "migration_required" if migration_required else "current"
 
 
-def _status_with_live_schema(migration, contract):
+def _status_with_live_schema(migration):
     journal = dict(migration.status())
     transaction_state = journal.pop("state", ABSENT)
-    journal["contract"] = contract
+    journal["contract"] = "observability"
     return {
         **journal,
         "transaction_state": transaction_state,
-        "live_schema_state": _live_schema_state(contract, migration.live),
+        "live_schema_state": _live_schema_state(migration.live),
     }
 
 
 def migration_preflight(workspace):
-    """Reject runtime startup while either explicit migration is active."""
+    """Reject runtime startup while an explicit artifact migration is active."""
     pony_root = Path(workspace.repo_root) / ".pony"
     if not pony_root.exists():
         return
-    for contract in ("observability", "tool_changes"):
-        migration, _ = _migration(workspace, contract)
-        state = migration.status().get("state", ABSENT)
-        if state != ABSENT:
-            raise CliError(
-                code="migration_required",
-                message="workspace migration requires explicit recovery",
-                details={"contract": contract, "state": state},
-                exit_code=CLI_EXIT_RUNTIME,
-            )
+    migration, _ = _migration(workspace)
+    state = migration.status().get("state", ABSENT)
+    if state != ABSENT:
+        raise CliError(
+            code="migration_required",
+            message="workspace migration requires explicit recovery",
+            details={"contract": "observability", "state": state},
+            exit_code=CLI_EXIT_RUNTIME,
+        )
 
 
 def handle_migrate(workspace, tokens, args):
     if len(tokens) == 1 and tokens[0] in {"status", "apply", "abort", "recover"}:
-        return {
-            contract: handle_migrate(workspace, [contract, tokens[0]], args)
-            for contract in ("observability", "tool_changes")
-        }
-    if (
-        len(tokens) != 2
-        or tokens[0] not in {"observability", "tool_changes"}
-        or tokens[1] not in {"status", "apply", "abort", "recover"}
+        operation = tokens[0]
+    elif (
+        len(tokens) == 2
+        and tokens[0] == "observability"
+        and tokens[1] in {"status", "apply", "abort", "recover"}
     ):
+        operation = tokens[1]
+    else:
         raise CliError(
             code="usage",
-            message="usage: pony migrate <status|apply|abort|recover>",
+            message="usage: pony migrate {status | apply | abort | recover}",
             exit_code=CLI_EXIT_USAGE,
         )
-    contract, operation = tokens
     if operation == "status" and not (Path(workspace.repo_root) / ".pony").exists():
         return {
-            "contract": contract,
+            "contract": "observability",
             "transaction_state": ABSENT,
             "live_schema_state": ABSENT,
         }
-    migration, validate = _migration(workspace, contract)
+    migration, validate = _migration(workspace)
     try:
         if operation == "status":
-            result = _status_with_live_schema(migration, contract)
+            result = _status_with_live_schema(migration)
         else:
-            with source_mutation_authority(
-                Path.home() / ".pony" / "sandboxes",
-                Path(workspace.repo_root),
-            ):
-                if operation == "abort":
-                    result = {"state": migration.abort()}
-                    return result
-                if operation == "recover":
-                    result = {"state": migration.recover()}
-                    return result
-                counter = {"value": 0}
+            if operation == "abort":
+                result = {"state": migration.abort()}
+                return result
+            if operation == "recover":
+                result = {"state": migration.recover()}
+                return result
+            counter = {"value": 0}
 
-                def builder(source, candidate):
-                    counter["value"] = (
-                        _build_observability(source, candidate)
-                        if contract == "observability"
-                        else _build_tool_changes(source, candidate)
-                    )
+            def builder(source, candidate):
+                counter["value"] = _build_observability(source, candidate)
 
-                state = migration.apply(builder)
-                result = {
-                    "state": state,
-                    "migrated": counter["value"],
-                    "validated": validate(migration.live) if state == ABSENT else 0,
-                }
+            state = migration.apply(builder)
+            result = {
+                "state": state,
+                "migrated": counter["value"],
+                "validated": validate(migration.live) if state == ABSENT else 0,
+            }
     except (OSError, ValueError, RunArtifactError) as exc:
         raise CliError(
             code="migration_failed",

@@ -13,6 +13,7 @@ from prompt_toolkit.shortcuts import print_formatted_text
 from prompt_toolkit.styles import Style
 from prompt_toolkit.utils import get_cwidth
 
+from pony.tools.permissions import display_permission_mode
 from pony.tui.markdown import render_markdown, sanitize_terminal_text
 
 
@@ -25,7 +26,7 @@ _PROTOCOL_PROVIDERS = {
 
 _FAILURE_STATUSES = frozenset({"error", "partial_success", "rejected"})
 
-# Terminal-scale adaptations of the horse silhouette selected for Pony's TUI.
+# Terminal-scale adaptations of Pony's protected horse-and-wordmark welcome asset.
 _HORSE_LINES = (
     "  ⣶⡄⣷⡄⣄",
     " ⢀⣼⣿⣿⣿⣿⣻⣦⣀",
@@ -177,7 +178,7 @@ def _banner_lines(columns):
 
 
 def logo_text(columns=80):
-    """Return the responsive, color-independent terminal logo."""
+    """Return the responsive, color-independent protected terminal logo."""
     return "\n".join(_banner_lines(columns))
 
 
@@ -240,7 +241,9 @@ def _provider_name(model_client):
 
 def _model_label(agent, model):
     provider = _provider_name(getattr(agent, "model_client", None))
-    safe_model = _one_line(model)
+    transport = getattr(getattr(agent, "model_client", None), "_inner", None)
+    transport = transport or getattr(agent, "model_client", None)
+    safe_model = _one_line(getattr(transport, "model", model))
     return f"{provider}/{safe_model}" if provider else safe_model
 
 
@@ -312,6 +315,8 @@ def _tool_summary(name, args, width):
         summary = f"look up {_one_line(args.get('symbol', 'symbol'))}"
     elif name == "delegate":
         summary = "delegate investigation"
+    elif name == "delegate_worktrees":
+        summary = "run isolated worktree agents"
     else:
         summary = name
     return _truncate(summary, max(1, width - 2))
@@ -331,16 +336,19 @@ class TuiRenderer:
     def header(self, agent, *, model, columns=None):
         columns = columns or shutil.get_terminal_size((80, 24)).columns
         width = max(1, columns - 1)
-        model_label = _model_label(agent, model)
         compact = columns < _MEDIUM_BANNER_COLUMNS
         description = (
             "Repository-grounded coding agent" if compact else _PRODUCT_DESCRIPTION
         )
-        model_summary = (
-            f"Using {model_label}"
-            if compact
-            else f"Using {model_label} · approval {agent.approval_policy}"
+        current_mode = getattr(agent, "current_permission_mode", None)
+        permission_mode = display_permission_mode(
+            current_mode()
+            if callable(current_mode)
+            else getattr(agent, "session", {}).get("permission_mode", "auto")
         )
+        model_summary = f"Using {_model_label(agent, model)}"
+        if not compact:
+            model_summary += f" · permission {permission_mode}"
         shortcuts = (
             "/ commands · ctrl+c twice exit"
             if compact
@@ -363,22 +371,21 @@ class TuiRenderer:
 
     def toolbar(self, agent, *, model, columns=None):
         width = _terminal_width(columns)
-        mode = "sandbox" if getattr(agent, "docker_sandbox", False) else "host"
-        session_id = _one_line(getattr(agent, "session", {}).get("id", "-"))[:8]
         branch = _one_line(getattr(agent.workspace, "branch", "-") or "-")
         workspace = _one_line(getattr(agent.workspace, "cwd", "-"))
-        left = f" {workspace} ({branch}) · {session_id} · {mode}"
-        approval = _one_line(getattr(agent, "approval_policy", "")) or "-"
-        right = f"{_model_label(agent, model)} · approval {approval} "
+        repository = Path(workspace).name or "-"
+        left = f" {repository} ({branch})"
+        current_mode = getattr(agent, "current_permission_mode", None)
+        permission_mode = _one_line(
+            current_mode()
+            if callable(current_mode)
+            else getattr(agent, "session", {}).get("permission_mode", "auto")
+        ) or "auto"
+        permission_mode = display_permission_mode(permission_mode)
+        right = f"{permission_mode} · {_model_label(agent, model)} "
         gap = width - get_cwidth(left) - get_cwidth(right)
         if gap < 1:
-            left = f" {Path(workspace).name} ({branch}) · {mode}"
-            gap = width - get_cwidth(left) - get_cwidth(right)
-        if gap < 1:
-            left = f" {Path(workspace).name} · {mode}"
-            gap = width - get_cwidth(left) - get_cwidth(right)
-        if gap < 1:
-            right = _truncate(right, max(1, width // 2))
+            right = _truncate(right, max(1, min(get_cwidth(right), width * 2 // 3)))
             left = _truncate(left, max(1, width - get_cwidth(right) - 1))
             gap = max(1, width - get_cwidth(left) - get_cwidth(right))
         return FormattedText(
@@ -397,6 +404,37 @@ class TuiRenderer:
             ]
         )
 
+    def resume(self, projection):
+        goal = projection["goal"]
+        lines = [
+            "Resume",
+            "permission [session]: "
+            f"{display_permission_mode(projection['permission_mode'])}",
+        ]
+        if goal["text"]:
+            lines.append(f"goal [{goal['source']}]: {goal['text']}")
+        checkpoint = projection["checkpoint"]
+        if checkpoint["status"] or checkpoint["blocker"]:
+            lines.append(
+                "checkpoint [checkpoint]: "
+                f"status={checkpoint['status'] or '-'}; "
+                f"blocker={checkpoint['blocker'] or '-'}"
+            )
+        lines.extend(
+            f"next [checkpoint]: {next_step}"
+            for next_step in checkpoint["next_steps"]
+        )
+        lines.append(f"resume [resume_state]: {projection['resume']['status'] or '-'}")
+        model = projection["model"]
+        if model["protocol_family"] or model["model"]:
+            label = "/".join(
+                value
+                for value in (model["protocol_family"], model["model"])
+                if value
+            )
+            lines.append(f"model [provider_binding]: {label}")
+        self.notice("\n".join(lines))
+
     def user(self, text, *, columns=None):
         self._clear_working()
         self._write(_user_block(text, _terminal_width(columns)))
@@ -410,6 +448,22 @@ class TuiRenderer:
     def approval(self, name, args):
         self._clear_working()
         safe_name = _one_line(name)
+        if safe_name == "exit_plan_mode" and isinstance(args, dict):
+            plan = str(args.get("plan", ""))
+            revision = int(args.get("revision", 0) or 0)
+            self._write(
+                FormattedText(
+                    [
+                        ("class:warning", "\n  ╷ PLAN APPROVAL REQUIRED\n"),
+                        ("", f"  │ revision {revision}\n"),
+                    ]
+                )
+            )
+            self._write(render_markdown(plan, width=_terminal_width()))
+            self._write(
+                FormattedText([("class:warning", "\n  ╵ default: deny\n")])
+            )
+            return
         self._write(
             FormattedText(
                 [

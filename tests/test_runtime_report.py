@@ -13,8 +13,6 @@ from pony.context.renderer import render_current_user_message
 from benchmarks.support.fake_provider import FakeModelClient
 from pony.providers.response import Response, StopReason
 from pony.state.task_state import TaskState
-from pony.tools.executor import ToolExecutionResult
-from tests.test_docker_sandbox_runtime import _build_runtime
 from pony.runtime.options import RuntimeOptions
 
 
@@ -26,19 +24,17 @@ def build_workspace(tmp_path):
 def build_agent(tmp_path, outputs, **kwargs):
     workspace = build_workspace(tmp_path)
     store = SessionStore(tmp_path / ".pony" / "sessions")
-    approval_policy = kwargs.pop("approval_policy", "auto")
-    return Pony(
+    permission_mode = kwargs.pop("permission_mode", "auto")
+    agent = Pony(
         model_client=FakeModelClient(outputs),
         workspace=workspace,
         session_store=store,
-        options=RuntimeOptions(approval_policy=approval_policy, **kwargs),
+        options=RuntimeOptions(project_trusted=True, **kwargs),
     )
-
-
-def build_sandbox_agent(tmp_path, monkeypatch, outputs):
-    _source, context, agent = _build_runtime(tmp_path, monkeypatch)
-    agent.model_client = FakeModelClient(outputs)
-    return agent, context
+    if permission_mode != "auto":
+        agent.set_permission_mode(permission_mode)
+    agent._approval_prompt = lambda _name, _args: True
+    return agent
 
 
 def set_raw_file_summary(agent, path, summary):
@@ -199,9 +195,8 @@ def test_report_projects_current_run_tool_change_effects(tmp_path):
             },
             "Done.",
         ],
-        approval_policy="ask",
+        permission_mode="default",
     )
-    agent.approve = lambda name, args: True
 
     assert agent.ask("Change README and fail") == "Done."
     report = agent.run_store.load_report(agent.current_task_state.run_id)
@@ -209,210 +204,7 @@ def test_report_projects_current_run_tool_change_effects(tmp_path):
     assert report["effects"] == {
         "changed_files": 1,
         "partial_successes": 1,
-        "recovery_review_required": True,
     }
-    assert report["recovery"]["review_required"] is True
-
-
-def test_report_projects_sandbox_outcome_and_host_fallback_from_tool_result(
-    tmp_path,
-    monkeypatch,
-):
-    agent, context = build_sandbox_agent(
-        tmp_path,
-        monkeypatch,
-        [
-            {"name": "run_shell", "args": {"command":"pwd","timeout":20}},
-            "Done.",
-        ],
-    )
-    agent.execute_tool = lambda name, args: ToolExecutionResult(
-        content="exit_code: 0",
-        metadata={
-            "tool_status": "ok",
-            "tool_error_code": "",
-            "security_event_type": "",
-            "risk_level": "high",
-            "effect_class": "workspace_write",
-            "read_only": False,
-            "affected_paths": [],
-            "workspace_changed": False,
-            "diff_summary": [],
-            "sandbox": {
-                "status": "completed",
-                "execution_plane": "host",
-            },
-            "command_approval": {"runner_executed": True},
-        },
-    )
-
-    assert agent.ask("Run one sandbox command") == "Done."
-    report = agent.run_store.load_report(agent.current_task_state.run_id)
-    manifest = context.current_session().manifest
-
-    assert report["sandbox"] == {
-        "active": True,
-        "implementation": "docker_container",
-        "session_state": "ready",
-        "engine_profile": "desktop_vm",
-        "image_digest": Pony._public_sandbox_digest(
-            manifest["image"]["image_digest"]
-        ),
-        "policy_digest": Pony._public_sandbox_digest(manifest["policy"]["digest"]),
-        "network_mode": "none",
-        "source_mounted": False,
-        "state_mounted": False,
-        "container_calls": 1,
-        "target_started_count": 0,
-        "outcome_counts": {"completed": 1},
-        "cleanup_failure_count": 0,
-        "host_fallback_count": 1,
-        "diff": {"candidates": 0, "blocked": 0, "generated": 0},
-        "apply_status": "not_started",
-    }
-
-
-def test_report_treats_missing_execution_plane_as_unproven_host_fallback(
-    tmp_path,
-    monkeypatch,
-):
-    agent, _context = build_sandbox_agent(
-        tmp_path,
-        monkeypatch,
-        [
-            {"name": "run_shell", "args": {"command":"pwd","timeout":20}},
-            "Done.",
-        ],
-    )
-    agent.execute_tool = lambda name, args: ToolExecutionResult(
-        content="exit_code: 0",
-        metadata={
-            "tool_status": "ok",
-            "tool_error_code": "",
-            "security_event_type": "",
-            "risk_level": "high",
-            "effect_class": "workspace_write",
-            "read_only": False,
-            "affected_paths": [],
-            "workspace_changed": False,
-            "diff_summary": [],
-            "sandbox": {"status": "completed"},
-            "command_approval": {"runner_executed": True},
-        },
-    )
-
-    assert agent.ask("Run one sandbox command") == "Done."
-    report = agent.run_store.load_report(agent.current_task_state.run_id)
-
-    assert report["sandbox"]["host_fallback_count"] == 1
-
-
-def test_report_counts_explicit_host_plane_without_approval_evidence(
-    tmp_path,
-    monkeypatch,
-):
-    agent, _context = build_sandbox_agent(
-        tmp_path,
-        monkeypatch,
-        [
-            {"name": "run_shell", "args": {"command":"pwd","timeout":20}},
-            "Done.",
-        ],
-    )
-    agent.execute_tool = lambda name, args: ToolExecutionResult(
-        content="exit_code: 0",
-        metadata={
-            "tool_status": "ok",
-            "tool_error_code": "",
-            "security_event_type": "",
-            "risk_level": "high",
-            "effect_class": "workspace_write",
-            "read_only": False,
-            "affected_paths": [],
-            "workspace_changed": False,
-            "diff_summary": [],
-            "sandbox": {
-                "status": "completed",
-                "execution_plane": "host",
-            },
-        },
-    )
-
-    assert agent.ask("Run one sandbox command") == "Done."
-    report = agent.run_store.load_report(agent.current_task_state.run_id)
-
-    assert report["sandbox"]["host_fallback_count"] == 1
-
-
-def test_report_counts_started_targets_and_cleanup_failures(tmp_path, monkeypatch):
-    agent, _context = build_sandbox_agent(
-        tmp_path,
-        monkeypatch,
-        [
-            {"name": "run_shell", "args": {"command":"pwd","timeout":20}},
-            "Done.",
-        ],
-    )
-    agent.execute_tool = lambda name, args: ToolExecutionResult(
-        content="exit_code: 0",
-        metadata={
-            "tool_status": "partial_success",
-            "tool_error_code": "container_cleanup_failed",
-            "security_event_type": "",
-            "risk_level": "high",
-            "effect_class": "workspace_write",
-            "read_only": False,
-            "affected_paths": [],
-            "workspace_changed": False,
-            "diff_summary": [],
-            "sandbox": {
-                "status": "completed",
-                "execution_plane": "sandbox",
-                "target_started": True,
-                "cleanup_status": "failed",
-                "wrapper_status": "completed",
-                "timed_out": False,
-                "residue_detected": True,
-                "container_created": True,
-                "runner_executed": True,
-                "error_code": "container_cleanup_failed",
-                "call_id": "call_1234",
-                "execution_plan_digest": "sha256:" + "3" * 64,
-                "logical_intent_digest": "sha256:" + "4" * 64,
-                "policy_digest": "sha256:" + "5" * 64,
-                "stdout_bytes": 7,
-                "stderr_bytes": 0,
-                "stdout_truncated": False,
-                "stderr_truncated": False,
-                "container_id": "6" * 64,
-            },
-            "command_approval": {"runner_executed": True},
-        },
-    )
-
-    assert agent.ask("Run one sandbox command") == "Done."
-    sandbox = agent.run_store.load_report(agent.current_task_state.run_id)["sandbox"]
-
-    assert sandbox["container_calls"] == 1
-    assert sandbox["target_started_count"] == 1
-    assert sandbox["cleanup_failure_count"] == 1
-    assert sandbox["host_fallback_count"] == 0
-    trace = [
-        json.loads(line)
-        for line in agent.run_store.trace_path(agent.current_task_state)
-        .read_text(encoding="utf-8")
-        .splitlines()
-    ]
-    event = [item for item in trace if item["event"] == "tool_executed"][0]
-    assert event["sandbox_outcome"] == "completed"
-    assert event["execution_plane"] == "sandbox"
-    assert event["target_started"] is True
-    assert event["cleanup_status"] == "failed"
-    assert event["sandbox_error_code"] == "container_cleanup_failed"
-    assert event["execution_plan_digest"] == "sha256:" + "3" * 64
-    assert event["policy_digest"] == "sha256:" + "5" * 64
-    assert event["stdout_bytes"] == 7
-    assert "container_id" not in event
 
 
 def test_interrupted_tool_attempt_is_included_in_current_run_report(tmp_path):
@@ -435,8 +227,6 @@ def test_interrupted_tool_attempt_is_included_in_current_run_report(tmp_path):
         "name_counts": {"run_shell": 1},
         "status_counts": {"interrupted": 1},
     }
-    assert report["effects"]["recovery_review_required"] is True
-    assert report["recovery"]["review_required"] is True
 
 
 def test_step_limit_run_artifacts_reference_final_checkpoint(tmp_path):
@@ -463,7 +253,6 @@ def test_step_limit_run_artifacts_reference_final_checkpoint(tmp_path):
 
     assert task_state["stop_reason"] == "step_limit_reached"
     assert task_state["checkpoint_id"] == checkpoint_id
-    assert report["recovery"]["checkpoint_id"] == checkpoint_id
     assert "task_state" not in report
 
 
@@ -692,7 +481,7 @@ def test_resume_invalidates_stale_file_summaries_and_marks_partial_stale(tmp_pat
         workspace=build_workspace(tmp_path),
         session_store=agent.session_store,
         session_id=agent.session["id"],
-        options=RuntimeOptions(approval_policy="auto"),
+        options=RuntimeOptions(project_trusted=True),
     )
 
     assert resumed.ask("Continue the task") == "Resumed."
@@ -748,13 +537,13 @@ def test_report_last_request_metadata_preserves_initial_resume_status(tmp_path):
         workspace=build_workspace(tmp_path),
         session_store=agent.session_store,
         session_id=agent.session["id"],
-        options=RuntimeOptions(approval_policy="auto"),
+        options=RuntimeOptions(project_trusted=True),
     )
 
     assert resumed.ask("Continue the task") == "Resumed."
     report = resumed.run_store.load_report(resumed.current_task_state.run_id)
 
-    assert report["recovery"]["status"] == "partial-stale"
+    assert resumed.resume_state["status"] == "partial-stale"
     assert report["context"]["resume_status"] == "partial-stale"
     assert report["context"]["last_prompt_resume_status"] == "partial-stale"
 
@@ -800,7 +589,7 @@ def test_first_prompt_resume_status_updates_task_state_after_late_checkpoint_set
     assert agent.ask("Continue the task") == "Resumed."
     report = agent.run_store.load_report(agent.current_task_state.run_id)
 
-    assert report["recovery"]["status"] == "partial-stale"
+    assert agent.resume_state["status"] == "partial-stale"
     assert report["context"]["resume_status"] == "partial-stale"
     assert report["context"]["last_prompt_resume_status"] == "partial-stale"
 
@@ -808,8 +597,7 @@ def test_first_prompt_resume_status_updates_task_state_after_late_checkpoint_set
 def test_run_shell_nonzero_with_workspace_change_is_recorded_as_partial_success(
     tmp_path,
 ):
-    agent = build_agent(tmp_path, [], approval_policy="ask")
-    agent.approve = lambda name, args: True
+    agent = build_agent(tmp_path, [], permission_mode="default")
 
     result = agent.run_tool(
         "run_shell",
@@ -855,7 +643,7 @@ def test_resume_marks_workspace_mismatch_when_checkpoint_runtime_identity_is_sta
         workspace=build_workspace(tmp_path),
         session_store=agent.session_store,
         session_id=agent.session["id"],
-        options=RuntimeOptions(approval_policy="auto"),
+        options=RuntimeOptions(project_trusted=True),
     )
 
     assert resumed.ask("Continue the task") == "Resumed."
@@ -925,7 +713,7 @@ def test_resume_uses_session_version_for_embedded_checkpoint(tmp_path):
         workspace=build_workspace(tmp_path),
         session_store=agent.session_store,
         session_id=agent.session["id"],
-        options=RuntimeOptions(approval_policy="auto"),
+        options=RuntimeOptions(project_trusted=True),
     )
 
     assert resumed.ask("Continue the task") == "Resumed."
@@ -999,18 +787,20 @@ def test_runtime_identity_persists_key_execution_metadata(tmp_path):
         workspace=workspace,
         session_store=store,
         options=RuntimeOptions(
-        approval_policy="never",
-        max_steps=9,
-        max_output_tokens=1024,
-        feature_flags={"memory": True},
+            project_trusted=True,
+            max_steps=9,
+            max_output_tokens=1024,
+            feature_flags={"memory": True},
         ),
     )
+    agent.set_permission_mode("dontAsk")
+    agent.evaluate_resume_state()
 
     runtime_identity = agent.session["runtime_identity"]
 
     assert runtime_identity["session_id"] == agent.session["id"]
     assert runtime_identity["cwd"] == str(tmp_path)
-    assert runtime_identity["approval_policy"] == "never"
+    assert runtime_identity["permission_mode"] == "dontAsk"
     assert runtime_identity["read_only"] is False
     assert runtime_identity["max_steps"] == 9
     assert runtime_identity["max_output_tokens"] == 1024
@@ -1040,7 +830,7 @@ def test_resume_records_runtime_identity_mismatch_fields_in_metadata_and_trace(
                 "summary": "identity changed",
                 "runtime_identity": {
                     "workspace_fingerprint": agent.workspace.fingerprint(),
-                    "approval_policy": "auto",
+                    "permission_mode": "dontAsk",
                     "read_only": False,
                     "max_steps": 6,
                     "max_output_tokens": 512,
@@ -1062,10 +852,10 @@ def test_resume_records_runtime_identity_mismatch_fields_in_metadata_and_trace(
         session_store=agent.session_store,
         session_id=agent.session["id"],
         options=RuntimeOptions(
-        approval_policy="never",
-        max_steps=9,
-        max_output_tokens=1024,
-        feature_flags={"memory": True},
+            project_trusted=True,
+            max_steps=9,
+            max_output_tokens=1024,
+            feature_flags={"memory": True},
         ),
     )
 
@@ -1073,11 +863,11 @@ def test_resume_records_runtime_identity_mismatch_fields_in_metadata_and_trace(
 
     assert resumed.last_request_metadata["resume_status"] == "workspace-mismatch"
     assert resumed.last_request_metadata["runtime_identity_mismatch_fields"] == [
-        "approval_policy",
         "feature_flags",
         "max_output_tokens",
         "max_steps",
         "model",
+        "permission_mode",
         "shell_env_allowlist",
     ]
 
@@ -1092,18 +882,17 @@ def test_resume_records_runtime_identity_mismatch_fields_in_metadata_and_trace(
     ]
     assert mismatch_events
     assert mismatch_events[0]["fields"] == [
-        "approval_policy",
         "feature_flags",
         "max_output_tokens",
         "max_steps",
         "model",
+        "permission_mode",
         "shell_env_allowlist",
     ]
 
 
 def test_partial_success_records_metadata_without_process_notes(tmp_path):
-    agent = build_agent(tmp_path, [], approval_policy="ask")
-    agent.approve = lambda name, args: True
+    agent = build_agent(tmp_path, [], permission_mode="default")
 
     agent.run_tool(
         "run_shell",
@@ -1138,7 +927,7 @@ def test_agent_keeps_completion_usage_out_of_last_request_metadata(tmp_path):
         ),
         workspace=workspace,
         session_store=store,
-        options=RuntimeOptions(approval_policy="auto"),
+        options=RuntimeOptions(project_trusted=True),
     )
 
     assert agent.ask("Cache aware run") == "Done."
@@ -1176,13 +965,12 @@ def test_report_records_safe_model_identity_and_request_evidence(tmp_path):
         "protocol_family": "openai_responses",
         "requested_model": "gpt-test",
         "effective_model": "gpt-test",
-        "endpoint_origin": "https://api.openai.com",
     }
     agent = Pony(
         model_client=client,
         workspace=workspace,
         session_store=store,
-        options=RuntimeOptions(approval_policy="auto"),
+        options=RuntimeOptions(project_trusted=True),
     )
 
     assert agent.ask("record provider evidence") == "Done."

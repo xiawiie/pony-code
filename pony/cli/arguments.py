@@ -2,8 +2,8 @@
 
 import argparse
 from importlib.metadata import PackageNotFoundError, version
-import math
 
+from pony.config.model import validate_model_name
 from pony.runtime.application import DEFAULT_MAX_OUTPUT_TOKENS, DEFAULT_MAX_STEPS
 
 from .commands import ROOT_HELP
@@ -30,27 +30,6 @@ def _bounded_int_argument(value, *, name, minimum, maximum):
         raise argparse.ArgumentTypeError(f"{name} must be an integer") from exc
     if not minimum <= parsed <= maximum:
         raise argparse.ArgumentTypeError(f"{name} must be in [{minimum}, {maximum}]")
-    return parsed
-
-
-def _bounded_float_argument(
-    value,
-    *,
-    name,
-    minimum,
-    maximum,
-    minimum_exclusive=False,
-):
-    try:
-        parsed = float(value)
-    except (TypeError, ValueError) as exc:
-        raise argparse.ArgumentTypeError(f"{name} must be a number") from exc
-    lower_ok = parsed > minimum if minimum_exclusive else parsed >= minimum
-    if not math.isfinite(parsed) or not lower_ok or parsed > maximum:
-        lower = "(" if minimum_exclusive else "["
-        raise argparse.ArgumentTypeError(
-            f"{name} must be in {lower}{minimum}, {maximum}]"
-        )
     return parsed
 
 
@@ -90,22 +69,19 @@ def _context_window_argument(value):
     )
 
 
-def _temperature_argument(value):
-    return _bounded_float_argument(
-        value,
-        name="temperature",
-        minimum=0,
-        maximum=2,
-    )
+def _model_argument(value):
+    try:
+        return validate_model_name(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            "model must be a non-empty one-line name"
+        ) from exc
 
 
-def _top_p_argument(value):
-    return _bounded_float_argument(
-        value,
-        name="top-p",
-        minimum=0,
-        maximum=1,
-        minimum_exclusive=True,
+def dangerous_bypass_enabled(args):
+    return bool(
+        getattr(args, "allow_dangerously_skip_permissions", False)
+        or getattr(args, "dangerously_skip_permissions", False)
     )
 
 
@@ -136,10 +112,51 @@ def build_arg_parser():
         "--resume", default=None, help="Session id to resume or 'latest'."
     )
     parser.add_argument(
-        "--approval",
-        choices=("ask", "auto", "never"),
-        default="ask",
-        help="Approval policy for risky tools.",
+        "--model",
+        type=_model_argument,
+        default=None,
+        help="Model for this run/repl Session without changing .env.",
+    )
+    parser.add_argument(
+        "--permission-mode",
+        choices=(
+            "acceptEdits",
+            "auto",
+            "bypassPermissions",
+            "manual",
+            "dontAsk",
+            "plan",
+        ),
+        default=None,
+        help="Permission mode for run/repl only.",
+    )
+    parser.add_argument(
+        "--allow-dangerously-skip-permissions",
+        action="store_true",
+        help="Allow bypassPermissions to be selected for this session.",
+    )
+    parser.add_argument(
+        "--dangerously-skip-permissions",
+        action="store_true",
+        help="Bypass permission prompts for this session.",
+    )
+    parser.add_argument(
+        "--allowedTools",
+        "--allowed-tools",
+        dest="allowed_tool_rules",
+        action="append",
+        default=[],
+        metavar="TOOLS",
+        help="Comma or quoted space-separated exact tool names to allow.",
+    )
+    parser.add_argument(
+        "--disallowedTools",
+        "--disallowed-tools",
+        dest="disallowed_tool_rules",
+        action="append",
+        default=[],
+        metavar="TOOLS",
+        help="Comma or quoted space-separated exact tool names to deny.",
     )
     parser.add_argument(
         "--secret-env-name",
@@ -167,18 +184,6 @@ def build_arg_parser():
         help="Model context window override.",
     )
     parser.add_argument(
-        "--temperature",
-        type=_temperature_argument,
-        default=0.2,
-        help="Ollama sampling temperature.",
-    )
-    parser.add_argument(
-        "--top-p",
-        type=_top_p_argument,
-        default=0.9,
-        help="Ollama top-p sampling value.",
-    )
-    parser.add_argument(
         "--format",
         choices=("text", "json"),
         default="text",
@@ -192,10 +197,5 @@ def build_arg_parser():
     )
     parser.add_argument(
         "--no-input", action="store_true", help="Disable interactive prompts."
-    )
-    parser.add_argument(
-        "--sandbox",
-        action="store_true",
-        help="Run/repl in local Docker Sandbox (macOS arm64 only).",
     )
     return parser

@@ -30,7 +30,7 @@ def test_pony_has_memory_store_and_repo_map(tmp_path, monkeypatch):
         model_client=FakeModelClient(["done"]),
         workspace=workspace,
         session_store=store,
-        options=RuntimeOptions(approval_policy="auto"),
+        options=RuntimeOptions(project_trusted=True),
     )
     assert agent.memory_store is not None
     assert agent.memory_retrieval is not None
@@ -45,7 +45,7 @@ def test_tool_context_has_wiring(tmp_path, monkeypatch):
         model_client=FakeModelClient(["done"]),
         workspace=workspace,
         session_store=store,
-        options=RuntimeOptions(approval_policy="auto"),
+        options=RuntimeOptions(project_trusted=True),
     )
     ctx = agent.tool_context()
     assert ctx.memory_store is agent.memory_store
@@ -62,7 +62,10 @@ def _build_agent(tmp_path, monkeypatch, session=None):
         workspace=workspace,
         session_store=store,
         session=session,
-        options=RuntimeOptions(approval_policy="auto"),
+        options=RuntimeOptions(
+            project_trusted=True,
+            delegate_model_client_factory=lambda: FakeModelClient(["child done"]),
+        ),
     )
 
 
@@ -92,8 +95,8 @@ def test_runtime_uses_current_working_memory(tmp_path, monkeypatch):
         "recently_recalled": [],
         "checkpoints": {"current_id": "", "items": {}},
         "resume_state": {},
-        "recovery": {"current_checkpoint_id": ""},
         "runtime_identity": {},
+        "permission_mode": "auto",
     }
 
     agent = _build_agent(tmp_path, monkeypatch, session=current_session)

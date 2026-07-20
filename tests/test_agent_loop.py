@@ -1,17 +1,20 @@
 import copy
 import json
 import logging
+import os
 from unittest.mock import Mock
 
 import pytest
 
 import pony.agent.loop as agent_loop_module
+import pony.agent.compaction as compaction_module
 from pony.security import private_files as security_module
 from pony import Pony
-from pony.state.session_store import SessionStore
+from pony.state.session_store import SessionFormatError, SessionStore
 from pony.workspace.context import WorkspaceContext
 from benchmarks.support.fake_provider import FakeModelClient
 from pony.agent.loop import AgentLoop
+from pony.agent.observability import load_run_summary
 from pony.providers.transport import ProviderTransportError
 from pony.providers.response import Response, StopReason
 from pony.runtime.options import RuntimeOptions
@@ -94,12 +97,14 @@ class EvidenceScriptProvider:
 def build_native_agent(tmp_path, provider, **kwargs):
     tmp_path.mkdir(parents=True, exist_ok=True)
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
-    return Pony(
+    agent = Pony(
         model_client=provider,
         workspace=WorkspaceContext.build(tmp_path),
         session_store=SessionStore(tmp_path / ".pony" / "sessions"),
-        options=RuntimeOptions(approval_policy="auto", **kwargs),
+        options=RuntimeOptions(project_trusted=True, **kwargs),
     )
+    agent._approval_prompt = lambda _name, _args: True
+    return agent
 
 
 def build_agent(tmp_path, outputs, max_steps=6):
@@ -107,12 +112,14 @@ def build_agent(tmp_path, outputs, max_steps=6):
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
     workspace = WorkspaceContext.build(tmp_path)
     store = SessionStore(tmp_path / ".pony" / "sessions")
-    return Pony(
+    agent = Pony(
         model_client=FakeModelClient(outputs),
         workspace=workspace,
         session_store=store,
-        options=RuntimeOptions(approval_policy="auto", max_steps=max_steps),
+        options=RuntimeOptions(project_trusted=True, max_steps=max_steps),
     )
+    agent._approval_prompt = lambda _name, _args: True
+    return agent
 
 
 def read_trace(agent):
@@ -123,6 +130,34 @@ def read_trace(agent):
         .splitlines()
         if line.strip()
     ]
+
+
+def test_provider_resolution_trace_uses_bounded_safe_projection(tmp_path):
+    agent = build_agent(tmp_path, ["done"])
+    agent.model_client.provider_resolution_metadata = {
+        "resolution_source": "probe",
+        "protocol": "openai_chat_completions",
+        "candidate_count": 2,
+        "probe_model_calls": 3,
+        "usage_status": "degraded",
+        "endpoint_origin": "https://must-not-appear.example",
+        "requested_model": "must-not-appear",
+    }
+
+    assert agent.ask("finish") == "done"
+
+    events = [
+        event for event in read_trace(agent) if event["event"] == "provider_resolved"
+    ]
+    assert len(events) == 1
+    assert events[0]["request_metadata"] == {
+        "resolution_source": "probe",
+        "protocol": "openai_chat_completions",
+        "candidate_count": 2,
+        "probe_model_calls": 3,
+        "usage_status": "degraded",
+    }
+    assert "must-not-appear" not in json.dumps(events[0])
 
 
 def test_agent_loop_runs_same_control_flow_as_pony_ask(tmp_path):
@@ -269,6 +304,182 @@ def test_provider_context_error_forces_one_compaction_and_retry(tmp_path):
         for message in retried_messages
     )
     assert "old-marker-0" not in json.dumps(retried_messages)
+    events = read_trace(agent)
+    assert [
+        event["attempt_origin"]
+        for event in events
+        if event["event"] == "model_requested"
+    ] == ["initial", "compaction", "model_retry"]
+    auxiliary = [
+        event for event in events if event["event"] == "model_auxiliary_completed"
+    ]
+    assert len(auxiliary) == 1
+    assert auxiliary[0]["completion_usage"]["input_tokens"] == 14_000
+    report = agent.run_store.load_report(agent.current_task_state.run_id)
+    assert report["model"]["attempts"] == 3
+    assert report["model"]["turns"] == 1
+    assert report["model"]["transport_attempts"] == 3
+    assert report["model"]["usage"]["input_tokens"] == 22_000
+    assert report["model"]["usage"]["output_tokens"] == 41
+    assert load_run_summary(agent.run_store.root, agent.current_task_state.run_id) == report
+
+
+def test_failed_compaction_call_is_durable_run_evidence(tmp_path, monkeypatch):
+    context_error = ProviderTransportError(
+        "context_length_exceeded",
+        code="context_length_exceeded",
+        http_status=400,
+    )
+    compaction_error = ProviderTransportError(
+        "summary timeout",
+        code="timeout",
+        retryable=True,
+    )
+    provider = EvidenceScriptProvider(
+        [context_error, compaction_error, compaction_error, compaction_error]
+    )
+    delays = []
+    monkeypatch.setattr(compaction_module, "_sleep", delays.append)
+    agent = build_native_agent(tmp_path, provider)
+    for index in range(60):
+        agent.session["messages"].append(
+            {
+                "role": "user" if index % 2 == 0 else "assistant",
+                "content": f"old-marker-{index} " + ("x" * 1_000),
+                "_pony_meta": {},
+            }
+        )
+    agent.session_store.save(agent.session)
+
+    with pytest.raises(ProviderTransportError) as caught:
+        agent.ask("current request")
+
+    assert caught.value is context_error
+    assert delays == [0.5, 1.0]
+    events = read_trace(agent)
+    assert [
+        event["attempt_origin"]
+        for event in events
+        if event["event"] == "model_requested"
+    ] == ["initial", "compaction", "compaction", "compaction"]
+    assert [
+        event["reason_code"]
+        for event in events
+        if event["event"] == "model_failed"
+    ] == ["context_length_exceeded", "timeout", "timeout", "timeout"]
+    report = agent.run_store.load_report(agent.current_task_state.run_id)
+    assert report["model"]["attempts"] == 4
+    assert report["model"]["turns"] == 0
+    assert report["model"]["failures"] == 4
+    assert report["model"]["retries"] == 2
+    assert report["model"]["transport_attempts"] == 4
+    assert report["model"]["failure_reason_counts"] == {
+        "context_length_exceeded": 1,
+        "timeout": 3,
+    }
+    assert load_run_summary(agent.run_store.root, agent.current_task_state.run_id) == report
+
+
+def test_compaction_retry_reuses_summary_request_and_records_usage(
+    tmp_path,
+    monkeypatch,
+):
+    context_error = ProviderTransportError(
+        "context_length_exceeded",
+        code="context_length_exceeded",
+        http_status=400,
+    )
+    timeout = ProviderTransportError("summary timeout", code="timeout", retryable=True)
+    provider = EvidenceScriptProvider(
+        [
+            context_error,
+            timeout,
+            Response(
+                stop_reason=StopReason.END_TURN,
+                content=[
+                    {
+                        "type": "text",
+                        "text": "# Goal\nContinue\n# Next Steps\nAnswer current request",
+                    }
+                ],
+                usage={"input_tokens": 14_000, "output_tokens": 40},
+            ),
+            Response(
+                stop_reason=StopReason.END_TURN,
+                content=[{"type": "text", "text": "recovered"}],
+                usage={"input_tokens": 8_000, "output_tokens": 1},
+            ),
+        ]
+    )
+    delays = []
+    monkeypatch.setattr(compaction_module, "_sleep", delays.append)
+    agent = build_native_agent(tmp_path, provider)
+    for index in range(60):
+        agent.session["messages"].append(
+            {
+                "role": "user" if index % 2 == 0 else "assistant",
+                "content": f"old-marker-{index} " + ("x" * 1_000),
+                "_pony_meta": {},
+            }
+        )
+    agent.session_store.save(agent.session)
+
+    assert agent.ask("current request") == "recovered"
+
+    assert delays == [0.5]
+    assert provider.calls[1] == provider.calls[2]
+    report = agent.run_store.load_report(agent.current_task_state.run_id)
+    assert report["model"]["attempts"] == 4
+    assert report["model"]["turns"] == 1
+    assert report["model"]["failures"] == 2
+    assert report["model"]["retries"] == 2
+    assert report["model"]["transport_attempts"] == 4
+    assert report["model"]["usage"]["input_tokens"] == 22_000
+
+
+def test_compaction_retry_rejects_concurrent_session_change(tmp_path, monkeypatch):
+    context_error = ProviderTransportError(
+        "context_length_exceeded",
+        code="context_length_exceeded",
+        http_status=400,
+    )
+    timeout = ProviderTransportError("summary timeout", code="timeout", retryable=True)
+    provider = EvidenceScriptProvider([context_error, timeout])
+    agent = build_native_agent(tmp_path, provider)
+    for index in range(60):
+        agent.session["messages"].append(
+            {
+                "role": "user" if index % 2 == 0 else "assistant",
+                "content": f"old-marker-{index} " + ("x" * 1_000),
+                "_pony_meta": {},
+            }
+        )
+    agent.session_store.save(agent.session)
+
+    def append_concurrently(_delay):
+        agent.session_store.append_messages(
+            agent.session["id"],
+            [
+                {
+                    "role": "user",
+                    "content": "concurrent message",
+                    "_pony_meta": {"created_at": "2026-07-20T00:00:00Z"},
+                }
+            ],
+        )
+
+    monkeypatch.setattr(compaction_module, "_sleep", append_concurrently)
+
+    with pytest.raises(SessionFormatError, match="compaction request"):
+        agent.ask("current request")
+
+    assert len(provider.calls) == 2
+    tree = agent.session_store.load_tree(agent.session["id"])
+    assert sum(entry["type"] == "compaction" for entry in tree.entries) == 0
+    assert any(
+        message.get("content") == "concurrent message"
+        for message in tree.projection["messages"]
+    )
 
 
 def test_nonretryable_provider_failure_is_not_replayed(tmp_path, monkeypatch):
@@ -394,16 +605,6 @@ def test_pony_ask_delegates_to_agent_loop(tmp_path):
     assert agent.ask("Use facade") == "Facade works."
 
 
-def test_rejected_tool_action_never_creates_verification_evidence():
-    assert (
-        agent_loop_module._verification_evidence_for_tool(
-        "run_shell",
-        {"tool_status": "rejected"},
-        )
-        is None
-    )
-
-
 def test_agent_loop_decodes_native_action_and_aggregates_response_usage_only(tmp_path):
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
     provider = NativeScriptProvider(
@@ -426,12 +627,18 @@ def test_agent_loop_decodes_native_action_and_aggregates_response_usage_only(tmp
                     "cache_creation_input_tokens": 4,
                     "cache_read_input_tokens": 3,
                     "cache_hit": True,
+                    "request_id": "request-1",
                 },
             ),
             Response(
                 stop_reason=StopReason.END_TURN,
                 content=[{"type": "text", "text": "done"}],
-                usage={"input_tokens": 20, "output_tokens": 5, "total_tokens": None},
+                usage={
+                    "input_tokens": 20,
+                    "output_tokens": 5,
+                    "total_tokens": None,
+                    "request_id": "request-2",
+                },
             ),
         ]
     )
@@ -453,11 +660,34 @@ def test_agent_loop_decodes_native_action_and_aggregates_response_usage_only(tmp
     assert decoded[0]["origin"] == "native_tool_use"
     assert decoded[1]["action_type"] == "final"
     assert [turn["completion_usage"]["input_tokens"] for turn in turns] == [10, 20]
+    assert all("request_id" not in turn["completion_usage"] for turn in turns)
+    assert [
+        turn["request_metadata"]["provider_request_id"] for turn in turns
+    ] == ["request-1", "request-2"]
     assert report["model"]["usage"]["input_tokens"] == 30
     assert report["model"]["usage"]["output_tokens"] == 7
     assert report["model"]["usage"]["total_tokens"] == 37
     assert report["model"]["usage"]["cache_hit"] is True
     assert report["model"]["usage"]["input_tokens"] != 999999
+
+
+def test_unsafe_provider_request_id_is_dropped_without_losing_usage(tmp_path):
+    provider = NativeScriptProvider(
+        [
+            Response(
+                stop_reason=StopReason.END_TURN,
+                content=[{"type": "text", "text": "done"}],
+                usage={"input_tokens": 10, "output_tokens": 2, "request_id": "/tmp/id"},
+            )
+        ]
+    )
+    agent = build_native_agent(tmp_path, provider)
+
+    assert agent.ask("finish") == "done"
+
+    report = agent.run_store.load_report(agent.current_task_state.run_id)
+    assert report["model"]["usage"]["input_tokens"] == 10
+    assert "provider_request_id" not in report["context"]
 
 
 def test_native_multiple_tool_response_executes_none_and_requests_correction(
@@ -501,7 +731,6 @@ def test_native_multiple_tool_response_executes_none_and_requests_correction(
     first_runner.assert_not_called()
     ignored_runner.assert_not_called()
     assert not (tmp_path / "ignored.txt").exists()
-    assert agent.checkpoint_store.list_tool_change_records() == []
     events = read_trace(agent)
     decoded = [event for event in events if event["event"] == "action_decoded"]
     assert decoded[0]["action_type"] == "retry"
@@ -549,12 +778,13 @@ def test_ordinary_workspace_tool_error_commits_pair_consumes_step_and_finishes(
     saved_transcripts = []
     original_append = agent.session_store.append_messages
 
-    def capture_append(session_id, messages, *, state_updates=None):
+    def capture_append(session_id, messages, *, state_updates=None, **append_options):
         saved_transcripts.append(copy.deepcopy(list(messages)))
         return original_append(
             session_id,
             messages,
             state_updates=state_updates,
+            **append_options,
         )
 
     monkeypatch.setattr(agent.session_store, "append_messages", capture_append)
@@ -575,13 +805,6 @@ def test_ordinary_workspace_tool_error_commits_pair_consumes_step_and_finishes(
     assert tool_result["content"][0]["tool_use_id"] == "tu_error"
     assert tool_result["content"][0]["is_error"] is True
     assert tool_result["_pony_meta"]["tool_status"] == "error"
-    tool_change_id = tool_result["_pony_meta"]["tool_change_id"]
-    tool_change = agent.checkpoint_store.load_tool_change_record(tool_change_id)
-    assert tool_change["status"] == "error"
-    assert tool_change["error"]["code"] == "tool_failed"
-    checkpoint_id = agent.current_task_state.recovery_checkpoint_id
-    checkpoint = agent.checkpoint_store.load_checkpoint_record(checkpoint_id)
-    assert checkpoint["tool_change_ids"] == [tool_change_id]
     report = agent.run_store.load_report(agent.current_task_state.run_id)
     assert report["run"]["status"] == "completed"
     assert report["tools"]["calls"] == 1
@@ -644,12 +867,13 @@ def test_tool_pair_is_written_by_one_session_save_without_orphan(tmp_path, monke
     saved_transcripts = []
     original_append = agent.session_store.append_messages
 
-    def spy_append(session_id, messages, *, state_updates=None):
+    def spy_append(session_id, messages, *, state_updates=None, **append_options):
         saved_transcripts.append(copy.deepcopy(list(messages)))
         return original_append(
             session_id,
             messages,
             state_updates=state_updates,
+            **append_options,
         )
 
     monkeypatch.setattr(agent.session_store, "append_messages", spy_append)
@@ -712,7 +936,7 @@ def test_side_effect_then_pair_save_failure_stops_before_another_provider_call(
     agent = build_native_agent(tmp_path, provider)
     original_append = agent.session_store.append_messages
 
-    def fail_pair(session_id, messages, *, state_updates=None):
+    def fail_pair(session_id, messages, *, state_updates=None, **append_options):
         if any(
             isinstance(message.get("content"), list)
             and message["content"]
@@ -724,6 +948,7 @@ def test_side_effect_then_pair_save_failure_stops_before_another_provider_call(
             session_id,
             messages,
             state_updates=state_updates,
+            **append_options,
         )
 
     monkeypatch.setattr(agent.session_store, "append_messages", fail_pair)
@@ -751,7 +976,7 @@ def test_side_effect_then_pair_save_failure_stops_before_another_provider_call(
         )
         for message in messages
     )
-    assert agent.current_task_state.recovery_checkpoint_id
+    assert agent.current_task_state.checkpoint_id
 
 
 def test_committed_pair_save_reloads_canonical_without_duplicate_or_loss(
@@ -784,7 +1009,7 @@ def test_committed_pair_save_reloads_canonical_without_duplicate_or_loss(
     original_append = agent.session_store.append_messages
     injected = False
 
-    def commit_then_raise(session_id, messages, *, state_updates=None):
+    def commit_then_raise(session_id, messages, *, state_updates=None, **append_options):
         nonlocal injected
         has_tool_use = any(
             isinstance(message.get("content"), list)
@@ -795,15 +1020,17 @@ def test_committed_pair_save_reloads_canonical_without_duplicate_or_loss(
         if has_tool_use and not injected:
             injected = True
             original_append(
-                session_id,
-                messages,
-                state_updates=state_updates,
-            )
+                    session_id,
+                    messages,
+                    state_updates=state_updates,
+                    **append_options,
+                )
             raise security_module.PrivateAtomicWriteError("committed")
         return original_append(
             session_id,
             messages,
             state_updates=state_updates,
+            **append_options,
         )
 
     monkeypatch.setattr(agent.session_store, "append_messages", commit_then_raise)
@@ -856,7 +1083,13 @@ def test_ambiguous_pair_save_never_overwrites_reloaded_canonical_with_terminal(
     original_append = agent.session_store.append_messages
     injected = False
 
-    def replace_canonical_then_raise(session_id, messages, *, state_updates=None):
+    def replace_canonical_then_raise(
+        session_id,
+        messages,
+        *,
+        state_updates=None,
+        **append_options,
+    ):
         nonlocal injected
         has_tool_use = any(
             isinstance(message.get("content"), list)
@@ -868,16 +1101,18 @@ def test_ambiguous_pair_save_never_overwrites_reloaded_canonical_with_terminal(
             injected = True
             old_leaf = agent.session_store.load_tree(session_id).leaf_id
             original_append(
-                session_id,
-                messages,
-                state_updates=state_updates,
-            )
+                    session_id,
+                    messages,
+                    state_updates=state_updates,
+                    **append_options,
+                )
             agent.session_store.rewind(session_id, old_leaf)
             raise security_module.PrivateAtomicWriteError("ambiguous")
         return original_append(
             session_id,
             messages,
             state_updates=state_updates,
+            **append_options,
         )
 
     monkeypatch.setattr(
@@ -924,7 +1159,7 @@ def test_committed_pair_save_with_failed_reload_blocks_all_later_session_writes(
     injected = False
     later_saves = 0
 
-    def commit_then_raise(session_id, messages, *, state_updates=None):
+    def commit_then_raise(session_id, messages, *, state_updates=None, **append_options):
         nonlocal injected, later_saves
         if injected:
             later_saves += 1
@@ -936,16 +1171,18 @@ def test_committed_pair_save_with_failed_reload_blocks_all_later_session_writes(
         )
         if has_tool_use and not injected:
             original_append(
-                session_id,
-                messages,
-                state_updates=state_updates,
-            )
+                    session_id,
+                    messages,
+                    state_updates=state_updates,
+                    **append_options,
+                )
             injected = True
             raise security_module.PrivateAtomicWriteError("unreadable commit")
         return original_append(
             session_id,
             messages,
             state_updates=state_updates,
+            **append_options,
         )
 
     def fail_reconciliation(session_id):
@@ -965,7 +1202,6 @@ def test_committed_pair_save_with_failed_reload_blocks_all_later_session_writes(
     persisted = original_load(agent.session["id"])
     assert "tu_unreadable_commit" in json.dumps(persisted["messages"])
     assert persisted["checkpoints"]["current_id"] == ""
-    assert agent.current_task_state.recovery_checkpoint_id == ""
     assert later_saves == 0
     assert len(provider.calls) == 1
 
@@ -1006,7 +1242,7 @@ def test_pair_save_failure_restores_pre_tool_memory(tmp_path, monkeypatch):
     baseline_summaries = copy.deepcopy(agent.session["memory"]["file_summaries"])
     original_append = agent.session_store.append_messages
 
-    def fail_pair(session_id, messages, *, state_updates=None):
+    def fail_pair(session_id, messages, *, state_updates=None, **append_options):
         if any(
             isinstance(message.get("content"), list)
             and message["content"]
@@ -1018,6 +1254,7 @@ def test_pair_save_failure_restores_pre_tool_memory(tmp_path, monkeypatch):
             session_id,
             messages,
             state_updates=state_updates,
+            **append_options,
         )
 
     monkeypatch.setattr(agent.session_store, "append_messages", fail_pair)
@@ -1062,7 +1299,13 @@ def test_pair_save_primary_error_survives_terminal_persistence_failure(
     original_append = agent.session_store.append_messages
     user_turn_saved = False
 
-    def fail_pair_then_terminal(session_id, messages, *, state_updates=None):
+    def fail_pair_then_terminal(
+        session_id,
+        messages,
+        *,
+        state_updates=None,
+        **append_options,
+    ):
         nonlocal user_turn_saved
         has_tool_use = any(
             isinstance(message.get("content"), list)
@@ -1079,6 +1322,7 @@ def test_pair_save_primary_error_survives_terminal_persistence_failure(
             session_id,
             messages,
             state_updates=state_updates,
+            **append_options,
         )
 
     monkeypatch.setattr(
@@ -1112,41 +1356,6 @@ def test_agent_loop_emits_focused_recovery_trace_events(tmp_path):
     assert '"event": "run_started"' in trace_text
     assert '"event": "model_turn"' in trace_text
     assert '"event": "checkpoint_created"' in trace_text
-
-
-def test_recovery_checkpoint_uses_distinct_trace_event(tmp_path):
-    agent = build_agent(
-        tmp_path,
-        [
-            {"name": "write_file", "args": {"path":"note.txt","content":"after\\n"}},
-            "done",
-        ],
-    )
-
-    agent.ask("write note")
-
-    trace_events = [
-        json.loads(line)
-        for line in agent.run_store.trace_path(agent.current_task_state)
-        .read_text(encoding="utf-8")
-        .splitlines()
-    ]
-    recovery_events = [
-        event
-        for event in trace_events
-        if event["event"] == "recovery_checkpoint_created"
-    ]
-
-    assert recovery_events
-    assert (
-        recovery_events[0]["checkpoint_id"]
-        == agent.current_task_state.recovery_checkpoint_id
-    )
-    assert not any(
-        event["event"] == "checkpoint_created"
-        and event.get("checkpoint_kind") == "recovery"
-        for event in trace_events
-    )
 
 
 def test_model_error_marks_run_failed_and_writes_report(tmp_path):
@@ -1271,7 +1480,13 @@ def test_terminal_path_matrix_persists_exactly_one_finalization(
     elif case == "persistence_error":
         original_append = agent.session_store.append_messages
 
-        def fail_final_answer(session_id, messages, *, state_updates=None):
+        def fail_final_answer(
+            session_id,
+            messages,
+            *,
+            state_updates=None,
+            **append_options,
+        ):
             last = messages[-1] if messages else {}
             if (
                 last.get("role") == "assistant"
@@ -1279,10 +1494,11 @@ def test_terminal_path_matrix_persists_exactly_one_finalization(
             ):
                 raise primary
             return original_append(
-                session_id,
-                messages,
-                state_updates=state_updates,
-            )
+                    session_id,
+                    messages,
+                    state_updates=state_updates,
+                    **append_options,
+                )
 
         monkeypatch.setattr(
             agent.session_store,
@@ -1470,6 +1686,121 @@ def test_build_failure_after_success_does_not_reuse_request_metadata(
     assert report["context"] == {}
 
 
+def test_concurrent_append_while_building_request_rejects_stale_response(
+    tmp_path,
+    monkeypatch,
+):
+    provider = NativeScriptProvider(
+        [
+            Response(
+                stop_reason=StopReason.END_TURN,
+                content=[{"type": "text", "text": "stale answer"}],
+                usage={},
+            )
+        ]
+    )
+    agent = build_native_agent(tmp_path, provider)
+    original = agent.context_manager.build_request
+
+    def build_with_concurrent_append(**kwargs):
+        request = original(**kwargs)
+        agent.session_store.append_messages(
+            agent.session["id"],
+            [
+                {
+                    "role": "user",
+                    "content": "concurrent prompt",
+                    "_pony_meta": {},
+                }
+            ],
+        )
+        return request
+
+    monkeypatch.setattr(agent.context_manager, "build_request", build_with_concurrent_append)
+
+    with pytest.raises(Exception, match="session changed before model request"):
+        agent.ask("original prompt")
+
+    assert provider.calls == []
+    persisted = agent.session_store.load(agent.session["id"])
+    assert [message["content"] for message in persisted["messages"][-2:]] == [
+        "original prompt",
+        "concurrent prompt",
+    ]
+
+
+def test_concurrent_append_before_user_turn_rejects_stale_request(
+    tmp_path,
+    monkeypatch,
+):
+    provider = NativeScriptProvider(
+        [
+            Response(
+                stop_reason=StopReason.END_TURN,
+                content=[{"type": "text", "text": "stale answer"}],
+                usage={},
+            )
+        ]
+    )
+    agent = build_native_agent(tmp_path, provider)
+    competing = SessionStore(agent.session_store.root)
+    original_append = agent.session_store.append_messages
+
+    def append_after_concurrent_writer(session_id, messages, **options):
+        competing.append_messages(
+            session_id,
+            [{"role": "user", "content": "concurrent prompt", "_pony_meta": {}}],
+        )
+        return original_append(session_id, messages, **options)
+
+    monkeypatch.setattr(
+        agent.session_store,
+        "append_messages",
+        append_after_concurrent_writer,
+    )
+
+    with pytest.raises(SessionFormatError, match="session changed before message append"):
+        agent.ask("original prompt")
+
+    assert provider.calls == []
+    assert [
+        message["content"] for message in competing.load(agent.session["id"])["messages"]
+    ] == ["concurrent prompt"]
+
+
+def test_concurrent_append_during_model_request_blocks_tool_execution(tmp_path):
+    provider = NativeScriptProvider([])
+    agent = build_native_agent(tmp_path, provider)
+    runner = Mock(return_value="written")
+    agent.tools["write_file"]["run"] = runner
+
+    def complete(**_kwargs):
+        agent.session_store.append_messages(
+            agent.session["id"],
+            [{"role": "user", "content": "concurrent prompt", "_pony_meta": {}}],
+        )
+        return Response(
+            stop_reason=StopReason.TOOL_USE,
+            content=[
+                {
+                    "type": "tool_use",
+                    "id": "stale-write",
+                    "name": "write_file",
+                    "input": {"path": "stale.txt", "content": "stale\n"},
+                }
+            ],
+            usage={},
+        )
+
+    provider.complete = complete
+
+    with pytest.raises(Exception, match="session changed before model request"):
+        agent.ask("write the file")
+
+    runner.assert_not_called()
+    assert not (tmp_path / "stale.txt").exists()
+
+
 def test_keyboard_interrupt_closes_run_and_reraises(tmp_path):
     agent = build_native_agent(
         tmp_path,
@@ -1483,6 +1814,58 @@ def test_keyboard_interrupt_closes_run_and_reraises(tmp_path):
     assert agent.current_task_state.stop_reason == "interrupted"
     assert agent.run_store.report_path(agent.current_task_state).exists()
     assert agent.session["messages"][-1]["_pony_meta"]["origin"] == "runtime_terminal"
+
+
+def test_effect_observation_failure_stops_before_next_model_turn(tmp_path, monkeypatch):
+    provider = NativeScriptProvider(
+        [
+            Response(
+                stop_reason=StopReason.TOOL_USE,
+                content=[
+                    {
+                        "type": "tool_use",
+                        "id": "tu_write",
+                        "name": "write_file",
+                        "input": {"path": "changed.txt", "content": "changed\n"},
+                    }
+                ],
+                usage={},
+            ),
+            Response(
+                stop_reason=StopReason.TOOL_USE,
+                content=[
+                    {
+                        "type": "tool_use",
+                        "id": "tu_must_not_run",
+                        "name": "write_file",
+                        "input": {
+                            "path": "must-not-run.txt",
+                            "content": "must not run\n",
+                        },
+                    }
+                ],
+                usage={},
+            ),
+        ]
+    )
+    agent = build_native_agent(tmp_path, provider)
+    original_diff = agent.workspace_observer.diff
+    monkeypatch.setattr(
+        agent.workspace_observer,
+        "diff",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("observer failed")),
+    )
+
+    answer = agent.ask("change one file")
+
+    assert answer == "Stopped because workspace effects could not be verified."
+    assert agent.current_task_state.stop_reason == "runtime_error"
+    assert len(provider.calls) == 1
+    assert len(provider.responses) == 1
+    assert (tmp_path / "changed.txt").read_text(encoding="utf-8") == "changed\n"
+    assert not (tmp_path / "must-not-run.txt").exists()
+    assert agent._last_tool_result_metadata["effect_observation_unknown"] is True
+    agent.workspace_observer.diff = original_diff
 
 
 @pytest.mark.parametrize("secondary", [OSError("trace unavailable"), SystemExit(2)])
@@ -1643,13 +2026,14 @@ def test_final_message_save_failure_is_persistence_error(tmp_path, monkeypatch):
     )
     original_append = agent.session_store.append_messages
 
-    def fail_assistant(session_id, messages, *, state_updates=None):
+    def fail_assistant(session_id, messages, *, state_updates=None, **append_options):
         if messages and messages[-1].get("role") == "assistant":
             raise OSError("assistant save failed")
         return original_append(
             session_id,
             messages,
             state_updates=state_updates,
+            **append_options,
         )
 
     monkeypatch.setattr(agent.session_store, "append_messages", fail_assistant)
@@ -1731,12 +2115,14 @@ def test_in_run_checkpoint_session_save_failure_is_persistence_error(
         ]
     )
     agent = build_native_agent(tmp_path, provider)
+    baseline = agent.create_manual_checkpoint("baseline")
     original_append_checkpoint = agent.session_store.append_task_checkpoint
     fault_injected = False
     failed_payload = None
+    failed_checkpoint_id = ""
 
     def fail_checkpoint_save(session_id, checkpoint, *, parent_id=None):
-        nonlocal fault_injected, failed_payload
+        nonlocal fault_injected, failed_checkpoint_id, failed_payload
         session = agent.session
         tool_use_ids = []
         tool_result_ids = []
@@ -1761,6 +2147,7 @@ def test_in_run_checkpoint_session_save_failure_is_persistence_error(
         )
         if not fault_injected and checkpoint_for_this_run and pair_present:
             fault_injected = True
+            failed_checkpoint_id = checkpoint["checkpoint_id"]
             failed_payload = copy.deepcopy(session)
             raise OSError("checkpoint save failed")
         return original_append_checkpoint(
@@ -1780,13 +2167,24 @@ def test_in_run_checkpoint_session_save_failure_is_persistence_error(
 
     assert len(provider.calls) == 2
     assert fault_injected is True
-    assert failed_payload["checkpoints"]["current_id"]
-    assert (
-        failed_payload["checkpoints"]["current_id"]
-        in failed_payload["checkpoints"]["items"]
-    )
+    assert failed_payload["checkpoints"]["current_id"] == baseline["checkpoint_id"]
     assert agent.current_task_state.stop_reason == "persistence_error"
     assert agent.current_task_state.status == "failed"
+
+    provider.responses.append(
+        Response(
+            stop_reason=StopReason.END_TURN,
+            content=[{"type": "text", "text": "continued"}],
+            usage={},
+        )
+    )
+    assert agent.ask("continue") == "continued"
+
+    durable = agent.session_store.load_tree(agent.session["id"]).projection["checkpoints"]
+    latest = durable["items"][durable["current_id"]]
+    assert failed_checkpoint_id not in durable["items"]
+    assert latest["parent_checkpoint_id"] == baseline["checkpoint_id"]
+    assert latest["parent_checkpoint_id"] in durable["items"]
 
 
 def test_rejected_tool_calls_do_not_consume_step_budget(tmp_path):
@@ -1819,3 +2217,101 @@ def test_rejected_tool_calls_do_not_consume_step_budget(tmp_path):
         and event.get("tool_status") == "rejected"
     ]
     assert rejected
+
+
+def test_repeated_rejected_tool_call_stops_after_one_transient_correction(tmp_path):
+    provider = NativeScriptProvider(
+        [
+            Response(
+                stop_reason=StopReason.TOOL_USE,
+                content=[
+                    {
+                        "type": "tool_use",
+                        "id": "tu_invalid_one",
+                        "name": "read_file",
+                        "input": {"path": "README.md", "start": 0},
+                    }
+                ],
+                usage={},
+            ),
+            Response(
+                stop_reason=StopReason.TOOL_USE,
+                content=[
+                    {
+                        "type": "tool_use",
+                        "id": "tu_invalid_two",
+                        "name": "read_file",
+                        "input": {"path": "README.md", "start": 0},
+                    }
+                ],
+                usage={},
+            ),
+        ]
+    )
+    agent = build_native_agent(tmp_path, provider, max_steps=3)
+
+    answer = agent.ask("inspect README")
+
+    assert answer.startswith("Stopped after the same tool/rejection category")
+    assert len(provider.calls) == 2
+    assert agent.current_task_state.stop_reason == "retry_limit_reached"
+    assert agent.current_task_state.tool_steps == 0
+    first_request, corrected_request = provider.calls
+    assert "pony:runtime_feedback" not in json.dumps(first_request)
+    corrected_payload = json.dumps(corrected_request)
+    assert "pony:runtime_feedback" in corrected_payload
+    assert "arguments did not satisfy the visible tool schema" in corrected_payload
+
+    canonical_text = json.dumps(agent.session["messages"])
+    trace_text = agent.run_store.trace_path(agent.current_task_state).read_text(
+        encoding="utf-8"
+    )
+    assert "pony:runtime_feedback" not in canonical_text
+    assert "arguments did not satisfy the visible tool schema" not in canonical_text
+    assert "pony:runtime_feedback" not in trace_text
+    assert "arguments did not satisfy the visible tool schema" not in trace_text
+
+
+def test_repeated_unsafe_workspace_tool_call_stops_after_one_correction(tmp_path):
+    outside = tmp_path.parent / f"{tmp_path.name}-outside.txt"
+    outside.write_text("outside-canary\n", encoding="utf-8")
+    os.link(outside, tmp_path / "unsafe.txt")
+    provider = NativeScriptProvider(
+        [
+            Response(
+                stop_reason=StopReason.TOOL_USE,
+                content=[
+                    {
+                        "type": "tool_use",
+                        "id": "tu_unsafe_one",
+                        "name": "read_file",
+                        "input": {"path": "unsafe.txt"},
+                    }
+                ],
+                usage={},
+            ),
+            Response(
+                stop_reason=StopReason.TOOL_USE,
+                content=[
+                    {
+                        "type": "tool_use",
+                        "id": "tu_unsafe_two",
+                        "name": "read_file",
+                        "input": {"path": "unsafe.txt"},
+                    }
+                ],
+                usage={},
+            ),
+        ]
+    )
+    agent = build_native_agent(tmp_path, provider, max_steps=3)
+
+    answer = agent.ask("inspect the unsafe file")
+
+    assert answer.startswith("Stopped after the same tool/rejection category")
+    assert len(provider.calls) == 2
+    corrected_payload = json.dumps(provider.calls[1])
+    assert "workspace entry is unsafe" in corrected_payload
+    assert "Do not retry that path" in corrected_payload
+    assert "Use list_files to choose" not in corrected_payload
+    assert outside.read_text(encoding="utf-8") == "outside-canary\n"

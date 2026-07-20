@@ -22,12 +22,7 @@ from pony.agent.compaction import CompactionError, CompactionNoProgress
 from pony.agent.context_manager import ContextBudgetExceeded
 from pony.context.renderer import build_injection_snapshot
 from pony.agent.messages import make_tool_pair
-from pony.recovery.policy import assess_command
-from pony.recovery.models import TRACE_RECOVERY_CHECKPOINT_CREATED
-from pony.recovery.checkpoint_writer import (
-    current_recovery_checkpoint_id,
-    set_current_recovery_checkpoint_id,
-)
+from pony.security.command_policy import assess_command
 from pony.security.private_files import ensure_private_dir
 from pony.security.paths import require_regular_no_symlink
 from pony.state.task_state import (
@@ -35,6 +30,7 @@ from pony.state.task_state import (
     STATUS_RUNNING,
     TaskState,
 )
+from pony.state.session_store import SessionFormatError
 from pony.workspace.context import clip, now
 from pony.tools.executor import (
     ToolExecutionResult,
@@ -64,8 +60,31 @@ _USAGE_SUM_KEYS = (
     "cache_read_input_tokens",
 )
 
-_ATTEMPT_ORIGINS = ("initial", "tool_followup", "retry_action", "model_retry")
+_ATTEMPT_ORIGINS = (
+    "initial",
+    "tool_followup",
+    "retry_action",
+    "model_retry",
+)
 _MODEL_RETRY_DELAYS = (0.5, 1.0)
+_REJECTION_CORRECTIONS = {
+    "invalid_arguments": (
+        "Runtime notice: the preceding tool call was rejected before it ran because "
+        "its arguments did not satisfy the visible tool schema. Do not repeat that "
+        "call. Return exactly one valid tool call using the supplied schema, or a "
+        "non-empty final answer."
+    ),
+    "workspace_entry_unsafe": (
+        "Runtime notice: the preceding tool call was rejected because its workspace "
+        "entry is unsafe. Do not retry that path. Choose a safe workspace entry from "
+        "the current context or visible tools, make exactly one valid tool call, or "
+        "return a non-empty final answer."
+    ),
+}
+_REJECTION_CORRECTION_LIMIT_TEXT = (
+    "Stopped after the same tool/rejection category remained after one correction. "
+    "Use a valid different tool call or return a final answer in a new turn."
+)
 
 
 def _is_context_length_error(error):
@@ -111,12 +130,6 @@ def _empty_model_execution():
             "status_counts": {},
             "changed_paths": [],
             "partial_successes": 0,
-            "recovery_review_required": False,
-            "sandbox_calls": 0,
-            "sandbox_target_started_count": 0,
-            "sandbox_outcome_counts": {},
-            "sandbox_cleanup_failure_count": 0,
-            "host_fallback_count": 0,
         },
     }
 
@@ -134,11 +147,36 @@ def _safe_provider_request_id(value):
         or value != value.strip()
         or not value
         or len(value) > 200
-        or any(character in value for character in ("\0", "\r", "\n"))
+        or not value.isascii()
+        or not value.isprintable()
+        or not all(character.isalnum() or character in "._:-" for character in value)
         or securitylib.looks_secret_shaped_text(value)
     ):
         return ""
     return value
+
+
+def _rejection_correction(name, metadata):
+    if not isinstance(metadata, dict) or metadata.get("tool_status") != "rejected":
+        return None
+    code = str(metadata.get("tool_error_code", "") or "")
+    notice = _REJECTION_CORRECTIONS.get(code)
+    if notice is None:
+        return None
+    return str(name), code, notice
+
+
+def _advance_rejection_correction(name, metadata, seen):
+    correction = _rejection_correction(name, metadata)
+    if correction is None:
+        return "", None
+    name, code, notice = correction
+    key = (name, code)
+    if key not in seen:
+        seen.add(key)
+        return notice, None
+
+    return "", _REJECTION_CORRECTION_LIMIT_TEXT
 
 
 def _record_transport(model_execution, model_client):
@@ -160,6 +198,7 @@ def _record_model_failure(
     outcome,
     failure_phase,
     error,
+    completion_usage=None,
 ):
     attempts, retries, complete = _record_transport(
         model_execution,
@@ -176,20 +215,23 @@ def _record_model_failure(
     reasons = model_execution["failure_reason_counts"]
     reasons[reason] = reasons.get(reason, 0) + 1
     try:
+        payload = {
+            "attempts": task_state.attempts,
+            "tool_steps": task_state.tool_steps,
+            "attempt_origin": attempt_origin,
+            "outcome": outcome,
+            "failure_phase": failure_phase,
+            "reason_code": reason,
+            "transport_attempts": attempts,
+            "transport_retries": retries,
+            "transport_evidence_complete": complete,
+        }
+        if completion_usage is not None:
+            payload["completion_usage"] = completion_usage
         agent.emit_trace(
             task_state,
             "model_failed",
-            {
-                "attempts": task_state.attempts,
-                "tool_steps": task_state.tool_steps,
-                "attempt_origin": attempt_origin,
-                "outcome": outcome,
-                "failure_phase": failure_phase,
-                "reason_code": reason,
-                "transport_attempts": attempts,
-                "transport_retries": retries,
-                "transport_evidence_complete": complete,
-            },
+            payload,
         )
     except BaseException as trace_error:
         logger.debug(
@@ -217,6 +259,75 @@ def _add_usage(totals, usage):
             totals["total_tokens"] += input_tokens + output_tokens
     totals["cache_hit"] = totals["cache_hit"] or bool(usage.get("cache_hit"))
     return totals
+
+
+def _run_compaction_observer(
+    agent,
+    task_state,
+    completion_usage_totals,
+    model_execution,
+):
+    def observe(call_kind, outcome, *, usage=None, error=None, retry=False):
+        if outcome == "requested":
+            task_state.record_attempt()
+            model_execution["model_attempts"] += 1
+            if retry:
+                model_execution["model_retries"] += 1
+            origins = model_execution["attempt_origin_counts"]
+            origins[call_kind] = origins.get(call_kind, 0) + 1
+            agent.run_store.write_task_state(task_state)
+            agent.emit_trace(
+                task_state,
+                "model_requested",
+                {
+                    "attempts": task_state.attempts,
+                    "tool_steps": task_state.tool_steps,
+                    "attempt_origin": call_kind,
+                },
+            )
+            return
+        if outcome == "failed":
+            completion_usage = None
+            if usage is not None:
+                completion_usage = dict(usage)
+                completion_usage.pop("request_id", None)
+                _add_usage(completion_usage_totals, completion_usage)
+            _record_model_failure(
+                agent,
+                task_state,
+                model_execution,
+                attempt_origin=call_kind,
+                outcome="error",
+                failure_phase="provider_complete",
+                error=error,
+                completion_usage=completion_usage,
+            )
+            return
+        if outcome != "completed":
+            raise ValueError("unknown compaction model outcome")
+
+        completion_usage = dict(usage or {})
+        completion_usage.pop("request_id", None)
+        _add_usage(completion_usage_totals, completion_usage)
+        attempts, retries, complete = _record_transport(
+            model_execution,
+            agent.model_client,
+        )
+        agent.emit_trace(
+            task_state,
+            "model_auxiliary_completed",
+            {
+                "attempts": task_state.attempts,
+                "tool_steps": task_state.tool_steps,
+                "attempt_origin": call_kind,
+                "completion_usage": completion_usage,
+                "transport_attempts": attempts,
+                "transport_retries": retries,
+                "transport_evidence_complete": complete,
+            },
+        )
+
+    return observe
 
 
 def _action_trace_payload(action):
@@ -302,7 +413,7 @@ def _sanitize_action(agent, action):
             assessment["risk_class"],
             _command_approval_metadata(
                 assessment,
-                agent.approval_policy,
+                agent.current_permission_mode(),
                 "blocked",
             ),
         )
@@ -338,7 +449,41 @@ def _adopt_session(agent, session, path):
     )
 
 
-def _commit_session(agent, *, messages=()):
+def _capture_model_session_guard(agent):
+    tree = agent.session_store.load_tree(agent.session["id"])
+    durable_binding = deepcopy(tree.projection.get("provider_binding"))
+    client_binding = getattr(agent.model_client, "provider_binding", None)
+    client_binding = (
+        deepcopy(client_binding) if isinstance(client_binding, dict) else None
+    )
+    if durable_binding != client_binding:
+        error = SessionFormatError("model_session_mismatch")
+        agent._session_write_blocked_cause = error
+        raise error
+    return {
+        "leaf_id": tree.leaf_id,
+        "provider_binding": durable_binding,
+    }
+
+
+def _validate_model_session_guard(agent, session_guard):
+    current = _capture_model_session_guard(agent)
+    if current != session_guard:
+        error = SessionFormatError("session changed before model request")
+        agent._session_write_blocked_cause = error
+        raise error
+
+
+def _advance_session_guard_after_session_tool(agent, session_guard):
+    tree = agent.session_store.load_tree(agent.session["id"])
+    if tree.projection.get("provider_binding") != session_guard["provider_binding"]:
+        error = SessionFormatError("model_session_mismatch")
+        agent._session_write_blocked_cause = error
+        raise SessionCommitError(error)
+    session_guard["leaf_id"] = tree.leaf_id
+
+
+def _commit_session(agent, *, messages=(), session_guard=None):
     blocked_cause = getattr(agent, "_session_write_blocked_cause", None)
     if blocked_cause is not None:
         raise SessionCommitError(blocked_cause)
@@ -352,15 +497,25 @@ def _commit_session(agent, *, messages=()):
     )
     state_updates = {
         key: agent.redact_artifact(agent.session.get(key, {}))
-        for key in ("resume_state", "recovery", "runtime_identity")
+        for key in ("resume_state", "runtime_identity")
     }
+    append_options = {}
+    if session_guard is not None:
+        append_options = {
+            "expected_leaf_id": session_guard["leaf_id"],
+            "expected_provider_binding": session_guard["provider_binding"],
+            "return_leaf_id": True,
+        }
     try:
-        saved_path = agent.session_store.append_messages(
+        saved = agent.session_store.append_messages(
             session_id,
             safe_messages,
             state_updates=state_updates,
+            **append_options,
         )
     except Exception as exc:
+        if session_guard is not None and isinstance(exc, SessionFormatError):
+            agent._session_write_blocked_cause = exc
         if getattr(exc, "committed", False):
             try:
                 persisted = agent.session_store.load(session_id)
@@ -382,6 +537,10 @@ def _commit_session(agent, *, messages=()):
             ):
                 return
         raise SessionCommitError(exc) from exc
+    if session_guard is None:
+        saved_path = saved
+    else:
+        saved_path, session_guard["leaf_id"] = saved
     agent.session["messages"].extend(deepcopy(safe_messages))
     agent.session.update(deepcopy(state_updates))
     agent.session_path = saved_path
@@ -547,7 +706,8 @@ def _run_turn_preflight(agent, user_message):
         "workspace_chars": len(agent.workspace.text()),
         "memory_chars": len(agent.memory_text()),
         "request_chars": len(str(user_message)),
-        "tool_count": len(agent.tools),
+        "tool_count": len(agent.visible_tools()),
+        "permission_mode": agent.current_permission_mode(),
         "workspace_docs": len(agent.workspace.project_docs),
         "recent_commits": len(agent.workspace.recent_commits),
         "workspace_fingerprint": agent.prefix_state.workspace_fingerprint,
@@ -577,6 +737,20 @@ def _start_agent_run(agent, task_state, user_message):
             "user_request": clip(user_message, 300),
         },
     )
+    resolution = getattr(agent.model_client, "provider_resolution_metadata", None)
+    if isinstance(resolution, dict):
+        allowed = (
+            "resolution_source",
+            "protocol",
+            "candidate_count",
+            "probe_model_calls",
+            "usage_status",
+        )
+        agent.emit_trace(
+            task_state,
+            "provider_resolved",
+            {"request_metadata": {key: resolution.get(key) for key in allowed}},
+        )
     preflight_metadata = _run_turn_preflight(agent, user_message)
     injection_snapshot, injection_telemetry = build_injection_snapshot(
         agent,
@@ -596,13 +770,9 @@ def _build_attempt_request(
     preflight_metadata,
     attempt_origin,
     model_execution,
+    session_guard,
+    compaction_observer,
 ):
-    task_state.record_attempt()
-    model_execution["model_attempts"] += 1
-    model_execution["attempt_origin_counts"][attempt_origin] += 1
-    if attempt_origin == "model_retry":
-        model_execution["model_retries"] += 1
-    agent.run_store.write_task_state(task_state)
     prompt_started_at = time.monotonic()
     compaction_result = None
     for compaction_attempt in range(3):
@@ -628,7 +798,10 @@ def _build_attempt_request(
                 compaction_result = agent.compact_session(
                     reason="budget_exceeded",
                     keep_recent_tokens=keep_recent,
+                    expected_leaf_id=session_guard["leaf_id"],
+                    model_observer=compaction_observer,
                 )
+                session_guard["leaf_id"] = compaction_result.entry["id"]
             except (CompactionError, CompactionNoProgress) as compaction_error:
                 raise budget_error from compaction_error
             agent.emit_trace(
@@ -657,12 +830,18 @@ def _build_attempt_request(
         agent.session["recently_recalled"] = (recent + [recall_paths])[
             -(skip_turns + 1) :
         ]
-        _commit_session(agent)
+        _commit_session(agent, session_guard=session_guard)
     if attempts == 1:
         task_state.resume_status = request_metadata.get(
             "resume_status",
             task_state.resume_status,
         )
+    task_state.record_attempt()
+    model_execution["model_attempts"] += 1
+    model_execution["attempt_origin_counts"][attempt_origin] += 1
+    if attempt_origin == "model_retry":
+        model_execution["model_retries"] += 1
+    agent.run_store.write_task_state(task_state)
     agent.emit_trace(
         task_state,
         "prompt_built",
@@ -752,6 +931,7 @@ def _complete_model_attempt(
         return None, None, exc
 
     completion_usage = dict(response.usage or {})
+    request_id = _safe_provider_request_id(completion_usage.pop("request_id", None))
     _add_usage(completion_usage_totals, completion_usage)
     anchor = getattr(agent, "_pending_token_anchor", None)
     if anchor is not None:
@@ -775,7 +955,6 @@ def _complete_model_attempt(
     transport_attempts, transport_retries, evidence_complete = _transport_evidence(
         agent.model_client,
     )
-    request_id = _safe_provider_request_id(completion_usage.get("request_id"))
     if request_id:
         request_metadata["provider_request_id"] = request_id
     if type(transport_attempts) is int and transport_attempts >= 0:
@@ -843,86 +1022,6 @@ def _record_tool_report(agent, name, metadata, model_execution):
             tool_report["changed_paths"].append(path)
     if tool_status == "partial_success":
         tool_report["partial_successes"] += 1
-    if (
-        metadata.get("recovery_review_required") is True
-        or metadata.get("tool_error_code") == "recovery_review_required"
-        or tool_status in {"interrupted", "partial_success"}
-    ):
-        tool_report["recovery_review_required"] = True
-
-    sandbox = metadata.get("sandbox")
-    sandbox = sandbox if isinstance(sandbox, dict) else {}
-    sandbox_status = str(sandbox.get("status", "") or "")
-    sandbox_outcome_observed = sandbox_status not in {
-        "",
-        "not_applicable",
-        "not_started",
-        "pending",
-    }
-    if sandbox_outcome_observed:
-        tool_report["sandbox_calls"] += 1
-        outcome_counts = tool_report["sandbox_outcome_counts"]
-        outcome_counts[sandbox_status] = outcome_counts.get(sandbox_status, 0) + 1
-        if sandbox.get("target_started") is True:
-            tool_report["sandbox_target_started_count"] += 1
-        if sandbox.get("cleanup_status") not in {
-            None,
-            "",
-            "completed",
-            "not_applicable",
-            "pending",
-        }:
-            tool_report["sandbox_cleanup_failure_count"] += 1
-    command_approval = metadata.get("command_approval")
-    runner_executed = (
-        isinstance(command_approval, dict)
-        and command_approval.get("runner_executed") is True
-    )
-    execution_plane = str(sandbox.get("execution_plane", "") or "")
-    if (
-        name == "run_shell"
-        and agent.sandbox_context is not None
-        and (
-            execution_plane == "host"
-            or (runner_executed and execution_plane != "sandbox")
-        )
-    ):
-        tool_report["host_fallback_count"] += 1
-
-
-def _sandbox_trace_payload(metadata):
-    sandbox = metadata.get("sandbox")
-    if not isinstance(sandbox, dict) or sandbox.get("status") in {
-        None,
-        "",
-        "not_applicable",
-        "not_started",
-        "pending",
-    }:
-        return {}
-    payload = {
-        "sandbox_outcome": sandbox.get("status"),
-        "execution_plane": sandbox.get("execution_plane") or "unknown",
-        "cleanup_status": sandbox.get("cleanup_status") or "unknown",
-        "sandbox_wrapper_status": sandbox.get("wrapper_status"),
-        "sandbox_error_code": sandbox.get("error_code"),
-        "sandbox_call_id": sandbox.get("call_id"),
-        "execution_plan_digest": sandbox.get("execution_plan_digest"),
-        "logical_intent_digest": sandbox.get("logical_intent_digest"),
-        "policy_digest": sandbox.get("policy_digest"),
-        "target_started": sandbox.get("target_started") is True,
-        "timed_out": sandbox.get("timed_out"),
-        "residue_detected": sandbox.get("residue_detected"),
-        "container_created": sandbox.get("container_created"),
-        "runner_executed": sandbox.get("runner_executed"),
-        "stdout_bytes": sandbox.get("stdout_bytes"),
-        "stderr_bytes": sandbox.get("stderr_bytes"),
-        "stdout_truncated": sandbox.get("stdout_truncated"),
-        "stderr_truncated": sandbox.get("stderr_truncated"),
-        "exit_code": sandbox.get("exit_code"),
-    }
-    return {key: value for key, value in payload.items() if value is not None}
-
 
 def _apply_tool_action(
     agent,
@@ -930,9 +1029,8 @@ def _apply_tool_action(
     user_message,
     action,
     blocked_tool_result,
-    run_tool_change_ids,
-    run_verification_evidence,
     model_execution,
+    session_guard,
 ):
     name = action.name
     args = action.arguments
@@ -953,9 +1051,6 @@ def _apply_tool_action(
             metadata = dict(agent._last_tool_result_metadata or {})
             if metadata.get("tool_status"):
                 _record_tool_report(agent, name, metadata, model_execution)
-                tool_change_id = str(metadata.get("tool_change_id", "") or "")
-                if tool_change_id and metadata.get("effect_class") == "workspace_write":
-                    run_tool_change_ids.append(tool_change_id)
                 try:
                     agent.emit_trace(
                         task_state,
@@ -963,10 +1058,8 @@ def _apply_tool_action(
                         {
                             "name": name,
                             "tool_use_id": tool_use_id,
-                            "tool_change_id": tool_change_id,
                             "tool_status": metadata["tool_status"],
                             "affected_paths": list(metadata.get("affected_paths", [])),
-                            **_sandbox_trace_payload(metadata),
                         },
                     )
                 except BaseException:
@@ -978,13 +1071,9 @@ def _apply_tool_action(
     result = tool_result.content
     metadata = dict(tool_result.metadata or {})
     _record_tool_report(agent, name, metadata, model_execution)
-    verification_evidence = _verification_evidence_for_tool(name, metadata)
-    if verification_evidence is not None:
-        run_verification_evidence.append(verification_evidence)
-    tool_change_id = str(metadata.get("tool_change_id", "") or "")
     effect_class = str(metadata["effect_class"])
-    if tool_change_id and effect_class == "workspace_write":
-        run_tool_change_ids.append(tool_change_id)
+    if effect_class == "session_state":
+        _advance_session_guard_after_session_tool(agent, session_guard)
 
     display_result, digest_meta = _prepare_tool_result(
         agent,
@@ -1007,19 +1096,17 @@ def _apply_tool_action(
         created_at=now(),
         tool_status=metadata["tool_status"],
         effect_class=effect_class,
-        tool_change_id=tool_change_id,
         result_meta=digest_meta,
         provider_state=action.provider_state,
     )
     try:
-        _commit_session(agent, messages=pair)
+        _commit_session(agent, messages=pair, session_guard=session_guard)
     except SessionCommitError as exc:
         if not exc.committed:
             agent.memory = working_memory_before
             agent._sync_working_memory()
             agent.session["memory"]["file_summaries"] = file_summaries_before
         raise
-
     consumed_step = metadata.get("tool_status") != "rejected"
     if consumed_step:
         task_state.record_tool(name)
@@ -1034,7 +1121,6 @@ def _apply_tool_action(
             "tool_use_id": tool_use_id,
             "duration_ms": int((time.monotonic() - tool_started_at) * 1000),
             **metadata,
-            **_sandbox_trace_payload(metadata),
         },
     )
     agent.emit_trace(
@@ -1042,7 +1128,6 @@ def _apply_tool_action(
         "tool_finished",
         {
             "name": name,
-            "tool_change_id": tool_change_id,
             "tool_use_id": tool_use_id,
             "tool_status": metadata.get("tool_status", ""),
             "affected_paths": list(metadata.get("affected_paths", [])),
@@ -1056,8 +1141,6 @@ def _run_agent_attempts(
     agent,
     task_state,
     user_message,
-    run_tool_change_ids,
-    run_verification_evidence,
     completion_usage_totals,
     model_execution,
 ):
@@ -1073,10 +1156,19 @@ def _run_agent_attempts(
     model_retry_count = 0
     retry_action_count = 0
     context_recovery_count = 0
+    rejection_corrections = set()
     max_attempts = max(agent.max_steps * 3, agent.max_steps + 4)
+    session_guard = None
+    compaction_observer = _run_compaction_observer(
+        agent,
+        task_state,
+        completion_usage_totals,
+        model_execution,
+    )
 
     while tool_steps < agent.max_steps and attempts < max_attempts:
         attempts += 1
+        session_guard = _capture_model_session_guard(agent)
         request, request_metadata, prompt_started_at = _build_attempt_request(
             agent,
             task_state,
@@ -1088,7 +1180,10 @@ def _run_agent_attempts(
             preflight_metadata,
             attempt_origin,
             model_execution,
+            session_guard,
+            compaction_observer,
         )
+        _validate_model_session_guard(agent, session_guard)
         action, blocked_result, model_error = _complete_model_attempt(
             agent,
             task_state,
@@ -1099,6 +1194,8 @@ def _run_agent_attempts(
             model_execution,
             attempt_origin,
         )
+        if model_error is None:
+            _validate_model_session_guard(agent, session_guard)
         if model_error is not None:
             if (
                 _is_context_length_error(model_error)
@@ -1115,6 +1212,8 @@ def _run_agent_attempts(
                                 agent.model_budget.input_limit // 4,
                             ),
                         ),
+                        expected_leaf_id=session_guard["leaf_id"],
+                        model_observer=compaction_observer,
                     )
                 except CompactionError:
                     recovery = None
@@ -1128,7 +1227,9 @@ def _run_agent_attempts(
                             "tokens_before": recovery.tokens_before,
                             "tokens_after": recovery.tokens_after,
                         },
+                        expected_leaf_id=recovery.entry["id"],
                     )
+                    session_guard["leaf_id"] = recovery_entry["id"]
                     agent.emit_trace(
                         task_state,
                         "context_recovery",
@@ -1175,10 +1276,41 @@ def _run_agent_attempts(
                 user_message,
                 action,
                 blocked_result,
-                run_tool_change_ids,
-                run_verification_evidence,
                 model_execution,
+                session_guard,
             )
+            if agent._last_tool_result_metadata.get("effect_observation_unknown"):
+                final = "Stopped because workspace effects could not be verified."
+                task_state.stop_runtime_error(final)
+                _commit_session(
+                    agent,
+                    messages=(_plain_message("assistant", final),),
+                    session_guard=session_guard,
+                )
+                return final, task_state.stop_reason, None, None
+            if (
+                action.name == "exit_plan_mode"
+                and agent._last_tool_result_metadata.get("tool_status") == "ok"
+                and agent.session.get("permission_mode") != "plan"
+            ):
+                agent.refresh_permission_turn_after_plan_exit()
+                preflight_metadata["permission_mode"] = (
+                    agent.current_permission_mode()
+                )
+                preflight_metadata["tool_count"] = len(agent.visible_tools())
+            runtime_feedback, correction_stop = _advance_rejection_correction(
+                action.name,
+                agent._last_tool_result_metadata,
+                rejection_corrections,
+            )
+            if correction_stop is not None:
+                task_state.stop_retry_limit(correction_stop)
+                _commit_session(
+                    agent,
+                    messages=(_plain_message("assistant", correction_stop),),
+                    session_guard=session_guard,
+                )
+                return correction_stop, task_state.stop_reason, None, None
             attempt_origin = "tool_followup"
             continue
         if isinstance(action, RetryAction):
@@ -1191,6 +1323,7 @@ def _run_agent_attempts(
                 _commit_session(
                     agent,
                     messages=(_plain_message("assistant", final),),
+                    session_guard=session_guard,
                 )
                 return final, task_state.stop_reason, None, None
             retry_action_count += 1
@@ -1203,6 +1336,7 @@ def _run_agent_attempts(
         _commit_session(
             agent,
             messages=(_plain_message("assistant", final),),
+            session_guard=session_guard,
         )
         task_state.finish_success(final)
         return final, "run_finished", None, None
@@ -1219,6 +1353,7 @@ def _run_agent_attempts(
     _commit_session(
         agent,
         messages=(_plain_message("assistant", final),),
+        session_guard=session_guard,
     )
     return final, task_state.stop_reason or "run_stopped", None, None
 
@@ -1227,16 +1362,33 @@ class AgentLoop:
     def __init__(self, agent):
         self.agent = agent
 
-    def run(self, user_message):
+    def run(self, user_message, *, skill=None):
+        if skill is not None and not hasattr(skill, "instructions"):
+            raise TypeError("skill must be a ProjectSkill")
+        if getattr(self.agent, "active_skill", None) is not None:
+            raise RuntimeError("skill_turn_active")
+        self.agent.active_skill = skill
+        try:
+            self.agent.begin_permission_turn()
+            try:
+                return self._run(user_message)
+            finally:
+                self.agent.end_permission_turn()
+        finally:
+            self.agent.active_skill = None
+
+    def _run(self, user_message):
         agent = self.agent
         user_message = agent.redact_text(user_message)
         run_started_at = time.monotonic()
+        session_guard = _capture_model_session_guard(agent)
         agent.memory.set_task_summary(user_message)
         agent._sync_working_memory()
         try:
             _commit_session(
                 agent,
                 messages=(_plain_message("user", user_message),),
+                session_guard=session_guard,
             )
         except SessionCommitError as exc:
             raise exc.cause
@@ -1252,8 +1404,6 @@ class AgentLoop:
         )
         agent.current_task_state = task_state
         agent.last_request_metadata = {}
-        run_tool_change_ids = []
-        run_verification_evidence = []
         completion_usage_totals = _empty_usage_totals()
         model_execution = _empty_model_execution()
         try:
@@ -1261,8 +1411,6 @@ class AgentLoop:
                 agent,
                 task_state,
                 user_message,
-                run_tool_change_ids,
-                run_verification_evidence,
                 completion_usage_totals,
                 model_execution,
             )
@@ -1304,8 +1452,6 @@ class AgentLoop:
             user_message=user_message,
             final=final,
             run_started_at=run_started_at,
-            run_tool_change_ids=run_tool_change_ids,
-            run_verification_evidence=run_verification_evidence,
             completion_usage_totals=completion_usage_totals,
             model_execution=model_execution,
             trigger=trigger,
@@ -1324,8 +1470,6 @@ def _finalize_run(
     user_message,
     final,
     run_started_at,
-    run_tool_change_ids,
-    run_verification_evidence,
     completion_usage_totals,
     model_execution,
     trigger,
@@ -1365,36 +1509,6 @@ def _finalize_run(
             ),
         )
     attempt("task_state_write", lambda: agent.run_store.write_task_state(task_state))
-    recovery_checkpoint = None
-    if not _session_writes_blocked(agent):
-        recovery_checkpoint = attempt(
-            "recovery_checkpoint",
-            lambda: _finalize_recovery_checkpoint(
-                agent,
-                task_state,
-                run_tool_change_ids,
-                run_verification_evidence,
-                trigger=trigger,
-            ),
-        )
-    if recovery_checkpoint is not None:
-        attempt(
-            "recovery_checkpoint_trace",
-            lambda: _emit_recovery_checkpoint_created(
-                agent,
-                task_state,
-                recovery_checkpoint,
-                trigger=trigger,
-            ),
-        )
-        attempt(
-            "verification_evidence",
-            lambda: _record_pending_verification_evidence(
-                agent,
-                recovery_checkpoint,
-                run_verification_evidence,
-            ),
-        )
     if not _session_writes_blocked(agent):
         changed_paths = list(
             (model_execution.get("tool_report") or {}).get("changed_paths", [])
@@ -1501,92 +1615,6 @@ def _create_resume_checkpoint(
             "checkpoint_id": checkpoint["checkpoint_id"],
             "checkpoint_kind": "task",
             "trigger": trigger,
-            "workspace_checkpoint_id": checkpoint.get(
-                "workspace_checkpoint_id",
-                "",
-            ),
         },
     )
     return checkpoint
-
-
-def _emit_recovery_checkpoint_created(agent, task_state, recovery_checkpoint, trigger):
-    if recovery_checkpoint is None:
-        return
-    agent.emit_trace(
-        task_state,
-        TRACE_RECOVERY_CHECKPOINT_CREATED,
-        {
-            "checkpoint_id": recovery_checkpoint["checkpoint_id"],
-            "recovery_checkpoint_id": recovery_checkpoint["checkpoint_id"],
-            "checkpoint_kind": "recovery",
-            "checkpoint_type": "turn",
-            "trigger": trigger,
-        },
-    )
-
-
-def _finalize_recovery_checkpoint(
-    agent, task_state, run_tool_change_ids, run_verification_evidence, trigger
-):
-    """把当前累计到的 Tool Change 打包成一份 Turn Checkpoint。
-
-    只有真的有 Tool Change 时才写，避免为纯回答型 turn 产生空 checkpoint。
-    写完后：
-      - 把 checkpoint_id 记到 task_state.recovery_checkpoint_id
-      - 更新 session.recovery.current_checkpoint_id
-      - 清空累计列表，防止下一个 turn 重复写
-    """
-    if not run_tool_change_ids:
-        return None
-    ids_to_link = list(run_tool_change_ids)
-    parent_checkpoint = current_recovery_checkpoint_id(agent.session)
-    record = agent.recovery_checkpoint_writer.create_turn_checkpoint(
-        session_id=agent.session["id"],
-        run_id=task_state.run_id,
-        turn_id=task_state.task_id,
-        parent_checkpoint_id=parent_checkpoint,
-        tool_change_ids=ids_to_link,
-        verification_evidence=[],
-    )
-    task_state.recovery_checkpoint_id = record["checkpoint_id"]
-    set_current_recovery_checkpoint_id(agent.session, record["checkpoint_id"])
-    try:
-        agent.session_path = agent.session_store.append_messages(
-            agent.session["id"],
-            (),
-            state_updates={
-                "resume_state": agent.session.get("resume_state", {}),
-                "recovery": agent.session.get("recovery", {}),
-                "runtime_identity": agent.session.get("runtime_identity", {}),
-            },
-        )
-    except Exception as exc:
-        _block_session_writes(agent, exc)
-        raise
-    agent.run_store.write_task_state(task_state)
-    run_tool_change_ids.clear()
-    return record
-
-
-def _record_pending_verification_evidence(
-    agent, recovery_checkpoint, run_verification_evidence
-):
-    if recovery_checkpoint is None:
-        return
-    for evidence in list(run_verification_evidence or []):
-        agent.record_verification_evidence(
-            checkpoint_id=recovery_checkpoint["checkpoint_id"],
-            **evidence,
-        )
-    if run_verification_evidence is not None:
-        run_verification_evidence.clear()
-
-
-def _verification_evidence_for_tool(name, metadata):
-    if name != "run_shell" or not isinstance(metadata, dict):
-        return None
-    evidence = metadata.get("verification_evidence")
-    if not isinstance(evidence, dict):
-        return None
-    return deepcopy(evidence)

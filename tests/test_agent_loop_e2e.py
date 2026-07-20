@@ -61,7 +61,7 @@ def test_end_to_end_tool_call_then_final(tmp_path):
         model_client=provider,
         workspace=workspace,
         session_store=store,
-        options=RuntimeOptions(approval_policy="auto", max_steps=3),
+        options=RuntimeOptions(project_trusted=True, max_steps=3),
     )
 
     result = pony.ask("what's in readme?")
@@ -99,7 +99,7 @@ def test_end_to_end_fake_provider_uses_structured_surface(tmp_path):
         model_client=inner,
         workspace=workspace,
         session_store=store,
-        options=RuntimeOptions(approval_policy="auto"),
+        options=RuntimeOptions(project_trusted=True),
     )
 
     assert pony.model_client is inner
@@ -126,7 +126,7 @@ def test_end_to_end_structured_provider_stays_as_is(tmp_path):
         model_client=provider,
         workspace=workspace,
         session_store=store,
-        options=RuntimeOptions(approval_policy="auto"),
+        options=RuntimeOptions(project_trusted=True),
     )
 
     assert pony.model_client is provider

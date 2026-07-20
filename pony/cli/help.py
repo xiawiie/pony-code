@@ -13,17 +13,24 @@ class SlashCommand:
 SLASH_COMMANDS = (
     SlashCommand("/help", "/help", "Show interactive commands"),
     SlashCommand("/memory", "/memory", "Show working memory and memory files"),
+    SlashCommand("/model", "/model [model]", "Show or change the Session model"),
+    SlashCommand("/plan", "/plan [open|share|description]", "Enter or view Plan"),
+    SlashCommand("/permissions", "/permissions", "Manage permission rules"),
+    SlashCommand("/allowed-tools", "/allowed-tools", "Alias of /permissions"),
     SlashCommand("/memory-review", "/memory-review", "Review agent notes"),
     SlashCommand("/remember", "/remember <text>", "Append an explicit workspace note"),
     SlashCommand("/session", "/session", "Show the active session file"),
     SlashCommand("/tree", "/tree", "Show the append-only Session Tree"),
     SlashCommand("/compact", "/compact [focus]", "Compact older conversation history"),
     SlashCommand("/checkpoint", "/checkpoint [label]", "Create a task checkpoint"),
-    SlashCommand("/fork", "/fork <entry>", "Branch the conversation at an entry"),
+    SlashCommand("/queue", "/queue [clear]", "Inspect or clear pending inputs"),
+    SlashCommand(
+        "/fork", "/fork [entry]", "Pick or branch the conversation at an entry"
+    ),
     SlashCommand(
         "/rewind",
-        "/rewind <entry> [--workspace] [--summary[=focus]]",
-        "Rewind the session, optionally restoring workspace files",
+        "/rewind [entry] [--summary[=focus]]",
+        "Pick or rewind the session to an earlier entry",
     ),
     SlashCommand(
         "/clone",
@@ -39,3 +46,28 @@ SLASH_COMMANDS = (
 HELP_DETAILS = "Commands:\n" + "\n".join(
     f"{command.usage:<54} {command.summary}." for command in SLASH_COMMANDS
 )
+
+
+def render_help_details(agent=None):
+    """Add dynamically discovered project Skills to the one slash command list."""
+    if agent is None:
+        return HELP_DETAILS
+    catalog = getattr(agent, "project_skills", None)
+    skills = getattr(catalog, "skills", ())
+    if not skills:
+        if getattr(catalog, "status", "") != "invalid":
+            return HELP_DETAILS
+        return "\n".join(
+            (
+                HELP_DETAILS,
+                "",
+                "Project Skills: unavailable",
+                f"reason: {catalog.reason_code}",
+                f"fix: {catalog.remediation}",
+            )
+        )
+    rows = ["", "Project Skills:"]
+    rows.extend(
+        f"/{skill.name + ' [prompt]':<54} {skill.description}." for skill in skills
+    )
+    return HELP_DETAILS + "\n" + "\n".join(rows)

@@ -9,10 +9,8 @@ from pathlib import Path
 from pony.security import paths as security_paths
 from pony.security import redaction as redaction
 from pony.memory.recall import recall_candidates
-from pony.memory.retrieval import Retrieval
 from pony.agent.model_capabilities import TokenAccounting
-
-from .chunks import make_chunk
+from .chunks import RequiredContextTooLarge, make_chunk
 
 
 logger = logging.getLogger("pony")
@@ -133,6 +131,36 @@ def workspace_state_chunks(agent, accounting):
     return chunks
 
 
+def active_skill_chunks(agent, accounting):
+    """Render the one Skill explicitly chosen for this top-level turn."""
+    skill = getattr(agent, "active_skill", None)
+    if skill is None:
+        return []
+    parts = [
+        "Repository Skill (read-only context):",
+        f"- name: {skill.name}",
+        f"- description: {skill.description}",
+        "- authority: user request, then applicable project rules, then this Skill",
+        "",
+        "Instructions:",
+        skill.instructions,
+    ]
+    for resource in getattr(skill, "resources", ()):
+        parts.extend(("", f"Resource {resource.path}:", resource.content))
+    text = "\n".join(parts)
+    return [
+        make_chunk(
+            accounting,
+            source="active_skill",
+            key=skill.name,
+            text=_sanitize_source_text(agent, text),
+            priority=0,
+            required=True,
+            provenance={"rank": 0, "name": skill.name},
+        )
+    ]
+
+
 def project_structure_chunks(agent, accounting):
     repo_map = getattr(agent, "repo_map", None)
     tree = []
@@ -219,7 +247,7 @@ def task_working_set_chunks(agent, accounting):
     checkpoint_items = checkpoint_items if isinstance(checkpoint_items, dict) else {}
     checkpoint = checkpoint_items.get(checkpoint_id)
     checkpoint = checkpoint if isinstance(checkpoint, dict) else {}
-    goal = str(
+    checkpoint_goal = str(
         checkpoint.get(
             "goal",
             checkpoint.get(
@@ -236,11 +264,12 @@ def task_working_set_chunks(agent, accounting):
     ]
     live_files = list(getattr(memory, "recent_files", []) or [])
     recent_files = list(dict.fromkeys([*live_files, *checkpoint_files]))
-    lines = ["Task working set:"]
+    chunks = []
+    lines = ["Checkpoint state:"]
     if checkpoint_id:
         lines.append(f"- Checkpoint: {checkpoint_id}")
-    if goal:
-        lines.append(f"- Goal: {goal}")
+    if checkpoint_goal:
+        lines.append(f"- Goal: {checkpoint_goal}")
     if checkpoint.get("status"):
         lines.append(f"- Status: {checkpoint['status']}")
     blocker = checkpoint.get("blocker", checkpoint.get("current_blocker", ""))
@@ -252,8 +281,23 @@ def task_working_set_chunks(agent, accounting):
     next_steps = [str(item).strip() for item in next_steps if str(item).strip()]
     if next_steps:
         lines.append("- Next steps: " + " | ".join(next_steps))
+    if len(lines) > 1:
+        safe_checkpoint = _sanitize_source_text(agent, "\n".join(lines))
+        chunks.append(
+            make_chunk(
+                accounting,
+                source="task_working_set",
+                key="checkpoint-state",
+                text=_clip_tokens(safe_checkpoint, accounting, 768),
+                priority=0,
+                required=bool(checkpoint_id),
+                provenance={"rank": 1},
+            )
+        )
+
+    detail_lines = []
     if recent_files:
-        lines.append("- Recent files: " + ", ".join(recent_files))
+        detail_lines.append("Recent files: " + ", ".join(recent_files))
     memory_state = session.get("memory", {}) if isinstance(session, dict) else {}
     summaries = (
         memory_state.get("file_summaries", {}) if isinstance(memory_state, dict) else {}
@@ -272,23 +316,20 @@ def task_working_set_chunks(agent, accounting):
         value = checkpoint_item.get("summary") or summaries.get(path)
         summary = value.get("summary", "") if isinstance(value, dict) else value
         if str(summary or "").strip():
-            lines.append(f"- {path}: {str(summary).strip()}")
-    if len(lines) == 1:
-        return []
-    safe_working_set = _sanitize_source_text(agent, "\n".join(lines))
-    required = bool(checkpoint_id)
-    return [
+            detail_lines.append(f"- {path}: {str(summary).strip()}")
+    safe_details = _sanitize_source_text(agent, "\n".join(detail_lines))
+    chunks.extend(
         make_chunk(
             accounting,
             source="task_working_set",
-            key=f"working-{index}",
+            key=f"working-details-{index}",
             text=part,
-            priority=0,
-            required=required and index == 0,
-            provenance={"rank": index},
+            priority=1,
+            provenance={"rank": 30 + index},
         )
-        for index, part in enumerate(_line_groups(safe_working_set, accounting, 1_024))
-    ]
+        for index, part in enumerate(_line_groups(safe_details, accounting, 1_024))
+    )
+    return [chunk for chunk in chunks if chunk is not None]
 
 
 def memory_index_chunks(agent, accounting, memory_snapshot):
@@ -332,7 +373,12 @@ def recalled_memory_chunks(agent, accounting, user_message, memory_snapshot):
         if isinstance(session, dict):
             counters = session.setdefault("_recall_errors", {"count": 0, "last": ""})
             counters["count"] = int(counters.get("count", 0)) + 1
-            counters["last"] = f"{type(exc).__name__}: {exc}"[:200]
+            detail = type(exc).__name__
+            try:
+                detail = _sanitize_source_text(agent, f"{detail}: {exc}")
+            except Exception:
+                pass
+            counters["last"] = detail[:200]
         logger.debug("recalled_memory source failed: %s", type(exc).__name__)
         return []
     return [
@@ -358,16 +404,7 @@ def recovery_state_chunks(agent, accounting):
     resume_state = getattr(agent, "resume_state", None)
     resume_state = resume_state if isinstance(resume_state, dict) else {}
     status = str(resume_state.get("status", "") or "")
-    sandbox = getattr(agent, "sandbox_session", None)
-    manifest = getattr(sandbox, "manifest", {}) if sandbox is not None else {}
-    sandbox_state = (
-        str(manifest.get("state", "") or "") if isinstance(manifest, dict) else ""
-    )
-    noteworthy = status in {"partial-stale", "workspace-mismatch"} or sandbox_state in {
-        "pending_review",
-        "review_required",
-    }
-    if not noteworthy:
+    if status not in {"partial-stale", "workspace-mismatch"}:
         return []
     lines = ["Recovery state:", f"- Resume status: {status or '-'}"]
     if resume_state.get("stale_paths"):
@@ -377,8 +414,6 @@ def recovery_state_chunks(agent, accounting):
             "- Runtime mismatch: "
             + ", ".join(resume_state["runtime_identity_mismatch_fields"])
         )
-    if sandbox_state:
-        lines.append(f"- Sandbox state: {sandbox_state}")
     chunk = make_chunk(
         accounting,
         source="recovery_state",
@@ -386,7 +421,7 @@ def recovery_state_chunks(agent, accounting):
         text=_sanitize_source_text(agent, "\n".join(lines)),
         priority=0,
         required=True,
-        provenance={"status": status, "sandbox_state": sandbox_state},
+        provenance={"status": status},
     )
     return [chunk]
 
@@ -394,9 +429,10 @@ def recovery_state_chunks(agent, accounting):
 def build_source_chunks(agent, user_message, *, memory_snapshot=None):
     accounting = _accounting(agent)
     builders = (
+        lambda: active_skill_chunks(agent, accounting),
         lambda: recovery_state_chunks(agent, accounting),
-        lambda: task_working_set_chunks(agent, accounting),
         lambda: workspace_state_chunks(agent, accounting),
+        lambda: task_working_set_chunks(agent, accounting),
         lambda: recalled_memory_chunks(
             agent,
             accounting,
@@ -410,73 +446,8 @@ def build_source_chunks(agent, user_message, *, memory_snapshot=None):
     for builder in builders:
         try:
             chunks.extend(chunk for chunk in builder() if chunk is not None)
-        except redaction.SensitiveDataBlockedError:
+        except (redaction.SensitiveDataBlockedError, RequiredContextTooLarge):
             raise
         except Exception as exc:
             logger.debug("context source failed: %s", type(exc).__name__)
     return chunks
-
-
-# Compatibility renderers for callers outside the new allocator. They enforce
-# token caps with the shared accounting and are not used by production assembly.
-def _compat_render(agent, chunks, budget_tokens):
-    text = "\n".join(chunk.text for chunk in chunks if chunk is not None)
-    return _clip_tokens(text, _accounting(agent), int(budget_tokens)) or None
-
-
-def render_workspace_state(agent, budget_tokens):
-    return _compat_render(
-        agent,
-        workspace_state_chunks(agent, _accounting(agent)),
-        budget_tokens,
-    )
-
-
-def render_project_structure(agent, budget_tokens):
-    return _compat_render(
-        agent,
-        project_structure_chunks(agent, _accounting(agent)),
-        budget_tokens,
-    )
-
-
-def render_checkpoint(agent, budget_tokens):
-    renderer = getattr(agent, "render_checkpoint_text", None)
-    if not callable(renderer):
-        return None
-    try:
-        text = str(renderer() or "").strip()
-    except redaction.SensitiveDataBlockedError:
-        raise
-    except Exception:
-        return None
-    safe = _sanitize_source_text(agent, text)
-    return _clip_tokens(safe, _accounting(agent), int(budget_tokens)) or None
-
-
-def render_memory_index(agent, budget_tokens):
-    retrieval = getattr(agent, "memory_retrieval", None)
-    if retrieval is None and getattr(agent, "memory_store", None) is not None:
-        retrieval = Retrieval(agent.memory_store)
-    snapshot = retrieval.snapshot() if retrieval is not None else None
-    index = _compat_render(
-        agent,
-        memory_index_chunks(agent, _accounting(agent), snapshot),
-        budget_tokens,
-    )
-    return index
-
-
-def render_recalled_memory(agent, budget_tokens, user_message=""):
-    retrieval = getattr(agent, "memory_retrieval", None)
-    snapshot = retrieval.snapshot() if retrieval is not None else None
-    return _compat_render(
-        agent,
-        recalled_memory_chunks(
-            agent,
-            _accounting(agent),
-            user_message,
-            snapshot,
-        ),
-        budget_tokens,
-    )

@@ -118,7 +118,6 @@ def _complete(client, *, tools=None, messages=None):
                 "protocol_family": "openai_responses",
                 "requested_model": "gpt-test",
                 "effective_model": "gpt-test",
-                "endpoint_origin": "https://api.openai.com",
             },
         ),
         (
@@ -127,7 +126,6 @@ def _complete(client, *, tools=None, messages=None):
                 "protocol_family": "anthropic_messages",
                 "requested_model": "claude-test",
                 "effective_model": "claude-test",
-                "endpoint_origin": "https://api.anthropic.com",
             },
         ),
         (
@@ -136,7 +134,6 @@ def _complete(client, *, tools=None, messages=None):
                 "protocol_family": "ollama_chat",
                 "requested_model": "qwen-test",
                 "effective_model": "qwen-test",
-                "endpoint_origin": "http://127.0.0.1:11434",
             },
         ),
     ],
@@ -483,6 +480,8 @@ def test_openai_rejects_non_responses_json_without_fallback(monkeypatch, body):
         _complete(_openai_client())
 
     assert caught.value.code == "provider_protocol_mismatch"
+    assert caught.value.stage == "response_decode"
+    assert caught.value.protocol_reason == "response_shape_invalid"
     assert urlopen.call_count == 1
 
 
@@ -499,6 +498,8 @@ def test_openai_rejects_invalid_function_arguments(monkeypatch):
         _complete(_openai_client(), tools=[_tool_schema()])
 
     assert caught.value.code == "provider_protocol_mismatch"
+    assert caught.value.stage == "tool_call"
+    assert caught.value.protocol_reason == "tool_arguments_invalid"
 
 
 def test_ollama_chat_wire_uses_native_messages_and_tools(monkeypatch):

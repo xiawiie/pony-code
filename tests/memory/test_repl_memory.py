@@ -20,7 +20,7 @@ def _build_agent(tmp_path):
         model_client=FakeModelClient(["done"]),
         workspace=workspace,
         session_store=store,
-        options=RuntimeOptions(approval_policy="auto"),
+        options=RuntimeOptions(project_trusted=True),
     )
 
 

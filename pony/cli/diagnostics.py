@@ -9,7 +9,12 @@ from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
 from pony.security import redaction as securitylib
-from .errors import CLI_EXIT_CONFIG, CLI_EXIT_RUNTIME, CLI_EXIT_USAGE, CliError
+from .errors import (
+    CLI_EXIT_CONFIG,
+    CLI_EXIT_USAGE,
+    CliError,
+    provider_report_cli_error,
+)
 from .output import build_inspection_redactor, print_result
 from pony.config.environment import (
     project_env_metadata,
@@ -18,19 +23,12 @@ from pony.config.environment import (
     write_project_env_assignments,
 )
 from pony.config.model import API_KEY_ENV_NAME, resolve_model_config
+from pony.context.skills import DEFAULT_SKILL_SECRET_ENV_NAMES, discover_project_skills
+from pony.security import private_files
 from pony.security.paths import require_directory_no_symlink
 from pony.tools.subprocess import build_trusted_executables
-from pony.sandbox.session import source_mutation_authority
 from pony.memory.diagnostics import collect_memory_diagnostics
 from pony.workspace.context import WorkspaceContext
-
-
-def _doctor_check(status, reason_code, remediation=""):
-    return {
-        "status": status,
-        "reason_code": reason_code,
-        "remediation": remediation,
-    }
 
 
 def _unavailable_memory_diagnostic():
@@ -43,83 +41,29 @@ def _unavailable_memory_diagnostic():
     }
 
 
-def _collect_docker_sandbox_diagnostic(*, offline=False):
-    try:
-        from .sandbox import sandbox_status_payload
+def _collect_project_skill_diagnostic(root, project_env):
+    from pony.cli.help import SLASH_COMMANDS
 
-        readiness = sandbox_status_payload()
-    except (OSError, RuntimeError, ValueError, KeyError, TypeError):
-        readiness = {
-            "status": "not_ready",
-            "reason_code": "sandbox_diagnostic_failed",
-            "network_performed": False,
-            "mutation_performed": False,
-            "capacity": {
-                "active_count": 0,
-                "pending_count": 0,
-                "cleanup_pending_count": 0,
-                "staging_bytes": 0,
-                "oldest_age_seconds": 0,
-                "orphan_verified_count": 0,
-                "orphan_unknown_count": 1,
-                "reconciliation_required_count": 0,
-            },
+    try:
+        env = {**dict(os.environ), **project_env}
+        secret_names = {
+            *DEFAULT_SKILL_SECRET_ENV_NAMES,
+            *(name.strip() for name in env.get("PONY_SECRET_ENV_NAMES", "").split(",")),
         }
-    ready = readiness.get("status") == "ready"
-    capacity = readiness.get("capacity") or {}
-    state_ready = capacity.get("orphan_unknown_count", 1) == 0
-    runtime_authorization = readiness.get("runtime_authorization") or {
-        "status": "blocked",
-        "kind": "local",
-        "reason_code": "sandbox_runtime_authorization_invalid",
-    }
-    runtime_ready = (
-        runtime_authorization.get("status") == "enabled"
-        and runtime_authorization.get("kind") == "local"
-    )
-    if not ready:
-        reason_code = str(readiness.get("reason_code") or "sandbox_diagnostic_failed")
-    elif not state_ready:
-        reason_code = "sandbox_state_invalid"
-    elif not runtime_ready:
-        reason_code = str(
-            runtime_authorization.get("reason_code")
-            or "sandbox_runtime_authorization_invalid"
-        )
-    else:
-        reason_code = "ready"
-    return {
-        "status": "ready" if ready and state_ready and runtime_ready else "not_ready",
-        "reason_code": reason_code,
-        "implementation": "docker_container",
-        "offline": bool(offline),
-        "readiness": readiness,
-        "runtime_authorization": runtime_authorization,
-        "checks": {
-            "readiness": _doctor_check(
-                "pass" if ready else "fail",
-                "ready" if ready else reason_code,
-                "" if ready else "pony sandbox status",
-            ),
-            "state_integrity": _doctor_check(
-                "pass" if state_ready else "review_required",
-                "state_verified" if state_ready else "sandbox_state_invalid",
-                "" if state_ready else "pony sandbox list",
-            ),
-            "runtime_authorization": _doctor_check(
-                "pass" if runtime_ready else "blocked",
-                (
-                    str(runtime_authorization.get("reason_code"))
-                    if runtime_ready
-                    else str(
-                        runtime_authorization.get("reason_code")
-                        or "sandbox_runtime_authorization_invalid"
-                    )
-                ),
-                "" if runtime_ready else "pony sandbox status",
-            ),
-        },
-    }
+        return discover_project_skills(
+            root,
+            expected_root_identity=private_files.private_directory_identity(root),
+            env=env,
+            secret_env_names=tuple(name for name in secret_names if name),
+            reserved_names=(command.name for command in SLASH_COMMANDS),
+        ).diagnostic()
+    except (OSError, RuntimeError, ValueError):
+        return {
+            "status": "unknown",
+            "reason_code": "project_skills_unavailable",
+            "remediation": "restore a readable repository root and rerun pony doctor",
+            "skill_count": 0,
+        }
 
 
 def collect_status(cwd, args=None):
@@ -128,28 +72,7 @@ def collect_status(cwd, args=None):
     pony_root = root / ".pony"
     sessions_root = pony_root / "sessions"
     runs_root = pony_root / "runs"
-    checkpoint_records_root = pony_root / "checkpoints" / "records"
     config = collect_config(cwd, args)
-    try:
-        from pony.state.checkpoint_store import CheckpointStore
-        from pony.recovery.manager import collect_recovery_review_items
-
-        review_items = collect_recovery_review_items(
-            CheckpointStore(root, read_only=True), root
-        )
-        active_reviews = (
-            review_items["tool_changes"]
-            + review_items["restore_journals"]
-            + review_items["invalid_records"]
-        )
-        recovery_review = {
-            "active_count": len(active_reviews),
-            "opaque_ids": [
-                item["opaque_id"] for item in review_items["invalid_records"]
-            ],
-        }
-    except (OSError, RuntimeError, ValueError):
-        recovery_review = {"active_count": 0, "opaque_ids": []}
     return {
         "workspace": {
             "cwd": workspace.cwd,
@@ -160,10 +83,12 @@ def collect_status(cwd, args=None):
         "storage": {
             "sessions": _storage_exists(sessions_root),
             "runs": _storage_exists(runs_root),
-            "checkpoints": _storage_exists(checkpoint_records_root),
         },
         "model": {
             "provider": config["provider"],
+            "resolved_provider": config["resolved_provider"],
+            "resolution_status": config["resolution_status"],
+            "resolution_source": config["resolution_source"],
             "protocol": config["protocol"],
             "api_variant": config["api_variant"],
             "model": config["model"],
@@ -174,9 +99,7 @@ def collect_status(cwd, args=None):
         "latest": {
             "session_id": _latest_json_stem(sessions_root),
             "run_id": _latest_dir_name(runs_root),
-            "checkpoint_id": _latest_json_stem(checkpoint_records_root),
         },
-        "recovery_review": recovery_review,
     }
 
 
@@ -195,6 +118,9 @@ def collect_config(cwd, args=None):
         "workspace": {"repo_root": workspace.repo_root},
         "project_env": project_env_info,
         "provider": config["provider"],
+        "resolved_provider": config["resolved_provider"],
+        "resolution_status": config["resolution_status"],
+        "resolution_source": config["resolution_source"],
         "protocol": config["protocol"],
         "api_variant": config["api_variant"],
         "model": config["model"],
@@ -232,6 +158,9 @@ def collect_doctor(cwd, args=None, check_api=False):
     api_key = resolved["api_key"]
     config = {
         "provider": resolved["provider"],
+        "resolved_provider": resolved["resolved_provider"],
+        "resolution_status": resolved["resolution_status"],
+        "resolution_source": resolved["resolution_source"],
         "protocol": resolved["protocol"],
         "api_variant": resolved["api_variant"],
         "model": resolved["model"],
@@ -256,20 +185,17 @@ def collect_doctor(cwd, args=None, check_api=False):
         }
     else:
         api_check = check_api_connectivity(
-            {**config, "api_key": resolved["api_key"]},
+            resolved,
             args=args,
         )
-    checkpoints_root = pony_root / "checkpoints"
     security = _collect_security_status(
         root,
         project_env_info,
         pony_root,
     )
-    sandbox = _collect_docker_sandbox_diagnostic(offline=True)
     try:
         memory = collect_memory_diagnostics(
             root,
-            git_executable=workspace.trusted_executables.get("git"),
         )
     except (
         OSError,
@@ -289,6 +215,7 @@ def collect_doctor(cwd, args=None, check_api=False):
                 "message": "CLAUDE.md exists but Pony only reads AGENTS.md. Consider: ln -s CLAUDE.md AGENTS.md",
             }
         )
+    project_skills = _collect_project_skill_diagnostic(root, project_env)
     return {
         "workspace": {
             "status": "ok",
@@ -298,6 +225,9 @@ def collect_doctor(cwd, args=None, check_api=False):
         "config": {
             "status": "ok",
             "provider": config["provider"],
+            "resolved_provider": config["resolved_provider"],
+            "resolution_status": config["resolution_status"],
+            "resolution_source": config["resolution_source"],
             "protocol": config["protocol"],
             "api_variant": config["api_variant"],
             "model": config["model"],
@@ -307,7 +237,14 @@ def collect_doctor(cwd, args=None, check_api=False):
         "credentials": {
             "status": (
                 "not_required"
-                if resolved["auth_mode"]["value"] == "none"
+                if not config["api_key"]["present"]
+                and (
+                    resolved["auth_mode"]["value"] == "none"
+                    or any(
+                        item.get("auth_mode") == "none"
+                        for item in resolved.get("candidates", [])
+                    )
+                )
                 else "ok"
                 if config["api_key"]["present"]
                 else "missing"
@@ -318,18 +255,15 @@ def collect_doctor(cwd, args=None, check_api=False):
         "storage": {
             "sessions": _storage_status(pony_root / "sessions"),
             "runs": _storage_status(pony_root / "runs"),
-            "checkpoints": _storage_status(checkpoints_root / "records"),
         },
-        "recovery_store": _storage_status(checkpoints_root),
-        "sandbox": sandbox,
         "memory": memory,
+        "project_skills": project_skills,
         "security": security,
         "project_docs": {"hints": doc_hints},
     }
 
 
 def _unavailable_workspace_doctor():
-    sandbox = _collect_docker_sandbox_diagnostic(offline=True)
     return {
         "workspace": {"status": "review_required", "repo_root": ""},
         "project_env": {
@@ -340,6 +274,13 @@ def _unavailable_workspace_doctor():
         "config": {
             "status": "review_required",
             "provider": {"value": "", "source": "unavailable", "name": ""},
+            "resolved_provider": {
+                "value": "",
+                "source": "unavailable",
+                "name": "",
+            },
+            "resolution_status": "invalid",
+            "resolution_source": "",
             "protocol": {"value": "", "source": "unavailable", "name": ""},
             "api_variant": {"value": "", "source": "unavailable", "name": ""},
             "model": {"value": "", "source": "unavailable", "name": ""},
@@ -358,11 +299,14 @@ def _unavailable_workspace_doctor():
         "storage": {
             "sessions": "review_required",
             "runs": "review_required",
-            "checkpoints": "review_required",
         },
-        "recovery_store": "review_required",
-        "sandbox": sandbox,
         "memory": _unavailable_memory_diagnostic(),
+        "project_skills": {
+            "status": "unknown",
+            "reason_code": "project_skills_unavailable",
+            "remediation": "restore a readable repository root and rerun pony doctor",
+            "skill_count": 0,
+        },
         "security": {
             "status": "review_required",
             "project_env": {"status": "review_required", "mode": ""},
@@ -370,12 +314,6 @@ def _unavailable_workspace_doctor():
             "trusted_executables": {
                 "status": "degraded",
                 "missing": ["git", "rg"],
-            },
-            "recovery_review": {
-                "pending_count": 0,
-                "applying_count": 0,
-                "unreviewed_partial_count": 0,
-                "invalid_mutation_count": 0,
             },
         },
         "project_docs": {"hints": []},
@@ -416,37 +354,6 @@ def handle_doctor(tokens, cwd, args):
     data["config"] = _redact_mapping_values(data["config"], redactor)
     data["credentials"] = _redact_mapping_values(data["credentials"], redactor)
     data["api_check"] = redactor(data["api_check"])
-    sandbox = data.get("sandbox", {})
-    runtime_authorization = sandbox.get("runtime_authorization", {})
-    readiness_authorization = (sandbox.get("readiness") or {}).get(
-        "runtime_authorization",
-        {},
-    )
-    authorization_check = (sandbox.get("checks") or {}).get(
-        "runtime_authorization",
-        {},
-    )
-    data["sandbox"] = redactor(sandbox)
-    if isinstance(runtime_authorization, dict):
-        # This is status metadata, but the generic redactor treats every
-        # ``*_authorization`` mapping as a credential-bearing value.
-        data["sandbox"]["runtime_authorization"] = {
-            key: redactor(runtime_authorization[key])
-            for key in ("status", "kind", "reason_code")
-            if key in runtime_authorization
-        }
-    if isinstance(readiness_authorization, dict):
-        data["sandbox"]["readiness"]["runtime_authorization"] = {
-            key: redactor(readiness_authorization[key])
-            for key in ("status", "kind", "reason_code")
-            if key in readiness_authorization
-        }
-    if isinstance(authorization_check, dict):
-        data["sandbox"]["checks"]["runtime_authorization"] = {
-            key: redactor(authorization_check[key])
-            for key in ("status", "reason_code", "remediation")
-            if key in authorization_check
-        }
     memory = data.get("memory") or _unavailable_memory_diagnostic()
     data["memory"] = redactor(
         {
@@ -457,15 +364,11 @@ def handle_doctor(tokens, cwd, args):
             "issues": [dict(item) for item in memory.get("issues", [])],
         }
     )
+    data["project_skills"] = redactor(data["project_skills"])
     data["security"] = redactor(data["security"])
     data["project_docs"] = redactor(data["project_docs"])
     if tokens and data["api_check"].get("status") != "ok":
-        raise CliError(
-            code="api_check_failed",
-            message="API verification failed",
-            exit_code=CLI_EXIT_RUNTIME,
-            details=data["api_check"],
-        )
+        raise provider_report_cli_error(data["api_check"])
     return print_result("doctor", data, args, _render_doctor)
 
 
@@ -538,11 +441,7 @@ def _handle_set_secret(tokens, cwd, args):
     workspace = WorkspaceContext.build(cwd)
     root = Path(workspace.repo_root)
     try:
-        with source_mutation_authority(
-            Path.home() / ".pony" / "sandboxes",
-            root,
-        ):
-            written = write_project_env_assignments(root, {name: value})
+        written = write_project_env_assignments(root, {name: value})
     except (OSError, RuntimeError, ValueError) as exc:
         raise CliError(
             code="config",
@@ -576,53 +475,47 @@ def _handle_set_secret(tokens, cwd, args):
 
 
 def check_api_connectivity(config, timeout=2, args=None):
-    """Run the explicit text/tool/tool-result API probe."""
-    base_url = config.get("base_url", {}).get("value", "")
+    """Run the explicit read-only Provider verification probe."""
     result = {
-        "status": "error",
+        "status": "failed",
         "category": "api_protocol",
-        "endpoint": _redact_url_for_diagnostics(base_url),
         "model_calls": 0,
     }
-    if config.get("auth_mode", {}).get("value") != "none" and not config.get(
-        "api_key", {}
-    ).get("value"):
-        return {**result, "reason_code": "api_key_not_configured"}
     try:
-        from pony.providers.factory import build_transport_client
-        from pony.providers.probe import probe_model_client
+        from pony.providers.probe import resolve_provider_client
 
-        client = build_transport_client(
-            config["protocol"]["value"],
-            model=config["model"]["value"],
-            base_url=base_url,
-            api_key=config["api_key"]["value"],
+        _client, resolved, report = resolve_provider_client(
+            config,
             timeout=getattr(args, "request_timeout_seconds", timeout),
-            auth_mode=config["auth_mode"]["value"],
-            capabilities=config["capabilities"],
+            verify_resolved=True,
         )
-        report = probe_model_client(client)
     except Exception as exc:
-        return {
+        failure = {
             **result,
             "reason_code": str(getattr(exc, "code", "api_check_failed")),
-            "http_status": getattr(exc, "http_status", None),
+            "stage": getattr(exc, "stage", "") or "runtime",
+            "protocol": getattr(exc, "protocol_family", "") or "",
         }
-    output = {
+        if getattr(exc, "protocol_reason", None):
+            failure["protocol_reason"] = exc.protocol_reason
+        if getattr(exc, "http_status", None) is not None:
+            failure["http_status"] = exc.http_status
+        return failure
+    return {
         **result,
-        "status": report["status"],
+        "status": "ok",
         "category": report["category"],
-        "reason_code": "api_verified"
-        if report["status"] == "ok"
-        else report["category"],
+        "reason_code": "api_verified",
         "stage": report["stage"],
         "model_calls": report["model_calls"],
+        "candidate_count": report["candidate_count"],
+        "detected_provider": resolved["resolved_provider"]["value"],
+        "protocol": resolved["protocol"]["value"],
+        "native_tools": "passed",
+        "tool_continuation": "passed",
+        "usage_status": report["usage_status"],
+        "persist_with": "pony init",
     }
-    if report.get("http_status") is not None:
-        output["http_status"] = report["http_status"]
-    if report.get("error_code"):
-        output["error_code"] = report["error_code"]
-    return output
 
 
 def _redact_url_for_diagnostics(value):
@@ -671,46 +564,16 @@ def _collect_security_status(root, project_env_info, pony_root):
         "status": "degraded" if missing else "ok",
         "missing": missing,
     }
-    review_inspection_failed = False
-    try:
-        from pony.state.checkpoint_store import CheckpointStore
-        from pony.recovery.manager import collect_recovery_review_items
-
-        reviews = collect_recovery_review_items(
-            CheckpointStore(root, read_only=True), root
-        )
-    except (OSError, RuntimeError, TypeError, ValueError):
-        review_inspection_failed = True
-        reviews = {
-            "tool_changes": [],
-            "restore_journals": [],
-            "invalid_records": [],
-        }
-    recovery_review = {
-        "pending_count": len(reviews["tool_changes"]),
-        "applying_count": sum(
-            item.get("status") == "applying" for item in reviews["restore_journals"]
-        ),
-        "unreviewed_partial_count": sum(
-            item.get("status") == "partial" and not item.get("reviewed_at")
-            for item in reviews["restore_journals"]
-        ),
-        "invalid_mutation_count": (
-            len(reviews["invalid_records"]) + int(review_inspection_failed)
-        ),
-    }
     needs_review = (
         project_env["status"] == "review_required"
         or private_storage["status"] == "review_required"
         or executables["status"] == "degraded"
-        or any(recovery_review.values())
     )
     return {
         "status": "review_required" if needs_review else "ok",
         "project_env": project_env,
         "private_storage": private_storage,
         "trusted_executables": executables,
-        "recovery_review": recovery_review,
     }
 
 
@@ -844,6 +707,12 @@ def _value_with_source(item):
     return f"{item.get('value', '-') or '-'} ({_source_label(item)})"
 
 
+def _protocol_with_resolution(data):
+    if data.get("resolution_status") == "probe_required":
+        return "unresolved"
+    return _value_with_source(data["protocol"])
+
+
 def _ok_missing(value):
     if isinstance(value, bool):
         return "ok" if value else "missing"
@@ -864,7 +733,10 @@ def _render_config(data):
         "",
         "Model",
         _line("provider", _value_with_source(data["provider"])),
-        _line("protocol", _value_with_source(data["protocol"])),
+        _line("resolution", data["resolution_status"]),
+        _line("resolution source", data["resolution_source"] or "-"),
+        _line("resolved provider", _value_with_source(data["resolved_provider"])),
+        _line("protocol", _protocol_with_resolution(data)),
         _line("api variant", _value_with_source(data["api_variant"])),
         _line("model", _value_with_source(data["model"])),
         _line("api url", _value_with_source(data["base_url"])),
@@ -903,9 +775,8 @@ def _render_doctor(data):
     storage = data["storage"]
     security = data["security"]
     security_executables = security["trusted_executables"]
-    recovery_review = security["recovery_review"]
-    sandbox = data.get("sandbox", {})
     memory = data.get("memory", {"status": "unknown", "issues": []})
+    project_skills = data.get("project_skills", {})
     lines = [
         "Pony doctor — CLI health check",
         "",
@@ -920,7 +791,10 @@ def _render_doctor(data):
         "",
         "Config",
         _line("provider", _value_with_source(config["provider"])),
-        _line("protocol", _value_with_source(config["protocol"])),
+        _line("resolution", config["resolution_status"]),
+        _line("resolution source", config["resolution_source"] or "-"),
+        _line("resolved provider", _value_with_source(config["resolved_provider"])),
+        _line("protocol", _protocol_with_resolution(config)),
         _line("api variant", _value_with_source(config["api_variant"])),
         _line("model", _value_with_source(config["model"])),
         _line("api url", _value_with_source(config["base_url"])),
@@ -933,24 +807,6 @@ def _render_doctor(data):
         "Storage",
         _line("sessions", storage["sessions"]),
         _line("runs", storage["runs"]),
-        _line("checkpoints", storage["checkpoints"]),
-        _line("recovery", data["recovery_store"]),
-        "",
-        "Sandbox",
-        _line("status", sandbox.get("status", "unknown")),
-        _line("reason", sandbox.get("reason_code", "unknown")),
-        _line("readiness", (sandbox.get("readiness") or {}).get("status", "unknown")),
-        _line(
-            "runtime authorization",
-            (sandbox.get("runtime_authorization") or {}).get("kind", "unknown"),
-        ),
-        *(
-            _line(
-                check_id,
-                f"{item.get('status', 'unknown')} ({item.get('reason_code', 'unknown')})",
-            )
-            for check_id, item in (sandbox.get("checks") or {}).items()
-        ),
         "",
         "Memory",
         _line("check", memory.get("check_id", "memory")),
@@ -966,6 +822,15 @@ def _render_doctor(data):
             )
             for item in memory.get("issues", [])
         ),
+        "",
+        "Project Skills",
+        _line("status", project_skills.get("status", "unknown")),
+        _line(
+            "reason",
+            project_skills.get("reason_code", "project_skills_unavailable"),
+        ),
+        _line("skills", project_skills.get("skill_count", 0)),
+        _line("remediation", project_skills.get("remediation", "") or "-"),
         "",
         "Security",
         _line("status", security["status"]),
@@ -983,10 +848,6 @@ def _render_doctor(data):
         _line("private store", security["private_storage"]["status"]),
         _line("executables", security_executables["status"]),
         _line("missing", ", ".join(security_executables["missing"]) or "-"),
-        _line("pending", recovery_review["pending_count"]),
-        _line("applying", recovery_review["applying_count"]),
-        _line("partial", recovery_review["unreviewed_partial_count"]),
-        _line("invalid", recovery_review["invalid_mutation_count"]),
         "",
         "API check",
         _line("status", connectivity.get("status", "-")),
@@ -994,10 +855,24 @@ def _render_doctor(data):
         _line("stage", connectivity.get("stage", "-") or "-"),
         _line("model calls", connectivity.get("model_calls", 0)),
     ]
+    if connectivity.get("status") == "ok":
+        lines.extend(
+            [
+                _line("detected provider", connectivity["detected_provider"]),
+                _line("protocol", connectivity["protocol"]),
+                _line("native tool", connectivity["native_tools"]),
+                _line("tool continuation", connectivity["tool_continuation"]),
+                _line(
+                    "usage",
+                    "unavailable"
+                    if connectivity["usage_status"] == "degraded"
+                    else connectivity["usage_status"],
+                ),
+                _line("persist with", connectivity["persist_with"]),
+            ]
+        )
     if connectivity.get("http_status") is not None:
         lines.append(_line("http", connectivity["http_status"]))
-    if connectivity.get("endpoint"):
-        lines.append(_line("endpoint", connectivity["endpoint"]))
     if connectivity.get("message"):
         lines.append(_line("message", connectivity["message"]))
     hints = ((data.get("project_docs") or {}).get("hints")) or []
@@ -1023,7 +898,13 @@ def _render_status(data):
         "",
         "Model",
         _line("provider", _value_with_source(data["model"]["provider"])),
-        _line("protocol", _value_with_source(data["model"]["protocol"])),
+        _line("resolution", data["model"]["resolution_status"]),
+        _line("resolution source", data["model"]["resolution_source"] or "-"),
+        _line(
+            "resolved provider",
+            _value_with_source(data["model"]["resolved_provider"]),
+        ),
+        _line("protocol", _protocol_with_resolution(data["model"])),
         _line("api variant", _value_with_source(data["model"]["api_variant"])),
         _line("model", _value_with_source(data["model"]["model"])),
         _line("api url", _value_with_source(data["model"]["base_url"])),
@@ -1033,11 +914,9 @@ def _render_status(data):
         "Storage",
         _line("sessions", _ok_missing(data["storage"]["sessions"])),
         _line("runs", _ok_missing(data["storage"]["runs"])),
-        _line("checkpoints", _ok_missing(data["storage"]["checkpoints"])),
         "",
         "Latest",
         _line("session id", data["latest"]["session_id"] or "-"),
         _line("run id", data["latest"]["run_id"] or "-"),
-        _line("checkpoint id", data["latest"]["checkpoint_id"] or "-"),
     ]
     return "\n".join(lines)

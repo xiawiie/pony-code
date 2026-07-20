@@ -10,7 +10,6 @@ from pony.security import private_files as private_files
 from pony.security import paths as security_paths
 from pony.security import workspace_files as workspace_files
 from pony.security import redaction as redaction
-
 from .shell import DEFAULT_RUN_SHELL_TIMEOUT, MAX_RUN_SHELL_TIMEOUT
 
 
@@ -28,7 +27,7 @@ MAX_WORKSPACE_SEARCH_BYTES = 64 * 1024 * 1024
 
 MAX_WORKSPACE_SEARCH_MATCHES = 200
 
-USER_NOTES_PROTECTED_PREFIX = (".pony", "memory", "notes")
+CONTROL_PLANE_PATH_NAMES = frozenset({".git", ".pony"})
 
 
 class SensitiveToolError(ValueError):
@@ -53,25 +52,9 @@ def _lexical_tool_target(context, raw_path):
             "workspace root changed",
         )
     source = Path(raw)
-    if (
-        source.is_absolute()
-        and getattr(
-            getattr(context, "sandbox_context", None),
-            "workspace_view",
-            None,
-        )
-        is not None
-    ):
-        try:
-            candidate = Path(context.path(raw))
-        except (OSError, RuntimeError, ValueError):
-            raise ValueError("path escapes workspace") from None
-    else:
-        candidate = Path(
-            os.path.abspath(
-                os.fspath(source if source.is_absolute() else root / source)
-            )
-        )
+    candidate = Path(
+        os.path.abspath(os.fspath(source if source.is_absolute() else root / source))
+    )
     try:
         relative = candidate.relative_to(root)
     except ValueError:
@@ -193,22 +176,13 @@ def _contains_sensitive_content(context, value):
     )
 
 
-def _refuse_user_notes_write(context, path):
-    # User Notes 是用户手写的上下文；`memory_save` 只允许追加到 agent_notes.md。
-    # 通用 write_file / patch_file 必须在路径层就拒绝写入 `.pony/memory/notes/**`，
-    # 而不是依赖 --approval 拦（`--approval auto` 时不拦）。
+def _refuse_control_plane_write(context, path):
     try:
         relative = path.relative_to(context.root)
     except ValueError:
-        return ""
-    parts = relative.parts
-    if len(parts) < len(USER_NOTES_PROTECTED_PREFIX):
-        return ""
-    if parts[: len(USER_NOTES_PROTECTED_PREFIX)] == USER_NOTES_PROTECTED_PREFIX:
-        return (
-            f"error: refusing to write user note path (read-only for agent): {relative}"
-        )
-    return ""
+        return
+    if any(part.casefold() in CONTROL_PLANE_PATH_NAMES for part in relative.parts):
+        raise SensitiveToolError("control_plane_write_block")
 
 
 def validate_tool(context, name, args):
@@ -267,9 +241,7 @@ def validate_tool(context, name, args):
 
     if name == "write_file":
         path, _ = _lexical_tool_target(context, args["path"])
-        refusal = _refuse_user_notes_write(context, path)
-        if refusal:
-            raise ValueError(refusal)
+        _refuse_control_plane_write(context, path)
         info = _target_stat(path)
         if info is not None and (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1):
             raise workspace_files.WorkspaceIOError(
@@ -287,9 +259,7 @@ def validate_tool(context, name, args):
         # patch_file 故意做得很严格：old_text 必须精确命中且只能出现一次，
         # 这样修改行为才是确定的，失败原因也更容易解释。
         path, _ = _lexical_tool_target(context, args["path"])
-        refusal = _refuse_user_notes_write(context, path)
-        if refusal:
-            raise ValueError(refusal)
+        _refuse_control_plane_write(context, path)
         info = _target_stat(path)
         if info is None:
             raise ValueError("path is not a file")
@@ -323,6 +293,50 @@ def validate_tool(context, name, args):
         task = str(args.get("task", "")).strip()
         if not task:
             raise ValueError("task must not be empty")
+        delegate_name = str(args.get("name", "delegate")).strip()
+        if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]{0,63}", delegate_name):
+            raise ValueError("delegate name must be 1-64 letters, digits, '_' or '-'")
+        max_steps = args.get("max_steps", 3)
+        if type(max_steps) is not int or not 1 <= max_steps <= 3:
+            raise ValueError("delegate max_steps must be in [1, 3]")
+        if context.depth >= context.max_depth:
+            raise ValueError("delegate depth exceeded")
+        return
+
+    if name == "delegate_worktrees":
+        if set(args) - {"tasks", "max_parallel"}:
+            raise ValueError("unknown delegate_worktrees argument")
+        tasks = args.get("tasks")
+        if not isinstance(tasks, list) or not 1 <= len(tasks) <= 8:
+            raise ValueError("delegate_worktrees tasks must contain 1-8 items")
+        max_parallel = args.get("max_parallel", 2)
+        if type(max_parallel) is not int or not 1 <= max_parallel <= 4:
+            raise ValueError("delegate_worktrees max_parallel must be in [1, 4]")
+        names = set()
+        for item in tasks:
+            if not isinstance(item, dict) or set(item) - {
+                "name",
+                "task",
+                "mode",
+                "max_steps",
+            }:
+                raise ValueError("invalid worktree task")
+            delegate_name = str(item.get("name", "")).strip()
+            if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]{0,63}", delegate_name):
+                raise ValueError(
+                    "worktree task name must be 1-64 letters, digits, '_' or '-'"
+                )
+            if delegate_name.casefold() in names:
+                raise ValueError("worktree task names must be unique")
+            names.add(delegate_name.casefold())
+            task = str(item.get("task", "")).strip()
+            if not task or len(task) > 16_384:
+                raise ValueError("worktree task must contain 1-16384 characters")
+            if item.get("mode", "readonly") not in {"readonly", "write"}:
+                raise ValueError("worktree task mode must be readonly or write")
+            max_steps = item.get("max_steps", 6)
+            if type(max_steps) is not int or not 1 <= max_steps <= 12:
+                raise ValueError("worktree task max_steps must be in [1, 12]")
         if context.depth >= context.max_depth:
             raise ValueError("delegate depth exceeded")
         return

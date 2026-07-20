@@ -63,7 +63,7 @@ def test_full_turn_injects_recall_and_digests_large_tool_result(tmp_path):
         model_client=provider,
         workspace=workspace,
         session_store=store,
-        options=RuntimeOptions(max_steps=3),
+        options=RuntimeOptions(project_trusted=True, max_steps=3),
     )
 
     answer = pony.ask("上次讨论过 cache 的问题")

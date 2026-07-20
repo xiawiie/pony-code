@@ -17,7 +17,7 @@ def _agent(tmp_path):
         model_client=FakeModelClient([]),
         workspace=WorkspaceContext.build(tmp_path),
         session_store=SessionStore(tmp_path / ".pony" / "sessions"),
-        options=RuntimeOptions(approval_policy="auto"),
+        options=RuntimeOptions(project_trusted=True),
     )
 
 
@@ -55,6 +55,12 @@ def test_tool_schema_keeps_integer_and_risk_contract():
     assert converted["input_schema"]["properties"]["retries"]["type"] == "integer"
     assert converted["input_schema"]["required"] == ["path"]
     assert "approval" in converted["description"].lower()
+
+
+def test_update_plan_is_absent_from_native_tool_schema(tmp_path):
+    tools = _build_tools_list(_agent(tmp_path).visible_tools())
+
+    assert "update_plan" not in {tool["name"] for tool in tools}
 
 
 def test_system_prefix_hash_depends_on_stable_prefix_only(tmp_path):

@@ -4,10 +4,6 @@ import shlex
 import unicodedata
 
 from pony.security import paths as securitylib
-from pony.recovery.models import (
-    new_id,
-    utc_now,
-)
 
 
 _MAX_TAIL_CHARS = 1000
@@ -48,6 +44,9 @@ _EXECUTION_CONTROL_KEY_MARKERS = (
 )
 _CONFIG_VALUE_OPTIONS = frozenset(("o", "overrideini", "config"))
 _REJECTED_CONFIG_KEYS = frozenset(("addopts",))
+_NON_EXECUTING_OPTIONS = frozenset(
+    {"--collect-only", "--help", "--version", "--co", "-h"}
+)
 
 
 def _tail(text):
@@ -185,6 +184,8 @@ def is_verification_argv(argv):
     if prefix is None:
         return False
     tail = tokens[len(prefix) :]
+    if any(token.casefold().partition("=")[0] in _NON_EXECUTING_OPTIONS for token in tail):
+        return False
     return not _has_execution_control_tail(
         tail,
         pytest_short_options=prefix[-1] == "pytest",
@@ -239,48 +240,4 @@ def verification_evidence_for_execution(
         "risk_class": _head(_redacted(redact_text, risk_class)),
         "stdout": _tail(_redacted(redact_text, stdout)),
         "stderr": _tail(_redacted(redact_text, stderr)),
-    }
-
-
-def new_verification_record(
-    *,
-    argv,
-    risk_class,
-    runner_executed,
-    execution_mode,
-    exit_code,
-    stdout,
-    stderr,
-    affected_checkpoint_id="",
-    trace_event_id="",
-    redact_text=None,
-):
-    evidence = verification_evidence_for_execution(
-        argv=argv,
-        risk_class=risk_class,
-        runner_executed=runner_executed,
-        execution_mode=execution_mode,
-        exit_code=exit_code,
-        stdout=stdout,
-        stderr=stderr,
-        redact_text=redact_text,
-    )
-    if evidence is None:
-        return None
-    return {
-        "verification_id": new_id("verify"),
-        "created_at": utc_now(),
-        "argv": list(evidence["argv"]),
-        "runner_executed": True,
-        "execution_mode": "argv",
-        "command": _head(shlex.join(evidence["argv"])),
-        "risk_class": evidence["risk_class"],
-        "exit_code": evidence["exit_code"],
-        "status": "passed" if evidence["exit_code"] == 0 else "failed",
-        "stdout_tail": evidence["stdout"],
-        "stderr_tail": evidence["stderr"],
-        "affected_checkpoint_id": _head(
-            _redacted(redact_text, affected_checkpoint_id or "")
-        ),
-        "trace_event_id": _head(_redacted(redact_text, trace_event_id or "")),
     }

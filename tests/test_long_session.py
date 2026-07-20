@@ -11,13 +11,14 @@ from pony.agent.model_capabilities import (
 )
 from benchmarks.support.fake_provider import FakeModelClient
 from pony.state.session_store import SessionStore, entry_message_refs
+from pony.state.session_store import SESSION_FORMAT_VERSION
 from pony.workspace.context import now
 
 
 def _session(workspace):
     return {
         "record_type": "session",
-        "format_version": 2,
+        "format_version": SESSION_FORMAT_VERSION,
         "id": "long-session",
         "created_at": now(),
         "workspace_root": str(workspace),
@@ -27,8 +28,12 @@ def _session(workspace):
         "recently_recalled": [],
         "checkpoints": {},
         "resume_state": {},
-        "recovery": {},
         "runtime_identity": {},
+        "permission_mode": "auto",
+        "permission_rules": {"allow": [], "ask": [], "deny": []},
+        "plan_text": "",
+        "plan_revision": 0,
+        "pre_plan_mode": "",
     }
 
 
@@ -71,6 +76,7 @@ def _agent(workspace, store):
         secret_env_names=(),
         prefix="system",
         tools={},
+        visible_tools=lambda: {},
         context_config={"compaction": {"enabled": True}},
         _pending_token_anchor=None,
     )
@@ -140,7 +146,6 @@ def test_200_turn_session_compacts_twice_branches_and_resumes(tmp_path):
         "key_files": [],
         "read_files": [],
         "modified_files": [],
-        "workspace_checkpoint_id": "",
         "worktree_identity_digest": tree.header["worktree_identity"]["digest"],
         "context_usage": {},
     }

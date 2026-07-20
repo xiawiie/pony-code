@@ -22,7 +22,7 @@ def test_recall_failure_logs_debug(caplog, tmp_path, monkeypatch):
     def _boom(*a, **kw):
         raise RuntimeError("simulated recall failure " + secret)
 
-    monkeypatch.setattr("pony.memory.recall.recall_for_turn", _boom)
+    monkeypatch.setattr("pony.context.sources.recall_candidates", _boom)
 
     a = SimpleNamespace(
         memory_store=MagicMock(),
@@ -46,7 +46,8 @@ def test_recall_failure_logs_debug(caplog, tmp_path, monkeypatch):
 def test_workspace_state_failure_logs_debug(caplog, tmp_path):
     from unittest.mock import MagicMock
 
-    from pony.context.sources import render_workspace_state
+    from pony.agent.model_capabilities import TokenAccounting
+    from pony.context.sources import workspace_state_chunks
 
     a = MagicMock()
     a.workspace = MagicMock()
@@ -56,7 +57,7 @@ def test_workspace_state_failure_logs_debug(caplog, tmp_path):
     )
 
     caplog.set_level(logging.DEBUG, logger="pony")
-    result = render_workspace_state(a, budget_tokens=500)
-    assert result is None
+    result = workspace_state_chunks(a, TokenAccounting())
+    assert result == []
     assert any("workspace_state" in r.message.lower() for r in caplog.records)
     assert secret not in caplog.text

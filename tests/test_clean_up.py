@@ -38,7 +38,7 @@ def test_metadata_uses_system_prefix_hash_only(tmp_path):
         model_client=FakeModelClient([]),
         workspace=workspace,
         session_store=store,
-        options=RuntimeOptions(approval_policy="auto"),
+        options=RuntimeOptions(project_trusted=True),
     )
 
     agent.session["messages"].append(

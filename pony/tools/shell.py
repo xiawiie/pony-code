@@ -2,8 +2,6 @@
 
 from dataclasses import dataclass
 from pathlib import Path
-import re
-import shlex
 
 from pony.tools.subprocess import run_hardened_command
 
@@ -20,68 +18,6 @@ class ApprovedShellExecution:
     execution_mode: str
     executable: str
     timeout: int
-    sandbox_plan: object = None
-
-
-_SANDBOX_PRIVILEGED_EXECUTABLES = frozenset(
-    {"sudo", "doas", "pkexec", "open", "osascript", "launchctl"}
-)
-
-
-def sandbox_privilege_denial(
-    execution,
-    *,
-    sandbox_mode,
-    allow_git_metadata_writes=False,
-):
-    if not sandbox_mode:
-        return None
-    executable_name = Path(str(execution.executable)).name.casefold()
-    argv_name = (
-        Path(str(execution.argv[0])).name.casefold()
-        if execution.argv
-        else executable_name
-    )
-    command = str(getattr(execution, "exact_command", "") or "")
-    tokens = []
-    try:
-        tokens = shlex.split(command, posix=True)
-    except ValueError:
-        return "sandbox_privilege_denied"
-    # Inspect shell segments and wrapper payloads (sh -c, env, command) so an
-    # alias cannot turn a broker call into an apparently harmless argv.
-    normalized = re.sub(r"(?:&&|\|\||[;|])", " ", command)
-    try:
-        tokens.extend(shlex.split(normalized, posix=True))
-    except ValueError:
-        return "sandbox_privilege_denied"
-    expanded = [*tokens, *(str(value) for value in execution.argv)]
-    for token in tuple(expanded):
-        if any(character.isspace() for character in token):
-            try:
-                expanded.extend(shlex.split(token, posix=True))
-            except ValueError:
-                return "sandbox_privilege_denied"
-    names = {executable_name, argv_name}
-    names.update(Path(token).name.casefold() for token in expanded)
-    if any(name in _SANDBOX_PRIVILEGED_EXECUTABLES for name in names):
-        return "sandbox_privilege_denied"
-    if executable_name == "git" and not allow_git_metadata_writes:
-        git_subcommands = {
-            "add",
-            "commit",
-            "reset",
-            "checkout",
-            "merge",
-            "rebase",
-            "update-index",
-        }
-        if any(
-            str(argument) in git_subcommands
-            for argument in (*execution.argv[1:], *tokens)
-        ):
-            return "sandbox_git_metadata_write_denied"
-    return None
 
 
 def _tool_run_shell(context, execution):
@@ -117,5 +53,4 @@ def _tool_run_shell(context, execution):
         "stderr": result.stderr,
         "exit_code": result.returncode,
         "timed_out": result.timed_out,
-        "sandbox_outcome": "timeout" if result.timed_out else "not_applicable",
     }

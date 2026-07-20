@@ -17,6 +17,7 @@ from .sources import build_source_chunks
 logger = logging.getLogger("pony")
 
 SOURCE_ORDER = (
+    "active_skill",
     "recovery_state",
     "task_working_set",
     "workspace_state",

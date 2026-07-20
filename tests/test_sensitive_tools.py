@@ -25,7 +25,7 @@ def build_agent(tmp_path, *, executables=None, **kwargs):
         model_client=FakeModelClient([]),
         workspace=workspace,
         session_store=SessionStore(tmp_path / ".pony" / "sessions"),
-        options=RuntimeOptions(approval_policy="auto", **kwargs),
+        options=RuntimeOptions(project_trusted=True, **kwargs),
     )
 
 
@@ -65,7 +65,7 @@ def test_sensitive_direct_paths_are_rejected_before_runner(
     assert result.metadata["tool_error_code"] == "sensitive_path_block"
     assert result.metadata["security_event_type"] == "sensitive_access_block"
     runner.assert_not_called()
-    assert list(agent.checkpoint_store.blobs_dir.rglob("*")) == []
+    assert not (tmp_path / ".pony" / "checkpoints").exists()
 
 
 @pytest.mark.parametrize(
@@ -83,7 +83,7 @@ def test_raw_lexical_aliases_are_rejected_before_resolution(tmp_path, raw_path):
 
     assert result.metadata["tool_error_code"] == "sensitive_path_block"
     runner.assert_not_called()
-    assert list(agent.checkpoint_store.blobs_dir.rglob("*")) == []
+    assert not (tmp_path / ".pony" / "checkpoints").exists()
 
 
 def test_benign_symlink_is_rejected_with_stable_workspace_error(tmp_path):
@@ -162,7 +162,7 @@ def test_explicit_env_template_directory_is_rejected_before_rg(
     assert result.metadata["security_event_type"] == "sensitive_access_block"
     assert canary not in result.content
     rg.assert_not_called()
-    assert list(agent.checkpoint_store.blobs_dir.rglob("*")) == []
+    assert not (tmp_path / ".pony" / "checkpoints").exists()
 
 
 @pytest.mark.parametrize(
@@ -266,6 +266,7 @@ def test_risky_write_revalidates_after_approval_swaps_target_to_symlink(
     tmp_path,
 ):
     agent = build_agent(tmp_path)
+    agent.set_permission_mode("default")
     sensitive = tmp_path / ".env"
     sensitive.write_text("untouched\n", encoding="utf-8")
     target = tmp_path / "safe.txt"
@@ -290,8 +291,7 @@ def test_risky_write_revalidates_after_approval_swaps_target_to_symlink(
     assert result.metadata["tool_error_code"] == "workspace_entry_unsafe"
     assert sensitive.read_text(encoding="utf-8") == "untouched\n"
     runner.assert_not_called()
-    assert list(agent.checkpoint_store.blobs_dir.rglob("*")) == []
-    assert agent.checkpoint_store.list_tool_change_records() == []
+    assert not (tmp_path / ".pony" / "checkpoints").exists()
 
 
 def test_risky_patch_revalidates_content_changed_during_approval(tmp_path):
@@ -299,6 +299,7 @@ def test_risky_patch_revalidates_content_changed_during_approval(tmp_path):
     target = tmp_path / "safe.txt"
     target.write_text("old safe\n", encoding="utf-8")
     agent = build_agent(tmp_path)
+    agent.set_permission_mode("default")
     approvals = []
 
     def approve(name, args):
@@ -320,8 +321,7 @@ def test_risky_patch_revalidates_content_changed_during_approval(tmp_path):
     assert result.metadata["tool_error_code"] == "sensitive_content_block"
     assert target.read_text(encoding="utf-8") == "old " + secret + "\n"
     runner.assert_not_called()
-    assert list(agent.checkpoint_store.blobs_dir.rglob("*")) == []
-    assert agent.checkpoint_store.list_tool_change_records() == []
+    assert not (tmp_path / ".pony" / "checkpoints").exists()
 
 
 def test_memory_save_secret_is_rejected_before_runner(tmp_path):

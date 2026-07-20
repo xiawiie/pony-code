@@ -31,33 +31,12 @@ def test_bench_runs_cleanup_after_every_sample():
     assert len(cleaned) == 5
 
 
-def test_security_recovery_scenario_names_are_stable():
-    from benchmarks.perf.bench_security_recovery import SCENARIO_NAMES
+def test_security_scenario_names_are_stable():
+    from benchmarks.perf.bench_security import SCENARIO_NAMES
 
     assert SCENARIO_NAMES == (
         "security/redact_artifact/100",
         "shell/assess_corpus/50",
-        "recovery/pending_reviews/200",
-        "recovery/preview/100",
-    )
-
-
-def test_sandbox_scenario_names_are_stable():
-    from benchmarks.perf.bench_sandbox import SCENARIO_NAMES
-
-    assert SCENARIO_NAMES == (
-        "sandbox/image_manifest/warm",
-        "sandbox/session_inspect/warm",
-        "sandbox/inventory_parallel/1",
-        "sandbox/inventory_parallel/4",
-        "sandbox/inventory_parallel/16",
-        "sandbox/staging/5000x1k",
-        "sandbox/staging/128mib",
-        "sandbox/capture_call/noop_326",
-        "sandbox/shell_empty_observed/326",
-        "sandbox/shell_empty_before_capture/326",
-        "sandbox/shell_empty_container/326",
-        "sandbox/shell_empty_after_capture/326",
     )
 
 
@@ -85,67 +64,3 @@ def test_recall_benchmark_exposes_shared_snapshot_scenarios():
     assert "memory/turn/512/shared_snapshot" in source
     assert "memory/turn/512/double_scan_reference" in source
     assert "scan_count_per_turn" in source
-
-
-def test_sandbox_perf_artifact_has_release_provenance(monkeypatch):
-    from benchmarks.perf import bench_sandbox
-
-    values = {
-        ("rev-parse", "HEAD"): "abc123",
-        ("status", "--porcelain"): " M pony/example.py",
-    }
-    monkeypatch.setattr(
-        bench_sandbox,
-        "_git_value",
-        lambda args: values[tuple(args)],
-    )
-
-    artifact = bench_sandbox.build_artifact([{"name": "sandbox/image_manifest/warm"}])
-
-    assert artifact["suite"] == "sandbox-performance-report-only"
-    assert artifact["runtime"]["commit"] == "abc123"
-    assert artifact["runtime"]["dirty"] is True
-    assert artifact["runtime"]["python"]
-    assert artifact["runtime"]["platform"]
-    assert artifact["runtime"]["architecture"]
-    assert artifact["runtime"]["machine"]
-    assert artifact["runtime"]["docker"] == {"status": "not_measured"}
-    assert artifact["sandbox"] == {
-        "implementation": "docker_container",
-        "image_digest": "sha256:d7a8ccd6b7482d8bb647dee7bc6549f2652ce147483af5f45ba36b6b2cf6f07f",
-        "policy_digest": "sha256:dd72f90d3fbdd26749a19091a8e51dafab7cb9fc7c448159f9e7ee744e7a441c",
-        "network_mode": "none",
-    }
-    assert artifact["baseline"]["comparison"] == "report_only"
-    assert artifact["scenarios"][0]["status"] == "measured"
-
-
-def test_sandbox_report_uses_the_released_image_platform(monkeypatch):
-    from benchmarks.perf import bench_sandbox
-
-    calls = []
-    sentinel = object()
-
-    def load_image_manifest(path, *, target_platform=None):
-        calls.append((path, target_platform))
-        return sentinel
-
-    monkeypatch.setattr(bench_sandbox, "load_image_manifest", load_image_manifest)
-
-    assert bench_sandbox._report_image() is sentinel
-    assert calls == [
-        (bench_sandbox.default_image_manifest_path(), "linux/arm64"),
-    ]
-
-
-def test_sandbox_session_metadata_has_one_local_image_digest():
-    from benchmarks.perf import bench_sandbox
-
-    image = bench_sandbox._report_image()
-    metadata = bench_sandbox._session_metadata(image)
-
-    assert metadata["image"] == {
-        "image_digest": image.image_digest,
-        "image_id": image.image_id,
-        "platform": image.platform,
-    }

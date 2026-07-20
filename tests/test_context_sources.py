@@ -10,12 +10,11 @@ from pony.state.session_store import SessionStore
 from pony.workspace.context import WorkspaceContext
 from pony.context.renderer import render_current_user_message
 from pony.context.sources import (
+    build_source_chunks,
     memory_index_chunks,
     project_structure_chunks,
     recalled_memory_chunks,
     recovery_state_chunks,
-    render_project_structure,
-    render_workspace_state,
     task_working_set_chunks,
     workspace_state_chunks,
 )
@@ -53,7 +52,7 @@ def _real_agent(tmp_path):
         model_client=FakeModelClient([]),
         workspace=WorkspaceContext.build(tmp_path),
         session_store=SessionStore(tmp_path / ".pony" / "sessions"),
-        options=RuntimeOptions(approval_policy="auto"),
+        options=RuntimeOptions(project_trusted=True),
     )
 
 
@@ -94,18 +93,6 @@ def test_recall_source_security_failure_is_not_treated_as_retrieval_miss(
         )
 
 
-def test_workspace_compat_renderer_enforces_token_budget():
-    agent = _agent()
-    agent.workspace.volatile_text.return_value = "\n".join(
-        f"- commit {index}: xxxx" for index in range(200)
-    )
-
-    text = render_workspace_state(agent, budget_tokens=100)
-
-    assert text is not None
-    assert agent.token_accounting.count_text(text) <= 100
-
-
 def test_project_structure_filters_sensitive_paths():
     agent = _agent()
     agent.repo_map.top_level_tree.return_value = [
@@ -120,7 +107,6 @@ def test_project_structure_filters_sensitive_paths():
     assert ".ssh" not in text
     assert "src" in text
     assert "python=3" in text
-    assert render_project_structure(agent, 500) is not None
 
 
 def test_project_structure_empty_without_repo_map():
@@ -137,7 +123,7 @@ def test_readme_is_dynamic_project_context_not_a_pinned_instruction(tmp_path):
         model_client=FakeModelClient([]),
         workspace=WorkspaceContext.build(tmp_path),
         session_store=SessionStore(tmp_path / ".pony" / "sessions"),
-        options=RuntimeOptions(approval_policy="auto"),
+        options=RuntimeOptions(project_trusted=True),
     )
 
     chunks = project_structure_chunks(agent, agent.token_accounting)
@@ -182,6 +168,81 @@ def test_task_working_set_contains_goal_files_and_required_checkpoint():
     assert "allocator entry point" in text
     assert "Checkpoint: ckpt-context" in text
     assert "Next steps: test" in text
+
+
+def test_task_working_set_contains_only_checkpoint_facts():
+    agent = _agent()
+    agent.session.update(
+        checkpoints={
+            "current_id": "ckpt-context",
+            "items": {
+                "ckpt-context": {
+                    "goal": "Old checkpoint goal",
+                    "status": "in_progress",
+                    "blocker": "none",
+                    "next_steps": ["continue"],
+                }
+            },
+        },
+    )
+
+    chunks = task_working_set_chunks(agent, agent.token_accounting)
+
+    checkpoint = next(chunk for chunk in chunks if chunk.key == "checkpoint-state")
+    assert checkpoint.key == "checkpoint-state"
+    assert checkpoint.required is True
+    assert "Old checkpoint goal" in checkpoint.text
+    assert all(chunk.key != "workflow-state" for chunk in chunks)
+    assert all(not chunk.key.startswith("plan-pending-") for chunk in chunks)
+
+
+def test_required_recovery_and_checkpoint_survive_budget_pressure():
+    agent = _agent()
+    agent.resume_state = {
+        "status": "workspace-mismatch",
+        "runtime_identity_mismatch_fields": ["cwd"],
+    }
+    agent.session.update(
+        checkpoints={
+            "current_id": "ckpt-budget",
+            "items": {"ckpt-budget": {"goal": "Checkpoint fact"}},
+        },
+    )
+    chunks = build_source_chunks(agent, "continue")
+    required_tokens = sum(chunk.tokens for chunk in chunks if chunk.required)
+
+    from pony.context.chunks import allocate_context_chunks
+
+    allocation = allocate_context_chunks(chunks, pool_tokens=required_tokens)
+    selected_keys = {chunk.key for chunk in allocation.selected}
+
+    assert {"active-recovery", "checkpoint-state"} <= selected_keys
+
+
+def test_checkpoint_context_redacts_known_secret_and_bounds_view():
+    agent = _agent()
+    secret = "sk-ABCDEF1234567890"
+    agent.redaction_env = {"PONY_API_KEY": secret}
+    agent.secret_env_names = ("PONY_API_KEY",)
+    agent.session.update(
+        checkpoints={
+            "current_id": "ckpt-bounded",
+            "items": {
+                "ckpt-bounded": {
+                    "goal": f"Use {secret}",
+                    "blocker": "x" * 10_000,
+                }
+            },
+        },
+    )
+
+    chunks = task_working_set_chunks(agent, agent.token_accounting)
+    rendered = "\n".join(chunk.text for chunk in chunks)
+    checkpoint = next(chunk for chunk in chunks if chunk.key == "checkpoint-state")
+
+    assert secret not in rendered
+    assert "<redacted>" in rendered
+    assert agent.token_accounting.count_text(checkpoint.text) <= 768
 
 
 def test_recovery_context_only_exists_for_actionable_state():

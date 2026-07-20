@@ -10,6 +10,7 @@ from .transport import (
     _open_provider_request,
     _optional_int,
     _provider_auth_headers,
+    _provider_protocol_error,
     _model_binding,
     _model_runtime_metadata,
     _record_effective_model,
@@ -106,25 +107,42 @@ def _ollama_content(data):
         raise ValueError("message content must be text")
     calls = message.get("tool_calls", [])
     if not isinstance(calls, list) or not all(isinstance(call, dict) for call in calls):
-        raise ValueError("tool_calls must be a list")
+        raise _provider_protocol_error(
+            "Ollama",
+            stage="tool_call",
+            reason="tool_call_shape_invalid",
+        )
     content = []
     if text.strip():
         content.append({"type": "text", "text": text})
     for call in calls:
         function = call.get("function")
         if not isinstance(function, dict):
-            raise ValueError("tool function must be an object")
+            raise _provider_protocol_error(
+                "Ollama",
+                stage="tool_call",
+                reason="tool_call_shape_invalid",
+            )
         name = function.get("name")
         arguments = function.get("arguments")
         call_id = call.get("id")
         if (
             not isinstance(name, str)
             or not name
-            or not isinstance(arguments, dict)
             or call_id is not None
             and (not isinstance(call_id, str) or not call_id)
         ):
-            raise ValueError("invalid tool call")
+            raise _provider_protocol_error(
+                "Ollama",
+                stage="tool_call",
+                reason="tool_call_shape_invalid",
+            )
+        if not isinstance(arguments, dict):
+            raise _provider_protocol_error(
+                "Ollama",
+                stage="tool_call",
+                reason="tool_arguments_invalid",
+            )
         content.append(
             {
                 "type": "tool_use",
@@ -170,7 +188,6 @@ class OllamaChatModelClient:
         self.provider_metadata = _model_runtime_metadata(
             "ollama_chat",
             self.model,
-            self.host,
         )
 
     def complete(
@@ -259,10 +276,13 @@ class OllamaChatModelClient:
                 content=content,
                 usage=usage,
             )
+        except ProviderTransportError:
+            raise
         except Exception:
-            raise ProviderTransportError(
-                "Ollama error: provider_protocol_mismatch",
-                code="provider_protocol_mismatch",
+            raise _provider_protocol_error(
+                "Ollama",
+                stage="response_decode",
+                reason="response_shape_invalid",
             ) from None
         self.last_completion_metadata = usage
         return response

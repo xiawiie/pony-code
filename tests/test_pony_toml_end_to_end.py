@@ -9,9 +9,6 @@ from benchmarks.support.fake_provider import FakeModelClient
 
 
 PONY_TOML = """
-[policy]
-max_blob_size = 4096
-
 [model]
 context_window = 90000
 output_limit = 12000
@@ -51,7 +48,6 @@ def test_full_pony_toml_overrides_take_effect(tmp_path):
     (tmp_path / "pony.toml").write_text(PONY_TOML, encoding="utf-8")
     cfg = load_pony_toml(tmp_path)
 
-    assert cfg["policy"]["max_blob_size"] == 4096
     assert cfg["model"] == {"context_window": 90_000, "output_limit": 12_000}
     assert cfg["context"] == {
         "system_tools_hard_cap": 18_000,
@@ -105,7 +101,6 @@ def test_pony_parses_once_per_instance_without_cross_instance_cache(
     first = Pony(FakeModelClient([]), workspace, store)
 
     assert parse_count == 1
-    assert first.project_max_blob_size == 4096
     assert first.model_capabilities.context_window == 90_000
     assert first.max_output_tokens == 12_000
     assert first.model_budget.reserve_tokens == 14_000

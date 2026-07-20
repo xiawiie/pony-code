@@ -4,7 +4,7 @@ import subprocess
 
 import pytest
 
-from pony.recovery import policy as recovery_policy
+import pony.security.command_policy as recovery_policy
 
 
 def assess_command(*args, **kwargs):

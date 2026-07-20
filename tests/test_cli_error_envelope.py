@@ -1,9 +1,12 @@
 import pytest
+import json
 import os
 import signal
 
 from pony.cli.app import main
 from pony.cli.start import run_agent_once, run_repl
+from pony.providers.transport import ProviderTransportError
+from pony.state.session_store import UnsupportedLegacyEntry
 
 
 CANARY = "hostile-config-canary-9f3d7a"
@@ -18,31 +21,6 @@ class _FailingAgent:
 
     def redact_text(self, text):
         return str(text).replace(CANARY, "<redacted>")
-
-
-class _ReviewAgent:
-    def ask(self, _prompt):
-        return "done"
-
-    def redact_text(self, text):
-        return str(text)
-
-    def finalize_sandbox_session(self):
-        return {
-            "status": "diff_blocked",
-            "sandbox_id": "sandbox_" + "1" * 32,
-            "session_state": "pending_review",
-            "generated_count": 4,
-            "artifact": {
-                "counts": {
-                    "candidate": 2,
-                    "high_risk_candidate": 1,
-                    "blocked_sensitive": 1,
-                    "blocked_size": 1,
-                    "blocked_type": 0,
-                }
-            },
-        }
 
 
 class _InterruptAgent:
@@ -74,24 +52,11 @@ class _FinalizingFailureAgent(_FailingAgent):
         return None
 
 
-def test_one_shot_renders_sandbox_review_counts(capsys):
-    agent = _ReviewAgent()
-
-    assert run_agent_once(agent, ["finish"]) == 0
-
-    output = capsys.readouterr().out
-    assert "State: pending_review" in output
-    assert (
-        "Changes: 3 candidate, 1 high-risk, 2 blocked, 4 generated (ignored)" in output
-    )
-    assert "Review: pony sandbox diff sandbox_" in output
-
-
 def test_one_shot_keyboard_interrupt_finalizes_sandbox_and_returns_130():
     agent = _InterruptAgent()
 
     assert run_agent_once(agent, ["finish"]) == 130
-    assert agent.finalized == 1
+    assert agent.finalized == 0
 
 
 @pytest.mark.skipif(not hasattr(signal, "SIGTERM"), reason="SIGTERM unavailable")
@@ -100,7 +65,7 @@ def test_one_shot_sigterm_becomes_interrupt_and_restores_handler():
     previous = signal.getsignal(signal.SIGTERM)
 
     assert run_agent_once(agent, ["finish"]) == 128 + signal.SIGTERM
-    assert agent.finalized == 1
+    assert agent.finalized == 0
     assert signal.getsignal(signal.SIGTERM) is previous
 
 
@@ -121,7 +86,7 @@ def test_repl_sigterm_during_non_model_branch_still_finalizes(monkeypatch):
     monkeypatch.setattr("builtins.input", lambda _prompt="": next(inputs))
 
     assert run_repl(agent) == 128 + signal.SIGTERM
-    assert agent.finalized == 1
+    assert agent.finalized == 0
 
 
 @pytest.mark.parametrize("error_type", (OSError, ValueError))
@@ -139,7 +104,88 @@ def test_one_shot_runtime_failure_still_finalizes_sandbox():
     agent = _FinalizingFailureAgent(ValueError("failed"))
 
     assert run_agent_once(agent, ["finish"]) == 1
-    assert agent.finalized == 1
+    assert agent.finalized == 0
+
+
+def _provider_failure():
+    return ProviderTransportError(
+        f"unsafe raw response {CANARY}",
+        code="provider_protocol_mismatch",
+        stage="tool_call",
+        protocol_reason="tool_call_shape_invalid",
+    )
+
+
+def test_one_shot_provider_failure_is_rethrown_after_finalization():
+    agent = _FinalizingFailureAgent(_provider_failure())
+
+    with pytest.raises(ProviderTransportError):
+        run_agent_once(agent, ["finish"])
+
+    assert agent.finalized == 0
+
+
+@pytest.mark.parametrize("output_format", ("text", "json"))
+def test_cli_projects_provider_failure_without_raw_response(
+    monkeypatch,
+    capsys,
+    output_format,
+):
+    agent = _FailingAgent(_provider_failure())
+    agent.model_client = type(
+        "BoundClient",
+        (),
+        {"provider_binding": {"protocol_family": "openai_chat_completions"}},
+    )()
+    monkeypatch.setattr("pony.cli.app.build_agent", lambda _args: agent)
+    argv = ["--format", output_format, "run", "finish"]
+
+    assert main(argv) == 1
+
+    captured = capsys.readouterr()
+    combined = captured.out + captured.err
+    assert CANARY not in combined
+    if output_format == "json":
+        error = json.loads(captured.out)["error"]
+        assert error["code"] == "provider_protocol_mismatch"
+        assert error["details"] == {
+            "code": "provider_protocol_mismatch",
+            "protocol": "openai_chat_completions",
+            "reason": "tool_call_shape_invalid",
+            "stage": "tool_call",
+        }
+    else:
+        assert "Provider request failed" in captured.err
+        assert "agent runtime failed" not in captured.err
+        assert "openai_chat_completions" in captured.err
+
+
+def test_plain_repl_provider_failure_propagates_after_finalization(monkeypatch):
+    agent = _FinalizingFailureAgent(_provider_failure())
+    agent.session = {}
+    monkeypatch.setattr("builtins.input", lambda _prompt="": "finish")
+
+    with pytest.raises(ProviderTransportError):
+        run_repl(agent, plain=True)
+
+    assert agent.finalized == 0
+
+
+def test_cli_drops_unrecognized_provider_error_code(monkeypatch, capsys):
+    failure = ProviderTransportError(
+        "unsafe failure",
+        code=f"unsafe_{CANARY}",
+        stage="tool_call",
+    )
+    agent = _FailingAgent(failure)
+    agent.model_client = type("BoundClient", (), {"provider_binding": {}})()
+    monkeypatch.setattr("pony.cli.app.build_agent", lambda _args: agent)
+
+    assert main(["--format", "json", "run", "finish"]) == 1
+
+    output = capsys.readouterr().out
+    assert CANARY not in output
+    assert json.loads(output)["error"]["code"] == "provider_protocol_mismatch"
 
 
 @pytest.mark.parametrize("error_type", (OSError, ValueError))
@@ -176,6 +222,8 @@ def test_invalid_project_api_base_uses_safe_config_envelope(
     monkeypatch,
     capsys,
 ):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr("builtins.input", lambda _prompt="": "y")
     (tmp_path / ".env").write_text(
         "PONY_PROVIDER=anthropic\n"
         "PONY_MODEL=claude-test\n"
@@ -191,7 +239,9 @@ def test_invalid_project_api_base_uses_safe_config_envelope(
     assert CANARY not in captured.out + captured.err
 
 
-def test_project_key_without_base_is_rejected(tmp_path, capsys):
+def test_project_key_without_base_is_rejected(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr("builtins.input", lambda _prompt="": "y")
     (tmp_path / ".env").write_text(
         "PONY_PROVIDER=anthropic\n"
         "PONY_MODEL=claude-test\n"
@@ -203,6 +253,61 @@ def test_project_key_without_base_is_rejected(tmp_path, capsys):
 
     output = capsys.readouterr()
     assert output.err.splitlines()[0] == "api_base_not_configured"
+
+
+def test_unsupported_legacy_session_uses_stable_json_error(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    def reject_legacy(_args):
+        raise UnsupportedLegacyEntry("model_change")
+
+    monkeypatch.setattr("pony.cli.app.build_agent", reject_legacy)
+
+    code = main(
+        [
+            "--cwd",
+            str(tmp_path),
+            "--format",
+            "json",
+            "--resume",
+            "legacy",
+            "repl",
+        ]
+    )
+
+    assert code == 3
+    output = capsys.readouterr().out
+    assert '"code": "unsupported_legacy_entry"' in output
+    assert "model_change" in output
+
+
+def test_resume_latest_on_empty_store_returns_session_not_found_without_creating(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr("builtins.input", lambda _prompt="": "y")
+
+    code = main(
+        [
+            "--cwd",
+            str(tmp_path),
+            "--format",
+            "json",
+            "--resume",
+            "latest",
+            "--permission-mode",
+            "plan",
+            "repl",
+        ]
+    )
+
+    assert code == 2
+    assert '"code": "session_not_found"' in capsys.readouterr().out
+    assert not list((tmp_path / ".pony" / "sessions").glob("*.jsonl"))
 
 
 def test_init_invalid_base_does_not_echo_input_value(tmp_path, monkeypatch, capsys):

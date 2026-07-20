@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 
 
 SOURCE_HARD_CAPS = {
+    "active_skill": 10_240,
     "workspace_state": 3_072,
     "project_structure": 6_144,
     "task_working_set": 3_072,

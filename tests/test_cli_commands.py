@@ -7,11 +7,14 @@ import stat
 import pytest
 
 from pony.cli.app import main
+from pony.cli.assembly import _model_client_factory
 from pony.config.environment import read_project_env
+from pony.config.model import resolve_model_config
+from pony.providers.transport import ProviderTransportError
 from pony.runtime.options import RuntimeOptions
 
 
-def _install_fake_agent(monkeypatch, tmp_path, called):
+def _install_fake_agent(monkeypatch, tmp_path, called, *, permission_mode="default"):
     def fake_build_agent(args):
         called["built"] = True
         called["prompt"] = list(getattr(args, "prompt", []))
@@ -19,13 +22,37 @@ def _install_fake_agent(monkeypatch, tmp_path, called):
         class FakeAgent:
             model_client = type("MC", (), {"model": "x"})()
             workspace = type("W", (), {"cwd": str(tmp_path), "branch": "main"})()
-            approval_policy = "auto"
-            session = {"id": "s"}
+            session = {"id": "s", "permission_mode": permission_mode}
             session_path = str(tmp_path / ".pony" / "sessions" / "s.json")
+            tools = {"read_file": {}, "write_file": {}, "run_shell": {}}
 
             def ask(self, message):
                 called["asked"] = message
+                called["bypass_available"] = getattr(
+                    self, "bypass_permissions_available", False
+                )
                 return "answer"
+
+            def set_permission_mode(self, mode):
+                called["permission_mode"] = mode
+                self.session["permission_mode"] = mode
+
+            def current_permission_mode(self):
+                return self.session["permission_mode"]
+
+            def set_permission_rule(self, name, behavior):
+                called.setdefault("permission_rules", []).append((behavior, name))
+
+            def set_permission_rules(self, updates):
+                called.setdefault("permission_rules", []).extend(
+                    (behavior, name) for name, behavior in updates
+                )
+
+            def update_permissions(self, *, mode=None, rule_updates=()):
+                if mode is not None:
+                    self.set_permission_mode(mode)
+                self.set_permission_rules(rule_updates)
+                return {"mode_entry": mode, "rules": tuple(rule_updates) or None}
 
             def memory_text(self):
                 return "memory"
@@ -33,9 +60,37 @@ def _install_fake_agent(monkeypatch, tmp_path, called):
             def reset(self):
                 called["reset"] = True
 
-        return FakeAgent()
+        agent = FakeAgent()
+        agent.bypass_permissions_available = bool(
+            getattr(args, "allow_dangerously_skip_permissions", False)
+            or getattr(args, "dangerously_skip_permissions", False)
+        )
+        if getattr(args, "resume", None) and getattr(args, "permission_mode", None):
+            agent.set_permission_mode(args.permission_mode)
+        return agent
 
     monkeypatch.setattr("pony.cli.app.build_agent", fake_build_agent)
+
+
+def test_model_client_factory_rebuilds_the_resolved_transport():
+    config = {
+        "protocol": {"value": "openai_chat_completions"},
+        "model": {"value": "gpt-test"},
+        "base_url": {"value": "https://api.example/v1"},
+        "api_key": {"value": "test-key"},
+        "auth_mode": {"value": "bearer"},
+        "capabilities": {"strict_tools": True},
+    }
+
+    factory = _model_client_factory(config, 30)
+    first = factory()
+    second = factory()
+    replacement = factory("gpt-next")
+
+    assert second is not first
+    assert second.provider_binding == first.provider_binding
+    assert second.capabilities == first.capabilities
+    assert replacement.model == "gpt-next"
 
 
 def test_run_command_calls_agent_once(tmp_path, monkeypatch, capsys):
@@ -47,6 +102,339 @@ def test_run_command_calls_agent_once(tmp_path, monkeypatch, capsys):
     assert code == 0
     assert called["asked"] == "fix tests"
     assert "answer" in capsys.readouterr().out
+
+
+def test_run_permission_mode_is_applied_after_runtime_build(tmp_path, monkeypatch):
+    called = {}
+    _install_fake_agent(monkeypatch, tmp_path, called)
+
+    assert (
+        main(
+            [
+                "--cwd",
+                str(tmp_path),
+                "--permission-mode",
+                "plan",
+                "run",
+                "inspect",
+            ]
+        )
+        == 0
+    )
+    assert called["permission_mode"] == "plan"
+
+
+def test_permission_mode_is_rejected_for_management_commands(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setattr(
+        "pony.cli.app.build_agent",
+        lambda _args: pytest.fail("agent must not be built"),
+    )
+
+    assert (
+        main(
+            [
+                "--cwd",
+                str(tmp_path),
+                "--permission-mode",
+                "dontAsk",
+                "status",
+            ]
+        )
+        == 2
+    )
+    assert "permission flags are only valid" in capsys.readouterr().err
+
+
+def test_model_flag_is_rejected_for_management_commands(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(
+        "pony.cli.app.build_agent",
+        lambda _args: pytest.fail("agent must not be built"),
+    )
+
+    assert main(["--cwd", str(tmp_path), "--model", "gpt-next", "status"]) == 2
+    assert "--model is only valid" in capsys.readouterr().err
+
+
+def test_bypass_permission_mode_requires_explicit_dangerous_opt_in(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setattr(
+        "pony.cli.app.build_agent",
+        lambda _args: pytest.fail("agent must not be built"),
+    )
+
+    assert (
+        main(
+            [
+                "--cwd",
+                str(tmp_path),
+                "--permission-mode",
+                "bypassPermissions",
+                "run",
+                "inspect",
+            ]
+        )
+        == 2
+    )
+    assert "requires --allow-dangerously-skip-permissions" in capsys.readouterr().err
+
+
+def test_direct_bypass_flag_applies_session_mode(tmp_path, monkeypatch):
+    called = {}
+    _install_fake_agent(monkeypatch, tmp_path, called)
+
+    assert (
+        main(
+            [
+                "--cwd",
+                str(tmp_path),
+                "--dangerously-skip-permissions",
+                "run",
+                "inspect",
+            ]
+        )
+        == 0
+    )
+    assert called["permission_mode"] == "bypassPermissions"
+
+
+def test_permission_rule_flags_share_one_parser_and_deny_wins(
+    tmp_path, monkeypatch
+):
+    called = {}
+    _install_fake_agent(monkeypatch, tmp_path, called)
+
+    code = main(
+        [
+            "--cwd",
+            str(tmp_path),
+            "--allowed-tools",
+            "read_file,write_file",
+            "--disallowedTools",
+            "write_file run_shell",
+            "run",
+            "inspect",
+        ]
+    )
+
+    assert code == 0
+    assert called["permission_rules"] == [
+        ("allow", "read_file"),
+        ("allow", "write_file"),
+        ("deny", "write_file"),
+        ("deny", "run_shell"),
+    ]
+
+
+@pytest.mark.parametrize(
+    "permission_args",
+    (
+        [
+            "--allowed-tools",
+            "read_file",
+            "--allowed-tools",
+            "unknown_permission_tool",
+        ],
+        [
+            "--permission-mode",
+            "plan",
+            "--allowed-tools",
+            "unknown_permission_tool",
+        ],
+    ),
+)
+def test_invalid_permission_flags_leave_real_resumed_session_unchanged(
+    tmp_path,
+    monkeypatch,
+    capsys,
+    permission_args,
+):
+    from benchmarks.support.fake_provider import FakeModelClient
+    from pony import Pony
+    from pony.state.session_store import SessionStore
+    from pony.workspace.context import WorkspaceContext
+
+    (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
+    store = SessionStore(tmp_path / ".pony" / "sessions")
+    agent = Pony(
+        model_client=FakeModelClient([]),
+        workspace=WorkspaceContext.build(tmp_path),
+        session_store=store,
+        options=RuntimeOptions(
+            project_trusted=True,
+            allow_dangerously_skip_permissions=True,
+        ),
+    )
+    session_id = agent.session["id"]
+    session_path = store.path(session_id)
+    original = session_path.read_bytes()
+    monkeypatch.setattr(
+        "pony.cli.app.build_agent",
+        lambda _args: pytest.fail("invalid permission flags must fail before build"),
+    )
+
+    code = main(
+        [
+            "--cwd",
+            str(tmp_path),
+            "--resume",
+            session_id,
+            *permission_args,
+            "run",
+            "inspect",
+        ]
+    )
+
+    assert code == 2
+    assert "unknown permission rule tool" in capsys.readouterr().err
+    assert session_path.read_bytes() == original
+    assert store.load(session_id)["permission_mode"] == "auto"
+    assert store.load(session_id)["permission_rules"] == {
+        "allow": [],
+        "ask": [],
+        "deny": [],
+    }
+
+
+def test_plain_resume_of_bypass_requires_dangerous_capability(
+    tmp_path, monkeypatch, capsys
+):
+    called = {}
+    _install_fake_agent(
+        monkeypatch,
+        tmp_path,
+        called,
+        permission_mode="bypassPermissions",
+    )
+
+    denied = main(["--cwd", str(tmp_path), "--resume", "s", "run", "inspect"])
+    allowed = main(
+        [
+            "--cwd",
+            str(tmp_path),
+            "--resume",
+            "s",
+            "--allow-dangerously-skip-permissions",
+            "run",
+            "inspect",
+        ]
+    )
+
+    assert denied == 2
+    assert allowed == 0
+    assert "resuming bypassPermissions requires" in capsys.readouterr().err
+    assert called["bypass_available"] is True
+
+
+def test_resume_of_bypass_can_explicitly_restore_manual_without_opt_in(
+    tmp_path, monkeypatch
+):
+    called = {}
+    _install_fake_agent(
+        monkeypatch,
+        tmp_path,
+        called,
+        permission_mode="bypassPermissions",
+    )
+
+    code = main(
+        [
+            "--cwd",
+            str(tmp_path),
+            "--resume",
+            "s",
+            "--permission-mode",
+            "manual",
+            "run",
+            "inspect",
+        ]
+    )
+
+    assert code == 0
+    assert called["permission_mode"] == "manual"
+
+
+def test_real_resume_bypass_preflight_runs_before_provider_resolution(
+    tmp_path, monkeypatch
+):
+    from benchmarks.support.fake_provider import FakeModelClient
+    from pony import Pony
+    from pony.cli.arguments import build_arg_parser
+    from pony.cli.assembly import _build_agent
+    from pony.cli.errors import CliError
+    from pony.state.session_store import SessionStore
+    from pony.workspace.context import WorkspaceContext
+
+    (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
+    workspace = WorkspaceContext.build(tmp_path)
+    store = SessionStore(tmp_path / ".pony" / "sessions")
+    agent = Pony(
+        model_client=FakeModelClient([]),
+        workspace=workspace,
+        session_store=store,
+        options=RuntimeOptions(
+            project_trusted=True,
+            allow_dangerously_skip_permissions=True,
+        ),
+    )
+    agent.set_permission_mode("bypassPermissions")
+    args = build_arg_parser().parse_args(
+        ["--cwd", str(tmp_path), "--resume", agent.session["id"], "run", "inspect"]
+    )
+    monkeypatch.setattr(
+        "pony.cli.assembly._build_transport_client",
+        lambda *_args, **_kwargs: pytest.fail("provider resolution must not run"),
+    )
+
+    with pytest.raises(CliError, match="resuming bypassPermissions"):
+        _build_agent(args, workspace)
+
+
+def test_invalid_no_input_repl_is_rejected_before_agent_build(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setattr(
+        "pony.cli.app.build_agent",
+        lambda _args: pytest.fail("agent must not be built"),
+    )
+
+    assert (
+        main(
+            [
+                "--cwd",
+                str(tmp_path),
+                "--no-input",
+                "--permission-mode",
+                "acceptEdits",
+                "repl",
+            ]
+        )
+        == 2
+    )
+    assert "--no-input cannot be used" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("extra", "expected"),
+    (([], True), (["--format", "json"], False)),
+)
+def test_explicit_resume_card_is_enabled_only_for_text_repl(
+    tmp_path,
+    monkeypatch,
+    extra,
+    expected,
+):
+    called = {}
+    _install_fake_agent(monkeypatch, tmp_path, called)
+    monkeypatch.setattr(
+        "pony.cli.app.run_repl",
+        lambda _agent, **options: called.update(options) or 0,
+    )
+
+    assert main(["--cwd", str(tmp_path), "--resume", "session", *extra, "repl"]) == 0
+    assert called["show_resume"] is expected
 
 
 @pytest.mark.parametrize("command", ([], ["repl"]))
@@ -105,30 +493,25 @@ def test_help_command_shows_examples(capsys):
     assert "pony\n" in out
     assert "also the default for bare `pony`" in out
     assert "--no-color" in out
-    assert "--sandbox    run/repl in local Docker Sandbox (macOS arm64 only)" in out
+    assert "--sandbox" not in out
+    assert "sandbox      " not in out
     assert 'pony run "inspect the failing tests"' in out
     assert "pony config set-secret PONY_API_KEY" in out
-    assert "pony --approval ask run" in out
+    assert "pony --permission-mode manual run" in out
     assert "pony checkpoints show <checkpoint-id>" in out
     assert "pony checkpoints pending" in out
     assert "pony runs summary latest" in out
     assert "migrate      Inspect and apply explicit artifact migrations" in out
     assert "Compatibility:" not in out
-    assert "no OS sandbox" in out
-    assert "all model-visible file tools use filtered" in out
+    assert "permission, path, and secret checks" in out
     assert "providers list" not in out
 
 
-def test_sandbox_flag_is_rejected_for_non_agent_commands(tmp_path, monkeypatch, capsys):
-    monkeypatch.setattr(
-        "pony.cli.app._dispatch_status",
-        lambda *_args: (_ for _ in ()).throw(AssertionError("must not dispatch")),
-    )
-
-    code = main(["--cwd", str(tmp_path), "--sandbox", "status"])
+def test_removed_sandbox_command_is_rejected(capsys):
+    code = main(["sandbox", "status"])
 
     assert code == 2
-    assert "--sandbox is only valid" in capsys.readouterr().err
+    assert "Unknown command: sandbox" in capsys.readouterr().err
 
 
 def test_help_flag_uses_root_help_without_argparse_dump(capsys):
@@ -182,7 +565,7 @@ def test_unknown_command_suggestion_uses_json_error_envelope(capsys):
 def _install_init_input(
     monkeypatch,
     *,
-    provider="",
+    provider="anthropic",
     api_base="",
     model="",
     key="test-key",
@@ -192,10 +575,39 @@ def _install_init_input(
     monkeypatch.setattr(getpass, "getpass", lambda prompt: key)
 
 
-def test_init_prompts_for_url_and_hidden_key_without_building_agent_or_network(
+def _install_successful_detection(monkeypatch, provider):
+    def detect(config, **_kwargs):
+        resolved = resolve_model_config(
+            project_env={
+                "PONY_PROVIDER": provider,
+                "PONY_API_BASE": config["base_url"]["value"],
+                "PONY_API_KEY": config["api_key"]["value"],
+                "PONY_MODEL": config["model"]["value"],
+            },
+            process_env={},
+        )
+        return object(), resolved, {
+            "status": "ok",
+            "stage": "complete",
+            "category": "ok",
+            "model_calls": 2,
+            "candidate_count": 1,
+            "usage_status": "degraded",
+        }
+
+    monkeypatch.setattr("pony.cli.commands.resolve_provider_client", detect)
+
+
+def test_init_auto_detects_before_writing_without_building_agent(
     tmp_path, monkeypatch, capsys
 ):
-    _install_init_input(monkeypatch)
+    _install_init_input(
+        monkeypatch,
+        provider="",
+        api_base="https://gateway.example/v1",
+        model="gateway-model",
+    )
+    _install_successful_detection(monkeypatch, "openai-chat")
     monkeypatch.setattr(
         "pony.cli.app.build_agent",
         lambda args: (_ for _ in ()).throw(AssertionError("init built an agent")),
@@ -211,18 +623,68 @@ def test_init_prompts_for_url_and_hidden_key_without_building_agent_or_network(
 
     values = read_project_env(tmp_path, warn=False)
     assert values == {
-        "PONY_PROVIDER": "anthropic",
-        "PONY_API_BASE": "https://api.anthropic.com/v1",
-        "PONY_MODEL": "claude-sonnet-4-6",
+        "PONY_PROVIDER": "openai-chat",
+        "PONY_API_BASE": "https://gateway.example/v1",
+        "PONY_MODEL": "gateway-model",
         "PONY_API_KEY": "test-key",
     }
     captured = capsys.readouterr()
-    assert "Provider [anthropic]:" in captured.err
-    assert "API Base [https://api.anthropic.com/v1]:" in captured.err
+    assert "Provider [auto]:" in captured.err
+    assert "Detecting provider..." in captured.err
     assert captured.out.startswith("Pony init")
-    assert "claude-sonnet-4-6" in captured.out
-    assert "anthropic_messages" in captured.out
+    assert "gateway-model" in captured.out
+    assert "openai_chat_completions" in captured.out
+    assert "usage" in captured.out and "unavailable" in captured.out
     assert "test-key" not in captured.out + captured.err
+
+
+def test_init_forced_provider_performs_no_detection(tmp_path, monkeypatch):
+    _install_init_input(monkeypatch, provider="anthropic")
+    monkeypatch.setattr(
+        "pony.cli.commands.resolve_provider_client",
+        lambda *_args, **_kwargs: pytest.fail("forced Provider was probed"),
+    )
+
+    assert main(["--cwd", str(tmp_path), "init"]) == 0
+    assert read_project_env(tmp_path, warn=False)["PONY_PROVIDER"] == "anthropic"
+
+
+def test_init_detection_failure_leaves_existing_env_identity_unchanged(
+    tmp_path,
+    monkeypatch,
+):
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "PONY_PROVIDER=auto\n"
+        "PONY_API_BASE=https://gateway.example/v1\n"
+        "PONY_API_KEY=existing-key\n"
+        "PONY_MODEL=gateway-model\n",
+        encoding="utf-8",
+    )
+    env_path.chmod(0o600)
+    before = env_path.stat()
+    before_bytes = env_path.read_bytes()
+    _install_init_input(monkeypatch, provider="", key="")
+
+    def fail(*_args, **_kwargs):
+        raise ProviderTransportError(
+            "unsafe raw failure",
+            code="provider_detection_failed",
+            stage="tool_call",
+            protocol_reason="tool_call_shape_invalid",
+        )
+
+    monkeypatch.setattr("pony.cli.commands.resolve_provider_client", fail)
+
+    assert main(["--cwd", str(tmp_path), "init"]) == 1
+
+    after = env_path.stat()
+    assert env_path.read_bytes() == before_bytes
+    assert (after.st_ino, after.st_mtime_ns, stat.S_IMODE(after.st_mode)) == (
+        before.st_ino,
+        before.st_mtime_ns,
+        stat.S_IMODE(before.st_mode),
+    )
 
 
 def test_init_accepts_exact_third_party_api_base(tmp_path, monkeypatch, capsys):
@@ -232,6 +694,7 @@ def test_init_accepts_exact_third_party_api_base(tmp_path, monkeypatch, capsys):
         api_base="https://lumina.tripo3d.com/v1/",
         key="gateway-key",
     )
+    _install_successful_detection(monkeypatch, "openai-chat")
 
     assert (
         main(
@@ -249,7 +712,7 @@ def test_init_accepts_exact_third_party_api_base(tmp_path, monkeypatch, capsys):
     output = capsys.readouterr().out
     payload = json.loads(output)["data"]
     assert payload["api_base"] == "https://lumina.tripo3d.com/v1"
-    assert payload["provider"] == "openai"
+    assert payload["provider"] == "openai-chat"
     assert payload["model"] == "gpt-5.4"
     assert payload["protocol"] == "openai_chat_completions"
     assert payload["api_key"] == {
@@ -266,11 +729,12 @@ def test_init_can_select_openai_from_api_base(tmp_path, monkeypatch):
         api_base="https://api.openai.com/v1",
         key="openai-key",
     )
+    _install_successful_detection(monkeypatch, "openai-responses")
 
     assert main(["--cwd", str(tmp_path), "init"]) == 0
 
     assert read_project_env(tmp_path, warn=False) == {
-        "PONY_PROVIDER": "openai",
+        "PONY_PROVIDER": "openai-responses",
         "PONY_API_BASE": "https://api.openai.com/v1",
         "PONY_MODEL": "gpt-5.4",
         "PONY_API_KEY": "openai-key",
@@ -297,7 +761,10 @@ def test_init_can_configure_local_ollama_without_api_key(tmp_path, monkeypatch):
 
 def test_init_empty_key_keeps_existing_project_key(tmp_path, monkeypatch, capsys):
     (tmp_path / ".env").write_text(
-        "PONY_API_BASE=https://old.example/v1\nPONY_API_KEY=existing-key\n",
+        "PONY_PROVIDER=anthropic\n"
+        "PONY_API_BASE=https://old.example/v1\n"
+        "PONY_MODEL=claude-sonnet-4-6\n"
+        "PONY_API_KEY=existing-key\n",
         encoding="utf-8",
     )
     _install_init_input(monkeypatch, api_base="", key="")
@@ -316,7 +783,9 @@ def test_init_updates_config_without_dropping_unrelated_lines(tmp_path, monkeypa
     (tmp_path / ".env").write_text(
         "# keep this comment\n"
         "OTHER_SETTING=kept\n"
+        "PONY_PROVIDER=anthropic\n"
         "PONY_API_BASE=https://old.example/v1\n"
+        "PONY_MODEL=claude-sonnet-4-6\n"
         "PONY_API_KEY=old-key\n",
         encoding="utf-8",
     )
@@ -392,9 +861,24 @@ def test_init_rejects_unsafe_existing_url_without_echo_or_prompt(
 def test_init_rejects_empty_new_key_without_writing(tmp_path, monkeypatch, capsys):
     _install_init_input(monkeypatch, key="")
 
-    assert main(["--cwd", str(tmp_path), "init"]) == 2
+    assert main(["--cwd", str(tmp_path), "init"]) == 3
 
-    assert "API Key is required unless auth mode is none" in capsys.readouterr().err
+    assert "api_key_not_configured" in capsys.readouterr().err
+    assert not (tmp_path / ".env").exists()
+
+
+def test_init_invalid_provider_explains_configuration_error(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    _install_init_input(monkeypatch, provider="unknown-provider")
+
+    assert main(["--cwd", str(tmp_path), "init"]) == 3
+
+    captured = capsys.readouterr()
+    assert "Invalid Provider value" in captured.err
+    assert "Choose auto or a Provider matching the API Base." in captured.err
     assert not (tmp_path / ".env").exists()
 
 
@@ -420,7 +904,6 @@ def test_init_no_input_never_prompts_or_writes(tmp_path, monkeypatch, capsys):
     [
         ["--provider", "openai"],
         ["--profile", "official"],
-        ["--model", "other-model"],
         ["--base-url", "https://example.com/v1"],
         ["--api-key", "sk-cli-secret-123456789"],
         ["--connection", "legacy"],
@@ -647,7 +1130,7 @@ def test_repl_help_renders_help_details(tmp_path, monkeypatch, capsys):
         model_client=FakeModelClient([]),
         workspace=workspace,
         session_store=session_store,
-        options=RuntimeOptions(approval_policy="auto"),
+        options=RuntimeOptions(project_trusted=True),
     )
 
     inputs = iter(["/help", "/exit"])

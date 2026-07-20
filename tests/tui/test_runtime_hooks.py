@@ -8,13 +8,13 @@ from pony.state.task_state import TaskState
 from pony.workspace.context import WorkspaceContext
 
 
-def _agent(tmp_path, *, approval_policy="ask"):
+def _agent(tmp_path):
     (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
     return Pony(
         model_client=FakeModelClient([]),
         workspace=WorkspaceContext.build(tmp_path),
         session_store=SessionStore(tmp_path / ".pony" / "sessions"),
-        options=RuntimeOptions(approval_policy=approval_policy),
+        options=RuntimeOptions(project_trusted=True),
     )
 
 
@@ -80,17 +80,13 @@ def test_trace_listener_gets_redacted_tool_details_without_persisting_them(tmp_p
     assert "result" not in persisted
 
 
-def test_approval_prompt_is_used_only_for_ask_policy(tmp_path):
+def test_approval_prompt_is_used_when_installed(tmp_path):
     agent = _agent(tmp_path)
     received = []
     agent._approval_prompt = lambda name, args: received.append((name, args)) or True
 
     assert agent.approve("write_file", {"path": "README.md"}) is True
     assert received == [("write_file", {"path": "README.md"})]
-
-    agent.approval_policy = "never"
-    assert agent.approve("write_file", {"path": "README.md"}) is False
-    assert len(received) == 1
 
 
 def test_broken_approval_prompt_fails_closed(tmp_path):

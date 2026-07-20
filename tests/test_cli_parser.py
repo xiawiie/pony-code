@@ -26,6 +26,61 @@ def test_parse_run_command_with_prompt():
     assert invocation.runtime_args.cwd == "/repo"
 
 
+@pytest.mark.parametrize(
+    "mode",
+    ("acceptEdits", "auto", "bypassPermissions", "manual", "dontAsk", "plan"),
+)
+def test_parse_claude_permission_modes(mode):
+    invocation = parse_cli_invocation(
+        ["--permission-mode", mode, "run", "inspect"], build_arg_parser()
+    )
+
+    assert invocation.runtime_args.permission_mode == mode
+
+
+def test_parse_model_override_for_agent_commands():
+    invocation = parse_cli_invocation(
+        ["--model", "claude-sonnet-4-6", "repl"],
+        build_arg_parser(),
+    )
+
+    assert invocation.runtime_args.model == "claude-sonnet-4-6"
+
+
+@pytest.mark.parametrize("model", ("", " bad", "bad\nmodel"))
+def test_parser_rejects_invalid_model_override(model):
+    with pytest.raises(SystemExit) as caught:
+        build_arg_parser().parse_args(["--model", model, "repl"])
+
+    assert caught.value.code == 2
+
+
+def test_parse_claude_permission_rule_flag_aliases():
+    invocation = parse_cli_invocation(
+        [
+            "--allowedTools",
+            "read_file write_file",
+            "--disallowed-tools",
+            "run_shell,patch_file",
+            "run",
+            "inspect",
+        ],
+        build_arg_parser(),
+    )
+
+    assert invocation.runtime_args.allowed_tool_rules == ["read_file write_file"]
+    assert invocation.runtime_args.disallowed_tool_rules == [
+        "run_shell,patch_file"
+    ]
+
+
+def test_parser_rejects_internal_default_permission_name():
+    with pytest.raises(SystemExit) as caught:
+        build_arg_parser().parse_args(["--permission-mode", "default"])
+
+    assert caught.value.code == 2
+
+
 def test_parse_repl_command():
     invocation = parse_cli_invocation(["repl"], build_arg_parser())
 
@@ -58,20 +113,18 @@ def test_run_rejects_unknown_or_abbreviated_options(argv):
 
 def test_run_accepts_option_like_prompt_after_separator():
     invocation = parse_cli_invocation(
-        ["--sandbox", "run", "--", "--sandox"],
+        ["run", "--", "--sandox"],
         build_arg_parser(),
     )
 
     assert invocation.command == "run"
     assert invocation.command_args == ["--sandox"]
-    assert invocation.runtime_args.sandbox is True
 
 
 @pytest.mark.parametrize(
     ("argv", "command_args"),
     (
         (["doctor", "--check-api"], ["--check-api"]),
-        (["sandbox", "prune", "--apply"], ["prune", "--apply"]),
         (
             ["config", "set-secret", "NAME", "--stdin"],
             ["set-secret", "NAME", "--stdin"],
@@ -143,10 +196,6 @@ def test_parser_rejects_removed_max_new_tokens_flag():
         ("--max-steps", "100", 100),
         ("--max-output-tokens", "1", 1),
         ("--max-output-tokens", "32768", 32768),
-        ("--temperature", "0", 0.0),
-        ("--temperature", "2", 2.0),
-        ("--top-p", "0.0001", 0.0001),
-        ("--top-p", "1", 1.0),
     ),
 )
 def test_runtime_resource_arguments_accept_documented_boundaries(
@@ -169,18 +218,18 @@ def test_runtime_resource_arguments_accept_documented_boundaries(
         ("--max-steps", "101"),
         ("--max-output-tokens", "0"),
         ("--max-output-tokens", "32769"),
-        ("--temperature", "-0.1"),
-        ("--temperature", "2.1"),
-        ("--temperature", "nan"),
-        ("--temperature", "inf"),
-        ("--top-p", "0"),
-        ("--top-p", "1.1"),
-        ("--top-p", "nan"),
-        ("--top-p", "inf"),
     ),
 )
 def test_runtime_resource_arguments_reject_out_of_range_values(flag, value):
     with pytest.raises(SystemExit) as caught:
         build_arg_parser().parse_args([flag, value])
+
+    assert caught.value.code == 2
+
+
+@pytest.mark.parametrize("flag", ("--temperature", "--top-p"))
+def test_parser_rejects_removed_sampling_flags(flag):
+    with pytest.raises(SystemExit) as caught:
+        build_arg_parser().parse_args([flag, "0.5"])
 
     assert caught.value.code == 2

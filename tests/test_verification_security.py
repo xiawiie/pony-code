@@ -123,6 +123,19 @@ def test_verification_argv_keeps_ordinary_relative_test_node_paths():
 @pytest.mark.parametrize(
     "argv",
     (
+        ("pytest", "--version"),
+        ("pytest", "--collect-only"),
+        ("pytest", "--co"),
+        ("ruff", "check", "--help"),
+    ),
+)
+def test_verification_argv_rejects_nonexecuting_commands(argv):
+    assert not verification.is_verification_argv(argv)
+
+
+@pytest.mark.parametrize(
+    "argv",
+    (
         ("pytest", "-ktest_exec"),
         ("pytest", "-k", "test_exec"),
         ("pytest", "tests/test_\ue000.py"),
@@ -177,7 +190,7 @@ def test_verification_evidence_rejects_aggregate_argv_over_field_bound():
     )
 
 
-def _build_agent(root, command, *, approval_policy="ask", read_only=False):
+def _build_agent(root, command, *, permission_mode="default", read_only=False):
     root.mkdir(parents=True)
     (root / "README.md").write_text("demo\n", encoding="utf-8")
     call = {
@@ -195,8 +208,10 @@ def _build_agent(root, command, *, approval_policy="ask", read_only=False):
             },
         ),
         session_store=SessionStore(root / ".pony" / "sessions"),
-        options=RuntimeOptions(approval_policy=approval_policy, read_only=read_only),
+        options=RuntimeOptions(project_trusted=True, read_only=read_only),
     )
+    if permission_mode != "auto":
+        agent.set_permission_mode(permission_mode)
     return agent
 
 
@@ -214,47 +229,46 @@ def test_composite_or_wrapped_commands_create_no_verification_records(
     command,
 ):
     agent = _build_agent(tmp_path / command.split()[0], command)
-    agent.approve = Mock(return_value=True)
+    agent._approval_prompt = Mock(return_value=True)
     agent.tools["run_shell"]["run"] = Mock(
         return_value={"stdout": "passed", "stderr": "", "exit_code": 0}
     )
 
     assert agent.ask("run it") == "done"
 
-    assert all(
-        not record["verification_evidence"]
-        for record in agent.checkpoint_store.list_checkpoint_records()
-    )
+    assert "verification_evidence" not in agent._last_tool_result_metadata
+    assert not (agent.root / ".pony" / "checkpoints").exists()
 
 
 @pytest.mark.parametrize(
-    ("approval_policy", "read_only", "command"),
+    ("permission_mode", "read_only", "command"),
     (
-        ("ask", False, "pytest -q"),
-        ("ask", True, "pytest -q"),
+        ("default", False, "pytest -q"),
+        ("default", True, "pytest -q"),
         ("auto", False, "sh -c pytest"),
     ),
 )
 def test_blocked_shell_paths_create_no_verification_records(
     tmp_path,
-    approval_policy,
+    permission_mode,
     read_only,
     command,
 ):
     agent = _build_agent(
-        tmp_path / f"{approval_policy}-{read_only}",
+        tmp_path / f"{permission_mode}-{read_only}",
         command,
-        approval_policy=approval_policy,
+        permission_mode=permission_mode,
         read_only=read_only,
     )
-    agent.approve = Mock(return_value=False)
+    agent._approval_prompt = Mock(return_value=False)
     runner = Mock(return_value={"stdout": "passed", "stderr": "", "exit_code": 0})
     agent.tools["run_shell"]["run"] = runner
 
     assert agent.ask("run it") == "done"
 
     runner.assert_not_called()
-    assert agent.checkpoint_store.list_checkpoint_records() == []
+    assert "verification_evidence" not in agent._last_tool_result_metadata
+    assert not (agent.root / ".pony" / "checkpoints").exists()
 
 
 def test_real_tool_executor_to_agent_loop_evidence_is_structured_redacted_and_bounded(
@@ -264,7 +278,7 @@ def test_real_tool_executor_to_agent_loop_evidence_is_structured_redacted_and_bo
     secret = "ghp_" + "B" * 32
     monkeypatch.setenv("PONY_TEST_SECRET", secret)
     agent = _build_agent(tmp_path / "structured", "python -m pytest -q")
-    agent.approve = Mock(return_value=True)
+    agent._approval_prompt = Mock(return_value=True)
     agent.tools["run_shell"]["run"] = Mock(
         return_value={
             "stdout": "all tests passed " + "x" * 1200 + secret,
@@ -275,14 +289,9 @@ def test_real_tool_executor_to_agent_loop_evidence_is_structured_redacted_and_bo
 
     assert agent.ask("run verification") == "done"
 
-    checkpoint = agent.checkpoint_store.load_checkpoint_record(
-        agent.current_task_state.recovery_checkpoint_id
-    )
-    assert len(checkpoint["verification_evidence"]) == 1
-    evidence = checkpoint["verification_evidence"][0]
-    assert evidence["status"] == "failed"
+    evidence = agent._last_tool_result_metadata["verification_evidence"]
     assert evidence["exit_code"] == 7
     assert secret not in json.dumps(evidence)
-    assert len(evidence["command"]) <= 1000
-    assert len(evidence["stdout_tail"]) <= 1000
-    assert len(evidence["stderr_tail"]) <= 1000
+    assert evidence["argv"] == ["python", "-m", "pytest", "-q"]
+    assert len(evidence["stdout"]) <= 1000
+    assert len(evidence["stderr"]) <= 1000
