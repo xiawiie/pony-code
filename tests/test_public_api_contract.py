@@ -197,7 +197,7 @@ def test_packaging_exposes_only_pony_cli_script():
     assert scripts.strip() == 'pony = "pony.cli.app:main"'
 
 
-def test_packaging_declares_stable_version_license_and_project_urls():
+def test_packaging_declares_unreleased_platforms_license_and_urls():
     project = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))[
         "project"
     ]
@@ -207,6 +207,12 @@ def test_packaging_declares_stable_version_license_and_project_urls():
     assert project["license-files"] == ["LICENSE"]
     assert project["name"] == "pony-code"
     assert project["urls"]["Source"] == "https://github.com/xiawiie/pony-code"
+    classifiers = set(project["classifiers"])
+    assert "Development Status :: 4 - Beta" in classifiers
+    assert "Operating System :: MacOS" in classifiers
+    assert "Operating System :: POSIX :: Linux" in classifiers
+    assert "Development Status :: 5 - Production/Stable" not in classifiers
+    assert "Operating System :: OS Independent" not in classifiers
     assert Path("LICENSE").read_text(encoding="utf-8").startswith("MIT License\n")
 
 

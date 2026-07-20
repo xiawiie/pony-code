@@ -25,7 +25,7 @@ MAINTAINER_DOCS = {
     "docs/adr/0045-permission-modes-session-v4-and-plan-artifacts.md",
     "docs/adr/0046-read-only-project-skills.md",
     "docs/adr/0047-session-scoped-model-switching.md",
-    "docs/coding-agent-workflow-plan.md",
+    "docs/adr/0048-product-and-support-boundary.md",
     "docs/context-and-sessions.md",
 }
 MAINTAINER_ASSETS = {
@@ -160,6 +160,24 @@ def test_agents_instructions_match_the_production_contract():
     assert "Host 不是 OS sandbox" in text
     assert "绝不静默切到 Host" in text
     assert "Definition of Done" in text
+
+
+def test_product_docs_lock_current_execution_and_support_contract():
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    architecture = (ROOT / "docs/architecture.md").read_text(encoding="utf-8")
+    verification = (ROOT / "docs/verification.md").read_text(encoding="utf-8")
+
+    for text in (readme, architecture):
+        normalized = " ".join(text.split())
+        assert "不是 OS sandbox" in normalized
+        assert "Windows 不在 1.0 支持范围" in normalized
+    assert "bounded synthetic" in readme
+    assert "真实任务失败不 fallback" in readme
+    assert "冻结的产品资产" in readme
+    assert "Provider/模型组合的 live 结果不能证明其他组合可用" in " ".join(
+        readme.split()
+    )
+    assert "| OS | macOS、Linux |" in verification
 
 
 def test_current_python_and_console_surfaces_are_exact():
