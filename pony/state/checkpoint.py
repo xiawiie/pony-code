@@ -278,14 +278,14 @@ def create_checkpoint(
         "summary": f"{trigger}: {clip(goal, 120)}",
         "runtime_identity": current_runtime_identity(agent),
     }
-    state["items"][checkpoint_id] = checkpoint
-    state["current_id"] = checkpoint_id
-    task_state.checkpoint_id = checkpoint_id
-    agent.session["runtime_identity"] = checkpoint["runtime_identity"]
     agent.session_store.append_task_checkpoint(
         agent.session["id"],
         checkpoint,
     )
+    state["items"][checkpoint_id] = checkpoint
+    state["current_id"] = checkpoint_id
+    task_state.checkpoint_id = checkpoint_id
+    agent.session["runtime_identity"] = checkpoint["runtime_identity"]
     agent.session_path = agent.session_store.path_for(agent.session["id"])
     derived_files = [item["path"] for item in key_files if item.get("path")][:8]
     agent.memory.set_task_summary(goal)

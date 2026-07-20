@@ -2115,12 +2115,14 @@ def test_in_run_checkpoint_session_save_failure_is_persistence_error(
         ]
     )
     agent = build_native_agent(tmp_path, provider)
+    baseline = agent.create_manual_checkpoint("baseline")
     original_append_checkpoint = agent.session_store.append_task_checkpoint
     fault_injected = False
     failed_payload = None
+    failed_checkpoint_id = ""
 
     def fail_checkpoint_save(session_id, checkpoint, *, parent_id=None):
-        nonlocal fault_injected, failed_payload
+        nonlocal fault_injected, failed_checkpoint_id, failed_payload
         session = agent.session
         tool_use_ids = []
         tool_result_ids = []
@@ -2145,6 +2147,7 @@ def test_in_run_checkpoint_session_save_failure_is_persistence_error(
         )
         if not fault_injected and checkpoint_for_this_run and pair_present:
             fault_injected = True
+            failed_checkpoint_id = checkpoint["checkpoint_id"]
             failed_payload = copy.deepcopy(session)
             raise OSError("checkpoint save failed")
         return original_append_checkpoint(
@@ -2164,13 +2167,24 @@ def test_in_run_checkpoint_session_save_failure_is_persistence_error(
 
     assert len(provider.calls) == 2
     assert fault_injected is True
-    assert failed_payload["checkpoints"]["current_id"]
-    assert (
-        failed_payload["checkpoints"]["current_id"]
-        in failed_payload["checkpoints"]["items"]
-    )
+    assert failed_payload["checkpoints"]["current_id"] == baseline["checkpoint_id"]
     assert agent.current_task_state.stop_reason == "persistence_error"
     assert agent.current_task_state.status == "failed"
+
+    provider.responses.append(
+        Response(
+            stop_reason=StopReason.END_TURN,
+            content=[{"type": "text", "text": "continued"}],
+            usage={},
+        )
+    )
+    assert agent.ask("continue") == "continued"
+
+    durable = agent.session_store.load_tree(agent.session["id"]).projection["checkpoints"]
+    latest = durable["items"][durable["current_id"]]
+    assert failed_checkpoint_id not in durable["items"]
+    assert latest["parent_checkpoint_id"] == baseline["checkpoint_id"]
+    assert latest["parent_checkpoint_id"] in durable["items"]
 
 
 def test_rejected_tool_calls_do_not_consume_step_budget(tmp_path):
