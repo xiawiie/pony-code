@@ -27,9 +27,11 @@ from pony.workspace.context import WorkspaceContext
 
 
 MAX_MANIFEST_BYTES = 64 * 1024
+MAX_BATCH_MANIFEST_BYTES = 1024 * 1024
 MAX_GIT_STATUS_BYTES = 4 * 1024 * 1024
 MAX_RESULT_CHARS = 2_000
 _AGENT_ID_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}-[0-9a-f]{12}$")
+_BATCH_ID_RE = re.compile(r"^batch-[0-9a-f]{12}$")
 _BRANCH_RE = re.compile(r"^codex/pony-agent-[a-z][a-z0-9_-]{0,63}-[0-9a-f]{12}$")
 _COMMIT_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 _TERMINAL_STATUSES = {"completed", "stopped", "failed", "ready", "merged", "cleaned"}
@@ -69,6 +71,13 @@ def _agent_root(source_root, agent_id):
     return _store_root(source_root) / agent_id
 
 
+def _batch_root(source_root, batch_id):
+    batch_id = str(batch_id or "")
+    if _BATCH_ID_RE.fullmatch(batch_id) is None:
+        raise ValueError("invalid worktree agent batch id")
+    return _store_root(source_root) / "batches" / batch_id
+
+
 def _write_manifest(agent_root, manifest):
     agent_root = ensure_private_dir(agent_root)
     root_identity = private_directory_identity(agent_root)
@@ -82,6 +91,22 @@ def _write_manifest(agent_root, manifest):
         trusted_root_identity=root_identity,
         max_existing_bytes=MAX_MANIFEST_BYTES,
         error="worktree agent manifest changed",
+    )
+
+
+def _write_batch_manifest(batch_root, manifest):
+    batch_root = ensure_private_dir(batch_root)
+    root_identity = private_directory_identity(batch_root)
+    data = (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    if len(data) > MAX_BATCH_MANIFEST_BYTES:
+        raise ValueError("worktree agent batch manifest is too large")
+    write_private_bytes_atomic(
+        batch_root / "manifest.json",
+        data,
+        trusted_root=batch_root,
+        trusted_root_identity=root_identity,
+        max_existing_bytes=MAX_BATCH_MANIFEST_BYTES,
+        error="worktree agent batch manifest changed",
     )
 
 
@@ -125,6 +150,10 @@ def _validated_manifest(agent_root, value):
             value["branch_head"] != ""
             and _COMMIT_RE.fullmatch(str(value["branch_head"] or "")) is None
         )
+        or (
+            "batch_id" in value
+            and _BATCH_ID_RE.fullmatch(str(value["batch_id"] or "")) is None
+        )
     ):
         raise ValueError("invalid worktree agent manifest")
     return dict(value)
@@ -165,6 +194,120 @@ def list_worktree_agents(source_root):
     return [
         load_worktree_agent(source_root, agent_id)
         for _mtime, agent_id in sorted(candidates, reverse=True)
+    ]
+
+
+def _validated_batch_manifest(batch_root, value):
+    if not isinstance(value, dict):
+        raise ValueError("invalid worktree agent batch manifest")
+    required = {"format_version", "id", "base_commit", "status", "children"}
+    optional = {"merged_commit"}
+    if not required <= set(value) or set(value) - required - optional:
+        raise ValueError("invalid worktree agent batch manifest")
+    batch_id = value["id"]
+    children = value["children"]
+    if (
+        value["format_version"] != 1
+        or _BATCH_ID_RE.fullmatch(str(batch_id or "")) is None
+        or Path(batch_root).name != batch_id
+        or _COMMIT_RE.fullmatch(str(value["base_commit"] or "")) is None
+        or (
+            "merged_commit" in value
+            and _COMMIT_RE.fullmatch(str(value["merged_commit"] or "")) is None
+        )
+        or (value["status"] == "merged") != ("merged_commit" in value)
+        or value["status"] not in {"running", "review_required", "merged", "cleaned"}
+        or not isinstance(children, list)
+        or not 1 <= len(children) <= 8
+    ):
+        raise ValueError("invalid worktree agent batch manifest")
+    seen = set()
+    validated_children = []
+    for child in children:
+        if not isinstance(child, dict):
+            raise ValueError("invalid worktree agent batch manifest")
+        child_required = {
+            "id",
+            "name",
+            "branch",
+            "base_commit",
+            "branch_head",
+            "status",
+            "changed_files",
+            "changed_paths",
+            "test_status",
+        }
+        if (
+            set(child) != child_required
+            or _AGENT_ID_RE.fullmatch(str(child.get("id") or "")) is None
+            or child["id"] in seen
+            or re.fullmatch(
+                r"[A-Za-z][A-Za-z0-9_-]{0,63}", str(child.get("name") or "")
+            )
+            is None
+            or _BRANCH_RE.fullmatch(str(child.get("branch") or "")) is None
+            or child["base_commit"] != value["base_commit"]
+            or (
+                child["branch_head"] != ""
+                and _COMMIT_RE.fullmatch(str(child["branch_head"] or "")) is None
+            )
+            or child["status"] not in _TERMINAL_STATUSES | {"created", "running"}
+            or type(child["changed_files"]) is not int
+            or not 0 <= child["changed_files"] <= 100_000
+            or not isinstance(child["changed_paths"], list)
+            or len(child["changed_paths"]) > 1_000
+            or any(
+                not isinstance(path, str)
+                or not path
+                or len(path) > 4_096
+                or "\x00" in path
+                or Path(path).is_absolute()
+                or ".." in Path(path).parts
+                for path in child["changed_paths"]
+            )
+            or child["test_status"] not in _TEST_STATUSES
+        ):
+            raise ValueError("invalid worktree agent batch manifest")
+        seen.add(child["id"])
+        validated_children.append(dict(child))
+    result = dict(value)
+    result["children"] = validated_children
+    return result
+
+
+def load_worktree_agent_batch(source_root, batch_id):
+    batch_root = _batch_root(source_root, batch_id)
+    root_identity = private_directory_identity(batch_root)
+    raw = read_private_text(
+        batch_root / "manifest.json",
+        trusted_root=batch_root,
+        trusted_root_identity=root_identity,
+        max_bytes=MAX_BATCH_MANIFEST_BYTES,
+    )
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError:
+        raise ValueError("invalid worktree agent batch manifest") from None
+    return _validated_batch_manifest(batch_root, value)
+
+
+def list_worktree_agent_batches(source_root):
+    root = _store_root(source_root) / "batches"
+    try:
+        root_identity = private_directory_identity(root)
+    except FileNotFoundError:
+        return []
+    candidates = []
+    with os.scandir(root) as entries:
+        for entry in entries:
+            info = entry.stat(follow_symlinks=False)
+            if stat.S_ISDIR(info.st_mode) and _BATCH_ID_RE.fullmatch(entry.name):
+                candidates.append((info.st_mtime_ns, entry.name))
+    if private_directory_identity(root) != root_identity:
+        raise ValueError("worktree agent batch root changed")
+    return [
+        load_worktree_agent_batch(source_root, batch_id)
+        for _mtime, batch_id in sorted(candidates, reverse=True)[:100]
     ]
 
 
@@ -251,7 +394,7 @@ def _test_status(messages):
     return "not_run"
 
 
-def _new_manifest(parent, item, base_commit):
+def _new_manifest(parent, item, base_commit, batch_id):
     suffix = uuid.uuid4().hex[:12]
     name = str(item["name"]).strip()
     slug = name.casefold()
@@ -265,8 +408,10 @@ def _new_manifest(parent, item, base_commit):
         "branch": branch,
         "worktree_rel": f".pony/worktree-agents/{agent_id}/worktree",
         "base_commit": base_commit,
+        "batch_id": batch_id,
         "status": "created",
         "changed_files": 0,
+        "changed_paths": [],
         "diff_status": "unknown",
         "test_status": "not_run",
         "branch_head": "",
@@ -309,8 +454,8 @@ def _remove_setup(git, source_root, manifest):
     shutil.rmtree(worktree)
 
 
-def _prepare_worktree(parent, git, item, base_commit):
-    manifest, agent_root = _new_manifest(parent, item, base_commit)
+def _prepare_worktree(parent, git, item, base_commit, batch_id):
+    manifest, agent_root = _new_manifest(parent, item, base_commit, batch_id)
     ensure_private_dir(agent_root)
     worktree = agent_root / "worktree"
     try:
@@ -440,6 +585,30 @@ def _clean_parent_head(git, source_root):
     return base
 
 
+def _batch_child_evidence(manifest):
+    return {
+        key: manifest[key]
+        for key in (
+            "id",
+            "name",
+            "branch",
+            "base_commit",
+            "branch_head",
+            "status",
+            "changed_files",
+            "changed_paths",
+            "test_status",
+        )
+    }
+
+
+def _batch_evidence_matches(evidence, manifest):
+    current = _batch_child_evidence(manifest)
+    if current["status"] in {"merged", "cleaned"}:
+        current["status"] = "completed"
+    return current == evidence
+
+
 def run_worktree_agents(parent, args):
     parent.validate_tool("delegate_worktrees", args)
     if not callable(parent.delegate_model_client_factory):
@@ -449,10 +618,12 @@ def run_worktree_agents(parent, args):
         raise ValueError("trusted Git executable is unavailable")
     tasks = [dict(item) for item in args["tasks"]]
     base_commit = _clean_parent_head(git, parent.source_root)
+    batch_id = f"batch-{uuid.uuid4().hex[:12]}"
+    batch_root = _batch_root(parent.source_root, batch_id)
     prepared = []
     try:
         for item in tasks:
-            prepared.append(_prepare_worktree(parent, git, item, base_commit))
+            prepared.append(_prepare_worktree(parent, git, item, base_commit, batch_id))
         if _clean_parent_head(git, parent.source_root) != base_commit:
             raise ValueError("parent HEAD changed while creating worktrees")
         clients = [parent.delegate_model_client_factory() for _item in prepared]
@@ -464,12 +635,29 @@ def run_worktree_agents(parent, args):
             _build_child(parent, item, client)
             for item, client in zip(prepared, clients, strict=True)
         ]
+        _write_batch_manifest(
+            batch_root,
+            {
+                "format_version": 1,
+                "id": batch_id,
+                "base_commit": base_commit,
+                "status": "running",
+                "children": [
+                    _batch_child_evidence(item["manifest"]) for item in prepared
+                ],
+            },
+        )
     except Exception:
         cleanup_errors = []
         for item in reversed(prepared):
             try:
                 _remove_setup(git, parent.source_root, item["manifest"])
                 shutil.rmtree(item["root"])
+            except Exception as cleanup_error:
+                cleanup_errors.append(cleanup_error)
+        if batch_root.exists():
+            try:
+                shutil.rmtree(batch_root)
             except Exception as cleanup_error:
                 cleanup_errors.append(cleanup_error)
         if cleanup_errors:
@@ -487,11 +675,24 @@ def run_worktree_agents(parent, args):
         }
         for future in as_completed(futures):
             results[futures[future]] = future.result()
-    return _render_tool_result(results)
+    _write_batch_manifest(
+        batch_root,
+        {
+            "format_version": 1,
+            "id": batch_id,
+            "base_commit": base_commit,
+            "status": "review_required",
+            "children": [_batch_child_evidence(result) for result in results],
+        },
+    )
+    return _render_tool_result(batch_id, results)
 
 
-def _render_tool_result(results):
-    lines = ["worktree agents completed; no branches were merged"]
+def _render_tool_result(batch_id, results):
+    lines = [
+        "worktree agents completed; no branches were merged",
+        f"batch: {batch_id}",
+    ]
     for result in results:
         lines.extend(
             (
@@ -519,6 +720,28 @@ def inspect_worktree_agent(source_root, agent_id, git=None):
         snapshot = _worktree_snapshot(git, worktree)
         result["worktree_changed_files"] = snapshot["changed_files"]
         result["worktree_diff_status"] = snapshot["diff_status"]
+    return result
+
+
+def inspect_worktree_agent_batch(source_root, batch_id, git=None):
+    batch = load_worktree_agent_batch(source_root, batch_id)
+    result = dict(batch)
+    children = []
+    changed_paths = {}
+    for evidence in batch["children"]:
+        manifest = load_worktree_agent(source_root, evidence["id"])
+        child = _batch_child_evidence(manifest)
+        child["sealed_evidence_matches"] = _batch_evidence_matches(evidence, manifest)
+        if git:
+            for path in child["changed_paths"]:
+                changed_paths.setdefault(path, []).append(child["id"])
+        children.append(child)
+    result["children"] = children
+    result["overlapping_paths"] = {
+        path: agent_ids
+        for path, agent_ids in sorted(changed_paths.items())
+        if len(agent_ids) > 1
+    }
     return result
 
 
@@ -645,6 +868,7 @@ def _seal_worktree(git, prepared):
     return {
         "branch_head": branch_head,
         "changed_files": len(committed_paths),
+        "changed_paths": committed_paths,
         "diff_status": "dirty" if committed_paths else "clean",
     }
 
@@ -725,13 +949,165 @@ def merge_worktree_agent(source_root, agent_id, git):
     return dict(manifest)
 
 
+def _validated_batch_children(source_root, batch, git, parent_head):
+    children = []
+    for evidence in batch["children"]:
+        manifest = load_worktree_agent(source_root, evidence["id"])
+        if not _batch_evidence_matches(evidence, manifest):
+            raise ValueError("worktree agent batch evidence changed")
+        if manifest["status"] not in {"completed", "merged", "cleaned"}:
+            raise ValueError("worktree agent batch has an incomplete child")
+        if manifest["test_status"] in {"blocked", "failed"}:
+            raise ValueError("worktree agent batch has failed tests")
+        if manifest["status"] in {"merged", "cleaned"}:
+            if not _is_ancestor(git, source_root, manifest["branch_head"], parent_head):
+                raise ValueError("worktree agent batch child is not merged into parent")
+            children.append(manifest)
+            continue
+        worktree = _live_worktree(source_root, manifest)
+        if _git(git, worktree, ["branch", "--show-current"]).stdout.strip() != manifest[
+            "branch"
+        ]:
+            raise ValueError("worktree agent branch changed")
+        if _git(git, worktree, ["rev-parse", "HEAD"]).stdout.strip() != manifest[
+            "branch_head"
+        ]:
+            raise ValueError("worktree agent branch changed after completion")
+        if _worktree_snapshot(git, worktree)["changed_files"]:
+            raise ValueError("worktree agent has changes after completion")
+        children.append(manifest)
+    return children
+
+
+def _preflight_batch_merge(source_root, children, git, parent_head):
+    simulated_head = parent_head
+    for manifest in children:
+        branch_head = manifest["branch_head"]
+        if _is_ancestor(git, source_root, branch_head, simulated_head):
+            continue
+        preflight = _git(
+            git,
+            source_root,
+            ["merge-tree", "--write-tree", simulated_head, branch_head],
+            check=False,
+        )
+        if preflight.returncode != 0:
+            raise ValueError(
+                f"worktree agent batch merge has conflicts at {manifest['id']}"
+            )
+        tree = preflight.stdout.splitlines()[0].strip()
+        if _COMMIT_RE.fullmatch(tree) is None:
+            raise ValueError("worktree agent batch merge preflight failed")
+        simulated_head = _git(
+            git,
+            source_root,
+            [
+                "commit-tree",
+                tree,
+                "-p",
+                simulated_head,
+                "-p",
+                branch_head,
+                "-m",
+                "Pony worktree agent batch preflight",
+            ],
+            commit=True,
+        ).stdout.strip()
+        if _COMMIT_RE.fullmatch(simulated_head) is None:
+            raise ValueError("worktree agent batch merge preflight failed")
+
+
+def merge_worktree_agent_batch(source_root, batch_id, git):
+    source_root = Path(source_root).resolve(strict=True)
+    batch = load_worktree_agent_batch(source_root, batch_id)
+    if batch["status"] == "merged":
+        parent_head = _clean_parent_head(git, source_root)
+        if not _is_ancestor(git, source_root, batch["merged_commit"], parent_head):
+            raise ValueError("worktree agent batch merge is not in parent history")
+        return dict(batch)
+    if batch["status"] != "review_required":
+        raise ValueError("worktree agent batch is not ready to merge")
+    parent_head = _clean_parent_head(git, source_root)
+    merge_head = _git(
+        git,
+        source_root,
+        ["rev-parse", "-q", "--verify", "MERGE_HEAD"],
+        check=False,
+    )
+    if merge_head.returncode == 0:
+        raise ValueError("parent repository already has a merge in progress")
+    children = _validated_batch_children(source_root, batch, git, parent_head)
+    _preflight_batch_merge(source_root, children, git, parent_head)
+
+    expected_head = parent_head
+    for manifest, evidence in zip(children, batch["children"], strict=True):
+        if _clean_parent_head(git, source_root) != expected_head:
+            raise ValueError("parent HEAD changed while merging worktree agent batch")
+        current = load_worktree_agent(source_root, manifest["id"])
+        if not _batch_evidence_matches(evidence, current):
+            raise ValueError("worktree agent batch evidence changed")
+        if current["status"] in {"merged", "cleaned"}:
+            if not _is_ancestor(git, source_root, current["branch_head"], expected_head):
+                raise ValueError("worktree agent batch child is not merged into parent")
+            continue
+        worktree = _live_worktree(source_root, current)
+        if (
+            _git(git, worktree, ["branch", "--show-current"]).stdout.strip()
+            != current["branch"]
+            or _git(git, worktree, ["rev-parse", "HEAD"]).stdout.strip()
+            != current["branch_head"]
+            or _worktree_snapshot(git, worktree)["changed_files"]
+        ):
+            raise ValueError("worktree agent changed while merging batch")
+        if _is_ancestor(git, source_root, manifest["branch_head"], expected_head):
+            continue
+        merged = _git(
+            git,
+            source_root,
+            ["merge", "--no-edit", "--no-ff", "--no-verify", manifest["branch_head"]],
+            check=False,
+            commit=True,
+        )
+        if merged.returncode != 0:
+            aborted = _git(git, source_root, ["merge", "--abort"], check=False)
+            if aborted.returncode != 0:
+                raise RuntimeError("worktree agent batch merge failed and abort failed")
+            raise ValueError("worktree agent batch merge failed and was aborted")
+        expected_head = _git(git, source_root, ["rev-parse", "HEAD"]).stdout.strip()
+
+    batch.update(status="merged", merged_commit=expected_head)
+    _write_batch_manifest(_batch_root(source_root, batch_id), batch)
+    return dict(batch)
+
+
+def _reconcile_cleaned_batch(source_root, manifest):
+    batch_id = manifest.get("batch_id")
+    if not batch_id:
+        return
+    try:
+        batch = load_worktree_agent_batch(source_root, batch_id)
+    except FileNotFoundError:
+        return
+    if any(
+        load_worktree_agent(source_root, child["id"])["status"] != "cleaned"
+        for child in batch["children"]
+    ):
+        return
+    batch.pop("merged_commit", None)
+    batch["status"] = "cleaned"
+    _write_batch_manifest(_batch_root(source_root, batch_id), batch)
+
+
 def cleanup_worktree_agent(source_root, agent_id, git, *, discard=False):
     source_root = Path(source_root).resolve(strict=True)
     manifest = load_worktree_agent(source_root, agent_id)
     if manifest["status"] == "cleaned":
+        _reconcile_cleaned_batch(source_root, manifest)
         return dict(manifest)
-    if manifest["status"] not in _TERMINAL_STATUSES:
+    if manifest["status"] in {"created", "running"} and not discard:
         raise ValueError("worktree agent is still running")
+    if manifest["status"] not in _TERMINAL_STATUSES | {"created", "running"}:
+        raise ValueError("worktree agent is not safe to clean up")
     worktree = _live_worktree(source_root, manifest)
     branch = _git(
         git,
@@ -746,6 +1122,7 @@ def cleanup_worktree_agent(source_root, agent_id, git, *, discard=False):
             raise ValueError("worktree agent branch is missing before merge")
         manifest["status"] = "cleaned"
         _write_manifest(_agent_root(source_root, agent_id), manifest)
+        _reconcile_cleaned_batch(source_root, manifest)
         return dict(manifest)
     if worktree.exists() and not discard:
         snapshot = _worktree_snapshot(git, worktree)
@@ -770,4 +1147,5 @@ def cleanup_worktree_agent(source_root, agent_id, git, *, discard=False):
         raise ValueError("failed to remove worktree agent branch")
     manifest["status"] = "cleaned"
     _write_manifest(_agent_root(source_root, agent_id), manifest)
+    _reconcile_cleaned_batch(source_root, manifest)
     return dict(manifest)

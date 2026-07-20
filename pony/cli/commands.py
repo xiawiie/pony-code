@@ -55,6 +55,8 @@ EXAMPLES:
     pony checkpoints show <checkpoint-id>
     pony checkpoints pending
     pony agents list
+    pony agents show-batch <batch-id>
+    pony agents merge-all <batch-id>
     pony agents merge <agent-id>
     pony agents cleanup <agent-id> --discard
     pony migrate status
@@ -72,7 +74,7 @@ Available Commands:
   checkpoints  Read-only legacy checkpoint inspection
   migrate      Inspect and apply explicit artifact migrations
   memory       Inspect and search memory files
-  agents       Inspect, merge, or clean up isolated worktree agents
+  agents       Inspect, batch-merge, or clean up isolated worktree agents
   help         Help about any command
 
 Flags:

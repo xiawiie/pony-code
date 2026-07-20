@@ -113,9 +113,10 @@ parent 只接收限长 final result。
 `.pony/worktree-agents/<id>/worktree` 与唯一 `codex/pony-agent-*` branch；每项有独立 client、Session、Run 和 mutation
 lock，并发硬上限为 4。readonly child 固定 `dontAsk`；write child 固定 `acceptEdits`，线程内 approval 一律拒绝，因此
 不会把 batch approval 扩大为任意 Host shell 权限。private atomic manifest 记录 terminal/diff/test 状态并封存 exact child
-commit；模型工具从不 merge。`pony agents merge` 要求 project trust，只接受该 sealed revision，拒绝 completion 后修改、
-sensitive path、symlink、hardlink、base drift、dirty parent 与 conflict preflight；Git 不可表示的 special file 不会进入
-merge。实际 merge 失败会 abort。`cleanup` 只删除已合入且 clean 的 child worktree/branch；放弃未合入 terminal child 需显式
+commit；模型工具从不 merge。`pony agents merge` 与有序 batch 的 `merge-all` 要求 project trust，只接受 sealed revision，
+拒绝 completion 后修改、sensitive path、symlink、hardlink、base drift 与 dirty parent；`merge-all` 在任何 parent 写入前预检
+完整顺序，Git 不可表示的 special file 不会进入 merge。实际 merge 失败会 abort。`cleanup` 只删除已合入且 clean 的 child
+worktree/branch；放弃未合入 terminal child 需显式
 `--discard`。
 
 Plan artifact 在任何脱敏前执行 strict/bounded validation；如果已知 secret 会被 redactor 改写，整次操作以

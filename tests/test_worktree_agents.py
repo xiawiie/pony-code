@@ -1,4 +1,5 @@
 import os
+import json
 import shutil
 import subprocess
 import threading
@@ -15,7 +16,10 @@ from pony.cli.errors import CliError
 from pony.runtime.options import RuntimeOptions
 from pony.runtime.worktree_agents import (
     cleanup_worktree_agent,
+    inspect_worktree_agent_batch,
+    list_worktree_agent_batches,
     list_worktree_agents,
+    merge_worktree_agent_batch,
     merge_worktree_agent,
 )
 from pony.state.session_store import SessionStore
@@ -70,6 +74,10 @@ def _agent(repo, clients, *, allowed_tools=None, read_only=False):
 
 def _git_executable(agent):
     return agent.trusted_executables["git"]
+
+
+def _batch(repo):
+    return list_worktree_agent_batches(repo)[0]
 
 
 def test_worktree_delegate_schema_is_one_typed_batch_tool():
@@ -752,3 +760,440 @@ def test_agents_cli_performs_explicit_merge_and_cleanup(tmp_path, capsys, monkey
 
     assert main(["--cwd", str(repo), "agents", "cleanup", manifest["id"]]) == 0
     assert "status: cleaned" in capsys.readouterr().out
+
+
+def test_batch_inspection_and_merge_all_follow_declared_order(tmp_path):
+    repo = _repo(tmp_path)
+    agent = _agent(
+        repo,
+        [
+            FakeModelClient(
+                [
+                    {
+                        "name": "write_file",
+                        "args": {"path": "one.txt", "content": "one\n"},
+                    },
+                    "done",
+                ]
+            ),
+            FakeModelClient(
+                [
+                    {
+                        "name": "write_file",
+                        "args": {"path": "two.txt", "content": "two\n"},
+                    },
+                    "done",
+                ]
+            ),
+        ],
+    )
+    result = agent.spawn_worktree_agents(
+        {
+            "tasks": [
+                {"name": "one", "task": "write one", "mode": "write"},
+                {"name": "two", "task": "write two", "mode": "write"},
+            ],
+            "max_parallel": 2,
+        }
+    )
+
+    batch = _batch(repo)
+    assert f"batch: {batch['id']}" in result
+    assert [child["name"] for child in batch["children"]] == ["one", "two"]
+    inspected = inspect_worktree_agent_batch(repo, batch["id"], _git_executable(agent))
+    assert inspected["overlapping_paths"] == {}
+    assert all(child["sealed_evidence_matches"] for child in inspected["children"])
+
+    merged = merge_worktree_agent_batch(repo, batch["id"], _git_executable(agent))
+
+    assert merged["status"] == "merged"
+    assert (repo / "one.txt").read_text(encoding="utf-8") == "one\n"
+    assert (repo / "two.txt").read_text(encoding="utf-8") == "two\n"
+    first_merge = _git(repo, "rev-parse", "HEAD^1").stdout.strip()
+    assert _git(repo, "show", "-s", "--format=%s", first_merge).stdout.strip().startswith(
+        "Merge commit"
+    )
+    assert _git(repo, "show", "-s", "--format=%s", "HEAD^2").stdout.strip() == (
+        "agent(two): isolated worktree task"
+    )
+    assert _git(repo, "show", "-s", "--format=%s", "HEAD^1^2").stdout.strip() == (
+        "agent(one): isolated worktree task"
+    )
+
+
+def test_batch_conflict_preflight_leaves_parent_unchanged(tmp_path):
+    repo = _repo(tmp_path)
+    agent = _agent(
+        repo,
+        [
+            FakeModelClient(
+                [
+                    {
+                        "name": "write_file",
+                        "args": {"path": "README.md", "content": "one\n"},
+                    },
+                    "done",
+                ]
+            ),
+            FakeModelClient(
+                [
+                    {
+                        "name": "write_file",
+                        "args": {"path": "README.md", "content": "two\n"},
+                    },
+                    "done",
+                ]
+            ),
+        ],
+    )
+    agent.spawn_worktree_agents(
+        {
+            "tasks": [
+                {"name": "one", "task": "edit", "mode": "write"},
+                {"name": "two", "task": "edit", "mode": "write"},
+            ],
+            "max_parallel": 2,
+        }
+    )
+    batch = _batch(repo)
+    before = _git(repo, "rev-parse", "HEAD").stdout.strip()
+
+    with pytest.raises(ValueError, match="conflicts at"):
+        merge_worktree_agent_batch(repo, batch["id"], _git_executable(agent))
+
+    assert _git(repo, "rev-parse", "HEAD").stdout.strip() == before
+    assert (repo / "README.md").read_text(encoding="utf-8") == "demo\n"
+    assert _git(repo, "rev-parse", "-q", "--verify", "MERGE_HEAD", check=False).returncode
+
+
+@pytest.mark.parametrize("status", ["stopped", "failed"])
+def test_merge_all_rejects_noncompleted_child(tmp_path, status):
+    repo = _repo(tmp_path)
+    agent = _agent(repo, [FakeModelClient(["done"])])
+    agent.spawn_worktree_agents(
+        {"tasks": [{"name": "child", "task": "inspect"}], "max_parallel": 1}
+    )
+    batch = _batch(repo)
+    child = batch["children"][0]
+    manifest_path = repo / ".pony" / "worktree-agents" / child["id"] / "manifest.json"
+    batch_path = repo / ".pony" / "worktree-agents" / "batches" / batch["id"] / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["status"] = status
+    child["status"] = status
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    batch_path.write_text(json.dumps(batch), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="incomplete child"):
+        merge_worktree_agent_batch(repo, batch["id"], _git_executable(agent))
+
+
+def test_merge_all_warns_but_does_not_block_untested_changes(tmp_path, capsys):
+    repo = _repo(tmp_path)
+    agent = _agent(
+        repo,
+        [
+            FakeModelClient(
+                [
+                    {
+                        "name": "write_file",
+                        "args": {"path": "untested.txt", "content": "review\n"},
+                    },
+                    "done",
+                ]
+            )
+        ],
+    )
+    agent.spawn_worktree_agents(
+        {
+            "tasks": [{"name": "untested", "task": "write", "mode": "write"}],
+            "max_parallel": 1,
+        }
+    )
+    batch = _batch(repo)
+
+    assert main(["--cwd", str(repo), "agents", "show-batch", batch["id"]]) == 0
+    assert "review_required/untested" in capsys.readouterr().out
+
+
+def test_show_batch_reports_sealed_evidence_mismatch(tmp_path, capsys):
+    repo = _repo(tmp_path)
+    agent = _agent(repo, [FakeModelClient(["done"])])
+    agent.spawn_worktree_agents(
+        {"tasks": [{"name": "child", "task": "inspect"}], "max_parallel": 1}
+    )
+    batch = _batch(repo)
+    child = batch["children"][0]
+    manifest_path = repo / ".pony" / "worktree-agents" / child["id"] / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["test_status"] = "passed"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    assert main(["--cwd", str(repo), "agents", "show-batch", batch["id"]]) == 0
+    assert "sealed_evidence: mismatch" in capsys.readouterr().out
+
+
+def test_agents_batch_cli_json_and_merge_all(tmp_path, capsys, monkeypatch):
+    repo = _repo(tmp_path)
+    agent = _agent(
+        repo,
+        [
+            FakeModelClient(
+                [
+                    {
+                        "name": "write_file",
+                        "args": {"path": "batch.txt", "content": "batch\n"},
+                    },
+                    "done",
+                ]
+            )
+        ],
+    )
+    agent.spawn_worktree_agents(
+        {
+            "tasks": [{"name": "batch", "task": "write", "mode": "write"}],
+            "max_parallel": 1,
+        }
+    )
+    batch = _batch(repo)
+
+    assert main(["--format", "json", "--cwd", str(repo), "agents", "batches"]) == 0
+    assert json.loads(capsys.readouterr().out)["kind"] == "worktree_agent_batches"
+    assert (
+        main(
+            [
+                "--format",
+                "json",
+                "--cwd",
+                str(repo),
+                "agents",
+                "show-batch",
+                batch["id"],
+            ]
+        )
+        == 0
+    )
+    assert json.loads(capsys.readouterr().out)["kind"] == "worktree_agent_show_batch"
+
+    trust_store = SimpleNamespace(is_trusted=lambda _root: True)
+    monkeypatch.setattr(
+        "pony.cli.app.trusted_project_root",
+        lambda _args: (repo, (repo.stat().st_dev, repo.stat().st_ino), trust_store),
+    )
+    assert (
+        main(
+            [
+                "--format",
+                "json",
+                "--cwd",
+                str(repo),
+                "agents",
+                "merge-all",
+                batch["id"],
+            ]
+        )
+        == 0
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["kind"] == "worktree_agent_merge_all"
+    assert payload["data"]["status"] == "merged"
+    assert (repo / "batch.txt").read_text(encoding="utf-8") == "batch\n"
+
+
+def test_merge_all_accepts_a_child_merged_and_cleaned_individually(tmp_path):
+    repo = _repo(tmp_path)
+    agent = _agent(
+        repo,
+        [
+            FakeModelClient(
+                [
+                    {
+                        "name": "write_file",
+                        "args": {"path": f"{name}.txt", "content": f"{name}\n"},
+                    },
+                    "done",
+                ]
+            )
+            for name in ("one", "two")
+        ],
+    )
+    agent.spawn_worktree_agents(
+        {
+            "tasks": [
+                {"name": name, "task": "write", "mode": "write"}
+                for name in ("one", "two")
+            ],
+            "max_parallel": 2,
+        }
+    )
+    batch = _batch(repo)
+    first = batch["children"][0]
+    merge_worktree_agent(repo, first["id"], _git_executable(agent))
+    cleanup_worktree_agent(repo, first["id"], _git_executable(agent))
+
+    merged = merge_worktree_agent_batch(repo, batch["id"], _git_executable(agent))
+
+    assert merged["status"] == "merged"
+    assert (repo / "one.txt").read_text(encoding="utf-8") == "one\n"
+    assert (repo / "two.txt").read_text(encoding="utf-8") == "two\n"
+
+
+def test_merged_batch_rejects_parent_history_that_lost_the_merge(tmp_path):
+    repo = _repo(tmp_path)
+    base = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    agent = _agent(
+        repo,
+        [
+            FakeModelClient(
+                [
+                    {
+                        "name": "write_file",
+                        "args": {"path": "merged.txt", "content": "merged\n"},
+                    },
+                    "done",
+                ]
+            )
+        ],
+    )
+    agent.spawn_worktree_agents(
+        {
+            "tasks": [{"name": "merged", "task": "write", "mode": "write"}],
+            "max_parallel": 1,
+        }
+    )
+    batch = _batch(repo)
+    merge_worktree_agent_batch(repo, batch["id"], _git_executable(agent))
+    _git(repo, "reset", "--hard", base)
+
+    with pytest.raises(ValueError, match="not in parent history"):
+        merge_worktree_agent_batch(repo, batch["id"], _git_executable(agent))
+
+
+@pytest.mark.parametrize("status", ["created", "running"])
+def test_explicit_discard_cleans_interrupted_worktree_agent(tmp_path, status):
+    repo = _repo(tmp_path)
+    agent = _agent(repo, [FakeModelClient(["done"])])
+    agent.spawn_worktree_agents(
+        {"tasks": [{"name": "child", "task": "inspect"}], "max_parallel": 1}
+    )
+    manifest = list_worktree_agents(repo)[0]
+    manifest_path = (
+        repo / ".pony" / "worktree-agents" / manifest["id"] / "manifest.json"
+    )
+    manifest["status"] = status
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="still running"):
+        cleanup_worktree_agent(repo, manifest["id"], _git_executable(agent))
+
+    cleaned = cleanup_worktree_agent(
+        repo,
+        manifest["id"],
+        _git_executable(agent),
+        discard=True,
+    )
+    assert cleaned["status"] == "cleaned"
+    assert not (repo / manifest["worktree_rel"]).exists()
+    assert _batch(repo)["status"] == "cleaned"
+
+
+def test_batch_listing_is_bounded_to_newest_manifests(tmp_path):
+    repo = _repo(tmp_path)
+    agent = _agent(repo, [FakeModelClient(["done"])])
+    agent.spawn_worktree_agents(
+        {"tasks": [{"name": "child", "task": "inspect"}], "max_parallel": 1}
+    )
+    template = _batch(repo)
+    batches_root = repo / ".pony" / "worktree-agents" / "batches"
+    for index in range(101):
+        batch_id = f"batch-{index:012x}"
+        batch_root = batches_root / batch_id
+        batch_root.mkdir(mode=0o700)
+        manifest = {**template, "id": batch_id}
+        (batch_root / "manifest.json").write_text(
+            json.dumps(manifest),
+            encoding="utf-8",
+        )
+
+    assert len(list_worktree_agent_batches(repo)) == 100
+
+
+def test_cleanup_succeeds_when_crash_preceded_batch_manifest_write(tmp_path):
+    repo = _repo(tmp_path)
+    agent = _agent(repo, [FakeModelClient(["done"])])
+    agent.spawn_worktree_agents(
+        {"tasks": [{"name": "child", "task": "inspect"}], "max_parallel": 1}
+    )
+    manifest = list_worktree_agents(repo)[0]
+    batch = _batch(repo)
+    batch_root = repo / ".pony" / "worktree-agents" / "batches" / batch["id"]
+    shutil.rmtree(batch_root)
+    manifest_path = (
+        repo / ".pony" / "worktree-agents" / manifest["id"] / "manifest.json"
+    )
+    manifest["status"] = "running"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    cleaned = cleanup_worktree_agent(
+        repo,
+        manifest["id"],
+        _git_executable(agent),
+        discard=True,
+    )
+
+    assert cleaned["status"] == "cleaned"
+
+
+def test_merge_all_rejects_branch_drift_before_parent_changes(tmp_path):
+    repo = _repo(tmp_path)
+    agent = _agent(repo, [FakeModelClient(["done"])])
+    agent.spawn_worktree_agents(
+        {"tasks": [{"name": "child", "task": "inspect"}], "max_parallel": 1}
+    )
+    batch = _batch(repo)
+    child = batch["children"][0]
+    worktree = repo / ".pony" / "worktree-agents" / child["id"] / "worktree"
+    _git(worktree, "commit", "--allow-empty", "-m", "drift")
+    before = _git(repo, "rev-parse", "HEAD").stdout.strip()
+
+    with pytest.raises(ValueError, match="branch changed after completion"):
+        merge_worktree_agent_batch(repo, batch["id"], _git_executable(agent))
+
+    assert _git(repo, "rev-parse", "HEAD").stdout.strip() == before
+
+
+def test_merge_all_resumes_after_a_declared_child_was_already_merged(tmp_path):
+    repo = _repo(tmp_path)
+    agent = _agent(
+        repo,
+        [
+            FakeModelClient(
+                [
+                    {
+                        "name": "write_file",
+                        "args": {"path": f"{name}.txt", "content": f"{name}\n"},
+                    },
+                    "done",
+                ]
+            )
+            for name in ("one", "two")
+        ],
+    )
+    agent.spawn_worktree_agents(
+        {
+            "tasks": [
+                {"name": name, "task": "write", "mode": "write"}
+                for name in ("one", "two")
+            ],
+            "max_parallel": 2,
+        }
+    )
+    batch = _batch(repo)
+    first = batch["children"][0]
+    _git(repo, "merge", "--no-edit", "--no-ff", "--no-verify", first["branch_head"])
+
+    merged = merge_worktree_agent_batch(repo, batch["id"], _git_executable(agent))
+
+    assert merged["status"] == "merged"
+    assert (repo / "one.txt").read_text(encoding="utf-8") == "one\n"
+    assert (repo / "two.txt").read_text(encoding="utf-8") == "two\n"
+    assert all(child["status"] == "completed" for child in list_worktree_agents(repo))
