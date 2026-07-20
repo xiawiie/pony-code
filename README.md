@@ -1,68 +1,94 @@
-# pony-code
+# Pony
 
-Pony 是一个面向代码仓库的本地 coding agent。它从当前仓库建立受边界约束的上下文，让模型读取、修改并验证代码，
-同时把 Session、Run、Checkpoint、Memory 与恢复证据保存在本地 `.pony/` 中。
+> 面向受信代码仓库的本地 coding agent：理解上下文、受控地调用工具、保存可恢复的会话证据。
 
-Pony 1.0 的产品边界很明确：一个 `pony` CLI、一个行内 TUI、三个用户可见 Provider，以及直接在受信仓库中执行的
-Host 工具。TUI 只引入 `prompt-toolkit` 这一项直接运行时依赖。Host 执行不是 OS sandbox；Pony 依靠 project trust、
-permission、path/secret 校验、可信 executable、mutation lock 和真实 effect observation 约束工具调用。
+Pony 是一个 Python CLI/TUI coding agent。它在当前 Git 仓库内构造上下文，由模型提出一个动作，再由本地运行时做
+schema、permission、路径、secret 与 effect 检查后执行。Session、Run、Memory、Plan 和恢复证据都保存在项目的
+`.pony/` 中。
 
-## 能力概览
+当前 `1.0.0` 是未发布源码目标；在 `v1.0.0` tag 与对应 package 真正发布前，请从源码安装。
 
-| 能力 | 1.0 状态 | 说明 |
-| --- | --- | --- |
-| Anthropic | 支持 | Anthropic Messages |
-| OpenAI | 支持 | Responses 或 Chat Completions |
-| Ollama | 支持 | 本地 Ollama Chat，无 Key 也可运行 |
-| 交互 TUI | 支持 | 裸 `pony` 或 `pony repl`；非交互终端自动使用纯文本 REPL |
-| Host 执行 | 支持 | Python 3.11/3.12；已验证 macOS 与 Linux；不是 OS sandbox |
-| Session / Legacy inspection / Memory | 支持 | Session 可分支/rewind；旧 Checkpoint 只读检查 |
-| Permission / Plan | 支持 | 六种权限模式、Session 规则、append-only Plan、Resume/Rewind |
-| Subagent | 支持 | 串行只读 delegate；并行任务使用独立 Git worktree/branch/client/Session/Run，显式 merge |
-| Provider 自动解析 | 支持 | init 可持久化；doctor 只读；run/repl 仅当前进程；真实任务失败不 fallback |
+![Pony TUI welcome screen](docs/assets/terminal/pony-tui-welcome.png)
 
-## 安装
+## 一眼看懂
 
-需要 Python 3.11 或 3.12；package metadata 会拒绝其他 Python 版本。1.0 目标支持并在 CI 验证 macOS 与 Linux；
-安全文件访问和锁依赖 POSIX 原语，Windows
-不在 1.0 支持范围，不能把安装成功等同于安全合同成立。
-
-`v1.0.0` tag 与对应 package 发布后可使用：
-
-```bash
-python -m pip install pony-code==1.0.0
-pony --version
-pony --help
+```mermaid
+flowchart LR
+    U["开发者"] --> C["pony CLI / TUI"]
+    C --> R["Pony runtime"]
+    R --> A["Agent loop"]
+    A --> P["Provider adapter"]
+    P --> M["模型 API"]
+    A --> T["受控 Tools"]
+    T --> W["受信 Git 仓库"]
+    R --> S[".pony 状态与证据"]
 ```
 
-在 tag 发布前，请使用下方的源码安装流程。
-
-如果希望在任意终端直接使用 `pony`，将当前源码工作区安装为用户级 CLI：
-
-```bash
-cd /path/to/pony-code
-uv tool install --editable .
-uv tool update-shell
-exec zsh
-pony --version
+```mermaid
+mindmap
+  root((Pony))
+    交互
+      行内 TUI
+      纯文本 REPL
+      one-shot run
+    Agent
+      Context 与 RepoMap
+      Memory recall
+      Plan
+      Session fork / rewind
+    执行
+      Permission modes
+      Tool validation
+      Host mutation lock
+      Effect observation
+    协作
+      Read-only delegate
+      Isolated worktree agents
+      Explicit merge review
+    Provider
+      Anthropic Messages
+      OpenAI Responses
+      OpenAI Chat Completions
+      Ollama Chat
 ```
 
-全局安装只提供命令，不会替目标仓库创建配置。运行交互会话时，当前目录就是目标仓库时可以直接执行；如果不想
-先 `cd`，使用 `--cwd` 显式指定目标仓库，Pony 会从该目录读取 `.env` 并将其作为 workspace：
+## 能做什么
 
-```bash
-cd /path/to/your/repository
-pony init
-pony
+| 场景 | Pony 的方式 |
+| --- | --- |
+| 修复或审查代码 | 从仓库读取上下文，模型提出单个 Tool/Final 动作，本地执行器复核并记录真实效果 |
+| 先规划后实现 | `plan` mode 只暴露只读与 Plan 工具；退出前针对精确 Plan revision 确认 |
+| 长任务继续执行 | append-only Session Tree、compaction、checkpoint、fork、rewind 与 Session 级模型切换 |
+| 使用项目规范 | 显式读取受信 `.claude/skills/<name>/SKILL.md`，仅作为当前 turn 的只读上下文 |
+| 并行处理任务 | 在隔离 Git worktree 中创建 child；审查后显式 `merge` 或有序 `merge-all` |
+| 切换模型或 Provider | 用单一 `.env` 配置；协议/endpoint 明确绑定，真实任务失败不 fallback |
 
-# 不进入目标仓库也可以运行
-pony --cwd /path/to/your/repository
+## 一次任务如何运行
+
+```mermaid
+flowchart LR
+    Q["用户请求"] --> F["冻结 mode / rules / tool schemas"]
+    F --> X["绑定 Session leaf 的模型请求"]
+    X --> D{"模型动作"}
+    D -->|"Final"| Z["写入 Run / Session 并显示结果"]
+    D -->|"Tool"| V["schema + policy + permission"]
+    V -->|"需要确认"| H["用户 approval"]
+    H --> L["mutation lock"]
+    V -->|"允许"| L
+    L --> E["执行一次并观察真实 effect"]
+    E --> X
+    D -->|"Retry"| X
 ```
 
-裸 `pony` 不会猜测全局默认仓库：从家目录或其他目录启动时，它使用当前目录作为 workspace。这样可以避免把
-请求发送到错误仓库或读取错误的 `.env`；需要切换仓库时，请使用 `--cwd` 或进入对应目录。
+一个模型响应最多形成一个 Tool、Final 或 Retry Action；多 tool call 不会部分执行。Session leaf、Provider binding、
+permission mode、可见工具和请求上下文都会在 turn 内冻结；并发写入、路径事实不明或持久化失败时 fail closed。
 
-从源码开发时使用锁定环境：
+## 五分钟开始
+
+### 1. 从源码安装
+
+Pony 1.0 支持 Python 3.11、3.12 的 macOS 与 Linux。Windows 不在 1.0 支持范围；它缺少当前安全文件与锁模型
+依赖的 POSIX 原语。
 
 ```bash
 git clone https://github.com/xiawiie/pony-code.git
@@ -71,256 +97,159 @@ uv sync --frozen --dev
 uv run pony --version
 ```
 
-如果 `pony` 不在 PATH，使用 `uv run pony ...` 或检查当前虚拟环境。详见
-[CLI 安装与更新](docs/cli-installation-and-updates.md)。
-
-## 五分钟开始
-
-在需要操作的 Git 仓库根目录运行：
+若要把源码工作区安装为用户级 CLI：
 
 ```bash
+uv tool install --editable .
+uv tool update-shell
+exec zsh
+pony --version
+```
+
+### 2. 在要操作的仓库配置模型
+
+```bash
+cd /path/to/your/repository
 pony init
 pony config show
 pony doctor
+```
+
+`pony init` 以私有权限原子写入仓库根目录 `.env`。强制 Provider 只做本地校验；`auto` 或 `openai` family 会在写入前
+执行 bounded synthetic probe，因此可能产生 Provider 费用。普通 `pony doctor` 不联网；`pony doctor --check-api`
+会执行最小文本、tool call 与 tool-result continuation 验证，但不写 `.env` 或 Session。
+
+### 3. 进入交互或执行一次任务
+
+```bash
 pony
 pony run "inspect the failing tests and make the smallest safe fix"
 pony --permission-mode plan run "inspect the repository and produce a plan"
 ```
 
-`pony init` 对强制 Provider 只做本地校验并以私有权限原子写入仓库根目录 `.env`；`auto` 或 `openai` family 会先执行
-固定 synthetic probe，因此可能产生 API 费用。普通 `doctor` 不联网；`pony doctor --check-api` 同样会发送最小的文本、
-工具调用和 tool-result 续接请求。
+`pony` 与 `pony repl` 是同一个交互会话；`pony run` 一次执行后退出。未知首 token 不会被静默当作 prompt。
+非 TTY、缺少/空白 `TERM`、`TERM=dumb` 或窄于 40 列时自动回退为纯文本 REPL；`pony run` 不显示装饰性 banner。
 
-## 进入 TUI
+## 配置与 Provider 路由
 
-完成 `.env` 配置后，在目标仓库根目录直接运行：
-
-```bash
-pony
-```
-
-从源码工作区运行时使用：
-
-```bash
-uv run pony
-```
-
-`pony` 与 `pony repl` 是同一个交互入口；保留 `repl` 是为了脚本、文档和排障时能显式表达意图。一次性执行仍使用
-`pony run "<prompt>"`，不会把未知子命令或裸自然语言悄悄当作 prompt。
-
-```text
-<responsive horse + PONY CODE wordmark>
-v1.0.0
-Local coding agent for repository-grounded work
-Using openai/model · permission manual
-/ commands · esc+enter newline · ctrl+c twice exit
-
-  帮我检查失败的测试
-
-Working…
-› read pyproject.toml
-› $ pytest -q
-
-测试失败来自一个过期断言，已完成最小修复。
-
-────────────────────────────────────────────────────
-  继续检查测试_
-────────────────────────────────────────────────────
-host · pony-code (main)             auto · anthropic/claude
-```
-
-除显式 `--quiet` 外，完整 TUI 每次启动显示随终端宽度适配的马形 `PONY CODE` 欢迎页，随后进入以对话为中心的界面。
-该 Logo、字标、欢迎页布局和视觉语言是冻结的产品资产，只有用户明确要求时才可修改；维护性清理、CLI 对齐或代码精简
-不得将其删除、替换或退化为单行标题。用户消息
-使用低对比消息块，Assistant 回复通过内置 renderer 排版标题、列表、代码块和表格。
-`Working…` 只在等待响应时短暂出现；成功 Tool 每次只显示一行摘要，自动 checkpoint 不占用对话区。失败、中断和
-一次性 permission prompt 仍会明确显示，手动 `/checkpoint` 仍返回 checkpoint ID。footer 只保留仓库/分支、执行环境、
-permission mode 与 Provider/model；窄终端优先保留安全和模型信息。Pony 不展示 Provider reasoning，也不提供
-streaming 输出。
-
-Provider 或 Tool 忙碌时仍可提交 follow-up prompt；Pony 在内存中最多排队五条，并在当前完整 turn（含 approval 与 Tool）
-结束后按 FIFO 串行执行。`/queue` 显示 active/pending 状态，`/queue clear` 只丢弃尚未开始的输入。queued prompt 直到真正
-执行才写入 Canonical Messages；进程退出或崩溃不会恢复队列或自动产生新的 Provider 请求。local slash command 不在忙碌期
-抢占；`/exit` 清空 pending 后等待当前 turn 完成。不提供 mid-request steer、Provider/tool cancel 或 streaming。
-
-fresh Session 默认使用 `auto`。`pony run` 与 `pony repl` 可通过 `--permission-mode` 选择六种公开模式；`manual`
-在 Session 内部存为 `default`，但 CLI、TUI 和文档只使用公开名称：
-
-| Permission mode | 行为 |
-| --- | --- |
-| `manual` | 读操作直接执行；没有规则覆盖的变更在本次 Tool 调用前询问 |
-| `auto` | 使用本地确定性安全分类器自动执行内置编辑、明确授权的 Memory 保存和可证明安全的 shell；不确定时拒绝 |
-| `acceptEdits` | 自动接受内置文件编辑；其他变更仍按规则决定或询问 |
-| `bypassPermissions` | 绕过普通 Tool 提示；不绕过项目 trust、显式 deny、schema、路径、secret 或可信 executable 边界 |
-| `dontAsk` | 不显示 Tool 授权提示；需要询问的变更直接拒绝，显式 allow 规则仍可执行 |
-| `plan` | 只向模型公开只读工具与 `read_plan`、`write_plan`、`exit_plan_mode`，离开前展示精确 Plan 请求一次确认 |
-
-`auto` 与 Claude Code 使用相同的用户模式名称，但 Pony 当前使用本地确定性分类器，不声称复刻 Claude 的内部模型分类器。
-`/permissions` 可连续管理当前 Session 的 exact tool-name `allow`、`ask`、`deny` 规则并切换 mode；
-`/allowed-tools` 是同一入口的别名。one-shot/REPL 启动时也可用 Claude 风格的 `--allowed-tools` 与
-`--disallowed-tools` 写入同一种 Session 规则。
-一次性 `Approve once?` 只授权当前调用，不会自动写成规则。
-
-`/plan [description|open|share]` 进入或查看 Plan。首次使用 description 会把任务提交给模型。`open`/`share` 从其他
-mode 调用时先进入 Plan；artifact 为空时只启用 Plan，不打开 editor 或 share。已有 artifact 时，`open` 通过
-`$VISUAL`/`$EDITOR` 编辑并按原 revision CAS 保存；本地 runtime 的 `share` 会明确返回不可用。模型通过 append-only
-`plan_artifact` 保存 Plan；
-`exit_plan_mode` 只有在 Plan 非空且用户确认精确 revision 后才恢复进入 Plan 前的 permission mode，同一请求随后可以
-继续实现。
-
-`/model` 显示当前 Provider、protocol 和 model；`/model <model>` 在当前 Session 内切换模型。切换只允许保留相同的
-protocol 与 API endpoint，结果写入 Session，因此 resume 继续使用该模型。包含模型专属 opaque Provider state 的历史、
-跨协议或跨 endpoint 切换都会以 `model_session_mismatch` 拒绝。`pony --model <model> run|repl` 提供同样的 Session 级
-覆盖且不修改 `.env`；它不提供模型目录、在线探测或失败 fallback。
-
-仓库可在 `.claude/skills/<name>/SKILL.md` 提供一个 Claude 风格的只读 Skill。文档必须带严格的 `name` 和
-`description` frontmatter，名称与目录一致；可选 `resources` 是最多八个、逗号分隔的 Skill 目录内相对 UTF-8 文件，
-例如 `resources: references/checklist.md,templates/report.txt`。不支持 glob、递归依赖或隐式目录读取。输入
-`/name [prompt]` 只为当前 turn 注入该 Skill；优先级固定为用户请求、适用项目规则、Skill。Pony 不读取 HOME、
-插件或 `.agents/skills`，也不执行脚本、安装或持久化 Skill；任何不安全、超限、含已知 secret 或格式错误的条目都会让
-本次目录不加载；`/help` 和 `pony doctor` 只显示稳定原因与修复建议，不回显被拒内容。
-
-`bypassPermissions` 必须显式获得本次进程的危险 capability；这些参数只适用于 `run/repl`：
-
-```bash
-pony --permission-mode bypassPermissions \
-  --allow-dangerously-skip-permissions run "apply the requested change"
-pony --dangerously-skip-permissions run "apply the requested change"
-```
-
-`--allow-dangerously-skip-permissions` 本身不切换 mode；它允许本进程通过 `/permissions` 选择 bypass，也允许恢复已经
-持久化为 bypass 的 Session。`--dangerously-skip-permissions` 直接为当前 Session 选择 bypass。普通 resume 必须重新提供
-capability；显式用 `--permission-mode` 改回其他 mode 不需要危险 flag。capability 只存在于当前 RuntimeOptions，不写入
-Session；公共 runtime 构造、resume、mode setter 和 Executor 都会重复检查。
-
-显式交互 `--resume` 会在首个 prompt 前显示一次 permission、checkpoint、resume state 与 Provider/model 摘要；
-`pony run` 和 JSON/管理命令不显示该卡片。Session v5 历史只从当前 active Canonical Messages 重建，不保留 slash 命令
-或已放弃分支的输入。
-
-| 操作 | 行为 |
-| --- | --- |
-| `/` | 打开并过滤当前 Pony 斜杠命令菜单 |
-| `/queue [clear]` | 查看或清空最多五条尚未执行的 follow-up input |
-| `Enter` | 提交当前 prompt |
-| `\` + `Enter` / `Esc` + `Enter` | 插入换行 |
-| `Up` / `Down`、`Ctrl+R` | 浏览或搜索当前交互历史 |
-| `Ctrl+C` | idle 时清空输入、短时间内再次按下退出；busy 时拒绝当前 approval/清空 pending，但不取消当前 turn |
-| `Ctrl+D` | idle 时退出；busy 时清空 pending 并等待当前 turn 完成 |
-
-当 stdin/stdout 不是 TTY、`TERM=dumb` 或终端窄于 40 列时，Pony 自动回退到无装饰的纯文本 REPL。一次性
-`pony run` 也只输出执行结果。`--no-color` 与 `NO_COLOR` 会移除颜色和背景，但保留缩进、边框及错误前缀，不改变
-命令或安全行为。TUI 继续只依赖 `prompt-toolkit`，不引入第三方 Markdown 或全屏 UI 框架。
-
-## `.env` 是唯一 Provider 配置入口
-
-Pony 只读取当前 lexical repository root 的 `.env`，不向父目录搜索。项目 `.env` 高于进程环境；不会读取
-`OPENAI_API_KEY`、`ANTHROPIC_API_KEY`、`PONY_DEEPSEEK_API_KEY` 等厂商或旧版变量。
-
-| 变量 | 必填 | 含义 |
-| --- | --- | --- |
-| `PONY_PROVIDER` | 否 | missing/`auto` 自动解析；`openai` 为家族；强制值见下表 |
-| `PONY_API_BASE` | 是 | 已包含版本前缀的精确 API root |
-| `PONY_API_KEY` | 云 Provider 是 | 唯一通用凭证；本地 Ollama 可为空 |
-| `PONY_MODEL` | 是 | Provider 侧的精确模型名 |
-
-`PONY_MODEL` 是 fresh Session 的默认值。交互中的 `/model <model>` 或 `run/repl` 的 `--model <model>` 只更新当前
-Session，不写回 `.env`。
-
-复制 [`.env.example`](.env.example) 即可手工切换。常见配置如下。
-
-### 自动解析（省略 Provider）
+`.env` 是唯一用户配置入口，只在当前 lexical repository root 读取，且项目值优先于同名进程变量：
 
 ```dotenv
-PONY_API_BASE=https://gateway.example/v1
-PONY_API_KEY=your-gateway-api-key
-PONY_MODEL=your-model-name
-```
-
-该形式与 `PONY_PROVIDER=auto` 等价。如果 endpoint 不是 known origin 且没有可复用的 Session binding，
-run/repl 会在用户任务前对 OpenAI Chat/Responses 做有界 probe；Anthropic-compatible 自定义网关需要显式设置
-`PONY_PROVIDER=anthropic`。要避免之后的新 Session 重复 probe，运行 `pony init`。
-
-### Anthropic
-
-```dotenv
-PONY_PROVIDER=anthropic
-PONY_API_BASE=https://api.anthropic.com/v1
-PONY_API_KEY=your-anthropic-api-key
-PONY_MODEL=claude-sonnet-4-6
-```
-
-### OpenAI Responses（强制）
-
-```dotenv
-PONY_PROVIDER=openai-responses
+PONY_PROVIDER=openai-chat
 PONY_API_BASE=https://api.openai.com/v1
-PONY_API_KEY=your-openai-api-key
+PONY_API_KEY=your-api-key
 PONY_MODEL=gpt-5.4
 ```
 
-自定义 Chat gateway 可使用 `PONY_PROVIDER=openai-chat`。`PONY_PROVIDER=openai` 会在 Chat/Responses 家族内解析；
-完全省略 Provider 或设置 `auto` 会先复用 known origin 或匹配的 Session binding，仍无法确定时才运行
-bounded synthetic probe。
-
-### Ollama
-
-```dotenv
-PONY_PROVIDER=ollama
-PONY_API_BASE=http://127.0.0.1:11434
-PONY_API_KEY=
-PONY_MODEL=qwen3:8b
-```
-
-Pony 不启动 Ollama，也不自动拉取模型。除 loopback 外，API Base 必须使用 HTTPS；URL 中的 userinfo、query、
-fragment 和凭证会被拒绝。
-
-## Provider 与内部 Transport
-
-强制 Provider 静态路由；missing/auto/OpenAI family 在发送用户任务前解析。真实用户请求失败后不 fallback：
+| 变量 | 是否必需 | 说明 |
+| --- | --- | --- |
+| `PONY_PROVIDER` | 否 | `auto` / 缺失可解析；也可指定强制 Provider |
+| `PONY_API_BASE` | 是 | 已含版本前缀的精确 API root |
+| `PONY_API_KEY` | 云端是 | Ollama 可为空 |
+| `PONY_MODEL` | 是 | 精确模型名；Session 可用 `/model` 临时切换 |
 
 ```mermaid
 flowchart LR
-    E["Repository .env"] --> R["resolve_model_config"]
-    R --> A["anthropic / messages"]
-    R --> O1["openai-responses"]
-    R --> O2["openai-chat"]
-    R --> L["ollama / chat"]
-    A --> F["Provider-neutral Response"]
-    O1 --> F
-    O2 --> F
-    L --> F
+    ENV["Repository .env"] --> CFG["配置解析"]
+    CFG --> A["anthropic_messages"]
+    CFG --> R["openai_responses"]
+    CFG --> C["openai_chat_completions"]
+    CFG --> O["ollama_chat"]
+    A --> N["统一 Response"]
+    R --> N
+    C --> N
+    O --> N
 ```
 
-| Provider | API Variant | 内部协议 | 客户端追加路径 | 默认认证 |
-| --- | --- | --- | --- | --- |
-| `anthropic` | `messages` | `anthropic_messages` | `/messages` | `x-api-key` |
-| `openai-responses` | `responses` | `openai_responses` | `/responses` | `bearer` |
-| `openai-chat` | `chat_completions` | `openai_chat_completions` | `/chat/completions` | `bearer` |
-| `ollama` | `chat` | `ollama_chat` | `/api/chat` | `none` |
+| 用户 Provider | 内部 Transport | 认证 |
+| --- | --- | --- |
+| `anthropic` | Anthropic Messages | `x-api-key` |
+| `openai-responses` | OpenAI Responses | bearer |
+| `openai-chat` | OpenAI Chat Completions | bearer |
+| `ollama` | Ollama Chat | none |
+| missing / `auto` / `openai` | known origin、Session binding 或 bounded synthetic resolution | 解析后固定 |
 
-`anthropic` 使用 Messages，`ollama` 使用 Ollama Chat；`openai` 是 Chat/Responses family selector。`pony init` 在
-auto/family probe 通过后写 resolved 强制值；`doctor --check-api` 始终只读，run/repl 的自动结果不写 `.env`。
+真实任务失败不 fallback：Pony 不会在任务失败后切换 Provider 或协议并重放状态。每个 Provider/模型组合的 live 结果不能证明其他组合可用；
+四种 Transport 的实现有离线 wire-contract 测试，真实账号/endpoint/model 仍需分别验收。
 
-| 入口 | 联网与持久化责任 |
-| --- | --- |
-| `pony init` | auto/OpenAI family 执行 probe；成功后原子写入 resolved 四变量 |
-| `pony doctor --check-api` | 执行同一 probe；不修改 `.env` 或 Session |
-| `pony run` / `pony repl` | 仅在 protocol unresolved 时 probe；结果只属于当前进程 |
-| 普通 benchmark | 要求 resolved target；未解析时 fail closed，先运行 `pony init` |
-| 收费 live harness | workload 前使用共享 resolver；probe 与 workload 调用分别记账，不另建 detection 路径 |
+## 交互能力
 
-Provider 失败不再折叠为 `agent runtime failed`。文本和 JSON 都只输出稳定 code、stage、protocol、
-reason 与可选 HTTP status，不输出 Key、prompt、raw response 或完整 endpoint。
+```mermaid
+stateDiagram-v2
+    [*] --> Auto
+    Auto --> Plan: /plan
+    Manual --> Plan: /plan
+    AcceptEdits --> Plan: /plan
+    DontAsk --> Plan: /plan
+    Bypass --> Plan: /plan
+    Plan --> PreviousMode: exit_plan_mode + exact approval
+    Auto --> Manual: /permissions
+    Manual --> AcceptEdits: /permissions
+    AcceptEdits --> DontAsk: /permissions
+    DontAsk --> Bypass: dangerous capability + /permissions
+```
 
-四个 Transport 都有离线 wire-contract 测试；真实账号、endpoint 和 model 的可用性必须分别通过 G8 验收。一个
-Provider/模型组合的 live 结果不能证明其他组合可用，也不能把 synthetic resolution 当作真实任务成功证据。
+| 能力 | 用户入口 | 关键边界 |
+| --- | --- | --- |
+| 权限模式 | `--permission-mode`、`/permissions` | `manual`、`auto`、`acceptEdits`、`bypassPermissions`、`dontAsk`、`plan` |
+| Plan | `/plan [description|open|share]` | 退出前确认精确文本与 revision；`share` 在本地 runtime 明确不可用 |
+| Session | `/session`、`/tree`、`/fork`、`/rewind`、`/compact` | fork/rewind 只改变 Session branch，不恢复 workspace 文件 |
+| 模型 | `/model [model]`、`--model` | 仅同 protocol 与 endpoint；含 opaque state 时拒绝切换 |
+| Memory | `/memory`、`/remember`、`/memory-review` | `memory_save` 必须是当前请求的明确授权 |
+| Skills | `/<skill-name> [prompt]` | 仅受信 `.claude/skills`、只读、当前 turn、不会执行脚本 |
+| Follow-up | `/queue [clear]` | 最多五条内存队列；不持久化、不取消已经开始的请求 |
+
+完整 TUI 始终保留响应式马形 Logo、`PONY CODE` 字标和欢迎页布局；它们是冻结的产品资产，除非用户明确要求，维护和重构
+不得修改。
+
+## 并行 Worktree Agent
+
+```mermaid
+flowchart LR
+    P["Clean parent HEAD"] --> B["delegate_worktrees batch"]
+    B --> A1["Child A\nbranch + worktree + client + Session"]
+    B --> A2["Child B\nbranch + worktree + client + Session"]
+    A1 --> S1["sealed revision + test evidence"]
+    A2 --> S2["sealed revision + test evidence"]
+    S1 --> R["review"]
+    S2 --> R
+    R --> M["explicit merge / merge-all"]
+```
+
+并行 child 不会自动合入 parent。`merge` 与 `merge-all` 要求 project trust、clean parent、sealed exact revision；
+`merge-all` 在写 parent 前预检完整顺序，任何冲突都不会部分合并。
+
+```bash
+pony agents list
+pony agents show-batch <batch-id>
+pony agents merge-all <batch-id>
+pony agents cleanup <agent-id> --discard
+```
+
+## 安全与边界
+
+```mermaid
+flowchart LR
+    I["Tool request"] --> S["schema / path / secret"]
+    S --> P["project trust + permission"]
+    P --> A["approval when required"]
+    A --> L["workspace mutation lock"]
+    L --> X["execute once"]
+    X --> O["observe real effect"]
+    O --> D["durable trace / Session evidence"]
+```
+
+- Pony 只在受信 Source Root 执行 Host 工具。Host 不是 OS sandbox，也不隔离恶意命令、依赖、编译器插件或测试进程。
+- 路径访问拒绝 traversal、symlink、hardlink、special file、root escape 与 identity drift；I/O 与 subprocess 输出均有上限。
+- `bypassPermissions` 只跳过普通 prompt，不绕过 trust、deny rule、schema、路径、secret、可信 executable、mutation lock 或 effect observation。
+- 已删除公开 Sandbox、Source Apply、workspace restore 与 `/rewind --workspace`。旧 Sandbox-bound Session 会稳定拒绝 resume，绝不静默切到 Host。
+- 旧 Checkpoint/Sandbox artifact 只允许 bounded、只读检查；恢复工作区请使用 Git 或外部备份。
+
+详细威胁模型见[安全边界](docs/security.md)，状态/恢复见[Context 与 Session](docs/context-and-sessions.md)与[恢复](docs/recovery.md)。
 
 ## 常用命令
 
 ```bash
-pony
-pony run "review the repository structure"
-pony repl
 pony status
 pony doctor
 pony doctor --check-api
@@ -328,74 +257,40 @@ pony sessions list
 pony runs summary latest
 pony checkpoints pending
 pony memory search "release decision"
-pony agents list
-pony agents show <agent-id>
 pony agents batches
-pony agents show-batch <batch-id>
-pony agents merge-all <batch-id>
-pony agents merge <agent-id>
-pony agents cleanup <agent-id>
-pony agents cleanup <agent-id> --discard
 ```
 
-裸 `pony` 和 `repl` 是交互会话，`run` 是一次性任务。Session Tree 使用 append-only JSONL 保存 Canonical Messages、
-工具交换、compaction 和 task checkpoint。`/rewind` 只创建新的 Session branch，不恢复或改写 workspace 文件。
+## 验证与支持范围
 
-模型可用 `delegate_worktrees` 在一次 Tool action 中声明最多 8 个命名任务，并用 `max_parallel` 将并发限制在 1-4。
-Pony 要求 parent worktree clean，然后从同一个 exact HEAD 在 `.pony/worktree-agents/` 下为每项创建独立 worktree 和
-`codex/pony-agent-*` branch。readonly child 固定 `dontAsk`；write child 固定 `acceptEdits`，可用内建 file edit，后台
-动态 shell approval 会 fail closed。结果会封存为 exact branch revision，测试状态只覆盖最终改动后的验证；之后新增的
-文件、未提交改动或 branch 前移都会使 merge 拒绝。审查后使用 `pony agents merge <agent-id>`；它要求 project trust 和
-parent clean。已合入的 child 用 `cleanup` 回收；放弃未合入 terminal child 必须显式使用 `cleanup <agent-id> --discard`。
-每次 delegate 还会保存绑定同一 base 与有序 sealed evidence 的 batch manifest。`show-batch` 汇总状态、测试与重叠路径；
-`merge-all` 在 mutation lock 内先预检完整顺序，任一冲突时零 merge，再按原顺序显式合入。`stopped`/`failed` child 或
-failed/blocked tests 会阻断；有改动但 `not_run` 会标记 `review_required/untested`，合并后必须运行 Phase 专项门禁，
-然后仍用现有逐个 `cleanup` 回收。merge 阶段中断可安全重试；执行阶段进程中断后，`running` child 不会被推断为完成，
-只能在确认放弃后用逐个 `cleanup <agent-id> --discard` 显式回收；最后一个 child 回收后 batch 会标记为 cleaned。
-batch 列表固定显示最近 100 项，历史累计不会使检查命令整体失败。
-
-## 执行与旧恢复数据
-
-Pony 当前只提供 Host 执行。已删除 `--sandbox`、`pony sandbox ...`、Source Apply 和 workspace restore 用户入口；
-升级后不会自动删除旧 `.pony/checkpoints` 或 Sandbox artifact。旧 Sandbox-bound Session 在 resume 时稳定拒绝，绝不
-静默切到 Host。Checkpoint CLI 只提供 bounded、fail-closed 的检查：
-
-```bash
-pony checkpoints list
-pony checkpoints show <checkpoint-id>
-pony checkpoints pending
+```mermaid
+flowchart LR
+    G0["G0 Source"] --> G1["G1 Static"] --> G2["G2 Functional"]
+    G2 --> G3["G3 Security"] --> G4["G4 Evaluation"]
+    G4 --> G5["G5 Distribution"] --> G6["G6 Clean install"]
+    G6 --> R["release candidate"]
+    G8["G8 Provider live\nconditional / charged"] -. per provider target .-> R
 ```
-
-`preview-restore`、`restore`、`resolve-pending`、`prune`、`/rewind --workspace` 和 `--yes` 不再是公开命令。需要恢复
-旧工作区时使用 Git 或外部备份；不要直接编辑 legacy store JSON。完整边界见[安全](docs/security.md)和
-[恢复](docs/recovery.md)。
-
-## 开发与验收
 
 ```bash
 ./scripts/check.sh
 ```
 
-wheel 只包含 `pony/**` 与安装 metadata，并声明 `prompt-toolkit` 运行时依赖；sdist 另含构建所需的
-标准根文件。`tests/`、`benchmarks/`、`scripts/`、`docs/` 和 `.github/` 均不进入分发包。发布由
-`v<project-version>` tag 触发，先重复完整离线门禁，再有意重建固定 `dist/` 并重新验证实际待发布归档，最后通过
-PyPI Trusted Publishing 和 GitHub Release 发布。真实 Provider 测试须单独授权费用。
+该命令在 clean exact HEAD 上运行 lock、Ruff、全量 pytest、offline assertions、deterministic evaluation、sdist/wheel
+构建和 clean-install smoke。G8 真实 Provider 验收会产生费用，必须获得明确授权；离线 contract 不会被写成 live 结果。
+完整门禁和发布说明见[验证与发布](docs/verification.md)。
 
-## 维护文档
+## 文档导航
 
-- [Agent 工作约定](AGENTS.md)
-- [领域语言与模块边界](docs/domain-model.md)
-- [架构](docs/architecture.md)
-- [CLI 安装与更新](docs/cli-installation-and-updates.md)
-- [安全](docs/security.md)
-- [验证与发布](docs/verification.md)
-- [Context 与 Session](docs/context-and-sessions.md)
-- [Memory](docs/memory.md)
-- [恢复](docs/recovery.md)
-- [ADR-0040：Docker filtered staging（已取代）](docs/adr/0040-docker-filtered-staging.md)
-- [ADR-0042：sealed local authorization（已取代）](docs/adr/0042-sealed-local-authorization.md)
-- [ADR-0044：Provider auto resolution](docs/adr/0044-provider-auto-resolution.md)
-- [ADR-0047：Session-scoped model switching](docs/adr/0047-session-scoped-model-switching.md)
-- [ADR-0048：1.0 产品与支持边界](docs/adr/0048-product-and-support-boundary.md)
+| 想了解什么 | 文档 |
+| --- | --- |
+| CLI 安装、配置、命令与迁移 | [CLI 安装与更新](docs/cli-installation-and-updates.md) |
+| 系统边界、目录与数据流 | [架构](docs/architecture.md) |
+| 领域术语、模块所有权与不变量 | [领域模型](docs/domain-model.md) |
+| 路径、secret、Host 与 permission 安全模型 | [安全](docs/security.md) |
+| Context、Session、compaction、fork 与 rewind | [Context 与 Session](docs/context-and-sessions.md) |
+| Memory 行为 | [Memory](docs/memory.md) |
+| Legacy artifact 与恢复边界 | [恢复](docs/recovery.md) |
+| exact-head 门禁、live 验收与发布 | [验证与发布](docs/verification.md) |
+| 产品支持边界 | [ADR-0048](docs/adr/0048-product-and-support-boundary.md) |
 
 Pony 使用 [MIT License](LICENSE)。
