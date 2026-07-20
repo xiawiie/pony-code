@@ -1107,6 +1107,8 @@ def _run_agent_attempts(
             model_execution,
             attempt_origin,
         )
+        if model_error is None:
+            _validate_model_session_guard(agent, session_guard)
         if model_error is not None:
             if (
                 _is_context_length_error(model_error)

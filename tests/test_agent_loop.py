@@ -1551,6 +1551,39 @@ def test_concurrent_append_while_building_request_rejects_stale_response(
     ]
 
 
+def test_concurrent_append_during_model_request_blocks_tool_execution(tmp_path):
+    provider = NativeScriptProvider([])
+    agent = build_native_agent(tmp_path, provider)
+    runner = Mock(return_value="written")
+    agent.tools["write_file"]["run"] = runner
+
+    def complete(**_kwargs):
+        agent.session_store.append_messages(
+            agent.session["id"],
+            [{"role": "user", "content": "concurrent prompt", "_pony_meta": {}}],
+        )
+        return Response(
+            stop_reason=StopReason.TOOL_USE,
+            content=[
+                {
+                    "type": "tool_use",
+                    "id": "stale-write",
+                    "name": "write_file",
+                    "input": {"path": "stale.txt", "content": "stale\n"},
+                }
+            ],
+            usage={},
+        )
+
+    provider.complete = complete
+
+    with pytest.raises(Exception, match="session changed before model request"):
+        agent.ask("write the file")
+
+    runner.assert_not_called()
+    assert not (tmp_path / "stale.txt").exists()
+
+
 def test_keyboard_interrupt_closes_run_and_reraises(tmp_path):
     agent = build_native_agent(
         tmp_path,
