@@ -3,6 +3,10 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from pony.agent.compaction import CompactionNoProgress
+from pony.cli.arguments import build_arg_parser
+from pony.cli.commands import handle_session
+from pony.cli.errors import CliError
 from pony.cli.session import handle_session_command
 from pony.cli.start import (
     _MAX_SESSION_PICKER_CANDIDATES,
@@ -11,6 +15,59 @@ from pony.cli.start import (
     _session_branch_candidates,
 )
 from pony.state.session_store import SessionTree
+
+
+def test_public_session_checkpoint_builds_runtime_from_assembly(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    agent = MagicMock()
+    agent.create_manual_checkpoint.return_value = {
+        "checkpoint_id": "checkpoint-1",
+        "label": "milestone",
+    }
+    built = []
+
+    def build_agent(args):
+        built.append(args.resume)
+        return agent
+
+    monkeypatch.setattr("pony.cli.assembly.build_agent", build_agent)
+    args = build_arg_parser().parse_args(["--cwd", str(tmp_path)])
+
+    code = handle_session(
+        ["checkpoint", "session-1", "milestone"],
+        tmp_path,
+        args,
+    )
+
+    assert code == 0
+    assert built == ["session-1"]
+    assert "checkpoint: checkpoint-1" in capsys.readouterr().out
+    agent.create_manual_checkpoint.assert_called_once_with("milestone")
+
+
+def test_public_session_compaction_preserves_typed_no_progress_error(
+    tmp_path,
+    monkeypatch,
+):
+    agent = MagicMock()
+    agent.compact_session.side_effect = CompactionNoProgress(
+        "compaction_no_progress: active tail already fits"
+    )
+    monkeypatch.setattr("pony.cli.assembly.build_agent", lambda _args: agent)
+    args = build_arg_parser().parse_args(["--cwd", str(tmp_path)])
+
+    with pytest.raises(CliError) as raised:
+        handle_session(
+            ["compact", "session-1"],
+            tmp_path,
+            args,
+        )
+
+    assert raised.value.code == "compaction_no_progress"
+    assert raised.value.exit_code == 1
 
 
 def test_noninteractive_manual_checkpoint_uses_runtime(tmp_path, capsys):

@@ -5,6 +5,7 @@ import getpass
 from pathlib import Path
 import sys
 
+from pony.agent.compaction import CompactionError
 from pony.security import redaction as securitylib
 from pony.providers.probe import resolve_provider_client
 from .errors import CLI_EXIT_CONFIG, CLI_EXIT_RUNTIME, CLI_EXIT_USAGE, CliError
@@ -134,7 +135,7 @@ def handle_session(tokens, root, args):
         )
 
     def build_resumed_agent(session_id):
-        from . import build_agent
+        from .assembly import build_agent
 
         runtime_args = copy(args)
         runtime_args.resume = session_id
@@ -148,7 +149,7 @@ def handle_session(tokens, root, args):
             agent_factory=build_resumed_agent,
             raise_typed_errors=True,
         )
-    except SessionFormatError as exc:
+    except (CompactionError, SessionFormatError) as exc:
         code = getattr(exc, "code", "")
         raise CliError(
             code=code or "unsafe_artifact",
