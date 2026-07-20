@@ -23,6 +23,8 @@ from pony.config.environment import (
     write_project_env_assignments,
 )
 from pony.config.model import API_KEY_ENV_NAME, resolve_model_config
+from pony.context.skills import DEFAULT_SKILL_SECRET_ENV_NAMES, discover_project_skills
+from pony.security import private_files
 from pony.security.paths import require_directory_no_symlink
 from pony.tools.subprocess import build_trusted_executables
 from pony.memory.diagnostics import collect_memory_diagnostics
@@ -37,6 +39,31 @@ def _unavailable_memory_diagnostic():
         "remediation": "resolve Memory filesystem or Git access and rerun pony doctor",
         "issues": [],
     }
+
+
+def _collect_project_skill_diagnostic(root, project_env):
+    from pony.cli.help import SLASH_COMMANDS
+
+    try:
+        env = {**dict(os.environ), **project_env}
+        secret_names = {
+            *DEFAULT_SKILL_SECRET_ENV_NAMES,
+            *(name.strip() for name in env.get("PONY_SECRET_ENV_NAMES", "").split(",")),
+        }
+        return discover_project_skills(
+            root,
+            expected_root_identity=private_files.private_directory_identity(root),
+            env=env,
+            secret_env_names=tuple(name for name in secret_names if name),
+            reserved_names=(command.name for command in SLASH_COMMANDS),
+        ).diagnostic()
+    except (OSError, RuntimeError, ValueError):
+        return {
+            "status": "unknown",
+            "reason_code": "project_skills_unavailable",
+            "remediation": "restore a readable repository root and rerun pony doctor",
+            "skill_count": 0,
+        }
 
 
 def collect_status(cwd, args=None):
@@ -188,6 +215,7 @@ def collect_doctor(cwd, args=None, check_api=False):
                 "message": "CLAUDE.md exists but Pony only reads AGENTS.md. Consider: ln -s CLAUDE.md AGENTS.md",
             }
         )
+    project_skills = _collect_project_skill_diagnostic(root, project_env)
     return {
         "workspace": {
             "status": "ok",
@@ -229,6 +257,7 @@ def collect_doctor(cwd, args=None, check_api=False):
             "runs": _storage_status(pony_root / "runs"),
         },
         "memory": memory,
+        "project_skills": project_skills,
         "security": security,
         "project_docs": {"hints": doc_hints},
     }
@@ -272,6 +301,12 @@ def _unavailable_workspace_doctor():
             "runs": "review_required",
         },
         "memory": _unavailable_memory_diagnostic(),
+        "project_skills": {
+            "status": "unknown",
+            "reason_code": "project_skills_unavailable",
+            "remediation": "restore a readable repository root and rerun pony doctor",
+            "skill_count": 0,
+        },
         "security": {
             "status": "review_required",
             "project_env": {"status": "review_required", "mode": ""},
@@ -329,6 +364,7 @@ def handle_doctor(tokens, cwd, args):
             "issues": [dict(item) for item in memory.get("issues", [])],
         }
     )
+    data["project_skills"] = redactor(data["project_skills"])
     data["security"] = redactor(data["security"])
     data["project_docs"] = redactor(data["project_docs"])
     if tokens and data["api_check"].get("status") != "ok":
@@ -740,6 +776,7 @@ def _render_doctor(data):
     security = data["security"]
     security_executables = security["trusted_executables"]
     memory = data.get("memory", {"status": "unknown", "issues": []})
+    project_skills = data.get("project_skills", {})
     lines = [
         "Pony doctor — CLI health check",
         "",
@@ -785,6 +822,15 @@ def _render_doctor(data):
             )
             for item in memory.get("issues", [])
         ),
+        "",
+        "Project Skills",
+        _line("status", project_skills.get("status", "unknown")),
+        _line(
+            "reason",
+            project_skills.get("reason_code", "project_skills_unavailable"),
+        ),
+        _line("skills", project_skills.get("skill_count", 0)),
+        _line("remediation", project_skills.get("remediation", "") or "-"),
         "",
         "Security",
         _line("status", security["status"]),

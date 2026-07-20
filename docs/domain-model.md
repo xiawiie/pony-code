@@ -78,8 +78,8 @@ protocol 与 endpoint；只有专用 Session writer 可在两者不变时替换 
 - 一个 attempt 只产生一个 Action；多个 tool calls 全部拒绝，不做部分执行。
 - Provider client 每个 Model Attempt 至多一个 Transport Attempt。
 - retry 与 tool follow-up 复用同一 top-level turn 的 immutable InjectionSnapshot。
-- Project Skill 只在显式 `/name` top-level turn 内作为 required context 存在；不进入 Canonical Messages、Memory、Run
-  metadata 或 permission authority。
+- Project Skill 只在显式 `/name` top-level turn 内把本体和显式同目录资源作为 required context 存在；优先级低于用户
+  请求和适用项目规则，不进入 Canonical Messages、Memory、Run metadata 或 permission authority。
 - Canonical Messages 是唯一 transcript；Provider adapter 不拥有第二套可变历史。
 - Permission Mode 与模型可见 tool schemas 在 top-level turn 开始时冻结；批准 `exit_plan_mode` 是唯一可在同一 turn
   刷新 mode/schema 的路径。
@@ -104,8 +104,9 @@ protocol 与 endpoint；只有专用 Session writer 可在两者不变时替换 
 ## Workspace 与 Host 执行不变量
 
 - 所有文件 I/O 锚定可信 root，拒绝 symlink、hardlink、special file、越界路径和身份漂移。
-- Project Skill 只从 `.claude/skills/<name>/SKILL.md` descriptor-anchored 读取；任一 catalog entry 不安全、超限、格式错误
-  或含已知 secret 时整个 catalog fail closed，且不执行其附带文件。
+- Project Skill 只从 `.claude/skills/<name>/SKILL.md` descriptor-anchored 读取；可选 `resources` 只显式列出同目录 bounded
+  UTF-8 文件，不 glob、不递归。任一 catalog entry 或资源不安全、超限、格式错误或含已知 secret 时整个 catalog fail
+  closed，且不执行任何文件。
 - Host 不是 OS sandbox，文档和输出不得暗示隔离保证。
 - mutation 工具在 approval/参数复核后获取 `.workspace-mutation.lock`，持锁覆盖 runner 与 before/after observation。
 - `--sandbox`、`pony sandbox`、Source Apply、Checkpoint mutation 与 workspace rewind 不属于公开产品。

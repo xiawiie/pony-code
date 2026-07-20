@@ -55,7 +55,17 @@ def render_help_details(agent=None):
     catalog = getattr(agent, "project_skills", None)
     skills = getattr(catalog, "skills", ())
     if not skills:
-        return HELP_DETAILS
+        if getattr(catalog, "status", "") != "invalid":
+            return HELP_DETAILS
+        return "\n".join(
+            (
+                HELP_DETAILS,
+                "",
+                "Project Skills: unavailable",
+                f"reason: {catalog.reason_code}",
+                f"fix: {catalog.remediation}",
+            )
+        )
     rows = ["", "Project Skills:"]
     rows.extend(
         f"/{skill.name + ' [prompt]':<54} {skill.description}." for skill in skills

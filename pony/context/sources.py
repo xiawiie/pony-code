@@ -136,16 +136,18 @@ def active_skill_chunks(agent, accounting):
     skill = getattr(agent, "active_skill", None)
     if skill is None:
         return []
-    text = "\n".join(
-        (
-            "Repository Skill (read-only context):",
-            f"- name: {skill.name}",
-            f"- description: {skill.description}",
-            "",
-            "Instructions:",
-            skill.instructions,
-        )
-    )
+    parts = [
+        "Repository Skill (read-only context):",
+        f"- name: {skill.name}",
+        f"- description: {skill.description}",
+        "- authority: user request, then applicable project rules, then this Skill",
+        "",
+        "Instructions:",
+        skill.instructions,
+    ]
+    for resource in getattr(skill, "resources", ()):
+        parts.extend(("", f"Resource {resource.path}:", resource.content))
+    text = "\n".join(parts)
     return [
         make_chunk(
             accounting,

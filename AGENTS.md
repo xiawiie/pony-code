@@ -77,7 +77,9 @@ CLI/TUI 合同：
   `/queue [clear]` 只查询或清空未执行输入，零 Session 写；approval 始终先回到前台，local slash command 不抢占当前 turn。
   不持久化队列，不修改 immutable request，不实现 Provider/tool cancel、streaming、daemon 或第二 Session writer。
 - 仓库 Skill 只从受信 root 的 `.claude/skills/<name>/SKILL.md` 发现，且仅由显式 `/name` 作为本 turn 的只读 context
-  调用；严格 frontmatter、bounded/no-follow/single-link/root identity 与 secret gate 任一失败即 catalog fail closed。不得
+  调用；可选 `resources` 只显式列出同一 Skill 目录内 bounded UTF-8 文件，不递归、不 glob。严格 frontmatter、
+  bounded/no-follow/single-link/root identity 与 secret gate 任一失败即 catalog fail closed。用户请求优先于项目规则，项目
+  规则优先于 Skill；诊断不得回显被拒路径或内容。不得
   读取 HOME/plugin/`.agents` 兼容路径，不得执行 Skill 脚本、安装、注册工具或持久化 loaded state。
 - transient bypass capability 只进入冻结的 `RuntimeOptions`，不持久化；构造、resume、mode setter 与 Executor 都必须
   fail closed。`/plan open|share` 从非 Plan mode 调用时先进入 Plan；空 artifact 不打开 editor 或 share。

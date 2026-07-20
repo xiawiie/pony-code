@@ -249,10 +249,12 @@ Provider、approval 与 Tool 全部结束后才取下一条，因此 Canonical M
 `/plan open|share` 会先进入 Plan；空 artifact 只启用 mode，已有 artifact 才打开 editor 或尝试 share。
 
 项目只读 Skill 固定为 `.claude/skills/<name>/SKILL.md`。`SKILL.md` 是受限 UTF-8 文档：严格 frontmatter
-只含 `name` 和 `description`，名称必须等于小写目录名；安全扫描拒绝 link、special file、root drift、超量、超大、
-含已知 secret 或任何错误条目。`/name [prompt]` 在 shared REPL handler 中把一个已发现 Skill 作为该 top-level turn 的
-required context 注入；它不创建 Session command、Memory、工具、脚本执行或另一份配置。HOME、plugin 和 `.agents/skills`
-不是兼容路径。
+必须含 `name` 和 `description`，名称必须等于小写目录名；可选 `resources` 用逗号列出最多八个 Skill 目录内相对 UTF-8
+文件，每个最多 16 KiB，不支持 glob、递归引用或隐式目录读取。安全扫描拒绝 link、special file、root drift、超量、
+超大、含已知 secret 或任何错误条目。`/name [prompt]` 在 shared REPL handler 中把一个已发现 Skill 及其显式资源作为
+该 top-level turn 的 required context 注入，优先级低于用户请求和适用项目规则；它不创建 Session command、Memory、
+工具、脚本执行或另一份配置。HOME、plugin 和 `.agents/skills` 不是兼容路径。`/help` 和 `pony doctor` 只投影稳定诊断，
+不回显被拒内容或路径。
 
 推荐配置：
 
