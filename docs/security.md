@@ -120,6 +120,10 @@ commit；模型工具从不 merge。`pony agents merge` 与有序 batch 的 `mer
 worktree/branch；放弃未合入 terminal child 需显式
 `--discard`。
 
+内部 subprocess 的 timeout 同时约束进程组终止与输出 pipe drain；后代即使脱离原进程组并继承 stdout/stderr，也不能让
+Pony 无限等待。Model request 在构造前绑定 Session leaf，并在发请求前复核；并发 append、rewind 或 model change 会
+fail closed，stale response 不得接入新的 Canonical Messages。
+
 Plan artifact 在任何脱敏前执行 strict/bounded validation；如果已知 secret 会被 redactor 改写，整次操作以
 `sensitive_content_block` 拒绝，不能把 `<redacted>` 当作成功 Plan。Session v1-v4 inspection 不硬化或改写 artifact；
 迁移只在显式 resume 下进行，并在原子发布前复验 source、backup 与 candidate 的 identity、single-link 和 exact bytes。

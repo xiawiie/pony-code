@@ -23,7 +23,8 @@ permission、path/secret 校验、可信 executable、mutation lock 和真实 ef
 
 ## 安装
 
-需要 Python 3.11 或 3.12。1.0 目标支持并在 CI 验证 macOS 与 Linux；安全文件访问和锁依赖 POSIX 原语，Windows
+需要 Python 3.11 或 3.12；package metadata 会拒绝其他 Python 版本。1.0 目标支持并在 CI 验证 macOS 与 Linux；
+安全文件访问和锁依赖 POSIX 原语，Windows
 不在 1.0 支持范围，不能把安装成功等同于安全合同成立。
 
 `v1.0.0` tag 与对应 package 发布后可使用：

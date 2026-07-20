@@ -24,6 +24,7 @@ PROJECT_NAME = _PROJECT["name"]
 DIST_INFO_NAME = PROJECT_NAME.replace("-", "_")
 PROJECT_VERSION = _PROJECT["version"]
 PROJECT_SUMMARY = _PROJECT["description"]
+EXPECTED_REQUIRES_PYTHON = "<3.13,>=3.11"
 EXPECTED_RUNTIME_REQUIREMENTS = ["prompt-toolkit<4,>=3.0.52"]
 DIST_INFO_FILES = {
     "METADATA",
@@ -144,7 +145,7 @@ def verify_wheel(wheel: Path, tracked_package_files: set[str], readme: str) -> N
     assert metadata["Name"] == PROJECT_NAME
     assert metadata["Version"] == PROJECT_VERSION
     assert metadata["Summary"] == PROJECT_SUMMARY
-    assert metadata["Requires-Python"] == ">=3.11"
+    assert metadata["Requires-Python"] == EXPECTED_REQUIRES_PYTHON
     assert metadata["Description-Content-Type"] == "text/markdown"
     assert metadata["License-Expression"] == "MIT"
     assert metadata.get_all("License-File") == ["LICENSE"]

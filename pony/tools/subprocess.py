@@ -1193,11 +1193,14 @@ def _capture_process(
             elif (
                 timed_out
                 and termination_deadline is not None
-                and process.poll() is None
                 and now >= termination_deadline
             ):
-                _signal_process_group(process, signal.SIGKILL)
-                process.wait()
+                if process.poll() is None:
+                    _signal_process_group(process, signal.SIGKILL)
+                    process.wait()
+                # A descendant may escape the process group but retain these pipes.
+                # Stop draining at the hard deadline so timeout remains bounded.
+                _close_capture_streams(selector, streams)
                 termination_deadline = None
 
             next_deadline = termination_deadline if timed_out else deadline

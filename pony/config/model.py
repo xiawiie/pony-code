@@ -114,9 +114,16 @@ def validate_api_base(value):
         raise ValueError("api_base_credentials")
     if parsed.query or parsed.fragment:
         raise ValueError("api_base_query_or_fragment")
-    if parsed.scheme.casefold() != "https" and not _loopback_api_url(raw):
+    scheme = parsed.scheme.casefold()
+    if scheme != "https" and not _loopback_api_url(raw):
         raise ValueError("insecure_api_base")
-    return raw.rstrip("/")
+    host = parsed.hostname.casefold()
+    if ":" in host:
+        host = f"[{host}]"
+    port = parsed.port
+    if port is not None and (scheme, port) not in {("https", 443), ("http", 80)}:
+        host = f"{host}:{port}"
+    return urllib.parse.urlunsplit((scheme, host, parsed.path.rstrip("/"), "", ""))
 
 
 def _resolve_env_value(name, project_env, process_env, default="", default_name=""):

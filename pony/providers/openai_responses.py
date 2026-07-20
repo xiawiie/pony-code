@@ -1,6 +1,7 @@
 """OpenAI Responses native provider adapter."""
 
 from copy import deepcopy
+from importlib.metadata import PackageNotFoundError, version
 import json
 import urllib.request
 
@@ -20,7 +21,10 @@ from .transport import (
 from .response import Response, StopReason
 
 
-OPENAI_USER_AGENT = "pony/0.1"
+try:
+    OPENAI_USER_AGENT = f"pony/{version('pony-code')}"
+except PackageNotFoundError:  # pragma: no cover - only an unpackaged source tree.
+    OPENAI_USER_AGENT = "pony/unknown"
 MAX_PROVIDER_STATE_ITEMS = 32
 MAX_PROVIDER_STATE_BYTES = 1024 * 1024
 

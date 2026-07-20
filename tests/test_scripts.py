@@ -188,6 +188,8 @@ def test_distribution_verifier_freezes_archive_and_install_contract():
     assert "cwd=cwd, env=env" in verifier
     assert 'PROJECT_VERSION = _PROJECT["version"]' in verifier
     assert 'PROJECT_VERSION = "' not in verifier
+    assert 'EXPECTED_REQUIRES_PYTHON = "<3.13,>=3.11"' in verifier
+    assert 'metadata["Requires-Python"] == EXPECTED_REQUIRES_PYTHON' in verifier
 
 
 def test_distribution_verifier_ignores_tracked_files_deleted_from_worktree(

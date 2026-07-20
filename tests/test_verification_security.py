@@ -123,6 +123,19 @@ def test_verification_argv_keeps_ordinary_relative_test_node_paths():
 @pytest.mark.parametrize(
     "argv",
     (
+        ("pytest", "--version"),
+        ("pytest", "--collect-only"),
+        ("pytest", "--co"),
+        ("ruff", "check", "--help"),
+    ),
+)
+def test_verification_argv_rejects_nonexecuting_commands(argv):
+    assert not verification.is_verification_argv(argv)
+
+
+@pytest.mark.parametrize(
+    "argv",
+    (
         ("pytest", "-ktest_exec"),
         ("pytest", "-k", "test_exec"),
         ("pytest", "tests/test_\ue000.py"),

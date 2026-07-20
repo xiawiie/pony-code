@@ -1176,12 +1176,20 @@ class Pony:
 
         return AgentLoop(self).run(user_message, skill=skill)
 
-    def compact_session(self, *, focus="", reason="manual", keep_recent_tokens=None):
+    def compact_session(
+        self,
+        *,
+        focus="",
+        reason="manual",
+        keep_recent_tokens=None,
+        expected_leaf_id=None,
+    ):
         return compact_session_tree(
             self,
             focus=focus,
             reason=reason,
             keep_recent_tokens=keep_recent_tokens,
+            expected_leaf_id=expected_leaf_id,
         )
 
     def _reload_session_projection(self):
@@ -1221,10 +1229,13 @@ class Pony:
         return result
 
     def fork_session(self, entry_id, *, expected_leaf_id=None):
+        current_leaf = expected_leaf_id
+        if current_leaf is None:
+            current_leaf = self.session_store.load_tree(self.session["id"]).leaf_id
         result = self.session_store.fork(
             self.session["id"],
             entry_id,
-            expected_leaf_id=expected_leaf_id,
+            expected_leaf_id=current_leaf,
         )
         self._reload_session_projection()
         return result

@@ -305,9 +305,11 @@ def handle_session_command(
         elif command == "tree" and len(argv) == 2:
             ok, report = _tree_report(session_id, sessions_root)
         elif command == "fork" and len(argv) == 3:
-            entry = _store_for_write(sessions_root, redactor).fork(
+            store = _store_for_write(sessions_root, redactor)
+            entry = store.fork(
                 session_id,
                 argv[2],
+                expected_leaf_id=store.load_tree(session_id).leaf_id,
             )
             ok = True
             report = f"forked: {entry['id']}\nparent: {entry['parent_id']}"
@@ -337,9 +339,11 @@ def handle_session_command(
                 )
                 ok = True
             else:
-                entry = _store_for_write(sessions_root, redactor).rewind(
+                store = _store_for_write(sessions_root, redactor)
+                entry = store.rewind(
                     session_id,
                     argv[2],
+                    expected_leaf_id=store.load_tree(session_id).leaf_id,
                 )
                 report = f"rewound: {entry['id']}\nparent: {entry['parent_id']}"
                 ok = True

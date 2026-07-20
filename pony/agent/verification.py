@@ -44,6 +44,9 @@ _EXECUTION_CONTROL_KEY_MARKERS = (
 )
 _CONFIG_VALUE_OPTIONS = frozenset(("o", "overrideini", "config"))
 _REJECTED_CONFIG_KEYS = frozenset(("addopts",))
+_NON_EXECUTING_OPTIONS = frozenset(
+    {"--collect-only", "--help", "--version", "--co", "-h"}
+)
 
 
 def _tail(text):
@@ -181,6 +184,8 @@ def is_verification_argv(argv):
     if prefix is None:
         return False
     tail = tokens[len(prefix) :]
+    if any(token.casefold().partition("=")[0] in _NON_EXECUTING_OPTIONS for token in tail):
+        return False
     return not _has_execution_control_tail(
         tail,
         pytest_short_options=prefix[-1] == "pytest",

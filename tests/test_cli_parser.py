@@ -196,10 +196,6 @@ def test_parser_rejects_removed_max_new_tokens_flag():
         ("--max-steps", "100", 100),
         ("--max-output-tokens", "1", 1),
         ("--max-output-tokens", "32768", 32768),
-        ("--temperature", "0", 0.0),
-        ("--temperature", "2", 2.0),
-        ("--top-p", "0.0001", 0.0001),
-        ("--top-p", "1", 1.0),
     ),
 )
 def test_runtime_resource_arguments_accept_documented_boundaries(
@@ -222,18 +218,18 @@ def test_runtime_resource_arguments_accept_documented_boundaries(
         ("--max-steps", "101"),
         ("--max-output-tokens", "0"),
         ("--max-output-tokens", "32769"),
-        ("--temperature", "-0.1"),
-        ("--temperature", "2.1"),
-        ("--temperature", "nan"),
-        ("--temperature", "inf"),
-        ("--top-p", "0"),
-        ("--top-p", "1.1"),
-        ("--top-p", "nan"),
-        ("--top-p", "inf"),
     ),
 )
 def test_runtime_resource_arguments_reject_out_of_range_values(flag, value):
     with pytest.raises(SystemExit) as caught:
         build_arg_parser().parse_args([flag, value])
+
+    assert caught.value.code == 2
+
+
+@pytest.mark.parametrize("flag", ("--temperature", "--top-p"))
+def test_parser_rejects_removed_sampling_flags(flag):
+    with pytest.raises(SystemExit) as caught:
+        build_arg_parser().parse_args([flag, "0.5"])
 
     assert caught.value.code == 2

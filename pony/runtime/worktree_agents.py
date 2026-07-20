@@ -6,12 +6,10 @@ import json
 import os
 from pathlib import Path
 import re
-import shlex
 import shutil
 import stat
 import uuid
 
-from pony.agent.verification import is_verification_argv
 from pony.security import paths as security_paths
 from pony.security.private_files import (
     ensure_private_dir,
@@ -373,21 +371,17 @@ def _test_status(messages):
             or content[0].get("name") != "run_shell"
         ):
             continue
-        command = str(content[0].get("input", {}).get("command", ""))
-        try:
-            argv = shlex.split(command)
-        except ValueError:
-            continue
-        if not is_verification_argv(argv):
-            continue
         result = messages[index + 1]
         metadata = result.get("_pony_meta", {}) if isinstance(result, dict) else {}
         if index + 1 <= last_change:
             continue
-        statuses.append(str(metadata.get("tool_status", "")))
-    if any(status in {"error", "partial_success"} for status in statuses):
+        evidence = metadata.get("verification_evidence")
+        if not isinstance(evidence, dict):
+            continue
+        statuses.append(evidence.get("exit_code"))
+    if any(type(status) is int and status != 0 for status in statuses):
         return "failed"
-    if any(status == "ok" for status in statuses):
+    if any(status == 0 for status in statuses):
         return "passed"
     if statuses:
         return "blocked"

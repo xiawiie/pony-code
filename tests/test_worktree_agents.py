@@ -431,12 +431,36 @@ def test_test_status_does_not_claim_prior_verification_for_later_edit():
                 }
             ],
         },
-        {"role": "user", "content": "ok", "_pony_meta": {"tool_status": "ok"}},
+        {
+            "role": "user",
+            "content": "ok",
+            "_pony_meta": {
+                "tool_status": "ok",
+                "verification_evidence": {"exit_code": 0},
+            },
+        },
         {
             "role": "user",
             "content": "edited",
             "_pony_meta": {"workspace_changed": True},
         },
+    ]
+
+    from pony.runtime.worktree_agents import _test_status
+
+    assert _test_status(messages) == "not_run"
+
+
+@pytest.mark.parametrize("command", ("pytest --version", "pytest --collect-only", "ruff check --help"))
+def test_test_status_does_not_accept_nonexecuting_verification(command):
+    messages = [
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "tool_use", "name": "run_shell", "input": {"command": command}}
+            ],
+        },
+        {"role": "user", "content": "ok", "_pony_meta": {"tool_status": "ok"}},
     ]
 
     from pony.runtime.worktree_agents import _test_status

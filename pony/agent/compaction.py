@@ -402,10 +402,13 @@ def compact_session(
     focus="",
     reason="manual",
     keep_recent_tokens=None,
+    expected_leaf_id=None,
 ):
     """Append one compaction entry only after a useful summary is complete."""
     session_id = agent.session["id"]
     tree = agent.session_store.load_tree(session_id)
+    if expected_leaf_id is not None and tree.leaf_id != expected_leaf_id:
+        raise SessionFormatError("session changed before compaction")
     target = (
         agent.model_budget.keep_recent_tokens
         if keep_recent_tokens is None
@@ -491,6 +494,7 @@ def compact_session(
             "provider_usage": usage,
             "split_provider_usage": split_usage,
         },
+        expected_leaf_id=tree.leaf_id,
     )
     return CompactionResult(
         entry=entry,

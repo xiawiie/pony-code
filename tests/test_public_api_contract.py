@@ -203,6 +203,7 @@ def test_packaging_declares_unreleased_platforms_license_and_urls():
     ]
 
     assert project["version"] in {"1.0.0rc1", "1.0.0"}
+    assert project["requires-python"] == ">=3.11,<3.13"
     assert project["license"] == "MIT"
     assert project["license-files"] == ["LICENSE"]
     assert project["name"] == "pony-code"

@@ -1508,6 +1508,49 @@ def test_build_failure_after_success_does_not_reuse_request_metadata(
     assert report["context"] == {}
 
 
+def test_concurrent_append_while_building_request_rejects_stale_response(
+    tmp_path,
+    monkeypatch,
+):
+    provider = NativeScriptProvider(
+        [
+            Response(
+                stop_reason=StopReason.END_TURN,
+                content=[{"type": "text", "text": "stale answer"}],
+                usage={},
+            )
+        ]
+    )
+    agent = build_native_agent(tmp_path, provider)
+    original = agent.context_manager.build_request
+
+    def build_with_concurrent_append(**kwargs):
+        request = original(**kwargs)
+        agent.session_store.append_messages(
+            agent.session["id"],
+            [
+                {
+                    "role": "user",
+                    "content": "concurrent prompt",
+                    "_pony_meta": {},
+                }
+            ],
+        )
+        return request
+
+    monkeypatch.setattr(agent.context_manager, "build_request", build_with_concurrent_append)
+
+    with pytest.raises(Exception, match="session changed before model request"):
+        agent.ask("original prompt")
+
+    assert provider.calls == []
+    persisted = agent.session_store.load(agent.session["id"])
+    assert [message["content"] for message in persisted["messages"][-2:]] == [
+        "original prompt",
+        "concurrent prompt",
+    ]
+
+
 def test_keyboard_interrupt_closes_run_and_reraises(tmp_path):
     agent = build_native_agent(
         tmp_path,

@@ -7,7 +7,7 @@ name = "pony-code"
 version = "1.0.0"
 description = "Local coding agent for repository-grounded engineering work"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.11,<3.13"
 license = "MIT"
 license-files = ["LICENSE"]
 keywords = ["coding-agent", "developer-tools", "cli"]

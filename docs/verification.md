@@ -164,6 +164,9 @@ evidence、model-free review、project-trusted ordered merge-all、完整顺序 
 uv run pytest -q tests/test_worktree_agents.py
 ```
 
+Worktree 的 `passed` 只来自 Executor 生成的结构化 verification evidence；`--version`、`--help`、`--collect-only` 等
+不执行检查的命令不得算作通过。subprocess 专项还必须覆盖脱离进程组但继承 capture pipe 的后代，证明 timeout 不会挂死。
+
 ## Distribution 验证
 
 ```bash
@@ -181,7 +184,7 @@ Verifier 使用 `git ls-files pony` 建立产品文件真源并检查：
 - sdist 单一 wrapper、无 link/special file；
 - wheel/sdist 无 tests、benchmarks、scripts、docs、`.github` 或 development evaluation；
 - wheel 精确包含 tracked runtime Python 文件；
-- Name、Version、Summary、Python 要求、MIT、Project URLs、README 与 console entry 正确；
+- Name、Version、Summary、Python `>=3.11,<3.13`、MIT、Project URLs、README 与 console entry 正确；
 - Runtime `Requires-Dist` 精确为 `prompt-toolkit>=3.0.52,<4`，wheel 为 `py3-none-any`；
 - clean venv 从锁定 uv cache 离线解析 prompt-toolkit/wcwidth，安装后 TUI 可导入，且 `pony --version`、help、doctor
   行为正确；removed Sandbox/Checkpoint mutation commands 由 CLI/parser 聚焦测试验证；

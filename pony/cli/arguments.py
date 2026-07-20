@@ -2,7 +2,6 @@
 
 import argparse
 from importlib.metadata import PackageNotFoundError, version
-import math
 
 from pony.config.model import validate_model_name
 from pony.runtime.application import DEFAULT_MAX_OUTPUT_TOKENS, DEFAULT_MAX_STEPS
@@ -31,27 +30,6 @@ def _bounded_int_argument(value, *, name, minimum, maximum):
         raise argparse.ArgumentTypeError(f"{name} must be an integer") from exc
     if not minimum <= parsed <= maximum:
         raise argparse.ArgumentTypeError(f"{name} must be in [{minimum}, {maximum}]")
-    return parsed
-
-
-def _bounded_float_argument(
-    value,
-    *,
-    name,
-    minimum,
-    maximum,
-    minimum_exclusive=False,
-):
-    try:
-        parsed = float(value)
-    except (TypeError, ValueError) as exc:
-        raise argparse.ArgumentTypeError(f"{name} must be a number") from exc
-    lower_ok = parsed > minimum if minimum_exclusive else parsed >= minimum
-    if not math.isfinite(parsed) or not lower_ok or parsed > maximum:
-        lower = "(" if minimum_exclusive else "["
-        raise argparse.ArgumentTypeError(
-            f"{name} must be in {lower}{minimum}, {maximum}]"
-        )
     return parsed
 
 
@@ -88,25 +66,6 @@ def _context_window_argument(value):
         name="context window",
         minimum=4096,
         maximum=2_000_000,
-    )
-
-
-def _temperature_argument(value):
-    return _bounded_float_argument(
-        value,
-        name="temperature",
-        minimum=0,
-        maximum=2,
-    )
-
-
-def _top_p_argument(value):
-    return _bounded_float_argument(
-        value,
-        name="top-p",
-        minimum=0,
-        maximum=1,
-        minimum_exclusive=True,
     )
 
 
@@ -223,18 +182,6 @@ def build_arg_parser():
         type=_context_window_argument,
         default=None,
         help="Model context window override.",
-    )
-    parser.add_argument(
-        "--temperature",
-        type=_temperature_argument,
-        default=0.2,
-        help="Ollama sampling temperature.",
-    )
-    parser.add_argument(
-        "--top-p",
-        type=_top_p_argument,
-        default=0.9,
-        help="Ollama top-p sampling value.",
     )
     parser.add_argument(
         "--format",

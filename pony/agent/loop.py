@@ -388,6 +388,14 @@ def _capture_model_session_guard(agent):
     }
 
 
+def _validate_model_session_guard(agent, session_guard):
+    current = _capture_model_session_guard(agent)
+    if current != session_guard:
+        error = SessionFormatError("session changed before model request")
+        agent._session_write_blocked_cause = error
+        raise error
+
+
 def _advance_session_guard_after_session_tool(agent, session_guard):
     tree = agent.session_store.load_tree(agent.session["id"])
     if tree.projection.get("provider_binding") != session_guard["provider_binding"]:
@@ -684,6 +692,7 @@ def _build_attempt_request(
     preflight_metadata,
     attempt_origin,
     model_execution,
+    session_guard,
 ):
     task_state.record_attempt()
     model_execution["model_attempts"] += 1
@@ -716,7 +725,9 @@ def _build_attempt_request(
                 compaction_result = agent.compact_session(
                     reason="budget_exceeded",
                     keep_recent_tokens=keep_recent,
+                    expected_leaf_id=session_guard["leaf_id"],
                 )
+                session_guard["leaf_id"] = compaction_result.entry["id"]
             except (CompactionError, CompactionNoProgress) as compaction_error:
                 raise budget_error from compaction_error
             agent.emit_trace(
@@ -745,7 +756,7 @@ def _build_attempt_request(
         agent.session["recently_recalled"] = (recent + [recall_paths])[
             -(skip_turns + 1) :
         ]
-        _commit_session(agent)
+        _commit_session(agent, session_guard=session_guard)
     if attempts == 1:
         task_state.resume_status = request_metadata.get(
             "resume_status",
@@ -1071,6 +1082,7 @@ def _run_agent_attempts(
 
     while tool_steps < agent.max_steps and attempts < max_attempts:
         attempts += 1
+        session_guard = _capture_model_session_guard(agent)
         request, request_metadata, prompt_started_at = _build_attempt_request(
             agent,
             task_state,
@@ -1082,8 +1094,9 @@ def _run_agent_attempts(
             preflight_metadata,
             attempt_origin,
             model_execution,
+            session_guard,
         )
-        session_guard = _capture_model_session_guard(agent)
+        _validate_model_session_guard(agent, session_guard)
         action, blocked_result, model_error = _complete_model_attempt(
             agent,
             task_state,
@@ -1110,6 +1123,7 @@ def _run_agent_attempts(
                                 agent.model_budget.input_limit // 4,
                             ),
                         ),
+                        expected_leaf_id=session_guard["leaf_id"],
                     )
                 except CompactionError:
                     recovery = None
@@ -1123,7 +1137,9 @@ def _run_agent_attempts(
                             "tokens_before": recovery.tokens_before,
                             "tokens_after": recovery.tokens_after,
                         },
+                        expected_leaf_id=recovery.entry["id"],
                     )
+                    session_guard["leaf_id"] = recovery_entry["id"]
                     agent.emit_trace(
                         task_state,
                         "context_recovery",

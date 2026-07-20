@@ -4,6 +4,8 @@ from contextlib import contextmanager
 from pathlib import Path
 import stat
 import subprocess
+import sys
+import time
 
 import pytest
 
@@ -14,6 +16,7 @@ from pony.tools.subprocess import (
     discover_lexical_repo_root,
     run_hardened_git,
     run_hardened_rg,
+    run_process_group,
 )
 
 
@@ -27,6 +30,29 @@ def _real_git():
     trusted = build_trusted_executables(Path.cwd(), names=("git",))
     assert "git" in trusted
     return str(trusted["git"])
+
+
+def test_timeout_does_not_wait_for_detached_descendant_capture_pipe(tmp_path):
+    script = (
+        "import os,time\n"
+        "if os.fork() == 0:\n"
+        "    os.setsid()\n"
+        "    time.sleep(2)\n"
+        "    os._exit(0)\n"
+        "os._exit(0)\n"
+    )
+    started = time.monotonic()
+
+    result = run_process_group(
+        [sys.executable, "-c", script],
+        cwd=tmp_path,
+        env=dict(os.environ),
+        timeout=0.1,
+        term_grace=0.1,
+    )
+
+    assert result.timed_out is True
+    assert time.monotonic() - started < 1
 
 
 def _init_git_repo(path):

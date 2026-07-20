@@ -153,6 +153,29 @@ def test_api_base_resolves_the_transport(
     assert resolved["resolution_source"] in {"explicit", "known_origin"}
 
 
+@pytest.mark.parametrize(
+    "api_base",
+    ("HTTPS://api.openai.com/v1", "https://API.OPENAI.COM:443/v1/"),
+)
+def test_official_api_base_is_canonicalized_before_capability_binding(api_base):
+    resolved = resolve_model_config(
+        project_env={
+            PROVIDER_ENV_NAME: "openai-responses",
+            API_BASE_ENV_NAME: api_base,
+            API_KEY_ENV_NAME: "test-key",
+        },
+        process_env={},
+        required=False,
+    )
+
+    assert resolved["base_url"]["value"] == "https://api.openai.com/v1"
+    assert resolved["capabilities"] == {
+        "strict_tools": True,
+        "parallel_tool_control": True,
+        "reasoning_replay": True,
+    }
+
+
 def test_openai_family_requires_probe_for_a_generic_endpoint():
     resolved = resolve_model_config(
         project_env={
