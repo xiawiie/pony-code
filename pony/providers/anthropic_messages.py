@@ -104,12 +104,6 @@ def _anthropic_content(data):
     return action_content, provider_state
 
 
-def _supports_anthropic_prompt_cache(base_url):
-    parsed = urllib.parse.urlsplit(base_url)
-    host = (parsed.hostname or "").casefold()
-    return host == "api.anthropic.com"
-
-
 def _anthropic_tools(tools, *, strict):
     prepared = []
     for tool in list(tools or []):

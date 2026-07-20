@@ -10,7 +10,6 @@ from pony.agent.messages import (
     message_metrics,
     render_transcript,
     strip_pony_meta,
-    tool_event_metrics,
     validate_messages,
 )
 
@@ -94,23 +93,6 @@ def test_render_and_metrics_use_content_not_internal_meta():
         "messages_count": 2,
         "messages_chars": len("question") + len("answer"),
         "messages_tokens": len("question") + len("answer"),
-    }
-
-
-def test_tool_event_metrics_counts_names_and_result_statuses():
-    pair = make_tool_pair(
-        name="read_file",
-        arguments={"path": "README.md"},
-        tool_use_id="tu_metrics",
-        result_content="body",
-        created_at="t",
-        tool_status="ok",
-        effect_class="read_only",
-    )
-    assert tool_event_metrics(pair) == {
-        "event_count": 1,
-        "name_counts": {"read_file": 1},
-        "status_counts": {"ok": 1},
     }
 
 

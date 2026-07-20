@@ -2,8 +2,6 @@
 
 import shlex
 import unicodedata
-import uuid
-from datetime import datetime, timezone
 
 from pony.security import paths as securitylib
 
@@ -46,14 +44,6 @@ _EXECUTION_CONTROL_KEY_MARKERS = (
 )
 _CONFIG_VALUE_OPTIONS = frozenset(("o", "overrideini", "config"))
 _REJECTED_CONFIG_KEYS = frozenset(("addopts",))
-
-
-def _verification_id():
-    return f"verify_{uuid.uuid4().hex[:12]}"
-
-
-def _now():
-    return datetime.now(timezone.utc).isoformat()
 
 
 def _tail(text):
@@ -245,48 +235,4 @@ def verification_evidence_for_execution(
         "risk_class": _head(_redacted(redact_text, risk_class)),
         "stdout": _tail(_redacted(redact_text, stdout)),
         "stderr": _tail(_redacted(redact_text, stderr)),
-    }
-
-
-def new_verification_record(
-    *,
-    argv,
-    risk_class,
-    runner_executed,
-    execution_mode,
-    exit_code,
-    stdout,
-    stderr,
-    affected_checkpoint_id="",
-    trace_event_id="",
-    redact_text=None,
-):
-    evidence = verification_evidence_for_execution(
-        argv=argv,
-        risk_class=risk_class,
-        runner_executed=runner_executed,
-        execution_mode=execution_mode,
-        exit_code=exit_code,
-        stdout=stdout,
-        stderr=stderr,
-        redact_text=redact_text,
-    )
-    if evidence is None:
-        return None
-    return {
-        "verification_id": _verification_id(),
-        "created_at": _now(),
-        "argv": list(evidence["argv"]),
-        "runner_executed": True,
-        "execution_mode": "argv",
-        "command": _head(shlex.join(evidence["argv"])),
-        "risk_class": evidence["risk_class"],
-        "exit_code": evidence["exit_code"],
-        "status": "passed" if evidence["exit_code"] == 0 else "failed",
-        "stdout_tail": evidence["stdout"],
-        "stderr_tail": evidence["stderr"],
-        "affected_checkpoint_id": _head(
-            _redacted(redact_text, affected_checkpoint_id or "")
-        ),
-        "trace_event_id": _head(_redacted(redact_text, trace_event_id or "")),
     }

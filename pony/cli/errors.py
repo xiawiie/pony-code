@@ -1,7 +1,5 @@
 """Typed CLI errors and exit-code mapping."""
 
-from difflib import get_close_matches
-
 
 CLI_EXIT_SUCCESS = 0
 CLI_EXIT_RUNTIME = 1
@@ -143,8 +141,3 @@ def provider_report_cli_error(report, *, message="Provider verification failed")
         ),
         category="provider",
     )
-
-
-def suggest(value, choices):
-    matches = get_close_matches(str(value), [str(choice) for choice in choices], n=1, cutoff=0.6)
-    return matches[0] if matches else ""

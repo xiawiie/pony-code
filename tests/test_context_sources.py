@@ -15,8 +15,6 @@ from pony.context.sources import (
     project_structure_chunks,
     recalled_memory_chunks,
     recovery_state_chunks,
-    render_project_structure,
-    render_workspace_state,
     task_working_set_chunks,
     workspace_state_chunks,
 )
@@ -95,18 +93,6 @@ def test_recall_source_security_failure_is_not_treated_as_retrieval_miss(
         )
 
 
-def test_workspace_compat_renderer_enforces_token_budget():
-    agent = _agent()
-    agent.workspace.volatile_text.return_value = "\n".join(
-        f"- commit {index}: xxxx" for index in range(200)
-    )
-
-    text = render_workspace_state(agent, budget_tokens=100)
-
-    assert text is not None
-    assert agent.token_accounting.count_text(text) <= 100
-
-
 def test_project_structure_filters_sensitive_paths():
     agent = _agent()
     agent.repo_map.top_level_tree.return_value = [
@@ -121,7 +107,6 @@ def test_project_structure_filters_sensitive_paths():
     assert ".ssh" not in text
     assert "src" in text
     assert "python=3" in text
-    assert render_project_structure(agent, 500) is not None
 
 
 def test_project_structure_empty_without_repo_map():

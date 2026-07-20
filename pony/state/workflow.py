@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from copy import deepcopy
-import hashlib
 import json
 import re
 
@@ -43,19 +42,6 @@ def _object_from_pairs(pairs):
             raise PlanValidationError("invalid_plan: duplicate JSON key")
         value[key] = item
     return value
-
-
-def canonical_plan_bytes(plan):
-    validated = validate_plan(plan)
-    return json.dumps(
-        validated,
-        ensure_ascii=False,
-        separators=(",", ":"),
-    ).encode("utf-8")
-
-
-def plan_digest(plan):
-    return "sha256:" + hashlib.sha256(canonical_plan_bytes(plan)).hexdigest()
 
 
 def validate_plan(plan, *, redactor=None):
@@ -130,6 +116,4 @@ def parse_plan_json(plan_json, *, redactor=None):
         raise
     except (TypeError, ValueError, json.JSONDecodeError):
         raise PlanValidationError("invalid_plan: malformed JSON") from None
-    validated = validate_plan(value, redactor=redactor)
-    canonical_plan_bytes(validated)
-    return validated
+    return validate_plan(value, redactor=redactor)

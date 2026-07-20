@@ -127,11 +127,6 @@ def _release_authority(key):
         os.close(descriptor)
 
 
-def lock_is_active(path):
-    key = os.path.abspath(os.fspath(path))
-    return key in _active_lock_keys()
-
-
 def _require_existing_lock_entry(value, *, directory=False):
     uid = os.geteuid() if hasattr(os, "geteuid") else value.st_uid
     expected_kind = stat.S_ISDIR(value.st_mode) if directory else stat.S_ISREG(value.st_mode)

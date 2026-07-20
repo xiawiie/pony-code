@@ -1,6 +1,5 @@
 from pony.runtime.resume import (
     active_prompt_history,
-    build_permission_request_metadata,
     build_resume_projection,
 )
 
@@ -30,15 +29,6 @@ def _session():
             "model": "gpt-test",
             "endpoint_hash": "sha256:" + "a" * 64,
         },
-    }
-
-
-def test_permission_request_metadata_contains_only_bounded_permission_facts():
-    metadata = build_permission_request_metadata(_session(), visible_tool_count=7)
-
-    assert metadata == {
-        "permission_mode": "plan",
-        "visible_tool_count": 7,
     }
 
 

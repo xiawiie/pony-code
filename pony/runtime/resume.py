@@ -26,14 +26,6 @@ def _display_text(value):
     return _DISPLAY_PATH_RE.sub("<path>", str(value or "").strip())[:300]
 
 
-def build_permission_request_metadata(session, *, visible_tool_count):
-    """Return the bounded authorization state frozen for one request."""
-    return {
-        "permission_mode": _permission_mode(session),
-        "visible_tool_count": max(0, int(visible_tool_count)),
-    }
-
-
 def build_resume_projection(session, *, redactor=None):
     """Combine current permission/checkpoint facts without I/O or internal IDs."""
     session = session if isinstance(session, dict) else {}

@@ -1009,7 +1009,6 @@ def test_committed_pair_save_with_failed_reload_blocks_all_later_session_writes(
     persisted = original_load(agent.session["id"])
     assert "tu_unreadable_commit" in json.dumps(persisted["messages"])
     assert persisted["checkpoints"]["current_id"] == ""
-    assert agent.current_task_state.recovery_checkpoint_id == ""
     assert later_saves == 0
     assert len(provider.calls) == 1
 

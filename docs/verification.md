@@ -92,9 +92,8 @@ uv run pytest -q \
 ```
 
 必须覆盖裸 `pony` 与 `pony repl` 的同一分派、`pony run` 纯结果输出、未知命令建议、TTY/`TERM=dumb`/窄终端
-fallback、`NO_COLOR`、40/80/120 列的 5/7/11 行响应式马形 `PONY CODE` 欢迎页与精简 footer、五项 slash
-completion、六行输入、换行/中断，以及中文、英文、emoji、标题、列表、代码块、表格降级、非法 Markdown 和控制字符
-清理。
+fallback、`NO_COLOR`、40/80/120 列相同的单行 `PONY CODE · v<version>` 启动头与精简 footer、五项 slash completion、
+六行输入、换行/中断，以及中文、英文、emoji、标题、列表、代码块、表格降级、非法 Markdown 和控制字符清理。
 
 Input queue 测试必须同时覆盖 plain/TUI：单 worker FIFO、五条 pending 上限、满队列拒绝、`/queue clear` 零 Session
 写、queued prompt 只在 dequeue 后按序进入 Canonical Messages、approval answer 由 UI 接收且不入队，以及 `/exit` 等待

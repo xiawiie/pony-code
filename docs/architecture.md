@@ -128,10 +128,10 @@ TUI 只通过两个私有、可恢复的 runtime seam 观察执行：durable tra
 一次性 UI prompt。renderer 异常不能破坏 durable trace，approval renderer 异常必须拒绝授权。离开 TUI 时两个 hook
 恢复原值。Tool 摘要需要的已脱敏参数与失败结果只附加到 listener 的内存副本，不进入低敏 `trace.jsonl`。
 
-TUI 使用原生 terminal scrollback，不维护全屏 transcript 副本。除显式 `--quiet` 外，启动区固定显示随终端宽度适配的
-马形 `PONY CODE` 欢迎页，不得退化为单行启动头；用户消息使用低对比块且不显示角色标签，Assistant 回复由内置轻量
-renderer 处理标题、强调、列表、引用、链接、代码块和 pipe table。renderer 按终端显示宽度处理 CJK 与 emoji；表格
-过宽时降级为逐行记录，非法 Markdown 保留原文，输出前
+TUI 使用原生 terminal scrollback，不维护全屏 transcript 副本。除显式 `--quiet` 外，启动区只显示单行
+`PONY CODE · v<version>`；用户消息使用低对比块且不显示角色标签，Assistant 回复由内置轻量 renderer 处理标题、
+强调、列表、引用、链接、代码块和 pipe table。renderer 按终端显示宽度处理 CJK 与 emoji；表格过宽时降级为逐行
+记录，非法 Markdown 保留原文，输出前
 剥离 ESC 与 C0/C1 控制字符。
 
 运行事件只投影为必要信息：`model_requested` 显示可清除的 `Working…`；Tool 开始时替换为一条脱敏的语义摘要，成功

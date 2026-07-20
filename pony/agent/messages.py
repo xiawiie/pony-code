@@ -188,43 +188,6 @@ def message_metrics(messages, token_of):
     }
 
 
-def tool_event_metrics(messages):
-    name_counts = {}
-    status_counts = {}
-    event_count = 0
-    for message in list(messages or []):
-        content = message.get("content")
-        if (
-            message.get("role") == "assistant"
-            and isinstance(content, list)
-            and content
-            and content[0].get("type") == "tool_use"
-        ):
-            name = str(content[0].get("name", "") or "")
-            event_count += 1
-            if name:
-                name_counts[name] = name_counts.get(name, 0) + 1
-        if (
-            message.get("role") == "user"
-            and isinstance(content, list)
-            and content
-            and content[0].get("type") == "tool_result"
-        ):
-            metadata = message.get("_pony_meta", {})
-            status = (
-                str(metadata.get("tool_status", "") or "")
-                if isinstance(metadata, dict)
-                else ""
-            )
-            if status:
-                status_counts[status] = status_counts.get(status, 0) + 1
-    return {
-        "event_count": event_count,
-        "name_counts": name_counts,
-        "status_counts": status_counts,
-    }
-
-
 def _tool_block(message, expected_type, expected_role):
     if message.get("role") != expected_role:
         raise MessageValidationError(

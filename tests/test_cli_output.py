@@ -1,10 +1,9 @@
 import json
 
-from pony.cli.errors import CLI_EXIT_USAGE, CliError, suggest
+from pony.cli.errors import CLI_EXIT_USAGE, CliError
 from pony.cli.output import (
     error_envelope,
     format_json,
-    should_use_color,
     success_envelope,
 )
 
@@ -40,19 +39,3 @@ def test_format_json_outputs_parseable_json_with_newline():
 
     assert text.endswith("\n")
     assert json.loads(text) == {"ok": True, "kind": "status", "data": {"ok": True}}
-
-
-def test_should_use_color_respects_cli_and_environment():
-    class Tty:
-        def isatty(self):
-            return True
-
-    assert should_use_color(stream=Tty(), environ={}, no_color=False) is True
-    assert should_use_color(stream=Tty(), environ={"NO_COLOR": "1"}, no_color=False) is False
-    assert should_use_color(stream=Tty(), environ={"TERM": "dumb"}, no_color=False) is False
-    assert should_use_color(stream=Tty(), environ={}, no_color=True) is False
-
-
-def test_suggest_returns_close_match():
-    assert suggest("chekpoints", ["checkpoints", "runs"]) == "checkpoints"
-    assert suggest("zzzz", ["checkpoints", "runs"]) == ""

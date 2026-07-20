@@ -26,54 +26,6 @@ _PROTOCOL_PROVIDERS = {
 
 _FAILURE_STATUSES = frozenset({"error", "partial_success", "rejected"})
 
-# Terminal-scale adaptations of the horse silhouette selected for Pony's TUI.
-_HORSE_LINES = (
-    "  ⣶⡄⣷⡄⣄",
-    " ⢀⣼⣿⣿⣿⣿⣻⣦⣀",
-    " ⣼⣿⣾⣿⣿⣿⣿⣽⣯⣄",
-    "⣾⣿⣿⠿⠋⣿⣿⣿⣿⣷⣿⡁  ⢀⣤⣤⣤ ⢀⣤⣄",
-    "⠘⠛⠃  ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣟⡻⣿⣷⡄",
-    "    ⢰⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡇⣿⣿⡇",
-    "    ⠈⣿⣿⣿⣿⣿⣿⣿⣿⣿⡿⠿⣿⣿⣿⡏⠁⢿⣿⣷",
-    "  ⢀⣠⣾⣿⠿⢾⣿⡟⠛⠛⠛⠁⠿⣿⣿⡻⣿⣷⡀ ⠘⠁",
-    "  ⠘⣿⠉⠁ ⠘⣿⠇     ⣉⣿⡿⠉⢿⣿",
-    "   ⢿⣿⣤  ⣿⡇    ⢠⣿⠟⠁ ⢸⣿",
-    "    ⠙⠛ ⣼⣿⠃   ⢠⣿⡟  ⣴⣿⠛",
-)
-
-_MEDIUM_HORSE_LINES = (
-    "   ⣶⡄⣷⣄",
-    "  ⣼⣿⣿⣿⣻⣦⣀",
-    " ⣾⠿⣿⣿⣿⣷⣿⣤⣤⣄",
-    "⠛⠃ ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣦",
-    "   ⣿⣿⣿⠿⠛⣿⣿⣿⡇",
-    "  ⣼⣿⠃    ⢸⣿⣆",
-    "  ⠛⠁     ⠛⠃",
-)
-
-_MICRO_HORSE_LINES = (
-    "  ⣶⡄⣷⣄",
-    " ⣼⣿⣿⣿⣻⣦⣀",
-    "⠛⠃⣿⣿⣿⣿⣿⣿⣿⣿⣦",
-    "  ⣿⠛⣿⣿⡇ ⣿",
-    " ⠛  ⠛  ⠛",
-)
-
-_PIXEL_GLYPHS = {
-    "P": ("### ", "#  #", "### ", "#   ", "#   "),
-    "O": (" ## ", "#  #", "#  #", "#  #", " ## "),
-    "N": ("#  #", "## #", "####", "# ##", "#  #"),
-    "Y": ("#  #", " ## ", "  # ", "  # ", "  # "),
-    "C": (" ###", "#   ", "#   ", "#   ", " ###"),
-    "D": ("### ", "#  #", "#  #", "#  #", "### "),
-    "E": ("####", "#   ", "### ", "#   ", "####"),
-}
-
-_HALF_BLOCKS = {"  ": " ", "# ": "▌", " #": "▐", "##": "█"}
-_LARGE_BANNER_COLUMNS = 112
-_MEDIUM_BANNER_COLUMNS = 64
-_PRODUCT_DESCRIPTION = "Local coding agent for repository-grounded work"
-
 _COLOR_STYLE = Style.from_dict(
     {
         "logo": "bold",
@@ -127,67 +79,6 @@ _PLAIN_STYLE = Style.from_dict(
 )
 
 
-def _pixel_row(pattern, scale):
-    if scale == 2:
-        return "".join("██" if pixel == "#" else "  " for pixel in pattern)
-    if scale == 1:
-        return pattern.replace("#", "█")
-    return "".join(_HALF_BLOCKS[pattern[index : index + 2]] for index in (0, 2))
-
-
-def _wordmark_lines(scale, repeats, letter_gap, word_gap):
-    lines = []
-    for row, repeat in enumerate(repeats):
-        words = []
-        for word in ("PONY", "CODE"):
-            words.append(
-                (" " * letter_gap).join(
-                    _pixel_row(_PIXEL_GLYPHS[letter][row], scale)
-                    for letter in word
-                )
-            )
-        lines.extend([(words[0] + " " * word_gap + words[1]).rstrip()] * repeat)
-    return tuple(lines)
-
-
-def _banner_variant(columns):
-    if columns >= _LARGE_BANNER_COLUMNS:
-        return _HORSE_LINES, _wordmark_lines(2, (2, 2, 3, 2, 2), 2, 4)
-    if columns >= _MEDIUM_BANNER_COLUMNS:
-        return _MEDIUM_HORSE_LINES, _wordmark_lines(1, (2, 1, 1, 1, 2), 1, 2)
-    return _MICRO_HORSE_LINES, _wordmark_lines(0, (1, 1, 1, 1, 1), 1, 2)
-
-
-def _banner_lines(columns):
-    width = max(1, int(columns) - 1)
-    horse_lines, wordmark_lines = _banner_variant(columns)
-    horse_width = max(get_cwidth(line) for line in horse_lines)
-    wordmark_width = max(get_cwidth(line) for line in wordmark_lines)
-    gap = min(3, max(1, width - horse_width - wordmark_width))
-    banner_width = horse_width + gap + wordmark_width
-    indent = " " * max(0, (width - banner_width) // 2)
-    return tuple(
-        (
-            indent
-            + horse
-            + " " * (horse_width - get_cwidth(horse) + gap)
-            + wordmark
-        ).rstrip()
-        for horse, wordmark in zip(horse_lines, wordmark_lines, strict=True)
-    )
-
-
-def logo_text(columns=80):
-    """Return the responsive, color-independent terminal logo."""
-    return "\n".join(_banner_lines(columns))
-
-
-def _logo_fragments(columns):
-    return FormattedText(
-        [("class:logo", f"{line}\n") for line in _banner_lines(columns)]
-    )
-
-
 def _terminal_width(columns=None):
     columns = columns or shutil.get_terminal_size((80, 24)).columns
     return max(1, int(columns) - 1)
@@ -207,11 +98,6 @@ def _truncate(text, width):
         clipped.append(character)
         remaining -= character_width
     return "".join(clipped) + "..."
-
-
-def _centered(text, width):
-    text = _truncate(text, width)
-    return " " * max(0, (width - get_cwidth(text)) // 2) + text
 
 
 def _product_version():
@@ -334,39 +220,8 @@ class TuiRenderer:
         print_formatted_text(value, style=self.style, **kwargs)
 
     def header(self, agent, *, model, columns=None):
-        columns = columns or shutil.get_terminal_size((80, 24)).columns
-        width = max(1, columns - 1)
-        model_label = _model_label(agent, model)
-        compact = columns < _MEDIUM_BANNER_COLUMNS
-        description = (
-            "Repository-grounded coding agent" if compact else _PRODUCT_DESCRIPTION
-        )
-        model_summary = (
-            f"Using {model_label}"
-            if compact
-            else (
-                f"Using {model_label} · "
-                f"{display_permission_mode(agent.current_permission_mode())}"
-            )
-        )
-        shortcuts = (
-            "/ commands · ctrl+c twice exit"
-            if compact
-            else "/ commands · esc+enter newline · ctrl+c twice exit"
-        )
         self._write(
-            FormattedText(
-                [
-                    *_logo_fragments(columns),
-                    (
-                        "class:meta",
-                        f"\n{_centered(f'v{_product_version()}', width)}\n",
-                    ),
-                    ("class:meta", f"{_centered(description, width)}\n"),
-                    ("class:meta", f"{_centered(model_summary, width)}\n"),
-                    ("class:meta", f"{_centered(shortcuts, width)}\n"),
-                ]
-            )
+            FormattedText([("class:logo", f"PONY CODE · v{_product_version()}")])
         )
 
     def toolbar(self, agent, *, model, columns=None):

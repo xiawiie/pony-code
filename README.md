@@ -107,18 +107,7 @@ uv run pony
 `pony run "<prompt>"`，不会把未知子命令或裸自然语言悄悄当作 prompt。
 
 ```text
-             ⣶⡄⣷⣄           ███   ██  █  █ █  █   ███  ██  ███  ████
-            ⣼⣿⣿⣿⣻⣦⣀         ███   ██  █  █ █  █   ███  ██  ███  ████
-           ⣾⠿⣿⣿⣿⣷⣿⣤⣤⣄       █  █ █  █ ██ █  ██   █    █  █ █  █ █
-          ⠛⠃ ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣦   ███  █  █ ████   █   █    █  █ █  █ ███
-             ⣿⣿⣿⠿⠛⣿⣿⣿⡇      █    █  █ █ ██   █   █    █  █ █  █ █
-            ⣼⣿⠃    ⢸⣿⣆      █     ██  █  █   █    ███  ██  ███  ████
-            ⠛⠁     ⠛⠃       █     ██  █  █   █    ███  ██  ███  ████
-
-                                    v1.0.0
-                Local coding agent for repository-grounded work
-                     Using anthropic/claude · auto
-              / commands · esc+enter newline · ctrl+c twice exit
+PONY CODE · v1.0.0
 
   帮我检查失败的测试
 
@@ -134,8 +123,8 @@ Working…
 host · pony-code (main)             auto · anthropic/claude
 ```
 
-除显式 `--quiet` 外，完整 TUI 每次启动都会先显示随 40/80/120 列终端宽度适配的马形 `PONY CODE` 欢迎页，随后进入
-以对话为中心的界面。用户消息使用低对比消息块，Assistant 回复通过内置 renderer 排版标题、列表、代码块和表格。
+除显式 `--quiet` 外，完整 TUI 每次启动只显示单行 `PONY CODE · v<version>`，随后进入以对话为中心的界面。用户消息
+使用低对比消息块，Assistant 回复通过内置 renderer 排版标题、列表、代码块和表格。
 `Working…` 只在等待响应时短暂出现；成功 Tool 每次只显示一行摘要，自动 checkpoint 不占用对话区。失败、中断和
 一次性 permission prompt 仍会明确显示，手动 `/checkpoint` 仍返回 checkpoint ID。footer 只保留仓库/分支、执行环境、
 permission mode 与 Provider/model；窄终端优先保留安全和模型信息。Pony 不展示 Provider reasoning，也不提供

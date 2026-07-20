@@ -29,14 +29,6 @@ from pony.memory.diagnostics import collect_memory_diagnostics
 from pony.workspace.context import WorkspaceContext
 
 
-def _doctor_check(status, reason_code, remediation=""):
-    return {
-        "status": status,
-        "reason_code": reason_code,
-        "remediation": remediation,
-    }
-
-
 def _unavailable_memory_diagnostic():
     return {
         "check_id": "memory",
