@@ -20,7 +20,7 @@ from pony.config.model import provider_family_for_protocol
 from pony.security.redaction import redact_text
 from pony.providers.transport import ProviderTransportError
 from pony.runtime.resume import active_prompt_history, build_resume_projection
-from pony.state.session_store import MAX_PLAN_TEXT_BYTES
+from pony.state.session_store import MAX_PLAN_TEXT_BYTES, PlanApprovalChanged
 
 
 _RUNTIME_ERROR_MESSAGE = "agent runtime failed"
@@ -51,8 +51,13 @@ def _open_plan_in_editor(agent):
     executable = shutil.which(editor[0])
     if not executable:
         raise ValueError("plan editor executable was not found")
-    original_plan = agent.current_plan()
-    original_revision = agent.current_plan_revision()
+    tree = agent.session_store.load_tree(agent.session["id"])
+    projection = tree.projection
+    original_plan = str(projection.get("plan_text", "") or "")
+    original_revision = int(projection.get("plan_revision", 0) or 0)
+    original_permission_mode = projection.get("permission_mode")
+    if original_permission_mode != "plan":
+        raise PlanApprovalChanged("plan changed while editing")
     descriptor, raw_path = tempfile.mkstemp(
         prefix="plan-",
         suffix=".md",
@@ -97,7 +102,13 @@ def _open_plan_in_editor(agent):
         except UnicodeDecodeError:
             raise ValueError("plan editor output must be UTF-8") from None
         if text.strip() and text.strip() != original_plan:
-            agent.save_plan_text(text, expected_revision=original_revision)
+            agent.save_plan_text(
+                text,
+                expected_leaf_id=tree.leaf_id,
+                expected_plan_text=original_plan,
+                expected_revision=original_revision,
+                expected_permission_mode=original_permission_mode,
+            )
         print("Opened plan in editor")
     finally:
         try:
@@ -136,8 +147,9 @@ def _rewind_options(tokens):
     return summary, focus
 
 
-def _session_branch_candidates(agent):
-    tree = agent.session_store.load_tree(agent.session["id"])
+def _session_branch_candidates(agent, *, tree=None):
+    if tree is None:
+        tree = agent.session_store.load_tree(agent.session["id"])
     active_ids = {entry["id"] for entry in tree.active_path}
     candidates = []
     for entry in reversed(tree.entries):
@@ -177,9 +189,12 @@ def _plain_session_picker(command, candidates):
     if not selected:
         return None
     try:
-        return candidates[int(selected) - 1][0]
-    except (IndexError, ValueError):
+        index = int(selected)
+    except ValueError:
         raise ValueError("choose a listed session entry") from None
+    if not 1 <= index <= len(candidates):
+        raise ValueError("choose a listed session entry") from None
+    return candidates[index - 1][0]
 
 
 def _default_confirm(message):
@@ -220,18 +235,28 @@ def _handle_repl_session_command(
             )
             return True
         if command == "/fork" and len(tokens) in {1, 2}:
-            entry_id = (
-                tokens[1]
-                if len(tokens) == 2
-                else _pick_session_entry(
+            expected_leaf_id = None
+            if len(tokens) == 2:
+                entry_id = tokens[1]
+            else:
+                selected = _pick_session_entry(
                     agent,
                     command,
                     pick_session_entry,
                 )
-            )
+                if selected is None:
+                    return True
+                entry_id, expected_leaf_id = selected
             if entry_id is None:
                 return True
-            entry = agent.fork_session(entry_id)
+            entry = (
+                agent.fork_session(entry_id)
+                if expected_leaf_id is None
+                else agent.fork_session(
+                    entry_id,
+                    expected_leaf_id=expected_leaf_id,
+                )
+            )
             refresh_history()
             print(f"forked at {entry['parent_id']}; leaf={entry['id']}")
             return True
@@ -240,15 +265,18 @@ def _handle_repl_session_command(
             print(f"checkpoint: {checkpoint['checkpoint_id']}")
             return True
         if command == "/rewind" and len(tokens) >= 1:
-            entry_id = (
-                tokens[1]
-                if len(tokens) >= 2 and not tokens[1].startswith("--")
-                else _pick_session_entry(
+            expected_leaf_id = None
+            if len(tokens) >= 2 and not tokens[1].startswith("--"):
+                entry_id = tokens[1]
+            else:
+                selected = _pick_session_entry(
                     agent,
                     command,
                     pick_session_entry,
                 )
-            )
+                if selected is None:
+                    return True
+                entry_id, expected_leaf_id = selected
             if entry_id is None:
                 return True
             option_tokens = (
@@ -257,11 +285,10 @@ def _handle_repl_session_command(
                 else tokens[1:]
             )
             summary, focus = _rewind_options(option_tokens)
-            result = agent.rewind_session(
-                entry_id,
-                summary=summary,
-                focus=focus,
-            )
+            rewind_kwargs = {"summary": summary, "focus": focus}
+            if expected_leaf_id is not None:
+                rewind_kwargs["expected_leaf_id"] = expected_leaf_id
+            result = agent.rewind_session(entry_id, **rewind_kwargs)
             refresh_history()
             entry = result.rewind_entry if summary else result
             print(f"rewound to {entry['parent_id']}; leaf={entry['id']}")
@@ -292,7 +319,8 @@ def _pick_session_entry(agent, command, picker):
     if picker is None:
         print(f"usage: {command} <entry-id>")
         return None
-    candidates = _session_branch_candidates(agent)
+    tree = agent.session_store.load_tree(agent.session["id"])
+    candidates = _session_branch_candidates(agent, tree=tree)
     if not candidates:
         print(f"no earlier session entries to {command[1:]}")
         return None
@@ -301,7 +329,7 @@ def _pick_session_entry(agent, command, picker):
         return None
     if entry_id not in {candidate[0] for candidate in candidates}:
         raise ValueError("selected session entry is unavailable")
-    return entry_id
+    return entry_id, tree.leaf_id
 
 
 @contextmanager

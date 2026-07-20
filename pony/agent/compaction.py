@@ -8,6 +8,7 @@ import json
 from pony.security import redaction as securitylib
 from pony.agent.messages import render_transcript
 from pony.state.session_store import (
+    SessionFormatError,
     context_view_from_tree,
     entry_message_refs,
     entry_messages,
@@ -562,10 +563,18 @@ def _generate_branch_summary(agent, entries, focus):
     return summary, dict(getattr(response, "usage", None) or {})
 
 
-def prepare_branch_summary(agent, target_entry_id, *, focus=""):
+def prepare_branch_summary(
+    agent,
+    target_entry_id,
+    *,
+    focus="",
+    expected_leaf_id=None,
+):
     """Generate a branch summary without mutating the Session Tree."""
     session_id = agent.session["id"]
     tree = agent.session_store.load_tree(session_id)
+    if expected_leaf_id is not None and tree.leaf_id != expected_leaf_id:
+        raise SessionFormatError("session changed before rewind")
     abandoned = _branch_entries(tree, target_entry_id)
     if not abandoned:
         raise CompactionNoProgress("branch_summary_failed: branch has no messages")
@@ -611,7 +620,18 @@ def append_branch_rewind(
     )
 
 
-def rewind_with_branch_summary(agent, target_entry_id, *, focus=""):
+def rewind_with_branch_summary(
+    agent,
+    target_entry_id,
+    *,
+    focus="",
+    expected_leaf_id=None,
+):
     """Create a new branch after summary succeeds; the old branch remains immutable."""
-    prepared = prepare_branch_summary(agent, target_entry_id, focus=focus)
+    prepared = prepare_branch_summary(
+        agent,
+        target_entry_id,
+        focus=focus,
+        expected_leaf_id=expected_leaf_id,
+    )
     return append_branch_rewind(agent, prepared)

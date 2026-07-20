@@ -13,6 +13,7 @@ from pony.agent.messages import make_tool_pair, validate_messages
 from pony.state.session_store import (
     LEGACY_SESSION_FORMAT_VERSION,
     MAX_SESSION_ENTRY_BYTES,
+    PlanApprovalChanged,
     SESSION_FORMAT_VERSION,
     SessionFormatError,
     SessionMigrationRequired,
@@ -931,6 +932,55 @@ def test_concurrent_plan_writers_allocate_distinct_revisions(tmp_path):
         if entry["type"] == "plan_artifact"
     ]
     assert sorted(revisions) == list(range(1, count + 1))
+
+
+@pytest.mark.parametrize(
+    "changed_expectation",
+    (
+        {"expected_plan_text": "# Other"},
+        {"expected_revision": 0},
+        {"expected_permission_mode": "auto"},
+    ),
+)
+def test_plan_editor_save_requires_the_exact_opened_state(
+    tmp_path,
+    changed_expectation,
+):
+    store = SessionStore(tmp_path / ".pony" / "sessions")
+    store.save(_session(tmp_path, "plan-editor-state"))
+    store.update_permissions("plan-editor-state", mode="plan")
+    store.set_plan_text("plan-editor-state", "# Original")
+    tree = store.load_tree("plan-editor-state")
+    expected = {
+        "expected_leaf_id": tree.leaf_id,
+        "expected_plan_text": "# Original",
+        "expected_revision": 1,
+        "expected_permission_mode": "plan",
+        **changed_expectation,
+    }
+
+    with pytest.raises(PlanApprovalChanged, match="plan changed while editing"):
+        store.set_plan_text("plan-editor-state", "# Edited", **expected)
+
+    assert store.load_tree("plan-editor-state").leaf_id == tree.leaf_id
+
+
+def test_fork_expected_leaf_rejects_concurrent_session_change(tmp_path):
+    store = SessionStore(tmp_path / ".pony" / "sessions")
+    store.save(_session(tmp_path, "fork-cas"))
+    tree = store.load_tree("fork-cas")
+    target = next(entry for entry in tree.active_path if entry["type"] == "message")
+    store.label("fork-cas", "concurrent")
+    before = store.path("fork-cas").read_bytes()
+
+    with pytest.raises(SessionFormatError, match="session changed before control append"):
+        store.fork(
+            "fork-cas",
+            target["id"],
+            expected_leaf_id=tree.leaf_id,
+        )
+
+    assert store.path("fork-cas").read_bytes() == before
 
 
 def test_permission_rule_batch_uses_one_atomic_session_entry(tmp_path):

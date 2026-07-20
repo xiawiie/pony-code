@@ -243,6 +243,13 @@ def _build_agent(args, source_workspace):
     if session_id == "latest":
         store = SessionStore(session_store_root, redactor=redactor)
         session_id = store.latest()
+        if session_id is None:
+            raise CliError(
+                code="session_not_found",
+                message="unknown session",
+                hint="Start a new Session without `--resume`.",
+                exit_code=CLI_EXIT_USAGE,
+            )
     if args.resume and session_id:
         try:
             preflight_legacy_sandbox_resume(source_workspace.repo_root, session_id)

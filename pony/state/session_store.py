@@ -2134,7 +2134,16 @@ class SessionStore:
                 "rules": deepcopy(safe_rules),
             }
 
-    def set_plan_text(self, session_id, text, *, expected_revision=None):
+    def set_plan_text(
+        self,
+        session_id,
+        text,
+        *,
+        expected_leaf_id=None,
+        expected_plan_text=None,
+        expected_revision=None,
+        expected_permission_mode=None,
+    ):
         session_id = _session_id(session_id)
         if not isinstance(text, str):
             raise ValueError("plan text must be a string")
@@ -2142,14 +2151,26 @@ class SessionStore:
             raise ValueError("plan text exceeds limit")
         with file_lock.locked_file(self.lock_path, require_existing=True):
             tree = self._read_tree_unlocked(session_id)
+            projection = tree.projection
             if (
-                expected_revision is not None
-                and tree.projection.get("plan_revision", 0) != expected_revision
+                (expected_leaf_id is not None and tree.leaf_id != expected_leaf_id)
+                or (
+                    expected_plan_text is not None
+                    and projection.get("plan_text", "") != expected_plan_text
+                )
+                or (
+                    expected_revision is not None
+                    and projection.get("plan_revision", 0) != expected_revision
+                )
+                or (
+                    expected_permission_mode is not None
+                    and projection.get("permission_mode") != expected_permission_mode
+                )
             ):
                 raise PlanApprovalChanged("plan changed while editing")
-            if tree.projection.get("plan_text", "") == text:
+            if projection.get("plan_text", "") == text:
                 return None
-            revision = int(tree.projection.get("plan_revision", 0)) + 1
+            revision = int(projection.get("plan_revision", 0)) + 1
             safe_data = self._redactor({"text": text, "revision": revision})
             entry = _new_entry("plan_artifact", safe_data, tree.leaf_id)
             self._append_entries_unlocked(session_id, [entry])
@@ -2264,12 +2285,13 @@ class SessionStore:
             )
             return deepcopy(rewind_entry), deepcopy(summary_entry)
 
-    def fork(self, session_id, entry_id):
+    def fork(self, session_id, entry_id, *, expected_leaf_id=None):
         return self.append_control(
             session_id,
             "rewind",
             {"target_entry_id": str(entry_id or ""), "reason": "fork"},
             parent_id=str(entry_id or ""),
+            expected_leaf_id=expected_leaf_id,
         )
 
     def label(self, session_id, label, *, entry_id=None):

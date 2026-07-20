@@ -896,7 +896,15 @@ class Pony:
             raise ValueError("write_plan requires plan mode")
         return self.save_plan_text(args.get("plan", ""))
 
-    def save_plan_text(self, value, *, expected_revision=None):
+    def save_plan_text(
+        self,
+        value,
+        *,
+        expected_leaf_id=None,
+        expected_plan_text=None,
+        expected_revision=None,
+        expected_permission_mode=None,
+    ):
         if self.current_permission_mode() != PermissionMode.PLAN.value:
             raise ValueError("write_plan requires plan mode")
         plan = str(value).strip()
@@ -907,7 +915,10 @@ class Pony:
             entry = self.session_store.set_plan_text(
                 self.session["id"],
                 plan,
+                expected_leaf_id=expected_leaf_id,
+                expected_plan_text=expected_plan_text,
                 expected_revision=expected_revision,
+                expected_permission_mode=expected_permission_mode,
             )
         except sessionstorelib.PlanApprovalChanged:
             self._reload_session_projection()
@@ -1180,11 +1191,19 @@ class Pony:
         *,
         summary=False,
         focus="",
+        expected_leaf_id=None,
     ):
         if summary:
-            result = rewind_with_branch_summary(self, entry_id, focus=focus)
+            result = rewind_with_branch_summary(
+                self,
+                entry_id,
+                focus=focus,
+                expected_leaf_id=expected_leaf_id,
+            )
         else:
-            current_leaf = self.session_store.load_tree(self.session["id"]).leaf_id
+            current_leaf = expected_leaf_id
+            if current_leaf is None:
+                current_leaf = self.session_store.load_tree(self.session["id"]).leaf_id
             result = self.session_store.rewind(
                 self.session["id"],
                 entry_id,
@@ -1193,8 +1212,12 @@ class Pony:
         self._reload_session_projection()
         return result
 
-    def fork_session(self, entry_id):
-        result = self.session_store.fork(self.session["id"], entry_id)
+    def fork_session(self, entry_id, *, expected_leaf_id=None):
+        result = self.session_store.fork(
+            self.session["id"],
+            entry_id,
+            expected_leaf_id=expected_leaf_id,
+        )
         self._reload_session_projection()
         return result
 
