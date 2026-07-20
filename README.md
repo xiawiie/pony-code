@@ -107,7 +107,11 @@ uv run pony
 `pony run "<prompt>"`，不会把未知子命令或裸自然语言悄悄当作 prompt。
 
 ```text
-PONY CODE · v1.0.0
+<responsive horse + PONY CODE wordmark>
+v1.0.0
+Local coding agent for repository-grounded work
+Using openai/model · permission manual
+/ commands · esc+enter newline · ctrl+c twice exit
 
   帮我检查失败的测试
 
@@ -123,7 +127,9 @@ Working…
 host · pony-code (main)             auto · anthropic/claude
 ```
 
-除显式 `--quiet` 外，完整 TUI 每次启动只显示单行 `PONY CODE · v<version>`，随后进入以对话为中心的界面。用户消息
+除显式 `--quiet` 外，完整 TUI 每次启动显示随终端宽度适配的马形 `PONY CODE` 欢迎页，随后进入以对话为中心的界面。
+该 Logo、字标、欢迎页布局和视觉语言是冻结的产品资产，只有用户明确要求时才可修改；维护性清理、CLI 对齐或代码精简
+不得将其删除、替换或退化为单行标题。用户消息
 使用低对比消息块，Assistant 回复通过内置 renderer 排版标题、列表、代码块和表格。
 `Working…` 只在等待响应时短暂出现；成功 Tool 每次只显示一行摘要，自动 checkpoint 不占用对话区。失败、中断和
 一次性 permission prompt 仍会明确显示，手动 `/checkpoint` 仍返回 checkpoint ID。footer 只保留仓库/分支、执行环境、

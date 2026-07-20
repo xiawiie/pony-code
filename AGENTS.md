@@ -84,6 +84,9 @@ CLI/TUI 合同：
 - TUI 只在 stdin/stdout 为 TTY、`TERM` 可用且宽度足够时启用；必须遵守 `NO_COLOR` / `--no-color`。
 - 除显式 `--quiet` 外，完整 TUI 每次启动必须显示随终端宽度适配的马形 `PONY CODE` 欢迎页，不得删除、隐藏或
   退化为单行启动头；纯文本 fallback 和 `pony run` 不输出装饰性 banner。
+- 马形 Logo、块状字标、欢迎页布局和视觉语言是用户冻结的产品资产。只有用户明确要求修改设计时才可变更；重构、
+  Claude Code/Codex 交互对齐、性能优化和代码精简都不是修改授权。允许修复宽度、裁切、颜色能力和字符兼容 bug，
+  但必须保持视觉意图并通过 40/80/120 列回归测试。
 - 用户消息使用低对比块且不加角色标签；Assistant 使用内置、安全的 Markdown renderer，消息块之间只留一个视觉间距。
 - `Working…` 是可清除的瞬态状态；自动 checkpoint 不进入对话区，成功 Tool 只显示一条语义摘要，失败与中断必须可见。
 - 输入框最多增长六行，completion 菜单最多显示五项。footer 只保留仓库/分支、permission mode、Provider/model，窄终端

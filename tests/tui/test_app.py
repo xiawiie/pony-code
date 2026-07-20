@@ -19,7 +19,7 @@ from pony.tui.app import (
     run_tui,
     should_use_tui,
 )
-from pony.tui.render import _COLOR_STYLE, _PLAIN_STYLE, TuiRenderer
+from pony.tui.render import _COLOR_STYLE, _PLAIN_STYLE, TuiRenderer, logo_text
 
 
 class _Stream:
@@ -55,16 +55,44 @@ def test_tui_requires_a_capable_interactive_terminal(
     ) is expected
 
 
+@pytest.mark.parametrize(("columns", "height"), ((40, 5), (80, 7), (120, 11)))
+def test_terminal_logo_scales_horse_and_wordmark_together(columns, height):
+    rendered = logo_text(columns)
+    lines = rendered.splitlines()
+
+    assert "⣿" in rendered
+    assert "█" in rendered
+    assert "PONY" not in rendered
+    assert len(lines) == height
+    assert max(get_cwidth(line) for line in lines) < columns
+
+
 @pytest.mark.parametrize("columns", (40, 80, 120))
-def test_terminal_header_is_one_stable_line(columns, monkeypatch):
+def test_terminal_welcome_preserves_logo_and_status(columns, monkeypatch):
     output = []
     renderer = TuiRenderer(no_color=True)
+    agent = SimpleNamespace(
+        current_permission_mode=lambda: "default",
+        model_client=SimpleNamespace(
+            provider_metadata={"protocol_family": "openai_chat_completions"}
+        ),
+        session={},
+    )
     monkeypatch.setattr("pony.tui.render._product_version", lambda: "1.2.3")
     renderer._write = lambda value, **_kwargs: output.append(value)
 
-    renderer.header(SimpleNamespace(), model="unused", columns=columns)
+    renderer.header(agent, model="gpt-test", columns=columns)
 
-    assert "".join(fragment[1] for fragment in output[0]) == "PONY CODE · v1.2.3"
+    rendered = "".join(fragment[1] for fragment in output[0])
+    assert "⣿" in rendered
+    assert "█" in rendered
+    assert "v1.2.3" in rendered
+    assert "openai/gpt-test" in rendered
+    if columns >= 64:
+        assert "Local coding agent for repository-grounded work" in rendered
+        assert "permission manual" in rendered
+        assert "esc+enter newline" in rendered
+    assert all(get_cwidth(line) < columns for line in rendered.splitlines())
 
 
 def test_tui_chrome_is_monochrome_but_status_colors_keep_their_meaning():
@@ -348,7 +376,11 @@ def test_tui_restores_runtime_hooks(monkeypatch):
     assert agent._trace_listener is previous_listener
     assert agent._approval_prompt is previous_prompt
     header = "".join(fragment[1] for fragment in output[0])
-    assert header == "PONY CODE · v1.0.0"
+    assert "⣿" in header
+    assert "█" in header
+    assert "v1.0.0" in header
+    assert "Local coding agent for repository-grounded work" in header
+    assert "Using gpt-test · permission manual" in header
 
 
 def test_tui_restores_runtime_hooks_when_provider_fails(monkeypatch):

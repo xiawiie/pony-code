@@ -128,8 +128,9 @@ TUI 只通过两个私有、可恢复的 runtime seam 观察执行：durable tra
 一次性 UI prompt。renderer 异常不能破坏 durable trace，approval renderer 异常必须拒绝授权。离开 TUI 时两个 hook
 恢复原值。Tool 摘要需要的已脱敏参数与失败结果只附加到 listener 的内存副本，不进入低敏 `trace.jsonl`。
 
-TUI 使用原生 terminal scrollback，不维护全屏 transcript 副本。除显式 `--quiet` 外，启动区只显示单行
-`PONY CODE · v<version>`；用户消息使用低对比块且不显示角色标签，Assistant 回复由内置轻量 renderer 处理标题、
+TUI 使用原生 terminal scrollback，不维护全屏 transcript 副本。除显式 `--quiet` 外，启动区显示随终端宽度适配的马形
+`PONY CODE` 欢迎页；Logo、字标、欢迎页布局和视觉语言属于冻结产品资产，只有用户明确要求时才可修改，不得因重构、
+竞品交互对齐或精简代码而删除、替换或退化为单行。用户消息使用低对比块且不显示角色标签，Assistant 回复由内置轻量 renderer 处理标题、
 强调、列表、引用、链接、代码块和 pipe table。renderer 按终端显示宽度处理 CJK 与 emoji；表格过宽时降级为逐行
 记录，非法 Markdown 保留原文，输出前
 剥离 ESC 与 C0/C1 控制字符。

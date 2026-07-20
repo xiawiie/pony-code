@@ -63,7 +63,7 @@
 - 命名 delegate 以独立的 child client、Session root 与 Run root 串行执行；它不是 worker pool，不能并行或写入 worktree。
 - 当前 TUI 同步执行 `session.prompt() -> agent.ask()`；Provider 使用阻塞式 `urllib` 且没有 cancel API，输入队列不是小改动。
 - `.agents/` 不在 Sandbox 的 agent-control 排除集合中，会进入 filtered staging 与 diff capture。
-- TUI 基线合同收束为单行 `PONY CODE · v<version>` 启动头，footer 不含绝对 cwd、Session ID、API Base
+- TUI 基线合同使用随终端宽度适配的马形 `PONY CODE` 欢迎页；该用户冻结资产不得退化为单行。footer 不含绝对 cwd、Session ID、API Base
   或 checkpoint ID；Workflow UI 只在该安全投影上增加 Mode/approval。
 
 ### 2.3 责任模块纠偏
