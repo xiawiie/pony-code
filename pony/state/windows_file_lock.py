@@ -111,7 +111,7 @@ def _open_lock(path, parent, *, require_existing):
             parent,
             path.name,
             directory=False,
-            desired_access=native.FILE_WRITE_ACCESS,
+            desired_access=native.FILE_LOCK_ACCESS,
             disposition=native.FILE_OPEN if require_existing else native.FILE_OPEN_IF,
             security_descriptor=security_descriptor,
             share_access=native.FILE_SHARE_READ_WRITE,
