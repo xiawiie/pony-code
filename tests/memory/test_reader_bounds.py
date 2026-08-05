@@ -169,7 +169,29 @@ def test_memory_index_rejects_leaf_replaced_after_descriptor_open(
             target.write_text("replacement\n", encoding="utf-8")
         return descriptor
 
-    monkeypatch.setattr(block_store_module.os, "open", swap_after_open)
+    if os.name == "nt":
+        real_read = (
+            block_store_module.workspace_files.read_regular_bytes_anchored
+        )
+
+        def reject_replaced_leaf(root, raw_path, **kwargs):
+            nonlocal swapped
+            if not swapped and Path(raw_path).name == target.name:
+                swapped = True
+                target.unlink()
+                target.write_text("replacement\n", encoding="utf-8")
+                raise block_store_module.workspace_files.WorkspaceIOError(
+                    "workspace_entry_unsafe"
+                )
+            return real_read(root, raw_path, **kwargs)
+
+        monkeypatch.setattr(
+            block_store_module.workspace_files,
+            "read_regular_bytes_anchored",
+            reject_replaced_leaf,
+        )
+    else:
+        monkeypatch.setattr(block_store_module.os, "open", swap_after_open)
 
     assert store.list() == []
     assert swapped is True
@@ -206,7 +228,33 @@ def test_retrieval_fails_closed_on_descriptor_swap_then_refreshes_next_query(
             )
         return descriptor
 
-    monkeypatch.setattr(block_store_module.os, "open", swap_after_open)
+    if os.name == "nt":
+        real_read = (
+            block_store_module.workspace_files.read_regular_bytes_anchored
+        )
+
+        def reject_replaced_leaf(root, raw_path, **kwargs):
+            nonlocal swapped
+            if not swapped and Path(raw_path).name == target.name:
+                swapped = True
+                target.unlink()
+                target.write_text(
+                    "---\nname: replacement\ndescription: cache\n---\n"
+                    "replacement body\n",
+                    encoding="utf-8",
+                )
+                raise block_store_module.workspace_files.WorkspaceIOError(
+                    "workspace_entry_unsafe"
+                )
+            return real_read(root, raw_path, **kwargs)
+
+        monkeypatch.setattr(
+            block_store_module.workspace_files,
+            "read_regular_bytes_anchored",
+            reject_replaced_leaf,
+        )
+    else:
+        monkeypatch.setattr(block_store_module.os, "open", swap_after_open)
 
     assert retrieval.search("cache") == []
     hits = retrieval.search("replacement")

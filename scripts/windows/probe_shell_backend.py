@@ -7,6 +7,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time
 import traceback
 
 
@@ -16,6 +17,7 @@ def _stage(name):
 
 
 def _run_direct_powershell(argv, *, root, env, creationflags, timeout=8):
+    started = time.monotonic()
     process = subprocess.Popen(
         argv,
         executable=argv[0],
@@ -42,12 +44,14 @@ def _run_direct_powershell(argv, *, root, env, creationflags, timeout=8):
             "process_running": process_running,
             "stdout": exc.output,
             "stderr": exc.stderr,
+            "elapsed_seconds": round(time.monotonic() - started, 3),
         }
     return {
         "timed_out": False,
         "returncode": process.returncode,
         "stdout": stdout,
         "stderr": stderr,
+        "elapsed_seconds": round(time.monotonic() - started, 3),
     }
 
 
@@ -208,6 +212,14 @@ def probe(*, expect_elevated_rejection=False):
                 env=no_cache_env,
                 creationflags=subprocess.CREATE_NO_WINDOW,
             )
+            _stage("powershell_cold_autoload_long")
+            cold_autoload_long = _run_direct_powershell(
+                shell_argv,
+                root=root,
+                env=shell_env,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+                timeout=60,
+            )
             raise RuntimeError(
                 "direct fixed PowerShell execution timed out: "
                 f"baseline={direct!r}, "
@@ -215,7 +227,8 @@ def probe(*, expect_elevated_rejection=False):
                 f"console_windowed={console_windowed!r}, "
                 f"explicit_module={explicit_module!r}, "
                 f"windows_base_env={windows_base_env!r}, "
-                f"no_module_cache={no_module_cache!r}"
+                f"no_module_cache={no_module_cache!r}, "
+                f"cold_autoload_long={cold_autoload_long!r}"
             )
         if direct["returncode"] != 0 or direct["stdout"].strip() != "pony-shell-ok":
             raise RuntimeError(
