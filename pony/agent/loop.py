@@ -4,8 +4,6 @@ from copy import deepcopy
 from dataclasses import replace
 import json
 import logging
-import os
-import stat
 import time
 from time import sleep as _sleep
 import uuid
@@ -23,8 +21,6 @@ from pony.agent.context_manager import ContextBudgetExceeded
 from pony.context.renderer import build_injection_snapshot
 from pony.agent.messages import make_tool_pair
 from pony.security.command_policy import assess_command
-from pony.security.private_files import ensure_private_dir
-from pony.security.paths import require_regular_no_symlink
 from pony.state.task_state import (
     STOP_REASON_PERSISTENCE_ERROR,
     STATUS_RUNNING,
@@ -628,61 +624,14 @@ def _prepare_tool_result(
         raw_result_id = ""
         if run_dir is not None:
             try:
-                raw_dir = ensure_private_dir(run_dir / "tool_results")
-                raw_path = raw_dir / f"{source_hash}.txt"
-                checked_path = require_regular_no_symlink(raw_path, allow_missing=True)
-                try:
-                    before = checked_path.lstat()
-                except FileNotFoundError:
-                    before = None
-                if before is not None and not stat.S_ISREG(before.st_mode):
-                    raise ValueError("raw tool result changed")
-                if before is not None and before.st_nlink != 1:
-                    raise ValueError("raw tool result changed")
-                flags = os.O_WRONLY
-                if before is None:
-                    flags |= os.O_CREAT | os.O_EXCL
-                flags |= getattr(os, "O_CLOEXEC", 0)
-                flags |= getattr(os, "O_NOFOLLOW", 0)
-                descriptor = os.open(checked_path, flags, 0o600)
-                try:
-                    opened = os.fstat(descriptor)
-                    current = os.stat(checked_path, follow_symlinks=False)
-                    identity = (opened.st_dev, opened.st_ino)
-                    if opened.st_nlink != 1:
-                        raise ValueError("raw tool result changed")
-                    if (
-                        not stat.S_ISREG(opened.st_mode)
-                        or (
-                        current.st_dev,
-                        current.st_ino,
-                        )
-                        != identity
-                    ):
-                        raise ValueError("raw tool result changed")
-                    if (
-                        before is not None
-                        and (
-                        before.st_dev,
-                        before.st_ino,
-                        )
-                        != identity
-                    ):
-                        raise ValueError("raw tool result changed")
-                    os.fchmod(descriptor, 0o600)
-                    os.ftruncate(descriptor, 0)
-                    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-                        descriptor = -1
-                        handle.write(safe_content)
-                        handle.flush()
-                        os.fsync(handle.fileno())
-                finally:
-                    if descriptor >= 0:
-                        os.close(descriptor)
+                agent.run_store.write_tool_result(
+                    agent.current_task_state,
+                    source_hash,
+                    safe_content,
+                )
                 raw_result_id = f"tool_result:{source_hash}"
             except (OSError, ValueError) as exc:
                 logger.debug("raw tool_result write failed: %s", type(exc).__name__)
-                raw_result_id = ""
         if raw_result_id:
             digest = _dc_replace(digest, raw_result_id=raw_result_id)
         display_content = render_digest_content(

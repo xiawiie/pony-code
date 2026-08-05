@@ -28,6 +28,44 @@ def test_run_store_creates_run_directory_and_state_file(tmp_path):
     assert persisted["user_request"] == "Inspect the repo."
 
 
+def test_run_store_writes_tool_result_through_private_atomic_backend(
+    tmp_path,
+    monkeypatch,
+):
+    store = RunStore(tmp_path / ".pony" / "runs")
+    calls = []
+    original_write = run_store_module.write_private_bytes_atomic
+
+    def record_write(path, data, **kwargs):
+        calls.append((path, data, kwargs))
+        return original_write(path, data, **kwargs)
+
+    monkeypatch.setattr(run_store_module, "write_private_bytes_atomic", record_write)
+
+    path = store.write_tool_result("run_001", "0123456789abcdef", "raw result")
+
+    assert path.read_text(encoding="utf-8") == "raw result"
+    assert calls == [
+        (
+            path,
+            b"raw result",
+            {
+                "trusted_root": store.root,
+                "trusted_root_identity": store._root_identity,
+                "error": "raw tool result changed",
+            },
+        )
+    ]
+
+
+@pytest.mark.parametrize("source_hash", ("", "../outside", "A" * 16, "a" * 15))
+def test_run_store_rejects_invalid_tool_result_hash(tmp_path, source_hash):
+    store = RunStore(tmp_path / ".pony" / "runs")
+
+    with pytest.raises(ValueError, match="invalid tool result hash"):
+        store.write_tool_result("run_001", source_hash, "raw result")
+
+
 def test_run_store_appends_trace_jsonl(tmp_path):
     store = RunStore(tmp_path / ".pony" / "runs")
     state = TaskState.create(

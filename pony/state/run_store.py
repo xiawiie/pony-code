@@ -25,6 +25,7 @@ from pony.security.private_files import (
 
 
 _RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+_TOOL_RESULT_HASH_RE = re.compile(r"^[0-9a-f]{16}$")
 
 
 def _run_id(value):
@@ -65,6 +66,11 @@ class RunStore:
 
     def trace_lock_path(self, run_id):
         return self.run_dir(run_id) / ".trace.lock"
+
+    def tool_result_path(self, run_id, source_hash):
+        if not _TOOL_RESULT_HASH_RE.fullmatch(str(source_hash or "")):
+            raise ValueError("invalid tool result hash")
+        return self.run_dir(run_id) / "tool_results" / f"{source_hash}.txt"
 
     def start_run(self, task_state):
         # 每次 ask() 都会生成一个 run 目录。
@@ -109,6 +115,17 @@ class RunStore:
         payload = self._redactor(deepcopy(report))
         self._write_json_atomic(path, payload)
         return path
+
+    def write_tool_result(self, task_state, source_hash, content):
+        path = self.tool_result_path(task_state, source_hash)
+        ensure_private_dir(path.parent)
+        return write_private_bytes_atomic(
+            path,
+            str(content).encode("utf-8"),
+            trusted_root=self.root,
+            trusted_root_identity=self._root_identity,
+            error="raw tool result changed",
+        )
 
     def load_task_state(self, task_id):
         return _decode_json(

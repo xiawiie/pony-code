@@ -10,19 +10,19 @@
 import hashlib
 import os
 import stat
-from pathlib import Path
 from unittest.mock import MagicMock
 
-import pony.agent.loop as agent_loop_module
 from pony.agent.loop import _prepare_tool_result
 from pony.agent.model_capabilities import TokenAccounting
 from pony.security.redaction import redact_text
+from pony.state.run_store import RunStore
 
 
 def _stub_agent(tmp_path, run_id="run1"):
     a = MagicMock()
-    a.current_run_dir = tmp_path / ".pony" / "runs" / run_id
-    a.current_run_dir.mkdir(parents=True, exist_ok=True)
+    a.run_store = RunStore(tmp_path / ".pony" / "runs")
+    a.current_task_state = run_id
+    a.current_run_dir = a.run_store.run_dir(run_id)
     a.redact_text.side_effect = lambda value: value
     a.token_accounting = TokenAccounting()
     a.context_config = {"tool_results": {"inline_tokens": 4096, "digest_tokens": 512}}
@@ -86,34 +86,19 @@ def test_large_tool_result_writes_only_redacted_private_body(tmp_path):
         assert stat.S_IMODE(raw_file.stat().st_mode) == 0o600
 
 
-def test_raw_tool_result_inode_swap_does_not_truncate_replacement(
-    tmp_path,
-    monkeypatch,
-):
+def test_raw_tool_result_write_failure_omits_reference(tmp_path, monkeypatch):
     agent = _stub_agent(tmp_path)
     agent.context_config = {
         "tool_results": {"inline_tokens": 100, "digest_tokens": 512}
     }
     body = "safe body\n" * 200
-    source_hash = hashlib.sha256(body.encode("utf-8")).hexdigest()[:16]
-    raw_dir = agent.current_run_dir / "tool_results"
-    raw_dir.mkdir()
-    raw_path = raw_dir / f"{source_hash}.txt"
-    raw_path.write_text("original\n", encoding="utf-8")
-    outside = tmp_path / "outside.txt"
-    outside.write_text("replacement\n", encoding="utf-8")
-    real_open = agent_loop_module.os.open
-    swapped = False
+    calls = []
 
-    def swap_before_open(path, flags, mode=0o777):
-        nonlocal swapped
-        if not swapped and Path(path) == raw_path:
-            swapped = True
-            raw_path.unlink()
-            os.link(outside, raw_path)
-        return real_open(path, flags, mode)
+    def reject_write(task_state, source_hash, content):
+        calls.append((task_state, source_hash, content))
+        raise ValueError("raw tool result changed")
 
-    monkeypatch.setattr(agent_loop_module.os, "open", swap_before_open)
+    monkeypatch.setattr(agent.run_store, "write_tool_result", reject_write)
 
     content, metadata = _prepare_tool_result(
         agent,
@@ -122,10 +107,7 @@ def test_raw_tool_result_inode_swap_does_not_truncate_replacement(
         tool_args={"path": "x"},
     )
 
-    assert swapped is True
-    assert metadata["source_hash"] == source_hash
-    assert outside.read_text(encoding="utf-8") == "replacement\n"
-    assert raw_path.read_text(encoding="utf-8") == "replacement\n"
+    assert calls == [(agent.current_task_state, metadata["source_hash"], body)]
     assert "raw_result_id:" not in content
     assert str(agent.current_run_dir) not in content
 
@@ -140,7 +122,7 @@ def test_raw_tool_result_rejects_hardlink_without_touching_external_inode(
     body = "safe body\n" * 200
     source_hash = hashlib.sha256(body.encode("utf-8")).hexdigest()[:16]
     raw_dir = agent.current_run_dir / "tool_results"
-    raw_dir.mkdir()
+    raw_dir.mkdir(parents=True)
     outside = tmp_path / "outside-raw.txt"
     outside.write_text("outside\n", encoding="utf-8")
     outside.chmod(0o644)
