@@ -124,9 +124,7 @@ def probe(*, expect_elevated_rejection=False):
         if rg is None:
             raise RuntimeError("immutable native rg.exe was not trusted")
 
-        command = (
-            "Get-Location | ForEach-Object { Write-Output 'pony-shell-ok' }"
-        )
+        command = "Write-Output 'pony-shell-ok'"
         assessment = assess_command(command, root, trusted)
         if assessment["execution_mode"] != "shell" or assessment["decision"] != "ask":
             raise RuntimeError("PowerShell command was not classified as shell grammar")
