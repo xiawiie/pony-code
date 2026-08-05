@@ -813,11 +813,12 @@ def windows_directory():
 
 def path_is_mutable_by_current_user(path, *, directory, contents=True):
     accesses = (
-        _FILE_WRITE_ATTRIBUTES,
         _DELETE,
         _WRITE_DAC,
         _WRITE_OWNER,
     )
+    if not directory:
+        accesses = (_FILE_WRITE_ATTRIBUTES, *accesses)
     if directory:
         accesses += (_FILE_DELETE_CHILD,)
         if contents:
