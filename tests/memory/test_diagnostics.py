@@ -91,6 +91,39 @@ def test_windows_memory_health_uses_anchored_backends(tmp_path, monkeypatch):
     assert reads == ["notes/note.md", "notes/nested/deep.md", "agent_notes.md"]
 
 
+def test_windows_memory_health_reports_unsafe_root_entries(tmp_path, monkeypatch):
+    root = tmp_path / "memory"
+    monkeypatch.setattr(
+        diagnostics_module.private_files,
+        "private_directory_identity",
+        lambda _path: (1, "root"),
+    )
+    monkeypatch.setattr(
+        diagnostics_module.workspace_files,
+        "list_directory_names_anchored",
+        lambda *_args, **_kwargs: {
+            "entries": (),
+            "unsafe_count": 1,
+            "scanned": 1,
+            "identity": (1, "root"),
+        },
+    )
+
+    issues = []
+    state = {"entries": 0, "bytes": 0}
+    diagnostics_module._scan_scope_windows("workspace", root, issues, state)
+
+    assert issues == [
+        {
+            "path": "workspace",
+            "count": 1,
+            "reason_code": "memory_directory_unavailable",
+            "limit": 0,
+        }
+    ]
+    assert state == {"entries": 1, "bytes": 0}
+
+
 def test_memory_health_is_bounded_and_does_not_validate_note_content(tmp_path):
     repo = tmp_path / "repo"
     memory = _memory_root(repo)

@@ -141,6 +141,7 @@ def test_ci_probes_native_windows_capabilities_and_file_semantics():
     assert '"${currentPrincipal}:F"' in runner
     assert '$toolRoot = Join-Path $env:ProgramFiles "pony-ci-tools-$runId"' in runner
     assert '"${principal}:(OI)(CI)RX"' in runner
+    assert "`$env:APPDATA = '$appDataLiteral'" in runner
     assert "`$env:LOCALAPPDATA = '$localAppDataLiteral'" in runner
     assert "`$env:PATH = '$pathLiteral'" in runner
     assert "$process.WaitForExit(5000)" in runner

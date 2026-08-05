@@ -437,6 +437,11 @@ def _scan_scope_windows(scope, root, issues, state):
     except (OSError, RuntimeError, TypeError, ValueError):
         issues.append(_issue(scope, "memory_root_unavailable"))
         return
+    if listing["unsafe_count"]:
+        state["entries"] += listing["unsafe_count"]
+        issues.append(
+            _issue(scope, "memory_directory_unavailable", listing["unsafe_count"])
+        )
     entries = {entry["name"]: entry for entry in listing["entries"]}
     notes = entries.get("notes")
     if notes is not None:
