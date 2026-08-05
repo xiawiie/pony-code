@@ -3,6 +3,7 @@
 import pytest
 
 from pony import Pony
+from pony.state.run_store import RunStore
 from pony.state.session_store import SessionStore
 from pony.workspace.context import WorkspaceContext
 from pony.agent.loop import _prepare_tool_result
@@ -151,13 +152,15 @@ digest_tokens = 256
 def test_prepare_tool_result_uses_token_limits(tmp_path):
     from types import SimpleNamespace
 
+    run_store = RunStore(tmp_path / ".pony" / "runs")
     agent = SimpleNamespace(
-        current_run_dir=tmp_path / ".pony" / "runs" / "r1",
+        current_task_state="r1",
+        current_run_dir=run_store.run_dir("r1"),
+        run_store=run_store,
         context_config={"tool_results": {"inline_tokens": 20, "digest_tokens": 64}},
         token_accounting=TokenAccounting(),
         redact_text=str,
     )
-    agent.current_run_dir.mkdir(parents=True)
 
     content, metadata = _prepare_tool_result(
         agent,
