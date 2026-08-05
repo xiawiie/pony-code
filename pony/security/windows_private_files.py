@@ -322,9 +322,13 @@ def write_private_bytes_atomic(
         _same_target(parent, path.name, existing_identity)
         if validate_commit is not None:
             validate_commit()
+        temp.close()
+        temp = None
         if existing is None:
             native.move_file(temp_path, path)
         else:
+            existing.close()
+            existing = None
             native.replace_file(path, temp_path, backup)
         installed = True
         _installed_target(parent, path.name, temp_identity)
