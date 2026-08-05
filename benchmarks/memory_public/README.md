@@ -34,7 +34,11 @@ Backends:
 must be named **PersonaMem-v1 32k, retrieval-augmented adaptation**. They are not the
 official full-context leaderboard setting.
 
-## Frozen protocol (`pony-public-memory-v1`)
+## Frozen protocol (`pony-public-memory-v2`)
+
+V2 supersedes the earlier smoke-only V1 artifacts by recording bounded concurrency,
+aborting resumably on live failures, and requiring complete paired evidence before a
+report is publishable.
 
 - answer model temperature: `0`;
 - LongMemEval judge temperature: `0`;
@@ -46,12 +50,14 @@ official full-context leaderboard setting.
   `1..16`; order inside each case/context remains strict;
 - one independent memory root/user per LongMemEval question;
 - one independent memory root/user per PersonaMem shared context;
-- artifact write after every completed question, with atomic replace;
+- atomic artifact updates for each returned question row;
 - dataset, prompt, protocol, model, worker count, Pony commit, and dirty state recorded.
 
-A run is publishable only when it uses the complete dataset, has no question-type
-filter, and starts from a clean Pony checkout. `--limit` and `--question-type` runs are
-smoke/debug evidence only.
+A run configuration is publication-eligible only when it uses the complete dataset, has
+no question-type filter, and starts from a clean Pony checkout. `--limit` and
+`--question-type` runs are smoke/debug evidence only. The final report additionally
+requires both sides to use the same Pony commit and transports, contain the exact
+expected unique case set, score every case, and contain no failures.
 
 ## Leakage controls
 
@@ -182,7 +188,9 @@ uv run --frozen python -m benchmarks.memory_public.run answer \
 Use `--resume` only with an existing artifact whose complete run header matches. A
 mismatch fails closed instead of mixing protocols or models. Each process uses fresh
 mem0 user IDs, so a timed-out partial write is never retried against the same identity;
-resume replays that case/context from its start.
+resume replays that case/context from its start. A live ingestion, answer, or judge error
+aborts the invocation instead of permanently converting an infrastructure failure into
+an incorrect benchmark row.
 
 ### 3. Judge LongMemEval
 
@@ -199,8 +207,8 @@ uv run --frozen python -m benchmarks.memory_public.run judge \
   --output benchmarks/memory_public/results/longmemeval-mem0-judged.json
 ```
 
-The judge accepts exactly `CORRECT: yes` or `CORRECT: no`; malformed output is recorded
-as a failure, not guessed.
+The judge accepts exactly `CORRECT: yes` or `CORRECT: no`; malformed output aborts for
+explicit `--resume` instead of being guessed or scored.
 
 ### 4. PersonaMem-v1 32k
 
@@ -236,8 +244,10 @@ uv run --frozen python -m benchmarks.memory_public.run report \
   --output benchmarks/memory_public/results/longmemeval-comparison.md
 ```
 
-The report checks that protocol, dataset digest, answer/judge model, prompts, reader
-budget, temperature, worker count, and filters match. It reports:
+The report checks that protocol, Pony commit, dataset digest, answer/judge model and
+transport, prompts, reader budget, temperature, worker count, and filters match. It also
+requires the complete expected case set with no duplicate, unscored, or failed rows
+before returning `publishable=true`. It reports:
 
 - accuracy and 95% Wilson interval;
 - paired accuracy delta and deterministic paired-bootstrap interval;
@@ -255,7 +265,7 @@ Each JSON artifact is a versioned record:
   "record_type": "public_memory_benchmark_result",
   "format_version": 1,
   "run": {
-    "protocol": "pony-public-memory-v1",
+    "protocol": "pony-public-memory-v2",
     "benchmark": "longmemeval",
     "backend": "pony",
     "ingest_adapter": "transcript-to-notes-v1",
@@ -275,9 +285,10 @@ Each JSON artifact is a versioned record:
 }
 ```
 
-A failed case remains visible with `correct: null` and a stable failure string. Work is
-scheduled in chunks no larger than `--workers`; an artifact write failure prevents the
-next chunk from starting, although the rest of the current in-flight chunk may finish.
+Legacy/source failure rows remain visible with `correct: null` and a stable failure
+string. New live failures abort for explicit `--resume`. Work is scheduled in chunks no
+larger than `--workers`; an artifact write failure prevents the next chunk from starting,
+although the rest of the current in-flight chunk may finish.
 
 ## Result table template
 

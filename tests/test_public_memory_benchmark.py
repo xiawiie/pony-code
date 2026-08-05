@@ -367,6 +367,66 @@ def test_worker_count_fails_closed(value):
     with pytest.raises(ValueError, match="integer between 1 and 16"):
         run._validated_workers(value)
 
+
+def test_publication_requires_complete_unique_scored_rows():
+    rows = [
+        {"case_id": "one", "correct": True, "failure": ""},
+        {"case_id": "two", "correct": False, "failure": ""},
+    ]
+
+    summary, case_ids, complete = run._publication_state(rows, 2)
+
+    assert summary["scored"] == 2
+    assert case_ids == {"one", "two"}
+    assert complete
+    assert not run._publication_state(rows[:1], 2)[2]
+    assert not run._publication_state([rows[0], dict(rows[0])], 2)[2]
+    assert not run._publication_state([rows[0], {**rows[1], "correct": None}], 2)[2]
+    assert not run._publication_state([rows[0], {**rows[1], "failure": "bad"}], 2)[2]
+
+
+def test_report_rejects_different_pony_commits(tmp_path):
+    base_run = {
+        "protocol": run.PROTOCOL,
+        "benchmark": "personamem",
+        "dataset_sha256": "sha256:data",
+        "pony_commit": "left",
+        "answer_model": "model",
+        "answer_transport": "transport",
+        "answer_prompt_sha256": "sha256:prompt",
+        "judge_model": None,
+        "max_retrieved_tokens": run.MAX_RETRIEVED_TOKENS,
+        "temperature": 0,
+        "workers": 1,
+        "limit": 1,
+        "question_type": None,
+        "publishable": False,
+    }
+
+    def write(name, run_header):
+        path = tmp_path / name
+        path.write_text(
+            json.dumps(
+                {
+                    "record_type": run.RECORD_TYPE,
+                    "format_version": run.FORMAT_VERSION,
+                    "run": run_header,
+                    "rows": [],
+                    "summary": {},
+                }
+            ),
+            encoding="utf-8",
+        )
+        return path
+
+    left = write("left.json", base_run)
+    right = write("right.json", {**base_run, "pony_commit": "right"})
+
+    with pytest.raises(ValueError, match="pony_commit"):
+        run.report(
+            SimpleNamespace(left=left, right=right, format="json", output=None)
+        )
+
 def test_complete_uses_canonical_system_blocks():
     class Client:
         def complete(self, **request):

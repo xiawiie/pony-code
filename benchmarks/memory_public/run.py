@@ -44,7 +44,7 @@ from .scoring import (
 )
 
 
-PROTOCOL = "pony-public-memory-v1"
+PROTOCOL = "pony-public-memory-v2"
 RECORD_TYPE = "public_memory_benchmark_result"
 FORMAT_VERSION = 1
 MAX_RETRIEVED_TOKENS = 6_144
@@ -52,6 +52,7 @@ ANSWER_MAX_TOKENS = 1_024
 JUDGE_MAX_TOKENS = 32
 MAX_ARTIFACT_BYTES = 64 * 1024 * 1024
 MAX_WORKERS = 16
+EXPECTED_CASES = {"longmemeval": 500, "personamem": 589}
 
 ANSWER_SYSTEM = (
     "Answer the question using only the supplied memory context. If the context does "
@@ -236,6 +237,20 @@ def _parallel_results(items, workers, process):
                 yield future.result()
 
 
+def _publication_state(rows: list[dict], expected: int):
+    summary = summarize_rows(rows)
+    ids = [row.get("case_id") for row in rows]
+    valid_ids = all(isinstance(case_id, str) and case_id for case_id in ids)
+    unique_ids = set(ids) if valid_ids else set()
+    complete = (
+        len(rows) == expected
+        and len(unique_ids) == expected
+        and summary["scored"] == expected
+        and not summary["failures"]
+    )
+    return summary, unique_ids, complete
+
+
 def _longmemeval_answer(args, target, payload, output_path: Path):
     attempt_id = uuid4().hex
     cases = _selected(load_longmemeval(args.dataset_path), args)
@@ -247,60 +262,51 @@ def _longmemeval_answer(args, target, payload, output_path: Path):
         pending = [case for case in cases if case.case_id not in completed]
 
         def process(case):
-            try:
-                client = _client(target)
-                backend = _backend(
-                    args.backend,
-                    Path(temp) / case.case_id,
-                    client=client,
-                    mem0_url=args.mem0_url,
-                    user_id=f"{case.case_id}-{attempt_id}",
-                )
-                backend.ingest_sessions(case.sessions)
-                recalled = backend.retrieve(case.question, budget_tokens=MAX_RETRIEVED_TOKENS)
-                prompt = LONG_ANSWER_TEMPLATE.format(
-                    context=recalled.text or "(no relevant memory retrieved)",
-                    question=case.question,
-                )
-                answer = _complete(
-                    client,
-                    system=ANSWER_SYSTEM,
-                    prompt=prompt,
-                    max_tokens=ANSWER_MAX_TOKENS,
-                )
-                answer_ids = set(case.answer_session_ids)
-                source_rank = next(
-                    (
-                        rank
-                        for rank, source_id in enumerate(recalled.source_ids, 1)
-                        if source_id in answer_ids
-                    ),
-                    None,
-                )
-                retrieval_scored = args.backend != "mem0" and bool(answer_ids)
-                row = {
-                    "case_id": case.case_id,
-                    "question_type": case.question_type,
-                    "question": case.question,
-                    "reference_answer": case.answer,
-                    "hypothesis": answer,
-                    "retrieved_tokens": recalled.tokens,
-                    "retrieved_source_ids": list(recalled.source_ids),
-                    "answer_source_recall": bool(source_rank) if retrieval_scored else None,
-                    "answer_source_reciprocal_rank": (1 / source_rank)
-                    if retrieval_scored and source_rank
-                    else (0.0 if retrieval_scored else None),
-                    "correct": None,
-                    "failure": "",
-                }
-            except Exception as exc:
-                row = {
-                    "case_id": case.case_id,
-                    "question_type": case.question_type,
-                    "correct": None,
-                    "failure": f"{type(exc).__name__}: {exc}",
-                }
-            return case, row
+            client = _client(target)
+            backend = _backend(
+                args.backend,
+                Path(temp) / case.case_id,
+                client=client,
+                mem0_url=args.mem0_url,
+                user_id=f"{case.case_id}-{attempt_id}",
+            )
+            backend.ingest_sessions(case.sessions)
+            recalled = backend.retrieve(case.question, budget_tokens=MAX_RETRIEVED_TOKENS)
+            prompt = LONG_ANSWER_TEMPLATE.format(
+                context=recalled.text or "(no relevant memory retrieved)",
+                question=case.question,
+            )
+            answer = _complete(
+                client,
+                system=ANSWER_SYSTEM,
+                prompt=prompt,
+                max_tokens=ANSWER_MAX_TOKENS,
+            )
+            answer_ids = set(case.answer_session_ids)
+            source_rank = next(
+                (
+                    rank
+                    for rank, source_id in enumerate(recalled.source_ids, 1)
+                    if source_id in answer_ids
+                ),
+                None,
+            )
+            retrieval_scored = args.backend != "mem0" and bool(answer_ids)
+            return case, {
+                "case_id": case.case_id,
+                "question_type": case.question_type,
+                "question": case.question,
+                "reference_answer": case.answer,
+                "hypothesis": answer,
+                "retrieved_tokens": recalled.tokens,
+                "retrieved_source_ids": list(recalled.source_ids),
+                "answer_source_recall": bool(source_rank) if retrieval_scored else None,
+                "answer_source_reciprocal_rank": (1 / source_rank)
+                if retrieval_scored and source_rank
+                else (0.0 if retrieval_scored else None),
+                "correct": None,
+                "failure": "",
+            }
 
         processed = len(completed)
         for case, row in _parallel_results(pending, args.workers, process):
@@ -354,27 +360,27 @@ def _persona_answer(args, target, payload, output_path: Path):
                 for question in batch:
                     if question.case_id in completed:
                         continue
-                    try:
-                        recalled = backend.retrieve(
-                            question.question,
-                            budget_tokens=MAX_RETRIEVED_TOKENS,
-                        )
-                        options = "\n".join(
-                            f"{chr(ord('A') + index)}. {option}"
-                            for index, option in enumerate(question.options)
-                        )
-                        prompt = PERSONA_ANSWER_TEMPLATE.format(
-                            context=recalled.text or "(no relevant memory retrieved)",
-                            question=question.question,
-                            options=options,
-                        )
-                        answer = _complete(
-                            client,
-                            system=ANSWER_SYSTEM,
-                            prompt=prompt,
-                            max_tokens=32,
-                        )
-                        row = {
+                    recalled = backend.retrieve(
+                        question.question,
+                        budget_tokens=MAX_RETRIEVED_TOKENS,
+                    )
+                    options = "\n".join(
+                        f"{chr(ord('A') + index)}. {option}"
+                        for index, option in enumerate(question.options)
+                    )
+                    prompt = PERSONA_ANSWER_TEMPLATE.format(
+                        context=recalled.text or "(no relevant memory retrieved)",
+                        question=question.question,
+                        options=options,
+                    )
+                    answer = _complete(
+                        client,
+                        system=ANSWER_SYSTEM,
+                        prompt=prompt,
+                        max_tokens=32,
+                    )
+                    rows.append(
+                        {
                             "case_id": question.case_id,
                             "question_type": question.question_type,
                             "question": question.question,
@@ -389,14 +395,7 @@ def _persona_answer(args, target, payload, output_path: Path):
                             ),
                             "failure": "",
                         }
-                    except Exception as exc:
-                        row = {
-                            "case_id": question.case_id,
-                            "question_type": question.question_type,
-                            "correct": None,
-                            "failure": f"{type(exc).__name__}: {exc}",
-                        }
-                    rows.append(row)
+                    )
             return rows
 
         processed = len(completed)
@@ -466,23 +465,19 @@ def judge(args):
         if row.get("failure"):
             judged["correct"] = None
         else:
-            try:
-                client = _client(target)
-                response = _complete(
-                    client,
-                    system=LONGMEMEVAL_JUDGE_SYSTEM,
-                    prompt=longmemeval_judge_prompt(
-                        row["question"],
-                        row["reference_answer"],
-                        row["hypothesis"],
-                    ),
-                    max_tokens=JUDGE_MAX_TOKENS,
-                )
-                judged["judge_response"] = response
-                judged["correct"] = parse_judge_answer(response)
-            except Exception as exc:
-                judged["correct"] = None
-                judged["failure"] = f"judge {type(exc).__name__}: {exc}"
+            client = _client(target)
+            response = _complete(
+                client,
+                system=LONGMEMEVAL_JUDGE_SYSTEM,
+                prompt=longmemeval_judge_prompt(
+                    row["question"],
+                    row["reference_answer"],
+                    row["hypothesis"],
+                ),
+                max_tokens=JUDGE_MAX_TOKENS,
+            )
+            judged["judge_response"] = response
+            judged["correct"] = parse_judge_answer(response)
         return judged
 
     processed = len(completed)
@@ -503,9 +498,12 @@ def report(args):
         "protocol",
         "benchmark",
         "dataset_sha256",
+        "pony_commit",
         "answer_model",
+        "answer_transport",
         "answer_prompt_sha256",
         "judge_model",
+        "judge_transport",
         "max_retrieved_tokens",
         "temperature",
         "workers",
@@ -515,26 +513,36 @@ def report(args):
     mismatches = [key for key in comparable if left["run"].get(key) != right["run"].get(key)]
     if mismatches:
         raise ValueError(f"artifacts are not comparable: {', '.join(mismatches)}")
+    benchmark = left["run"]["benchmark"]
+    expected = EXPECTED_CASES.get(benchmark)
+    if expected is None:
+        raise ValueError("unsupported benchmark")
+    left_summary, left_ids, left_complete = _publication_state(left["rows"], expected)
+    right_summary, right_ids, right_complete = _publication_state(right["rows"], expected)
+    same_case_ids = left_ids == right_ids
     result = {
         "benchmark": left["run"]["benchmark"],
         "left": {
             "backend": left["run"]["backend"],
-            "summary": summarize_rows(left["rows"]),
+            "summary": left_summary,
         },
         "right": {
             "backend": right["run"]["backend"],
-            "summary": summarize_rows(right["rows"]),
+            "summary": right_summary,
         },
         "paired": paired_summary(left["rows"], right["rows"]),
+        "expected_cases": expected,
+        "same_case_ids": same_case_ids,
         "publishable": bool(
             left["run"].get("publishable") and right["run"].get("publishable")
+            and left_complete
+            and right_complete
+            and same_case_ids
         ),
     }
     if args.format == "json":
         rendered = json.dumps(result, ensure_ascii=False, indent=2)
     else:
-        left_summary = result["left"]["summary"]
-        right_summary = result["right"]["summary"]
         paired = result["paired"]
         rendered = (
             "| Benchmark | Backend | Accuracy | 95% Wilson CI | N |\n"
@@ -548,6 +556,7 @@ def report(args):
             f"[{right_summary['wilson_95'][0]:.2%}, {right_summary['wilson_95'][1]:.2%}] | "
             f"{right_summary['scored']} |\n\n"
             f"Paired delta: {paired['delta']:+.2%}; "
+            f"paired cases: {paired['paired']}/{expected}; "
             f"win/tie/loss: {paired['win_tie_loss']}; "
             f"McNemar p={paired['mcnemar_exact']['p_value']:.4g}; "
             f"publishable={str(result['publishable']).lower()}\n"
