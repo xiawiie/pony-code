@@ -1,6 +1,8 @@
 import csv
 import json
 from pathlib import Path
+from threading import Lock
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -332,11 +334,38 @@ def test_mem0_run_header_records_reproducibility_fingerprint():
         mem0_fingerprint="mem0ai=2.0.12;embedder=text-embedding-v4:1024",
         limit=1,
         question_type=None,
+        workers=4,
     )
 
     header = run._answer_run_header(args, {"model": "m", "transport": "t"}, "sha256:x", dirty=True, commit="c")
 
     assert header["backend_fingerprint"] == args.mem0_fingerprint
+    assert header["workers"] == 4
+
+
+def test_parallel_results_bounds_concurrency():
+    active = 0
+    peak = 0
+    lock = Lock()
+
+    def process(value):
+        nonlocal active, peak
+        with lock:
+            active += 1
+            peak = max(peak, active)
+        time.sleep(0.02)
+        with lock:
+            active -= 1
+        return value
+
+    assert sorted(run._parallel_results(list(range(5)), 2, process)) == list(range(5))
+    assert peak == 2
+
+
+@pytest.mark.parametrize("value", [True, 0, 17])
+def test_worker_count_fails_closed(value):
+    with pytest.raises(ValueError, match="integer between 1 and 16"):
+        run._validated_workers(value)
 
 def test_complete_uses_canonical_system_blocks():
     class Client:
@@ -367,7 +396,12 @@ def test_answer_temp_workspace_is_anchored_to_output_parent(tmp_path, monkeypatc
     output = tmp_path / "results" / "answer.json"
 
     run._longmemeval_answer(
-        SimpleNamespace(dataset_path=tmp_path / "dataset.json", question_type=None, limit=None),
+        SimpleNamespace(
+            dataset_path=tmp_path / "dataset.json",
+            question_type=None,
+            limit=None,
+            workers=1,
+        ),
         None,
         {"rows": []},
         output,

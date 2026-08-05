@@ -41,11 +41,13 @@ official full-context leaderboard setting.
 - reader/retrieval budget: `6144` tokens;
 - Pony retrieval defaults: top 6, maximum 1024 tokens per note;
 - mem0 search: top 200, then the same `TokenAccounting` budget clipping;
-- one process, fixed dataset order, no model retry;
+- one process, fixed dataset selection, no model retry;
+- `--workers` bounds independent LongMemEval cases or PersonaMem shared contexts to
+  `1..16`; order inside each case/context remains strict;
 - one independent memory root/user per LongMemEval question;
 - one independent memory root/user per PersonaMem shared context;
-- artifact write after every question, with atomic replace;
-- dataset, prompt, protocol, model, Pony commit, and dirty state recorded.
+- artifact write after every completed question, with atomic replace;
+- dataset, prompt, protocol, model, worker count, Pony commit, and dirty state recorded.
 
 A run is publishable only when it uses the complete dataset, has no question-type
 filter, and starts from a clean Pony checkout. `--limit` and `--question-type` runs are
@@ -164,6 +166,7 @@ uv run --frozen python -m benchmarks.memory_public.run answer \
   --benchmark longmemeval \
   --backend pony \
   --dataset-path benchmarks/memory_public/data/longmemeval_s_cleaned_v1.json \
+  --workers 4 \
   --output benchmarks/memory_public/results/longmemeval-pony-answers.json
 
 uv run --frozen python -m benchmarks.memory_public.run answer \
@@ -172,6 +175,7 @@ uv run --frozen python -m benchmarks.memory_public.run answer \
   --dataset-path benchmarks/memory_public/data/longmemeval_s_cleaned_v1.json \
   --mem0-url http://127.0.0.1:8888 \
   --mem0-fingerprint "$MEM0_FINGERPRINT" \
+  --workers 4 \
   --output benchmarks/memory_public/results/longmemeval-mem0-answers.json
 ```
 
@@ -183,7 +187,7 @@ resume replays that case/context from its start.
 ### 3. Judge LongMemEval
 
 Answer generation and judging are separate so an answer model is never silently called
-again during scoring.
+again during scoring. Judge runs inherit the answer artifact's worker count.
 
 ```bash
 uv run --frozen python -m benchmarks.memory_public.run judge \
@@ -206,6 +210,7 @@ uv run --frozen python -m benchmarks.memory_public.run answer \
   --backend pony \
   --dataset-path benchmarks/memory_public/data/personamem/questions_32k.csv \
   --contexts-path benchmarks/memory_public/data/personamem/shared_contexts_32k.jsonl \
+  --workers 4 \
   --output benchmarks/memory_public/results/personamem-pony.json
 
 uv run --frozen python -m benchmarks.memory_public.run answer \
@@ -215,6 +220,7 @@ uv run --frozen python -m benchmarks.memory_public.run answer \
   --contexts-path benchmarks/memory_public/data/personamem/shared_contexts_32k.jsonl \
   --mem0-url http://127.0.0.1:8888 \
   --mem0-fingerprint "$MEM0_FINGERPRINT" \
+  --workers 4 \
   --output benchmarks/memory_public/results/personamem-mem0.json
 ```
 
@@ -231,7 +237,7 @@ uv run --frozen python -m benchmarks.memory_public.run report \
 ```
 
 The report checks that protocol, dataset digest, answer/judge model, prompts, reader
-budget, temperature, and filters match. It reports:
+budget, temperature, worker count, and filters match. It reports:
 
 - accuracy and 95% Wilson interval;
 - paired accuracy delta and deterministic paired-bootstrap interval;
@@ -261,6 +267,7 @@ Each JSON artifact is a versioned record:
     "judge_model": null,
     "max_retrieved_tokens": 6144,
     "temperature": 0,
+    "workers": 4,
     "publishable": true
   },
   "rows": [],
@@ -268,9 +275,9 @@ Each JSON artifact is a versioned record:
 }
 ```
 
-A failed case remains visible with `correct: null` and a stable failure string. Artifact
-write failure stops the process immediately, preventing additional paid requests after
-results can no longer be persisted.
+A failed case remains visible with `correct: null` and a stable failure string. Work is
+scheduled in chunks no larger than `--workers`; an artifact write failure prevents the
+next chunk from starting, although the rest of the current in-flight chunk may finish.
 
 ## Result table template
 
@@ -299,9 +306,9 @@ dataset digests, model identities, and report output.
   remains the primary comparison.
 - Full-context takes the most recent chronological material that fits the 6144-token
   reader budget. It is diagnostic, not an oracle with unlimited context.
-- The harness deliberately has no concurrency, model retry, dynamic backend registry, or
-  extra dependency. Add concurrency only after reproducibility and provider rate limits
-  are measured as the actual bottleneck.
+- Concurrency is only across independent cases/contexts. PersonaMem prefix ingestion and
+  LongMemEval conversation-pair ingestion remain sequential inside each worker. There is
+  deliberately no model retry, dynamic backend registry, or extra dependency.
 
 ## Offline verification
 

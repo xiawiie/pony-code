@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from hashlib import sha256
 import json
 from pathlib import Path
@@ -50,6 +51,7 @@ MAX_RETRIEVED_TOKENS = 6_144
 ANSWER_MAX_TOKENS = 1_024
 JUDGE_MAX_TOKENS = 32
 MAX_ARTIFACT_BYTES = 64 * 1024 * 1024
+MAX_WORKERS = 16
 
 ANSWER_SYSTEM = (
     "Answer the question using only the supplied memory context. If the context does "
@@ -90,9 +92,8 @@ def _git_metadata(repo_root: Path) -> tuple[str, bool]:
     return commit, dirty
 
 
-def _provider(repo_root: Path):
-    target = _resolve_benchmark_target(repo_root)
-    client = build_transport_client(
+def _client(target: dict):
+    return build_transport_client(
         target["transport"],
         model=target["model"],
         base_url=target["base_url"],
@@ -102,7 +103,6 @@ def _provider(repo_root: Path):
         capabilities=target["capabilities"],
         temperature=0,
     )
-    return target, client
 
 
 def _complete(client, *, system: str, prompt: str, max_tokens: int) -> str:
@@ -204,6 +204,7 @@ def _answer_run_header(args, target: dict, dataset_sha: str, *, dirty: bool, com
         "judge_model": None,
         "max_retrieved_tokens": MAX_RETRIEVED_TOKENS,
         "temperature": 0,
+        "workers": args.workers,
         "limit": args.limit,
         "question_type": args.question_type,
         "publishable": not dirty and args.limit is None and args.question_type is None,
@@ -219,7 +220,23 @@ def _selected(values, args):
     return selected[: args.limit] if args.limit is not None else selected
 
 
-def _longmemeval_answer(args, client, payload, output_path: Path):
+def _validated_workers(value) -> int:
+    if type(value) is not int or not 1 <= value <= MAX_WORKERS:
+        raise ValueError(f"workers must be an integer between 1 and {MAX_WORKERS}")
+    return value
+
+
+def _parallel_results(items, workers, process):
+    workers = _validated_workers(workers)
+    # ponytail: chunking bounds unpersisted paid work to one worker batch.
+    for start in range(0, len(items), workers):
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = [executor.submit(process, item) for item in items[start : start + workers]]
+            for future in as_completed(futures):
+                yield future.result()
+
+
+def _longmemeval_answer(args, target, payload, output_path: Path):
     attempt_id = uuid4().hex
     cases = _selected(load_longmemeval(args.dataset_path), args)
     completed = {row["case_id"] for row in payload["rows"]}
@@ -227,10 +244,11 @@ def _longmemeval_answer(args, client, payload, output_path: Path):
         prefix="pony-memory-public-",
         dir=ensure_private_dir(output_path.parent),
     ) as temp:
-        for index, case in enumerate(cases):
-            if case.case_id in completed:
-                continue
+        pending = [case for case in cases if case.case_id not in completed]
+
+        def process(case):
             try:
+                client = _client(target)
                 backend = _backend(
                     args.backend,
                     Path(temp) / case.case_id,
@@ -282,99 +300,123 @@ def _longmemeval_answer(args, client, payload, output_path: Path):
                     "correct": None,
                     "failure": f"{type(exc).__name__}: {exc}",
                 }
+            return case, row
+
+        processed = len(completed)
+        for case, row in _parallel_results(pending, args.workers, process):
+            processed += 1
             payload["rows"].append(row)
             payload["summary"] = summarize_rows(payload["rows"])
             _write_artifact(output_path, payload)
-            print(f"[{index + 1}/{len(cases)}] {case.case_id}: {'ok' if not row['failure'] else 'failed'}")
+            print(
+                f"[{processed}/{len(cases)}] {case.case_id}: "
+                f"{'ok' if not row['failure'] else 'failed'}",
+                flush=True,
+            )
     return payload
 
 
-def _persona_answer(args, client, payload, output_path: Path):
+def _persona_answer(args, target, payload, output_path: Path):
     attempt_id = uuid4().hex
     contexts = load_persona_contexts(args.contexts_path)
     questions = _selected(load_persona_questions(args.dataset_path), args)
     completed = {row["case_id"] for row in payload["rows"]}
     total = len(questions)
-    processed = 0
     with tempfile.TemporaryDirectory(
         prefix="pony-memory-public-",
         dir=ensure_private_dir(output_path.parent),
     ) as temp:
-        current_context = None
-        backend = None
+        grouped = {}
         for context_id, previous_end, end_index, delta, batch in persona_batches(contexts, questions):
-            if context_id != current_context:
-                current_context = context_id
-                backend = _backend(
-                    args.backend,
-                    Path(temp) / f"context-{context_id}",
-                    client=client,
-                    mem0_url=args.mem0_url,
-                    user_id=f"context-{context_id}-{attempt_id}",
-                )
-            backend.ingest_items(
-                delta,
-                source_prefix=f"context-{context_id}-{previous_end}-{end_index}",
+            grouped.setdefault(context_id, []).append((previous_end, end_index, delta, batch))
+        pending = [
+            (context_id, batches)
+            for context_id, batches in grouped.items()
+            if any(question.case_id not in completed for *_, batch in batches for question in batch)
+        ]
+
+        def process_context(item):
+            context_id, batches = item
+            client = _client(target)
+            backend = _backend(
+                args.backend,
+                Path(temp) / f"context-{context_id}",
+                client=client,
+                mem0_url=args.mem0_url,
+                user_id=f"context-{context_id}-{attempt_id}",
             )
-            for question in batch:
+            rows = []
+            for previous_end, end_index, delta, batch in batches:
+                backend.ingest_items(
+                    delta,
+                    source_prefix=f"context-{context_id}-{previous_end}-{end_index}",
+                )
+                for question in batch:
+                    if question.case_id in completed:
+                        continue
+                    try:
+                        recalled = backend.retrieve(
+                            question.question,
+                            budget_tokens=MAX_RETRIEVED_TOKENS,
+                        )
+                        options = "\n".join(
+                            f"{chr(ord('A') + index)}. {option}"
+                            for index, option in enumerate(question.options)
+                        )
+                        prompt = PERSONA_ANSWER_TEMPLATE.format(
+                            context=recalled.text or "(no relevant memory retrieved)",
+                            question=question.question,
+                            options=options,
+                        )
+                        answer = _complete(
+                            client,
+                            system=ANSWER_SYSTEM,
+                            prompt=prompt,
+                            max_tokens=32,
+                        )
+                        row = {
+                            "case_id": question.case_id,
+                            "question_type": question.question_type,
+                            "question": question.question,
+                            "options": list(question.options),
+                            "reference_answer": question.correct_answer,
+                            "hypothesis": answer,
+                            "retrieved_tokens": recalled.tokens,
+                            "correct": persona_correct(
+                                answer,
+                                question.correct_answer,
+                                question.options,
+                            ),
+                            "failure": "",
+                        }
+                    except Exception as exc:
+                        row = {
+                            "case_id": question.case_id,
+                            "question_type": question.question_type,
+                            "correct": None,
+                            "failure": f"{type(exc).__name__}: {exc}",
+                        }
+                    rows.append(row)
+            return rows
+
+        processed = len(completed)
+        for rows in _parallel_results(pending, args.workers, process_context):
+            for row in rows:
                 processed += 1
-                if question.case_id in completed:
-                    continue
-                try:
-                    recalled = backend.retrieve(
-                        question.question,
-                        budget_tokens=MAX_RETRIEVED_TOKENS,
-                    )
-                    options = "\n".join(
-                        f"{chr(ord('A') + index)}. {option}"
-                        for index, option in enumerate(question.options)
-                    )
-                    prompt = PERSONA_ANSWER_TEMPLATE.format(
-                        context=recalled.text or "(no relevant memory retrieved)",
-                        question=question.question,
-                        options=options,
-                    )
-                    answer = _complete(
-                        client,
-                        system=ANSWER_SYSTEM,
-                        prompt=prompt,
-                        max_tokens=32,
-                    )
-                    row = {
-                        "case_id": question.case_id,
-                        "question_type": question.question_type,
-                        "question": question.question,
-                        "options": list(question.options),
-                        "reference_answer": question.correct_answer,
-                        "hypothesis": answer,
-                        "retrieved_tokens": recalled.tokens,
-                        "correct": persona_correct(
-                            answer,
-                            question.correct_answer,
-                            question.options,
-                        ),
-                        "failure": "",
-                    }
-                except Exception as exc:
-                    row = {
-                        "case_id": question.case_id,
-                        "question_type": question.question_type,
-                        "correct": None,
-                        "failure": f"{type(exc).__name__}: {exc}",
-                    }
                 payload["rows"].append(row)
                 payload["summary"] = summarize_rows(payload["rows"])
                 _write_artifact(output_path, payload)
                 print(
-                    f"[{processed}/{total}] {question.case_id}: "
-                    f"{'ok' if not row['failure'] else 'failed'}"
+                    f"[{processed}/{total}] {row['case_id']}: "
+                    f"{'ok' if not row['failure'] else 'failed'}",
+                    flush=True,
                 )
     return payload
 
 
 def answer(args):
     repo_root = Path(args.repo_root).resolve()
-    target, client = _provider(repo_root)
+    target = _resolve_benchmark_target(repo_root)
     dataset_paths = [Path(args.dataset_path)]
     if args.benchmark == "personamem":
         if not args.contexts_path:
@@ -391,9 +433,9 @@ def answer(args):
     output_path = Path(args.output)
     payload = _resume_or_create(output_path, run, resume=args.resume)
     if args.benchmark == "longmemeval":
-        _longmemeval_answer(args, client, payload, output_path)
+        _longmemeval_answer(args, target, payload, output_path)
     else:
-        _persona_answer(args, client, payload, output_path)
+        _persona_answer(args, target, payload, output_path)
     payload["summary"] = summarize_rows(payload["rows"])
     _write_artifact(output_path, payload)
     print(json.dumps(payload["summary"], indent=2))
@@ -404,7 +446,7 @@ def judge(args):
     if source["run"].get("benchmark") != "longmemeval":
         raise ValueError("judge only accepts LongMemEval artifacts")
     repo_root = Path(args.repo_root).resolve()
-    target, client = _provider(repo_root)
+    target = _resolve_benchmark_target(repo_root)
     run = dict(source["run"])
     run.update(
         judge_model=target["model"],
@@ -417,14 +459,15 @@ def judge(args):
     output_path = Path(args.output)
     payload = _resume_or_create(output_path, run, resume=args.resume)
     completed = {row["case_id"] for row in payload["rows"]}
-    for index, row in enumerate(source["rows"]):
-        if row["case_id"] in completed:
-            continue
+    pending = [row for row in source["rows"] if row["case_id"] not in completed]
+
+    def process(row):
         judged = dict(row)
         if row.get("failure"):
             judged["correct"] = None
         else:
             try:
+                client = _client(target)
                 response = _complete(
                     client,
                     system=LONGMEMEVAL_JUDGE_SYSTEM,
@@ -440,10 +483,16 @@ def judge(args):
             except Exception as exc:
                 judged["correct"] = None
                 judged["failure"] = f"judge {type(exc).__name__}: {exc}"
+        return judged
+
+    processed = len(completed)
+    workers = _validated_workers(source["run"].get("workers", 1))
+    for judged in _parallel_results(pending, workers, process):
+        processed += 1
         payload["rows"].append(judged)
         payload["summary"] = summarize_rows(payload["rows"])
         _write_artifact(output_path, payload)
-        print(f"[{index + 1}/{len(source['rows'])}] {row['case_id']}")
+        print(f"[{processed}/{len(source['rows'])}] {judged['case_id']}", flush=True)
     print(json.dumps(payload["summary"], indent=2))
 
 
@@ -459,6 +508,7 @@ def report(args):
         "judge_model",
         "max_retrieved_tokens",
         "temperature",
+        "workers",
         "limit",
         "question_type",
     )
@@ -522,6 +572,7 @@ def _parser():
     answer_parser.add_argument("--mem0-fingerprint")
     answer_parser.add_argument("--limit", type=int)
     answer_parser.add_argument("--question-type")
+    answer_parser.add_argument("--workers", type=int, default=1)
     answer_parser.add_argument("--resume", action="store_true")
     answer_parser.set_defaults(handler=answer)
 
@@ -545,6 +596,8 @@ def main(argv=None):
     args = _parser().parse_args(argv)
     if args.command == "answer" and args.limit is not None and args.limit <= 0:
         raise ValueError("--limit must be positive")
+    if args.command == "answer":
+        _validated_workers(args.workers)
     if args.command == "answer" and args.backend == "mem0" and not args.mem0_fingerprint:
         raise ValueError("--mem0-fingerprint is required for mem0")
     args.handler(args)
