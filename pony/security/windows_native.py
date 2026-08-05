@@ -811,10 +811,8 @@ def windows_directory():
         size = length + 1
 
 
-def path_is_mutable_by_current_user(path, *, directory):
+def path_is_mutable_by_current_user(path, *, directory, contents=True):
     accesses = (
-        _FILE_WRITE_DATA,
-        _FILE_APPEND_DATA,
         _FILE_WRITE_ATTRIBUTES,
         _DELETE,
         _WRITE_DAC,
@@ -822,6 +820,10 @@ def path_is_mutable_by_current_user(path, *, directory):
     )
     if directory:
         accesses += (_FILE_DELETE_CHILD,)
+        if contents:
+            accesses += (_FILE_WRITE_DATA, _FILE_APPEND_DATA)
+    else:
+        accesses += (_FILE_WRITE_DATA, _FILE_APPEND_DATA)
     for access in accesses:
         try:
             handle = open_path(
