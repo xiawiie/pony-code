@@ -191,7 +191,7 @@ class Migration:
         ensure_private_dir(self.candidate.parent)
         ensure_private_dir(self.rollback.parent)
         area_identity = self._trusted_area_identity()
-        if private_directory_identity(self.root)[0] != area_identity[0]:
+        if private_directory_identity(self.root).filesystem_id != area_identity.filesystem_id:
             raise ValueError("candidate is on another filesystem")
 
     def _trusted_area_identity(self):
@@ -313,8 +313,8 @@ class Migration:
                     self._remove_tree(self.candidate)
                 build_candidate(self.live, self.candidate)
                 if (
-                    private_directory_identity(self.candidate)[0]
-                    != private_directory_identity(self.root)[0]
+                    private_directory_identity(self.candidate).filesystem_id
+                    != private_directory_identity(self.root).filesystem_id
                 ):
                     raise ValueError("candidate is on another filesystem")
                 value["candidate_identity"] = _manifest(self.candidate)

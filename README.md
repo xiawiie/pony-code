@@ -87,8 +87,8 @@ permission mode、可见工具和请求上下文都会在 turn 内冻结；并�
 
 ### 1. 从源码安装
 
-Pony 1.0 支持 Python 3.11、3.12 的 macOS 与 Linux。Windows 不在 1.0 支持范围；它缺少当前安全文件与锁模型
-依赖的 POSIX 原语。
+Pony 1.0 支持 Python 3.11、3.12 的 macOS 与 Linux。Windows 当前仍不在支持范围；原生一等平台的实施与
+晋级门禁见 [ADR-0050](docs/adr/0050-windows-native-support.md)。
 
 ```bash
 git clone https://github.com/xiawiie/pony-code.git
@@ -293,5 +293,6 @@ flowchart LR
 | Legacy artifact 与恢复边界 | [恢复](docs/recovery.md) |
 | exact-head 门禁、live 验收与发布 | [验证与发布](docs/verification.md) |
 | 产品支持边界 | [ADR-0048](docs/adr/0048-product-and-support-boundary.md) |
+| Windows 原生支持实施 | [ADR-0050](docs/adr/0050-windows-native-support.md) |
 
 Pony 使用 [MIT License](LICENSE)。

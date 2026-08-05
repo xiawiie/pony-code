@@ -51,8 +51,8 @@ class ProjectTrustStore:
         with file_lock.locked_file(self.lock_path, require_lock=True):
             projects = self._load_projects()
             projects[str(project_root)] = {
-                "device": identity[0],
-                "inode": identity[1],
+                "device": identity.filesystem_id,
+                "inode": identity.file_id,
             }
             if private_directory_identity(project_root) != identity:
                 raise ValueError("project root changed")

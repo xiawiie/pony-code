@@ -57,6 +57,17 @@ def test_tui_requires_a_capable_interactive_terminal(
     ) is expected
 
 
+def test_windows_tui_does_not_require_term(monkeypatch):
+    monkeypatch.setattr("pony.tui.app._WINDOWS", True)
+
+    assert should_use_tui(
+        stdin=_Stream(True),
+        stdout=_Stream(True),
+        environ={},
+        columns=80,
+    )
+
+
 @pytest.mark.parametrize(("columns", "height"), ((40, 5), (80, 7), (120, 11)))
 def test_terminal_logo_scales_horse_and_wordmark_together(columns, height):
     rendered = logo_text(columns)

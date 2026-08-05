@@ -79,4 +79,6 @@ def test_security_doc_states_post_validation_and_platform_trust_boundaries():
     assert "snapshot" in security_doc
     assert "POSIX/macOS" in security_doc
     assert "所需安全原语不可用时 fail closed" in security_doc
-    assert "Windows 等价机制留待后续设计" in security_doc
+    assert "已接受 Windows 原生" in security_doc
+    assert "Windows 实机门禁前" in security_doc
+    assert "不能用普通路径检查或 POSIX 兼容层冒充同等保证" in security_doc

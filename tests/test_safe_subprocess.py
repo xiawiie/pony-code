@@ -457,7 +457,7 @@ def test_hardened_git_disables_repo_config_execution(tmp_path, monkeypatch):
     assert argv[2] == "--no-optional-locks"
     assert argv[-2:] == ["status", "--short"]
     assert "core.fsmonitor=false" in argv
-    assert "core.hooksPath=/dev/null" in argv
+    assert f"core.hooksPath={os.devnull}" in argv
     assert "diff.external=" in argv
     assert "credential.helper=" in argv
     assert "protocol.ext.allow=never" in argv

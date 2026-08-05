@@ -31,9 +31,11 @@ Host 中实际运行的命令/依赖。模型输出、仓库内容、`.env` 文�
 
 Repository discovery 只把 Git marker 当作结构元数据使用，不读取或信任其中的 config 或 index。发现 root 后仍会对
 marker、root 与目标文件做 identity/类型后置验证；这些检查降低路径替换风险，但不能把校验后并发修改描述成绝对
-不可能。当前 anchored dirfd、no-follow、link-count、mode、fsync 和 atomic-replace 保证以 POSIX/macOS 原语为
-实现基础，所需安全原语不可用时 fail closed。Windows 等价机制留待后续设计，不能用普通路径检查冒充同等保证。
-发布 metadata 因此只声明已由 CI 验证的 macOS 与 Linux，不声明 OS Independent。
+不可能。当前 anchored dirfd、no-follow、link-count、mode、fsync 和 atomic-replace 保证仍以 POSIX/macOS 原语为
+实现基础，所需安全原语不可用时 fail closed。[ADR-0050](adr/0050-windows-native-support.md) 已接受 Windows 原生
+等价 backend 的实施方向，但 root-handle traversal、DACL/File ID、LockFileEx、Job Object 和 PowerShell policy 未经
+Windows 实机门禁前，不能用普通路径检查或 POSIX 兼容层冒充同等保证。发布 metadata 因此仍只声明已由 CI 验证的
+macOS 与 Linux，不声明 OS Independent。
 
 ## Provider 凭证与目标绑定
 
