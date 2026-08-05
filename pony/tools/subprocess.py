@@ -594,6 +594,25 @@ def _metadata_file(base, value):
     return candidate
 
 
+def _git_file_identity(path):
+    _candidate, handle = _open_git_path(path, directory=False)
+    try:
+        if os.name == "nt":
+            from pony.security import windows_native as native
+
+            return native.identity(handle)
+        opened = os.fstat(handle)
+        return opened.st_dev, opened.st_ino
+    finally:
+        _close_git_handle(handle)
+
+
+def _same_git_file(left, right):
+    if left == right:
+        return True
+    return os.name == "nt" and _git_file_identity(left) == _git_file_identity(right)
+
+
 def _git_config_value(raw_value):
     value = (raw_value or "").strip()
     if not value:
@@ -684,7 +703,7 @@ def _validate_linked_worktree_gitfile(marker, target, target_fd, backlink_data):
         target,
         _single_git_path(backlink_data),
     )
-    if backlink != marker:
+    if not _same_git_file(backlink, marker):
         raise ValueError("unsafe git repository")
     common, common_fd = _open_metadata_directory(
         target,

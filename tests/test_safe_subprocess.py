@@ -1598,3 +1598,19 @@ def test_windows_shell_minimal_environment_drops_module_and_secret_state(
     assert env["SystemRoot"] == r"C:\Windows"
     assert "PSModulePath" not in env
     assert "PONY_API_KEY" not in env
+
+
+def test_gitfile_backlink_accepts_windows_alias_of_same_file(monkeypatch):
+    from pony.tools import subprocess as safe_subprocess
+
+    monkeypatch.setattr(safe_subprocess.os, "name", "nt")
+    monkeypatch.setattr(
+        safe_subprocess,
+        "_git_file_identity",
+        lambda _path: (7, b"same"),
+    )
+
+    assert safe_subprocess._same_git_file(
+        Path(r"C:\\LONGNA~1\\marker"),
+        Path(r"C:\\Long Name\\marker"),
+    )
