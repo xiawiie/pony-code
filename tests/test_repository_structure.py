@@ -17,6 +17,7 @@ MAINTAINER_DOCS = {
     "docs/security.md",
     "docs/recovery.md",
     "docs/verification.md",
+    "docs/benchmark-evaluation-results-2026-08-05.md",
     "docs/memory.md",
     "docs/adr/0040-docker-filtered-staging.md",
     "docs/adr/0042-sealed-local-authorization.md",
@@ -26,6 +27,7 @@ MAINTAINER_DOCS = {
     "docs/adr/0046-read-only-project-skills.md",
     "docs/adr/0047-session-scoped-model-switching.md",
     "docs/adr/0048-product-and-support-boundary.md",
+    "docs/adr/0049-benchmark-evaluation-design.md",
     "docs/context-and-sessions.md",
 }
 MAINTAINER_ASSETS = {

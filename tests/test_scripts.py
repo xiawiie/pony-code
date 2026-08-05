@@ -140,6 +140,7 @@ def test_maintenance_scripts_start_and_show_help():
         "scripts/evaluation/collect_resume_metrics.py",
         "scripts/evaluation/evaluate.py",
         "scripts/evaluation/run_large_scale_experiments.py",
+        "scripts/evaluation/run_efficiency_evaluation.py",
         "scripts/evaluation/run_provider_experiments.py",
         "scripts/release/verify_distribution.py",
     ):

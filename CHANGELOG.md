@@ -6,6 +6,8 @@ Pony 1.0 将预发布仓库收束为一个可安装、可验证、可发布的�
 
 ### Added
 
+- 决策型 coding benchmark/evaluation：qualified pilot、SCC comparison，以及计入 summary 成本、paired repetitions、
+  事实保留和 Provider failure 证据的 compaction 净 token/break-even 与非流式 Provider latency 测量。
 - 三个用户可见 Provider：Anthropic、OpenAI、Ollama；OpenAI 支持 Responses 与 Chat Completions 两个 Variant。
 - 统一的四变量 `.env` 合同，以及能写全配置的交互式 `pony init`。
 - 参考 Pi 消息层级的行内 TUI：响应式马形 `PONY CODE` 欢迎页、低对比用户消息块、内置 Markdown、slash command menu、
