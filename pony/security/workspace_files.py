@@ -208,6 +208,8 @@ def list_directory_names_anchored(
                         "name": entry.name,
                         "mode": current.st_mode,
                         "size": current.st_size,
+                        "modified_ns": current.st_mtime_ns,
+                        "changed_ns": current.st_ctime_ns,
                         "identity": _workspace_inode_identity(current),
                     }
                 )
