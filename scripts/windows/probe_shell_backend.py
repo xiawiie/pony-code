@@ -20,9 +20,11 @@ def probe():
     from pony.security.command_policy import assess_command
     from pony.tools.subprocess import (
         _minimal_env,
+        _verified_executable_identity,
         build_trusted_executables,
         run_hardened_command,
     )
+    from pony.security import windows_native
 
     with tempfile.TemporaryDirectory(prefix="pony-windows-shell-") as temporary:
         root = Path(temporary)
@@ -34,6 +36,14 @@ def probe():
         env["PATH"] = os.pathsep.join((str(shim_directory), env.get("PATH", "")))
 
         _stage("discover")
+        powershell_path = (
+            windows_native.windows_directory()
+            / "System32"
+            / "WindowsPowerShell"
+            / "v1.0"
+            / "powershell.exe"
+        )
+        _verified_executable_identity(powershell_path)
         trusted = build_trusted_executables(root, env=env)
         powershell = trusted.get("powershell")
         git = trusted.get("git")
