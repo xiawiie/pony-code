@@ -37,6 +37,7 @@ Pony 1.0 将预发布仓库收束为一个可安装、可验证、可发布的�
 
 ### Changed
 
+- Windows 原生一等平台进入分阶段实施：先把私有文件 identity/signature 上层合同改为平台中立命名字段，增加 Windows 3.11/3.12 PowerShell 与 Win32/NT API surface probe，修复无 `TERM` 的 Windows TUI gate、Git `os.devnull` 与无 `/bin/sh` 的 distribution smoke；完整 Windows 实机门禁前仍不声明支持。
 - Coding-quality task 现在把 scope hard gate 显式写入 Agent 可见 prompt；condition artifact format v3 记录并校验
   changed/forbidden 文件证据，scope-explicit 收费 pilot 达到 `24/24 SCC`，当前 corpus 仅保留为 must-pass canary。
 - 收紧 Python package 支持范围为 3.11/3.12；移除未接入 runtime 的 sampling flags，并统一规范化 Provider API Base。

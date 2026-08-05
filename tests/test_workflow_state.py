@@ -490,7 +490,7 @@ def test_migration_rechecks_candidate_identity_before_replace(
         if path == candidate:
             candidate_checks += 1
             if candidate_checks == 3:
-                return (*value[:3], value[3] + 1, *value[4:])
+                return value._replace(modified_ns=value.modified_ns + 1)
         return value
 
     monkeypatch.setattr(session_store_module, "private_file_signature", changed_signature)

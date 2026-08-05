@@ -7,11 +7,42 @@ import os
 from pathlib import Path
 import secrets
 import stat
+from typing import NamedTuple
 
 from .paths import _lexical_absolute
 
 
 _OPEN_SUPPORTS_DIR_FD = os.open in getattr(os, "supports_dir_fd", ())
+
+
+class PrivateDirectoryIdentity(NamedTuple):
+    """Platform-neutral identity for an opened directory."""
+
+    filesystem_id: object
+    file_id: object
+
+
+class PrivateFileSignature(NamedTuple):
+    """Platform-neutral identity, version, and protection facts for a private file."""
+
+    filesystem_id: object
+    file_id: object
+    size: int
+    modified_ns: int
+    changed_ns: int
+    link_count: int
+    protection_identity: object
+    is_private: bool
+
+    @property
+    def version_identity(self):
+        return (
+            self.filesystem_id,
+            self.file_id,
+            self.size,
+            self.modified_ns,
+            self.changed_ns,
+        )
 
 
 class PrivateAtomicWriteError(RuntimeError):
@@ -173,7 +204,7 @@ def private_directory_identity(path):
     descriptor = _open_private_directory(path)
     try:
         opened = os.fstat(descriptor)
-        return opened.st_dev, opened.st_ino
+        return PrivateDirectoryIdentity(opened.st_dev, opened.st_ino)
     finally:
         os.close(descriptor)
 
@@ -187,15 +218,18 @@ def private_file_signature(path, *, trusted_root=None, trusted_root_identity=Non
     )
     try:
         opened = os.fstat(descriptor)
-        return (
-            opened.st_dev,
-            opened.st_ino,
-            opened.st_size,
-            opened.st_mtime_ns,
-            opened.st_ctime_ns,
-            opened.st_nlink,
-            stat.S_IMODE(opened.st_mode),
-            opened.st_uid,
+        mode = stat.S_IMODE(opened.st_mode)
+        owner_id = opened.st_uid
+        current_owner = os.geteuid() if hasattr(os, "geteuid") else owner_id
+        return PrivateFileSignature(
+            filesystem_id=opened.st_dev,
+            file_id=opened.st_ino,
+            size=opened.st_size,
+            modified_ns=opened.st_mtime_ns,
+            changed_ns=opened.st_ctime_ns,
+            link_count=opened.st_nlink,
+            protection_identity=(mode, owner_id),
+            is_private=mode == 0o600 and owner_id == current_owner,
         )
     finally:
         os.close(descriptor)

@@ -35,7 +35,7 @@ G0-G6 与 G9 是 package 发布 mandatory gate。G8 需要用户拥有的账号�
 | 维度 | 1.0 声明 | 发布证据 |
 | --- | --- | --- |
 | Python | 3.11、3.12 | Linux 全量测试；macOS 3.12 安全与耐久性专项 |
-| OS | macOS、Linux | CI；Windows 不受支持且安全原语缺失时 fail closed |
+| OS | macOS、Linux | CI；Windows 原生支持正在按 [ADR-0050](adr/0050-windows-native-support.md) 实施，完整实机门禁前仍不受支持 |
 | Anthropic Messages | 实现支持 | 离线 wire contract；每个账号/model 的 G8 单独验收 |
 | OpenAI Responses | 实现支持 | 离线 wire contract；每个 endpoint/model 的 G8 单独验收 |
 | OpenAI Chat Completions | 实现支持 | 离线 wire contract；每个 endpoint/model 的 G8 单独验收 |
@@ -44,6 +44,21 @@ G0-G6 与 G9 是 package 发布 mandatory gate。G8 需要用户拥有的账号�
 
 “实现支持”不代表所有网关兼容。发布或部署结论必须写明 exact HEAD、Provider、protocol、endpoint 类别、model 和
 G8 是否执行；不得把某一组合的 live 结果外推到其他组合。
+
+### Windows 支持晋级门禁
+
+CI 的 Windows 3.11/3.12 capability job 只验证系统 Windows PowerShell 和计划使用的 Win32/NT API symbol surface；它不是
+runtime backend、Windows 11 实机或安全语义证据。Windows 仍是未支持平台。只有以下证据在同一 exact HEAD 全部成立后，
+才可增加 Windows classifier 和公开支持声明：
+
+- Windows 11 x64 的 Python 3.11、3.12 全量 pytest、Ruff、build、distribution verifier 与 clean-install smoke 通过；
+- root-relative traversal、reparse point/junction、hardlink、ADS、DACL/File ID 漂移和 atomic-write fault injection 通过；
+- `LockFileEx` 互斥/timeout/identity race 与 Job Object timeout/output-limit/完整进程树清理通过；
+- PowerShell command policy、原生 Git/rg、Windows Terminal/cmd/PowerShell 启动、TUI 40/80/120 列回归通过；
+- Windows 专项不是由 WSL、Git Bash 或大面积 `skipif Windows` 获得绿色结果。
+
+跨机器或跨 OS 复制 active Session 的支持声明还必须通过 [ADR-0050](adr/0050-windows-native-support.md) 定义的 logical identity/physical binding 格式迁移；
+否则只声明 Windows 本机新建与恢复 Session。
 
 ## 聚焦测试
 

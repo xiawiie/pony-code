@@ -60,6 +60,30 @@ jobs:
         if: matrix.python-version == '3.12'
         run: ./scripts/check.sh
 
+  windows-capabilities:
+    name: Windows capability surface (Python ${{ matrix.python-version }})
+    runs-on: windows-2025
+
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version:
+          - "3.11"
+          - "3.12"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: ${{ matrix.python-version }}
+          architecture: x64
+
+      - name: Probe native Windows capabilities
+        run: python scripts/windows/probe_capabilities.py --pretty
+
   macos-focused:
     name: macOS focused (Python 3.12)
     runs-on: macos-latest

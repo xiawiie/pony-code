@@ -538,7 +538,7 @@ def _harden_migration_source(path, *, root, root_identity):
         trusted_root=root,
         trusted_root_identity=root_identity,
     )
-    if signature[6] != 0o600:
+    if not signature.is_private:
         ensure_private_file(
             path,
             trusted_root=root,
@@ -1612,7 +1612,7 @@ class SessionStore:
             trusted_root=self.root,
             trusted_root_identity=self._root_identity,
         )
-        if signature[:5] != final_signature[:5]:
+        if signature.version_identity != final_signature.version_identity:
             raise SessionFormatError("session tree changed while reading")
         self._tree_cache[session_id] = (final_signature, tree)
         return tree
@@ -1745,7 +1745,11 @@ class SessionStore:
         _validate_projection(extended.projection, session_id)
         rendered = b"".join(_serialize_line(entry) for entry in entries)
         cached = self._tree_cache.get(session_id)
-        expected_identity = cached[0][:2] if cached is not None else None
+        expected_identity = (
+            (cached[0].filesystem_id, cached[0].file_id)
+            if cached is not None
+            else None
+        )
         path = append_private_bytes(
             self.path(session_id),
             rendered,
@@ -2756,7 +2760,8 @@ class SessionStore:
             if (
                 not stat.S_ISREG(current.st_mode)
                 or current.st_nlink != 1
-                or (current.st_dev, current.st_ino) != candidate_signature[:2]
+                or (current.st_dev, current.st_ino)
+                != (candidate_signature.filesystem_id, candidate_signature.file_id)
             ):
                 raise SessionFormatError("session migration candidate changed")
             os.replace(
@@ -2900,7 +2905,8 @@ class SessionStore:
             if (
                 not stat.S_ISREG(current.st_mode)
                 or current.st_nlink != 1
-                or (current.st_dev, current.st_ino) != candidate_signature[:2]
+                or (current.st_dev, current.st_ino)
+                != (candidate_signature.filesystem_id, candidate_signature.file_id)
             ):
                 raise SessionFormatError("session migration candidate changed")
             os.replace(
@@ -2936,14 +2942,11 @@ class SessionStore:
                         trusted_root=self.root,
                         trusted_root_identity=self._root_identity,
                     )
-                    expected_uid = (
-                        os.geteuid() if hasattr(os, "geteuid") else signature[7]
-                    )
-                    if signature[6] != 0o600 or signature[7] != expected_uid:
+                    if not signature.is_private:
                         continue
                     session_id = path.name.removesuffix(".jsonl").removesuffix(".json")
                     _session_id(session_id)
-                    files.append((signature[3], session_id))
+                    files.append((signature.modified_ns, session_id))
                 except (OSError, ValueError):
                     continue
         files.sort()

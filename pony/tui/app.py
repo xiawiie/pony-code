@@ -26,6 +26,7 @@ from pony.tui.render import TuiRenderer
 
 
 _MINIMUM_COLUMNS = 40
+_WINDOWS = os.name == "nt"
 _DOUBLE_INTERRUPT_SECONDS = 1.5
 _MAX_EDITOR_LINES = 6
 _COMPLETION_ROWS = 5
@@ -53,7 +54,7 @@ def should_use_tui(*, stdin=None, stdout=None, environ=None, columns=None):
     if not getattr(stdout, "isatty", lambda: False)():
         return False
     term = environ.get("TERM", "").strip()
-    if not term or term.casefold() == "dumb":
+    if term.casefold() == "dumb" or (not term and not _WINDOWS):
         return False
     width = columns
     if width is None:

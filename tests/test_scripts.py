@@ -4,6 +4,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tomllib
+from types import SimpleNamespace
 
 import benchmarks.evaluation.provider_benchmark as provider_benchmark
 import pytest
@@ -107,6 +108,80 @@ def test_linux_ci_uses_the_single_exact_head_gate():
     assert "uv build" not in linux
 
 
+def test_ci_probes_native_windows_capabilities_on_x64_python():
+    workflow = Path(".github/workflows/ci.yml").read_text(encoding="utf-8")
+    windows = workflow.split("windows-capabilities:", 1)[1].split(
+        "macos-focused:", 1
+    )[0]
+
+    assert "runs-on: windows-2025" in windows
+    assert '          - "3.11"' in windows
+    assert '          - "3.12"' in windows
+    assert "architecture: x64" in windows
+    assert "python scripts/windows/probe_capabilities.py --pretty" in windows
+    assert "continue-on-error" not in windows
+
+
+def test_windows_capability_probe_checks_system_powershell_and_required_apis(
+    tmp_path,
+    monkeypatch,
+):
+    script = Path("scripts/windows/probe_capabilities.py")
+    spec = importlib.util.spec_from_file_location("windows_capability_probe", script)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setattr(module.platform, "machine", lambda: "AMD64")
+    system_root = tmp_path / "Windows"
+    powershell = system_root / module._POWERSHELL_RELATIVE
+    powershell.parent.mkdir(parents=True)
+    powershell.write_bytes(b"")
+
+    class Library:
+        pass
+
+    libraries = {}
+    for name, symbols in module._REQUIRED_SYMBOLS.items():
+        library = Library()
+        for symbol in symbols:
+            setattr(library, symbol, object())
+        libraries[name] = library
+
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return SimpleNamespace(returncode=0, stdout="5.1.26100.1", stderr="")
+
+    report = module.probe(
+        system_root=system_root,
+        loader=lambda name, **_kwargs: libraries[name],
+        runner=run,
+    )
+
+    assert report["architecture"] == "x64"
+    assert report["powershell"] == "5.1.26100.1"
+    assert report["api_symbols"] == {
+        name: list(symbols) for name, symbols in module._REQUIRED_SYMBOLS.items()
+    }
+    assert calls == [
+        (
+            [str(powershell), *module._POWERSHELL_ARGS],
+            {
+                "capture_output": True,
+                "text": True,
+                "check": False,
+                "timeout": 10,
+            },
+        )
+    ]
+
+    delattr(libraries["kernel32"], "LockFileEx")
+    with pytest.raises(RuntimeError, match="missing Windows API symbols.*LockFileEx"):
+        module._load_required_symbols(
+            lambda name, **_kwargs: libraries[name]
+        )
+
+
 def test_ci_has_macos_security_and_durability_gate():
     workflow = Path(".github/workflows/ci.yml").read_text(encoding="utf-8")
 
@@ -143,6 +218,7 @@ def test_maintenance_scripts_start_and_show_help():
         "scripts/evaluation/run_efficiency_evaluation.py",
         "scripts/evaluation/run_provider_experiments.py",
         "scripts/release/verify_distribution.py",
+        "scripts/windows/probe_capabilities.py",
     ):
         result = subprocess.run(
             [sys.executable, script, "--help"],
@@ -175,7 +251,8 @@ def test_distribution_verifier_freezes_archive_and_install_contract():
     assert 'EXPECTED_RUNTIME_REQUIREMENTS = ["prompt-toolkit<4,>=3.0.52"]' in verifier
     assert 'metadata["License-Expression"] == "MIT"' in verifier
     assert 'installed_version == f"pony {PROJECT_VERSION}"' in verifier
-    assert '"command -v pony"' in verifier
+    assert 'shutil.which(pony.name, path=env["PATH"])' in verifier
+    assert '"/bin/sh"' not in verifier
     assert '_run(str(pony), "doctor", cwd=cwd, env=env)' in verifier
     assert '"PYTHONHOME"' in verifier
     assert '"PYTHONPATH"' in verifier

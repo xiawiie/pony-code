@@ -7,10 +7,44 @@ import threading
 
 import pytest
 
-from pony.security.private_files import ensure_private_dir, ensure_private_file
+from pony.security.private_files import (
+    ensure_private_dir,
+    ensure_private_file,
+    private_directory_identity,
+    private_file_signature,
+)
 from pony.security.paths import require_regular_no_symlink
 
 SECRET_PATH_COMPONENT = "github_pat_A123456789012345678901234567890"
+
+
+def test_private_identities_expose_platform_neutral_fields(tmp_path):
+    root = ensure_private_dir(tmp_path / "state")
+    path = root / "session.jsonl"
+    path.write_bytes(b"{}\n")
+    ensure_private_file(
+        path,
+        trusted_root=root,
+        trusted_root_identity=private_directory_identity(root),
+    )
+
+    directory_identity = private_directory_identity(root)
+    signature = private_file_signature(
+        path,
+        trusted_root=root,
+        trusted_root_identity=directory_identity,
+    )
+
+    assert directory_identity.filesystem_id is not None
+    assert directory_identity.file_id is not None
+    assert signature.filesystem_id == directory_identity.filesystem_id
+    assert signature.file_id is not None
+    assert signature.size == 3
+    assert signature.version_identity[:2] == (
+        signature.filesystem_id,
+        signature.file_id,
+    )
+    assert signature.is_private
 
 
 def _ensure_private_dir_worker(path, start, queue):

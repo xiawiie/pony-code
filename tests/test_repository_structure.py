@@ -28,6 +28,7 @@ MAINTAINER_DOCS = {
     "docs/adr/0047-session-scoped-model-switching.md",
     "docs/adr/0048-product-and-support-boundary.md",
     "docs/adr/0049-benchmark-evaluation-design.md",
+    "docs/adr/0050-windows-native-support.md",
     "docs/context-and-sessions.md",
 }
 MAINTAINER_ASSETS = {
@@ -170,9 +171,10 @@ def test_product_docs_lock_current_execution_and_support_contract():
     verification = (ROOT / "docs/verification.md").read_text(encoding="utf-8")
 
     for text in (readme, architecture):
-        normalized = " ".join(text.split())
-        assert "不是 OS sandbox" in normalized
-        assert "Windows 不在 1.0 支持范围" in normalized
+        assert "不是 OS sandbox" in " ".join(text.split())
+    assert "Windows 当前仍不在支持范围" in " ".join(readme.split())
+    assert "当前发布仍只支持 macOS/Linux" in " ".join(architecture.split())
+    assert "完整实机门禁前仍不受支持" in " ".join(verification.split())
     assert "bounded synthetic" in readme
     assert "真实任务失败不 fallback" in readme
     assert "冻结的产品资产" in readme

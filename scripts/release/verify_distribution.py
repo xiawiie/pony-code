@@ -233,7 +233,8 @@ def install_smoke(wheel: Path, *, offline: bool = False) -> None:
                 env=env,
             )
         _run(str(python), "-m", "pip", "check", env=env)
-        resolved = _run("/bin/sh", "-c", "command -v pony", cwd=cwd, env=env).strip()
+        resolved = shutil.which(pony.name, path=env["PATH"])
+        assert resolved is not None, "installed pony entry point was not found"
         assert Path(resolved).resolve() == pony.resolve()
         _run(
             str(python),
