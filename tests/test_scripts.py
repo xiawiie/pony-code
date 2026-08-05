@@ -120,6 +120,7 @@ def test_ci_probes_native_windows_capabilities_and_file_semantics():
     assert "architecture: x64" in windows
     assert "python scripts/windows/probe_capabilities.py --pretty" in windows
     assert "python scripts/windows/probe_file_semantics.py --pretty" in windows
+    assert "python scripts/windows/probe_lock_semantics.py --pretty" in windows
     assert "continue-on-error" not in windows
 
 
@@ -208,6 +209,17 @@ def test_windows_file_semantics_probe_rejects_path_traversal_components():
     assert handle.value is None
 
 
+def test_windows_lock_probe_fails_if_holder_exits_before_ready(tmp_path):
+    script = Path("scripts/windows/probe_lock_semantics.py")
+    spec = importlib.util.spec_from_file_location("windows_lock_semantics_probe", script)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    process = SimpleNamespace(poll=lambda: 7)
+    with pytest.raises(RuntimeError, match="holder exited early with status 7"):
+        module._wait_for(tmp_path / "ready", process, module.time.monotonic() + 1)
+
+
 def test_ci_has_macos_security_and_durability_gate():
     workflow = Path(".github/workflows/ci.yml").read_text(encoding="utf-8")
 
@@ -246,6 +258,7 @@ def test_maintenance_scripts_start_and_show_help():
         "scripts/release/verify_distribution.py",
         "scripts/windows/probe_capabilities.py",
         "scripts/windows/probe_file_semantics.py",
+        "scripts/windows/probe_lock_semantics.py",
     ):
         result = subprocess.run(
             [sys.executable, script, "--help"],
