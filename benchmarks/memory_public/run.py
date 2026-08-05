@@ -233,8 +233,16 @@ def _parallel_results(items, workers, process):
     for start in range(0, len(items), workers):
         with ThreadPoolExecutor(max_workers=workers) as executor:
             futures = [executor.submit(process, item) for item in items[start : start + workers]]
+            first_error = None
             for future in as_completed(futures):
-                yield future.result()
+                try:
+                    result = future.result()
+                except Exception as exc:
+                    first_error = first_error or exc
+                else:
+                    yield result
+            if first_error is not None:
+                raise first_error
 
 
 def _publication_state(rows: list[dict], expected: int):
@@ -504,6 +512,7 @@ def report(args):
         "answer_prompt_sha256",
         "judge_model",
         "judge_transport",
+        "judge_prompt_sha256",
         "max_retrieved_tokens",
         "temperature",
         "workers",

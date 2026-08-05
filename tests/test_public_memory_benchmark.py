@@ -362,6 +362,21 @@ def test_parallel_results_bounds_concurrency():
     assert peak == 2
 
 
+def test_parallel_results_yields_successful_siblings_before_failure():
+    def process(value):
+        if value == 0:
+            raise RuntimeError("failed")
+        time.sleep(0.02)
+        return value
+
+    results = []
+    with pytest.raises(RuntimeError, match="failed"):
+        for result in run._parallel_results([0, 1, 2], 3, process):
+            results.append(result)
+
+    assert sorted(results) == [1, 2]
+
+
 @pytest.mark.parametrize("value", [True, 0, 17])
 def test_worker_count_fails_closed(value):
     with pytest.raises(ValueError, match="integer between 1 and 16"):
@@ -385,7 +400,7 @@ def test_publication_requires_complete_unique_scored_rows():
     assert not run._publication_state([rows[0], {**rows[1], "failure": "bad"}], 2)[2]
 
 
-def test_report_rejects_different_pony_commits(tmp_path):
+def test_report_rejects_noncomparable_run_metadata(tmp_path):
     base_run = {
         "protocol": run.PROTOCOL,
         "benchmark": "personamem",
@@ -395,6 +410,8 @@ def test_report_rejects_different_pony_commits(tmp_path):
         "answer_transport": "transport",
         "answer_prompt_sha256": "sha256:prompt",
         "judge_model": None,
+        "judge_transport": None,
+        "judge_prompt_sha256": "sha256:judge",
         "max_retrieved_tokens": run.MAX_RETRIEVED_TOKENS,
         "temperature": 0,
         "workers": 1,
@@ -423,6 +440,15 @@ def test_report_rejects_different_pony_commits(tmp_path):
     right = write("right.json", {**base_run, "pony_commit": "right"})
 
     with pytest.raises(ValueError, match="pony_commit"):
+        run.report(
+            SimpleNamespace(left=left, right=right, format="json", output=None)
+        )
+
+    right = write(
+        "right-prompt.json",
+        {**base_run, "judge_prompt_sha256": "sha256:different-judge"},
+    )
+    with pytest.raises(ValueError, match="judge_prompt_sha256"):
         run.report(
             SimpleNamespace(left=left, right=right, format="json", output=None)
         )
