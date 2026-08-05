@@ -75,6 +75,7 @@ def probe(*, expect_elevated_rejection=False):
     from pony.security.command_policy import assess_command
     from pony.tools.subprocess import (
         _minimal_env,
+        _shell_argv,
         _verified_executable_identity,
         build_trusted_executables,
         run_hardened_command,
@@ -123,19 +124,14 @@ def probe(*, expect_elevated_rejection=False):
         if rg is None:
             raise RuntimeError("immutable native rg.exe was not trusted")
 
-        command = "Write-Output 'pony-shell-ok'"
+        command = (
+            "Get-Location | ForEach-Object { Write-Output 'pony-shell-ok' }"
+        )
         assessment = assess_command(command, root, trusted)
         if assessment["execution_mode"] != "shell" or assessment["decision"] != "ask":
             raise RuntimeError("PowerShell command was not classified as shell grammar")
         shell_env = _minimal_env(root, powershell)
-        shell_argv = [
-            str(powershell),
-            "-NoLogo",
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            command,
-        ]
+        shell_argv = _shell_argv(str(powershell), command, windows=True)
         _stage("powershell_direct")
         direct = _run_direct_powershell(
             shell_argv,
@@ -144,91 +140,10 @@ def probe(*, expect_elevated_rejection=False):
             creationflags=subprocess.CREATE_NO_WINDOW,
         )
         if direct["timed_out"]:
-            console_argv = [
-                *shell_argv[:-1],
-                "[Console]::Out.WriteLine('pony-shell-ok')",
-            ]
-            _stage("powershell_console_no_window")
-            console_no_window = _run_direct_powershell(
-                console_argv,
-                root=root,
-                env=shell_env,
-                creationflags=subprocess.CREATE_NO_WINDOW,
-            )
-            _stage("powershell_console_windowed")
-            console_windowed = _run_direct_powershell(
-                console_argv,
-                root=root,
-                env=shell_env,
-                creationflags=0,
-            )
-            utility_manifest = (
-                Path(powershell).parent
-                / "Modules"
-                / "Microsoft.PowerShell.Utility"
-                / "Microsoft.PowerShell.Utility.psd1"
-            )
-            import_command = (
-                f"Import-Module '{str(utility_manifest).replace(chr(39), chr(39) * 2)}'; "
-                + command
-            )
-            _stage("powershell_explicit_utility_module")
-            explicit_module = _run_direct_powershell(
-                [*shell_argv[:-1], import_command],
-                root=root,
-                env=shell_env,
-                creationflags=subprocess.CREATE_NO_WINDOW,
-            )
-            expanded_env = dict(shell_env)
-            for name in (
-                "ALLUSERSPROFILE",
-                "ComSpec",
-                "HOMEDRIVE",
-                "HOMEPATH",
-                "ProgramData",
-                "ProgramFiles",
-                "ProgramFiles(x86)",
-                "ProgramW6432",
-                "PUBLIC",
-                "SystemDrive",
-                "USERNAME",
-                "USERDOMAIN",
-            ):
-                if os.environ.get(name):
-                    expanded_env[name] = os.environ[name]
-            _stage("powershell_windows_base_env")
-            windows_base_env = _run_direct_powershell(
-                shell_argv,
-                root=root,
-                env=expanded_env,
-                creationflags=subprocess.CREATE_NO_WINDOW,
-            )
-            no_cache_env = dict(shell_env)
-            no_cache_env["PSModuleAnalysisCachePath"] = os.devnull
-            _stage("powershell_without_module_analysis_cache")
-            no_module_cache = _run_direct_powershell(
-                shell_argv,
-                root=root,
-                env=no_cache_env,
-                creationflags=subprocess.CREATE_NO_WINDOW,
-            )
-            _stage("powershell_cold_autoload_long")
-            cold_autoload_long = _run_direct_powershell(
-                shell_argv,
-                root=root,
-                env=shell_env,
-                creationflags=subprocess.CREATE_NO_WINDOW,
-                timeout=60,
-            )
             raise RuntimeError(
                 "direct fixed PowerShell execution timed out: "
-                f"baseline={direct!r}, "
-                f"console_no_window={console_no_window!r}, "
-                f"console_windowed={console_windowed!r}, "
-                f"explicit_module={explicit_module!r}, "
-                f"windows_base_env={windows_base_env!r}, "
-                f"no_module_cache={no_module_cache!r}, "
-                f"cold_autoload_long={cold_autoload_long!r}"
+                f"elapsed_seconds={direct['elapsed_seconds']}, "
+                f"stdout={direct['stdout']!r}, stderr={direct['stderr']!r}"
             )
         if direct["returncode"] != 0 or direct["stdout"].strip() != "pony-shell-ok":
             raise RuntimeError(
