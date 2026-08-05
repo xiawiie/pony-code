@@ -84,6 +84,9 @@ jobs:
       - name: Probe native Windows capabilities
         run: python scripts/windows/probe_capabilities.py --pretty
 
+      - name: Probe native Windows file semantics
+        run: python scripts/windows/probe_file_semantics.py --pretty
+
   macos-focused:
     name: macOS focused (Python 3.12)
     runs-on: macos-latest

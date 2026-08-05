@@ -108,7 +108,7 @@ def test_linux_ci_uses_the_single_exact_head_gate():
     assert "uv build" not in linux
 
 
-def test_ci_probes_native_windows_capabilities_on_x64_python():
+def test_ci_probes_native_windows_capabilities_and_file_semantics():
     workflow = Path(".github/workflows/ci.yml").read_text(encoding="utf-8")
     windows = workflow.split("windows-capabilities:", 1)[1].split(
         "macos-focused:", 1
@@ -119,6 +119,7 @@ def test_ci_probes_native_windows_capabilities_on_x64_python():
     assert '          - "3.12"' in windows
     assert "architecture: x64" in windows
     assert "python scripts/windows/probe_capabilities.py --pretty" in windows
+    assert "python scripts/windows/probe_file_semantics.py --pretty" in windows
     assert "continue-on-error" not in windows
 
 
@@ -182,6 +183,18 @@ def test_windows_capability_probe_checks_system_powershell_and_required_apis(
         )
 
 
+def test_windows_file_semantics_probe_rejects_path_traversal_components():
+    script = Path("scripts/windows/probe_file_semantics.py")
+    spec = importlib.util.spec_from_file_location("windows_file_semantics_probe", script)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    assert module._component_name("target.txt") == "target.txt"
+    for value in ("", ".", "..", "nested/target.txt", r"nested\target.txt"):
+        with pytest.raises(ValueError, match="one lexical path component"):
+            module._component_name(value)
+
+
 def test_ci_has_macos_security_and_durability_gate():
     workflow = Path(".github/workflows/ci.yml").read_text(encoding="utf-8")
 
@@ -219,6 +232,7 @@ def test_maintenance_scripts_start_and_show_help():
         "scripts/evaluation/run_provider_experiments.py",
         "scripts/release/verify_distribution.py",
         "scripts/windows/probe_capabilities.py",
+        "scripts/windows/probe_file_semantics.py",
     ):
         result = subprocess.run(
             [sys.executable, script, "--help"],
