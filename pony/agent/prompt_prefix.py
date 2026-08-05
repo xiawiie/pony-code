@@ -2,6 +2,8 @@
 
 import hashlib
 import json
+import os
+import platform
 import textwrap
 from dataclasses import dataclass
 
@@ -52,6 +54,19 @@ def tool_signature(tools):
     ).hexdigest()
 
 
+def _platform_guidance():
+    if os.name == "nt":
+        return """Platform:
+- operating_system: Windows
+- command_shell: Windows PowerShell 5.1
+- path_separator: \\"""
+    system = platform.system() or "POSIX"
+    return f"""Platform:
+- operating_system: {"macOS" if system == "Darwin" else system}
+- command_shell: POSIX sh
+- path_separator: /"""
+
+
 def build_prompt_prefix(workspace, tools, built_at=None):
     # Provider tool schemas are the only capability list. The pinned prefix
     # keeps stable behavior and applicable AGENTS files.
@@ -71,6 +86,8 @@ def build_prompt_prefix(workspace, tools, built_at=None):
         {MEMORY_USAGE_GUIDANCE}
 
         {MEMORY_READING_GUIDANCE}
+
+        {_platform_guidance()}
 
         {workspace.instruction_text()}
         """

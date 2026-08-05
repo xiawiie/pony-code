@@ -1,6 +1,7 @@
 from pony import Pony
 from pony.state.session_store import SessionStore
 from benchmarks.support.fake_provider import FakeModelClient
+from pony.agent import prompt_prefix
 from pony.context.renderer import render_current_user_message
 from pony.agent.prompt_prefix import build_prompt_prefix, tool_signature
 from pony.tools.registry import build_tool_registry
@@ -76,6 +77,17 @@ def test_build_prompt_prefix_keeps_schemas_and_ordinary_docs_out_of_system(tmp_p
     assert prefix.workspace_fingerprint == workspace.fingerprint()
     assert prefix.tool_signature == tool_signature(tools)
     assert prefix.built_at == "2026-06-02T00:00:00+08:00"
+
+
+def test_build_prompt_prefix_describes_native_windows_shell(tmp_path, monkeypatch):
+    workspace = WorkspaceContext.build(tmp_path, executables={}, inspect_git=False)
+    monkeypatch.setattr(prompt_prefix.os, "name", "nt")
+
+    prefix = build_prompt_prefix(workspace, {}).text
+
+    assert "operating_system: Windows" in prefix
+    assert "command_shell: Windows PowerShell 5.1" in prefix
+    assert "path_separator: \\" in prefix
 
 
 def test_stable_prefix_is_native_tool_protocol_neutral(tmp_path):
