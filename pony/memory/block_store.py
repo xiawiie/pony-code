@@ -53,6 +53,11 @@ def _is_agent_owned_path(rel_path):
     return sub_path == "agent_notes.md"
 
 
+def _decode_memory_text(data):
+    text = data.decode("utf-8", errors="replace")
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
 def _read_bounded_regular(
     path,
     limit,
@@ -386,7 +391,7 @@ class BlockStore:
             limit,
             **read_options,
         )
-        content = data.decode("utf-8", errors="replace")
+        content = _decode_memory_text(data)
         # Task 17: parse frontmatter so retrieval / recall can boost by field.
         # When a file has a `description` header, prefer that as the display
         # first-line (memory_index shows it); otherwise fall back to the body's
@@ -438,7 +443,7 @@ class BlockStore:
             MAX_MEMORY_FILE_BYTES,
             **read_options,
         )
-        return data.decode("utf-8", errors="replace")
+        return _decode_memory_text(data)
 
     def exists(self, rel_path: str) -> bool:
         try:
