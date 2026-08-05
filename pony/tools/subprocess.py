@@ -436,7 +436,7 @@ def _git_open_flags(*, directory):
     return flags
 
 
-def _open_git_path(path, *, directory):
+def _open_git_path(path, *, directory, single_link=True):
     if not _HAS_GIT_DIR_FD_TRAVERSAL:
         raise ValueError("unsafe git repository")
     candidate = Path(os.path.abspath(path))
@@ -447,6 +447,7 @@ def _open_git_path(path, *, directory):
             candidate,
             directory=directory,
             share_access=native.FILE_SHARE_READ_WRITE,
+            single_link=single_link,
         )
     descriptor = os.open(candidate.anchor, _git_open_flags(directory=True))
     try:
@@ -478,7 +479,7 @@ def _open_git_path(path, *, directory):
         raise
 
 
-def _open_git_entry(directory_fd, name, *, directory):
+def _open_git_entry(directory_fd, name, *, directory, single_link=True):
     raw_name = os.fsdecode(name)
     if Path(raw_name).name != raw_name or raw_name in {"", ".", ".."}:
         raise ValueError("unsafe git repository")
@@ -495,6 +496,7 @@ def _open_git_entry(directory_fd, name, *, directory):
                 native.FILE_DIRECTORY_ACCESS if directory else native.FILE_READ_ACCESS
             ),
             share_access=native.FILE_SHARE_READ_WRITE,
+            single_link=single_link,
         )
         return handle
     return os.open(
@@ -508,9 +510,14 @@ def _read_git_metadata(path, *, dir_fd=None, allow_missing=False):
     descriptor = None
     try:
         if dir_fd is None:
-            _, descriptor = _open_git_path(path, directory=False)
+            _, descriptor = _open_git_path(path, directory=False, single_link=False)
         else:
-            descriptor = _open_git_entry(dir_fd, path, directory=False)
+            descriptor = _open_git_entry(
+                dir_fd,
+                path,
+                directory=False,
+                single_link=False,
+            )
     except FileNotFoundError:
         if allow_missing:
             return None
