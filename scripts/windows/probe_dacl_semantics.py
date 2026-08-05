@@ -17,6 +17,7 @@ _TOKEN_USER = 1
 _ERROR_INSUFFICIENT_BUFFER = 122
 _READ_CONTROL = 0x00020000
 _WRITE_DAC = 0x00040000
+_WRITE_OWNER = 0x00080000
 _FILE_ALL_ACCESS = 0x001F01FF
 _FILE_SHARE_ALL = 0x00000007
 _OPEN_EXISTING = 3
@@ -257,7 +258,7 @@ def _open_object(kernel32, path, *, directory):
     flags = _FILE_FLAG_BACKUP_SEMANTICS if directory else 0
     handle = kernel32.CreateFileW(
         str(path),
-        _READ_CONTROL | _WRITE_DAC,
+        _READ_CONTROL | _WRITE_DAC | _WRITE_OWNER,
         _FILE_SHARE_ALL,
         None,
         _OPEN_EXISTING,
@@ -288,8 +289,10 @@ def _set_private_dacl(kernel32, advapi32, handle, sid):
             advapi32.SetSecurityInfo(
                 handle,
                 _SE_FILE_OBJECT,
-                _DACL_SECURITY_INFORMATION | _PROTECTED_DACL_SECURITY_INFORMATION,
-                None,
+                _OWNER_SECURITY_INFORMATION
+                | _DACL_SECURITY_INFORMATION
+                | _PROTECTED_DACL_SECURITY_INFORMATION,
+                sid,
                 None,
                 acl,
                 None,
