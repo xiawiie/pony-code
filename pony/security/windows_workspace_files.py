@@ -81,6 +81,9 @@ def _file_limit_error(value):
         "exists": True,
         "data": None,
         "mode": _FILE_MODE,
+        "size": value.size,
+        "modified_ns": value.modified_ns,
+        "changed_ns": value.changed_ns,
         "sha256": "",
         "identity": (value.filesystem_id, value.file_id),
     }
@@ -265,6 +268,9 @@ def read_regular_bytes_anchored(
             "exists": True,
             "data": data,
             "mode": _FILE_MODE,
+            "size": opened.size,
+            "modified_ns": opened.modified_ns,
+            "changed_ns": opened.changed_ns,
             "sha256": hashlib.sha256(data).hexdigest(),
             "identity": native.identity(handle),
         }

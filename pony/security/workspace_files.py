@@ -132,6 +132,9 @@ def read_regular_bytes_anchored(
             "exists": True,
             "data": data,
             "mode": stat.S_IMODE(opened.st_mode),
+            "size": opened.st_size,
+            "modified_ns": opened.st_mtime_ns,
+            "changed_ns": opened.st_ctime_ns,
             "sha256": digest.hexdigest(),
             "identity": (opened.st_dev, opened.st_ino),
         }
@@ -519,6 +522,9 @@ def _missing_workspace_file():
         "exists": False,
         "data": None,
         "mode": None,
+        "size": None,
+        "modified_ns": None,
+        "changed_ns": None,
         "sha256": "",
         "identity": None,
     }
@@ -533,6 +539,9 @@ def _workspace_file_limit_error(value):
         "exists": True,
         "data": None,
         "mode": stat.S_IMODE(value.st_mode),
+        "size": value.st_size,
+        "modified_ns": value.st_mtime_ns,
+        "changed_ns": value.st_ctime_ns,
         "sha256": "",
         "identity": _workspace_inode_identity(value),
     }

@@ -23,11 +23,12 @@ import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from types import MappingProxyType
+from types import MappingProxyType, SimpleNamespace
 from typing import Literal
 
 from pony.security import private_files as private_files
 from pony.security import redaction as redaction
+from pony.security import workspace_files as workspace_files
 from pony.state.file_lock import locked_file
 from pony.security.private_files import (
     ensure_private_dir,
@@ -61,6 +62,29 @@ def _read_bounded_regular(
     trusted_root_identity=None,
 ):
     path = Path(os.path.abspath(os.fspath(path)))
+    if os.name == "nt":
+        if trusted_root is None:
+            raise ValueError("memory root is required")
+        if private:
+            ensure_private_file(
+                path,
+                trusted_root=trusted_root,
+                trusted_root_identity=trusted_root_identity,
+            )
+        result = workspace_files.read_regular_bytes_anchored(
+            trusted_root,
+            path.relative_to(trusted_root),
+            max_bytes=limit,
+            expected_root_identity=trusted_root_identity,
+        )
+        if not result["exists"]:
+            raise FileNotFoundError(path)
+        metadata = SimpleNamespace(
+            st_mtime=result["modified_ns"] / 1_000_000_000,
+            st_mtime_ns=result["modified_ns"],
+            st_size=result["size"],
+        )
+        return result["data"], metadata
     descriptor = -1
     if private:
         _, descriptor = private_files._open_private_file(
@@ -273,6 +297,33 @@ class BlockStore:
 
     @staticmethod
     def _markdown_files(root: Path, directory: Path):
+        if os.name == "nt":
+            stack = [directory.relative_to(root).as_posix()]
+            while stack:
+                relative_dir = stack.pop()
+                try:
+                    listing = workspace_files.list_directory_names_anchored(
+                        root,
+                        relative_dir,
+                        max_entries=MAX_MEMORY_INDEX_FILES,
+                        expected_root_identity=private_files.private_directory_identity(
+                            root
+                        ),
+                    )
+                except (OSError, RuntimeError, ValueError):
+                    continue
+                children = []
+                for entry in listing["entries"]:
+                    relative = f"{relative_dir}/{entry['name']}"
+                    if stat.S_ISDIR(entry["mode"]):
+                        children.append(relative)
+                    elif stat.S_ISREG(entry["mode"]) and entry["name"].endswith(
+                        ".md"
+                    ):
+                        yield root / Path(relative)
+                for child in reversed(children):
+                    stack.append(child)
+            return
         for dirpath, dirnames, filenames in os.walk(directory, followlinks=False):
             safe_dirnames = []
             for name in sorted(dirnames):
@@ -325,7 +376,7 @@ class BlockStore:
             raise error
         agent_owned = _is_agent_owned_path(rel_path)
         read_options = {"private": agent_owned}
-        if agent_owned:
+        if os.name == "nt" or agent_owned:
             read_options.update(
                 trusted_root=root,
                 trusted_root_identity=root_identity,
@@ -377,7 +428,7 @@ class BlockStore:
             if target is None:
                 raise FileNotFoundError(rel_path)
         read_options = {"private": agent_owned}
-        if agent_owned:
+        if os.name == "nt" or agent_owned:
             read_options.update(
                 trusted_root=root,
                 trusted_root_identity=self._root_identities[scope],
