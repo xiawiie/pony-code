@@ -267,6 +267,170 @@ def _cleanup_file(path, *, primary):
             raise
 
 
+def _rollback_promotion(
+    source,
+    destination,
+    parent,
+    source_identity,
+    destination_identity,
+    backup,
+):
+    try:
+        _same_target(parent, destination.name, source_identity)
+        if destination_identity is None:
+            native.move_file(destination, source)
+        else:
+            native.replace_file(destination, backup, source)
+        _same_target(parent, source.name, source_identity)
+        _same_target(parent, destination.name, destination_identity)
+    except Exception as exc:
+        raise AtomicWriteAmbiguous("private file promotion rollback failed") from exc
+
+
+def promote_private_file(
+    source,
+    destination,
+    *,
+    trusted_root,
+    trusted_root_identity,
+    expected_source_identity,
+    expected_destination_identity=None,
+):
+    source, parent = native.open_parent(
+        source,
+        trusted_root=trusted_root,
+        trusted_root_identity=trusted_root_identity,
+    )
+    destination = native.lexical_absolute(destination)
+    if destination.parent != source.parent or destination.name == source.name:
+        parent.close()
+        raise ValueError("private promotion requires distinct sibling files")
+    source_handle = None
+    backup = destination.with_name(
+        f".{destination.name}.{secrets.token_hex(12)}.bak"
+    )
+    installed = False
+    committed = False
+    primary = None
+    try:
+        source_handle, _created = native.open_relative(
+            parent,
+            source.name,
+            directory=False,
+            desired_access=native.FILE_READ_ACCESS,
+        )
+        native.require_private(source_handle)
+        if native.identity(source_handle) != tuple(expected_source_identity):
+            raise ValueError("private file changed")
+        _same_target(parent, destination.name, expected_destination_identity)
+        _same_target(parent, backup.name, None)
+        _same_parent(
+            source,
+            parent,
+            trusted_root=trusted_root,
+            trusted_root_identity=trusted_root_identity,
+        )
+        source_handle.close()
+        source_handle = None
+        try:
+            if expected_destination_identity is None:
+                native.move_file(source, destination)
+            else:
+                native.replace_file(destination, source, backup)
+        except OSError:
+            try:
+                _same_target(parent, destination.name, tuple(expected_source_identity))
+            except (OSError, ValueError):
+                pass
+            else:
+                installed = True
+            raise
+        installed = True
+        _same_target(parent, destination.name, tuple(expected_source_identity))
+        _same_target(parent, source.name, None)
+        _same_parent(
+            source,
+            parent,
+            trusted_root=trusted_root,
+            trusted_root_identity=trusted_root_identity,
+        )
+        if expected_destination_identity is not None:
+            _same_target(
+                parent, backup.name, tuple(expected_destination_identity)
+            )
+            native.delete_file(backup)
+        committed = True
+        return destination
+    except BaseException as exc:
+        primary = exc
+        if installed and not committed:
+            _rollback_promotion(
+                source,
+                destination,
+                parent,
+                tuple(expected_source_identity),
+                (
+                    None
+                    if expected_destination_identity is None
+                    else tuple(expected_destination_identity)
+                ),
+                backup,
+            )
+            installed = False
+        raise
+    finally:
+        if source_handle is not None:
+            source_handle.close()
+        if not installed:
+            _cleanup_file(backup, primary=primary)
+        parent.close()
+
+
+def remove_private_file(
+    path,
+    *,
+    trusted_root,
+    trusted_root_identity,
+    expected_identity,
+):
+    path, parent = native.open_parent(
+        path,
+        trusted_root=trusted_root,
+        trusted_root_identity=trusted_root_identity,
+    )
+    handle = None
+    try:
+        handle, _created = native.open_relative(
+            parent,
+            path.name,
+            directory=False,
+            desired_access=native.FILE_DELETE_ACCESS,
+        )
+        native.require_private(handle)
+        if native.identity(handle) != tuple(expected_identity):
+            raise ValueError("private file changed")
+        _same_parent(
+            path,
+            parent,
+            trusted_root=trusted_root,
+            trusted_root_identity=trusted_root_identity,
+        )
+        native.delete_handle(handle)
+        handle.close()
+        handle = None
+        _same_target(parent, path.name, None)
+        _same_parent(
+            path,
+            parent,
+            trusted_root=trusted_root,
+            trusted_root_identity=trusted_root_identity,
+        )
+    finally:
+        if handle is not None:
+            handle.close()
+        parent.close()
+
+
 def write_private_bytes_atomic(
     path,
     data,

@@ -29,6 +29,10 @@ def probe():
         read_private_bytes,
         write_private_bytes_atomic,
     )
+    from pony.security.windows_private_files import (
+        promote_private_file,
+        remove_private_file,
+    )
 
     _stage("create_base")
     base = Path(tempfile.mkdtemp(prefix="pony-private-files-"))
@@ -116,6 +120,71 @@ def probe():
         ) != b"new\n":
             raise RuntimeError("private atomic replacement content mismatch")
 
+        _stage("promote_replace")
+        candidate = root / "candidate.jsonl"
+        write_private_bytes_atomic(
+            candidate,
+            b"promoted\n",
+            trusted_root=root,
+            trusted_root_identity=root_identity,
+        )
+        candidate_signature = private_file_signature(
+            candidate,
+            trusted_root=root,
+            trusted_root_identity=root_identity,
+        )
+        promote_private_file(
+            candidate,
+            target,
+            trusted_root=root,
+            trusted_root_identity=root_identity,
+            expected_source_identity=(
+                candidate_signature.filesystem_id,
+                candidate_signature.file_id,
+            ),
+            expected_destination_identity=(final.filesystem_id, final.file_id),
+        )
+        if candidate.exists() or read_private_bytes(
+            target,
+            trusted_root=root,
+            trusted_root_identity=root_identity,
+        ) != b"promoted\n":
+            raise RuntimeError("private replacement promotion mismatch")
+
+        _stage("promote_create_remove")
+        candidate = root / "new-candidate.jsonl"
+        promoted = root / "promoted.jsonl"
+        write_private_bytes_atomic(
+            candidate,
+            b"temporary\n",
+            trusted_root=root,
+            trusted_root_identity=root_identity,
+        )
+        candidate_signature = private_file_signature(
+            candidate,
+            trusted_root=root,
+            trusted_root_identity=root_identity,
+        )
+        candidate_identity = (
+            candidate_signature.filesystem_id,
+            candidate_signature.file_id,
+        )
+        promote_private_file(
+            candidate,
+            promoted,
+            trusted_root=root,
+            trusted_root_identity=root_identity,
+            expected_source_identity=candidate_identity,
+        )
+        remove_private_file(
+            promoted,
+            trusted_root=root,
+            trusted_root_identity=root_identity,
+            expected_identity=candidate_identity,
+        )
+        if candidate.exists() or promoted.exists():
+            raise RuntimeError("private promoted file removal mismatch")
+
         _stage("tree_hardening")
         nested = root / "nested"
         nested.mkdir()
@@ -149,6 +218,9 @@ def probe():
             "atomic_rollback": True,
             "append": True,
             "private_dacl": True,
+            "promote_create": True,
+            "promote_replace": True,
+            "promoted_remove": True,
             "tree_hardening": True,
             "long_path": True,
         }
