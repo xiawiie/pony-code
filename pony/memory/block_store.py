@@ -248,6 +248,12 @@ class BlockStore:
                     return documents
                 file_count += 1
                 if real_path is None:
+                    # Windows cannot expose a trusted size for a rejected entry.
+                    remaining = MAX_MEMORY_INDEX_BYTES - total_bytes
+                    total_bytes += min(MAX_MEMORY_FILE_BYTES, remaining) + 1
+                    if total_bytes >= MAX_MEMORY_INDEX_BYTES:
+                        documents.sort(key=lambda document: document.path)
+                        return documents
                     continue
                 remaining = MAX_MEMORY_INDEX_BYTES - total_bytes
                 if remaining <= 0:
