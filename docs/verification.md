@@ -190,6 +190,140 @@ Verifier 使用 `git ls-files pony` 建立产品文件真源并检查：
   行为正确；removed Sandbox/Checkpoint mutation commands 由 CLI/parser 聚焦测试验证；
 - smoke 环境不继承 `PONY_*`、厂商 Key、`PYTHONHOME` 或 `PYTHONPATH`。
 
+## Decision-driven coding benchmark
+
+[`ADR-0049`](adr/0049-benchmark-evaluation-design.md) 定义 Q suite 的目的：判断一个 exact commit、Provider/model 或 feature
+是否提高 **Safe Correct Completion（SCC）**，并把结果映射为 `accept`、`reject` 或 `inconclusive`。它不输出综合分，也不把
+更快失败、Fake Provider 脚本通过或公开测试通过解释为 coding capability。
+
+当前 8-task pilot 只代表受信、小到中型、离线 Python maintenance task。它想观察四件事：
+
+- 有公开失败时，Agent 是否能定位根因并做最小修复；
+- 没有公开失败时，Agent 是否能导航到 latent edge case；
+- 多文件合同是否一致修改且不破坏回归；
+- I/O/config/CLI 边界是否 fail closed 且无越界副作用。
+
+### 先 qualification 测量工具
+
+```bash
+uv run --frozen python benchmarks/coding_quality/run_benchmark.py qualify \
+  --tasks benchmarks/coding_quality/tasks.json \
+  --output /private/tmp/pony-coding-quality-qualification.json
+```
+
+Qualification 的目的不是测试模型，而是证明 benchmark 自身有区分度且可重复。成功必须同时观察到：broken target 连续
+`3/3` 失败；diagnosis broken fixture 的 public tests 失败、其他 slice 的 public tests 通过；reference 的 target、regression、
+public 连续 `5/5` 通过；允许范围内的 reference patch 通过；模拟越界修改被拒绝。任一 task 失败都禁止 live run。
+
+Qualification artifact 是 live condition 的强制输入。Runner 在 Provider resolution 前验证 exact-key schema、零失败、task 数以及
+corpus/grader digest；缺失、手工矛盾或过期 artifact fail closed。Artifact 只写入私有临时目录，不提交。
+
+### 再冻结 Evaluation Brief
+
+看到结果前创建 exact-key brief；字段和示例见 ADR-0049 第 6 节。Brief 必须写清：
+
+1. 要做什么决定；
+2. 可证伪问题和假设；
+3. baseline/candidate exact SHA；
+4. 目标 slice、SCC expected effect 和 hard-gate guardrail；
+5. 每 task trial 数；
+6. 哪些机器可执行条件必须判为 inconclusive。基础 provenance、dirty、invalid trial 和 non-live 条件强制存在；代码 feature
+   evaluation 通常再加入 `provider_transport_failure`，Provider/model 可靠性 evaluation 可省略它并把 transport failure 计入 outcome。
+
+没有预先冻结 brief 的运行只能用于探索，不能支持 feature 改善、合并或发布结论。
+
+### 两个 worktree 分别运行 condition
+
+Baseline 和 candidate 必须各自在自己的 clean exact-HEAD worktree 中运行；不要在一个 Python 进程里 checkout 或动态 import 两个
+commit。两边使用同一 tasks、qualification、Provider target、预算和 brief：
+
+```bash
+uv run --frozen python benchmarks/coding_quality/run_benchmark.py run \
+  --brief /private/tmp/evaluation-brief.json \
+  --condition baseline \
+  --qualification /private/tmp/pony-coding-quality-qualification.json \
+  --tasks benchmarks/coding_quality/tasks.json \
+  --output /private/tmp/baseline-condition.json
+
+uv run --frozen python benchmarks/coding_quality/run_benchmark.py run \
+  --brief /private/tmp/evaluation-brief.json \
+  --condition candidate \
+  --qualification /private/tmp/pony-coding-quality-qualification.json \
+  --tasks benchmarks/coding_quality/tasks.json \
+  --output /private/tmp/candidate-condition.json
+```
+
+真实 run 复用仓库 `.env`、production resolver、transport factory、`Pony`、Session/Run、permission rule 和 hardened tool path。
+`run_shell=allow` 仍经过 command/path/secret/mutation policy；不使用 `bypassPermissions`。`--allow-dirty` 只允许有界调试 smoke，
+artifact 会标记为 non-confirmatory，comparator 不会接受它。
+
+### 纯 artifact comparison
+
+```bash
+uv run --frozen python benchmarks/coding_quality/run_benchmark.py compare \
+  --brief /private/tmp/evaluation-brief.json \
+  --baseline /private/tmp/baseline-condition.json \
+  --candidate /private/tmp/candidate-condition.json \
+  --output /private/tmp/coding-quality-comparison.json
+```
+
+Comparator 从 trial 重算 task SCC count 和 summary，并验证 commit、brief、corpus/grader digest、Provider、protocol、预算、trial 数、
+task set、clean state 和 live claim：
+
+- `accept`：预先声明的 task wins/losses 与全部 guardrail 通过；
+- `reject`：frozen conditions 有效，但 expected effect 或 guardrail 失败；
+- `inconclusive`：provenance/condition 不一致、dirty、invalid trial、scripted Provider 或 artifact 内部矛盾。
+
+被 policy 成功拒绝且没有产生 workspace effect 的 tool attempt 记录为 `policy_rejections` 诊断项，不直接构成 hard gate；否则会
+反向惩罚 fail-closed。只有 scope/integrity 失败、未知 workspace effect、durability/finalization 失败或边界实际失守才是不可抵消的
+hard gate。若拒绝后 Agent 未完成任务，target/finalization/budget outcome 仍会使 SCC 失败。
+
+Fake Provider 单测只证明 fresh workspace、hidden grader 隔离、production runner plumbing 和 SCC 计算合同；不得放入 Q capability
+结果。完整 live coding benchmark 属于收费 G8，必须记录 exact SHA、Provider/protocol/model、task/trial 数和费用边界。该 suite
+不加入默认 `scripts/check.sh`，因为默认发布门禁必须保持离线、确定且零费用。
+
+
+## Compaction efficiency 与非流式 Provider latency
+
+`scripts/evaluation/run_efficiency_evaluation.py` 只回答两个有明确决策的问题：
+
+1. compaction 在单次/重复 compaction 且 resume 后，能否保持 active state 的 SCC，并在六个后续 turn 内偿还 summary
+   成本、产生正的净 token 收益；
+2. 当前 canonical `.env` 选定的单一 Provider target，在固定 short-final、read-tool-continuation、long-context workload
+   下，完整非流式响应、首 action 可用和最终完成需要多久。
+
+它不把字符压缩率称为 token 节省率。第 `k` 个 follow-up 后使用 Provider usage 计算：
+
+```text
+gross_input_saved(k) = Σ baseline follow-up input - Σ compacted follow-up input
+baseline_total(k) = Σ baseline(input + output)
+compacted_total(k) = summary(input + output) + Σ compacted(input + output)
+net_saved_tokens(k) = baseline_total(k) - compacted_total(k)
+break_even_turn = first k where net_saved_tokens(k) >= 0
+```
+
+只有 baseline SCC 有效、compacted SCC 通过、usage 完整且 frozen horizon 内 break even 才能 `accept`；compacted
+事实保留失败或 horizon 内仍无净收益为 `reject`；Provider 失败、baseline 无效或 usage 不完整为 `inconclusive`。dirty
+worktree 的 measured effect 只作探索，顶层 decision 强制 `inconclusive`。
+
+Production adapter 当前全部 `stream=False` 并在 body 完整读取后返回，所以真实首 token 时间不可观察。Artifact 固定写
+`ttft_status: unavailable_non_streaming`，不得用 `provider_complete_ms` 冒充 TTFT。延迟只在成功 trial 上解释并报告
+p50/p95；失败、retry 和 usage completeness 单独报告。
+
+已授权收费请求时，在 clean exact HEAD 上运行：
+
+```bash
+uv run --frozen python scripts/evaluation/run_efficiency_evaluation.py \
+  --repo-root /path/to/repository-with-canonical-env \
+  --latency-repetitions 3 \
+  --output-json /private/tmp/pony-efficiency-evaluation.json
+```
+
+Runner 复用 production config resolver 和 Transport factory；不拥有 Provider selector、registry 或第二配置面。Artifact
+只保存 SHA/dirty、Provider/protocol/model、聚合 usage、延迟、重试和 opaque grader 结果，不保存 `.env`、API Base/Key、
+prompt、answer、raw response 或 reasoning。当前一次运行只能描述一个 target；Provider 间比较必须分别从各自 canonical
+repo root 产生脱敏 artifact，并在 Provider、model、workload、预算和 trial 数一致时离线比较。
+
 ## Provider live
 
 真实 API 会产生网络请求、token 消耗和费用。只有用户明确授权后执行：
