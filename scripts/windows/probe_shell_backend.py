@@ -97,28 +97,36 @@ def probe(*, expect_elevated_rejection=False):
             command,
         ]
         _stage("powershell_direct")
+        direct = subprocess.Popen(
+            shell_argv,
+            executable=str(powershell),
+            cwd=root,
+            env=shell_env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
         try:
-            direct = subprocess.run(
-                shell_argv,
-                executable=str(powershell),
-                cwd=root,
-                env=shell_env,
-                stdin=subprocess.DEVNULL,
-                capture_output=True,
-                text=True,
-                timeout=20,
-                check=False,
-                creationflags=subprocess.CREATE_NO_WINDOW,
-            )
+            stdout, stderr = direct.communicate(timeout=20)
         except subprocess.TimeoutExpired as exc:
+            process_running = direct.poll() is None
+            if process_running:
+                direct.kill()
+            for stream in (direct.stdout, direct.stderr):
+                if stream is not None:
+                    stream.close()
+            direct.wait(timeout=5)
             raise RuntimeError(
                 "direct fixed PowerShell execution timed out: "
+                f"process_running={process_running}, "
                 f"stdout={exc.output!r}, stderr={exc.stderr!r}"
             ) from exc
-        if direct.returncode != 0 or direct.stdout.strip() != "pony-shell-ok":
+        if direct.returncode != 0 or stdout.strip() != "pony-shell-ok":
             raise RuntimeError(
                 "direct fixed PowerShell execution failed: "
-                f"returncode={direct.returncode}, stderr={direct.stderr!r}"
+                f"returncode={direct.returncode}, stderr={stderr!r}"
             )
 
         _stage("powershell_job")

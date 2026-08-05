@@ -374,25 +374,44 @@ def test_memory_health_fails_closed_when_hardlink_is_added_during_read(
     note = memory / "notes" / "note.md"
     note.write_text("note", encoding="utf-8")
     hardlink = tmp_path / "note-hardlink.md"
-    original_stat = diagnostics_module.os.stat
-    note_stat_calls = 0
 
-    def add_hardlink_before_final_stat(path, *args, **kwargs):
-        nonlocal note_stat_calls
-        if path == "note.md" and kwargs.get("dir_fd") is not None:
-            note_stat_calls += 1
-            if note_stat_calls == 2:
-                os.link(note, hardlink)
-        return original_stat(path, *args, **kwargs)
+    if os.name == "nt":
+        original_read = diagnostics_module.workspace_files.read_regular_bytes_anchored
+        read_calls = 0
 
-    monkeypatch.setattr(diagnostics_module.os, "stat", add_hardlink_before_final_stat)
+        def add_hardlink_before_read(root, relative, **kwargs):
+            nonlocal read_calls
+            read_calls += 1
+            os.link(note, hardlink)
+            return original_read(root, relative, **kwargs)
+
+        monkeypatch.setattr(
+            diagnostics_module.workspace_files,
+            "read_regular_bytes_anchored",
+            add_hardlink_before_read,
+        )
+    else:
+        original_stat = diagnostics_module.os.stat
+        read_calls = 0
+
+        def add_hardlink_before_final_stat(path, *args, **kwargs):
+            nonlocal read_calls
+            if path == "note.md" and kwargs.get("dir_fd") is not None:
+                read_calls += 1
+                if read_calls == 2:
+                    os.link(note, hardlink)
+            return original_stat(path, *args, **kwargs)
+
+        monkeypatch.setattr(
+            diagnostics_module.os, "stat", add_hardlink_before_final_stat
+        )
 
     result = collect_memory_diagnostics(
         repo,
         user_memory_root=tmp_path / "missing-user" / ".pony" / "memory",
     )
 
-    assert note_stat_calls == 2
+    assert read_calls == (1 if os.name == "nt" else 2)
     assert result["status"] == "unknown"
     assert {
         "path": "workspace/notes/note.md",
