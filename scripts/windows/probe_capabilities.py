@@ -56,6 +56,7 @@ _REQUIRED_SYMBOLS = {
         "SetNamedSecurityInfoW",
         "SetSecurityDescriptorControl",
         "SetSecurityDescriptorDacl",
+        "SetSecurityDescriptorOwner",
         "SetSecurityInfo",
     ),
 }

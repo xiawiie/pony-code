@@ -20,6 +20,7 @@ _FILE_WRITE_ATTRIBUTES = 0x0100
 _DELETE = 0x00010000
 _READ_CONTROL = 0x00020000
 _WRITE_DAC = 0x00040000
+_WRITE_OWNER = 0x00080000
 _SYNCHRONIZE = 0x00100000
 _FILE_ALL_ACCESS = 0x001F01FF
 _FILE_SHARE_ALL = 0x00000007
@@ -320,6 +321,12 @@ class _Api:
             wintypes.BOOL,
         )
         advapi32.SetSecurityDescriptorDacl.restype = wintypes.BOOL
+        advapi32.SetSecurityDescriptorOwner.argtypes = (
+            wintypes.LPVOID,
+            wintypes.LPVOID,
+            wintypes.BOOL,
+        )
+        advapi32.SetSecurityDescriptorOwner.restype = wintypes.BOOL
         advapi32.SetSecurityDescriptorControl.argtypes = (
             wintypes.LPVOID,
             wintypes.WORD,
@@ -496,6 +503,10 @@ def private_security_descriptor():
             _winerror("InitializeSecurityDescriptor failed")
         if not native.advapi32.SetSecurityDescriptorDacl(descriptor, True, acl, False):
             _winerror("SetSecurityDescriptorDacl failed")
+        if not native.advapi32.SetSecurityDescriptorOwner(
+            descriptor, native.current_sid, False
+        ):
+            _winerror("SetSecurityDescriptorOwner failed")
         if not native.advapi32.SetSecurityDescriptorControl(
             descriptor, _SE_DACL_PROTECTED, _SE_DACL_PROTECTED
         ):
@@ -837,8 +848,10 @@ def make_private(handle):
             native.advapi32.SetSecurityInfo(
                 handle.value,
                 _SE_FILE_OBJECT,
-                _DACL_SECURITY_INFORMATION | _PROTECTED_DACL_SECURITY_INFORMATION,
-                None,
+                _OWNER_SECURITY_INFORMATION
+                | _DACL_SECURITY_INFORMATION
+                | _PROTECTED_DACL_SECURITY_INFORMATION,
+                native.current_sid,
                 None,
                 dacl,
                 None,
@@ -945,6 +958,7 @@ FILE_WRITE_ACCESS = (
     | _FILE_WRITE_ATTRIBUTES
     | _READ_CONTROL
     | _WRITE_DAC
+    | _WRITE_OWNER
     | _DELETE
 )
 FILE_OPEN = _FILE_OPEN
