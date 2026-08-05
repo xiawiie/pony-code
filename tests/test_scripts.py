@@ -194,6 +194,19 @@ def test_windows_file_semantics_probe_rejects_path_traversal_components():
         with pytest.raises(ValueError, match="one lexical path component"):
             module._component_name(value)
 
+    class Ntdll:
+        @staticmethod
+        def NtCreateFile(*_args):
+            return 0
+
+    handle = module._open_relative(
+        Ntdll(),
+        module.wintypes.HANDLE(1),
+        "target.txt",
+        directory=False,
+    )
+    assert handle.value is None
+
 
 def test_ci_has_macos_security_and_durability_gate():
     workflow = Path(".github/workflows/ci.yml").read_text(encoding="utf-8")

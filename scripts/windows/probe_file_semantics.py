@@ -169,7 +169,11 @@ def _open_relative(ntdll, root_handle, name, *, directory):
     name = _component_name(name)
     buffer = ctypes.create_unicode_buffer(name)
     length = len(name.encode("utf-16-le"))
-    unicode_name = _UnicodeString(length, length + 2, buffer)
+    unicode_name = _UnicodeString(
+        length,
+        length + 2,
+        ctypes.cast(buffer, wintypes.LPWSTR),
+    )
     attributes = _ObjectAttributes(
         ctypes.sizeof(_ObjectAttributes),
         root_handle,
