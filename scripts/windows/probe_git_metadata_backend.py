@@ -28,7 +28,11 @@ def probe():
         sys.path.insert(0, str(root_path))
 
     from pony.tools.subprocess import (
+        _close_git_handle,
         _lexical_git_repository_kind,
+        _open_gitfile_target,
+        _read_git_metadata,
+        _validate_linked_worktree_gitfile,
         discover_lexical_repo_root,
     )
 
@@ -53,10 +57,21 @@ def probe():
         _git("worktree", "add", str(worktree), cwd=repo)
         if discover_lexical_repo_root(worktree) != worktree:
             raise RuntimeError("linked worktree root discovery mismatch")
+        marker = worktree / ".git"
+        target, target_handle = _open_gitfile_target(marker)
+        try:
+            backlink_data = _read_git_metadata("gitdir", dir_fd=target_handle)
+            _validate_linked_worktree_gitfile(
+                marker,
+                target,
+                target_handle,
+                backlink_data,
+            )
+        finally:
+            _close_git_handle(target_handle)
         if _lexical_git_repository_kind(worktree) != "linked-worktree":
             raise RuntimeError("linked worktree classification mismatch")
 
-        marker = worktree / ".git"
         marker_data = marker.read_bytes()
         marker.unlink()
         outside = base / "outside.gitfile"
