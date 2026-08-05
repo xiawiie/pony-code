@@ -77,12 +77,19 @@ def _read_bounded_regular(
                 trusted_root=trusted_root,
                 trusted_root_identity=trusted_root_identity,
             )
-        result = workspace_files.read_regular_bytes_anchored(
-            trusted_root,
-            path.relative_to(trusted_root),
-            max_bytes=limit,
-            expected_root_identity=trusted_root_identity,
-        )
+        try:
+            result = workspace_files.read_regular_bytes_anchored(
+                trusted_root,
+                path.relative_to(trusted_root),
+                max_bytes=limit,
+                expected_root_identity=trusted_root_identity,
+            )
+        except workspace_files.WorkspaceIOError as exc:
+            if exc.code != "workspace_file_limit_exceeded":
+                raise
+            error = ValueError("memory file too large")
+            error.bytes_read = limit + 1
+            raise error from exc
         if not result["exists"]:
             raise FileNotFoundError(path)
         metadata = SimpleNamespace(
