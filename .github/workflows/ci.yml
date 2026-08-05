@@ -81,6 +81,46 @@ jobs:
           python-version: ${{ matrix.python-version }}
           architecture: x64
 
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          version: "0.11.26"
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --frozen --dev
+
+      - name: Check lock and source
+        run: |
+          uv lock --check
+          uv run --frozen ruff check .
+
+      - name: Run complete Windows test suite
+        run: >-
+          uv run --frozen pytest -q
+          tests benchmarks/live_e2e/tests/test_assertions.py
+
+      - name: Run Windows core-functional evaluation
+        run: >-
+          uv run --frozen python scripts/evaluation/evaluate.py
+          --suite core-functional
+          --output-dir "$env:RUNNER_TEMP\pony-windows-eval"
+
+      - name: Build and verify Windows distribution
+        run: |
+          uv build --offline --clear --no-create-gitignore --out-dir "$env:RUNNER_TEMP\pony-dist"
+          uv run --frozen python scripts/release/verify_distribution.py `
+            --dist-dir "$env:RUNNER_TEMP\pony-dist" `
+            --install-smoke `
+            --offline-bundle-smoke
+
+      - name: Smoke native PowerShell and cmd entry points
+        run: |
+          uv run pony --help
+          uv run pony status
+          cmd /d /c ".venv\Scripts\pony.exe --help"
+          uv run python -c "import prompt_toolkit; import pony.tui.app"
+
       - name: Probe native Windows capabilities
         run: python scripts/windows/probe_capabilities.py --pretty
 
