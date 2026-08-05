@@ -566,7 +566,7 @@ def test_windows_memory_directory_scan_limit_is_separate_from_index_limit(
     assert observed["max_entries"] == block_store_module.MAX_MEMORY_DIRECTORY_ENTRIES
 
 
-def test_windows_memory_directory_with_unsafe_entry_fails_closed(
+def test_windows_memory_directory_skips_unsafe_entry_but_keeps_safe_file(
     tmp_path,
     monkeypatch,
 ):
@@ -583,7 +583,10 @@ def test_windows_memory_directory_with_unsafe_entry_fails_closed(
         },
     )
 
-    assert list(BlockStore._markdown_files(workspace, notes)) == []
+    assert list(BlockStore._markdown_files(workspace, notes)) == [
+        None,
+        notes / "safe.md",
+    ]
 
 
 def test_unsafe_hardlink_consumes_aggregate_byte_budget(tmp_path, monkeypatch):

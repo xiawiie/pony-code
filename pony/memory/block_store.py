@@ -247,6 +247,8 @@ class BlockStore:
                     documents.sort(key=lambda document: document.path)
                     return documents
                 file_count += 1
+                if real_path is None:
+                    continue
                 remaining = MAX_MEMORY_INDEX_BYTES - total_bytes
                 if remaining <= 0:
                     documents.sort(key=lambda document: document.path)
@@ -290,6 +292,8 @@ class BlockStore:
                 if file_count >= MAX_MEMORY_INDEX_FILES:
                     return tuple(rows)
                 file_count += 1
+                if real_path is None:
+                    continue
                 try:
                     info = real_path.stat(follow_symlinks=False)
                 except OSError:
@@ -325,8 +329,9 @@ class BlockStore:
                     )
                 except (OSError, RuntimeError, ValueError):
                     continue
-                if listing["unsafe_count"]:
-                    continue
+                # Rejected entries still consume the cross-platform file budget.
+                for _ in range(listing["unsafe_count"]):
+                    yield None
                 children = []
                 for entry in listing["entries"]:
                     relative = f"{relative_dir}/{entry['name']}"
@@ -361,6 +366,9 @@ class BlockStore:
         notes_dir = _safe_index_directory(root, root / "notes")
         if notes_dir is not None:
             for md in self._markdown_files(root, notes_dir):
+                if md is None:
+                    yield None, None
+                    continue
                 rel = md.relative_to(root).as_posix()
                 yield f"{scope}/{rel}", md
         # agent_notes.md — agent-owned, append-only
