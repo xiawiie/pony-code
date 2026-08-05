@@ -651,7 +651,7 @@ def test_read_rejects_unsafe_agent_notes_leaf(tmp_path, unsafe_kind):
             pytest.skip("FIFO unavailable")
         os.mkfifo(agent_notes)
 
-    with pytest.raises(ValueError, match="symlink|private|regular"):
+    with pytest.raises(ValueError, match="symlink|reparse|private|regular"):
         store.read("workspace/agent_notes.md")
 
     assert outside.read_text(encoding="utf-8") == "outside-canary"

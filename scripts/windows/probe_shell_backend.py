@@ -83,11 +83,45 @@ def probe(*, expect_elevated_rejection=False):
         if rg is None:
             raise RuntimeError("immutable native rg.exe was not trusted")
 
-        _stage("powershell")
         command = "Write-Output 'pony-shell-ok'"
         assessment = assess_command(command, root, trusted)
         if assessment["execution_mode"] != "shell" or assessment["decision"] != "ask":
             raise RuntimeError("PowerShell command was not classified as shell grammar")
+        shell_env = _minimal_env(root, powershell)
+        shell_argv = [
+            str(powershell),
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            command,
+        ]
+        _stage("powershell_direct")
+        try:
+            direct = subprocess.run(
+                shell_argv,
+                executable=str(powershell),
+                cwd=root,
+                env=shell_env,
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                timeout=20,
+                check=False,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(
+                "direct fixed PowerShell execution timed out: "
+                f"stdout={exc.output!r}, stderr={exc.stderr!r}"
+            ) from exc
+        if direct.returncode != 0 or direct.stdout.strip() != "pony-shell-ok":
+            raise RuntimeError(
+                "direct fixed PowerShell execution failed: "
+                f"returncode={direct.returncode}, stderr={direct.stderr!r}"
+            )
+
+        _stage("powershell_job")
         try:
             result = run_hardened_command(
                 powershell,
@@ -95,7 +129,7 @@ def probe(*, expect_elevated_rejection=False):
                 shell=True,
                 cwd=root,
                 timeout=20,
-                env=_minimal_env(root, powershell),
+                env=shell_env,
             )
         except subprocess.TimeoutExpired as exc:
             raise RuntimeError(
@@ -134,6 +168,7 @@ def probe(*, expect_elevated_rejection=False):
 
     return {
         "schema_version": 1,
+        "direct_system_powershell": True,
         "fixed_system_powershell": True,
         "native_git_argv": True,
         "native_rg_trusted": True,
