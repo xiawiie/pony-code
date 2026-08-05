@@ -1,294 +1,268 @@
-# Pony 公开记忆评测：LongMemEval、PersonaMem 与 mem0
+# Pony 与 mem0 公开记忆评测：最终结果与差距分析
 
-> 结果冻结日期：2026-08-05。本文采用用户指定的 PersonaMem **43.5%** 中期快照，
-> 并把描述性数字与严格配对统计分开。当前证据不是 589 题 Pony/mem0 全量配对报告，
-> 因此不能标记为 `publishable=true`。
+## 最终数字
 
-## 摘要
+| System | Correct / N | Accuracy | 95% Wilson CI | 差距 |
+|---|---:|---:|---:|---:|
+| Pony User-Notes/BM25 | **249/589** | **42.28%** | **38.35%–46.30%** | **-22.41 pp** |
+| mem0 OSS | **381/589** | **64.69%** | **60.74%–68.44%** | reference |
 
-我为 Pony Agent 已有的 User Notes/BM25 记忆路径实现了公开基准评测适配层，覆盖
-LongMemEval-S cleaned V1 和 PersonaMem-v1 32k，并接入固定版本 mem0 OSS baseline。
-评测层记录 exact commit、数据集和 prompt 摘要、模型/transport、reader budget、逐题答案、
-失败状态、Wilson 区间、paired bootstrap 与 McNemar 检验。
+**Pony 比 mem0 少答对 132 题。**
 
-本轮可对外使用的 Pony 数字是：
+换一种表达：mem0 的正确题数比 Pony 多 **53.01%**；相对于 Pony 的 340 道错题，mem0
+减少了 **38.82%** 的错误。两侧 Wilson 区间完全分离，说明差距不是几个样本造成的小幅波动；但由于
+两边回答的是同一批题，正式显著性结论仍应以 589 题逐题配对检验为准，不能用两个独立 Wilson 区间代替。
 
-> **PersonaMem-v1 32k retrieval-augmented adaptation：189/434，accuracy 43.5%，
-> 95% Wilson CI 39.0%–48.2%。**
+## 核心结论
 
-这个数字必须带上 `434-case interim snapshot` 限定。严格相同 Case ID 的 246 题比较为
-Pony **39.4%**、mem0 **64.6%**，Pony 相对 mem0 为 **-25.2 percentage points**；
-paired bootstrap 95% CI 为 **[-32.1, -18.3] pp**，exact McNemar
-`p=9.33e-12`。结果说明当前简单 BM25 memory baseline 明显落后 mem0；项目的主要价值是
-建立了公开、可恢复、可审计的评测方法，并用数据定位了下一步优化方向。
+这 **22.41 个百分点** 不是单一参数、一次随机波动或回答模型能力造成的。根本原因是两套系统实际比较的
+不是同一种记忆管线：
 
-## 1. 最终数字表
+- **Pony** 把原始对话按块写成 User Notes，再用纯词法 BM25 检索；
+- **mem0** 先调用 LLM 从对话中提取、整理记忆，再生成 embedding，通过 Qdrant 做语义检索；
+- 两侧虽然使用相同的最终回答模型、prompt、temperature 和最大检索预算，但 mem0 在回答前已经投入了额外的
+  **记忆抽取模型、embedding 模型和向量数据库**。
 
-### 1.1 用户指定的 headline snapshot
+因此，这个结果证明的是：**在当前完整配置下，mem0 的自动对话记忆覆盖率明显高于 Pony 的原始文本
+User-Notes/BM25 适配方案。** 它不是“BM25 与向量检索在完全相同表示、相同计算成本下”的单变量实验。
 
-| System | Correct / N | Accuracy | 95% Wilson CI | 状态 |
-|---|---:|---:|---:|---|
-| Pony User-Notes/BM25 | **189/434** | **43.55%** | **[38.96%, 48.25%]** | 中期、事后冻结 |
-| mem0 OSS | 159/246 | 64.63% | [58.48%, 70.34%] | 部分 live run |
-
-两行不是相同 Case 集。直接相减为 `-21.09 pp`，只能作为描述性差异，不能解释为 paired
-效果，也不能对它做显著性推断。
-
-### 1.2 严格 246-case paired subset
-
-| Pony | mem0 | Delta | Paired bootstrap 95% CI | Win/Tie/Loss | McNemar p | N |
-|---:|---:|---:|---:|---:|---:|---:|
-| **39.43%** | **64.63%** | **-25.20 pp** | **[-32.11, -18.29] pp** | **13/158/75** | **9.33e-12** | **246** |
-
-这里两侧来自同一个 Pony commit `67626ead32c97805178e2069417978da8596ea5f`，使用相同的
-246 个 Case ID、数据集摘要、回答模型、transport、prompt、temperature、reader budget 和 workers，
-且两侧都是零 row failure。subset 覆盖 16 个 shared contexts、85 个 prefix boundaries。
-
-它仍是运行过程中形成的 post-hoc partial subset，不是预注册随机样本，所以可以用于工程诊断和带限定的
-项目陈述，但不能冒充 PersonaMem 589 题正式 leaderboard 结果。
-
-### 1.3 结果进展与选择性报告控制
-
-| Evidence | Pony result | 用途 |
-|---|---:|---|
-| 用户指定冻结点 | **189/434 = 43.55%** | 可作为带 N 和 interim 限定的项目数字 |
-| 停止收费进程时的续跑文件 | 214/500 = 42.80% | 审计上下文，不应隐藏 |
-| 先前完成的 Pony-only run | 249/589 = 42.28% | 敏感性参考；没有完整 mem0 pair |
-| 同 commit 严格 paired subset | 97/246 = 39.43% | 与 mem0 159/246 做配对推断 |
-
-因此，**43.5% 可以使用，但不能写成“PersonaMem 全量最终 accuracy”**。更稳妥的公开格式是：
-
-> Pony User-Notes/BM25 在 PersonaMem-v1 32k adaptation 的 434-case interim evaluation 中达到
-> 43.5% accuracy（189/434；95% CI 39.0%–48.2%）。
-
-## 2. 被评测系统
-
-### 2.1 Pony User-Notes/BM25
-
-准确名称为：
-
-> **Pony User-Notes/BM25, transcript-to-notes benchmark adapter**
-
-公开 transcript 经 benchmark-only adapter 转为中性的 User Notes，随后复用生产检索链路：
+最短的因果链是：
 
 ```text
-BlockStore -> Retrieval.snapshot() -> recall_candidates()
+Pony：原始长对话 → 粗粒度文本块 → 词面匹配不足 → 证据召回不完整 → 回答模型拒答 → 准确率下降
+mem0：对话角色对 → LLM 提取/整理事实 → 向量化 → 语义召回 → 证据覆盖更高 → 回答率与准确率上升
 ```
 
-默认返回 top 6 notes，每条最多 1024 tokens，最终由统一 TokenAccounting 截断到 6144 tokens。
-这证明的是现有记忆存储和检索路径在公开数据上的表现，不等于生产 Agent 会自动把全部对话提炼成同样的 notes。
+## 评测中哪些条件相同，哪些条件不同
 
-### 2.2 mem0 OSS baseline
+### 相同条件
 
-本轮 baseline 固定为：
+- 相同的 PersonaMem-v1 32k retrieval-augmented adaptation，共 589 题；
+- 相同的 prefix boundary，不把问题发生之后的对话提前写入记忆；
+- 相同的最终回答模型 `qwen3.7-max`；
+- 相同的回答 prompt 和 `temperature=0`；
+- 相同的最大检索上下文预算：6144 tokens；
+- 相同的选择题 exact-match 评分方法。
 
-- `mem0/memory-benchmarks` commit `4b61c5d31b9c668a12b4f5e78064248a02c82d2b`；
-- `mem0ai==2.0.12`；
-- `qdrant/qdrant:v1.18.0`；
-- `qwen3.7-max` extraction/answer model，temperature 0；
-- `text-embedding-v4`，实测 embedding dimension 1024；
-- `/search` 取 top 200，再裁剪到同一个 6144-token reader budget。
+这些控制项排除了“mem0 使用了更强的最终答题模型”这一解释。
 
-比较的是两个端到端 memory pipeline，不是单独比较 BM25 与向量检索器。mem0 同时包含结构化 extraction、
-embedding、Qdrant retrieval 和其 memory representation，这些差异都是被测系统的一部分。
+### 不同条件
 
-## 3. 数据集与防泄漏边界
+| 维度 | Pony User-Notes/BM25 | mem0 OSS | 直接影响 |
+|---|---|---|---|
+| 写入方式 | 原始 transcript 直接写入 Markdown note | LLM 从 role-pair 中抽取记忆 | mem0 在写入时已完成信息压缩和重述 |
+| 记忆单元 | 一段或多段长对话 | 较原子的事实/偏好记忆 | 原子记忆更容易被问题准确命中 |
+| 元数据 | opaque name、固定 `type/description` | 抽取结果、用户/run metadata | Pony 的 field boost 在本适配中几乎没有可利用的主题字段 |
+| 检索 | BM25，英文按词面匹配 | embedding + Qdrant 语义检索 | mem0 能匹配同义改写和间接表达 |
+| 候选深度 | 最多 6 个 note，每个 note 只取一个最佳 passage | 搜索 top 200，再按同一 token budget 截断 | Pony 更容易在候选阶段提前丢失证据 |
+| 状态变化 | 原始历史并存，没有自动合并新旧偏好 | LLM 记忆管线可抽取并更新事实 | mem0 更适合偏好演化和原因追踪 |
+| 写入计算 | 不调用抽取模型或 embedding 模型 | 3547 次 `add`，并调用抽取与 embedding | mem0 质量更高，但成本、延迟和系统复杂度也更高 |
+| 运行依赖 | Python 标准库和本地文件 | mem0ai、LLM、embedding、Qdrant | 这是产品级能力与成本的比较，不是等成本算法比较 |
 
-### 3.1 PersonaMem-v1 32k adaptation
+## 为什么差距会达到 132 题
 
-- 原数据包含 589 个 multiple-choice questions；
-- memory 按 `shared_context_id` 隔离；
-- 问题按 `end_index_in_shared_context` 分组；
-- 每个边界只写入 `context[previous_end:end_index]`；
-- 在当前边界回答完问题后才允许继续写入后续上下文；
-- question、options、correct answer 和 question type 不进入 memory；
-- 两侧共用 answer model、prompt、temperature 与 6144-token reader budget。
+### 1. Pony 的评测适配没有真正做“记忆抽取”
 
-因此该结果应称为 **PersonaMem-v1 32k retrieval-augmented adaptation**，不能与官方 full-context
-leaderboard setting 直接混用。
+`PonyMemoryBackend` 的 `transcript-to-notes-v1` 只是把对话原文写进 Markdown：
 
-### 3.2 LongMemEval-S cleaned V1
+```text
+role: content
+```
 
-评测框架也支持 LongMemEval-S cleaned V1 的 500 个问题：每题独立 memory root/user，只写入 transcript
-的 `role` 与 `content`，不把答案、answer session IDs、question ID 或 question type 泄漏给 memory，
-回答后再走独立 LLM judge。
+它没有把内容转换成“用户喜欢什么”“为什么改变”“当前状态是什么”“旧状态被什么取代”等可直接检索的
+记忆对象。PersonaMem 恰好大量考查偏好、原因、状态演化、建议和新场景泛化，因此原文保存虽然没有主动丢数据，
+却把理解和定位工作全部推迟到了检索与回答阶段。
 
-本轮没有形成 Pony/mem0 的 500 题正式配对结果，因此本文不报告 LongMemEval headline accuracy。
-已有 smoke artifacts 只能证明链路可运行，不能作为公开质量数字。
+mem0 则在写入阶段就使用 LLM 抽取事实。它付出了额外成本，但也把长对话压缩成更接近问题语义的记忆单元。
+当问题换一种说法时，mem0 更有机会召回已经规范化的事实；Pony 必须依赖问题和原文共享足够多的词。
 
-## 4. 协议与可审计性
+### 2. BM25 解决的是词面相关性，不是语义等价
 
-冻结协议为 `pony-public-memory-v2`：
+Pony 当前 tokenizer 对英文使用单词匹配。问题中的词没有出现在相关对话里，即使两句话语义相同，BM25 也不会
+因为“意思相近”而加分。例如：
 
-- answer/judge temperature 为 0；
-- reader budget 为 6144 tokens；
-- workers 为 4，只并发独立 case/context；
-- 单个 context 内增量写入与问题顺序保持串行；
-- 单个模型调用不自动 retry；
-- live failure 后依赖逐题 artifact 显式 resume；
-- 每个完成行原子落盘，artifact 上限 64 MiB；
-- benchmark 共用 Pony 的 Provider resolver 和 transport factory；
-- 不向 runtime package 引入 mem0、Qdrant 或其他 benchmark dependency。
+- “更喜欢小型聚会”与“在人多的活动中感到疲惫”；
+- “重新开始写理财博客”与“恢复了对个人财务的兴趣”；
+- “不再参加烹饪课”与“兴趣从烹饪转向音乐”。
 
-正式 `publishable=true` paired report 还要求：两侧同 clean commit、同完整 Case ID 集合、达到 benchmark
-expected count、全部已评分、零 failure，并且所有可比 run metadata 一致。本轮 434/246 证据没有满足完整
-589-case paired gate，所以分析 artifact 显式标记为 post-hoc、non-publishable-as-full-benchmark。
+这些问题需要同义改写、因果联系或状态变化理解。embedding 检索天然更适合寻找语义接近的记忆；纯 BM25
+只有在关键词重合足够明显时才稳定。
 
-## 5. 统计方法
+代码中的 `pony/memory/retrieval.py` 也明确记录了这一限制：它是 keyword-level matching，不提供 semantic
+similarity。这不是实现 bug，而是当前算法边界。
 
-### 5.1 单侧 accuracy 与 Wilson interval
+### 3. Pony 的文档和返回粒度过粗
 
-Accuracy 为 `correct / scored`。Wilson interval 比简单的正态近似更适合有限样本的二项比例；
-434 题 Pony 快照为 43.55%，95% interval 为 38.96%–48.25%。
+本次 PersonaMem 适配把 6425 个 context item 写成 246 个 transcript note；部分首段 note 接近 128 KiB 上限。
+检索先给整个 note 排名，然后每个命中的 note 只返回一个 `_best_passage`，最多返回 6 个 note。
 
-### 5.2 Paired bootstrap
+这会产生三层信息损失：
 
-对相同 Case ID 的逐题差值 `Pony_correct - mem0_correct` 做固定 seed 的 10,000 次有放回重采样。
-246 题 delta 为 -25.20 pp，95% interval 完全低于 0，说明差距不只是总体百分比的偶然波动。
+1. 相关事实位于长 note 中，但整篇文档的 BM25 分数不够高，note 没进入前 6；
+2. note 进入前 6，但同一 note 中有多个必要事实，最终只返回词面最匹配的一个段落；
+3. 偏好演化需要“过去状态 + 更新原因 + 当前状态”，三段证据可能被拆开，而回答模型只看到其中一段。
 
-### 5.3 Exact McNemar
+所以“数据已经存进文件”不等于“回答时拿到了完整证据”。本轮短板主要发生在从持久化文本到模型上下文的
+转换过程。
 
-配对结果中 Pony-only correct 为 13，mem0-only correct 为 75，discordant pairs 为 88。
-Exact McNemar `p=9.33e-12`，拒绝两侧错误率相同的假设。这个检验只说明该 subset 上存在稳定差异，
-不把 post-hoc subset 自动升级成全数据集结论。
+### 4. Pony 的 field boost 和 link expansion 在该适配中基本没有发挥作用
 
-## 6. 分问题类型结果
+Pony BM25 支持对 `name`、`description`、`tags`、`aliases` 加权，也支持 `[[name]]` 一跳链接扩展；但 benchmark
+adapter 生成的 note 使用 opaque name、统一的 `type: transcript` 和 `description: conversation transcript`，
+没有主题 tags、aliases 或实体链接。
 
-| Question type | N | Pony | mem0 | Delta | W/T/L | McNemar p |
-|---|---:|---:|---:|---:|---:|---:|
-| `generalizing_to_new_scenarios` | 27 | 37.0% | 74.1% | -37.0 pp | 2/13/12 | 0.01294 |
-| `provide_preference_aligned_recommendations` | 28 | 46.4% | 71.4% | -25.0 pp | 1/19/8 | 0.03906 |
-| `recall_user_shared_facts` | 51 | 52.9% | 78.4% | -25.5 pp | 2/34/15 | 0.00235 |
-| `recalling_facts_mentioned_by_the_user` | 6 | 0.0% | 33.3% | -33.3 pp | 0/4/2 | 0.5 |
-| `recalling_the_reasons_behind_previous_updates` | 40 | 45.0% | 75.0% | -30.0 pp | 1/26/13 | 0.001831 |
-| `suggest_new_ideas` | 36 | 16.7% | 38.9% | -22.2 pp | 3/22/11 | 0.05737 |
-| `track_full_preference_evolution` | 58 | 39.7% | 56.9% | -17.2 pp | 4/40/14 | 0.03088 |
+因此，生产检索器已有的结构化能力没有被数据适配层利用。最终几乎只剩正文 BM25，不能把“偏好”“原因”“人物”
+和“时间变化”等字段作为强信号。
 
-最明显的差距出现在新场景泛化（-37.0 pp）、更新原因回忆（-30.0 pp）和用户事实回忆（-25.5 pp）。
-`recalling_facts_mentioned_by_the_user` 只有 6 题，interval 很宽且 McNemar 不显著，不应基于它单独下结论。
+### 5. 逐题行为说明主要瓶颈是证据覆盖，而不是选项判断
 
-## 7. 错误分析
+仓库现有的 246 题严格配对子集提供了逐题诊断。它不是新的最终榜单，但能解释差距发生在哪里：
 
-### 7.1 主要差异是 answer coverage，而不是选项判断能力
-
-在严格 246 题 subset 上：
-
-| Diagnostic | Pony | mem0 |
+| Diagnostic（246 题配对子集） | Pony | mem0 |
 |---|---:|---:|
-| 返回 A/B/C/D 的题数 | 130 | 209 |
 | Answer coverage | 52.85% | 84.96% |
-| 返回选项后的 conditional accuracy | 74.62% | 76.08% |
-| `I do not know` | 116 | 37 |
 | Abstention rate | 47.15% | 15.04% |
+| 已返回 A/B/C/D 后的 conditional accuracy | 74.62% | 76.08% |
+| 平均检索 tokens | 754.5 | 1117.7 |
 
-两侧一旦返回选项，conditional accuracy 很接近；总体差距主要伴随 Pony 更高的 abstention。
-逐题看，56 个 case 是“Pony abstain、mem0 correct”，19 个是“Pony 返回错误选项、mem0 correct”，
-13 个是“Pony correct、mem0 wrong/abstain”。
+最关键的是：**一旦两边真正返回选项，conditional accuracy 只差 1.46 个百分点；但 answer coverage 相差
+32.11 个百分点。**
 
-这不是严格的因果分解，但它把优化重点从“换更强 reader”转向“让 memory extraction/retrieval 更稳定地提供
-足够证据”。
+在这个子集的 75 道 “mem0 对、Pony 错” 题中：
 
-### 7.2 检索上下文长度提供了相关性线索
+- 56 题是 Pony 拒答、mem0 答对；
+- 19 题是 Pony 返回错误选项、mem0 答对。
 
-paired subset 中，Pony 平均返回 754.5 tokens，中位数 668.5；mem0 平均返回 1117.7 tokens，
-中位数 1123.5。两侧上限预算相同，但实际送给 reader 的有效记忆量不同。
+这说明多数净损失发生在 Pony 没有获得足以作答的证据时。共同的回答模型遵守了“证据不足就说不知道”的 prompt，
+高 abstention 是上游记忆覆盖不足的结果，而不是 reader 不会做选择题。
 
-不能据此直接断言“token 越多越好”：更多文本也可能引入噪声，而且两个系统的 memory representation 不同。
-但结合 Pony 的高 abstention，当前最值得验证的假设是：简单 transcript-to-notes + BM25 对隐含偏好、原因和
-跨阶段演化的覆盖不足。
+平均 token 数只能作为相关线索，不能解释成“文本越多越好”。真正重要的是 mem0 返回的内容更可能覆盖问题所需事实；
+盲目把 Pony token budget 填满，也可能只增加无关 transcript 噪声。
 
-### 7.3 下一步最小优化顺序
+### 6. PersonaMem 的难题类型正好击中 Pony 当前边界
 
-1. **先改 extraction coverage**：把偏好、原因、事实、状态变化分别写成可检索的结构化 note，而不是只保留中性文本块。
-2. **再改 retrieval query**：对 preference evolution、reason 和 generalization 做有限的 query expansion；保持同一 reader budget。
-3. **增加 evidence-aware fallback**：只在检索确实缺证据时 abstain，不通过 prompt 强迫盲猜。
-4. **每次优化先跑固定 paired slice**：保留相同 Case ID，先看 abstention、W/T/L 与 McNemar，再决定是否扩大 live run。
-5. **最后才扩展模型或预算**：否则无法区分记忆算法收益与 reader/model 成本增长。
+246 题配对子集中，Pony 相对 mem0 的主要差距为：
 
-## 8. 工程实现与 Akashic 参考
+| Question type | Pony - mem0 |
+|---|---:|
+| 新场景泛化 | -37.0 pp |
+| 回忆先前更新的原因 | -30.0 pp |
+| 回忆用户共享事实 | -25.5 pp |
+| 偏好对齐推荐 | -25.0 pp |
+| 提出新想法 | -22.2 pp |
+| 跟踪完整偏好演化 | -17.2 pp |
 
-实现保持在 `benchmarks/memory_public/`：
+这些任务不仅要求找到一句原文，还要求把记忆转换成稳定的用户状态：
 
-- `datasets.py`：严格加载 LongMemEval 与 PersonaMem，拒绝重复或畸形记录；
-- `backends.py`：Pony、mem0 与 full-context diagnostic backend；
-- `run.py`：answer、judge、resume、原子 artifact 与 paired report CLI；
-- `scoring.py`：PersonaMem exact match、LongMemEval judge 和配对统计。
+- **泛化**要求从旧偏好推断新场景；
+- **原因回忆**要求同时关联事件与动机；
+- **偏好演化**要求区分旧状态、更新事件和当前状态；
+- **推荐与新想法**要求把多条偏好组合后再应用。
 
-结构参考并适配了 Akashic 的 `eval/longmemeval/`：复用了 benchmark-only package、严格数据加载、逐题隔离、
-resume 和机器可读 artifact 等思想，但没有逐行复制。Pony 版本增加了 PersonaMem prefix boundary、mem0 backend、
-Provider/config 共用、失败可恢复和完整配对门槛。
+mem0 的抽取和语义检索与这些任务更匹配。Pony 的原始文本块加词法检索更适合明确关键词的事实查找，对组合、
+改写和时间演化能力不足。
 
-benchmark 代码不进入 `pony/` runtime package，也没有增加运行时依赖；Fake Provider 仍留在 benchmark/test 边界。
+## 这次结果真正说明了什么
 
-## 9. nanobot 仓库审计的安全表述
+### 可以下的结论
 
-截至 2026-08-05，审计的 nanobot commit 为 `5a1ab44baa6d68038ea452586197e5a9354d180e`，
-当时记录的 GitHub stars 为 46,641。完整仓库树中发现了面向外部 eval runner 的 LongMemEval transcript
-ingestion 示例，但没有发现 checked-in public memory benchmark harness、结果 artifact 或公开 memory-quality 数字。
+1. **当前 Pony User-Notes/BM25 方案在 PersonaMem 上显著落后 mem0 OSS。** 22.41 pp 和 132 题不是可忽略差距。
+2. **主要工程瓶颈位于记忆写入表示与检索覆盖。** 逐题子集中的 conditional accuracy 接近，但 Pony 拒答明显更多。
+3. **Pony 的通用检索能力没有被 benchmark adapter 充分利用。** adapter 没有生成 tags、aliases、links 或状态字段。
+4. **mem0 的优势有真实成本。** 它使用额外 LLM 抽取、embedding 和 Qdrant，不能把提升全部归因于一个向量搜索调用。
+5. **Pony 当前产品边界与 PersonaMem 目标不完全一致。** Pony 生产设计强调用户明确授权后保存高精度 notes；
+   PersonaMem 测的是自动吸收全部对话并长期维护 persona。若要追平，需要明确扩大产品能力，而不只是调参。
 
-可以说：
+### 不能下的结论
 
-> 我在给自己的 Agent 建公开记忆评测时，也审计了 4.6 万 star 的 nanobot；它提供 LongMemEval ingestion
-> 示例，但在所审计 commit 中没有 checked-in 的公开记忆质量评测框架或结果。
+1. 不能说 132 道题全部是 BM25 召回失败；完整 589 题还缺逐题错误归因。
+2. 不能说“向量检索一定比 BM25 好 22.41 pp”；两侧的抽取、表示、更新和计算成本都不同。
+3. 不能说最终回答模型是主要差异；两侧 reader 相同，子集 conditional accuracy 也接近。
+4. 不能把更多 retrieved tokens 直接当成原因；相关证据密度比 token 数更重要。
+5. 不能通过取消 abstention、强迫模型猜选项来宣称修复；那会掩盖检索问题并增加错误答案。
 
-不要说“nanobot 没有任何记忆评测”，因为仓库审计无法证明维护者从未做过未公开或仓库外评测。
+## 最小、可验证的改进顺序
 
-## 10. 简历与面试叙事
+如果目标是在不立刻复制 mem0 全套架构的前提下提高 Pony，应该先修最便宜、最接近根因的部分：
 
-### 10.1 推荐简历版本
+1. **把检索单元从 note 降到 passage。** 对每个对话段落独立评分，允许同一 note 返回多个相关 passage，避免
+   “整篇排名 + 单段返回”的双重丢失。
+2. **让 benchmark adapter 生成结构化字段。** 至少写入 `topic`、实体、偏好、原因、时间和状态类型，使现有
+   field boost 真正生效。
+3. **增加有限 query expansion。** 针对 preference、reason、evolution 等已知题型扩展同义词和状态词；先验证
+   词法方案的上限，再决定是否引入 embedding。
+4. **显式表示状态更新。** 保留来源和时间，同时把“当前事实”与“已被取代的旧事实”区分开，减少矛盾 transcript
+   同时进入上下文。
+5. **最后评估语义检索或 LLM extraction。** 这一步最可能继续缩小差距，但会改变成本、隐私、授权和依赖边界，
+   应作为产品决策，而不是悄悄加入的 benchmark 特例。
 
-> 为自研 coding agent 的 User-Notes/BM25 记忆系统接入 LongMemEval 与 PersonaMem，并实现 mem0 OSS
-> baseline、断点续跑、逐题 artifact 和配对统计；PersonaMem 434-case interim evaluation 达到 **43.5%**
-> accuracy（189/434），在 246 个严格配对 Case 上为 **39.4% vs mem0 64.6%**，用 bootstrap CI 与
-> McNemar 检验量化 **-25.2 pp** 差距并定位 retrieval coverage/abstention 为首要优化方向。
+每一步都应在同一 589 Case ID、相同 reader、prompt、temperature 和 6144-token budget 下单独 A/B；同时报告：
 
-如果简历空间很小：
+- overall accuracy；
+- answer coverage 与 abstention；
+- conditional accuracy；
+- paired win/tie/loss；
+- exact McNemar 和 paired bootstrap CI；
+- 写入调用数、延迟、token 与基础设施成本。
 
-> Built auditable LongMemEval/PersonaMem evaluation for Pony memory with a pinned mem0 baseline; measured
-> 43.5% on a 434-case PersonaMem interim run and diagnosed a -25.2 pp gap on 246 matched cases.
+这样才能回答“提升来自哪里、值不值得付出成本”，而不只是得到一个更高但无法解释的总分。
 
-### 10.2 面试展开顺序
+## 面试回答模板
 
-1. **问题**：memory demo 只能证明“能存、能搜”，不能证明长期记忆质量。
-2. **方法**：引入公开数据集、prefix leakage boundary、统一 reader model/budget 和逐题 artifact。
-3. **工程**：live run 可恢复、失败不丢已完成 sibling、报告对 metadata 和 Case ID fail closed。
-4. **数字**：先报 43.5% 的 N 与 CI，再明确 246-case paired 结果 39.4% vs 64.6%。
-5. **洞察**：Pony 与 mem0 在“已返回选项”时准确率接近，但 Pony abstention 47.2% vs 15.0%。
-6. **决策**：不先堆模型或 token，而是优先改结构化 extraction 与 retrieval coverage。
-7. **边界**：主动说明 43.5% 是 interim snapshot、paired subset 是 post-hoc，不伪装成 full leaderboard。
-8. **行业观察**：用 nanobot 的 bounded repository audit 说明公开、checked-in memory evaluation 仍不普遍。
+### 30 秒版本
 
-这套叙事的亮点不是“打赢 mem0”，而是：能设计公平实验、发现自己的系统落后、量化根因线索，并把结果转成
-下一轮工程优先级。对面试官而言，这通常比选择性展示一个高分更可信。
+> 我用 589 道 PersonaMem 题比较了 Pony 的 User-Notes/BM25 和 mem0 OSS。Pony 是 249/589，42.28%；
+> mem0 是 381/589，64.69%，Pony 少答对 132 题，差 22.41 个百分点。根因不是最终回答模型，因为两边 reader、
+> prompt、temperature 和检索预算相同。真正差别在记忆管线：Pony 直接保存长 transcript，用 top-6 词法 BM25；
+> mem0 先用 LLM 抽取事实，再用 embedding 和 Qdrant 做语义检索。246 题逐题诊断里，两边返回选项后的准确率
+> 约 75%，但 Pony 的回答覆盖率只有 52.85%，mem0 是 84.96%，所以主要损失来自证据没有稳定召回，模型因此拒答。
 
-## 11. 证据与复现
+### 2 分钟版本
 
-Git 忽略的本地证据：
+> 这次比较最重要的不是只报 42.28% 对 64.69%，而是解释 22.41 个百分点从哪里来。两边最终答题条件相同：
+> 同一批 589 题、同一 qwen3.7-max reader、同一 prompt、temperature=0、同一 6144-token 上限，所以差距主要来自
+> reader 之前的 memory pipeline。
+>
+> Pony 的 benchmark adapter 没有做知识抽取，只把原始对话写成较大的 Markdown note。检索时使用纯 BM25，最多
+> 取 6 个 note，而且每个 note 只返回一个最佳 passage。这样在同义改写、原因关联和偏好演化题中，很容易出现
+> “内容存着，但没有作为完整证据送到模型”的情况。生成的 note 又没有主题 tags、aliases 或 links，所以 Pony 已有的
+> field boost 和 link expansion 基本没有发挥作用。
+>
+> mem0 在写入时额外调用 LLM，把对话抽取成较原子的事实，再用 embedding 和 Qdrant 做语义检索。它更能处理
+> 问题与原文措辞不同、需要组合多条状态的场景，但代价是更多模型调用、延迟、费用和基础设施。
+>
+> 最有说服力的证据来自 246 题逐题子集：Pony 和 mem0 在已经返回 A/B/C/D 后的准确率分别是 74.62% 和 76.08%，
+> 差得不多；但回答覆盖率是 52.85% 对 84.96%。75 道 mem0-only correct 中，有 56 道是 Pony 直接拒答。因此我把
+> 根因定位为 extraction/retrieval coverage，而不是先换更强 reader 或强迫模型猜答案。
+>
+> 下一步我会按成本从低到高做 passage-level BM25、结构化 note、有限 query expansion 和状态更新建模，再评估是否
+> 值得引入 embedding 或自动 LLM extraction。每一步保持同一 Case ID 和 reader 做 paired A/B，才能知道收益到底来自哪里。
 
-```text
-benchmarks/memory_public/results/personamem-pony-434-snapshot-20260805.json
-benchmarks/memory_public/results/personamem-434-and-paired-246-analysis-20260805.json
-benchmarks/memory_public/results/personamem-434-and-paired-246-analysis-20260805.md
-benchmarks/memory_public/results/archive-67626ead-20260805/personamem-v2-pony-20260805.json
-benchmarks/memory_public/results/archive-67626ead-20260805/personamem-v2-mem0-20260805.json
-```
+### 常见追问
 
-核验时至少检查：
+**为什么不直接换成向量数据库？**
 
-- 434 snapshot 为 189 correct、434 scored、434 unique Case IDs、零 failure；
-- paired subset 为 246 个相同 Case IDs、两侧同 commit 和同 protocol metadata；
-- Pony paired 为 97/246，mem0 为 159/246；
-- paired W/T/L 为 13/158/75；
-- bootstrap interval 与 McNemar p 可由 `benchmarks.memory_public.scoring` 独立复算；
-- 文档不把 434/246 结果标成 full `publishable=true`。
+因为那会同时改变依赖、成本、隐私和运行边界。先修 passage 粒度和结构化 note，可以用最小改动验证 BM25 还能追回
+多少分；只有词法上限被证实后，再引入 embedding，结论才可解释。
 
-## 12. 局限
+**这是不是说明 Pony 的记忆设计失败？**
 
-1. 43.5% 是用户指定的 434-case post-hoc interim snapshot，不是 589-case final score。
-2. 246-case subset 是先完成的 16 个 shared contexts，不是预注册随机样本。
-3. 当前没有完整 589-case mem0 artifact，因此不能给出 PersonaMem full paired comparison。
-4. 当前没有 LongMemEval 500-case paired result，smoke run 不能替代正式数字。
-5. Temperature 0 不保证云端模型跨请求绝对确定；重复 run 仍可能有轻微变化。
-6. PersonaMem adaptation 与官方 full-context setting 不可直接比较。
-7. benchmark ingestion adapter 不代表生产 Agent 自动 memory formation 的真实分布。
-8. 检索 token 数与 abstention 的关系是诊断相关性，不是已证明的因果关系。
+说明当前方案不适合“自动吸收全部对话并维护长期 persona”这一任务。Pony 原设计偏向用户明确授权后保存高精度、
+可审计的 notes，目标不同。但如果产品要宣称通用长期记忆，42.28% 就是必须正视的能力缺口，不能用产品边界回避。
+
+**为什么说不是回答模型的问题？**
+
+两侧最终 reader 完全相同；而且逐题子集中，一旦系统返回选项，conditional accuracy 分别为 74.62% 和 76.08%。
+真正拉开总准确率的是 Pony 更高的 abstention，说明上游证据覆盖不足。
+
+**132 道题能否全部归因于检索？**
+
+不能。132 是两边总正确数的净差，不等于 132 个纯 retrieval miss。完整归因需要 589 题逐题配对 artifact，区分
+双方都对、双方都错、Pony-only correct 和 mem0-only correct。现有 246 题诊断支持“覆盖率是主要原因”，但不应把
+相关证据夸大成对全部 132 题的逐题因果证明。
+
+**怎样证明优化真的有效？**
+
+保持数据、Case ID、reader、prompt、temperature 和 budget 不变，只替换一个 memory stage；报告 paired
+win/tie/loss、McNemar、bootstrap CI、coverage、abstention 和成本。如果只报新的 overall accuracy，就无法判断提升
+来自更好的记忆、更多 token、额外模型计算还是随机波动。
