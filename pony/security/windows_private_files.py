@@ -341,7 +341,7 @@ def write_private_bytes_atomic(
         if validate_commit is not None:
             validate_commit()
         committed = True
-        if existing is not None:
+        if existing_identity is not None:
             native.delete_file(backup)
         return path
     except BaseException as exc:
