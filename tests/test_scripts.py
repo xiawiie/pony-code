@@ -129,9 +129,12 @@ def test_ci_probes_native_windows_capabilities_and_file_semantics():
     assert "-Script scripts/windows/verify_full_runtime.ps1" in windows
     assert "--expect-elevated-rejection" in windows
     assert "-Script scripts/windows/probe_shell_backend.py" in windows
-    assert '[Guid]::NewGuid().ToString("N")' in Path(
-        "scripts/windows/run_as_standard_user.ps1"
-    ).read_text(encoding="utf-8")
+    runner = Path("scripts/windows/run_as_standard_user.ps1").read_text(
+        encoding="utf-8"
+    )
+    assert '[Guid]::NewGuid().ToString("N")' in runner
+    assert '$userRoot = Join-Path $controlRoot "profile"' in runner
+    assert '"${currentPrincipal}:F"' in runner
     assert "continue-on-error" not in windows
 
 
