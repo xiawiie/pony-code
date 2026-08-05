@@ -1,5 +1,6 @@
 """Probe Pony's production Windows executable and PowerShell boundaries."""
 
+import argparse
 import json
 import os
 from pathlib import Path
@@ -13,7 +14,19 @@ def _stage(name):
 
 
 
-def probe():
+def _parser():
+    parser = argparse.ArgumentParser(
+        description="Probe Pony's production Windows executable and PowerShell boundaries."
+    )
+    parser.add_argument(
+        "--expect-elevated-rejection",
+        action="store_true",
+        help="require the elevated account to be rejected as an executable trust root",
+    )
+    return parser
+
+
+def probe(*, expect_elevated_rejection=False):
     root_path = Path(__file__).resolve().parents[2]
     if str(root_path) not in sys.path:
         sys.path.insert(0, str(root_path))
@@ -44,6 +57,19 @@ def probe():
             / "v1.0"
             / "powershell.exe"
         )
+        if expect_elevated_rejection:
+            try:
+                _verified_executable_identity(powershell_path)
+            except ValueError as exc:
+                if str(exc) != "mutable trusted executable directory":
+                    raise
+            else:
+                raise RuntimeError("elevated executable trust root was not rejected")
+            return {
+                "schema_version": 1,
+                "elevated_executable_trust_rejected": True,
+            }
+
         _verified_executable_identity(powershell_path)
         trusted = build_trusted_executables(root, env=env)
         powershell = trusted.get("powershell")
@@ -109,12 +135,13 @@ def probe():
     }
 
 
-def main():
+def main(argv=None):
+    args = _parser().parse_args(argv)
     if os.name != "nt":
         print("windows_shell_probe_requires_windows", file=sys.stderr)
         return 2
     try:
-        report = probe()
+        report = probe(expect_elevated_rejection=args.expect_elevated_rejection)
     except BaseException as exc:
         traceback.print_exc()
         print(f"windows_shell_probe_failed: {exc}", file=sys.stderr, flush=True)

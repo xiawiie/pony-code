@@ -122,46 +122,66 @@ jobs:
           uv run python -c "import prompt_toolkit; import pony.tui.app"
 
       - name: Probe native Windows capabilities
+        if: ${{ !cancelled() }}
         run: python scripts/windows/probe_capabilities.py --pretty
 
       - name: Probe native Windows file semantics
+        if: ${{ !cancelled() }}
         run: python scripts/windows/probe_file_semantics.py --pretty
 
       - name: Probe native Windows DACL semantics
+        if: ${{ !cancelled() }}
         run: python scripts/windows/probe_dacl_semantics.py --pretty
 
       - name: Probe native Windows atomic-write semantics
+        if: ${{ !cancelled() }}
         run: python scripts/windows/probe_atomic_write_semantics.py --pretty
 
       - name: Probe Pony Windows private-file backend
+        if: ${{ !cancelled() }}
         run: python scripts/windows/probe_private_files_backend.py
 
       - name: Probe Pony Windows migration backend
+        if: ${{ !cancelled() }}
         run: python scripts/windows/probe_migration_backend.py
 
       - name: Probe Pony Windows Git metadata backend
+        if: ${{ !cancelled() }}
         run: python scripts/windows/probe_git_metadata_backend.py
 
       - name: Probe Pony Windows workspace-file backend
+        if: ${{ !cancelled() }}
         run: python scripts/windows/probe_workspace_files_backend.py
 
       - name: Probe Pony Windows memory backend
+        if: ${{ !cancelled() }}
         run: python scripts/windows/probe_memory_backend.py
 
       - name: Probe native Windows lock semantics
+        if: ${{ !cancelled() }}
         run: python scripts/windows/probe_lock_semantics.py --pretty
 
       - name: Probe Pony Windows file-lock backend
+        if: ${{ !cancelled() }}
         run: python scripts/windows/probe_file_lock_backend.py
 
       - name: Probe native Windows Job Object semantics
+        if: ${{ !cancelled() }}
         run: python scripts/windows/probe_job_semantics.py --pretty
 
       - name: Probe Pony Windows process backend
+        if: ${{ !cancelled() }}
         run: python scripts/windows/probe_process_backend.py
 
-      - name: Probe Pony Windows shell backend
-        run: python scripts/windows/probe_shell_backend.py
+      - name: Prove elevated Windows shell trust fails closed
+        if: ${{ !cancelled() }}
+        run: >-
+          python scripts/windows/probe_shell_backend.py
+          --expect-elevated-rejection
+
+      - name: Probe Pony Windows shell backend as a standard user
+        if: ${{ !cancelled() }}
+        run: scripts/windows/run_shell_probe_as_standard_user.ps1
 
   macos-focused:
     name: macOS focused (Python 3.12)
