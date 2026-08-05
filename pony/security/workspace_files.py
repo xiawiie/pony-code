@@ -30,6 +30,15 @@ def read_regular_bytes_anchored(
     workspace_root, raw_path, *, max_bytes, expected_root_identity=None
 ):
     """Read one relative regular file once through an anchored bounded fd."""
+    if os.name == "nt":
+        from .windows_workspace_files import read_regular_bytes_anchored as windows_read
+
+        return windows_read(
+            workspace_root,
+            raw_path,
+            max_bytes=max_bytes,
+            expected_root_identity=expected_root_identity,
+        )
     parts = _workspace_relative_parts(raw_path)
     limit = int(max_bytes)
     if limit < 0:
@@ -141,6 +150,15 @@ def list_directory_names_anchored(
     expected_root_identity=None,
 ):
     """List one directory without following or returning unsafe entries."""
+    if os.name == "nt":
+        from .windows_workspace_files import list_directory_names_anchored as windows_list
+
+        return windows_list(
+            workspace_root,
+            raw_path,
+            max_entries=max_entries,
+            expected_root_identity=expected_root_identity,
+        )
     parts = _workspace_relative_parts(raw_path, allow_root=True)
     limit = int(max_entries)
     if limit < 1:
@@ -442,6 +460,21 @@ def write_regular_bytes_anchored_atomic(
     fsync_parent=None,
 ):
     """CAS-check and atomically replace one workspace regular file."""
+    if os.name == "nt":
+        from .windows_workspace_files import (
+            write_regular_bytes_anchored_atomic as windows_write,
+        )
+
+        return windows_write(
+            workspace_root,
+            raw_path,
+            data,
+            max_bytes=max_bytes,
+            expected_sha256=expected_sha256,
+            expected_root_identity=expected_root_identity,
+            fsync_file=fsync_file,
+            fsync_parent=fsync_parent,
+        )
     request = _workspace_write_request(
         workspace_root,
         raw_path,
