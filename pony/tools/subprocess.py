@@ -236,12 +236,17 @@ def _require_immutable_windows_directory(path):
 
     path = native.lexical_absolute(path)
     current = Path(path.anchor)
-    for component in (None, *path.parts[1:]):
+    components = path.parts[1:]
+    for index, component in enumerate((None, *components)):
         if component is not None:
             current /= component
         with native.open_path(current, directory=True, single_link=False):
             pass
-        if native.path_is_mutable_by_current_user(current, directory=True):
+        if native.path_is_mutable_by_current_user(
+            current,
+            directory=True,
+            contents=index == len(components),
+        ):
             raise ValueError("mutable trusted executable directory")
     return path
 
