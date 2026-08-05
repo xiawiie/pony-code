@@ -14,7 +14,6 @@ def _stage(name):
 
 def _report_mutable_directory_access(native, path):
     accesses = (
-        ("write_attributes", native._FILE_WRITE_ATTRIBUTES),
         ("delete", native._DELETE),
         ("write_dacl", native._WRITE_DAC),
         ("write_owner", native._WRITE_OWNER),
