@@ -83,7 +83,15 @@ def _relative(value):
     return path
 
 
-def _manifest(path):
+def _manifest(path, *, trusted_root=None, trusted_root_identity=None):
+    if os.name == "nt":
+        from pony.security.windows_private_directories import private_tree_manifest
+
+        return private_tree_manifest(
+            path,
+            trusted_root=trusted_root,
+            trusted_root_identity=trusted_root_identity,
+        )
     root = require_directory_no_symlink(path)
     digest = hashlib.sha256()
     for item in sorted(
@@ -177,6 +185,7 @@ class Migration:
         self.workspace_identity, self.validate = dict(workspace_identity), validate
         self.validate_candidate = validate_candidate
         self._area_identity = None
+        self._root_identity = private_directory_identity(self.root)
 
     def status(self):
         if not self.area.exists():
@@ -193,6 +202,19 @@ class Migration:
         area_identity = self._trusted_area_identity()
         if private_directory_identity(self.root).filesystem_id != area_identity.filesystem_id:
             raise ValueError("candidate is on another filesystem")
+
+    def _trusted_root_identity(self):
+        current = private_directory_identity(self.root)
+        if current != self._root_identity:
+            raise ValueError("migration root changed")
+        return self._root_identity
+
+    def _manifest(self, path):
+        return _manifest(
+            path,
+            trusted_root=self.root,
+            trusted_root_identity=self._trusted_root_identity(),
+        )
 
     def _trusted_area_identity(self):
         current = private_directory_identity(self.area)
@@ -258,6 +280,8 @@ class Migration:
 
     @staticmethod
     def _fsync_dir(path):
+        if os.name == "nt":
+            return
         descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
         try:
             os.fsync(descriptor)
@@ -265,6 +289,15 @@ class Migration:
             os.close(descriptor)
 
     def _remove_tree(self, path):
+        if os.name == "nt":
+            from pony.security.windows_private_directories import remove_private_tree
+
+            remove_private_tree(
+                path,
+                trusted_root=self.root,
+                trusted_root_identity=self._trusted_root_identity(),
+            )
+            return
         shutil.rmtree(path)
         self._fsync_dir(path.parent)
 
@@ -273,6 +306,22 @@ class Migration:
         self._fsync_dir(self.journal.parent)
 
     def _rename(self, source, destination):
+        if os.name == "nt":
+            from pony.security.windows_private_directories import (
+                DirectoryMoveAmbiguous,
+                move_private_directory,
+            )
+
+            try:
+                move_private_directory(
+                    source,
+                    destination,
+                    trusted_root=self.root,
+                    trusted_root_identity=self._trusted_root_identity(),
+                )
+            except DirectoryMoveAmbiguous as exc:
+                raise PrivateAtomicWriteError(str(exc)) from exc
+            return
         require_directory_no_symlink(source)
         if destination.exists() or destination.is_symlink():
             raise ValueError("migration destination exists")
@@ -304,7 +353,7 @@ class Migration:
                         "candidate": self.candidate_rel.as_posix(),
                         "rollback": self.rollback_rel.as_posix(),
                     },
-                    "source_identity": _manifest(self.live),
+                    "source_identity": self._manifest(self.live),
                     "candidate_identity": {},
                     "error_code": "",
                 }
@@ -317,7 +366,7 @@ class Migration:
                     != private_directory_identity(self.root).filesystem_id
                 ):
                     raise ValueError("candidate is on another filesystem")
-                value["candidate_identity"] = _manifest(self.candidate)
+                value["candidate_identity"] = self._manifest(self.candidate)
                 value = self._write(value, CANDIDATE_READY)
             return self._advance(value)
 
@@ -325,8 +374,8 @@ class Migration:
         state = value["state"]
         if state == CANDIDATE_READY:
             if (
-                _manifest(self.live) != value["source_identity"]
-                or _manifest(self.candidate) != value["candidate_identity"]
+                self._manifest(self.live) != value["source_identity"]
+                or self._manifest(self.candidate) != value["candidate_identity"]
             ):
                 raise ValueError("migration_identity_mismatch")
             if (

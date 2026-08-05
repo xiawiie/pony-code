@@ -135,6 +135,15 @@ class _FileDispositionInfo(ctypes.Structure):
     _fields_ = (("DeleteFile", wintypes.BOOLEAN),)
 
 
+class _FileRenameInfo(ctypes.Structure):
+    _fields_ = (
+        ("ReplaceIfExists", wintypes.BOOLEAN),
+        ("RootDirectory", wintypes.HANDLE),
+        ("FileNameLength", wintypes.DWORD),
+        ("FileName", wintypes.WCHAR * 1),
+    )
+
+
 class _SidAndAttributes(ctypes.Structure):
     _fields_ = (("Sid", wintypes.LPVOID), ("Attributes", wintypes.DWORD))
 
@@ -966,29 +975,31 @@ def make_private(handle):
         )
 
 
-def read_bytes(handle, *, max_bytes=None):
+def read_chunks(handle):
     native = api()
     if not native.kernel32.SetFilePointerEx(handle.value, 0, None, 0):
         _winerror("SetFilePointerEx failed")
-    chunks = []
-    remaining = None if max_bytes is None else int(max_bytes) + 1
-    while remaining is None or remaining > 0:
-        size = 64 * 1024 if remaining is None else min(64 * 1024, remaining)
-        buffer = ctypes.create_string_buffer(size)
+    while True:
+        buffer = ctypes.create_string_buffer(64 * 1024)
         read = wintypes.DWORD()
         if not native.kernel32.ReadFile(
-            handle.value, buffer, size, ctypes.byref(read), None
+            handle.value, buffer, len(buffer), ctypes.byref(read), None
         ):
             _winerror("ReadFile failed")
         if not read.value:
-            break
-        chunks.append(buffer.raw[: read.value])
-        if remaining is not None:
-            remaining -= read.value
-    data = b"".join(chunks)
-    if max_bytes is not None and len(data) > int(max_bytes):
-        raise ValueError("private file too large")
-    return data
+            return
+        yield buffer.raw[: read.value]
+
+
+def read_bytes(handle, *, max_bytes=None):
+    chunks = []
+    total = 0
+    for chunk in read_chunks(handle):
+        total += len(chunk)
+        if max_bytes is not None and total > int(max_bytes):
+            raise ValueError("private file too large")
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 def write_bytes(handle, data, *, append=False):
@@ -1022,6 +1033,21 @@ def truncate(handle, size):
         _winerror("SetEndOfFile failed")
     if not native.kernel32.FlushFileBuffers(handle.value):
         _winerror("FlushFileBuffers failed")
+
+
+def rename_handle(handle, destination_parent, destination_name):
+    name = lexical_component(destination_name).encode("utf-16-le")
+    size = _FileRenameInfo.FileName.offset + len(name)
+    buffer = ctypes.create_string_buffer(size)
+    info = _FileRenameInfo.from_buffer(buffer)
+    info.ReplaceIfExists = False
+    info.RootDirectory = destination_parent.value
+    info.FileNameLength = len(name)
+    ctypes.memmove(
+        ctypes.addressof(buffer) + _FileRenameInfo.FileName.offset, name, len(name)
+    )
+    if not api().kernel32.SetFileInformationByHandle(handle.value, 3, buffer, size):
+        _winerror("SetFileInformationByHandle rename failed")
 
 
 def delete_handle(handle):
@@ -1069,6 +1095,7 @@ def replace_file(target, replacement, backup=None):
 FILE_READ_ACCESS = _FILE_READ_DATA | _FILE_READ_ATTRIBUTES | _READ_CONTROL
 FILE_DIRECTORY_ACCESS = _FILE_TRAVERSE | _FILE_READ_ATTRIBUTES | _READ_CONTROL
 FILE_DELETE_ACCESS = FILE_READ_ACCESS | _DELETE
+DIRECTORY_DELETE_ACCESS = FILE_DIRECTORY_ACCESS | _DELETE
 FILE_REPLACE_ACCESS = (
     _FILE_READ_DATA
     | _FILE_WRITE_DATA

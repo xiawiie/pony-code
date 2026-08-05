@@ -96,6 +96,9 @@ jobs:
       - name: Probe Pony Windows private-file backend
         run: python scripts/windows/probe_private_files_backend.py
 
+      - name: Probe Pony Windows migration backend
+        run: python scripts/windows/probe_migration_backend.py
+
       - name: Probe Pony Windows workspace-file backend
         run: python scripts/windows/probe_workspace_files_backend.py
 
