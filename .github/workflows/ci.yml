@@ -108,6 +108,9 @@ jobs:
       - name: Probe native Windows Job Object semantics
         run: python scripts/windows/probe_job_semantics.py --pretty
 
+      - name: Probe Pony Windows process backend
+        run: python scripts/windows/probe_process_backend.py
+
   macos-focused:
     name: macOS focused (Python 3.12)
     runs-on: macos-latest
