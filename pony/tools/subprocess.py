@@ -112,6 +112,7 @@ _ENV_ALLOWLIST = (
     "LANGUAGE",
     "LC_ALL",
     "LC_CTYPE",
+    "LOCALAPPDATA",
     "PATHEXT",
     "SystemRoot",
     "TEMP",
