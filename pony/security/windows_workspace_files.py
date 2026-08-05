@@ -330,6 +330,8 @@ def list_directory_names_anchored(
                             "name": name,
                             "mode": _DIRECTORY_MODE if directory else _FILE_MODE,
                             "size": value.size,
+                            "modified_ns": value.modified_ns,
+                            "changed_ns": value.changed_ns,
                             "identity": (value.filesystem_id, value.file_id),
                         }
                     )

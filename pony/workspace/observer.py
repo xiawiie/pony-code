@@ -1,32 +1,29 @@
-"""在 run_shell 前后各拍一张 workspace 快照，用于算出这次命令改了哪些文件。
-
-Git 仓库里用 `git status --porcelain=v1 -z -uall` 的输出打底，非 Git 目录用普通
-mtime+size+存在性扫描兜底。两种模式返回同一个结构，`diff()` 只把“真的变了”的
-路径拿出来。
-"""
+"""Capture workspace state before and after host tool execution."""
 
 import os
+import stat
 import subprocess
 from pathlib import Path
 from types import MappingProxyType
 
+from pony.security import paths as security_paths
+from pony.security import private_files, workspace_files
 from pony.tools.subprocess import run_hardened_git
-from pony.workspace.context import (
-    _safe_index_directory,
-    _safe_index_file,
-    _safe_index_path,
-)
+from pony.workspace.context import _safe_index_path
+
+IGNORED_OBSERVER_NAMES = {".git", ".pony", "__pycache__", ".venv", "node_modules"}
+MAX_OBSERVER_ENTRIES = 10_000
+MAX_OBSERVER_DEPTH = 32
 
 
-def _file_marker(value):
+def _entry_marker(entry):
     return ":".join(
         str(item)
         for item in (
-            value.st_dev,
-            value.st_ino,
-            value.st_size,
-            value.st_mtime_ns,
-            value.st_ctime_ns,
+            *entry["identity"],
+            entry["size"],
+            entry["modified_ns"],
+            entry["changed_ns"],
         )
     )
 
@@ -35,6 +32,27 @@ class WorkspaceObserver:
     def __init__(self, root, *, executables=None):
         self.root = Path(os.path.abspath(os.fspath(root)))
         self.trusted_executables = MappingProxyType(dict(executables or {}))
+        try:
+            self.root_identity = private_files.private_directory_identity(self.root)
+        except (OSError, ValueError):
+            self.root_identity = None
+
+    def _require_current_root(self):
+        if self.root_identity is None:
+            return False
+        try:
+            current = private_files.private_directory_identity(self.root)
+        except (OSError, ValueError) as exc:
+            raise workspace_files.WorkspaceIOError(
+                "workspace_entry_unsafe",
+                "workspace root changed",
+            ) from exc
+        if tuple(current) != tuple(self.root_identity):
+            raise workspace_files.WorkspaceIOError(
+                "workspace_entry_unsafe",
+                "workspace root changed",
+            )
+        return True
 
     def _is_git_repo(self):
         git_executable = self.trusted_executables.get("git")
@@ -52,9 +70,31 @@ class WorkspaceObserver:
             return False
         return result.returncode == 0 and result.stdout.strip() == "true"
 
+    def _list_directory(self, relative, *, max_entries=MAX_OBSERVER_ENTRIES):
+        if self.root_identity is None:
+            return None
+        return workspace_files.list_directory_names_anchored(
+            self.root,
+            relative,
+            max_entries=max_entries,
+            expected_root_identity=self.root_identity,
+        )
+
+    def _file_marker(self, path):
+        candidate = _safe_index_path(self.root, self.root / path)
+        if candidate is None:
+            return None
+        relative = candidate.relative_to(self.root)
+        parent = relative.parent.as_posix()
+        listing = self._list_directory(parent)
+        if listing is None:
+            return None
+        for entry in listing["entries"]:
+            if entry["name"] == relative.name and stat.S_ISREG(entry["mode"]):
+                return _entry_marker(entry)
+        return None
+
     def _capture_git(self):
-        # git status 给出每一个非干净路径的状态。Phase 1 里我们把状态 token 也
-        # 当作哈希前缀存起来，用来在 diff 时区分 clean 和 dirty。
         git_executable = self.trusted_executables.get("git")
         if not git_executable:
             return self._capture_filesystem()
@@ -83,7 +123,6 @@ class WorkspaceObserver:
             status = entry[:2].decode("ascii", errors="replace")
             path = entry[3:].decode("utf-8", errors="replace")
             if status.startswith("R"):
-                # renames give two entries separated by NUL
                 original = (
                     entries[i + 1].decode("utf-8", errors="replace")
                     if i + 1 < len(entries)
@@ -99,57 +138,57 @@ class WorkspaceObserver:
                 continue
             candidate = _safe_index_path(self.root, self.root / path)
             if candidate is not None:
-                paths[candidate.relative_to(self.root).as_posix()] = (
-                    status.strip() or "?"
-                )
+                paths[candidate.relative_to(self.root).as_posix()] = status.strip() or "?"
             i += 1
-        # 也顺带记录每个 dirty 文件的 size+mtime，用来精确 diff
         detail = {}
-        for path in list(paths.keys()):
-            abs_path = _safe_index_file(self.root, self.root / path)
-            if abs_path is not None:
-                try:
-                    stat = abs_path.stat()
-                except OSError:
-                    continue
-                detail[path] = _file_marker(stat)
+        for path in paths:
+            marker = self._file_marker(path)
+            if marker is not None:
+                detail[path] = marker
         return {"mode": "git", "paths": paths, "detail": detail, "summaries": []}
 
     def _capture_filesystem(self):
         paths = {}
-        root = _safe_index_directory(self.root, self.root)
-        if root is None:
-            return {
-                "mode": "filesystem",
-                "paths": paths,
-                "detail": paths,
-                "summaries": [],
-            }
-        for dirpath, dirnames, filenames in os.walk(str(root), followlinks=False):
-            # 跳过常见的构建产物和虚拟环境目录，避免把无关文件也算成 delta
-            dirnames[:] = [
-                name
-                for name in dirnames
-                if name not in {".git", ".pony", "__pycache__", ".venv", "node_modules"}
-                and _safe_index_directory(root, Path(dirpath) / name) is not None
-            ]
-            for filename in filenames:
-                abs_path = _safe_index_file(root, Path(dirpath) / filename)
-                if abs_path is None:
+        if self.root_identity is None:
+            return {"mode": "filesystem", "paths": paths, "detail": paths, "summaries": []}
+        stack = [(".", 0)]
+        scanned = 0
+        while stack:
+            directory, depth = stack.pop()
+            listing = self._list_directory(
+                directory,
+                max_entries=MAX_OBSERVER_ENTRIES - scanned,
+            )
+            scanned += listing["scanned"]
+            children = []
+            for entry in listing["entries"]:
+                relative = (
+                    entry["name"]
+                    if directory == "."
+                    else f"{directory}/{entry['name']}"
+                )
+                if entry["name"] in IGNORED_OBSERVER_NAMES or security_paths.is_sensitive_path(relative):
                     continue
-                try:
-                    rel = abs_path.relative_to(root).as_posix()
-                except ValueError:
-                    continue
-                try:
-                    stat = abs_path.stat()
-                except OSError:
-                    continue
-                paths[rel] = _file_marker(stat)
+                if stat.S_ISDIR(entry["mode"]):
+                    if depth >= MAX_OBSERVER_DEPTH:
+                        raise workspace_files.WorkspaceIOError(
+                            "workspace_observer_limit_exceeded",
+                            "workspace observer depth limit exceeded",
+                        )
+                    children.append(relative)
+                elif stat.S_ISREG(entry["mode"]):
+                    paths[relative] = _entry_marker(entry)
+            for child in reversed(children):
+                stack.append((child, depth + 1))
+            if scanned >= MAX_OBSERVER_ENTRIES and stack:
+                raise workspace_files.WorkspaceIOError(
+                    "workspace_observer_limit_exceeded",
+                    "workspace observer entry limit exceeded",
+                )
         return {"mode": "filesystem", "paths": paths, "detail": paths, "summaries": []}
 
     def capture(self):
-        if _safe_index_directory(self.root, self.root) is None:
+        if not self._require_current_root():
             return self._capture_filesystem()
         if self._is_git_repo():
             return self._capture_git()
@@ -165,31 +204,26 @@ class WorkspaceObserver:
         return None
 
     def diff(self, before, after):
-        """比较两次 capture，只报告真的发生变化的路径。"""
+        """Compare two captures and report paths that actually changed."""
         before_paths = dict(before.get("paths", {}))
         after_paths = dict(after.get("paths", {}))
         before_detail = dict(before.get("detail", {}))
         after_detail = dict(after.get("detail", {}))
-
         mode = after.get("mode") or before.get("mode") or "filesystem"
-
-        # 用两侧 keys ∪，得到所有候选路径
         candidates = (
-            set(before_paths.keys())
-            | set(after_paths.keys())
-            | set(before_detail.keys())
-            | set(after_detail.keys())
+            set(before_paths)
+            | set(after_paths)
+            | set(before_detail)
+            | set(after_detail)
         )
         changed = []
         summaries = []
-
         for path in sorted(candidates):
             before_marker = before_detail.get(path) or before_paths.get(path)
             after_marker = after_detail.get(path) or after_paths.get(path)
             if before_marker == after_marker:
                 continue
-            # 判断存在性变化
-            after_exists = _safe_index_file(self.root, self.root / path) is not None
+            after_exists = self._file_marker(path) is not None
             before_had_marker = before_marker is not None
             after_had_marker = after_marker is not None
             if not before_had_marker and after_had_marker and after_exists:
@@ -199,12 +233,6 @@ class WorkspaceObserver:
             elif before_had_marker and after_had_marker:
                 summaries.append(f"modified:{path}")
             else:
-                # git 报了状态但文件不在（删除后被 git 追踪）→ 视作删除
                 summaries.append(f"deleted:{path}")
             changed.append(path)
-
-        return {
-            "mode": mode,
-            "changed_paths": changed,
-            "summaries": summaries,
-        }
+        return {"mode": mode, "changed_paths": changed, "summaries": summaries}
