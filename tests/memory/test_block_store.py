@@ -43,7 +43,7 @@ def test_read_returns_full_content(tmp_path):
     user = tmp_path / "user"
     (workspace / "notes").mkdir(parents=True)
     user.mkdir()
-    (workspace / "notes" / "auth.md").write_text("hello\nworld\n")
+    (workspace / "notes" / "auth.md").write_bytes(b"hello\r\nworld\r\n")
 
     store = BlockStore(workspace_root=workspace, user_root=user)
     assert store.read("workspace/notes/auth.md") == "hello\nworld\n"
