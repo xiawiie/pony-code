@@ -1603,7 +1603,10 @@ def test_windows_shell_minimal_environment_drops_module_and_secret_state(
     assert env["PATH"] == str(powershell.parent)
     assert env["SystemRoot"] == r"C:\Windows"
     assert env["USERPROFILE"] == r"C:\Users\pony-ci"
-    assert "PSModulePath" not in env
+    assert env["PSModulePath"] == (
+        r"C:\Windows\System32\WindowsPowerShell\v1.0\Modules"
+    )
+    assert env["PSModulePath"] != "user-modules"
     assert "PONY_API_KEY" not in env
 
 

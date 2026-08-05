@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 from contextlib import contextmanager
 import locale
+import ntpath
 import os
 import re
 import selectors
@@ -1001,6 +1002,10 @@ def _minimal_env(cwd, executable):
     )
     path_value = os.pathsep.join(_safe_path_dirs(cwd, {"PATH": candidate_path}))
     env["PATH"] = path_value
+    if ntpath.basename(str(executable)).casefold() == "powershell.exe":
+        env["PSModulePath"] = ntpath.join(
+            ntpath.dirname(str(executable)), "Modules"
+        )
     return env
 
 
