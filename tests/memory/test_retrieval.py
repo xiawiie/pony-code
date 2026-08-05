@@ -44,7 +44,7 @@ def _make_store(tmp_path, files: dict[str, str]):
     for rel, content in files.items():
         full = workspace / rel
         full.parent.mkdir(parents=True, exist_ok=True)
-        full.write_text(content)
+        full.write_text(content, encoding="utf-8")
     return BlockStore(workspace_root=workspace, user_root=user)
 
 
