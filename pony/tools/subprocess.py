@@ -358,6 +358,7 @@ def _git_entry_mode(directory_handle, name):
                         else native.FILE_READ_ACCESS
                     ),
                     share_access=native.FILE_SHARE_READ_WRITE,
+                    single_link=False,
                 )
             except OSError as exc:
                 errors.append(exc)
