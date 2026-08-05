@@ -540,6 +540,32 @@ def test_nested_symlink_directory_consumes_file_scan_budget(tmp_path, monkeypatc
     assert store.list() == []
 
 
+def test_windows_memory_directory_scan_limit_is_separate_from_index_limit(
+    tmp_path,
+    monkeypatch,
+):
+    workspace = tmp_path / "workspace"
+    notes = workspace / "notes"
+    notes.mkdir(parents=True)
+    observed = {}
+
+    monkeypatch.setattr(block_store_module, "os", SimpleNamespace(name="nt"))
+    monkeypatch.setattr(block_store_module, "MAX_MEMORY_INDEX_FILES", 2)
+
+    def list_directory(*_args, **kwargs):
+        observed.update(kwargs)
+        return {"entries": (), "unsafe_count": 0}
+
+    monkeypatch.setattr(
+        block_store_module.workspace_files,
+        "list_directory_names_anchored",
+        list_directory,
+    )
+
+    assert list(BlockStore._markdown_files(workspace, notes)) == []
+    assert observed["max_entries"] == block_store_module.MAX_MEMORY_DIRECTORY_ENTRIES
+
+
 def test_windows_memory_directory_with_unsafe_entry_fails_closed(
     tmp_path,
     monkeypatch,
