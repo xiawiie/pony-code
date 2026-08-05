@@ -2,6 +2,7 @@ import multiprocessing
 import os
 from pathlib import Path
 import stat
+from types import SimpleNamespace
 
 import pytest
 
@@ -537,6 +538,26 @@ def test_nested_symlink_directory_consumes_file_scan_budget(tmp_path, monkeypatc
     store = BlockStore(workspace_root=workspace, user_root=user)
 
     assert store.list() == []
+
+
+def test_windows_memory_directory_with_unsafe_entry_fails_closed(
+    tmp_path,
+    monkeypatch,
+):
+    workspace = tmp_path / "workspace"
+    notes = workspace / "notes"
+    notes.mkdir(parents=True)
+    monkeypatch.setattr(block_store_module, "os", SimpleNamespace(name="nt"))
+    monkeypatch.setattr(
+        block_store_module.workspace_files,
+        "list_directory_names_anchored",
+        lambda *_args, **_kwargs: {
+            "entries": ({"name": "safe.md", "mode": stat.S_IFREG},),
+            "unsafe_count": 1,
+        },
+    )
+
+    assert list(BlockStore._markdown_files(workspace, notes)) == []
 
 
 def test_unsafe_hardlink_consumes_aggregate_byte_budget(tmp_path, monkeypatch):

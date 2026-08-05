@@ -317,6 +317,8 @@ class BlockStore:
                     )
                 except (OSError, RuntimeError, ValueError):
                     continue
+                if listing["unsafe_count"]:
+                    continue
                 children = []
                 for entry in listing["entries"]:
                     relative = f"{relative_dir}/{entry['name']}"

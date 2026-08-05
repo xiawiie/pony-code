@@ -118,6 +118,7 @@ _ENV_ALLOWLIST = (
     "TMP",
     "TMPDIR",
     "TZ",
+    "USERPROFILE",
     "WINDIR",
 )
 
