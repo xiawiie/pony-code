@@ -1587,6 +1587,7 @@ def test_windows_shell_minimal_environment_drops_module_and_secret_state(
     monkeypatch.setenv("PSModulePath", "user-modules")
     monkeypatch.setenv("PONY_API_KEY", "secret")
     monkeypatch.setenv("SystemRoot", r"C:\Windows")
+    monkeypatch.setenv("USERPROFILE", r"C:\Users\pony-ci")
     monkeypatch.setattr(
         safe_subprocess_module,
         "_safe_path_dirs",
@@ -1597,6 +1598,7 @@ def test_windows_shell_minimal_environment_drops_module_and_secret_state(
 
     assert env["PATH"] == str(powershell.parent)
     assert env["SystemRoot"] == r"C:\Windows"
+    assert env["USERPROFILE"] == r"C:\Users\pony-ci"
     assert "PSModulePath" not in env
     assert "PONY_API_KEY" not in env
 
