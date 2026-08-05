@@ -87,6 +87,12 @@ jobs:
       - name: Probe native Windows file semantics
         run: python scripts/windows/probe_file_semantics.py --pretty
 
+      - name: Probe native Windows DACL semantics
+        run: python scripts/windows/probe_dacl_semantics.py --pretty
+
+      - name: Probe native Windows atomic-write semantics
+        run: python scripts/windows/probe_atomic_write_semantics.py --pretty
+
       - name: Probe native Windows lock semantics
         run: python scripts/windows/probe_lock_semantics.py --pretty
 
