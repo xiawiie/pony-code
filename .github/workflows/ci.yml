@@ -96,6 +96,9 @@ jobs:
       - name: Probe Pony Windows private-file backend
         run: python scripts/windows/probe_private_files_backend.py
 
+      - name: Probe Pony Windows workspace-file backend
+        run: python scripts/windows/probe_workspace_files_backend.py
+
       - name: Probe native Windows lock semantics
         run: python scripts/windows/probe_lock_semantics.py --pretty
 

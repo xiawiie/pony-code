@@ -317,6 +317,15 @@ def test_windows_private_path_component_accepts_unicode_name():
     assert lexical_component("会话-01.jsonl") == "会话-01.jsonl"
 
 
+def test_windows_error_code_falls_back_when_winerror_is_none():
+    from pony.security.windows_native import error_code
+
+    error = FileNotFoundError(2, "missing")
+    error.winerror = None
+
+    assert error_code(error) == 2
+
+
 @pytest.mark.parametrize(
     ("absolute", "expected"),
     (

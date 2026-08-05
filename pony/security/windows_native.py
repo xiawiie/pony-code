@@ -131,6 +131,10 @@ class _FileAttributeTagInfo(ctypes.Structure):
     _fields_ = (("FileAttributes", wintypes.DWORD), ("ReparseTag", wintypes.DWORD))
 
 
+class _FileDispositionInfo(ctypes.Structure):
+    _fields_ = (("DeleteFile", wintypes.BOOLEAN),)
+
+
 class _SidAndAttributes(ctypes.Structure):
     _fields_ = (("Sid", wintypes.LPVOID), ("Attributes", wintypes.DWORD))
 
@@ -247,6 +251,13 @@ class _Api:
             wintypes.DWORD,
         )
         kernel32.GetFileInformationByHandleEx.restype = wintypes.BOOL
+        kernel32.SetFileInformationByHandle.argtypes = (
+            wintypes.HANDLE,
+            ctypes.c_int,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+        )
+        kernel32.SetFileInformationByHandle.restype = wintypes.BOOL
         kernel32.LocalFree.argtypes = (wintypes.LPVOID,)
         kernel32.LocalFree.restype = wintypes.LPVOID
         kernel32.DeleteFileW.argtypes = (wintypes.LPCWSTR,)
@@ -449,6 +460,10 @@ def _status_error(status, message):
         raise OSError(int(status), message)
 
 
+def error_code(exc):
+    return getattr(exc, "winerror", None) or exc.errno
+
+
 def lexical_component(value):
     value = os.fsdecode(os.fspath(value))
     if (
@@ -478,6 +493,10 @@ def _win32_path(path):
     if value.startswith("\\\\"):
         return "\\\\?\\UNC\\" + value[2:]
     return "\\\\?\\" + value
+
+
+def win32_path(path):
+    return _win32_path(lexical_absolute(path))
 
 
 @contextmanager
@@ -646,7 +665,7 @@ def ensure_directory(path):
                     desired_access=access,
                 )
             except OSError as exc:
-                if getattr(exc, "winerror", exc.errno) not in {2, 3}:
+                if error_code(exc) not in {2, 3}:
                     raise
                 with private_security_descriptor() as descriptor:
                     child, _created = open_relative(
@@ -930,6 +949,17 @@ def truncate(handle, size):
         _winerror("FlushFileBuffers failed")
 
 
+def delete_handle(handle):
+    info = _FileDispositionInfo(True)
+    if not api().kernel32.SetFileInformationByHandle(
+        handle.value,
+        4,
+        ctypes.byref(info),
+        ctypes.sizeof(info),
+    ):
+        _winerror("SetFileInformationByHandle delete failed")
+
+
 def delete_file(path, *, missing_ok=False):
     native = api()
     if native.kernel32.DeleteFileW(_win32_path(path)):
@@ -962,6 +992,16 @@ def replace_file(target, replacement, backup=None):
 
 
 FILE_READ_ACCESS = _FILE_READ_DATA | _FILE_READ_ATTRIBUTES | _READ_CONTROL
+FILE_DIRECTORY_ACCESS = _FILE_TRAVERSE | _FILE_READ_ATTRIBUTES | _READ_CONTROL
+FILE_DELETE_ACCESS = _FILE_READ_DATA | _FILE_READ_ATTRIBUTES | _DELETE
+FILE_REPLACE_ACCESS = (
+    _FILE_READ_DATA
+    | _FILE_WRITE_DATA
+    | _FILE_APPEND_DATA
+    | _FILE_READ_ATTRIBUTES
+    | _DELETE
+)
+FILE_SHARE_ALL = _FILE_SHARE_ALL
 FILE_SHARE_READ_WRITE = _FILE_SHARE_READ_WRITE
 FILE_WRITE_ACCESS = (
     _FILE_READ_DATA
