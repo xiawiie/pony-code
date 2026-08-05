@@ -151,7 +151,7 @@ def test_repl_plan_open_enters_plan_and_edits_existing_artifact(
 
 
 def test_editor_command_uses_native_windows_parser(monkeypatch):
-    monkeypatch.setattr(start.os, "name", "nt")
+    monkeypatch.setattr(start, "os", SimpleNamespace(name="nt"))
     monkeypatch.setattr(
         start,
         "_split_windows_command_line",

@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 from pony import Pony
 from pony.state.session_store import SessionStore
 from benchmarks.support.fake_provider import FakeModelClient
@@ -81,7 +83,7 @@ def test_build_prompt_prefix_keeps_schemas_and_ordinary_docs_out_of_system(tmp_p
 
 def test_build_prompt_prefix_describes_native_windows_shell(tmp_path, monkeypatch):
     workspace = WorkspaceContext.build(tmp_path, executables={}, inspect_git=False)
-    monkeypatch.setattr(prompt_prefix.os, "name", "nt")
+    monkeypatch.setattr(prompt_prefix, "os", SimpleNamespace(name="nt"))
 
     prefix = build_prompt_prefix(workspace, {}).text
 

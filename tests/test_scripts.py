@@ -125,6 +125,13 @@ def test_ci_probes_native_windows_capabilities_and_file_semantics():
     assert "python scripts/windows/probe_lock_semantics.py --pretty" in windows
     assert "python scripts/windows/probe_file_lock_backend.py" in windows
     assert "python scripts/windows/probe_job_semantics.py --pretty" in windows
+    assert "scripts/windows/run_as_standard_user.ps1" in windows
+    assert "-Script scripts/windows/verify_full_runtime.ps1" in windows
+    assert "--expect-elevated-rejection" in windows
+    assert "-Script scripts/windows/probe_shell_backend.py" in windows
+    assert '[Guid]::NewGuid().ToString("N")' in Path(
+        "scripts/windows/run_as_standard_user.ps1"
+    ).read_text(encoding="utf-8")
     assert "continue-on-error" not in windows
 
 
@@ -250,10 +257,11 @@ def test_windows_job_probe_creates_child_suspended_before_assignment(tmp_path):
 
 def test_ci_has_macos_security_and_durability_gate():
     workflow = Path(".github/workflows/ci.yml").read_text(encoding="utf-8")
+    macos = workflow.split("macos-focused:", 1)[1]
 
-    assert "runs-on: macos-latest" in workflow
-    assert 'python-version: "3.12"' in workflow
-    assert workflow.count("uv sync --frozen --dev") == 2
+    assert "runs-on: macos-latest" in macos
+    assert 'python-version: "3.12"' in macos
+    assert macos.count("uv sync --frozen --dev") == 1
     assert "uv export --frozen --no-dev --no-emit-project" in workflow
     assert "uv pip install --refresh" in workflow
     assert "sandbox-contract" not in workflow
