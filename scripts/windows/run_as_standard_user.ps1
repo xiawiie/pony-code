@@ -105,11 +105,29 @@ exit `$LASTEXITCODE
         -WorkingDirectory $workspace `
         -RedirectStandardOutput $stdout `
         -RedirectStandardError $stderr `
-        -Wait `
         -PassThru
 
-    Get-Content $stdout
-    Get-Content $stderr
+    $stdoutLines = 0
+    $stderrLines = 0
+    while (-not $process.WaitForExit(5000)) {
+        $stdoutContent = @(Get-Content $stdout -ErrorAction SilentlyContinue)
+        $stderrContent = @(Get-Content $stderr -ErrorAction SilentlyContinue)
+        if ($stdoutContent.Count -gt $stdoutLines) {
+            $stdoutContent[$stdoutLines..($stdoutContent.Count - 1)]
+            $stdoutLines = $stdoutContent.Count
+        }
+        if ($stderrContent.Count -gt $stderrLines) {
+            $stderrContent[$stderrLines..($stderrContent.Count - 1)] |
+                ForEach-Object { [Console]::Error.WriteLine($_) }
+            $stderrLines = $stderrContent.Count
+        }
+    }
+
+    @(Get-Content $stdout -ErrorAction SilentlyContinue) |
+        Select-Object -Skip $stdoutLines
+    @(Get-Content $stderr -ErrorAction SilentlyContinue) |
+        Select-Object -Skip $stderrLines |
+        ForEach-Object { [Console]::Error.WriteLine($_) }
     if ($process.ExitCode -ne 0) {
         throw "standard-user script failed with exit code $($process.ExitCode)"
     }
