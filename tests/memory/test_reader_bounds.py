@@ -66,9 +66,9 @@ def test_memory_list_reads_each_safe_candidate_exactly_once(tmp_path, monkeypatc
     calls = []
     real_read = block_store_module._read_bounded_regular
 
-    def counting_read(path, limit, *, private=False):
+    def counting_read(path, limit, *, private=False, **kwargs):
         calls.append(Path(path).name)
-        return real_read(path, limit, private=private)
+        return real_read(path, limit, private=private, **kwargs)
 
     monkeypatch.setattr(block_store_module, "_read_bounded_regular", counting_read)
 
@@ -122,7 +122,7 @@ def test_memory_aggregate_counts_bytes_read_while_detecting_growth(
             super().__init__("memory file too large")
             self.bytes_read = bytes_read
 
-    def growing_read(_path, limit, *, private=False):
+    def growing_read(_path, limit, *, private=False, **_kwargs):
         calls.append((limit, private))
         raise GrewDuringRead(limit + 1)
 
