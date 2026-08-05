@@ -831,9 +831,14 @@ net_saved_tokens(k) = baseline_total(k) - compacted_total(k)
 break_even_turn = first k where net_saved_tokens(k) >= 0
 ```
 
-Frozen horizon 为六个 follow-up。`accept` 要求 baseline SCC、compacted SCC、完整 usage 和 horizon 内 break even 全部成立；
-compacted SCC 失败或没有净收益为 `reject`；Provider 失败、baseline 无效、usage 不完整或 dirty provenance 为
-`inconclusive`。先过 SCC guardrail，再解释 token、cache、latency 或费用。
+Frozen horizon 为六个 follow-up。每个 paired trial 的 `accept` 要求 baseline SCC、compacted SCC、完整 usage 和 horizon 内
+break even 全部成立；compacted SCC 失败或没有净收益为 `reject`；Provider 失败、baseline 无效或 usage 不完整为
+`inconclusive`。
+
+默认每个单次/重复 compaction 场景各运行三个 paired trials。场景只在至少两个 trial `accept` 且没有任何 trial `reject` 时
+`accept`；任一有效 pair `reject` 就整体 `reject`；其余情况 `inconclusive`。这允许最多一个因 baseline 随机失败、Provider 失败
+或 usage 缺失而无效的 pair，但绝不让无效 pair 伪装成收益，也不掩盖 compacted regression。dirty provenance 仍把顶层结果
+强制降为 `inconclusive`。先过 SCC guardrail，再解释 token、cache、latency 或费用。
 
 ### 20.2 Provider latency 的决策目的
 
@@ -845,8 +850,9 @@ ttft_status = unavailable_non_streaming
 ```
 
 实际测量固定 short final、read-tool continuation、long context 三类 workload，报告成功 trial 的
-`provider_complete_ms`、`time_to_first_action_ms`、`time_to_final_ms` p50/p95，同时报告 success、retry、transport attempt 和
-usage completeness。首 action 指完整非流式响应返回并被 Agent 解码后的第一个 action；不得写成首 token。
+`provider_complete_ms`、`time_to_first_action_ms`、`time_to_final_ms` p50/p95，同时报告 success、Provider failure type/count、
+retry、transport attempt 和 usage completeness。首 action 指完整非流式响应返回并被 Agent 解码后的第一个 action；不得写成
+首 token。成功完成后的内部 Provider failure 也必须保留为失败证据，不能被最终 success rate 吞掉。
 
 一个 repository root 只有一个 canonical `.env` target，因此单次 artifact 不伪造 Provider-to-Provider comparison。不同 target
 必须在各自 canonical root 独立执行，再按相同 workload、预算、trial 数和 evidence policy 比较脱敏 artifact。

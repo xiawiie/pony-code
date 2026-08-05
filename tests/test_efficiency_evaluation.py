@@ -3,8 +3,10 @@ import json
 from benchmarks.evaluation.efficiency_evaluation import (
     TTFT_STATUS,
     _TimedProvider,
+    _aggregate_compaction_decision,
     _latency_stats,
     _paired_savings,
+    _provider_failure_evidence,
     _scenario_decision,
     run_efficiency_evaluation,
 )
@@ -161,6 +163,29 @@ def test_compaction_decision_is_inconclusive_without_complete_usage():
     )
 
 
+def test_compaction_repetitions_allow_one_invalid_pair_but_never_hide_rejection():
+    assert (
+        _aggregate_compaction_decision(
+            [
+                {"decision": "accept"},
+                {"decision": "inconclusive"},
+                {"decision": "accept"},
+            ]
+        )
+        == "accept"
+    )
+    assert (
+        _aggregate_compaction_decision(
+            [
+                {"decision": "accept"},
+                {"decision": "reject"},
+                {"decision": "accept"},
+            ]
+        )
+        == "reject"
+    )
+
+
 def test_timed_provider_records_only_bounded_evidence():
     recorder = _TimedProvider(_DeterministicProvider())
 
@@ -178,6 +203,20 @@ def test_timed_provider_records_only_bounded_evidence():
     assert "response" not in recorder.calls[0]
 
 
+def test_provider_failure_evidence_reports_only_count_and_error_types():
+    evidence = _provider_failure_evidence(
+        [
+            {"completed": True},
+            {"completed": False, "error_type": "ProviderTransportError"},
+        ]
+    )
+
+    assert evidence == {
+        "provider_failures": 1,
+        "provider_error_types": ["ProviderTransportError"],
+    }
+
+
 def test_latency_stats_use_interpolated_p50_and_p95():
     assert _latency_stats([10, 20, 30, 40]) == {
         "count": 4,
@@ -190,6 +229,7 @@ def test_latency_stats_use_interpolated_p50_and_p95():
 
 def test_offline_efficiency_evaluation_exercises_compaction_resume_and_tools(tmp_path):
     payload = run_efficiency_evaluation(
+        compaction_repetitions=3,
         latency_repetitions=1,
         client_factory=_DeterministicProvider,
         target={
@@ -208,12 +248,15 @@ def test_offline_efficiency_evaluation_exercises_compaction_resume_and_tools(tmp
         scenario["scenario"] for scenario in payload["compaction"]["scenarios"]
     ] == ["single_compaction_resume", "repeated_compaction_resume"]
     for scenario in payload["compaction"]["scenarios"]:
-        assert scenario["baseline"]["scc"] is True
-        assert scenario["compacted"]["scc"] is True
-        assert scenario["savings"]["break_even_turn"] is not None
-        assert scenario["savings"]["net_saved_tokens_at_horizon"] > 0
+        assert scenario["accepted_trials"] == 3
+        for trial in scenario["trials"]:
+            assert trial["baseline"]["scc"] is True
+            assert trial["compacted"]["scc"] is True
+            assert trial["savings"]["break_even_turn"] is not None
+            assert trial["savings"]["net_saved_tokens_at_horizon"] > 0
     assert payload["latency"]["ttft_status"] == TTFT_STATUS
     assert payload["latency"]["success_rate"] == 1.0
+    assert payload["latency"]["provider_failures"] == 0
     tool_rows = [
         row
         for row in payload["latency"]["rows"]

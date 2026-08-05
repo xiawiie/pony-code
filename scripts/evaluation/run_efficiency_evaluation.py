@@ -24,6 +24,12 @@ def build_arg_parser():
         help="Repository whose canonical .env selects the single Provider target.",
     )
     parser.add_argument(
+        "--compaction-repetitions",
+        type=int,
+        default=3,
+        help="Paired trials per compaction/resume scenario.",
+    )
+    parser.add_argument(
         "--latency-repetitions",
         type=int,
         default=3,
@@ -45,10 +51,11 @@ def _write_private_json(path, payload):
 
 def main(argv=None):
     args = build_arg_parser().parse_args(argv)
-    if args.latency_repetitions < 1:
-        raise SystemExit("--latency-repetitions must be positive")
+    if args.compaction_repetitions < 1 or args.latency_repetitions < 1:
+        raise SystemExit("evaluation repetitions must be positive")
     payload = run_efficiency_evaluation(
         repo_root=args.repo_root,
+        compaction_repetitions=args.compaction_repetitions,
         latency_repetitions=args.latency_repetitions,
     )
     _write_private_json(args.output_json, payload)

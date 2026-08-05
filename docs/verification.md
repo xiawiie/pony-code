@@ -302,19 +302,22 @@ net_saved_tokens(k) = baseline_total(k) - compacted_total(k)
 break_even_turn = first k where net_saved_tokens(k) >= 0
 ```
 
-只有 baseline SCC 有效、compacted SCC 通过、usage 完整且 frozen horizon 内 break even 才能 `accept`；compacted
-事实保留失败或 horizon 内仍无净收益为 `reject`；Provider 失败、baseline 无效或 usage 不完整为 `inconclusive`。dirty
-worktree 的 measured effect 只作探索，顶层 decision 强制 `inconclusive`。
+每个 paired trial 只有 baseline SCC 有效、compacted SCC 通过、usage 完整且 frozen horizon 内 break even 才能 `accept`；
+compacted 事实保留失败或 horizon 内仍无净收益为 `reject`；Provider 失败、baseline 无效或 usage 不完整为 `inconclusive`。
+默认每个场景运行三次：至少两个 trial `accept` 且没有 `reject` 才接受；任一 `reject` 即拒绝；其余为 `inconclusive`。这样最多
+容忍一个无效 pair 的随机噪声，但不隐藏 compacted regression。dirty worktree 的 measured effect 只作探索，顶层 decision
+强制 `inconclusive`。
 
 Production adapter 当前全部 `stream=False` 并在 body 完整读取后返回，所以真实首 token 时间不可观察。Artifact 固定写
 `ttft_status: unavailable_non_streaming`，不得用 `provider_complete_ms` 冒充 TTFT。延迟只在成功 trial 上解释并报告
-p50/p95；失败、retry 和 usage completeness 单独报告。
+p50/p95；Provider failure type/count、retry 和 usage completeness 单独报告，即使 Agent 后续 retry 成功也不抹除失败。
 
 已授权收费请求时，在 clean exact HEAD 上运行：
 
 ```bash
 uv run --frozen python scripts/evaluation/run_efficiency_evaluation.py \
   --repo-root /path/to/repository-with-canonical-env \
+  --compaction-repetitions 3 \
   --latency-repetitions 3 \
   --output-json /private/tmp/pony-efficiency-evaluation.json
 ```

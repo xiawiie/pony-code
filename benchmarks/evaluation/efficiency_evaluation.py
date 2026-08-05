@@ -17,7 +17,7 @@ from .metrics_common import _utc_timestamp
 from .provider_benchmark import _client_from_target, _resolve_benchmark_target
 
 
-EFFICIENCY_EVALUATION_FORMAT_VERSION = 1
+EFFICIENCY_EVALUATION_FORMAT_VERSION = 2
 TTFT_STATUS = "unavailable_non_streaming"
 _USAGE_KEYS = ("input_tokens", "output_tokens", "total_tokens", "cached_tokens")
 _ACTIVE_FACTS = (
@@ -124,6 +124,20 @@ def _usage_total(calls):
                 totals[key] += value
     totals["total_tokens"] = totals["input_tokens"] + totals["output_tokens"]
     return totals
+
+
+def _provider_failure_evidence(calls):
+    failed_calls = [call for call in calls if not call["completed"]]
+    return {
+        "provider_failures": len(failed_calls),
+        "provider_error_types": sorted(
+            {
+                call["error_type"]
+                for call in failed_calls
+                if call.get("error_type")
+            }
+        ),
+    }
 
 
 def _latency_stats(values):
@@ -355,6 +369,7 @@ def _run_followups(agent, recorder, call_start):
                 "terminal": terminal,
                 "error_type": error_type,
                 "model_calls": len(calls),
+                **_provider_failure_evidence(calls),
                 "usage": _usage_total(calls),
                 "usage_complete": _usage_complete(calls),
                 "provider_complete_ms": [
@@ -377,7 +392,7 @@ def _run_followups(agent, recorder, call_start):
         "completed_cases": len(rows),
         "usage": _usage_total(workload_calls),
         "usage_complete": _usage_complete(workload_calls),
-        "provider_failures": sum(not call["completed"] for call in workload_calls),
+        **_provider_failure_evidence(workload_calls),
         "transport_retries": sum(
             call.get("transport_retries") or 0 for call in workload_calls
         ),
@@ -436,7 +451,7 @@ def _scenario_decision(baseline, compacted, savings, summary_calls):
     return "accept" if savings["break_even_turn"] is not None else "reject"
 
 
-def _run_compaction_scenario(client_factory, *, repeated):
+def _run_compaction_trial(client_factory, *, repeated, trial_number):
     with tempfile.TemporaryDirectory(prefix="pony-efficiency-") as temp_dir:
         root = Path(temp_dir).resolve()
         (root / "README.md").write_text("evaluation fixture\n", encoding="utf-8")
@@ -459,7 +474,7 @@ def _run_compaction_scenario(client_factory, *, repeated):
         summary_calls = compacted_recorder.calls[:compacted_start]
         savings = _paired_savings(baseline, compacted, summary_calls)
         return {
-            "scenario": "repeated_compaction_resume" if repeated else "single_compaction_resume",
+            "trial": trial_number,
             "baseline": baseline,
             "compacted": compacted,
             "compactions": compactions,
@@ -471,6 +486,36 @@ def _run_compaction_scenario(client_factory, *, repeated):
                 summary_calls,
             ),
         }
+
+
+def _aggregate_compaction_decision(trials):
+    decisions = [trial["decision"] for trial in trials]
+    if "reject" in decisions:
+        return "reject"
+    minimum_valid_trials = min(2, len(trials))
+    return "accept" if decisions.count("accept") >= minimum_valid_trials else "inconclusive"
+
+
+def _run_compaction_scenario(client_factory, *, repeated, repetitions):
+    trials = [
+        _run_compaction_trial(
+            client_factory,
+            repeated=repeated,
+            trial_number=trial_number,
+        )
+        for trial_number in range(1, repetitions + 1)
+    ]
+    decisions = [trial["decision"] for trial in trials]
+    return {
+        "scenario": "repeated_compaction_resume" if repeated else "single_compaction_resume",
+        "repetitions": repetitions,
+        "minimum_valid_trials": min(2, repetitions),
+        "accepted_trials": decisions.count("accept"),
+        "rejected_trials": decisions.count("reject"),
+        "inconclusive_trials": decisions.count("inconclusive"),
+        "decision": _aggregate_compaction_decision(trials),
+        "trials": trials,
+    }
 
 
 def _seed_latency_history(agent):
@@ -548,6 +593,7 @@ def _run_latency_trial(client_factory, workload):
             "terminal": terminal,
             "error_type": error_type,
             "model_calls": len(recorder.calls),
+            **_provider_failure_evidence(recorder.calls),
             "read_file_calls": read_calls,
             "usage": _usage_total(recorder.calls),
             "usage_complete": _usage_complete(recorder.calls),
@@ -587,6 +633,14 @@ def _run_latency_evaluation(client_factory, repetitions):
         "trial_count": len(rows),
         "success_rate": len(successful) / len(rows) if rows else 0.0,
         "usage_complete": bool(rows) and all(row["usage_complete"] for row in rows),
+        "provider_failures": sum(row["provider_failures"] for row in rows),
+        "provider_error_types": sorted(
+            {
+                error_type
+                for row in rows
+                for error_type in row["provider_error_types"]
+            }
+        ),
         "transport_attempts": sum(row["transport_attempts"] for row in rows),
         "transport_retries": sum(row["transport_retries"] for row in rows),
         "provider_complete_ms": _latency_stats(complete_ms),
@@ -598,11 +652,43 @@ def _run_latency_evaluation(client_factory, repetitions):
                 "successes": sum(
                     row["workload"] == workload and row["success"] for row in rows
                 ),
+                "usage_complete_trials": sum(
+                    row["workload"] == workload and row["usage_complete"] for row in rows
+                ),
+                "provider_failures": sum(
+                    row["provider_failures"]
+                    for row in rows
+                    if row["workload"] == workload
+                ),
+                "provider_error_types": sorted(
+                    {
+                        error_type
+                        for row in rows
+                        if row["workload"] == workload
+                        for error_type in row["provider_error_types"]
+                    }
+                ),
+                "transport_attempts": sum(
+                    row["transport_attempts"]
+                    for row in rows
+                    if row["workload"] == workload
+                ),
+                "transport_retries": sum(
+                    row["transport_retries"]
+                    for row in rows
+                    if row["workload"] == workload
+                ),
                 "provider_complete_ms": _latency_stats(
                     value
                     for row in successful
                     if row["workload"] == workload
                     for value in row["provider_complete_ms"]
+                ),
+                "time_to_first_action_ms": _latency_stats(
+                    row["time_to_first_action_ms"]
+                    for row in successful
+                    if row["workload"] == workload
+                    and row["time_to_first_action_ms"] is not None
                 ),
                 "time_to_final_ms": _latency_stats(
                     row["time_to_final_ms"]
@@ -642,12 +728,17 @@ def _git_provenance(root):
 def run_efficiency_evaluation(
     repo_root=None,
     *,
+    compaction_repetitions=3,
     latency_repetitions=3,
     client_factory=None,
     target=None,
     source_root=None,
 ):
     """Run paired compaction and non-streaming latency evaluations."""
+    compaction_repetitions = int(compaction_repetitions)
+    latency_repetitions = int(latency_repetitions)
+    if compaction_repetitions < 1 or latency_repetitions < 1:
+        raise ValueError("evaluation repetitions must be positive")
     source_root = Path(source_root or Path(__file__).resolve().parents[2])
     if target is None:
         target = _resolve_benchmark_target(Path(repo_root or Path.cwd()))
@@ -656,8 +747,16 @@ def run_efficiency_evaluation(
             return _client_from_target(target, timeout=120)
     provenance = _git_provenance(source_root)
     scenarios = [
-        _run_compaction_scenario(client_factory, repeated=False),
-        _run_compaction_scenario(client_factory, repeated=True),
+        _run_compaction_scenario(
+            client_factory,
+            repeated=False,
+            repetitions=compaction_repetitions,
+        ),
+        _run_compaction_scenario(
+            client_factory,
+            repeated=True,
+            repetitions=compaction_repetitions,
+        ),
     ]
     measured_decision = (
         "accept"
@@ -685,6 +784,11 @@ def run_efficiency_evaluation(
         ),
         "compaction": {
             "purpose": "retain SCC while producing positive net token savings within six follow-up turns",
+            "repetitions": compaction_repetitions,
+            "decision_policy": (
+                "reject on any paired rejection; otherwise accept with at least two "
+                "accepted trials, or one when only one repetition was requested"
+            ),
             "measured_decision": measured_decision,
             "decision": decision,
             "scenarios": scenarios,
