@@ -114,21 +114,39 @@ def test_append_agent_note_rejects_or_blocks_scope_root_swap_before_atomic_write
     assert not (trusted_workspace / "agent_notes.md").exists()
 
 
-def test_append_agent_note_fsyncs_file_then_parent(tmp_path, monkeypatch):
+def test_append_agent_note_flushes_file_then_commit(tmp_path, monkeypatch):
     workspace = tmp_path / "workspace"
     user = tmp_path / "user"
     workspace.mkdir()
     user.mkdir()
     store = BlockStore(workspace_root=workspace, user_root=user, redaction_env={})
     events = []
-    real_fsync = os.fsync
 
-    def observed_fsync(descriptor):
-        mode = os.fstat(descriptor).st_mode
-        events.append("parent" if stat.S_ISDIR(mode) else "file")
-        real_fsync(descriptor)
+    if os.name == "nt":
+        from pony.security import windows_private_files
 
-    monkeypatch.setattr(os, "fsync", observed_fsync)
+        real_write = windows_private_files.native.write_bytes
+        real_move = windows_private_files.native.move_file
+
+        def observed_write(*args, **kwargs):
+            real_write(*args, **kwargs)
+            events.append("file")
+
+        def observed_move(*args, **kwargs):
+            real_move(*args, **kwargs)
+            events.append("parent")
+
+        monkeypatch.setattr(windows_private_files.native, "write_bytes", observed_write)
+        monkeypatch.setattr(windows_private_files.native, "move_file", observed_move)
+    else:
+        real_fsync = os.fsync
+
+        def observed_fsync(descriptor):
+            mode = os.fstat(descriptor).st_mode
+            events.append("parent" if stat.S_ISDIR(mode) else "file")
+            real_fsync(descriptor)
+
+        monkeypatch.setattr(os, "fsync", observed_fsync)
 
     store.append_agent_note(scope="workspace", note="durable")
 

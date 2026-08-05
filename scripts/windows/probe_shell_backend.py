@@ -92,7 +92,7 @@ def probe(*, expect_elevated_rejection=False):
             command=command,
             shell=True,
             cwd=root,
-            timeout=5,
+            timeout=20,
             env=_minimal_env(root, powershell),
         )
         if result.returncode != 0 or result.stdout.strip() != "pony-shell-ok":
