@@ -139,6 +139,9 @@ def test_ci_probes_native_windows_capabilities_and_file_semantics():
     assert '[Guid]::NewGuid().ToString("N")' in runner
     assert '$userRoot = Join-Path $controlRoot "profile"' in runner
     assert '"${currentPrincipal}:F"' in runner
+    assert '$toolRoot = Join-Path $env:ProgramFiles "pony-ci-tools-$runId"' in runner
+    assert '"${principal}:(OI)(CI)RX"' in runner
+    assert "`$env:PATH = '$pathLiteral'" in runner
     assert "$process.WaitForExit(5000)" in runner
     assert "Select-Object -Skip $stdoutLines" in runner
     assert "Select-Object -Skip $stderrLines" in runner
