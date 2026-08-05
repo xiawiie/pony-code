@@ -346,7 +346,7 @@ def test_repo_map_aggregate_counts_bytes_read_while_detecting_growth(
             super().__init__("repo-map source too large")
             self.bytes_read = bytes_read
 
-    def growing_read(_path, limit):
+    def growing_read(_path, limit, **_kwargs):
         calls.append(limit)
         raise GrewDuringRead(limit + 1)
 
