@@ -18,6 +18,7 @@ if ([IO.Path]::GetExtension($scriptPath) -notin ".ps1", ".py") {
 $userName = "pony_ci_standard"
 $runId = [Guid]::NewGuid().ToString("N")
 $controlRoot = Join-Path $env:RUNNER_TEMP "$userName-$runId"
+$toolRoot = Join-Path $env:ProgramFiles "pony-ci-tools-$runId"
 $userRoot = Join-Path $controlRoot "profile"
 $stdout = Join-Path $controlRoot "stdout.txt"
 $stderr = Join-Path $controlRoot "stderr.txt"
@@ -63,6 +64,27 @@ try {
         }
     }
 
+    $chocolateyRoot = if ($env:ChocolateyInstall) {
+        $env:ChocolateyInstall
+    }
+    else {
+        Join-Path $env:ProgramData "chocolatey"
+    }
+    $rgSource = Get-ChildItem -LiteralPath (Join-Path $chocolateyRoot "lib") `
+        -Filter "rg.exe" -File -Recurse -ErrorAction SilentlyContinue |
+        Select-Object -First 1 -ExpandProperty FullName
+    if (-not $rgSource) {
+        $rgSource = (Get-Command rg.exe -CommandType Application).Source
+    }
+    New-Item -ItemType Directory -Path $toolRoot | Out-Null
+    Copy-Item -LiteralPath $rgSource -Destination (Join-Path $toolRoot "rg.exe")
+    & icacls.exe $toolRoot /inheritance:r /grant:r `
+        "${principal}:(OI)(CI)RX" "${currentPrincipal}:(OI)(CI)F" `
+        "*S-1-5-18:(OI)(CI)F" /t /c /q
+    if ($LASTEXITCODE -ne 0) {
+        throw "failed to secure the standard-user native tool directory"
+    }
+
     $homePath = Join-Path $userRoot "home"
     $tempLiteral = $userRoot.Replace("'", "''")
     $homeLiteral = $homePath.Replace("'", "''")
@@ -70,6 +92,8 @@ try {
     $pythonLiteral = $Python.Replace("'", "''")
     $scriptLiteral = $scriptPath.Replace("'", "''")
     $uvLiteral = (Get-Command uv).Source.Replace("'", "''")
+    $trustedPath = $toolRoot + [IO.Path]::PathSeparator + $env:PATH
+    $pathLiteral = $trustedPath.Replace("'", "''")
     $invocation = if ([IO.Path]::GetExtension($scriptPath) -eq ".py") {
         "& '$pythonLiteral' '$scriptLiteral'"
     }
@@ -85,6 +109,7 @@ try {
 `$env:RUNNER_TEMP = '$tempLiteral'
 `$env:GITHUB_WORKSPACE = '$workspaceLiteral'
 `$env:PONY_CI_UV = '$uvLiteral'
+`$env:PATH = '$pathLiteral'
 New-Item -ItemType Directory -Path '$homeLiteral' | Out-Null
 Set-Location '$workspaceLiteral'
 $invocation
@@ -137,4 +162,5 @@ finally {
         Remove-LocalUser -Name $userName
     }
     Remove-Item -LiteralPath $controlRoot -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $toolRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
