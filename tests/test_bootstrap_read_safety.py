@@ -209,7 +209,7 @@ def test_workspace_bounded_reader_rejects_parent_swap(tmp_path, monkeypatch):
     (outside / "README.md").write_text("outside-canary\n", encoding="utf-8")
     validated = workspace_module._safe_index_file(repo, target)
     moved = repo / "docs-original"
-    real_open_directory = workspace_module.private_files._open_private_directory
+    real_open_directory = workspace_module.workspace_files._open_private_directory
 
     def swap_then_open(path):
         docs.rename(moved)
@@ -217,13 +217,19 @@ def test_workspace_bounded_reader_rejects_parent_swap(tmp_path, monkeypatch):
         return real_open_directory(path)
 
     monkeypatch.setattr(
-        workspace_module.private_files,
+        workspace_module.workspace_files,
         "_open_private_directory",
         swap_then_open,
     )
 
+    root_identity = workspace_module.private_files.private_directory_identity(repo)
     with pytest.raises((OSError, ValueError)):
-        workspace_module._read_bounded_regular(validated, 1024)
+        workspace_module._read_bounded_workspace_file(
+            repo,
+            validated,
+            1024,
+            root_identity,
+        )
 
 
 def test_repo_map_and_memory_index_skip_symlink_files_in_both_scopes(tmp_path):
