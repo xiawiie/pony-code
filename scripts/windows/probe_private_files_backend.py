@@ -7,6 +7,7 @@ from pathlib import Path
 import shutil
 import sys
 import tempfile
+import traceback
 
 def probe():
     root_path = Path(__file__).resolve().parents[2]
@@ -146,6 +147,7 @@ def main():
     try:
         result = probe()
     except (OSError, RuntimeError, ValueError) as exc:
+        traceback.print_exc()
         print(f"windows_private_files_probe_failed: {exc}", file=sys.stderr)
         return 1
     print(json.dumps(result, indent=2, sort_keys=True))
