@@ -12,6 +12,49 @@ def _stage(name):
     print(f"windows_shell_stage={name}", file=sys.stderr, flush=True)
 
 
+def _report_mutable_directory_access(native, path):
+    accesses = (
+        ("write_attributes", native._FILE_WRITE_ATTRIBUTES),
+        ("delete", native._DELETE),
+        ("write_dacl", native._WRITE_DAC),
+        ("write_owner", native._WRITE_OWNER),
+        ("delete_child", native._FILE_DELETE_CHILD),
+        ("add_file", native._FILE_WRITE_DATA),
+        ("add_directory", native._FILE_APPEND_DATA),
+    )
+    path = native.lexical_absolute(path)
+    current = Path(path.anchor)
+    components = path.parts[1:]
+    for index, component in enumerate((None, *components)):
+        if component is not None:
+            current /= component
+        allowed = []
+        for name, access in accesses:
+            if index != len(components) and name in {"add_file", "add_directory"}:
+                continue
+            try:
+                handle = native.open_path(
+                    current,
+                    directory=True,
+                    desired_access=access,
+                    single_link=False,
+                )
+            except OSError as exc:
+                if native.error_code(exc) in {5, 1314}:
+                    continue
+                raise
+            else:
+                handle.close()
+                allowed.append(name)
+        if allowed:
+            print(
+                "windows_shell_mutable_directory="
+                f"{index}:{current.name or current.anchor}:{','.join(allowed)}",
+                file=sys.stderr,
+                flush=True,
+            )
+
+
 def probe():
     root_path = Path(__file__).resolve().parents[2]
     if str(root_path) not in sys.path:
@@ -43,6 +86,7 @@ def probe():
             / "v1.0"
             / "powershell.exe"
         )
+        _report_mutable_directory_access(windows_native, powershell_path.parent)
         _verified_executable_identity(powershell_path)
         trusted = build_trusted_executables(root, env=env)
         powershell = trusted.get("powershell")
