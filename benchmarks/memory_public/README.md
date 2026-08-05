@@ -1,5 +1,7 @@
 # Public Memory Benchmark: LongMemEval + PersonaMem + mem0
 
+中文协议说明、统计方法和结果分析见 [`docs/public-memory-benchmark.md`](../../docs/public-memory-benchmark.md)。
+
 This directory evaluates Pony's existing memory retrieval against public memory
 benchmarks without adding benchmark code or dependencies to the `pony` runtime package.
 

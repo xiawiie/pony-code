@@ -62,6 +62,7 @@ readme_intro_locked/
 !/docs/verification.md
 !/docs/benchmark-evaluation-results-2026-08-05.md
 !/docs/memory.md
+!/docs/public-memory-benchmark.md
 !/docs/local-stable-execution.md
 !/docs/adr/
 !/docs/adr/*.md

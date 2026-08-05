@@ -289,6 +289,7 @@ flowchart LR
 | 路径、secret、Host 与 permission 安全模型 | [安全](docs/security.md) |
 | Context、Session、compaction、fork 与 rewind | [Context 与 Session](docs/context-and-sessions.md) |
 | Memory 行为 | [Memory](docs/memory.md) |
+| LongMemEval、PersonaMem 与 mem0 公开记忆评测 | [公开记忆基准](docs/public-memory-benchmark.md) |
 | Legacy artifact 与恢复边界 | [恢复](docs/recovery.md) |
 | exact-head 门禁、live 验收与发布 | [验证与发布](docs/verification.md) |
 | 产品支持边界 | [ADR-0048](docs/adr/0048-product-and-support-boundary.md) |
