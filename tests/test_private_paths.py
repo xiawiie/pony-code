@@ -353,6 +353,43 @@ def test_windows_native_path_uses_extended_length_namespace(
     monkeypatch.setattr(windows_native.os.path, "abspath", lambda _path: absolute)
     assert windows_native._win32_path("ignored") == expected
 
+
+def test_windows_handle_rename_uses_relative_nt_file_information(monkeypatch):
+    from pony.security import windows_native
+
+    observed = {}
+
+    class Ntdll:
+        @staticmethod
+        def NtSetInformationFile(handle, _status, buffer, size, info_class):
+            observed.update(
+                handle=handle,
+                buffer=bytes(buffer.raw[:size]),
+                size=size,
+                info_class=info_class,
+            )
+            return 0
+
+    monkeypatch.setattr(
+        windows_native,
+        "api",
+        lambda: type("Api", (), {"ntdll": Ntdll()})(),
+    )
+
+    windows_native.rename_handle(
+        type("Handle", (), {"value": 11})(),
+        type("Handle", (), {"value": 22})(),
+        "renamed",
+    )
+
+    info = windows_native._FileRenameInfo.from_buffer_copy(observed["buffer"])
+    name = "renamed".encode("utf-16-le")
+    start = windows_native._FileRenameInfo.FileName.offset
+    assert info.RootDirectory == 22
+    assert info.FileNameLength == len(name)
+    assert observed["buffer"][start : start + len(name)] == name
+    assert observed["info_class"] == windows_native._FILE_RENAME_INFORMATION
+
 def test_windows_directory_mutability_ignores_attribute_only_access(monkeypatch):
     from pony.security import windows_native
 

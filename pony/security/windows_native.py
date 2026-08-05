@@ -35,6 +35,7 @@ _FILE_OPEN = 1
 _FILE_CREATE = 2
 _FILE_OPEN_IF = 3
 _FILE_OVERWRITE_IF = 5
+_FILE_RENAME_INFORMATION = 10
 _FILE_DIRECTORY_FILE = 0x00000001
 _FILE_NON_DIRECTORY_FILE = 0x00000040
 _FILE_SYNCHRONOUS_IO_NONALERT = 0x00000020
@@ -439,6 +440,14 @@ class _Api:
             wintypes.ULONG,
         )
         ntdll.NtCreateFile.restype = wintypes.LONG
+        ntdll.NtSetInformationFile.argtypes = (
+            wintypes.HANDLE,
+            ctypes.POINTER(_IoStatusBlock),
+            wintypes.LPVOID,
+            wintypes.ULONG,
+            ctypes.c_int,
+        )
+        ntdll.NtSetInformationFile.restype = wintypes.LONG
         ntdll.RtlNtStatusToDosError.argtypes = (wintypes.LONG,)
         ntdll.RtlNtStatusToDosError.restype = wintypes.ULONG
 
@@ -1046,8 +1055,18 @@ def rename_handle(handle, destination_parent, destination_name):
     ctypes.memmove(
         ctypes.addressof(buffer) + _FileRenameInfo.FileName.offset, name, len(name)
     )
-    if not api().kernel32.SetFileInformationByHandle(handle.value, 3, buffer, size):
-        _winerror("SetFileInformationByHandle rename failed")
+    native = api()
+    io_status = _IoStatusBlock()
+    status = native.ntdll.NtSetInformationFile(
+        handle.value,
+        ctypes.byref(io_status),
+        buffer,
+        size,
+        _FILE_RENAME_INFORMATION,
+    )
+    if status < 0:
+        error = native.ntdll.RtlNtStatusToDosError(status)
+        raise OSError(error, "NtSetInformationFile rename failed")
 
 
 def delete_handle(handle):
