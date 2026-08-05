@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Exercise Pony's production private-file backend on native Windows."""
 
+import faulthandler
 import json
 import os
 from pathlib import Path
@@ -9,10 +10,16 @@ import sys
 import tempfile
 import traceback
 
+
+def _stage(name):
+    print(f"windows_private_files_stage={name}", file=sys.stderr, flush=True)
+
+
 def probe():
     root_path = Path(__file__).resolve().parents[2]
     if str(root_path) not in sys.path:
         sys.path.insert(0, str(root_path))
+    _stage("import")
     from pony.security.private_files import (
         append_private_bytes,
         ensure_private_dir,
@@ -23,11 +30,14 @@ def probe():
         write_private_bytes_atomic,
     )
 
+    _stage("create_base")
     base = Path(tempfile.mkdtemp(prefix="pony-private-files-"))
     try:
+        _stage("ensure_root")
         root = ensure_private_dir(base / "state")
         root_identity = private_directory_identity(root)
         target = root / "session.jsonl"
+        _stage("atomic_create")
         write_private_bytes_atomic(
             target,
             b"old\n",
@@ -40,6 +50,7 @@ def probe():
             trusted_root=root,
             trusted_root_identity=root_identity,
         )
+        _stage("append")
         append_private_bytes(
             target,
             b"trace\n",
@@ -62,6 +73,7 @@ def probe():
             if calls == 2:
                 raise RuntimeError("reject installed state")
 
+        _stage("atomic_rollback")
         try:
             write_private_bytes_atomic(
                 target,
@@ -82,6 +94,7 @@ def probe():
         ) != b"old\ntrace\n":
             raise RuntimeError("private atomic rollback content mismatch")
 
+        _stage("atomic_replace")
         write_private_bytes_atomic(
             target,
             b"new\n",
@@ -103,9 +116,11 @@ def probe():
         ) != b"new\n":
             raise RuntimeError("private atomic replacement content mismatch")
 
+        _stage("tree_hardening")
         nested = root / "nested"
         nested.mkdir()
         (nested / "note.txt").write_bytes(b"note")
+        _stage("long_path")
         long_root = root.joinpath(*(f"component-{index}-" + "x" * 30 for index in range(7)))
         ensure_private_dir(long_root)
         long_identity = private_directory_identity(long_root)
@@ -115,6 +130,7 @@ def probe():
             trusted_root=long_root,
             trusted_root_identity=long_identity,
         )
+        _stage("harden")
         harden_private_tree(root)
         nested_signature = private_file_signature(
             nested / "note.txt",
@@ -137,6 +153,7 @@ def probe():
             "long_path": True,
         }
     finally:
+        _stage("cleanup")
         shutil.rmtree(base, ignore_errors=True)
 
 
@@ -144,12 +161,15 @@ def main():
     if os.name != "nt":
         print("windows_private_files_probe_requires_windows", file=sys.stderr)
         return 2
+    faulthandler.enable()
+    _stage("start")
     try:
         result = probe()
-    except (OSError, RuntimeError, ValueError) as exc:
+    except BaseException as exc:
         traceback.print_exc()
-        print(f"windows_private_files_probe_failed: {exc}", file=sys.stderr)
+        print(f"windows_private_files_probe_failed: {exc}", file=sys.stderr, flush=True)
         return 1
+    _stage("complete")
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0
 
