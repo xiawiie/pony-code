@@ -107,6 +107,7 @@ _HAS_GIT_DIR_FD_TRAVERSAL = os.name == "nt" or (
     and os.stat in getattr(os, "supports_dir_fd", ())
 )
 _ENV_ALLOWLIST = (
+    "APPDATA",
     "HOME",
     "LANG",
     "LANGUAGE",

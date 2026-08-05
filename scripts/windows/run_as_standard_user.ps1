@@ -86,9 +86,11 @@ try {
     }
 
     $homePath = Join-Path $userRoot "home"
+    $appDataPath = Join-Path $homePath "AppData\Roaming"
     $localAppDataPath = Join-Path $homePath "AppData\Local"
     $tempLiteral = $userRoot.Replace("'", "''")
     $homeLiteral = $homePath.Replace("'", "''")
+    $appDataLiteral = $appDataPath.Replace("'", "''")
     $localAppDataLiteral = $localAppDataPath.Replace("'", "''")
     $workspaceLiteral = $workspace.Replace("'", "''")
     $pythonLiteral = $Python.Replace("'", "''")
@@ -104,6 +106,7 @@ try {
     }
     @"
 `$ErrorActionPreference = "Stop"
+`$env:APPDATA = '$appDataLiteral'
 `$env:TEMP = '$tempLiteral'
 `$env:TMP = '$tempLiteral'
 `$env:HOME = '$homeLiteral'
@@ -113,6 +116,7 @@ try {
 `$env:GITHUB_WORKSPACE = '$workspaceLiteral'
 `$env:PONY_CI_UV = '$uvLiteral'
 `$env:PATH = '$pathLiteral'
+New-Item -ItemType Directory -Path '$appDataLiteral' -Force | Out-Null
 New-Item -ItemType Directory -Path '$localAppDataLiteral' -Force | Out-Null
 Set-Location '$workspaceLiteral'
 $invocation
