@@ -1159,6 +1159,25 @@ def _capture_process(
     if limit < 1:
         raise ValueError("invalid process output limit")
     command = [str(arg) for arg in argv]
+    if os.name == "nt":
+        from .windows_process import capture_process
+
+        captured = capture_process(
+            command,
+            executable=executable,
+            cwd=cwd,
+            env=env,
+            timeout=timeout,
+            max_output_bytes=limit,
+        )
+        if captured.output_limit_exceeded:
+            raise ProcessOutputLimitExceeded(command, limit)
+        return _CapturedProcess(
+            stdout=captured.stdout,
+            stderr=captured.stderr,
+            returncode=captured.returncode,
+            timed_out=captured.timed_out,
+        )
     process = subprocess.Popen(
         command,
         executable=executable,
