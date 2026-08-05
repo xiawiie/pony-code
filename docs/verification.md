@@ -190,6 +190,9 @@ Verifier 使用 `git ls-files pony` 建立产品文件真源并检查：
   行为正确；removed Sandbox/Checkpoint mutation commands 由 CLI/parser 聚焦测试验证；
 - smoke 环境不继承 `PONY_*`、厂商 Key、`PYTHONHOME` 或 `PYTHONPATH`。
 
+本轮正式 benchmark/evaluation 结果见
+[`benchmark-evaluation-results-2026-08-05.md`](benchmark-evaluation-results-2026-08-05.md)。
+
 ## Decision-driven coding benchmark
 
 [`ADR-0049`](adr/0049-benchmark-evaluation-design.md) 定义 Q suite 的目的：判断一个 exact commit、Provider/model 或 feature

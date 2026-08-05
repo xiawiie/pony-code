@@ -60,6 +60,7 @@ readme_intro_locked/
 !/docs/security.md
 !/docs/recovery.md
 !/docs/verification.md
+!/docs/benchmark-evaluation-results-2026-08-05.md
 !/docs/memory.md
 !/docs/local-stable-execution.md
 !/docs/adr/

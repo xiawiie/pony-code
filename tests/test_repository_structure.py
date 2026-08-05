@@ -17,6 +17,7 @@ MAINTAINER_DOCS = {
     "docs/security.md",
     "docs/recovery.md",
     "docs/verification.md",
+    "docs/benchmark-evaluation-results-2026-08-05.md",
     "docs/memory.md",
     "docs/adr/0040-docker-filtered-staging.md",
     "docs/adr/0042-sealed-local-authorization.md",
