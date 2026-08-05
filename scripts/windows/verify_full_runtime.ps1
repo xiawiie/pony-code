@@ -6,7 +6,7 @@ $evaluation = Join-Path $env:RUNNER_TEMP "pony-windows-eval"
 & git.exe config --global --add safe.directory $env:GITHUB_WORKSPACE
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-& $uv run --frozen pytest -q tests benchmarks/live_e2e/tests/test_assertions.py
+& $uv run --frozen pytest -x -vv tests benchmarks/live_e2e/tests/test_assertions.py
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 & $uv run --frozen python scripts/evaluation/evaluate.py `

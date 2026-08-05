@@ -127,6 +127,10 @@ def test_ci_probes_native_windows_capabilities_and_file_semantics():
     assert "python scripts/windows/probe_job_semantics.py --pretty" in windows
     assert "scripts/windows/run_as_standard_user.ps1" in windows
     assert "-Script scripts/windows/verify_full_runtime.ps1" in windows
+    full_runtime = Path("scripts/windows/verify_full_runtime.ps1").read_text(
+        encoding="utf-8"
+    )
+    assert "pytest -x -vv tests benchmarks/live_e2e/tests/test_assertions.py" in full_runtime
     assert "--expect-elevated-rejection" in windows
     assert "-Script scripts/windows/probe_shell_backend.py" in windows
     runner = Path("scripts/windows/run_as_standard_user.ps1").read_text(
