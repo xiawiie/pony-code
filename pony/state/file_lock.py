@@ -144,6 +144,17 @@ def _require_existing_lock_entry(value, *, directory=False):
 
 @contextmanager
 def locked_file(path, *, require_lock=False, require_existing=False, lock_timeout=None):
+    if os.name == "nt":
+        from .windows_file_lock import locked_file as windows_locked_file
+
+        with windows_locked_file(
+            path,
+            require_lock=require_lock,
+            require_existing=require_existing,
+            lock_timeout=lock_timeout,
+        ) as handle:
+            yield handle
+        return
     owner_pid = os.getpid()
     path = Path(os.path.abspath(os.fspath(path)))
     key = str(path)

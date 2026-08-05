@@ -52,9 +52,10 @@ CI 的 Windows 3.11/3.12 capability job 分开运行 symbol probe 与安全语�
 目录的当前用户 owner、单一无继承 full-control ACE、protected DACL、handle/path 双重复验，以及 owner/DACL 漂移拒绝；
 atomic-write probe 验证同目录 durable temp、失败时保留旧内容、`ReplaceFileW` 成功后的内容/File ID/DACL；production
 private-state backend probe 通过公共 API 验证 private directory、create/read/append/replace、post-install validation rollback 和
-tree hardening；`LockFileEx` probe 验证跨进程互斥与释放后重获；Job Object probe 还验证 suspended child 在执行前加入带
+tree hardening；production `LockFileEx` probe 验证跨进程 timeout、释放后重获、同线程重入拒绝、hardlink 拒绝、
+`require_existing` 零写，以及持锁期间禁止删除 leaf/重命名 parent；Job Object probe 还验证 suspended child 在执行前加入带
 `KILL_ON_JOB_CLOSE` 的 Job，并在关闭 Job 后终止 child 与 descendant。当前仍缺 workspace/runtime 其余 backend、
-Windows 11 实机、完整 atomic-write fault injection、锁 identity race/timeout、bounded pipe/output-limit 和完整安全语义证据。
+Windows 11 实机、完整 atomic-write fault injection、剩余锁 race、bounded pipe/output-limit 和完整安全语义证据。
 Windows 仍是未支持平台。只有以下证据在同一 exact HEAD
 全部成立后，才可增加 Windows classifier 和公开支持声明：
 

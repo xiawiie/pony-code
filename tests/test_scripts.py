@@ -121,6 +121,7 @@ def test_ci_probes_native_windows_capabilities_and_file_semantics():
     assert "python scripts/windows/probe_capabilities.py --pretty" in windows
     assert "python scripts/windows/probe_file_semantics.py --pretty" in windows
     assert "python scripts/windows/probe_lock_semantics.py --pretty" in windows
+    assert "python scripts/windows/probe_file_lock_backend.py" in windows
     assert "python scripts/windows/probe_job_semantics.py --pretty" in windows
     assert "continue-on-error" not in windows
 
@@ -284,6 +285,7 @@ def test_maintenance_scripts_start_and_show_help():
         "scripts/windows/probe_capabilities.py",
         "scripts/windows/probe_file_semantics.py",
         "scripts/windows/probe_lock_semantics.py",
+        "scripts/windows/probe_file_lock_backend.py",
         "scripts/windows/probe_job_semantics.py",
     ):
         result = subprocess.run(

@@ -23,6 +23,7 @@ _WRITE_DAC = 0x00040000
 _WRITE_OWNER = 0x00080000
 _SYNCHRONIZE = 0x00100000
 _FILE_ALL_ACCESS = 0x001F01FF
+_FILE_SHARE_READ_WRITE = 0x00000003
 _FILE_SHARE_ALL = 0x00000007
 _OPEN_EXISTING = 3
 _FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
@@ -516,12 +517,12 @@ def private_security_descriptor():
         native.kernel32.LocalFree(acl)
 
 
-def _open_root(path):
+def _open_root(path, *, share_access=_FILE_SHARE_ALL):
     native = api()
     handle = native.kernel32.CreateFileW(
         _win32_path(Path(path.anchor)),
         _FILE_TRAVERSE | _FILE_READ_ATTRIBUTES | _READ_CONTROL | _SYNCHRONIZE,
-        _FILE_SHARE_ALL,
+        share_access,
         None,
         _OPEN_EXISTING,
         _FILE_FLAG_BACKUP_SEMANTICS | _FILE_FLAG_OPEN_REPARSE_POINT,
@@ -546,6 +547,7 @@ def open_relative(
     desired_access,
     disposition=_FILE_OPEN,
     security_descriptor=None,
+    share_access=_FILE_SHARE_ALL,
 ):
     native = api()
     name = lexical_component(name)
@@ -571,7 +573,7 @@ def open_relative(
         ctypes.byref(io_status),
         None,
         _FILE_ATTRIBUTE_NORMAL,
-        _FILE_SHARE_ALL,
+        share_access,
         disposition,
         options,
         None,
@@ -589,7 +591,7 @@ def open_relative(
         raise
 
 
-def open_path(path, *, directory, desired_access=None):
+def open_path(path, *, directory, desired_access=None, share_access=_FILE_SHARE_ALL):
     path = lexical_absolute(path)
     if desired_access is None:
         desired_access = (
@@ -597,7 +599,7 @@ def open_path(path, *, directory, desired_access=None):
             if directory
             else FILE_READ_ACCESS
         )
-    current = _open_root(path)
+    current = _open_root(path, share_access=share_access)
     try:
         if len(path.parts) == 1:
             if not directory:
@@ -614,6 +616,7 @@ def open_path(path, *, directory, desired_access=None):
                     if final
                     else _FILE_TRAVERSE | _FILE_READ_ATTRIBUTES | _READ_CONTROL
                 ),
+                share_access=share_access,
             )
             current.close()
             current = child
@@ -664,10 +667,18 @@ def ensure_directory(path):
         current.close()
 
 
-def open_parent(path, *, trusted_root=None, trusted_root_identity=None):
+def open_parent(
+    path,
+    *,
+    trusted_root=None,
+    trusted_root_identity=None,
+    share_access=_FILE_SHARE_ALL,
+):
     path = lexical_absolute(path)
     if trusted_root is None:
-        return path, open_path(path.parent, directory=True)
+        return path, open_path(
+            path.parent, directory=True, share_access=share_access
+        )
     root = lexical_absolute(trusted_root)
     try:
         relative = path.relative_to(root)
@@ -675,7 +686,7 @@ def open_parent(path, *, trusted_root=None, trusted_root_identity=None):
         raise ValueError("private path escapes trusted root") from exc
     if not relative.parts:
         raise ValueError("private path must name a file")
-    current = open_path(root, directory=True)
+    current = open_path(root, directory=True, share_access=share_access)
     try:
         if trusted_root_identity is None or identity(current) != tuple(trusted_root_identity):
             raise ValueError("private root changed")
@@ -685,6 +696,7 @@ def open_parent(path, *, trusted_root=None, trusted_root_identity=None):
                 component,
                 directory=True,
                 desired_access=_FILE_TRAVERSE | _FILE_READ_ATTRIBUTES | _READ_CONTROL,
+                share_access=share_access,
             )
             current.close()
             current = child
@@ -950,6 +962,7 @@ def replace_file(target, replacement, backup=None):
 
 
 FILE_READ_ACCESS = _FILE_READ_DATA | _FILE_READ_ATTRIBUTES | _READ_CONTROL
+FILE_SHARE_READ_WRITE = _FILE_SHARE_READ_WRITE
 FILE_WRITE_ACCESS = (
     _FILE_READ_DATA
     | _FILE_WRITE_DATA
