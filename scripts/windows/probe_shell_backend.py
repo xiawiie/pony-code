@@ -199,13 +199,23 @@ def probe(*, expect_elevated_rejection=False):
                 env=expanded_env,
                 creationflags=subprocess.CREATE_NO_WINDOW,
             )
+            no_cache_env = dict(shell_env)
+            no_cache_env["PSModuleAnalysisCachePath"] = os.devnull
+            _stage("powershell_without_module_analysis_cache")
+            no_module_cache = _run_direct_powershell(
+                shell_argv,
+                root=root,
+                env=no_cache_env,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
             raise RuntimeError(
                 "direct fixed PowerShell execution timed out: "
                 f"baseline={direct!r}, "
                 f"console_no_window={console_no_window!r}, "
                 f"console_windowed={console_windowed!r}, "
                 f"explicit_module={explicit_module!r}, "
-                f"windows_base_env={windows_base_env!r}"
+                f"windows_base_env={windows_base_env!r}, "
+                f"no_module_cache={no_module_cache!r}"
             )
         if direct["returncode"] != 0 or direct["stdout"].strip() != "pony-shell-ok":
             raise RuntimeError(
