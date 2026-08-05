@@ -4,6 +4,7 @@ from collections.abc import Mapping
 from contextlib import nullcontext
 from copy import deepcopy
 from dataclasses import dataclass
+import os
 from pathlib import Path
 import subprocess
 import textwrap
@@ -291,9 +292,13 @@ def _freeze_shell_preparation(agent, tool, args, effect_class, assessment, mode)
     if assessment["execution_mode"] == "argv":
         argv = tuple(assessment["argv"])
         executable_name = argv[0]
+        if os.name == "nt":
+            executable_name = Path(executable_name).name.casefold()
+            if executable_name.endswith(".exe"):
+                executable_name = executable_name[:-4]
     else:
         argv = ()
-        executable_name = "sh"
+        executable_name = "powershell" if os.name == "nt" else "sh"
     return _ShellPreparation(
         agent=agent,
         tool=tool,

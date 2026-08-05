@@ -1553,3 +1553,48 @@ def test_hardened_rg_rejects_preprocessors(option, tmp_path, monkeypatch):
 
     with pytest.raises(ValueError):
         run_hardened_rg("/usr/bin/rg", [option, "needle", "."], cwd=tmp_path)
+
+
+def test_windows_shell_argv_uses_fixed_powershell_flags():
+    command = "Get-ChildItem README.md | Select-String Pony"
+
+    argv = safe_subprocess_module._shell_argv(
+        r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+        command,
+        windows=True,
+    )
+
+    assert argv == [
+        r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        command,
+    ]
+    assert "cmd" not in argv
+
+
+def test_windows_shell_minimal_environment_drops_module_and_secret_state(
+    tmp_path,
+    monkeypatch,
+):
+    powershell = Path(
+        r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
+    )
+    monkeypatch.setenv("PATH", "untrusted")
+    monkeypatch.setenv("PSModulePath", "user-modules")
+    monkeypatch.setenv("PONY_API_KEY", "secret")
+    monkeypatch.setenv("SystemRoot", r"C:\Windows")
+    monkeypatch.setattr(
+        safe_subprocess_module,
+        "_safe_path_dirs",
+        lambda *_args, **_kwargs: [str(powershell.parent)],
+    )
+
+    env = safe_subprocess_module._minimal_env(tmp_path, powershell)
+
+    assert env["PATH"] == str(powershell.parent)
+    assert env["SystemRoot"] == r"C:\Windows"
+    assert "PSModulePath" not in env
+    assert "PONY_API_KEY" not in env

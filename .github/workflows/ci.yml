@@ -111,6 +111,9 @@ jobs:
       - name: Probe Pony Windows process backend
         run: python scripts/windows/probe_process_backend.py
 
+      - name: Probe Pony Windows shell backend
+        run: python scripts/windows/probe_shell_backend.py
+
   macos-focused:
     name: macOS focused (Python 3.12)
     runs-on: macos-latest

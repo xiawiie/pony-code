@@ -1,6 +1,7 @@
 """Fail-closed classification for Host shell commands."""
 
 import os
+import ntpath
 import re
 import shlex
 import stat
@@ -41,6 +42,38 @@ _COMMAND_PREFIX_KEYWORDS = {
     "do",
 }
 _ASSIGNMENT_TOKEN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+_POWERSHELL_CMDLET_RE = re.compile(r"^[A-Za-z]+-[A-Za-z][A-Za-z0-9]*$")
+_POWERSHELL_ALIASES = {
+    "cat",
+    "cd",
+    "copy",
+    "cp",
+    "del",
+    "dir",
+    "echo",
+    "gc",
+    "gci",
+    "gl",
+    "ls",
+    "mkdir",
+    "move",
+    "mv",
+    "ni",
+    "pwd",
+    "rm",
+    "ri",
+    "sls",
+    "type",
+}
+_POWERSHELL_WRAPPERS = {
+    "bash",
+    "cmd",
+    "powershell",
+    "pwsh",
+    "sh",
+    "wsl",
+    "zsh",
+}
 
 
 def _line_break_length(raw, index):
@@ -165,6 +198,151 @@ def _scan_shell_syntax(command):
     }
 
 
+def _scan_powershell_syntax(command):
+    raw = str(command or "")
+    words = []
+    tokens = []
+    operators = []
+    redirects = []
+    current = []
+    quote = ""
+    word_started = False
+    rejected_reason = ""
+    index = 0
+
+    def flush():
+        nonlocal word_started
+        if word_started:
+            word = "".join(current)
+            words.append(word)
+            tokens.append(word)
+            current.clear()
+            word_started = False
+
+    while index < len(raw):
+        char = raw[index]
+        if quote == "single":
+            if char == "'":
+                if raw[index + 1 : index + 2] == "'":
+                    current.append("'")
+                    index += 2
+                    continue
+                quote = ""
+            else:
+                current.append(char)
+            index += 1
+            continue
+        if quote == "double":
+            if char == '"':
+                quote = ""
+            elif char in {"$", "`"}:
+                rejected_reason = rejected_reason or "dynamic_expansion_rejected"
+                current.append(char)
+            else:
+                current.append(char)
+            index += 1
+            continue
+        if char.isspace():
+            flush()
+            line_break_length = _line_break_length(raw, index)
+            if line_break_length:
+                operators.append(";")
+                tokens.append(";")
+                index += line_break_length
+            else:
+                index += 1
+            continue
+        if char == "'":
+            quote = "single"
+            word_started = True
+            index += 1
+            continue
+        if char == '"':
+            quote = "double"
+            word_started = True
+            index += 1
+            continue
+        pair = raw[index : index + 2]
+        if pair in {"$(", "${", "@("}:
+            rejected_reason = rejected_reason or "dynamic_expansion_rejected"
+        if char in {"$", "`"}:
+            rejected_reason = rejected_reason or "dynamic_expansion_rejected"
+            current.append(char)
+            word_started = True
+            index += 1
+            continue
+        if char in "{}()":
+            rejected_reason = rejected_reason or "powershell_script_rejected"
+            current.append(char)
+            word_started = True
+            index += 1
+            continue
+        if char == "#":
+            rejected_reason = rejected_reason or "powershell_comment_rejected"
+            current.append(char)
+            word_started = True
+            index += 1
+            continue
+        if pair in {"&&", "||"}:
+            rejected_reason = rejected_reason or "powershell_operator_rejected"
+            flush()
+            operators.append(pair)
+            tokens.append(pair)
+            index += 2
+            continue
+        if char == "&":
+            rejected_reason = rejected_reason or "invocation_operator_rejected"
+            flush()
+            operators.append(char)
+            tokens.append(char)
+            index += 1
+            continue
+        if char == "|" or char == ";":
+            flush()
+            operators.append(char)
+            tokens.append(char)
+            index += 1
+            continue
+        if char in "<>":
+            flush()
+            operator = char
+            if raw[index + 1 : index + 2] == char:
+                operator += char
+                index += 1
+            if char == "<":
+                rejected_reason = rejected_reason or "powershell_operator_rejected"
+            operators.append(operator)
+            tokens.append(operator)
+            index += 1
+            continue
+        current.append(char)
+        word_started = True
+        index += 1
+    flush()
+    redirects = [
+        (
+            token,
+            tokens[token_index + 1]
+            if token_index + 1 < len(tokens)
+            and tokens[token_index + 1] not in operators
+            else "",
+        )
+        for token_index, token in enumerate(tokens)
+        if token in _REDIRECT_TOKENS
+    ]
+    return {
+        "parse_error": bool(quote),
+        "operators": tuple(operators),
+        "redirects": tuple(redirects),
+        "has_expansion": rejected_reason == "dynamic_expansion_rejected",
+        "has_assignment": False,
+        "has_control_keyword": False,
+        "rejected_reason": rejected_reason,
+        "words": tuple(words),
+        "tokens": tuple(tokens),
+    }
+
+
 _LS_OPTIONS = {"-1", "-a", "-A", "-d", "-F", "-l"}
 _FILE_OPTIONS = {"-b", "--brief"}
 _WC_OPTIONS = {"-c", "-l", "-w"}
@@ -193,6 +371,43 @@ _DESTRUCTIVE_HEADS = {
     "chmod",
     "kill",
 }
+
+
+def _command_name(value, *, windows=False):
+    name = ntpath.basename(str(value)) if windows else Path(value).name
+    folded = name.casefold()
+    if windows and folded.endswith(".exe"):
+        return folded[:-4]
+    return folded
+
+
+def _windows_ads_operand(value):
+    raw = str(value or "")
+    if raw.startswith("$") or "://" in raw:
+        return False
+    if re.match(r"^[A-Za-z]:[\\/]", raw):
+        raw = raw[2:]
+    return ":" in raw
+
+
+def _windows_literal_reason(words):
+    if any(_windows_ads_operand(word) for word in words):
+        return "alternate_data_stream_rejected"
+    if any(_literal_word_is_sensitive(word) for word in words):
+        return "sensitive_path"
+    for segment in _command_segments(words):
+        if not segment:
+            continue
+        head = _command_name(segment[0], windows=True)
+        if head in _POWERSHELL_WRAPPERS:
+            return "shell_wrapper_rejected"
+        if segment[0] == ".":
+            return "dot_sourcing_rejected"
+    return ""
+
+
+def _windows_requires_powershell(head):
+    return head in _POWERSHELL_ALIASES or bool(_POWERSHELL_CMDLET_RE.fullmatch(head))
 
 
 def _shell_wrapper_payload(argv):
@@ -791,5 +1006,97 @@ def _assess_command(command, workspace_root, executables, _depth=0):
     return _assessment("external_effect", "ask", reason, argv, "argv")
 
 
+def _assess_windows_command(command, workspace_root, executables):
+    raw = str(command or "").strip()
+    scan = _scan_powershell_syntax(raw)
+    words = list(scan["words"])
+    head = _command_name(words[0], windows=True) if words else ""
+    has_shell_grammar = bool(scan["operators"] or _windows_requires_powershell(head))
+    if scan["rejected_reason"]:
+        return _assessment(
+            "destructive",
+            "reject",
+            scan["rejected_reason"],
+            [],
+            "shell",
+        )
+    literal_reason = _windows_literal_reason(scan["tokens"])
+    if literal_reason:
+        return _assessment(
+            "destructive",
+            "reject",
+            literal_reason,
+            [],
+            "shell" if has_shell_grammar else "argv",
+        )
+    if scan["parse_error"]:
+        return _assessment(
+            "external_effect", "reject", "powershell_parse_error", [], "shell"
+        )
+    if scan["redirects"]:
+        redirect_reasons = [
+            _path_operand_reason(workspace_root, target)
+            for _, target in scan["redirects"]
+        ]
+        if "sensitive_path" in redirect_reasons:
+            return _assessment("destructive", "reject", "sensitive_path", [], "shell")
+        if any(
+            reason in {"outside_path", "unsafe_path"} for reason in redirect_reasons
+        ):
+            return _assessment("destructive", "ask", "unsafe_redirect", [], "shell")
+        return _assessment(
+            "workspace_write", "ask", "redirect_requires_approval", [], "shell"
+        )
+    if has_shell_grammar:
+        return _assessment(
+            "external_effect",
+            "ask",
+            "shell_grammar_requires_approval",
+            [],
+            "shell",
+        )
+    if not words:
+        return _assessment("external_effect", "ask", "empty_command", [], "shell")
+    if "/" in words[0] or "\\" in words[0]:
+        return _assessment(
+            "external_effect",
+            "ask",
+            "executable_path_requires_approval",
+            words,
+            "argv",
+        )
+    normalized = [head, *words[1:]]
+    if head == "git":
+        reason = _automatic_grammar_reason(normalized, workspace_root)
+        if reason:
+            decision = (
+                "reject"
+                if reason in {"sensitive_path", "unsafe_path", "outside_path"}
+                else "ask"
+            )
+            risk = "destructive" if decision == "reject" else "external_effect"
+            return _assessment(risk, decision, reason, words, "argv")
+        if executables is not None and head not in executables:
+            return _assessment(
+                "read_only", "ask", "trusted_executable_missing", words, "argv"
+            )
+        return _assessment("read_only", "allow", "proved_read_only", words, "argv")
+    if head in _INTERPRETERS:
+        reason = "interpreter_requires_approval"
+    elif head in _DESTRUCTIVE_HEADS:
+        return _assessment(
+            "destructive",
+            "ask",
+            "system_command_requires_approval",
+            words,
+            "argv",
+        )
+    else:
+        reason = "unknown_command_requires_approval"
+    return _assessment("external_effect", "ask", reason, words, "argv")
+
+
 def assess_command(command, workspace_root, executables=None):
+    if os.name == "nt":
+        return _assess_windows_command(command, workspace_root, executables)
     return _assess_command(command, workspace_root, executables, _depth=0)
