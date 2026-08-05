@@ -53,10 +53,9 @@ def ensure_private_file(path, *, trusted_root=None, trusted_root_identity=None):
         path,
         trusted_root=trusted_root,
         trusted_root_identity=trusted_root_identity,
-        access=native.FILE_WRITE_ACCESS,
+        access=native.FILE_ALL_ACCESS,
     )
     try:
-        native.require_current_owner(handle)
         native.make_private(handle)
         native.require_private(handle)
         return path
@@ -110,7 +109,7 @@ def read_private_bytes(
     harden=True,
     allow_insecure_mode=False,
 ):
-    access = native.FILE_WRITE_ACCESS if harden else native.FILE_READ_ACCESS
+    access = native.FILE_ALL_ACCESS if harden else native.FILE_READ_ACCESS
     _path, parent, handle = _open_file(
         path,
         trusted_root=trusted_root,
@@ -119,7 +118,6 @@ def read_private_bytes(
     )
     try:
         if harden:
-            native.require_current_owner(handle)
             native.make_private(handle)
             native.require_private(handle)
         elif allow_insecure_mode:
@@ -451,7 +449,6 @@ def harden_private_tree(path):
                         desired_access=native.FILE_ALL_ACCESS,
                     ) as handle:
                         native.require_kind(handle, directory=True)
-                        native.require_current_owner(handle)
                         native.make_private(handle)
                         native.require_private(handle)
                     pending.append(child)
