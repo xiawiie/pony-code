@@ -587,6 +587,9 @@ def write_regular_bytes_anchored_atomic(
         )
         temp = _create_temp(chain.handle, path, rendered, fsync_file)
         _revalidate_target(chain.handle, path.name, target)
+        temp.handle.close()
+        if target.handle is not None:
+            target.handle.close()
         try:
             if target.signature is None:
                 native.move_file(temp.path, path)
@@ -616,7 +619,17 @@ def write_regular_bytes_anchored_atomic(
                 if _identity_at(chain.handle, path.name) != temp.identity:
                     raise ValueError("workspace installed file changed")
                 if target is not None and target.signature is None:
-                    native.delete_handle(temp.handle)
+                    installed_handle = _open_leaf(
+                        chain.handle,
+                        path.name,
+                        access=native.FILE_DELETE_ACCESS,
+                    )
+                    try:
+                        if native.identity(installed_handle) != temp.identity:
+                            raise ValueError("workspace installed file changed")
+                        native.delete_handle(installed_handle)
+                    finally:
+                        installed_handle.close()
                 elif target is not None:
                     if _identity_at(chain.handle, backup.name) != target.signature[:2]:
                         raise ValueError("workspace backup identity changed")
@@ -637,7 +650,10 @@ def write_regular_bytes_anchored_atomic(
     finally:
         if not installed and temp is not None:
             try:
-                native.delete_handle(temp.handle)
+                if temp.handle.value is None:
+                    _delete_backup(chain.handle, temp.path.name, temp.identity)
+                else:
+                    native.delete_handle(temp.handle)
             except OSError:
                 pass
         if temp is not None:
