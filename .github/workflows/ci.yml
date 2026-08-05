@@ -95,31 +95,10 @@ jobs:
           uv lock --check
           uv run --frozen ruff check .
 
-      - name: Run complete Windows test suite
+      - name: Run complete Windows verification as a standard user
         run: >-
-          uv run --frozen pytest -q
-          tests benchmarks/live_e2e/tests/test_assertions.py
-
-      - name: Run Windows core-functional evaluation
-        run: >-
-          uv run --frozen python scripts/evaluation/evaluate.py
-          --suite core-functional
-          --output-dir "$env:RUNNER_TEMP\pony-windows-eval"
-
-      - name: Build and verify Windows distribution
-        run: |
-          uv build --offline --clear --no-create-gitignore --out-dir "$env:RUNNER_TEMP\pony-dist"
-          uv run --frozen python scripts/release/verify_distribution.py `
-            --dist-dir "$env:RUNNER_TEMP\pony-dist" `
-            --install-smoke `
-            --offline-bundle-smoke
-
-      - name: Smoke native PowerShell and cmd entry points
-        run: |
-          uv run pony --help
-          uv run pony status
-          cmd /d /c ".venv\Scripts\pony.exe --help"
-          uv run python -c "import prompt_toolkit; import pony.tui.app"
+          scripts/windows/run_as_standard_user.ps1
+          -Script scripts/windows/verify_full_runtime.ps1
 
       - name: Probe native Windows capabilities
         if: ${{ !cancelled() }}
@@ -181,7 +160,9 @@ jobs:
 
       - name: Probe Pony Windows shell backend as a standard user
         if: ${{ !cancelled() }}
-        run: scripts/windows/run_shell_probe_as_standard_user.ps1
+        run: >-
+          scripts/windows/run_as_standard_user.ps1
+          -Script scripts/windows/probe_shell_backend.py
 
   macos-focused:
     name: macOS focused (Python 3.12)
