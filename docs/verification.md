@@ -49,8 +49,9 @@ G8 是否执行；不得把某一组合的 live 结果外推到其他组合。
 
 CI 的 Windows 3.11/3.12 capability job 分开运行 symbol probe 与文件语义 probe。后者在 hosted Windows runner 上验证
 `NtCreateFile` root-handle-relative 逐层打开、reparse point 打开后识别、稳定 File ID、hardlink count，以及 `LockFileEx`
-跨进程互斥与释放后重获；这些仍不是 runtime backend、Windows 11 实机、DACL/atomic-write、锁 identity race/timeout 或完整
-安全语义证据。Windows 仍是未支持平台。只有以下证据在同一 exact HEAD
+跨进程互斥与释放后重获；Job Object probe 还验证 suspended child 在执行前加入带 `KILL_ON_JOB_CLOSE` 的 Job，并在关闭
+Job 后终止 child 与 descendant。这些仍不是 runtime backend、Windows 11 实机、DACL/atomic-write、锁 identity race/timeout、
+bounded pipe/output-limit 或完整安全语义证据。Windows 仍是未支持平台。只有以下证据在同一 exact HEAD
 全部成立后，才可增加 Windows classifier 和公开支持声明：
 
 - Windows 11 x64 的 Python 3.11、3.12 全量 pytest、Ruff、build、distribution verifier 与 clean-install smoke 通过；

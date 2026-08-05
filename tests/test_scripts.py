@@ -121,6 +121,7 @@ def test_ci_probes_native_windows_capabilities_and_file_semantics():
     assert "python scripts/windows/probe_capabilities.py --pretty" in windows
     assert "python scripts/windows/probe_file_semantics.py --pretty" in windows
     assert "python scripts/windows/probe_lock_semantics.py --pretty" in windows
+    assert "python scripts/windows/probe_job_semantics.py --pretty" in windows
     assert "continue-on-error" not in windows
 
 
@@ -220,6 +221,30 @@ def test_windows_lock_probe_fails_if_holder_exits_before_ready(tmp_path):
         module._wait_for(tmp_path / "ready", process, module.time.monotonic() + 1)
 
 
+def test_windows_job_probe_creates_child_suspended_before_assignment(tmp_path):
+    script = Path("scripts/windows/probe_job_semantics.py")
+    spec = importlib.util.spec_from_file_location("windows_job_semantics_probe", script)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    calls = []
+
+    class Kernel32:
+        @staticmethod
+        def CreateProcessW(*args):
+            calls.append(args)
+            return True
+
+    module._create_suspended_child(
+        Kernel32(),
+        tmp_path / "marker",
+        tmp_path / "grandchild-pid",
+    )
+
+    assert calls[0][5] == module._CREATE_SUSPENDED | module._CREATE_NO_WINDOW
+    assert calls[0][4] is False
+
+
 def test_ci_has_macos_security_and_durability_gate():
     workflow = Path(".github/workflows/ci.yml").read_text(encoding="utf-8")
 
@@ -259,6 +284,7 @@ def test_maintenance_scripts_start_and_show_help():
         "scripts/windows/probe_capabilities.py",
         "scripts/windows/probe_file_semantics.py",
         "scripts/windows/probe_lock_semantics.py",
+        "scripts/windows/probe_job_semantics.py",
     ):
         result = subprocess.run(
             [sys.executable, script, "--help"],
