@@ -1571,7 +1571,13 @@ def test_windows_shell_argv_uses_fixed_powershell_flags():
         "-NoProfile",
         "-NonInteractive",
         "-Command",
-        command,
+        "Import-Module -Name "
+        "'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\Modules\\"
+        "Microsoft.PowerShell.Management\\Microsoft.PowerShell.Management.psd1' "
+        "-ErrorAction Stop; Import-Module -Name "
+        "'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\Modules\\"
+        "Microsoft.PowerShell.Utility\\Microsoft.PowerShell.Utility.psd1' "
+        f"-ErrorAction Stop; {command}",
     ]
     assert "cmd" not in argv
 

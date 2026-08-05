@@ -1618,13 +1618,22 @@ def run_process_group(
 
 def _shell_argv(executable, command, *, windows):
     if windows:
+        module_root = ntpath.join(ntpath.dirname(str(executable)), "Modules")
+        imports = []
+        for name in (
+            "Microsoft.PowerShell.Management",
+            "Microsoft.PowerShell.Utility",
+        ):
+            manifest = ntpath.join(module_root, name, f"{name}.psd1")
+            quoted = manifest.replace("'", "''")
+            imports.append(f"Import-Module -Name '{quoted}' -ErrorAction Stop")
         return [
             executable,
             "-NoLogo",
             "-NoProfile",
             "-NonInteractive",
             "-Command",
-            command,
+            f"{'; '.join(imports)}; {command}",
         ]
     return [executable, "-c", command]
 
