@@ -11,6 +11,7 @@ MAINTAINER_DOCS = {
     "AGENTS.md",
     "README.md",
     "CHANGELOG.md",
+    "benchmarks/memory_public/README.md",
     "docs/domain-model.md",
     "docs/cli-installation-and-updates.md",
     "docs/architecture.md",
