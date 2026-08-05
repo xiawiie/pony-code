@@ -99,6 +99,9 @@ jobs:
       - name: Probe native Windows lock semantics
         run: python scripts/windows/probe_lock_semantics.py --pretty
 
+      - name: Probe Pony Windows file-lock backend
+        run: python scripts/windows/probe_file_lock_backend.py
+
       - name: Probe native Windows Job Object semantics
         run: python scripts/windows/probe_job_semantics.py --pretty
 
