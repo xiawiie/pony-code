@@ -51,10 +51,10 @@ try {
         }
     }
 
-    $home = Join-Path $userRoot "home"
-    New-Item -ItemType Directory -Path $home | Out-Null
+    $homePath = Join-Path $userRoot "home"
+    New-Item -ItemType Directory -Path $homePath | Out-Null
     $tempLiteral = $userRoot.Replace("'", "''")
-    $homeLiteral = $home.Replace("'", "''")
+    $homeLiteral = $homePath.Replace("'", "''")
     $workspaceLiteral = $workspace.Replace("'", "''")
     $pythonLiteral = $Python.Replace("'", "''")
     $scriptLiteral = $scriptPath.Replace("'", "''")
