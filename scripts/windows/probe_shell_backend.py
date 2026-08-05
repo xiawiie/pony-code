@@ -15,6 +15,42 @@ def _stage(name):
 
 
 
+def _run_direct_powershell(argv, *, root, env, creationflags, timeout=8):
+    process = subprocess.Popen(
+        argv,
+        executable=argv[0],
+        cwd=root,
+        env=env,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        creationflags=creationflags,
+    )
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        process_running = process.poll() is None
+        if process_running:
+            process.kill()
+        for stream in (process.stdout, process.stderr):
+            if stream is not None:
+                stream.close()
+        process.wait(timeout=5)
+        return {
+            "timed_out": True,
+            "process_running": process_running,
+            "stdout": exc.output,
+            "stderr": exc.stderr,
+        }
+    return {
+        "timed_out": False,
+        "returncode": process.returncode,
+        "stdout": stdout,
+        "stderr": stderr,
+    }
+
+
 def _parser():
     parser = argparse.ArgumentParser(
         description="Probe Pony's production Windows executable and PowerShell boundaries."
@@ -97,36 +133,41 @@ def probe(*, expect_elevated_rejection=False):
             command,
         ]
         _stage("powershell_direct")
-        direct = subprocess.Popen(
+        direct = _run_direct_powershell(
             shell_argv,
-            executable=str(powershell),
-            cwd=root,
+            root=root,
             env=shell_env,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
             creationflags=subprocess.CREATE_NO_WINDOW,
         )
-        try:
-            stdout, stderr = direct.communicate(timeout=20)
-        except subprocess.TimeoutExpired as exc:
-            process_running = direct.poll() is None
-            if process_running:
-                direct.kill()
-            for stream in (direct.stdout, direct.stderr):
-                if stream is not None:
-                    stream.close()
-            direct.wait(timeout=5)
+        if direct["timed_out"]:
+            console_argv = [
+                *shell_argv[:-1],
+                "[Console]::Out.WriteLine('pony-shell-ok')",
+            ]
+            _stage("powershell_console_no_window")
+            console_no_window = _run_direct_powershell(
+                console_argv,
+                root=root,
+                env=shell_env,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+            _stage("powershell_console_windowed")
+            console_windowed = _run_direct_powershell(
+                console_argv,
+                root=root,
+                env=shell_env,
+                creationflags=0,
+            )
             raise RuntimeError(
                 "direct fixed PowerShell execution timed out: "
-                f"process_running={process_running}, "
-                f"stdout={exc.output!r}, stderr={exc.stderr!r}"
-            ) from exc
-        if direct.returncode != 0 or stdout.strip() != "pony-shell-ok":
+                f"baseline={direct!r}, "
+                f"console_no_window={console_no_window!r}, "
+                f"console_windowed={console_windowed!r}"
+            )
+        if direct["returncode"] != 0 or direct["stdout"].strip() != "pony-shell-ok":
             raise RuntimeError(
                 "direct fixed PowerShell execution failed: "
-                f"returncode={direct.returncode}, stderr={stderr!r}"
+                f"returncode={direct['returncode']}, stderr={direct['stderr']!r}"
             )
 
         _stage("powershell_job")

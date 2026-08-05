@@ -43,6 +43,7 @@ from .frontmatter import parse_frontmatter
 MAX_NOTE_STORAGE_BYTES = 16 * 1024
 AGENT_NOTES_SOFT_LIMIT_BYTES = 64 * 1024
 MAX_MEMORY_INDEX_FILES = 512
+MAX_MEMORY_DIRECTORY_ENTRIES = 10_000
 MAX_MEMORY_FILE_BYTES = 128 * 1024
 MAX_MEMORY_INDEX_BYTES = 2 * 1024 * 1024
 
@@ -310,7 +311,7 @@ class BlockStore:
                     listing = workspace_files.list_directory_names_anchored(
                         root,
                         relative_dir,
-                        max_entries=MAX_MEMORY_INDEX_FILES,
+                        max_entries=MAX_MEMORY_DIRECTORY_ENTRIES,
                         expected_root_identity=private_files.private_directory_identity(
                             root
                         ),
