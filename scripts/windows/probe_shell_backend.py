@@ -46,10 +46,11 @@ def _report_mutable_directory_access(native, path):
             else:
                 handle.close()
                 allowed.append(name)
+                break
         if allowed:
             print(
                 "windows_shell_mutable_directory="
-                f"{index}:{current.name or current.anchor}:{','.join(allowed)}",
+                f"{index}:{current.name or current.anchor}:{allowed[0]}",
                 file=sys.stderr,
                 flush=True,
             )
