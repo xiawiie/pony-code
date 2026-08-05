@@ -99,7 +99,7 @@ _GIT_CONFIG_KEY_RE = re.compile(
 _MAX_GIT_METADATA_BYTES = 64 * 1024
 MAX_CAPTURED_PROCESS_BYTES = 4 * 1024 * 1024
 # Regular gitfiles fail closed without race-safe component traversal.
-_HAS_GIT_DIR_FD_TRAVERSAL = (
+_HAS_GIT_DIR_FD_TRAVERSAL = os.name == "nt" or (
     os.name == "posix"
     and bool(getattr(os, "O_DIRECTORY", 0))
     and bool(getattr(os, "O_NOFOLLOW", 0))
@@ -326,28 +326,71 @@ def _prepared_executable(executable):
         os.close(descriptor)
 
 
+def _git_absolute(path):
+    if os.name == "nt":
+        from pony.security import windows_native as native
+
+        return native.lexical_absolute(path)
+    return Path(path).resolve()
+
+
+def _close_git_handle(handle):
+    if os.name == "nt":
+        handle.close()
+    else:
+        os.close(handle)
+
+
+def _git_entry_mode(directory_handle, name):
+    if os.name == "nt":
+        from pony.security import windows_native as native
+
+        errors = []
+        for directory in (True, False):
+            try:
+                handle, _created = native.open_relative(
+                    directory_handle,
+                    name,
+                    directory=directory,
+                    desired_access=(
+                        native.FILE_DIRECTORY_ACCESS
+                        if directory
+                        else native.FILE_READ_ACCESS
+                    ),
+                    share_access=native.FILE_SHARE_READ_WRITE,
+                )
+            except OSError as exc:
+                errors.append(exc)
+                continue
+            handle.close()
+            return stat.S_IFDIR if directory else stat.S_IFREG
+        for exc in errors:
+            if native.error_code(exc) in {2, 3}:
+                continue
+            if native.error_code(exc) != 267:
+                raise exc
+        raise FileNotFoundError(2, "git entry missing")
+    return os.stat(name, dir_fd=directory_handle, follow_symlinks=False).st_mode
+
+
 def _open_lexical_repo_root(cwd):
-    current = Path(cwd).resolve()
+    current = _git_absolute(cwd)
     for candidate in (current, *current.parents):
         _, candidate_fd = _open_git_path(candidate, directory=True)
         try:
-            mode = os.stat(
-                ".git",
-                dir_fd=candidate_fd,
-                follow_symlinks=False,
-            ).st_mode
+            mode = _git_entry_mode(candidate_fd, ".git")
         except FileNotFoundError:
-            os.close(candidate_fd)
+            _close_git_handle(candidate_fd)
             continue
         except Exception:
-            os.close(candidate_fd)
+            _close_git_handle(candidate_fd)
             raise
         if stat.S_ISLNK(mode):
-            os.close(candidate_fd)
+            _close_git_handle(candidate_fd)
             raise ValueError("unsafe .git symlink")
         if stat.S_ISDIR(mode) or stat.S_ISREG(mode):
             return candidate, candidate_fd, mode
-        os.close(candidate_fd)
+        _close_git_handle(candidate_fd)
         raise ValueError("unsafe git repository")
     _, current_fd = _open_git_path(current, directory=True)
     return current, current_fd, None
@@ -356,10 +399,10 @@ def _open_lexical_repo_root(cwd):
 def discover_lexical_repo_root(cwd):
     if _HAS_GIT_DIR_FD_TRAVERSAL:
         root, root_fd, _ = _open_lexical_repo_root(cwd)
-        os.close(root_fd)
+        _close_git_handle(root_fd)
         return root
 
-    current = Path(cwd).resolve()
+    current = _git_absolute(cwd)
     for candidate in (current, *current.parents):
         marker = candidate / ".git"
         try:
@@ -396,6 +439,14 @@ def _open_git_path(path, *, directory):
     if not _HAS_GIT_DIR_FD_TRAVERSAL:
         raise ValueError("unsafe git repository")
     candidate = Path(os.path.abspath(path))
+    if os.name == "nt":
+        from pony.security import windows_native as native
+
+        return candidate, native.open_path(
+            candidate,
+            directory=directory,
+            share_access=native.FILE_SHARE_READ_WRITE,
+        )
     descriptor = os.open(candidate.anchor, _git_open_flags(directory=True))
     try:
         components = candidate.parts[1:]
@@ -412,9 +463,9 @@ def _open_git_path(path, *, directory):
                 if not expected_type(opened.st_mode):
                     raise ValueError("unsafe git repository")
             except Exception:
-                os.close(next_descriptor)
+                _close_git_handle(next_descriptor)
                 raise
-            os.close(descriptor)
+            _close_git_handle(descriptor)
             descriptor = next_descriptor
         opened = os.fstat(descriptor)
         expected_type = stat.S_ISDIR if directory else stat.S_ISREG
@@ -422,7 +473,7 @@ def _open_git_path(path, *, directory):
             raise ValueError("unsafe git repository")
         return candidate, descriptor
     except Exception:
-        os.close(descriptor)
+        _close_git_handle(descriptor)
         raise
 
 
@@ -432,6 +483,19 @@ def _open_git_entry(directory_fd, name, *, directory):
         raise ValueError("unsafe git repository")
     if not _HAS_GIT_DIR_FD_TRAVERSAL:
         raise ValueError("unsafe git repository")
+    if os.name == "nt":
+        from pony.security import windows_native as native
+
+        handle, _created = native.open_relative(
+            directory_fd,
+            raw_name,
+            directory=directory,
+            desired_access=(
+                native.FILE_DIRECTORY_ACCESS if directory else native.FILE_READ_ACCESS
+            ),
+            share_access=native.FILE_SHARE_READ_WRITE,
+        )
+        return handle
     return os.open(
         raw_name,
         _git_open_flags(directory=directory),
@@ -440,7 +504,7 @@ def _open_git_entry(directory_fd, name, *, directory):
 
 
 def _read_git_metadata(path, *, dir_fd=None, allow_missing=False):
-    descriptor = -1
+    descriptor = None
     try:
         if dir_fd is None:
             _, descriptor = _open_git_path(path, directory=False)
@@ -451,6 +515,32 @@ def _read_git_metadata(path, *, dir_fd=None, allow_missing=False):
             return None
         raise
     try:
+        if os.name == "nt":
+            from pony.security import windows_native as native
+
+            opened = native.facts(descriptor)
+            if opened.link_count != 1 or opened.size > _MAX_GIT_METADATA_BYTES:
+                raise ValueError("unsafe git repository")
+            before = (
+                opened.filesystem_id,
+                opened.file_id,
+                opened.size,
+                opened.modified_ns,
+                opened.changed_ns,
+                opened.link_count,
+            )
+            data = native.read_bytes(descriptor, max_bytes=_MAX_GIT_METADATA_BYTES)
+            after = native.facts(descriptor)
+            if before != (
+                after.filesystem_id,
+                after.file_id,
+                after.size,
+                after.modified_ns,
+                after.changed_ns,
+                after.link_count,
+            ):
+                raise ValueError("unsafe git repository")
+            return data
         opened = os.fstat(descriptor)
         if (
             not stat.S_ISREG(opened.st_mode)
@@ -459,14 +549,14 @@ def _read_git_metadata(path, *, dir_fd=None, allow_missing=False):
         ):
             raise ValueError("unsafe git repository")
         with os.fdopen(descriptor, "rb") as handle:
-            descriptor = -1
+            descriptor = None
             data = handle.read(_MAX_GIT_METADATA_BYTES + 1)
         if len(data) > _MAX_GIT_METADATA_BYTES:
             raise ValueError("unsafe git repository")
         return data
     finally:
-        if descriptor >= 0:
-            os.close(descriptor)
+        if descriptor is not None:
+            _close_git_handle(descriptor)
 
 
 def _single_git_path(data, *, prefix=""):
@@ -494,7 +584,7 @@ def _open_metadata_directory(base, value):
 
 def _metadata_directory(base, value):
     candidate, descriptor = _open_metadata_directory(base, value)
-    os.close(descriptor)
+    _close_git_handle(descriptor)
     return candidate
 
 
@@ -612,7 +702,7 @@ def _validate_linked_worktree_gitfile(marker, target, target_fd, backlink_data):
             allow_missing=True,
         )
     finally:
-        os.close(common_fd)
+        _close_git_handle(common_fd)
     return common
 
 
@@ -633,11 +723,7 @@ def _enclosing_git_dir(lexical_root):
         marker_data = None
         try:
             try:
-                mode = os.stat(
-                    ".git",
-                    dir_fd=super_fd,
-                    follow_symlinks=False,
-                ).st_mode
+                mode = _git_entry_mode(super_fd, ".git")
             except FileNotFoundError:
                 continue
             if stat.S_ISLNK(mode):
@@ -649,13 +735,13 @@ def _enclosing_git_dir(lexical_root):
                     _read_git_metadata("HEAD", dir_fd=common_fd)
                     _read_git_metadata("config", dir_fd=common_fd)
                 finally:
-                    os.close(common_fd)
+                    _close_git_handle(common_fd)
                 return common
             if not stat.S_ISREG(mode):
                 raise ValueError("unsafe git repository")
             marker_data = _read_git_metadata(".git", dir_fd=super_fd)
         finally:
-            os.close(super_fd)
+            _close_git_handle(super_fd)
         _, git_dir = _validate_gitfile_binding(
             super_root,
             marker,
@@ -673,7 +759,7 @@ def _validate_absorbed_submodule_gitfile(lexical_root, target, target_fd):
         raise ValueError("unsafe git repository")
     super_git_dir = _enclosing_git_dir(lexical_root)
     modules, modules_fd = _open_metadata_directory(super_git_dir, "modules")
-    os.close(modules_fd)
+    _close_git_handle(modules_fd)
     try:
         relative_target = target.relative_to(modules)
     except ValueError:
@@ -707,13 +793,39 @@ def _validate_gitfile_binding(lexical_root, marker, *, marker_data=None):
             )
             return "linked-worktree", target
         finally:
-            os.close(target_fd)
+            _close_git_handle(target_fd)
     except (OSError, RuntimeError, ValueError):
         raise ValueError("unsafe git repository config") from None
 
 
+def _bare_git_repository(candidate):
+    _, directory = _open_git_path(candidate, directory=True)
+    try:
+        modes = {}
+        for name in ("HEAD", "config", "objects"):
+            try:
+                modes[name] = _git_entry_mode(directory, name)
+            except FileNotFoundError:
+                modes[name] = None
+        if all(value is None for value in modes.values()):
+            return False
+        if not (
+            stat.S_ISREG(modes["HEAD"] or 0)
+            and stat.S_ISREG(modes["config"] or 0)
+            and stat.S_ISDIR(modes["objects"] or 0)
+        ):
+            raise ValueError("unsafe git repository")
+        _read_git_metadata("HEAD", dir_fd=directory)
+        _read_git_metadata("config", dir_fd=directory)
+        objects = _open_git_entry(directory, "objects", directory=True)
+        _close_git_handle(objects)
+        return True
+    finally:
+        _close_git_handle(directory)
+
+
 def _lexical_git_repository_kind(cwd):
-    current = Path(cwd).resolve()
+    current = _git_absolute(cwd)
     if _HAS_GIT_DIR_FD_TRAVERSAL:
         lexical_root, root_fd, marker_mode = _open_lexical_repo_root(current)
         marker = lexical_root / ".git"
@@ -724,7 +836,7 @@ def _lexical_git_repository_kind(cwd):
                     return "directory"
                 marker_data = _read_git_metadata(".git", dir_fd=root_fd)
         finally:
-            os.close(root_fd)
+            _close_git_handle(root_fd)
         if marker_data is not None:
             return _validate_gitfile_binding(
                 lexical_root,
@@ -739,6 +851,10 @@ def _lexical_git_repository_kind(cwd):
         if marker.is_file():
             return _validate_gitfile_binding(lexical_root, marker)[0]
     for candidate in (current, *current.parents):
+        if _HAS_GIT_DIR_FD_TRAVERSAL:
+            if _bare_git_repository(candidate):
+                return "bare"
+            continue
         try:
             head_mode = (candidate / "HEAD").lstat().st_mode
             config_mode = (candidate / "config").lstat().st_mode
