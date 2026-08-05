@@ -255,26 +255,49 @@ def test_memory_health_fails_closed_when_root_is_replaced_during_scan(
     (replacement / "notes" / "new.md").write_text("new note", encoding="utf-8")
     (replacement / "agent_notes.md").write_text("new agent", encoding="utf-8")
     displaced = tmp_path / "displaced"
-    original_read = diagnostics_module._read_bounded_at
+    replaced = False
     parent_identities = []
 
-    def replace_root(parent_descriptor, name, expected, limit):
-        if not parent_identities:
-            memory.rename(displaced)
-            replacement.rename(memory)
-        parent_identities.append(
-            diagnostics_module._identity(os.fstat(parent_descriptor))
-        )
-        return original_read(parent_descriptor, name, expected, limit)
+    if os.name == "nt":
+        original_read = diagnostics_module.workspace_files.read_regular_bytes_anchored
 
-    monkeypatch.setattr(diagnostics_module, "_read_bounded_at", replace_root)
+        def replace_root(root, relative, **kwargs):
+            nonlocal replaced
+            if not replaced:
+                memory.rename(displaced)
+                replacement.rename(memory)
+                replaced = True
+            return original_read(root, relative, **kwargs)
+
+        monkeypatch.setattr(
+            diagnostics_module.workspace_files,
+            "read_regular_bytes_anchored",
+            replace_root,
+        )
+    else:
+        original_read = diagnostics_module._read_bounded_at
+
+        def replace_root(parent_descriptor, name, expected, limit):
+            nonlocal replaced
+            if not replaced:
+                memory.rename(displaced)
+                replacement.rename(memory)
+                replaced = True
+            parent_identities.append(
+                diagnostics_module._identity(os.fstat(parent_descriptor))
+            )
+            return original_read(parent_descriptor, name, expected, limit)
+
+        monkeypatch.setattr(diagnostics_module, "_read_bounded_at", replace_root)
 
     result = collect_memory_diagnostics(
         repo,
         user_memory_root=tmp_path / "missing-user" / ".pony" / "memory",
     )
 
-    assert parent_identities == [old_notes_identity, old_root_identity]
+    assert replaced
+    if os.name != "nt":
+        assert parent_identities == [old_notes_identity, old_root_identity]
     assert result["status"] == "unknown"
     assert {
         "path": "workspace",
@@ -296,25 +319,43 @@ def test_memory_health_fails_closed_when_nested_directory_is_replaced(
     replacement.mkdir()
     (replacement / "new.md").write_text("new note", encoding="utf-8")
     displaced = tmp_path / "displaced-nested"
-    original_read = diagnostics_module._read_bounded_at
     replaced = False
 
-    def replace_nested(parent_descriptor, name, expected, limit):
-        nonlocal replaced
-        if not replaced:
-            nested.rename(displaced)
-            replacement.rename(nested)
-            replaced = True
-        return original_read(parent_descriptor, name, expected, limit)
+    if os.name == "nt":
+        original_read = diagnostics_module.workspace_files.read_regular_bytes_anchored
 
-    monkeypatch.setattr(diagnostics_module, "_read_bounded_at", replace_nested)
+        def replace_nested(root, relative, **kwargs):
+            nonlocal replaced
+            if not replaced:
+                nested.rename(displaced)
+                replacement.rename(nested)
+                replaced = True
+            return original_read(root, relative, **kwargs)
+
+        monkeypatch.setattr(
+            diagnostics_module.workspace_files,
+            "read_regular_bytes_anchored",
+            replace_nested,
+        )
+    else:
+        original_read = diagnostics_module._read_bounded_at
+
+        def replace_nested(parent_descriptor, name, expected, limit):
+            nonlocal replaced
+            if not replaced:
+                nested.rename(displaced)
+                replacement.rename(nested)
+                replaced = True
+            return original_read(parent_descriptor, name, expected, limit)
+
+        monkeypatch.setattr(diagnostics_module, "_read_bounded_at", replace_nested)
 
     result = collect_memory_diagnostics(
         repo,
         user_memory_root=tmp_path / "missing-user" / ".pony" / "memory",
     )
 
-    assert replaced is True
+    assert replaced
     assert result["status"] == "unknown"
     assert {
         "path": "workspace/notes/nested",
