@@ -1037,7 +1037,7 @@ def truncate(handle, size):
 
 def rename_handle(handle, destination_parent, destination_name):
     name = lexical_component(destination_name).encode("utf-16-le")
-    size = _FileRenameInfo.FileName.offset + len(name)
+    size = ctypes.sizeof(_FileRenameInfo) + len(name)
     buffer = ctypes.create_string_buffer(size)
     info = _FileRenameInfo.from_buffer(buffer)
     info.ReplaceIfExists = False
