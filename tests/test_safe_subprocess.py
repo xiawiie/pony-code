@@ -2,6 +2,7 @@ import multiprocessing
 import os
 from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 import stat
 import subprocess
 import sys
@@ -1603,7 +1604,7 @@ def test_windows_shell_minimal_environment_drops_module_and_secret_state(
 def test_gitfile_backlink_accepts_windows_alias_of_same_file(monkeypatch):
     from pony.tools import subprocess as safe_subprocess
 
-    monkeypatch.setattr(safe_subprocess.os, "name", "nt")
+    monkeypatch.setattr(safe_subprocess, "os", SimpleNamespace(name="nt"))
     monkeypatch.setattr(
         safe_subprocess,
         "_git_file_identity",

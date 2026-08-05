@@ -1,6 +1,5 @@
 import pytest
 import json
-import os
 import signal
 
 from pony.cli.app import main
@@ -31,7 +30,7 @@ class _InterruptAgent:
     def ask(self, _prompt):
         if self.signum is None:
             raise KeyboardInterrupt("stop")
-        os.kill(os.getpid(), self.signum)
+        signal.raise_signal(self.signum)
         raise AssertionError("signal handler did not interrupt")
 
     def redact_text(self, text):
@@ -77,7 +76,7 @@ def test_repl_sigterm_during_non_model_branch_still_finalizes(monkeypatch):
         (),
         {
             "__str__": lambda _self: (
-                os.kill(os.getpid(), signal.SIGTERM),
+                signal.raise_signal(signal.SIGTERM),
                 "unreachable",
             )[1]
         },

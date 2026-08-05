@@ -16,7 +16,8 @@ if ([IO.Path]::GetExtension($scriptPath) -notin ".ps1", ".py") {
 }
 
 $userName = "pony_ci_standard"
-$userRoot = Join-Path $env:RUNNER_TEMP $userName
+$runId = [Guid]::NewGuid().ToString("N")
+$userRoot = Join-Path $env:RUNNER_TEMP "$userName-$runId"
 $stdout = Join-Path $userRoot "stdout.txt"
 $stderr = Join-Path $userRoot "stderr.txt"
 $wrapper = Join-Path $userRoot "run-script.ps1"
