@@ -60,7 +60,6 @@ _TRUSTEE_IS_USER = 1
 _ACL_SIZE_INFORMATION_CLASS = 2
 _ACCESS_ALLOWED_ACE_TYPE = 0
 _SECURITY_DESCRIPTOR_REVISION = 1
-_SECURITY_DESCRIPTOR_MIN_LENGTH = 20
 _MOVEFILE_WRITE_THROUGH = 0x00000008
 _RESERVED_DOS_NAMES = {
     "aux",
@@ -137,6 +136,18 @@ class _FileDispositionInfo(ctypes.Structure):
 
 class _SidAndAttributes(ctypes.Structure):
     _fields_ = (("Sid", wintypes.LPVOID), ("Attributes", wintypes.DWORD))
+
+
+class _SecurityDescriptor(ctypes.Structure):
+    _fields_ = (
+        ("Revision", wintypes.BYTE),
+        ("Sbz1", wintypes.BYTE),
+        ("Control", wintypes.WORD),
+        ("Owner", wintypes.LPVOID),
+        ("Group", wintypes.LPVOID),
+        ("Sacl", wintypes.LPVOID),
+        ("Dacl", wintypes.LPVOID),
+    )
 
 
 class _TokenUser(ctypes.Structure):
@@ -515,23 +526,24 @@ def private_security_descriptor():
         native.advapi32.SetEntriesInAclW(1, ctypes.byref(entry), None, ctypes.byref(acl)),
         "SetEntriesInAclW failed",
     )
-    descriptor = ctypes.create_string_buffer(_SECURITY_DESCRIPTOR_MIN_LENGTH)
+    descriptor = _SecurityDescriptor()
+    descriptor_pointer = ctypes.byref(descriptor)
     try:
         if not native.advapi32.InitializeSecurityDescriptor(
-            descriptor, _SECURITY_DESCRIPTOR_REVISION
+            descriptor_pointer, _SECURITY_DESCRIPTOR_REVISION
         ):
             _winerror("InitializeSecurityDescriptor failed")
-        if not native.advapi32.SetSecurityDescriptorDacl(descriptor, True, acl, False):
+        if not native.advapi32.SetSecurityDescriptorDacl(descriptor_pointer, True, acl, False):
             _winerror("SetSecurityDescriptorDacl failed")
         if not native.advapi32.SetSecurityDescriptorOwner(
-            descriptor, native.current_sid, False
+            descriptor_pointer, native.current_sid, False
         ):
             _winerror("SetSecurityDescriptorOwner failed")
         if not native.advapi32.SetSecurityDescriptorControl(
-            descriptor, _SE_DACL_PROTECTED, _SE_DACL_PROTECTED
+            descriptor_pointer, _SE_DACL_PROTECTED, _SE_DACL_PROTECTED
         ):
             _winerror("SetSecurityDescriptorControl failed")
-        yield descriptor
+        yield descriptor_pointer
     finally:
         native.kernel32.LocalFree(acl)
 

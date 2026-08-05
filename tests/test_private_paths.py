@@ -300,6 +300,16 @@ def test_regular_file_guard_rejects_fifo_without_opening_it(tmp_path):
         require_regular_no_symlink(fifo)
 
 
+def test_windows_security_descriptor_matches_native_pointer_layout():
+    import ctypes
+
+    from pony.security.windows_native import _SecurityDescriptor
+
+    pointer_size = ctypes.sizeof(ctypes.c_void_p)
+    expected_size = ((4 + 4 * pointer_size + pointer_size - 1) // pointer_size) * pointer_size
+    assert ctypes.sizeof(_SecurityDescriptor) == expected_size
+
+
 @pytest.mark.parametrize(
     "component",
     ("", ".", "..", "CON", "nul.txt", "name:stream", "trailing.", "trailing "),
