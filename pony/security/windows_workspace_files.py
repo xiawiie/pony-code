@@ -297,6 +297,7 @@ def list_directory_names_anchored(
         expected_root_identity=expected_root_identity,
     )
     try:
+        opened_identity = native.identity(chain.handle)
         entries = []
         unsafe_count = 0
         scanned = 0
@@ -329,6 +330,7 @@ def list_directory_names_anchored(
                             "name": name,
                             "mode": _DIRECTORY_MODE if directory else _FILE_MODE,
                             "size": value.size,
+                            "identity": (value.filesystem_id, value.file_id),
                         }
                     )
                 except (OSError, ValueError):
@@ -341,6 +343,7 @@ def list_directory_names_anchored(
             "entries": tuple(entries),
             "unsafe_count": unsafe_count,
             "scanned": scanned,
+            "identity": opened_identity,
         }
     finally:
         chain.close()
