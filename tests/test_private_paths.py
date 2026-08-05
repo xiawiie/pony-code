@@ -371,6 +371,23 @@ def test_windows_directory_mutability_ignores_attribute_only_access(monkeypatch)
     assert windows_native._DELETE in attempted
 
 
+def test_windows_volume_root_mutability_skips_delete_access(monkeypatch):
+    from pony.security import windows_native
+
+    attempted = []
+
+    def deny_access(_path, *, desired_access, **_kwargs):
+        attempted.append(desired_access)
+        raise OSError(5, "access denied")
+
+    monkeypatch.setattr(windows_native, "open_path", deny_access)
+    assert windows_native.path_is_mutable_by_current_user(
+        Path("/"), directory=True
+    ) is False
+    assert windows_native._DELETE not in attempted
+    assert windows_native._FILE_DELETE_CHILD in attempted
+
+
 def test_windows_file_mutability_keeps_attribute_access_check(monkeypatch):
     from pony.security import windows_native
 
