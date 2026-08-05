@@ -54,8 +54,13 @@ def probe():
             env=env,
             timeout=5,
         )
-        if result.returncode != 0 or result.stdout.strip() != str(root):
-            raise RuntimeError("Windows process capture result mismatch")
+        reported_cwd = Path(result.stdout.strip())
+        if result.returncode != 0 or not reported_cwd.samefile(root):
+            raise RuntimeError(
+                "Windows process capture result mismatch: "
+                f"returncode={result.returncode}, "
+                f"stdout={result.stdout!r}, stderr={result.stderr!r}"
+            )
         if result.stderr != "stderr\n" or result.timed_out:
             raise RuntimeError("Windows stderr capture result mismatch")
 

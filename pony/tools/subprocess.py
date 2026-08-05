@@ -44,6 +44,24 @@ DEFAULT_TRUSTED_EXECUTABLES = (
     *INTERNAL_TRUSTED_EXECUTABLES,
     *APPROVAL_TRUSTED_EXECUTABLES,
 )
+WINDOWS_DEFAULT_TRUSTED_EXECUTABLES = tuple(
+    name
+    for name in DEFAULT_TRUSTED_EXECUTABLES
+    if name
+    not in {
+        "pwd",
+        "ls",
+        "stat",
+        "file",
+        "wc",
+        "sudo",
+        "doas",
+        "pkexec",
+        "sh",
+        "bash",
+        "zsh",
+    }
+)
 _GIT_CONFIG_OVERRIDES = (
     "commit.gpgSign=false",
     "core.fsmonitor=false",
@@ -88,7 +106,20 @@ _HAS_GIT_DIR_FD_TRAVERSAL = (
     and os.open in getattr(os, "supports_dir_fd", ())
     and os.stat in getattr(os, "supports_dir_fd", ())
 )
-_ENV_ALLOWLIST = ("HOME", "LANG", "LANGUAGE", "LC_ALL", "LC_CTYPE", "TMPDIR", "TZ")
+_ENV_ALLOWLIST = (
+    "HOME",
+    "LANG",
+    "LANGUAGE",
+    "LC_ALL",
+    "LC_CTYPE",
+    "PATHEXT",
+    "SystemRoot",
+    "TEMP",
+    "TMP",
+    "TMPDIR",
+    "TZ",
+    "WINDIR",
+)
 
 
 class _TrustedExecutable(str):
@@ -200,7 +231,56 @@ def _open_verified_executable(path, *, expected=None):
         raise
 
 
+def _require_immutable_windows_directory(path):
+    from pony.security import windows_native as native
+
+    path = native.lexical_absolute(path)
+    current = Path(path.anchor)
+    for component in (None, *path.parts[1:]):
+        if component is not None:
+            current /= component
+        with native.open_path(current, directory=True, single_link=False):
+            pass
+        if native.path_is_mutable_by_current_user(current, directory=True):
+            raise ValueError("mutable trusted executable directory")
+    return path
+
+
+def _open_windows_verified_executable(path, *, expected=None):
+    from pony.security import windows_native as native
+
+    path = native.lexical_absolute(path)
+    if path.suffix.casefold() != ".exe":
+        raise ValueError("unsafe trusted executable")
+    _require_immutable_windows_directory(path.parent)
+    handle = native.open_path(path, directory=False, single_link=False)
+    try:
+        facts = native.facts(handle)
+        identity = (
+            facts.filesystem_id,
+            facts.file_id,
+            facts.size,
+            facts.modified_ns,
+            facts.changed_ns,
+            native.protection_identity(handle),
+        )
+        if expected is not None and identity != expected:
+            raise ValueError("unsafe trusted executable")
+        if native.path_is_mutable_by_current_user(path, directory=False):
+            raise ValueError("mutable trusted executable")
+        return handle, identity, True
+    except Exception:
+        handle.close()
+        raise
+
+
 def _verified_executable_identity(path, *, expected=None):
+    if os.name == "nt":
+        handle, identity, _immutable_path = _open_windows_verified_executable(
+            path, expected=expected
+        )
+        handle.close()
+        return identity
     descriptor, identity, immutable_path = _open_verified_executable(
         path, expected=expected
     )
@@ -218,6 +298,16 @@ def _prepared_executable(executable):
     if not argv0.is_absolute():
         raise ValueError("trusted executable must be absolute")
     expected = getattr(executable, "_identity", None)
+    if os.name == "nt":
+        path = argv0 if expected is not None else Path(os.path.abspath(argv0))
+        handle, _, _immutable_path = _open_windows_verified_executable(
+            path, expected=expected
+        )
+        try:
+            yield _PreparedExecutable(str(argv0), str(path))
+        finally:
+            handle.close()
+        return
     path = argv0 if expected is not None else argv0.resolve(strict=True)
     descriptor, _, immutable_path = _open_verified_executable(
         path,
@@ -669,6 +759,18 @@ def _safe_path_dirs(workspace_root, env):
         candidate = Path(raw)
         if not raw or raw == "." or not candidate.is_absolute():
             continue
+        if os.name == "nt":
+            try:
+                resolved = Path(os.path.abspath(candidate))
+                if resolved == root or root in resolved.parents:
+                    continue
+                _require_immutable_windows_directory(resolved)
+            except (OSError, RuntimeError, ValueError):
+                continue
+            value = str(resolved)
+            if value not in result:
+                result.append(value)
+            continue
         try:
             resolved = candidate.resolve(strict=True)
             mode = resolved.stat().st_mode
@@ -687,10 +789,36 @@ def _safe_path_dirs(workspace_root, env):
 def build_trusted_executables(workspace_root, *, env=None, names=()):
     root = Path(workspace_root).resolve()
     safe_path_dirs = _safe_path_dirs(root, env)
-    if not safe_path_dirs:
+    requested = tuple(
+        names
+        or (
+            WINDOWS_DEFAULT_TRUSTED_EXECUTABLES
+            if os.name == "nt"
+            else DEFAULT_TRUSTED_EXECUTABLES
+        )
+    )
+    if not safe_path_dirs and os.name != "nt":
         return {}
     result = {}
-    for raw_name in tuple(names or DEFAULT_TRUSTED_EXECUTABLES):
+    if os.name == "nt" and not names:
+        from pony.security import windows_native as native
+
+        powershell = (
+            native.windows_directory()
+            / "System32"
+            / "WindowsPowerShell"
+            / "v1.0"
+            / "powershell.exe"
+        )
+        try:
+            identity = _verified_executable_identity(powershell)
+        except (OSError, RuntimeError, ValueError):
+            pass
+        else:
+            result["powershell"] = _TrustedExecutable(
+                str(powershell), identity, root
+            )
+    for raw_name in requested:
         name = str(raw_name)
         if not name or Path(name).name != name:
             continue
@@ -699,7 +827,11 @@ def build_trusted_executables(workspace_root, *, env=None, names=()):
             if not found:
                 continue
             try:
-                resolved = Path(found).resolve(strict=True)
+                resolved = (
+                    Path(os.path.abspath(found))
+                    if os.name == "nt"
+                    else Path(found).resolve(strict=True)
+                )
                 if resolved == root or root in resolved.parents:
                     continue
                 identity = _verified_executable_identity(resolved)
@@ -713,9 +845,10 @@ def build_trusted_executables(workspace_root, *, env=None, names=()):
 def _minimal_env(cwd, executable):
     source = os.environ
     env = {name: source[name] for name in _ENV_ALLOWLIST if source.get(name)}
-    path_value = os.pathsep.join(
-        _safe_path_dirs(cwd, {"PATH": os.pathsep.join((str(Path(executable).parent), source.get("PATH", "")))})
+    candidate_path = os.pathsep.join(
+        (str(Path(executable).parent), source.get("PATH", ""))
     )
+    path_value = os.pathsep.join(_safe_path_dirs(cwd, {"PATH": candidate_path}))
     env["PATH"] = path_value
     return env
 
@@ -1327,6 +1460,19 @@ def run_process_group(
     )
 
 
+def _shell_argv(executable, command, *, windows):
+    if windows:
+        return [
+            executable,
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            command,
+        ]
+    return [executable, "-c", command]
+
+
 def run_hardened_command(
     executable,
     *,
@@ -1340,7 +1486,7 @@ def run_hardened_command(
 ):
     with _prepared_executable(executable) as prepared:
         if shell:
-            argv = [prepared, "-c", command]
+            argv = _shell_argv(prepared, command, windows=os.name == "nt")
             result = run_process_group(
                 argv,
                 executable=_execution_path(prepared) or str(prepared),

@@ -15,6 +15,7 @@ _FILE_READ_DATA = 0x0001
 _FILE_WRITE_DATA = 0x0002
 _FILE_APPEND_DATA = 0x0004
 _FILE_TRAVERSE = 0x0020
+_FILE_DELETE_CHILD = 0x0040
 _FILE_READ_ATTRIBUTES = 0x0080
 _FILE_WRITE_ATTRIBUTES = 0x0100
 _DELETE = 0x00010000
@@ -241,6 +242,8 @@ class _Api:
         advapi32 = self.advapi32
         ntdll = self.ntdll
         kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+        kernel32.GetWindowsDirectoryW.argtypes = (wintypes.LPWSTR, wintypes.UINT)
+        kernel32.GetWindowsDirectoryW.restype = wintypes.UINT
         kernel32.CreateFileW.argtypes = (
             wintypes.LPCWSTR,
             wintypes.DWORD,
@@ -548,11 +551,14 @@ def private_security_descriptor():
         native.kernel32.LocalFree(acl)
 
 
-def _open_root(path, *, share_access=_FILE_SHARE_ALL):
+def _open_root(path, *, desired_access=None, share_access=_FILE_SHARE_ALL):
     native = api()
+    access = desired_access
+    if access is None:
+        access = _FILE_TRAVERSE | _FILE_READ_ATTRIBUTES | _READ_CONTROL
     handle = native.kernel32.CreateFileW(
         _win32_path(Path(path.anchor)),
-        _FILE_TRAVERSE | _FILE_READ_ATTRIBUTES | _READ_CONTROL | _SYNCHRONIZE,
+        access | _SYNCHRONIZE,
         share_access,
         None,
         _OPEN_EXISTING,
@@ -579,6 +585,7 @@ def open_relative(
     disposition=_FILE_OPEN,
     security_descriptor=None,
     share_access=_FILE_SHARE_ALL,
+    single_link=True,
 ):
     native = api()
     name = lexical_component(name)
@@ -615,14 +622,21 @@ def open_relative(
         raise OSError(error, "NtCreateFile failed")
     opened = Handle(handle.value)
     try:
-        require_kind(opened, directory=directory)
+        require_kind(opened, directory=directory, single_link=single_link)
         return opened, io_status.Information == _FILE_CREATED
     except Exception:
         opened.close()
         raise
 
 
-def open_path(path, *, directory, desired_access=None, share_access=_FILE_SHARE_ALL):
+def open_path(
+    path,
+    *,
+    directory,
+    desired_access=None,
+    share_access=_FILE_SHARE_ALL,
+    single_link=True,
+):
     path = lexical_absolute(path)
     if desired_access is None:
         desired_access = (
@@ -630,7 +644,11 @@ def open_path(path, *, directory, desired_access=None, share_access=_FILE_SHARE_
             if directory
             else FILE_READ_ACCESS
         )
-    current = _open_root(path, share_access=share_access)
+    current = _open_root(
+        path,
+        desired_access=desired_access if len(path.parts) == 1 else None,
+        share_access=share_access,
+    )
     try:
         if len(path.parts) == 1:
             if not directory:
@@ -648,6 +666,7 @@ def open_path(path, *, directory, desired_access=None, share_access=_FILE_SHARE_
                     else _FILE_TRAVERSE | _FILE_READ_ATTRIBUTES | _READ_CONTROL
                 ),
                 share_access=share_access,
+                single_link=single_link if final else True,
             )
             current.close()
             current = child
@@ -768,15 +787,57 @@ def identity(handle):
     return value.filesystem_id, value.file_id
 
 
-def require_kind(handle, *, directory):
+def require_kind(handle, *, directory, single_link=True):
     value = facts(handle)
     if value.reparse_tag:
         raise ValueError("refusing reparse point component")
     if value.directory != directory:
         raise ValueError("private path has unsafe component")
-    if not directory and value.link_count != 1:
+    if not directory and single_link and value.link_count != 1:
         raise ValueError("private file has multiple links")
     return value
+
+
+def windows_directory():
+    native = api()
+    size = 260
+    while True:
+        buffer = ctypes.create_unicode_buffer(size)
+        length = native.kernel32.GetWindowsDirectoryW(buffer, size)
+        if not length:
+            _winerror("GetWindowsDirectoryW failed")
+        if length < size:
+            return lexical_absolute(buffer.value)
+        size = length + 1
+
+
+def path_is_mutable_by_current_user(path, *, directory):
+    accesses = (
+        _FILE_WRITE_DATA,
+        _FILE_APPEND_DATA,
+        _FILE_WRITE_ATTRIBUTES,
+        _DELETE,
+        _WRITE_DAC,
+        _WRITE_OWNER,
+    )
+    if directory:
+        accesses += (_FILE_DELETE_CHILD,)
+    for access in accesses:
+        try:
+            handle = open_path(
+                path,
+                directory=directory,
+                desired_access=access,
+                single_link=False,
+            )
+        except OSError as exc:
+            if error_code(exc) in {5, 1314}:
+                continue
+            raise
+        else:
+            handle.close()
+            return True
+    return False
 
 
 def _security_snapshot(handle):
