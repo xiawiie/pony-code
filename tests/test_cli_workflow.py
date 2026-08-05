@@ -5,6 +5,7 @@ import pytest
 
 from benchmarks.support.fake_provider import FakeModelClient
 from pony import Pony
+from pony.cli import start
 from pony.cli.start import _open_plan_in_editor, _process_repl_input, run_repl
 from pony.runtime.options import RuntimeOptions
 from pony.runtime.resume import active_prompt_history
@@ -147,6 +148,20 @@ def test_repl_plan_open_enters_plan_and_edits_existing_artifact(
     assert len(tree.entries) == before + 2
     assert tree.entries[-1]["type"] == "plan_artifact"
     assert "Opened plan in editor" in capsys.readouterr().out
+
+
+def test_editor_command_uses_native_windows_parser(monkeypatch):
+    monkeypatch.setattr(start.os, "name", "nt")
+    monkeypatch.setattr(
+        start,
+        "_split_windows_command_line",
+        lambda value: [value, "--wait"],
+    )
+
+    assert start._split_editor_command(r"C:\Program Files\Editor\editor.exe") == [
+        r"C:\Program Files\Editor\editor.exe",
+        "--wait",
+    ]
 
 
 @pytest.mark.parametrize("concurrent_change", ("exit", "rewind", "fork"))
