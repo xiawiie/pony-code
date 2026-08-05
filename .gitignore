@@ -62,6 +62,7 @@ readme_intro_locked/
 !/docs/verification.md
 !/docs/benchmark-evaluation-results-2026-08-05.md
 !/docs/memory.md
+!/docs/public-memory-benchmark.md
 !/docs/local-stable-execution.md
 !/docs/adr/
 !/docs/adr/*.md
@@ -79,3 +80,7 @@ pony.egg-info/
 # Live-e2e benchmark artifacts
 benchmarks/live_e2e/results/*.json
 benchmarks/live_e2e/results/pre-run-pony.toml.bak
+
+# Public memory benchmark inputs and generated artifacts
+/benchmarks/memory_public/data/
+/benchmarks/memory_public/results/
