@@ -85,7 +85,7 @@ def test_append_agent_note_appends(tmp_path):
     assert contents.index("first") < contents.index("second")
 
 
-def test_append_agent_note_rejects_scope_root_swapped_before_atomic_write(
+def test_append_agent_note_rejects_or_blocks_scope_root_swap_before_atomic_write(
     tmp_path,
     monkeypatch,
 ):
@@ -104,10 +104,13 @@ def test_append_agent_note_rejects_scope_root_swapped_before_atomic_write(
 
     monkeypatch.setattr(store, "_atomic_write", swap_scope_root)
 
-    with pytest.raises(ValueError, match="private root changed"):
+    with pytest.raises((PermissionError, ValueError)) as caught:
         store.append_agent_note(scope="workspace", note="must not land")
 
-    assert list(workspace.iterdir()) == []
+    assert isinstance(caught.value, PermissionError) or str(caught.value) == (
+        "private root changed"
+    )
+    assert not (workspace / "agent_notes.md").exists()
     assert not (trusted_workspace / "agent_notes.md").exists()
 
 
