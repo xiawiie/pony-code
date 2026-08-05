@@ -1,5 +1,6 @@
 import json
 import os
+import stat
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,79 @@ def _memory_root(repo):
     root = repo / ".pony" / "memory"
     (root / "notes").mkdir(parents=True)
     return root
+
+
+def test_windows_memory_health_uses_anchored_backends(tmp_path, monkeypatch):
+    root = tmp_path / "memory"
+    identities = {
+        ".": (1, "root"),
+        "notes": (1, "notes"),
+        "notes/nested": (1, "nested"),
+    }
+    listings = {
+        ".": (
+            {"name": "notes", "mode": stat.S_IFDIR, "identity": identities["notes"]},
+            {"name": "agent_notes.md", "mode": stat.S_IFREG, "identity": (1, "agent")},
+        ),
+        "notes": (
+            {"name": "note.md", "mode": stat.S_IFREG, "identity": (1, "note")},
+            {
+                "name": "nested",
+                "mode": stat.S_IFDIR,
+                "identity": identities["notes/nested"],
+            },
+        ),
+        "notes/nested": (
+            {"name": "deep.md", "mode": stat.S_IFREG, "identity": (1, "deep")},
+        ),
+    }
+    file_identities = {
+        "agent_notes.md": (1, "agent"),
+        "notes/note.md": (1, "note"),
+        "notes/nested/deep.md": (1, "deep"),
+    }
+    reads = []
+
+    monkeypatch.setattr(
+        diagnostics_module.private_files,
+        "private_directory_identity",
+        lambda _path: identities["."],
+    )
+
+    def list_directory(_root, relative, **_kwargs):
+        return {
+            "entries": listings[relative],
+            "unsafe_count": 0,
+            "scanned": len(listings[relative]),
+            "identity": identities[relative],
+        }
+
+    def read_file(_root, relative, **_kwargs):
+        reads.append(relative)
+        return {
+            "exists": True,
+            "identity": file_identities[relative],
+            "data": b"safe",
+        }
+
+    monkeypatch.setattr(
+        diagnostics_module.workspace_files,
+        "list_directory_names_anchored",
+        list_directory,
+    )
+    monkeypatch.setattr(
+        diagnostics_module.workspace_files,
+        "read_regular_bytes_anchored",
+        read_file,
+    )
+
+    issues = []
+    diagnostics_module._scan_scope_windows(
+        "workspace", root, issues, {"entries": 0, "bytes": 0}
+    )
+
+    assert issues == []
+    assert reads == ["notes/note.md", "notes/nested/deep.md", "agent_notes.md"]
 
 
 def test_memory_health_is_bounded_and_does_not_validate_note_content(tmp_path):

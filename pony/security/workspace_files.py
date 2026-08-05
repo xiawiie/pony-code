@@ -208,6 +208,7 @@ def list_directory_names_anchored(
                         "name": entry.name,
                         "mode": current.st_mode,
                         "size": current.st_size,
+                        "identity": _workspace_inode_identity(current),
                     }
                 )
         _require_current_workspace_directory(
@@ -222,6 +223,7 @@ def list_directory_names_anchored(
             "entries": tuple(entries),
             "unsafe_count": unsafe_count,
             "scanned": scanned,
+            "identity": opened_identity,
         }
     finally:
         os.close(descriptor)

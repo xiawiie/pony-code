@@ -12,7 +12,7 @@ from pathlib import Path
 import stat
 from itertools import islice
 
-from pony.security import private_files
+from pony.security import private_files, workspace_files
 from pony.security.paths import _lexical_absolute
 
 from . import block_store
@@ -236,6 +236,9 @@ def _root_matches(root, expected_identity):
 
 
 def _scan_scope(scope, root, issues, state):
+    if os.name == "nt":
+        _scan_scope_windows(scope, root, issues, state)
+        return
     root = _lexical_absolute(root)
     try:
         root_descriptor = private_files._open_private_directory(root)
@@ -296,6 +299,185 @@ def _scan_scope(scope, root, issues, state):
         if not _root_matches(root, root_identity):
             issues.append(_issue(scope, "memory_root_changed"))
         os.close(root_descriptor)
+
+
+def _windows_listing(root, relative, root_identity, expected_identity):
+    listing = workspace_files.list_directory_names_anchored(
+        root,
+        relative,
+        max_entries=block_store.MAX_MEMORY_INDEX_FILES + 1,
+        expected_root_identity=root_identity,
+    )
+    if tuple(listing["identity"]) != tuple(expected_identity):
+        raise ValueError("memory directory changed")
+    return listing
+
+
+def _windows_entry_matches(
+    root, parent, parent_identity, name, expected, root_identity
+):
+    try:
+        listing = _windows_listing(
+            root,
+            parent,
+            root_identity,
+            parent_identity,
+        )
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return False
+    return any(
+        entry["name"] == name and tuple(entry["identity"]) == tuple(expected)
+        for entry in listing["entries"]
+    )
+
+
+def _read_windows_candidate(
+    scope, relative, root, root_identity, expected_identity, issues, state
+):
+    remaining = block_store.MAX_MEMORY_INDEX_BYTES - state["bytes"]
+    if remaining <= 0:
+        issues.append(
+            _issue(
+                f"{scope}/{relative}",
+                "memory_total_bytes_limit_reached",
+                state["bytes"],
+                block_store.MAX_MEMORY_INDEX_BYTES,
+            )
+        )
+        return False
+    limit = min(block_store.MAX_MEMORY_FILE_BYTES, remaining)
+    try:
+        result = workspace_files.read_regular_bytes_anchored(
+            root,
+            relative,
+            max_bytes=limit,
+            expected_root_identity=root_identity,
+        )
+        if not result["exists"] or tuple(result["identity"]) != tuple(
+            expected_identity
+        ):
+            raise ValueError("memory file changed")
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        error_state = getattr(exc, "state", {})
+        size = error_state.get("size") or getattr(exc, "bytes_read", 0)
+        state["bytes"] += min(int(size), limit + 1)
+        issues.append(_issue(f"{scope}/{relative}", "memory_file_unavailable"))
+    else:
+        state["bytes"] += len(result["data"])
+    return True
+
+
+def _scan_windows_directory(
+    scope, root, relative_dir, expected_identity, root_identity, issues, state
+):
+    try:
+        listing = _windows_listing(
+            root, relative_dir, root_identity, expected_identity
+        )
+    except (OSError, RuntimeError, TypeError, ValueError):
+        issues.append(
+            _issue(f"{scope}/{relative_dir}", "memory_directory_unavailable")
+        )
+        return True
+    if listing["unsafe_count"]:
+        state["entries"] += listing["unsafe_count"]
+        issues.append(
+            _issue(
+                f"{scope}/{relative_dir}",
+                "memory_file_unavailable",
+                listing["unsafe_count"],
+            )
+        )
+    for entry in listing["entries"]:
+        relative = f"{relative_dir}/{entry['name']}"
+        if not _consume_entry(scope, relative, issues, state):
+            return False
+        if stat.S_ISDIR(entry["mode"]):
+            if not _scan_windows_directory(
+                scope,
+                root,
+                relative,
+                entry["identity"],
+                root_identity,
+                issues,
+                state,
+            ):
+                return False
+            if not _windows_entry_matches(
+                root,
+                relative_dir,
+                expected_identity,
+                entry["name"],
+                entry["identity"],
+                root_identity,
+            ):
+                issues.append(
+                    _issue(f"{scope}/{relative}", "memory_directory_unavailable")
+                )
+        elif entry["name"].endswith(".md") and not _read_windows_candidate(
+            scope,
+            relative,
+            root,
+            root_identity,
+            entry["identity"],
+            issues,
+            state,
+        ):
+            return False
+    return True
+
+
+def _scan_scope_windows(scope, root, issues, state):
+    root = _lexical_absolute(root)
+    try:
+        root_identity = private_files.private_directory_identity(root)
+        listing = _windows_listing(root, ".", root_identity, root_identity)
+    except FileNotFoundError:
+        return
+    except (OSError, RuntimeError, TypeError, ValueError):
+        issues.append(_issue(scope, "memory_root_unavailable"))
+        return
+    entries = {entry["name"]: entry for entry in listing["entries"]}
+    notes = entries.get("notes")
+    if notes is not None:
+        if stat.S_ISDIR(notes["mode"]):
+            _scan_windows_directory(
+                scope,
+                root,
+                "notes",
+                notes["identity"],
+                root_identity,
+                issues,
+                state,
+            )
+            if not _windows_entry_matches(
+                root,
+                ".",
+                root_identity,
+                "notes",
+                notes["identity"],
+                root_identity,
+            ):
+                issues.append(
+                    _issue(f"{scope}/notes", "memory_directory_unavailable")
+                )
+        else:
+            issues.append(_issue(f"{scope}/notes", "memory_directory_unavailable"))
+    agent = entries.get("agent_notes.md")
+    if agent is not None and _consume_entry(
+        scope, "agent_notes.md", issues, state
+    ):
+        _read_windows_candidate(
+            scope,
+            "agent_notes.md",
+            root,
+            root_identity,
+            agent["identity"],
+            issues,
+            state,
+        )
+    if not _root_matches(root, root_identity):
+        issues.append(_issue(scope, "memory_root_changed"))
 
 
 def collect_memory_diagnostics(workspace_root, *, user_memory_root=None):
