@@ -158,11 +158,54 @@ def probe(*, expect_elevated_rejection=False):
                 env=shell_env,
                 creationflags=0,
             )
+            utility_manifest = (
+                Path(powershell).parent
+                / "Modules"
+                / "Microsoft.PowerShell.Utility"
+                / "Microsoft.PowerShell.Utility.psd1"
+            )
+            import_command = (
+                f"Import-Module '{str(utility_manifest).replace(chr(39), chr(39) * 2)}'; "
+                + command
+            )
+            _stage("powershell_explicit_utility_module")
+            explicit_module = _run_direct_powershell(
+                [*shell_argv[:-1], import_command],
+                root=root,
+                env=shell_env,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+            expanded_env = dict(shell_env)
+            for name in (
+                "ALLUSERSPROFILE",
+                "ComSpec",
+                "HOMEDRIVE",
+                "HOMEPATH",
+                "ProgramData",
+                "ProgramFiles",
+                "ProgramFiles(x86)",
+                "ProgramW6432",
+                "PUBLIC",
+                "SystemDrive",
+                "USERNAME",
+                "USERDOMAIN",
+            ):
+                if os.environ.get(name):
+                    expanded_env[name] = os.environ[name]
+            _stage("powershell_windows_base_env")
+            windows_base_env = _run_direct_powershell(
+                shell_argv,
+                root=root,
+                env=expanded_env,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
             raise RuntimeError(
                 "direct fixed PowerShell execution timed out: "
                 f"baseline={direct!r}, "
                 f"console_no_window={console_no_window!r}, "
-                f"console_windowed={console_windowed!r}"
+                f"console_windowed={console_windowed!r}, "
+                f"explicit_module={explicit_module!r}, "
+                f"windows_base_env={windows_base_env!r}"
             )
         if direct["returncode"] != 0 or direct["stdout"].strip() != "pony-shell-ok":
             raise RuntimeError(
