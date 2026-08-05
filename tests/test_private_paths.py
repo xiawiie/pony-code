@@ -298,3 +298,37 @@ def test_regular_file_guard_rejects_fifo_without_opening_it(tmp_path):
 
     with pytest.raises(ValueError, match="regular file"):
         require_regular_no_symlink(fifo)
+
+
+@pytest.mark.parametrize(
+    "component",
+    ("", ".", "..", "CON", "nul.txt", "name:stream", "trailing.", "trailing "),
+)
+def test_windows_private_path_component_rejects_ambiguous_names(component):
+    from pony.security.windows_native import lexical_component
+
+    with pytest.raises(ValueError, match="unsafe Windows path component"):
+        lexical_component(component)
+
+
+def test_windows_private_path_component_accepts_unicode_name():
+    from pony.security.windows_native import lexical_component
+
+    assert lexical_component("会话-01.jsonl") == "会话-01.jsonl"
+
+
+@pytest.mark.parametrize(
+    ("absolute", "expected"),
+    (
+        (r"C:\\work\\pony", r"\\?\C:\\work\\pony"),
+        (r"\\server\share\\pony", r"\\?\UNC\server\share\\pony"),
+        (r"\\?\C:\\work\\pony", r"\\?\C:\\work\\pony"),
+    ),
+)
+def test_windows_native_path_uses_extended_length_namespace(
+    absolute, expected, monkeypatch
+):
+    from pony.security import windows_native
+
+    monkeypatch.setattr(windows_native.os.path, "abspath", lambda _path: absolute)
+    assert windows_native._win32_path("ignored") == expected
