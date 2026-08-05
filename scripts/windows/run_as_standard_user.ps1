@@ -17,10 +17,11 @@ if ([IO.Path]::GetExtension($scriptPath) -notin ".ps1", ".py") {
 
 $userName = "pony_ci_standard"
 $runId = [Guid]::NewGuid().ToString("N")
-$userRoot = Join-Path $env:RUNNER_TEMP "$userName-$runId"
-$stdout = Join-Path $userRoot "stdout.txt"
-$stderr = Join-Path $userRoot "stderr.txt"
-$wrapper = Join-Path $userRoot "run-script.ps1"
+$controlRoot = Join-Path $env:RUNNER_TEMP "$userName-$runId"
+$userRoot = Join-Path $controlRoot "profile"
+$stdout = Join-Path $controlRoot "stdout.txt"
+$stderr = Join-Path $controlRoot "stderr.txt"
+$wrapper = Join-Path $controlRoot "run-script.ps1"
 $passwordBytes = New-Object byte[] 32
 [Security.Cryptography.RandomNumberGenerator]::Fill($passwordBytes)
 $passwordText = [Convert]::ToBase64String($passwordBytes) + "aA1!"
@@ -35,11 +36,21 @@ try {
     $usersGroup = Get-LocalGroup -SID "S-1-5-32-545"
     Add-LocalGroupMember -Group $usersGroup -Member $userName
 
-    New-Item -ItemType Directory -Path $userRoot | Out-Null
-    & icacls.exe $userRoot /inheritance:r /grant:r `
+    New-Item -ItemType Directory -Path $controlRoot | Out-Null
+    & icacls.exe $controlRoot /inheritance:r /grant:r `
         "${principal}:(OI)(CI)F" "${currentPrincipal}:(OI)(CI)F" /q
     if ($LASTEXITCODE -ne 0) {
-        throw "failed to secure the standard user's temporary directory"
+        throw "failed to secure the standard-user control directory"
+    }
+    New-Item -ItemType Directory -Path $userRoot | Out-Null
+    & icacls.exe $userRoot /inheritance:r /grant:r `
+        "${principal}:(OI)(CI)F" "${currentPrincipal}:F" /q
+    if ($LASTEXITCODE -ne 0) {
+        throw "failed to secure the standard user's private directory"
+    }
+    & icacls.exe $userRoot /setowner $principal /q
+    if ($LASTEXITCODE -ne 0) {
+        throw "failed to assign the standard user's private directory"
     }
     & icacls.exe $workspace /grant "${principal}:(OI)(CI)M" /t /c /q
     if ($LASTEXITCODE -ne 0) {
@@ -53,7 +64,6 @@ try {
     }
 
     $homePath = Join-Path $userRoot "home"
-    New-Item -ItemType Directory -Path $homePath | Out-Null
     $tempLiteral = $userRoot.Replace("'", "''")
     $homeLiteral = $homePath.Replace("'", "''")
     $workspaceLiteral = $workspace.Replace("'", "''")
@@ -75,6 +85,7 @@ try {
 `$env:RUNNER_TEMP = '$tempLiteral'
 `$env:GITHUB_WORKSPACE = '$workspaceLiteral'
 `$env:PONY_CI_UV = '$uvLiteral'
+New-Item -ItemType Directory -Path '$homeLiteral' | Out-Null
 Set-Location '$workspaceLiteral'
 $invocation
 exit `$LASTEXITCODE
@@ -107,5 +118,5 @@ finally {
     if (Get-LocalUser -Name $userName -ErrorAction SilentlyContinue) {
         Remove-LocalUser -Name $userName
     }
-    Remove-Item -LiteralPath $userRoot -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $controlRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
