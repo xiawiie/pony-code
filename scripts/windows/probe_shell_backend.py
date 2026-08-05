@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import traceback
@@ -87,14 +88,20 @@ def probe(*, expect_elevated_rejection=False):
         assessment = assess_command(command, root, trusted)
         if assessment["execution_mode"] != "shell" or assessment["decision"] != "ask":
             raise RuntimeError("PowerShell command was not classified as shell grammar")
-        result = run_hardened_command(
-            powershell,
-            command=command,
-            shell=True,
-            cwd=root,
-            timeout=20,
-            env=_minimal_env(root, powershell),
-        )
+        try:
+            result = run_hardened_command(
+                powershell,
+                command=command,
+                shell=True,
+                cwd=root,
+                timeout=20,
+                env=_minimal_env(root, powershell),
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(
+                "fixed PowerShell execution timed out: "
+                f"stdout={exc.output!r}, stderr={exc.stderr!r}"
+            ) from exc
         if result.returncode != 0 or result.stdout.strip() != "pony-shell-ok":
             raise RuntimeError(
                 "fixed PowerShell execution failed: "

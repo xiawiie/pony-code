@@ -386,11 +386,19 @@ class BlockStore:
                 trusted_root=root,
                 trusted_root_identity=root_identity,
             )
-        data, stat_result = _read_bounded_regular(
-            real_path,
-            limit,
-            **read_options,
-        )
+        try:
+            data, stat_result = _read_bounded_regular(
+                real_path,
+                limit,
+                **read_options,
+            )
+        except (OSError, RuntimeError, ValueError) as exc:
+            if not hasattr(exc, "bytes_read"):
+                try:
+                    exc.bytes_read = min(candidate.lstat().st_size, limit + 1)
+                except OSError:
+                    exc.bytes_read = 0
+            raise
         content = _decode_memory_text(data)
         # Task 17: parse frontmatter so retrieval / recall can boost by field.
         # When a file has a `description` header, prefer that as the display
