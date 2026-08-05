@@ -37,7 +37,7 @@ from pony.workspace.context import WorkspaceContext  # noqa: E402
 TASKS_FORMAT_VERSION = 1
 BRIEF_FORMAT_VERSION = 1
 QUALIFICATION_FORMAT_VERSION = 1
-CONDITION_FORMAT_VERSION = 2
+CONDITION_FORMAT_VERSION = 3
 COMPARISON_FORMAT_VERSION = 1
 DEFAULT_TASKS_PATH = Path("benchmarks/coding_quality/tasks.json")
 TASK_KEYS = {
@@ -713,6 +713,7 @@ def _product_failure(task, trial_number, category, started):
         "self_verification": False,
         "successful_shell_checks_after_mutation": 0,
         "policy_rejections": {},
+        "scope": None,
     }
 
 
@@ -762,7 +763,7 @@ def _run_trial(task, trial_number, workspace_root, model_client_factory, max_out
             "status": "invalid",
             "reason": "runner_or_grader_error",
         }
-    integrity_pass, _changed, _forbidden = _integrity_result(
+    integrity_pass, changed, forbidden = _integrity_result(
         before, after, task["allowed_changes"]
     )
     wall_time = time.monotonic() - started
@@ -810,6 +811,7 @@ def _run_trial(task, trial_number, workspace_root, model_client_factory, max_out
         "self_verification": verified,
         "successful_shell_checks_after_mutation": shell_checks,
         "policy_rejections": policy_rejections,
+        "scope": {"changed_files": changed, "forbidden_files": forbidden},
     }
 
 
@@ -1113,6 +1115,7 @@ def _validate_condition_artifact(payload):
                     "self_verification",
                     "successful_shell_checks_after_mutation",
                     "policy_rejections",
+                    "scope",
                 },
                 "condition trial",
             )
@@ -1182,6 +1185,32 @@ def _validate_condition_artifact(payload):
             _nonnegative_int(
                 trial["successful_shell_checks_after_mutation"], "trial shell checks"
             )
+            scope = trial["scope"]
+            if scope is None:
+                if outcome["integrity_pass"]:
+                    raise ValueError("passing integrity requires scope evidence")
+            else:
+                _require_exact_keys(
+                    scope, {"changed_files", "forbidden_files"}, "trial scope evidence"
+                )
+                changed_files = scope["changed_files"]
+                forbidden_files = scope["forbidden_files"]
+                for values, label in (
+                    (changed_files, "changed files"),
+                    (forbidden_files, "forbidden files"),
+                ):
+                    if (
+                        not isinstance(values, list)
+                        or len(values) > MAX_TREE_FILES
+                        or values != sorted(set(values))
+                    ):
+                        raise ValueError(f"invalid trial scope {label}")
+                    for value in values:
+                        _relative_path(value, f"trial scope {label}")
+                if not set(forbidden_files).issubset(changed_files):
+                    raise ValueError("trial forbidden files must be changed files")
+                if outcome["integrity_pass"] != (not forbidden_files):
+                    raise ValueError("trial scope disagrees with integrity state")
             policy_rejections = trial["policy_rejections"]
             if not isinstance(policy_rejections, dict):
                 raise ValueError("invalid trial policy rejections")

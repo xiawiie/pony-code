@@ -5,7 +5,7 @@
     {
       "id": "diagnosis-date-boundary",
       "slice": "failing-test-diagnosis",
-      "prompt": "A date-range helper drops the final day. Diagnose the defect, make the smallest safe fix, and run `python3 -m unittest discover -s . -q`.",
+      "prompt": "A date-range helper drops the final day. Diagnose the defect, make the smallest safe fix, and run `python3 -m unittest discover -s . -q`. Modify only `date_ranges.py`; do not create or change any other file.",
       "fixture": "benchmarks/coding_quality/fixtures/diagnosis-date-boundary",
       "grader": "benchmarks/coding_quality/graders/grader.py",
       "reference": "benchmarks/coding_quality/references/diagnosis-date-boundary",
@@ -26,7 +26,7 @@
     {
       "id": "diagnosis-cache-key",
       "slice": "failing-test-diagnosis",
-      "prompt": "Region-specific prices sometimes reuse a cached value from another region. Find the root cause, fix it without removing caching, and run `python3 -m unittest discover -s . -q`.",
+      "prompt": "Region-specific prices sometimes reuse a cached value from another region. Find the root cause, fix it without removing caching, and run `python3 -m unittest discover -s . -q`. Modify only `pricing.py`; do not create or change any other file.",
       "fixture": "benchmarks/coding_quality/fixtures/diagnosis-cache-key",
       "grader": "benchmarks/coding_quality/graders/grader.py",
       "reference": "benchmarks/coding_quality/references/diagnosis-cache-key",
@@ -47,7 +47,7 @@
     {
       "id": "navigation-unicode-config",
       "slice": "issue-driven-navigation",
-      "prompt": "Configuration names written as UTF-8 with a BOM are returned with an invisible leading character, while invalid byte sequences leak UnicodeDecodeError. Normalize BOM input and raise ValueError for invalid UTF-8 without changing valid behavior. Run `python3 -m unittest discover -s . -q`.",
+      "prompt": "Configuration names written as UTF-8 with a BOM are returned with an invisible leading character, while invalid byte sequences leak UnicodeDecodeError. Normalize BOM input and raise ValueError for invalid UTF-8 without changing valid behavior. Run `python3 -m unittest discover -s . -q`. Modify only `config_loader.py`; do not create or change any other file.",
       "fixture": "benchmarks/coding_quality/fixtures/navigation-unicode-config",
       "grader": "benchmarks/coding_quality/graders/grader.py",
       "reference": "benchmarks/coding_quality/references/navigation-unicode-config",
@@ -68,7 +68,7 @@
     {
       "id": "navigation-nested-merge",
       "slice": "issue-driven-navigation",
-      "prompt": "Overlaying a nested configuration currently replaces sibling defaults. Preserve existing nested keys while applying nested overrides; scalar values should still replace old values. Run `python3 -m unittest discover -s . -q`.",
+      "prompt": "Overlaying a nested configuration currently replaces sibling defaults. Preserve existing nested keys while applying nested overrides; scalar values should still replace old values. Run `python3 -m unittest discover -s . -q`. Modify only `config_merge.py`; do not create or change any other file.",
       "fixture": "benchmarks/coding_quality/fixtures/navigation-nested-merge",
       "grader": "benchmarks/coding_quality/graders/grader.py",
       "reference": "benchmarks/coding_quality/references/navigation-nested-merge",
@@ -89,7 +89,7 @@
     {
       "id": "contract-runtime-option",
       "slice": "multi-file-contract",
-      "prompt": "Add a frozen RuntimeOptions dry_run flag defaulting to False and propagate it through build_command so dry-run commands are prefixed with \"echo \". Keep normal command behavior unchanged and update and run `python3 -m unittest discover -s . -q`.",
+      "prompt": "Add a frozen RuntimeOptions dry_run flag defaulting to False and propagate it through build_command so dry-run commands are prefixed with \"echo \". Keep normal command behavior unchanged and update and run `python3 -m unittest discover -s . -q`. Modify only `options.py`, `commands.py`, `test_commands.py`; do not create or change any other file.",
       "fixture": "benchmarks/coding_quality/fixtures/contract-runtime-option",
       "grader": "benchmarks/coding_quality/graders/grader.py",
       "reference": "benchmarks/coding_quality/references/contract-runtime-option",
@@ -112,7 +112,7 @@
     {
       "id": "contract-error-envelope",
       "slice": "multi-file-contract",
-      "prompt": "Failure responses must use {\"ok\": false, \"error\": {\"code\": ..., \"message\": ...}} instead of a top-level error string. Update the error type and response adapter together while preserving successful responses and tests, then run `python3 -m unittest discover -s . -q`.",
+      "prompt": "Failure responses must use {\"ok\": false, \"error\": {\"code\": ..., \"message\": ...}} instead of a top-level error string. Update the error type and response adapter together while preserving successful responses and tests, then run `python3 -m unittest discover -s . -q`. Modify only `errors.py`, `response.py`, `test_response.py`; do not create or change any other file.",
       "fixture": "benchmarks/coding_quality/fixtures/contract-error-envelope",
       "grader": "benchmarks/coding_quality/graders/grader.py",
       "reference": "benchmarks/coding_quality/references/contract-error-envelope",
@@ -135,7 +135,7 @@
     {
       "id": "hardening-path-traversal",
       "slice": "io-config-cli-hardening",
-      "prompt": "resolve_workspace_path must accept ordinary relative paths but reject absolute paths and any path that escapes the workspace through .. components. Make the boundary fail closed and run `python3 -m unittest discover -s . -q`.",
+      "prompt": "resolve_workspace_path must accept ordinary relative paths but reject absolute paths and any path that escapes the workspace through .. components. Make the boundary fail closed and run `python3 -m unittest discover -s . -q`. Modify only `workspace_paths.py`; do not create or change any other file.",
       "fixture": "benchmarks/coding_quality/fixtures/hardening-path-traversal",
       "grader": "benchmarks/coding_quality/graders/grader.py",
       "reference": "benchmarks/coding_quality/references/hardening-path-traversal",
@@ -156,7 +156,7 @@
     {
       "id": "hardening-env-update",
       "slice": "io-config-cli-hardening",
-      "prompt": "Project environment updates must reject duplicate keys and invalid key names before writing anything. Preserve valid comments and assignments, and ensure a rejected update leaves the original file byte-for-byte unchanged. Run `python3 -m unittest discover -s . -q`.",
+      "prompt": "Project environment updates must reject duplicate keys and invalid key names before writing anything. Preserve valid comments and assignments, and ensure a rejected update leaves the original file byte-for-byte unchanged. Run `python3 -m unittest discover -s . -q`. Modify only `env_update.py`; do not create or change any other file.",
       "fixture": "benchmarks/coding_quality/fixtures/hardening-env-update",
       "grader": "benchmarks/coding_quality/graders/grader.py",
       "reference": "benchmarks/coding_quality/references/hardening-env-update",

@@ -37,6 +37,8 @@ Pony 1.0 将预发布仓库收束为一个可安装、可验证、可发布的�
 
 ### Changed
 
+- Coding-quality task 现在把 scope hard gate 显式写入 Agent 可见 prompt；condition artifact format v3 记录并校验
+  changed/forbidden 文件证据，scope-explicit 收费 pilot 达到 `24/24 SCC`，当前 corpus 仅保留为 must-pass canary。
 - 收紧 Python package 支持范围为 3.11/3.12；移除未接入 runtime 的 sampling flags，并统一规范化 Provider API Base。
 - Agent model request、fork/rewind 与自动 compaction 绑定 Session leaf CAS；自动 compaction 的辅助模型请求使用有界瞬态重试，
   并进入当前 Run 的 usage、失败与 transport evidence；bounded subprocess 在后代逃逸并持有 pipe 时仍按 hard deadline 返回。

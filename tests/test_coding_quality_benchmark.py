@@ -95,6 +95,9 @@ def test_pilot_corpus_is_strict_and_covers_four_decision_slices():
         "io-config-cli-hardening",
     }
     assert all("run_shell" in task["allowed_tools"] for task in benchmark["tasks"])
+    for task in benchmark["tasks"]:
+        assert "do not create or change any other file" in task["prompt"]
+        assert all(f"`{path}`" in task["prompt"] for path in task["allowed_changes"])
 
     payload = json.loads(TASKS.read_text(encoding="utf-8"))
     payload["tasks"][0]["unexpected"] = True
@@ -188,6 +191,10 @@ def test_fake_condition_only_proves_runner_plumbing_and_scc_contract(tmp_path):
     assert artifact["summary"]["invalid_trials"] == 0
     assert all(row["scc_count"] == 1 for row in artifact["tasks"])
     assert all(row["trials"][0]["self_verification"] for row in artifact["tasks"])
+    assert all(
+        row["trials"][0]["scope"]["forbidden_files"] == []
+        for row in artifact["tasks"]
+    )
     rendered = json.dumps(artifact)
     assert "A date-range helper" not in rendered
     assert str(ROOT) not in rendered
@@ -238,6 +245,29 @@ def test_trial_rejects_fixture_identity_drift_before_starting_the_provider(tmp_p
         "trial": 1,
         "status": "invalid",
         "reason": "fixture_identity_mismatch",
+    }
+
+
+def test_trial_records_the_files_behind_a_scope_integrity_failure(tmp_path):
+    task = load_tasks(TASKS)["tasks"][0]
+    outputs = _reference_outputs(task)
+    outputs.insert(1, {"name": "write_file", "args": {"path": "notes.txt", "content": "x\n"}})
+    workspace_root = tmp_path / "runs"
+    workspace_root.mkdir()
+
+    result = run_benchmark._run_trial(
+        task,
+        1,
+        workspace_root,
+        lambda **_kwargs: FakeModelClient(outputs),
+        2048,
+    )
+
+    assert result["status"] == "fail"
+    assert result["failure_category"] == "hard_gate"
+    assert result["scope"] == {
+        "changed_files": ["date_ranges.py", "notes.txt"],
+        "forbidden_files": ["notes.txt"],
     }
 
 
@@ -319,6 +349,7 @@ def _comparison_artifacts(tmp_path):
             "self_verification": scc,
             "successful_shell_checks_after_mutation": int(scc),
             "policy_rejections": {},
+            "scope": {"changed_files": [], "forbidden_files": []},
         }
 
     def artifact(name, sha, scc):
@@ -330,7 +361,7 @@ def _comparison_artifacts(tmp_path):
         }
         return {
             "record_type": "coding_quality_condition_result",
-            "format_version": 2,
+            "format_version": run_benchmark.CONDITION_FORMAT_VERSION,
             "captured_at": "2026-08-04T00:00:00+00:00",
             "brief_digest": run_benchmark._canonical_digest(brief),
             "condition": {

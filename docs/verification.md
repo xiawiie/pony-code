@@ -216,7 +216,8 @@ uv run --frozen python benchmarks/coding_quality/run_benchmark.py qualify \
 
 Qualification 的目的不是测试模型，而是证明 benchmark 自身有区分度且可重复。成功必须同时观察到：broken target 连续
 `3/3` 失败；diagnosis broken fixture 的 public tests 失败、其他 slice 的 public tests 通过；reference 的 target、regression、
-public 连续 `5/5` 通过；允许范围内的 reference patch 通过；模拟越界修改被拒绝。任一 task 失败都禁止 live run。
+public 连续 `5/5` 通过；允许范围内的 reference patch 通过；模拟越界修改被拒绝。作为 hard gate 的 `allowed_changes` 必须显式
+出现在 Agent 可见 task prompt 中；任一 task 失败都禁止 live run。
 
 Qualification artifact 是 live condition 的强制输入。Runner 在 Provider resolution 前验证 exact-key schema、零失败、task 数以及
 corpus/grader digest；缺失、手工矛盾或过期 artifact fail closed。Artifact 只写入私有临时目录，不提交。
@@ -260,6 +261,10 @@ uv run --frozen python benchmarks/coding_quality/run_benchmark.py run \
 `run_shell=allow` 仍经过 command/path/secret/mutation policy；不使用 `bypassPermissions`。`--allow-dirty` 只允许有界调试 smoke，
 artifact 会标记为 non-confirmatory，comparator 不会接受它。
 
+Coding-quality condition artifact 当前为 format version 3。每个正常 trial 都记录排序、去重、bounded 的 relative
+`changed_files`/`forbidden_files`，validator 要求 forbidden 是 changed 的子集，并与 `integrity_pass` 一致；缺少 scope evidence 的
+trial 不能声明 integrity pass。这样 scope hard gate 对 Agent 可见，失败时也能从低敏 artifact 审计具体越界文件。
+
 ### 纯 artifact comparison
 
 ```bash
@@ -284,6 +289,10 @@ hard gate。若拒绝后 Agent 未完成任务，target/finalization/budget outc
 Fake Provider 单测只证明 fresh workspace、hidden grader 隔离、production runner plumbing 和 SCC 计算合同；不得放入 Q capability
 结果。完整 live coding benchmark 属于收费 G8，必须记录 exact SHA、Provider/protocol/model、task/trial 数和费用边界。该 suite
 不加入默认 `scripts/check.sh`，因为默认发布门禁必须保持离线、确定且零费用。
+
+2026-08-05 的 scope-explicit fresh pilot 在 clean exact commit 上得到 `24/24 SCC`、`24/24` scope evidence、零 forbidden file 和
+零 hard gate。它只把当前 corpus 资格提升为 must-pass canary；达到 ceiling 后不得用于 Provider/model/feature 的 confirmatory
+comparison。完整证据和旧 `23/24` 历史见本页前述结果文档。
 
 
 ## Compaction efficiency 与非流式 Provider latency

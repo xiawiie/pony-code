@@ -1,6 +1,6 @@
 # ADR-0049：以产品决策为中心的 Benchmark 与 Evaluation 设计
 
-- 状态：Accepted；8-task pilot 与 comparison runner 已实现，live pilot 证据单独记录
+- 状态：Accepted；8-task pilot 与 comparison runner 已实现，scope-explicit live pilot 为 `24/24` canary
 - 日期：2026-08-04
 - 分析基线：`1411f62206d60d75d11b304edca083afb6e8b01a`
 
@@ -621,9 +621,9 @@ tests/test_coding_quality_benchmark.py
 
 不修改 `pony/`，不新增 runtime dependency，不建立 Provider registry、数据库、dashboard 或 LLM judge。
 
-状态：离线实现与 qualification 已完成；真实 Provider pilot 发现当前小型 corpus 对所测 live target 接近 ceiling，因此它只保留
-为 runner/canary pilot，**不得用于 confirmatory feature/model 比较**。这一结果不是“benchmark 失败后没有价值”，而是 qualification
-成功阻止了一个低区分度 corpus 被误用。
+状态：离线实现与 qualification 已完成；scope-explicit fresh Provider pilot 为 `24/24 SCC`，确认当前小型 corpus 已达到 ceiling，
+因此它只保留为 runner/canary pilot，**不得用于 confirmatory feature/model 比较**。这一结果不是“benchmark 失败后没有价值”，
+而是 evaluation 成功阻止了一个低区分度 corpus 被误用。
 
 ### 15.3 Phase 2：支持真正的 comparison evaluation
 
@@ -794,18 +794,54 @@ format-v2 修复后又执行了 `navigation-nested-merge` 单 task live smoke：
 `1/1 SCC`，同时独立记录 `policy_rejections: {trusted_executable_missing: 1}`、hard gate 为 0。这验证了“安全拒绝是诊断证据，
 不是安全失败”的新合同。
 
-### 19.5 决策
+### 19.5 Scope-hidden review 与 format-v3 fresh pilot
+
+Format-v2 artifact 没有记录 changed/forbidden 文件名，无法从历史证据证明失败 trial 具体越界文件。Review 同时发现：
+`allowed_changes` 是 SCC hard gate，却没有进入 Agent 可见任务。功能 target、regression 和 self-verification 均为 `24/24`，因此旧
+`23/24` 不能解释为 coding behavior failure，也不能在没有 fresh trials 的情况下改写为 `24/24`。
+
+修复没有删除 task、降低 hidden grader、回归、budget 或 integrity 标准。八个 task 显式声明允许修改的文件；condition artifact
+升级为 format v3，为每个正常 trial 保存 bounded relative `changed_files` 和 `forbidden_files`，并验证它们与 integrity outcome 一致。
+Product failure 可以没有 scope evidence，但不能伪装为 integrity pass。
+
+新 corpus 重新完成 `8/8` offline qualification：
+
+```text
+corpus_digest: sha256:223ccbc829499bbd731c1931a36dd6e2ccdffb0da4828cee963eb2cc5b2a3483
+grader_digest: sha256:22a1d95711b4799df461b0ec3d9f14575d4930f4e02621fcd0097cc7837e1991
+broken/reference/integrity qualification: 8/8
+```
+
+Fresh pilot 在运行前冻结的问题是“scope-explicit corpus 是否足够可靠，可以保留为 must-pass canary”，接受规则为全部
+`24/24 SCC`、零 hard gate 且 `24/24` scope evidence。Clean exact commit
+`38b7457210b75343b7273d99719a1d9929acdeb3` 上的真实结果为：
+
+```text
+safe correct completion: 24/24 (100%)
+hidden target/regression/self-verification: 24/24
+scope evidence: 24/24
+forbidden files: 0
+invalid trials: 0
+hard-gate failures: 0
+usage: 383,773 input + 40,902 output = 424,675 total tokens
+model attempts: 182
+tool steps: 150
+```
+
+旧 `23/24` 作为 scope-hidden 历史结果保留；新 `24/24` 使用不同的 Agent 可见任务合同，因此不用于声称模型能力提高。
+
+### 19.6 决策
 
 - **Runner/evaluation protocol：接受作为 pilot 基础设施。** 它已经能在请求前 fail closed、区分 invalid/product outcome、冻结 brief、
-  产生低敏 artifact，并阻止 dirty/Fake/不匹配条件得到 `accept`。
-- **当前 8-task corpus：拒绝用于 confirmatory feature/model comparison。** 7 个 task 为稳定 `3/3`，剩余 task 为 `2/3`，对本次
-  live target 接近 ceiling；小型 fixture 也不足以代表 Pony 的真实 stateful、多文件和 policy-aware 维护分布。
+  产生低敏 artifact、记录 scope evidence，并阻止 dirty/Fake/不匹配条件得到 `accept`。
+- **当前 8-task corpus：只接受为 must-pass canary，拒绝用于 confirmatory feature/model comparison。** Scope-explicit fresh pilot
+  为 `24/24`，已达到 ceiling；小型 fixture 也不足以代表 Pony 的真实 stateful、多文件和 policy-aware 维护分布。
 - **下一行动：**保留 1–2 个 must-pass canary，其余从 Pony 真实 issue/修复历史构造更难、模型不可见答案的 task；重新做 8/8
   offline qualification 和每 task 至少 3 次 live pilot。只有出现可解释的稳定通过、混合结果和稳定失败分布，才允许冻结首个
   confirmatory Evaluation Brief。
 
 因此本轮没有 baseline/candidate `accept` 结论，也没有必要为凑结果运行虚假的同 SHA comparison。最有价值的执行结果正是：
-**评测协议及时发现并拒绝了一个过于容易、且曾错误惩罚安全拒绝的 corpus。**
+**评测协议及时发现并拒绝了一个过于容易、曾错误惩罚安全拒绝、且曾隐藏 scope hard gate 的 corpus。**
 
 ## 20. Efficiency evaluation：先定义要看到什么
 

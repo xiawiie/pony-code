@@ -10,12 +10,18 @@ evaluation 的最终结果。设计与决策规则见
 | Evaluation | 最终决策 | 结论 |
 | --- | --- | --- |
 | Coding-quality runner/protocol | 接受为 pilot 基础设施 | 能冻结 brief、隔离 hidden grader、区分 invalid/product outcome，并阻止 dirty/Fake/条件不匹配得到 `accept` |
-| 当前 8-task coding corpus | 拒绝 confirmatory 使用 | 修正后 live pilot 为 `23/24 SCC`，接近 ceiling，不能比较模型或 feature 优劣 |
+| 当前 8-task coding corpus | 拒绝 confirmatory 使用 | scope-explicit v3 live pilot 为 `24/24 SCC`，已达到 ceiling，只适合作为 must-pass canary |
 | 单次 compaction + resume | `accept` | SCC 全部通过，六轮净 token 节省率 p50 为 `56.438%`，均在第 2 轮回本 |
 | 重复 compaction + resume | `accept` | SCC 全部通过，六轮净 token 节省率 p50 为 `47.362%`，在第 2–3 轮回本 |
 | 当前单一 Provider target latency | 测量完成 | 9/9 workload 成功；非流式 Transport 无法观测真实 TTFT |
 
-本轮 efficiency confirmatory evaluation 对应实现 commit：
+本轮 scope-explicit coding-quality live pilot 对应实现 commit：
+
+```text
+38b7457210b75343b7273d99719a1d9929acdeb3
+```
+
+Efficiency confirmatory evaluation 对应实现 commit：
 
 ```text
 29428ac2fb602db3c681b382b3d3080d1b25b17c
@@ -91,7 +97,7 @@ integrity/tamper rejection: 8/8 通过
 这证明 fixture、reference、hidden grader、公开失败形态和 integrity contract 有区分度；它不证明真实 Provider coding
 capability。
 
-### 3.2 收费 live pilot
+### 3.2 第一次收费 live pilot
 
 同一 live target 共执行 24 个 fresh trials。原始 format-v1 artifact 把 9 个 policy 成功拒绝错误计为 hard gate；review
 后升级为 format v2，并按修正语义重算：
@@ -124,6 +130,58 @@ tool steps: 168
 - 当前 corpus 对该 target 接近 ceiling；
 - 当前结果不能支持 Provider、model 或 feature 的 confirmatory comparison；
 - 应保留 1–2 个 must-pass canary，其余替换为来自 Pony 真实修复历史的 multi-file、stateful、policy-aware task。
+
+该 format-v2 artifact 没有记录 changed/forbidden 文件名，因此不能从历史 artifact 证明 trial 3 具体修改了哪个越界文件。Review
+确认了更基础的 evaluation 设计问题：`allowed_changes` 是 hard gate，却没有出现在 Agent 可见任务中。功能 target、regression 和
+self-verification 均为 `24/24`，因此不能把这个 hidden scope failure 解释为 coding behavior failure，也不能事后把旧 artifact
+改写成 `24/24`。
+
+### 3.3 Scope-explicit v3 收费 live pilot
+
+修复没有降低 hidden target、regression、budget 或 integrity 标准。八个 task 都显式列出允许修改的文件，condition artifact
+升级为 format v3，并为每个正常完成的 trial 记录 bounded relative `changed_files` 和 `forbidden_files`。新 corpus 重新完成
+`8/8` offline qualification 后，在 clean exact commit
+`38b7457210b75343b7273d99719a1d9929acdeb3` 上执行 24 个 fresh trials：
+
+本次 pilot 在请求前冻结的问题是“scope-explicit corpus 是否足够稳定，可以保留为 must-pass canary”。接受条件不是分数提高，
+而是全部 `24/24` trials 同时达到 SCC、零 hard gate，并且每个 trial 都有完整 scope evidence。冻结的 corpus/grader digest 为：
+
+```text
+corpus: sha256:223ccbc829499bbd731c1931a36dd6e2ccdffb0da4828cee963eb2cc5b2a3483
+grader: sha256:22a1d95711b4799df461b0ec3d9f14575d4930f4e02621fcd0097cc7837e1991
+```
+
+```text
+safe correct completion: 24/24 (100%)
+hidden target pass: 24/24
+regression pass: 24/24
+self-verification: 24/24
+scope evidence: 24/24
+forbidden files: 0
+invalid trials: 0
+hard-gate failures: 0
+usage: 424,675 total tokens
+input/output tokens: 383,773 / 40,902
+model attempts: 182
+tool steps: 150
+sum trial duration: 1,036,208 ms
+policy rejections: trusted_executable_missing=3
+```
+
+| Task | Scope-explicit v3 SCC |
+| --- | ---: |
+| diagnosis-date-boundary | 3/3 |
+| diagnosis-cache-key | 3/3 |
+| navigation-unicode-config | 3/3 |
+| navigation-nested-merge | 3/3 |
+| contract-runtime-option | 3/3 |
+| contract-error-envelope | 3/3 |
+| hardening-path-traversal | 3/3 |
+| hardening-env-update | 3/3 |
+
+该 `100%` 证明显式 scope 下的 canary 路径稳定，不证明模型能力提高。旧 `23/24` 与新 `24/24` 使用了不同的 Agent 可见
+scope contract，因此不能解释为同一 benchmark 上的模型提升。相反，零失败进一步确认当前小型 corpus 没有足够区分度，不能用于
+Provider、model 或 feature 的 confirmatory comparison。
 
 ## 4. Compaction efficiency 正式结果
 
@@ -187,13 +245,13 @@ Provider completions: 12
 
 ```text
 Ruff: passed
-83 passed
+26 passed
 ```
 
 Clean exact-HEAD 完整门禁：
 
 ```text
-2767 passed
+2768 passed
 core-functional passed
 offline assertions passed
 sdist/wheel build passed
@@ -205,6 +263,7 @@ two clean-install smoke checks passed
 
 ```text
 bounded Provider probe: 2 calls, passed, usage complete
+scope-explicit coding-quality v3: 24/24 SCC, scope evidence 24/24, forbidden files 0
 v2 smoke: compaction accept, latency 100%, Provider failures 0
 formal evaluation: all paired compaction trials accepted, latency 9/9
 ```
@@ -213,12 +272,14 @@ formal evaluation: all paired compaction trials accepted, latency 9/9
 
 ## 7. Artifact 与隐私
 
-正式 artifact 使用 format version 2，记录 evaluated commit、dirty state、Provider/protocol/model、usage、SCC、延迟、失败类型和
-重试计数。检查结果：
+Coding-quality condition artifact 使用 format version 3，额外记录 bounded relative changed/forbidden 文件；efficiency artifact
+继续使用 format version 2。两者记录 evaluated commit、dirty state、Provider/protocol/model、usage、SCC、延迟、失败类型和重试
+计数。检查结果：
 
 ```text
 provenance dirty: false
-claim scope: confirmatory single-target efficiency evaluation
+coding-quality claim scope: exploratory scope-explicit canary pilot
+efficiency claim scope: confirmatory single-target efficiency evaluation
 artifact file mode: 0600
 privacy/integrity audit: passed
 ```
@@ -230,8 +291,8 @@ messages、raw response 或 reasoning。
 
 1. 当前只有一个 canonical target，不能声称完成 Provider-to-Provider comparison。其他 Provider 必须在相同 commit、workload、预算、
    trial 数和 evidence policy 下独立生成脱敏 artifact 后再比较。
-2. 当前 8-task corpus 只作为 pilot/canary；在替换为真实 multi-file、stateful、policy-aware 历史任务并重新 qualification 前，
-   不进行昂贵的 baseline/candidate confirmatory comparison。
+2. 当前 8-task corpus 的 scope-explicit live pilot 已为 `24/24 SCC`，只作为 must-pass canary；在替换为真实 multi-file、stateful、
+   policy-aware 历史任务并重新 qualification 前，不进行昂贵的 baseline/candidate confirmatory comparison。
 3. 当前 production Transport 非流式，因此不提供 TTFT。只有产品确实需要 streaming 时才增加 streaming observability，不能只为生成
    benchmark 数字扩大运行时复杂度。
 4. Compaction 节省率必须与 SCC、break-even horizon 和 Provider usage 一起解释，不能只报告字符压缩率。
