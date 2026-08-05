@@ -93,6 +93,9 @@ jobs:
       - name: Probe native Windows atomic-write semantics
         run: python scripts/windows/probe_atomic_write_semantics.py --pretty
 
+      - name: Probe Pony Windows private-file backend
+        run: python scripts/windows/probe_private_files_backend.py
+
       - name: Probe native Windows lock semantics
         run: python scripts/windows/probe_lock_semantics.py --pretty
 

@@ -1209,3 +1209,118 @@ def harden_private_tree(path):
                 else:
                     raise ValueError("private tree has unsafe entry")
     return root
+
+
+if os.name == "nt":
+    from . import windows_private_files as _windows_private
+
+    def ensure_private_dir(path):
+        return _windows_private.ensure_private_dir(path)
+
+    def ensure_private_file(path, *, trusted_root=None, trusted_root_identity=None):
+        return _windows_private.ensure_private_file(
+            path,
+            trusted_root=trusted_root,
+            trusted_root_identity=trusted_root_identity,
+        )
+
+    def read_private_text(
+        path,
+        *,
+        encoding="utf-8",
+        errors="strict",
+        trusted_root=None,
+        trusted_root_identity=None,
+        max_bytes=None,
+        harden=True,
+        allow_insecure_mode=False,
+    ):
+        return _windows_private.read_private_text(
+            path,
+            encoding=encoding,
+            errors=errors,
+            trusted_root=trusted_root,
+            trusted_root_identity=trusted_root_identity,
+            max_bytes=max_bytes,
+            harden=harden,
+            allow_insecure_mode=allow_insecure_mode,
+        )
+
+    def read_private_bytes(
+        path,
+        *,
+        trusted_root=None,
+        trusted_root_identity=None,
+        max_bytes=None,
+        harden=True,
+        allow_insecure_mode=False,
+    ):
+        return _windows_private.read_private_bytes(
+            path,
+            trusted_root=trusted_root,
+            trusted_root_identity=trusted_root_identity,
+            max_bytes=max_bytes,
+            harden=harden,
+            allow_insecure_mode=allow_insecure_mode,
+        )
+
+    def private_directory_identity(path):
+        return _windows_private.private_directory_identity(path, PrivateDirectoryIdentity)
+
+    def private_file_signature(path, *, trusted_root=None, trusted_root_identity=None):
+        return _windows_private.private_file_signature(
+            path,
+            PrivateFileSignature,
+            trusted_root=trusted_root,
+            trusted_root_identity=trusted_root_identity,
+        )
+
+    def write_private_bytes_atomic(
+        path,
+        data,
+        *,
+        trusted_root,
+        trusted_root_identity,
+        error="private temp changed",
+        fsync_file=None,
+        fsync_parent=None,
+        max_existing_bytes=None,
+        require_absent=False,
+        validate_commit=None,
+    ):
+        try:
+            return _windows_private.write_private_bytes_atomic(
+                path,
+                data,
+                trusted_root=trusted_root,
+                trusted_root_identity=trusted_root_identity,
+                error=error,
+                fsync_file=fsync_file,
+                fsync_parent=fsync_parent,
+                max_existing_bytes=max_existing_bytes,
+                require_absent=require_absent,
+                validate_commit=validate_commit,
+            )
+        except _windows_private.AtomicWriteAmbiguous as exc:
+            raise PrivateAtomicWriteError(str(exc)) from exc
+
+    def append_private_bytes(
+        path,
+        data,
+        *,
+        trusted_root,
+        trusted_root_identity,
+        max_total_bytes=None,
+        expected_identity=None,
+    ):
+        return _windows_private.append_private_bytes(
+            path,
+            data,
+            trusted_root=trusted_root,
+            trusted_root_identity=trusted_root_identity,
+            max_total_bytes=max_total_bytes,
+            expected_identity=expected_identity,
+        )
+
+    def harden_private_tree(path):
+        return _windows_private.harden_private_tree(path)
