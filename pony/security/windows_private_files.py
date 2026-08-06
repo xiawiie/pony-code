@@ -245,6 +245,24 @@ def _installed_target(parent, name, expected_identity):
         handle.close()
 
 
+def _open_owned_target(parent, name, expected_identity):
+    handle, _created = native.open_relative(
+        parent,
+        name,
+        directory=False,
+        desired_access=native.FILE_WRITE_ACCESS,
+        single_link=False,
+    )
+    try:
+        if native.identity(handle) != expected_identity:
+            raise ValueError("private file changed")
+        native.require_private(handle)
+        return handle
+    except Exception:
+        handle.close()
+        raise
+
+
 def _rollback(
     path,
     parent,
@@ -253,16 +271,25 @@ def _rollback(
     *,
     existing_identity,
 ):
+    installed = None
     try:
-        _same_target(parent, path.name, installed_identity)
+        installed = _open_owned_target(parent, path.name, installed_identity)
+        native.truncate(installed, 0)
         if existing_identity is None:
-            native.delete_file(path)
+            native.delete_handle(installed)
+            installed.close()
+            installed = None
             _same_target(parent, path.name, None)
         else:
+            installed.close()
+            installed = None
             native.replace_file(path, backup)
             _same_target(parent, path.name, existing_identity)
     except Exception as exc:
         raise AtomicWriteAmbiguous("private atomic write rollback failed") from exc
+    finally:
+        if installed is not None:
+            installed.close()
 
 
 def _cleanup_file(path, *, primary):

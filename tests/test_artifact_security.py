@@ -67,6 +67,52 @@ def _swap_private_temp_with_symlink(monkeypatch, outside):
     monkeypatch.setattr(security_module.os, "replace", swap_before_replace)
 
 
+def _hardlink_private_temp_before_install(monkeypatch, install_alias):
+    if os.name == "nt":
+        from pony.security import windows_private_files
+
+        original_move = windows_private_files.native.move_file
+        original_replace = windows_private_files.native.replace_file
+
+        def hardlink_before_move(source, target):
+            if str(source).endswith(".tmp"):
+                install_alias(source)
+            return original_move(source, target)
+
+        def hardlink_before_replace(target, replacement, backup=None):
+            if str(replacement).endswith(".tmp"):
+                install_alias(replacement)
+            return original_replace(target, replacement, backup)
+
+        monkeypatch.setattr(windows_private_files.native, "move_file", hardlink_before_move)
+        monkeypatch.setattr(
+            windows_private_files.native,
+            "replace_file",
+            hardlink_before_replace,
+        )
+        return
+
+    original_path_replace = Path.replace
+    original_os_replace = security_module.os.replace
+
+    def hardlink_before_path_replace(source, target):
+        if str(source).endswith(".tmp"):
+            install_alias(source)
+        return original_path_replace(source, target)
+
+    def hardlink_before_os_replace(source, target, **kwargs):
+        if str(source).endswith(".tmp"):
+            install_alias(source, src_dir_fd=kwargs.get("src_dir_fd"))
+        return original_os_replace(source, target, **kwargs)
+
+    monkeypatch.setattr(Path, "replace", hardlink_before_path_replace)
+    monkeypatch.setattr(
+        security_module.os,
+        "replace",
+        hardlink_before_os_replace,
+    )
+
+
 def _session(session_id, workspace_root="/repo"):
     return {
         "record_type": "session",
@@ -724,27 +770,13 @@ def test_atomic_writers_remove_installed_temp_with_extra_hardlink(
     memory_user.mkdir(parents=True)
     memory_store = BlockStore(memory_workspace, memory_user, redaction_env={})
     aliases = []
-    real_path_replace = Path.replace
-    real_os_replace = security_module.os.replace
 
-    def hardlink_before_path_replace(path, target):
+    def install_alias(source, *, src_dir_fd=None):
         alias = tmp_path / f"temp-alias-{len(aliases)}"
-        os.link(path, alias)
+        os.link(source, alias, src_dir_fd=src_dir_fd)
         aliases.append(alias)
-        return real_path_replace(path, target)
 
-    def hardlink_before_os_replace(source, target, **kwargs):
-        alias = tmp_path / f"temp-alias-{len(aliases)}"
-        os.link(source, alias, src_dir_fd=kwargs.get("src_dir_fd"))
-        aliases.append(alias)
-        return real_os_replace(source, target, **kwargs)
-
-    monkeypatch.setattr(Path, "replace", hardlink_before_path_replace)
-    monkeypatch.setattr(
-        security_module.os,
-        "replace",
-        hardlink_before_os_replace,
-    )
+    _hardlink_private_temp_before_install(monkeypatch, install_alias)
 
     cases = (
         (
@@ -780,17 +812,14 @@ def test_atomic_writer_hardlink_race_restores_previous_target(
         target.write_bytes(original)
     root_identity = security_module.private_directory_identity(root)
     alias = tmp_path / "atomic-temp-alias"
-    real_replace = security_module.os.replace
     linked = False
 
-    def hardlink_before_replace(source, destination, **kwargs):
+    def install_alias(source, *, src_dir_fd=None):
         nonlocal linked
-        if not linked and str(source).endswith(".tmp"):
-            os.link(source, alias, src_dir_fd=kwargs["src_dir_fd"])
-            linked = True
-        return real_replace(source, destination, **kwargs)
+        os.link(source, alias, src_dir_fd=src_dir_fd)
+        linked = True
 
-    monkeypatch.setattr(security_module.os, "replace", hardlink_before_replace)
+    _hardlink_private_temp_before_install(monkeypatch, install_alias)
 
     with pytest.raises(ValueError, match="temp changed"):
         security_module.write_private_bytes_atomic(
