@@ -3,7 +3,6 @@ import json
 import shutil
 import subprocess
 import threading
-import time
 from types import SimpleNamespace
 
 import pytest
@@ -230,7 +229,9 @@ class _ConcurrentClient(FakeModelClient):
             self.activity["maximum"] = max(
                 self.activity["maximum"], self.activity["active"]
             )
-        time.sleep(0.08)
+            if self.activity["maximum"] == 2:
+                self.activity["overlap"].set()
+        self.activity["overlap"].wait(timeout=5)
         try:
             return super().complete(**kwargs)
         finally:
@@ -240,7 +241,12 @@ class _ConcurrentClient(FakeModelClient):
 
 def test_batch_honors_max_parallel_with_distinct_clients(tmp_path):
     repo = _repo(tmp_path)
-    activity = {"lock": threading.Lock(), "active": 0, "maximum": 0}
+    activity = {
+        "lock": threading.Lock(),
+        "overlap": threading.Event(),
+        "active": 0,
+        "maximum": 0,
+    }
     agent = _agent(repo, [_ConcurrentClient(activity) for _ in range(3)])
 
     agent.spawn_worktree_agents(
