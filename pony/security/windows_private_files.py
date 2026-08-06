@@ -265,6 +265,47 @@ def _open_owned_target(parent, name, expected_identity):
         raise
 
 
+def _copy_restore(parent, canonical_name, source, size, digest, error):
+    name = f".{canonical_name}.{secrets.token_hex(12)}.restore"
+    handle = None
+    identity = None
+    try:
+        with native.private_security_descriptor() as descriptor:
+            handle, created = native.open_relative(
+                parent,
+                name,
+                directory=False,
+                desired_access=native.FILE_WRITE_ACCESS,
+                disposition=native.FILE_CREATE,
+                security_descriptor=descriptor,
+                share_access=native.FILE_SHARE_READ,
+            )
+        if not created:
+            raise ValueError(error)
+        identity = native.identity(handle)
+        copied = hashlib.sha256()
+        total = 0
+        for chunk in native.read_chunks(source):
+            total += len(chunk)
+            if total > size:
+                raise ValueError(error)
+            native.write_bytes(handle, chunk, append=total != len(chunk))
+            copied.update(chunk)
+        if total == 0:
+            native.write_bytes(handle, b"")
+        native.require_private(handle)
+        if total != size or copied.hexdigest() != digest:
+            raise ValueError(error)
+        if descriptor_digest(handle, size, error) != digest:
+            raise ValueError(error)
+        return name, handle, identity
+    except BaseException as exc:
+        if handle is not None:
+            handle.close()
+        _cleanup_owned_target(parent, name, identity, primary=exc)
+        raise
+
+
 def _rollback(
     path,
     parent,
@@ -275,20 +316,40 @@ def _rollback(
     existing_size,
     existing_digest,
     error,
+    preserve_backup=False,
 ):
     restored = None
+    protected_backup = None
+    restore_name = None
+    restore_identity = None
     if existing_identity is not None:
         try:
             restored = _open_owned_target(parent, backup.name, existing_identity)
             if descriptor_digest(restored, existing_size, error) != existing_digest:
                 raise ValueError(error)
+            if preserve_backup:
+                protected_backup = restored
+                restored = None
+                restore_name, restore, restore_identity = _copy_restore(
+                    parent,
+                    path.name,
+                    protected_backup,
+                    existing_size,
+                    existing_digest,
+                    error,
+                )
+                restored = restore
         except (FileNotFoundError, ValueError):
             if restored is not None:
                 restored.close()
+            if protected_backup is not None:
+                protected_backup.close()
             raise ValueError(error) from None
         except OSError as exc:
             if restored is not None:
                 restored.close()
+            if protected_backup is not None:
+                protected_backup.close()
             raise AtomicWriteAmbiguous(
                 "private atomic write rollback failed"
             ) from exc
@@ -316,6 +377,15 @@ def _rollback(
             installed.close()
         if restored is not None:
             restored.close()
+        if protected_backup is not None:
+            protected_backup.close()
+        if restore_name is not None:
+            _cleanup_owned_target(
+                parent,
+                restore_name,
+                restore_identity,
+                primary=error,
+            )
 
 
 def _cleanup_file(path, *, primary):
@@ -600,9 +670,29 @@ def write_private_bytes_atomic(
             fsync_parent(parent.value)
         if validate_commit is not None:
             validate_commit()
-        committed = True
         if existing_identity is not None:
-            native.delete_file(backup)
+            try:
+                native.delete_file(backup)
+            except BaseException as cleanup_error:
+                preserve_backup = True
+                try:
+                    _rollback(
+                        path,
+                        parent,
+                        temp_identity,
+                        backup,
+                        existing_identity=existing_identity,
+                        existing_size=existing_size,
+                        existing_digest=existing_digest,
+                        error=error,
+                        preserve_backup=True,
+                    )
+                except BaseException as rollback_error:
+                    committed = True
+                    raise AtomicWriteAmbiguous(error) from rollback_error
+                installed = False
+                raise cleanup_error
+        committed = True
         return path
     except BaseException as exc:
         primary = exc

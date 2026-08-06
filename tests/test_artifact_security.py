@@ -40,6 +40,17 @@ def _assert_mode(path, expected):
         assert stat.S_IMODE(path.stat().st_mode) == expected
 
 
+def _seed_private_file(root, target, data):
+    root_identity = security_module.private_directory_identity(root)
+    security_module.write_private_bytes_atomic(
+        target,
+        data,
+        trusted_root=root,
+        trusted_root_identity=root_identity,
+    )
+    return root_identity
+
+
 def _swap_private_temp_with_symlink(monkeypatch, outside):
     if os.name == "nt":
         from pony.security import windows_private_files
@@ -1203,14 +1214,14 @@ def test_atomic_writer_rejects_oversized_existing_artifact_before_backup(tmp_pat
     root = security_module.ensure_private_dir(tmp_path / "atomic-bounded")
     target = root / "artifact.json"
     original = b"x" * 9
-    target.write_bytes(original)
+    root_identity = _seed_private_file(root, target, original)
 
     with pytest.raises(ValueError, match="private file too large"):
         security_module.write_private_bytes_atomic(
             target,
             b"small\n",
             trusted_root=root,
-            trusted_root_identity=security_module.private_directory_identity(root),
+            trusted_root_identity=root_identity,
             max_existing_bytes=8,
         )
 
@@ -1227,22 +1238,23 @@ def test_atomic_writer_ignores_unlinked_backup_wipe_failure(
     target = root / "artifact.json"
     original = b"old-sensitive-bytes\n"
     replacement = b"new-redacted-bytes\n"
-    target.write_bytes(original)
+    root_identity = _seed_private_file(root, target, original)
 
-    monkeypatch.setattr(
-        security_module.os,
-        "ftruncate",
-        lambda _descriptor, _length: (_ for _ in ()).throw(
-            OSError("backup cleanup failed")
-        ),
-    )
+    if os.name != "nt":
+        monkeypatch.setattr(
+            security_module.os,
+            "ftruncate",
+            lambda _descriptor, _length: (_ for _ in ()).throw(
+                OSError("backup cleanup failed")
+            ),
+        )
 
     assert (
         security_module.write_private_bytes_atomic(
         target,
         replacement,
         trusted_root=root,
-        trusted_root_identity=security_module.private_directory_identity(root),
+        trusted_root_identity=root_identity,
         )
         == target
     )
@@ -1260,42 +1272,52 @@ def test_atomic_writer_rolls_back_if_committed_backup_unlink_fails(
     target = root / "artifact.json"
     original = b"old-sensitive-bytes\n"
     replacement = b"new-redacted-bytes\n"
-    target.write_bytes(original)
-    real_unlink = security_module.os.unlink
+    root_identity = _seed_private_file(root, target, original)
+
+    if os.name == "nt":
+        from pony.security import windows_private_files
+
+        unlink_owner = windows_private_files.native
+        unlink_name = "delete_file"
+    else:
+        unlink_owner = security_module.os
+        unlink_name = "unlink"
+    real_unlink = getattr(unlink_owner, unlink_name)
 
     def fail_backup_unlink(name, **kwargs):
         if str(name).endswith(".bak"):
             raise OSError("backup cleanup failed")
         return real_unlink(name, **kwargs)
 
-    monkeypatch.setattr(security_module.os, "unlink", fail_backup_unlink)
+    monkeypatch.setattr(unlink_owner, unlink_name, fail_backup_unlink)
 
     with pytest.raises(OSError, match="backup cleanup failed"):
         security_module.write_private_bytes_atomic(
             target,
             replacement,
             trusted_root=root,
-            trusted_root_identity=security_module.private_directory_identity(root),
+            trusted_root_identity=root_identity,
         )
 
     assert target.read_bytes() == original
     backups = list(root.glob(".*.bak"))
     assert len(backups) == 1
     assert backups[0].read_bytes() == original
-    assert stat.S_IMODE(backups[0].stat().st_mode) == 0o600
+    _assert_mode(backups[0], 0o600)
 
 
 def test_atomic_writer_rebuilds_backup_if_cleanup_parent_fsync_fails(tmp_path):
     root = security_module.ensure_private_dir(tmp_path / "atomic-cleanup-fsync")
     target = root / "artifact.json"
     original = b"original\n"
-    target.write_bytes(original)
+    root_identity = _seed_private_file(root, target, original)
     calls = 0
+    fail_at = 1 if os.name == "nt" else 3
 
     def fail_cleanup_fsync(descriptor):
         nonlocal calls
         calls += 1
-        if calls == 3:
+        if calls == fail_at:
             raise OSError("cleanup parent fsync failed")
         os.fsync(descriptor)
 
@@ -1304,7 +1326,7 @@ def test_atomic_writer_rebuilds_backup_if_cleanup_parent_fsync_fails(tmp_path):
             target,
             b"replacement\n",
             trusted_root=root,
-            trusted_root_identity=security_module.private_directory_identity(root),
+            trusted_root_identity=root_identity,
             fsync_parent=fail_cleanup_fsync,
         )
 
@@ -1321,8 +1343,17 @@ def test_atomic_writer_marks_committed_when_cleanup_and_rollback_are_untrusted(
     target = root / "artifact.json"
     original = b"old-sensitive-bytes\n"
     replacement = b"new-redacted-bytes\n"
-    target.write_bytes(original)
-    real_unlink = security_module.os.unlink
+    root_identity = _seed_private_file(root, target, original)
+
+    if os.name == "nt":
+        from pony.security import windows_private_files
+
+        unlink_owner = windows_private_files.native
+        unlink_name = "delete_file"
+    else:
+        unlink_owner = security_module.os
+        unlink_name = "unlink"
+    real_unlink = getattr(unlink_owner, unlink_name)
 
     def tamper_and_fail_backup_unlink(name, **kwargs):
         if str(name).endswith(".bak"):
@@ -1330,18 +1361,14 @@ def test_atomic_writer_marks_committed_when_cleanup_and_rollback_are_untrusted(
             raise OSError("backup cleanup failed")
         return real_unlink(name, **kwargs)
 
-    monkeypatch.setattr(
-        security_module.os,
-        "unlink",
-        tamper_and_fail_backup_unlink,
-    )
+    monkeypatch.setattr(unlink_owner, unlink_name, tamper_and_fail_backup_unlink)
 
     with pytest.raises(security_module.PrivateAtomicWriteError) as raised:
         security_module.write_private_bytes_atomic(
             target,
             replacement,
             trusted_root=root,
-            trusted_root_identity=security_module.private_directory_identity(root),
+            trusted_root_identity=root_identity,
         )
 
     assert raised.value.committed is True
