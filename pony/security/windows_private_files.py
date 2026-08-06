@@ -245,12 +245,19 @@ def _installed_target(parent, name, expected_identity):
         handle.close()
 
 
-def _open_owned_target(parent, name, expected_identity):
+def _open_owned_target(
+    parent,
+    name,
+    expected_identity,
+    *,
+    share_access=native.FILE_SHARE_ALL,
+):
     handle, _created = native.open_relative(
         parent,
         name,
         directory=False,
         desired_access=native.FILE_WRITE_ACCESS,
+        share_access=share_access,
         single_link=False,
     )
     try:
@@ -273,7 +280,12 @@ def _rollback(
 ):
     installed = None
     try:
-        installed = _open_owned_target(parent, path.name, installed_identity)
+        installed = _open_owned_target(
+            parent,
+            path.name,
+            installed_identity,
+            share_access=native.FILE_SHARE_READ_WRITE,
+        )
         native.truncate(installed, 0)
         if existing_identity is None:
             native.delete_handle(installed)

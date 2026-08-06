@@ -36,6 +36,9 @@ _FILE_CREATE = 2
 _FILE_OPEN_IF = 3
 _FILE_OVERWRITE_IF = 5
 _FILE_RENAME_INFORMATION = 10
+_FILE_RENAME_INFORMATION_EX = 65
+_FILE_RENAME_FLAG_REPLACE_IF_EXISTS = 0x00000001
+_FILE_RENAME_FLAG_POSIX_SEMANTICS = 0x00000002
 _FILE_DIRECTORY_FILE = 0x00000001
 _FILE_NON_DIRECTORY_FILE = 0x00000040
 _FILE_SYNCHRONOUS_IO_NONALERT = 0x00000020
@@ -139,6 +142,15 @@ class _FileDispositionInfo(ctypes.Structure):
 class _FileRenameInfo(ctypes.Structure):
     _fields_ = (
         ("ReplaceIfExists", wintypes.BOOLEAN),
+        ("RootDirectory", wintypes.HANDLE),
+        ("FileNameLength", wintypes.DWORD),
+        ("FileName", wintypes.WCHAR * 1),
+    )
+
+
+class _FileRenameInfoEx(ctypes.Structure):
+    _fields_ = (
+        ("Flags", wintypes.DWORD),
         ("RootDirectory", wintypes.HANDLE),
         ("FileNameLength", wintypes.DWORD),
         ("FileName", wintypes.WCHAR * 1),
@@ -1046,14 +1058,20 @@ def truncate(handle, size):
 
 def rename_handle(handle, destination_parent, destination_name, *, replace=False):
     name = lexical_component(destination_name).encode("utf-16-le")
-    size = ctypes.sizeof(_FileRenameInfo) + len(name)
+    info_type = _FileRenameInfoEx if replace else _FileRenameInfo
+    size = ctypes.sizeof(info_type) + len(name)
     buffer = ctypes.create_string_buffer(size)
-    info = _FileRenameInfo.from_buffer(buffer)
-    info.ReplaceIfExists = bool(replace)
+    info = info_type.from_buffer(buffer)
+    if replace:
+        info.Flags = (
+            _FILE_RENAME_FLAG_REPLACE_IF_EXISTS | _FILE_RENAME_FLAG_POSIX_SEMANTICS
+        )
+    else:
+        info.ReplaceIfExists = False
     info.RootDirectory = destination_parent.value
     info.FileNameLength = len(name)
     ctypes.memmove(
-        ctypes.addressof(buffer) + _FileRenameInfo.FileName.offset, name, len(name)
+        ctypes.addressof(buffer) + info_type.FileName.offset, name, len(name)
     )
     native = api()
     io_status = _IoStatusBlock()
@@ -1062,7 +1080,7 @@ def rename_handle(handle, destination_parent, destination_name, *, replace=False
         ctypes.byref(io_status),
         buffer,
         size,
-        _FILE_RENAME_INFORMATION,
+        _FILE_RENAME_INFORMATION_EX if replace else _FILE_RENAME_INFORMATION,
     )
     if status < 0:
         error = native.ntdll.RtlNtStatusToDosError(status)

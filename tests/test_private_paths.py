@@ -417,14 +417,31 @@ def test_windows_handle_rename_uses_relative_nt_file_information(
         replace=replace,
     )
 
-    info = windows_native._FileRenameInfo.from_buffer_copy(observed["buffer"])
+    info_type = (
+        windows_native._FileRenameInfoEx
+        if replace
+        else windows_native._FileRenameInfo
+    )
+    info = info_type.from_buffer_copy(observed["buffer"])
     name = "renamed".encode("utf-16-le")
-    start = windows_native._FileRenameInfo.FileName.offset
-    assert bool(info.ReplaceIfExists) is replace
+    start = info_type.FileName.offset
+    if replace:
+        assert info.Flags == (
+            windows_native._FILE_RENAME_FLAG_REPLACE_IF_EXISTS
+            | windows_native._FILE_RENAME_FLAG_POSIX_SEMANTICS
+        )
+    else:
+        assert not bool(info.ReplaceIfExists)
     assert info.RootDirectory == 22
     assert info.FileNameLength == len(name)
     assert observed["buffer"][start : start + len(name)] == name
-    assert observed["info_class"] == windows_native._FILE_RENAME_INFORMATION
+    expected_class = (
+        windows_native._FILE_RENAME_INFORMATION_EX
+        if replace
+        else windows_native._FILE_RENAME_INFORMATION
+    )
+    assert observed["info_class"] == expected_class
+
 
 def test_windows_directory_mutability_ignores_attribute_only_access(monkeypatch):
     from pony.security import windows_native
