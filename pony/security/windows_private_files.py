@@ -300,6 +300,24 @@ def _cleanup_file(path, *, primary):
             raise
 
 
+def _cleanup_owned_target(parent, name, expected_identity, *, primary):
+    if expected_identity is None:
+        return
+    handle = None
+    try:
+        handle = _open_owned_target(parent, name, expected_identity)
+        native.truncate(handle, 0)
+        native.delete_handle(handle)
+    except FileNotFoundError:
+        return
+    except Exception:
+        if primary is None:
+            raise
+    finally:
+        if handle is not None:
+            handle.close()
+
+
 def _rollback_promotion(
     source,
     destination,
@@ -555,12 +573,28 @@ def write_private_bytes_atomic(
         raise
     finally:
         if temp is not None:
+            _cleanup_owned_target(
+                parent,
+                temp_path.name,
+                temp_identity,
+                primary=primary,
+            )
             temp.close()
         if existing is not None:
             existing.close()
         if not installed:
-            _cleanup_file(temp_path, primary=primary)
-            _cleanup_file(backup, primary=primary)
+            _cleanup_owned_target(
+                parent,
+                temp_path.name,
+                temp_identity,
+                primary=primary,
+            )
+            _cleanup_owned_target(
+                parent,
+                backup.name,
+                existing_identity,
+                primary=primary,
+            )
         parent.close()
 
 

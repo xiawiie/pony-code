@@ -850,22 +850,44 @@ def test_atomic_writer_rejects_canonical_root_renamed_after_parent_open(
     root = security_module.ensure_private_dir(tmp_path / "atomic-root")
     target = root / "artifact.json"
     original = b"original\n"
-    if existing:
-        target.write_bytes(original)
     root_identity = security_module.private_directory_identity(root)
+    if existing:
+        security_module.write_private_bytes_atomic(
+            target,
+            original,
+            trusted_root=root,
+            trusted_root_identity=root_identity,
+        )
     displaced = tmp_path / "atomic-root-displaced"
-    real_write_all = security_module._write_all
     swapped = False
+
+    if os.name == "nt":
+        from pony.security import windows_private_files
+
+        real_write = windows_private_files.native.write_bytes
+    else:
+        real_write = security_module._write_all
 
     def swap_root_after_parent_open(descriptor, data):
         nonlocal swapped
-        real_write_all(descriptor, data)
+        real_write(descriptor, data)
         if not swapped:
             swapped = True
             root.rename(displaced)
             root.mkdir(mode=0o700)
 
-    monkeypatch.setattr(security_module, "_write_all", swap_root_after_parent_open)
+    if os.name == "nt":
+        monkeypatch.setattr(
+            windows_private_files.native,
+            "write_bytes",
+            swap_root_after_parent_open,
+        )
+    else:
+        monkeypatch.setattr(
+            security_module,
+            "_write_all",
+            swap_root_after_parent_open,
+        )
 
     with pytest.raises(ValueError, match="private root changed"):
         security_module.write_private_bytes_atomic(
