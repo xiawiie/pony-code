@@ -93,8 +93,8 @@ try {
     Copy-Item -LiteralPath (Join-Path $basePython "Lib") `
         -Destination $pythonToolRoot -Recurse
     & icacls.exe $toolRoot /inheritance:r /grant:r `
-        "${principal}:(OI)(CI)RX" "${currentPrincipal}:(OI)(CI)F" `
-        "*S-1-5-18:(OI)(CI)F" /t /c /q
+        "${principal}:RX" "${currentPrincipal}:F" "*S-1-5-18:F" `
+        /t /c /q
     if ($LASTEXITCODE -ne 0) {
         throw "failed to secure the standard-user native tool directory"
     }
