@@ -603,7 +603,10 @@ def test_session_temp_swap_preserves_unknown_installed_symlink(
     outside.write_text("outside\n", encoding="utf-8")
     _swap_private_temp_with_symlink(monkeypatch, outside)
 
-    with pytest.raises(ValueError, match="temp|changed|regular|symlink|rollback"):
+    with pytest.raises(
+        (ValueError, security_module.PrivateAtomicWriteError),
+        match="temp|changed|regular|symlink|rollback",
+    ):
         store.save(_session("swapped", tmp_path))
 
     assert outside.read_text(encoding="utf-8") == "outside\n"
@@ -1248,7 +1251,10 @@ def test_block_store_temp_swap_preserves_unknown_installed_symlink(
     store = BlockStore(workspace_root=workspace, user_root=user, redaction_env={})
     _swap_private_temp_with_symlink(monkeypatch, outside)
 
-    with pytest.raises(ValueError, match="temp|changed|regular|symlink|rollback"):
+    with pytest.raises(
+        (ValueError, security_module.PrivateAtomicWriteError),
+        match="temp|changed|regular|symlink|rollback",
+    ):
         store.append_agent_note("workspace", "safe note")
 
     assert outside.read_text(encoding="utf-8") == "outside\n"
