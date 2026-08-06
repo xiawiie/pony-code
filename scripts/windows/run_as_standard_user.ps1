@@ -78,6 +78,20 @@ try {
     }
     New-Item -ItemType Directory -Path $toolRoot | Out-Null
     Copy-Item -LiteralPath $rgSource -Destination (Join-Path $toolRoot "rg.exe")
+    $basePython = & $Python -c "import sys; print(sys.base_prefix)"
+    if ($LASTEXITCODE -ne 0 -or -not $basePython) {
+        throw "failed to locate the base Python runtime"
+    }
+    $pythonToolRoot = Join-Path $toolRoot "python"
+    New-Item -ItemType Directory -Path $pythonToolRoot | Out-Null
+    Copy-Item -LiteralPath (Join-Path $basePython "python.exe") `
+        -Destination $pythonToolRoot
+    Get-ChildItem -LiteralPath $basePython -Filter "*.dll" -File |
+        Copy-Item -Destination $pythonToolRoot
+    Copy-Item -LiteralPath (Join-Path $basePython "DLLs") `
+        -Destination $pythonToolRoot -Recurse
+    Copy-Item -LiteralPath (Join-Path $basePython "Lib") `
+        -Destination $pythonToolRoot -Recurse
     & icacls.exe $toolRoot /inheritance:r /grant:r `
         "${principal}:(OI)(CI)RX" "${currentPrincipal}:(OI)(CI)F" `
         "*S-1-5-18:(OI)(CI)F" /t /c /q
@@ -96,7 +110,8 @@ try {
     $pythonLiteral = $Python.Replace("'", "''")
     $scriptLiteral = $scriptPath.Replace("'", "''")
     $uvLiteral = (Get-Command uv).Source.Replace("'", "''")
-    $trustedPath = $toolRoot + [IO.Path]::PathSeparator + $env:PATH
+    $trustedPath = $pythonToolRoot + [IO.Path]::PathSeparator + `
+        $toolRoot + [IO.Path]::PathSeparator + $env:PATH
     $pathLiteral = $trustedPath.Replace("'", "''")
     $invocation = if ([IO.Path]::GetExtension($scriptPath) -eq ".py") {
         "& '$pythonLiteral' '$scriptLiteral'"

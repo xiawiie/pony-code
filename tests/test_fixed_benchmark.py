@@ -8,8 +8,10 @@ from benchmarks.evaluation.benchmark_schema import (
     load_benchmark,
     summarize_rows,
 )
+from benchmarks.evaluation import fixed_benchmark
 from benchmarks.evaluation.fixed_benchmark import (
     BenchmarkEvaluator,
+    _run_verifier,
     _verifier_argv,
     run_fixed_benchmark,
     run_harness_regression_v2,
@@ -116,6 +118,32 @@ def test_verifier_is_parsed_as_structured_argv_without_shell_operators():
     ]
     with pytest.raises(ValueError, match="shell operators"):
         _verifier_argv("python3 -c 'print(1)' && touch escaped")
+
+
+def test_windows_python3_verifier_uses_trusted_python(monkeypatch, tmp_path):
+    observed = {}
+    result = object()
+    monkeypatch.setattr(
+        fixed_benchmark,
+        "os",
+        type("WindowsOS", (), {"name": "nt", "environ": {}})(),
+    )
+
+    def trusted(_cwd, *, names):
+        observed["names"] = names
+        return {"python": r"C:\Program Files\Python\python.exe"}
+
+    def run(executable, **options):
+        observed.update(executable=executable, options=options)
+        return result
+
+    monkeypatch.setattr(fixed_benchmark, "build_trusted_executables", trusted)
+    monkeypatch.setattr(fixed_benchmark, "run_hardened_command", run)
+
+    assert _run_verifier("python3 -c 'print(1)'", cwd=tmp_path) is result
+    assert observed["names"] == ("python",)
+    assert observed["executable"] == r"C:\Program Files\Python\python.exe"
+    assert observed["options"]["args"] == ["-c", "print(1)"]
 
 
 def test_run_fixed_benchmark_uses_fresh_fixture_copy_and_fresh_run_directory(tmp_path):
