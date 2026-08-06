@@ -30,7 +30,7 @@ print(
     "python" in safe_subprocess.build_trusted_executables(Path.cwd(), names=("python",)),
 )
 '@
-& $uv run --frozen python -c $trustedPythonProbe
+$trustedPythonProbe | & $uv run --frozen python -
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 & $uv run --frozen pytest -x -vv tests benchmarks/live_e2e/tests/test_assertions.py
