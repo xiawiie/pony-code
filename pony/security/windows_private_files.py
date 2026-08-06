@@ -515,6 +515,7 @@ def write_private_bytes_atomic(
     backup = path.with_name(f".{path.name}.{secrets.token_hex(12)}.bak")
     installed = False
     committed = False
+    preserve_backup = False
     primary = None
     try:
         existing = _existing(parent, path.name)
@@ -542,12 +543,25 @@ def write_private_bytes_atomic(
             validate_commit()
         temp.close()
         temp = None
-        if existing is None:
-            native.move_file(temp_path, path)
-        else:
-            existing.close()
-            existing = None
-            native.replace_file(path, temp_path, backup)
+        try:
+            if existing is None:
+                native.move_file(temp_path, path)
+            else:
+                existing.close()
+                existing = None
+                native.replace_file(path, temp_path, backup)
+        except OSError:
+            try:
+                _same_target(parent, path.name, temp_identity)
+            except (OSError, ValueError):
+                try:
+                    _same_target(parent, path.name, existing_identity)
+                except (OSError, ValueError):
+                    preserve_backup = True
+                    raise ValueError(error) from None
+            else:
+                installed = True
+            raise
         installed = True
         _installed_target(parent, path.name, temp_identity)
         _same_parent(
@@ -594,12 +608,13 @@ def write_private_bytes_atomic(
                 temp_identity,
                 primary=primary,
             )
-            _cleanup_owned_target(
-                parent,
-                backup.name,
-                existing_identity,
-                primary=primary,
-            )
+            if not preserve_backup:
+                _cleanup_owned_target(
+                    parent,
+                    backup.name,
+                    existing_identity,
+                    primary=primary,
+                )
         parent.close()
 
 
