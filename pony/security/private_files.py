@@ -51,10 +51,6 @@ class PrivateAtomicWriteError(RuntimeError):
     committed = True
 
 
-def harden_private_descriptor(descriptor):
-    os.fchmod(descriptor, 0o600)
-
-
 def ensure_private_dir(path):
     path = _lexical_absolute(path)
     current = Path(path.anchor)
@@ -1216,15 +1212,7 @@ def harden_private_tree(path):
 
 
 if os.name == "nt":
-    import msvcrt
-
-    from . import windows_native as _windows_native
     from . import windows_private_files as _windows_private
-
-    def harden_private_descriptor(descriptor):
-        handle = _windows_native.Handle(msvcrt.get_osfhandle(descriptor))
-        _windows_native.make_private(handle)
-        _windows_native.require_private(handle)
 
     def ensure_private_dir(path):
         return _windows_private.ensure_private_dir(path)
