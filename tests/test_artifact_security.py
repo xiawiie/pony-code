@@ -1154,8 +1154,13 @@ def test_atomic_writer_does_not_destroy_new_canonical_when_backup_is_untrusted(
 ):
     root = security_module.ensure_private_dir(tmp_path / f"atomic-backup-{mutation}")
     target = root / "artifact.json"
-    target.write_bytes(b"original\n")
     root_identity = security_module.private_directory_identity(root)
+    security_module.write_private_bytes_atomic(
+        target,
+        b"original\n",
+        trusted_root=root,
+        trusted_root_identity=root_identity,
+    )
     replacement = b"replacement\n"
     calls = 0
 
@@ -1168,6 +1173,8 @@ def test_atomic_writer_does_not_destroy_new_canonical_when_backup_is_untrusted(
                 backup.write_bytes(b"tampered\n")
             else:
                 backup.unlink()
+            if os.name == "nt":
+                raise OSError("commit fsync failed")
             os.fsync(descriptor)
             return
         if calls == 2:

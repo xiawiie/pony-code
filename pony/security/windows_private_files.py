@@ -164,6 +164,7 @@ def _existing(parent, name):
             name,
             directory=False,
             desired_access=native.FILE_WRITE_ACCESS,
+            share_access=native.FILE_SHARE_READ,
         )
     except FileNotFoundError:
         return None
@@ -251,6 +252,7 @@ def _open_owned_target(parent, name, expected_identity):
         name,
         directory=False,
         desired_access=native.FILE_WRITE_ACCESS,
+        share_access=native.FILE_SHARE_READ,
         single_link=False,
     )
     try:
@@ -270,7 +272,26 @@ def _rollback(
     backup,
     *,
     existing_identity,
+    existing_size,
+    existing_digest,
+    error,
 ):
+    restored = None
+    if existing_identity is not None:
+        try:
+            restored = _open_owned_target(parent, backup.name, existing_identity)
+            if descriptor_digest(restored, existing_size, error) != existing_digest:
+                raise ValueError(error)
+        except (FileNotFoundError, ValueError):
+            if restored is not None:
+                restored.close()
+            raise ValueError(error) from None
+        except OSError as exc:
+            if restored is not None:
+                restored.close()
+            raise AtomicWriteAmbiguous(
+                "private atomic write rollback failed"
+            ) from exc
     installed = None
     try:
         installed = _open_owned_target(parent, path.name, installed_identity)
@@ -284,17 +305,17 @@ def _rollback(
             native.delete_handle(installed, posix=True)
             installed.close()
             installed = None
-            restored = _open_owned_target(parent, backup.name, existing_identity)
-            try:
-                native.rename_handle(restored, parent, path.name)
-            finally:
-                restored.close()
+            native.rename_handle(restored, parent, path.name)
+            restored.close()
+            restored = None
             _same_target(parent, path.name, existing_identity)
     except Exception as exc:
         raise AtomicWriteAmbiguous("private atomic write rollback failed") from exc
     finally:
         if installed is not None:
             installed.close()
+        if restored is not None:
+            restored.close()
 
 
 def _cleanup_file(path, *, primary):
@@ -511,6 +532,8 @@ def write_private_bytes_atomic(
     temp = None
     temp_identity = None
     existing_identity = None
+    existing_size = None
+    existing_digest = None
     temp_path = path.with_name(f".{path.name}.{secrets.token_hex(12)}.tmp")
     backup = path.with_name(f".{path.name}.{secrets.token_hex(12)}.bak")
     installed = False
@@ -520,14 +543,17 @@ def write_private_bytes_atomic(
     try:
         existing = _existing(parent, path.name)
         existing_identity = native.identity(existing) if existing is not None else None
+        existing_size = native.facts(existing).size if existing is not None else None
         if require_absent and existing is not None:
             raise ValueError(error)
         if (
             existing is not None
             and max_existing_bytes is not None
-            and native.facts(existing).size > int(max_existing_bytes)
+            and existing_size > int(max_existing_bytes)
         ):
             raise ValueError("private file too large")
+        if existing is not None:
+            existing_digest = descriptor_digest(existing, existing_size, error)
         temp = _create_temp(parent, temp_path.name, bytes(data))
         temp_identity = native.identity(temp)
         if fsync_file is not None:
@@ -587,6 +613,9 @@ def write_private_bytes_atomic(
                 temp_identity,
                 backup,
                 existing_identity=existing_identity,
+                existing_size=existing_size,
+                existing_digest=existing_digest,
+                error=error,
             )
             installed = False
         raise
@@ -712,4 +741,13 @@ def harden_private_tree(path):
 def descriptor_digest(handle, size, error):
     if native.facts(handle).size != size:
         raise ValueError(error)
-    return hashlib.sha256(native.read_bytes(handle, max_bytes=size)).hexdigest()
+    digest = hashlib.sha256()
+    total = 0
+    for chunk in native.read_chunks(handle):
+        total += len(chunk)
+        if total > size:
+            raise ValueError(error)
+        digest.update(chunk)
+    if total != size or native.facts(handle).size != size:
+        raise ValueError(error)
+    return digest.hexdigest()
