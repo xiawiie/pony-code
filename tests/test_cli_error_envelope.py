@@ -3,6 +3,8 @@ import json
 import signal
 
 from pony.cli.app import main
+from pony.cli.arguments import build_arg_parser
+from pony.cli.assembly import build_agent
 from pony.cli.start import run_agent_once, run_repl
 from pony.providers.transport import ProviderTransportError
 from pony.state.session_store import UnsupportedLegacyEntry
@@ -230,6 +232,10 @@ def test_invalid_project_api_base_uses_safe_config_envelope(
         "PONY_API_KEY=test-key\n",
         encoding="utf-8",
     )
+    args = build_arg_parser().parse_args(["--cwd", str(tmp_path), "--quiet"])
+
+    with pytest.raises(ValueError, match="api_base_credentials"):
+        build_agent(args, confirm=lambda _root: True)
 
     assert main(["--cwd", str(tmp_path), "--quiet", "run", "hello"]) == 3
 
