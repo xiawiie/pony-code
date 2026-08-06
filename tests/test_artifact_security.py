@@ -665,23 +665,42 @@ def test_private_chmod_rejects_leaf_swapped_to_external_hardlink(
     outside = tmp_path / "outside.txt"
     outside.write_text("outside\n", encoding="utf-8")
     outside.chmod(0o644)
-    real_open = security_module.os.open
     swapped = False
+    if os.name == "nt":
+        from pony.security import windows_private_files
 
-    def swap_before_open(path, flags, mode=0o777, *, dir_fd=None):
-        nonlocal swapped
-        if not swapped and (
-            Path(path) == target
-            or (dir_fd is not None and os.fspath(path) == target.name)
-        ):
-            swapped = True
-            target.unlink()
-            os.link(outside, target)
-        if dir_fd is None:
-            return real_open(path, flags, mode)
-        return real_open(path, flags, mode, dir_fd=dir_fd)
+        real_open_relative = windows_private_files.native.open_relative
 
-    monkeypatch.setattr(security_module.os, "open", swap_before_open)
+        def swap_before_open(root, name, **kwargs):
+            nonlocal swapped
+            if not swapped and not kwargs.get("directory") and name == target.name:
+                swapped = True
+                target.unlink()
+                os.link(outside, target)
+            return real_open_relative(root, name, **kwargs)
+
+        monkeypatch.setattr(
+            windows_private_files.native,
+            "open_relative",
+            swap_before_open,
+        )
+    else:
+        real_open = security_module.os.open
+
+        def swap_before_open(path, flags, mode=0o777, *, dir_fd=None):
+            nonlocal swapped
+            if not swapped and (
+                Path(path) == target
+                or (dir_fd is not None and os.fspath(path) == target.name)
+            ):
+                swapped = True
+                target.unlink()
+                os.link(outside, target)
+            if dir_fd is None:
+                return real_open(path, flags, mode)
+            return real_open(path, flags, mode, dir_fd=dir_fd)
+
+        monkeypatch.setattr(security_module.os, "open", swap_before_open)
 
     with pytest.raises(ValueError, match="link|private|changed"):
         security_module.ensure_private_file(target)
