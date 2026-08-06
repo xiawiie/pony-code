@@ -915,7 +915,7 @@ class Pony:
     ):
         if self.current_permission_mode() != PermissionMode.PLAN.value:
             raise ValueError("write_plan requires plan mode")
-        plan = str(value).strip()
+        plan = str(value).replace("\r\n", "\n").replace("\r", "\n").strip()
         if not plan:
             raise ValueError("plan must not be empty")
         self.validate_tool("write_plan", {"plan": plan})
