@@ -1,4 +1,5 @@
 from pathlib import Path
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -312,15 +313,15 @@ def test_plain_history_is_rebuilt_from_canonical_prompts_after_every_input(
     tmp_path,
     monkeypatch,
 ):
-    import readline
-
+    history = []
+    monkeypatch.setitem(
+        sys.modules,
+        "readline",
+        SimpleNamespace(clear_history=history.clear, add_history=history.append),
+    )
     agent = _agent(tmp_path, outputs=("done",))
     inputs = iter(("/help", "inspect canonical state", "/exit"))
     monkeypatch.setattr("builtins.input", lambda _prompt="": next(inputs))
 
     assert run_repl(agent, plain=True) == 0
-    history = [
-        readline.get_history_item(index)
-        for index in range(1, readline.get_current_history_length() + 1)
-    ]
     assert history == ["inspect canonical state"]
