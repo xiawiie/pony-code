@@ -21,6 +21,7 @@ if str(ROOT) not in sys.path:
 
 from pony.config.environment import read_project_env  # noqa: E402
 from pony.config.model import resolve_model_config  # noqa: E402
+from pony.security.private_files import harden_private_descriptor  # noqa: E402
 from pony.security.redaction import redact_text  # noqa: E402
 
 
@@ -1031,18 +1032,23 @@ def _write_atomic(path, text):
     )
     temporary = Path(temporary_name)
     try:
-        os.fchmod(descriptor, 0o600)
+        harden_private_descriptor(descriptor)
         with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
             descriptor = -1
             stream.write(text)
             stream.flush()
             os.fsync(stream.fileno())
-        os.link(temporary, path)
-        parent = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(parent)
-        finally:
-            os.close(parent)
+        if os.name == "nt":
+            from pony.security import windows_native
+
+            windows_native.move_file(temporary, path)
+        else:
+            os.link(temporary, path)
+            parent = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(parent)
+            finally:
+                os.close(parent)
     finally:
         if descriptor >= 0:
             os.close(descriptor)
