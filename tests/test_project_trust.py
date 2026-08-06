@@ -1,11 +1,14 @@
 import json
 import os
+from pathlib import Path
 import stat
 import threading
 
 import pytest
 
+from pony.security.private_files import private_directory_identity
 from pony.security.trust import ProjectTrustStore
+import pony.security.trust as trust_module
 
 
 def test_reading_missing_trust_store_has_no_side_effects(tmp_path):
@@ -129,3 +132,55 @@ def test_corrupt_trust_store_denies_without_overwriting(tmp_path):
     assert store.is_trusted(project) is False
     with pytest.raises(ValueError, match="invalid trust store"):
         store.trust(project)
+
+
+def test_project_trust_persists_windows_bytes_identity(tmp_path, monkeypatch):
+    project = tmp_path / "project"
+    project.mkdir()
+    state = tmp_path / "state"
+    identity = private_directory_identity(project)._replace(file_id=bytes(range(16)))
+    original_identity = trust_module.private_directory_identity
+
+    def project_identity(path):
+        return identity if Path(path) == project else original_identity(path)
+
+    monkeypatch.setattr(trust_module, "private_directory_identity", project_identity)
+    ProjectTrustStore(state).trust(project)
+
+    payload = json.loads((state / "trust.json").read_text(encoding="utf-8"))
+    assert payload["version"] == 2
+    assert payload["projects"][str(project)]["inode"] == (
+        "bytes:000102030405060708090a0b0c0d0e0f"
+    )
+    assert ProjectTrustStore(state).is_trusted(project) is True
+
+
+def test_project_trust_reads_legacy_integer_identity(tmp_path, monkeypatch):
+    project = tmp_path / "project"
+    project.mkdir()
+    state = tmp_path / "state"
+    identity = private_directory_identity(project)._replace(
+        filesystem_id=17,
+        file_id=29,
+    )
+    original_identity = trust_module.private_directory_identity
+
+    def project_identity(path):
+        return identity if Path(path) == project else original_identity(path)
+
+    monkeypatch.setattr(trust_module, "private_directory_identity", project_identity)
+    store = ProjectTrustStore(state)
+    store.trust(project)
+    (state / "trust.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "projects": {
+                    str(project): {"device": 17, "inode": 29},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert ProjectTrustStore(state).is_trusted(project) is True
