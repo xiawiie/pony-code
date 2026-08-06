@@ -16,7 +16,6 @@ import os
 import stat
 import subprocess
 import sys
-import tempfile
 import time
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -2036,28 +2035,13 @@ class Reporter:
                 "live report contains blocked sensitive material"
             )
         report_path = self.output_dir / f"{run_id}.json"
-        ensure_private_dir(self.output_dir)
-        descriptor, temp_name = tempfile.mkstemp(
-            prefix=report_path.name + ".",
-            dir=self.output_dir,
+        output_root = ensure_private_dir(self.output_dir)
+        write_private_bytes_atomic(
+            report_path,
+            serialized.encode("utf-8"),
+            trusted_root=output_root,
+            trusted_root_identity=private_directory_identity(output_root),
         )
-        temp_path = Path(temp_name)
-        try:
-            os.fchmod(descriptor, 0o600)
-            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-                handle.write(serialized)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(temp_path, report_path)
-            ensure_private_file(report_path)
-            directory_fd = os.open(self.output_dir, os.O_RDONLY)
-            try:
-                os.fsync(directory_fd)
-            finally:
-                os.close(directory_fd)
-        finally:
-            if temp_path.exists():
-                temp_path.unlink()
         return report_path
 
     def _turn_to_json(self, r, assertions) -> dict:
