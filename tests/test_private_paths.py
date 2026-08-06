@@ -300,6 +300,37 @@ def test_regular_file_guard_rejects_fifo_without_opening_it(tmp_path):
         require_regular_no_symlink(fifo)
 
 
+@pytest.mark.parametrize(
+    ("initially_private", "expected"),
+    (
+        (True, ["require"]),
+        (False, ["require", "make", "require"]),
+    ),
+)
+def test_windows_private_hardening_is_idempotent(
+    initially_private, expected, monkeypatch
+):
+    from pony.security import windows_private_files
+
+    events = []
+
+    def require_private(_handle):
+        events.append("require")
+        if not initially_private and events == ["require"]:
+            raise ValueError("private file permissions are unsafe")
+
+    monkeypatch.setattr(windows_private_files.native, "require_private", require_private)
+    monkeypatch.setattr(
+        windows_private_files.native,
+        "make_private",
+        lambda _handle: events.append("make"),
+    )
+
+    windows_private_files._harden_private(object())
+
+    assert events == expected
+
+
 def test_windows_security_descriptor_matches_native_pointer_layout():
     import ctypes
 

@@ -48,6 +48,14 @@ def private_directory_identity(path, identity_type):
         return identity_type(*native.identity(handle))
 
 
+def _harden_private(handle):
+    try:
+        native.require_private(handle)
+    except ValueError:
+        native.make_private(handle)
+        native.require_private(handle)
+
+
 def ensure_private_file(path, *, trusted_root=None, trusted_root_identity=None):
     path, parent, handle = _open_file(
         path,
@@ -56,8 +64,7 @@ def ensure_private_file(path, *, trusted_root=None, trusted_root_identity=None):
         access=native.FILE_ALL_ACCESS,
     )
     try:
-        native.make_private(handle)
-        native.require_private(handle)
+        _harden_private(handle)
         return path
     finally:
         handle.close()
@@ -118,8 +125,7 @@ def read_private_bytes(
     )
     try:
         if harden:
-            native.make_private(handle)
-            native.require_private(handle)
+            _harden_private(handle)
         elif allow_insecure_mode:
             native.require_current_owner(handle)
         else:
@@ -613,8 +619,7 @@ def harden_private_tree(path):
                         desired_access=native.FILE_ALL_ACCESS,
                     ) as handle:
                         native.require_kind(handle, directory=True)
-                        native.make_private(handle)
-                        native.require_private(handle)
+                        _harden_private(handle)
                     pending.append(child)
                 elif entry.is_file(follow_symlinks=False):
                     ensure_private_file(child)
