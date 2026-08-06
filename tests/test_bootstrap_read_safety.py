@@ -209,18 +209,38 @@ def test_workspace_bounded_reader_rejects_parent_swap(tmp_path, monkeypatch):
     (outside / "README.md").write_text("outside-canary\n", encoding="utf-8")
     validated = workspace_module._safe_index_file(repo, target)
     moved = repo / "docs-original"
-    real_open_directory = workspace_module.workspace_files._open_private_directory
+    if os.name == "nt":
+        from pony.security import windows_workspace_files
 
-    def swap_then_open(path):
-        docs.rename(moved)
-        docs.symlink_to(outside, target_is_directory=True)
-        return real_open_directory(path)
+        real_open_relative = windows_workspace_files.native.open_relative
+        swapped = False
 
-    monkeypatch.setattr(
-        workspace_module.workspace_files,
-        "_open_private_directory",
-        swap_then_open,
-    )
+        def swap_then_open(parent, name, **kwargs):
+            nonlocal swapped
+            if name == "docs" and kwargs.get("directory") and not swapped:
+                docs.rename(moved)
+                docs.symlink_to(outside, target_is_directory=True)
+                swapped = True
+            return real_open_relative(parent, name, **kwargs)
+
+        monkeypatch.setattr(
+            windows_workspace_files.native,
+            "open_relative",
+            swap_then_open,
+        )
+    else:
+        real_open_directory = workspace_module.workspace_files._open_private_directory
+
+        def swap_then_open(path):
+            docs.rename(moved)
+            docs.symlink_to(outside, target_is_directory=True)
+            return real_open_directory(path)
+
+        monkeypatch.setattr(
+            workspace_module.workspace_files,
+            "_open_private_directory",
+            swap_then_open,
+        )
 
     root_identity = workspace_module.private_files.private_directory_identity(repo)
     with pytest.raises((OSError, ValueError)):
