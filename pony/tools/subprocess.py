@@ -991,6 +991,13 @@ def build_trusted_executables(workspace_root, *, env=None, names=()):
                 continue
             result[name] = _TrustedExecutable(str(resolved), identity, root)
             break
+    if (
+        os.name == "nt"
+        and "python3" in requested
+        and "python3" not in result
+        and "python" in result
+    ):
+        result["python3"] = result["python"]
     return result
 
 
