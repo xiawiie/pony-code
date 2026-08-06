@@ -821,7 +821,7 @@ def test_atomic_writer_hardlink_race_restores_previous_target(
 
     _hardlink_private_temp_before_install(monkeypatch, install_alias)
 
-    with pytest.raises(ValueError, match="link|temp changed"):
+    with pytest.raises(ValueError, match="link|permissions|temp changed"):
         security_module.write_private_bytes_atomic(
             target,
             b"replacement\n",
