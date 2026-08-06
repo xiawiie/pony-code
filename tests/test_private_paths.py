@@ -385,10 +385,7 @@ def test_windows_native_path_uses_extended_length_namespace(
     assert windows_native._win32_path("ignored") == expected
 
 
-@pytest.mark.parametrize("replace", (False, True))
-def test_windows_handle_rename_uses_relative_nt_file_information(
-    monkeypatch, replace
-):
+def test_windows_handle_rename_uses_relative_nt_file_information(monkeypatch):
     from pony.security import windows_native
 
     observed = {}
@@ -414,33 +411,55 @@ def test_windows_handle_rename_uses_relative_nt_file_information(
         type("Handle", (), {"value": 11})(),
         type("Handle", (), {"value": 22})(),
         "renamed",
-        replace=replace,
     )
 
-    info_type = (
-        windows_native._FileRenameInfoEx
-        if replace
-        else windows_native._FileRenameInfo
-    )
-    info = info_type.from_buffer_copy(observed["buffer"])
+    info = windows_native._FileRenameInfo.from_buffer_copy(observed["buffer"])
     name = "renamed".encode("utf-16-le")
-    start = info_type.FileName.offset
-    if replace:
-        assert info.Flags == (
-            windows_native._FILE_RENAME_FLAG_REPLACE_IF_EXISTS
-            | windows_native._FILE_RENAME_FLAG_POSIX_SEMANTICS
-        )
-    else:
-        assert not bool(info.ReplaceIfExists)
+    start = windows_native._FileRenameInfo.FileName.offset
+    assert not bool(info.ReplaceIfExists)
     assert info.RootDirectory == 22
     assert info.FileNameLength == len(name)
     assert observed["buffer"][start : start + len(name)] == name
-    expected_class = (
-        windows_native._FILE_RENAME_INFORMATION_EX
-        if replace
-        else windows_native._FILE_RENAME_INFORMATION
+    assert observed["info_class"] == windows_native._FILE_RENAME_INFORMATION
+
+
+@pytest.mark.parametrize("posix", (False, True))
+def test_windows_handle_delete_selects_posix_disposition(monkeypatch, posix):
+    from pony.security import windows_native
+
+    observed = {}
+
+    class Kernel32:
+        @staticmethod
+        def SetFileInformationByHandle(handle, info_class, info, size):
+            observed.update(
+                handle=handle,
+                info_class=info_class,
+                buffer=windows_native.ctypes.string_at(info, size),
+            )
+            return True
+
+    monkeypatch.setattr(
+        windows_native,
+        "api",
+        lambda: type("Api", (), {"kernel32": Kernel32()})(),
     )
-    assert observed["info_class"] == expected_class
+
+    windows_native.delete_handle(type("Handle", (), {"value": 11})(), posix=posix)
+
+    if posix:
+        info = windows_native._FileDispositionInfoEx.from_buffer_copy(
+            observed["buffer"]
+        )
+        assert info.Flags == (
+            windows_native._FILE_DISPOSITION_FLAG_DELETE
+            | windows_native._FILE_DISPOSITION_FLAG_POSIX_SEMANTICS
+        )
+        assert observed["info_class"] == windows_native._FILE_DISPOSITION_INFO_EX_CLASS
+    else:
+        info = windows_native._FileDispositionInfo.from_buffer_copy(observed["buffer"])
+        assert bool(info.DeleteFile)
+        assert observed["info_class"] == windows_native._FILE_DISPOSITION_INFO_CLASS
 
 
 def test_windows_directory_mutability_ignores_attribute_only_access(monkeypatch):
