@@ -281,9 +281,18 @@ def _rollback(
             installed = None
             _same_target(parent, path.name, None)
         else:
+            restored = _open_owned_target(parent, backup.name, existing_identity)
+            try:
+                native.rename_handle(
+                    restored,
+                    parent,
+                    path.name,
+                    replace=True,
+                )
+            finally:
+                restored.close()
             installed.close()
             installed = None
-            native.replace_file(path, backup)
             _same_target(parent, path.name, existing_identity)
     except Exception as exc:
         raise AtomicWriteAmbiguous("private atomic write rollback failed") from exc

@@ -385,7 +385,10 @@ def test_windows_native_path_uses_extended_length_namespace(
     assert windows_native._win32_path("ignored") == expected
 
 
-def test_windows_handle_rename_uses_relative_nt_file_information(monkeypatch):
+@pytest.mark.parametrize("replace", (False, True))
+def test_windows_handle_rename_uses_relative_nt_file_information(
+    monkeypatch, replace
+):
     from pony.security import windows_native
 
     observed = {}
@@ -411,11 +414,13 @@ def test_windows_handle_rename_uses_relative_nt_file_information(monkeypatch):
         type("Handle", (), {"value": 11})(),
         type("Handle", (), {"value": 22})(),
         "renamed",
+        replace=replace,
     )
 
     info = windows_native._FileRenameInfo.from_buffer_copy(observed["buffer"])
     name = "renamed".encode("utf-16-le")
     start = windows_native._FileRenameInfo.FileName.offset
+    assert bool(info.ReplaceIfExists) is replace
     assert info.RootDirectory == 22
     assert info.FileNameLength == len(name)
     assert observed["buffer"][start : start + len(name)] == name
