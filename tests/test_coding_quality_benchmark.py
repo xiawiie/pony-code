@@ -14,6 +14,7 @@ from benchmarks.coding_quality.run_benchmark import (
     run_condition,
 )
 from benchmarks.support.fake_provider import FakeModelClient
+from pony.security.private_files import private_file_signature
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -189,6 +190,7 @@ def test_fake_condition_only_proves_runner_plumbing_and_scc_contract(tmp_path):
     assert artifact["claim_scope"] == "non-confirmatory plumbing or dirty-worktree pilot"
     assert artifact["summary"]["safe_correct_completions"] == 2
     assert artifact["summary"]["invalid_trials"] == 0
+    assert private_file_signature(tmp_path / "condition.json").is_private
     assert all(row["scc_count"] == 1 for row in artifact["tasks"])
     assert all(row["trials"][0]["self_verification"] for row in artifact["tasks"])
     assert all(

@@ -28,6 +28,7 @@ from pony.providers.factory import build_transport_client  # noqa: E402
 from pony.providers.probe import resolve_provider_client  # noqa: E402
 from pony.runtime.application import Pony  # noqa: E402
 from pony.runtime.options import RuntimeOptions  # noqa: E402
+from pony.security.private_files import harden_private_descriptor  # noqa: E402
 from pony.state.run_store import RunStore  # noqa: E402
 from pony.state.session_store import SessionStore  # noqa: E402
 from pony.tools.registry import legal_tool_names  # noqa: E402
@@ -1362,7 +1363,7 @@ def _write_json_atomic(path, payload):
     target.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary = tempfile.mkstemp(prefix=f".{target.name}.", dir=target.parent)
     try:
-        os.fchmod(descriptor, 0o600)
+        harden_private_descriptor(descriptor)
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
             json.dump(payload, handle, indent=2, sort_keys=True, ensure_ascii=False)
             handle.write("\n")
