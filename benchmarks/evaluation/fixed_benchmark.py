@@ -76,13 +76,15 @@ def _verifier_argv(command):
 def _run_verifier(command, *, cwd):
     argv = _verifier_argv(command)
     name = Path(argv[0]).name
-    if name in {"python", "python3"} and Path("/usr/bin/python3").exists():
-        executable = "/usr/bin/python3"
+    if name in {"python", "python3"} and os.name != "nt":
+        executable = "/usr/bin/python3" if Path("/usr/bin/python3").exists() else None
     else:
-        trusted = build_trusted_executables(cwd, names=(name,))
-        executable = trusted.get(name)
-        if executable is None:
-            raise ValueError("trusted verifier executable unavailable")
+        trusted_name = "python" if os.name == "nt" and name == "python3" else name
+        executable = build_trusted_executables(cwd, names=(trusted_name,)).get(
+            trusted_name
+        )
+    if executable is None:
+        raise ValueError("trusted verifier executable unavailable")
     return run_hardened_command(
         executable,
         args=argv[1:],
