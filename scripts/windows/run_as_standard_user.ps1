@@ -57,6 +57,10 @@ try {
     if ($LASTEXITCODE -ne 0) {
         throw "failed to grant the standard user repository access"
     }
+    & icacls.exe $workspace /setowner $principal /t /c /q
+    if ($LASTEXITCODE -ne 0) {
+        throw "failed to assign the standard user's repository"
+    }
     if ($env:UV_CACHE_DIR) {
         & icacls.exe $env:UV_CACHE_DIR /grant "${principal}:(OI)(CI)M" /t /c /q
         if ($LASTEXITCODE -ne 0) {

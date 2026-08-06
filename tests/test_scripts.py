@@ -139,6 +139,8 @@ def test_ci_probes_native_windows_capabilities_and_file_semantics():
     assert '[Guid]::NewGuid().ToString("N")' in runner
     assert '$userRoot = Join-Path $controlRoot "profile"' in runner
     assert '"${currentPrincipal}:F"' in runner
+    assert "icacls.exe $workspace /setowner $principal /t /c /q" in runner
+    assert "safe.directory" not in full_runtime
     assert '$toolRoot = Join-Path $env:ProgramFiles "pony-ci-tools-$runId"' in runner
     assert '"${principal}:RX"' in runner
     assert "`$env:APPDATA = '$appDataLiteral'" in runner
