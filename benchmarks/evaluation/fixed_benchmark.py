@@ -49,11 +49,15 @@ _COMPACTION_SETUP = "compaction"
 
 
 def _git_value(args, fallback="", cwd=None):
+    root = cwd or Path.cwd()
     try:
+        executable = build_trusted_executables(root, names=("git",)).get("git")
+        if executable is None:
+            return fallback
         result = run_hardened_git(
-            "/usr/bin/git",
+            executable,
             args,
-            cwd=cwd or Path.cwd(),
+            cwd=root,
             text=True,
             check=True,
             timeout=5,
