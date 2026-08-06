@@ -9,6 +9,8 @@ from types import SimpleNamespace
 import benchmarks.evaluation.provider_benchmark as provider_benchmark
 import pytest
 
+from pony.security.private_files import private_file_signature
+
 
 def test_ci_tracks_and_uses_frozen_uv_lock():
     workflow = Path(".github/workflows/ci.yml").read_text(encoding="utf-8")
@@ -299,6 +301,19 @@ def test_ci_has_macos_security_and_durability_gate():
         assert path in workflow
     assert "continue-on-error" not in workflow
     assert "-W ignore" not in workflow
+
+
+def test_efficiency_evaluation_writer_keeps_output_private(tmp_path):
+    script = Path("scripts/evaluation/run_efficiency_evaluation.py")
+    spec = importlib.util.spec_from_file_location("efficiency_evaluation_script", script)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    output = tmp_path / "result.json"
+
+    module._write_private_json(output, {"status": "pass"})
+
+    assert output.read_text(encoding="utf-8") == '{\n  "status": "pass"\n}\n'
+    assert private_file_signature(output).is_private
 
 
 def test_maintenance_scripts_start_and_show_help():

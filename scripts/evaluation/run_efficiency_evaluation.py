@@ -14,6 +14,7 @@ if str(ROOT) not in sys.path:
 from benchmarks.evaluation.efficiency_evaluation import (  # noqa: E402
     run_efficiency_evaluation,
 )
+from pony.security.private_files import harden_private_descriptor  # noqa: E402
 
 
 def build_arg_parser():
@@ -43,7 +44,7 @@ def _write_private_json(path, payload):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    os.fchmod(descriptor, 0o600)
+    harden_private_descriptor(descriptor)
     with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
         json.dump(payload, stream, indent=2, sort_keys=True)
         stream.write("\n")
