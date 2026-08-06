@@ -40,6 +40,33 @@ def _assert_mode(path, expected):
         assert stat.S_IMODE(path.stat().st_mode) == expected
 
 
+def _swap_private_temp_with_symlink(monkeypatch, outside):
+    if os.name == "nt":
+        from pony.security import windows_private_files
+
+        original_move = windows_private_files.native.move_file
+
+        def swap_before_move(source, target):
+            if str(source).endswith(".tmp"):
+                Path(source).unlink()
+                Path(source).symlink_to(outside)
+            return original_move(source, target)
+
+        monkeypatch.setattr(windows_private_files.native, "move_file", swap_before_move)
+        return
+
+    original_replace = security_module.os.replace
+
+    def swap_before_replace(source, target, **kwargs):
+        source_dir_fd = kwargs.get("src_dir_fd")
+        if str(source).endswith(".tmp"):
+            os.unlink(source, dir_fd=source_dir_fd)
+            os.symlink(outside, source, dir_fd=source_dir_fd)
+        return original_replace(source, target, **kwargs)
+
+    monkeypatch.setattr(security_module.os, "replace", swap_before_replace)
+
+
 def _session(session_id, workspace_root="/repo"):
     return {
         "record_type": "session",
@@ -574,18 +601,9 @@ def test_session_temp_swap_preserves_unknown_installed_symlink(
     store = SessionStore(tmp_path / ".pony" / "sessions")
     outside = tmp_path / "outside-session.json"
     outside.write_text("outside\n", encoding="utf-8")
-    original_replace = security_module.os.replace
+    _swap_private_temp_with_symlink(monkeypatch, outside)
 
-    def swap_before_replace(source, target, **kwargs):
-        source_dir_fd = kwargs.get("src_dir_fd")
-        if str(source).endswith(".tmp"):
-            os.unlink(source, dir_fd=source_dir_fd)
-            os.symlink(outside, source, dir_fd=source_dir_fd)
-        return original_replace(source, target, **kwargs)
-
-    monkeypatch.setattr(security_module.os, "replace", swap_before_replace)
-
-    with pytest.raises(ValueError, match="temp|changed|regular|symlink"):
+    with pytest.raises(ValueError, match="temp|changed|regular|symlink|rollback"):
         store.save(_session("swapped", tmp_path))
 
     assert outside.read_text(encoding="utf-8") == "outside\n"
@@ -1228,18 +1246,9 @@ def test_block_store_temp_swap_preserves_unknown_installed_symlink(
     outside = tmp_path / "outside-memory.md"
     outside.write_text("outside\n", encoding="utf-8")
     store = BlockStore(workspace_root=workspace, user_root=user, redaction_env={})
-    original_replace = security_module.os.replace
+    _swap_private_temp_with_symlink(monkeypatch, outside)
 
-    def swap_before_replace(source, target, **kwargs):
-        if source.endswith(".tmp"):
-            parent = kwargs["src_dir_fd"]
-            os.unlink(source, dir_fd=parent)
-            os.symlink(outside, source, dir_fd=parent)
-        return original_replace(source, target, **kwargs)
-
-    monkeypatch.setattr(security_module.os, "replace", swap_before_replace)
-
-    with pytest.raises(ValueError, match="temp|changed|regular|symlink"):
+    with pytest.raises(ValueError, match="temp|changed|regular|symlink|rollback"):
         store.append_agent_note("workspace", "safe note")
 
     assert outside.read_text(encoding="utf-8") == "outside\n"
