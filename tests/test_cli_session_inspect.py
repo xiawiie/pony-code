@@ -61,7 +61,7 @@ def _write_legacy(root, workspace, session_id, messages):
     )
 
 
-def _make_legacy_insecure(path):
+def _make_insecure(path):
     if os.name == "nt":
         subprocess.run(
             ["icacls.exe", str(path), "/grant", "*S-1-1-0:(R)", "/q"],
@@ -184,7 +184,7 @@ def test_inspect_legacy_reports_pending_migration_without_migrating(tmp_path):
 def test_inspect_legacy_preserves_file_identity_and_permissions(tmp_path):
     root = tmp_path / "sessions"
     legacy = _write_legacy(root, tmp_path, "readonly-v1", _tool_messages())
-    _make_legacy_insecure(legacy)
+    _make_insecure(legacy)
     before = legacy.stat()
     original = legacy.read_bytes()
 
@@ -310,7 +310,7 @@ def test_latest_skips_unsafe_session_without_changing_its_permissions(tmp_path):
     )
     os.utime(safe, ns=(1, 1))
     os.utime(unsafe, ns=(2, 2))
-    unsafe.chmod(0o644)
+    _make_insecure(unsafe)
     before = unsafe.stat()
     original = unsafe.read_bytes()
 
