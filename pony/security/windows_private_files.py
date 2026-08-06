@@ -322,6 +322,7 @@ def _rollback(
     protected_backup = None
     restore_name = None
     restore_identity = None
+    restored_identity = existing_identity
     if existing_identity is not None:
         try:
             restored = _open_owned_target(parent, backup.name, existing_identity)
@@ -339,6 +340,7 @@ def _rollback(
                     error,
                 )
                 restored = restore
+                restored_identity = restore_identity
         except (FileNotFoundError, ValueError):
             if restored is not None:
                 restored.close()
@@ -369,7 +371,7 @@ def _rollback(
             native.rename_handle(restored, parent, path.name)
             restored.close()
             restored = None
-            _same_target(parent, path.name, existing_identity)
+            _same_target(parent, path.name, restored_identity)
     except Exception as exc:
         raise AtomicWriteAmbiguous("private atomic write rollback failed") from exc
     finally:
