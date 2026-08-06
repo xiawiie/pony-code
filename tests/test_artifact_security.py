@@ -808,9 +808,14 @@ def test_atomic_writer_hardlink_race_restores_previous_target(
     root = security_module.ensure_private_dir(tmp_path / "atomic-hardlink")
     target = root / "artifact.json"
     original = b"original\n"
-    if existing:
-        target.write_bytes(original)
     root_identity = security_module.private_directory_identity(root)
+    if existing:
+        security_module.write_private_bytes_atomic(
+            target,
+            original,
+            trusted_root=root,
+            trusted_root_identity=root_identity,
+        )
     alias = tmp_path / "atomic-temp-alias"
     linked = False
 
