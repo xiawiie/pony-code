@@ -864,25 +864,50 @@ def test_atomic_writer_rejects_canonical_root_renamed_after_parent_open(
     if os.name == "nt":
         from pony.security import windows_private_files
 
-        real_write = windows_private_files.native.write_bytes
+        replacement = security_module.ensure_private_dir(displaced)
+        replacement_identity = security_module.private_directory_identity(replacement)
+        real_open_parent = windows_private_files.native.open_parent
+        open_calls = 0
+        path_cleanup_called = False
+
+        def resolve_replacement_parent(path, **kwargs):
+            nonlocal open_calls, swapped
+            open_calls += 1
+            if open_calls == 2:
+                swapped = True
+                return real_open_parent(
+                    replacement / Path(path).name,
+                    trusted_root=replacement,
+                    trusted_root_identity=replacement_identity,
+                )
+            return real_open_parent(path, **kwargs)
+
+        def reject_path_cleanup(*_args, **_kwargs):
+            nonlocal path_cleanup_called
+            path_cleanup_called = True
+            raise AssertionError("private cleanup used a drifted path")
+
+        monkeypatch.setattr(
+            windows_private_files.native,
+            "open_parent",
+            resolve_replacement_parent,
+        )
+        monkeypatch.setattr(
+            windows_private_files.native,
+            "delete_file",
+            reject_path_cleanup,
+        )
     else:
         real_write = security_module._write_all
 
-    def swap_root_after_parent_open(descriptor, data):
-        nonlocal swapped
-        real_write(descriptor, data)
-        if not swapped:
-            swapped = True
-            root.rename(displaced)
-            root.mkdir(mode=0o700)
+        def swap_root_after_parent_open(descriptor, data):
+            nonlocal swapped
+            real_write(descriptor, data)
+            if not swapped:
+                swapped = True
+                root.rename(displaced)
+                root.mkdir(mode=0o700)
 
-    if os.name == "nt":
-        monkeypatch.setattr(
-            windows_private_files.native,
-            "write_bytes",
-            swap_root_after_parent_open,
-        )
-    else:
         monkeypatch.setattr(
             security_module,
             "_write_all",
@@ -898,15 +923,22 @@ def test_atomic_writer_rejects_canonical_root_renamed_after_parent_open(
         )
 
     assert swapped is True
-    assert not target.exists()
-    displaced_target = displaced / target.name
-    assert (
-        displaced_target.read_bytes() == original
-        if existing
-        else not displaced_target.exists()
-    )
-    assert not list(displaced.glob(".*.tmp"))
-    assert not list(displaced.glob(".*.bak"))
+    if os.name == "nt":
+        assert path_cleanup_called is False
+        assert target.read_bytes() == original if existing else not target.exists()
+        assert not list(root.glob(".*.tmp"))
+        assert not list(root.glob(".*.bak"))
+        assert not list(displaced.iterdir())
+    else:
+        assert not target.exists()
+        displaced_target = displaced / target.name
+        assert (
+            displaced_target.read_bytes() == original
+            if existing
+            else not displaced_target.exists()
+        )
+        assert not list(displaced.glob(".*.tmp"))
+        assert not list(displaced.glob(".*.bak"))
 
 
 @pytest.mark.parametrize("existing", (False, True))
