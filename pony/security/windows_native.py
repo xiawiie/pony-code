@@ -1044,12 +1044,12 @@ def truncate(handle, size):
         _winerror("FlushFileBuffers failed")
 
 
-def rename_handle(handle, destination_parent, destination_name):
+def rename_handle(handle, destination_parent, destination_name, *, replace=False):
     name = lexical_component(destination_name).encode("utf-16-le")
     size = ctypes.sizeof(_FileRenameInfo) + len(name)
     buffer = ctypes.create_string_buffer(size)
     info = _FileRenameInfo.from_buffer(buffer)
-    info.ReplaceIfExists = False
+    info.ReplaceIfExists = bool(replace)
     info.RootDirectory = destination_parent.value
     info.FileNameLength = len(name)
     ctypes.memmove(

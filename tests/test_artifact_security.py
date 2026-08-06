@@ -950,23 +950,66 @@ def test_atomic_writer_rolls_back_if_root_moves_after_replace(
     root = security_module.ensure_private_dir(tmp_path / "atomic-post-replace")
     target = root / "artifact.json"
     original = b"original\n"
-    if existing:
-        target.write_bytes(original)
     root_identity = security_module.private_directory_identity(root)
+    if existing:
+        security_module.write_private_bytes_atomic(
+            target,
+            original,
+            trusted_root=root,
+            trusted_root_identity=root_identity,
+        )
     displaced = tmp_path / "atomic-post-replace-displaced"
-    real_replace = security_module.os.replace
     swapped = False
 
-    def swap_root_after_replace(source, destination, **kwargs):
+    def move_root():
         nonlocal swapped
-        result = real_replace(source, destination, **kwargs)
-        if not swapped and str(source).endswith(".tmp"):
+        if not swapped:
             swapped = True
             root.rename(displaced)
             root.mkdir(mode=0o700)
-        return result
 
-    monkeypatch.setattr(security_module.os, "replace", swap_root_after_replace)
+    if os.name == "nt":
+        from pony.security import windows_private_files
+
+        real_move = windows_private_files.native.move_file
+        real_replace = windows_private_files.native.replace_file
+
+        def swap_root_after_move(source, destination):
+            result = real_move(source, destination)
+            if str(source).endswith(".tmp"):
+                move_root()
+            return result
+
+        def swap_root_after_replace(destination, source, backup=None):
+            result = real_replace(destination, source, backup)
+            if str(source).endswith(".tmp"):
+                move_root()
+            return result
+
+        monkeypatch.setattr(
+            windows_private_files.native,
+            "move_file",
+            swap_root_after_move,
+        )
+        monkeypatch.setattr(
+            windows_private_files.native,
+            "replace_file",
+            swap_root_after_replace,
+        )
+    else:
+        real_replace = security_module.os.replace
+
+        def swap_root_after_replace(source, destination, **kwargs):
+            result = real_replace(source, destination, **kwargs)
+            if str(source).endswith(".tmp"):
+                move_root()
+            return result
+
+        monkeypatch.setattr(
+            security_module.os,
+            "replace",
+            swap_root_after_replace,
+        )
 
     with pytest.raises(ValueError, match="private root changed"):
         security_module.write_private_bytes_atomic(
