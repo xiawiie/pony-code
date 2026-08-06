@@ -6,41 +6,6 @@ $evaluation = Join-Path $env:RUNNER_TEMP "pony-windows-eval"
 & git.exe config --global --add safe.directory $env:GITHUB_WORKSPACE
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-$trustedPythonProbe = @'
-from pathlib import Path
-import os
-import shutil
-from pony.tools import subprocess as safe_subprocess
-
-candidates = [
-    Path(value)
-    for value in os.environ.get("PATH", "").split(os.pathsep)
-    if Path(value).name.casefold() == "python"
-    and Path(value).parent.name.startswith("pony-ci-tools-")
-]
-candidate = candidates[0] if len(candidates) == 1 else None
-print("trusted_python_candidate_count", len(candidates))
-print("trusted_python_pathext_present", bool(os.environ.get("PATHEXT")))
-print("trusted_python_exe_exists", bool(candidate and (candidate / "python.exe").is_file()))
-found = shutil.which("python", path=str(candidate)) if candidate else None
-print("trusted_python_which", bool(found))
-safe_dirs = safe_subprocess._safe_path_dirs(Path.cwd(), os.environ)
-print("trusted_python_safe_dir", bool(candidate and str(candidate) in safe_dirs))
-try:
-    if found:
-        safe_subprocess._verified_executable_identity(found)
-except (OSError, RuntimeError, ValueError) as exc:
-    print("trusted_python_identity_error", type(exc).__name__, str(exc))
-else:
-    print("trusted_python_identity_error", "none")
-print(
-    "trusted_python_discovered",
-    "python" in safe_subprocess.build_trusted_executables(Path.cwd(), names=("python",)),
-)
-'@
-$trustedPythonProbe | & $uv run --frozen python -
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
 & $uv run --frozen pytest -x -vv tests benchmarks/live_e2e/tests/test_assertions.py
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
