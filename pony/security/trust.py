@@ -30,6 +30,14 @@ class ProjectTrustStore:
 
     def _read_root_identity(self):
         identity = private_directory_identity(self.root)
+        if os.name == "nt":
+            from pony.security import windows_native
+
+            with windows_native.open_path(self.root, directory=True) as handle:
+                if windows_native.identity(handle) != tuple(identity):
+                    raise ValueError("trust store root changed")
+                windows_native.require_private(handle)
+            return identity
         info = self.root.stat(follow_symlinks=False)
         uid = os.geteuid() if hasattr(os, "geteuid") else info.st_uid
         if (
