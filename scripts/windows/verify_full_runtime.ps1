@@ -22,9 +22,17 @@ candidate = candidates[0] if len(candidates) == 1 else None
 print("trusted_python_candidate_count", len(candidates))
 print("trusted_python_pathext_present", bool(os.environ.get("PATHEXT")))
 print("trusted_python_exe_exists", bool(candidate and (candidate / "python.exe").is_file()))
-print("trusted_python_which", bool(candidate and shutil.which("python", path=str(candidate))))
+found = shutil.which("python", path=str(candidate)) if candidate else None
+print("trusted_python_which", bool(found))
 safe_dirs = safe_subprocess._safe_path_dirs(Path.cwd(), os.environ)
 print("trusted_python_safe_dir", bool(candidate and str(candidate) in safe_dirs))
+try:
+    if found:
+        safe_subprocess._verified_executable_identity(found)
+except (OSError, RuntimeError, ValueError) as exc:
+    print("trusted_python_identity_error", type(exc).__name__, str(exc))
+else:
+    print("trusted_python_identity_error", "none")
 print(
     "trusted_python_discovered",
     "python" in safe_subprocess.build_trusted_executables(Path.cwd(), names=("python",)),
