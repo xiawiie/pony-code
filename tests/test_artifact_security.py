@@ -1039,11 +1039,16 @@ def test_atomic_writer_parent_fsync_failure_restores_previous_target(
     root = security_module.ensure_private_dir(tmp_path / "atomic-fsync")
     target = root / "artifact.json"
     original = b"original\n"
-    if existing:
-        target.write_bytes(original)
     root_identity = security_module.private_directory_identity(root)
+    if existing:
+        security_module.write_private_bytes_atomic(
+            target,
+            original,
+            trusted_root=root,
+            trusted_root_identity=root_identity,
+        )
     calls = 0
-    fail_at = 2 if existing else 1
+    fail_at = 2 if existing and os.name != "nt" else 1
 
     def fail_commit_fsync(descriptor):
         nonlocal calls
