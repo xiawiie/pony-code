@@ -1081,19 +1081,53 @@ def test_atomic_writer_never_rolls_back_over_unknown_canonical(
     target = root / "artifact.json"
     original = b"original\n"
     concurrent = b"concurrent\n"
-    if existing:
-        target.write_bytes(original)
     root_identity = security_module.private_directory_identity(root)
-    real_replace = security_module.os.replace
+    if existing:
+        security_module.write_private_bytes_atomic(
+            target,
+            original,
+            trusted_root=root,
+            trusted_root_identity=root_identity,
+        )
 
-    def fail_before_install(source, destination, **kwargs):
-        if str(source).endswith(".tmp"):
-            target.unlink(missing_ok=True)
-            target.write_bytes(concurrent)
-            raise OSError("replace failed before install")
-        return real_replace(source, destination, **kwargs)
+    def replace_with_concurrent():
+        target.unlink(missing_ok=True)
+        target.write_bytes(concurrent)
+        raise OSError("replace failed before install")
 
-    monkeypatch.setattr(security_module.os, "replace", fail_before_install)
+    if os.name == "nt":
+        from pony.security import windows_private_files
+
+        real_move = windows_private_files.native.move_file
+        real_replace = windows_private_files.native.replace_file
+
+        def fail_after_move(source, destination):
+            result = real_move(source, destination)
+            if str(source).endswith(".tmp"):
+                replace_with_concurrent()
+            return result
+
+        def fail_after_replace(destination, source, backup=None):
+            result = real_replace(destination, source, backup)
+            if str(source).endswith(".tmp"):
+                replace_with_concurrent()
+            return result
+
+        monkeypatch.setattr(windows_private_files.native, "move_file", fail_after_move)
+        monkeypatch.setattr(
+            windows_private_files.native,
+            "replace_file",
+            fail_after_replace,
+        )
+    else:
+        real_replace = security_module.os.replace
+
+        def fail_before_install(source, destination, **kwargs):
+            if str(source).endswith(".tmp"):
+                replace_with_concurrent()
+            return real_replace(source, destination, **kwargs)
+
+        monkeypatch.setattr(security_module.os, "replace", fail_before_install)
 
     with pytest.raises(ValueError, match="private temp changed"):
         security_module.write_private_bytes_atomic(
