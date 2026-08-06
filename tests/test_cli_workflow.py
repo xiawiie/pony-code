@@ -135,7 +135,7 @@ def test_repl_plan_open_enters_plan_and_edits_existing_artifact(
     monkeypatch.setattr("pony.cli.start.shutil.which", lambda _name: "/usr/bin/editor")
 
     def edit(argv, **_kwargs):
-        Path(argv[-1]).write_text("# Edited Plan\n1. Test\n", encoding="utf-8")
+        Path(argv[-1]).write_bytes(b"# Edited Plan\r\n1. Test\r\n")
         return SimpleNamespace(returncode=0)
 
     monkeypatch.setattr("pony.cli.start.subprocess.run", edit)
