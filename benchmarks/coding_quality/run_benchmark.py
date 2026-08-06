@@ -31,7 +31,11 @@ from pony.runtime.options import RuntimeOptions  # noqa: E402
 from pony.state.run_store import RunStore  # noqa: E402
 from pony.state.session_store import SessionStore  # noqa: E402
 from pony.tools.registry import legal_tool_names  # noqa: E402
-from pony.tools.subprocess import run_hardened_command, run_hardened_git  # noqa: E402
+from pony.tools.subprocess import (  # noqa: E402
+    build_trusted_executables,
+    run_hardened_command,
+    run_hardened_git,
+)
 from pony.workspace.context import WorkspaceContext  # noqa: E402
 
 TASKS_FORMAT_VERSION = 1
@@ -331,28 +335,34 @@ def load_evaluation_brief(path):
 
 
 def _grader_python():
+    if os.name == "nt":
+        executable = build_trusted_executables(ROOT, names=("python",)).get("python")
+        if executable is None:
+            raise ValueError("trusted grader Python unavailable")
+        return executable
     candidate = Path("/usr/bin/python3")
     if not candidate.exists():
         raise ValueError("trusted grader Python unavailable")
     return str(candidate)
 
 
-def _grader_env():
+def _grader_env(executable):
     return {
         "HOME": os.environ.get("HOME", ""),
         "LANG": "C.UTF-8",
         "LC_ALL": "C.UTF-8",
-        "PATH": "/usr/bin:/bin",
+        "PATH": str(Path(executable).parent) if os.name == "nt" else "/usr/bin:/bin",
     }
 
 
 def _run_grader(task, workspace, mode):
+    executable = _grader_python()
     return run_hardened_command(
-        _grader_python(),
+        executable,
         args=(task["grader_path"], task["id"], mode),
         cwd=workspace,
         timeout=GRADER_TIMEOUT_SECONDS,
-        env=_grader_env(),
+        env=_grader_env(executable),
     )
 
 
@@ -555,7 +565,10 @@ def _captured_at():
 
 
 def _git(args, *, cwd):
-    result = run_hardened_git("/usr/bin/git", args, cwd=cwd, text=True, check=True, timeout=10)
+    executable = build_trusted_executables(cwd, names=("git",)).get("git")
+    if executable is None:
+        raise ValueError("trusted Git executable unavailable")
+    result = run_hardened_git(executable, args, cwd=cwd, text=True, check=True, timeout=10)
     return result.stdout.strip()
 
 
