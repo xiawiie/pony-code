@@ -274,6 +274,8 @@ def test_discover_lexical_repo_root_rejects_git_symlink_without_raw_path(tmp_pat
 def test_windows_git_entry_mode_normalizes_reparse_errors(name, message, monkeypatch):
     from pony.security import windows_native
 
+    monkeypatch.setattr(safe_subprocess_module.os, "name", "nt")
+
     def reject_reparse(*_args, **_kwargs):
         raise windows_native.ReparsePointError()
 
