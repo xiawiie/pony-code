@@ -571,6 +571,21 @@ def test_windows_reparse_rejection_is_typed_and_platform_neutral(monkeypatch):
     assert str(exc_info.value) == "refusing symlink component"
 
 
+def test_windows_private_dir_normalizes_reparse_error(monkeypatch):
+    from pony.security import windows_native, windows_private_files
+
+    def reject_reparse(_path):
+        raise windows_native.ReparsePointError()
+
+    monkeypatch.setattr(windows_private_files.native, "ensure_directory", reject_reparse)
+
+    with pytest.raises(ValueError) as exc_info:
+        windows_private_files.ensure_private_dir("ignored")
+
+    assert type(exc_info.value) is ValueError
+    assert str(exc_info.value) == "private directory has symlink component"
+
+
 @pytest.mark.parametrize(
     ("absolute", "expected"),
     (

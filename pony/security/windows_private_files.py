@@ -14,7 +14,10 @@ class AtomicWriteAmbiguous(RuntimeError):
 
 
 def ensure_private_dir(path):
-    return native.ensure_directory(path)
+    try:
+        return native.ensure_directory(path)
+    except native.ReparsePointError as exc:
+        raise ValueError("private directory has symlink component") from exc
 
 
 def _open_file(
