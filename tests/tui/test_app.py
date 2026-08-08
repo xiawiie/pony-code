@@ -43,12 +43,15 @@ class _Stream:
     ),
 )
 def test_tui_requires_a_capable_interactive_terminal(
+    monkeypatch,
     stdin_tty,
     stdout_tty,
     term,
     columns,
     expected,
 ):
+    monkeypatch.setattr("pony.tui.app._WINDOWS", False)
+
     assert should_use_tui(
         stdin=_Stream(stdin_tty),
         stdout=_Stream(stdout_tty),

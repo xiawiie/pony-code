@@ -190,8 +190,13 @@ def _open_leaf(parent, name, *, access=native.FILE_READ_ACCESS):
             share_access=native.FILE_SHARE_ALL,
         )
         return handle
-    except OSError:
-        raise
+    except OSError as exc:
+        if _is_missing(exc):
+            raise
+        raise WorkspaceIOError(
+            "workspace_entry_unsafe",
+            "path is not a stable regular file",
+        ) from exc
     except ValueError as exc:
         raise WorkspaceIOError(
             "workspace_entry_unsafe",
@@ -459,24 +464,6 @@ def _identity_at(parent, name):
         handle.close()
 
 
-def _delete_backup(parent, name, expected_identity):
-    try:
-        handle = _open_leaf(parent, name, access=native.FILE_DELETE_ACCESS)
-    except OSError as exc:
-        if _is_missing(exc):
-            return
-        raise
-    try:
-        if native.identity(handle) != tuple(expected_identity):
-            raise WorkspaceIOError(
-                "workspace_changed_during_write",
-                "workspace backup identity changed",
-            )
-        native.delete_handle(handle)
-    finally:
-        handle.close()
-
-
 def _same_target(parent, name, signature):
     try:
         current = _open_leaf(parent, name)
@@ -529,39 +516,191 @@ def _revalidate_target(parent, name, target):
         )
 
 
-def _verify_backup(parent, backup_name, target):
-    backup = _open_leaf(parent, backup_name)
+def _copy_restore(parent, path, target):
+    name = f".{path.name}.{secrets.token_hex(12)}.restore"
+    restore_path = path.with_name(name)
+    handle = None
+    created = False
     try:
-        value = native.facts(backup)
-        if _facts_signature(value)[:-1] != target.signature[:-1]:
+        handle, created = native.open_relative(
+            parent,
+            name,
+            directory=False,
+            desired_access=native.FILE_REPLACE_ACCESS,
+            disposition=native.FILE_CREATE,
+            share_access=native.FILE_SHARE_ALL,
+        )
+        if not created:
             raise WorkspaceIOError(
                 "workspace_changed_during_write",
-                "workspace file changed during atomic replace",
+                "workspace restore file changed",
             )
-        if target.digest is not None and _read_digest(
-            backup,
-            value.size,
+        identity = native.identity(handle)
+        digest = hashlib.sha256()
+        total = 0
+        expected_size = target.signature[3]
+        for chunk in native.read_chunks(target.handle):
+            total += len(chunk)
+            if total > expected_size:
+                raise WorkspaceIOError(
+                    "workspace_changed_during_write",
+                    "workspace file changed while preparing rollback",
+                )
+            native.write_bytes(handle, chunk, append=total != len(chunk))
+            digest.update(chunk)
+        if total == 0:
+            native.write_bytes(handle, b"")
+        value = native.facts(handle)
+        if (
+            total != expected_size
+            or value.size != expected_size
+            or value.link_count != 1
+            or native.identity(handle) != identity
+        ):
+            raise WorkspaceIOError(
+                "workspace_changed_during_write",
+                "workspace restore file changed",
+            )
+        target.digest = digest.hexdigest()
+        if _read_digest(
+            handle,
+            expected_size,
             code="workspace_changed_during_write",
         ) != target.digest:
             raise WorkspaceIOError(
                 "workspace_changed_during_write",
-                "workspace file content changed during atomic replace",
+                "workspace restore file content changed",
             )
-    finally:
-        backup.close()
+        return _Temp(handle, restore_path, identity)
+    except BaseException:
+        if handle is not None:
+            if created:
+                try:
+                    native.delete_handle(handle)
+                except OSError:
+                    pass
+            handle.close()
+        raise
 
 
-def _installed(parent, name, identity, size):
+def _verify_owned(parent, owned, size, digest, message):
+    if owned is None or owned.handle is None:
+        raise WorkspaceIOError("workspace_changed_during_write", message)
+    value = native.facts(owned.handle)
+    if (
+        native.identity(owned.handle) != owned.identity
+        or value.link_count != 1
+        or value.size != size
+        or _identity_at(parent, owned.path.name) != owned.identity
+        or _read_digest(
+            owned.handle,
+            size,
+            code="workspace_changed_during_write",
+        )
+        != digest
+    ):
+        raise WorkspaceIOError("workspace_changed_during_write", message)
+
+
+def _open_owned(parent, owned, message):
+    handle = _open_leaf(parent, owned.path.name, access=native.FILE_REPLACE_ACCESS)
+    try:
+        if native.identity(handle) != owned.identity:
+            raise WorkspaceIOError("workspace_changed_during_write", message)
+        owned.handle = handle
+    except BaseException:
+        handle.close()
+        raise
+
+
+def _installed(parent, name, identity, size, digest):
     handle = _open_leaf(parent, name)
     try:
         value = native.facts(handle)
-        if native.identity(handle) != identity or value.size != size:
+        if (
+            native.identity(handle) != identity
+            or value.link_count != 1
+            or value.size != size
+            or _read_digest(
+                handle,
+                size,
+                code="workspace_changed_during_write",
+            )
+            != digest
+        ):
             raise WorkspaceIOError(
                 "workspace_changed_during_write",
                 "workspace replace result changed",
             )
     finally:
         handle.close()
+
+
+def _rollback_atomic(
+    parent,
+    path,
+    temp,
+    target,
+    restore,
+    rendered_size,
+    rendered_digest,
+):
+    try:
+        _installed(
+            parent,
+            path.name,
+            temp.identity,
+            rendered_size,
+            rendered_digest,
+        )
+        if target.signature is None:
+            native.delete_handle(temp.handle)
+            temp.handle.close()
+            temp.handle = None
+            if _identity_at(parent, path.name) is not None:
+                raise ValueError("workspace rollback did not remove installed file")
+            return False
+
+        _verify_owned(
+            parent,
+            restore,
+            target.signature[3],
+            target.digest,
+            "workspace restore file changed",
+        )
+        temp.handle.close()
+        temp.handle = None
+        try:
+            native.rename_handle(
+                restore.handle,
+                parent,
+                path.name,
+                replace=True,
+            )
+        except OSError:
+            _installed(
+                parent,
+                path.name,
+                restore.identity,
+                target.signature[3],
+                target.digest,
+            )
+        else:
+            _installed(
+                parent,
+                path.name,
+                restore.identity,
+                target.signature[3],
+                target.digest,
+            )
+        if _identity_at(parent, restore.path.name) is not None:
+            raise ValueError("workspace restore binding remained after rollback")
+        return True
+    except Exception as exc:
+        raise WorkspaceIOError(
+            "workspace_changed_during_write",
+            "workspace atomic rollback failed",
+        ) from exc
 
 
 def write_regular_bytes_anchored_atomic(
@@ -576,6 +715,7 @@ def write_regular_bytes_anchored_atomic(
     fsync_parent=None,
 ):
     rendered, limit = _validate_write(data, max_bytes, expected_sha256)
+    rendered_digest = hashlib.sha256(rendered).hexdigest()
     parts = _workspace_relative_parts(raw_path)
     chain = _open_directory_chain(
         workspace_root,
@@ -586,9 +726,11 @@ def write_regular_bytes_anchored_atomic(
     path = chain.path / parts[-1]
     target = None
     temp = None
-    backup = path.with_name(f".{path.name}.{secrets.token_hex(12)}.bak")
+    restore = None
     installed = False
     committed = False
+    restore_installed = False
+    preserve_restore = False
     try:
         target = _inspect_target(
             chain.handle,
@@ -597,78 +739,148 @@ def write_regular_bytes_anchored_atomic(
             limit=limit,
         )
         temp = _create_temp(chain.handle, path, rendered, fsync_file)
+        if target.signature is not None:
+            restore = _copy_restore(chain.handle, path, target)
         _revalidate_target(chain.handle, path.name, target)
-        temp.handle.close()
+        _verify_owned(
+            chain.handle,
+            temp,
+            len(rendered),
+            rendered_digest,
+            "workspace temporary file changed",
+        )
+        if restore is not None:
+            _verify_owned(
+                chain.handle,
+                restore,
+                target.signature[3],
+                target.digest,
+                "workspace restore file changed",
+            )
         if target.handle is not None:
             target.handle.close()
+            target.handle = None
         try:
-            if target.signature is None:
-                native.move_file(temp.path, path)
-            else:
-                native.replace_file(path, temp.path, backup)
+            native.rename_handle(
+                temp.handle,
+                chain.handle,
+                path.name,
+                replace=target.signature is not None,
+            )
         except OSError:
             if _identity_at(chain.handle, path.name) == temp.identity:
                 installed = True
+            else:
+                try:
+                    _verify_owned(
+                        chain.handle,
+                        temp,
+                        len(rendered),
+                        rendered_digest,
+                        "workspace temporary file changed",
+                    )
+                    _same_target(chain.handle, path.name, target.signature)
+                except Exception:
+                    preserve_restore = restore is not None
+                    raise WorkspaceIOError(
+                        "workspace_changed_during_write",
+                        "workspace replace result is ambiguous",
+                    ) from None
             raise
         installed = True
-        _installed(chain.handle, path.name, temp.identity, len(rendered))
-        if target.signature is not None:
-            _verify_backup(chain.handle, backup.name, target)
+        _installed(
+            chain.handle,
+            path.name,
+            temp.identity,
+            len(rendered),
+            rendered_digest,
+        )
+        if _identity_at(chain.handle, temp.path.name) is not None:
+            raise WorkspaceIOError(
+                "workspace_changed_during_write",
+                "workspace temporary binding remained after replace",
+            )
+        if restore is not None:
+            _verify_owned(
+                chain.handle,
+                restore,
+                target.signature[3],
+                target.digest,
+                "workspace restore file changed",
+            )
         if fsync_parent is not None:
             fsync_parent(chain.handle.value)
+        if restore is not None:
+            try:
+                native.delete_handle(restore.handle)
+            except BaseException as cleanup_error:
+                restore.handle.close()
+                restore.handle = None
+                current = _identity_at(chain.handle, restore.path.name)
+                if current is not None:
+                    if current != restore.identity:
+                        preserve_restore = True
+                        raise WorkspaceIOError(
+                            "workspace_changed_during_write",
+                            "workspace restore file changed",
+                        ) from cleanup_error
+                    _open_owned(
+                        chain.handle,
+                        restore,
+                        "workspace restore file changed",
+                    )
+                    raise cleanup_error
+            else:
+                restore.handle.close()
+                restore.handle = None
+                if _identity_at(chain.handle, restore.path.name) is not None:
+                    raise WorkspaceIOError(
+                        "workspace_changed_during_write",
+                        "workspace restore cleanup failed",
+                    )
         committed = True
-        if target.signature is not None:
-            _delete_backup(chain.handle, backup.name, target.signature[:2])
         return {
             "mode": _FILE_MODE,
-            "sha256": hashlib.sha256(rendered).hexdigest(),
+            "sha256": rendered_digest,
             "created": target.signature is None,
         }
     except BaseException:
         if installed and not committed:
             try:
-                if _identity_at(chain.handle, path.name) != temp.identity:
-                    raise ValueError("workspace installed file changed")
-                if target is not None and target.signature is None:
-                    installed_handle = _open_leaf(
-                        chain.handle,
-                        path.name,
-                        access=native.FILE_DELETE_ACCESS,
-                    )
-                    try:
-                        if native.identity(installed_handle) != temp.identity:
-                            raise ValueError("workspace installed file changed")
-                        native.delete_handle(installed_handle)
-                    finally:
-                        installed_handle.close()
-                elif target is not None:
-                    if _identity_at(chain.handle, backup.name) != target.signature[:2]:
-                        raise ValueError("workspace backup identity changed")
-                    native.replace_file(path, backup)
-                    restored = _open_leaf(chain.handle, path.name)
-                    try:
-                        if native.identity(restored) != target.signature[:2]:
-                            raise ValueError("workspace rollback identity changed")
-                    finally:
-                        restored.close()
-                installed = False
-            except Exception as rollback_exc:
-                raise WorkspaceIOError(
-                    "workspace_changed_during_write",
-                    "workspace atomic rollback failed",
-                ) from rollback_exc
+                restore_installed = _rollback_atomic(
+                    chain.handle,
+                    path,
+                    temp,
+                    target,
+                    restore,
+                    len(rendered),
+                    rendered_digest,
+                )
+            except Exception:
+                preserve_restore = restore is not None
+                raise
+            installed = False
         raise
     finally:
-        if not installed and temp is not None:
-            try:
-                if temp.handle.value is None:
-                    _delete_backup(chain.handle, temp.path.name, temp.identity)
-                else:
-                    native.delete_handle(temp.handle)
-            except OSError:
-                pass
-        if temp is not None:
-            temp.handle.close()
         if target is not None and target.handle is not None:
             target.handle.close()
+        if temp is not None and temp.handle is not None:
+            if not committed and not installed:
+                try:
+                    native.delete_handle(temp.handle)
+                except OSError:
+                    pass
+            temp.handle.close()
+        if restore is not None and restore.handle is not None:
+            if (
+                not committed
+                and not installed
+                and not restore_installed
+                and not preserve_restore
+            ):
+                try:
+                    native.delete_handle(restore.handle)
+                except OSError:
+                    pass
+            restore.handle.close()
         chain.close()

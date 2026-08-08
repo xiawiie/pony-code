@@ -132,7 +132,8 @@ def test_ci_probes_native_windows_capabilities_and_file_semantics():
     full_runtime = Path("scripts/windows/verify_full_runtime.ps1").read_text(
         encoding="utf-8"
     )
-    assert "pytest -x -vv tests benchmarks/live_e2e/tests/test_assertions.py" in full_runtime
+    assert '"run", "--frozen", "pytest", "-q"' in full_runtime
+    assert '"tests", "benchmarks/live_e2e/tests/test_assertions.py"' in full_runtime
     assert "--expect-elevated-rejection" in windows
     assert "-Script scripts/windows/probe_shell_backend.py" in windows
     runner = Path("scripts/windows/run_as_standard_user.ps1").read_text(
@@ -470,7 +471,13 @@ def test_local_check_script_runs_each_full_gate_once_on_a_clean_exact_head():
     script = Path("scripts/check.sh")
 
     assert script.exists()
-    assert script.stat().st_mode & 0o111
+    index_entry = subprocess.run(
+        ["git", "ls-files", "--stage", "--", script.as_posix()],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert index_entry.startswith("100755 ")
 
     text = script.read_text()
     assert "uv lock --check" in text
@@ -497,6 +504,167 @@ def test_local_check_script_runs_each_full_gate_once_on_a_clean_exact_head():
     assert "trap 'exit 129' 1" in text
     assert "trap 'exit 130' 2" in text
     assert "trap 'exit 143' 15" in text
+
+
+def test_windows_local_check_script_matches_the_full_exact_head_gate():
+    script = Path("scripts/windows/verify_full_runtime.ps1")
+
+    assert script.is_file()
+    text = script.read_text(encoding="utf-8")
+    assert "$args.Count -ne 0" in text
+    assert "uv lock" not in text
+    assert 'Invoke-CheckedNative $uv @("lock", "--check")' in text
+    assert 'Invoke-CheckedNative $uv @("run", "--frozen", "ruff", "check", ".")' in text
+    assert '"tests", "benchmarks/live_e2e/tests/test_assertions.py"' in text
+    assert '"--suite", "core-functional", "--output-dir", $evaluationDir' in text
+    assert '"build", "--offline", "--clear", "--no-create-gitignore"' in text
+    assert '"--install-smoke", "--offline-bundle-smoke"' in text
+    assert 'Invoke-CheckedNative $uv @("run", "--frozen", "pony", "--help")' in text
+    assert 'Invoke-CheckedNative $uv @("run", "--frozen", "pony", "status")' in text
+    assert 'Invoke-CheckedNative "cmd.exe"' in text
+    assert '"import prompt_toolkit; import pony.tui.app"' in text
+    assert 'UV_OFFLINE = "1"' in text
+    assert "GetTempPath()" in text
+    assert "git status --porcelain --untracked-files=all" in text
+    assert text.count("git rev-parse HEAD") == 2
+    assert "checking clean exact HEAD $startHead" in text
+    assert "verified clean exact HEAD $startHead" in text
+    assert "Remove-Item -LiteralPath $temporaryRoot -Recurse -Force" in text
+    assert "safe.directory" not in text
+
+
+def _windows_check_fixture(tmp_path):
+    repo = tmp_path / "repo"
+    scripts = repo / "scripts" / "windows"
+    fake_bin = repo / "bin"
+    check_tmp = tmp_path / "check-tmp"
+    scripts.mkdir(parents=True)
+    fake_bin.mkdir()
+    check_tmp.mkdir()
+    check = scripts / "verify_full_runtime.ps1"
+    check.write_text(
+        Path("scripts/windows/verify_full_runtime.ps1").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    uv = fake_bin / "uv.cmd"
+    uv.write_text(
+        "@echo off\r\n"
+        'if /I "%PONY_FAKE_UV_MODE%"=="fail" exit /b 7\r\n'
+        'if not "%~1"=="build" exit /b 0\r\n'
+        "set OUT_DIR=\r\n"
+        ":parse\r\n"
+        'if "%~1"=="" goto built\r\n'
+        'if "%~1"=="--out-dir" goto capture_out_dir\r\n'
+        "shift\r\n"
+        "goto parse\r\n"
+        ":capture_out_dir\r\n"
+        "shift\r\n"
+        'set "OUT_DIR=%~1"\r\n'
+        "shift\r\n"
+        "goto parse\r\n"
+        ":built\r\n"
+        'if not exist "%OUT_DIR%" mkdir "%OUT_DIR%"\r\n'
+        'type nul > "%OUT_DIR%\\pony_code-1.0.0.tar.gz"\r\n'
+        'type nul > "%OUT_DIR%\\pony_code-1.0.0-py3-none-any.whl"\r\n'
+        "exit /b 0\r\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Pony Test",
+            "-c",
+            "user.email=pony@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-qm",
+            "fixture",
+        ],
+        cwd=repo,
+        check=True,
+    )
+    env = os.environ.copy()
+    env["PATH"] = os.pathsep.join((str(fake_bin), env["PATH"]))
+    env["TEMP"] = str(check_tmp)
+    env["TMP"] = str(check_tmp)
+    env["PONY_CI_UV"] = str(uv)
+    return repo, check, check_tmp, env
+
+
+def _run_windows_check(repo, check, env, *args, mode="success"):
+    run_env = env.copy()
+    run_env["PONY_FAKE_UV_MODE"] = mode
+    powershell = (
+        Path(os.environ["SystemRoot"])
+        / "System32"
+        / "WindowsPowerShell"
+        / "v1.0"
+        / "powershell.exe"
+    )
+    return subprocess.run(
+        [
+            str(powershell),
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(check),
+            *args,
+        ],
+        cwd=repo,
+        env=run_env,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=20,
+    )
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell gate contract")
+def test_windows_local_check_cleanup_preserves_failure_status(tmp_path):
+    repo, check, check_tmp, env = _windows_check_fixture(tmp_path)
+
+    result = _run_windows_check(repo, check, env, mode="fail")
+
+    assert result.returncode == 7, result.stderr
+    assert list(check_tmp.glob("pony-check-*")) == []
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell gate contract")
+def test_windows_local_check_rejects_extra_arguments(tmp_path):
+    repo, check, check_tmp, env = _windows_check_fixture(tmp_path)
+
+    result = _run_windows_check(repo, check, env, "--release-dist")
+
+    assert result.returncode == 2
+    assert "usage:" in result.stderr
+    assert list(check_tmp.glob("pony-check-*")) == []
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell gate contract")
+def test_windows_local_check_keeps_artifacts_temporary_and_finishes_clean(tmp_path):
+    repo, check, check_tmp, env = _windows_check_fixture(tmp_path)
+
+    result = _run_windows_check(repo, check, env)
+
+    assert result.returncode == 0, result.stderr
+    assert "checking clean exact HEAD" in result.stdout
+    assert "verified clean exact HEAD" in result.stdout
+    assert not (repo / "dist").exists()
+    assert list(check_tmp.glob("pony-check-*")) == []
+    assert subprocess.run(
+        ["git", "status", "--porcelain", "--untracked-files=all"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout == ""
 
 
 def _check_fixture(tmp_path):
@@ -568,6 +736,7 @@ def _run_check(repo, check, env, *args, mode="success"):
     )
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX shell gate contract")
 @pytest.mark.parametrize(("mode", "expected_status"), (("fail", 7), ("term", 143)))
 def test_local_check_cleanup_preserves_failure_status(tmp_path, mode, expected_status):
     repo, check, env = _check_fixture(tmp_path)
@@ -579,6 +748,7 @@ def test_local_check_cleanup_preserves_failure_status(tmp_path, mode, expected_s
     assert list(Path(env["TMPDIR"]).glob("pony-check.*")) == []
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX shell gate contract")
 def test_local_check_rejects_release_dist_argument(tmp_path):
     repo, check, env = _check_fixture(tmp_path)
 
@@ -589,6 +759,7 @@ def test_local_check_rejects_release_dist_argument(tmp_path):
     assert list(Path(env["TMPDIR"]).glob("pony-check.*")) == []
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX shell gate contract")
 def test_local_check_keeps_distributions_in_temporary_directory(tmp_path):
     repo, check, env = _check_fixture(tmp_path)
 

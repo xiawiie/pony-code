@@ -1,7 +1,10 @@
 import json
 import os
+import shutil
 import subprocess
+import sys
 from contextlib import contextmanager
+from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
@@ -9,8 +12,50 @@ import pytest
 from pony import Pony
 from pony.state.session_store import SessionStore
 from pony.workspace.context import WorkspaceContext
+import pony.workspace.context as workspace_context_module
 from benchmarks.support.fake_provider import FakeModelClient
+import pony.security.command_policy as command_policy
 from pony.runtime.options import RuntimeOptions
+import pony.tools.executor as tool_executor
+import pony.tools.shell as shell_tool
+import pony.tools.subprocess as safe_subprocess
+
+
+def _frozen(name):
+    return str(Path(Path.cwd().anchor) / "frozen" / name)
+
+
+@pytest.fixture(autouse=True)
+def posix_shell_contract(monkeypatch):
+    monkeypatch.setattr(command_policy, "_WINDOWS", False)
+    monkeypatch.setattr(tool_executor, "_WINDOWS", False)
+    monkeypatch.setattr(shell_tool, "_WINDOWS", False)
+    monkeypatch.setattr(safe_subprocess, "_WINDOWS", False)
+    if os.name != "nt":
+        return
+
+    discovered = shutil.which("git")
+    assert discovered is not None
+    executable = os.path.abspath(discovered)
+    expected = os.path.normcase(executable)
+    original = safe_subprocess._prepared_executable
+
+    @contextmanager
+    def prepare(candidate):
+        if os.path.normcase(os.path.abspath(candidate)) == expected:
+            yield safe_subprocess._PreparedExecutable(executable, executable)
+            return
+        with original(candidate) as prepared:
+            yield prepared
+
+    # Executable discovery/ACL rejection has dedicated tests. The real-Git
+    # cases below isolate shell and repository-hardening behavior.
+    monkeypatch.setattr(safe_subprocess, "_prepared_executable", prepare)
+    monkeypatch.setattr(
+        workspace_context_module,
+        "build_trusted_executables",
+        lambda _root: {"git": executable},
+    )
 
 
 def build_agent(
@@ -93,7 +138,7 @@ def assert_shell_metadata(
             "pwd",
             "default",
             True,
-            {"pwd": "/frozen/pwd"},
+            {"pwd": _frozen("pwd")},
             True,
             "read_only_block",
             "read_only",
@@ -109,7 +154,7 @@ def assert_shell_metadata(
             "pwd",
             "dontAsk",
             False,
-            {"pwd": "/frozen/pwd"},
+            {"pwd": _frozen("pwd")},
             True,
             "permission_mode_block",
             "read_only",
@@ -125,7 +170,7 @@ def assert_shell_metadata(
             "pwd",
             "auto",
             False,
-            {"pwd": "/frozen/pwd"},
+            {"pwd": _frozen("pwd")},
             True,
             "",
             "read_only",
@@ -157,7 +202,7 @@ def assert_shell_metadata(
             "python -m pytest",
             "auto",
             False,
-            {"python": "/frozen/python"},
+            {"python": _frozen("python")},
             True,
             "permission_mode_block",
             "external_effect",
@@ -173,7 +218,7 @@ def assert_shell_metadata(
             "pwd && ls",
             "auto",
             False,
-            {"sh": "/frozen/sh"},
+            {"sh": _frozen("sh")},
             True,
             "permission_mode_block",
             "external_effect",
@@ -189,7 +234,7 @@ def assert_shell_metadata(
             "pwd",
             "default",
             False,
-            {"pwd": "/frozen/pwd"},
+            {"pwd": _frozen("pwd")},
             True,
             "",
             "read_only",
@@ -205,7 +250,7 @@ def assert_shell_metadata(
             "python -m pytest",
             "default",
             False,
-            {"python": "/frozen/python"},
+            {"python": _frozen("python")},
             True,
             "",
             "external_effect",
@@ -237,7 +282,7 @@ def assert_shell_metadata(
             "pwd",
             "default",
             False,
-            {"pwd": "/frozen/pwd"},
+            {"pwd": _frozen("pwd")},
             False,
             "approval_denied",
             "read_only",
@@ -253,7 +298,7 @@ def assert_shell_metadata(
             "pwd && ls",
             "default",
             False,
-            {"sh": "/frozen/sh"},
+            {"sh": _frozen("sh")},
             True,
             "",
             "external_effect",
@@ -285,7 +330,7 @@ def assert_shell_metadata(
             "cat .env",
             "default",
             False,
-            {"cat": "/frozen/cat"},
+            {"cat": _frozen("cat")},
             True,
             "sensitive_path_block",
             "destructive",
@@ -368,7 +413,7 @@ def test_sensitive_git_object_path_is_rejected_before_prompt_or_runner(
     agent = build_agent(
         tmp_path,
         permission_mode="default",
-        executables={"git": "/frozen/git"},
+        executables={"git": _frozen("git")},
     )
     approve = Mock(return_value=True)
     registry_runner = Mock(return_value=completed())
@@ -404,7 +449,7 @@ def test_ask_eof_denies_without_runner_or_exit_code(tmp_path, monkeypatch):
     agent = build_agent(
         tmp_path,
         permission_mode="default",
-        executables={"pwd": "/frozen/pwd"},
+        executables={"pwd": _frozen("pwd")},
     )
     runner = Mock(return_value=completed())
     agent.tools["run_shell"]["run"] = runner
@@ -447,7 +492,7 @@ def test_shell_early_rejections_keep_complete_assessment_metadata(
 ):
     agent = build_agent(
         tmp_path,
-        executables={"pwd": "/frozen/pwd"},
+        executables={"pwd": _frozen("pwd")},
     )
     if "allowed_tools" in agent_options:
         agent.allowed_tools = tuple(agent_options["allowed_tools"])
@@ -479,7 +524,7 @@ def test_nonmapping_shell_arguments_return_structured_invalid_metadata(
 ):
     agent = build_agent(
         tmp_path,
-        executables={"pwd": "/frozen/pwd"},
+        executables={"pwd": _frozen("pwd")},
     )
     approve = Mock(return_value=True)
     runner = Mock(return_value=completed())
@@ -508,7 +553,7 @@ def test_nonmapping_shell_arguments_return_structured_invalid_metadata(
 def test_repeated_shell_rejection_keeps_complete_assessment_metadata(tmp_path):
     agent = build_agent(
         tmp_path,
-        executables={"pwd": "/frozen/pwd"},
+        executables={"pwd": _frozen("pwd")},
     )
     agent.session["messages"] = [
         {
@@ -599,27 +644,27 @@ def test_hard_reject_does_not_read_empty_argv(tmp_path, monkeypatch):
         "expected_executable",
     ),
     [
-        ("pwd", {"pwd": "/frozen/pwd"}, ["/frozen/pwd"], False, None),
+        ("pwd", {"pwd": _frozen("pwd")}, [_frozen("pwd")], False, None),
         (
             "python -m pytest",
-            {"python": "/frozen/python"},
-            ["/frozen/python", "-m", "pytest"],
+            {"python": _frozen("python")},
+            [_frozen("python"), "-m", "pytest"],
             False,
             None,
         ),
         (
             "bash -c 'pwd && ls'",
-            {"bash": "/frozen/bash"},
-            ["/frozen/bash", "-c", "pwd && ls"],
+            {"bash": _frozen("bash")},
+            [_frozen("bash"), "-c", "pwd && ls"],
             False,
             None,
         ),
         (
             "pwd && ls",
-            {"sh": "/frozen/sh"},
+            {"sh": _frozen("sh")},
             "pwd && ls",
             True,
-            "/frozen/sh",
+            _frozen("sh"),
         ),
     ],
 )
@@ -660,7 +705,7 @@ def test_execution_shape_uses_only_frozen_executables(
     assert len(calls) == 1
     argv, kwargs = calls[0]
     assert argv == (
-        ["/frozen/sh", "-c", expected_argv] if expected_shell else expected_argv
+        [_frozen("sh"), "-c", expected_argv] if expected_shell else expected_argv
     )
     assert kwargs.get("executable") == expected_executable
     assert kwargs["cwd"] == tmp_path.resolve()
@@ -684,7 +729,7 @@ def test_simple_unknown_command_is_not_rewrapped_in_shell(tmp_path, monkeypatch)
     agent = build_agent(
         tmp_path,
         permission_mode="default",
-        executables={"echo": "/frozen/echo"},
+        executables={"echo": _frozen("echo")},
     )
     agent.approve = Mock(return_value=True)
 
@@ -694,7 +739,7 @@ def test_simple_unknown_command_is_not_rewrapped_in_shell(tmp_path, monkeypatch)
     )
 
     assert result.metadata["tool_status"] == "ok"
-    assert calls[0][0] == ["/frozen/echo", "hello"]
+    assert calls[0][0] == [_frozen("echo"), "hello"]
     assert calls[0][1].get("executable") is None
 
 
@@ -710,7 +755,7 @@ def test_runtime_path_spoof_cannot_replace_frozen_executable(tmp_path, monkeypat
 
     agent = build_agent(
         tmp_path,
-        executables={"pwd": "/frozen/pwd"},
+        executables={"pwd": _frozen("pwd")},
     )
     monkeypatch.setenv("PATH", str(tmp_path))
 
@@ -727,16 +772,17 @@ def test_runtime_path_spoof_cannot_replace_frozen_executable(tmp_path, monkeypat
     )
 
     assert result.metadata["tool_status"] == "ok"
-    assert calls[0][0] == ["/frozen/pwd"]
+    assert calls[0][0] == [_frozen("pwd")]
 
 
 def test_executable_path_never_falls_back_to_frozen_basename(tmp_path):
+    explicit_python = _frozen("explicit-python")
     agent = build_agent(
         tmp_path,
         permission_mode="default",
         executables={
-            "python": "/frozen/python",
-            "/usr/bin/python": "/usr/bin/python",
+            "python": _frozen("python"),
+            explicit_python: explicit_python,
         },
     )
     approve = Mock(return_value=True)
@@ -746,7 +792,7 @@ def test_executable_path_never_falls_back_to_frozen_basename(tmp_path):
 
     result = agent.execute_tool(
         "run_shell",
-        {"command": "/usr/bin/python -m pytest", "timeout": 5},
+        {"command": f"{explicit_python} -m pytest", "timeout": 5},
     )
 
     assert approve.call_count == 1
@@ -759,7 +805,7 @@ def test_missing_trusted_executable_reports_safe_available_names(tmp_path):
     agent = build_agent(
         tmp_path,
         permission_mode="default",
-        executables={"python3": "/frozen/python3"},
+        executables={"python3": _frozen("python3")},
     )
     agent.approve = Mock(return_value=True)
 
@@ -770,7 +816,7 @@ def test_missing_trusted_executable_reports_safe_available_names(tmp_path):
 
     assert result.metadata["tool_error_code"] == "trusted_executable_missing"
     assert "available trusted executable names: python3" in result.content
-    assert "/frozen/python3" not in result.content
+    assert _frozen("python3") not in result.content
 
 
 def test_approval_payload_and_runner_output_are_redacted(tmp_path):
@@ -779,7 +825,7 @@ def test_approval_payload_and_runner_output_are_redacted(tmp_path):
     agent = build_agent(
         tmp_path,
         permission_mode="default",
-        executables={"pwd": "/frozen/pwd"},
+        executables={"pwd": _frozen("pwd")},
         redaction_env={"PONY_TEST_TOKEN": secret},
         secret_env_names=("PONY_TEST_TOKEN",),
     )
@@ -810,7 +856,7 @@ def test_approval_mutation_blocks_execution(tmp_path, mutation_target):
     agent = build_agent(
         tmp_path,
         permission_mode="default",
-        executables={"pwd": "/frozen/pwd"},
+        executables={"pwd": _frozen("pwd")},
     )
     args = {"command": "pwd", "timeout": 5}
     runner = Mock(return_value=completed())
@@ -842,7 +888,7 @@ def test_post_prompt_reassessment_blocks_filesystem_swap_without_second_prompt(
     agent = build_agent(
         tmp_path,
         permission_mode="default",
-        executables={"wc": "/frozen/wc"},
+        executables={"wc": _frozen("wc")},
     )
     runner = Mock(return_value=completed())
     agent.tools["run_shell"]["run"] = runner
@@ -875,7 +921,7 @@ def test_decoded_secret_tool_action_is_blocked_before_prompt_and_runner(tmp_path
     agent = build_agent(
         tmp_path,
         permission_mode="default",
-        executables={"echo": "/frozen/echo"},
+        executables={"echo": _frozen("echo")},
         outputs=(tool_call, "done"),
         redaction_env={"PONY_TEST_TOKEN": secret},
         secret_env_names=("PONY_TEST_TOKEN",),
@@ -906,7 +952,7 @@ def test_decoded_secret_tool_action_is_blocked_before_prompt_and_runner(tmp_path
 def test_runner_exception_records_attempt_without_invented_exit_code(tmp_path):
     agent = build_agent(
         tmp_path,
-        executables={"pwd": "/frozen/pwd"},
+        executables={"pwd": _frozen("pwd")},
     )
     agent.tools["run_shell"]["run"] = Mock(side_effect=RuntimeError("runner failed"))
 
@@ -930,7 +976,7 @@ def test_before_capture_failure_does_not_create_nonexecuted_shell_record(
 ):
     agent = build_agent(
         tmp_path,
-        executables={"pwd": "/frozen/pwd"},
+        executables={"pwd": _frozen("pwd")},
     )
     runner = Mock(return_value=completed())
     agent.tools["run_shell"]["run"] = runner
@@ -954,7 +1000,7 @@ def test_before_capture_interrupt_does_not_create_nonexecuted_shell_record(
 ):
     agent = build_agent(
         tmp_path,
-        executables={"pwd": "/frozen/pwd"},
+        executables={"pwd": _frozen("pwd")},
     )
     runner = Mock(return_value=completed())
     agent.tools["run_shell"]["run"] = runner
@@ -971,7 +1017,7 @@ def test_before_capture_interrupt_does_not_create_nonexecuted_shell_record(
 
 
 def test_shell_rechecks_workspace_identity_inside_mutation_lock(tmp_path, monkeypatch):
-    agent = build_agent(tmp_path, executables={"pwd": "/frozen/pwd"})
+    agent = build_agent(tmp_path, executables={"pwd": _frozen("pwd")})
     runner = Mock(return_value=completed())
     agent.tools["run_shell"]["run"] = runner
     lock_active = False
@@ -1009,7 +1055,7 @@ def test_worktree_delegate_rechecks_workspace_identity_inside_mutation_lock(
     tmp_path,
     monkeypatch,
 ):
-    agent = build_agent(tmp_path, executables={"git": "/frozen/git"})
+    agent = build_agent(tmp_path, executables={"git": _frozen("git")})
     agent.set_permission_rule("delegate_worktrees", "allow")
     runner = Mock()
     agent.tools["delegate_worktrees"]["run"] = runner
@@ -1042,7 +1088,7 @@ def test_malformed_structured_runner_result_fails_closed(
 ):
     agent = build_agent(
         tmp_path,
-        executables={"pwd": "/frozen/pwd"},
+        executables={"pwd": _frozen("pwd")},
     )
     agent.tools["run_shell"]["run"] = Mock(return_value=runner_result)
 
@@ -1064,7 +1110,7 @@ def test_malformed_shell_result_after_side_effect_preserves_recovery_evidence(
 ):
     agent = build_agent(
         tmp_path,
-        executables={"pwd": "/frozen/pwd"},
+        executables={"pwd": _frozen("pwd")},
     )
     changed = tmp_path / "malformed-side-effect.txt"
 
@@ -1114,6 +1160,12 @@ def test_pony_has_no_raw_tool_proxies_and_executor_remains_registered(tmp_path):
 
 def _init_git_repo(root):
     subprocess.run(["git", "init"], cwd=root, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "config", "core.autocrlf", "false"],
+        cwd=root,
+        check=True,
+        capture_output=True,
+    )
     subprocess.run(
         ["git", "config", "user.email", "pony@example.test"],
         cwd=root,
@@ -1244,7 +1296,7 @@ def test_approved_git_cannot_override_hardening_or_run_config_helpers(
     agent = build_agent(
         tmp_path,
         permission_mode="default",
-        executables={"git": "/frozen/git"},
+        executables={"git": _frozen("git")},
     )
     agent.approve = Mock(return_value=True)
     hardened_git = Mock(side_effect=AssertionError("unsafe git reached runner"))
@@ -1448,15 +1500,32 @@ def test_approved_git_fetch_blocks_unknown_remote_helper_protocol(
         permission_mode="default",
         executables={"git": git},
     )
-    helper_dir = tmp_path.parent / f"{tmp_path.name}-helper-bin"
-    helper_dir.mkdir(mode=0o755)
+    helper_root = tmp_path.parent / f"{tmp_path.name}-helper-bin"
     marker = tmp_path.parent / f"{tmp_path.name}-remote-helper-ran"
-    helper = helper_dir / "git-remote-evil"
-    helper.write_text(
-        f"#!/bin/sh\ntouch {marker}\nexit 1\n",
-        encoding="utf-8",
-    )
-    helper.chmod(0o755)
+    if os.name == "nt":
+        helper_dir = helper_root / "Scripts"
+        helper_dir.mkdir(parents=True)
+        (helper_root / "pyvenv.cfg").write_text(
+            (Path(sys.prefix) / "pyvenv.cfg").read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
+        helper = helper_dir / "git-remote-evil.exe"
+        shutil.copyfile(sys.executable, helper)
+        (tmp_path / "origin").write_text(
+            "from pathlib import Path\n"
+            f"Path({str(marker)!r}).touch()\n"
+            "raise SystemExit(1)\n",
+            encoding="utf-8",
+        )
+    else:
+        helper_dir = helper_root
+        helper_dir.mkdir(mode=0o755)
+        helper = helper_dir / "git-remote-evil"
+        helper.write_text(
+            f"#!/bin/sh\ntouch {marker}\nexit 1\n",
+            encoding="utf-8",
+        )
+        helper.chmod(0o755)
     subprocess.run(
         [git, "remote", "add", "origin", "evil::payload"],
         cwd=tmp_path,

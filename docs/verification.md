@@ -50,14 +50,18 @@ G8 是否执行；不得把某一组合的 live 结果外推到其他组合。
 CI 的 Windows 3.11/3.12 capability job 分开运行 symbol probe 与安全语义 probe。后者在 hosted Windows runner 上验证
 `NtCreateFile` root-handle-relative 逐层打开、reparse point 打开后识别、稳定 File ID、hardlink count；DACL probe 验证文件和
 目录的当前用户 owner、单一无继承 full-control ACE、protected DACL、handle/path 双重复验，以及 owner/DACL 漂移拒绝；
-atomic-write probe 验证同目录 durable temp、失败时保留旧内容、`ReplaceFileW` 成功后的内容/File ID/DACL；production
-private-state backend probe 通过公共 API 验证 private directory、create/read/append/replace、post-install validation rollback 和
-tree hardening；production workspace-file probe 通过公共 API 验证 root-handle-relative create/read/list、bounded I/O、CAS、
-hardlink/reparse 拒绝、完整 parent chain deny-delete、replace rollback、commit ambiguity rollback 与 long path；production
-`LockFileEx` probe 验证跨进程 timeout、释放后重获、同线程重入拒绝、hardlink 拒绝、`require_existing` 零写，以及持锁期间
-禁止删除 leaf/重命名 parent；Job Object probe 还验证 suspended child 在执行前加入带 `KILL_ON_JOB_CLOSE` 的 Job，并在关闭
-Job 后终止 child 与 descendant。当前仍缺 session/migration 等 runtime backend、Windows 11 实机、剩余 atomic-write fault
-injection、锁 race、bounded pipe/output-limit 和完整安全语义证据。
+raw atomic-write capability probe 仍验证同目录 durable temp、失败时保留旧内容以及 `ReplaceFileW` 的系统语义，但 production
+private-state migration promotion 与 workspace atomic writer 的发布权威已改为持续持有并复验 source/temp handle，再通过目标
+parent handle 执行 `NtSetInformationFile(FileRenameInformation)`；发布后复验 File ID、DACL、大小与 digest，失败时从已验证的
+restore handle 回滚，不依赖 `MoveFileExW`/`ReplaceFileW` 路径调用决定提交对象。production private-state probe 通过公共 API
+验证 private directory、create/read/append/replace、post-install validation rollback 与 tree hardening；production
+workspace-file probe 验证 root-handle-relative create/read/list、bounded I/O、CAS、hardlink/reparse 拒绝、完整 parent chain
+deny-delete、replace rollback、commit ambiguity rollback 与 long path；production `LockFileEx` probe 验证跨进程 timeout、
+释放后重获、同线程重入拒绝、hardlink 拒绝、`require_existing` 零写，以及持锁期间禁止删除 leaf/重命名 parent；Job Object
+probe 还验证 suspended child 在执行前加入带 `KILL_ON_JOB_CLOSE` 的 Job，并在关闭 Job 后终止 child 与 descendant。
+Session、migration、memory 与 Git metadata 已有 Windows production-backend probe；剩余门禁主要是 clean-host Python 3.11/3.12
+矩阵、受保护 machine-scope Git/Python 上的 shell/evaluation、Windows Terminal 交互式 TUI 宽度回归，以及 clean exact HEAD 的
+完整一键门禁。
 Windows 仍是未支持平台。只有以下证据在同一 exact HEAD
 全部成立后，才可增加 Windows classifier 和公开支持声明：
 
@@ -66,6 +70,32 @@ Windows 仍是未支持平台。只有以下证据在同一 exact HEAD
 - `LockFileEx` 互斥/timeout/identity race 与 Job Object timeout/output-limit/完整进程树清理通过；
 - PowerShell command policy、原生 Git/rg、Windows Terminal/cmd/PowerShell 启动、TUI 40/80/120 列回归通过；
 - Windows 专项不是由 WSL、Git Bash 或大面积 `skipif Windows` 获得绿色结果。
+
+#### 2026-08-08 Windows 11 x64 本地实施证据
+
+以下结果来自 `467dc7bd1df91b528050e0013fb708b234f8a0da` 上的未提交实现工作区，只用于说明当前分支进度；由于 worktree
+不是 clean exact HEAD、Python 3.11 未运行且 G4 仍被宿主可执行文件信任门禁阻塞，因此不构成发布证据，也不改变 Windows
+“尚未支持”的状态：
+
+- Windows 11 x64、Python 3.12.13：完整 `pytest -q --maxfail=20 -ra` 为 `2575 passed, 150 skipped`；安全聚焦组为
+  `175 passed, 23 skipped`。聚焦 skip 对应当前用户没有 symbolic-link privilege 以及 FIFO/POSIX mode 等明确平台条件，不能
+  将其替代为放宽产品安全策略；完整 skip 集仍须在 clean-host CI 中复核。
+- `uv lock --check`、`uv run --frozen ruff check .` 与 `git diff --check` 通过。
+- 13 个 Windows probe 通过：atomic-write capability、capabilities、DACL、production file lock、file semantics、Git metadata、
+  Job Object、lock semantics、memory、migration、private files、process、workspace files。workspace probe 已覆盖
+  `commit_ambiguity_rollback`、`rollback`、long path、hardlink rejection 与 root rename denial；private probe 已覆盖 create、
+  replace、rollback 与 private DACL。
+- `probe_shell_backend.py` 在本机正确 fail closed：`C:\Git\cmd\git.exe` 及父目录对当前用户可写，因而不能作为 trusted
+  executable。产品策略不得为本机环境放宽；正式 probe 需要受保护目录中的 machine-scope Git（通常位于
+  `C:\Program Files\Git`）。
+- `core-functional` 中 `core.memory-quality-fake` 通过，`core.fixed-benchmark` 因
+  `trusted verifier executable unavailable` 失败。本机 `.venv`、用户级 Python 和 PATH 中其他 Python 候选的父目录均不满足
+  immutable executable directory 合同；这属于 clean-host 环境门禁，不能通过信任用户可写 Python 修复。
+- 仓库外 `%TEMP%` 目录的完全离线 `uv build` 成功，生成 `pony_code-1.0.0.tar.gz` 与
+  `pony_code-1.0.0-py3-none-any.whl`；`verify_distribution.py --install-smoke --offline-bundle-smoke` 通过。
+- PowerShell 与原生 `cmd.exe` 的 `pony --help` 均退出 0；`pony status` 退出 0 并在不可信 Git 环境下将 Git 状态标记为
+  unavailable；`prompt_toolkit` 和 `pony.tui.app` 原生导入通过。Windows Terminal 的实际交互、40/80/120 列视觉回归仍待
+  clean-host Phase 5 验收。
 
 跨机器或跨 OS 复制 active Session 的支持声明还必须通过 [ADR-0050](adr/0050-windows-native-support.md) 定义的 logical identity/physical binding 格式迁移；
 否则只声明 Windows 本机新建与恢复 Session。

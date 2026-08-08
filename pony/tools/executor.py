@@ -29,6 +29,9 @@ from pony.state.file_lock import locked_file
 from pony.agent.verification import verification_evidence_for_execution
 
 
+_WINDOWS = os.name == "nt"
+
+
 @dataclass(frozen=True)
 class ToolExecutionResult:
     content: str
@@ -292,13 +295,13 @@ def _freeze_shell_preparation(agent, tool, args, effect_class, assessment, mode)
     if assessment["execution_mode"] == "argv":
         argv = tuple(assessment["argv"])
         executable_name = argv[0]
-        if os.name == "nt":
+        if _WINDOWS:
             executable_name = Path(executable_name).name.casefold()
             if executable_name.endswith(".exe"):
                 executable_name = executable_name[:-4]
     else:
         argv = ()
-        executable_name = "powershell" if os.name == "nt" else "sh"
+        executable_name = "powershell" if _WINDOWS else "sh"
     return _ShellPreparation(
         agent=agent,
         tool=tool,

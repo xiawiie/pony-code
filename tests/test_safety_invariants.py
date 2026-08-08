@@ -68,7 +68,11 @@ def test_workspace_bootstrap_ignores_workspace_git_from_path(tmp_path, monkeypat
     workspace = WorkspaceContext.build(tmp_path)
 
     assert workspace.repo_root == str(tmp_path.resolve())
-    assert workspace.trusted_executables == {}
+    assert "git" not in workspace.trusted_executables
+    if os.name == "nt":
+        assert set(workspace.trusted_executables) == {"powershell"}
+    else:
+        assert workspace.trusted_executables == {}
     runner.assert_not_called()
 
 
@@ -738,13 +742,13 @@ def test_cli_no_input_fails_closed_for_untrusted_project(tmp_path):
     assert not (tmp_path / ".pony" / "trusted-projects.json").exists()
 
 
-def test_run_shell_uses_allowlisted_environment_only(tmp_path):
+def test_run_shell_uses_allowlisted_environment_only(tmp_path, contract_python):
     secret = "shh-allowlist-secret"
     agent = build_agent(
         tmp_path,
         [],
         permission_mode="default",
-        workspace_executables={"python": "/usr/bin/python3"},
+        workspace_executables={"python": contract_python},
     )
     agent.approve = lambda name, args: True
     script = 'import os; print(os.getenv("PONY_ALLOWLIST_SECRET", "missing"))'

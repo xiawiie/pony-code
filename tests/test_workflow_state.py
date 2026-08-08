@@ -1,8 +1,10 @@
 import json
 import os
+from pathlib import Path
 
 import pytest
 
+import pony.security.private_files as private_files_module
 import pony.state.session_store as session_store_module
 from pony.agent.messages import make_tool_pair
 from pony.state.session_store import (
@@ -128,6 +130,48 @@ def _rewrite_as_v4(path):
     return raw
 
 
+def _write_private(store, path, data):
+    return private_files_module.write_private_bytes_atomic(
+        path,
+        data,
+        trusted_root=store.root,
+        trusted_root_identity=store._root_identity,
+    )
+
+
+def _patch_candidate_publish_failure(monkeypatch, candidate, destination):
+    enabled = True
+    if os.name == "nt":
+        from pony.security import windows_private_files
+
+        owner = windows_private_files
+        name = "promote_private_file"
+        original = owner.promote_private_file
+
+        def fail_publish(source, target, **kwargs):
+            if enabled and Path(source) == candidate and Path(target) == destination:
+                raise OSError("candidate publish failed")
+            return original(source, target, **kwargs)
+
+    else:
+        owner = session_store_module.os
+        name = "replace"
+        original = owner.replace
+
+        def fail_publish(source, target, **kwargs):
+            if enabled and str(source).endswith(".jsonl.candidate"):
+                raise OSError("candidate publish failed")
+            return original(source, target, **kwargs)
+
+    monkeypatch.setattr(owner, name, fail_publish)
+
+    def allow_publish():
+        nonlocal enabled
+        enabled = False
+
+    return allow_publish
+
+
 def _legacy_source(store, workspace, session_id, version):
     if version == LEGACY_JSONL_SESSION_FORMAT_VERSION:
         path = store.save(_session(workspace, session_id))
@@ -141,9 +185,8 @@ def _legacy_source(store, workspace, session_id, version):
     payload["format_version"] = 1
     payload.pop("permission_mode")
     path = store.legacy_path(session_id)
-    path.write_text(json.dumps(payload), encoding="utf-8")
-    path.chmod(0o600)
-    store.lock_path.touch(mode=0o600)
+    _write_private(store, path, json.dumps(payload).encode("utf-8"))
+    _write_private(store, store.lock_path, b"")
     return path
 
 
@@ -313,8 +356,7 @@ def test_v1_resume_accepts_historical_recovery_field(tmp_path):
     source = _legacy_source(store, tmp_path, "legacy-v1-recovery", 1)
     payload = json.loads(source.read_text(encoding="utf-8"))
     payload["recovery"] = {"current_checkpoint_id": "legacy"}
-    source.write_text(json.dumps(payload), encoding="utf-8")
-    source.chmod(0o600)
+    _write_private(store, source, json.dumps(payload).encode("utf-8"))
 
     migrated = store.load_for_resume("legacy-v1-recovery")
 
@@ -388,19 +430,16 @@ def test_v3_publish_failure_keeps_source_and_resume_is_retryable(
         WORKFLOW_SESSION_FORMAT_VERSION,
     )
     original = path.read_bytes()
-    replace = os.replace
-
-    def fail_candidate_publish(source, destination, **kwargs):
-        if str(source).endswith(".jsonl.candidate"):
-            raise OSError("candidate publish failed")
-        return replace(source, destination, **kwargs)
-
-    monkeypatch.setattr(session_store_module.os, "replace", fail_candidate_publish)
+    allow_publish = _patch_candidate_publish_failure(
+        monkeypatch,
+        store.candidate_path("retry-v3"),
+        store.path("retry-v3"),
+    )
     with pytest.raises(OSError, match="candidate publish failed"):
         store.load_for_resume("retry-v3")
     assert path.read_bytes() == original
 
-    monkeypatch.setattr(session_store_module.os, "replace", replace)
+    allow_publish()
     assert store.load_for_resume("retry-v3")["format_version"] == SESSION_FORMAT_VERSION
 
 
@@ -416,19 +455,16 @@ def test_v2_publish_failure_keeps_source_and_resume_is_retryable(
         LEGACY_JSONL_SESSION_FORMAT_VERSION,
     )
     original = path.read_bytes()
-    replace = os.replace
-
-    def fail_candidate_publish(source, destination, **kwargs):
-        if str(source).endswith(".jsonl.candidate"):
-            raise OSError("candidate publish failed")
-        return replace(source, destination, **kwargs)
-
-    monkeypatch.setattr(session_store_module.os, "replace", fail_candidate_publish)
+    allow_publish = _patch_candidate_publish_failure(
+        monkeypatch,
+        store.candidate_path("retry-v2"),
+        store.path("retry-v2"),
+    )
     with pytest.raises(OSError, match="candidate publish failed"):
         store.load_for_resume("retry-v2")
     assert path.read_bytes() == original
 
-    monkeypatch.setattr(session_store_module.os, "replace", replace)
+    allow_publish()
     assert store.load_for_resume("retry-v2")["format_version"] == SESSION_FORMAT_VERSION
 
 
@@ -512,21 +548,18 @@ def test_migration_rejects_mismatched_existing_backup(tmp_path, monkeypatch, ver
     session_id = f"backup-race-v{version}"
     source = _legacy_source(store, tmp_path, session_id, version)
     original = source.read_bytes()
-    replace = os.replace
-
-    def fail_candidate_publish(source_name, destination, **kwargs):
-        if str(source_name).endswith(".jsonl.candidate"):
-            raise OSError("candidate publish failed")
-        return replace(source_name, destination, **kwargs)
-
-    monkeypatch.setattr(session_store_module.os, "replace", fail_candidate_publish)
+    allow_publish = _patch_candidate_publish_failure(
+        monkeypatch,
+        store.candidate_path(session_id),
+        store.path(session_id),
+    )
     with pytest.raises(OSError, match="candidate publish failed"):
         store.load_for_resume(session_id)
     backup = next((store.root / "legacy-backups").iterdir())
     backup.write_bytes(b"wrong backup")
     backup.chmod(0o600)
 
-    monkeypatch.setattr(session_store_module.os, "replace", replace)
+    allow_publish()
     with pytest.raises(SessionFormatError, match="backup changed"):
         store.load_for_resume(session_id)
     assert source.read_bytes() == original

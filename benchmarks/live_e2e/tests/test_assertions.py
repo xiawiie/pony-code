@@ -3056,7 +3056,15 @@ def test_fixture_removes_dangling_digest_symlink_on_exit(tmp_path):
     fixture.__enter__()
     digest = tmp_path / run_live_session.TOOL_DIGEST_FIXTURE_REL
     digest.unlink()
-    digest.symlink_to(tmp_path / "missing-target")
+    try:
+        digest.symlink_to(tmp_path / "missing-target")
+    except OSError as exc:
+        if getattr(exc, "winerror", None) == 1314:
+            pytest.skip(
+                "Windows symlink creation requires Developer Mode or "
+                "SeCreateSymbolicLinkPrivilege"
+            )
+        raise
     fixture.__exit__(None, None, None)
 
     assert not os.path.lexists(digest)

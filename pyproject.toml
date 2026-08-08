@@ -38,6 +38,7 @@ pony = "pony.cli.app:main"
 dev = [
   "pytest>=8.3.5",
   "ruff>=0.4.4",
+  "tzdata>=2025.2 ; sys_platform == 'win32'",
 ]
 
 [tool.hatch.build.targets.sdist]

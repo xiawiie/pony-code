@@ -127,18 +127,22 @@ def test_append_agent_note_flushes_file_then_commit(tmp_path, monkeypatch):
         from pony.security import windows_private_files
 
         real_write = windows_private_files.native.write_bytes
-        real_move = windows_private_files.native.move_file
+        real_rename = windows_private_files.native.rename_handle
 
         def observed_write(*args, **kwargs):
             real_write(*args, **kwargs)
             events.append("file")
 
-        def observed_move(*args, **kwargs):
-            real_move(*args, **kwargs)
+        def observed_rename(*args, **kwargs):
+            real_rename(*args, **kwargs)
             events.append("parent")
 
         monkeypatch.setattr(windows_private_files.native, "write_bytes", observed_write)
-        monkeypatch.setattr(windows_private_files.native, "move_file", observed_move)
+        monkeypatch.setattr(
+            windows_private_files.native,
+            "rename_handle",
+            observed_rename,
+        )
     else:
         real_fsync = os.fsync
 

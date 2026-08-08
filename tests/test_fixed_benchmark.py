@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 from collections import Counter
 
@@ -19,6 +20,23 @@ from benchmarks.evaluation.fixed_benchmark import (
 from pony.agent.observability import RunArtifactError
 from benchmarks.support.fake_provider import FakeModelClient
 
+
+
+@pytest.fixture(autouse=True)
+def windows_contract_python(monkeypatch, contract_python):
+    if os.name != "nt":
+        return
+    original = fixed_benchmark.build_trusted_executables
+
+    def trusted(workspace_root, *, env=None, names=()):
+        result = original(workspace_root, env=env, names=names)
+        if "python" in names:
+            result["python"] = contract_python
+        if "python3" in names:
+            result["python3"] = contract_python
+        return result
+
+    monkeypatch.setattr(fixed_benchmark, "build_trusted_executables", trusted)
 
 def test_load_benchmark_validates_fixed_schema():
     benchmark = load_benchmark(Path("benchmarks/coding_tasks.json"))

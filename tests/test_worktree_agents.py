@@ -1,3 +1,4 @@
+from contextlib import contextmanager
 import os
 import json
 import shutil
@@ -13,6 +14,7 @@ from pony.agent.context_manager import _convert_pony_tool_to_anthropic
 from pony.cli.app import main
 from pony.cli.errors import CliError
 from pony.runtime.options import RuntimeOptions
+from pony.security.private_files import private_directory_identity
 from pony.runtime.worktree_agents import (
     cleanup_worktree_agent,
     inspect_worktree_agent_batch,
@@ -22,6 +24,7 @@ from pony.runtime.worktree_agents import (
     merge_worktree_agent,
 )
 from pony.state.session_store import SessionStore
+from pony.tools import subprocess as safe_subprocess_module
 from pony.tools.registry import WORKTREE_DELEGATE_TOOL_SPEC
 from pony.workspace.context import WorkspaceContext
 
@@ -33,6 +36,37 @@ def _git(repo, *args, check=True):
         check=check,
         capture_output=True,
         text=True,
+    )
+
+
+def _host_git():
+    discovered = shutil.which("git")
+    assert discovered is not None
+    return os.path.abspath(discovered)
+
+
+@pytest.fixture(autouse=True)
+def _contract_host_git_independently_from_windows_install_acl(monkeypatch):
+    if os.name != "nt":
+        return
+    executable = _host_git()
+    expected = os.path.normcase(executable)
+    original = safe_subprocess_module._prepared_executable
+
+    @contextmanager
+    def prepare(candidate):
+        if os.path.normcase(os.path.abspath(candidate)) == expected:
+            yield safe_subprocess_module._PreparedExecutable(executable, executable)
+            return
+        with original(candidate) as prepared:
+            yield prepared
+
+    # Executable discovery/ACL rejection has dedicated tests. This module tests
+    # worktree behavior against the host's real Git implementation.
+    monkeypatch.setattr(safe_subprocess_module, "_prepared_executable", prepare)
+    monkeypatch.setattr(
+        "pony.cli.agents.build_trusted_executables",
+        lambda _root: {"git": executable},
     )
 
 
@@ -58,15 +92,17 @@ def _repo(tmp_path):
 
 def _agent(repo, clients, *, allowed_tools=None, read_only=False):
     pending = list(clients)
+    git = _host_git()
     return Pony(
         model_client=FakeModelClient([]),
-        workspace=WorkspaceContext.build(repo),
+        workspace=WorkspaceContext.build(repo, executables={"git": git}),
         session_store=SessionStore(repo / ".pony" / "sessions"),
         options=RuntimeOptions(
             project_trusted=True,
             delegate_model_client_factory=lambda: pending.pop(0),
             allowed_tools=allowed_tools,
             read_only=read_only,
+            trusted_executables={"git": git},
         ),
     )
 
@@ -600,6 +636,7 @@ def test_merge_rejects_uncommitted_hardlinks(tmp_path):
     assert not (repo / "hardlink").exists()
 
 
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFO unavailable")
 def test_special_file_cannot_enter_parent_merge(tmp_path):
     repo = _repo(tmp_path)
     agent = _agent(repo, [FakeModelClient(["done"])])
@@ -781,7 +818,7 @@ def test_agents_cli_performs_explicit_merge_and_cleanup(tmp_path, capsys, monkey
     trust_store = SimpleNamespace(is_trusted=lambda _root: True)
     monkeypatch.setattr(
         "pony.cli.app.trusted_project_root",
-        lambda _args: (repo, (repo.stat().st_dev, repo.stat().st_ino), trust_store),
+        lambda _args: (repo, private_directory_identity(repo), trust_store),
     )
 
     assert main(["--cwd", str(repo), "agents", "merge", manifest["id"]]) == 0
@@ -1007,7 +1044,7 @@ def test_agents_batch_cli_json_and_merge_all(tmp_path, capsys, monkeypatch):
     trust_store = SimpleNamespace(is_trusted=lambda _root: True)
     monkeypatch.setattr(
         "pony.cli.app.trusted_project_root",
-        lambda _args: (repo, (repo.stat().st_dev, repo.stat().st_ino), trust_store),
+        lambda _args: (repo, private_directory_identity(repo), trust_store),
     )
     assert (
         main(

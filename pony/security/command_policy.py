@@ -10,6 +10,7 @@ from pathlib import Path
 from pony.security import paths as security_paths
 from pony.security.paths import is_sensitive_path
 
+_WINDOWS = os.name == "nt"
 _TWO_CHAR_SHELL_TOKENS = ("&&", "||", "<<", ">>")
 _ONE_CHAR_SHELL_TOKENS = frozenset("|;&<>()")
 _REDIRECT_TOKENS = {"<", ">", "<<", ">>"}
@@ -1097,6 +1098,6 @@ def _assess_windows_command(command, workspace_root, executables):
 
 
 def assess_command(command, workspace_root, executables=None):
-    if os.name == "nt":
+    if _WINDOWS:
         return _assess_windows_command(command, workspace_root, executables)
     return _assess_command(command, workspace_root, executables, _depth=0)

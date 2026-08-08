@@ -124,7 +124,7 @@ def _open_lock(path, parent, *, require_existing):
             native.require_private(handle)
         elif not created:
             native.require_current_owner(handle)
-            native.make_private(handle)
+            native.make_private(handle, set_owner=False)
         native.require_private(handle)
         return handle
     except Exception:

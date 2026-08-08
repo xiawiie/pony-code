@@ -14,6 +14,7 @@ import subprocess
 import time
 from pathlib import Path
 
+_WINDOWS = os.name == "nt"
 AUTO_TRUSTED_EXECUTABLES = ("git", "pwd", "ls", "stat", "file", "wc")
 INTERNAL_TRUSTED_EXECUTABLES = ("rg",)
 APPROVAL_TRUSTED_EXECUTABLES = (
@@ -72,6 +73,11 @@ _GIT_CONFIG_OVERRIDES = (
     "credential.helper=",
     "protocol.ext.allow=never",
     "pager.status=false",
+)
+_WINDOWS_GIT_TEXT_CONFIG_KEYS = (
+    "core.autocrlf",
+    "core.eol",
+    "core.safecrlf",
 )
 _GIT_DIFF_RENDERING_SUBCOMMANDS = {
     "annotate",
@@ -1064,6 +1070,86 @@ def _hardened_git_env(cwd, executable):
     return env
 
 
+def _canonical_windows_git_text_config(key, raw_value):
+    value = raw_value.strip().casefold()
+    if key == "core.autocrlf":
+        if value == "input":
+            return value
+        true_values = {"", "1", "on", "true", "yes"}
+        false_values = {"0", "off", "false", "no"}
+        if value in true_values:
+            return "true"
+        if value in false_values:
+            return "false"
+    elif key == "core.eol" and value in {"crlf", "lf", "native"}:
+        return value
+    elif key == "core.safecrlf":
+        if value == "warn":
+            return value
+        if value in {"", "1", "on", "true", "yes"}:
+            return "true"
+        if value in {"0", "off", "false", "no"}:
+            return "false"
+    raise ValueError("unsafe Windows Git line-ending configuration")
+
+
+def _windows_git_text_config_overrides(executable, *, cwd, timeout):
+    if not _WINDOWS or not _lexical_git_repository_kind(cwd):
+        return ()
+    argv = _hardened_git_prefix(executable)
+    argv.extend(("-c", "alias.config="))
+    argv.extend(
+        (
+            "config",
+            "--null",
+            "--get-regexp",
+            r"^core\.(autocrlf|eol|safecrlf)$",
+        )
+    )
+    env = _minimal_env(cwd, executable)
+    env.update(
+        GIT_ALLOW_PROTOCOL="git:http:https:ssh",
+        GIT_TERMINAL_PROMPT="0",
+    )
+    result = _run_bounded(
+        argv,
+        executable=_execution_path(executable),
+        cwd=Path(cwd).resolve(),
+        capture_output=True,
+        text=False,
+        check=False,
+        timeout=min(int(timeout), 5),
+        env=env,
+        shell=False,
+    )
+    if result.returncode == 1 and result.stdout == b"":
+        return ()
+    if result.returncode != 0 or not isinstance(result.stdout, (bytes, bytearray)):
+        raise ValueError("unsafe Windows Git line-ending configuration")
+    values = {}
+    for record in bytes(result.stdout).split(b"\x00"):
+        if not record:
+            continue
+        raw_key, separator, raw_value = record.partition(b"\n")
+        if not separator:
+            raise ValueError("unsafe Windows Git line-ending configuration")
+        try:
+            key = raw_key.decode("ascii").casefold()
+            value = raw_value.decode("ascii")
+        except UnicodeDecodeError:
+            raise ValueError(
+                "unsafe Windows Git line-ending configuration"
+            ) from None
+        if key not in _WINDOWS_GIT_TEXT_CONFIG_KEYS:
+            raise ValueError("unsafe Windows Git line-ending configuration")
+        values[key] = value
+    return tuple(
+        f"{key}={_canonical_windows_git_text_config(key, values[key])}"
+        for key in _WINDOWS_GIT_TEXT_CONFIG_KEYS
+        if key in values
+    )
+
+
 def build_hardened_git_argv(executable, args):
     """Build the fixed Git argv without inspecting or executing a repository."""
     args, subcommand = _validate_hardened_git_args(args)
@@ -1325,7 +1411,18 @@ def run_hardened_git(
             args=args,
             timeout=timeout,
         )
+        text_config_overrides = _windows_git_text_config_overrides(
+            prepared,
+            cwd=cwd,
+            timeout=timeout,
+        )
         argv = build_hardened_git_argv(prepared, args)
+        if text_config_overrides:
+            argv[3:3] = [
+                value
+                for override in text_config_overrides
+                for value in ("-c", override)
+            ]
         env = _hardened_git_env(cwd, prepared)
         if commit_identity is not None:
             name, email = commit_identity
@@ -1658,7 +1755,7 @@ def run_hardened_command(
 ):
     with _prepared_executable(executable) as prepared:
         if shell:
-            argv = _shell_argv(prepared, command, windows=os.name == "nt")
+            argv = _shell_argv(prepared, command, windows=_WINDOWS)
             result = run_process_group(
                 argv,
                 executable=_execution_path(prepared) or str(prepared),

@@ -7,8 +7,14 @@ from pony import Pony
 from pony.state.session_store import SessionStore
 from pony.workspace.context import WorkspaceContext
 from benchmarks.support.fake_provider import FakeModelClient
+import pony.security.command_policy as command_policy
 from pony.security.command_policy import assess_command
 from pony.runtime.options import RuntimeOptions
+
+
+@pytest.fixture(autouse=True)
+def posix_command_policy(monkeypatch):
+    monkeypatch.setattr(command_policy, "_WINDOWS", False)
 
 
 def build_agent(tmp_path, outputs, **kwargs):
